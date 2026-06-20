@@ -1177,19 +1177,19 @@ bool ProjectArchive(sqlite3* source, sqlite3* ui, const OutboxEvent& event, std:
     if (package_id > 0) {
         Statement pkg;
         constexpr const char* kPkg =
-            "SELECT archive_package_id,source_context,source_root_job_set_id,created_at_utc,schema_version,event_catalog_version,time_range_start_utc,time_range_end_utc,checksum_status "
+            "SELECT archive_package_id,source_context,source_root_job_set_id,source_scope_kind,source_workflow_count,selection_summary,archive_name,archive_notes,created_at_utc,schema_version,event_catalog_version,time_range_start_utc,time_range_end_utc,checksum_status "
             "FROM ar_archive_package WHERE archive_package_id=?1;";
         if (!Prepare(source, kPkg, &pkg, error_out)) return false;
         sqlite3_bind_int64(pkg.st, 1, package_id);
         if (sqlite3_step(pkg.st) == SQLITE_ROW) {
             Statement upsert;
             constexpr const char* kSql =
-                "INSERT INTO ui_archive_catalog(archive_package_id,source_context,source_root_job_set_id,created_at_utc,schema_version,event_catalog_version,time_range_start_utc,time_range_end_utc,checksum_status) "
-                "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9) "
-                "ON CONFLICT(archive_package_id) DO UPDATE SET source_context=excluded.source_context,source_root_job_set_id=excluded.source_root_job_set_id,created_at_utc=excluded.created_at_utc,"
+                "INSERT INTO ui_archive_catalog(archive_package_id,source_context,source_root_job_set_id,source_scope_kind,source_workflow_count,selection_summary,archive_name,archive_notes,created_at_utc,schema_version,event_catalog_version,time_range_start_utc,time_range_end_utc,checksum_status) "
+                "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14) "
+                "ON CONFLICT(archive_package_id) DO UPDATE SET source_context=excluded.source_context,source_root_job_set_id=excluded.source_root_job_set_id,source_scope_kind=excluded.source_scope_kind,source_workflow_count=excluded.source_workflow_count,selection_summary=excluded.selection_summary,archive_name=excluded.archive_name,archive_notes=excluded.archive_notes,created_at_utc=excluded.created_at_utc,"
                 "schema_version=excluded.schema_version,event_catalog_version=excluded.event_catalog_version,time_range_start_utc=excluded.time_range_start_utc,time_range_end_utc=excluded.time_range_end_utc,checksum_status=excluded.checksum_status;";
             if (!Prepare(ui, kSql, &upsert, error_out)) return false;
-            for (int i = 0; i < 9; ++i) BindColumn(upsert.st, i + 1, pkg.st, i);
+            for (int i = 0; i < 14; ++i) BindColumn(upsert.st, i + 1, pkg.st, i);
             if (!StepDone(ui, upsert.st, error_out)) return false;
         }
     }

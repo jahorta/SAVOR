@@ -60,6 +60,11 @@ public:
 
     savor::db::IExecutionDb* ExecutionDb();
     savor::db::execution::workflow::SqliteExecutionDb* RawExecutionDbForValidation();
+    sqlite3* RawExecutionSqlite();
+    sqlite3* RawStateSqlite();
+    sqlite3* RawAnalysisSqlite();
+    sqlite3* RawUiReadSqlite();
+    sqlite3* RawArchiveSqlite();
     savor::db::IStateDb* StateDb();
     savor::db::IAnalysisDb* AnalysisDb();
     savor::db::IAuthoringDb* AuthoringDb();

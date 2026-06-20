@@ -25,6 +25,10 @@ public:
         std::int64_t* archive_item_id_out = nullptr,
         std::string* error_out = nullptr) override;
 
+    bool AddArchiveWorkflowPackageMember(
+        const AddArchiveWorkflowPackageMemberCommand& command,
+        std::string* error_out = nullptr) override;
+
     bool RequestRehydrate(
         const RequestRehydrateCommand& command,
         std::int64_t* rehydrate_request_id_out = nullptr,

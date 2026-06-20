@@ -18,6 +18,11 @@ using ArchivePayloadRecord = events::ArchivePackagePayloadView;
 struct CreateArchivePackageCommand {
     std::string source_context;
     std::int64_t source_root_job_set_id = 0;
+    std::string source_scope_kind = "root_job_set";
+    std::int64_t source_workflow_count = 0;
+    std::optional<std::string> selection_summary;
+    std::string archive_name;
+    std::optional<std::string> archive_notes;
     types::UtcTimePoint created_at_utc{};
     std::int64_t schema_version = 1;
     int event_catalog_version = 1;
@@ -27,6 +32,18 @@ struct CreateArchivePackageCommand {
     std::string checksum_status;
     std::string correlation_id;
     std::string causation_id;
+};
+
+struct AddArchiveWorkflowPackageMemberCommand {
+    std::int64_t archive_package_id = 0;
+    std::int64_t workflow_instance_id = 0;
+    std::optional<std::string> workflow_kind;
+    std::optional<std::string> display_state;
+    std::optional<std::string> root_scope_kind;
+    std::optional<std::int64_t> root_scope_id;
+    std::optional<types::UtcTimePoint> created_at_utc;
+    std::optional<types::UtcTimePoint> completed_at_utc;
+    int battle_final_victory_count = 0;
 };
 
 struct AddArchiveItemCommand {
@@ -84,6 +101,10 @@ struct IArchiveDb {
     virtual bool AddArchiveItem(
         const AddArchiveItemCommand& command,
         std::int64_t* archive_item_id_out = nullptr,
+        std::string* error_out = nullptr) = 0;
+
+    virtual bool AddArchiveWorkflowPackageMember(
+        const AddArchiveWorkflowPackageMemberCommand& command,
         std::string* error_out = nullptr) = 0;
 
     virtual bool RequestRehydrate(

@@ -173,6 +173,26 @@ savor::db::execution::workflow::SqliteExecutionDb* DBService::RawExecutionDbForV
     return sqlite_execution_db_.get();
 }
 
+sqlite3* DBService::RawExecutionSqlite() {
+    return execution_sqlite_;
+}
+
+sqlite3* DBService::RawStateSqlite() {
+    return state_sqlite_;
+}
+
+sqlite3* DBService::RawAnalysisSqlite() {
+    return analysis_sqlite_;
+}
+
+sqlite3* DBService::RawUiReadSqlite() {
+    return ui_read_sqlite_;
+}
+
+sqlite3* DBService::RawArchiveSqlite() {
+    return archive_sqlite_;
+}
+
 savor::db::IStateDb* DBService::StateDb() {
     return state_db_.get();
 }

@@ -94,6 +94,17 @@ bool QueuedArchiveDb::AddArchiveItem(
         error_out);
 }
 
+bool QueuedArchiveDb::AddArchiveWorkflowPackageMember(
+    const AddArchiveWorkflowPackageMemberCommand& command,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, command, error_out]() {
+            return inner_ != nullptr ? inner_->AddArchiveWorkflowPackageMember(command, error_out) : false;
+        },
+        false,
+        error_out);
+}
+
 bool QueuedArchiveDb::RequestRehydrate(
     const RequestRehydrateCommand& command,
     std::int64_t* rehydrate_request_id_out,

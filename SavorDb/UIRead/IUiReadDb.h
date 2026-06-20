@@ -205,6 +205,7 @@ struct UiWorkflowInstanceListQuery {
     std::string display_state;
     std::string workflow_kind;
     bool battle_final_victory_only = false;
+    bool battle_final_victory_absent_only = false;
 };
 
 struct UiWorkflowInstanceSummary {

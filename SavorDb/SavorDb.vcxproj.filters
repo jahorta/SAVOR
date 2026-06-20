@@ -133,6 +133,9 @@
     <ClInclude Include="Archive\ArchivePackageService.h">
       <Filter>Archive</Filter>
     </ClInclude>
+    <ClInclude Include="Archive\ArchiveProgress.h">
+      <Filter>Archive</Filter>
+    </ClInclude>
     <ClInclude Include="Authoring\IAuthoringDb.h">
       <Filter>Authoring</Filter>
     </ClInclude>
@@ -447,6 +450,12 @@
     <None Include="migration\Archive\202604051200_archive_stage4_workflow_archive_kinds.sql">
       <Filter>Migrations\Archive</Filter>
     </None>
+    <None Include="migration\Archive\202606201000_archive_workflow_package_membership.sql">
+      <Filter>Migrations\Archive</Filter>
+    </None>
+    <None Include="migration\Archive\202606201100_archive_package_name_notes.sql">
+      <Filter>Migrations\Archive</Filter>
+    </None>
     <None Include="migration\Authoring\202604051000_authoring_stage2_schema.sql">
       <Filter>Migrations\Authoring</Filter>
     </None>
@@ -553,6 +562,15 @@
       <Filter>Migrations\UiRead</Filter>
     </None>
     <None Include="migration\UIRead\202606181300_uiread_workflow_display_state.sql">
+      <Filter>Migrations\UiRead</Filter>
+    </None>
+    <None Include="migration\UIRead\202606181400_uiread_terminal_display_state_repair.sql">
+      <Filter>Migrations\UiRead</Filter>
+    </None>
+    <None Include="migration\UIRead\202606201000_uiread_archive_workflow_scope.sql">
+      <Filter>Migrations\UiRead</Filter>
+    </None>
+    <None Include="migration\UIRead\202606201100_uiread_archive_name_notes.sql">
       <Filter>Migrations\UiRead</Filter>
     </None>
   </ItemGroup>

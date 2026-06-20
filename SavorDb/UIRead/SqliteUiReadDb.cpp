@@ -863,7 +863,8 @@ UiReadPage<UiWorkflowInstanceSummary> SqliteUiReadDb::ListWorkflowInstances(
         "AND (?7=0 OR created_at_utc < ?8 OR (created_at_utc=?8 AND workflow_instance_id < ?9)) "
         "AND (?10=0 OR created_at_utc > ?11 OR (created_at_utc=?11 AND workflow_instance_id > ?12)) "
         "AND (?13=0 OR battle_final_victory_count > 0) "
-        "ORDER BY created_at_utc DESC, workflow_instance_id DESC LIMIT ?14;";
+        "AND (?14=0 OR battle_final_victory_count = 0) "
+        "ORDER BY created_at_utc DESC, workflow_instance_id DESC LIMIT ?15;";
     if (sqlite3_prepare_v2(db_, kSql, -1, &st, nullptr) != SQLITE_OK) {
         return page;
     }
@@ -881,7 +882,8 @@ UiReadPage<UiWorkflowInstanceSummary> SqliteUiReadDb::ListWorkflowInstances(
     sqlite3_bind_int64(st, 11, query.after.value_or(UiReadListCursor{}).primary);
     sqlite3_bind_int64(st, 12, query.after.value_or(UiReadListCursor{}).secondary);
     sqlite3_bind_int(st, 13, query.battle_final_victory_only ? 1 : 0);
-    sqlite3_bind_int(st, 14, query.limit);
+    sqlite3_bind_int(st, 14, query.battle_final_victory_absent_only ? 1 : 0);
+    sqlite3_bind_int(st, 15, query.limit);
 
     while (sqlite3_step(st) == SQLITE_ROW) {
         page.items.push_back(ReadWorkflowInstanceRow(st));

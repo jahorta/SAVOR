@@ -10,6 +10,7 @@
 
 #include <sqlite3.h>
 
+#include "ArchiveProgress.h"
 #include "IArchiveDb.h"
 #include "../Common/DbConfigPaths.h"
 #include "../Common/Retention/OutboxRetention.h"
@@ -31,10 +32,39 @@ struct CreateArchivePackageRequest {
     ArchivePackageRetentionPolicy retention_policy{};
     types::UtcTimePoint created_at_utc = types::UtcNow();
     std::string source_context = "Execution";
+    std::string archive_name;
+    std::optional<std::string> archive_notes;
     std::int64_t schema_version = 0;
     int event_catalog_version = 1;
     std::string correlation_id;
     std::string causation_id;
+};
+
+struct ArchiveWorkflowSelection {
+    std::vector<std::int64_t> workflow_instance_ids;
+    std::string created_by_filter_snapshot;
+    std::vector<std::int64_t> explicit_exclusions;
+};
+
+struct CreateWorkflowArchivePackageRequest {
+    ArchiveWorkflowSelection selection;
+    ArchivePackageRetentionPolicy retention_policy{};
+    types::UtcTimePoint created_at_utc = types::UtcNow();
+    std::string archive_name;
+    std::optional<std::string> archive_notes;
+    bool include_execution = true;
+    bool include_analysis = true;
+    bool include_ui_read_snapshot = true;
+    bool include_state_savestates = true;
+    std::string source_context = "Workflow";
+    std::int64_t schema_version = 0;
+    std::int64_t state_schema_version = 0;
+    std::int64_t analysis_schema_version = 0;
+    std::int64_t ui_read_schema_version = 0;
+    int event_catalog_version = 1;
+    std::string correlation_id;
+    std::string causation_id;
+    ArchiveProgressSink progress_sink;
 };
 
 struct ArchivePackageFileSummary {
@@ -49,6 +79,33 @@ struct CreateArchivePackageResult {
     std::int64_t archive_package_id = 0;
     std::filesystem::path package_root;
     std::vector<ArchivePackageFileSummary> files;
+    std::optional<std::string> error;
+};
+
+struct WorkflowArchivePreview {
+    bool success = false;
+    int workflow_count = 0;
+    int execution_row_count = 0;
+    int analysis_row_count = 0;
+    int ui_read_snapshot_row_count = 0;
+    int savestate_count = 0;
+    int shared_savestate_count = 0;
+    int exclusive_savestate_count = 0;
+    std::uint64_t savestate_bytes = 0;
+    std::vector<std::string> purge_blockers;
+    std::optional<std::string> error;
+};
+
+struct WorkflowArchivePurgeResult {
+    bool success = false;
+    int workflow_rows_deleted = 0;
+    int execution_rows_deleted = 0;
+    int analysis_rows_deleted = 0;
+    int ui_read_rows_deleted = 0;
+    int savestate_rows_deleted = 0;
+    int artifact_rows_deleted = 0;
+    int savestate_files_deleted = 0;
+    std::vector<std::string> blockers;
     std::optional<std::string> error;
 };
 
@@ -89,6 +146,14 @@ struct IArchivePackageService {
     virtual ~IArchivePackageService() = default;
 
     virtual CreateArchivePackageResult CreatePackage(const CreateArchivePackageRequest& request) = 0;
+    virtual WorkflowArchivePreview PreviewWorkflowArchive(
+        const ArchiveWorkflowSelection& selection,
+        std::string* error_out = nullptr) const = 0;
+    virtual CreateArchivePackageResult CreateWorkflowPackage(const CreateWorkflowArchivePackageRequest& request) = 0;
+    virtual WorkflowArchivePurgeResult PurgeWorkflowArchiveSource(
+        const ArchiveWorkflowSelection& selection,
+        std::int64_t archive_package_id,
+        std::string* error_out = nullptr) = 0;
     virtual std::vector<ArchiveCandidateRoot> ListArchiveCandidateRoots(
         types::UtcTimePoint older_than_utc,
         types::UtcTimePoint now_utc,
@@ -116,9 +181,20 @@ public:
         savor::db::IExecutionDb* execution_retention_db,
         savor::db::IUiReadDb* ui_read_db,
         IArchiveDb* archive_db,
-        DbConfigPaths config_paths);
+        DbConfigPaths config_paths,
+        sqlite3* state_db = nullptr,
+        sqlite3* analysis_db = nullptr,
+        sqlite3* ui_read_sqlite_db = nullptr);
 
     CreateArchivePackageResult CreatePackage(const CreateArchivePackageRequest& request) override;
+    WorkflowArchivePreview PreviewWorkflowArchive(
+        const ArchiveWorkflowSelection& selection,
+        std::string* error_out = nullptr) const override;
+    CreateArchivePackageResult CreateWorkflowPackage(const CreateWorkflowArchivePackageRequest& request) override;
+    WorkflowArchivePurgeResult PurgeWorkflowArchiveSource(
+        const ArchiveWorkflowSelection& selection,
+        std::int64_t archive_package_id,
+        std::string* error_out = nullptr) override;
     std::vector<ArchiveCandidateRoot> ListArchiveCandidateRoots(
         types::UtcTimePoint older_than_utc,
         types::UtcTimePoint now_utc,
@@ -152,6 +228,9 @@ private:
         std::string* error_out) const;
 
     sqlite3* execution_db_ = nullptr;
+    sqlite3* state_db_ = nullptr;
+    sqlite3* analysis_db_ = nullptr;
+    sqlite3* ui_read_sqlite_db_ = nullptr;
     savor::db::IExecutionDb* execution_retention_db_ = nullptr;
     savor::db::IUiReadDb* ui_read_db_ = nullptr;
     IArchiveDb* archive_db_ = nullptr;

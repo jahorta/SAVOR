@@ -53,6 +53,7 @@
 #include "Execution/WorkflowSchedulerAdapter.h"
 #include "Execution/StepInputAggregationService.h"
 #include "Execution/JobMaterializationService.h"
+#include "Utils/Hash.h"
 #include "Core/Memory/Soa/Battle/BattleContextCodec.h"
 #include "Runner/Breakpoints/BpRegistry.h"
 
@@ -664,6 +665,31 @@ TEST_F(SqliteDbFixture, Stage3bWorkflowMigrationsCreateExecutionAndUiReadTables)
     const auto instance_table_sql = TableCreateSql(db_, "exec_workflow_instance");
     EXPECT_NE(instance_table_sql.find("CHECK(state IN ('PENDING','RUNNING','COMPLETED','FAILED','CANCELED'))"), std::string::npos);
     EXPECT_NE(instance_table_sql.find("CHECK(root_scope_kind IN ('job_set','run','manual'))"), std::string::npos);
+}
+
+TEST_F(SqliteDbFixture, UiReadTerminalDisplayStateRepairMigrationCorrectsStaleTerminalRows) {
+    using namespace savor::db::migrations;
+
+    const MigrationSourceOptions embedded_options{
+        .source_kind = MigrationSourceKind::Embedded,
+    };
+
+    std::string err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::UIRead, embedded_options, &err)) << err;
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+INSERT INTO ui_workflow_instance(workflow_instance_id,workflow_kind,state,display_state,root_scope_kind,root_scope_id,created_by,blocked_step_count,failed_step_count,created_at_utc,started_at_utc,completed_at_utc,failure_code,failure_text)
+VALUES
+(6201,'repair-test','COMPLETED','WAITING','manual',NULL,'test',0,0,1000,1100,1200,NULL,NULL),
+(6202,'repair-test','FAILED','QUEUED','manual',NULL,'test',0,1,1000,1100,1200,'failed','failed'),
+(6203,'repair-test','RUNNING','WAITING','manual',NULL,'test',0,0,1000,1100,NULL,NULL,NULL);
+DELETE FROM migration_history
+WHERE context='UIRead' AND migration_name='202606181400_uiread_terminal_display_state_repair.sql';
+)SQL"));
+
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::UIRead, embedded_options, &err)) << err;
+    EXPECT_EQ(ReadText(db_, "SELECT display_state FROM ui_workflow_instance WHERE workflow_instance_id=6201;"), "COMPLETED");
+    EXPECT_EQ(ReadText(db_, "SELECT display_state FROM ui_workflow_instance WHERE workflow_instance_id=6202;"), "FAILED");
+    EXPECT_EQ(ReadText(db_, "SELECT display_state FROM ui_workflow_instance WHERE workflow_instance_id=6203;"), "WAITING");
 }
 
 TEST_F(SqliteDbFixture, Stage5WorkflowAppendDynamicStepsCreatesReadyIdempotentChildren) {
@@ -3483,6 +3509,42 @@ VALUES(1906, 1903, 7, 1, 'seed_probe', 33, 'fp-stage3d-tree-b1', 5, 'QUEUED', 0,
     EXPECT_EQ(snapshot->failed_total, 0);
 }
 
+TEST_F(SqliteDbFixture, Stage3dMarkQueuedJobsSupersededEmitsJobCompletedOutbox) {
+    using namespace savor::db::execution::workflow;
+    using namespace savor::db::migrations;
+
+    const MigrationSourceOptions embedded_options{ .source_kind = MigrationSourceKind::Embedded };
+    std::string err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Execution, embedded_options, &err)) << err;
+
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+INSERT INTO exec_job_set(job_set_id, parent_job_set_id, program_kind, purpose, expected_total, created_at_utc)
+VALUES(1910, NULL, 7, 'supersede-event-root', 4, 1000);
+INSERT INTO exec_job(job_id, job_set_id, program_kind, program_version, program_ref_kind, program_ref_id, fingerprint, priority, state, attempts, max_attempts, queued_at_utc)
+VALUES
+(1911, 1910, 7, 1, 'seed_probe', 33, 'fp-supersede-keep', 5, 'QUEUED', 0, 3, 1000),
+(1912, 1910, 7, 1, 'seed_probe', 33, 'fp-supersede-a', 5, 'QUEUED', 0, 3, 1000),
+(1913, 1910, 7, 1, 'seed_probe', 33, 'fp-supersede-b', 5, 'QUEUED', 0, 3, 1000),
+(1914, 1910, 7, 1, 'seed_probe', 33, 'fp-supersede-terminal', 5, 'SUCCEEDED', 0, 3, 1000);
+)SQL"));
+
+    SqliteExecutionDb execution_db(db_);
+    int rows_superseded = 0;
+    ASSERT_TRUE(execution_db.MarkQueuedJobsSuperseded(1910, 1911, &err, &rows_superseded)) << err;
+    EXPECT_EQ(rows_superseded, 2);
+    EXPECT_EQ(ReadText(db_, "SELECT state FROM exec_job WHERE job_id=1911;"), "QUEUED");
+    EXPECT_EQ(ReadText(db_, "SELECT state FROM exec_job WHERE job_id=1912;"), "SUPERSEDED");
+    EXPECT_EQ(ReadText(db_, "SELECT state FROM exec_job WHERE job_id=1913;"), "SUPERSEDED");
+    EXPECT_EQ(ReadText(db_, "SELECT state FROM exec_job WHERE job_id=1914;"), "SUCCEEDED");
+    EXPECT_EQ(ReadInt64(db_, "SELECT COUNT(1) FROM exec_outbox_message WHERE event_type='Execution.JobCompleted.v1' AND payload_ref_kind='job' AND payload_ref_id IN (1912,1913);"), 2);
+    EXPECT_EQ(ReadInt64(db_, "SELECT COUNT(1) FROM exec_job_event WHERE event_kind='Execution.JobCompleted.v1' AND message='SUPERSEDE' AND job_id IN (1912,1913);"), 2);
+    EXPECT_EQ(ReadInt64(db_, "SELECT COUNT(1) FROM exec_outbox_message WHERE payload_ref_kind='job' AND payload_ref_id=1911;"), 0);
+
+    ASSERT_TRUE(execution_db.MarkQueuedJobsSuperseded(1910, 1911, &err, &rows_superseded)) << err;
+    EXPECT_EQ(rows_superseded, 0);
+    EXPECT_EQ(ReadInt64(db_, "SELECT COUNT(1) FROM exec_outbox_message WHERE event_type='Execution.JobCompleted.v1' AND payload_ref_kind='job' AND payload_ref_id IN (1912,1913);"), 2);
+}
+
 TEST_F(SqliteDbFixture, Stage3dClaimNextReadyExecutionJobFailsAndRollsBackWhenJobSetAncestryHasNoWorkflowStep) {
     using namespace savor::db::execution::workflow;
     using namespace savor::db::migrations;
@@ -5880,6 +5942,8 @@ TEST_F(SqliteDbFixture, Stage3dArchiveCommandsEmitEventsFortyFourThroughFortyEig
         {
             .source_context = "Execution",
             .source_root_job_set_id = 9001,
+            .archive_name = "manual archive event test",
+            .archive_notes = std::string("event notes"),
             .created_at_utc = now,
             .schema_version = 1,
             .event_catalog_version = 1,
@@ -5894,6 +5958,8 @@ TEST_F(SqliteDbFixture, Stage3dArchiveCommandsEmitEventsFortyFourThroughFortyEig
         &err))
         << err;
     ASSERT_GT(archive_package_id, 0);
+    EXPECT_EQ(ReadText(db_, "SELECT archive_name FROM ar_archive_package WHERE archive_package_id=(SELECT MAX(archive_package_id) FROM ar_archive_package);"), "manual archive event test");
+    EXPECT_EQ(ReadText(db_, "SELECT archive_notes FROM ar_archive_package WHERE archive_package_id=(SELECT MAX(archive_package_id) FROM ar_archive_package);"), "event notes");
 
     std::int64_t archive_item_id = 0;
     ASSERT_TRUE(archive_db.AddArchiveItem(
@@ -6226,6 +6292,1017 @@ WHERE source_context='Execution' AND source_outbox_table='exec_outbox_message';
     EXPECT_EQ(preview.ui_safe_floor_outbox_id, 15);
     ASSERT_TRUE(preview.retention_safe_floor_outbox_id.has_value());
     EXPECT_EQ(preview.retention_safe_floor_outbox_id.value(), 15);
+
+    std::filesystem::remove_all(temp_root);
+}
+
+TEST_F(SqliteDbFixture, Stage4WorkflowArchivePackagesSelectedWorkflowsAndDedupesSavestateZipEntries) {
+    using namespace savor::db;
+    using namespace savor::db::migrations;
+
+    const MigrationSourceOptions embedded_options{ .source_kind = MigrationSourceKind::Embedded };
+    std::string err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Execution, embedded_options, &err)) << err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::State, embedded_options, &err)) << err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::UIRead, embedded_options, &err)) << err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Archive, embedded_options, &err)) << err;
+
+    const auto temp_root = std::filesystem::temp_directory_path() / ("savor-workflow-archive-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    ASSERT_TRUE(std::filesystem::create_directories(temp_root));
+    const auto sav_path = temp_root / "entry.sav";
+    {
+        std::ofstream out(sav_path, std::ios::binary | std::ios::trunc);
+        out << "shared-entry-savestate";
+    }
+
+    const auto sav_sql = std::string("INSERT INTO state_artifact(artifact_id,sha256,size_bytes,compression_kind,filename,file_ext,artifact_kind,created_at_utc) VALUES(10,'sharedsha',21,'NONE','")
+        + sav_path.generic_string() + "','.sav','SAV',1000);"
+        + "INSERT INTO state_savestate(savestate_id,artifact_id,savestate_type,note,is_complete,created_at_utc) VALUES(101,10,'ENTRY','shared',1,1000);";
+    ASSERT_TRUE(ExecSql(db_, sav_sql.c_str()));
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+INSERT INTO exec_workflow_instance(workflow_instance_id,workflow_kind,state,root_scope_kind,created_by,created_at_utc,completed_at_utc)
+VALUES(1,'BATTLE_RUN','COMPLETED','manual','test',1000,2000),
+      (2,'BATTLE_RUN','COMPLETED','manual','test',1000,2000);
+INSERT INTO exec_workflow_step(workflow_step_id,workflow_instance_id,step_key,step_kind,state,priority,attempts,max_attempts,input_ref_kind,input_ref_id,created_at_utc,completed_at_utc)
+VALUES(11,1,'entry','battle.entry','COMPLETED',0,0,1,'state.savestate_id',101,1000,2000),
+      (21,2,'entry','battle.entry','COMPLETED',0,0,1,'state.savestate_id',101,1000,2000);
+INSERT INTO ui_workflow_instance(workflow_instance_id,workflow_kind,state,display_state,root_scope_kind,created_by,created_at_utc,completed_at_utc,battle_final_victory_count)
+VALUES(1,'BATTLE_RUN','COMPLETED','COMPLETED','manual','test',1000,2000,0),
+      (2,'BATTLE_RUN','COMPLETED','COMPLETED','manual','test',1000,2000,0);
+)SQL"));
+
+    execution::workflow::SqliteExecutionDb execution_db(db_);
+    SqliteUiReadDb ui_read_db(db_);
+    SqliteArchiveDb archive_db(db_);
+    archive::SqliteArchivePackageService package_service(
+        db_,
+        &execution_db,
+        &ui_read_db,
+        &archive_db,
+        DbConfigPaths{ .archive_store_root = temp_root },
+        db_,
+        nullptr,
+        db_);
+
+    const auto package = package_service.CreateWorkflowPackage({
+        .selection = { .workflow_instance_ids = {1, 2}, .created_by_filter_snapshot = "{\"workflow_kind\":\"BATTLE_RUN\"}" },
+        .created_at_utc = types::UtcTimePoint(std::chrono::milliseconds(1712304000000)),
+        .archive_name = "No victory archive",
+        .archive_notes = std::string("Keep these for later review."),
+        .correlation_id = "workflow-archive",
+        .causation_id = "workflow-archive",
+    });
+    ASSERT_TRUE(package.success) << package.error.value_or("unknown error");
+    EXPECT_TRUE(std::filesystem::exists(package.package_root / "savestates.zip"));
+    EXPECT_NE(package.package_root.filename().string().find("no-victory-archive"), std::string::npos);
+    EXPECT_EQ(ReadText(db_, "SELECT archive_name FROM ar_archive_package WHERE archive_package_id=(SELECT MAX(archive_package_id) FROM ar_archive_package);"), "No victory archive");
+    EXPECT_EQ(ReadText(db_, "SELECT archive_notes FROM ar_archive_package WHERE archive_package_id=(SELECT MAX(archive_package_id) FROM ar_archive_package);"), "Keep these for later review.");
+    EXPECT_EQ(ReadInt64(db_, "SELECT COUNT(1) FROM ar_archive_workflow_package WHERE archive_package_id=(SELECT MAX(archive_package_id) FROM ar_archive_package);"), 2);
+    EXPECT_EQ(ReadInt64(db_, "SELECT source_workflow_count FROM ar_archive_package WHERE archive_package_id=(SELECT MAX(archive_package_id) FROM ar_archive_package);"), 2);
+    EXPECT_EQ(ReadInt64(db_, "SELECT item_count FROM ar_archive_item WHERE item_kind='state_savestate_zip' AND archive_package_id=(SELECT MAX(archive_package_id) FROM ar_archive_package);"), 1);
+    EXPECT_EQ(ReadInt64(db_, "SELECT COUNT(1) FROM ar_archive_item WHERE item_kind='state_artifacts' AND archive_package_id=(SELECT MAX(archive_package_id) FROM ar_archive_package);"), 1);
+    {
+        std::ifstream manifest(package.package_root / "manifest.json", std::ios::binary);
+        ASSERT_TRUE(manifest.is_open());
+        std::ostringstream manifest_text;
+        manifest_text << manifest.rdbuf();
+        EXPECT_NE(manifest_text.str().find("\"archive_name\": \"No victory archive\""), std::string::npos);
+        EXPECT_NE(manifest_text.str().find("\"archive_notes\": \"Keep these for later review.\""), std::string::npos);
+    }
+
+    std::filesystem::remove_all(temp_root);
+}
+
+TEST_F(SqliteDbFixture, Stage4WorkflowArchiveRehydrateReusesExistingSavestateArtifactBySha) {
+    using namespace savor::db;
+    using namespace savor::db::migrations;
+
+    const MigrationSourceOptions embedded_options{ .source_kind = MigrationSourceKind::Embedded };
+    std::string err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Execution, embedded_options, &err)) << err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::State, embedded_options, &err)) << err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::UIRead, embedded_options, &err)) << err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Archive, embedded_options, &err)) << err;
+
+    const auto temp_root = std::filesystem::temp_directory_path() / ("savor-workflow-rehydrate-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    ASSERT_TRUE(std::filesystem::create_directories(temp_root));
+    const auto sav_path = temp_root / "entry.sav";
+    {
+        std::ofstream out(sav_path, std::ios::binary | std::ios::trunc);
+        out << "dedupe-entry-savestate";
+    }
+
+    const auto sav_sql = std::string("INSERT INTO state_artifact(artifact_id,sha256,size_bytes,compression_kind,filename,file_ext,artifact_kind,created_at_utc) VALUES(10,'dedupesha',22,'NONE','")
+        + sav_path.generic_string() + "','.sav','SAV',1000);"
+        + "INSERT INTO state_savestate(savestate_id,artifact_id,savestate_type,note,is_complete,created_at_utc) VALUES(101,10,'ENTRY','shared',1,1000);";
+    ASSERT_TRUE(ExecSql(db_, sav_sql.c_str()));
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+INSERT INTO exec_workflow_instance(workflow_instance_id,workflow_kind,state,root_scope_kind,created_by,created_at_utc,completed_at_utc)
+VALUES(1,'BATTLE_RUN','COMPLETED','manual','test',1000,2000);
+INSERT INTO exec_workflow_step(workflow_step_id,workflow_instance_id,step_key,step_kind,state,priority,attempts,max_attempts,input_ref_kind,input_ref_id,output_ref_kind,output_ref_id,created_at_utc,completed_at_utc)
+VALUES(11,1,'entry','battle.entry','COMPLETED',0,0,1,'state.savestate_id',101,'state.savestate_id',101,1000,2000);
+INSERT INTO ui_workflow_instance(workflow_instance_id,workflow_kind,state,display_state,root_scope_kind,created_by,created_at_utc,completed_at_utc,battle_final_victory_count)
+VALUES(1,'BATTLE_RUN','COMPLETED','COMPLETED','manual','test',1000,2000,0);
+)SQL"));
+
+    execution::workflow::SqliteExecutionDb execution_db(db_);
+    SqliteUiReadDb ui_read_db(db_);
+    SqliteArchiveDb archive_db(db_);
+    archive::SqliteArchivePackageService package_service(
+        db_,
+        &execution_db,
+        &ui_read_db,
+        &archive_db,
+        DbConfigPaths{ .archive_store_root = temp_root },
+        db_,
+        nullptr,
+        db_);
+
+    const auto now = types::UtcTimePoint(std::chrono::milliseconds(1712304000000));
+    const auto package = package_service.CreateWorkflowPackage({
+        .selection = { .workflow_instance_ids = {1} },
+        .created_at_utc = now,
+        .correlation_id = "workflow-rehydrate",
+        .causation_id = "workflow-rehydrate",
+    });
+    ASSERT_TRUE(package.success) << package.error.value_or("unknown error");
+
+    std::int64_t request_id = 0;
+    ASSERT_TRUE(archive_db.RequestRehydrate(
+        {
+            .archive_package_id = package.archive_package_id,
+            .status = "REQUESTED",
+            .requested_at_utc = now,
+            .target_namespace = "wf-state",
+            .correlation_id = "workflow-rehydrate",
+            .causation_id = "workflow-rehydrate",
+        },
+        &request_id,
+        &err))
+        << err;
+
+    archive::SqliteRehydrateExecutor rehydrate_executor(db_, db_, &archive_db, temp_root, db_);
+    std::vector<archive::ArchiveOperationProgress> rehydrate_progress;
+    const auto result = rehydrate_executor.Execute({
+        .rehydrate_request_id = request_id,
+        .now_utc = now,
+        .correlation_id = "workflow-rehydrate",
+        .causation_id = "workflow-rehydrate",
+        .progress_sink = [&](const archive::ArchiveOperationProgress& progress) { rehydrate_progress.push_back(progress); },
+    });
+    ASSERT_TRUE(result.success) << result.error.value_or("unknown error");
+    EXPECT_TRUE(std::any_of(rehydrate_progress.begin(), rehydrate_progress.end(), [](const archive::ArchiveOperationProgress& progress) {
+        return progress.phase == archive::ArchiveOperationPhase::Complete;
+    }));
+    EXPECT_FALSE(std::any_of(rehydrate_progress.begin(), rehydrate_progress.end(), [](const archive::ArchiveOperationProgress& progress) {
+        return progress.phase == archive::ArchiveOperationPhase::Failed;
+    }));
+    EXPECT_EQ(ReadInt64(db_, "SELECT CAST(new_id AS INTEGER) FROM ar_rehydrate_map WHERE entity_kind='state_artifact' AND old_id='10' ORDER BY rehydrate_map_id DESC LIMIT 1;"), 10);
+    EXPECT_EQ(ReadInt64(db_, "SELECT CAST(new_id AS INTEGER) FROM ar_rehydrate_map WHERE entity_kind='state_savestate' AND old_id='101' ORDER BY rehydrate_map_id DESC LIMIT 1;"), 101);
+    EXPECT_EQ(ReadInt64(db_, "SELECT COUNT(1) FROM state_artifact WHERE sha256='dedupesha';"), 1);
+
+    std::filesystem::remove_all(temp_root);
+}
+
+TEST_F(SqliteDbFixture, Stage4WorkflowArchiveRehydrateRestoresExecutionExtrasAndBattleAnalysis) {
+    using namespace savor::db;
+    using namespace savor::db::archive;
+    using namespace savor::db::migrations;
+    using savor::runner::parallel::savordb::ArchiveWorkflowCommands;
+
+    const MigrationSourceOptions embedded_options{ .source_kind = MigrationSourceKind::Embedded };
+    std::string err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Execution, embedded_options, &err)) << err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::State, embedded_options, &err)) << err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::AnalysisBattle, embedded_options, &err)) << err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::UIRead, embedded_options, &err)) << err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Archive, embedded_options, &err)) << err;
+
+    const auto temp_root = std::filesystem::temp_directory_path() / ("savor-workflow-rehydrate-full-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    ASSERT_TRUE(std::filesystem::create_directories(temp_root));
+    const auto sav_path = temp_root / "entry-full.sav";
+    {
+        std::ofstream out(sav_path, std::ios::binary | std::ios::trunc);
+        out << "full-entry-savestate";
+    }
+
+    const auto sav_sql = std::string("INSERT INTO state_artifact(artifact_id,sha256,size_bytes,compression_kind,filename,file_ext,artifact_kind,created_at_utc) VALUES(60,'fullsha',20,'NONE','")
+        + sav_path.generic_string() + "','.sav','SAV',1000);"
+        + "INSERT INTO state_savestate(savestate_id,artifact_id,savestate_type,note,is_complete,created_at_utc) VALUES(601,60,'ENTRY','full',1,1000);";
+    ASSERT_TRUE(ExecSql(db_, sav_sql.c_str()));
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+INSERT INTO exec_job_set(job_set_id,program_kind,purpose,created_by,created_at_utc,priority_boost,expected_total,domain_ref_kind,domain_ref_id,meta_note)
+VALUES(7100,7,'rehydrate full','test',1000,0,1,'analysis_battle.turn_job',8300,'full');
+INSERT INTO exec_job(job_id,job_set_id,program_kind,program_version,program_ref_kind,program_ref_id,fingerprint,priority,state,attempts,max_attempts,queued_at_utc,ended_at_utc)
+VALUES(7101,7100,7,1,'analysis_battle.turn_job',8300,'rehydrate-full-job',0,'SUCCEEDED',1,1,1000,2000);
+INSERT INTO exec_workflow_instance(workflow_instance_id,workflow_kind,state,root_scope_kind,root_scope_id,created_by,created_at_utc,completed_at_utc)
+VALUES(7001,'BATTLE_RUN','COMPLETED','job_set',7100,'test',1000,2000);
+INSERT INTO exec_workflow_step(workflow_step_id,workflow_instance_id,workflow_unit_activation_id,step_key,graph_node_key,step_kind,state,priority,attempts,max_attempts,job_set_id,input_ref_kind,input_ref_id,output_ref_kind,output_ref_id,created_at_utc,completed_at_utc)
+VALUES(7201,7001,NULL,'battle','battle','battle.single_turn','COMPLETED',0,1,1,7100,'state.savestate_id',601,'state.savestate_id',601,1000,2000);
+INSERT INTO exec_workflow_step_output(workflow_step_output_id,workflow_instance_id,workflow_step_id,graph_node_key,output_key,data_kind,ref_kind,ref_id,created_at_utc)
+VALUES(7202,7001,7201,'battle','output_savestate','state.savestate_id','state.savestate_id',601,2000);
+INSERT INTO exec_workflow_instance_input_binding(workflow_instance_input_binding_id,workflow_instance_id,workflow_graph_revision_id,node_key,input_key,data_kind,ref_kind,ref_id,source_kind,created_at_utc)
+VALUES(7203,7001,1,'battle','entry','state.savestate_id','state.savestate_id',601,'manual',1000);
+INSERT INTO exec_workflow_instance_argument(workflow_instance_argument_id,workflow_instance_id,node_key,argument_key,value_type,integer_value,text_value,source_kind,created_at_utc)
+VALUES(7204,7001,'battle','turn_index','integer',1,NULL,'manual',1000);
+INSERT INTO ui_workflow_instance(workflow_instance_id,workflow_kind,state,display_state,root_scope_kind,created_by,created_at_utc,completed_at_utc,battle_final_victory_count)
+VALUES(7001,'BATTLE_RUN','COMPLETED','COMPLETED','job_set','test',1000,2000,0);
+INSERT INTO ab_battle_set(battle_set_id,name,entry_savestate_id,battle_run_spec_id,explorer_settings_id,status,created_at_utc,completed_at_utc)
+VALUES(8000,'rehydrate battle',601,1,1,'COMPLETED',1000,2000);
+INSERT INTO ab_seed_candidate(seed_candidate_id,battle_set_id,seed_value,source_kind,candidate_status,created_at_utc)
+VALUES(8100,8000,123,'MANUAL','SELECTED',1000);
+INSERT INTO ab_battle_advancement_pool(battle_advancement_pool_id,battle_set_id,turn_index,pool_name,criterion_kind,created_at_utc)
+VALUES(8200,8000,1,'pool','best',1000);
+INSERT INTO ab_turn_wave(wave_id,battle_set_id,turn_index,context_probe_id,parent_wave_id,parent_turn_job_id,seed_candidate_id,battle_advancement_pool_id,status,created_at_utc,completed_at_utc)
+VALUES(8250,8000,1,NULL,NULL,NULL,8100,8200,'COMPLETED',1000,2000);
+INSERT INTO ab_battle_context_probe(context_probe_id,wave_id,source_savestate_id,exec_job_id,probe_status,context_blob,context_version,recorded_at_utc,created_at_utc)
+VALUES(8275,8250,601,7101,'COMPLETED','{}',1,1500,1000);
+UPDATE ab_turn_wave SET context_probe_id=8275 WHERE wave_id=8250;
+INSERT INTO ab_turn_job(turn_job_id,wave_id,exec_job_id,plan_id,fake_attacks_this_turn,fake_attacks_used_before,job_state,started_at_utc,ended_at_utc,has_results,output_savestate_id,recorded_at_utc,source_savestate_id,seed_candidate_id,authored_plan_id,authored_turn_index)
+VALUES(8300,8250,7101,1,0,0,'SUCCEEDED',1000,2000,1,601,2000,601,8100,1,1);
+INSERT INTO ab_battle_advancement_decision(battle_advancement_decision_id,battle_advancement_pool_id,turn_job_id,decision_kind,decision_reason,created_at_utc)
+VALUES(8400,8200,8300,'SELECTED','best',2000);
+INSERT INTO ab_manual_followup(manual_followup_id,turn_job_id,manual_followup_status,recorded_sav_artifact_id,note,updated_at_utc)
+VALUES(8500,8300,'UNREVIEWED',NULL,'restore me',2000);
+)SQL"));
+
+    execution::workflow::SqliteExecutionDb execution_db(db_);
+    SqliteUiReadDb ui_read_db(db_);
+    SqliteArchiveDb archive_db(db_);
+    SqliteArchivePackageService package_service(
+        db_,
+        &execution_db,
+        &ui_read_db,
+        &archive_db,
+        DbConfigPaths{ .archive_store_root = temp_root },
+        db_,
+        db_,
+        db_);
+
+    const auto now = types::UtcTimePoint(std::chrono::milliseconds(1712304000000));
+    const auto package = package_service.CreateWorkflowPackage({
+        .selection = { .workflow_instance_ids = {7001} },
+        .created_at_utc = now,
+        .correlation_id = "workflow-rehydrate-full",
+        .causation_id = "workflow-rehydrate-full",
+    });
+    ASSERT_TRUE(package.success) << package.error.value_or("unknown error");
+
+    SqliteRehydrateExecutor rehydrate_executor(db_, db_, &archive_db, temp_root, db_, db_);
+    ArchiveWorkflowCommands commands(db_, &archive_db, &package_service, &rehydrate_executor);
+    const auto preview = commands.RehydratePreview({
+        .archive_package_id = package.archive_package_id,
+        .target_namespace = "wf-full",
+    });
+    ASSERT_TRUE(preview.success);
+    EXPECT_EQ(preview.expected_workflows, 1);
+    EXPECT_EQ(preview.expected_jobs, 1);
+    EXPECT_GT(preview.execution_row_count, 0);
+    EXPECT_GT(preview.analysis_row_count, 0);
+    EXPECT_EQ(preview.state_savestate_count, 1);
+    EXPECT_EQ(preview.savestate_zip_entry_count, 1);
+
+    std::int64_t request_id = 0;
+    ASSERT_TRUE(archive_db.RequestRehydrate(
+        {
+            .archive_package_id = package.archive_package_id,
+            .status = "REQUESTED",
+            .requested_at_utc = now,
+            .target_namespace = "wf-full",
+            .correlation_id = "workflow-rehydrate-full",
+            .causation_id = "workflow-rehydrate-full",
+        },
+        &request_id,
+        &err))
+        << err;
+
+    const auto result = rehydrate_executor.Execute({
+        .rehydrate_request_id = request_id,
+        .now_utc = now,
+        .correlation_id = "workflow-rehydrate-full",
+        .causation_id = "workflow-rehydrate-full",
+    });
+    ASSERT_TRUE(result.success) << result.error.value_or("unknown error");
+
+    const auto new_workflow_id = ReadInt64(db_, "SELECT CAST(new_id AS INTEGER) FROM ar_rehydrate_map WHERE entity_kind='workflow_instance' AND old_id='7001' ORDER BY rehydrate_map_id DESC LIMIT 1;");
+    const auto new_job_id = ReadInt64(db_, "SELECT CAST(new_id AS INTEGER) FROM ar_rehydrate_map WHERE entity_kind='job' AND old_id='7101' ORDER BY rehydrate_map_id DESC LIMIT 1;");
+    const auto new_battle_set_id = ReadInt64(db_, "SELECT CAST(new_id AS INTEGER) FROM ar_rehydrate_map WHERE entity_kind='analysis_battle_set' AND old_id='8000' ORDER BY rehydrate_map_id DESC LIMIT 1;");
+    const auto new_wave_id = ReadInt64(db_, "SELECT CAST(new_id AS INTEGER) FROM ar_rehydrate_map WHERE entity_kind='analysis_turn_wave' AND old_id='8250' ORDER BY rehydrate_map_id DESC LIMIT 1;");
+    const auto new_context_id = ReadInt64(db_, "SELECT CAST(new_id AS INTEGER) FROM ar_rehydrate_map WHERE entity_kind='analysis_battle_context_probe' AND old_id='8275' ORDER BY rehydrate_map_id DESC LIMIT 1;");
+    const auto new_turn_job_id = ReadInt64(db_, "SELECT CAST(new_id AS INTEGER) FROM ar_rehydrate_map WHERE entity_kind='analysis_battle_turn_job' AND old_id='8300' ORDER BY rehydrate_map_id DESC LIMIT 1;");
+    ASSERT_GT(new_workflow_id, 0);
+    ASSERT_GT(new_job_id, 0);
+    ASSERT_GT(new_battle_set_id, 0);
+    ASSERT_GT(new_wave_id, 0);
+    ASSERT_GT(new_context_id, 0);
+    ASSERT_GT(new_turn_job_id, 0);
+
+    EXPECT_EQ(ReadInt64(db_, ("SELECT COUNT(1) FROM exec_workflow_step_output WHERE workflow_instance_id=" + std::to_string(new_workflow_id) + " AND ref_id=601;").c_str()), 1);
+    EXPECT_EQ(ReadInt64(db_, ("SELECT COUNT(1) FROM exec_workflow_instance_input_binding WHERE workflow_instance_id=" + std::to_string(new_workflow_id) + " AND ref_id=601;").c_str()), 1);
+    EXPECT_EQ(ReadInt64(db_, ("SELECT COUNT(1) FROM exec_workflow_instance_argument WHERE workflow_instance_id=" + std::to_string(new_workflow_id) + " AND argument_key='turn_index' AND integer_value=1;").c_str()), 1);
+    EXPECT_EQ(ReadInt64(db_, ("SELECT entry_savestate_id FROM ab_battle_set WHERE battle_set_id=" + std::to_string(new_battle_set_id) + ";").c_str()), 601);
+    EXPECT_EQ(ReadInt64(db_, ("SELECT exec_job_id FROM ab_turn_job WHERE turn_job_id=" + std::to_string(new_turn_job_id) + ";").c_str()), new_job_id);
+    EXPECT_EQ(ReadInt64(db_, ("SELECT context_probe_id FROM ab_turn_wave WHERE wave_id=" + std::to_string(new_wave_id) + ";").c_str()), new_context_id);
+    EXPECT_EQ(ReadText(db_, ("SELECT note FROM ab_manual_followup WHERE turn_job_id=" + std::to_string(new_turn_job_id) + ";").c_str()), "restore me");
+
+    const auto collision_preview = commands.RehydratePreview({
+        .archive_package_id = package.archive_package_id,
+        .target_namespace = "wf-full",
+    });
+    EXPECT_FALSE(collision_preview.success);
+    EXPECT_TRUE(std::any_of(collision_preview.blocking_reasons.begin(), collision_preview.blocking_reasons.end(), [](const std::string& reason) {
+        return reason.find("target_id_collision:exec_workflow_instance.workflow_instance_id") != std::string::npos;
+    }));
+
+    std::filesystem::remove_all(temp_root);
+}
+
+TEST_F(SqliteDbFixture, Stage4WorkflowArchiveRehydrateRestoresSeedProbeAnalysisAndRefs) {
+    using namespace savor::db;
+    using namespace savor::db::archive;
+    using namespace savor::db::migrations;
+
+    const MigrationSourceOptions embedded_options{ .source_kind = MigrationSourceKind::Embedded };
+    std::string err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Execution, embedded_options, &err)) << err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::State, embedded_options, &err)) << err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::AnalysisSeedProbe, embedded_options, &err)) << err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::UIRead, embedded_options, &err)) << err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Archive, embedded_options, &err)) << err;
+
+    const auto temp_root = std::filesystem::temp_directory_path() / ("savor-workflow-rehydrate-seed-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    ASSERT_TRUE(std::filesystem::create_directories(temp_root));
+    const auto sav_path = temp_root / "seed-entry.sav";
+    {
+        std::ofstream out(sav_path, std::ios::binary | std::ios::trunc);
+        out << "seed-entry-savestate";
+    }
+
+    const auto sav_sql = std::string("INSERT INTO state_artifact(artifact_id,sha256,size_bytes,compression_kind,filename,file_ext,artifact_kind,created_at_utc) VALUES(70,'seedsha',20,'NONE','")
+        + sav_path.generic_string() + "','.sav','SAV',1000);"
+        + "INSERT INTO state_savestate(savestate_id,artifact_id,savestate_type,note,is_complete,created_at_utc) VALUES(701,70,'ENTRY','seed',1,1000);";
+    ASSERT_TRUE(ExecSql(db_, sav_sql.c_str()));
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+INSERT INTO sp_probe_set(probe_set_id,name,probe_flavor,breakpoint_policy_name,segment_source_kind,created_at_utc)
+VALUES(9000,'seed probe set','BATTLE_PRE','default','manual',1000);
+INSERT INTO an_input_set(input_set_id,content_hash,source_ref_kind,source_ref_id,created_at_utc)
+VALUES(9001,'seed-input-hash','manual',1,1000);
+INSERT INTO sp_axis_xy(axis_xy_id,x,y) VALUES(9002,128,128),(9003,129,128),(9004,128,129);
+INSERT INTO sp_input_frame(input_frame_id,main_axis_xy_id,cstick_axis_xy_id,trigger_axis_xy_id)
+VALUES(9005,9002,9003,9004);
+INSERT INTO an_input_set_frame(input_set_id,ordinal,input_frame_id,added_at_utc)
+VALUES(9001,0,9005,1000);
+INSERT INTO sp_probe_run(probe_run_id,probe_set_id,entry_savestate_id,seed_probe_spec_id,codec_version,status,unique_input_set_id,requested_at_utc,completed_at_utc,launch_samples_per_axis)
+VALUES(9010,9000,701,1,1,'COMPLETED',9001,1000,2000,1);
+INSERT INTO sp_probe_result(probe_result_id,probe_run_id,neutral_seed_value,grid_count,unique_count,result_status,recorded_at_utc)
+VALUES(9020,9010,1000,1,1,'COMPLETED',2000);
+INSERT INTO sp_neutral_seed(neutral_seed_id,probe_result_id,neutral_seed_value,source_kind,recorded_at_utc)
+VALUES(9030,9020,1000,'CALCULATED',2000);
+INSERT INTO sp_grid_seed(grid_seed_id,probe_result_id,source_family,axis_xy_id,seed_value,seed_delta,recorded_at_utc)
+VALUES(9040,9020,'MAIN',9002,1001,1,2000);
+INSERT INTO sp_unique_seed(unique_seed_id,probe_result_id,input_frame_id,seed_value,seed_delta,recorded_at_utc)
+VALUES(9050,9020,9005,1002,2,2000);
+INSERT INTO sp_encounter_projection(encounter_projection_id,probe_run_id,seed_value,option_ordinal,encounter_id,encounter_frame,movement_required,recorded_at_utc)
+VALUES(9060,9010,1002,0,'battle',10,1,2000);
+INSERT INTO exec_job_set(job_set_id,program_kind,purpose,created_by,created_at_utc,priority_boost,expected_total,domain_ref_kind,domain_ref_id,meta_note)
+VALUES(9100,3,'seed job set','test',1000,0,1,'sp_probe_run',9010,'seed');
+INSERT INTO exec_job(job_id,job_set_id,program_kind,program_version,program_ref_kind,program_ref_id,fingerprint,priority,state,attempts,max_attempts,queued_at_utc,ended_at_utc)
+VALUES(9101,9100,3,1,'sp_probe_run',9010,'rehydrate-seed-job',0,'SUCCEEDED',1,1,1000,2000);
+INSERT INTO exec_workflow_instance(workflow_instance_id,workflow_kind,state,root_scope_kind,root_scope_id,created_by,created_at_utc,completed_at_utc)
+VALUES(9102,'SEED_PROBE','COMPLETED','job_set',9100,'test',1000,2000);
+INSERT INTO exec_workflow_step(workflow_step_id,workflow_instance_id,step_key,graph_node_key,step_kind,state,priority,attempts,max_attempts,job_set_id,input_ref_kind,input_ref_id,output_ref_kind,output_ref_id,created_at_utc,completed_at_utc)
+VALUES(9103,9102,'probe','probe','seed_probe_chain','COMPLETED',0,1,1,9100,'sp_probe_run',9010,'sp_probe_run',9010,1000,2000);
+INSERT INTO exec_workflow_step_output(workflow_step_output_id,workflow_instance_id,workflow_step_id,graph_node_key,output_key,data_kind,ref_kind,ref_id,created_at_utc)
+VALUES(9104,9102,9103,'probe','run','sp_probe_run','sp_probe_run',9010,2000);
+INSERT INTO exec_workflow_instance_input_binding(workflow_instance_input_binding_id,workflow_instance_id,workflow_graph_revision_id,node_key,input_key,data_kind,ref_kind,ref_id,source_kind,created_at_utc)
+VALUES(9105,9102,1,'probe','run','sp_probe_run','sp_probe_run',9010,'manual',1000);
+INSERT INTO ui_workflow_instance(workflow_instance_id,workflow_kind,state,display_state,root_scope_kind,created_by,created_at_utc,completed_at_utc,battle_final_victory_count)
+VALUES(9102,'SEED_PROBE','COMPLETED','COMPLETED','job_set','test',1000,2000,0);
+)SQL"));
+
+    execution::workflow::SqliteExecutionDb execution_db(db_);
+    SqliteUiReadDb ui_read_db(db_);
+    SqliteArchiveDb archive_db(db_);
+    SqliteArchivePackageService package_service(
+        db_,
+        &execution_db,
+        &ui_read_db,
+        &archive_db,
+        DbConfigPaths{ .archive_store_root = temp_root },
+        db_,
+        db_,
+        db_);
+
+    const auto now = types::UtcTimePoint(std::chrono::milliseconds(1712304000000));
+    const auto package = package_service.CreateWorkflowPackage({
+        .selection = { .workflow_instance_ids = {9102} },
+        .created_at_utc = now,
+        .correlation_id = "workflow-rehydrate-seed",
+        .causation_id = "workflow-rehydrate-seed",
+    });
+    ASSERT_TRUE(package.success) << package.error.value_or("unknown error");
+    EXPECT_EQ(ReadInt64(db_, ("SELECT item_count FROM ar_archive_item WHERE archive_package_id=" + std::to_string(package.archive_package_id) + " AND item_kind='analysis_seed_probe_runs';").c_str()), 1);
+    EXPECT_EQ(ReadInt64(db_, ("SELECT item_count FROM ar_archive_item WHERE archive_package_id=" + std::to_string(package.archive_package_id) + " AND item_kind='state_savestates';").c_str()), 1);
+
+    std::int64_t request_id = 0;
+    ASSERT_TRUE(archive_db.RequestRehydrate(
+        {
+            .archive_package_id = package.archive_package_id,
+            .status = "REQUESTED",
+            .requested_at_utc = now,
+            .target_namespace = "wf-seed",
+            .correlation_id = "workflow-rehydrate-seed",
+            .causation_id = "workflow-rehydrate-seed",
+        },
+        &request_id,
+        &err))
+        << err;
+
+    SqliteRehydrateExecutor rehydrate_executor(db_, db_, &archive_db, temp_root, db_, db_);
+    const auto result = rehydrate_executor.Execute({
+        .rehydrate_request_id = request_id,
+        .now_utc = now,
+        .correlation_id = "workflow-rehydrate-seed",
+        .causation_id = "workflow-rehydrate-seed",
+    });
+    ASSERT_TRUE(result.success) << result.error.value_or("unknown error");
+
+    const auto new_probe_run_id = ReadInt64(db_, "SELECT CAST(new_id AS INTEGER) FROM ar_rehydrate_map WHERE entity_kind='analysis_seed_probe_run' AND old_id='9010' ORDER BY rehydrate_map_id DESC LIMIT 1;");
+    const auto new_job_id = ReadInt64(db_, "SELECT CAST(new_id AS INTEGER) FROM ar_rehydrate_map WHERE entity_kind='job' AND old_id='9101' ORDER BY rehydrate_map_id DESC LIMIT 1;");
+    const auto new_step_id = ReadInt64(db_, "SELECT CAST(new_id AS INTEGER) FROM ar_rehydrate_map WHERE entity_kind='workflow_step' AND old_id='9103' ORDER BY rehydrate_map_id DESC LIMIT 1;");
+    ASSERT_GT(new_probe_run_id, 0);
+    ASSERT_GT(new_job_id, 0);
+    ASSERT_GT(new_step_id, 0);
+    EXPECT_EQ(ReadInt64(db_, ("SELECT program_ref_id FROM exec_job WHERE job_id=" + std::to_string(new_job_id) + ";").c_str()), new_probe_run_id);
+    EXPECT_EQ(ReadInt64(db_, ("SELECT input_ref_id FROM exec_workflow_step WHERE workflow_step_id=" + std::to_string(new_step_id) + ";").c_str()), new_probe_run_id);
+    EXPECT_EQ(ReadInt64(db_, ("SELECT COUNT(1) FROM sp_probe_result WHERE probe_run_id=" + std::to_string(new_probe_run_id) + ";").c_str()), 1);
+    EXPECT_EQ(ReadInt64(db_, ("SELECT entry_savestate_id FROM sp_probe_run WHERE probe_run_id=" + std::to_string(new_probe_run_id) + ";").c_str()), 701);
+    EXPECT_EQ(ReadInt64(db_, ("SELECT COUNT(1) FROM sp_unique_seed u JOIN sp_probe_result r ON r.probe_result_id=u.probe_result_id WHERE r.probe_run_id=" + std::to_string(new_probe_run_id) + ";").c_str()), 1);
+
+    std::filesystem::remove_all(temp_root);
+}
+
+TEST_F(SqliteDbFixture, Stage4WorkflowArchiveRehydrateRejectsCorruptSavestateZipBytes) {
+    using namespace savor::db;
+    using namespace savor::db::archive;
+    using namespace savor::db::migrations;
+
+    const MigrationSourceOptions embedded_options{ .source_kind = MigrationSourceKind::Embedded };
+    std::string err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Execution, embedded_options, &err)) << err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::State, embedded_options, &err)) << err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::UIRead, embedded_options, &err)) << err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Archive, embedded_options, &err)) << err;
+
+    const auto temp_root = std::filesystem::temp_directory_path() / ("savor-workflow-rehydrate-corrupt-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    ASSERT_TRUE(std::filesystem::create_directories(temp_root));
+    const auto sav_path = temp_root / "corrupt-entry.sav";
+    {
+        std::ofstream out(sav_path, std::ios::binary | std::ios::trunc);
+        out << "corrupt-entry-savestate";
+    }
+    const auto sha = hash::sha256_of_file(sav_path.string());
+
+    const auto sav_sql = std::string("INSERT INTO state_artifact(artifact_id,sha256,size_bytes,compression_kind,filename,file_ext,artifact_kind,created_at_utc) VALUES(80,'")
+        + sha + "',23,'NONE','" + sav_path.generic_string() + "','.sav','SAV',1000);"
+        + "INSERT INTO state_savestate(savestate_id,artifact_id,savestate_type,note,is_complete,created_at_utc) VALUES(801,80,'ENTRY','corrupt',1,1000);";
+    ASSERT_TRUE(ExecSql(db_, sav_sql.c_str()));
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+INSERT INTO exec_workflow_instance(workflow_instance_id,workflow_kind,state,root_scope_kind,created_by,created_at_utc,completed_at_utc)
+VALUES(9801,'BATTLE_RUN','COMPLETED','manual','test',1000,2000);
+INSERT INTO exec_workflow_step(workflow_step_id,workflow_instance_id,step_key,step_kind,state,priority,attempts,max_attempts,input_ref_kind,input_ref_id,created_at_utc,completed_at_utc)
+VALUES(9802,9801,'entry','battle.entry','COMPLETED',0,0,1,'state.savestate_id',801,1000,2000);
+INSERT INTO ui_workflow_instance(workflow_instance_id,workflow_kind,state,display_state,root_scope_kind,created_by,created_at_utc,completed_at_utc,battle_final_victory_count)
+VALUES(9801,'BATTLE_RUN','COMPLETED','COMPLETED','manual','test',1000,2000,0);
+)SQL"));
+
+    execution::workflow::SqliteExecutionDb execution_db(db_);
+    SqliteUiReadDb ui_read_db(db_);
+    SqliteArchiveDb archive_db(db_);
+    SqliteArchivePackageService package_service(
+        db_,
+        &execution_db,
+        &ui_read_db,
+        &archive_db,
+        DbConfigPaths{ .archive_store_root = temp_root },
+        db_,
+        nullptr,
+        db_);
+
+    const auto now = types::UtcTimePoint(std::chrono::milliseconds(1712304000000));
+    const auto package = package_service.CreateWorkflowPackage({
+        .selection = { .workflow_instance_ids = {9801} },
+        .created_at_utc = now,
+        .correlation_id = "workflow-rehydrate-corrupt",
+        .causation_id = "workflow-rehydrate-corrupt",
+    });
+    ASSERT_TRUE(package.success) << package.error.value_or("unknown error");
+
+    const auto zip_path = package.package_root / "savestates.zip";
+    {
+        std::string zip_bytes;
+        {
+            std::ifstream in(zip_path, std::ios::binary);
+            ASSERT_TRUE(in.is_open());
+            std::ostringstream buffer;
+            buffer << in.rdbuf();
+            zip_bytes = buffer.str();
+        }
+        const auto payload_offset = zip_bytes.find("corrupt-entry-savestate");
+        ASSERT_NE(payload_offset, std::string::npos);
+        std::fstream out(zip_path, std::ios::in | std::ios::out | std::ios::binary);
+        ASSERT_TRUE(out.is_open());
+        out.seekp(static_cast<std::streamoff>(payload_offset));
+        const char corrupted = 'X';
+        out.write(&corrupted, 1);
+        ASSERT_TRUE(out.good());
+    }
+
+    ASSERT_TRUE(ExecSql(db_, "DELETE FROM state_savestate WHERE savestate_id=801;DELETE FROM state_artifact WHERE artifact_id=80;"));
+
+    std::int64_t request_id = 0;
+    ASSERT_TRUE(archive_db.RequestRehydrate(
+        {
+            .archive_package_id = package.archive_package_id,
+            .status = "REQUESTED",
+            .requested_at_utc = now,
+            .target_namespace = "wf-corrupt",
+            .correlation_id = "workflow-rehydrate-corrupt",
+            .causation_id = "workflow-rehydrate-corrupt",
+        },
+        &request_id,
+        &err))
+        << err;
+
+    SqliteRehydrateExecutor rehydrate_executor(db_, db_, &archive_db, temp_root, db_);
+    const auto result = rehydrate_executor.Execute({
+        .rehydrate_request_id = request_id,
+        .now_utc = now,
+        .correlation_id = "workflow-rehydrate-corrupt",
+        .causation_id = "workflow-rehydrate-corrupt",
+    });
+    ASSERT_FALSE(result.success);
+    ASSERT_TRUE(result.error.has_value());
+    EXPECT_NE(result.error->find("sha256 mismatch"), std::string::npos) << *result.error;
+    EXPECT_EQ(ReadText(db_, ("SELECT status FROM ar_rehydrate_request WHERE rehydrate_request_id=" + std::to_string(request_id) + ";").c_str()), "FAILED");
+
+    std::filesystem::remove_all(temp_root);
+}
+
+TEST_F(SqliteDbFixture, Stage4WorkflowArchiveExecuteReportsProgressPhases) {
+    using namespace savor::db;
+    using namespace savor::db::archive;
+    using namespace savor::db::migrations;
+    using savor::runner::parallel::savordb::ArchiveWorkflowCommands;
+
+    const MigrationSourceOptions embedded_options{ .source_kind = MigrationSourceKind::Embedded };
+    std::string err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Execution, embedded_options, &err)) << err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::State, embedded_options, &err)) << err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::UIRead, embedded_options, &err)) << err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Archive, embedded_options, &err)) << err;
+
+    const auto temp_root = std::filesystem::temp_directory_path() / ("savor-workflow-progress-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    ASSERT_TRUE(std::filesystem::create_directories(temp_root));
+    const auto sav_path = temp_root / "progress-entry.sav";
+    {
+        std::ofstream out(sav_path, std::ios::binary | std::ios::trunc);
+        out << "progress-entry-savestate";
+    }
+
+    const auto sav_sql = std::string("INSERT INTO state_artifact(artifact_id,sha256,size_bytes,compression_kind,filename,file_ext,artifact_kind,created_at_utc) VALUES(50,'progresssha',23,'NONE','")
+        + sav_path.generic_string() + "','.sav','SAV',1000);"
+        + "INSERT INTO state_savestate(savestate_id,artifact_id,savestate_type,note,is_complete,created_at_utc) VALUES(501,50,'ENTRY','progress',1,1000);";
+    ASSERT_TRUE(ExecSql(db_, sav_sql.c_str()));
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+INSERT INTO exec_workflow_instance(workflow_instance_id,workflow_kind,state,root_scope_kind,created_by,created_at_utc,completed_at_utc)
+VALUES(5010,'BATTLE_RUN','COMPLETED','manual','test',1000,2000);
+INSERT INTO exec_workflow_step(workflow_step_id,workflow_instance_id,step_key,step_kind,state,priority,attempts,max_attempts,input_ref_kind,input_ref_id,created_at_utc,completed_at_utc)
+VALUES(5011,5010,'entry','battle.entry','COMPLETED',0,0,1,'state.savestate_id',501,1000,2000);
+INSERT INTO ui_workflow_instance(workflow_instance_id,workflow_kind,state,display_state,root_scope_kind,created_by,created_at_utc,completed_at_utc,battle_final_victory_count)
+VALUES(5010,'BATTLE_RUN','COMPLETED','COMPLETED','manual','test',1000,2000,0);
+)SQL"));
+
+    execution::workflow::SqliteExecutionDb execution_db(db_);
+    SqliteUiReadDb ui_read_db(db_);
+    SqliteArchiveDb archive_db(db_);
+    archive::SqliteArchivePackageService package_service(
+        db_,
+        &execution_db,
+        &ui_read_db,
+        &archive_db,
+        DbConfigPaths{ .archive_store_root = temp_root },
+        db_,
+        nullptr,
+        db_);
+    archive::SqliteRehydrateExecutor rehydrate_executor(db_, db_, &archive_db, temp_root, db_);
+    ArchiveWorkflowCommands commands(db_, &archive_db, &package_service, &rehydrate_executor);
+
+    const auto now = types::UtcTimePoint(std::chrono::milliseconds(1712304000000));
+    std::vector<ArchiveOperationProgress> package_only_progress;
+    auto package_only = commands.WorkflowArchiveExecute({
+        .selection = { .workflow_instance_ids = {5010} },
+        .now_utc = now,
+        .purge_after_verify = false,
+        .trace_id = "workflow-progress-package",
+        .progress_sink = [&](const ArchiveOperationProgress& progress) { package_only_progress.push_back(progress); },
+    });
+    ASSERT_TRUE(package_only.success) << (package_only.errors.empty() ? "unknown error" : package_only.errors.front());
+
+    auto has_phase = [](const std::vector<ArchiveOperationProgress>& progress, ArchiveOperationPhase phase) {
+        return std::any_of(progress.begin(), progress.end(), [phase](const ArchiveOperationProgress& item) {
+            return item.phase == phase;
+        });
+    };
+    auto phase_index = [](const std::vector<ArchiveOperationProgress>& progress, ArchiveOperationPhase phase) {
+        for (std::size_t i = 0; i < progress.size(); ++i) {
+            if (progress[i].phase == phase) {
+                return i;
+            }
+        }
+        return progress.size();
+    };
+
+    EXPECT_TRUE(has_phase(package_only_progress, ArchiveOperationPhase::Previewing));
+    EXPECT_TRUE(has_phase(package_only_progress, ArchiveOperationPhase::ExportingRows));
+    EXPECT_TRUE(has_phase(package_only_progress, ArchiveOperationPhase::WritingSavestates));
+    EXPECT_TRUE(has_phase(package_only_progress, ArchiveOperationPhase::RegisteringPackage));
+    EXPECT_TRUE(has_phase(package_only_progress, ArchiveOperationPhase::VerifyingPackage));
+    EXPECT_TRUE(has_phase(package_only_progress, ArchiveOperationPhase::Complete));
+    EXPECT_FALSE(has_phase(package_only_progress, ArchiveOperationPhase::PurgingSource));
+    EXPECT_LT(phase_index(package_only_progress, ArchiveOperationPhase::Previewing), phase_index(package_only_progress, ArchiveOperationPhase::ExportingRows));
+    EXPECT_LT(phase_index(package_only_progress, ArchiveOperationPhase::ExportingRows), phase_index(package_only_progress, ArchiveOperationPhase::WritingSavestates));
+    EXPECT_LT(phase_index(package_only_progress, ArchiveOperationPhase::WritingSavestates), phase_index(package_only_progress, ArchiveOperationPhase::RegisteringPackage));
+    EXPECT_LT(phase_index(package_only_progress, ArchiveOperationPhase::RegisteringPackage), phase_index(package_only_progress, ArchiveOperationPhase::VerifyingPackage));
+    EXPECT_LT(phase_index(package_only_progress, ArchiveOperationPhase::VerifyingPackage), phase_index(package_only_progress, ArchiveOperationPhase::Complete));
+    EXPECT_TRUE(std::any_of(package_only_progress.begin(), package_only_progress.end(), [](const ArchiveOperationProgress& item) {
+        return item.phase == ArchiveOperationPhase::WritingSavestates
+            && item.completed_units == item.total_units
+            && item.total_units == 1
+            && item.bytes_completed.has_value()
+            && item.bytes_total.has_value()
+            && *item.bytes_total > 0;
+    }));
+
+    std::vector<ArchiveOperationProgress> purge_progress;
+    auto purge = commands.WorkflowArchiveExecute({
+        .selection = { .workflow_instance_ids = {5010} },
+        .now_utc = now,
+        .purge_after_verify = true,
+        .trace_id = "workflow-progress-purge",
+        .progress_sink = [&](const ArchiveOperationProgress& progress) { purge_progress.push_back(progress); },
+    });
+    ASSERT_TRUE(purge.success) << (purge.errors.empty() ? "unknown error" : purge.errors.front());
+    EXPECT_TRUE(has_phase(purge_progress, ArchiveOperationPhase::PurgingSource));
+    EXPECT_TRUE(has_phase(purge_progress, ArchiveOperationPhase::Complete));
+    EXPECT_FALSE(has_phase(purge_progress, ArchiveOperationPhase::Failed));
+
+    std::filesystem::remove_all(temp_root);
+}
+
+TEST_F(SqliteDbFixture, Stage4WorkflowArchiveCandidateFilterSelectsCompletedBattlesWithoutFinalVictory) {
+    using namespace savor::db;
+    using namespace savor::db::migrations;
+
+    const MigrationSourceOptions embedded_options{ .source_kind = MigrationSourceKind::Embedded };
+    std::string err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::UIRead, embedded_options, &err)) << err;
+
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+INSERT INTO ui_workflow_instance(workflow_instance_id,workflow_kind,state,display_state,root_scope_kind,created_by,created_at_utc,completed_at_utc,battle_final_victory_count)
+VALUES(1,'BATTLE_RUN','COMPLETED','COMPLETED','manual','test',3000,4000,0),
+      (2,'BATTLE_RUN','COMPLETED','COMPLETED','manual','test',2000,3000,1),
+      (3,'SEED_PROBE_CHAIN','COMPLETED','COMPLETED','manual','test',1000,2000,0);
+)SQL"));
+
+    SqliteUiReadDb ui_read_db(db_);
+    const auto page = ui_read_db.ListWorkflowInstances({
+        .limit = 20,
+        .state = "COMPLETED",
+        .workflow_kind = "BATTLE_RUN",
+        .battle_final_victory_absent_only = true,
+    });
+
+    ASSERT_EQ(page.items.size(), 1u);
+    EXPECT_EQ(page.items.front().workflow_instance_id, 1);
+    EXPECT_EQ(page.items.front().battle_final_victory_count, 0);
+}
+
+TEST_F(SqliteDbFixture, UiReadArchiveCatalogProjectsArchiveNameAndNotes) {
+    namespace migrations = savor::db::migrations;
+    namespace projectors = savor::db::uiread::projectors;
+
+    const auto separate_root = temp_root_ / "projection-archive-name-notes";
+    ASSERT_TRUE(std::filesystem::create_directories(separate_root));
+    const auto paths = MakePhase4DbPaths(separate_root);
+
+    {
+        savor::db::core::DBService initializer(
+            paths,
+            migrations::MigrationSourceOptions{ .source_kind = migrations::MigrationSourceKind::Embedded });
+        std::string err;
+        ASSERT_TRUE(initializer.Start(&err)) << err;
+        initializer.Stop();
+    }
+
+    sqlite3* archive_handle = nullptr;
+    ASSERT_EQ(SQLITE_OK, sqlite3_open(paths.archive_db_path.string().c_str(), &archive_handle));
+    ASSERT_NE(archive_handle, nullptr);
+    savor::db::SqliteArchiveDb archive_db(archive_handle);
+    const auto now = savor::db::types::UtcTimePoint(std::chrono::milliseconds(1712304000000));
+    std::string err;
+    std::int64_t archive_package_id = 0;
+    ASSERT_TRUE(archive_db.CreateArchivePackage(
+        {
+            .source_context = "Workflow",
+            .source_root_job_set_id = 0,
+            .source_scope_kind = "workflow_selection",
+            .source_workflow_count = 2,
+            .selection_summary = std::string("{\"workflow_count\":2}"),
+            .archive_name = "Projected archive name",
+            .archive_notes = std::string("Projected archive notes"),
+            .created_at_utc = now,
+            .schema_version = 1,
+            .event_catalog_version = 1,
+            .time_range_start_utc = now,
+            .time_range_end_utc = now,
+            .manifest_path = "manifest.json",
+            .checksum_status = "PASS",
+            .correlation_id = "archive-projection",
+            .causation_id = "archive-projection",
+        },
+        &archive_package_id,
+        &err))
+        << err;
+    sqlite3_close(archive_handle);
+    archive_handle = nullptr;
+
+    projectors::UiReadProjectionService projection(
+        projectors::UiReadProjectionConfig{
+            .ui_read_db_path = paths.ui_read_db_path,
+            .execution_db_path = paths.execution_db_path,
+            .state_db_path = paths.state_db_path,
+            .analysis_db_path = paths.analysis_db_path,
+            .archive_db_path = paths.archive_db_path,
+            .max_batch_size = 100,
+            .max_attempts = 5,
+            .poll_interval = std::chrono::hours{ 24 },
+        });
+    ASSERT_TRUE(projection.RunOnce(&err)) << err;
+
+    sqlite3* verify_handle = nullptr;
+    ASSERT_EQ(SQLITE_OK, sqlite3_open(paths.ui_read_db_path.string().c_str(), &verify_handle));
+    ASSERT_NE(verify_handle, nullptr);
+    EXPECT_EQ(ReadText(verify_handle, "SELECT archive_name FROM ui_archive_catalog WHERE archive_package_id=(SELECT MAX(archive_package_id) FROM ui_archive_catalog);"), "Projected archive name");
+    EXPECT_EQ(ReadText(verify_handle, "SELECT archive_notes FROM ui_archive_catalog WHERE archive_package_id=(SELECT MAX(archive_package_id) FROM ui_archive_catalog);"), "Projected archive notes");
+    EXPECT_EQ(ReadInt64(verify_handle, "SELECT source_workflow_count FROM ui_archive_catalog WHERE archive_package_id=(SELECT MAX(archive_package_id) FROM ui_archive_catalog);"), 2);
+    sqlite3_close(verify_handle);
+}
+
+TEST_F(SqliteDbFixture, UiReadPageCursorsMoveForwardToOlderRowsAndBackToNewerRows) {
+    using namespace savor::db;
+    using namespace savor::db::migrations;
+
+    const MigrationSourceOptions embedded_options{ .source_kind = MigrationSourceKind::Embedded };
+    std::string err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::UIRead, embedded_options, &err)) << err;
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+INSERT INTO ui_job_summary(job_id,job_set_id,program_kind,state,priority,queued_at_utc)
+VALUES(9003,9103,5,'QUEUED',1,3000),
+      (9002,9102,5,'QUEUED',1,2000),
+      (9001,9101,5,'QUEUED',1,1000);
+INSERT INTO ui_artifact_browser(artifact_id,sha256,size_bytes,artifact_kind,filename,created_at_utc)
+VALUES(9203,'sha9203',1,'SAV','a3.sav',3000),
+      (9202,'sha9202',1,'SAV','a2.sav',2000),
+      (9201,'sha9201',1,'SAV','a1.sav',1000);
+INSERT INTO ui_workflow_instance(workflow_instance_id,workflow_kind,state,display_state,root_scope_kind,created_by,created_at_utc,completed_at_utc)
+VALUES(9303,'cursor-test','COMPLETED','COMPLETED','manual','test',3000,3001),
+      (9302,'cursor-test','COMPLETED','COMPLETED','manual','test',2000,2001),
+      (9301,'cursor-test','COMPLETED','COMPLETED','manual','test',1000,1001);
+INSERT INTO ui_battle_group(battle_set_id,name,status,created_at_utc,completed_at_utc)
+VALUES(9403,'battle-3','done',3000,3001),
+      (9402,'battle-2','done',2000,2001),
+      (9401,'battle-1','done',1000,1001);
+INSERT INTO ui_seed_probe_summary(probe_run_id,probe_set_id,status,neutral_seed_value,grid_count,unique_count,requested_at_utc,completed_at_utc)
+VALUES(9503,1,'completed',NULL,0,0,3000,3001),
+      (9502,1,'completed',NULL,0,0,2000,2001),
+      (9501,1,'completed',NULL,0,0,1000,1001);
+)SQL"));
+
+    SqliteUiReadDb ui_read_db(db_);
+
+    auto jobs = ui_read_db.ListJobs({ .limit = 2 });
+    ASSERT_EQ(jobs.items.size(), 2u);
+    EXPECT_EQ(jobs.items[0].job_id, 9003);
+    EXPECT_EQ(jobs.items[1].job_id, 9002);
+    auto older_jobs = ui_read_db.ListJobs({ .before = jobs.next, .limit = 2 });
+    ASSERT_EQ(older_jobs.items.size(), 1u);
+    EXPECT_EQ(older_jobs.items[0].job_id, 9001);
+    auto newer_jobs = ui_read_db.ListJobs({ .after = older_jobs.prev, .limit = 2 });
+    ASSERT_EQ(newer_jobs.items.size(), 2u);
+    EXPECT_EQ(newer_jobs.items[0].job_id, 9003);
+    EXPECT_EQ(newer_jobs.items[1].job_id, 9002);
+
+    auto job_sets = ui_read_db.ListJobSets({ .limit = 2 });
+    ASSERT_EQ(job_sets.items.size(), 2u);
+    EXPECT_EQ(job_sets.items[0].job_set_id, 9103);
+    EXPECT_EQ(job_sets.items[1].job_set_id, 9102);
+    auto older_job_sets = ui_read_db.ListJobSets({ .before = job_sets.next, .limit = 2 });
+    ASSERT_EQ(older_job_sets.items.size(), 1u);
+    EXPECT_EQ(older_job_sets.items[0].job_set_id, 9101);
+    auto newer_job_sets = ui_read_db.ListJobSets({ .after = older_job_sets.prev, .limit = 2 });
+    ASSERT_EQ(newer_job_sets.items.size(), 2u);
+    EXPECT_EQ(newer_job_sets.items[0].job_set_id, 9103);
+    EXPECT_EQ(newer_job_sets.items[1].job_set_id, 9102);
+
+    auto artifacts = ui_read_db.ListArtifacts({ .limit = 2 });
+    ASSERT_EQ(artifacts.items.size(), 2u);
+    EXPECT_EQ(artifacts.items[0].artifact_id, 9203);
+    EXPECT_EQ(artifacts.items[1].artifact_id, 9202);
+    auto older_artifacts = ui_read_db.ListArtifacts({ .before = artifacts.next, .limit = 2 });
+    ASSERT_EQ(older_artifacts.items.size(), 1u);
+    EXPECT_EQ(older_artifacts.items[0].artifact_id, 9201);
+    auto newer_artifacts = ui_read_db.ListArtifacts({ .after = older_artifacts.prev, .limit = 2 });
+    ASSERT_EQ(newer_artifacts.items.size(), 2u);
+    EXPECT_EQ(newer_artifacts.items[0].artifact_id, 9203);
+    EXPECT_EQ(newer_artifacts.items[1].artifact_id, 9202);
+
+    auto workflows = ui_read_db.ListWorkflowInstances({ .limit = 2, .workflow_kind = "cursor-test" });
+    ASSERT_EQ(workflows.items.size(), 2u);
+    EXPECT_EQ(workflows.items[0].workflow_instance_id, 9303);
+    EXPECT_EQ(workflows.items[1].workflow_instance_id, 9302);
+    auto older_workflows = ui_read_db.ListWorkflowInstances({ .before = workflows.next, .limit = 2, .workflow_kind = "cursor-test" });
+    ASSERT_EQ(older_workflows.items.size(), 1u);
+    EXPECT_EQ(older_workflows.items[0].workflow_instance_id, 9301);
+    auto newer_workflows = ui_read_db.ListWorkflowInstances({ .after = older_workflows.prev, .limit = 2, .workflow_kind = "cursor-test" });
+    ASSERT_EQ(newer_workflows.items.size(), 2u);
+    EXPECT_EQ(newer_workflows.items[0].workflow_instance_id, 9303);
+    EXPECT_EQ(newer_workflows.items[1].workflow_instance_id, 9302);
+
+    auto battle_groups = ui_read_db.ListBattleGroups({ .limit = 2 });
+    ASSERT_EQ(battle_groups.items.size(), 2u);
+    EXPECT_EQ(battle_groups.items[0].battle_set_id, 9403);
+    EXPECT_EQ(battle_groups.items[1].battle_set_id, 9402);
+    auto older_battle_groups = ui_read_db.ListBattleGroups({ .before = battle_groups.next, .limit = 2 });
+    ASSERT_EQ(older_battle_groups.items.size(), 1u);
+    EXPECT_EQ(older_battle_groups.items[0].battle_set_id, 9401);
+    auto newer_battle_groups = ui_read_db.ListBattleGroups({ .after = older_battle_groups.prev, .limit = 2 });
+    ASSERT_EQ(newer_battle_groups.items.size(), 2u);
+    EXPECT_EQ(newer_battle_groups.items[0].battle_set_id, 9403);
+    EXPECT_EQ(newer_battle_groups.items[1].battle_set_id, 9402);
+
+    auto seed_probes = ui_read_db.ListSeedProbeRuns({ .limit = 2 });
+    ASSERT_EQ(seed_probes.items.size(), 2u);
+    EXPECT_EQ(seed_probes.items[0].probe_run_id, 9503);
+    EXPECT_EQ(seed_probes.items[1].probe_run_id, 9502);
+    auto older_seed_probes = ui_read_db.ListSeedProbeRuns({ .before = seed_probes.next, .limit = 2 });
+    ASSERT_EQ(older_seed_probes.items.size(), 1u);
+    EXPECT_EQ(older_seed_probes.items[0].probe_run_id, 9501);
+    auto newer_seed_probes = ui_read_db.ListSeedProbeRuns({ .after = older_seed_probes.prev, .limit = 2 });
+    ASSERT_EQ(newer_seed_probes.items.size(), 2u);
+    EXPECT_EQ(newer_seed_probes.items[0].probe_run_id, 9503);
+    EXPECT_EQ(newer_seed_probes.items[1].probe_run_id, 9502);
+}
+
+TEST_F(SqliteDbFixture, Stage4WorkflowArchiveExecutePurgesExclusiveWorkflowAndSavestateAfterVerify) {
+    using namespace savor::db;
+    using namespace savor::db::migrations;
+    using savor::runner::parallel::savordb::ArchiveWorkflowCommands;
+
+    const MigrationSourceOptions embedded_options{ .source_kind = MigrationSourceKind::Embedded };
+    std::string err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Execution, embedded_options, &err)) << err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::State, embedded_options, &err)) << err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::UIRead, embedded_options, &err)) << err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Archive, embedded_options, &err)) << err;
+
+    const auto temp_root = std::filesystem::temp_directory_path() / ("savor-workflow-exec-purge-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    ASSERT_TRUE(std::filesystem::create_directories(temp_root));
+    const auto sav_path = temp_root / "exclusive-output.sav";
+    {
+        std::ofstream out(sav_path, std::ios::binary | std::ios::trunc);
+        out << "exclusive-output-savestate";
+    }
+
+    const auto sav_sql = std::string("INSERT INTO state_artifact(artifact_id,sha256,size_bytes,compression_kind,filename,file_ext,artifact_kind,created_at_utc) VALUES(30,'exclusivesha',25,'NONE','")
+        + sav_path.generic_string() + "','.sav','SAV',1000);"
+        + "INSERT INTO state_savestate(savestate_id,artifact_id,savestate_type,note,is_complete,created_at_utc) VALUES(301,30,'OUTPUT','exclusive',1,1000);";
+    ASSERT_TRUE(ExecSql(db_, sav_sql.c_str()));
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+INSERT INTO exec_workflow_instance(workflow_instance_id,workflow_kind,state,root_scope_kind,created_by,created_at_utc,completed_at_utc)
+VALUES(3010,'BATTLE_RUN','COMPLETED','manual','test',1000,2000);
+INSERT INTO exec_workflow_step(workflow_step_id,workflow_instance_id,step_key,step_kind,state,priority,attempts,max_attempts,output_ref_kind,output_ref_id,created_at_utc,completed_at_utc)
+VALUES(3011,3010,'final','battle.final','COMPLETED',0,0,1,'state.savestate_id',301,1000,2000);
+INSERT INTO ui_workflow_instance(workflow_instance_id,workflow_kind,state,display_state,root_scope_kind,created_by,created_at_utc,completed_at_utc,battle_final_victory_count)
+VALUES(3010,'BATTLE_RUN','COMPLETED','COMPLETED','manual','test',1000,2000,0);
+)SQL"));
+
+    execution::workflow::SqliteExecutionDb execution_db(db_);
+    SqliteUiReadDb ui_read_db(db_);
+    SqliteArchiveDb archive_db(db_);
+    archive::SqliteArchivePackageService package_service(
+        db_,
+        &execution_db,
+        &ui_read_db,
+        &archive_db,
+        DbConfigPaths{ .archive_store_root = temp_root },
+        db_,
+        nullptr,
+        db_);
+    archive::SqliteRehydrateExecutor rehydrate_executor(db_, db_, &archive_db, temp_root, db_);
+    ArchiveWorkflowCommands commands(db_, &archive_db, &package_service, &rehydrate_executor);
+
+    const auto now = types::UtcTimePoint(std::chrono::milliseconds(1712304000000));
+    const auto summary = commands.WorkflowArchiveExecute({
+        .selection = { .workflow_instance_ids = {3010} },
+        .now_utc = now,
+        .purge_after_verify = true,
+        .trace_id = "workflow-execute-purge",
+    });
+
+    ASSERT_TRUE(summary.success) << (summary.errors.empty() ? "unknown error" : summary.errors.front());
+    EXPECT_GT(summary.archive_package_id, 0);
+    EXPECT_TRUE(summary.verify.success);
+    EXPECT_TRUE(summary.purge.success) << summary.purge.error.value_or("unknown purge error");
+    EXPECT_EQ(ReadInt64(db_, "SELECT COUNT(1) FROM exec_workflow_instance WHERE workflow_instance_id=3010;"), 0);
+    EXPECT_EQ(ReadInt64(db_, "SELECT COUNT(1) FROM exec_workflow_step WHERE workflow_instance_id=3010;"), 0);
+    EXPECT_EQ(ReadInt64(db_, "SELECT COUNT(1) FROM ui_workflow_instance WHERE workflow_instance_id=3010;"), 0);
+    EXPECT_EQ(ReadInt64(db_, "SELECT COUNT(1) FROM state_savestate WHERE savestate_id=301;"), 0);
+    EXPECT_EQ(ReadInt64(db_, "SELECT COUNT(1) FROM state_artifact WHERE artifact_id=30;"), 0);
+    EXPECT_FALSE(std::filesystem::exists(sav_path));
+
+    std::filesystem::remove_all(temp_root);
+}
+
+TEST_F(SqliteDbFixture, Stage4WorkflowArchiveExecuteKeepsSharedSavestateWhenRemainingWorkflowReferencesIt) {
+    using namespace savor::db;
+    using namespace savor::db::migrations;
+    using savor::runner::parallel::savordb::ArchiveWorkflowCommands;
+
+    const MigrationSourceOptions embedded_options{ .source_kind = MigrationSourceKind::Embedded };
+    std::string err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Execution, embedded_options, &err)) << err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::State, embedded_options, &err)) << err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::UIRead, embedded_options, &err)) << err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Archive, embedded_options, &err)) << err;
+
+    const auto temp_root = std::filesystem::temp_directory_path() / ("savor-workflow-shared-purge-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    ASSERT_TRUE(std::filesystem::create_directories(temp_root));
+    const auto sav_path = temp_root / "shared-entry.sav";
+    {
+        std::ofstream out(sav_path, std::ios::binary | std::ios::trunc);
+        out << "shared-entry-savestate";
+    }
+
+    const auto sav_sql = std::string("INSERT INTO state_artifact(artifact_id,sha256,size_bytes,compression_kind,filename,file_ext,artifact_kind,created_at_utc) VALUES(40,'sharedpurgesha',21,'NONE','")
+        + sav_path.generic_string() + "','.sav','SAV',1000);"
+        + "INSERT INTO state_savestate(savestate_id,artifact_id,savestate_type,note,is_complete,created_at_utc) VALUES(401,40,'ENTRY','shared',1,1000);";
+    ASSERT_TRUE(ExecSql(db_, sav_sql.c_str()));
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+INSERT INTO exec_workflow_instance(workflow_instance_id,workflow_kind,state,root_scope_kind,created_by,created_at_utc,completed_at_utc)
+VALUES(4010,'BATTLE_RUN','COMPLETED','manual','test',1000,2000),
+      (4020,'BATTLE_RUN','COMPLETED','manual','test',1000,2000);
+INSERT INTO exec_workflow_step(workflow_step_id,workflow_instance_id,step_key,step_kind,state,priority,attempts,max_attempts,input_ref_kind,input_ref_id,created_at_utc,completed_at_utc)
+VALUES(4011,4010,'entry','battle.entry','COMPLETED',0,0,1,'state.savestate_id',401,1000,2000),
+      (4021,4020,'entry','battle.entry','COMPLETED',0,0,1,'state.savestate_id',401,1000,2000);
+INSERT INTO ui_workflow_instance(workflow_instance_id,workflow_kind,state,display_state,root_scope_kind,created_by,created_at_utc,completed_at_utc,battle_final_victory_count)
+VALUES(4010,'BATTLE_RUN','COMPLETED','COMPLETED','manual','test',1000,2000,0),
+      (4020,'BATTLE_RUN','COMPLETED','COMPLETED','manual','test',1000,2000,1);
+)SQL"));
+
+    execution::workflow::SqliteExecutionDb execution_db(db_);
+    SqliteUiReadDb ui_read_db(db_);
+    SqliteArchiveDb archive_db(db_);
+    archive::SqliteArchivePackageService package_service(
+        db_,
+        &execution_db,
+        &ui_read_db,
+        &archive_db,
+        DbConfigPaths{ .archive_store_root = temp_root },
+        db_,
+        nullptr,
+        db_);
+    archive::SqliteRehydrateExecutor rehydrate_executor(db_, db_, &archive_db, temp_root, db_);
+    ArchiveWorkflowCommands commands(db_, &archive_db, &package_service, &rehydrate_executor);
+
+    const auto now = types::UtcTimePoint(std::chrono::milliseconds(1712304000000));
+    const auto summary = commands.WorkflowArchiveExecute({
+        .selection = { .workflow_instance_ids = {4010}, .explicit_exclusions = {4020} },
+        .now_utc = now,
+        .purge_after_verify = true,
+        .trace_id = "workflow-shared-purge",
+    });
+
+    ASSERT_TRUE(summary.success) << (summary.errors.empty() ? "unknown error" : summary.errors.front());
+    EXPECT_TRUE(summary.verify.success);
+    EXPECT_TRUE(summary.purge.success) << summary.purge.error.value_or("unknown purge error");
+    EXPECT_EQ(ReadInt64(db_, "SELECT COUNT(1) FROM exec_workflow_instance WHERE workflow_instance_id=4010;"), 0);
+    EXPECT_EQ(ReadInt64(db_, "SELECT COUNT(1) FROM exec_workflow_instance WHERE workflow_instance_id=4020;"), 1);
+    EXPECT_EQ(ReadInt64(db_, "SELECT COUNT(1) FROM ui_workflow_instance WHERE workflow_instance_id=4010;"), 0);
+    EXPECT_EQ(ReadInt64(db_, "SELECT COUNT(1) FROM ui_workflow_instance WHERE workflow_instance_id=4020;"), 1);
+    EXPECT_EQ(ReadInt64(db_, "SELECT COUNT(1) FROM state_savestate WHERE savestate_id=401;"), 1);
+    EXPECT_EQ(ReadInt64(db_, "SELECT COUNT(1) FROM state_artifact WHERE artifact_id=40;"), 1);
+    EXPECT_TRUE(std::filesystem::exists(sav_path));
 
     std::filesystem::remove_all(temp_root);
 }
@@ -8160,6 +9237,93 @@ TEST_F(SqliteDbFixture, UiReadProjectionProjectsWorkflowDisplayStateFromStepActi
     EXPECT_EQ(counts.completed, 1);
     EXPECT_EQ(counts.terminal, 1);
     EXPECT_EQ(counts.total, 5);
+    sqlite3_close(verify_handle);
+}
+
+TEST_F(SqliteDbFixture, UiReadProjectionRefreshesJobsSupersededByBatchUpdate) {
+    namespace migrations = savor::db::migrations;
+    namespace projectors = savor::db::uiread::projectors;
+
+    const auto separate_root = temp_root_ / "projection-superseded-jobs";
+    ASSERT_TRUE(std::filesystem::create_directories(separate_root));
+    const auto paths = MakePhase4DbPaths(separate_root);
+
+    {
+        savor::db::core::DBService initializer(
+            paths,
+            migrations::MigrationSourceOptions{ .source_kind = migrations::MigrationSourceKind::Embedded });
+        std::string err;
+        ASSERT_TRUE(initializer.Start(&err)) << err;
+        initializer.Stop();
+    }
+
+    sqlite3* exec_handle = nullptr;
+    ASSERT_EQ(SQLITE_OK, sqlite3_open(paths.execution_db_path.string().c_str(), &exec_handle));
+    ASSERT_NE(exec_handle, nullptr);
+    ASSERT_TRUE(ExecSql(exec_handle, R"SQL(
+INSERT INTO exec_workflow_instance(workflow_instance_id,workflow_kind,state,root_scope_kind,root_scope_id,created_by,created_at_utc,started_at_utc)
+VALUES(27001,'supersede-projection','RUNNING','manual',NULL,'test',1000,1100);
+INSERT INTO exec_job_set(job_set_id,parent_job_set_id,program_kind,purpose,created_by,created_at_utc,priority_boost,expected_total,domain_ref_kind,domain_ref_id,meta_note)
+VALUES(27010,NULL,7,'supersede-projection','test',1000,0,3,NULL,NULL,NULL);
+INSERT INTO exec_workflow_step(workflow_step_id,workflow_instance_id,step_key,step_kind,state,priority,attempts,max_attempts,job_set_id,ready_at_utc,created_at_utc)
+VALUES(27011,27001,'Unique','seedprobe.unique','MATERIALIZED',1,0,1,27010,1100,1000);
+INSERT INTO exec_job(job_id,job_set_id,parent_job_id,program_kind,program_version,program_ref_kind,program_ref_id,fingerprint,priority,state,attempts,max_attempts,queued_at_utc)
+VALUES
+(27021,27010,NULL,7,1,'seed_probe',1,'projection-supersede-keep',1,'QUEUED',0,1,1200),
+(27022,27010,NULL,7,1,'seed_probe',1,'projection-supersede-a',1,'QUEUED',0,1,1200),
+(27023,27010,NULL,7,1,'seed_probe',1,'projection-supersede-b',1,'QUEUED',0,1,1200);
+INSERT INTO exec_outbox_message(outbox_id,event_id,event_type,event_version,context_name,aggregate_kind,aggregate_id,correlation_id,causation_id,occurred_at_utc,payload_ref_kind,payload_ref_id,published_at_utc,attempt_count,last_error)
+VALUES
+(1,'projection-supersede-job-27021','Execution.JobQueued.v1',1,'Execution','job','27021','test','test',1200,'job',27021,NULL,0,NULL),
+(2,'projection-supersede-job-27022','Execution.JobQueued.v1',1,'Execution','job','27022','test','test',1201,'job',27022,NULL,0,NULL),
+(3,'projection-supersede-job-27023','Execution.JobQueued.v1',1,'Execution','job','27023','test','test',1202,'job',27023,NULL,0,NULL);
+)SQL"));
+    sqlite3_close(exec_handle);
+    exec_handle = nullptr;
+
+    projectors::UiReadProjectionService projection(
+        projectors::UiReadProjectionConfig{
+            .ui_read_db_path = paths.ui_read_db_path,
+            .execution_db_path = paths.execution_db_path,
+            .state_db_path = paths.state_db_path,
+            .analysis_db_path = paths.analysis_db_path,
+            .archive_db_path = paths.archive_db_path,
+            .max_batch_size = 5000,
+            .max_dirty_materialization_batch_size = 1000,
+            .max_attempts = 5,
+            .poll_interval = std::chrono::hours{ 24 },
+        });
+    std::string err;
+    ASSERT_TRUE(projection.RunOnce(&err)) << err;
+
+    sqlite3* verify_handle = nullptr;
+    ASSERT_EQ(SQLITE_OK, sqlite3_open(paths.ui_read_db_path.string().c_str(), &verify_handle));
+    ASSERT_NE(verify_handle, nullptr);
+    EXPECT_EQ(ReadText(verify_handle, "SELECT state FROM ui_job_summary WHERE job_id=27021;"), "QUEUED");
+    EXPECT_EQ(ReadText(verify_handle, "SELECT state FROM ui_job_summary WHERE job_id=27022;"), "QUEUED");
+    EXPECT_EQ(ReadText(verify_handle, "SELECT state FROM ui_job_summary WHERE job_id=27023;"), "QUEUED");
+    sqlite3_close(verify_handle);
+    verify_handle = nullptr;
+
+    ASSERT_EQ(SQLITE_OK, sqlite3_open(paths.execution_db_path.string().c_str(), &exec_handle));
+    ASSERT_NE(exec_handle, nullptr);
+    savor::db::execution::workflow::SqliteExecutionDb execution_db(exec_handle);
+    int rows_superseded = 0;
+    ASSERT_TRUE(execution_db.MarkQueuedJobsSuperseded(27010, 27021, &err, &rows_superseded)) << err;
+    EXPECT_EQ(rows_superseded, 2);
+    sqlite3_close(exec_handle);
+    exec_handle = nullptr;
+
+    for (int i = 0; i < 3; ++i) {
+        ASSERT_TRUE(projection.RunOnce(&err)) << err;
+    }
+
+    ASSERT_EQ(SQLITE_OK, sqlite3_open(paths.ui_read_db_path.string().c_str(), &verify_handle));
+    ASSERT_NE(verify_handle, nullptr);
+    EXPECT_EQ(ReadText(verify_handle, "SELECT state FROM ui_job_summary WHERE job_id=27021;"), "QUEUED");
+    EXPECT_EQ(ReadText(verify_handle, "SELECT state FROM ui_job_summary WHERE job_id=27022;"), "SUPERSEDED");
+    EXPECT_EQ(ReadText(verify_handle, "SELECT state FROM ui_job_summary WHERE job_id=27023;"), "SUPERSEDED");
+    EXPECT_EQ(ReadInt64(verify_handle, "SELECT COUNT(1) FROM ui_job_summary WHERE job_set_id=27010 AND state IN ('QUEUED','PENDING_MATERIALIZATION');"), 1);
     sqlite3_close(verify_handle);
 }
 

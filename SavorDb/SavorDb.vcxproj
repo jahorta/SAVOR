@@ -157,6 +157,7 @@
     </PreBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="Archive\ArchiveProgress.h" />
     <ClInclude Include="Archive\ArchivePackageService.h" />
     <ClInclude Include="Archive\IArchiveDb.h" />
     <ClInclude Include="Archive\QueuedArchiveDb.h" />
@@ -285,6 +286,8 @@
     <None Include="migration\Archive\202604051000_archive_stage2_schema.sql" />
     <None Include="migration\Archive\202604051100_archive_stage3_outbox.sql" />
     <None Include="migration\Archive\202604051200_archive_stage4_workflow_archive_kinds.sql" />
+    <None Include="migration\Archive\202606201000_archive_workflow_package_membership.sql" />
+    <None Include="migration\Archive\202606201100_archive_package_name_notes.sql" />
     <None Include="migration\Authoring\202604051000_authoring_stage2_schema.sql" />
     <None Include="migration\Authoring\202604101000_authoring_predicate_breakpoint_id.sql" />
     <None Include="migration\Authoring\202604101100_authoring_predicate_width.sql" />
@@ -321,6 +324,9 @@
     <None Include="migration\UIRead\202606171600_uiread_dirty_entity_priority_index.sql" />
     <None Include="migration\UIRead\202606181000_uiread_workflow_rollup_indexes.sql" />
     <None Include="migration\UIRead\202606181300_uiread_workflow_display_state.sql" />
+    <None Include="migration\UIRead\202606181400_uiread_terminal_display_state_repair.sql" />
+    <None Include="migration\UIRead\202606201000_uiread_archive_workflow_scope.sql" />
+    <None Include="migration\UIRead\202606201100_uiread_archive_name_notes.sql" />
     <None Include="update_generated_migrations_command.txt" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

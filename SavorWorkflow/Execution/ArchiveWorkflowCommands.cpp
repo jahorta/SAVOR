@@ -105,6 +105,164 @@ ArchiveCommandSummary ArchiveWorkflowCommands::ArchiveExecute(const ArchiveComma
     return summary;
 }
 
+WorkflowArchiveCommandSummary ArchiveWorkflowCommands::WorkflowArchivePreview(const WorkflowArchiveCommandRequest& request) const {
+    WorkflowArchiveCommandSummary summary{};
+    if (archive_package_service_ == nullptr) {
+        summary.errors.push_back("archive package service is null");
+        return summary;
+    }
+
+    std::string error;
+    summary.preview = archive_package_service_->PreviewWorkflowArchive(request.selection, &error);
+    summary.success = summary.preview.success && error.empty();
+    summary.blocking_reasons = summary.preview.purge_blockers;
+    if (!error.empty()) {
+        summary.errors.push_back(error);
+    } else if (summary.preview.error.has_value()) {
+        summary.errors.push_back(*summary.preview.error);
+    }
+    return summary;
+}
+
+WorkflowArchiveCommandSummary ArchiveWorkflowCommands::WorkflowArchiveExecute(const WorkflowArchiveCommandRequest& request) const {
+    savor::db::archive::EmitArchiveProgress(
+        request.progress_sink,
+        savor::db::archive::ArchiveOperationPhase::Previewing,
+        "Previewing selected workflows");
+    WorkflowArchiveCommandSummary summary = WorkflowArchivePreview(request);
+    if (!summary.success) {
+        savor::db::archive::EmitArchiveProgress(
+            request.progress_sink,
+            savor::db::archive::ArchiveOperationPhase::Failed,
+            "Workflow archive preview failed",
+            0,
+            0,
+            false);
+        return summary;
+    }
+    savor::db::archive::EmitArchiveProgress(
+        request.progress_sink,
+        savor::db::archive::ArchiveOperationPhase::Previewing,
+        "Preview complete",
+        summary.preview.workflow_count,
+        summary.preview.workflow_count,
+        false);
+
+    savor::db::archive::CreateWorkflowArchivePackageRequest package_request{};
+    package_request.selection = request.selection;
+    package_request.created_at_utc = request.now_utc;
+    package_request.archive_name = request.archive_name;
+    package_request.archive_notes = request.archive_notes;
+    package_request.correlation_id = request.trace_id.empty() ? "workflow-archive" : request.trace_id;
+    package_request.causation_id = package_request.correlation_id;
+    package_request.progress_sink = request.progress_sink;
+
+    const auto package = archive_package_service_->CreateWorkflowPackage(package_request);
+    if (!package.success) {
+        summary.success = false;
+        summary.errors.push_back(package.error.value_or("workflow archive package creation failed"));
+        savor::db::archive::EmitArchiveProgress(
+            request.progress_sink,
+            savor::db::archive::ArchiveOperationPhase::Failed,
+            summary.errors.back(),
+            0,
+            0,
+            false);
+        return summary;
+    }
+    summary.archive_package_id = package.archive_package_id;
+    summary.package_root = package.package_root;
+
+    savor::db::archive::EmitArchiveProgress(
+        request.progress_sink,
+        savor::db::archive::ArchiveOperationPhase::VerifyingPackage,
+        "Verifying archive package");
+    summary.verify = PackageVerify({ .archive_package_id = package.archive_package_id });
+    if (!summary.verify.success) {
+        summary.success = false;
+        summary.blocking_reasons.insert(
+            summary.blocking_reasons.end(),
+            summary.verify.blocking_reasons.begin(),
+            summary.verify.blocking_reasons.end());
+        savor::db::archive::EmitArchiveProgress(
+            request.progress_sink,
+            savor::db::archive::ArchiveOperationPhase::Failed,
+            "Archive package verification failed",
+            0,
+            0,
+            false);
+        return summary;
+    }
+    savor::db::archive::EmitArchiveProgress(
+        request.progress_sink,
+        savor::db::archive::ArchiveOperationPhase::VerifyingPackage,
+        "Archive package verified",
+        summary.verify.checksum_verified_files,
+        summary.verify.manifest_file_count,
+        false);
+
+    if (request.purge_after_verify) {
+        savor::db::archive::EmitArchiveProgress(
+            request.progress_sink,
+            savor::db::archive::ArchiveOperationPhase::PurgingSource,
+            "Purging archived source rows");
+        std::string purge_error;
+        summary.purge = archive_package_service_->PurgeWorkflowArchiveSource(
+            request.selection,
+            package.archive_package_id,
+            &purge_error);
+        if (!summary.purge.success) {
+            summary.success = false;
+            summary.blocking_reasons.insert(
+                summary.blocking_reasons.end(),
+                summary.purge.blockers.begin(),
+                summary.purge.blockers.end());
+            if (!purge_error.empty()) {
+                summary.errors.push_back(purge_error);
+            } else if (summary.purge.error.has_value()) {
+                summary.errors.push_back(*summary.purge.error);
+            }
+            savor::db::archive::EmitArchiveProgress(
+                request.progress_sink,
+                savor::db::archive::ArchiveOperationPhase::Failed,
+                summary.errors.empty() ? "Archive source purge failed" : summary.errors.back(),
+                0,
+                0,
+                false);
+            return summary;
+        }
+        savor::db::archive::EmitArchiveProgress(
+            request.progress_sink,
+            savor::db::archive::ArchiveOperationPhase::PurgingSource,
+            "Archived source rows purged",
+            summary.purge.workflow_rows_deleted
+                + summary.purge.execution_rows_deleted
+                + summary.purge.analysis_rows_deleted
+                + summary.purge.ui_read_rows_deleted
+                + summary.purge.savestate_rows_deleted
+                + summary.purge.artifact_rows_deleted
+                + summary.purge.savestate_files_deleted,
+            summary.purge.workflow_rows_deleted
+                + summary.purge.execution_rows_deleted
+                + summary.purge.analysis_rows_deleted
+                + summary.purge.ui_read_rows_deleted
+                + summary.purge.savestate_rows_deleted
+                + summary.purge.artifact_rows_deleted
+                + summary.purge.savestate_files_deleted,
+            false);
+    }
+
+    summary.success = true;
+    savor::db::archive::EmitArchiveProgress(
+        request.progress_sink,
+        savor::db::archive::ArchiveOperationPhase::Complete,
+        "Archive operation complete",
+        1,
+        1,
+        false);
+    return summary;
+}
+
 PackageVerifySummary ArchiveWorkflowCommands::PackageVerify(const PackageVerifyRequest& request) const {
     PackageVerifySummary summary{};
     summary.archive_package_id = request.archive_package_id;
@@ -192,17 +350,21 @@ RehydratePreviewSummary ArchiveWorkflowCommands::RehydratePreview(const Rehydrat
     summary.manifest_row_total = verify.manifest_row_total;
     summary.blocking_reasons = verify.blocking_reasons;
 
-    Statement st;
-    if (sqlite3_prepare_v2(
-            archive_db_,
-            "SELECT item_count FROM ar_archive_item WHERE archive_package_id=?1 AND item_kind='exec_job';",
-            -1,
-            &st.st,
-            nullptr)
-        == SQLITE_OK) {
-        sqlite3_bind_int64(st.st, 1, request.archive_package_id);
-        if (sqlite3_step(st.st) == SQLITE_ROW) {
-            summary.expected_jobs = sqlite3_column_int(st.st, 0);
+    if (rehydrate_executor_ != nullptr) {
+        const auto preview = rehydrate_executor_->PreviewPackage({
+            .archive_package_id = request.archive_package_id,
+            .target_namespace = request.target_namespace,
+        });
+        summary.success = summary.success && preview.success;
+        summary.expected_jobs = preview.job_count;
+        summary.expected_workflows = preview.workflow_count;
+        summary.execution_row_count = preview.execution_row_count;
+        summary.analysis_row_count = preview.analysis_row_count;
+        summary.state_savestate_count = preview.state_savestate_count;
+        summary.savestate_zip_entry_count = preview.savestate_zip_entry_count;
+        summary.blocking_reasons.insert(summary.blocking_reasons.end(), preview.blocking_reasons.begin(), preview.blocking_reasons.end());
+        if (preview.error.has_value()) {
+            summary.blocking_reasons.push_back(*preview.error);
         }
     }
 
@@ -213,9 +375,37 @@ ArchiveCommandSummary ArchiveWorkflowCommands::RehydrateExecute(const RehydrateE
     ArchiveCommandSummary summary{};
     if (archive_service_ == nullptr || rehydrate_executor_ == nullptr) {
         summary.errors.push_back("archive service or rehydrate executor is null");
+        savor::db::archive::EmitArchiveProgress(
+            request.progress_sink,
+            savor::db::archive::ArchiveOperationPhase::Failed,
+            summary.errors.back(),
+            0,
+            0,
+            false);
         return summary;
     }
 
+    const auto preview = RehydratePreview({
+        .archive_package_id = request.archive_package_id,
+        .target_namespace = request.target_namespace,
+    });
+    if (!preview.success) {
+        summary.blocking_reasons = preview.blocking_reasons;
+        summary.errors.push_back("rehydrate preflight failed");
+        savor::db::archive::EmitArchiveProgress(
+            request.progress_sink,
+            savor::db::archive::ArchiveOperationPhase::Failed,
+            "Rehydrate preflight failed",
+            0,
+            0,
+            false);
+        return summary;
+    }
+
+    savor::db::archive::EmitArchiveProgress(
+        request.progress_sink,
+        savor::db::archive::ArchiveOperationPhase::Previewing,
+        "Creating rehydrate request");
     std::string error;
     std::int64_t request_id = 0;
     if (!archive_service_->RequestRehydrate(
@@ -230,6 +420,13 @@ ArchiveCommandSummary ArchiveWorkflowCommands::RehydrateExecute(const RehydrateE
             &request_id,
             &error)) {
         summary.errors.push_back(error.empty() ? "request_rehydrate failed" : error);
+        savor::db::archive::EmitArchiveProgress(
+            request.progress_sink,
+            savor::db::archive::ArchiveOperationPhase::Failed,
+            summary.errors.back(),
+            0,
+            0,
+            false);
         return summary;
     }
 
@@ -238,6 +435,7 @@ ArchiveCommandSummary ArchiveWorkflowCommands::RehydrateExecute(const RehydrateE
         .now_utc = request.now_utc,
         .correlation_id = request.trace_id,
         .causation_id = request.trace_id,
+        .progress_sink = request.progress_sink,
     });
 
     summary.success = result.success;
@@ -245,6 +443,15 @@ ArchiveCommandSummary ArchiveWorkflowCommands::RehydrateExecute(const RehydrateE
     summary.package_count = static_cast<int>(result.restored_job_count);
     if (result.error.has_value()) {
         summary.errors.push_back(*result.error);
+    }
+    if (!summary.success) {
+        savor::db::archive::EmitArchiveProgress(
+            request.progress_sink,
+            savor::db::archive::ArchiveOperationPhase::Failed,
+            summary.errors.empty() ? "Rehydrate failed" : summary.errors.back(),
+            0,
+            0,
+            false);
     }
     return summary;
 }

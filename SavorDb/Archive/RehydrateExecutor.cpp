@@ -3,11 +3,13 @@
 #include <algorithm>
 #include <fstream>
 #include <limits>
+#include <optional>
 #include <sstream>
 #include <unordered_set>
 
 #include "../Common/Migrations/MigrationRunner.h"
 #include "../Common/Events/OutboxEventIds.h"
+#include "../../SavorCore/Utils/Hash.h"
 
 namespace savor::db::archive {
 namespace {
@@ -163,6 +165,276 @@ bool InsertMap(sqlite3* archive_db, std::int64_t request_id, std::string_view ki
     return StepDone(archive_db, st.st, error_out);
 }
 
+std::uint16_t ReadLe16(const std::string& bytes, std::size_t offset) {
+    return static_cast<std::uint16_t>(
+        static_cast<unsigned char>(bytes[offset])
+        | (static_cast<unsigned char>(bytes[offset + 1]) << 8));
+}
+
+std::uint32_t ReadLe32(const std::string& bytes, std::size_t offset) {
+    return static_cast<std::uint32_t>(ReadLe16(bytes, offset))
+        | (static_cast<std::uint32_t>(ReadLe16(bytes, offset + 2)) << 16);
+}
+
+bool ExtractStoredZipEntry(
+    const std::filesystem::path& zip_path,
+    std::string_view entry_name,
+    const std::filesystem::path& output_path,
+    std::string* error_out) {
+    std::string zip;
+    if (!ReadFile(zip_path, &zip, error_out)) {
+        return false;
+    }
+
+    std::size_t offset = 0;
+    while (offset + 30 <= zip.size()) {
+        const auto sig = ReadLe32(zip, offset);
+        if (sig == 0x02014b50u || sig == 0x06054b50u) {
+            break;
+        }
+        if (sig != 0x04034b50u) {
+            if (error_out) *error_out = "unsupported zip layout";
+            return false;
+        }
+        const auto compression = ReadLe16(zip, offset + 8);
+        const auto compressed_size = ReadLe32(zip, offset + 18);
+        const auto uncompressed_size = ReadLe32(zip, offset + 22);
+        const auto name_len = ReadLe16(zip, offset + 26);
+        const auto extra_len = ReadLe16(zip, offset + 28);
+        const auto name_offset = offset + 30;
+        const auto data_offset = name_offset + name_len + extra_len;
+        if (data_offset + compressed_size > zip.size()) {
+            if (error_out) *error_out = "zip entry is truncated";
+            return false;
+        }
+        const std::string current_name = zip.substr(name_offset, name_len);
+        if (current_name == entry_name) {
+            if (compression != 0 || compressed_size != uncompressed_size) {
+                if (error_out) *error_out = "savestate zip entry is not stored";
+                return false;
+            }
+            std::filesystem::create_directories(output_path.parent_path());
+            std::ofstream out(output_path, std::ios::binary | std::ios::trunc);
+            if (!out.is_open()) {
+                if (error_out) *error_out = "failed opening extracted savestate path";
+                return false;
+            }
+            out.write(zip.data() + data_offset, compressed_size);
+            return out.good();
+        }
+        offset = data_offset + compressed_size;
+    }
+
+    if (error_out) *error_out = "savestate zip entry not found";
+    return false;
+}
+
+std::optional<std::int64_t> FindArtifactBySha(sqlite3* db, const std::string& sha, std::string* error_out) {
+    Statement st;
+    if (!Prepare(db, "SELECT artifact_id FROM state_artifact WHERE sha256=?1 LIMIT 1;", &st, error_out)) {
+        return std::nullopt;
+    }
+    sqlite3_bind_text(st.st, 1, sha.c_str(), -1, SQLITE_TRANSIENT);
+    const int rc = sqlite3_step(st.st);
+    if (rc == SQLITE_ROW) {
+        return sqlite3_column_int64(st.st, 0);
+    }
+    if (rc != SQLITE_DONE && error_out) {
+        *error_out = sqlite3_errmsg(db);
+    }
+    return std::nullopt;
+}
+
+std::optional<std::int64_t> FindSavestateForArtifact(sqlite3* db, std::int64_t artifact_id, const std::string& savestate_type, std::string* error_out) {
+    Statement st;
+    if (!Prepare(db, "SELECT savestate_id FROM state_savestate WHERE artifact_id=?1 AND savestate_type=?2 LIMIT 1;", &st, error_out)) {
+        return std::nullopt;
+    }
+    sqlite3_bind_int64(st.st, 1, artifact_id);
+    sqlite3_bind_text(st.st, 2, savestate_type.c_str(), -1, SQLITE_TRANSIENT);
+    const int rc = sqlite3_step(st.st);
+    if (rc == SQLITE_ROW) {
+        return sqlite3_column_int64(st.st, 0);
+    }
+    if (rc != SQLITE_DONE && error_out) {
+        *error_out = sqlite3_errmsg(db);
+    }
+    return std::nullopt;
+}
+
+bool TableHasId(sqlite3* db, std::string_view table_name, std::string_view column_name, std::int64_t id, std::string* error_out) {
+    if (db == nullptr) {
+        return false;
+    }
+    const std::string sql = "SELECT 1 FROM " + std::string(table_name) + " WHERE " + std::string(column_name) + "=?1 LIMIT 1;";
+    Statement st;
+    if (!Prepare(db, sql.c_str(), &st, error_out)) {
+        return false;
+    }
+    sqlite3_bind_int64(st.st, 1, id);
+    return sqlite3_step(st.st) == SQLITE_ROW;
+}
+
+bool TableExists(sqlite3* db, std::string_view table_name) {
+    if (db == nullptr) {
+        return false;
+    }
+    Statement st;
+    if (sqlite3_prepare_v2(db, "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1 LIMIT 1;", -1, &st.st, nullptr) != SQLITE_OK) {
+        return false;
+    }
+    sqlite3_bind_text(st.st, 1, table_name.data(), static_cast<int>(table_name.size()), SQLITE_TRANSIENT);
+    return sqlite3_step(st.st) == SQLITE_ROW;
+}
+
+const StreamFile* FindStream(const PackageSpec& spec, std::string_view item_kind) {
+    const auto it = std::find_if(spec.stream_files.begin(), spec.stream_files.end(), [&](const StreamFile& file) {
+        return file.item_kind == item_kind;
+    });
+    return it == spec.stream_files.end() ? nullptr : &*it;
+}
+
+std::vector<std::string> ReadStreamLines(const PackageSpec& spec, const StreamFile& file) {
+    std::vector<std::string> lines;
+    std::ifstream in(spec.package_root / file.rel_path, std::ios::binary);
+    std::string line;
+    while (std::getline(in, line)) {
+        if (!line.empty()) {
+            lines.push_back(std::move(line));
+        }
+    }
+    return lines;
+}
+
+bool LoadPackageSpecFromManifest(
+    sqlite3* json_db,
+    const std::filesystem::path& manifest_path,
+    std::string target_namespace,
+    std::int64_t archive_package_id,
+    PackageSpec* spec,
+    std::string* error_out) {
+    if (json_db == nullptr || spec == nullptr || manifest_path.empty()) {
+        if (error_out) *error_out = "invalid package spec request";
+        return false;
+    }
+    std::string manifest_text;
+    if (!ReadFile(manifest_path, &manifest_text, error_out)) {
+        return false;
+    }
+
+    PackageSpec loaded{};
+    loaded.archive_package_id = archive_package_id;
+    loaded.target_namespace = std::move(target_namespace);
+    loaded.package_root = manifest_path.parent_path();
+    bool ok_schema = false;
+    bool ok_catalog = false;
+    loaded.schema_version = JsonExtractInt(json_db, manifest_text, "$.schema_version", &ok_schema);
+    loaded.event_catalog_version = JsonExtractInt(json_db, manifest_text, "$.event_catalog_version", &ok_catalog);
+    if (!ok_schema || !ok_catalog) {
+        if (error_out) *error_out = "schema_version/event_catalog_version missing";
+        return false;
+    }
+
+    Statement st_files;
+    if (sqlite3_prepare_v2(
+            json_db,
+            "SELECT json_extract(value,'$.item_kind'), json_extract(value,'$.path'), json_extract(value,'$.checksum'), json_extract(value,'$.row_count') "
+            "FROM json_each(json_extract(?1, '$.files'));",
+            -1,
+            &st_files.st,
+            nullptr)
+        != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(json_db);
+        return false;
+    }
+    sqlite3_bind_text(st_files.st, 1, manifest_text.c_str(), -1, SQLITE_TRANSIENT);
+    while (sqlite3_step(st_files.st) == SQLITE_ROW) {
+        StreamFile f{};
+        const char* kind = reinterpret_cast<const char*>(sqlite3_column_text(st_files.st, 0));
+        const char* path = reinterpret_cast<const char*>(sqlite3_column_text(st_files.st, 1));
+        const char* checksum = reinterpret_cast<const char*>(sqlite3_column_text(st_files.st, 2));
+        f.item_kind = kind == nullptr ? std::string{} : std::string(kind);
+        f.rel_path = path == nullptr ? std::filesystem::path{} : std::filesystem::path(path);
+        f.checksum = checksum == nullptr ? std::string{} : std::string(checksum);
+        f.row_count = sqlite3_column_type(st_files.st, 3) == SQLITE_NULL ? 0 : sqlite3_column_int(st_files.st, 3);
+        if (f.rel_path.extension() == ".jsonl") {
+            loaded.stream_files.push_back(std::move(f));
+        } else if (f.item_kind == "state_savestate_zip") {
+            loaded.stream_files.push_back(std::move(f));
+        }
+    }
+    *spec = std::move(loaded);
+    return true;
+}
+
+bool LoadPackageSpecByPackageId(
+    sqlite3* archive_db,
+    sqlite3* json_db,
+    std::int64_t archive_package_id,
+    std::string target_namespace,
+    PackageSpec* spec,
+    std::string* error_out) {
+    Statement st;
+    if (!Prepare(archive_db, "SELECT manifest_path FROM ar_archive_package WHERE archive_package_id=?1;", &st, error_out)) {
+        return false;
+    }
+    sqlite3_bind_int64(st.st, 1, archive_package_id);
+    if (sqlite3_step(st.st) != SQLITE_ROW || sqlite3_column_text(st.st, 0) == nullptr) {
+        if (error_out) *error_out = "archive package not found";
+        return false;
+    }
+    return LoadPackageSpecFromManifest(
+        json_db,
+        std::filesystem::path(reinterpret_cast<const char*>(sqlite3_column_text(st.st, 0))),
+        std::move(target_namespace),
+        archive_package_id,
+        spec,
+        error_out);
+}
+
+struct IdRule {
+    const char* item_kind;
+    const char* json_id;
+    const char* map_kind;
+    const char* table_name;
+    const char* column_name;
+    sqlite3* db;
+};
+
+void ScanCollisionRules(
+    const PackageSpec& spec,
+    const std::vector<IdRule>& rules,
+    std::vector<std::string>* blockers) {
+    if (blockers == nullptr) {
+        return;
+    }
+    std::unordered_set<std::string> seen;
+    for (const auto& rule : rules) {
+        if (rule.db == nullptr || !TableExists(rule.db, rule.table_name)) {
+            continue;
+        }
+        const auto* stream = FindStream(spec, rule.item_kind);
+        if (stream == nullptr || stream->rel_path.extension() != ".jsonl") {
+            continue;
+        }
+        std::string error;
+        for (const auto& line : ReadStreamLines(spec, *stream)) {
+            bool ok = false;
+            const auto old_id = JsonExtractInt(rule.db, line, rule.json_id, &ok);
+            if (!ok) {
+                continue;
+            }
+            const auto new_id = AllocateId(spec.target_namespace, rule.map_kind, old_id);
+            const auto key = std::string(rule.table_name) + ":" + std::to_string(new_id);
+            if (seen.insert(key).second && TableHasId(rule.db, rule.table_name, rule.column_name, new_id, &error)) {
+                blockers->push_back(
+                    "target_id_collision:" + std::string(rule.table_name) + "." + rule.column_name
+                    + ":" + std::to_string(new_id));
+            }
+        }
+    }
+}
+
 bool InsertExecutionOutbox(
     sqlite3* execution_db,
     std::string_view event_type,
@@ -226,24 +498,132 @@ SqliteRehydrateExecutor::SqliteRehydrateExecutor(
     sqlite3* execution_db,
     sqlite3* archive_db,
     savor::db::IArchiveDb* archive_service,
-    std::filesystem::path archive_store_root)
+    std::filesystem::path archive_store_root,
+    sqlite3* state_db,
+    sqlite3* analysis_db)
     : execution_db_(execution_db)
     , archive_db_(archive_db)
+    , state_db_(state_db)
+    , analysis_db_(analysis_db)
     , archive_service_(archive_service)
     , archive_store_root_(std::move(archive_store_root)) {
+}
+
+RehydratePackagePreviewResult SqliteRehydrateExecutor::PreviewPackage(const RehydratePackagePreviewRequest& request) {
+    RehydratePackagePreviewResult result{};
+    if (execution_db_ == nullptr || archive_db_ == nullptr || request.archive_package_id <= 0) {
+        result.error = "invalid rehydrate preview request";
+        result.blocking_reasons.push_back(result.error.value());
+        return result;
+    }
+
+    PackageSpec spec{};
+    std::string error;
+    auto ns = request.target_namespace.empty()
+        ? ("preview-" + std::to_string(request.archive_package_id))
+        : request.target_namespace;
+    if (!LoadPackageSpecByPackageId(archive_db_, execution_db_, request.archive_package_id, ns, &spec, &error)) {
+        result.error = error.empty() ? "failed loading archive package" : error;
+        result.blocking_reasons.push_back(*result.error);
+        return result;
+    }
+    result.namespace_token = spec.target_namespace;
+
+    for (const auto& file : spec.stream_files) {
+        ++result.manifest_file_count;
+        result.manifest_row_total += file.row_count;
+        if (file.item_kind == "workflow_instances") {
+            result.workflow_count += file.row_count;
+        } else if (file.item_kind == "jobs") {
+            result.job_count += file.row_count;
+        } else if (file.item_kind == "state_savestates") {
+            result.state_savestate_count += file.row_count;
+        } else if (file.item_kind == "state_savestate_zip") {
+            result.savestate_zip_entry_count += file.row_count;
+        }
+        if (file.item_kind.rfind("analysis_", 0) == 0) {
+            result.analysis_row_count += file.row_count;
+        } else if (file.item_kind != "state_savestate_zip"
+            && file.item_kind.rfind("state_", 0) != 0
+            && file.item_kind.rfind("ui_", 0) != 0) {
+            result.execution_row_count += file.row_count;
+        }
+    }
+
+    if (result.analysis_row_count > 0 && analysis_db_ == nullptr) {
+        result.blocking_reasons.push_back("analysis_db_missing");
+    }
+    if (result.state_savestate_count > 0 && state_db_ == nullptr) {
+        result.blocking_reasons.push_back("state_db_missing");
+    }
+
+    std::vector<IdRule> rules = {
+        {"job_sets", "$.job_set_id", "job_set", "exec_job_set", "job_set_id", execution_db_},
+        {"jobs", "$.job_id", "job", "exec_job", "job_id", execution_db_},
+        {"job_events", "$.job_event_id", "job_event", "exec_job_event", "job_event_id", execution_db_},
+        {"workflow_instances", "$.workflow_instance_id", "workflow_instance", "exec_workflow_instance", "workflow_instance_id", execution_db_},
+        {"workflow_unit_activations", "$.workflow_unit_activation_id", "workflow_unit_activation", "exec_workflow_unit_activation", "workflow_unit_activation_id", execution_db_},
+        {"workflow_unit_activation_edges", "$.workflow_unit_activation_edge_id", "workflow_unit_activation_edge", "exec_workflow_unit_activation_edge", "workflow_unit_activation_edge_id", execution_db_},
+        {"workflow_steps", "$.workflow_step_id", "workflow_step", "exec_workflow_step", "workflow_step_id", execution_db_},
+        {"workflow_edges", "$.workflow_edge_id", "workflow_edge", "exec_workflow_edge", "workflow_edge_id", execution_db_},
+        {"workflow_events", "$.workflow_event_id", "workflow_event", "exec_workflow_event", "workflow_event_id", execution_db_},
+        {"workflow_step_outputs", "$.workflow_step_output_id", "workflow_step_output", "exec_workflow_step_output", "workflow_step_output_id", execution_db_},
+        {"workflow_instance_input_bindings", "$.workflow_instance_input_binding_id", "workflow_instance_input_binding", "exec_workflow_instance_input_binding", "workflow_instance_input_binding_id", execution_db_},
+        {"workflow_instance_arguments", "$.workflow_instance_argument_id", "workflow_instance_argument", "exec_workflow_instance_argument", "workflow_instance_argument_id", execution_db_},
+        {"analysis_battle_sets", "$.battle_set_id", "analysis_battle_set", "ab_battle_set", "battle_set_id", analysis_db_},
+        {"analysis_seed_candidates", "$.seed_candidate_id", "analysis_seed_candidate", "ab_seed_candidate", "seed_candidate_id", analysis_db_},
+        {"analysis_battle_advancement_pools", "$.battle_advancement_pool_id", "analysis_battle_advancement_pool", "ab_battle_advancement_pool", "battle_advancement_pool_id", analysis_db_},
+        {"analysis_turn_waves", "$.wave_id", "analysis_turn_wave", "ab_turn_wave", "wave_id", analysis_db_},
+        {"analysis_battle_context_probes", "$.context_probe_id", "analysis_battle_context_probe", "ab_battle_context_probe", "context_probe_id", analysis_db_},
+        {"analysis_battle_turn_jobs", "$.turn_job_id", "analysis_battle_turn_job", "ab_turn_job", "turn_job_id", analysis_db_},
+        {"analysis_battle_advancement_decisions", "$.battle_advancement_decision_id", "analysis_battle_advancement_decision", "ab_battle_advancement_decision", "battle_advancement_decision_id", analysis_db_},
+        {"analysis_manual_followups", "$.manual_followup_id", "analysis_manual_followup", "ab_manual_followup", "manual_followup_id", analysis_db_},
+        {"analysis_seed_probe_sets", "$.probe_set_id", "analysis_seed_probe_set", "sp_probe_set", "probe_set_id", analysis_db_},
+        {"analysis_input_sets", "$.input_set_id", "analysis_input_set", "an_input_set", "input_set_id", analysis_db_},
+        {"analysis_seed_probe_axis_xy", "$.axis_xy_id", "analysis_seed_probe_axis_xy", "sp_axis_xy", "axis_xy_id", analysis_db_},
+        {"analysis_seed_probe_input_frames", "$.input_frame_id", "analysis_seed_probe_input_frame", "sp_input_frame", "input_frame_id", analysis_db_},
+        {"analysis_seed_probe_runs", "$.probe_run_id", "analysis_seed_probe_run", "sp_probe_run", "probe_run_id", analysis_db_},
+        {"analysis_seed_probe_results", "$.probe_result_id", "analysis_seed_probe_result", "sp_probe_result", "probe_result_id", analysis_db_},
+        {"analysis_seed_probe_neutral_seeds", "$.neutral_seed_id", "analysis_seed_probe_neutral_seed", "sp_neutral_seed", "neutral_seed_id", analysis_db_},
+        {"analysis_seed_probe_grid_seeds", "$.grid_seed_id", "analysis_seed_probe_grid_seed", "sp_grid_seed", "grid_seed_id", analysis_db_},
+        {"analysis_seed_probe_unique_seeds", "$.unique_seed_id", "analysis_seed_probe_unique_seed", "sp_unique_seed", "unique_seed_id", analysis_db_},
+        {"analysis_seed_probe_encounter_projections", "$.encounter_projection_id", "analysis_seed_probe_encounter_projection", "sp_encounter_projection", "encounter_projection_id", analysis_db_},
+    };
+    ScanCollisionRules(spec, rules, &result.blocking_reasons);
+
+    result.success = result.blocking_reasons.empty();
+    return result;
 }
 
 RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecutionRequest& request) {
     RehydrateExecutionResult result{};
     if (execution_db_ == nullptr || archive_db_ == nullptr || archive_service_ == nullptr) {
         result.error = StructuredError{ "DEPENDENCY_NULL", "rehydrate dependencies are missing", "database/service dependency is null" }.ToJson();
+        EmitArchiveProgress(
+            request.progress_sink,
+            ArchiveOperationPhase::Failed,
+            "Rehydrate dependencies are missing",
+            0,
+            0,
+            false);
         return result;
     }
     if (request.rehydrate_request_id <= 0) {
         result.error = StructuredError{ "INVALID_REQUEST", "rehydrate_request_id must be positive", "invalid request id" }.ToJson();
+        EmitArchiveProgress(
+            request.progress_sink,
+            ArchiveOperationPhase::Failed,
+            "Invalid rehydrate request",
+            0,
+            0,
+            false);
         return result;
     }
 
+    EmitArchiveProgress(
+        request.progress_sink,
+        ArchiveOperationPhase::Previewing,
+        "Reading rehydrate request");
     PackageSpec spec{};
     {
         Statement st;
@@ -256,11 +636,25 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                 &st,
                 &error)) {
             result.error = StructuredError{ "DB_QUERY_ERROR", "failed reading rehydrate request", error }.ToJson();
+            EmitArchiveProgress(
+                request.progress_sink,
+                ArchiveOperationPhase::Failed,
+                "Failed reading rehydrate request",
+                0,
+                0,
+                false);
             return result;
         }
         sqlite3_bind_int64(st.st, 1, request.rehydrate_request_id);
         if (sqlite3_step(st.st) != SQLITE_ROW) {
             result.error = StructuredError{ "REQUEST_NOT_FOUND", "rehydrate request missing", "request row not found" }.ToJson();
+            EmitArchiveProgress(
+                request.progress_sink,
+                ArchiveOperationPhase::Failed,
+                "Rehydrate request not found",
+                0,
+                0,
+                false);
             return result;
         }
         spec.archive_package_id = sqlite3_column_int64(st.st, 0);
@@ -276,6 +670,10 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
     }
     result.namespace_token = spec.target_namespace;
 
+    EmitArchiveProgress(
+        request.progress_sink,
+        ArchiveOperationPhase::VerifyingPackage,
+        "Verifying archive package before rehydrate");
     std::string manifest_text;
     std::string io_error;
     if (!ReadFile(spec.package_root / "manifest.json", &manifest_text, &io_error)) {
@@ -376,21 +774,220 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
         }
     }
 
+    if (!result.error.has_value()) {
+        auto preflight = PreviewPackage({
+            .archive_package_id = spec.archive_package_id,
+            .target_namespace = spec.target_namespace,
+        });
+        if (!preflight.success) {
+            std::ostringstream detail;
+            for (std::size_t i = 0; i < preflight.blocking_reasons.size(); ++i) {
+                if (i != 0) detail << ';';
+                detail << preflight.blocking_reasons[i];
+            }
+            if (detail.str().empty() && preflight.error.has_value()) {
+                detail << *preflight.error;
+            }
+            result.error = StructuredError{ "REHYDRATE_PREFLIGHT_FAILED", "rehydrate preflight failed", detail.str() }.ToJson();
+        }
+    }
+
     std::vector<std::int64_t> restored_jobs;
     std::unordered_map<std::string, std::unordered_map<std::int64_t, std::int64_t>> id_map;
 
+    auto map_existing_id = [&](std::string_view map_kind, std::int64_t old_id, std::int64_t new_id, std::string* error_out) -> bool {
+        id_map[std::string(map_kind)][old_id] = new_id;
+        return InsertMap(archive_db_, request.rehydrate_request_id, map_kind, old_id, new_id, error_out);
+    };
+
+    if (!result.error.has_value() && state_db_ != nullptr) {
+        EmitArchiveProgress(
+            request.progress_sink,
+            ArchiveOperationPhase::ExportingRows,
+            "Rehydrating State DB savestates");
+        const auto artifact_file = std::find_if(spec.stream_files.begin(), spec.stream_files.end(), [](const StreamFile& f) {
+            return f.item_kind == "state_artifacts";
+        });
+        const auto savestate_file = std::find_if(spec.stream_files.begin(), spec.stream_files.end(), [](const StreamFile& f) {
+            return f.item_kind == "state_savestates";
+        });
+        const auto derivation_file = std::find_if(spec.stream_files.begin(), spec.stream_files.end(), [](const StreamFile& f) {
+            return f.item_kind == "state_savestate_derivations";
+        });
+        if (artifact_file != spec.stream_files.end() || savestate_file != spec.stream_files.end()) {
+            sqlite3_exec(state_db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr);
+            std::string state_error;
+            const auto extracted_root = spec.package_root / "rehydrated-savestates" / spec.target_namespace;
+            const auto zip_path = spec.package_root / "savestates.zip";
+
+            if (artifact_file != spec.stream_files.end()) {
+                std::ifstream in(spec.package_root / artifact_file->rel_path, std::ios::binary);
+                std::string line;
+                while (std::getline(in, line)) {
+                    if (line.empty()) continue;
+                    bool ok_artifact = false;
+                    bool ok_sha = false;
+                    const auto old_artifact_id = JsonExtractInt(state_db_, line, "$.artifact_id", &ok_artifact);
+                    const auto sha = JsonExtractText(state_db_, line, "$.sha256", &ok_sha);
+                    if (!ok_artifact || !ok_sha || sha.empty()) continue;
+
+                    auto existing = FindArtifactBySha(state_db_, sha, &state_error);
+                    std::int64_t new_artifact_id = existing.value_or(0);
+                    if (!state_error.empty()) break;
+                    if (new_artifact_id == 0) {
+                        const auto output_path = extracted_root / (sha + ".sav");
+                        if (!ExtractStoredZipEntry(zip_path, sha + ".sav", output_path, &state_error)) break;
+                        try {
+                            const auto actual_sha = hash::sha256_of_file(output_path.string());
+                            if (actual_sha != sha) {
+                                state_error = "extracted savestate sha256 mismatch for " + sha;
+                                break;
+                            }
+                        } catch (const std::exception& ex) {
+                            state_error = ex.what();
+                            break;
+                        }
+
+                        Statement insert_artifact;
+                        if (!Prepare(
+                                state_db_,
+                                "INSERT INTO state_artifact(sha256,size_bytes,compression_kind,filename,file_ext,artifact_kind,created_at_utc) "
+                                "VALUES(?1,json_extract(?2,'$.size_bytes'),json_extract(?2,'$.compression_kind'),?3,json_extract(?2,'$.file_ext'),json_extract(?2,'$.artifact_kind'),json_extract(?2,'$.created_at_utc'));",
+                                &insert_artifact,
+                                &state_error)) break;
+                        sqlite3_bind_text(insert_artifact.st, 1, sha.c_str(), -1, SQLITE_TRANSIENT);
+                        sqlite3_bind_text(insert_artifact.st, 2, line.c_str(), -1, SQLITE_TRANSIENT);
+                        const auto filename = output_path.string();
+                        sqlite3_bind_text(insert_artifact.st, 3, filename.c_str(), -1, SQLITE_TRANSIENT);
+                        if (!StepDone(state_db_, insert_artifact.st, &state_error)) break;
+                        new_artifact_id = sqlite3_last_insert_rowid(state_db_);
+                    }
+                    if (!map_existing_id("state_artifact", old_artifact_id, new_artifact_id, &state_error)) break;
+                }
+            }
+
+            if (state_error.empty() && savestate_file != spec.stream_files.end()) {
+                std::ifstream in(spec.package_root / savestate_file->rel_path, std::ios::binary);
+                std::string line;
+                while (std::getline(in, line)) {
+                    if (line.empty()) continue;
+                    bool ok_savestate = false;
+                    bool ok_artifact = false;
+                    bool ok_type = false;
+                    const auto old_savestate_id = JsonExtractInt(state_db_, line, "$.savestate_id", &ok_savestate);
+                    const auto old_artifact_id = JsonExtractInt(state_db_, line, "$.artifact_id", &ok_artifact);
+                    const auto savestate_type = JsonExtractText(state_db_, line, "$.savestate_type", &ok_type);
+                    if (!ok_savestate || !ok_artifact || !ok_type) continue;
+                    const auto artifact_it = id_map["state_artifact"].find(old_artifact_id);
+                    if (artifact_it == id_map["state_artifact"].end()) {
+                        state_error = "artifact mapping missing for archived savestate";
+                        break;
+                    }
+
+                    auto existing = FindSavestateForArtifact(state_db_, artifact_it->second, savestate_type, &state_error);
+                    std::int64_t new_savestate_id = existing.value_or(0);
+                    if (!state_error.empty()) break;
+                    if (new_savestate_id == 0) {
+                        Statement insert_savestate;
+                        if (!Prepare(
+                                state_db_,
+                                "INSERT INTO state_savestate(artifact_id,savestate_type,note,is_complete,created_at_utc) "
+                                "VALUES(?1,json_extract(?2,'$.savestate_type'),json_extract(?2,'$.note'),json_extract(?2,'$.is_complete'),json_extract(?2,'$.created_at_utc'));",
+                                &insert_savestate,
+                                &state_error)) break;
+                        sqlite3_bind_int64(insert_savestate.st, 1, artifact_it->second);
+                        sqlite3_bind_text(insert_savestate.st, 2, line.c_str(), -1, SQLITE_TRANSIENT);
+                        if (!StepDone(state_db_, insert_savestate.st, &state_error)) break;
+                        new_savestate_id = sqlite3_last_insert_rowid(state_db_);
+                    }
+                    if (!map_existing_id("state_savestate", old_savestate_id, new_savestate_id, &state_error)) break;
+                }
+            }
+
+            if (state_error.empty() && derivation_file != spec.stream_files.end()) {
+                std::ifstream in(spec.package_root / derivation_file->rel_path, std::ios::binary);
+                std::string line;
+                while (std::getline(in, line)) {
+                    if (line.empty()) continue;
+                    bool ok_from = false;
+                    bool ok_to = false;
+                    const auto old_from = JsonExtractInt(state_db_, line, "$.from_savestate_id", &ok_from);
+                    const auto old_to = JsonExtractInt(state_db_, line, "$.to_savestate_id", &ok_to);
+                    const auto from_it = id_map["state_savestate"].find(old_from);
+                    const auto to_it = id_map["state_savestate"].find(old_to);
+                    if (!ok_from || !ok_to || from_it == id_map["state_savestate"].end() || to_it == id_map["state_savestate"].end()) continue;
+
+                    Statement insert_derivation;
+                    if (!Prepare(
+                            state_db_,
+                            "INSERT OR IGNORE INTO state_savestate_derivation(from_savestate_id,to_savestate_id,method_kind,source_context_kind,source_context_id,created_at_utc) "
+                            "VALUES(?1,?2,json_extract(?3,'$.method_kind'),json_extract(?3,'$.source_context_kind'),json_extract(?3,'$.source_context_id'),json_extract(?3,'$.created_at_utc'));",
+                            &insert_derivation,
+                            &state_error)) break;
+                    sqlite3_bind_int64(insert_derivation.st, 1, from_it->second);
+                    sqlite3_bind_int64(insert_derivation.st, 2, to_it->second);
+                    sqlite3_bind_text(insert_derivation.st, 3, line.c_str(), -1, SQLITE_TRANSIENT);
+                    if (!StepDone(state_db_, insert_derivation.st, &state_error)) break;
+                }
+            }
+
+            if (state_error.empty()) {
+                sqlite3_exec(state_db_, "COMMIT;", nullptr, nullptr, nullptr);
+            } else {
+                sqlite3_exec(state_db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+                result.error = StructuredError{ "STATE_REHYDRATE_ERROR", "failed restoring archived State DB savestates", state_error }.ToJson();
+            }
+        }
+    }
+
     if (!result.error.has_value()) {
+        EmitArchiveProgress(
+            request.progress_sink,
+            ArchiveOperationPhase::ExportingRows,
+            "Rehydrating execution rows",
+            0,
+            static_cast<std::int64_t>(spec.stream_files.size()),
+            false);
         sqlite3_exec(execution_db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr);
+        const bool has_analysis_streams = std::any_of(spec.stream_files.begin(), spec.stream_files.end(), [](const StreamFile& file) {
+            return file.item_kind.rfind("analysis_", 0) == 0;
+        });
+        bool analysis_transaction_started = false;
+        if (has_analysis_streams && analysis_db_ != nullptr) {
+            sqlite3_exec(analysis_db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr);
+            analysis_transaction_started = true;
+        } else if (has_analysis_streams && analysis_db_ == nullptr) {
+            result.error = StructuredError{ "ANALYSIS_DB_MISSING", "analysis streams require an analysis database", "analysis_db is null" }.ToJson();
+        }
         auto rollback = [&]() {
             sqlite3_exec(execution_db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+            if (analysis_transaction_started) {
+                sqlite3_exec(analysis_db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+            }
         };
 
         std::string db_error;
         std::vector<std::string> order = {
-            "job_sets", "jobs", "job_events", "workflow_instances", "workflow_steps", "workflow_edges", "workflow_events", "triggers"
+            "job_sets", "jobs", "job_events", "workflow_instances", "workflow_unit_activations", "workflow_unit_activation_edges", "workflow_steps", "workflow_edges", "workflow_step_outputs", "workflow_instance_input_bindings", "workflow_instance_arguments", "workflow_events", "triggers"
+        };
+        auto map_id = [&](std::string_view map_kind, std::int64_t old_id) -> std::int64_t {
+            auto& per_kind = id_map[std::string(map_kind)];
+            auto existing = per_kind.find(old_id);
+            if (existing != per_kind.end()) {
+                return existing->second;
+            }
+            const auto next = AllocateId(spec.target_namespace, map_kind, old_id);
+            per_kind.emplace(old_id, next);
+            if (!InsertMap(archive_db_, request.rehydrate_request_id, map_kind, old_id, next, &db_error)) {
+                return 0;
+            }
+            return next;
         };
 
         for (const auto& kind : order) {
+            if (result.error.has_value()) {
+                break;
+            }
             const auto it = std::find_if(spec.stream_files.begin(), spec.stream_files.end(), [&](const StreamFile& f) {
                 return f.item_kind == kind;
             });
@@ -402,20 +999,6 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
             std::string line;
             while (std::getline(in, line)) {
                 if (line.empty()) continue;
-
-                auto map_id = [&](std::string_view map_kind, std::int64_t old_id) -> std::int64_t {
-                    auto& per_kind = id_map[std::string(map_kind)];
-                    auto existing = per_kind.find(old_id);
-                    if (existing != per_kind.end()) {
-                        return existing->second;
-                    }
-                    const auto next = AllocateId(spec.target_namespace, map_kind, old_id);
-                    per_kind.emplace(old_id, next);
-                    if (!InsertMap(archive_db_, request.rehydrate_request_id, map_kind, old_id, next, &db_error)) {
-                        return 0;
-                    }
-                    return next;
-                };
 
                 if (kind == "job_sets") {
                     bool ok_id = false;
@@ -580,10 +1163,34 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                     const auto new_set = ok_set ? map_id("job_set", old_set) : 0;
                     const auto new_activation = ok_activation ? map_id("workflow_unit_activation", old_activation) : 0;
                     if (new_id == 0 || new_instance == 0 || (ok_set && new_set == 0) || (ok_activation && new_activation == 0)) break;
+
+                    bool ok_input_ref = false;
+                    bool ok_output_ref = false;
+                    bool ok_input_kind = false;
+                    bool ok_output_kind = false;
+                    const auto old_input_ref = JsonExtractInt(execution_db_, line, "$.input_ref_id", &ok_input_ref);
+                    const auto old_output_ref = JsonExtractInt(execution_db_, line, "$.output_ref_id", &ok_output_ref);
+                    const auto input_ref_kind = JsonExtractText(execution_db_, line, "$.input_ref_kind", &ok_input_kind);
+                    const auto output_ref_kind = JsonExtractText(execution_db_, line, "$.output_ref_kind", &ok_output_kind);
+                    auto remap_savestate_ref = [&](const std::string& ref_kind, bool ok_ref, std::int64_t old_ref) -> std::optional<std::int64_t> {
+                        if (!ok_ref) {
+                            return std::nullopt;
+                        }
+                        if (ref_kind.find("savestate") == std::string::npos) {
+                            return old_ref;
+                        }
+                        const auto mapped = id_map["state_savestate"].find(old_ref);
+                        if (mapped == id_map["state_savestate"].end()) {
+                            return old_ref;
+                        }
+                        return mapped->second;
+                    };
+                    const auto input_ref_id = remap_savestate_ref(input_ref_kind, ok_input_ref, old_input_ref);
+                    const auto output_ref_id = remap_savestate_ref(output_ref_kind, ok_output_ref, old_output_ref);
                     Statement st;
                     if (!Prepare(execution_db_,
                             "INSERT INTO exec_workflow_step(workflow_step_id,workflow_instance_id,workflow_unit_activation_id,step_key,graph_node_key,step_kind,state,guard_kind,guard_value,priority,attempts,max_attempts,job_set_id,input_ref_kind,input_ref_id,output_ref_kind,output_ref_id,blocked_reason,ready_at_utc,started_at_utc,completed_at_utc,failed_at_utc,created_at_utc) "
-                            "VALUES(?1,?2,?3,json_extract(?4,'$.step_key'),json_extract(?4,'$.graph_node_key'),json_extract(?4,'$.step_kind'),json_extract(?4,'$.state'),json_extract(?4,'$.guard_kind'),json_extract(?4,'$.guard_value'),json_extract(?4,'$.priority'),json_extract(?4,'$.attempts'),json_extract(?4,'$.max_attempts'),?5,json_extract(?4,'$.input_ref_kind'),json_extract(?4,'$.input_ref_id'),json_extract(?4,'$.output_ref_kind'),json_extract(?4,'$.output_ref_id'),json_extract(?4,'$.blocked_reason'),json_extract(?4,'$.ready_at_utc'),json_extract(?4,'$.started_at_utc'),json_extract(?4,'$.completed_at_utc'),json_extract(?4,'$.failed_at_utc'),json_extract(?4,'$.created_at_utc'));",
+                            "VALUES(?1,?2,?3,json_extract(?4,'$.step_key'),json_extract(?4,'$.graph_node_key'),json_extract(?4,'$.step_kind'),json_extract(?4,'$.state'),json_extract(?4,'$.guard_kind'),json_extract(?4,'$.guard_value'),json_extract(?4,'$.priority'),json_extract(?4,'$.attempts'),json_extract(?4,'$.max_attempts'),?5,json_extract(?4,'$.input_ref_kind'),?6,json_extract(?4,'$.output_ref_kind'),?7,json_extract(?4,'$.blocked_reason'),json_extract(?4,'$.ready_at_utc'),json_extract(?4,'$.started_at_utc'),json_extract(?4,'$.completed_at_utc'),json_extract(?4,'$.failed_at_utc'),json_extract(?4,'$.created_at_utc'));",
                             &st,
                             &db_error)) break;
                     sqlite3_bind_int64(st.st, 1, new_id);
@@ -591,6 +1198,8 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                     if (ok_activation) sqlite3_bind_int64(st.st, 3, new_activation); else sqlite3_bind_null(st.st, 3);
                     sqlite3_bind_text(st.st, 4, line.c_str(), -1, SQLITE_TRANSIENT);
                     if (ok_set) sqlite3_bind_int64(st.st, 5, new_set); else sqlite3_bind_null(st.st, 5);
+                    if (input_ref_id.has_value()) sqlite3_bind_int64(st.st, 6, *input_ref_id); else sqlite3_bind_null(st.st, 6);
+                    if (output_ref_id.has_value()) sqlite3_bind_int64(st.st, 7, *output_ref_id); else sqlite3_bind_null(st.st, 7);
                     if (!StepDone(execution_db_, st.st, &db_error)) break;
                 } else if (kind == "workflow_edges") {
                     bool ok_id = false;
@@ -618,6 +1227,95 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                     sqlite3_bind_int64(st.st, 3, new_from);
                     sqlite3_bind_int64(st.st, 4, new_to);
                     sqlite3_bind_text(st.st, 5, line.c_str(), -1, SQLITE_TRANSIENT);
+                    if (!StepDone(execution_db_, st.st, &db_error)) break;
+                } else if (kind == "workflow_step_outputs") {
+                    bool ok_id = false;
+                    bool ok_instance = false;
+                    bool ok_step = false;
+                    const auto old_id = JsonExtractInt(execution_db_, line, "$.workflow_step_output_id", &ok_id);
+                    const auto old_instance = JsonExtractInt(execution_db_, line, "$.workflow_instance_id", &ok_instance);
+                    const auto old_step = JsonExtractInt(execution_db_, line, "$.workflow_step_id", &ok_step);
+                    if (!ok_id || !ok_instance || !ok_step) continue;
+                    const auto new_id = map_id("workflow_step_output", old_id);
+                    const auto new_instance = map_id("workflow_instance", old_instance);
+                    const auto new_step = map_id("workflow_step", old_step);
+                    if (new_id == 0 || new_instance == 0 || new_step == 0) break;
+
+                    bool ok_ref = false;
+                    bool ok_kind = false;
+                    const auto old_ref = JsonExtractInt(execution_db_, line, "$.ref_id", &ok_ref);
+                    const auto ref_kind = JsonExtractText(execution_db_, line, "$.ref_kind", &ok_kind);
+                    std::int64_t new_ref = old_ref;
+                    if (ok_ref && ref_kind.find("savestate") != std::string::npos) {
+                        const auto mapped = id_map["state_savestate"].find(old_ref);
+                        if (mapped != id_map["state_savestate"].end()) {
+                            new_ref = mapped->second;
+                        }
+                    }
+
+                    Statement st;
+                    if (!Prepare(execution_db_,
+                            "INSERT INTO exec_workflow_step_output(workflow_step_output_id,workflow_instance_id,workflow_step_id,graph_node_key,output_key,data_kind,ref_kind,ref_id,created_at_utc) "
+                            "VALUES(?1,?2,?3,json_extract(?4,'$.graph_node_key'),json_extract(?4,'$.output_key'),json_extract(?4,'$.data_kind'),json_extract(?4,'$.ref_kind'),?5,json_extract(?4,'$.created_at_utc'));",
+                            &st,
+                            &db_error)) break;
+                    sqlite3_bind_int64(st.st, 1, new_id);
+                    sqlite3_bind_int64(st.st, 2, new_instance);
+                    sqlite3_bind_int64(st.st, 3, new_step);
+                    sqlite3_bind_text(st.st, 4, line.c_str(), -1, SQLITE_TRANSIENT);
+                    if (ok_ref) sqlite3_bind_int64(st.st, 5, new_ref); else sqlite3_bind_null(st.st, 5);
+                    if (!StepDone(execution_db_, st.st, &db_error)) break;
+                } else if (kind == "workflow_instance_input_bindings") {
+                    bool ok_id = false;
+                    bool ok_instance = false;
+                    const auto old_id = JsonExtractInt(execution_db_, line, "$.workflow_instance_input_binding_id", &ok_id);
+                    const auto old_instance = JsonExtractInt(execution_db_, line, "$.workflow_instance_id", &ok_instance);
+                    if (!ok_id || !ok_instance) continue;
+                    const auto new_id = map_id("workflow_instance_input_binding", old_id);
+                    const auto new_instance = map_id("workflow_instance", old_instance);
+                    if (new_id == 0 || new_instance == 0) break;
+
+                    bool ok_ref = false;
+                    bool ok_kind = false;
+                    const auto old_ref = JsonExtractInt(execution_db_, line, "$.ref_id", &ok_ref);
+                    const auto ref_kind = JsonExtractText(execution_db_, line, "$.ref_kind", &ok_kind);
+                    std::int64_t new_ref = old_ref;
+                    if (ok_ref && ref_kind.find("savestate") != std::string::npos) {
+                        const auto mapped = id_map["state_savestate"].find(old_ref);
+                        if (mapped != id_map["state_savestate"].end()) {
+                            new_ref = mapped->second;
+                        }
+                    }
+
+                    Statement st;
+                    if (!Prepare(execution_db_,
+                            "INSERT INTO exec_workflow_instance_input_binding(workflow_instance_input_binding_id,workflow_instance_id,workflow_graph_revision_id,node_key,input_key,data_kind,ref_kind,ref_id,source_kind,created_at_utc) "
+                            "VALUES(?1,?2,json_extract(?3,'$.workflow_graph_revision_id'),json_extract(?3,'$.node_key'),json_extract(?3,'$.input_key'),json_extract(?3,'$.data_kind'),json_extract(?3,'$.ref_kind'),?4,json_extract(?3,'$.source_kind'),json_extract(?3,'$.created_at_utc'));",
+                            &st,
+                            &db_error)) break;
+                    sqlite3_bind_int64(st.st, 1, new_id);
+                    sqlite3_bind_int64(st.st, 2, new_instance);
+                    sqlite3_bind_text(st.st, 3, line.c_str(), -1, SQLITE_TRANSIENT);
+                    if (ok_ref) sqlite3_bind_int64(st.st, 4, new_ref); else sqlite3_bind_null(st.st, 4);
+                    if (!StepDone(execution_db_, st.st, &db_error)) break;
+                } else if (kind == "workflow_instance_arguments") {
+                    bool ok_id = false;
+                    bool ok_instance = false;
+                    const auto old_id = JsonExtractInt(execution_db_, line, "$.workflow_instance_argument_id", &ok_id);
+                    const auto old_instance = JsonExtractInt(execution_db_, line, "$.workflow_instance_id", &ok_instance);
+                    if (!ok_id || !ok_instance) continue;
+                    const auto new_id = map_id("workflow_instance_argument", old_id);
+                    const auto new_instance = map_id("workflow_instance", old_instance);
+                    if (new_id == 0 || new_instance == 0) break;
+                    Statement st;
+                    if (!Prepare(execution_db_,
+                            "INSERT INTO exec_workflow_instance_argument(workflow_instance_argument_id,workflow_instance_id,node_key,argument_key,value_type,integer_value,text_value,source_kind,created_at_utc) "
+                            "VALUES(?1,?2,json_extract(?3,'$.node_key'),json_extract(?3,'$.argument_key'),json_extract(?3,'$.value_type'),json_extract(?3,'$.integer_value'),json_extract(?3,'$.text_value'),json_extract(?3,'$.source_kind'),json_extract(?3,'$.created_at_utc'));",
+                            &st,
+                            &db_error)) break;
+                    sqlite3_bind_int64(st.st, 1, new_id);
+                    sqlite3_bind_int64(st.st, 2, new_instance);
+                    sqlite3_bind_text(st.st, 3, line.c_str(), -1, SQLITE_TRANSIENT);
                     if (!StepDone(execution_db_, st.st, &db_error)) break;
                 } else if (kind == "workflow_events") {
                     bool ok_id = false;
@@ -671,6 +1369,583 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
             }
         }
 
+        if (!result.error.has_value() && has_analysis_streams) {
+            auto lookup_map = [&](std::string_view map_kind, std::int64_t old_id) -> std::optional<std::int64_t> {
+                const auto per_kind = id_map.find(std::string(map_kind));
+                if (per_kind == id_map.end()) {
+                    return std::nullopt;
+                }
+                const auto it = per_kind->second.find(old_id);
+                return it == per_kind->second.end() ? std::nullopt : std::optional<std::int64_t>(it->second);
+            };
+            auto map_optional = [&](std::string_view map_kind, bool ok, std::int64_t old_id) -> std::optional<std::int64_t> {
+                if (!ok) {
+                    return std::nullopt;
+                }
+                const auto mapped = lookup_map(map_kind, old_id);
+                if (mapped.has_value()) {
+                    return mapped;
+                }
+                const auto next = map_id(map_kind, old_id);
+                return next == 0 ? std::nullopt : std::optional<std::int64_t>(next);
+            };
+            auto map_savestate = [&](bool ok, std::int64_t old_id) -> std::optional<std::int64_t> {
+                if (!ok) {
+                    return std::nullopt;
+                }
+                const auto mapped = lookup_map("state_savestate", old_id);
+                return mapped.has_value() ? mapped : std::optional<std::int64_t>(old_id);
+            };
+            auto restore_stream = [&](std::string_view item_kind, const auto& callback) {
+                const auto* stream = FindStream(spec, item_kind);
+                if (stream == nullptr || stream->rel_path.extension() != ".jsonl" || !db_error.empty()) {
+                    return;
+                }
+                for (const auto& line : ReadStreamLines(spec, *stream)) {
+                    callback(line);
+                    if (!db_error.empty()) {
+                        return;
+                    }
+                }
+            };
+            auto bind_optional_int64 = [](sqlite3_stmt* st, int index, std::optional<std::int64_t> value) {
+                if (value.has_value()) {
+                    sqlite3_bind_int64(st, index, *value);
+                } else {
+                    sqlite3_bind_null(st, index);
+                }
+            };
+
+            restore_stream("analysis_battle_sets", [&](const std::string& line) {
+                bool ok_id = false;
+                bool ok_entry = false;
+                const auto old_id = JsonExtractInt(analysis_db_, line, "$.battle_set_id", &ok_id);
+                const auto old_entry = JsonExtractInt(analysis_db_, line, "$.entry_savestate_id", &ok_entry);
+                if (!ok_id) return;
+                const auto new_id = map_id("analysis_battle_set", old_id);
+                const auto entry = map_savestate(ok_entry, old_entry);
+                if (new_id == 0 || !entry.has_value()) return;
+                const auto name = spec.target_namespace + ":rehydrate:" + JsonExtractText(analysis_db_, line, "$.name", &ok_id);
+                Statement st;
+                if (!Prepare(analysis_db_,
+                        "INSERT INTO ab_battle_set(battle_set_id,name,entry_savestate_id,battle_run_spec_id,explorer_settings_id,status,created_at_utc,completed_at_utc) "
+                        "VALUES(?1,?2,?3,json_extract(?4,'$.battle_run_spec_id'),json_extract(?4,'$.explorer_settings_id'),json_extract(?4,'$.status'),json_extract(?4,'$.created_at_utc'),json_extract(?4,'$.completed_at_utc'));",
+                        &st,
+                        &db_error)) return;
+                sqlite3_bind_int64(st.st, 1, new_id);
+                sqlite3_bind_text(st.st, 2, name.c_str(), -1, SQLITE_TRANSIENT);
+                sqlite3_bind_int64(st.st, 3, *entry);
+                sqlite3_bind_text(st.st, 4, line.c_str(), -1, SQLITE_TRANSIENT);
+                StepDone(analysis_db_, st.st, &db_error);
+            });
+            restore_stream("analysis_seed_candidates", [&](const std::string& line) {
+                bool ok_id = false, ok_battle = false, ok_unique = false, ok_frame = false;
+                const auto old_id = JsonExtractInt(analysis_db_, line, "$.seed_candidate_id", &ok_id);
+                const auto old_battle = JsonExtractInt(analysis_db_, line, "$.battle_set_id", &ok_battle);
+                const auto old_unique = JsonExtractInt(analysis_db_, line, "$.source_unique_seed_id", &ok_unique);
+                const auto old_frame = JsonExtractInt(analysis_db_, line, "$.source_input_frame_id", &ok_frame);
+                if (!ok_id || !ok_battle) return;
+                const auto new_id = map_id("analysis_seed_candidate", old_id);
+                const auto battle = map_optional("analysis_battle_set", true, old_battle);
+                const auto unique = map_optional("analysis_seed_probe_unique_seed", ok_unique, old_unique);
+                const auto frame = map_optional("analysis_seed_probe_input_frame", ok_frame, old_frame);
+                if (new_id == 0 || !battle.has_value()) return;
+                Statement st;
+                if (!Prepare(analysis_db_,
+                        "INSERT INTO ab_seed_candidate(seed_candidate_id,battle_set_id,source_unique_seed_id,source_input_frame_id,seed_value,source_kind,candidate_status,created_at_utc) "
+                        "VALUES(?1,?2,?3,?4,json_extract(?5,'$.seed_value'),json_extract(?5,'$.source_kind'),json_extract(?5,'$.candidate_status'),json_extract(?5,'$.created_at_utc'));",
+                        &st,
+                        &db_error)) return;
+                sqlite3_bind_int64(st.st, 1, new_id);
+                sqlite3_bind_int64(st.st, 2, *battle);
+                bind_optional_int64(st.st, 3, unique);
+                bind_optional_int64(st.st, 4, frame);
+                sqlite3_bind_text(st.st, 5, line.c_str(), -1, SQLITE_TRANSIENT);
+                StepDone(analysis_db_, st.st, &db_error);
+            });
+            restore_stream("analysis_battle_advancement_pools", [&](const std::string& line) {
+                bool ok_id = false, ok_battle = false;
+                const auto old_id = JsonExtractInt(analysis_db_, line, "$.battle_advancement_pool_id", &ok_id);
+                const auto old_battle = JsonExtractInt(analysis_db_, line, "$.battle_set_id", &ok_battle);
+                if (!ok_id || !ok_battle) return;
+                const auto new_id = map_id("analysis_battle_advancement_pool", old_id);
+                const auto battle = map_optional("analysis_battle_set", true, old_battle);
+                if (new_id == 0 || !battle.has_value()) return;
+                Statement st;
+                if (!Prepare(analysis_db_,
+                        "INSERT INTO ab_battle_advancement_pool(battle_advancement_pool_id,battle_set_id,turn_index,pool_name,criterion_kind,created_at_utc) "
+                        "VALUES(?1,?2,json_extract(?3,'$.turn_index'),json_extract(?3,'$.pool_name'),json_extract(?3,'$.criterion_kind'),json_extract(?3,'$.created_at_utc'));",
+                        &st,
+                        &db_error)) return;
+                sqlite3_bind_int64(st.st, 1, new_id);
+                sqlite3_bind_int64(st.st, 2, *battle);
+                sqlite3_bind_text(st.st, 3, line.c_str(), -1, SQLITE_TRANSIENT);
+                StepDone(analysis_db_, st.st, &db_error);
+            });
+            restore_stream("analysis_turn_waves", [&](const std::string& line) {
+                bool ok_id = false, ok_battle = false, ok_seed = false, ok_pool = false, ok_parent_wave = false;
+                const auto old_id = JsonExtractInt(analysis_db_, line, "$.wave_id", &ok_id);
+                const auto old_battle = JsonExtractInt(analysis_db_, line, "$.battle_set_id", &ok_battle);
+                const auto old_seed = JsonExtractInt(analysis_db_, line, "$.seed_candidate_id", &ok_seed);
+                const auto old_pool = JsonExtractInt(analysis_db_, line, "$.battle_advancement_pool_id", &ok_pool);
+                const auto old_parent_wave = JsonExtractInt(analysis_db_, line, "$.parent_wave_id", &ok_parent_wave);
+                if (!ok_id || !ok_battle || !ok_seed) return;
+                const auto new_id = map_id("analysis_turn_wave", old_id);
+                const auto battle = map_optional("analysis_battle_set", true, old_battle);
+                const auto seed = map_optional("analysis_seed_candidate", true, old_seed);
+                const auto pool = map_optional("analysis_battle_advancement_pool", ok_pool, old_pool);
+                const auto parent_wave = map_optional("analysis_turn_wave", ok_parent_wave, old_parent_wave);
+                if (new_id == 0 || !battle.has_value() || !seed.has_value()) return;
+                Statement st;
+                if (!Prepare(analysis_db_,
+                        "INSERT INTO ab_turn_wave(wave_id,battle_set_id,turn_index,context_probe_id,parent_wave_id,parent_turn_job_id,seed_candidate_id,battle_advancement_pool_id,status,created_at_utc,completed_at_utc) "
+                        "VALUES(?1,?2,json_extract(?3,'$.turn_index'),NULL,?4,NULL,?5,?6,json_extract(?3,'$.status'),json_extract(?3,'$.created_at_utc'),json_extract(?3,'$.completed_at_utc'));",
+                        &st,
+                        &db_error)) return;
+                sqlite3_bind_int64(st.st, 1, new_id);
+                sqlite3_bind_int64(st.st, 2, *battle);
+                sqlite3_bind_text(st.st, 3, line.c_str(), -1, SQLITE_TRANSIENT);
+                bind_optional_int64(st.st, 4, parent_wave);
+                sqlite3_bind_int64(st.st, 5, *seed);
+                bind_optional_int64(st.st, 6, pool);
+                StepDone(analysis_db_, st.st, &db_error);
+            });
+            restore_stream("analysis_battle_context_probes", [&](const std::string& line) {
+                bool ok_id = false, ok_wave = false, ok_sav = false, ok_job = false;
+                const auto old_id = JsonExtractInt(analysis_db_, line, "$.context_probe_id", &ok_id);
+                const auto old_wave = JsonExtractInt(analysis_db_, line, "$.wave_id", &ok_wave);
+                const auto old_sav = JsonExtractInt(analysis_db_, line, "$.source_savestate_id", &ok_sav);
+                const auto old_job = JsonExtractInt(analysis_db_, line, "$.exec_job_id", &ok_job);
+                if (!ok_id || !ok_sav) return;
+                const auto new_id = map_id("analysis_battle_context_probe", old_id);
+                const auto wave = map_optional("analysis_turn_wave", ok_wave, old_wave);
+                const auto sav = map_savestate(ok_sav, old_sav);
+                const auto job = map_optional("job", ok_job, old_job);
+                if (new_id == 0 || !sav.has_value()) return;
+                Statement st;
+                if (!Prepare(analysis_db_,
+                        "INSERT INTO ab_battle_context_probe(context_probe_id,wave_id,source_savestate_id,exec_job_id,probe_status,context_blob,context_version,recorded_at_utc,created_at_utc) "
+                        "VALUES(?1,?2,?3,?4,json_extract(?5,'$.probe_status'),json_extract(?5,'$.context_blob'),json_extract(?5,'$.context_version'),json_extract(?5,'$.recorded_at_utc'),json_extract(?5,'$.created_at_utc'));",
+                        &st,
+                        &db_error)) return;
+                sqlite3_bind_int64(st.st, 1, new_id);
+                bind_optional_int64(st.st, 2, wave);
+                sqlite3_bind_int64(st.st, 3, *sav);
+                bind_optional_int64(st.st, 4, job);
+                sqlite3_bind_text(st.st, 5, line.c_str(), -1, SQLITE_TRANSIENT);
+                StepDone(analysis_db_, st.st, &db_error);
+            });
+            restore_stream("analysis_battle_turn_jobs", [&](const std::string& line) {
+                bool ok_id = false, ok_wave = false, ok_job = false, ok_source_sav = false, ok_output_sav = false, ok_seed = false;
+                const auto old_id = JsonExtractInt(analysis_db_, line, "$.turn_job_id", &ok_id);
+                const auto old_wave = JsonExtractInt(analysis_db_, line, "$.wave_id", &ok_wave);
+                const auto old_job = JsonExtractInt(analysis_db_, line, "$.exec_job_id", &ok_job);
+                const auto old_source_sav = JsonExtractInt(analysis_db_, line, "$.source_savestate_id", &ok_source_sav);
+                const auto old_output_sav = JsonExtractInt(analysis_db_, line, "$.output_savestate_id", &ok_output_sav);
+                const auto old_seed = JsonExtractInt(analysis_db_, line, "$.seed_candidate_id", &ok_seed);
+                if (!ok_id || !ok_wave) return;
+                const auto new_id = map_id("analysis_battle_turn_job", old_id);
+                const auto wave = map_optional("analysis_turn_wave", true, old_wave);
+                const auto job = map_optional("job", ok_job, old_job);
+                const auto source_sav = map_savestate(ok_source_sav, old_source_sav);
+                const auto output_sav = map_savestate(ok_output_sav, old_output_sav);
+                const auto seed = map_optional("analysis_seed_candidate", ok_seed, old_seed);
+                if (new_id == 0 || !wave.has_value()) return;
+                Statement st;
+                if (!Prepare(analysis_db_,
+                        "INSERT INTO ab_turn_job(turn_job_id,wave_id,exec_job_id,plan_id,fake_attacks_this_turn,fake_attacks_used_before,job_state,started_at_utc,ended_at_utc,has_results,vi_start,vi_end,delta_vi,rng_seed,battle_outcome,plan_materialize_err,pred_passed,pred_total,pred_abort_run,output_savestate_id,applied_input_artifact_id,recorded_at_utc,result_context_blob_base64,result_context_version,source_savestate_id,seed_candidate_id,authored_plan_id,authored_turn_index,resolved_turn_commands_blob,resolved_turn_variant_key,input_trace_artifact_id) "
+                        "VALUES(?1,?2,?3,json_extract(?4,'$.plan_id'),json_extract(?4,'$.fake_attacks_this_turn'),json_extract(?4,'$.fake_attacks_used_before'),json_extract(?4,'$.job_state'),json_extract(?4,'$.started_at_utc'),json_extract(?4,'$.ended_at_utc'),json_extract(?4,'$.has_results'),json_extract(?4,'$.vi_start'),json_extract(?4,'$.vi_end'),json_extract(?4,'$.delta_vi'),json_extract(?4,'$.rng_seed'),json_extract(?4,'$.battle_outcome'),json_extract(?4,'$.plan_materialize_err'),json_extract(?4,'$.pred_passed'),json_extract(?4,'$.pred_total'),json_extract(?4,'$.pred_abort_run'),?5,json_extract(?4,'$.applied_input_artifact_id'),json_extract(?4,'$.recorded_at_utc'),json_extract(?4,'$.result_context_blob_base64'),json_extract(?4,'$.result_context_version'),?6,?7,json_extract(?4,'$.authored_plan_id'),json_extract(?4,'$.authored_turn_index'),json_extract(?4,'$.resolved_turn_commands_blob'),json_extract(?4,'$.resolved_turn_variant_key'),json_extract(?4,'$.input_trace_artifact_id'));",
+                        &st,
+                        &db_error)) return;
+                sqlite3_bind_int64(st.st, 1, new_id);
+                sqlite3_bind_int64(st.st, 2, *wave);
+                bind_optional_int64(st.st, 3, job);
+                sqlite3_bind_text(st.st, 4, line.c_str(), -1, SQLITE_TRANSIENT);
+                bind_optional_int64(st.st, 5, output_sav);
+                bind_optional_int64(st.st, 6, source_sav);
+                bind_optional_int64(st.st, 7, seed);
+                StepDone(analysis_db_, st.st, &db_error);
+            });
+            restore_stream("analysis_battle_advancement_decisions", [&](const std::string& line) {
+                bool ok_id = false, ok_pool = false, ok_turn = false;
+                const auto old_id = JsonExtractInt(analysis_db_, line, "$.battle_advancement_decision_id", &ok_id);
+                const auto old_pool = JsonExtractInt(analysis_db_, line, "$.battle_advancement_pool_id", &ok_pool);
+                const auto old_turn = JsonExtractInt(analysis_db_, line, "$.turn_job_id", &ok_turn);
+                if (!ok_id || !ok_pool || !ok_turn) return;
+                const auto new_id = map_id("analysis_battle_advancement_decision", old_id);
+                const auto pool = map_optional("analysis_battle_advancement_pool", true, old_pool);
+                const auto turn = map_optional("analysis_battle_turn_job", true, old_turn);
+                if (new_id == 0 || !pool.has_value() || !turn.has_value()) return;
+                Statement st;
+                if (!Prepare(analysis_db_,
+                        "INSERT INTO ab_battle_advancement_decision(battle_advancement_decision_id,battle_advancement_pool_id,turn_job_id,decision_kind,decision_reason,created_at_utc) "
+                        "VALUES(?1,?2,?3,json_extract(?4,'$.decision_kind'),json_extract(?4,'$.decision_reason'),json_extract(?4,'$.created_at_utc'));",
+                        &st,
+                        &db_error)) return;
+                sqlite3_bind_int64(st.st, 1, new_id);
+                sqlite3_bind_int64(st.st, 2, *pool);
+                sqlite3_bind_int64(st.st, 3, *turn);
+                sqlite3_bind_text(st.st, 4, line.c_str(), -1, SQLITE_TRANSIENT);
+                StepDone(analysis_db_, st.st, &db_error);
+            });
+            restore_stream("analysis_manual_followups", [&](const std::string& line) {
+                bool ok_id = false, ok_turn = false;
+                const auto old_id = JsonExtractInt(analysis_db_, line, "$.manual_followup_id", &ok_id);
+                const auto old_turn = JsonExtractInt(analysis_db_, line, "$.turn_job_id", &ok_turn);
+                if (!ok_id || !ok_turn) return;
+                const auto new_id = map_id("analysis_manual_followup", old_id);
+                const auto turn = map_optional("analysis_battle_turn_job", true, old_turn);
+                if (new_id == 0 || !turn.has_value()) return;
+                Statement st;
+                if (!Prepare(analysis_db_,
+                        "INSERT INTO ab_manual_followup(manual_followup_id,turn_job_id,manual_followup_status,recorded_dtm_artifact_id,recorded_dtmini_artifact_id,recorded_sav_artifact_id,note,updated_at_utc) "
+                        "VALUES(?1,?2,json_extract(?3,'$.manual_followup_status'),json_extract(?3,'$.recorded_dtm_artifact_id'),json_extract(?3,'$.recorded_dtmini_artifact_id'),json_extract(?3,'$.recorded_sav_artifact_id'),json_extract(?3,'$.note'),json_extract(?3,'$.updated_at_utc'));",
+                        &st,
+                        &db_error)) return;
+                sqlite3_bind_int64(st.st, 1, new_id);
+                sqlite3_bind_int64(st.st, 2, *turn);
+                sqlite3_bind_text(st.st, 3, line.c_str(), -1, SQLITE_TRANSIENT);
+                StepDone(analysis_db_, st.st, &db_error);
+            });
+
+            restore_stream("analysis_seed_probe_sets", [&](const std::string& line) {
+                bool ok_id = false;
+                const auto old_id = JsonExtractInt(analysis_db_, line, "$.probe_set_id", &ok_id);
+                if (!ok_id) return;
+                const auto new_id = map_id("analysis_seed_probe_set", old_id);
+                const auto name = spec.target_namespace + ":rehydrate:" + JsonExtractText(analysis_db_, line, "$.name", &ok_id);
+                Statement st;
+                if (!Prepare(analysis_db_,
+                        "INSERT INTO sp_probe_set(probe_set_id,name,probe_flavor,breakpoint_policy_name,dungeon_segment_file_num,dungeon_segment_file_letter,dungeon_segment_code,segment_source_kind,created_at_utc) "
+                        "VALUES(?1,?2,json_extract(?3,'$.probe_flavor'),json_extract(?3,'$.breakpoint_policy_name'),json_extract(?3,'$.dungeon_segment_file_num'),json_extract(?3,'$.dungeon_segment_file_letter'),json_extract(?3,'$.dungeon_segment_code'),json_extract(?3,'$.segment_source_kind'),json_extract(?3,'$.created_at_utc'));",
+                        &st,
+                        &db_error)) return;
+                sqlite3_bind_int64(st.st, 1, new_id);
+                sqlite3_bind_text(st.st, 2, name.c_str(), -1, SQLITE_TRANSIENT);
+                sqlite3_bind_text(st.st, 3, line.c_str(), -1, SQLITE_TRANSIENT);
+                StepDone(analysis_db_, st.st, &db_error);
+            });
+            restore_stream("analysis_input_sets", [&](const std::string& line) {
+                bool ok_id = false;
+                const auto old_id = JsonExtractInt(analysis_db_, line, "$.input_set_id", &ok_id);
+                if (!ok_id) return;
+                const auto new_id = map_id("analysis_input_set", old_id);
+                const auto content_hash = spec.target_namespace + ":rehydrate:" + std::to_string(old_id);
+                Statement st;
+                if (!Prepare(analysis_db_,
+                        "INSERT INTO an_input_set(input_set_id,content_hash,source_ref_kind,source_ref_id,created_at_utc) "
+                        "VALUES(?1,?2,NULL,NULL,json_extract(?3,'$.created_at_utc'));",
+                        &st,
+                        &db_error)) return;
+                sqlite3_bind_int64(st.st, 1, new_id);
+                sqlite3_bind_text(st.st, 2, content_hash.c_str(), -1, SQLITE_TRANSIENT);
+                sqlite3_bind_text(st.st, 3, line.c_str(), -1, SQLITE_TRANSIENT);
+                StepDone(analysis_db_, st.st, &db_error);
+            });
+            restore_stream("analysis_seed_probe_axis_xy", [&](const std::string& line) {
+                bool ok_id = false, ok_x = false, ok_y = false;
+                const auto old_id = JsonExtractInt(analysis_db_, line, "$.axis_xy_id", &ok_id);
+                const auto x = JsonExtractInt(analysis_db_, line, "$.x", &ok_x);
+                const auto y = JsonExtractInt(analysis_db_, line, "$.y", &ok_y);
+                if (!ok_id) return;
+                if (ok_x && ok_y) {
+                    Statement find;
+                    if (Prepare(analysis_db_, "SELECT axis_xy_id FROM sp_axis_xy WHERE x=?1 AND y=?2 LIMIT 1;", &find, &db_error)) {
+                        sqlite3_bind_int64(find.st, 1, x);
+                        sqlite3_bind_int64(find.st, 2, y);
+                        if (sqlite3_step(find.st) == SQLITE_ROW) {
+                            map_existing_id("analysis_seed_probe_axis_xy", old_id, sqlite3_column_int64(find.st, 0), &db_error);
+                            return;
+                        }
+                    }
+                    if (!db_error.empty()) return;
+                }
+                const auto new_id = map_id("analysis_seed_probe_axis_xy", old_id);
+                Statement st;
+                if (!Prepare(analysis_db_, "INSERT INTO sp_axis_xy(axis_xy_id,x,y) VALUES(?1,json_extract(?2,'$.x'),json_extract(?2,'$.y'));", &st, &db_error)) return;
+                sqlite3_bind_int64(st.st, 1, new_id);
+                sqlite3_bind_text(st.st, 2, line.c_str(), -1, SQLITE_TRANSIENT);
+                StepDone(analysis_db_, st.st, &db_error);
+            });
+            restore_stream("analysis_seed_probe_input_frames", [&](const std::string& line) {
+                bool ok_id = false, ok_main = false, ok_c = false, ok_t = false;
+                const auto old_id = JsonExtractInt(analysis_db_, line, "$.input_frame_id", &ok_id);
+                const auto old_main = JsonExtractInt(analysis_db_, line, "$.main_axis_xy_id", &ok_main);
+                const auto old_c = JsonExtractInt(analysis_db_, line, "$.cstick_axis_xy_id", &ok_c);
+                const auto old_t = JsonExtractInt(analysis_db_, line, "$.trigger_axis_xy_id", &ok_t);
+                if (!ok_id || !ok_main || !ok_c || !ok_t) return;
+                const auto main_axis = map_optional("analysis_seed_probe_axis_xy", true, old_main);
+                const auto c_axis = map_optional("analysis_seed_probe_axis_xy", true, old_c);
+                const auto t_axis = map_optional("analysis_seed_probe_axis_xy", true, old_t);
+                if (!main_axis || !c_axis || !t_axis) return;
+                Statement find;
+                if (Prepare(
+                        analysis_db_,
+                        "SELECT input_frame_id FROM sp_input_frame WHERE main_axis_xy_id=?1 AND cstick_axis_xy_id=?2 AND trigger_axis_xy_id=?3 LIMIT 1;",
+                        &find,
+                        &db_error)) {
+                    sqlite3_bind_int64(find.st, 1, *main_axis);
+                    sqlite3_bind_int64(find.st, 2, *c_axis);
+                    sqlite3_bind_int64(find.st, 3, *t_axis);
+                    if (sqlite3_step(find.st) == SQLITE_ROW) {
+                        map_existing_id("analysis_seed_probe_input_frame", old_id, sqlite3_column_int64(find.st, 0), &db_error);
+                        return;
+                    }
+                }
+                if (!db_error.empty()) return;
+                const auto new_id = map_id("analysis_seed_probe_input_frame", old_id);
+                if (new_id == 0) return;
+                Statement st;
+                if (!Prepare(analysis_db_,
+                        "INSERT INTO sp_input_frame(input_frame_id,main_axis_xy_id,cstick_axis_xy_id,trigger_axis_xy_id) VALUES(?1,?2,?3,?4);",
+                        &st,
+                        &db_error)) return;
+                sqlite3_bind_int64(st.st, 1, new_id);
+                sqlite3_bind_int64(st.st, 2, *main_axis);
+                sqlite3_bind_int64(st.st, 3, *c_axis);
+                sqlite3_bind_int64(st.st, 4, *t_axis);
+                StepDone(analysis_db_, st.st, &db_error);
+            });
+            restore_stream("analysis_input_set_frames", [&](const std::string& line) {
+                bool ok_set = false, ok_frame = false;
+                const auto old_set = JsonExtractInt(analysis_db_, line, "$.input_set_id", &ok_set);
+                const auto old_frame = JsonExtractInt(analysis_db_, line, "$.input_frame_id", &ok_frame);
+                const auto set_id = map_optional("analysis_input_set", ok_set, old_set);
+                const auto frame_id = map_optional("analysis_seed_probe_input_frame", ok_frame, old_frame);
+                if (!set_id || !frame_id) return;
+                Statement st;
+                if (!Prepare(analysis_db_, "INSERT OR IGNORE INTO an_input_set_frame(input_set_id,ordinal,input_frame_id,added_at_utc) VALUES(?1,json_extract(?2,'$.ordinal'),?3,json_extract(?2,'$.added_at_utc'));", &st, &db_error)) return;
+                sqlite3_bind_int64(st.st, 1, *set_id);
+                sqlite3_bind_text(st.st, 2, line.c_str(), -1, SQLITE_TRANSIENT);
+                sqlite3_bind_int64(st.st, 3, *frame_id);
+                StepDone(analysis_db_, st.st, &db_error);
+            });
+            restore_stream("analysis_seed_probe_runs", [&](const std::string& line) {
+                bool ok_id = false, ok_set = false, ok_sav = false, ok_input_set = false;
+                const auto old_id = JsonExtractInt(analysis_db_, line, "$.probe_run_id", &ok_id);
+                const auto old_set = JsonExtractInt(analysis_db_, line, "$.probe_set_id", &ok_set);
+                const auto old_sav = JsonExtractInt(analysis_db_, line, "$.entry_savestate_id", &ok_sav);
+                const auto old_input_set = JsonExtractInt(analysis_db_, line, "$.unique_input_set_id", &ok_input_set);
+                if (!ok_id || !ok_set || !ok_sav || !ok_input_set) return;
+                const auto new_id = map_id("analysis_seed_probe_run", old_id);
+                const auto set_id = map_optional("analysis_seed_probe_set", true, old_set);
+                const auto sav = map_savestate(true, old_sav);
+                const auto input_set = map_optional("analysis_input_set", true, old_input_set);
+                if (new_id == 0 || !set_id || !sav || !input_set) return;
+                Statement st;
+                if (!Prepare(analysis_db_,
+                        "INSERT INTO sp_probe_run(probe_run_id,probe_set_id,entry_savestate_id,seed_probe_spec_id,codec_version,status,unique_input_set_id,requested_at_utc,completed_at_utc,launch_samples_per_axis) "
+                        "VALUES(?1,?2,?3,json_extract(?4,'$.seed_probe_spec_id'),json_extract(?4,'$.codec_version'),json_extract(?4,'$.status'),?5,json_extract(?4,'$.requested_at_utc'),json_extract(?4,'$.completed_at_utc'),json_extract(?4,'$.launch_samples_per_axis'));",
+                        &st,
+                        &db_error)) return;
+                sqlite3_bind_int64(st.st, 1, new_id);
+                sqlite3_bind_int64(st.st, 2, *set_id);
+                sqlite3_bind_int64(st.st, 3, *sav);
+                sqlite3_bind_text(st.st, 4, line.c_str(), -1, SQLITE_TRANSIENT);
+                sqlite3_bind_int64(st.st, 5, *input_set);
+                StepDone(analysis_db_, st.st, &db_error);
+            });
+            restore_stream("analysis_seed_probe_results", [&](const std::string& line) {
+                bool ok_id = false, ok_run = false;
+                const auto old_id = JsonExtractInt(analysis_db_, line, "$.probe_result_id", &ok_id);
+                const auto old_run = JsonExtractInt(analysis_db_, line, "$.probe_run_id", &ok_run);
+                if (!ok_id || !ok_run) return;
+                const auto new_id = map_id("analysis_seed_probe_result", old_id);
+                const auto run = map_optional("analysis_seed_probe_run", true, old_run);
+                if (new_id == 0 || !run) return;
+                Statement st;
+                if (!Prepare(analysis_db_,
+                        "INSERT INTO sp_probe_result(probe_result_id,probe_run_id,neutral_seed_value,grid_count,unique_count,result_status,recorded_at_utc) "
+                        "VALUES(?1,?2,json_extract(?3,'$.neutral_seed_value'),json_extract(?3,'$.grid_count'),json_extract(?3,'$.unique_count'),json_extract(?3,'$.result_status'),json_extract(?3,'$.recorded_at_utc'));",
+                        &st,
+                        &db_error)) return;
+                sqlite3_bind_int64(st.st, 1, new_id);
+                sqlite3_bind_int64(st.st, 2, *run);
+                sqlite3_bind_text(st.st, 3, line.c_str(), -1, SQLITE_TRANSIENT);
+                StepDone(analysis_db_, st.st, &db_error);
+            });
+            restore_stream("analysis_seed_probe_neutral_seeds", [&](const std::string& line) {
+                bool ok_id = false, ok_result = false;
+                const auto old_id = JsonExtractInt(analysis_db_, line, "$.neutral_seed_id", &ok_id);
+                const auto old_result = JsonExtractInt(analysis_db_, line, "$.probe_result_id", &ok_result);
+                if (!ok_id || !ok_result) return;
+                const auto new_id = map_id("analysis_seed_probe_neutral_seed", old_id);
+                const auto result_id = map_optional("analysis_seed_probe_result", true, old_result);
+                if (new_id == 0 || !result_id) return;
+                Statement st;
+                if (!Prepare(analysis_db_, "INSERT INTO sp_neutral_seed(neutral_seed_id,probe_result_id,neutral_seed_value,source_kind,recorded_at_utc) VALUES(?1,?2,json_extract(?3,'$.neutral_seed_value'),json_extract(?3,'$.source_kind'),json_extract(?3,'$.recorded_at_utc'));", &st, &db_error)) return;
+                sqlite3_bind_int64(st.st, 1, new_id);
+                sqlite3_bind_int64(st.st, 2, *result_id);
+                sqlite3_bind_text(st.st, 3, line.c_str(), -1, SQLITE_TRANSIENT);
+                StepDone(analysis_db_, st.st, &db_error);
+            });
+            restore_stream("analysis_seed_probe_grid_seeds", [&](const std::string& line) {
+                bool ok_id = false, ok_result = false, ok_axis = false;
+                const auto old_id = JsonExtractInt(analysis_db_, line, "$.grid_seed_id", &ok_id);
+                const auto old_result = JsonExtractInt(analysis_db_, line, "$.probe_result_id", &ok_result);
+                const auto old_axis = JsonExtractInt(analysis_db_, line, "$.axis_xy_id", &ok_axis);
+                if (!ok_id || !ok_result || !ok_axis) return;
+                const auto new_id = map_id("analysis_seed_probe_grid_seed", old_id);
+                const auto result_id = map_optional("analysis_seed_probe_result", true, old_result);
+                const auto axis = map_optional("analysis_seed_probe_axis_xy", true, old_axis);
+                if (new_id == 0 || !result_id || !axis) return;
+                Statement st;
+                if (!Prepare(analysis_db_, "INSERT INTO sp_grid_seed(grid_seed_id,probe_result_id,source_family,axis_xy_id,seed_value,seed_delta,recorded_at_utc) VALUES(?1,?2,json_extract(?3,'$.source_family'),?4,json_extract(?3,'$.seed_value'),json_extract(?3,'$.seed_delta'),json_extract(?3,'$.recorded_at_utc'));", &st, &db_error)) return;
+                sqlite3_bind_int64(st.st, 1, new_id);
+                sqlite3_bind_int64(st.st, 2, *result_id);
+                sqlite3_bind_text(st.st, 3, line.c_str(), -1, SQLITE_TRANSIENT);
+                sqlite3_bind_int64(st.st, 4, *axis);
+                StepDone(analysis_db_, st.st, &db_error);
+            });
+            restore_stream("analysis_seed_probe_unique_seeds", [&](const std::string& line) {
+                bool ok_id = false, ok_result = false, ok_frame = false;
+                const auto old_id = JsonExtractInt(analysis_db_, line, "$.unique_seed_id", &ok_id);
+                const auto old_result = JsonExtractInt(analysis_db_, line, "$.probe_result_id", &ok_result);
+                const auto old_frame = JsonExtractInt(analysis_db_, line, "$.input_frame_id", &ok_frame);
+                if (!ok_id || !ok_result || !ok_frame) return;
+                const auto new_id = map_id("analysis_seed_probe_unique_seed", old_id);
+                const auto result_id = map_optional("analysis_seed_probe_result", true, old_result);
+                const auto frame = map_optional("analysis_seed_probe_input_frame", true, old_frame);
+                if (new_id == 0 || !result_id || !frame) return;
+                Statement st;
+                if (!Prepare(analysis_db_, "INSERT INTO sp_unique_seed(unique_seed_id,probe_result_id,input_frame_id,seed_value,seed_delta,recorded_at_utc) VALUES(?1,?2,?3,json_extract(?4,'$.seed_value'),json_extract(?4,'$.seed_delta'),json_extract(?4,'$.recorded_at_utc'));", &st, &db_error)) return;
+                sqlite3_bind_int64(st.st, 1, new_id);
+                sqlite3_bind_int64(st.st, 2, *result_id);
+                sqlite3_bind_int64(st.st, 3, *frame);
+                sqlite3_bind_text(st.st, 4, line.c_str(), -1, SQLITE_TRANSIENT);
+                StepDone(analysis_db_, st.st, &db_error);
+            });
+            restore_stream("analysis_seed_probe_encounter_projections", [&](const std::string& line) {
+                bool ok_id = false, ok_run = false;
+                const auto old_id = JsonExtractInt(analysis_db_, line, "$.encounter_projection_id", &ok_id);
+                const auto old_run = JsonExtractInt(analysis_db_, line, "$.probe_run_id", &ok_run);
+                if (!ok_id || !ok_run) return;
+                const auto new_id = map_id("analysis_seed_probe_encounter_projection", old_id);
+                const auto run = map_optional("analysis_seed_probe_run", true, old_run);
+                if (new_id == 0 || !run) return;
+                Statement st;
+                if (!Prepare(analysis_db_, "INSERT INTO sp_encounter_projection(encounter_projection_id,probe_run_id,seed_value,option_ordinal,encounter_id,encounter_frame,stutter_step_at,movement_required,recorded_at_utc) VALUES(?1,?2,json_extract(?3,'$.seed_value'),json_extract(?3,'$.option_ordinal'),json_extract(?3,'$.encounter_id'),json_extract(?3,'$.encounter_frame'),json_extract(?3,'$.stutter_step_at'),json_extract(?3,'$.movement_required'),json_extract(?3,'$.recorded_at_utc'));", &st, &db_error)) return;
+                sqlite3_bind_int64(st.st, 1, new_id);
+                sqlite3_bind_int64(st.st, 2, *run);
+                sqlite3_bind_text(st.st, 3, line.c_str(), -1, SQLITE_TRANSIENT);
+                StepDone(analysis_db_, st.st, &db_error);
+            });
+
+            restore_stream("analysis_turn_waves", [&](const std::string& line) {
+                bool ok_id = false, ok_context = false, ok_parent_turn = false;
+                const auto old_id = JsonExtractInt(analysis_db_, line, "$.wave_id", &ok_id);
+                const auto old_context = JsonExtractInt(analysis_db_, line, "$.context_probe_id", &ok_context);
+                const auto old_parent_turn = JsonExtractInt(analysis_db_, line, "$.parent_turn_job_id", &ok_parent_turn);
+                const auto wave = map_optional("analysis_turn_wave", ok_id, old_id);
+                const auto context = map_optional("analysis_battle_context_probe", ok_context, old_context);
+                const auto parent_turn = map_optional("analysis_battle_turn_job", ok_parent_turn, old_parent_turn);
+                if (!wave || (!context && !parent_turn)) return;
+                Statement st;
+                if (!Prepare(analysis_db_, "UPDATE ab_turn_wave SET context_probe_id=?1,parent_turn_job_id=?2 WHERE wave_id=?3;", &st, &db_error)) return;
+                bind_optional_int64(st.st, 1, context);
+                bind_optional_int64(st.st, 2, parent_turn);
+                sqlite3_bind_int64(st.st, 3, *wave);
+                StepDone(analysis_db_, st.st, &db_error);
+            });
+
+            restore_stream("job_sets", [&](const std::string& line) {
+                bool ok_set = false, ok_ref = false, ok_kind = false;
+                const auto old_set = JsonExtractInt(execution_db_, line, "$.job_set_id", &ok_set);
+                const auto old_ref = JsonExtractInt(execution_db_, line, "$.domain_ref_id", &ok_ref);
+                const auto ref_kind = JsonExtractText(execution_db_, line, "$.domain_ref_kind", &ok_kind);
+                if (!ok_set || !ok_ref || ref_kind != "sp_probe_run") return;
+                const auto job_set = map_optional("job_set", true, old_set);
+                const auto mapped = lookup_map("analysis_seed_probe_run", old_ref);
+                if (!job_set || !mapped) return;
+                Statement st;
+                if (!Prepare(execution_db_, "UPDATE exec_job_set SET domain_ref_id=?1 WHERE job_set_id=?2;", &st, &db_error)) return;
+                sqlite3_bind_int64(st.st, 1, *mapped);
+                sqlite3_bind_int64(st.st, 2, *job_set);
+                StepDone(execution_db_, st.st, &db_error);
+            });
+            restore_stream("jobs", [&](const std::string& line) {
+                bool ok_job = false, ok_ref = false, ok_kind = false;
+                const auto old_job = JsonExtractInt(execution_db_, line, "$.job_id", &ok_job);
+                const auto old_ref = JsonExtractInt(execution_db_, line, "$.program_ref_id", &ok_ref);
+                const auto ref_kind = JsonExtractText(execution_db_, line, "$.program_ref_kind", &ok_kind);
+                if (!ok_job || !ok_ref || ref_kind != "sp_probe_run") return;
+                const auto job = map_optional("job", true, old_job);
+                const auto mapped = lookup_map("analysis_seed_probe_run", old_ref);
+                if (!job || !mapped) return;
+                Statement st;
+                if (!Prepare(execution_db_, "UPDATE exec_job SET program_ref_id=?1 WHERE job_id=?2;", &st, &db_error)) return;
+                sqlite3_bind_int64(st.st, 1, *mapped);
+                sqlite3_bind_int64(st.st, 2, *job);
+                StepDone(execution_db_, st.st, &db_error);
+            });
+
+            restore_stream("workflow_steps", [&](const std::string& line) {
+                bool ok_step = false, ok_input = false, ok_output = false, ok_input_kind = false, ok_output_kind = false;
+                const auto old_step = JsonExtractInt(execution_db_, line, "$.workflow_step_id", &ok_step);
+                const auto old_input = JsonExtractInt(execution_db_, line, "$.input_ref_id", &ok_input);
+                const auto old_output = JsonExtractInt(execution_db_, line, "$.output_ref_id", &ok_output);
+                const auto input_kind = JsonExtractText(execution_db_, line, "$.input_ref_kind", &ok_input_kind);
+                const auto output_kind = JsonExtractText(execution_db_, line, "$.output_ref_kind", &ok_output_kind);
+                const auto step = map_optional("workflow_step", ok_step, old_step);
+                if (!step) return;
+                if (ok_input && input_kind == "sp_probe_run") {
+                    const auto mapped = lookup_map("analysis_seed_probe_run", old_input);
+                    if (mapped) {
+                        Statement st;
+                        if (!Prepare(execution_db_, "UPDATE exec_workflow_step SET input_ref_id=?1 WHERE workflow_step_id=?2;", &st, &db_error)) return;
+                        sqlite3_bind_int64(st.st, 1, *mapped);
+                        sqlite3_bind_int64(st.st, 2, *step);
+                        StepDone(execution_db_, st.st, &db_error);
+                    }
+                }
+                if (!db_error.empty()) return;
+                if (ok_output && output_kind == "sp_probe_run") {
+                    const auto mapped = lookup_map("analysis_seed_probe_run", old_output);
+                    if (mapped) {
+                        Statement st;
+                        if (!Prepare(execution_db_, "UPDATE exec_workflow_step SET output_ref_id=?1 WHERE workflow_step_id=?2;", &st, &db_error)) return;
+                        sqlite3_bind_int64(st.st, 1, *mapped);
+                        sqlite3_bind_int64(st.st, 2, *step);
+                        StepDone(execution_db_, st.st, &db_error);
+                    }
+                }
+            });
+            restore_stream("workflow_step_outputs", [&](const std::string& line) {
+                bool ok_id = false, ok_ref = false, ok_kind = false;
+                const auto old_id = JsonExtractInt(execution_db_, line, "$.workflow_step_output_id", &ok_id);
+                const auto old_ref = JsonExtractInt(execution_db_, line, "$.ref_id", &ok_ref);
+                const auto ref_kind = JsonExtractText(execution_db_, line, "$.ref_kind", &ok_kind);
+                if (!ok_id || !ok_ref || ref_kind != "sp_probe_run") return;
+                const auto output = map_optional("workflow_step_output", true, old_id);
+                const auto mapped = lookup_map("analysis_seed_probe_run", old_ref);
+                if (!output || !mapped) return;
+                Statement st;
+                if (!Prepare(execution_db_, "UPDATE exec_workflow_step_output SET ref_id=?1 WHERE workflow_step_output_id=?2;", &st, &db_error)) return;
+                sqlite3_bind_int64(st.st, 1, *mapped);
+                sqlite3_bind_int64(st.st, 2, *output);
+                StepDone(execution_db_, st.st, &db_error);
+            });
+            restore_stream("workflow_instance_input_bindings", [&](const std::string& line) {
+                bool ok_id = false, ok_ref = false, ok_kind = false;
+                const auto old_id = JsonExtractInt(execution_db_, line, "$.workflow_instance_input_binding_id", &ok_id);
+                const auto old_ref = JsonExtractInt(execution_db_, line, "$.ref_id", &ok_ref);
+                const auto ref_kind = JsonExtractText(execution_db_, line, "$.ref_kind", &ok_kind);
+                if (!ok_id || !ok_ref || ref_kind != "sp_probe_run") return;
+                const auto binding = map_optional("workflow_instance_input_binding", true, old_id);
+                const auto mapped = lookup_map("analysis_seed_probe_run", old_ref);
+                if (!binding || !mapped) return;
+                Statement st;
+                if (!Prepare(execution_db_, "UPDATE exec_workflow_instance_input_binding SET ref_id=?1 WHERE workflow_instance_input_binding_id=?2;", &st, &db_error)) return;
+                sqlite3_bind_int64(st.st, 1, *mapped);
+                sqlite3_bind_int64(st.st, 2, *binding);
+                StepDone(execution_db_, st.st, &db_error);
+            });
+
+            if (!db_error.empty()) {
+                result.error = StructuredError{ "ANALYSIS_REHYDRATE_ERROR", "failed restoring analysis rows", db_error }.ToJson();
+            }
+        }
+
         if (!result.error.has_value()) {
             std::string db_error2;
             const auto now_epoch = request.now_utc.time_since_epoch().count();
@@ -699,6 +1974,9 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
 
             if (db_error2.empty()) {
                 sqlite3_exec(execution_db_, "COMMIT;", nullptr, nullptr, nullptr);
+                if (analysis_transaction_started) {
+                    sqlite3_exec(analysis_db_, "COMMIT;", nullptr, nullptr, nullptr);
+                }
 
                 CompleteRehydrateCommand done{};
                 done.rehydrate_request_id = request.rehydrate_request_id;
@@ -735,6 +2013,21 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
         fail.causation_id = request.causation_id.empty() ? fail.correlation_id : request.causation_id;
         std::string archive_error;
         archive_service_->FailRehydrate(fail, &archive_error);
+        EmitArchiveProgress(
+            request.progress_sink,
+            ArchiveOperationPhase::Failed,
+            "Rehydrate failed",
+            0,
+            0,
+            false);
+    } else {
+        EmitArchiveProgress(
+            request.progress_sink,
+            ArchiveOperationPhase::Complete,
+            "Rehydrate complete",
+            result.restored_job_count,
+            result.restored_job_count,
+            false);
     }
 
     return result;

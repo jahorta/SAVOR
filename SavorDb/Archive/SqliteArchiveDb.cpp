@@ -236,8 +236,11 @@ bool SqliteArchiveDb::CreateArchivePackage(
         if (error_out) *error_out = "database handle is null";
         return false;
     }
+    const auto source_scope_kind = command.source_scope_kind.empty() ? std::string("root_job_set") : command.source_scope_kind;
+    const bool is_workflow_selection = source_scope_kind == "workflow_selection";
     if (command.source_context.empty()
-        || command.source_root_job_set_id <= 0
+        || (!is_workflow_selection && command.source_root_job_set_id <= 0)
+        || (is_workflow_selection && command.source_workflow_count <= 0)
         || command.manifest_path.empty()
         || command.checksum_status.empty()) {
         if (error_out) *error_out = "required command fields are missing";
@@ -254,8 +257,8 @@ bool SqliteArchiveDb::CreateArchivePackage(
     Statement insert_package;
     if (sqlite3_prepare_v2(
             db_,
-            "INSERT INTO ar_archive_package(source_context,source_root_job_set_id,created_at_utc,schema_version,event_catalog_version,time_range_start_utc,time_range_end_utc,manifest_path,checksum_status) "
-            "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9);",
+            "INSERT INTO ar_archive_package(source_context,source_root_job_set_id,source_scope_kind,source_workflow_count,selection_summary,archive_name,archive_notes,created_at_utc,schema_version,event_catalog_version,time_range_start_utc,time_range_end_utc,manifest_path,checksum_status) "
+            "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14);",
             -1,
             &insert_package.st,
             nullptr)
@@ -267,13 +270,20 @@ bool SqliteArchiveDb::CreateArchivePackage(
 
     sqlite3_bind_text(insert_package.st, 1, command.source_context.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int64(insert_package.st, 2, command.source_root_job_set_id);
-    sqlite3_bind_int64(insert_package.st, 3, command.created_at_utc.time_since_epoch().count());
-    sqlite3_bind_int64(insert_package.st, 4, command.schema_version);
-    sqlite3_bind_int(insert_package.st, 5, command.event_catalog_version);
-    sqlite3_bind_int64(insert_package.st, 6, command.time_range_start_utc.time_since_epoch().count());
-    sqlite3_bind_int64(insert_package.st, 7, command.time_range_end_utc.time_since_epoch().count());
-    sqlite3_bind_text(insert_package.st, 8, command.manifest_path.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(insert_package.st, 9, command.checksum_status.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(insert_package.st, 3, source_scope_kind.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(insert_package.st, 4, command.source_workflow_count);
+    if (command.selection_summary.has_value()) sqlite3_bind_text(insert_package.st, 5, command.selection_summary->c_str(), -1, SQLITE_TRANSIENT);
+    else sqlite3_bind_null(insert_package.st, 5);
+    sqlite3_bind_text(insert_package.st, 6, command.archive_name.c_str(), -1, SQLITE_TRANSIENT);
+    if (command.archive_notes.has_value()) sqlite3_bind_text(insert_package.st, 7, command.archive_notes->c_str(), -1, SQLITE_TRANSIENT);
+    else sqlite3_bind_null(insert_package.st, 7);
+    sqlite3_bind_int64(insert_package.st, 8, command.created_at_utc.time_since_epoch().count());
+    sqlite3_bind_int64(insert_package.st, 9, command.schema_version);
+    sqlite3_bind_int(insert_package.st, 10, command.event_catalog_version);
+    sqlite3_bind_int64(insert_package.st, 11, command.time_range_start_utc.time_since_epoch().count());
+    sqlite3_bind_int64(insert_package.st, 12, command.time_range_end_utc.time_since_epoch().count());
+    sqlite3_bind_text(insert_package.st, 13, command.manifest_path.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(insert_package.st, 14, command.checksum_status.c_str(), -1, SQLITE_TRANSIENT);
     if (sqlite3_step(insert_package.st) != SQLITE_DONE) {
         if (error_out != nullptr) {
             *error_out = sqlite3_errmsg(db_);
@@ -308,6 +318,55 @@ bool SqliteArchiveDb::CreateArchivePackage(
 
     if (archive_package_id_out) {
         *archive_package_id_out = archive_package_id;
+    }
+    return true;
+}
+
+bool SqliteArchiveDb::AddArchiveWorkflowPackageMember(
+    const AddArchiveWorkflowPackageMemberCommand& command,
+    std::string* error_out) {
+    if (db_ == nullptr) {
+        if (error_out) *error_out = "database handle is null";
+        return false;
+    }
+    if (command.archive_package_id <= 0 || command.workflow_instance_id <= 0) {
+        if (error_out) *error_out = "required command fields are missing";
+        return false;
+    }
+
+    Statement insert_member;
+    if (sqlite3_prepare_v2(
+            db_,
+            "INSERT INTO ar_archive_workflow_package(archive_package_id,workflow_instance_id,workflow_kind,display_state,root_scope_kind,root_scope_id,created_at_utc,completed_at_utc,battle_final_victory_count) "
+            "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9) "
+            "ON CONFLICT(archive_package_id,workflow_instance_id) DO UPDATE SET workflow_kind=excluded.workflow_kind,display_state=excluded.display_state,root_scope_kind=excluded.root_scope_kind,root_scope_id=excluded.root_scope_id,created_at_utc=excluded.created_at_utc,completed_at_utc=excluded.completed_at_utc,battle_final_victory_count=excluded.battle_final_victory_count;",
+            -1,
+            &insert_member.st,
+            nullptr)
+        != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+
+    sqlite3_bind_int64(insert_member.st, 1, command.archive_package_id);
+    sqlite3_bind_int64(insert_member.st, 2, command.workflow_instance_id);
+    if (command.workflow_kind.has_value()) sqlite3_bind_text(insert_member.st, 3, command.workflow_kind->c_str(), -1, SQLITE_TRANSIENT);
+    else sqlite3_bind_null(insert_member.st, 3);
+    if (command.display_state.has_value()) sqlite3_bind_text(insert_member.st, 4, command.display_state->c_str(), -1, SQLITE_TRANSIENT);
+    else sqlite3_bind_null(insert_member.st, 4);
+    if (command.root_scope_kind.has_value()) sqlite3_bind_text(insert_member.st, 5, command.root_scope_kind->c_str(), -1, SQLITE_TRANSIENT);
+    else sqlite3_bind_null(insert_member.st, 5);
+    if (command.root_scope_id.has_value()) sqlite3_bind_int64(insert_member.st, 6, *command.root_scope_id);
+    else sqlite3_bind_null(insert_member.st, 6);
+    if (command.created_at_utc.has_value()) sqlite3_bind_int64(insert_member.st, 7, command.created_at_utc->time_since_epoch().count());
+    else sqlite3_bind_null(insert_member.st, 7);
+    if (command.completed_at_utc.has_value()) sqlite3_bind_int64(insert_member.st, 8, command.completed_at_utc->time_since_epoch().count());
+    else sqlite3_bind_null(insert_member.st, 8);
+    sqlite3_bind_int(insert_member.st, 9, command.battle_final_victory_count);
+
+    if (sqlite3_step(insert_member.st) != SQLITE_DONE) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
     }
     return true;
 }
