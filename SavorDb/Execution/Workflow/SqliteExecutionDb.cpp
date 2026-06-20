@@ -1625,26 +1625,76 @@ bool SqliteExecutionDb::MarkQueuedJobsSuperseded(
         return false;
     }
 
-    Statement st;
-    if (sqlite3_prepare_v2(db_,
-        "UPDATE exec_job "
-            "SET state='SUPERSEDED', ended_at_utc=CAST(unixepoch('now') * 1000 AS INTEGER) "
-            "WHERE job_set_id=?1 AND state='QUEUED' AND job_id<>?2;",
-        -1,
-        &st.st,
-        nullptr)
-        != SQLITE_OK) {
-        if (error_out) *error_out = sqlite3_errmsg(db_);
+    if (!ExecuteSql(db_, "BEGIN IMMEDIATE;", error_out)) {
         return false;
     }
-    sqlite3_bind_int64(st.st, 1, job_set_id);
-    sqlite3_bind_int64(st.st, 2, except_job_id);
-    if (sqlite3_step(st.st) != SQLITE_DONE) {
-        if (error_out) *error_out = sqlite3_errmsg(db_);
+
+    std::vector<std::int64_t> job_ids;
+    {
+        Statement select;
+        if (sqlite3_prepare_v2(db_,
+            "SELECT job_id FROM exec_job "
+            "WHERE job_set_id=?1 AND state='QUEUED' AND job_id<>?2 "
+            "ORDER BY job_id ASC;",
+            -1,
+            &select.st,
+            nullptr)
+            != SQLITE_OK) {
+            Rollback(db_);
+            if (error_out) *error_out = sqlite3_errmsg(db_);
+            return false;
+        }
+        sqlite3_bind_int64(select.st, 1, job_set_id);
+        sqlite3_bind_int64(select.st, 2, except_job_id);
+        int rc = SQLITE_OK;
+        while ((rc = sqlite3_step(select.st)) == SQLITE_ROW) {
+            job_ids.push_back(sqlite3_column_int64(select.st, 0));
+        }
+        if (rc != SQLITE_DONE) {
+            Rollback(db_);
+            if (error_out) *error_out = sqlite3_errmsg(db_);
+            return false;
+        }
+    }
+
+    int changed = 0;
+    for (const auto job_id : job_ids) {
+        Statement update;
+        if (sqlite3_prepare_v2(db_,
+            "UPDATE exec_job "
+            "SET state='SUPERSEDED', ended_at_utc=CAST(unixepoch('now') * 1000 AS INTEGER) "
+            "WHERE job_id=?1 AND job_set_id=?2 AND state='QUEUED';",
+            -1,
+            &update.st,
+            nullptr)
+            != SQLITE_OK) {
+            Rollback(db_);
+            if (error_out) *error_out = sqlite3_errmsg(db_);
+            return false;
+        }
+        sqlite3_bind_int64(update.st, 1, job_id);
+        sqlite3_bind_int64(update.st, 2, job_set_id);
+        if (sqlite3_step(update.st) != SQLITE_DONE) {
+            Rollback(db_);
+            if (error_out) *error_out = sqlite3_errmsg(db_);
+            return false;
+        }
+        if (sqlite3_changes(db_) == 0) {
+            continue;
+        }
+        if (!InsertJobActionEventAndOutbox(db_, job_id, job_set_id, "Execution.JobCompleted.v1", "SUPERSEDE", error_out)) {
+            Rollback(db_);
+            return false;
+        }
+        ++changed;
+    }
+
+    if (!Commit(db_, error_out)) {
+        Rollback(db_);
         return false;
     }
     if (rows_superseded_out != nullptr) {
-        *rows_superseded_out = sqlite3_changes(db_);
+        *rows_superseded_out = changed;
     }
     return true;
 }

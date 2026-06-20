@@ -37,6 +37,9 @@
     <Filter Include="GUI\Panes\Artifacts">
       <UniqueIdentifier>{9a267a3f-42f8-4db8-9540-c08a4d67f9e5}</UniqueIdentifier>
     </Filter>
+    <Filter Include="GUI\Panes\Archive">
+      <UniqueIdentifier>{f40f7091-f040-4dd0-8c2d-bfb2d5b90f55}</UniqueIdentifier>
+    </Filter>
     <Filter Include="GUI\Panes\JobBuilder">
       <UniqueIdentifier>{17d08e24-b230-4462-aad2-f682ce9200ba}</UniqueIdentifier>
     </Filter>
@@ -85,6 +88,9 @@
     </ClCompile>
     <ClCompile Include="GUI\Panes\ArtifactsPane\ArtifactsPage.cpp">
       <Filter>GUI\Panes\Artifacts</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Panes\ArchivePane\ArchiveWorkbenchPage.cpp">
+      <Filter>GUI\Panes\Archive</Filter>
     </ClCompile>
     <ClCompile Include="GUI\MainWindow.cpp">
       <Filter>GUI</Filter>
@@ -224,6 +230,9 @@
     </QtMoc>
     <QtMoc Include="GUI\Panes\ArtifactsPane\ArtifactsBrowserTableView.h">
       <Filter>GUI\Panes\Artifacts</Filter>
+    </QtMoc>
+    <QtMoc Include="GUI\Panes\ArchivePane\ArchiveWorkbenchPage.h">
+      <Filter>GUI\Panes\Archive</Filter>
     </QtMoc>
     <QtMoc Include="GUI\MainWindow.h">
       <Filter>GUI</Filter>
@@ -367,6 +376,9 @@
       <Filter>DB</Filter>
     </ClInclude>
     <ClInclude Include="DB\SavorDbArtifactService.h">
+      <Filter>DB</Filter>
+    </ClInclude>
+    <ClInclude Include="DB\SavorDbArchiveService.h">
       <Filter>DB</Filter>
     </ClInclude>
     <ClInclude Include="DB\SavorDbServiceResult.h">

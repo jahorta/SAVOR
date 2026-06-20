@@ -1,6 +1,7 @@
 #include "MainWindow.h"
 
 #include "GUI/Panes/ArtifactsPane/ArtifactsPage.h"
+#include "GUI/Panes/ArchivePane/ArchiveWorkbenchPage.h"
 #include "GUI/Panes/BattleRunSettingsPane/BattleRunSettingsPage.h"
 #include "GUI/Panes/JobBuilderPane/WorkflowGraphEditorWindow.h"
 #include "GUI/Panes/JobBuilderPane/WorkflowLauncherPage.h"
@@ -50,6 +51,7 @@ QString focusedToolKey(MainWindow::FocusedTool tool)
     case MainWindow::FocusedTool::Artifacts: return QStringLiteral("artifacts");
     case MainWindow::FocusedTool::SeedProbe: return QStringLiteral("seed_probe");
     case MainWindow::FocusedTool::BattleRuns: return QStringLiteral("battle_runs");
+    case MainWindow::FocusedTool::ArchiveWorkbench: return QStringLiteral("archive_workbench");
     case MainWindow::FocusedTool::DtmEditor: return QStringLiteral("dtm_editor");
     case MainWindow::FocusedTool::Settings: return QStringLiteral("settings");
     }
@@ -67,6 +69,7 @@ QString focusedToolTitle(MainWindow::FocusedTool tool)
     case MainWindow::FocusedTool::Artifacts: return QStringLiteral("Artifacts");
     case MainWindow::FocusedTool::SeedProbe: return QStringLiteral("Seed Probe");
     case MainWindow::FocusedTool::BattleRuns: return QStringLiteral("Battle Runs");
+    case MainWindow::FocusedTool::ArchiveWorkbench: return QStringLiteral("Archive Workbench");
     case MainWindow::FocusedTool::DtmEditor: return QStringLiteral("DTM Editor");
     case MainWindow::FocusedTool::Settings: return QStringLiteral("Settings");
     }
@@ -182,6 +185,9 @@ void MainWindow::createMenus()
     });
     connect(analysisMenu->addAction(QStringLiteral("Workflow Provenance")), &QAction::triggered, this, [this]() {
         openFocusedTool(FocusedTool::Workflows);
+    });
+    connect(analysisMenu->addAction(QStringLiteral("Archive Workbench")), &QAction::triggered, this, [this]() {
+        openFocusedTool(FocusedTool::ArchiveWorkbench);
     });
 }
 
@@ -477,6 +483,14 @@ void MainWindow::openFocusedTool(FocusedTool tool)
     }
     case FocusedTool::BattleRuns:
         break;
+    case FocusedTool::ArchiveWorkbench: {
+        auto* archive = new ArchiveWorkbenchPage(dialog);
+        archive->setPageActive(true);
+        connect(dialog, &QDialog::finished, archive, [archive]() { archive->setPageActive(false); });
+        connect(archive, &ArchiveWorkbenchPage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
+        page = archive;
+        break;
+    }
     case FocusedTool::DtmEditor: {
         auto* dtm = new DtmEditorPage(dialog);
         dtm->setPageActive(true);

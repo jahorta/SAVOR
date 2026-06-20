@@ -129,6 +129,7 @@
     <ClCompile Include="GUI\Panes\ArtifactsPane\ArtifactsBrowserTableView.cpp" />
     <ClCompile Include="GUI\Panes\ArtifactsPane\ArtifactsController.cpp" />
     <ClCompile Include="GUI\Panes\ArtifactsPane\ArtifactsPage.cpp" />
+    <ClCompile Include="GUI\Panes\ArchivePane\ArchiveWorkbenchPage.cpp" />
     <ClCompile Include="GUI\Panes\BattleRunSettingsPane\BattlePlanActionPresetEditorWindow.cpp" />
     <ClCompile Include="GUI\Panes\BattleRunSettingsPane\AuthoringLibraryDialog.cpp" />
     <ClCompile Include="GUI\Panes\BattleRunSettingsPane\AuthoringSpecEditorWindows.cpp" />
@@ -177,6 +178,7 @@
     <QtMoc Include="GUI\Widgets\VisualReplay\VisualReplayCoordinator.h" />
     <QtMoc Include="GUI\Widgets\VisualReplay\VisualReplayDialog.h" />
     <QtMoc Include="GUI\MainWindow.h" />
+    <QtMoc Include="GUI\Panes\ArchivePane\ArchiveWorkbenchPage.h" />
     <QtMoc Include="GUI\Panes\ArtifactsPane\ArtifactsController.h" />
     <QtMoc Include="GUI\Panes\ArtifactsPane\ArtifactsPage.h" />
     <QtMoc Include="GUI\Panes\ArtifactsPane\ArtifactsBrowserTableView.h" />
@@ -222,6 +224,7 @@
     <ClInclude Include="GUI\Widgets\VisualReplay\LiveLogListModel.h" />
     <ClInclude Include="GUI\Widgets\VisualReplay\VisualWorkerDashboardDialog.h" />
     <ClInclude Include="DB\SavorDbArtifactService.h" />
+    <ClInclude Include="DB\SavorDbArchiveService.h" />
     <ClInclude Include="DB\SavorDbAuthoringService.h" />
     <ClInclude Include="DB\SavorDbExplorerRunService.h" />
     <ClInclude Include="DB\SavorDbJobSetService.h" />

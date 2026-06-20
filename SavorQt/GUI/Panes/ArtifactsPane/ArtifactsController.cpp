@@ -203,8 +203,8 @@ void ArtifactsController::requestRefresh()
 void ArtifactsController::requestNextPage()
 {
     if (state_.page.next.has_value()) {
-        after_ = state_.page.next;
-        before_.reset();
+        before_ = state_.page.next;
+        after_.reset();
         kickPageFetch();
     }
 }
@@ -212,8 +212,8 @@ void ArtifactsController::requestNextPage()
 void ArtifactsController::requestPreviousPage()
 {
     if (state_.page.prev.has_value()) {
-        before_ = state_.page.prev;
-        after_.reset();
+        after_ = state_.page.prev;
+        before_.reset();
         kickPageFetch();
     }
 }

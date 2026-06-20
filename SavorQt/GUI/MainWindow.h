@@ -42,6 +42,7 @@ public:
         Artifacts,
         SeedProbe,
         BattleRuns,
+        ArchiveWorkbench,
         DtmEditor,
         Settings
     };
