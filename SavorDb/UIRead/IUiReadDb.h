@@ -197,6 +197,42 @@ struct UiReadArtifactListQuery {
     std::string extension;
 };
 
+struct UiArchiveCatalogListQuery {
+    std::string search;
+    std::string source_scope_kind;
+    std::string checksum_status;
+    bool workflow_packages_only = true;
+    std::optional<std::int64_t> created_from_utc;
+    std::optional<std::int64_t> created_to_utc;
+};
+
+struct UiArchiveCatalogRow {
+    std::int64_t archive_package_id = 0;
+    std::string source_context;
+    std::int64_t source_root_job_set_id = 0;
+    std::string source_scope_kind;
+    std::int64_t source_workflow_count = 0;
+    std::string selection_summary;
+    std::string archive_name;
+    std::string archive_notes;
+    std::int64_t created_at_utc = 0;
+    int schema_version = 0;
+    int event_catalog_version = 0;
+    std::int64_t time_range_start_utc = 0;
+    std::int64_t time_range_end_utc = 0;
+    std::string checksum_status;
+};
+
+struct UiArchiveRehydrateRequestRow {
+    std::int64_t rehydrate_request_id = 0;
+    std::int64_t archive_package_id = 0;
+    std::string status;
+    std::string target_namespace;
+    std::int64_t requested_at_utc = 0;
+    std::optional<std::int64_t> completed_at_utc;
+    std::string error_text;
+};
+
 struct UiWorkflowInstanceListQuery {
     std::optional<UiReadListCursor> before;
     std::optional<UiReadListCursor> after;
@@ -470,6 +506,12 @@ struct IUiReadDb {
 
     virtual UiReadPage<UiArtifactSummary> ListArtifacts(
         const UiReadArtifactListQuery& query) const = 0;
+
+    virtual std::vector<UiArchiveCatalogRow> ListArchiveCatalog(
+        const UiArchiveCatalogListQuery& query) const = 0;
+
+    virtual std::vector<UiArchiveRehydrateRequestRow> ListArchiveRehydrateRequests(
+        std::int64_t archive_package_id) const = 0;
 
     virtual bool UpsertArtifactSummary(
         const UiArtifactSummary& summary,

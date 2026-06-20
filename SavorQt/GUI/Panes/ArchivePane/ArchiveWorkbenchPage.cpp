@@ -19,6 +19,7 @@
 #include <QtWidgets/QProgressBar>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QSplitter>
+#include <QtWidgets/QTabWidget>
 #include <QtWidgets/QTableWidget>
 #include <QtWidgets/QTableWidgetItem>
 #include <QtWidgets/QTextEdit>
@@ -30,6 +31,8 @@
 
 namespace {
 constexpr int kWorkflowIdRole = Qt::UserRole + 1;
+constexpr int kArchivePackageIdRole = Qt::UserRole + 2;
+constexpr int kRehydrateRequestIdRole = Qt::UserRole + 3;
 
 QString qstr(const std::string& value)
 {
@@ -49,6 +52,14 @@ QString formatOptionalTime(const std::optional<std::int64_t>& epochMillis)
 QString formatTime(std::int64_t epochMillis)
 {
     return formatOptionalTime(epochMillis > 0 ? std::optional<std::int64_t>(epochMillis) : std::nullopt);
+}
+
+QString packageDisplayName(const savor::db::UiArchiveCatalogRow& row)
+{
+    if (!row.archive_name.empty()) {
+        return qstr(row.archive_name);
+    }
+    return QStringLiteral("Package %1").arg(static_cast<qint64>(row.archive_package_id));
 }
 
 QTableWidgetItem* makeItem(const QString& text)
@@ -89,6 +100,11 @@ QString progressPhaseText(savor::db::archive::ArchiveOperationPhase phase)
     }
     return QStringLiteral("Archive");
 }
+
+bool isInactiveRehydrateStatus(const std::string& status)
+{
+    return status == "COMPLETED" || status == "FAILED";
+}
 }
 
 ArchiveWorkbenchPage::ArchiveWorkbenchPage(QWidget* parent)
@@ -107,8 +123,18 @@ void ArchiveWorkbenchPage::setPageActive(bool active)
     if (previewRefreshPipeline_ != nullptr) {
         previewRefreshPipeline_->setActive(active);
     }
+    if (rehydratePackageRefreshPipeline_ != nullptr) {
+        rehydratePackageRefreshPipeline_->setActive(active);
+    }
+    if (rehydratePreviewRefreshPipeline_ != nullptr) {
+        rehydratePreviewRefreshPipeline_->setActive(active);
+    }
+    if (rehydrateRequestRefreshPipeline_ != nullptr) {
+        rehydrateRequestRefreshPipeline_->setActive(active);
+    }
     if (active) {
         refreshCandidates();
+        refreshArchivePackages();
     }
 }
 
@@ -116,9 +142,15 @@ void ArchiveWorkbenchPage::createWidgets()
 {
     auto* root = new QVBoxLayout(this);
     root->setContentsMargins(0, 0, 0, 0);
-    root->setSpacing(10);
+    root->setSpacing(0);
 
-    auto* filterPanel = new QFrame(this);
+    tabWidget_ = new QTabWidget(this);
+    auto* archiveTab = new QWidget(tabWidget_);
+    auto* archiveRoot = new QVBoxLayout(archiveTab);
+    archiveRoot->setContentsMargins(0, 0, 0, 0);
+    archiveRoot->setSpacing(10);
+
+    auto* filterPanel = new QFrame(archiveTab);
     filterPanel->setObjectName("jobSetsToolbarPanel");
     auto* filterLayout = new QGridLayout(filterPanel);
     filterLayout->setContentsMargins(8, 7, 8, 7);
@@ -194,9 +226,9 @@ void ArchiveWorkbenchPage::createWidgets()
     filterLayout->addWidget(completedToEnabled_, 2, 3);
     filterLayout->addWidget(completedToEdit_, 3, 3);
     filterLayout->setColumnStretch(4, 1);
-    root->addWidget(filterPanel);
+    archiveRoot->addWidget(filterPanel);
 
-    auto* actionsPanel = new QFrame(this);
+    auto* actionsPanel = new QFrame(archiveTab);
     actionsPanel->setObjectName("jobSetsPagingPanel");
     auto* actionsLayout = new QHBoxLayout(actionsPanel);
     actionsLayout->setContentsMargins(8, 7, 8, 7);
@@ -215,9 +247,9 @@ void ArchiveWorkbenchPage::createWidgets()
     actionsLayout->addWidget(clearExclusionsButton_);
     actionsLayout->addStretch();
     actionsLayout->addWidget(statusLabel_);
-    root->addWidget(actionsPanel);
+    archiveRoot->addWidget(actionsPanel);
 
-    auto* splitter = new QSplitter(Qt::Horizontal, this);
+    auto* splitter = new QSplitter(Qt::Horizontal, archiveTab);
     candidateTable_ = new QTableWidget(splitter);
     candidateTable_->setObjectName("jobSetsTreeView");
     candidateTable_->setColumnCount(10);
@@ -303,10 +335,193 @@ void ArchiveWorkbenchPage::createWidgets()
     splitter->addWidget(sidePanel);
     splitter->setStretchFactor(0, 4);
     splitter->setStretchFactor(1, 1);
-    root->addWidget(splitter, 1);
+    archiveRoot->addWidget(splitter, 1);
+
+    tabWidget_->addTab(archiveTab, QStringLiteral("Create Archive"));
+    auto* rehydrateTab = new QWidget(tabWidget_);
+    createRehydrateWidgets(rehydrateTab);
+    tabWidget_->addTab(rehydrateTab, QStringLiteral("Rehydrate Archive"));
+    root->addWidget(tabWidget_, 1);
 
     candidateRefreshPipeline_ = new savorqt::gui::AsyncRefreshPipeline<CandidateRefreshRequest, CandidateResult>(this);
     previewRefreshPipeline_ = new savorqt::gui::AsyncRefreshPipeline<PreviewRefreshRequest, PreviewResult>(this);
+    rehydratePackageRefreshPipeline_ = new savorqt::gui::AsyncRefreshPipeline<RehydratePackageRefreshRequest, RehydratePackageResult>(this);
+    rehydratePreviewRefreshPipeline_ = new savorqt::gui::AsyncRefreshPipeline<RehydratePreviewRefreshRequest, RehydratePreviewResult>(this);
+    rehydrateRequestRefreshPipeline_ = new savorqt::gui::AsyncRefreshPipeline<RehydrateRequestRefreshRequest, RehydrateRequestResult>(this);
+}
+
+void ArchiveWorkbenchPage::createRehydrateWidgets(QWidget* tab)
+{
+    auto* root = new QVBoxLayout(tab);
+    root->setContentsMargins(0, 0, 0, 0);
+    root->setSpacing(10);
+
+    auto* filterPanel = new QFrame(tab);
+    filterPanel->setObjectName("jobSetsToolbarPanel");
+    auto* filterLayout = new QGridLayout(filterPanel);
+    filterLayout->setContentsMargins(8, 7, 8, 7);
+    filterLayout->setHorizontalSpacing(10);
+    filterLayout->setVerticalSpacing(8);
+
+    rehydrateSearchEdit_ = new QLineEdit(filterPanel);
+    rehydrateSearchEdit_->setObjectName("jobSetsFilterCombo");
+    rehydrateSearchEdit_->setPlaceholderText(QStringLiteral("id/name/notes"));
+
+    rehydrateScopeFilter_ = new QComboBox(filterPanel);
+    rehydrateScopeFilter_->setObjectName("jobSetsFilterCombo");
+    rehydrateScopeFilter_->addItem(QStringLiteral("Any scope"), QString());
+    rehydrateScopeFilter_->addItem(QStringLiteral("Workflow selection"), QStringLiteral("workflow_selection"));
+    rehydrateScopeFilter_->addItem(QStringLiteral("Root job set"), QStringLiteral("root_job_set"));
+
+    rehydrateChecksumFilter_ = new QComboBox(filterPanel);
+    rehydrateChecksumFilter_->setObjectName("jobSetsFilterCombo");
+    rehydrateChecksumFilter_->addItem(QStringLiteral("Any checksum"), QString());
+    rehydrateChecksumFilter_->addItem(QStringLiteral("Pass"), QStringLiteral("PASS"));
+    rehydrateChecksumFilter_->addItem(QStringLiteral("Pending"), QStringLiteral("PENDING"));
+    rehydrateChecksumFilter_->addItem(QStringLiteral("Failed"), QStringLiteral("FAILED"));
+
+    rehydrateWorkflowOnlyCheck_ = new QCheckBox(QStringLiteral("Workflow packages only"), filterPanel);
+    rehydrateWorkflowOnlyCheck_->setChecked(true);
+
+    const auto now = QDateTime::currentDateTime();
+    rehydrateCreatedFromEnabled_ = new QCheckBox(QStringLiteral("Created from"), filterPanel);
+    rehydrateCreatedToEnabled_ = new QCheckBox(QStringLiteral("Created to"), filterPanel);
+    rehydrateCreatedFromEdit_ = new QDateTimeEdit(now.addDays(-30), filterPanel);
+    rehydrateCreatedToEdit_ = new QDateTimeEdit(now, filterPanel);
+    for (auto* edit : { rehydrateCreatedFromEdit_, rehydrateCreatedToEdit_ }) {
+        edit->setObjectName("jobSetsFilterCombo");
+        edit->setCalendarPopup(true);
+        edit->setDisplayFormat(QStringLiteral("yyyy-MM-dd HH:mm"));
+    }
+
+    rehydrateRefreshButton_ = new QPushButton(QStringLiteral("Refresh"), filterPanel);
+    rehydrateRefreshButton_->setObjectName("jobSetsPrimaryButton");
+
+    filterLayout->addWidget(new QLabel(QStringLiteral("Search"), filterPanel), 0, 0);
+    filterLayout->addWidget(rehydrateSearchEdit_, 1, 0);
+    filterLayout->addWidget(new QLabel(QStringLiteral("Scope"), filterPanel), 0, 1);
+    filterLayout->addWidget(rehydrateScopeFilter_, 1, 1);
+    filterLayout->addWidget(new QLabel(QStringLiteral("Checksum"), filterPanel), 0, 2);
+    filterLayout->addWidget(rehydrateChecksumFilter_, 1, 2);
+    filterLayout->addWidget(rehydrateWorkflowOnlyCheck_, 1, 3);
+    filterLayout->addWidget(rehydrateRefreshButton_, 1, 4);
+    filterLayout->addWidget(rehydrateCreatedFromEnabled_, 2, 0);
+    filterLayout->addWidget(rehydrateCreatedFromEdit_, 3, 0);
+    filterLayout->addWidget(rehydrateCreatedToEnabled_, 2, 1);
+    filterLayout->addWidget(rehydrateCreatedToEdit_, 3, 1);
+    filterLayout->setColumnStretch(5, 1);
+    root->addWidget(filterPanel);
+
+    auto* metaPanel = new QFrame(tab);
+    metaPanel->setObjectName("jobSetsPagingPanel");
+    auto* metaLayout = new QHBoxLayout(metaPanel);
+    metaLayout->setContentsMargins(8, 7, 8, 7);
+    rehydrateCatalogStatusLabel_ = new QLabel(metaPanel);
+    rehydrateCatalogStatusLabel_->setObjectName("jobSetsMetaText");
+    metaLayout->addWidget(rehydrateCatalogStatusLabel_);
+    metaLayout->addStretch();
+    root->addWidget(metaPanel);
+
+    auto* splitter = new QSplitter(Qt::Horizontal, tab);
+    rehydratePackageTable_ = new QTableWidget(splitter);
+    rehydratePackageTable_->setObjectName("jobSetsTreeView");
+    rehydratePackageTable_->setColumnCount(7);
+    rehydratePackageTable_->setHorizontalHeaderLabels({
+        QStringLiteral("Package"),
+        QStringLiteral("Name"),
+        QStringLiteral("Workflows"),
+        QStringLiteral("Scope"),
+        QStringLiteral("Created"),
+        QStringLiteral("Checksum"),
+        QStringLiteral("Last request"),
+    });
+    rehydratePackageTable_->setSelectionBehavior(QAbstractItemView::SelectRows);
+    rehydratePackageTable_->setSelectionMode(QAbstractItemView::SingleSelection);
+    rehydratePackageTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    rehydratePackageTable_->setAlternatingRowColors(true);
+    rehydratePackageTable_->verticalHeader()->hide();
+    rehydratePackageTable_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Interactive);
+    rehydratePackageTable_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+    rehydratePackageTable_->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Interactive);
+    rehydratePackageTable_->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Interactive);
+    rehydratePackageTable_->horizontalHeader()->setSectionResizeMode(4, QHeaderView::Interactive);
+    rehydratePackageTable_->horizontalHeader()->setSectionResizeMode(5, QHeaderView::Interactive);
+    rehydratePackageTable_->horizontalHeader()->setSectionResizeMode(6, QHeaderView::Interactive);
+    splitter->addWidget(rehydratePackageTable_);
+
+    auto* sidePanel = new QWidget(splitter);
+    auto* sideLayout = new QVBoxLayout(sidePanel);
+    sideLayout->setContentsMargins(8, 0, 0, 0);
+
+    rehydratePreviewLabel_ = new QLabel(sidePanel);
+    rehydratePreviewLabel_->setObjectName("jobSetsMetaText");
+    rehydratePreviewLabel_->setWordWrap(true);
+    rehydrateBlockersLabel_ = new QLabel(sidePanel);
+    rehydrateBlockersLabel_->setObjectName("jobSetsInlineMessage");
+    rehydrateBlockersLabel_->setWordWrap(true);
+
+    rehydrateNamespaceEdit_ = new QLineEdit(sidePanel);
+    rehydrateNamespaceEdit_->setPlaceholderText(QStringLiteral("target namespace"));
+    rehydrateConfirmationEdit_ = new QLineEdit(sidePanel);
+    rehydrateConfirmationEdit_->setPlaceholderText(QStringLiteral("archive package id"));
+    rehydrateExecuteButton_ = new QPushButton(QStringLiteral("Rehydrate archive"), sidePanel);
+    rehydrateExecuteButton_->setObjectName("jobSetsPrimaryButton");
+    rehydrateProgressPhaseLabel_ = new QLabel(QStringLiteral("Idle"), sidePanel);
+    rehydrateProgressPhaseLabel_->setObjectName("jobSetsMetaText");
+    rehydrateProgressPhaseLabel_->setWordWrap(true);
+    rehydrateProgressBar_ = new QProgressBar(sidePanel);
+    rehydrateProgressBar_->setRange(0, 1);
+    rehydrateProgressBar_->setValue(0);
+    rehydrateProgressBar_->setTextVisible(true);
+    rehydrateStatusLabel_ = new QLabel(sidePanel);
+    rehydrateStatusLabel_->setObjectName("jobSetsMetaText");
+    rehydrateStatusLabel_->setWordWrap(true);
+
+    rehydrateRequestTable_ = new QTableWidget(sidePanel);
+    rehydrateRequestTable_->setObjectName("jobSetsTreeView");
+    rehydrateRequestTable_->setColumnCount(5);
+    rehydrateRequestTable_->setHorizontalHeaderLabels({
+        QStringLiteral("Request"),
+        QStringLiteral("Status"),
+        QStringLiteral("Namespace"),
+        QStringLiteral("Requested"),
+        QStringLiteral("Error"),
+    });
+    rehydrateRequestTable_->setSelectionBehavior(QAbstractItemView::SelectRows);
+    rehydrateRequestTable_->setSelectionMode(QAbstractItemView::SingleSelection);
+    rehydrateRequestTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    rehydrateRequestTable_->setAlternatingRowColors(true);
+    rehydrateRequestTable_->verticalHeader()->hide();
+    rehydrateRequestTable_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Interactive);
+    rehydrateRequestTable_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Interactive);
+    rehydrateRequestTable_->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Interactive);
+    rehydrateRequestTable_->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Interactive);
+    rehydrateRequestTable_->horizontalHeader()->setSectionResizeMode(4, QHeaderView::Stretch);
+    rehydrateCleanupButton_ = new QPushButton(QStringLiteral("Cleanup selected request"), sidePanel);
+
+    sideLayout->addWidget(new QLabel(QStringLiteral("Preview"), sidePanel));
+    sideLayout->addWidget(rehydratePreviewLabel_);
+    sideLayout->addWidget(rehydrateBlockersLabel_);
+    sideLayout->addSpacing(10);
+    sideLayout->addWidget(new QLabel(QStringLiteral("Target namespace"), sidePanel));
+    sideLayout->addWidget(rehydrateNamespaceEdit_);
+    sideLayout->addWidget(rehydrateConfirmationEdit_);
+    sideLayout->addWidget(rehydrateExecuteButton_);
+    sideLayout->addWidget(rehydrateProgressPhaseLabel_);
+    sideLayout->addWidget(rehydrateProgressBar_);
+    sideLayout->addWidget(rehydrateStatusLabel_);
+    sideLayout->addSpacing(10);
+    sideLayout->addWidget(new QLabel(QStringLiteral("Request history"), sidePanel));
+    sideLayout->addWidget(rehydrateRequestTable_, 1);
+    sideLayout->addWidget(rehydrateCleanupButton_);
+    splitter->addWidget(sidePanel);
+    splitter->setStretchFactor(0, 3);
+    splitter->setStretchFactor(1, 2);
+    root->addWidget(splitter, 1);
+
+    rehydratePreviewLabel_->setText(QStringLiteral("Select an archive package."));
+    rehydrateCatalogStatusLabel_->setText(QStringLiteral("Rows: 0"));
+    updateRehydrateExecuteState();
 }
 
 void ArchiveWorkbenchPage::wireSignals()
@@ -459,6 +674,180 @@ void ArchiveWorkbenchPage::wireSignals()
         setBusy(false);
         requestPreview();
     });
+
+    connect(rehydrateRefreshButton_, &QPushButton::clicked, this, &ArchiveWorkbenchPage::refreshArchivePackages);
+    connect(rehydrateSearchEdit_, &QLineEdit::returnPressed, this, &ArchiveWorkbenchPage::refreshArchivePackages);
+    connect(rehydrateScopeFilter_, &QComboBox::currentIndexChanged, this, [this]() { refreshArchivePackages(); });
+    connect(rehydrateChecksumFilter_, &QComboBox::currentIndexChanged, this, [this]() { refreshArchivePackages(); });
+    connect(rehydrateWorkflowOnlyCheck_, &QCheckBox::toggled, this, [this]() { refreshArchivePackages(); });
+    connect(rehydrateCreatedFromEnabled_, &QCheckBox::toggled, this, [this]() { refreshArchivePackages(); });
+    connect(rehydrateCreatedToEnabled_, &QCheckBox::toggled, this, [this]() { refreshArchivePackages(); });
+    connect(rehydrateNamespaceEdit_, &QLineEdit::textChanged, this, [this]() {
+        requestRehydratePreview();
+        updateRehydrateExecuteState();
+    });
+    connect(rehydrateConfirmationEdit_, &QLineEdit::textChanged, this, &ArchiveWorkbenchPage::updateRehydrateExecuteState);
+    connect(rehydrateExecuteButton_, &QPushButton::clicked, this, &ArchiveWorkbenchPage::executeRehydrate);
+    connect(rehydrateCleanupButton_, &QPushButton::clicked, this, &ArchiveWorkbenchPage::cleanupSelectedRehydrateRequest);
+    connect(rehydratePackageTable_, &QTableWidget::itemSelectionChanged, this, [this]() {
+        std::int64_t packageId = 0;
+        const auto selectedItems = rehydratePackageTable_->selectedItems();
+        if (!selectedItems.empty()) {
+            const int row = selectedItems.front()->row();
+            if (auto* idItem = rehydratePackageTable_->item(row, 0)) {
+                packageId = idItem->data(kArchivePackageIdRole).toLongLong();
+            }
+        }
+        selectedArchivePackageId_ = packageId;
+        const auto selected = selectedArchivePackage();
+        currentRehydratePreview_.reset();
+        if (selected.has_value()) {
+            rehydrateNamespaceEdit_->setText(fallbackRehydrateNamespace());
+        } else {
+            applyRehydrateRequestRows({});
+        }
+        refreshRehydrateRequests();
+        requestRehydratePreview();
+        updateRehydratePreviewLabels();
+        updateRehydrateExecuteState();
+    });
+    connect(rehydrateRequestTable_, &QTableWidget::itemSelectionChanged, this, &ArchiveWorkbenchPage::updateRehydrateExecuteState);
+
+    rehydratePackageRefreshPipeline_->setAutoRefreshEnabled(false);
+    rehydratePackageRefreshPipeline_->setRequestBuilder([this](savorqt::gui::RefreshReason) -> std::optional<RehydratePackageRefreshRequest> {
+        rehydratePackageFetchInFlight_ = true;
+        rehydrateCatalogStatusLabel_->setText(QStringLiteral("Loading archive packages..."));
+        return RehydratePackageRefreshRequest{ .filter = currentArchivePackageFilter() };
+    });
+    rehydratePackageRefreshPipeline_->setLoadAndPrepare([](RehydratePackageRefreshRequest request) {
+        const auto packages = savorqt::db::SavorDbArchiveService::ListArchivePackages(request.filter);
+        if (!packages.ok) {
+            return savorqt::gui::AsyncRefreshResult<RehydratePackageResult>::Ok(RehydratePackageResult::Err(packages.error));
+        }
+        RehydratePackageRefreshData data{};
+        data.packages = packages.value;
+        return savorqt::gui::AsyncRefreshResult<RehydratePackageResult>::Ok(RehydratePackageResult::Ok(std::move(data)));
+    });
+    rehydratePackageRefreshPipeline_->setApply([this](const RehydratePackageResult& result, savorqt::gui::RefreshReason, const savorqt::gui::RefreshStatus&) {
+        rehydratePackageFetchInFlight_ = false;
+        if (!result.ok) {
+            rehydrateInlineMessage_ = QStringLiteral("Package refresh failed: %1").arg(qstr(result.error.message));
+            applyArchivePackageRows({});
+        } else {
+            rehydrateInlineMessage_.clear();
+            applyArchivePackageRows(result.value.packages.rows);
+        }
+        refreshRehydrateRequests();
+        requestRehydratePreview();
+        updateRehydratePreviewLabels();
+        updateRehydrateExecuteState();
+    });
+
+    rehydratePreviewRefreshPipeline_->setAutoRefreshEnabled(false);
+    rehydratePreviewRefreshPipeline_->setRequestBuilder([this](savorqt::gui::RefreshReason) -> std::optional<RehydratePreviewRefreshRequest> {
+        if (selectedArchivePackageId_ <= 0 || rehydrateNamespaceEdit_->text().trimmed().isEmpty()) {
+            return std::nullopt;
+        }
+        rehydratePreviewFetchInFlight_ = true;
+        updateRehydratePreviewLabels();
+        return RehydratePreviewRefreshRequest{
+            .archive_package_id = selectedArchivePackageId_,
+            .target_namespace = rehydrateNamespaceEdit_->text().trimmed().toStdString(),
+        };
+    });
+    rehydratePreviewRefreshPipeline_->setLoadAndPrepare([](RehydratePreviewRefreshRequest request) {
+        const auto preview = savorqt::db::SavorDbArchiveService::PreviewRehydrate(request.archive_package_id, request.target_namespace);
+        if (!preview.ok) {
+            return savorqt::gui::AsyncRefreshResult<RehydratePreviewResult>::Ok(RehydratePreviewResult::Err(preview.error));
+        }
+        RehydratePreviewRefreshData data{};
+        data.preview = preview.value;
+        return savorqt::gui::AsyncRefreshResult<RehydratePreviewResult>::Ok(RehydratePreviewResult::Ok(std::move(data)));
+    });
+    rehydratePreviewRefreshPipeline_->setApply([this](const RehydratePreviewResult& result, savorqt::gui::RefreshReason, const savorqt::gui::RefreshStatus&) {
+        rehydratePreviewFetchInFlight_ = false;
+        if (!result.ok) {
+            currentRehydratePreview_.reset();
+            rehydrateInlineMessage_ = QStringLiteral("Rehydrate preview failed: %1").arg(qstr(result.error.message));
+        } else {
+            currentRehydratePreview_ = result.value;
+            if (result.value.preview.success) {
+                rehydrateInlineMessage_.clear();
+            }
+        }
+        updateRehydratePreviewLabels();
+        updateRehydrateExecuteState();
+    });
+
+    rehydrateRequestRefreshPipeline_->setAutoRefreshEnabled(false);
+    rehydrateRequestRefreshPipeline_->setRequestBuilder([this](savorqt::gui::RefreshReason) -> std::optional<RehydrateRequestRefreshRequest> {
+        if (selectedArchivePackageId_ <= 0) {
+            return std::nullopt;
+        }
+        rehydrateRequestFetchInFlight_ = true;
+        return RehydrateRequestRefreshRequest{ .archive_package_id = selectedArchivePackageId_ };
+    });
+    rehydrateRequestRefreshPipeline_->setLoadAndPrepare([](RehydrateRequestRefreshRequest request) {
+        const auto requests = savorqt::db::SavorDbArchiveService::ListRehydrateRequests(request.archive_package_id);
+        if (!requests.ok) {
+            return savorqt::gui::AsyncRefreshResult<RehydrateRequestResult>::Ok(RehydrateRequestResult::Err(requests.error));
+        }
+        RehydrateRequestRefreshData data{};
+        data.requests = requests.value;
+        return savorqt::gui::AsyncRefreshResult<RehydrateRequestResult>::Ok(RehydrateRequestResult::Ok(std::move(data)));
+    });
+    rehydrateRequestRefreshPipeline_->setApply([this](const RehydrateRequestResult& result, savorqt::gui::RefreshReason, const savorqt::gui::RefreshStatus&) {
+        rehydrateRequestFetchInFlight_ = false;
+        if (!result.ok) {
+            rehydrateInlineMessage_ = QStringLiteral("Request history refresh failed: %1").arg(qstr(result.error.message));
+            applyRehydrateRequestRows({});
+        } else {
+            applyRehydrateRequestRows(result.value.requests.rows);
+        }
+        updateRehydrateExecuteState();
+    });
+
+    connect(&rehydrateExecuteWatcher_, &QFutureWatcher<RehydrateExecuteResult>::finished, this, [this]() {
+        rehydrateExecuteInFlight_ = false;
+        const auto result = rehydrateExecuteWatcher_.result();
+        if (!result.ok) {
+            savor::db::archive::ArchiveOperationProgress failed{};
+            failed.phase = savor::db::archive::ArchiveOperationPhase::Failed;
+            failed.message = result.error.message;
+            failed.indeterminate = false;
+            applyRehydrateProgress(failed);
+            rehydrateStatusLabel_->setText(QStringLiteral("Failed: %1").arg(qstr(result.error.message)));
+            postStatusMessage(rehydrateStatusLabel_->text(), StatusToast::Severity::Error);
+        } else {
+            savor::db::archive::ArchiveOperationProgress complete{};
+            complete.phase = savor::db::archive::ArchiveOperationPhase::Complete;
+            complete.message = "Rehydrate operation complete";
+            complete.completed_units = 1;
+            complete.total_units = 1;
+            complete.indeterminate = false;
+            applyRehydrateProgress(complete);
+            const auto requestId = result.value.request_ids.empty() ? 0 : result.value.request_ids.front();
+            rehydrateStatusLabel_->setText(QStringLiteral("Rehydrate request %1 completed.").arg(static_cast<qint64>(requestId)));
+            postStatusMessage(QStringLiteral("Archive rehydrated."), StatusToast::Severity::Info);
+        }
+        setRehydrateBusy(false);
+        refreshRehydrateRequests();
+        requestRehydratePreview();
+    });
+
+    connect(&rehydrateCleanupWatcher_, &QFutureWatcher<RehydrateCleanupResult>::finished, this, [this]() {
+        rehydrateCleanupInFlight_ = false;
+        const auto result = rehydrateCleanupWatcher_.result();
+        if (!result.ok) {
+            rehydrateStatusLabel_->setText(QStringLiteral("Cleanup failed: %1").arg(qstr(result.error.message)));
+            postStatusMessage(rehydrateStatusLabel_->text(), StatusToast::Severity::Error);
+        } else {
+            rehydrateStatusLabel_->setText(QStringLiteral("Rehydrate request cleanup complete."));
+            postStatusMessage(rehydrateStatusLabel_->text(), StatusToast::Severity::Info);
+        }
+        setRehydrateBusy(false);
+        refreshRehydrateRequests();
+    });
 }
 
 void ArchiveWorkbenchPage::refreshCandidates()
@@ -471,6 +860,24 @@ void ArchiveWorkbenchPage::requestPreview()
 {
     if (!pageActive_ || previewRefreshPipeline_ == nullptr) return;
     previewRefreshPipeline_->requestRefresh(savorqt::gui::RefreshReason::Manual);
+}
+
+void ArchiveWorkbenchPage::refreshArchivePackages()
+{
+    if (!pageActive_ || rehydratePackageRefreshPipeline_ == nullptr) return;
+    rehydratePackageRefreshPipeline_->requestRefresh(savorqt::gui::RefreshReason::Manual);
+}
+
+void ArchiveWorkbenchPage::refreshRehydrateRequests()
+{
+    if (!pageActive_ || rehydrateRequestRefreshPipeline_ == nullptr || selectedArchivePackageId_ <= 0) return;
+    rehydrateRequestRefreshPipeline_->requestRefresh(savorqt::gui::RefreshReason::Manual);
+}
+
+void ArchiveWorkbenchPage::requestRehydratePreview()
+{
+    if (!pageActive_ || rehydratePreviewRefreshPipeline_ == nullptr || selectedArchivePackageId_ <= 0) return;
+    rehydratePreviewRefreshPipeline_->requestRefresh(savorqt::gui::RefreshReason::Manual);
 }
 
 void ArchiveWorkbenchPage::executeArchive()
@@ -518,6 +925,61 @@ void ArchiveWorkbenchPage::executeArchive()
     }));
 }
 
+void ArchiveWorkbenchPage::executeRehydrate()
+{
+    const auto selected = selectedArchivePackage();
+    if (!selected.has_value() || !currentRehydratePreview_.has_value()) return;
+    const auto expected = QString::number(static_cast<qint64>(selected->archive_package_id));
+    if (rehydrateConfirmationEdit_->text().trimmed() != expected) {
+        rehydrateStatusLabel_->setText(QStringLiteral("Type package id %1 before rehydrating.").arg(expected));
+        postStatusMessage(rehydrateStatusLabel_->text(), StatusToast::Severity::Warn);
+        return;
+    }
+    const auto targetNamespace = rehydrateNamespaceEdit_->text().trimmed();
+    if (targetNamespace.isEmpty()) {
+        rehydrateStatusLabel_->setText(QStringLiteral("Target namespace is required."));
+        postStatusMessage(rehydrateStatusLabel_->text(), StatusToast::Severity::Warn);
+        return;
+    }
+
+    rehydrateExecuteInFlight_ = true;
+    setRehydrateBusy(true);
+    resetRehydrateProgress();
+    savorqt::db::ArchiveRehydrateExecuteRequest request{};
+    request.archive_package_id = selected->archive_package_id;
+    request.target_namespace = targetNamespace.toStdString();
+    request.trace_id = "qt-archive-workbench-rehydrate";
+    QPointer<ArchiveWorkbenchPage> self(this);
+    request.progress_sink = [self](const savor::db::archive::ArchiveOperationProgress& progress) {
+        if (self.isNull()) {
+            return;
+        }
+        QMetaObject::invokeMethod(
+            self.data(),
+            [self, progress]() {
+                if (!self.isNull()) {
+                    self->applyRehydrateProgress(progress);
+                }
+            },
+            Qt::QueuedConnection);
+    };
+    rehydrateExecuteWatcher_.setFuture(QtConcurrent::run([request]() {
+        return savorqt::db::SavorDbArchiveService::ExecuteRehydrate(request);
+    }));
+}
+
+void ArchiveWorkbenchPage::cleanupSelectedRehydrateRequest()
+{
+    const auto selected = selectedRehydrateRequest();
+    if (!selected.has_value() || !isInactiveRehydrateStatus(selected->status)) return;
+    rehydrateCleanupInFlight_ = true;
+    setRehydrateBusy(true);
+    const auto requestId = selected->rehydrate_request_id;
+    rehydrateCleanupWatcher_.setFuture(QtConcurrent::run([requestId]() {
+        return savorqt::db::SavorDbArchiveService::CleanupRehydrateRequest(requestId);
+    }));
+}
+
 void ArchiveWorkbenchPage::applyCandidateRows(const std::vector<savorqt::db::ArchiveCandidateRow>& rows)
 {
     currentRows_.clear();
@@ -551,6 +1013,81 @@ void ArchiveWorkbenchPage::applyCandidateRows(const std::vector<savorqt::db::Arc
     updateInlineMessage();
 }
 
+void ArchiveWorkbenchPage::applyArchivePackageRows(const std::vector<savor::db::UiArchiveCatalogRow>& rows)
+{
+    currentArchivePackages_ = rows;
+    bool stillSelected = false;
+    QSignalBlocker blocker(rehydratePackageTable_);
+    rehydratePackageTable_->setRowCount(static_cast<int>(currentArchivePackages_.size()));
+    for (int r = 0; r < static_cast<int>(currentArchivePackages_.size()); ++r) {
+        const auto& row = currentArchivePackages_[static_cast<std::size_t>(r)];
+        auto* idItem = makeItem(QString::number(static_cast<qint64>(row.archive_package_id)));
+        idItem->setData(kArchivePackageIdRole, static_cast<qint64>(row.archive_package_id));
+        rehydratePackageTable_->setItem(r, 0, idItem);
+        rehydratePackageTable_->setItem(r, 1, makeItem(packageDisplayName(row)));
+        rehydratePackageTable_->setItem(r, 2, makeItem(QString::number(static_cast<qint64>(row.source_workflow_count))));
+        rehydratePackageTable_->setItem(r, 3, makeItem(qstr(row.source_scope_kind)));
+        rehydratePackageTable_->setItem(r, 4, makeItem(formatTime(row.created_at_utc)));
+        rehydratePackageTable_->setItem(r, 5, makeItem(qstr(row.checksum_status)));
+        QString lastRequest = QStringLiteral("-");
+        for (const auto& request : currentRehydrateRequests_) {
+            if (request.archive_package_id == row.archive_package_id) {
+                lastRequest = qstr(request.status);
+                break;
+            }
+        }
+        rehydratePackageTable_->setItem(r, 6, makeItem(lastRequest));
+        if (row.archive_package_id == selectedArchivePackageId_) {
+            stillSelected = true;
+            rehydratePackageTable_->selectRow(r);
+        }
+    }
+
+    if (!stillSelected) {
+        selectedArchivePackageId_ = currentArchivePackages_.empty() ? 0 : currentArchivePackages_.front().archive_package_id;
+        if (!currentArchivePackages_.empty()) {
+            rehydratePackageTable_->selectRow(0);
+            rehydrateNamespaceEdit_->setText(fallbackRehydrateNamespace());
+        } else {
+            currentRehydratePreview_.reset();
+            currentRehydrateRequests_.clear();
+            applyRehydrateRequestRows({});
+        }
+    }
+    rehydrateCatalogStatusLabel_->setText(QStringLiteral("Rows: %1").arg(currentArchivePackages_.size()));
+}
+
+void ArchiveWorkbenchPage::applyRehydrateRequestRows(const std::vector<savor::db::UiArchiveRehydrateRequestRow>& rows)
+{
+    currentRehydrateRequests_ = rows;
+    QSignalBlocker blocker(rehydrateRequestTable_);
+    rehydrateRequestTable_->setRowCount(static_cast<int>(currentRehydrateRequests_.size()));
+    for (int r = 0; r < static_cast<int>(currentRehydrateRequests_.size()); ++r) {
+        const auto& row = currentRehydrateRequests_[static_cast<std::size_t>(r)];
+        auto* idItem = makeItem(QString::number(static_cast<qint64>(row.rehydrate_request_id)));
+        idItem->setData(kRehydrateRequestIdRole, static_cast<qint64>(row.rehydrate_request_id));
+        rehydrateRequestTable_->setItem(r, 0, idItem);
+        rehydrateRequestTable_->setItem(r, 1, makeItem(qstr(row.status)));
+        rehydrateRequestTable_->setItem(r, 2, makeItem(qstr(row.target_namespace)));
+        rehydrateRequestTable_->setItem(r, 3, makeItem(formatTime(row.requested_at_utc)));
+        rehydrateRequestTable_->setItem(r, 4, makeItem(qstr(row.error_text)));
+    }
+    if (!currentRehydrateRequests_.empty()) {
+        rehydrateRequestTable_->selectRow(0);
+    }
+    for (int r = 0; r < rehydratePackageTable_->rowCount(); ++r) {
+        auto* idItem = rehydratePackageTable_->item(r, 0);
+        if (idItem == nullptr || idItem->data(kArchivePackageIdRole).toLongLong() != selectedArchivePackageId_) {
+            continue;
+        }
+        const QString status = currentRehydrateRequests_.empty()
+            ? QStringLiteral("-")
+            : qstr(currentRehydrateRequests_.front().status);
+        rehydratePackageTable_->setItem(r, 6, makeItem(status));
+        break;
+    }
+}
+
 void ArchiveWorkbenchPage::updatePreviewLabels()
 {
     if (previewFetchInFlight_) {
@@ -578,6 +1115,48 @@ void ArchiveWorkbenchPage::updatePreviewLabels()
     blockersLabel_->setText(joinMessages(preview.purge_blockers));
 }
 
+void ArchiveWorkbenchPage::updateRehydratePreviewLabels()
+{
+    if (!rehydrateInlineMessage_.isEmpty()) {
+        rehydrateStatusLabel_->setText(rehydrateInlineMessage_);
+    }
+    if (rehydratePackageFetchInFlight_) {
+        rehydratePreviewLabel_->setText(QStringLiteral("Loading archive packages..."));
+        rehydrateBlockersLabel_->clear();
+        return;
+    }
+    const auto selected = selectedArchivePackage();
+    if (!selected.has_value()) {
+        rehydratePreviewLabel_->setText(QStringLiteral("Select an archive package."));
+        rehydrateBlockersLabel_->clear();
+        return;
+    }
+    if (rehydratePreviewFetchInFlight_) {
+        rehydratePreviewLabel_->setText(QStringLiteral("Preview loading..."));
+        return;
+    }
+    if (!currentRehydratePreview_.has_value()) {
+        rehydratePreviewLabel_->setText(QStringLiteral("No rehydrate preview."));
+        rehydrateBlockersLabel_->clear();
+        return;
+    }
+
+    const auto& preview = currentRehydratePreview_->preview;
+    rehydratePreviewLabel_->setText(QStringLiteral(
+        "Package: %1\nName: %2\nManifest files: %3\nManifest rows: %4\nWorkflows: %5\nJobs: %6\nExecution rows: %7\nAnalysis rows: %8\nState SAV rows: %9\nSAV zip entries: %10")
+        .arg(static_cast<qint64>(selected->archive_package_id))
+        .arg(packageDisplayName(*selected))
+        .arg(preview.manifest_file_count)
+        .arg(preview.manifest_row_total)
+        .arg(preview.expected_workflows)
+        .arg(preview.expected_jobs)
+        .arg(preview.execution_row_count)
+        .arg(preview.analysis_row_count)
+        .arg(preview.state_savestate_count)
+        .arg(preview.savestate_zip_entry_count));
+    rehydrateBlockersLabel_->setText(joinMessages(preview.blocking_reasons));
+}
+
 void ArchiveWorkbenchPage::updateExecuteState()
 {
     const int selected = currentPreview_.has_value() ? currentPreview_->selection.selected_count : 0;
@@ -597,6 +1176,43 @@ void ArchiveWorkbenchPage::updateExecuteState()
         executeStatusLabel_->setText(purgeAfterVerifyCheck_->isChecked()
             ? QStringLiteral("Ready to create, verify, and purge.")
             : QStringLiteral("Ready to create package only."));
+    }
+}
+
+void ArchiveWorkbenchPage::updateRehydrateExecuteState()
+{
+    const auto selected = selectedArchivePackage();
+    const bool hasPreview = currentRehydratePreview_.has_value();
+    const bool previewOk = hasPreview && currentRehydratePreview_->preview.success;
+    const QString expected = selected.has_value()
+        ? QString::number(static_cast<qint64>(selected->archive_package_id))
+        : QString();
+    const bool confirmed = selected.has_value() && rehydrateConfirmationEdit_->text().trimmed() == expected;
+    const bool hasNamespace = rehydrateNamespaceEdit_ != nullptr && !rehydrateNamespaceEdit_->text().trimmed().isEmpty();
+    const bool busy = rehydrateExecuteInFlight_ || rehydrateCleanupInFlight_;
+    if (rehydrateExecuteButton_ != nullptr) {
+        rehydrateExecuteButton_->setEnabled(!busy && !rehydratePreviewFetchInFlight_ && previewOk && confirmed && hasNamespace);
+    }
+    const auto request = selectedRehydrateRequest();
+    if (rehydrateCleanupButton_ != nullptr) {
+        rehydrateCleanupButton_->setEnabled(!busy && request.has_value() && isInactiveRehydrateStatus(request->status));
+    }
+
+    if (rehydrateStatusLabel_ == nullptr || !rehydrateInlineMessage_.isEmpty()) {
+        return;
+    }
+    if (busy) {
+        rehydrateStatusLabel_->setText(rehydrateExecuteInFlight_ ? QStringLiteral("Rehydrate operation running...") : QStringLiteral("Cleanup running..."));
+    } else if (!selected.has_value()) {
+        rehydrateStatusLabel_->setText(QStringLiteral("Select an archive package."));
+    } else if (rehydratePreviewFetchInFlight_) {
+        rehydrateStatusLabel_->setText(QStringLiteral("Waiting for rehydrate preview..."));
+    } else if (!previewOk) {
+        rehydrateStatusLabel_->setText(QStringLiteral("Resolve preview blockers before rehydrating."));
+    } else if (!confirmed) {
+        rehydrateStatusLabel_->setText(QStringLiteral("Type %1 to confirm package restore.").arg(expected));
+    } else {
+        rehydrateStatusLabel_->setText(QStringLiteral("Ready to rehydrate package."));
     }
 }
 
@@ -623,11 +1239,30 @@ void ArchiveWorkbenchPage::setBusy(bool busy)
     updateExecuteState();
 }
 
+void ArchiveWorkbenchPage::setRehydrateBusy(bool busy)
+{
+    for (auto* widget : { rehydrateRefreshButton_, rehydrateExecuteButton_, rehydrateCleanupButton_ }) {
+        if (widget != nullptr) widget->setEnabled(!busy);
+    }
+    if (rehydratePackageTable_ != nullptr) rehydratePackageTable_->setEnabled(!busy);
+    if (rehydrateRequestTable_ != nullptr) rehydrateRequestTable_->setEnabled(!busy);
+    if (rehydrateNamespaceEdit_ != nullptr) rehydrateNamespaceEdit_->setEnabled(!busy);
+    if (rehydrateConfirmationEdit_ != nullptr) rehydrateConfirmationEdit_->setEnabled(!busy);
+    updateRehydrateExecuteState();
+}
+
 void ArchiveWorkbenchPage::resetArchiveProgress()
 {
     archiveProgressPhaseLabel_->setText(QStringLiteral("Starting archive operation..."));
     archiveProgressBar_->setRange(0, 0);
     archiveProgressBar_->setValue(0);
+}
+
+void ArchiveWorkbenchPage::resetRehydrateProgress()
+{
+    rehydrateProgressPhaseLabel_->setText(QStringLiteral("Starting rehydrate operation..."));
+    rehydrateProgressBar_->setRange(0, 0);
+    rehydrateProgressBar_->setValue(0);
 }
 
 void ArchiveWorkbenchPage::applyArchiveProgress(const savor::db::archive::ArchiveOperationProgress& progress)
@@ -658,6 +1293,34 @@ void ArchiveWorkbenchPage::applyArchiveProgress(const savor::db::archive::Archiv
     archiveProgressBar_->setValue(static_cast<int>(std::clamp<std::int64_t>(progress.completed_units, 0, archiveProgressBar_->maximum())));
 }
 
+void ArchiveWorkbenchPage::applyRehydrateProgress(const savor::db::archive::ArchiveOperationProgress& progress)
+{
+    const auto phase = progressPhaseText(progress.phase);
+    const auto message = qstr(progress.message);
+    QString text = message.isEmpty() ? phase : QStringLiteral("%1: %2").arg(phase, message);
+    if (!progress.indeterminate && progress.total_units > 0) {
+        text += QStringLiteral(" (%1/%2)").arg(static_cast<qint64>(progress.completed_units)).arg(static_cast<qint64>(progress.total_units));
+    }
+    if (progress.bytes_completed.has_value() && progress.bytes_total.has_value() && *progress.bytes_total > 0) {
+        text += QStringLiteral(" | %1/%2 bytes")
+            .arg(static_cast<qulonglong>(*progress.bytes_completed))
+            .arg(static_cast<qulonglong>(*progress.bytes_total));
+    }
+    rehydrateProgressPhaseLabel_->setText(text);
+
+    if (progress.phase == savor::db::archive::ArchiveOperationPhase::Failed) {
+        rehydrateProgressBar_->setRange(0, 1);
+        rehydrateProgressBar_->setValue(0);
+        return;
+    }
+    if (progress.indeterminate || progress.total_units <= 0) {
+        rehydrateProgressBar_->setRange(0, 0);
+        return;
+    }
+    rehydrateProgressBar_->setRange(0, static_cast<int>(std::min<std::int64_t>(progress.total_units, std::numeric_limits<int>::max())));
+    rehydrateProgressBar_->setValue(static_cast<int>(std::clamp<std::int64_t>(progress.completed_units, 0, rehydrateProgressBar_->maximum())));
+}
+
 QString ArchiveWorkbenchPage::fallbackArchiveName() const
 {
     const auto timestamp = QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd HH:mm"));
@@ -665,6 +1328,14 @@ QString ArchiveWorkbenchPage::fallbackArchiveName() const
         currentFilter(),
         currentPreview_.has_value() ? currentPreview_->selection.selected_count : 0,
         timestamp.toStdString()));
+}
+
+QString ArchiveWorkbenchPage::fallbackRehydrateNamespace() const
+{
+    const auto id = selectedArchivePackageId_ > 0 ? selectedArchivePackageId_ : 0;
+    return QStringLiteral("rehydrate_%1_%2")
+        .arg(static_cast<qint64>(id))
+        .arg(QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd_hhmmss")));
 }
 
 void ArchiveWorkbenchPage::postStatusMessage(const QString& text, StatusToast::Severity severity)
@@ -695,6 +1366,55 @@ savorqt::db::ArchiveSelectionBuildRequest ArchiveWorkbenchPage::currentSelection
     request.explicit_includes = toVector(explicitIncludes_);
     request.explicit_exclusions = toVector(explicitExclusions_);
     return request;
+}
+
+savorqt::db::ArchivePackageFilter ArchiveWorkbenchPage::currentArchivePackageFilter() const
+{
+    savorqt::db::ArchivePackageFilter filter{};
+    filter.text_filter = rehydrateSearchEdit_->text().trimmed().toStdString();
+    filter.source_scope_kind = rehydrateScopeFilter_->currentData().toString().trimmed().toStdString();
+    filter.checksum_status = rehydrateChecksumFilter_->currentData().toString().trimmed().toStdString();
+    filter.workflow_packages_only = rehydrateWorkflowOnlyCheck_->isChecked();
+    if (rehydrateCreatedFromEnabled_->isChecked()) {
+        filter.created_from_utc = rehydrateCreatedFromEdit_->dateTime().toMSecsSinceEpoch();
+    }
+    if (rehydrateCreatedToEnabled_->isChecked()) {
+        filter.created_to_utc = rehydrateCreatedToEdit_->dateTime().toMSecsSinceEpoch();
+    }
+    return filter;
+}
+
+std::optional<savor::db::UiArchiveCatalogRow> ArchiveWorkbenchPage::selectedArchivePackage() const
+{
+    if (selectedArchivePackageId_ <= 0) {
+        return std::nullopt;
+    }
+    const auto it = std::find_if(
+        currentArchivePackages_.begin(),
+        currentArchivePackages_.end(),
+        [this](const savor::db::UiArchiveCatalogRow& row) {
+            return row.archive_package_id == selectedArchivePackageId_;
+        });
+    if (it == currentArchivePackages_.end()) {
+        return std::nullopt;
+    }
+    return *it;
+}
+
+std::optional<savor::db::UiArchiveRehydrateRequestRow> ArchiveWorkbenchPage::selectedRehydrateRequest() const
+{
+    if (rehydrateRequestTable_ == nullptr) {
+        return std::nullopt;
+    }
+    const auto selectedItems = rehydrateRequestTable_->selectedItems();
+    if (selectedItems.empty()) {
+        return std::nullopt;
+    }
+    const int row = selectedItems.front()->row();
+    if (row < 0 || row >= static_cast<int>(currentRehydrateRequests_.size())) {
+        return std::nullopt;
+    }
+    return currentRehydrateRequests_[static_cast<std::size_t>(row)];
 }
 
 std::vector<std::int64_t> ArchiveWorkbenchPage::visibleWorkflowIds() const

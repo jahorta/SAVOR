@@ -80,8 +80,35 @@ struct ArchiveWorkflowExecuteRequest {
     savor::db::archive::ArchiveProgressSink progress_sink;
 };
 
+struct ArchivePackageFilter {
+    std::string text_filter;
+    std::string source_scope_kind;
+    std::string checksum_status;
+    bool workflow_packages_only = true;
+    std::optional<std::int64_t> created_from_utc;
+    std::optional<std::int64_t> created_to_utc;
+};
+
+struct ArchivePackagePage {
+    std::vector<savor::db::UiArchiveCatalogRow> rows;
+};
+
+struct ArchiveRehydrateRequestPage {
+    std::vector<savor::db::UiArchiveRehydrateRequestRow> rows;
+};
+
+struct ArchiveRehydrateExecuteRequest {
+    std::int64_t archive_package_id = 0;
+    std::string target_namespace;
+    std::string trace_id;
+    savor::db::archive::ArchiveProgressSink progress_sink;
+};
+
 using ArchiveWorkflowPreviewResult = savor::runner::parallel::savordb::WorkflowArchiveCommandSummary;
 using ArchiveWorkflowExecuteResult = savor::runner::parallel::savordb::WorkflowArchiveCommandSummary;
+using ArchiveRehydratePreviewResult = savor::runner::parallel::savordb::RehydratePreviewSummary;
+using ArchiveRehydrateExecuteResult = savor::runner::parallel::savordb::ArchiveCommandSummary;
+using ArchiveRehydrateCleanupResult = savor::runner::parallel::savordb::ArchiveCommandSummary;
 
 class SavorDbArchiveService {
 public:
@@ -271,6 +298,145 @@ public:
         return ServiceResult<ArchiveWorkflowExecuteResult>::Ok(summary);
     }
 
+    static ServiceResult<ArchivePackagePage> ListArchivePackages(const ArchivePackageFilter& filter) {
+        auto* ui_read = UiReadDb();
+        if (ui_read == nullptr) {
+            return ServiceResult<ArchivePackagePage>::Err({ ServiceErrorKind::Unavailable, kSavorDbRuntimeUnavailableMessage });
+        }
+
+        savor::db::UiArchiveCatalogListQuery query{};
+        query.search = filter.text_filter;
+        query.source_scope_kind = filter.source_scope_kind;
+        query.checksum_status = filter.checksum_status;
+        query.workflow_packages_only = filter.workflow_packages_only;
+        query.created_from_utc = filter.created_from_utc;
+        query.created_to_utc = filter.created_to_utc;
+
+        ArchivePackagePage page{};
+        page.rows = ui_read->ListArchiveCatalog(query);
+        return ServiceResult<ArchivePackagePage>::Ok(std::move(page));
+    }
+
+    static ServiceResult<ArchiveRehydrateRequestPage> ListRehydrateRequests(std::int64_t archive_package_id) {
+        auto* ui_read = UiReadDb();
+        if (ui_read == nullptr) {
+            return ServiceResult<ArchiveRehydrateRequestPage>::Err({ ServiceErrorKind::Unavailable, kSavorDbRuntimeUnavailableMessage });
+        }
+        ArchiveRehydrateRequestPage page{};
+        page.rows = ui_read->ListArchiveRehydrateRequests(archive_package_id);
+        return ServiceResult<ArchiveRehydrateRequestPage>::Ok(std::move(page));
+    }
+
+    static ServiceResult<ArchiveRehydratePreviewResult> PreviewRehydrate(
+        std::int64_t archive_package_id,
+        const std::string& target_namespace) {
+        auto context = BuildContext();
+        if (!context.ok) {
+            return ServiceResult<ArchiveRehydratePreviewResult>::Err(context.error);
+        }
+        auto* service = context.value.service;
+        savor::db::archive::SqliteArchivePackageService package_service(
+            service->RawExecutionSqlite(),
+            service->ExecutionDb(),
+            service->UiReadDb(),
+            service->ArchiveDb(),
+            context.value.paths,
+            service->RawStateSqlite(),
+            service->RawAnalysisSqlite(),
+            service->RawUiReadSqlite());
+        savor::db::archive::SqliteRehydrateExecutor rehydrate_executor(
+            service->RawExecutionSqlite(),
+            service->RawArchiveSqlite(),
+            service->ArchiveDb(),
+            context.value.paths.archive_store_root,
+            service->RawStateSqlite(),
+            service->RawAnalysisSqlite());
+        savor::runner::parallel::savordb::ArchiveWorkflowCommands commands(
+            service->RawArchiveSqlite(),
+            service->ArchiveDb(),
+            &package_service,
+            &rehydrate_executor);
+        const auto summary = commands.RehydratePreview({
+            .archive_package_id = archive_package_id,
+            .target_namespace = target_namespace,
+        });
+        return ServiceResult<ArchiveRehydratePreviewResult>::Ok(summary);
+    }
+
+    static ServiceResult<ArchiveRehydrateExecuteResult> ExecuteRehydrate(const ArchiveRehydrateExecuteRequest& request) {
+        auto context = BuildContext();
+        if (!context.ok) {
+            return ServiceResult<ArchiveRehydrateExecuteResult>::Err(context.error);
+        }
+        auto* service = context.value.service;
+        savor::db::archive::SqliteArchivePackageService package_service(
+            service->RawExecutionSqlite(),
+            service->ExecutionDb(),
+            service->UiReadDb(),
+            service->ArchiveDb(),
+            context.value.paths,
+            service->RawStateSqlite(),
+            service->RawAnalysisSqlite(),
+            service->RawUiReadSqlite());
+        savor::db::archive::SqliteRehydrateExecutor rehydrate_executor(
+            service->RawExecutionSqlite(),
+            service->RawArchiveSqlite(),
+            service->ArchiveDb(),
+            context.value.paths.archive_store_root,
+            service->RawStateSqlite(),
+            service->RawAnalysisSqlite());
+        savor::runner::parallel::savordb::ArchiveWorkflowCommands commands(
+            service->RawArchiveSqlite(),
+            service->ArchiveDb(),
+            &package_service,
+            &rehydrate_executor);
+        const auto summary = commands.RehydrateExecute({
+            .archive_package_id = request.archive_package_id,
+            .now_utc = savor::db::types::UtcNow(),
+            .target_namespace = request.target_namespace,
+            .trace_id = request.trace_id,
+            .progress_sink = request.progress_sink,
+        });
+        if (!summary.success) {
+            return ServiceResult<ArchiveRehydrateExecuteResult>::Err({ ServiceErrorKind::Failed, JoinErrors(summary) });
+        }
+        return ServiceResult<ArchiveRehydrateExecuteResult>::Ok(summary);
+    }
+
+    static ServiceResult<ArchiveRehydrateCleanupResult> CleanupRehydrateRequest(std::int64_t rehydrate_request_id) {
+        auto context = BuildContext();
+        if (!context.ok) {
+            return ServiceResult<ArchiveRehydrateCleanupResult>::Err(context.error);
+        }
+        auto* service = context.value.service;
+        savor::db::archive::SqliteArchivePackageService package_service(
+            service->RawExecutionSqlite(),
+            service->ExecutionDb(),
+            service->UiReadDb(),
+            service->ArchiveDb(),
+            context.value.paths,
+            service->RawStateSqlite(),
+            service->RawAnalysisSqlite(),
+            service->RawUiReadSqlite());
+        savor::db::archive::SqliteRehydrateExecutor rehydrate_executor(
+            service->RawExecutionSqlite(),
+            service->RawArchiveSqlite(),
+            service->ArchiveDb(),
+            context.value.paths.archive_store_root,
+            service->RawStateSqlite(),
+            service->RawAnalysisSqlite());
+        savor::runner::parallel::savordb::ArchiveWorkflowCommands commands(
+            service->RawArchiveSqlite(),
+            service->ArchiveDb(),
+            &package_service,
+            &rehydrate_executor);
+        const auto summary = commands.RehydrateCleanup({ .rehydrate_request_id = rehydrate_request_id });
+        if (!summary.success) {
+            return ServiceResult<ArchiveRehydrateCleanupResult>::Err({ ServiceErrorKind::Failed, JoinErrors(summary) });
+        }
+        return ServiceResult<ArchiveRehydrateCleanupResult>::Ok(summary);
+    }
+
 private:
     static constexpr int kFetchBatchSize = 250;
 
@@ -377,6 +543,28 @@ private:
         if (summary.purge.error.has_value()) append(*summary.purge.error);
         for (const auto& blocker : summary.purge.blockers) append(blocker);
         return joined.empty() ? "archive operation failed" : joined;
+    }
+
+    static std::string JoinErrors(const ArchiveRehydrateExecuteResult& summary) {
+        std::string joined;
+        const auto append = [&](const std::string& value) {
+            if (value.empty()) return;
+            if (!joined.empty()) joined += " | ";
+            joined += value;
+        };
+        for (const auto& error : summary.errors) append(error);
+        for (const auto& blocker : summary.blocking_reasons) append(blocker);
+        return joined.empty() ? "rehydrate operation failed" : joined;
+    }
+
+    static std::string JoinMessages(const std::vector<std::string>& values, const std::string& fallback) {
+        std::string joined;
+        for (const auto& value : values) {
+            if (value.empty()) continue;
+            if (!joined.empty()) joined += " | ";
+            joined += value;
+        }
+        return joined.empty() ? fallback : joined;
     }
 };
 

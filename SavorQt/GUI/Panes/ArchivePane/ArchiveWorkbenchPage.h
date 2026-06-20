@@ -20,6 +20,7 @@ class QLabel;
 class QLineEdit;
 class QProgressBar;
 class QPushButton;
+class QTabWidget;
 class QTableWidget;
 class QTextEdit;
 
@@ -59,27 +60,74 @@ private:
         savorqt::db::ArchiveWorkflowPreviewResult preview;
     };
 
+    struct RehydratePackageRefreshRequest {
+        savorqt::db::ArchivePackageFilter filter;
+    };
+
+    struct RehydratePackageRefreshData {
+        savorqt::db::ArchivePackagePage packages;
+    };
+
+    struct RehydratePreviewRefreshRequest {
+        std::int64_t archive_package_id = 0;
+        std::string target_namespace;
+    };
+
+    struct RehydratePreviewRefreshData {
+        savorqt::db::ArchiveRehydratePreviewResult preview;
+    };
+
+    struct RehydrateRequestRefreshRequest {
+        std::int64_t archive_package_id = 0;
+    };
+
+    struct RehydrateRequestRefreshData {
+        savorqt::db::ArchiveRehydrateRequestPage requests;
+    };
+
     using CandidateResult = savorqt::db::ServiceResult<CandidateRefreshData>;
     using PreviewResult = savorqt::db::ServiceResult<PreviewRefreshData>;
     using ExecuteResult = savorqt::db::ServiceResult<savorqt::db::ArchiveWorkflowExecuteResult>;
+    using RehydratePackageResult = savorqt::db::ServiceResult<RehydratePackageRefreshData>;
+    using RehydratePreviewResult = savorqt::db::ServiceResult<RehydratePreviewRefreshData>;
+    using RehydrateRequestResult = savorqt::db::ServiceResult<RehydrateRequestRefreshData>;
+    using RehydrateExecuteResult = savorqt::db::ServiceResult<savorqt::db::ArchiveRehydrateExecuteResult>;
+    using RehydrateCleanupResult = savorqt::db::ServiceResult<savorqt::db::ArchiveRehydrateCleanupResult>;
 
     void createWidgets();
     void wireSignals();
+    void createRehydrateWidgets(QWidget* tab);
     void refreshCandidates();
     void requestPreview();
     void executeArchive();
+    void refreshArchivePackages();
+    void refreshRehydrateRequests();
+    void requestRehydratePreview();
+    void executeRehydrate();
+    void cleanupSelectedRehydrateRequest();
     void applyCandidateRows(const std::vector<savorqt::db::ArchiveCandidateRow>& rows);
+    void applyArchivePackageRows(const std::vector<savor::db::UiArchiveCatalogRow>& rows);
+    void applyRehydrateRequestRows(const std::vector<savor::db::UiArchiveRehydrateRequestRow>& rows);
     void updatePreviewLabels();
     void updateExecuteState();
+    void updateRehydratePreviewLabels();
+    void updateRehydrateExecuteState();
     void updateInlineMessage();
     void setBusy(bool busy);
+    void setRehydrateBusy(bool busy);
     void resetArchiveProgress();
+    void resetRehydrateProgress();
     void applyArchiveProgress(const savor::db::archive::ArchiveOperationProgress& progress);
+    void applyRehydrateProgress(const savor::db::archive::ArchiveOperationProgress& progress);
     QString fallbackArchiveName() const;
+    QString fallbackRehydrateNamespace() const;
     void postStatusMessage(const QString& text, StatusToast::Severity severity);
 
     savorqt::db::ArchiveWorkflowFilter currentFilter() const;
     savorqt::db::ArchiveSelectionBuildRequest currentSelectionRequest() const;
+    savorqt::db::ArchivePackageFilter currentArchivePackageFilter() const;
+    std::optional<savor::db::UiArchiveCatalogRow> selectedArchivePackage() const;
+    std::optional<savor::db::UiArchiveRehydrateRequestRow> selectedRehydrateRequest() const;
     std::vector<std::int64_t> visibleWorkflowIds() const;
     std::vector<std::int64_t> selectedHighlightedWorkflowIds() const;
     void setVisibleRowsSelected(bool selected);
@@ -90,17 +138,33 @@ private:
     bool candidateFetchInFlight_ = false;
     bool previewFetchInFlight_ = false;
     bool executeInFlight_ = false;
+    bool rehydratePackageFetchInFlight_ = false;
+    bool rehydratePreviewFetchInFlight_ = false;
+    bool rehydrateRequestFetchInFlight_ = false;
+    bool rehydrateExecuteInFlight_ = false;
+    bool rehydrateCleanupInFlight_ = false;
     bool includeFilterMatches_ = false;
+    std::int64_t selectedArchivePackageId_ = 0;
     std::set<std::int64_t> explicitIncludes_;
     std::set<std::int64_t> explicitExclusions_;
     std::vector<CandidateRow> currentRows_;
+    std::vector<savor::db::UiArchiveCatalogRow> currentArchivePackages_;
+    std::vector<savor::db::UiArchiveRehydrateRequestRow> currentRehydrateRequests_;
     std::optional<PreviewRefreshData> currentPreview_;
+    std::optional<RehydratePreviewRefreshData> currentRehydratePreview_;
     QString inlineMessage_;
+    QString rehydrateInlineMessage_;
 
     savorqt::gui::AsyncRefreshPipeline<CandidateRefreshRequest, CandidateResult>* candidateRefreshPipeline_ = nullptr;
     savorqt::gui::AsyncRefreshPipeline<PreviewRefreshRequest, PreviewResult>* previewRefreshPipeline_ = nullptr;
+    savorqt::gui::AsyncRefreshPipeline<RehydratePackageRefreshRequest, RehydratePackageResult>* rehydratePackageRefreshPipeline_ = nullptr;
+    savorqt::gui::AsyncRefreshPipeline<RehydratePreviewRefreshRequest, RehydratePreviewResult>* rehydratePreviewRefreshPipeline_ = nullptr;
+    savorqt::gui::AsyncRefreshPipeline<RehydrateRequestRefreshRequest, RehydrateRequestResult>* rehydrateRequestRefreshPipeline_ = nullptr;
     QFutureWatcher<ExecuteResult> executeWatcher_;
+    QFutureWatcher<RehydrateExecuteResult> rehydrateExecuteWatcher_;
+    QFutureWatcher<RehydrateCleanupResult> rehydrateCleanupWatcher_;
 
+    QTabWidget* tabWidget_ = nullptr;
     QComboBox* displayStateFilter_ = nullptr;
     QLineEdit* workflowKindFilter_ = nullptr;
     QComboBox* finalVictoryFilter_ = nullptr;
@@ -134,4 +198,26 @@ private:
     QLabel* archiveProgressPhaseLabel_ = nullptr;
     QLabel* executeStatusLabel_ = nullptr;
     QTableWidget* candidateTable_ = nullptr;
+
+    QLineEdit* rehydrateSearchEdit_ = nullptr;
+    QComboBox* rehydrateScopeFilter_ = nullptr;
+    QComboBox* rehydrateChecksumFilter_ = nullptr;
+    QCheckBox* rehydrateWorkflowOnlyCheck_ = nullptr;
+    QCheckBox* rehydrateCreatedFromEnabled_ = nullptr;
+    QDateTimeEdit* rehydrateCreatedFromEdit_ = nullptr;
+    QCheckBox* rehydrateCreatedToEnabled_ = nullptr;
+    QDateTimeEdit* rehydrateCreatedToEdit_ = nullptr;
+    QPushButton* rehydrateRefreshButton_ = nullptr;
+    QLabel* rehydrateCatalogStatusLabel_ = nullptr;
+    QTableWidget* rehydratePackageTable_ = nullptr;
+    QLabel* rehydratePreviewLabel_ = nullptr;
+    QLabel* rehydrateBlockersLabel_ = nullptr;
+    QLineEdit* rehydrateNamespaceEdit_ = nullptr;
+    QLineEdit* rehydrateConfirmationEdit_ = nullptr;
+    QPushButton* rehydrateExecuteButton_ = nullptr;
+    QProgressBar* rehydrateProgressBar_ = nullptr;
+    QLabel* rehydrateProgressPhaseLabel_ = nullptr;
+    QLabel* rehydrateStatusLabel_ = nullptr;
+    QTableWidget* rehydrateRequestTable_ = nullptr;
+    QPushButton* rehydrateCleanupButton_ = nullptr;
 };

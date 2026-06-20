@@ -46,6 +46,10 @@ public:
         int jobs_limit) const override;
     UiReadPage<UiArtifactSummary> ListArtifacts(
         const UiReadArtifactListQuery& query) const override;
+    std::vector<UiArchiveCatalogRow> ListArchiveCatalog(
+        const UiArchiveCatalogListQuery& query) const override;
+    std::vector<UiArchiveRehydrateRequestRow> ListArchiveRehydrateRequests(
+        std::int64_t archive_package_id) const override;
     bool UpsertArtifactSummary(
         const UiArtifactSummary& summary,
         std::string* error_out = nullptr) override;

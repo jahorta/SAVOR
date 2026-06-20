@@ -804,6 +804,99 @@ UiReadPage<UiArtifactSummary> SqliteUiReadDb::ListArtifacts(
     return page;
 }
 
+std::vector<UiArchiveCatalogRow> SqliteUiReadDb::ListArchiveCatalog(
+    const UiArchiveCatalogListQuery& query) const {
+    std::vector<UiArchiveCatalogRow> rows;
+    if (db_ == nullptr) {
+        return rows;
+    }
+
+    sqlite3_stmt* st = nullptr;
+    constexpr const char* kSql =
+        "SELECT archive_package_id,source_context,source_root_job_set_id,"
+        "COALESCE(source_scope_kind,'root_job_set'),COALESCE(source_workflow_count,0),"
+        "COALESCE(selection_summary,''),COALESCE(archive_name,''),COALESCE(archive_notes,''),"
+        "created_at_utc,schema_version,event_catalog_version,time_range_start_utc,time_range_end_utc,checksum_status "
+        "FROM ui_archive_catalog "
+        "WHERE (?1=1 OR archive_name LIKE ?2 OR archive_notes LIKE ?2 OR CAST(archive_package_id AS TEXT) LIKE ?2 OR selection_summary LIKE ?2) "
+        "AND (?3=1 OR source_scope_kind=?4) "
+        "AND (?5=1 OR checksum_status=?6) "
+        "AND (?7=0 OR source_scope_kind='workflow_selection') "
+        "AND (?8=0 OR created_at_utc>=?9) "
+        "AND (?10=0 OR created_at_utc<=?11) "
+        "ORDER BY created_at_utc DESC, archive_package_id DESC;";
+    if (sqlite3_prepare_v2(db_, kSql, -1, &st, nullptr) != SQLITE_OK) {
+        return rows;
+    }
+
+    const bool search_empty = query.search.empty();
+    const std::string search_like = "%" + query.search + "%";
+    sqlite3_bind_int(st, 1, search_empty ? 1 : 0);
+    sqlite3_bind_text(st, 2, search_like.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(st, 3, query.source_scope_kind.empty() ? 1 : 0);
+    sqlite3_bind_text(st, 4, query.source_scope_kind.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(st, 5, query.checksum_status.empty() ? 1 : 0);
+    sqlite3_bind_text(st, 6, query.checksum_status.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(st, 7, query.workflow_packages_only ? 1 : 0);
+    sqlite3_bind_int(st, 8, query.created_from_utc.has_value() ? 1 : 0);
+    sqlite3_bind_int64(st, 9, query.created_from_utc.value_or(0));
+    sqlite3_bind_int(st, 10, query.created_to_utc.has_value() ? 1 : 0);
+    sqlite3_bind_int64(st, 11, query.created_to_utc.value_or(0));
+
+    while (sqlite3_step(st) == SQLITE_ROW) {
+        UiArchiveCatalogRow row{};
+        row.archive_package_id = sqlite3_column_int64(st, 0);
+        row.source_context = ColumnText(st, 1);
+        row.source_root_job_set_id = sqlite3_column_int64(st, 2);
+        row.source_scope_kind = ColumnText(st, 3);
+        row.source_workflow_count = sqlite3_column_int64(st, 4);
+        row.selection_summary = ColumnText(st, 5);
+        row.archive_name = ColumnText(st, 6);
+        row.archive_notes = ColumnText(st, 7);
+        row.created_at_utc = sqlite3_column_int64(st, 8);
+        row.schema_version = sqlite3_column_int(st, 9);
+        row.event_catalog_version = sqlite3_column_int(st, 10);
+        row.time_range_start_utc = sqlite3_column_int64(st, 11);
+        row.time_range_end_utc = sqlite3_column_int64(st, 12);
+        row.checksum_status = ColumnText(st, 13);
+        rows.push_back(std::move(row));
+    }
+    sqlite3_finalize(st);
+    return rows;
+}
+
+std::vector<UiArchiveRehydrateRequestRow> SqliteUiReadDb::ListArchiveRehydrateRequests(
+    std::int64_t archive_package_id) const {
+    std::vector<UiArchiveRehydrateRequestRow> rows;
+    if (db_ == nullptr || archive_package_id <= 0) {
+        return rows;
+    }
+
+    sqlite3_stmt* st = nullptr;
+    constexpr const char* kSql =
+        "SELECT rehydrate_request_id,archive_package_id,status,target_namespace,requested_at_utc,completed_at_utc,COALESCE(error_text,'') "
+        "FROM ui_archive_rehydrate_request "
+        "WHERE archive_package_id=?1 "
+        "ORDER BY requested_at_utc DESC, rehydrate_request_id DESC;";
+    if (sqlite3_prepare_v2(db_, kSql, -1, &st, nullptr) != SQLITE_OK) {
+        return rows;
+    }
+    sqlite3_bind_int64(st, 1, archive_package_id);
+    while (sqlite3_step(st) == SQLITE_ROW) {
+        UiArchiveRehydrateRequestRow row{};
+        row.rehydrate_request_id = sqlite3_column_int64(st, 0);
+        row.archive_package_id = sqlite3_column_int64(st, 1);
+        row.status = ColumnText(st, 2);
+        row.target_namespace = ColumnText(st, 3);
+        row.requested_at_utc = sqlite3_column_int64(st, 4);
+        row.completed_at_utc = ColumnInt64Optional(st, 5);
+        row.error_text = ColumnText(st, 6);
+        rows.push_back(std::move(row));
+    }
+    sqlite3_finalize(st);
+    return rows;
+}
+
 bool SqliteUiReadDb::UpsertArtifactSummary(
     const UiArtifactSummary& summary,
     std::string* error_out) {

@@ -7059,6 +7059,50 @@ TEST_F(SqliteDbFixture, UiReadArchiveCatalogProjectsArchiveNameAndNotes) {
     sqlite3_close(verify_handle);
 }
 
+TEST_F(SqliteDbFixture, UiReadArchiveCatalogAndRehydrateRequestsListForWorkbench) {
+    using namespace savor::db;
+    using namespace savor::db::migrations;
+
+    const MigrationSourceOptions embedded_options{ .source_kind = MigrationSourceKind::Embedded };
+    std::string err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::UIRead, embedded_options, &err)) << err;
+
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+INSERT INTO ui_archive_catalog(
+    archive_package_id,source_context,source_root_job_set_id,source_scope_kind,source_workflow_count,
+    selection_summary,archive_name,archive_notes,created_at_utc,schema_version,event_catalog_version,
+    time_range_start_utc,time_range_end_utc,checksum_status)
+VALUES
+    (100,'Workflow',0,'workflow_selection',3,'{"workflow_count":3}','No victory workflows','notes',3000,1,1,1000,3000,'PASS'),
+    (99,'Root',50,'root_job_set',0,'{}','Old root package','',2000,1,1,1000,2000,'PASS');
+INSERT INTO ui_archive_rehydrate_request(
+    rehydrate_request_id,archive_package_id,status,target_namespace,requested_at_utc,completed_at_utc,error_text)
+VALUES
+    (1001,100,'COMPLETED','rehydrate_100_a',4000,4500,NULL),
+    (1002,100,'FAILED','rehydrate_100_b',5000,5500,'collision'),
+    (1003,99,'COMPLETED','rehydrate_99_a',6000,6500,NULL);
+)SQL"));
+
+    SqliteUiReadDb ui_read_db(db_);
+    const auto packages = ui_read_db.ListArchiveCatalog({
+        .search = "victory",
+        .workflow_packages_only = true,
+    });
+    ASSERT_EQ(packages.size(), 1u);
+    EXPECT_EQ(packages.front().archive_package_id, 100);
+    EXPECT_EQ(packages.front().archive_name, "No victory workflows");
+    EXPECT_EQ(packages.front().source_scope_kind, "workflow_selection");
+    EXPECT_EQ(packages.front().source_workflow_count, 3);
+
+    const auto requests = ui_read_db.ListArchiveRehydrateRequests(100);
+    ASSERT_EQ(requests.size(), 2u);
+    EXPECT_EQ(requests.front().rehydrate_request_id, 1002);
+    EXPECT_EQ(requests.front().status, "FAILED");
+    EXPECT_EQ(requests.front().error_text, "collision");
+    EXPECT_EQ(requests.back().rehydrate_request_id, 1001);
+    EXPECT_EQ(requests.back().target_namespace, "rehydrate_100_a");
+}
+
 TEST_F(SqliteDbFixture, UiReadPageCursorsMoveForwardToOlderRowsAndBackToNewerRows) {
     using namespace savor::db;
     using namespace savor::db::migrations;

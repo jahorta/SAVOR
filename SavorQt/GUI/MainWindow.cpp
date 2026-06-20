@@ -186,7 +186,9 @@ void MainWindow::createMenus()
     connect(analysisMenu->addAction(QStringLiteral("Workflow Provenance")), &QAction::triggered, this, [this]() {
         openFocusedTool(FocusedTool::Workflows);
     });
-    connect(analysisMenu->addAction(QStringLiteral("Archive Workbench")), &QAction::triggered, this, [this]() {
+
+    auto* toolsMenu = menuBar()->addMenu(QStringLiteral("Tools"));
+    connect(toolsMenu->addAction(QStringLiteral("Archive Workbench")), &QAction::triggered, this, [this]() {
         openFocusedTool(FocusedTool::ArchiveWorkbench);
     });
 }

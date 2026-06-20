@@ -151,6 +151,24 @@ UiReadPage<UiArtifactSummary> QueuedUiReadDb::ListArtifacts(
         {});
 }
 
+std::vector<UiArchiveCatalogRow> QueuedUiReadDb::ListArchiveCatalog(
+    const UiArchiveCatalogListQuery& query) const {
+    return ExecuteRead<std::vector<UiArchiveCatalogRow>>(
+        [this, query]() {
+            return inner_ != nullptr ? inner_->ListArchiveCatalog(query) : std::vector<UiArchiveCatalogRow>{};
+        },
+        {});
+}
+
+std::vector<UiArchiveRehydrateRequestRow> QueuedUiReadDb::ListArchiveRehydrateRequests(
+    std::int64_t archive_package_id) const {
+    return ExecuteRead<std::vector<UiArchiveRehydrateRequestRow>>(
+        [this, archive_package_id]() {
+            return inner_ != nullptr ? inner_->ListArchiveRehydrateRequests(archive_package_id) : std::vector<UiArchiveRehydrateRequestRow>{};
+        },
+        {});
+}
+
 bool QueuedUiReadDb::UpsertArtifactSummary(
     const UiArtifactSummary& summary,
     std::string* error_out) {
