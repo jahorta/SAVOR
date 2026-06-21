@@ -373,6 +373,17 @@ TEST(SavorPredictRngModel, FirstBattleSoldierDropSimulationMatchesEnabledRows) {
     EXPECT_NE(*no_drop.second_roll % 100, 0);
 }
 
+TEST(SavorPredictRngModel, FirstBattleDropCheckpointExpectationUsesDropDrawCount) {
+    const auto expectation = first_battle_drop_checkpoint_expectation(2);
+
+    EXPECT_EQ(expectation.expected_drop_rolls, 2);
+    EXPECT_EQ(expectation.owner, std::string_view("enemy_drop_roll"));
+    EXPECT_EQ(expectation.pc, std::string_view("8002BAE8"));
+    EXPECT_NE(
+        std::string_view(first_battle_drop_checkpoint_rule_detail()).find("enemyDropItem_8002ba8c"),
+        std::string_view::npos);
+}
+
 TEST(SavorPredictRngModel, CounterCheckSuppressesWithoutDrawBeforeChanceRoll) {
     CounterInputs inputs;
     inputs.attacker_slot = 0;
@@ -840,6 +851,60 @@ TEST(SavorPredictCheckpointTrace, SummarizesCounterCheckpoints) {
     EXPECT_EQ(
         counter_checkpoint_status_name(exceeds.status),
         std::string("ExceedsExpectedCeiling"));
+}
+
+TEST(SavorPredictCheckpointTrace, SummarizesDropCheckpoints) {
+    std::istringstream input(
+        "pc=80052bf0 function=FUN_80052b24 checkpoint=mode0e_camera rng_draw_index_before=20\n"
+        "pc=80010628 function=status checkpoint=pc rng_draw_index_before=22\n"
+        "pc=80010984 function=rollDamage checkpoint=bonus rng_draw_index_before=23\n"
+        "pc=8002bae8 function=enemyDropItem checkpoint=row rng_draw_index_before=24 "
+        "target_slot=4 enemy_entry_id=0 drop_row_index=1 drop_item_id=273 "
+        "drop_amount=1 rand_value=44 rand_mod100=44 drop_success=0\n"
+        "pc=80081a88 function=shouldCounter checkpoint=roll rng_draw_index_before=25\n"
+        "pc=80010984 function=rollDamage checkpoint=bonus rng_draw_index_before=26\n"
+        "pc=8002bae8 function=enemyDropItem checkpoint=row rng_draw_index_before=27 "
+        "target_slot=4 enemy_entry_id=0 drop_row_index=2 drop_item_id=258 "
+        "drop_amount=1 rand_value=0 rand_mod100=0 drop_success=1\n");
+
+    const auto parsed = parse_checkpoint_stream(input);
+    ASSERT_TRUE(parsed.errors.empty());
+    ASSERT_EQ(parsed.events.size(), 7u);
+    EXPECT_EQ(parsed.events[3].known_rng_owner, "enemy_drop_roll");
+
+    const auto matched = summarize_drop_checkpoints(parsed.events, 2);
+    EXPECT_EQ(matched.status, DropCheckpointStatus::MatchesExpected);
+    EXPECT_EQ(matched.observed_drop_rolls, 2);
+    ASSERT_TRUE(matched.first_drop_roll_draw_index.has_value());
+    EXPECT_EQ(*matched.first_drop_roll_draw_index, 24);
+    ASSERT_TRUE(matched.last_drop_roll_draw_index.has_value());
+    EXPECT_EQ(*matched.last_drop_roll_draw_index, 27);
+    EXPECT_EQ(matched.draws_with_target_slot, 2);
+    EXPECT_EQ(matched.draws_with_drop_row, 2);
+    EXPECT_EQ(matched.draws_with_rand_value, 2);
+    EXPECT_EQ(matched.observed_damage_bonus_draws, 2);
+    EXPECT_EQ(matched.damage_bonus_draws_before_first_drop, 1);
+    EXPECT_EQ(matched.damage_bonus_draws_after_first_drop, 1);
+    EXPECT_EQ(matched.observed_counter_rolls, 1);
+    EXPECT_EQ(matched.counter_rolls_before_first_drop, 0);
+    EXPECT_EQ(matched.observed_action_view_camera_draws, 1);
+    EXPECT_EQ(matched.action_view_camera_draws_before_first_drop, 1);
+    EXPECT_EQ(matched.observed_status_attempt_draws, 1);
+    EXPECT_EQ(matched.status_attempt_draws_before_first_drop, 1);
+    ASSERT_EQ(matched.draws.size(), 2u);
+    ASSERT_TRUE(matched.draws[1].drop_success.has_value());
+    EXPECT_EQ(*matched.draws[1].drop_success, 1);
+    ASSERT_TRUE(matched.draws[1].drop_item_id.has_value());
+    EXPECT_EQ(*matched.draws[1].drop_item_id, 258);
+
+    const auto missing = summarize_drop_checkpoints(parsed.events, 3);
+    EXPECT_EQ(missing.status, DropCheckpointStatus::MissingDropRolls);
+
+    const auto extra = summarize_drop_checkpoints(parsed.events, 1);
+    EXPECT_EQ(extra.status, DropCheckpointStatus::ExtraDropRolls);
+    EXPECT_EQ(
+        drop_checkpoint_status_name(extra.status),
+        std::string("ExtraDropRolls"));
 }
 
 TEST(SavorPredictCheckpointTrace, RejectsRegressingDrawIndexes) {

@@ -115,6 +115,7 @@
     <ClCompile Include="CounterCheckpointModel.cpp" />
     <ClCompile Include="CounterModel.cpp" />
     <ClCompile Include="DbCopy.cpp" />
+    <ClCompile Include="DropCheckpointModel.cpp" />
     <ClCompile Include="DropModel.cpp" />
     <ClCompile Include="EnemyAttackSetupModel.cpp" />
     <ClCompile Include="FirstBattleDataModel.cpp" />
@@ -137,6 +138,7 @@
     <ClInclude Include="CounterCheckpointModel.h" />
     <ClInclude Include="CounterModel.h" />
     <ClInclude Include="DbCopy.h" />
+    <ClInclude Include="DropCheckpointModel.h" />
     <ClInclude Include="DropModel.h" />
     <ClInclude Include="EnemyAttackSetupModel.h" />
     <ClInclude Include="FirstBattleDataModel.h" />

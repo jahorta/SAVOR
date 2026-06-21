@@ -19,6 +19,7 @@ struct TraceCheckpointsOptions {
     std::optional<int> expected_attack_events;
     std::optional<int> expected_crit_draws;
     std::optional<int> expected_counter_roll_ceiling;
+    std::optional<int> expected_drop_rolls;
     bool json = false;
 };
 

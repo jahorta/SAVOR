@@ -83,6 +83,7 @@ struct TraceSummary {
     std::vector<CritGateSummary> crit_gate_events;
     int first_battle_soldier_drop_draws_from_events = 0;
     bool first_battle_soldier_drop_draws_known = true;
+    std::optional<DropCheckpointExpectation> drop_checkpoint_expectation;
     ActionViewCameraExpectation action_view_camera_expectation;
     int first_battle_mode0e_camera_draws_for_observed_attacks = 0;
     int observed_lethal_attack_events = 0;
@@ -678,6 +679,10 @@ TraceSummary build_trace(JobSnapshot job, ParsedProgressEvents events, std::vect
         summary.events,
         summary.first_battle_soldier_drop_draws_from_events,
         summary.first_battle_soldier_drop_draws_known);
+    if (summary.first_battle_soldier_drop_draws_known) {
+        summary.drop_checkpoint_expectation =
+            first_battle_drop_checkpoint_expectation(summary.first_battle_soldier_drop_draws_from_events);
+    }
     summary.action_view_camera_expectation = first_battle_action_view_camera_expectation(summary.events);
     summary.first_battle_mode0e_camera_draws_for_observed_attacks =
         summary.action_view_camera_expectation.expected_mode0e_camera_draws;
@@ -935,6 +940,14 @@ void write_text(const TraceSummary& summary, std::ostream& out) {
     out << "  first-battle Soldier drop draws from death/drop events: ";
     if (summary.first_battle_soldier_drop_draws_known) {
         out << summary.first_battle_soldier_drop_draws_from_events << "\n";
+        if (summary.drop_checkpoint_expectation.has_value()) {
+            out << "    checkpoint expected drop rolls: "
+                << summary.drop_checkpoint_expectation->expected_drop_rolls
+                << " (" << summary.drop_checkpoint_expectation->pc << ")\n";
+            out << "    checkpoint rule: " << first_battle_drop_checkpoint_rule_detail() << "\n";
+            out << "    trace-checkpoints args: --expected-drop-rolls "
+                << summary.drop_checkpoint_expectation->expected_drop_rolls << "\n";
+        }
     } else {
         out << "unknown item outside first-battle Soldier drop table\n";
     }
@@ -1259,6 +1272,19 @@ void write_json(const TraceSummary& summary, std::ostream& out) {
     }
     out << ", \"first_battle_soldier_drop_draws_known\": "
         << (summary.first_battle_soldier_drop_draws_known ? "true" : "false");
+    out << ", \"drop_checkpoint_expectation\": ";
+    if (summary.drop_checkpoint_expectation.has_value()) {
+        out << "{";
+        out << "\"expected_drop_rolls\": "
+            << summary.drop_checkpoint_expectation->expected_drop_rolls;
+        out << ", \"owner\": \"" << summary.drop_checkpoint_expectation->owner << "\"";
+        out << ", \"pc\": \"" << summary.drop_checkpoint_expectation->pc << "\"";
+        out << ", \"rule\": \""
+            << json_escape(first_battle_drop_checkpoint_rule_detail()) << "\"";
+        out << "}";
+    } else {
+        out << "null";
+    }
     out << ", \"mode0e_action_view_camera_draws_for_observed_attacks\": "
         << summary.first_battle_mode0e_camera_draws_for_observed_attacks;
     out << ", \"mode0e_action_view_camera_owner\": \""

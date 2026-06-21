@@ -7,6 +7,7 @@
 #include "AttackResolutionModel.h"
 #include "CounterCheckpointModel.h"
 #include "CounterModel.h"
+#include "DropCheckpointModel.h"
 #include "DropModel.h"
 #include "EnemyAttackSetupModel.h"
 #include "FirstBattleDataModel.h"

@@ -3,6 +3,7 @@
 #include "ActionViewCameraModel.h"
 #include "AttackResolutionCheckpointModel.h"
 #include "CounterCheckpointModel.h"
+#include "DropCheckpointModel.h"
 #include "TurnOrderCheckpointModel.h"
 
 #include <algorithm>
@@ -267,6 +268,9 @@ void write_text_report(
     if (options.expected_counter_roll_ceiling.has_value()) {
         out << "  expected_counter_roll_ceiling: " << *options.expected_counter_roll_ceiling << "\n";
     }
+    if (options.expected_drop_rolls.has_value()) {
+        out << "  expected_drop_rolls: " << *options.expected_drop_rolls << "\n";
+    }
     out << "  db_root: " << options.db_root.string() << "\n";
     out << "  events: " << result.events.size() << "\n";
 
@@ -517,6 +521,89 @@ void write_text_report(
         }
     }
 
+    const auto drop = summarize_drop_checkpoints(
+        result.events,
+        options.expected_drop_rolls);
+    out << "\nDrop checkpoints\n";
+    out << "  status: " << drop_checkpoint_status_name(drop.status) << "\n";
+    out << "  expected_drop_rolls: ";
+    if (drop.expected_drop_rolls.has_value()) {
+        out << *drop.expected_drop_rolls << "\n";
+    } else {
+        out << "unknown\n";
+    }
+    out << "  observed_drop_rolls: " << drop.observed_drop_rolls << "\n";
+    out << "  first_drop_roll_draw_index: ";
+    if (drop.first_drop_roll_draw_index.has_value()) {
+        out << *drop.first_drop_roll_draw_index << "\n";
+    } else {
+        out << "unknown\n";
+    }
+    out << "  last_drop_roll_draw_index: ";
+    if (drop.last_drop_roll_draw_index.has_value()) {
+        out << *drop.last_drop_roll_draw_index << "\n";
+    } else {
+        out << "unknown\n";
+    }
+    out << "  draws_with_target_slot: " << drop.draws_with_target_slot << "\n";
+    out << "  draws_with_drop_row: " << drop.draws_with_drop_row << "\n";
+    out << "  draws_with_rand_value: " << drop.draws_with_rand_value << "\n";
+    out << "  observed_damage_bonus_draws: " << drop.observed_damage_bonus_draws << "\n";
+    out << "  damage_bonus_draws_before_first_drop: "
+        << drop.damage_bonus_draws_before_first_drop << "\n";
+    out << "  damage_bonus_draws_after_first_drop: "
+        << drop.damage_bonus_draws_after_first_drop << "\n";
+    out << "  counter_rolls_before_first_drop: "
+        << drop.counter_rolls_before_first_drop << " of " << drop.observed_counter_rolls << "\n";
+    out << "  action_view_camera_draws_before_first_drop: "
+        << drop.action_view_camera_draws_before_first_drop
+        << " of " << drop.observed_action_view_camera_draws << "\n";
+    out << "  status_attempt_draws_before_first_drop: "
+        << drop.status_attempt_draws_before_first_drop
+        << " of " << drop.observed_status_attempt_draws << "\n";
+    if (!drop.draws.empty()) {
+        out << "  draws:\n";
+        for (const auto& draw : drop.draws) {
+            out << "    draw_index=";
+            if (draw.draw_index.has_value()) {
+                out << *draw.draw_index;
+            } else {
+                out << "unknown";
+            }
+            out << " target_slot=";
+            if (draw.target_slot.has_value()) {
+                out << *draw.target_slot;
+            } else {
+                out << "unknown";
+            }
+            out << " row=";
+            if (draw.drop_row_index.has_value()) {
+                out << *draw.drop_row_index;
+            } else {
+                out << "unknown";
+            }
+            out << " rand_value=";
+            if (draw.rand_value.has_value()) {
+                out << *draw.rand_value;
+            } else {
+                out << "unknown";
+            }
+            out << " rand_mod100=";
+            if (draw.rand_mod100.has_value()) {
+                out << *draw.rand_mod100;
+            } else {
+                out << "unknown";
+            }
+            out << " drop_success=";
+            if (draw.drop_success.has_value()) {
+                out << *draw.drop_success;
+            } else {
+                out << "unknown";
+            }
+            out << "\n";
+        }
+    }
+
     out << "\nFirst events\n";
     const auto limit = std::min<std::size_t>(result.events.size(), 10);
     for (std::size_t i = 0; i < limit; ++i) {
@@ -602,6 +689,13 @@ void write_json_report(
     out << "  \"expected_counter_roll_ceiling\": ";
     if (options.expected_counter_roll_ceiling.has_value()) {
         out << *options.expected_counter_roll_ceiling;
+    } else {
+        out << "null";
+    }
+    out << ",\n";
+    out << "  \"expected_drop_rolls\": ";
+    if (options.expected_drop_rolls.has_value()) {
+        out << *options.expected_drop_rolls;
     } else {
         out << "null";
     }
@@ -890,6 +984,114 @@ void write_json_report(
         out << ", \"updated_current_counter_chance\": ";
         if (draw.updated_current_counter_chance.has_value()) {
             out << *draw.updated_current_counter_chance;
+        } else {
+            out << "null";
+        }
+        out << "}";
+    }
+    out << "]";
+    out << "},\n";
+
+    const auto drop = summarize_drop_checkpoints(
+        result.events,
+        options.expected_drop_rolls);
+    out << "  \"drop_checkpoints\": {";
+    out << "\"status\": \"" << drop_checkpoint_status_name(drop.status) << "\"";
+    out << ", \"expected_drop_rolls\": ";
+    if (drop.expected_drop_rolls.has_value()) {
+        out << *drop.expected_drop_rolls;
+    } else {
+        out << "null";
+    }
+    out << ", \"observed_drop_rolls\": " << drop.observed_drop_rolls;
+    out << ", \"first_drop_roll_draw_index\": ";
+    if (drop.first_drop_roll_draw_index.has_value()) {
+        out << *drop.first_drop_roll_draw_index;
+    } else {
+        out << "null";
+    }
+    out << ", \"last_drop_roll_draw_index\": ";
+    if (drop.last_drop_roll_draw_index.has_value()) {
+        out << *drop.last_drop_roll_draw_index;
+    } else {
+        out << "null";
+    }
+    out << ", \"draws_with_target_slot\": " << drop.draws_with_target_slot;
+    out << ", \"draws_with_drop_row\": " << drop.draws_with_drop_row;
+    out << ", \"draws_with_rand_value\": " << drop.draws_with_rand_value;
+    out << ", \"observed_damage_bonus_draws\": " << drop.observed_damage_bonus_draws;
+    out << ", \"damage_bonus_draws_before_first_drop\": "
+        << drop.damage_bonus_draws_before_first_drop;
+    out << ", \"damage_bonus_draws_after_first_drop\": "
+        << drop.damage_bonus_draws_after_first_drop;
+    out << ", \"observed_counter_rolls\": " << drop.observed_counter_rolls;
+    out << ", \"counter_rolls_before_first_drop\": "
+        << drop.counter_rolls_before_first_drop;
+    out << ", \"observed_action_view_camera_draws\": "
+        << drop.observed_action_view_camera_draws;
+    out << ", \"action_view_camera_draws_before_first_drop\": "
+        << drop.action_view_camera_draws_before_first_drop;
+    out << ", \"observed_status_attempt_draws\": "
+        << drop.observed_status_attempt_draws;
+    out << ", \"status_attempt_draws_before_first_drop\": "
+        << drop.status_attempt_draws_before_first_drop;
+    out << ", \"draws\": [";
+    for (std::size_t i = 0; i < drop.draws.size(); ++i) {
+        if (i != 0) {
+            out << ", ";
+        }
+        const auto& draw = drop.draws[i];
+        out << "{\"draw_index\": ";
+        if (draw.draw_index.has_value()) {
+            out << *draw.draw_index;
+        } else {
+            out << "null";
+        }
+        out << ", \"target_slot\": ";
+        if (draw.target_slot.has_value()) {
+            out << *draw.target_slot;
+        } else {
+            out << "null";
+        }
+        out << ", \"enemy_entry_id\": ";
+        if (draw.enemy_entry_id.has_value()) {
+            out << *draw.enemy_entry_id;
+        } else {
+            out << "null";
+        }
+        out << ", \"drop_row_index\": ";
+        if (draw.drop_row_index.has_value()) {
+            out << *draw.drop_row_index;
+        } else {
+            out << "null";
+        }
+        out << ", \"drop_item_id\": ";
+        if (draw.drop_item_id.has_value()) {
+            out << *draw.drop_item_id;
+        } else {
+            out << "null";
+        }
+        out << ", \"drop_amount\": ";
+        if (draw.drop_amount.has_value()) {
+            out << *draw.drop_amount;
+        } else {
+            out << "null";
+        }
+        out << ", \"rand_value\": ";
+        if (draw.rand_value.has_value()) {
+            out << *draw.rand_value;
+        } else {
+            out << "null";
+        }
+        out << ", \"rand_mod100\": ";
+        if (draw.rand_mod100.has_value()) {
+            out << *draw.rand_mod100;
+        } else {
+            out << "null";
+        }
+        out << ", \"drop_success\": ";
+        if (draw.drop_success.has_value()) {
+            out << *draw.drop_success;
         } else {
             out << "null";
         }

@@ -10,6 +10,7 @@
     <ClCompile Include="..\SavorPredict\CheckpointTrace.cpp" />
     <ClCompile Include="..\SavorPredict\CounterCheckpointModel.cpp" />
     <ClCompile Include="..\SavorPredict\CounterModel.cpp" />
+    <ClCompile Include="..\SavorPredict\DropCheckpointModel.cpp" />
     <ClCompile Include="..\SavorPredict\DropModel.cpp" />
     <ClCompile Include="..\SavorPredict\EnemyAttackSetupModel.cpp" />
     <ClCompile Include="..\SavorPredict\FirstBattleDataModel.cpp" />
