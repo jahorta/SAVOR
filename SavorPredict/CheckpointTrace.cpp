@@ -1390,6 +1390,7 @@ void write_text_report(
         options.expected_level_up_stat_rolls);
     out << "\nOutcome checkpoints\n";
     out << "  status: " << outcome_checkpoint_status_name(outcome.status) << "\n";
+    out << "  rule: " << first_battle_outcome_checkpoint_rule_detail() << "\n";
     out << "  expected_end_turn_status_draws: ";
     if (outcome.expected_end_turn_status_draws.has_value()) {
         out << *outcome.expected_end_turn_status_draws << "\n";
@@ -1412,60 +1413,78 @@ void write_text_report(
         << outcome.observed_level_up_roll_2_draws << "\n";
     out << "  observed_level_up_roll_3_draws: "
         << outcome.observed_level_up_roll_3_draws << "\n";
+    out << "  observed_run_case9_events: "
+        << outcome.observed_run_case9_events << "\n";
+    out << "  observed_battle_success_events: "
+        << outcome.observed_battle_success_events << "\n";
+    out << "  observed_level_up_entries: "
+        << outcome.observed_level_up_entries << "\n";
+    out << "  observed_victory_branch_events: "
+        << outcome.observed_victory_branch_events << "\n";
+    out << "  battle_success_events_with_reward_context: "
+        << outcome.battle_success_events_with_reward_context << "\n";
+    out << "  level_up_entries_with_exp_context: "
+        << outcome.level_up_entries_with_exp_context << "\n";
+    out << "  level_up_entries_with_expected_rolls: "
+        << outcome.level_up_entries_with_expected_rolls << "\n";
+    out << "  expected_level_up_stat_rolls_from_entries: "
+        << outcome.expected_level_up_stat_rolls_from_entries << "\n";
+    out << "  stat_rolls_after_level_up_entry: "
+        << outcome.stat_rolls_after_level_up_entry << "\n";
+    out << "  stat_rolls_before_level_up_entry: "
+        << outcome.stat_rolls_before_level_up_entry << "\n";
     out << "  first_end_turn_status_draw_index: ";
-    if (outcome.first_end_turn_status_draw_index.has_value()) {
-        out << *outcome.first_end_turn_status_draw_index << "\n";
-    } else {
-        out << "unknown\n";
-    }
+    write_optional_int(out, outcome.first_end_turn_status_draw_index);
+    out << "\n";
+    out << "  first_run_case9_draw_index: ";
+    write_optional_int(out, outcome.first_run_case9_draw_index);
+    out << "\n";
+    out << "  first_battle_success_draw_index: ";
+    write_optional_int(out, outcome.first_battle_success_draw_index);
+    out << "\n";
+    out << "  first_level_up_entry_draw_index: ";
+    write_optional_int(out, outcome.first_level_up_entry_draw_index);
+    out << "\n";
     out << "  first_level_up_stat_roll_index: ";
-    if (outcome.first_level_up_stat_roll_index.has_value()) {
-        out << *outcome.first_level_up_stat_roll_index << "\n";
-    } else {
-        out << "unknown\n";
-    }
+    write_optional_int(out, outcome.first_level_up_stat_roll_index);
+    out << "\n";
     out << "  draws_with_actor_slot: " << outcome.draws_with_actor_slot << "\n";
     out << "  draws_with_rand_value: " << outcome.draws_with_rand_value << "\n";
     if (!outcome.draws.empty()) {
-        out << "  draws:\n";
+        out << "  events:\n";
         for (const auto& draw : outcome.draws) {
             out << "    draw_index=";
-            if (draw.draw_index.has_value()) {
-                out << *draw.draw_index;
-            } else {
-                out << "unknown";
-            }
+            write_optional_int(out, draw.draw_index);
+            out << " kind=" << outcome_checkpoint_kind_name(draw.kind);
             out << " owner=" << draw.owner;
             out << " actor_slot=";
-            if (draw.actor_slot.has_value()) {
-                out << *draw.actor_slot;
-            } else {
-                out << "unknown";
-            }
+            write_optional_int(out, draw.actor_slot);
             out << " status_effect_id=";
-            if (draw.status_effect_id.has_value()) {
-                out << *draw.status_effect_id;
-            } else {
-                out << "unknown";
-            }
+            write_optional_int(out, draw.status_effect_id);
             out << " stat_index=";
-            if (draw.stat_index.has_value()) {
-                out << *draw.stat_index;
-            } else {
-                out << "unknown";
-            }
+            write_optional_int(out, draw.stat_index);
             out << " level=";
-            if (draw.level.has_value()) {
-                out << *draw.level;
-            } else {
-                out << "unknown";
-            }
+            write_optional_int(out, draw.level);
+            out << " level_before=";
+            write_optional_int(out, draw.level_before);
+            out << " level_after=";
+            write_optional_int(out, draw.level_after);
+            out << " exp_before=";
+            write_optional_int(out, draw.exp_before);
+            out << " exp_after=";
+            write_optional_int(out, draw.exp_after);
+            out << " next_level_exp=";
+            write_optional_int(out, draw.next_level_exp);
+            out << " exp_awarded=";
+            write_optional_int(out, draw.exp_awarded);
+            out << " expected_stat_rolls=";
+            write_optional_int(out, draw.expected_stat_rolls);
+            out << " battle_outcome=";
+            write_optional_int(out, draw.battle_outcome);
+            out << " victory=";
+            write_optional_int(out, draw.victory);
             out << " rand_value=";
-            if (draw.rand_value.has_value()) {
-                out << *draw.rand_value;
-            } else {
-                out << "unknown";
-            }
+            write_optional_int(out, draw.rand_value);
             out << "\n";
         }
     }
@@ -2746,6 +2765,8 @@ void write_json_report(
         options.expected_level_up_stat_rolls);
     out << "  \"outcome_checkpoints\": {";
     out << "\"status\": \"" << outcome_checkpoint_status_name(outcome.status) << "\"";
+    out << ", \"rule\": \""
+        << json_escape(first_battle_outcome_checkpoint_rule_detail()) << "\"";
     out << ", \"expected_end_turn_status_draws\": ";
     if (outcome.expected_end_turn_status_draws.has_value()) {
         out << *outcome.expected_end_turn_status_draws;
@@ -2768,63 +2789,77 @@ void write_json_report(
         << outcome.observed_level_up_roll_2_draws;
     out << ", \"observed_level_up_roll_3_draws\": "
         << outcome.observed_level_up_roll_3_draws;
+    out << ", \"observed_run_case9_events\": "
+        << outcome.observed_run_case9_events;
+    out << ", \"observed_battle_success_events\": "
+        << outcome.observed_battle_success_events;
+    out << ", \"observed_level_up_entries\": "
+        << outcome.observed_level_up_entries;
+    out << ", \"observed_victory_branch_events\": "
+        << outcome.observed_victory_branch_events;
+    out << ", \"battle_success_events_with_reward_context\": "
+        << outcome.battle_success_events_with_reward_context;
+    out << ", \"level_up_entries_with_exp_context\": "
+        << outcome.level_up_entries_with_exp_context;
+    out << ", \"level_up_entries_with_expected_rolls\": "
+        << outcome.level_up_entries_with_expected_rolls;
+    out << ", \"expected_level_up_stat_rolls_from_entries\": "
+        << outcome.expected_level_up_stat_rolls_from_entries;
+    out << ", \"stat_rolls_after_level_up_entry\": "
+        << outcome.stat_rolls_after_level_up_entry;
+    out << ", \"stat_rolls_before_level_up_entry\": "
+        << outcome.stat_rolls_before_level_up_entry;
     out << ", \"first_end_turn_status_draw_index\": ";
-    if (outcome.first_end_turn_status_draw_index.has_value()) {
-        out << *outcome.first_end_turn_status_draw_index;
-    } else {
-        out << "null";
-    }
+    write_json_optional_int(out, outcome.first_end_turn_status_draw_index);
+    out << ", \"first_run_case9_draw_index\": ";
+    write_json_optional_int(out, outcome.first_run_case9_draw_index);
+    out << ", \"first_battle_success_draw_index\": ";
+    write_json_optional_int(out, outcome.first_battle_success_draw_index);
+    out << ", \"first_level_up_entry_draw_index\": ";
+    write_json_optional_int(out, outcome.first_level_up_entry_draw_index);
     out << ", \"first_level_up_stat_roll_index\": ";
-    if (outcome.first_level_up_stat_roll_index.has_value()) {
-        out << *outcome.first_level_up_stat_roll_index;
-    } else {
-        out << "null";
-    }
+    write_json_optional_int(out, outcome.first_level_up_stat_roll_index);
     out << ", \"draws_with_actor_slot\": " << outcome.draws_with_actor_slot;
     out << ", \"draws_with_rand_value\": " << outcome.draws_with_rand_value;
-    out << ", \"draws\": [";
+    out << ", \"events\": [";
     for (std::size_t i = 0; i < outcome.draws.size(); ++i) {
         if (i != 0) {
             out << ", ";
         }
         const auto& draw = outcome.draws[i];
         out << "{\"draw_index\": ";
-        if (draw.draw_index.has_value()) {
-            out << *draw.draw_index;
-        } else {
-            out << "null";
-        }
+        write_json_optional_int(out, draw.draw_index);
+        out << ", \"kind\": \""
+            << outcome_checkpoint_kind_name(draw.kind) << "\"";
         out << ", \"owner\": \"" << json_escape(draw.owner) << "\"";
         out << ", \"actor_slot\": ";
-        if (draw.actor_slot.has_value()) {
-            out << *draw.actor_slot;
-        } else {
-            out << "null";
-        }
+        write_json_optional_int(out, draw.actor_slot);
         out << ", \"status_effect_id\": ";
-        if (draw.status_effect_id.has_value()) {
-            out << *draw.status_effect_id;
-        } else {
-            out << "null";
-        }
+        write_json_optional_int(out, draw.status_effect_id);
         out << ", \"stat_index\": ";
-        if (draw.stat_index.has_value()) {
-            out << *draw.stat_index;
-        } else {
-            out << "null";
-        }
+        write_json_optional_int(out, draw.stat_index);
         out << ", \"level\": ";
-        if (draw.level.has_value()) {
-            out << *draw.level;
-        } else {
-            out << "null";
-        }
+        write_json_optional_int(out, draw.level);
+        out << ", \"level_before\": ";
+        write_json_optional_int(out, draw.level_before);
+        out << ", \"level_after\": ";
+        write_json_optional_int(out, draw.level_after);
+        out << ", \"exp_before\": ";
+        write_json_optional_int(out, draw.exp_before);
+        out << ", \"exp_after\": ";
+        write_json_optional_int(out, draw.exp_after);
+        out << ", \"next_level_exp\": ";
+        write_json_optional_int(out, draw.next_level_exp);
+        out << ", \"exp_awarded\": ";
+        write_json_optional_int(out, draw.exp_awarded);
+        out << ", \"expected_stat_rolls\": ";
+        write_json_optional_int(out, draw.expected_stat_rolls);
+        out << ", \"battle_outcome\": ";
+        write_json_optional_int(out, draw.battle_outcome);
+        out << ", \"victory\": ";
+        write_json_optional_int(out, draw.victory);
         out << ", \"rand_value\": ";
-        if (draw.rand_value.has_value()) {
-            out << *draw.rand_value;
-        } else {
-            out << "null";
-        }
+        write_json_optional_int(out, draw.rand_value);
         out << "}";
     }
     out << "]";

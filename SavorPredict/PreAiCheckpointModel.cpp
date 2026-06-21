@@ -286,9 +286,9 @@ const char* first_battle_pre_ai_checkpoint_rule_detail() {
     return "first-battle pre-AI checkpoints should show one 8001413c battle-start camera draw, "
            "fake_attack_count fake draws, one or two 800608dc targeting-camera draws depending on "
            "fake-attack suppression, and the first 8008b428 Soldier AI draw at the resulting cursor; "
-           "target-camera A-to-B gaps under 7 frames are tracked as observed no-rand fake-attack cases, "
-           "while 7 frames is only the minimum tested gap that sometimes worked and not yet a proven "
-           "consistent threshold";
+           "short target-camera A-to-B gaps are tracked as observed no-rand fake-attack cases; "
+           "7 frames is only the minimum tested gap that sometimes worked, and the consistent "
+           "threshold may be higher";
 }
 
 } // namespace savor::predict

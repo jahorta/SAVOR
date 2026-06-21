@@ -490,6 +490,9 @@ TEST(SavorPredictRngModel, FirstBattleOutcomeCheckpointExpectationSkipsReachedNe
     EXPECT_NE(
         std::string_view(first_battle_outcome_checkpoint_rule_detail()).find("ReachedNextTurn"),
         std::string_view::npos);
+    EXPECT_NE(
+        std::string_view(first_battle_outcome_checkpoint_rule_detail()).find("victory reward"),
+        std::string_view::npos);
 }
 
 TEST(SavorPredictRngModel, CounterCheckSuppressesWithoutDrawBeforeChanceRoll) {
@@ -1516,8 +1519,15 @@ TEST(SavorPredictCheckpointTrace, SummarizesDeathDropCheckpoints) {
 
 TEST(SavorPredictCheckpointTrace, SummarizesOutcomeCheckpoints) {
     std::istringstream input(
-        "pc=8006ff38 function=endTurn checkpoint=status rng_draw_index_before=40 "
+        "pc=8006ff38 function=endTurn checkpoint=status rng_draw_index_before=39 "
         "actor_slot=0 status_effect_id=0 rand_value=12\n"
+        "pc=8006f020 function=runCase9 checkpoint=entry rng_draw_index_before=40 "
+        "battle_outcome=0\n"
+        "pc=8006f4b0 function=endBattleSuccess checkpoint=entry rng_draw_index_before=40 "
+        "exp_awarded=6 gold_awarded=12\n"
+        "pc=801f2a34 function=LevelUp checkpoint=entry rng_draw_index_before=41 "
+        "actor_slot=0 level_before=1 level_after=2 exp_before=0 exp_after=6 "
+        "next_level_exp=5 expected_stat_rolls=3\n"
         "pc=801f2b6c function=LevelUp checkpoint=stat1 rng_draw_index_before=41 "
         "actor_slot=0 stat_index=1 level=2 rand_value=3\n"
         "pc=801f2c00 function=LevelUp checkpoint=stat2 rng_draw_index_before=42 "
@@ -1527,26 +1537,44 @@ TEST(SavorPredictCheckpointTrace, SummarizesOutcomeCheckpoints) {
 
     const auto parsed = parse_checkpoint_stream(input);
     ASSERT_TRUE(parsed.errors.empty());
-    ASSERT_EQ(parsed.events.size(), 4u);
+    ASSERT_EQ(parsed.events.size(), 7u);
     EXPECT_EQ(parsed.events[0].known_rng_owner, "end_turn_status_cleanup");
-    EXPECT_EQ(parsed.events[1].known_rng_owner, "level_up_stat_roll_1");
+    EXPECT_EQ(parsed.events[4].known_rng_owner, "level_up_stat_roll_1");
 
     const auto matched = summarize_outcome_checkpoints(parsed.events, 1, 3);
-    EXPECT_EQ(matched.status, OutcomeCheckpointStatus::MatchesExpected);
+    EXPECT_EQ(matched.status, OutcomeCheckpointStatus::MatchesExpectedFlow);
     EXPECT_EQ(matched.observed_end_turn_status_draws, 1);
     EXPECT_EQ(matched.observed_level_up_stat_rolls, 3);
     EXPECT_EQ(matched.observed_level_up_roll_1_draws, 1);
     EXPECT_EQ(matched.observed_level_up_roll_2_draws, 1);
     EXPECT_EQ(matched.observed_level_up_roll_3_draws, 1);
+    EXPECT_EQ(matched.observed_run_case9_events, 1);
+    EXPECT_EQ(matched.observed_battle_success_events, 1);
+    EXPECT_EQ(matched.observed_level_up_entries, 1);
+    EXPECT_EQ(matched.battle_success_events_with_reward_context, 1);
+    EXPECT_EQ(matched.level_up_entries_with_exp_context, 1);
+    EXPECT_EQ(matched.level_up_entries_with_expected_rolls, 1);
+    EXPECT_EQ(matched.expected_level_up_stat_rolls_from_entries, 3);
+    EXPECT_EQ(matched.stat_rolls_after_level_up_entry, 3);
+    EXPECT_EQ(matched.stat_rolls_before_level_up_entry, 0);
     ASSERT_TRUE(matched.first_end_turn_status_draw_index.has_value());
-    EXPECT_EQ(*matched.first_end_turn_status_draw_index, 40);
+    EXPECT_EQ(*matched.first_end_turn_status_draw_index, 39);
+    ASSERT_TRUE(matched.first_run_case9_draw_index.has_value());
+    EXPECT_EQ(*matched.first_run_case9_draw_index, 40);
+    ASSERT_TRUE(matched.first_battle_success_draw_index.has_value());
+    EXPECT_EQ(*matched.first_battle_success_draw_index, 40);
+    ASSERT_TRUE(matched.first_level_up_entry_draw_index.has_value());
+    EXPECT_EQ(*matched.first_level_up_entry_draw_index, 41);
     ASSERT_TRUE(matched.first_level_up_stat_roll_index.has_value());
     EXPECT_EQ(*matched.first_level_up_stat_roll_index, 41);
-    EXPECT_EQ(matched.draws_with_actor_slot, 4);
+    EXPECT_EQ(matched.draws_with_actor_slot, 5);
     EXPECT_EQ(matched.draws_with_rand_value, 4);
-    ASSERT_EQ(matched.draws.size(), 4u);
-    ASSERT_TRUE(matched.draws[2].stat_index.has_value());
-    EXPECT_EQ(*matched.draws[2].stat_index, 2);
+    ASSERT_EQ(matched.draws.size(), 7u);
+    EXPECT_EQ(matched.draws[1].kind, OutcomeCheckpointKind::RunCase9Entry);
+    EXPECT_EQ(matched.draws[2].kind, OutcomeCheckpointKind::BattleSuccessEntry);
+    EXPECT_EQ(matched.draws[3].kind, OutcomeCheckpointKind::LevelUpEntry);
+    ASSERT_TRUE(matched.draws[5].stat_index.has_value());
+    EXPECT_EQ(*matched.draws[5].stat_index, 2);
 
     const auto end_turn_mismatch = summarize_outcome_checkpoints(parsed.events, 0, 0);
     EXPECT_EQ(end_turn_mismatch.status, OutcomeCheckpointStatus::EndTurnStatusDrawMismatch);
@@ -1556,6 +1584,50 @@ TEST(SavorPredictCheckpointTrace, SummarizesOutcomeCheckpoints) {
     EXPECT_EQ(
         outcome_checkpoint_status_name(level_up_mismatch.status),
         std::string("LevelUpStatRollMismatch"));
+    EXPECT_EQ(
+        outcome_checkpoint_kind_name(OutcomeCheckpointKind::BattleSuccessEntry),
+        std::string("BattleSuccessEntry"));
+}
+
+TEST(SavorPredictCheckpointTrace, FlagsUnexpectedVictoryBranchForReachedNextTurnExpectation) {
+    std::istringstream input(
+        "pc=8006f020 function=runCase9 checkpoint=entry rng_draw_index_before=60 "
+        "battle_outcome=0\n"
+        "pc=8006f4b0 function=endBattleSuccess checkpoint=entry rng_draw_index_before=60 "
+        "exp_awarded=6\n");
+
+    const auto parsed = parse_checkpoint_stream(input);
+    ASSERT_TRUE(parsed.errors.empty());
+
+    const auto summary = summarize_outcome_checkpoints(parsed.events, 0, 0);
+    EXPECT_EQ(summary.status, OutcomeCheckpointStatus::UnexpectedVictoryBranch);
+    EXPECT_EQ(summary.observed_run_case9_events, 1);
+    EXPECT_EQ(summary.observed_battle_success_events, 1);
+    EXPECT_EQ(summary.observed_victory_branch_events, 2);
+}
+
+TEST(SavorPredictCheckpointTrace, RequiresLevelUpEntryContextForVictoryRolls) {
+    std::istringstream missing_entry_input(
+        "pc=801f2b6c function=LevelUp checkpoint=stat1 rng_draw_index_before=70 "
+        "actor_slot=0 stat_index=1 level=2 rand_value=3\n");
+    const auto missing_entry_parsed = parse_checkpoint_stream(missing_entry_input);
+    ASSERT_TRUE(missing_entry_parsed.errors.empty());
+
+    const auto missing_entry =
+        summarize_outcome_checkpoints(missing_entry_parsed.events, std::nullopt, std::nullopt);
+    EXPECT_EQ(missing_entry.status, OutcomeCheckpointStatus::MissingLevelUpEntry);
+
+    std::istringstream missing_context_input(
+        "pc=801f2a34 function=LevelUp checkpoint=entry rng_draw_index_before=70 "
+        "actor_slot=0 expected_stat_rolls=1\n"
+        "pc=801f2b6c function=LevelUp checkpoint=stat1 rng_draw_index_before=71 "
+        "actor_slot=0 stat_index=1 level=2 rand_value=3\n");
+    const auto missing_context_parsed = parse_checkpoint_stream(missing_context_input);
+    ASSERT_TRUE(missing_context_parsed.errors.empty());
+
+    const auto missing_context =
+        summarize_outcome_checkpoints(missing_context_parsed.events, std::nullopt, std::nullopt);
+    EXPECT_EQ(missing_context.status, OutcomeCheckpointStatus::MissingLevelUpContext);
 }
 
 TEST(SavorPredictCheckpointTrace, RejectsRegressingDrawIndexes) {

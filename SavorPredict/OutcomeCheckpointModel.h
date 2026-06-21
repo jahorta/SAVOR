@@ -12,8 +12,24 @@ namespace savor::predict {
 enum class OutcomeCheckpointStatus {
     ObservedOnly,
     MatchesExpected,
+    MatchesExpectedFlow,
     EndTurnStatusDrawMismatch,
     LevelUpStatRollMismatch,
+    UnexpectedVictoryBranch,
+    MissingBattleSuccessEntry,
+    MissingVictoryRewardContext,
+    MissingLevelUpEntry,
+    MissingLevelUpContext,
+    LevelUpOrderMismatch,
+    LevelUpEntryRollMismatch,
+};
+
+enum class OutcomeCheckpointKind {
+    EndTurnStatusDraw,
+    RunCase9Entry,
+    BattleSuccessEntry,
+    LevelUpEntry,
+    LevelUpStatRoll,
 };
 
 struct OutcomeCheckpointExpectation {
@@ -27,12 +43,22 @@ struct OutcomeCheckpointExpectation {
 };
 
 struct OutcomeCheckpointDraw {
+    OutcomeCheckpointKind kind = OutcomeCheckpointKind::EndTurnStatusDraw;
     std::optional<int> draw_index;
     std::string owner;
     std::optional<int> actor_slot;
     std::optional<int> status_effect_id;
     std::optional<int> stat_index;
     std::optional<int> level;
+    std::optional<int> level_before;
+    std::optional<int> level_after;
+    std::optional<int> exp_before;
+    std::optional<int> exp_after;
+    std::optional<int> next_level_exp;
+    std::optional<int> exp_awarded;
+    std::optional<int> expected_stat_rolls;
+    std::optional<int> battle_outcome;
+    std::optional<int> victory;
     std::optional<int> rand_value;
 };
 
@@ -44,7 +70,20 @@ struct OutcomeCheckpointSummary {
     int observed_level_up_roll_1_draws = 0;
     int observed_level_up_roll_2_draws = 0;
     int observed_level_up_roll_3_draws = 0;
+    int observed_run_case9_events = 0;
+    int observed_battle_success_events = 0;
+    int observed_level_up_entries = 0;
+    int observed_victory_branch_events = 0;
+    int battle_success_events_with_reward_context = 0;
+    int level_up_entries_with_exp_context = 0;
+    int level_up_entries_with_expected_rolls = 0;
+    int expected_level_up_stat_rolls_from_entries = 0;
+    int stat_rolls_after_level_up_entry = 0;
+    int stat_rolls_before_level_up_entry = 0;
     std::optional<int> first_end_turn_status_draw_index;
+    std::optional<int> first_run_case9_draw_index;
+    std::optional<int> first_battle_success_draw_index;
+    std::optional<int> first_level_up_entry_draw_index;
     std::optional<int> first_level_up_stat_roll_index;
     int draws_with_actor_slot = 0;
     int draws_with_rand_value = 0;
@@ -58,6 +97,7 @@ OutcomeCheckpointSummary summarize_outcome_checkpoints(
     std::optional<int> expected_end_turn_status_draws,
     std::optional<int> expected_level_up_stat_rolls);
 const char* outcome_checkpoint_status_name(OutcomeCheckpointStatus status);
+const char* outcome_checkpoint_kind_name(OutcomeCheckpointKind kind);
 const char* first_battle_outcome_checkpoint_rule_detail();
 
 } // namespace savor::predict
