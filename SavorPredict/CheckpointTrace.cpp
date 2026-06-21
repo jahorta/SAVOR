@@ -661,18 +661,47 @@ void write_text_report(
     } else {
         out << "unknown\n";
     }
+    out << "  expected_callback_pc: ";
+    if (action_source.expected_callback_pc.has_value()) {
+        out << *action_source.expected_callback_pc << "\n";
+    } else {
+        out << "unknown\n";
+    }
+    out << "  observed_source_selection_events: "
+        << action_source.observed_source_selection_events << "\n";
     out << "  observed_action_source_events: "
         << action_source.observed_action_source_events << "\n";
+    out << "  source_selection_events_with_source_slot: "
+        << action_source.source_selection_events_with_source_slot << "\n";
+    out << "  source_selection_events_with_actor_slot: "
+        << action_source.source_selection_events_with_actor_slot << "\n";
+    out << "  source_selection_events_with_target_slot: "
+        << action_source.source_selection_events_with_target_slot << "\n";
     out << "  events_with_actor_slot: " << action_source.events_with_actor_slot << "\n";
     out << "  events_with_source_slot: " << action_source.events_with_source_slot << "\n";
     out << "  events_with_action_id: " << action_source.events_with_action_id << "\n";
     out << "  events_with_handler_pc: " << action_source.events_with_handler_pc << "\n";
+    out << "  events_with_callback_pc: " << action_source.events_with_callback_pc << "\n";
     out << "  events_with_source_field6: " << action_source.events_with_source_field6 << "\n";
     out << "  events_with_actor_field6: " << action_source.events_with_actor_field6 << "\n";
+    out << "  source_selection_bridge_pairs: "
+        << action_source.source_selection_bridge_pairs << "\n";
+    out << "  source_selection_bridge_matches: "
+        << action_source.source_selection_bridge_matches << "\n";
+    out << "  source_selection_bridge_mismatches: "
+        << action_source.source_selection_bridge_mismatches << "\n";
     out << "  field6_matches: " << action_source.field6_matches << "\n";
     out << "  field6_mismatches: " << action_source.field6_mismatches << "\n";
     out << "  handler_matches: " << action_source.handler_matches << "\n";
     out << "  handler_mismatches: " << action_source.handler_mismatches << "\n";
+    out << "  callback_matches: " << action_source.callback_matches << "\n";
+    out << "  callback_mismatches: " << action_source.callback_mismatches << "\n";
+    out << "  first_source_selection_draw_index: ";
+    if (action_source.first_source_selection_draw_index.has_value()) {
+        out << *action_source.first_source_selection_draw_index << "\n";
+    } else {
+        out << "unknown\n";
+    }
     out << "  first_action_source_draw_index: ";
     if (action_source.first_action_source_draw_index.has_value()) {
         out << *action_source.first_action_source_draw_index << "\n";
@@ -682,7 +711,8 @@ void write_text_report(
     if (!action_source.events.empty()) {
         out << "  events:\n";
         for (const auto& event : action_source.events) {
-            out << "    draw_index=";
+            out << "    kind=" << action_source_checkpoint_kind_name(event.kind);
+            out << " draw_index=";
             if (event.draw_index.has_value()) {
                 out << *event.draw_index;
             } else {
@@ -727,6 +757,12 @@ void write_text_report(
             out << " handler_pc=";
             if (event.handler_pc.has_value()) {
                 out << *event.handler_pc;
+            } else {
+                out << "unknown";
+            }
+            out << " callback_pc=";
+            if (event.callback_pc.has_value()) {
+                out << *event.callback_pc;
             } else {
                 out << "unknown";
             }
@@ -1998,18 +2034,47 @@ void write_json_report(
     } else {
         out << "null";
     }
+    out << ", \"expected_callback_pc\": ";
+    if (action_source.expected_callback_pc.has_value()) {
+        out << "\"" << json_escape(*action_source.expected_callback_pc) << "\"";
+    } else {
+        out << "null";
+    }
+    out << ", \"observed_source_selection_events\": "
+        << action_source.observed_source_selection_events;
     out << ", \"observed_action_source_events\": "
         << action_source.observed_action_source_events;
+    out << ", \"source_selection_events_with_source_slot\": "
+        << action_source.source_selection_events_with_source_slot;
+    out << ", \"source_selection_events_with_actor_slot\": "
+        << action_source.source_selection_events_with_actor_slot;
+    out << ", \"source_selection_events_with_target_slot\": "
+        << action_source.source_selection_events_with_target_slot;
     out << ", \"events_with_actor_slot\": " << action_source.events_with_actor_slot;
     out << ", \"events_with_source_slot\": " << action_source.events_with_source_slot;
     out << ", \"events_with_action_id\": " << action_source.events_with_action_id;
     out << ", \"events_with_handler_pc\": " << action_source.events_with_handler_pc;
+    out << ", \"events_with_callback_pc\": " << action_source.events_with_callback_pc;
     out << ", \"events_with_source_field6\": " << action_source.events_with_source_field6;
     out << ", \"events_with_actor_field6\": " << action_source.events_with_actor_field6;
+    out << ", \"source_selection_bridge_pairs\": "
+        << action_source.source_selection_bridge_pairs;
+    out << ", \"source_selection_bridge_matches\": "
+        << action_source.source_selection_bridge_matches;
+    out << ", \"source_selection_bridge_mismatches\": "
+        << action_source.source_selection_bridge_mismatches;
     out << ", \"field6_matches\": " << action_source.field6_matches;
     out << ", \"field6_mismatches\": " << action_source.field6_mismatches;
     out << ", \"handler_matches\": " << action_source.handler_matches;
     out << ", \"handler_mismatches\": " << action_source.handler_mismatches;
+    out << ", \"callback_matches\": " << action_source.callback_matches;
+    out << ", \"callback_mismatches\": " << action_source.callback_mismatches;
+    out << ", \"first_source_selection_draw_index\": ";
+    if (action_source.first_source_selection_draw_index.has_value()) {
+        out << *action_source.first_source_selection_draw_index;
+    } else {
+        out << "null";
+    }
     out << ", \"first_action_source_draw_index\": ";
     if (action_source.first_action_source_draw_index.has_value()) {
         out << *action_source.first_action_source_draw_index;
@@ -2022,7 +2087,8 @@ void write_json_report(
             out << ", ";
         }
         const auto& event = action_source.events[i];
-        out << "{\"draw_index\": ";
+        out << "{\"kind\": \"" << action_source_checkpoint_kind_name(event.kind) << "\"";
+        out << ", \"draw_index\": ";
         if (event.draw_index.has_value()) {
             out << *event.draw_index;
         } else {
@@ -2067,6 +2133,12 @@ void write_json_report(
         out << ", \"handler_pc\": ";
         if (event.handler_pc.has_value()) {
             out << "\"" << json_escape(*event.handler_pc) << "\"";
+        } else {
+            out << "null";
+        }
+        out << ", \"callback_pc\": ";
+        if (event.callback_pc.has_value()) {
+            out << "\"" << json_escape(*event.callback_pc) << "\"";
         } else {
             out << "null";
         }
