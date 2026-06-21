@@ -522,6 +522,55 @@ TEST(SavorPredictProgressParser, ParsesPlannedActionsPredicateAndCombatEvents) {
     EXPECT_EQ(parsed.ordered_combat_events[2].drop, "Sacri Crystal");
 }
 
+TEST(SavorPredictProgressParser, SoldierActionExecutionInfersDeathPreventedPlannedAttack) {
+    ParsedProgressEvents events;
+    PlannedTurnActions actions;
+    actions.vyse = parse_planned_action("Attack->[4]Soldier");
+    actions.aika = parse_planned_action("Attack->[4]Soldier");
+    actions.soldier4 = parse_planned_action("Attack->Vyse");
+    actions.soldier5 = parse_planned_action("Attack->Vyse");
+    events.planned_actions = actions;
+
+    const AttackEvent aika_attack{"Aika", "[4]Soldier", 30};
+    const AttackEvent vyse_attack{"Vyse", "[4]Soldier", 43};
+    const AttackEvent soldier5_attack{"[5]Soldier", "Vyse", 46};
+    events.ordered_combat_events.push_back(CombatEvent{CombatEventKind::Attack, aika_attack, {}, {}});
+    events.ordered_combat_events.push_back(CombatEvent{CombatEventKind::Attack, vyse_attack, {}, {}});
+    events.ordered_combat_events.push_back(CombatEvent{CombatEventKind::Death, {}, "[4]Soldier", {}});
+    events.ordered_combat_events.push_back(CombatEvent{CombatEventKind::Drop, {}, "[4]Soldier", "[273]Electri Box x1"});
+    events.ordered_combat_events.push_back(CombatEvent{CombatEventKind::Attack, soldier5_attack, {}, {}});
+
+    TurnOrderSimulation turn_order;
+    turn_order.execution_order_exact = true;
+    turn_order.execution_slots = {1, 0, 4, 5};
+
+    const auto summary = analyze_first_battle_soldier_action_execution(events, turn_order);
+
+    EXPECT_EQ(summary.planned_attack_count, 2);
+    EXPECT_EQ(summary.reached_execution_count, 1);
+    EXPECT_EQ(summary.death_prevented_count, 1);
+    EXPECT_EQ(summary.unresolved_planned_attack_count, 0);
+    ASSERT_EQ(summary.soldiers.size(), 2u);
+
+    EXPECT_EQ(summary.soldiers[0].slot, 4);
+    EXPECT_EQ(summary.soldiers[0].status, SoldierActionExecutionStatus::PreventedByDeathBeforeAction);
+    ASSERT_TRUE(summary.soldiers[0].turn_order_rank.has_value());
+    EXPECT_EQ(*summary.soldiers[0].turn_order_rank, 2);
+    ASSERT_TRUE(summary.soldiers[0].death_event_order.has_value());
+    EXPECT_EQ(*summary.soldiers[0].death_event_order, 2);
+    EXPECT_FALSE(summary.soldiers[0].attack_event_order.has_value());
+
+    EXPECT_EQ(summary.soldiers[1].slot, 5);
+    EXPECT_EQ(summary.soldiers[1].status, SoldierActionExecutionStatus::ReachedExecution);
+    ASSERT_TRUE(summary.soldiers[1].turn_order_rank.has_value());
+    EXPECT_EQ(*summary.soldiers[1].turn_order_rank, 3);
+    ASSERT_TRUE(summary.soldiers[1].attack_event_order.has_value());
+    EXPECT_EQ(*summary.soldiers[1].attack_event_order, 4);
+    EXPECT_EQ(
+        soldier_action_execution_status_name(summary.soldiers[1].status),
+        std::string("ReachedExecution"));
+}
+
 TEST(SavorPredictCheckpointTrace, ParsesKnownRngOwnersAndSeeds) {
     std::istringstream input(
         "pc=80010bdc function=getAttackResult checkpoint=hit rng_draw_index_before=12 "

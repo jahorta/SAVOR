@@ -9,5 +9,6 @@
 #include "FirstBattleDataModel.h"
 #include "PreAiCameraModel.h"
 #include "RngCore.h"
+#include "SoldierActionExecutionModel.h"
 #include "SoldierAiModel.h"
 #include "TurnOrderModel.h"

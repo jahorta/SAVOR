@@ -47,6 +47,9 @@
     <ClCompile Include="RngModel.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="SoldierActionExecutionModel.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="SoldierAiModel.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -89,6 +92,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="RngModel.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="SoldierActionExecutionModel.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="SoldierAiModel.h">

@@ -120,6 +120,7 @@
     <ClCompile Include="ProgressEventParser.cpp" />
     <ClCompile Include="RngCore.cpp" />
     <ClCompile Include="RngModel.cpp" />
+    <ClCompile Include="SoldierActionExecutionModel.cpp" />
     <ClCompile Include="SoldierAiModel.cpp" />
     <ClCompile Include="TurnOrderModel.cpp" />
     <ClCompile Include="TraceJob.cpp" />
@@ -136,6 +137,7 @@
     <ClInclude Include="ProgressEventParser.h" />
     <ClInclude Include="RngCore.h" />
     <ClInclude Include="RngModel.h" />
+    <ClInclude Include="SoldierActionExecutionModel.h" />
     <ClInclude Include="SoldierAiModel.h" />
     <ClInclude Include="TurnOrderModel.h" />
     <ClInclude Include="TraceJob.h" />

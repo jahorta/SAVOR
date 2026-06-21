@@ -70,6 +70,7 @@ struct TraceSummary {
     int observed_soldier_attack_events = 0;
     int enemy_ai_draws = 0;
     TurnOrderSimulation turn_order;
+    SoldierActionExecutionSummary soldier_action_execution;
     int turn_order_draws = 0;
     int known_through_turn_order = 0;
     int enemy_execution_setup_draws_if_all_planned_soldiers_act = 0;
@@ -658,10 +659,13 @@ TraceSummary build_trace(JobSnapshot job, ParsedProgressEvents events, std::vect
     summary.turn_order = simulate_turn_order(
         state,
         first_battle_basic_turn_order_entries(soldier4_attacks, soldier5_attacks));
+    summary.soldier_action_execution =
+        analyze_first_battle_soldier_action_execution(summary.events, summary.turn_order);
     summary.turn_order_draws = summary.turn_order.draws_consumed;
     summary.known_through_turn_order = summary.pre_ai_draws + summary.enemy_ai_draws + summary.turn_order_draws;
     summary.enemy_execution_setup_draws_if_all_planned_soldiers_act = summary.planned_soldier_attacks;
-    summary.confirmed_enemy_execution_setup_draws_from_observed_events = summary.observed_soldier_attack_events;
+    summary.confirmed_enemy_execution_setup_draws_from_observed_events =
+        summary.soldier_action_execution.reached_execution_count;
     summary.observed_shared_attack_damage_draw_floor = shared_attack_damage_draw_floor(summary.events);
     summarize_crit_gate_events(
         summary.events,
@@ -822,6 +826,35 @@ void write_text(const TraceSummary& summary, std::ostream& out) {
         << " (HandleECInst:8008bc68 if each planned Soldier attack acts)\n";
     out << "  confirmed enemy setup draws from observed Soldier attack events: "
         << summary.confirmed_enemy_execution_setup_draws_from_observed_events << "\n";
+    out << "  Soldier action execution from progress order:\n";
+    out << "    planned attacks: " << summary.soldier_action_execution.planned_attack_count << "\n";
+    out << "    reached execution: " << summary.soldier_action_execution.reached_execution_count << "\n";
+    out << "    death-prevented planned attacks: " << summary.soldier_action_execution.death_prevented_count << "\n";
+    out << "    unresolved planned attacks: " << summary.soldier_action_execution.unresolved_planned_attack_count << "\n";
+    for (const auto& soldier : summary.soldier_action_execution.soldiers) {
+        out << "    [" << soldier.slot << "]Soldier status="
+            << soldier_action_execution_status_name(soldier.status)
+            << " planned=" << action_kind_name(soldier.planned_kind)
+            << " turn_order_rank=";
+        if (soldier.turn_order_rank.has_value()) {
+            out << *soldier.turn_order_rank;
+        } else {
+            out << "unknown";
+        }
+        out << " attack_event_order=";
+        if (soldier.attack_event_order.has_value()) {
+            out << *soldier.attack_event_order;
+        } else {
+            out << "none";
+        }
+        out << " death_event_order=";
+        if (soldier.death_event_order.has_value()) {
+            out << *soldier.death_event_order;
+        } else {
+            out << "none";
+        }
+        out << "\n";
+    }
     out << "  observed shared attack damage draw floor: "
         << summary.observed_shared_attack_damage_draw_floor
         << " (3 per damage event: hit/dodge plus two damage rolls)\n";
@@ -1043,6 +1076,42 @@ void write_json(const TraceSummary& summary, std::ostream& out) {
         << summary.enemy_execution_setup_draws_if_all_planned_soldiers_act;
     out << ", \"confirmed_enemy_execution_setup_draws_from_observed_events\": "
         << summary.confirmed_enemy_execution_setup_draws_from_observed_events;
+    out << ", \"soldier_action_execution\": {";
+    out << "\"planned_attacks\": " << summary.soldier_action_execution.planned_attack_count;
+    out << ", \"reached_execution\": " << summary.soldier_action_execution.reached_execution_count;
+    out << ", \"death_prevented_planned_attacks\": " << summary.soldier_action_execution.death_prevented_count;
+    out << ", \"unresolved_planned_attacks\": "
+        << summary.soldier_action_execution.unresolved_planned_attack_count;
+    out << ", \"soldiers\": [";
+    for (std::size_t i = 0; i < summary.soldier_action_execution.soldiers.size(); ++i) {
+        const auto& soldier = summary.soldier_action_execution.soldiers[i];
+        if (i != 0) {
+            out << ", ";
+        }
+        out << "{\"slot\": " << soldier.slot
+            << ", \"planned\": \"" << action_kind_name(soldier.planned_kind)
+            << "\", \"status\": \"" << soldier_action_execution_status_name(soldier.status)
+            << "\", \"turn_order_rank\": ";
+        if (soldier.turn_order_rank.has_value()) {
+            out << *soldier.turn_order_rank;
+        } else {
+            out << "null";
+        }
+        out << ", \"attack_event_order\": ";
+        if (soldier.attack_event_order.has_value()) {
+            out << *soldier.attack_event_order;
+        } else {
+            out << "null";
+        }
+        out << ", \"death_event_order\": ";
+        if (soldier.death_event_order.has_value()) {
+            out << *soldier.death_event_order;
+        } else {
+            out << "null";
+        }
+        out << "}";
+    }
+    out << "]}";
     out << ", \"aggregate_limit\": \"progress events do not prove missed/interrupted Soldier turns or scheduler interleaving\"";
     out << "},\n";
     out << "  \"action_execution_observation\": {";
