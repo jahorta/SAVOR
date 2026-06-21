@@ -138,6 +138,7 @@
     <ClCompile Include="..\SavorPredict\DropModel.cpp" />
     <ClCompile Include="..\SavorPredict\EnemyAttackSetupModel.cpp" />
     <ClCompile Include="..\SavorPredict\FirstBattleDataModel.cpp" />
+    <ClCompile Include="..\SavorPredict\PreAiCameraModel.cpp" />
     <ClCompile Include="..\SavorPredict\ProgressEventParser.cpp" />
     <ClCompile Include="..\SavorPredict\RngCore.cpp" />
     <ClCompile Include="..\SavorPredict\RngModel.cpp" />

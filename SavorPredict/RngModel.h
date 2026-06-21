@@ -7,6 +7,7 @@
 #include "DropModel.h"
 #include "EnemyAttackSetupModel.h"
 #include "FirstBattleDataModel.h"
+#include "PreAiCameraModel.h"
 #include "RngCore.h"
 #include "SoldierAiModel.h"
 #include "TurnOrderModel.h"

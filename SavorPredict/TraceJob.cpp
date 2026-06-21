@@ -61,6 +61,7 @@ struct TraceSummary {
     JobSnapshot job;
     std::vector<std::string> command_summary;
     ParsedProgressEvents events;
+    PreAiCameraDrawModel pre_ai_model;
     int pre_ai_draws = 0;
     std::vector<SoldierAiDecision> soldier_ai;
     int planned_soldier_attacks = 0;
@@ -632,7 +633,8 @@ TraceSummary build_trace(JobSnapshot job, ParsedProgressEvents events, std::vect
         summary.total_draw_distance = bounded_distance(summary.job.start_seed, *summary.job.end_seed, max_distance);
     }
 
-    summary.pre_ai_draws = pre_ai_draws_for_fake_attacks(summary.job.fake_attacks_this_turn);
+    summary.pre_ai_model = model_pre_ai_camera_draws(summary.job.fake_attacks_this_turn);
+    summary.pre_ai_draws = summary.pre_ai_model.expected_total_draws;
     auto state = summary.job.start_seed;
     for (int i = 0; i < summary.pre_ai_draws; ++i) {
         state = advance_once(state);
@@ -785,7 +787,15 @@ void write_text(const TraceSummary& summary, std::ostream& out) {
 
     out << "\nKnown RNG checkpoints\n";
     out << "  pre_ai_draws: " << summary.pre_ai_draws << "\n";
-    out << "    rule: fake_attacks + 2 for fake_attacks >= 1, otherwise 3\n";
+    out << "    rule: " << pre_ai_camera_rule_name(summary.pre_ai_model) << "\n";
+    out << "    detail: " << pre_ai_camera_rule_detail(summary.pre_ai_model) << "\n";
+    out << "    fake_attack_draws: " << summary.pre_ai_model.fake_attack_draws << "\n";
+    out << "    baseline_camera_draws: " << summary.pre_ai_model.baseline_camera_draws << "\n";
+    out << "    expected_camera_draws: " << summary.pre_ai_model.expected_camera_draws << "\n";
+    out << "    suppressed_attack_targeting_camera_draws: "
+        << summary.pre_ai_model.suppressed_attack_targeting_camera_draws << "\n";
+    out << "    unsuppressed_fake_plus_camera_total: "
+        << summary.pre_ai_model.unsuppressed_total_draws << "\n";
     out << "    first Soldier AI draw index: " << (summary.pre_ai_draws + 1) << " (1-based after battle start seed)\n";
     out << "  enemy_ai_draws: " << summary.enemy_ai_draws << "\n";
     out << "    planned Soldier attacks: " << summary.planned_soldier_attacks << "\n";
@@ -998,7 +1008,15 @@ void write_json(const TraceSummary& summary, std::ostream& out) {
     }
     out << ",\n";
     out << "  \"pre_ai_draws\": " << summary.pre_ai_draws << ",\n";
-    out << "  \"pre_ai_rule\": \"fake_attacks + 2 for fake_attacks >= 1, otherwise 3\",\n";
+    out << "  \"pre_ai_rule\": \"" << pre_ai_camera_rule_name(summary.pre_ai_model) << "\",\n";
+    out << "  \"pre_ai_rule_detail\": \"" << json_escape(pre_ai_camera_rule_detail(summary.pre_ai_model)) << "\",\n";
+    out << "  \"pre_ai_fake_attack_draws\": " << summary.pre_ai_model.fake_attack_draws << ",\n";
+    out << "  \"pre_ai_baseline_camera_draws\": " << summary.pre_ai_model.baseline_camera_draws << ",\n";
+    out << "  \"pre_ai_expected_camera_draws\": " << summary.pre_ai_model.expected_camera_draws << ",\n";
+    out << "  \"pre_ai_suppressed_attack_targeting_camera_draws\": "
+        << summary.pre_ai_model.suppressed_attack_targeting_camera_draws << ",\n";
+    out << "  \"pre_ai_unsuppressed_fake_plus_camera_total\": "
+        << summary.pre_ai_model.unsuppressed_total_draws << ",\n";
     out << "  \"first_soldier_ai_draw_index_1_based\": " << (summary.pre_ai_draws + 1) << ",\n";
     out << "  \"enemy_ai_draws\": " << summary.enemy_ai_draws << ",\n";
     out << "  \"planned_soldier_attacks\": " << summary.planned_soldier_attacks << ",\n";

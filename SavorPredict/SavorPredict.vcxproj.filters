@@ -35,6 +35,9 @@
     <ClCompile Include="Main.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="PreAiCameraModel.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="ProgressEventParser.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -74,6 +77,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="FirstBattleDataModel.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PreAiCameraModel.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="ProgressEventParser.h">

@@ -1,12 +1,11 @@
 #include "SoldierAiModel.h"
 
+#include "PreAiCameraModel.h"
+
 namespace savor::predict {
 
 int pre_ai_draws_for_fake_attacks(int fake_attacks_this_turn) {
-    if (fake_attacks_this_turn <= 0) {
-        return 3;
-    }
-    return fake_attacks_this_turn + 2;
+    return model_pre_ai_camera_draws(fake_attacks_this_turn).expected_total_draws;
 }
 
 int soldier_attack_param_from_rand(std::uint16_t value) {

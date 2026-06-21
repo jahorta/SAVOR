@@ -30,6 +30,35 @@ TEST(SavorPredictRngModel, BoundedDistanceFindsAdvancedTarget) {
     EXPECT_EQ(*distance, 17);
 }
 
+TEST(SavorPredictRngModel, PreAiCameraModelKeepsBaselineAndSuppressionVisible) {
+    const auto no_fake = model_pre_ai_camera_draws(0);
+    EXPECT_EQ(no_fake.fake_attack_draws, 0);
+    EXPECT_EQ(no_fake.baseline_camera_draws, 3);
+    EXPECT_EQ(no_fake.expected_camera_draws, 3);
+    EXPECT_EQ(no_fake.suppressed_attack_targeting_camera_draws, 0);
+    EXPECT_EQ(no_fake.unsuppressed_total_draws, 3);
+    EXPECT_EQ(no_fake.expected_total_draws, 3);
+    EXPECT_FALSE(no_fake.suppresses_normal_attack_targeting_camera);
+    EXPECT_EQ(pre_ai_camera_rule_name(no_fake), std::string("BaselineThreeCameraDraws"));
+
+    const auto one_fake = model_pre_ai_camera_draws(1);
+    EXPECT_EQ(one_fake.fake_attack_draws, 1);
+    EXPECT_EQ(one_fake.baseline_camera_draws, 3);
+    EXPECT_EQ(one_fake.expected_camera_draws, 2);
+    EXPECT_EQ(one_fake.suppressed_attack_targeting_camera_draws, 1);
+    EXPECT_EQ(one_fake.unsuppressed_total_draws, 4);
+    EXPECT_EQ(one_fake.expected_total_draws, 3);
+    EXPECT_TRUE(one_fake.suppresses_normal_attack_targeting_camera);
+    EXPECT_EQ(
+        pre_ai_camera_rule_name(one_fake),
+        std::string("FakeAttackSuppressesOneTargetingCameraDraw"));
+
+    const auto three_fake = model_pre_ai_camera_draws(3);
+    EXPECT_EQ(three_fake.unsuppressed_total_draws, 6);
+    EXPECT_EQ(three_fake.expected_total_draws, 5);
+    EXPECT_EQ(pre_ai_draws_for_fake_attacks(3), three_fake.expected_total_draws);
+}
+
 TEST(SavorPredictRngModel, SoldierAiConsumesExpectedAttackDraws) {
     std::uint32_t state = 15u;
     for (int i = 0; i < pre_ai_draws_for_fake_attacks(3); ++i) {
