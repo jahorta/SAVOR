@@ -136,6 +136,7 @@
     <ClCompile Include="..\SavorPredict\AttackResolutionCheckpointModel.cpp" />
     <ClCompile Include="..\SavorPredict\AttackResolutionModel.cpp" />
     <ClCompile Include="..\SavorPredict\CheckpointTrace.cpp" />
+    <ClCompile Include="..\SavorPredict\CritGateCheckpointModel.cpp" />
     <ClCompile Include="..\SavorPredict\CounterCheckpointModel.cpp" />
     <ClCompile Include="..\SavorPredict\CounterModel.cpp" />
     <ClCompile Include="..\SavorPredict\DropCheckpointModel.cpp" />

@@ -2,6 +2,7 @@
 
 #include "ActionViewCameraModel.h"
 #include "AttackResolutionCheckpointModel.h"
+#include "CritGateCheckpointModel.h"
 #include "CounterCheckpointModel.h"
 #include "DropCheckpointModel.h"
 #include "OutcomeCheckpointModel.h"
@@ -453,6 +454,83 @@ void write_text_report(
     out << "  damage_pairs_in_order: " << attack_resolution.damage_pairs_in_order << "\n";
     out << "  damage_pairs_out_of_order: "
         << attack_resolution.damage_pairs_out_of_order << "\n";
+
+    const auto crit_gate = summarize_crit_gate_checkpoints(result.events);
+    out << "\nCrit-gate checkpoints\n";
+    out << "  status: " << crit_gate_checkpoint_status_name(crit_gate.status) << "\n";
+    out << "  rule: " << crit_gate_checkpoint_rule_detail() << "\n";
+    out << "  observed_hit_draws: " << crit_gate.observed_hit_draws << "\n";
+    out << "  observed_crit_draws: " << crit_gate.observed_crit_draws << "\n";
+    out << "  hit_draws_with_instr_param: "
+        << crit_gate.hit_draws_with_instr_param << "\n";
+    out << "  hit_draws_with_hit_success: "
+        << crit_gate.hit_draws_with_hit_success << "\n";
+    out << "  expected_crit_draws_from_live_gate: ";
+    if (crit_gate.expected_crit_draws_from_live_gate.has_value()) {
+        out << *crit_gate.expected_crit_draws_from_live_gate << "\n";
+    } else {
+        out << "unknown\n";
+    }
+    out << "  first_hit_draw_index: ";
+    if (crit_gate.first_hit_draw_index.has_value()) {
+        out << *crit_gate.first_hit_draw_index << "\n";
+    } else {
+        out << "unknown\n";
+    }
+    out << "  first_crit_draw_index: ";
+    if (crit_gate.first_crit_draw_index.has_value()) {
+        out << *crit_gate.first_crit_draw_index << "\n";
+    } else {
+        out << "unknown\n";
+    }
+    if (!crit_gate.hit_draws.empty()) {
+        out << "  hit_draws:\n";
+        for (const auto& draw : crit_gate.hit_draws) {
+            out << "    draw_index=";
+            if (draw.draw_index.has_value()) {
+                out << *draw.draw_index;
+            } else {
+                out << "unknown";
+            }
+            out << " active_slot=";
+            if (draw.active_slot.has_value()) {
+                out << *draw.active_slot;
+            } else {
+                out << "unknown";
+            }
+            out << " target_slot=";
+            if (draw.target_slot.has_value()) {
+                out << *draw.target_slot;
+            } else {
+                out << "unknown";
+            }
+            out << " instr_param_0x6=";
+            if (draw.instr_param_0x6.has_value()) {
+                out << *draw.instr_param_0x6;
+            } else {
+                out << "unknown";
+            }
+            out << " hit_success=";
+            if (draw.hit_success.has_value()) {
+                out << *draw.hit_success;
+            } else {
+                out << "unknown";
+            }
+            out << " attack_result=";
+            if (draw.attack_result.has_value()) {
+                out << *draw.attack_result;
+            } else {
+                out << "unknown";
+            }
+            out << " rand_value=";
+            if (draw.rand_value.has_value()) {
+                out << *draw.rand_value;
+            } else {
+                out << "unknown";
+            }
+            out << "\n";
+        }
+    }
 
     const auto counter = summarize_counter_checkpoints(
         result.events,
@@ -983,6 +1061,87 @@ void write_json_report(
         << attack_resolution.damage_pairs_in_order;
     out << ", \"damage_pairs_out_of_order\": "
         << attack_resolution.damage_pairs_out_of_order;
+    out << "},\n";
+
+    const auto crit_gate = summarize_crit_gate_checkpoints(result.events);
+    out << "  \"crit_gate_checkpoints\": {";
+    out << "\"status\": \"" << crit_gate_checkpoint_status_name(crit_gate.status) << "\"";
+    out << ", \"rule\": \"" << json_escape(crit_gate_checkpoint_rule_detail()) << "\"";
+    out << ", \"observed_hit_draws\": " << crit_gate.observed_hit_draws;
+    out << ", \"observed_crit_draws\": " << crit_gate.observed_crit_draws;
+    out << ", \"hit_draws_with_instr_param\": "
+        << crit_gate.hit_draws_with_instr_param;
+    out << ", \"hit_draws_with_hit_success\": "
+        << crit_gate.hit_draws_with_hit_success;
+    out << ", \"expected_crit_draws_from_live_gate\": ";
+    if (crit_gate.expected_crit_draws_from_live_gate.has_value()) {
+        out << *crit_gate.expected_crit_draws_from_live_gate;
+    } else {
+        out << "null";
+    }
+    out << ", \"first_hit_draw_index\": ";
+    if (crit_gate.first_hit_draw_index.has_value()) {
+        out << *crit_gate.first_hit_draw_index;
+    } else {
+        out << "null";
+    }
+    out << ", \"first_crit_draw_index\": ";
+    if (crit_gate.first_crit_draw_index.has_value()) {
+        out << *crit_gate.first_crit_draw_index;
+    } else {
+        out << "null";
+    }
+    out << ", \"hit_draws\": [";
+    for (std::size_t i = 0; i < crit_gate.hit_draws.size(); ++i) {
+        if (i != 0) {
+            out << ", ";
+        }
+        const auto& draw = crit_gate.hit_draws[i];
+        out << "{\"draw_index\": ";
+        if (draw.draw_index.has_value()) {
+            out << *draw.draw_index;
+        } else {
+            out << "null";
+        }
+        out << ", \"active_slot\": ";
+        if (draw.active_slot.has_value()) {
+            out << *draw.active_slot;
+        } else {
+            out << "null";
+        }
+        out << ", \"target_slot\": ";
+        if (draw.target_slot.has_value()) {
+            out << *draw.target_slot;
+        } else {
+            out << "null";
+        }
+        out << ", \"instr_param_0x6\": ";
+        if (draw.instr_param_0x6.has_value()) {
+            out << *draw.instr_param_0x6;
+        } else {
+            out << "null";
+        }
+        out << ", \"hit_success\": ";
+        if (draw.hit_success.has_value()) {
+            out << *draw.hit_success;
+        } else {
+            out << "null";
+        }
+        out << ", \"attack_result\": ";
+        if (draw.attack_result.has_value()) {
+            out << *draw.attack_result;
+        } else {
+            out << "null";
+        }
+        out << ", \"rand_value\": ";
+        if (draw.rand_value.has_value()) {
+            out << *draw.rand_value;
+        } else {
+            out << "null";
+        }
+        out << "}";
+    }
+    out << "]";
     out << "},\n";
 
     const auto counter = summarize_counter_checkpoints(

@@ -23,6 +23,9 @@
     <ClCompile Include="CheckpointTrace.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="CritGateCheckpointModel.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="CounterCheckpointModel.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -89,6 +92,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="CheckpointTrace.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="CritGateCheckpointModel.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="CounterCheckpointModel.h">
