@@ -909,39 +909,68 @@ void write_text_report(
     out << "  draws_with_quick: " << turn_order.draws_with_quick << "\n";
     out << "  draws_with_assigned_priority: " << turn_order.draws_with_assigned_priority << "\n";
     out << "  draws_with_rand_value: " << turn_order.draws_with_rand_value << "\n";
+    out << "  observed_queue_entries: " << turn_order.observed_queue_entries << "\n";
+    out << "  observed_execution_order_entries: "
+        << turn_order.observed_execution_order_entries << "\n";
+    out << "  queue_entries_with_slot: " << turn_order.queue_entries_with_slot << "\n";
+    out << "  queue_entries_with_quick: " << turn_order.queue_entries_with_quick << "\n";
+    out << "  queue_entries_with_assigned_priority: "
+        << turn_order.queue_entries_with_assigned_priority << "\n";
+    out << "  priority_draws_with_expected_priority: "
+        << turn_order.priority_draws_with_expected_priority << "\n";
+    out << "  priority_matches: " << turn_order.priority_matches << "\n";
+    out << "  priority_mismatches: " << turn_order.priority_mismatches << "\n";
+    out << "  incomplete_queue_entries: " << turn_order.incomplete_queue_entries << "\n";
+    out << "  incomplete_execution_order_entries: "
+        << turn_order.incomplete_execution_order_entries << "\n";
+    out << "  execution_order_compared: "
+        << (turn_order.execution_order_compared ? "true" : "false") << "\n";
+    out << "  execution_order_exact: "
+        << (turn_order.execution_order_exact ? "true" : "false") << "\n";
+    out << "  priority_ties_observed: "
+        << (turn_order.priority_ties_observed ? "true" : "false") << "\n";
+    out << "  execution_order_matches: "
+        << turn_order.execution_order_matches << "\n";
+    out << "  execution_order_mismatches: "
+        << turn_order.execution_order_mismatches << "\n";
+    if (!turn_order.expected_execution_slots.empty()) {
+        out << "  expected_execution_slots:";
+        for (const auto slot : turn_order.expected_execution_slots) {
+            out << " " << slot;
+        }
+        out << "\n";
+    }
+    if (!turn_order.observed_execution_slots.empty()) {
+        out << "  observed_execution_slots:";
+        for (const auto slot : turn_order.observed_execution_slots) {
+            out << " " << slot;
+        }
+        out << "\n";
+    }
     if (!turn_order.draws.empty()) {
-        out << "  draws:\n";
+        out << "  events:\n";
         for (const auto& draw : turn_order.draws) {
             out << "    draw_index=";
-            if (draw.draw_index.has_value()) {
-                out << *draw.draw_index;
-            } else {
-                out << "unknown";
-            }
+            write_optional_int(out, draw.draw_index);
+            out << " kind=" << turn_order_checkpoint_kind_name(draw.kind);
             out << " slot=";
-            if (draw.slot.has_value()) {
-                out << *draw.slot;
-            } else {
-                out << "unknown";
-            }
+            write_optional_int(out, draw.slot);
             out << " quick=";
-            if (draw.quick.has_value()) {
-                out << *draw.quick;
-            } else {
-                out << "unknown";
-            }
+            write_optional_int(out, draw.quick);
+            out << " queue_index=";
+            write_optional_int(out, draw.queue_index);
+            out << " execution_index=";
+            write_optional_int(out, draw.execution_index);
+            out << " jitter_modulus=";
+            write_optional_int(out, draw.jitter_modulus);
             out << " assigned_priority=";
-            if (draw.assigned_priority.has_value()) {
-                out << *draw.assigned_priority;
-            } else {
-                out << "unknown";
-            }
+            write_optional_int(out, draw.assigned_priority);
+            out << " expected_assigned_priority=";
+            write_optional_int(out, draw.expected_assigned_priority);
             out << " rand_value=";
-            if (draw.rand_value.has_value()) {
-                out << *draw.rand_value;
-            } else {
-                out << "unknown";
-            }
+            write_optional_int(out, draw.rand_value);
+            out << " priority_matches="
+                << (draw.priority_matches ? "true" : "false");
             out << "\n";
         }
     }
@@ -2222,42 +2251,89 @@ void write_json_report(
     out << ", \"draws_with_assigned_priority\": "
         << turn_order.draws_with_assigned_priority;
     out << ", \"draws_with_rand_value\": " << turn_order.draws_with_rand_value;
-    out << ", \"draws\": [";
+    out << ", \"observed_queue_entries\": " << turn_order.observed_queue_entries;
+    out << ", \"observed_execution_order_entries\": "
+        << turn_order.observed_execution_order_entries;
+    out << ", \"queue_entries_with_slot\": " << turn_order.queue_entries_with_slot;
+    out << ", \"queue_entries_with_quick\": " << turn_order.queue_entries_with_quick;
+    out << ", \"queue_entries_with_assigned_priority\": "
+        << turn_order.queue_entries_with_assigned_priority;
+    out << ", \"priority_draws_with_expected_priority\": "
+        << turn_order.priority_draws_with_expected_priority;
+    out << ", \"priority_matches\": " << turn_order.priority_matches;
+    out << ", \"priority_mismatches\": " << turn_order.priority_mismatches;
+    out << ", \"incomplete_queue_entries\": " << turn_order.incomplete_queue_entries;
+    out << ", \"incomplete_execution_order_entries\": "
+        << turn_order.incomplete_execution_order_entries;
+    out << ", \"execution_order_compared\": "
+        << (turn_order.execution_order_compared ? "true" : "false");
+    out << ", \"execution_order_exact\": "
+        << (turn_order.execution_order_exact ? "true" : "false");
+    out << ", \"priority_ties_observed\": "
+        << (turn_order.priority_ties_observed ? "true" : "false");
+    out << ", \"execution_order_matches\": " << turn_order.execution_order_matches;
+    out << ", \"execution_order_mismatches\": "
+        << turn_order.execution_order_mismatches;
+    out << ", \"expected_execution_slots\": [";
+    for (std::size_t i = 0; i < turn_order.expected_execution_slots.size(); ++i) {
+        if (i != 0) {
+            out << ", ";
+        }
+        out << turn_order.expected_execution_slots[i];
+    }
+    out << "]";
+    out << ", \"observed_execution_slots\": [";
+    for (std::size_t i = 0; i < turn_order.observed_execution_slots.size(); ++i) {
+        if (i != 0) {
+            out << ", ";
+        }
+        out << turn_order.observed_execution_slots[i];
+    }
+    out << "]";
+    out << ", \"events\": [";
     for (std::size_t i = 0; i < turn_order.draws.size(); ++i) {
         if (i != 0) {
             out << ", ";
         }
         const auto& draw = turn_order.draws[i];
         out << "{\"draw_index\": ";
-        if (draw.draw_index.has_value()) {
-            out << *draw.draw_index;
-        } else {
-            out << "null";
-        }
+        write_json_optional_int(out, draw.draw_index);
+        out << ", \"kind\": \""
+            << turn_order_checkpoint_kind_name(draw.kind) << "\"";
         out << ", \"slot\": ";
-        if (draw.slot.has_value()) {
-            out << *draw.slot;
-        } else {
-            out << "null";
-        }
+        write_json_optional_int(out, draw.slot);
         out << ", \"quick\": ";
-        if (draw.quick.has_value()) {
-            out << *draw.quick;
-        } else {
-            out << "null";
-        }
+        write_json_optional_int(out, draw.quick);
+        out << ", \"queued_instruction\": ";
+        write_json_optional_int(out, draw.queued_instruction);
+        out << ", \"target_slot\": ";
+        write_json_optional_int(out, draw.target_slot);
+        out << ", \"initial_priority\": ";
+        write_json_optional_int(out, draw.initial_priority);
+        out << ", \"fixed_priority_result\": ";
+        write_json_optional_int(out, draw.fixed_priority_result);
+        out << ", \"fixed_priority_value\": ";
+        write_json_optional_int(out, draw.fixed_priority_value);
+        out << ", \"jitter_modulus\": ";
+        write_json_optional_int(out, draw.jitter_modulus);
+        out << ", \"sum_quick\": ";
+        write_json_optional_int(out, draw.sum_quick);
+        out << ", \"queued_count\": ";
+        write_json_optional_int(out, draw.queued_count);
+        out << ", \"queue_index\": ";
+        write_json_optional_int(out, draw.queue_index);
+        out << ", \"execution_index\": ";
+        write_json_optional_int(out, draw.execution_index);
         out << ", \"assigned_priority\": ";
-        if (draw.assigned_priority.has_value()) {
-            out << *draw.assigned_priority;
-        } else {
-            out << "null";
-        }
+        write_json_optional_int(out, draw.assigned_priority);
+        out << ", \"expected_assigned_priority\": ";
+        write_json_optional_int(out, draw.expected_assigned_priority);
+        out << ", \"expected_execution_slot\": ";
+        write_json_optional_int(out, draw.expected_execution_slot);
         out << ", \"rand_value\": ";
-        if (draw.rand_value.has_value()) {
-            out << *draw.rand_value;
-        } else {
-            out << "null";
-        }
+        write_json_optional_int(out, draw.rand_value);
+        out << ", \"priority_matches\": "
+            << (draw.priority_matches ? "true" : "false");
         out << "}";
     }
     out << "]";

@@ -1,6 +1,10 @@
 #include "TurnOrderCheckpointModel.h"
 
+#include <algorithm>
 #include <cstdlib>
+#include <initializer_list>
+#include <numeric>
+#include <string_view>
 #include <utility>
 
 namespace savor::predict {
@@ -20,22 +24,109 @@ std::optional<int> parse_field_int(const CheckpointEvent& event, const char* key
     }
 
     char* end = nullptr;
-    const long parsed = std::strtol(found->second.c_str(), &end, 10);
+    const long parsed = std::strtol(found->second.c_str(), &end, 0);
     if (end == found->second.c_str() || *end != '\0') {
         return std::nullopt;
     }
     return static_cast<int>(parsed);
 }
 
-TurnOrderCheckpointStatus classify_status(std::optional<int> expected, int observed) {
-    if (!expected.has_value()) {
-        return TurnOrderCheckpointStatus::ObservedOnly;
+std::optional<int> parse_first_field_int(
+    const CheckpointEvent& event,
+    std::initializer_list<const char*> field_names) {
+    for (const auto* field_name : field_names) {
+        if (const auto value = parse_field_int(event, field_name); value.has_value()) {
+            return value;
+        }
     }
-    if (observed < *expected) {
+    return std::nullopt;
+}
+
+bool event_named(const CheckpointEvent& event, std::initializer_list<std::string_view> names) {
+    for (const auto name : names) {
+        if (event.function == name || event.checkpoint == name) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool is_queue_entry_checkpoint(const CheckpointEvent& event) {
+    return event_named(event, {
+        "turn_order_queue",
+        "queued_entry",
+        "queue_entry",
+        "action_queue_entry",
+    });
+}
+
+bool is_execution_order_checkpoint(const CheckpointEvent& event) {
+    return event_named(event, {
+        "turn_order_execution",
+        "execution_order",
+        "final_turn_order",
+        "s8_ARRAY_803092f4",
+        "s8_array",
+    });
+}
+
+bool priority_fields_complete(const TurnOrderCheckpointDraw& draw) {
+    return draw.quick.has_value()
+        && draw.rand_value.has_value()
+        && draw.jitter_modulus.has_value()
+        && draw.assigned_priority.has_value()
+        && *draw.jitter_modulus > 0;
+}
+
+bool queue_entry_complete(const TurnOrderCheckpointDraw& draw) {
+    return draw.slot.has_value()
+        && draw.quick.has_value()
+        && draw.assigned_priority.has_value();
+}
+
+bool execution_entry_complete(const TurnOrderCheckpointDraw& draw) {
+    return draw.slot.has_value();
+}
+
+std::vector<TurnOrderCheckpointDraw> sorted_execution_entries(
+    const std::vector<TurnOrderCheckpointDraw>& entries) {
+    auto sorted = entries;
+    std::stable_sort(sorted.begin(), sorted.end(), [](const auto& lhs, const auto& rhs) {
+        if (lhs.execution_index.has_value() && rhs.execution_index.has_value()
+            && *lhs.execution_index != *rhs.execution_index) {
+            return *lhs.execution_index < *rhs.execution_index;
+        }
+        if (lhs.draw_index.has_value() && rhs.draw_index.has_value()
+            && *lhs.draw_index != *rhs.draw_index) {
+            return *lhs.draw_index < *rhs.draw_index;
+        }
+        return false;
+    });
+    return sorted;
+}
+
+TurnOrderCheckpointStatus classify_status(const TurnOrderCheckpointSummary& summary) {
+    if (summary.expected_priority_jitter_draws.has_value()
+        && summary.observed_priority_jitter_draws < *summary.expected_priority_jitter_draws) {
         return TurnOrderCheckpointStatus::MissingPriorityJitterDraws;
     }
-    if (observed > *expected) {
+    if (summary.expected_priority_jitter_draws.has_value()
+        && summary.observed_priority_jitter_draws > *summary.expected_priority_jitter_draws) {
         return TurnOrderCheckpointStatus::ExtraPriorityJitterDraws;
+    }
+    if (summary.priority_mismatches > 0) {
+        return TurnOrderCheckpointStatus::PriorityMismatch;
+    }
+    if (summary.execution_order_mismatches > 0) {
+        return TurnOrderCheckpointStatus::ExecutionOrderMismatch;
+    }
+    if (summary.incomplete_queue_entries > 0 || summary.incomplete_execution_order_entries > 0) {
+        return TurnOrderCheckpointStatus::MissingLivePriorityFields;
+    }
+    if (!summary.expected_priority_jitter_draws.has_value()
+        && summary.priority_draws_with_expected_priority == 0
+        && !summary.execution_order_compared) {
+        return TurnOrderCheckpointStatus::ObservedOnly;
     }
     return TurnOrderCheckpointStatus::MatchesExpected;
 }
@@ -55,21 +146,61 @@ TurnOrderCheckpointSummary summarize_turn_order_checkpoints(
     std::optional<int> expected_priority_jitter_draws) {
     TurnOrderCheckpointSummary summary;
     summary.expected_priority_jitter_draws = expected_priority_jitter_draws;
+    std::vector<TurnOrderCheckpointDraw> queue_priority_sources;
+    std::vector<TurnOrderCheckpointDraw> draw_priority_sources;
+    std::vector<TurnOrderCheckpointDraw> execution_entries;
 
     for (const auto& event : events) {
-        if (!owner_is(event, kTurnOrderOwner)) {
+        const bool priority_draw = owner_is(event, kTurnOrderOwner);
+        const bool queue_entry = !priority_draw && is_queue_entry_checkpoint(event);
+        const bool execution_entry = is_execution_order_checkpoint(event);
+        if (!priority_draw && !queue_entry && !execution_entry) {
             continue;
         }
 
         TurnOrderCheckpointDraw draw;
+        draw.kind = priority_draw
+            ? TurnOrderCheckpointKind::PriorityJitterDraw
+            : (execution_entry ? TurnOrderCheckpointKind::ExecutionOrderEntry : TurnOrderCheckpointKind::QueueEntry);
         draw.draw_index = event.rng_draw_index_before;
-        draw.slot = event.active_slot.has_value() ? event.active_slot : parse_field_int(event, "slot");
+        draw.slot = event.active_slot.has_value() ? event.active_slot : parse_first_field_int(event, {"slot", "actor_slot"});
         draw.quick = parse_field_int(event, "quick");
+        draw.queued_instruction = parse_first_field_int(event, {"queued_instruction", "instruction"});
+        draw.target_slot = event.target_slot.has_value()
+            ? event.target_slot
+            : parse_first_field_int(event, {"target_slot", "target"});
+        draw.initial_priority = parse_field_int(event, "initial_priority");
+        draw.fixed_priority_result = parse_field_int(event, "fixed_priority_result");
+        draw.fixed_priority_value = parse_field_int(event, "fixed_priority_value");
+        draw.jitter_modulus = parse_field_int(event, "jitter_modulus");
+        draw.sum_quick = parse_field_int(event, "sum_quick");
+        draw.queued_count = parse_first_field_int(event, {"queued_count", "num_actions"});
+        draw.queue_index = parse_field_int(event, "queue_index");
+        draw.execution_index = parse_field_int(event, "execution_index");
         draw.assigned_priority = parse_field_int(event, "assigned_priority");
-        draw.rand_value = parse_field_int(event, "rand_value");
+        draw.rand_value = parse_first_field_int(event, {"priority_rand", "rand_value"});
 
-        ++summary.observed_priority_jitter_draws;
-        if (draw.draw_index.has_value()) {
+        if (priority_fields_complete(draw)) {
+            draw.expected_assigned_priority =
+                *draw.quick + (*draw.rand_value % *draw.jitter_modulus);
+            draw.priority_matches = *draw.assigned_priority == *draw.expected_assigned_priority;
+            ++summary.priority_draws_with_expected_priority;
+            if (draw.priority_matches) {
+                ++summary.priority_matches;
+            } else {
+                ++summary.priority_mismatches;
+            }
+        }
+
+        if (priority_draw) {
+            ++summary.observed_priority_jitter_draws;
+        } else if (queue_entry) {
+            ++summary.observed_queue_entries;
+        } else if (execution_entry) {
+            ++summary.observed_execution_order_entries;
+        }
+
+        if (priority_draw && draw.draw_index.has_value()) {
             if (!summary.first_priority_jitter_draw_index.has_value()) {
                 summary.first_priority_jitter_draw_index = *draw.draw_index;
             }
@@ -87,10 +218,81 @@ TurnOrderCheckpointSummary summarize_turn_order_checkpoints(
         if (draw.rand_value.has_value()) {
             ++summary.draws_with_rand_value;
         }
+        if (queue_entry) {
+            if (draw.slot.has_value()) {
+                ++summary.queue_entries_with_slot;
+            }
+            if (draw.quick.has_value()) {
+                ++summary.queue_entries_with_quick;
+            }
+            if (draw.assigned_priority.has_value()) {
+                ++summary.queue_entries_with_assigned_priority;
+            }
+            if (!queue_entry_complete(draw)) {
+                ++summary.incomplete_queue_entries;
+            } else {
+                queue_priority_sources.push_back(draw);
+            }
+        } else if (priority_draw && draw.slot.has_value() && draw.assigned_priority.has_value()) {
+            draw_priority_sources.push_back(draw);
+        } else if (execution_entry) {
+            if (!execution_entry_complete(draw)) {
+                ++summary.incomplete_execution_order_entries;
+            } else {
+                execution_entries.push_back(draw);
+            }
+        }
         summary.draws.push_back(std::move(draw));
     }
 
-    summary.status = classify_status(expected_priority_jitter_draws, summary.observed_priority_jitter_draws);
+    const auto& priority_sources =
+        !queue_priority_sources.empty() ? queue_priority_sources : draw_priority_sources;
+    if (!priority_sources.empty() && !execution_entries.empty()) {
+        std::vector<int> sorted_indices(priority_sources.size());
+        std::iota(sorted_indices.begin(), sorted_indices.end(), 0);
+        std::stable_sort(sorted_indices.begin(), sorted_indices.end(), [&priority_sources](int lhs, int rhs) {
+            const int lhs_priority = *priority_sources[lhs].assigned_priority;
+            const int rhs_priority = *priority_sources[rhs].assigned_priority;
+            if (lhs_priority != rhs_priority) {
+                return lhs_priority < rhs_priority;
+            }
+            return lhs < rhs;
+        });
+
+        for (std::size_t i = 1; i < sorted_indices.size(); ++i) {
+            if (priority_sources[sorted_indices[i - 1]].assigned_priority
+                == priority_sources[sorted_indices[i]].assigned_priority) {
+                summary.priority_ties_observed = true;
+                summary.execution_order_exact = false;
+                break;
+            }
+        }
+
+        for (auto it = sorted_indices.rbegin(); it != sorted_indices.rend(); ++it) {
+            summary.expected_execution_slots.push_back(*priority_sources[*it].slot);
+        }
+
+        for (const auto& entry : sorted_execution_entries(execution_entries)) {
+            summary.observed_execution_slots.push_back(*entry.slot);
+        }
+
+        if (!summary.priority_ties_observed
+            && summary.expected_execution_slots.size() == summary.observed_execution_slots.size()) {
+            summary.execution_order_compared = true;
+            for (std::size_t i = 0; i < summary.expected_execution_slots.size(); ++i) {
+                if (summary.expected_execution_slots[i] == summary.observed_execution_slots[i]) {
+                    ++summary.execution_order_matches;
+                } else {
+                    ++summary.execution_order_mismatches;
+                }
+            }
+        } else if (!summary.priority_ties_observed) {
+            summary.execution_order_compared = true;
+            ++summary.execution_order_mismatches;
+        }
+    }
+
+    summary.status = classify_status(summary);
     return summary;
 }
 
@@ -104,13 +306,32 @@ const char* turn_order_checkpoint_status_name(TurnOrderCheckpointStatus status) 
         return "MissingPriorityJitterDraws";
     case TurnOrderCheckpointStatus::ExtraPriorityJitterDraws:
         return "ExtraPriorityJitterDraws";
+    case TurnOrderCheckpointStatus::MissingLivePriorityFields:
+        return "MissingLivePriorityFields";
+    case TurnOrderCheckpointStatus::PriorityMismatch:
+        return "PriorityMismatch";
+    case TurnOrderCheckpointStatus::ExecutionOrderMismatch:
+        return "ExecutionOrderMismatch";
+    default:
+        return "Unknown";
+    }
+}
+
+const char* turn_order_checkpoint_kind_name(TurnOrderCheckpointKind kind) {
+    switch (kind) {
+    case TurnOrderCheckpointKind::PriorityJitterDraw:
+        return "PriorityJitterDraw";
+    case TurnOrderCheckpointKind::QueueEntry:
+        return "QueueEntry";
+    case TurnOrderCheckpointKind::ExecutionOrderEntry:
+        return "ExecutionOrderEntry";
     default:
         return "Unknown";
     }
 }
 
 const char* turn_order_checkpoint_rule_detail() {
-    return "first-battle turn order should spend one 800711f8 priority-jitter draw per queued action when jitter_modulus is nonzero";
+    return "first-battle turn order should spend one 800711f8 priority-jitter draw per queued action when jitter_modulus is nonzero, assign priority as quick + rand % jitter_modulus, then reverse the sorted action queue into execution order";
 }
 
 } // namespace savor::predict
