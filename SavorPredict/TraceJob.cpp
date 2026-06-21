@@ -81,6 +81,7 @@ struct TraceSummary {
     std::vector<CritGateSummary> crit_gate_events;
     int first_battle_soldier_drop_draws_from_events = 0;
     bool first_battle_soldier_drop_draws_known = true;
+    ActionViewCameraExpectation action_view_camera_expectation;
     int first_battle_mode0e_camera_draws_for_observed_attacks = 0;
     int observed_lethal_attack_events = 0;
     int observed_nonlethal_attack_events = 0;
@@ -362,14 +363,6 @@ void summarize_first_battle_drop_draws(
         }
         drop_draws += *item_draws;
     }
-}
-
-int first_battle_mode0e_camera_draws_for_observed_attacks(const ParsedProgressEvents& events) {
-    // Static first-battle STD evaluation expects one mode-0xe camera draw at
-    // FUN_80052b24:80052bf0 per basic attack that reaches the action-view
-    // spawn path. Aggregate progress events prove only observed attacks, not
-    // live field6, aux-list suppression state, or scheduler order.
-    return static_cast<int>(events.attacks.size());
 }
 
 void summarize_crit_gate_events(
@@ -677,8 +670,9 @@ TraceSummary build_trace(JobSnapshot job, ParsedProgressEvents events, std::vect
         summary.events,
         summary.first_battle_soldier_drop_draws_from_events,
         summary.first_battle_soldier_drop_draws_known);
+    summary.action_view_camera_expectation = first_battle_action_view_camera_expectation(summary.events);
     summary.first_battle_mode0e_camera_draws_for_observed_attacks =
-        first_battle_mode0e_camera_draws_for_observed_attacks(summary.events);
+        summary.action_view_camera_expectation.expected_mode0e_camera_draws;
     summarize_attack_lethality(
         summary.events,
         summary.observed_lethal_attack_events,
@@ -908,7 +902,12 @@ void write_text(const TraceSummary& summary, std::ostream& out) {
     }
     out << "  expected mode-0xe action-view camera draws for observed attacks: "
         << summary.first_battle_mode0e_camera_draws_for_observed_attacks
-        << " (FUN_80052b24:80052bf0, pending live field6/gate check)\n";
+        << " (" << summary.action_view_camera_expectation.expected_pc
+        << ", pending live field6/gate check)\n";
+    out << "    rule: " << first_battle_action_view_camera_rule_detail() << "\n";
+    out << "    rejected fallback owner: "
+        << summary.action_view_camera_expectation.rejected_fallback_owner
+        << " at " << summary.action_view_camera_expectation.rejected_fallback_pc << "\n";
     out << "  post-turn-order observed draw floor: ";
     if (summary.post_turn_order_observed_draw_floor_known) {
         out << summary.post_turn_order_observed_draw_floor << "\n";
@@ -1184,7 +1183,16 @@ void write_json(const TraceSummary& summary, std::ostream& out) {
         << (summary.first_battle_soldier_drop_draws_known ? "true" : "false");
     out << ", \"mode0e_action_view_camera_draws_for_observed_attacks\": "
         << summary.first_battle_mode0e_camera_draws_for_observed_attacks;
-    out << ", \"mode0e_action_view_camera_owner\": \"FUN_80052b24:80052bf0\"";
+    out << ", \"mode0e_action_view_camera_owner\": \""
+        << summary.action_view_camera_expectation.expected_owner << "\"";
+    out << ", \"mode0e_action_view_camera_pc\": \""
+        << summary.action_view_camera_expectation.expected_pc << "\"";
+    out << ", \"mode0e_action_view_camera_rule\": \""
+        << json_escape(first_battle_action_view_camera_rule_detail()) << "\"";
+    out << ", \"mode0e_action_view_camera_rejected_fallback_owner\": \""
+        << summary.action_view_camera_expectation.rejected_fallback_owner << "\"";
+    out << ", \"mode0e_action_view_camera_rejected_fallback_pc\": \""
+        << summary.action_view_camera_expectation.rejected_fallback_pc << "\"";
     out << ", \"post_turn_order_observed_draw_floor\": ";
     if (summary.post_turn_order_observed_draw_floor_known) {
         out << summary.post_turn_order_observed_draw_floor;

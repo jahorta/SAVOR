@@ -11,6 +11,9 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="ActionViewCameraModel.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="AttackResolutionModel.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -61,6 +64,9 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="ActionViewCameraModel.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="AttackResolutionModel.h">
       <Filter>Header Files</Filter>
     </ClInclude>

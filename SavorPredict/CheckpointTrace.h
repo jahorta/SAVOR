@@ -14,6 +14,7 @@ struct TraceCheckpointsOptions {
     std::filesystem::path checkpoint_file;
     std::optional<long long> turn_job_id;
     std::optional<long long> exec_job_id;
+    std::optional<int> expected_mode0e_camera_draws;
     bool json = false;
 };
 

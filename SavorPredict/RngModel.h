@@ -2,6 +2,7 @@
 
 // Umbrella header for the phase-specific RNG model helpers.
 
+#include "ActionViewCameraModel.h"
 #include "AttackResolutionModel.h"
 #include "CounterModel.h"
 #include "DropModel.h"

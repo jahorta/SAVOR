@@ -1,5 +1,7 @@
 #include "CheckpointTrace.h"
 
+#include "ActionViewCameraModel.h"
+
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
@@ -247,6 +249,9 @@ void write_text_report(
     if (options.exec_job_id.has_value()) {
         out << "  exec_job_id: " << *options.exec_job_id << "\n";
     }
+    if (options.expected_mode0e_camera_draws.has_value()) {
+        out << "  expected_mode0e_camera_draws: " << *options.expected_mode0e_camera_draws << "\n";
+    }
     out << "  db_root: " << options.db_root.string() << "\n";
     out << "  events: " << result.events.size() << "\n";
 
@@ -283,6 +288,37 @@ void write_text_report(
             out << "  " << warning << "\n";
         }
     }
+
+    const auto action_view = summarize_action_view_camera_checkpoints(
+        result.events,
+        options.expected_mode0e_camera_draws);
+    out << "\nAction-view camera checkpoints\n";
+    out << "  status: " << action_view_camera_checkpoint_status_name(action_view.status) << "\n";
+    out << "  expected_mode0e_camera_draws: ";
+    if (action_view.expected_mode0e_camera_draws.has_value()) {
+        out << *action_view.expected_mode0e_camera_draws << "\n";
+    } else {
+        out << "unknown\n";
+    }
+    out << "  observed_mode0e_camera_draws: " << action_view.observed_mode0e_camera_draws << "\n";
+    out << "  observed_mode0_fallback_draws: " << action_view.observed_mode0_fallback_draws << "\n";
+    out << "  observed_attack_hit_draws: " << action_view.observed_attack_hit_draws << "\n";
+    out << "  first_mode0e_draw_index: ";
+    if (action_view.first_mode0e_draw_index.has_value()) {
+        out << *action_view.first_mode0e_draw_index << "\n";
+    } else {
+        out << "unknown\n";
+    }
+    out << "  first_attack_hit_draw_index: ";
+    if (action_view.first_attack_hit_draw_index.has_value()) {
+        out << *action_view.first_attack_hit_draw_index << "\n";
+    } else {
+        out << "unknown\n";
+    }
+    out << "  mode0e_draws_before_first_attack_hit: "
+        << action_view.mode0e_draws_before_first_attack_hit << "\n";
+    out << "  mode0e_draws_after_first_attack_hit: "
+        << action_view.mode0e_draws_after_first_attack_hit << "\n";
 
     out << "\nFirst events\n";
     const auto limit = std::min<std::size_t>(result.events.size(), 10);
@@ -338,6 +374,13 @@ void write_json_report(
         out << "null";
     }
     out << ",\n";
+    out << "  \"expected_mode0e_camera_draws\": ";
+    if (options.expected_mode0e_camera_draws.has_value()) {
+        out << *options.expected_mode0e_camera_draws;
+    } else {
+        out << "null";
+    }
+    out << ",\n";
     out << "  \"db_root\": \"" << json_escape(options.db_root.string()) << "\",\n";
     out << "  \"events\": " << result.events.size() << ",\n";
     out << "  \"rng_draw_events\": " << rng_draw_events << ",\n";
@@ -367,6 +410,38 @@ void write_json_report(
         first = false;
         out << "\"" << json_escape(owner) << "\": " << count;
     }
+    out << "},\n";
+
+    const auto action_view = summarize_action_view_camera_checkpoints(
+        result.events,
+        options.expected_mode0e_camera_draws);
+    out << "  \"action_view_camera_checkpoints\": {";
+    out << "\"status\": \"" << action_view_camera_checkpoint_status_name(action_view.status) << "\"";
+    out << ", \"expected_mode0e_camera_draws\": ";
+    if (action_view.expected_mode0e_camera_draws.has_value()) {
+        out << *action_view.expected_mode0e_camera_draws;
+    } else {
+        out << "null";
+    }
+    out << ", \"observed_mode0e_camera_draws\": " << action_view.observed_mode0e_camera_draws;
+    out << ", \"observed_mode0_fallback_draws\": " << action_view.observed_mode0_fallback_draws;
+    out << ", \"observed_attack_hit_draws\": " << action_view.observed_attack_hit_draws;
+    out << ", \"first_mode0e_draw_index\": ";
+    if (action_view.first_mode0e_draw_index.has_value()) {
+        out << *action_view.first_mode0e_draw_index;
+    } else {
+        out << "null";
+    }
+    out << ", \"first_attack_hit_draw_index\": ";
+    if (action_view.first_attack_hit_draw_index.has_value()) {
+        out << *action_view.first_attack_hit_draw_index;
+    } else {
+        out << "null";
+    }
+    out << ", \"mode0e_draws_before_first_attack_hit\": "
+        << action_view.mode0e_draws_before_first_attack_hit;
+    out << ", \"mode0e_draws_after_first_attack_hit\": "
+        << action_view.mode0e_draws_after_first_attack_hit;
     out << "}\n";
     out << "}\n";
 }
@@ -383,6 +458,7 @@ const std::map<std::string, std::string>& known_rng_callsite_owners() {
         {"800711F8", "turn_order_priority_jitter"},
         {"8008BC68", "enemy_attack_execution_setup"},
         {"80052BF0", "mode0e_action_view_camera"},
+        {"800513D4", "mode0_action_view_camera_fallback"},
         {"80010BDC", "attack_hit_dodge"},
         {"80010C44", "attack_critical"},
         {"80010958", "damage_spread"},

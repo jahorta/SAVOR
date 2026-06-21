@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace {
@@ -261,6 +262,23 @@ TEST(SavorPredictRngModel, BasicAttackBurstMissSkipsDamageDraws) {
     EXPECT_EQ(result.attack_result, 0);
     EXPECT_EQ(result.hit_check, 0);
     EXPECT_EQ(result.damage, 0);
+}
+
+TEST(SavorPredictRngModel, FirstBattleActionViewCameraExpectationCountsObservedAttacks) {
+    ParsedProgressEvents events;
+    events.attacks.push_back(AttackEvent{"Aika", "[4]Soldier", 30});
+    events.attacks.push_back(AttackEvent{"Vyse", "[4]Soldier", 43});
+    events.attacks.push_back(AttackEvent{"[5]Soldier", "Vyse", 46});
+
+    const auto expectation = first_battle_action_view_camera_expectation(events);
+
+    EXPECT_EQ(expectation.observed_attack_events, 3);
+    EXPECT_EQ(expectation.expected_mode0e_camera_draws, 3);
+    EXPECT_EQ(expectation.expected_owner, std::string_view("mode0e_action_view_camera"));
+    EXPECT_EQ(expectation.expected_pc, std::string_view("80052BF0"));
+    EXPECT_EQ(expectation.rejected_fallback_owner, std::string_view("mode0_action_view_camera_fallback"));
+    EXPECT_EQ(expectation.rejected_fallback_pc, std::string_view("800513D4"));
+    EXPECT_NE(std::string_view(first_battle_action_view_camera_rule_detail()).find("mode 0xe"), std::string_view::npos);
 }
 
 TEST(SavorPredictRngModel, FirstBattleSoldierDropSimulationMatchesEnabledRows) {
@@ -598,6 +616,45 @@ TEST(SavorPredictCheckpointTrace, ParsesKnownRngOwnersAndSeeds) {
     EXPECT_EQ(parsed.events[1].known_rng_owner, "damage_spread");
     ASSERT_TRUE(parsed.events[1].rng_seed_after.has_value());
     EXPECT_EQ(*parsed.events[1].rng_seed_after, 0xAABBCCDDu);
+}
+
+TEST(SavorPredictCheckpointTrace, SummarizesActionViewCameraCheckpoints) {
+    std::istringstream input(
+        "pc=80052bf0 function=FUN_80052b24 checkpoint=mode0e_camera rng_draw_index_before=20 "
+        "rng_seed_before=0x12345678 rng_seed_after=0x456789AB\n"
+        "pc=80010bdc function=getAttackResult checkpoint=hit rng_draw_index_before=21 "
+        "rng_seed_before=0x456789AB rng_seed_after=0xAABBCCDD\n"
+        "pc=800513d4 function=UpdateActionViewRecord checkpoint=mode0_fallback rng_draw_index_before=22 "
+        "rng_seed_before=0xAABBCCDD rng_seed_after=0x01020304\n");
+
+    const auto parsed = parse_checkpoint_stream(input);
+    ASSERT_TRUE(parsed.errors.empty());
+    ASSERT_EQ(parsed.events.size(), 3u);
+    EXPECT_EQ(parsed.events[0].known_rng_owner, "mode0e_action_view_camera");
+    EXPECT_EQ(parsed.events[2].known_rng_owner, "mode0_action_view_camera_fallback");
+
+    const std::vector<CheckpointEvent> no_fallback(parsed.events.begin(), parsed.events.begin() + 2);
+    const auto matched = summarize_action_view_camera_checkpoints(no_fallback, 1);
+    EXPECT_EQ(matched.status, ActionViewCameraCheckpointStatus::MatchesExpected);
+    EXPECT_EQ(matched.observed_mode0e_camera_draws, 1);
+    EXPECT_EQ(matched.observed_mode0_fallback_draws, 0);
+    EXPECT_EQ(matched.observed_attack_hit_draws, 1);
+    ASSERT_TRUE(matched.first_mode0e_draw_index.has_value());
+    EXPECT_EQ(*matched.first_mode0e_draw_index, 20);
+    ASSERT_TRUE(matched.first_attack_hit_draw_index.has_value());
+    EXPECT_EQ(*matched.first_attack_hit_draw_index, 21);
+    EXPECT_EQ(matched.mode0e_draws_before_first_attack_hit, 1);
+    EXPECT_EQ(matched.mode0e_draws_after_first_attack_hit, 0);
+
+    const auto with_fallback = summarize_action_view_camera_checkpoints(parsed.events, 1);
+    EXPECT_EQ(with_fallback.status, ActionViewCameraCheckpointStatus::UnexpectedMode0FallbackObserved);
+    EXPECT_EQ(with_fallback.observed_mode0_fallback_draws, 1);
+    EXPECT_EQ(
+        action_view_camera_checkpoint_status_name(with_fallback.status),
+        std::string("UnexpectedMode0FallbackObserved"));
+
+    const auto missing = summarize_action_view_camera_checkpoints(no_fallback, 2);
+    EXPECT_EQ(missing.status, ActionViewCameraCheckpointStatus::MissingMode0eDraws);
 }
 
 TEST(SavorPredictCheckpointTrace, RejectsRegressingDrawIndexes) {
