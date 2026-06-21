@@ -15,6 +15,9 @@ enum class TurnOrderCheckpointStatus {
     MissingPriorityJitterDraws,
     ExtraPriorityJitterDraws,
     MissingLivePriorityFields,
+    MissingFixedPriorityResults,
+    QuickMismatch,
+    QueueMetadataMismatch,
     PriorityMismatch,
     ExecutionOrderMismatch,
 };
@@ -51,8 +54,12 @@ struct TurnOrderCheckpointDraw {
     std::optional<int> assigned_priority;
     std::optional<int> rand_value;
     std::optional<int> expected_assigned_priority;
+    std::optional<int> expected_first_battle_quick;
+    std::optional<int> expected_jitter_modulus;
     std::optional<int> expected_execution_slot;
     bool priority_matches = false;
+    bool quick_matches = false;
+    bool queue_metadata_matches = false;
 };
 
 struct TurnOrderCheckpointSummary {
@@ -64,6 +71,17 @@ struct TurnOrderCheckpointSummary {
     int draws_with_quick = 0;
     int draws_with_assigned_priority = 0;
     int draws_with_rand_value = 0;
+    int events_with_expected_first_battle_quick = 0;
+    int quick_matches = 0;
+    int quick_mismatches = 0;
+    int events_with_fixed_priority_result = 0;
+    int fixed_priority_zero_results = 0;
+    int fixed_priority_nonzero_results = 0;
+    int priority_sources_missing_fixed_priority_result = 0;
+    int priority_sources_with_fixed_priority_result = 0;
+    int events_with_queue_metadata = 0;
+    int queue_metadata_matches = 0;
+    int queue_metadata_mismatches = 0;
     int observed_queue_entries = 0;
     int observed_execution_order_entries = 0;
     int queue_entries_with_slot = 0;

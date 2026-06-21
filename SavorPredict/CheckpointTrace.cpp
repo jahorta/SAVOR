@@ -1057,6 +1057,23 @@ void write_text_report(
     out << "  draws_with_quick: " << turn_order.draws_with_quick << "\n";
     out << "  draws_with_assigned_priority: " << turn_order.draws_with_assigned_priority << "\n";
     out << "  draws_with_rand_value: " << turn_order.draws_with_rand_value << "\n";
+    out << "  events_with_expected_first_battle_quick: "
+        << turn_order.events_with_expected_first_battle_quick << "\n";
+    out << "  quick_matches: " << turn_order.quick_matches << "\n";
+    out << "  quick_mismatches: " << turn_order.quick_mismatches << "\n";
+    out << "  events_with_fixed_priority_result: "
+        << turn_order.events_with_fixed_priority_result << "\n";
+    out << "  fixed_priority_zero_results: "
+        << turn_order.fixed_priority_zero_results << "\n";
+    out << "  fixed_priority_nonzero_results: "
+        << turn_order.fixed_priority_nonzero_results << "\n";
+    out << "  priority_sources_with_fixed_priority_result: "
+        << turn_order.priority_sources_with_fixed_priority_result << "\n";
+    out << "  priority_sources_missing_fixed_priority_result: "
+        << turn_order.priority_sources_missing_fixed_priority_result << "\n";
+    out << "  events_with_queue_metadata: " << turn_order.events_with_queue_metadata << "\n";
+    out << "  queue_metadata_matches: " << turn_order.queue_metadata_matches << "\n";
+    out << "  queue_metadata_mismatches: " << turn_order.queue_metadata_mismatches << "\n";
     out << "  observed_queue_entries: " << turn_order.observed_queue_entries << "\n";
     out << "  observed_execution_order_entries: "
         << turn_order.observed_execution_order_entries << "\n";
@@ -1105,20 +1122,42 @@ void write_text_report(
             write_optional_int(out, draw.slot);
             out << " quick=";
             write_optional_int(out, draw.quick);
+            out << " queued_instruction=";
+            write_optional_int(out, draw.queued_instruction);
+            out << " target_slot=";
+            write_optional_int(out, draw.target_slot);
+            out << " initial_priority=";
+            write_optional_int(out, draw.initial_priority);
+            out << " fixed_priority_result=";
+            write_optional_int(out, draw.fixed_priority_result);
+            out << " fixed_priority_value=";
+            write_optional_int(out, draw.fixed_priority_value);
             out << " queue_index=";
             write_optional_int(out, draw.queue_index);
             out << " execution_index=";
             write_optional_int(out, draw.execution_index);
             out << " jitter_modulus=";
             write_optional_int(out, draw.jitter_modulus);
+            out << " sum_quick=";
+            write_optional_int(out, draw.sum_quick);
+            out << " queued_count=";
+            write_optional_int(out, draw.queued_count);
             out << " assigned_priority=";
             write_optional_int(out, draw.assigned_priority);
             out << " expected_assigned_priority=";
             write_optional_int(out, draw.expected_assigned_priority);
+            out << " expected_first_battle_quick=";
+            write_optional_int(out, draw.expected_first_battle_quick);
+            out << " expected_jitter_modulus=";
+            write_optional_int(out, draw.expected_jitter_modulus);
             out << " rand_value=";
             write_optional_int(out, draw.rand_value);
             out << " priority_matches="
                 << (draw.priority_matches ? "true" : "false");
+            out << " quick_matches="
+                << (draw.quick_matches ? "true" : "false");
+            out << " queue_metadata_matches="
+                << (draw.queue_metadata_matches ? "true" : "false");
             out << "\n";
         }
     }
@@ -2549,6 +2588,23 @@ void write_json_report(
     out << ", \"draws_with_assigned_priority\": "
         << turn_order.draws_with_assigned_priority;
     out << ", \"draws_with_rand_value\": " << turn_order.draws_with_rand_value;
+    out << ", \"events_with_expected_first_battle_quick\": "
+        << turn_order.events_with_expected_first_battle_quick;
+    out << ", \"quick_matches\": " << turn_order.quick_matches;
+    out << ", \"quick_mismatches\": " << turn_order.quick_mismatches;
+    out << ", \"events_with_fixed_priority_result\": "
+        << turn_order.events_with_fixed_priority_result;
+    out << ", \"fixed_priority_zero_results\": "
+        << turn_order.fixed_priority_zero_results;
+    out << ", \"fixed_priority_nonzero_results\": "
+        << turn_order.fixed_priority_nonzero_results;
+    out << ", \"priority_sources_with_fixed_priority_result\": "
+        << turn_order.priority_sources_with_fixed_priority_result;
+    out << ", \"priority_sources_missing_fixed_priority_result\": "
+        << turn_order.priority_sources_missing_fixed_priority_result;
+    out << ", \"events_with_queue_metadata\": " << turn_order.events_with_queue_metadata;
+    out << ", \"queue_metadata_matches\": " << turn_order.queue_metadata_matches;
+    out << ", \"queue_metadata_mismatches\": " << turn_order.queue_metadata_mismatches;
     out << ", \"observed_queue_entries\": " << turn_order.observed_queue_entries;
     out << ", \"observed_execution_order_entries\": "
         << turn_order.observed_execution_order_entries;
@@ -2626,12 +2682,20 @@ void write_json_report(
         write_json_optional_int(out, draw.assigned_priority);
         out << ", \"expected_assigned_priority\": ";
         write_json_optional_int(out, draw.expected_assigned_priority);
+        out << ", \"expected_first_battle_quick\": ";
+        write_json_optional_int(out, draw.expected_first_battle_quick);
+        out << ", \"expected_jitter_modulus\": ";
+        write_json_optional_int(out, draw.expected_jitter_modulus);
         out << ", \"expected_execution_slot\": ";
         write_json_optional_int(out, draw.expected_execution_slot);
         out << ", \"rand_value\": ";
         write_json_optional_int(out, draw.rand_value);
         out << ", \"priority_matches\": "
             << (draw.priority_matches ? "true" : "false");
+        out << ", \"quick_matches\": "
+            << (draw.quick_matches ? "true" : "false");
+        out << ", \"queue_metadata_matches\": "
+            << (draw.queue_metadata_matches ? "true" : "false");
         out << "}";
     }
     out << "]";
