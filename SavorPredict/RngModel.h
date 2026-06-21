@@ -5,6 +5,7 @@
 #include "ActionViewCameraModel.h"
 #include "AttackResolutionCheckpointModel.h"
 #include "AttackResolutionModel.h"
+#include "CounterCheckpointModel.h"
 #include "CounterModel.h"
 #include "DropModel.h"
 #include "EnemyAttackSetupModel.h"

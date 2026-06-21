@@ -478,6 +478,17 @@ TEST(SavorPredictRngModel, CounterCheckHandlesForcedAndMovementSuppressedCases) 
     EXPECT_FALSE(result.queued_field7_0xc.has_value());
 }
 
+TEST(SavorPredictRngModel, FirstBattleCounterCheckpointExpectationUsesCandidateCeiling) {
+    const auto expectation = first_battle_counter_checkpoint_expectation(2);
+
+    EXPECT_EQ(expectation.expected_counter_roll_ceiling, 2);
+    EXPECT_EQ(expectation.owner, std::string_view("counter_roll"));
+    EXPECT_EQ(expectation.pc, std::string_view("80081A88"));
+    EXPECT_NE(
+        std::string_view(first_battle_counter_checkpoint_rule_detail()).find("bounded by nonlethal"),
+        std::string_view::npos);
+}
+
 TEST(SavorPredictRngModel, EnemyAttackSetupGateSpendsDrawForFirstBattleSoldierFlags) {
     EnemyAttackSetupInputs inputs;
     inputs.queued_instruction = 3;
@@ -785,6 +796,50 @@ TEST(SavorPredictCheckpointTrace, SummarizesAttackResolutionCheckpoints) {
     const auto order_summary = summarize_attack_resolution_checkpoints(out_of_order.events, 1, 0);
     EXPECT_EQ(order_summary.status, AttackResolutionCheckpointStatus::DamagePairOrderMismatch);
     EXPECT_EQ(order_summary.damage_pairs_out_of_order, 1);
+}
+
+TEST(SavorPredictCheckpointTrace, SummarizesCounterCheckpoints) {
+    std::istringstream input(
+        "pc=80081a88 function=shouldCounter checkpoint=roll rng_draw_index_before=30 "
+        "attacker_slot=1 target_slot=4 target_status_flags=0x0 target_movement_flags=0xc0 "
+        "target_base_counter_chance=10 target_current_counter_chance=10 "
+        "attacker_action_marker=0 attack_was_critical=0 counter_rand=7 "
+        "counter_result=1 queued_field7_0xc=0 updated_current_counter_chance=0\n"
+        "pc=80081a88 function=shouldCounter checkpoint=roll rng_draw_index_before=31 "
+        "attacker_slot=5 target_slot=0 target_status_flags=0x0 target_movement_flags=0xc0 "
+        "target_base_counter_chance=15 target_current_counter_chance=15 "
+        "attacker_action_marker=0 attack_was_critical=0 counter_rand=54 "
+        "counter_result=0 updated_current_counter_chance=15\n");
+
+    const auto parsed = parse_checkpoint_stream(input);
+    ASSERT_TRUE(parsed.errors.empty());
+    ASSERT_EQ(parsed.events.size(), 2u);
+    EXPECT_EQ(parsed.events[0].known_rng_owner, "counter_roll");
+
+    const auto within = summarize_counter_checkpoints(parsed.events, 2);
+    EXPECT_EQ(within.status, CounterCheckpointStatus::WithinExpectedCeiling);
+    EXPECT_EQ(within.observed_counter_rolls, 2);
+    ASSERT_TRUE(within.first_counter_roll_draw_index.has_value());
+    EXPECT_EQ(*within.first_counter_roll_draw_index, 30);
+    ASSERT_TRUE(within.last_counter_roll_draw_index.has_value());
+    EXPECT_EQ(*within.last_counter_roll_draw_index, 31);
+    EXPECT_EQ(within.draws_with_actor_slots, 2);
+    EXPECT_EQ(within.draws_with_gate_inputs, 2);
+    EXPECT_EQ(within.draws_with_counter_result, 2);
+    ASSERT_EQ(within.draws.size(), 2u);
+    ASSERT_TRUE(within.draws[0].target_status_flags.has_value());
+    EXPECT_EQ(*within.draws[0].target_status_flags, 0);
+    ASSERT_TRUE(within.draws[0].target_movement_flags.has_value());
+    EXPECT_EQ(*within.draws[0].target_movement_flags, 0xc0);
+
+    const auto observed_only = summarize_counter_checkpoints(parsed.events, std::nullopt);
+    EXPECT_EQ(observed_only.status, CounterCheckpointStatus::ObservedOnly);
+
+    const auto exceeds = summarize_counter_checkpoints(parsed.events, 1);
+    EXPECT_EQ(exceeds.status, CounterCheckpointStatus::ExceedsExpectedCeiling);
+    EXPECT_EQ(
+        counter_checkpoint_status_name(exceeds.status),
+        std::string("ExceedsExpectedCeiling"));
 }
 
 TEST(SavorPredictCheckpointTrace, RejectsRegressingDrawIndexes) {

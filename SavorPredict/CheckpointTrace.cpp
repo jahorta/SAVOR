@@ -2,6 +2,7 @@
 
 #include "ActionViewCameraModel.h"
 #include "AttackResolutionCheckpointModel.h"
+#include "CounterCheckpointModel.h"
 #include "TurnOrderCheckpointModel.h"
 
 #include <algorithm>
@@ -263,6 +264,9 @@ void write_text_report(
     if (options.expected_crit_draws.has_value()) {
         out << "  expected_crit_draws: " << *options.expected_crit_draws << "\n";
     }
+    if (options.expected_counter_roll_ceiling.has_value()) {
+        out << "  expected_counter_roll_ceiling: " << *options.expected_counter_roll_ceiling << "\n";
+    }
     out << "  db_root: " << options.db_root.string() << "\n";
     out << "  events: " << result.events.size() << "\n";
 
@@ -437,6 +441,82 @@ void write_text_report(
     out << "  damage_pairs_out_of_order: "
         << attack_resolution.damage_pairs_out_of_order << "\n";
 
+    const auto counter = summarize_counter_checkpoints(
+        result.events,
+        options.expected_counter_roll_ceiling);
+    out << "\nCounter checkpoints\n";
+    out << "  status: " << counter_checkpoint_status_name(counter.status) << "\n";
+    out << "  expected_counter_roll_ceiling: ";
+    if (counter.expected_counter_roll_ceiling.has_value()) {
+        out << *counter.expected_counter_roll_ceiling << "\n";
+    } else {
+        out << "unknown\n";
+    }
+    out << "  observed_counter_rolls: " << counter.observed_counter_rolls << "\n";
+    out << "  first_counter_roll_draw_index: ";
+    if (counter.first_counter_roll_draw_index.has_value()) {
+        out << *counter.first_counter_roll_draw_index << "\n";
+    } else {
+        out << "unknown\n";
+    }
+    out << "  last_counter_roll_draw_index: ";
+    if (counter.last_counter_roll_draw_index.has_value()) {
+        out << *counter.last_counter_roll_draw_index << "\n";
+    } else {
+        out << "unknown\n";
+    }
+    out << "  draws_with_actor_slots: " << counter.draws_with_actor_slots << "\n";
+    out << "  draws_with_gate_inputs: " << counter.draws_with_gate_inputs << "\n";
+    out << "  draws_with_counter_result: " << counter.draws_with_counter_result << "\n";
+    if (!counter.draws.empty()) {
+        out << "  draws:\n";
+        for (const auto& draw : counter.draws) {
+            out << "    draw_index=";
+            if (draw.draw_index.has_value()) {
+                out << *draw.draw_index;
+            } else {
+                out << "unknown";
+            }
+            out << " attacker_slot=";
+            if (draw.attacker_slot.has_value()) {
+                out << *draw.attacker_slot;
+            } else {
+                out << "unknown";
+            }
+            out << " target_slot=";
+            if (draw.target_slot.has_value()) {
+                out << *draw.target_slot;
+            } else {
+                out << "unknown";
+            }
+            out << " cur_counter=";
+            if (draw.target_current_counter_chance.has_value()) {
+                out << *draw.target_current_counter_chance;
+            } else {
+                out << "unknown";
+            }
+            out << " crit=";
+            if (draw.attack_was_critical.has_value()) {
+                out << *draw.attack_was_critical;
+            } else {
+                out << "unknown";
+            }
+            out << " counter_rand=";
+            if (draw.counter_rand.has_value()) {
+                out << *draw.counter_rand;
+            } else {
+                out << "unknown";
+            }
+            out << " counter_result=";
+            if (draw.counter_result.has_value()) {
+                out << *draw.counter_result;
+            } else {
+                out << "unknown";
+            }
+            out << "\n";
+        }
+    }
+
     out << "\nFirst events\n";
     const auto limit = std::min<std::size_t>(result.events.size(), 10);
     for (std::size_t i = 0; i < limit; ++i) {
@@ -515,6 +595,13 @@ void write_json_report(
     out << "  \"expected_crit_draws\": ";
     if (options.expected_crit_draws.has_value()) {
         out << *options.expected_crit_draws;
+    } else {
+        out << "null";
+    }
+    out << ",\n";
+    out << "  \"expected_counter_roll_ceiling\": ";
+    if (options.expected_counter_roll_ceiling.has_value()) {
+        out << *options.expected_counter_roll_ceiling;
     } else {
         out << "null";
     }
@@ -693,6 +780,122 @@ void write_json_report(
         << attack_resolution.damage_pairs_in_order;
     out << ", \"damage_pairs_out_of_order\": "
         << attack_resolution.damage_pairs_out_of_order;
+    out << "},\n";
+
+    const auto counter = summarize_counter_checkpoints(
+        result.events,
+        options.expected_counter_roll_ceiling);
+    out << "  \"counter_checkpoints\": {";
+    out << "\"status\": \"" << counter_checkpoint_status_name(counter.status) << "\"";
+    out << ", \"expected_counter_roll_ceiling\": ";
+    if (counter.expected_counter_roll_ceiling.has_value()) {
+        out << *counter.expected_counter_roll_ceiling;
+    } else {
+        out << "null";
+    }
+    out << ", \"observed_counter_rolls\": " << counter.observed_counter_rolls;
+    out << ", \"first_counter_roll_draw_index\": ";
+    if (counter.first_counter_roll_draw_index.has_value()) {
+        out << *counter.first_counter_roll_draw_index;
+    } else {
+        out << "null";
+    }
+    out << ", \"last_counter_roll_draw_index\": ";
+    if (counter.last_counter_roll_draw_index.has_value()) {
+        out << *counter.last_counter_roll_draw_index;
+    } else {
+        out << "null";
+    }
+    out << ", \"draws_with_actor_slots\": " << counter.draws_with_actor_slots;
+    out << ", \"draws_with_gate_inputs\": " << counter.draws_with_gate_inputs;
+    out << ", \"draws_with_counter_result\": " << counter.draws_with_counter_result;
+    out << ", \"draws\": [";
+    for (std::size_t i = 0; i < counter.draws.size(); ++i) {
+        if (i != 0) {
+            out << ", ";
+        }
+        const auto& draw = counter.draws[i];
+        out << "{\"draw_index\": ";
+        if (draw.draw_index.has_value()) {
+            out << *draw.draw_index;
+        } else {
+            out << "null";
+        }
+        out << ", \"attacker_slot\": ";
+        if (draw.attacker_slot.has_value()) {
+            out << *draw.attacker_slot;
+        } else {
+            out << "null";
+        }
+        out << ", \"target_slot\": ";
+        if (draw.target_slot.has_value()) {
+            out << *draw.target_slot;
+        } else {
+            out << "null";
+        }
+        out << ", \"target_status_flags\": ";
+        if (draw.target_status_flags.has_value()) {
+            out << *draw.target_status_flags;
+        } else {
+            out << "null";
+        }
+        out << ", \"target_movement_flags\": ";
+        if (draw.target_movement_flags.has_value()) {
+            out << *draw.target_movement_flags;
+        } else {
+            out << "null";
+        }
+        out << ", \"target_base_counter_chance\": ";
+        if (draw.target_base_counter_chance.has_value()) {
+            out << *draw.target_base_counter_chance;
+        } else {
+            out << "null";
+        }
+        out << ", \"target_current_counter_chance\": ";
+        if (draw.target_current_counter_chance.has_value()) {
+            out << *draw.target_current_counter_chance;
+        } else {
+            out << "null";
+        }
+        out << ", \"attacker_action_marker\": ";
+        if (draw.attacker_action_marker.has_value()) {
+            out << *draw.attacker_action_marker;
+        } else {
+            out << "null";
+        }
+        out << ", \"attack_was_critical\": ";
+        if (draw.attack_was_critical.has_value()) {
+            out << *draw.attack_was_critical;
+        } else {
+            out << "null";
+        }
+        out << ", \"counter_rand\": ";
+        if (draw.counter_rand.has_value()) {
+            out << *draw.counter_rand;
+        } else {
+            out << "null";
+        }
+        out << ", \"counter_result\": ";
+        if (draw.counter_result.has_value()) {
+            out << *draw.counter_result;
+        } else {
+            out << "null";
+        }
+        out << ", \"queued_field7_0xc\": ";
+        if (draw.queued_field7_0xc.has_value()) {
+            out << *draw.queued_field7_0xc;
+        } else {
+            out << "null";
+        }
+        out << ", \"updated_current_counter_chance\": ";
+        if (draw.updated_current_counter_chance.has_value()) {
+            out << *draw.updated_current_counter_chance;
+        } else {
+            out << "null";
+        }
+        out << "}";
+    }
+    out << "]";
     out << "}\n";
     out << "}\n";
 }

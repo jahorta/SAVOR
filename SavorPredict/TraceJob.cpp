@@ -88,6 +88,7 @@ struct TraceSummary {
     int observed_lethal_attack_events = 0;
     int observed_nonlethal_attack_events = 0;
     int counter_draw_candidate_events = 0;
+    CounterCheckpointExpectation counter_checkpoint_expectation;
     std::vector<CounterCandidateSummary> counter_candidates;
     int first_battle_status_attempt_draws_expected = 0;
     int post_turn_order_observed_draw_floor = 0;
@@ -686,6 +687,8 @@ TraceSummary build_trace(JobSnapshot job, ParsedProgressEvents events, std::vect
         summary.observed_nonlethal_attack_events,
         summary.counter_candidates);
     summary.counter_draw_candidate_events = static_cast<int>(summary.counter_candidates.size());
+    summary.counter_checkpoint_expectation =
+        first_battle_counter_checkpoint_expectation(summary.counter_draw_candidate_events);
     summary.first_battle_status_attempt_draws_expected = 0;
     summary.post_turn_order_observed_draw_floor_known =
         summary.first_battle_soldier_drop_draws_known;
@@ -909,6 +912,12 @@ void write_text(const TraceSummary& summary, std::ostream& out) {
     out << "  counter draw candidates from nonlethal events: "
         << summary.counter_draw_candidate_events
         << " (upper bound; crit/status/live counter gates still apply)\n";
+    out << "    checkpoint ceiling: "
+        << summary.counter_checkpoint_expectation.expected_counter_roll_ceiling
+        << " (" << summary.counter_checkpoint_expectation.pc << ")\n";
+    out << "    checkpoint rule: " << first_battle_counter_checkpoint_rule_detail() << "\n";
+    out << "    trace-checkpoints args: --expected-counter-roll-ceiling "
+        << summary.counter_checkpoint_expectation.expected_counter_roll_ceiling << "\n";
     for (std::size_t i = 0; i < summary.counter_candidates.size(); ++i) {
         const auto& candidate = summary.counter_candidates[i];
         out << "    #" << (i + 1) << " " << candidate.target
@@ -1213,6 +1222,14 @@ void write_json(const TraceSummary& summary, std::ostream& out) {
     out << ", \"lethal_attack_events\": " << summary.observed_lethal_attack_events;
     out << ", \"nonlethal_attack_events\": " << summary.observed_nonlethal_attack_events;
     out << ", \"counter_draw_candidate_events\": " << summary.counter_draw_candidate_events;
+    out << ", \"counter_checkpoint_expectation\": {";
+    out << "\"expected_counter_roll_ceiling\": "
+        << summary.counter_checkpoint_expectation.expected_counter_roll_ceiling;
+    out << ", \"owner\": \"" << summary.counter_checkpoint_expectation.owner << "\"";
+    out << ", \"pc\": \"" << summary.counter_checkpoint_expectation.pc << "\"";
+    out << ", \"rule\": \""
+        << json_escape(first_battle_counter_checkpoint_rule_detail()) << "\"";
+    out << "}";
     out << ", \"counter_draw_candidates\": [";
     for (std::size_t i = 0; i < summary.counter_candidates.size(); ++i) {
         const auto& candidate = summary.counter_candidates[i];

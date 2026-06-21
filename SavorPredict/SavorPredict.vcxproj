@@ -112,6 +112,7 @@
     <ClCompile Include="AttackResolutionCheckpointModel.cpp" />
     <ClCompile Include="AttackResolutionModel.cpp" />
     <ClCompile Include="CheckpointTrace.cpp" />
+    <ClCompile Include="CounterCheckpointModel.cpp" />
     <ClCompile Include="CounterModel.cpp" />
     <ClCompile Include="DbCopy.cpp" />
     <ClCompile Include="DropModel.cpp" />
@@ -133,6 +134,7 @@
     <ClInclude Include="AttackResolutionCheckpointModel.h" />
     <ClInclude Include="AttackResolutionModel.h" />
     <ClInclude Include="CheckpointTrace.h" />
+    <ClInclude Include="CounterCheckpointModel.h" />
     <ClInclude Include="CounterModel.h" />
     <ClInclude Include="DbCopy.h" />
     <ClInclude Include="DropModel.h" />
