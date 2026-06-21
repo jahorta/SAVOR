@@ -4,6 +4,7 @@
 #include "ActionSetupCheckpointModel.h"
 #include "ActionSourceCheckpointModel.h"
 #include "ActionViewGateCheckpointModel.h"
+#include "AttackDamageValueCheckpointModel.h"
 #include "AttackResolutionCheckpointModel.h"
 #include "CritGateCheckpointModel.h"
 #include "CounterCheckpointModel.h"
@@ -110,6 +111,22 @@ std::string seed_hex(unsigned int seed) {
     std::ostringstream out;
     out << "0x" << std::hex << std::uppercase << std::setw(8) << std::setfill('0') << seed;
     return out.str();
+}
+
+void write_optional_int(std::ostream& out, const std::optional<int>& value) {
+    if (value.has_value()) {
+        out << *value;
+    } else {
+        out << "unknown";
+    }
+}
+
+void write_json_optional_int(std::ostream& out, const std::optional<int>& value) {
+    if (value.has_value()) {
+        out << *value;
+    } else {
+        out << "null";
+    }
 }
 
 bool token_is_comment(const std::string& token) {
@@ -967,6 +984,70 @@ void write_text_report(
     out << "  damage_pairs_in_order: " << attack_resolution.damage_pairs_in_order << "\n";
     out << "  damage_pairs_out_of_order: "
         << attack_resolution.damage_pairs_out_of_order << "\n";
+
+    const auto attack_damage_values = summarize_attack_damage_value_checkpoints(result.events);
+    out << "\nAttack damage value checkpoints\n";
+    out << "  status: "
+        << attack_damage_value_checkpoint_status_name(attack_damage_values.status) << "\n";
+    out << "  rule: " << first_battle_attack_damage_value_checkpoint_rule_detail() << "\n";
+    out << "  observed_attack_bursts: " << attack_damage_values.observed_attack_bursts << "\n";
+    out << "  orphan_damage_draw_events: "
+        << attack_damage_values.orphan_damage_draw_events << "\n";
+    out << "  bursts_with_live_inputs: "
+        << attack_damage_values.bursts_with_live_inputs << "\n";
+    out << "  bursts_with_required_draws: "
+        << attack_damage_values.bursts_with_required_draws << "\n";
+    out << "  bursts_with_observed_attack_result: "
+        << attack_damage_values.bursts_with_observed_attack_result << "\n";
+    out << "  bursts_with_observed_damage: "
+        << attack_damage_values.bursts_with_observed_damage << "\n";
+    out << "  simulated_bursts: " << attack_damage_values.simulated_bursts << "\n";
+    out << "  attack_result_matches: "
+        << attack_damage_values.attack_result_matches << "\n";
+    out << "  attack_result_mismatches: "
+        << attack_damage_values.attack_result_mismatches << "\n";
+    out << "  damage_matches: " << attack_damage_values.damage_matches << "\n";
+    out << "  damage_mismatches: " << attack_damage_values.damage_mismatches << "\n";
+    out << "  missing_live_field_bursts: "
+        << attack_damage_values.missing_live_field_bursts << "\n";
+    out << "  incomplete_draw_bursts: "
+        << attack_damage_values.incomplete_draw_bursts << "\n";
+    out << "  seed_transition_mismatches: "
+        << attack_damage_values.seed_transition_mismatches << "\n";
+    out << "  first_hit_draw_index: ";
+    write_optional_int(out, attack_damage_values.first_hit_draw_index);
+    out << "\n";
+    out << "  first_damage_value_draw_index: ";
+    write_optional_int(out, attack_damage_values.first_damage_value_draw_index);
+    out << "\n";
+    if (!attack_damage_values.attacks.empty()) {
+        out << "  attacks:\n";
+        for (const auto& attack : attack_damage_values.attacks) {
+            out << "    attack_index=" << attack.attack_index;
+            out << " active_slot=";
+            write_optional_int(out, attack.active_slot);
+            out << " target_slot=";
+            write_optional_int(out, attack.target_slot);
+            out << " hit_rand=";
+            write_optional_int(out, attack.hit_rand);
+            out << " crit_rand=";
+            write_optional_int(out, attack.crit_rand);
+            out << " spread_rand=";
+            write_optional_int(out, attack.damage_spread_rand);
+            out << " bonus_rand=";
+            write_optional_int(out, attack.damage_bonus_rand);
+            out << " expected_attack_result=";
+            write_optional_int(out, attack.expected_attack_result);
+            out << " observed_attack_result=";
+            write_optional_int(out, attack.observed_attack_result);
+            out << " expected_damage=";
+            write_optional_int(out, attack.expected_damage);
+            out << " observed_damage=";
+            write_optional_int(out, attack.observed_damage);
+            out << " missing_live_inputs=" << attack.missing_live_input_fields;
+            out << " simulated=" << (attack.simulated ? "true" : "false") << "\n";
+        }
+    }
 
     const auto crit_gate = summarize_crit_gate_checkpoints(result.events);
     out << "\nCrit-gate checkpoints\n";
@@ -2115,6 +2196,87 @@ void write_json_report(
         << attack_resolution.damage_pairs_in_order;
     out << ", \"damage_pairs_out_of_order\": "
         << attack_resolution.damage_pairs_out_of_order;
+    out << "},\n";
+
+    const auto attack_damage_values = summarize_attack_damage_value_checkpoints(result.events);
+    out << "  \"attack_damage_value_checkpoints\": {";
+    out << "\"status\": \""
+        << attack_damage_value_checkpoint_status_name(attack_damage_values.status) << "\"";
+    out << ", \"rule\": \""
+        << json_escape(first_battle_attack_damage_value_checkpoint_rule_detail()) << "\"";
+    out << ", \"observed_attack_bursts\": "
+        << attack_damage_values.observed_attack_bursts;
+    out << ", \"orphan_damage_draw_events\": "
+        << attack_damage_values.orphan_damage_draw_events;
+    out << ", \"bursts_with_live_inputs\": "
+        << attack_damage_values.bursts_with_live_inputs;
+    out << ", \"bursts_with_required_draws\": "
+        << attack_damage_values.bursts_with_required_draws;
+    out << ", \"bursts_with_observed_attack_result\": "
+        << attack_damage_values.bursts_with_observed_attack_result;
+    out << ", \"bursts_with_observed_damage\": "
+        << attack_damage_values.bursts_with_observed_damage;
+    out << ", \"simulated_bursts\": " << attack_damage_values.simulated_bursts;
+    out << ", \"attack_result_matches\": "
+        << attack_damage_values.attack_result_matches;
+    out << ", \"attack_result_mismatches\": "
+        << attack_damage_values.attack_result_mismatches;
+    out << ", \"damage_matches\": " << attack_damage_values.damage_matches;
+    out << ", \"damage_mismatches\": " << attack_damage_values.damage_mismatches;
+    out << ", \"missing_live_field_bursts\": "
+        << attack_damage_values.missing_live_field_bursts;
+    out << ", \"incomplete_draw_bursts\": "
+        << attack_damage_values.incomplete_draw_bursts;
+    out << ", \"seed_transition_mismatches\": "
+        << attack_damage_values.seed_transition_mismatches;
+    out << ", \"first_hit_draw_index\": ";
+    write_json_optional_int(out, attack_damage_values.first_hit_draw_index);
+    out << ", \"first_damage_value_draw_index\": ";
+    write_json_optional_int(out, attack_damage_values.first_damage_value_draw_index);
+    out << ", \"attacks\": [";
+    for (std::size_t i = 0; i < attack_damage_values.attacks.size(); ++i) {
+        if (i != 0) {
+            out << ", ";
+        }
+        const auto& attack = attack_damage_values.attacks[i];
+        out << "{\"attack_index\": " << attack.attack_index;
+        out << ", \"active_slot\": ";
+        write_json_optional_int(out, attack.active_slot);
+        out << ", \"target_slot\": ";
+        write_json_optional_int(out, attack.target_slot);
+        out << ", \"hit_draw_index\": ";
+        write_json_optional_int(out, attack.hit_draw_index);
+        out << ", \"crit_draw_index\": ";
+        write_json_optional_int(out, attack.crit_draw_index);
+        out << ", \"damage_spread_draw_index\": ";
+        write_json_optional_int(out, attack.damage_spread_draw_index);
+        out << ", \"damage_bonus_draw_index\": ";
+        write_json_optional_int(out, attack.damage_bonus_draw_index);
+        out << ", \"hit_rand\": ";
+        write_json_optional_int(out, attack.hit_rand);
+        out << ", \"crit_rand\": ";
+        write_json_optional_int(out, attack.crit_rand);
+        out << ", \"damage_spread_rand\": ";
+        write_json_optional_int(out, attack.damage_spread_rand);
+        out << ", \"damage_bonus_rand\": ";
+        write_json_optional_int(out, attack.damage_bonus_rand);
+        out << ", \"observed_attack_result\": ";
+        write_json_optional_int(out, attack.observed_attack_result);
+        out << ", \"expected_attack_result\": ";
+        write_json_optional_int(out, attack.expected_attack_result);
+        out << ", \"observed_damage\": ";
+        write_json_optional_int(out, attack.observed_damage);
+        out << ", \"expected_damage\": ";
+        write_json_optional_int(out, attack.expected_damage);
+        out << ", \"missing_live_input_fields\": "
+            << attack.missing_live_input_fields;
+        out << ", \"simulated\": " << (attack.simulated ? "true" : "false");
+        out << ", \"attack_result_matches\": "
+            << (attack.attack_result_matches ? "true" : "false");
+        out << ", \"damage_matches\": " << (attack.damage_matches ? "true" : "false");
+        out << "}";
+    }
+    out << "]";
     out << "},\n";
 
     const auto crit_gate = summarize_crit_gate_checkpoints(result.events);

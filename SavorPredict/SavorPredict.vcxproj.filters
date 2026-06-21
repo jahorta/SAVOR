@@ -23,6 +23,9 @@
     <ClCompile Include="ActionViewGateCheckpointModel.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="AttackDamageValueCheckpointModel.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="AttackResolutionCheckpointModel.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -104,6 +107,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="ActionViewGateCheckpointModel.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="AttackDamageValueCheckpointModel.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="AttackResolutionCheckpointModel.h">

@@ -1112,6 +1112,100 @@ TEST(SavorPredictCheckpointTrace, SummarizesAttackResolutionCheckpoints) {
     EXPECT_EQ(order_summary.damage_pairs_out_of_order, 1);
 }
 
+TEST(SavorPredictCheckpointTrace, SummarizesAttackDamageValueCheckpoints) {
+    const std::string live_hit_fields =
+        "active_slot=0 target_slot=4 attacker_attack=10 attacker_hit=100 attacker_agile=50 "
+        "attacker_element=0 target_defense=5 target_dodge=0 "
+        "target_element_effectiveness_tenths=10 target_status_flags=0 instr_param_0x6=0 ";
+
+    std::istringstream input(
+        "pc=80010bdc function=getAttackResult checkpoint=hit rng_draw_index_before=20 "
+        + live_hit_fields
+        + "rand_value=10000 attack_result=2\n"
+        "pc=80010c44 function=getAttackResult checkpoint=crit rng_draw_index_before=21 "
+        "rand_value=10\n"
+        "pc=80010958 function=rollDamage checkpoint=spread rng_draw_index_before=22 "
+        "rand_value=0\n"
+        "pc=80010984 function=rollDamage checkpoint=bonus rng_draw_index_before=23 "
+        "rand_value=1 observed_damage=19\n");
+
+    const auto parsed = parse_checkpoint_stream(input);
+    ASSERT_TRUE(parsed.errors.empty());
+    const auto matched = summarize_attack_damage_value_checkpoints(parsed.events);
+    EXPECT_EQ(matched.status, AttackDamageValueCheckpointStatus::MatchesFormula);
+    EXPECT_EQ(matched.observed_attack_bursts, 1);
+    EXPECT_EQ(matched.bursts_with_live_inputs, 1);
+    EXPECT_EQ(matched.bursts_with_required_draws, 1);
+    EXPECT_EQ(matched.simulated_bursts, 1);
+    EXPECT_EQ(matched.attack_result_matches, 1);
+    EXPECT_EQ(matched.damage_matches, 1);
+    ASSERT_EQ(matched.attacks.size(), 1u);
+    EXPECT_EQ(matched.attacks[0].expected_attack_result, std::optional<int>(2));
+    EXPECT_EQ(matched.attacks[0].expected_base_damage, std::optional<int>(20));
+    EXPECT_EQ(matched.attacks[0].expected_damage, std::optional<int>(19));
+
+    std::istringstream missing_fields_input(
+        "pc=80010bdc function=getAttackResult checkpoint=hit rng_draw_index_before=20 "
+        "active_slot=0 target_slot=4 attacker_attack=10 attacker_hit=100 attacker_agile=50 "
+        "attacker_element=0 target_dodge=0 target_element_effectiveness_tenths=10 "
+        "target_status_flags=0 instr_param_0x6=0 rand_value=10000 attack_result=2\n");
+    const auto missing_fields_parsed = parse_checkpoint_stream(missing_fields_input);
+    ASSERT_TRUE(missing_fields_parsed.errors.empty());
+    const auto missing_fields =
+        summarize_attack_damage_value_checkpoints(missing_fields_parsed.events);
+    EXPECT_EQ(
+        attack_damage_value_checkpoint_status_name(missing_fields.status),
+        std::string("MissingLiveDamageFields"));
+
+    std::istringstream incomplete_input(
+        "pc=80010bdc function=getAttackResult checkpoint=hit rng_draw_index_before=20 "
+        + live_hit_fields
+        + "rand_value=10000 attack_result=2\n"
+        "pc=80010c44 function=getAttackResult checkpoint=crit rng_draw_index_before=21 "
+        "rand_value=10\n"
+        "pc=80010958 function=rollDamage checkpoint=spread rng_draw_index_before=22 "
+        "rand_value=0\n");
+    const auto incomplete_parsed = parse_checkpoint_stream(incomplete_input);
+    ASSERT_TRUE(incomplete_parsed.errors.empty());
+    const auto incomplete = summarize_attack_damage_value_checkpoints(incomplete_parsed.events);
+    EXPECT_EQ(incomplete.status, AttackDamageValueCheckpointStatus::IncompleteDrawSequence);
+
+    std::istringstream attack_result_mismatch_input(
+        "pc=80010bdc function=getAttackResult checkpoint=hit rng_draw_index_before=20 "
+        + live_hit_fields
+        + "rand_value=10000 attack_result=1\n"
+        "pc=80010c44 function=getAttackResult checkpoint=crit rng_draw_index_before=21 "
+        "rand_value=10\n"
+        "pc=80010958 function=rollDamage checkpoint=spread rng_draw_index_before=22 "
+        "rand_value=0\n"
+        "pc=80010984 function=rollDamage checkpoint=bonus rng_draw_index_before=23 "
+        "rand_value=1 observed_damage=19\n");
+    const auto attack_result_mismatch_parsed =
+        parse_checkpoint_stream(attack_result_mismatch_input);
+    ASSERT_TRUE(attack_result_mismatch_parsed.errors.empty());
+    const auto attack_result_mismatch =
+        summarize_attack_damage_value_checkpoints(attack_result_mismatch_parsed.events);
+    EXPECT_EQ(
+        attack_damage_value_checkpoint_status_name(attack_result_mismatch.status),
+        std::string("AttackResultMismatch"));
+
+    std::istringstream damage_mismatch_input(
+        "pc=80010bdc function=getAttackResult checkpoint=hit rng_draw_index_before=20 "
+        + live_hit_fields
+        + "rand_value=10000 attack_result=2\n"
+        "pc=80010c44 function=getAttackResult checkpoint=crit rng_draw_index_before=21 "
+        "rand_value=10\n"
+        "pc=80010958 function=rollDamage checkpoint=spread rng_draw_index_before=22 "
+        "rand_value=0\n"
+        "pc=80010984 function=rollDamage checkpoint=bonus rng_draw_index_before=23 "
+        "rand_value=1 observed_damage=18\n");
+    const auto damage_mismatch_parsed = parse_checkpoint_stream(damage_mismatch_input);
+    ASSERT_TRUE(damage_mismatch_parsed.errors.empty());
+    const auto damage_mismatch =
+        summarize_attack_damage_value_checkpoints(damage_mismatch_parsed.events);
+    EXPECT_EQ(damage_mismatch.status, AttackDamageValueCheckpointStatus::DamageMismatch);
+}
+
 TEST(SavorPredictCheckpointTrace, SummarizesCritGateCheckpoints) {
     std::istringstream input(
         "pc=80010bdc function=getAttackResult checkpoint=hit rng_draw_index_before=20 "

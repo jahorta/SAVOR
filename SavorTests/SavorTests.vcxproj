@@ -136,6 +136,7 @@
     <ClCompile Include="..\SavorPredict\ActionSetupCheckpointModel.cpp" />
     <ClCompile Include="..\SavorPredict\ActionSourceCheckpointModel.cpp" />
     <ClCompile Include="..\SavorPredict\ActionViewGateCheckpointModel.cpp" />
+    <ClCompile Include="..\SavorPredict\AttackDamageValueCheckpointModel.cpp" />
     <ClCompile Include="..\SavorPredict\AttackResolutionCheckpointModel.cpp" />
     <ClCompile Include="..\SavorPredict\AttackResolutionModel.cpp" />
     <ClCompile Include="..\SavorPredict\CheckpointTrace.cpp" />
