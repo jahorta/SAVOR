@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <initializer_list>
+#include <map>
 #include <numeric>
 #include <string_view>
 #include <utility>
@@ -146,6 +147,83 @@ std::vector<TurnOrderCheckpointDraw> sorted_execution_entries(
         return false;
     });
     return sorted;
+}
+
+bool vector_contains(const std::vector<int>& values, int needle) {
+    return std::find(values.begin(), values.end(), needle) != values.end();
+}
+
+std::vector<int> reversed_copy(std::vector<int> values) {
+    std::reverse(values.begin(), values.end());
+    return values;
+}
+
+void summarize_priority_tie_groups(
+    TurnOrderCheckpointSummary& summary,
+    const std::vector<TurnOrderCheckpointDraw>& priority_sources,
+    const std::vector<TurnOrderCheckpointDraw>& sorted_execution) {
+    std::map<int, std::vector<const TurnOrderCheckpointDraw*>> sources_by_priority;
+    for (const auto& source : priority_sources) {
+        if (source.assigned_priority.has_value() && source.slot.has_value()) {
+            sources_by_priority[*source.assigned_priority].push_back(&source);
+        }
+    }
+
+    for (auto& [assigned_priority, sources] : sources_by_priority) {
+        if (sources.size() < 2) {
+            continue;
+        }
+
+        std::stable_sort(
+            sources.begin(),
+            sources.end(),
+            [](const auto* lhs, const auto* rhs) {
+                if (lhs->queue_index.has_value() && rhs->queue_index.has_value()
+                    && *lhs->queue_index != *rhs->queue_index) {
+                    return *lhs->queue_index < *rhs->queue_index;
+                }
+                return false;
+            });
+
+        TurnOrderTieGroup group;
+        group.assigned_priority = assigned_priority;
+        for (const auto* source : sources) {
+            if (source->queue_index.has_value()) {
+                group.queue_indices.push_back(*source->queue_index);
+            }
+            group.slots_by_queue_order.push_back(*source->slot);
+        }
+
+        for (const auto& entry : sorted_execution) {
+            if (entry.slot.has_value()
+                && vector_contains(group.slots_by_queue_order, *entry.slot)) {
+                group.observed_execution_slots.push_back(*entry.slot);
+            }
+        }
+
+        ++summary.priority_tie_groups;
+        summary.priority_tied_entries += static_cast<int>(sources.size());
+        if (group.observed_execution_slots.size() == group.slots_by_queue_order.size()) {
+            group.observed_order_compared = true;
+            ++summary.tie_groups_with_observed_execution_order;
+            group.observed_order_matches_queue_ascending =
+                group.observed_execution_slots == group.slots_by_queue_order;
+            group.observed_order_matches_queue_descending =
+                group.observed_execution_slots == reversed_copy(group.slots_by_queue_order);
+            if (group.observed_order_matches_queue_ascending) {
+                ++summary.tie_groups_matching_queue_ascending;
+            }
+            if (group.observed_order_matches_queue_descending) {
+                ++summary.tie_groups_matching_queue_descending;
+            }
+        }
+        summary.tie_groups.push_back(std::move(group));
+    }
+
+    if (summary.priority_tie_groups > 0) {
+        summary.priority_ties_observed = true;
+        summary.execution_order_exact = false;
+    }
 }
 
 TurnOrderCheckpointStatus classify_status(const TurnOrderCheckpointSummary& summary) {
@@ -341,7 +419,14 @@ TurnOrderCheckpointSummary summarize_turn_order_checkpoints(
             ++summary.priority_sources_missing_fixed_priority_result;
         }
     }
-    if (!priority_sources.empty() && !execution_entries.empty()) {
+    if (!priority_sources.empty()) {
+        const auto sorted_execution = sorted_execution_entries(execution_entries);
+        summarize_priority_tie_groups(summary, priority_sources, sorted_execution);
+        if (execution_entries.empty()) {
+            summary.status = classify_status(summary);
+            return summary;
+        }
+
         std::vector<int> sorted_indices(priority_sources.size());
         std::iota(sorted_indices.begin(), sorted_indices.end(), 0);
         std::stable_sort(sorted_indices.begin(), sorted_indices.end(), [&priority_sources](int lhs, int rhs) {
@@ -353,20 +438,11 @@ TurnOrderCheckpointSummary summarize_turn_order_checkpoints(
             return lhs < rhs;
         });
 
-        for (std::size_t i = 1; i < sorted_indices.size(); ++i) {
-            if (priority_sources[sorted_indices[i - 1]].assigned_priority
-                == priority_sources[sorted_indices[i]].assigned_priority) {
-                summary.priority_ties_observed = true;
-                summary.execution_order_exact = false;
-                break;
-            }
-        }
-
         for (auto it = sorted_indices.rbegin(); it != sorted_indices.rend(); ++it) {
             summary.expected_execution_slots.push_back(*priority_sources[*it].slot);
         }
 
-        for (const auto& entry : sorted_execution_entries(execution_entries)) {
+        for (const auto& entry : sorted_execution) {
             summary.observed_execution_slots.push_back(*entry.slot);
         }
 

@@ -62,6 +62,16 @@ struct TurnOrderCheckpointDraw {
     bool queue_metadata_matches = false;
 };
 
+struct TurnOrderTieGroup {
+    int assigned_priority = 0;
+    std::vector<int> queue_indices;
+    std::vector<int> slots_by_queue_order;
+    std::vector<int> observed_execution_slots;
+    bool observed_order_compared = false;
+    bool observed_order_matches_queue_ascending = false;
+    bool observed_order_matches_queue_descending = false;
+};
+
 struct TurnOrderCheckpointSummary {
     std::optional<int> expected_priority_jitter_draws;
     int observed_priority_jitter_draws = 0;
@@ -95,10 +105,16 @@ struct TurnOrderCheckpointSummary {
     bool execution_order_compared = false;
     bool execution_order_exact = true;
     bool priority_ties_observed = false;
+    int priority_tie_groups = 0;
+    int priority_tied_entries = 0;
+    int tie_groups_with_observed_execution_order = 0;
+    int tie_groups_matching_queue_ascending = 0;
+    int tie_groups_matching_queue_descending = 0;
     int execution_order_matches = 0;
     int execution_order_mismatches = 0;
     std::vector<int> expected_execution_slots;
     std::vector<int> observed_execution_slots;
+    std::vector<TurnOrderTieGroup> tie_groups;
     std::vector<TurnOrderCheckpointDraw> draws;
     TurnOrderCheckpointStatus status = TurnOrderCheckpointStatus::ObservedOnly;
 };

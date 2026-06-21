@@ -1441,6 +1441,9 @@ TEST(SavorPredictCheckpointTrace, SummarizesTurnOrderExecutionOrderCheckpoints) 
     EXPECT_EQ(matched.observed_execution_slots[0], 1);
     EXPECT_EQ(matched.observed_execution_slots[1], 0);
     EXPECT_EQ(matched.observed_execution_slots[2], 4);
+    EXPECT_EQ(matched.priority_tie_groups, 0);
+    EXPECT_EQ(matched.priority_tied_entries, 0);
+    EXPECT_EQ(matched.tie_groups_with_observed_execution_order, 0);
 
     std::istringstream mismatch_input(
         "pc=80070c18 function=setupTurn checkpoint=queued_entry rng_draw_index_before=20 "
@@ -1455,6 +1458,45 @@ TEST(SavorPredictCheckpointTrace, SummarizesTurnOrderExecutionOrderCheckpoints) 
     ASSERT_TRUE(mismatch_parsed.errors.empty());
     const auto mismatch = summarize_turn_order_checkpoints(mismatch_parsed.events, std::nullopt);
     EXPECT_EQ(mismatch.status, TurnOrderCheckpointStatus::ExecutionOrderMismatch);
+
+    std::istringstream tied_input(
+        "pc=80070c18 function=setupTurn checkpoint=queued_entry rng_draw_index_before=20 "
+        "queue_index=0 slot=0 quick=22 fixed_priority_result=0 assigned_priority=27 "
+        "rand_value=5 jitter_modulus=10 sum_quick=40 queued_count=2\n"
+        "pc=80070c18 function=setupTurn checkpoint=queued_entry rng_draw_index_before=20 "
+        "queue_index=1 slot=4 quick=18 fixed_priority_result=0 assigned_priority=27 "
+        "rand_value=9 jitter_modulus=10 sum_quick=40 queued_count=2\n"
+        "pc=80071280 function=setupTurn checkpoint=execution_order rng_draw_index_before=20 "
+        "execution_index=0 slot=4\n"
+        "pc=80071280 function=setupTurn checkpoint=execution_order rng_draw_index_before=20 "
+        "execution_index=1 slot=0\n");
+    const auto tied_parsed = parse_checkpoint_stream(tied_input);
+    ASSERT_TRUE(tied_parsed.errors.empty());
+    const auto tied = summarize_turn_order_checkpoints(tied_parsed.events, std::nullopt);
+    EXPECT_EQ(tied.status, TurnOrderCheckpointStatus::MatchesExpected);
+    EXPECT_TRUE(tied.priority_ties_observed);
+    EXPECT_FALSE(tied.execution_order_exact);
+    EXPECT_FALSE(tied.execution_order_compared);
+    EXPECT_EQ(tied.priority_tie_groups, 1);
+    EXPECT_EQ(tied.priority_tied_entries, 2);
+    EXPECT_EQ(tied.tie_groups_with_observed_execution_order, 1);
+    EXPECT_EQ(tied.tie_groups_matching_queue_ascending, 0);
+    EXPECT_EQ(tied.tie_groups_matching_queue_descending, 1);
+    ASSERT_EQ(tied.tie_groups.size(), 1u);
+    const auto& group = tied.tie_groups[0];
+    EXPECT_EQ(group.assigned_priority, 27);
+    ASSERT_EQ(group.queue_indices.size(), 2u);
+    EXPECT_EQ(group.queue_indices[0], 0);
+    EXPECT_EQ(group.queue_indices[1], 1);
+    ASSERT_EQ(group.slots_by_queue_order.size(), 2u);
+    EXPECT_EQ(group.slots_by_queue_order[0], 0);
+    EXPECT_EQ(group.slots_by_queue_order[1], 4);
+    ASSERT_EQ(group.observed_execution_slots.size(), 2u);
+    EXPECT_EQ(group.observed_execution_slots[0], 4);
+    EXPECT_EQ(group.observed_execution_slots[1], 0);
+    EXPECT_TRUE(group.observed_order_compared);
+    EXPECT_FALSE(group.observed_order_matches_queue_ascending);
+    EXPECT_TRUE(group.observed_order_matches_queue_descending);
 }
 
 TEST(SavorPredictCheckpointTrace, SummarizesAttackResolutionCheckpoints) {

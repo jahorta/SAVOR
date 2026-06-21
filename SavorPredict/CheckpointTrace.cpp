@@ -1168,6 +1168,14 @@ void write_text_report(
         << (turn_order.execution_order_exact ? "true" : "false") << "\n";
     out << "  priority_ties_observed: "
         << (turn_order.priority_ties_observed ? "true" : "false") << "\n";
+    out << "  priority_tie_groups: " << turn_order.priority_tie_groups << "\n";
+    out << "  priority_tied_entries: " << turn_order.priority_tied_entries << "\n";
+    out << "  tie_groups_with_observed_execution_order: "
+        << turn_order.tie_groups_with_observed_execution_order << "\n";
+    out << "  tie_groups_matching_queue_ascending: "
+        << turn_order.tie_groups_matching_queue_ascending << "\n";
+    out << "  tie_groups_matching_queue_descending: "
+        << turn_order.tie_groups_matching_queue_descending << "\n";
     out << "  execution_order_matches: "
         << turn_order.execution_order_matches << "\n";
     out << "  execution_order_mismatches: "
@@ -1185,6 +1193,48 @@ void write_text_report(
             out << " " << slot;
         }
         out << "\n";
+    }
+    if (!turn_order.tie_groups.empty()) {
+        out << "  priority_tie_groups_detail:\n";
+        for (const auto& group : turn_order.tie_groups) {
+            out << "    assigned_priority=" << group.assigned_priority;
+            out << " queue_indices=";
+            if (group.queue_indices.empty()) {
+                out << "unknown";
+            } else {
+                for (std::size_t i = 0; i < group.queue_indices.size(); ++i) {
+                    if (i != 0) {
+                        out << ",";
+                    }
+                    out << group.queue_indices[i];
+                }
+            }
+            out << " slots_by_queue_order=";
+            for (std::size_t i = 0; i < group.slots_by_queue_order.size(); ++i) {
+                if (i != 0) {
+                    out << ",";
+                }
+                out << group.slots_by_queue_order[i];
+            }
+            out << " observed_execution_slots=";
+            if (group.observed_execution_slots.empty()) {
+                out << "unknown";
+            } else {
+                for (std::size_t i = 0; i < group.observed_execution_slots.size(); ++i) {
+                    if (i != 0) {
+                        out << ",";
+                    }
+                    out << group.observed_execution_slots[i];
+                }
+            }
+            out << " observed_order_compared="
+                << (group.observed_order_compared ? "true" : "false");
+            out << " observed_order_matches_queue_ascending="
+                << (group.observed_order_matches_queue_ascending ? "true" : "false");
+            out << " observed_order_matches_queue_descending="
+                << (group.observed_order_matches_queue_descending ? "true" : "false");
+            out << "\n";
+        }
     }
     if (!turn_order.draws.empty()) {
         out << "  events:\n";
@@ -2809,6 +2859,14 @@ void write_json_report(
         << (turn_order.execution_order_exact ? "true" : "false");
     out << ", \"priority_ties_observed\": "
         << (turn_order.priority_ties_observed ? "true" : "false");
+    out << ", \"priority_tie_groups\": " << turn_order.priority_tie_groups;
+    out << ", \"priority_tied_entries\": " << turn_order.priority_tied_entries;
+    out << ", \"tie_groups_with_observed_execution_order\": "
+        << turn_order.tie_groups_with_observed_execution_order;
+    out << ", \"tie_groups_matching_queue_ascending\": "
+        << turn_order.tie_groups_matching_queue_ascending;
+    out << ", \"tie_groups_matching_queue_descending\": "
+        << turn_order.tie_groups_matching_queue_descending;
     out << ", \"execution_order_matches\": " << turn_order.execution_order_matches;
     out << ", \"execution_order_mismatches\": "
         << turn_order.execution_order_mismatches;
@@ -2826,6 +2884,46 @@ void write_json_report(
             out << ", ";
         }
         out << turn_order.observed_execution_slots[i];
+    }
+    out << "]";
+    out << ", \"tie_groups\": [";
+    for (std::size_t i = 0; i < turn_order.tie_groups.size(); ++i) {
+        if (i != 0) {
+            out << ", ";
+        }
+        const auto& group = turn_order.tie_groups[i];
+        out << "{\"assigned_priority\": " << group.assigned_priority;
+        out << ", \"queue_indices\": [";
+        for (std::size_t j = 0; j < group.queue_indices.size(); ++j) {
+            if (j != 0) {
+                out << ", ";
+            }
+            out << group.queue_indices[j];
+        }
+        out << "]";
+        out << ", \"slots_by_queue_order\": [";
+        for (std::size_t j = 0; j < group.slots_by_queue_order.size(); ++j) {
+            if (j != 0) {
+                out << ", ";
+            }
+            out << group.slots_by_queue_order[j];
+        }
+        out << "]";
+        out << ", \"observed_execution_slots\": [";
+        for (std::size_t j = 0; j < group.observed_execution_slots.size(); ++j) {
+            if (j != 0) {
+                out << ", ";
+            }
+            out << group.observed_execution_slots[j];
+        }
+        out << "]";
+        out << ", \"observed_order_compared\": "
+            << (group.observed_order_compared ? "true" : "false");
+        out << ", \"observed_order_matches_queue_ascending\": "
+            << (group.observed_order_matches_queue_ascending ? "true" : "false");
+        out << ", \"observed_order_matches_queue_descending\": "
+            << (group.observed_order_matches_queue_descending ? "true" : "false");
+        out << "}";
     }
     out << "]";
     out << ", \"events\": [";
