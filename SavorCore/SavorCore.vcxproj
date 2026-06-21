@@ -220,6 +220,9 @@
     <ClInclude Include="Runner\Breakpoints\BP.def.h" />
     <ClInclude Include="Runner\Breakpoints\BpRegistry.h" />
     <ClInclude Include="Runner\Breakpoints\Predicate.h" />
+    <ClInclude Include="Runner\Capture\CaptureJsonlWriter.h" />
+    <ClInclude Include="Runner\Capture\CaptureProfile.h" />
+    <ClInclude Include="Runner\Capture\LiveCheckpointCapture.h" />
     <ClInclude Include="Runner\IPC\Wire.h" />
     <ClInclude Include="Runner\Parallel\ParallelPhaseScriptRunnerApi.h" />
     <ClInclude Include="Runner\Parallel\WorkerBootPlan.h" />
@@ -282,6 +285,9 @@
     <ClCompile Include="Phases\RNGSeedDeltaMap.cpp" />
     <ClCompile Include="Runner\Breakpoints\BpRegistry.cpp" />
     <ClCompile Include="Runner\Breakpoints\Predicate.cpp" />
+    <ClCompile Include="Runner\Capture\CaptureJsonlWriter.cpp" />
+    <ClCompile Include="Runner\Capture\CaptureProfile.cpp" />
+    <ClCompile Include="Runner\Capture\LiveCheckpointCapture.cpp" />
     <ClCompile Include="Runner\Script\CtxRegistry.cpp" />
     <ClCompile Include="Runner\Script\PhaseScriptVM.cpp" />
     <ClCompile Include="Runner\Script\PSContextCodec.cpp" />

@@ -77,6 +77,9 @@ namespace phase::battle::turnrunner {
         put_u32(out, blob_sz);
         if (blob_sz) out.insert(out.end(), blob.begin(), blob.end());
 
+        put_str(out, spec.capture_profile_path);
+        put_str(out, spec.capture_output_path);
+
         return true;
     }
 
@@ -97,7 +100,7 @@ namespace phase::battle::turnrunner {
         uint32_t has_initial_input = 0;
 
         if (!get_u32(p, e, version)) return false;
-        if (version != PayloadVersion) return false;
+        if (version < 3 || version > PayloadVersion) return false;
         if (!get_u32(p, e, run_ms)) return false;
         if (!get_u32(p, e, vi_stall_ms)) return false;
         if (!get_u32(p, e, current_turn)) return false;
@@ -149,6 +152,13 @@ namespace phase::battle::turnrunner {
             if (p + blob_sz > e) return false;
             pred_table.append(reinterpret_cast<const char*>(p), blob_sz);
             p += blob_sz;
+        }
+
+        std::string capture_profile_path;
+        std::string capture_output_path;
+        if (version >= 4) {
+            if (!get_str(p, e, capture_profile_path)) return false;
+            if (!get_str(p, e, capture_output_path)) return false;
         }
 
         if (p != e) return false;
@@ -206,6 +216,11 @@ namespace phase::battle::turnrunner {
         out_ctx[savor::context::key::core::PRED_PASSED] = (uint32_t)0;
         out_ctx[savor::context::key::core::PRED_TOTAL] = (uint32_t)0;
         out_ctx[savor::context::key::core::PRED_ABORT_RUN] = (uint32_t)0;
+
+        if (!capture_profile_path.empty() || !capture_output_path.empty()) {
+            out_ctx[savor::context::key::core::CAPTURE_PROFILE_PATH] = capture_profile_path;
+            out_ctx[savor::context::key::core::CAPTURE_OUTPUT_PATH] = capture_output_path;
+        }
 
         savor::progress::ProgressDeets progress{ .poll_rate = 5000 };
         progress.set_flag(CoreProgressFlags::BattleProgress);

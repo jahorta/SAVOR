@@ -62,6 +62,9 @@
     <ClCompile Include="FirstBattleDataModel.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="LiveCaptureProfile.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="Main.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -149,6 +152,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="FirstBattleDataModel.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="LiveCaptureProfile.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="OutcomeCheckpointModel.h">

@@ -37,6 +37,9 @@
     <Filter Include="Runner\Breakpoints">
       <UniqueIdentifier>{eb90977c-bb6f-467c-9b6a-46f72e40aa63}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Runner\Capture">
+      <UniqueIdentifier>{2f795460-2d6d-4e37-9f4f-0c39b18f8c15}</UniqueIdentifier>
+    </Filter>
     <Filter Include="Core\Memory">
       <UniqueIdentifier>{c909555e-6482-421c-b1e0-e0c35effd5cb}</UniqueIdentifier>
     </Filter>
@@ -179,6 +182,15 @@
     </ClInclude>
     <ClInclude Include="Runner\Breakpoints\Predicate.h">
       <Filter>Runner\Breakpoints</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Capture\CaptureJsonlWriter.h">
+      <Filter>Runner\Capture</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Capture\CaptureProfile.h">
+      <Filter>Runner\Capture</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Capture\LiveCheckpointCapture.h">
+      <Filter>Runner\Capture</Filter>
     </ClInclude>
     <ClInclude Include="Phases\Programs\BattleRunner\BattleOutcome.h">
       <Filter>Phases\BattleRunner</Filter>
@@ -391,6 +403,15 @@
     </ClCompile>
     <ClCompile Include="Runner\Breakpoints\Predicate.cpp">
       <Filter>Runner\Breakpoints</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Capture\CaptureJsonlWriter.cpp">
+      <Filter>Runner\Capture</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Capture\CaptureProfile.cpp">
+      <Filter>Runner\Capture</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Capture\LiveCheckpointCapture.cpp">
+      <Filter>Runner\Capture</Filter>
     </ClCompile>
     <ClCompile Include="Runner\Script\CtxRegistry.cpp">
       <Filter>Runner\VM</Filter>

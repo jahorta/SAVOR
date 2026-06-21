@@ -56,6 +56,7 @@ struct JobIni {
     std::string action_key;
     std::string resolved_turn_commands_blob;
     std::string resolved_turn_variant_key;
+    std::string capture_profile_path;
 
     void set_section(IniDoc& ini) const {
         ini.set(kJobSection, "wave_id", std::to_string(wave_id));
@@ -68,6 +69,9 @@ struct JobIni {
         ini.set(kJobSection, "action_key", action_key);
         ini.set(kJobSection, "resolved_turn_commands_blob", resolved_turn_commands_blob);
         ini.set(kJobSection, "resolved_turn_variant_key", resolved_turn_variant_key);
+        if (!capture_profile_path.empty()) {
+            ini.set(kJobSection, "capture_profile_path", capture_profile_path);
+        }
         // Compatibility for queued jobs created before the resolved-command terminology.
         ini.set(kJobSection, "concrete_turn_plan_hex", resolved_turn_commands_blob);
         ini.set(kJobSection, "target_variant_key", resolved_turn_variant_key);
@@ -92,6 +96,7 @@ struct JobIni {
         if (out.resolved_turn_variant_key.empty()) {
             out.resolved_turn_variant_key = ini.get(kJobSection, "target_variant_key", "");
         }
+        out.capture_profile_path = ini.get(kJobSection, "capture_profile_path", "");
         return out;
     }
 };
@@ -116,7 +121,9 @@ struct ResultsIni {
     std::uint32_t macro_last_hit_pc = 0;
     std::int64_t applied_input_artifact_id = 0;
     std::int64_t input_trace_artifact_id = 0;
+    std::int64_t capture_artifact_id = 0;
     std::string input_trace_blob;
+    std::string capture_output_path;
     std::string savestate_path;
     std::int64_t output_savestate_id = 0;
     std::string context_blob_base64;
@@ -143,8 +150,12 @@ struct ResultsIni {
         ini.set(kResultsSection, "macro_last_hit_pc", std::to_string(macro_last_hit_pc));
         ini.set(kResultsSection, "applied_input_artifact_id", std::to_string(applied_input_artifact_id));
         ini.set(kResultsSection, "input_trace_artifact_id", std::to_string(input_trace_artifact_id));
+        ini.set(kResultsSection, "capture_artifact_id", std::to_string(capture_artifact_id));
         ini.set(kResultsSection, "input_trace_blob", input_trace_blob);
         ini.set(kResultsSection, "applied_input_tape_text", input_trace_blob);
+        if (!capture_output_path.empty()) {
+            ini.set(kResultsSection, "capture_output_path", capture_output_path);
+        }
         ini.set(kResultsSection, "savestate_path", savestate_path);
         ini.set(kResultsSection, "output_savestate_id", std::to_string(output_savestate_id));
         if (!context_blob_base64.empty()) {
@@ -176,10 +187,12 @@ struct ResultsIni {
         out.macro_last_hit_pc = ini.get_u32(kResultsSection, "macro_last_hit_pc", 0);
         out.applied_input_artifact_id = ini.get_i64(kResultsSection, "applied_input_artifact_id", 0);
         out.input_trace_artifact_id = ini.get_i64(kResultsSection, "input_trace_artifact_id", 0);
+        out.capture_artifact_id = ini.get_i64(kResultsSection, "capture_artifact_id", 0);
         out.input_trace_blob = ini.get(kResultsSection, "input_trace_blob", "");
         if (out.input_trace_blob.empty()) {
             out.input_trace_blob = ini.get(kResultsSection, "applied_input_tape_text", "");
         }
+        out.capture_output_path = ini.get(kResultsSection, "capture_output_path", "");
         out.savestate_path = ini.get(kResultsSection, "savestate_path", "");
         out.output_savestate_id = ini.get_i64(kResultsSection, "output_savestate_id", 0);
         out.context_blob_base64 = ini.get(kResultsSection, "context_blob_base64", "");
@@ -994,6 +1007,10 @@ public:
         const auto out_dir = WorkingRoot(working_dir_root_) / ("job-" + std::to_string(job_id));
         std::filesystem::create_directories(out_dir);
         spec.output_savestate_path = (out_dir / "battle_single_turn_output.sav").string();
+        spec.capture_profile_path = job_ini.capture_profile_path;
+        if (!spec.capture_profile_path.empty()) {
+            spec.capture_output_path = (out_dir / "battle_checkpoint_capture.jsonl").string();
+        }
 
         savor::PSJob ps_job{};
         if (!phase::battle::turnrunner::encode_payload(spec, ps_job.payload)) {
@@ -1056,6 +1073,7 @@ public:
             }
         }
         result.ps.ctx.get(savor::context::key::core::LAST_SAVESTATE_PATH, out.savestate_path);
+        result.ps.ctx.get(savor::context::key::core::CAPTURE_OUTPUT_PATH, out.capture_output_path);
         std::string context_blob;
         if (result.ps.ctx.get(savor::context::key::battle::CTX_BLOB, context_blob) && !context_blob.empty()) {
             out.context_blob_base64 = savor::utils::Base64Encode(context_blob);
@@ -1103,6 +1121,12 @@ public:
             if (input_trace_artifact_id.has_value()) {
                 parsed.input_trace_artifact_id = *input_trace_artifact_id;
                 parsed.applied_input_artifact_id = *input_trace_artifact_id;
+            }
+        }
+        if (!parsed.capture_output_path.empty()) {
+            if (const auto capture_artifact_id = StoreCaptureArtifact(job_id, parsed.capture_output_path, payload.event_lines);
+                capture_artifact_id.has_value()) {
+                parsed.capture_artifact_id = *capture_artifact_id;
             }
         }
 
@@ -1176,6 +1200,44 @@ public:
     }
 
 private:
+    std::optional<std::int64_t> StoreCaptureArtifact(
+        std::int64_t job_id,
+        const std::string& capture_output_path,
+        std::vector<std::string>& lines) const {
+        if (state_db_ == nullptr || capture_output_path.empty()) {
+            return std::nullopt;
+        }
+        const std::filesystem::path path(capture_output_path);
+        if (!std::filesystem::exists(path)) {
+            lines.push_back("[battle-single-turn-result] capture_missing path=" + capture_output_path);
+            return std::nullopt;
+        }
+
+        const auto now = savor::db::types::UtcNow();
+        std::string error;
+        std::int64_t artifact_id = 0;
+        if (!state_db_->StoreArtifact(
+                {
+                    .sha256 = hash::sha256_of_file(path.string()),
+                    .size_bytes = FileSize(path),
+                    .filename = std::filesystem::absolute(path).string(),
+                    .file_ext = path.extension().string(),
+                    .artifact_kind = "OTHER",
+                    .created_at_utc = now,
+                    .correlation_id = "battle-job-" + std::to_string(job_id),
+                    .causation_id = "job-" + std::to_string(job_id),
+                },
+                &artifact_id,
+                &error)
+            || artifact_id <= 0) {
+            lines.push_back("[battle-single-turn-result] capture_store_failed error=" + error);
+            return std::nullopt;
+        }
+        lines.push_back("[battle-single-turn-result] capture_artifact_id=" + std::to_string(artifact_id)
+            + " path=" + std::filesystem::absolute(path).string());
+        return artifact_id;
+    }
+
     std::optional<std::int64_t> StoreOutputSavestate(
         std::int64_t job_id,
         const ResultsIni& parsed,

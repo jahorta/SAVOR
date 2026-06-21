@@ -10,7 +10,7 @@
 
 namespace phase::battle::turnrunner {
 
-    static constexpr int PayloadVersion = 3;
+    static constexpr int PayloadVersion = 4;
 
     struct EncodeSpec {
         uint32_t run_ms{ 0 };
@@ -27,6 +27,8 @@ namespace phase::battle::turnrunner {
         uint32_t fake_attack_budget_max{ 0 };
         uint32_t fake_attacks_used_before_turn{ 0 };
         std::string output_savestate_path{};
+        std::string capture_profile_path{};
+        std::string capture_output_path{};
     };
 
     bool encode_payload(const EncodeSpec& spec, std::vector<uint8_t>& out);

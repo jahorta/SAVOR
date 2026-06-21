@@ -148,6 +148,7 @@
     <ClCompile Include="..\SavorPredict\DropModel.cpp" />
     <ClCompile Include="..\SavorPredict\EnemyAttackSetupModel.cpp" />
     <ClCompile Include="..\SavorPredict\FirstBattleDataModel.cpp" />
+    <ClCompile Include="..\SavorPredict\LiveCaptureProfile.cpp" />
     <ClCompile Include="..\SavorPredict\OutcomeCheckpointModel.cpp" />
     <ClCompile Include="..\SavorPredict\PreAiCameraModel.cpp" />
     <ClCompile Include="..\SavorPredict\PreAiCheckpointModel.cpp" />
@@ -169,6 +170,7 @@
     <ClCompile Include="test_framestep.cpp" />
     <ClCompile Include="test_GC_input_frame_builder.cpp" />
     <ClCompile Include="test_import_from_qt.cpp" />
+    <ClCompile Include="test_live_checkpoint_capture.cpp" />
     <ClCompile Include="test_pad_poll_isolated_user.cpp" />
     <ClCompile Include="test_simconfig.cpp" />
     <ClCompile Include="test_savordb.cpp" />

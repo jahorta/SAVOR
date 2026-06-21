@@ -24,6 +24,8 @@ namespace savor::context::key::core {
   X(PROGRESS_RATE,           0x0042, "core.input.progress_rate") \
   X(PROGRESS_CORE_FLAGS,     0x0043, "core.input.progress_core_flags") \
   X(RUN_POLL_MS,             0x0044, "core.input.run_poll_ms") \
+  X(CAPTURE_PROFILE_PATH,    0x0045, "core.capture.profile_path") \
+  X(CAPTURE_OUTPUT_PATH,     0x0046, "core.capture.output_path") \
 \
   X(PLAN_FRAME_IDX,          0x0060, "core.plan.frame_idx")    \
   X(PLAN_DONE,               0x0061, "core.plan.done")         \

@@ -125,6 +125,7 @@
     <ClCompile Include="DropModel.cpp" />
     <ClCompile Include="EnemyAttackSetupModel.cpp" />
     <ClCompile Include="FirstBattleDataModel.cpp" />
+    <ClCompile Include="LiveCaptureProfile.cpp" />
     <ClCompile Include="Main.cpp" />
     <ClCompile Include="OutcomeCheckpointModel.cpp" />
     <ClCompile Include="PreAiCameraModel.cpp" />
@@ -156,6 +157,7 @@
     <ClInclude Include="DropModel.h" />
     <ClInclude Include="EnemyAttackSetupModel.h" />
     <ClInclude Include="FirstBattleDataModel.h" />
+    <ClInclude Include="LiveCaptureProfile.h" />
     <ClInclude Include="OutcomeCheckpointModel.h" />
     <ClInclude Include="PreAiCameraModel.h" />
     <ClInclude Include="PreAiCheckpointModel.h" />

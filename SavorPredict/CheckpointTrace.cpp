@@ -178,6 +178,108 @@ void parse_event_field(CheckpointEvent& event, const std::string& token, Checkpo
     event.fields[key] = value;
 }
 
+bool parse_json_string_token(const std::string& line, std::size_t& index, std::string& out) {
+    if (index >= line.size() || line[index] != '"') {
+        return false;
+    }
+    ++index;
+    out.clear();
+    while (index < line.size()) {
+        const char c = line[index++];
+        if (c == '"') {
+            return true;
+        }
+        if (c == '\\') {
+            if (index >= line.size()) return false;
+            const char esc = line[index++];
+            switch (esc) {
+            case '"': out.push_back('"'); break;
+            case '\\': out.push_back('\\'); break;
+            case 'n': out.push_back('\n'); break;
+            case 'r': out.push_back('\r'); break;
+            case 't': out.push_back('\t'); break;
+            default: out.push_back(esc); break;
+            }
+        } else {
+            out.push_back(c);
+        }
+    }
+    return false;
+}
+
+void skip_json_ws(const std::string& line, std::size_t& index) {
+    while (index < line.size() && std::isspace(static_cast<unsigned char>(line[index])) != 0) {
+        ++index;
+    }
+}
+
+bool parse_json_value_token(const std::string& line, std::size_t& index, std::string& out) {
+    skip_json_ws(line, index);
+    if (index >= line.size()) {
+        return false;
+    }
+    if (line[index] == '"') {
+        return parse_json_string_token(line, index, out);
+    }
+    const auto start = index;
+    while (index < line.size() && line[index] != ',' && line[index] != '}') {
+        ++index;
+    }
+    out = trim(line.substr(start, index - start));
+    return !out.empty();
+}
+
+bool parse_json_event_fields(CheckpointEvent& event, const std::string& line, CheckpointParseResult& result) {
+    std::size_t index = 0;
+    skip_json_ws(line, index);
+    if (index >= line.size() || line[index] != '{') {
+        return false;
+    }
+    ++index;
+
+    for (;;) {
+        skip_json_ws(line, index);
+        if (index < line.size() && line[index] == '}') {
+            ++index;
+            skip_json_ws(line, index);
+            if (index != line.size()) {
+                result.errors.push_back("line " + std::to_string(event.line_number) + ": trailing text after JSON object");
+            }
+            return true;
+        }
+
+        std::string key;
+        if (!parse_json_string_token(line, index, key)) {
+            result.errors.push_back("line " + std::to_string(event.line_number) + ": expected JSON object key");
+            return true;
+        }
+        skip_json_ws(line, index);
+        if (index >= line.size() || line[index] != ':') {
+            result.errors.push_back("line " + std::to_string(event.line_number) + ": expected ':' after JSON object key");
+            return true;
+        }
+        ++index;
+
+        std::string value;
+        if (!parse_json_value_token(line, index, value)) {
+            result.errors.push_back("line " + std::to_string(event.line_number) + ": expected JSON value for key '" + key + "'");
+            return true;
+        }
+        event.fields[key] = value;
+
+        skip_json_ws(line, index);
+        if (index < line.size() && line[index] == ',') {
+            ++index;
+            continue;
+        }
+        if (index < line.size() && line[index] == '}') {
+            continue;
+        }
+        result.errors.push_back("line " + std::to_string(event.line_number) + ": expected ',' or '}' in JSON object");
+        return true;
+    }
+}
+
 void finalize_event(CheckpointEvent& event, CheckpointParseResult& result) {
     auto require_string = [&](const char* key, std::string& target) {
         const auto found = event.fields.find(key);
@@ -3774,13 +3876,15 @@ CheckpointParseResult parse_checkpoint_stream(std::istream& in) {
         CheckpointEvent event;
         event.line_number = line_number;
 
-        std::istringstream tokens(line);
-        std::string token;
-        while (tokens >> token) {
-            if (token_is_comment(token)) {
-                break;
+        if (!parse_json_event_fields(event, line, result)) {
+            std::istringstream tokens(line);
+            std::string token;
+            while (tokens >> token) {
+                if (token_is_comment(token)) {
+                    break;
+                }
+                parse_event_field(event, token, result);
             }
-            parse_event_field(event, token, result);
         }
 
         finalize_event(event, result);

@@ -14,6 +14,7 @@
 #include "../../Core/Input/SoaBattle/Actiontypes.h"
 #include "../../Core/Memory/DerivedBase.h"
 #include "../../Core/Memory/KeyHostRouter.h"
+#include "../Capture/LiveCheckpointCapture.h"
 #include "Core/Common/Buffer.h"
 #include "CtxRegistry.h"
 #include "PSContext.h"
@@ -246,6 +247,8 @@ namespace savor {
 		std::atomic<bool> run_until_bp_active_{ false };
 		bool macro_breakpoint_scope_active_{ false };
 		std::vector<BPKey> macro_enabled_bp_keys_;
+		std::unique_ptr<savor::capture::LiveCheckpointCapture> capture_;
+		std::vector<uint32_t> capture_armed_pcs_;
 
 		bool armed_{ false };
 		Common::UniqueBuffer<u8> snapshot_;
@@ -299,6 +302,13 @@ namespace savor {
 		// helpers
 		void arm_bps_once();
 		void restore_canonical_breakpoint_scope();
+		std::vector<uint32_t> capture_pcs() const;
+		void append_capture_pcs(std::vector<uint32_t>& pcs) const;
+		bool configure_capture_from_context(const PSContext& ctx, PSResult& result);
+		void arm_capture_breakpoints();
+		void reset_capture_session(bool restore_scope);
+		bool capture_current_hit(uint32_t pc, PSContext& ctx);
+		void step_past_capture_only_breakpoint(uint32_t timeout_ms, const RunUntilBpSpec& spec);
 		void begin_macro_breakpoint_scope();
 		void enable_macro_step_breakpoint(BPKey key);
 		void disable_macro_step_breakpoint();

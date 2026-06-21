@@ -1,5 +1,6 @@
 #include "CheckpointTrace.h"
 #include "DbCopy.h"
+#include "LiveCaptureProfile.h"
 #include "TraceJob.h"
 
 #include <algorithm>
@@ -16,6 +17,7 @@ void print_usage(std::ostream& out) {
     out << "SavorPredict exploratory CLI\n\n"
         << "Usage:\n"
         << "  SavorPredict prepare-db [--source PATH] [--dest PATH] [--overwrite]\n"
+        << "  SavorPredict write-first-battle-capture-profile --output PATH\n"
         << "  SavorPredict trace-job (--turn-job-id N | --exec-job-id N) [--db-root PATH] [--format text|json] [--max-distance N]\n\n"
         << "  SavorPredict trace-checkpoints --checkpoint-file PATH [--turn-job-id N | --exec-job-id N] [--db-root PATH] [--format text|json] [--expected-fake-attacks N] [--expected-enemy-setup-draws N] [--expected-mode0e-camera-draws N] [--expected-turn-order-draws N] [--expected-attack-events N] [--expected-crit-draws N] [--expected-counter-roll-ceiling N] [--expected-drop-rolls N] [--expected-end-turn-status-draws N] [--expected-level-up-stat-rolls N]\n\n"
         << "Defaults:\n"
@@ -160,6 +162,27 @@ int run_trace_job(int argc, char** argv) {
     return savor::predict::run_trace_job(options, std::cout, std::cerr);
 }
 
+int run_write_first_battle_capture_profile(int argc, char** argv) {
+    std::filesystem::path output;
+    for (int i = 2; i < argc; ++i) {
+        const std::string arg = argv[i];
+        std::string value;
+        if (arg == "--output") {
+            if (!require_value(argc, argv, i, arg, value, std::cerr)) {
+                return 2;
+            }
+            output = value;
+        } else if (arg == "--help" || arg == "-h") {
+            print_usage(std::cout);
+            return 0;
+        } else {
+            std::cerr << "Unknown write-first-battle-capture-profile option: " << arg << "\n";
+            return 2;
+        }
+    }
+    return savor::predict::write_first_battle_capture_profile(output, std::cout, std::cerr);
+}
+
 int run_trace_checkpoints_command(int argc, char** argv) {
     savor::predict::TraceCheckpointsOptions options;
     for (int i = 2; i < argc; ++i) {
@@ -298,6 +321,9 @@ int main(int argc, char** argv) {
     const std::string command = argv[1];
     if (command == "prepare-db") {
         return run_prepare_db(argc, argv);
+    }
+    if (command == "write-first-battle-capture-profile") {
+        return run_write_first_battle_capture_profile(argc, argv);
     }
     if (command == "trace-job") {
         return run_trace_job(argc, argv);
