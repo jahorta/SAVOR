@@ -44,6 +44,8 @@ struct CounterCandidateSummary {
     std::string target;
     int target_base_counter_chance = 0;
     bool target_base_counter_chance_known = false;
+    bool observed_counter = false;
+    std::string counter_actor;
 };
 
 struct CritGateSummary {
@@ -89,6 +91,10 @@ struct TraceSummary {
     int first_battle_mode0e_camera_draws_for_observed_attacks = 0;
     int observed_lethal_attack_events = 0;
     int observed_nonlethal_attack_events = 0;
+    int observed_counter_events = 0;
+    int observed_counter_events_with_target = 0;
+    int observed_lethal_counter_events = 0;
+    int observed_nonlethal_counter_events = 0;
     int counter_draw_candidate_events = 0;
     CounterCheckpointExpectation counter_checkpoint_expectation;
     std::vector<CounterCandidateSummary> counter_candidates;
@@ -415,47 +421,98 @@ void summarize_crit_gate_events(
     }
 }
 
-bool attack_is_followed_by_death_before_next_attack(
+bool is_offensive_combat_event(const CombatEvent& event) {
+    return event.kind == CombatEventKind::Attack || event.kind == CombatEventKind::Counter;
+}
+
+bool event_is_followed_by_death_before_next_offense(
     const ParsedProgressEvents& events,
-    std::size_t attack_event_index) {
-    if (attack_event_index >= events.ordered_combat_events.size()) {
+    std::size_t event_index,
+    const std::string& target) {
+    if (target.empty() || event_index >= events.ordered_combat_events.size()) {
         return false;
     }
 
-    const auto& attack = events.ordered_combat_events[attack_event_index].attack;
-    for (std::size_t i = attack_event_index + 1; i < events.ordered_combat_events.size(); ++i) {
+    for (std::size_t i = event_index + 1; i < events.ordered_combat_events.size(); ++i) {
         const auto& event = events.ordered_combat_events[i];
-        if (event.kind == CombatEventKind::Attack) {
+        if (is_offensive_combat_event(event)) {
             return false;
         }
-        if (event.kind == CombatEventKind::Death && event.target == attack.target) {
+        if (event.kind == CombatEventKind::Death && event.target == target) {
             return true;
         }
     }
     return false;
 }
 
+const CounterEvent* counter_after_attack_before_next_offense(
+    const ParsedProgressEvents& events,
+    std::size_t attack_event_index) {
+    if (attack_event_index >= events.ordered_combat_events.size()
+        || events.ordered_combat_events[attack_event_index].kind != CombatEventKind::Attack) {
+        return nullptr;
+    }
+
+    const auto& attack = events.ordered_combat_events[attack_event_index].attack;
+    for (std::size_t i = attack_event_index + 1; i < events.ordered_combat_events.size(); ++i) {
+        const auto& event = events.ordered_combat_events[i];
+        if (event.kind == CombatEventKind::Counter) {
+            return event.counter.actor == attack.target ? &event.counter : nullptr;
+        }
+        if (event.kind == CombatEventKind::Attack || event.kind == CombatEventKind::Death) {
+            return nullptr;
+        }
+    }
+    return nullptr;
+}
+
 void summarize_attack_lethality(
     const ParsedProgressEvents& events,
     int& lethal_attacks,
     int& nonlethal_attacks,
+    int& observed_counter_events,
+    int& observed_counter_events_with_target,
+    int& lethal_counter_events,
+    int& nonlethal_counter_events,
     std::vector<CounterCandidateSummary>& counter_candidates) {
     lethal_attacks = 0;
     nonlethal_attacks = 0;
+    observed_counter_events = 0;
+    observed_counter_events_with_target = 0;
+    lethal_counter_events = 0;
+    nonlethal_counter_events = 0;
     counter_candidates.clear();
 
     for (std::size_t i = 0; i < events.ordered_combat_events.size(); ++i) {
-        if (events.ordered_combat_events[i].kind != CombatEventKind::Attack) {
+        const auto& event = events.ordered_combat_events[i];
+        if (event.kind == CombatEventKind::Counter) {
+            ++observed_counter_events;
+            if (!event.counter.target.empty()) {
+                ++observed_counter_events_with_target;
+            }
+            if (event_is_followed_by_death_before_next_offense(events, i, event.counter.target)) {
+                ++lethal_counter_events;
+            } else {
+                ++nonlethal_counter_events;
+            }
             continue;
         }
-        if (attack_is_followed_by_death_before_next_attack(events, i)) {
+
+        if (event.kind != CombatEventKind::Attack) {
+            continue;
+        }
+        if (event_is_followed_by_death_before_next_offense(events, i, event.attack.target)) {
             ++lethal_attacks;
         } else {
             ++nonlethal_attacks;
-            const auto& attack = events.ordered_combat_events[i].attack;
+            const auto& attack = event.attack;
             CounterCandidateSummary candidate;
             candidate.actor = attack.actor;
             candidate.target = attack.target;
+            if (const auto* counter = counter_after_attack_before_next_offense(events, i); counter != nullptr) {
+                candidate.observed_counter = true;
+                candidate.counter_actor = counter->actor;
+            }
             const auto target_base_counter = first_battle_base_counter_chance_for_actor(attack.target);
             if (target_base_counter.has_value()) {
                 candidate.target_base_counter_chance = *target_base_counter;
@@ -693,6 +750,10 @@ TraceSummary build_trace(JobSnapshot job, ParsedProgressEvents events, std::vect
         summary.events,
         summary.observed_lethal_attack_events,
         summary.observed_nonlethal_attack_events,
+        summary.observed_counter_events,
+        summary.observed_counter_events_with_target,
+        summary.observed_lethal_counter_events,
+        summary.observed_nonlethal_counter_events,
         summary.counter_candidates);
     summary.counter_draw_candidate_events = static_cast<int>(summary.counter_candidates.size());
     summary.counter_checkpoint_expectation =
@@ -786,6 +847,20 @@ void write_text(const TraceSummary& summary, std::ostream& out) {
         const auto& attack = summary.events.attacks[i];
         out << "    #" << (i + 1) << " " << attack.actor << " -> "
             << attack.target << " damage=" << attack.damage << "\n";
+    }
+    out << "  counter attacks: " << summary.events.counters.size() << "\n";
+    for (std::size_t i = 0; i < summary.events.counters.size(); ++i) {
+        const auto& counter = summary.events.counters[i];
+        out << "    #" << (i + 1) << " " << counter.actor << " -> ";
+        if (!counter.target.empty()) {
+            out << counter.target;
+            if (counter.target_inferred) {
+                out << " (inferred from previous attack)";
+            }
+        } else {
+            out << "unknown";
+        }
+        out << "\n";
     }
     out << "  deaths: " << summary.events.deaths.size() << "\n";
     for (const auto& death : summary.events.deaths) {
@@ -921,6 +996,10 @@ void write_text(const TraceSummary& summary, std::ostream& out) {
     }
     out << "  lethal observed attack events: " << summary.observed_lethal_attack_events << "\n";
     out << "  nonlethal observed attack events: " << summary.observed_nonlethal_attack_events << "\n";
+    out << "  observed counter attacks: " << summary.observed_counter_events
+        << " (" << summary.observed_counter_events_with_target << " with inferred target)\n";
+    out << "    lethal counter attacks: " << summary.observed_lethal_counter_events << "\n";
+    out << "    nonlethal counter attacks: " << summary.observed_nonlethal_counter_events << "\n";
     out << "  counter draw candidates from nonlethal events: "
         << summary.counter_draw_candidate_events
         << " (upper bound; crit/status/live counter gates still apply)\n";
@@ -938,6 +1017,12 @@ void write_text(const TraceSummary& summary, std::ostream& out) {
             out << candidate.target_base_counter_chance << "%";
         } else {
             out << "unknown";
+        }
+        if (candidate.observed_counter) {
+            out << " observed counter";
+            if (!candidate.counter_actor.empty()) {
+                out << " by " << candidate.counter_actor;
+            }
         }
         out << " (live curCounterChance/status/crit gates pending)\n";
     }
@@ -1257,6 +1342,10 @@ void write_json(const TraceSummary& summary, std::ostream& out) {
     out << "]";
     out << ", \"lethal_attack_events\": " << summary.observed_lethal_attack_events;
     out << ", \"nonlethal_attack_events\": " << summary.observed_nonlethal_attack_events;
+    out << ", \"observed_counter_events\": " << summary.observed_counter_events;
+    out << ", \"observed_counter_events_with_target\": " << summary.observed_counter_events_with_target;
+    out << ", \"lethal_counter_events\": " << summary.observed_lethal_counter_events;
+    out << ", \"nonlethal_counter_events\": " << summary.observed_nonlethal_counter_events;
     out << ", \"counter_draw_candidate_events\": " << summary.counter_draw_candidate_events;
     out << ", \"counter_checkpoint_expectation\": {";
     out << "\"expected_counter_roll_ceiling\": "
@@ -1282,7 +1371,15 @@ void write_json(const TraceSummary& summary, std::ostream& out) {
         }
         out << ", \"target_base_counter_chance_known\": "
             << (candidate.target_base_counter_chance_known ? "true" : "false")
-            << "}";
+            << ", \"observed_counter\": "
+            << (candidate.observed_counter ? "true" : "false")
+            << ", \"counter_actor\": ";
+        if (!candidate.counter_actor.empty()) {
+            out << "\"" << json_escape(candidate.counter_actor) << "\"";
+        } else {
+            out << "null";
+        }
+        out << "}";
     }
     out << "]";
     out << ", \"first_battle_status_attempt_draws_expected\": "
@@ -1460,6 +1557,7 @@ void write_json(const TraceSummary& summary, std::ostream& out) {
     out << "  \"event_counts\": {\"attacks\": " << summary.events.attacks.size()
         << ", \"pc_attack_events\": " << summary.observed_pc_attack_events
         << ", \"soldier_attack_events\": " << summary.observed_soldier_attack_events
+        << ", \"counter_events\": " << summary.events.counters.size()
         << ", \"deaths\": " << summary.events.deaths.size()
         << ", \"drops\": " << summary.events.drops.size() << "},\n";
     out << "  \"resolved_turn_variant_key\": \"" << json_escape(summary.job.resolved_turn_variant_key) << "\"\n";

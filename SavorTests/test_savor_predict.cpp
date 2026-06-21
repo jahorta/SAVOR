@@ -747,6 +747,27 @@ TEST(SavorPredictProgressParser, ParsesPlannedActionsPredicateAndCombatEvents) {
     EXPECT_EQ(parsed.ordered_combat_events[2].drop, "Sacri Crystal");
 }
 
+TEST(SavorPredictProgressParser, ParsesCounterAttacksAndInfersTarget) {
+    const std::vector<std::string> messages = {
+        "worker=16 progress=[4]Soldier attacks Vyse for 45 damage",
+        "worker=16 progress=Vyse counter attacks...",
+        "worker=16 progress=[4]Soldier died..."};
+
+    const auto parsed = parse_progress_events(messages);
+    ASSERT_EQ(parsed.attacks.size(), 1u);
+    ASSERT_EQ(parsed.counters.size(), 1u);
+    EXPECT_EQ(parsed.counters[0].actor, "Vyse");
+    EXPECT_EQ(parsed.counters[0].target, "[4]Soldier");
+    EXPECT_TRUE(parsed.counters[0].target_inferred);
+
+    ASSERT_EQ(parsed.ordered_combat_events.size(), 3u);
+    EXPECT_EQ(parsed.ordered_combat_events[0].kind, CombatEventKind::Attack);
+    EXPECT_EQ(parsed.ordered_combat_events[1].kind, CombatEventKind::Counter);
+    EXPECT_EQ(parsed.ordered_combat_events[1].counter.actor, "Vyse");
+    EXPECT_EQ(parsed.ordered_combat_events[1].counter.target, "[4]Soldier");
+    EXPECT_EQ(parsed.ordered_combat_events[2].kind, CombatEventKind::Death);
+}
+
 TEST(SavorPredictProgressParser, SoldierActionExecutionInfersDeathPreventedPlannedAttack) {
     ParsedProgressEvents events;
     PlannedTurnActions actions;
@@ -759,11 +780,11 @@ TEST(SavorPredictProgressParser, SoldierActionExecutionInfersDeathPreventedPlann
     const AttackEvent aika_attack{"Aika", "[4]Soldier", 30};
     const AttackEvent vyse_attack{"Vyse", "[4]Soldier", 43};
     const AttackEvent soldier5_attack{"[5]Soldier", "Vyse", 46};
-    events.ordered_combat_events.push_back(CombatEvent{CombatEventKind::Attack, aika_attack, {}, {}});
-    events.ordered_combat_events.push_back(CombatEvent{CombatEventKind::Attack, vyse_attack, {}, {}});
-    events.ordered_combat_events.push_back(CombatEvent{CombatEventKind::Death, {}, "[4]Soldier", {}});
-    events.ordered_combat_events.push_back(CombatEvent{CombatEventKind::Drop, {}, "[4]Soldier", "[273]Electri Box x1"});
-    events.ordered_combat_events.push_back(CombatEvent{CombatEventKind::Attack, soldier5_attack, {}, {}});
+    events.ordered_combat_events.push_back(CombatEvent{CombatEventKind::Attack, aika_attack, {}, {}, {}});
+    events.ordered_combat_events.push_back(CombatEvent{CombatEventKind::Attack, vyse_attack, {}, {}, {}});
+    events.ordered_combat_events.push_back(CombatEvent{CombatEventKind::Death, {}, {}, "[4]Soldier", {}});
+    events.ordered_combat_events.push_back(CombatEvent{CombatEventKind::Drop, {}, {}, "[4]Soldier", "[273]Electri Box x1"});
+    events.ordered_combat_events.push_back(CombatEvent{CombatEventKind::Attack, soldier5_attack, {}, {}, {}});
 
     TurnOrderSimulation turn_order;
     turn_order.execution_order_exact = true;

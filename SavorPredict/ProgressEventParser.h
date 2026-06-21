@@ -41,8 +41,15 @@ struct DropEvent {
     std::string drop;
 };
 
+struct CounterEvent {
+    std::string actor;
+    std::string target;
+    bool target_inferred = false;
+};
+
 enum class CombatEventKind {
     Attack,
+    Counter,
     Death,
     Drop,
 };
@@ -50,6 +57,7 @@ enum class CombatEventKind {
 struct CombatEvent {
     CombatEventKind kind = CombatEventKind::Attack;
     AttackEvent attack;
+    CounterEvent counter;
     std::string target;
     std::string drop;
 };
@@ -58,6 +66,7 @@ struct ParsedProgressEvents {
     std::optional<PlannedTurnActions> planned_actions;
     std::optional<PcBeforeEcPredicate> pc_before_ec_predicate;
     std::vector<AttackEvent> attacks;
+    std::vector<CounterEvent> counters;
     std::vector<std::string> deaths;
     std::vector<DropEvent> drops;
     std::vector<CombatEvent> ordered_combat_events;
