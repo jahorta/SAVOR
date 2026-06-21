@@ -2,10 +2,13 @@
 
 #include "PreAiCameraModel.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <initializer_list>
+#include <set>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace savor::predict {
 
@@ -146,6 +149,78 @@ void record_min_max(
     }
 }
 
+bool is_fake_attempt_draw(const PreAiCheckpointDraw& draw) {
+    const std::string_view owner(draw.owner);
+    return owner == kFakeAttackOwner || owner == kFakeAttackNoRandOwner;
+}
+
+void record_previous_gap_transition(
+    const PreAiCheckpointDraw& previous,
+    int& transitions_with_previous_gap,
+    std::optional<int>& min_previous_gap,
+    std::optional<int>& max_previous_gap) {
+    if (!previous.camera_frame_gap.has_value()) {
+        return;
+    }
+    ++transitions_with_previous_gap;
+    record_min_max(
+        *previous.camera_frame_gap,
+        min_previous_gap,
+        max_previous_gap);
+}
+
+void summarize_fake_attempt_transitions(PreAiCheckpointSummary& summary) {
+    std::vector<const PreAiCheckpointDraw*> attempts;
+    bool can_sort_by_attempt_index = true;
+    std::set<int> seen_attempt_indices;
+
+    for (const auto& draw : summary.draws) {
+        if (!is_fake_attempt_draw(draw)) {
+            continue;
+        }
+        attempts.push_back(&draw);
+        if (!draw.fake_attack_index.has_value()
+            || !seen_attempt_indices.insert(*draw.fake_attack_index).second) {
+            can_sort_by_attempt_index = false;
+        }
+    }
+
+    if (can_sort_by_attempt_index) {
+        std::sort(
+            attempts.begin(),
+            attempts.end(),
+            [](const auto* lhs, const auto* rhs) {
+                return *lhs->fake_attack_index < *rhs->fake_attack_index;
+            });
+    }
+
+    for (std::size_t i = 1; i < attempts.size(); ++i) {
+        const auto& previous = *attempts[i - 1];
+        const auto& current = *attempts[i];
+        ++summary.fake_attack_attempt_transitions;
+
+        if (!previous.skipped_rng_draw && current.skipped_rng_draw) {
+            ++summary.draw_to_skip_fake_attack_transitions;
+            record_previous_gap_transition(
+                previous,
+                summary.draw_to_skip_transitions_with_previous_frame_gap,
+                summary.min_draw_to_skip_previous_camera_frame_gap,
+                summary.max_draw_to_skip_previous_camera_frame_gap);
+        } else if (previous.skipped_rng_draw && !current.skipped_rng_draw) {
+            ++summary.skip_to_draw_fake_attack_transitions;
+            record_previous_gap_transition(
+                previous,
+                summary.skip_to_draw_transitions_with_previous_frame_gap,
+                summary.min_skip_to_draw_previous_camera_frame_gap,
+                summary.max_skip_to_draw_previous_camera_frame_gap);
+        } else if (!previous.skipped_rng_draw && !current.skipped_rng_draw) {
+            ++summary.draw_to_draw_fake_attack_transitions;
+        } else {
+            ++summary.skip_to_skip_fake_attack_transitions;
+        }
+    }
+}
+
 } // namespace
 
 PreAiCheckpointExpectation first_battle_pre_ai_checkpoint_expectation(int fake_attacks) {
@@ -281,6 +356,8 @@ PreAiCheckpointSummary summarize_pre_ai_checkpoints(
         }
     }
 
+    summarize_fake_attempt_transitions(summary);
+
     summary.status = classify_status(summary);
     return summary;
 }
@@ -308,6 +385,8 @@ const char* first_battle_pre_ai_checkpoint_rule_detail() {
            "fake-attack suppression, and the first 8008b428 Soldier AI draw at the resulting cursor; "
            "target-camera A-to-B frame gaps are recorded as observations for both rand-consuming "
            "and no-rand fake-attack attempts; "
+           "consecutive fake attempts are summarized as draw-to-skip, skip-to-draw, draw-to-draw, "
+           "and skip-to-skip transitions using attempt index order when present; "
            "7 frames is only the minimum tested gap that sometimes worked, and the consistent "
            "threshold may be higher";
 }

@@ -54,6 +54,17 @@ struct PreAiCheckpointSummary {
     std::optional<int> max_fake_attack_draw_camera_frame_gap;
     std::optional<int> min_skipped_fake_attempt_camera_frame_gap;
     std::optional<int> max_skipped_fake_attempt_camera_frame_gap;
+    int fake_attack_attempt_transitions = 0;
+    int draw_to_skip_fake_attack_transitions = 0;
+    int skip_to_draw_fake_attack_transitions = 0;
+    int draw_to_draw_fake_attack_transitions = 0;
+    int skip_to_skip_fake_attack_transitions = 0;
+    int draw_to_skip_transitions_with_previous_frame_gap = 0;
+    int skip_to_draw_transitions_with_previous_frame_gap = 0;
+    std::optional<int> min_draw_to_skip_previous_camera_frame_gap;
+    std::optional<int> max_draw_to_skip_previous_camera_frame_gap;
+    std::optional<int> min_skip_to_draw_previous_camera_frame_gap;
+    std::optional<int> max_skip_to_draw_previous_camera_frame_gap;
     int observed_pre_ai_draws = 0;
     int observed_first_soldier_ai_draws = 0;
     int targeting_draws_with_target_slot = 0;

@@ -444,6 +444,32 @@ void write_text_report(
     out << "  max_skipped_fake_attempt_camera_frame_gap: ";
     write_optional_int(out, pre_ai.max_skipped_fake_attempt_camera_frame_gap);
     out << "\n";
+    out << "  fake_attack_attempt_transitions: "
+        << pre_ai.fake_attack_attempt_transitions << "\n";
+    out << "  draw_to_skip_fake_attack_transitions: "
+        << pre_ai.draw_to_skip_fake_attack_transitions << "\n";
+    out << "  skip_to_draw_fake_attack_transitions: "
+        << pre_ai.skip_to_draw_fake_attack_transitions << "\n";
+    out << "  draw_to_draw_fake_attack_transitions: "
+        << pre_ai.draw_to_draw_fake_attack_transitions << "\n";
+    out << "  skip_to_skip_fake_attack_transitions: "
+        << pre_ai.skip_to_skip_fake_attack_transitions << "\n";
+    out << "  draw_to_skip_transitions_with_previous_frame_gap: "
+        << pre_ai.draw_to_skip_transitions_with_previous_frame_gap << "\n";
+    out << "  skip_to_draw_transitions_with_previous_frame_gap: "
+        << pre_ai.skip_to_draw_transitions_with_previous_frame_gap << "\n";
+    out << "  min_draw_to_skip_previous_camera_frame_gap: ";
+    write_optional_int(out, pre_ai.min_draw_to_skip_previous_camera_frame_gap);
+    out << "\n";
+    out << "  max_draw_to_skip_previous_camera_frame_gap: ";
+    write_optional_int(out, pre_ai.max_draw_to_skip_previous_camera_frame_gap);
+    out << "\n";
+    out << "  min_skip_to_draw_previous_camera_frame_gap: ";
+    write_optional_int(out, pre_ai.min_skip_to_draw_previous_camera_frame_gap);
+    out << "\n";
+    out << "  max_skip_to_draw_previous_camera_frame_gap: ";
+    write_optional_int(out, pre_ai.max_skip_to_draw_previous_camera_frame_gap);
+    out << "\n";
     out << "  observed_pre_ai_draws: " << pre_ai.observed_pre_ai_draws << "\n";
     out << "  observed_first_soldier_ai_draws: "
         << pre_ai.observed_first_soldier_ai_draws << "\n";
@@ -2038,6 +2064,28 @@ void write_json_report(
     write_json_optional_int(out, pre_ai.min_skipped_fake_attempt_camera_frame_gap);
     out << ", \"max_skipped_fake_attempt_camera_frame_gap\": ";
     write_json_optional_int(out, pre_ai.max_skipped_fake_attempt_camera_frame_gap);
+    out << ", \"fake_attack_attempt_transitions\": "
+        << pre_ai.fake_attack_attempt_transitions;
+    out << ", \"draw_to_skip_fake_attack_transitions\": "
+        << pre_ai.draw_to_skip_fake_attack_transitions;
+    out << ", \"skip_to_draw_fake_attack_transitions\": "
+        << pre_ai.skip_to_draw_fake_attack_transitions;
+    out << ", \"draw_to_draw_fake_attack_transitions\": "
+        << pre_ai.draw_to_draw_fake_attack_transitions;
+    out << ", \"skip_to_skip_fake_attack_transitions\": "
+        << pre_ai.skip_to_skip_fake_attack_transitions;
+    out << ", \"draw_to_skip_transitions_with_previous_frame_gap\": "
+        << pre_ai.draw_to_skip_transitions_with_previous_frame_gap;
+    out << ", \"skip_to_draw_transitions_with_previous_frame_gap\": "
+        << pre_ai.skip_to_draw_transitions_with_previous_frame_gap;
+    out << ", \"min_draw_to_skip_previous_camera_frame_gap\": ";
+    write_json_optional_int(out, pre_ai.min_draw_to_skip_previous_camera_frame_gap);
+    out << ", \"max_draw_to_skip_previous_camera_frame_gap\": ";
+    write_json_optional_int(out, pre_ai.max_draw_to_skip_previous_camera_frame_gap);
+    out << ", \"min_skip_to_draw_previous_camera_frame_gap\": ";
+    write_json_optional_int(out, pre_ai.min_skip_to_draw_previous_camera_frame_gap);
+    out << ", \"max_skip_to_draw_previous_camera_frame_gap\": ";
+    write_json_optional_int(out, pre_ai.max_skip_to_draw_previous_camera_frame_gap);
     out << ", \"observed_pre_ai_draws\": " << pre_ai.observed_pre_ai_draws;
     out << ", \"observed_first_soldier_ai_draws\": "
         << pre_ai.observed_first_soldier_ai_draws;
