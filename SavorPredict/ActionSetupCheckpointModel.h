@@ -14,6 +14,7 @@ enum class ActionSetupCheckpointStatus {
     MatchesExpected,
     MissingLiveSetupFields,
     HandlerMismatch,
+    SetupHandlerFieldMismatch,
     MissingEnemySetupDraws,
     ExtraEnemySetupDraws,
     MissingEnemySetupHelperFields,
@@ -35,6 +36,10 @@ struct ActionSetupCheckpointEvent {
     std::optional<int> instruction;
     std::optional<int> instr_param_0x6;
     std::optional<int> movement_flags;
+    std::optional<int> matched_setup_draw_index;
+    std::optional<bool> instruction_matches_setup;
+    std::optional<bool> target_slot_matches_setup;
+    std::optional<bool> instr_param_matches_setup;
     std::optional<std::string> expected_handler_pc;
     std::optional<std::string> handler_pc;
     std::optional<int> setup_rand;
@@ -67,6 +72,15 @@ struct ActionSetupCheckpointSummary {
     int handler_entries_with_movement_flags = 0;
     int handler_matches = 0;
     int handler_mismatches = 0;
+    int setup_handler_field_comparisons = 0;
+    int setup_handler_field_matches = 0;
+    int setup_handler_field_mismatches = 0;
+    int pc_setup_handler_field_comparisons = 0;
+    int pc_setup_handler_field_matches = 0;
+    int pc_setup_handler_field_mismatches = 0;
+    int enemy_setup_handler_field_comparisons = 0;
+    int enemy_setup_handler_field_matches = 0;
+    int enemy_setup_handler_field_mismatches = 0;
     int enemy_setup_draws_with_gate_inputs = 0;
     int enemy_setup_draws_with_rand_value = 0;
     int enemy_setup_draws_with_rand_mod10 = 0;

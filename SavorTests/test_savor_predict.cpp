@@ -965,6 +965,15 @@ TEST(SavorPredictCheckpointTrace, SummarizesActionSetupCheckpoints) {
     EXPECT_EQ(matched.observed_enemy_setup_draws, 1);
     EXPECT_EQ(matched.handler_matches, 4);
     EXPECT_EQ(matched.handler_mismatches, 0);
+    EXPECT_EQ(matched.setup_handler_field_comparisons, 6);
+    EXPECT_EQ(matched.setup_handler_field_matches, 6);
+    EXPECT_EQ(matched.setup_handler_field_mismatches, 0);
+    EXPECT_EQ(matched.pc_setup_handler_field_comparisons, 3);
+    EXPECT_EQ(matched.pc_setup_handler_field_matches, 3);
+    EXPECT_EQ(matched.pc_setup_handler_field_mismatches, 0);
+    EXPECT_EQ(matched.enemy_setup_handler_field_comparisons, 3);
+    EXPECT_EQ(matched.enemy_setup_handler_field_matches, 3);
+    EXPECT_EQ(matched.enemy_setup_handler_field_mismatches, 0);
     EXPECT_EQ(matched.enemy_setup_draws_with_gate_inputs, 1);
     EXPECT_EQ(matched.enemy_setup_draws_with_rand_value, 1);
     EXPECT_EQ(matched.enemy_setup_draws_with_rand_mod10, 1);
@@ -1002,6 +1011,29 @@ TEST(SavorPredictCheckpointTrace, SummarizesActionSetupCheckpoints) {
     EXPECT_EQ(
         action_setup_checkpoint_status_name(mismatch.status),
         std::string("HandlerMismatch"));
+
+    std::istringstream setup_handler_mismatch_input(
+        "pc=800708c0 function=Battle::Run::setupAction checkpoint=setup_action "
+        "rng_draw_index_before=20 actor_slot=0 handler_pc=80086c68 "
+        "instruction=3 target_slot=4 instr_param_0x6=0\n"
+        "pc=80086c68 function=Battle::HandlePCInst checkpoint=pc_handler "
+        "rng_draw_index_before=21 active_slot=0 instruction=3 target_slot=4 instr_param_0x6=1\n");
+    const auto setup_handler_mismatch_parsed =
+        parse_checkpoint_stream(setup_handler_mismatch_input);
+    ASSERT_TRUE(setup_handler_mismatch_parsed.errors.empty());
+    const auto setup_handler_mismatch =
+        summarize_action_setup_checkpoints(setup_handler_mismatch_parsed.events, std::nullopt);
+    EXPECT_EQ(
+        action_setup_checkpoint_status_name(setup_handler_mismatch.status),
+        std::string("SetupHandlerFieldMismatch"));
+    EXPECT_EQ(setup_handler_mismatch.pc_setup_handler_field_comparisons, 3);
+    EXPECT_EQ(setup_handler_mismatch.pc_setup_handler_field_matches, 2);
+    EXPECT_EQ(setup_handler_mismatch.pc_setup_handler_field_mismatches, 1);
+    ASSERT_EQ(setup_handler_mismatch.events.size(), 2u);
+    ASSERT_TRUE(setup_handler_mismatch.events[1].matched_setup_draw_index.has_value());
+    EXPECT_EQ(*setup_handler_mismatch.events[1].matched_setup_draw_index, 20);
+    ASSERT_TRUE(setup_handler_mismatch.events[1].instr_param_matches_setup.has_value());
+    EXPECT_FALSE(*setup_handler_mismatch.events[1].instr_param_matches_setup);
 
     std::istringstream missing_fields_input(
         "pc=80086c68 function=Battle::HandlePCInst checkpoint=pc_handler "

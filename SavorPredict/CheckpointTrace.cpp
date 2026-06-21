@@ -566,6 +566,24 @@ void write_text_report(
         << action_setup.handler_entries_with_movement_flags << "\n";
     out << "  handler_matches: " << action_setup.handler_matches << "\n";
     out << "  handler_mismatches: " << action_setup.handler_mismatches << "\n";
+    out << "  setup_handler_field_comparisons: "
+        << action_setup.setup_handler_field_comparisons << "\n";
+    out << "  setup_handler_field_matches: "
+        << action_setup.setup_handler_field_matches << "\n";
+    out << "  setup_handler_field_mismatches: "
+        << action_setup.setup_handler_field_mismatches << "\n";
+    out << "  pc_setup_handler_field_comparisons: "
+        << action_setup.pc_setup_handler_field_comparisons << "\n";
+    out << "  pc_setup_handler_field_matches: "
+        << action_setup.pc_setup_handler_field_matches << "\n";
+    out << "  pc_setup_handler_field_mismatches: "
+        << action_setup.pc_setup_handler_field_mismatches << "\n";
+    out << "  enemy_setup_handler_field_comparisons: "
+        << action_setup.enemy_setup_handler_field_comparisons << "\n";
+    out << "  enemy_setup_handler_field_matches: "
+        << action_setup.enemy_setup_handler_field_matches << "\n";
+    out << "  enemy_setup_handler_field_mismatches: "
+        << action_setup.enemy_setup_handler_field_mismatches << "\n";
     out << "  enemy_setup_draws_with_gate_inputs: "
         << action_setup.enemy_setup_draws_with_gate_inputs << "\n";
     out << "  enemy_setup_draws_with_rand_value: "
@@ -676,6 +694,14 @@ void write_text_report(
             } else {
                 out << "unknown";
             }
+            out << " matched_setup_draw_index=";
+            write_optional_int(out, event.matched_setup_draw_index);
+            out << " instruction_matches_setup=";
+            write_optional_bool(out, event.instruction_matches_setup);
+            out << " target_slot_matches_setup=";
+            write_optional_bool(out, event.target_slot_matches_setup);
+            out << " instr_param_matches_setup=";
+            write_optional_bool(out, event.instr_param_matches_setup);
             out << " setup_rand=";
             if (event.setup_rand.has_value()) {
                 out << *event.setup_rand;
@@ -2079,6 +2105,24 @@ void write_json_report(
         << action_setup.handler_entries_with_movement_flags;
     out << ", \"handler_matches\": " << action_setup.handler_matches;
     out << ", \"handler_mismatches\": " << action_setup.handler_mismatches;
+    out << ", \"setup_handler_field_comparisons\": "
+        << action_setup.setup_handler_field_comparisons;
+    out << ", \"setup_handler_field_matches\": "
+        << action_setup.setup_handler_field_matches;
+    out << ", \"setup_handler_field_mismatches\": "
+        << action_setup.setup_handler_field_mismatches;
+    out << ", \"pc_setup_handler_field_comparisons\": "
+        << action_setup.pc_setup_handler_field_comparisons;
+    out << ", \"pc_setup_handler_field_matches\": "
+        << action_setup.pc_setup_handler_field_matches;
+    out << ", \"pc_setup_handler_field_mismatches\": "
+        << action_setup.pc_setup_handler_field_mismatches;
+    out << ", \"enemy_setup_handler_field_comparisons\": "
+        << action_setup.enemy_setup_handler_field_comparisons;
+    out << ", \"enemy_setup_handler_field_matches\": "
+        << action_setup.enemy_setup_handler_field_matches;
+    out << ", \"enemy_setup_handler_field_mismatches\": "
+        << action_setup.enemy_setup_handler_field_mismatches;
     out << ", \"enemy_setup_draws_with_gate_inputs\": "
         << action_setup.enemy_setup_draws_with_gate_inputs;
     out << ", \"enemy_setup_draws_with_rand_value\": "
@@ -2192,6 +2236,14 @@ void write_json_report(
         } else {
             out << "null";
         }
+        out << ", \"matched_setup_draw_index\": ";
+        write_json_optional_int(out, event.matched_setup_draw_index);
+        out << ", \"instruction_matches_setup\": ";
+        write_json_optional_bool(out, event.instruction_matches_setup);
+        out << ", \"target_slot_matches_setup\": ";
+        write_json_optional_bool(out, event.target_slot_matches_setup);
+        out << ", \"instr_param_matches_setup\": ";
+        write_json_optional_bool(out, event.instr_param_matches_setup);
         out << ", \"setup_rand\": ";
         if (event.setup_rand.has_value()) {
             out << *event.setup_rand;

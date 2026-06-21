@@ -189,13 +189,111 @@ bool has_required_enemy_helper_fields(const ActionSetupCheckpointEvent& event) {
         && event.target_adjacent.has_value();
 }
 
+const ActionSetupCheckpointEvent* find_matching_setup_event(
+    const std::vector<ActionSetupCheckpointEvent>& setup_events,
+    const ActionSetupCheckpointEvent& handler_event) {
+    if (!handler_event.actor_slot.has_value()) {
+        return nullptr;
+    }
+
+    for (auto it = setup_events.rbegin(); it != setup_events.rend(); ++it) {
+        if (!it->actor_slot.has_value() || *it->actor_slot != *handler_event.actor_slot) {
+            continue;
+        }
+        if (it->draw_index.has_value()
+            && handler_event.draw_index.has_value()
+            && *it->draw_index > *handler_event.draw_index) {
+            continue;
+        }
+        return &*it;
+    }
+    return nullptr;
+}
+
+void record_setup_handler_field_match(
+    ActionSetupCheckpointSummary& summary,
+    bool pc_handler,
+    std::optional<bool> field_matches) {
+    if (!field_matches.has_value()) {
+        return;
+    }
+
+    ++summary.setup_handler_field_comparisons;
+    if (pc_handler) {
+        ++summary.pc_setup_handler_field_comparisons;
+    } else {
+        ++summary.enemy_setup_handler_field_comparisons;
+    }
+
+    if (*field_matches) {
+        ++summary.setup_handler_field_matches;
+        if (pc_handler) {
+            ++summary.pc_setup_handler_field_matches;
+        } else {
+            ++summary.enemy_setup_handler_field_matches;
+        }
+    } else {
+        ++summary.setup_handler_field_mismatches;
+        if (pc_handler) {
+            ++summary.pc_setup_handler_field_mismatches;
+        } else {
+            ++summary.enemy_setup_handler_field_mismatches;
+        }
+    }
+}
+
+std::optional<bool> compare_optional_ints(std::optional<int> lhs, std::optional<int> rhs) {
+    if (!lhs.has_value() || !rhs.has_value()) {
+        return std::nullopt;
+    }
+    return *lhs == *rhs;
+}
+
+void compare_setup_to_handler(
+    ActionSetupCheckpointSummary& summary,
+    const std::vector<ActionSetupCheckpointEvent>& setup_events,
+    ActionSetupCheckpointEvent& handler_event,
+    bool pc_handler) {
+    const auto* setup_event = find_matching_setup_event(setup_events, handler_event);
+    if (setup_event == nullptr) {
+        return;
+    }
+
+    handler_event.matched_setup_draw_index = setup_event->draw_index;
+    handler_event.instruction_matches_setup =
+        compare_optional_ints(handler_event.instruction, setup_event->instruction);
+    handler_event.target_slot_matches_setup =
+        compare_optional_ints(handler_event.target_slot, setup_event->target_slot);
+    handler_event.instr_param_matches_setup =
+        compare_optional_ints(handler_event.instr_param_0x6, setup_event->instr_param_0x6);
+
+    record_setup_handler_field_match(
+        summary,
+        pc_handler,
+        handler_event.instruction_matches_setup);
+    record_setup_handler_field_match(
+        summary,
+        pc_handler,
+        handler_event.target_slot_matches_setup);
+    record_setup_handler_field_match(
+        summary,
+        pc_handler,
+        handler_event.instr_param_matches_setup);
+}
+
 ActionSetupCheckpointStatus classify_status(const ActionSetupCheckpointSummary& summary) {
     if (summary.handler_mismatches > 0) {
         return ActionSetupCheckpointStatus::HandlerMismatch;
     }
+    if (summary.setup_handler_field_mismatches > 0) {
+        return ActionSetupCheckpointStatus::SetupHandlerFieldMismatch;
+    }
     if (summary.observed_setup_action_events > 0
         && (summary.setup_events_with_actor_slot < summary.observed_setup_action_events
-            || summary.setup_events_with_handler_pc < summary.observed_setup_action_events)) {
+            || summary.setup_events_with_handler_pc < summary.observed_setup_action_events
+            || summary.setup_events_with_instruction < summary.observed_setup_action_events
+            || summary.setup_events_with_target_slot < summary.observed_setup_action_events
+            || summary.setup_events_with_instr_param < summary.observed_setup_action_events)) {
         return ActionSetupCheckpointStatus::MissingLiveSetupFields;
     }
     const int handler_entries = summary.observed_pc_handler_entries + summary.observed_enemy_handler_entries;
@@ -280,6 +378,7 @@ ActionSetupCheckpointSummary summarize_action_setup_checkpoints(
     std::optional<int> expected_enemy_setup_draws) {
     ActionSetupCheckpointSummary summary;
     summary.expected_enemy_setup_draws = expected_enemy_setup_draws;
+    std::vector<ActionSetupCheckpointEvent> setup_events;
 
     for (const auto& event : events) {
         if (owner_is(event, kAttackHitOwner)) {
@@ -307,6 +406,7 @@ ActionSetupCheckpointSummary summarize_action_setup_checkpoints(
                 ++summary.setup_events_with_instr_param;
             }
             update_handler_match_counts(summary, observed);
+            setup_events.push_back(observed);
             summary.events.push_back(std::move(observed));
             continue;
         }
@@ -417,6 +517,7 @@ ActionSetupCheckpointSummary summarize_action_setup_checkpoints(
                 ++summary.handler_entries_with_movement_flags;
             }
             update_handler_match_counts(summary, observed);
+            compare_setup_to_handler(summary, setup_events, observed, pc_handler);
             summary.events.push_back(std::move(observed));
             continue;
         }
@@ -442,6 +543,7 @@ const char* action_setup_checkpoint_status_name(ActionSetupCheckpointStatus stat
     case ActionSetupCheckpointStatus::MatchesExpected: return "MatchesExpected";
     case ActionSetupCheckpointStatus::MissingLiveSetupFields: return "MissingLiveSetupFields";
     case ActionSetupCheckpointStatus::HandlerMismatch: return "HandlerMismatch";
+    case ActionSetupCheckpointStatus::SetupHandlerFieldMismatch: return "SetupHandlerFieldMismatch";
     case ActionSetupCheckpointStatus::MissingEnemySetupDraws: return "MissingEnemySetupDraws";
     case ActionSetupCheckpointStatus::ExtraEnemySetupDraws: return "ExtraEnemySetupDraws";
     case ActionSetupCheckpointStatus::MissingEnemySetupHelperFields: return "MissingEnemySetupHelperFields";
@@ -461,7 +563,7 @@ const char* action_setup_checkpoint_kind_name(ActionSetupCheckpointKind kind) {
 }
 
 const char* first_battle_action_setup_checkpoint_rule_detail() {
-    return "first-battle setupAction should route slots 0-3 to HandlePCInst 80086c68 and enemy slots to HandleECInst 8008b9e0; Soldier attacks that reach HandleECInst should expose queued instruction fields, the 8008bc68 enemy-only setup draw, helper results that determine final instrParam_0x6, and worker 80087f6c/80087844 selection before the shared attack-result draw";
+    return "first-battle setupAction should route slots 0-3 to HandlePCInst 80086c68 and enemy slots to HandleECInst 8008b9e0; handler entries should preserve setupAction instruction, target, and instrParam_0x6 fields; Soldier attacks that reach HandleECInst should expose queued instruction fields, the 8008bc68 enemy-only setup draw, helper results that determine final instrParam_0x6, and worker 80087f6c/80087844 selection before the shared attack-result draw";
 }
 
 } // namespace savor::predict
