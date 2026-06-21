@@ -1021,6 +1021,23 @@ void write_text_report(
     out << "  status: " << action_view_gate_checkpoint_status_name(action_view_gate.status) << "\n";
     out << "  rule: " << first_battle_action_view_gate_checkpoint_rule_detail() << "\n";
     out << "  observed_gate_events: " << action_view_gate.observed_gate_events << "\n";
+    out << "  observed_dispatch_events: " << action_view_gate.observed_dispatch_events << "\n";
+    out << "  dispatch_events_with_payload_mode: "
+        << action_view_gate.dispatch_events_with_payload_mode << "\n";
+    out << "  dispatch_events_with_effective_mode: "
+        << action_view_gate.dispatch_events_with_effective_mode << "\n";
+    out << "  dispatch_events_with_spicestd_payload_fields: "
+        << action_view_gate.dispatch_events_with_spicestd_payload_fields << "\n";
+    out << "  dispatch_serialized_mode0_events: "
+        << action_view_gate.dispatch_serialized_mode0_events << "\n";
+    out << "  dispatch_effective_mode0_events: "
+        << action_view_gate.dispatch_effective_mode0_events << "\n";
+    out << "  dispatch_effective_mode0e_events: "
+        << action_view_gate.dispatch_effective_mode0e_events << "\n";
+    out << "  dispatch_mode0_to_mode0e_rewrites: "
+        << action_view_gate.dispatch_mode0_to_mode0e_rewrites << "\n";
+    out << "  dispatch_mode0_stays_mode0_events: "
+        << action_view_gate.dispatch_mode0_stays_mode0_events << "\n";
     out << "  events_with_aux_list_root: " << action_view_gate.events_with_aux_list_root << "\n";
     out << "  events_with_query_args: " << action_view_gate.events_with_query_args << "\n";
     out << "  events_with_query_result: " << action_view_gate.events_with_query_result << "\n";
@@ -2730,6 +2747,23 @@ void write_json_report(
     out << ", \"rule\": \""
         << json_escape(first_battle_action_view_gate_checkpoint_rule_detail()) << "\"";
     out << ", \"observed_gate_events\": " << action_view_gate.observed_gate_events;
+    out << ", \"observed_dispatch_events\": " << action_view_gate.observed_dispatch_events;
+    out << ", \"dispatch_events_with_payload_mode\": "
+        << action_view_gate.dispatch_events_with_payload_mode;
+    out << ", \"dispatch_events_with_effective_mode\": "
+        << action_view_gate.dispatch_events_with_effective_mode;
+    out << ", \"dispatch_events_with_spicestd_payload_fields\": "
+        << action_view_gate.dispatch_events_with_spicestd_payload_fields;
+    out << ", \"dispatch_serialized_mode0_events\": "
+        << action_view_gate.dispatch_serialized_mode0_events;
+    out << ", \"dispatch_effective_mode0_events\": "
+        << action_view_gate.dispatch_effective_mode0_events;
+    out << ", \"dispatch_effective_mode0e_events\": "
+        << action_view_gate.dispatch_effective_mode0e_events;
+    out << ", \"dispatch_mode0_to_mode0e_rewrites\": "
+        << action_view_gate.dispatch_mode0_to_mode0e_rewrites;
+    out << ", \"dispatch_mode0_stays_mode0_events\": "
+        << action_view_gate.dispatch_mode0_stays_mode0_events;
     out << ", \"events_with_aux_list_root\": "
         << action_view_gate.events_with_aux_list_root;
     out << ", \"events_with_query_args\": " << action_view_gate.events_with_query_args;

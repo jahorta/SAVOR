@@ -6,6 +6,7 @@
 #include <charconv>
 #include <cctype>
 #include <fstream>
+#include <limits>
 #include <set>
 #include <sstream>
 
@@ -51,6 +52,40 @@ bool parse_u32(std::string value, std::uint32_t& out)
     return true;
 }
 
+bool parse_i32(std::string value, std::int32_t& out)
+{
+    value = trim(std::move(value));
+    if (value.empty()) return false;
+
+    int base = 10;
+    bool negative = false;
+    if (!value.empty() && (value[0] == '-' || value[0] == '+')) {
+        negative = value[0] == '-';
+        value = value.substr(1);
+    }
+    if (value.rfind("0x", 0) == 0 || value.rfind("0X", 0) == 0) {
+        value = value.substr(2);
+        base = 16;
+    }
+    if (value.empty()) return false;
+
+    std::uint32_t parsed = 0;
+    const auto* begin = value.data();
+    const auto* end = value.data() + value.size();
+    const auto [ptr, ec] = std::from_chars(begin, end, parsed, base);
+    if (ec != std::errc{} || ptr != end) return false;
+    if (negative) {
+        if (parsed > 0x80000000u) return false;
+        out = parsed == 0x80000000u
+            ? std::numeric_limits<std::int32_t>::min()
+            : -static_cast<std::int32_t>(parsed);
+    } else {
+        if (parsed > 0x7fffffffu) return false;
+        out = static_cast<std::int32_t>(parsed);
+    }
+    return true;
+}
+
 bool parse_bool(std::string value, bool& out)
 {
     value = to_lower(trim(std::move(value)));
@@ -77,6 +112,20 @@ std::optional<SampleWidth> parse_width(std::string value)
     if (value == "32") return SampleWidth::U32;
     if (value == "64") return SampleWidth::U64;
     return std::nullopt;
+}
+
+bool parse_register_index(std::string value, std::uint8_t& out)
+{
+    value = trim(std::move(value));
+    if (!value.empty() && (value[0] == 'r' || value[0] == 'R')) {
+        value = value.substr(1);
+    }
+    std::uint32_t reg = 0;
+    if (!parse_u32(value, reg) || reg > 31) {
+        return false;
+    }
+    out = static_cast<std::uint8_t>(reg);
+    return true;
 }
 
 std::vector<std::string> split_list(const std::string& value)
@@ -124,6 +173,42 @@ std::optional<MemorySampleSpec> parse_memory_sample(
     return spec;
 }
 
+std::optional<RegisterMemorySampleSpec> parse_register_memory_sample(
+    const std::string& token,
+    std::vector<std::string>& errors,
+    const std::string& section)
+{
+    const auto first = token.find(':');
+    const auto second = first == std::string::npos ? std::string::npos : token.find(':', first + 1);
+    const auto third = second == std::string::npos ? std::string::npos : token.find(':', second + 1);
+    if (first == std::string::npos || second == std::string::npos || third == std::string::npos) {
+        errors.push_back(section + ": register memory sample must be name:reg:offset:width, got '" + token + "'");
+        return std::nullopt;
+    }
+
+    RegisterMemorySampleSpec spec{};
+    spec.name = trim(token.substr(0, first));
+    if (spec.name.empty()) {
+        errors.push_back(section + ": register memory sample name is empty");
+        return std::nullopt;
+    }
+    if (!parse_register_index(token.substr(first + 1, second - first - 1), spec.base_reg)) {
+        errors.push_back(section + ": invalid register in '" + token + "'");
+        return std::nullopt;
+    }
+    if (!parse_i32(token.substr(second + 1, third - second - 1), spec.offset)) {
+        errors.push_back(section + ": invalid register memory offset in '" + token + "'");
+        return std::nullopt;
+    }
+    const auto width = parse_width(token.substr(third + 1));
+    if (!width.has_value()) {
+        errors.push_back(section + ": invalid register memory width in '" + token + "'");
+        return std::nullopt;
+    }
+    spec.width = *width;
+    return spec;
+}
+
 std::optional<GprSampleSpec> parse_gpr_sample(
     const std::string& token,
     std::vector<std::string>& errors,
@@ -148,6 +233,19 @@ std::optional<GprSampleSpec> parse_gpr_sample(
     }
     spec.reg = static_cast<std::uint8_t>(reg);
     return spec;
+}
+
+void append_register_memory_samples(
+    std::vector<RegisterMemorySampleSpec>& out,
+    const std::string& value,
+    std::vector<std::string>& errors,
+    const std::string& section)
+{
+    for (const auto& token : split_list(value)) {
+        if (auto parsed = parse_register_memory_sample(token, errors, section)) {
+            out.push_back(*parsed);
+        }
+    }
 }
 
 void append_memory_samples(
@@ -223,6 +321,11 @@ CaptureProfileParseResult ParseCaptureProfileText(const std::string& text)
         ini.get("profile", "gprs", ""),
         result.errors,
         "profile");
+    append_register_memory_samples(
+        profile.default_register_memory_samples,
+        ini.get("profile", "reg_memory", ""),
+        result.errors,
+        "profile");
 
     std::set<std::string> ids;
     for (const auto& section : ini.list_sections(false)) {
@@ -249,6 +352,7 @@ CaptureProfileParseResult ParseCaptureProfileText(const std::string& text)
 
         checkpoint.memory_samples = profile.default_memory_samples;
         checkpoint.gpr_samples = profile.default_gpr_samples;
+        checkpoint.register_memory_samples = profile.default_register_memory_samples;
         append_memory_samples(
             checkpoint.memory_samples,
             ini.get(section, "memory", ""),
@@ -257,6 +361,11 @@ CaptureProfileParseResult ParseCaptureProfileText(const std::string& text)
         append_gpr_samples(
             checkpoint.gpr_samples,
             ini.get(section, "gprs", ""),
+            result.errors,
+            section);
+        append_register_memory_samples(
+            checkpoint.register_memory_samples,
+            ini.get(section, "reg_memory", ""),
             result.errors,
             section);
 

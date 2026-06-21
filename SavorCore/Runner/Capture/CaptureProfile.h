@@ -25,6 +25,13 @@ struct GprSampleSpec {
     std::uint8_t reg = 0;
 };
 
+struct RegisterMemorySampleSpec {
+    std::string name;
+    std::uint8_t base_reg = 0;
+    std::int32_t offset = 0;
+    SampleWidth width = SampleWidth::U32;
+};
+
 struct CheckpointSpec {
     std::string id;
     std::string name;
@@ -34,6 +41,7 @@ struct CheckpointSpec {
     bool owns_rng_draw = false;
     std::vector<MemorySampleSpec> memory_samples;
     std::vector<GprSampleSpec> gpr_samples;
+    std::vector<RegisterMemorySampleSpec> register_memory_samples;
 };
 
 struct CaptureProfile {
@@ -41,6 +49,7 @@ struct CaptureProfile {
     std::uint32_t schema_version = 1;
     std::vector<MemorySampleSpec> default_memory_samples;
     std::vector<GprSampleSpec> default_gpr_samples;
+    std::vector<RegisterMemorySampleSpec> default_register_memory_samples;
     std::vector<CheckpointSpec> checkpoints;
 
     const CheckpointSpec* find_checkpoint(std::uint32_t pc) const;

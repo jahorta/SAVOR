@@ -14,14 +14,16 @@ enum class ActionViewCameraCheckpointStatus {
     MatchesExpected,
     MissingMode0eDraws,
     ExtraMode0eDraws,
-    UnexpectedMode0FallbackObserved,
 };
 
 struct ActionViewCameraExpectation {
     int observed_attack_events = 0;
     int expected_mode0e_camera_draws = 0;
+    int expected_mode0_rewrite_gate_draws = 0;
     std::string_view expected_owner = "mode0e_action_view_camera";
     std::string_view expected_pc = "80052BF0";
+    std::string_view rewrite_gate_owner = "mode0_action_view_camera_fallback";
+    std::string_view rewrite_gate_pc = "800513D4";
     std::string_view rejected_fallback_owner = "mode0_action_view_camera_fallback";
     std::string_view rejected_fallback_pc = "800513D4";
 };

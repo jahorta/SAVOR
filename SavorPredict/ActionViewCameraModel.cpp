@@ -14,11 +14,7 @@ bool owner_is(const CheckpointEvent& event, std::string_view owner) {
 
 ActionViewCameraCheckpointStatus classify_status(
     std::optional<int> expected,
-    int observed_mode0e,
-    int observed_fallback) {
-    if (observed_fallback > 0) {
-        return ActionViewCameraCheckpointStatus::UnexpectedMode0FallbackObserved;
-    }
+    int observed_mode0e) {
     if (!expected.has_value()) {
         return ActionViewCameraCheckpointStatus::ObservedOnly;
     }
@@ -36,7 +32,8 @@ ActionViewCameraCheckpointStatus classify_status(
 ActionViewCameraExpectation first_battle_action_view_camera_expectation(const ParsedProgressEvents& events) {
     ActionViewCameraExpectation expectation;
     expectation.observed_attack_events = static_cast<int>(events.attacks.size());
-    expectation.expected_mode0e_camera_draws = expectation.observed_attack_events;
+    expectation.expected_mode0e_camera_draws = 0;
+    expectation.expected_mode0_rewrite_gate_draws = expectation.observed_attack_events;
     return expectation;
 }
 
@@ -77,8 +74,7 @@ ActionViewCameraCheckpointSummary summarize_action_view_camera_checkpoints(
 
     summary.status = classify_status(
         expected_mode0e_camera_draws,
-        summary.observed_mode0e_camera_draws,
-        summary.observed_mode0_fallback_draws);
+        summary.observed_mode0e_camera_draws);
     return summary;
 }
 
@@ -92,15 +88,16 @@ const char* action_view_camera_checkpoint_status_name(ActionViewCameraCheckpoint
         return "MissingMode0eDraws";
     case ActionViewCameraCheckpointStatus::ExtraMode0eDraws:
         return "ExtraMode0eDraws";
-    case ActionViewCameraCheckpointStatus::UnexpectedMode0FallbackObserved:
-        return "UnexpectedMode0FallbackObserved";
     default:
         return "Unknown";
     }
 }
 
 const char* first_battle_action_view_camera_rule_detail() {
-    return "first-battle basic attacks are expected to use mode 0xe action-view camera draws at FUN_80052b24:80052bf0; mode-0 fallback at 800513d4 should not appear";
+    return "first-battle action-view camera draws split between serialized mode-0 rewrite gate "
+           "UpdateActionViewRecord_80051264:800513d4 and conditional runtime mode-0xe "
+           "FUN_80052b24:80052bf0 draws; mode 0xe is reached only when the mode-0 gate "
+           "rewrites the selected 0x0003002a payload mode";
 }
 
 } // namespace savor::predict

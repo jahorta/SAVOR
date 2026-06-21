@@ -26,6 +26,7 @@ TEST(LiveCheckpointCaptureProfile, ParsesDefaultSamplesAndUniquePcs)
         "schema_version=1\n"
         "memory=rng_seed_before:0x803469A8:u32, wide_counter:0x80000000:u64\n"
         "gprs=return_value:3\n"
+        "reg_memory=payload_mode:r3:0x22:u16, saved_mode:31:-0x10:u16\n"
         "\n"
         "[checkpoint.first]\n"
         "pc=0x80001000\n"
@@ -33,6 +34,7 @@ TEST(LiveCheckpointCaptureProfile, ParsesDefaultSamplesAndUniquePcs)
         "function=RNG\n"
         "checkpoint=draw\n"
         "owns_rng_draw=true\n"
+        "reg_memory=payload_flags:r3:0x10:u32\n"
         "\n"
         "[checkpoint.second]\n"
         "pc=0x80001000\n"
@@ -52,6 +54,13 @@ TEST(LiveCheckpointCaptureProfile, ParsesDefaultSamplesAndUniquePcs)
     EXPECT_EQ(profile.checkpoints[0].memory_samples[0].width, SampleWidth::U32);
     EXPECT_EQ(profile.checkpoints[0].memory_samples[1].width, SampleWidth::U64);
     EXPECT_EQ(profile.checkpoints[0].gpr_samples.size(), 1u);
+    ASSERT_EQ(profile.checkpoints[0].register_memory_samples.size(), 3u);
+    EXPECT_EQ(profile.checkpoints[0].register_memory_samples[0].name, "payload_mode");
+    EXPECT_EQ(profile.checkpoints[0].register_memory_samples[0].base_reg, 3u);
+    EXPECT_EQ(profile.checkpoints[0].register_memory_samples[0].offset, 0x22);
+    EXPECT_EQ(profile.checkpoints[0].register_memory_samples[1].base_reg, 31u);
+    EXPECT_EQ(profile.checkpoints[0].register_memory_samples[1].offset, -0x10);
+    EXPECT_EQ(profile.checkpoints[0].register_memory_samples[2].name, "payload_flags");
     EXPECT_TRUE(profile.checkpoints[0].owns_rng_draw);
     EXPECT_FALSE(profile.checkpoints[1].owns_rng_draw);
 
@@ -125,15 +134,25 @@ TEST(SavorPredictLiveCaptureProfile, BuildsParseableFirstBattleRngProfile)
     ASSERT_TRUE(parsed.profile.has_value()) << FormatCaptureProfileError(parsed);
 
     const auto& profile = *parsed.profile;
-    EXPECT_EQ(profile.name, "first_battle_rng_live_capture");
-    ASSERT_EQ(profile.checkpoints.size(), known_rng_callsite_owners().size());
+    EXPECT_EQ(profile.name, "first_battle_live_capture");
+    ASSERT_GT(profile.checkpoints.size(), known_rng_callsite_owners().size());
     ASSERT_FALSE(profile.checkpoints.empty());
+    int rng_checkpoints = 0;
+    int action_view_state_checkpoints = 0;
     for (const auto& checkpoint : profile.checkpoints) {
-        EXPECT_TRUE(checkpoint.owns_rng_draw) << checkpoint.id;
         ASSERT_FALSE(checkpoint.memory_samples.empty()) << checkpoint.id;
         EXPECT_EQ(checkpoint.memory_samples[0].name, "rng_seed_before") << checkpoint.id;
         EXPECT_EQ(checkpoint.memory_samples[0].width, SampleWidth::U32) << checkpoint.id;
+        if (checkpoint.owns_rng_draw) {
+            ++rng_checkpoints;
+        }
+        if (checkpoint.id.find("action_view") != std::string::npos
+            || checkpoint.id.find("mode0") != std::string::npos) {
+            ++action_view_state_checkpoints;
+        }
     }
+    EXPECT_EQ(rng_checkpoints, static_cast<int>(known_rng_callsite_owners().size()));
+    EXPECT_GE(action_view_state_checkpoints, 5);
 }
 
 TEST(BattleTurnRunnerPayload, RoundTripsLiveCaptureContextPaths)

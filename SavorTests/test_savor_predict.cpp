@@ -414,12 +414,17 @@ TEST(SavorPredictRngModel, FirstBattleActionViewCameraExpectationCountsObservedA
     const auto expectation = first_battle_action_view_camera_expectation(events);
 
     EXPECT_EQ(expectation.observed_attack_events, 3);
-    EXPECT_EQ(expectation.expected_mode0e_camera_draws, 3);
+    EXPECT_EQ(expectation.expected_mode0e_camera_draws, 0);
+    EXPECT_EQ(expectation.expected_mode0_rewrite_gate_draws, 3);
     EXPECT_EQ(expectation.expected_owner, std::string_view("mode0e_action_view_camera"));
     EXPECT_EQ(expectation.expected_pc, std::string_view("80052BF0"));
+    EXPECT_EQ(expectation.rewrite_gate_owner, std::string_view("mode0_action_view_camera_fallback"));
+    EXPECT_EQ(expectation.rewrite_gate_pc, std::string_view("800513D4"));
     EXPECT_EQ(expectation.rejected_fallback_owner, std::string_view("mode0_action_view_camera_fallback"));
     EXPECT_EQ(expectation.rejected_fallback_pc, std::string_view("800513D4"));
-    EXPECT_NE(std::string_view(first_battle_action_view_camera_rule_detail()).find("mode 0xe"), std::string_view::npos);
+    EXPECT_NE(
+        std::string_view(first_battle_action_view_camera_rule_detail()).find("mode-0 rewrite gate"),
+        std::string_view::npos);
 }
 
 TEST(SavorPredictRngModel, FirstBattleAttackResolutionCheckpointExpectationCountsDamageEvents) {
@@ -1160,21 +1165,34 @@ TEST(SavorPredictCheckpointTrace, SummarizesActionViewGateCheckpoints) {
         "action_sequence_id=7 "
         "active_slot=1 source_slot=1 target_slot=4 source_field6_0x6=14 actor_field6_0x6=14 "
         "aux_list_root=0x80346bd8 query_arg0=4 query_arg1=-1 query_arg2=0x2a query_arg3=3 "
-        "query_result=0x81234567 selected_record_mode=0xe "
+        "query_result=0x81234567 selected_record_mode=0 "
         "action_child_thread=0x81230000 child_payload=0x81231000 nested_payload=0x81232000 "
         "child_thread_state_byte=1 mode0_fallback_reached=0\n"
+        "pc=80051424 function=UpdateActionViewRecord checkpoint=action_view_dispatch_state "
+        "rng_draw_index_before=19 payload_primary_0x00=4 payload_secondary_0x02=0 "
+        "payload_flags_0x10=0x00000000 payload_start_frame_0x18=0 payload_end_frame_0x1c=70 "
+        "payload_hold_0x1e=7 payload_step_0x20=10 payload_mode_0x22=0 "
+        "worksheet_saved_mode_0x110=0 worksheet_effective_mode_0x112=0xe "
+        "worksheet_turn_timer_0x70=0 instruction_flags_0xf0=0x10000000 "
+        "global_camera_override_80347394=0x00000000 global_camera_flags_803472F4=0x00000000\n"
         "pc=80052bf0 function=FUN_80052b24 checkpoint=mode0e_camera "
-        "rng_draw_index_before=19 action_sequence_id=7\n"
+        "rng_draw_index_before=20 action_sequence_id=7\n"
         "pc=80010bdc function=getAttackResult checkpoint=hit "
-        "rng_draw_index_before=20 action_sequence_id=7\n");
+        "rng_draw_index_before=21 action_sequence_id=7\n");
 
     const auto parsed = parse_checkpoint_stream(input);
     ASSERT_TRUE(parsed.errors.empty());
-    ASSERT_EQ(parsed.events.size(), 3u);
+    ASSERT_EQ(parsed.events.size(), 4u);
 
     const auto matched = summarize_action_view_gate_checkpoints(parsed.events);
     EXPECT_EQ(matched.status, ActionViewGateCheckpointStatus::MatchesExpected);
     EXPECT_EQ(matched.observed_gate_events, 1);
+    EXPECT_EQ(matched.observed_dispatch_events, 1);
+    EXPECT_EQ(matched.dispatch_events_with_spicestd_payload_fields, 1);
+    EXPECT_EQ(matched.dispatch_serialized_mode0_events, 1);
+    EXPECT_EQ(matched.dispatch_effective_mode0e_events, 1);
+    EXPECT_EQ(matched.dispatch_mode0_to_mode0e_rewrites, 1);
+    EXPECT_EQ(matched.dispatch_mode0_stays_mode0_events, 0);
     EXPECT_EQ(matched.events_with_aux_list_root, 1);
     EXPECT_EQ(matched.events_with_query_args, 1);
     EXPECT_EQ(matched.events_with_query_result, 1);
@@ -1207,7 +1225,10 @@ TEST(SavorPredictCheckpointTrace, SummarizesActionViewGateCheckpoints) {
     ASSERT_TRUE(matched.events[0].query_arg2.has_value());
     EXPECT_EQ(*matched.events[0].query_arg2, 0x2a);
     ASSERT_TRUE(matched.events[0].selected_record_mode.has_value());
-    EXPECT_EQ(*matched.events[0].selected_record_mode, 0x0e);
+    EXPECT_EQ(*matched.events[0].selected_record_mode, 0);
+    ASSERT_EQ(matched.dispatch_events.size(), 1u);
+    ASSERT_TRUE(matched.dispatch_events[0].effective_mode.has_value());
+    EXPECT_EQ(*matched.dispatch_events[0].effective_mode, 0x0e);
     ASSERT_TRUE(matched.events[0].action_child_thread.has_value());
     EXPECT_EQ(*matched.events[0].action_child_thread, "0x81230000");
     ASSERT_TRUE(matched.events[0].child_thread_state_byte.has_value());
@@ -1215,9 +1236,9 @@ TEST(SavorPredictCheckpointTrace, SummarizesActionViewGateCheckpoints) {
     ASSERT_TRUE(matched.events[0].mode0_fallback_reached.has_value());
     EXPECT_FALSE(*matched.events[0].mode0_fallback_reached);
     ASSERT_TRUE(matched.events[0].matched_mode0e_draw_index.has_value());
-    EXPECT_EQ(*matched.events[0].matched_mode0e_draw_index, 19);
+    EXPECT_EQ(*matched.events[0].matched_mode0e_draw_index, 20);
     ASSERT_TRUE(matched.events[0].matched_attack_hit_draw_index.has_value());
-    EXPECT_EQ(*matched.events[0].matched_attack_hit_draw_index, 20);
+    EXPECT_EQ(*matched.events[0].matched_attack_hit_draw_index, 21);
     ASSERT_TRUE(matched.events[0].gate_before_mode0e_draw.has_value());
     EXPECT_TRUE(*matched.events[0].gate_before_mode0e_draw);
     ASSERT_TRUE(matched.events[0].gate_before_attack_hit_draw.has_value());
@@ -1228,7 +1249,7 @@ TEST(SavorPredictCheckpointTrace, SummarizesActionViewGateCheckpoints) {
     std::istringstream query_mismatch_input(
         "pc=80012f58 function=FUN_80012f58 checkpoint=action_view_gate rng_draw_index_before=18 "
         "aux_list_root=0x80346bd8 query_arg0=4 query_arg1=-1 query_arg2=0x2b query_arg3=3 "
-        "query_result=0x81234567 selected_record_mode=0xe\n");
+        "query_result=0x81234567 selected_record_mode=0\n");
     const auto query_mismatch_parsed = parse_checkpoint_stream(query_mismatch_input);
     ASSERT_TRUE(query_mismatch_parsed.errors.empty());
     const auto query_mismatch = summarize_action_view_gate_checkpoints(query_mismatch_parsed.events);
@@ -1237,7 +1258,7 @@ TEST(SavorPredictCheckpointTrace, SummarizesActionViewGateCheckpoints) {
     std::istringstream mode_mismatch_input(
         "pc=80012f58 function=FUN_80012f58 checkpoint=action_view_gate rng_draw_index_before=18 "
         "aux_list_root=0x80346bd8 query_arg0=4 query_arg1=-1 query_arg2=0x2a query_arg3=3 "
-        "query_result=0x81234567 selected_record_mode=0\n");
+        "query_result=0x81234567 selected_record_mode=0xe\n");
     const auto mode_mismatch_parsed = parse_checkpoint_stream(mode_mismatch_input);
     ASSERT_TRUE(mode_mismatch_parsed.errors.empty());
     const auto mode_mismatch = summarize_action_view_gate_checkpoints(mode_mismatch_parsed.events);
@@ -1257,7 +1278,7 @@ TEST(SavorPredictCheckpointTrace, SummarizesActionViewGateCheckpoints) {
     std::istringstream missing_scheduler_input(
         "pc=80012f58 function=FUN_80012f58 checkpoint=action_view_gate rng_draw_index_before=18 "
         "aux_list_root=0x80346bd8 query_arg0=4 query_arg1=-1 query_arg2=0x2a query_arg3=3 "
-        "query_result=0x81234567 selected_record_mode=0xe\n");
+        "query_result=0x81234567 selected_record_mode=0\n");
     const auto missing_scheduler_parsed = parse_checkpoint_stream(missing_scheduler_input);
     ASSERT_TRUE(missing_scheduler_parsed.errors.empty());
     const auto missing_scheduler =
@@ -1272,7 +1293,7 @@ TEST(SavorPredictCheckpointTrace, SummarizesActionViewGateCheckpoints) {
         "pc=80012f58 function=FUN_80012f58 checkpoint=action_view_gate rng_draw_index_before=18 "
         "action_sequence_id=7 aux_list_root=0x80346bd8 "
         "query_arg0=4 query_arg1=-1 query_arg2=0x2a query_arg3=3 "
-        "query_result=0x81234567 selected_record_mode=0xe "
+        "query_result=0x81234567 selected_record_mode=0 "
         "action_child_thread=0x81230000 child_payload=0x81231000 nested_payload=0x81232000 "
         "child_thread_state_byte=1 mode0_fallback_reached=0\n"
         "pc=80010bdc function=getAttackResult checkpoint=hit "
@@ -1293,7 +1314,7 @@ TEST(SavorPredictCheckpointTrace, SummarizesActionViewGateCheckpoints) {
     std::istringstream fallback_input(
         "pc=80012f58 function=FUN_80012f58 checkpoint=action_view_gate rng_draw_index_before=18 "
         "aux_list_root=0x80346bd8 query_arg0=4 query_arg1=-1 query_arg2=0x2a query_arg3=3 "
-        "query_result=0x81234567 selected_record_mode=0xe "
+        "query_result=0x81234567 selected_record_mode=0 "
         "action_child_thread=0x81230000 child_payload=0x81231000 nested_payload=0x81232000 "
         "child_thread_state_byte=1 mode0_fallback_reached=true\n"
         "pc=800513d4 function=UpdateActionViewRecord checkpoint=mode0_fallback rng_draw_index_before=19\n");
@@ -1302,7 +1323,7 @@ TEST(SavorPredictCheckpointTrace, SummarizesActionViewGateCheckpoints) {
     const auto fallback = summarize_action_view_gate_checkpoints(fallback_parsed.events);
     EXPECT_EQ(
         action_view_gate_checkpoint_status_name(fallback.status),
-        std::string("Mode0FallbackReached"));
+        std::string("MatchesExpected"));
     EXPECT_EQ(fallback.mode0_fallback_reached_events, 1);
     EXPECT_EQ(fallback.observed_mode0_fallback_draws, 1);
 }
@@ -1336,11 +1357,11 @@ TEST(SavorPredictCheckpointTrace, SummarizesActionViewCameraCheckpoints) {
     EXPECT_EQ(matched.mode0e_draws_after_first_attack_hit, 0);
 
     const auto with_fallback = summarize_action_view_camera_checkpoints(parsed.events, 1);
-    EXPECT_EQ(with_fallback.status, ActionViewCameraCheckpointStatus::UnexpectedMode0FallbackObserved);
+    EXPECT_EQ(with_fallback.status, ActionViewCameraCheckpointStatus::MatchesExpected);
     EXPECT_EQ(with_fallback.observed_mode0_fallback_draws, 1);
     EXPECT_EQ(
         action_view_camera_checkpoint_status_name(with_fallback.status),
-        std::string("UnexpectedMode0FallbackObserved"));
+        std::string("MatchesExpected"));
 
     const auto missing = summarize_action_view_camera_checkpoints(no_fallback, 2);
     EXPECT_EQ(missing.status, ActionViewCameraCheckpointStatus::MissingMode0eDraws);

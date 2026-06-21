@@ -137,6 +137,20 @@ bool LiveCheckpointCapture::capture_hit(DolphinWrapper& host, std::uint32_t pc, 
         record.fields.push_back(CaptureField{ sample.name, "\"" + HexU32(value) + "\"", false });
     }
 
+    for (const auto& sample : checkpoint->register_memory_samples) {
+        const auto base = host.getRegister(sample.base_reg);
+        const auto address = static_cast<std::uint32_t>(
+            static_cast<std::uint64_t>(base) + static_cast<std::int64_t>(sample.offset));
+        record.fields.push_back(CaptureField{ sample.name + "_address", "\"" + HexU32(address) + "\"", false });
+
+        std::uint64_t value = 0;
+        if (!read_memory_sample(host, MemorySampleSpec{ sample.name, address, sample.width }, value)) {
+            record.fields.push_back(CaptureField{ sample.name + "_read_ok", "false", false });
+            continue;
+        }
+        record.fields.push_back(CaptureField{ sample.name, sample_value_for_json(value, sample.width), false });
+    }
+
     if (!writer_.write(record, error_out)) {
         return false;
     }

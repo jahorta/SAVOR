@@ -46,8 +46,35 @@ struct ActionViewGateCheckpointEvent {
     std::optional<bool> mode0e_draw_before_attack_hit_draw;
 };
 
+struct ActionViewDispatchCheckpointEvent {
+    std::optional<int> draw_index;
+    std::optional<int> payload_primary_key;
+    std::optional<int> payload_secondary_key;
+    std::optional<std::string> payload_flags;
+    std::optional<int> payload_start_frame;
+    std::optional<int> payload_end_frame;
+    std::optional<int> payload_hold;
+    std::optional<int> payload_step;
+    std::optional<int> payload_mode;
+    std::optional<int> saved_mode;
+    std::optional<int> effective_mode;
+    std::optional<int> worksheet_turn_timer;
+    std::optional<std::string> instruction_flags;
+    std::optional<std::string> global_camera_override;
+    std::optional<std::string> global_camera_flags;
+};
+
 struct ActionViewGateCheckpointSummary {
     int observed_gate_events = 0;
+    int observed_dispatch_events = 0;
+    int dispatch_events_with_payload_mode = 0;
+    int dispatch_events_with_effective_mode = 0;
+    int dispatch_events_with_spicestd_payload_fields = 0;
+    int dispatch_serialized_mode0_events = 0;
+    int dispatch_effective_mode0_events = 0;
+    int dispatch_effective_mode0e_events = 0;
+    int dispatch_mode0_to_mode0e_rewrites = 0;
+    int dispatch_mode0_stays_mode0_events = 0;
     int events_with_aux_list_root = 0;
     int events_with_query_args = 0;
     int events_with_query_result = 0;
@@ -81,6 +108,7 @@ struct ActionViewGateCheckpointSummary {
     int action_sequence_order_mismatches = 0;
     int action_sequence_order_missing_camera_or_hit = 0;
     std::vector<ActionViewGateCheckpointEvent> events;
+    std::vector<ActionViewDispatchCheckpointEvent> dispatch_events;
     ActionViewGateCheckpointStatus status = ActionViewGateCheckpointStatus::ObservedOnly;
 };
 

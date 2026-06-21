@@ -1059,14 +1059,18 @@ void write_text(const TraceSummary& summary, std::ostream& out) {
     } else {
         out << "    exact end-turn/level-up expectations pending EXP and threshold modeling\n";
     }
-    out << "  expected mode-0xe action-view camera draws for observed attacks: "
+    out << "  expected serialized mode-0 action-view rewrite gate draws for observed attacks: "
+        << summary.action_view_camera_expectation.expected_mode0_rewrite_gate_draws
+        << " (" << summary.action_view_camera_expectation.rewrite_gate_pc
+        << ", pending live field6/gate check)\n";
+    out << "  expected mode-0xe action-view camera draws from aggregate progress alone: "
         << summary.first_battle_mode0e_camera_draws_for_observed_attacks
         << " (" << summary.action_view_camera_expectation.expected_pc
-        << ", pending live field6/gate check)\n";
+        << ", seed-dependent after the rewrite gate)\n";
     out << "    rule: " << first_battle_action_view_camera_rule_detail() << "\n";
-    out << "    rejected fallback owner: "
-        << summary.action_view_camera_expectation.rejected_fallback_owner
-        << " at " << summary.action_view_camera_expectation.rejected_fallback_pc << "\n";
+    out << "    rewrite gate owner: "
+        << summary.action_view_camera_expectation.rewrite_gate_owner
+        << " at " << summary.action_view_camera_expectation.rewrite_gate_pc << "\n";
     out << "  post-turn-order observed draw floor: ";
     if (summary.post_turn_order_observed_draw_floor_known) {
         out << summary.post_turn_order_observed_draw_floor << "\n";
@@ -1433,10 +1437,16 @@ void write_json(const TraceSummary& summary, std::ostream& out) {
     out << "}";
     out << ", \"mode0e_action_view_camera_draws_for_observed_attacks\": "
         << summary.first_battle_mode0e_camera_draws_for_observed_attacks;
+    out << ", \"mode0_action_view_rewrite_gate_draws_for_observed_attacks\": "
+        << summary.action_view_camera_expectation.expected_mode0_rewrite_gate_draws;
     out << ", \"mode0e_action_view_camera_owner\": \""
         << summary.action_view_camera_expectation.expected_owner << "\"";
     out << ", \"mode0e_action_view_camera_pc\": \""
         << summary.action_view_camera_expectation.expected_pc << "\"";
+    out << ", \"mode0_action_view_rewrite_gate_owner\": \""
+        << summary.action_view_camera_expectation.rewrite_gate_owner << "\"";
+    out << ", \"mode0_action_view_rewrite_gate_pc\": \""
+        << summary.action_view_camera_expectation.rewrite_gate_pc << "\"";
     out << ", \"mode0e_action_view_camera_rule\": \""
         << json_escape(first_battle_action_view_camera_rule_detail()) << "\"";
     out << ", \"mode0e_action_view_camera_rejected_fallback_owner\": \""

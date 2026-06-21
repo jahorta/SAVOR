@@ -15,7 +15,7 @@ constexpr int kExpectedQueryArg0 = 4;
 constexpr int kExpectedQueryArg1 = -1;
 constexpr int kExpectedQueryArg2 = 0x2a;
 constexpr int kExpectedQueryArg3 = 3;
-constexpr int kExpectedSelectedRecordMode = 0x0e;
+constexpr int kExpectedSelectedRecordMode = 0;
 constexpr const char* kMode0eOwner = "mode0e_action_view_camera";
 constexpr const char* kMode0FallbackOwner = "mode0_action_view_camera_fallback";
 constexpr const char* kAttackHitOwner = "attack_hit_dodge";
@@ -107,6 +107,12 @@ bool is_gate_checkpoint(const CheckpointEvent& event) {
         || event.checkpoint == "action_view_query";
 }
 
+bool is_dispatch_checkpoint(const CheckpointEvent& event) {
+    return event.pc == "80051424"
+        || event.checkpoint == "action_view_dispatch_state"
+        || event.function == "UpdateActionViewRecord";
+}
+
 bool has_query_args(const ActionViewGateCheckpointEvent& event) {
     return event.query_arg0.has_value()
         && event.query_arg1.has_value()
@@ -129,10 +135,18 @@ bool has_scheduler_chain(const ActionViewGateCheckpointEvent& event) {
         && event.aux_list_root.has_value();
 }
 
+bool has_spicestd_payload_fields(const ActionViewDispatchCheckpointEvent& event) {
+    return event.payload_primary_key.has_value()
+        && event.payload_secondary_key.has_value()
+        && event.payload_flags.has_value()
+        && event.payload_start_frame.has_value()
+        && event.payload_end_frame.has_value()
+        && event.payload_hold.has_value()
+        && event.payload_step.has_value()
+        && event.payload_mode.has_value();
+}
+
 ActionViewGateCheckpointStatus classify_status(const ActionViewGateCheckpointSummary& summary) {
-    if (summary.mode0_fallback_reached_events > 0 || summary.observed_mode0_fallback_draws > 0) {
-        return ActionViewGateCheckpointStatus::Mode0FallbackReached;
-    }
     if (summary.observed_gate_events == 0) {
         return ActionViewGateCheckpointStatus::ObservedOnly;
     }
@@ -202,6 +216,65 @@ ActionViewGateCheckpointSummary summarize_action_view_gate_checkpoints(
             if (!summary.first_attack_hit_draw_index.has_value()) {
                 summary.first_attack_hit_draw_index = event.rng_draw_index_before;
             }
+            continue;
+        }
+        if (is_dispatch_checkpoint(event)) {
+            ActionViewDispatchCheckpointEvent observed;
+            observed.draw_index = event.rng_draw_index_before;
+            observed.payload_primary_key = parse_first_field_int(event, {"payload_primary_0x00", "payload_primary"});
+            observed.payload_secondary_key =
+                parse_first_field_int(event, {"payload_secondary_0x02", "payload_secondary"});
+            observed.payload_flags =
+                parse_first_field_string(event, {"payload_flags_0x10", "payload_flags"});
+            observed.payload_start_frame =
+                parse_first_field_int(event, {"payload_start_frame_0x18", "payload_start_frame"});
+            observed.payload_end_frame =
+                parse_first_field_int(event, {"payload_end_frame_0x1c", "payload_end_frame"});
+            observed.payload_hold =
+                parse_first_field_int(event, {"payload_hold_0x1e", "payload_hold"});
+            observed.payload_step =
+                parse_first_field_int(event, {"payload_step_0x20", "payload_step"});
+            observed.payload_mode =
+                parse_first_field_int(event, {"payload_mode_0x22", "payload_mode", "selected_record_mode"});
+            observed.saved_mode =
+                parse_first_field_int(event, {"worksheet_saved_mode_0x110", "saved_mode"});
+            observed.effective_mode =
+                parse_first_field_int(event, {"worksheet_effective_mode_0x112", "effective_mode"});
+            observed.worksheet_turn_timer =
+                parse_first_field_int(event, {"worksheet_turn_timer_0x70", "turn_timer"});
+            observed.instruction_flags =
+                parse_first_field_string(event, {"instruction_flags_0xf0", "instruction_flags"});
+            observed.global_camera_override =
+                parse_first_field_string(event, {"global_camera_override_80347394", "global_camera_override"});
+            observed.global_camera_flags =
+                parse_first_field_string(event, {"global_camera_flags_803472F4", "global_camera_flags"});
+
+            ++summary.observed_dispatch_events;
+            if (observed.payload_mode.has_value()) {
+                ++summary.dispatch_events_with_payload_mode;
+                if (*observed.payload_mode == 0) {
+                    ++summary.dispatch_serialized_mode0_events;
+                }
+            }
+            if (observed.effective_mode.has_value()) {
+                ++summary.dispatch_events_with_effective_mode;
+                if (*observed.effective_mode == 0) {
+                    ++summary.dispatch_effective_mode0_events;
+                } else if (*observed.effective_mode == 0x0e) {
+                    ++summary.dispatch_effective_mode0e_events;
+                }
+            }
+            if (observed.payload_mode.has_value() && observed.effective_mode.has_value()) {
+                if (*observed.payload_mode == 0 && *observed.effective_mode == 0x0e) {
+                    ++summary.dispatch_mode0_to_mode0e_rewrites;
+                } else if (*observed.payload_mode == 0 && *observed.effective_mode == 0) {
+                    ++summary.dispatch_mode0_stays_mode0_events;
+                }
+            }
+            if (has_spicestd_payload_fields(observed)) {
+                ++summary.dispatch_events_with_spicestd_payload_fields;
+            }
+            summary.dispatch_events.push_back(std::move(observed));
             continue;
         }
         if (!is_gate_checkpoint(event)) {
@@ -391,9 +464,10 @@ const char* action_view_gate_checkpoint_status_name(ActionViewGateCheckpointStat
 
 const char* first_battle_action_view_gate_checkpoint_rule_detail() {
     return "first-battle action-view gate checkpoints should prove the aux-list root, "
-           "FUN_80009030 query args (4, -1, 0x2a, 3), query result, and selected mode 0xe "
-           "before the mode-0xe camera draw and shared attack hit draw, with scheduler child "
-           "thread/payload/state fields present and no mode-0 fallback draw";
+           "FUN_80009030 query args (4, -1, 0x2a, 3), query result, and selected serialized "
+           "mode 0 when a SpiceStd 0x0003002a record is present; dispatch checkpoints should "
+           "then show whether UpdateActionViewRecord kept effective mode 0 or rewrote it to "
+           "runtime mode 0xe before the shared attack hit draw";
 }
 
 } // namespace savor::predict
