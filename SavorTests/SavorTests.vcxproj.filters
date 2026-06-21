@@ -4,6 +4,17 @@
     <ClCompile Include="common\DbPreparer.cpp" />
     <ClCompile Include="..\SavorDbDebugTool\BackfillAnalysisBattle.cpp" />
     <ClCompile Include="..\SavorDbDebugTool\ReprojectUiRead.cpp" />
+    <ClCompile Include="..\SavorPredict\AttackResolutionModel.cpp" />
+    <ClCompile Include="..\SavorPredict\CheckpointTrace.cpp" />
+    <ClCompile Include="..\SavorPredict\CounterModel.cpp" />
+    <ClCompile Include="..\SavorPredict\DropModel.cpp" />
+    <ClCompile Include="..\SavorPredict\EnemyAttackSetupModel.cpp" />
+    <ClCompile Include="..\SavorPredict\FirstBattleDataModel.cpp" />
+    <ClCompile Include="..\SavorPredict\ProgressEventParser.cpp" />
+    <ClCompile Include="..\SavorPredict\RngCore.cpp" />
+    <ClCompile Include="..\SavorPredict\RngModel.cpp" />
+    <ClCompile Include="..\SavorPredict\SoldierAiModel.cpp" />
+    <ClCompile Include="..\SavorPredict\TurnOrderModel.cpp" />
     <ClCompile Include="..\third-party\googletest-1.17.0\googlemock\src\gmock-all.cc" />
     <ClCompile Include="..\third-party\googletest-1.17.0\googletest\src\gtest-all.cc" />
     <ClCompile Include="run_tests.cpp" />
@@ -19,6 +30,7 @@
     <ClCompile Include="test_savordb_phase3_nonfixture.cpp" />
     <ClCompile Include="test_runtime_symbols.cpp" />
     <ClCompile Include="test_savordb_debug_tool.cpp" />
+    <ClCompile Include="test_savor_predict.cpp" />
     <ClCompile Include="test_tsqueue.cpp" />
     <ClCompile Include="test_TASPad.cpp" />
     <ClCompile Include="test_worker_runtime_materialization.cpp" />
