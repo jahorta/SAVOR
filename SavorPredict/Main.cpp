@@ -1,3 +1,5 @@
+#include "BattleJobRunOptions.h"
+#include "BattleJobWorkerRun.h"
 #include "CheckpointTrace.h"
 #include "DbCopy.h"
 #include "LiveCaptureProfile.h"
@@ -10,6 +12,7 @@
 #include <iostream>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace {
 
@@ -18,6 +21,7 @@ void print_usage(std::ostream& out) {
         << "Usage:\n"
         << "  SavorPredict prepare-db [--source PATH] [--dest PATH] [--overwrite]\n"
         << "  SavorPredict write-first-battle-capture-profile --output PATH\n"
+        << "  SavorPredict run-battle-job (--turn-job-id N | --exec-job-id N) --iso PATH --dolphin-base-dir PATH [--db-root PATH] [--run-root PATH] [--worker-exe PATH] [--capture-profile PATH] [--timeout-ms N] [--poll-ms N]\n"
         << "  SavorPredict trace-job (--turn-job-id N | --exec-job-id N) [--db-root PATH] [--format text|json] [--max-distance N]\n\n"
         << "  SavorPredict trace-checkpoints --checkpoint-file PATH [--turn-job-id N | --exec-job-id N] [--db-root PATH] [--format text|json] [--expected-fake-attacks N] [--expected-enemy-setup-draws N] [--expected-mode0e-camera-draws N] [--expected-turn-order-draws N] [--expected-attack-events N] [--expected-crit-draws N] [--expected-counter-roll-ceiling N] [--expected-drop-rolls N] [--expected-end-turn-status-draws N] [--expected-level-up-stat-rolls N]\n\n"
         << "Defaults:\n"
@@ -183,6 +187,26 @@ int run_write_first_battle_capture_profile(int argc, char** argv) {
     return savor::predict::write_first_battle_capture_profile(output, std::cout, std::cerr);
 }
 
+int run_battle_job_command(int argc, char** argv) {
+    std::vector<std::string> args;
+    args.reserve(static_cast<std::size_t>(std::max(0, argc - 2)));
+    for (int i = 2; i < argc; ++i) {
+        args.emplace_back(argv[i]);
+    }
+    const auto parsed = savor::predict::parse_battle_job_run_tokens(args, argv[0]);
+    if (parsed.help_requested) {
+        print_usage(std::cout);
+        return parsed.errors.empty() ? 0 : 2;
+    }
+    if (!parsed.errors.empty()) {
+        for (const auto& error : parsed.errors) {
+            std::cerr << error << "\n";
+        }
+        return 2;
+    }
+    return savor::predict::run_battle_job(parsed.options, std::cout, std::cerr);
+}
+
 int run_trace_checkpoints_command(int argc, char** argv) {
     savor::predict::TraceCheckpointsOptions options;
     for (int i = 2; i < argc; ++i) {
@@ -324,6 +348,9 @@ int main(int argc, char** argv) {
     }
     if (command == "write-first-battle-capture-profile") {
         return run_write_first_battle_capture_profile(argc, argv);
+    }
+    if (command == "run-battle-job") {
+        return run_battle_job_command(argc, argv);
     }
     if (command == "trace-job") {
         return run_trace_job(argc, argv);

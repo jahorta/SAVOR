@@ -11,6 +11,8 @@
     <ClCompile Include="..\SavorPredict\AttackDamageValueCheckpointModel.cpp" />
     <ClCompile Include="..\SavorPredict\AttackResolutionCheckpointModel.cpp" />
     <ClCompile Include="..\SavorPredict\AttackResolutionModel.cpp" />
+    <ClCompile Include="..\SavorPredict\BattleJobClone.cpp" />
+    <ClCompile Include="..\SavorPredict\BattleJobRunOptions.cpp" />
     <ClCompile Include="..\SavorPredict\CheckpointTrace.cpp" />
     <ClCompile Include="..\SavorPredict\CritGateCheckpointModel.cpp" />
     <ClCompile Include="..\SavorPredict\CounterCheckpointModel.cpp" />
@@ -46,6 +48,7 @@
     <ClCompile Include="test_savordb_fixture_sqlite.cpp" />
     <ClCompile Include="test_savordb_phase3_nonfixture.cpp" />
     <ClCompile Include="test_runtime_symbols.cpp" />
+    <ClCompile Include="test_savor_predict_battle_job_runner.cpp" />
     <ClCompile Include="test_savordb_debug_tool.cpp" />
     <ClCompile Include="test_savor_predict.cpp" />
     <ClCompile Include="test_tsqueue.cpp" />

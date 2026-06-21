@@ -32,6 +32,21 @@
     <ClCompile Include="AttackResolutionModel.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="BattleJobClone.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="BattleJobRunManifest.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="BattleJobRunOptions.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="BattleJobSandbox.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="BattleJobWorkerRun.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="CheckpointTrace.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -122,6 +137,21 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="AttackResolutionModel.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="BattleJobClone.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="BattleJobRunManifest.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="BattleJobRunOptions.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="BattleJobSandbox.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="BattleJobWorkerRun.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="CheckpointTrace.h">
