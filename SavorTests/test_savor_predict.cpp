@@ -1373,7 +1373,9 @@ TEST(SavorPredictCheckpointTrace, SummarizesAttackDamageValueCheckpoints) {
         "pc=80010958 function=rollDamage checkpoint=spread rng_draw_index_before=22 "
         "rand_value=0\n"
         "pc=80010984 function=rollDamage checkpoint=bonus rng_draw_index_before=23 "
-        "rand_value=1 observed_damage=19\n");
+        "rand_value=1 observed_damage=19\n"
+        "pc=8002dd14 function=zzDealDamage checkpoint=damage_apply rng_draw_index_before=24 "
+        "damage=19 hp_before=25 hp_after=6 lethal=0\n");
 
     const auto parsed = parse_checkpoint_stream(input);
     ASSERT_TRUE(parsed.errors.empty());
@@ -1385,10 +1387,18 @@ TEST(SavorPredictCheckpointTrace, SummarizesAttackDamageValueCheckpoints) {
     EXPECT_EQ(matched.simulated_bursts, 1);
     EXPECT_EQ(matched.attack_result_matches, 1);
     EXPECT_EQ(matched.damage_matches, 1);
+    EXPECT_EQ(matched.bursts_with_damage_apply, 1);
+    EXPECT_EQ(matched.bursts_with_damage_apply_fields, 1);
+    EXPECT_EQ(matched.damage_apply_events_after_damage_draws, 1);
+    EXPECT_EQ(matched.damage_apply_matches, 1);
+    EXPECT_EQ(matched.hp_after_matches, 1);
+    EXPECT_EQ(matched.lethal_matches, 1);
     ASSERT_EQ(matched.attacks.size(), 1u);
     EXPECT_EQ(matched.attacks[0].expected_attack_result, std::optional<int>(2));
     EXPECT_EQ(matched.attacks[0].expected_base_damage, std::optional<int>(20));
     EXPECT_EQ(matched.attacks[0].expected_damage, std::optional<int>(19));
+    EXPECT_EQ(matched.attacks[0].expected_hp_after, std::optional<int>(6));
+    EXPECT_EQ(matched.attacks[0].expected_lethal, std::optional<int>(0));
 
     std::istringstream missing_fields_input(
         "pc=80010bdc function=getAttackResult checkpoint=hit rng_draw_index_before=20 "
@@ -1425,7 +1435,9 @@ TEST(SavorPredictCheckpointTrace, SummarizesAttackDamageValueCheckpoints) {
         "pc=80010958 function=rollDamage checkpoint=spread rng_draw_index_before=22 "
         "rand_value=0\n"
         "pc=80010984 function=rollDamage checkpoint=bonus rng_draw_index_before=23 "
-        "rand_value=1 observed_damage=19\n");
+        "rand_value=1 observed_damage=19\n"
+        "pc=8002dd14 function=zzDealDamage checkpoint=damage_apply rng_draw_index_before=24 "
+        "damage=19 hp_before=25 hp_after=6 lethal=0\n");
     const auto attack_result_mismatch_parsed =
         parse_checkpoint_stream(attack_result_mismatch_input);
     ASSERT_TRUE(attack_result_mismatch_parsed.errors.empty());
@@ -1444,12 +1456,69 @@ TEST(SavorPredictCheckpointTrace, SummarizesAttackDamageValueCheckpoints) {
         "pc=80010958 function=rollDamage checkpoint=spread rng_draw_index_before=22 "
         "rand_value=0\n"
         "pc=80010984 function=rollDamage checkpoint=bonus rng_draw_index_before=23 "
-        "rand_value=1 observed_damage=18\n");
+        "rand_value=1 observed_damage=18\n"
+        "pc=8002dd14 function=zzDealDamage checkpoint=damage_apply rng_draw_index_before=24 "
+        "damage=19 hp_before=25 hp_after=6 lethal=0\n");
     const auto damage_mismatch_parsed = parse_checkpoint_stream(damage_mismatch_input);
     ASSERT_TRUE(damage_mismatch_parsed.errors.empty());
     const auto damage_mismatch =
         summarize_attack_damage_value_checkpoints(damage_mismatch_parsed.events);
     EXPECT_EQ(damage_mismatch.status, AttackDamageValueCheckpointStatus::DamageMismatch);
+
+    std::istringstream missing_apply_input(
+        "pc=80010bdc function=getAttackResult checkpoint=hit rng_draw_index_before=20 "
+        + live_hit_fields
+        + "rand_value=10000 attack_result=2\n"
+        "pc=80010c44 function=getAttackResult checkpoint=crit rng_draw_index_before=21 "
+        "rand_value=10\n"
+        "pc=80010958 function=rollDamage checkpoint=spread rng_draw_index_before=22 "
+        "rand_value=0\n"
+        "pc=80010984 function=rollDamage checkpoint=bonus rng_draw_index_before=23 "
+        "rand_value=1 observed_damage=19\n");
+    const auto missing_apply_parsed = parse_checkpoint_stream(missing_apply_input);
+    ASSERT_TRUE(missing_apply_parsed.errors.empty());
+    const auto missing_apply =
+        summarize_attack_damage_value_checkpoints(missing_apply_parsed.events);
+    EXPECT_EQ(
+        attack_damage_value_checkpoint_status_name(missing_apply.status),
+        std::string("MissingDamageApplyFields"));
+
+    std::istringstream apply_mismatch_input(
+        "pc=80010bdc function=getAttackResult checkpoint=hit rng_draw_index_before=20 "
+        + live_hit_fields
+        + "rand_value=10000 attack_result=2\n"
+        "pc=80010c44 function=getAttackResult checkpoint=crit rng_draw_index_before=21 "
+        "rand_value=10\n"
+        "pc=80010958 function=rollDamage checkpoint=spread rng_draw_index_before=22 "
+        "rand_value=0\n"
+        "pc=80010984 function=rollDamage checkpoint=bonus rng_draw_index_before=23 "
+        "rand_value=1 observed_damage=19\n"
+        "pc=8002dd14 function=zzDealDamage checkpoint=damage_apply rng_draw_index_before=24 "
+        "damage=19 hp_before=25 hp_after=7 lethal=0\n");
+    const auto apply_mismatch_parsed = parse_checkpoint_stream(apply_mismatch_input);
+    ASSERT_TRUE(apply_mismatch_parsed.errors.empty());
+    const auto apply_mismatch =
+        summarize_attack_damage_value_checkpoints(apply_mismatch_parsed.events);
+    EXPECT_EQ(apply_mismatch.status, AttackDamageValueCheckpointStatus::DamageApplyMismatch);
+    EXPECT_EQ(apply_mismatch.hp_after_mismatches, 1);
+
+    std::istringstream apply_order_input(
+        "pc=80010bdc function=getAttackResult checkpoint=hit rng_draw_index_before=20 "
+        + live_hit_fields
+        + "rand_value=10000 attack_result=2\n"
+        "pc=80010c44 function=getAttackResult checkpoint=crit rng_draw_index_before=21 "
+        "rand_value=10\n"
+        "pc=80010958 function=rollDamage checkpoint=spread rng_draw_index_before=22 "
+        "rand_value=0\n"
+        "pc=80010984 function=rollDamage checkpoint=bonus rng_draw_index_before=23 "
+        "rand_value=1 observed_damage=19\n"
+        "pc=8002dd14 function=zzDealDamage checkpoint=damage_apply rng_draw_index_before=23 "
+        "damage=19 hp_before=25 hp_after=6 lethal=0\n");
+    const auto apply_order_parsed = parse_checkpoint_stream(apply_order_input);
+    ASSERT_TRUE(apply_order_parsed.errors.empty());
+    const auto apply_order =
+        summarize_attack_damage_value_checkpoints(apply_order_parsed.events);
+    EXPECT_EQ(apply_order.status, AttackDamageValueCheckpointStatus::DamageApplyOrderMismatch);
 }
 
 TEST(SavorPredictCheckpointTrace, SummarizesCritGateCheckpoints) {

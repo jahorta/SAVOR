@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <initializer_list>
+#include <string_view>
 #include <utility>
 
 namespace savor::predict {
@@ -26,6 +27,26 @@ bool is_attack_resolution_draw(const CheckpointEvent& event) {
         || owner_is(event, kCritOwner)
         || owner_is(event, kDamageSpreadOwner)
         || owner_is(event, kDamageBonusOwner);
+}
+
+bool event_named(const CheckpointEvent& event, std::initializer_list<std::string_view> names) {
+    for (const auto name : names) {
+        if (event.function == name || event.checkpoint == name) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool is_damage_apply_checkpoint(const CheckpointEvent& event) {
+    return event.pc == "8002DD14"
+        || event_named(event, {
+            "zzDealDamage",
+            "zzDealDamage_8002dc38",
+            "deal_damage",
+            "damage_apply",
+            "zz_deal_damage",
+        });
 }
 
 std::optional<int> parse_field_int(const CheckpointEvent& event, const char* key) {
@@ -157,6 +178,37 @@ void merge_live_fields(
     }));
 }
 
+void merge_damage_apply_fields(
+    AttackDamageValueCheckpointEvent& attack,
+    const CheckpointEvent& event) {
+    merge_live_fields(attack, event);
+    attack.damage_apply_draw_index = event.rng_draw_index_before;
+    attack.damage_apply_damage = parse_first_field_int(event, {
+        "damage_apply_damage",
+        "applied_damage",
+        "damage",
+        "observed_damage",
+        "damage_value",
+    });
+    attack.hp_before = parse_first_field_int(event, {
+        "hp_before",
+        "target_hp_before",
+    });
+    attack.hp_after = parse_first_field_int(event, {
+        "hp_after",
+        "target_hp_after",
+        "cur_hp",
+        "target_cur_hp",
+        "current_hp",
+    });
+    attack.lethal = parse_first_field_int(event, {
+        "lethal",
+        "target_died",
+        "killed",
+    });
+    attack.damage_apply_observed = true;
+}
+
 int count_missing_live_inputs(const AttackDamageValueCheckpointEvent& attack) {
     int missing = 0;
     const std::optional<int> AttackDamageValueCheckpointEvent::* fields[] = {
@@ -276,6 +328,55 @@ void finalize_attack(
         } else {
             ++summary.damage_mismatches;
         }
+
+        if (attack.damage_apply_observed) {
+            ++summary.bursts_with_damage_apply;
+        }
+        attack.damage_apply_fields_complete =
+            attack.damage_apply_observed
+            && attack.damage_apply_damage.has_value()
+            && attack.hp_before.has_value()
+            && attack.hp_after.has_value();
+        if (attack.damage_apply_fields_complete) {
+            ++summary.bursts_with_damage_apply_fields;
+        } else {
+            ++summary.missing_damage_apply_field_bursts;
+            return;
+        }
+
+        if (attack.damage_bonus_draw_index.has_value()
+            && attack.damage_apply_draw_index.has_value()
+            && *attack.damage_bonus_draw_index < *attack.damage_apply_draw_index) {
+            attack.damage_apply_after_damage_draws = true;
+            ++summary.damage_apply_events_after_damage_draws;
+        } else {
+            ++summary.damage_apply_order_mismatches;
+        }
+
+        attack.damage_apply_matches = *attack.damage_apply_damage == *attack.expected_damage;
+        if (attack.damage_apply_matches) {
+            ++summary.damage_apply_matches;
+        } else {
+            ++summary.damage_apply_mismatches;
+        }
+
+        attack.expected_hp_after = std::max(0, *attack.hp_before - *attack.expected_damage);
+        attack.hp_after_matches = *attack.hp_after == *attack.expected_hp_after;
+        if (attack.hp_after_matches) {
+            ++summary.hp_after_matches;
+        } else {
+            ++summary.hp_after_mismatches;
+        }
+
+        attack.expected_lethal = *attack.expected_hp_after < 1 ? 1 : 0;
+        if (attack.lethal.has_value()) {
+            attack.lethal_matches = ((*attack.lethal != 0) == (*attack.expected_lethal != 0));
+            if (attack.lethal_matches) {
+                ++summary.lethal_matches;
+            } else {
+                ++summary.lethal_mismatches;
+            }
+        }
     }
 }
 
@@ -289,11 +390,22 @@ AttackDamageValueCheckpointStatus classify_status(const AttackDamageValueCheckpo
     if (summary.incomplete_draw_bursts > 0 || summary.orphan_damage_draw_events > 0) {
         return AttackDamageValueCheckpointStatus::IncompleteDrawSequence;
     }
+    if (summary.missing_damage_apply_field_bursts > 0) {
+        return AttackDamageValueCheckpointStatus::MissingDamageApplyFields;
+    }
+    if (summary.damage_apply_order_mismatches > 0) {
+        return AttackDamageValueCheckpointStatus::DamageApplyOrderMismatch;
+    }
     if (summary.attack_result_mismatches > 0) {
         return AttackDamageValueCheckpointStatus::AttackResultMismatch;
     }
     if (summary.damage_mismatches > 0) {
         return AttackDamageValueCheckpointStatus::DamageMismatch;
+    }
+    if (summary.damage_apply_mismatches > 0
+        || summary.hp_after_mismatches > 0
+        || summary.lethal_mismatches > 0) {
+        return AttackDamageValueCheckpointStatus::DamageApplyMismatch;
     }
     return AttackDamageValueCheckpointStatus::MatchesFormula;
 }
@@ -316,7 +428,7 @@ AttackDamageValueCheckpointSummary summarize_attack_damage_value_checkpoints(
     };
 
     for (const auto& event : events) {
-        if (!is_attack_resolution_draw(event)) {
+        if (!is_attack_resolution_draw(event) && !is_damage_apply_checkpoint(event)) {
             continue;
         }
 
@@ -340,6 +452,11 @@ AttackDamageValueCheckpointSummary summarize_attack_damage_value_checkpoints(
 
         if (!current.has_value()) {
             ++summary.orphan_damage_draw_events;
+            continue;
+        }
+
+        if (is_damage_apply_checkpoint(event)) {
+            merge_damage_apply_fields(*current, event);
             continue;
         }
 
@@ -388,17 +505,23 @@ const char* attack_damage_value_checkpoint_status_name(AttackDamageValueCheckpoi
         return "MissingLiveDamageFields";
     case AttackDamageValueCheckpointStatus::IncompleteDrawSequence:
         return "IncompleteDrawSequence";
+    case AttackDamageValueCheckpointStatus::MissingDamageApplyFields:
+        return "MissingDamageApplyFields";
+    case AttackDamageValueCheckpointStatus::DamageApplyOrderMismatch:
+        return "DamageApplyOrderMismatch";
     case AttackDamageValueCheckpointStatus::AttackResultMismatch:
         return "AttackResultMismatch";
     case AttackDamageValueCheckpointStatus::DamageMismatch:
         return "DamageMismatch";
+    case AttackDamageValueCheckpointStatus::DamageApplyMismatch:
+        return "DamageApplyMismatch";
     default:
         return "Unknown";
     }
 }
 
 const char* first_battle_attack_damage_value_checkpoint_rule_detail() {
-    return "live first-battle attack damage checkpoints should expose attacker hit/agile/attack/element, target dodge/defense/element/status, instrParam_0x6, RNG draw values, observed attack result, and observed damage so the shared attack formula can be checked per attack burst";
+    return "live first-battle attack damage checkpoints should expose attacker hit/agile/attack/element, target dodge/defense/element/status, instrParam_0x6, RNG draw values, observed attack result, observed damage, and zzDealDamage HP fields so the shared attack formula and damage application can be checked per attack burst";
 }
 
 } // namespace savor::predict

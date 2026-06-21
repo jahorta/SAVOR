@@ -12,8 +12,11 @@ enum class AttackDamageValueCheckpointStatus {
     MatchesFormula,
     MissingLiveDamageFields,
     IncompleteDrawSequence,
+    MissingDamageApplyFields,
+    DamageApplyOrderMismatch,
     AttackResultMismatch,
     DamageMismatch,
+    DamageApplyMismatch,
 };
 
 struct AttackDamageValueCheckpointEvent {
@@ -24,6 +27,7 @@ struct AttackDamageValueCheckpointEvent {
     std::optional<int> crit_draw_index;
     std::optional<int> damage_spread_draw_index;
     std::optional<int> damage_bonus_draw_index;
+    std::optional<int> damage_apply_draw_index;
     std::optional<int> hit_rand;
     std::optional<int> crit_rand;
     std::optional<int> damage_spread_rand;
@@ -40,16 +44,28 @@ struct AttackDamageValueCheckpointEvent {
     std::optional<int> observed_attack_result;
     std::optional<int> observed_hit_check;
     std::optional<int> observed_damage;
+    std::optional<int> damage_apply_damage;
+    std::optional<int> hp_before;
+    std::optional<int> hp_after;
+    std::optional<int> lethal;
     std::optional<int> expected_attack_result;
     std::optional<int> expected_hit_check;
     std::optional<int> expected_base_damage;
     std::optional<int> expected_damage;
+    std::optional<int> expected_hp_after;
+    std::optional<int> expected_lethal;
     bool live_inputs_complete = false;
     bool required_draws_complete = false;
+    bool damage_apply_observed = false;
+    bool damage_apply_fields_complete = false;
+    bool damage_apply_after_damage_draws = false;
     bool damage_expected = false;
     bool simulated = false;
     bool attack_result_matches = false;
     bool damage_matches = false;
+    bool damage_apply_matches = false;
+    bool hp_after_matches = false;
+    bool lethal_matches = false;
     int missing_live_input_fields = 0;
 };
 
@@ -60,13 +76,24 @@ struct AttackDamageValueCheckpointSummary {
     int bursts_with_required_draws = 0;
     int bursts_with_observed_attack_result = 0;
     int bursts_with_observed_damage = 0;
+    int bursts_with_damage_apply = 0;
+    int bursts_with_damage_apply_fields = 0;
+    int damage_apply_events_after_damage_draws = 0;
+    int damage_apply_order_mismatches = 0;
     int simulated_bursts = 0;
     int attack_result_matches = 0;
     int attack_result_mismatches = 0;
     int damage_matches = 0;
     int damage_mismatches = 0;
+    int damage_apply_matches = 0;
+    int damage_apply_mismatches = 0;
+    int hp_after_matches = 0;
+    int hp_after_mismatches = 0;
+    int lethal_matches = 0;
+    int lethal_mismatches = 0;
     int missing_live_field_bursts = 0;
     int incomplete_draw_bursts = 0;
+    int missing_damage_apply_field_bursts = 0;
     int seed_transition_mismatches = 0;
     std::optional<int> first_hit_draw_index;
     std::optional<int> first_damage_value_draw_index;

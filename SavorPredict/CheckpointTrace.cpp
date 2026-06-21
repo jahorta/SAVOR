@@ -1179,6 +1179,14 @@ void write_text_report(
         << attack_damage_values.bursts_with_observed_attack_result << "\n";
     out << "  bursts_with_observed_damage: "
         << attack_damage_values.bursts_with_observed_damage << "\n";
+    out << "  bursts_with_damage_apply: "
+        << attack_damage_values.bursts_with_damage_apply << "\n";
+    out << "  bursts_with_damage_apply_fields: "
+        << attack_damage_values.bursts_with_damage_apply_fields << "\n";
+    out << "  damage_apply_events_after_damage_draws: "
+        << attack_damage_values.damage_apply_events_after_damage_draws << "\n";
+    out << "  damage_apply_order_mismatches: "
+        << attack_damage_values.damage_apply_order_mismatches << "\n";
     out << "  simulated_bursts: " << attack_damage_values.simulated_bursts << "\n";
     out << "  attack_result_matches: "
         << attack_damage_values.attack_result_matches << "\n";
@@ -1186,10 +1194,22 @@ void write_text_report(
         << attack_damage_values.attack_result_mismatches << "\n";
     out << "  damage_matches: " << attack_damage_values.damage_matches << "\n";
     out << "  damage_mismatches: " << attack_damage_values.damage_mismatches << "\n";
+    out << "  damage_apply_matches: "
+        << attack_damage_values.damage_apply_matches << "\n";
+    out << "  damage_apply_mismatches: "
+        << attack_damage_values.damage_apply_mismatches << "\n";
+    out << "  hp_after_matches: " << attack_damage_values.hp_after_matches << "\n";
+    out << "  hp_after_mismatches: "
+        << attack_damage_values.hp_after_mismatches << "\n";
+    out << "  lethal_matches: " << attack_damage_values.lethal_matches << "\n";
+    out << "  lethal_mismatches: "
+        << attack_damage_values.lethal_mismatches << "\n";
     out << "  missing_live_field_bursts: "
         << attack_damage_values.missing_live_field_bursts << "\n";
     out << "  incomplete_draw_bursts: "
         << attack_damage_values.incomplete_draw_bursts << "\n";
+    out << "  missing_damage_apply_field_bursts: "
+        << attack_damage_values.missing_damage_apply_field_bursts << "\n";
     out << "  seed_transition_mismatches: "
         << attack_damage_values.seed_transition_mismatches << "\n";
     out << "  first_hit_draw_index: ";
@@ -1214,6 +1234,8 @@ void write_text_report(
             write_optional_int(out, attack.damage_spread_rand);
             out << " bonus_rand=";
             write_optional_int(out, attack.damage_bonus_rand);
+            out << " damage_apply_draw_index=";
+            write_optional_int(out, attack.damage_apply_draw_index);
             out << " expected_attack_result=";
             write_optional_int(out, attack.expected_attack_result);
             out << " observed_attack_result=";
@@ -1222,7 +1244,23 @@ void write_text_report(
             write_optional_int(out, attack.expected_damage);
             out << " observed_damage=";
             write_optional_int(out, attack.observed_damage);
+            out << " damage_apply_damage=";
+            write_optional_int(out, attack.damage_apply_damage);
+            out << " hp_before=";
+            write_optional_int(out, attack.hp_before);
+            out << " hp_after=";
+            write_optional_int(out, attack.hp_after);
+            out << " expected_hp_after=";
+            write_optional_int(out, attack.expected_hp_after);
+            out << " lethal=";
+            write_optional_int(out, attack.lethal);
+            out << " expected_lethal=";
+            write_optional_int(out, attack.expected_lethal);
             out << " missing_live_inputs=" << attack.missing_live_input_fields;
+            out << " damage_apply_observed="
+                << (attack.damage_apply_observed ? "true" : "false");
+            out << " damage_apply_after_damage_draws="
+                << (attack.damage_apply_after_damage_draws ? "true" : "false");
             out << " simulated=" << (attack.simulated ? "true" : "false") << "\n";
         }
     }
@@ -2659,6 +2697,14 @@ void write_json_report(
         << attack_damage_values.bursts_with_observed_attack_result;
     out << ", \"bursts_with_observed_damage\": "
         << attack_damage_values.bursts_with_observed_damage;
+    out << ", \"bursts_with_damage_apply\": "
+        << attack_damage_values.bursts_with_damage_apply;
+    out << ", \"bursts_with_damage_apply_fields\": "
+        << attack_damage_values.bursts_with_damage_apply_fields;
+    out << ", \"damage_apply_events_after_damage_draws\": "
+        << attack_damage_values.damage_apply_events_after_damage_draws;
+    out << ", \"damage_apply_order_mismatches\": "
+        << attack_damage_values.damage_apply_order_mismatches;
     out << ", \"simulated_bursts\": " << attack_damage_values.simulated_bursts;
     out << ", \"attack_result_matches\": "
         << attack_damage_values.attack_result_matches;
@@ -2666,10 +2712,19 @@ void write_json_report(
         << attack_damage_values.attack_result_mismatches;
     out << ", \"damage_matches\": " << attack_damage_values.damage_matches;
     out << ", \"damage_mismatches\": " << attack_damage_values.damage_mismatches;
+    out << ", \"damage_apply_matches\": " << attack_damage_values.damage_apply_matches;
+    out << ", \"damage_apply_mismatches\": "
+        << attack_damage_values.damage_apply_mismatches;
+    out << ", \"hp_after_matches\": " << attack_damage_values.hp_after_matches;
+    out << ", \"hp_after_mismatches\": " << attack_damage_values.hp_after_mismatches;
+    out << ", \"lethal_matches\": " << attack_damage_values.lethal_matches;
+    out << ", \"lethal_mismatches\": " << attack_damage_values.lethal_mismatches;
     out << ", \"missing_live_field_bursts\": "
         << attack_damage_values.missing_live_field_bursts;
     out << ", \"incomplete_draw_bursts\": "
         << attack_damage_values.incomplete_draw_bursts;
+    out << ", \"missing_damage_apply_field_bursts\": "
+        << attack_damage_values.missing_damage_apply_field_bursts;
     out << ", \"seed_transition_mismatches\": "
         << attack_damage_values.seed_transition_mismatches;
     out << ", \"first_hit_draw_index\": ";
@@ -2695,6 +2750,8 @@ void write_json_report(
         write_json_optional_int(out, attack.damage_spread_draw_index);
         out << ", \"damage_bonus_draw_index\": ";
         write_json_optional_int(out, attack.damage_bonus_draw_index);
+        out << ", \"damage_apply_draw_index\": ";
+        write_json_optional_int(out, attack.damage_apply_draw_index);
         out << ", \"hit_rand\": ";
         write_json_optional_int(out, attack.hit_rand);
         out << ", \"crit_rand\": ";
@@ -2711,12 +2768,36 @@ void write_json_report(
         write_json_optional_int(out, attack.observed_damage);
         out << ", \"expected_damage\": ";
         write_json_optional_int(out, attack.expected_damage);
+        out << ", \"damage_apply_damage\": ";
+        write_json_optional_int(out, attack.damage_apply_damage);
+        out << ", \"hp_before\": ";
+        write_json_optional_int(out, attack.hp_before);
+        out << ", \"hp_after\": ";
+        write_json_optional_int(out, attack.hp_after);
+        out << ", \"expected_hp_after\": ";
+        write_json_optional_int(out, attack.expected_hp_after);
+        out << ", \"lethal\": ";
+        write_json_optional_int(out, attack.lethal);
+        out << ", \"expected_lethal\": ";
+        write_json_optional_int(out, attack.expected_lethal);
         out << ", \"missing_live_input_fields\": "
             << attack.missing_live_input_fields;
+        out << ", \"damage_apply_observed\": "
+            << (attack.damage_apply_observed ? "true" : "false");
+        out << ", \"damage_apply_fields_complete\": "
+            << (attack.damage_apply_fields_complete ? "true" : "false");
+        out << ", \"damage_apply_after_damage_draws\": "
+            << (attack.damage_apply_after_damage_draws ? "true" : "false");
         out << ", \"simulated\": " << (attack.simulated ? "true" : "false");
         out << ", \"attack_result_matches\": "
             << (attack.attack_result_matches ? "true" : "false");
         out << ", \"damage_matches\": " << (attack.damage_matches ? "true" : "false");
+        out << ", \"damage_apply_matches\": "
+            << (attack.damage_apply_matches ? "true" : "false");
+        out << ", \"hp_after_matches\": "
+            << (attack.hp_after_matches ? "true" : "false");
+        out << ", \"lethal_matches\": "
+            << (attack.lethal_matches ? "true" : "false");
         out << "}";
     }
     out << "]";
