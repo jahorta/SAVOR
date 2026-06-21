@@ -2,9 +2,12 @@
 
 namespace savor::predict {
 
-CounterSimulation simulate_counter_check(std::uint32_t state, const CounterInputs& inputs) {
+namespace {
+
+CounterSimulation simulate_counter_check_after_draw(
+    const CounterInputs& inputs,
+    std::optional<std::uint16_t> counter_rand) {
     CounterSimulation result;
-    result.end_state = state;
     result.updated_current_counter_chance = inputs.target_current_counter_chance;
 
     if ((inputs.target_status_flags & 0x6D00) != 0) {
@@ -32,12 +35,13 @@ CounterSimulation simulate_counter_check(std::uint32_t state, const CounterInput
             return result;
         }
 
-        const auto draw = draw_rand15(state);
-        state = draw.next_state;
-        result.end_state = state;
-        result.counter_rand = draw.value;
+        if (!counter_rand.has_value()) {
+            result.reason = CounterResultReason::RandomFailed;
+            return result;
+        }
+        result.counter_rand = *counter_rand;
         result.draws_consumed = 1;
-        if ((draw.value % 100) >= inputs.target_current_counter_chance) {
+        if ((*counter_rand % 100) >= inputs.target_current_counter_chance) {
             result.reason = CounterResultReason::RandomFailed;
             return result;
         }
@@ -59,6 +63,36 @@ CounterSimulation simulate_counter_check(std::uint32_t state, const CounterInput
     result.reason = CounterResultReason::Counter;
     result.updated_current_counter_chance = force_counter ? 100 : 0;
     return result;
+}
+
+} // namespace
+
+CounterSimulation simulate_counter_check(std::uint32_t state, const CounterInputs& inputs) {
+    std::optional<std::uint16_t> counter_rand;
+    std::uint32_t next_state = state;
+
+    const bool no_draw =
+        (inputs.target_status_flags & 0x6D00) != 0
+        || ((inputs.attacker_slot < 4) == (inputs.target_slot < 4))
+        || inputs.attack_was_critical
+        || ((inputs.target_status_flags & 0x2) != 0)
+        || ((inputs.target_status_flags & 0x800000) != 0)
+        || inputs.target_base_counter_chance == 0;
+    if (!no_draw) {
+        const auto draw = draw_rand15(state);
+        counter_rand = draw.value;
+        next_state = draw.next_state;
+    }
+
+    auto result = simulate_counter_check_after_draw(inputs, counter_rand);
+    result.end_state = result.draws_consumed == 0 ? state : next_state;
+    return result;
+}
+
+CounterSimulation simulate_counter_check_from_rand(
+    const CounterInputs& inputs,
+    std::uint16_t counter_rand) {
+    return simulate_counter_check_after_draw(inputs, counter_rand);
 }
 
 const char* counter_result_reason_name(CounterResultReason reason) {

@@ -1152,7 +1152,21 @@ void write_text_report(
     }
     out << "  draws_with_actor_slots: " << counter.draws_with_actor_slots << "\n";
     out << "  draws_with_gate_inputs: " << counter.draws_with_gate_inputs << "\n";
+    out << "  draws_with_rand_value: " << counter.draws_with_rand_value << "\n";
     out << "  draws_with_counter_result: " << counter.draws_with_counter_result << "\n";
+    out << "  draws_with_queue_result: " << counter.draws_with_queue_result << "\n";
+    out << "  draws_with_counter_chance_update: "
+        << counter.draws_with_counter_chance_update << "\n";
+    out << "  live_gate_simulated_draws: " << counter.live_gate_simulated_draws << "\n";
+    out << "  counter_result_matches: " << counter.counter_result_matches << "\n";
+    out << "  counter_result_mismatches: " << counter.counter_result_mismatches << "\n";
+    out << "  queued_field_matches: " << counter.queued_field_matches << "\n";
+    out << "  queued_field_mismatches: " << counter.queued_field_mismatches << "\n";
+    out << "  counter_chance_update_matches: "
+        << counter.counter_chance_update_matches << "\n";
+    out << "  counter_chance_update_mismatches: "
+        << counter.counter_chance_update_mismatches << "\n";
+    out << "  seed_transition_mismatches: " << counter.seed_transition_mismatches << "\n";
     if (!counter.draws.empty()) {
         out << "  draws:\n";
         for (const auto& draw : counter.draws) {
@@ -1195,6 +1209,18 @@ void write_text_report(
             out << " counter_result=";
             if (draw.counter_result.has_value()) {
                 out << *draw.counter_result;
+            } else {
+                out << "unknown";
+            }
+            out << " expected_counter_result=";
+            if (draw.expected_counter_result.has_value()) {
+                out << *draw.expected_counter_result;
+            } else {
+                out << "unknown";
+            }
+            out << " expected_reason=";
+            if (draw.expected_reason.has_value()) {
+                out << counter_result_reason_name(*draw.expected_reason);
             } else {
                 out << "unknown";
             }
@@ -2373,20 +2399,27 @@ void write_json_report(
     }
     out << ", \"observed_counter_rolls\": " << counter.observed_counter_rolls;
     out << ", \"first_counter_roll_draw_index\": ";
-    if (counter.first_counter_roll_draw_index.has_value()) {
-        out << *counter.first_counter_roll_draw_index;
-    } else {
-        out << "null";
-    }
+    write_json_optional_int(out, counter.first_counter_roll_draw_index);
     out << ", \"last_counter_roll_draw_index\": ";
-    if (counter.last_counter_roll_draw_index.has_value()) {
-        out << *counter.last_counter_roll_draw_index;
-    } else {
-        out << "null";
-    }
+    write_json_optional_int(out, counter.last_counter_roll_draw_index);
     out << ", \"draws_with_actor_slots\": " << counter.draws_with_actor_slots;
     out << ", \"draws_with_gate_inputs\": " << counter.draws_with_gate_inputs;
+    out << ", \"draws_with_rand_value\": " << counter.draws_with_rand_value;
     out << ", \"draws_with_counter_result\": " << counter.draws_with_counter_result;
+    out << ", \"draws_with_queue_result\": " << counter.draws_with_queue_result;
+    out << ", \"draws_with_counter_chance_update\": "
+        << counter.draws_with_counter_chance_update;
+    out << ", \"live_gate_simulated_draws\": " << counter.live_gate_simulated_draws;
+    out << ", \"counter_result_matches\": " << counter.counter_result_matches;
+    out << ", \"counter_result_mismatches\": " << counter.counter_result_mismatches;
+    out << ", \"queued_field_matches\": " << counter.queued_field_matches;
+    out << ", \"queued_field_mismatches\": " << counter.queued_field_mismatches;
+    out << ", \"counter_chance_update_matches\": "
+        << counter.counter_chance_update_matches;
+    out << ", \"counter_chance_update_mismatches\": "
+        << counter.counter_chance_update_mismatches;
+    out << ", \"seed_transition_mismatches\": "
+        << counter.seed_transition_mismatches;
     out << ", \"draws\": [";
     for (std::size_t i = 0; i < counter.draws.size(); ++i) {
         if (i != 0) {
@@ -2394,83 +2427,51 @@ void write_json_report(
         }
         const auto& draw = counter.draws[i];
         out << "{\"draw_index\": ";
-        if (draw.draw_index.has_value()) {
-            out << *draw.draw_index;
-        } else {
-            out << "null";
-        }
+        write_json_optional_int(out, draw.draw_index);
         out << ", \"attacker_slot\": ";
-        if (draw.attacker_slot.has_value()) {
-            out << *draw.attacker_slot;
-        } else {
-            out << "null";
-        }
+        write_json_optional_int(out, draw.attacker_slot);
         out << ", \"target_slot\": ";
-        if (draw.target_slot.has_value()) {
-            out << *draw.target_slot;
-        } else {
-            out << "null";
-        }
+        write_json_optional_int(out, draw.target_slot);
         out << ", \"target_status_flags\": ";
-        if (draw.target_status_flags.has_value()) {
-            out << *draw.target_status_flags;
-        } else {
-            out << "null";
-        }
+        write_json_optional_int(out, draw.target_status_flags);
         out << ", \"target_movement_flags\": ";
-        if (draw.target_movement_flags.has_value()) {
-            out << *draw.target_movement_flags;
-        } else {
-            out << "null";
-        }
+        write_json_optional_int(out, draw.target_movement_flags);
         out << ", \"target_base_counter_chance\": ";
-        if (draw.target_base_counter_chance.has_value()) {
-            out << *draw.target_base_counter_chance;
-        } else {
-            out << "null";
-        }
+        write_json_optional_int(out, draw.target_base_counter_chance);
         out << ", \"target_current_counter_chance\": ";
-        if (draw.target_current_counter_chance.has_value()) {
-            out << *draw.target_current_counter_chance;
-        } else {
-            out << "null";
-        }
+        write_json_optional_int(out, draw.target_current_counter_chance);
         out << ", \"attacker_action_marker\": ";
-        if (draw.attacker_action_marker.has_value()) {
-            out << *draw.attacker_action_marker;
-        } else {
-            out << "null";
-        }
+        write_json_optional_int(out, draw.attacker_action_marker);
         out << ", \"attack_was_critical\": ";
-        if (draw.attack_was_critical.has_value()) {
-            out << *draw.attack_was_critical;
-        } else {
-            out << "null";
-        }
+        write_json_optional_int(out, draw.attack_was_critical);
         out << ", \"counter_rand\": ";
-        if (draw.counter_rand.has_value()) {
-            out << *draw.counter_rand;
-        } else {
-            out << "null";
-        }
+        write_json_optional_int(out, draw.counter_rand);
         out << ", \"counter_result\": ";
-        if (draw.counter_result.has_value()) {
-            out << *draw.counter_result;
-        } else {
-            out << "null";
-        }
+        write_json_optional_int(out, draw.counter_result);
+        out << ", \"expected_counter_result\": ";
+        write_json_optional_int(out, draw.expected_counter_result);
         out << ", \"queued_field7_0xc\": ";
-        if (draw.queued_field7_0xc.has_value()) {
-            out << *draw.queued_field7_0xc;
-        } else {
-            out << "null";
-        }
+        write_json_optional_int(out, draw.queued_field7_0xc);
+        out << ", \"expected_queued_field7_0xc\": ";
+        write_json_optional_int(out, draw.expected_queued_field7_0xc);
         out << ", \"updated_current_counter_chance\": ";
-        if (draw.updated_current_counter_chance.has_value()) {
-            out << *draw.updated_current_counter_chance;
+        write_json_optional_int(out, draw.updated_current_counter_chance);
+        out << ", \"expected_updated_current_counter_chance\": ";
+        write_json_optional_int(out, draw.expected_updated_current_counter_chance);
+        out << ", \"expected_reason\": ";
+        if (draw.expected_reason.has_value()) {
+            out << "\"" << counter_result_reason_name(*draw.expected_reason) << "\"";
         } else {
             out << "null";
         }
+        out << ", \"live_gate_simulated\": "
+            << (draw.live_gate_simulated ? "true" : "false");
+        out << ", \"counter_result_matches\": "
+            << (draw.counter_result_matches ? "true" : "false");
+        out << ", \"queued_field_matches\": "
+            << (draw.queued_field_matches ? "true" : "false");
+        out << ", \"counter_chance_update_matches\": "
+            << (draw.counter_chance_update_matches ? "true" : "false");
         out << "}";
     }
     out << "]";

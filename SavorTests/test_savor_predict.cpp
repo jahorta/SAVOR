@@ -1277,7 +1277,7 @@ TEST(SavorPredictCheckpointTrace, SummarizesCounterCheckpoints) {
     EXPECT_EQ(parsed.events[0].known_rng_owner, "counter_roll");
 
     const auto within = summarize_counter_checkpoints(parsed.events, 2);
-    EXPECT_EQ(within.status, CounterCheckpointStatus::WithinExpectedCeiling);
+    EXPECT_EQ(within.status, CounterCheckpointStatus::MatchesLiveGate);
     EXPECT_EQ(within.observed_counter_rolls, 2);
     ASSERT_TRUE(within.first_counter_roll_draw_index.has_value());
     EXPECT_EQ(*within.first_counter_roll_draw_index, 30);
@@ -1285,21 +1285,81 @@ TEST(SavorPredictCheckpointTrace, SummarizesCounterCheckpoints) {
     EXPECT_EQ(*within.last_counter_roll_draw_index, 31);
     EXPECT_EQ(within.draws_with_actor_slots, 2);
     EXPECT_EQ(within.draws_with_gate_inputs, 2);
+    EXPECT_EQ(within.draws_with_rand_value, 2);
     EXPECT_EQ(within.draws_with_counter_result, 2);
+    EXPECT_EQ(within.draws_with_queue_result, 1);
+    EXPECT_EQ(within.draws_with_counter_chance_update, 2);
+    EXPECT_EQ(within.live_gate_simulated_draws, 2);
+    EXPECT_EQ(within.counter_result_matches, 2);
+    EXPECT_EQ(within.counter_chance_update_matches, 2);
     ASSERT_EQ(within.draws.size(), 2u);
     ASSERT_TRUE(within.draws[0].target_status_flags.has_value());
     EXPECT_EQ(*within.draws[0].target_status_flags, 0);
     ASSERT_TRUE(within.draws[0].target_movement_flags.has_value());
     EXPECT_EQ(*within.draws[0].target_movement_flags, 0xc0);
+    ASSERT_TRUE(within.draws[0].expected_counter_result.has_value());
+    EXPECT_EQ(*within.draws[0].expected_counter_result, 1);
+    ASSERT_TRUE(within.draws[0].expected_reason.has_value());
+    EXPECT_EQ(*within.draws[0].expected_reason, CounterResultReason::Counter);
 
     const auto observed_only = summarize_counter_checkpoints(parsed.events, std::nullopt);
-    EXPECT_EQ(observed_only.status, CounterCheckpointStatus::ObservedOnly);
+    EXPECT_EQ(observed_only.status, CounterCheckpointStatus::MatchesLiveGate);
 
     const auto exceeds = summarize_counter_checkpoints(parsed.events, 1);
     EXPECT_EQ(exceeds.status, CounterCheckpointStatus::ExceedsExpectedCeiling);
     EXPECT_EQ(
         counter_checkpoint_status_name(exceeds.status),
         std::string("ExceedsExpectedCeiling"));
+
+    std::istringstream count_only_input(
+        "pc=80081a88 function=shouldCounter checkpoint=roll rng_draw_index_before=30\n");
+    const auto count_only_parsed = parse_checkpoint_stream(count_only_input);
+    ASSERT_TRUE(count_only_parsed.errors.empty());
+    const auto count_only = summarize_counter_checkpoints(count_only_parsed.events, 1);
+    EXPECT_EQ(count_only.status, CounterCheckpointStatus::WithinExpectedCeiling);
+
+    std::istringstream missing_fields_input(
+        "pc=80081a88 function=shouldCounter checkpoint=roll rng_draw_index_before=30 "
+        "attacker_slot=1 target_slot=4 counter_rand=7\n");
+    const auto missing_fields_parsed = parse_checkpoint_stream(missing_fields_input);
+    ASSERT_TRUE(missing_fields_parsed.errors.empty());
+    const auto missing_fields = summarize_counter_checkpoints(missing_fields_parsed.events, 1);
+    EXPECT_EQ(
+        counter_checkpoint_status_name(missing_fields.status),
+        std::string("MissingLiveGateFields"));
+
+    std::istringstream result_mismatch_input(
+        "pc=80081a88 function=shouldCounter checkpoint=roll rng_draw_index_before=30 "
+        "attacker_slot=1 target_slot=4 target_status_flags=0x0 target_movement_flags=0xc0 "
+        "target_base_counter_chance=10 target_current_counter_chance=10 "
+        "attacker_action_marker=0 attack_was_critical=0 counter_rand=7 "
+        "counter_result=0 queued_field7_0xc=0 updated_current_counter_chance=0\n");
+    const auto result_mismatch_parsed = parse_checkpoint_stream(result_mismatch_input);
+    ASSERT_TRUE(result_mismatch_parsed.errors.empty());
+    const auto result_mismatch = summarize_counter_checkpoints(result_mismatch_parsed.events, 1);
+    EXPECT_EQ(result_mismatch.status, CounterCheckpointStatus::CounterResultMismatch);
+
+    std::istringstream queue_mismatch_input(
+        "pc=80081a88 function=shouldCounter checkpoint=roll rng_draw_index_before=30 "
+        "attacker_slot=1 target_slot=4 target_status_flags=0x0 target_movement_flags=0xc0 "
+        "target_base_counter_chance=10 target_current_counter_chance=10 "
+        "attacker_action_marker=0 attack_was_critical=0 counter_rand=7 "
+        "counter_result=1 queued_field7_0xc=1 updated_current_counter_chance=0\n");
+    const auto queue_mismatch_parsed = parse_checkpoint_stream(queue_mismatch_input);
+    ASSERT_TRUE(queue_mismatch_parsed.errors.empty());
+    const auto queue_mismatch = summarize_counter_checkpoints(queue_mismatch_parsed.events, 1);
+    EXPECT_EQ(queue_mismatch.status, CounterCheckpointStatus::CounterQueueMismatch);
+
+    std::istringstream update_mismatch_input(
+        "pc=80081a88 function=shouldCounter checkpoint=roll rng_draw_index_before=30 "
+        "attacker_slot=1 target_slot=4 target_status_flags=0x0 target_movement_flags=0xc0 "
+        "target_base_counter_chance=10 target_current_counter_chance=10 "
+        "attacker_action_marker=0 attack_was_critical=0 counter_rand=7 "
+        "counter_result=1 queued_field7_0xc=0 updated_current_counter_chance=10\n");
+    const auto update_mismatch_parsed = parse_checkpoint_stream(update_mismatch_input);
+    ASSERT_TRUE(update_mismatch_parsed.errors.empty());
+    const auto update_mismatch = summarize_counter_checkpoints(update_mismatch_parsed.events, 1);
+    EXPECT_EQ(update_mismatch.status, CounterCheckpointStatus::CounterChanceUpdateMismatch);
 }
 
 TEST(SavorPredictCheckpointTrace, SummarizesDropCheckpoints) {

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CheckpointTrace.h"
+#include "CounterModel.h"
 
 #include <optional>
 #include <string_view>
@@ -12,6 +13,11 @@ enum class CounterCheckpointStatus {
     ObservedOnly,
     WithinExpectedCeiling,
     ExceedsExpectedCeiling,
+    MatchesLiveGate,
+    MissingLiveGateFields,
+    CounterResultMismatch,
+    CounterQueueMismatch,
+    CounterChanceUpdateMismatch,
 };
 
 struct CounterCheckpointExpectation {
@@ -34,6 +40,15 @@ struct CounterCheckpointDraw {
     std::optional<int> counter_result;
     std::optional<int> queued_field7_0xc;
     std::optional<int> updated_current_counter_chance;
+    std::optional<int> expected_counter_result;
+    std::optional<int> expected_queued_field7_0xc;
+    std::optional<int> expected_updated_current_counter_chance;
+    std::optional<CounterResultReason> expected_reason;
+    bool live_gate_inputs_complete = false;
+    bool live_gate_simulated = false;
+    bool counter_result_matches = false;
+    bool queued_field_matches = false;
+    bool counter_chance_update_matches = false;
 };
 
 struct CounterCheckpointSummary {
@@ -43,7 +58,18 @@ struct CounterCheckpointSummary {
     std::optional<int> last_counter_roll_draw_index;
     int draws_with_actor_slots = 0;
     int draws_with_gate_inputs = 0;
+    int draws_with_rand_value = 0;
     int draws_with_counter_result = 0;
+    int draws_with_queue_result = 0;
+    int draws_with_counter_chance_update = 0;
+    int live_gate_simulated_draws = 0;
+    int counter_result_matches = 0;
+    int counter_result_mismatches = 0;
+    int queued_field_matches = 0;
+    int queued_field_mismatches = 0;
+    int counter_chance_update_matches = 0;
+    int counter_chance_update_mismatches = 0;
+    int seed_transition_mismatches = 0;
     std::vector<CounterCheckpointDraw> draws;
     CounterCheckpointStatus status = CounterCheckpointStatus::ObservedOnly;
 };

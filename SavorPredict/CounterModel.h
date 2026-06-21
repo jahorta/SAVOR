@@ -39,6 +39,9 @@ struct CounterSimulation {
 };
 
 CounterSimulation simulate_counter_check(std::uint32_t state, const CounterInputs& inputs);
+CounterSimulation simulate_counter_check_from_rand(
+    const CounterInputs& inputs,
+    std::uint16_t counter_rand);
 const char* counter_result_reason_name(CounterResultReason reason);
 
 } // namespace savor::predict
