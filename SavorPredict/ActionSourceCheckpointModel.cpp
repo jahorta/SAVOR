@@ -4,6 +4,7 @@
 #include <cctype>
 #include <cstdlib>
 #include <initializer_list>
+#include <map>
 #include <utility>
 
 namespace savor::predict {
@@ -91,6 +92,9 @@ ActionSourceCheckpointStatus classify_status(const ActionSourceCheckpointSummary
     if (summary.observed_source_selection_events < summary.observed_action_source_events) {
         return ActionSourceCheckpointStatus::MissingSourceSelectionCheckpoint;
     }
+    if (summary.source_selection_bridge_missing_by_action_sequence_id > 0) {
+        return ActionSourceCheckpointStatus::MissingSourceSelectionCheckpoint;
+    }
     if (summary.source_selection_events_with_source_slot != summary.observed_source_selection_events) {
         return ActionSourceCheckpointStatus::MissingLiveSourceFields;
     }
@@ -131,6 +135,63 @@ void maybe_set_first(std::optional<int>& target, const std::optional<int>& value
     }
 }
 
+std::optional<int> action_sequence_id_from_event(const CheckpointEvent& event) {
+    return parse_first_field_int(
+        event,
+        {"action_sequence_id", "action_sequence", "attack_sequence", "attack_index", "action_index", "sequence_id"});
+}
+
+bool all_bridges_have_action_sequence_id(
+    const std::vector<ActionSourceCheckpointEvent*>& bridges) {
+    return !bridges.empty() && std::all_of(bridges.begin(), bridges.end(), [](const auto* bridge) {
+        return bridge->action_sequence_id.has_value();
+    });
+}
+
+bool any_selection_has_action_sequence_id(
+    const std::vector<const ActionSourceCheckpointEvent*>& source_selections) {
+    return std::any_of(source_selections.begin(), source_selections.end(), [](const auto* selection) {
+        return selection->action_sequence_id.has_value();
+    });
+}
+
+std::map<int, const ActionSourceCheckpointEvent*> source_selection_by_action_sequence_id(
+    const std::vector<const ActionSourceCheckpointEvent*>& source_selections) {
+    std::map<int, const ActionSourceCheckpointEvent*> result;
+    for (const auto* selection : source_selections) {
+        if (selection->action_sequence_id.has_value()
+            && result.find(*selection->action_sequence_id) == result.end()) {
+            result.emplace(*selection->action_sequence_id, selection);
+        }
+    }
+    return result;
+}
+
+void compare_source_selection_pair(
+    ActionSourceCheckpointSummary& summary,
+    ActionSourceCheckpointEvent& bridge,
+    const ActionSourceCheckpointEvent& selection) {
+    bridge.matched_source_selection_draw_index = selection.draw_index;
+    bridge.matched_source_selection_source_slot = selection.source_slot;
+    if (selection.draw_index.has_value() && bridge.draw_index.has_value()) {
+        bridge.source_selection_before_bridge = *selection.draw_index <= *bridge.draw_index;
+        if (*bridge.source_selection_before_bridge) {
+            ++summary.source_selection_bridge_order_matches;
+        } else {
+            ++summary.source_selection_bridge_order_mismatches;
+        }
+    }
+    if (!selection.source_slot.has_value() || !bridge.source_slot.has_value()) {
+        return;
+    }
+    bridge.source_slot_matches_selection = *selection.source_slot == *bridge.source_slot;
+    if (*bridge.source_slot_matches_selection) {
+        ++summary.source_selection_bridge_matches;
+    } else {
+        ++summary.source_selection_bridge_mismatches;
+    }
+}
+
 } // namespace
 
 ActionSourceCheckpointExpectation first_battle_action_source_checkpoint_expectation() {
@@ -162,10 +223,15 @@ ActionSourceCheckpointSummary summarize_action_source_checkpoints(
             observed.target_slot = event.target_slot.has_value()
                 ? event.target_slot
                 : parse_first_field_int(event, {"target_slot"});
+            observed.action_sequence_id = action_sequence_id_from_event(event);
             observed.action_id = parse_first_field_int(event, {"action_id", "source_action_id"});
 
             ++summary.observed_source_selection_events;
             maybe_set_first(summary.first_source_selection_draw_index, observed.draw_index);
+            if (observed.action_sequence_id.has_value()) {
+                ++summary.events_with_action_sequence_id;
+                ++summary.source_selection_events_with_action_sequence_id;
+            }
             if (observed.source_slot.has_value()) {
                 ++summary.source_selection_events_with_source_slot;
             }
@@ -194,6 +260,7 @@ ActionSourceCheckpointSummary summarize_action_source_checkpoints(
         observed.target_slot = event.target_slot.has_value()
             ? event.target_slot
             : parse_first_field_int(event, {"target_slot"});
+        observed.action_sequence_id = action_sequence_id_from_event(event);
         observed.action_id = parse_first_field_int(event, {"action_id", "source_action_id"});
         observed.source_field6_0x6 =
             parse_first_field_int(event, {"source_field6_0x6", "source_field6", "source_field6_6"});
@@ -212,6 +279,10 @@ ActionSourceCheckpointSummary summarize_action_source_checkpoints(
         }
         if (observed.source_slot.has_value()) {
             ++summary.events_with_source_slot;
+        }
+        if (observed.action_sequence_id.has_value()) {
+            ++summary.events_with_action_sequence_id;
+            ++summary.action_source_events_with_action_sequence_id;
         }
         if (observed.action_id.has_value()) {
             ++summary.events_with_action_id;
@@ -254,28 +325,40 @@ ActionSourceCheckpointSummary summarize_action_source_checkpoints(
     }
 
     std::vector<const ActionSourceCheckpointEvent*> source_selections;
-    std::vector<const ActionSourceCheckpointEvent*> bridges;
+    std::vector<ActionSourceCheckpointEvent*> bridges;
     source_selections.reserve(summary.events.size());
     bridges.reserve(summary.events.size());
-    for (const auto& event : summary.events) {
+    for (auto& event : summary.events) {
         if (event.kind == ActionSourceCheckpointKind::SourceSelection) {
             source_selections.push_back(&event);
         } else {
             bridges.push_back(&event);
         }
     }
-    const auto pair_count = std::min(source_selections.size(), bridges.size());
-    summary.source_selection_bridge_pairs = static_cast<int>(pair_count);
-    for (std::size_t i = 0; i < pair_count; ++i) {
-        const auto* selection = source_selections[i];
-        const auto* bridge = bridges[i];
-        if (!selection->source_slot.has_value() || !bridge->source_slot.has_value()) {
-            continue;
+
+    const bool use_action_sequence_id =
+        all_bridges_have_action_sequence_id(bridges)
+        && any_selection_has_action_sequence_id(source_selections);
+    if (use_action_sequence_id) {
+        summary.source_selection_bridge_pairing_strategy = "action_sequence_id";
+        const auto selections_by_sequence =
+            source_selection_by_action_sequence_id(source_selections);
+        for (auto* bridge : bridges) {
+            const auto found =
+                selections_by_sequence.find(*bridge->action_sequence_id);
+            if (found == selections_by_sequence.end()) {
+                ++summary.source_selection_bridge_missing_by_action_sequence_id;
+                continue;
+            }
+            ++summary.source_selection_bridge_pairs;
+            ++summary.source_selection_bridge_pairs_by_action_sequence_id;
+            compare_source_selection_pair(summary, *bridge, *found->second);
         }
-        if (*selection->source_slot == *bridge->source_slot) {
-            ++summary.source_selection_bridge_matches;
-        } else {
-            ++summary.source_selection_bridge_mismatches;
+    } else {
+        const auto pair_count = std::min(source_selections.size(), bridges.size());
+        summary.source_selection_bridge_pairs = static_cast<int>(pair_count);
+        for (std::size_t i = 0; i < pair_count; ++i) {
+            compare_source_selection_pair(summary, *bridges[i], *source_selections[i]);
         }
     }
 
@@ -310,7 +393,9 @@ const char* first_battle_action_source_checkpoint_rule_detail() {
            "selection from DAT_80346bd8+0x90 to the FUN_8006721c field6 bridge, expose source "
            "field6_0x6 and actor field6_0x6, and validate both selected handler and "
            "InstructionWorksheet+0xe0 callback; current static resource extraction expects "
-           "800662bc for first-battle basic action ids";
+           "800662bc for first-battle basic action ids; when action_sequence_id is present, "
+           "source-selection rows are paired to field6 bridge rows by sequence before falling "
+           "back to trace order";
 }
 
 } // namespace savor::predict

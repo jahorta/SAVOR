@@ -797,6 +797,12 @@ void write_text_report(
         << action_source.source_selection_events_with_target_slot << "\n";
     out << "  events_with_actor_slot: " << action_source.events_with_actor_slot << "\n";
     out << "  events_with_source_slot: " << action_source.events_with_source_slot << "\n";
+    out << "  events_with_action_sequence_id: "
+        << action_source.events_with_action_sequence_id << "\n";
+    out << "  source_selection_events_with_action_sequence_id: "
+        << action_source.source_selection_events_with_action_sequence_id << "\n";
+    out << "  action_source_events_with_action_sequence_id: "
+        << action_source.action_source_events_with_action_sequence_id << "\n";
     out << "  events_with_action_id: " << action_source.events_with_action_id << "\n";
     out << "  events_with_handler_pc: " << action_source.events_with_handler_pc << "\n";
     out << "  events_with_callback_pc: " << action_source.events_with_callback_pc << "\n";
@@ -808,6 +814,16 @@ void write_text_report(
         << action_source.source_selection_bridge_matches << "\n";
     out << "  source_selection_bridge_mismatches: "
         << action_source.source_selection_bridge_mismatches << "\n";
+    out << "  source_selection_bridge_pairs_by_action_sequence_id: "
+        << action_source.source_selection_bridge_pairs_by_action_sequence_id << "\n";
+    out << "  source_selection_bridge_missing_by_action_sequence_id: "
+        << action_source.source_selection_bridge_missing_by_action_sequence_id << "\n";
+    out << "  source_selection_bridge_order_matches: "
+        << action_source.source_selection_bridge_order_matches << "\n";
+    out << "  source_selection_bridge_order_mismatches: "
+        << action_source.source_selection_bridge_order_mismatches << "\n";
+    out << "  source_selection_bridge_pairing_strategy: "
+        << action_source.source_selection_bridge_pairing_strategy << "\n";
     out << "  field6_matches: " << action_source.field6_matches << "\n";
     out << "  field6_mismatches: " << action_source.field6_mismatches << "\n";
     out << "  handler_matches: " << action_source.handler_matches << "\n";
@@ -854,6 +870,8 @@ void write_text_report(
             } else {
                 out << "unknown";
             }
+            out << " action_sequence_id=";
+            write_optional_int(out, event.action_sequence_id);
             out << " action_id=";
             if (event.action_id.has_value()) {
                 out << *event.action_id;
@@ -884,6 +902,14 @@ void write_text_report(
             } else {
                 out << "unknown";
             }
+            out << " matched_source_selection_draw_index=";
+            write_optional_int(out, event.matched_source_selection_draw_index);
+            out << " matched_source_selection_source_slot=";
+            write_optional_int(out, event.matched_source_selection_source_slot);
+            out << " source_selection_before_bridge=";
+            write_optional_bool(out, event.source_selection_before_bridge);
+            out << " source_slot_matches_selection=";
+            write_optional_bool(out, event.source_slot_matches_selection);
             out << "\n";
         }
     }
@@ -2475,6 +2501,12 @@ void write_json_report(
         << action_source.source_selection_events_with_target_slot;
     out << ", \"events_with_actor_slot\": " << action_source.events_with_actor_slot;
     out << ", \"events_with_source_slot\": " << action_source.events_with_source_slot;
+    out << ", \"events_with_action_sequence_id\": "
+        << action_source.events_with_action_sequence_id;
+    out << ", \"source_selection_events_with_action_sequence_id\": "
+        << action_source.source_selection_events_with_action_sequence_id;
+    out << ", \"action_source_events_with_action_sequence_id\": "
+        << action_source.action_source_events_with_action_sequence_id;
     out << ", \"events_with_action_id\": " << action_source.events_with_action_id;
     out << ", \"events_with_handler_pc\": " << action_source.events_with_handler_pc;
     out << ", \"events_with_callback_pc\": " << action_source.events_with_callback_pc;
@@ -2486,6 +2518,16 @@ void write_json_report(
         << action_source.source_selection_bridge_matches;
     out << ", \"source_selection_bridge_mismatches\": "
         << action_source.source_selection_bridge_mismatches;
+    out << ", \"source_selection_bridge_pairs_by_action_sequence_id\": "
+        << action_source.source_selection_bridge_pairs_by_action_sequence_id;
+    out << ", \"source_selection_bridge_missing_by_action_sequence_id\": "
+        << action_source.source_selection_bridge_missing_by_action_sequence_id;
+    out << ", \"source_selection_bridge_order_matches\": "
+        << action_source.source_selection_bridge_order_matches;
+    out << ", \"source_selection_bridge_order_mismatches\": "
+        << action_source.source_selection_bridge_order_mismatches;
+    out << ", \"source_selection_bridge_pairing_strategy\": \""
+        << json_escape(action_source.source_selection_bridge_pairing_strategy) << "\"";
     out << ", \"field6_matches\": " << action_source.field6_matches;
     out << ", \"field6_mismatches\": " << action_source.field6_mismatches;
     out << ", \"handler_matches\": " << action_source.handler_matches;
@@ -2535,6 +2577,8 @@ void write_json_report(
         } else {
             out << "null";
         }
+        out << ", \"action_sequence_id\": ";
+        write_json_optional_int(out, event.action_sequence_id);
         out << ", \"action_id\": ";
         if (event.action_id.has_value()) {
             out << *event.action_id;
@@ -2565,6 +2609,14 @@ void write_json_report(
         } else {
             out << "null";
         }
+        out << ", \"matched_source_selection_draw_index\": ";
+        write_json_optional_int(out, event.matched_source_selection_draw_index);
+        out << ", \"matched_source_selection_source_slot\": ";
+        write_json_optional_int(out, event.matched_source_selection_source_slot);
+        out << ", \"source_selection_before_bridge\": ";
+        write_json_optional_bool(out, event.source_selection_before_bridge);
+        out << ", \"source_slot_matches_selection\": ";
+        write_json_optional_bool(out, event.source_slot_matches_selection);
         out << "}";
     }
     out << "]";

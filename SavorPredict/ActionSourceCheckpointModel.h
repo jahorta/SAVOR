@@ -39,11 +39,16 @@ struct ActionSourceCheckpointEvent {
     std::optional<int> actor_slot;
     std::optional<int> source_slot;
     std::optional<int> target_slot;
+    std::optional<int> action_sequence_id;
     std::optional<int> action_id;
     std::optional<int> source_field6_0x6;
     std::optional<int> actor_field6_0x6;
     std::optional<std::string> handler_pc;
     std::optional<std::string> callback_pc;
+    std::optional<int> matched_source_selection_draw_index;
+    std::optional<int> matched_source_selection_source_slot;
+    std::optional<bool> source_selection_before_bridge;
+    std::optional<bool> source_slot_matches_selection;
 };
 
 struct ActionSourceCheckpointSummary {
@@ -56,6 +61,9 @@ struct ActionSourceCheckpointSummary {
     int source_selection_events_with_target_slot = 0;
     int events_with_actor_slot = 0;
     int events_with_source_slot = 0;
+    int events_with_action_sequence_id = 0;
+    int source_selection_events_with_action_sequence_id = 0;
+    int action_source_events_with_action_sequence_id = 0;
     int events_with_action_id = 0;
     int events_with_handler_pc = 0;
     int events_with_callback_pc = 0;
@@ -64,6 +72,11 @@ struct ActionSourceCheckpointSummary {
     int source_selection_bridge_pairs = 0;
     int source_selection_bridge_matches = 0;
     int source_selection_bridge_mismatches = 0;
+    int source_selection_bridge_pairs_by_action_sequence_id = 0;
+    int source_selection_bridge_missing_by_action_sequence_id = 0;
+    int source_selection_bridge_order_matches = 0;
+    int source_selection_bridge_order_mismatches = 0;
+    std::string source_selection_bridge_pairing_strategy = "trace_order";
     int field6_matches = 0;
     int field6_mismatches = 0;
     int handler_matches = 0;
