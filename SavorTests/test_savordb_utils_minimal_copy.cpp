@@ -87,6 +87,23 @@ std::optional<std::string> QueryText(const std::filesystem::path& db_path, const
     return out;
 }
 
+void ExecuteSqlOrThrow(const std::filesystem::path& db_path, const std::string& sql) {
+    sqlite3* db = nullptr;
+    if (sqlite3_open(db_path.string().c_str(), &db) != SQLITE_OK) {
+        std::string msg = db != nullptr ? sqlite3_errmsg(db) : "sqlite open failed";
+        if (db != nullptr) sqlite3_close(db);
+        throw std::runtime_error(msg);
+    }
+    char* err = nullptr;
+    if (sqlite3_exec(db, sql.c_str(), nullptr, nullptr, &err) != SQLITE_OK) {
+        std::string msg = err != nullptr ? err : sqlite3_errmsg(db);
+        sqlite3_free(err);
+        sqlite3_close(db);
+        throw std::runtime_error(msg);
+    }
+    sqlite3_close(db);
+}
+
 void RequireFixtureStep(bool ok, const std::string& err, const char* context) {
     if (!ok) {
         throw std::runtime_error(std::string(context) + ": " + err);
@@ -102,6 +119,7 @@ struct SeededSourceBattle {
     std::int64_t plan_id = 0;
     std::int64_t turn_job_id = 0;
     std::int64_t exec_job_id = 0;
+    std::int64_t job_set_id = 0;
     std::int64_t unrelated_exec_job_id = 0;
     std::filesystem::path source_sav_path;
 };
@@ -291,7 +309,6 @@ protected:
             &seeded.turn_job_id,
             &err), err, "record battle turn job");
 
-        std::int64_t job_set_id = 0;
         RequireFixtureStep(db_service.ExecutionDb()->CreateJobSet(
             {
                 .program_kind = static_cast<std::int32_t>(savor::PK_BattleSingleTurnRunner),
@@ -299,11 +316,11 @@ protected:
                 .created_by = std::string("test"),
                 .created_at_utc = now.time_since_epoch().count(),
             },
-            &job_set_id,
+            &seeded.job_set_id,
             &err), err, "create execution job set");
         RequireFixtureStep(db_service.ExecutionDb()->EnqueueJob(
             {
-                .job_set_id = job_set_id,
+                .job_set_id = seeded.job_set_id,
                 .program_kind = static_cast<std::int32_t>(savor::PK_BattleSingleTurnRunner),
                 .program_version = 4,
                 .program_ref_kind = "analysis_battle.turn_job",
@@ -321,7 +338,7 @@ protected:
             "link turn job to execution job");
         RequireFixtureStep(db_service.ExecutionDb()->EnqueueJob(
             {
-                .job_set_id = job_set_id,
+                .job_set_id = seeded.job_set_id,
                 .program_kind = static_cast<std::int32_t>(savor::PK_BattleSingleTurnRunner),
                 .program_version = 4,
                 .program_ref_kind = "analysis_battle.turn_job",
@@ -336,6 +353,23 @@ protected:
             &err), err, "enqueue unrelated execution job");
 
         db_service.Stop();
+        const auto workflow_instance_id = 9000 + turn_index;
+        const auto workflow_activation_id = 9100 + turn_index;
+        const auto workflow_step_id = 9200 + turn_index;
+        ExecuteSqlOrThrow(
+            source_root / "execution.db",
+            "INSERT INTO exec_workflow_instance("
+            "workflow_instance_id,workflow_kind,state,root_scope_kind,root_scope_id,created_by,created_at_utc,workflow_graph_revision_id) VALUES("
+            + std::to_string(workflow_instance_id) + ",'fixture','COMPLETED','manual',NULL,'test',1781000000200,1);"
+            "INSERT INTO exec_workflow_unit_activation("
+            "workflow_unit_activation_id,workflow_instance_id,activation_key,graph_node_key,unit_kind,display_name,state,activation_params_json,created_at_utc) VALUES("
+            + std::to_string(workflow_activation_id) + "," + std::to_string(workflow_instance_id)
+            + ",'fixture_activation','fixture_node','fixture_unit','Fixture Unit','COMPLETED','{}',1781000000200);"
+            "INSERT INTO exec_workflow_step("
+            "workflow_step_id,workflow_instance_id,workflow_unit_activation_id,step_key,step_kind,state,priority,attempts,max_attempts,job_set_id,ready_at_utc,created_at_utc,graph_node_key) VALUES("
+            + std::to_string(workflow_step_id) + "," + std::to_string(workflow_instance_id) + "," + std::to_string(workflow_activation_id)
+            + ",'fixture_step','battle.single_turn','COMPLETED',1,0,1," + std::to_string(seeded.job_set_id)
+            + ",1781000000200,1781000000200,'fixture_node');");
         return seeded;
     }
 
@@ -400,6 +434,9 @@ TEST_F(SavorDbUtilsMinimalCopyFixture, MinimalCopyPreservesSelectedClosureAndLoc
     EXPECT_EQ(QueryI64(target_paths.execution_db_path, "SELECT COUNT(*) FROM exec_job;").value_or(-1), 1);
     EXPECT_EQ(QueryI64(target_paths.execution_db_path, "SELECT job_id FROM exec_job;", 0).value_or(-1), seeded.exec_job_id);
     EXPECT_EQ(QueryI64(target_paths.execution_db_path, "SELECT COUNT(*) FROM exec_job WHERE job_id=?1;", seeded.unrelated_exec_job_id).value_or(-1), 0);
+    EXPECT_EQ(QueryI64(target_paths.execution_db_path, "SELECT COUNT(*) FROM exec_workflow_step WHERE job_set_id=?1;", seeded.job_set_id).value_or(-1), 1);
+    EXPECT_EQ(QueryI64(target_paths.execution_db_path, "SELECT COUNT(*) FROM exec_workflow_instance;").value_or(-1), 1);
+    EXPECT_EQ(QueryI64(target_paths.execution_db_path, "SELECT COUNT(*) FROM exec_workflow_unit_activation;").value_or(-1), 1);
     EXPECT_EQ(QueryI64(target_paths.analysis_db_path, "SELECT COUNT(*) FROM ab_turn_job WHERE turn_job_id=?1;", seeded.turn_job_id).value_or(-1), 1);
 
     const auto localized = QueryText(target_paths.state_db_path, "SELECT filename FROM state_artifact WHERE artifact_id=?1;", seeded.artifact_id);

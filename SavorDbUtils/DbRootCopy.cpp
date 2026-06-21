@@ -1041,7 +1041,16 @@ int HydrateBattleSingleTurnJobSubset(
             target_paths.execution_db_path,
             "execution",
             [&](sqlite3* db) {
+                const auto job_set_id = std::to_string(exec_job->job_set_id);
+                const auto workflow_instance_filter =
+                    "WHERE workflow_instance_id IN (SELECT workflow_instance_id FROM src.exec_workflow_step WHERE job_set_id=" + job_set_id + ")";
                 if (!copy_one_by_id(db, "execution", "exec_job_set", "job_set_id", exec_job->job_set_id, result_out, err)
+                    || !copy_rows(db, "execution", "exec_workflow_instance", workflow_instance_filter, result_out, err)
+                    || !copy_rows(db, "execution", "exec_workflow_instance_argument", workflow_instance_filter, result_out, err)
+                    || !copy_rows(db, "execution", "exec_workflow_instance_input_binding", workflow_instance_filter, result_out, err)
+                    || !copy_rows(db, "execution", "exec_workflow_unit_activation", workflow_instance_filter, result_out, err)
+                    || !copy_rows(db, "execution", "exec_workflow_unit_activation_edge", workflow_instance_filter, result_out, err)
+                    || !copy_rows(db, "execution", "exec_workflow_step", "WHERE job_set_id=" + job_set_id, result_out, err)
                     || !copy_one_by_id(db, "execution", "exec_job", "job_id", exec_job->job_id, result_out, err)) {
                     return false;
                 }
