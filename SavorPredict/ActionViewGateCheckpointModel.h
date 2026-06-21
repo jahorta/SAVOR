@@ -16,10 +16,12 @@ enum class ActionViewGateCheckpointStatus {
     QueryArgsMismatch,
     SelectedModeMismatch,
     Mode0FallbackReached,
+    ActionViewOrderMismatch,
 };
 
 struct ActionViewGateCheckpointEvent {
     std::optional<int> draw_index;
+    std::optional<int> action_sequence_id;
     std::optional<int> active_slot;
     std::optional<int> source_slot;
     std::optional<int> target_slot;
@@ -37,6 +39,11 @@ struct ActionViewGateCheckpointEvent {
     std::optional<std::string> nested_payload;
     std::optional<int> child_thread_state_byte;
     std::optional<bool> mode0_fallback_reached;
+    std::optional<int> matched_mode0e_draw_index;
+    std::optional<int> matched_attack_hit_draw_index;
+    std::optional<bool> gate_before_mode0e_draw;
+    std::optional<bool> gate_before_attack_hit_draw;
+    std::optional<bool> mode0e_draw_before_attack_hit_draw;
 };
 
 struct ActionViewGateCheckpointSummary {
@@ -68,6 +75,11 @@ struct ActionViewGateCheckpointSummary {
     int mode0e_draws_before_first_attack_hit = 0;
     int mode0_fallback_draws_before_first_mode0e = 0;
     int mode0_fallback_draws_before_first_attack_hit = 0;
+    int events_with_action_sequence_id = 0;
+    int action_sequence_order_comparisons = 0;
+    int action_sequence_order_matches = 0;
+    int action_sequence_order_mismatches = 0;
+    int action_sequence_order_missing_camera_or_hit = 0;
     std::vector<ActionViewGateCheckpointEvent> events;
     ActionViewGateCheckpointStatus status = ActionViewGateCheckpointStatus::ObservedOnly;
 };

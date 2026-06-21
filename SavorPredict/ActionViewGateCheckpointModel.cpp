@@ -4,6 +4,7 @@
 #include <cctype>
 #include <cstdlib>
 #include <initializer_list>
+#include <map>
 #include <utility>
 
 namespace savor::predict {
@@ -42,6 +43,12 @@ std::optional<int> parse_first_field_int(
         }
     }
     return std::nullopt;
+}
+
+std::optional<int> action_sequence_id_from_event(const CheckpointEvent& event) {
+    return parse_first_field_int(
+        event,
+        {"action_sequence_id", "action_sequence", "attack_sequence", "attack_index", "action_index", "sequence_id"});
 }
 
 std::optional<std::string> parse_first_field_string(
@@ -149,7 +156,20 @@ ActionViewGateCheckpointStatus classify_status(const ActionViewGateCheckpointSum
         || summary.events_with_mode0_fallback_flag != summary.observed_gate_events) {
         return ActionViewGateCheckpointStatus::MissingSchedulerFields;
     }
+    if (summary.action_sequence_order_mismatches > 0) {
+        return ActionViewGateCheckpointStatus::ActionViewOrderMismatch;
+    }
     return ActionViewGateCheckpointStatus::MatchesExpected;
+}
+
+void record_first_draw_for_sequence(
+    std::map<int, int>& draws_by_sequence,
+    const CheckpointEvent& event) {
+    const auto sequence_id = action_sequence_id_from_event(event);
+    if (!sequence_id.has_value() || !event.rng_draw_index_before.has_value()) {
+        return;
+    }
+    draws_by_sequence.emplace(*sequence_id, *event.rng_draw_index_before);
 }
 
 } // namespace
@@ -157,10 +177,13 @@ ActionViewGateCheckpointStatus classify_status(const ActionViewGateCheckpointSum
 ActionViewGateCheckpointSummary summarize_action_view_gate_checkpoints(
     const std::vector<CheckpointEvent>& events) {
     ActionViewGateCheckpointSummary summary;
+    std::map<int, int> mode0e_draw_by_sequence;
+    std::map<int, int> attack_hit_draw_by_sequence;
 
     for (const auto& event : events) {
         if (owner_is(event, kMode0eOwner)) {
             ++summary.observed_mode0e_camera_draws;
+            record_first_draw_for_sequence(mode0e_draw_by_sequence, event);
             if (!summary.first_mode0e_draw_index.has_value()) {
                 summary.first_mode0e_draw_index = event.rng_draw_index_before;
             }
@@ -175,6 +198,7 @@ ActionViewGateCheckpointSummary summarize_action_view_gate_checkpoints(
         }
         if (owner_is(event, kAttackHitOwner)) {
             ++summary.observed_attack_hit_draws;
+            record_first_draw_for_sequence(attack_hit_draw_by_sequence, event);
             if (!summary.first_attack_hit_draw_index.has_value()) {
                 summary.first_attack_hit_draw_index = event.rng_draw_index_before;
             }
@@ -186,6 +210,7 @@ ActionViewGateCheckpointSummary summarize_action_view_gate_checkpoints(
 
         ActionViewGateCheckpointEvent observed;
         observed.draw_index = event.rng_draw_index_before;
+        observed.action_sequence_id = action_sequence_id_from_event(event);
         observed.active_slot = event.active_slot.has_value()
             ? event.active_slot
             : parse_first_field_int(event, {"active_slot", "actor_slot"});
@@ -269,7 +294,7 @@ ActionViewGateCheckpointSummary summarize_action_view_gate_checkpoints(
         summary.events.push_back(std::move(observed));
     }
 
-    for (const auto& event : summary.events) {
+    for (auto& event : summary.events) {
         if (!event.draw_index.has_value()) {
             continue;
         }
@@ -280,6 +305,39 @@ ActionViewGateCheckpointSummary summarize_action_view_gate_checkpoints(
         if (summary.first_attack_hit_draw_index.has_value()
             && *event.draw_index < *summary.first_attack_hit_draw_index) {
             ++summary.gate_events_before_first_attack_hit;
+        }
+        if (event.action_sequence_id.has_value()) {
+            ++summary.events_with_action_sequence_id;
+            const auto mode0e_draw = mode0e_draw_by_sequence.find(*event.action_sequence_id);
+            const auto attack_hit_draw = attack_hit_draw_by_sequence.find(*event.action_sequence_id);
+            if (mode0e_draw != mode0e_draw_by_sequence.end()) {
+                event.matched_mode0e_draw_index = mode0e_draw->second;
+                event.gate_before_mode0e_draw = *event.draw_index < mode0e_draw->second;
+            }
+            if (attack_hit_draw != attack_hit_draw_by_sequence.end()) {
+                event.matched_attack_hit_draw_index = attack_hit_draw->second;
+                event.gate_before_attack_hit_draw = *event.draw_index < attack_hit_draw->second;
+            }
+            if (mode0e_draw != mode0e_draw_by_sequence.end()
+                && attack_hit_draw != attack_hit_draw_by_sequence.end()) {
+                event.mode0e_draw_before_attack_hit_draw =
+                    mode0e_draw->second < attack_hit_draw->second;
+            }
+
+            if (event.gate_before_mode0e_draw.has_value()
+                && event.gate_before_attack_hit_draw.has_value()
+                && event.mode0e_draw_before_attack_hit_draw.has_value()) {
+                ++summary.action_sequence_order_comparisons;
+                if (*event.gate_before_mode0e_draw
+                    && *event.gate_before_attack_hit_draw
+                    && *event.mode0e_draw_before_attack_hit_draw) {
+                    ++summary.action_sequence_order_matches;
+                } else {
+                    ++summary.action_sequence_order_mismatches;
+                }
+            } else {
+                ++summary.action_sequence_order_missing_camera_or_hit;
+            }
         }
     }
 
@@ -326,6 +384,7 @@ const char* action_view_gate_checkpoint_status_name(ActionViewGateCheckpointStat
     case ActionViewGateCheckpointStatus::QueryArgsMismatch: return "QueryArgsMismatch";
     case ActionViewGateCheckpointStatus::SelectedModeMismatch: return "SelectedModeMismatch";
     case ActionViewGateCheckpointStatus::Mode0FallbackReached: return "Mode0FallbackReached";
+    case ActionViewGateCheckpointStatus::ActionViewOrderMismatch: return "ActionViewOrderMismatch";
     default: return "Unknown";
     }
 }

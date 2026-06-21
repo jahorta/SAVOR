@@ -928,6 +928,16 @@ void write_text_report(
         << action_view_gate.mode0_fallback_draws_before_first_mode0e << "\n";
     out << "  mode0_fallback_draws_before_first_attack_hit: "
         << action_view_gate.mode0_fallback_draws_before_first_attack_hit << "\n";
+    out << "  events_with_action_sequence_id: "
+        << action_view_gate.events_with_action_sequence_id << "\n";
+    out << "  action_sequence_order_comparisons: "
+        << action_view_gate.action_sequence_order_comparisons << "\n";
+    out << "  action_sequence_order_matches: "
+        << action_view_gate.action_sequence_order_matches << "\n";
+    out << "  action_sequence_order_mismatches: "
+        << action_view_gate.action_sequence_order_mismatches << "\n";
+    out << "  action_sequence_order_missing_camera_or_hit: "
+        << action_view_gate.action_sequence_order_missing_camera_or_hit << "\n";
     if (!action_view_gate.events.empty()) {
         out << "  events:\n";
         for (const auto& event : action_view_gate.events) {
@@ -937,6 +947,8 @@ void write_text_report(
             } else {
                 out << "unknown";
             }
+            out << " action_sequence_id=";
+            write_optional_int(out, event.action_sequence_id);
             out << " active_slot=";
             if (event.active_slot.has_value()) {
                 out << *event.active_slot;
@@ -1019,6 +1031,16 @@ void write_text_report(
             write_optional_int(out, event.child_thread_state_byte);
             out << " mode0_fallback_reached=";
             write_optional_bool(out, event.mode0_fallback_reached);
+            out << " matched_mode0e_draw_index=";
+            write_optional_int(out, event.matched_mode0e_draw_index);
+            out << " matched_attack_hit_draw_index=";
+            write_optional_int(out, event.matched_attack_hit_draw_index);
+            out << " gate_before_mode0e_draw=";
+            write_optional_bool(out, event.gate_before_mode0e_draw);
+            out << " gate_before_attack_hit_draw=";
+            write_optional_bool(out, event.gate_before_attack_hit_draw);
+            out << " mode0e_draw_before_attack_hit_draw=";
+            write_optional_bool(out, event.mode0e_draw_before_attack_hit_draw);
             out << "\n";
         }
     }
@@ -2519,6 +2541,16 @@ void write_json_report(
         << action_view_gate.mode0_fallback_draws_before_first_mode0e;
     out << ", \"mode0_fallback_draws_before_first_attack_hit\": "
         << action_view_gate.mode0_fallback_draws_before_first_attack_hit;
+    out << ", \"events_with_action_sequence_id\": "
+        << action_view_gate.events_with_action_sequence_id;
+    out << ", \"action_sequence_order_comparisons\": "
+        << action_view_gate.action_sequence_order_comparisons;
+    out << ", \"action_sequence_order_matches\": "
+        << action_view_gate.action_sequence_order_matches;
+    out << ", \"action_sequence_order_mismatches\": "
+        << action_view_gate.action_sequence_order_mismatches;
+    out << ", \"action_sequence_order_missing_camera_or_hit\": "
+        << action_view_gate.action_sequence_order_missing_camera_or_hit;
     out << ", \"events\": [";
     for (std::size_t i = 0; i < action_view_gate.events.size(); ++i) {
         if (i != 0) {
@@ -2531,6 +2563,8 @@ void write_json_report(
         } else {
             out << "null";
         }
+        out << ", \"action_sequence_id\": ";
+        write_json_optional_int(out, event.action_sequence_id);
         out << ", \"active_slot\": ";
         if (event.active_slot.has_value()) {
             out << *event.active_slot;
@@ -2613,6 +2647,16 @@ void write_json_report(
         write_json_optional_int(out, event.child_thread_state_byte);
         out << ", \"mode0_fallback_reached\": ";
         write_json_optional_bool(out, event.mode0_fallback_reached);
+        out << ", \"matched_mode0e_draw_index\": ";
+        write_json_optional_int(out, event.matched_mode0e_draw_index);
+        out << ", \"matched_attack_hit_draw_index\": ";
+        write_json_optional_int(out, event.matched_attack_hit_draw_index);
+        out << ", \"gate_before_mode0e_draw\": ";
+        write_json_optional_bool(out, event.gate_before_mode0e_draw);
+        out << ", \"gate_before_attack_hit_draw\": ";
+        write_json_optional_bool(out, event.gate_before_attack_hit_draw);
+        out << ", \"mode0e_draw_before_attack_hit_draw\": ";
+        write_json_optional_bool(out, event.mode0e_draw_before_attack_hit_draw);
         out << "}";
     }
     out << "]";
