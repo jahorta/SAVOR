@@ -8,6 +8,7 @@
 #include "CounterCheckpointModel.h"
 #include "DropCheckpointModel.h"
 #include "OutcomeCheckpointModel.h"
+#include "PreAiCheckpointModel.h"
 #include "TurnOrderCheckpointModel.h"
 
 #include <algorithm>
@@ -257,6 +258,9 @@ void write_text_report(
     if (options.exec_job_id.has_value()) {
         out << "  exec_job_id: " << *options.exec_job_id << "\n";
     }
+    if (options.expected_fake_attacks.has_value()) {
+        out << "  expected_fake_attacks: " << *options.expected_fake_attacks << "\n";
+    }
     if (options.expected_mode0e_camera_draws.has_value()) {
         out << "  expected_mode0e_camera_draws: " << *options.expected_mode0e_camera_draws << "\n";
     }
@@ -317,6 +321,143 @@ void write_text_report(
         out << "\nWarnings\n";
         for (const auto& warning : result.warnings) {
             out << "  " << warning << "\n";
+        }
+    }
+
+    const auto pre_ai = summarize_pre_ai_checkpoints(result.events, options.expected_fake_attacks);
+    out << "\nPre-AI fake/camera checkpoints\n";
+    out << "  status: " << pre_ai_checkpoint_status_name(pre_ai.status) << "\n";
+    out << "  rule: " << first_battle_pre_ai_checkpoint_rule_detail() << "\n";
+    out << "  expected_fake_attack_attempts: ";
+    if (pre_ai.expectation.has_value()) {
+        out << pre_ai.expectation->expected_fake_attack_attempts << "\n";
+    } else {
+        out << "unknown\n";
+    }
+    out << "  expected_fake_attack_draws: ";
+    if (pre_ai.expectation.has_value()) {
+        out << pre_ai.expectation->expected_fake_attack_draws << "\n";
+    } else {
+        out << "unknown\n";
+    }
+    out << "  expected_battle_start_camera_draws: ";
+    if (pre_ai.expectation.has_value()) {
+        out << pre_ai.expectation->expected_battle_start_camera_draws << "\n";
+    } else {
+        out << "unknown\n";
+    }
+    out << "  expected_targeting_camera_draws: ";
+    if (pre_ai.expectation.has_value()) {
+        out << pre_ai.expectation->expected_targeting_camera_draws << "\n";
+    } else {
+        out << "unknown\n";
+    }
+    out << "  expected_total_pre_ai_draws: ";
+    if (pre_ai.expectation.has_value()) {
+        out << pre_ai.expectation->expected_total_pre_ai_draws << "\n";
+    } else {
+        out << "unknown\n";
+    }
+    out << "  expected_first_soldier_ai_draw_index_before: ";
+    if (pre_ai.expectation.has_value()) {
+        out << pre_ai.expectation->expected_first_soldier_ai_draw_index_before << "\n";
+    } else {
+        out << "unknown\n";
+    }
+    out << "  observed_battle_start_camera_draws: "
+        << pre_ai.observed_battle_start_camera_draws << "\n";
+    out << "  observed_targeting_camera_draws: "
+        << pre_ai.observed_targeting_camera_draws << "\n";
+    out << "  observed_fake_attack_attempts: "
+        << pre_ai.observed_fake_attack_attempts << "\n";
+    out << "  observed_fake_attack_draws: "
+        << pre_ai.observed_fake_attack_draws << "\n";
+    out << "  observed_skipped_fake_attack_draws: "
+        << pre_ai.observed_skipped_fake_attack_draws << "\n";
+    out << "  skipped_fake_attacks_with_short_camera_gap: "
+        << pre_ai.skipped_fake_attacks_with_short_camera_gap << "\n";
+    out << "  skipped_fake_draws_with_frame_gap: "
+        << pre_ai.skipped_fake_draws_with_frame_gap << "\n";
+    out << "  observed_pre_ai_draws: " << pre_ai.observed_pre_ai_draws << "\n";
+    out << "  observed_first_soldier_ai_draws: "
+        << pre_ai.observed_first_soldier_ai_draws << "\n";
+    out << "  targeting_draws_with_target_slot: "
+        << pre_ai.targeting_draws_with_target_slot << "\n";
+    out << "  fake_draws_with_fake_attack_index: "
+        << pre_ai.fake_draws_with_fake_attack_index << "\n";
+    out << "  first_battle_start_camera_draw_index: ";
+    if (pre_ai.first_battle_start_camera_draw_index.has_value()) {
+        out << *pre_ai.first_battle_start_camera_draw_index << "\n";
+    } else {
+        out << "unknown\n";
+    }
+    out << "  first_targeting_camera_draw_index: ";
+    if (pre_ai.first_targeting_camera_draw_index.has_value()) {
+        out << *pre_ai.first_targeting_camera_draw_index << "\n";
+    } else {
+        out << "unknown\n";
+    }
+    out << "  last_targeting_camera_draw_index: ";
+    if (pre_ai.last_targeting_camera_draw_index.has_value()) {
+        out << *pre_ai.last_targeting_camera_draw_index << "\n";
+    } else {
+        out << "unknown\n";
+    }
+    out << "  first_fake_attack_draw_index: ";
+    if (pre_ai.first_fake_attack_draw_index.has_value()) {
+        out << *pre_ai.first_fake_attack_draw_index << "\n";
+    } else {
+        out << "unknown\n";
+    }
+    out << "  last_fake_attack_draw_index: ";
+    if (pre_ai.last_fake_attack_draw_index.has_value()) {
+        out << *pre_ai.last_fake_attack_draw_index << "\n";
+    } else {
+        out << "unknown\n";
+    }
+    out << "  first_soldier_ai_draw_index: ";
+    if (pre_ai.first_soldier_ai_draw_index.has_value()) {
+        out << *pre_ai.first_soldier_ai_draw_index << "\n";
+    } else {
+        out << "unknown\n";
+    }
+    out << "  pre_ai_draws_before_first_soldier_ai: "
+        << pre_ai.pre_ai_draws_before_first_soldier_ai << "\n";
+    if (!pre_ai.draws.empty()) {
+        out << "  draws:\n";
+        for (const auto& draw : pre_ai.draws) {
+            out << "    owner=" << draw.owner;
+            out << " draw_index=";
+            if (draw.draw_index.has_value()) {
+                out << *draw.draw_index;
+            } else {
+                out << "unknown";
+            }
+            out << " active_slot=";
+            if (draw.active_slot.has_value()) {
+                out << *draw.active_slot;
+            } else {
+                out << "unknown";
+            }
+            out << " target_slot=";
+            if (draw.target_slot.has_value()) {
+                out << *draw.target_slot;
+            } else {
+                out << "unknown";
+            }
+            out << " fake_attack_index=";
+            if (draw.fake_attack_index.has_value()) {
+                out << *draw.fake_attack_index;
+            } else {
+                out << "unknown";
+            }
+            out << " camera_frame_gap=";
+            if (draw.camera_frame_gap.has_value()) {
+                out << *draw.camera_frame_gap;
+            } else {
+                out << "unknown";
+            }
+            out << " skipped_rng_draw=" << (draw.skipped_rng_draw ? "true" : "false") << "\n";
         }
     }
 
@@ -1046,6 +1187,13 @@ void write_json_report(
         out << "null";
     }
     out << ",\n";
+    out << "  \"expected_fake_attacks\": ";
+    if (options.expected_fake_attacks.has_value()) {
+        out << *options.expected_fake_attacks;
+    } else {
+        out << "null";
+    }
+    out << ",\n";
     out << "  \"expected_mode0e_camera_draws\": ";
     if (options.expected_mode0e_camera_draws.has_value()) {
         out << *options.expected_mode0e_camera_draws;
@@ -1131,6 +1279,150 @@ void write_json_report(
         first = false;
         out << "\"" << json_escape(owner) << "\": " << count;
     }
+    out << "},\n";
+
+    const auto pre_ai = summarize_pre_ai_checkpoints(result.events, options.expected_fake_attacks);
+    out << "  \"pre_ai_checkpoints\": {";
+    out << "\"status\": \"" << pre_ai_checkpoint_status_name(pre_ai.status) << "\"";
+    out << ", \"rule\": \""
+        << json_escape(first_battle_pre_ai_checkpoint_rule_detail()) << "\"";
+    out << ", \"expected_fake_attack_attempts\": ";
+    if (pre_ai.expectation.has_value()) {
+        out << pre_ai.expectation->expected_fake_attack_attempts;
+    } else {
+        out << "null";
+    }
+    out << ", \"expected_fake_attack_draws\": ";
+    if (pre_ai.expectation.has_value()) {
+        out << pre_ai.expectation->expected_fake_attack_draws;
+    } else {
+        out << "null";
+    }
+    out << ", \"expected_battle_start_camera_draws\": ";
+    if (pre_ai.expectation.has_value()) {
+        out << pre_ai.expectation->expected_battle_start_camera_draws;
+    } else {
+        out << "null";
+    }
+    out << ", \"expected_targeting_camera_draws\": ";
+    if (pre_ai.expectation.has_value()) {
+        out << pre_ai.expectation->expected_targeting_camera_draws;
+    } else {
+        out << "null";
+    }
+    out << ", \"expected_total_pre_ai_draws\": ";
+    if (pre_ai.expectation.has_value()) {
+        out << pre_ai.expectation->expected_total_pre_ai_draws;
+    } else {
+        out << "null";
+    }
+    out << ", \"expected_first_soldier_ai_draw_index_before\": ";
+    if (pre_ai.expectation.has_value()) {
+        out << pre_ai.expectation->expected_first_soldier_ai_draw_index_before;
+    } else {
+        out << "null";
+    }
+    out << ", \"observed_battle_start_camera_draws\": "
+        << pre_ai.observed_battle_start_camera_draws;
+    out << ", \"observed_targeting_camera_draws\": "
+        << pre_ai.observed_targeting_camera_draws;
+    out << ", \"observed_fake_attack_attempts\": "
+        << pre_ai.observed_fake_attack_attempts;
+    out << ", \"observed_fake_attack_draws\": "
+        << pre_ai.observed_fake_attack_draws;
+    out << ", \"observed_skipped_fake_attack_draws\": "
+        << pre_ai.observed_skipped_fake_attack_draws;
+    out << ", \"skipped_fake_attacks_with_short_camera_gap\": "
+        << pre_ai.skipped_fake_attacks_with_short_camera_gap;
+    out << ", \"skipped_fake_draws_with_frame_gap\": "
+        << pre_ai.skipped_fake_draws_with_frame_gap;
+    out << ", \"observed_pre_ai_draws\": " << pre_ai.observed_pre_ai_draws;
+    out << ", \"observed_first_soldier_ai_draws\": "
+        << pre_ai.observed_first_soldier_ai_draws;
+    out << ", \"targeting_draws_with_target_slot\": "
+        << pre_ai.targeting_draws_with_target_slot;
+    out << ", \"fake_draws_with_fake_attack_index\": "
+        << pre_ai.fake_draws_with_fake_attack_index;
+    out << ", \"first_battle_start_camera_draw_index\": ";
+    if (pre_ai.first_battle_start_camera_draw_index.has_value()) {
+        out << *pre_ai.first_battle_start_camera_draw_index;
+    } else {
+        out << "null";
+    }
+    out << ", \"first_targeting_camera_draw_index\": ";
+    if (pre_ai.first_targeting_camera_draw_index.has_value()) {
+        out << *pre_ai.first_targeting_camera_draw_index;
+    } else {
+        out << "null";
+    }
+    out << ", \"last_targeting_camera_draw_index\": ";
+    if (pre_ai.last_targeting_camera_draw_index.has_value()) {
+        out << *pre_ai.last_targeting_camera_draw_index;
+    } else {
+        out << "null";
+    }
+    out << ", \"first_fake_attack_draw_index\": ";
+    if (pre_ai.first_fake_attack_draw_index.has_value()) {
+        out << *pre_ai.first_fake_attack_draw_index;
+    } else {
+        out << "null";
+    }
+    out << ", \"last_fake_attack_draw_index\": ";
+    if (pre_ai.last_fake_attack_draw_index.has_value()) {
+        out << *pre_ai.last_fake_attack_draw_index;
+    } else {
+        out << "null";
+    }
+    out << ", \"first_soldier_ai_draw_index\": ";
+    if (pre_ai.first_soldier_ai_draw_index.has_value()) {
+        out << *pre_ai.first_soldier_ai_draw_index;
+    } else {
+        out << "null";
+    }
+    out << ", \"pre_ai_draws_before_first_soldier_ai\": "
+        << pre_ai.pre_ai_draws_before_first_soldier_ai;
+    out << ", \"draws\": [";
+    for (std::size_t i = 0; i < pre_ai.draws.size(); ++i) {
+        if (i != 0) {
+            out << ", ";
+        }
+        const auto& draw = pre_ai.draws[i];
+        out << "{\"owner\": \"" << json_escape(draw.owner) << "\"";
+        out << ", \"draw_index\": ";
+        if (draw.draw_index.has_value()) {
+            out << *draw.draw_index;
+        } else {
+            out << "null";
+        }
+        out << ", \"active_slot\": ";
+        if (draw.active_slot.has_value()) {
+            out << *draw.active_slot;
+        } else {
+            out << "null";
+        }
+        out << ", \"target_slot\": ";
+        if (draw.target_slot.has_value()) {
+            out << *draw.target_slot;
+        } else {
+            out << "null";
+        }
+        out << ", \"fake_attack_index\": ";
+        if (draw.fake_attack_index.has_value()) {
+            out << *draw.fake_attack_index;
+        } else {
+            out << "null";
+        }
+        out << ", \"camera_frame_gap\": ";
+        if (draw.camera_frame_gap.has_value()) {
+            out << *draw.camera_frame_gap;
+        } else {
+            out << "null";
+        }
+        out << ", \"skipped_rng_draw\": "
+            << (draw.skipped_rng_draw ? "true" : "false");
+        out << "}";
+    }
+    out << "]";
     out << "},\n";
 
     const auto action_source_expectation = first_battle_action_source_checkpoint_expectation();

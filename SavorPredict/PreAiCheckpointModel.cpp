@@ -1,0 +1,294 @@
+#include "PreAiCheckpointModel.h"
+
+#include "PreAiCameraModel.h"
+
+#include <cstdlib>
+#include <initializer_list>
+#include <string_view>
+#include <utility>
+
+namespace savor::predict {
+
+namespace {
+
+constexpr std::string_view kBattleStartCameraOwner = "pre_ai_battle_start_camera";
+constexpr std::string_view kTargetingCameraOwner = "pre_ai_attack_targeting_camera";
+constexpr std::string_view kSoldierAiActionOwner = "soldier_ai_action_decision";
+constexpr std::string_view kFakeAttackOwner = "pre_ai_fake_attack";
+constexpr std::string_view kFakeAttackNoRandOwner = "pre_ai_fake_attack_no_rand";
+constexpr int kShortCameraGapFrames = 7;
+
+bool owner_is(const CheckpointEvent& event, std::string_view owner) {
+    return event.known_rng_owner == owner;
+}
+
+std::optional<int> parse_field_int(const CheckpointEvent& event, const char* field_name) {
+    const auto found = event.fields.find(field_name);
+    if (found == event.fields.end()) {
+        return std::nullopt;
+    }
+
+    char* end = nullptr;
+    const long parsed = std::strtol(found->second.c_str(), &end, 0);
+    if (end == found->second.c_str() || *end != '\0') {
+        return std::nullopt;
+    }
+    return static_cast<int>(parsed);
+}
+
+std::optional<int> parse_first_field_int(
+    const CheckpointEvent& event,
+    std::initializer_list<const char*> field_names) {
+    for (const auto* field_name : field_names) {
+        if (const auto value = parse_field_int(event, field_name); value.has_value()) {
+            return value;
+        }
+    }
+    return std::nullopt;
+}
+
+bool checkpoint_is(const CheckpointEvent& event, std::initializer_list<std::string_view> names) {
+    for (const auto name : names) {
+        if (event.checkpoint == name || event.function == name) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool is_fake_attack_checkpoint(const CheckpointEvent& event) {
+    const auto owner = event.fields.find("owner");
+    if (owner != event.fields.end() && owner->second == kFakeAttackOwner) {
+        return true;
+    }
+    return checkpoint_is(event, {
+        "fake_attack",
+        "pre_ai_fake_attack",
+        "fakeAttack",
+        "FakeAttack",
+    });
+}
+
+bool is_fake_attack_no_rand_checkpoint(const CheckpointEvent& event) {
+    const auto owner = event.fields.find("owner");
+    if (owner != event.fields.end() && owner->second == kFakeAttackNoRandOwner) {
+        return true;
+    }
+    return checkpoint_is(event, {
+        "fake_attack_no_rand",
+        "fake_attack_skipped_rand",
+        "pre_ai_fake_attack_no_rand",
+        "pre_ai_fake_attack_skipped_rand",
+    });
+}
+
+PreAiCheckpointStatus classify_status(const PreAiCheckpointSummary& summary) {
+    if (!summary.expectation.has_value()) {
+        return PreAiCheckpointStatus::ObservedOnly;
+    }
+
+    const auto& expectation = *summary.expectation;
+    if (summary.observed_battle_start_camera_draws < expectation.expected_battle_start_camera_draws) {
+        return PreAiCheckpointStatus::MissingBattleStartCameraDraw;
+    }
+    if (summary.observed_battle_start_camera_draws > expectation.expected_battle_start_camera_draws) {
+        return PreAiCheckpointStatus::ExtraBattleStartCameraDraws;
+    }
+    if (summary.observed_fake_attack_draws < expectation.expected_fake_attack_draws
+        && summary.observed_skipped_fake_attack_draws > 0) {
+        return PreAiCheckpointStatus::ShortCameraGapSkippedFakeAttackDraws;
+    }
+    if (summary.observed_fake_attack_draws < expectation.expected_fake_attack_draws) {
+        return PreAiCheckpointStatus::MissingFakeAttackDraws;
+    }
+    if (summary.observed_fake_attack_draws > expectation.expected_fake_attack_draws) {
+        return PreAiCheckpointStatus::ExtraFakeAttackDraws;
+    }
+    if (summary.observed_targeting_camera_draws < expectation.expected_targeting_camera_draws) {
+        return PreAiCheckpointStatus::MissingTargetingCameraDraws;
+    }
+    if (summary.observed_targeting_camera_draws > expectation.expected_targeting_camera_draws) {
+        return PreAiCheckpointStatus::ExtraTargetingCameraDraws;
+    }
+    if (summary.first_soldier_ai_draw_index.has_value()) {
+        if (*summary.first_soldier_ai_draw_index
+            != expectation.expected_first_soldier_ai_draw_index_before) {
+            return PreAiCheckpointStatus::FirstSoldierAiDrawMismatch;
+        }
+    } else {
+        return PreAiCheckpointStatus::MissingFirstSoldierAiDraw;
+    }
+
+    return PreAiCheckpointStatus::MatchesExpected;
+}
+
+void record_draw_index_bounds(
+    const std::optional<int>& draw_index,
+    std::optional<int>& first,
+    std::optional<int>& last) {
+    if (!draw_index.has_value()) {
+        return;
+    }
+    if (!first.has_value()) {
+        first = *draw_index;
+    }
+    last = *draw_index;
+}
+
+} // namespace
+
+PreAiCheckpointExpectation first_battle_pre_ai_checkpoint_expectation(int fake_attacks) {
+    const auto model = model_pre_ai_camera_draws(fake_attacks);
+
+    PreAiCheckpointExpectation expectation;
+    expectation.expected_fake_attack_attempts = model.fake_attacks;
+    expectation.expected_fake_attack_draws = model.fake_attack_draws;
+    expectation.expected_battle_start_camera_draws = 1;
+    expectation.expected_targeting_camera_draws =
+        model.expected_camera_draws - expectation.expected_battle_start_camera_draws;
+    expectation.expected_total_pre_ai_draws = model.expected_total_draws;
+    expectation.expected_first_soldier_ai_draw_index_before = model.expected_total_draws;
+    return expectation;
+}
+
+PreAiCheckpointSummary summarize_pre_ai_checkpoints(
+    const std::vector<CheckpointEvent>& events,
+    std::optional<int> expected_fake_attacks) {
+    PreAiCheckpointSummary summary;
+    if (expected_fake_attacks.has_value()) {
+        summary.expectation = first_battle_pre_ai_checkpoint_expectation(*expected_fake_attacks);
+    }
+
+    for (const auto& event : events) {
+        if (owner_is(event, kBattleStartCameraOwner)) {
+            ++summary.observed_battle_start_camera_draws;
+            ++summary.observed_pre_ai_draws;
+            PreAiCheckpointDraw draw;
+            draw.owner = std::string(kBattleStartCameraOwner);
+            draw.draw_index = event.rng_draw_index_before;
+            draw.active_slot = event.active_slot;
+            draw.target_slot = event.target_slot;
+            if (!summary.first_battle_start_camera_draw_index.has_value()
+                && draw.draw_index.has_value()) {
+                summary.first_battle_start_camera_draw_index = *draw.draw_index;
+            }
+            summary.draws.push_back(std::move(draw));
+            continue;
+        }
+
+        if (owner_is(event, kTargetingCameraOwner)) {
+            ++summary.observed_targeting_camera_draws;
+            ++summary.observed_pre_ai_draws;
+            PreAiCheckpointDraw draw;
+            draw.owner = std::string(kTargetingCameraOwner);
+            draw.draw_index = event.rng_draw_index_before;
+            draw.active_slot = event.active_slot;
+            draw.target_slot = event.target_slot.has_value()
+                ? event.target_slot
+                : parse_first_field_int(event, {"target_slot", "target"});
+            if (draw.target_slot.has_value()) {
+                ++summary.targeting_draws_with_target_slot;
+            }
+            record_draw_index_bounds(
+                draw.draw_index,
+                summary.first_targeting_camera_draw_index,
+                summary.last_targeting_camera_draw_index);
+            summary.draws.push_back(std::move(draw));
+            continue;
+        }
+
+        if (is_fake_attack_no_rand_checkpoint(event)) {
+            ++summary.observed_fake_attack_attempts;
+            ++summary.observed_skipped_fake_attack_draws;
+            PreAiCheckpointDraw draw;
+            draw.owner = std::string(kFakeAttackNoRandOwner);
+            draw.draw_index = event.rng_draw_index_before;
+            draw.active_slot = event.active_slot;
+            draw.target_slot = event.target_slot;
+            draw.fake_attack_index =
+                parse_first_field_int(event, {"fake_attack_index", "fake_index", "fake_attack"});
+            draw.camera_frame_gap =
+                parse_first_field_int(event, {"camera_frame_gap", "target_camera_frame_gap", "a_to_b_frames"});
+            draw.skipped_rng_draw = true;
+            if (draw.camera_frame_gap.has_value()) {
+                ++summary.skipped_fake_draws_with_frame_gap;
+                if (*draw.camera_frame_gap < kShortCameraGapFrames) {
+                    ++summary.skipped_fake_attacks_with_short_camera_gap;
+                }
+            }
+            summary.draws.push_back(std::move(draw));
+            continue;
+        }
+
+        if (is_fake_attack_checkpoint(event)) {
+            ++summary.observed_fake_attack_attempts;
+            ++summary.observed_fake_attack_draws;
+            ++summary.observed_pre_ai_draws;
+            PreAiCheckpointDraw draw;
+            draw.owner = std::string(kFakeAttackOwner);
+            draw.draw_index = event.rng_draw_index_before;
+            draw.active_slot = event.active_slot;
+            draw.target_slot = event.target_slot;
+            draw.fake_attack_index =
+                parse_first_field_int(event, {"fake_attack_index", "fake_index", "fake_attack"});
+            draw.camera_frame_gap =
+                parse_first_field_int(event, {"camera_frame_gap", "target_camera_frame_gap", "a_to_b_frames"});
+            if (draw.fake_attack_index.has_value()) {
+                ++summary.fake_draws_with_fake_attack_index;
+            }
+            record_draw_index_bounds(
+                draw.draw_index,
+                summary.first_fake_attack_draw_index,
+                summary.last_fake_attack_draw_index);
+            summary.draws.push_back(std::move(draw));
+            continue;
+        }
+
+        if (owner_is(event, kSoldierAiActionOwner)) {
+            ++summary.observed_first_soldier_ai_draws;
+            if (!summary.first_soldier_ai_draw_index.has_value()) {
+                summary.first_soldier_ai_draw_index = event.rng_draw_index_before;
+            }
+        }
+    }
+
+    if (summary.first_soldier_ai_draw_index.has_value()) {
+        for (const auto& draw : summary.draws) {
+            if (draw.draw_index.has_value()
+                && *draw.draw_index < *summary.first_soldier_ai_draw_index) {
+                ++summary.pre_ai_draws_before_first_soldier_ai;
+            }
+        }
+    }
+
+    summary.status = classify_status(summary);
+    return summary;
+}
+
+const char* pre_ai_checkpoint_status_name(PreAiCheckpointStatus status) {
+    switch (status) {
+    case PreAiCheckpointStatus::ObservedOnly: return "ObservedOnly";
+    case PreAiCheckpointStatus::MatchesExpected: return "MatchesExpected";
+    case PreAiCheckpointStatus::MissingBattleStartCameraDraw: return "MissingBattleStartCameraDraw";
+    case PreAiCheckpointStatus::ExtraBattleStartCameraDraws: return "ExtraBattleStartCameraDraws";
+    case PreAiCheckpointStatus::ShortCameraGapSkippedFakeAttackDraws: return "ShortCameraGapSkippedFakeAttackDraws";
+    case PreAiCheckpointStatus::MissingFakeAttackDraws: return "MissingFakeAttackDraws";
+    case PreAiCheckpointStatus::ExtraFakeAttackDraws: return "ExtraFakeAttackDraws";
+    case PreAiCheckpointStatus::MissingTargetingCameraDraws: return "MissingTargetingCameraDraws";
+    case PreAiCheckpointStatus::ExtraTargetingCameraDraws: return "ExtraTargetingCameraDraws";
+    case PreAiCheckpointStatus::MissingFirstSoldierAiDraw: return "MissingFirstSoldierAiDraw";
+    case PreAiCheckpointStatus::FirstSoldierAiDrawMismatch: return "FirstSoldierAiDrawMismatch";
+    default: return "Unknown";
+    }
+}
+
+const char* first_battle_pre_ai_checkpoint_rule_detail() {
+    return "first-battle pre-AI checkpoints should show one 8001413c battle-start camera draw, "
+           "fake_attack_count fake draws, one or two 800608dc targeting-camera draws depending on "
+           "fake-attack suppression, and the first 8008b428 Soldier AI draw at the resulting cursor; "
+           "target-camera A-to-B gaps under 7 frames are tracked as observed no-rand fake-attack cases, "
+           "while 7 frames is only the minimum tested gap that sometimes worked and not yet a proven "
+           "consistent threshold";
+}
+
+} // namespace savor::predict

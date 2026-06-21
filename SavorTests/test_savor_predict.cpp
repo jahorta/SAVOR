@@ -61,6 +61,95 @@ TEST(SavorPredictRngModel, PreAiCameraModelKeepsBaselineAndSuppressionVisible) {
     EXPECT_EQ(pre_ai_draws_for_fake_attacks(3), three_fake.expected_total_draws);
 }
 
+TEST(SavorPredictRngModel, PreAiCheckpointModelSummarizesFakeCameraCursor) {
+    {
+        std::istringstream input(
+            "pc=8001413c function=BattleCameraSetup checkpoint=battle_start_camera "
+            "rng_draw_index_before=0 rng_seed_before=0x00000001 rng_seed_after=0x0000303a\n"
+            "pc=800608dc function=TargetCamera checkpoint=targeting_camera "
+            "rng_draw_index_before=1 rng_seed_before=0x0000303a rng_seed_after=0xd3dc167e "
+            "active_slot=0 target_slot=4\n"
+            "pc=800608dc function=TargetCamera checkpoint=targeting_camera "
+            "rng_draw_index_before=2 rng_seed_before=0xd3dc167e rng_seed_after=0xa70427df "
+            "active_slot=1 target_slot=4\n"
+            "pc=8008b428 function=runAiRoutine checkpoint=soldier_ai_action "
+            "rng_draw_index_before=3 rng_seed_before=0xa70427df rng_seed_after=0xd6651c2c "
+            "active_slot=4\n");
+
+        const auto parsed = parse_checkpoint_stream(input);
+        ASSERT_TRUE(parsed.errors.empty());
+        const auto baseline = summarize_pre_ai_checkpoints(parsed.events, 0);
+
+        EXPECT_EQ(pre_ai_checkpoint_status_name(baseline.status), std::string("MatchesExpected"));
+        ASSERT_TRUE(baseline.expectation.has_value());
+        EXPECT_EQ(baseline.expectation->expected_targeting_camera_draws, 2);
+        EXPECT_EQ(baseline.observed_battle_start_camera_draws, 1);
+        EXPECT_EQ(baseline.observed_targeting_camera_draws, 2);
+        EXPECT_EQ(baseline.observed_fake_attack_draws, 0);
+        EXPECT_EQ(baseline.observed_pre_ai_draws, 3);
+        ASSERT_TRUE(baseline.first_soldier_ai_draw_index.has_value());
+        EXPECT_EQ(*baseline.first_soldier_ai_draw_index, 3);
+    }
+
+    {
+        std::istringstream input(
+            "pc=8001413c function=BattleCameraSetup checkpoint=battle_start_camera "
+            "rng_draw_index_before=0\n"
+            "pc=80000000 function=FakeAttack checkpoint=pre_ai_fake_attack "
+            "rng_draw_index_before=1 owns_rng_draw=true fake_attack_index=0 camera_frame_gap=9\n"
+            "pc=800608dc function=TargetCamera checkpoint=targeting_camera "
+            "rng_draw_index_before=2 active_slot=1 target_slot=4\n"
+            "pc=8008b428 function=runAiRoutine checkpoint=soldier_ai_action "
+            "rng_draw_index_before=3 active_slot=4\n");
+
+        const auto parsed = parse_checkpoint_stream(input);
+        ASSERT_TRUE(parsed.errors.empty());
+        const auto fake_one = summarize_pre_ai_checkpoints(parsed.events, 1);
+
+        EXPECT_EQ(pre_ai_checkpoint_status_name(fake_one.status), std::string("MatchesExpected"));
+        ASSERT_TRUE(fake_one.expectation.has_value());
+        EXPECT_EQ(fake_one.expectation->expected_fake_attack_draws, 1);
+        EXPECT_EQ(fake_one.expectation->expected_targeting_camera_draws, 1);
+        EXPECT_EQ(fake_one.observed_fake_attack_attempts, 1);
+        EXPECT_EQ(fake_one.observed_fake_attack_draws, 1);
+        EXPECT_EQ(fake_one.observed_skipped_fake_attack_draws, 0);
+        EXPECT_EQ(fake_one.observed_targeting_camera_draws, 1);
+        EXPECT_EQ(fake_one.observed_pre_ai_draws, 3);
+    }
+}
+
+TEST(SavorPredictRngModel, PreAiCheckpointModelTracksShortGapFakeAttackNoRand) {
+    std::istringstream input(
+        "pc=8001413c function=BattleCameraSetup checkpoint=battle_start_camera "
+        "rng_draw_index_before=0\n"
+        "pc=80000000 function=FakeAttack checkpoint=pre_ai_fake_attack "
+        "rng_draw_index_before=1 owns_rng_draw=true fake_attack_index=0 camera_frame_gap=9\n"
+        "pc=80000004 function=FakeAttack checkpoint=pre_ai_fake_attack_no_rand "
+        "rng_draw_index_before=2 owns_rng_draw=false fake_attack_index=1 camera_frame_gap=6\n"
+        "pc=800608dc function=TargetCamera checkpoint=targeting_camera "
+        "rng_draw_index_before=2 active_slot=1 target_slot=4\n"
+        "pc=8008b428 function=runAiRoutine checkpoint=soldier_ai_action "
+        "rng_draw_index_before=3 active_slot=4\n");
+
+    const auto parsed = parse_checkpoint_stream(input);
+    ASSERT_TRUE(parsed.errors.empty());
+    const auto summary = summarize_pre_ai_checkpoints(parsed.events, 2);
+
+    EXPECT_EQ(
+        pre_ai_checkpoint_status_name(summary.status),
+        std::string("ShortCameraGapSkippedFakeAttackDraws"));
+    EXPECT_EQ(summary.observed_fake_attack_attempts, 2);
+    EXPECT_EQ(summary.observed_fake_attack_draws, 1);
+    EXPECT_EQ(summary.observed_skipped_fake_attack_draws, 1);
+    EXPECT_EQ(summary.skipped_fake_attacks_with_short_camera_gap, 1);
+    EXPECT_EQ(summary.skipped_fake_draws_with_frame_gap, 1);
+    EXPECT_EQ(summary.observed_pre_ai_draws, 3);
+    ASSERT_EQ(summary.draws.size(), 4u);
+    EXPECT_TRUE(summary.draws[2].skipped_rng_draw);
+    ASSERT_TRUE(summary.draws[2].camera_frame_gap.has_value());
+    EXPECT_EQ(*summary.draws[2].camera_frame_gap, 6);
+}
+
 TEST(SavorPredictRngModel, SoldierAiConsumesExpectedAttackDraws) {
     std::uint32_t state = 15u;
     for (int i = 0; i < pre_ai_draws_for_fake_attacks(3); ++i) {

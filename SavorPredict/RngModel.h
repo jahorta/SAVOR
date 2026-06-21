@@ -16,6 +16,7 @@
 #include "FirstBattleDataModel.h"
 #include "OutcomeCheckpointModel.h"
 #include "PreAiCameraModel.h"
+#include "PreAiCheckpointModel.h"
 #include "RngCore.h"
 #include "SoldierActionExecutionModel.h"
 #include "SoldierAiModel.h"

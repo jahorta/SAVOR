@@ -813,6 +813,8 @@ void write_text(const TraceSummary& summary, std::ostream& out) {
     out << "    unsuppressed_fake_plus_camera_total: "
         << summary.pre_ai_model.unsuppressed_total_draws << "\n";
     out << "    first Soldier AI draw index: " << (summary.pre_ai_draws + 1) << " (1-based after battle start seed)\n";
+    out << "    trace-checkpoints args: --expected-fake-attacks "
+        << summary.pre_ai_model.fake_attacks << "\n";
     out << "  enemy_ai_draws: " << summary.enemy_ai_draws << "\n";
     out << "    planned Soldier attacks: " << summary.planned_soldier_attacks << "\n";
     if (summary.events.planned_actions.has_value()) {

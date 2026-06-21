@@ -125,6 +125,7 @@
     <ClCompile Include="Main.cpp" />
     <ClCompile Include="OutcomeCheckpointModel.cpp" />
     <ClCompile Include="PreAiCameraModel.cpp" />
+    <ClCompile Include="PreAiCheckpointModel.cpp" />
     <ClCompile Include="ProgressEventParser.cpp" />
     <ClCompile Include="RngCore.cpp" />
     <ClCompile Include="RngModel.cpp" />
@@ -151,6 +152,7 @@
     <ClInclude Include="FirstBattleDataModel.h" />
     <ClInclude Include="OutcomeCheckpointModel.h" />
     <ClInclude Include="PreAiCameraModel.h" />
+    <ClInclude Include="PreAiCheckpointModel.h" />
     <ClInclude Include="ProgressEventParser.h" />
     <ClInclude Include="RngCore.h" />
     <ClInclude Include="RngModel.h" />

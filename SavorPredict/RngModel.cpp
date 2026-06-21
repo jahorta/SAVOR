@@ -4,7 +4,7 @@
 // RngCore, ActionViewCameraModel, ActionSourceCheckpointModel,
 // ActionViewGateCheckpointModel, AttackResolutionCheckpointModel,
 // CritGateCheckpointModel, CounterCheckpointModel, DropCheckpointModel,
-// OutcomeCheckpointModel, PreAiCameraModel,
+// OutcomeCheckpointModel, PreAiCameraModel, PreAiCheckpointModel,
 // SoldierAiModel, SoldierActionExecutionModel, TurnOrderCheckpointModel,
 // TurnOrderModel, EnemyAttackSetupModel, FirstBattleDataModel,
 // AttackResolutionModel, CounterModel, and DropModel.
