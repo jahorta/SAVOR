@@ -1,6 +1,7 @@
 #include "CheckpointTrace.h"
 
 #include "ActionViewCameraModel.h"
+#include "ActionSetupCheckpointModel.h"
 #include "ActionSourceCheckpointModel.h"
 #include "ActionViewGateCheckpointModel.h"
 #include "AttackResolutionCheckpointModel.h"
@@ -261,6 +262,9 @@ void write_text_report(
     if (options.expected_fake_attacks.has_value()) {
         out << "  expected_fake_attacks: " << *options.expected_fake_attacks << "\n";
     }
+    if (options.expected_enemy_setup_draws.has_value()) {
+        out << "  expected_enemy_setup_draws: " << *options.expected_enemy_setup_draws << "\n";
+    }
     if (options.expected_mode0e_camera_draws.has_value()) {
         out << "  expected_mode0e_camera_draws: " << *options.expected_mode0e_camera_draws << "\n";
     }
@@ -458,6 +462,159 @@ void write_text_report(
                 out << "unknown";
             }
             out << " skipped_rng_draw=" << (draw.skipped_rng_draw ? "true" : "false") << "\n";
+        }
+    }
+
+    const auto action_setup =
+        summarize_action_setup_checkpoints(result.events, options.expected_enemy_setup_draws);
+    out << "\nAction setup checkpoints\n";
+    out << "  status: " << action_setup_checkpoint_status_name(action_setup.status) << "\n";
+    out << "  rule: " << first_battle_action_setup_checkpoint_rule_detail() << "\n";
+    out << "  expected_enemy_setup_draws: ";
+    if (action_setup.expected_enemy_setup_draws.has_value()) {
+        out << *action_setup.expected_enemy_setup_draws << "\n";
+    } else {
+        out << "unknown\n";
+    }
+    out << "  observed_setup_action_events: "
+        << action_setup.observed_setup_action_events << "\n";
+    out << "  observed_pc_handler_entries: "
+        << action_setup.observed_pc_handler_entries << "\n";
+    out << "  observed_enemy_handler_entries: "
+        << action_setup.observed_enemy_handler_entries << "\n";
+    out << "  observed_enemy_setup_draws: "
+        << action_setup.observed_enemy_setup_draws << "\n";
+    out << "  setup_events_with_actor_slot: "
+        << action_setup.setup_events_with_actor_slot << "\n";
+    out << "  setup_events_with_handler_pc: "
+        << action_setup.setup_events_with_handler_pc << "\n";
+    out << "  setup_events_with_instruction: "
+        << action_setup.setup_events_with_instruction << "\n";
+    out << "  setup_events_with_target_slot: "
+        << action_setup.setup_events_with_target_slot << "\n";
+    out << "  setup_events_with_instr_param: "
+        << action_setup.setup_events_with_instr_param << "\n";
+    out << "  handler_entries_with_instruction: "
+        << action_setup.handler_entries_with_instruction << "\n";
+    out << "  handler_entries_with_target_slot: "
+        << action_setup.handler_entries_with_target_slot << "\n";
+    out << "  handler_entries_with_instr_param: "
+        << action_setup.handler_entries_with_instr_param << "\n";
+    out << "  handler_entries_with_movement_flags: "
+        << action_setup.handler_entries_with_movement_flags << "\n";
+    out << "  handler_matches: " << action_setup.handler_matches << "\n";
+    out << "  handler_mismatches: " << action_setup.handler_mismatches << "\n";
+    out << "  enemy_setup_draws_with_gate_inputs: "
+        << action_setup.enemy_setup_draws_with_gate_inputs << "\n";
+    out << "  enemy_setup_draws_with_rand_value: "
+        << action_setup.enemy_setup_draws_with_rand_value << "\n";
+    out << "  enemy_setup_draws_with_rand_mod10: "
+        << action_setup.enemy_setup_draws_with_rand_mod10 << "\n";
+    out << "  enemy_setup_draws_with_direct_close_candidate: "
+        << action_setup.enemy_setup_draws_with_direct_close_candidate << "\n";
+    out << "  first_setup_action_draw_index: ";
+    if (action_setup.first_setup_action_draw_index.has_value()) {
+        out << *action_setup.first_setup_action_draw_index << "\n";
+    } else {
+        out << "unknown\n";
+    }
+    out << "  first_pc_handler_draw_index: ";
+    if (action_setup.first_pc_handler_draw_index.has_value()) {
+        out << *action_setup.first_pc_handler_draw_index << "\n";
+    } else {
+        out << "unknown\n";
+    }
+    out << "  first_enemy_handler_draw_index: ";
+    if (action_setup.first_enemy_handler_draw_index.has_value()) {
+        out << *action_setup.first_enemy_handler_draw_index << "\n";
+    } else {
+        out << "unknown\n";
+    }
+    out << "  first_enemy_setup_draw_index: ";
+    if (action_setup.first_enemy_setup_draw_index.has_value()) {
+        out << *action_setup.first_enemy_setup_draw_index << "\n";
+    } else {
+        out << "unknown\n";
+    }
+    out << "  first_attack_hit_draw_index: ";
+    if (action_setup.first_attack_hit_draw_index.has_value()) {
+        out << *action_setup.first_attack_hit_draw_index << "\n";
+    } else {
+        out << "unknown\n";
+    }
+    out << "  enemy_setup_draws_before_first_attack_hit: "
+        << action_setup.enemy_setup_draws_before_first_attack_hit << "\n";
+    if (!action_setup.events.empty()) {
+        out << "  events:\n";
+        for (const auto& event : action_setup.events) {
+            out << "    kind=" << action_setup_checkpoint_kind_name(event.kind);
+            out << " draw_index=";
+            if (event.draw_index.has_value()) {
+                out << *event.draw_index;
+            } else {
+                out << "unknown";
+            }
+            out << " actor_slot=";
+            if (event.actor_slot.has_value()) {
+                out << *event.actor_slot;
+            } else {
+                out << "unknown";
+            }
+            out << " target_slot=";
+            if (event.target_slot.has_value()) {
+                out << *event.target_slot;
+            } else {
+                out << "unknown";
+            }
+            out << " instruction=";
+            if (event.instruction.has_value()) {
+                out << *event.instruction;
+            } else {
+                out << "unknown";
+            }
+            out << " instr_param_0x6=";
+            if (event.instr_param_0x6.has_value()) {
+                out << *event.instr_param_0x6;
+            } else {
+                out << "unknown";
+            }
+            out << " movement_flags=";
+            if (event.movement_flags.has_value()) {
+                out << *event.movement_flags;
+            } else {
+                out << "unknown";
+            }
+            out << " expected_handler_pc=";
+            if (event.expected_handler_pc.has_value()) {
+                out << *event.expected_handler_pc;
+            } else {
+                out << "unknown";
+            }
+            out << " handler_pc=";
+            if (event.handler_pc.has_value()) {
+                out << *event.handler_pc;
+            } else {
+                out << "unknown";
+            }
+            out << " setup_rand=";
+            if (event.setup_rand.has_value()) {
+                out << *event.setup_rand;
+            } else {
+                out << "unknown";
+            }
+            out << " setup_rand_mod10=";
+            if (event.setup_rand_mod10.has_value()) {
+                out << *event.setup_rand_mod10;
+            } else {
+                out << "unknown";
+            }
+            out << " direct_close_candidate=";
+            if (event.direct_close_candidate.has_value()) {
+                out << *event.direct_close_candidate;
+            } else {
+                out << "unknown";
+            }
+            out << "\n";
         }
     }
 
@@ -1194,6 +1351,13 @@ void write_json_report(
         out << "null";
     }
     out << ",\n";
+    out << "  \"expected_enemy_setup_draws\": ";
+    if (options.expected_enemy_setup_draws.has_value()) {
+        out << *options.expected_enemy_setup_draws;
+    } else {
+        out << "null";
+    }
+    out << ",\n";
     out << "  \"expected_mode0e_camera_draws\": ";
     if (options.expected_mode0e_camera_draws.has_value()) {
         out << *options.expected_mode0e_camera_draws;
@@ -1420,6 +1584,164 @@ void write_json_report(
         }
         out << ", \"skipped_rng_draw\": "
             << (draw.skipped_rng_draw ? "true" : "false");
+        out << "}";
+    }
+    out << "]";
+    out << "},\n";
+
+    const auto action_setup =
+        summarize_action_setup_checkpoints(result.events, options.expected_enemy_setup_draws);
+    out << "  \"action_setup_checkpoints\": {";
+    out << "\"status\": \"" << action_setup_checkpoint_status_name(action_setup.status) << "\"";
+    out << ", \"rule\": \""
+        << json_escape(first_battle_action_setup_checkpoint_rule_detail()) << "\"";
+    out << ", \"expected_enemy_setup_draws\": ";
+    if (action_setup.expected_enemy_setup_draws.has_value()) {
+        out << *action_setup.expected_enemy_setup_draws;
+    } else {
+        out << "null";
+    }
+    out << ", \"observed_setup_action_events\": "
+        << action_setup.observed_setup_action_events;
+    out << ", \"observed_pc_handler_entries\": "
+        << action_setup.observed_pc_handler_entries;
+    out << ", \"observed_enemy_handler_entries\": "
+        << action_setup.observed_enemy_handler_entries;
+    out << ", \"observed_enemy_setup_draws\": "
+        << action_setup.observed_enemy_setup_draws;
+    out << ", \"setup_events_with_actor_slot\": "
+        << action_setup.setup_events_with_actor_slot;
+    out << ", \"setup_events_with_handler_pc\": "
+        << action_setup.setup_events_with_handler_pc;
+    out << ", \"setup_events_with_instruction\": "
+        << action_setup.setup_events_with_instruction;
+    out << ", \"setup_events_with_target_slot\": "
+        << action_setup.setup_events_with_target_slot;
+    out << ", \"setup_events_with_instr_param\": "
+        << action_setup.setup_events_with_instr_param;
+    out << ", \"handler_entries_with_instruction\": "
+        << action_setup.handler_entries_with_instruction;
+    out << ", \"handler_entries_with_target_slot\": "
+        << action_setup.handler_entries_with_target_slot;
+    out << ", \"handler_entries_with_instr_param\": "
+        << action_setup.handler_entries_with_instr_param;
+    out << ", \"handler_entries_with_movement_flags\": "
+        << action_setup.handler_entries_with_movement_flags;
+    out << ", \"handler_matches\": " << action_setup.handler_matches;
+    out << ", \"handler_mismatches\": " << action_setup.handler_mismatches;
+    out << ", \"enemy_setup_draws_with_gate_inputs\": "
+        << action_setup.enemy_setup_draws_with_gate_inputs;
+    out << ", \"enemy_setup_draws_with_rand_value\": "
+        << action_setup.enemy_setup_draws_with_rand_value;
+    out << ", \"enemy_setup_draws_with_rand_mod10\": "
+        << action_setup.enemy_setup_draws_with_rand_mod10;
+    out << ", \"enemy_setup_draws_with_direct_close_candidate\": "
+        << action_setup.enemy_setup_draws_with_direct_close_candidate;
+    out << ", \"first_setup_action_draw_index\": ";
+    if (action_setup.first_setup_action_draw_index.has_value()) {
+        out << *action_setup.first_setup_action_draw_index;
+    } else {
+        out << "null";
+    }
+    out << ", \"first_pc_handler_draw_index\": ";
+    if (action_setup.first_pc_handler_draw_index.has_value()) {
+        out << *action_setup.first_pc_handler_draw_index;
+    } else {
+        out << "null";
+    }
+    out << ", \"first_enemy_handler_draw_index\": ";
+    if (action_setup.first_enemy_handler_draw_index.has_value()) {
+        out << *action_setup.first_enemy_handler_draw_index;
+    } else {
+        out << "null";
+    }
+    out << ", \"first_enemy_setup_draw_index\": ";
+    if (action_setup.first_enemy_setup_draw_index.has_value()) {
+        out << *action_setup.first_enemy_setup_draw_index;
+    } else {
+        out << "null";
+    }
+    out << ", \"first_attack_hit_draw_index\": ";
+    if (action_setup.first_attack_hit_draw_index.has_value()) {
+        out << *action_setup.first_attack_hit_draw_index;
+    } else {
+        out << "null";
+    }
+    out << ", \"enemy_setup_draws_before_first_attack_hit\": "
+        << action_setup.enemy_setup_draws_before_first_attack_hit;
+    out << ", \"events\": [";
+    for (std::size_t i = 0; i < action_setup.events.size(); ++i) {
+        if (i != 0) {
+            out << ", ";
+        }
+        const auto& event = action_setup.events[i];
+        out << "{\"kind\": \"" << action_setup_checkpoint_kind_name(event.kind) << "\"";
+        out << ", \"draw_index\": ";
+        if (event.draw_index.has_value()) {
+            out << *event.draw_index;
+        } else {
+            out << "null";
+        }
+        out << ", \"actor_slot\": ";
+        if (event.actor_slot.has_value()) {
+            out << *event.actor_slot;
+        } else {
+            out << "null";
+        }
+        out << ", \"target_slot\": ";
+        if (event.target_slot.has_value()) {
+            out << *event.target_slot;
+        } else {
+            out << "null";
+        }
+        out << ", \"instruction\": ";
+        if (event.instruction.has_value()) {
+            out << *event.instruction;
+        } else {
+            out << "null";
+        }
+        out << ", \"instr_param_0x6\": ";
+        if (event.instr_param_0x6.has_value()) {
+            out << *event.instr_param_0x6;
+        } else {
+            out << "null";
+        }
+        out << ", \"movement_flags\": ";
+        if (event.movement_flags.has_value()) {
+            out << *event.movement_flags;
+        } else {
+            out << "null";
+        }
+        out << ", \"expected_handler_pc\": ";
+        if (event.expected_handler_pc.has_value()) {
+            out << "\"" << json_escape(*event.expected_handler_pc) << "\"";
+        } else {
+            out << "null";
+        }
+        out << ", \"handler_pc\": ";
+        if (event.handler_pc.has_value()) {
+            out << "\"" << json_escape(*event.handler_pc) << "\"";
+        } else {
+            out << "null";
+        }
+        out << ", \"setup_rand\": ";
+        if (event.setup_rand.has_value()) {
+            out << *event.setup_rand;
+        } else {
+            out << "null";
+        }
+        out << ", \"setup_rand_mod10\": ";
+        if (event.setup_rand_mod10.has_value()) {
+            out << *event.setup_rand_mod10;
+        } else {
+            out << "null";
+        }
+        out << ", \"direct_close_candidate\": ";
+        if (event.direct_close_candidate.has_value()) {
+            out << *event.direct_close_candidate;
+        } else {
+            out << "null";
+        }
         out << "}";
     }
     out << "]";

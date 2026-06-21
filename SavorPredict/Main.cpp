@@ -17,7 +17,7 @@ void print_usage(std::ostream& out) {
         << "Usage:\n"
         << "  SavorPredict prepare-db [--source PATH] [--dest PATH] [--overwrite]\n"
         << "  SavorPredict trace-job (--turn-job-id N | --exec-job-id N) [--db-root PATH] [--format text|json] [--max-distance N]\n\n"
-        << "  SavorPredict trace-checkpoints --checkpoint-file PATH [--turn-job-id N | --exec-job-id N] [--db-root PATH] [--format text|json] [--expected-fake-attacks N] [--expected-mode0e-camera-draws N] [--expected-turn-order-draws N] [--expected-attack-events N] [--expected-crit-draws N] [--expected-counter-roll-ceiling N] [--expected-drop-rolls N] [--expected-end-turn-status-draws N] [--expected-level-up-stat-rolls N]\n\n"
+        << "  SavorPredict trace-checkpoints --checkpoint-file PATH [--turn-job-id N | --exec-job-id N] [--db-root PATH] [--format text|json] [--expected-fake-attacks N] [--expected-enemy-setup-draws N] [--expected-mode0e-camera-draws N] [--expected-turn-order-draws N] [--expected-attack-events N] [--expected-crit-draws N] [--expected-counter-roll-ceiling N] [--expected-drop-rolls N] [--expected-end-turn-status-draws N] [--expected-level-up-stat-rolls N]\n\n"
         << "Defaults:\n"
         << "  prepare-db --source D:/SoaSimDBDebug --dest D:/SavorPredictDB\n"
         << "  trace-job --db-root D:/SavorPredictDB --format text --max-distance 5000\n\n"
@@ -208,6 +208,13 @@ int run_trace_checkpoints_command(int argc, char** argv) {
                 return 2;
             }
             options.expected_fake_attacks = parsed;
+        } else if (arg == "--expected-enemy-setup-draws") {
+            int parsed = 0;
+            if (!require_value(argc, argv, i, arg, value, std::cerr) || !parse_int(value, parsed) || parsed < 0) {
+                std::cerr << "--expected-enemy-setup-draws requires a non-negative integer.\n";
+                return 2;
+            }
+            options.expected_enemy_setup_draws = parsed;
         } else if (arg == "--expected-mode0e-camera-draws") {
             int parsed = 0;
             if (!require_value(argc, argv, i, arg, value, std::cerr) || !parse_int(value, parsed) || parsed < 0) {

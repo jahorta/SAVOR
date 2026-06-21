@@ -2,6 +2,7 @@
 
 // Umbrella header for the phase-specific RNG model helpers.
 
+#include "ActionSetupCheckpointModel.h"
 #include "ActionViewCameraModel.h"
 #include "ActionSourceCheckpointModel.h"
 #include "ActionViewGateCheckpointModel.h"

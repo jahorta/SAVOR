@@ -14,6 +14,9 @@
     <ClCompile Include="ActionViewCameraModel.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="ActionSetupCheckpointModel.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="ActionSourceCheckpointModel.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -92,6 +95,9 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="ActionViewCameraModel.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="ActionSetupCheckpointModel.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="ActionSourceCheckpointModel.h">

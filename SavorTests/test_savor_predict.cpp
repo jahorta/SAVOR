@@ -848,6 +848,78 @@ TEST(SavorPredictCheckpointTrace, SummarizesActionSourceCheckpoints) {
         std::string("MissingLiveSourceFields"));
 }
 
+TEST(SavorPredictCheckpointTrace, SummarizesActionSetupCheckpoints) {
+    std::istringstream input(
+        "pc=800708c0 function=Battle::Run::setupAction checkpoint=setup_action "
+        "rng_draw_index_before=20 actor_slot=0 handler_pc=80086c68 "
+        "instruction=3 target_slot=4 instr_param_0x6=0\n"
+        "pc=80086c68 function=Battle::HandlePCInst checkpoint=pc_handler "
+        "rng_draw_index_before=21 active_slot=0 instruction=3 target_slot=4 instr_param_0x6=0\n"
+        "pc=800708c0 function=Battle::Run::setupAction checkpoint=setup_action "
+        "rng_draw_index_before=22 actor_slot=4 handler_pc=8008b9e0 "
+        "instruction=3 target_slot=0 instr_param_0x6=1\n"
+        "pc=8008b9e0 function=Battle::HandleECInst checkpoint=enemy_handler "
+        "rng_draw_index_before=23 active_slot=4 instruction=3 target_slot=0 "
+        "instr_param_0x6=1 movement_flags=0xc0\n"
+        "pc=8008bc68 function=Battle::HandleECInst checkpoint=enemy_setup "
+        "rng_draw_index_before=24 active_slot=4 instruction=3 target_slot=0 "
+        "instr_param_0x6=1 movement_flags=0xc0 setup_rand=27 setup_rand_mod10=7 "
+        "direct_close_candidate=1\n"
+        "pc=80010bdc function=getAttackResult checkpoint=hit rng_draw_index_before=25\n");
+
+    const auto parsed = parse_checkpoint_stream(input);
+    ASSERT_TRUE(parsed.errors.empty());
+    const auto matched = summarize_action_setup_checkpoints(parsed.events, 1);
+
+    EXPECT_EQ(action_setup_checkpoint_status_name(matched.status), std::string("MatchesExpected"));
+    EXPECT_EQ(matched.observed_setup_action_events, 2);
+    EXPECT_EQ(matched.observed_pc_handler_entries, 1);
+    EXPECT_EQ(matched.observed_enemy_handler_entries, 1);
+    EXPECT_EQ(matched.observed_enemy_setup_draws, 1);
+    EXPECT_EQ(matched.handler_matches, 4);
+    EXPECT_EQ(matched.handler_mismatches, 0);
+    EXPECT_EQ(matched.enemy_setup_draws_with_gate_inputs, 1);
+    EXPECT_EQ(matched.enemy_setup_draws_with_rand_value, 1);
+    EXPECT_EQ(matched.enemy_setup_draws_with_rand_mod10, 1);
+    EXPECT_EQ(matched.enemy_setup_draws_with_direct_close_candidate, 1);
+    ASSERT_TRUE(matched.first_enemy_setup_draw_index.has_value());
+    EXPECT_EQ(*matched.first_enemy_setup_draw_index, 24);
+    ASSERT_TRUE(matched.first_attack_hit_draw_index.has_value());
+    EXPECT_EQ(*matched.first_attack_hit_draw_index, 25);
+    EXPECT_EQ(matched.enemy_setup_draws_before_first_attack_hit, 1);
+
+    const auto missing_draw = summarize_action_setup_checkpoints(parsed.events, 2);
+    EXPECT_EQ(
+        action_setup_checkpoint_status_name(missing_draw.status),
+        std::string("MissingEnemySetupDraws"));
+
+    const auto extra_draw = summarize_action_setup_checkpoints(parsed.events, 0);
+    EXPECT_EQ(
+        action_setup_checkpoint_status_name(extra_draw.status),
+        std::string("ExtraEnemySetupDraws"));
+
+    std::istringstream mismatch_input(
+        "pc=800708c0 function=Battle::Run::setupAction checkpoint=setup_action "
+        "rng_draw_index_before=20 actor_slot=0 handler_pc=8008b9e0\n");
+    const auto mismatch_parsed = parse_checkpoint_stream(mismatch_input);
+    ASSERT_TRUE(mismatch_parsed.errors.empty());
+    const auto mismatch = summarize_action_setup_checkpoints(mismatch_parsed.events, std::nullopt);
+    EXPECT_EQ(
+        action_setup_checkpoint_status_name(mismatch.status),
+        std::string("HandlerMismatch"));
+
+    std::istringstream missing_fields_input(
+        "pc=80086c68 function=Battle::HandlePCInst checkpoint=pc_handler "
+        "rng_draw_index_before=21 active_slot=0 instruction=3\n");
+    const auto missing_fields_parsed = parse_checkpoint_stream(missing_fields_input);
+    ASSERT_TRUE(missing_fields_parsed.errors.empty());
+    const auto missing_fields =
+        summarize_action_setup_checkpoints(missing_fields_parsed.events, std::nullopt);
+    EXPECT_EQ(
+        action_setup_checkpoint_status_name(missing_fields.status),
+        std::string("MissingLiveSetupFields"));
+}
+
 TEST(SavorPredictCheckpointTrace, SummarizesActionViewGateCheckpoints) {
     std::istringstream input(
         "pc=80012f58 function=FUN_80012f58 checkpoint=action_view_gate rng_draw_index_before=18 "

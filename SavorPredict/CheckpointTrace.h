@@ -15,6 +15,7 @@ struct TraceCheckpointsOptions {
     std::optional<long long> turn_job_id;
     std::optional<long long> exec_job_id;
     std::optional<int> expected_fake_attacks;
+    std::optional<int> expected_enemy_setup_draws;
     std::optional<int> expected_mode0e_camera_draws;
     std::optional<int> expected_turn_order_draws;
     std::optional<int> expected_attack_events;

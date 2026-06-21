@@ -850,6 +850,8 @@ void write_text(const TraceSummary& summary, std::ostream& out) {
         << " (HandleECInst:8008bc68 if each planned Soldier attack acts)\n";
     out << "  confirmed enemy setup draws from observed Soldier attack events: "
         << summary.confirmed_enemy_execution_setup_draws_from_observed_events << "\n";
+    out << "    trace-checkpoints args: --expected-enemy-setup-draws "
+        << summary.confirmed_enemy_execution_setup_draws_from_observed_events << "\n";
     out << "  Soldier action execution from progress order:\n";
     out << "    planned attacks: " << summary.soldier_action_execution.planned_attack_count << "\n";
     out << "    reached execution: " << summary.soldier_action_execution.reached_execution_count << "\n";

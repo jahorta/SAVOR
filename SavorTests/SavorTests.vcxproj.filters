@@ -5,6 +5,7 @@
     <ClCompile Include="..\SavorDbDebugTool\BackfillAnalysisBattle.cpp" />
     <ClCompile Include="..\SavorDbDebugTool\ReprojectUiRead.cpp" />
     <ClCompile Include="..\SavorPredict\ActionViewCameraModel.cpp" />
+    <ClCompile Include="..\SavorPredict\ActionSetupCheckpointModel.cpp" />
     <ClCompile Include="..\SavorPredict\ActionSourceCheckpointModel.cpp" />
     <ClCompile Include="..\SavorPredict\ActionViewGateCheckpointModel.cpp" />
     <ClCompile Include="..\SavorPredict\AttackResolutionCheckpointModel.cpp" />
