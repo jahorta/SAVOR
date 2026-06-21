@@ -759,6 +759,69 @@ TEST(SavorPredictCheckpointTrace, SummarizesActionSourceCheckpoints) {
         std::string("MissingLiveSourceFields"));
 }
 
+TEST(SavorPredictCheckpointTrace, SummarizesActionViewGateCheckpoints) {
+    std::istringstream input(
+        "pc=80012f58 function=FUN_80012f58 checkpoint=action_view_gate rng_draw_index_before=18 "
+        "active_slot=1 source_slot=1 target_slot=4 source_field6_0x6=14 actor_field6_0x6=14 "
+        "aux_list_root=0x80346bd8 query_arg0=4 query_arg1=-1 query_arg2=0x2a query_arg3=3 "
+        "query_result=0x81234567 selected_record_mode=0xe\n"
+        "pc=80052bf0 function=FUN_80052b24 checkpoint=mode0e_camera rng_draw_index_before=19\n"
+        "pc=80010bdc function=getAttackResult checkpoint=hit rng_draw_index_before=20\n");
+
+    const auto parsed = parse_checkpoint_stream(input);
+    ASSERT_TRUE(parsed.errors.empty());
+    ASSERT_EQ(parsed.events.size(), 3u);
+
+    const auto matched = summarize_action_view_gate_checkpoints(parsed.events);
+    EXPECT_EQ(matched.status, ActionViewGateCheckpointStatus::MatchesExpected);
+    EXPECT_EQ(matched.observed_gate_events, 1);
+    EXPECT_EQ(matched.events_with_aux_list_root, 1);
+    EXPECT_EQ(matched.events_with_query_args, 1);
+    EXPECT_EQ(matched.events_with_query_result, 1);
+    EXPECT_EQ(matched.events_with_selected_record_mode, 1);
+    EXPECT_EQ(matched.query_args_match, 1);
+    EXPECT_EQ(matched.selected_mode_matches, 1);
+    EXPECT_EQ(matched.observed_mode0e_camera_draws, 1);
+    EXPECT_EQ(matched.observed_attack_hit_draws, 1);
+    EXPECT_EQ(matched.gate_events_before_first_mode0e, 1);
+    EXPECT_EQ(matched.gate_events_before_first_attack_hit, 1);
+    EXPECT_EQ(matched.mode0e_draws_before_first_attack_hit, 1);
+    ASSERT_EQ(matched.events.size(), 1u);
+    ASSERT_TRUE(matched.events[0].query_arg2.has_value());
+    EXPECT_EQ(*matched.events[0].query_arg2, 0x2a);
+    ASSERT_TRUE(matched.events[0].selected_record_mode.has_value());
+    EXPECT_EQ(*matched.events[0].selected_record_mode, 0x0e);
+
+    std::istringstream query_mismatch_input(
+        "pc=80012f58 function=FUN_80012f58 checkpoint=action_view_gate rng_draw_index_before=18 "
+        "aux_list_root=0x80346bd8 query_arg0=4 query_arg1=-1 query_arg2=0x2b query_arg3=3 "
+        "query_result=0x81234567 selected_record_mode=0xe\n");
+    const auto query_mismatch_parsed = parse_checkpoint_stream(query_mismatch_input);
+    ASSERT_TRUE(query_mismatch_parsed.errors.empty());
+    const auto query_mismatch = summarize_action_view_gate_checkpoints(query_mismatch_parsed.events);
+    EXPECT_EQ(query_mismatch.status, ActionViewGateCheckpointStatus::QueryArgsMismatch);
+
+    std::istringstream mode_mismatch_input(
+        "pc=80012f58 function=FUN_80012f58 checkpoint=action_view_gate rng_draw_index_before=18 "
+        "aux_list_root=0x80346bd8 query_arg0=4 query_arg1=-1 query_arg2=0x2a query_arg3=3 "
+        "query_result=0x81234567 selected_record_mode=0\n");
+    const auto mode_mismatch_parsed = parse_checkpoint_stream(mode_mismatch_input);
+    ASSERT_TRUE(mode_mismatch_parsed.errors.empty());
+    const auto mode_mismatch = summarize_action_view_gate_checkpoints(mode_mismatch_parsed.events);
+    EXPECT_EQ(mode_mismatch.status, ActionViewGateCheckpointStatus::SelectedModeMismatch);
+
+    std::istringstream missing_input(
+        "pc=80012f58 function=FUN_80012f58 checkpoint=action_view_gate rng_draw_index_before=18 "
+        "aux_list_root=0x80346bd8 query_arg0=4 query_arg1=-1 query_arg2=0x2a query_arg3=3\n");
+    const auto missing_parsed = parse_checkpoint_stream(missing_input);
+    ASSERT_TRUE(missing_parsed.errors.empty());
+    const auto missing = summarize_action_view_gate_checkpoints(missing_parsed.events);
+    EXPECT_EQ(missing.status, ActionViewGateCheckpointStatus::MissingLiveGateFields);
+    EXPECT_EQ(
+        action_view_gate_checkpoint_status_name(missing.status),
+        std::string("MissingLiveGateFields"));
+}
+
 TEST(SavorPredictCheckpointTrace, SummarizesActionViewCameraCheckpoints) {
     std::istringstream input(
         "pc=80052bf0 function=FUN_80052b24 checkpoint=mode0e_camera rng_draw_index_before=20 "

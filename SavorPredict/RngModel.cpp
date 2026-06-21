@@ -2,7 +2,7 @@
 
 // Compatibility translation unit. RNG model implementation is split across
 // RngCore, ActionViewCameraModel, ActionSourceCheckpointModel,
-// AttackResolutionCheckpointModel,
+// ActionViewGateCheckpointModel, AttackResolutionCheckpointModel,
 // CritGateCheckpointModel, CounterCheckpointModel, DropCheckpointModel,
 // OutcomeCheckpointModel, PreAiCameraModel,
 // SoldierAiModel, SoldierActionExecutionModel, TurnOrderCheckpointModel,

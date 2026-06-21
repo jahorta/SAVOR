@@ -17,6 +17,9 @@
     <ClCompile Include="ActionSourceCheckpointModel.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="ActionViewGateCheckpointModel.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="AttackResolutionCheckpointModel.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -89,6 +92,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="ActionSourceCheckpointModel.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="ActionViewGateCheckpointModel.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="AttackResolutionCheckpointModel.h">

@@ -2,6 +2,7 @@
 
 #include "ActionViewCameraModel.h"
 #include "ActionSourceCheckpointModel.h"
+#include "ActionViewGateCheckpointModel.h"
 #include "AttackResolutionCheckpointModel.h"
 #include "CritGateCheckpointModel.h"
 #include "CounterCheckpointModel.h"
@@ -398,6 +399,133 @@ void write_text_report(
             out << " handler_pc=";
             if (event.handler_pc.has_value()) {
                 out << *event.handler_pc;
+            } else {
+                out << "unknown";
+            }
+            out << "\n";
+        }
+    }
+
+    const auto action_view_gate = summarize_action_view_gate_checkpoints(result.events);
+    out << "\nAction-view gate checkpoints\n";
+    out << "  status: " << action_view_gate_checkpoint_status_name(action_view_gate.status) << "\n";
+    out << "  rule: " << first_battle_action_view_gate_checkpoint_rule_detail() << "\n";
+    out << "  observed_gate_events: " << action_view_gate.observed_gate_events << "\n";
+    out << "  events_with_aux_list_root: " << action_view_gate.events_with_aux_list_root << "\n";
+    out << "  events_with_query_args: " << action_view_gate.events_with_query_args << "\n";
+    out << "  events_with_query_result: " << action_view_gate.events_with_query_result << "\n";
+    out << "  events_with_selected_record_mode: "
+        << action_view_gate.events_with_selected_record_mode << "\n";
+    out << "  query_args_match: " << action_view_gate.query_args_match << "\n";
+    out << "  query_args_mismatch: " << action_view_gate.query_args_mismatch << "\n";
+    out << "  selected_mode_matches: " << action_view_gate.selected_mode_matches << "\n";
+    out << "  selected_mode_mismatches: " << action_view_gate.selected_mode_mismatches << "\n";
+    out << "  observed_mode0e_camera_draws: "
+        << action_view_gate.observed_mode0e_camera_draws << "\n";
+    out << "  observed_attack_hit_draws: "
+        << action_view_gate.observed_attack_hit_draws << "\n";
+    out << "  first_gate_draw_index: ";
+    if (action_view_gate.first_gate_draw_index.has_value()) {
+        out << *action_view_gate.first_gate_draw_index << "\n";
+    } else {
+        out << "unknown\n";
+    }
+    out << "  first_mode0e_draw_index: ";
+    if (action_view_gate.first_mode0e_draw_index.has_value()) {
+        out << *action_view_gate.first_mode0e_draw_index << "\n";
+    } else {
+        out << "unknown\n";
+    }
+    out << "  first_attack_hit_draw_index: ";
+    if (action_view_gate.first_attack_hit_draw_index.has_value()) {
+        out << *action_view_gate.first_attack_hit_draw_index << "\n";
+    } else {
+        out << "unknown\n";
+    }
+    out << "  gate_events_before_first_mode0e: "
+        << action_view_gate.gate_events_before_first_mode0e << "\n";
+    out << "  gate_events_before_first_attack_hit: "
+        << action_view_gate.gate_events_before_first_attack_hit << "\n";
+    out << "  mode0e_draws_before_first_attack_hit: "
+        << action_view_gate.mode0e_draws_before_first_attack_hit << "\n";
+    if (!action_view_gate.events.empty()) {
+        out << "  events:\n";
+        for (const auto& event : action_view_gate.events) {
+            out << "    draw_index=";
+            if (event.draw_index.has_value()) {
+                out << *event.draw_index;
+            } else {
+                out << "unknown";
+            }
+            out << " active_slot=";
+            if (event.active_slot.has_value()) {
+                out << *event.active_slot;
+            } else {
+                out << "unknown";
+            }
+            out << " source_slot=";
+            if (event.source_slot.has_value()) {
+                out << *event.source_slot;
+            } else {
+                out << "unknown";
+            }
+            out << " target_slot=";
+            if (event.target_slot.has_value()) {
+                out << *event.target_slot;
+            } else {
+                out << "unknown";
+            }
+            out << " source_field6_0x6=";
+            if (event.source_field6_0x6.has_value()) {
+                out << *event.source_field6_0x6;
+            } else {
+                out << "unknown";
+            }
+            out << " actor_field6_0x6=";
+            if (event.actor_field6_0x6.has_value()) {
+                out << *event.actor_field6_0x6;
+            } else {
+                out << "unknown";
+            }
+            out << " aux_list_root=";
+            if (event.aux_list_root.has_value()) {
+                out << *event.aux_list_root;
+            } else {
+                out << "unknown";
+            }
+            out << " query=(";
+            if (event.query_arg0.has_value()) {
+                out << *event.query_arg0;
+            } else {
+                out << "unknown";
+            }
+            out << ",";
+            if (event.query_arg1.has_value()) {
+                out << *event.query_arg1;
+            } else {
+                out << "unknown";
+            }
+            out << ",";
+            if (event.query_arg2.has_value()) {
+                out << *event.query_arg2;
+            } else {
+                out << "unknown";
+            }
+            out << ",";
+            if (event.query_arg3.has_value()) {
+                out << *event.query_arg3;
+            } else {
+                out << "unknown";
+            }
+            out << ") query_result=";
+            if (event.query_result.has_value()) {
+                out << *event.query_result;
+            } else {
+                out << "unknown";
+            }
+            out << " selected_record_mode=";
+            if (event.selected_record_mode.has_value()) {
+                out << *event.selected_record_mode;
             } else {
                 out << "unknown";
             }
@@ -1088,6 +1216,140 @@ void write_json_report(
         out << ", \"handler_pc\": ";
         if (event.handler_pc.has_value()) {
             out << "\"" << json_escape(*event.handler_pc) << "\"";
+        } else {
+            out << "null";
+        }
+        out << "}";
+    }
+    out << "]";
+    out << "},\n";
+
+    const auto action_view_gate = summarize_action_view_gate_checkpoints(result.events);
+    out << "  \"action_view_gate_checkpoints\": {";
+    out << "\"status\": \"" << action_view_gate_checkpoint_status_name(action_view_gate.status) << "\"";
+    out << ", \"rule\": \""
+        << json_escape(first_battle_action_view_gate_checkpoint_rule_detail()) << "\"";
+    out << ", \"observed_gate_events\": " << action_view_gate.observed_gate_events;
+    out << ", \"events_with_aux_list_root\": "
+        << action_view_gate.events_with_aux_list_root;
+    out << ", \"events_with_query_args\": " << action_view_gate.events_with_query_args;
+    out << ", \"events_with_query_result\": " << action_view_gate.events_with_query_result;
+    out << ", \"events_with_selected_record_mode\": "
+        << action_view_gate.events_with_selected_record_mode;
+    out << ", \"query_args_match\": " << action_view_gate.query_args_match;
+    out << ", \"query_args_mismatch\": " << action_view_gate.query_args_mismatch;
+    out << ", \"selected_mode_matches\": " << action_view_gate.selected_mode_matches;
+    out << ", \"selected_mode_mismatches\": "
+        << action_view_gate.selected_mode_mismatches;
+    out << ", \"observed_mode0e_camera_draws\": "
+        << action_view_gate.observed_mode0e_camera_draws;
+    out << ", \"observed_attack_hit_draws\": "
+        << action_view_gate.observed_attack_hit_draws;
+    out << ", \"first_gate_draw_index\": ";
+    if (action_view_gate.first_gate_draw_index.has_value()) {
+        out << *action_view_gate.first_gate_draw_index;
+    } else {
+        out << "null";
+    }
+    out << ", \"first_mode0e_draw_index\": ";
+    if (action_view_gate.first_mode0e_draw_index.has_value()) {
+        out << *action_view_gate.first_mode0e_draw_index;
+    } else {
+        out << "null";
+    }
+    out << ", \"first_attack_hit_draw_index\": ";
+    if (action_view_gate.first_attack_hit_draw_index.has_value()) {
+        out << *action_view_gate.first_attack_hit_draw_index;
+    } else {
+        out << "null";
+    }
+    out << ", \"gate_events_before_first_mode0e\": "
+        << action_view_gate.gate_events_before_first_mode0e;
+    out << ", \"gate_events_before_first_attack_hit\": "
+        << action_view_gate.gate_events_before_first_attack_hit;
+    out << ", \"mode0e_draws_before_first_attack_hit\": "
+        << action_view_gate.mode0e_draws_before_first_attack_hit;
+    out << ", \"events\": [";
+    for (std::size_t i = 0; i < action_view_gate.events.size(); ++i) {
+        if (i != 0) {
+            out << ", ";
+        }
+        const auto& event = action_view_gate.events[i];
+        out << "{\"draw_index\": ";
+        if (event.draw_index.has_value()) {
+            out << *event.draw_index;
+        } else {
+            out << "null";
+        }
+        out << ", \"active_slot\": ";
+        if (event.active_slot.has_value()) {
+            out << *event.active_slot;
+        } else {
+            out << "null";
+        }
+        out << ", \"source_slot\": ";
+        if (event.source_slot.has_value()) {
+            out << *event.source_slot;
+        } else {
+            out << "null";
+        }
+        out << ", \"target_slot\": ";
+        if (event.target_slot.has_value()) {
+            out << *event.target_slot;
+        } else {
+            out << "null";
+        }
+        out << ", \"source_field6_0x6\": ";
+        if (event.source_field6_0x6.has_value()) {
+            out << *event.source_field6_0x6;
+        } else {
+            out << "null";
+        }
+        out << ", \"actor_field6_0x6\": ";
+        if (event.actor_field6_0x6.has_value()) {
+            out << *event.actor_field6_0x6;
+        } else {
+            out << "null";
+        }
+        out << ", \"aux_list_root\": ";
+        if (event.aux_list_root.has_value()) {
+            out << "\"" << json_escape(*event.aux_list_root) << "\"";
+        } else {
+            out << "null";
+        }
+        out << ", \"query_arg0\": ";
+        if (event.query_arg0.has_value()) {
+            out << *event.query_arg0;
+        } else {
+            out << "null";
+        }
+        out << ", \"query_arg1\": ";
+        if (event.query_arg1.has_value()) {
+            out << *event.query_arg1;
+        } else {
+            out << "null";
+        }
+        out << ", \"query_arg2\": ";
+        if (event.query_arg2.has_value()) {
+            out << *event.query_arg2;
+        } else {
+            out << "null";
+        }
+        out << ", \"query_arg3\": ";
+        if (event.query_arg3.has_value()) {
+            out << *event.query_arg3;
+        } else {
+            out << "null";
+        }
+        out << ", \"query_result\": ";
+        if (event.query_result.has_value()) {
+            out << "\"" << json_escape(*event.query_result) << "\"";
+        } else {
+            out << "null";
+        }
+        out << ", \"selected_record_mode\": ";
+        if (event.selected_record_mode.has_value()) {
+            out << *event.selected_record_mode;
         } else {
             out << "null";
         }

@@ -4,6 +4,7 @@
 
 #include "ActionViewCameraModel.h"
 #include "ActionSourceCheckpointModel.h"
+#include "ActionViewGateCheckpointModel.h"
 #include "AttackResolutionCheckpointModel.h"
 #include "AttackResolutionModel.h"
 #include "CritGateCheckpointModel.h"
