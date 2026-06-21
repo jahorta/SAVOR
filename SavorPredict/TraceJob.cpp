@@ -70,6 +70,7 @@ struct TraceSummary {
     int observed_soldier_attack_events = 0;
     int enemy_ai_draws = 0;
     TurnOrderSimulation turn_order;
+    TurnOrderCheckpointExpectation turn_order_checkpoint_expectation;
     SoldierActionExecutionSummary soldier_action_execution;
     int turn_order_draws = 0;
     int known_through_turn_order = 0;
@@ -653,6 +654,7 @@ TraceSummary build_trace(JobSnapshot job, ParsedProgressEvents events, std::vect
     summary.turn_order = simulate_turn_order(
         state,
         first_battle_basic_turn_order_entries(soldier4_attacks, soldier5_attacks));
+    summary.turn_order_checkpoint_expectation = turn_order_checkpoint_expectation(summary.turn_order);
     summary.soldier_action_execution =
         analyze_first_battle_soldier_action_execution(summary.events, summary.turn_order);
     summary.turn_order_draws = summary.turn_order.draws_consumed;
@@ -814,6 +816,16 @@ void write_text(const TraceSummary& summary, std::ostream& out) {
     if (!summary.turn_order.execution_slots.empty()) {
         out << "    execution_slots: " << join_ints(summary.turn_order.execution_slots) << "\n";
     }
+    out << "    checkpoint expected priority-jitter draws: "
+        << summary.turn_order_checkpoint_expectation.expected_priority_jitter_draws
+        << " (" << summary.turn_order_checkpoint_expectation.pc << ")\n";
+    out << "    checkpoint queued entries: "
+        << summary.turn_order_checkpoint_expectation.expected_queued_entries
+        << ", jitter_modulus: "
+        << summary.turn_order_checkpoint_expectation.expected_jitter_modulus << "\n";
+    out << "    checkpoint rule: " << turn_order_checkpoint_rule_detail() << "\n";
+    out << "    trace-checkpoints args: --expected-turn-order-draws "
+        << summary.turn_order_checkpoint_expectation.expected_priority_jitter_draws << "\n";
     out << "  known_through_turn_order: " << summary.known_through_turn_order << "\n";
     if (summary.total_draw_distance.has_value()) {
         out << "  residual_after_turn_order: " << (*summary.total_draw_distance - summary.known_through_turn_order) << "\n";
@@ -1086,6 +1098,20 @@ void write_json(const TraceSummary& summary, std::ostream& out) {
         out << summary.turn_order.execution_slots[i];
     }
     out << "]},\n";
+    out << "  \"turn_order_checkpoint_expectation\": {";
+    out << "\"expected_priority_jitter_draws\": "
+        << summary.turn_order_checkpoint_expectation.expected_priority_jitter_draws;
+    out << ", \"expected_queued_entries\": "
+        << summary.turn_order_checkpoint_expectation.expected_queued_entries;
+    out << ", \"expected_jitter_modulus\": "
+        << summary.turn_order_checkpoint_expectation.expected_jitter_modulus;
+    out << ", \"owner\": \""
+        << summary.turn_order_checkpoint_expectation.owner << "\"";
+    out << ", \"pc\": \""
+        << summary.turn_order_checkpoint_expectation.pc << "\"";
+    out << ", \"rule\": \""
+        << json_escape(turn_order_checkpoint_rule_detail()) << "\"";
+    out << "},\n";
     out << "  \"known_through_turn_order\": " << summary.known_through_turn_order << ",\n";
     out << "  \"post_turn_order_model\": {";
     out << "\"enemy_execution_setup_draws_if_all_planned_soldiers_act\": "

@@ -109,6 +109,23 @@ TEST(SavorPredictRngModel, FirstBattleTurnOrderSpendsOneDrawPerQueuedBasicAction
     EXPECT_EQ(turn_order_priority_path_name(result.entries[0].path), std::string("RandomizedQuick"));
 }
 
+TEST(SavorPredictRngModel, FirstBattleTurnOrderCheckpointExpectationUsesSimulation) {
+    const auto result = simulate_turn_order(
+        0x12345678u,
+        first_battle_basic_turn_order_entries(true, false));
+
+    const auto expectation = turn_order_checkpoint_expectation(result);
+
+    EXPECT_EQ(expectation.expected_priority_jitter_draws, 3);
+    EXPECT_EQ(expectation.expected_queued_entries, 3);
+    EXPECT_EQ(expectation.expected_jitter_modulus, 10);
+    EXPECT_EQ(expectation.owner, std::string_view("turn_order_priority_jitter"));
+    EXPECT_EQ(expectation.pc, std::string_view("800711F8"));
+    EXPECT_NE(
+        std::string_view(turn_order_checkpoint_rule_detail()).find("one 800711f8"),
+        std::string_view::npos);
+}
+
 TEST(SavorPredictRngModel, TurnOrderUsesDescendingPriorityWhenPrioritiesAreKnown) {
     std::vector<TurnOrderEntryInput> entries;
     entries.push_back({.slot = 0, .quick = 10, .initial_priority = 30});
@@ -678,6 +695,45 @@ TEST(SavorPredictCheckpointTrace, SummarizesActionViewCameraCheckpoints) {
 
     const auto missing = summarize_action_view_camera_checkpoints(no_fallback, 2);
     EXPECT_EQ(missing.status, ActionViewCameraCheckpointStatus::MissingMode0eDraws);
+}
+
+TEST(SavorPredictCheckpointTrace, SummarizesTurnOrderCheckpoints) {
+    std::istringstream input(
+        "pc=800711f8 function=setupTurn checkpoint=priority rng_draw_index_before=10 "
+        "active_slot=0 quick=22 assigned_priority=27 rand_value=5\n"
+        "pc=800711f8 function=setupTurn checkpoint=priority rng_draw_index_before=11 "
+        "active_slot=1 quick=24 assigned_priority=30 rand_value=6\n"
+        "pc=800711f8 function=setupTurn checkpoint=priority rng_draw_index_before=12 "
+        "slot=4 quick=18 assigned_priority=21 rand_value=3\n");
+
+    const auto parsed = parse_checkpoint_stream(input);
+    ASSERT_TRUE(parsed.errors.empty());
+    ASSERT_EQ(parsed.events.size(), 3u);
+    EXPECT_EQ(parsed.events[0].known_rng_owner, "turn_order_priority_jitter");
+
+    const auto matched = summarize_turn_order_checkpoints(parsed.events, 3);
+    EXPECT_EQ(matched.status, TurnOrderCheckpointStatus::MatchesExpected);
+    EXPECT_EQ(matched.observed_priority_jitter_draws, 3);
+    ASSERT_TRUE(matched.first_priority_jitter_draw_index.has_value());
+    EXPECT_EQ(*matched.first_priority_jitter_draw_index, 10);
+    ASSERT_TRUE(matched.last_priority_jitter_draw_index.has_value());
+    EXPECT_EQ(*matched.last_priority_jitter_draw_index, 12);
+    EXPECT_EQ(matched.draws_with_slot, 3);
+    EXPECT_EQ(matched.draws_with_quick, 3);
+    EXPECT_EQ(matched.draws_with_assigned_priority, 3);
+    EXPECT_EQ(matched.draws_with_rand_value, 3);
+    ASSERT_EQ(matched.draws.size(), 3u);
+    ASSERT_TRUE(matched.draws[2].slot.has_value());
+    EXPECT_EQ(*matched.draws[2].slot, 4);
+
+    const auto missing = summarize_turn_order_checkpoints(parsed.events, 4);
+    EXPECT_EQ(missing.status, TurnOrderCheckpointStatus::MissingPriorityJitterDraws);
+
+    const auto extra = summarize_turn_order_checkpoints(parsed.events, 2);
+    EXPECT_EQ(extra.status, TurnOrderCheckpointStatus::ExtraPriorityJitterDraws);
+    EXPECT_EQ(
+        turn_order_checkpoint_status_name(extra.status),
+        std::string("ExtraPriorityJitterDraws"));
 }
 
 TEST(SavorPredictCheckpointTrace, SummarizesAttackResolutionCheckpoints) {

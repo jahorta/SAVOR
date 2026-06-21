@@ -2,6 +2,7 @@
 
 #include "ActionViewCameraModel.h"
 #include "AttackResolutionCheckpointModel.h"
+#include "TurnOrderCheckpointModel.h"
 
 #include <algorithm>
 #include <cctype>
@@ -253,6 +254,9 @@ void write_text_report(
     if (options.expected_mode0e_camera_draws.has_value()) {
         out << "  expected_mode0e_camera_draws: " << *options.expected_mode0e_camera_draws << "\n";
     }
+    if (options.expected_turn_order_draws.has_value()) {
+        out << "  expected_turn_order_draws: " << *options.expected_turn_order_draws << "\n";
+    }
     if (options.expected_attack_events.has_value()) {
         out << "  expected_attack_events: " << *options.expected_attack_events << "\n";
     }
@@ -326,6 +330,72 @@ void write_text_report(
         << action_view.mode0e_draws_before_first_attack_hit << "\n";
     out << "  mode0e_draws_after_first_attack_hit: "
         << action_view.mode0e_draws_after_first_attack_hit << "\n";
+
+    const auto turn_order = summarize_turn_order_checkpoints(
+        result.events,
+        options.expected_turn_order_draws);
+    out << "\nTurn-order checkpoints\n";
+    out << "  status: " << turn_order_checkpoint_status_name(turn_order.status) << "\n";
+    out << "  expected_turn_order_draws: ";
+    if (turn_order.expected_priority_jitter_draws.has_value()) {
+        out << *turn_order.expected_priority_jitter_draws << "\n";
+    } else {
+        out << "unknown\n";
+    }
+    out << "  observed_priority_jitter_draws: "
+        << turn_order.observed_priority_jitter_draws << "\n";
+    out << "  first_priority_jitter_draw_index: ";
+    if (turn_order.first_priority_jitter_draw_index.has_value()) {
+        out << *turn_order.first_priority_jitter_draw_index << "\n";
+    } else {
+        out << "unknown\n";
+    }
+    out << "  last_priority_jitter_draw_index: ";
+    if (turn_order.last_priority_jitter_draw_index.has_value()) {
+        out << *turn_order.last_priority_jitter_draw_index << "\n";
+    } else {
+        out << "unknown\n";
+    }
+    out << "  draws_with_slot: " << turn_order.draws_with_slot << "\n";
+    out << "  draws_with_quick: " << turn_order.draws_with_quick << "\n";
+    out << "  draws_with_assigned_priority: " << turn_order.draws_with_assigned_priority << "\n";
+    out << "  draws_with_rand_value: " << turn_order.draws_with_rand_value << "\n";
+    if (!turn_order.draws.empty()) {
+        out << "  draws:\n";
+        for (const auto& draw : turn_order.draws) {
+            out << "    draw_index=";
+            if (draw.draw_index.has_value()) {
+                out << *draw.draw_index;
+            } else {
+                out << "unknown";
+            }
+            out << " slot=";
+            if (draw.slot.has_value()) {
+                out << *draw.slot;
+            } else {
+                out << "unknown";
+            }
+            out << " quick=";
+            if (draw.quick.has_value()) {
+                out << *draw.quick;
+            } else {
+                out << "unknown";
+            }
+            out << " assigned_priority=";
+            if (draw.assigned_priority.has_value()) {
+                out << *draw.assigned_priority;
+            } else {
+                out << "unknown";
+            }
+            out << " rand_value=";
+            if (draw.rand_value.has_value()) {
+                out << *draw.rand_value;
+            } else {
+                out << "unknown";
+            }
+            out << "\n";
+        }
+    }
 
     const auto attack_resolution = summarize_attack_resolution_checkpoints(
         result.events,
@@ -428,6 +498,13 @@ void write_json_report(
         out << "null";
     }
     out << ",\n";
+    out << "  \"expected_turn_order_draws\": ";
+    if (options.expected_turn_order_draws.has_value()) {
+        out << *options.expected_turn_order_draws;
+    } else {
+        out << "null";
+    }
+    out << ",\n";
     out << "  \"expected_attack_events\": ";
     if (options.expected_attack_events.has_value()) {
         out << *options.expected_attack_events;
@@ -503,6 +580,77 @@ void write_json_report(
         << action_view.mode0e_draws_before_first_attack_hit;
     out << ", \"mode0e_draws_after_first_attack_hit\": "
         << action_view.mode0e_draws_after_first_attack_hit;
+    out << "},\n";
+
+    const auto turn_order = summarize_turn_order_checkpoints(
+        result.events,
+        options.expected_turn_order_draws);
+    out << "  \"turn_order_checkpoints\": {";
+    out << "\"status\": \"" << turn_order_checkpoint_status_name(turn_order.status) << "\"";
+    out << ", \"expected_priority_jitter_draws\": ";
+    if (turn_order.expected_priority_jitter_draws.has_value()) {
+        out << *turn_order.expected_priority_jitter_draws;
+    } else {
+        out << "null";
+    }
+    out << ", \"observed_priority_jitter_draws\": "
+        << turn_order.observed_priority_jitter_draws;
+    out << ", \"first_priority_jitter_draw_index\": ";
+    if (turn_order.first_priority_jitter_draw_index.has_value()) {
+        out << *turn_order.first_priority_jitter_draw_index;
+    } else {
+        out << "null";
+    }
+    out << ", \"last_priority_jitter_draw_index\": ";
+    if (turn_order.last_priority_jitter_draw_index.has_value()) {
+        out << *turn_order.last_priority_jitter_draw_index;
+    } else {
+        out << "null";
+    }
+    out << ", \"draws_with_slot\": " << turn_order.draws_with_slot;
+    out << ", \"draws_with_quick\": " << turn_order.draws_with_quick;
+    out << ", \"draws_with_assigned_priority\": "
+        << turn_order.draws_with_assigned_priority;
+    out << ", \"draws_with_rand_value\": " << turn_order.draws_with_rand_value;
+    out << ", \"draws\": [";
+    for (std::size_t i = 0; i < turn_order.draws.size(); ++i) {
+        if (i != 0) {
+            out << ", ";
+        }
+        const auto& draw = turn_order.draws[i];
+        out << "{\"draw_index\": ";
+        if (draw.draw_index.has_value()) {
+            out << *draw.draw_index;
+        } else {
+            out << "null";
+        }
+        out << ", \"slot\": ";
+        if (draw.slot.has_value()) {
+            out << *draw.slot;
+        } else {
+            out << "null";
+        }
+        out << ", \"quick\": ";
+        if (draw.quick.has_value()) {
+            out << *draw.quick;
+        } else {
+            out << "null";
+        }
+        out << ", \"assigned_priority\": ";
+        if (draw.assigned_priority.has_value()) {
+            out << *draw.assigned_priority;
+        } else {
+            out << "null";
+        }
+        out << ", \"rand_value\": ";
+        if (draw.rand_value.has_value()) {
+            out << *draw.rand_value;
+        } else {
+            out << "null";
+        }
+        out << "}";
+    }
+    out << "]";
     out << "},\n";
 
     const auto attack_resolution = summarize_attack_resolution_checkpoints(

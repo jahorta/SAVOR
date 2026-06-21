@@ -18,6 +18,7 @@
     <ClCompile Include="..\SavorPredict\RngModel.cpp" />
     <ClCompile Include="..\SavorPredict\SoldierActionExecutionModel.cpp" />
     <ClCompile Include="..\SavorPredict\SoldierAiModel.cpp" />
+    <ClCompile Include="..\SavorPredict\TurnOrderCheckpointModel.cpp" />
     <ClCompile Include="..\SavorPredict\TurnOrderModel.cpp" />
     <ClCompile Include="..\third-party\googletest-1.17.0\googlemock\src\gmock-all.cc" />
     <ClCompile Include="..\third-party\googletest-1.17.0\googletest\src\gtest-all.cc" />

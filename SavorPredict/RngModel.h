@@ -13,4 +13,5 @@
 #include "RngCore.h"
 #include "SoldierActionExecutionModel.h"
 #include "SoldierAiModel.h"
+#include "TurnOrderCheckpointModel.h"
 #include "TurnOrderModel.h"

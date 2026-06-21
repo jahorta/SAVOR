@@ -17,7 +17,7 @@ void print_usage(std::ostream& out) {
         << "Usage:\n"
         << "  SavorPredict prepare-db [--source PATH] [--dest PATH] [--overwrite]\n"
         << "  SavorPredict trace-job (--turn-job-id N | --exec-job-id N) [--db-root PATH] [--format text|json] [--max-distance N]\n\n"
-        << "  SavorPredict trace-checkpoints --checkpoint-file PATH [--turn-job-id N | --exec-job-id N] [--db-root PATH] [--format text|json] [--expected-mode0e-camera-draws N] [--expected-attack-events N] [--expected-crit-draws N]\n\n"
+        << "  SavorPredict trace-checkpoints --checkpoint-file PATH [--turn-job-id N | --exec-job-id N] [--db-root PATH] [--format text|json] [--expected-mode0e-camera-draws N] [--expected-turn-order-draws N] [--expected-attack-events N] [--expected-crit-draws N]\n\n"
         << "Defaults:\n"
         << "  prepare-db --source D:/SoaSimDBDebug --dest D:/SavorPredictDB\n"
         << "  trace-job --db-root D:/SavorPredictDB --format text --max-distance 5000\n\n"
@@ -208,6 +208,13 @@ int run_trace_checkpoints_command(int argc, char** argv) {
                 return 2;
             }
             options.expected_mode0e_camera_draws = parsed;
+        } else if (arg == "--expected-turn-order-draws") {
+            int parsed = 0;
+            if (!require_value(argc, argv, i, arg, value, std::cerr) || !parse_int(value, parsed) || parsed < 0) {
+                std::cerr << "--expected-turn-order-draws requires a non-negative integer.\n";
+                return 2;
+            }
+            options.expected_turn_order_draws = parsed;
         } else if (arg == "--expected-attack-events") {
             int parsed = 0;
             if (!require_value(argc, argv, i, arg, value, std::cerr) || !parse_int(value, parsed) || parsed < 0) {
