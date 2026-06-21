@@ -84,6 +84,7 @@ struct TraceSummary {
     int first_battle_soldier_drop_draws_from_events = 0;
     bool first_battle_soldier_drop_draws_known = true;
     std::optional<DropCheckpointExpectation> drop_checkpoint_expectation;
+    OutcomeCheckpointExpectation outcome_checkpoint_expectation;
     ActionViewCameraExpectation action_view_camera_expectation;
     int first_battle_mode0e_camera_draws_for_observed_attacks = 0;
     int observed_lethal_attack_events = 0;
@@ -683,6 +684,8 @@ TraceSummary build_trace(JobSnapshot job, ParsedProgressEvents events, std::vect
         summary.drop_checkpoint_expectation =
             first_battle_drop_checkpoint_expectation(summary.first_battle_soldier_drop_draws_from_events);
     }
+    summary.outcome_checkpoint_expectation =
+        first_battle_outcome_checkpoint_expectation(summary.job.battle_outcome);
     summary.action_view_camera_expectation = first_battle_action_view_camera_expectation(summary.events);
     summary.first_battle_mode0e_camera_draws_for_observed_attacks =
         summary.action_view_camera_expectation.expected_mode0e_camera_draws;
@@ -950,6 +953,22 @@ void write_text(const TraceSummary& summary, std::ostream& out) {
         }
     } else {
         out << "unknown item outside first-battle Soldier drop table\n";
+    }
+    out << "  outcome branch checkpoints:\n";
+    out << "    rule: " << first_battle_outcome_checkpoint_rule_detail() << "\n";
+    if (summary.outcome_checkpoint_expectation.expected_end_turn_status_draws.has_value()) {
+        out << "    expected end-turn status cleanup draws: "
+            << *summary.outcome_checkpoint_expectation.expected_end_turn_status_draws
+            << " (" << summary.outcome_checkpoint_expectation.end_turn_pc << ")\n";
+        out << "    trace-checkpoints args: --expected-end-turn-status-draws "
+            << *summary.outcome_checkpoint_expectation.expected_end_turn_status_draws;
+        if (summary.outcome_checkpoint_expectation.expected_level_up_stat_rolls.has_value()) {
+            out << " --expected-level-up-stat-rolls "
+                << *summary.outcome_checkpoint_expectation.expected_level_up_stat_rolls;
+        }
+        out << "\n";
+    } else {
+        out << "    exact end-turn/level-up expectations pending EXP and threshold modeling\n";
     }
     out << "  expected mode-0xe action-view camera draws for observed attacks: "
         << summary.first_battle_mode0e_camera_draws_for_observed_attacks
@@ -1285,6 +1304,32 @@ void write_json(const TraceSummary& summary, std::ostream& out) {
     } else {
         out << "null";
     }
+    out << ", \"outcome_checkpoint_expectation\": {";
+    out << "\"expected_end_turn_status_draws\": ";
+    if (summary.outcome_checkpoint_expectation.expected_end_turn_status_draws.has_value()) {
+        out << *summary.outcome_checkpoint_expectation.expected_end_turn_status_draws;
+    } else {
+        out << "null";
+    }
+    out << ", \"expected_level_up_stat_rolls\": ";
+    if (summary.outcome_checkpoint_expectation.expected_level_up_stat_rolls.has_value()) {
+        out << *summary.outcome_checkpoint_expectation.expected_level_up_stat_rolls;
+    } else {
+        out << "null";
+    }
+    out << ", \"end_turn_owner\": \""
+        << summary.outcome_checkpoint_expectation.end_turn_owner << "\"";
+    out << ", \"end_turn_pc\": \""
+        << summary.outcome_checkpoint_expectation.end_turn_pc << "\"";
+    out << ", \"level_up_roll_1_owner\": \""
+        << summary.outcome_checkpoint_expectation.level_up_roll_1_owner << "\"";
+    out << ", \"level_up_roll_2_owner\": \""
+        << summary.outcome_checkpoint_expectation.level_up_roll_2_owner << "\"";
+    out << ", \"level_up_roll_3_owner\": \""
+        << summary.outcome_checkpoint_expectation.level_up_roll_3_owner << "\"";
+    out << ", \"rule\": \""
+        << json_escape(first_battle_outcome_checkpoint_rule_detail()) << "\"";
+    out << "}";
     out << ", \"mode0e_action_view_camera_draws_for_observed_attacks\": "
         << summary.first_battle_mode0e_camera_draws_for_observed_attacks;
     out << ", \"mode0e_action_view_camera_owner\": \""

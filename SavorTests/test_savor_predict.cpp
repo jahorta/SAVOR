@@ -5,6 +5,7 @@
 #include <RngModel.h>
 
 #include <cstdint>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -381,6 +382,24 @@ TEST(SavorPredictRngModel, FirstBattleDropCheckpointExpectationUsesDropDrawCount
     EXPECT_EQ(expectation.pc, std::string_view("8002BAE8"));
     EXPECT_NE(
         std::string_view(first_battle_drop_checkpoint_rule_detail()).find("enemyDropItem_8002ba8c"),
+        std::string_view::npos);
+}
+
+TEST(SavorPredictRngModel, FirstBattleOutcomeCheckpointExpectationSkipsReachedNextTurnCleanup) {
+    const auto reached_next_turn = first_battle_outcome_checkpoint_expectation(6);
+
+    ASSERT_TRUE(reached_next_turn.expected_end_turn_status_draws.has_value());
+    EXPECT_EQ(*reached_next_turn.expected_end_turn_status_draws, 0);
+    ASSERT_TRUE(reached_next_turn.expected_level_up_stat_rolls.has_value());
+    EXPECT_EQ(*reached_next_turn.expected_level_up_stat_rolls, 0);
+    EXPECT_EQ(reached_next_turn.end_turn_owner, std::string_view("end_turn_status_cleanup"));
+    EXPECT_EQ(reached_next_turn.end_turn_pc, std::string_view("8006FF38"));
+
+    const auto victory = first_battle_outcome_checkpoint_expectation(0);
+    EXPECT_FALSE(victory.expected_end_turn_status_draws.has_value());
+    EXPECT_FALSE(victory.expected_level_up_stat_rolls.has_value());
+    EXPECT_NE(
+        std::string_view(first_battle_outcome_checkpoint_rule_detail()).find("ReachedNextTurn"),
         std::string_view::npos);
 }
 
@@ -905,6 +924,50 @@ TEST(SavorPredictCheckpointTrace, SummarizesDropCheckpoints) {
     EXPECT_EQ(
         drop_checkpoint_status_name(extra.status),
         std::string("ExtraDropRolls"));
+}
+
+TEST(SavorPredictCheckpointTrace, SummarizesOutcomeCheckpoints) {
+    std::istringstream input(
+        "pc=8006ff38 function=endTurn checkpoint=status rng_draw_index_before=40 "
+        "actor_slot=0 status_effect_id=0 rand_value=12\n"
+        "pc=801f2b6c function=LevelUp checkpoint=stat1 rng_draw_index_before=41 "
+        "actor_slot=0 stat_index=1 level=2 rand_value=3\n"
+        "pc=801f2c00 function=LevelUp checkpoint=stat2 rng_draw_index_before=42 "
+        "actor_slot=0 stat_index=2 level=2 rand_value=4\n"
+        "pc=801f2d10 function=LevelUp checkpoint=stat3 rng_draw_index_before=43 "
+        "actor_slot=0 stat_index=3 level=2 rand_value=5\n");
+
+    const auto parsed = parse_checkpoint_stream(input);
+    ASSERT_TRUE(parsed.errors.empty());
+    ASSERT_EQ(parsed.events.size(), 4u);
+    EXPECT_EQ(parsed.events[0].known_rng_owner, "end_turn_status_cleanup");
+    EXPECT_EQ(parsed.events[1].known_rng_owner, "level_up_stat_roll_1");
+
+    const auto matched = summarize_outcome_checkpoints(parsed.events, 1, 3);
+    EXPECT_EQ(matched.status, OutcomeCheckpointStatus::MatchesExpected);
+    EXPECT_EQ(matched.observed_end_turn_status_draws, 1);
+    EXPECT_EQ(matched.observed_level_up_stat_rolls, 3);
+    EXPECT_EQ(matched.observed_level_up_roll_1_draws, 1);
+    EXPECT_EQ(matched.observed_level_up_roll_2_draws, 1);
+    EXPECT_EQ(matched.observed_level_up_roll_3_draws, 1);
+    ASSERT_TRUE(matched.first_end_turn_status_draw_index.has_value());
+    EXPECT_EQ(*matched.first_end_turn_status_draw_index, 40);
+    ASSERT_TRUE(matched.first_level_up_stat_roll_index.has_value());
+    EXPECT_EQ(*matched.first_level_up_stat_roll_index, 41);
+    EXPECT_EQ(matched.draws_with_actor_slot, 4);
+    EXPECT_EQ(matched.draws_with_rand_value, 4);
+    ASSERT_EQ(matched.draws.size(), 4u);
+    ASSERT_TRUE(matched.draws[2].stat_index.has_value());
+    EXPECT_EQ(*matched.draws[2].stat_index, 2);
+
+    const auto end_turn_mismatch = summarize_outcome_checkpoints(parsed.events, 0, 0);
+    EXPECT_EQ(end_turn_mismatch.status, OutcomeCheckpointStatus::EndTurnStatusDrawMismatch);
+
+    const auto level_up_mismatch = summarize_outcome_checkpoints(parsed.events, std::nullopt, 2);
+    EXPECT_EQ(level_up_mismatch.status, OutcomeCheckpointStatus::LevelUpStatRollMismatch);
+    EXPECT_EQ(
+        outcome_checkpoint_status_name(level_up_mismatch.status),
+        std::string("LevelUpStatRollMismatch"));
 }
 
 TEST(SavorPredictCheckpointTrace, RejectsRegressingDrawIndexes) {

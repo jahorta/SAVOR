@@ -4,6 +4,7 @@
 #include "AttackResolutionCheckpointModel.h"
 #include "CounterCheckpointModel.h"
 #include "DropCheckpointModel.h"
+#include "OutcomeCheckpointModel.h"
 #include "TurnOrderCheckpointModel.h"
 
 #include <algorithm>
@@ -270,6 +271,14 @@ void write_text_report(
     }
     if (options.expected_drop_rolls.has_value()) {
         out << "  expected_drop_rolls: " << *options.expected_drop_rolls << "\n";
+    }
+    if (options.expected_end_turn_status_draws.has_value()) {
+        out << "  expected_end_turn_status_draws: "
+            << *options.expected_end_turn_status_draws << "\n";
+    }
+    if (options.expected_level_up_stat_rolls.has_value()) {
+        out << "  expected_level_up_stat_rolls: "
+            << *options.expected_level_up_stat_rolls << "\n";
     }
     out << "  db_root: " << options.db_root.string() << "\n";
     out << "  events: " << result.events.size() << "\n";
@@ -604,6 +613,92 @@ void write_text_report(
         }
     }
 
+    const auto outcome = summarize_outcome_checkpoints(
+        result.events,
+        options.expected_end_turn_status_draws,
+        options.expected_level_up_stat_rolls);
+    out << "\nOutcome checkpoints\n";
+    out << "  status: " << outcome_checkpoint_status_name(outcome.status) << "\n";
+    out << "  expected_end_turn_status_draws: ";
+    if (outcome.expected_end_turn_status_draws.has_value()) {
+        out << *outcome.expected_end_turn_status_draws << "\n";
+    } else {
+        out << "unknown\n";
+    }
+    out << "  expected_level_up_stat_rolls: ";
+    if (outcome.expected_level_up_stat_rolls.has_value()) {
+        out << *outcome.expected_level_up_stat_rolls << "\n";
+    } else {
+        out << "unknown\n";
+    }
+    out << "  observed_end_turn_status_draws: "
+        << outcome.observed_end_turn_status_draws << "\n";
+    out << "  observed_level_up_stat_rolls: "
+        << outcome.observed_level_up_stat_rolls << "\n";
+    out << "  observed_level_up_roll_1_draws: "
+        << outcome.observed_level_up_roll_1_draws << "\n";
+    out << "  observed_level_up_roll_2_draws: "
+        << outcome.observed_level_up_roll_2_draws << "\n";
+    out << "  observed_level_up_roll_3_draws: "
+        << outcome.observed_level_up_roll_3_draws << "\n";
+    out << "  first_end_turn_status_draw_index: ";
+    if (outcome.first_end_turn_status_draw_index.has_value()) {
+        out << *outcome.first_end_turn_status_draw_index << "\n";
+    } else {
+        out << "unknown\n";
+    }
+    out << "  first_level_up_stat_roll_index: ";
+    if (outcome.first_level_up_stat_roll_index.has_value()) {
+        out << *outcome.first_level_up_stat_roll_index << "\n";
+    } else {
+        out << "unknown\n";
+    }
+    out << "  draws_with_actor_slot: " << outcome.draws_with_actor_slot << "\n";
+    out << "  draws_with_rand_value: " << outcome.draws_with_rand_value << "\n";
+    if (!outcome.draws.empty()) {
+        out << "  draws:\n";
+        for (const auto& draw : outcome.draws) {
+            out << "    draw_index=";
+            if (draw.draw_index.has_value()) {
+                out << *draw.draw_index;
+            } else {
+                out << "unknown";
+            }
+            out << " owner=" << draw.owner;
+            out << " actor_slot=";
+            if (draw.actor_slot.has_value()) {
+                out << *draw.actor_slot;
+            } else {
+                out << "unknown";
+            }
+            out << " status_effect_id=";
+            if (draw.status_effect_id.has_value()) {
+                out << *draw.status_effect_id;
+            } else {
+                out << "unknown";
+            }
+            out << " stat_index=";
+            if (draw.stat_index.has_value()) {
+                out << *draw.stat_index;
+            } else {
+                out << "unknown";
+            }
+            out << " level=";
+            if (draw.level.has_value()) {
+                out << *draw.level;
+            } else {
+                out << "unknown";
+            }
+            out << " rand_value=";
+            if (draw.rand_value.has_value()) {
+                out << *draw.rand_value;
+            } else {
+                out << "unknown";
+            }
+            out << "\n";
+        }
+    }
+
     out << "\nFirst events\n";
     const auto limit = std::min<std::size_t>(result.events.size(), 10);
     for (std::size_t i = 0; i < limit; ++i) {
@@ -696,6 +791,20 @@ void write_json_report(
     out << "  \"expected_drop_rolls\": ";
     if (options.expected_drop_rolls.has_value()) {
         out << *options.expected_drop_rolls;
+    } else {
+        out << "null";
+    }
+    out << ",\n";
+    out << "  \"expected_end_turn_status_draws\": ";
+    if (options.expected_end_turn_status_draws.has_value()) {
+        out << *options.expected_end_turn_status_draws;
+    } else {
+        out << "null";
+    }
+    out << ",\n";
+    out << "  \"expected_level_up_stat_rolls\": ";
+    if (options.expected_level_up_stat_rolls.has_value()) {
+        out << *options.expected_level_up_stat_rolls;
     } else {
         out << "null";
     }
@@ -1092,6 +1201,96 @@ void write_json_report(
         out << ", \"drop_success\": ";
         if (draw.drop_success.has_value()) {
             out << *draw.drop_success;
+        } else {
+            out << "null";
+        }
+        out << "}";
+    }
+    out << "]";
+    out << "},\n";
+
+    const auto outcome = summarize_outcome_checkpoints(
+        result.events,
+        options.expected_end_turn_status_draws,
+        options.expected_level_up_stat_rolls);
+    out << "  \"outcome_checkpoints\": {";
+    out << "\"status\": \"" << outcome_checkpoint_status_name(outcome.status) << "\"";
+    out << ", \"expected_end_turn_status_draws\": ";
+    if (outcome.expected_end_turn_status_draws.has_value()) {
+        out << *outcome.expected_end_turn_status_draws;
+    } else {
+        out << "null";
+    }
+    out << ", \"expected_level_up_stat_rolls\": ";
+    if (outcome.expected_level_up_stat_rolls.has_value()) {
+        out << *outcome.expected_level_up_stat_rolls;
+    } else {
+        out << "null";
+    }
+    out << ", \"observed_end_turn_status_draws\": "
+        << outcome.observed_end_turn_status_draws;
+    out << ", \"observed_level_up_stat_rolls\": "
+        << outcome.observed_level_up_stat_rolls;
+    out << ", \"observed_level_up_roll_1_draws\": "
+        << outcome.observed_level_up_roll_1_draws;
+    out << ", \"observed_level_up_roll_2_draws\": "
+        << outcome.observed_level_up_roll_2_draws;
+    out << ", \"observed_level_up_roll_3_draws\": "
+        << outcome.observed_level_up_roll_3_draws;
+    out << ", \"first_end_turn_status_draw_index\": ";
+    if (outcome.first_end_turn_status_draw_index.has_value()) {
+        out << *outcome.first_end_turn_status_draw_index;
+    } else {
+        out << "null";
+    }
+    out << ", \"first_level_up_stat_roll_index\": ";
+    if (outcome.first_level_up_stat_roll_index.has_value()) {
+        out << *outcome.first_level_up_stat_roll_index;
+    } else {
+        out << "null";
+    }
+    out << ", \"draws_with_actor_slot\": " << outcome.draws_with_actor_slot;
+    out << ", \"draws_with_rand_value\": " << outcome.draws_with_rand_value;
+    out << ", \"draws\": [";
+    for (std::size_t i = 0; i < outcome.draws.size(); ++i) {
+        if (i != 0) {
+            out << ", ";
+        }
+        const auto& draw = outcome.draws[i];
+        out << "{\"draw_index\": ";
+        if (draw.draw_index.has_value()) {
+            out << *draw.draw_index;
+        } else {
+            out << "null";
+        }
+        out << ", \"owner\": \"" << json_escape(draw.owner) << "\"";
+        out << ", \"actor_slot\": ";
+        if (draw.actor_slot.has_value()) {
+            out << *draw.actor_slot;
+        } else {
+            out << "null";
+        }
+        out << ", \"status_effect_id\": ";
+        if (draw.status_effect_id.has_value()) {
+            out << *draw.status_effect_id;
+        } else {
+            out << "null";
+        }
+        out << ", \"stat_index\": ";
+        if (draw.stat_index.has_value()) {
+            out << *draw.stat_index;
+        } else {
+            out << "null";
+        }
+        out << ", \"level\": ";
+        if (draw.level.has_value()) {
+            out << *draw.level;
+        } else {
+            out << "null";
+        }
+        out << ", \"rand_value\": ";
+        if (draw.rand_value.has_value()) {
+            out << *draw.rand_value;
         } else {
             out << "null";
         }

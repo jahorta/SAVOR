@@ -11,6 +11,7 @@
 #include "DropModel.h"
 #include "EnemyAttackSetupModel.h"
 #include "FirstBattleDataModel.h"
+#include "OutcomeCheckpointModel.h"
 #include "PreAiCameraModel.h"
 #include "RngCore.h"
 #include "SoldierActionExecutionModel.h"
