@@ -1872,6 +1872,23 @@ TEST(SavorPredictCheckpointTrace, SummarizesDropCheckpoints) {
     EXPECT_EQ(matched.draws_with_target_slot, 2);
     EXPECT_EQ(matched.draws_with_drop_row, 2);
     EXPECT_EQ(matched.draws_with_rand_value, 2);
+    EXPECT_EQ(matched.first_battle_drop_rows_validated, 2);
+    EXPECT_EQ(matched.drop_rolls_with_live_outcome_fields, 2);
+    EXPECT_EQ(matched.drop_rolls_missing_live_outcome_fields, 0);
+    EXPECT_EQ(matched.drop_table_matches, 2);
+    EXPECT_EQ(matched.drop_table_mismatches, 0);
+    EXPECT_EQ(matched.drop_outcome_matches, 2);
+    EXPECT_EQ(matched.drop_outcome_mismatches, 0);
+    EXPECT_EQ(matched.disabled_first_battle_rows_observed, 0);
+    EXPECT_EQ(matched.successful_drop_rolls, 1);
+    EXPECT_EQ(matched.failed_drop_rolls, 1);
+    EXPECT_EQ(matched.drop_rolls_after_success, 0);
+    ASSERT_TRUE(matched.final_drop_row_index.has_value());
+    EXPECT_EQ(*matched.final_drop_row_index, 2);
+    ASSERT_TRUE(matched.final_drop_item_id.has_value());
+    EXPECT_EQ(*matched.final_drop_item_id, 258);
+    ASSERT_TRUE(matched.final_drop_amount.has_value());
+    EXPECT_EQ(*matched.final_drop_amount, 1);
     EXPECT_EQ(matched.observed_damage_bonus_draws, 2);
     EXPECT_EQ(matched.damage_bonus_draws_before_first_drop, 1);
     EXPECT_EQ(matched.damage_bonus_draws_after_first_drop, 1);
@@ -1886,6 +1903,10 @@ TEST(SavorPredictCheckpointTrace, SummarizesDropCheckpoints) {
     EXPECT_EQ(*matched.draws[1].drop_success, 1);
     ASSERT_TRUE(matched.draws[1].drop_item_id.has_value());
     EXPECT_EQ(*matched.draws[1].drop_item_id, 258);
+    ASSERT_TRUE(matched.draws[1].expected_drop_success.has_value());
+    EXPECT_EQ(*matched.draws[1].expected_drop_success, 1);
+    EXPECT_TRUE(matched.draws[1].drop_table_matches);
+    EXPECT_TRUE(matched.draws[1].drop_outcome_matches);
 
     const auto missing = summarize_drop_checkpoints(parsed.events, 3);
     EXPECT_EQ(missing.status, DropCheckpointStatus::MissingDropRolls);
@@ -1895,6 +1916,58 @@ TEST(SavorPredictCheckpointTrace, SummarizesDropCheckpoints) {
     EXPECT_EQ(
         drop_checkpoint_status_name(extra.status),
         std::string("ExtraDropRolls"));
+
+    std::istringstream outcome_mismatch_input(
+        "pc=8002bae8 function=enemyDropItem checkpoint=row rng_draw_index_before=24 "
+        "target_slot=4 enemy_entry_id=0 drop_row_index=1 drop_item_id=273 "
+        "drop_amount=1 rand_value=44 rand_mod100=44 drop_success=1\n");
+    const auto outcome_mismatch_parsed = parse_checkpoint_stream(outcome_mismatch_input);
+    ASSERT_TRUE(outcome_mismatch_parsed.errors.empty());
+    const auto outcome_mismatch =
+        summarize_drop_checkpoints(outcome_mismatch_parsed.events, std::nullopt);
+    EXPECT_EQ(outcome_mismatch.status, DropCheckpointStatus::DropOutcomeMismatch);
+    EXPECT_EQ(
+        drop_checkpoint_status_name(outcome_mismatch.status),
+        std::string("DropOutcomeMismatch"));
+    EXPECT_EQ(outcome_mismatch.drop_outcome_mismatches, 1);
+
+    std::istringstream table_mismatch_input(
+        "pc=8002bae8 function=enemyDropItem checkpoint=row rng_draw_index_before=24 "
+        "target_slot=4 enemy_entry_id=0 drop_row_index=2 drop_item_id=273 "
+        "drop_amount=1 rand_value=44 rand_mod100=44 drop_success=0\n");
+    const auto table_mismatch_parsed = parse_checkpoint_stream(table_mismatch_input);
+    ASSERT_TRUE(table_mismatch_parsed.errors.empty());
+    const auto table_mismatch =
+        summarize_drop_checkpoints(table_mismatch_parsed.events, std::nullopt);
+    EXPECT_EQ(table_mismatch.status, DropCheckpointStatus::DropTableMismatch);
+    EXPECT_EQ(table_mismatch.drop_table_mismatches, 1);
+
+    std::istringstream disabled_row_input(
+        "pc=8002bae8 function=enemyDropItem checkpoint=row rng_draw_index_before=24 "
+        "target_slot=4 enemy_entry_id=0 drop_row_index=3 drop_item_id=0 "
+        "drop_amount=0 rand_value=44 rand_mod100=44 drop_success=0\n");
+    const auto disabled_row_parsed = parse_checkpoint_stream(disabled_row_input);
+    ASSERT_TRUE(disabled_row_parsed.errors.empty());
+    const auto disabled_row =
+        summarize_drop_checkpoints(disabled_row_parsed.events, std::nullopt);
+    EXPECT_EQ(disabled_row.status, DropCheckpointStatus::DropTableMismatch);
+    EXPECT_EQ(disabled_row.disabled_first_battle_rows_observed, 1);
+
+    std::istringstream continuation_input(
+        "pc=8002bae8 function=enemyDropItem checkpoint=row rng_draw_index_before=24 "
+        "target_slot=4 enemy_entry_id=0 drop_row_index=1 drop_item_id=273 "
+        "drop_amount=1 rand_value=0 rand_mod100=0 drop_success=1\n"
+        "pc=8002bae8 function=enemyDropItem checkpoint=row rng_draw_index_before=25 "
+        "target_slot=4 enemy_entry_id=0 drop_row_index=2 drop_item_id=258 "
+        "drop_amount=1 rand_value=44 rand_mod100=44 drop_success=0\n");
+    const auto continuation_parsed = parse_checkpoint_stream(continuation_input);
+    ASSERT_TRUE(continuation_parsed.errors.empty());
+    const auto continuation =
+        summarize_drop_checkpoints(continuation_parsed.events, std::nullopt);
+    EXPECT_EQ(continuation.status, DropCheckpointStatus::DropContinuationMismatch);
+    EXPECT_EQ(continuation.drop_rolls_after_success, 1);
+    ASSERT_EQ(continuation.draws.size(), 2u);
+    EXPECT_TRUE(continuation.draws[1].roll_after_success);
 }
 
 TEST(SavorPredictCheckpointTrace, SummarizesDeathDropCheckpoints) {

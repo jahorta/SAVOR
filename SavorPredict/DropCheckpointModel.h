@@ -13,6 +13,10 @@ enum class DropCheckpointStatus {
     MatchesExpected,
     MissingDropRolls,
     ExtraDropRolls,
+    MissingLiveDropFields,
+    DropTableMismatch,
+    DropOutcomeMismatch,
+    DropContinuationMismatch,
 };
 
 struct DropCheckpointExpectation {
@@ -31,6 +35,14 @@ struct DropCheckpointDraw {
     std::optional<int> rand_value;
     std::optional<int> rand_mod100;
     std::optional<int> drop_success;
+    std::optional<int> expected_drop_item_id;
+    std::optional<int> expected_drop_amount;
+    std::optional<int> expected_drop_threshold;
+    std::optional<int> expected_drop_success;
+    bool first_battle_row_validated = false;
+    bool drop_table_matches = false;
+    bool drop_outcome_matches = false;
+    bool roll_after_success = false;
 };
 
 struct DropCheckpointSummary {
@@ -41,6 +53,20 @@ struct DropCheckpointSummary {
     int draws_with_target_slot = 0;
     int draws_with_drop_row = 0;
     int draws_with_rand_value = 0;
+    int first_battle_drop_rows_validated = 0;
+    int drop_rolls_with_live_outcome_fields = 0;
+    int drop_rolls_missing_live_outcome_fields = 0;
+    int drop_table_matches = 0;
+    int drop_table_mismatches = 0;
+    int drop_outcome_matches = 0;
+    int drop_outcome_mismatches = 0;
+    int disabled_first_battle_rows_observed = 0;
+    int successful_drop_rolls = 0;
+    int failed_drop_rolls = 0;
+    int drop_rolls_after_success = 0;
+    std::optional<int> final_drop_row_index;
+    std::optional<int> final_drop_item_id;
+    std::optional<int> final_drop_amount;
     int observed_damage_bonus_draws = 0;
     int damage_bonus_draws_before_first_drop = 0;
     int damage_bonus_draws_after_first_drop = 0;

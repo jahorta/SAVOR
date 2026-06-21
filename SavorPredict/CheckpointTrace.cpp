@@ -1597,6 +1597,30 @@ void write_text_report(
     out << "  draws_with_target_slot: " << drop.draws_with_target_slot << "\n";
     out << "  draws_with_drop_row: " << drop.draws_with_drop_row << "\n";
     out << "  draws_with_rand_value: " << drop.draws_with_rand_value << "\n";
+    out << "  first_battle_drop_rows_validated: "
+        << drop.first_battle_drop_rows_validated << "\n";
+    out << "  drop_rolls_with_live_outcome_fields: "
+        << drop.drop_rolls_with_live_outcome_fields << "\n";
+    out << "  drop_rolls_missing_live_outcome_fields: "
+        << drop.drop_rolls_missing_live_outcome_fields << "\n";
+    out << "  drop_table_matches: " << drop.drop_table_matches << "\n";
+    out << "  drop_table_mismatches: " << drop.drop_table_mismatches << "\n";
+    out << "  drop_outcome_matches: " << drop.drop_outcome_matches << "\n";
+    out << "  drop_outcome_mismatches: " << drop.drop_outcome_mismatches << "\n";
+    out << "  disabled_first_battle_rows_observed: "
+        << drop.disabled_first_battle_rows_observed << "\n";
+    out << "  successful_drop_rolls: " << drop.successful_drop_rolls << "\n";
+    out << "  failed_drop_rolls: " << drop.failed_drop_rolls << "\n";
+    out << "  drop_rolls_after_success: " << drop.drop_rolls_after_success << "\n";
+    out << "  final_drop_row_index: ";
+    write_optional_int(out, drop.final_drop_row_index);
+    out << "\n";
+    out << "  final_drop_item_id: ";
+    write_optional_int(out, drop.final_drop_item_id);
+    out << "\n";
+    out << "  final_drop_amount: ";
+    write_optional_int(out, drop.final_drop_amount);
+    out << "\n";
     out << "  observed_damage_bonus_draws: " << drop.observed_damage_bonus_draws << "\n";
     out << "  damage_bonus_draws_before_first_drop: "
         << drop.damage_bonus_draws_before_first_drop << "\n";
@@ -1649,6 +1673,22 @@ void write_text_report(
             } else {
                 out << "unknown";
             }
+            out << " expected_drop_item_id=";
+            write_optional_int(out, draw.expected_drop_item_id);
+            out << " expected_drop_amount=";
+            write_optional_int(out, draw.expected_drop_amount);
+            out << " expected_drop_threshold=";
+            write_optional_int(out, draw.expected_drop_threshold);
+            out << " expected_drop_success=";
+            write_optional_int(out, draw.expected_drop_success);
+            out << " first_battle_row_validated="
+                << (draw.first_battle_row_validated ? "true" : "false");
+            out << " drop_table_matches="
+                << (draw.drop_table_matches ? "true" : "false");
+            out << " drop_outcome_matches="
+                << (draw.drop_outcome_matches ? "true" : "false");
+            out << " roll_after_success="
+                << (draw.roll_after_success ? "true" : "false");
             out << "\n";
         }
     }
@@ -3222,6 +3262,27 @@ void write_json_report(
     out << ", \"draws_with_target_slot\": " << drop.draws_with_target_slot;
     out << ", \"draws_with_drop_row\": " << drop.draws_with_drop_row;
     out << ", \"draws_with_rand_value\": " << drop.draws_with_rand_value;
+    out << ", \"first_battle_drop_rows_validated\": "
+        << drop.first_battle_drop_rows_validated;
+    out << ", \"drop_rolls_with_live_outcome_fields\": "
+        << drop.drop_rolls_with_live_outcome_fields;
+    out << ", \"drop_rolls_missing_live_outcome_fields\": "
+        << drop.drop_rolls_missing_live_outcome_fields;
+    out << ", \"drop_table_matches\": " << drop.drop_table_matches;
+    out << ", \"drop_table_mismatches\": " << drop.drop_table_mismatches;
+    out << ", \"drop_outcome_matches\": " << drop.drop_outcome_matches;
+    out << ", \"drop_outcome_mismatches\": " << drop.drop_outcome_mismatches;
+    out << ", \"disabled_first_battle_rows_observed\": "
+        << drop.disabled_first_battle_rows_observed;
+    out << ", \"successful_drop_rolls\": " << drop.successful_drop_rolls;
+    out << ", \"failed_drop_rolls\": " << drop.failed_drop_rolls;
+    out << ", \"drop_rolls_after_success\": " << drop.drop_rolls_after_success;
+    out << ", \"final_drop_row_index\": ";
+    write_json_optional_int(out, drop.final_drop_row_index);
+    out << ", \"final_drop_item_id\": ";
+    write_json_optional_int(out, drop.final_drop_item_id);
+    out << ", \"final_drop_amount\": ";
+    write_json_optional_int(out, drop.final_drop_amount);
     out << ", \"observed_damage_bonus_draws\": " << drop.observed_damage_bonus_draws;
     out << ", \"damage_bonus_draws_before_first_drop\": "
         << drop.damage_bonus_draws_before_first_drop;
@@ -3298,6 +3359,22 @@ void write_json_report(
         } else {
             out << "null";
         }
+        out << ", \"expected_drop_item_id\": ";
+        write_json_optional_int(out, draw.expected_drop_item_id);
+        out << ", \"expected_drop_amount\": ";
+        write_json_optional_int(out, draw.expected_drop_amount);
+        out << ", \"expected_drop_threshold\": ";
+        write_json_optional_int(out, draw.expected_drop_threshold);
+        out << ", \"expected_drop_success\": ";
+        write_json_optional_int(out, draw.expected_drop_success);
+        out << ", \"first_battle_row_validated\": "
+            << (draw.first_battle_row_validated ? "true" : "false");
+        out << ", \"drop_table_matches\": "
+            << (draw.drop_table_matches ? "true" : "false");
+        out << ", \"drop_outcome_matches\": "
+            << (draw.drop_outcome_matches ? "true" : "false");
+        out << ", \"roll_after_success\": "
+            << (draw.roll_after_success ? "true" : "false");
         out << "}";
     }
     out << "]";
