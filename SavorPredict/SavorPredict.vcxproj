@@ -109,6 +109,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="ActionViewCameraModel.cpp" />
+    <ClCompile Include="AttackResolutionCheckpointModel.cpp" />
     <ClCompile Include="AttackResolutionModel.cpp" />
     <ClCompile Include="CheckpointTrace.cpp" />
     <ClCompile Include="CounterModel.cpp" />
@@ -128,6 +129,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="ActionViewCameraModel.h" />
+    <ClInclude Include="AttackResolutionCheckpointModel.h" />
     <ClInclude Include="AttackResolutionModel.h" />
     <ClInclude Include="CheckpointTrace.h" />
     <ClInclude Include="CounterModel.h" />

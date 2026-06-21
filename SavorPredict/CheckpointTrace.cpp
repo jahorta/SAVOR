@@ -1,6 +1,7 @@
 #include "CheckpointTrace.h"
 
 #include "ActionViewCameraModel.h"
+#include "AttackResolutionCheckpointModel.h"
 
 #include <algorithm>
 #include <cctype>
@@ -252,6 +253,12 @@ void write_text_report(
     if (options.expected_mode0e_camera_draws.has_value()) {
         out << "  expected_mode0e_camera_draws: " << *options.expected_mode0e_camera_draws << "\n";
     }
+    if (options.expected_attack_events.has_value()) {
+        out << "  expected_attack_events: " << *options.expected_attack_events << "\n";
+    }
+    if (options.expected_crit_draws.has_value()) {
+        out << "  expected_crit_draws: " << *options.expected_crit_draws << "\n";
+    }
     out << "  db_root: " << options.db_root.string() << "\n";
     out << "  events: " << result.events.size() << "\n";
 
@@ -320,6 +327,46 @@ void write_text_report(
     out << "  mode0e_draws_after_first_attack_hit: "
         << action_view.mode0e_draws_after_first_attack_hit << "\n";
 
+    const auto attack_resolution = summarize_attack_resolution_checkpoints(
+        result.events,
+        options.expected_attack_events,
+        options.expected_crit_draws);
+    out << "\nAttack-result and damage checkpoints\n";
+    out << "  status: " << attack_resolution_checkpoint_status_name(attack_resolution.status) << "\n";
+    out << "  expected_attack_events: ";
+    if (attack_resolution.expected_attack_events.has_value()) {
+        out << *attack_resolution.expected_attack_events << "\n";
+    } else {
+        out << "unknown\n";
+    }
+    out << "  expected_crit_draws: ";
+    if (attack_resolution.expected_crit_draws.has_value()) {
+        out << *attack_resolution.expected_crit_draws << "\n";
+    } else {
+        out << "unknown\n";
+    }
+    out << "  observed_hit_draws: " << attack_resolution.observed_hit_draws << "\n";
+    out << "  observed_crit_draws: " << attack_resolution.observed_crit_draws << "\n";
+    out << "  observed_damage_spread_draws: "
+        << attack_resolution.observed_damage_spread_draws << "\n";
+    out << "  observed_damage_bonus_draws: "
+        << attack_resolution.observed_damage_bonus_draws << "\n";
+    out << "  first_hit_draw_index: ";
+    if (attack_resolution.first_hit_draw_index.has_value()) {
+        out << *attack_resolution.first_hit_draw_index << "\n";
+    } else {
+        out << "unknown\n";
+    }
+    out << "  first_damage_spread_draw_index: ";
+    if (attack_resolution.first_damage_spread_draw_index.has_value()) {
+        out << *attack_resolution.first_damage_spread_draw_index << "\n";
+    } else {
+        out << "unknown\n";
+    }
+    out << "  damage_pairs_in_order: " << attack_resolution.damage_pairs_in_order << "\n";
+    out << "  damage_pairs_out_of_order: "
+        << attack_resolution.damage_pairs_out_of_order << "\n";
+
     out << "\nFirst events\n";
     const auto limit = std::min<std::size_t>(result.events.size(), 10);
     for (std::size_t i = 0; i < limit; ++i) {
@@ -377,6 +424,20 @@ void write_json_report(
     out << "  \"expected_mode0e_camera_draws\": ";
     if (options.expected_mode0e_camera_draws.has_value()) {
         out << *options.expected_mode0e_camera_draws;
+    } else {
+        out << "null";
+    }
+    out << ",\n";
+    out << "  \"expected_attack_events\": ";
+    if (options.expected_attack_events.has_value()) {
+        out << *options.expected_attack_events;
+    } else {
+        out << "null";
+    }
+    out << ",\n";
+    out << "  \"expected_crit_draws\": ";
+    if (options.expected_crit_draws.has_value()) {
+        out << *options.expected_crit_draws;
     } else {
         out << "null";
     }
@@ -442,6 +503,48 @@ void write_json_report(
         << action_view.mode0e_draws_before_first_attack_hit;
     out << ", \"mode0e_draws_after_first_attack_hit\": "
         << action_view.mode0e_draws_after_first_attack_hit;
+    out << "},\n";
+
+    const auto attack_resolution = summarize_attack_resolution_checkpoints(
+        result.events,
+        options.expected_attack_events,
+        options.expected_crit_draws);
+    out << "  \"attack_resolution_checkpoints\": {";
+    out << "\"status\": \"" << attack_resolution_checkpoint_status_name(attack_resolution.status) << "\"";
+    out << ", \"expected_attack_events\": ";
+    if (attack_resolution.expected_attack_events.has_value()) {
+        out << *attack_resolution.expected_attack_events;
+    } else {
+        out << "null";
+    }
+    out << ", \"expected_crit_draws\": ";
+    if (attack_resolution.expected_crit_draws.has_value()) {
+        out << *attack_resolution.expected_crit_draws;
+    } else {
+        out << "null";
+    }
+    out << ", \"observed_hit_draws\": " << attack_resolution.observed_hit_draws;
+    out << ", \"observed_crit_draws\": " << attack_resolution.observed_crit_draws;
+    out << ", \"observed_damage_spread_draws\": "
+        << attack_resolution.observed_damage_spread_draws;
+    out << ", \"observed_damage_bonus_draws\": "
+        << attack_resolution.observed_damage_bonus_draws;
+    out << ", \"first_hit_draw_index\": ";
+    if (attack_resolution.first_hit_draw_index.has_value()) {
+        out << *attack_resolution.first_hit_draw_index;
+    } else {
+        out << "null";
+    }
+    out << ", \"first_damage_spread_draw_index\": ";
+    if (attack_resolution.first_damage_spread_draw_index.has_value()) {
+        out << *attack_resolution.first_damage_spread_draw_index;
+    } else {
+        out << "null";
+    }
+    out << ", \"damage_pairs_in_order\": "
+        << attack_resolution.damage_pairs_in_order;
+    out << ", \"damage_pairs_out_of_order\": "
+        << attack_resolution.damage_pairs_out_of_order;
     out << "}\n";
     out << "}\n";
 }

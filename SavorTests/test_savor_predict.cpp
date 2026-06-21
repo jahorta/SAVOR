@@ -281,6 +281,29 @@ TEST(SavorPredictRngModel, FirstBattleActionViewCameraExpectationCountsObservedA
     EXPECT_NE(std::string_view(first_battle_action_view_camera_rule_detail()).find("mode 0xe"), std::string_view::npos);
 }
 
+TEST(SavorPredictRngModel, FirstBattleAttackResolutionCheckpointExpectationCountsDamageEvents) {
+    ParsedProgressEvents events;
+    events.attacks.push_back(AttackEvent{"Aika", "[4]Soldier", 30});
+    events.attacks.push_back(AttackEvent{"Vyse", "[4]Soldier", 43});
+    events.attacks.push_back(AttackEvent{"[5]Soldier", "Vyse", 46});
+
+    const auto expectation = first_battle_attack_resolution_checkpoint_expectation(events, 2);
+
+    EXPECT_EQ(expectation.observed_attack_events, 3);
+    EXPECT_EQ(expectation.expected_hit_draws, 3);
+    EXPECT_EQ(expectation.expected_damage_spread_draws, 3);
+    EXPECT_EQ(expectation.expected_damage_bonus_draws, 3);
+    ASSERT_TRUE(expectation.expected_crit_draws.has_value());
+    EXPECT_EQ(*expectation.expected_crit_draws, 2);
+    EXPECT_EQ(expectation.hit_owner, std::string_view("attack_hit_dodge"));
+    EXPECT_EQ(expectation.crit_owner, std::string_view("attack_critical"));
+    EXPECT_EQ(expectation.damage_spread_owner, std::string_view("damage_spread"));
+    EXPECT_EQ(expectation.damage_bonus_owner, std::string_view("damage_low_bit_bonus"));
+    EXPECT_NE(
+        std::string_view(first_battle_attack_resolution_checkpoint_rule_detail()).find("damage event"),
+        std::string_view::npos);
+}
+
 TEST(SavorPredictRngModel, FirstBattleSoldierDropSimulationMatchesEnabledRows) {
     std::optional<std::uint32_t> electri_seed;
     std::optional<std::uint32_t> moonberry_seed;
@@ -655,6 +678,57 @@ TEST(SavorPredictCheckpointTrace, SummarizesActionViewCameraCheckpoints) {
 
     const auto missing = summarize_action_view_camera_checkpoints(no_fallback, 2);
     EXPECT_EQ(missing.status, ActionViewCameraCheckpointStatus::MissingMode0eDraws);
+}
+
+TEST(SavorPredictCheckpointTrace, SummarizesAttackResolutionCheckpoints) {
+    std::istringstream input(
+        "pc=80010bdc function=getAttackResult checkpoint=hit rng_draw_index_before=20\n"
+        "pc=80010c44 function=getAttackResult checkpoint=crit rng_draw_index_before=21\n"
+        "pc=80010958 function=rollDamage checkpoint=spread rng_draw_index_before=22\n"
+        "pc=80010984 function=rollDamage checkpoint=bonus rng_draw_index_before=23\n"
+        "pc=80010bdc function=getAttackResult checkpoint=hit rng_draw_index_before=24\n"
+        "pc=80010958 function=rollDamage checkpoint=spread rng_draw_index_before=25\n"
+        "pc=80010984 function=rollDamage checkpoint=bonus rng_draw_index_before=26\n");
+
+    const auto parsed = parse_checkpoint_stream(input);
+    ASSERT_TRUE(parsed.errors.empty());
+    ASSERT_EQ(parsed.events.size(), 7u);
+    EXPECT_EQ(parsed.events[0].known_rng_owner, "attack_hit_dodge");
+    EXPECT_EQ(parsed.events[1].known_rng_owner, "attack_critical");
+    EXPECT_EQ(parsed.events[2].known_rng_owner, "damage_spread");
+    EXPECT_EQ(parsed.events[3].known_rng_owner, "damage_low_bit_bonus");
+
+    const auto matched = summarize_attack_resolution_checkpoints(parsed.events, 2, 1);
+    EXPECT_EQ(matched.status, AttackResolutionCheckpointStatus::MatchesExpected);
+    EXPECT_EQ(matched.observed_hit_draws, 2);
+    EXPECT_EQ(matched.observed_crit_draws, 1);
+    EXPECT_EQ(matched.observed_damage_spread_draws, 2);
+    EXPECT_EQ(matched.observed_damage_bonus_draws, 2);
+    ASSERT_TRUE(matched.first_hit_draw_index.has_value());
+    EXPECT_EQ(*matched.first_hit_draw_index, 20);
+    ASSERT_TRUE(matched.first_damage_spread_draw_index.has_value());
+    EXPECT_EQ(*matched.first_damage_spread_draw_index, 22);
+    EXPECT_EQ(matched.damage_pairs_in_order, 2);
+    EXPECT_EQ(matched.damage_pairs_out_of_order, 0);
+
+    const auto missing = summarize_attack_resolution_checkpoints(parsed.events, 3, 1);
+    EXPECT_EQ(missing.status, AttackResolutionCheckpointStatus::MissingHitDraws);
+
+    const auto crit_mismatch = summarize_attack_resolution_checkpoints(parsed.events, 2, 2);
+    EXPECT_EQ(crit_mismatch.status, AttackResolutionCheckpointStatus::CritDrawCountMismatch);
+    EXPECT_EQ(
+        attack_resolution_checkpoint_status_name(crit_mismatch.status),
+        std::string("CritDrawCountMismatch"));
+
+    std::istringstream out_of_order_input(
+        "pc=80010bdc function=getAttackResult checkpoint=hit rng_draw_index_before=20\n"
+        "pc=80010984 function=rollDamage checkpoint=bonus rng_draw_index_before=21\n"
+        "pc=80010958 function=rollDamage checkpoint=spread rng_draw_index_before=22\n");
+    const auto out_of_order = parse_checkpoint_stream(out_of_order_input);
+    ASSERT_TRUE(out_of_order.errors.empty());
+    const auto order_summary = summarize_attack_resolution_checkpoints(out_of_order.events, 1, 0);
+    EXPECT_EQ(order_summary.status, AttackResolutionCheckpointStatus::DamagePairOrderMismatch);
+    EXPECT_EQ(order_summary.damage_pairs_out_of_order, 1);
 }
 
 TEST(SavorPredictCheckpointTrace, RejectsRegressingDrawIndexes) {

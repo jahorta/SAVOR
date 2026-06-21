@@ -78,6 +78,7 @@ struct TraceSummary {
     int observed_shared_attack_damage_draw_floor = 0;
     int observed_shared_attack_optional_crit_candidates = 0;
     int observed_shared_attack_crit_skipped_by_instr_param_events = 0;
+    AttackResolutionCheckpointExpectation attack_resolution_checkpoint_expectation;
     std::vector<CritGateSummary> crit_gate_events;
     int first_battle_soldier_drop_draws_from_events = 0;
     bool first_battle_soldier_drop_draws_known = true;
@@ -666,6 +667,10 @@ TraceSummary build_trace(JobSnapshot job, ParsedProgressEvents events, std::vect
         summary.crit_gate_events,
         summary.observed_shared_attack_optional_crit_candidates,
         summary.observed_shared_attack_crit_skipped_by_instr_param_events);
+    summary.attack_resolution_checkpoint_expectation =
+        first_battle_attack_resolution_checkpoint_expectation(
+            summary.events,
+            summary.observed_shared_attack_optional_crit_candidates);
     summarize_first_battle_drop_draws(
         summary.events,
         summary.first_battle_soldier_drop_draws_from_events,
@@ -852,6 +857,18 @@ void write_text(const TraceSummary& summary, std::ostream& out) {
     out << "  observed shared attack damage draw floor: "
         << summary.observed_shared_attack_damage_draw_floor
         << " (3 per damage event: hit/dodge plus two damage rolls)\n";
+    out << "    checkpoint expectation: "
+        << summary.attack_resolution_checkpoint_expectation.expected_hit_draws
+        << " hit draws, "
+        << summary.attack_resolution_checkpoint_expectation.expected_damage_spread_draws
+        << " damage-spread draws, "
+        << summary.attack_resolution_checkpoint_expectation.expected_damage_bonus_draws
+        << " low-bit bonus draws\n";
+    out << "    checkpoint rule: " << first_battle_attack_resolution_checkpoint_rule_detail() << "\n";
+    out << "    trace-checkpoints args: --expected-attack-events "
+        << summary.attack_resolution_checkpoint_expectation.observed_attack_events
+        << " --expected-crit-draws "
+        << summary.observed_shared_attack_optional_crit_candidates << "\n";
     out << "  damage formula simulation: helper implemented, exact prediction pending live current stats, HP, element, status, and draw-order checkpoints\n";
     out << "  optional crit draw candidates from damage events: "
         << summary.observed_shared_attack_optional_crit_candidates << "\n";
@@ -1116,6 +1133,24 @@ void write_json(const TraceSummary& summary, std::ostream& out) {
     out << "  \"action_execution_observation\": {";
     out << "\"shared_attack_damage_draw_floor\": " << summary.observed_shared_attack_damage_draw_floor;
     out << ", \"shared_attack_damage_draw_floor_rule\": \"3 per damage event: hit/dodge plus two damage rolls\"";
+    out << ", \"attack_resolution_checkpoint_expectation\": {";
+    out << "\"expected_attack_events\": "
+        << summary.attack_resolution_checkpoint_expectation.observed_attack_events;
+    out << ", \"expected_hit_draws\": "
+        << summary.attack_resolution_checkpoint_expectation.expected_hit_draws;
+    out << ", \"expected_damage_spread_draws\": "
+        << summary.attack_resolution_checkpoint_expectation.expected_damage_spread_draws;
+    out << ", \"expected_damage_bonus_draws\": "
+        << summary.attack_resolution_checkpoint_expectation.expected_damage_bonus_draws;
+    out << ", \"expected_crit_draws\": ";
+    if (summary.attack_resolution_checkpoint_expectation.expected_crit_draws.has_value()) {
+        out << *summary.attack_resolution_checkpoint_expectation.expected_crit_draws;
+    } else {
+        out << "null";
+    }
+    out << ", \"rule\": \""
+        << json_escape(first_battle_attack_resolution_checkpoint_rule_detail()) << "\"";
+    out << "}";
     out << ", \"damage_formula_model_status\": \"helper implemented; exact prediction pending live current stats, HP, element, status, and draw-order checkpoints\"";
     out << ", \"optional_crit_draw_candidates\": " << summary.observed_shared_attack_optional_crit_candidates;
     out << ", \"crit_draws_skipped_by_known_nonzero_instr_param\": "
