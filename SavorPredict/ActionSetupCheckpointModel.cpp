@@ -14,6 +14,8 @@ constexpr std::string_view kEnemySetupOwner = "enemy_attack_execution_setup";
 constexpr std::string_view kAttackHitOwner = "attack_hit_dodge";
 constexpr const char* kPcHandlerPc = "80086C68";
 constexpr const char* kEnemyHandlerPc = "8008B9E0";
+constexpr const char* kEnemyWorkerParam0Pc = "80087F6C";
+constexpr const char* kEnemyWorkerFallbackPc = "80087844";
 
 std::string normalize_pc_string(std::string value) {
     if (value.rfind("0x", 0) == 0 || value.rfind("0X", 0) == 0) {
@@ -61,6 +63,36 @@ std::optional<std::string> parse_first_field_pc(
         const auto found = event.fields.find(field_name);
         if (found != event.fields.end() && !found->second.empty()) {
             return normalize_pc_string(found->second);
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<bool> parse_field_bool(const CheckpointEvent& event, const char* key) {
+    const auto found = event.fields.find(key);
+    if (found == event.fields.end()) {
+        return std::nullopt;
+    }
+
+    std::string lowered = found->second;
+    std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    if (lowered == "1" || lowered == "true" || lowered == "yes") {
+        return true;
+    }
+    if (lowered == "0" || lowered == "false" || lowered == "no") {
+        return false;
+    }
+    return std::nullopt;
+}
+
+std::optional<bool> parse_first_field_bool(
+    const CheckpointEvent& event,
+    std::initializer_list<const char*> field_names) {
+    for (const auto* field_name : field_names) {
+        if (const auto value = parse_field_bool(event, field_name); value.has_value()) {
+            return value;
         }
     }
     return std::nullopt;
@@ -119,6 +151,44 @@ std::optional<int> target_slot_from_event(const CheckpointEvent& event) {
     return parse_first_field_int(event, {"target_slot", "target"});
 }
 
+std::string expected_enemy_worker_pc_for_final_param(int final_instr_param_0x6) {
+    return final_instr_param_0x6 == 0 ? kEnemyWorkerParam0Pc : kEnemyWorkerFallbackPc;
+}
+
+bool has_required_enemy_helper_fields(const ActionSetupCheckpointEvent& event) {
+    if (!event.final_instr_param_0x6.has_value()
+        || !event.direct_close_candidate.has_value()
+        || !event.selected_worker_pc.has_value()) {
+        return false;
+    }
+
+    if (*event.direct_close_candidate == 0) {
+        return event.helper_8008a280_reached.has_value()
+            && event.target_adjacent.has_value();
+    }
+
+    if (!event.helper_8008a174_result.has_value()) {
+        return false;
+    }
+
+    if (*event.helper_8008a174_result != 0) {
+        if (!event.helper_80082340_result.has_value()) {
+            return false;
+        }
+        if (*event.helper_80082340_result == 0 && !event.target_distance.has_value()) {
+            return false;
+        }
+        if (*event.helper_80082340_result == 0
+            && event.target_distance.has_value()
+            && *event.target_distance < 5) {
+            return true;
+        }
+    }
+
+    return event.helper_8008a280_reached.has_value()
+        && event.target_adjacent.has_value();
+}
+
 ActionSetupCheckpointStatus classify_status(const ActionSetupCheckpointSummary& summary) {
     if (summary.handler_mismatches > 0) {
         return ActionSetupCheckpointStatus::HandlerMismatch;
@@ -141,6 +211,13 @@ ActionSetupCheckpointStatus classify_status(const ActionSetupCheckpointSummary& 
         }
         if (summary.observed_enemy_setup_draws > *summary.expected_enemy_setup_draws) {
             return ActionSetupCheckpointStatus::ExtraEnemySetupDraws;
+        }
+        if (summary.worker_mismatches > 0) {
+            return ActionSetupCheckpointStatus::WorkerMismatch;
+        }
+        if (summary.observed_enemy_setup_draws > 0
+            && summary.enemy_setup_draws_with_required_helper_fields < summary.observed_enemy_setup_draws) {
+            return ActionSetupCheckpointStatus::MissingEnemySetupHelperFields;
         }
         return ActionSetupCheckpointStatus::MatchesExpected;
     }
@@ -242,6 +319,25 @@ ActionSetupCheckpointSummary summarize_action_setup_checkpoints(
                 parse_first_field_int(event, {"setup_rand_mod10", "rand_mod10"});
             observed.direct_close_candidate =
                 parse_first_field_int(event, {"direct_close_candidate", "direct_close_branch_candidate"});
+            observed.final_instr_param_0x6 = parse_first_field_int(
+                event,
+                {"final_instr_param_0x6", "instr_param_after", "final_instr_param", "instr_param_final"});
+            observed.helper_8008a174_result = parse_first_field_int(
+                event,
+                {"helper_8008a174_result", "fun_8008a174_result", "target_repair_result"});
+            observed.helper_8008a280_reached = parse_first_field_bool(
+                event,
+                {"helper_8008a280_reached", "fun_8008a280_reached", "target_scope_helper_reached"});
+            observed.helper_80082340_result = parse_first_field_int(
+                event,
+                {"helper_80082340_result", "fun_80082340_result", "distance_helper_result"});
+            observed.target_adjacent = parse_first_field_int(
+                event,
+                {"target_adjacent", "check_target_adjacent", "checkTargetAdjacent_result"});
+            observed.target_distance =
+                parse_first_field_int(event, {"target_distance", "dist_to_target_0x14"});
+            observed.selected_worker_pc =
+                parse_first_field_pc(event, {"selected_worker_pc", "worker_pc", "next_function_pc"});
 
             ++summary.observed_enemy_setup_draws;
             maybe_set_first(summary.first_enemy_setup_draw_index, observed.draw_index);
@@ -256,6 +352,39 @@ ActionSetupCheckpointSummary summarize_action_setup_checkpoints(
             }
             if (observed.direct_close_candidate.has_value()) {
                 ++summary.enemy_setup_draws_with_direct_close_candidate;
+            }
+            if (observed.final_instr_param_0x6.has_value()) {
+                ++summary.enemy_setup_draws_with_final_instr_param;
+                observed.expected_worker_pc =
+                    expected_enemy_worker_pc_for_final_param(*observed.final_instr_param_0x6);
+            }
+            if (observed.helper_8008a174_result.has_value()) {
+                ++summary.enemy_setup_draws_with_helper_8008a174_result;
+            }
+            if (observed.helper_8008a280_reached.has_value()) {
+                ++summary.enemy_setup_draws_with_helper_8008a280_marker;
+            }
+            if (observed.helper_80082340_result.has_value()) {
+                ++summary.enemy_setup_draws_with_helper_80082340_result;
+            }
+            if (observed.target_adjacent.has_value()) {
+                ++summary.enemy_setup_draws_with_target_adjacency;
+            }
+            if (observed.target_distance.has_value()) {
+                ++summary.enemy_setup_draws_with_target_distance;
+            }
+            if (observed.selected_worker_pc.has_value()) {
+                ++summary.enemy_setup_draws_with_selected_worker;
+            }
+            if (observed.expected_worker_pc.has_value() && observed.selected_worker_pc.has_value()) {
+                if (*observed.expected_worker_pc == *observed.selected_worker_pc) {
+                    ++summary.worker_matches;
+                } else {
+                    ++summary.worker_mismatches;
+                }
+            }
+            if (has_required_enemy_helper_fields(observed)) {
+                ++summary.enemy_setup_draws_with_required_helper_fields;
             }
             summary.events.push_back(std::move(observed));
             continue;
@@ -315,6 +444,8 @@ const char* action_setup_checkpoint_status_name(ActionSetupCheckpointStatus stat
     case ActionSetupCheckpointStatus::HandlerMismatch: return "HandlerMismatch";
     case ActionSetupCheckpointStatus::MissingEnemySetupDraws: return "MissingEnemySetupDraws";
     case ActionSetupCheckpointStatus::ExtraEnemySetupDraws: return "ExtraEnemySetupDraws";
+    case ActionSetupCheckpointStatus::MissingEnemySetupHelperFields: return "MissingEnemySetupHelperFields";
+    case ActionSetupCheckpointStatus::WorkerMismatch: return "WorkerMismatch";
     default: return "Unknown";
     }
 }
@@ -330,7 +461,7 @@ const char* action_setup_checkpoint_kind_name(ActionSetupCheckpointKind kind) {
 }
 
 const char* first_battle_action_setup_checkpoint_rule_detail() {
-    return "first-battle setupAction should route slots 0-3 to HandlePCInst 80086c68 and enemy slots to HandleECInst 8008b9e0; Soldier attacks that reach HandleECInst should expose queued instruction fields and the 8008bc68 enemy-only setup draw before the shared attack-result draw";
+    return "first-battle setupAction should route slots 0-3 to HandlePCInst 80086c68 and enemy slots to HandleECInst 8008b9e0; Soldier attacks that reach HandleECInst should expose queued instruction fields, the 8008bc68 enemy-only setup draw, helper results that determine final instrParam_0x6, and worker 80087f6c/80087844 selection before the shared attack-result draw";
 }
 
 } // namespace savor::predict

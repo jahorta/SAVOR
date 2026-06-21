@@ -16,6 +16,8 @@ enum class ActionSetupCheckpointStatus {
     HandlerMismatch,
     MissingEnemySetupDraws,
     ExtraEnemySetupDraws,
+    MissingEnemySetupHelperFields,
+    WorkerMismatch,
 };
 
 enum class ActionSetupCheckpointKind {
@@ -38,6 +40,14 @@ struct ActionSetupCheckpointEvent {
     std::optional<int> setup_rand;
     std::optional<int> setup_rand_mod10;
     std::optional<int> direct_close_candidate;
+    std::optional<int> final_instr_param_0x6;
+    std::optional<int> helper_8008a174_result;
+    std::optional<bool> helper_8008a280_reached;
+    std::optional<int> helper_80082340_result;
+    std::optional<int> target_adjacent;
+    std::optional<int> target_distance;
+    std::optional<std::string> expected_worker_pc;
+    std::optional<std::string> selected_worker_pc;
 };
 
 struct ActionSetupCheckpointSummary {
@@ -61,6 +71,16 @@ struct ActionSetupCheckpointSummary {
     int enemy_setup_draws_with_rand_value = 0;
     int enemy_setup_draws_with_rand_mod10 = 0;
     int enemy_setup_draws_with_direct_close_candidate = 0;
+    int enemy_setup_draws_with_final_instr_param = 0;
+    int enemy_setup_draws_with_helper_8008a174_result = 0;
+    int enemy_setup_draws_with_helper_8008a280_marker = 0;
+    int enemy_setup_draws_with_helper_80082340_result = 0;
+    int enemy_setup_draws_with_target_adjacency = 0;
+    int enemy_setup_draws_with_target_distance = 0;
+    int enemy_setup_draws_with_selected_worker = 0;
+    int enemy_setup_draws_with_required_helper_fields = 0;
+    int worker_matches = 0;
+    int worker_mismatches = 0;
     std::optional<int> first_setup_action_draw_index;
     std::optional<int> first_pc_handler_draw_index;
     std::optional<int> first_enemy_handler_draw_index;

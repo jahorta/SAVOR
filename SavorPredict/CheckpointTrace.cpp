@@ -574,6 +574,24 @@ void write_text_report(
         << action_setup.enemy_setup_draws_with_rand_mod10 << "\n";
     out << "  enemy_setup_draws_with_direct_close_candidate: "
         << action_setup.enemy_setup_draws_with_direct_close_candidate << "\n";
+    out << "  enemy_setup_draws_with_final_instr_param: "
+        << action_setup.enemy_setup_draws_with_final_instr_param << "\n";
+    out << "  enemy_setup_draws_with_helper_8008a174_result: "
+        << action_setup.enemy_setup_draws_with_helper_8008a174_result << "\n";
+    out << "  enemy_setup_draws_with_helper_8008a280_marker: "
+        << action_setup.enemy_setup_draws_with_helper_8008a280_marker << "\n";
+    out << "  enemy_setup_draws_with_helper_80082340_result: "
+        << action_setup.enemy_setup_draws_with_helper_80082340_result << "\n";
+    out << "  enemy_setup_draws_with_target_adjacency: "
+        << action_setup.enemy_setup_draws_with_target_adjacency << "\n";
+    out << "  enemy_setup_draws_with_target_distance: "
+        << action_setup.enemy_setup_draws_with_target_distance << "\n";
+    out << "  enemy_setup_draws_with_selected_worker: "
+        << action_setup.enemy_setup_draws_with_selected_worker << "\n";
+    out << "  enemy_setup_draws_with_required_helper_fields: "
+        << action_setup.enemy_setup_draws_with_required_helper_fields << "\n";
+    out << "  worker_matches: " << action_setup.worker_matches << "\n";
+    out << "  worker_mismatches: " << action_setup.worker_mismatches << "\n";
     out << "  first_setup_action_draw_index: ";
     if (action_setup.first_setup_action_draw_index.has_value()) {
         out << *action_setup.first_setup_action_draw_index << "\n";
@@ -676,6 +694,22 @@ void write_text_report(
             } else {
                 out << "unknown";
             }
+            out << " final_instr_param_0x6=";
+            write_optional_int(out, event.final_instr_param_0x6);
+            out << " helper_8008a174_result=";
+            write_optional_int(out, event.helper_8008a174_result);
+            out << " helper_8008a280_reached=";
+            write_optional_bool(out, event.helper_8008a280_reached);
+            out << " helper_80082340_result=";
+            write_optional_int(out, event.helper_80082340_result);
+            out << " target_adjacent=";
+            write_optional_int(out, event.target_adjacent);
+            out << " target_distance=";
+            write_optional_int(out, event.target_distance);
+            out << " expected_worker_pc=";
+            write_optional_string(out, event.expected_worker_pc);
+            out << " selected_worker_pc=";
+            write_optional_string(out, event.selected_worker_pc);
             out << "\n";
         }
     }
@@ -1976,6 +2010,24 @@ void write_json_report(
         << action_setup.enemy_setup_draws_with_rand_mod10;
     out << ", \"enemy_setup_draws_with_direct_close_candidate\": "
         << action_setup.enemy_setup_draws_with_direct_close_candidate;
+    out << ", \"enemy_setup_draws_with_final_instr_param\": "
+        << action_setup.enemy_setup_draws_with_final_instr_param;
+    out << ", \"enemy_setup_draws_with_helper_8008a174_result\": "
+        << action_setup.enemy_setup_draws_with_helper_8008a174_result;
+    out << ", \"enemy_setup_draws_with_helper_8008a280_marker\": "
+        << action_setup.enemy_setup_draws_with_helper_8008a280_marker;
+    out << ", \"enemy_setup_draws_with_helper_80082340_result\": "
+        << action_setup.enemy_setup_draws_with_helper_80082340_result;
+    out << ", \"enemy_setup_draws_with_target_adjacency\": "
+        << action_setup.enemy_setup_draws_with_target_adjacency;
+    out << ", \"enemy_setup_draws_with_target_distance\": "
+        << action_setup.enemy_setup_draws_with_target_distance;
+    out << ", \"enemy_setup_draws_with_selected_worker\": "
+        << action_setup.enemy_setup_draws_with_selected_worker;
+    out << ", \"enemy_setup_draws_with_required_helper_fields\": "
+        << action_setup.enemy_setup_draws_with_required_helper_fields;
+    out << ", \"worker_matches\": " << action_setup.worker_matches;
+    out << ", \"worker_mismatches\": " << action_setup.worker_mismatches;
     out << ", \"first_setup_action_draw_index\": ";
     if (action_setup.first_setup_action_draw_index.has_value()) {
         out << *action_setup.first_setup_action_draw_index;
@@ -2081,6 +2133,22 @@ void write_json_report(
         } else {
             out << "null";
         }
+        out << ", \"final_instr_param_0x6\": ";
+        write_json_optional_int(out, event.final_instr_param_0x6);
+        out << ", \"helper_8008a174_result\": ";
+        write_json_optional_int(out, event.helper_8008a174_result);
+        out << ", \"helper_8008a280_reached\": ";
+        write_json_optional_bool(out, event.helper_8008a280_reached);
+        out << ", \"helper_80082340_result\": ";
+        write_json_optional_int(out, event.helper_80082340_result);
+        out << ", \"target_adjacent\": ";
+        write_json_optional_int(out, event.target_adjacent);
+        out << ", \"target_distance\": ";
+        write_json_optional_int(out, event.target_distance);
+        out << ", \"expected_worker_pc\": ";
+        write_json_optional_string(out, event.expected_worker_pc);
+        out << ", \"selected_worker_pc\": ";
+        write_json_optional_string(out, event.selected_worker_pc);
         out << "}";
     }
     out << "]";

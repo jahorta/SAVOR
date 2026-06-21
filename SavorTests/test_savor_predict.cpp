@@ -950,7 +950,8 @@ TEST(SavorPredictCheckpointTrace, SummarizesActionSetupCheckpoints) {
         "pc=8008bc68 function=Battle::HandleECInst checkpoint=enemy_setup "
         "rng_draw_index_before=24 active_slot=4 instruction=3 target_slot=0 "
         "instr_param_0x6=1 movement_flags=0xc0 setup_rand=27 setup_rand_mod10=7 "
-        "direct_close_candidate=1\n"
+        "direct_close_candidate=1 final_instr_param_0x6=0 helper_8008a174_result=1 "
+        "helper_80082340_result=0 target_distance=3 selected_worker_pc=80087f6c\n"
         "pc=80010bdc function=getAttackResult checkpoint=hit rng_draw_index_before=25\n");
 
     const auto parsed = parse_checkpoint_stream(input);
@@ -968,6 +969,14 @@ TEST(SavorPredictCheckpointTrace, SummarizesActionSetupCheckpoints) {
     EXPECT_EQ(matched.enemy_setup_draws_with_rand_value, 1);
     EXPECT_EQ(matched.enemy_setup_draws_with_rand_mod10, 1);
     EXPECT_EQ(matched.enemy_setup_draws_with_direct_close_candidate, 1);
+    EXPECT_EQ(matched.enemy_setup_draws_with_final_instr_param, 1);
+    EXPECT_EQ(matched.enemy_setup_draws_with_helper_8008a174_result, 1);
+    EXPECT_EQ(matched.enemy_setup_draws_with_helper_80082340_result, 1);
+    EXPECT_EQ(matched.enemy_setup_draws_with_target_distance, 1);
+    EXPECT_EQ(matched.enemy_setup_draws_with_selected_worker, 1);
+    EXPECT_EQ(matched.enemy_setup_draws_with_required_helper_fields, 1);
+    EXPECT_EQ(matched.worker_matches, 1);
+    EXPECT_EQ(matched.worker_mismatches, 0);
     ASSERT_TRUE(matched.first_enemy_setup_draw_index.has_value());
     EXPECT_EQ(*matched.first_enemy_setup_draw_index, 24);
     ASSERT_TRUE(matched.first_attack_hit_draw_index.has_value());
@@ -1004,6 +1013,36 @@ TEST(SavorPredictCheckpointTrace, SummarizesActionSetupCheckpoints) {
     EXPECT_EQ(
         action_setup_checkpoint_status_name(missing_fields.status),
         std::string("MissingLiveSetupFields"));
+
+    std::istringstream missing_helpers_input(
+        "pc=8008bc68 function=Battle::HandleECInst checkpoint=enemy_setup "
+        "rng_draw_index_before=24 active_slot=4 instruction=3 target_slot=0 "
+        "instr_param_0x6=1 movement_flags=0xc0 setup_rand=27 setup_rand_mod10=7 "
+        "direct_close_candidate=1\n");
+    const auto missing_helpers_parsed = parse_checkpoint_stream(missing_helpers_input);
+    ASSERT_TRUE(missing_helpers_parsed.errors.empty());
+    const auto missing_helpers = summarize_action_setup_checkpoints(
+        missing_helpers_parsed.events,
+        1);
+    EXPECT_EQ(
+        action_setup_checkpoint_status_name(missing_helpers.status),
+        std::string("MissingEnemySetupHelperFields"));
+
+    std::istringstream worker_mismatch_input(
+        "pc=8008bc68 function=Battle::HandleECInst checkpoint=enemy_setup "
+        "rng_draw_index_before=24 active_slot=4 instruction=3 target_slot=0 "
+        "instr_param_0x6=1 movement_flags=0xc0 setup_rand=27 setup_rand_mod10=7 "
+        "direct_close_candidate=0 final_instr_param_0x6=0 helper_8008a280_reached=true "
+        "target_adjacent=1 selected_worker_pc=80087844\n");
+    const auto worker_mismatch_parsed = parse_checkpoint_stream(worker_mismatch_input);
+    ASSERT_TRUE(worker_mismatch_parsed.errors.empty());
+    const auto worker_mismatch = summarize_action_setup_checkpoints(
+        worker_mismatch_parsed.events,
+        1);
+    EXPECT_EQ(
+        action_setup_checkpoint_status_name(worker_mismatch.status),
+        std::string("WorkerMismatch"));
+    EXPECT_EQ(worker_mismatch.worker_mismatches, 1);
 }
 
 TEST(SavorPredictCheckpointTrace, SummarizesActionViewGateCheckpoints) {
