@@ -15,9 +15,19 @@ enum class CounterCheckpointStatus {
     ExceedsExpectedCeiling,
     MatchesLiveGate,
     MissingLiveGateFields,
+    MissingCounterRolls,
+    UnexpectedCounterRolls,
+    MissingCounterFollowUp,
+    UnexpectedCounterFollowUp,
     CounterResultMismatch,
     CounterQueueMismatch,
     CounterChanceUpdateMismatch,
+};
+
+enum class CounterCheckpointKind {
+    GateAttempt,
+    CounterRoll,
+    CounterFollowUp,
 };
 
 struct CounterCheckpointExpectation {
@@ -27,6 +37,7 @@ struct CounterCheckpointExpectation {
 };
 
 struct CounterCheckpointDraw {
+    CounterCheckpointKind kind = CounterCheckpointKind::CounterRoll;
     std::optional<int> draw_index;
     std::optional<int> attacker_slot;
     std::optional<int> target_slot;
@@ -44,6 +55,9 @@ struct CounterCheckpointDraw {
     std::optional<int> expected_queued_field7_0xc;
     std::optional<int> expected_updated_current_counter_chance;
     std::optional<CounterResultReason> expected_reason;
+    std::optional<int> expected_counter_rolls;
+    std::optional<int> expected_counter_follow_up;
+    std::optional<int> observed_counter_follow_up;
     bool live_gate_inputs_complete = false;
     bool live_gate_simulated = false;
     bool counter_result_matches = false;
@@ -63,6 +77,13 @@ struct CounterCheckpointSummary {
     int draws_with_queue_result = 0;
     int draws_with_counter_chance_update = 0;
     int live_gate_simulated_draws = 0;
+    int observed_counter_gate_attempts = 0;
+    int gate_attempts_with_live_inputs = 0;
+    int expected_counter_rolls_from_gate_inputs = 0;
+    int expected_no_draw_gate_attempts = 0;
+    int no_draw_gate_attempts_simulated = 0;
+    int observed_counter_follow_up_events = 0;
+    int expected_counter_follow_up_events = 0;
     int counter_result_matches = 0;
     int counter_result_mismatches = 0;
     int queued_field_matches = 0;
@@ -79,6 +100,7 @@ CounterCheckpointSummary summarize_counter_checkpoints(
     const std::vector<CheckpointEvent>& events,
     std::optional<int> expected_counter_roll_ceiling);
 const char* counter_checkpoint_status_name(CounterCheckpointStatus status);
+const char* counter_checkpoint_kind_name(CounterCheckpointKind kind);
 const char* first_battle_counter_checkpoint_rule_detail();
 
 } // namespace savor::predict

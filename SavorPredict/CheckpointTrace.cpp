@@ -1159,6 +1159,20 @@ void write_text_report(
     out << "  draws_with_counter_chance_update: "
         << counter.draws_with_counter_chance_update << "\n";
     out << "  live_gate_simulated_draws: " << counter.live_gate_simulated_draws << "\n";
+    out << "  observed_counter_gate_attempts: "
+        << counter.observed_counter_gate_attempts << "\n";
+    out << "  gate_attempts_with_live_inputs: "
+        << counter.gate_attempts_with_live_inputs << "\n";
+    out << "  expected_counter_rolls_from_gate_inputs: "
+        << counter.expected_counter_rolls_from_gate_inputs << "\n";
+    out << "  expected_no_draw_gate_attempts: "
+        << counter.expected_no_draw_gate_attempts << "\n";
+    out << "  no_draw_gate_attempts_simulated: "
+        << counter.no_draw_gate_attempts_simulated << "\n";
+    out << "  observed_counter_follow_up_events: "
+        << counter.observed_counter_follow_up_events << "\n";
+    out << "  expected_counter_follow_up_events: "
+        << counter.expected_counter_follow_up_events << "\n";
     out << "  counter_result_matches: " << counter.counter_result_matches << "\n";
     out << "  counter_result_mismatches: " << counter.counter_result_mismatches << "\n";
     out << "  queued_field_matches: " << counter.queued_field_matches << "\n";
@@ -1169,56 +1183,31 @@ void write_text_report(
         << counter.counter_chance_update_mismatches << "\n";
     out << "  seed_transition_mismatches: " << counter.seed_transition_mismatches << "\n";
     if (!counter.draws.empty()) {
-        out << "  draws:\n";
+        out << "  events:\n";
         for (const auto& draw : counter.draws) {
             out << "    draw_index=";
-            if (draw.draw_index.has_value()) {
-                out << *draw.draw_index;
-            } else {
-                out << "unknown";
-            }
+            write_optional_int(out, draw.draw_index);
+            out << " kind=" << counter_checkpoint_kind_name(draw.kind);
             out << " attacker_slot=";
-            if (draw.attacker_slot.has_value()) {
-                out << *draw.attacker_slot;
-            } else {
-                out << "unknown";
-            }
+            write_optional_int(out, draw.attacker_slot);
             out << " target_slot=";
-            if (draw.target_slot.has_value()) {
-                out << *draw.target_slot;
-            } else {
-                out << "unknown";
-            }
+            write_optional_int(out, draw.target_slot);
             out << " cur_counter=";
-            if (draw.target_current_counter_chance.has_value()) {
-                out << *draw.target_current_counter_chance;
-            } else {
-                out << "unknown";
-            }
+            write_optional_int(out, draw.target_current_counter_chance);
             out << " crit=";
-            if (draw.attack_was_critical.has_value()) {
-                out << *draw.attack_was_critical;
-            } else {
-                out << "unknown";
-            }
+            write_optional_int(out, draw.attack_was_critical);
             out << " counter_rand=";
-            if (draw.counter_rand.has_value()) {
-                out << *draw.counter_rand;
-            } else {
-                out << "unknown";
-            }
+            write_optional_int(out, draw.counter_rand);
+            out << " expected_counter_rolls=";
+            write_optional_int(out, draw.expected_counter_rolls);
             out << " counter_result=";
-            if (draw.counter_result.has_value()) {
-                out << *draw.counter_result;
-            } else {
-                out << "unknown";
-            }
+            write_optional_int(out, draw.counter_result);
             out << " expected_counter_result=";
-            if (draw.expected_counter_result.has_value()) {
-                out << *draw.expected_counter_result;
-            } else {
-                out << "unknown";
-            }
+            write_optional_int(out, draw.expected_counter_result);
+            out << " expected_counter_follow_up=";
+            write_optional_int(out, draw.expected_counter_follow_up);
+            out << " observed_counter_follow_up=";
+            write_optional_int(out, draw.observed_counter_follow_up);
             out << " expected_reason=";
             if (draw.expected_reason.has_value()) {
                 out << counter_result_reason_name(*draw.expected_reason);
@@ -2502,6 +2491,20 @@ void write_json_report(
     out << ", \"draws_with_counter_chance_update\": "
         << counter.draws_with_counter_chance_update;
     out << ", \"live_gate_simulated_draws\": " << counter.live_gate_simulated_draws;
+    out << ", \"observed_counter_gate_attempts\": "
+        << counter.observed_counter_gate_attempts;
+    out << ", \"gate_attempts_with_live_inputs\": "
+        << counter.gate_attempts_with_live_inputs;
+    out << ", \"expected_counter_rolls_from_gate_inputs\": "
+        << counter.expected_counter_rolls_from_gate_inputs;
+    out << ", \"expected_no_draw_gate_attempts\": "
+        << counter.expected_no_draw_gate_attempts;
+    out << ", \"no_draw_gate_attempts_simulated\": "
+        << counter.no_draw_gate_attempts_simulated;
+    out << ", \"observed_counter_follow_up_events\": "
+        << counter.observed_counter_follow_up_events;
+    out << ", \"expected_counter_follow_up_events\": "
+        << counter.expected_counter_follow_up_events;
     out << ", \"counter_result_matches\": " << counter.counter_result_matches;
     out << ", \"counter_result_mismatches\": " << counter.counter_result_mismatches;
     out << ", \"queued_field_matches\": " << counter.queued_field_matches;
@@ -2512,7 +2515,7 @@ void write_json_report(
         << counter.counter_chance_update_mismatches;
     out << ", \"seed_transition_mismatches\": "
         << counter.seed_transition_mismatches;
-    out << ", \"draws\": [";
+    out << ", \"events\": [";
     for (std::size_t i = 0; i < counter.draws.size(); ++i) {
         if (i != 0) {
             out << ", ";
@@ -2520,6 +2523,8 @@ void write_json_report(
         const auto& draw = counter.draws[i];
         out << "{\"draw_index\": ";
         write_json_optional_int(out, draw.draw_index);
+        out << ", \"kind\": \""
+            << counter_checkpoint_kind_name(draw.kind) << "\"";
         out << ", \"attacker_slot\": ";
         write_json_optional_int(out, draw.attacker_slot);
         out << ", \"target_slot\": ";
@@ -2538,10 +2543,16 @@ void write_json_report(
         write_json_optional_int(out, draw.attack_was_critical);
         out << ", \"counter_rand\": ";
         write_json_optional_int(out, draw.counter_rand);
+        out << ", \"expected_counter_rolls\": ";
+        write_json_optional_int(out, draw.expected_counter_rolls);
         out << ", \"counter_result\": ";
         write_json_optional_int(out, draw.counter_result);
         out << ", \"expected_counter_result\": ";
         write_json_optional_int(out, draw.expected_counter_result);
+        out << ", \"expected_counter_follow_up\": ";
+        write_json_optional_int(out, draw.expected_counter_follow_up);
+        out << ", \"observed_counter_follow_up\": ";
+        write_json_optional_int(out, draw.observed_counter_follow_up);
         out << ", \"queued_field7_0xc\": ";
         write_json_optional_int(out, draw.queued_field7_0xc);
         out << ", \"expected_queued_field7_0xc\": ";

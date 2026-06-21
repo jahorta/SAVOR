@@ -2,6 +2,7 @@
 
 #include <cstdlib>
 #include <initializer_list>
+#include <string_view>
 #include <utility>
 
 namespace savor::predict {
@@ -39,6 +40,40 @@ std::optional<int> parse_first_field_int(
     return std::nullopt;
 }
 
+bool event_named(const CheckpointEvent& event, std::initializer_list<std::string_view> names) {
+    for (const auto name : names) {
+        if (event.function == name || event.checkpoint == name) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool field_truthy(const CheckpointEvent& event, const char* key) {
+    const auto value = parse_field_int(event, key);
+    return value.has_value() && *value != 0;
+}
+
+bool is_counter_gate_attempt(const CheckpointEvent& event) {
+    return event.pc == "800819D0"
+        || event_named(event, {
+            "shouldCounter_800819d0",
+            "counter_gate_entry",
+            "counter_gate",
+            "should_counter_gate",
+        });
+}
+
+bool is_counter_follow_up(const CheckpointEvent& event) {
+    return event_named(event, {
+               "counter_follow_up",
+               "counter_followup",
+               "counter_setup_action",
+               "counter_setupTurnAction",
+           })
+        || (event.pc == "80082134" && field_truthy(event, "counter_follow_up"));
+}
+
 std::optional<int> rand_value_from_event(
     const CheckpointEvent& event,
     int& seed_transition_mismatches) {
@@ -71,7 +106,7 @@ bool has_any_live_gate_fields(const CounterCheckpointDraw& draw) {
         || draw.updated_current_counter_chance.has_value();
 }
 
-bool has_complete_live_gate_inputs(const CounterCheckpointDraw& draw) {
+bool has_complete_live_gate_inputs_without_rand(const CounterCheckpointDraw& draw) {
     return draw.attacker_slot.has_value()
         && draw.target_slot.has_value()
         && draw.target_status_flags.has_value()
@@ -79,7 +114,11 @@ bool has_complete_live_gate_inputs(const CounterCheckpointDraw& draw) {
         && draw.target_base_counter_chance.has_value()
         && draw.target_current_counter_chance.has_value()
         && draw.attacker_action_marker.has_value()
-        && draw.attack_was_critical.has_value()
+        && draw.attack_was_critical.has_value();
+}
+
+bool has_complete_live_gate_inputs(const CounterCheckpointDraw& draw) {
+    return has_complete_live_gate_inputs_without_rand(draw)
         && draw.counter_rand.has_value();
 }
 
@@ -96,15 +135,34 @@ CounterInputs make_counter_inputs(const CounterCheckpointDraw& draw) {
     return inputs;
 }
 
-void simulate_live_gate(CounterCheckpointSummary& summary, CounterCheckpointDraw& draw) {
-    draw.live_gate_inputs_complete = has_complete_live_gate_inputs(draw);
-    if (!draw.live_gate_inputs_complete) {
-        return;
+bool counter_gate_requires_roll(const CounterInputs& inputs) {
+    if ((inputs.target_status_flags & 0x6D00) != 0) {
+        return false;
     }
 
-    const auto simulation = simulate_counter_check_from_rand(
-        make_counter_inputs(draw),
-        static_cast<std::uint16_t>(*draw.counter_rand));
+    const bool attacker_is_pc = inputs.attacker_slot < 4;
+    const bool target_is_pc = inputs.target_slot < 4;
+    if (attacker_is_pc == target_is_pc) {
+        return false;
+    }
+
+    if (inputs.attack_was_critical) {
+        return false;
+    }
+
+    const bool force_counter = (inputs.target_status_flags & 0x2) != 0
+        || (inputs.target_status_flags & 0x800000) != 0;
+    if (force_counter) {
+        return false;
+    }
+
+    return inputs.target_base_counter_chance != 0;
+}
+
+void apply_counter_simulation_result(
+    CounterCheckpointSummary& summary,
+    CounterCheckpointDraw& draw,
+    const CounterSimulation& simulation) {
     draw.live_gate_simulated = true;
     draw.expected_counter_result = simulation.counter ? 1 : 0;
     if (simulation.queued_field7_0xc.has_value()) {
@@ -112,7 +170,18 @@ void simulate_live_gate(CounterCheckpointSummary& summary, CounterCheckpointDraw
     }
     draw.expected_updated_current_counter_chance = simulation.updated_current_counter_chance;
     draw.expected_reason = simulation.reason;
-    ++summary.live_gate_simulated_draws;
+    draw.expected_counter_follow_up = simulation.counter ? 1 : 0;
+
+    if (draw.kind == CounterCheckpointKind::CounterRoll) {
+        ++summary.live_gate_simulated_draws;
+    } else if (draw.kind == CounterCheckpointKind::GateAttempt
+        && draw.expected_counter_rolls.has_value()
+        && *draw.expected_counter_rolls == 0) {
+        ++summary.no_draw_gate_attempts_simulated;
+    }
+    if (draw.kind == CounterCheckpointKind::GateAttempt && simulation.counter) {
+        ++summary.expected_counter_follow_up_events;
+    }
 
     if (draw.counter_result.has_value()) {
         draw.counter_result_matches = *draw.counter_result == *draw.expected_counter_result;
@@ -141,10 +210,76 @@ void simulate_live_gate(CounterCheckpointSummary& summary, CounterCheckpointDraw
     }
 }
 
+void simulate_live_gate(CounterCheckpointSummary& summary, CounterCheckpointDraw& draw) {
+    draw.live_gate_inputs_complete = draw.kind == CounterCheckpointKind::GateAttempt
+        ? has_complete_live_gate_inputs_without_rand(draw)
+        : has_complete_live_gate_inputs(draw);
+    if (!draw.live_gate_inputs_complete) {
+        return;
+    }
+
+    const auto inputs = make_counter_inputs(draw);
+    const bool requires_roll = counter_gate_requires_roll(inputs);
+    if (draw.kind == CounterCheckpointKind::GateAttempt) {
+        draw.expected_counter_rolls = requires_roll ? 1 : 0;
+        summary.expected_counter_rolls_from_gate_inputs += *draw.expected_counter_rolls;
+        if (!requires_roll) {
+            ++summary.expected_no_draw_gate_attempts;
+        }
+    }
+
+    if (!requires_roll) {
+        apply_counter_simulation_result(
+            summary,
+            draw,
+            simulate_counter_check(0, inputs));
+        return;
+    }
+
+    if (!draw.counter_rand.has_value()) {
+        return;
+    }
+
+    apply_counter_simulation_result(
+        summary,
+        draw,
+        simulate_counter_check_from_rand(
+            inputs,
+            static_cast<std::uint16_t>(*draw.counter_rand)));
+}
+
 CounterCheckpointStatus classify_status(const CounterCheckpointSummary& summary) {
     if (summary.expected_counter_roll_ceiling.has_value()
         && summary.observed_counter_rolls > *summary.expected_counter_roll_ceiling) {
         return CounterCheckpointStatus::ExceedsExpectedCeiling;
+    }
+
+    if (summary.observed_counter_gate_attempts > 0) {
+        if (summary.gate_attempts_with_live_inputs < summary.observed_counter_gate_attempts) {
+            return CounterCheckpointStatus::MissingLiveGateFields;
+        }
+        if (summary.observed_counter_rolls < summary.expected_counter_rolls_from_gate_inputs) {
+            return CounterCheckpointStatus::MissingCounterRolls;
+        }
+        if (summary.observed_counter_rolls > summary.expected_counter_rolls_from_gate_inputs) {
+            return CounterCheckpointStatus::UnexpectedCounterRolls;
+        }
+        if (summary.observed_counter_follow_up_events < summary.expected_counter_follow_up_events) {
+            return CounterCheckpointStatus::MissingCounterFollowUp;
+        }
+        if (summary.observed_counter_follow_up_events > summary.expected_counter_follow_up_events) {
+            return CounterCheckpointStatus::UnexpectedCounterFollowUp;
+        }
+        if (summary.counter_result_mismatches > 0) {
+            return CounterCheckpointStatus::CounterResultMismatch;
+        }
+        if (summary.queued_field_mismatches > 0) {
+            return CounterCheckpointStatus::CounterQueueMismatch;
+        }
+        if (summary.counter_chance_update_mismatches > 0) {
+            return CounterCheckpointStatus::CounterChanceUpdateMismatch;
+        }
+        return CounterCheckpointStatus::MatchesLiveGate;
     }
 
     if (summary.live_gate_simulated_draws > 0) {
@@ -201,11 +336,17 @@ CounterCheckpointSummary summarize_counter_checkpoints(
     summary.expected_counter_roll_ceiling = expected_counter_roll_ceiling;
 
     for (const auto& event : events) {
-        if (!owner_is(event, kCounterOwner)) {
+        const bool counter_roll = owner_is(event, kCounterOwner);
+        const bool gate_attempt = !counter_roll && is_counter_gate_attempt(event);
+        const bool follow_up = is_counter_follow_up(event);
+        if (!counter_roll && !gate_attempt && !follow_up) {
             continue;
         }
 
         CounterCheckpointDraw draw;
+        draw.kind = counter_roll
+            ? CounterCheckpointKind::CounterRoll
+            : (follow_up ? CounterCheckpointKind::CounterFollowUp : CounterCheckpointKind::GateAttempt);
         draw.draw_index = event.rng_draw_index_before;
         draw.attacker_slot = parse_field_int(event, "attacker_slot");
         draw.target_slot = event.target_slot.has_value() ? event.target_slot : parse_field_int(event, "target_slot");
@@ -219,9 +360,17 @@ CounterCheckpointSummary summarize_counter_checkpoints(
         draw.counter_result = parse_field_int(event, "counter_result");
         draw.queued_field7_0xc = parse_field_int(event, "queued_field7_0xc");
         draw.updated_current_counter_chance = parse_field_int(event, "updated_current_counter_chance");
+        draw.observed_counter_follow_up = parse_field_int(event, "counter_follow_up");
 
-        ++summary.observed_counter_rolls;
-        if (draw.draw_index.has_value()) {
+        if (counter_roll) {
+            ++summary.observed_counter_rolls;
+        } else if (gate_attempt) {
+            ++summary.observed_counter_gate_attempts;
+        } else if (follow_up) {
+            ++summary.observed_counter_follow_up_events;
+        }
+
+        if (counter_roll && draw.draw_index.has_value()) {
             if (!summary.first_counter_roll_draw_index.has_value()) {
                 summary.first_counter_roll_draw_index = *draw.draw_index;
             }
@@ -249,6 +398,9 @@ CounterCheckpointSummary summarize_counter_checkpoints(
         if (draw.updated_current_counter_chance.has_value()) {
             ++summary.draws_with_counter_chance_update;
         }
+        if (gate_attempt && has_complete_live_gate_inputs_without_rand(draw)) {
+            ++summary.gate_attempts_with_live_inputs;
+        }
         simulate_live_gate(summary, draw);
         summary.draws.push_back(std::move(draw));
     }
@@ -269,6 +421,14 @@ const char* counter_checkpoint_status_name(CounterCheckpointStatus status) {
         return "MatchesLiveGate";
     case CounterCheckpointStatus::MissingLiveGateFields:
         return "MissingLiveGateFields";
+    case CounterCheckpointStatus::MissingCounterRolls:
+        return "MissingCounterRolls";
+    case CounterCheckpointStatus::UnexpectedCounterRolls:
+        return "UnexpectedCounterRolls";
+    case CounterCheckpointStatus::MissingCounterFollowUp:
+        return "MissingCounterFollowUp";
+    case CounterCheckpointStatus::UnexpectedCounterFollowUp:
+        return "UnexpectedCounterFollowUp";
     case CounterCheckpointStatus::CounterResultMismatch:
         return "CounterResultMismatch";
     case CounterCheckpointStatus::CounterQueueMismatch:
@@ -280,8 +440,24 @@ const char* counter_checkpoint_status_name(CounterCheckpointStatus status) {
     }
 }
 
+const char* counter_checkpoint_kind_name(CounterCheckpointKind kind) {
+    switch (kind) {
+    case CounterCheckpointKind::GateAttempt:
+        return "GateAttempt";
+    case CounterCheckpointKind::CounterRoll:
+        return "CounterRoll";
+    case CounterCheckpointKind::CounterFollowUp:
+        return "CounterFollowUp";
+    default:
+        return "Unknown";
+    }
+}
+
 const char* first_battle_counter_checkpoint_rule_detail() {
-    return "first-battle counter rolls at 80081a88 are bounded by nonlethal observed attacks; crit, status, side, and movement gates can suppress the draw";
+    return "first-battle counter rolls at 80081a88 are bounded by nonlethal observed attacks; "
+           "shouldCounter checkpoints should expose the 800819d0 gate attempt, any roll, and any "
+           "counter follow-up through 80082134; crit, status, side, forced-counter, "
+           "zero-base-chance, and movement gates determine whether the roll or follow-up is expected";
 }
 
 } // namespace savor::predict

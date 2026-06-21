@@ -1365,6 +1365,81 @@ TEST(SavorPredictCheckpointTrace, SummarizesCounterCheckpoints) {
     EXPECT_EQ(update_mismatch.status, CounterCheckpointStatus::CounterChanceUpdateMismatch);
 }
 
+TEST(SavorPredictCheckpointTrace, SummarizesCounterGateAttemptsWithoutDraws) {
+    std::istringstream no_draw_input(
+        "pc=800819d0 function=shouldCounter_800819d0 checkpoint=gate rng_draw_index_before=44 "
+        "attacker_slot=1 target_slot=4 target_status_flags=0x0 target_movement_flags=0xc0 "
+        "target_base_counter_chance=10 target_current_counter_chance=10 "
+        "attacker_action_marker=0 attack_was_critical=1 "
+        "counter_result=0 updated_current_counter_chance=10\n");
+
+    const auto no_draw_parsed = parse_checkpoint_stream(no_draw_input);
+    ASSERT_TRUE(no_draw_parsed.errors.empty());
+
+    const auto no_draw = summarize_counter_checkpoints(no_draw_parsed.events, std::nullopt);
+    EXPECT_EQ(no_draw.status, CounterCheckpointStatus::MatchesLiveGate);
+    EXPECT_EQ(no_draw.observed_counter_gate_attempts, 1);
+    EXPECT_EQ(no_draw.gate_attempts_with_live_inputs, 1);
+    EXPECT_EQ(no_draw.expected_counter_rolls_from_gate_inputs, 0);
+    EXPECT_EQ(no_draw.expected_no_draw_gate_attempts, 1);
+    EXPECT_EQ(no_draw.no_draw_gate_attempts_simulated, 1);
+    ASSERT_EQ(no_draw.draws.size(), 1u);
+    EXPECT_EQ(no_draw.draws[0].kind, CounterCheckpointKind::GateAttempt);
+    ASSERT_TRUE(no_draw.draws[0].expected_counter_rolls.has_value());
+    EXPECT_EQ(*no_draw.draws[0].expected_counter_rolls, 0);
+    ASSERT_TRUE(no_draw.draws[0].expected_reason.has_value());
+    EXPECT_EQ(*no_draw.draws[0].expected_reason, CounterResultReason::CriticalSuppressed);
+
+    std::istringstream missing_roll_input(
+        "pc=800819d0 function=shouldCounter_800819d0 checkpoint=gate rng_draw_index_before=44 "
+        "attacker_slot=1 target_slot=4 target_status_flags=0x0 target_movement_flags=0xc0 "
+        "target_base_counter_chance=10 target_current_counter_chance=10 "
+        "attacker_action_marker=0 attack_was_critical=0\n");
+    const auto missing_roll_parsed = parse_checkpoint_stream(missing_roll_input);
+    ASSERT_TRUE(missing_roll_parsed.errors.empty());
+    const auto missing_roll = summarize_counter_checkpoints(missing_roll_parsed.events, std::nullopt);
+    EXPECT_EQ(missing_roll.status, CounterCheckpointStatus::MissingCounterRolls);
+    EXPECT_EQ(
+        counter_checkpoint_status_name(missing_roll.status),
+        std::string("MissingCounterRolls"));
+}
+
+TEST(SavorPredictCheckpointTrace, SummarizesCounterFollowUpActions) {
+    std::istringstream missing_follow_up_input(
+        "pc=800819d0 function=shouldCounter_800819d0 checkpoint=gate rng_draw_index_before=50 "
+        "attacker_slot=1 target_slot=4 target_status_flags=0x2 target_movement_flags=0xc0 "
+        "target_base_counter_chance=10 target_current_counter_chance=10 "
+        "attacker_action_marker=0 attack_was_critical=0 "
+        "counter_result=1 queued_field7_0xc=0 updated_current_counter_chance=100\n");
+    const auto missing_follow_up_parsed = parse_checkpoint_stream(missing_follow_up_input);
+    ASSERT_TRUE(missing_follow_up_parsed.errors.empty());
+    const auto missing_follow_up =
+        summarize_counter_checkpoints(missing_follow_up_parsed.events, std::nullopt);
+    EXPECT_EQ(missing_follow_up.status, CounterCheckpointStatus::MissingCounterFollowUp);
+    EXPECT_EQ(missing_follow_up.expected_counter_follow_up_events, 1);
+    EXPECT_EQ(missing_follow_up.observed_counter_follow_up_events, 0);
+
+    std::istringstream matched_input(
+        "pc=800819d0 function=shouldCounter_800819d0 checkpoint=gate rng_draw_index_before=50 "
+        "attacker_slot=1 target_slot=4 target_status_flags=0x2 target_movement_flags=0xc0 "
+        "target_base_counter_chance=10 target_current_counter_chance=10 "
+        "attacker_action_marker=0 attack_was_critical=0 "
+        "counter_result=1 queued_field7_0xc=0 updated_current_counter_chance=100\n"
+        "pc=80082134 function=setupTurnAction checkpoint=counter_follow_up rng_draw_index_before=50 "
+        "attacker_slot=1 target_slot=4 counter_follow_up=1\n");
+    const auto matched_parsed = parse_checkpoint_stream(matched_input);
+    ASSERT_TRUE(matched_parsed.errors.empty());
+    const auto matched = summarize_counter_checkpoints(matched_parsed.events, std::nullopt);
+    EXPECT_EQ(matched.status, CounterCheckpointStatus::MatchesLiveGate);
+    EXPECT_EQ(matched.expected_counter_follow_up_events, 1);
+    EXPECT_EQ(matched.observed_counter_follow_up_events, 1);
+    ASSERT_EQ(matched.draws.size(), 2u);
+    EXPECT_EQ(matched.draws[1].kind, CounterCheckpointKind::CounterFollowUp);
+    EXPECT_EQ(
+        counter_checkpoint_kind_name(matched.draws[1].kind),
+        std::string("CounterFollowUp"));
+}
+
 TEST(SavorPredictCheckpointTrace, SummarizesDropCheckpoints) {
     std::istringstream input(
         "pc=80052bf0 function=FUN_80052b24 checkpoint=mode0e_camera rng_draw_index_before=20\n"
