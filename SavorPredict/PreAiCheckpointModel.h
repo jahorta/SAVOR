@@ -13,7 +13,7 @@ enum class PreAiCheckpointStatus {
     MatchesExpected,
     MissingBattleStartCameraDraw,
     ExtraBattleStartCameraDraws,
-    ShortCameraGapSkippedFakeAttackDraws,
+    SkippedFakeAttackDrawsObserved,
     MissingFakeAttackDraws,
     ExtraFakeAttackDraws,
     MissingTargetingCameraDraws,
@@ -48,8 +48,12 @@ struct PreAiCheckpointSummary {
     int observed_fake_attack_attempts = 0;
     int observed_fake_attack_draws = 0;
     int observed_skipped_fake_attack_draws = 0;
-    int skipped_fake_attacks_with_short_camera_gap = 0;
-    int skipped_fake_draws_with_frame_gap = 0;
+    int fake_attack_draws_with_frame_gap = 0;
+    int skipped_fake_attempts_with_frame_gap = 0;
+    std::optional<int> min_fake_attack_draw_camera_frame_gap;
+    std::optional<int> max_fake_attack_draw_camera_frame_gap;
+    std::optional<int> min_skipped_fake_attempt_camera_frame_gap;
+    std::optional<int> max_skipped_fake_attempt_camera_frame_gap;
     int observed_pre_ai_draws = 0;
     int observed_first_soldier_ai_draws = 0;
     int targeting_draws_with_target_slot = 0;
