@@ -119,6 +119,7 @@
     <ClCompile Include="CritGateCheckpointModel.cpp" />
     <ClCompile Include="CounterCheckpointModel.cpp" />
     <ClCompile Include="CounterModel.cpp" />
+    <ClCompile Include="DeathDropCheckpointModel.cpp" />
     <ClCompile Include="DbCopy.cpp" />
     <ClCompile Include="DropCheckpointModel.cpp" />
     <ClCompile Include="DropModel.cpp" />
@@ -149,6 +150,7 @@
     <ClInclude Include="CritGateCheckpointModel.h" />
     <ClInclude Include="CounterCheckpointModel.h" />
     <ClInclude Include="CounterModel.h" />
+    <ClInclude Include="DeathDropCheckpointModel.h" />
     <ClInclude Include="DbCopy.h" />
     <ClInclude Include="DropCheckpointModel.h" />
     <ClInclude Include="DropModel.h" />

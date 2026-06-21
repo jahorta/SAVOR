@@ -12,6 +12,7 @@
 #include "CritGateCheckpointModel.h"
 #include "CounterCheckpointModel.h"
 #include "CounterModel.h"
+#include "DeathDropCheckpointModel.h"
 #include "DropCheckpointModel.h"
 #include "DropModel.h"
 #include "EnemyAttackSetupModel.h"

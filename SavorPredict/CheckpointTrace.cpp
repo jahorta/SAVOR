@@ -9,6 +9,7 @@
 #include "CritGateCheckpointModel.h"
 #include "CounterCheckpointModel.h"
 #include "DropCheckpointModel.h"
+#include "DeathDropCheckpointModel.h"
 #include "OutcomeCheckpointModel.h"
 #include "PreAiCheckpointModel.h"
 #include "TurnOrderCheckpointModel.h"
@@ -1224,6 +1225,78 @@ void write_text_report(
             } else {
                 out << "unknown";
             }
+            out << "\n";
+        }
+    }
+
+    const auto death_drop = summarize_death_drop_checkpoints(result.events);
+    out << "\nDeath/drop flow checkpoints\n";
+    out << "  status: " << death_drop_checkpoint_status_name(death_drop.status) << "\n";
+    out << "  rule: " << first_battle_death_drop_checkpoint_rule_detail() << "\n";
+    out << "  observed_damage_apply_events: "
+        << death_drop.observed_damage_apply_events << "\n";
+    out << "  observed_death_handler_events: "
+        << death_drop.observed_death_handler_events << "\n";
+    out << "  observed_drop_entry_events: "
+        << death_drop.observed_drop_entry_events << "\n";
+    out << "  observed_drop_rolls: " << death_drop.observed_drop_rolls << "\n";
+    out << "  damage_events_with_live_death_fields: "
+        << death_drop.damage_events_with_live_death_fields << "\n";
+    out << "  lethal_damage_events: " << death_drop.lethal_damage_events << "\n";
+    out << "  nonlethal_damage_events: " << death_drop.nonlethal_damage_events << "\n";
+    out << "  damage_events_with_death_handler: "
+        << death_drop.damage_events_with_death_handler << "\n";
+    out << "  lethal_events_with_drop_entry: "
+        << death_drop.lethal_events_with_drop_entry << "\n";
+    out << "  lethal_events_with_drop_roll: "
+        << death_drop.lethal_events_with_drop_roll << "\n";
+    out << "  nonlethal_events_with_unexpected_drop: "
+        << death_drop.nonlethal_events_with_unexpected_drop << "\n";
+    out << "  drop_rolls_after_drop_entry: "
+        << death_drop.drop_rolls_after_drop_entry << "\n";
+    out << "  drop_rolls_before_drop_entry: "
+        << death_drop.drop_rolls_before_drop_entry << "\n";
+    out << "  missing_live_death_field_events: "
+        << death_drop.missing_live_death_field_events << "\n";
+    out << "  missing_death_handler_events: "
+        << death_drop.missing_death_handler_events << "\n";
+    out << "  missing_drop_entry_events: "
+        << death_drop.missing_drop_entry_events << "\n";
+    out << "  missing_drop_roll_events: "
+        << death_drop.missing_drop_roll_events << "\n";
+    out << "  first_damage_apply_draw_index: ";
+    write_optional_int(out, death_drop.first_damage_apply_draw_index);
+    out << "\n";
+    out << "  first_death_handler_draw_index: ";
+    write_optional_int(out, death_drop.first_death_handler_draw_index);
+    out << "\n";
+    out << "  first_drop_entry_draw_index: ";
+    write_optional_int(out, death_drop.first_drop_entry_draw_index);
+    out << "\n";
+    out << "  first_drop_roll_draw_index: ";
+    write_optional_int(out, death_drop.first_drop_roll_draw_index);
+    out << "\n";
+    if (!death_drop.damage_flows.empty()) {
+        out << "  damage_flows:\n";
+        for (const auto& flow : death_drop.damage_flows) {
+            out << "    damage_event_index=" << flow.damage_event_index;
+            out << " target_slot=";
+            write_optional_int(out, flow.target_slot);
+            out << " enemy_entry_id=";
+            write_optional_int(out, flow.enemy_entry_id);
+            out << " damage=";
+            write_optional_int(out, flow.damage);
+            out << " hp_before=";
+            write_optional_int(out, flow.hp_before);
+            out << " hp_after=";
+            write_optional_int(out, flow.hp_after);
+            out << " lethal=";
+            write_optional_int(out, flow.lethal);
+            out << " death_handler=" << (flow.observed_death_handler ? "true" : "false");
+            out << " drop_entry=" << (flow.observed_drop_entry ? "true" : "false");
+            out << " drop_roll=" << (flow.observed_drop_roll ? "true" : "false");
+            out << " unexpected_nonlethal_drop="
+                << (flow.unexpected_drop_for_nonlethal ? "true" : "false");
             out << "\n";
         }
     }
@@ -2472,6 +2545,88 @@ void write_json_report(
             << (draw.queued_field_matches ? "true" : "false");
         out << ", \"counter_chance_update_matches\": "
             << (draw.counter_chance_update_matches ? "true" : "false");
+        out << "}";
+    }
+    out << "]";
+    out << "},\n";
+
+    const auto death_drop = summarize_death_drop_checkpoints(result.events);
+    out << "  \"death_drop_checkpoints\": {";
+    out << "\"status\": \"" << death_drop_checkpoint_status_name(death_drop.status) << "\"";
+    out << ", \"rule\": \""
+        << json_escape(first_battle_death_drop_checkpoint_rule_detail()) << "\"";
+    out << ", \"observed_damage_apply_events\": "
+        << death_drop.observed_damage_apply_events;
+    out << ", \"observed_death_handler_events\": "
+        << death_drop.observed_death_handler_events;
+    out << ", \"observed_drop_entry_events\": "
+        << death_drop.observed_drop_entry_events;
+    out << ", \"observed_drop_rolls\": " << death_drop.observed_drop_rolls;
+    out << ", \"damage_events_with_live_death_fields\": "
+        << death_drop.damage_events_with_live_death_fields;
+    out << ", \"lethal_damage_events\": " << death_drop.lethal_damage_events;
+    out << ", \"nonlethal_damage_events\": " << death_drop.nonlethal_damage_events;
+    out << ", \"damage_events_with_death_handler\": "
+        << death_drop.damage_events_with_death_handler;
+    out << ", \"lethal_events_with_drop_entry\": "
+        << death_drop.lethal_events_with_drop_entry;
+    out << ", \"lethal_events_with_drop_roll\": "
+        << death_drop.lethal_events_with_drop_roll;
+    out << ", \"nonlethal_events_with_unexpected_drop\": "
+        << death_drop.nonlethal_events_with_unexpected_drop;
+    out << ", \"drop_rolls_after_drop_entry\": "
+        << death_drop.drop_rolls_after_drop_entry;
+    out << ", \"drop_rolls_before_drop_entry\": "
+        << death_drop.drop_rolls_before_drop_entry;
+    out << ", \"missing_live_death_field_events\": "
+        << death_drop.missing_live_death_field_events;
+    out << ", \"missing_death_handler_events\": "
+        << death_drop.missing_death_handler_events;
+    out << ", \"missing_drop_entry_events\": "
+        << death_drop.missing_drop_entry_events;
+    out << ", \"missing_drop_roll_events\": "
+        << death_drop.missing_drop_roll_events;
+    out << ", \"first_damage_apply_draw_index\": ";
+    write_json_optional_int(out, death_drop.first_damage_apply_draw_index);
+    out << ", \"first_death_handler_draw_index\": ";
+    write_json_optional_int(out, death_drop.first_death_handler_draw_index);
+    out << ", \"first_drop_entry_draw_index\": ";
+    write_json_optional_int(out, death_drop.first_drop_entry_draw_index);
+    out << ", \"first_drop_roll_draw_index\": ";
+    write_json_optional_int(out, death_drop.first_drop_roll_draw_index);
+    out << ", \"damage_flows\": [";
+    for (std::size_t i = 0; i < death_drop.damage_flows.size(); ++i) {
+        if (i != 0) {
+            out << ", ";
+        }
+        const auto& flow = death_drop.damage_flows[i];
+        out << "{\"damage_event_index\": " << flow.damage_event_index;
+        out << ", \"target_slot\": ";
+        write_json_optional_int(out, flow.target_slot);
+        out << ", \"enemy_entry_id\": ";
+        write_json_optional_int(out, flow.enemy_entry_id);
+        out << ", \"damage\": ";
+        write_json_optional_int(out, flow.damage);
+        out << ", \"hp_before\": ";
+        write_json_optional_int(out, flow.hp_before);
+        out << ", \"hp_after\": ";
+        write_json_optional_int(out, flow.hp_after);
+        out << ", \"lethal\": ";
+        write_json_optional_int(out, flow.lethal);
+        out << ", \"live_death_fields_complete\": "
+            << (flow.live_death_fields_complete ? "true" : "false");
+        out << ", \"observed_death_handler\": "
+            << (flow.observed_death_handler ? "true" : "false");
+        out << ", \"expects_drop_entry\": "
+            << (flow.expects_drop_entry ? "true" : "false");
+        out << ", \"observed_drop_entry\": "
+            << (flow.observed_drop_entry ? "true" : "false");
+        out << ", \"observed_drop_roll\": "
+            << (flow.observed_drop_roll ? "true" : "false");
+        out << ", \"unexpected_drop_for_nonlethal\": "
+            << (flow.unexpected_drop_for_nonlethal ? "true" : "false");
+        out << ", \"drop_roll_before_drop_entry\": "
+            << (flow.drop_roll_before_drop_entry ? "true" : "false");
         out << "}";
     }
     out << "]";
