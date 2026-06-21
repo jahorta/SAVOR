@@ -1,7 +1,8 @@
 #include "RngModel.h"
 
 // Compatibility translation unit. RNG model implementation is split across
-// RngCore, ActionViewCameraModel, AttackResolutionCheckpointModel,
+// RngCore, ActionViewCameraModel, ActionSourceCheckpointModel,
+// AttackResolutionCheckpointModel,
 // CritGateCheckpointModel, CounterCheckpointModel, DropCheckpointModel,
 // OutcomeCheckpointModel, PreAiCameraModel,
 // SoldierAiModel, SoldierActionExecutionModel, TurnOrderCheckpointModel,

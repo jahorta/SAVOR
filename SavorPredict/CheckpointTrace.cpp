@@ -1,6 +1,7 @@
 #include "CheckpointTrace.h"
 
 #include "ActionViewCameraModel.h"
+#include "ActionSourceCheckpointModel.h"
 #include "AttackResolutionCheckpointModel.h"
 #include "CritGateCheckpointModel.h"
 #include "CounterCheckpointModel.h"
@@ -315,6 +316,92 @@ void write_text_report(
         out << "\nWarnings\n";
         for (const auto& warning : result.warnings) {
             out << "  " << warning << "\n";
+        }
+    }
+
+    const auto action_source_expectation = first_battle_action_source_checkpoint_expectation();
+    const auto action_source = summarize_action_source_checkpoints(
+        result.events,
+        action_source_expectation.expected_handler_pc);
+    out << "\nAction-source field6 checkpoints\n";
+    out << "  status: " << action_source_checkpoint_status_name(action_source.status) << "\n";
+    out << "  rule: " << first_battle_action_source_checkpoint_rule_detail() << "\n";
+    out << "  expected_handler_pc: ";
+    if (action_source.expected_handler_pc.has_value()) {
+        out << *action_source.expected_handler_pc << "\n";
+    } else {
+        out << "unknown\n";
+    }
+    out << "  observed_action_source_events: "
+        << action_source.observed_action_source_events << "\n";
+    out << "  events_with_actor_slot: " << action_source.events_with_actor_slot << "\n";
+    out << "  events_with_source_slot: " << action_source.events_with_source_slot << "\n";
+    out << "  events_with_action_id: " << action_source.events_with_action_id << "\n";
+    out << "  events_with_handler_pc: " << action_source.events_with_handler_pc << "\n";
+    out << "  events_with_source_field6: " << action_source.events_with_source_field6 << "\n";
+    out << "  events_with_actor_field6: " << action_source.events_with_actor_field6 << "\n";
+    out << "  field6_matches: " << action_source.field6_matches << "\n";
+    out << "  field6_mismatches: " << action_source.field6_mismatches << "\n";
+    out << "  handler_matches: " << action_source.handler_matches << "\n";
+    out << "  handler_mismatches: " << action_source.handler_mismatches << "\n";
+    out << "  first_action_source_draw_index: ";
+    if (action_source.first_action_source_draw_index.has_value()) {
+        out << *action_source.first_action_source_draw_index << "\n";
+    } else {
+        out << "unknown\n";
+    }
+    if (!action_source.events.empty()) {
+        out << "  events:\n";
+        for (const auto& event : action_source.events) {
+            out << "    draw_index=";
+            if (event.draw_index.has_value()) {
+                out << *event.draw_index;
+            } else {
+                out << "unknown";
+            }
+            out << " actor_slot=";
+            if (event.actor_slot.has_value()) {
+                out << *event.actor_slot;
+            } else {
+                out << "unknown";
+            }
+            out << " source_slot=";
+            if (event.source_slot.has_value()) {
+                out << *event.source_slot;
+            } else {
+                out << "unknown";
+            }
+            out << " target_slot=";
+            if (event.target_slot.has_value()) {
+                out << *event.target_slot;
+            } else {
+                out << "unknown";
+            }
+            out << " action_id=";
+            if (event.action_id.has_value()) {
+                out << *event.action_id;
+            } else {
+                out << "unknown";
+            }
+            out << " source_field6_0x6=";
+            if (event.source_field6_0x6.has_value()) {
+                out << *event.source_field6_0x6;
+            } else {
+                out << "unknown";
+            }
+            out << " actor_field6_0x6=";
+            if (event.actor_field6_0x6.has_value()) {
+                out << *event.actor_field6_0x6;
+            } else {
+                out << "unknown";
+            }
+            out << " handler_pc=";
+            if (event.handler_pc.has_value()) {
+                out << *event.handler_pc;
+            } else {
+                out << "unknown";
+            }
+            out << "\n";
         }
     }
 
@@ -916,6 +1003,97 @@ void write_json_report(
         first = false;
         out << "\"" << json_escape(owner) << "\": " << count;
     }
+    out << "},\n";
+
+    const auto action_source_expectation = first_battle_action_source_checkpoint_expectation();
+    const auto action_source = summarize_action_source_checkpoints(
+        result.events,
+        action_source_expectation.expected_handler_pc);
+    out << "  \"action_source_checkpoints\": {";
+    out << "\"status\": \"" << action_source_checkpoint_status_name(action_source.status) << "\"";
+    out << ", \"rule\": \""
+        << json_escape(first_battle_action_source_checkpoint_rule_detail()) << "\"";
+    out << ", \"expected_handler_pc\": ";
+    if (action_source.expected_handler_pc.has_value()) {
+        out << "\"" << json_escape(*action_source.expected_handler_pc) << "\"";
+    } else {
+        out << "null";
+    }
+    out << ", \"observed_action_source_events\": "
+        << action_source.observed_action_source_events;
+    out << ", \"events_with_actor_slot\": " << action_source.events_with_actor_slot;
+    out << ", \"events_with_source_slot\": " << action_source.events_with_source_slot;
+    out << ", \"events_with_action_id\": " << action_source.events_with_action_id;
+    out << ", \"events_with_handler_pc\": " << action_source.events_with_handler_pc;
+    out << ", \"events_with_source_field6\": " << action_source.events_with_source_field6;
+    out << ", \"events_with_actor_field6\": " << action_source.events_with_actor_field6;
+    out << ", \"field6_matches\": " << action_source.field6_matches;
+    out << ", \"field6_mismatches\": " << action_source.field6_mismatches;
+    out << ", \"handler_matches\": " << action_source.handler_matches;
+    out << ", \"handler_mismatches\": " << action_source.handler_mismatches;
+    out << ", \"first_action_source_draw_index\": ";
+    if (action_source.first_action_source_draw_index.has_value()) {
+        out << *action_source.first_action_source_draw_index;
+    } else {
+        out << "null";
+    }
+    out << ", \"events\": [";
+    for (std::size_t i = 0; i < action_source.events.size(); ++i) {
+        if (i != 0) {
+            out << ", ";
+        }
+        const auto& event = action_source.events[i];
+        out << "{\"draw_index\": ";
+        if (event.draw_index.has_value()) {
+            out << *event.draw_index;
+        } else {
+            out << "null";
+        }
+        out << ", \"actor_slot\": ";
+        if (event.actor_slot.has_value()) {
+            out << *event.actor_slot;
+        } else {
+            out << "null";
+        }
+        out << ", \"source_slot\": ";
+        if (event.source_slot.has_value()) {
+            out << *event.source_slot;
+        } else {
+            out << "null";
+        }
+        out << ", \"target_slot\": ";
+        if (event.target_slot.has_value()) {
+            out << *event.target_slot;
+        } else {
+            out << "null";
+        }
+        out << ", \"action_id\": ";
+        if (event.action_id.has_value()) {
+            out << *event.action_id;
+        } else {
+            out << "null";
+        }
+        out << ", \"source_field6_0x6\": ";
+        if (event.source_field6_0x6.has_value()) {
+            out << *event.source_field6_0x6;
+        } else {
+            out << "null";
+        }
+        out << ", \"actor_field6_0x6\": ";
+        if (event.actor_field6_0x6.has_value()) {
+            out << *event.actor_field6_0x6;
+        } else {
+            out << "null";
+        }
+        out << ", \"handler_pc\": ";
+        if (event.handler_pc.has_value()) {
+            out << "\"" << json_escape(*event.handler_pc) << "\"";
+        } else {
+            out << "null";
+        }
+        out << "}";
+    }
+    out << "]";
     out << "},\n";
 
     const auto action_view = summarize_action_view_camera_checkpoints(

@@ -3,6 +3,7 @@
 // Umbrella header for the phase-specific RNG model helpers.
 
 #include "ActionViewCameraModel.h"
+#include "ActionSourceCheckpointModel.h"
 #include "AttackResolutionCheckpointModel.h"
 #include "AttackResolutionModel.h"
 #include "CritGateCheckpointModel.h"
