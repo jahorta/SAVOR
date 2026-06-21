@@ -12,8 +12,10 @@ enum class ActionViewGateCheckpointStatus {
     ObservedOnly,
     MatchesExpected,
     MissingLiveGateFields,
+    MissingSchedulerFields,
     QueryArgsMismatch,
     SelectedModeMismatch,
+    Mode0FallbackReached,
 };
 
 struct ActionViewGateCheckpointEvent {
@@ -30,6 +32,11 @@ struct ActionViewGateCheckpointEvent {
     std::optional<int> query_arg3;
     std::optional<std::string> query_result;
     std::optional<int> selected_record_mode;
+    std::optional<std::string> action_child_thread;
+    std::optional<std::string> child_payload;
+    std::optional<std::string> nested_payload;
+    std::optional<int> child_thread_state_byte;
+    std::optional<bool> mode0_fallback_reached;
 };
 
 struct ActionViewGateCheckpointSummary {
@@ -42,14 +49,25 @@ struct ActionViewGateCheckpointSummary {
     int query_args_mismatch = 0;
     int selected_mode_matches = 0;
     int selected_mode_mismatches = 0;
+    int events_with_action_child_thread = 0;
+    int events_with_child_payload = 0;
+    int events_with_nested_payload = 0;
+    int events_with_child_thread_state = 0;
+    int events_with_scheduler_chain = 0;
+    int events_with_mode0_fallback_flag = 0;
+    int mode0_fallback_reached_events = 0;
     int observed_mode0e_camera_draws = 0;
+    int observed_mode0_fallback_draws = 0;
     int observed_attack_hit_draws = 0;
     std::optional<int> first_gate_draw_index;
     std::optional<int> first_mode0e_draw_index;
+    std::optional<int> first_mode0_fallback_draw_index;
     std::optional<int> first_attack_hit_draw_index;
     int gate_events_before_first_mode0e = 0;
     int gate_events_before_first_attack_hit = 0;
     int mode0e_draws_before_first_attack_hit = 0;
+    int mode0_fallback_draws_before_first_mode0e = 0;
+    int mode0_fallback_draws_before_first_attack_hit = 0;
     std::vector<ActionViewGateCheckpointEvent> events;
     ActionViewGateCheckpointStatus status = ActionViewGateCheckpointStatus::ObservedOnly;
 };

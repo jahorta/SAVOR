@@ -1011,7 +1011,9 @@ TEST(SavorPredictCheckpointTrace, SummarizesActionViewGateCheckpoints) {
         "pc=80012f58 function=FUN_80012f58 checkpoint=action_view_gate rng_draw_index_before=18 "
         "active_slot=1 source_slot=1 target_slot=4 source_field6_0x6=14 actor_field6_0x6=14 "
         "aux_list_root=0x80346bd8 query_arg0=4 query_arg1=-1 query_arg2=0x2a query_arg3=3 "
-        "query_result=0x81234567 selected_record_mode=0xe\n"
+        "query_result=0x81234567 selected_record_mode=0xe "
+        "action_child_thread=0x81230000 child_payload=0x81231000 nested_payload=0x81232000 "
+        "child_thread_state_byte=1 mode0_fallback_reached=0\n"
         "pc=80052bf0 function=FUN_80052b24 checkpoint=mode0e_camera rng_draw_index_before=19\n"
         "pc=80010bdc function=getAttackResult checkpoint=hit rng_draw_index_before=20\n");
 
@@ -1028,16 +1030,32 @@ TEST(SavorPredictCheckpointTrace, SummarizesActionViewGateCheckpoints) {
     EXPECT_EQ(matched.events_with_selected_record_mode, 1);
     EXPECT_EQ(matched.query_args_match, 1);
     EXPECT_EQ(matched.selected_mode_matches, 1);
+    EXPECT_EQ(matched.events_with_action_child_thread, 1);
+    EXPECT_EQ(matched.events_with_child_payload, 1);
+    EXPECT_EQ(matched.events_with_nested_payload, 1);
+    EXPECT_EQ(matched.events_with_child_thread_state, 1);
+    EXPECT_EQ(matched.events_with_scheduler_chain, 1);
+    EXPECT_EQ(matched.events_with_mode0_fallback_flag, 1);
+    EXPECT_EQ(matched.mode0_fallback_reached_events, 0);
     EXPECT_EQ(matched.observed_mode0e_camera_draws, 1);
+    EXPECT_EQ(matched.observed_mode0_fallback_draws, 0);
     EXPECT_EQ(matched.observed_attack_hit_draws, 1);
     EXPECT_EQ(matched.gate_events_before_first_mode0e, 1);
     EXPECT_EQ(matched.gate_events_before_first_attack_hit, 1);
     EXPECT_EQ(matched.mode0e_draws_before_first_attack_hit, 1);
+    EXPECT_EQ(matched.mode0_fallback_draws_before_first_mode0e, 0);
+    EXPECT_EQ(matched.mode0_fallback_draws_before_first_attack_hit, 0);
     ASSERT_EQ(matched.events.size(), 1u);
     ASSERT_TRUE(matched.events[0].query_arg2.has_value());
     EXPECT_EQ(*matched.events[0].query_arg2, 0x2a);
     ASSERT_TRUE(matched.events[0].selected_record_mode.has_value());
     EXPECT_EQ(*matched.events[0].selected_record_mode, 0x0e);
+    ASSERT_TRUE(matched.events[0].action_child_thread.has_value());
+    EXPECT_EQ(*matched.events[0].action_child_thread, "0x81230000");
+    ASSERT_TRUE(matched.events[0].child_thread_state_byte.has_value());
+    EXPECT_EQ(*matched.events[0].child_thread_state_byte, 1);
+    ASSERT_TRUE(matched.events[0].mode0_fallback_reached.has_value());
+    EXPECT_FALSE(*matched.events[0].mode0_fallback_reached);
 
     std::istringstream query_mismatch_input(
         "pc=80012f58 function=FUN_80012f58 checkpoint=action_view_gate rng_draw_index_before=18 "
@@ -1067,6 +1085,34 @@ TEST(SavorPredictCheckpointTrace, SummarizesActionViewGateCheckpoints) {
     EXPECT_EQ(
         action_view_gate_checkpoint_status_name(missing.status),
         std::string("MissingLiveGateFields"));
+
+    std::istringstream missing_scheduler_input(
+        "pc=80012f58 function=FUN_80012f58 checkpoint=action_view_gate rng_draw_index_before=18 "
+        "aux_list_root=0x80346bd8 query_arg0=4 query_arg1=-1 query_arg2=0x2a query_arg3=3 "
+        "query_result=0x81234567 selected_record_mode=0xe\n");
+    const auto missing_scheduler_parsed = parse_checkpoint_stream(missing_scheduler_input);
+    ASSERT_TRUE(missing_scheduler_parsed.errors.empty());
+    const auto missing_scheduler =
+        summarize_action_view_gate_checkpoints(missing_scheduler_parsed.events);
+    EXPECT_EQ(
+        action_view_gate_checkpoint_status_name(missing_scheduler.status),
+        std::string("MissingSchedulerFields"));
+
+    std::istringstream fallback_input(
+        "pc=80012f58 function=FUN_80012f58 checkpoint=action_view_gate rng_draw_index_before=18 "
+        "aux_list_root=0x80346bd8 query_arg0=4 query_arg1=-1 query_arg2=0x2a query_arg3=3 "
+        "query_result=0x81234567 selected_record_mode=0xe "
+        "action_child_thread=0x81230000 child_payload=0x81231000 nested_payload=0x81232000 "
+        "child_thread_state_byte=1 mode0_fallback_reached=true\n"
+        "pc=800513d4 function=UpdateActionViewRecord checkpoint=mode0_fallback rng_draw_index_before=19\n");
+    const auto fallback_parsed = parse_checkpoint_stream(fallback_input);
+    ASSERT_TRUE(fallback_parsed.errors.empty());
+    const auto fallback = summarize_action_view_gate_checkpoints(fallback_parsed.events);
+    EXPECT_EQ(
+        action_view_gate_checkpoint_status_name(fallback.status),
+        std::string("Mode0FallbackReached"));
+    EXPECT_EQ(fallback.mode0_fallback_reached_events, 1);
+    EXPECT_EQ(fallback.observed_mode0_fallback_draws, 1);
 }
 
 TEST(SavorPredictCheckpointTrace, SummarizesActionViewCameraCheckpoints) {

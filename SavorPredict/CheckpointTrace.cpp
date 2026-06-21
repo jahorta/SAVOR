@@ -122,9 +122,41 @@ void write_optional_int(std::ostream& out, const std::optional<int>& value) {
     }
 }
 
+void write_optional_bool(std::ostream& out, const std::optional<bool>& value) {
+    if (value.has_value()) {
+        out << (*value ? "true" : "false");
+    } else {
+        out << "unknown";
+    }
+}
+
+void write_optional_string(std::ostream& out, const std::optional<std::string>& value) {
+    if (value.has_value()) {
+        out << *value;
+    } else {
+        out << "unknown";
+    }
+}
+
 void write_json_optional_int(std::ostream& out, const std::optional<int>& value) {
     if (value.has_value()) {
         out << *value;
+    } else {
+        out << "null";
+    }
+}
+
+void write_json_optional_bool(std::ostream& out, const std::optional<bool>& value) {
+    if (value.has_value()) {
+        out << (*value ? "true" : "false");
+    } else {
+        out << "null";
+    }
+}
+
+void write_json_optional_string(std::ostream& out, const std::optional<std::string>& value) {
+    if (value.has_value()) {
+        out << "\"" << json_escape(*value) << "\"";
     } else {
         out << "null";
     }
@@ -784,8 +816,22 @@ void write_text_report(
     out << "  query_args_mismatch: " << action_view_gate.query_args_mismatch << "\n";
     out << "  selected_mode_matches: " << action_view_gate.selected_mode_matches << "\n";
     out << "  selected_mode_mismatches: " << action_view_gate.selected_mode_mismatches << "\n";
+    out << "  events_with_action_child_thread: "
+        << action_view_gate.events_with_action_child_thread << "\n";
+    out << "  events_with_child_payload: " << action_view_gate.events_with_child_payload << "\n";
+    out << "  events_with_nested_payload: " << action_view_gate.events_with_nested_payload << "\n";
+    out << "  events_with_child_thread_state: "
+        << action_view_gate.events_with_child_thread_state << "\n";
+    out << "  events_with_scheduler_chain: "
+        << action_view_gate.events_with_scheduler_chain << "\n";
+    out << "  events_with_mode0_fallback_flag: "
+        << action_view_gate.events_with_mode0_fallback_flag << "\n";
+    out << "  mode0_fallback_reached_events: "
+        << action_view_gate.mode0_fallback_reached_events << "\n";
     out << "  observed_mode0e_camera_draws: "
         << action_view_gate.observed_mode0e_camera_draws << "\n";
+    out << "  observed_mode0_fallback_draws: "
+        << action_view_gate.observed_mode0_fallback_draws << "\n";
     out << "  observed_attack_hit_draws: "
         << action_view_gate.observed_attack_hit_draws << "\n";
     out << "  first_gate_draw_index: ";
@@ -797,6 +843,12 @@ void write_text_report(
     out << "  first_mode0e_draw_index: ";
     if (action_view_gate.first_mode0e_draw_index.has_value()) {
         out << *action_view_gate.first_mode0e_draw_index << "\n";
+    } else {
+        out << "unknown\n";
+    }
+    out << "  first_mode0_fallback_draw_index: ";
+    if (action_view_gate.first_mode0_fallback_draw_index.has_value()) {
+        out << *action_view_gate.first_mode0_fallback_draw_index << "\n";
     } else {
         out << "unknown\n";
     }
@@ -812,6 +864,10 @@ void write_text_report(
         << action_view_gate.gate_events_before_first_attack_hit << "\n";
     out << "  mode0e_draws_before_first_attack_hit: "
         << action_view_gate.mode0e_draws_before_first_attack_hit << "\n";
+    out << "  mode0_fallback_draws_before_first_mode0e: "
+        << action_view_gate.mode0_fallback_draws_before_first_mode0e << "\n";
+    out << "  mode0_fallback_draws_before_first_attack_hit: "
+        << action_view_gate.mode0_fallback_draws_before_first_attack_hit << "\n";
     if (!action_view_gate.events.empty()) {
         out << "  events:\n";
         for (const auto& event : action_view_gate.events) {
@@ -893,6 +949,16 @@ void write_text_report(
             } else {
                 out << "unknown";
             }
+            out << " action_child_thread=";
+            write_optional_string(out, event.action_child_thread);
+            out << " child_payload=";
+            write_optional_string(out, event.child_payload);
+            out << " nested_payload=";
+            write_optional_string(out, event.nested_payload);
+            out << " child_thread_state_byte=";
+            write_optional_int(out, event.child_thread_state_byte);
+            out << " mode0_fallback_reached=";
+            write_optional_bool(out, event.mode0_fallback_reached);
             out << "\n";
         }
     }
@@ -2164,8 +2230,22 @@ void write_json_report(
     out << ", \"selected_mode_matches\": " << action_view_gate.selected_mode_matches;
     out << ", \"selected_mode_mismatches\": "
         << action_view_gate.selected_mode_mismatches;
+    out << ", \"events_with_action_child_thread\": "
+        << action_view_gate.events_with_action_child_thread;
+    out << ", \"events_with_child_payload\": " << action_view_gate.events_with_child_payload;
+    out << ", \"events_with_nested_payload\": " << action_view_gate.events_with_nested_payload;
+    out << ", \"events_with_child_thread_state\": "
+        << action_view_gate.events_with_child_thread_state;
+    out << ", \"events_with_scheduler_chain\": "
+        << action_view_gate.events_with_scheduler_chain;
+    out << ", \"events_with_mode0_fallback_flag\": "
+        << action_view_gate.events_with_mode0_fallback_flag;
+    out << ", \"mode0_fallback_reached_events\": "
+        << action_view_gate.mode0_fallback_reached_events;
     out << ", \"observed_mode0e_camera_draws\": "
         << action_view_gate.observed_mode0e_camera_draws;
+    out << ", \"observed_mode0_fallback_draws\": "
+        << action_view_gate.observed_mode0_fallback_draws;
     out << ", \"observed_attack_hit_draws\": "
         << action_view_gate.observed_attack_hit_draws;
     out << ", \"first_gate_draw_index\": ";
@@ -2177,6 +2257,12 @@ void write_json_report(
     out << ", \"first_mode0e_draw_index\": ";
     if (action_view_gate.first_mode0e_draw_index.has_value()) {
         out << *action_view_gate.first_mode0e_draw_index;
+    } else {
+        out << "null";
+    }
+    out << ", \"first_mode0_fallback_draw_index\": ";
+    if (action_view_gate.first_mode0_fallback_draw_index.has_value()) {
+        out << *action_view_gate.first_mode0_fallback_draw_index;
     } else {
         out << "null";
     }
@@ -2192,6 +2278,10 @@ void write_json_report(
         << action_view_gate.gate_events_before_first_attack_hit;
     out << ", \"mode0e_draws_before_first_attack_hit\": "
         << action_view_gate.mode0e_draws_before_first_attack_hit;
+    out << ", \"mode0_fallback_draws_before_first_mode0e\": "
+        << action_view_gate.mode0_fallback_draws_before_first_mode0e;
+    out << ", \"mode0_fallback_draws_before_first_attack_hit\": "
+        << action_view_gate.mode0_fallback_draws_before_first_attack_hit;
     out << ", \"events\": [";
     for (std::size_t i = 0; i < action_view_gate.events.size(); ++i) {
         if (i != 0) {
@@ -2276,6 +2366,16 @@ void write_json_report(
         } else {
             out << "null";
         }
+        out << ", \"action_child_thread\": ";
+        write_json_optional_string(out, event.action_child_thread);
+        out << ", \"child_payload\": ";
+        write_json_optional_string(out, event.child_payload);
+        out << ", \"nested_payload\": ";
+        write_json_optional_string(out, event.nested_payload);
+        out << ", \"child_thread_state_byte\": ";
+        write_json_optional_int(out, event.child_thread_state_byte);
+        out << ", \"mode0_fallback_reached\": ";
+        write_json_optional_bool(out, event.mode0_fallback_reached);
         out << "}";
     }
     out << "]";

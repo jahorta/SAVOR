@@ -1,5 +1,7 @@
 #include "ActionViewGateCheckpointModel.h"
 
+#include <algorithm>
+#include <cctype>
 #include <cstdlib>
 #include <initializer_list>
 #include <utility>
@@ -14,6 +16,7 @@ constexpr int kExpectedQueryArg2 = 0x2a;
 constexpr int kExpectedQueryArg3 = 3;
 constexpr int kExpectedSelectedRecordMode = 0x0e;
 constexpr const char* kMode0eOwner = "mode0e_action_view_camera";
+constexpr const char* kMode0FallbackOwner = "mode0_action_view_camera_fallback";
 constexpr const char* kAttackHitOwner = "attack_hit_dodge";
 
 std::optional<int> parse_field_int(const CheckpointEvent& event, const char* field_name) {
@@ -53,6 +56,37 @@ std::optional<std::string> parse_first_field_string(
     return std::nullopt;
 }
 
+std::optional<bool> parse_field_bool(const CheckpointEvent& event, const char* field_name) {
+    const auto found = event.fields.find(field_name);
+    if (found == event.fields.end()) {
+        return std::nullopt;
+    }
+
+    std::string lowered = found->second;
+    std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+
+    if (lowered == "1" || lowered == "true" || lowered == "yes") {
+        return true;
+    }
+    if (lowered == "0" || lowered == "false" || lowered == "no") {
+        return false;
+    }
+    return std::nullopt;
+}
+
+std::optional<bool> parse_first_field_bool(
+    const CheckpointEvent& event,
+    std::initializer_list<const char*> field_names) {
+    for (const auto* field_name : field_names) {
+        if (const auto value = parse_field_bool(event, field_name); value.has_value()) {
+            return value;
+        }
+    }
+    return std::nullopt;
+}
+
 bool owner_is(const CheckpointEvent& event, const char* owner) {
     return event.known_rng_owner == owner;
 }
@@ -81,7 +115,17 @@ bool query_args_match(const ActionViewGateCheckpointEvent& event) {
         && *event.query_arg3 == kExpectedQueryArg3;
 }
 
+bool has_scheduler_chain(const ActionViewGateCheckpointEvent& event) {
+    return event.action_child_thread.has_value()
+        && event.child_payload.has_value()
+        && event.nested_payload.has_value()
+        && event.aux_list_root.has_value();
+}
+
 ActionViewGateCheckpointStatus classify_status(const ActionViewGateCheckpointSummary& summary) {
+    if (summary.mode0_fallback_reached_events > 0 || summary.observed_mode0_fallback_draws > 0) {
+        return ActionViewGateCheckpointStatus::Mode0FallbackReached;
+    }
     if (summary.observed_gate_events == 0) {
         return ActionViewGateCheckpointStatus::ObservedOnly;
     }
@@ -97,6 +141,14 @@ ActionViewGateCheckpointStatus classify_status(const ActionViewGateCheckpointSum
     if (summary.selected_mode_mismatches > 0) {
         return ActionViewGateCheckpointStatus::SelectedModeMismatch;
     }
+    if (summary.events_with_action_child_thread != summary.observed_gate_events
+        || summary.events_with_child_payload != summary.observed_gate_events
+        || summary.events_with_nested_payload != summary.observed_gate_events
+        || summary.events_with_child_thread_state != summary.observed_gate_events
+        || summary.events_with_scheduler_chain != summary.observed_gate_events
+        || summary.events_with_mode0_fallback_flag != summary.observed_gate_events) {
+        return ActionViewGateCheckpointStatus::MissingSchedulerFields;
+    }
     return ActionViewGateCheckpointStatus::MatchesExpected;
 }
 
@@ -111,6 +163,13 @@ ActionViewGateCheckpointSummary summarize_action_view_gate_checkpoints(
             ++summary.observed_mode0e_camera_draws;
             if (!summary.first_mode0e_draw_index.has_value()) {
                 summary.first_mode0e_draw_index = event.rng_draw_index_before;
+            }
+            continue;
+        }
+        if (owner_is(event, kMode0FallbackOwner)) {
+            ++summary.observed_mode0_fallback_draws;
+            if (!summary.first_mode0_fallback_draw_index.has_value()) {
+                summary.first_mode0_fallback_draw_index = event.rng_draw_index_before;
             }
             continue;
         }
@@ -148,6 +207,17 @@ ActionViewGateCheckpointSummary summarize_action_view_gate_checkpoints(
             parse_first_field_string(event, {"query_result", "aux_result", "selected_record_ptr"});
         observed.selected_record_mode =
             parse_first_field_int(event, {"selected_record_mode", "record_mode", "selected_mode"});
+        observed.action_child_thread = parse_first_field_string(
+            event,
+            {"action_child_thread", "child_thread", "action_view_child_thread", "action_view_thread", "thread"});
+        observed.child_payload =
+            parse_first_field_string(event, {"child_payload", "thread_payload", "payload_0x24"});
+        observed.nested_payload =
+            parse_first_field_string(event, {"nested_payload", "payload_nested", "payload_0x10", "nested_payload_0x10"});
+        observed.child_thread_state_byte =
+            parse_first_field_int(event, {"child_thread_state_byte", "thread_state_byte", "thread_0x19"});
+        observed.mode0_fallback_reached =
+            parse_first_field_bool(event, {"mode0_fallback_reached", "fallback_reached", "mode0_fallback"});
 
         ++summary.observed_gate_events;
         if (!summary.first_gate_draw_index.has_value()) {
@@ -173,6 +243,27 @@ ActionViewGateCheckpointSummary summarize_action_view_gate_checkpoints(
                 ++summary.selected_mode_matches;
             } else {
                 ++summary.selected_mode_mismatches;
+            }
+        }
+        if (observed.action_child_thread.has_value()) {
+            ++summary.events_with_action_child_thread;
+        }
+        if (observed.child_payload.has_value()) {
+            ++summary.events_with_child_payload;
+        }
+        if (observed.nested_payload.has_value()) {
+            ++summary.events_with_nested_payload;
+        }
+        if (observed.child_thread_state_byte.has_value()) {
+            ++summary.events_with_child_thread_state;
+        }
+        if (has_scheduler_chain(observed)) {
+            ++summary.events_with_scheduler_chain;
+        }
+        if (observed.mode0_fallback_reached.has_value()) {
+            ++summary.events_with_mode0_fallback_flag;
+            if (*observed.mode0_fallback_reached) {
+                ++summary.mode0_fallback_reached_events;
             }
         }
         summary.events.push_back(std::move(observed));
@@ -202,6 +293,26 @@ ActionViewGateCheckpointSummary summarize_action_view_gate_checkpoints(
         }
     }
 
+    if (summary.first_mode0e_draw_index.has_value()) {
+        for (const auto& event : events) {
+            if (owner_is(event, kMode0FallbackOwner)
+                && event.rng_draw_index_before.has_value()
+                && *event.rng_draw_index_before < *summary.first_mode0e_draw_index) {
+                ++summary.mode0_fallback_draws_before_first_mode0e;
+            }
+        }
+    }
+
+    if (summary.first_attack_hit_draw_index.has_value()) {
+        for (const auto& event : events) {
+            if (owner_is(event, kMode0FallbackOwner)
+                && event.rng_draw_index_before.has_value()
+                && *event.rng_draw_index_before < *summary.first_attack_hit_draw_index) {
+                ++summary.mode0_fallback_draws_before_first_attack_hit;
+            }
+        }
+    }
+
     summary.status = classify_status(summary);
     return summary;
 }
@@ -211,8 +322,10 @@ const char* action_view_gate_checkpoint_status_name(ActionViewGateCheckpointStat
     case ActionViewGateCheckpointStatus::ObservedOnly: return "ObservedOnly";
     case ActionViewGateCheckpointStatus::MatchesExpected: return "MatchesExpected";
     case ActionViewGateCheckpointStatus::MissingLiveGateFields: return "MissingLiveGateFields";
+    case ActionViewGateCheckpointStatus::MissingSchedulerFields: return "MissingSchedulerFields";
     case ActionViewGateCheckpointStatus::QueryArgsMismatch: return "QueryArgsMismatch";
     case ActionViewGateCheckpointStatus::SelectedModeMismatch: return "SelectedModeMismatch";
+    case ActionViewGateCheckpointStatus::Mode0FallbackReached: return "Mode0FallbackReached";
     default: return "Unknown";
     }
 }
@@ -220,7 +333,8 @@ const char* action_view_gate_checkpoint_status_name(ActionViewGateCheckpointStat
 const char* first_battle_action_view_gate_checkpoint_rule_detail() {
     return "first-battle action-view gate checkpoints should prove the aux-list root, "
            "FUN_80009030 query args (4, -1, 0x2a, 3), query result, and selected mode 0xe "
-           "before the mode-0xe camera draw and shared attack hit draw";
+           "before the mode-0xe camera draw and shared attack hit draw, with scheduler child "
+           "thread/payload/state fields present and no mode-0 fallback draw";
 }
 
 } // namespace savor::predict
