@@ -5,6 +5,8 @@
 #include <string>
 #include <vector>
 
+#include "DbRootCopy.h"
+
 namespace savor::predict {
 
 struct BattleJobRunOptions {
@@ -14,6 +16,7 @@ struct BattleJobRunOptions {
     std::filesystem::path dolphin_base_dir;
     std::filesystem::path worker_exe_path;
     std::filesystem::path capture_profile_path;
+    savor::dbutils::SandboxMode sandbox_mode = savor::dbutils::SandboxMode::MinimalBattleSingleTurn;
     std::optional<long long> turn_job_id;
     std::optional<long long> exec_job_id;
     int poll_ms = 100;

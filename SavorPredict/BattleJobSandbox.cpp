@@ -1,9 +1,12 @@
 #include "BattleJobSandbox.h"
 
-#include "DbCopy.h"
+#include "DbRootCopy.h"
 
+#include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <ostream>
+#include <utility>
 
 namespace savor::predict {
 
@@ -35,16 +38,54 @@ int prepare_battle_job_sandbox(
         return 1;
     }
 
-    PrepareDbOptions copy_options;
-    copy_options.source = options.db_root;
-    copy_options.dest = sandbox_db_root;
-    copy_options.overwrite = false;
-    if (const int rc = run_prepare_db(copy_options, out, err); rc != 0) {
+    result_out->run_root = run_root;
+    result_out->db_root = sandbox_db_root;
+    result_out->sandbox_mode = options.sandbox_mode;
+
+    if (options.sandbox_mode == savor::dbutils::SandboxMode::FullCopy) {
+        if (const int rc = savor::dbutils::CopyDbRootFull(
+                {
+                    .source_root = options.db_root,
+                    .dest_root = sandbox_db_root,
+                    .overwrite = false,
+                },
+                out,
+                err);
+            rc != 0) {
+            return rc;
+        }
+        return 0;
+    }
+
+    savor::dbutils::BattleSingleTurnJobSubsetResult subset;
+    if (const int rc = savor::dbutils::HydrateBattleSingleTurnJobSubset(
+            {
+                .source_root = options.db_root,
+                .target_root = sandbox_db_root,
+                .artifact_root = run_root / "source-artifacts",
+                .selector = {
+                    .turn_job_id = options.turn_job_id.has_value()
+                        ? std::optional<std::int64_t>(*options.turn_job_id)
+                        : std::nullopt,
+                    .exec_job_id = options.exec_job_id.has_value()
+                        ? std::optional<std::int64_t>(*options.exec_job_id)
+                        : std::nullopt,
+                },
+                .overwrite_target = false,
+            },
+            &subset,
+            out,
+            err);
+        rc != 0) {
+        result_out->table_counts = std::move(subset.table_counts);
+        result_out->copied_artifacts = std::move(subset.copied_artifacts);
+        result_out->validation_errors = std::move(subset.validation_errors);
         return rc;
     }
 
-    result_out->run_root = run_root;
-    result_out->db_root = sandbox_db_root;
+    result_out->table_counts = std::move(subset.table_counts);
+    result_out->copied_artifacts = std::move(subset.copied_artifacts);
+    result_out->validation_errors = std::move(subset.validation_errors);
     return 0;
 }
 

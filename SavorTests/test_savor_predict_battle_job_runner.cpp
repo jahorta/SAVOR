@@ -284,7 +284,19 @@ TEST(SavorPredictBattleJobRunOptions, ValidatesSelectorsAndRuntimePaths)
     ASSERT_TRUE(parsed.options.turn_job_id.has_value());
     EXPECT_EQ(*parsed.options.turn_job_id, 12);
     EXPECT_EQ(parsed.options.worker_exe_path.generic_string(), "C:/repo/bin/x64/Debug/SavorWorker.exe");
+    EXPECT_EQ(parsed.options.sandbox_mode, savor::dbutils::SandboxMode::MinimalBattleSingleTurn);
     EXPECT_NE(parsed.options.run_root.generic_string().find("Analyses/battle_runs_first_battle/live_capture_runs/"), std::string::npos);
+
+    const auto full_copy = parse_battle_job_run_tokens(
+        {
+            "--exec-job-id", "34",
+            "--sandbox-mode", "full-copy",
+            "--iso", "D:/SoATAS/game.gcm",
+            "--dolphin-base-dir", "D:/SoATAS/dolphin",
+        },
+        "SavorPredict.exe");
+    EXPECT_TRUE(full_copy.errors.empty()) << (full_copy.errors.empty() ? "" : full_copy.errors.front());
+    EXPECT_EQ(full_copy.options.sandbox_mode, savor::dbutils::SandboxMode::FullCopy);
 
     const auto both = parse_battle_job_run_tokens(
         {

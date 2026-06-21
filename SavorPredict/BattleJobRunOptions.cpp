@@ -177,6 +177,14 @@ BattleJobRunParseResult parse_battle_job_run_tokens(
             if (require_value(args, i, arg, value, result.errors)) {
                 result.options.capture_profile_path = value;
             }
+        } else if (arg == "--sandbox-mode") {
+            if (require_value(args, i, arg, value, result.errors)) {
+                if (const auto mode = savor::dbutils::ParseSandboxMode(value); mode.has_value()) {
+                    result.options.sandbox_mode = *mode;
+                } else {
+                    result.errors.push_back("--sandbox-mode must be minimal or full-copy.");
+                }
+            }
         } else if (arg == "--poll-ms") {
             int parsed = 0;
             if (require_value(args, i, arg, value, result.errors) && parse_int(value, parsed)) {

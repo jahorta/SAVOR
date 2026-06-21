@@ -141,6 +141,10 @@ int run_battle_job(const BattleJobRunOptions& options, std::ostream& out, std::o
     }
 
     if (const int rc = prepare_battle_job_sandbox(options, &summary.sandbox, out, err); rc != 0) {
+        append_error(summary, "failed preparing battle job sandbox");
+        if (!summary.sandbox.run_root.empty()) {
+            write_manifest_outputs(summary, err);
+        }
         return rc;
     }
 

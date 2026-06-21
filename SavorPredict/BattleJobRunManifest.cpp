@@ -50,6 +50,34 @@ void write_json_string_array(std::ostream& out, const char* name, const std::vec
     out << "\n";
 }
 
+void write_table_counts(std::ostream& out, const std::vector<savor::dbutils::TableCopyCount>& values) {
+    out << "  \"sandbox_table_counts\": [";
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        if (i != 0) {
+            out << ", ";
+        }
+        out << "{\"db\":\"" << json_escape(values[i].db_name)
+            << "\",\"table\":\"" << json_escape(values[i].table_name)
+            << "\",\"rows\":" << values[i].rows_copied << "}";
+    }
+    out << "],\n";
+}
+
+void write_copied_artifacts(std::ostream& out, const std::vector<savor::dbutils::CopiedArtifactFile>& values) {
+    out << "  \"sandbox_copied_artifacts\": [";
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        if (i != 0) {
+            out << ", ";
+        }
+        out << "{\"artifact_id\":" << values[i].artifact_id
+            << ",\"savestate_id\":" << values[i].savestate_id
+            << ",\"source_path\":\"" << json_escape(path_string(values[i].source_path))
+            << "\",\"copied_path\":\"" << json_escape(path_string(values[i].copied_path))
+            << "\"}";
+    }
+    out << "],\n";
+}
+
 } // namespace
 
 bool write_battle_job_run_manifest(
@@ -78,6 +106,7 @@ bool write_battle_job_run_manifest(
     file << "  \"source_db_root\": \"" << json_escape(path_string(summary.options.db_root)) << "\",\n";
     file << "  \"run_root\": \"" << json_escape(path_string(summary.sandbox.run_root)) << "\",\n";
     file << "  \"sandbox_db_root\": \"" << json_escape(path_string(summary.sandbox.db_root)) << "\",\n";
+    file << "  \"sandbox_mode\": \"" << json_escape(savor::dbutils::ToString(summary.sandbox.sandbox_mode)) << "\",\n";
     file << "  \"iso_path\": \"" << json_escape(path_string(summary.options.iso_path)) << "\",\n";
     file << "  \"dolphin_base_dir\": \"" << json_escape(path_string(summary.options.dolphin_base_dir)) << "\",\n";
     file << "  \"worker_exe_path\": \"" << json_escape(path_string(summary.options.worker_exe_path)) << "\",\n";
@@ -99,6 +128,9 @@ bool write_battle_job_run_manifest(
     file << "  \"timed_out\": " << (summary.timed_out ? "true" : "false") << ",\n";
     file << "  \"capture_found\": " << (summary.capture_found ? "true" : "false") << ",\n";
     file << "  \"trace_exit_code\": " << summary.trace_exit_code << ",\n";
+    write_table_counts(file, summary.sandbox.table_counts);
+    write_copied_artifacts(file, summary.sandbox.copied_artifacts);
+    write_json_string_array(file, "sandbox_validation_errors", summary.sandbox.validation_errors, true);
     write_json_string_array(file, "events", summary.events, true);
     write_json_string_array(file, "errors", summary.errors, false);
     file << "}\n";
@@ -121,6 +153,7 @@ bool write_battle_job_run_text_summary(
     file << "SavorPredict run-battle-job\n";
     file << "source_db_root: " << summary.options.db_root.string() << "\n";
     file << "sandbox_db_root: " << summary.sandbox.db_root.string() << "\n";
+    file << "sandbox_mode: " << savor::dbutils::ToString(summary.sandbox.sandbox_mode) << "\n";
     file << "original_exec_job_id: " << summary.clone.original_exec_job_id << "\n";
     file << "cloned_exec_job_id: " << summary.clone.cloned_exec_job_id << "\n";
     file << "original_turn_job_id: " << summary.clone.original_turn_job_id << "\n";

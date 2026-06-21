@@ -43,6 +43,7 @@
     <ClCompile Include="test_import_from_qt.cpp" />
     <ClCompile Include="test_live_checkpoint_capture.cpp" />
     <ClCompile Include="test_pad_poll_isolated_user.cpp" />
+    <ClCompile Include="test_savordb_utils_minimal_copy.cpp" />
     <ClCompile Include="test_simconfig.cpp" />
     <ClCompile Include="test_savordb.cpp" />
     <ClCompile Include="test_savordb_fixture_sqlite.cpp" />
