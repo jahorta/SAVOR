@@ -157,6 +157,7 @@ public:
     std::optional<BattleContextProbeSnapshot> GetBattleContextProbe(std::int64_t context_probe_id) const override;
     std::optional<BattleContextProbeSnapshot> GetBattleContextProbeForExecJob(std::int64_t exec_job_id) const override;
     std::optional<BattleContextProbeSnapshot> GetLatestBattleContextForWave(std::int64_t wave_id) const override;
+    std::optional<BattleTurnJobSnapshot> GetBattleTurnJob(std::int64_t turn_job_id) const override;
     std::optional<BattleTurnJobSnapshot> GetBattleTurnJobForExecJob(std::int64_t exec_job_id) const override;
     std::vector<BattleTurnJobSnapshot> ListBattleTurnJobsForWave(std::int64_t wave_id) const override;
     std::vector<BattleTurnJobSnapshot> ListBattleTurnJobsForBattleTurn(std::int64_t battle_set_id, int turn_index) const override;

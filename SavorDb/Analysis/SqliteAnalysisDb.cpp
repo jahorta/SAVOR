@@ -3646,6 +3646,26 @@ std::optional<BattleContextProbeSnapshot> SqliteAnalysisDb::GetLatestBattleConte
     return ReadBattleContextProbe(st.st);
 }
 
+std::optional<BattleTurnJobSnapshot> SqliteAnalysisDb::GetBattleTurnJob(std::int64_t turn_job_id) const {
+    if (db_ == nullptr || turn_job_id <= 0) {
+        return std::nullopt;
+    }
+    Statement st;
+    constexpr const char* kSql =
+        "SELECT turn_job_id,wave_id,exec_job_id,plan_id,source_savestate_id,seed_candidate_id,authored_plan_id,authored_turn_index,resolved_turn_commands_blob,resolved_turn_variant_key,fake_attacks_this_turn,fake_attacks_used_before,job_state,"
+        "started_at_utc,ended_at_utc,has_results,vi_start,vi_end,delta_vi,rng_seed,battle_outcome,plan_materialize_err,"
+        "pred_passed,pred_total,pred_abort_run,output_savestate_id,applied_input_artifact_id,input_trace_artifact_id,result_context_blob_base64,result_context_version,recorded_at_utc "
+        "FROM ab_turn_job WHERE turn_job_id=?1;";
+    if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK) {
+        return std::nullopt;
+    }
+    sqlite3_bind_int64(st.st, 1, turn_job_id);
+    if (sqlite3_step(st.st) != SQLITE_ROW) {
+        return std::nullopt;
+    }
+    return ReadBattleTurnJob(st.st);
+}
+
 std::optional<BattleTurnJobSnapshot> SqliteAnalysisDb::GetBattleTurnJobForExecJob(std::int64_t exec_job_id) const {
     if (db_ == nullptr || exec_job_id <= 0) {
         return std::nullopt;

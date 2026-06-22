@@ -1,12 +1,19 @@
 #include <gtest/gtest.h>
 
 #include <CheckpointTrace.h>
+#include <BattlePredictionDbInput.h>
 #include <BattlePredictorCli.h>
 #include <ProgressEventParser.h>
 #include <RngModel.h>
 #include <SstActionCommandCheckpointModel.h>
 
+#include <Core/Input/SoaBattle/BattleCommandCodec.h>
+#include <Core/Memory/Soa/Battle/BattleContextCodec.h>
+
+#include "common/SqliteDbFixture.h"
+
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -159,6 +166,131 @@ soa::battle::actions::TurnPlan make_two_pc_attack_turn_plan(std::uint32_t fake_a
     });
     return plan;
 }
+
+struct PredictionDbFixtureRows {
+    std::int64_t battle_set_id = 0;
+    std::int64_t seed_candidate_id = 0;
+    std::int64_t wave_id = 0;
+    std::int64_t context_probe_id = 0;
+    std::int64_t turn_job_id = 0;
+    std::int64_t turn_exec_job_id = 88001;
+    std::uint32_t candidate_seed = 0x11111111u;
+    std::optional<std::uint32_t> live_seed = 0x22222222u;
+};
+
+class SavorPredictDbInputFixture : public SqliteDbFixture {
+protected:
+    PredictionDbFixtureRows SeedPredictionRows(std::optional<std::uint32_t> live_seed = 0x22222222u) {
+        using namespace savor::db;
+
+        auto* analysis_db = db_service_->AnalysisDb();
+        EXPECT_NE(analysis_db, nullptr);
+
+        PredictionDbFixtureRows rows;
+        rows.live_seed = live_seed;
+        const auto now = types::UtcTimePoint(std::chrono::milliseconds(1712304000000));
+        std::string err;
+
+        EXPECT_TRUE(analysis_db->CreateBattleSet(
+            {
+                .name = "prediction-input-fixture",
+                .entry_savestate_id = 501,
+                .battle_run_spec_id = 601,
+                .explorer_settings_id = 701,
+                .status = BattleSetStatus::Active,
+                .created_at_utc = now,
+                .correlation_id = "predict-corr",
+                .causation_id = "predict-cause-1",
+            },
+            &rows.battle_set_id,
+            &err))
+            << err;
+
+        EXPECT_TRUE(analysis_db->AddBattleSeedCandidate(
+            {
+                .battle_set_id = rows.battle_set_id,
+                .seed_value = rows.candidate_seed,
+                .source_kind = BattleSeedCandidateSourceKind::SeedProbeUnique,
+                .candidate_status = BattleSeedCandidateStatus::Pending,
+                .created_at_utc = now,
+                .correlation_id = "predict-corr",
+                .causation_id = "predict-cause-2",
+            },
+            &rows.seed_candidate_id,
+            &err))
+            << err;
+
+        EXPECT_TRUE(analysis_db->CreateBattleTurnWave(
+            {
+                .battle_set_id = rows.battle_set_id,
+                .turn_index = 1,
+                .seed_candidate_id = rows.seed_candidate_id,
+                .status = BattleTurnWaveStatus::Ready,
+                .created_at_utc = now,
+                .correlation_id = "predict-corr",
+                .causation_id = "predict-cause-3",
+            },
+            &rows.wave_id,
+            &err))
+            << err;
+
+        std::string context_blob;
+        EXPECT_TRUE(soa::battle::ctx::codec::encode(make_predictor_first_battle_context(), context_blob));
+        EXPECT_TRUE(analysis_db->CreateBattleContextProbe(
+            {
+                .wave_id = rows.wave_id,
+                .source_savestate_id = 501,
+                .probe_status = BattleContextProbeStatus::Queued,
+                .created_at_utc = now,
+                .correlation_id = "predict-corr",
+                .causation_id = "predict-cause-4",
+            },
+            &rows.context_probe_id,
+            &err))
+            << err;
+        EXPECT_TRUE(analysis_db->SetBattleContextProbeExecJobId(rows.context_probe_id, 87001, &err)) << err;
+        EXPECT_TRUE(analysis_db->CompleteBattleContextProbe(
+            {
+                .exec_job_id = 87001,
+                .probe_status = BattleContextProbeStatus::Succeeded,
+                .context_blob = context_blob,
+                .context_version = soa::battle::ctx::codec::ver,
+                .recorded_at_utc = now,
+            },
+            &err))
+            << err;
+
+        const auto turn_plan = make_two_pc_attack_turn_plan(2);
+        const auto command_blob = soa::battle::actions::encode_battle_turn_commands_hex(turn_plan.commands);
+        EXPECT_TRUE(analysis_db->RecordBattleTurnJob(
+            {
+                .wave_id = rows.wave_id,
+                .exec_job_id = rows.turn_exec_job_id,
+                .plan_id = 9001,
+                .seed_candidate_id = rows.seed_candidate_id,
+                .resolved_turn_commands_blob = command_blob,
+                .resolved_turn_variant_key = "fixture-variant",
+                .fake_attacks_this_turn = 2,
+                .fake_attacks_used_before = 0,
+                .job_state = BattleTurnJobState::Completed,
+                .started_at_utc = now,
+                .ended_at_utc = now,
+                .has_results = live_seed.has_value(),
+                .rng_seed = live_seed.has_value()
+                    ? std::optional<std::int64_t>(static_cast<std::int64_t>(*live_seed))
+                    : std::nullopt,
+                .battle_outcome = savor::battle::Outcome::ReachedNextTurn,
+                .recorded_at_utc = now,
+                .correlation_id = "predict-corr",
+                .causation_id = "predict-cause-5",
+            },
+            &rows.turn_job_id,
+            &err))
+            << err;
+
+        return rows;
+    }
+};
 
 const BattlePredictionEvent* find_prediction_event(
     const BattlePredictionResult& result,
@@ -692,6 +824,105 @@ TEST(SavorPredictBattlePredictorCli, RejectsMutableDebugDbRoot) {
             parsed.errors.end(),
             "Refusing to use D:/SoaSimDBDebug for prediction; use D:/SavorPredictDB."),
         parsed.errors.end());
+}
+
+TEST(SavorPredictBattlePredictorCli, ParsesSeedCandidateFallbackFlag) {
+    const auto parsed = parse_predict_battle_tokens({
+        "--exec-job-id",
+        "10",
+        "--allow-seed-candidate-fallback",
+    });
+
+    EXPECT_TRUE(parsed.errors.empty());
+    EXPECT_TRUE(parsed.options.allow_seed_candidate_fallback);
+}
+
+TEST(SavorPredictBattlePredictionDbInput, RejectsMutableDebugDbRootInResolver) {
+    BattlePredictionDbInputOptions options;
+    options.db_root = "D:/SoaSimDBDebug";
+    options.selector.exec_job_id = 10;
+    std::ostringstream err;
+
+    const auto resolved = build_battle_prediction_input_from_db_root(options, err);
+
+    EXPECT_FALSE(resolved.has_value());
+    EXPECT_NE(err.str().find("Refusing to use D:/SoaSimDBDebug"), std::string::npos);
+}
+
+TEST_F(SavorPredictDbInputFixture, UsesLiveTurnJobSeedForExecJob) {
+    const auto rows = SeedPredictionRows(0x22222222u);
+
+    BattlePredictionDbInputOptions options;
+    options.selector.exec_job_id = rows.turn_exec_job_id;
+    std::ostringstream err;
+
+    const auto resolved = build_battle_prediction_input_from_analysis_db(
+        *db_service_->AnalysisDb(),
+        options,
+        err);
+
+    ASSERT_TRUE(resolved.has_value()) << err.str();
+    EXPECT_EQ(resolved->input.starting_rng_seed, 0x22222222u);
+    EXPECT_EQ(resolved->metadata.seed_source, BattlePredictionSeedSource::TurnJobLiveRngSeed);
+    EXPECT_EQ(resolved->metadata.turn_job_id, rows.turn_job_id);
+    EXPECT_EQ(resolved->metadata.exec_job_id.value_or(0), rows.turn_exec_job_id);
+    EXPECT_EQ(resolved->metadata.context_source, BattlePredictionContextSource::LatestWaveContextProbe);
+    EXPECT_EQ(resolved->metadata.context_probe_id.value_or(0), rows.context_probe_id);
+    EXPECT_EQ(resolved->metadata.fake_attack_source, BattlePredictionFakeAttackSource::TurnJob);
+    EXPECT_EQ(resolved->input.turn_plan.fake_attack_count, 2u);
+    ASSERT_EQ(resolved->input.turn_plan.commands.size(), 2u);
+    EXPECT_EQ(resolved->input.turn_plan.commands[0].actor_slot, 0);
+    EXPECT_EQ(resolved->metadata.resolved_turn_variant_key.value_or(""), "fixture-variant");
+}
+
+TEST_F(SavorPredictDbInputFixture, OverridesSeedAndFakeAttackCountExplicitly) {
+    const auto rows = SeedPredictionRows(0x22222222u);
+
+    BattlePredictionDbInputOptions options;
+    options.selector.turn_job_id = rows.turn_job_id;
+    options.start_seed_override = 0x33333333u;
+    options.fake_attacks_override = 4;
+    std::ostringstream err;
+
+    const auto resolved = build_battle_prediction_input_from_analysis_db(
+        *db_service_->AnalysisDb(),
+        options,
+        err);
+
+    ASSERT_TRUE(resolved.has_value()) << err.str();
+    EXPECT_EQ(resolved->input.starting_rng_seed, 0x33333333u);
+    EXPECT_EQ(resolved->metadata.seed_source, BattlePredictionSeedSource::Override);
+    EXPECT_FALSE(resolved->metadata.warnings.empty());
+    EXPECT_EQ(resolved->input.turn_plan.fake_attack_count, 4u);
+    EXPECT_EQ(resolved->metadata.fake_attack_source, BattlePredictionFakeAttackSource::Override);
+}
+
+TEST_F(SavorPredictDbInputFixture, MissingLiveSeedRequiresExplicitCandidateFallback) {
+    const auto rows = SeedPredictionRows(std::nullopt);
+
+    BattlePredictionDbInputOptions options;
+    options.selector.exec_job_id = rows.turn_exec_job_id;
+    std::ostringstream err;
+
+    const auto rejected = build_battle_prediction_input_from_analysis_db(
+        *db_service_->AnalysisDb(),
+        options,
+        err);
+    EXPECT_FALSE(rejected.has_value());
+    EXPECT_NE(err.str().find("no live RNG seed"), std::string::npos);
+
+    err.str("");
+    err.clear();
+    options.allow_seed_candidate_fallback = true;
+    const auto resolved = build_battle_prediction_input_from_analysis_db(
+        *db_service_->AnalysisDb(),
+        options,
+        err);
+
+    ASSERT_TRUE(resolved.has_value()) << err.str();
+    EXPECT_EQ(resolved->input.starting_rng_seed, rows.candidate_seed);
+    EXPECT_EQ(resolved->metadata.seed_source, BattlePredictionSeedSource::SeedCandidateFallback);
+    EXPECT_FALSE(resolved->metadata.warnings.empty());
 }
 
 TEST(SavorPredictRngModel, FirstBattleTurnOrderSpendsOneDrawPerQueuedBasicAction) {

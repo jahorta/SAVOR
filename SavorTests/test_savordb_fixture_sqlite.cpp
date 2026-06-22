@@ -4244,6 +4244,11 @@ TEST_F(SqliteDbFixture, Stage3dBattleAuthoringAndAnalysisQueriesRoundTrip) {
     EXPECT_EQ(turn_job->delta_vi.value_or(0), 25);
     EXPECT_EQ(turn_job->output_savestate_id.value_or(0), 9501);
 
+    const auto turn_job_by_id = analysis_db.GetBattleTurnJob(turn_job_id);
+    ASSERT_TRUE(turn_job_by_id.has_value());
+    EXPECT_EQ(turn_job_by_id->exec_job_id.value_or(0), 88001);
+    EXPECT_EQ(turn_job_by_id->rng_seed.value_or(0), 7777);
+
     const auto turn_jobs = analysis_db.ListBattleTurnJobsForWave(wave_id);
     ASSERT_EQ(turn_jobs.size(), 1);
     EXPECT_EQ(turn_jobs[0].exec_job_id.value_or(0), 88001);

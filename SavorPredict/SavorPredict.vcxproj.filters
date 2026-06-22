@@ -32,6 +32,9 @@
     <ClCompile Include="AttackResolutionModel.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="BattlePredictionDbInput.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="BattlePredictor.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -155,6 +158,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="AttackResolutionModel.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="BattlePredictionDbInput.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="BattlePredictor.h">

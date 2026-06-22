@@ -11,6 +11,7 @@
     <ClCompile Include="..\SavorPredict\AttackDamageValueCheckpointModel.cpp" />
     <ClCompile Include="..\SavorPredict\AttackResolutionCheckpointModel.cpp" />
     <ClCompile Include="..\SavorPredict\AttackResolutionModel.cpp" />
+    <ClCompile Include="..\SavorPredict\BattlePredictionDbInput.cpp" />
     <ClCompile Include="..\SavorPredict\BattlePredictor.cpp" />
     <ClCompile Include="..\SavorPredict\BattlePredictorCli.cpp" />
     <ClCompile Include="..\SavorPredict\BattleJobClone.cpp" />

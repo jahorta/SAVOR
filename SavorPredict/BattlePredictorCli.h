@@ -20,6 +20,7 @@ struct BattlePredictorCliOptions {
     std::string turn_plan_hex;
     std::string profile_name = "first-battle";
     bool json = false;
+    bool allow_seed_candidate_fallback = false;
 };
 
 struct BattlePredictorCliParseResult {

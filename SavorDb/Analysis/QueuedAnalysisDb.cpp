@@ -548,6 +548,14 @@ std::optional<BattleContextProbeSnapshot> QueuedAnalysisDb::GetLatestBattleConte
         std::nullopt);
 }
 
+std::optional<BattleTurnJobSnapshot> QueuedAnalysisDb::GetBattleTurnJob(std::int64_t turn_job_id) const {
+    return ExecuteRead<std::optional<BattleTurnJobSnapshot>>(
+        [this, turn_job_id]() {
+            return inner_ != nullptr ? inner_->GetBattleTurnJob(turn_job_id) : std::nullopt;
+        },
+        std::nullopt);
+}
+
 std::optional<BattleTurnJobSnapshot> QueuedAnalysisDb::GetBattleTurnJobForExecJob(std::int64_t exec_job_id) const {
     return ExecuteRead<std::optional<BattleTurnJobSnapshot>>(
         [this, exec_job_id]() {

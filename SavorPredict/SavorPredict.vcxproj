@@ -115,6 +115,7 @@
     <ClCompile Include="AttackDamageValueCheckpointModel.cpp" />
     <ClCompile Include="AttackResolutionCheckpointModel.cpp" />
     <ClCompile Include="AttackResolutionModel.cpp" />
+    <ClCompile Include="BattlePredictionDbInput.cpp" />
     <ClCompile Include="BattlePredictor.cpp" />
     <ClCompile Include="BattlePredictorCli.cpp" />
     <ClCompile Include="BattleVisualRngModel.cpp" />
@@ -158,6 +159,7 @@
     <ClInclude Include="AttackDamageValueCheckpointModel.h" />
     <ClInclude Include="AttackResolutionCheckpointModel.h" />
     <ClInclude Include="AttackResolutionModel.h" />
+    <ClInclude Include="BattlePredictionDbInput.h" />
     <ClInclude Include="BattlePredictor.h" />
     <ClInclude Include="BattlePredictorCli.h" />
     <ClInclude Include="BattleVisualRngModel.h" />
