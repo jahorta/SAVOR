@@ -161,6 +161,7 @@
     <ClCompile Include="..\SavorPredict\RngModel.cpp" />
     <ClCompile Include="..\SavorPredict\SoldierActionExecutionModel.cpp" />
     <ClCompile Include="..\SavorPredict\SoldierAiModel.cpp" />
+    <ClCompile Include="..\SavorPredict\SstActionCommandCheckpointModel.cpp" />
     <ClCompile Include="..\SavorPredict\TurnOrderCheckpointModel.cpp" />
     <ClCompile Include="..\SavorPredict\TurnOrderModel.cpp" />
     <ClCompile Include="..\SavorE2E\Cli.cpp" />

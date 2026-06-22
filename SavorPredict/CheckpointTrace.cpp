@@ -13,6 +13,7 @@
 #include "EffectCheckpointModel.h"
 #include "OutcomeCheckpointModel.h"
 #include "PreAiCheckpointModel.h"
+#include "SstActionCommandCheckpointModel.h"
 #include "TurnOrderCheckpointModel.h"
 
 #include <algorithm>
@@ -1154,6 +1155,57 @@ void write_text_report(
             write_optional_bool(out, event.source_selection_before_bridge);
             out << " source_slot_matches_selection=";
             write_optional_bool(out, event.source_slot_matches_selection);
+            out << "\n";
+        }
+    }
+
+    const auto sst_action_command = summarize_sst_action_command_checkpoints(result.events);
+    out << "\nSST action command field6 checkpoints\n";
+    out << "  status: "
+        << sst_action_command_checkpoint_status_name(sst_action_command.status) << "\n";
+    out << "  rule: " << first_battle_sst_action_command_checkpoint_rule_detail() << "\n";
+    out << "  observed_store_events: "
+        << sst_action_command.observed_store_events << "\n";
+    out << "  observed_case2_store_events: "
+        << sst_action_command.observed_case2_store_events << "\n";
+    out << "  observed_case8_store_events: "
+        << sst_action_command.observed_case8_store_events << "\n";
+    out << "  events_with_source_field6: "
+        << sst_action_command.events_with_source_field6 << "\n";
+    out << "  events_with_destination_field6: "
+        << sst_action_command.events_with_destination_field6 << "\n";
+    out << "  events_with_written_field6_register: "
+        << sst_action_command.events_with_written_field6_register << "\n";
+    out << "  events_with_action_sequence_id: "
+        << sst_action_command.events_with_action_sequence_id << "\n";
+    out << "  source_destination_matches: "
+        << sst_action_command.source_destination_matches << "\n";
+    out << "  source_destination_mismatches: "
+        << sst_action_command.source_destination_mismatches << "\n";
+    out << "  key8_store_events: "
+        << sst_action_command.key8_store_events << "\n";
+    out << "  first_store_draw_index: ";
+    write_optional_int(out, sst_action_command.first_store_draw_index);
+    out << "\n";
+    out << "  first_key8_store_draw_index: ";
+    write_optional_int(out, sst_action_command.first_key8_store_draw_index);
+    out << "\n";
+    if (!sst_action_command.events.empty()) {
+        out << "  events:\n";
+        for (const auto& event : sst_action_command.events) {
+            out << "    kind=" << sst_action_command_checkpoint_kind_name(event.kind);
+            out << " draw_index=";
+            write_optional_int(out, event.draw_index);
+            out << " action_sequence_id=";
+            write_optional_int(out, event.action_sequence_id);
+            out << " source_field6=";
+            write_optional_int(out, event.source_field6);
+            out << " destination_field6=";
+            write_optional_int(out, event.destination_field6);
+            out << " written_field6_register=";
+            write_optional_int(out, event.written_field6_register);
+            out << " source_matches_destination=";
+            write_optional_bool(out, event.source_matches_destination);
             out << "\n";
         }
     }
@@ -3030,6 +3082,61 @@ void write_json_report(
         write_json_optional_bool(out, event.source_selection_before_bridge);
         out << ", \"source_slot_matches_selection\": ";
         write_json_optional_bool(out, event.source_slot_matches_selection);
+        out << "}";
+    }
+    out << "]";
+    out << "},\n";
+
+    const auto sst_action_command = summarize_sst_action_command_checkpoints(result.events);
+    out << "  \"sst_action_command_checkpoints\": {";
+    out << "\"status\": \""
+        << sst_action_command_checkpoint_status_name(sst_action_command.status) << "\"";
+    out << ", \"rule\": \""
+        << json_escape(first_battle_sst_action_command_checkpoint_rule_detail()) << "\"";
+    out << ", \"observed_store_events\": "
+        << sst_action_command.observed_store_events;
+    out << ", \"observed_case2_store_events\": "
+        << sst_action_command.observed_case2_store_events;
+    out << ", \"observed_case8_store_events\": "
+        << sst_action_command.observed_case8_store_events;
+    out << ", \"events_with_source_field6\": "
+        << sst_action_command.events_with_source_field6;
+    out << ", \"events_with_destination_field6\": "
+        << sst_action_command.events_with_destination_field6;
+    out << ", \"events_with_written_field6_register\": "
+        << sst_action_command.events_with_written_field6_register;
+    out << ", \"events_with_action_sequence_id\": "
+        << sst_action_command.events_with_action_sequence_id;
+    out << ", \"source_destination_matches\": "
+        << sst_action_command.source_destination_matches;
+    out << ", \"source_destination_mismatches\": "
+        << sst_action_command.source_destination_mismatches;
+    out << ", \"key8_store_events\": "
+        << sst_action_command.key8_store_events;
+    out << ", \"first_store_draw_index\": ";
+    write_json_optional_int(out, sst_action_command.first_store_draw_index);
+    out << ", \"first_key8_store_draw_index\": ";
+    write_json_optional_int(out, sst_action_command.first_key8_store_draw_index);
+    out << ", \"events\": [";
+    for (std::size_t i = 0; i < sst_action_command.events.size(); ++i) {
+        if (i != 0) {
+            out << ", ";
+        }
+        const auto& event = sst_action_command.events[i];
+        out << "{\"kind\": \""
+            << sst_action_command_checkpoint_kind_name(event.kind) << "\"";
+        out << ", \"draw_index\": ";
+        write_json_optional_int(out, event.draw_index);
+        out << ", \"action_sequence_id\": ";
+        write_json_optional_int(out, event.action_sequence_id);
+        out << ", \"source_field6\": ";
+        write_json_optional_int(out, event.source_field6);
+        out << ", \"destination_field6\": ";
+        write_json_optional_int(out, event.destination_field6);
+        out << ", \"written_field6_register\": ";
+        write_json_optional_int(out, event.written_field6_register);
+        out << ", \"source_matches_destination\": ";
+        write_json_optional_bool(out, event.source_matches_destination);
         out << "}";
     }
     out << "]";

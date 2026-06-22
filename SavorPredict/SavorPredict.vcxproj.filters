@@ -113,6 +113,9 @@
     <ClCompile Include="SoldierAiModel.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="SstActionCommandCheckpointModel.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="TurnOrderCheckpointModel.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -221,6 +224,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="SoldierAiModel.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="SstActionCommandCheckpointModel.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="TurnOrderCheckpointModel.h">

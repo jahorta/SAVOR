@@ -308,6 +308,32 @@ std::vector<std::string_view> action_source_bridge_samples()
     };
 }
 
+std::vector<std::string_view> sst_case2_action_field6_store_samples()
+{
+    return {
+        "source_field4_0x04:r29:0x04:u16",
+        "source_field6_0x06:r29:0x06:u16",
+        "dest_field4_after_0x04:r3:0x04:u16",
+        "dest_field6_after_0x06:r3:0x06:u16",
+        "dest_subtype_after_0x08:r3:0x08:u16",
+    };
+}
+
+std::vector<std::string_view> sst_case8_action_field6_store_samples()
+{
+    return {
+        "source_field0_0x00:r30:0x00:u16",
+        "source_field2_0x06:r30:0x06:u16",
+        "source_field4_0x08:r30:0x08:u16",
+        "source_field6_0x0a:r30:0x0a:u16",
+        "source_subtype_0x0c:r30:0x0c:u16",
+        "dest_field0_after_0x00:r3:0x00:u16",
+        "dest_field2_after_0x02:r3:0x02:u16",
+        "dest_field4_after_0x04:r3:0x04:u16",
+        "dest_field6_after_0x06:r3:0x06:u16",
+    };
+}
+
 std::vector<std::string_view> action_view_category2_gate_gprs()
 {
     return {
@@ -539,6 +565,44 @@ std::string build_first_battle_capture_profile_ini()
             "r30_actor_instruction:30",
         },
         action_source_bridge_samples());
+
+    write_checkpoint(
+        out,
+        "sst_action_field6_case2_store_complete_8000C4C8",
+        "8000C4C8",
+        "sst_action_field6_case2_store_complete",
+        "SST::Command::Dispatch_8000c19c",
+        "sst_action_field6_case2_store_complete",
+        false,
+        {},
+        {
+            "r0_written_field6:0",
+            "r3_destination_worksheet:3",
+            "r27_parent_thread:27",
+            "r28_child_thread:28",
+            "r29_serialized_command:29",
+            "r31_dispatch_context:31",
+        },
+        sst_case2_action_field6_store_samples());
+
+    write_checkpoint(
+        out,
+        "sst_action_field6_case8_store_complete_8000C6E8",
+        "8000C6E8",
+        "sst_action_field6_case8_store_complete",
+        "SST::Command::Dispatch_8000c19c",
+        "sst_action_field6_case8_store_complete",
+        false,
+        {},
+        {
+            "r0_written_field6:0",
+            "r3_destination_worksheet:3",
+            "r27_parent_thread:27",
+            "r29_child_thread:29",
+            "r30_serialized_command:30",
+            "r31_dispatch_context:31",
+        },
+        sst_case8_action_field6_store_samples());
 
     write_checkpoint(
         out,

@@ -3,6 +3,7 @@
 #include <CheckpointTrace.h>
 #include <ProgressEventParser.h>
 #include <RngModel.h>
+#include <SstActionCommandCheckpointModel.h>
 
 #include <cstdint>
 #include <optional>
@@ -1260,6 +1261,66 @@ TEST(SavorPredictCheckpointTrace, SummarizesActionSourceCheckpoints) {
         callback_mismatch_parsed.events,
         expectation.expected_handler_pc);
     EXPECT_EQ(callback_mismatch.status, ActionSourceCheckpointStatus::CallbackMismatch);
+}
+
+TEST(SavorPredictCheckpointTrace, SummarizesSstActionCommandField6Stores) {
+    std::istringstream input(
+        "pc=8000c4c8 function=SST::Command::Dispatch_8000c19c "
+        "checkpoint=sst_action_field6_case2_store_complete rng_draw_index_before=10 "
+        "source_field6_0x06=4 dest_field6_after_0x06=4 r0_written_field6=4 "
+        "action_sequence_id=3\n"
+        "pc=8000c6e8 function=SST::Command::Dispatch_8000c19c "
+        "checkpoint=sst_action_field6_case8_store_complete rng_draw_index_before=11 "
+        "source_field6_0x0a=8 dest_field6_after_0x06=8 r0_written_field6=8 "
+        "action_sequence_id=4\n");
+
+    const auto parsed = parse_checkpoint_stream(input);
+    ASSERT_TRUE(parsed.errors.empty());
+    const auto matched = summarize_sst_action_command_checkpoints(parsed.events);
+    EXPECT_EQ(matched.status, SstActionCommandCheckpointStatus::MatchesExpected);
+    EXPECT_EQ(matched.observed_store_events, 2);
+    EXPECT_EQ(matched.observed_case2_store_events, 1);
+    EXPECT_EQ(matched.observed_case8_store_events, 1);
+    EXPECT_EQ(matched.events_with_source_field6, 2);
+    EXPECT_EQ(matched.events_with_destination_field6, 2);
+    EXPECT_EQ(matched.events_with_written_field6_register, 2);
+    EXPECT_EQ(matched.events_with_action_sequence_id, 2);
+    EXPECT_EQ(matched.source_destination_matches, 2);
+    EXPECT_EQ(matched.source_destination_mismatches, 0);
+    EXPECT_EQ(matched.key8_store_events, 1);
+    ASSERT_TRUE(matched.first_store_draw_index.has_value());
+    EXPECT_EQ(*matched.first_store_draw_index, 10);
+    ASSERT_TRUE(matched.first_key8_store_draw_index.has_value());
+    EXPECT_EQ(*matched.first_key8_store_draw_index, 11);
+    ASSERT_EQ(matched.events.size(), 2u);
+    EXPECT_EQ(matched.events[0].kind, SstActionCommandCheckpointKind::Case2Field6Store);
+    EXPECT_EQ(matched.events[1].kind, SstActionCommandCheckpointKind::Case8Field6Store);
+    ASSERT_TRUE(matched.events[1].source_matches_destination.has_value());
+    EXPECT_TRUE(*matched.events[1].source_matches_destination);
+    EXPECT_EQ(
+        sst_action_command_checkpoint_status_name(matched.status),
+        std::string("MatchesExpected"));
+    EXPECT_NE(
+        std::string_view(first_battle_sst_action_command_checkpoint_rule_detail()).find("8000c6e8"),
+        std::string_view::npos);
+
+    std::istringstream missing_input(
+        "pc=8000c4c8 function=SST::Command::Dispatch_8000c19c "
+        "checkpoint=sst_action_field6_case2_store_complete rng_draw_index_before=12 "
+        "source_field6_0x06=4\n");
+    const auto missing_parsed = parse_checkpoint_stream(missing_input);
+    ASSERT_TRUE(missing_parsed.errors.empty());
+    const auto missing = summarize_sst_action_command_checkpoints(missing_parsed.events);
+    EXPECT_EQ(missing.status, SstActionCommandCheckpointStatus::MissingLiveFields);
+
+    std::istringstream mismatch_input(
+        "pc=8000c6e8 function=SST::Command::Dispatch_8000c19c "
+        "checkpoint=sst_action_field6_case8_store_complete rng_draw_index_before=13 "
+        "source_field6_0x0a=8 dest_field6_after_0x06=4\n");
+    const auto mismatch_parsed = parse_checkpoint_stream(mismatch_input);
+    ASSERT_TRUE(mismatch_parsed.errors.empty());
+    const auto mismatch = summarize_sst_action_command_checkpoints(mismatch_parsed.events);
+    EXPECT_EQ(mismatch.status, SstActionCommandCheckpointStatus::Field6Mismatch);
 }
 
 TEST(SavorPredictCheckpointTrace, SummarizesActionSetupCheckpoints) {

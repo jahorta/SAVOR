@@ -283,6 +283,26 @@ TEST(SavorPredictLiveCaptureProfile, BuildsParseableFirstBattleRngProfile)
     EXPECT_TRUE(has_reg_sample(*source_bridge, "source_field6_0x6"));
     EXPECT_TRUE(has_reg_sample(*source_bridge, "handler_pc"));
     EXPECT_TRUE(has_reg_sample(*source_bridge, "callback_0xe0"));
+
+    const auto* sst_case2 =
+        find_checkpoint("sst_action_field6_case2_store_complete_8000C4C8");
+    ASSERT_NE(sst_case2, nullptr);
+    EXPECT_FALSE(sst_case2->owns_rng_draw);
+    EXPECT_TRUE(has_gpr_sample(*sst_case2, "r0_written_field6"));
+    EXPECT_TRUE(has_gpr_sample(*sst_case2, "r3_destination_worksheet"));
+    EXPECT_TRUE(has_gpr_sample(*sst_case2, "r29_serialized_command"));
+    EXPECT_TRUE(has_reg_sample(*sst_case2, "source_field6_0x06"));
+    EXPECT_TRUE(has_reg_sample(*sst_case2, "dest_field6_after_0x06"));
+
+    const auto* sst_case8 =
+        find_checkpoint("sst_action_field6_case8_store_complete_8000C6E8");
+    ASSERT_NE(sst_case8, nullptr);
+    EXPECT_FALSE(sst_case8->owns_rng_draw);
+    EXPECT_TRUE(has_gpr_sample(*sst_case8, "r0_written_field6"));
+    EXPECT_TRUE(has_gpr_sample(*sst_case8, "r3_destination_worksheet"));
+    EXPECT_TRUE(has_gpr_sample(*sst_case8, "r30_serialized_command"));
+    EXPECT_TRUE(has_reg_sample(*sst_case8, "source_field6_0x0a"));
+    EXPECT_TRUE(has_reg_sample(*sst_case8, "dest_field6_after_0x06"));
 }
 
 TEST(BattleTurnRunnerPayload, RoundTripsLiveCaptureContextPaths)
