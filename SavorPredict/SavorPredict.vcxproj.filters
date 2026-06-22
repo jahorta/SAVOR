@@ -32,6 +32,15 @@
     <ClCompile Include="AttackResolutionModel.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="BattlePredictor.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="BattlePredictorCli.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="BattleVisualRngModel.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="BattleJobClone.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -146,6 +155,15 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="AttackResolutionModel.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="BattlePredictor.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="BattlePredictorCli.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="BattleVisualRngModel.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="BattleJobClone.h">

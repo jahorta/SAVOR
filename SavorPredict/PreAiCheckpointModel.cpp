@@ -381,14 +381,14 @@ const char* pre_ai_checkpoint_status_name(PreAiCheckpointStatus status) {
 
 const char* first_battle_pre_ai_checkpoint_rule_detail() {
     return "first-battle pre-AI checkpoints should show one 8001413c battle-start camera draw, "
-           "fake_attack_count fake draws, one or two 800608dc targeting-camera draws depending on "
-           "fake-attack suppression, and the first 8008b428 Soldier AI draw at the resulting cursor; "
+           "fake_attack_count fake draws, two 800608dc targeting-camera draws for the two PCs, "
+           "and the first 8008b428 Soldier AI draw at the resulting cursor; "
+           "the v1 input macro is expected to enforce one RNG draw per fake attack and no targeting-camera suppression; "
            "target-camera A-to-B frame gaps are recorded as observations for both rand-consuming "
            "and no-rand fake-attack attempts; "
            "consecutive fake attempts are summarized as draw-to-skip, skip-to-draw, draw-to-draw, "
            "and skip-to-skip transitions using attempt index order when present; "
-           "7 frames is only the minimum tested gap that sometimes worked, and the consistent "
-           "threshold may be higher";
+           "the old fake-attack suppression behavior remains a research gap but is outside the fixed v1 macro contract";
 }
 
 } // namespace savor::predict

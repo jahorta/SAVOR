@@ -6,6 +6,8 @@
 #include "ActionViewCameraModel.h"
 #include "ActionSourceCheckpointModel.h"
 #include "ActionViewGateCheckpointModel.h"
+#include "BattlePredictor.h"
+#include "BattleVisualRngModel.h"
 #include "AttackDamageValueCheckpointModel.h"
 #include "AttackResolutionCheckpointModel.h"
 #include "AttackResolutionModel.h"

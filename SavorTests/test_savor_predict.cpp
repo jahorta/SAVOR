@@ -1,11 +1,15 @@
 #include <gtest/gtest.h>
 
 #include <CheckpointTrace.h>
+#include <BattlePredictorCli.h>
 #include <ProgressEventParser.h>
 #include <RngModel.h>
 #include <SstActionCommandCheckpointModel.h>
 
+#include <algorithm>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -77,6 +81,97 @@ void append_effect_buffer_trace(
     }
 }
 
+void set_all_element_effectiveness(soa::ElementalEffectiveness& effectiveness, std::uint16_t value) {
+    effectiveness.green = value;
+    effectiveness.red = value;
+    effectiveness.purple = value;
+    effectiveness.blue = value;
+    effectiveness.Yellow = value;
+    effectiveness.Silver = value;
+}
+
+void fill_predictor_slot(
+    soa::battle::ctx::BattleContext& context,
+    int slot,
+    bool player,
+    int hp,
+    int attack,
+    int defense,
+    int hit,
+    int dodge,
+    int agile,
+    int element,
+    int counter_chance,
+    std::uint16_t movement_flags) {
+    auto& battle_slot = context.slots_[slot];
+    battle_slot.present = 1;
+    battle_slot.is_player = player ? 1 : 0;
+    battle_slot.is_alive = 1;
+    battle_slot.id = static_cast<std::uint16_t>(slot);
+    battle_slot.instance.Current_HP = static_cast<std::uint32_t>(hp);
+    battle_slot.instance.Max_HP = static_cast<std::uint32_t>(hp);
+    battle_slot.instance.current_derived_stats.Attack = static_cast<std::uint16_t>(attack);
+    battle_slot.instance.current_derived_stats.Defense = static_cast<std::uint16_t>(defense);
+    battle_slot.instance.current_derived_stats.HitChance = static_cast<std::uint16_t>(hit);
+    battle_slot.instance.current_derived_stats.DodgeChance = static_cast<std::uint16_t>(dodge);
+    battle_slot.instance.current_base_stats.Agility = static_cast<std::int16_t>(agile);
+    battle_slot.instance.current_weapon_element = static_cast<std::uint8_t>(element);
+    battle_slot.instance.base_counter_chance = static_cast<std::uint16_t>(counter_chance);
+    battle_slot.instance.current_counter_chance = static_cast<std::uint16_t>(counter_chance);
+    battle_slot.instance.movement_flags = movement_flags;
+    set_all_element_effectiveness(battle_slot.instance.current_elemental_eff, 10);
+}
+
+soa::battle::ctx::BattleContext make_predictor_first_battle_context(int soldier_hp = 58) {
+    soa::battle::ctx::BattleContext context{};
+    fill_predictor_slot(context, 0, true, 420, 43, 0, 90, 0, 11, 0, 15, 0x0FC7);
+    fill_predictor_slot(context, 1, true, 360, 36, 0, 110, 0, 22, 1, 6, 0x0FF7);
+    fill_predictor_slot(context, 4, false, soldier_hp, 43, 42, 95, 15, 10, 4, 10, 0x0FC7);
+    fill_predictor_slot(context, 5, false, soldier_hp, 43, 42, 95, 15, 10, 4, 10, 0x0FC7);
+    for (int slot : {4, 5}) {
+        auto& battle_slot = context.slots_[slot];
+        battle_slot.has_enemy_def = 1;
+        battle_slot.enemy_def.items[1].chance = 1;
+        battle_slot.enemy_def.items[1].amount = 1;
+        battle_slot.enemy_def.items[1].itemId = 273;
+        battle_slot.enemy_def.items[2].chance = 1;
+        battle_slot.enemy_def.items[2].amount = 1;
+        battle_slot.enemy_def.items[2].itemId = 258;
+    }
+    return context;
+}
+
+soa::battle::actions::TurnPlan make_two_pc_attack_turn_plan(std::uint32_t fake_attacks = 2) {
+    using soa::battle::actions::ActionParameters;
+    using soa::battle::actions::BattleAction;
+    using soa::battle::actions::BattleCommand;
+    soa::battle::actions::TurnPlan plan;
+    plan.fake_attack_count = fake_attacks;
+    plan.commands.push_back(BattleCommand{
+        .actor_slot = 0,
+        .macro = BattleAction::Attack,
+        .params = ActionParameters{.target_slot = 4},
+    });
+    plan.commands.push_back(BattleCommand{
+        .actor_slot = 1,
+        .macro = BattleAction::Attack,
+        .params = ActionParameters{.target_slot = 4},
+    });
+    return plan;
+}
+
+const BattlePredictionEvent* find_prediction_event(
+    const BattlePredictionResult& result,
+    std::string_view phase,
+    std::string_view label) {
+    for (const auto& event : result.events) {
+        if (event.phase == phase && event.label == label) {
+            return &event;
+        }
+    }
+    return nullptr;
+}
+
 TEST(SavorPredictRngModel, DrawRand15AdvancesFromZero) {
     const auto draw = draw_rand15(0);
     EXPECT_EQ(draw.next_state, 0x00003039u);
@@ -94,33 +189,38 @@ TEST(SavorPredictRngModel, BoundedDistanceFindsAdvancedTarget) {
     EXPECT_EQ(*distance, 17);
 }
 
-TEST(SavorPredictRngModel, PreAiCameraModelKeepsBaselineAndSuppressionVisible) {
+TEST(SavorPredictRngModel, PreAiCameraModelUsesFixedFakePlusCameraContract) {
     const auto no_fake = model_pre_ai_camera_draws(0);
     EXPECT_EQ(no_fake.fake_attack_draws, 0);
+    EXPECT_EQ(no_fake.pc_count, 2);
     EXPECT_EQ(no_fake.baseline_camera_draws, 3);
     EXPECT_EQ(no_fake.expected_camera_draws, 3);
     EXPECT_EQ(no_fake.suppressed_attack_targeting_camera_draws, 0);
     EXPECT_EQ(no_fake.unsuppressed_total_draws, 3);
     EXPECT_EQ(no_fake.expected_total_draws, 3);
     EXPECT_FALSE(no_fake.suppresses_normal_attack_targeting_camera);
-    EXPECT_EQ(pre_ai_camera_rule_name(no_fake), std::string("BaselineThreeCameraDraws"));
+    EXPECT_EQ(pre_ai_camera_rule_name(no_fake), std::string("FixedCameraDraws"));
 
     const auto one_fake = model_pre_ai_camera_draws(1);
     EXPECT_EQ(one_fake.fake_attack_draws, 1);
     EXPECT_EQ(one_fake.baseline_camera_draws, 3);
-    EXPECT_EQ(one_fake.expected_camera_draws, 2);
-    EXPECT_EQ(one_fake.suppressed_attack_targeting_camera_draws, 1);
+    EXPECT_EQ(one_fake.expected_camera_draws, 3);
+    EXPECT_EQ(one_fake.suppressed_attack_targeting_camera_draws, 0);
     EXPECT_EQ(one_fake.unsuppressed_total_draws, 4);
-    EXPECT_EQ(one_fake.expected_total_draws, 3);
-    EXPECT_TRUE(one_fake.suppresses_normal_attack_targeting_camera);
+    EXPECT_EQ(one_fake.expected_total_draws, 4);
+    EXPECT_FALSE(one_fake.suppresses_normal_attack_targeting_camera);
     EXPECT_EQ(
         pre_ai_camera_rule_name(one_fake),
-        std::string("FakeAttackSuppressesOneTargetingCameraDraw"));
+        std::string("FakeAttacksPlusFixedCameraDraws"));
 
     const auto three_fake = model_pre_ai_camera_draws(3);
     EXPECT_EQ(three_fake.unsuppressed_total_draws, 6);
-    EXPECT_EQ(three_fake.expected_total_draws, 5);
+    EXPECT_EQ(three_fake.expected_total_draws, 6);
     EXPECT_EQ(pre_ai_draws_for_fake_attacks(3), three_fake.expected_total_draws);
+
+    const auto one_pc = model_pre_ai_camera_draws(2, 1);
+    EXPECT_EQ(one_pc.baseline_camera_draws, 2);
+    EXPECT_EQ(one_pc.expected_total_draws, 4);
 }
 
 TEST(SavorPredictRngModel, EffectRngModelComputesFirstBattle007Burst) {
@@ -170,6 +270,54 @@ TEST(SavorPredictRngModel, EffectRngModelComputesFirstBattleSourceKey8CritBurst)
     EXPECT_EQ(model.bursts[1].total_draws, 20);
 
     EXPECT_TRUE(first_battle_effect_burst_sequence_for_source_key(99).empty());
+}
+
+TEST(SavorPredictRngModel, FirstBattleVisualRngModelComposesCameraAndEffectDraws) {
+    const auto pre_hit = model_first_battle_basic_attack_visual_rng({
+        .actor_slot = 0,
+        .target_slot = 4,
+        .attack_landed = false,
+    });
+    ASSERT_EQ(pre_hit.steps.size(), 1u);
+    EXPECT_EQ(pre_hit.total_draws, 1);
+    EXPECT_EQ(pre_hit.steps[0].label, "mode0_action_view_camera_rewrite_gate");
+    EXPECT_EQ(pre_hit.steps[0].status, BattleVisualRngStepStatus::Exact);
+    EXPECT_EQ(
+        battle_visual_rng_step_status_name(pre_hit.steps[0].status),
+        std::string("Exact"));
+
+    const auto vyse_hit = model_first_battle_basic_attack_visual_rng({
+        .actor_slot = 0,
+        .target_slot = 4,
+        .attack_landed = true,
+        .include_action_view_camera = false,
+    });
+    ASSERT_EQ(vyse_hit.steps.size(), 1u);
+    EXPECT_EQ(vyse_hit.total_draws, 110);
+    ASSERT_TRUE(vyse_hit.steps[0].effect_source_key.has_value());
+    EXPECT_EQ(*vyse_hit.steps[0].effect_source_key, 4);
+
+    const auto critical = model_first_battle_basic_attack_visual_rng({
+        .actor_slot = 0,
+        .target_slot = 4,
+        .attack_landed = true,
+        .attack_was_critical = true,
+        .include_action_view_camera = false,
+    });
+    ASSERT_EQ(critical.steps.size(), 1u);
+    EXPECT_EQ(critical.total_draws, 100);
+    ASSERT_TRUE(critical.steps[0].effect_source_key.has_value());
+    EXPECT_EQ(*critical.steps[0].effect_source_key, 8);
+
+    const auto unknown_actor = model_first_battle_basic_attack_visual_rng({
+        .actor_slot = 2,
+        .target_slot = 4,
+        .attack_landed = true,
+        .include_action_view_camera = false,
+    });
+    ASSERT_EQ(unknown_actor.steps.size(), 1u);
+    EXPECT_TRUE(unknown_actor.has_ambiguous_steps);
+    EXPECT_EQ(unknown_actor.steps[0].label, "ambiguous_effect_source_key");
 }
 
 TEST(SavorPredictRngModel, EffectCheckpointModelSummarizes80042b10BurstShape) {
@@ -346,8 +494,10 @@ TEST(SavorPredictRngModel, PreAiCheckpointModelSummarizesFakeCameraCursor) {
             "rng_draw_index_before=1 owns_rng_draw=true fake_attack_index=0 camera_frame_gap=9\n"
             "pc=800608dc function=TargetCamera checkpoint=targeting_camera "
             "rng_draw_index_before=2 active_slot=1 target_slot=4\n"
+            "pc=800608dc function=TargetCamera checkpoint=targeting_camera "
+            "rng_draw_index_before=3 active_slot=0 target_slot=4\n"
             "pc=8008b428 function=runAiRoutine checkpoint=soldier_ai_action "
-            "rng_draw_index_before=3 active_slot=4\n");
+            "rng_draw_index_before=4 active_slot=4\n");
 
         const auto parsed = parse_checkpoint_stream(input);
         ASSERT_TRUE(parsed.errors.empty());
@@ -356,7 +506,7 @@ TEST(SavorPredictRngModel, PreAiCheckpointModelSummarizesFakeCameraCursor) {
         EXPECT_EQ(pre_ai_checkpoint_status_name(fake_one.status), std::string("MatchesExpected"));
         ASSERT_TRUE(fake_one.expectation.has_value());
         EXPECT_EQ(fake_one.expectation->expected_fake_attack_draws, 1);
-        EXPECT_EQ(fake_one.expectation->expected_targeting_camera_draws, 1);
+        EXPECT_EQ(fake_one.expectation->expected_targeting_camera_draws, 2);
         EXPECT_EQ(fake_one.observed_fake_attack_attempts, 1);
         EXPECT_EQ(fake_one.observed_fake_attack_draws, 1);
         EXPECT_EQ(fake_one.observed_skipped_fake_attack_draws, 0);
@@ -365,8 +515,8 @@ TEST(SavorPredictRngModel, PreAiCheckpointModelSummarizesFakeCameraCursor) {
         ASSERT_TRUE(fake_one.max_fake_attack_draw_camera_frame_gap.has_value());
         EXPECT_EQ(*fake_one.min_fake_attack_draw_camera_frame_gap, 9);
         EXPECT_EQ(*fake_one.max_fake_attack_draw_camera_frame_gap, 9);
-        EXPECT_EQ(fake_one.observed_targeting_camera_draws, 1);
-        EXPECT_EQ(fake_one.observed_pre_ai_draws, 3);
+        EXPECT_EQ(fake_one.observed_targeting_camera_draws, 2);
+        EXPECT_EQ(fake_one.observed_pre_ai_draws, 4);
     }
 }
 
@@ -449,6 +599,99 @@ TEST(SavorPredictRngModel, SoldierAttackParamUsesMod10Threshold) {
     EXPECT_EQ(soldier_attack_param_from_rand(4), 0);
     EXPECT_EQ(soldier_attack_param_from_rand(13), 1);
     EXPECT_EQ(soldier_attack_param_from_rand(14), 0);
+}
+
+TEST(SavorPredictBattlePredictor, ResolvesFirstBattleProfile) {
+    const auto profile = battle_prediction_profile_by_name("first-battle");
+    ASSERT_TRUE(profile.has_value());
+    EXPECT_EQ(profile->name, "first-battle");
+    EXPECT_FALSE(battle_prediction_profile_by_name("FirstBattlePredictor").has_value());
+}
+
+TEST(SavorPredictBattlePredictor, PredictsFirstBattleThroughTurnOrderWithFixedPreAiDraws) {
+    BattlePredictionInput input;
+    input.profile = first_battle_prediction_profile();
+    input.starting_rng_seed = 15u;
+    input.context = make_predictor_first_battle_context();
+    input.turn_plan = make_two_pc_attack_turn_plan(2);
+
+    const auto result = predict_battle(input);
+
+    const auto* fake = find_prediction_event(result, "pre_ai", "fake_attack_draws");
+    ASSERT_NE(fake, nullptr);
+    EXPECT_EQ(fake->draws_consumed, 2);
+    EXPECT_EQ(fake->status, BattlePredictionEventStatus::Exact);
+
+    const auto* camera = find_prediction_event(result, "pre_ai", "camera_draws");
+    ASSERT_NE(camera, nullptr);
+    EXPECT_EQ(camera->draws_consumed, 3);
+    EXPECT_EQ(camera->status, BattlePredictionEventStatus::Exact);
+
+    const auto enemy_ai_count = std::count_if(
+        result.events.begin(),
+        result.events.end(),
+        [](const BattlePredictionEvent& event) {
+            return event.phase == "enemy_ai" && event.label == "soldier_ai";
+        });
+    EXPECT_EQ(enemy_ai_count, 2);
+
+    const auto* turn_order = find_prediction_event(result, "turn_order", "resolve_turn_order");
+    ASSERT_NE(turn_order, nullptr);
+    EXPECT_EQ(turn_order->status, BattlePredictionEventStatus::Exact);
+    EXPECT_TRUE(result.exact_through_turn_order);
+    EXPECT_GT(result.exact_draws_through_turn_order, 5);
+
+    const auto* unresolved_visual = find_prediction_event(
+        result,
+        "action_visual_rng",
+        "unresolved_action_view_effect_rng");
+    EXPECT_EQ(unresolved_visual, nullptr);
+
+    const auto* action_view = find_prediction_event(
+        result,
+        "action_visual_rng",
+        "mode0_action_view_camera_rewrite_gate");
+    ASSERT_NE(action_view, nullptr);
+    EXPECT_EQ(action_view->status, BattlePredictionEventStatus::Exact);
+    EXPECT_EQ(action_view->draws_consumed, 1);
+}
+
+TEST(SavorPredictBattlePredictor, ReportsUnsupportedPlayerActionsExplicitly) {
+    BattlePredictionInput input;
+    input.profile = first_battle_prediction_profile();
+    input.starting_rng_seed = 15u;
+    input.context = make_predictor_first_battle_context();
+    input.turn_plan.fake_attack_count = 0;
+    input.turn_plan.commands.push_back(soa::battle::actions::BattleCommand{
+        .actor_slot = 0,
+        .macro = soa::battle::actions::BattleAction::Focus,
+    });
+
+    const auto result = predict_battle(input);
+
+    EXPECT_TRUE(result.has_unsupported_events);
+    EXPECT_EQ(result.outcome, BattlePredictionOutcome::Unsupported);
+    const auto* unsupported = find_prediction_event(
+        result,
+        "player_command",
+        "unsupported_player_action");
+    ASSERT_NE(unsupported, nullptr);
+    EXPECT_EQ(unsupported->status, BattlePredictionEventStatus::Unsupported);
+}
+
+TEST(SavorPredictBattlePredictorCli, RejectsMutableDebugDbRoot) {
+    const auto parsed = parse_predict_battle_tokens({
+        "--turn-job-id", "123",
+        "--db-root", "D:/SoaSimDBDebug",
+    });
+
+    EXPECT_FALSE(parsed.errors.empty());
+    EXPECT_NE(
+        std::find(
+            parsed.errors.begin(),
+            parsed.errors.end(),
+            "Refusing to use D:/SoaSimDBDebug for prediction; use D:/SavorPredictDB."),
+        parsed.errors.end());
 }
 
 TEST(SavorPredictRngModel, FirstBattleTurnOrderSpendsOneDrawPerQueuedBasicAction) {

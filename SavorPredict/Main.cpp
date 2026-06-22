@@ -1,5 +1,6 @@
 #include "BattleJobRunOptions.h"
 #include "BattleJobWorkerRun.h"
+#include "BattlePredictorCli.h"
 #include "CheckpointTrace.h"
 #include "DbCopy.h"
 #include "LiveCaptureProfile.h"
@@ -22,10 +23,12 @@ void print_usage(std::ostream& out) {
         << "  SavorPredict prepare-db [--source PATH] [--dest PATH] [--overwrite]\n"
         << "  SavorPredict write-first-battle-capture-profile --output PATH\n"
         << "  SavorPredict run-battle-job (--turn-job-id N | --exec-job-id N) --iso PATH --dolphin-base-dir PATH [--db-root PATH] [--run-root PATH] [--worker-exe PATH] [--capture-profile PATH] [--sandbox-mode minimal|full-copy] [--timeout-ms N] [--poll-ms N]\n"
+        << "  SavorPredict predict-battle (--context-file PATH --turn-plan-hex HEX --fake-attacks N --start-seed N | --turn-job-id N | --exec-job-id N) [--db-root PATH] [--profile first-battle] [--format text|json]\n"
         << "  SavorPredict trace-job (--turn-job-id N | --exec-job-id N) [--db-root PATH] [--format text|json] [--max-distance N]\n\n"
         << "  SavorPredict trace-checkpoints --checkpoint-file PATH [--turn-job-id N | --exec-job-id N] [--db-root PATH] [--format text|json] [--expected-fake-attacks N] [--expected-enemy-setup-draws N] [--expected-mode0e-camera-draws N] [--expected-turn-order-draws N] [--expected-attack-events N] [--expected-crit-draws N] [--expected-counter-roll-ceiling N] [--expected-drop-rolls N] [--expected-end-turn-status-draws N] [--expected-level-up-stat-rolls N]\n\n"
         << "Defaults:\n"
         << "  prepare-db --source D:/SoaSimDBDebug --dest D:/SavorPredictDB\n"
+        << "  predict-battle --db-root D:/SavorPredictDB --profile first-battle --format text\n"
         << "  trace-job --db-root D:/SavorPredictDB --format text --max-distance 5000\n\n"
         << "Policy:\n"
         << "  D:/SoaSimDBDebug is only the mutable prepare-db source. Analysis commands must use D:/SavorPredictDB.\n";
@@ -207,6 +210,26 @@ int run_battle_job_command(int argc, char** argv) {
     return savor::predict::run_battle_job(parsed.options, std::cout, std::cerr);
 }
 
+int run_predict_battle_command(int argc, char** argv) {
+    std::vector<std::string> args;
+    args.reserve(static_cast<std::size_t>(std::max(0, argc - 2)));
+    for (int i = 2; i < argc; ++i) {
+        args.emplace_back(argv[i]);
+    }
+    const auto parsed = savor::predict::parse_predict_battle_tokens(args);
+    if (parsed.help_requested) {
+        print_usage(std::cout);
+        return parsed.errors.empty() ? 0 : 2;
+    }
+    if (!parsed.errors.empty()) {
+        for (const auto& error : parsed.errors) {
+            std::cerr << error << "\n";
+        }
+        return 2;
+    }
+    return savor::predict::run_predict_battle(parsed.options, std::cout, std::cerr);
+}
+
 int run_trace_checkpoints_command(int argc, char** argv) {
     savor::predict::TraceCheckpointsOptions options;
     for (int i = 2; i < argc; ++i) {
@@ -351,6 +374,9 @@ int main(int argc, char** argv) {
     }
     if (command == "run-battle-job") {
         return run_battle_job_command(argc, argv);
+    }
+    if (command == "predict-battle") {
+        return run_predict_battle_command(argc, argv);
     }
     if (command == "trace-job") {
         return run_trace_job(argc, argv);

@@ -139,6 +139,9 @@
     <ClCompile Include="..\SavorPredict\AttackDamageValueCheckpointModel.cpp" />
     <ClCompile Include="..\SavorPredict\AttackResolutionCheckpointModel.cpp" />
     <ClCompile Include="..\SavorPredict\AttackResolutionModel.cpp" />
+    <ClCompile Include="..\SavorPredict\BattlePredictor.cpp" />
+    <ClCompile Include="..\SavorPredict\BattlePredictorCli.cpp" />
+    <ClCompile Include="..\SavorPredict\BattleVisualRngModel.cpp" />
     <ClCompile Include="..\SavorPredict\BattleJobClone.cpp" />
     <ClCompile Include="..\SavorPredict\BattleJobRunOptions.cpp" />
     <ClCompile Include="..\SavorPredict\CheckpointTrace.cpp" />

@@ -4,36 +4,37 @@
 
 namespace savor::predict {
 
-PreAiCameraDrawModel model_pre_ai_camera_draws(int fake_attacks_this_turn) {
+PreAiCameraDrawModel model_pre_ai_camera_draws(int fake_attacks_this_turn, int pc_count) {
     PreAiCameraDrawModel model;
     model.fake_attacks = std::max(0, fake_attacks_this_turn);
+    model.pc_count = std::max(0, pc_count);
     model.fake_attack_draws = model.fake_attacks;
 
-    // First-battle baseline: one camera draw before command input and one
-    // normal attack-target zoom-out draw for each PC target selection.
-    model.baseline_camera_draws = 3;
-    model.suppresses_normal_attack_targeting_camera = model.fake_attacks > 0;
-    model.suppressed_attack_targeting_camera_draws =
-        model.suppresses_normal_attack_targeting_camera ? 1 : 0;
-    model.expected_camera_draws =
-        model.baseline_camera_draws - model.suppressed_attack_targeting_camera_draws;
+    // V1 macro contract: one camera draw before command input, one target
+    // camera draw per PC, and one RNG draw per fake attack.
+    model.baseline_camera_draws = 1 + model.pc_count;
+    model.suppresses_normal_attack_targeting_camera = false;
+    model.suppressed_attack_targeting_camera_draws = 0;
+    model.expected_camera_draws = model.baseline_camera_draws;
     model.unsuppressed_total_draws = model.fake_attack_draws + model.baseline_camera_draws;
     model.expected_total_draws = model.fake_attack_draws + model.expected_camera_draws;
     return model;
 }
 
+PreAiCameraDrawModel model_pre_ai_camera_draws(int fake_attacks_this_turn) {
+    return model_pre_ai_camera_draws(fake_attacks_this_turn, 2);
+}
+
 const char* pre_ai_camera_rule_name(const PreAiCameraDrawModel& model) {
-    if (model.suppresses_normal_attack_targeting_camera) {
-        return "FakeAttackSuppressesOneTargetingCameraDraw";
+    if (model.fake_attacks > 0) {
+        return "FakeAttacksPlusFixedCameraDraws";
     }
-    return "BaselineThreeCameraDraws";
+    return "FixedCameraDraws";
 }
 
 const char* pre_ai_camera_rule_detail(const PreAiCameraDrawModel& model) {
-    if (model.suppresses_normal_attack_targeting_camera) {
-        return "aggregate fit is fake_attacks + 2; staged hypothesis is fake_attacks + 3 baseline with one 800608dc targeting-camera draw suppressed";
-    }
-    return "baseline fit is three camera draws before Soldier AI: battle-start camera plus two PC attack-targeting zoom-out draws";
+    (void)model;
+    return "v1 macro contract is fake_attack_count fake draws plus fixed camera draws: one battle-start camera draw and one targeting-camera draw per PC";
 }
 
 } // namespace savor::predict
