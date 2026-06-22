@@ -14,6 +14,7 @@
 
 #include "Input/InputPlan.h"
 #include "Config/SimConfig.h"
+#include "PowerPcMemoryAccessDecoder.h"
 #include "Core/InputCommon/GCPadStatus.h"
 #include "Input/GCPadOverride.h"
 #include "Core/Common/Buffer.h"
@@ -147,7 +148,73 @@ namespace savor {
         // Width-aware read into 64-bit bucket; returns the actual width via out_width (1,2,4,8).
         bool readByKeyAny(addr::AddrKey k, uint8_t width, uint64_t& out, uint8_t& out_width) const;
 
-        struct RunUntilHitResult { bool hit; uint32_t pc; const char* reason; };
+        enum class MemoryWatchpointAccess : uint32_t {
+            Read = 1,
+            Write = 2,
+            Access = 3,
+        };
+
+        enum class DebugStopKind : uint32_t {
+            None = 0,
+            PcBreakpoint = 1,
+            Memcheck = 2,
+            PcBreakpointAndMemcheck = 3,
+        };
+
+        struct MemoryWatchpointSpec {
+            uint32_t id = 0;
+            uint32_t address = 0;
+            uint32_t size = 0;
+            MemoryWatchpointAccess access = MemoryWatchpointAccess::Write;
+        };
+
+        struct MemoryWatchpointSnapshotEntry {
+            uint32_t id = 0;
+            uint32_t address = 0;
+            uint32_t size = 0;
+            MemoryWatchpointAccess access = MemoryWatchpointAccess::Write;
+            uint32_t num_hits = 0;
+        };
+
+        struct MemoryWatchpointSnapshot {
+            std::vector<MemoryWatchpointSnapshotEntry> entries;
+        };
+
+        using DecodedMemoryRegisterValue = ppc::DecodedMemoryRegisterValue;
+        using DecodedMemoryAccess = ppc::DecodedMemoryAccess;
+
+        struct MemoryWatchpointDelta {
+            uint32_t id = 0;
+            uint32_t address = 0;
+            uint32_t size = 0;
+            MemoryWatchpointAccess access = MemoryWatchpointAccess::Write;
+            uint32_t hit_pc = 0;
+            uint32_t num_hits_before = 0;
+            uint32_t num_hits_after = 0;
+        };
+
+        struct MemoryWatchpointHit {
+            uint32_t id = 0;
+            uint32_t address = 0;
+            uint32_t size = 0;
+            MemoryWatchpointAccess access = MemoryWatchpointAccess::Write;
+            uint32_t hit_pc = 0;
+            uint32_t num_hits_before = 0;
+            uint32_t num_hits_after = 0;
+            bool confirmed_current_instruction = false;
+            uint32_t unattributed_extra_hits = 0;
+            DecodedMemoryAccess decoded_access;
+        };
+
+        struct RunUntilHitResult {
+            bool hit = false;
+            uint32_t pc = 0;
+            const char* reason = nullptr;
+            DebugStopKind stop_kind = DebugStopKind::None;
+            std::optional<MemoryWatchpointHit> memory_watchpoint;
+            std::vector<MemoryWatchpointDelta> memory_watchpoint_deltas;
+            DecodedMemoryAccess decoded_current_access;
+        };
         bool armBattleBreakpoints();
         bool disarmBattleBreakpoints();
         bool armPcBreakpoints(const std::vector<uint32_t>& pcs);
@@ -156,6 +223,21 @@ namespace savor {
         bool setEnableBreakpoint(uint32_t pc, bool enabled);
         bool setEnableAllBreakpoints(bool enabled);
         bool setEnabledPcBreakpointsOnly(const std::vector<uint32_t>& enabled_pcs);
+        bool armMemoryWatchpoints(const std::vector<MemoryWatchpointSpec>& specs);
+        void clearMemoryWatchpoints();
+        MemoryWatchpointSnapshot snapshotMemoryWatchpoints() const;
+        std::vector<MemoryWatchpointDelta> detectMemoryWatchpointDeltasSince(
+            const MemoryWatchpointSnapshot& snapshot) const;
+        std::optional<MemoryWatchpointHit> detectMemoryWatchpointHitSince(
+            const MemoryWatchpointSnapshot& snapshot) const;
+        static DecodedMemoryAccess DecodeCurrentMemoryAccess(
+            uint32_t pc,
+            uint32_t opcode,
+            const std::function<bool(uint8_t, uint32_t&)>& read_gpr,
+            const ppc::MemoryReadFn& read_memory = {});
+        static std::optional<MemoryWatchpointHit> ProveMemoryWatchpointHitAtCurrentInstruction(
+            const DecodedMemoryAccess& decoded,
+            const std::vector<MemoryWatchpointDelta>& deltas);
 
         using ProgressSink = std::function<void(const char* text, const bool record)>;
 
@@ -228,6 +310,7 @@ namespace savor {
         bool mutatePcBreakpoints(const char* label, const std::function<void()>& fn) const;
 
         ProgressSink m_progress_sink{};
+        std::vector<MemoryWatchpointSpec> m_memory_watchpoints;
     };
 
 } // namespace savor

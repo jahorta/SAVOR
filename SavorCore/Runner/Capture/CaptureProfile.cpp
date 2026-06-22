@@ -114,6 +114,15 @@ std::optional<SampleWidth> parse_width(std::string value)
     return std::nullopt;
 }
 
+std::optional<WatchpointAccess> parse_watchpoint_access(std::string value)
+{
+    value = to_lower(trim(std::move(value)));
+    if (value == "read" || value == "r") return WatchpointAccess::Read;
+    if (value == "write" || value == "w") return WatchpointAccess::Write;
+    if (value == "access" || value == "rw" || value == "readwrite") return WatchpointAccess::Access;
+    return std::nullopt;
+}
+
 bool parse_register_index(std::string value, std::uint8_t& out)
 {
     value = trim(std::move(value));
@@ -377,8 +386,47 @@ CaptureProfileParseResult ParseCaptureProfileText(const std::string& text)
         profile.checkpoints.push_back(std::move(checkpoint));
     }
 
-    if (profile.checkpoints.empty()) {
-        result.errors.push_back("profile must define at least one [checkpoint.*] section");
+    std::set<std::string> watchpoint_ids;
+    std::set<std::uint32_t> watchpoint_addresses;
+    for (const auto& section : ini.list_sections(false)) {
+        if (section.rfind("watchpoint.", 0) != 0) continue;
+
+        MemoryWatchpointSpec watchpoint{};
+        watchpoint.id = section.substr(std::string("watchpoint.").size());
+        if (watchpoint.id.empty()) {
+            result.errors.push_back(section + ": watchpoint id is empty");
+        } else if (!watchpoint_ids.insert(watchpoint.id).second) {
+            result.errors.push_back(section + ": duplicate watchpoint id");
+        }
+
+        std::uint32_t address = 0;
+        if (!parse_u32(ini.get(section, "address", ""), address) || address == 0) {
+            result.errors.push_back(section + ": address is required");
+        }
+        watchpoint.address = address;
+        if (address != 0 && !watchpoint_addresses.insert(address).second) {
+            result.errors.push_back(section + ": duplicate watchpoint address");
+        }
+
+        const auto size = parse_width(ini.get(section, "size", ""));
+        if (!size.has_value()) {
+            result.errors.push_back(section + ": size must be u8/u16/u32/u64");
+        } else {
+            watchpoint.size = *size;
+        }
+
+        const auto access = parse_watchpoint_access(ini.get(section, "access", ""));
+        if (!access.has_value()) {
+            result.errors.push_back(section + ": access must be read/write/access");
+        } else {
+            watchpoint.access = *access;
+        }
+
+        profile.memory_watchpoints.push_back(std::move(watchpoint));
+    }
+
+    if (profile.checkpoints.empty() && profile.memory_watchpoints.empty()) {
+        result.errors.push_back("profile must define at least one [checkpoint.*] or [watchpoint.*] section");
     }
 
     if (result.errors.empty()) {

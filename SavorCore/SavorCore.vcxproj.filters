@@ -90,6 +90,9 @@
     <ClInclude Include="Core\DolphinWrapper.h">
       <Filter>Core</Filter>
     </ClInclude>
+    <ClInclude Include="Core\PowerPcMemoryAccessDecoder.h">
+      <Filter>Core</Filter>
+    </ClInclude>
     <ClInclude Include="Utils\Log.h">
       <Filter>Utils</Filter>
     </ClInclude>
@@ -348,6 +351,9 @@
       <Filter>Core</Filter>
     </ClCompile>
     <ClCompile Include="Core\DolphinWrapper.cpp">
+      <Filter>Core</Filter>
+    </ClCompile>
+    <ClCompile Include="Core\PowerPcMemoryAccessDecoder.cpp">
       <Filter>Core</Filter>
     </ClCompile>
     <ClCompile Include="Core\HostStubs.cpp">

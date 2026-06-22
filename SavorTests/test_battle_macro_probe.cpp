@@ -942,6 +942,8 @@ TEST(BattleTurnRunnerProgram, UsesMacroLoopInsteadOfRawInputTape)
     EXPECT_TRUE(has_op(savor::PSOpCode::EXECUTE_BATTLE_MACRO_STEP));
     EXPECT_FALSE(has_op(savor::PSOpCode::BUILD_TURN_INPUTPLAN_FROM_BATTLE_PATH));
     EXPECT_FALSE(has_op(savor::PSOpCode::APPLY_BATTLE_INPUTPLAN_FRAMES));
+    EXPECT_TRUE(has_op(savor::PSOpCode::CLEAR_MEMORY_WATCHPOINTS));
+    EXPECT_TRUE(has_op(savor::PSOpCode::ARM_CAPTURE_MEMORY_WATCHPOINTS));
     EXPECT_TRUE(has_set_run_poll(10u));
     EXPECT_TRUE(has_set_run_poll(0u));
 }

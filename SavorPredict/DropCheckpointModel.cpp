@@ -1,6 +1,9 @@
 #include "DropCheckpointModel.h"
 
+#include "RngCore.h"
+
 #include <cstdlib>
+#include <initializer_list>
 #include <utility>
 
 namespace savor::predict {
@@ -48,6 +51,60 @@ std::optional<int> parse_field_int(const CheckpointEvent& event, const char* key
     return static_cast<int>(parsed);
 }
 
+std::optional<int> parse_first_field_int(
+    const CheckpointEvent& event,
+    std::initializer_list<const char*> field_names) {
+    for (const auto* field_name : field_names) {
+        if (const auto value = parse_field_int(event, field_name); value.has_value()) {
+            return value;
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<int> enemy_entry_id_from_target_slot(const CheckpointEvent& event) {
+    const auto target_slot =
+        event.target_slot.has_value()
+        ? event.target_slot
+        : parse_first_field_int(event, {"target_slot", "target", "defender_slot"});
+    if (!target_slot.has_value()) {
+        return std::nullopt;
+    }
+    if (*target_slot == 4) {
+        return parse_field_int(event, "enemy_id_slot4");
+    }
+    if (*target_slot == 5) {
+        return parse_field_int(event, "enemy_id_slot5");
+    }
+    return std::nullopt;
+}
+
+std::optional<int> drop_row_index_from_event(const CheckpointEvent& event) {
+    if (const auto one_based = parse_first_field_int(
+            event,
+            {"drop_row_index", "drop_row", "row_index"});
+        one_based.has_value()) {
+        return one_based;
+    }
+    if (const auto zero_based = parse_first_field_int(
+            event,
+            {"drop_row_index_zero_based", "drop_row_zero_based", "row_index_zero_based"});
+        zero_based.has_value()) {
+        return *zero_based + 1;
+    }
+    return std::nullopt;
+}
+
+std::optional<int> rand_value_from_event(const CheckpointEvent& event) {
+    if (const auto explicit_value = parse_field_int(event, "rand_value"); explicit_value.has_value()) {
+        return explicit_value;
+    }
+    if (event.rng_seed_before.has_value()) {
+        return draw_rand15(static_cast<std::uint32_t>(*event.rng_seed_before)).value;
+    }
+    return std::nullopt;
+}
+
 std::optional<FirstBattleDropRow> first_battle_drop_row(
     std::optional<int> enemy_entry_id,
     std::optional<int> row_index) {
@@ -80,6 +137,7 @@ bool has_first_battle_enemy_entry(const DropCheckpointDraw& draw) {
 
 bool has_live_outcome_fields(const DropCheckpointDraw& draw) {
     return draw.drop_row_index.has_value()
+        && draw.drop_threshold.has_value()
         && draw.drop_item_id.has_value()
         && draw.drop_amount.has_value()
         && effective_rand_mod100(draw).has_value()
@@ -142,6 +200,13 @@ void apply_first_battle_drop_validation(
     draw.expected_drop_amount = expected_row->amount;
     draw.expected_drop_threshold = expected_row->threshold_percent;
 
+    if (!draw.drop_success.has_value()) {
+        if (const auto mod100 = effective_rand_mod100(draw);
+            mod100.has_value() && draw.drop_threshold.has_value()) {
+            draw.drop_success = *mod100 < *draw.drop_threshold ? 1 : 0;
+        }
+    }
+
     ++summary.first_battle_drop_rows_validated;
     if (has_live_outcome_fields(draw)) {
         ++summary.drop_rolls_with_live_outcome_fields;
@@ -150,9 +215,13 @@ void apply_first_battle_drop_validation(
     }
 
     if (draw.drop_item_id.has_value() && draw.drop_amount.has_value()) {
+        const bool threshold_matches =
+            !draw.drop_threshold.has_value()
+            || *draw.drop_threshold == expected_row->threshold_percent;
         draw.drop_table_matches =
             *draw.drop_item_id == expected_row->item_id
-            && *draw.drop_amount == expected_row->amount;
+            && *draw.drop_amount == expected_row->amount
+            && threshold_matches;
         if (draw.drop_table_matches) {
             ++summary.drop_table_matches;
         } else {
@@ -193,12 +262,21 @@ DropCheckpointSummary summarize_drop_checkpoints(
             DropCheckpointDraw draw;
             draw.draw_index = event.rng_draw_index_before;
             draw.target_slot = event.target_slot.has_value() ? event.target_slot : parse_field_int(event, "target_slot");
-            draw.enemy_entry_id = parse_field_int(event, "enemy_entry_id");
-            draw.drop_row_index = parse_field_int(event, "drop_row_index");
-            draw.drop_item_id = parse_field_int(event, "drop_item_id");
-            draw.drop_amount = parse_field_int(event, "drop_amount");
-            draw.rand_value = parse_field_int(event, "rand_value");
+            draw.enemy_entry_id = parse_first_field_int(event, {"enemy_entry_id", "enemy_id"});
+            if (!draw.enemy_entry_id.has_value()) {
+                draw.enemy_entry_id = enemy_entry_id_from_target_slot(event);
+            }
+            draw.drop_row_index = drop_row_index_from_event(event);
+            draw.drop_threshold = parse_first_field_int(
+                event,
+                {"drop_threshold", "drop_chance", "drop_chance_byte", "drop_row_chance", "drop_row_chance_raw"});
+            draw.drop_item_id = parse_first_field_int(event, {"drop_item_id", "item_id"});
+            draw.drop_amount = parse_first_field_int(event, {"drop_amount", "item_amount", "drop_count"});
+            draw.rand_value = rand_value_from_event(event);
             draw.rand_mod100 = parse_field_int(event, "rand_mod100");
+            if (!draw.rand_mod100.has_value() && draw.rand_value.has_value()) {
+                draw.rand_mod100 = *draw.rand_value % 100;
+            }
             draw.drop_success = parse_field_int(event, "drop_success");
 
             ++summary.observed_drop_rolls;

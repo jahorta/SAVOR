@@ -3,6 +3,7 @@
 #include "../../Core/DolphinWrapper.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <string>
 
 namespace savor::capture {
@@ -46,6 +47,73 @@ std::string sample_value_for_json(std::uint64_t value, SampleWidth width)
         return "\"" + HexU64(value) + "\"";
     }
     return "\"" + HexU32(static_cast<std::uint32_t>(value)) + "\"";
+}
+
+std::string watchpoint_access_for_json(std::uint32_t access)
+{
+    switch (access) {
+    case 1: return "read";
+    case 2: return "write";
+    case 3: return "access";
+    default: return "unknown";
+    }
+}
+
+std::string gpr_name(std::uint8_t reg)
+{
+    return "r" + std::to_string(static_cast<unsigned>(reg));
+}
+
+std::string watchpoint_label_for_id(const CaptureProfile& profile, std::uint32_t id)
+{
+    return id > 0 && static_cast<std::size_t>(id) <= profile.memory_watchpoints.size()
+        ? profile.memory_watchpoints[static_cast<std::size_t>(id - 1)].id
+        : std::to_string(id);
+}
+
+void append_decoded_memory_access_fields(
+    CheckpointCaptureRecord& record,
+    const DolphinWrapper::DecodedMemoryAccess& decoded)
+{
+    record.fields.push_back(CaptureField{ "decoded_pc", "\"" + HexU32(decoded.pc) + "\"", false });
+    record.fields.push_back(CaptureField{ "decoded_opcode", "\"" + HexU32(decoded.opcode) + "\"", false });
+    record.fields.push_back(CaptureField{ "decoded_mnemonic", decoded.mnemonic, true });
+    record.fields.push_back(CaptureField{ "decoded_supported", decoded.supported ? "true" : "false", false });
+    record.fields.push_back(CaptureField{ "decoded_is_memory_access", decoded.is_memory_access ? "true" : "false", false });
+    if (!decoded.unsupported_reason.empty()) {
+        record.fields.push_back(CaptureField{ "decoded_unsupported_reason", decoded.unsupported_reason, true });
+    }
+    if (decoded.is_memory_access) {
+        record.fields.push_back(CaptureField{
+            "decoded_access",
+            watchpoint_access_for_json(static_cast<std::uint32_t>(decoded.access)),
+            true });
+        record.fields.push_back(CaptureField{ "decoded_effective_addr", "\"" + HexU32(decoded.effective_address) + "\"", false });
+        record.fields.push_back(CaptureField{ "decoded_access_size", std::to_string(decoded.access_size), false });
+    }
+    if (decoded.has_base_reg) {
+        record.fields.push_back(CaptureField{ "decoded_base_reg", gpr_name(decoded.base_reg), true });
+    }
+    if (decoded.has_index_reg) {
+        record.fields.push_back(CaptureField{ "decoded_index_reg", gpr_name(decoded.index_reg), true });
+    }
+    if (decoded.has_value_reg) {
+        record.fields.push_back(CaptureField{ "decoded_value_reg", gpr_name(decoded.value_reg), true });
+    }
+    if (decoded.value_available) {
+        record.fields.push_back(CaptureField{ "decoded_value", "\"" + HexU64(decoded.value) + "\"", false });
+    }
+    if (!decoded.value_source.empty()) {
+        record.fields.push_back(CaptureField{ "decoded_value_source", decoded.value_source, true });
+    }
+    if (decoded.memory_value_available) {
+        record.fields.push_back(CaptureField{ "decoded_memory_value", "\"" + HexU64(decoded.memory_value) + "\"", false });
+    }
+    for (const auto& reg : decoded.gpr_values) {
+        const std::string prefix = "decoded_gpr_" + gpr_name(reg.reg);
+        record.fields.push_back(CaptureField{ prefix + "_role", reg.role, true });
+        record.fields.push_back(CaptureField{ prefix + "_value", "\"" + HexU32(reg.value) + "\"", false });
+    }
 }
 
 } // namespace
@@ -96,6 +164,11 @@ bool LiveCheckpointCapture::contains_pc(std::uint32_t pc) const
 std::vector<std::uint32_t> LiveCheckpointCapture::pcs() const
 {
     return active_ ? profile_.pcs() : std::vector<std::uint32_t>{};
+}
+
+const std::vector<MemoryWatchpointSpec>& LiveCheckpointCapture::memory_watchpoints() const
+{
+    return profile_.memory_watchpoints;
 }
 
 bool LiveCheckpointCapture::capture_hit(DolphinWrapper& host, std::uint32_t pc, std::string* error_out)
@@ -158,6 +231,94 @@ bool LiveCheckpointCapture::capture_hit(DolphinWrapper& host, std::uint32_t pc, 
         ++rng_draw_index_;
     }
     return true;
+}
+
+bool LiveCheckpointCapture::capture_memory_watchpoint_hit(
+    DolphinWrapper& host,
+    const std::string& stop_kind,
+    const DolphinWrapper::MemoryWatchpointHit& hit,
+    std::string* error_out)
+{
+    if (!active_) return true;
+
+    const std::string label = watchpoint_label_for_id(profile_, hit.id);
+    const std::string checkpoint_id = "memwatch." + label;
+
+    CheckpointCaptureRecord record{};
+    record.capture_sequence = next_sequence_++;
+    record.pc = hit.hit_pc;
+    record.stop_kind = stop_kind;
+    record.checkpoint_id = checkpoint_id;
+    record.checkpoint_name = label;
+    record.function = "memory_watchpoint";
+    record.checkpoint = watchpoint_access_for_json(static_cast<std::uint32_t>(hit.access));
+    record.movie_input_count = host.getCurrentMovieInputCount();
+    record.vi_field_count = host.getViFieldCountApprox();
+    record.frame_count = host.getFrameCountApprox(false);
+    record.tbr_u64 = host.getTBR();
+    record.tbr_high = static_cast<std::uint32_t>(record.tbr_u64 >> 32);
+    record.tbr_low = static_cast<std::uint32_t>(record.tbr_u64);
+    record.rng_draw_index_before = rng_draw_index_;
+    record.owns_rng_draw = false;
+
+    auto& hit_count = hit_counts_[checkpoint_id];
+    record.checkpoint_hit_count = hit_count++;
+
+    record.fields.push_back(CaptureField{ "memwatch_id", std::to_string(hit.id), false });
+    record.fields.push_back(CaptureField{ "memwatch_addr", "\"" + HexU32(hit.address) + "\"", false });
+    record.fields.push_back(CaptureField{ "memwatch_size", std::to_string(hit.size), false });
+    record.fields.push_back(CaptureField{ "memwatch_access", watchpoint_access_for_json(static_cast<std::uint32_t>(hit.access)), true });
+    record.fields.push_back(CaptureField{ "memwatch_hits_before", std::to_string(hit.num_hits_before), false });
+    record.fields.push_back(CaptureField{ "memwatch_hits_after", std::to_string(hit.num_hits_after), false });
+    record.fields.push_back(CaptureField{ "memwatch_confirmed_current_instruction", "true", false });
+    record.fields.push_back(CaptureField{ "memwatch_unattributed_extra_hits", std::to_string(hit.unattributed_extra_hits), false });
+    append_decoded_memory_access_fields(record, hit.decoded_access);
+
+    return writer_.write(record, error_out);
+}
+
+bool LiveCheckpointCapture::capture_memory_watchpoint_delta(
+    DolphinWrapper& host,
+    const std::string& stop_kind,
+    const DolphinWrapper::MemoryWatchpointDelta& delta,
+    const DolphinWrapper::DecodedMemoryAccess& decoded_current_access,
+    std::string* error_out)
+{
+    if (!active_) return true;
+
+    const std::string label = watchpoint_label_for_id(profile_, delta.id);
+    const std::string checkpoint_id = "memwatch_delta." + label;
+
+    CheckpointCaptureRecord record{};
+    record.capture_sequence = next_sequence_++;
+    record.pc = delta.hit_pc;
+    record.stop_kind = stop_kind;
+    record.checkpoint_id = checkpoint_id;
+    record.checkpoint_name = label;
+    record.function = "memory_watchpoint_delta";
+    record.checkpoint = "unattributed_delta";
+    record.movie_input_count = host.getCurrentMovieInputCount();
+    record.vi_field_count = host.getViFieldCountApprox();
+    record.frame_count = host.getFrameCountApprox(false);
+    record.tbr_u64 = host.getTBR();
+    record.tbr_high = static_cast<std::uint32_t>(record.tbr_u64 >> 32);
+    record.tbr_low = static_cast<std::uint32_t>(record.tbr_u64);
+    record.rng_draw_index_before = rng_draw_index_;
+    record.owns_rng_draw = false;
+
+    auto& hit_count = hit_counts_[checkpoint_id];
+    record.checkpoint_hit_count = hit_count++;
+
+    record.fields.push_back(CaptureField{ "memwatch_id", std::to_string(delta.id), false });
+    record.fields.push_back(CaptureField{ "memwatch_addr", "\"" + HexU32(delta.address) + "\"", false });
+    record.fields.push_back(CaptureField{ "memwatch_size", std::to_string(delta.size), false });
+    record.fields.push_back(CaptureField{ "memwatch_access", watchpoint_access_for_json(static_cast<std::uint32_t>(delta.access)), true });
+    record.fields.push_back(CaptureField{ "memwatch_hits_before", std::to_string(delta.num_hits_before), false });
+    record.fields.push_back(CaptureField{ "memwatch_hits_after", std::to_string(delta.num_hits_after), false });
+    record.fields.push_back(CaptureField{ "memwatch_confirmed_current_instruction", "false", false });
+    append_decoded_memory_access_fields(record, decoded_current_access);
+
+    return writer_.write(record, error_out);
 }
 
 } // namespace savor::capture

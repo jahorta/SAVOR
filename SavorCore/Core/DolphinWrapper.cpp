@@ -51,9 +51,11 @@
 
 #include <thread>
 #include <chrono>
+#include <algorithm>
 #include <cstdarg>
 #include <mutex>
 #include <optional>
+#include <utility>
 
 #include "Core/PowerPC/BreakPoints.h"
 #include <unordered_set>
@@ -227,6 +229,7 @@ namespace savor {
     }
 
     void DolphinWrapper::shutdownCore() {
+        clearMemoryWatchpoints();
         if (Core::IsRunning(*m_system))
             Core::Stop(*m_system);
 
@@ -1568,6 +1571,312 @@ namespace savor {
             });
     }
 
+    namespace {
+        bool is_valid_memory_watchpoint_size(uint32_t size)
+        {
+            return size == 1u || size == 2u || size == 4u || size == 8u;
+        }
+
+        bool memory_watchpoint_breaks_on_read(DolphinWrapper::MemoryWatchpointAccess access)
+        {
+            return access == DolphinWrapper::MemoryWatchpointAccess::Read
+                || access == DolphinWrapper::MemoryWatchpointAccess::Access;
+        }
+
+        bool memory_watchpoint_breaks_on_write(DolphinWrapper::MemoryWatchpointAccess access)
+        {
+            return access == DolphinWrapper::MemoryWatchpointAccess::Write
+                || access == DolphinWrapper::MemoryWatchpointAccess::Access;
+        }
+
+        const char* debug_stop_reason(DolphinWrapper::DebugStopKind kind)
+        {
+            switch (kind) {
+            case DolphinWrapper::DebugStopKind::PcBreakpoint: return "breakpoint";
+            case DolphinWrapper::DebugStopKind::Memcheck: return "memcheck";
+            case DolphinWrapper::DebugStopKind::PcBreakpointAndMemcheck: return "breakpoint+memcheck";
+            default: return "none";
+            }
+        }
+
+        DolphinWrapper::DebugStopKind merge_debug_stop_kind(bool pc_hit, bool memcheck_hit)
+        {
+            if (pc_hit && memcheck_hit) return DolphinWrapper::DebugStopKind::PcBreakpointAndMemcheck;
+            if (pc_hit) return DolphinWrapper::DebugStopKind::PcBreakpoint;
+            if (memcheck_hit) return DolphinWrapper::DebugStopKind::Memcheck;
+            return DolphinWrapper::DebugStopKind::None;
+        }
+
+        bool ranges_intersect(uint32_t left_address, uint32_t left_size, uint32_t right_address, uint32_t right_size)
+        {
+            if (left_size == 0 || right_size == 0) return false;
+            const uint64_t left_begin = left_address;
+            const uint64_t left_end = left_begin + left_size - 1u;
+            const uint64_t right_begin = right_address;
+            const uint64_t right_end = right_begin + right_size - 1u;
+            return left_begin <= right_end && right_begin <= left_end;
+        }
+
+        bool watchpoint_access_matches(
+            DolphinWrapper::MemoryWatchpointAccess watched,
+            ppc::MemoryAccessKind decoded)
+        {
+            return watched == DolphinWrapper::MemoryWatchpointAccess::Access
+                || static_cast<uint32_t>(watched) == static_cast<uint32_t>(decoded);
+        }
+
+        bool read_memory_value_for_decode(
+            DolphinWrapper& host,
+            uint32_t address,
+            uint32_t size,
+            uint64_t& out)
+        {
+            switch (size) {
+            case 1: {
+                uint8_t value = 0;
+                if (!host.readU8(address, value)) return false;
+                out = value;
+                return true;
+            }
+            case 2: {
+                uint16_t value = 0;
+                if (!host.readU16(address, value)) return false;
+                out = value;
+                return true;
+            }
+            case 4: {
+                uint32_t value = 0;
+                if (!host.readU32(address, value)) return false;
+                out = value;
+                return true;
+            }
+            case 8: {
+                uint64_t value = 0;
+                if (!host.readU64(address, value)) return false;
+                out = value;
+                return true;
+            }
+            default:
+                return false;
+            }
+        }
+    }
+
+    bool DolphinWrapper::armMemoryWatchpoints(const std::vector<MemoryWatchpointSpec>& specs)
+    {
+        if (!m_system) return false;
+        if (specs.empty()) return true;
+
+        std::unordered_set<uint32_t> ids;
+        std::unordered_set<uint32_t> addresses;
+        ids.reserve(specs.size() + m_memory_watchpoints.size());
+        addresses.reserve(specs.size() + m_memory_watchpoints.size());
+
+        for (const auto& existing : m_memory_watchpoints) {
+            ids.insert(existing.id);
+            addresses.insert(existing.address);
+        }
+
+        for (const auto& spec : specs) {
+            if (spec.id == 0 || spec.address == 0 || !is_valid_memory_watchpoint_size(spec.size)) {
+                SCLOGW("[core] invalid memory watchpoint id=%u addr=%08X size=%u",
+                    spec.id, spec.address, spec.size);
+                return false;
+            }
+            if (!ids.insert(spec.id).second) {
+                SCLOGW("[core] duplicate memory watchpoint id=%u", spec.id);
+                return false;
+            }
+            if (!addresses.insert(spec.address).second) {
+                SCLOGW("[core] duplicate memory watchpoint address=%08X", spec.address);
+                return false;
+            }
+        }
+
+        bool collision = false;
+        const bool arm_result = runOnCpuThread([&] {
+            auto& memchecks = m_system->GetPowerPC().GetMemChecks();
+            for (const auto& spec : specs) {
+                if (memchecks.GetMemCheck(spec.address, spec.size) != nullptr) {
+                    collision = true;
+                    SCLOGW("[core] memory watchpoint overlaps existing memcheck id=%u addr=%08X size=%u",
+                        spec.id,
+                        spec.address,
+                        spec.size);
+                    return;
+                }
+            }
+            for (const auto& spec : specs) {
+                TMemCheck check{};
+                check.start_address = spec.address;
+                check.end_address = spec.address + spec.size - 1u;
+                check.is_enabled = true;
+                check.is_ranged = spec.size > 1u;
+                check.is_break_on_read = memory_watchpoint_breaks_on_read(spec.access);
+                check.is_break_on_write = memory_watchpoint_breaks_on_write(spec.access);
+                check.log_on_hit = false;
+                check.break_on_hit = true;
+                memchecks.Add(std::move(check));
+                SCLOGD("[core] armed memory watchpoint id=%u addr=%08X size=%u access=%u",
+                    spec.id,
+                    spec.address,
+                    spec.size,
+                    static_cast<uint32_t>(spec.access));
+            }
+        }, true);
+
+        if (!arm_result || collision) return false;
+
+        m_memory_watchpoints.insert(m_memory_watchpoints.end(), specs.begin(), specs.end());
+        return true;
+    }
+
+    void DolphinWrapper::clearMemoryWatchpoints()
+    {
+        if (!m_system || m_memory_watchpoints.empty()) {
+            m_memory_watchpoints.clear();
+            return;
+        }
+
+        const auto specs = m_memory_watchpoints;
+        const bool clear_result = runOnCpuThread([&] {
+            auto& memchecks = m_system->GetPowerPC().GetMemChecks();
+            bool removed_any = false;
+            for (const auto& spec : specs) {
+                removed_any = memchecks.Remove(spec.address, false) || removed_any;
+            }
+            if (removed_any) {
+                memchecks.Update();
+            }
+        }, true);
+
+        SCLOGD("[core] cleared memory watchpoints count=%zu ok=%d",
+            specs.size(),
+            clear_result ? 1 : 0);
+        m_memory_watchpoints.clear();
+    }
+
+    DolphinWrapper::MemoryWatchpointSnapshot DolphinWrapper::snapshotMemoryWatchpoints() const
+    {
+        MemoryWatchpointSnapshot snapshot{};
+        if (!m_system || m_memory_watchpoints.empty()) return snapshot;
+
+        snapshot.entries.reserve(m_memory_watchpoints.size());
+        const bool ok = runOnCpuThread([&] {
+            const auto& memchecks = m_system->GetPowerPC().GetMemChecks().GetMemChecks();
+            for (const auto& spec : m_memory_watchpoints) {
+                MemoryWatchpointSnapshotEntry entry{};
+                entry.id = spec.id;
+                entry.address = spec.address;
+                entry.size = spec.size;
+                entry.access = spec.access;
+                for (const auto& check : memchecks) {
+                    if (check.start_address == spec.address) {
+                        entry.num_hits = check.num_hits;
+                        break;
+                    }
+                }
+                snapshot.entries.push_back(entry);
+            }
+        }, true);
+        if (!ok) snapshot.entries.clear();
+        return snapshot;
+    }
+
+    DolphinWrapper::DecodedMemoryAccess DolphinWrapper::DecodeCurrentMemoryAccess(
+        uint32_t pc,
+        uint32_t opcode,
+        const std::function<bool(uint8_t, uint32_t&)>& read_gpr,
+        const ppc::MemoryReadFn& read_memory)
+    {
+        return ppc::DecodeCurrentMemoryAccess(pc, opcode, read_gpr, read_memory);
+    }
+
+    std::optional<DolphinWrapper::MemoryWatchpointHit> DolphinWrapper::ProveMemoryWatchpointHitAtCurrentInstruction(
+        const DecodedMemoryAccess& decoded,
+        const std::vector<MemoryWatchpointDelta>& deltas)
+    {
+        if (!decoded.decoded || !decoded.supported || !decoded.is_memory_access || decoded.access_size == 0) {
+            return std::nullopt;
+        }
+
+        for (const auto& delta : deltas) {
+            if (!watchpoint_access_matches(delta.access, decoded.access)) continue;
+            if (!ranges_intersect(delta.address, delta.size, decoded.effective_address, decoded.access_size)) continue;
+
+            const uint32_t delta_hits = delta.num_hits_after > delta.num_hits_before
+                ? delta.num_hits_after - delta.num_hits_before
+                : 0u;
+            return MemoryWatchpointHit{
+                .id = delta.id,
+                .address = delta.address,
+                .size = delta.size,
+                .access = delta.access,
+                .hit_pc = decoded.pc,
+                .num_hits_before = delta.num_hits_before,
+                .num_hits_after = delta.num_hits_after,
+                .confirmed_current_instruction = true,
+                .unattributed_extra_hits = delta_hits > 0 ? delta_hits - 1u : 0u,
+                .decoded_access = decoded,
+            };
+        }
+
+        return std::nullopt;
+    }
+
+    std::vector<DolphinWrapper::MemoryWatchpointDelta>
+        DolphinWrapper::detectMemoryWatchpointDeltasSince(const MemoryWatchpointSnapshot& snapshot) const
+    {
+        std::vector<MemoryWatchpointDelta> deltas;
+        if (!m_system || snapshot.entries.empty()) return deltas;
+
+        const uint32_t pc = const_cast<DolphinWrapper*>(this)->getPC();
+        (void)runOnCpuThread([&] {
+            const auto& memchecks = m_system->GetPowerPC().GetMemChecks().GetMemChecks();
+            for (const auto& before : snapshot.entries) {
+                for (const auto& check : memchecks) {
+                    if (check.start_address != before.address) continue;
+                    if (check.num_hits <= before.num_hits) continue;
+                    deltas.push_back(MemoryWatchpointDelta{
+                        .id = before.id,
+                        .address = before.address,
+                        .size = before.size,
+                        .access = before.access,
+                        .hit_pc = pc,
+                        .num_hits_before = before.num_hits,
+                        .num_hits_after = check.num_hits,
+                    });
+                    break;
+                }
+            }
+        }, true);
+        return deltas;
+    }
+
+    std::optional<DolphinWrapper::MemoryWatchpointHit>
+        DolphinWrapper::detectMemoryWatchpointHitSince(const MemoryWatchpointSnapshot& snapshot) const
+    {
+        const auto deltas = detectMemoryWatchpointDeltasSince(snapshot);
+        if (deltas.empty()) return std::nullopt;
+
+        const uint32_t pc = deltas.front().hit_pc;
+        uint32_t opcode = 0;
+        if (!readU32(pc, opcode)) return std::nullopt;
+
+        auto* self = const_cast<DolphinWrapper*>(this);
+        const auto decoded = DecodeCurrentMemoryAccess(
+            pc,
+            opcode,
+            [self](uint8_t reg, uint32_t& out) {
+                out = self->getRegister(reg);
+                return true;
+            },
+            [self](uint32_t address, uint32_t size, uint64_t& out) {
+                return read_memory_value_for_decode(*self, address, size, out);
+            });
+        return ProveMemoryWatchpointHitAtCurrentInstruction(decoded, deltas);
+    }
+
     DolphinWrapper::RunUntilHitResult DolphinWrapper::runUntilBreakpointBlocking(uint32_t timeout_ms)
     {
         // Preserve legacy behavior but now through the flexible watchdog loop with no extra checks.
@@ -1630,7 +1939,7 @@ namespace savor {
         if (contains_pc(armed_singleton().pcs, pc)) {
             if (Core::GetState(*m_system) == Core::State::Paused) {
                 SCLOGD("[DW/run] HIT already paused at pc=%08X before run loop", pc);
-                return { true, pc, "breakpoint" };
+                return { true, pc, "breakpoint", DebugStopKind::PcBreakpoint, std::nullopt };
             }
             SCLOGD("[DW/run] Stepping past pc=%08X to avoid breakpoint", pc);
             //setEnableBreakpoint(pc, false);
@@ -1717,6 +2026,8 @@ namespace savor {
             return sample;
         };
 
+        const auto memory_watchpoint_snapshot = snapshotMemoryWatchpoints();
+
         // Ensure we begin in Running so time can advance (unless already paused by a BP before entry)
         if (Core::GetState(*m_system) != Core::State::Paused)
             Core::SetState(*m_system, Core::State::Running);
@@ -1739,12 +2050,51 @@ namespace savor {
             const auto st = Core::GetState(*m_system);
             if (st == Core::State::Paused)
             {
-                // 1) Breakpoint takes precedence when paused
+                // 1) PC breakpoints remain the normal hit path; memchecks are an optional second stop source.
                 const uint32_t pc = getPC();
-                if (contains_pc(armed_singleton().pcs, pc)) {
+                const bool pc_hit = contains_pc(armed_singleton().pcs, pc);
+                const auto memcheck_deltas = detectMemoryWatchpointDeltasSince(memory_watchpoint_snapshot);
+                DecodedMemoryAccess decoded_current_access{};
+                std::optional<MemoryWatchpointHit> memcheck_hit;
+                if (!memcheck_deltas.empty()) {
+                    uint32_t opcode = 0;
+                    if (readU32(pc, opcode)) {
+                        decoded_current_access = DecodeCurrentMemoryAccess(
+                            pc,
+                            opcode,
+                            [this](uint8_t reg, uint32_t& out) {
+                                out = getRegister(reg);
+                                return true;
+                            },
+                            [this](uint32_t address, uint32_t size, uint64_t& out) {
+                                return read_memory_value_for_decode(*this, address, size, out);
+                            });
+                        memcheck_hit = ProveMemoryWatchpointHitAtCurrentInstruction(
+                            decoded_current_access,
+                            memcheck_deltas);
+                    }
+                }
+                if (pc_hit || memcheck_hit.has_value() || !memcheck_deltas.empty()) {
                     // HIT: core is already Paused by the BP; leave paused and return
-                    SCLOGD("[DW/run] HIT pc=%08X polls=%zu", pc, polls);
-                    return finish({ true, pc, "breakpoint" });
+                    const DebugStopKind stop_kind = merge_debug_stop_kind(pc_hit, memcheck_hit.has_value());
+                    const char* reason = (!pc_hit && !memcheck_hit.has_value() && !memcheck_deltas.empty())
+                        ? "unattributed_memcheck"
+                        : debug_stop_reason(stop_kind);
+                    SCLOGD("[DW/run] HIT pc=%08X polls=%zu reason=%s raw_memcheck_deltas=%zu proved_memcheck=%d",
+                        pc,
+                        polls,
+                        reason,
+                        memcheck_deltas.size(),
+                        memcheck_hit.has_value() ? 1 : 0);
+                    return finish({
+                        true,
+                        pc,
+                        reason,
+                        stop_kind,
+                        memcheck_hit,
+                        memcheck_deltas,
+                        decoded_current_access,
+                    });
                 }
 
                 // 2) If movie EOM caused the pause (pause-on-EOM enabled), detect and return without resuming
@@ -1782,7 +2132,13 @@ namespace savor {
                             if (sample.hit) {
                                 SCLOGD("[DW/run] HIT pc=%08X polls=%zu during_vi_stall_sample steps=%zu distinct=%zu",
                                     sample.hit_pc, polls, sample.steps, sample.distinct_pcs);
-                                return finish({ true, sample.hit_pc, "breakpoint" });
+                                return finish({
+                                    true,
+                                    sample.hit_pc,
+                                    "breakpoint",
+                                    DebugStopKind::PcBreakpoint,
+                                    std::nullopt,
+                                });
                             }
                             if (sample.progress) {
                                 last_vi_change = steady_clock::now();

@@ -362,6 +362,9 @@ void finalize_event(CheckpointEvent& event, CheckpointParseResult& result) {
             result.errors.push_back("line " + std::to_string(event.line_number) + ": owns_rng_draw must be true/false");
         } else {
             event.owns_rng_draw = parsed;
+            if (!parsed) {
+                event.known_rng_owner.clear();
+            }
         }
     }
 
@@ -394,7 +397,7 @@ void add_ordering_warnings(CheckpointParseResult& result) {
 std::map<std::string, int> count_known_rng_owners(const std::vector<CheckpointEvent>& events) {
     std::map<std::string, int> counts;
     for (const auto& event : events) {
-        if (!event.known_rng_owner.empty()) {
+        if (event.owns_rng_draw && !event.known_rng_owner.empty()) {
             ++counts[event.known_rng_owner];
         }
     }
@@ -1949,6 +1952,8 @@ void write_text_report(
         << death_drop.observed_damage_apply_events << "\n";
     out << "  observed_death_handler_events: "
         << death_drop.observed_death_handler_events << "\n";
+    out << "  observed_drop_path_events: "
+        << death_drop.observed_drop_path_events << "\n";
     out << "  observed_drop_entry_events: "
         << death_drop.observed_drop_entry_events << "\n";
     out << "  observed_drop_rolls: " << death_drop.observed_drop_rolls << "\n";
@@ -1958,6 +1963,8 @@ void write_text_report(
     out << "  nonlethal_damage_events: " << death_drop.nonlethal_damage_events << "\n";
     out << "  damage_events_with_death_handler: "
         << death_drop.damage_events_with_death_handler << "\n";
+    out << "  lethal_events_with_drop_path: "
+        << death_drop.lethal_events_with_drop_path << "\n";
     out << "  lethal_events_with_drop_entry: "
         << death_drop.lethal_events_with_drop_entry << "\n";
     out << "  lethal_events_with_drop_roll: "
@@ -1972,6 +1979,8 @@ void write_text_report(
         << death_drop.missing_live_death_field_events << "\n";
     out << "  missing_death_handler_events: "
         << death_drop.missing_death_handler_events << "\n";
+    out << "  missing_drop_path_events: "
+        << death_drop.missing_drop_path_events << "\n";
     out << "  missing_drop_entry_events: "
         << death_drop.missing_drop_entry_events << "\n";
     out << "  missing_drop_roll_events: "
@@ -1981,6 +1990,9 @@ void write_text_report(
     out << "\n";
     out << "  first_death_handler_draw_index: ";
     write_optional_int(out, death_drop.first_death_handler_draw_index);
+    out << "\n";
+    out << "  first_drop_path_draw_index: ";
+    write_optional_int(out, death_drop.first_drop_path_draw_index);
     out << "\n";
     out << "  first_drop_entry_draw_index: ";
     write_optional_int(out, death_drop.first_drop_entry_draw_index);
@@ -2005,6 +2017,7 @@ void write_text_report(
             out << " lethal=";
             write_optional_int(out, flow.lethal);
             out << " death_handler=" << (flow.observed_death_handler ? "true" : "false");
+            out << " drop_path=" << (flow.observed_drop_path ? "true" : "false");
             out << " drop_entry=" << (flow.observed_drop_entry ? "true" : "false");
             out << " drop_roll=" << (flow.observed_drop_roll ? "true" : "false");
             out << " unexpected_nonlethal_drop="
@@ -2095,6 +2108,12 @@ void write_text_report(
             out << " row=";
             if (draw.drop_row_index.has_value()) {
                 out << *draw.drop_row_index;
+            } else {
+                out << "unknown";
+            }
+            out << " threshold=";
+            if (draw.drop_threshold.has_value()) {
+                out << *draw.drop_threshold;
             } else {
                 out << "unknown";
             }
@@ -3947,6 +3966,8 @@ void write_json_report(
         << death_drop.observed_damage_apply_events;
     out << ", \"observed_death_handler_events\": "
         << death_drop.observed_death_handler_events;
+    out << ", \"observed_drop_path_events\": "
+        << death_drop.observed_drop_path_events;
     out << ", \"observed_drop_entry_events\": "
         << death_drop.observed_drop_entry_events;
     out << ", \"observed_drop_rolls\": " << death_drop.observed_drop_rolls;
@@ -3956,6 +3977,8 @@ void write_json_report(
     out << ", \"nonlethal_damage_events\": " << death_drop.nonlethal_damage_events;
     out << ", \"damage_events_with_death_handler\": "
         << death_drop.damage_events_with_death_handler;
+    out << ", \"lethal_events_with_drop_path\": "
+        << death_drop.lethal_events_with_drop_path;
     out << ", \"lethal_events_with_drop_entry\": "
         << death_drop.lethal_events_with_drop_entry;
     out << ", \"lethal_events_with_drop_roll\": "
@@ -3970,6 +3993,8 @@ void write_json_report(
         << death_drop.missing_live_death_field_events;
     out << ", \"missing_death_handler_events\": "
         << death_drop.missing_death_handler_events;
+    out << ", \"missing_drop_path_events\": "
+        << death_drop.missing_drop_path_events;
     out << ", \"missing_drop_entry_events\": "
         << death_drop.missing_drop_entry_events;
     out << ", \"missing_drop_roll_events\": "
@@ -3978,6 +4003,8 @@ void write_json_report(
     write_json_optional_int(out, death_drop.first_damage_apply_draw_index);
     out << ", \"first_death_handler_draw_index\": ";
     write_json_optional_int(out, death_drop.first_death_handler_draw_index);
+    out << ", \"first_drop_path_draw_index\": ";
+    write_json_optional_int(out, death_drop.first_drop_path_draw_index);
     out << ", \"first_drop_entry_draw_index\": ";
     write_json_optional_int(out, death_drop.first_drop_entry_draw_index);
     out << ", \"first_drop_roll_draw_index\": ";
@@ -4005,6 +4032,10 @@ void write_json_report(
             << (flow.live_death_fields_complete ? "true" : "false");
         out << ", \"observed_death_handler\": "
             << (flow.observed_death_handler ? "true" : "false");
+        out << ", \"expects_drop_path\": "
+            << (flow.expects_drop_path ? "true" : "false");
+        out << ", \"observed_drop_path\": "
+            << (flow.observed_drop_path ? "true" : "false");
         out << ", \"expects_drop_entry\": "
             << (flow.expects_drop_entry ? "true" : "false");
         out << ", \"observed_drop_entry\": "
@@ -4111,6 +4142,12 @@ void write_json_report(
         out << ", \"drop_row_index\": ";
         if (draw.drop_row_index.has_value()) {
             out << *draw.drop_row_index;
+        } else {
+            out << "null";
+        }
+        out << ", \"drop_threshold\": ";
+        if (draw.drop_threshold.has_value()) {
+            out << *draw.drop_threshold;
         } else {
             out << "null";
         }

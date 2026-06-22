@@ -63,7 +63,11 @@ namespace savor {
 		MATERIALIZE_BATTLE_TURN_MACRO_STEPS,
 		EXECUTE_BATTLE_MACRO_STEP,
 		RECORD_TAS_INPUT_SAMPLE,
-		STEP_OPCODE
+		STEP_OPCODE,
+		ARM_MEMORY_WATCHPOINT,
+		CLEAR_MEMORY_WATCHPOINTS,
+		ARM_CAPTURE_MEMORY_WATCHPOINTS,
+		RUN_UNTIL_DEBUG_STOP
 	};
 
 	struct PSOp;
@@ -95,6 +99,14 @@ namespace savor {
 	struct PSArg_Plan { uint32_t id; };
 	struct PSArg_ImmU32 { uint32_t v; };
 	struct PSArg_KeyImm { savor::context::key::KeyId key; uint32_t imm; };
+	struct PSArg_MemoryWatchpoint {
+		uint32_t id = 0;
+		uint32_t address = 0;
+		savor::context::key::KeyId address_key = 0;
+		uint32_t use_address_key = 0;
+		uint32_t size = 0;
+		uint32_t access = static_cast<uint32_t>(DolphinWrapper::MemoryWatchpointAccess::Write);
+	};
 
 	// Only one of these will be used depending on `code`
 	struct PSOp {           
@@ -109,6 +121,7 @@ namespace savor {
 		PSArg_Plan       plan{};
 		PSArg_ImmU32     imm{};
 		PSArg_KeyImm     keyimm{};
+		PSArg_MemoryWatchpoint memwatch{};
 	};
 
 	inline PSOp OpLabel(const std::string& s) { PSOp o; o.code = PSOpCode::LABEL; o.label.name = s; return o; }
@@ -130,6 +143,10 @@ namespace savor {
 
 	inline PSOp OpStepFrames(uint32_t frame_count, bool disable_breakpoints = false) { PSOp o; o.code = PSOpCode::STEP_FRAMES; o.step = { frame_count }; o.imm = { (uint32_t)(disable_breakpoints ? 1 : 0) }; return o; }
 	inline PSOp OpStepOpcode(bool disable_breakpoints = false) { PSOp o; o.code = PSOpCode::STEP_OPCODE; o.imm = { (uint32_t)(disable_breakpoints ? 1 : 0) }; return o; }
+	inline PSOp OpArmMemoryWatchpoint(uint32_t id, uint32_t address, uint32_t size, DolphinWrapper::MemoryWatchpointAccess access) { PSOp o; o.code = PSOpCode::ARM_MEMORY_WATCHPOINT; o.memwatch = { id, address, 0, 0, size, static_cast<uint32_t>(access) }; return o; }
+	inline PSOp OpArmMemoryWatchpointFromKey(uint32_t id, savor::context::key::KeyId address_key, uint32_t size, DolphinWrapper::MemoryWatchpointAccess access) { PSOp o; o.code = PSOpCode::ARM_MEMORY_WATCHPOINT; o.memwatch = { id, 0, address_key, 1, size, static_cast<uint32_t>(access) }; return o; }
+	inline PSOp OpClearMemoryWatchpoints() { PSOp o; o.code = PSOpCode::CLEAR_MEMORY_WATCHPOINTS; return o; }
+	inline PSOp OpArmCaptureMemoryWatchpoints() { PSOp o; o.code = PSOpCode::ARM_CAPTURE_MEMORY_WATCHPOINTS; return o; }
 
 	inline PSOp OpGcSlotASet(savor::context::key::KeyId k) { PSOp o; o.code = PSOpCode::GC_SLOT_A_SET_FROM; o.key.id = k; return o; }
 	inline PSOp OpApplyInputFrom(savor::context::key::KeyId k) { PSOp o; o.code = PSOpCode::APPLY_INPUT_FROM;   o.key.id = k; return o; }
@@ -156,6 +173,7 @@ namespace savor {
 	inline PSOp OpLoadSnapshot() { PSOp o; o.code = PSOpCode::LOAD_SNAPSHOT; return o; }
 	inline PSOp OpCaptureSnapshot() { PSOp o; o.code = PSOpCode::CAPTURE_SNAPSHOT; return o; }
 	inline PSOp OpRunUntilBp() { PSOp o; o.code = PSOpCode::RUN_UNTIL_BP; return o; }
+	inline PSOp OpRunUntilDebugStop() { PSOp o; o.code = PSOpCode::RUN_UNTIL_DEBUG_STOP; return o; }
 	inline PSOp OpRecordCurrentBp() { PSOp o; o.code = PSOpCode::RECORD_CURRENT_BP; return o; }
 	inline PSOp OpStartDeterministicRun() { PSOp o; o.code = PSOpCode::START_DETERMINISIC_RUN; return o; }
 	inline PSOp OpEndDeterministicRun() { PSOp o; o.code = PSOpCode::END_DETERMINISTIC_RUN; return o; }
@@ -306,6 +324,7 @@ namespace savor {
 		void append_capture_pcs(std::vector<uint32_t>& pcs) const;
 		bool configure_capture_from_context(const PSContext& ctx, PSResult& result);
 		void arm_capture_breakpoints();
+		bool arm_capture_memory_watchpoints();
 		void reset_capture_session(bool restore_scope);
 		bool capture_current_hit(uint32_t pc, PSContext& ctx);
 		void step_past_capture_only_breakpoint(uint32_t timeout_ms, const RunUntilBpSpec& spec);
@@ -342,6 +361,10 @@ namespace savor {
 		void op_start_deterministic_run() const;
 		void op_end_deterministic_run() const;
 		void op_run_until_bp(PSContext& ctx);
+		void op_run_until_debug_stop(PSContext& ctx);
+		bool op_arm_memory_watchpoint(const PSOp& op, PSResult& result, PSContext& ctx);
+		void op_clear_memory_watchpoints() const;
+		bool op_arm_capture_memory_watchpoints(PSResult& result, PSContext& ctx);
 		void op_record_current_bp(PSContext& ctx);
 		void op_record_tas_input_sample(PSContext& ctx);
 		bool op_read_u8(const PSOp& op, PSResult& result, PSContext& ctx);

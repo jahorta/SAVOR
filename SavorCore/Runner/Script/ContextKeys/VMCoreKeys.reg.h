@@ -13,6 +13,13 @@ namespace savor::context::key::core {
   X(LAST_SAVESTATE_PATH,     0x0004, "core.run.last_savestate_path")    \
   X(GAME_ISO_PATH,           0x0005, "core.run.game_iso_path")    \
   X(RUN_EXPECTED_MATCH,      0x0006, "core.run.expected_match")    \
+  X(RUN_STOP_KIND,           0x0007, "core.run.stop_kind")    \
+  X(RUN_MEMWATCH_ID,         0x0008, "core.run.memwatch.id")    \
+  X(RUN_MEMWATCH_ADDR,       0x0009, "core.run.memwatch.addr")    \
+  X(RUN_MEMWATCH_SIZE,       0x000A, "core.run.memwatch.size")    \
+  X(RUN_MEMWATCH_ACCESS,     0x000B, "core.run.memwatch.access")    \
+  X(RUN_MEMWATCH_HITS_BEFORE, 0x000C, "core.run.memwatch.hits_before")    \
+  X(RUN_MEMWATCH_HITS_AFTER, 0x000D, "core.run.memwatch.hits_after")    \
 \
   X(VI_FIRST,                0x0020, "core.metrics.vi_first")  \
   X(VI_LAST,                 0x0021, "core.metrics.vi_last")   \

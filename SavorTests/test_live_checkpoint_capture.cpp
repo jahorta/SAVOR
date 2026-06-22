@@ -1,22 +1,48 @@
 #include <gtest/gtest.h>
 
 #include "CheckpointTrace.h"
+#include "Core/PowerPcMemoryAccessDecoder.h"
 #include "LiveCaptureProfile.h"
 #include "Phases/Programs/BattleTurnRunner/BattleTurnRunnerPayload.h"
 #include "Runner/Capture/CaptureJsonlWriter.h"
 #include "Runner/Capture/CaptureProfile.h"
 #include "Runner/Script/CtxRegistry.h"
 #include "Runner/Script/PSContext.h"
+#include "Runner/Script/PhaseScriptVM.h"
 
+#include <array>
 #include <cstdint>
 #include <sstream>
 #include <string>
+#include <tuple>
 #include <vector>
 
 namespace {
 
 using namespace savor::capture;
 using namespace savor::predict;
+
+std::uint32_t EncodeDForm(std::uint32_t primary, std::uint32_t rt, std::uint32_t ra, std::uint16_t imm)
+{
+    return (primary << 26) | (rt << 21) | (ra << 16) | imm;
+}
+
+std::uint32_t EncodeXForm(std::uint32_t rt, std::uint32_t ra, std::uint32_t rb, std::uint32_t xo)
+{
+    return (31u << 26) | (rt << 21) | (ra << 16) | (rb << 11) | (xo << 1);
+}
+
+struct TestRegisterFile {
+    std::array<std::uint32_t, 32> values{};
+    std::vector<std::uint8_t> reads;
+
+    bool read(std::uint8_t reg, std::uint32_t& out)
+    {
+        reads.push_back(reg);
+        out = values[reg];
+        return true;
+    }
+};
 
 TEST(LiveCheckpointCaptureProfile, ParsesDefaultSamplesAndUniquePcs)
 {
@@ -27,6 +53,11 @@ TEST(LiveCheckpointCaptureProfile, ParsesDefaultSamplesAndUniquePcs)
         "memory=rng_seed_before:0x803469A8:u32, wide_counter:0x80000000:u64\n"
         "gprs=return_value:3\n"
         "reg_memory=payload_mode:r3:0x22:u16, saved_mode:31:-0x10:u16\n"
+        "\n"
+        "[watchpoint.field6_writer]\n"
+        "address=0x81234567\n"
+        "size=u16\n"
+        "access=write\n"
         "\n"
         "[checkpoint.first]\n"
         "pc=0x80001000\n"
@@ -49,6 +80,11 @@ TEST(LiveCheckpointCaptureProfile, ParsesDefaultSamplesAndUniquePcs)
     const auto& profile = *parsed.profile;
     EXPECT_EQ(profile.name, "test_capture");
     ASSERT_EQ(profile.checkpoints.size(), 2u);
+    ASSERT_EQ(profile.memory_watchpoints.size(), 1u);
+    EXPECT_EQ(profile.memory_watchpoints[0].id, "field6_writer");
+    EXPECT_EQ(profile.memory_watchpoints[0].address, 0x81234567u);
+    EXPECT_EQ(profile.memory_watchpoints[0].size, SampleWidth::U16);
+    EXPECT_EQ(profile.memory_watchpoints[0].access, WatchpointAccess::Write);
     EXPECT_EQ(profile.checkpoints[0].memory_samples.size(), 2u);
     EXPECT_EQ(profile.checkpoints[0].memory_samples[0].name, "rng_seed_before");
     EXPECT_EQ(profile.checkpoints[0].memory_samples[0].width, SampleWidth::U32);
@@ -103,6 +139,7 @@ TEST(LiveCheckpointCaptureJsonl, SerializesRequiredFieldsAndStableRepeatedHitOrd
     const auto second_line = SerializeJsonlRecord(second);
     EXPECT_EQ(first_line.find(",}"), std::string::npos);
     EXPECT_NE(first_line.find("\"capture_sequence\":0"), std::string::npos);
+    EXPECT_NE(first_line.find("\"stop_kind\":\"pc_breakpoint\""), std::string::npos);
     EXPECT_NE(first_line.find("\"tbr_high\":286331153"), std::string::npos);
     EXPECT_NE(first_line.find("\"tbr_low\":572662306"), std::string::npos);
     EXPECT_NE(first_line.find("\"tbr_u64_hex\":\"0x1111111122222222\""), std::string::npos);
@@ -112,6 +149,7 @@ TEST(LiveCheckpointCaptureJsonl, SerializesRequiredFieldsAndStableRepeatedHitOrd
     EXPECT_TRUE(parsed.errors.empty()) << (parsed.errors.empty() ? "" : parsed.errors.front());
     ASSERT_EQ(parsed.events.size(), 2u);
     EXPECT_EQ(parsed.events[0].fields.at("capture_sequence"), "0");
+    EXPECT_EQ(parsed.events[0].fields.at("stop_kind"), "pc_breakpoint");
     EXPECT_EQ(parsed.events[0].fields.at("checkpoint_hit_count"), "0");
     EXPECT_EQ(parsed.events[0].fields.at("tbr_high"), "286331153");
     EXPECT_EQ(parsed.events[0].fields.at("tbr_low"), "572662306");
@@ -125,6 +163,238 @@ TEST(LiveCheckpointCaptureJsonl, SerializesRequiredFieldsAndStableRepeatedHitOrd
     ASSERT_TRUE(parsed.events[1].rng_seed_before.has_value());
     EXPECT_EQ(*parsed.events[1].rng_draw_index_before, 6);
     EXPECT_EQ(*parsed.events[1].rng_seed_before, 0x23456789u);
+}
+
+TEST(LiveCheckpointCaptureJsonl, SerializesMemoryWatchpointProofFields)
+{
+    CheckpointCaptureRecord record{};
+    record.capture_sequence = 9;
+    record.checkpoint_hit_count = 0;
+    record.pc = 0x8003C730;
+    record.stop_kind = "memcheck";
+    record.checkpoint_id = "memwatch.field6_writer";
+    record.checkpoint_name = "field6_writer";
+    record.function = "memory_watchpoint";
+    record.checkpoint = "write";
+    record.movie_input_count = 1;
+    record.vi_field_count = 2;
+    record.frame_count = 3;
+    record.tbr_u64 = 0x1111111122222222ull;
+    record.tbr_high = 0x11111111u;
+    record.tbr_low = 0x22222222u;
+    record.fields.push_back(CaptureField{ "memwatch_confirmed_current_instruction", "true", false });
+    record.fields.push_back(CaptureField{ "memwatch_unattributed_extra_hits", "2", false });
+    record.fields.push_back(CaptureField{ "decoded_opcode", "\"0x93C30178\"", false });
+    record.fields.push_back(CaptureField{ "decoded_mnemonic", "stw", true });
+    record.fields.push_back(CaptureField{ "decoded_effective_addr", "\"0x812A3F78\"", false });
+    record.fields.push_back(CaptureField{ "decoded_value", "\"0x0000000080F46320\"", false });
+    record.fields.push_back(CaptureField{ "decoded_value_source", "source_gpr", true });
+    record.fields.push_back(CaptureField{ "decoded_memory_value", "\"0x0000000080F46320\"", false });
+    record.fields.push_back(CaptureField{ "decoded_gpr_r3_value", "\"0x812A3E00\"", false });
+    record.fields.push_back(CaptureField{ "decoded_gpr_r30_value", "\"0x80F46320\"", false });
+
+    std::istringstream input(SerializeJsonlRecord(record) + "\n");
+    const auto parsed = parse_checkpoint_stream(input);
+    ASSERT_TRUE(parsed.errors.empty()) << (parsed.errors.empty() ? "" : parsed.errors.front());
+    ASSERT_EQ(parsed.events.size(), 1u);
+    EXPECT_EQ(parsed.events[0].fields.at("memwatch_confirmed_current_instruction"), "true");
+    EXPECT_EQ(parsed.events[0].fields.at("memwatch_unattributed_extra_hits"), "2");
+    EXPECT_EQ(parsed.events[0].fields.at("decoded_mnemonic"), "stw");
+    EXPECT_EQ(parsed.events[0].fields.at("decoded_effective_addr"), "0x812A3F78");
+    EXPECT_EQ(parsed.events[0].fields.at("decoded_value"), "0x0000000080F46320");
+    EXPECT_EQ(parsed.events[0].fields.at("decoded_value_source"), "source_gpr");
+    EXPECT_EQ(parsed.events[0].fields.at("decoded_memory_value"), "0x0000000080F46320");
+    EXPECT_EQ(parsed.events[0].fields.at("decoded_gpr_r3_value"), "0x812A3E00");
+    EXPECT_EQ(parsed.events[0].fields.at("decoded_gpr_r30_value"), "0x80F46320");
+}
+
+TEST(VMMemoryWatchpoints, ConstructsLiteralAndContextAddressOps)
+{
+    const auto literal = savor::OpArmMemoryWatchpoint(
+        7,
+        0x81234567u,
+        2,
+        savor::DolphinWrapper::MemoryWatchpointAccess::Write);
+    EXPECT_EQ(literal.code, savor::PSOpCode::ARM_MEMORY_WATCHPOINT);
+    EXPECT_EQ(literal.memwatch.id, 7u);
+    EXPECT_EQ(literal.memwatch.address, 0x81234567u);
+    EXPECT_EQ(literal.memwatch.use_address_key, 0u);
+    EXPECT_EQ(literal.memwatch.size, 2u);
+    EXPECT_EQ(literal.memwatch.access, static_cast<std::uint32_t>(savor::DolphinWrapper::MemoryWatchpointAccess::Write));
+
+    const auto from_key = savor::OpArmMemoryWatchpointFromKey(
+        8,
+        savor::context::key::core::RUN_HIT_PC,
+        4,
+        savor::DolphinWrapper::MemoryWatchpointAccess::Access);
+    EXPECT_EQ(from_key.code, savor::PSOpCode::ARM_MEMORY_WATCHPOINT);
+    EXPECT_EQ(from_key.memwatch.id, 8u);
+    EXPECT_EQ(from_key.memwatch.address_key, savor::context::key::core::RUN_HIT_PC);
+    EXPECT_EQ(from_key.memwatch.use_address_key, 1u);
+    EXPECT_EQ(from_key.memwatch.size, 4u);
+    EXPECT_EQ(from_key.memwatch.access, static_cast<std::uint32_t>(savor::DolphinWrapper::MemoryWatchpointAccess::Access));
+
+    EXPECT_EQ(savor::OpRunUntilDebugStop().code, savor::PSOpCode::RUN_UNTIL_DEBUG_STOP);
+    EXPECT_EQ(savor::OpClearMemoryWatchpoints().code, savor::PSOpCode::CLEAR_MEMORY_WATCHPOINTS);
+    EXPECT_EQ(savor::OpArmCaptureMemoryWatchpoints().code, savor::PSOpCode::ARM_CAPTURE_MEMORY_WATCHPOINTS);
+}
+
+TEST(VMMemoryWatchpoints, DecodesDFormStoreWithOnlyRelevantRegisters)
+{
+    TestRegisterFile rf;
+    rf.values[3] = 0x812A3E00u;
+    rf.values[30] = 0x80F46320u;
+
+    const auto decoded = savor::ppc::DecodeCurrentMemoryAccess(
+        0x8003C730u,
+        EncodeDForm(36, 30, 3, 0x0178u),
+        [&](std::uint8_t reg, std::uint32_t& out) { return rf.read(reg, out); });
+
+    EXPECT_TRUE(decoded.decoded);
+    EXPECT_TRUE(decoded.supported);
+    EXPECT_TRUE(decoded.is_memory_access);
+    EXPECT_EQ(decoded.mnemonic, "stw");
+    EXPECT_EQ(decoded.access, savor::ppc::MemoryAccessKind::Write);
+    EXPECT_EQ(decoded.effective_address, 0x812A3F78u);
+    EXPECT_EQ(decoded.access_size, 4u);
+    ASSERT_TRUE(decoded.value_available);
+    EXPECT_EQ(decoded.value, 0x80F46320ull);
+    EXPECT_EQ(decoded.value_source, "source_gpr");
+    EXPECT_EQ(rf.reads, (std::vector<std::uint8_t>{ 3, 30 }));
+}
+
+TEST(VMMemoryWatchpoints, DecodesHalfwordStoreValueMask)
+{
+    TestRegisterFile rf;
+    rf.values[3] = 0x812A3F20u;
+    rf.values[0] = 0xAABBCCDDu;
+
+    const auto decoded = savor::ppc::DecodeCurrentMemoryAccess(
+        0x80051400u,
+        EncodeDForm(44, 0, 3, 0x0022u),
+        [&](std::uint8_t reg, std::uint32_t& out) { return rf.read(reg, out); });
+
+    EXPECT_TRUE(decoded.supported);
+    EXPECT_EQ(decoded.mnemonic, "sth");
+    EXPECT_EQ(decoded.effective_address, 0x812A3F42u);
+    EXPECT_EQ(decoded.access_size, 2u);
+    ASSERT_TRUE(decoded.value_available);
+    EXPECT_EQ(decoded.value, 0xCCDDull);
+    EXPECT_EQ(decoded.value_source, "source_gpr");
+    EXPECT_EQ(rf.reads, (std::vector<std::uint8_t>{ 3, 0 }));
+}
+
+TEST(VMMemoryWatchpoints, DecodesLoadValueFromMemoryCallback)
+{
+    TestRegisterFile rf;
+    rf.values[3] = 0x812A3F60u;
+    std::vector<std::tuple<std::uint32_t, std::uint32_t>> memory_reads;
+
+    const auto decoded = savor::ppc::DecodeCurrentMemoryAccess(
+        0x80001000u,
+        EncodeDForm(32, 5, 3, 0x0018u),
+        [&](std::uint8_t reg, std::uint32_t& out) { return rf.read(reg, out); },
+        [&](std::uint32_t address, std::uint32_t size, std::uint64_t& out) {
+            memory_reads.emplace_back(address, size);
+            out = 0x80F46320u;
+            return true;
+        });
+
+    EXPECT_TRUE(decoded.supported);
+    EXPECT_EQ(decoded.mnemonic, "lwz");
+    EXPECT_EQ(decoded.access, savor::ppc::MemoryAccessKind::Read);
+    EXPECT_EQ(decoded.effective_address, 0x812A3F78u);
+    EXPECT_EQ(decoded.access_size, 4u);
+    ASSERT_TRUE(decoded.value_available);
+    EXPECT_EQ(decoded.value, 0x80F46320ull);
+    EXPECT_EQ(decoded.value_source, "memory");
+    ASSERT_TRUE(decoded.memory_value_available);
+    EXPECT_EQ(decoded.memory_value, 0x80F46320ull);
+    EXPECT_EQ(rf.reads, (std::vector<std::uint8_t>{ 3 }));
+    ASSERT_EQ(memory_reads.size(), 1u);
+    EXPECT_EQ(std::get<0>(memory_reads[0]), 0x812A3F78u);
+    EXPECT_EQ(std::get<1>(memory_reads[0]), 4u);
+}
+
+TEST(VMMemoryWatchpoints, DecodesIndexedStoreWithOnlyReferencedRegisters)
+{
+    TestRegisterFile rf;
+    rf.values[3] = 0x812A3000u;
+    rf.values[4] = 0x00000F78u;
+    rf.values[5] = 0x12345678u;
+
+    const auto decoded = savor::ppc::DecodeCurrentMemoryAccess(
+        0x80001000u,
+        EncodeXForm(5, 3, 4, 151),
+        [&](std::uint8_t reg, std::uint32_t& out) { return rf.read(reg, out); });
+
+    EXPECT_TRUE(decoded.supported);
+    EXPECT_EQ(decoded.mnemonic, "stwx");
+    EXPECT_EQ(decoded.effective_address, 0x812A3F78u);
+    EXPECT_EQ(decoded.access_size, 4u);
+    ASSERT_TRUE(decoded.value_available);
+    EXPECT_EQ(decoded.value, 0x12345678ull);
+    EXPECT_EQ(decoded.value_source, "source_gpr");
+    EXPECT_EQ(rf.reads, (std::vector<std::uint8_t>{ 3, 4, 5 }));
+}
+
+TEST(VMMemoryWatchpoints, BranchDoesNotConfirmMemcheck)
+{
+    TestRegisterFile rf;
+    const auto decoded = savor::ppc::DecodeCurrentMemoryAccess(
+        0x800513D4u,
+        0x48000001u,
+        [&](std::uint8_t reg, std::uint32_t& out) { return rf.read(reg, out); });
+
+    EXPECT_TRUE(decoded.decoded);
+    EXPECT_FALSE(decoded.is_memory_access);
+    EXPECT_FALSE(decoded.supported);
+    EXPECT_EQ(decoded.mnemonic, "bl");
+    EXPECT_TRUE(rf.reads.empty());
+
+    const std::vector<savor::DolphinWrapper::MemoryWatchpointDelta> deltas{
+        savor::DolphinWrapper::MemoryWatchpointDelta{
+            .id = 1,
+            .address = 0x80F46342u,
+            .size = 2,
+            .access = savor::DolphinWrapper::MemoryWatchpointAccess::Write,
+            .hit_pc = 0x800513D4u,
+            .num_hits_before = 0,
+            .num_hits_after = 8,
+        },
+    };
+    EXPECT_FALSE(savor::DolphinWrapper::ProveMemoryWatchpointHitAtCurrentInstruction(decoded, deltas).has_value());
+}
+
+TEST(VMMemoryWatchpoints, ProvesOnlyIntersectingCurrentInstructionAccess)
+{
+    TestRegisterFile rf;
+    rf.values[3] = 0x812A3E00u;
+    rf.values[30] = 0x80F46320u;
+
+    const auto decoded = savor::ppc::DecodeCurrentMemoryAccess(
+        0x8003C730u,
+        EncodeDForm(36, 30, 3, 0x0178u),
+        [&](std::uint8_t reg, std::uint32_t& out) { return rf.read(reg, out); });
+    const std::vector<savor::DolphinWrapper::MemoryWatchpointDelta> deltas{
+        savor::DolphinWrapper::MemoryWatchpointDelta{
+            .id = 2,
+            .address = 0x812A3F78u,
+            .size = 4,
+            .access = savor::DolphinWrapper::MemoryWatchpointAccess::Write,
+            .hit_pc = 0x8003C730u,
+            .num_hits_before = 4,
+            .num_hits_after = 7,
+        },
+    };
+
+    const auto hit = savor::DolphinWrapper::ProveMemoryWatchpointHitAtCurrentInstruction(decoded, deltas);
+    ASSERT_TRUE(hit.has_value());
+    EXPECT_TRUE(hit->confirmed_current_instruction);
+    EXPECT_EQ(hit->id, 2u);
+    EXPECT_EQ(hit->hit_pc, 0x8003C730u);
+    EXPECT_EQ(hit->unattributed_extra_hits, 2u);
+    EXPECT_EQ(hit->decoded_access.effective_address, 0x812A3F78u);
 }
 
 TEST(SavorPredictLiveCaptureProfile, BuildsParseableFirstBattleRngProfile)
@@ -183,6 +453,14 @@ TEST(SavorPredictLiveCaptureProfile, BuildsParseableFirstBattleRngProfile)
     };
     const auto has_gpr_sample = [](const CheckpointSpec& checkpoint, std::string_view name) {
         for (const auto& sample : checkpoint.gpr_samples) {
+            if (sample.name == name) {
+                return true;
+            }
+        }
+        return false;
+    };
+    const auto has_memory_sample = [](const CheckpointSpec& checkpoint, std::string_view name) {
+        for (const auto& sample : checkpoint.memory_samples) {
             if (sample.name == name) {
                 return true;
             }
@@ -264,6 +542,50 @@ TEST(SavorPredictLiveCaptureProfile, BuildsParseableFirstBattleRngProfile)
     EXPECT_FALSE(attack_begin->owns_rng_draw);
     EXPECT_TRUE(has_gpr_sample(*attack_begin, "target_slot_arg"));
     EXPECT_TRUE(has_gpr_sample(*attack_begin, "actor_slot_arg"));
+
+    const auto* damage_apply =
+        find_checkpoint("damage_apply_death_call_8002DD14");
+    ASSERT_NE(damage_apply, nullptr);
+    EXPECT_FALSE(damage_apply->owns_rng_draw);
+    EXPECT_TRUE(has_memory_sample(*damage_apply, "enemy_id_slot4"));
+    EXPECT_TRUE(has_memory_sample(*damage_apply, "enemy_id_slot5"));
+    EXPECT_TRUE(has_gpr_sample(*damage_apply, "target_slot"));
+    EXPECT_TRUE(has_gpr_sample(*damage_apply, "damage"));
+    EXPECT_TRUE(has_gpr_sample(*damage_apply, "hp_after"));
+
+    const auto* death_handler =
+        find_checkpoint("death_handler_hp_gate_8002BC80");
+    ASSERT_NE(death_handler, nullptr);
+    EXPECT_FALSE(death_handler->owns_rng_draw);
+    EXPECT_TRUE(has_gpr_sample(*death_handler, "cur_hp"));
+    EXPECT_TRUE(has_gpr_sample(*death_handler, "combatant_instance"));
+    EXPECT_TRUE(has_gpr_sample(*death_handler, "target_slot"));
+
+    const auto* enemy_drop_call =
+        find_checkpoint("enemy_drop_call_8002BD20");
+    ASSERT_NE(enemy_drop_call, nullptr);
+    EXPECT_FALSE(enemy_drop_call->owns_rng_draw);
+    EXPECT_TRUE(has_gpr_sample(*enemy_drop_call, "target_slot"));
+    EXPECT_TRUE(has_gpr_sample(*enemy_drop_call, "enemy_def_ptr"));
+
+    const auto* drop_entry =
+        find_checkpoint("enemy_drop_entry_8002BA8C");
+    ASSERT_NE(drop_entry, nullptr);
+    EXPECT_FALSE(drop_entry->owns_rng_draw);
+    EXPECT_TRUE(has_memory_sample(*drop_entry, "enemy_id_slot4"));
+    EXPECT_TRUE(has_gpr_sample(*drop_entry, "target_slot"));
+
+    const auto* drop_roll =
+        find_checkpoint("enemy_drop_roll_8002BAD8");
+    ASSERT_NE(drop_roll, nullptr);
+    EXPECT_TRUE(drop_roll->owns_rng_draw);
+    EXPECT_TRUE(has_memory_sample(*drop_roll, "enemy_id_slot4"));
+    EXPECT_TRUE(has_gpr_sample(*drop_roll, "target_slot"));
+    EXPECT_TRUE(has_gpr_sample(*drop_roll, "drop_row_index_zero_based"));
+    EXPECT_TRUE(has_gpr_sample(*drop_roll, "drop_threshold"));
+    EXPECT_TRUE(has_reg_sample(*drop_roll, "drop_item_id"));
+    EXPECT_TRUE(has_reg_sample(*drop_roll, "drop_amount"));
+    EXPECT_TRUE(has_reg_sample(*drop_roll, "drop_row_chance_raw"));
 
     const auto* source_selection =
         find_checkpoint("action_source_selection_80067BD0");

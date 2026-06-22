@@ -63,6 +63,7 @@ std::string SerializeJsonlRecord(const CheckpointCaptureRecord& record)
     append_json_u64_field(out, "capture_sequence", record.capture_sequence);
     append_json_u64_field(out, "checkpoint_hit_count", record.checkpoint_hit_count);
     append_json_string_field(out, "pc", HexU32(record.pc));
+    append_json_string_field(out, "stop_kind", record.stop_kind);
     append_json_string_field(out, "checkpoint_id", record.checkpoint_id);
     append_json_string_field(out, "checkpoint_name", record.checkpoint_name);
     append_json_string_field(out, "function", record.function);

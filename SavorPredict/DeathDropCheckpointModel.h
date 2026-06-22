@@ -13,6 +13,7 @@ enum class DeathDropCheckpointStatus {
     MissingLiveDeathFields,
     MissingDeathHandler,
     UnexpectedDropForNonlethalDamage,
+    MissingDropPath,
     MissingDropEntry,
     MissingDropRolls,
     DropOrderMismatch,
@@ -21,6 +22,7 @@ enum class DeathDropCheckpointStatus {
 enum class DeathDropCheckpointKind {
     DamageApply,
     DeathHandler,
+    DropPath,
     DropEntry,
     DropRoll,
 };
@@ -53,6 +55,8 @@ struct DeathDropDamageFlow {
     bool live_death_fields_complete = false;
     bool expects_death_handler = false;
     bool observed_death_handler = false;
+    bool expects_drop_path = false;
+    bool observed_drop_path = false;
     bool expects_drop_entry = false;
     bool observed_drop_entry = false;
     bool observed_drop_roll = false;
@@ -63,12 +67,14 @@ struct DeathDropDamageFlow {
 struct DeathDropCheckpointSummary {
     int observed_damage_apply_events = 0;
     int observed_death_handler_events = 0;
+    int observed_drop_path_events = 0;
     int observed_drop_entry_events = 0;
     int observed_drop_rolls = 0;
     int damage_events_with_live_death_fields = 0;
     int lethal_damage_events = 0;
     int nonlethal_damage_events = 0;
     int damage_events_with_death_handler = 0;
+    int lethal_events_with_drop_path = 0;
     int lethal_events_with_drop_entry = 0;
     int lethal_events_with_drop_roll = 0;
     int nonlethal_events_with_unexpected_drop = 0;
@@ -76,10 +82,12 @@ struct DeathDropCheckpointSummary {
     int drop_rolls_before_drop_entry = 0;
     int missing_live_death_field_events = 0;
     int missing_death_handler_events = 0;
+    int missing_drop_path_events = 0;
     int missing_drop_entry_events = 0;
     int missing_drop_roll_events = 0;
     std::optional<int> first_damage_apply_draw_index;
     std::optional<int> first_death_handler_draw_index;
+    std::optional<int> first_drop_path_draw_index;
     std::optional<int> first_drop_entry_draw_index;
     std::optional<int> first_drop_roll_draw_index;
     std::vector<DeathDropCheckpointEvent> events;

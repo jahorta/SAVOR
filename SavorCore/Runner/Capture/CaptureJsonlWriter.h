@@ -19,6 +19,7 @@ struct CheckpointCaptureRecord {
     std::uint64_t capture_sequence = 0;
     std::uint64_t checkpoint_hit_count = 0;
     std::uint32_t pc = 0;
+    std::string stop_kind = "pc_breakpoint";
     std::string checkpoint_id;
     std::string checkpoint_name;
     std::string function;

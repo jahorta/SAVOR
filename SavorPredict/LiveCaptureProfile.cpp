@@ -10,6 +10,7 @@
 #include <iomanip>
 #include <iostream>
 #include <sstream>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -280,6 +281,79 @@ std::vector<std::string_view> attack_resolution_begin_gprs()
     };
 }
 
+std::vector<std::string_view> first_battle_enemy_id_samples()
+{
+    static const std::string slot4 =
+        "enemy_id_slot4:" + hex_u32(addr::AddrRegistry::base(addr::battle::CombatantIdTable) + 4u * 2u) + ":u16";
+    static const std::string slot5 =
+        "enemy_id_slot5:" + hex_u32(addr::AddrRegistry::base(addr::battle::CombatantIdTable) + 5u * 2u) + ":u16";
+    return {
+        std::string_view(slot4.data(), slot4.size()),
+        std::string_view(slot5.data(), slot5.size()),
+    };
+}
+
+std::vector<std::string_view> damage_apply_gprs()
+{
+    return {
+        "target_slot:3",
+        "target_slot_saved:29",
+        "hp_after:7",
+        "damage:8",
+    };
+}
+
+std::vector<std::string_view> death_handler_gate_gprs()
+{
+    return {
+        "cur_hp:0",
+        "combatant_instance:30",
+        "target_slot:31",
+    };
+}
+
+std::vector<std::string_view> enemy_drop_call_gprs()
+{
+    return {
+        "target_slot:3",
+        "target_slot_saved:31",
+        "enemy_def_ptr:6",
+    };
+}
+
+std::vector<std::string_view> drop_entry_gprs()
+{
+    return {
+        "target_slot:3",
+    };
+}
+
+std::vector<std::string_view> drop_rng_gprs()
+{
+    return {
+        "target_slot:29",
+        "drop_row_index_zero_based:30",
+        "drop_threshold:27",
+        "drop_row_ptr:28",
+        "enemy_def_ptr:31",
+    };
+}
+
+std::vector<std::string_view> drop_rng_samples()
+{
+    return {
+        "drop_row_chance_raw:r28:0x72:u16",
+        "drop_amount:r28:0x74:u16",
+        "drop_item_id:r28:0x76:u16",
+        "first_row_chance_raw:r31:0x72:u16",
+        "first_row_amount:r31:0x74:u16",
+        "first_row_item_id:r31:0x76:u16",
+        "second_row_chance_raw:r31:0x78:u16",
+        "second_row_amount:r31:0x7a:u16",
+        "second_row_item_id:r31:0x7c:u16",
+    };
+}
+
 std::vector<std::string_view> action_source_selection_samples()
 {
     return {
@@ -434,6 +508,18 @@ std::string build_first_battle_capture_profile_ini()
                 {},
                 {"r30_worksheet:30", "r31_target_buffer:31"},
                 action_view_mode0e_rng_samples());
+        } else if (pc == "8002BAD8") {
+            write_checkpoint(
+                out,
+                section_id(owner, pc),
+                pc,
+                owner,
+                "enemyDropItem_8002ba8c",
+                "row",
+                true,
+                first_battle_enemy_id_samples(),
+                drop_rng_gprs(),
+                drop_rng_samples());
         } else if (is_combat_effect_burst_pc(pc)) {
             write_checkpoint(
                 out,
@@ -537,6 +623,50 @@ std::string build_first_battle_capture_profile_ini()
         false,
         {},
         attack_resolution_begin_gprs());
+
+    write_checkpoint(
+        out,
+        "damage_apply_death_call_8002DD14",
+        "8002DD14",
+        "damage_apply_death_call",
+        "zzDealDamage_8002dc14",
+        "damage_apply",
+        false,
+        first_battle_enemy_id_samples(),
+        damage_apply_gprs());
+
+    write_checkpoint(
+        out,
+        "death_handler_hp_gate_8002BC80",
+        "8002BC80",
+        "death_handler_hp_gate",
+        "HandleCombatantDeath_8002bc4c",
+        "death_handler_gate",
+        false,
+        first_battle_enemy_id_samples(),
+        death_handler_gate_gprs());
+
+    write_checkpoint(
+        out,
+        "enemy_drop_call_8002BD20",
+        "8002BD20",
+        "enemy_drop_call",
+        "HandleCombatantDeath_8002bc4c",
+        "enemy_drop_call",
+        false,
+        first_battle_enemy_id_samples(),
+        enemy_drop_call_gprs());
+
+    write_checkpoint(
+        out,
+        "enemy_drop_entry_8002BA8C",
+        "8002BA8C",
+        "enemy_drop_entry",
+        "enemyDropItem_8002ba8c",
+        "enemy_drop_entry",
+        false,
+        first_battle_enemy_id_samples(),
+        drop_entry_gprs());
 
     write_checkpoint(
         out,

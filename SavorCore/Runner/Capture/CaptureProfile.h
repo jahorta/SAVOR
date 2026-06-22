@@ -14,6 +14,12 @@ enum class SampleWidth : std::uint8_t {
     U64 = 8,
 };
 
+enum class WatchpointAccess : std::uint8_t {
+    Read = 1,
+    Write = 2,
+    Access = 3,
+};
+
 struct MemorySampleSpec {
     std::string name;
     std::uint32_t address = 0;
@@ -44,6 +50,13 @@ struct CheckpointSpec {
     std::vector<RegisterMemorySampleSpec> register_memory_samples;
 };
 
+struct MemoryWatchpointSpec {
+    std::string id;
+    std::uint32_t address = 0;
+    SampleWidth size = SampleWidth::U32;
+    WatchpointAccess access = WatchpointAccess::Write;
+};
+
 struct CaptureProfile {
     std::string name;
     std::uint32_t schema_version = 1;
@@ -51,6 +64,7 @@ struct CaptureProfile {
     std::vector<GprSampleSpec> default_gpr_samples;
     std::vector<RegisterMemorySampleSpec> default_register_memory_samples;
     std::vector<CheckpointSpec> checkpoints;
+    std::vector<MemoryWatchpointSpec> memory_watchpoints;
 
     const CheckpointSpec* find_checkpoint(std::uint32_t pc) const;
     std::vector<std::uint32_t> pcs() const;

@@ -62,12 +62,25 @@ bool is_damage_apply_checkpoint(const CheckpointEvent& event) {
 
 bool is_death_handler_checkpoint(const CheckpointEvent& event) {
     return event.pc == "8002BC4C"
-        || event.pc == "8002BD20"
+        || event.pc == "8002BC78"
+        || event.pc == "8002BC80"
         || event_named(event, {
             "HandleCombatantDeath",
             "HandleCombatantDeath_8002bc4c",
+            "death_handler_entry",
+            "death_handler_gate",
+            "death_handler_hp_gate",
             "death_handler",
             "combatant_death",
+        });
+}
+
+bool is_drop_path_checkpoint(const CheckpointEvent& event) {
+    return event.pc == "8002BD20"
+        || event_named(event, {
+            "enemy_drop_call",
+            "enemy_drop_path",
+            "death_handler_enemy_drop_call",
         });
 }
 
@@ -76,7 +89,6 @@ bool is_drop_entry_checkpoint(const CheckpointEvent& event) {
         return false;
     }
     return event.pc == "8002BA8C"
-        || event.pc == "8002BAD8"
         || event_named(event, {
             "enemyDropItem",
             "enemyDropItem_8002ba8c",
@@ -99,6 +111,20 @@ std::optional<int> attacker_slot_from_event(const CheckpointEvent& event) {
     return parse_first_field_int(event, {"attacker_slot", "active_slot", "actor_slot"});
 }
 
+std::optional<int> enemy_entry_id_from_target_slot(const CheckpointEvent& event) {
+    const auto target_slot = target_slot_from_event(event);
+    if (!target_slot.has_value()) {
+        return std::nullopt;
+    }
+    if (*target_slot == 4) {
+        return parse_field_int(event, "enemy_id_slot4");
+    }
+    if (*target_slot == 5) {
+        return parse_field_int(event, "enemy_id_slot5");
+    }
+    return std::nullopt;
+}
+
 DeathDropCheckpointEvent make_event(
     const CheckpointEvent& event,
     DeathDropCheckpointKind kind) {
@@ -108,6 +134,9 @@ DeathDropCheckpointEvent make_event(
     observed.target_slot = target_slot_from_event(event);
     observed.attacker_slot = attacker_slot_from_event(event);
     observed.enemy_entry_id = parse_first_field_int(event, {"enemy_entry_id", "enemy_id"});
+    if (!observed.enemy_entry_id.has_value()) {
+        observed.enemy_entry_id = enemy_entry_id_from_target_slot(event);
+    }
     observed.damage = parse_first_field_int(event, {"damage", "observed_damage", "damage_value"});
     observed.hp_before = parse_first_field_int(event, {"hp_before", "target_hp_before"});
     observed.hp_after = parse_first_field_int(event, {"hp_after", "target_hp_after"});
@@ -117,7 +146,9 @@ DeathDropCheckpointEvent make_event(
         parse_first_field_int(event, {"entered_enemy_reward", "enemy_reward_path"});
     observed.called_enemy_drop =
         parse_first_field_int(event, {"called_enemy_drop", "called_drop", "entered_drop"});
-    observed.drop_row_index = parse_field_int(event, "drop_row_index");
+    observed.drop_row_index = parse_first_field_int(
+        event,
+        {"drop_row_index", "drop_row_index_zero_based"});
     observed.drop_success = parse_field_int(event, "drop_success");
     return observed;
 }
@@ -191,6 +222,9 @@ DeathDropCheckpointStatus classify_status(const DeathDropCheckpointSummary& summ
     if (summary.nonlethal_events_with_unexpected_drop > 0) {
         return DeathDropCheckpointStatus::UnexpectedDropForNonlethalDamage;
     }
+    if (summary.missing_drop_path_events > 0) {
+        return DeathDropCheckpointStatus::MissingDropPath;
+    }
     if (summary.missing_drop_entry_events > 0) {
         return DeathDropCheckpointStatus::MissingDropEntry;
     }
@@ -215,6 +249,8 @@ DeathDropCheckpointSummary summarize_death_drop_checkpoints(
             kind = DeathDropCheckpointKind::DropRoll;
         } else if (is_damage_apply_checkpoint(event)) {
             kind = DeathDropCheckpointKind::DamageApply;
+        } else if (is_drop_path_checkpoint(event)) {
+            kind = DeathDropCheckpointKind::DropPath;
         } else if (is_death_handler_checkpoint(event)) {
             kind = DeathDropCheckpointKind::DeathHandler;
         } else if (is_drop_entry_checkpoint(event)) {
@@ -238,6 +274,12 @@ DeathDropCheckpointSummary summarize_death_drop_checkpoints(
                 && observed.draw_index.has_value()) {
                 summary.first_death_handler_draw_index = *observed.draw_index;
             }
+        } else if (observed.kind == DeathDropCheckpointKind::DropPath) {
+            ++summary.observed_drop_path_events;
+            if (!summary.first_drop_path_draw_index.has_value()
+                && observed.draw_index.has_value()) {
+                summary.first_drop_path_draw_index = *observed.draw_index;
+            }
         } else if (observed.kind == DeathDropCheckpointKind::DropEntry) {
             ++summary.observed_drop_entry_events;
             if (!summary.first_drop_entry_draw_index.has_value()
@@ -254,6 +296,8 @@ DeathDropCheckpointSummary summarize_death_drop_checkpoints(
         summary.events.push_back(std::move(observed));
     }
 
+    const bool has_death_handler_capture = summary.observed_death_handler_events > 0;
+
     for (std::size_t i = 0; i < summary.events.size(); ++i) {
         const auto& event = summary.events[i];
         if (event.kind != DeathDropCheckpointKind::DamageApply) {
@@ -268,7 +312,7 @@ DeathDropCheckpointSummary summarize_death_drop_checkpoints(
         flow.hp_before = event.hp_before;
         flow.hp_after = event.hp_after;
         flow.live_death_fields_complete = has_live_death_fields(event);
-        flow.expects_death_handler = true;
+        flow.expects_death_handler = has_death_handler_capture;
 
         if (!flow.live_death_fields_complete) {
             ++summary.missing_live_death_field_events;
@@ -277,34 +321,45 @@ DeathDropCheckpointSummary summarize_death_drop_checkpoints(
             flow.lethal = is_lethal(event) ? 1 : 0;
             if (*flow.lethal != 0) {
                 ++summary.lethal_damage_events;
-                flow.expects_drop_entry = is_first_battle_enemy_target(event);
+                flow.expects_drop_path = is_first_battle_enemy_target(event);
+                flow.expects_drop_entry = flow.expects_drop_path;
             } else {
                 ++summary.nonlethal_damage_events;
             }
         }
 
-        const auto death_handler =
-            find_next_event(summary.events, i, DeathDropCheckpointKind::DeathHandler, event);
-        if (death_handler.has_value()) {
-            flow.observed_death_handler = true;
-            ++summary.damage_events_with_death_handler;
-        } else {
-            ++summary.missing_death_handler_events;
+        if (flow.expects_death_handler) {
+            const auto death_handler =
+                find_next_event(summary.events, i, DeathDropCheckpointKind::DeathHandler, event);
+            if (death_handler.has_value()) {
+                flow.observed_death_handler = true;
+                ++summary.damage_events_with_death_handler;
+            } else {
+                ++summary.missing_death_handler_events;
+            }
         }
 
+        const auto drop_path =
+            find_next_event(summary.events, i, DeathDropCheckpointKind::DropPath, event);
         const auto drop_entry =
             find_next_event(summary.events, i, DeathDropCheckpointKind::DropEntry, event);
         const auto drop_roll =
             find_next_event(summary.events, i, DeathDropCheckpointKind::DropRoll, event);
+        flow.observed_drop_path = drop_path.has_value();
         flow.observed_drop_entry = drop_entry.has_value();
         flow.observed_drop_roll = drop_roll.has_value();
 
         if (flow.lethal.has_value() && *flow.lethal == 0) {
-            if (flow.observed_drop_entry || flow.observed_drop_roll) {
+            if (flow.observed_drop_path || flow.observed_drop_entry || flow.observed_drop_roll) {
                 flow.unexpected_drop_for_nonlethal = true;
                 ++summary.nonlethal_events_with_unexpected_drop;
             }
         } else if (flow.lethal.has_value() && *flow.lethal != 0 && flow.expects_drop_entry) {
+            if (flow.observed_drop_path) {
+                ++summary.lethal_events_with_drop_path;
+            } else if (flow.expects_drop_path) {
+                ++summary.missing_drop_path_events;
+            }
             if (flow.observed_drop_entry) {
                 ++summary.lethal_events_with_drop_entry;
             } else {
@@ -345,6 +400,8 @@ const char* death_drop_checkpoint_status_name(DeathDropCheckpointStatus status) 
         return "MissingDeathHandler";
     case DeathDropCheckpointStatus::UnexpectedDropForNonlethalDamage:
         return "UnexpectedDropForNonlethalDamage";
+    case DeathDropCheckpointStatus::MissingDropPath:
+        return "MissingDropPath";
     case DeathDropCheckpointStatus::MissingDropEntry:
         return "MissingDropEntry";
     case DeathDropCheckpointStatus::MissingDropRolls:
@@ -362,6 +419,8 @@ const char* death_drop_checkpoint_kind_name(DeathDropCheckpointKind kind) {
         return "DamageApply";
     case DeathDropCheckpointKind::DeathHandler:
         return "DeathHandler";
+    case DeathDropCheckpointKind::DropPath:
+        return "DropPath";
     case DeathDropCheckpointKind::DropEntry:
         return "DropEntry";
     case DeathDropCheckpointKind::DropRoll:
@@ -372,7 +431,7 @@ const char* death_drop_checkpoint_kind_name(DeathDropCheckpointKind kind) {
 }
 
 const char* first_battle_death_drop_checkpoint_rule_detail() {
-    return "first-battle death/drop flow should show zzDealDamage applying HP, HandleCombatantDeath after each damage application, enemyDropItem only for lethal first-battle Soldier damage, and drop-row RNG only after the drop entry";
+    return "first-battle death/drop flow should show zzDealDamage applying HP, the HandleCombatantDeath HP gate when that checkpoint is present, the 8002BD20 enemy-drop call path only for lethal first-battle Soldier damage, enemyDropItem entry after that path, and drop-row RNG only after the drop entry";
 }
 
 } // namespace savor::predict

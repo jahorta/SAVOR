@@ -1919,6 +1919,51 @@ TEST(SavorPredictCheckpointTrace, SummarizesActionViewCameraCheckpoints) {
     EXPECT_EQ(missing.status, ActionViewCameraCheckpointStatus::MissingMode0eDraws);
 }
 
+TEST(SavorPredictCheckpointTrace, DoesNotCountDiagnosticKnownPcRowsAsRngOwners) {
+    std::istringstream input(
+        "pc=800513d4 function=memory_watchpoint_delta checkpoint=unattributed_delta "
+        "rng_draw_index_before=127 owns_rng_draw=false\n"
+        "pc=800513d4 function=memory_watchpoint_delta checkpoint=unattributed_delta "
+        "rng_draw_index_before=127 owns_rng_draw=false\n"
+        "pc=800513d4 function=UpdateActionViewRecord checkpoint=mode0_fallback "
+        "rng_draw_index_before=127 owns_rng_draw=true "
+        "rng_seed_before=0xAABBCCDD rng_seed_after=0x01020304\n");
+
+    const auto parsed = parse_checkpoint_stream(input);
+    ASSERT_TRUE(parsed.errors.empty());
+    ASSERT_EQ(parsed.events.size(), 3u);
+    EXPECT_TRUE(parsed.events[0].known_rng_owner.empty());
+    EXPECT_TRUE(parsed.events[1].known_rng_owner.empty());
+    EXPECT_EQ(parsed.events[2].known_rng_owner, "mode0_action_view_camera_fallback");
+
+    const auto checkpoint_path =
+        std::filesystem::temp_directory_path() / "savor_predict_trace_owner_override_test.txt";
+    {
+        std::ofstream file(checkpoint_path);
+        ASSERT_TRUE(file.good());
+        file
+            << "pc=800513d4 function=memory_watchpoint_delta checkpoint=unattributed_delta "
+               "rng_draw_index_before=127 owns_rng_draw=false\n"
+            << "pc=800513d4 function=memory_watchpoint_delta checkpoint=unattributed_delta "
+               "rng_draw_index_before=127 owns_rng_draw=false\n"
+            << "pc=800513d4 function=UpdateActionViewRecord checkpoint=mode0_fallback "
+               "rng_draw_index_before=127 owns_rng_draw=true "
+               "rng_seed_before=0xAABBCCDD rng_seed_after=0x01020304\n";
+    }
+
+    TraceCheckpointsOptions options{};
+    options.checkpoint_file = checkpoint_path;
+
+    std::ostringstream out;
+    std::ostringstream err;
+    const int rc = run_trace_checkpoints(options, out, err);
+    std::filesystem::remove(checkpoint_path);
+
+    EXPECT_EQ(rc, 0) << err.str();
+    EXPECT_NE(out.str().find("mode0_action_view_camera_fallback: 1"), std::string::npos);
+    EXPECT_EQ(out.str().find("mode0_action_view_camera_fallback: 3"), std::string::npos);
+}
+
 TEST(SavorPredictCheckpointTrace, SummarizesTurnOrderCheckpoints) {
     std::istringstream input(
         "pc=800711f8 function=setupTurn checkpoint=priority rng_draw_index_before=10 "
@@ -2594,12 +2639,12 @@ TEST(SavorPredictCheckpointTrace, SummarizesDropCheckpoints) {
         "pc=80010984 function=rollDamage checkpoint=bonus rng_draw_index_before=23\n"
         "pc=8002bad8 function=enemyDropItem checkpoint=row rng_draw_index_before=24 "
         "target_slot=4 enemy_entry_id=0 drop_row_index=1 drop_item_id=273 "
-        "drop_amount=1 rand_value=44 rand_mod100=44 drop_success=0\n"
+        "drop_threshold=1 drop_amount=1 rand_value=44 rand_mod100=44 drop_success=0\n"
         "pc=80081a88 function=shouldCounter checkpoint=roll rng_draw_index_before=25\n"
         "pc=80010984 function=rollDamage checkpoint=bonus rng_draw_index_before=26\n"
         "pc=8002bad8 function=enemyDropItem checkpoint=row rng_draw_index_before=27 "
         "target_slot=4 enemy_entry_id=0 drop_row_index=2 drop_item_id=258 "
-        "drop_amount=1 rand_value=0 rand_mod100=0 drop_success=1\n");
+        "drop_threshold=1 drop_amount=1 rand_value=0 rand_mod100=0 drop_success=1\n");
 
     const auto parsed = parse_checkpoint_stream(input);
     ASSERT_TRUE(parsed.errors.empty());
@@ -2661,10 +2706,28 @@ TEST(SavorPredictCheckpointTrace, SummarizesDropCheckpoints) {
         drop_checkpoint_status_name(extra.status),
         std::string("ExtraDropRolls"));
 
+    std::istringstream live_fields_input(
+        "pc=8002bad8 function=enemyDropItem checkpoint=row rng_draw_index_before=24 "
+        "rng_seed_before=0x00000000 target_slot=4 enemy_id_slot4=0 "
+        "drop_row_index_zero_based=0 drop_threshold=1 drop_item_id=273 drop_amount=1\n");
+    const auto live_fields_parsed = parse_checkpoint_stream(live_fields_input);
+    ASSERT_TRUE(live_fields_parsed.errors.empty());
+    const auto live_fields =
+        summarize_drop_checkpoints(live_fields_parsed.events, std::nullopt);
+    EXPECT_EQ(live_fields.status, DropCheckpointStatus::MatchesExpected);
+    EXPECT_EQ(live_fields.drop_rolls_with_live_outcome_fields, 1);
+    EXPECT_EQ(live_fields.draws_with_rand_value, 1);
+    EXPECT_EQ(live_fields.successful_drop_rolls, 1);
+    ASSERT_EQ(live_fields.draws.size(), 1u);
+    EXPECT_EQ(live_fields.draws[0].enemy_entry_id, std::optional<int>(0));
+    EXPECT_EQ(live_fields.draws[0].drop_row_index, std::optional<int>(1));
+    EXPECT_EQ(live_fields.draws[0].drop_success, std::optional<int>(1));
+    EXPECT_EQ(live_fields.draws[0].expected_drop_success, std::optional<int>(1));
+
     std::istringstream outcome_mismatch_input(
         "pc=8002bad8 function=enemyDropItem checkpoint=row rng_draw_index_before=24 "
         "target_slot=4 enemy_entry_id=0 drop_row_index=1 drop_item_id=273 "
-        "drop_amount=1 rand_value=44 rand_mod100=44 drop_success=1\n");
+        "drop_threshold=1 drop_amount=1 rand_value=44 rand_mod100=44 drop_success=1\n");
     const auto outcome_mismatch_parsed = parse_checkpoint_stream(outcome_mismatch_input);
     ASSERT_TRUE(outcome_mismatch_parsed.errors.empty());
     const auto outcome_mismatch =
@@ -2678,7 +2741,7 @@ TEST(SavorPredictCheckpointTrace, SummarizesDropCheckpoints) {
     std::istringstream table_mismatch_input(
         "pc=8002bad8 function=enemyDropItem checkpoint=row rng_draw_index_before=24 "
         "target_slot=4 enemy_entry_id=0 drop_row_index=2 drop_item_id=273 "
-        "drop_amount=1 rand_value=44 rand_mod100=44 drop_success=0\n");
+        "drop_threshold=1 drop_amount=1 rand_value=44 rand_mod100=44 drop_success=0\n");
     const auto table_mismatch_parsed = parse_checkpoint_stream(table_mismatch_input);
     ASSERT_TRUE(table_mismatch_parsed.errors.empty());
     const auto table_mismatch =
@@ -2689,7 +2752,7 @@ TEST(SavorPredictCheckpointTrace, SummarizesDropCheckpoints) {
     std::istringstream disabled_row_input(
         "pc=8002bad8 function=enemyDropItem checkpoint=row rng_draw_index_before=24 "
         "target_slot=4 enemy_entry_id=0 drop_row_index=3 drop_item_id=0 "
-        "drop_amount=0 rand_value=44 rand_mod100=44 drop_success=0\n");
+        "drop_threshold=0 drop_amount=0 rand_value=44 rand_mod100=44 drop_success=0\n");
     const auto disabled_row_parsed = parse_checkpoint_stream(disabled_row_input);
     ASSERT_TRUE(disabled_row_parsed.errors.empty());
     const auto disabled_row =
@@ -2700,10 +2763,10 @@ TEST(SavorPredictCheckpointTrace, SummarizesDropCheckpoints) {
     std::istringstream continuation_input(
         "pc=8002bad8 function=enemyDropItem checkpoint=row rng_draw_index_before=24 "
         "target_slot=4 enemy_entry_id=0 drop_row_index=1 drop_item_id=273 "
-        "drop_amount=1 rand_value=0 rand_mod100=0 drop_success=1\n"
+        "drop_threshold=1 drop_amount=1 rand_value=0 rand_mod100=0 drop_success=1\n"
         "pc=8002bad8 function=enemyDropItem checkpoint=row rng_draw_index_before=25 "
         "target_slot=4 enemy_entry_id=0 drop_row_index=2 drop_item_id=258 "
-        "drop_amount=1 rand_value=44 rand_mod100=44 drop_success=0\n");
+        "drop_threshold=1 drop_amount=1 rand_value=44 rand_mod100=44 drop_success=0\n");
     const auto continuation_parsed = parse_checkpoint_stream(continuation_input);
     ASSERT_TRUE(continuation_parsed.errors.empty());
     const auto continuation =
@@ -2718,7 +2781,9 @@ TEST(SavorPredictCheckpointTrace, SummarizesDeathDropCheckpoints) {
     std::istringstream lethal_input(
         "pc=8002dd14 function=zzDealDamage checkpoint=damage_apply rng_draw_index_before=22 "
         "attacker_slot=0 target_slot=4 enemy_entry_id=0 damage=18 hp_before=18 hp_after=0\n"
-        "pc=8002bd20 function=HandleCombatantDeath checkpoint=death_handler rng_draw_index_before=22 "
+        "pc=8002bc80 function=HandleCombatantDeath checkpoint=death_handler_gate rng_draw_index_before=22 "
+        "target_slot=4 enemy_entry_id=0 cur_hp=0\n"
+        "pc=8002bd20 function=HandleCombatantDeath checkpoint=enemy_drop_call rng_draw_index_before=22 "
         "target_slot=4 enemy_entry_id=0 cur_hp=0 entered_enemy_reward=1 called_enemy_drop=1\n"
         "pc=8002ba8c function=enemyDropItem checkpoint=enemy_drop_entry rng_draw_index_before=22 "
         "target_slot=4 enemy_entry_id=0\n"
@@ -2732,34 +2797,57 @@ TEST(SavorPredictCheckpointTrace, SummarizesDeathDropCheckpoints) {
     EXPECT_EQ(lethal.status, DeathDropCheckpointStatus::MatchesExpectedFlow);
     EXPECT_EQ(lethal.observed_damage_apply_events, 1);
     EXPECT_EQ(lethal.observed_death_handler_events, 1);
+    EXPECT_EQ(lethal.observed_drop_path_events, 1);
     EXPECT_EQ(lethal.observed_drop_entry_events, 1);
     EXPECT_EQ(lethal.observed_drop_rolls, 1);
     EXPECT_EQ(lethal.damage_events_with_live_death_fields, 1);
     EXPECT_EQ(lethal.lethal_damage_events, 1);
     EXPECT_EQ(lethal.damage_events_with_death_handler, 1);
+    EXPECT_EQ(lethal.lethal_events_with_drop_path, 1);
     EXPECT_EQ(lethal.lethal_events_with_drop_entry, 1);
     EXPECT_EQ(lethal.lethal_events_with_drop_roll, 1);
     EXPECT_EQ(lethal.drop_rolls_after_drop_entry, 1);
     ASSERT_EQ(lethal.damage_flows.size(), 1u);
     EXPECT_TRUE(lethal.damage_flows[0].observed_death_handler);
+    EXPECT_TRUE(lethal.damage_flows[0].observed_drop_path);
     EXPECT_TRUE(lethal.damage_flows[0].observed_drop_entry);
+
+    std::istringstream legacy_drop_path_input(
+        "pc=8002dd14 function=zzDealDamage checkpoint=damage_apply rng_draw_index_before=22 "
+        "attacker_slot=0 target_slot=4 enemy_entry_id=0 damage=18 hp_before=18 hp_after=0\n"
+        "pc=8002bd20 function=HandleCombatantDeath checkpoint=death_handler rng_draw_index_before=22 "
+        "target_slot=4 enemy_entry_id=0 cur_hp=0 entered_enemy_reward=1 called_enemy_drop=1\n"
+        "pc=8002ba8c function=enemyDropItem checkpoint=enemy_drop_entry rng_draw_index_before=22 "
+        "target_slot=4 enemy_entry_id=0\n"
+        "pc=8002bad8 function=enemyDropItem checkpoint=row rng_draw_index_before=23 "
+        "target_slot=4 enemy_entry_id=0 drop_row_index=1 rand_value=0 rand_mod100=0 "
+        "drop_success=1\n");
+    const auto legacy_drop_path_parsed = parse_checkpoint_stream(legacy_drop_path_input);
+    ASSERT_TRUE(legacy_drop_path_parsed.errors.empty());
+    const auto legacy_drop_path =
+        summarize_death_drop_checkpoints(legacy_drop_path_parsed.events);
+    EXPECT_EQ(legacy_drop_path.status, DeathDropCheckpointStatus::MatchesExpectedFlow);
+    EXPECT_EQ(legacy_drop_path.observed_death_handler_events, 0);
+    EXPECT_EQ(legacy_drop_path.observed_drop_path_events, 1);
+    EXPECT_EQ(legacy_drop_path.damage_events_with_death_handler, 0);
 
     std::istringstream nonlethal_input(
         "pc=8002dd14 function=zzDealDamage checkpoint=damage_apply rng_draw_index_before=22 "
         "attacker_slot=0 target_slot=4 enemy_entry_id=0 damage=5 hp_before=18 hp_after=13\n"
-        "pc=8002bd20 function=HandleCombatantDeath checkpoint=death_handler rng_draw_index_before=22 "
-        "target_slot=4 enemy_entry_id=0 cur_hp=13 entered_enemy_reward=0 called_enemy_drop=0\n");
+        "pc=8002bc80 function=HandleCombatantDeath checkpoint=death_handler_gate rng_draw_index_before=22 "
+        "target_slot=4 enemy_entry_id=0 cur_hp=13\n");
     const auto nonlethal_parsed = parse_checkpoint_stream(nonlethal_input);
     ASSERT_TRUE(nonlethal_parsed.errors.empty());
     const auto nonlethal = summarize_death_drop_checkpoints(nonlethal_parsed.events);
     EXPECT_EQ(nonlethal.status, DeathDropCheckpointStatus::MatchesExpectedFlow);
     EXPECT_EQ(nonlethal.nonlethal_damage_events, 1);
+    EXPECT_EQ(nonlethal.observed_drop_path_events, 0);
     EXPECT_EQ(nonlethal.observed_drop_entry_events, 0);
 
     std::istringstream missing_fields_input(
         "pc=8002dd14 function=zzDealDamage checkpoint=damage_apply rng_draw_index_before=22 "
         "target_slot=4 enemy_entry_id=0 damage=5\n"
-        "pc=8002bd20 function=HandleCombatantDeath checkpoint=death_handler rng_draw_index_before=22 "
+        "pc=8002bc80 function=HandleCombatantDeath checkpoint=death_handler_gate rng_draw_index_before=22 "
         "target_slot=4 enemy_entry_id=0 cur_hp=13\n");
     const auto missing_fields_parsed = parse_checkpoint_stream(missing_fields_input);
     ASSERT_TRUE(missing_fields_parsed.errors.empty());
@@ -2770,7 +2858,9 @@ TEST(SavorPredictCheckpointTrace, SummarizesDeathDropCheckpoints) {
 
     std::istringstream missing_handler_input(
         "pc=8002dd14 function=zzDealDamage checkpoint=damage_apply rng_draw_index_before=22 "
-        "target_slot=4 enemy_entry_id=0 damage=18 hp_before=18 hp_after=0\n");
+        "target_slot=4 enemy_entry_id=0 damage=18 hp_before=18 hp_after=0\n"
+        "pc=8002bc80 function=HandleCombatantDeath checkpoint=death_handler_gate rng_draw_index_before=22 "
+        "target_slot=5 enemy_entry_id=0 cur_hp=0\n");
     const auto missing_handler_parsed = parse_checkpoint_stream(missing_handler_input);
     ASSERT_TRUE(missing_handler_parsed.errors.empty());
     const auto missing_handler = summarize_death_drop_checkpoints(missing_handler_parsed.events);
@@ -2779,7 +2869,9 @@ TEST(SavorPredictCheckpointTrace, SummarizesDeathDropCheckpoints) {
     std::istringstream unexpected_drop_input(
         "pc=8002dd14 function=zzDealDamage checkpoint=damage_apply rng_draw_index_before=22 "
         "target_slot=4 enemy_entry_id=0 damage=5 hp_before=18 hp_after=13\n"
-        "pc=8002bd20 function=HandleCombatantDeath checkpoint=death_handler rng_draw_index_before=22 "
+        "pc=8002bc80 function=HandleCombatantDeath checkpoint=death_handler_gate rng_draw_index_before=22 "
+        "target_slot=4 enemy_entry_id=0 cur_hp=13\n"
+        "pc=8002bd20 function=HandleCombatantDeath checkpoint=enemy_drop_call rng_draw_index_before=22 "
         "target_slot=4 enemy_entry_id=0 cur_hp=13 entered_enemy_reward=0 called_enemy_drop=1\n"
         "pc=8002ba8c function=enemyDropItem checkpoint=enemy_drop_entry rng_draw_index_before=22 "
         "target_slot=4 enemy_entry_id=0\n");
@@ -2788,10 +2880,23 @@ TEST(SavorPredictCheckpointTrace, SummarizesDeathDropCheckpoints) {
     const auto unexpected_drop = summarize_death_drop_checkpoints(unexpected_drop_parsed.events);
     EXPECT_EQ(unexpected_drop.status, DeathDropCheckpointStatus::UnexpectedDropForNonlethalDamage);
 
+    std::istringstream missing_drop_path_input(
+        "pc=8002dd14 function=zzDealDamage checkpoint=damage_apply rng_draw_index_before=22 "
+        "target_slot=4 enemy_entry_id=0 damage=18 hp_before=18 hp_after=0\n"
+        "pc=8002bc80 function=HandleCombatantDeath checkpoint=death_handler_gate rng_draw_index_before=22 "
+        "target_slot=4 enemy_entry_id=0 cur_hp=0\n");
+    const auto missing_drop_path_parsed = parse_checkpoint_stream(missing_drop_path_input);
+    ASSERT_TRUE(missing_drop_path_parsed.errors.empty());
+    const auto missing_drop_path =
+        summarize_death_drop_checkpoints(missing_drop_path_parsed.events);
+    EXPECT_EQ(missing_drop_path.status, DeathDropCheckpointStatus::MissingDropPath);
+
     std::istringstream missing_drop_entry_input(
         "pc=8002dd14 function=zzDealDamage checkpoint=damage_apply rng_draw_index_before=22 "
         "target_slot=4 enemy_entry_id=0 damage=18 hp_before=18 hp_after=0\n"
-        "pc=8002bd20 function=HandleCombatantDeath checkpoint=death_handler rng_draw_index_before=22 "
+        "pc=8002bc80 function=HandleCombatantDeath checkpoint=death_handler_gate rng_draw_index_before=22 "
+        "target_slot=4 enemy_entry_id=0 cur_hp=0\n"
+        "pc=8002bd20 function=HandleCombatantDeath checkpoint=enemy_drop_call rng_draw_index_before=22 "
         "target_slot=4 enemy_entry_id=0 cur_hp=0 entered_enemy_reward=1 called_enemy_drop=1\n");
     const auto missing_drop_entry_parsed = parse_checkpoint_stream(missing_drop_entry_input);
     ASSERT_TRUE(missing_drop_entry_parsed.errors.empty());
@@ -2802,7 +2907,9 @@ TEST(SavorPredictCheckpointTrace, SummarizesDeathDropCheckpoints) {
     std::istringstream missing_drop_roll_input(
         "pc=8002dd14 function=zzDealDamage checkpoint=damage_apply rng_draw_index_before=22 "
         "target_slot=4 enemy_entry_id=0 damage=18 hp_before=18 hp_after=0\n"
-        "pc=8002bd20 function=HandleCombatantDeath checkpoint=death_handler rng_draw_index_before=22 "
+        "pc=8002bc80 function=HandleCombatantDeath checkpoint=death_handler_gate rng_draw_index_before=22 "
+        "target_slot=4 enemy_entry_id=0 cur_hp=0\n"
+        "pc=8002bd20 function=HandleCombatantDeath checkpoint=enemy_drop_call rng_draw_index_before=22 "
         "target_slot=4 enemy_entry_id=0 cur_hp=0 entered_enemy_reward=1 called_enemy_drop=1\n"
         "pc=8002ba8c function=enemyDropItem checkpoint=enemy_drop_entry rng_draw_index_before=22 "
         "target_slot=4 enemy_entry_id=0\n");

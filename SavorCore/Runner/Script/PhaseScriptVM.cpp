@@ -183,6 +183,32 @@ namespace savor {
             }
             return out.str();
         }
+
+        DolphinWrapper::MemoryWatchpointAccess capture_access_to_wrapper_access(
+            savor::capture::WatchpointAccess access)
+        {
+            switch (access) {
+            case savor::capture::WatchpointAccess::Read:
+                return DolphinWrapper::MemoryWatchpointAccess::Read;
+            case savor::capture::WatchpointAccess::Access:
+                return DolphinWrapper::MemoryWatchpointAccess::Access;
+            case savor::capture::WatchpointAccess::Write:
+            default:
+                return DolphinWrapper::MemoryWatchpointAccess::Write;
+            }
+        }
+
+        const char* debug_stop_kind_to_string(DolphinWrapper::DebugStopKind kind)
+        {
+            switch (kind) {
+            case DolphinWrapper::DebugStopKind::PcBreakpoint: return "pc_breakpoint";
+            case DolphinWrapper::DebugStopKind::Memcheck: return "memcheck";
+            case DolphinWrapper::DebugStopKind::PcBreakpointAndMemcheck: return "pc_breakpoint_and_memcheck";
+            case DolphinWrapper::DebugStopKind::None:
+            default:
+                return "none";
+            }
+        }
     }
 
     PhaseScriptVM::PhaseScriptVM(savor::DolphinWrapper& host, const BreakpointMap& bpmap)
@@ -306,9 +332,19 @@ namespace savor {
             return false;
         }
 
+        if (!arm_capture_memory_watchpoints()) {
+            result.ctx = ctx;
+            SCLOGW("[capture] memory watchpoint arm failed profile=%s", profile_path.c_str());
+            capture_->stop();
+            return false;
+        }
+
         arm_capture_breakpoints();
-        SCLOGI("[capture] active profile=%s output=%s pc_count=%zu",
-            profile_path.c_str(), output_path.c_str(), capture_armed_pcs_.size());
+        SCLOGI("[capture] active profile=%s output=%s pc_count=%zu watchpoint_count=%zu",
+            profile_path.c_str(),
+            output_path.c_str(),
+            capture_armed_pcs_.size(),
+            capture_->memory_watchpoints().size());
         return true;
     }
 
@@ -322,6 +358,25 @@ namespace savor {
             host_.armPcBreakpoints(capture_armed_pcs_);
         }
         restore_canonical_breakpoint_scope();
+    }
+
+    bool PhaseScriptVM::arm_capture_memory_watchpoints() {
+        if (!capture_ || !capture_->active()) {
+            return true;
+        }
+        std::vector<DolphinWrapper::MemoryWatchpointSpec> memory_watchpoints;
+        const auto& profile_watchpoints = capture_->memory_watchpoints();
+        memory_watchpoints.reserve(profile_watchpoints.size());
+        for (std::size_t i = 0; i < profile_watchpoints.size(); ++i) {
+            const auto& watchpoint = profile_watchpoints[i];
+            memory_watchpoints.push_back(DolphinWrapper::MemoryWatchpointSpec{
+                .id = static_cast<uint32_t>(i + 1),
+                .address = watchpoint.address,
+                .size = static_cast<uint32_t>(watchpoint.size),
+                .access = capture_access_to_wrapper_access(watchpoint.access),
+            });
+        }
+        return memory_watchpoints.empty() || host_.armMemoryWatchpoints(memory_watchpoints);
     }
 
     void PhaseScriptVM::reset_capture_session(bool restore_scope) {
@@ -354,6 +409,7 @@ namespace savor {
         if (capture_) {
             capture_->stop();
         }
+        host_.clearMemoryWatchpoints();
         capture_armed_pcs_.clear();
         if (restore_scope) {
             restore_canonical_breakpoint_scope();
@@ -463,6 +519,7 @@ namespace savor {
     {
         init_ = init;
         prog_ = program;
+        host_.clearMemoryWatchpoints();
 
         switch (init_.derived_buffer_type) {
         case DK_Battle: derived_ = std::make_unique<savor::DerivedBattleBuffer>(); break;
@@ -534,6 +591,7 @@ namespace savor {
             result.ctx = ctx;
             return false;
         }
+        host_.clearMemoryWatchpoints();
         host_.clearAllPcBreakpoints();
         host_.loadGame(iso_path);
         host_.ConfigurePortsStandardPadP1();
@@ -541,6 +599,11 @@ namespace savor {
         armed_pcs_.clear();
         arm_bps_once();
         if (capture_ && capture_->active()) {
+            if (!arm_capture_memory_watchpoints()) {
+                ctx[savor::context::key::core::WORKER_ERROR] = static_cast<uint32_t>(WERR_UnknownError);
+                result.ctx = ctx;
+                return false;
+            }
             arm_capture_breakpoints();
         }
         return true;
@@ -710,6 +773,42 @@ namespace savor {
             }
 
             const uint32_t hit_pc = static_cast<uint32_t>(rr.pc);
+            if (rr.memory_watchpoint.has_value() && capture_ && capture_->active()) {
+                const auto& hit = *rr.memory_watchpoint;
+                std::string error;
+                if (!capture_->capture_memory_watchpoint_hit(
+                    host_,
+                    debug_stop_kind_to_string(rr.stop_kind),
+                    hit,
+                    &error)) {
+                    ctx[savor::context::key::core::WORKER_ERROR] = static_cast<uint32_t>(WERR_UnknownError);
+                    SCLOGW("[capture] memory watchpoint write failed pc=%08X error=%s", hit_pc, error.c_str());
+                    rr = { false, 0u, "capture_failed" };
+                    break;
+                }
+            }
+            if (!rr.memory_watchpoint.has_value()
+                && !rr.memory_watchpoint_deltas.empty()
+                && capture_
+                && capture_->active()) {
+                for (const auto& delta : rr.memory_watchpoint_deltas) {
+                    std::string error;
+                    if (!capture_->capture_memory_watchpoint_delta(
+                        host_,
+                        debug_stop_kind_to_string(rr.stop_kind),
+                        delta,
+                        rr.decoded_current_access,
+                        &error)) {
+                        ctx[savor::context::key::core::WORKER_ERROR] = static_cast<uint32_t>(WERR_UnknownError);
+                        SCLOGW("[capture] memory watchpoint delta write failed pc=%08X error=%s", hit_pc, error.c_str());
+                        rr = { false, 0u, "capture_failed" };
+                        break;
+                    }
+                }
+                if (!rr.hit) {
+                    break;
+                }
+            }
             const bool capture_hit = capture_ && capture_->active() && capture_->contains_pc(hit_pc);
             const BPAddr* program_hit = nullptr;
             if (!spec.expected_bp_keys.empty()) {
@@ -797,6 +896,23 @@ namespace savor {
         ctx[savor::context::key::core::RUN_HIT_PC] = rr.hit ? static_cast<uint32_t>(rr.pc) : 0u;
         ctx[savor::context::key::core::RUN_HIT_BP_KEY] = hit_bp_key;
         ctx[savor::context::key::core::RUN_EXPECTED_MATCH] = expected_match ? 1u : 0u;
+        ctx[savor::context::key::core::RUN_STOP_KIND] = static_cast<uint32_t>(rr.stop_kind);
+        if (rr.memory_watchpoint.has_value()) {
+            const auto& hit = *rr.memory_watchpoint;
+            ctx[savor::context::key::core::RUN_MEMWATCH_ID] = hit.id;
+            ctx[savor::context::key::core::RUN_MEMWATCH_ADDR] = hit.address;
+            ctx[savor::context::key::core::RUN_MEMWATCH_SIZE] = hit.size;
+            ctx[savor::context::key::core::RUN_MEMWATCH_ACCESS] = static_cast<uint32_t>(hit.access);
+            ctx[savor::context::key::core::RUN_MEMWATCH_HITS_BEFORE] = hit.num_hits_before;
+            ctx[savor::context::key::core::RUN_MEMWATCH_HITS_AFTER] = hit.num_hits_after;
+        } else {
+            ctx[savor::context::key::core::RUN_MEMWATCH_ID] = 0u;
+            ctx[savor::context::key::core::RUN_MEMWATCH_ADDR] = 0u;
+            ctx[savor::context::key::core::RUN_MEMWATCH_SIZE] = 0u;
+            ctx[savor::context::key::core::RUN_MEMWATCH_ACCESS] = 0u;
+            ctx[savor::context::key::core::RUN_MEMWATCH_HITS_BEFORE] = 0u;
+            ctx[savor::context::key::core::RUN_MEMWATCH_HITS_AFTER] = 0u;
+        }
         ctx[savor::context::key::core::VI_DELTA] = static_cast<uint32_t>(host_.getViFieldCountApproxFromBaseline() & 0xFFFFFFFFull);
         ctx[savor::context::key::core::POLL_MS] = poll_ms;
         ctx[savor::context::key::core::VI_LAST] = static_cast<uint32_t>(host_.getViFieldCountApprox() & 0xFFFFFFFFull);
@@ -1644,6 +1760,59 @@ namespace savor {
     void PhaseScriptVM::op_run_until_bp(PSContext& ctx) {
         (void)run_until_bp_core(ctx, RunUntilBpSpec{});
     }
+    void PhaseScriptVM::op_run_until_debug_stop(PSContext& ctx) {
+        (void)run_until_bp_core(ctx, RunUntilBpSpec{});
+    }
+    bool PhaseScriptVM::op_arm_memory_watchpoint(const PSOp& op, PSResult& result, PSContext& ctx) {
+        uint32_t address = op.memwatch.address;
+        if (op.memwatch.use_address_key != 0) {
+            if (!ctx.get<uint32_t>(op.memwatch.address_key, address)) {
+                ctx[savor::context::key::core::DW_RUN_OUTCOME_CODE] = static_cast<uint32_t>(RunToBpOutcome::InputPlaybackFailed);
+                ctx[savor::context::key::core::WORKER_ERROR] = static_cast<uint32_t>(WERR_UnknownError);
+                result.ctx = ctx;
+                return false;
+            }
+        }
+
+        const auto access = static_cast<DolphinWrapper::MemoryWatchpointAccess>(op.memwatch.access);
+        if (access != DolphinWrapper::MemoryWatchpointAccess::Read
+            && access != DolphinWrapper::MemoryWatchpointAccess::Write
+            && access != DolphinWrapper::MemoryWatchpointAccess::Access) {
+            ctx[savor::context::key::core::DW_RUN_OUTCOME_CODE] = static_cast<uint32_t>(RunToBpOutcome::InputPlaybackFailed);
+            ctx[savor::context::key::core::WORKER_ERROR] = static_cast<uint32_t>(WERR_UnknownError);
+            result.ctx = ctx;
+            return false;
+        }
+
+        const DolphinWrapper::MemoryWatchpointSpec spec{
+            .id = op.memwatch.id,
+            .address = address,
+            .size = op.memwatch.size,
+            .access = access,
+        };
+        if (!host_.armMemoryWatchpoints({ spec })) {
+            ctx[savor::context::key::core::DW_RUN_OUTCOME_CODE] = static_cast<uint32_t>(RunToBpOutcome::InputPlaybackFailed);
+            ctx[savor::context::key::core::WORKER_ERROR] = static_cast<uint32_t>(WERR_UnknownError);
+            result.ctx = ctx;
+            return false;
+        }
+        return true;
+    }
+    void PhaseScriptVM::op_clear_memory_watchpoints() const {
+        host_.clearMemoryWatchpoints();
+    }
+    bool PhaseScriptVM::op_arm_capture_memory_watchpoints(PSResult& result, PSContext& ctx) {
+        if (!capture_ || !capture_->active()) {
+            return true;
+        }
+        if (arm_capture_memory_watchpoints()) {
+            return true;
+        }
+        ctx[savor::context::key::core::DW_RUN_OUTCOME_CODE] = static_cast<uint32_t>(RunToBpOutcome::InputPlaybackFailed);
+        ctx[savor::context::key::core::WORKER_ERROR] = static_cast<uint32_t>(WERR_UnknownError);
+        result.ctx = ctx;
+        return false;
+    }
     void PhaseScriptVM::op_record_current_bp(PSContext& ctx) {
         const uint32_t pc = host_.getPC();
         const BPAddr* hit_bp = find_hit_bp(bpmap_, canonical_bp_keys_, predicate_bp_keys_, pc);
@@ -1659,6 +1828,9 @@ namespace savor {
             : static_cast<uint32_t>(RunToBpOutcome::Unknown);
         ctx[savor::context::key::core::RUN_HIT_PC] = pc;
         ctx[savor::context::key::core::RUN_HIT_BP_KEY] = hit_bp_key;
+        ctx[savor::context::key::core::RUN_STOP_KIND] = hit_bp_key != 0
+            ? static_cast<uint32_t>(DolphinWrapper::DebugStopKind::PcBreakpoint)
+            : static_cast<uint32_t>(DolphinWrapper::DebugStopKind::None);
         ctx[savor::context::key::core::VI_DELTA] = 0u;
         ctx[savor::context::key::core::VI_LAST] = static_cast<uint32_t>(host_.getViFieldCountApprox() & 0xFFFFFFFFull);
         if (derived_ && hit_bp_key != 0) derived_->update_on_bp(hit_bp_key, ctx, host_);
@@ -1807,6 +1979,11 @@ namespace savor {
         PSResult R{};
         auto ctx_heap = std::make_unique<PSContext>(job.ctx);
         PSContext& ctx = *ctx_heap;
+        struct MemoryWatchpointRunScope {
+            DolphinWrapper& host;
+            ~MemoryWatchpointRunScope() { host.clearMemoryWatchpoints(); }
+        } memory_watchpoint_scope{ host_ };
+        host_.clearMemoryWatchpoints();
         predicate_bp_keys_.clear();
         std::string _section = "Entry Point";
         // Always start by restoring the pre-captured snapshot for each job
@@ -1855,6 +2032,10 @@ namespace savor {
             case PSOpCode::START_DETERMINISIC_RUN: op_start_deterministic_run(); break;
             case PSOpCode::END_DETERMINISTIC_RUN: op_end_deterministic_run(); break;
             case PSOpCode::RUN_UNTIL_BP: op_run_until_bp(ctx); break;
+            case PSOpCode::RUN_UNTIL_DEBUG_STOP: op_run_until_debug_stop(ctx); break;
+            case PSOpCode::ARM_MEMORY_WATCHPOINT: if (!op_arm_memory_watchpoint(op, R, ctx)) return R; break;
+            case PSOpCode::CLEAR_MEMORY_WATCHPOINTS: op_clear_memory_watchpoints(); break;
+            case PSOpCode::ARM_CAPTURE_MEMORY_WATCHPOINTS: if (!op_arm_capture_memory_watchpoints(R, ctx)) return R; break;
             case PSOpCode::RECORD_CURRENT_BP: op_record_current_bp(ctx); break;
             case PSOpCode::RECORD_TAS_INPUT_SAMPLE: op_record_tas_input_sample(ctx); break;
             case PSOpCode::READ_U8: if (!op_read_u8(op, R, ctx)) return R; break;
@@ -1894,6 +2075,10 @@ namespace savor {
         case PSOpCode::STEP_FRAMES: return { "Step Frames" };
         case PSOpCode::STEP_OPCODE: return { "Step Opcode" };
         case PSOpCode::RUN_UNTIL_BP: return { "Run Until BP" };
+        case PSOpCode::RUN_UNTIL_DEBUG_STOP: return { "Run Until Debug Stop" };
+        case PSOpCode::ARM_MEMORY_WATCHPOINT: return { "Arm Memory Watchpoint" };
+        case PSOpCode::CLEAR_MEMORY_WATCHPOINTS: return { "Clear Memory Watchpoints" };
+        case PSOpCode::ARM_CAPTURE_MEMORY_WATCHPOINTS: return { "Arm Capture Memory Watchpoints" };
         case PSOpCode::RECORD_CURRENT_BP: return { "Record Current BP" };
         case PSOpCode::READ_U8: return { "Read u8" };
         case PSOpCode::READ_U16: return { "Read u16" };
@@ -1956,6 +2141,14 @@ namespace savor {
             break;
         case PSOpCode::STEP_OPCODE:
             args << "disable_breakpoints=" << op.imm.v;
+            break;
+        case PSOpCode::ARM_MEMORY_WATCHPOINT:
+            args << "id=" << op.memwatch.id
+                 << ", addr=" << op.memwatch.address
+                 << ", addr_key=" << key_desc(op.memwatch.address_key)
+                 << ", use_addr_key=" << op.memwatch.use_address_key
+                 << ", size=" << op.memwatch.size
+                 << ", access=" << op.memwatch.access;
             break;
         case PSOpCode::SET_TIMEOUT:
             args << "ms=" << op.imm.v;

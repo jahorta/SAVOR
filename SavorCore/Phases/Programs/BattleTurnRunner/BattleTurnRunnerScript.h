@@ -66,6 +66,7 @@ namespace phase::battle::turnrunner {
         ps.ops.push_back(savor::OpArmPhaseBps());
         ps.ops.push_back(savor::OpArmBpsFromPredTable());
         ps.ops.push_back(savor::OpLoadSnapshot());
+        ps.ops.push_back(savor::OpClearMemoryWatchpoints());
         ps.ops.push_back(savor::OpSetTimeoutToMS(long_timeout));
         ps.ops.push_back(savor::OpSetU32(savor::context::key::core::RUN_POLL_MS, 0u));
         ps.ops.push_back(savor::OpSetU32(savor::context::key::battle::INPUT_RETRY_COUNT, 0u));
@@ -119,6 +120,7 @@ namespace phase::battle::turnrunner {
         ps.ops.push_back(savor::OpGotoIf(DW_Outcome, savor::PSCmp::NE, 0u, LabelRetryInput));
         ps.ops.push_back(savor::OpGotoIf(savor::context::key::core::RUN_HIT_BP_KEY, savor::PSCmp::NE, (uint32_t)BP_BattleInputsDone, LabelRetryInput));
         ps.ops.push_back(savor::OpSetTimeoutToMS(long_timeout));
+        ps.ops.push_back(savor::OpArmCaptureMemoryWatchpoints());
         ps.ops.push_back(savor::OpGoto(LabelRunAppliedInputs));
 
         // ============  Label Run Applied Inputs  ===================
@@ -144,6 +146,7 @@ namespace phase::battle::turnrunner {
         ps.ops.push_back(savor::OpGotoIf(savor::context::key::battle::INPUT_RETRY_COUNT, savor::PSCmp::GE, 1u, LabelRetryExhausted));
         ps.ops.push_back(savor::OpAddU32(savor::context::key::battle::INPUT_RETRY_COUNT, 1u));
         ps.ops.push_back(savor::OpLoadSnapshot());
+        ps.ops.push_back(savor::OpClearMemoryWatchpoints());
         ps.ops.push_back(savor::OpSetTimeoutToMS(long_timeout));
         ps.ops.push_back(savor::OpSetU32(savor::context::key::core::RUN_POLL_MS, 0u));
         ps.ops.push_back(savor::OpGoto(LabelStartAttempt));

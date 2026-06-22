@@ -2,14 +2,11 @@
 
 #include "CaptureJsonlWriter.h"
 #include "CaptureProfile.h"
+#include "../../Core/DolphinWrapper.h"
 
 #include <cstdint>
 #include <filesystem>
 #include <unordered_map>
-
-namespace savor {
-class DolphinWrapper;
-}
 
 namespace savor::capture {
 
@@ -24,9 +21,21 @@ public:
     bool active() const { return active_; }
     bool contains_pc(std::uint32_t pc) const;
     std::vector<std::uint32_t> pcs() const;
+    const std::vector<MemoryWatchpointSpec>& memory_watchpoints() const;
     const std::filesystem::path& output_path() const { return output_path_; }
 
     bool capture_hit(DolphinWrapper& host, std::uint32_t pc, std::string* error_out = nullptr);
+    bool capture_memory_watchpoint_hit(
+        DolphinWrapper& host,
+        const std::string& stop_kind,
+        const DolphinWrapper::MemoryWatchpointHit& hit,
+        std::string* error_out = nullptr);
+    bool capture_memory_watchpoint_delta(
+        DolphinWrapper& host,
+        const std::string& stop_kind,
+        const DolphinWrapper::MemoryWatchpointDelta& delta,
+        const DolphinWrapper::DecodedMemoryAccess& decoded_current_access,
+        std::string* error_out = nullptr);
 
 private:
     bool active_ = false;

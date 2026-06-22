@@ -30,6 +30,7 @@ struct DropCheckpointDraw {
     std::optional<int> target_slot;
     std::optional<int> enemy_entry_id;
     std::optional<int> drop_row_index;
+    std::optional<int> drop_threshold;
     std::optional<int> drop_item_id;
     std::optional<int> drop_amount;
     std::optional<int> rand_value;
