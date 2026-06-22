@@ -22,7 +22,7 @@ enum class DropCheckpointStatus {
 struct DropCheckpointExpectation {
     int expected_drop_rolls = 0;
     std::string_view owner = "enemy_drop_roll";
-    std::string_view pc = "8002BAE8";
+    std::string_view pc = "8002BAD8";
 };
 
 struct DropCheckpointDraw {

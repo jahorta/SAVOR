@@ -153,6 +153,47 @@ TEST(SavorPredictLiveCaptureProfile, BuildsParseableFirstBattleRngProfile)
     }
     EXPECT_EQ(rng_checkpoints, static_cast<int>(known_rng_callsite_owners().size()));
     EXPECT_GE(action_view_state_checkpoints, 5);
+
+    const auto find_checkpoint = [&](std::string_view id)
+        -> const CheckpointSpec* {
+        for (const auto& checkpoint : profile.checkpoints) {
+            if (checkpoint.id == id) {
+                return &checkpoint;
+            }
+        }
+        return nullptr;
+    };
+    const auto has_reg_sample = [](const CheckpointSpec& checkpoint, std::string_view name) {
+        for (const auto& sample : checkpoint.register_memory_samples) {
+            if (sample.name == name) {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    const auto* combat_effect =
+        find_checkpoint("combat_effect_spawn_scale_x_80043020");
+    ASSERT_NE(combat_effect, nullptr);
+    EXPECT_TRUE(has_reg_sample(*combat_effect, "effect_loop_count_0x5c"));
+    EXPECT_TRUE(has_reg_sample(*combat_effect, "effect_flags_0x38"));
+    EXPECT_TRUE(has_reg_sample(*combat_effect, "effect_variant_count_0x5e"));
+    EXPECT_TRUE(has_reg_sample(*combat_effect, "effect_axis_mode_0x60"));
+
+    const auto* emitter_source =
+        find_checkpoint("effect_emitter_source_gate_80041F30");
+    ASSERT_NE(emitter_source, nullptr);
+    EXPECT_FALSE(emitter_source->owns_rng_draw);
+    EXPECT_TRUE(has_reg_sample(*emitter_source, "emitter_outer_count_0x142"));
+    EXPECT_TRUE(has_reg_sample(*emitter_source, "emitter_child_count_0x1c"));
+    EXPECT_TRUE(has_reg_sample(*emitter_source, "emitter_variant_count_0x16"));
+    EXPECT_TRUE(has_reg_sample(*emitter_source, "emitter_axis_mode_0x3c"));
+
+    const auto* particle_tick =
+        find_checkpoint("effect_particle_motion_gate_x_800425A0");
+    ASSERT_NE(particle_tick, nullptr);
+    EXPECT_TRUE(has_reg_sample(*particle_tick, "particle_payload_source_ptr_0x20"));
+    EXPECT_TRUE(has_reg_sample(*particle_tick, "particle_payload_lifetime_0x28"));
 }
 
 TEST(BattleTurnRunnerPayload, RoundTripsLiveCaptureContextPaths)

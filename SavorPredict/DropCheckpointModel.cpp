@@ -299,7 +299,7 @@ const char* drop_checkpoint_status_name(DropCheckpointStatus status) {
 }
 
 const char* first_battle_drop_checkpoint_rule_detail() {
-    return "first-battle Soldier deaths enter enemyDropItem_8002ba8c only when curHp is below one; enabled entry-0 rows are Electri Box row 1 and Moonberry row 2 at one percent each, and each row consumes one 8002bae8 roll until a row succeeds or the table ends";
+    return "first-battle Soldier deaths enter enemyDropItem_8002ba8c only when curHp is below one; enabled entry-0 rows are Electri Box row 1 and Moonberry row 2 at one percent each, and each row consumes one 8002bad8 roll until a row succeeds or the table ends";
 }
 
 } // namespace savor::predict

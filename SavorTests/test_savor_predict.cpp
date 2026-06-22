@@ -61,6 +61,98 @@ TEST(SavorPredictRngModel, PreAiCameraModelKeepsBaselineAndSuppressionVisible) {
     EXPECT_EQ(pre_ai_draws_for_fake_attacks(3), three_fake.expected_total_draws);
 }
 
+TEST(SavorPredictRngModel, EffectRngModelComputesFirstBattle007Burst) {
+    const auto input = first_battle_007_combat_effect_burst_input();
+    const auto model = model_combat_effect_burst_draws(input);
+
+    EXPECT_EQ(model.loop_count, 22);
+    EXPECT_EQ(model.draws_per_iteration, 5);
+    EXPECT_EQ(model.position_selector_draws, 22);
+    EXPECT_EQ(model.scale_draws, 66);
+    EXPECT_EQ(model.variant_index_draws, 22);
+    EXPECT_EQ(model.axis_assignment_draws, 0);
+    EXPECT_EQ(model.total_draws, 110);
+    EXPECT_EQ(model.total_draws * 4, 440);
+
+    const auto emitter = model_effect_emitter_spawn_draws({3, true, false, 2});
+    EXPECT_EQ(emitter.draws_per_outer, 6);
+    EXPECT_EQ(emitter.total_draws, 18);
+    EXPECT_EQ(emitter.child_tasks, 6);
+
+    const auto particle = model_effect_particle_tick_draws({2, true});
+    EXPECT_EQ(particle.total_draws, 8);
+}
+
+TEST(SavorPredictRngModel, EffectCheckpointModelSummarizes80042b10BurstShape) {
+    std::ostringstream stream;
+    int draw_index = 0;
+    for (int i = 0; i < 88; ++i) {
+        stream << "pc=80042fbc function=FUN_80042b10 checkpoint=position "
+               << "rng_draw_index_before=" << draw_index++
+               << " effect_loop_count_0x5c=22 effect_flags_0x38=0 "
+               << "effect_variant_count_0x5e=4 effect_axis_mode_0x60=0\n";
+        stream << "pc=80043020 function=FUN_80042b10 checkpoint=scale_x "
+               << "rng_draw_index_before=" << draw_index++
+               << " effect_loop_count_0x5c=22 effect_flags_0x38=0 "
+               << "effect_variant_count_0x5e=4 effect_axis_mode_0x60=0\n";
+        stream << "pc=80043048 function=FUN_80042b10 checkpoint=scale_y "
+               << "rng_draw_index_before=" << draw_index++
+               << " effect_loop_count_0x5c=22 effect_flags_0x38=0 "
+               << "effect_variant_count_0x5e=4 effect_axis_mode_0x60=0\n";
+        stream << "pc=80043070 function=FUN_80042b10 checkpoint=scale_z "
+               << "rng_draw_index_before=" << draw_index++
+               << " effect_loop_count_0x5c=22 effect_flags_0x38=0 "
+               << "effect_variant_count_0x5e=4 effect_axis_mode_0x60=0\n";
+        stream << "pc=800430fc function=FUN_80042b10 checkpoint=variant "
+               << "rng_draw_index_before=" << draw_index++
+               << " effect_loop_count_0x5c=22 effect_flags_0x38=0 "
+               << "effect_variant_count_0x5e=4 effect_axis_mode_0x60=0\n";
+    }
+    stream << "pc=80041f30 function=FUN_80041e64 checkpoint=effect_emitter_source_gate "
+           << "rng_draw_index_before=" << draw_index << " owns_rng_draw=false "
+           << "emitter_outer_count_0x142=3 emitter_child_count_0x1c=2 "
+           << "emitter_variant_count_0x16=4 emitter_axis_mode_0x3c=8\n";
+    stream << "pc=800425a0 function=FUN_800422d0 checkpoint=particle_tick "
+           << "rng_draw_index_before=" << draw_index++
+           << " particle_payload_source_ptr_0x20=0x12345678 "
+           << "particle_payload_lifetime_0x28=12\n";
+
+    std::istringstream input(stream.str());
+    const auto parsed = parse_checkpoint_stream(input);
+    ASSERT_TRUE(parsed.errors.empty());
+    ASSERT_EQ(parsed.events.size(), 442u);
+    EXPECT_EQ(parsed.events.front().known_rng_owner, "combat_effect_spawn_position_binary");
+
+    const auto summary = summarize_effect_checkpoints(parsed.events);
+    EXPECT_EQ(summary.status, EffectCheckpointStatus::MatchesBinaryVariantBurstShape);
+    EXPECT_EQ(summary.observed_combat_effect_draws, 440);
+    EXPECT_EQ(summary.observed_binary_position_draws, 88);
+    EXPECT_EQ(summary.observed_scale_x_draws, 88);
+    EXPECT_EQ(summary.observed_scale_y_draws, 88);
+    EXPECT_EQ(summary.observed_scale_z_draws, 88);
+    EXPECT_EQ(summary.observed_variant_index_draws, 88);
+    EXPECT_EQ(summary.observed_axis_assignment_draws, 0);
+    EXPECT_EQ(summary.combat_effect_draws_with_loop_count, 440);
+    EXPECT_EQ(summary.combat_effect_draws_with_flags, 440);
+    EXPECT_EQ(summary.combat_effect_draws_with_variant_count, 440);
+    EXPECT_EQ(summary.combat_effect_draws_with_axis_mode, 440);
+    EXPECT_EQ(summary.complete_binary_variant_iterations, 88);
+    EXPECT_EQ(summary.complete_binary_variant_22_loop_executions, 4);
+    EXPECT_EQ(summary.incomplete_binary_variant_iteration_remainder, 0);
+    EXPECT_EQ(summary.observed_emitter_source_gate_events, 1);
+    EXPECT_EQ(summary.emitter_source_gate_events_with_outer_count, 1);
+    EXPECT_EQ(summary.emitter_source_gate_events_with_child_count, 1);
+    EXPECT_EQ(summary.emitter_source_gate_events_with_variant_count, 1);
+    EXPECT_EQ(summary.emitter_source_gate_events_with_axis_mode, 1);
+    EXPECT_EQ(summary.observed_particle_tick_draws, 1);
+    EXPECT_EQ(summary.particle_tick_draws_with_payload_source, 1);
+    EXPECT_EQ(summary.particle_tick_draws_with_lifetime, 1);
+    ASSERT_TRUE(summary.first_combat_effect_draw_index.has_value());
+    EXPECT_EQ(*summary.first_combat_effect_draw_index, 0);
+    ASSERT_TRUE(summary.last_combat_effect_draw_index.has_value());
+    EXPECT_EQ(*summary.last_combat_effect_draw_index, 439);
+}
+
 TEST(SavorPredictRngModel, PreAiCheckpointModelSummarizesFakeCameraCursor) {
     {
         std::istringstream input(
@@ -507,7 +599,7 @@ TEST(SavorPredictRngModel, FirstBattleDropCheckpointExpectationUsesDropDrawCount
 
     EXPECT_EQ(expectation.expected_drop_rolls, 2);
     EXPECT_EQ(expectation.owner, std::string_view("enemy_drop_roll"));
-    EXPECT_EQ(expectation.pc, std::string_view("8002BAE8"));
+    EXPECT_EQ(expectation.pc, std::string_view("8002BAD8"));
     EXPECT_NE(
         std::string_view(first_battle_drop_checkpoint_rule_detail()).find("enemyDropItem_8002ba8c"),
         std::string_view::npos);
@@ -2032,12 +2124,12 @@ TEST(SavorPredictCheckpointTrace, SummarizesDropCheckpoints) {
         "pc=80052bf0 function=FUN_80052b24 checkpoint=mode0e_camera rng_draw_index_before=20\n"
         "pc=80010628 function=status checkpoint=pc rng_draw_index_before=22\n"
         "pc=80010984 function=rollDamage checkpoint=bonus rng_draw_index_before=23\n"
-        "pc=8002bae8 function=enemyDropItem checkpoint=row rng_draw_index_before=24 "
+        "pc=8002bad8 function=enemyDropItem checkpoint=row rng_draw_index_before=24 "
         "target_slot=4 enemy_entry_id=0 drop_row_index=1 drop_item_id=273 "
         "drop_amount=1 rand_value=44 rand_mod100=44 drop_success=0\n"
         "pc=80081a88 function=shouldCounter checkpoint=roll rng_draw_index_before=25\n"
         "pc=80010984 function=rollDamage checkpoint=bonus rng_draw_index_before=26\n"
-        "pc=8002bae8 function=enemyDropItem checkpoint=row rng_draw_index_before=27 "
+        "pc=8002bad8 function=enemyDropItem checkpoint=row rng_draw_index_before=27 "
         "target_slot=4 enemy_entry_id=0 drop_row_index=2 drop_item_id=258 "
         "drop_amount=1 rand_value=0 rand_mod100=0 drop_success=1\n");
 
@@ -2102,7 +2194,7 @@ TEST(SavorPredictCheckpointTrace, SummarizesDropCheckpoints) {
         std::string("ExtraDropRolls"));
 
     std::istringstream outcome_mismatch_input(
-        "pc=8002bae8 function=enemyDropItem checkpoint=row rng_draw_index_before=24 "
+        "pc=8002bad8 function=enemyDropItem checkpoint=row rng_draw_index_before=24 "
         "target_slot=4 enemy_entry_id=0 drop_row_index=1 drop_item_id=273 "
         "drop_amount=1 rand_value=44 rand_mod100=44 drop_success=1\n");
     const auto outcome_mismatch_parsed = parse_checkpoint_stream(outcome_mismatch_input);
@@ -2116,7 +2208,7 @@ TEST(SavorPredictCheckpointTrace, SummarizesDropCheckpoints) {
     EXPECT_EQ(outcome_mismatch.drop_outcome_mismatches, 1);
 
     std::istringstream table_mismatch_input(
-        "pc=8002bae8 function=enemyDropItem checkpoint=row rng_draw_index_before=24 "
+        "pc=8002bad8 function=enemyDropItem checkpoint=row rng_draw_index_before=24 "
         "target_slot=4 enemy_entry_id=0 drop_row_index=2 drop_item_id=273 "
         "drop_amount=1 rand_value=44 rand_mod100=44 drop_success=0\n");
     const auto table_mismatch_parsed = parse_checkpoint_stream(table_mismatch_input);
@@ -2127,7 +2219,7 @@ TEST(SavorPredictCheckpointTrace, SummarizesDropCheckpoints) {
     EXPECT_EQ(table_mismatch.drop_table_mismatches, 1);
 
     std::istringstream disabled_row_input(
-        "pc=8002bae8 function=enemyDropItem checkpoint=row rng_draw_index_before=24 "
+        "pc=8002bad8 function=enemyDropItem checkpoint=row rng_draw_index_before=24 "
         "target_slot=4 enemy_entry_id=0 drop_row_index=3 drop_item_id=0 "
         "drop_amount=0 rand_value=44 rand_mod100=44 drop_success=0\n");
     const auto disabled_row_parsed = parse_checkpoint_stream(disabled_row_input);
@@ -2138,10 +2230,10 @@ TEST(SavorPredictCheckpointTrace, SummarizesDropCheckpoints) {
     EXPECT_EQ(disabled_row.disabled_first_battle_rows_observed, 1);
 
     std::istringstream continuation_input(
-        "pc=8002bae8 function=enemyDropItem checkpoint=row rng_draw_index_before=24 "
+        "pc=8002bad8 function=enemyDropItem checkpoint=row rng_draw_index_before=24 "
         "target_slot=4 enemy_entry_id=0 drop_row_index=1 drop_item_id=273 "
         "drop_amount=1 rand_value=0 rand_mod100=0 drop_success=1\n"
-        "pc=8002bae8 function=enemyDropItem checkpoint=row rng_draw_index_before=25 "
+        "pc=8002bad8 function=enemyDropItem checkpoint=row rng_draw_index_before=25 "
         "target_slot=4 enemy_entry_id=0 drop_row_index=2 drop_item_id=258 "
         "drop_amount=1 rand_value=44 rand_mod100=44 drop_success=0\n");
     const auto continuation_parsed = parse_checkpoint_stream(continuation_input);
@@ -2162,7 +2254,7 @@ TEST(SavorPredictCheckpointTrace, SummarizesDeathDropCheckpoints) {
         "target_slot=4 enemy_entry_id=0 cur_hp=0 entered_enemy_reward=1 called_enemy_drop=1\n"
         "pc=8002ba8c function=enemyDropItem checkpoint=enemy_drop_entry rng_draw_index_before=22 "
         "target_slot=4 enemy_entry_id=0\n"
-        "pc=8002bae8 function=enemyDropItem checkpoint=row rng_draw_index_before=23 "
+        "pc=8002bad8 function=enemyDropItem checkpoint=row rng_draw_index_before=23 "
         "target_slot=4 enemy_entry_id=0 drop_row_index=1 rand_value=0 rand_mod100=0 "
         "drop_success=1\n");
 

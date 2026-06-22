@@ -71,6 +71,12 @@
     <ClCompile Include="DropModel.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="EffectCheckpointModel.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="EffectRngModel.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="EnemyAttackSetupModel.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -176,6 +182,12 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="DropModel.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="EffectCheckpointModel.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="EffectRngModel.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="EnemyAttackSetupModel.h">

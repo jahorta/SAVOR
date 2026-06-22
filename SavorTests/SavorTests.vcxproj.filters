@@ -20,6 +20,8 @@
     <ClCompile Include="..\SavorPredict\DeathDropCheckpointModel.cpp" />
     <ClCompile Include="..\SavorPredict\DropCheckpointModel.cpp" />
     <ClCompile Include="..\SavorPredict\DropModel.cpp" />
+    <ClCompile Include="..\SavorPredict\EffectCheckpointModel.cpp" />
+    <ClCompile Include="..\SavorPredict\EffectRngModel.cpp" />
     <ClCompile Include="..\SavorPredict\EnemyAttackSetupModel.cpp" />
     <ClCompile Include="..\SavorPredict\FirstBattleDataModel.cpp" />
     <ClCompile Include="..\SavorPredict\LiveCaptureProfile.cpp" />

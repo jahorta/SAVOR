@@ -10,6 +10,7 @@
 #include "CounterCheckpointModel.h"
 #include "DropCheckpointModel.h"
 #include "DeathDropCheckpointModel.h"
+#include "EffectCheckpointModel.h"
 #include "OutcomeCheckpointModel.h"
 #include "PreAiCheckpointModel.h"
 #include "TurnOrderCheckpointModel.h"
@@ -465,6 +466,61 @@ void write_text_report(
             out << "  " << owner << ": " << count << "\n";
         }
     }
+
+    const auto effects = summarize_effect_checkpoints(result.events);
+    out << "\n8004 effect RNG checkpoints\n";
+    out << "  status: " << effect_checkpoint_status_name(effects.status) << "\n";
+    out << "  rule: " << first_battle_effect_checkpoint_rule_detail() << "\n";
+    out << "  observed_combat_effect_draws: " << effects.observed_combat_effect_draws << "\n";
+    out << "  observed_binary_position_draws: "
+        << effects.observed_binary_position_draws << "\n";
+    out << "  observed_four_way_position_draws: "
+        << effects.observed_four_way_position_draws << "\n";
+    out << "  observed_scale_x_draws: " << effects.observed_scale_x_draws << "\n";
+    out << "  observed_scale_y_draws: " << effects.observed_scale_y_draws << "\n";
+    out << "  observed_scale_z_draws: " << effects.observed_scale_z_draws << "\n";
+    out << "  observed_variant_index_draws: "
+        << effects.observed_variant_index_draws << "\n";
+    out << "  observed_axis_assignment_draws: "
+        << effects.observed_axis_assignment_draws << "\n";
+    out << "  combat_effect_draws_with_loop_count: "
+        << effects.combat_effect_draws_with_loop_count << "\n";
+    out << "  combat_effect_draws_with_flags: "
+        << effects.combat_effect_draws_with_flags << "\n";
+    out << "  combat_effect_draws_with_variant_count: "
+        << effects.combat_effect_draws_with_variant_count << "\n";
+    out << "  combat_effect_draws_with_axis_mode: "
+        << effects.combat_effect_draws_with_axis_mode << "\n";
+    out << "  complete_binary_variant_iterations: "
+        << effects.complete_binary_variant_iterations << "\n";
+    out << "  complete_binary_variant_22_loop_executions: "
+        << effects.complete_binary_variant_22_loop_executions << "\n";
+    out << "  incomplete_binary_variant_iteration_remainder: "
+        << effects.incomplete_binary_variant_iteration_remainder << "\n";
+    out << "  observed_emitter_spawn_draws: "
+        << effects.observed_emitter_spawn_draws << "\n";
+    out << "  observed_emitter_source_gate_events: "
+        << effects.observed_emitter_source_gate_events << "\n";
+    out << "  emitter_source_gate_events_with_outer_count: "
+        << effects.emitter_source_gate_events_with_outer_count << "\n";
+    out << "  emitter_source_gate_events_with_child_count: "
+        << effects.emitter_source_gate_events_with_child_count << "\n";
+    out << "  emitter_source_gate_events_with_variant_count: "
+        << effects.emitter_source_gate_events_with_variant_count << "\n";
+    out << "  emitter_source_gate_events_with_axis_mode: "
+        << effects.emitter_source_gate_events_with_axis_mode << "\n";
+    out << "  observed_particle_tick_draws: "
+        << effects.observed_particle_tick_draws << "\n";
+    out << "  particle_tick_draws_with_payload_source: "
+        << effects.particle_tick_draws_with_payload_source << "\n";
+    out << "  particle_tick_draws_with_lifetime: "
+        << effects.particle_tick_draws_with_lifetime << "\n";
+    out << "  first_combat_effect_draw_index: ";
+    write_optional_int(out, effects.first_combat_effect_draw_index);
+    out << "\n";
+    out << "  last_combat_effect_draw_index: ";
+    write_optional_int(out, effects.last_combat_effect_draw_index);
+    out << "\n";
 
     if (!result.errors.empty()) {
         out << "\nErrors\n";
@@ -2196,6 +2252,61 @@ void write_json_report(
     }
     out << "},\n";
 
+    const auto effects = summarize_effect_checkpoints(result.events);
+    out << "  \"effect_checkpoints\": {";
+    out << "\"status\": \"" << effect_checkpoint_status_name(effects.status) << "\"";
+    out << ", \"rule\": \""
+        << json_escape(first_battle_effect_checkpoint_rule_detail()) << "\"";
+    out << ", \"observed_combat_effect_draws\": " << effects.observed_combat_effect_draws;
+    out << ", \"observed_binary_position_draws\": "
+        << effects.observed_binary_position_draws;
+    out << ", \"observed_four_way_position_draws\": "
+        << effects.observed_four_way_position_draws;
+    out << ", \"observed_scale_x_draws\": " << effects.observed_scale_x_draws;
+    out << ", \"observed_scale_y_draws\": " << effects.observed_scale_y_draws;
+    out << ", \"observed_scale_z_draws\": " << effects.observed_scale_z_draws;
+    out << ", \"observed_variant_index_draws\": "
+        << effects.observed_variant_index_draws;
+    out << ", \"observed_axis_assignment_draws\": "
+        << effects.observed_axis_assignment_draws;
+    out << ", \"combat_effect_draws_with_loop_count\": "
+        << effects.combat_effect_draws_with_loop_count;
+    out << ", \"combat_effect_draws_with_flags\": "
+        << effects.combat_effect_draws_with_flags;
+    out << ", \"combat_effect_draws_with_variant_count\": "
+        << effects.combat_effect_draws_with_variant_count;
+    out << ", \"combat_effect_draws_with_axis_mode\": "
+        << effects.combat_effect_draws_with_axis_mode;
+    out << ", \"complete_binary_variant_iterations\": "
+        << effects.complete_binary_variant_iterations;
+    out << ", \"complete_binary_variant_22_loop_executions\": "
+        << effects.complete_binary_variant_22_loop_executions;
+    out << ", \"incomplete_binary_variant_iteration_remainder\": "
+        << effects.incomplete_binary_variant_iteration_remainder;
+    out << ", \"observed_emitter_spawn_draws\": "
+        << effects.observed_emitter_spawn_draws;
+    out << ", \"observed_emitter_source_gate_events\": "
+        << effects.observed_emitter_source_gate_events;
+    out << ", \"emitter_source_gate_events_with_outer_count\": "
+        << effects.emitter_source_gate_events_with_outer_count;
+    out << ", \"emitter_source_gate_events_with_child_count\": "
+        << effects.emitter_source_gate_events_with_child_count;
+    out << ", \"emitter_source_gate_events_with_variant_count\": "
+        << effects.emitter_source_gate_events_with_variant_count;
+    out << ", \"emitter_source_gate_events_with_axis_mode\": "
+        << effects.emitter_source_gate_events_with_axis_mode;
+    out << ", \"observed_particle_tick_draws\": "
+        << effects.observed_particle_tick_draws;
+    out << ", \"particle_tick_draws_with_payload_source\": "
+        << effects.particle_tick_draws_with_payload_source;
+    out << ", \"particle_tick_draws_with_lifetime\": "
+        << effects.particle_tick_draws_with_lifetime;
+    out << ", \"first_combat_effect_draw_index\": ";
+    write_json_optional_int(out, effects.first_combat_effect_draw_index);
+    out << ", \"last_combat_effect_draw_index\": ";
+    write_json_optional_int(out, effects.last_combat_effect_draw_index);
+    out << "},\n";
+
     const auto pre_ai = summarize_pre_ai_checkpoints(result.events, options.expected_fake_attacks);
     out << "  \"pre_ai_checkpoints\": {";
     out << "\"status\": \"" << pre_ai_checkpoint_status_name(pre_ai.status) << "\"";
@@ -3886,11 +3997,29 @@ const std::map<std::string, std::string>& known_rng_callsite_owners() {
         {"80010628", "pc_status_attempt"},
         {"80010774", "enemy_status_attempt"},
         {"80081A88", "counter_roll"},
-        {"8002BAE8", "enemy_drop_roll"},
+        {"8002BAD8", "enemy_drop_roll"},
         {"8006FF38", "end_turn_status_cleanup"},
         {"801F2B6C", "level_up_stat_roll_1"},
         {"801F2C00", "level_up_stat_roll_2"},
         {"801F2D10", "level_up_stat_roll_3"},
+        {"80041F3C", "effect_emitter_spawn_variant"},
+        {"80041F60", "effect_emitter_spawn_offset_x"},
+        {"80041F88", "effect_emitter_spawn_offset_y"},
+        {"80041FB0", "effect_emitter_spawn_scale_a"},
+        {"80041FCC", "effect_emitter_spawn_scale_b"},
+        {"80041FE8", "effect_emitter_spawn_scale_c"},
+        {"80042020", "effect_emitter_axis_variant"},
+        {"800425A0", "effect_particle_motion_gate_x"},
+        {"800425E0", "effect_particle_motion_offset_x"},
+        {"80042630", "effect_particle_motion_gate_z"},
+        {"80042670", "effect_particle_motion_offset_z"},
+        {"80042F3C", "combat_effect_spawn_position_four_way"},
+        {"80042FBC", "combat_effect_spawn_position_binary"},
+        {"80043020", "combat_effect_spawn_scale_x"},
+        {"80043048", "combat_effect_spawn_scale_y"},
+        {"80043070", "combat_effect_spawn_scale_z"},
+        {"800430FC", "combat_effect_spawn_variant_index"},
+        {"80043200", "combat_effect_spawn_axis_assignment"},
     };
     return owners;
 }

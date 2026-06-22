@@ -15,6 +15,8 @@
 #include "DeathDropCheckpointModel.h"
 #include "DropCheckpointModel.h"
 #include "DropModel.h"
+#include "EffectCheckpointModel.h"
+#include "EffectRngModel.h"
 #include "EnemyAttackSetupModel.h"
 #include "FirstBattleDataModel.h"
 #include "OutcomeCheckpointModel.h"

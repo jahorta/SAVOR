@@ -128,6 +128,8 @@
     <ClCompile Include="DbCopy.cpp" />
     <ClCompile Include="DropCheckpointModel.cpp" />
     <ClCompile Include="DropModel.cpp" />
+    <ClCompile Include="EffectCheckpointModel.cpp" />
+    <ClCompile Include="EffectRngModel.cpp" />
     <ClCompile Include="EnemyAttackSetupModel.cpp" />
     <ClCompile Include="FirstBattleDataModel.cpp" />
     <ClCompile Include="LiveCaptureProfile.cpp" />
@@ -165,6 +167,8 @@
     <ClInclude Include="DbCopy.h" />
     <ClInclude Include="DropCheckpointModel.h" />
     <ClInclude Include="DropModel.h" />
+    <ClInclude Include="EffectCheckpointModel.h" />
+    <ClInclude Include="EffectRngModel.h" />
     <ClInclude Include="EnemyAttackSetupModel.h" />
     <ClInclude Include="FirstBattleDataModel.h" />
     <ClInclude Include="LiveCaptureProfile.h" />
