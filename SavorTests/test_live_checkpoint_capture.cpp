@@ -185,6 +185,14 @@ TEST(SavorPredictLiveCaptureProfile, BuildsParseableFirstBattleRngProfile)
     const auto* combat_effect =
         find_checkpoint("combat_effect_spawn_scale_x_80043020");
     ASSERT_NE(combat_effect, nullptr);
+    EXPECT_TRUE(has_reg_sample(*combat_effect, "effect_source_key_0x28"));
+    EXPECT_TRUE(has_reg_sample(*combat_effect, "effect_source_subtype_0x2a"));
+    EXPECT_TRUE(has_reg_sample(*combat_effect, "effect_source_secondary_0x2c"));
+    EXPECT_TRUE(has_reg_sample(*combat_effect, "effect_source_resource_id_0x30"));
+    EXPECT_TRUE(has_reg_sample(*combat_effect, "effect_source_timing_raw_0x3c"));
+    EXPECT_TRUE(has_reg_sample(*combat_effect, "effect_source_pos_x_raw_0x50"));
+    EXPECT_TRUE(has_reg_sample(*combat_effect, "effect_source_pos_y_raw_0x54"));
+    EXPECT_TRUE(has_reg_sample(*combat_effect, "effect_source_pos_z_raw_0x58"));
     EXPECT_TRUE(has_reg_sample(*combat_effect, "effect_loop_count_0x5c"));
     EXPECT_TRUE(has_reg_sample(*combat_effect, "effect_flags_0x38"));
     EXPECT_TRUE(has_reg_sample(*combat_effect, "effect_variant_count_0x5e"));

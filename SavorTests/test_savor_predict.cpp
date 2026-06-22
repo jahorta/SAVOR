@@ -97,43 +97,54 @@ TEST(SavorPredictRngModel, EffectRngModelComputesFirstBattle007Burst) {
 TEST(SavorPredictRngModel, EffectCheckpointModelSummarizes80042b10BurstShape) {
     std::ostringstream stream;
     int draw_index = 0;
-    auto append_buffer = [&](std::string_view buffer, int loop_count) {
+    auto append_buffer = [&](std::string_view buffer, int loop_count, int source_key) {
+        const std::string source_fields =
+            " effect_source_key_0x28=" + std::to_string(source_key) +
+            " effect_source_subtype_0x2a=2"
+            " effect_source_secondary_0x2c=0"
+            " effect_source_resource_id_0x30=0x9e";
         for (int i = 0; i < loop_count; ++i) {
             stream << "pc=80042fbc function=FUN_80042b10 checkpoint=position "
                    << "rng_draw_index_before=" << draw_index++
                    << " r29_effect_buffer=" << buffer
+                   << source_fields
                    << " effect_loop_count_0x5c=0x" << std::hex << loop_count << std::dec
                    << " effect_flags_0x38=0 "
                    << "effect_variant_count_0x5e=1 effect_axis_mode_0x60=0\n";
             stream << "pc=80043020 function=FUN_80042b10 checkpoint=scale_x "
                    << "rng_draw_index_before=" << draw_index++
                    << " r29_effect_buffer=" << buffer
+                   << source_fields
                    << " effect_loop_count_0x5c=0x" << std::hex << loop_count << std::dec
                    << " effect_flags_0x38=0 "
                    << "effect_variant_count_0x5e=1 effect_axis_mode_0x60=0\n";
             stream << "pc=80043048 function=FUN_80042b10 checkpoint=scale_y "
                    << "rng_draw_index_before=" << draw_index++
                    << " r29_effect_buffer=" << buffer
+                   << source_fields
                    << " effect_loop_count_0x5c=0x" << std::hex << loop_count << std::dec
                    << " effect_flags_0x38=0 "
                    << "effect_variant_count_0x5e=1 effect_axis_mode_0x60=0\n";
             stream << "pc=80043070 function=FUN_80042b10 checkpoint=scale_z "
                    << "rng_draw_index_before=" << draw_index++
                    << " r29_effect_buffer=" << buffer
+                   << source_fields
                    << " effect_loop_count_0x5c=0x" << std::hex << loop_count << std::dec
                    << " effect_flags_0x38=0 "
                    << "effect_variant_count_0x5e=1 effect_axis_mode_0x60=0\n";
             stream << "pc=800430fc function=FUN_80042b10 checkpoint=variant "
                    << "rng_draw_index_before=" << draw_index++
                    << " r29_effect_buffer=" << buffer
+                   << source_fields
                    << " effect_loop_count_0x5c=0x" << std::hex << loop_count << std::dec
                    << " effect_flags_0x38=0 "
                    << "effect_variant_count_0x5e=1 effect_axis_mode_0x60=0\n";
         }
     };
+    const std::vector<int> source_keys = {5, 4, 5};
     for (int attack = 0; attack < 3; ++attack) {
-        append_buffer("0x100" + std::to_string(attack), 16);
-        append_buffer("0x200" + std::to_string(attack), 6);
+        append_buffer("0x100" + std::to_string(attack), 16, source_keys[attack]);
+        append_buffer("0x200" + std::to_string(attack), 6, source_keys[attack]);
     }
     stream << "pc=80041f30 function=FUN_80041e64 checkpoint=effect_emitter_source_gate "
            << "rng_draw_index_before=" << draw_index << " owns_rng_draw=false "
@@ -163,6 +174,10 @@ TEST(SavorPredictRngModel, EffectCheckpointModelSummarizes80042b10BurstShape) {
     EXPECT_EQ(summary.combat_effect_draws_with_flags, 330);
     EXPECT_EQ(summary.combat_effect_draws_with_variant_count, 330);
     EXPECT_EQ(summary.combat_effect_draws_with_axis_mode, 330);
+    EXPECT_EQ(summary.combat_effect_draws_with_source_key, 330);
+    EXPECT_EQ(summary.combat_effect_draws_with_source_subtype, 330);
+    EXPECT_EQ(summary.combat_effect_draws_with_source_secondary, 330);
+    EXPECT_EQ(summary.combat_effect_draws_with_source_resource_id, 330);
     EXPECT_EQ(summary.combat_effect_draws_with_buffer_pointer, 330);
     EXPECT_EQ(summary.observed_combat_effect_buffers, 6);
     EXPECT_EQ(summary.complete_binary_variant_iterations, 66);
@@ -170,6 +185,13 @@ TEST(SavorPredictRngModel, EffectCheckpointModelSummarizes80042b10BurstShape) {
     EXPECT_EQ(summary.complete_binary_variant_16_loop_buffers, 3);
     EXPECT_EQ(summary.complete_binary_variant_6_loop_buffers, 3);
     EXPECT_EQ(summary.complete_first_battle_landed_attack_effect_pairs, 3);
+    EXPECT_EQ(summary.complete_first_battle_landed_attack_effect_pairs_with_matching_source_key, 3);
+    EXPECT_EQ(summary.complete_first_battle_landed_attack_effect_pairs_without_matching_source_key, 0);
+    ASSERT_EQ(summary.complete_first_battle_effect_pairs_by_source_key.size(), 2u);
+    EXPECT_EQ(summary.complete_first_battle_effect_pairs_by_source_key[0].source_key, 4);
+    EXPECT_EQ(summary.complete_first_battle_effect_pairs_by_source_key[0].pair_count, 1);
+    EXPECT_EQ(summary.complete_first_battle_effect_pairs_by_source_key[1].source_key, 5);
+    EXPECT_EQ(summary.complete_first_battle_effect_pairs_by_source_key[1].pair_count, 2);
     EXPECT_EQ(summary.unpaired_first_battle_effect_buffers, 0);
     EXPECT_EQ(summary.incomplete_binary_variant_iteration_remainder, 0);
     EXPECT_EQ(summary.observed_emitter_source_gate_events, 1);

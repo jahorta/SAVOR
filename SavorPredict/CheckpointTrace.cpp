@@ -491,6 +491,14 @@ void write_text_report(
         << effects.combat_effect_draws_with_variant_count << "\n";
     out << "  combat_effect_draws_with_axis_mode: "
         << effects.combat_effect_draws_with_axis_mode << "\n";
+    out << "  combat_effect_draws_with_source_key: "
+        << effects.combat_effect_draws_with_source_key << "\n";
+    out << "  combat_effect_draws_with_source_subtype: "
+        << effects.combat_effect_draws_with_source_subtype << "\n";
+    out << "  combat_effect_draws_with_source_secondary: "
+        << effects.combat_effect_draws_with_source_secondary << "\n";
+    out << "  combat_effect_draws_with_source_resource_id: "
+        << effects.combat_effect_draws_with_source_resource_id << "\n";
     out << "  combat_effect_draws_with_buffer_pointer: "
         << effects.combat_effect_draws_with_buffer_pointer << "\n";
     out << "  observed_combat_effect_buffers: "
@@ -505,6 +513,19 @@ void write_text_report(
         << effects.complete_binary_variant_6_loop_buffers << "\n";
     out << "  complete_first_battle_landed_attack_effect_pairs: "
         << effects.complete_first_battle_landed_attack_effect_pairs << "\n";
+    out << "  complete_first_battle_landed_attack_effect_pairs_with_matching_source_key: "
+        << effects.complete_first_battle_landed_attack_effect_pairs_with_matching_source_key << "\n";
+    out << "  complete_first_battle_landed_attack_effect_pairs_without_matching_source_key: "
+        << effects.complete_first_battle_landed_attack_effect_pairs_without_matching_source_key << "\n";
+    out << "  complete_first_battle_effect_pairs_by_source_key:\n";
+    if (effects.complete_first_battle_effect_pairs_by_source_key.empty()) {
+        out << "    none\n";
+    } else {
+        for (const auto& pair_count : effects.complete_first_battle_effect_pairs_by_source_key) {
+            out << "    source_key_" << pair_count.source_key << ": "
+                << pair_count.pair_count << "\n";
+        }
+    }
     out << "  unpaired_first_battle_effect_buffers: "
         << effects.unpaired_first_battle_effect_buffers << "\n";
     out << "  incomplete_binary_variant_iteration_remainder: "
@@ -2289,6 +2310,14 @@ void write_json_report(
         << effects.combat_effect_draws_with_variant_count;
     out << ", \"combat_effect_draws_with_axis_mode\": "
         << effects.combat_effect_draws_with_axis_mode;
+    out << ", \"combat_effect_draws_with_source_key\": "
+        << effects.combat_effect_draws_with_source_key;
+    out << ", \"combat_effect_draws_with_source_subtype\": "
+        << effects.combat_effect_draws_with_source_subtype;
+    out << ", \"combat_effect_draws_with_source_secondary\": "
+        << effects.combat_effect_draws_with_source_secondary;
+    out << ", \"combat_effect_draws_with_source_resource_id\": "
+        << effects.combat_effect_draws_with_source_resource_id;
     out << ", \"combat_effect_draws_with_buffer_pointer\": "
         << effects.combat_effect_draws_with_buffer_pointer;
     out << ", \"observed_combat_effect_buffers\": "
@@ -2303,6 +2332,20 @@ void write_json_report(
         << effects.complete_binary_variant_6_loop_buffers;
     out << ", \"complete_first_battle_landed_attack_effect_pairs\": "
         << effects.complete_first_battle_landed_attack_effect_pairs;
+    out << ", \"complete_first_battle_landed_attack_effect_pairs_with_matching_source_key\": "
+        << effects.complete_first_battle_landed_attack_effect_pairs_with_matching_source_key;
+    out << ", \"complete_first_battle_landed_attack_effect_pairs_without_matching_source_key\": "
+        << effects.complete_first_battle_landed_attack_effect_pairs_without_matching_source_key;
+    out << ", \"complete_first_battle_effect_pairs_by_source_key\": [";
+    for (std::size_t i = 0; i < effects.complete_first_battle_effect_pairs_by_source_key.size(); ++i) {
+        if (i != 0) {
+            out << ", ";
+        }
+        const auto& pair_count = effects.complete_first_battle_effect_pairs_by_source_key[i];
+        out << "{\"source_key\": " << pair_count.source_key
+            << ", \"pair_count\": " << pair_count.pair_count << "}";
+    }
+    out << "]";
     out << ", \"unpaired_first_battle_effect_buffers\": "
         << effects.unpaired_first_battle_effect_buffers;
     out << ", \"incomplete_binary_variant_iteration_remainder\": "

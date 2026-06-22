@@ -13,6 +13,11 @@ enum class EffectCheckpointStatus {
     UnbalancedCombatEffectBurst,
 };
 
+struct EffectSourceKeyPairCount {
+    int source_key = -1;
+    int pair_count = 0;
+};
+
 struct EffectCheckpointSummary {
     int observed_combat_effect_draws = 0;
     int observed_binary_position_draws = 0;
@@ -26,6 +31,10 @@ struct EffectCheckpointSummary {
     int combat_effect_draws_with_flags = 0;
     int combat_effect_draws_with_variant_count = 0;
     int combat_effect_draws_with_axis_mode = 0;
+    int combat_effect_draws_with_source_key = 0;
+    int combat_effect_draws_with_source_subtype = 0;
+    int combat_effect_draws_with_source_secondary = 0;
+    int combat_effect_draws_with_source_resource_id = 0;
     int combat_effect_draws_with_buffer_pointer = 0;
     int observed_combat_effect_buffers = 0;
     int complete_binary_variant_iterations = 0;
@@ -33,6 +42,9 @@ struct EffectCheckpointSummary {
     int complete_binary_variant_16_loop_buffers = 0;
     int complete_binary_variant_6_loop_buffers = 0;
     int complete_first_battle_landed_attack_effect_pairs = 0;
+    int complete_first_battle_landed_attack_effect_pairs_with_matching_source_key = 0;
+    int complete_first_battle_landed_attack_effect_pairs_without_matching_source_key = 0;
+    std::vector<EffectSourceKeyPairCount> complete_first_battle_effect_pairs_by_source_key;
     int unpaired_first_battle_effect_buffers = 0;
     int incomplete_binary_variant_iteration_remainder = 0;
     int observed_emitter_spawn_draws = 0;

@@ -182,7 +182,15 @@ bool is_excluded_from_default_live_profile(std::string_view pc)
 std::vector<std::string_view> combat_effect_burst_samples()
 {
     return {
+        "effect_source_key_0x28:r29:0x28:u16",
+        "effect_source_subtype_0x2a:r29:0x2a:u16",
+        "effect_source_secondary_0x2c:r29:0x2c:u16",
+        "effect_source_resource_id_0x30:r29:0x30:u32",
         "effect_flags_0x38:r29:0x38:u32",
+        "effect_source_timing_raw_0x3c:r29:0x3c:u32",
+        "effect_source_pos_x_raw_0x50:r29:0x50:u32",
+        "effect_source_pos_y_raw_0x54:r29:0x54:u32",
+        "effect_source_pos_z_raw_0x58:r29:0x58:u32",
         "effect_loop_count_0x5c:r29:0x5c:u16",
         "effect_variant_count_0x5e:r29:0x5e:u16",
         "effect_axis_mode_0x60:r29:0x60:u16",

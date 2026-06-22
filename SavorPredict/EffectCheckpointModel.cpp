@@ -82,6 +82,7 @@ std::optional<int> parse_int_field(const CheckpointEvent& event, std::string_vie
 struct CombatEffectBufferStats {
     std::string key;
     std::optional<int> first_draw_index;
+    std::optional<int> source_key;
     int loop_count = -1;
     int binary_position_draws = 0;
     int four_way_position_draws = 0;
@@ -101,6 +102,9 @@ void observe_combat_effect_buffer_draw(CombatEffectBufferStats& stats, const Che
 
     if (const auto loop_count = parse_int_field(event, "effect_loop_count_0x5c")) {
         stats.loop_count = *loop_count;
+    }
+    if (const auto source_key = parse_int_field(event, "effect_source_key_0x28")) {
+        stats.source_key = *source_key;
     }
 
     if (owner_is(event, kPositionBinaryOwner)) {
@@ -177,6 +181,18 @@ EffectCheckpointSummary summarize_effect_checkpoints(const std::vector<Checkpoin
             }
             if (has_field(event, "effect_axis_mode_0x60")) {
                 ++summary.combat_effect_draws_with_axis_mode;
+            }
+            if (has_field(event, "effect_source_key_0x28")) {
+                ++summary.combat_effect_draws_with_source_key;
+            }
+            if (has_field(event, "effect_source_subtype_0x2a")) {
+                ++summary.combat_effect_draws_with_source_subtype;
+            }
+            if (has_field(event, "effect_source_secondary_0x2c")) {
+                ++summary.combat_effect_draws_with_source_secondary;
+            }
+            if (has_field(event, "effect_source_resource_id_0x30")) {
+                ++summary.combat_effect_draws_with_source_resource_id;
             }
             if (event.rng_draw_index_before.has_value()) {
                 if (!summary.first_combat_effect_draw_index.has_value()) {
@@ -257,6 +273,7 @@ EffectCheckpointSummary summarize_effect_checkpoints(const std::vector<Checkpoin
         });
 
     std::vector<bool> paired(complete_first_battle_buffers.size(), false);
+    std::map<int, int> pairs_by_source_key;
     for (std::size_t i = 0; i + 1 < complete_first_battle_buffers.size(); ++i) {
         if (paired[i]) {
             continue;
@@ -267,8 +284,20 @@ EffectCheckpointSummary summarize_effect_checkpoints(const std::vector<Checkpoin
             paired[i] = true;
             paired[i + 1] = true;
             ++summary.complete_first_battle_landed_attack_effect_pairs;
+            if (current.source_key.has_value()
+                && next.source_key.has_value()
+                && *current.source_key == *next.source_key) {
+                ++summary.complete_first_battle_landed_attack_effect_pairs_with_matching_source_key;
+                ++pairs_by_source_key[*current.source_key];
+            } else {
+                ++summary.complete_first_battle_landed_attack_effect_pairs_without_matching_source_key;
+            }
             ++i;
         }
+    }
+    for (const auto& [source_key, pair_count] : pairs_by_source_key) {
+        summary.complete_first_battle_effect_pairs_by_source_key.push_back(
+            EffectSourceKeyPairCount{source_key, pair_count});
     }
     for (std::size_t i = 0; i < complete_first_battle_buffers.size(); ++i) {
         if (!paired[i]) {
@@ -304,10 +333,11 @@ const char* effect_checkpoint_status_name(EffectCheckpointStatus status) {
 }
 
 const char* first_battle_effect_checkpoint_rule_detail() {
-    return "Live first-battle checkpoints observe each landed basic attack as two "
-           "FUN_80042b10 effect buffers: 16 binary-selector/variant loops followed "
-           "by 6 more, for 110 draws per landed attack; workbook 22-loop groups are "
-           "a flattened view without the live r29 buffer split";
+    return "Live first-battle checkpoints observe supported landed basic attacks "
+           "selecting source keys 4 or 5 as two FUN_80042b10 effect buffers: "
+           "16 binary-selector/variant loops followed by 6 more, for 110 draws; "
+           "workbook 22-loop groups are a flattened view without the live r29 "
+           "buffer split";
 }
 
 } // namespace savor::predict
