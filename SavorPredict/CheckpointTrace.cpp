@@ -60,7 +60,7 @@ std::string normalize_pc(std::string value) {
 
 bool parse_int_value(const std::string& value, int& out) {
     char* end = nullptr;
-    const long parsed = std::strtol(value.c_str(), &end, 10);
+    const long parsed = std::strtol(value.c_str(), &end, 0);
     if (end == value.c_str() || *end != '\0') {
         return false;
     }
@@ -501,6 +501,20 @@ void write_text_report(
         << effects.combat_effect_draws_with_source_resource_id << "\n";
     out << "  combat_effect_draws_with_buffer_pointer: "
         << effects.combat_effect_draws_with_buffer_pointer << "\n";
+    out << "  observed_effect_record_copy_events: "
+        << effects.observed_effect_record_copy_events << "\n";
+    out << "  effect_record_copy_events_with_effect_buffer: "
+        << effects.effect_record_copy_events_with_effect_buffer << "\n";
+    out << "  effect_record_copy_events_with_parent_action_thread: "
+        << effects.effect_record_copy_events_with_parent_action_thread << "\n";
+    out << "  effect_record_copy_events_with_source_key: "
+        << effects.effect_record_copy_events_with_source_key << "\n";
+    out << "  effect_record_copy_events_with_loop_count: "
+        << effects.effect_record_copy_events_with_loop_count << "\n";
+    out << "  effect_record_copy_events_matching_source_record_fields: "
+        << effects.effect_record_copy_events_matching_source_record_fields << "\n";
+    out << "  effect_record_copy_events_matching_combat_effect_buffer: "
+        << effects.effect_record_copy_events_matching_combat_effect_buffer << "\n";
     out << "  observed_combat_effect_buffers: "
         << effects.observed_combat_effect_buffers << "\n";
     out << "  complete_binary_variant_iterations: "
@@ -530,6 +544,32 @@ void write_text_report(
         << effects.unpaired_first_battle_effect_buffers << "\n";
     out << "  incomplete_binary_variant_iteration_remainder: "
         << effects.incomplete_binary_variant_iteration_remainder << "\n";
+    if (!effects.record_copy_events.empty()) {
+        out << "  record_copy_events:\n";
+        for (const auto& event : effects.record_copy_events) {
+            out << "    draw_index=";
+            write_optional_int(out, event.draw_index);
+            out << " effect_buffer=";
+            write_optional_string(out, event.effect_buffer);
+            out << " source_record=";
+            write_optional_string(out, event.source_record);
+            out << " parent_action_thread=";
+            write_optional_string(out, event.parent_action_thread);
+            out << " copied_parent_action_thread=";
+            write_optional_string(out, event.copied_parent_action_thread);
+            out << " source_key=";
+            write_optional_int(out, event.source_key);
+            out << " source_record_key=";
+            write_optional_int(out, event.source_record_key);
+            out << " loop_count=";
+            write_optional_int(out, event.loop_count);
+            out << " source_record_loop_count=";
+            write_optional_int(out, event.source_record_loop_count);
+            out << " matched_combat_effect_first_draw_index=";
+            write_optional_int(out, event.matched_combat_effect_first_draw_index);
+            out << "\n";
+        }
+    }
     out << "  observed_emitter_spawn_draws: "
         << effects.observed_emitter_spawn_draws << "\n";
     out << "  observed_emitter_source_gate_events: "
@@ -1565,6 +1605,12 @@ void write_text_report(
     out << "  status: "
         << attack_damage_value_checkpoint_status_name(attack_damage_values.status) << "\n";
     out << "  rule: " << first_battle_attack_damage_value_checkpoint_rule_detail() << "\n";
+    out << "  observed_attack_begin_events: "
+        << attack_damage_values.observed_attack_begin_events << "\n";
+    out << "  attack_begins_with_actor_slot: "
+        << attack_damage_values.attack_begins_with_actor_slot << "\n";
+    out << "  attack_begins_with_target_slot: "
+        << attack_damage_values.attack_begins_with_target_slot << "\n";
     out << "  observed_attack_bursts: " << attack_damage_values.observed_attack_bursts << "\n";
     out << "  orphan_damage_draw_events: "
         << attack_damage_values.orphan_damage_draw_events << "\n";
@@ -2320,6 +2366,20 @@ void write_json_report(
         << effects.combat_effect_draws_with_source_resource_id;
     out << ", \"combat_effect_draws_with_buffer_pointer\": "
         << effects.combat_effect_draws_with_buffer_pointer;
+    out << ", \"observed_effect_record_copy_events\": "
+        << effects.observed_effect_record_copy_events;
+    out << ", \"effect_record_copy_events_with_effect_buffer\": "
+        << effects.effect_record_copy_events_with_effect_buffer;
+    out << ", \"effect_record_copy_events_with_parent_action_thread\": "
+        << effects.effect_record_copy_events_with_parent_action_thread;
+    out << ", \"effect_record_copy_events_with_source_key\": "
+        << effects.effect_record_copy_events_with_source_key;
+    out << ", \"effect_record_copy_events_with_loop_count\": "
+        << effects.effect_record_copy_events_with_loop_count;
+    out << ", \"effect_record_copy_events_matching_source_record_fields\": "
+        << effects.effect_record_copy_events_matching_source_record_fields;
+    out << ", \"effect_record_copy_events_matching_combat_effect_buffer\": "
+        << effects.effect_record_copy_events_matching_combat_effect_buffer;
     out << ", \"observed_combat_effect_buffers\": "
         << effects.observed_combat_effect_buffers;
     out << ", \"complete_binary_variant_iterations\": "
@@ -2350,6 +2410,35 @@ void write_json_report(
         << effects.unpaired_first_battle_effect_buffers;
     out << ", \"incomplete_binary_variant_iteration_remainder\": "
         << effects.incomplete_binary_variant_iteration_remainder;
+    out << ", \"record_copy_events\": [";
+    for (std::size_t i = 0; i < effects.record_copy_events.size(); ++i) {
+        if (i != 0) {
+            out << ", ";
+        }
+        const auto& event = effects.record_copy_events[i];
+        out << "{\"draw_index\": ";
+        write_json_optional_int(out, event.draw_index);
+        out << ", \"effect_buffer\": ";
+        write_json_optional_string(out, event.effect_buffer);
+        out << ", \"source_record\": ";
+        write_json_optional_string(out, event.source_record);
+        out << ", \"parent_action_thread\": ";
+        write_json_optional_string(out, event.parent_action_thread);
+        out << ", \"copied_parent_action_thread\": ";
+        write_json_optional_string(out, event.copied_parent_action_thread);
+        out << ", \"source_key\": ";
+        write_json_optional_int(out, event.source_key);
+        out << ", \"source_record_key\": ";
+        write_json_optional_int(out, event.source_record_key);
+        out << ", \"loop_count\": ";
+        write_json_optional_int(out, event.loop_count);
+        out << ", \"source_record_loop_count\": ";
+        write_json_optional_int(out, event.source_record_loop_count);
+        out << ", \"matched_combat_effect_first_draw_index\": ";
+        write_json_optional_int(out, event.matched_combat_effect_first_draw_index);
+        out << "}";
+    }
+    out << "]";
     out << ", \"observed_emitter_spawn_draws\": "
         << effects.observed_emitter_spawn_draws;
     out << ", \"observed_emitter_source_gate_events\": "
@@ -3397,6 +3486,12 @@ void write_json_report(
         << attack_damage_value_checkpoint_status_name(attack_damage_values.status) << "\"";
     out << ", \"rule\": \""
         << json_escape(first_battle_attack_damage_value_checkpoint_rule_detail()) << "\"";
+    out << ", \"observed_attack_begin_events\": "
+        << attack_damage_values.observed_attack_begin_events;
+    out << ", \"attack_begins_with_actor_slot\": "
+        << attack_damage_values.attack_begins_with_actor_slot;
+    out << ", \"attack_begins_with_target_slot\": "
+        << attack_damage_values.attack_begins_with_target_slot;
     out << ", \"observed_attack_bursts\": "
         << attack_damage_values.observed_attack_bursts;
     out << ", \"orphan_damage_draw_events\": "

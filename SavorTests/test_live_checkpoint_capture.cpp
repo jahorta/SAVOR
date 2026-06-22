@@ -162,7 +162,7 @@ TEST(SavorPredictLiveCaptureProfile, BuildsParseableFirstBattleRngProfile)
     EXPECT_EQ(rng_checkpoints, static_cast<int>(known_rng_callsite_owners().size()) - 1);
     EXPECT_FALSE(found_default_targeting_camera);
     EXPECT_FALSE(found_default_action_view_dispatch_state);
-    EXPECT_GE(action_view_state_checkpoints, 4);
+    EXPECT_GE(action_view_state_checkpoints, 7);
 
     const auto find_checkpoint = [&](std::string_view id)
         -> const CheckpointSpec* {
@@ -175,6 +175,14 @@ TEST(SavorPredictLiveCaptureProfile, BuildsParseableFirstBattleRngProfile)
     };
     const auto has_reg_sample = [](const CheckpointSpec& checkpoint, std::string_view name) {
         for (const auto& sample : checkpoint.register_memory_samples) {
+            if (sample.name == name) {
+                return true;
+            }
+        }
+        return false;
+    };
+    const auto has_gpr_sample = [](const CheckpointSpec& checkpoint, std::string_view name) {
+        for (const auto& sample : checkpoint.gpr_samples) {
             if (sample.name == name) {
                 return true;
             }
@@ -210,8 +218,71 @@ TEST(SavorPredictLiveCaptureProfile, BuildsParseableFirstBattleRngProfile)
     const auto* particle_tick =
         find_checkpoint("effect_particle_motion_gate_x_800425A0");
     ASSERT_NE(particle_tick, nullptr);
+
+    const auto* action_view_query_call =
+        find_checkpoint("action_view_category2_query_call_8001331C");
+    ASSERT_NE(action_view_query_call, nullptr);
+    EXPECT_FALSE(action_view_query_call->owns_rng_draw);
+    EXPECT_TRUE(has_gpr_sample(*action_view_query_call, "aux_list_root"));
+    EXPECT_TRUE(has_gpr_sample(*action_view_query_call, "query_arg1"));
+    EXPECT_TRUE(has_reg_sample(*action_view_query_call, "active_slot"));
+    EXPECT_TRUE(has_reg_sample(*action_view_query_call, "target_slot"));
+    EXPECT_TRUE(has_reg_sample(*action_view_query_call, "actor_field6_0x6"));
+    EXPECT_TRUE(has_reg_sample(*action_view_query_call, "gate_state_0x30"));
+
+    const auto* action_view_query_result =
+        find_checkpoint("action_view_category2_query_result_80013320");
+    ASSERT_NE(action_view_query_result, nullptr);
+    EXPECT_FALSE(action_view_query_result->owns_rng_draw);
+    EXPECT_TRUE(has_gpr_sample(*action_view_query_result, "query_result"));
+    EXPECT_TRUE(has_reg_sample(*action_view_query_result, "actor_field6_0x6"));
+
+    const auto* action_view_spawn =
+        find_checkpoint("action_view_category2_spawn_80013334");
+    ASSERT_NE(action_view_spawn, nullptr);
+    EXPECT_FALSE(action_view_spawn->owns_rng_draw);
+    EXPECT_TRUE(has_gpr_sample(*action_view_spawn, "spawn_slot_arg"));
+    EXPECT_TRUE(has_gpr_sample(*action_view_spawn, "spawn_mode_arg"));
+
+    const auto* effect_record_copy =
+        find_checkpoint("effect_record_copy_complete_8003BB24");
+    ASSERT_NE(effect_record_copy, nullptr);
+    EXPECT_FALSE(effect_record_copy->owns_rng_draw);
+    EXPECT_TRUE(has_gpr_sample(*effect_record_copy, "r6_effect_buffer"));
+    EXPECT_TRUE(has_gpr_sample(*effect_record_copy, "r30_parent_action_thread"));
+    EXPECT_TRUE(has_gpr_sample(*effect_record_copy, "r31_source_record"));
+    EXPECT_TRUE(has_reg_sample(*effect_record_copy, "effect_parent_action_thread_0x04"));
+    EXPECT_TRUE(has_reg_sample(*effect_record_copy, "effect_source_key_0x28"));
+    EXPECT_TRUE(has_reg_sample(*effect_record_copy, "source_record_key_0x00"));
+    EXPECT_TRUE(has_reg_sample(*effect_record_copy, "source_record_loop_count_0x34"));
     EXPECT_TRUE(has_reg_sample(*particle_tick, "particle_payload_source_ptr_0x20"));
     EXPECT_TRUE(has_reg_sample(*particle_tick, "particle_payload_lifetime_0x28"));
+
+    const auto* attack_begin =
+        find_checkpoint("attack_resolution_begin_80081B94");
+    ASSERT_NE(attack_begin, nullptr);
+    EXPECT_FALSE(attack_begin->owns_rng_draw);
+    EXPECT_TRUE(has_gpr_sample(*attack_begin, "target_slot_arg"));
+    EXPECT_TRUE(has_gpr_sample(*attack_begin, "actor_slot_arg"));
+
+    const auto* source_selection =
+        find_checkpoint("action_source_selection_80067BD0");
+    ASSERT_NE(source_selection, nullptr);
+    EXPECT_FALSE(source_selection->owns_rng_draw);
+    EXPECT_TRUE(has_reg_sample(*source_selection, "selected_source_slot"));
+    EXPECT_TRUE(has_reg_sample(*source_selection, "controller_actor_slot_0x92"));
+
+    const auto* source_bridge =
+        find_checkpoint("action_source_field6_bridge_8006778C");
+    ASSERT_NE(source_bridge, nullptr);
+    EXPECT_FALSE(source_bridge->owns_rng_draw);
+    EXPECT_TRUE(has_reg_sample(*source_bridge, "actor_slot"));
+    EXPECT_TRUE(has_reg_sample(*source_bridge, "target_slot"));
+    EXPECT_TRUE(has_reg_sample(*source_bridge, "source_slot"));
+    EXPECT_TRUE(has_reg_sample(*source_bridge, "actor_field6_0x6"));
+    EXPECT_TRUE(has_reg_sample(*source_bridge, "source_field6_0x6"));
+    EXPECT_TRUE(has_reg_sample(*source_bridge, "handler_pc"));
+    EXPECT_TRUE(has_reg_sample(*source_bridge, "callback_0xe0"));
 }
 
 TEST(BattleTurnRunnerPayload, RoundTripsLiveCaptureContextPaths)

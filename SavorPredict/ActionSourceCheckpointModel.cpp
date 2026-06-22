@@ -217,7 +217,11 @@ ActionSourceCheckpointSummary summarize_action_source_checkpoints(
             observed.draw_index = event.rng_draw_index_before;
             observed.actor_slot = event.active_slot.has_value()
                 ? event.active_slot
-                : parse_first_field_int(event, {"actor_slot", "active_slot"});
+                : parse_first_field_int(event, {
+                    "actor_slot",
+                    "active_slot",
+                    "controller_actor_slot_0x92",
+                });
             observed.source_slot =
                 parse_first_field_int(event, {"selected_source_slot", "source_slot", "source_actor_slot"});
             observed.target_slot = event.target_slot.has_value()

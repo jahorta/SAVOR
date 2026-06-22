@@ -70,6 +70,9 @@ struct AttackDamageValueCheckpointEvent {
 };
 
 struct AttackDamageValueCheckpointSummary {
+    int observed_attack_begin_events = 0;
+    int attack_begins_with_actor_slot = 0;
+    int attack_begins_with_target_slot = 0;
     int observed_attack_bursts = 0;
     int orphan_damage_draw_events = 0;
     int bursts_with_live_inputs = 0;

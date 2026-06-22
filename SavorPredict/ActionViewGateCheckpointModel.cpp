@@ -2,8 +2,10 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <cstdlib>
 #include <initializer_list>
+#include <limits>
 #include <map>
 #include <utility>
 
@@ -26,9 +28,25 @@ std::optional<int> parse_field_int(const CheckpointEvent& event, const char* fie
         return std::nullopt;
     }
 
+    const auto& text = found->second;
+    if (text.size() > 2 && text[0] == '0' && (text[1] == 'x' || text[1] == 'X')) {
+        char* end = nullptr;
+        const unsigned long parsed = std::strtoul(text.c_str(), &end, 16);
+        if (end == text.c_str() || *end != '\0') {
+            return std::nullopt;
+        }
+        if (parsed <= static_cast<unsigned long>(std::numeric_limits<int>::max())) {
+            return static_cast<int>(parsed);
+        }
+        if (parsed <= static_cast<unsigned long>(std::numeric_limits<std::uint32_t>::max())) {
+            return static_cast<int>(static_cast<std::int32_t>(parsed));
+        }
+        return std::nullopt;
+    }
+
     char* end = nullptr;
-    const long parsed = std::strtol(found->second.c_str(), &end, 0);
-    if (end == found->second.c_str() || *end != '\0') {
+    const long parsed = std::strtol(text.c_str(), &end, 0);
+    if (end == text.c_str() || *end != '\0') {
         return std::nullopt;
     }
     return static_cast<int>(parsed);

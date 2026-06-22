@@ -103,6 +103,17 @@ TEST(SavorPredictRngModel, EffectCheckpointModelSummarizes80042b10BurstShape) {
             " effect_source_subtype_0x2a=2"
             " effect_source_secondary_0x2c=0"
             " effect_source_resource_id_0x30=0x9e";
+        stream << "pc=8003bb24 function=FUN_8003ba08 checkpoint=effect_record_copy_complete "
+               << "rng_draw_index_before=" << draw_index
+               << " r6_effect_buffer=" << buffer
+               << " r30_parent_action_thread=0x81230000"
+               << " r31_source_record=0x80f40000"
+               << " effect_parent_action_thread_0x04=0x81230000"
+               << source_fields
+               << " effect_loop_count_0x5c=0x" << std::hex << loop_count << std::dec
+               << " source_record_key_0x00=" << source_key
+               << " source_record_loop_count_0x34=0x" << std::hex << loop_count << std::dec
+               << "\n";
         for (int i = 0; i < loop_count; ++i) {
             stream << "pc=80042fbc function=FUN_80042b10 checkpoint=position "
                    << "rng_draw_index_before=" << draw_index++
@@ -158,8 +169,8 @@ TEST(SavorPredictRngModel, EffectCheckpointModelSummarizes80042b10BurstShape) {
     std::istringstream input(stream.str());
     const auto parsed = parse_checkpoint_stream(input);
     ASSERT_TRUE(parsed.errors.empty());
-    ASSERT_EQ(parsed.events.size(), 332u);
-    EXPECT_EQ(parsed.events.front().known_rng_owner, "combat_effect_spawn_position_binary");
+    ASSERT_EQ(parsed.events.size(), 338u);
+    EXPECT_EQ(parsed.events.front().checkpoint, "effect_record_copy_complete");
 
     const auto summary = summarize_effect_checkpoints(parsed.events);
     EXPECT_EQ(summary.status, EffectCheckpointStatus::MatchesBinaryVariantBurstShape);
@@ -179,6 +190,16 @@ TEST(SavorPredictRngModel, EffectCheckpointModelSummarizes80042b10BurstShape) {
     EXPECT_EQ(summary.combat_effect_draws_with_source_secondary, 330);
     EXPECT_EQ(summary.combat_effect_draws_with_source_resource_id, 330);
     EXPECT_EQ(summary.combat_effect_draws_with_buffer_pointer, 330);
+    EXPECT_EQ(summary.observed_effect_record_copy_events, 6);
+    EXPECT_EQ(summary.effect_record_copy_events_with_effect_buffer, 6);
+    EXPECT_EQ(summary.effect_record_copy_events_with_parent_action_thread, 6);
+    EXPECT_EQ(summary.effect_record_copy_events_with_source_key, 6);
+    EXPECT_EQ(summary.effect_record_copy_events_with_loop_count, 6);
+    EXPECT_EQ(summary.effect_record_copy_events_matching_source_record_fields, 6);
+    EXPECT_EQ(summary.effect_record_copy_events_matching_combat_effect_buffer, 6);
+    ASSERT_EQ(summary.record_copy_events.size(), 6u);
+    ASSERT_TRUE(summary.record_copy_events[0].matched_combat_effect_first_draw_index.has_value());
+    EXPECT_EQ(*summary.record_copy_events[0].matched_combat_effect_first_draw_index, 0);
     EXPECT_EQ(summary.observed_combat_effect_buffers, 6);
     EXPECT_EQ(summary.complete_binary_variant_iterations, 66);
     EXPECT_EQ(summary.complete_binary_variant_buffers, 6);
@@ -1311,7 +1332,7 @@ TEST(SavorPredictCheckpointTrace, SummarizesActionViewGateCheckpoints) {
         "pc=80012f58 function=FUN_80012f58 checkpoint=action_view_gate rng_draw_index_before=18 "
         "action_sequence_id=7 "
         "active_slot=1 source_slot=1 target_slot=4 source_field6_0x6=14 actor_field6_0x6=14 "
-        "aux_list_root=0x80346bd8 query_arg0=4 query_arg1=-1 query_arg2=0x2a query_arg3=3 "
+        "aux_list_root=0x80346bd8 query_arg0=4 query_arg1=0xFFFFFFFF query_arg2=0x2a query_arg3=3 "
         "query_result=0x81234567 selected_record_mode=0 "
         "action_child_thread=0x81230000 child_payload=0x81231000 nested_payload=0x81232000 "
         "child_thread_state_byte=1 mode0_fallback_reached=0\n"
@@ -1371,6 +1392,8 @@ TEST(SavorPredictCheckpointTrace, SummarizesActionViewGateCheckpoints) {
     EXPECT_EQ(*matched.events[0].action_sequence_id, 7);
     ASSERT_TRUE(matched.events[0].query_arg2.has_value());
     EXPECT_EQ(*matched.events[0].query_arg2, 0x2a);
+    ASSERT_TRUE(matched.events[0].query_arg1.has_value());
+    EXPECT_EQ(*matched.events[0].query_arg1, -1);
     ASSERT_TRUE(matched.events[0].selected_record_mode.has_value());
     EXPECT_EQ(*matched.events[0].selected_record_mode, 0);
     ASSERT_EQ(matched.dispatch_events.size(), 1u);
@@ -1782,11 +1805,14 @@ TEST(SavorPredictCheckpointTrace, SummarizesAttackResolutionCheckpoints) {
 
 TEST(SavorPredictCheckpointTrace, SummarizesAttackDamageValueCheckpoints) {
     const std::string live_hit_fields =
-        "active_slot=0 target_slot=4 attacker_attack=10 attacker_hit=100 attacker_agile=50 "
+        "attacker_attack=10 attacker_hit=100 attacker_agile=50 "
         "attacker_element=0 target_defense=5 target_dodge=0 "
         "target_element_effectiveness_tenths=10 target_status_flags=0 instr_param_0x6=0 ";
 
     std::istringstream input(
+        "pc=80081b94 function=Battle::AtkMethods::performAttack_80081b94 "
+        "checkpoint=attack_begin rng_draw_index_before=20 "
+        "actor_slot_arg=0x00000000 target_slot_arg=0x00000004\n"
         "pc=80010bdc function=getAttackResult checkpoint=hit rng_draw_index_before=20 "
         + live_hit_fields
         + "rand_value=10000 attack_result=2\n"
@@ -1803,6 +1829,9 @@ TEST(SavorPredictCheckpointTrace, SummarizesAttackDamageValueCheckpoints) {
     ASSERT_TRUE(parsed.errors.empty());
     const auto matched = summarize_attack_damage_value_checkpoints(parsed.events);
     EXPECT_EQ(matched.status, AttackDamageValueCheckpointStatus::MatchesFormula);
+    EXPECT_EQ(matched.observed_attack_begin_events, 1);
+    EXPECT_EQ(matched.attack_begins_with_actor_slot, 1);
+    EXPECT_EQ(matched.attack_begins_with_target_slot, 1);
     EXPECT_EQ(matched.observed_attack_bursts, 1);
     EXPECT_EQ(matched.bursts_with_live_inputs, 1);
     EXPECT_EQ(matched.bursts_with_required_draws, 1);
@@ -1816,6 +1845,8 @@ TEST(SavorPredictCheckpointTrace, SummarizesAttackDamageValueCheckpoints) {
     EXPECT_EQ(matched.hp_after_matches, 1);
     EXPECT_EQ(matched.lethal_matches, 1);
     ASSERT_EQ(matched.attacks.size(), 1u);
+    EXPECT_EQ(matched.attacks[0].active_slot, std::optional<int>(0));
+    EXPECT_EQ(matched.attacks[0].target_slot, std::optional<int>(4));
     EXPECT_EQ(matched.attacks[0].expected_attack_result, std::optional<int>(2));
     EXPECT_EQ(matched.attacks[0].expected_base_damage, std::optional<int>(20));
     EXPECT_EQ(matched.attacks[0].expected_damage, std::optional<int>(19));

@@ -3,6 +3,7 @@
 #include "CheckpointTrace.h"
 
 #include <optional>
+#include <string>
 #include <vector>
 
 namespace savor::predict {
@@ -16,6 +17,19 @@ enum class EffectCheckpointStatus {
 struct EffectSourceKeyPairCount {
     int source_key = -1;
     int pair_count = 0;
+};
+
+struct EffectRecordCopyCheckpointEvent {
+    std::optional<int> draw_index;
+    std::optional<std::string> effect_buffer;
+    std::optional<std::string> source_record;
+    std::optional<std::string> parent_action_thread;
+    std::optional<std::string> copied_parent_action_thread;
+    std::optional<int> source_key;
+    std::optional<int> source_record_key;
+    std::optional<int> loop_count;
+    std::optional<int> source_record_loop_count;
+    std::optional<int> matched_combat_effect_first_draw_index;
 };
 
 struct EffectCheckpointSummary {
@@ -36,6 +50,13 @@ struct EffectCheckpointSummary {
     int combat_effect_draws_with_source_secondary = 0;
     int combat_effect_draws_with_source_resource_id = 0;
     int combat_effect_draws_with_buffer_pointer = 0;
+    int observed_effect_record_copy_events = 0;
+    int effect_record_copy_events_with_effect_buffer = 0;
+    int effect_record_copy_events_with_parent_action_thread = 0;
+    int effect_record_copy_events_with_source_key = 0;
+    int effect_record_copy_events_with_loop_count = 0;
+    int effect_record_copy_events_matching_source_record_fields = 0;
+    int effect_record_copy_events_matching_combat_effect_buffer = 0;
     int observed_combat_effect_buffers = 0;
     int complete_binary_variant_iterations = 0;
     int complete_binary_variant_buffers = 0;
@@ -56,6 +77,7 @@ struct EffectCheckpointSummary {
     int observed_particle_tick_draws = 0;
     int particle_tick_draws_with_payload_source = 0;
     int particle_tick_draws_with_lifetime = 0;
+    std::vector<EffectRecordCopyCheckpointEvent> record_copy_events;
     std::optional<int> first_combat_effect_draw_index;
     std::optional<int> last_combat_effect_draw_index;
     EffectCheckpointStatus status = EffectCheckpointStatus::ObservedOnly;

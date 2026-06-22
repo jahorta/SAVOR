@@ -7,6 +7,7 @@
 #include <map>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace savor::predict {
@@ -60,6 +61,14 @@ bool has_field(const CheckpointEvent& event, std::string_view field_name) {
     return event.fields.find(std::string(field_name)) != event.fields.end();
 }
 
+std::optional<std::string> parse_string_field(const CheckpointEvent& event, std::string_view field_name) {
+    const auto found = event.fields.find(std::string(field_name));
+    if (found == event.fields.end() || found->second.empty()) {
+        return std::nullopt;
+    }
+    return found->second;
+}
+
 std::optional<int> parse_int_field(const CheckpointEvent& event, std::string_view field_name) {
     const auto found = event.fields.find(std::string(field_name));
     if (found == event.fields.end()) {
@@ -77,6 +86,11 @@ std::optional<int> parse_int_field(const CheckpointEvent& event, std::string_vie
         return std::nullopt;
     }
     return static_cast<int>(parsed);
+}
+
+bool is_effect_record_copy_checkpoint(const CheckpointEvent& event) {
+    return event.pc == "8003BB24"
+        || event.checkpoint == "effect_record_copy_complete";
 }
 
 struct CombatEffectBufferStats {
@@ -224,6 +238,51 @@ EffectCheckpointSummary summarize_effect_checkpoints(const std::vector<Checkpoin
             if (has_field(event, "emitter_axis_mode_0x3c")) {
                 ++summary.emitter_source_gate_events_with_axis_mode;
             }
+        } else if (is_effect_record_copy_checkpoint(event)) {
+            EffectRecordCopyCheckpointEvent copy_event;
+            copy_event.draw_index = event.rng_draw_index_before;
+            copy_event.effect_buffer = parse_string_field(event, "r6_effect_buffer");
+            if (!copy_event.effect_buffer.has_value()) {
+                copy_event.effect_buffer = parse_string_field(event, "effect_buffer");
+            }
+            copy_event.source_record = parse_string_field(event, "r31_source_record");
+            if (!copy_event.source_record.has_value()) {
+                copy_event.source_record = parse_string_field(event, "source_record");
+            }
+            copy_event.parent_action_thread = parse_string_field(event, "r30_parent_action_thread");
+            if (!copy_event.parent_action_thread.has_value()) {
+                copy_event.parent_action_thread = parse_string_field(event, "parent_action_thread");
+            }
+            copy_event.copied_parent_action_thread =
+                parse_string_field(event, "effect_parent_action_thread_0x04");
+            copy_event.source_key = parse_int_field(event, "effect_source_key_0x28");
+            copy_event.source_record_key = parse_int_field(event, "source_record_key_0x00");
+            copy_event.loop_count = parse_int_field(event, "effect_loop_count_0x5c");
+            copy_event.source_record_loop_count = parse_int_field(event, "source_record_loop_count_0x34");
+
+            ++summary.observed_effect_record_copy_events;
+            if (copy_event.effect_buffer.has_value()) {
+                ++summary.effect_record_copy_events_with_effect_buffer;
+            }
+            if (copy_event.parent_action_thread.has_value()
+                || copy_event.copied_parent_action_thread.has_value()) {
+                ++summary.effect_record_copy_events_with_parent_action_thread;
+            }
+            if (copy_event.source_key.has_value()) {
+                ++summary.effect_record_copy_events_with_source_key;
+            }
+            if (copy_event.loop_count.has_value()) {
+                ++summary.effect_record_copy_events_with_loop_count;
+            }
+            if (copy_event.source_key.has_value()
+                && copy_event.source_record_key.has_value()
+                && *copy_event.source_key == *copy_event.source_record_key
+                && copy_event.loop_count.has_value()
+                && copy_event.source_record_loop_count.has_value()
+                && *copy_event.loop_count == *copy_event.source_record_loop_count) {
+                ++summary.effect_record_copy_events_matching_source_record_fields;
+            }
+            summary.record_copy_events.push_back(std::move(copy_event));
         }
 
         if (owner_is(event, kPositionBinaryOwner)) {
@@ -305,6 +364,18 @@ EffectCheckpointSummary summarize_effect_checkpoints(const std::vector<Checkpoin
         }
     }
 
+    for (auto& copy_event : summary.record_copy_events) {
+        if (!copy_event.effect_buffer.has_value()) {
+            continue;
+        }
+        const auto found = combat_effect_buffers.find(*copy_event.effect_buffer);
+        if (found == combat_effect_buffers.end()) {
+            continue;
+        }
+        ++summary.effect_record_copy_events_matching_combat_effect_buffer;
+        copy_event.matched_combat_effect_first_draw_index = found->second.first_draw_index;
+    }
+
     summary.complete_binary_variant_iterations = std::min({
         summary.observed_binary_position_draws,
         summary.observed_scale_x_draws,
@@ -336,8 +407,9 @@ const char* first_battle_effect_checkpoint_rule_detail() {
     return "Live first-battle checkpoints observe supported landed basic attacks "
            "selecting source keys 4 or 5 as two FUN_80042b10 effect buffers: "
            "16 binary-selector/variant loops followed by 6 more, for 110 draws; "
-           "workbook 22-loop groups are a flattened view without the live r29 "
-           "buffer split";
+           "FUN_8003ba08 effect-record copy checkpoints should match those later "
+           "FUN_80042b10 buffers by effect-buffer pointer; workbook 22-loop groups "
+           "are a flattened view without the live r29 buffer split";
 }
 
 } // namespace savor::predict

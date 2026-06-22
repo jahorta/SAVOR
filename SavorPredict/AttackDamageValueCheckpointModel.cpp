@@ -49,6 +49,16 @@ bool is_damage_apply_checkpoint(const CheckpointEvent& event) {
         });
 }
 
+bool is_attack_begin_checkpoint(const CheckpointEvent& event) {
+    return event.pc == "80081B94"
+        || event_named(event, {
+            "Battle::AtkMethods::performAttack_80081b94",
+            "performAttack_80081b94",
+            "attack_begin",
+            "attack_resolution_begin",
+        });
+}
+
 std::optional<int> parse_field_int(const CheckpointEvent& event, const char* key) {
     const auto found = event.fields.find(key);
     if (found == event.fields.end()) {
@@ -84,14 +94,25 @@ std::optional<int> slot_from_event(const CheckpointEvent& event) {
     if (event.active_slot.has_value()) {
         return event.active_slot;
     }
-    return parse_first_field_int(event, {"actor_slot", "attacker_slot", "slot", "active_slot"});
+    return parse_first_field_int(event, {
+        "actor_slot",
+        "attacker_slot",
+        "actor_slot_arg",
+        "attacker_slot_arg",
+        "slot",
+        "active_slot",
+    });
 }
 
 std::optional<int> target_from_event(const CheckpointEvent& event) {
     if (event.target_slot.has_value()) {
         return event.target_slot;
     }
-    return parse_first_field_int(event, {"target_slot", "target"});
+    return parse_first_field_int(event, {
+        "target_slot",
+        "target_slot_arg",
+        "target",
+    });
 }
 
 std::optional<int> rand_value_from_event(
@@ -207,6 +228,27 @@ void merge_damage_apply_fields(
         "killed",
     });
     attack.damage_apply_observed = true;
+}
+
+void merge_context_fields(
+    AttackDamageValueCheckpointEvent& attack,
+    const AttackDamageValueCheckpointEvent& context) {
+    fill_if_missing(attack.active_slot, context.active_slot);
+    fill_if_missing(attack.target_slot, context.target_slot);
+    fill_if_missing(attack.attacker_attack, context.attacker_attack);
+    fill_if_missing(attack.attacker_hit, context.attacker_hit);
+    fill_if_missing(attack.attacker_agile, context.attacker_agile);
+    fill_if_missing(attack.attacker_element, context.attacker_element);
+    fill_if_missing(attack.target_defense, context.target_defense);
+    fill_if_missing(attack.target_dodge, context.target_dodge);
+    fill_if_missing(
+        attack.target_element_effectiveness_tenths,
+        context.target_element_effectiveness_tenths);
+    fill_if_missing(attack.target_status_flags, context.target_status_flags);
+    fill_if_missing(attack.instr_param_0x6, context.instr_param_0x6);
+    fill_if_missing(attack.observed_attack_result, context.observed_attack_result);
+    fill_if_missing(attack.observed_hit_check, context.observed_hit_check);
+    fill_if_missing(attack.observed_damage, context.observed_damage);
 }
 
 int count_missing_live_inputs(const AttackDamageValueCheckpointEvent& attack) {
@@ -416,6 +458,7 @@ AttackDamageValueCheckpointSummary summarize_attack_damage_value_checkpoints(
     const std::vector<CheckpointEvent>& events) {
     AttackDamageValueCheckpointSummary summary;
     std::optional<AttackDamageValueCheckpointEvent> current;
+    std::optional<AttackDamageValueCheckpointEvent> pending_attack_context;
     int next_attack_index = 0;
 
     auto flush_current = [&]() {
@@ -428,6 +471,22 @@ AttackDamageValueCheckpointSummary summarize_attack_damage_value_checkpoints(
     };
 
     for (const auto& event : events) {
+        if (is_attack_begin_checkpoint(event)) {
+            flush_current();
+
+            AttackDamageValueCheckpointEvent context;
+            merge_live_fields(context, event);
+            if (context.active_slot.has_value()) {
+                ++summary.attack_begins_with_actor_slot;
+            }
+            if (context.target_slot.has_value()) {
+                ++summary.attack_begins_with_target_slot;
+            }
+            pending_attack_context = std::move(context);
+            ++summary.observed_attack_begin_events;
+            continue;
+        }
+
         if (!is_attack_resolution_draw(event) && !is_damage_apply_checkpoint(event)) {
             continue;
         }
@@ -439,6 +498,10 @@ AttackDamageValueCheckpointSummary summarize_attack_damage_value_checkpoints(
             attack.hit_draw_index = event.rng_draw_index_before;
             if (!summary.first_hit_draw_index.has_value() && event.rng_draw_index_before.has_value()) {
                 summary.first_hit_draw_index = *event.rng_draw_index_before;
+            }
+            if (pending_attack_context.has_value()) {
+                merge_context_fields(attack, *pending_attack_context);
+                pending_attack_context.reset();
             }
             merge_live_fields(attack, event);
             attack.hit_rand = rand_value_from_event(
@@ -521,7 +584,7 @@ const char* attack_damage_value_checkpoint_status_name(AttackDamageValueCheckpoi
 }
 
 const char* first_battle_attack_damage_value_checkpoint_rule_detail() {
-    return "live first-battle attack damage checkpoints should expose attacker hit/agile/attack/element, target dodge/defense/element/status, instrParam_0x6, RNG draw values, observed attack result, observed damage, and zzDealDamage HP fields so the shared attack formula and damage application can be checked per attack burst";
+    return "live first-battle attack damage checkpoints should use performAttack_80081b94 as the per-attack context bridge, then expose attacker hit/agile/attack/element, target dodge/defense/element/status, instrParam_0x6, RNG draw values, observed attack result, observed damage, and zzDealDamage HP fields so the shared attack formula and damage application can be checked per attack burst";
 }
 
 } // namespace savor::predict

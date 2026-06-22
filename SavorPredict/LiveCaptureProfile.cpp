@@ -203,6 +203,43 @@ std::vector<std::string_view> combat_effect_burst_samples()
     };
 }
 
+std::vector<std::string_view> effect_record_copy_samples_from_r6()
+{
+    return {
+        "effect_parent_action_thread_0x04:r6:0x04:u32",
+        "effect_source_key_0x28:r6:0x28:u16",
+        "effect_source_subtype_0x2a:r6:0x2a:u16",
+        "effect_source_secondary_0x2c:r6:0x2c:u16",
+        "effect_source_resource_id_0x30:r6:0x30:u32",
+        "effect_flags_0x38:r6:0x38:u32",
+        "effect_source_timing_raw_0x3c:r6:0x3c:u32",
+        "effect_loop_count_0x5c:r6:0x5c:u16",
+        "effect_variant_count_0x5e:r6:0x5e:u16",
+        "effect_axis_mode_0x60:r6:0x60:u16",
+        "effect_scale_x_raw_0x70:r6:0x70:u32",
+        "effect_scale_y_raw_0x74:r6:0x74:u32",
+        "effect_scale_z_raw_0x78:r6:0x78:u32",
+    };
+}
+
+std::vector<std::string_view> effect_source_record_samples_from_r31()
+{
+    return {
+        "source_record_key_0x00:r31:0x00:u16",
+        "source_record_subtype_0x02:r31:0x02:u16",
+        "source_record_secondary_0x04:r31:0x04:u16",
+        "source_record_resource_id_0x08:r31:0x08:u32",
+        "source_record_flags_0x10:r31:0x10:u32",
+        "source_record_timing_raw_0x14:r31:0x14:u32",
+        "source_record_loop_count_0x34:r31:0x34:u16",
+        "source_record_variant_count_0x36:r31:0x36:u16",
+        "source_record_axis_mode_0x38:r31:0x38:u16",
+        "source_record_scale_x_raw_0x48:r31:0x48:u32",
+        "source_record_scale_y_raw_0x4c:r31:0x4c:u32",
+        "source_record_scale_z_raw_0x50:r31:0x50:u32",
+    };
+}
+
 std::vector<std::string_view> effect_emitter_spawn_samples()
 {
     return {
@@ -232,6 +269,96 @@ std::vector<std::string_view> effect_particle_tick_samples()
         "particle_payload_source_ptr_0x20:r30:0x20:u32",
         "particle_state_x_raw_0x1c:r31:0x1c:u32",
         "particle_state_z_raw_0x24:r31:0x24:u32",
+    };
+}
+
+std::vector<std::string_view> attack_resolution_begin_gprs()
+{
+    return {
+        "target_slot_arg:3",
+        "actor_slot_arg:4",
+    };
+}
+
+std::vector<std::string_view> action_source_selection_samples()
+{
+    return {
+        "selected_source_slot:r3:0x90:u16",
+        "controller_actor_slot_0x92:r3:0x92:u16",
+    };
+}
+
+std::vector<std::string_view> action_source_bridge_samples()
+{
+    return {
+        "actor_slot:r30:0x00:u8",
+        "target_slot:r30:0x04:u8",
+        "source_slot:r29:0x00:u8",
+        "source_target_slot_0x4:r29:0x04:u8",
+        "actor_field6_0x6:r30:0x06:u16",
+        "actor_subtype_0x8:r30:0x08:u16",
+        "actor_previous_field6_0x1c:r30:0x1c:u16",
+        "source_field6_0x6:r29:0x06:u16",
+        "source_subtype_0x8:r29:0x08:u16",
+        "selected_field6_stack_0x0a:r1:0x0a:u16",
+        "selected_subtype_stack_0x08:r1:0x08:u16",
+        "selected_row_index_0xe4:r30:0xe4:u16",
+        "handler_pc:r30:0xe0:u32",
+        "callback_0xe0:r30:0xe0:u32",
+    };
+}
+
+std::vector<std::string_view> action_view_category2_gate_gprs()
+{
+    return {
+        "aux_list_root:3",
+        "query_arg0:4",
+        "query_arg1:5",
+        "query_arg2:6",
+        "query_arg3:7",
+        "r28_instruction_worksheet:28",
+        "r29_action_view_state:29",
+        "r30_action_view_payload:30",
+        "r31_active_combatant:31",
+    };
+}
+
+std::vector<std::string_view> action_view_category2_result_gprs()
+{
+    return {
+        "query_result:3",
+        "r28_instruction_worksheet:28",
+        "r29_action_view_state:29",
+        "r30_action_view_payload:30",
+        "r31_active_combatant:31",
+    };
+}
+
+std::vector<std::string_view> action_view_category2_spawn_gprs()
+{
+    return {
+        "spawn_slot_arg:3",
+        "spawn_mode_arg:4",
+        "r28_instruction_worksheet:28",
+        "r29_action_view_state:29",
+        "r30_action_view_payload:30",
+        "r31_active_combatant:31",
+    };
+}
+
+std::vector<std::string_view> action_view_category2_gate_samples()
+{
+    return {
+        "active_slot:r1:0x0a:u16",
+        "target_slot:r1:0x08:u16",
+        "actor_field6_0x6:r28:0x06:u16",
+        "actor_subtype_0x8:r28:0x08:u16",
+        "instruction_flags_0xf0:r28:0xf0:u32",
+        "gate_category_0x2f:r29:0x2f:u8",
+        "gate_state_0x30:r29:0x30:u16",
+        "gate_active_slot_0x02:r29:0x02:u16",
+        "gate_target_slot_0x04:r29:0x04:u16",
+        "combatant_movement_worksheet_0x24:r31:0x24:u32",
     };
 }
 
@@ -373,6 +500,97 @@ std::string build_first_battle_capture_profile_ini()
                 "worksheet_state_0x10e:r30:0x10e:u16",
                 "worksheet_payload_ptr_0x178:r30:0x178:u32",
             }));
+
+    write_checkpoint(
+        out,
+        "attack_resolution_begin_80081B94",
+        "80081B94",
+        "attack_resolution_begin",
+        "Battle::AtkMethods::performAttack_80081b94",
+        "attack_begin",
+        false,
+        {},
+        attack_resolution_begin_gprs());
+
+    write_checkpoint(
+        out,
+        "action_source_selection_80067BD0",
+        "80067BD0",
+        "action_source_selection",
+        "FUN_8006782c",
+        "source_selection",
+        false,
+        action_view_globals(),
+        {"r3_action_source_state:3"},
+        action_source_selection_samples());
+
+    write_checkpoint(
+        out,
+        "action_source_field6_bridge_8006778C",
+        "8006778C",
+        "action_source_field6_bridge",
+        "FUN_8006721c",
+        "action_source",
+        false,
+        {},
+        {
+            "selected_row_index_return:3",
+            "r29_source_instruction:29",
+            "r30_actor_instruction:30",
+        },
+        action_source_bridge_samples());
+
+    write_checkpoint(
+        out,
+        "action_view_category2_query_call_8001331C",
+        "8001331C",
+        "action_view_category2_query_call",
+        "FUN_80012f58",
+        "action_view_query",
+        false,
+        action_view_globals(),
+        action_view_category2_gate_gprs(),
+        action_view_category2_gate_samples());
+
+    write_checkpoint(
+        out,
+        "action_view_category2_query_result_80013320",
+        "80013320",
+        "action_view_category2_query_result",
+        "FUN_80012f58",
+        "action_view_query_result",
+        false,
+        action_view_globals(),
+        action_view_category2_result_gprs(),
+        action_view_category2_gate_samples());
+
+    write_checkpoint(
+        out,
+        "action_view_category2_spawn_80013334",
+        "80013334",
+        "action_view_category2_spawn",
+        "FUN_80053f38",
+        "action_view_spawn",
+        false,
+        action_view_globals(),
+        action_view_category2_spawn_gprs(),
+        action_view_category2_gate_samples());
+
+    write_checkpoint(
+        out,
+        "effect_record_copy_complete_8003BB24",
+        "8003BB24",
+        "effect_record_copy_complete",
+        "FUN_8003ba08",
+        "effect_record_copy_complete",
+        false,
+        {},
+        {
+            "r6_effect_buffer:6",
+            "r30_parent_action_thread:30",
+            "r31_source_record:31",
+        },
+        concat(effect_record_copy_samples_from_r6(), effect_source_record_samples_from_r31()));
 
     write_checkpoint(
         out,
