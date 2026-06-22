@@ -170,6 +170,15 @@ bool is_effect_particle_tick_pc(std::string_view pc)
         || pc == "80042670";
 }
 
+bool is_excluded_from_default_live_profile(std::string_view pc)
+{
+    // This targeting-camera rand fires while the battle input macro is still
+    // selecting targets. Capturing it by default currently perturbs the macro
+    // path enough to miss the finalized-target breakpoint, so keep it for
+    // explicit profiles only until that stepping interaction is fixed.
+    return pc == "800608DC";
+}
+
 std::vector<std::string_view> combat_effect_burst_samples()
 {
     return {
@@ -237,6 +246,9 @@ std::string build_first_battle_capture_profile_ini()
     out << "memory=rng_seed_before:" << hex_u32(addr::AddrRegistry::base(addr::core::RNG_SEED)) << ":u32\n\n";
 
     for (const auto& [pc, owner] : known_rng_callsite_owners()) {
+        if (is_excluded_from_default_live_profile(pc)) {
+            continue;
+        }
         if (pc == "800513D4") {
             write_checkpoint(
                 out,
@@ -321,17 +333,9 @@ std::string build_first_battle_capture_profile_ini()
         }
     }
 
-    write_checkpoint(
-        out,
-        "action_view_dispatch_state_80051424",
-        "80051424",
-        "action_view_dispatch_state",
-        "UpdateActionViewRecord",
-        "action_view_dispatch_state",
-        false,
-        action_view_globals(),
-        action_view_update_gprs(),
-        concat(action_view_payload_from_r3_samples(), action_view_worksheet_from_r31_samples()));
+    // action_view_dispatch_state_80051424 is intentionally omitted from the
+    // default profile. It is useful in narrow action-view research profiles,
+    // but it fires once per update tick and can exhaust the VM run timeout.
 
     write_checkpoint(
         out,

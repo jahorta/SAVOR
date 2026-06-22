@@ -633,6 +633,9 @@ namespace savor {
         if (poll_ms == 0) {
             ctx.get<uint32_t>(savor::context::key::core::RUN_POLL_MS, poll_ms);
         }
+        if (poll_ms == 0 && capture_ && capture_->active()) {
+            poll_ms = 1;
+        }
         if (poll_ms == 0) {
             poll_ms = host_.pickPollIntervalMs(timeout_ms);
         }

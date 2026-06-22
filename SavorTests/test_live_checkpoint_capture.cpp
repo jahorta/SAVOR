@@ -139,6 +139,8 @@ TEST(SavorPredictLiveCaptureProfile, BuildsParseableFirstBattleRngProfile)
     ASSERT_FALSE(profile.checkpoints.empty());
     int rng_checkpoints = 0;
     int action_view_state_checkpoints = 0;
+    bool found_default_targeting_camera = false;
+    bool found_default_action_view_dispatch_state = false;
     for (const auto& checkpoint : profile.checkpoints) {
         ASSERT_FALSE(checkpoint.memory_samples.empty()) << checkpoint.id;
         EXPECT_EQ(checkpoint.memory_samples[0].name, "rng_seed_before") << checkpoint.id;
@@ -146,13 +148,21 @@ TEST(SavorPredictLiveCaptureProfile, BuildsParseableFirstBattleRngProfile)
         if (checkpoint.owns_rng_draw) {
             ++rng_checkpoints;
         }
+        if (checkpoint.id == "pre_ai_attack_targeting_camera_800608DC") {
+            found_default_targeting_camera = true;
+        }
+        if (checkpoint.id == "action_view_dispatch_state_80051424") {
+            found_default_action_view_dispatch_state = true;
+        }
         if (checkpoint.id.find("action_view") != std::string::npos
             || checkpoint.id.find("mode0") != std::string::npos) {
             ++action_view_state_checkpoints;
         }
     }
-    EXPECT_EQ(rng_checkpoints, static_cast<int>(known_rng_callsite_owners().size()));
-    EXPECT_GE(action_view_state_checkpoints, 5);
+    EXPECT_EQ(rng_checkpoints, static_cast<int>(known_rng_callsite_owners().size()) - 1);
+    EXPECT_FALSE(found_default_targeting_camera);
+    EXPECT_FALSE(found_default_action_view_dispatch_state);
+    EXPECT_GE(action_view_state_checkpoints, 4);
 
     const auto find_checkpoint = [&](std::string_view id)
         -> const CheckpointSpec* {
