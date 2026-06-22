@@ -2,6 +2,7 @@
 
 #include "CheckpointTrace.h"
 #include "Core/PowerPcMemoryAccessDecoder.h"
+#include "Core/Memory/Soa/SoaAddrProgramBuilder.h"
 #include "LiveCaptureProfile.h"
 #include "Phases/Programs/BattleTurnRunner/BattleTurnRunnerPayload.h"
 #include "Runner/Capture/CaptureJsonlWriter.h"
@@ -53,6 +54,8 @@ TEST(LiveCheckpointCaptureProfile, ParsesDefaultSamplesAndUniquePcs)
         "memory=rng_seed_before:0x803469A8:u32, wide_counter:0x80000000:u64\n"
         "gprs=return_value:3\n"
         "reg_memory=payload_mode:r3:0x22:u16, saved_mode:31:-0x10:u16\n"
+        "addrprog=payload_mode_chain:r3:+0x24|load_ptr32|+0x22:u16\n"
+        "addrprog_trace=true\n"
         "\n"
         "[watchpoint.field6_writer]\n"
         "address=0x81234567\n"
@@ -66,6 +69,8 @@ TEST(LiveCheckpointCaptureProfile, ParsesDefaultSamplesAndUniquePcs)
         "checkpoint=draw\n"
         "owns_rng_draw=true\n"
         "reg_memory=payload_flags:r3:0x10:u32\n"
+        "addrprog=actor_field6:r29:+0x6:u16\n"
+        "addrprog_trace=false\n"
         "\n"
         "[checkpoint.second]\n"
         "pc=0x80001000\n"
@@ -97,12 +102,67 @@ TEST(LiveCheckpointCaptureProfile, ParsesDefaultSamplesAndUniquePcs)
     EXPECT_EQ(profile.checkpoints[0].register_memory_samples[1].base_reg, 31u);
     EXPECT_EQ(profile.checkpoints[0].register_memory_samples[1].offset, -0x10);
     EXPECT_EQ(profile.checkpoints[0].register_memory_samples[2].name, "payload_flags");
+    ASSERT_EQ(profile.checkpoints[0].address_program_samples.size(), 2u);
+    EXPECT_EQ(profile.checkpoints[0].address_program_samples[0].name, "payload_mode_chain");
+    EXPECT_EQ(profile.checkpoints[0].address_program_samples[0].width, SampleWidth::U16);
+    EXPECT_EQ(profile.checkpoints[0].address_program_samples[1].name, "actor_field6");
+    EXPECT_EQ(profile.checkpoints[0].address_program_samples[1].width, SampleWidth::U16);
+    EXPECT_FALSE(profile.checkpoints[0].address_program_trace);
     EXPECT_TRUE(profile.checkpoints[0].owns_rng_draw);
     EXPECT_FALSE(profile.checkpoints[1].owns_rng_draw);
 
     const auto pcs = profile.pcs();
     ASSERT_EQ(pcs.size(), 1u);
     EXPECT_EQ(pcs[0], 0x80001000u);
+}
+
+TEST(AddrProgramEvaluator, EvaluatesRegisterRootedAddressWithTrace)
+{
+    addrprog::Builder builder;
+    builder.op_base_gpr(3);
+    builder.op_add_i32(0x24);
+    builder.op_index(2, 4);
+    builder.op_end();
+
+    savor::DolphinWrapper host;
+    const auto& blob = builder.blob();
+    const auto result = addrprog::evaluate(
+        blob.data(),
+        blob.size(),
+        0,
+        host,
+        nullptr,
+        [](std::uint8_t reg, std::uint32_t& out) {
+            if (reg != 3) return false;
+            out = 0x812A3000u;
+            return true;
+        },
+        true);
+
+    ASSERT_TRUE(result.ok) << result.error;
+    EXPECT_EQ(result.va, 0x812A302Cu);
+    ASSERT_EQ(result.trace.size(), 4u);
+    EXPECT_EQ(result.trace[0].op_name, "BASE_GPR");
+    EXPECT_EQ(result.trace[0].address_after, 0x812A3000u);
+    EXPECT_EQ(result.trace[1].op_name, "ADD_I32");
+    EXPECT_EQ(result.trace[1].address_after, 0x812A3024u);
+    EXPECT_EQ(result.trace[2].op_name, "INDEX");
+    EXPECT_EQ(result.trace[2].address_after, 0x812A302Cu);
+    EXPECT_EQ(result.trace[3].op_name, "END");
+}
+
+TEST(AddrProgramEvaluator, FailsRegisterRootedAddressWithoutRegisterReader)
+{
+    addrprog::Builder builder;
+    builder.op_base_gpr(3);
+    builder.op_end();
+
+    savor::DolphinWrapper host;
+    const auto& blob = builder.blob();
+    const auto result = addrprog::evaluate(blob.data(), blob.size(), 0, host, nullptr);
+
+    EXPECT_FALSE(result.ok);
+    EXPECT_EQ(result.error, "BASE_GPR without register reader");
 }
 
 TEST(LiveCheckpointCaptureJsonl, SerializesRequiredFieldsAndStableRepeatedHitOrder)

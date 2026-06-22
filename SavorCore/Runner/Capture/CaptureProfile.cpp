@@ -1,5 +1,6 @@
 #include "CaptureProfile.h"
 
+#include "../../Core/Memory/Soa/SoaAddrProgramBuilder.h"
 #include "../../Utils/IniDoc.h"
 
 #include <algorithm>
@@ -149,6 +150,188 @@ std::vector<std::string> split_list(const std::string& value)
     return out;
 }
 
+std::vector<std::string> split_pipe_list(const std::string& value)
+{
+    std::vector<std::string> out;
+    std::string cur;
+    std::istringstream in(value);
+    while (std::getline(in, cur, '|')) {
+        cur = trim(cur);
+        if (!cur.empty()) out.push_back(cur);
+    }
+    return out;
+}
+
+std::optional<addr::AddrKey> parse_addr_key(std::string value)
+{
+    value = trim(std::move(value));
+    if (value.rfind("key:", 0) == 0 || value.rfind("KEY:", 0) == 0) {
+        value = value.substr(4);
+    }
+    std::uint32_t numeric = 0;
+    if (parse_u32(value, numeric) && numeric <= 0xffffu) {
+        const auto key = static_cast<addr::AddrKey>(numeric);
+        if (addr::AddrRegistry::exists(key)) return key;
+    }
+
+    const auto lower = to_lower(value);
+    for (const auto& rec : addr::AddrRegistry::all()) {
+        if (to_lower(rec.name) == lower) return rec.key;
+    }
+    return std::nullopt;
+}
+
+bool append_addrprog_base(
+    addrprog::Builder& builder,
+    const std::string& base,
+    std::vector<std::string>& errors,
+    const std::string& section,
+    const std::string& token)
+{
+    const auto base_trimmed = trim(base);
+    std::uint8_t reg = 0;
+    if (parse_register_index(base_trimmed, reg)) {
+        builder.op_base_gpr(reg);
+        return true;
+    }
+    if (base_trimmed.rfind("key:", 0) == 0 || base_trimmed.rfind("KEY:", 0) == 0) {
+        const auto key = parse_addr_key(base_trimmed);
+        if (!key.has_value()) {
+            errors.push_back(section + ": invalid addrprog key base in '" + token + "'");
+            return false;
+        }
+        builder.op_base_key(*key);
+        return true;
+    }
+    std::uint32_t address = 0;
+    if (parse_u32(base_trimmed, address)) {
+        builder.op_base_abs(address);
+        return true;
+    }
+
+    errors.push_back(section + ": invalid addrprog base in '" + token + "'");
+    return false;
+}
+
+bool append_addrprog_step(
+    addrprog::Builder& builder,
+    const std::string& step,
+    std::vector<std::string>& errors,
+    const std::string& section,
+    const std::string& token)
+{
+    const auto step_trimmed = trim(step);
+    const auto step_lower = to_lower(step_trimmed);
+    if (step_lower == "load_ptr32" || step_lower == "deref32") {
+        builder.op_load_ptr32();
+        return true;
+    }
+
+    if (!step_trimmed.empty() && (step_trimmed[0] == '+' || step_trimmed[0] == '-')) {
+        std::int32_t offset = 0;
+        if (!parse_i32(step_trimmed, offset)) {
+            errors.push_back(section + ": invalid addrprog offset step in '" + token + "'");
+            return false;
+        }
+        builder.op_add_i32(offset);
+        return true;
+    }
+
+    if (step_lower.rfind("field:", 0) == 0) {
+        std::uint32_t offset = 0;
+        if (!parse_u32(step_trimmed.substr(6), offset)) {
+            errors.push_back(section + ": invalid addrprog field step in '" + token + "'");
+            return false;
+        }
+        builder.op_field(offset);
+        return true;
+    }
+
+    if (step_lower.rfind("index:", 0) == 0) {
+        const auto first = step_trimmed.find(':');
+        const auto second = first == std::string::npos ? std::string::npos : step_trimmed.find(':', first + 1);
+        if (first == std::string::npos || second == std::string::npos) {
+            errors.push_back(section + ": addrprog index step must be index:count:stride in '" + token + "'");
+            return false;
+        }
+        std::uint32_t count = 0;
+        std::uint32_t stride = 0;
+        if (!parse_u32(step_trimmed.substr(first + 1, second - first - 1), count)
+            || !parse_u32(step_trimmed.substr(second + 1), stride)
+            || count > 0xffffu
+            || stride > 0xffffu) {
+            errors.push_back(section + ": invalid addrprog index step in '" + token + "'");
+            return false;
+        }
+        builder.op_index(static_cast<std::uint16_t>(count), static_cast<std::uint16_t>(stride));
+        return true;
+    }
+
+    errors.push_back(section + ": unknown addrprog step '" + step_trimmed + "' in '" + token + "'");
+    return false;
+}
+
+std::optional<AddressProgramSampleSpec> parse_address_program_sample(
+    const std::string& token,
+    std::vector<std::string>& errors,
+    const std::string& section)
+{
+    const auto first = token.find(':');
+    const auto last = token.rfind(':');
+    if (first == std::string::npos || last == std::string::npos || first == last) {
+        errors.push_back(section + ": addrprog sample must be name:base:steps:width or name:base:width, got '" + token + "'");
+        return std::nullopt;
+    }
+
+    AddressProgramSampleSpec spec{};
+    spec.name = trim(token.substr(0, first));
+    if (spec.name.empty()) {
+        errors.push_back(section + ": addrprog sample name is empty");
+        return std::nullopt;
+    }
+
+    const auto width = parse_width(token.substr(last + 1));
+    if (!width.has_value()) {
+        errors.push_back(section + ": invalid addrprog sample width in '" + token + "'");
+        return std::nullopt;
+    }
+    spec.width = *width;
+
+    const auto body = token.substr(first + 1, last - first - 1);
+    std::string base;
+    std::string steps;
+    if (body.rfind("key:", 0) == 0 || body.rfind("KEY:", 0) == 0) {
+        const auto separator = body.find(':', 4);
+        if (separator == std::string::npos) {
+            base = body;
+        } else {
+            base = body.substr(0, separator);
+            steps = body.substr(separator + 1);
+        }
+    } else {
+        const auto separator = body.find(':');
+        if (separator == std::string::npos) {
+            base = body;
+        } else {
+            base = body.substr(0, separator);
+            steps = body.substr(separator + 1);
+        }
+    }
+
+    addrprog::Builder builder;
+    if (!append_addrprog_base(builder, base, errors, section, token)) {
+        return std::nullopt;
+    }
+    for (const auto& step : split_pipe_list(steps)) {
+        if (!append_addrprog_step(builder, step, errors, section, token)) {
+            return std::nullopt;
+        }
+    }
+    builder.op_end();
+    spec.program = builder.blob();
+    return spec;
+}
+
 std::optional<MemorySampleSpec> parse_memory_sample(
     const std::string& token,
     std::vector<std::string>& errors,
@@ -257,6 +440,19 @@ void append_register_memory_samples(
     }
 }
 
+void append_address_program_samples(
+    std::vector<AddressProgramSampleSpec>& out,
+    const std::string& value,
+    std::vector<std::string>& errors,
+    const std::string& section)
+{
+    for (const auto& token : split_list(value)) {
+        if (auto parsed = parse_address_program_sample(token, errors, section)) {
+            out.push_back(*parsed);
+        }
+    }
+}
+
 void append_memory_samples(
     std::vector<MemorySampleSpec>& out,
     const std::string& value,
@@ -335,6 +531,15 @@ CaptureProfileParseResult ParseCaptureProfileText(const std::string& text)
         ini.get("profile", "reg_memory", ""),
         result.errors,
         "profile");
+    append_address_program_samples(
+        profile.default_address_program_samples,
+        ini.get("profile", "addrprog", ""),
+        result.errors,
+        "profile");
+    const auto default_addrprog_trace_text = ini.get("profile", "addrprog_trace", "false");
+    if (!parse_bool(default_addrprog_trace_text, profile.default_address_program_trace)) {
+        result.errors.push_back("profile: addrprog_trace must be true/false");
+    }
 
     std::set<std::string> ids;
     for (const auto& section : ini.list_sections(false)) {
@@ -358,10 +563,17 @@ CaptureProfileParseResult ParseCaptureProfileText(const std::string& text)
             result.errors.push_back(section + ": owns_rng_draw must be true/false");
         }
         checkpoint.owns_rng_draw = owns_rng_draw;
+        checkpoint.address_program_trace = profile.default_address_program_trace;
+        const auto addrprog_trace_text = ini.get(section, "addrprog_trace", "");
+        if (!addrprog_trace_text.empty()
+            && !parse_bool(addrprog_trace_text, checkpoint.address_program_trace)) {
+            result.errors.push_back(section + ": addrprog_trace must be true/false");
+        }
 
         checkpoint.memory_samples = profile.default_memory_samples;
         checkpoint.gpr_samples = profile.default_gpr_samples;
         checkpoint.register_memory_samples = profile.default_register_memory_samples;
+        checkpoint.address_program_samples = profile.default_address_program_samples;
         append_memory_samples(
             checkpoint.memory_samples,
             ini.get(section, "memory", ""),
@@ -375,6 +587,11 @@ CaptureProfileParseResult ParseCaptureProfileText(const std::string& text)
         append_register_memory_samples(
             checkpoint.register_memory_samples,
             ini.get(section, "reg_memory", ""),
+            result.errors,
+            section);
+        append_address_program_samples(
+            checkpoint.address_program_samples,
+            ini.get(section, "addrprog", ""),
             result.errors,
             section);
 

@@ -1,6 +1,7 @@
 #include "LiveCheckpointCapture.h"
 
 #include "../../Core/DolphinWrapper.h"
+#include "../../Core/Memory/Soa/SoaAddrProgram.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -116,6 +117,23 @@ void append_decoded_memory_access_fields(
     }
 }
 
+void append_address_program_trace_fields(
+    CheckpointCaptureRecord& record,
+    const std::string& name,
+    const addrprog::EvalResult& eval)
+{
+    for (std::size_t i = 0; i < eval.trace.size(); ++i) {
+        const auto& step = eval.trace[i];
+        const auto prefix = name + "_step" + std::to_string(i);
+        record.fields.push_back(CaptureField{ prefix + "_op", step.op_name, true });
+        record.fields.push_back(CaptureField{ prefix + "_address_before", "\"" + HexU32(step.address_before) + "\"", false });
+        record.fields.push_back(CaptureField{ prefix + "_address_after", "\"" + HexU32(step.address_after) + "\"", false });
+        if (step.has_value) {
+            record.fields.push_back(CaptureField{ prefix + "_value", "\"" + HexU64(step.value) + "\"", false });
+        }
+    }
+}
+
 } // namespace
 
 bool LiveCheckpointCapture::start(
@@ -222,6 +240,38 @@ bool LiveCheckpointCapture::capture_hit(DolphinWrapper& host, std::uint32_t pc, 
             continue;
         }
         record.fields.push_back(CaptureField{ sample.name, sample_value_for_json(value, sample.width), false });
+    }
+
+    for (const auto& sample : checkpoint->address_program_samples) {
+        std::uint64_t value = 0;
+        addrprog::EvalResult eval{};
+        const auto read_ok = addrprog::read_value(
+            sample.program.data(),
+            sample.program.size(),
+            0,
+            host,
+            nullptr,
+            static_cast<std::uint8_t>(sample.width),
+            value,
+            &eval,
+            [&](const std::uint8_t reg, std::uint32_t& out) {
+                out = host.getRegister(reg);
+                return true;
+            },
+            checkpoint->address_program_trace);
+        record.fields.push_back(CaptureField{ sample.name + "_eval_ok", eval.ok ? "true" : "false", false });
+        if (eval.ok) {
+            record.fields.push_back(CaptureField{ sample.name + "_address", "\"" + HexU32(eval.va) + "\"", false });
+        } else {
+            record.fields.push_back(CaptureField{ sample.name + "_eval_error", eval.error, true });
+        }
+        record.fields.push_back(CaptureField{ sample.name + "_read_ok", read_ok ? "true" : "false", false });
+        if (read_ok) {
+            record.fields.push_back(CaptureField{ sample.name, sample_value_for_json(value, sample.width), false });
+        }
+        if (checkpoint->address_program_trace) {
+            append_address_program_trace_fields(record, sample.name, eval);
+        }
     }
 
     if (!writer_.write(record, error_out)) {

@@ -12,6 +12,8 @@ namespace addrprog {
 	public:
 		uint32_t begin() { return 0; }
 		void op_base_key(addr::AddrKey k) { emit_byte((uint8_t)Op::BASE_KEY); emit_u16(static_cast<uint16_t>(k)); }
+		void op_base_gpr(uint8_t reg) { emit_byte((uint8_t)Op::BASE_GPR); emit_byte(reg); }
+		void op_base_abs(uint32_t va) { emit_byte((uint8_t)Op::BASE_ABS); emit_u32(va); }
 		void op_add_i32(int32_t imm) { emit_byte((uint8_t)Op::ADD_I32);  emit_i32(imm); }
 		void op_index(uint16_t count, uint16_t stride) { emit_byte((uint8_t)Op::INDEX); emit_u16(count); emit_u16(stride); }
 		void op_field(uint32_t off) { emit_byte((uint8_t)Op::FIELD_OFF); emit_u32(off); }

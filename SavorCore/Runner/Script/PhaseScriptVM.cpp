@@ -125,33 +125,7 @@ namespace {
 
         const uint8_t* base = reinterpret_cast<const uint8_t*>(table_and_blob.data());
         const size_t   sz = table_and_blob.size();
-        if (prog_off + 3 > sz) return false;
-
-        const uint8_t* p = base + prog_off;
-        uint8_t op = *p++;
-        if (op != 0x01) return false; // OP_BASE_KEY
-        uint16_t key = uint16_t(p[0]) | (uint16_t(p[1]) << 8);
-
-        const auto region = addr::AddrRegistry::region(static_cast<addr::AddrKey>(key)); // MEM1/MEM2/DERIVED
-        const auto res = addrprog::exec(base, sz, prog_off, host, derived);        
-        if (!res.ok) return false;
-
-        switch (region) {
-        case addr::Region::MEM1:
-        case addr::Region::MEM2:
-            switch (width) {
-            case 1: { uint8_t  v = 0; if (!host.readU8(res.va, v))  return false; out_bits = v; return true; }
-            case 2: { uint16_t v = 0; if (!host.readU16(res.va, v)) return false; out_bits = v; return true; }
-            case 4: { uint32_t v = 0; if (!host.readU32(res.va, v)) return false; out_bits = v; return true; }
-            case 8: { uint64_t v = 0; if (!host.readU64(res.va, v)) return false; out_bits = v; return true; }
-            default: return false;
-            }
-        case addr::Region::DERIVED:
-            if (!derived) return false;
-            return derived->read_raw(res.va, width, out_bits);
-        default:
-            return false;
-        }
+        return addrprog::read_value(base, sz, prog_off, host, derived, width, out_bits);
     }
 }
 

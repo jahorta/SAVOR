@@ -38,6 +38,12 @@ struct RegisterMemorySampleSpec {
     SampleWidth width = SampleWidth::U32;
 };
 
+struct AddressProgramSampleSpec {
+    std::string name;
+    std::vector<std::uint8_t> program;
+    SampleWidth width = SampleWidth::U32;
+};
+
 struct CheckpointSpec {
     std::string id;
     std::string name;
@@ -45,9 +51,11 @@ struct CheckpointSpec {
     std::string checkpoint;
     std::uint32_t pc = 0;
     bool owns_rng_draw = false;
+    bool address_program_trace = false;
     std::vector<MemorySampleSpec> memory_samples;
     std::vector<GprSampleSpec> gpr_samples;
     std::vector<RegisterMemorySampleSpec> register_memory_samples;
+    std::vector<AddressProgramSampleSpec> address_program_samples;
 };
 
 struct MemoryWatchpointSpec {
@@ -63,6 +71,8 @@ struct CaptureProfile {
     std::vector<MemorySampleSpec> default_memory_samples;
     std::vector<GprSampleSpec> default_gpr_samples;
     std::vector<RegisterMemorySampleSpec> default_register_memory_samples;
+    std::vector<AddressProgramSampleSpec> default_address_program_samples;
+    bool default_address_program_trace = false;
     std::vector<CheckpointSpec> checkpoints;
     std::vector<MemoryWatchpointSpec> memory_watchpoints;
 
