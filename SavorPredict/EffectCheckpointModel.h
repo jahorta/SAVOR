@@ -16,6 +16,10 @@ enum class EffectCheckpointStatus {
 
 struct EffectSourceKeyPairCount {
     int source_key = -1;
+    int first_loop_count = 0;
+    int second_loop_count = 0;
+    int loop_count_sum = 0;
+    int draw_count = 0;
     int pair_count = 0;
 };
 
@@ -62,7 +66,12 @@ struct EffectCheckpointSummary {
     int complete_binary_variant_buffers = 0;
     int complete_binary_variant_16_loop_buffers = 0;
     int complete_binary_variant_6_loop_buffers = 0;
+    int complete_binary_variant_4_loop_buffers = 0;
     int complete_first_battle_landed_attack_effect_pairs = 0;
+    int complete_first_battle_16_6_effect_pairs = 0;
+    int complete_first_battle_16_4_effect_pairs = 0;
+    int complete_first_battle_landed_attack_effect_pair_iterations = 0;
+    int complete_first_battle_landed_attack_effect_pair_draws = 0;
     int complete_first_battle_landed_attack_effect_pairs_with_matching_source_key = 0;
     int complete_first_battle_landed_attack_effect_pairs_without_matching_source_key = 0;
     std::vector<EffectSourceKeyPairCount> complete_first_battle_effect_pairs_by_source_key;

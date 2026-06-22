@@ -525,8 +525,18 @@ void write_text_report(
         << effects.complete_binary_variant_16_loop_buffers << "\n";
     out << "  complete_binary_variant_6_loop_buffers: "
         << effects.complete_binary_variant_6_loop_buffers << "\n";
+    out << "  complete_binary_variant_4_loop_buffers: "
+        << effects.complete_binary_variant_4_loop_buffers << "\n";
     out << "  complete_first_battle_landed_attack_effect_pairs: "
         << effects.complete_first_battle_landed_attack_effect_pairs << "\n";
+    out << "  complete_first_battle_16_6_effect_pairs: "
+        << effects.complete_first_battle_16_6_effect_pairs << "\n";
+    out << "  complete_first_battle_16_4_effect_pairs: "
+        << effects.complete_first_battle_16_4_effect_pairs << "\n";
+    out << "  complete_first_battle_landed_attack_effect_pair_iterations: "
+        << effects.complete_first_battle_landed_attack_effect_pair_iterations << "\n";
+    out << "  complete_first_battle_landed_attack_effect_pair_draws: "
+        << effects.complete_first_battle_landed_attack_effect_pair_draws << "\n";
     out << "  complete_first_battle_landed_attack_effect_pairs_with_matching_source_key: "
         << effects.complete_first_battle_landed_attack_effect_pairs_with_matching_source_key << "\n";
     out << "  complete_first_battle_landed_attack_effect_pairs_without_matching_source_key: "
@@ -537,7 +547,10 @@ void write_text_report(
     } else {
         for (const auto& pair_count : effects.complete_first_battle_effect_pairs_by_source_key) {
             out << "    source_key_" << pair_count.source_key << ": "
-                << pair_count.pair_count << "\n";
+                << pair_count.pair_count
+                << " pairs loops=" << pair_count.first_loop_count
+                << "+" << pair_count.second_loop_count
+                << " draws_per_pair=" << pair_count.draw_count << "\n";
         }
     }
     out << "  unpaired_first_battle_effect_buffers: "
@@ -2390,8 +2403,18 @@ void write_json_report(
         << effects.complete_binary_variant_16_loop_buffers;
     out << ", \"complete_binary_variant_6_loop_buffers\": "
         << effects.complete_binary_variant_6_loop_buffers;
+    out << ", \"complete_binary_variant_4_loop_buffers\": "
+        << effects.complete_binary_variant_4_loop_buffers;
     out << ", \"complete_first_battle_landed_attack_effect_pairs\": "
         << effects.complete_first_battle_landed_attack_effect_pairs;
+    out << ", \"complete_first_battle_16_6_effect_pairs\": "
+        << effects.complete_first_battle_16_6_effect_pairs;
+    out << ", \"complete_first_battle_16_4_effect_pairs\": "
+        << effects.complete_first_battle_16_4_effect_pairs;
+    out << ", \"complete_first_battle_landed_attack_effect_pair_iterations\": "
+        << effects.complete_first_battle_landed_attack_effect_pair_iterations;
+    out << ", \"complete_first_battle_landed_attack_effect_pair_draws\": "
+        << effects.complete_first_battle_landed_attack_effect_pair_draws;
     out << ", \"complete_first_battle_landed_attack_effect_pairs_with_matching_source_key\": "
         << effects.complete_first_battle_landed_attack_effect_pairs_with_matching_source_key;
     out << ", \"complete_first_battle_landed_attack_effect_pairs_without_matching_source_key\": "
@@ -2403,6 +2426,10 @@ void write_json_report(
         }
         const auto& pair_count = effects.complete_first_battle_effect_pairs_by_source_key[i];
         out << "{\"source_key\": " << pair_count.source_key
+            << ", \"first_loop_count\": " << pair_count.first_loop_count
+            << ", \"second_loop_count\": " << pair_count.second_loop_count
+            << ", \"loop_count_sum\": " << pair_count.loop_count_sum
+            << ", \"draw_count\": " << pair_count.draw_count
             << ", \"pair_count\": " << pair_count.pair_count << "}";
     }
     out << "]";

@@ -107,6 +107,22 @@ struct CombatEffectBufferStats {
     int axis_assignment_draws = 0;
 };
 
+struct FirstBattleEffectPairKey {
+    int source_key = -1;
+    int first_loop_count = 0;
+    int second_loop_count = 0;
+
+    bool operator<(const FirstBattleEffectPairKey& other) const {
+        if (source_key != other.source_key) {
+            return source_key < other.source_key;
+        }
+        if (first_loop_count != other.first_loop_count) {
+            return first_loop_count < other.first_loop_count;
+        }
+        return second_loop_count < other.second_loop_count;
+    }
+};
+
 void observe_combat_effect_buffer_draw(CombatEffectBufferStats& stats, const CheckpointEvent& event) {
     if (!stats.first_draw_index.has_value()
         || (event.rng_draw_index_before.has_value()
@@ -147,6 +163,47 @@ bool is_complete_binary_variant_buffer(const CombatEffectBufferStats& stats) {
         && stats.scale_z_draws == stats.loop_count
         && stats.variant_index_draws == stats.loop_count
         && stats.axis_assignment_draws == 0;
+}
+
+std::optional<int> expected_first_battle_second_loop_count_for_source_key(int source_key) {
+    if (source_key == 4 || source_key == 5) {
+        return 6;
+    }
+    if (source_key == 8) {
+        return 4;
+    }
+    return std::nullopt;
+}
+
+bool source_keys_match(const CombatEffectBufferStats& current, const CombatEffectBufferStats& next) {
+    return current.source_key.has_value()
+        && next.source_key.has_value()
+        && *current.source_key == *next.source_key;
+}
+
+bool is_supported_first_battle_effect_pair(
+    const CombatEffectBufferStats& current,
+    const CombatEffectBufferStats& next) {
+    if (current.loop_count != 16) {
+        return false;
+    }
+
+    if (source_keys_match(current, next)) {
+        const auto expected_second_loop_count =
+            expected_first_battle_second_loop_count_for_source_key(*current.source_key);
+        return expected_second_loop_count.has_value()
+            && next.loop_count == *expected_second_loop_count;
+    }
+
+    if (current.source_key.has_value()) {
+        const auto expected_second_loop_count =
+            expected_first_battle_second_loop_count_for_source_key(*current.source_key);
+        return expected_second_loop_count.has_value()
+            && next.loop_count == *expected_second_loop_count;
+    }
+
+    // Preserve the original source-key-free test fixture behavior.
+    return !next.source_key.has_value() && next.loop_count == 6;
 }
 
 EffectCheckpointStatus classify_status(const EffectCheckpointSummary& summary) {
@@ -316,6 +373,9 @@ EffectCheckpointSummary summarize_effect_checkpoints(const std::vector<Checkpoin
         } else if (stats.loop_count == 6) {
             ++summary.complete_binary_variant_6_loop_buffers;
             complete_first_battle_buffers.push_back(stats);
+        } else if (stats.loop_count == 4) {
+            ++summary.complete_binary_variant_4_loop_buffers;
+            complete_first_battle_buffers.push_back(stats);
         }
     }
 
@@ -332,31 +392,48 @@ EffectCheckpointSummary summarize_effect_checkpoints(const std::vector<Checkpoin
         });
 
     std::vector<bool> paired(complete_first_battle_buffers.size(), false);
-    std::map<int, int> pairs_by_source_key;
+    std::map<FirstBattleEffectPairKey, int> pairs_by_source_key;
     for (std::size_t i = 0; i + 1 < complete_first_battle_buffers.size(); ++i) {
         if (paired[i]) {
             continue;
         }
         const auto& current = complete_first_battle_buffers[i];
         const auto& next = complete_first_battle_buffers[i + 1];
-        if (!paired[i + 1] && current.loop_count == 16 && next.loop_count == 6) {
+        if (!paired[i + 1] && is_supported_first_battle_effect_pair(current, next)) {
             paired[i] = true;
             paired[i + 1] = true;
             ++summary.complete_first_battle_landed_attack_effect_pairs;
-            if (current.source_key.has_value()
-                && next.source_key.has_value()
-                && *current.source_key == *next.source_key) {
+            if (current.loop_count == 16 && next.loop_count == 6) {
+                ++summary.complete_first_battle_16_6_effect_pairs;
+            } else if (current.loop_count == 16 && next.loop_count == 4) {
+                ++summary.complete_first_battle_16_4_effect_pairs;
+            }
+            const int pair_iterations = current.loop_count + next.loop_count;
+            summary.complete_first_battle_landed_attack_effect_pair_iterations += pair_iterations;
+            summary.complete_first_battle_landed_attack_effect_pair_draws += pair_iterations * 5;
+            if (source_keys_match(current, next)) {
                 ++summary.complete_first_battle_landed_attack_effect_pairs_with_matching_source_key;
-                ++pairs_by_source_key[*current.source_key];
+                ++pairs_by_source_key[FirstBattleEffectPairKey{
+                    *current.source_key,
+                    current.loop_count,
+                    next.loop_count,
+                }];
             } else {
                 ++summary.complete_first_battle_landed_attack_effect_pairs_without_matching_source_key;
             }
             ++i;
         }
     }
-    for (const auto& [source_key, pair_count] : pairs_by_source_key) {
+    for (const auto& [pair_key, pair_count] : pairs_by_source_key) {
         summary.complete_first_battle_effect_pairs_by_source_key.push_back(
-            EffectSourceKeyPairCount{source_key, pair_count});
+            EffectSourceKeyPairCount{
+                pair_key.source_key,
+                pair_key.first_loop_count,
+                pair_key.second_loop_count,
+                pair_key.first_loop_count + pair_key.second_loop_count,
+                (pair_key.first_loop_count + pair_key.second_loop_count) * 5,
+                pair_count,
+            });
     }
     for (std::size_t i = 0; i < complete_first_battle_buffers.size(); ++i) {
         if (!paired[i]) {
@@ -385,7 +462,7 @@ EffectCheckpointSummary summarize_effect_checkpoints(const std::vector<Checkpoin
     });
     summary.incomplete_binary_variant_iteration_remainder =
         summary.complete_binary_variant_iterations
-        - (summary.complete_first_battle_landed_attack_effect_pairs * 22);
+        - summary.complete_first_battle_landed_attack_effect_pair_iterations;
     summary.status = classify_status(summary);
     return summary;
 }
@@ -404,9 +481,11 @@ const char* effect_checkpoint_status_name(EffectCheckpointStatus status) {
 }
 
 const char* first_battle_effect_checkpoint_rule_detail() {
-    return "Live first-battle checkpoints observe supported landed basic attacks "
-           "selecting source keys 4 or 5 as two FUN_80042b10 effect buffers: "
-           "16 binary-selector/variant loops followed by 6 more, for 110 draws; "
+    return "Live first-battle checkpoints observe supported landed basic attacks as "
+           "two FUN_80042b10 effect buffers selected from copied source records: "
+           "source keys 4/5 use 16 binary-selector/variant loops followed by 6 "
+           "more, for 110 draws; the observed successful-crit key 8 path uses "
+           "16 followed by 4, for 100 draws; "
            "FUN_8003ba08 effect-record copy checkpoints should match those later "
            "FUN_80042b10 buffers by effect-buffer pointer; workbook 22-loop groups "
            "are a flattened view without the live r29 buffer split";

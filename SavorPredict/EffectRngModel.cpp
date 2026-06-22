@@ -56,6 +56,19 @@ EffectParticleTickModel model_effect_particle_tick_draws(const EffectParticleTic
 }
 
 std::vector<CombatEffectBurstInput> first_battle_landed_basic_attack_effect_burst_sequence() {
+    return first_battle_effect_burst_sequence_for_source_key(4);
+}
+
+std::vector<CombatEffectBurstInput> first_battle_effect_burst_sequence_for_source_key(int source_key) {
+    int second_loop_count = 0;
+    if (source_key == 4 || source_key == 5) {
+        second_loop_count = 6;
+    } else if (source_key == 8) {
+        second_loop_count = 4;
+    } else {
+        return {};
+    }
+
     return {
         {
             .loop_count = 16,
@@ -64,7 +77,7 @@ std::vector<CombatEffectBurstInput> first_battle_landed_basic_attack_effect_burs
             .axis_assignment_draw = false,
         },
         {
-            .loop_count = 6,
+            .loop_count = second_loop_count,
             .position_selector = CombatEffectPositionSelector::Binary,
             .variant_index_draw = true,
             .axis_assignment_draw = false,
@@ -76,8 +89,10 @@ const char* combat_effect_burst_rule_detail() {
     return "FUN_80042b10 spends one mutually exclusive position-selector draw, "
            "three scale draws, an optional variant-index draw, and an optional "
            "axis-assignment draw per loop iteration; live first-battle landed basic "
-           "attacks observe two selected binary/variant buffers, 16 loops then 6 "
-           "loops, with no axis draw";
+           "attacks use copied source-record loop counts: keys 4/5 are two "
+           "selected binary/variant buffers, 16 loops then 6 loops, while the "
+           "observed successful-crit key 8 path is 16 loops then 4 loops; neither "
+           "uses an axis draw";
 }
 
 const char* effect_emitter_spawn_rule_detail() {
