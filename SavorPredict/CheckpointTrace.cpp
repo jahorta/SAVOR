@@ -491,10 +491,22 @@ void write_text_report(
         << effects.combat_effect_draws_with_variant_count << "\n";
     out << "  combat_effect_draws_with_axis_mode: "
         << effects.combat_effect_draws_with_axis_mode << "\n";
+    out << "  combat_effect_draws_with_buffer_pointer: "
+        << effects.combat_effect_draws_with_buffer_pointer << "\n";
+    out << "  observed_combat_effect_buffers: "
+        << effects.observed_combat_effect_buffers << "\n";
     out << "  complete_binary_variant_iterations: "
         << effects.complete_binary_variant_iterations << "\n";
-    out << "  complete_binary_variant_22_loop_executions: "
-        << effects.complete_binary_variant_22_loop_executions << "\n";
+    out << "  complete_binary_variant_buffers: "
+        << effects.complete_binary_variant_buffers << "\n";
+    out << "  complete_binary_variant_16_loop_buffers: "
+        << effects.complete_binary_variant_16_loop_buffers << "\n";
+    out << "  complete_binary_variant_6_loop_buffers: "
+        << effects.complete_binary_variant_6_loop_buffers << "\n";
+    out << "  complete_first_battle_landed_attack_effect_pairs: "
+        << effects.complete_first_battle_landed_attack_effect_pairs << "\n";
+    out << "  unpaired_first_battle_effect_buffers: "
+        << effects.unpaired_first_battle_effect_buffers << "\n";
     out << "  incomplete_binary_variant_iteration_remainder: "
         << effects.incomplete_binary_variant_iteration_remainder << "\n";
     out << "  observed_emitter_spawn_draws: "
@@ -2277,10 +2289,22 @@ void write_json_report(
         << effects.combat_effect_draws_with_variant_count;
     out << ", \"combat_effect_draws_with_axis_mode\": "
         << effects.combat_effect_draws_with_axis_mode;
+    out << ", \"combat_effect_draws_with_buffer_pointer\": "
+        << effects.combat_effect_draws_with_buffer_pointer;
+    out << ", \"observed_combat_effect_buffers\": "
+        << effects.observed_combat_effect_buffers;
     out << ", \"complete_binary_variant_iterations\": "
         << effects.complete_binary_variant_iterations;
-    out << ", \"complete_binary_variant_22_loop_executions\": "
-        << effects.complete_binary_variant_22_loop_executions;
+    out << ", \"complete_binary_variant_buffers\": "
+        << effects.complete_binary_variant_buffers;
+    out << ", \"complete_binary_variant_16_loop_buffers\": "
+        << effects.complete_binary_variant_16_loop_buffers;
+    out << ", \"complete_binary_variant_6_loop_buffers\": "
+        << effects.complete_binary_variant_6_loop_buffers;
+    out << ", \"complete_first_battle_landed_attack_effect_pairs\": "
+        << effects.complete_first_battle_landed_attack_effect_pairs;
+    out << ", \"unpaired_first_battle_effect_buffers\": "
+        << effects.unpaired_first_battle_effect_buffers;
     out << ", \"incomplete_binary_variant_iteration_remainder\": "
         << effects.incomplete_binary_variant_iteration_remainder;
     out << ", \"observed_emitter_spawn_draws\": "

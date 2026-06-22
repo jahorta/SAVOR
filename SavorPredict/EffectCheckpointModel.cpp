@@ -2,7 +2,12 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdlib>
+#include <limits>
+#include <map>
+#include <string>
 #include <string_view>
+#include <vector>
 
 namespace savor::predict {
 
@@ -55,6 +60,77 @@ bool has_field(const CheckpointEvent& event, std::string_view field_name) {
     return event.fields.find(std::string(field_name)) != event.fields.end();
 }
 
+std::optional<int> parse_int_field(const CheckpointEvent& event, std::string_view field_name) {
+    const auto found = event.fields.find(std::string(field_name));
+    if (found == event.fields.end()) {
+        return std::nullopt;
+    }
+
+    const auto& value = found->second;
+    char* end = nullptr;
+    const int base = (value.rfind("0x", 0) == 0 || value.rfind("0X", 0) == 0) ? 16 : 10;
+    const long parsed = std::strtol(value.c_str(), &end, base);
+    if (end == value.c_str() || *end != '\0') {
+        return std::nullopt;
+    }
+    if (parsed < std::numeric_limits<int>::min() || parsed > std::numeric_limits<int>::max()) {
+        return std::nullopt;
+    }
+    return static_cast<int>(parsed);
+}
+
+struct CombatEffectBufferStats {
+    std::string key;
+    std::optional<int> first_draw_index;
+    int loop_count = -1;
+    int binary_position_draws = 0;
+    int four_way_position_draws = 0;
+    int scale_x_draws = 0;
+    int scale_y_draws = 0;
+    int scale_z_draws = 0;
+    int variant_index_draws = 0;
+    int axis_assignment_draws = 0;
+};
+
+void observe_combat_effect_buffer_draw(CombatEffectBufferStats& stats, const CheckpointEvent& event) {
+    if (!stats.first_draw_index.has_value()
+        || (event.rng_draw_index_before.has_value()
+            && *event.rng_draw_index_before < *stats.first_draw_index)) {
+        stats.first_draw_index = event.rng_draw_index_before;
+    }
+
+    if (const auto loop_count = parse_int_field(event, "effect_loop_count_0x5c")) {
+        stats.loop_count = *loop_count;
+    }
+
+    if (owner_is(event, kPositionBinaryOwner)) {
+        ++stats.binary_position_draws;
+    } else if (owner_is(event, kPositionFourWayOwner)) {
+        ++stats.four_way_position_draws;
+    } else if (owner_is(event, kScaleXOwner)) {
+        ++stats.scale_x_draws;
+    } else if (owner_is(event, kScaleYOwner)) {
+        ++stats.scale_y_draws;
+    } else if (owner_is(event, kScaleZOwner)) {
+        ++stats.scale_z_draws;
+    } else if (owner_is(event, kVariantIndexOwner)) {
+        ++stats.variant_index_draws;
+    } else if (owner_is(event, kAxisAssignmentOwner)) {
+        ++stats.axis_assignment_draws;
+    }
+}
+
+bool is_complete_binary_variant_buffer(const CombatEffectBufferStats& stats) {
+    return stats.loop_count > 0
+        && stats.binary_position_draws == stats.loop_count
+        && stats.four_way_position_draws == 0
+        && stats.scale_x_draws == stats.loop_count
+        && stats.scale_y_draws == stats.loop_count
+        && stats.scale_z_draws == stats.loop_count
+        && stats.variant_index_draws == stats.loop_count
+        && stats.axis_assignment_draws == 0;
+}
+
 EffectCheckpointStatus classify_status(const EffectCheckpointSummary& summary) {
     if (summary.observed_combat_effect_draws == 0) {
         return EffectCheckpointStatus::ObservedOnly;
@@ -78,10 +154,18 @@ EffectCheckpointStatus classify_status(const EffectCheckpointSummary& summary) {
 
 EffectCheckpointSummary summarize_effect_checkpoints(const std::vector<CheckpointEvent>& events) {
     EffectCheckpointSummary summary;
+    std::map<std::string, CombatEffectBufferStats> combat_effect_buffers;
 
     for (const auto& event : events) {
         if (owner_in(event, kCombatEffectOwners)) {
             ++summary.observed_combat_effect_draws;
+            if (const auto buffer = event.fields.find("r29_effect_buffer");
+                buffer != event.fields.end() && !buffer->second.empty()) {
+                ++summary.combat_effect_draws_with_buffer_pointer;
+                auto& stats = combat_effect_buffers[buffer->second];
+                stats.key = buffer->second;
+                observe_combat_effect_buffer_draw(stats, event);
+            }
             if (has_field(event, "effect_loop_count_0x5c")) {
                 ++summary.combat_effect_draws_with_loop_count;
             }
@@ -143,6 +227,55 @@ EffectCheckpointSummary summarize_effect_checkpoints(const std::vector<Checkpoin
         }
     }
 
+    summary.observed_combat_effect_buffers = static_cast<int>(combat_effect_buffers.size());
+
+    std::vector<CombatEffectBufferStats> complete_first_battle_buffers;
+    for (const auto& [_, stats] : combat_effect_buffers) {
+        if (!is_complete_binary_variant_buffer(stats)) {
+            continue;
+        }
+        ++summary.complete_binary_variant_buffers;
+        if (stats.loop_count == 16) {
+            ++summary.complete_binary_variant_16_loop_buffers;
+            complete_first_battle_buffers.push_back(stats);
+        } else if (stats.loop_count == 6) {
+            ++summary.complete_binary_variant_6_loop_buffers;
+            complete_first_battle_buffers.push_back(stats);
+        }
+    }
+
+    std::sort(
+        complete_first_battle_buffers.begin(),
+        complete_first_battle_buffers.end(),
+        [](const CombatEffectBufferStats& lhs, const CombatEffectBufferStats& rhs) {
+            const auto lhs_draw = lhs.first_draw_index.value_or(std::numeric_limits<int>::max());
+            const auto rhs_draw = rhs.first_draw_index.value_or(std::numeric_limits<int>::max());
+            if (lhs_draw != rhs_draw) {
+                return lhs_draw < rhs_draw;
+            }
+            return lhs.key < rhs.key;
+        });
+
+    std::vector<bool> paired(complete_first_battle_buffers.size(), false);
+    for (std::size_t i = 0; i + 1 < complete_first_battle_buffers.size(); ++i) {
+        if (paired[i]) {
+            continue;
+        }
+        const auto& current = complete_first_battle_buffers[i];
+        const auto& next = complete_first_battle_buffers[i + 1];
+        if (!paired[i + 1] && current.loop_count == 16 && next.loop_count == 6) {
+            paired[i] = true;
+            paired[i + 1] = true;
+            ++summary.complete_first_battle_landed_attack_effect_pairs;
+            ++i;
+        }
+    }
+    for (std::size_t i = 0; i < complete_first_battle_buffers.size(); ++i) {
+        if (!paired[i]) {
+            ++summary.unpaired_first_battle_effect_buffers;
+        }
+    }
+
     summary.complete_binary_variant_iterations = std::min({
         summary.observed_binary_position_draws,
         summary.observed_scale_x_draws,
@@ -150,10 +283,9 @@ EffectCheckpointSummary summarize_effect_checkpoints(const std::vector<Checkpoin
         summary.observed_scale_z_draws,
         summary.observed_variant_index_draws,
     });
-    summary.complete_binary_variant_22_loop_executions =
-        summary.complete_binary_variant_iterations / 22;
     summary.incomplete_binary_variant_iteration_remainder =
-        summary.complete_binary_variant_iterations % 22;
+        summary.complete_binary_variant_iterations
+        - (summary.complete_first_battle_landed_attack_effect_pairs * 22);
     summary.status = classify_status(summary);
     return summary;
 }
@@ -172,10 +304,10 @@ const char* effect_checkpoint_status_name(EffectCheckpointStatus status) {
 }
 
 const char* first_battle_effect_checkpoint_rule_detail() {
-    return "Battle1_007 exact RNG Calls observe FUN_80042b10 as four 22-iteration "
-           "binary-selector bursts with scale x/y/z and variant-index draws, for "
-           "110 draws per execution and 440 draws total; sibling 80041e64 and "
-           "800422d0 helpers remain separate live-validation buckets";
+    return "Live first-battle checkpoints observe each landed basic attack as two "
+           "FUN_80042b10 effect buffers: 16 binary-selector/variant loops followed "
+           "by 6 more, for 110 draws per landed attack; workbook 22-loop groups are "
+           "a flattened view without the live r29 buffer split";
 }
 
 } // namespace savor::predict

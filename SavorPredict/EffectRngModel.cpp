@@ -20,6 +20,19 @@ CombatEffectBurstModel model_combat_effect_burst_draws(const CombatEffectBurstIn
     return model;
 }
 
+CombatEffectBurstSequenceModel model_combat_effect_burst_sequence_draws(
+    const std::vector<CombatEffectBurstInput>& inputs) {
+    CombatEffectBurstSequenceModel sequence;
+    sequence.bursts.reserve(inputs.size());
+    for (const auto& input : inputs) {
+        auto burst = model_combat_effect_burst_draws(input);
+        sequence.total_loop_count += burst.loop_count;
+        sequence.total_draws += burst.total_draws;
+        sequence.bursts.push_back(burst);
+    }
+    return sequence;
+}
+
 EffectEmitterSpawnModel model_effect_emitter_spawn_draws(const EffectEmitterSpawnInput& input) {
     EffectEmitterSpawnModel model;
     model.outer_count = std::max(0, input.outer_count);
@@ -42,20 +55,29 @@ EffectParticleTickModel model_effect_particle_tick_draws(const EffectParticleTic
     return model;
 }
 
-CombatEffectBurstInput first_battle_007_combat_effect_burst_input() {
-    CombatEffectBurstInput input;
-    input.loop_count = 22;
-    input.position_selector = CombatEffectPositionSelector::Binary;
-    input.variant_index_draw = true;
-    input.axis_assignment_draw = false;
-    return input;
+std::vector<CombatEffectBurstInput> first_battle_landed_basic_attack_effect_burst_sequence() {
+    return {
+        {
+            .loop_count = 16,
+            .position_selector = CombatEffectPositionSelector::Binary,
+            .variant_index_draw = true,
+            .axis_assignment_draw = false,
+        },
+        {
+            .loop_count = 6,
+            .position_selector = CombatEffectPositionSelector::Binary,
+            .variant_index_draw = true,
+            .axis_assignment_draw = false,
+        },
+    };
 }
 
 const char* combat_effect_burst_rule_detail() {
     return "FUN_80042b10 spends one mutually exclusive position-selector draw, "
            "three scale draws, an optional variant-index draw, and an optional "
-           "axis-assignment draw per loop iteration; Battle1_007 observes "
-           "22 iterations with the binary selector, variant enabled, and no axis draw";
+           "axis-assignment draw per loop iteration; live first-battle landed basic "
+           "attacks observe two selected binary/variant buffers, 16 loops then 6 "
+           "loops, with no axis draw";
 }
 
 const char* effect_emitter_spawn_rule_detail() {
@@ -71,4 +93,3 @@ const char* effect_particle_tick_rule_detail() {
 }
 
 } // namespace savor::predict
-

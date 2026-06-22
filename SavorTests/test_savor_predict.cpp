@@ -62,17 +62,28 @@ TEST(SavorPredictRngModel, PreAiCameraModelKeepsBaselineAndSuppressionVisible) {
 }
 
 TEST(SavorPredictRngModel, EffectRngModelComputesFirstBattle007Burst) {
-    const auto input = first_battle_007_combat_effect_burst_input();
-    const auto model = model_combat_effect_burst_draws(input);
+    const auto input = first_battle_landed_basic_attack_effect_burst_sequence();
+    const auto model = model_combat_effect_burst_sequence_draws(input);
 
-    EXPECT_EQ(model.loop_count, 22);
-    EXPECT_EQ(model.draws_per_iteration, 5);
-    EXPECT_EQ(model.position_selector_draws, 22);
-    EXPECT_EQ(model.scale_draws, 66);
-    EXPECT_EQ(model.variant_index_draws, 22);
-    EXPECT_EQ(model.axis_assignment_draws, 0);
+    ASSERT_EQ(model.bursts.size(), 2u);
+    EXPECT_EQ(model.total_loop_count, 22);
     EXPECT_EQ(model.total_draws, 110);
-    EXPECT_EQ(model.total_draws * 4, 440);
+
+    EXPECT_EQ(model.bursts[0].loop_count, 16);
+    EXPECT_EQ(model.bursts[0].draws_per_iteration, 5);
+    EXPECT_EQ(model.bursts[0].position_selector_draws, 16);
+    EXPECT_EQ(model.bursts[0].scale_draws, 48);
+    EXPECT_EQ(model.bursts[0].variant_index_draws, 16);
+    EXPECT_EQ(model.bursts[0].axis_assignment_draws, 0);
+    EXPECT_EQ(model.bursts[0].total_draws, 80);
+
+    EXPECT_EQ(model.bursts[1].loop_count, 6);
+    EXPECT_EQ(model.bursts[1].draws_per_iteration, 5);
+    EXPECT_EQ(model.bursts[1].position_selector_draws, 6);
+    EXPECT_EQ(model.bursts[1].scale_draws, 18);
+    EXPECT_EQ(model.bursts[1].variant_index_draws, 6);
+    EXPECT_EQ(model.bursts[1].axis_assignment_draws, 0);
+    EXPECT_EQ(model.bursts[1].total_draws, 30);
 
     const auto emitter = model_effect_emitter_spawn_draws({3, true, false, 2});
     EXPECT_EQ(emitter.draws_per_outer, 6);
@@ -86,27 +97,43 @@ TEST(SavorPredictRngModel, EffectRngModelComputesFirstBattle007Burst) {
 TEST(SavorPredictRngModel, EffectCheckpointModelSummarizes80042b10BurstShape) {
     std::ostringstream stream;
     int draw_index = 0;
-    for (int i = 0; i < 88; ++i) {
-        stream << "pc=80042fbc function=FUN_80042b10 checkpoint=position "
-               << "rng_draw_index_before=" << draw_index++
-               << " effect_loop_count_0x5c=22 effect_flags_0x38=0 "
-               << "effect_variant_count_0x5e=4 effect_axis_mode_0x60=0\n";
-        stream << "pc=80043020 function=FUN_80042b10 checkpoint=scale_x "
-               << "rng_draw_index_before=" << draw_index++
-               << " effect_loop_count_0x5c=22 effect_flags_0x38=0 "
-               << "effect_variant_count_0x5e=4 effect_axis_mode_0x60=0\n";
-        stream << "pc=80043048 function=FUN_80042b10 checkpoint=scale_y "
-               << "rng_draw_index_before=" << draw_index++
-               << " effect_loop_count_0x5c=22 effect_flags_0x38=0 "
-               << "effect_variant_count_0x5e=4 effect_axis_mode_0x60=0\n";
-        stream << "pc=80043070 function=FUN_80042b10 checkpoint=scale_z "
-               << "rng_draw_index_before=" << draw_index++
-               << " effect_loop_count_0x5c=22 effect_flags_0x38=0 "
-               << "effect_variant_count_0x5e=4 effect_axis_mode_0x60=0\n";
-        stream << "pc=800430fc function=FUN_80042b10 checkpoint=variant "
-               << "rng_draw_index_before=" << draw_index++
-               << " effect_loop_count_0x5c=22 effect_flags_0x38=0 "
-               << "effect_variant_count_0x5e=4 effect_axis_mode_0x60=0\n";
+    auto append_buffer = [&](std::string_view buffer, int loop_count) {
+        for (int i = 0; i < loop_count; ++i) {
+            stream << "pc=80042fbc function=FUN_80042b10 checkpoint=position "
+                   << "rng_draw_index_before=" << draw_index++
+                   << " r29_effect_buffer=" << buffer
+                   << " effect_loop_count_0x5c=0x" << std::hex << loop_count << std::dec
+                   << " effect_flags_0x38=0 "
+                   << "effect_variant_count_0x5e=1 effect_axis_mode_0x60=0\n";
+            stream << "pc=80043020 function=FUN_80042b10 checkpoint=scale_x "
+                   << "rng_draw_index_before=" << draw_index++
+                   << " r29_effect_buffer=" << buffer
+                   << " effect_loop_count_0x5c=0x" << std::hex << loop_count << std::dec
+                   << " effect_flags_0x38=0 "
+                   << "effect_variant_count_0x5e=1 effect_axis_mode_0x60=0\n";
+            stream << "pc=80043048 function=FUN_80042b10 checkpoint=scale_y "
+                   << "rng_draw_index_before=" << draw_index++
+                   << " r29_effect_buffer=" << buffer
+                   << " effect_loop_count_0x5c=0x" << std::hex << loop_count << std::dec
+                   << " effect_flags_0x38=0 "
+                   << "effect_variant_count_0x5e=1 effect_axis_mode_0x60=0\n";
+            stream << "pc=80043070 function=FUN_80042b10 checkpoint=scale_z "
+                   << "rng_draw_index_before=" << draw_index++
+                   << " r29_effect_buffer=" << buffer
+                   << " effect_loop_count_0x5c=0x" << std::hex << loop_count << std::dec
+                   << " effect_flags_0x38=0 "
+                   << "effect_variant_count_0x5e=1 effect_axis_mode_0x60=0\n";
+            stream << "pc=800430fc function=FUN_80042b10 checkpoint=variant "
+                   << "rng_draw_index_before=" << draw_index++
+                   << " r29_effect_buffer=" << buffer
+                   << " effect_loop_count_0x5c=0x" << std::hex << loop_count << std::dec
+                   << " effect_flags_0x38=0 "
+                   << "effect_variant_count_0x5e=1 effect_axis_mode_0x60=0\n";
+        }
+    };
+    for (int attack = 0; attack < 3; ++attack) {
+        append_buffer("0x100" + std::to_string(attack), 16);
+        append_buffer("0x200" + std::to_string(attack), 6);
     }
     stream << "pc=80041f30 function=FUN_80041e64 checkpoint=effect_emitter_source_gate "
            << "rng_draw_index_before=" << draw_index << " owns_rng_draw=false "
@@ -120,24 +147,30 @@ TEST(SavorPredictRngModel, EffectCheckpointModelSummarizes80042b10BurstShape) {
     std::istringstream input(stream.str());
     const auto parsed = parse_checkpoint_stream(input);
     ASSERT_TRUE(parsed.errors.empty());
-    ASSERT_EQ(parsed.events.size(), 442u);
+    ASSERT_EQ(parsed.events.size(), 332u);
     EXPECT_EQ(parsed.events.front().known_rng_owner, "combat_effect_spawn_position_binary");
 
     const auto summary = summarize_effect_checkpoints(parsed.events);
     EXPECT_EQ(summary.status, EffectCheckpointStatus::MatchesBinaryVariantBurstShape);
-    EXPECT_EQ(summary.observed_combat_effect_draws, 440);
-    EXPECT_EQ(summary.observed_binary_position_draws, 88);
-    EXPECT_EQ(summary.observed_scale_x_draws, 88);
-    EXPECT_EQ(summary.observed_scale_y_draws, 88);
-    EXPECT_EQ(summary.observed_scale_z_draws, 88);
-    EXPECT_EQ(summary.observed_variant_index_draws, 88);
+    EXPECT_EQ(summary.observed_combat_effect_draws, 330);
+    EXPECT_EQ(summary.observed_binary_position_draws, 66);
+    EXPECT_EQ(summary.observed_scale_x_draws, 66);
+    EXPECT_EQ(summary.observed_scale_y_draws, 66);
+    EXPECT_EQ(summary.observed_scale_z_draws, 66);
+    EXPECT_EQ(summary.observed_variant_index_draws, 66);
     EXPECT_EQ(summary.observed_axis_assignment_draws, 0);
-    EXPECT_EQ(summary.combat_effect_draws_with_loop_count, 440);
-    EXPECT_EQ(summary.combat_effect_draws_with_flags, 440);
-    EXPECT_EQ(summary.combat_effect_draws_with_variant_count, 440);
-    EXPECT_EQ(summary.combat_effect_draws_with_axis_mode, 440);
-    EXPECT_EQ(summary.complete_binary_variant_iterations, 88);
-    EXPECT_EQ(summary.complete_binary_variant_22_loop_executions, 4);
+    EXPECT_EQ(summary.combat_effect_draws_with_loop_count, 330);
+    EXPECT_EQ(summary.combat_effect_draws_with_flags, 330);
+    EXPECT_EQ(summary.combat_effect_draws_with_variant_count, 330);
+    EXPECT_EQ(summary.combat_effect_draws_with_axis_mode, 330);
+    EXPECT_EQ(summary.combat_effect_draws_with_buffer_pointer, 330);
+    EXPECT_EQ(summary.observed_combat_effect_buffers, 6);
+    EXPECT_EQ(summary.complete_binary_variant_iterations, 66);
+    EXPECT_EQ(summary.complete_binary_variant_buffers, 6);
+    EXPECT_EQ(summary.complete_binary_variant_16_loop_buffers, 3);
+    EXPECT_EQ(summary.complete_binary_variant_6_loop_buffers, 3);
+    EXPECT_EQ(summary.complete_first_battle_landed_attack_effect_pairs, 3);
+    EXPECT_EQ(summary.unpaired_first_battle_effect_buffers, 0);
     EXPECT_EQ(summary.incomplete_binary_variant_iteration_remainder, 0);
     EXPECT_EQ(summary.observed_emitter_source_gate_events, 1);
     EXPECT_EQ(summary.emitter_source_gate_events_with_outer_count, 1);
@@ -150,7 +183,7 @@ TEST(SavorPredictRngModel, EffectCheckpointModelSummarizes80042b10BurstShape) {
     ASSERT_TRUE(summary.first_combat_effect_draw_index.has_value());
     EXPECT_EQ(*summary.first_combat_effect_draw_index, 0);
     ASSERT_TRUE(summary.last_combat_effect_draw_index.has_value());
-    EXPECT_EQ(*summary.last_combat_effect_draw_index, 439);
+    EXPECT_EQ(*summary.last_combat_effect_draw_index, 329);
 }
 
 TEST(SavorPredictRngModel, PreAiCheckpointModelSummarizesFakeCameraCursor) {

@@ -26,8 +26,14 @@ struct EffectCheckpointSummary {
     int combat_effect_draws_with_flags = 0;
     int combat_effect_draws_with_variant_count = 0;
     int combat_effect_draws_with_axis_mode = 0;
+    int combat_effect_draws_with_buffer_pointer = 0;
+    int observed_combat_effect_buffers = 0;
     int complete_binary_variant_iterations = 0;
-    int complete_binary_variant_22_loop_executions = 0;
+    int complete_binary_variant_buffers = 0;
+    int complete_binary_variant_16_loop_buffers = 0;
+    int complete_binary_variant_6_loop_buffers = 0;
+    int complete_first_battle_landed_attack_effect_pairs = 0;
+    int unpaired_first_battle_effect_buffers = 0;
     int incomplete_binary_variant_iteration_remainder = 0;
     int observed_emitter_spawn_draws = 0;
     int observed_emitter_source_gate_events = 0;

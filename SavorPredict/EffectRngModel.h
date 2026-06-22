@@ -1,5 +1,7 @@
 #pragma once
 
+#include <vector>
+
 namespace savor::predict {
 
 enum class CombatEffectPositionSelector {
@@ -21,6 +23,12 @@ struct CombatEffectBurstModel {
     int scale_draws = 0;
     int variant_index_draws = 0;
     int axis_assignment_draws = 0;
+    int total_draws = 0;
+};
+
+struct CombatEffectBurstSequenceModel {
+    std::vector<CombatEffectBurstModel> bursts;
+    int total_loop_count = 0;
     int total_draws = 0;
 };
 
@@ -53,13 +61,14 @@ struct EffectParticleTickModel {
 };
 
 CombatEffectBurstModel model_combat_effect_burst_draws(const CombatEffectBurstInput& input);
+CombatEffectBurstSequenceModel model_combat_effect_burst_sequence_draws(
+    const std::vector<CombatEffectBurstInput>& inputs);
 EffectEmitterSpawnModel model_effect_emitter_spawn_draws(const EffectEmitterSpawnInput& input);
 EffectParticleTickModel model_effect_particle_tick_draws(const EffectParticleTickInput& input);
 
-CombatEffectBurstInput first_battle_007_combat_effect_burst_input();
+std::vector<CombatEffectBurstInput> first_battle_landed_basic_attack_effect_burst_sequence();
 const char* combat_effect_burst_rule_detail();
 const char* effect_emitter_spawn_rule_detail();
 const char* effect_particle_tick_rule_detail();
 
 } // namespace savor::predict
-
