@@ -601,6 +601,32 @@ namespace savor {
     bool PhaseScriptVM::op_read_u8(const PSOp& op, PSResult&, PSContext& ctx) { uint8_t v{}; if (!read_u8(op.rd.addr, v)) return false; ctx[op.rd.dst] = v; return true; }
     bool PhaseScriptVM::op_read_u16(const PSOp& op, PSResult&, PSContext& ctx) { uint16_t v{}; if (!read_u16(op.rd.addr, v)) return false; ctx[op.rd.dst] = v; return true; }
     bool PhaseScriptVM::op_read_u32(const PSOp& op, PSResult&, PSContext& ctx) { uint32_t v{}; if (!read_u32(op.rd.addr, v)) { SCLOGD("[VM] READ_U32 FAIL @%08X key=%s", op.rd.addr, savor::context::key::name_for_id(op.rd.dst).data()); return false; } SCLOGD("[VM] READ_U32 @%08X -> %08X key=%s", op.rd.addr, v, savor::context::key::name_for_id(op.rd.dst).data()); ctx[op.rd.dst] = v; return true; }
+    bool PhaseScriptVM::op_write_u32(const PSOp& op, PSResult&, PSContext& ctx) {
+        uint32_t value = 0;
+        uint32_t readback = 0;
+        ctx[savor::context::key::core::MEMWRITE_ADDR] = op.rd.addr;
+        ctx[savor::context::key::core::MEMWRITE_VALUE] = 0u;
+        ctx[savor::context::key::core::MEMWRITE_READBACK] = 0u;
+        ctx[savor::context::key::core::MEMWRITE_STATUS] = 0u;
+
+        if (!ctx.get<uint32_t>(op.rd.dst, value)) {
+            ctx[savor::context::key::core::MEMWRITE_STATUS] = 2u;
+            return true;
+        }
+        ctx[savor::context::key::core::MEMWRITE_VALUE] = value;
+
+        if (!host_.writeU32(op.rd.addr, value)) {
+            ctx[savor::context::key::core::MEMWRITE_STATUS] = 3u;
+            return true;
+        }
+        if (!host_.readU32(op.rd.addr, readback)) {
+            ctx[savor::context::key::core::MEMWRITE_STATUS] = 4u;
+            return true;
+        }
+        ctx[savor::context::key::core::MEMWRITE_READBACK] = readback;
+        ctx[savor::context::key::core::MEMWRITE_STATUS] = readback == value ? 1u : 5u;
+        return true;
+    }
     bool PhaseScriptVM::op_read_f32(const PSOp& op, PSResult&, PSContext& ctx) { float v{}; if (!read_f32(op.rd.addr, v)) return false; ctx[op.rd.dst] = v; return true; }
     bool PhaseScriptVM::op_read_f64(const PSOp& op, PSResult&, PSContext& ctx) { double v{}; if (!read_f64(op.rd.addr, v)) return false; ctx[op.rd.dst] = v; return true; }
     void PhaseScriptVM::op_emit_result(const PSOp& op, PSResult& result, PSContext& ctx) const { SCLOGD("[VM] EMIT_RESULT %s=%08X", savor::context::key::name_for_id(op.key.id).data(), ctx[op.key.id]); result.ctx[op.key.id] = ctx[op.key.id]; }
@@ -1734,6 +1760,13 @@ namespace savor {
     void PhaseScriptVM::op_run_until_bp(PSContext& ctx) {
         (void)run_until_bp_core(ctx, RunUntilBpSpec{});
     }
+    void PhaseScriptVM::op_run_until_bp_key(const PSOp& op, PSContext& ctx) {
+        (void)run_until_bp_core(ctx, RunUntilBpSpec{
+            .expected_bp_keys = { static_cast<BPKey>(op.imm.v) },
+            .expected_only_scope = true,
+            .include_reserved_hit_lookup = true,
+        });
+    }
     void PhaseScriptVM::op_run_until_debug_stop(PSContext& ctx) {
         (void)run_until_bp_core(ctx, RunUntilBpSpec{});
     }
@@ -1774,6 +1807,27 @@ namespace savor {
     }
     void PhaseScriptVM::op_clear_memory_watchpoints() const {
         host_.clearMemoryWatchpoints();
+    }
+    bool PhaseScriptVM::op_capture_seed_override(PSResult& result, PSContext& ctx) {
+        if (!capture_ || !capture_->active()) {
+            return true;
+        }
+
+        uint32_t original_seed = 0;
+        uint32_t override_seed = 0;
+        uint32_t applied_seed = 0;
+        ctx.get<uint32_t>(savor::context::key::battle::RNG_ORIGINAL_SEED, original_seed);
+        ctx.get<uint32_t>(savor::context::key::battle::RNG_OVERRIDE_SEED, override_seed);
+        ctx.get<uint32_t>(savor::context::key::battle::RNG_APPLIED_SEED, applied_seed);
+
+        std::string error;
+        if (!capture_->capture_seed_override(host_, host_.getPC(), original_seed, override_seed, applied_seed, &error)) {
+            ctx[savor::context::key::core::WORKER_ERROR] = static_cast<uint32_t>(WERR_UnknownError);
+            result.ctx = ctx;
+            SCLOGW("[capture] seed override write failed error=%s", error.c_str());
+            return false;
+        }
+        return true;
     }
     bool PhaseScriptVM::op_arm_capture_memory_watchpoints(PSResult& result, PSContext& ctx) {
         if (!capture_ || !capture_->active()) {
@@ -2006,6 +2060,7 @@ namespace savor {
             case PSOpCode::START_DETERMINISIC_RUN: op_start_deterministic_run(); break;
             case PSOpCode::END_DETERMINISTIC_RUN: op_end_deterministic_run(); break;
             case PSOpCode::RUN_UNTIL_BP: op_run_until_bp(ctx); break;
+            case PSOpCode::RUN_UNTIL_BP_KEY: op_run_until_bp_key(op, ctx); break;
             case PSOpCode::RUN_UNTIL_DEBUG_STOP: op_run_until_debug_stop(ctx); break;
             case PSOpCode::ARM_MEMORY_WATCHPOINT: if (!op_arm_memory_watchpoint(op, R, ctx)) return R; break;
             case PSOpCode::CLEAR_MEMORY_WATCHPOINTS: op_clear_memory_watchpoints(); break;
@@ -2015,8 +2070,10 @@ namespace savor {
             case PSOpCode::READ_U8: if (!op_read_u8(op, R, ctx)) return R; break;
             case PSOpCode::READ_U16: if (!op_read_u16(op, R, ctx)) return R; break;
             case PSOpCode::READ_U32: if (!op_read_u32(op, R, ctx)) return R; break;
+            case PSOpCode::WRITE_U32: if (!op_write_u32(op, R, ctx)) return R; break;
             case PSOpCode::READ_F32: if (!op_read_f32(op, R, ctx)) return R; break;
             case PSOpCode::READ_F64: if (!op_read_f64(op, R, ctx)) return R; break;
+            case PSOpCode::CAPTURE_SEED_OVERRIDE: if (!op_capture_seed_override(R, ctx)) return R; break;
             case PSOpCode::GET_BATTLE_CONTEXT: op_get_battle_context(R, ctx); break;
             case PSOpCode::EMIT_RESULT: op_emit_result(op, R, ctx); break;
             case PSOpCode::RETURN_RESULT: if (op_return_result(op, R, ctx)) return R; break;
@@ -2049,6 +2106,7 @@ namespace savor {
         case PSOpCode::STEP_FRAMES: return { "Step Frames" };
         case PSOpCode::STEP_OPCODE: return { "Step Opcode" };
         case PSOpCode::RUN_UNTIL_BP: return { "Run Until BP" };
+        case PSOpCode::RUN_UNTIL_BP_KEY: return { "Run Until BP Key" };
         case PSOpCode::RUN_UNTIL_DEBUG_STOP: return { "Run Until Debug Stop" };
         case PSOpCode::ARM_MEMORY_WATCHPOINT: return { "Arm Memory Watchpoint" };
         case PSOpCode::CLEAR_MEMORY_WATCHPOINTS: return { "Clear Memory Watchpoints" };
@@ -2057,6 +2115,7 @@ namespace savor {
         case PSOpCode::READ_U8: return { "Read u8" };
         case PSOpCode::READ_U16: return { "Read u16" };
         case PSOpCode::READ_U32: return { "Read u32" };
+        case PSOpCode::WRITE_U32: return { "Write u32" };
         case PSOpCode::READ_F32: return { "Read float" };
         case PSOpCode::READ_F64: return { "Read double" };
         case PSOpCode::SET_TIMEOUT: return { "Set Timeout" };
@@ -2084,6 +2143,7 @@ namespace savor {
         case PSOpCode::ADD_U32: return { "Add to a u32 Context Value" };
         case PSOpCode::APPLY_BATTLE_INPUTPLAN_FRAMES : return { "Apply Inputplan Frame from Context" };
         case PSOpCode::RECORD_TAS_INPUT_SAMPLE: return { "Record TAS Input Sample" };
+        case PSOpCode::CAPTURE_SEED_OVERRIDE: return { "Capture Seed Override" };
         default:
             return { "Unknown Code" };
         }
@@ -2099,6 +2159,9 @@ namespace savor {
         case PSOpCode::READ_F32:
         case PSOpCode::READ_F64:
             args << "addr=" << op.rd.addr << ", dst=" << key_desc(op.rd.dst);
+            break;
+        case PSOpCode::WRITE_U32:
+            args << "addr=" << op.rd.addr << ", value_key=" << key_desc(op.rd.dst);
             break;
         case PSOpCode::APPLY_INPUT_FROM:
         case PSOpCode::SET_TIMEOUT_FROM:
@@ -2126,6 +2189,9 @@ namespace savor {
             break;
         case PSOpCode::SET_TIMEOUT:
             args << "ms=" << op.imm.v;
+            break;
+        case PSOpCode::RUN_UNTIL_BP_KEY:
+            args << "bp_key=" << op.imm.v;
             break;
         case PSOpCode::LABEL:
             args << "name=" << op.label.name;

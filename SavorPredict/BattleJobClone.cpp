@@ -2,6 +2,7 @@
 
 #include "Common/Types/UtcTimestamp.h"
 #include "Execution/IExecutionDb.h"
+#include "Phases/Programs/BattleTurnRunner/BattleTurnRunnerPayload.h"
 #include "Runner/IPC/Wire.h"
 #include "Runner/Script/PhaseScriptVM.h"
 #include "Utils/IniDoc.h"
@@ -221,9 +222,13 @@ int quarantine_ready_jobs_except(sqlite3* execution_db, const std::set<std::int6
 
 std::string patch_battle_single_turn_capture_profile(
     const std::string& input_ini,
-    const std::filesystem::path& capture_profile_path) {
+    const std::filesystem::path& capture_profile_path,
+    std::optional<std::uint32_t> override_start_rng_seed) {
     auto ini = IniDoc::parse(input_ini);
     ini.set(kJobSection, "capture_profile_path", capture_profile_path.string());
+    if (override_start_rng_seed.has_value()) {
+        ini.set(kJobSection, "override_start_rng_seed", std::to_string(*override_start_rng_seed));
+    }
     return ini.to_string_sorted();
 }
 
@@ -309,7 +314,10 @@ bool clone_battle_job_for_capture_internal(
         return false;
     }
 
-    const auto patched_input = patch_battle_single_turn_capture_profile(original_exec->input_ini, capture_profile_path);
+    const auto patched_input = patch_battle_single_turn_capture_profile(
+        original_exec->input_ini,
+        capture_profile_path,
+        options.override_start_rng_seed);
     std::ostringstream fingerprint;
     fingerprint << original_exec->fingerprint << ":savorpredict-capture:" << source->exec_job_id.value()
                 << ":" << cloned_turn_job_id;
@@ -320,7 +328,7 @@ bool clone_battle_job_for_capture_internal(
                 .job_set_id = original_exec->job_set_id,
                 .parent_job_id = original_exec->job_id,
                 .program_kind = static_cast<std::int32_t>(savor::PK_BattleSingleTurnRunner),
-                .program_version = original_exec->program_version > 0 ? original_exec->program_version : 1,
+                .program_version = phase::battle::turnrunner::PayloadVersion,
                 .program_ref_kind = kTurnJobRefKind,
                 .program_ref_id = cloned_turn_job_id,
                 .savestate_id = original_exec->savestate_id,
@@ -360,6 +368,7 @@ bool clone_battle_job_for_capture_internal(
     result_out->turn_index = source->turn_index;
     result_out->fake_attacks_this_turn = source->fake_attacks_this_turn;
     result_out->quarantined_ready_jobs = quarantined;
+    result_out->override_start_rng_seed = options.override_start_rng_seed;
     result_out->patched_input_ini = patched_input;
     return true;
 }
@@ -381,7 +390,7 @@ bool clone_battle_job_for_capture(
 
 bool clone_battle_jobs_for_capture(
     savor::db::core::DBService& db_service,
-    const std::vector<long long>& source_exec_job_ids,
+    const std::vector<BattleJobCloneRequest>& requests,
     const std::filesystem::path& capture_profile_path,
     BattleJobBatchCloneResult* result_out,
     std::ostream& err) {
@@ -398,9 +407,10 @@ bool clone_battle_jobs_for_capture(
     result_out->quarantined_ready_jobs = 0;
 
     std::set<std::int64_t> keep_job_ids;
-    for (const auto source_exec_job_id : source_exec_job_ids) {
+    for (const auto& request : requests) {
         BattleJobRunOptions single_options;
-        single_options.exec_job_id = source_exec_job_id;
+        single_options.exec_job_id = request.source_exec_job_id;
+        single_options.override_start_rng_seed = request.override_start_rng_seed;
         BattleJobCloneResult clone;
         if (!clone_battle_job_for_capture_internal(
                 db_service,
@@ -424,6 +434,44 @@ bool clone_battle_jobs_for_capture(
         clone.quarantined_ready_jobs = quarantined;
     }
     return true;
+}
+
+bool clone_battle_jobs_for_capture(
+    savor::db::core::DBService& db_service,
+    const std::vector<long long>& source_exec_job_ids,
+    const std::filesystem::path& capture_profile_path,
+    std::optional<std::uint32_t> override_start_rng_seed,
+    BattleJobBatchCloneResult* result_out,
+    std::ostream& err) {
+    std::vector<BattleJobCloneRequest> requests;
+    requests.reserve(source_exec_job_ids.size());
+    for (const auto source_exec_job_id : source_exec_job_ids) {
+        requests.push_back({
+            .source_exec_job_id = source_exec_job_id,
+            .override_start_rng_seed = override_start_rng_seed,
+        });
+    }
+    return clone_battle_jobs_for_capture(
+        db_service,
+        requests,
+        capture_profile_path,
+        result_out,
+        err);
+}
+
+bool clone_battle_jobs_for_capture(
+    savor::db::core::DBService& db_service,
+    const std::vector<long long>& source_exec_job_ids,
+    const std::filesystem::path& capture_profile_path,
+    BattleJobBatchCloneResult* result_out,
+    std::ostream& err) {
+    return clone_battle_jobs_for_capture(
+        db_service,
+        source_exec_job_ids,
+        capture_profile_path,
+        std::nullopt,
+        result_out,
+        err);
 }
 
 } // namespace savor::predict

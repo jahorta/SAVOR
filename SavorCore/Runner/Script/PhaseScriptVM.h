@@ -31,13 +31,14 @@ namespace savor {
 		APPLY_INPUT_FROM,          // key -> GCInputFrame
 		STEP_FRAMES,               // literal step count ok to keep
 		RUN_UNTIL_BP,              // uses current timeout
+		RUN_UNTIL_BP_KEY,          // run only until the supplied breakpoint key
 		RECORD_CURRENT_BP,         // stores current pc / matching BP key
 		SET_TIMEOUT,               // imm -> time out in ms
 		SET_TIMEOUT_FROM,          // key -> uint32
 		START_DETERMINISIC_RUN,
 		END_DETERMINISTIC_RUN,
 
-		READ_U8, READ_U16, READ_U32, READ_F32, READ_F64, GET_BATTLE_CONTEXT,
+		READ_U8, READ_U16, READ_U32, WRITE_U32, READ_F32, READ_F64, GET_BATTLE_CONTEXT,
 
 		EMIT_RESULT,               // literal: which key to emit
 
@@ -67,7 +68,8 @@ namespace savor {
 		ARM_MEMORY_WATCHPOINT,
 		CLEAR_MEMORY_WATCHPOINTS,
 		ARM_CAPTURE_MEMORY_WATCHPOINTS,
-		RUN_UNTIL_DEBUG_STOP
+		RUN_UNTIL_DEBUG_STOP,
+		CAPTURE_SEED_OVERRIDE
 	};
 
 	struct PSOp;
@@ -160,6 +162,7 @@ namespace savor {
 	inline PSOp OpReadU8(uint32_t addr, savor::context::key::KeyId dst) { PSOp o; o.code = PSOpCode::READ_U8;  o.rd = { addr,dst }; return o; }
 	inline PSOp OpReadU16(uint32_t addr, savor::context::key::KeyId dst) { PSOp o; o.code = PSOpCode::READ_U16; o.rd = { addr,dst }; return o; }
 	inline PSOp OpReadU32(uint32_t addr, savor::context::key::KeyId dst) { PSOp o; o.code = PSOpCode::READ_U32; o.rd = { addr,dst }; return o; }
+	inline PSOp OpWriteU32(uint32_t addr, savor::context::key::KeyId value_key) { PSOp o; o.code = PSOpCode::WRITE_U32; o.rd = { addr,value_key }; return o; }
 	inline PSOp OpReadF32(uint32_t addr, savor::context::key::KeyId dst) { PSOp o; o.code = PSOpCode::READ_F32; o.rd = { addr,dst }; return o; }
 	inline PSOp OpReadF64(uint32_t addr, savor::context::key::KeyId dst) { PSOp o; o.code = PSOpCode::READ_F64; o.rd = { addr,dst }; return o; }
 	inline PSOp OpGetBattleContext() { PSOp o; o.code = PSOpCode::GET_BATTLE_CONTEXT; return o; }
@@ -173,7 +176,9 @@ namespace savor {
 	inline PSOp OpLoadSnapshot() { PSOp o; o.code = PSOpCode::LOAD_SNAPSHOT; return o; }
 	inline PSOp OpCaptureSnapshot() { PSOp o; o.code = PSOpCode::CAPTURE_SNAPSHOT; return o; }
 	inline PSOp OpRunUntilBp() { PSOp o; o.code = PSOpCode::RUN_UNTIL_BP; return o; }
+	inline PSOp OpRunUntilBpKey(BPKey key) { PSOp o; o.code = PSOpCode::RUN_UNTIL_BP_KEY; o.imm.v = static_cast<uint32_t>(key); return o; }
 	inline PSOp OpRunUntilDebugStop() { PSOp o; o.code = PSOpCode::RUN_UNTIL_DEBUG_STOP; return o; }
+	inline PSOp OpCaptureSeedOverride() { PSOp o; o.code = PSOpCode::CAPTURE_SEED_OVERRIDE; return o; }
 	inline PSOp OpRecordCurrentBp() { PSOp o; o.code = PSOpCode::RECORD_CURRENT_BP; return o; }
 	inline PSOp OpStartDeterministicRun() { PSOp o; o.code = PSOpCode::START_DETERMINISIC_RUN; return o; }
 	inline PSOp OpEndDeterministicRun() { PSOp o; o.code = PSOpCode::END_DETERMINISTIC_RUN; return o; }
@@ -361,6 +366,7 @@ namespace savor {
 		void op_start_deterministic_run() const;
 		void op_end_deterministic_run() const;
 		void op_run_until_bp(PSContext& ctx);
+		void op_run_until_bp_key(const PSOp& op, PSContext& ctx);
 		void op_run_until_debug_stop(PSContext& ctx);
 		bool op_arm_memory_watchpoint(const PSOp& op, PSResult& result, PSContext& ctx);
 		void op_clear_memory_watchpoints() const;
@@ -370,8 +376,10 @@ namespace savor {
 		bool op_read_u8(const PSOp& op, PSResult& result, PSContext& ctx);
 		bool op_read_u16(const PSOp& op, PSResult& result, PSContext& ctx);
 		bool op_read_u32(const PSOp& op, PSResult& result, PSContext& ctx);
+		bool op_write_u32(const PSOp& op, PSResult& result, PSContext& ctx);
 		bool op_read_f32(const PSOp& op, PSResult& result, PSContext& ctx);
 		bool op_read_f64(const PSOp& op, PSResult& result, PSContext& ctx);
+		bool op_capture_seed_override(PSResult& result, PSContext& ctx);
 		void op_get_battle_context(PSResult& result, PSContext& ctx) const;
 		void op_emit_result(const PSOp& op, PSResult& result, PSContext& ctx) const;
 		bool op_return_result(const PSOp& op, PSResult& result, PSContext& ctx) const;

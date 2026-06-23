@@ -36,6 +36,13 @@ public:
         const DolphinWrapper::MemoryWatchpointDelta& delta,
         const DolphinWrapper::DecodedMemoryAccess& decoded_current_access,
         std::string* error_out = nullptr);
+    bool capture_seed_override(
+        DolphinWrapper& host,
+        std::uint32_t pc,
+        std::uint32_t original_seed,
+        std::uint32_t override_seed,
+        std::uint32_t applied_seed,
+        std::string* error_out = nullptr);
 
 private:
     bool active_ = false;

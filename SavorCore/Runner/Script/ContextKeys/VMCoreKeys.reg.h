@@ -33,6 +33,10 @@ namespace savor::context::key::core {
   X(RUN_POLL_MS,             0x0044, "core.input.run_poll_ms") \
   X(CAPTURE_PROFILE_PATH,    0x0045, "core.capture.profile_path") \
   X(CAPTURE_OUTPUT_PATH,     0x0046, "core.capture.output_path") \
+  X(MEMWRITE_STATUS,         0x0047, "core.memwrite.status") \
+  X(MEMWRITE_ADDR,           0x0048, "core.memwrite.addr") \
+  X(MEMWRITE_VALUE,          0x0049, "core.memwrite.value") \
+  X(MEMWRITE_READBACK,       0x004A, "core.memwrite.readback") \
 \
   X(PLAN_FRAME_IDX,          0x0060, "core.plan.frame_idx")    \
   X(PLAN_DONE,               0x0061, "core.plan.done")         \

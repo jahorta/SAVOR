@@ -9,6 +9,7 @@
 #include <limits>
 #include <set>
 #include <sstream>
+#include <utility>
 
 namespace savor::predict {
 namespace {
@@ -26,6 +27,16 @@ bool parse_int(const std::string& value, int& out) {
         return false;
     }
     out = static_cast<int>(parsed);
+    return true;
+}
+
+bool parse_u32_auto(const std::string& value, std::uint32_t& out) {
+    char* end = nullptr;
+    const auto parsed = std::strtoull(value.c_str(), &end, 0);
+    if (end == value.c_str() || *end != '\0' || parsed > std::numeric_limits<std::uint32_t>::max()) {
+        return false;
+    }
+    out = static_cast<std::uint32_t>(parsed);
     return true;
 }
 
@@ -101,6 +112,60 @@ void append_exec_job_list_file(
     }
 }
 
+bool parse_exec_job_seed_spec(
+    const std::string& value,
+    BattleJobBatchRunRequest* request,
+    std::vector<std::string>* errors) {
+    const auto colon = value.find(':');
+    if (colon == std::string::npos || colon == 0 || colon + 1 >= value.size()) {
+        errors->push_back("--exec-job-seed must be EXEC_ID:SEED, with SEED decimal or 0x hex.");
+        return false;
+    }
+    long long exec_job_id = 0;
+    std::uint32_t seed = 0;
+    if (!parse_ll(value.substr(0, colon), exec_job_id) || exec_job_id <= 0) {
+        errors->push_back("--exec-job-seed requires a positive integer exec job id before ':'.");
+        return false;
+    }
+    if (!parse_u32_auto(value.substr(colon + 1), seed)) {
+        errors->push_back("--exec-job-seed requires a uint32 seed after ':' in decimal or 0x hex.");
+        return false;
+    }
+    request->exec_job_id = exec_job_id;
+    request->override_start_rng_seed = seed;
+    return true;
+}
+
+void append_exec_job_seed_list_file(
+    const std::filesystem::path& path,
+    std::vector<BattleJobBatchRunRequest>* requests,
+    std::vector<std::string>* errors) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file.is_open()) {
+        errors->push_back("Failed opening --exec-job-seed-list: " + path.string());
+        return;
+    }
+    std::string line;
+    int line_number = 0;
+    while (std::getline(file, line)) {
+        ++line_number;
+        if (const auto hash = line.find('#'); hash != std::string::npos) {
+            line.resize(hash);
+        }
+        line = trim(line);
+        if (line.empty()) {
+            continue;
+        }
+        BattleJobBatchRunRequest request;
+        if (!parse_exec_job_seed_spec(line, &request, errors)) {
+            errors->push_back(
+                "--exec-job-seed-list contains an invalid run spec at line " + std::to_string(line_number));
+            continue;
+        }
+        requests->push_back(request);
+    }
+}
+
 } // namespace
 
 std::filesystem::path default_battle_job_batch_run_root() {
@@ -110,11 +175,40 @@ std::filesystem::path default_battle_job_batch_run_root() {
         / timestamp_slug();
 }
 
+std::vector<BattleJobBatchRunRequest> resolved_battle_job_batch_requests(const BattleJobBatchRunOptions& options) {
+    std::vector<BattleJobBatchRunRequest> requests;
+    requests.reserve(options.exec_job_ids.size() + options.seeded_exec_job_requests.size());
+    for (const auto exec_job_id : options.exec_job_ids) {
+        requests.push_back({
+            .exec_job_id = exec_job_id,
+            .override_start_rng_seed = options.override_start_rng_seed,
+        });
+    }
+    requests.insert(
+        requests.end(),
+        options.seeded_exec_job_requests.begin(),
+        options.seeded_exec_job_requests.end());
+    return requests;
+}
+
+std::vector<long long> unique_battle_job_batch_source_exec_job_ids(const BattleJobBatchRunOptions& options) {
+    const auto requests = resolved_battle_job_batch_requests(options);
+    std::vector<long long> ids;
+    std::set<long long> seen;
+    ids.reserve(requests.size());
+    for (const auto& request : requests) {
+        if (seen.insert(request.exec_job_id).second) {
+            ids.push_back(request.exec_job_id);
+        }
+    }
+    return ids;
+}
+
 int resolved_battle_job_batch_timeout_ms(const BattleJobBatchRunOptions& options) {
     if (options.timeout_ms.has_value()) {
         return *options.timeout_ms;
     }
-    const auto job_count = static_cast<long long>(std::max<std::size_t>(1, options.exec_job_ids.size()));
+    const auto job_count = static_cast<long long>(std::max<std::size_t>(1, resolved_battle_job_batch_requests(options).size()));
     const auto worker_count = static_cast<long long>(std::max(1, options.max_workers));
     const auto waves = (job_count + worker_count - 1) / worker_count;
     const auto timeout = 180000LL * waves;
@@ -123,17 +217,25 @@ int resolved_battle_job_batch_timeout_ms(const BattleJobBatchRunOptions& options
 
 std::vector<std::string> validate_battle_job_batch_run_options(const BattleJobBatchRunOptions& options) {
     std::vector<std::string> errors;
-    if (options.exec_job_ids.empty()) {
-        errors.push_back("Specify at least one --exec-job-id or --exec-job-list.");
+    const auto requests = resolved_battle_job_batch_requests(options);
+    if (requests.empty()) {
+        errors.push_back("Specify at least one --exec-job-id, --exec-job-list, --exec-job-seed, or --exec-job-seed-list.");
     }
-    std::set<long long> seen;
-    for (const auto id : options.exec_job_ids) {
-        if (id <= 0) {
-            errors.push_back("--exec-job-id values must be positive.");
+    std::set<std::pair<long long, std::uint64_t>> seen;
+    for (const auto& request : requests) {
+        if (request.exec_job_id <= 0) {
+            errors.push_back("Batch exec job ids must be positive.");
             break;
         }
-        if (!seen.insert(id).second) {
-            errors.push_back("Duplicate --exec-job-id value: " + std::to_string(id));
+        const auto seed_key = request.override_start_rng_seed.has_value()
+            ? static_cast<std::uint64_t>(*request.override_start_rng_seed)
+            : (std::uint64_t{1} << 32);
+        if (!seen.insert({ request.exec_job_id, seed_key }).second) {
+            errors.push_back("Duplicate batch run request for exec job "
+                + std::to_string(request.exec_job_id)
+                + (request.override_start_rng_seed.has_value()
+                    ? " with the same override seed."
+                    : " with no override seed."));
             break;
         }
     }
@@ -187,6 +289,20 @@ BattleJobBatchRunParseResult parse_battle_job_batch_run_tokens(
             if (require_value(args, i, arg, value, result.errors)) {
                 append_exec_job_list_file(value, &result.options.exec_job_ids, &result.errors);
             }
+        } else if (arg == "--exec-job-seed") {
+            if (require_value(args, i, arg, value, result.errors)) {
+                BattleJobBatchRunRequest request;
+                if (parse_exec_job_seed_spec(value, &request, &result.errors)) {
+                    result.options.seeded_exec_job_requests.push_back(request);
+                }
+            }
+        } else if (arg == "--exec-job-seed-list") {
+            if (require_value(args, i, arg, value, result.errors)) {
+                append_exec_job_seed_list_file(
+                    value,
+                    &result.options.seeded_exec_job_requests,
+                    &result.errors);
+            }
         } else if (arg == "--db-root") {
             if (require_value(args, i, arg, value, result.errors)) {
                 result.options.db_root = value;
@@ -239,6 +355,13 @@ BattleJobBatchRunParseResult parse_battle_job_batch_run_tokens(
                 result.options.max_workers = parsed;
             } else {
                 result.errors.push_back("--max-workers requires an integer.");
+            }
+        } else if (arg == "--override-start-rng-seed") {
+            std::uint32_t parsed = 0;
+            if (require_value(args, i, arg, value, result.errors) && parse_u32_auto(value, parsed)) {
+                result.options.override_start_rng_seed = parsed;
+            } else {
+                result.errors.push_back("--override-start-rng-seed requires a uint32 seed in decimal or 0x hex.");
             }
         } else if (arg == "--help" || arg == "-h") {
             result.help_requested = true;

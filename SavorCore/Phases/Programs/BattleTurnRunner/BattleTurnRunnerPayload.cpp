@@ -79,6 +79,8 @@ namespace phase::battle::turnrunner {
 
         put_str(out, spec.capture_profile_path);
         put_str(out, spec.capture_output_path);
+        put_u32(out, spec.override_start_rng_seed.has_value() ? 1u : 0u);
+        put_u32(out, spec.override_start_rng_seed.value_or(0u));
 
         return true;
     }
@@ -160,6 +162,12 @@ namespace phase::battle::turnrunner {
             if (!get_str(p, e, capture_profile_path)) return false;
             if (!get_str(p, e, capture_output_path)) return false;
         }
+        uint32_t override_start_rng_enabled = 0;
+        uint32_t override_start_rng_seed = 0;
+        if (version >= 5) {
+            if (!get_u32(p, e, override_start_rng_enabled)) return false;
+            if (!get_u32(p, e, override_start_rng_seed)) return false;
+        }
 
         if (p != e) return false;
 
@@ -208,6 +216,10 @@ namespace phase::battle::turnrunner {
         out_ctx[savor::context::key::battle::MACRO_MEMORY_REPEAT2_CHANGED] = (uint32_t)0;
         out_ctx[savor::context::key::battle::MACRO_MEMORY_REPEAT2_POLL_COUNT] = (uint32_t)0;
         out_ctx[savor::context::key::battle::MACRO_MEMORY_REPEAT2_ELAPSED_MS] = (uint32_t)0;
+        out_ctx[savor::context::key::battle::RNG_OVERRIDE_ENABLED] = override_start_rng_enabled ? 1u : 0u;
+        out_ctx[savor::context::key::battle::RNG_OVERRIDE_SEED] = override_start_rng_seed;
+        out_ctx[savor::context::key::battle::RNG_ORIGINAL_SEED] = (uint32_t)0;
+        out_ctx[savor::context::key::battle::RNG_APPLIED_SEED] = (uint32_t)0;
         out_ctx[savor::context::key::core::RUN_POLL_MS] = (uint32_t)10;
 
         out_ctx[savor::context::key::core::PRED_COUNT] = pred_count;

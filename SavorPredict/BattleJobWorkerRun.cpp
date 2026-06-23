@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <ostream>
 #include <sstream>
 #include <string>
@@ -108,6 +109,61 @@ bool check_runtime_paths(const BattleJobRunOptions& options, std::ostream& err) 
 
 void append_error(BattleJobRunSummary& summary, const std::string& message) {
     summary.errors.push_back(message);
+}
+
+std::optional<std::uint32_t> parse_hex_u32_json_field(const std::string& line, const char* key) {
+    const std::string marker = "\"" + std::string(key) + "\":\"0x";
+    const auto pos = line.find(marker);
+    if (pos == std::string::npos) {
+        return std::nullopt;
+    }
+    const auto start = pos + marker.size();
+    if (start + 8 > line.size()) {
+        return std::nullopt;
+    }
+    const auto text = line.substr(start, 8);
+    try {
+        return static_cast<std::uint32_t>(std::stoul(text, nullptr, 16));
+    } catch (...) {
+        return std::nullopt;
+    }
+}
+
+std::optional<bool> parse_bool_json_field(const std::string& line, const char* key) {
+    const std::string marker = "\"" + std::string(key) + "\":";
+    const auto pos = line.find(marker);
+    if (pos == std::string::npos) {
+        return std::nullopt;
+    }
+    const auto start = pos + marker.size();
+    if (line.compare(start, 4, "true") == 0) {
+        return true;
+    }
+    if (line.compare(start, 5, "false") == 0) {
+        return false;
+    }
+    return std::nullopt;
+}
+
+void collect_seed_override_capture_summary(const std::filesystem::path& capture_path, BattleJobRunSummary* summary) {
+    if (summary == nullptr) {
+        return;
+    }
+    std::ifstream file(capture_path, std::ios::binary);
+    if (!file.is_open()) {
+        return;
+    }
+    std::string line;
+    while (std::getline(file, line)) {
+        if (line.find("\"checkpoint_id\":\"prebattle.seed_override\"") == std::string::npos) {
+            continue;
+        }
+        summary->captured_original_seed = parse_hex_u32_json_field(line, "original_seed");
+        summary->captured_override_seed = parse_hex_u32_json_field(line, "override_seed");
+        summary->captured_applied_seed = parse_hex_u32_json_field(line, "applied_seed");
+        summary->captured_seed_readback_matches = parse_bool_json_field(line, "readback_matches");
+        return;
+    }
 }
 
 void write_manifest_outputs(BattleJobRunSummary& summary, std::ostream& err) {
@@ -254,6 +310,7 @@ int run_battle_job(const BattleJobRunOptions& options, std::ostream& out, std::o
         if (ec) {
             append_error(summary, "failed copying stable capture: " + ec.message());
         } else {
+            collect_seed_override_capture_summary(summary.stable_capture_path, &summary);
             std::ofstream trace(summary.trace_report_path, std::ios::binary | std::ios::trunc);
             if (!trace.is_open()) {
                 append_error(summary, "failed opening trace report");

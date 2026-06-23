@@ -694,6 +694,7 @@ TEST(BattleTurnRunnerPayload, RoundTripsLiveCaptureContextPaths)
     spec.vi_stall_ms = 5000;
     spec.capture_profile_path = "D:/SavorPredictDB/capture/first_battle.ini";
     spec.capture_output_path = "D:/SavorPredictDB/capture/job_1.jsonl";
+    spec.override_start_rng_seed = 0x12345678u;
 
     std::vector<std::uint8_t> payload;
     ASSERT_TRUE(phase::battle::turnrunner::encode_payload(spec, payload));
@@ -707,6 +708,13 @@ TEST(BattleTurnRunnerPayload, RoundTripsLiveCaptureContextPaths)
     ASSERT_TRUE(ctx.get(savor::context::key::core::CAPTURE_OUTPUT_PATH, output_path));
     EXPECT_EQ(profile_path, spec.capture_profile_path);
     EXPECT_EQ(output_path, spec.capture_output_path);
+
+    uint32_t override_enabled = 0;
+    uint32_t override_seed = 0;
+    ASSERT_TRUE(ctx.get(savor::context::key::battle::RNG_OVERRIDE_ENABLED, override_enabled));
+    ASSERT_TRUE(ctx.get(savor::context::key::battle::RNG_OVERRIDE_SEED, override_seed));
+    EXPECT_EQ(override_enabled, 1u);
+    EXPECT_EQ(override_seed, 0x12345678u);
 }
 
 } // namespace

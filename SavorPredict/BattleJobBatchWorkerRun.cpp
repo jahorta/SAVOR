@@ -21,6 +21,7 @@
 #include <fstream>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <ostream>
 #include <string>
 #include <thread>
@@ -118,6 +119,61 @@ void append_error(BattleJobBatchRunJobSummary& summary, const std::string& messa
     summary.errors.push_back(message);
 }
 
+std::optional<std::uint32_t> parse_hex_u32_json_field(const std::string& line, const char* key) {
+    const std::string marker = "\"" + std::string(key) + "\":\"0x";
+    const auto pos = line.find(marker);
+    if (pos == std::string::npos) {
+        return std::nullopt;
+    }
+    const auto start = pos + marker.size();
+    if (start + 8 > line.size()) {
+        return std::nullopt;
+    }
+    const auto text = line.substr(start, 8);
+    try {
+        return static_cast<std::uint32_t>(std::stoul(text, nullptr, 16));
+    } catch (...) {
+        return std::nullopt;
+    }
+}
+
+std::optional<bool> parse_bool_json_field(const std::string& line, const char* key) {
+    const std::string marker = "\"" + std::string(key) + "\":";
+    const auto pos = line.find(marker);
+    if (pos == std::string::npos) {
+        return std::nullopt;
+    }
+    const auto start = pos + marker.size();
+    if (line.compare(start, 4, "true") == 0) {
+        return true;
+    }
+    if (line.compare(start, 5, "false") == 0) {
+        return false;
+    }
+    return std::nullopt;
+}
+
+void collect_seed_override_capture_summary(const std::filesystem::path& capture_path, BattleJobBatchRunJobSummary* summary) {
+    if (summary == nullptr) {
+        return;
+    }
+    std::ifstream file(capture_path, std::ios::binary);
+    if (!file.is_open()) {
+        return;
+    }
+    std::string line;
+    while (std::getline(file, line)) {
+        if (line.find("\"checkpoint_id\":\"prebattle.seed_override\"") == std::string::npos) {
+            continue;
+        }
+        summary->captured_original_seed = parse_hex_u32_json_field(line, "original_seed");
+        summary->captured_override_seed = parse_hex_u32_json_field(line, "override_seed");
+        summary->captured_applied_seed = parse_hex_u32_json_field(line, "applied_seed");
+        summary->captured_seed_readback_matches = parse_bool_json_field(line, "readback_matches");
+        return;
+    }
+}
+
 void write_manifest_outputs(BattleJobBatchRunSummary& summary, std::ostream& err) {
     const auto manifest_path = summary.sandbox.run_root / "manifest.json";
     const auto summary_path = summary.sandbox.run_root / "summary.txt";
@@ -171,9 +227,10 @@ int prepare_battle_job_batch_sandbox(
             err);
     }
 
+    const auto source_exec_job_ids = unique_battle_job_batch_source_exec_job_ids(options);
     std::vector<savor::dbutils::BattleJobSelector> selectors;
-    selectors.reserve(options.exec_job_ids.size());
-    for (const auto exec_job_id : options.exec_job_ids) {
+    selectors.reserve(source_exec_job_ids.size());
+    for (const auto exec_job_id : source_exec_job_ids) {
         selectors.push_back({
             .turn_job_id = std::nullopt,
             .exec_job_id = exec_job_id,
@@ -267,6 +324,7 @@ void collect_capture_and_trace_artifacts(
             append_error(job, "failed copying stable capture: " + ec.message());
             continue;
         }
+        collect_seed_override_capture_summary(job.stable_capture_path, &job);
 
         std::ofstream trace(job.trace_report_path, std::ios::binary | std::ios::trunc);
         if (!trace.is_open()) {
@@ -305,6 +363,7 @@ int run_battle_jobs(const BattleJobBatchRunOptions& options, std::ostream& out, 
     BattleJobBatchRunSummary summary{};
     summary.options = options;
     summary.timeout_ms = resolved_battle_job_batch_timeout_ms(options);
+    const auto run_requests = resolved_battle_job_batch_requests(options);
 
     const auto validation_errors = validate_battle_job_batch_run_options(options);
     if (!validation_errors.empty()) {
@@ -343,9 +402,17 @@ int run_battle_jobs(const BattleJobBatchRunOptions& options, std::ostream& out, 
         return 1;
     }
 
+    std::vector<BattleJobCloneRequest> clone_requests;
+    clone_requests.reserve(run_requests.size());
+    for (const auto& request : run_requests) {
+        clone_requests.push_back({
+            .source_exec_job_id = request.exec_job_id,
+            .override_start_rng_seed = request.override_start_rng_seed,
+        });
+    }
     if (!clone_battle_jobs_for_capture(
             *db_service,
-            options.exec_job_ids,
+            clone_requests,
             summary.capture_profile_path,
             &summary.clone,
             err)) {

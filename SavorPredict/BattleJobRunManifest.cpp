@@ -2,6 +2,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <ostream>
 #include <sstream>
 
@@ -78,6 +79,38 @@ void write_copied_artifacts(std::ostream& out, const std::vector<savor::dbutils:
     out << "],\n";
 }
 
+std::string hex_u32(std::uint32_t value) {
+    std::ostringstream out;
+    out << "0x" << std::uppercase << std::hex << std::setw(8) << std::setfill('0') << value;
+    return out.str();
+}
+
+void write_optional_hex_u32(std::ostream& out, const char* name, const std::optional<std::uint32_t>& value, bool comma) {
+    out << "  \"" << name << "\": ";
+    if (value.has_value()) {
+        out << "\"" << hex_u32(*value) << "\"";
+    } else {
+        out << "null";
+    }
+    if (comma) {
+        out << ",";
+    }
+    out << "\n";
+}
+
+void write_optional_bool(std::ostream& out, const char* name, const std::optional<bool>& value, bool comma) {
+    out << "  \"" << name << "\": ";
+    if (value.has_value()) {
+        out << (*value ? "true" : "false");
+    } else {
+        out << "null";
+    }
+    if (comma) {
+        out << ",";
+    }
+    out << "\n";
+}
+
 } // namespace
 
 bool write_battle_job_run_manifest(
@@ -123,6 +156,11 @@ bool write_battle_job_run_manifest(
     file << "  \"wave_id\": " << summary.clone.wave_id << ",\n";
     file << "  \"turn_index\": " << summary.clone.turn_index << ",\n";
     file << "  \"fake_attacks_this_turn\": " << summary.clone.fake_attacks_this_turn << ",\n";
+    write_optional_hex_u32(file, "override_start_rng_seed", summary.options.override_start_rng_seed, true);
+    write_optional_hex_u32(file, "captured_original_seed", summary.captured_original_seed, true);
+    write_optional_hex_u32(file, "captured_override_seed", summary.captured_override_seed, true);
+    write_optional_hex_u32(file, "captured_applied_seed", summary.captured_applied_seed, true);
+    write_optional_bool(file, "captured_seed_readback_matches", summary.captured_seed_readback_matches, true);
     file << "  \"quarantined_ready_jobs\": " << summary.clone.quarantined_ready_jobs << ",\n";
     file << "  \"terminal_state\": \"" << json_escape(summary.terminal_state) << "\",\n";
     file << "  \"timed_out\": " << (summary.timed_out ? "true" : "false") << ",\n";
@@ -158,6 +196,16 @@ bool write_battle_job_run_text_summary(
     file << "cloned_exec_job_id: " << summary.clone.cloned_exec_job_id << "\n";
     file << "original_turn_job_id: " << summary.clone.original_turn_job_id << "\n";
     file << "cloned_turn_job_id: " << summary.clone.cloned_turn_job_id << "\n";
+    file << "override_start_rng_seed: "
+        << (summary.options.override_start_rng_seed.has_value() ? hex_u32(*summary.options.override_start_rng_seed) : "none")
+        << "\n";
+    if (summary.captured_original_seed.has_value()) {
+        file << "captured_original_seed: " << hex_u32(*summary.captured_original_seed) << "\n";
+        file << "captured_override_seed: " << hex_u32(summary.captured_override_seed.value_or(0)) << "\n";
+        file << "captured_applied_seed: " << hex_u32(summary.captured_applied_seed.value_or(0)) << "\n";
+        file << "captured_seed_readback_matches: "
+            << (summary.captured_seed_readback_matches.value_or(false) ? "true" : "false") << "\n";
+    }
     file << "terminal_state: " << summary.terminal_state << "\n";
     file << "capture_found: " << (summary.capture_found ? "true" : "false") << "\n";
     file << "stable_capture_path: " << summary.stable_capture_path.string() << "\n";

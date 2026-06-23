@@ -371,4 +371,43 @@ bool LiveCheckpointCapture::capture_memory_watchpoint_delta(
     return writer_.write(record, error_out);
 }
 
+bool LiveCheckpointCapture::capture_seed_override(
+    DolphinWrapper& host,
+    std::uint32_t pc,
+    std::uint32_t original_seed,
+    std::uint32_t override_seed,
+    std::uint32_t applied_seed,
+    std::string* error_out)
+{
+    if (!active_) return true;
+
+    constexpr const char* kCheckpointId = "prebattle.seed_override";
+
+    CheckpointCaptureRecord record{};
+    record.capture_sequence = next_sequence_++;
+    record.pc = pc;
+    record.checkpoint_id = kCheckpointId;
+    record.checkpoint_name = kCheckpointId;
+    record.function = "prebattle";
+    record.checkpoint = "seed_override";
+    record.movie_input_count = host.getCurrentMovieInputCount();
+    record.vi_field_count = host.getViFieldCountApprox();
+    record.frame_count = host.getFrameCountApprox(false);
+    record.tbr_u64 = host.getTBR();
+    record.tbr_high = static_cast<std::uint32_t>(record.tbr_u64 >> 32);
+    record.tbr_low = static_cast<std::uint32_t>(record.tbr_u64);
+    record.rng_draw_index_before = rng_draw_index_;
+    record.owns_rng_draw = false;
+
+    auto& hit_count = hit_counts_[kCheckpointId];
+    record.checkpoint_hit_count = hit_count++;
+
+    record.fields.push_back(CaptureField{ "original_seed", "\"" + HexU32(original_seed) + "\"", false });
+    record.fields.push_back(CaptureField{ "override_seed", "\"" + HexU32(override_seed) + "\"", false });
+    record.fields.push_back(CaptureField{ "applied_seed", "\"" + HexU32(applied_seed) + "\"", false });
+    record.fields.push_back(CaptureField{ "readback_matches", applied_seed == override_seed ? "true" : "false", false });
+
+    return writer_.write(record, error_out);
+}
+
 } // namespace savor::capture

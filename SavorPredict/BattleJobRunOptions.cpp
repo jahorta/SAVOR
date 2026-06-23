@@ -5,6 +5,7 @@
 #include <cctype>
 #include <cstdlib>
 #include <iomanip>
+#include <limits>
 #include <sstream>
 
 namespace savor::predict {
@@ -23,6 +24,16 @@ bool parse_int(const std::string& value, int& out) {
         return false;
     }
     out = static_cast<int>(parsed);
+    return true;
+}
+
+bool parse_u32_auto(const std::string& value, std::uint32_t& out) {
+    char* end = nullptr;
+    const auto parsed = std::strtoull(value.c_str(), &end, 0);
+    if (end == value.c_str() || *end != '\0' || parsed > std::numeric_limits<std::uint32_t>::max()) {
+        return false;
+    }
+    out = static_cast<std::uint32_t>(parsed);
     return true;
 }
 
@@ -198,6 +209,13 @@ BattleJobRunParseResult parse_battle_job_run_tokens(
                 result.options.timeout_ms = parsed;
             } else {
                 result.errors.push_back("--timeout-ms requires an integer.");
+            }
+        } else if (arg == "--override-start-rng-seed") {
+            std::uint32_t parsed = 0;
+            if (require_value(args, i, arg, value, result.errors) && parse_u32_auto(value, parsed)) {
+                result.options.override_start_rng_seed = parsed;
+            } else {
+                result.errors.push_back("--override-start-rng-seed requires a uint32 seed in decimal or 0x hex.");
             }
         } else if (arg == "--help" || arg == "-h") {
             result.help_requested = true;

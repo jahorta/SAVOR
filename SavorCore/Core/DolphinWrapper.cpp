@@ -1252,6 +1252,21 @@ namespace savor {
         return true;
     }
 
+    bool savor::DolphinWrapper::writeU32(uint32_t addr, uint32_t value)
+    {
+        if (!isRunning()) return false;
+        if (Core::GetState(*m_system) != Core::State::Paused)
+        {
+            SCLOGW("[mem write] Refusing u32 write while core is not paused addr=%08X value=%08X", addr, value);
+            return false;
+        }
+
+        auto& mem = m_system->GetMemory();
+        mem.Write_U32(value, addr);
+        SCLOGT("[mem write] Successfully wrote u32: addr=%08X value=%08X", addr, value);
+        return true;
+    }
+
     bool savor::DolphinWrapper::readU64(uint32_t addr, uint64_t& out) const
     {
         if (!isRunning()) return false;

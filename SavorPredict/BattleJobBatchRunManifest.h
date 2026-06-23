@@ -5,7 +5,9 @@
 #include "BattleJobSandbox.h"
 
 #include <filesystem>
+#include <cstdint>
 #include <iosfwd>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -20,6 +22,10 @@ struct BattleJobBatchRunJobSummary {
     bool timed_out = false;
     bool capture_found = false;
     int trace_exit_code = -1;
+    std::optional<std::uint32_t> captured_original_seed;
+    std::optional<std::uint32_t> captured_override_seed;
+    std::optional<std::uint32_t> captured_applied_seed;
+    std::optional<bool> captured_seed_readback_matches;
     std::vector<std::string> errors;
 };
 

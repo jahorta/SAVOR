@@ -57,6 +57,7 @@ struct JobIni {
     std::string resolved_turn_commands_blob;
     std::string resolved_turn_variant_key;
     std::string capture_profile_path;
+    std::optional<std::uint32_t> override_start_rng_seed;
 
     void set_section(IniDoc& ini) const {
         ini.set(kJobSection, "wave_id", std::to_string(wave_id));
@@ -71,6 +72,9 @@ struct JobIni {
         ini.set(kJobSection, "resolved_turn_variant_key", resolved_turn_variant_key);
         if (!capture_profile_path.empty()) {
             ini.set(kJobSection, "capture_profile_path", capture_profile_path);
+        }
+        if (override_start_rng_seed.has_value()) {
+            ini.set(kJobSection, "override_start_rng_seed", std::to_string(*override_start_rng_seed));
         }
         // Compatibility for queued jobs created before the resolved-command terminology.
         ini.set(kJobSection, "concrete_turn_plan_hex", resolved_turn_commands_blob);
@@ -97,6 +101,9 @@ struct JobIni {
             out.resolved_turn_variant_key = ini.get(kJobSection, "target_variant_key", "");
         }
         out.capture_profile_path = ini.get(kJobSection, "capture_profile_path", "");
+        if (ini.has(kJobSection, "override_start_rng_seed")) {
+            out.override_start_rng_seed = ini.get_u32(kJobSection, "override_start_rng_seed", 0);
+        }
         return out;
     }
 };
@@ -119,6 +126,12 @@ struct ResultsIni {
     std::uint32_t macro_last_expected_bp = 0;
     std::uint32_t macro_last_hit_bp = 0;
     std::uint32_t macro_last_hit_pc = 0;
+    std::uint32_t rng_override_enabled = 0;
+    std::uint32_t rng_override_seed = 0;
+    std::uint32_t rng_original_seed = 0;
+    std::uint32_t rng_applied_seed = 0;
+    std::uint32_t memwrite_status = 0;
+    std::uint32_t memwrite_readback = 0;
     std::int64_t applied_input_artifact_id = 0;
     std::int64_t input_trace_artifact_id = 0;
     std::int64_t capture_artifact_id = 0;
@@ -148,6 +161,12 @@ struct ResultsIni {
         ini.set(kResultsSection, "macro_last_expected_bp", std::to_string(macro_last_expected_bp));
         ini.set(kResultsSection, "macro_last_hit_bp", std::to_string(macro_last_hit_bp));
         ini.set(kResultsSection, "macro_last_hit_pc", std::to_string(macro_last_hit_pc));
+        ini.set(kResultsSection, "rng_override_enabled", std::to_string(rng_override_enabled));
+        ini.set(kResultsSection, "rng_override_seed", std::to_string(rng_override_seed));
+        ini.set(kResultsSection, "rng_original_seed", std::to_string(rng_original_seed));
+        ini.set(kResultsSection, "rng_applied_seed", std::to_string(rng_applied_seed));
+        ini.set(kResultsSection, "memwrite_status", std::to_string(memwrite_status));
+        ini.set(kResultsSection, "memwrite_readback", std::to_string(memwrite_readback));
         ini.set(kResultsSection, "applied_input_artifact_id", std::to_string(applied_input_artifact_id));
         ini.set(kResultsSection, "input_trace_artifact_id", std::to_string(input_trace_artifact_id));
         ini.set(kResultsSection, "capture_artifact_id", std::to_string(capture_artifact_id));
@@ -185,6 +204,12 @@ struct ResultsIni {
         out.macro_last_expected_bp = ini.get_u32(kResultsSection, "macro_last_expected_bp", 0);
         out.macro_last_hit_bp = ini.get_u32(kResultsSection, "macro_last_hit_bp", 0);
         out.macro_last_hit_pc = ini.get_u32(kResultsSection, "macro_last_hit_pc", 0);
+        out.rng_override_enabled = ini.get_u32(kResultsSection, "rng_override_enabled", 0);
+        out.rng_override_seed = ini.get_u32(kResultsSection, "rng_override_seed", 0);
+        out.rng_original_seed = ini.get_u32(kResultsSection, "rng_original_seed", 0);
+        out.rng_applied_seed = ini.get_u32(kResultsSection, "rng_applied_seed", 0);
+        out.memwrite_status = ini.get_u32(kResultsSection, "memwrite_status", 0);
+        out.memwrite_readback = ini.get_u32(kResultsSection, "memwrite_readback", 0);
         out.applied_input_artifact_id = ini.get_i64(kResultsSection, "applied_input_artifact_id", 0);
         out.input_trace_artifact_id = ini.get_i64(kResultsSection, "input_trace_artifact_id", 0);
         out.capture_artifact_id = ini.get_i64(kResultsSection, "capture_artifact_id", 0);
@@ -1011,6 +1036,7 @@ public:
         if (!spec.capture_profile_path.empty()) {
             spec.capture_output_path = (out_dir / "battle_checkpoint_capture.jsonl").string();
         }
+        spec.override_start_rng_seed = job_ini.override_start_rng_seed;
 
         savor::PSJob ps_job{};
         if (!phase::battle::turnrunner::encode_payload(spec, ps_job.payload)) {
@@ -1064,6 +1090,12 @@ public:
         result.ps.ctx.get(savor::context::key::battle::MACRO_LAST_EXPECTED_BP, out.macro_last_expected_bp);
         result.ps.ctx.get(savor::context::key::battle::MACRO_LAST_HIT_BP, out.macro_last_hit_bp);
         result.ps.ctx.get(savor::context::key::battle::MACRO_LAST_HIT_PC, out.macro_last_hit_pc);
+        result.ps.ctx.get(savor::context::key::battle::RNG_OVERRIDE_ENABLED, out.rng_override_enabled);
+        result.ps.ctx.get(savor::context::key::battle::RNG_OVERRIDE_SEED, out.rng_override_seed);
+        result.ps.ctx.get(savor::context::key::battle::RNG_ORIGINAL_SEED, out.rng_original_seed);
+        result.ps.ctx.get(savor::context::key::battle::RNG_APPLIED_SEED, out.rng_applied_seed);
+        result.ps.ctx.get(savor::context::key::core::MEMWRITE_STATUS, out.memwrite_status);
+        result.ps.ctx.get(savor::context::key::core::MEMWRITE_READBACK, out.memwrite_readback);
         std::string turn_blob;
         result.ps.ctx.get(savor::context::key::battle::APPLIED_INPUTPLAN_TURN_BLOB, turn_blob);
         if (!turn_blob.empty()) {

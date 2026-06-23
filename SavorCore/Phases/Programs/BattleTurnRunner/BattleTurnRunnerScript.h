@@ -18,6 +18,8 @@ namespace phase::battle::turnrunner {
     static constexpr savor::context::key::KeyId Battle_Outcome = savor::context::key::battle::BATTLE_OUTCOME;
 
     static const std::string LabelStartAttempt = "START_ATTEMPT";
+    static const std::string LabelAfterOverrideStartSeed = "AFTER_OVERRIDE_START_SEED";
+    static const std::string LabelSeedOverrideMismatch = "SEED_OVERRIDE_MISMATCH";
     static const std::string LabelAdvanceToTurnInput = "ADV_TO_TURN_INPUT";
     static const std::string LabelTurnInputs = "AFTER_PRELUDE";
     static const std::string LabelMaterializeTurnMacro = "MATERIALIZE_TURN_MACRO";
@@ -61,6 +63,7 @@ namespace phase::battle::turnrunner {
             bp::battle::BattleMacroItemDetailReady,
             bp::battle::BattleMacroEnemyTargetReady,
             bp::battle::BattleMacroAllyTargetReady,
+            bp::prebattle::AfterRandSeedSet,
         };
 
         ps.ops.push_back(savor::OpArmPhaseBps());
@@ -74,6 +77,24 @@ namespace phase::battle::turnrunner {
         // Infer prelude path by current turn. current_turn > 1 starts near TurnInputs and should not apply initial input.
         ps.ops.push_back(savor::OpLabel(LabelStartAttempt));
         ps.ops.push_back(savor::OpGotoIf(savor::context::key::battle::TURN_OUTPUT_INDEX, savor::PSCmp::GT, 1u, LabelTurnInputs));
+
+        ps.ops.push_back(savor::OpGotoIf(savor::context::key::battle::RNG_OVERRIDE_ENABLED, savor::PSCmp::EQ, 0u, LabelAfterOverrideStartSeed));
+        ps.ops.push_back(savor::OpRunUntilBpKey(bp::prebattle::AfterRandSeedSet));
+        ps.ops.push_back(savor::OpGotoIf(DW_Outcome, savor::PSCmp::NE, 0u, LabelRetDWErr));
+        ps.ops.push_back(savor::OpGotoIf(savor::context::key::core::RUN_EXPECTED_MATCH, savor::PSCmp::NE, 1u, LabelRetDWErr));
+        ps.ops.push_back(savor::OpReadU32(addr::AddrRegistry::base(addr::core::RNG_SEED), savor::context::key::battle::RNG_ORIGINAL_SEED));
+        ps.ops.push_back(savor::OpWriteU32(addr::AddrRegistry::base(addr::core::RNG_SEED), savor::context::key::battle::RNG_OVERRIDE_SEED));
+        ps.ops.push_back(savor::OpGotoIf(savor::context::key::core::MEMWRITE_STATUS, savor::PSCmp::NE, 1u, LabelSeedOverrideMismatch));
+        ps.ops.push_back(savor::OpReadU32(addr::AddrRegistry::base(addr::core::RNG_SEED), savor::context::key::battle::RNG_APPLIED_SEED));
+        ps.ops.push_back(savor::OpCaptureSeedOverride());
+        ps.ops.push_back(savor::OpGotoIfKeys(savor::context::key::battle::RNG_APPLIED_SEED, savor::PSCmp::NE, savor::context::key::battle::RNG_OVERRIDE_SEED, LabelSeedOverrideMismatch));
+        ps.ops.push_back(savor::OpGoto(LabelAfterOverrideStartSeed));
+
+        ps.ops.push_back(savor::OpLabel(LabelSeedOverrideMismatch));
+        ps.ops.push_back(savor::OpSetU32(DW_Outcome, static_cast<uint32_t>(savor::RunToBpOutcome::Aborted)));
+        ps.ops.push_back(savor::OpGoto(LabelRetDWErr));
+
+        ps.ops.push_back(savor::OpLabel(LabelAfterOverrideStartSeed));
 
         // Turn 1 path: apply initial input only if caller supplied it.
         ps.ops.push_back(savor::OpGotoIf(savor::context::key::battle::HAS_INITIAL_INPUT, savor::PSCmp::EQ, 0u, LabelAdvanceToTurnInput));

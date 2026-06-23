@@ -134,6 +134,7 @@ namespace savor {
         bool readU64(uint32_t addr, uint64_t& out) const;
         bool readF32(uint32_t addr, float& out) const;
         bool readF64(uint32_t addr, double& out) const;
+        bool writeU32(uint32_t addr, uint32_t value);
 
         // Resolve an address key to a VA using the paused core's memory (no MEM1 copy).
         bool resolveKey(addr::AddrKey k, uint32_t& out_va) const;

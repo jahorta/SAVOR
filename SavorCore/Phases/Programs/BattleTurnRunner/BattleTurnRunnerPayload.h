@@ -2,6 +2,7 @@
 #include <vector>
 #include <cstdint>
 #include <string>
+#include <optional>
 
 #include "../../../Runner/Script/PhaseScriptVM.h"
 #include "../../../Runner/Breakpoints/Predicate.h"
@@ -10,7 +11,7 @@
 
 namespace phase::battle::turnrunner {
 
-    static constexpr int PayloadVersion = 4;
+    static constexpr int PayloadVersion = 5;
 
     struct EncodeSpec {
         uint32_t run_ms{ 0 };
@@ -29,6 +30,7 @@ namespace phase::battle::turnrunner {
         std::string output_savestate_path{};
         std::string capture_profile_path{};
         std::string capture_output_path{};
+        std::optional<uint32_t> override_start_rng_seed{};
     };
 
     bool encode_payload(const EncodeSpec& spec, std::vector<uint8_t>& out);

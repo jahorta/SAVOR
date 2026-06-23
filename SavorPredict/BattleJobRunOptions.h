@@ -1,6 +1,7 @@
 #pragma once
 
 #include <filesystem>
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <vector>
@@ -21,6 +22,7 @@ struct BattleJobRunOptions {
     std::optional<long long> exec_job_id;
     int poll_ms = 100;
     int timeout_ms = 180000;
+    std::optional<std::uint32_t> override_start_rng_seed;
 };
 
 struct BattleJobRunParseResult {
