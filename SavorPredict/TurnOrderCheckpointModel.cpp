@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <cstdint>
 #include <initializer_list>
 #include <map>
 #include <numeric>
@@ -36,11 +37,36 @@ std::optional<int> parse_field_int(const CheckpointEvent& event, const char* key
     return static_cast<int>(parsed);
 }
 
+std::optional<std::uint32_t> parse_field_u32(const CheckpointEvent& event, const char* key) {
+    const auto found = event.fields.find(key);
+    if (found == event.fields.end()) {
+        return std::nullopt;
+    }
+
+    char* end = nullptr;
+    const auto parsed = std::strtoull(found->second.c_str(), &end, 0);
+    if (end == found->second.c_str() || *end != '\0' || parsed > 0xffffffffull) {
+        return std::nullopt;
+    }
+    return static_cast<std::uint32_t>(parsed);
+}
+
 std::optional<int> parse_first_field_int(
     const CheckpointEvent& event,
     std::initializer_list<const char*> field_names) {
     for (const auto* field_name : field_names) {
         if (const auto value = parse_field_int(event, field_name); value.has_value()) {
+            return value;
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<std::uint32_t> parse_first_field_u32(
+    const CheckpointEvent& event,
+    std::initializer_list<const char*> field_names) {
+    for (const auto* field_name : field_names) {
+        if (const auto value = parse_field_u32(event, field_name); value.has_value()) {
             return value;
         }
     }
@@ -54,6 +80,13 @@ bool event_named(const CheckpointEvent& event, std::initializer_list<std::string
         }
     }
     return false;
+}
+
+bool is_qsort_call_checkpoint(const CheckpointEvent& event) {
+    return event_named(event, {
+        "turn_order_qsort_call",
+        "qsort_call",
+    });
 }
 
 bool is_queue_entry_checkpoint(const CheckpointEvent& event) {
@@ -202,6 +235,22 @@ std::vector<int> reversed_copy(std::vector<int> values) {
     return values;
 }
 
+bool is_active_turn_order_slot(int slot) {
+    return slot >= 0 && slot != 255;
+}
+
+std::vector<TurnOrderCheckpointDraw> active_entries(
+    const std::vector<TurnOrderCheckpointDraw>& entries) {
+    std::vector<TurnOrderCheckpointDraw> active;
+    active.reserve(entries.size());
+    for (const auto& entry : entries) {
+        if (entry.slot.has_value() && is_active_turn_order_slot(*entry.slot)) {
+            active.push_back(entry);
+        }
+    }
+    return active;
+}
+
 std::vector<TurnOrderCheckpointDraw> sorted_by_index_or_draw(
     std::vector<TurnOrderCheckpointDraw> entries,
     bool use_execution_index) {
@@ -218,6 +267,78 @@ std::vector<TurnOrderCheckpointDraw> sorted_by_index_or_draw(
         return false;
     });
     return entries;
+}
+
+std::uint32_t fallback_action_queue_word0(const TurnOrderCheckpointDraw& draw) {
+    if (draw.record_word0.has_value()) {
+        return *draw.record_word0;
+    }
+    if (draw.slot.has_value()) {
+        return static_cast<std::uint32_t>(*draw.slot & 0xff) << 24;
+    }
+    return 0;
+}
+
+std::uint32_t fallback_action_queue_priority(const TurnOrderCheckpointDraw& draw) {
+    if (!draw.assigned_priority.has_value()) {
+        return 0;
+    }
+    return static_cast<std::uint32_t>(*draw.assigned_priority);
+}
+
+std::uint32_t fallback_action_queue_word8(const TurnOrderCheckpointDraw& draw) {
+    return draw.record_word8.value_or(0);
+}
+
+std::size_t inferred_qsort_count(
+    const TurnOrderCheckpointSummary& summary,
+    const std::vector<TurnOrderCheckpointDraw>& priority_sources) {
+    if (summary.qsort_call_count.has_value() && *summary.qsort_call_count >= 0) {
+        return std::min(
+            static_cast<std::size_t>(*summary.qsort_call_count),
+            priority_sources.size());
+    }
+
+    const auto active = active_entries(priority_sources);
+    if (!active.empty()) {
+        return active.size();
+    }
+    return priority_sources.size();
+}
+
+std::vector<int> expected_qsort_slots_from_action_queue(
+    const std::vector<TurnOrderCheckpointDraw>& priority_sources,
+    std::size_t qsort_count) {
+    std::vector<std::uint8_t> bytes;
+    bytes.reserve(priority_sources.size() * 12u);
+    for (const auto& source : priority_sources) {
+        const auto record = make_battle_turn_order_action_queue_record(
+            fallback_action_queue_word0(source),
+            fallback_action_queue_priority(source),
+            fallback_action_queue_word8(source));
+        bytes.insert(bytes.end(), record.begin(), record.end());
+    }
+
+    const auto sorted = simulate_battle_turn_order_action_queue_qsort(bytes, qsort_count);
+
+    std::vector<int> slots;
+    slots.reserve(priority_sources.size());
+    for (std::size_t i = 0; i < priority_sources.size(); ++i) {
+        slots.push_back(static_cast<int>(battle_turn_order_action_queue_slot(
+            std::span<const std::uint8_t>(sorted.data() + i * 12u, 12u))));
+    }
+    return slots;
+}
+
+std::vector<int> active_slots_from_qsort_output(const std::vector<int>& qsort_slots) {
+    std::vector<int> active;
+    active.reserve(qsort_slots.size());
+    for (const auto slot : qsort_slots) {
+        if (is_active_turn_order_slot(slot)) {
+            active.push_back(slot);
+        }
+    }
+    return active;
 }
 
 void fill_queue_priority_from_draws(
@@ -389,9 +510,16 @@ TurnOrderCheckpointSummary summarize_turn_order_checkpoints(
 
     for (const auto& event : events) {
         const bool priority_draw = owner_is(event, kTurnOrderOwner);
+        const bool qsort_call = !priority_draw && is_qsort_call_checkpoint(event);
         const bool queue_entry = !priority_draw && is_queue_entry_checkpoint(event);
         const bool qsort_output_entry = !priority_draw && is_qsort_output_checkpoint(event);
         const bool execution_entry = is_execution_order_checkpoint(event);
+        if (qsort_call) {
+            summary.qsort_call_count = parse_first_field_int(event, {"queued_count", "queued_count_r29"});
+            summary.qsort_element_size = parse_field_int(event, "qsort_elem_size_arg");
+            summary.qsort_comparator = parse_field_u32(event, "qsort_comparator_arg");
+            continue;
+        }
         if (!priority_draw && !queue_entry && !qsort_output_entry && !execution_entry) {
             continue;
         }
@@ -431,6 +559,8 @@ TurnOrderCheckpointSummary summarize_turn_order_checkpoints(
         }
         draw.assigned_priority = parse_field_int(event, "assigned_priority");
         draw.rand_value = parse_first_field_int(event, {"priority_rand", "rand_value"});
+        draw.record_word0 = parse_first_field_u32(event, {"record_word0", "record_field0", "word0"});
+        draw.record_word8 = parse_first_field_u32(event, {"record_word8", "record_field8", "word8"});
         if (priority_draw && !draw.rand_value.has_value() && event.rng_seed_before.has_value()) {
             draw.rand_value = draw_rand15(*event.rng_seed_before).value;
         }
@@ -559,18 +689,15 @@ TurnOrderCheckpointSummary summarize_turn_order_checkpoints(
     if (!priority_sources.empty()) {
         const auto sorted_qsort_output = sorted_by_index_or_draw(qsort_output_entries, false);
         const auto sorted_execution = sorted_execution_entries(execution_entries);
-        summarize_priority_tie_groups(summary, priority_sources, sorted_execution);
+        const auto active_priority_sources = active_entries(priority_sources);
+        const auto active_execution = active_entries(sorted_execution);
+        const auto& execution_sources =
+            !active_priority_sources.empty() ? active_priority_sources : priority_sources;
+        summarize_priority_tie_groups(summary, execution_sources, active_execution);
 
-        std::vector<int> priority_keys;
-        priority_keys.reserve(priority_sources.size());
-        for (const auto& source : priority_sources) {
-            priority_keys.push_back(*source.assigned_priority);
-        }
-        const auto sorted_indices = soa_qsort_indices_by_key_ascending(priority_keys);
-
-        for (const auto index : sorted_indices) {
-            summary.expected_qsort_slots.push_back(*priority_sources[index].slot);
-        }
+        summary.expected_qsort_slots = expected_qsort_slots_from_action_queue(
+            priority_sources,
+            inferred_qsort_count(summary, priority_sources));
         for (const auto& entry : sorted_qsort_output) {
             summary.observed_qsort_slots.push_back(*entry.slot);
         }
@@ -590,15 +717,29 @@ TurnOrderCheckpointSummary summarize_turn_order_checkpoints(
             summary.qsort_output_exact = summary.qsort_output_mismatches == 0;
         }
 
-        for (auto it = sorted_indices.rbegin(); it != sorted_indices.rend(); ++it) {
-            summary.expected_execution_slots.push_back(*priority_sources[*it].slot);
+        const auto active_expected_qsort_slots =
+            active_slots_from_qsort_output(summary.expected_qsort_slots);
+        if (!active_expected_qsort_slots.empty()) {
+            for (auto it = active_expected_qsort_slots.rbegin(); it != active_expected_qsort_slots.rend(); ++it) {
+                summary.expected_execution_slots.push_back(*it);
+            }
+        } else {
+            std::vector<int> active_priority_keys;
+            active_priority_keys.reserve(execution_sources.size());
+            for (const auto& source : execution_sources) {
+                active_priority_keys.push_back(*source.assigned_priority);
+            }
+            const auto active_sorted_indices = soa_qsort_indices_by_key_ascending(active_priority_keys);
+            for (auto it = active_sorted_indices.rbegin(); it != active_sorted_indices.rend(); ++it) {
+                summary.expected_execution_slots.push_back(*execution_sources[*it].slot);
+            }
         }
 
-        for (const auto& entry : sorted_execution) {
+        for (const auto& entry : active_execution) {
             summary.observed_execution_slots.push_back(*entry.slot);
         }
 
-        if (!sorted_execution.empty() && summary.expected_execution_slots.size() == summary.observed_execution_slots.size()) {
+        if (!active_execution.empty() && summary.expected_execution_slots.size() == summary.observed_execution_slots.size()) {
             summary.execution_order_compared = true;
             for (std::size_t i = 0; i < summary.expected_execution_slots.size(); ++i) {
                 if (summary.expected_execution_slots[i] == summary.observed_execution_slots[i]) {
@@ -607,7 +748,7 @@ TurnOrderCheckpointSummary summarize_turn_order_checkpoints(
                     ++summary.execution_order_mismatches;
                 }
             }
-        } else if (!sorted_execution.empty()) {
+        } else if (!active_execution.empty()) {
             summary.execution_order_compared = true;
             ++summary.execution_order_mismatches;
         }

@@ -1502,9 +1502,10 @@ std::string build_first_battle_turn_order_validation_profile_ini()
             "qsort_input",
             false,
             {
+                memory_sample("record_word0", base + 0x0u, "u32"),
                 memory_sample("slot", base + 0x0u, "u8"),
                 memory_sample("assigned_priority", base + 0x4u, "u32"),
-                memory_sample("record_field8", base + 0x8u, "u32"),
+                memory_sample("record_word8", base + 0x8u, "u32"),
             });
 
         write_checkpoint_owned(
@@ -1516,9 +1517,10 @@ std::string build_first_battle_turn_order_validation_profile_ini()
             "qsort_output",
             false,
             {
+                memory_sample("record_word0", base + 0x0u, "u32"),
                 memory_sample("slot", base + 0x0u, "u8"),
                 memory_sample("assigned_priority", base + 0x4u, "u32"),
-                memory_sample("record_field8", base + 0x8u, "u32"),
+                memory_sample("record_word8", base + 0x8u, "u32"),
             });
 
         write_checkpoint_owned(

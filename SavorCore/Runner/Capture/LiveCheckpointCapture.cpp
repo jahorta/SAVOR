@@ -176,7 +176,7 @@ void LiveCheckpointCapture::stop()
 
 bool LiveCheckpointCapture::contains_pc(std::uint32_t pc) const
 {
-    return active_ && profile_.find_checkpoint(pc) != nullptr;
+    return active_ && !profile_.find_checkpoints(pc).empty();
 }
 
 std::vector<std::uint32_t> LiveCheckpointCapture::pcs() const
@@ -192,93 +192,95 @@ const std::vector<MemoryWatchpointSpec>& LiveCheckpointCapture::memory_watchpoin
 bool LiveCheckpointCapture::capture_hit(DolphinWrapper& host, std::uint32_t pc, std::string* error_out)
 {
     if (!active_) return true;
-    const auto* checkpoint = profile_.find_checkpoint(pc);
-    if (checkpoint == nullptr) return true;
+    const auto checkpoints = profile_.find_checkpoints(pc);
+    if (checkpoints.empty()) return true;
 
-    CheckpointCaptureRecord record{};
-    record.capture_sequence = next_sequence_++;
-    record.pc = pc;
-    record.checkpoint_id = checkpoint->id;
-    record.checkpoint_name = checkpoint->name;
-    record.function = checkpoint->function;
-    record.checkpoint = checkpoint->checkpoint;
-    record.movie_input_count = host.getCurrentMovieInputCount();
-    record.vi_field_count = host.getViFieldCountApprox();
-    record.frame_count = host.getFrameCountApprox(false);
-    record.tbr_u64 = host.getTBR();
-    record.tbr_high = static_cast<std::uint32_t>(record.tbr_u64 >> 32);
-    record.tbr_low = static_cast<std::uint32_t>(record.tbr_u64);
-    record.rng_draw_index_before = rng_draw_index_;
-    record.owns_rng_draw = checkpoint->owns_rng_draw;
+    for (const auto* checkpoint : checkpoints) {
+        CheckpointCaptureRecord record{};
+        record.capture_sequence = next_sequence_++;
+        record.pc = pc;
+        record.checkpoint_id = checkpoint->id;
+        record.checkpoint_name = checkpoint->name;
+        record.function = checkpoint->function;
+        record.checkpoint = checkpoint->checkpoint;
+        record.movie_input_count = host.getCurrentMovieInputCount();
+        record.vi_field_count = host.getViFieldCountApprox();
+        record.frame_count = host.getFrameCountApprox(false);
+        record.tbr_u64 = host.getTBR();
+        record.tbr_high = static_cast<std::uint32_t>(record.tbr_u64 >> 32);
+        record.tbr_low = static_cast<std::uint32_t>(record.tbr_u64);
+        record.rng_draw_index_before = rng_draw_index_;
+        record.owns_rng_draw = checkpoint->owns_rng_draw;
 
-    auto& hit_count = hit_counts_[checkpoint->id];
-    record.checkpoint_hit_count = hit_count++;
+        auto& hit_count = hit_counts_[checkpoint->id];
+        record.checkpoint_hit_count = hit_count++;
 
-    for (const auto& sample : checkpoint->memory_samples) {
-        std::uint64_t value = 0;
-        if (!read_memory_sample(host, sample, value)) {
-            record.fields.push_back(CaptureField{ sample.name + "_read_ok", "false", false });
-            continue;
-        }
-        record.fields.push_back(CaptureField{ sample.name, sample_value_for_json(value, sample.width), false });
-    }
-
-    for (const auto& sample : checkpoint->gpr_samples) {
-        const auto value = host.getRegister(sample.reg);
-        record.fields.push_back(CaptureField{ sample.name, "\"" + HexU32(value) + "\"", false });
-    }
-
-    for (const auto& sample : checkpoint->register_memory_samples) {
-        const auto base = host.getRegister(sample.base_reg);
-        const auto address = static_cast<std::uint32_t>(
-            static_cast<std::uint64_t>(base) + static_cast<std::int64_t>(sample.offset));
-        record.fields.push_back(CaptureField{ sample.name + "_address", "\"" + HexU32(address) + "\"", false });
-
-        std::uint64_t value = 0;
-        if (!read_memory_sample(host, MemorySampleSpec{ sample.name, address, sample.width }, value)) {
-            record.fields.push_back(CaptureField{ sample.name + "_read_ok", "false", false });
-            continue;
-        }
-        record.fields.push_back(CaptureField{ sample.name, sample_value_for_json(value, sample.width), false });
-    }
-
-    for (const auto& sample : checkpoint->address_program_samples) {
-        std::uint64_t value = 0;
-        addrprog::EvalResult eval{};
-        const auto read_ok = addrprog::read_value(
-            sample.program.data(),
-            sample.program.size(),
-            0,
-            host,
-            nullptr,
-            static_cast<std::uint8_t>(sample.width),
-            value,
-            &eval,
-            [&](const std::uint8_t reg, std::uint32_t& out) {
-                out = host.getRegister(reg);
-                return true;
-            },
-            checkpoint->address_program_trace);
-        record.fields.push_back(CaptureField{ sample.name + "_eval_ok", eval.ok ? "true" : "false", false });
-        if (eval.ok) {
-            record.fields.push_back(CaptureField{ sample.name + "_address", "\"" + HexU32(eval.va) + "\"", false });
-        } else {
-            record.fields.push_back(CaptureField{ sample.name + "_eval_error", eval.error, true });
-        }
-        record.fields.push_back(CaptureField{ sample.name + "_read_ok", read_ok ? "true" : "false", false });
-        if (read_ok) {
+        for (const auto& sample : checkpoint->memory_samples) {
+            std::uint64_t value = 0;
+            if (!read_memory_sample(host, sample, value)) {
+                record.fields.push_back(CaptureField{ sample.name + "_read_ok", "false", false });
+                continue;
+            }
             record.fields.push_back(CaptureField{ sample.name, sample_value_for_json(value, sample.width), false });
         }
-        if (checkpoint->address_program_trace) {
-            append_address_program_trace_fields(record, sample.name, eval);
-        }
-    }
 
-    if (!writer_.write(record, error_out)) {
-        return false;
-    }
-    if (checkpoint->owns_rng_draw) {
-        ++rng_draw_index_;
+        for (const auto& sample : checkpoint->gpr_samples) {
+            const auto value = host.getRegister(sample.reg);
+            record.fields.push_back(CaptureField{ sample.name, "\"" + HexU32(value) + "\"", false });
+        }
+
+        for (const auto& sample : checkpoint->register_memory_samples) {
+            const auto base = host.getRegister(sample.base_reg);
+            const auto address = static_cast<std::uint32_t>(
+                static_cast<std::uint64_t>(base) + static_cast<std::int64_t>(sample.offset));
+            record.fields.push_back(CaptureField{ sample.name + "_address", "\"" + HexU32(address) + "\"", false });
+
+            std::uint64_t value = 0;
+            if (!read_memory_sample(host, MemorySampleSpec{ sample.name, address, sample.width }, value)) {
+                record.fields.push_back(CaptureField{ sample.name + "_read_ok", "false", false });
+                continue;
+            }
+            record.fields.push_back(CaptureField{ sample.name, sample_value_for_json(value, sample.width), false });
+        }
+
+        for (const auto& sample : checkpoint->address_program_samples) {
+            std::uint64_t value = 0;
+            addrprog::EvalResult eval{};
+            const auto read_ok = addrprog::read_value(
+                sample.program.data(),
+                sample.program.size(),
+                0,
+                host,
+                nullptr,
+                static_cast<std::uint8_t>(sample.width),
+                value,
+                &eval,
+                [&](const std::uint8_t reg, std::uint32_t& out) {
+                    out = host.getRegister(reg);
+                    return true;
+                },
+                checkpoint->address_program_trace);
+            record.fields.push_back(CaptureField{ sample.name + "_eval_ok", eval.ok ? "true" : "false", false });
+            if (eval.ok) {
+                record.fields.push_back(CaptureField{ sample.name + "_address", "\"" + HexU32(eval.va) + "\"", false });
+            } else {
+                record.fields.push_back(CaptureField{ sample.name + "_eval_error", eval.error, true });
+            }
+            record.fields.push_back(CaptureField{ sample.name + "_read_ok", read_ok ? "true" : "false", false });
+            if (read_ok) {
+                record.fields.push_back(CaptureField{ sample.name, sample_value_for_json(value, sample.width), false });
+            }
+            if (checkpoint->address_program_trace) {
+                append_address_program_trace_fields(record, sample.name, eval);
+            }
+        }
+
+        if (!writer_.write(record, error_out)) {
+            return false;
+        }
+        if (checkpoint->owns_rng_draw) {
+            ++rng_draw_index_;
+        }
     }
     return true;
 }

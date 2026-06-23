@@ -2053,6 +2053,24 @@ void write_text_report(
         << turn_order.priority_sources_with_fixed_priority_result << "\n";
     out << "  priority_sources_missing_fixed_priority_result: "
         << turn_order.priority_sources_missing_fixed_priority_result << "\n";
+    out << "  qsort_call_count: ";
+    if (turn_order.qsort_call_count.has_value()) {
+        out << *turn_order.qsort_call_count << "\n";
+    } else {
+        out << "unknown\n";
+    }
+    out << "  qsort_element_size: ";
+    if (turn_order.qsort_element_size.has_value()) {
+        out << *turn_order.qsort_element_size << "\n";
+    } else {
+        out << "unknown\n";
+    }
+    out << "  qsort_comparator: ";
+    if (turn_order.qsort_comparator.has_value()) {
+        out << *turn_order.qsort_comparator << "\n";
+    } else {
+        out << "unknown\n";
+    }
     out << "  events_with_queue_metadata: " << turn_order.events_with_queue_metadata << "\n";
     out << "  queue_metadata_matches: " << turn_order.queue_metadata_matches << "\n";
     out << "  queue_metadata_mismatches: " << turn_order.queue_metadata_mismatches << "\n";
@@ -4040,6 +4058,24 @@ void write_json_report(
         << turn_order.priority_sources_with_fixed_priority_result;
     out << ", \"priority_sources_missing_fixed_priority_result\": "
         << turn_order.priority_sources_missing_fixed_priority_result;
+    out << ", \"qsort_call_count\": ";
+    if (turn_order.qsort_call_count.has_value()) {
+        out << *turn_order.qsort_call_count;
+    } else {
+        out << "null";
+    }
+    out << ", \"qsort_element_size\": ";
+    if (turn_order.qsort_element_size.has_value()) {
+        out << *turn_order.qsort_element_size;
+    } else {
+        out << "null";
+    }
+    out << ", \"qsort_comparator\": ";
+    if (turn_order.qsort_comparator.has_value()) {
+        out << *turn_order.qsort_comparator;
+    } else {
+        out << "null";
+    }
     out << ", \"events_with_queue_metadata\": " << turn_order.events_with_queue_metadata;
     out << ", \"queue_metadata_matches\": " << turn_order.queue_metadata_matches;
     out << ", \"queue_metadata_mismatches\": " << turn_order.queue_metadata_mismatches;

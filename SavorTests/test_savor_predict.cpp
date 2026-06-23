@@ -1694,6 +1694,52 @@ TEST(SavorPredictRngModel, SoaQSortModelMatchesDisassembledHeapSortCases) {
     EXPECT_EQ(ascending_input[4], 4);
 }
 
+TEST(SavorPredictRngModel, SoaQSortGenericEngineUsesInjectedComparator) {
+    std::vector<std::uint8_t> records;
+    for (const auto value : {1u, 3u, 2u}) {
+        records.push_back(static_cast<std::uint8_t>(value));
+    }
+
+    const auto descending = simulate_soa_qsort_records(
+        records,
+        1,
+        3,
+        [](std::span<const std::uint8_t> lhs, std::span<const std::uint8_t> rhs) {
+            return static_cast<int>(rhs[0]) - static_cast<int>(lhs[0]);
+        });
+
+    ASSERT_EQ(descending.size(), 3u);
+    EXPECT_EQ(descending[0], 3);
+    EXPECT_EQ(descending[1], 2);
+    EXPECT_EQ(descending[2], 1);
+}
+
+TEST(SavorPredictRngModel, BattleActionQueueQSortUsesCallCountPrefixAndPreservesTail) {
+    std::vector<std::uint8_t> records;
+    const auto append_record = [&records](int slot, int priority) {
+        const auto record = make_battle_turn_order_action_queue_record(
+            static_cast<std::uint32_t>(slot & 0xff) << 24,
+            static_cast<std::uint32_t>(priority),
+            0);
+        records.insert(records.end(), record.begin(), record.end());
+    };
+    append_record(0, 26);
+    append_record(1, 26);
+    append_record(4, 28);
+    append_record(255, 0x7fffffff);
+
+    const auto sorted = simulate_battle_turn_order_action_queue_qsort(records, 3);
+
+    const auto slot_at = [&sorted](std::size_t index) {
+        return static_cast<int>(battle_turn_order_action_queue_slot(
+            std::span<const std::uint8_t>(sorted.data() + index * 12u, 12u)));
+    };
+    EXPECT_EQ(slot_at(0), 1);
+    EXPECT_EQ(slot_at(1), 0);
+    EXPECT_EQ(slot_at(2), 4);
+    EXPECT_EQ(slot_at(3), 255);
+}
+
 TEST(SavorPredictRngModel, FirstBattleTurnOrderSpendsOneDrawPerQueuedBasicAction) {
     const auto entries = first_battle_basic_turn_order_entries(true, true);
     ASSERT_EQ(entries.size(), 4u);
@@ -3220,6 +3266,155 @@ TEST(SavorPredictCheckpointTrace, SummarizesTurnOrderExecutionOrderCheckpoints) 
     EXPECT_EQ(matched.priority_tie_groups, 0);
     EXPECT_EQ(matched.priority_tied_entries, 0);
     EXPECT_EQ(matched.tie_groups_with_observed_execution_order, 0);
+
+    std::istringstream sentinel_tail_input(
+        "pc=80070c18 function=setupTurn checkpoint=queued_entry rng_draw_index_before=20 "
+        "queue_index=0 slot=0 fixed_priority_result=0 assigned_priority=22\n"
+        "pc=80070c18 function=setupTurn checkpoint=queued_entry rng_draw_index_before=20 "
+        "queue_index=1 slot=1 fixed_priority_result=0 assigned_priority=27\n"
+        "pc=80070c18 function=setupTurn checkpoint=queued_entry rng_draw_index_before=20 "
+        "queue_index=2 slot=4 fixed_priority_result=0 assigned_priority=21\n"
+        "pc=80070c18 function=setupTurn checkpoint=queued_entry rng_draw_index_before=20 "
+        "queue_index=3 slot=5 fixed_priority_result=0 assigned_priority=22\n"
+        "pc=80070c18 function=setupTurn checkpoint=queued_entry rng_draw_index_before=20 "
+        "queue_index=4 slot=255 fixed_priority_result=0 assigned_priority=2147483647\n"
+        "pc=80070c18 function=setupTurn checkpoint=queued_entry rng_draw_index_before=20 "
+        "queue_index=5 slot=255 fixed_priority_result=0 assigned_priority=2147483647\n"
+        "pc=80070c18 function=setupTurn checkpoint=queued_entry rng_draw_index_before=20 "
+        "queue_index=6 slot=255 fixed_priority_result=0 assigned_priority=2147483647\n"
+        "pc=80070c18 function=setupTurn checkpoint=queued_entry rng_draw_index_before=20 "
+        "queue_index=7 slot=255 fixed_priority_result=0 assigned_priority=2147483647\n"
+        "pc=8007140c function=setupTurn checkpoint=qsort_output rng_draw_index_before=20 "
+        "queue_index=0 slot=4 assigned_priority=21\n"
+        "pc=8007140c function=setupTurn checkpoint=qsort_output rng_draw_index_before=20 "
+        "queue_index=1 slot=0 assigned_priority=22\n"
+        "pc=8007140c function=setupTurn checkpoint=qsort_output rng_draw_index_before=20 "
+        "queue_index=2 slot=5 assigned_priority=22\n"
+        "pc=8007140c function=setupTurn checkpoint=qsort_output rng_draw_index_before=20 "
+        "queue_index=3 slot=1 assigned_priority=27\n"
+        "pc=8007140c function=setupTurn checkpoint=qsort_output rng_draw_index_before=20 "
+        "queue_index=4 slot=255 assigned_priority=2147483647\n"
+        "pc=8007140c function=setupTurn checkpoint=qsort_output rng_draw_index_before=20 "
+        "queue_index=5 slot=255 assigned_priority=2147483647\n"
+        "pc=8007140c function=setupTurn checkpoint=qsort_output rng_draw_index_before=20 "
+        "queue_index=6 slot=255 assigned_priority=2147483647\n"
+        "pc=8007140c function=setupTurn checkpoint=qsort_output rng_draw_index_before=20 "
+        "queue_index=7 slot=255 assigned_priority=2147483647\n"
+        "pc=8007154c function=setupTurn checkpoint=execution_order rng_draw_index_before=20 "
+        "execution_index=0 slot=1\n"
+        "pc=8007154c function=setupTurn checkpoint=execution_order rng_draw_index_before=20 "
+        "execution_index=1 slot=5\n"
+        "pc=8007154c function=setupTurn checkpoint=execution_order rng_draw_index_before=20 "
+        "execution_index=2 slot=0\n"
+        "pc=8007154c function=setupTurn checkpoint=execution_order rng_draw_index_before=20 "
+        "execution_index=3 slot=4\n"
+        "pc=8007154c function=setupTurn checkpoint=execution_order rng_draw_index_before=20 "
+        "execution_index=4 slot=255\n"
+        "pc=8007154c function=setupTurn checkpoint=execution_order rng_draw_index_before=20 "
+        "execution_index=5 slot=255\n"
+        "pc=8007154c function=setupTurn checkpoint=execution_order rng_draw_index_before=20 "
+        "execution_index=6 slot=255\n"
+        "pc=8007154c function=setupTurn checkpoint=execution_order rng_draw_index_before=20 "
+        "execution_index=7 slot=255\n");
+    const auto sentinel_tail_parsed = parse_checkpoint_stream(sentinel_tail_input);
+    ASSERT_TRUE(sentinel_tail_parsed.errors.empty());
+    const auto sentinel_tail = summarize_turn_order_checkpoints(sentinel_tail_parsed.events, std::nullopt);
+    EXPECT_EQ(sentinel_tail.status, TurnOrderCheckpointStatus::MatchesExpected);
+    EXPECT_TRUE(sentinel_tail.qsort_output_exact);
+    EXPECT_TRUE(sentinel_tail.execution_order_exact);
+    EXPECT_EQ(sentinel_tail.observed_execution_order_entries, 8);
+    ASSERT_EQ(sentinel_tail.expected_execution_slots.size(), 4u);
+    EXPECT_EQ(sentinel_tail.expected_execution_slots[0], 1);
+    EXPECT_EQ(sentinel_tail.expected_execution_slots[1], 5);
+    EXPECT_EQ(sentinel_tail.expected_execution_slots[2], 0);
+    EXPECT_EQ(sentinel_tail.expected_execution_slots[3], 4);
+    ASSERT_EQ(sentinel_tail.observed_execution_slots.size(), 4u);
+    EXPECT_EQ(sentinel_tail.observed_execution_slots[0], 1);
+    EXPECT_EQ(sentinel_tail.observed_execution_slots[1], 5);
+    EXPECT_EQ(sentinel_tail.observed_execution_slots[2], 0);
+    EXPECT_EQ(sentinel_tail.observed_execution_slots[3], 4);
+
+    std::istringstream live_tie_433890_input(
+        "pc=80071408 function=setupTurn checkpoint=qsort_call rng_draw_index_before=20 "
+        "queued_count=3 qsort_elem_size_arg=12 qsort_comparator_arg=123\n"
+        "pc=80071408 function=setupTurn checkpoint=qsort_input rng_draw_index_before=20 "
+        "queue_index=0 slot=0 assigned_priority=26\n"
+        "pc=80071408 function=setupTurn checkpoint=qsort_input rng_draw_index_before=20 "
+        "queue_index=1 slot=1 assigned_priority=26\n"
+        "pc=80071408 function=setupTurn checkpoint=qsort_input rng_draw_index_before=20 "
+        "queue_index=2 slot=4 assigned_priority=28\n"
+        "pc=80071408 function=setupTurn checkpoint=qsort_input rng_draw_index_before=20 "
+        "queue_index=3 slot=255 assigned_priority=2147483647\n"
+        "pc=8007140c function=setupTurn checkpoint=qsort_output rng_draw_index_before=20 "
+        "queue_index=0 slot=1 assigned_priority=26\n"
+        "pc=8007140c function=setupTurn checkpoint=qsort_output rng_draw_index_before=20 "
+        "queue_index=1 slot=0 assigned_priority=26\n"
+        "pc=8007140c function=setupTurn checkpoint=qsort_output rng_draw_index_before=20 "
+        "queue_index=2 slot=4 assigned_priority=28\n"
+        "pc=8007140c function=setupTurn checkpoint=qsort_output rng_draw_index_before=20 "
+        "queue_index=3 slot=255 assigned_priority=2147483647\n"
+        "pc=8007154c function=setupTurn checkpoint=execution_order rng_draw_index_before=20 "
+        "execution_index=0 slot=4\n"
+        "pc=8007154c function=setupTurn checkpoint=execution_order rng_draw_index_before=20 "
+        "execution_index=1 slot=0\n"
+        "pc=8007154c function=setupTurn checkpoint=execution_order rng_draw_index_before=20 "
+        "execution_index=2 slot=1\n"
+        "pc=8007154c function=setupTurn checkpoint=execution_order rng_draw_index_before=20 "
+        "execution_index=3 slot=255\n");
+    const auto live_tie_433890_parsed = parse_checkpoint_stream(live_tie_433890_input);
+    ASSERT_TRUE(live_tie_433890_parsed.errors.empty());
+    const auto live_tie_433890 = summarize_turn_order_checkpoints(live_tie_433890_parsed.events, std::nullopt);
+    EXPECT_EQ(live_tie_433890.status, TurnOrderCheckpointStatus::MatchesExpected);
+    ASSERT_TRUE(live_tie_433890.qsort_call_count.has_value());
+    EXPECT_EQ(*live_tie_433890.qsort_call_count, 3);
+    EXPECT_TRUE(live_tie_433890.qsort_output_exact);
+    EXPECT_TRUE(live_tie_433890.execution_order_exact);
+    ASSERT_EQ(live_tie_433890.expected_qsort_slots.size(), 4u);
+    EXPECT_EQ(live_tie_433890.expected_qsort_slots[0], 1);
+    EXPECT_EQ(live_tie_433890.expected_qsort_slots[1], 0);
+    EXPECT_EQ(live_tie_433890.expected_qsort_slots[2], 4);
+    EXPECT_EQ(live_tie_433890.expected_qsort_slots[3], 255);
+
+    std::istringstream live_tie_433896_input(
+        "pc=80071408 function=setupTurn checkpoint=qsort_call rng_draw_index_before=20 "
+        "queued_count=3 qsort_elem_size_arg=12 qsort_comparator_arg=123\n"
+        "pc=80071408 function=setupTurn checkpoint=qsort_input rng_draw_index_before=20 "
+        "queue_index=0 slot=0 assigned_priority=27\n"
+        "pc=80071408 function=setupTurn checkpoint=qsort_input rng_draw_index_before=20 "
+        "queue_index=1 slot=1 assigned_priority=36\n"
+        "pc=80071408 function=setupTurn checkpoint=qsort_input rng_draw_index_before=20 "
+        "queue_index=2 slot=5 assigned_priority=27\n"
+        "pc=80071408 function=setupTurn checkpoint=qsort_input rng_draw_index_before=20 "
+        "queue_index=3 slot=255 assigned_priority=2147483647\n"
+        "pc=8007140c function=setupTurn checkpoint=qsort_output rng_draw_index_before=20 "
+        "queue_index=0 slot=0 assigned_priority=27\n"
+        "pc=8007140c function=setupTurn checkpoint=qsort_output rng_draw_index_before=20 "
+        "queue_index=1 slot=5 assigned_priority=27\n"
+        "pc=8007140c function=setupTurn checkpoint=qsort_output rng_draw_index_before=20 "
+        "queue_index=2 slot=1 assigned_priority=36\n"
+        "pc=8007140c function=setupTurn checkpoint=qsort_output rng_draw_index_before=20 "
+        "queue_index=3 slot=255 assigned_priority=2147483647\n"
+        "pc=8007154c function=setupTurn checkpoint=execution_order rng_draw_index_before=20 "
+        "execution_index=0 slot=1\n"
+        "pc=8007154c function=setupTurn checkpoint=execution_order rng_draw_index_before=20 "
+        "execution_index=1 slot=5\n"
+        "pc=8007154c function=setupTurn checkpoint=execution_order rng_draw_index_before=20 "
+        "execution_index=2 slot=0\n"
+        "pc=8007154c function=setupTurn checkpoint=execution_order rng_draw_index_before=20 "
+        "execution_index=3 slot=255\n");
+    const auto live_tie_433896_parsed = parse_checkpoint_stream(live_tie_433896_input);
+    ASSERT_TRUE(live_tie_433896_parsed.errors.empty());
+    const auto live_tie_433896 = summarize_turn_order_checkpoints(live_tie_433896_parsed.events, std::nullopt);
+    EXPECT_EQ(live_tie_433896.status, TurnOrderCheckpointStatus::MatchesExpected);
+    ASSERT_TRUE(live_tie_433896.qsort_call_count.has_value());
+    EXPECT_EQ(*live_tie_433896.qsort_call_count, 3);
+    EXPECT_TRUE(live_tie_433896.qsort_output_exact);
+    EXPECT_TRUE(live_tie_433896.execution_order_exact);
+    ASSERT_EQ(live_tie_433896.expected_qsort_slots.size(), 4u);
+    EXPECT_EQ(live_tie_433896.expected_qsort_slots[0], 0);
+    EXPECT_EQ(live_tie_433896.expected_qsort_slots[1], 5);
+    EXPECT_EQ(live_tie_433896.expected_qsort_slots[2], 1);
+    EXPECT_EQ(live_tie_433896.expected_qsort_slots[3], 255);
 
     std::istringstream mismatch_input(
         "pc=80070c18 function=setupTurn checkpoint=queued_entry rng_draw_index_before=20 "

@@ -780,6 +780,8 @@ TEST(SavorPredictLiveCaptureProfile, BuildsTurnOrderValidationProfile)
     }
     EXPECT_FALSE(found_targeting_camera);
     EXPECT_FALSE(found_progress_pc);
+    EXPECT_GT(profile.find_checkpoints(0x80071408u).size(), 1u);
+    EXPECT_GT(profile.find_checkpoints(0x8007140Cu).size(), 1u);
 
     const auto find_checkpoint = [&](std::string_view id)
         -> const CheckpointSpec* {
@@ -820,14 +822,18 @@ TEST(SavorPredictLiveCaptureProfile, BuildsTurnOrderValidationProfile)
     const auto* input0 = find_checkpoint("turn_order_qsort_input_entry_0_80071408");
     ASSERT_NE(input0, nullptr);
     EXPECT_EQ(input0->checkpoint, "qsort_input");
+    EXPECT_TRUE(has_memory_sample(*input0, "record_word0"));
     EXPECT_TRUE(has_memory_sample(*input0, "slot"));
     EXPECT_TRUE(has_memory_sample(*input0, "assigned_priority"));
+    EXPECT_TRUE(has_memory_sample(*input0, "record_word8"));
 
     const auto* output7 = find_checkpoint("turn_order_qsort_output_entry_7_8007140C");
     ASSERT_NE(output7, nullptr);
     EXPECT_EQ(output7->checkpoint, "qsort_output");
+    EXPECT_TRUE(has_memory_sample(*output7, "record_word0"));
     EXPECT_TRUE(has_memory_sample(*output7, "slot"));
     EXPECT_TRUE(has_memory_sample(*output7, "assigned_priority"));
+    EXPECT_TRUE(has_memory_sample(*output7, "record_word8"));
 
     const auto* execution3 = find_checkpoint("turn_order_execution_order_entry_3_8007154C");
     ASSERT_NE(execution3, nullptr);

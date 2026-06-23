@@ -489,6 +489,17 @@ const CheckpointSpec* CaptureProfile::find_checkpoint(std::uint32_t pc) const
     return nullptr;
 }
 
+std::vector<const CheckpointSpec*> CaptureProfile::find_checkpoints(std::uint32_t pc) const
+{
+    std::vector<const CheckpointSpec*> out;
+    for (const auto& checkpoint : checkpoints) {
+        if (checkpoint.pc == pc) {
+            out.push_back(&checkpoint);
+        }
+    }
+    return out;
+}
+
 std::vector<std::uint32_t> CaptureProfile::pcs() const
 {
     std::vector<std::uint32_t> out;

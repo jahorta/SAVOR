@@ -77,6 +77,7 @@ struct CaptureProfile {
     std::vector<MemoryWatchpointSpec> memory_watchpoints;
 
     const CheckpointSpec* find_checkpoint(std::uint32_t pc) const;
+    std::vector<const CheckpointSpec*> find_checkpoints(std::uint32_t pc) const;
     std::vector<std::uint32_t> pcs() const;
 };
 

@@ -3,6 +3,7 @@
 #include "CheckpointTrace.h"
 #include "TurnOrderModel.h"
 
+#include <cstdint>
 #include <optional>
 #include <string_view>
 #include <vector>
@@ -59,6 +60,8 @@ struct TurnOrderCheckpointDraw {
     std::optional<int> expected_first_battle_quick;
     std::optional<int> expected_jitter_modulus;
     std::optional<int> expected_execution_slot;
+    std::optional<std::uint32_t> record_word0;
+    std::optional<std::uint32_t> record_word8;
     bool priority_matches = false;
     bool quick_matches = false;
     bool queue_metadata_matches = false;
@@ -91,6 +94,9 @@ struct TurnOrderCheckpointSummary {
     int fixed_priority_nonzero_results = 0;
     int priority_sources_missing_fixed_priority_result = 0;
     int priority_sources_with_fixed_priority_result = 0;
+    std::optional<int> qsort_call_count;
+    std::optional<int> qsort_element_size;
+    std::optional<std::uint32_t> qsort_comparator;
     int events_with_queue_metadata = 0;
     int queue_metadata_matches = 0;
     int queue_metadata_mismatches = 0;
