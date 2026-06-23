@@ -124,6 +124,7 @@ void fill_predictor_slot(
     battle_slot.instance.current_derived_stats.DodgeChance = static_cast<std::uint16_t>(dodge);
     battle_slot.instance.current_base_stats.Agility = static_cast<std::int16_t>(agile);
     battle_slot.instance.current_weapon_element = static_cast<std::uint8_t>(element);
+    battle_slot.instance.counter_chance = static_cast<std::uint16_t>(counter_chance);
     battle_slot.instance.base_counter_chance = static_cast<std::uint16_t>(counter_chance);
     battle_slot.instance.current_counter_chance = static_cast<std::uint16_t>(counter_chance);
     battle_slot.instance.movement_flags = movement_flags;
@@ -405,6 +406,64 @@ TEST(SavorPredictRngModel, EffectRngModelComputesFirstBattleSourceKey8CritBurst)
     EXPECT_TRUE(first_battle_effect_burst_sequence_for_source_key(99).empty());
 }
 
+TEST(SavorPredictRngModel, ForcedCounterFollowUpConsumesDamageDrawsOnly) {
+    const BasicAttackInputs inputs{
+        .attacker_attack = 43,
+        .attacker_hit = 95,
+        .attacker_agile = 10,
+        .attacker_element = 4,
+        .target_defense = 42,
+        .target_dodge = 0,
+        .target_element_effectiveness_tenths = 10,
+    };
+
+    const auto forced = simulate_forced_basic_attack_damage_burst(0x12345678u, inputs);
+
+    EXPECT_EQ(forced.attack_result, 1);
+    EXPECT_EQ(forced.hit_check, 1);
+    EXPECT_EQ(forced.draws_consumed, 2);
+    EXPECT_FALSE(forced.hit_draw_spent);
+    EXPECT_FALSE(forced.crit_draw_spent);
+    EXPECT_TRUE(forced.damage_draws_spent);
+    EXPECT_TRUE(forced.damage_spread_rand.has_value());
+    EXPECT_TRUE(forced.damage_bonus_rand.has_value());
+    EXPECT_GT(forced.damage, 0);
+}
+
+TEST(SavorPredictRngModel, CounterChanceIncrementBelongsToDamageApplication) {
+    const auto hit = simulate_counter_chance_increment_after_damage({
+        .hit_check = 1,
+        .current_counter_chance = 10,
+        .counter_chance_increment = 10,
+    });
+    EXPECT_TRUE(hit.incremented);
+    EXPECT_EQ(hit.updated_current_counter_chance, 20);
+
+    const auto no_cap = simulate_counter_chance_increment_after_damage({
+        .hit_check = 1,
+        .current_counter_chance = 95,
+        .counter_chance_increment = 10,
+    });
+    EXPECT_TRUE(no_cap.incremented);
+    EXPECT_EQ(no_cap.updated_current_counter_chance, 105);
+
+    const auto miss = simulate_counter_chance_increment_after_damage({
+        .hit_check = 0,
+        .current_counter_chance = 10,
+        .counter_chance_increment = 10,
+    });
+    EXPECT_FALSE(miss.incremented);
+    EXPECT_EQ(miss.updated_current_counter_chance, 10);
+
+    const auto suppressed = simulate_counter_chance_increment_after_damage({
+        .hit_check = 4,
+        .current_counter_chance = 10,
+        .counter_chance_increment = 10,
+    });
+    EXPECT_FALSE(suppressed.incremented);
+    EXPECT_EQ(suppressed.updated_current_counter_chance, 10);
+}
+
 TEST(SavorPredictRngModel, FirstBattleVisualRngModelComposesCameraAndEffectDraws) {
     const auto pre_hit = model_first_battle_basic_attack_visual_rng({
         .actor_slot = 0,
@@ -451,6 +510,31 @@ TEST(SavorPredictRngModel, FirstBattleVisualRngModelComposesCameraAndEffectDraws
     ASSERT_EQ(unknown_actor.steps.size(), 1u);
     EXPECT_TRUE(unknown_actor.has_ambiguous_steps);
     EXPECT_EQ(unknown_actor.steps[0].label, "ambiguous_effect_source_key");
+}
+
+TEST(SavorPredictRngModel, FirstBattleCounterFollowUpVisualsUseCounterSourceKeys) {
+    const auto enemy_counter = model_first_battle_basic_attack_visual_rng({
+        .actor_slot = 4,
+        .target_slot = 1,
+        .attack_landed = true,
+        .attack_was_critical = true,
+        .counter_follow_up = true,
+        .include_action_view_camera = false,
+    });
+    ASSERT_EQ(enemy_counter.steps.size(), 1u);
+    ASSERT_TRUE(enemy_counter.steps[0].effect_source_key.has_value());
+    EXPECT_EQ(*enemy_counter.steps[0].effect_source_key, 4);
+
+    const auto pc_counter = model_first_battle_basic_attack_visual_rng({
+        .actor_slot = 1,
+        .target_slot = 4,
+        .attack_landed = true,
+        .counter_follow_up = true,
+        .include_action_view_camera = false,
+    });
+    ASSERT_EQ(pc_counter.steps.size(), 1u);
+    ASSERT_TRUE(pc_counter.steps[0].effect_source_key.has_value());
+    EXPECT_EQ(*pc_counter.steps[0].effect_source_key, 5);
 }
 
 TEST(SavorPredictRngModel, EffectCheckpointModelSummarizes80042b10BurstShape) {
@@ -789,6 +873,37 @@ TEST(SavorPredictBattlePredictor, PredictsFirstBattleThroughTurnOrderWithFixedPr
     EXPECT_EQ(action_view->draws_consumed, 1);
 }
 
+TEST(SavorPredictBattlePredictor, UsesBattleInstanceCounterChanceAsDamageIncrement) {
+    BattlePredictionInput input;
+    input.profile = first_battle_prediction_profile();
+    input.starting_rng_seed = 15u;
+    input.context = make_predictor_first_battle_context();
+    input.context.slots_[4].instance.base_counter_chance = 31;
+    input.context.slots_[4].instance.counter_chance = 7;
+    input.context.slots_[4].instance.current_counter_chance = 3;
+    input.turn_plan.fake_attack_count = 0;
+
+    const auto result = predict_battle(input);
+
+    const auto slot = std::find_if(
+        result.final_slots.begin(),
+        result.final_slots.end(),
+        [](const BattlePredictionSlotState& state) {
+            return state.slot == 4;
+        });
+    ASSERT_NE(slot, result.final_slots.end());
+    EXPECT_EQ(slot->base_counter_chance, 31);
+    EXPECT_EQ(slot->counter_chance_increment, 7);
+    EXPECT_EQ(
+        std::find_if(
+            result.warnings.begin(),
+            result.warnings.end(),
+            [](const std::string& warning) {
+                return warning.find("counter chance increment") != std::string::npos;
+            }),
+        result.warnings.end());
+}
+
 TEST(SavorPredictBattlePredictor, ReportsUnsupportedPlayerActionsExplicitly) {
     BattlePredictionInput input;
     input.profile = first_battle_prediction_profile();
@@ -869,6 +984,59 @@ TEST(SavorPredictBattlePredictorCli, ParsesSeedCandidateFallbackFlag) {
 
     EXPECT_TRUE(parsed.errors.empty());
     EXPECT_TRUE(parsed.options.allow_seed_candidate_fallback);
+}
+
+TEST(SavorPredictBattlePredictorCli, ParsesStartSeedListForDbSelector) {
+    const auto parsed = parse_predict_battle_tokens({
+        "--exec-job-id",
+        "147884",
+        "--start-seed-list",
+        "seeds.txt",
+    });
+
+    EXPECT_TRUE(parsed.errors.empty());
+    EXPECT_EQ(parsed.options.exec_job_id, 147884);
+    EXPECT_EQ(parsed.options.start_seed_list, std::filesystem::path("seeds.txt"));
+}
+
+TEST(SavorPredictBattlePredictorCli, RejectsStartSeedAndStartSeedListTogether) {
+    const auto parsed = parse_predict_battle_tokens({
+        "--exec-job-id",
+        "147884",
+        "--start-seed",
+        "0x8D5AD625",
+        "--start-seed-list",
+        "seeds.txt",
+    });
+
+    EXPECT_FALSE(parsed.errors.empty());
+    EXPECT_NE(
+        std::find(
+            parsed.errors.begin(),
+            parsed.errors.end(),
+            "Specify only one of --start-seed or --start-seed-list."),
+        parsed.errors.end());
+}
+
+TEST(SavorPredictBattlePredictorCli, RejectsStartSeedListWithContextFile) {
+    const auto parsed = parse_predict_battle_tokens({
+        "--context-file",
+        "context.bin",
+        "--turn-plan-hex",
+        "00",
+        "--fake-attacks",
+        "0",
+        "--start-seed-list",
+        "seeds.txt",
+    });
+
+    EXPECT_FALSE(parsed.errors.empty());
+    EXPECT_NE(
+        std::find(
+            parsed.errors.begin(),
+            parsed.errors.end(),
+            "--start-seed-list is only supported with a DB job selector."),
+        parsed.errors.end());
 }
 
 TEST(SavorPredictBattlePredictionDbInput, RejectsMutableDebugDbRootInResolver) {

@@ -33,7 +33,12 @@ std::string effect_detail(int source_key, const CombatEffectBurstSequenceModel& 
 
 std::optional<int> first_battle_basic_attack_effect_source_key(
     int actor_slot,
-    bool attack_was_critical) {
+    bool attack_was_critical,
+    bool counter_follow_up) {
+    if (counter_follow_up) {
+        return actor_slot < 4 ? 5 : 4;
+    }
+
     if (attack_was_critical) {
         return 8;
     }
@@ -78,7 +83,8 @@ BattleVisualRngModelResult model_first_battle_basic_attack_visual_rng(
 
     const auto source_key = first_battle_basic_attack_effect_source_key(
         input.actor_slot,
-        input.attack_was_critical);
+        input.attack_was_critical,
+        input.counter_follow_up);
     if (!source_key.has_value()) {
         append_step(result, {
             .label = "ambiguous_effect_source_key",
@@ -125,7 +131,8 @@ const char* first_battle_basic_attack_visual_rng_rule_detail() {
     return "first-battle basic attacks model one action-view mode-0 rewrite-gate camera draw "
            "before hit/damage resolution, then landed-hit combat effect bursts using source "
            "keys 4/5 for non-critical first-battle actors and source key 8 for the observed "
-           "successful-critical path";
+           "successful-critical path; counter follow-ups use the forced-hit path and select "
+           "source key 4 for enemy counters or source key 5 for PC counters";
 }
 
 } // namespace savor::predict

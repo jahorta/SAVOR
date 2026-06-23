@@ -66,6 +66,7 @@ struct BattlePredictionSlotState {
     std::uint16_t movement_flags = 0;
     int base_counter_chance = 0;
     int current_counter_chance = 0;
+    int counter_chance_increment = 0;
     int quick = 0;
     int agile = 0;
     int attack = 0;

@@ -19,6 +19,7 @@ struct BattleVisualRngActionInput {
     int target_slot = -1;
     bool attack_landed = false;
     bool attack_was_critical = false;
+    bool counter_follow_up = false;
     bool include_action_view_camera = true;
     bool include_effect_bursts = true;
 };
@@ -41,7 +42,8 @@ struct BattleVisualRngModelResult {
 
 std::optional<int> first_battle_basic_attack_effect_source_key(
     int actor_slot,
-    bool attack_was_critical);
+    bool attack_was_critical,
+    bool counter_follow_up = false);
 
 BattleVisualRngModelResult model_first_battle_basic_attack_visual_rng(
     const BattleVisualRngActionInput& input);

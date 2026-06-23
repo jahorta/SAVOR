@@ -140,6 +140,7 @@ BattlePredictionSlotState make_slot_state(
     state.movement_flags = source.instance.movement_flags;
     state.base_counter_chance = source.instance.base_counter_chance;
     state.current_counter_chance = source.instance.current_counter_chance;
+    state.counter_chance_increment = source.instance.counter_chance;
     state.agile = source.instance.current_base_stats.Agility;
     state.attack = source.instance.current_derived_stats.Attack;
     state.defense = source.instance.current_derived_stats.Defense;
@@ -174,8 +175,14 @@ BattlePredictionSlotState make_slot_state(
             if (state.base_counter_chance == 0) {
                 state.base_counter_chance = first_battle->counter_chance;
             }
-            if (state.current_counter_chance == 0) {
-                state.current_counter_chance = first_battle->counter_chance;
+            if (state.counter_chance_increment == 0) {
+                state.counter_chance_increment = first_battle->counter_chance;
+            }
+            if (state.present && source.instance.counter_chance == 0 && state.counter_chance_increment != 0) {
+                warnings.push_back(
+                    std::string("counter chance increment was not materialized in BattleContext ")
+                    + "field for slot " + std::to_string(slot_index)
+                    + "; first-battle profile uses the actor counter chance as a fallback");
             }
             if (state.movement_flags == 0) {
                 state.movement_flags = static_cast<std::uint16_t>(first_battle->movement_flags);
@@ -728,20 +735,22 @@ bool append_post_attack_visual_rng(
     const BattlePredictionProfile& profile,
     const QueuedPredictionAction& action,
     bool attack_landed,
-    bool attack_was_critical) {
+    bool attack_was_critical,
+    bool counter_follow_up) {
     const auto visual = model_first_battle_basic_attack_visual_rng({
         .profile_name = profile.name,
         .actor_slot = action.actor_slot,
         .target_slot = action.target_slot,
         .attack_landed = attack_landed,
         .attack_was_critical = attack_was_critical,
+        .counter_follow_up = counter_follow_up,
         .include_action_view_camera = false,
         .include_effect_bursts = true,
     });
     return append_visual_rng_steps(result, state, action, visual);
 }
 
-void append_counter_check(
+bool append_counter_check(
     BattlePredictionResult& result,
     std::uint32_t& state,
     std::vector<BattlePredictionSlotState>& slots,
@@ -750,10 +759,11 @@ void append_counter_check(
     auto* attacker = find_slot(slots, action.actor_slot);
     auto* target = find_slot(slots, action.target_slot);
     if (attacker == nullptr || target == nullptr || !target->alive) {
-        return;
+        return false;
     }
 
     const auto before = state;
+    const int current_before = target->current_counter_chance;
     const auto counter = simulate_counter_check(
         state,
         CounterInputs{
@@ -769,22 +779,28 @@ void append_counter_check(
     state = counter.end_state;
     target->current_counter_chance = counter.updated_current_counter_chance;
 
+    std::ostringstream detail;
+    detail << counter_result_reason_name(counter.reason)
+        << "; current_counter_chance=" << current_before
+        << "->" << target->current_counter_chance;
+    if (counter.counter) {
+        detail << "; follow-up uses setupTurnAction_80082134 self-target branch "
+               << "and FUN_80081de0 forced-hit damage path";
+    }
+
     append_event(result, {
         .phase = "counter",
         .label = counter.counter ? "counter_queued" : "counter_not_queued",
-        .status = counter.counter
-            ? BattlePredictionEventStatus::Ambiguous
-            : BattlePredictionEventStatus::Exact,
+        .status = BattlePredictionEventStatus::Exact,
         .actor_slot = action.target_slot,
         .target_slot = action.actor_slot,
         .rng_seed_before = before,
         .rng_seed_after = state,
         .draws_consumed = counter.draws_consumed,
         .rand_value = counter.counter_rand,
-        .detail = counter.counter
-            ? "counter follow-up identity/insertion remains a live-validation gap"
-            : counter_result_reason_name(counter.reason),
+        .detail = detail.str(),
     });
+    return counter.counter;
 }
 
 void append_death_and_drop(
@@ -822,6 +838,158 @@ void append_death_and_drop(
     event.amount = drop.amount;
     event.detail = drop_detail(drop);
     append_event(result, std::move(event));
+}
+
+bool basic_attack_damage_applies(const BasicAttackSimulation& attack) {
+    return attack.hit_check != 0 && attack.hit_check != 4;
+}
+
+void append_counter_skipped_lethal_damage(
+    BattlePredictionResult& result,
+    const QueuedPredictionAction& action,
+    int hp_before,
+    int damage) {
+    append_event(result, {
+        .phase = "counter",
+        .label = "counter_skipped_lethal_damage",
+        .status = BattlePredictionEventStatus::Exact,
+        .actor_slot = action.target_slot,
+        .target_slot = action.actor_slot,
+        .damage = damage,
+        .hp_before = hp_before,
+        .hp_after = std::max(0, hp_before - damage),
+        .detail = "performAttack skips shouldCounter when predicted target HP would be reduced to zero",
+    });
+}
+
+void append_damage_application(
+    BattlePredictionResult& result,
+    std::vector<BattlePredictionSlotState>& slots,
+    const QueuedPredictionAction& action,
+    const BasicAttackSimulation& attack) {
+    auto* target = find_slot(slots, action.target_slot);
+    if (target == nullptr || !target->alive || !basic_attack_damage_applies(attack)) {
+        return;
+    }
+
+    const int hp_before = target->current_hp;
+    const int hp_after = std::max(0, hp_before - attack.damage);
+    const int current_counter_before = target->current_counter_chance;
+    const auto counter_increment = simulate_counter_chance_increment_after_damage({
+        .hit_check = attack.hit_check,
+        .current_counter_chance = target->current_counter_chance,
+        .counter_chance_increment = target->counter_chance_increment,
+    });
+    target->current_counter_chance = counter_increment.updated_current_counter_chance;
+    target->current_hp = hp_after;
+    if (hp_after == 0) {
+        target->alive = false;
+    }
+
+    std::ostringstream detail;
+    detail << "zzDealDamage_8002dc14 damage application; zzIncreaseCounterChance_80010538 "
+        << (counter_increment.incremented ? "incremented" : "did not increment")
+        << " current_counter_chance=" << current_counter_before
+        << "->" << target->current_counter_chance
+        << "; increment=" << target->counter_chance_increment
+        << "; hit_check=" << attack.hit_check;
+
+    append_event(result, {
+        .phase = "damage_application",
+        .label = hp_after == 0 ? "damage_applied_lethal" : "damage_applied",
+        .status = BattlePredictionEventStatus::Exact,
+        .actor_slot = action.actor_slot,
+        .target_slot = action.target_slot,
+        .damage = attack.damage,
+        .hp_before = hp_before,
+        .hp_after = hp_after,
+        .detail = detail.str(),
+    });
+}
+
+void append_counter_follow_up(
+    BattlePredictionResult& result,
+    std::uint32_t& state,
+    const soa::battle::ctx::BattleContext& context,
+    std::vector<BattlePredictionSlotState>& slots,
+    const BattlePredictionProfile& profile,
+    const QueuedPredictionAction& triggering_action) {
+    QueuedPredictionAction counter_action;
+    counter_action.actor_slot = triggering_action.target_slot;
+    counter_action.target_slot = triggering_action.actor_slot;
+    counter_action.attack = true;
+    counter_action.enemy_owned = counter_action.actor_slot >= 4;
+    counter_action.instr_param_0x6 = 0;
+    counter_action.source = "counter_follow_up";
+
+    auto* actor = find_slot(slots, counter_action.actor_slot);
+    auto* target = find_slot(slots, counter_action.target_slot);
+    if (actor == nullptr || target == nullptr || !actor->alive || !target->alive) {
+        append_event(result, {
+            .phase = "counter_follow_up",
+            .label = "skipped_dead_or_missing_actor",
+            .status = BattlePredictionEventStatus::Skipped,
+            .actor_slot = counter_action.actor_slot,
+            .target_slot = counter_action.target_slot,
+            .detail = "countering actor or target is not alive when the follow-up resolves",
+        });
+        return;
+    }
+
+    const auto inputs = basic_attack_inputs_for(
+        context,
+        slots,
+        counter_action.actor_slot,
+        counter_action.target_slot,
+        counter_action.instr_param_0x6);
+    if (!inputs.has_value()) {
+        append_event(result, {
+            .phase = "counter_follow_up",
+            .label = "unsupported_missing_attack_inputs",
+            .status = BattlePredictionEventStatus::Unsupported,
+            .actor_slot = counter_action.actor_slot,
+            .target_slot = counter_action.target_slot,
+            .detail = "counter follow-up damage inputs are unavailable",
+        });
+        return;
+    }
+
+    const auto before = state;
+    const int hp_before = target->current_hp;
+    const auto attack = simulate_forced_basic_attack_damage_burst(state, *inputs);
+    state = attack.end_state;
+    append_event(result, {
+        .phase = "counter_follow_up",
+        .label = "forced_hit_damage",
+        .status = BattlePredictionEventStatus::Exact,
+        .actor_slot = counter_action.actor_slot,
+        .target_slot = counter_action.target_slot,
+        .rng_seed_before = before,
+        .rng_seed_after = state,
+        .draws_consumed = attack.draws_consumed,
+        .attack_result = attack.attack_result,
+        .damage = attack.damage,
+        .hp_before = hp_before,
+        .hp_after = basic_attack_damage_applies(attack) ? std::max(0, hp_before - attack.damage) : hp_before,
+        .detail = "FUN_80081de0 counter follow-up uses forced result helper FUN_80010b5c; "
+                  "no hit draw, no crit draw, and no recursive counter roll",
+    });
+
+    append_damage_application(result, slots, counter_action, attack);
+    if (auto* updated_target = find_slot(slots, counter_action.target_slot);
+        updated_target != nullptr && !updated_target->alive) {
+        append_death_and_drop(result, state, context, counter_action);
+        return;
+    }
+
+    append_post_attack_visual_rng(
+        result,
+        state,
+        profile,
+        counter_action,
+        attack.attack_result != 0,
+        false,
+        true);
 }
 
 void append_attack_resolution(
@@ -867,14 +1035,8 @@ void append_attack_resolution(
     const int hp_before = target->current_hp;
     const auto attack = simulate_basic_attack_burst(state, *inputs);
     state = attack.end_state;
-    int hp_after = hp_before;
-    if (attack.hit_check != 0) {
-        hp_after = std::max(0, hp_before - attack.damage);
-        target->current_hp = hp_after;
-        if (hp_after == 0) {
-            target->alive = false;
-        }
-    }
+    const bool damage_applies = basic_attack_damage_applies(attack);
+    const int hp_after = damage_applies ? std::max(0, hp_before - attack.damage) : hp_before;
 
     BattlePredictionEvent event;
     event.phase = "attack_resolution";
@@ -897,6 +1059,24 @@ void append_attack_resolution(
     event.detail = "basic attack helper; instr_param_0x6=" + std::to_string(action.instr_param_0x6);
     append_event(result, std::move(event));
 
+    bool counter_triggered = false;
+    if (damage_applies && attack.attack_result != 2) {
+        if (hp_before > attack.damage) {
+            counter_triggered = append_counter_check(
+                result,
+                state,
+                slots,
+                action,
+                false);
+        } else {
+            append_counter_skipped_lethal_damage(result, action, hp_before, attack.damage);
+        }
+    }
+
+    if (counter_triggered) {
+        append_counter_follow_up(result, state, context, slots, profile, action);
+    }
+
     if (attack.attack_result != 0) {
         append_post_attack_visual_rng(
             result,
@@ -904,16 +1084,15 @@ void append_attack_resolution(
             profile,
             action,
             true,
-            attack.attack_result == 2);
+            attack.attack_result == 2,
+            false);
     }
+
+    append_damage_application(result, slots, action, attack);
 
     if (!target->alive) {
         append_death_and_drop(result, state, context, action);
         return;
-    }
-
-    if (attack.attack_result != 0) {
-        append_counter_check(result, state, slots, action, attack.attack_result == 2);
     }
 }
 

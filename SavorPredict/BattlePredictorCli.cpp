@@ -13,6 +13,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace savor::predict {
 namespace {
@@ -80,6 +81,75 @@ bool read_binary_file(const std::filesystem::path& path, std::string& out, std::
     return true;
 }
 
+std::string trim_copy(std::string_view value) {
+    const auto is_space = [](unsigned char c) {
+        return c == ' ' || c == '\t' || c == '\r' || c == '\n';
+    };
+    std::size_t first = 0;
+    while (first < value.size() && is_space(static_cast<unsigned char>(value[first]))) {
+        ++first;
+    }
+    std::size_t last = value.size();
+    while (last > first && is_space(static_cast<unsigned char>(value[last - 1]))) {
+        --last;
+    }
+    return std::string(value.substr(first, last - first));
+}
+
+bool read_start_seed_list(
+    const std::filesystem::path& path,
+    std::vector<std::uint32_t>& out,
+    std::ostream& err) {
+    std::ifstream file(path);
+    if (!file.is_open()) {
+        err << "Failed opening --start-seed-list " << path.string() << "\n";
+        return false;
+    }
+
+    std::string line;
+    int line_number = 0;
+    while (std::getline(file, line)) {
+        ++line_number;
+        if (const auto comment = line.find('#'); comment != std::string::npos) {
+            line.erase(comment);
+        }
+        const auto value = trim_copy(line);
+        if (value.empty()) {
+            continue;
+        }
+        std::uint32_t seed = 0;
+        if (!parse_u32_seed(value, seed)) {
+            err << "--start-seed-list " << path.string()
+                << " line " << line_number
+                << " is not a decimal or hex uint32 seed: " << value << "\n";
+            return false;
+        }
+        out.push_back(seed);
+    }
+
+    if (out.empty()) {
+        err << "--start-seed-list " << path.string() << " did not contain any seeds.\n";
+        return false;
+    }
+    return true;
+}
+
+std::string json_escape_local(std::string_view value) {
+    std::string out;
+    out.reserve(value.size());
+    for (const char c : value) {
+        switch (c) {
+        case '\\': out += "\\\\"; break;
+        case '"': out += "\\\""; break;
+        case '\n': out += "\\n"; break;
+        case '\r': out += "\\r"; break;
+        case '\t': out += "\\t"; break;
+        default: out.push_back(c); break;
+        }
+    }
+    return out;
+}
+
 bool build_input_from_context_file(
     const BattlePredictorCliOptions& options,
     BattlePredictionInput& input,
@@ -144,6 +214,10 @@ BattlePredictorCliParseResult parse_predict_battle_tokens(const std::vector<std:
             } else {
                 result.errors.push_back("--start-seed requires a decimal or hex uint32.");
             }
+        } else if (arg == "--start-seed-list") {
+            if (require_value(args, i, arg, value, result.errors)) {
+                result.options.start_seed_list = value;
+            }
         } else if (arg == "--turn-job-id") {
             long long parsed = 0;
             if (require_value(args, i, arg, value, result.errors) && parse_ll(value, parsed)) {
@@ -198,6 +272,7 @@ std::vector<std::string> validate_predict_battle_options(const BattlePredictorCl
     const bool has_turn = options.turn_job_id.has_value();
     const bool has_exec = options.exec_job_id.has_value();
     const bool has_db_selector = has_turn || has_exec;
+    const bool has_start_seed_list = !options.start_seed_list.empty();
 
     if (has_turn && has_exec) {
         errors.push_back("Specify only one of --turn-job-id or --exec-job-id.");
@@ -207,6 +282,15 @@ std::vector<std::string> validate_predict_battle_options(const BattlePredictorCl
     }
     if (has_context_file && options.turn_plan_hex.empty()) {
         errors.push_back("--turn-plan-hex is required with --context-file.");
+    }
+    if (has_start_seed_list && options.start_seed.has_value()) {
+        errors.push_back("Specify only one of --start-seed or --start-seed-list.");
+    }
+    if (has_start_seed_list && has_context_file) {
+        errors.push_back("--start-seed-list is only supported with a DB job selector.");
+    }
+    if (has_start_seed_list && !has_db_selector) {
+        errors.push_back("--start-seed-list requires --turn-job-id or --exec-job-id.");
     }
     if (has_db_selector && is_mutable_debug_db_root(options.db_root)) {
         errors.push_back("Refusing to use D:/SoaSimDBDebug for prediction; use D:/SavorPredictDB.");
@@ -252,9 +336,60 @@ int run_predict_battle(const BattlePredictorCliOptions& options, std::ostream& o
     db_options.selector.turn_job_id = options.turn_job_id;
     db_options.selector.exec_job_id = options.exec_job_id;
     db_options.profile_name = options.profile_name;
-    db_options.start_seed_override = options.start_seed;
     db_options.fake_attacks_override = options.fake_attacks;
     db_options.allow_seed_candidate_fallback = options.allow_seed_candidate_fallback;
+
+    if (!options.start_seed_list.empty()) {
+        std::vector<std::uint32_t> start_seeds;
+        if (!read_start_seed_list(options.start_seed_list, start_seeds, err)) {
+            return 1;
+        }
+
+        int aggregate_rc = 0;
+        if (options.json) {
+            out << "{\n";
+            out << "  \"start_seed_list\": \"" << json_escape_local(options.start_seed_list.generic_string()) << "\",\n";
+            out << "  \"runs\": [\n";
+        }
+        for (std::size_t i = 0; i < start_seeds.size(); ++i) {
+            db_options.start_seed_override = start_seeds[i];
+            const auto db_input = build_battle_prediction_input_from_db_root(db_options, err);
+            if (!db_input.has_value()) {
+                return 1;
+            }
+
+            const auto result = predict_battle(db_input->input);
+            const int run_rc = result.has_unsupported_events || !result.errors.empty() ? 1 : 0;
+            if (run_rc != 0) {
+                aggregate_rc = run_rc;
+            }
+
+            if (options.json) {
+                std::ostringstream run_json;
+                write_battle_prediction_run_json(db_input->metadata, result, run_json);
+                if (i > 0) {
+                    out << ",\n";
+                }
+                out << run_json.str();
+            } else {
+                if (i > 0) {
+                    out << "\n";
+                }
+                out << "Prediction seed run " << (i + 1) << "/" << start_seeds.size() << "\n";
+                write_battle_prediction_db_metadata_text(db_input->metadata, out);
+                out << "\n";
+                write_battle_prediction_text(result, out);
+            }
+        }
+        if (options.json) {
+            out << "\n";
+            out << "  ]\n";
+            out << "}\n";
+        }
+        return aggregate_rc;
+    }
+
+    db_options.start_seed_override = options.start_seed;
 
     const auto db_input = build_battle_prediction_input_from_db_root(db_options, err);
     if (!db_input.has_value()) {

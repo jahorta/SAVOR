@@ -23,6 +23,7 @@ struct BasicAttackSimulation {
     std::uint32_t end_state = 0;
     int draws_consumed = 0;
     std::uint16_t hit_rand = 0;
+    bool hit_draw_spent = false;
     std::optional<std::uint16_t> crit_rand;
     std::optional<std::uint16_t> damage_spread_rand;
     std::optional<std::uint16_t> damage_bonus_rand;
@@ -44,5 +45,8 @@ int roll_damage_from_draws(
     std::uint16_t bonus_rand,
     bool halve_damage);
 BasicAttackSimulation simulate_basic_attack_burst(std::uint32_t state, const BasicAttackInputs& inputs);
+BasicAttackSimulation simulate_forced_basic_attack_damage_burst(
+    std::uint32_t state,
+    const BasicAttackInputs& inputs);
 
 } // namespace savor::predict

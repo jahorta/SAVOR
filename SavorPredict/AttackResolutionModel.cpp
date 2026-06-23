@@ -6,6 +6,44 @@ namespace {
 constexpr double kGuaranteedDamageMultiplier = 0.95;
 constexpr double kPotentialDamageMultiplier = 0.05;
 constexpr double kRandUnitMultiplier = 1.0 / 32767.0;
+
+void append_damage_draws(
+    BasicAttackSimulation& result,
+    std::uint32_t& state,
+    const BasicAttackInputs& inputs) {
+    auto spread = draw_rand15(state);
+    state = spread.next_state;
+    auto bonus = draw_rand15(state);
+    state = bonus.next_state;
+    result.damage_spread_rand = spread.value;
+    result.damage_bonus_rand = bonus.value;
+    result.damage_draws_spent = true;
+    result.draws_consumed += 2;
+
+    const int target_defense = (result.attack_result == 2) ? 0 : inputs.target_defense;
+    result.base_damage = (inputs.attacker_attack * 2) - target_defense;
+    result.damage = roll_damage_from_draws(
+        result.base_damage,
+        inputs.attacker_element,
+        inputs.target_element_effectiveness_tenths,
+        spread.value,
+        bonus.value,
+        (inputs.target_status_flags & 1) != 0);
+    if (result.attack_result == 2 && result.damage == 0) {
+        result.damage = 1;
+    }
+}
+
+void apply_target_hit_check_overrides(BasicAttackSimulation& result, const BasicAttackInputs& inputs) {
+    result.hit_check = result.attack_result;
+    if (result.attack_result != 0) {
+        if ((inputs.target_status_flags & 4) != 0) {
+            result.hit_check = 4;
+        } else if ((inputs.target_status_flags & 1) != 0) {
+            result.hit_check = 3;
+        }
+    }
+}
 }
 
 int attack_hit_threshold(int attacker_hit, int target_dodge) {
@@ -69,6 +107,7 @@ BasicAttackSimulation simulate_basic_attack_burst(std::uint32_t state, const Bas
     auto hit = draw_rand15(state);
     state = hit.next_state;
     result.hit_rand = hit.value;
+    result.hit_draw_spent = true;
     ++result.draws_consumed;
 
     const bool hit_succeeds = (hit.value % 101) >= attack_hit_threshold(inputs.attacker_hit, inputs.target_dodge);
@@ -81,39 +120,25 @@ BasicAttackSimulation simulate_basic_attack_burst(std::uint32_t state, const Bas
     }
 
     result.attack_result = attack_result_from_draw(result.hit_rand, result.crit_rand, inputs);
-    result.hit_check = result.attack_result;
-    if (result.attack_result != 0) {
-        if ((inputs.target_status_flags & 4) != 0) {
-            result.hit_check = 4;
-        } else if ((inputs.target_status_flags & 1) != 0) {
-            result.hit_check = 3;
-        }
-    }
+    apply_target_hit_check_overrides(result, inputs);
 
     if (result.hit_check != 0 && result.hit_check != 4) {
-        auto spread = draw_rand15(state);
-        state = spread.next_state;
-        auto bonus = draw_rand15(state);
-        state = bonus.next_state;
-        result.damage_spread_rand = spread.value;
-        result.damage_bonus_rand = bonus.value;
-        result.damage_draws_spent = true;
-        result.draws_consumed += 2;
-
-        const int target_defense = (result.attack_result == 2) ? 0 : inputs.target_defense;
-        result.base_damage = (inputs.attacker_attack * 2) - target_defense;
-        result.damage = roll_damage_from_draws(
-            result.base_damage,
-            inputs.attacker_element,
-            inputs.target_element_effectiveness_tenths,
-            spread.value,
-            bonus.value,
-            (inputs.target_status_flags & 1) != 0);
-        if (result.attack_result == 2 && result.damage == 0) {
-            result.damage = 1;
-        }
+        append_damage_draws(result, state, inputs);
     }
 
+    result.end_state = state;
+    return result;
+}
+
+BasicAttackSimulation simulate_forced_basic_attack_damage_burst(
+    std::uint32_t state,
+    const BasicAttackInputs& inputs) {
+    BasicAttackSimulation result;
+    result.attack_result = 1;
+    apply_target_hit_check_overrides(result, inputs);
+    if (result.hit_check != 0 && result.hit_check != 4) {
+        append_damage_draws(result, state, inputs);
+    }
     result.end_state = state;
     return result;
 }

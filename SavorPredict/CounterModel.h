@@ -38,10 +38,23 @@ struct CounterSimulation {
     CounterResultReason reason = CounterResultReason::RandomFailed;
 };
 
+struct CounterChanceIncrementInputs {
+    int hit_check = 0;
+    int current_counter_chance = 0;
+    int counter_chance_increment = 0;
+};
+
+struct CounterChanceIncrementSimulation {
+    bool incremented = false;
+    int updated_current_counter_chance = 0;
+};
+
 CounterSimulation simulate_counter_check(std::uint32_t state, const CounterInputs& inputs);
 CounterSimulation simulate_counter_check_from_rand(
     const CounterInputs& inputs,
     std::uint16_t counter_rand);
+CounterChanceIncrementSimulation simulate_counter_chance_increment_after_damage(
+    const CounterChanceIncrementInputs& inputs);
 const char* counter_result_reason_name(CounterResultReason reason);
 
 } // namespace savor::predict

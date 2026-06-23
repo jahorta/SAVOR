@@ -95,6 +95,20 @@ CounterSimulation simulate_counter_check_from_rand(
     return simulate_counter_check_after_draw(inputs, counter_rand);
 }
 
+CounterChanceIncrementSimulation simulate_counter_chance_increment_after_damage(
+    const CounterChanceIncrementInputs& inputs) {
+    CounterChanceIncrementSimulation result;
+    result.updated_current_counter_chance = inputs.current_counter_chance;
+    if (inputs.hit_check == 0 || inputs.hit_check == 4) {
+        return result;
+    }
+
+    result.incremented = true;
+    result.updated_current_counter_chance =
+        inputs.current_counter_chance + inputs.counter_chance_increment;
+    return result;
+}
+
 const char* counter_result_reason_name(CounterResultReason reason) {
     switch (reason) {
     case CounterResultReason::Counter:
