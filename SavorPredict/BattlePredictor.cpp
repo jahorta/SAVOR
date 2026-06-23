@@ -961,6 +961,56 @@ void append_turn_order(
     state = turn_order.end_state;
     execution_slots = turn_order.execution_slots;
 
+    std::uint32_t entry_rng_state = before;
+    for (std::size_t i = 0; i < turn_order.entries.size(); ++i) {
+        const auto& entry = turn_order.entries[i];
+        std::optional<std::uint32_t> entry_seed_before;
+        std::optional<std::uint32_t> entry_seed_after;
+        if (entry.priority_rand.has_value()) {
+            const auto draw = draw_rand15(entry_rng_state);
+            entry_seed_before = entry_rng_state;
+            entry_seed_after = draw.next_state;
+            entry_rng_state = draw.next_state;
+        }
+
+        std::optional<int> qsort_index;
+        for (std::size_t sorted_index = 0; sorted_index < turn_order.qsort_sorted_indices.size(); ++sorted_index) {
+            if (turn_order.qsort_sorted_indices[sorted_index] == static_cast<int>(i)) {
+                qsort_index = static_cast<int>(sorted_index);
+                break;
+            }
+        }
+
+        std::optional<int> execution_index;
+        for (std::size_t order_index = 0; order_index < execution_slots.size(); ++order_index) {
+            if (execution_slots[order_index] == entry.input.slot) {
+                execution_index = static_cast<int>(order_index);
+                break;
+            }
+        }
+
+        append_event(result, {
+            .phase = "turn_order",
+            .label = "entry",
+            .status = entry.assigned_priority.has_value()
+                ? BattlePredictionEventStatus::Exact
+                : BattlePredictionEventStatus::Ambiguous,
+            .actor_slot = entry.input.slot,
+            .rng_seed_before = entry_seed_before,
+            .rng_seed_after = entry_seed_after,
+            .draws_consumed = entry.priority_rand.has_value() ? 1 : 0,
+            .rand_value = entry.priority_rand,
+            .queue_index = static_cast<int>(i),
+            .quick = entry.input.quick,
+            .fixed_priority_result = entry.input.fixed_priority_result,
+            .jitter_modulus = turn_order.jitter_modulus,
+            .assigned_priority = entry.assigned_priority,
+            .qsort_index = qsort_index,
+            .execution_index = execution_index,
+            .detail = std::string("priority_path=") + turn_order_priority_path_name(entry.path),
+        });
+    }
+
     std::ostringstream detail;
     detail << "queued=" << turn_order.queued_count
            << "; order=";
@@ -1803,6 +1853,27 @@ void write_battle_prediction_text(const BattlePredictionResult& result, std::ost
             out << " item_id=" << *event.item_id
                 << " amount=" << event.amount.value_or(0);
         }
+        if (event.queue_index.has_value()) {
+            out << " queue_index=" << *event.queue_index;
+        }
+        if (event.quick.has_value()) {
+            out << " quick=" << *event.quick;
+        }
+        if (event.fixed_priority_result.has_value()) {
+            out << " fixed_priority_result=" << *event.fixed_priority_result;
+        }
+        if (event.jitter_modulus.has_value()) {
+            out << " jitter_modulus=" << *event.jitter_modulus;
+        }
+        if (event.assigned_priority.has_value()) {
+            out << " assigned_priority=" << *event.assigned_priority;
+        }
+        if (event.qsort_index.has_value()) {
+            out << " qsort_index=" << *event.qsort_index;
+        }
+        if (event.execution_index.has_value()) {
+            out << " execution_index=" << *event.execution_index;
+        }
         if (!event.detail.empty()) {
             out << " detail=\"" << event.detail << "\"";
         }
@@ -1910,6 +1981,27 @@ void write_battle_prediction_json(const BattlePredictionResult& result, std::ost
         }
         if (event.amount.has_value()) {
             out << ", \"amount\": " << *event.amount;
+        }
+        if (event.queue_index.has_value()) {
+            out << ", \"queue_index\": " << *event.queue_index;
+        }
+        if (event.quick.has_value()) {
+            out << ", \"quick\": " << *event.quick;
+        }
+        if (event.fixed_priority_result.has_value()) {
+            out << ", \"fixed_priority_result\": " << *event.fixed_priority_result;
+        }
+        if (event.jitter_modulus.has_value()) {
+            out << ", \"jitter_modulus\": " << *event.jitter_modulus;
+        }
+        if (event.assigned_priority.has_value()) {
+            out << ", \"assigned_priority\": " << *event.assigned_priority;
+        }
+        if (event.qsort_index.has_value()) {
+            out << ", \"qsort_index\": " << *event.qsort_index;
+        }
+        if (event.execution_index.has_value()) {
+            out << ", \"execution_index\": " << *event.execution_index;
         }
         out << ", \"detail\": \"" << json_escape(event.detail) << "\"";
         out << "}";

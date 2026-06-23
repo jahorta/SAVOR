@@ -756,6 +756,85 @@ TEST(SavorPredictLiveCaptureProfile, BuildsPredictorValidationProfile)
     EXPECT_NE(find_checkpoint("enemy_direct_worker_select_8008BDAC"), nullptr);
 }
 
+TEST(SavorPredictLiveCaptureProfile, BuildsTurnOrderValidationProfile)
+{
+    const auto text = build_first_battle_turn_order_validation_profile_ini();
+    const auto parsed = ParseCaptureProfileText(text);
+    ASSERT_TRUE(parsed.profile.has_value()) << FormatCaptureProfileError(parsed);
+
+    const auto& profile = *parsed.profile;
+    EXPECT_EQ(profile.name, "first_battle_turn_order_validation");
+
+    bool found_progress_pc = false;
+    bool found_targeting_camera = false;
+    for (const auto& checkpoint : profile.checkpoints) {
+        ASSERT_FALSE(checkpoint.memory_samples.empty()) << checkpoint.id;
+        EXPECT_EQ(checkpoint.memory_samples[0].name, "rng_seed_before") << checkpoint.id;
+        if (checkpoint.pc == 0x800608DCu) {
+            found_targeting_camera = true;
+        }
+        if (checkpoint.id.find("progress") != std::string::npos
+            || checkpoint.name.find("progress") != std::string::npos) {
+            found_progress_pc = true;
+        }
+    }
+    EXPECT_FALSE(found_targeting_camera);
+    EXPECT_FALSE(found_progress_pc);
+
+    const auto find_checkpoint = [&](std::string_view id)
+        -> const CheckpointSpec* {
+        for (const auto& checkpoint : profile.checkpoints) {
+            if (checkpoint.id == id) {
+                return &checkpoint;
+            }
+        }
+        return nullptr;
+    };
+    const auto has_memory_sample = [](const CheckpointSpec& checkpoint, std::string_view name) {
+        for (const auto& sample : checkpoint.memory_samples) {
+            if (sample.name == name) {
+                return true;
+            }
+        }
+        return false;
+    };
+    const auto has_gpr_sample = [](const CheckpointSpec& checkpoint, std::string_view name) {
+        for (const auto& sample : checkpoint.gpr_samples) {
+            if (sample.name == name) {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    const auto* priority = find_checkpoint("turn_order_priority_jitter_800711F8");
+    ASSERT_NE(priority, nullptr);
+    EXPECT_TRUE(priority->owns_rng_draw);
+
+    const auto* qsort_call = find_checkpoint("turn_order_qsort_call_80071408");
+    ASSERT_NE(qsort_call, nullptr);
+    EXPECT_FALSE(qsort_call->owns_rng_draw);
+    EXPECT_TRUE(has_gpr_sample(*qsort_call, "queued_count"));
+    EXPECT_TRUE(has_gpr_sample(*qsort_call, "qsort_elem_size_arg"));
+
+    const auto* input0 = find_checkpoint("turn_order_qsort_input_entry_0_80071408");
+    ASSERT_NE(input0, nullptr);
+    EXPECT_EQ(input0->checkpoint, "qsort_input");
+    EXPECT_TRUE(has_memory_sample(*input0, "slot"));
+    EXPECT_TRUE(has_memory_sample(*input0, "assigned_priority"));
+
+    const auto* output7 = find_checkpoint("turn_order_qsort_output_entry_7_8007140C");
+    ASSERT_NE(output7, nullptr);
+    EXPECT_EQ(output7->checkpoint, "qsort_output");
+    EXPECT_TRUE(has_memory_sample(*output7, "slot"));
+    EXPECT_TRUE(has_memory_sample(*output7, "assigned_priority"));
+
+    const auto* execution3 = find_checkpoint("turn_order_execution_order_entry_3_8007154C");
+    ASSERT_NE(execution3, nullptr);
+    EXPECT_EQ(execution3->checkpoint, "execution_order");
+    EXPECT_TRUE(has_memory_sample(*execution3, "slot"));
+}
+
 TEST(BattleTurnRunnerPayload, RoundTripsLiveCaptureContextPaths)
 {
     phase::battle::turnrunner::EncodeSpec spec{};

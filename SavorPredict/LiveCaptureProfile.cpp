@@ -80,6 +80,32 @@ void write_checkpoint(
     out << "\n";
 }
 
+void write_checkpoint_owned(
+    std::ostringstream& out,
+    std::string_view id,
+    std::string_view pc,
+    std::string_view name,
+    std::string_view function,
+    std::string_view checkpoint,
+    bool owns_rng_draw,
+    const std::vector<std::string>& memory,
+    const std::vector<std::string_view>& gprs = {})
+{
+    std::vector<std::string_view> memory_views;
+    memory_views.reserve(memory.size());
+    for (const auto& sample : memory) {
+        memory_views.push_back(sample);
+    }
+    write_checkpoint(out, id, pc, name, function, checkpoint, owns_rng_draw, memory_views, gprs);
+}
+
+std::string memory_sample(std::string_view name, std::uint32_t address, std::string_view type)
+{
+    std::ostringstream out;
+    out << name << ":" << hex_u32(address) << ":" << type;
+    return out.str();
+}
+
 std::vector<std::string_view> action_view_globals()
 {
     return {
@@ -1418,6 +1444,99 @@ std::string build_first_battle_predictor_validation_profile_ini()
     return out.str();
 }
 
+std::string build_first_battle_turn_order_validation_profile_ini()
+{
+    constexpr std::uint32_t kActionQueueBase = 0x80302B48u;
+    constexpr std::uint32_t kActionQueueStride = 0x0Cu;
+    constexpr std::uint32_t kExecutionOrderBase = 0x803092F4u;
+    constexpr int kMaxFirstBattleQueueEntries = 8;
+
+    std::ostringstream out;
+    out << "[profile]\n";
+    out << "name=first_battle_turn_order_validation\n";
+    out << "schema_version=1\n";
+    out << "memory=rng_seed_before:" << hex_u32(addr::AddrRegistry::base(addr::core::RNG_SEED)) << ":u32\n\n";
+
+    write_checkpoint(
+        out,
+        "turn_order_priority_jitter_800711F8",
+        "800711F8",
+        "turn_order_priority_jitter",
+        "Battle::setupTurn_80070c18",
+        "priority",
+        true,
+        {},
+        {
+            "actor_slot:29",
+            "queue_count:22",
+            "action_queue_base:31",
+        });
+
+    write_checkpoint(
+        out,
+        "turn_order_qsort_call_80071408",
+        "80071408",
+        "turn_order_qsort_call",
+        "Battle::setupTurn_80070c18",
+        "qsort_call",
+        false,
+        {},
+        {
+            "action_queue_base_arg:3",
+            "queued_count:4",
+            "qsort_elem_size_arg:5",
+            "qsort_comparator_arg:6",
+            "queued_count_r29:29",
+        });
+
+    for (int i = 0; i < kMaxFirstBattleQueueEntries; ++i) {
+        const auto base = kActionQueueBase + static_cast<std::uint32_t>(i) * kActionQueueStride;
+        const auto suffix = std::to_string(i);
+
+        write_checkpoint_owned(
+            out,
+            "turn_order_qsort_input_entry_" + suffix + "_80071408",
+            "80071408",
+            "turn_order_qsort_input_entry_" + suffix,
+            "Battle::setupTurn_80070c18",
+            "qsort_input",
+            false,
+            {
+                memory_sample("slot", base + 0x0u, "u8"),
+                memory_sample("assigned_priority", base + 0x4u, "u32"),
+                memory_sample("record_field8", base + 0x8u, "u32"),
+            });
+
+        write_checkpoint_owned(
+            out,
+            "turn_order_qsort_output_entry_" + suffix + "_8007140C",
+            "8007140C",
+            "turn_order_qsort_output_entry_" + suffix,
+            "Battle::setupTurn_80070c18",
+            "qsort_output",
+            false,
+            {
+                memory_sample("slot", base + 0x0u, "u8"),
+                memory_sample("assigned_priority", base + 0x4u, "u32"),
+                memory_sample("record_field8", base + 0x8u, "u32"),
+            });
+
+        write_checkpoint_owned(
+            out,
+            "turn_order_execution_order_entry_" + suffix + "_8007154C",
+            "8007154C",
+            "turn_order_execution_order_entry_" + suffix,
+            "Battle::setupTurn_80070c18",
+            "execution_order",
+            false,
+            {
+                memory_sample("slot", kExecutionOrderBase + static_cast<std::uint32_t>(i), "u8"),
+            });
+    }
+
+    return out.str();
+}
+
 int write_first_battle_capture_profile(
     const std::filesystem::path& output_path,
     std::ostream& out,
@@ -1481,6 +1600,40 @@ int write_first_battle_predictor_validation_profile(
         return 1;
     }
     out << "Wrote first-battle predictor-validation capture profile: "
+        << output_path.string() << "\n";
+    return 0;
+}
+
+int write_first_battle_turn_order_validation_profile(
+    const std::filesystem::path& output_path,
+    std::ostream& out,
+    std::ostream& err)
+{
+    if (output_path.empty()) {
+        err << "write-first-battle-turn-order-validation-profile requires --output PATH.\n";
+        return 2;
+    }
+    if (const auto parent = output_path.parent_path(); !parent.empty()) {
+        std::error_code ec;
+        std::filesystem::create_directories(parent, ec);
+        if (ec) {
+            err << "Failed to create output directory: " << ec.message() << "\n";
+            return 1;
+        }
+    }
+
+    std::ofstream file(output_path, std::ios::binary | std::ios::trunc);
+    if (!file.is_open()) {
+        err << "Failed to open output profile: " << output_path.string() << "\n";
+        return 1;
+    }
+    const auto text = build_first_battle_turn_order_validation_profile_ini();
+    file.write(text.data(), static_cast<std::streamsize>(text.size()));
+    if (!file.good()) {
+        err << "Failed to write output profile: " << output_path.string() << "\n";
+        return 1;
+    }
+    out << "Wrote first-battle turn-order validation capture profile: "
         << output_path.string() << "\n";
     return 0;
 }

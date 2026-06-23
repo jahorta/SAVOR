@@ -110,6 +110,13 @@ struct BattlePredictionEvent {
     std::optional<int> movement_reachability;
     std::optional<int> item_id;
     std::optional<int> amount;
+    std::optional<int> queue_index;
+    std::optional<int> quick;
+    std::optional<int> fixed_priority_result;
+    std::optional<int> jitter_modulus;
+    std::optional<int> assigned_priority;
+    std::optional<int> qsort_index;
+    std::optional<int> execution_index;
     std::string movement_worker;
     std::string detail;
 };

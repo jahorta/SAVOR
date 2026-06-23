@@ -2057,6 +2057,8 @@ void write_text_report(
     out << "  queue_metadata_matches: " << turn_order.queue_metadata_matches << "\n";
     out << "  queue_metadata_mismatches: " << turn_order.queue_metadata_mismatches << "\n";
     out << "  observed_queue_entries: " << turn_order.observed_queue_entries << "\n";
+    out << "  observed_qsort_output_entries: "
+        << turn_order.observed_qsort_output_entries << "\n";
     out << "  observed_execution_order_entries: "
         << turn_order.observed_execution_order_entries << "\n";
     out << "  queue_entries_with_slot: " << turn_order.queue_entries_with_slot << "\n";
@@ -2068,8 +2070,18 @@ void write_text_report(
     out << "  priority_matches: " << turn_order.priority_matches << "\n";
     out << "  priority_mismatches: " << turn_order.priority_mismatches << "\n";
     out << "  incomplete_queue_entries: " << turn_order.incomplete_queue_entries << "\n";
+    out << "  incomplete_qsort_output_entries: "
+        << turn_order.incomplete_qsort_output_entries << "\n";
     out << "  incomplete_execution_order_entries: "
         << turn_order.incomplete_execution_order_entries << "\n";
+    out << "  qsort_output_compared: "
+        << (turn_order.qsort_output_compared ? "true" : "false") << "\n";
+    out << "  qsort_output_exact: "
+        << (turn_order.qsort_output_exact ? "true" : "false") << "\n";
+    out << "  qsort_output_matches: "
+        << turn_order.qsort_output_matches << "\n";
+    out << "  qsort_output_mismatches: "
+        << turn_order.qsort_output_mismatches << "\n";
     out << "  execution_order_compared: "
         << (turn_order.execution_order_compared ? "true" : "false") << "\n";
     out << "  execution_order_exact: "
@@ -2091,6 +2103,20 @@ void write_text_report(
     if (!turn_order.expected_execution_slots.empty()) {
         out << "  expected_execution_slots:";
         for (const auto slot : turn_order.expected_execution_slots) {
+            out << " " << slot;
+        }
+        out << "\n";
+    }
+    if (!turn_order.expected_qsort_slots.empty()) {
+        out << "  expected_qsort_slots:";
+        for (const auto slot : turn_order.expected_qsort_slots) {
+            out << " " << slot;
+        }
+        out << "\n";
+    }
+    if (!turn_order.observed_qsort_slots.empty()) {
+        out << "  observed_qsort_slots:";
+        for (const auto slot : turn_order.observed_qsort_slots) {
             out << " " << slot;
         }
         out << "\n";
@@ -4018,6 +4044,8 @@ void write_json_report(
     out << ", \"queue_metadata_matches\": " << turn_order.queue_metadata_matches;
     out << ", \"queue_metadata_mismatches\": " << turn_order.queue_metadata_mismatches;
     out << ", \"observed_queue_entries\": " << turn_order.observed_queue_entries;
+    out << ", \"observed_qsort_output_entries\": "
+        << turn_order.observed_qsort_output_entries;
     out << ", \"observed_execution_order_entries\": "
         << turn_order.observed_execution_order_entries;
     out << ", \"queue_entries_with_slot\": " << turn_order.queue_entries_with_slot;
@@ -4029,8 +4057,17 @@ void write_json_report(
     out << ", \"priority_matches\": " << turn_order.priority_matches;
     out << ", \"priority_mismatches\": " << turn_order.priority_mismatches;
     out << ", \"incomplete_queue_entries\": " << turn_order.incomplete_queue_entries;
+    out << ", \"incomplete_qsort_output_entries\": "
+        << turn_order.incomplete_qsort_output_entries;
     out << ", \"incomplete_execution_order_entries\": "
         << turn_order.incomplete_execution_order_entries;
+    out << ", \"qsort_output_compared\": "
+        << (turn_order.qsort_output_compared ? "true" : "false");
+    out << ", \"qsort_output_exact\": "
+        << (turn_order.qsort_output_exact ? "true" : "false");
+    out << ", \"qsort_output_matches\": " << turn_order.qsort_output_matches;
+    out << ", \"qsort_output_mismatches\": "
+        << turn_order.qsort_output_mismatches;
     out << ", \"execution_order_compared\": "
         << (turn_order.execution_order_compared ? "true" : "false");
     out << ", \"execution_order_exact\": "
@@ -4054,6 +4091,22 @@ void write_json_report(
             out << ", ";
         }
         out << turn_order.expected_execution_slots[i];
+    }
+    out << "]";
+    out << ", \"expected_qsort_slots\": [";
+    for (std::size_t i = 0; i < turn_order.expected_qsort_slots.size(); ++i) {
+        if (i != 0) {
+            out << ", ";
+        }
+        out << turn_order.expected_qsort_slots[i];
+    }
+    out << "]";
+    out << ", \"observed_qsort_slots\": [";
+    for (std::size_t i = 0; i < turn_order.observed_qsort_slots.size(); ++i) {
+        if (i != 0) {
+            out << ", ";
+        }
+        out << turn_order.observed_qsort_slots[i];
     }
     out << "]";
     out << ", \"observed_execution_slots\": [";

@@ -19,12 +19,14 @@ enum class TurnOrderCheckpointStatus {
     QuickMismatch,
     QueueMetadataMismatch,
     PriorityMismatch,
+    QSortOutputMismatch,
     ExecutionOrderMismatch,
 };
 
 enum class TurnOrderCheckpointKind {
     PriorityJitterDraw,
     QueueEntry,
+    QSortOutputEntry,
     ExecutionOrderEntry,
 };
 
@@ -93,6 +95,7 @@ struct TurnOrderCheckpointSummary {
     int queue_metadata_matches = 0;
     int queue_metadata_mismatches = 0;
     int observed_queue_entries = 0;
+    int observed_qsort_output_entries = 0;
     int observed_execution_order_entries = 0;
     int queue_entries_with_slot = 0;
     int queue_entries_with_quick = 0;
@@ -101,7 +104,12 @@ struct TurnOrderCheckpointSummary {
     int priority_matches = 0;
     int priority_mismatches = 0;
     int incomplete_queue_entries = 0;
+    int incomplete_qsort_output_entries = 0;
     int incomplete_execution_order_entries = 0;
+    bool qsort_output_compared = false;
+    bool qsort_output_exact = true;
+    int qsort_output_matches = 0;
+    int qsort_output_mismatches = 0;
     bool execution_order_compared = false;
     bool execution_order_exact = true;
     bool priority_ties_observed = false;
@@ -113,6 +121,8 @@ struct TurnOrderCheckpointSummary {
     int execution_order_matches = 0;
     int execution_order_mismatches = 0;
     std::vector<int> expected_execution_slots;
+    std::vector<int> expected_qsort_slots;
+    std::vector<int> observed_qsort_slots;
     std::vector<int> observed_execution_slots;
     std::vector<TurnOrderTieGroup> tie_groups;
     std::vector<TurnOrderCheckpointDraw> draws;

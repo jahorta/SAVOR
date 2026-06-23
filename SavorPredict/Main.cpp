@@ -25,6 +25,7 @@ void print_usage(std::ostream& out) {
         << "  SavorPredict prepare-db [--source PATH] [--dest PATH] [--overwrite]\n"
         << "  SavorPredict write-first-battle-capture-profile --output PATH\n"
         << "  SavorPredict write-first-battle-predictor-validation-profile --output PATH\n"
+        << "  SavorPredict write-first-battle-turn-order-validation-profile --output PATH\n"
         << "  SavorPredict run-battle-job (--turn-job-id N | --exec-job-id N) --iso PATH --dolphin-base-dir PATH [--db-root PATH] [--run-root PATH] [--worker-exe PATH] [--capture-profile PATH] [--sandbox-mode minimal|full-copy] [--timeout-ms N] [--poll-ms N] [--override-start-rng-seed N]\n"
         << "  SavorPredict run-battle-jobs --exec-job-id N [--exec-job-id N ...] [--exec-job-list PATH] [--exec-job-seed EXEC_ID:SEED] [--exec-job-seed-list PATH] --iso PATH --dolphin-base-dir PATH [--db-root PATH] [--run-root PATH] [--worker-exe PATH] [--capture-profile PATH] [--sandbox-mode minimal|full-copy] [--max-workers N] [--timeout-ms N] [--poll-ms N] [--override-start-rng-seed N]\n"
         << "  SavorPredict predict-battle (--context-file PATH --turn-plan-hex HEX --fake-attacks N --start-seed N | (--turn-job-id N | --exec-job-id N) [--start-seed N | --start-seed-list PATH]) [--db-root PATH] [--profile first-battle] [--format text|json] [--allow-seed-candidate-fallback]\n"
@@ -214,6 +215,31 @@ int run_write_first_battle_predictor_validation_profile(int argc, char** argv) {
         }
     }
     return savor::predict::write_first_battle_predictor_validation_profile(
+        output,
+        std::cout,
+        std::cerr);
+}
+
+int run_write_first_battle_turn_order_validation_profile(int argc, char** argv) {
+    std::filesystem::path output;
+    for (int i = 2; i < argc; ++i) {
+        const std::string arg = argv[i];
+        std::string value;
+        if (arg == "--output") {
+            if (!require_value(argc, argv, i, arg, value, std::cerr)) {
+                return 2;
+            }
+            output = value;
+        } else if (arg == "--help" || arg == "-h") {
+            print_usage(std::cout);
+            return 0;
+        } else {
+            std::cerr << "Unknown write-first-battle-turn-order-validation-profile option: "
+                << arg << "\n";
+            return 2;
+        }
+    }
+    return savor::predict::write_first_battle_turn_order_validation_profile(
         output,
         std::cout,
         std::cerr);
@@ -423,6 +449,9 @@ int main(int argc, char** argv) {
     }
     if (command == "write-first-battle-predictor-validation-profile") {
         return run_write_first_battle_predictor_validation_profile(argc, argv);
+    }
+    if (command == "write-first-battle-turn-order-validation-profile") {
+        return run_write_first_battle_turn_order_validation_profile(argc, argv);
     }
     if (command == "run-battle-job") {
         return run_battle_job_command(argc, argv);

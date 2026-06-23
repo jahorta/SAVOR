@@ -42,6 +42,8 @@ struct TurnOrderSimulation {
     bool priority_ties_ambiguous = false;
     bool execution_order_exact = true;
     std::vector<TurnOrderEntrySimulation> entries;
+    std::vector<int> qsort_sorted_indices;
+    std::vector<int> qsort_sorted_slots;
     std::vector<int> execution_slots;
 };
 

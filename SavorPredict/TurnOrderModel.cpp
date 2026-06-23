@@ -81,6 +81,11 @@ TurnOrderSimulation simulate_turn_order(std::uint32_t state, const std::vector<T
         priority_keys.push_back(*entry.assigned_priority);
     }
     const auto sorted_indices = soa_qsort_indices_by_key_ascending(priority_keys);
+    result.qsort_sorted_indices = sorted_indices;
+    result.qsort_sorted_slots.reserve(sorted_indices.size());
+    for (const auto index : sorted_indices) {
+        result.qsort_sorted_slots.push_back(result.entries[index].input.slot);
+    }
     for (std::size_t i = 1; i < sorted_indices.size(); ++i) {
         if (result.entries[sorted_indices[i - 1]].assigned_priority
             == result.entries[sorted_indices[i]].assigned_priority) {
