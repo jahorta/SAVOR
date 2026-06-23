@@ -1,6 +1,7 @@
 #include "TurnOrderCheckpointModel.h"
 
 #include "FirstBattleDataModel.h"
+#include "SoaQSortModel.h"
 
 #include <algorithm>
 #include <cstdlib>
@@ -222,7 +223,6 @@ void summarize_priority_tie_groups(
 
     if (summary.priority_tie_groups > 0) {
         summary.priority_ties_observed = true;
-        summary.execution_order_exact = false;
     }
 }
 
@@ -427,16 +427,12 @@ TurnOrderCheckpointSummary summarize_turn_order_checkpoints(
             return summary;
         }
 
-        std::vector<int> sorted_indices(priority_sources.size());
-        std::iota(sorted_indices.begin(), sorted_indices.end(), 0);
-        std::stable_sort(sorted_indices.begin(), sorted_indices.end(), [&priority_sources](int lhs, int rhs) {
-            const int lhs_priority = *priority_sources[lhs].assigned_priority;
-            const int rhs_priority = *priority_sources[rhs].assigned_priority;
-            if (lhs_priority != rhs_priority) {
-                return lhs_priority < rhs_priority;
-            }
-            return lhs < rhs;
-        });
+        std::vector<int> priority_keys;
+        priority_keys.reserve(priority_sources.size());
+        for (const auto& source : priority_sources) {
+            priority_keys.push_back(*source.assigned_priority);
+        }
+        const auto sorted_indices = soa_qsort_indices_by_key_ascending(priority_keys);
 
         for (auto it = sorted_indices.rbegin(); it != sorted_indices.rend(); ++it) {
             summary.expected_execution_slots.push_back(*priority_sources[*it].slot);
@@ -446,8 +442,7 @@ TurnOrderCheckpointSummary summarize_turn_order_checkpoints(
             summary.observed_execution_slots.push_back(*entry.slot);
         }
 
-        if (!summary.priority_ties_observed
-            && summary.expected_execution_slots.size() == summary.observed_execution_slots.size()) {
+        if (summary.expected_execution_slots.size() == summary.observed_execution_slots.size()) {
             summary.execution_order_compared = true;
             for (std::size_t i = 0; i < summary.expected_execution_slots.size(); ++i) {
                 if (summary.expected_execution_slots[i] == summary.observed_execution_slots[i]) {
@@ -456,7 +451,7 @@ TurnOrderCheckpointSummary summarize_turn_order_checkpoints(
                     ++summary.execution_order_mismatches;
                 }
             }
-        } else if (!summary.priority_ties_observed) {
+        } else {
             summary.execution_order_compared = true;
             ++summary.execution_order_mismatches;
         }

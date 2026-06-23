@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include "BattleJobBatchRunOptions.h"
 #include "BattleJobClone.h"
 #include "BattleJobRunOptions.h"
 #include "common/SqliteDbFixture.h"
@@ -16,6 +17,7 @@
 
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -74,7 +76,7 @@ struct SeededBattleJob {
 
 class SavorPredictBattleJobRunnerDb : public SqliteDbFixture {
 protected:
-SeededBattleJob SeedBattleJob() {
+SeededBattleJob SeedBattleJob(int unique_key = 1) {
     using namespace savor::db;
 
     auto* authoring_db = db_service_->AuthoringDb();
@@ -84,14 +86,15 @@ SeededBattleJob SeedBattleJob() {
     EXPECT_NE(analysis_db, nullptr);
     EXPECT_NE(execution_db, nullptr);
 
-    const auto now = types::UtcTimePoint(std::chrono::milliseconds(1781000000200));
+    const auto now = types::UtcTimePoint(std::chrono::milliseconds(1781000000200 + unique_key));
+    const auto key = std::to_string(unique_key);
     std::string err;
     SeededBattleJob seeded;
 
     std::int64_t run_spec_id = 0;
     EXPECT_TRUE(authoring_db->SaveBattleRunSpec(
         {
-            .name = "predict-runner-run",
+            .name = "predict-runner-run-" + key,
             .priority = 7,
             .run_ms = 1000,
             .vi_stall_ms = 0,
@@ -105,8 +108,8 @@ SeededBattleJob SeedBattleJob() {
 
     EXPECT_TRUE(authoring_db->SavePlan(
         {
-            .name = "predict-runner-plan",
-            .fingerprint = "predict-runner-plan",
+            .name = "predict-runner-plan-" + key,
+            .fingerprint = "predict-runner-plan-" + key,
             .num_turns = 1,
             .created_at_utc = now,
             .correlation_id = "predict-runner",
@@ -118,7 +121,7 @@ SeededBattleJob SeedBattleJob() {
     std::int64_t action_preset_id = 0;
     EXPECT_TRUE(authoring_db->SaveBattlePlanActionPreset(
         {
-            .name = "attack-enemy",
+            .name = "attack-enemy-" + key,
             .macro = BattlePlanActionMacro::Attack,
             .target_kind = BattlePlanTargetKind::SingleEnemy,
             .target_single_slot = 4,
@@ -152,7 +155,7 @@ SeededBattleJob SeedBattleJob() {
     std::int64_t settings_id = 0;
     EXPECT_TRUE(authoring_db->SaveExplorerSettings(
         {
-            .name = "predict-runner-settings",
+            .name = "predict-runner-settings-" + key,
             .default_plan_id = seeded.plan_id,
             .created_at_utc = now,
             .correlation_id = "predict-runner",
@@ -163,7 +166,7 @@ SeededBattleJob SeedBattleJob() {
 
     EXPECT_TRUE(analysis_db->CreateBattleSet(
         {
-            .name = "predict-runner-set",
+            .name = "predict-runner-set-" + key,
             .entry_savestate_id = 101,
             .battle_run_spec_id = run_spec_id,
             .explorer_settings_id = settings_id,
@@ -226,7 +229,7 @@ SeededBattleJob SeedBattleJob() {
     EXPECT_TRUE(execution_db->CreateJobSet(
         {
             .program_kind = static_cast<std::int32_t>(savor::PK_BattleSingleTurnRunner),
-            .purpose = "predict-runner",
+            .purpose = "predict-runner-" + key,
             .created_by = std::string("test"),
             .created_at_utc = now.time_since_epoch().count(),
         },
@@ -241,7 +244,7 @@ SeededBattleJob SeedBattleJob() {
             .program_ref_kind = "analysis_battle.turn_job",
             .program_ref_id = seeded.turn_job_id,
             .savestate_id = 101,
-            .fingerprint = "predict-runner-original",
+            .fingerprint = "predict-runner-original-" + key,
             .priority = 10,
             .max_attempts = 1,
             .input_ini = BuildInputIni(seeded.wave_id, seeded.plan_id, seeded.seed_candidate_id, 101, 1),
@@ -258,7 +261,7 @@ SeededBattleJob SeedBattleJob() {
             .program_ref_kind = "analysis_battle.turn_job",
             .program_ref_id = seeded.turn_job_id,
             .savestate_id = 101,
-            .fingerprint = "predict-runner-unrelated",
+            .fingerprint = "predict-runner-unrelated-" + key,
             .priority = 9,
             .max_attempts = 1,
             .input_ini = BuildInputIni(seeded.wave_id, seeded.plan_id, seeded.seed_candidate_id, 101, 0),
@@ -311,6 +314,84 @@ TEST(SavorPredictBattleJobRunOptions, ValidatesSelectorsAndRuntimePaths)
     const auto mutable_db = parse_battle_job_run_tokens(
         {
             "--exec-job-id", "34",
+            "--db-root", "D:/SoaSimDBDebug",
+            "--iso", "D:/SoATAS/game.gcm",
+            "--dolphin-base-dir", "D:/SoATAS/dolphin",
+        },
+        "SavorPredict.exe");
+    EXPECT_FALSE(mutable_db.errors.empty());
+}
+
+TEST(SavorPredictBattleJobBatchRunOptions, ParsesRepeatedIdsListFileAndTimeoutDefaults)
+{
+    const auto list_path = std::filesystem::temp_directory_path()
+        / ("savor_batch_ids_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".txt");
+    {
+        std::ofstream file(list_path, std::ios::binary | std::ios::trunc);
+        file << "# comment\n102\n\n";
+    }
+
+    const auto parsed = parse_battle_job_batch_run_tokens(
+        {
+            "--exec-job-id", "101",
+            "--exec-job-list", list_path.string(),
+            "--max-workers", "2",
+            "--iso", "D:/SoATAS/game.gcm",
+            "--dolphin-base-dir", "D:/SoATAS/dolphin",
+        },
+        "C:/repo/bin/x64/Debug/SavorPredict.exe");
+    std::error_code ec;
+    std::filesystem::remove(list_path, ec);
+
+    EXPECT_TRUE(parsed.errors.empty()) << (parsed.errors.empty() ? "" : parsed.errors.front());
+    ASSERT_EQ(parsed.options.exec_job_ids.size(), 2u);
+    EXPECT_EQ(parsed.options.exec_job_ids[0], 101);
+    EXPECT_EQ(parsed.options.exec_job_ids[1], 102);
+    EXPECT_EQ(parsed.options.max_workers, 2);
+    EXPECT_EQ(parsed.options.worker_exe_path.generic_string(), "C:/repo/bin/x64/Debug/SavorWorker.exe");
+    EXPECT_EQ(parsed.options.sandbox_mode, savor::dbutils::SandboxMode::MinimalBattleSingleTurn);
+    EXPECT_NE(parsed.options.run_root.generic_string().find("Analyses/battle_runs_first_battle/live_capture_runs/batch_"), std::string::npos);
+    EXPECT_EQ(resolved_battle_job_batch_timeout_ms(parsed.options), 180000);
+
+    auto timeout_options = parsed.options;
+    timeout_options.max_workers = 2;
+    timeout_options.exec_job_ids = { 1, 2, 3, 4, 5 };
+    EXPECT_EQ(resolved_battle_job_batch_timeout_ms(timeout_options), 540000);
+
+    const auto duplicate = parse_battle_job_batch_run_tokens(
+        {
+            "--exec-job-id", "101",
+            "--exec-job-id", "101",
+            "--iso", "D:/SoATAS/game.gcm",
+            "--dolphin-base-dir", "D:/SoATAS/dolphin",
+        },
+        "SavorPredict.exe");
+    EXPECT_FALSE(duplicate.errors.empty());
+
+    const auto full_copy = parse_battle_job_batch_run_tokens(
+        {
+            "--exec-job-id", "101",
+            "--sandbox-mode", "full-copy",
+            "--iso", "D:/SoATAS/game.gcm",
+            "--dolphin-base-dir", "D:/SoATAS/dolphin",
+        },
+        "SavorPredict.exe");
+    EXPECT_TRUE(full_copy.errors.empty()) << (full_copy.errors.empty() ? "" : full_copy.errors.front());
+    EXPECT_EQ(full_copy.options.sandbox_mode, savor::dbutils::SandboxMode::FullCopy);
+
+    const auto invalid_workers = parse_battle_job_batch_run_tokens(
+        {
+            "--exec-job-id", "101",
+            "--max-workers", "0",
+            "--iso", "D:/SoATAS/game.gcm",
+            "--dolphin-base-dir", "D:/SoATAS/dolphin",
+        },
+        "SavorPredict.exe");
+    EXPECT_FALSE(invalid_workers.errors.empty());
+
+    const auto mutable_db = parse_battle_job_batch_run_tokens(
+        {
+            "--exec-job-id", "101",
             "--db-root", "D:/SoaSimDBDebug",
             "--iso", "D:/SoATAS/game.gcm",
             "--dolphin-base-dir", "D:/SoATAS/dolphin",
@@ -378,6 +459,46 @@ TEST_F(SavorPredictBattleJobRunnerDb, ClonesTurnAndExecRowsThenQuarantinesOtherR
     const auto unrelated_state = QueryText(db_, "SELECT state FROM exec_job WHERE job_id=?1;", seeded.unrelated_exec_job_id);
     ASSERT_TRUE(unrelated_state.has_value());
     EXPECT_EQ(*unrelated_state, "SUPERSEDED");
+}
+
+TEST_F(SavorPredictBattleJobRunnerDb, BatchCloneKeepsAllClonesAndQuarantinesOtherReadyJobs)
+{
+    const auto first = SeedBattleJob(101);
+    const auto second = SeedBattleJob(102);
+
+    BattleJobBatchCloneResult batch;
+    std::ostringstream err;
+    ASSERT_TRUE(clone_battle_jobs_for_capture(
+        *db_service_,
+        { first.exec_job_id, second.exec_job_id },
+        temp_root_ / "capture_profile.ini",
+        &batch,
+        err)) << err.str();
+
+    ASSERT_EQ(batch.clones.size(), 2u);
+    EXPECT_GE(batch.quarantined_ready_jobs, 2);
+    EXPECT_EQ(batch.clones[0].original_exec_job_id, first.exec_job_id);
+    EXPECT_EQ(batch.clones[1].original_exec_job_id, second.exec_job_id);
+    EXPECT_NE(batch.clones[0].cloned_exec_job_id, batch.clones[1].cloned_exec_job_id);
+    EXPECT_NE(batch.clones[0].cloned_turn_job_id, batch.clones[1].cloned_turn_job_id);
+
+    for (const auto& clone : batch.clones) {
+        const auto cloned_turn = db_service_->AnalysisDb()->GetBattleTurnJobForExecJob(clone.cloned_exec_job_id);
+        ASSERT_TRUE(cloned_turn.has_value());
+        EXPECT_EQ(cloned_turn->turn_job_id, clone.cloned_turn_job_id);
+
+        const auto cloned_exec = db_service_->ExecutionDb()->GetJob(clone.cloned_exec_job_id);
+        ASSERT_TRUE(cloned_exec.has_value());
+        EXPECT_EQ(cloned_exec->state, "QUEUED");
+        EXPECT_NE(cloned_exec->input_ini.find("capture_profile_path"), std::string::npos);
+    }
+
+    const auto first_unrelated_state = QueryText(db_, "SELECT state FROM exec_job WHERE job_id=?1;", first.unrelated_exec_job_id);
+    const auto second_unrelated_state = QueryText(db_, "SELECT state FROM exec_job WHERE job_id=?1;", second.unrelated_exec_job_id);
+    ASSERT_TRUE(first_unrelated_state.has_value());
+    ASSERT_TRUE(second_unrelated_state.has_value());
+    EXPECT_EQ(*first_unrelated_state, "SUPERSEDED");
+    EXPECT_EQ(*second_unrelated_state, "SUPERSEDED");
 }
 
 TEST_F(SavorPredictBattleJobRunnerDb, ClonedJobMaterializesCapturePayload)

@@ -640,7 +640,7 @@ std::vector<MacroStep> BuildMacroPlanStepsFromTurnPlan(
     std::vector<MacroStep> steps;
     const FakeAttackPattern fast_fake_attack_pattern{
         .memory_gate_mode = FakeAttackMemoryGateMode::TargetSide,
-        .target_neutral_before_b_frames = 0,
+        .target_neutral_before_b_frames = 7,
         .input_neutral_after_b_frames = 0,
         .memory_timeout_ms = 1000,
     };
@@ -659,8 +659,8 @@ std::vector<MacroStep> BuildMacroPlanStepsFromTurnPlan(
     const std::uint32_t fast_fake_capacity = std::min<std::uint32_t>(
         fast_fake_capacity_by_players,
         static_cast<std::uint32_t>(commands.size()));
-    const std::uint32_t fast_fake_count = std::min(turn_plan.fake_attack_count, fast_fake_capacity);
-    const std::uint32_t slow_fake_count = turn_plan.fake_attack_count - fast_fake_count;
+    const std::uint32_t fast_fake_count = 0;
+    const std::uint32_t slow_fake_count = turn_plan.fake_attack_count;
 
     std::uint32_t fake_cycle_index = 0;
     for (; fake_cycle_index < slow_fake_count; ++fake_cycle_index) {

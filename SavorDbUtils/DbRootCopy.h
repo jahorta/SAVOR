@@ -54,6 +54,14 @@ struct HydrateBattleSingleTurnJobSubsetOptions {
     bool overwrite_target = false;
 };
 
+struct HydrateBattleSingleTurnJobSubsetsOptions {
+    std::filesystem::path source_root;
+    std::filesystem::path target_root;
+    std::filesystem::path artifact_root;
+    std::vector<BattleJobSelector> selectors;
+    bool overwrite_target = false;
+};
+
 struct BattleSingleTurnJobSubsetResult {
     SandboxMode sandbox_mode = SandboxMode::MinimalBattleSingleTurn;
     std::filesystem::path source_root;
@@ -63,6 +71,16 @@ struct BattleSingleTurnJobSubsetResult {
     std::int64_t source_job_set_id = 0;
     std::int64_t source_battle_set_id = 0;
     std::int64_t source_wave_id = 0;
+    std::vector<TableCopyCount> table_counts;
+    std::vector<CopiedArtifactFile> copied_artifacts;
+    std::vector<std::string> validation_errors;
+};
+
+struct BattleSingleTurnJobSubsetsResult {
+    SandboxMode sandbox_mode = SandboxMode::MinimalBattleSingleTurn;
+    std::filesystem::path source_root;
+    std::filesystem::path target_root;
+    std::vector<BattleSingleTurnJobSubsetResult> jobs;
     std::vector<TableCopyCount> table_counts;
     std::vector<CopiedArtifactFile> copied_artifacts;
     std::vector<std::string> validation_errors;
@@ -82,6 +100,12 @@ int CreateEmptyMigratedDbRoot(
 int HydrateBattleSingleTurnJobSubset(
     const HydrateBattleSingleTurnJobSubsetOptions& options,
     BattleSingleTurnJobSubsetResult* result_out,
+    std::ostream& out,
+    std::ostream& err);
+
+int HydrateBattleSingleTurnJobSubsets(
+    const HydrateBattleSingleTurnJobSubsetsOptions& options,
+    BattleSingleTurnJobSubsetsResult* result_out,
     std::ostream& out,
     std::ostream& err);
 

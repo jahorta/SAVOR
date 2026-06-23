@@ -825,7 +825,7 @@ int CreateEmptyMigratedDbRoot(const CreateEmptyMigratedDbRootOptions& options, s
     return 0;
 }
 
-int HydrateBattleSingleTurnJobSubset(
+int hydrate_battle_single_turn_job_subset_into_existing(
     const HydrateBattleSingleTurnJobSubsetOptions& options,
     BattleSingleTurnJobSubsetResult* result_out,
     std::ostream& out,
@@ -850,13 +850,6 @@ int HydrateBattleSingleTurnJobSubset(
     const auto artifact_root = options.artifact_root.empty()
         ? options.target_root.parent_path() / "source-artifacts"
         : options.artifact_root;
-
-    if (const int rc = CreateEmptyMigratedDbRoot(
-            { .db_root = options.target_root, .overwrite = options.overwrite_target },
-            err);
-        rc != 0) {
-        return rc;
-    }
 
     SqliteHandle source_execution;
     SqliteHandle source_analysis;
@@ -1169,7 +1162,114 @@ int HydrateBattleSingleTurnJobSubset(
         });
     }
 
-    out << "Prepared minimal battle job DB root at " << options.target_root.string() << "\n";
+    out << "Hydrated minimal battle job exec " << result_out->source_exec_job_id
+        << " into " << options.target_root.string() << "\n";
+    return 0;
+}
+
+int HydrateBattleSingleTurnJobSubset(
+    const HydrateBattleSingleTurnJobSubsetOptions& options,
+    BattleSingleTurnJobSubsetResult* result_out,
+    std::ostream& out,
+    std::ostream& err) {
+    if (result_out == nullptr) {
+        err << "Internal error: null subset result.\n";
+        return 1;
+    }
+    if (const int rc = CreateEmptyMigratedDbRoot(
+            { .db_root = options.target_root, .overwrite = options.overwrite_target },
+            err);
+        rc != 0) {
+        return rc;
+    }
+    const int rc = hydrate_battle_single_turn_job_subset_into_existing(options, result_out, out, err);
+    if (rc == 0) {
+        out << "Prepared minimal battle job DB root at " << options.target_root.string() << "\n";
+    }
+    return rc;
+}
+
+int HydrateBattleSingleTurnJobSubsets(
+    const HydrateBattleSingleTurnJobSubsetsOptions& options,
+    BattleSingleTurnJobSubsetsResult* result_out,
+    std::ostream& out,
+    std::ostream& err) {
+    if (result_out == nullptr) {
+        err << "Internal error: null subsets result.\n";
+        return 1;
+    }
+    *result_out = BattleSingleTurnJobSubsetsResult{};
+    result_out->source_root = options.source_root;
+    result_out->target_root = options.target_root;
+
+    if (options.selectors.empty()) {
+        result_out->validation_errors.push_back("no battle job selectors");
+        err << "At least one battle job selector is required.\n";
+        return 2;
+    }
+
+    std::set<std::string> seen_selectors;
+    for (const auto& selector : options.selectors) {
+        if (!validate_selector(selector, err)) {
+            result_out->validation_errors.push_back("invalid battle job selector");
+            return 2;
+        }
+        std::ostringstream key;
+        if (selector.exec_job_id.has_value()) {
+            key << "exec:" << *selector.exec_job_id;
+        } else {
+            key << "turn:" << *selector.turn_job_id;
+        }
+        if (!seen_selectors.insert(key.str()).second) {
+            result_out->validation_errors.push_back("duplicate battle job selector");
+            err << "Duplicate battle job selector: " << key.str() << "\n";
+            return 2;
+        }
+    }
+
+    if (const int rc = CreateEmptyMigratedDbRoot(
+            { .db_root = options.target_root, .overwrite = options.overwrite_target },
+            err);
+        rc != 0) {
+        return rc;
+    }
+
+    std::set<std::int64_t> copied_artifact_ids;
+    for (const auto& selector : options.selectors) {
+        BattleSingleTurnJobSubsetResult job_result;
+        HydrateBattleSingleTurnJobSubsetOptions job_options{
+            .source_root = options.source_root,
+            .target_root = options.target_root,
+            .artifact_root = options.artifact_root,
+            .selector = selector,
+            .overwrite_target = false,
+        };
+        const int rc = hydrate_battle_single_turn_job_subset_into_existing(
+            job_options,
+            &job_result,
+            out,
+            err);
+        result_out->validation_errors.insert(
+            result_out->validation_errors.end(),
+            job_result.validation_errors.begin(),
+            job_result.validation_errors.end());
+        if (rc != 0) {
+            return rc;
+        }
+        result_out->table_counts.insert(
+            result_out->table_counts.end(),
+            job_result.table_counts.begin(),
+            job_result.table_counts.end());
+        for (const auto& artifact : job_result.copied_artifacts) {
+            if (copied_artifact_ids.insert(artifact.artifact_id).second) {
+                result_out->copied_artifacts.push_back(artifact);
+            }
+        }
+        result_out->jobs.push_back(std::move(job_result));
+    }
+
+    out << "Prepared minimal battle job DB root at " << options.target_root.string()
+        << " for " << result_out->jobs.size() << " jobs\n";
     return 0;
 }
 

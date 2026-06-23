@@ -143,6 +143,8 @@
     <ClCompile Include="..\SavorPredict\BattlePredictor.cpp" />
     <ClCompile Include="..\SavorPredict\BattlePredictorCli.cpp" />
     <ClCompile Include="..\SavorPredict\BattleVisualRngModel.cpp" />
+    <ClCompile Include="..\SavorPredict\BattleJobBatchRunManifest.cpp" />
+    <ClCompile Include="..\SavorPredict\BattleJobBatchRunOptions.cpp" />
     <ClCompile Include="..\SavorPredict\BattleJobClone.cpp" />
     <ClCompile Include="..\SavorPredict\BattleJobRunOptions.cpp" />
     <ClCompile Include="..\SavorPredict\CheckpointTrace.cpp" />
@@ -165,6 +167,7 @@
     <ClCompile Include="..\SavorPredict\RngModel.cpp" />
     <ClCompile Include="..\SavorPredict\SoldierActionExecutionModel.cpp" />
     <ClCompile Include="..\SavorPredict\SoldierAiModel.cpp" />
+    <ClCompile Include="..\SavorPredict\SoaQSortModel.cpp" />
     <ClCompile Include="..\SavorPredict\SstActionCommandCheckpointModel.cpp" />
     <ClCompile Include="..\SavorPredict\TurnOrderCheckpointModel.cpp" />
     <ClCompile Include="..\SavorPredict\TurnOrderModel.cpp" />

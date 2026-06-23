@@ -1,0 +1,277 @@
+#include "BattleJobBatchRunManifest.h"
+
+#include <filesystem>
+#include <fstream>
+#include <ostream>
+#include <sstream>
+
+namespace savor::predict {
+namespace {
+
+std::string json_escape(const std::string& value) {
+    std::ostringstream out;
+    for (const char ch : value) {
+        switch (ch) {
+        case '\\': out << "\\\\"; break;
+        case '"': out << "\\\""; break;
+        case '\n': out << "\\n"; break;
+        case '\r': out << "\\r"; break;
+        case '\t': out << "\\t"; break;
+        default:
+            const auto uch = static_cast<unsigned char>(ch);
+            if (uch < 0x20) {
+                out << "\\u00";
+                constexpr char kHex[] = "0123456789abcdef";
+                out << kHex[(uch >> 4) & 0x0f] << kHex[uch & 0x0f];
+            } else {
+                out << ch;
+            }
+        }
+    }
+    return out.str();
+}
+
+std::string csv_escape(const std::string& value) {
+    bool needs_quotes = false;
+    for (const char ch : value) {
+        if (ch == ',' || ch == '"' || ch == '\n' || ch == '\r') {
+            needs_quotes = true;
+            break;
+        }
+    }
+    if (!needs_quotes) {
+        return value;
+    }
+    std::string out = "\"";
+    for (const char ch : value) {
+        if (ch == '"') {
+            out += "\"\"";
+        } else {
+            out += ch;
+        }
+    }
+    out += "\"";
+    return out;
+}
+
+std::string path_string(const std::filesystem::path& path) {
+    return path.empty() ? std::string{} : path.string();
+}
+
+void write_json_string_array(std::ostream& out, const char* name, const std::vector<std::string>& values, bool comma) {
+    out << "  \"" << name << "\": [";
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        if (i != 0) {
+            out << ", ";
+        }
+        out << "\"" << json_escape(values[i]) << "\"";
+    }
+    out << "]";
+    if (comma) {
+        out << ",";
+    }
+    out << "\n";
+}
+
+void write_table_counts(std::ostream& out, const std::vector<savor::dbutils::TableCopyCount>& values) {
+    out << "  \"sandbox_table_counts\": [";
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        if (i != 0) {
+            out << ", ";
+        }
+        out << "{\"db\":\"" << json_escape(values[i].db_name)
+            << "\",\"table\":\"" << json_escape(values[i].table_name)
+            << "\",\"rows\":" << values[i].rows_copied << "}";
+    }
+    out << "],\n";
+}
+
+void write_copied_artifacts(std::ostream& out, const std::vector<savor::dbutils::CopiedArtifactFile>& values) {
+    out << "  \"sandbox_copied_artifacts\": [";
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        if (i != 0) {
+            out << ", ";
+        }
+        out << "{\"artifact_id\":" << values[i].artifact_id
+            << ",\"savestate_id\":" << values[i].savestate_id
+            << ",\"source_path\":\"" << json_escape(path_string(values[i].source_path))
+            << "\",\"copied_path\":\"" << json_escape(path_string(values[i].copied_path))
+            << "\"}";
+    }
+    out << "],\n";
+}
+
+void ensure_parent_dir(const std::filesystem::path& path, std::ostream& err, bool* ok) {
+    if (!*ok) {
+        return;
+    }
+    if (const auto parent = path.parent_path(); !parent.empty()) {
+        std::error_code ec;
+        std::filesystem::create_directories(parent, ec);
+        if (ec) {
+            err << "Failed creating output directory " << parent.string() << ": " << ec.message() << "\n";
+            *ok = false;
+        }
+    }
+}
+
+} // namespace
+
+bool write_battle_job_batch_run_manifest(
+    const BattleJobBatchRunSummary& summary,
+    const std::filesystem::path& manifest_path,
+    std::ostream& err) {
+    if (manifest_path.empty()) {
+        err << "Manifest path is empty.\n";
+        return false;
+    }
+    bool ok = true;
+    ensure_parent_dir(manifest_path, err, &ok);
+    if (!ok) {
+        return false;
+    }
+
+    std::ofstream file(manifest_path, std::ios::binary | std::ios::trunc);
+    if (!file.is_open()) {
+        err << "Failed opening manifest: " << manifest_path.string() << "\n";
+        return false;
+    }
+
+    file << "{\n";
+    file << "  \"command\": \"run-battle-jobs\",\n";
+    file << "  \"source_db_root\": \"" << json_escape(path_string(summary.options.db_root)) << "\",\n";
+    file << "  \"run_root\": \"" << json_escape(path_string(summary.sandbox.run_root)) << "\",\n";
+    file << "  \"sandbox_db_root\": \"" << json_escape(path_string(summary.sandbox.db_root)) << "\",\n";
+    file << "  \"sandbox_mode\": \"" << json_escape(savor::dbutils::ToString(summary.sandbox.sandbox_mode)) << "\",\n";
+    file << "  \"iso_path\": \"" << json_escape(path_string(summary.options.iso_path)) << "\",\n";
+    file << "  \"dolphin_base_dir\": \"" << json_escape(path_string(summary.options.dolphin_base_dir)) << "\",\n";
+    file << "  \"worker_exe_path\": \"" << json_escape(path_string(summary.options.worker_exe_path)) << "\",\n";
+    file << "  \"capture_profile_path\": \"" << json_escape(path_string(summary.capture_profile_path)) << "\",\n";
+    file << "  \"worker_count\": " << summary.worker_count << ",\n";
+    file << "  \"max_workers\": " << summary.options.max_workers << ",\n";
+    file << "  \"poll_ms\": " << summary.options.poll_ms << ",\n";
+    file << "  \"timeout_ms\": " << summary.timeout_ms << ",\n";
+    file << "  \"timed_out\": " << (summary.timed_out ? "true" : "false") << ",\n";
+
+    file << "  \"source_exec_job_ids\": [";
+    for (std::size_t i = 0; i < summary.options.exec_job_ids.size(); ++i) {
+        if (i != 0) {
+            file << ", ";
+        }
+        file << summary.options.exec_job_ids[i];
+    }
+    file << "],\n";
+
+    file << "  \"quarantined_ready_jobs\": " << summary.clone.quarantined_ready_jobs << ",\n";
+    write_table_counts(file, summary.sandbox.table_counts);
+    write_copied_artifacts(file, summary.sandbox.copied_artifacts);
+    write_json_string_array(file, "sandbox_validation_errors", summary.sandbox.validation_errors, true);
+
+    file << "  \"jobs\": [\n";
+    for (std::size_t i = 0; i < summary.jobs.size(); ++i) {
+        const auto& job = summary.jobs[i];
+        file << "    {\n";
+        file << "      \"original_turn_job_id\": " << job.clone.original_turn_job_id << ",\n";
+        file << "      \"original_exec_job_id\": " << job.clone.original_exec_job_id << ",\n";
+        file << "      \"cloned_turn_job_id\": " << job.clone.cloned_turn_job_id << ",\n";
+        file << "      \"cloned_exec_job_id\": " << job.clone.cloned_exec_job_id << ",\n";
+        file << "      \"original_job_set_id\": " << job.clone.original_job_set_id << ",\n";
+        file << "      \"battle_set_id\": " << job.clone.battle_set_id << ",\n";
+        file << "      \"wave_id\": " << job.clone.wave_id << ",\n";
+        file << "      \"turn_index\": " << job.clone.turn_index << ",\n";
+        file << "      \"fake_attacks_this_turn\": " << job.clone.fake_attacks_this_turn << ",\n";
+        file << "      \"terminal_state\": \"" << json_escape(job.terminal_state) << "\",\n";
+        file << "      \"timed_out\": " << (job.timed_out ? "true" : "false") << ",\n";
+        file << "      \"capture_found\": " << (job.capture_found ? "true" : "false") << ",\n";
+        file << "      \"trace_exit_code\": " << job.trace_exit_code << ",\n";
+        file << "      \"expected_capture_path\": \"" << json_escape(path_string(job.expected_capture_path)) << "\",\n";
+        file << "      \"stable_capture_path\": \"" << json_escape(path_string(job.stable_capture_path)) << "\",\n";
+        file << "      \"trace_report_path\": \"" << json_escape(path_string(job.trace_report_path)) << "\",\n";
+        file << "      \"errors\": [";
+        for (std::size_t e = 0; e < job.errors.size(); ++e) {
+            if (e != 0) {
+                file << ", ";
+            }
+            file << "\"" << json_escape(job.errors[e]) << "\"";
+        }
+        file << "]\n";
+        file << "    }" << (i + 1 == summary.jobs.size() ? "" : ",") << "\n";
+    }
+    file << "  ],\n";
+
+    write_json_string_array(file, "events", summary.events, true);
+    write_json_string_array(file, "errors", summary.errors, false);
+    file << "}\n";
+    return file.good();
+}
+
+bool write_battle_job_batch_run_text_summary(
+    const BattleJobBatchRunSummary& summary,
+    const std::filesystem::path& summary_path,
+    std::ostream& err) {
+    if (summary_path.empty()) {
+        err << "Summary path is empty.\n";
+        return false;
+    }
+    std::ofstream file(summary_path, std::ios::binary | std::ios::trunc);
+    if (!file.is_open()) {
+        err << "Failed opening summary: " << summary_path.string() << "\n";
+        return false;
+    }
+    file << "SavorPredict run-battle-jobs\n";
+    file << "source_db_root: " << summary.options.db_root.string() << "\n";
+    file << "sandbox_db_root: " << summary.sandbox.db_root.string() << "\n";
+    file << "sandbox_mode: " << savor::dbutils::ToString(summary.sandbox.sandbox_mode) << "\n";
+    file << "worker_count: " << summary.worker_count << "\n";
+    file << "timeout_ms: " << summary.timeout_ms << "\n";
+    file << "timed_out: " << (summary.timed_out ? "true" : "false") << "\n";
+    file << "jobs: " << summary.jobs.size() << "\n";
+    for (const auto& job : summary.jobs) {
+        file << "job original_exec=" << job.clone.original_exec_job_id
+            << " cloned_exec=" << job.clone.cloned_exec_job_id
+            << " state=" << (job.terminal_state.empty() ? "unknown" : job.terminal_state)
+            << " capture=" << (job.capture_found ? job.stable_capture_path.string() : "missing")
+            << " trace=" << job.trace_report_path.string()
+            << " errors=" << job.errors.size() << "\n";
+        for (const auto& error : job.errors) {
+            file << "  error: " << error << "\n";
+        }
+    }
+    for (const auto& error : summary.errors) {
+        file << "error: " << error << "\n";
+    }
+    return file.good();
+}
+
+bool write_battle_job_batch_run_csv_summary(
+    const BattleJobBatchRunSummary& summary,
+    const std::filesystem::path& csv_path,
+    std::ostream& err) {
+    if (csv_path.empty()) {
+        err << "CSV summary path is empty.\n";
+        return false;
+    }
+    std::ofstream file(csv_path, std::ios::binary | std::ios::trunc);
+    if (!file.is_open()) {
+        err << "Failed opening CSV summary: " << csv_path.string() << "\n";
+        return false;
+    }
+    file << "original_exec_job_id,cloned_exec_job_id,original_turn_job_id,cloned_turn_job_id,"
+        << "terminal_state,timed_out,capture_found,trace_exit_code,stable_capture_path,trace_report_path,error_count\n";
+    for (const auto& job : summary.jobs) {
+        file << job.clone.original_exec_job_id << ","
+            << job.clone.cloned_exec_job_id << ","
+            << job.clone.original_turn_job_id << ","
+            << job.clone.cloned_turn_job_id << ","
+            << csv_escape(job.terminal_state) << ","
+            << (job.timed_out ? "true" : "false") << ","
+            << (job.capture_found ? "true" : "false") << ","
+            << job.trace_exit_code << ","
+            << csv_escape(path_string(job.stable_capture_path)) << ","
+            << csv_escape(path_string(job.trace_report_path)) << ","
+            << job.errors.size() << "\n";
+    }
+    return file.good();
+}
+
+} // namespace savor::predict

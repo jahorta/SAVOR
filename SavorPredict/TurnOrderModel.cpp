@@ -1,8 +1,8 @@
 #include "TurnOrderModel.h"
 
 #include "FirstBattleDataModel.h"
+#include "SoaQSortModel.h"
 
-#include <algorithm>
 #include <numeric>
 
 namespace savor::predict {
@@ -75,22 +75,16 @@ TurnOrderSimulation simulate_turn_order(std::uint32_t state, const std::vector<T
         return result;
     }
 
-    std::vector<int> sorted_indices(result.entries.size());
-    std::iota(sorted_indices.begin(), sorted_indices.end(), 0);
-    std::stable_sort(sorted_indices.begin(), sorted_indices.end(), [&result](int lhs, int rhs) {
-        const int lhs_priority = *result.entries[lhs].assigned_priority;
-        const int rhs_priority = *result.entries[rhs].assigned_priority;
-        if (lhs_priority != rhs_priority) {
-            return lhs_priority < rhs_priority;
-        }
-        return lhs < rhs;
-    });
-
+    std::vector<int> priority_keys;
+    priority_keys.reserve(result.entries.size());
+    for (const auto& entry : result.entries) {
+        priority_keys.push_back(*entry.assigned_priority);
+    }
+    const auto sorted_indices = soa_qsort_indices_by_key_ascending(priority_keys);
     for (std::size_t i = 1; i < sorted_indices.size(); ++i) {
         if (result.entries[sorted_indices[i - 1]].assigned_priority
             == result.entries[sorted_indices[i]].assigned_priority) {
             result.priority_ties_ambiguous = true;
-            result.execution_order_exact = false;
             break;
         }
     }

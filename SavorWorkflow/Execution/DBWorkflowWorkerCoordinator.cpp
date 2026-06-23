@@ -386,7 +386,9 @@ bool EnsureWorkflowWorkerRuntimeSlot(
     }
 
     const auto fingerprint = WorkerRuntimeFingerprint(source_worker_exe, dolphin_base_dir);
-    const fs::path runtime_cache_root = utils::getExecutablePath() / ".worker-runtime";
+    const fs::path runtime_cache_root = worker_cfg.worker_binary_runtime_root.empty()
+        ? utils::getExecutablePath() / ".worker-runtime"
+        : fs::path(worker_cfg.worker_binary_runtime_root);
     PruneStaleWorkerRuntimeFingerprints(runtime_cache_root, fingerprint);
 
     const fs::path slot_root = runtime_cache_root / fingerprint / ("slot-" + std::to_string(worker_idx));

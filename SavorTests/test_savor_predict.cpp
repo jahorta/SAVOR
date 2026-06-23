@@ -5,6 +5,7 @@
 #include <BattlePredictorCli.h>
 #include <ProgressEventParser.h>
 #include <RngModel.h>
+#include <SoaQSortModel.h>
 #include <SstActionCommandCheckpointModel.h>
 
 #include <Core/Input/SoaBattle/BattleCommandCodec.h>
@@ -811,6 +812,39 @@ TEST(SavorPredictBattlePredictor, ReportsUnsupportedPlayerActionsExplicitly) {
     EXPECT_EQ(unsupported->status, BattlePredictionEventStatus::Unsupported);
 }
 
+TEST(SavorPredictBattlePredictor, RetargetsDeadFirstBattleSoldierToOnlyLivingSoldier) {
+    BattlePredictionInput input;
+    input.profile = first_battle_prediction_profile();
+    input.starting_rng_seed = 15u;
+    input.context = make_predictor_first_battle_context();
+    input.context.slots_[4].is_alive = 0;
+    input.context.slots_[4].instance.Current_HP = 0;
+    input.options.include_visual_rng_gap_events = false;
+
+    input.turn_plan.fake_attack_count = 0;
+    input.turn_plan.commands.push_back(soa::battle::actions::BattleCommand{
+        .actor_slot = 0,
+        .macro = soa::battle::actions::BattleAction::Attack,
+        .params = soa::battle::actions::ActionParameters{.target_slot = 4},
+    });
+
+    const auto result = predict_battle(input);
+
+    const auto* retarget = find_prediction_event(
+        result,
+        "action_setup",
+        "pc_attack_retarget");
+    ASSERT_NE(retarget, nullptr);
+    EXPECT_EQ(retarget->status, BattlePredictionEventStatus::Exact);
+    EXPECT_EQ(retarget->actor_slot, 0);
+    EXPECT_EQ(retarget->target_slot, 5);
+    EXPECT_NE(retarget->detail.find("original_target=4"), std::string::npos);
+    EXPECT_EQ(find_prediction_event(
+        result,
+        "attack_resolution",
+        "skipped_dead_or_missing_actor"), nullptr);
+}
+
 TEST(SavorPredictBattlePredictorCli, RejectsMutableDebugDbRoot) {
     const auto parsed = parse_predict_battle_tokens({
         "--turn-job-id", "123",
@@ -925,6 +959,27 @@ TEST_F(SavorPredictDbInputFixture, MissingLiveSeedRequiresExplicitCandidateFallb
     EXPECT_FALSE(resolved->metadata.warnings.empty());
 }
 
+TEST(SavorPredictRngModel, SoaQSortModelMatchesObservedEqualKeyPermutation) {
+    const auto two = soa_qsort_indices_by_key_ascending({10, 10});
+    ASSERT_EQ(two.size(), 2u);
+    EXPECT_EQ(two[0], 1);
+    EXPECT_EQ(two[1], 0);
+
+    const auto four = soa_qsort_indices_by_key_ascending({10, 10, 10, 10});
+    ASSERT_EQ(four.size(), 4u);
+    EXPECT_EQ(four[0], 1);
+    EXPECT_EQ(four[1], 2);
+    EXPECT_EQ(four[2], 3);
+    EXPECT_EQ(four[3], 0);
+
+    const auto mixed = soa_qsort_indices_by_key_ascending({22, 24, 18, 18});
+    ASSERT_EQ(mixed.size(), 4u);
+    EXPECT_EQ(mixed[0], 3);
+    EXPECT_EQ(mixed[1], 2);
+    EXPECT_EQ(mixed[2], 0);
+    EXPECT_EQ(mixed[3], 1);
+}
+
 TEST(SavorPredictRngModel, FirstBattleTurnOrderSpendsOneDrawPerQueuedBasicAction) {
     const auto entries = first_battle_basic_turn_order_entries(true, true);
     ASSERT_EQ(entries.size(), 4u);
@@ -985,6 +1040,25 @@ TEST(SavorPredictRngModel, TurnOrderUsesDescendingPriorityWhenPrioritiesAreKnown
     EXPECT_EQ(result.execution_slots[0], 1);
     EXPECT_EQ(result.execution_slots[1], 4);
     EXPECT_EQ(result.execution_slots[2], 0);
+}
+
+TEST(SavorPredictRngModel, TurnOrderPriorityTiesUseExactSoaQSortPermutation) {
+    std::vector<TurnOrderEntryInput> entries;
+    entries.push_back({.slot = 0, .quick = 10, .initial_priority = 22});
+    entries.push_back({.slot = 1, .quick = 10, .initial_priority = 22});
+    entries.push_back({.slot = 4, .quick = 10, .initial_priority = 22});
+    entries.push_back({.slot = 5, .quick = 10, .initial_priority = 22});
+
+    const auto result = simulate_turn_order(0x12345678u, entries);
+
+    EXPECT_EQ(result.draws_consumed, 0);
+    EXPECT_TRUE(result.priority_ties_ambiguous);
+    EXPECT_TRUE(result.execution_order_exact);
+    ASSERT_EQ(result.execution_slots.size(), 4u);
+    EXPECT_EQ(result.execution_slots[0], 0);
+    EXPECT_EQ(result.execution_slots[1], 5);
+    EXPECT_EQ(result.execution_slots[2], 4);
+    EXPECT_EQ(result.execution_slots[3], 1);
 }
 
 TEST(SavorPredictRngModel, TurnOrderZeroJitterUsesQuickWithoutDraw) {
@@ -2378,21 +2452,26 @@ TEST(SavorPredictCheckpointTrace, SummarizesTurnOrderExecutionOrderCheckpoints) 
         "queue_index=1 slot=4 quick=18 fixed_priority_result=0 assigned_priority=27 "
         "rand_value=9 jitter_modulus=10 sum_quick=40 queued_count=2\n"
         "pc=80071280 function=setupTurn checkpoint=execution_order rng_draw_index_before=20 "
-        "execution_index=0 slot=4\n"
+        "execution_index=0 slot=0\n"
         "pc=80071280 function=setupTurn checkpoint=execution_order rng_draw_index_before=20 "
-        "execution_index=1 slot=0\n");
+        "execution_index=1 slot=4\n");
     const auto tied_parsed = parse_checkpoint_stream(tied_input);
     ASSERT_TRUE(tied_parsed.errors.empty());
     const auto tied = summarize_turn_order_checkpoints(tied_parsed.events, std::nullopt);
     EXPECT_EQ(tied.status, TurnOrderCheckpointStatus::MatchesExpected);
     EXPECT_TRUE(tied.priority_ties_observed);
-    EXPECT_FALSE(tied.execution_order_exact);
-    EXPECT_FALSE(tied.execution_order_compared);
+    EXPECT_TRUE(tied.execution_order_exact);
+    EXPECT_TRUE(tied.execution_order_compared);
+    EXPECT_EQ(tied.execution_order_matches, 2);
+    EXPECT_EQ(tied.execution_order_mismatches, 0);
+    ASSERT_EQ(tied.expected_execution_slots.size(), 2u);
+    EXPECT_EQ(tied.expected_execution_slots[0], 0);
+    EXPECT_EQ(tied.expected_execution_slots[1], 4);
     EXPECT_EQ(tied.priority_tie_groups, 1);
     EXPECT_EQ(tied.priority_tied_entries, 2);
     EXPECT_EQ(tied.tie_groups_with_observed_execution_order, 1);
-    EXPECT_EQ(tied.tie_groups_matching_queue_ascending, 0);
-    EXPECT_EQ(tied.tie_groups_matching_queue_descending, 1);
+    EXPECT_EQ(tied.tie_groups_matching_queue_ascending, 1);
+    EXPECT_EQ(tied.tie_groups_matching_queue_descending, 0);
     ASSERT_EQ(tied.tie_groups.size(), 1u);
     const auto& group = tied.tie_groups[0];
     EXPECT_EQ(group.assigned_priority, 27);
@@ -2403,11 +2482,11 @@ TEST(SavorPredictCheckpointTrace, SummarizesTurnOrderExecutionOrderCheckpoints) 
     EXPECT_EQ(group.slots_by_queue_order[0], 0);
     EXPECT_EQ(group.slots_by_queue_order[1], 4);
     ASSERT_EQ(group.observed_execution_slots.size(), 2u);
-    EXPECT_EQ(group.observed_execution_slots[0], 4);
-    EXPECT_EQ(group.observed_execution_slots[1], 0);
+    EXPECT_EQ(group.observed_execution_slots[0], 0);
+    EXPECT_EQ(group.observed_execution_slots[1], 4);
     EXPECT_TRUE(group.observed_order_compared);
-    EXPECT_FALSE(group.observed_order_matches_queue_ascending);
-    EXPECT_TRUE(group.observed_order_matches_queue_descending);
+    EXPECT_TRUE(group.observed_order_matches_queue_ascending);
+    EXPECT_FALSE(group.observed_order_matches_queue_descending);
 }
 
 TEST(SavorPredictCheckpointTrace, SummarizesAttackResolutionCheckpoints) {

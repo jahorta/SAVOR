@@ -139,8 +139,9 @@ protected:
         }
     }
 
-    SeededSourceBattle SeedSourceDb(const std::filesystem::path& source_root, int turn_index = 1) {
+    SeededSourceBattle SeedSourceDb(const std::filesystem::path& source_root, int turn_index = 1, int unique_key = 0) {
         using namespace savor::db;
+        const int key = unique_key == 0 ? turn_index : unique_key;
 
         savor::db::core::DBService db_service(
             savor::dbutils::MakeDbConfigPaths(source_root),
@@ -150,7 +151,7 @@ protected:
 
         const auto now = types::UtcTimePoint(std::chrono::milliseconds(1781000000200));
         SeededSourceBattle seeded;
-        seeded.source_sav_path = source_root / "seed.sav";
+        seeded.source_sav_path = source_root / ("seed-" + std::to_string(key) + ".sav");
         {
             std::ofstream sav(seeded.source_sav_path, std::ios::binary | std::ios::trunc);
             sav << "source sav bytes";
@@ -158,7 +159,7 @@ protected:
 
         RequireFixtureStep(db_service.StateDb()->StoreArtifact(
             {
-                .sha256 = "seed-sav-hash-" + std::to_string(turn_index),
+                .sha256 = "seed-sav-hash-" + std::to_string(key),
                 .size_bytes = static_cast<std::int64_t>(std::filesystem::file_size(seeded.source_sav_path)),
                 .filename = seeded.source_sav_path.string(),
                 .file_ext = ".sav",
@@ -185,7 +186,7 @@ protected:
         std::int64_t run_spec_id = 0;
         RequireFixtureStep(db_service.AuthoringDb()->SaveBattleRunSpec(
             {
-                .name = "dbutils-run-spec-" + std::to_string(turn_index),
+                .name = "dbutils-run-spec-" + std::to_string(key),
                 .priority = 1,
                 .run_ms = 1000,
                 .vi_stall_ms = 0,
@@ -198,8 +199,8 @@ protected:
             &err), err, "save battle run spec");
         RequireFixtureStep(db_service.AuthoringDb()->SavePlan(
             {
-                .name = "dbutils-plan-" + std::to_string(turn_index),
-                .fingerprint = "dbutils-plan-" + std::to_string(turn_index),
+                .name = "dbutils-plan-" + std::to_string(key),
+                .fingerprint = "dbutils-plan-" + std::to_string(key),
                 .num_turns = 1,
                 .created_at_utc = now,
                 .correlation_id = "dbutils-test",
@@ -210,7 +211,7 @@ protected:
         std::int64_t action_preset_id = 0;
         RequireFixtureStep(db_service.AuthoringDb()->SaveBattlePlanActionPreset(
             {
-                .name = "dbutils-attack-" + std::to_string(turn_index),
+                .name = "dbutils-attack-" + std::to_string(key),
                 .macro = BattlePlanActionMacro::Attack,
                 .target_kind = BattlePlanTargetKind::SingleEnemy,
                 .target_single_slot = 4,
@@ -242,7 +243,7 @@ protected:
         std::int64_t settings_id = 0;
         RequireFixtureStep(db_service.AuthoringDb()->SaveExplorerSettings(
             {
-                .name = "dbutils-settings-" + std::to_string(turn_index),
+                .name = "dbutils-settings-" + std::to_string(key),
                 .default_plan_id = seeded.plan_id,
                 .created_at_utc = now,
                 .correlation_id = "dbutils-test",
@@ -253,7 +254,7 @@ protected:
 
         RequireFixtureStep(db_service.AnalysisDb()->CreateBattleSet(
             {
-                .name = "dbutils-set-" + std::to_string(turn_index),
+                .name = "dbutils-set-" + std::to_string(key),
                 .entry_savestate_id = seeded.savestate_id,
                 .battle_run_spec_id = run_spec_id,
                 .explorer_settings_id = settings_id,
@@ -326,7 +327,7 @@ protected:
                 .program_ref_kind = "analysis_battle.turn_job",
                 .program_ref_id = seeded.turn_job_id,
                 .savestate_id = seeded.savestate_id,
-                .fingerprint = "dbutils-original-" + std::to_string(turn_index),
+                .fingerprint = "dbutils-original-" + std::to_string(key),
                 .priority = 10,
                 .max_attempts = 1,
                 .input_ini = BuildBattleInputIni(seeded.wave_id, seeded.plan_id, seeded.seed_candidate_id, seeded.savestate_id),
@@ -344,7 +345,7 @@ protected:
                 .program_ref_kind = "analysis_battle.turn_job",
                 .program_ref_id = seeded.turn_job_id,
                 .savestate_id = seeded.savestate_id,
-                .fingerprint = "dbutils-unrelated-" + std::to_string(turn_index),
+                .fingerprint = "dbutils-unrelated-" + std::to_string(key),
                 .priority = 9,
                 .max_attempts = 1,
                 .input_ini = BuildBattleInputIni(seeded.wave_id, seeded.plan_id, seeded.seed_candidate_id, seeded.savestate_id),
@@ -353,9 +354,9 @@ protected:
             &err), err, "enqueue unrelated execution job");
 
         db_service.Stop();
-        const auto workflow_instance_id = 9000 + turn_index;
-        const auto workflow_activation_id = 9100 + turn_index;
-        const auto workflow_step_id = 9200 + turn_index;
+        const auto workflow_instance_id = 9000 + key;
+        const auto workflow_activation_id = 9100 + key;
+        const auto workflow_step_id = 9200 + key;
         ExecuteSqlOrThrow(
             source_root / "execution.db",
             "INSERT INTO exec_workflow_instance("
@@ -442,6 +443,48 @@ TEST_F(SavorDbUtilsMinimalCopyFixture, MinimalCopyPreservesSelectedClosureAndLoc
     const auto localized = QueryText(target_paths.state_db_path, "SELECT filename FROM state_artifact WHERE artifact_id=?1;", seeded.artifact_id);
     ASSERT_TRUE(localized.has_value());
     EXPECT_NE(localized->find((root_ / "run" / "source-artifacts").string()), std::string::npos);
+}
+
+TEST_F(SavorDbUtilsMinimalCopyFixture, MinimalBatchCopyPreservesSelectedClosures)
+{
+    const auto source_root = root_ / "source";
+    const auto target_root = root_ / "target";
+    const auto artifact_root = root_ / "run" / "source-artifacts";
+    const auto first = SeedSourceDb(source_root, 1, 101);
+    const auto second = SeedSourceDb(source_root, 1, 102);
+
+    savor::dbutils::BattleSingleTurnJobSubsetsResult result;
+    std::ostringstream out;
+    std::ostringstream err;
+    ASSERT_EQ(savor::dbutils::HydrateBattleSingleTurnJobSubsets(
+        {
+            .source_root = source_root,
+            .target_root = target_root,
+            .artifact_root = artifact_root,
+            .selectors = {
+                { .exec_job_id = first.exec_job_id },
+                { .exec_job_id = second.exec_job_id },
+            },
+        },
+        &result,
+        out,
+        err), 0) << err.str();
+
+    ASSERT_EQ(result.jobs.size(), 2u);
+    EXPECT_EQ(result.jobs[0].source_exec_job_id, first.exec_job_id);
+    EXPECT_EQ(result.jobs[1].source_exec_job_id, second.exec_job_id);
+    EXPECT_FALSE(result.table_counts.empty());
+    EXPECT_EQ(result.copied_artifacts.size(), 2u);
+
+    const auto target_paths = savor::dbutils::MakeDbConfigPaths(target_root);
+    EXPECT_EQ(QueryI64(target_paths.execution_db_path, "SELECT COUNT(*) FROM exec_job;").value_or(-1), 2);
+    EXPECT_EQ(QueryI64(target_paths.execution_db_path, "SELECT COUNT(*) FROM exec_job WHERE job_id=?1;", first.exec_job_id).value_or(-1), 1);
+    EXPECT_EQ(QueryI64(target_paths.execution_db_path, "SELECT COUNT(*) FROM exec_job WHERE job_id=?1;", second.exec_job_id).value_or(-1), 1);
+    EXPECT_EQ(QueryI64(target_paths.execution_db_path, "SELECT COUNT(*) FROM exec_job WHERE job_id=?1;", first.unrelated_exec_job_id).value_or(-1), 0);
+    EXPECT_EQ(QueryI64(target_paths.execution_db_path, "SELECT COUNT(*) FROM exec_job WHERE job_id=?1;", second.unrelated_exec_job_id).value_or(-1), 0);
+    EXPECT_EQ(QueryI64(target_paths.analysis_db_path, "SELECT COUNT(*) FROM ab_turn_job;").value_or(-1), 2);
+    EXPECT_TRUE(std::filesystem::exists(result.copied_artifacts[0].copied_path));
+    EXPECT_TRUE(std::filesystem::exists(result.copied_artifacts[1].copied_path));
 }
 
 TEST_F(SavorDbUtilsMinimalCopyFixture, MinimalCopyRejectsMissingSavestateArtifactFile)

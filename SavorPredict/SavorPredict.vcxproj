@@ -119,6 +119,9 @@
     <ClCompile Include="BattlePredictor.cpp" />
     <ClCompile Include="BattlePredictorCli.cpp" />
     <ClCompile Include="BattleVisualRngModel.cpp" />
+    <ClCompile Include="BattleJobBatchRunManifest.cpp" />
+    <ClCompile Include="BattleJobBatchRunOptions.cpp" />
+    <ClCompile Include="BattleJobBatchWorkerRun.cpp" />
     <ClCompile Include="BattleJobClone.cpp" />
     <ClCompile Include="BattleJobRunManifest.cpp" />
     <ClCompile Include="BattleJobRunOptions.cpp" />
@@ -146,6 +149,7 @@
     <ClCompile Include="RngModel.cpp" />
     <ClCompile Include="SoldierActionExecutionModel.cpp" />
     <ClCompile Include="SoldierAiModel.cpp" />
+    <ClCompile Include="SoaQSortModel.cpp" />
     <ClCompile Include="SstActionCommandCheckpointModel.cpp" />
     <ClCompile Include="TurnOrderCheckpointModel.cpp" />
     <ClCompile Include="TurnOrderModel.cpp" />
@@ -163,6 +167,9 @@
     <ClInclude Include="BattlePredictor.h" />
     <ClInclude Include="BattlePredictorCli.h" />
     <ClInclude Include="BattleVisualRngModel.h" />
+    <ClInclude Include="BattleJobBatchRunManifest.h" />
+    <ClInclude Include="BattleJobBatchRunOptions.h" />
+    <ClInclude Include="BattleJobBatchWorkerRun.h" />
     <ClInclude Include="BattleJobClone.h" />
     <ClInclude Include="BattleJobRunManifest.h" />
     <ClInclude Include="BattleJobRunOptions.h" />
@@ -189,6 +196,7 @@
     <ClInclude Include="RngModel.h" />
     <ClInclude Include="SoldierActionExecutionModel.h" />
     <ClInclude Include="SoldierAiModel.h" />
+    <ClInclude Include="SoaQSortModel.h" />
     <ClInclude Include="SstActionCommandCheckpointModel.h" />
     <ClInclude Include="TurnOrderCheckpointModel.h" />
     <ClInclude Include="TurnOrderModel.h" />

@@ -10,6 +10,7 @@
 
 #include <optional>
 #include <ostream>
+#include <set>
 #include <sstream>
 #include <string>
 
@@ -35,6 +36,16 @@ bool prepare(sqlite3* db, const char* sql, Statement* out, std::ostream& err) {
     }
     if (sqlite3_prepare_v2(db, sql, -1, &out->st, nullptr) != SQLITE_OK) {
         err << sqlite3_errmsg(db) << "\n";
+        return false;
+    }
+    return true;
+}
+
+bool exec(sqlite3* db, const char* sql, std::ostream& err) {
+    char* raw_error = nullptr;
+    if (sqlite3_exec(db, sql, nullptr, nullptr, &raw_error) != SQLITE_OK) {
+        err << (raw_error != nullptr ? raw_error : sqlite3_errmsg(db)) << "\n";
+        sqlite3_free(raw_error);
         return false;
     }
     return true;
@@ -179,6 +190,33 @@ int quarantine_ready_jobs(sqlite3* execution_db, std::int64_t keep_job_id, std::
     return sqlite3_changes(execution_db);
 }
 
+int quarantine_ready_jobs_except(sqlite3* execution_db, const std::set<std::int64_t>& keep_job_ids, std::ostream& err) {
+    if (keep_job_ids.empty()) {
+        err << "Internal error: batch quarantine keep set is empty.\n";
+        return -1;
+    }
+    std::ostringstream keep_list;
+    bool first = true;
+    for (const auto job_id : keep_job_ids) {
+        if (!first) {
+            keep_list << ",";
+        }
+        first = false;
+        keep_list << job_id;
+    }
+    const auto sql =
+        "UPDATE exec_job "
+        "SET state='SUPERSEDED', claimed_by_token=NULL, lease_expires_at_utc=NULL, "
+        "    error_text='SavorPredict sandbox quarantine before batch live capture run' "
+        "WHERE job_id NOT IN (" + keep_list.str() + ") "
+        "AND state IN ('QUEUED','PENDING_MATERIALIZATION','CLAIMED','RUNNING');";
+    if (!exec(execution_db, sql.c_str(), err)) {
+        err << "Failed quarantining runnable sandbox jobs for batch.\n";
+        return -1;
+    }
+    return sqlite3_changes(execution_db);
+}
+
 } // namespace
 
 std::string patch_battle_single_turn_capture_profile(
@@ -189,10 +227,11 @@ std::string patch_battle_single_turn_capture_profile(
     return ini.to_string_sorted();
 }
 
-bool clone_battle_job_for_capture(
+bool clone_battle_job_for_capture_internal(
     savor::db::core::DBService& db_service,
     const BattleJobRunOptions& options,
     const std::filesystem::path& capture_profile_path,
+    bool quarantine_after_clone,
     BattleJobCloneResult* result_out,
     std::ostream& err) {
     if (result_out == nullptr) {
@@ -303,9 +342,12 @@ bool clone_battle_job_for_capture(
         return false;
     }
 
-    const int quarantined = quarantine_ready_jobs(raw_execution, cloned_exec_job_id, err);
-    if (quarantined < 0) {
-        return false;
+    int quarantined = 0;
+    if (quarantine_after_clone) {
+        quarantined = quarantine_ready_jobs(raw_execution, cloned_exec_job_id, err);
+        if (quarantined < 0) {
+            return false;
+        }
     }
 
     result_out->original_turn_job_id = source->turn_job_id;
@@ -319,6 +361,68 @@ bool clone_battle_job_for_capture(
     result_out->fake_attacks_this_turn = source->fake_attacks_this_turn;
     result_out->quarantined_ready_jobs = quarantined;
     result_out->patched_input_ini = patched_input;
+    return true;
+}
+
+bool clone_battle_job_for_capture(
+    savor::db::core::DBService& db_service,
+    const BattleJobRunOptions& options,
+    const std::filesystem::path& capture_profile_path,
+    BattleJobCloneResult* result_out,
+    std::ostream& err) {
+    return clone_battle_job_for_capture_internal(
+        db_service,
+        options,
+        capture_profile_path,
+        true,
+        result_out,
+        err);
+}
+
+bool clone_battle_jobs_for_capture(
+    savor::db::core::DBService& db_service,
+    const std::vector<long long>& source_exec_job_ids,
+    const std::filesystem::path& capture_profile_path,
+    BattleJobBatchCloneResult* result_out,
+    std::ostream& err) {
+    if (result_out == nullptr) {
+        err << "Internal error: batch clone result output is null.\n";
+        return false;
+    }
+    auto* raw_execution = db_service.RawExecutionSqlite();
+    if (raw_execution == nullptr) {
+        err << "DBService is missing raw execution sqlite handle.\n";
+        return false;
+    }
+    result_out->clones.clear();
+    result_out->quarantined_ready_jobs = 0;
+
+    std::set<std::int64_t> keep_job_ids;
+    for (const auto source_exec_job_id : source_exec_job_ids) {
+        BattleJobRunOptions single_options;
+        single_options.exec_job_id = source_exec_job_id;
+        BattleJobCloneResult clone;
+        if (!clone_battle_job_for_capture_internal(
+                db_service,
+                single_options,
+                capture_profile_path,
+                false,
+                &clone,
+                err)) {
+            return false;
+        }
+        keep_job_ids.insert(clone.cloned_exec_job_id);
+        result_out->clones.push_back(std::move(clone));
+    }
+
+    const int quarantined = quarantine_ready_jobs_except(raw_execution, keep_job_ids, err);
+    if (quarantined < 0) {
+        return false;
+    }
+    result_out->quarantined_ready_jobs = quarantined;
+    for (auto& clone : result_out->clones) {
+        clone.quarantined_ready_jobs = quarantined;
+    }
     return true;
 }
 

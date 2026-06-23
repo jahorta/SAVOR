@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <iosfwd>
 #include <string>
+#include <vector>
 
 namespace savor::predict {
 
@@ -25,6 +26,11 @@ struct BattleJobCloneResult {
     std::string patched_input_ini;
 };
 
+struct BattleJobBatchCloneResult {
+    std::vector<BattleJobCloneResult> clones;
+    int quarantined_ready_jobs = 0;
+};
+
 std::string patch_battle_single_turn_capture_profile(
     const std::string& input_ini,
     const std::filesystem::path& capture_profile_path);
@@ -34,6 +40,13 @@ bool clone_battle_job_for_capture(
     const BattleJobRunOptions& options,
     const std::filesystem::path& capture_profile_path,
     BattleJobCloneResult* result_out,
+    std::ostream& err);
+
+bool clone_battle_jobs_for_capture(
+    savor::db::core::DBService& db_service,
+    const std::vector<long long>& source_exec_job_ids,
+    const std::filesystem::path& capture_profile_path,
+    BattleJobBatchCloneResult* result_out,
     std::ostream& err);
 
 } // namespace savor::predict

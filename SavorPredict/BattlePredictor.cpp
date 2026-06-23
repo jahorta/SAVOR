@@ -85,6 +85,16 @@ int first_alive_enemy_slot(const std::vector<BattlePredictionSlotState>& slots) 
     return -1;
 }
 
+std::vector<int> living_side_slots(const std::vector<BattlePredictionSlotState>& slots, bool player_side) {
+    std::vector<int> result;
+    for (const auto& slot : slots) {
+        if (slot.present && slot.is_player == player_side && slot.alive) {
+            result.push_back(slot.slot);
+        }
+    }
+    return result;
+}
+
 bool has_alive_enemy(const std::vector<BattlePredictionSlotState>& slots) {
     return first_alive_enemy_slot(slots) >= 0;
 }
@@ -522,6 +532,75 @@ const QueuedPredictionAction* find_action_for_slot(
     return nullptr;
 }
 
+bool target_valid_for_action(
+    const std::vector<BattlePredictionSlotState>& slots,
+    const QueuedPredictionAction& action) {
+    const auto* target = find_slot(slots, action.target_slot);
+    if (target == nullptr || !target->present || !target->alive) {
+        return false;
+    }
+    return action.enemy_owned ? target->is_player : !target->is_player;
+}
+
+bool repair_action_target_for_execution(
+    BattlePredictionResult& result,
+    const std::vector<BattlePredictionSlotState>& slots,
+    QueuedPredictionAction& action) {
+    if (target_valid_for_action(slots, action)) {
+        return true;
+    }
+
+    const int original_target = action.target_slot;
+    const auto candidates = living_side_slots(slots, action.enemy_owned);
+    if (candidates.empty()) {
+        append_event(result, {
+            .phase = "action_setup",
+            .label = "skipped_no_retarget_candidate",
+            .status = BattlePredictionEventStatus::Skipped,
+            .actor_slot = action.actor_slot,
+            .target_slot = original_target,
+            .detail = "queued target is invalid and no living replacement target exists",
+        });
+        return false;
+    }
+
+    if (candidates.size() == 1) {
+        action.target_slot = candidates.front();
+        std::ostringstream detail;
+        detail << "original_target=" << original_target
+               << "; replacement_target=" << action.target_slot
+               << "; unique living " << (action.enemy_owned ? "PC" : "enemy") << " candidate";
+        append_event(result, {
+            .phase = "action_setup",
+            .label = action.enemy_owned ? "enemy_attack_retarget" : "pc_attack_retarget",
+            .status = BattlePredictionEventStatus::Exact,
+            .actor_slot = action.actor_slot,
+            .target_slot = action.target_slot,
+            .detail = detail.str(),
+        });
+        return true;
+    }
+
+    std::ostringstream detail;
+    detail << "original_target=" << original_target << "; candidates=";
+    for (std::size_t i = 0; i < candidates.size(); ++i) {
+        if (i != 0) {
+            detail << ",";
+        }
+        detail << candidates[i];
+    }
+    detail << "; multi-candidate pathing retargeting is outside first-battle v1";
+    append_event(result, {
+        .phase = "action_setup",
+        .label = action.enemy_owned ? "ambiguous_enemy_attack_retarget" : "ambiguous_pc_attack_retarget",
+        .status = BattlePredictionEventStatus::Ambiguous,
+        .actor_slot = action.actor_slot,
+        .target_slot = original_target,
+        .detail = detail.str(),
+    });
+    return false;
+}
+
 void append_turn_order(
     BattlePredictionResult& result,
     std::uint32_t& state,
@@ -873,18 +952,23 @@ void append_action_execution(
             continue;
         }
 
-        if (action->enemy_owned) {
+        QueuedPredictionAction resolved_action = *action;
+        if (!repair_action_target_for_execution(result, slots, resolved_action)) {
+            continue;
+        }
+
+        if (resolved_action.enemy_owned) {
             append_enemy_attack_setup(result, state, *actor);
         }
 
         if (options.include_visual_rng_gap_events) {
-            const bool visual_exact = append_pre_attack_visual_rng(result, state, profile, *action);
+            const bool visual_exact = append_pre_attack_visual_rng(result, state, profile, resolved_action);
             if (!visual_exact && !options.continue_after_visual_rng_gap) {
                 continue;
             }
         }
 
-        append_attack_resolution(result, state, context, slots, profile, *action);
+        append_attack_resolution(result, state, context, slots, profile, resolved_action);
         if (!has_alive_enemy(slots) || !has_alive_pc(slots)) {
             break;
         }
