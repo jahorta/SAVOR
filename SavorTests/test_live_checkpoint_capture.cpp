@@ -687,6 +687,75 @@ TEST(SavorPredictLiveCaptureProfile, BuildsParseableFirstBattleRngProfile)
     EXPECT_TRUE(has_reg_sample(*sst_case8, "dest_field6_after_0x06"));
 }
 
+TEST(SavorPredictLiveCaptureProfile, BuildsPredictorValidationProfile)
+{
+    const auto text = build_first_battle_predictor_validation_profile_ini();
+    const auto parsed = ParseCaptureProfileText(text);
+    ASSERT_TRUE(parsed.profile.has_value()) << FormatCaptureProfileError(parsed);
+
+    const auto& profile = *parsed.profile;
+    EXPECT_EQ(profile.name, "first_battle_predictor_validation");
+    bool found_targeting_camera = false;
+    bool found_progress_pc = false;
+    for (const auto& checkpoint : profile.checkpoints) {
+        ASSERT_FALSE(checkpoint.memory_samples.empty()) << checkpoint.id;
+        EXPECT_EQ(checkpoint.memory_samples[0].name, "rng_seed_before") << checkpoint.id;
+        if (checkpoint.pc == 0x800608DCu) {
+            found_targeting_camera = true;
+        }
+        const auto lowered_id = checkpoint.id;
+        if (lowered_id.find("progress") != std::string::npos) {
+            found_progress_pc = true;
+        }
+    }
+    EXPECT_FALSE(found_targeting_camera);
+    EXPECT_FALSE(found_progress_pc);
+
+    const auto find_checkpoint = [&](std::string_view id)
+        -> const CheckpointSpec* {
+        for (const auto& checkpoint : profile.checkpoints) {
+            if (checkpoint.id == id) {
+                return &checkpoint;
+            }
+        }
+        return nullptr;
+    };
+    const auto has_memory_sample = [](const CheckpointSpec& checkpoint, std::string_view name) {
+        for (const auto& sample : checkpoint.memory_samples) {
+            if (sample.name == name) {
+                return true;
+            }
+        }
+        return false;
+    };
+    const auto has_gpr_sample = [](const CheckpointSpec& checkpoint, std::string_view name) {
+        for (const auto& sample : checkpoint.gpr_samples) {
+            if (sample.name == name) {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    const auto* hit = find_checkpoint("attack_hit_dodge_80010BDC");
+    ASSERT_NE(hit, nullptr);
+    EXPECT_TRUE(hit->owns_rng_draw);
+    EXPECT_TRUE(has_memory_sample(*hit, "slot0_instr_param_0x6"));
+    EXPECT_TRUE(has_memory_sample(*hit, "slot4_attack_result_0xc"));
+    EXPECT_TRUE(has_gpr_sample(*hit, "r0_instr_param_candidate"));
+    EXPECT_TRUE(has_gpr_sample(*hit, "attack_result"));
+
+    const auto* crit_gate = find_checkpoint("crit_gate_branch_80010C40");
+    ASSERT_NE(crit_gate, nullptr);
+    EXPECT_FALSE(crit_gate->owns_rng_draw);
+    EXPECT_TRUE(has_memory_sample(*crit_gate, "slot1_instr_param_0x6"));
+    EXPECT_TRUE(has_gpr_sample(*crit_gate, "instr_param_0x6"));
+
+    EXPECT_NE(find_checkpoint("pc_attack_fallback_param_set_b_800856C4"), nullptr);
+    EXPECT_NE(find_checkpoint("pc_fallback_attack_worker_entry_80085CE0"), nullptr);
+    EXPECT_NE(find_checkpoint("enemy_direct_worker_select_8008BDAC"), nullptr);
+}
+
 TEST(BattleTurnRunnerPayload, RoundTripsLiveCaptureContextPaths)
 {
     phase::battle::turnrunner::EncodeSpec spec{};

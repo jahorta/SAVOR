@@ -1,6 +1,7 @@
 #include "CritGateCheckpointModel.h"
 
 #include <cstdlib>
+#include <string>
 #include <utility>
 
 namespace savor::predict {
@@ -26,6 +27,14 @@ std::optional<int> parse_field_int(const CheckpointEvent& event, const char* fie
         return std::nullopt;
     }
     return static_cast<int>(parsed);
+}
+
+std::optional<int> parse_slot_instr_param(const CheckpointEvent& event, std::optional<int> slot) {
+    if (!slot.has_value()) {
+        return std::nullopt;
+    }
+    const auto field_name = "slot" + std::to_string(*slot) + "_instr_param_0x6";
+    return parse_field_int(event, field_name.c_str());
 }
 
 std::optional<int> parse_hit_success(const CheckpointEvent& event) {
@@ -83,6 +92,9 @@ CritGateCheckpointSummary summarize_crit_gate_checkpoints(
             ? event.target_slot
             : parse_field_int(event, "target_slot");
         draw.instr_param_0x6 = parse_field_int(event, "instr_param_0x6");
+        if (!draw.instr_param_0x6.has_value()) {
+            draw.instr_param_0x6 = parse_slot_instr_param(event, draw.active_slot);
+        }
         draw.hit_success = parse_hit_success(event);
         draw.attack_result = parse_field_int(event, "attack_result");
         draw.rand_value = parse_field_int(event, "rand_value");

@@ -1,6 +1,8 @@
 #include "TraceJob.h"
 
+#include "EnemyEventDataModel.h"
 #include "ProgressEventParser.h"
+#include "MovementModel.h"
 #include "RngModel.h"
 
 #include <Core/Input/SoaBattle/BattleCommandCodec.h>
@@ -265,15 +267,36 @@ std::optional<int> soldier_slot_from_actor(const std::string& actor) {
     return first_battle_soldier_slot_from_progress_name(actor);
 }
 
-std::optional<int> first_battle_expected_instr_param_for_attack_actor(
+std::optional<int> first_battle_slot_from_progress_actor(const std::string& actor) {
+    const auto stats = first_battle_actor_by_progress_name(actor);
+    if (!stats.has_value()) {
+        return std::nullopt;
+    }
+    return stats->slot;
+}
+
+std::vector<MovementSlotState> first_battle_event0_movement_slots() {
+    std::vector<MovementSlotState> slots;
+    for (int slot : {0, 1, 4, 5}) {
+        const auto stats = first_battle_actor_by_slot(slot);
+        if (!stats.has_value()) {
+            continue;
+        }
+        slots.push_back(MovementSlotState{
+            .slot = slot,
+            .present = true,
+            .is_player = slot < 4,
+            .alive = true,
+            .movement_flags = static_cast<std::uint16_t>(stats->movement_flags),
+            .start_position = enemy_event_start_position_for_slot(0, slot),
+        });
+    }
+    return slots;
+}
+
+std::optional<int> first_battle_soldier_ai_initial_instr_param(
     const std::string& actor,
     const std::vector<SoldierAiDecision>& soldier_ai) {
-    if (is_pc_actor(actor)) {
-        // First-battle PC basic attacks are expected to take the param-0 path
-        // through HandlePCInst; live checkpoints still need to confirm it.
-        return 0;
-    }
-
     const auto soldier_slot = soldier_slot_from_actor(actor);
     if (!soldier_slot.has_value()) {
         return std::nullopt;
@@ -284,6 +307,73 @@ std::optional<int> first_battle_expected_instr_param_for_attack_actor(
         }
     }
     return std::nullopt;
+}
+
+std::optional<int> first_battle_expected_instr_param_for_attack(
+    const AttackEvent& attack,
+    const std::vector<SoldierAiDecision>& soldier_ai,
+    std::string& note) {
+    const auto actor_slot = first_battle_slot_from_progress_actor(attack.actor);
+    const auto target_slot = first_battle_slot_from_progress_actor(attack.target);
+    if (!actor_slot.has_value() || !target_slot.has_value()) {
+        note = "actor or target slot unknown; live checkpoint needed";
+        return std::nullopt;
+    }
+
+    int initial_param = 0;
+    const bool enemy_owned = *actor_slot >= 4;
+    if (enemy_owned) {
+        const auto soldier_param =
+            first_battle_soldier_ai_initial_instr_param(attack.actor, soldier_ai);
+        if (!soldier_param.has_value()) {
+            note = "Soldier AI attack parameter unknown; live checkpoint needed";
+            return std::nullopt;
+        }
+        initial_param = *soldier_param;
+    }
+
+    MovementModelInputs inputs;
+    inputs.rng_state = 0;
+    inputs.actor_slot = *actor_slot;
+    inputs.target_slot = *target_slot;
+    inputs.queued_instruction = 3;
+    inputs.instr_param_0x6 = initial_param;
+    inputs.enemy_owned = enemy_owned;
+    inputs.slots = first_battle_event0_movement_slots();
+    inputs.actor_worksheet = project_enemy_event0_movement_worksheet_snapshot(inputs);
+
+    if (enemy_owned
+        && inputs.actor_worksheet.available
+        && inputs.actor_worksheet.path_shape_forces_fallback.has_value()
+        && !*inputs.actor_worksheet.path_shape_forces_fallback) {
+        note = "event0 movement model needs enemy setup draw to choose direct-close vs fallback";
+        return std::nullopt;
+    }
+
+    const auto movement = simulate_first_battle_movement_setup(inputs);
+    if (!movement.can_execute || movement.status == MovementSimulationStatus::Unsupported) {
+        note = movement.detail.empty()
+            ? "movement model could not execute attack setup"
+            : movement.detail;
+        return std::nullopt;
+    }
+    if (movement.status == MovementSimulationStatus::Ambiguous) {
+        note = movement.detail.empty()
+            ? "movement model left instrParam_0x6 ambiguous"
+            : movement.detail;
+        return std::nullopt;
+    }
+
+    std::ostringstream detail;
+    detail << "event0 movement model "
+           << movement_selected_worker_name(movement.selected_worker)
+           << " final_instr_param_0x6=" << movement.final_instr_param_0x6;
+    if (inputs.actor_worksheet.path_shape_forces_fallback.has_value()) {
+        detail << "; grid_path_fallback="
+               << (*inputs.actor_worksheet.path_shape_forces_fallback ? "true" : "false");
+    }
+    note = detail.str();
+    return movement.final_instr_param_0x6;
 }
 
 std::string action_kind_name(PlannedActionKind kind) {
@@ -391,7 +481,9 @@ void summarize_crit_gate_events(
         gate.actor = attack.actor;
         gate.target = attack.target;
 
-        const auto instr_param = first_battle_expected_instr_param_for_attack_actor(attack.actor, soldier_ai);
+        std::string movement_note;
+        const auto instr_param =
+            first_battle_expected_instr_param_for_attack(attack, soldier_ai, movement_note);
         if (instr_param.has_value()) {
             gate.instr_param_0x6 = *instr_param;
             gate.instr_param_0x6_known = true;
@@ -405,15 +497,17 @@ void summarize_crit_gate_events(
 
         if (!gate.instr_param_0x6_known) {
             gate.crit_draw_candidate = true;
-            gate.note = "instrParam_0x6 unknown; live checkpoint needed";
+            gate.note = movement_note.empty()
+                ? "instrParam_0x6 unknown; live checkpoint needed"
+                : movement_note;
             ++crit_candidates;
         } else if (gate.instr_param_0x6 == 0) {
             gate.crit_draw_candidate = true;
-            gate.note = "param 0 allows getAttackResult crit draw";
+            gate.note = "param 0 allows getAttackResult crit draw; " + movement_note;
             ++crit_candidates;
         } else {
             gate.crit_draw_candidate = false;
-            gate.note = "nonzero instrParam_0x6 skips getAttackResult crit draw";
+            gate.note = "nonzero instrParam_0x6 skips getAttackResult crit draw; " + movement_note;
             ++crit_skipped_by_instr_param;
         }
 

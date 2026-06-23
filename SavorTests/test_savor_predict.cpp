@@ -3,6 +3,8 @@
 #include <CheckpointTrace.h>
 #include <BattlePredictionDbInput.h>
 #include <BattlePredictorCli.h>
+#include <EnemyEventDataModel.h>
+#include <MovementModel.h>
 #include <ProgressEventParser.h>
 #include <RngModel.h>
 #include <SoaQSortModel.h>
@@ -169,20 +171,68 @@ soa::battle::actions::TurnPlan make_two_pc_attack_turn_plan(std::uint32_t fake_a
     return plan;
 }
 
+std::vector<MovementSlotState> make_first_battle_movement_slots(bool soldier4_alive = true) {
+    return {
+        MovementSlotState{
+            .slot = 0,
+            .present = true,
+            .is_player = true,
+            .alive = true,
+            .movement_flags = 0x0FC7,
+        },
+        MovementSlotState{
+            .slot = 1,
+            .present = true,
+            .is_player = true,
+            .alive = true,
+            .movement_flags = 0x0FF7,
+        },
+        MovementSlotState{
+            .slot = 4,
+            .present = true,
+            .is_player = false,
+            .alive = soldier4_alive,
+            .movement_flags = 0x0FC7,
+        },
+        MovementSlotState{
+            .slot = 5,
+            .present = true,
+            .is_player = false,
+            .alive = true,
+            .movement_flags = 0x0FC7,
+        },
+    };
+}
+
+std::vector<MovementSlotState> make_first_battle_movement_slots_with_event0_positions(
+    bool soldier4_alive = true) {
+    auto slots = make_first_battle_movement_slots(soldier4_alive);
+    for (auto& slot : slots) {
+        slot.start_position = enemy_event_start_position_for_slot(0, slot.slot);
+    }
+    return slots;
+}
+
 struct PredictionDbFixtureRows {
     std::int64_t battle_set_id = 0;
     std::int64_t seed_candidate_id = 0;
+    std::int64_t source_input_frame_id = 0;
+    std::int64_t unique_seed_id = 0;
     std::int64_t wave_id = 0;
     std::int64_t context_probe_id = 0;
     std::int64_t turn_job_id = 0;
     std::int64_t turn_exec_job_id = 88001;
     std::uint32_t candidate_seed = 0x11111111u;
+    std::uint32_t unique_seed = 0x44444444u;
     std::optional<std::uint32_t> live_seed = 0x22222222u;
 };
 
 class SavorPredictDbInputFixture : public SqliteDbFixture {
 protected:
-    PredictionDbFixtureRows SeedPredictionRows(std::optional<std::uint32_t> live_seed = 0x22222222u) {
+    PredictionDbFixtureRows SeedPredictionRows(
+        std::optional<std::uint32_t> live_seed = 0x22222222u,
+        bool create_unique_seed = true,
+        bool direct_unique_link = true) {
         using namespace savor::db;
 
         auto* analysis_db = db_service_->AnalysisDb();
@@ -208,11 +258,79 @@ protected:
             &err))
             << err;
 
+        if (create_unique_seed) {
+            std::int64_t probe_set_id = 0;
+            EXPECT_TRUE(analysis_db->CreateSeedProbeSet(
+                {
+                    .name = "prediction-input-seedprobe",
+                    .probe_flavor = "BATTLE_PRE",
+                    .breakpoint_policy_name = "fixture",
+                    .segment_source_kind = "fixture",
+                    .created_at_utc = now,
+                    .correlation_id = "predict-corr",
+                    .causation_id = "predict-cause-seedprobe-set",
+                },
+                &probe_set_id,
+                &err))
+                << err;
+
+            std::int64_t probe_run_id = 0;
+            EXPECT_TRUE(analysis_db->RequestSeedProbeRun(
+                {
+                    .probe_set_id = probe_set_id,
+                    .entry_savestate_id = 501,
+                    .seed_probe_spec_id = 1,
+                    .codec_version = 1,
+                    .status = "requested",
+                    .requested_at_utc = now,
+                    .correlation_id = "predict-corr",
+                    .causation_id = "predict-cause-seedprobe-run",
+                },
+                &probe_run_id,
+                &err))
+                << err;
+
+            EXPECT_TRUE(analysis_db->EnsureSeedProbeInputFrame(
+                0x8080,
+                0x8080,
+                0x0000,
+                &rows.source_input_frame_id,
+                &err))
+                << err;
+            EXPECT_TRUE(analysis_db->SetSeedProbeRunNeutralSeed(probe_run_id, 0, &err)) << err;
+            const auto probe_result_id = analysis_db->LookupSeedProbeResultId(probe_run_id);
+            EXPECT_TRUE(probe_result_id.has_value());
+
+            bool inserted = false;
+            EXPECT_TRUE(analysis_db->EnsureSeedProbeUniqueSeedDelta(
+                {
+                    .probe_result_id = probe_result_id.value_or(0),
+                    .input_frame_id = rows.source_input_frame_id,
+                    .seed_value = rows.unique_seed,
+                    .seed_delta = 0,
+                    .recorded_at_utc = now,
+                    .correlation_id = "predict-corr",
+                    .causation_id = "predict-cause-unique-seed",
+                },
+                &inserted,
+                &rows.unique_seed_id,
+                &err))
+                << err;
+        }
+
         EXPECT_TRUE(analysis_db->AddBattleSeedCandidate(
             {
                 .battle_set_id = rows.battle_set_id,
+                .source_unique_seed_id = create_unique_seed && direct_unique_link
+                    ? std::optional<std::int64_t>(rows.unique_seed_id)
+                    : std::nullopt,
+                .source_input_frame_id = create_unique_seed
+                    ? std::optional<std::int64_t>(rows.source_input_frame_id)
+                    : std::nullopt,
                 .seed_value = rows.candidate_seed,
-                .source_kind = BattleSeedCandidateSourceKind::SeedProbeUnique,
+                .source_kind = create_unique_seed && direct_unique_link
+                    ? BattleSeedCandidateSourceKind::SeedProbeUnique
+                    : BattleSeedCandidateSourceKind::Synthetic,
                 .candidate_status = BattleSeedCandidateStatus::Pending,
                 .created_at_utc = now,
                 .correlation_id = "predict-corr",
@@ -301,6 +419,17 @@ const BattlePredictionEvent* find_prediction_event(
     for (const auto& event : result.events) {
         if (event.phase == phase && event.label == label) {
             return &event;
+        }
+    }
+    return nullptr;
+}
+
+const BattlePredictionValidationItem* find_prediction_validation(
+    const BattlePredictionResult& result,
+    std::string_view scope) {
+    for (const auto& item : result.validation) {
+        if (item.scope == scope) {
+            return &item;
         }
     }
     return nullptr;
@@ -825,6 +954,242 @@ TEST(SavorPredictBattlePredictor, ResolvesFirstBattleProfile) {
     EXPECT_FALSE(battle_prediction_profile_by_name("FirstBattlePredictor").has_value());
 }
 
+TEST(SavorPredictEnemyEventDataModel, ProvidesScriptedBattleStartPositions) {
+    const auto first = enemy_event_start_positions(0);
+    ASSERT_TRUE(first.has_value());
+    EXPECT_EQ(first->enemy_event_id, 0);
+
+    const auto vyse = enemy_event_start_position_for_slot(0, 0);
+    ASSERT_TRUE(vyse.has_value());
+    EXPECT_TRUE(vyse->present);
+    EXPECT_TRUE(vyse->is_player);
+    EXPECT_EQ(vyse->combatant_id, 0);
+    EXPECT_EQ(std::string(vyse->combatant_name), "Vyse");
+    EXPECT_EQ(vyse->grid_x, 4);
+    EXPECT_EQ(vyse->grid_z, 6);
+
+    const auto soldier5 = enemy_event_start_position_for_slot(0, 5);
+    ASSERT_TRUE(soldier5.has_value());
+    EXPECT_FALSE(soldier5->is_player);
+    EXPECT_EQ(std::string(soldier5->combatant_name), "Soldier");
+    EXPECT_EQ(soldier5->grid_x, 6);
+    EXPECT_EQ(soldier5->grid_z, 2);
+
+    const auto guard7 = enemy_event_start_position_for_slot(1, 7);
+    ASSERT_TRUE(guard7.has_value());
+    EXPECT_EQ(std::string(guard7->combatant_name), "Guard");
+    EXPECT_EQ(guard7->grid_x, 8);
+    EXPECT_EQ(guard7->grid_z, 3);
+
+    EXPECT_FALSE(enemy_event_start_positions(999).has_value());
+}
+
+TEST(SavorPredictMovementModel, PcAttackSelectsDirectWorkerWhenWorksheetProvesReachability) {
+    MovementModelInputs inputs;
+    inputs.rng_state = 0x12345678u;
+    inputs.actor_slot = 0;
+    inputs.target_slot = 4;
+    inputs.queued_instruction = 3;
+    inputs.instr_param_0x6 = 0;
+    inputs.enemy_owned = false;
+    inputs.slots = make_first_battle_movement_slots();
+    inputs.actor_worksheet.available = true;
+    inputs.actor_worksheet.target_adjacent = true;
+    inputs.actor_worksheet.reachability_result = 1;
+    inputs.actor_worksheet.path_shape_forces_fallback = false;
+    inputs.actor_worksheet.dist_to_target = 1;
+
+    const auto result = simulate_first_battle_movement_setup(inputs);
+
+    EXPECT_EQ(result.status, MovementSimulationStatus::Exact);
+    EXPECT_EQ(result.draws_consumed, 0);
+    EXPECT_EQ(result.final_target_slot, 4);
+    EXPECT_EQ(result.final_instr_param_0x6, 0);
+    EXPECT_EQ(result.reachability, MovementReachabilityStatus::Adjacent1);
+    EXPECT_EQ(result.selected_worker, MovementSelectedWorker::PcDirectAttack_80086308);
+    EXPECT_EQ(movement_selected_worker_name(result.selected_worker), std::string("PcDirectAttack_80086308"));
+}
+
+TEST(SavorPredictMovementModel, Event0WorksheetProjectionKeepsAlxGridSeparateFromRawStageUnits) {
+    MovementModelInputs inputs;
+    inputs.actor_slot = 1;
+    inputs.target_slot = 4;
+    inputs.queued_instruction = 3;
+    inputs.instr_param_0x6 = 0;
+    inputs.enemy_owned = false;
+    inputs.slots = make_first_battle_movement_slots_with_event0_positions();
+
+    const auto worksheet = project_enemy_event0_movement_worksheet_snapshot(inputs);
+
+    ASSERT_TRUE(worksheet.available);
+    ASSERT_TRUE(worksheet.actor_grid_position.has_value());
+    EXPECT_EQ(worksheet.actor_grid_position->grid_x, 6);
+    EXPECT_EQ(worksheet.actor_grid_position->grid_z, 6);
+    ASSERT_TRUE(worksheet.target_grid_position.has_value());
+    EXPECT_EQ(worksheet.target_grid_position->grid_x, 4);
+    EXPECT_EQ(worksheet.target_grid_position->grid_z, 2);
+    EXPECT_FALSE(worksheet.actor_raw_stage_position.has_value());
+    EXPECT_FALSE(worksheet.target_raw_stage_position.has_value());
+    ASSERT_TRUE(worksheet.path_shape_forces_fallback.has_value());
+    EXPECT_TRUE(*worksheet.path_shape_forces_fallback);
+}
+
+TEST(SavorPredictMovementModel, Event0SameColumnPcAttackSelectsDirectWorker) {
+    MovementModelInputs inputs;
+    inputs.rng_state = 0x12345678u;
+    inputs.actor_slot = 0;
+    inputs.target_slot = 4;
+    inputs.queued_instruction = 3;
+    inputs.instr_param_0x6 = 0;
+    inputs.enemy_owned = false;
+    inputs.slots = make_first_battle_movement_slots_with_event0_positions();
+    inputs.actor_worksheet = project_enemy_event0_movement_worksheet_snapshot(inputs);
+
+    const auto result = simulate_first_battle_movement_setup(inputs);
+
+    EXPECT_EQ(result.status, MovementSimulationStatus::Exact);
+    EXPECT_EQ(result.final_instr_param_0x6, 0);
+    EXPECT_EQ(result.reachability, MovementReachabilityStatus::Path4);
+    EXPECT_EQ(result.selected_worker, MovementSelectedWorker::PcDirectAttack_80086308);
+}
+
+TEST(SavorPredictMovementModel, Event0DiagonalPcAttackSelectsFallbackWorker) {
+    MovementModelInputs inputs;
+    inputs.rng_state = 0x12345678u;
+    inputs.actor_slot = 1;
+    inputs.target_slot = 4;
+    inputs.queued_instruction = 3;
+    inputs.instr_param_0x6 = 0;
+    inputs.enemy_owned = false;
+    inputs.slots = make_first_battle_movement_slots_with_event0_positions();
+    inputs.actor_worksheet = project_enemy_event0_movement_worksheet_snapshot(inputs);
+
+    const auto result = simulate_first_battle_movement_setup(inputs);
+
+    EXPECT_EQ(result.status, MovementSimulationStatus::Exact);
+    EXPECT_EQ(result.final_instr_param_0x6, 1);
+    EXPECT_EQ(result.reachability, MovementReachabilityStatus::Failed0);
+    EXPECT_EQ(result.selected_worker, MovementSelectedWorker::PcFallbackAttack_80085ce0);
+}
+
+TEST(SavorPredictMovementModel, PcAttackWithoutWorksheetIsAmbiguousInsteadOfDefaultDirect) {
+    MovementModelInputs inputs;
+    inputs.rng_state = 0x12345678u;
+    inputs.actor_slot = 1;
+    inputs.target_slot = 4;
+    inputs.queued_instruction = 3;
+    inputs.instr_param_0x6 = 0;
+    inputs.enemy_owned = false;
+    inputs.slots = make_first_battle_movement_slots();
+
+    const auto result = simulate_first_battle_movement_setup(inputs);
+
+    EXPECT_EQ(result.status, MovementSimulationStatus::Ambiguous);
+    EXPECT_EQ(result.final_instr_param_0x6, 0);
+    EXPECT_EQ(result.selected_worker, MovementSelectedWorker::PcDirectAttack_80086308);
+    EXPECT_NE(result.detail.find("FUN_80083728"), std::string::npos);
+}
+
+TEST(SavorPredictMovementModel, DeadFirstBattleSoldierRetargetsToOnlyLivingSoldier) {
+    MovementModelInputs inputs;
+    inputs.rng_state = 0x12345678u;
+    inputs.actor_slot = 0;
+    inputs.target_slot = 4;
+    inputs.queued_instruction = 3;
+    inputs.instr_param_0x6 = 0;
+    inputs.enemy_owned = false;
+    inputs.slots = make_first_battle_movement_slots(false);
+
+    const auto result = simulate_first_battle_movement_setup(inputs);
+
+    EXPECT_TRUE(result.target_repaired);
+    EXPECT_EQ(result.target_repair_status, MovementSimulationStatus::Exact);
+    EXPECT_EQ(result.original_target_slot, 4);
+    EXPECT_EQ(result.final_target_slot, 5);
+}
+
+TEST(SavorPredictMovementModel, SoldierAttackSetupConsumesMovementDraw) {
+    MovementModelInputs inputs;
+    inputs.rng_state = 0;
+    inputs.actor_slot = 5;
+    inputs.target_slot = 0;
+    inputs.queued_instruction = 3;
+    inputs.instr_param_0x6 = 0;
+    inputs.enemy_owned = true;
+    inputs.slots = make_first_battle_movement_slots();
+
+    const auto result = simulate_first_battle_movement_setup(inputs);
+
+    EXPECT_EQ(result.draws_consumed, 1);
+    ASSERT_TRUE(result.setup_rand.has_value());
+    ASSERT_TRUE(result.setup_rand_mod10.has_value());
+    EXPECT_EQ(*result.setup_rand_mod10, *result.setup_rand % 10);
+    EXPECT_EQ(result.status, MovementSimulationStatus::Ambiguous);
+    EXPECT_EQ(result.enemy_setup_path, EnemyAttackSetupPath::TargetAdjacencySetup);
+}
+
+TEST(SavorPredictMovementModel, Event0EnemyDirectCloseCandidateCanSelectDirectWorker) {
+    std::optional<std::uint32_t> direct_seed;
+    for (std::uint32_t seed = 0; seed < 2000000u; ++seed) {
+        EnemyAttackSetupInputs setup_inputs;
+        setup_inputs.queued_instruction = 3;
+        setup_inputs.movement_flags = 0x0FC7;
+        const auto setup = simulate_enemy_attack_setup_gate(seed, setup_inputs);
+        if (setup.direct_close_branch_candidate) {
+            direct_seed = seed;
+            break;
+        }
+    }
+    ASSERT_TRUE(direct_seed.has_value());
+
+    MovementModelInputs inputs;
+    inputs.rng_state = *direct_seed;
+    inputs.actor_slot = 4;
+    inputs.target_slot = 0;
+    inputs.queued_instruction = 3;
+    inputs.instr_param_0x6 = 1;
+    inputs.enemy_owned = true;
+    inputs.slots = make_first_battle_movement_slots_with_event0_positions();
+    inputs.actor_worksheet = project_enemy_event0_movement_worksheet_snapshot(inputs);
+
+    const auto result = simulate_first_battle_movement_setup(inputs);
+
+    EXPECT_EQ(result.draws_consumed, 1);
+    EXPECT_EQ(result.status, MovementSimulationStatus::Exact);
+    EXPECT_EQ(result.enemy_setup_path, EnemyAttackSetupPath::DirectCloseSetupCandidate);
+    EXPECT_EQ(result.final_instr_param_0x6, 0);
+    EXPECT_EQ(result.reachability, MovementReachabilityStatus::Path4);
+    EXPECT_EQ(result.selected_worker, MovementSelectedWorker::EnemyDirectAttack_80087f6c);
+}
+
+TEST(SavorPredictMovementModel, PassiveRoutesIncludeTargetParticipant) {
+    MovementModelInputs inputs;
+    inputs.rng_state = 0x12345678u;
+    inputs.actor_slot = 0;
+    inputs.target_slot = 4;
+    inputs.queued_instruction = 3;
+    inputs.instr_param_0x6 = 0;
+    inputs.enemy_owned = false;
+    inputs.slots = make_first_battle_movement_slots();
+    inputs.actor_worksheet.available = true;
+    inputs.actor_worksheet.target_adjacent = true;
+    inputs.actor_worksheet.reachability_result = 1;
+    inputs.actor_worksheet.path_shape_forces_fallback = false;
+    inputs.actor_worksheet.dist_to_target = 1;
+
+    const auto result = simulate_first_battle_movement_setup(inputs);
+
+    const auto target_route = std::find_if(
+        result.passive_routes.begin(),
+        result.passive_routes.end(),
+        [](const PassiveMovementRoute& route) {
+            return route.slot == 4;
+        });
+    ASSERT_NE(target_route, result.passive_routes.end());
+    EXPECT_EQ(target_route->route, PassiveMovementRouteKind::TargetParticipant);
+    EXPECT_EQ(passive_movement_route_kind_name(target_route->route), std::string("TargetParticipant"));
+}
+
 TEST(SavorPredictBattlePredictor, PredictsFirstBattleThroughTurnOrderWithFixedPreAiDraws) {
     BattlePredictionInput input;
     input.profile = first_battle_prediction_profile();
@@ -871,6 +1236,78 @@ TEST(SavorPredictBattlePredictor, PredictsFirstBattleThroughTurnOrderWithFixedPr
     ASSERT_NE(action_view, nullptr);
     EXPECT_EQ(action_view->status, BattlePredictionEventStatus::Exact);
     EXPECT_EQ(action_view->draws_consumed, 1);
+
+    const auto* pre_ai_validation = find_prediction_validation(result, "pre_ai");
+    ASSERT_NE(pre_ai_validation, nullptr);
+    EXPECT_EQ(pre_ai_validation->status, BattlePredictionValidationStatus::Provisional);
+    EXPECT_NE(pre_ai_validation->detail.find("fake_attacks + 1 + pc_count"), std::string::npos);
+
+    const auto* soldier_ai_validation = find_prediction_validation(result, "soldier_ai");
+    ASSERT_NE(soldier_ai_validation, nullptr);
+    EXPECT_EQ(soldier_ai_validation->status, BattlePredictionValidationStatus::Validated);
+
+    const auto* turn_order_validation = find_prediction_validation(result, "turn_order");
+    ASSERT_NE(turn_order_validation, nullptr);
+    EXPECT_EQ(turn_order_validation->status, BattlePredictionValidationStatus::Validated);
+    EXPECT_EQ(turn_order_validation->draws_exact_through, result.exact_draws_through_turn_order);
+
+    const auto* movement_validation = find_prediction_validation(result, "movement_setup");
+    ASSERT_NE(movement_validation, nullptr);
+    EXPECT_EQ(movement_validation->status, BattlePredictionValidationStatus::Ambiguous);
+
+    const auto* movement_param_validation = find_prediction_validation(result, "movement_instr_param");
+    ASSERT_NE(movement_param_validation, nullptr);
+    EXPECT_EQ(movement_param_validation->status, BattlePredictionValidationStatus::Ambiguous);
+
+    const auto* action_source_validation = find_prediction_validation(result, "action_source_selection");
+    ASSERT_NE(action_source_validation, nullptr);
+    EXPECT_EQ(action_source_validation->status, BattlePredictionValidationStatus::Provisional);
+
+    const auto* total_draws_validation = find_prediction_validation(result, "total_draws");
+    ASSERT_NE(total_draws_validation, nullptr);
+    EXPECT_EQ(total_draws_validation->status, BattlePredictionValidationStatus::Ambiguous);
+    EXPECT_EQ(total_draws_validation->draws_exact_through, result.exact_draws_through_turn_order);
+}
+
+TEST(SavorPredictBattlePredictor, UsesEnemyEventStartPositionsWhenSpecified) {
+    BattlePredictionInput input;
+    input.profile = first_battle_prediction_profile();
+    input.starting_rng_seed = 15u;
+    input.enemy_event_id = 0;
+    input.context = make_predictor_first_battle_context();
+    input.turn_plan = make_two_pc_attack_turn_plan(0);
+
+    const auto result = predict_battle(input);
+
+    ASSERT_TRUE(result.enemy_event_id.has_value());
+    EXPECT_EQ(*result.enemy_event_id, 0);
+    const auto* position = find_prediction_event(
+        result,
+        "encounter_setup",
+        "enemy_event_start_position");
+    ASSERT_NE(position, nullptr);
+    EXPECT_EQ(position->status, BattlePredictionEventStatus::Exact);
+    EXPECT_EQ(position->actor_slot, 0);
+    EXPECT_NE(position->detail.find("enemy_event_id=0"), std::string::npos);
+    EXPECT_NE(position->detail.find("grid_x=4 grid_z=6"), std::string::npos);
+
+    ASSERT_GT(result.final_slots.size(), 5u);
+    ASSERT_TRUE(result.final_slots[0].start_position.has_value());
+    EXPECT_EQ(result.final_slots[0].start_position->grid_x, 4);
+    EXPECT_EQ(result.final_slots[0].start_position->grid_z, 6);
+    ASSERT_TRUE(result.final_slots[5].start_position.has_value());
+    EXPECT_EQ(result.final_slots[5].start_position->grid_x, 6);
+    EXPECT_EQ(result.final_slots[5].start_position->grid_z, 2);
+
+    const auto* worker = find_prediction_event(result, "movement_setup", "worker_select");
+    ASSERT_NE(worker, nullptr);
+    EXPECT_NE(worker->detail.find("actor_start=("), std::string::npos);
+    EXPECT_NE(worker->detail.find("worksheet_source=enemy_event_0_alx_grid_projection"), std::string::npos);
+    EXPECT_NE(worker->detail.find("raw_stage_position=not_projected_from_alx_grid"), std::string::npos);
+
+    const auto* validation = find_prediction_validation(result, "start_positions");
+    ASSERT_NE(validation, nullptr);
+    EXPECT_EQ(validation->status, BattlePredictionValidationStatus::Exact);
 }
 
 TEST(SavorPredictBattlePredictor, UsesBattleInstanceCounterChanceAsDamageIncrement) {
@@ -947,17 +1384,23 @@ TEST(SavorPredictBattlePredictor, RetargetsDeadFirstBattleSoldierToOnlyLivingSol
 
     const auto* retarget = find_prediction_event(
         result,
-        "action_setup",
+        "movement_setup",
         "pc_attack_retarget");
     ASSERT_NE(retarget, nullptr);
     EXPECT_EQ(retarget->status, BattlePredictionEventStatus::Exact);
     EXPECT_EQ(retarget->actor_slot, 0);
     EXPECT_EQ(retarget->target_slot, 5);
     EXPECT_NE(retarget->detail.find("original_target=4"), std::string::npos);
+    EXPECT_NE(retarget->detail.find("final_target=5"), std::string::npos);
     EXPECT_EQ(find_prediction_event(
         result,
         "attack_resolution",
         "skipped_dead_or_missing_actor"), nullptr);
+
+    const auto* retarget_validation = find_prediction_validation(result, "retargeting");
+    ASSERT_NE(retarget_validation, nullptr);
+    EXPECT_EQ(retarget_validation->status, BattlePredictionValidationStatus::Validated);
+    EXPECT_NE(retarget_validation->detail.find("RNG-neutral"), std::string::npos);
 }
 
 TEST(SavorPredictBattlePredictorCli, RejectsMutableDebugDbRoot) {
@@ -997,6 +1440,36 @@ TEST(SavorPredictBattlePredictorCli, ParsesStartSeedListForDbSelector) {
     EXPECT_TRUE(parsed.errors.empty());
     EXPECT_EQ(parsed.options.exec_job_id, 147884);
     EXPECT_EQ(parsed.options.start_seed_list, std::filesystem::path("seeds.txt"));
+}
+
+TEST(SavorPredictBattlePredictorCli, ParsesEnemyEventId) {
+    const auto parsed = parse_predict_battle_tokens({
+        "--exec-job-id",
+        "147884",
+        "--enemy-event-id",
+        "0",
+    });
+
+    EXPECT_TRUE(parsed.errors.empty());
+    ASSERT_TRUE(parsed.options.enemy_event_id.has_value());
+    EXPECT_EQ(*parsed.options.enemy_event_id, 0);
+}
+
+TEST(SavorPredictBattlePredictorCli, RejectsUnsupportedEnemyEventId) {
+    const auto parsed = parse_predict_battle_tokens({
+        "--exec-job-id",
+        "147884",
+        "--enemy-event-id",
+        "999",
+    });
+
+    EXPECT_FALSE(parsed.errors.empty());
+    EXPECT_NE(
+        std::find(
+            parsed.errors.begin(),
+            parsed.errors.end(),
+            "Unsupported --enemy-event-id: 999"),
+        parsed.errors.end());
 }
 
 TEST(SavorPredictBattlePredictorCli, RejectsStartSeedAndStartSeedListTogether) {
@@ -1051,11 +1524,12 @@ TEST(SavorPredictBattlePredictionDbInput, RejectsMutableDebugDbRootInResolver) {
     EXPECT_NE(err.str().find("Refusing to use D:/SoaSimDBDebug"), std::string::npos);
 }
 
-TEST_F(SavorPredictDbInputFixture, UsesLiveTurnJobSeedForExecJob) {
+TEST_F(SavorPredictDbInputFixture, UsesSeedProbeUniqueSeedForExecJob) {
     const auto rows = SeedPredictionRows(0x22222222u);
 
     BattlePredictionDbInputOptions options;
     options.selector.exec_job_id = rows.turn_exec_job_id;
+    options.enemy_event_id = 0;
     std::ostringstream err;
 
     const auto resolved = build_battle_prediction_input_from_analysis_db(
@@ -1064,17 +1538,37 @@ TEST_F(SavorPredictDbInputFixture, UsesLiveTurnJobSeedForExecJob) {
         err);
 
     ASSERT_TRUE(resolved.has_value()) << err.str();
-    EXPECT_EQ(resolved->input.starting_rng_seed, 0x22222222u);
-    EXPECT_EQ(resolved->metadata.seed_source, BattlePredictionSeedSource::TurnJobLiveRngSeed);
+    EXPECT_EQ(resolved->input.starting_rng_seed, rows.unique_seed);
+    EXPECT_EQ(resolved->metadata.seed_source, BattlePredictionSeedSource::SeedProbeUniqueSeed);
     EXPECT_EQ(resolved->metadata.turn_job_id, rows.turn_job_id);
     EXPECT_EQ(resolved->metadata.exec_job_id.value_or(0), rows.turn_exec_job_id);
     EXPECT_EQ(resolved->metadata.context_source, BattlePredictionContextSource::LatestWaveContextProbe);
     EXPECT_EQ(resolved->metadata.context_probe_id.value_or(0), rows.context_probe_id);
     EXPECT_EQ(resolved->metadata.fake_attack_source, BattlePredictionFakeAttackSource::TurnJob);
     EXPECT_EQ(resolved->input.turn_plan.fake_attack_count, 2u);
+    EXPECT_EQ(resolved->input.enemy_event_id.value_or(-1), 0);
+    EXPECT_EQ(resolved->metadata.enemy_event_id.value_or(-1), 0);
     ASSERT_EQ(resolved->input.turn_plan.commands.size(), 2u);
     EXPECT_EQ(resolved->input.turn_plan.commands[0].actor_slot, 0);
     EXPECT_EQ(resolved->metadata.resolved_turn_variant_key.value_or(""), "fixture-variant");
+}
+
+TEST_F(SavorPredictDbInputFixture, UsesSeedProbeUniqueSeedFromSourceInputFrameForLegacyCandidate) {
+    const auto rows = SeedPredictionRows(0x22222222u, true, false);
+
+    BattlePredictionDbInputOptions options;
+    options.selector.exec_job_id = rows.turn_exec_job_id;
+    options.enemy_event_id = 0;
+    std::ostringstream err;
+
+    const auto resolved = build_battle_prediction_input_from_analysis_db(
+        *db_service_->AnalysisDb(),
+        options,
+        err);
+
+    ASSERT_TRUE(resolved.has_value()) << err.str();
+    EXPECT_EQ(resolved->input.starting_rng_seed, rows.unique_seed);
+    EXPECT_EQ(resolved->metadata.seed_source, BattlePredictionSeedSource::SeedProbeUniqueSeed);
 }
 
 TEST_F(SavorPredictDbInputFixture, OverridesSeedAndFakeAttackCountExplicitly) {
@@ -1099,23 +1593,13 @@ TEST_F(SavorPredictDbInputFixture, OverridesSeedAndFakeAttackCountExplicitly) {
     EXPECT_EQ(resolved->metadata.fake_attack_source, BattlePredictionFakeAttackSource::Override);
 }
 
-TEST_F(SavorPredictDbInputFixture, MissingLiveSeedRequiresExplicitCandidateFallback) {
-    const auto rows = SeedPredictionRows(std::nullopt);
+TEST_F(SavorPredictDbInputFixture, UsesCandidateSeedWhenNoUniqueSeedSourceExists) {
+    const auto rows = SeedPredictionRows(std::nullopt, false);
 
     BattlePredictionDbInputOptions options;
     options.selector.exec_job_id = rows.turn_exec_job_id;
     std::ostringstream err;
 
-    const auto rejected = build_battle_prediction_input_from_analysis_db(
-        *db_service_->AnalysisDb(),
-        options,
-        err);
-    EXPECT_FALSE(rejected.has_value());
-    EXPECT_NE(err.str().find("no live RNG seed"), std::string::npos);
-
-    err.str("");
-    err.clear();
-    options.allow_seed_candidate_fallback = true;
     const auto resolved = build_battle_prediction_input_from_analysis_db(
         *db_service_->AnalysisDb(),
         options,
@@ -1123,8 +1607,7 @@ TEST_F(SavorPredictDbInputFixture, MissingLiveSeedRequiresExplicitCandidateFallb
 
     ASSERT_TRUE(resolved.has_value()) << err.str();
     EXPECT_EQ(resolved->input.starting_rng_seed, rows.candidate_seed);
-    EXPECT_EQ(resolved->metadata.seed_source, BattlePredictionSeedSource::SeedCandidateFallback);
-    EXPECT_FALSE(resolved->metadata.warnings.empty());
+    EXPECT_EQ(resolved->metadata.seed_source, BattlePredictionSeedSource::SeedCandidate);
 }
 
 TEST(SavorPredictRngModel, SoaQSortModelMatchesObservedEqualKeyPermutation) {
@@ -2435,6 +2918,47 @@ TEST(SavorPredictCheckpointTrace, DoesNotCountDiagnosticKnownPcRowsAsRngOwners) 
     EXPECT_EQ(rc, 0) << err.str();
     EXPECT_NE(out.str().find("mode0_action_view_camera_fallback: 1"), std::string::npos);
     EXPECT_EQ(out.str().find("mode0_action_view_camera_fallback: 3"), std::string::npos);
+}
+
+TEST(SavorPredictCheckpointTrace, ReportsLiveAttackParamComparisonChains) {
+    const auto checkpoint_path =
+        std::filesystem::temp_directory_path() / "savor_predict_trace_attack_param_chain_test.txt";
+    {
+        std::ofstream file(checkpoint_path);
+        ASSERT_TRUE(file.good());
+        file
+            << "pc=80081b94 function=Battle::AtkMethods::performAttack_80081b94 "
+               "checkpoint=attack_begin rng_draw_index_before=13 "
+               "actor_slot_arg=1 target_slot_arg=4 "
+               "slot1_instr_param_0x6=0\n"
+            << "pc=800856c4 function=FUN_800855ac checkpoint=instr_param_set "
+               "rng_draw_index_before=13 actor_slot=1 target_slot=4 "
+               "instr_param_0x6=1\n"
+            << "pc=80085ce0 function=FUN_80085ce0 checkpoint=worker_select "
+               "rng_draw_index_before=13 actor_slot=1 target_slot=4 "
+               "instr_param_0x6=1\n"
+            << "pc=80010bdc function=getAttackResult checkpoint=hit "
+               "rng_draw_index_before=14 active_slot=1 target_slot=4 "
+               "instr_param_0x6=1 attack_result=2 rand_value=30\n";
+    }
+
+    TraceCheckpointsOptions options{};
+    options.checkpoint_file = checkpoint_path;
+
+    std::ostringstream out;
+    std::ostringstream err;
+    const int rc = run_trace_checkpoints(options, out, err);
+    std::filesystem::remove(checkpoint_path);
+
+    EXPECT_EQ(rc, 0) << err.str();
+    const auto text = out.str();
+    EXPECT_NE(text.find("Predictor/live attack parameter comparison"), std::string::npos);
+    EXPECT_NE(text.find("live_chains: 1"), std::string::npos);
+    EXPECT_NE(text.find("predictor_status: not_requested"), std::string::npos);
+    EXPECT_NE(text.find("live_setpoint_pc=80085CE0"), std::string::npos);
+    EXPECT_NE(text.find("live_consumer_instr_param_0x6=1"), std::string::npos);
+    EXPECT_NE(text.find("live_worker=PcFallbackAttack_80085ce0"), std::string::npos);
+    EXPECT_NE(text.find("crit_draw_observed=false"), std::string::npos);
 }
 
 TEST(SavorPredictCheckpointTrace, SummarizesTurnOrderCheckpoints) {

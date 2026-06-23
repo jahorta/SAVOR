@@ -101,10 +101,16 @@
     <ClCompile Include="EnemyAttackSetupModel.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="EnemyEventDataModel.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="FirstBattleDataModel.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="LiveCaptureProfile.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="MovementModel.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="Main.cpp">
@@ -241,10 +247,16 @@
     <ClInclude Include="EnemyAttackSetupModel.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="EnemyEventDataModel.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="FirstBattleDataModel.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="LiveCaptureProfile.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="MovementModel.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="OutcomeCheckpointModel.h">

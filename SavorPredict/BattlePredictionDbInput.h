@@ -16,7 +16,8 @@ namespace savor::predict {
 enum class BattlePredictionSeedSource {
     Unknown,
     Override,
-    TurnJobLiveRngSeed,
+    SeedProbeUniqueSeed,
+    SeedCandidate,
     SeedCandidateFallback,
 };
 
@@ -43,6 +44,7 @@ struct BattlePredictionDbInputOptions {
     std::string profile_name = "first-battle";
     std::optional<std::uint32_t> start_seed_override;
     std::optional<int> fake_attacks_override;
+    std::optional<int> enemy_event_id;
     bool allow_seed_candidate_fallback = false;
 };
 
@@ -60,6 +62,7 @@ struct BattlePredictionDbInputMetadata {
     BattlePredictionSeedSource seed_source = BattlePredictionSeedSource::Unknown;
     int fake_attacks = 0;
     BattlePredictionFakeAttackSource fake_attack_source = BattlePredictionFakeAttackSource::Unknown;
+    std::optional<int> enemy_event_id;
     std::optional<long long> context_probe_id;
     BattlePredictionContextSource context_source = BattlePredictionContextSource::Unknown;
     std::optional<int> context_version;

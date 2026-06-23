@@ -2,6 +2,7 @@
 
 #include "BattleVisualRngModel.h"
 #include "FirstBattleDataModel.h"
+#include "MovementModel.h"
 #include "PreAiCameraModel.h"
 #include "RngCore.h"
 
@@ -83,16 +84,6 @@ int first_alive_enemy_slot(const std::vector<BattlePredictionSlotState>& slots) 
         }
     }
     return -1;
-}
-
-std::vector<int> living_side_slots(const std::vector<BattlePredictionSlotState>& slots, bool player_side) {
-    std::vector<int> result;
-    for (const auto& slot : slots) {
-        if (slot.present && slot.is_player == player_side && slot.alive) {
-            result.push_back(slot.slot);
-        }
-    }
-    return result;
 }
 
 bool has_alive_enemy(const std::vector<BattlePredictionSlotState>& slots) {
@@ -236,6 +227,37 @@ const soa::battle::ctx::BattleSlot* context_slot(
     return &context.slots_[slot];
 }
 
+std::vector<MovementSlotState> movement_slots_from_prediction_slots(
+    const std::vector<BattlePredictionSlotState>& slots,
+    const soa::battle::ctx::BattleContext& context) {
+    std::vector<MovementSlotState> result;
+    result.reserve(slots.size());
+    for (const auto& slot : slots) {
+        int width = 1;
+        int depth = 1;
+        if (const auto* source = context_slot(context, slot.slot); source != nullptr) {
+            if (source->instance.width != 0) {
+                width = source->instance.width;
+            }
+            if (source->instance.depth != 0) {
+                depth = source->instance.depth;
+            }
+        }
+        result.push_back(MovementSlotState{
+            .slot = slot.slot,
+            .present = slot.present,
+            .is_player = slot.is_player,
+            .alive = slot.alive,
+            .status_flags = slot.status_flags,
+            .movement_flags = slot.movement_flags,
+            .width = width,
+            .depth = depth,
+            .start_position = slot.start_position,
+        });
+    }
+    return result;
+}
+
 void append_event(BattlePredictionResult& result, BattlePredictionEvent event) {
     event.sequence = static_cast<int>(result.events.size()) + 1;
     result.total_draws_consumed += event.draws_consumed;
@@ -246,6 +268,394 @@ void append_event(BattlePredictionResult& result, BattlePredictionEvent event) {
         result.has_unsupported_events = true;
     }
     result.events.push_back(std::move(event));
+}
+
+std::string start_position_detail(const BattleStartPosition& position) {
+    std::ostringstream detail;
+    detail << position.combatant_name
+           << " id=" << position.combatant_id
+           << " grid_x=" << position.grid_x
+           << " grid_z=" << position.grid_z
+           << " side=" << (position.is_player ? "pc" : "enemy");
+    return detail.str();
+}
+
+void append_slot_position_if_known(
+    std::ostringstream& detail,
+    const std::vector<BattlePredictionSlotState>& slots,
+    int slot,
+    std::string_view label) {
+    const auto* state = find_slot(slots, slot);
+    if (state == nullptr || !state->start_position.has_value()) {
+        return;
+    }
+    detail << "; " << label << "_start=("
+           << state->start_position->grid_x << ","
+           << state->start_position->grid_z << ")";
+}
+
+void append_worksheet_projection_detail(
+    std::ostringstream& detail,
+    const MovementWorksheetSnapshot& worksheet) {
+    if (!worksheet.available) {
+        return;
+    }
+    if (!worksheet.source.empty()) {
+        detail << "; worksheet_source=" << worksheet.source;
+    }
+    if (worksheet.actor_grid_position.has_value()) {
+        detail << "; actor_grid=("
+               << worksheet.actor_grid_position->grid_x << ","
+               << worksheet.actor_grid_position->grid_z << ")";
+    }
+    if (worksheet.target_grid_position.has_value()) {
+        detail << "; target_grid=("
+               << worksheet.target_grid_position->grid_x << ","
+               << worksheet.target_grid_position->grid_z << ")";
+    }
+    if (worksheet.actor_raw_stage_position.has_value()
+        || worksheet.target_raw_stage_position.has_value()) {
+        detail << "; raw_stage_position=known";
+    } else {
+        detail << "; raw_stage_position=not_projected_from_alx_grid";
+    }
+    if (worksheet.dist_to_target.has_value()) {
+        detail << "; grid_distance=" << *worksheet.dist_to_target;
+    }
+    if (worksheet.path_shape_forces_fallback.has_value()) {
+        detail << "; grid_path_fallback="
+               << (*worksheet.path_shape_forces_fallback ? "true" : "false");
+    }
+}
+
+bool apply_enemy_event_start_positions(
+    BattlePredictionResult& result,
+    std::optional<int> enemy_event_id,
+    std::vector<BattlePredictionSlotState>& slots) {
+    if (!enemy_event_id.has_value()) {
+        return true;
+    }
+
+    const auto layout = enemy_event_start_positions(*enemy_event_id);
+    if (!layout.has_value()) {
+        append_event(result, {
+            .phase = "encounter_setup",
+            .label = "unsupported_enemy_event_start_positions",
+            .status = BattlePredictionEventStatus::Unsupported,
+            .detail = "no static enemyevent.csv start-position row is encoded for enemy_event_id="
+                + std::to_string(*enemy_event_id),
+        });
+        return false;
+    }
+
+    for (const auto& position : layout->positions) {
+        if (auto* slot = find_slot(slots, position.slot); slot != nullptr) {
+            slot->start_position = position;
+        }
+        if (!position.present) {
+            continue;
+        }
+        append_event(result, {
+            .phase = "encounter_setup",
+            .label = "enemy_event_start_position",
+            .status = BattlePredictionEventStatus::Exact,
+            .actor_slot = position.slot,
+            .detail = "enemy_event_id=" + std::to_string(*enemy_event_id)
+                + "; " + start_position_detail(position),
+        });
+    }
+    return true;
+}
+
+bool has_event(
+    const BattlePredictionResult& result,
+    std::string_view phase,
+    std::string_view label) {
+    return std::any_of(
+        result.events.begin(),
+        result.events.end(),
+        [&](const BattlePredictionEvent& event) {
+            return event.phase == phase && event.label == label;
+        });
+}
+
+bool has_phase_event(
+    const BattlePredictionResult& result,
+    std::string_view phase) {
+    return std::any_of(
+        result.events.begin(),
+        result.events.end(),
+        [&](const BattlePredictionEvent& event) {
+            return event.phase == phase;
+        });
+}
+
+bool has_event_with_status(
+    const BattlePredictionResult& result,
+    std::string_view phase,
+    std::string_view label,
+    BattlePredictionEventStatus status) {
+    return std::any_of(
+        result.events.begin(),
+        result.events.end(),
+        [&](const BattlePredictionEvent& event) {
+            return event.phase == phase && event.label == label && event.status == status;
+        });
+}
+
+bool has_event_status_in_phase(
+    const BattlePredictionResult& result,
+    std::string_view phase,
+    BattlePredictionEventStatus status) {
+    return std::any_of(
+        result.events.begin(),
+        result.events.end(),
+        [&](const BattlePredictionEvent& event) {
+            return event.phase == phase && event.status == status;
+        });
+}
+
+void add_validation(
+    BattlePredictionResult& result,
+    std::string scope,
+    BattlePredictionValidationStatus status,
+    std::string detail,
+    int draws_exact_through = -1) {
+    result.validation.push_back(BattlePredictionValidationItem{
+        .scope = std::move(scope),
+        .status = status,
+        .draws_exact_through = draws_exact_through,
+        .detail = std::move(detail),
+    });
+}
+
+void append_validation_statuses(BattlePredictionResult& result) {
+    result.validation.clear();
+
+    add_validation(
+        result,
+        "pre_ai",
+        BattlePredictionValidationStatus::Provisional,
+        "v1 macro contract is fake_attacks + 1 + pc_count; direct 800608DC capture remains perturbing");
+
+    if (has_event_status_in_phase(result, "encounter_setup", BattlePredictionEventStatus::Unsupported)) {
+        add_validation(
+            result,
+            "start_positions",
+            BattlePredictionValidationStatus::Unsupported,
+            "requested enemy-event start-position row is not encoded");
+    } else if (has_event(result, "encounter_setup", "enemy_event_start_position")) {
+        add_validation(
+            result,
+            "start_positions",
+            BattlePredictionValidationStatus::Exact,
+            "combatant start positions are sourced from encoded ALX 5.0.0 enemyevent.csv rows");
+    } else {
+        add_validation(
+            result,
+            "start_positions",
+            BattlePredictionValidationStatus::NotExercised,
+            "no enemy_event_id was supplied for static start-position seeding");
+    }
+
+    if (has_event_status_in_phase(result, "enemy_ai", BattlePredictionEventStatus::Unsupported)) {
+        add_validation(
+            result,
+            "soldier_ai",
+            BattlePredictionValidationStatus::Unsupported,
+            "enemy AI prediction encountered an unsupported event");
+    } else if (has_phase_event(result, "enemy_ai")) {
+        add_validation(
+            result,
+            "soldier_ai",
+            BattlePredictionValidationStatus::Validated,
+            "first-battle Soldier AI action, target, and attack-parameter draws are validated by aggregate traces");
+    } else {
+        add_validation(
+            result,
+            "soldier_ai",
+            BattlePredictionValidationStatus::NotExercised,
+            "no enemy AI events were predicted");
+    }
+
+    if (result.exact_through_turn_order) {
+        add_validation(
+            result,
+            "turn_order",
+            BattlePredictionValidationStatus::Validated,
+            "draw count and execution order are exact for the modeled queue; qsort live snapshots are still required for unresolved tie cases",
+            result.exact_draws_through_turn_order);
+    } else if (has_event_status_in_phase(result, "turn_order", BattlePredictionEventStatus::Ambiguous)) {
+        add_validation(
+            result,
+            "turn_order",
+            BattlePredictionValidationStatus::Ambiguous,
+            "turn order is ambiguous because priorities or qsort ordering were not exact",
+            result.exact_draws_through_turn_order);
+    } else {
+        add_validation(
+            result,
+            "turn_order",
+            BattlePredictionValidationStatus::Provisional,
+            "turn-order prediction did not reach the exact validation boundary",
+            result.exact_draws_through_turn_order);
+    }
+
+    if (has_event_status_in_phase(result, "movement_setup", BattlePredictionEventStatus::Unsupported)) {
+        add_validation(
+            result,
+            "movement_setup",
+            BattlePredictionValidationStatus::Unsupported,
+            "movement setup encountered an unsupported action or backend");
+    } else if (has_event_status_in_phase(result, "movement_setup", BattlePredictionEventStatus::Ambiguous)) {
+        add_validation(
+            result,
+            "movement_setup",
+            BattlePredictionValidationStatus::Ambiguous,
+            "direct/fallback movement mode requires movement worksheet/path fields that are not fully materialized yet");
+    } else if (has_phase_event(result, "movement_setup")) {
+        add_validation(
+            result,
+            "movement_setup",
+            BattlePredictionValidationStatus::Provisional,
+            "handler-level first-battle movement setup is modeled; representative live worker-selection validation remains open");
+    } else {
+        add_validation(
+            result,
+            "movement_setup",
+            BattlePredictionValidationStatus::NotExercised,
+            "no movement setup events were predicted");
+    }
+
+    if (has_event_with_status(result, "movement_setup", "worker_select", BattlePredictionEventStatus::Ambiguous)) {
+        add_validation(
+            result,
+            "movement_instr_param",
+            BattlePredictionValidationStatus::Ambiguous,
+            "final instr_param_0x6 depends on reachability/path state unavailable in the current BattleContext");
+    } else if (has_event(result, "movement_setup", "worker_select")) {
+        add_validation(
+            result,
+            "movement_instr_param",
+            BattlePredictionValidationStatus::Provisional,
+            "final instr_param_0x6 is supplied by MovementModel and feeds attack resolution");
+    } else {
+        add_validation(
+            result,
+            "movement_instr_param",
+            BattlePredictionValidationStatus::NotExercised,
+            "no attack worker selection was predicted");
+    }
+
+    if (has_event_with_status(result, "movement_setup", "pc_attack_retarget", BattlePredictionEventStatus::Ambiguous)
+        || has_event_with_status(result, "movement_setup", "enemy_attack_retarget", BattlePredictionEventStatus::Ambiguous)) {
+        add_validation(
+            result,
+            "retargeting",
+            BattlePredictionValidationStatus::Ambiguous,
+            "multi-candidate retargeting requires pathing and qsort candidate ordering beyond first-battle v1");
+    } else if (has_event(result, "movement_setup", "pc_attack_retarget")
+        || has_event(result, "movement_setup", "enemy_attack_retarget")) {
+        add_validation(
+            result,
+            "retargeting",
+            BattlePredictionValidationStatus::Validated,
+            "single living replacement target retargeting is validated as RNG-neutral for first-battle v1");
+    } else {
+        add_validation(
+            result,
+            "retargeting",
+            BattlePredictionValidationStatus::NotExercised,
+            "no invalid queued target required repair");
+    }
+
+    if (has_event(result, "death_drop", "enemy_drop")
+        || has_event(result, "death_drop", "enemy_no_drop")) {
+        add_validation(
+            result,
+            "drop",
+            BattlePredictionValidationStatus::Validated,
+            "first-battle Soldier drop row order and stop-after-success are validated for Electri Box, Moonberry, and no-drop outcomes");
+    } else {
+        add_validation(
+            result,
+            "drop",
+            BattlePredictionValidationStatus::NotExercised,
+            "no lethal enemy damage reached the drop table");
+    }
+
+    if (has_event(result, "action_visual_rng", "ambiguous_effect_source_key")) {
+        add_validation(
+            result,
+            "effect_burst",
+            BattlePredictionValidationStatus::Ambiguous,
+            "effect burst source key is ambiguous for at least one action");
+    } else if (has_event(result, "action_visual_rng", "unsupported_effect_source_key")) {
+        add_validation(
+            result,
+            "effect_burst",
+            BattlePredictionValidationStatus::Unsupported,
+            "an effect source key lacked a supported first-battle burst model");
+    } else if (has_event(result, "action_visual_rng", "combat_effect_burst")) {
+        add_validation(
+            result,
+            "effect_burst",
+            BattlePredictionValidationStatus::Validated,
+            "supported first-battle source keys 4/5 use 110 draws and observed crit key 8 uses 100 draws");
+    } else {
+        add_validation(
+            result,
+            "effect_burst",
+            BattlePredictionValidationStatus::NotExercised,
+            "no landed attack effect burst was predicted");
+    }
+
+    if (has_phase_event(result, "action_visual_rng")) {
+        add_validation(
+            result,
+            "action_source_selection",
+            BattlePredictionValidationStatus::Provisional,
+            "source keys are selected from first-battle actor/crit/counter rules; the FUN_8006782c -> FUN_8006721c live bridge remains open");
+    } else {
+        add_validation(
+            result,
+            "action_source_selection",
+            BattlePredictionValidationStatus::NotExercised,
+            "no action visual RNG source key was needed");
+    }
+
+    if (has_phase_event(result, "counter") || has_phase_event(result, "counter_follow_up")) {
+        add_validation(
+            result,
+            "counter",
+            BattlePredictionValidationStatus::Provisional,
+            "counter increment and forced follow-up model are implemented, but full live actor/target gate fields remain open");
+    } else {
+        add_validation(
+            result,
+            "counter",
+            BattlePredictionValidationStatus::NotExercised,
+            "no counter gate was reached");
+    }
+
+    BattlePredictionValidationStatus total_status = BattlePredictionValidationStatus::Provisional;
+    std::string total_detail =
+        "total draw count after turn order is provisional; trust exact_draws_through_turn_order as the current validation boundary";
+    if (result.has_unsupported_events || !result.errors.empty()) {
+        total_status = BattlePredictionValidationStatus::Unsupported;
+        total_detail =
+            "unsupported events or errors prevent total draw-count validation";
+    } else if (result.has_ambiguous_events) {
+        total_status = BattlePredictionValidationStatus::Ambiguous;
+        total_detail =
+            "ambiguous events prevent total draw-count validation";
+    }
+    add_validation(
+        result,
+        "total_draws",
+        total_status,
+        total_detail,
+        result.exact_draws_through_turn_order);
 }
 
 void advance_without_rand_values(std::uint32_t& state, int draws) {
@@ -539,75 +949,6 @@ const QueuedPredictionAction* find_action_for_slot(
     return nullptr;
 }
 
-bool target_valid_for_action(
-    const std::vector<BattlePredictionSlotState>& slots,
-    const QueuedPredictionAction& action) {
-    const auto* target = find_slot(slots, action.target_slot);
-    if (target == nullptr || !target->present || !target->alive) {
-        return false;
-    }
-    return action.enemy_owned ? target->is_player : !target->is_player;
-}
-
-bool repair_action_target_for_execution(
-    BattlePredictionResult& result,
-    const std::vector<BattlePredictionSlotState>& slots,
-    QueuedPredictionAction& action) {
-    if (target_valid_for_action(slots, action)) {
-        return true;
-    }
-
-    const int original_target = action.target_slot;
-    const auto candidates = living_side_slots(slots, action.enemy_owned);
-    if (candidates.empty()) {
-        append_event(result, {
-            .phase = "action_setup",
-            .label = "skipped_no_retarget_candidate",
-            .status = BattlePredictionEventStatus::Skipped,
-            .actor_slot = action.actor_slot,
-            .target_slot = original_target,
-            .detail = "queued target is invalid and no living replacement target exists",
-        });
-        return false;
-    }
-
-    if (candidates.size() == 1) {
-        action.target_slot = candidates.front();
-        std::ostringstream detail;
-        detail << "original_target=" << original_target
-               << "; replacement_target=" << action.target_slot
-               << "; unique living " << (action.enemy_owned ? "PC" : "enemy") << " candidate";
-        append_event(result, {
-            .phase = "action_setup",
-            .label = action.enemy_owned ? "enemy_attack_retarget" : "pc_attack_retarget",
-            .status = BattlePredictionEventStatus::Exact,
-            .actor_slot = action.actor_slot,
-            .target_slot = action.target_slot,
-            .detail = detail.str(),
-        });
-        return true;
-    }
-
-    std::ostringstream detail;
-    detail << "original_target=" << original_target << "; candidates=";
-    for (std::size_t i = 0; i < candidates.size(); ++i) {
-        if (i != 0) {
-            detail << ",";
-        }
-        detail << candidates[i];
-    }
-    detail << "; multi-candidate pathing retargeting is outside first-battle v1";
-    append_event(result, {
-        .phase = "action_setup",
-        .label = action.enemy_owned ? "ambiguous_enemy_attack_retarget" : "ambiguous_pc_attack_retarget",
-        .status = BattlePredictionEventStatus::Ambiguous,
-        .actor_slot = action.actor_slot,
-        .target_slot = original_target,
-        .detail = detail.str(),
-    });
-    return false;
-}
-
 void append_turn_order(
     BattlePredictionResult& result,
     std::uint32_t& state,
@@ -650,29 +991,108 @@ void append_turn_order(
     result.exact_draws_through_turn_order = result.total_draws_consumed;
 }
 
-void append_enemy_attack_setup(
+BattlePredictionEventStatus battle_event_status_from_movement_status(MovementSimulationStatus status);
+int movement_reachability_code(MovementReachabilityStatus status);
+
+bool append_movement_setup(
     BattlePredictionResult& result,
     std::uint32_t& state,
-    const BattlePredictionSlotState& actor) {
+    const soa::battle::ctx::BattleContext& context,
+    const std::vector<BattlePredictionSlotState>& slots,
+    QueuedPredictionAction& action) {
     const auto before = state;
-    const auto setup = simulate_enemy_attack_setup_gate(
-        state,
-        EnemyAttackSetupInputs{
-            .queued_instruction = 3,
-            .movement_flags = actor.movement_flags,
+    MovementModelInputs movement_inputs{
+        .backend = MovementBackend::HandlerLevelFirstBattle,
+        .rng_state = state,
+        .actor_slot = action.actor_slot,
+        .target_slot = action.target_slot,
+        .queued_instruction = action.attack ? 3 : (action.guard ? 4 : 0),
+        .instr_param_0x6 = action.instr_param_0x6,
+        .enemy_owned = action.enemy_owned,
+        .slots = movement_slots_from_prediction_slots(slots, context),
+    };
+    if (result.enemy_event_id == 0) {
+        movement_inputs.actor_worksheet =
+            project_enemy_event0_movement_worksheet_snapshot(movement_inputs);
+    }
+    const auto movement = simulate_first_battle_movement_setup(movement_inputs);
+    state = movement.end_state;
+
+    if (movement.target_repaired || !movement.can_execute) {
+        std::ostringstream detail;
+        detail << "original_target=" << movement.original_target_slot
+               << "; final_target=" << movement.final_target_slot;
+        if (!movement.detail.empty()) {
+            detail << "; " << movement.detail;
+        }
+        append_event(result, {
+            .phase = "movement_setup",
+            .label = action.enemy_owned ? "enemy_attack_retarget" : "pc_attack_retarget",
+            .status = battle_event_status_from_movement_status(movement.target_repair_status),
+            .actor_slot = action.actor_slot,
+            .target_slot = movement.final_target_slot,
+            .detail = detail.str(),
         });
-    state = setup.end_state;
+    }
+
+    if (movement.draws_consumed > 0) {
+        append_event(result, {
+            .phase = "movement_setup",
+            .label = "enemy_setup_draw",
+            .status = BattlePredictionEventStatus::Exact,
+            .actor_slot = action.actor_slot,
+            .target_slot = movement.final_target_slot,
+            .rng_seed_before = before,
+            .rng_seed_after = state,
+            .draws_consumed = movement.draws_consumed,
+            .rand_value = movement.setup_rand,
+            .instr_param_0x6 = movement.final_instr_param_0x6,
+            .detail = enemy_attack_setup_path_name(movement.enemy_setup_path),
+        });
+    }
+
+    if (!movement.can_execute) {
+        return false;
+    }
+
+    action.target_slot = movement.final_target_slot;
+    action.instr_param_0x6 = movement.final_instr_param_0x6;
+
+    std::ostringstream detail;
+    detail << "initial_instr_param_0x6=" << movement.initial_instr_param_0x6
+           << "; final_instr_param_0x6=" << movement.final_instr_param_0x6
+           << "; reachability=" << movement_reachability_status_name(movement.reachability);
+    append_slot_position_if_known(detail, slots, action.actor_slot, "actor");
+    append_slot_position_if_known(detail, slots, action.target_slot, "target");
+    append_worksheet_projection_detail(detail, movement_inputs.actor_worksheet);
+    if (!movement.detail.empty()) {
+        detail << "; " << movement.detail;
+    }
     append_event(result, {
-        .phase = "action_setup",
-        .label = "enemy_attack_setup_gate",
-        .status = BattlePredictionEventStatus::Exact,
-        .actor_slot = actor.slot,
-        .rng_seed_before = before,
-        .rng_seed_after = state,
-        .draws_consumed = setup.draws_consumed,
-        .rand_value = setup.setup_rand,
-        .detail = enemy_attack_setup_path_name(setup.path),
+        .phase = "movement_setup",
+        .label = "worker_select",
+        .status = battle_event_status_from_movement_status(movement.status),
+        .actor_slot = action.actor_slot,
+        .target_slot = action.target_slot,
+        .instr_param_0x6 = action.instr_param_0x6,
+        .movement_reachability = movement_reachability_code(movement.reachability),
+        .movement_worker = movement_selected_worker_name(movement.selected_worker),
+        .detail = detail.str(),
     });
+
+    for (const auto& route : movement.passive_routes) {
+        append_event(result, {
+            .phase = "movement_setup",
+            .label = "passive_route",
+            .status = battle_event_status_from_movement_status(route.status),
+            .actor_slot = action.actor_slot,
+            .target_slot = route.slot,
+            .movement_worker = movement_selected_worker_name(route.selected_worker),
+            .detail = passive_movement_route_kind_name(route.route),
+        });
+    }
+
+    return true;
 }
 
 BattlePredictionEventStatus battle_event_status_from_visual_status(BattleVisualRngStepStatus status) {
@@ -687,6 +1107,39 @@ BattlePredictionEventStatus battle_event_status_from_visual_status(BattleVisualR
         return BattlePredictionEventStatus::Unsupported;
     }
     return BattlePredictionEventStatus::Unsupported;
+}
+
+BattlePredictionEventStatus battle_event_status_from_movement_status(MovementSimulationStatus status) {
+    switch (status) {
+    case MovementSimulationStatus::Exact:
+        return BattlePredictionEventStatus::Exact;
+    case MovementSimulationStatus::Provisional:
+        return BattlePredictionEventStatus::Provisional;
+    case MovementSimulationStatus::Skipped:
+        return BattlePredictionEventStatus::Skipped;
+    case MovementSimulationStatus::Unsupported:
+        return BattlePredictionEventStatus::Unsupported;
+    case MovementSimulationStatus::Ambiguous:
+        return BattlePredictionEventStatus::Ambiguous;
+    }
+    return BattlePredictionEventStatus::Unsupported;
+}
+
+int movement_reachability_code(MovementReachabilityStatus status) {
+    switch (status) {
+    case MovementReachabilityStatus::Failed0:
+        return 0;
+    case MovementReachabilityStatus::Adjacent1:
+        return 1;
+    case MovementReachabilityStatus::AdjustedAdjacent2:
+        return 2;
+    case MovementReachabilityStatus::Path4:
+        return 4;
+    case MovementReachabilityStatus::Unknown:
+    case MovementReachabilityStatus::Ambiguous:
+        return -1;
+    }
+    return -1;
 }
 
 bool append_visual_rng_steps(
@@ -1132,12 +1585,8 @@ void append_action_execution(
         }
 
         QueuedPredictionAction resolved_action = *action;
-        if (!repair_action_target_for_execution(result, slots, resolved_action)) {
+        if (!append_movement_setup(result, state, context, slots, resolved_action)) {
             continue;
-        }
-
-        if (resolved_action.enemy_owned) {
-            append_enemy_attack_setup(result, state, *actor);
         }
 
         if (options.include_visual_rng_gap_events) {
@@ -1177,15 +1626,24 @@ BattlePredictionResult predict_battle(const BattlePredictionInput& input) {
     result.profile = input.profile;
     result.starting_rng_seed = input.starting_rng_seed;
     result.final_rng_seed = input.starting_rng_seed;
+    result.enemy_event_id = input.enemy_event_id;
 
     if (input.profile.name != "first-battle") {
         result.outcome = BattlePredictionOutcome::Unsupported;
         result.errors.push_back("unsupported battle prediction profile: " + input.profile.name);
+        append_validation_statuses(result);
         return result;
     }
 
     auto slots = make_initial_slots(input.profile, input.context, result.warnings);
     auto state = input.starting_rng_seed;
+    if (!apply_enemy_event_start_positions(result, input.enemy_event_id, slots)) {
+        result.final_rng_seed = state;
+        result.final_slots = std::move(slots);
+        result.outcome = BattlePredictionOutcome::Unsupported;
+        append_validation_statuses(result);
+        return result;
+    }
 
     const int pc_count = std::max(1, present_alive_pc_count(slots));
     append_pre_ai_events(
@@ -1225,6 +1683,8 @@ BattlePredictionResult predict_battle(const BattlePredictionInput& input) {
         result.outcome = BattlePredictionOutcome::ReachedNextTurn;
     }
 
+    append_validation_statuses(result);
+
     return result;
 }
 
@@ -1250,17 +1710,46 @@ const char* battle_prediction_event_status_name(BattlePredictionEventStatus stat
     return "Unsupported";
 }
 
+const char* battle_prediction_validation_status_name(BattlePredictionValidationStatus status) {
+    switch (status) {
+    case BattlePredictionValidationStatus::Exact: return "Exact";
+    case BattlePredictionValidationStatus::Validated: return "Validated";
+    case BattlePredictionValidationStatus::Provisional: return "Provisional";
+    case BattlePredictionValidationStatus::NotExercised: return "NotExercised";
+    case BattlePredictionValidationStatus::Unsupported: return "Unsupported";
+    case BattlePredictionValidationStatus::Ambiguous: return "Ambiguous";
+    }
+    return "Unsupported";
+}
+
 void write_battle_prediction_text(const BattlePredictionResult& result, std::ostream& out) {
     out << "SavorPredict predict-battle\n";
     out << "  profile: " << result.profile.name << "\n";
     out << "  outcome: " << battle_prediction_outcome_name(result.outcome) << "\n";
     out << "  start_seed: " << result.starting_rng_seed << " ("
         << hex_seed(result.starting_rng_seed) << ")\n";
+    if (result.enemy_event_id.has_value()) {
+        out << "  enemy_event_id: " << *result.enemy_event_id << "\n";
+    }
     out << "  final_seed: " << result.final_rng_seed << " ("
         << hex_seed(result.final_rng_seed) << ")\n";
     out << "  total_draws_consumed: " << result.total_draws_consumed << "\n";
     out << "  exact_through_turn_order: " << (result.exact_through_turn_order ? "true" : "false") << "\n";
     out << "  exact_draws_through_turn_order: " << result.exact_draws_through_turn_order << "\n";
+    if (!result.validation.empty()) {
+        out << "  validation:\n";
+        for (const auto& item : result.validation) {
+            out << "    - " << item.scope
+                << ": " << battle_prediction_validation_status_name(item.status);
+            if (item.draws_exact_through >= 0) {
+                out << " draws_exact_through=" << item.draws_exact_through;
+            }
+            if (!item.detail.empty()) {
+                out << " - " << item.detail;
+            }
+            out << "\n";
+        }
+    }
     if (!result.warnings.empty()) {
         out << "  warnings:\n";
         for (const auto& warning : result.warnings) {
@@ -1301,6 +1790,15 @@ void write_battle_prediction_text(const BattlePredictionResult& result, std::ost
         if (event.effect_source_key.has_value()) {
             out << " effect_source_key=" << *event.effect_source_key;
         }
+        if (event.instr_param_0x6.has_value()) {
+            out << " instr_param_0x6=" << *event.instr_param_0x6;
+        }
+        if (event.movement_reachability.has_value()) {
+            out << " movement_reachability=" << *event.movement_reachability;
+        }
+        if (!event.movement_worker.empty()) {
+            out << " movement_worker=" << event.movement_worker;
+        }
         if (event.item_id.has_value()) {
             out << " item_id=" << *event.item_id
                 << " amount=" << event.amount.value_or(0);
@@ -1318,6 +1816,9 @@ void write_battle_prediction_json(const BattlePredictionResult& result, std::ost
     out << "  \"outcome\": \"" << battle_prediction_outcome_name(result.outcome) << "\",\n";
     out << "  \"starting_rng_seed\": " << result.starting_rng_seed << ",\n";
     out << "  \"starting_rng_seed_hex\": \"" << hex_seed(result.starting_rng_seed) << "\",\n";
+    if (result.enemy_event_id.has_value()) {
+        out << "  \"enemy_event_id\": " << *result.enemy_event_id << ",\n";
+    }
     out << "  \"final_rng_seed\": " << result.final_rng_seed << ",\n";
     out << "  \"final_rng_seed_hex\": \"" << hex_seed(result.final_rng_seed) << "\",\n";
     out << "  \"total_draws_consumed\": " << result.total_draws_consumed << ",\n";
@@ -1325,6 +1826,23 @@ void write_battle_prediction_json(const BattlePredictionResult& result, std::ost
     out << "  \"exact_draws_through_turn_order\": " << result.exact_draws_through_turn_order << ",\n";
     out << "  \"has_ambiguous_events\": " << (result.has_ambiguous_events ? "true" : "false") << ",\n";
     out << "  \"has_unsupported_events\": " << (result.has_unsupported_events ? "true" : "false") << ",\n";
+    out << "  \"validation\": [\n";
+    for (std::size_t i = 0; i < result.validation.size(); ++i) {
+        const auto& item = result.validation[i];
+        out << "    {";
+        out << "\"scope\": \"" << json_escape(item.scope) << "\"";
+        out << ", \"status\": \"" << battle_prediction_validation_status_name(item.status) << "\"";
+        if (item.draws_exact_through >= 0) {
+            out << ", \"draws_exact_through\": " << item.draws_exact_through;
+        }
+        out << ", \"detail\": \"" << json_escape(item.detail) << "\"";
+        out << "}";
+        if (i + 1 != result.validation.size()) {
+            out << ",";
+        }
+        out << "\n";
+    }
+    out << "  ],\n";
     out << "  \"warnings\": [";
     for (std::size_t i = 0; i < result.warnings.size(); ++i) {
         if (i != 0) {
@@ -1377,6 +1895,15 @@ void write_battle_prediction_json(const BattlePredictionResult& result, std::ost
         }
         if (event.effect_source_key.has_value()) {
             out << ", \"effect_source_key\": " << *event.effect_source_key;
+        }
+        if (event.instr_param_0x6.has_value()) {
+            out << ", \"instr_param_0x6\": " << *event.instr_param_0x6;
+        }
+        if (event.movement_reachability.has_value()) {
+            out << ", \"movement_reachability\": " << *event.movement_reachability;
+        }
+        if (!event.movement_worker.empty()) {
+            out << ", \"movement_worker\": \"" << json_escape(event.movement_worker) << "\"";
         }
         if (event.item_id.has_value()) {
             out << ", \"item_id\": " << *event.item_id;

@@ -118,6 +118,18 @@ std::optional<SeedProbeUniqueSeedRow> QueuedAnalysisDb::GetSeedProbeUniqueSeed(s
         std::nullopt);
 }
 
+std::optional<SeedProbeUniqueSeedRow> QueuedAnalysisDb::FindSeedProbeUniqueSeedForEntrySavestateInputFrame(
+    std::int64_t entry_savestate_id,
+    std::int64_t input_frame_id) const {
+    return ExecuteRead<std::optional<SeedProbeUniqueSeedRow>>(
+        [this, entry_savestate_id, input_frame_id]() {
+            return inner_ != nullptr
+                ? inner_->FindSeedProbeUniqueSeedForEntrySavestateInputFrame(entry_savestate_id, input_frame_id)
+                : std::nullopt;
+        },
+        std::nullopt);
+}
+
 std::optional<AnalysisInputSetFrameRow> QueuedAnalysisDb::GetAnalysisInputFrame(std::int64_t input_frame_id) const {
     return ExecuteRead<std::optional<AnalysisInputSetFrameRow>>(
         [this, input_frame_id]() {

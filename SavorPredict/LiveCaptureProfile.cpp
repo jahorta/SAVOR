@@ -12,6 +12,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <vector>
 
 namespace savor::predict {
@@ -462,12 +463,235 @@ std::vector<std::string_view> action_view_category2_gate_samples()
     };
 }
 
+std::vector<std::string_view> first_battle_queued_instruction_samples()
+{
+    return {
+        "slot0_instruction_0x0:0x80309174:u32",
+        "slot0_target_0x4:0x80309178:u8",
+        "slot0_instr_param_0x6:0x8030917A:u16",
+        "slot0_attack_result_0xc:0x80309180:u8",
+        "slot1_instruction_0x0:0x80309194:u32",
+        "slot1_target_0x4:0x80309198:u8",
+        "slot1_instr_param_0x6:0x8030919A:u16",
+        "slot1_attack_result_0xc:0x803091A0:u8",
+        "slot4_instruction_0x0:0x803091F4:u32",
+        "slot4_target_0x4:0x803091F8:u8",
+        "slot4_instr_param_0x6:0x803091FA:u16",
+        "slot4_attack_result_0xc:0x80309200:u8",
+        "slot5_instruction_0x0:0x80309214:u32",
+        "slot5_target_0x4:0x80309218:u8",
+        "slot5_instr_param_0x6:0x8030921A:u16",
+        "slot5_attack_result_0xc:0x80309220:u8",
+    };
+}
+
+std::vector<std::string_view> setup_action_gprs()
+{
+    return {
+        "actor_slot:29",
+        "handler_pc:31",
+    };
+}
+
+std::vector<std::string_view> pc_handler_gprs()
+{
+    return {
+        "actor_slot:30",
+        "target_slot:31",
+    };
+}
+
+std::vector<std::string_view> pc_movement_helper_gprs()
+{
+    return {
+        "actor_slot:30",
+        "target_slot:31",
+        "helper_result:3",
+        "selected_worker_pc:0",
+    };
+}
+
+std::vector<std::string_view> enemy_handler_gprs()
+{
+    return {
+        "actor_slot:30",
+        "target_slot:31",
+    };
+}
+
+std::vector<std::string_view> enemy_setup_gprs()
+{
+    return {
+        "actor_slot:30",
+        "target_slot:31",
+        "setup_rand:3",
+    };
+}
+
+std::vector<std::string_view> attack_result_gate_gprs()
+{
+    return {
+        "instr_param_0x6:0",
+        "r3_return_or_arg:3",
+        "attack_result:26",
+        "active_slot:28",
+        "r29_attack_context:29",
+        "target_slot_word:31",
+    };
+}
+
+std::vector<std::string_view> attack_result_rng_gprs()
+{
+    return {
+        "r0_instr_param_candidate:0",
+        "r3_return_or_arg:3",
+        "attack_result:26",
+        "active_slot:28",
+        "r29_attack_context:29",
+        "target_slot_word:31",
+    };
+}
+
 std::vector<std::string_view> concat(
     std::vector<std::string_view> lhs,
     const std::vector<std::string_view>& rhs)
 {
     lhs.insert(lhs.end(), rhs.begin(), rhs.end());
     return lhs;
+}
+
+void write_predictor_validation_rng_checkpoint(
+    std::ostringstream& out,
+    std::string_view pc,
+    std::string_view owner)
+{
+    if (pc == "800513D4") {
+        write_checkpoint(
+            out,
+            section_id(std::string(owner), std::string(pc)),
+            pc,
+            owner,
+            "UpdateActionViewRecord",
+            owner,
+            true,
+            action_view_globals(),
+            action_view_update_gprs(),
+            concat(action_view_payload_from_r3_samples(), action_view_worksheet_from_r31_samples()));
+    } else if (pc == "80052BF0") {
+        write_checkpoint(
+            out,
+            section_id(std::string(owner), std::string(pc)),
+            pc,
+            owner,
+            "FUN_80052b24",
+            owner,
+            true,
+            {},
+            {"r30_worksheet:30", "r31_target_buffer:31"},
+            action_view_mode0e_rng_samples());
+    } else if (pc == "8008BC68") {
+        write_checkpoint(
+            out,
+            section_id(std::string(owner), std::string(pc)),
+            pc,
+            owner,
+            "Battle::HandleECInst_8008b9e0",
+            "enemy_setup",
+            true,
+            first_battle_queued_instruction_samples(),
+            enemy_setup_gprs());
+    } else if (pc == "80010BDC") {
+        write_checkpoint(
+            out,
+            section_id(std::string(owner), std::string(pc)),
+            pc,
+            owner,
+            "getAttackResult_80010b8c",
+            "hit",
+            true,
+            first_battle_queued_instruction_samples(),
+            attack_result_rng_gprs());
+    } else if (pc == "80010C44") {
+        write_checkpoint(
+            out,
+            section_id(std::string(owner), std::string(pc)),
+            pc,
+            owner,
+            "getAttackResult_80010b8c",
+            "crit",
+            true,
+            first_battle_queued_instruction_samples(),
+            attack_result_rng_gprs());
+    } else if (pc == "8002BAD8") {
+        write_checkpoint(
+            out,
+            section_id(std::string(owner), std::string(pc)),
+            pc,
+            owner,
+            "enemyDropItem_8002ba8c",
+            "row",
+            true,
+            first_battle_enemy_id_samples(),
+            drop_rng_gprs(),
+            drop_rng_samples());
+    } else if (is_combat_effect_burst_pc(pc)) {
+        write_checkpoint(
+            out,
+            section_id(std::string(owner), std::string(pc)),
+            pc,
+            owner,
+            "FUN_80042b10",
+            owner,
+            true,
+            {},
+            {
+                "r27_child_effect_buffer:27",
+                "r28_loop_index:28",
+                "r29_effect_buffer:29",
+                "r30_combatant_worksheet:30",
+            },
+            combat_effect_burst_samples());
+    } else if (is_effect_emitter_spawn_pc(pc)) {
+        write_checkpoint(
+            out,
+            section_id(std::string(owner), std::string(pc)),
+            pc,
+            owner,
+            "FUN_80041e64",
+            owner,
+            true,
+            {},
+            {
+                "r25_outer_index:25",
+                "r26_emitter_buffer:26",
+                "r4_source_record_candidate:4",
+            },
+            effect_emitter_spawn_samples());
+    } else if (is_effect_particle_tick_pc(pc)) {
+        write_checkpoint(
+            out,
+            section_id(std::string(owner), std::string(pc)),
+            pc,
+            owner,
+            "FUN_800422d0",
+            owner,
+            true,
+            {},
+            {
+                "r30_particle_payload:30",
+                "r31_particle_state:31",
+            },
+            effect_particle_tick_samples());
+    } else {
+        write_checkpoint(
+            out,
+            section_id(std::string(owner), std::string(pc)),
+            pc,
+            owner,
+            "RNG",
+            owner,
+            true);
+    }
 }
 
 } // namespace
@@ -816,6 +1040,384 @@ std::string build_first_battle_capture_profile_ini()
     return out.str();
 }
 
+std::string build_first_battle_predictor_validation_profile_ini()
+{
+    std::ostringstream out;
+    out << "[profile]\n";
+    out << "name=first_battle_predictor_validation\n";
+    out << "schema_version=1\n";
+    out << "memory=rng_seed_before:" << hex_u32(addr::AddrRegistry::base(addr::core::RNG_SEED)) << ":u32\n\n";
+
+    for (const auto& [pc, owner] : known_rng_callsite_owners()) {
+        if (is_excluded_from_default_live_profile(pc)) {
+            continue;
+        }
+        write_predictor_validation_rng_checkpoint(out, pc, owner);
+    }
+
+    write_checkpoint(
+        out,
+        "setup_action_800708C0",
+        "800708C0",
+        "setup_action",
+        "Battle::Run::setupAction_800708c0",
+        "setup_action",
+        false,
+        first_battle_queued_instruction_samples(),
+        setup_action_gprs());
+
+    write_checkpoint(
+        out,
+        "pc_handler_entry_80086C68",
+        "80086C68",
+        "pc_handler",
+        "Battle::HandlePCInst_80086c68",
+        "pc_handler",
+        false,
+        first_battle_queued_instruction_samples(),
+        pc_handler_gprs());
+
+    write_checkpoint(
+        out,
+        "pc_attack_param_initial_zero_80086D18",
+        "80086D18",
+        "pc_attack_param_initial_zero",
+        "Battle::HandlePCInst_80086c68",
+        "instr_param_set",
+        false,
+        first_battle_queued_instruction_samples(),
+        pc_handler_gprs());
+
+    write_checkpoint(
+        out,
+        "pc_attack_helper_80083728_return_80085670",
+        "80085670",
+        "pc_attack_helper_80083728_return",
+        "FUN_800855ac",
+        "movement_helper_return",
+        false,
+        first_battle_queued_instruction_samples(),
+        pc_movement_helper_gprs());
+
+    write_checkpoint(
+        out,
+        "pc_attack_helper_80082340_return_80085680",
+        "80085680",
+        "pc_attack_helper_80082340_return",
+        "FUN_800855ac",
+        "movement_distance_return",
+        false,
+        first_battle_queued_instruction_samples(),
+        pc_movement_helper_gprs());
+
+    for (const auto& [pc, id] : {
+             std::pair<std::string_view, std::string_view>{"80085608", "pc_attack_fallback_param_set_a_80085608"},
+             std::pair<std::string_view, std::string_view>{"800856C4", "pc_attack_fallback_param_set_b_800856C4"},
+             std::pair<std::string_view, std::string_view>{"800856F8", "pc_attack_fallback_param_set_c_800856F8"},
+         }) {
+        write_checkpoint(
+            out,
+            id,
+            pc,
+            "pc_attack_fallback_param_set",
+            "FUN_800855ac",
+            "instr_param_set",
+            false,
+            first_battle_queued_instruction_samples(),
+            pc_movement_helper_gprs());
+    }
+
+    write_checkpoint(
+        out,
+        "pc_attack_closest_combatant_return_800856D8",
+        "800856D8",
+        "pc_attack_closest_combatant_return",
+        "FUN_800855ac",
+        "retarget_helper_return",
+        false,
+        first_battle_queued_instruction_samples(),
+        pc_movement_helper_gprs());
+
+    write_checkpoint(
+        out,
+        "pc_check_target_adjacent_return_80086E34",
+        "80086E34",
+        "pc_check_target_adjacent_return",
+        "Battle::HandlePCInst_80086c68",
+        "target_adjacent",
+        false,
+        first_battle_queued_instruction_samples(),
+        pc_handler_gprs());
+
+    write_checkpoint(
+        out,
+        "pc_attack_param_reset_zero_80086E4C",
+        "80086E4C",
+        "pc_attack_param_reset_zero",
+        "Battle::HandlePCInst_80086c68",
+        "instr_param_set",
+        false,
+        first_battle_queued_instruction_samples(),
+        pc_handler_gprs());
+
+    write_checkpoint(
+        out,
+        "pc_direct_attack_worker_call_80086F48",
+        "80086F48",
+        "pc_direct_attack_worker_call",
+        "Battle::HandlePCInst_80086c68",
+        "worker_select",
+        false,
+        first_battle_queued_instruction_samples(),
+        pc_handler_gprs());
+
+    write_checkpoint(
+        out,
+        "pc_fallback_attack_worker_entry_80085CE0",
+        "80085CE0",
+        "pc_fallback_attack_worker_entry",
+        "FUN_80085ce0",
+        "worker_select",
+        false,
+        first_battle_queued_instruction_samples(),
+        pc_handler_gprs());
+
+    write_checkpoint(
+        out,
+        "enemy_handler_entry_8008B9E0",
+        "8008B9E0",
+        "enemy_handler",
+        "Battle::HandleECInst_8008b9e0",
+        "enemy_handler",
+        false,
+        first_battle_queued_instruction_samples(),
+        enemy_handler_gprs());
+
+    for (const auto& [pc, id, checkpoint] : {
+             std::tuple<std::string_view, std::string_view, std::string_view>{"8008A660", "soldier_attack_param_store_a_8008A660", "soldier_ai_instr_param_set"},
+             std::tuple<std::string_view, std::string_view, std::string_view>{"8008A678", "soldier_attack_param_store_b_8008A678", "soldier_ai_instr_param_set"},
+             std::tuple<std::string_view, std::string_view, std::string_view>{"8008A690", "soldier_attack_param_store_c_8008A690", "soldier_ai_instr_param_set"},
+             std::tuple<std::string_view, std::string_view, std::string_view>{"8008BCB0", "enemy_helper_8008a174_return_8008BCB0", "movement_helper_return"},
+             std::tuple<std::string_view, std::string_view, std::string_view>{"8008BCCC", "enemy_helper_80082340_return_8008BCCC", "movement_distance_return"},
+             std::tuple<std::string_view, std::string_view, std::string_view>{"8008BD0C", "enemy_helper_8008a174_return_8008BD0C", "movement_helper_return"},
+             std::tuple<std::string_view, std::string_view, std::string_view>{"8008BD24", "enemy_helper_8008a280_return_8008BD24", "movement_scope_return"},
+             std::tuple<std::string_view, std::string_view, std::string_view>{"8008BD40", "enemy_check_target_adjacent_return_8008BD40", "target_adjacent"},
+             std::tuple<std::string_view, std::string_view, std::string_view>{"8008BD64", "enemy_helper_8008a174_return_8008BD64", "movement_helper_return"},
+             std::tuple<std::string_view, std::string_view, std::string_view>{"8008BE4C", "enemy_helper_8008a280_return_8008BE4C", "movement_scope_return"},
+             std::tuple<std::string_view, std::string_view, std::string_view>{"8008BDAC", "enemy_direct_worker_select_8008BDAC", "worker_select"},
+             std::tuple<std::string_view, std::string_view, std::string_view>{"8008BDDC", "enemy_fallback_worker_select_8008BDDC", "worker_select"},
+         }) {
+        write_checkpoint(
+            out,
+            id,
+            pc,
+            id,
+            "Battle::HandleECInst_8008b9e0",
+            checkpoint,
+            false,
+            first_battle_queued_instruction_samples(),
+            enemy_handler_gprs());
+    }
+
+    write_checkpoint(
+        out,
+        "attack_resolution_begin_80081B94",
+        "80081B94",
+        "attack_resolution_begin",
+        "Battle::AtkMethods::performAttack_80081b94",
+        "attack_begin",
+        false,
+        first_battle_queued_instruction_samples(),
+        attack_resolution_begin_gprs());
+
+    write_checkpoint(
+        out,
+        "attack_result_return_80081BE8",
+        "80081BE8",
+        "attack_result_return",
+        "Battle::AtkMethods::performAttack_80081b94",
+        "attack_result_return",
+        false,
+        first_battle_queued_instruction_samples(),
+        {"attack_result:3", "actor_slot:4", "target_slot:29"});
+
+    write_checkpoint(
+        out,
+        "attack_result_write_80081C48",
+        "80081C48",
+        "attack_result_write",
+        "Battle::AtkMethods::performAttack_80081b94",
+        "attack_result_write",
+        false,
+        first_battle_queued_instruction_samples(),
+        {"attack_result:0", "actor_slot:4", "target_slot:29"});
+
+    write_checkpoint(
+        out,
+        "crit_gate_branch_80010C40",
+        "80010C40",
+        "crit_gate_branch",
+        "getAttackResult_80010b8c",
+        "crit_gate",
+        false,
+        first_battle_queued_instruction_samples(),
+        attack_result_gate_gprs());
+
+    write_checkpoint(
+        out,
+        "crit_gate_return_80010CA4",
+        "80010CA4",
+        "crit_gate_return",
+        "getAttackResult_80010b8c",
+        "crit_gate_return",
+        false,
+        first_battle_queued_instruction_samples(),
+        attack_result_gate_gprs());
+
+    write_checkpoint(
+        out,
+        "damage_apply_death_call_8002DD14",
+        "8002DD14",
+        "damage_apply_death_call",
+        "zzDealDamage_8002dc14",
+        "damage_apply",
+        false,
+        concat(first_battle_enemy_id_samples(), first_battle_queued_instruction_samples()),
+        damage_apply_gprs());
+
+    write_checkpoint(
+        out,
+        "death_handler_hp_gate_8002BC80",
+        "8002BC80",
+        "death_handler_hp_gate",
+        "HandleCombatantDeath_8002bc4c",
+        "death_handler_gate",
+        false,
+        first_battle_enemy_id_samples(),
+        death_handler_gate_gprs());
+
+    write_checkpoint(
+        out,
+        "enemy_drop_call_8002BD20",
+        "8002BD20",
+        "enemy_drop_call",
+        "HandleCombatantDeath_8002bc4c",
+        "enemy_drop_call",
+        false,
+        first_battle_enemy_id_samples(),
+        enemy_drop_call_gprs());
+
+    write_checkpoint(
+        out,
+        "enemy_drop_entry_8002BA8C",
+        "8002BA8C",
+        "enemy_drop_entry",
+        "enemyDropItem_8002ba8c",
+        "enemy_drop_entry",
+        false,
+        first_battle_enemy_id_samples(),
+        drop_entry_gprs());
+
+    write_checkpoint(
+        out,
+        "counter_gate_800819D0",
+        "800819D0",
+        "counter_gate",
+        "Battle::AtkMethods::shouldCounter_800819d0",
+        "counter_gate",
+        false,
+        first_battle_queued_instruction_samples(),
+        {"attacker_slot:3", "target_slot:4"});
+
+    write_checkpoint(
+        out,
+        "counter_followup_dispatch_80082134",
+        "80082134",
+        "counter_followup_dispatch",
+        "Battle::AtkMethods::setupTurnAction_80082134",
+        "counter_followup_dispatch",
+        false,
+        first_battle_queued_instruction_samples(),
+        {"actor_slot:3", "target_slot:4"});
+
+    write_checkpoint(
+        out,
+        "counter_followup_action_80081DE0",
+        "80081DE0",
+        "counter_followup_action",
+        "Battle::AtkMethods::performAttack_80081b94",
+        "counter_followup_action",
+        false,
+        first_battle_queued_instruction_samples(),
+        {"actor_slot:3", "target_slot:4"});
+
+    write_checkpoint(
+        out,
+        "action_source_selection_80067BD0",
+        "80067BD0",
+        "action_source_selection",
+        "FUN_8006782c",
+        "source_selection",
+        false,
+        action_view_globals(),
+        {"r3_action_source_state:3"},
+        action_source_selection_samples());
+
+    write_checkpoint(
+        out,
+        "action_source_field6_bridge_8006778C",
+        "8006778C",
+        "action_source_field6_bridge",
+        "FUN_8006721c",
+        "action_source",
+        false,
+        {},
+        {
+            "selected_row_index_return:3",
+            "r29_source_instruction:29",
+            "r30_actor_instruction:30",
+        },
+        action_source_bridge_samples());
+
+    write_checkpoint(
+        out,
+        "action_view_category2_query_call_8001331C",
+        "8001331C",
+        "action_view_category2_query_call",
+        "FUN_80012f58",
+        "action_view_query",
+        false,
+        action_view_globals(),
+        action_view_category2_gate_gprs(),
+        action_view_category2_gate_samples());
+
+    write_checkpoint(
+        out,
+        "action_view_category2_query_result_80013320",
+        "80013320",
+        "action_view_category2_query_result",
+        "FUN_80012f58",
+        "action_view_query_result",
+        false,
+        action_view_globals(),
+        action_view_category2_result_gprs(),
+        action_view_category2_gate_samples());
+
+    write_checkpoint(
+        out,
+        "action_view_category2_spawn_80013334",
+        "80013334",
+        "action_view_category2_spawn",
+        "FUN_80053f38",
+        "action_view_spawn",
+        false,
+        action_view_globals(),
+        action_view_category2_spawn_gprs(),
+        action_view_category2_gate_samples());
+
+    return out.str();
+}
+
 int write_first_battle_capture_profile(
     const std::filesystem::path& output_path,
     std::ostream& out,
@@ -846,6 +1448,40 @@ int write_first_battle_capture_profile(
         return 1;
     }
     out << "Wrote first-battle capture profile: " << output_path.string() << "\n";
+    return 0;
+}
+
+int write_first_battle_predictor_validation_profile(
+    const std::filesystem::path& output_path,
+    std::ostream& out,
+    std::ostream& err)
+{
+    if (output_path.empty()) {
+        err << "write-first-battle-predictor-validation-profile requires --output PATH.\n";
+        return 2;
+    }
+    if (const auto parent = output_path.parent_path(); !parent.empty()) {
+        std::error_code ec;
+        std::filesystem::create_directories(parent, ec);
+        if (ec) {
+            err << "Failed to create output directory: " << ec.message() << "\n";
+            return 1;
+        }
+    }
+
+    std::ofstream file(output_path, std::ios::binary | std::ios::trunc);
+    if (!file.is_open()) {
+        err << "Failed to open output profile: " << output_path.string() << "\n";
+        return 1;
+    }
+    const auto text = build_first_battle_predictor_validation_profile_ini();
+    file.write(text.data(), static_cast<std::streamsize>(text.size()));
+    if (!file.good()) {
+        err << "Failed to write output profile: " << output_path.string() << "\n";
+        return 1;
+    }
+    out << "Wrote first-battle predictor-validation capture profile: "
+        << output_path.string() << "\n";
     return 0;
 }
 

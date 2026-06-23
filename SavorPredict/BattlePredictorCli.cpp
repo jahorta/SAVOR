@@ -2,6 +2,7 @@
 
 #include "BattlePredictionDbInput.h"
 #include "BattleJobRunOptions.h"
+#include "EnemyEventDataModel.h"
 
 #include <Core/Input/SoaBattle/BattleCommandCodec.h>
 #include <Core/Memory/Soa/Battle/BattleContextCodec.h>
@@ -179,6 +180,7 @@ bool build_input_from_context_file(
     }
 
     input.starting_rng_seed = *options.start_seed;
+    input.enemy_event_id = options.enemy_event_id;
     input.turn_plan.fake_attack_count = static_cast<std::uint32_t>(*options.fake_attacks);
     input.turn_plan.commands = *commands;
     return true;
@@ -217,6 +219,13 @@ BattlePredictorCliParseResult parse_predict_battle_tokens(const std::vector<std:
         } else if (arg == "--start-seed-list") {
             if (require_value(args, i, arg, value, result.errors)) {
                 result.options.start_seed_list = value;
+            }
+        } else if (arg == "--enemy-event-id") {
+            int parsed = 0;
+            if (require_value(args, i, arg, value, result.errors) && parse_int(value, parsed) && parsed >= 0) {
+                result.options.enemy_event_id = parsed;
+            } else {
+                result.errors.push_back("--enemy-event-id requires a non-negative integer.");
             }
         } else if (arg == "--turn-job-id") {
             long long parsed = 0;
@@ -292,6 +301,10 @@ std::vector<std::string> validate_predict_battle_options(const BattlePredictorCl
     if (has_start_seed_list && !has_db_selector) {
         errors.push_back("--start-seed-list requires --turn-job-id or --exec-job-id.");
     }
+    if (options.enemy_event_id.has_value()
+        && !enemy_event_start_positions(*options.enemy_event_id).has_value()) {
+        errors.push_back("Unsupported --enemy-event-id: " + std::to_string(*options.enemy_event_id));
+    }
     if (has_db_selector && is_mutable_debug_db_root(options.db_root)) {
         errors.push_back("Refusing to use D:/SoaSimDBDebug for prediction; use D:/SavorPredictDB.");
     }
@@ -337,6 +350,7 @@ int run_predict_battle(const BattlePredictorCliOptions& options, std::ostream& o
     db_options.selector.exec_job_id = options.exec_job_id;
     db_options.profile_name = options.profile_name;
     db_options.fake_attacks_override = options.fake_attacks;
+    db_options.enemy_event_id = options.enemy_event_id;
     db_options.allow_seed_candidate_fallback = options.allow_seed_candidate_fallback;
 
     if (!options.start_seed_list.empty()) {

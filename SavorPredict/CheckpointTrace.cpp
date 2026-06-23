@@ -6,6 +6,7 @@
 #include "ActionViewGateCheckpointModel.h"
 #include "AttackDamageValueCheckpointModel.h"
 #include "AttackResolutionCheckpointModel.h"
+#include "BattlePredictionDbInput.h"
 #include "CritGateCheckpointModel.h"
 #include "CounterCheckpointModel.h"
 #include "DropCheckpointModel.h"
@@ -21,6 +22,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <iomanip>
+#include <initializer_list>
 #include <iostream>
 #include <sstream>
 
@@ -402,6 +404,570 @@ std::map<std::string, int> count_known_rng_owners(const std::vector<CheckpointEv
         }
     }
     return counts;
+}
+
+std::optional<int> parse_event_field_int(
+    const CheckpointEvent& event,
+    const std::string& field_name) {
+    const auto found = event.fields.find(field_name);
+    if (found == event.fields.end()) {
+        return std::nullopt;
+    }
+    int parsed = 0;
+    if (!parse_int_value(found->second, parsed)) {
+        return std::nullopt;
+    }
+    return parsed;
+}
+
+std::optional<int> parse_first_event_field_int(
+    const CheckpointEvent& event,
+    std::initializer_list<const char*> field_names) {
+    for (const auto* field_name : field_names) {
+        if (const auto value = parse_event_field_int(event, field_name); value.has_value()) {
+            return value;
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<std::string> parse_first_event_field_pc(
+    const CheckpointEvent& event,
+    std::initializer_list<const char*> field_names) {
+    for (const auto* field_name : field_names) {
+        const auto found = event.fields.find(field_name);
+        if (found != event.fields.end() && !found->second.empty()) {
+            return normalize_pc(found->second);
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<int> parse_slot_field_int(
+    const CheckpointEvent& event,
+    std::optional<int> slot,
+    std::string_view suffix) {
+    if (!slot.has_value()) {
+        return std::nullopt;
+    }
+    const auto field_name = "slot" + std::to_string(*slot) + std::string(suffix);
+    return parse_event_field_int(event, field_name);
+}
+
+std::optional<int> actor_slot_from_checkpoint_event(const CheckpointEvent& event) {
+    if (event.active_slot.has_value()) {
+        return event.active_slot;
+    }
+    return parse_first_event_field_int(event, {
+        "active_slot",
+        "actor_slot",
+        "actor_slot_arg",
+        "attacker_slot",
+        "slot",
+    });
+}
+
+std::optional<int> target_slot_from_checkpoint_event(const CheckpointEvent& event) {
+    if (event.target_slot.has_value()) {
+        return event.target_slot;
+    }
+    return parse_first_event_field_int(event, {
+        "target_slot",
+        "target_slot_arg",
+        "target",
+    });
+}
+
+std::string worker_name_for_checkpoint_pc(const CheckpointEvent& event) {
+    if (event.pc == "80086F48") {
+        return "PcDirectAttack_80086308";
+    }
+    if (event.pc == "80085CE0") {
+        return "PcFallbackAttack_80085ce0";
+    }
+    if (event.pc == "8008BDAC") {
+        return "EnemyDirectAttack_80087f6c";
+    }
+    if (event.pc == "8008BDDC") {
+        return "EnemyFallbackAttack_80087844";
+    }
+    if (const auto worker_pc = parse_first_event_field_pc(event, {
+            "selected_worker_pc",
+            "worker_pc",
+            "next_function_pc",
+        }); worker_pc.has_value()) {
+        if (*worker_pc == "80086308") {
+            return "PcDirectAttack_80086308";
+        }
+        if (*worker_pc == "80085CE0") {
+            return "PcFallbackAttack_80085ce0";
+        }
+        if (*worker_pc == "80087F6C") {
+            return "EnemyDirectAttack_80087f6c";
+        }
+        if (*worker_pc == "80087844") {
+            return "EnemyFallbackAttack_80087844";
+        }
+        return *worker_pc;
+    }
+    return {};
+}
+
+std::optional<int> inferred_param_for_checkpoint_pc(const CheckpointEvent& event) {
+    if (event.pc == "80086D18" || event.pc == "80086E4C" || event.pc == "8008BDAC") {
+        return 0;
+    }
+    if (event.pc == "80085608" || event.pc == "800856C4"
+        || event.pc == "800856F8" || event.pc == "8008BDDC"
+        || event.pc == "80085CE0") {
+        return 1;
+    }
+    return std::nullopt;
+}
+
+std::optional<int> instr_param_from_checkpoint_event(
+    const CheckpointEvent& event,
+    std::optional<int> actor_slot) {
+    if (const auto value = parse_first_event_field_int(event, {
+            "instr_param_0x6",
+            "r0_instr_param_0x6",
+            "final_instr_param_0x6",
+            "instr_param_after",
+            "instr_param",
+            "param_0x6",
+        }); value.has_value()) {
+        return value;
+    }
+    if (const auto value = parse_slot_field_int(event, actor_slot, "_instr_param_0x6");
+        value.has_value()) {
+        return value;
+    }
+    return inferred_param_for_checkpoint_pc(event);
+}
+
+bool is_instr_param_setpoint(const CheckpointEvent& event) {
+    return event.checkpoint == "instr_param_set"
+        || event.checkpoint == "worker_select"
+        || event.pc == "80086D18"
+        || event.pc == "80085608"
+        || event.pc == "800856C4"
+        || event.pc == "800856F8"
+        || event.pc == "80086E4C"
+        || event.pc == "8008A660"
+        || event.pc == "8008A678"
+        || event.pc == "8008A690"
+        || event.pc == "8008BDAC"
+        || event.pc == "8008BDDC"
+        || event.pc == "80085CE0"
+        || event.pc == "80086F48";
+}
+
+struct LiveAttackParamSnapshot {
+    std::optional<int> actor_slot;
+    std::optional<int> target_slot;
+    std::optional<int> instr_param_0x6;
+    std::optional<std::string> setpoint_pc;
+    std::optional<std::string> worker;
+};
+
+struct PredictedAttackParamChain {
+    int sequence = 0;
+    std::optional<int> actor_slot;
+    std::optional<int> target_slot;
+    std::optional<int> instr_param_0x6;
+    std::string worker;
+    std::string status;
+};
+
+struct AttackParamComparisonChain {
+    int chain_index = 0;
+    std::optional<int> hit_draw_index;
+    std::optional<int> actor_slot;
+    std::optional<int> target_slot;
+    std::optional<int> live_setpoint_instr_param_0x6;
+    std::optional<int> live_consumer_instr_param_0x6;
+    std::optional<std::string> live_setpoint_pc;
+    std::optional<std::string> live_worker;
+    bool crit_draw_observed = false;
+    std::optional<int> predicted_sequence;
+    std::optional<int> predicted_actor_slot;
+    std::optional<int> predicted_target_slot;
+    std::optional<int> predicted_instr_param_0x6;
+    std::optional<std::string> predicted_worker;
+    std::string match_status = "live_only";
+};
+
+struct AttackParamComparisonSummary {
+    std::vector<AttackParamComparisonChain> chains;
+    int predicted_chains = 0;
+    int matched_chains = 0;
+    int mismatched_chains = 0;
+    int unknown_chains = 0;
+    std::string predictor_status = "not_requested";
+    std::vector<std::string> diagnostics;
+};
+
+bool has_selector(const TraceCheckpointsOptions& options) {
+    return options.turn_job_id.has_value() || options.exec_job_id.has_value();
+}
+
+std::optional<std::uint32_t> first_live_rng_seed_before(
+    const std::vector<CheckpointEvent>& events) {
+    for (const auto& event : events) {
+        if (event.owns_rng_draw && event.rng_seed_before.has_value()) {
+            return *event.rng_seed_before;
+        }
+    }
+    return std::nullopt;
+}
+
+std::vector<PredictedAttackParamChain> build_predicted_attack_param_chains(
+    const TraceCheckpointsOptions& options,
+    const std::vector<CheckpointEvent>& events,
+    AttackParamComparisonSummary& summary) {
+    std::vector<PredictedAttackParamChain> predicted;
+    if (!has_selector(options)) {
+        summary.predictor_status = "not_requested";
+        return predicted;
+    }
+
+    BattlePredictionDbInputOptions input_options;
+    input_options.db_root = options.db_root;
+    input_options.selector.turn_job_id = options.turn_job_id;
+    input_options.selector.exec_job_id = options.exec_job_id;
+    input_options.enemy_event_id = 0;
+    input_options.allow_seed_candidate_fallback = true;
+    if (const auto live_seed = first_live_rng_seed_before(events); live_seed.has_value()) {
+        input_options.start_seed_override = *live_seed;
+        summary.diagnostics.push_back(
+            "prediction start seed overridden from first live RNG checkpoint");
+    }
+
+    std::ostringstream err;
+    const auto db_input = build_battle_prediction_input_from_db_root(input_options, err);
+    if (!db_input.has_value()) {
+        summary.predictor_status = "unavailable";
+        const auto text = trim(err.str());
+        if (!text.empty()) {
+            summary.diagnostics.push_back(text);
+        }
+        return predicted;
+    }
+
+    const auto prediction = predict_battle(db_input->input);
+    summary.predictor_status = "available";
+    for (const auto& event : prediction.events) {
+        if (event.phase != "movement_setup" || event.label != "worker_select") {
+            continue;
+        }
+        predicted.push_back(PredictedAttackParamChain{
+            .sequence = event.sequence,
+            .actor_slot = event.actor_slot >= 0
+                ? std::optional<int>(event.actor_slot)
+                : std::nullopt,
+            .target_slot = event.target_slot >= 0
+                ? std::optional<int>(event.target_slot)
+                : std::nullopt,
+            .instr_param_0x6 = event.instr_param_0x6,
+            .worker = event.movement_worker,
+            .status = battle_prediction_event_status_name(event.status),
+        });
+    }
+    summary.predicted_chains = static_cast<int>(predicted.size());
+    return predicted;
+}
+
+bool next_hit_before_crit(
+    const std::vector<CheckpointEvent>& events,
+    std::size_t start,
+    std::size_t candidate) {
+    for (std::size_t i = start + 1; i < candidate; ++i) {
+        if (events[i].known_rng_owner == "attack_hit_dodge") {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::optional<int> consumer_param_after_hit(
+    const std::vector<CheckpointEvent>& events,
+    std::size_t hit_index,
+    std::optional<int> actor_slot) {
+    for (std::size_t i = hit_index + 1; i < events.size(); ++i) {
+        if (events[i].known_rng_owner == "attack_hit_dodge") {
+            return std::nullopt;
+        }
+        if (events[i].pc != "80010C40" && events[i].checkpoint != "crit_gate") {
+            continue;
+        }
+        return instr_param_from_checkpoint_event(events[i], actor_slot);
+    }
+    return std::nullopt;
+}
+
+bool crit_draw_after_hit(
+    const std::vector<CheckpointEvent>& events,
+    std::size_t hit_index) {
+    for (std::size_t i = hit_index + 1; i < events.size(); ++i) {
+        if (events[i].known_rng_owner == "attack_critical") {
+            return !next_hit_before_crit(events, hit_index, i);
+        }
+        if (events[i].known_rng_owner == "attack_hit_dodge") {
+            return false;
+        }
+    }
+    return false;
+}
+
+std::string compare_attack_param_chain(
+    const AttackParamComparisonChain& chain) {
+    bool compared = false;
+    bool matched = true;
+    if (chain.live_consumer_instr_param_0x6.has_value()
+        && chain.predicted_instr_param_0x6.has_value()) {
+        compared = true;
+        matched = matched
+            && *chain.live_consumer_instr_param_0x6 == *chain.predicted_instr_param_0x6;
+    }
+    if (chain.live_worker.has_value() && chain.predicted_worker.has_value()) {
+        compared = true;
+        matched = matched && *chain.live_worker == *chain.predicted_worker;
+    }
+    if (chain.actor_slot.has_value() && chain.predicted_actor_slot.has_value()) {
+        compared = true;
+        matched = matched && *chain.actor_slot == *chain.predicted_actor_slot;
+    }
+    if (chain.target_slot.has_value() && chain.predicted_target_slot.has_value()) {
+        compared = true;
+        matched = matched && *chain.target_slot == *chain.predicted_target_slot;
+    }
+    if (!chain.predicted_sequence.has_value()) {
+        return "live_only";
+    }
+    if (!compared) {
+        return "unknown";
+    }
+    return matched ? "match" : "mismatch";
+}
+
+AttackParamComparisonSummary summarize_attack_param_comparison(
+    const TraceCheckpointsOptions& options,
+    const std::vector<CheckpointEvent>& events) {
+    AttackParamComparisonSummary summary;
+    const auto predicted = build_predicted_attack_param_chains(options, events, summary);
+    std::map<int, LiveAttackParamSnapshot> latest_by_actor;
+    std::optional<LiveAttackParamSnapshot> latest_attack_begin;
+
+    for (std::size_t i = 0; i < events.size(); ++i) {
+        const auto& event = events[i];
+        const auto actor_slot = actor_slot_from_checkpoint_event(event);
+        const auto target_slot = target_slot_from_checkpoint_event(event);
+
+        if (event.checkpoint == "attack_begin") {
+            LiveAttackParamSnapshot begin;
+            begin.actor_slot = actor_slot;
+            begin.target_slot = target_slot;
+            if (begin.actor_slot.has_value()) {
+                begin.instr_param_0x6 =
+                    instr_param_from_checkpoint_event(event, begin.actor_slot);
+                latest_by_actor[*begin.actor_slot] = begin;
+            }
+            latest_attack_begin = begin;
+            continue;
+        }
+
+        if (is_instr_param_setpoint(event)) {
+            if (actor_slot.has_value()) {
+                auto& snapshot = latest_by_actor[*actor_slot];
+                snapshot.actor_slot = actor_slot;
+                if (target_slot.has_value()) {
+                    snapshot.target_slot = target_slot;
+                }
+                if (const auto param = instr_param_from_checkpoint_event(event, actor_slot);
+                    param.has_value()) {
+                    snapshot.instr_param_0x6 = param;
+                    snapshot.setpoint_pc = event.pc;
+                }
+                if (const auto worker = worker_name_for_checkpoint_pc(event); !worker.empty()) {
+                    snapshot.worker = worker;
+                }
+            }
+            continue;
+        }
+
+        if (event.known_rng_owner != "attack_hit_dodge") {
+            continue;
+        }
+
+        AttackParamComparisonChain chain;
+        chain.chain_index = static_cast<int>(summary.chains.size()) + 1;
+        chain.hit_draw_index = event.rng_draw_index_before;
+        chain.actor_slot = actor_slot;
+        chain.target_slot = target_slot;
+        if (!chain.actor_slot.has_value() && latest_attack_begin.has_value()) {
+            chain.actor_slot = latest_attack_begin->actor_slot;
+        }
+        if (!chain.target_slot.has_value() && latest_attack_begin.has_value()) {
+            chain.target_slot = latest_attack_begin->target_slot;
+        }
+        if (chain.actor_slot.has_value()) {
+            const auto found = latest_by_actor.find(*chain.actor_slot);
+            if (found != latest_by_actor.end()) {
+                chain.live_setpoint_instr_param_0x6 = found->second.instr_param_0x6;
+                chain.live_setpoint_pc = found->second.setpoint_pc;
+                chain.live_worker = found->second.worker;
+                if (!chain.target_slot.has_value()) {
+                    chain.target_slot = found->second.target_slot;
+                }
+            }
+        }
+        chain.live_consumer_instr_param_0x6 =
+            instr_param_from_checkpoint_event(event, chain.actor_slot);
+        if (!chain.live_consumer_instr_param_0x6.has_value()) {
+            chain.live_consumer_instr_param_0x6 =
+                consumer_param_after_hit(events, i, chain.actor_slot);
+        }
+        chain.crit_draw_observed = crit_draw_after_hit(events, i);
+
+        const auto predicted_index = summary.chains.size();
+        if (predicted_index < predicted.size()) {
+            const auto& expected = predicted[predicted_index];
+            chain.predicted_sequence = expected.sequence;
+            chain.predicted_actor_slot = expected.actor_slot;
+            chain.predicted_target_slot = expected.target_slot;
+            chain.predicted_instr_param_0x6 = expected.instr_param_0x6;
+            if (!expected.worker.empty()) {
+                chain.predicted_worker = expected.worker;
+            }
+        }
+        chain.match_status = compare_attack_param_chain(chain);
+        if (chain.match_status == "match") {
+            ++summary.matched_chains;
+        } else if (chain.match_status == "mismatch") {
+            ++summary.mismatched_chains;
+        } else if (chain.match_status == "unknown") {
+            ++summary.unknown_chains;
+        }
+        summary.chains.push_back(std::move(chain));
+    }
+
+    if (summary.predictor_status == "available"
+        && summary.chains.size() < predicted.size()) {
+        summary.diagnostics.push_back(
+            "prediction has more movement worker_select events than live hit draws");
+    }
+    return summary;
+}
+
+void write_attack_param_comparison_text(
+    const AttackParamComparisonSummary& comparison,
+    std::ostream& out) {
+    out << "\nPredictor/live attack parameter comparison\n";
+    out << "  predictor_status: " << comparison.predictor_status << "\n";
+    out << "  live_chains: " << comparison.chains.size() << "\n";
+    out << "  predicted_chains: " << comparison.predicted_chains << "\n";
+    out << "  matched_chains: " << comparison.matched_chains << "\n";
+    out << "  mismatched_chains: " << comparison.mismatched_chains << "\n";
+    out << "  unknown_chains: " << comparison.unknown_chains << "\n";
+    if (!comparison.diagnostics.empty()) {
+        out << "  diagnostics:\n";
+        for (const auto& diagnostic : comparison.diagnostics) {
+            out << "    - " << diagnostic << "\n";
+        }
+    }
+    if (comparison.chains.empty()) {
+        out << "  chains: none\n";
+        return;
+    }
+    out << "  chains:\n";
+    for (const auto& chain : comparison.chains) {
+        out << "    #" << chain.chain_index
+            << " status=" << chain.match_status;
+        out << " hit_draw=";
+        write_optional_int(out, chain.hit_draw_index);
+        out << " actor=";
+        write_optional_int(out, chain.actor_slot);
+        out << " target=";
+        write_optional_int(out, chain.target_slot);
+        out << " live_setpoint_pc=";
+        write_optional_string(out, chain.live_setpoint_pc);
+        out << " live_setpoint_instr_param_0x6=";
+        write_optional_int(out, chain.live_setpoint_instr_param_0x6);
+        out << " live_consumer_instr_param_0x6=";
+        write_optional_int(out, chain.live_consumer_instr_param_0x6);
+        out << " live_worker=";
+        write_optional_string(out, chain.live_worker);
+        out << " crit_draw_observed=" << (chain.crit_draw_observed ? "true" : "false");
+        out << " predicted_sequence=";
+        write_optional_int(out, chain.predicted_sequence);
+        out << " predicted_actor=";
+        write_optional_int(out, chain.predicted_actor_slot);
+        out << " predicted_target=";
+        write_optional_int(out, chain.predicted_target_slot);
+        out << " predicted_instr_param_0x6=";
+        write_optional_int(out, chain.predicted_instr_param_0x6);
+        out << " predicted_worker=";
+        write_optional_string(out, chain.predicted_worker);
+        out << "\n";
+    }
+}
+
+void write_attack_param_comparison_json(
+    const AttackParamComparisonSummary& comparison,
+    std::ostream& out) {
+    out << "  \"attack_param_comparison\": {";
+    out << "\"predictor_status\": \"" << json_escape(comparison.predictor_status) << "\"";
+    out << ", \"live_chains\": " << comparison.chains.size();
+    out << ", \"predicted_chains\": " << comparison.predicted_chains;
+    out << ", \"matched_chains\": " << comparison.matched_chains;
+    out << ", \"mismatched_chains\": " << comparison.mismatched_chains;
+    out << ", \"unknown_chains\": " << comparison.unknown_chains;
+    out << ", \"diagnostics\": [";
+    for (std::size_t i = 0; i < comparison.diagnostics.size(); ++i) {
+        if (i != 0) {
+            out << ", ";
+        }
+        out << "\"" << json_escape(comparison.diagnostics[i]) << "\"";
+    }
+    out << "]";
+    out << ", \"chains\": [";
+    for (std::size_t i = 0; i < comparison.chains.size(); ++i) {
+        if (i != 0) {
+            out << ", ";
+        }
+        const auto& chain = comparison.chains[i];
+        out << "{\"chain_index\": " << chain.chain_index;
+        out << ", \"match_status\": \"" << json_escape(chain.match_status) << "\"";
+        out << ", \"hit_draw_index\": ";
+        write_json_optional_int(out, chain.hit_draw_index);
+        out << ", \"actor_slot\": ";
+        write_json_optional_int(out, chain.actor_slot);
+        out << ", \"target_slot\": ";
+        write_json_optional_int(out, chain.target_slot);
+        out << ", \"live_setpoint_pc\": ";
+        write_json_optional_string(out, chain.live_setpoint_pc);
+        out << ", \"live_setpoint_instr_param_0x6\": ";
+        write_json_optional_int(out, chain.live_setpoint_instr_param_0x6);
+        out << ", \"live_consumer_instr_param_0x6\": ";
+        write_json_optional_int(out, chain.live_consumer_instr_param_0x6);
+        out << ", \"live_worker\": ";
+        write_json_optional_string(out, chain.live_worker);
+        out << ", \"crit_draw_observed\": "
+            << (chain.crit_draw_observed ? "true" : "false");
+        out << ", \"predicted_sequence\": ";
+        write_json_optional_int(out, chain.predicted_sequence);
+        out << ", \"predicted_actor_slot\": ";
+        write_json_optional_int(out, chain.predicted_actor_slot);
+        out << ", \"predicted_target_slot\": ";
+        write_json_optional_int(out, chain.predicted_target_slot);
+        out << ", \"predicted_instr_param_0x6\": ";
+        write_json_optional_int(out, chain.predicted_instr_param_0x6);
+        out << ", \"predicted_worker\": ";
+        write_json_optional_string(out, chain.predicted_worker);
+        out << "}";
+    }
+    out << "]";
+    out << "},\n";
 }
 
 void write_text_report(
@@ -1852,6 +2418,10 @@ void write_text_report(
             out << "\n";
         }
     }
+
+    const auto attack_param_comparison =
+        summarize_attack_param_comparison(options, result.events);
+    write_attack_param_comparison_text(attack_param_comparison, out);
 
     const auto counter = summarize_counter_checkpoints(
         result.events,
@@ -3843,6 +4413,10 @@ void write_json_report(
     }
     out << "]";
     out << "},\n";
+
+    const auto attack_param_comparison =
+        summarize_attack_param_comparison(options, result.events);
+    write_attack_param_comparison_json(attack_param_comparison, out);
 
     const auto counter = summarize_counter_checkpoints(
         result.events,

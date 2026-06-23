@@ -176,7 +176,8 @@ std::optional<savor::db::BattleContextProbeSnapshot> resolve_context_probe(
 const char* battle_prediction_seed_source_name(BattlePredictionSeedSource source) {
     switch (source) {
     case BattlePredictionSeedSource::Override: return "override";
-    case BattlePredictionSeedSource::TurnJobLiveRngSeed: return "turn_job_live_rng_seed";
+    case BattlePredictionSeedSource::SeedProbeUniqueSeed: return "sp_unique_seed.seed_value";
+    case BattlePredictionSeedSource::SeedCandidate: return "ab_seed_candidate.seed_value";
     case BattlePredictionSeedSource::SeedCandidateFallback: return "seed_candidate_fallback";
     case BattlePredictionSeedSource::Unknown: return "unknown";
     }
@@ -221,6 +222,11 @@ std::optional<BattlePredictionDbInput> build_battle_prediction_input_from_analys
         err << "Selected turn job references missing wave " << turn_job->wave_id << ".\n";
         return std::nullopt;
     }
+    const auto battle_set = analysis_db.GetBattleSet(wave->battle_set_id);
+    if (!battle_set.has_value()) {
+        err << "Selected turn job references missing battle set " << wave->battle_set_id << ".\n";
+        return std::nullopt;
+    }
 
     const auto seed_candidate_id = turn_job->seed_candidate_id.value_or(wave->seed_candidate_id);
     const auto seed_candidate = analysis_db.GetBattleSeedCandidate(seed_candidate_id);
@@ -243,24 +249,61 @@ std::optional<BattlePredictionDbInput> build_battle_prediction_input_from_analys
         resolved.input.starting_rng_seed = *options.start_seed_override;
         metadata.seed_source = BattlePredictionSeedSource::Override;
         if (turn_job->rng_seed.has_value()) {
-            metadata.warnings.push_back("start seed override ignored the live turn-job RNG seed");
+            metadata.warnings.push_back("start seed override ignored stored turn-job RNG seed");
         }
-    } else if (turn_job->rng_seed.has_value()) {
-        resolved.input.starting_rng_seed = checked_seed_from_i64(*turn_job->rng_seed);
-        metadata.seed_source = BattlePredictionSeedSource::TurnJobLiveRngSeed;
-    } else if (options.allow_seed_candidate_fallback) {
+    } else {
         if (!seed_candidate.has_value()) {
-            err << "Selected turn job has no live RNG seed and seed candidate "
+            err << "Selected turn job references seed candidate "
                 << seed_candidate_id << " could not be loaded.\n";
             return std::nullopt;
         }
-        resolved.input.starting_rng_seed = checked_seed_from_i64(seed_candidate->seed_value);
-        metadata.seed_source = BattlePredictionSeedSource::SeedCandidateFallback;
-        metadata.warnings.push_back("using seed candidate fallback instead of live turn-job RNG seed");
-    } else {
-        err << "Selected turn job has no live RNG seed; rerun with --allow-seed-candidate-fallback "
-            << "to use the candidate seed instead.\n";
-        return std::nullopt;
+
+        if (seed_candidate->source_unique_seed_id.has_value()) {
+            const auto unique_seed =
+                analysis_db.GetSeedProbeUniqueSeed(*seed_candidate->source_unique_seed_id);
+            if (unique_seed.has_value()) {
+                resolved.input.starting_rng_seed = checked_seed_from_i64(unique_seed->seed_value);
+                metadata.seed_source = BattlePredictionSeedSource::SeedProbeUniqueSeed;
+            } else if (options.allow_seed_candidate_fallback) {
+                resolved.input.starting_rng_seed = checked_seed_from_i64(seed_candidate->seed_value);
+                metadata.seed_source = BattlePredictionSeedSource::SeedCandidateFallback;
+                metadata.warnings.push_back(
+                    "linked sp_unique_seed row was missing; using ab_seed_candidate.seed_value fallback");
+            } else {
+                err << "Selected seed candidate references missing sp_unique_seed "
+                    << *seed_candidate->source_unique_seed_id
+                    << "; rerun with --allow-seed-candidate-fallback to use ab_seed_candidate.seed_value.\n";
+                return std::nullopt;
+            }
+        } else if (seed_candidate->source_input_frame_id.has_value()) {
+            const auto unique_seed =
+                analysis_db.FindSeedProbeUniqueSeedForEntrySavestateInputFrame(
+                    battle_set->entry_savestate_id,
+                    *seed_candidate->source_input_frame_id);
+            if (unique_seed.has_value()) {
+                resolved.input.starting_rng_seed = checked_seed_from_i64(unique_seed->seed_value);
+                metadata.seed_source = BattlePredictionSeedSource::SeedProbeUniqueSeed;
+            } else if (options.allow_seed_candidate_fallback) {
+                resolved.input.starting_rng_seed = checked_seed_from_i64(seed_candidate->seed_value);
+                metadata.seed_source = BattlePredictionSeedSource::SeedCandidateFallback;
+                metadata.warnings.push_back(
+                    "no sp_unique_seed matched seed candidate source input frame; using ab_seed_candidate.seed_value fallback");
+            } else {
+                err << "Selected seed candidate has source input frame "
+                    << *seed_candidate->source_input_frame_id
+                    << " but no matching sp_unique_seed for battle set entry savestate "
+                    << battle_set->entry_savestate_id
+                    << "; rerun with --allow-seed-candidate-fallback to use ab_seed_candidate.seed_value.\n";
+                return std::nullopt;
+            }
+        } else {
+            resolved.input.starting_rng_seed = checked_seed_from_i64(seed_candidate->seed_value);
+            metadata.seed_source = BattlePredictionSeedSource::SeedCandidate;
+            if (turn_job->rng_seed.has_value()) {
+                metadata.warnings.push_back(
+                    "using ab_seed_candidate.seed_value as battle start seed; stored turn-job RNG seed is not used for predictor input");
+            }
+        }
     }
     metadata.starting_rng_seed = resolved.input.starting_rng_seed;
 
@@ -275,6 +318,8 @@ std::optional<BattlePredictionDbInput> build_battle_prediction_input_from_analys
         metadata.fake_attacks = turn_job->fake_attacks_this_turn;
         metadata.fake_attack_source = BattlePredictionFakeAttackSource::TurnJob;
     }
+    resolved.input.enemy_event_id = options.enemy_event_id;
+    metadata.enemy_event_id = options.enemy_event_id;
 
     if (!turn_job->resolved_turn_commands_blob.has_value() || turn_job->resolved_turn_commands_blob->empty()) {
         err << "Selected turn job has no resolved turn command blob.\n";
@@ -339,6 +384,9 @@ void write_battle_prediction_db_metadata_text(
         << " source=" << battle_prediction_seed_source_name(metadata.seed_source) << "\n";
     out << "  fake_attacks: " << metadata.fake_attacks
         << " source=" << battle_prediction_fake_attack_source_name(metadata.fake_attack_source) << "\n";
+    if (metadata.enemy_event_id.has_value()) {
+        out << "  enemy_event_id: " << *metadata.enemy_event_id << "\n";
+    }
     if (metadata.context_probe_id.has_value()) {
         out << "  context_probe_id: " << *metadata.context_probe_id
             << " source=" << battle_prediction_context_source_name(metadata.context_source);
@@ -387,6 +435,9 @@ void write_battle_prediction_run_json(
     write_json_string_field(out, "seed_source", battle_prediction_seed_source_name(metadata.seed_source), first);
     write_json_int_field(out, "fake_attacks", metadata.fake_attacks, first);
     write_json_string_field(out, "fake_attack_source", battle_prediction_fake_attack_source_name(metadata.fake_attack_source), first);
+    if (metadata.enemy_event_id.has_value()) {
+        write_json_int_field(out, "enemy_event_id", *metadata.enemy_event_id, first);
+    }
     if (metadata.context_probe_id.has_value()) {
         write_json_i64_field(out, "context_probe_id", *metadata.context_probe_id, first);
         write_json_string_field(out, "context_source", battle_prediction_context_source_name(metadata.context_source), first);

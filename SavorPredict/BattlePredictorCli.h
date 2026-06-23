@@ -17,6 +17,7 @@ struct BattlePredictorCliOptions {
     std::optional<long long> exec_job_id;
     std::optional<std::uint32_t> start_seed;
     std::filesystem::path start_seed_list;
+    std::optional<int> enemy_event_id;
     std::optional<int> fake_attacks;
     std::string turn_plan_hex;
     std::string profile_name = "first-battle";

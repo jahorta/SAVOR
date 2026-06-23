@@ -2,6 +2,7 @@
 
 #include "AttackResolutionModel.h"
 #include "CounterModel.h"
+#include "EnemyEventDataModel.h"
 #include "EnemyAttackSetupModel.h"
 #include "SoldierAiModel.h"
 #include "TurnOrderModel.h"
@@ -34,6 +35,15 @@ enum class BattlePredictionEventStatus {
     Ambiguous,
 };
 
+enum class BattlePredictionValidationStatus {
+    Exact,
+    Validated,
+    Provisional,
+    NotExercised,
+    Unsupported,
+    Ambiguous,
+};
+
 struct BattlePredictionProfile {
     std::string name = "first-battle";
     int supported_turn_index = 1;
@@ -48,6 +58,7 @@ struct BattlePredictionOptions {
 
 struct BattlePredictionInput {
     std::uint32_t starting_rng_seed = 0;
+    std::optional<int> enemy_event_id;
     soa::battle::ctx::BattleContext context{};
     soa::battle::actions::TurnPlan turn_plan{};
     BattlePredictionProfile profile{};
@@ -76,6 +87,7 @@ struct BattlePredictionSlotState {
     int element = -1;
     bool quick_known = false;
     bool attack_inputs_known = false;
+    std::optional<BattleStartPosition> start_position;
 };
 
 struct BattlePredictionEvent {
@@ -94,8 +106,18 @@ struct BattlePredictionEvent {
     std::optional<int> hp_before;
     std::optional<int> hp_after;
     std::optional<int> effect_source_key;
+    std::optional<int> instr_param_0x6;
+    std::optional<int> movement_reachability;
     std::optional<int> item_id;
     std::optional<int> amount;
+    std::string movement_worker;
+    std::string detail;
+};
+
+struct BattlePredictionValidationItem {
+    std::string scope;
+    BattlePredictionValidationStatus status = BattlePredictionValidationStatus::Provisional;
+    int draws_exact_through = -1;
     std::string detail;
 };
 
@@ -104,11 +126,13 @@ struct BattlePredictionResult {
     BattlePredictionOutcome outcome = BattlePredictionOutcome::ReachedNextTurn;
     std::uint32_t starting_rng_seed = 0;
     std::uint32_t final_rng_seed = 0;
+    std::optional<int> enemy_event_id;
     int total_draws_consumed = 0;
     int exact_draws_through_turn_order = 0;
     bool exact_through_turn_order = false;
     bool has_ambiguous_events = false;
     bool has_unsupported_events = false;
+    std::vector<BattlePredictionValidationItem> validation;
     std::vector<BattlePredictionSlotState> final_slots;
     std::vector<BattlePredictionEvent> events;
     std::vector<std::string> warnings;
@@ -122,6 +146,7 @@ BattlePredictionResult predict_battle(const BattlePredictionInput& input);
 
 const char* battle_prediction_outcome_name(BattlePredictionOutcome outcome);
 const char* battle_prediction_event_status_name(BattlePredictionEventStatus status);
+const char* battle_prediction_validation_status_name(BattlePredictionValidationStatus status);
 
 void write_battle_prediction_text(const BattlePredictionResult& result, std::ostream& out);
 void write_battle_prediction_json(const BattlePredictionResult& result, std::ostream& out);

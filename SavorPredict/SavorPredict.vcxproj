@@ -138,9 +138,11 @@
     <ClCompile Include="EffectCheckpointModel.cpp" />
     <ClCompile Include="EffectRngModel.cpp" />
     <ClCompile Include="EnemyAttackSetupModel.cpp" />
+    <ClCompile Include="EnemyEventDataModel.cpp" />
     <ClCompile Include="FirstBattleDataModel.cpp" />
     <ClCompile Include="LiveCaptureProfile.cpp" />
     <ClCompile Include="Main.cpp" />
+    <ClCompile Include="MovementModel.cpp" />
     <ClCompile Include="OutcomeCheckpointModel.cpp" />
     <ClCompile Include="PreAiCameraModel.cpp" />
     <ClCompile Include="PreAiCheckpointModel.cpp" />
@@ -186,8 +188,10 @@
     <ClInclude Include="EffectCheckpointModel.h" />
     <ClInclude Include="EffectRngModel.h" />
     <ClInclude Include="EnemyAttackSetupModel.h" />
+    <ClInclude Include="EnemyEventDataModel.h" />
     <ClInclude Include="FirstBattleDataModel.h" />
     <ClInclude Include="LiveCaptureProfile.h" />
+    <ClInclude Include="MovementModel.h" />
     <ClInclude Include="OutcomeCheckpointModel.h" />
     <ClInclude Include="PreAiCameraModel.h" />
     <ClInclude Include="PreAiCheckpointModel.h" />

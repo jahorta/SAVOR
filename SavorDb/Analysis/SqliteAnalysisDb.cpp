@@ -920,6 +920,52 @@ std::optional<SeedProbeUniqueSeedRow> SqliteAnalysisDb::GetSeedProbeUniqueSeed(s
     };
 }
 
+std::optional<SeedProbeUniqueSeedRow> SqliteAnalysisDb::FindSeedProbeUniqueSeedForEntrySavestateInputFrame(
+    std::int64_t entry_savestate_id,
+    std::int64_t input_frame_id) const {
+    if (db_ == nullptr || entry_savestate_id <= 0 || input_frame_id <= 0) {
+        return std::nullopt;
+    }
+    Statement st;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT u.unique_seed_id,u.probe_result_id,u.seed_value,u.seed_delta,"
+            "m.x,m.y,c.x,c.y,t.x,t.y "
+            "FROM sp_probe_run pr "
+            "JOIN sp_probe_result r ON r.probe_run_id=pr.probe_run_id "
+            "JOIN sp_unique_seed u ON u.probe_result_id=r.probe_result_id "
+            "JOIN sp_input_frame f ON f.input_frame_id=u.input_frame_id "
+            "JOIN sp_axis_xy m ON m.axis_xy_id=f.main_axis_xy_id "
+            "JOIN sp_axis_xy c ON c.axis_xy_id=f.cstick_axis_xy_id "
+            "JOIN sp_axis_xy t ON t.axis_xy_id=f.trigger_axis_xy_id "
+            "WHERE pr.entry_savestate_id=?1 AND u.input_frame_id=?2 "
+            "ORDER BY pr.probe_run_id ASC, u.unique_seed_id ASC "
+            "LIMIT 1;",
+            -1,
+            &st.st,
+            nullptr)
+        != SQLITE_OK) {
+        return std::nullopt;
+    }
+    sqlite3_bind_int64(st.st, 1, entry_savestate_id);
+    sqlite3_bind_int64(st.st, 2, input_frame_id);
+    if (sqlite3_step(st.st) != SQLITE_ROW) {
+        return std::nullopt;
+    }
+    return SeedProbeUniqueSeedRow{
+        .unique_seed_id = sqlite3_column_int64(st.st, 0),
+        .probe_result_id = sqlite3_column_int64(st.st, 1),
+        .seed_value = sqlite3_column_int64(st.st, 2),
+        .seed_delta = sqlite3_column_int64(st.st, 3),
+        .main_x = sqlite3_column_int(st.st, 4),
+        .main_y = sqlite3_column_int(st.st, 5),
+        .cstick_x = sqlite3_column_int(st.st, 6),
+        .cstick_y = sqlite3_column_int(st.st, 7),
+        .trigger_x = sqlite3_column_int(st.st, 8),
+        .trigger_y = sqlite3_column_int(st.st, 9),
+    };
+}
+
 std::optional<AnalysisInputSetFrameRow> SqliteAnalysisDb::GetAnalysisInputFrame(std::int64_t input_frame_id) const {
     if (db_ == nullptr || input_frame_id <= 0) {
         return std::nullopt;
