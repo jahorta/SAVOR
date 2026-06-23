@@ -88,6 +88,7 @@ namespace phase::battle::turnrunner {
         ps.ops.push_back(savor::OpReadU32(addr::AddrRegistry::base(addr::core::RNG_SEED), savor::context::key::battle::RNG_APPLIED_SEED));
         ps.ops.push_back(savor::OpCaptureSeedOverride());
         ps.ops.push_back(savor::OpGotoIfKeys(savor::context::key::battle::RNG_APPLIED_SEED, savor::PSCmp::NE, savor::context::key::battle::RNG_OVERRIDE_SEED, LabelSeedOverrideMismatch));
+        ps.ops.push_back(savor::OpStepOpcode(true));
         ps.ops.push_back(savor::OpGoto(LabelAfterOverrideStartSeed));
 
         ps.ops.push_back(savor::OpLabel(LabelSeedOverrideMismatch));

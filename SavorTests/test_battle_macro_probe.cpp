@@ -948,6 +948,20 @@ TEST(BattleTurnRunnerProgram, UsesMacroLoopInsteadOfRawInputTape)
     EXPECT_TRUE(has_set_run_poll(0u));
 }
 
+TEST(BattleTurnRunnerProgram, StepsPastSeedOverrideBreakpoint)
+{
+    const auto program = phase::battle::turnrunner::MakeBattleTurnRunnerProgram();
+    auto capture_it = std::find_if(program.ops.begin(), program.ops.end(), [](const savor::PSOp& op) {
+        return op.code == savor::PSOpCode::CAPTURE_SEED_OVERRIDE;
+    });
+    ASSERT_NE(capture_it, program.ops.end());
+    ASSERT_NE(std::next(capture_it), program.ops.end());
+    EXPECT_EQ(std::next(capture_it)->code, savor::PSOpCode::GOTO_IF_KEYS);
+    ASSERT_NE(std::next(capture_it, 2), program.ops.end());
+    EXPECT_EQ(std::next(capture_it, 2)->code, savor::PSOpCode::STEP_OPCODE);
+    EXPECT_EQ(std::next(capture_it, 2)->imm.v, 1u);
+}
+
 TEST(BattleMacroProbeCli, BattlePlanDisablesInteractivePrompt)
 {
     savor::e2e::CliOptions options;
