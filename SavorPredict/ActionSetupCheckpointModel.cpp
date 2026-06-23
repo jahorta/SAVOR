@@ -1,9 +1,11 @@
 #include "ActionSetupCheckpointModel.h"
+#include "RngCore.h"
 
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
 #include <initializer_list>
+#include <string>
 #include <utility>
 
 namespace savor::predict {
@@ -151,8 +153,64 @@ std::optional<int> target_slot_from_event(const CheckpointEvent& event) {
     return parse_first_field_int(event, {"target_slot", "target"});
 }
 
+std::optional<int> queued_field_for_slot(
+    const CheckpointEvent& event,
+    std::optional<int> slot,
+    std::initializer_list<const char*> direct_names,
+    const char* slot_field_suffix) {
+    if (const auto direct = parse_first_field_int(event, direct_names); direct.has_value()) {
+        return direct;
+    }
+    if (!slot.has_value() || *slot < 0) {
+        return std::nullopt;
+    }
+
+    const std::string field_name =
+        "slot" + std::to_string(*slot) + "_" + slot_field_suffix;
+    return parse_field_int(event, field_name.c_str());
+}
+
+std::optional<int> instruction_from_event(const CheckpointEvent& event, std::optional<int> actor_slot) {
+    return queued_field_for_slot(
+        event,
+        actor_slot,
+        {"instruction", "queued_instruction", "instruction_0x0"},
+        "instruction_0x0");
+}
+
+std::optional<int> target_from_event(const CheckpointEvent& event, std::optional<int> actor_slot) {
+    if (event.target_slot.has_value()) {
+        return event.target_slot;
+    }
+    return queued_field_for_slot(
+        event,
+        actor_slot,
+        {"target_slot", "target"},
+        "target_0x4");
+}
+
+std::optional<int> instr_param_from_event(const CheckpointEvent& event, std::optional<int> actor_slot) {
+    return queued_field_for_slot(
+        event,
+        actor_slot,
+        {"instr_param_0x6", "instr_param", "param_0x6"},
+        "instr_param_0x6");
+}
+
 std::string expected_enemy_worker_pc_for_final_param(int final_instr_param_0x6) {
     return final_instr_param_0x6 == 0 ? kEnemyWorkerParam0Pc : kEnemyWorkerFallbackPc;
+}
+
+std::optional<int> setup_rand_from_event(const CheckpointEvent& event) {
+    if (const auto explicit_value = parse_first_field_int(
+            event,
+            {"setup_rand", "rand_value", "enemy_setup_rand"}); explicit_value.has_value()) {
+        return explicit_value;
+    }
+    if (!event.rng_seed_before.has_value()) {
+        return std::nullopt;
+    }
+    return static_cast<int>(draw_rand15(*event.rng_seed_before).value);
 }
 
 bool has_required_enemy_helper_fields(const ActionSetupCheckpointEvent& event) {
@@ -355,16 +413,197 @@ ActionSetupCheckpointEvent make_common_event(
     observed.kind = kind;
     observed.draw_index = event.rng_draw_index_before;
     observed.actor_slot = actor_slot_from_event(event);
-    observed.target_slot = target_slot_from_event(event);
-    observed.instruction =
-        parse_first_field_int(event, {"instruction", "queued_instruction", "instruction_0x0"});
-    observed.instr_param_0x6 =
-        parse_first_field_int(event, {"instr_param_0x6", "instr_param", "param_0x6"});
+    observed.target_slot = target_from_event(event, observed.actor_slot);
+    observed.instruction = instruction_from_event(event, observed.actor_slot);
+    observed.instr_param_0x6 = instr_param_from_event(event, observed.actor_slot);
     observed.movement_flags =
-        parse_first_field_int(event, {"movement_flags", "actor_movement_flags"});
+        parse_first_field_int(event, {"movement_flags", "actor_movement_flags", "target_movement_flags"});
     observed.handler_pc =
         parse_first_field_pc(event, {"handler_pc", "selected_handler_pc", "next_fxn_0x10"});
     return observed;
+}
+
+bool is_enemy_setup_followup_checkpoint(const CheckpointEvent& event) {
+    return event_named(event, {
+            "soldier_ai_instr_param_set",
+            "movement_helper_return",
+            "movement_distance_return",
+            "movement_scope_return",
+            "target_adjacent",
+            "worker_select",
+            "instr_param_set",
+        });
+}
+
+ActionSetupCheckpointEvent* find_last_enemy_setup_draw(
+    ActionSetupCheckpointSummary& summary,
+    std::optional<int> actor_slot,
+    std::optional<int> draw_index) {
+    if (!actor_slot.has_value()) {
+        return nullptr;
+    }
+    for (auto it = summary.events.rbegin(); it != summary.events.rend(); ++it) {
+        if (it->kind != ActionSetupCheckpointKind::EnemySetupDraw
+            || !it->actor_slot.has_value()
+            || *it->actor_slot != *actor_slot) {
+            continue;
+        }
+        if (it->draw_index.has_value()
+            && draw_index.has_value()
+            && *it->draw_index > *draw_index) {
+            continue;
+        }
+        return &*it;
+    }
+    return nullptr;
+}
+
+void fill_enemy_setup_derived_fields(ActionSetupCheckpointEvent& event) {
+    if (!event.setup_rand_mod10.has_value() && event.setup_rand.has_value()) {
+        event.setup_rand_mod10 = *event.setup_rand % 10;
+    }
+
+    if (!event.direct_close_candidate.has_value()
+        && event.setup_rand_mod10.has_value()
+        && event.movement_flags.has_value()) {
+        event.direct_close_candidate =
+            (*event.setup_rand_mod10 > 3 && ((*event.movement_flags & 0x40) != 0)) ? 1 : 0;
+    }
+
+    if (!event.final_instr_param_0x6.has_value() && event.instr_param_0x6.has_value()) {
+        event.final_instr_param_0x6 = event.instr_param_0x6;
+    }
+    if (event.final_instr_param_0x6.has_value()) {
+        event.expected_worker_pc = expected_enemy_worker_pc_for_final_param(*event.final_instr_param_0x6);
+    }
+}
+
+void merge_enemy_setup_followup(
+    ActionSetupCheckpointSummary& summary,
+    const CheckpointEvent& event) {
+    auto observed = make_common_event(event, ActionSetupCheckpointKind::EnemySetupDraw);
+    auto* setup = find_last_enemy_setup_draw(summary, observed.actor_slot, observed.draw_index);
+    if (setup == nullptr) {
+        return;
+    }
+
+    if (observed.target_slot.has_value()) {
+        setup->target_slot = observed.target_slot;
+    }
+    if (observed.instruction.has_value()) {
+        setup->instruction = observed.instruction;
+    }
+    if (observed.instr_param_0x6.has_value()) {
+        setup->instr_param_0x6 = observed.instr_param_0x6;
+        setup->final_instr_param_0x6 = observed.instr_param_0x6;
+    }
+    if (observed.movement_flags.has_value()) {
+        setup->movement_flags = observed.movement_flags;
+    }
+
+    const auto helper_result = parse_first_field_int(
+        event,
+        {"helper_result", "r3_return_or_arg", "r3_return", "return_value"});
+    if (event.checkpoint == "movement_helper_return") {
+        setup->helper_8008a174_result = helper_result;
+    } else if (event.checkpoint == "movement_distance_return") {
+        setup->helper_80082340_result = helper_result;
+        setup->target_distance = parse_first_field_int(
+            event,
+            {"target_distance", "dist_to_target_0x14", "distance"});
+    } else if (event.checkpoint == "movement_scope_return") {
+        setup->helper_8008a280_reached = true;
+    } else if (event.checkpoint == "target_adjacent") {
+        setup->target_adjacent = helper_result.has_value()
+            ? helper_result
+            : parse_first_field_int(event, {"target_adjacent", "check_target_adjacent"});
+    } else if (event.checkpoint == "worker_select") {
+        const auto normalized_pc = normalize_pc_string(event.pc);
+        setup->selected_worker_pc =
+            normalized_pc == "8008BDAC" ? std::optional<std::string>(kEnemyWorkerParam0Pc)
+            : normalized_pc == "8008BDDC" ? std::optional<std::string>(kEnemyWorkerFallbackPc)
+            : parse_first_field_pc(event, {"selected_worker_pc", "worker_pc", "next_function_pc"});
+    }
+
+    fill_enemy_setup_derived_fields(*setup);
+}
+
+void recompute_enemy_setup_draw_counts(ActionSetupCheckpointSummary& summary) {
+    summary.observed_enemy_setup_draws = 0;
+    summary.enemy_setup_draws_with_gate_inputs = 0;
+    summary.enemy_setup_draws_with_rand_value = 0;
+    summary.enemy_setup_draws_with_rand_mod10 = 0;
+    summary.enemy_setup_draws_with_direct_close_candidate = 0;
+    summary.enemy_setup_draws_with_final_instr_param = 0;
+    summary.enemy_setup_draws_with_helper_8008a174_result = 0;
+    summary.enemy_setup_draws_with_helper_8008a280_marker = 0;
+    summary.enemy_setup_draws_with_helper_80082340_result = 0;
+    summary.enemy_setup_draws_with_target_adjacency = 0;
+    summary.enemy_setup_draws_with_target_distance = 0;
+    summary.enemy_setup_draws_with_selected_worker = 0;
+    summary.enemy_setup_draws_with_required_helper_fields = 0;
+    summary.worker_matches = 0;
+    summary.worker_mismatches = 0;
+    summary.first_enemy_setup_draw_index.reset();
+    summary.enemy_setup_draws_before_first_attack_hit = 0;
+
+    for (auto& event : summary.events) {
+        if (event.kind != ActionSetupCheckpointKind::EnemySetupDraw) {
+            continue;
+        }
+
+        fill_enemy_setup_derived_fields(event);
+        ++summary.observed_enemy_setup_draws;
+        maybe_set_first(summary.first_enemy_setup_draw_index, event.draw_index);
+        if (event.instruction.has_value() && event.movement_flags.has_value()) {
+            ++summary.enemy_setup_draws_with_gate_inputs;
+        }
+        if (event.setup_rand.has_value()) {
+            ++summary.enemy_setup_draws_with_rand_value;
+        }
+        if (event.setup_rand_mod10.has_value()) {
+            ++summary.enemy_setup_draws_with_rand_mod10;
+        }
+        if (event.direct_close_candidate.has_value()) {
+            ++summary.enemy_setup_draws_with_direct_close_candidate;
+        }
+        if (event.final_instr_param_0x6.has_value()) {
+            ++summary.enemy_setup_draws_with_final_instr_param;
+        }
+        if (event.helper_8008a174_result.has_value()) {
+            ++summary.enemy_setup_draws_with_helper_8008a174_result;
+        }
+        if (event.helper_8008a280_reached.has_value()) {
+            ++summary.enemy_setup_draws_with_helper_8008a280_marker;
+        }
+        if (event.helper_80082340_result.has_value()) {
+            ++summary.enemy_setup_draws_with_helper_80082340_result;
+        }
+        if (event.target_adjacent.has_value()) {
+            ++summary.enemy_setup_draws_with_target_adjacency;
+        }
+        if (event.target_distance.has_value()) {
+            ++summary.enemy_setup_draws_with_target_distance;
+        }
+        if (event.selected_worker_pc.has_value()) {
+            ++summary.enemy_setup_draws_with_selected_worker;
+        }
+        if (event.expected_worker_pc.has_value() && event.selected_worker_pc.has_value()) {
+            if (*event.expected_worker_pc == *event.selected_worker_pc) {
+                ++summary.worker_matches;
+            } else {
+                ++summary.worker_mismatches;
+            }
+        }
+        if (has_required_enemy_helper_fields(event)) {
+            ++summary.enemy_setup_draws_with_required_helper_fields;
+        }
+        if (summary.first_attack_hit_draw_index.has_value()
+            && event.draw_index.has_value()
+            && *event.draw_index < *summary.first_attack_hit_draw_index) {
+            ++summary.enemy_setup_draws_before_first_attack_hit;
+        }
+    }
 }
 
 } // namespace
@@ -413,8 +652,7 @@ ActionSetupCheckpointSummary summarize_action_setup_checkpoints(
 
         if (owner_is(event, kEnemySetupOwner)) {
             auto observed = make_common_event(event, ActionSetupCheckpointKind::EnemySetupDraw);
-            observed.setup_rand =
-                parse_first_field_int(event, {"setup_rand", "rand_value", "enemy_setup_rand"});
+            observed.setup_rand = setup_rand_from_event(event);
             observed.setup_rand_mod10 =
                 parse_first_field_int(event, {"setup_rand_mod10", "rand_mod10"});
             observed.direct_close_candidate =
@@ -438,54 +676,8 @@ ActionSetupCheckpointSummary summarize_action_setup_checkpoints(
                 parse_first_field_int(event, {"target_distance", "dist_to_target_0x14"});
             observed.selected_worker_pc =
                 parse_first_field_pc(event, {"selected_worker_pc", "worker_pc", "next_function_pc"});
+            fill_enemy_setup_derived_fields(observed);
 
-            ++summary.observed_enemy_setup_draws;
-            maybe_set_first(summary.first_enemy_setup_draw_index, observed.draw_index);
-            if (observed.instruction.has_value() && observed.movement_flags.has_value()) {
-                ++summary.enemy_setup_draws_with_gate_inputs;
-            }
-            if (observed.setup_rand.has_value()) {
-                ++summary.enemy_setup_draws_with_rand_value;
-            }
-            if (observed.setup_rand_mod10.has_value()) {
-                ++summary.enemy_setup_draws_with_rand_mod10;
-            }
-            if (observed.direct_close_candidate.has_value()) {
-                ++summary.enemy_setup_draws_with_direct_close_candidate;
-            }
-            if (observed.final_instr_param_0x6.has_value()) {
-                ++summary.enemy_setup_draws_with_final_instr_param;
-                observed.expected_worker_pc =
-                    expected_enemy_worker_pc_for_final_param(*observed.final_instr_param_0x6);
-            }
-            if (observed.helper_8008a174_result.has_value()) {
-                ++summary.enemy_setup_draws_with_helper_8008a174_result;
-            }
-            if (observed.helper_8008a280_reached.has_value()) {
-                ++summary.enemy_setup_draws_with_helper_8008a280_marker;
-            }
-            if (observed.helper_80082340_result.has_value()) {
-                ++summary.enemy_setup_draws_with_helper_80082340_result;
-            }
-            if (observed.target_adjacent.has_value()) {
-                ++summary.enemy_setup_draws_with_target_adjacency;
-            }
-            if (observed.target_distance.has_value()) {
-                ++summary.enemy_setup_draws_with_target_distance;
-            }
-            if (observed.selected_worker_pc.has_value()) {
-                ++summary.enemy_setup_draws_with_selected_worker;
-            }
-            if (observed.expected_worker_pc.has_value() && observed.selected_worker_pc.has_value()) {
-                if (*observed.expected_worker_pc == *observed.selected_worker_pc) {
-                    ++summary.worker_matches;
-                } else {
-                    ++summary.worker_mismatches;
-                }
-            }
-            if (has_required_enemy_helper_fields(observed)) {
-                ++summary.enemy_setup_draws_with_required_helper_fields;
-            }
             summary.events.push_back(std::move(observed));
             continue;
         }
@@ -521,18 +713,13 @@ ActionSetupCheckpointSummary summarize_action_setup_checkpoints(
             summary.events.push_back(std::move(observed));
             continue;
         }
-    }
 
-    if (summary.first_attack_hit_draw_index.has_value()) {
-        for (const auto& event : summary.events) {
-            if (event.kind == ActionSetupCheckpointKind::EnemySetupDraw
-                && event.draw_index.has_value()
-                && *event.draw_index < *summary.first_attack_hit_draw_index) {
-                ++summary.enemy_setup_draws_before_first_attack_hit;
-            }
+        if (is_enemy_setup_followup_checkpoint(event)) {
+            merge_enemy_setup_followup(summary, event);
         }
     }
 
+    recompute_enemy_setup_draw_counts(summary);
     summary.status = classify_status(summary);
     return summary;
 }

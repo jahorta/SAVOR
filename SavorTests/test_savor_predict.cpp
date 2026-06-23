@@ -2749,6 +2749,34 @@ TEST(SavorPredictCheckpointTrace, SummarizesActionSetupCheckpoints) {
     ASSERT_TRUE(setup_handler_mismatch.events[1].instr_param_matches_setup.has_value());
     EXPECT_FALSE(*setup_handler_mismatch.events[1].instr_param_matches_setup);
 
+    std::istringstream split_enemy_setup_input(
+        "pc=8008bc68 function=Battle::HandleECInst_8008b9e0 checkpoint=enemy_setup "
+        "rng_draw_index_before=30 actor_slot=4 setup_rand=27 movement_flags=0xc0 "
+        "slot4_instruction_0x0=3 slot4_target_0x4=0 slot4_instr_param_0x6=1\n"
+        "pc=8008a660 function=Battle::HandleECInst_8008b9e0 checkpoint=soldier_ai_instr_param_set "
+        "rng_draw_index_before=30 actor_slot=4 slot4_instruction_0x0=3 "
+        "slot4_target_0x4=0 slot4_instr_param_0x6=0\n"
+        "pc=8008bcb0 function=Battle::HandleECInst_8008b9e0 checkpoint=movement_helper_return "
+        "rng_draw_index_before=30 actor_slot=4 helper_result=1\n"
+        "pc=8008bccc function=Battle::HandleECInst_8008b9e0 checkpoint=movement_distance_return "
+        "rng_draw_index_before=30 actor_slot=4 helper_result=0 target_distance=3\n"
+        "pc=8008bdac function=Battle::HandleECInst_8008b9e0 checkpoint=worker_select "
+        "rng_draw_index_before=30 actor_slot=4\n"
+        "pc=80010bdc function=getAttackResult checkpoint=hit rng_draw_index_before=31\n");
+    const auto split_enemy_setup_parsed = parse_checkpoint_stream(split_enemy_setup_input);
+    ASSERT_TRUE(split_enemy_setup_parsed.errors.empty());
+    const auto split_enemy_setup =
+        summarize_action_setup_checkpoints(split_enemy_setup_parsed.events, 1);
+    EXPECT_EQ(split_enemy_setup.status, ActionSetupCheckpointStatus::MatchesExpected);
+    EXPECT_EQ(split_enemy_setup.observed_enemy_setup_draws, 1);
+    EXPECT_EQ(split_enemy_setup.enemy_setup_draws_with_required_helper_fields, 1);
+    EXPECT_EQ(split_enemy_setup.worker_matches, 1);
+    ASSERT_EQ(split_enemy_setup.events.size(), 1u);
+    ASSERT_TRUE(split_enemy_setup.events[0].final_instr_param_0x6.has_value());
+    EXPECT_EQ(*split_enemy_setup.events[0].final_instr_param_0x6, 0);
+    ASSERT_TRUE(split_enemy_setup.events[0].selected_worker_pc.has_value());
+    EXPECT_EQ(*split_enemy_setup.events[0].selected_worker_pc, std::string("80087F6C"));
+
     std::istringstream missing_fields_input(
         "pc=80086c68 function=Battle::HandlePCInst checkpoint=pc_handler "
         "rng_draw_index_before=21 active_slot=0 instruction=3\n");
@@ -3870,6 +3898,37 @@ TEST(SavorPredictCheckpointTrace, SummarizesCounterCheckpoints) {
     ASSERT_TRUE(update_mismatch_parsed.errors.empty());
     const auto update_mismatch = summarize_counter_checkpoints(update_mismatch_parsed.events, 1);
     EXPECT_EQ(update_mismatch.status, CounterCheckpointStatus::CounterChanceUpdateMismatch);
+
+    std::istringstream split_gate_input(
+        "pc=800819d0 function=shouldCounter_800819d0 checkpoint=counter_gate "
+        "rng_draw_index_before=40 attacker_slot=1 target_slot=4\n"
+        "pc=800819fc function=shouldCounter_800819d0 checkpoint=counter_gate_inputs "
+        "rng_draw_index_before=40 attacker_slot=1 target_slot=4 "
+        "target_status_flags=0x0 target_movement_flags=0xc0 "
+        "target_base_counter_chance=10 target_current_counter_chance=10 "
+        "slot1_action_marker_0x0=0 slot4_critical_marker_0x8=0\n"
+        "pc=80081a88 function=shouldCounter_800819d0 checkpoint=counter_roll "
+        "rng_draw_index_before=40 counter_rand=7\n"
+        "pc=80081b80 function=shouldCounter_800819d0 checkpoint=counter_gate_result "
+        "rng_draw_index_before=40 counter_result=1 slot4_attack_result_0xc=0 "
+        "target_current_counter_chance=0\n"
+        "pc=80081d80 function=performAttack checkpoint=counter_follow_up "
+        "rng_draw_index_before=40 attacker_slot=1 target_slot=4 counter_follow_up=1\n");
+    const auto split_gate_parsed = parse_checkpoint_stream(split_gate_input);
+    ASSERT_TRUE(split_gate_parsed.errors.empty());
+    const auto split_gate = summarize_counter_checkpoints(split_gate_parsed.events, std::nullopt);
+    EXPECT_EQ(split_gate.status, CounterCheckpointStatus::MatchesLiveGate);
+    EXPECT_EQ(split_gate.observed_counter_gate_attempts, 1);
+    EXPECT_EQ(split_gate.observed_counter_rolls, 1);
+    EXPECT_EQ(split_gate.observed_counter_follow_up_events, 1);
+    EXPECT_EQ(split_gate.expected_counter_follow_up_events, 1);
+    ASSERT_EQ(split_gate.draws.size(), 3u);
+    EXPECT_EQ(split_gate.draws[0].kind, CounterCheckpointKind::GateAttempt);
+    EXPECT_EQ(split_gate.draws[1].kind, CounterCheckpointKind::CounterRoll);
+    ASSERT_TRUE(split_gate.draws[1].counter_result.has_value());
+    EXPECT_EQ(*split_gate.draws[1].counter_result, 1);
+    ASSERT_TRUE(split_gate.draws[1].updated_current_counter_chance.has_value());
+    EXPECT_EQ(*split_gate.draws[1].updated_current_counter_chance, 0);
 }
 
 TEST(SavorPredictCheckpointTrace, SummarizesCounterGateAttemptsWithoutDraws) {

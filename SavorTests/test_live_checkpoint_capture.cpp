@@ -736,6 +736,14 @@ TEST(SavorPredictLiveCaptureProfile, BuildsPredictorValidationProfile)
         }
         return false;
     };
+    const auto has_reg_sample = [](const CheckpointSpec& checkpoint, std::string_view name) {
+        for (const auto& sample : checkpoint.register_memory_samples) {
+            if (sample.name == name) {
+                return true;
+            }
+        }
+        return false;
+    };
 
     const auto* hit = find_checkpoint("attack_hit_dodge_80010BDC");
     ASSERT_NE(hit, nullptr);
@@ -754,6 +762,28 @@ TEST(SavorPredictLiveCaptureProfile, BuildsPredictorValidationProfile)
     EXPECT_NE(find_checkpoint("pc_attack_fallback_param_set_b_800856C4"), nullptr);
     EXPECT_NE(find_checkpoint("pc_fallback_attack_worker_entry_80085CE0"), nullptr);
     EXPECT_NE(find_checkpoint("enemy_direct_worker_select_8008BDAC"), nullptr);
+
+    const auto* enemy_helper = find_checkpoint("enemy_helper_8008a174_return_8008BCB0");
+    ASSERT_NE(enemy_helper, nullptr);
+    EXPECT_TRUE(has_gpr_sample(*enemy_helper, "helper_result"));
+
+    const auto* counter_inputs = find_checkpoint("counter_gate_inputs_800819FC");
+    ASSERT_NE(counter_inputs, nullptr);
+    EXPECT_TRUE(has_memory_sample(*counter_inputs, "slot4_critical_marker_0x8"));
+    EXPECT_TRUE(has_gpr_sample(*counter_inputs, "target_instance"));
+    EXPECT_TRUE(has_reg_sample(*counter_inputs, "target_status_flags"));
+    EXPECT_TRUE(has_reg_sample(*counter_inputs, "target_current_counter_chance"));
+
+    const auto* counter_roll = find_checkpoint("counter_roll_80081A88");
+    ASSERT_NE(counter_roll, nullptr);
+    EXPECT_TRUE(counter_roll->owns_rng_draw);
+    EXPECT_TRUE(has_memory_sample(*counter_roll, "slot1_action_marker_0x0"));
+    EXPECT_TRUE(has_reg_sample(*counter_roll, "target_base_counter_chance"));
+
+    EXPECT_NE(find_checkpoint("counter_followup_call_prepare_80081D80"), nullptr);
+    EXPECT_NE(find_checkpoint("action_source_selection_entry_8006782C"), nullptr);
+    EXPECT_NE(find_checkpoint("action_source_selection_candidate_80067A9C"), nullptr);
+    EXPECT_NE(find_checkpoint("action_source_selection_source_slot_80067B50"), nullptr);
 }
 
 TEST(SavorPredictLiveCaptureProfile, BuildsTurnOrderValidationProfile)

@@ -114,6 +114,15 @@ std::vector<std::string_view> action_view_globals()
     };
 }
 
+std::vector<std::string_view> action_source_globals()
+{
+    return {
+        "global_action_source_state_80346bd8:0x80346BD8:u32",
+        "global_camera_override_80347394:0x80347394:u32",
+        "global_camera_flags_803472F4:0x803472F4:u32",
+    };
+}
+
 std::vector<std::string_view> action_view_update_gprs()
 {
     return {
@@ -386,6 +395,16 @@ std::vector<std::string_view> action_source_selection_samples()
     return {
         "selected_source_slot:r3:0x90:u16",
         "controller_actor_slot_0x92:r3:0x92:u16",
+        "controller_target_slot_0x94:r3:0x94:u16",
+    };
+}
+
+std::vector<std::string_view> action_source_state_pointer_samples()
+{
+    return {
+        "selected_source_slot:r3:0x90:u16",
+        "controller_actor_slot_0x92:r3:0x92:u16",
+        "controller_target_slot_0x94:r3:0x94:u16",
     };
 }
 
@@ -511,6 +530,20 @@ std::vector<std::string_view> first_battle_queued_instruction_samples()
     };
 }
 
+std::vector<std::string_view> first_battle_counter_state_samples()
+{
+    return {
+        "slot0_action_marker_0x0:0x80309730:u8",
+        "slot0_critical_marker_0x8:0x80309738:u8",
+        "slot1_action_marker_0x0:0x80309740:u8",
+        "slot1_critical_marker_0x8:0x80309748:u8",
+        "slot4_action_marker_0x0:0x80309770:u8",
+        "slot4_critical_marker_0x8:0x80309778:u8",
+        "slot5_action_marker_0x0:0x80309780:u8",
+        "slot5_critical_marker_0x8:0x80309788:u8",
+    };
+}
+
 std::vector<std::string_view> setup_action_gprs()
 {
     return {
@@ -545,12 +578,83 @@ std::vector<std::string_view> enemy_handler_gprs()
     };
 }
 
+std::vector<std::string_view> enemy_movement_helper_gprs()
+{
+    return {
+        "helper_result:3",
+        "actor_slot:30",
+        "target_slot:31",
+    };
+}
+
+std::vector<std::string_view> enemy_worker_select_gprs()
+{
+    return {
+        "selected_worker_pc:0",
+        "actor_slot:30",
+        "target_slot:31",
+    };
+}
+
 std::vector<std::string_view> enemy_setup_gprs()
 {
     return {
         "actor_slot:30",
         "target_slot:31",
         "setup_rand:3",
+    };
+}
+
+std::vector<std::string_view> counter_gate_gprs()
+{
+    return {
+        "attacker_slot:27",
+        "target_slot:29",
+        "target_slot_x4:30",
+        "target_instance:28",
+    };
+}
+
+std::vector<std::string_view> counter_roll_compare_gprs()
+{
+    return {
+        "counter_rand_mod100:3",
+        "target_current_counter_chance:0",
+        "attacker_slot:27",
+        "target_slot:29",
+        "target_slot_x4:30",
+        "target_instance:28",
+    };
+}
+
+std::vector<std::string_view> counter_return_gprs()
+{
+    return {
+        "counter_result:3",
+        "attacker_slot:27",
+        "target_slot:29",
+        "target_slot_x4:30",
+        "target_instance:28",
+    };
+}
+
+std::vector<std::string_view> counter_followup_gprs()
+{
+    return {
+        "counter_result:3",
+        "attacker_slot:31",
+        "target_slot:30",
+    };
+}
+
+std::vector<std::string_view> counter_target_instance_samples()
+{
+    return {
+        "target_status_flags:r28:0x1c:u32",
+        "target_movement_flags:r28:0xae:u16",
+        "target_current_counter_chance:r28:0xb4:u16",
+        "target_base_counter_chance:r28:0xba:u16",
+        "target_counter_chance_increment:r28:0x08:u16",
     };
 }
 
@@ -626,6 +730,18 @@ void write_predictor_validation_rng_checkpoint(
             true,
             first_battle_queued_instruction_samples(),
             enemy_setup_gprs());
+    } else if (pc == "80081A88") {
+        write_checkpoint(
+            out,
+            section_id(std::string(owner), std::string(pc)),
+            pc,
+            owner,
+            "Battle::AtkMethods::shouldCounter_800819d0",
+            "counter_roll",
+            true,
+            concat(first_battle_queued_instruction_samples(), first_battle_counter_state_samples()),
+            counter_gate_gprs(),
+            counter_target_instance_samples());
     } else if (pc == "80010BDC") {
         write_checkpoint(
             out,
@@ -720,6 +836,143 @@ void write_predictor_validation_rng_checkpoint(
     }
 }
 
+void write_action_source_selection_checkpoints(std::ostringstream& out)
+{
+    for (const auto& [pc, id, name] : {
+             std::tuple<std::string_view, std::string_view, std::string_view>{
+                 "8006782C", "action_source_selection_entry_8006782C", "action_source_selection_entry"},
+             std::tuple<std::string_view, std::string_view, std::string_view>{
+                 "80067A9C", "action_source_selection_candidate_80067A9C", "action_source_selection_candidate"},
+             std::tuple<std::string_view, std::string_view, std::string_view>{
+                 "80067AD0", "action_source_selection_mode_gate_80067AD0", "action_source_selection_mode_gate"},
+             std::tuple<std::string_view, std::string_view, std::string_view>{
+                 "80067B50", "action_source_selection_source_slot_80067B50", "action_source_selection_source_slot"},
+             std::tuple<std::string_view, std::string_view, std::string_view>{
+                 "80067BD0", "action_source_selection_80067BD0", "action_source_selection"},
+         }) {
+        write_checkpoint(
+            out,
+            id,
+            pc,
+            name,
+            "FUN_8006782c",
+            "source_selection",
+            false,
+            action_source_globals(),
+            {"r3_action_source_state:3"},
+            action_source_state_pointer_samples());
+    }
+}
+
+void write_counter_internal_checkpoints(std::ostringstream& out)
+{
+    const auto counter_memory =
+        concat(first_battle_queued_instruction_samples(), first_battle_counter_state_samples());
+    write_checkpoint(
+        out,
+        "counter_gate_entry_800819D0",
+        "800819D0",
+        "counter_gate_entry",
+        "Battle::AtkMethods::shouldCounter_800819d0",
+        "counter_gate",
+        false,
+        counter_memory,
+        {"attacker_slot:3", "target_slot:4"});
+
+    write_checkpoint(
+        out,
+        "counter_gate_inputs_800819FC",
+        "800819FC",
+        "counter_gate_inputs",
+        "Battle::AtkMethods::shouldCounter_800819d0",
+        "counter_gate_inputs",
+        false,
+        counter_memory,
+        counter_gate_gprs(),
+        counter_target_instance_samples());
+
+    write_checkpoint(
+        out,
+        "counter_roll_compare_80081AB0",
+        "80081AB0",
+        "counter_roll_compare",
+        "Battle::AtkMethods::shouldCounter_800819d0",
+        "counter_roll_compare",
+        false,
+        counter_memory,
+        counter_roll_compare_gprs(),
+        counter_target_instance_samples());
+
+    write_checkpoint(
+        out,
+        "counter_gate_queue_write_complete_80081B54",
+        "80081B54",
+        "counter_gate_queue_write_complete",
+        "Battle::AtkMethods::shouldCounter_800819d0",
+        "counter_gate_result",
+        false,
+        counter_memory,
+        counter_return_gprs(),
+        counter_target_instance_samples());
+
+    write_checkpoint(
+        out,
+        "counter_gate_success_80081B7C",
+        "80081B7C",
+        "counter_gate_success",
+        "Battle::AtkMethods::shouldCounter_800819d0",
+        "counter_gate_result",
+        false,
+        counter_memory,
+        counter_return_gprs(),
+        counter_target_instance_samples());
+
+    write_checkpoint(
+        out,
+        "counter_gate_return_80081B80",
+        "80081B80",
+        "counter_gate_return",
+        "Battle::AtkMethods::shouldCounter_800819d0",
+        "counter_gate_result",
+        false,
+        counter_memory,
+        counter_return_gprs(),
+        counter_target_instance_samples());
+
+    write_checkpoint(
+        out,
+        "counter_after_should_return_80081D78",
+        "80081D78",
+        "counter_after_should_return",
+        "Battle::AtkMethods::performAttack_80081b94",
+        "counter_gate_return",
+        false,
+        counter_memory,
+        counter_followup_gprs());
+
+    write_checkpoint(
+        out,
+        "counter_followup_call_prepare_80081D80",
+        "80081D80",
+        "counter_followup_call_prepare",
+        "Battle::AtkMethods::performAttack_80081b94",
+        "counter_follow_up",
+        false,
+        counter_memory,
+        counter_followup_gprs());
+
+    write_checkpoint(
+        out,
+        "counter_followup_return_80081D88",
+        "80081D88",
+        "counter_followup_return",
+        "Battle::AtkMethods::performAttack_80081b94",
+        "counter_follow_up",
+        false,
+        counter_memory,
+        counter_followup_gprs());
+}
+
 } // namespace
 
 std::string build_first_battle_capture_profile_ini()
@@ -758,6 +1011,51 @@ std::string build_first_battle_capture_profile_ini()
                 {},
                 {"r30_worksheet:30", "r31_target_buffer:31"},
                 action_view_mode0e_rng_samples());
+        } else if (pc == "8008BC68") {
+            write_checkpoint(
+                out,
+                section_id(owner, pc),
+                pc,
+                owner,
+                "Battle::HandleECInst_8008b9e0",
+                "enemy_setup",
+                true,
+                first_battle_queued_instruction_samples(),
+                enemy_setup_gprs());
+        } else if (pc == "80010BDC") {
+            write_checkpoint(
+                out,
+                section_id(owner, pc),
+                pc,
+                owner,
+                "getAttackResult_80010b8c",
+                "hit",
+                true,
+                first_battle_queued_instruction_samples(),
+                attack_result_rng_gprs());
+        } else if (pc == "80010C44") {
+            write_checkpoint(
+                out,
+                section_id(owner, pc),
+                pc,
+                owner,
+                "getAttackResult_80010b8c",
+                "crit",
+                true,
+                first_battle_queued_instruction_samples(),
+                attack_result_rng_gprs());
+        } else if (pc == "80081A88") {
+            write_checkpoint(
+                out,
+                section_id(owner, pc),
+                pc,
+                owner,
+                "Battle::AtkMethods::shouldCounter_800819d0",
+                "counter_roll",
+                true,
+                concat(first_battle_queued_instruction_samples(), first_battle_counter_state_samples()),
+                counter_gate_gprs(),
+                counter_target_instance_samples());
         } else if (pc == "8002BAD8") {
             write_checkpoint(
                 out,
@@ -918,17 +1216,7 @@ std::string build_first_battle_capture_profile_ini()
         first_battle_enemy_id_samples(),
         drop_entry_gprs());
 
-    write_checkpoint(
-        out,
-        "action_source_selection_80067BD0",
-        "80067BD0",
-        "action_source_selection",
-        "FUN_8006782c",
-        "source_selection",
-        false,
-        action_view_globals(),
-        {"r3_action_source_state:3"},
-        action_source_selection_samples());
+    write_action_source_selection_checkpoints(out);
 
     write_checkpoint(
         out,
@@ -983,6 +1271,8 @@ std::string build_first_battle_capture_profile_ini()
             "r31_dispatch_context:31",
         },
         sst_case8_action_field6_store_samples());
+
+    write_counter_internal_checkpoints(out);
 
     write_checkpoint(
         out,
@@ -1233,6 +1523,14 @@ std::string build_first_battle_predictor_validation_profile_ini()
              std::tuple<std::string_view, std::string_view, std::string_view>{"8008BDAC", "enemy_direct_worker_select_8008BDAC", "worker_select"},
              std::tuple<std::string_view, std::string_view, std::string_view>{"8008BDDC", "enemy_fallback_worker_select_8008BDDC", "worker_select"},
          }) {
+        const auto helper_gprs =
+            checkpoint == "worker_select" ? enemy_worker_select_gprs()
+            : checkpoint == "movement_helper_return"
+                || checkpoint == "movement_distance_return"
+                || checkpoint == "movement_scope_return"
+                || checkpoint == "target_adjacent"
+                ? enemy_movement_helper_gprs()
+                : enemy_handler_gprs();
         write_checkpoint(
             out,
             id,
@@ -1242,7 +1540,7 @@ std::string build_first_battle_predictor_validation_profile_ini()
             checkpoint,
             false,
             first_battle_queued_instruction_samples(),
-            enemy_handler_gprs());
+            helper_gprs);
     }
 
     write_checkpoint(
@@ -1344,16 +1642,7 @@ std::string build_first_battle_predictor_validation_profile_ini()
         first_battle_enemy_id_samples(),
         drop_entry_gprs());
 
-    write_checkpoint(
-        out,
-        "counter_gate_800819D0",
-        "800819D0",
-        "counter_gate",
-        "Battle::AtkMethods::shouldCounter_800819d0",
-        "counter_gate",
-        false,
-        first_battle_queued_instruction_samples(),
-        {"attacker_slot:3", "target_slot:4"});
+    write_counter_internal_checkpoints(out);
 
     write_checkpoint(
         out,
@@ -1363,7 +1652,7 @@ std::string build_first_battle_predictor_validation_profile_ini()
         "Battle::AtkMethods::setupTurnAction_80082134",
         "counter_followup_dispatch",
         false,
-        first_battle_queued_instruction_samples(),
+        concat(first_battle_queued_instruction_samples(), first_battle_counter_state_samples()),
         {"actor_slot:3", "target_slot:4"});
 
     write_checkpoint(
@@ -1374,20 +1663,10 @@ std::string build_first_battle_predictor_validation_profile_ini()
         "Battle::AtkMethods::performAttack_80081b94",
         "counter_followup_action",
         false,
-        first_battle_queued_instruction_samples(),
+        concat(first_battle_queued_instruction_samples(), first_battle_counter_state_samples()),
         {"actor_slot:3", "target_slot:4"});
 
-    write_checkpoint(
-        out,
-        "action_source_selection_80067BD0",
-        "80067BD0",
-        "action_source_selection",
-        "FUN_8006782c",
-        "source_selection",
-        false,
-        action_view_globals(),
-        {"r3_action_source_state:3"},
-        action_source_selection_samples());
+    write_action_source_selection_checkpoints(out);
 
     write_checkpoint(
         out,

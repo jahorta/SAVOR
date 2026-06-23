@@ -2,6 +2,7 @@
 
 #include <cstdlib>
 #include <initializer_list>
+#include <string>
 #include <string_view>
 #include <utility>
 
@@ -57,11 +58,25 @@ bool field_truthy(const CheckpointEvent& event, const char* key) {
 bool is_counter_gate_attempt(const CheckpointEvent& event) {
     return event.pc == "800819D0"
         || event_named(event, {
-            "shouldCounter_800819d0",
             "counter_gate_entry",
             "counter_gate",
             "should_counter_gate",
         });
+}
+
+bool is_counter_gate_detail(const CheckpointEvent& event) {
+    return event_named(event, {
+            "counter_gate_inputs",
+            "counter_roll_compare",
+            "counter_gate_result",
+            "counter_gate_success",
+            "counter_gate_return",
+        })
+        || event.pc == "800819FC"
+        || event.pc == "80081AB0"
+        || event.pc == "80081B54"
+        || event.pc == "80081B7C"
+        || event.pc == "80081B80";
 }
 
 bool is_counter_follow_up(const CheckpointEvent& event) {
@@ -70,8 +85,87 @@ bool is_counter_follow_up(const CheckpointEvent& event) {
                "counter_followup",
                "counter_setup_action",
                "counter_setupTurnAction",
+               "counter_followup_dispatch",
+               "counter_followup_action",
            })
         || (event.pc == "80082134" && field_truthy(event, "counter_follow_up"));
+}
+
+std::optional<int> actor_slot_from_event(const CheckpointEvent& event) {
+    return parse_first_field_int(event, {"attacker_slot", "actor_slot", "active_slot"});
+}
+
+std::optional<int> target_slot_from_event(const CheckpointEvent& event) {
+    if (event.target_slot.has_value()) {
+        return event.target_slot;
+    }
+    return parse_first_field_int(event, {"target_slot", "target"});
+}
+
+std::optional<int> slot_field_from_event(
+    const CheckpointEvent& event,
+    std::optional<int> slot,
+    const char* suffix) {
+    if (!slot.has_value() || *slot < 0) {
+        return std::nullopt;
+    }
+    const std::string field_name =
+        "slot" + std::to_string(*slot) + "_" + suffix;
+    return parse_field_int(event, field_name.c_str());
+}
+
+std::optional<int> attacker_action_marker_from_event(
+    const CheckpointEvent& event,
+    std::optional<int> attacker_slot) {
+    if (const auto direct = parse_first_field_int(
+            event,
+            {"attacker_action_marker", "action_marker"}); direct.has_value()) {
+        return direct;
+    }
+    return slot_field_from_event(event, attacker_slot, "action_marker_0x0");
+}
+
+std::optional<int> attack_was_critical_from_event(
+    const CheckpointEvent& event,
+    std::optional<int> target_slot) {
+    if (const auto direct = parse_first_field_int(
+            event,
+            {"attack_was_critical", "critical_marker"}); direct.has_value()) {
+        return direct;
+    }
+    return slot_field_from_event(event, target_slot, "critical_marker_0x8");
+}
+
+std::optional<int> queued_field_from_event(
+    const CheckpointEvent& event,
+    std::optional<int> target_slot) {
+    if (const auto direct = parse_first_field_int(
+            event,
+            {"queued_field7_0xc", "field7_0xc", "counter_queue_result"}); direct.has_value()) {
+        return direct;
+    }
+    return slot_field_from_event(event, target_slot, "attack_result_0xc");
+}
+
+bool event_has_counter_chance_update(const CheckpointEvent& event) {
+    return event_named(event, {
+            "counter_gate_result",
+            "counter_gate_success",
+            "counter_gate_return",
+        })
+        || event.pc == "80081B54"
+        || event.pc == "80081B7C"
+        || event.pc == "80081B80";
+}
+
+std::optional<int> updated_current_counter_chance_from_event(const CheckpointEvent& event) {
+    if (const auto direct = parse_field_int(event, "updated_current_counter_chance"); direct.has_value()) {
+        return direct;
+    }
+    if (event_has_counter_chance_update(event)) {
+        return parse_field_int(event, "target_current_counter_chance");
+    }
+    return std::nullopt;
 }
 
 std::optional<int> rand_value_from_event(
@@ -248,6 +342,131 @@ void simulate_live_gate(CounterCheckpointSummary& summary, CounterCheckpointDraw
             static_cast<std::uint16_t>(*draw.counter_rand)));
 }
 
+void merge_optional(std::optional<int>& target, std::optional<int> value) {
+    if (value.has_value()) {
+        target = *value;
+    }
+}
+
+void merge_optional_if_missing(std::optional<int>& target, std::optional<int> value) {
+    if (!target.has_value() && value.has_value()) {
+        target = *value;
+    }
+}
+
+void merge_counter_fields(CounterCheckpointDraw& target, const CounterCheckpointDraw& source) {
+    merge_optional_if_missing(target.draw_index, source.draw_index);
+    merge_optional_if_missing(target.attacker_slot, source.attacker_slot);
+    merge_optional_if_missing(target.target_slot, source.target_slot);
+    merge_optional_if_missing(target.target_status_flags, source.target_status_flags);
+    merge_optional_if_missing(target.target_movement_flags, source.target_movement_flags);
+    merge_optional_if_missing(target.target_base_counter_chance, source.target_base_counter_chance);
+    merge_optional_if_missing(target.target_current_counter_chance, source.target_current_counter_chance);
+    merge_optional_if_missing(target.attacker_action_marker, source.attacker_action_marker);
+    merge_optional_if_missing(target.attack_was_critical, source.attack_was_critical);
+    merge_optional(target.counter_rand, source.counter_rand);
+    merge_optional(target.counter_result, source.counter_result);
+    merge_optional(target.queued_field7_0xc, source.queued_field7_0xc);
+    merge_optional(target.updated_current_counter_chance, source.updated_current_counter_chance);
+    merge_optional(target.observed_counter_follow_up, source.observed_counter_follow_up);
+}
+
+CounterCheckpointDraw make_counter_draw_from_event(
+    const CheckpointEvent& event,
+    CounterCheckpointKind kind,
+    bool parse_rand,
+    int& seed_transition_mismatches) {
+    CounterCheckpointDraw draw;
+    draw.kind = kind;
+    draw.draw_index = event.rng_draw_index_before;
+    draw.attacker_slot = actor_slot_from_event(event);
+    draw.target_slot = target_slot_from_event(event);
+    draw.target_status_flags = parse_field_int(event, "target_status_flags");
+    draw.target_movement_flags = parse_field_int(event, "target_movement_flags");
+    draw.target_base_counter_chance = parse_field_int(event, "target_base_counter_chance");
+    draw.target_current_counter_chance = parse_field_int(event, "target_current_counter_chance");
+    draw.attacker_action_marker = attacker_action_marker_from_event(event, draw.attacker_slot);
+    draw.attack_was_critical = attack_was_critical_from_event(event, draw.target_slot);
+    if (parse_rand) {
+        draw.counter_rand = rand_value_from_event(event, seed_transition_mismatches);
+    }
+    draw.counter_result = parse_field_int(event, "counter_result");
+    draw.queued_field7_0xc = queued_field_from_event(event, draw.target_slot);
+    draw.updated_current_counter_chance = updated_current_counter_chance_from_event(event);
+    draw.observed_counter_follow_up = parse_field_int(event, "counter_follow_up");
+    return draw;
+}
+
+void recompute_counter_summary_counts(CounterCheckpointSummary& summary) {
+    summary.observed_counter_rolls = 0;
+    summary.first_counter_roll_draw_index.reset();
+    summary.last_counter_roll_draw_index.reset();
+    summary.draws_with_actor_slots = 0;
+    summary.draws_with_gate_inputs = 0;
+    summary.draws_with_rand_value = 0;
+    summary.draws_with_counter_result = 0;
+    summary.draws_with_queue_result = 0;
+    summary.draws_with_counter_chance_update = 0;
+    summary.live_gate_simulated_draws = 0;
+    summary.observed_counter_gate_attempts = 0;
+    summary.gate_attempts_with_live_inputs = 0;
+    summary.expected_counter_rolls_from_gate_inputs = 0;
+    summary.expected_no_draw_gate_attempts = 0;
+    summary.no_draw_gate_attempts_simulated = 0;
+    summary.observed_counter_follow_up_events = 0;
+    summary.expected_counter_follow_up_events = 0;
+    summary.counter_result_matches = 0;
+    summary.counter_result_mismatches = 0;
+    summary.queued_field_matches = 0;
+    summary.queued_field_mismatches = 0;
+    summary.counter_chance_update_matches = 0;
+    summary.counter_chance_update_mismatches = 0;
+
+    for (auto& draw : summary.draws) {
+        if (draw.kind == CounterCheckpointKind::CounterRoll) {
+            ++summary.observed_counter_rolls;
+            if (draw.draw_index.has_value()) {
+                if (!summary.first_counter_roll_draw_index.has_value()) {
+                    summary.first_counter_roll_draw_index = *draw.draw_index;
+                }
+                summary.last_counter_roll_draw_index = *draw.draw_index;
+            }
+        } else if (draw.kind == CounterCheckpointKind::GateAttempt) {
+            ++summary.observed_counter_gate_attempts;
+        } else if (draw.kind == CounterCheckpointKind::CounterFollowUp) {
+            ++summary.observed_counter_follow_up_events;
+        }
+
+        if (draw.attacker_slot.has_value() && draw.target_slot.has_value()) {
+            ++summary.draws_with_actor_slots;
+        }
+        if (draw.target_status_flags.has_value()
+            && draw.target_movement_flags.has_value()
+            && draw.target_base_counter_chance.has_value()
+            && draw.target_current_counter_chance.has_value()
+            && draw.attack_was_critical.has_value()) {
+            ++summary.draws_with_gate_inputs;
+        }
+        if (draw.counter_rand.has_value()) {
+            ++summary.draws_with_rand_value;
+        }
+        if (draw.counter_result.has_value()) {
+            ++summary.draws_with_counter_result;
+        }
+        if (draw.queued_field7_0xc.has_value()) {
+            ++summary.draws_with_queue_result;
+        }
+        if (draw.updated_current_counter_chance.has_value()) {
+            ++summary.draws_with_counter_chance_update;
+        }
+        if (draw.kind == CounterCheckpointKind::GateAttempt
+            && has_complete_live_gate_inputs_without_rand(draw)) {
+            ++summary.gate_attempts_with_live_inputs;
+        }
+        simulate_live_gate(summary, draw);
+    }
+}
+
 CounterCheckpointStatus classify_status(const CounterCheckpointSummary& summary) {
     if (summary.expected_counter_roll_ceiling.has_value()
         && summary.observed_counter_rolls > *summary.expected_counter_roll_ceiling) {
@@ -334,77 +553,77 @@ CounterCheckpointSummary summarize_counter_checkpoints(
     std::optional<int> expected_counter_roll_ceiling) {
     CounterCheckpointSummary summary;
     summary.expected_counter_roll_ceiling = expected_counter_roll_ceiling;
+    std::optional<std::size_t> current_gate_index;
+    std::optional<std::size_t> current_roll_index;
 
     for (const auto& event : events) {
         const bool counter_roll = owner_is(event, kCounterOwner);
         const bool gate_attempt = !counter_roll && is_counter_gate_attempt(event);
+        const bool gate_detail = !counter_roll && is_counter_gate_detail(event);
         const bool follow_up = is_counter_follow_up(event);
-        if (!counter_roll && !gate_attempt && !follow_up) {
+        if (!counter_roll && !gate_attempt && !gate_detail && !follow_up) {
             continue;
         }
 
-        CounterCheckpointDraw draw;
-        draw.kind = counter_roll
-            ? CounterCheckpointKind::CounterRoll
-            : (follow_up ? CounterCheckpointKind::CounterFollowUp : CounterCheckpointKind::GateAttempt);
-        draw.draw_index = event.rng_draw_index_before;
-        draw.attacker_slot = parse_field_int(event, "attacker_slot");
-        draw.target_slot = event.target_slot.has_value() ? event.target_slot : parse_field_int(event, "target_slot");
-        draw.target_status_flags = parse_field_int(event, "target_status_flags");
-        draw.target_movement_flags = parse_field_int(event, "target_movement_flags");
-        draw.target_base_counter_chance = parse_field_int(event, "target_base_counter_chance");
-        draw.target_current_counter_chance = parse_field_int(event, "target_current_counter_chance");
-        draw.attacker_action_marker = parse_field_int(event, "attacker_action_marker");
-        draw.attack_was_critical = parse_field_int(event, "attack_was_critical");
-        draw.counter_rand = rand_value_from_event(event, summary.seed_transition_mismatches);
-        draw.counter_result = parse_field_int(event, "counter_result");
-        draw.queued_field7_0xc = parse_field_int(event, "queued_field7_0xc");
-        draw.updated_current_counter_chance = parse_field_int(event, "updated_current_counter_chance");
-        draw.observed_counter_follow_up = parse_field_int(event, "counter_follow_up");
-
         if (counter_roll) {
-            ++summary.observed_counter_rolls;
-        } else if (gate_attempt) {
-            ++summary.observed_counter_gate_attempts;
-        } else if (follow_up) {
-            ++summary.observed_counter_follow_up_events;
+            auto draw = make_counter_draw_from_event(
+                event,
+                CounterCheckpointKind::CounterRoll,
+                true,
+                summary.seed_transition_mismatches);
+            if (current_gate_index.has_value()) {
+                merge_counter_fields(draw, summary.draws[*current_gate_index]);
+            }
+            summary.draws.push_back(std::move(draw));
+            current_roll_index = summary.draws.size() - 1u;
+            if (current_gate_index.has_value()) {
+                merge_counter_fields(summary.draws[*current_gate_index], summary.draws[*current_roll_index]);
+            }
+            continue;
         }
 
-        if (counter_roll && draw.draw_index.has_value()) {
-            if (!summary.first_counter_roll_draw_index.has_value()) {
-                summary.first_counter_roll_draw_index = *draw.draw_index;
+        if (gate_attempt) {
+            auto draw = make_counter_draw_from_event(
+                event,
+                CounterCheckpointKind::GateAttempt,
+                false,
+                summary.seed_transition_mismatches);
+            summary.draws.push_back(std::move(draw));
+            current_gate_index = summary.draws.size() - 1u;
+            current_roll_index.reset();
+            continue;
+        }
+
+        if (gate_detail) {
+            auto draw = make_counter_draw_from_event(
+                event,
+                CounterCheckpointKind::GateAttempt,
+                false,
+                summary.seed_transition_mismatches);
+            if (!current_gate_index.has_value()) {
+                summary.draws.push_back(draw);
+                current_gate_index = summary.draws.size() - 1u;
+            } else {
+                merge_counter_fields(summary.draws[*current_gate_index], draw);
             }
-            summary.last_counter_roll_draw_index = *draw.draw_index;
+            if (current_roll_index.has_value()) {
+                merge_counter_fields(summary.draws[*current_roll_index], draw);
+            }
+            continue;
         }
-        if (draw.attacker_slot.has_value() && draw.target_slot.has_value()) {
-            ++summary.draws_with_actor_slots;
+
+        if (follow_up) {
+            auto draw = make_counter_draw_from_event(
+                event,
+                CounterCheckpointKind::CounterFollowUp,
+                false,
+                summary.seed_transition_mismatches);
+            summary.draws.push_back(std::move(draw));
+            continue;
         }
-        if (draw.target_status_flags.has_value()
-            && draw.target_movement_flags.has_value()
-            && draw.target_base_counter_chance.has_value()
-            && draw.target_current_counter_chance.has_value()
-            && draw.attack_was_critical.has_value()) {
-            ++summary.draws_with_gate_inputs;
-        }
-        if (draw.counter_rand.has_value()) {
-            ++summary.draws_with_rand_value;
-        }
-        if (draw.counter_result.has_value()) {
-            ++summary.draws_with_counter_result;
-        }
-        if (draw.queued_field7_0xc.has_value()) {
-            ++summary.draws_with_queue_result;
-        }
-        if (draw.updated_current_counter_chance.has_value()) {
-            ++summary.draws_with_counter_chance_update;
-        }
-        if (gate_attempt && has_complete_live_gate_inputs_without_rand(draw)) {
-            ++summary.gate_attempts_with_live_inputs;
-        }
-        simulate_live_gate(summary, draw);
-        summary.draws.push_back(std::move(draw));
     }
 
+    recompute_counter_summary_counts(summary);
     summary.status = classify_status(summary);
     return summary;
 }
