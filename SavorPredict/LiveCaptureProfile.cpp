@@ -45,7 +45,8 @@ void write_checkpoint(
     bool owns_rng_draw,
     const std::vector<std::string_view>& memory = {},
     const std::vector<std::string_view>& gprs = {},
-    const std::vector<std::string_view>& reg_memory = {})
+    const std::vector<std::string_view>& reg_memory = {},
+    const std::vector<std::string_view>& addrprog = {})
 {
     out << "[checkpoint." << id << "]\n";
     out << "pc=0x" << pc << "\n";
@@ -77,7 +78,57 @@ void write_checkpoint(
         }
         out << "\n";
     }
+    if (!addrprog.empty()) {
+        out << "addrprog=";
+        for (std::size_t i = 0; i < addrprog.size(); ++i) {
+            if (i != 0) out << ",";
+            out << addrprog[i];
+        }
+        out << "\n";
+    }
     out << "\n";
+}
+
+void write_static_watchpoint(
+    std::ostringstream& out,
+    std::string_view id,
+    std::uint32_t address,
+    std::string_view size,
+    std::string_view access,
+    std::string_view scope = {})
+{
+    out << "[watchpoint." << id << "]\n";
+    out << "address=" << hex_u32(address) << "\n";
+    out << "size=" << size << "\n";
+    out << "access=" << access << "\n";
+    if (!scope.empty()) {
+        out << "scope=" << scope << "\n\n";
+    } else {
+        out << "\n";
+    }
+}
+
+void write_dynamic_watchpoint(
+    std::ostringstream& out,
+    std::string_view id,
+    std::string_view pc,
+    std::string_view base_gpr,
+    std::string_view offset,
+    std::string_view size,
+    std::string_view access,
+    std::string_view scope = {})
+{
+    out << "[dynamic_watchpoint." << id << "]\n";
+    out << "pc=0x" << pc << "\n";
+    out << "base_gpr=" << base_gpr << "\n";
+    out << "offset=" << offset << "\n";
+    out << "size=" << size << "\n";
+    out << "access=" << access << "\n";
+    if (!scope.empty()) {
+        out << "scope=" << scope << "\n\n";
+    } else {
+        out << "\n";
+    }
 }
 
 void write_checkpoint_owned(
@@ -399,12 +450,30 @@ std::vector<std::string_view> action_source_selection_samples()
     };
 }
 
-std::vector<std::string_view> action_source_state_pointer_samples()
+std::vector<std::string_view> action_source_state_r3_samples()
 {
     return {
         "selected_source_slot:r3:0x90:u16",
         "controller_actor_slot_0x92:r3:0x92:u16",
         "controller_target_slot_0x94:r3:0x94:u16",
+    };
+}
+
+std::vector<std::string_view> action_source_state_r4_samples()
+{
+    return {
+        "selected_source_slot:r4:0x90:u16",
+        "controller_actor_slot_0x92:r4:0x92:u16",
+        "controller_target_slot_0x94:r4:0x94:u16",
+    };
+}
+
+std::vector<std::string_view> action_source_state_global_addrprog_samples()
+{
+    return {
+        "selected_source_slot_global:0x80346BD8:load_ptr32|+0x90:u16",
+        "controller_actor_slot_0x92_global:0x80346BD8:load_ptr32|+0x92:u16",
+        "controller_target_slot_0x94_global:0x80346BD8:load_ptr32|+0x94:u16",
     };
 }
 
@@ -838,30 +907,73 @@ void write_predictor_validation_rng_checkpoint(
 
 void write_action_source_selection_checkpoints(std::ostringstream& out)
 {
-    for (const auto& [pc, id, name] : {
-             std::tuple<std::string_view, std::string_view, std::string_view>{
-                 "8006782C", "action_source_selection_entry_8006782C", "action_source_selection_entry"},
-             std::tuple<std::string_view, std::string_view, std::string_view>{
-                 "80067A9C", "action_source_selection_candidate_80067A9C", "action_source_selection_candidate"},
-             std::tuple<std::string_view, std::string_view, std::string_view>{
-                 "80067AD0", "action_source_selection_mode_gate_80067AD0", "action_source_selection_mode_gate"},
-             std::tuple<std::string_view, std::string_view, std::string_view>{
-                 "80067B50", "action_source_selection_source_slot_80067B50", "action_source_selection_source_slot"},
-             std::tuple<std::string_view, std::string_view, std::string_view>{
-                 "80067BD0", "action_source_selection_80067BD0", "action_source_selection"},
-         }) {
-        write_checkpoint(
-            out,
-            id,
-            pc,
-            name,
-            "FUN_8006782c",
-            "source_selection",
-            false,
-            action_source_globals(),
-            {"r3_action_source_state:3"},
-            action_source_state_pointer_samples());
-    }
+    write_checkpoint(
+        out,
+        "action_source_selection_entry_8006782C",
+        "8006782C",
+        "action_source_selection_entry",
+        "FUN_8006782c",
+        "action_source_selection_entry",
+        false,
+        action_source_globals(),
+        {"r3_callback_thread:3"});
+
+    write_checkpoint(
+        out,
+        "action_source_selection_candidate_80067A9C",
+        "80067A9C",
+        "action_source_selection_candidate",
+        "FUN_8006782c",
+        "source_selection",
+        false,
+        action_source_globals(),
+        {
+            "r3_selected_element:3",
+            "r4_action_source_state:4",
+            "r5_selected_source_slot_candidate:5",
+        },
+        action_source_state_r4_samples());
+
+    write_checkpoint(
+        out,
+        "action_source_selection_mode_gate_80067AD0",
+        "80067AD0",
+        "action_source_selection_mode_gate",
+        "FUN_8006782c",
+        "source_selection",
+        false,
+        action_source_globals(),
+        {
+            "r0_selected_source_slot_fallback:0",
+            "r3_action_source_state:3",
+            "r5_occupied_slot_count:5",
+        },
+        action_source_state_r3_samples());
+
+    write_checkpoint(
+        out,
+        "action_source_selection_source_slot_80067B50",
+        "80067B50",
+        "action_source_selection_source_slot",
+        "FUN_8006782c",
+        "source_selection",
+        false,
+        action_source_globals(),
+        {"r3_callback_thread:3", "r27_callback_thread:27"},
+        {},
+        action_source_state_global_addrprog_samples());
+
+    write_checkpoint(
+        out,
+        "action_source_state_downstream_read_80067BD0",
+        "80067BD0",
+        "action_source_state_downstream_read",
+        "FUN_8006782c",
+        "action_source_state_downstream_read",
+        false,
+        action_source_globals(),
+        {"r3_action_source_state:3"},
+        action_source_state_r3_samples());
 }
 
 void write_counter_internal_checkpoints(std::ostringstream& out)
@@ -1818,6 +1930,139 @@ std::string build_first_battle_turn_order_validation_profile_ini()
     return out.str();
 }
 
+std::string build_first_battle_field6_watch_profile_ini()
+{
+    std::ostringstream out;
+    out << "[profile]\n";
+    out << "name=first_battle_field6_watchpoints\n";
+    out << "schema_version=1\n";
+    out << "memory=rng_seed_before:" << hex_u32(addr::AddrRegistry::base(addr::core::RNG_SEED)) << ":u32\n\n";
+
+    write_static_watchpoint(out, "queued_slot0_instr_param_0x6", 0x8030917Au, "u16", "access", "input_macro");
+    write_static_watchpoint(out, "queued_slot1_instr_param_0x6", 0x8030919Au, "u16", "access", "input_macro");
+    write_static_watchpoint(out, "queued_slot4_instr_param_0x6", 0x803091FAu, "u16", "access", "input_macro");
+    write_static_watchpoint(out, "queued_slot5_instr_param_0x6", 0x8030921Au, "u16", "access", "input_macro");
+
+    write_checkpoint(
+        out,
+        "action_view_category2_query_call_8001331C",
+        "8001331C",
+        "action_view_category2_query_call",
+        "FUN_80012f58",
+        "action_view_query",
+        false,
+        action_view_globals(),
+        action_view_category2_gate_gprs(),
+        action_view_category2_gate_samples());
+    write_dynamic_watchpoint(
+        out,
+        "actor_field6_action_view_query_call_8001331C",
+        "8001331C",
+        "r28",
+        "0x6",
+        "u16",
+        "access",
+        "input_macro");
+
+    write_checkpoint(
+        out,
+        "action_view_category2_query_result_80013320",
+        "80013320",
+        "action_view_category2_query_result",
+        "FUN_80012f58",
+        "action_view_query_result",
+        false,
+        action_view_globals(),
+        action_view_category2_result_gprs(),
+        action_view_category2_gate_samples());
+    write_dynamic_watchpoint(
+        out,
+        "actor_field6_action_view_query_result_80013320",
+        "80013320",
+        "r28",
+        "0x6",
+        "u16",
+        "access",
+        "input_macro");
+
+    write_checkpoint(
+        out,
+        "action_view_category2_spawn_80013334",
+        "80013334",
+        "action_view_category2_spawn",
+        "FUN_80053f38",
+        "action_view_spawn",
+        false,
+        action_view_globals(),
+        action_view_category2_spawn_gprs(),
+        action_view_category2_gate_samples());
+    write_dynamic_watchpoint(
+        out,
+        "actor_field6_action_view_spawn_80013334",
+        "80013334",
+        "r28",
+        "0x6",
+        "u16",
+        "access",
+        "input_macro");
+
+    write_checkpoint(
+        out,
+        "action_source_field6_bridge_8006778C",
+        "8006778C",
+        "action_source_field6_bridge",
+        "FUN_8006721c",
+        "action_source",
+        false,
+        {},
+        {
+            "selected_row_index_return:3",
+            "r29_source_instruction:29",
+            "r30_actor_instruction:30",
+        },
+        action_source_bridge_samples());
+    write_dynamic_watchpoint(out, "source_field6_bridge_8006778C", "8006778C", "r29", "0x6", "u16", "access", "input_macro");
+    write_dynamic_watchpoint(out, "actor_field6_bridge_8006778C", "8006778C", "r30", "0x6", "u16", "access", "input_macro");
+
+    write_checkpoint(
+        out,
+        "sst_action_field6_case2_store_complete_8000C4C8",
+        "8000C4C8",
+        "sst_action_field6_case2_store_complete",
+        "SST::Command::Dispatch_8000c19c",
+        "sst_action_field6_case2_store_complete",
+        false,
+        {},
+        {
+            "r0_written_field6:0",
+            "r3_destination_worksheet:3",
+            "r29_serialized_command:29",
+        },
+        sst_case2_action_field6_store_samples());
+    write_dynamic_watchpoint(out, "sst_case2_source_field6_8000C4C8", "8000C4C8", "r29", "0x6", "u16", "access", "input_macro");
+    write_dynamic_watchpoint(out, "sst_case2_dest_field6_8000C4C8", "8000C4C8", "r3", "0x6", "u16", "access", "input_macro");
+
+    write_checkpoint(
+        out,
+        "sst_action_field6_case8_store_complete_8000C6E8",
+        "8000C6E8",
+        "sst_action_field6_case8_store_complete",
+        "SST::Command::Dispatch_8000c19c",
+        "sst_action_field6_case8_store_complete",
+        false,
+        {},
+        {
+            "r0_written_field6:0",
+            "r3_destination_worksheet:3",
+            "r30_serialized_command:30",
+        },
+        sst_case8_action_field6_store_samples());
+    write_dynamic_watchpoint(out, "sst_case8_source_field6_8000C6E8", "8000C6E8", "r30", "0x0a", "u16", "access", "input_macro");
+    write_dynamic_watchpoint(out, "sst_case8_dest_field6_8000C6E8", "8000C6E8", "r3", "0x6", "u16", "access", "input_macro");
+
+    return out.str();
+}
+
 int write_first_battle_capture_profile(
     const std::filesystem::path& output_path,
     std::ostream& out,
@@ -1915,6 +2160,40 @@ int write_first_battle_turn_order_validation_profile(
         return 1;
     }
     out << "Wrote first-battle turn-order validation capture profile: "
+        << output_path.string() << "\n";
+    return 0;
+}
+
+int write_first_battle_field6_watch_profile(
+    const std::filesystem::path& output_path,
+    std::ostream& out,
+    std::ostream& err)
+{
+    if (output_path.empty()) {
+        err << "write-first-battle-field6-watch-profile requires --output PATH.\n";
+        return 2;
+    }
+    if (const auto parent = output_path.parent_path(); !parent.empty()) {
+        std::error_code ec;
+        std::filesystem::create_directories(parent, ec);
+        if (ec) {
+            err << "Failed to create output directory: " << ec.message() << "\n";
+            return 1;
+        }
+    }
+
+    std::ofstream file(output_path, std::ios::binary | std::ios::trunc);
+    if (!file.is_open()) {
+        err << "Failed to open output profile: " << output_path.string() << "\n";
+        return 1;
+    }
+    const auto text = build_first_battle_field6_watch_profile_ini();
+    file.write(text.data(), static_cast<std::streamsize>(text.size()));
+    if (!file.good()) {
+        err << "Failed to write output profile: " << output_path.string() << "\n";
+        return 1;
+    }
+    out << "Wrote first-battle field6 watch capture profile: "
         << output_path.string() << "\n";
     return 0;
 }

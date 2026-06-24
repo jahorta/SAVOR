@@ -223,9 +223,13 @@ int quarantine_ready_jobs_except(sqlite3* execution_db, const std::set<std::int6
 std::string patch_battle_single_turn_capture_profile(
     const std::string& input_ini,
     const std::filesystem::path& capture_profile_path,
-    std::optional<std::uint32_t> override_start_rng_seed) {
+    std::optional<std::uint32_t> override_start_rng_seed,
+    std::optional<std::uint32_t> battle_run_ms) {
     auto ini = IniDoc::parse(input_ini);
     ini.set(kJobSection, "capture_profile_path", capture_profile_path.string());
+    if (battle_run_ms.has_value()) {
+        ini.set(kJobSection, "run_ms_override", std::to_string(*battle_run_ms));
+    }
     if (override_start_rng_seed.has_value()) {
         ini.set(kJobSection, "override_start_rng_seed", std::to_string(*override_start_rng_seed));
     }
@@ -317,7 +321,8 @@ bool clone_battle_job_for_capture_internal(
     const auto patched_input = patch_battle_single_turn_capture_profile(
         original_exec->input_ini,
         capture_profile_path,
-        options.override_start_rng_seed);
+        options.override_start_rng_seed,
+        options.battle_run_ms);
     std::ostringstream fingerprint;
     fingerprint << original_exec->fingerprint << ":savorpredict-capture:" << source->exec_job_id.value()
                 << ":" << cloned_turn_job_id;
@@ -368,6 +373,7 @@ bool clone_battle_job_for_capture_internal(
     result_out->turn_index = source->turn_index;
     result_out->fake_attacks_this_turn = source->fake_attacks_this_turn;
     result_out->quarantined_ready_jobs = quarantined;
+    result_out->battle_run_ms = options.battle_run_ms;
     result_out->override_start_rng_seed = options.override_start_rng_seed;
     result_out->patched_input_ini = patched_input;
     return true;
@@ -411,6 +417,7 @@ bool clone_battle_jobs_for_capture(
         BattleJobRunOptions single_options;
         single_options.exec_job_id = request.source_exec_job_id;
         single_options.override_start_rng_seed = request.override_start_rng_seed;
+        single_options.battle_run_ms = request.battle_run_ms;
         BattleJobCloneResult clone;
         if (!clone_battle_job_for_capture_internal(
                 db_service,
@@ -440,6 +447,7 @@ bool clone_battle_jobs_for_capture(
     savor::db::core::DBService& db_service,
     const std::vector<long long>& source_exec_job_ids,
     const std::filesystem::path& capture_profile_path,
+    std::optional<std::uint32_t> battle_run_ms,
     std::optional<std::uint32_t> override_start_rng_seed,
     BattleJobBatchCloneResult* result_out,
     std::ostream& err) {
@@ -449,6 +457,7 @@ bool clone_battle_jobs_for_capture(
         requests.push_back({
             .source_exec_job_id = source_exec_job_id,
             .override_start_rng_seed = override_start_rng_seed,
+            .battle_run_ms = battle_run_ms,
         });
     }
     return clone_battle_jobs_for_capture(
@@ -469,6 +478,7 @@ bool clone_battle_jobs_for_capture(
         db_service,
         source_exec_job_ids,
         capture_profile_path,
+        std::nullopt,
         std::nullopt,
         result_out,
         err);

@@ -37,6 +37,12 @@ bool parse_u32_auto(const std::string& value, std::uint32_t& out) {
     return true;
 }
 
+int outer_timeout_for_battle_run_ms(std::uint32_t battle_run_ms) {
+    constexpr long long kMarginMs = 60000;
+    const auto adjusted = static_cast<long long>(battle_run_ms) + kMarginMs;
+    return static_cast<int>(std::min<long long>(adjusted, std::numeric_limits<int>::max()));
+}
+
 std::string normalize_policy_path(const std::filesystem::path& path) {
     auto normalized = path.lexically_normal().generic_string();
     std::transform(normalized.begin(), normalized.end(), normalized.begin(), [](unsigned char c) {
@@ -137,6 +143,9 @@ std::vector<std::string> validate_battle_job_run_options(const BattleJobRunOptio
     if (options.timeout_ms <= 0) {
         errors.push_back("--timeout-ms must be positive.");
     }
+    if (options.battle_run_ms.has_value() && *options.battle_run_ms == 0) {
+        errors.push_back("--battle-run-ms must be positive.");
+    }
     return errors;
 }
 
@@ -146,6 +155,7 @@ BattleJobRunParseResult parse_battle_job_run_tokens(
     BattleJobRunParseResult result;
     result.options.run_root = default_battle_job_run_root();
     result.options.worker_exe_path = default_battle_job_worker_exe(executable_path);
+    bool timeout_ms_specified = false;
 
     for (std::size_t i = 0; i < args.size(); ++i) {
         const auto& arg = args[i];
@@ -207,8 +217,16 @@ BattleJobRunParseResult parse_battle_job_run_tokens(
             int parsed = 0;
             if (require_value(args, i, arg, value, result.errors) && parse_int(value, parsed)) {
                 result.options.timeout_ms = parsed;
+                timeout_ms_specified = true;
             } else {
                 result.errors.push_back("--timeout-ms requires an integer.");
+            }
+        } else if (arg == "--battle-run-ms") {
+            std::uint32_t parsed = 0;
+            if (require_value(args, i, arg, value, result.errors) && parse_u32_auto(value, parsed)) {
+                result.options.battle_run_ms = parsed;
+            } else {
+                result.errors.push_back("--battle-run-ms requires a positive uint32 millisecond value.");
             }
         } else if (arg == "--override-start-rng-seed") {
             std::uint32_t parsed = 0;
@@ -222,6 +240,12 @@ BattleJobRunParseResult parse_battle_job_run_tokens(
         } else {
             result.errors.push_back("Unknown run-battle-job option: " + arg);
         }
+    }
+
+    if (result.options.battle_run_ms.has_value() && !timeout_ms_specified) {
+        result.options.timeout_ms = std::max(
+            result.options.timeout_ms,
+            outer_timeout_for_battle_run_ms(*result.options.battle_run_ms));
     }
 
     if (!result.help_requested) {

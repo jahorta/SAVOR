@@ -2431,13 +2431,13 @@ TEST(SavorPredictCheckpointTrace, SummarizesActionSourceCheckpoints) {
     EXPECT_EQ(*expectation.expected_callback_pc, "800662BC");
 
     std::istringstream input(
-        "pc=8006782c function=FUN_8006782c checkpoint=source_selection rng_draw_index_before=17 "
-        "actor_slot=1 selected_source_slot=1 target_slot=4 action_sequence_id=7 action_id=4\n"
+        "pc=80067b50 function=FUN_8006782c checkpoint=source_selection rng_draw_index_before=17 "
+        "actor_slot=1 selected_source_slot_global=1 target_slot=4 action_sequence_id=7 action_id=4\n"
         "pc=8006721c function=FUN_8006721c checkpoint=action_source rng_draw_index_before=18 "
         "actor_slot=1 source_slot=1 target_slot=4 action_sequence_id=7 action_id=4 "
         "source_field6_0x6=14 actor_field6_0x6=14 handler_pc=0x800662bc callback_pc=0x800662bc\n"
-        "pc=8006782c function=FUN_8006782c checkpoint=source_selection rng_draw_index_before=18 "
-        "actor_slot=0 selected_source_slot=0 target_slot=4 action_sequence_id=8 action_id=8\n"
+        "pc=80067a9c function=FUN_8006782c checkpoint=source_selection rng_draw_index_before=18 "
+        "actor_slot=0 r5_selected_source_slot_candidate=0 target_slot=4 action_sequence_id=8 action_id=8\n"
         "pc=8006721c function=FUN_8006721c checkpoint=action_source rng_draw_index_before=19 "
         "actor_slot=0 source_slot=0 target_slot=4 action_sequence_id=8 action_id=8 "
         "source_field6_0x6=14 actor_field6_0x6=14 selected_handler_pc=800662BC "
@@ -2496,10 +2496,10 @@ TEST(SavorPredictCheckpointTrace, SummarizesActionSourceCheckpoints) {
     EXPECT_TRUE(*matched.events[1].source_slot_matches_selection);
 
     std::istringstream out_of_order_input(
-        "pc=8006782c function=FUN_8006782c checkpoint=source_selection rng_draw_index_before=17 "
-        "actor_slot=0 selected_source_slot=0 action_sequence_id=7\n"
-        "pc=8006782c function=FUN_8006782c checkpoint=source_selection rng_draw_index_before=18 "
-        "actor_slot=1 selected_source_slot=1 action_sequence_id=8\n"
+        "pc=80067ad0 function=FUN_8006782c checkpoint=source_selection rng_draw_index_before=17 "
+        "actor_slot=0 r0_selected_source_slot_fallback=0 action_sequence_id=7\n"
+        "pc=80067b50 function=FUN_8006782c checkpoint=source_selection rng_draw_index_before=18 "
+        "actor_slot=1 selected_source_slot_global=1 action_sequence_id=8\n"
         "pc=8006721c function=FUN_8006721c checkpoint=action_source rng_draw_index_before=19 "
         "actor_slot=1 source_slot=1 action_sequence_id=8 source_field6_0x6=14 actor_field6_0x6=14 "
         "handler_pc=800662BC callback_pc=800662BC\n"
@@ -2521,8 +2521,8 @@ TEST(SavorPredictCheckpointTrace, SummarizesActionSourceCheckpoints) {
     EXPECT_EQ(*out_of_order.events[2].matched_source_selection_source_slot, 1);
 
     std::istringstream mismatch_input(
-        "pc=8006782c function=FUN_8006782c checkpoint=source_selection rng_draw_index_before=19 "
-        "actor_slot=1 selected_source_slot=1\n"
+        "pc=80067b50 function=FUN_8006782c checkpoint=source_selection rng_draw_index_before=19 "
+        "actor_slot=1 selected_source_slot_global=1\n"
         "pc=8006721c function=FUN_8006721c checkpoint=action_source rng_draw_index_before=20 "
         "actor_slot=1 source_slot=1 source_field6_0x6=14 actor_field6_0x6=15 "
         "handler_pc=800662BC callback_pc=800662BC\n");
@@ -2534,8 +2534,8 @@ TEST(SavorPredictCheckpointTrace, SummarizesActionSourceCheckpoints) {
     EXPECT_EQ(field_mismatch.status, ActionSourceCheckpointStatus::Field6Mismatch);
 
     std::istringstream missing_input(
-        "pc=8006782c function=FUN_8006782c checkpoint=source_selection rng_draw_index_before=20 "
-        "actor_slot=1 selected_source_slot=1\n"
+        "pc=80067b50 function=FUN_8006782c checkpoint=source_selection rng_draw_index_before=20 "
+        "actor_slot=1 selected_source_slot_global=1\n"
         "pc=8006721c function=FUN_8006721c checkpoint=action_source rng_draw_index_before=21 "
         "actor_slot=1 source_slot=1 source_field6_0x6=14 handler_pc=800662BC callback_pc=800662BC\n");
     const auto missing_parsed = parse_checkpoint_stream(missing_input);
@@ -2562,8 +2562,8 @@ TEST(SavorPredictCheckpointTrace, SummarizesActionSourceCheckpoints) {
         ActionSourceCheckpointStatus::MissingSourceSelectionCheckpoint);
 
     std::istringstream selection_mismatch_input(
-        "pc=8006782c function=FUN_8006782c checkpoint=source_selection rng_draw_index_before=23 "
-        "actor_slot=1 selected_source_slot=0\n"
+        "pc=80067b50 function=FUN_8006782c checkpoint=source_selection rng_draw_index_before=23 "
+        "actor_slot=1 selected_source_slot_global=0\n"
         "pc=8006721c function=FUN_8006721c checkpoint=action_source rng_draw_index_before=24 "
         "actor_slot=1 source_slot=1 source_field6_0x6=14 actor_field6_0x6=14 "
         "handler_pc=800662BC callback_pc=800662BC\n");
@@ -2575,8 +2575,8 @@ TEST(SavorPredictCheckpointTrace, SummarizesActionSourceCheckpoints) {
     EXPECT_EQ(selection_mismatch.status, ActionSourceCheckpointStatus::SourceSelectionMismatch);
 
     std::istringstream callback_mismatch_input(
-        "pc=8006782c function=FUN_8006782c checkpoint=source_selection rng_draw_index_before=25 "
-        "actor_slot=1 selected_source_slot=1\n"
+        "pc=80067b50 function=FUN_8006782c checkpoint=source_selection rng_draw_index_before=25 "
+        "actor_slot=1 selected_source_slot_global=1\n"
         "pc=8006721c function=FUN_8006721c checkpoint=action_source rng_draw_index_before=26 "
         "actor_slot=1 source_slot=1 source_field6_0x6=14 actor_field6_0x6=14 "
         "handler_pc=800662BC callback_pc=80000000\n");
@@ -2586,6 +2586,22 @@ TEST(SavorPredictCheckpointTrace, SummarizesActionSourceCheckpoints) {
         callback_mismatch_parsed.events,
         expectation.expected_handler_pc);
     EXPECT_EQ(callback_mismatch.status, ActionSourceCheckpointStatus::CallbackMismatch);
+
+    std::istringstream non_selection_input(
+        "pc=8006782c function=FUN_8006782c checkpoint=action_source_selection_entry "
+        "rng_draw_index_before=27 actor_slot=1\n"
+        "pc=80067bd0 function=FUN_8006782c checkpoint=action_source_state_downstream_read "
+        "rng_draw_index_before=28 actor_slot=1 selected_source_slot=1\n"
+        "pc=8006721c function=FUN_8006721c checkpoint=action_source rng_draw_index_before=29 "
+        "actor_slot=1 source_slot=1 source_field6_0x6=14 actor_field6_0x6=14 "
+        "handler_pc=800662BC callback_pc=800662BC\n");
+    const auto non_selection_parsed = parse_checkpoint_stream(non_selection_input);
+    ASSERT_TRUE(non_selection_parsed.errors.empty());
+    const auto non_selection = summarize_action_source_checkpoints(
+        non_selection_parsed.events,
+        expectation.expected_handler_pc);
+    EXPECT_EQ(non_selection.observed_source_selection_events, 0);
+    EXPECT_EQ(non_selection.status, ActionSourceCheckpointStatus::MissingSourceSelectionCheckpoint);
 }
 
 TEST(SavorPredictCheckpointTrace, SummarizesSstActionCommandField6Stores) {

@@ -98,6 +98,19 @@ void write_optional_hex_u32(std::ostream& out, const char* name, const std::opti
     out << "\n";
 }
 
+void write_optional_u32(std::ostream& out, const char* name, const std::optional<std::uint32_t>& value, bool comma) {
+    out << "  \"" << name << "\": ";
+    if (value.has_value()) {
+        out << *value;
+    } else {
+        out << "null";
+    }
+    if (comma) {
+        out << ",";
+    }
+    out << "\n";
+}
+
 void write_optional_bool(std::ostream& out, const char* name, const std::optional<bool>& value, bool comma) {
     out << "  \"" << name << "\": ";
     if (value.has_value()) {
@@ -144,6 +157,8 @@ bool write_battle_job_run_manifest(
     file << "  \"dolphin_base_dir\": \"" << json_escape(path_string(summary.options.dolphin_base_dir)) << "\",\n";
     file << "  \"worker_exe_path\": \"" << json_escape(path_string(summary.options.worker_exe_path)) << "\",\n";
     file << "  \"capture_profile_path\": \"" << json_escape(path_string(summary.capture_profile_path)) << "\",\n";
+    file << "  \"timeout_ms\": " << summary.options.timeout_ms << ",\n";
+    write_optional_u32(file, "battle_run_ms", summary.options.battle_run_ms, true);
     file << "  \"expected_capture_path\": \"" << json_escape(path_string(summary.expected_capture_path)) << "\",\n";
     file << "  \"stable_capture_path\": \"" << json_escape(path_string(summary.stable_capture_path)) << "\",\n";
     file << "  \"trace_report_path\": \"" << json_escape(path_string(summary.trace_report_path)) << "\",\n";
@@ -198,6 +213,9 @@ bool write_battle_job_run_text_summary(
     file << "cloned_turn_job_id: " << summary.clone.cloned_turn_job_id << "\n";
     file << "override_start_rng_seed: "
         << (summary.options.override_start_rng_seed.has_value() ? hex_u32(*summary.options.override_start_rng_seed) : "none")
+        << "\n";
+    file << "battle_run_ms: "
+        << (summary.options.battle_run_ms.has_value() ? std::to_string(*summary.options.battle_run_ms) : "none")
         << "\n";
     if (summary.captured_original_seed.has_value()) {
         file << "captured_original_seed: " << hex_u32(*summary.captured_original_seed) << "\n";

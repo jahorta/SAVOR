@@ -12,6 +12,7 @@
 #include "DropCheckpointModel.h"
 #include "DeathDropCheckpointModel.h"
 #include "EffectCheckpointModel.h"
+#include "Field6WatchpointModel.h"
 #include "OutcomeCheckpointModel.h"
 #include "PreAiCheckpointModel.h"
 #include "SstActionCommandCheckpointModel.h"
@@ -1775,6 +1776,39 @@ void write_text_report(
             write_optional_int(out, event.written_field6_register);
             out << " source_matches_destination=";
             write_optional_bool(out, event.source_matches_destination);
+            out << "\n";
+        }
+    }
+
+    const auto field6_watchpoints = summarize_field6_watchpoints(result.events);
+    out << "\nField6 access watchpoints\n";
+    out << "  status: " << field6_watchpoint_status(field6_watchpoints) << "\n";
+    out << "  rule: " << first_battle_field6_watchpoint_rule_detail() << "\n";
+    out << "  observed_events: " << field6_watchpoints.observed_events << "\n";
+    out << "  confirmed_events: " << field6_watchpoints.confirmed_events << "\n";
+    out << "  unattributed_delta_events: "
+        << field6_watchpoints.unattributed_delta_events << "\n";
+    out << "  confirmed_reads: " << field6_watchpoints.confirmed_reads << "\n";
+    out << "  confirmed_writes: " << field6_watchpoints.confirmed_writes << "\n";
+    out << "  producer_not_seen_reads: "
+        << field6_watchpoints.producer_not_seen_reads << "\n";
+    if (!field6_watchpoints.events.empty()) {
+        out << "  events:\n";
+        for (const auto& event : field6_watchpoints.events) {
+            out << "    seq=";
+            write_optional_int(out, event.capture_sequence);
+            out << " draw_index=";
+            write_optional_int(out, event.draw_index);
+            out << " pc=" << event.pc;
+            out << " label=" << (event.label.empty() ? "unknown" : event.label);
+            out << " addr=" << (event.address.empty() ? "unknown" : event.address);
+            out << " watch_access=" << (event.watch_access.empty() ? "unknown" : event.watch_access);
+            out << " decoded_access=" << (event.decoded_access.empty() ? "unknown" : event.decoded_access);
+            out << " mnemonic=" << (event.mnemonic.empty() ? "unknown" : event.mnemonic);
+            out << " value=" << (event.value.empty() ? "unknown" : event.value);
+            out << " memory_value=" << (event.memory_value.empty() ? "unknown" : event.memory_value);
+            out << " confirmed=" << (event.confirmed_current_instruction ? "true" : "false");
+            out << " producer_not_seen=" << (event.producer_not_seen ? "true" : "false");
             out << "\n";
         }
     }
@@ -3770,6 +3804,47 @@ void write_json_report(
         write_json_optional_int(out, event.written_field6_register);
         out << ", \"source_matches_destination\": ";
         write_json_optional_bool(out, event.source_matches_destination);
+        out << "}";
+    }
+    out << "]";
+    out << "},\n";
+
+    const auto field6_watchpoints = summarize_field6_watchpoints(result.events);
+    out << "  \"field6_access_watchpoints\": {";
+    out << "\"status\": \"" << field6_watchpoint_status(field6_watchpoints) << "\"";
+    out << ", \"rule\": \""
+        << json_escape(first_battle_field6_watchpoint_rule_detail()) << "\"";
+    out << ", \"observed_events\": " << field6_watchpoints.observed_events;
+    out << ", \"confirmed_events\": " << field6_watchpoints.confirmed_events;
+    out << ", \"unattributed_delta_events\": "
+        << field6_watchpoints.unattributed_delta_events;
+    out << ", \"confirmed_reads\": " << field6_watchpoints.confirmed_reads;
+    out << ", \"confirmed_writes\": " << field6_watchpoints.confirmed_writes;
+    out << ", \"producer_not_seen_reads\": "
+        << field6_watchpoints.producer_not_seen_reads;
+    out << ", \"events\": [";
+    for (std::size_t i = 0; i < field6_watchpoints.events.size(); ++i) {
+        if (i != 0) {
+            out << ", ";
+        }
+        const auto& event = field6_watchpoints.events[i];
+        out << "{\"capture_sequence\": ";
+        write_json_optional_int(out, event.capture_sequence);
+        out << ", \"draw_index\": ";
+        write_json_optional_int(out, event.draw_index);
+        out << ", \"pc\": \"" << json_escape(event.pc) << "\"";
+        out << ", \"label\": \"" << json_escape(event.label) << "\"";
+        out << ", \"address\": \"" << json_escape(event.address) << "\"";
+        out << ", \"watch_access\": \"" << json_escape(event.watch_access) << "\"";
+        out << ", \"decoded_access\": \"" << json_escape(event.decoded_access) << "\"";
+        out << ", \"mnemonic\": \"" << json_escape(event.mnemonic) << "\"";
+        out << ", \"value\": \"" << json_escape(event.value) << "\"";
+        out << ", \"memory_value\": \"" << json_escape(event.memory_value) << "\"";
+        out << ", \"source_pc\": \"" << json_escape(event.source_pc) << "\"";
+        out << ", \"confirmed_current_instruction\": "
+            << (event.confirmed_current_instruction ? "true" : "false");
+        out << ", \"producer_not_seen\": "
+            << (event.producer_not_seen ? "true" : "false");
         out << "}";
     }
     out << "]";

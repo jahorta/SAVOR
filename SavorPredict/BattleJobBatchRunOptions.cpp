@@ -182,12 +182,18 @@ std::vector<BattleJobBatchRunRequest> resolved_battle_job_batch_requests(const B
         requests.push_back({
             .exec_job_id = exec_job_id,
             .override_start_rng_seed = options.override_start_rng_seed,
+            .battle_run_ms = options.battle_run_ms,
         });
     }
     requests.insert(
         requests.end(),
         options.seeded_exec_job_requests.begin(),
         options.seeded_exec_job_requests.end());
+    if (options.battle_run_ms.has_value()) {
+        for (auto& request : requests) {
+            request.battle_run_ms = options.battle_run_ms;
+        }
+    }
     return requests;
 }
 
@@ -211,7 +217,12 @@ int resolved_battle_job_batch_timeout_ms(const BattleJobBatchRunOptions& options
     const auto job_count = static_cast<long long>(std::max<std::size_t>(1, resolved_battle_job_batch_requests(options).size()));
     const auto worker_count = static_cast<long long>(std::max(1, options.max_workers));
     const auto waves = (job_count + worker_count - 1) / worker_count;
-    const auto timeout = 180000LL * waves;
+    constexpr long long kDefaultPerWaveMs = 180000;
+    constexpr long long kBattleRunMarginMs = 60000;
+    const auto per_wave = options.battle_run_ms.has_value()
+        ? std::max(kDefaultPerWaveMs, static_cast<long long>(*options.battle_run_ms) + kBattleRunMarginMs)
+        : kDefaultPerWaveMs;
+    const auto timeout = per_wave * waves;
     return static_cast<int>(std::min<long long>(timeout, std::numeric_limits<int>::max()));
 }
 
@@ -264,6 +275,9 @@ std::vector<std::string> validate_battle_job_batch_run_options(const BattleJobBa
     }
     if (options.max_workers <= 0) {
         errors.push_back("--max-workers must be positive.");
+    }
+    if (options.battle_run_ms.has_value() && *options.battle_run_ms == 0) {
+        errors.push_back("--battle-run-ms must be positive.");
     }
     return errors;
 }
@@ -355,6 +369,13 @@ BattleJobBatchRunParseResult parse_battle_job_batch_run_tokens(
                 result.options.max_workers = parsed;
             } else {
                 result.errors.push_back("--max-workers requires an integer.");
+            }
+        } else if (arg == "--battle-run-ms") {
+            std::uint32_t parsed = 0;
+            if (require_value(args, i, arg, value, result.errors) && parse_u32_auto(value, parsed)) {
+                result.options.battle_run_ms = parsed;
+            } else {
+                result.errors.push_back("--battle-run-ms requires a positive uint32 millisecond value.");
             }
         } else if (arg == "--override-start-rng-seed") {
             std::uint32_t parsed = 0;

@@ -3,6 +3,7 @@
 #include "CheckpointTrace.h"
 #include "Core/PowerPcMemoryAccessDecoder.h"
 #include "Core/Memory/Soa/SoaAddrProgramBuilder.h"
+#include "Field6WatchpointModel.h"
 #include "LiveCaptureProfile.h"
 #include "Phases/Programs/BattleTurnRunner/BattleTurnRunnerPayload.h"
 #include "Runner/Capture/CaptureJsonlWriter.h"
@@ -61,6 +62,29 @@ TEST(LiveCheckpointCaptureProfile, ParsesDefaultSamplesAndUniquePcs)
         "address=0x81234567\n"
         "size=u16\n"
         "access=write\n"
+        "scope=input_macro\n"
+        "\n"
+        "[dynamic_watchpoint.actor_field6]\n"
+        "pc=0x8001331C\n"
+        "base_gpr=r28\n"
+        "offset=0x6\n"
+        "size=u16\n"
+        "access=access\n"
+        "scope=input_macro\n"
+        "one_shot=true\n"
+        "\n"
+        "[dynamic_watchpoint.absolute_after_turn_order]\n"
+        "pc=0x8007154C\n"
+        "address=0x812F5086\n"
+        "size=u16\n"
+        "access=access\n"
+        "\n"
+        "[dynamic_watchpoint.pointer_chased_field6]\n"
+        "pc=0x80086F48\n"
+        "addrprog=r31:+0x24|load_ptr32|+0x4c|load_ptr32|+0x6\n"
+        "size=u16\n"
+        "access=access\n"
+        "one_shot=true\n"
         "\n"
         "[checkpoint.first]\n"
         "pc=0x80001000\n"
@@ -86,10 +110,35 @@ TEST(LiveCheckpointCaptureProfile, ParsesDefaultSamplesAndUniquePcs)
     EXPECT_EQ(profile.name, "test_capture");
     ASSERT_EQ(profile.checkpoints.size(), 2u);
     ASSERT_EQ(profile.memory_watchpoints.size(), 1u);
+    ASSERT_EQ(profile.dynamic_memory_watchpoints.size(), 3u);
     EXPECT_EQ(profile.memory_watchpoints[0].id, "field6_writer");
     EXPECT_EQ(profile.memory_watchpoints[0].address, 0x81234567u);
     EXPECT_EQ(profile.memory_watchpoints[0].size, SampleWidth::U16);
     EXPECT_EQ(profile.memory_watchpoints[0].access, WatchpointAccess::Write);
+    EXPECT_EQ(profile.memory_watchpoints[0].scope, WatchpointScope::InputMacro);
+    EXPECT_EQ(profile.dynamic_memory_watchpoints[0].id, "actor_field6");
+    EXPECT_EQ(profile.dynamic_memory_watchpoints[0].pc, 0x8001331Cu);
+    EXPECT_EQ(profile.dynamic_memory_watchpoints[0].base_reg, 28u);
+    EXPECT_EQ(profile.dynamic_memory_watchpoints[0].offset, 0x6);
+    EXPECT_EQ(profile.dynamic_memory_watchpoints[0].size, SampleWidth::U16);
+    EXPECT_EQ(profile.dynamic_memory_watchpoints[0].access, WatchpointAccess::Access);
+    EXPECT_EQ(profile.dynamic_memory_watchpoints[0].scope, WatchpointScope::InputMacro);
+    EXPECT_TRUE(profile.dynamic_memory_watchpoints[0].one_shot);
+    EXPECT_EQ(profile.dynamic_memory_watchpoints[1].id, "absolute_after_turn_order");
+    EXPECT_EQ(profile.dynamic_memory_watchpoints[1].pc, 0x8007154Cu);
+    EXPECT_TRUE(profile.dynamic_memory_watchpoints[1].use_absolute_address);
+    EXPECT_EQ(profile.dynamic_memory_watchpoints[1].address, 0x812F5086u);
+    EXPECT_EQ(profile.dynamic_memory_watchpoints[1].size, SampleWidth::U16);
+    EXPECT_EQ(profile.dynamic_memory_watchpoints[1].access, WatchpointAccess::Access);
+    EXPECT_EQ(profile.dynamic_memory_watchpoints[1].scope, WatchpointScope::Normal);
+    EXPECT_EQ(profile.dynamic_memory_watchpoints[2].id, "pointer_chased_field6");
+    EXPECT_EQ(profile.dynamic_memory_watchpoints[2].pc, 0x80086F48u);
+    EXPECT_TRUE(profile.dynamic_memory_watchpoints[2].use_address_program);
+    EXPECT_FALSE(profile.dynamic_memory_watchpoints[2].address_program.empty());
+    EXPECT_EQ(profile.dynamic_memory_watchpoints[2].size, SampleWidth::U16);
+    EXPECT_EQ(profile.dynamic_memory_watchpoints[2].access, WatchpointAccess::Access);
+    EXPECT_TRUE(profile.dynamic_memory_watchpoints[2].one_shot);
+    EXPECT_FALSE(profile.dynamic_memory_watchpoints[1].one_shot);
     EXPECT_EQ(profile.checkpoints[0].memory_samples.size(), 2u);
     EXPECT_EQ(profile.checkpoints[0].memory_samples[0].name, "rng_seed_before");
     EXPECT_EQ(profile.checkpoints[0].memory_samples[0].width, SampleWidth::U32);
@@ -511,6 +560,14 @@ TEST(SavorPredictLiveCaptureProfile, BuildsParseableFirstBattleRngProfile)
         }
         return false;
     };
+    const auto has_addrprog_sample = [](const CheckpointSpec& checkpoint, std::string_view name) {
+        for (const auto& sample : checkpoint.address_program_samples) {
+            if (sample.name == name) {
+                return true;
+            }
+        }
+        return false;
+    };
     const auto has_gpr_sample = [](const CheckpointSpec& checkpoint, std::string_view name) {
         for (const auto& sample : checkpoint.gpr_samples) {
             if (sample.name == name) {
@@ -647,12 +704,35 @@ TEST(SavorPredictLiveCaptureProfile, BuildsParseableFirstBattleRngProfile)
     EXPECT_TRUE(has_reg_sample(*drop_roll, "drop_amount"));
     EXPECT_TRUE(has_reg_sample(*drop_roll, "drop_row_chance_raw"));
 
-    const auto* source_selection =
-        find_checkpoint("action_source_selection_80067BD0");
-    ASSERT_NE(source_selection, nullptr);
-    EXPECT_FALSE(source_selection->owns_rng_draw);
-    EXPECT_TRUE(has_reg_sample(*source_selection, "selected_source_slot"));
-    EXPECT_TRUE(has_reg_sample(*source_selection, "controller_actor_slot_0x92"));
+    const auto* source_selection_candidate =
+        find_checkpoint("action_source_selection_candidate_80067A9C");
+    ASSERT_NE(source_selection_candidate, nullptr);
+    EXPECT_FALSE(source_selection_candidate->owns_rng_draw);
+    EXPECT_TRUE(has_gpr_sample(*source_selection_candidate, "r5_selected_source_slot_candidate"));
+    EXPECT_TRUE(has_reg_sample(*source_selection_candidate, "selected_source_slot"));
+    EXPECT_TRUE(has_reg_sample(*source_selection_candidate, "controller_actor_slot_0x92"));
+
+    const auto* source_selection_fallback =
+        find_checkpoint("action_source_selection_mode_gate_80067AD0");
+    ASSERT_NE(source_selection_fallback, nullptr);
+    EXPECT_FALSE(source_selection_fallback->owns_rng_draw);
+    EXPECT_TRUE(has_gpr_sample(*source_selection_fallback, "r0_selected_source_slot_fallback"));
+    EXPECT_TRUE(has_reg_sample(*source_selection_fallback, "selected_source_slot"));
+
+    const auto* source_selection_global =
+        find_checkpoint("action_source_selection_source_slot_80067B50");
+    ASSERT_NE(source_selection_global, nullptr);
+    EXPECT_FALSE(source_selection_global->owns_rng_draw);
+    EXPECT_TRUE(has_gpr_sample(*source_selection_global, "r3_callback_thread"));
+    EXPECT_TRUE(has_addrprog_sample(*source_selection_global, "selected_source_slot_global"));
+    EXPECT_TRUE(has_addrprog_sample(*source_selection_global, "controller_actor_slot_0x92_global"));
+
+    const auto* source_state_read =
+        find_checkpoint("action_source_state_downstream_read_80067BD0");
+    ASSERT_NE(source_state_read, nullptr);
+    EXPECT_FALSE(source_state_read->owns_rng_draw);
+    EXPECT_TRUE(has_reg_sample(*source_state_read, "selected_source_slot"));
+    EXPECT_TRUE(has_reg_sample(*source_state_read, "controller_actor_slot_0x92"));
 
     const auto* source_bridge =
         find_checkpoint("action_source_field6_bridge_8006778C");
@@ -744,6 +824,14 @@ TEST(SavorPredictLiveCaptureProfile, BuildsPredictorValidationProfile)
         }
         return false;
     };
+    const auto has_addrprog_sample = [](const CheckpointSpec& checkpoint, std::string_view name) {
+        for (const auto& sample : checkpoint.address_program_samples) {
+            if (sample.name == name) {
+                return true;
+            }
+        }
+        return false;
+    };
 
     const auto* hit = find_checkpoint("attack_hit_dodge_80010BDC");
     ASSERT_NE(hit, nullptr);
@@ -783,7 +871,11 @@ TEST(SavorPredictLiveCaptureProfile, BuildsPredictorValidationProfile)
     EXPECT_NE(find_checkpoint("counter_followup_call_prepare_80081D80"), nullptr);
     EXPECT_NE(find_checkpoint("action_source_selection_entry_8006782C"), nullptr);
     EXPECT_NE(find_checkpoint("action_source_selection_candidate_80067A9C"), nullptr);
-    EXPECT_NE(find_checkpoint("action_source_selection_source_slot_80067B50"), nullptr);
+    EXPECT_NE(find_checkpoint("action_source_selection_mode_gate_80067AD0"), nullptr);
+    const auto* source_slot_boundary = find_checkpoint("action_source_selection_source_slot_80067B50");
+    ASSERT_NE(source_slot_boundary, nullptr);
+    EXPECT_TRUE(has_addrprog_sample(*source_slot_boundary, "selected_source_slot_global"));
+    EXPECT_NE(find_checkpoint("action_source_state_downstream_read_80067BD0"), nullptr);
 }
 
 TEST(SavorPredictLiveCaptureProfile, BuildsTurnOrderValidationProfile)
@@ -871,6 +963,108 @@ TEST(SavorPredictLiveCaptureProfile, BuildsTurnOrderValidationProfile)
     EXPECT_TRUE(has_memory_sample(*execution3, "slot"));
 }
 
+TEST(SavorPredictLiveCaptureProfile, BuildsField6WatchProfile)
+{
+    const auto text = build_first_battle_field6_watch_profile_ini();
+    const auto parsed = ParseCaptureProfileText(text);
+    ASSERT_TRUE(parsed.profile.has_value()) << FormatCaptureProfileError(parsed);
+
+    const auto& profile = *parsed.profile;
+    EXPECT_EQ(profile.name, "first_battle_field6_watchpoints");
+    EXPECT_EQ(profile.memory_watchpoints.size(), 4u);
+    EXPECT_GE(profile.dynamic_memory_watchpoints.size(), 8u);
+    for (const auto& watchpoint : profile.memory_watchpoints) {
+        EXPECT_EQ(watchpoint.scope, WatchpointScope::InputMacro) << watchpoint.id;
+    }
+    for (const auto& watchpoint : profile.dynamic_memory_watchpoints) {
+        EXPECT_EQ(watchpoint.scope, WatchpointScope::InputMacro) << watchpoint.id;
+    }
+
+    bool found_progress_pc = false;
+    bool found_targeting_camera = false;
+    for (const auto& checkpoint : profile.checkpoints) {
+        if (checkpoint.pc == 0x800608DCu) {
+            found_targeting_camera = true;
+        }
+        if (checkpoint.id.find("progress") != std::string::npos
+            || checkpoint.name.find("progress") != std::string::npos) {
+            found_progress_pc = true;
+        }
+    }
+    EXPECT_FALSE(found_targeting_camera);
+    EXPECT_FALSE(found_progress_pc);
+
+    const auto find_dynamic = [&](std::string_view id)
+        -> const DynamicMemoryWatchpointSpec* {
+        for (const auto& watchpoint : profile.dynamic_memory_watchpoints) {
+            if (watchpoint.id == id) {
+                return &watchpoint;
+            }
+        }
+        return nullptr;
+    };
+
+    const auto* action_view =
+        find_dynamic("actor_field6_action_view_query_call_8001331C");
+    ASSERT_NE(action_view, nullptr);
+    EXPECT_EQ(action_view->pc, 0x8001331Cu);
+    EXPECT_EQ(action_view->base_reg, 28u);
+    EXPECT_EQ(action_view->offset, 0x6);
+    EXPECT_EQ(action_view->size, SampleWidth::U16);
+    EXPECT_EQ(action_view->access, WatchpointAccess::Access);
+    EXPECT_EQ(action_view->scope, WatchpointScope::InputMacro);
+
+    const auto* sst_case8_source =
+        find_dynamic("sst_case8_source_field6_8000C6E8");
+    ASSERT_NE(sst_case8_source, nullptr);
+    EXPECT_EQ(sst_case8_source->base_reg, 30u);
+    EXPECT_EQ(sst_case8_source->offset, 0x0a);
+}
+
+TEST(Field6WatchpointModel, ClassifiesAccessWatchpointsByDecodedInstruction)
+{
+    CheckpointEvent read{};
+    read.function = "memory_watchpoint";
+    read.checkpoint = "access";
+    read.pc = "80013320";
+    read.rng_draw_index_before = 12;
+    read.fields["capture_sequence"] = "3";
+    read.fields["checkpoint_id"] = "memwatch.actor_field6";
+    read.fields["memwatch_label"] = "actor_field6";
+    read.fields["memwatch_addr"] = "0x81234506";
+    read.fields["memwatch_access"] = "access";
+    read.fields["memwatch_confirmed_current_instruction"] = "true";
+    read.fields["decoded_access"] = "read";
+    read.fields["decoded_mnemonic"] = "lhz";
+    read.fields["decoded_memory_value"] = "0x0000000000000001";
+
+    CheckpointEvent write{};
+    write.function = "memory_watchpoint";
+    write.checkpoint = "access";
+    write.pc = "800856C4";
+    write.rng_draw_index_before = 13;
+    write.fields["capture_sequence"] = "4";
+    write.fields["checkpoint_id"] = "memwatch.actor_field6";
+    write.fields["memwatch_label"] = "actor_field6";
+    write.fields["memwatch_addr"] = "0x81234506";
+    write.fields["memwatch_access"] = "access";
+    write.fields["memwatch_confirmed_current_instruction"] = "true";
+    write.fields["decoded_access"] = "write";
+    write.fields["decoded_mnemonic"] = "sth";
+    write.fields["decoded_value"] = "0x0000000000000000";
+
+    const auto summary = summarize_field6_watchpoints({ read, write });
+    EXPECT_EQ(summary.observed_events, 2);
+    EXPECT_EQ(summary.confirmed_events, 2);
+    EXPECT_EQ(summary.confirmed_reads, 1);
+    EXPECT_EQ(summary.confirmed_writes, 1);
+    EXPECT_EQ(summary.producer_not_seen_reads, 1);
+    ASSERT_EQ(summary.events.size(), 2u);
+    EXPECT_TRUE(summary.events[0].producer_not_seen);
+    EXPECT_FALSE(summary.events[1].producer_not_seen);
+    EXPECT_STREQ(field6_watchpoint_status(summary), "validated");
+}
+
 TEST(BattleTurnRunnerPayload, RoundTripsLiveCaptureContextPaths)
 {
     phase::battle::turnrunner::EncodeSpec spec{};
@@ -895,10 +1089,13 @@ TEST(BattleTurnRunnerPayload, RoundTripsLiveCaptureContextPaths)
 
     uint32_t override_enabled = 0;
     uint32_t override_seed = 0;
+    uint32_t battle_run_ms = 0;
     ASSERT_TRUE(ctx.get(savor::context::key::battle::RNG_OVERRIDE_ENABLED, override_enabled));
     ASSERT_TRUE(ctx.get(savor::context::key::battle::RNG_OVERRIDE_SEED, override_seed));
+    ASSERT_TRUE(ctx.get(savor::context::key::battle::RUN_LONG_TIMEOUT_MS, battle_run_ms));
     EXPECT_EQ(override_enabled, 1u);
     EXPECT_EQ(override_seed, 0x12345678u);
+    EXPECT_EQ(battle_run_ms, spec.run_ms);
 }
 
 } // namespace

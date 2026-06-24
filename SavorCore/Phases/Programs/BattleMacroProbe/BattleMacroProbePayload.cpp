@@ -261,6 +261,7 @@ const char* FailureCodeName(FailureCode code) {
     case FailureCode::UnexpectedBreakpoint: return "unexpected_breakpoint";
     case FailureCode::BattleContextUnavailable: return "battle_context_unavailable";
     case FailureCode::MemoryReadFailed: return "memory_read_failed";
+    case FailureCode::CaptureOnlyHitLimit: return "capture_only_hit_limit";
     default: return "unknown";
     }
 }

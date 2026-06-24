@@ -307,6 +307,10 @@ namespace savor {
 			bool include_reserved_hit_lookup{ false };
 			bool update_derived{ true };
 			uint32_t poll_ms_override{ 0 };
+			savor::capture::WatchpointScope capture_watchpoint_scope{
+				savor::capture::WatchpointScope::Normal
+			};
+			uint32_t capture_only_hit_limit{ 4096 };
 		};
 
 		struct RunUntilBpCoreResult {
@@ -329,10 +333,15 @@ namespace savor {
 		void append_capture_pcs(std::vector<uint32_t>& pcs) const;
 		bool configure_capture_from_context(const PSContext& ctx, PSResult& result);
 		void arm_capture_breakpoints();
-		bool arm_capture_memory_watchpoints();
+		bool arm_capture_memory_watchpoints(savor::capture::WatchpointScope scope);
+		void clear_capture_memory_watchpoints();
 		void reset_capture_session(bool restore_scope);
-		bool capture_current_hit(uint32_t pc, PSContext& ctx);
+		bool capture_current_hit(
+			uint32_t pc,
+			PSContext& ctx,
+			savor::capture::WatchpointScope scope);
 		void step_past_capture_only_breakpoint(uint32_t timeout_ms, const RunUntilBpSpec& spec);
+		bool step_past_capture_only_memory_watchpoint(uint32_t timeout_ms, const RunUntilBpSpec& spec);
 		void begin_macro_breakpoint_scope();
 		void enable_macro_step_breakpoint(BPKey key);
 		void disable_macro_step_breakpoint();

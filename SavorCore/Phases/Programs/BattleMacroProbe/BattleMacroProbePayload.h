@@ -31,6 +31,7 @@ enum class FailureCode : std::uint32_t {
     UnexpectedBreakpoint = 5,
     BattleContextUnavailable = 6,
     MemoryReadFailed = 7,
+    CaptureOnlyHitLimit = 8,
 };
 
 struct MacroStep {

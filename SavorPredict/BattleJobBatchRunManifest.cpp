@@ -135,6 +135,19 @@ void write_optional_hex_u32(std::ostream& out, const char* indent, const char* n
     out << "\n";
 }
 
+void write_optional_u32(std::ostream& out, const char* indent, const char* name, const std::optional<std::uint32_t>& value, bool comma) {
+    out << indent << "\"" << name << "\": ";
+    if (value.has_value()) {
+        out << *value;
+    } else {
+        out << "null";
+    }
+    if (comma) {
+        out << ",";
+    }
+    out << "\n";
+}
+
 void write_optional_bool(std::ostream& out, const char* indent, const char* name, const std::optional<bool>& value, bool comma) {
     out << indent << "\"" << name << "\": ";
     if (value.has_value()) {
@@ -152,6 +165,10 @@ std::string optional_hex_for_text(const std::optional<std::uint32_t>& value) {
     return value.has_value() ? hex_u32(*value) : "none";
 }
 
+std::string optional_u32_for_text(const std::optional<std::uint32_t>& value) {
+    return value.has_value() ? std::to_string(*value) : "none";
+}
+
 void write_requested_runs(std::ostream& out, const BattleJobBatchRunOptions& options) {
     const auto requests = resolved_battle_job_batch_requests(options);
     out << "  \"requested_runs\": [";
@@ -163,6 +180,12 @@ void write_requested_runs(std::ostream& out, const BattleJobBatchRunOptions& opt
             << ",\"override_start_rng_seed\":";
         if (requests[i].override_start_rng_seed.has_value()) {
             out << "\"" << hex_u32(*requests[i].override_start_rng_seed) << "\"";
+        } else {
+            out << "null";
+        }
+        out << ",\"battle_run_ms\":";
+        if (requests[i].battle_run_ms.has_value()) {
+            out << *requests[i].battle_run_ms;
         } else {
             out << "null";
         }
@@ -207,6 +230,7 @@ bool write_battle_job_batch_run_manifest(
     file << "  \"max_workers\": " << summary.options.max_workers << ",\n";
     file << "  \"poll_ms\": " << summary.options.poll_ms << ",\n";
     file << "  \"timeout_ms\": " << summary.timeout_ms << ",\n";
+    write_optional_u32(file, "  ", "battle_run_ms", summary.options.battle_run_ms, true);
     write_optional_hex_u32(file, "  ", "override_start_rng_seed", summary.options.override_start_rng_seed, true);
     file << "  \"timed_out\": " << (summary.timed_out ? "true" : "false") << ",\n";
 
@@ -239,6 +263,7 @@ bool write_battle_job_batch_run_manifest(
         file << "      \"wave_id\": " << job.clone.wave_id << ",\n";
         file << "      \"turn_index\": " << job.clone.turn_index << ",\n";
         file << "      \"fake_attacks_this_turn\": " << job.clone.fake_attacks_this_turn << ",\n";
+        write_optional_u32(file, "      ", "battle_run_ms", job.clone.battle_run_ms, true);
         write_optional_hex_u32(file, "      ", "override_start_rng_seed", job.clone.override_start_rng_seed, true);
         write_optional_hex_u32(file, "      ", "captured_original_seed", job.captured_original_seed, true);
         write_optional_hex_u32(file, "      ", "captured_override_seed", job.captured_override_seed, true);
@@ -288,6 +313,7 @@ bool write_battle_job_batch_run_text_summary(
     file << "sandbox_mode: " << savor::dbutils::ToString(summary.sandbox.sandbox_mode) << "\n";
     file << "worker_count: " << summary.worker_count << "\n";
     file << "timeout_ms: " << summary.timeout_ms << "\n";
+    file << "battle_run_ms: " << optional_u32_for_text(summary.options.battle_run_ms) << "\n";
     file << "override_start_rng_seed: " << optional_hex_for_text(summary.options.override_start_rng_seed) << "\n";
     file << "timed_out: " << (summary.timed_out ? "true" : "false") << "\n";
     file << "jobs: " << summary.jobs.size() << "\n";
@@ -295,6 +321,7 @@ bool write_battle_job_batch_run_text_summary(
         file << "job original_exec=" << job.clone.original_exec_job_id
             << " cloned_exec=" << job.clone.cloned_exec_job_id
             << " state=" << (job.terminal_state.empty() ? "unknown" : job.terminal_state)
+            << " battle_run_ms=" << optional_u32_for_text(job.clone.battle_run_ms)
             << " override=" << optional_hex_for_text(job.clone.override_start_rng_seed)
             << " original_seed=" << optional_hex_for_text(job.captured_original_seed)
             << " applied_seed=" << optional_hex_for_text(job.captured_applied_seed)
@@ -325,13 +352,14 @@ bool write_battle_job_batch_run_csv_summary(
         return false;
     }
     file << "original_exec_job_id,cloned_exec_job_id,original_turn_job_id,cloned_turn_job_id,"
-        << "override_start_rng_seed,captured_original_seed,captured_override_seed,captured_applied_seed,"
+        << "battle_run_ms,override_start_rng_seed,captured_original_seed,captured_override_seed,captured_applied_seed,"
         << "captured_seed_readback_matches,terminal_state,timed_out,capture_found,trace_exit_code,stable_capture_path,trace_report_path,error_count\n";
     for (const auto& job : summary.jobs) {
         file << job.clone.original_exec_job_id << ","
             << job.clone.cloned_exec_job_id << ","
             << job.clone.original_turn_job_id << ","
             << job.clone.cloned_turn_job_id << ","
+            << csv_escape(optional_u32_for_text(job.clone.battle_run_ms)) << ","
             << csv_escape(optional_hex_for_text(job.clone.override_start_rng_seed)) << ","
             << csv_escape(optional_hex_for_text(job.captured_original_seed)) << ","
             << csv_escape(optional_hex_for_text(job.captured_override_seed)) << ","

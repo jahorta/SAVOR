@@ -20,6 +20,11 @@ enum class WatchpointAccess : std::uint8_t {
     Access = 3,
 };
 
+enum class WatchpointScope : std::uint8_t {
+    Normal = 0,
+    InputMacro = 1,
+};
+
 struct MemorySampleSpec {
     std::string name;
     std::uint32_t address = 0;
@@ -63,6 +68,22 @@ struct MemoryWatchpointSpec {
     std::uint32_t address = 0;
     SampleWidth size = SampleWidth::U32;
     WatchpointAccess access = WatchpointAccess::Write;
+    WatchpointScope scope = WatchpointScope::Normal;
+};
+
+struct DynamicMemoryWatchpointSpec {
+    std::string id;
+    std::uint32_t pc = 0;
+    bool use_absolute_address = false;
+    std::uint32_t address = 0;
+    bool use_address_program = false;
+    std::vector<std::uint8_t> address_program;
+    std::uint8_t base_reg = 0;
+    std::int32_t offset = 0;
+    SampleWidth size = SampleWidth::U32;
+    WatchpointAccess access = WatchpointAccess::Write;
+    WatchpointScope scope = WatchpointScope::Normal;
+    bool one_shot = false;
 };
 
 struct CaptureProfile {
@@ -75,6 +96,7 @@ struct CaptureProfile {
     bool default_address_program_trace = false;
     std::vector<CheckpointSpec> checkpoints;
     std::vector<MemoryWatchpointSpec> memory_watchpoints;
+    std::vector<DynamicMemoryWatchpointSpec> dynamic_memory_watchpoints;
 
     const CheckpointSpec* find_checkpoint(std::uint32_t pc) const;
     std::vector<const CheckpointSpec*> find_checkpoints(std::uint32_t pc) const;

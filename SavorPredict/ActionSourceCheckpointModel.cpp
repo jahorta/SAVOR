@@ -11,7 +11,9 @@ namespace savor::predict {
 
 namespace {
 
-constexpr std::string_view kSourceSelectionPc = "8006782C";
+constexpr std::string_view kSourceSelectionCandidatePc = "80067A9C";
+constexpr std::string_view kSourceSelectionFallbackPc = "80067AD0";
+constexpr std::string_view kSourceSelectionCallBoundaryPc = "80067B50";
 constexpr std::string_view kActionSourcePc = "8006721C";
 constexpr std::string_view kExpectedFirstBattleHandlerPc = "800662BC";
 
@@ -62,14 +64,46 @@ std::optional<std::string> parse_first_pc_field(
     return std::nullopt;
 }
 
+bool has_any_field(const CheckpointEvent& event, std::initializer_list<const char*> field_names) {
+    return std::any_of(field_names.begin(), field_names.end(), [&](const char* field_name) {
+        return event.fields.find(field_name) != event.fields.end();
+    });
+}
+
+bool checkpoint_is(const CheckpointEvent& event, std::initializer_list<std::string_view> names) {
+    return std::any_of(names.begin(), names.end(), [&](std::string_view name) {
+        return event.checkpoint == name;
+    });
+}
+
+bool pc_is_source_selection_proof(const CheckpointEvent& event) {
+    return event.pc == kSourceSelectionCandidatePc
+        || event.pc == kSourceSelectionFallbackPc
+        || event.pc == kSourceSelectionCallBoundaryPc;
+}
+
 bool is_source_selection_checkpoint(const CheckpointEvent& event) {
-    if (event.pc == kSourceSelectionPc) {
+    const bool has_source_slot = has_any_field(event, {
+        "selected_source_slot",
+        "selected_source_slot_global",
+        "source_slot",
+        "source_actor_slot",
+        "r5_selected_source_slot_candidate",
+        "r0_selected_source_slot_fallback",
+    });
+    if (!has_source_slot) {
+        return false;
+    }
+    if (pc_is_source_selection_proof(event)) {
         return true;
     }
-    return event.function == "FUN_8006782c"
-        || event.function == "FUN_8006782C"
-        || event.checkpoint == "source_selection"
-        || event.checkpoint == "action_source_selection";
+    return checkpoint_is(event, {
+        "source_selection",
+        "action_source_selection",
+        "action_source_selection_candidate",
+        "action_source_selection_mode_gate",
+        "action_source_selection_source_slot",
+    });
 }
 
 bool is_action_source_checkpoint(const CheckpointEvent& event) {
@@ -223,7 +257,14 @@ ActionSourceCheckpointSummary summarize_action_source_checkpoints(
                     "controller_actor_slot_0x92",
                 });
             observed.source_slot =
-                parse_first_field_int(event, {"selected_source_slot", "source_slot", "source_actor_slot"});
+                parse_first_field_int(event, {
+                    "selected_source_slot",
+                    "selected_source_slot_global",
+                    "source_slot",
+                    "source_actor_slot",
+                    "r5_selected_source_slot_candidate",
+                    "r0_selected_source_slot_fallback",
+                });
             observed.target_slot = event.target_slot.has_value()
                 ? event.target_slot
                 : parse_first_field_int(event, {"target_slot"});
@@ -359,10 +400,27 @@ ActionSourceCheckpointSummary summarize_action_source_checkpoints(
             compare_source_selection_pair(summary, *bridge, *found->second);
         }
     } else {
-        const auto pair_count = std::min(source_selections.size(), bridges.size());
-        summary.source_selection_bridge_pairs = static_cast<int>(pair_count);
-        for (std::size_t i = 0; i < pair_count; ++i) {
-            compare_source_selection_pair(summary, *bridges[i], *source_selections[i]);
+        std::size_t fallback_index = 0;
+        for (auto* bridge : bridges) {
+            const ActionSourceCheckpointEvent* selection = nullptr;
+            if (bridge->draw_index.has_value()) {
+                for (const auto* candidate : source_selections) {
+                    if (!candidate->draw_index.has_value()) {
+                        continue;
+                    }
+                    if (*candidate->draw_index <= *bridge->draw_index) {
+                        selection = candidate;
+                    }
+                }
+            } else if (fallback_index < source_selections.size()) {
+                selection = source_selections[fallback_index++];
+            }
+            if (selection == nullptr) {
+                ++summary.source_selection_bridge_missing_by_action_sequence_id;
+                continue;
+            }
+            ++summary.source_selection_bridge_pairs;
+            compare_source_selection_pair(summary, *bridge, *selection);
         }
     }
 
@@ -393,13 +451,15 @@ const char* action_source_checkpoint_kind_name(ActionSourceCheckpointKind kind) 
 }
 
 const char* first_battle_action_source_checkpoint_rule_detail() {
-    return "first-battle live action-source checkpoints should connect FUN_8006782c source "
-           "selection from DAT_80346bd8+0x90 to the FUN_8006721c field6 bridge, expose source "
+    return "first-battle live action-source checkpoints should connect disassembly-proven "
+           "FUN_8006782c DAT_80346bd8+0x90 source-slot proof points (80067a9c, 80067ad0, "
+           "or pointer-chased 80067b50) to the FUN_8006721c field6 bridge, expose source "
            "field6_0x6 and actor field6_0x6, and validate both selected handler and "
-           "InstructionWorksheet+0xe0 callback; current static resource extraction expects "
-           "800662bc for first-battle basic action ids; when action_sequence_id is present, "
-           "source-selection rows are paired to field6 bridge rows by sequence before falling "
-           "back to trace order";
+           "InstructionWorksheet+0xe0 callback; 80067bd0 is a downstream read, not a "
+           "selection write; current static resource extraction expects 800662bc for "
+           "first-battle basic action ids; when action_sequence_id is present, source-selection "
+           "rows are paired to field6 bridge rows by sequence before falling back to latest "
+           "prior draw order";
 }
 
 } // namespace savor::predict

@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <sstream>
 #include <string>
 
 namespace savor::capture {
@@ -65,11 +66,31 @@ std::string gpr_name(std::uint8_t reg)
     return "r" + std::to_string(static_cast<unsigned>(reg));
 }
 
-std::string watchpoint_label_for_id(const CaptureProfile& profile, std::uint32_t id)
+std::string watchpoint_access_for_json(WatchpointAccess access)
 {
-    return id > 0 && static_cast<std::size_t>(id) <= profile.memory_watchpoints.size()
-        ? profile.memory_watchpoints[static_cast<std::size_t>(id - 1)].id
-        : std::to_string(id);
+    return watchpoint_access_for_json(static_cast<std::uint32_t>(access));
+}
+
+std::string watchpoint_label_for_id(
+    const std::vector<LiveCheckpointCapture::ActiveMemoryWatchpointSpec>& watchpoints,
+    std::uint32_t id)
+{
+    for (const auto& watchpoint : watchpoints) {
+        if (watchpoint.id == id) {
+            return watchpoint.label;
+        }
+    }
+    return std::to_string(id);
+}
+
+const LiveCheckpointCapture::ActiveMemoryWatchpointSpec* watchpoint_for_id(
+    const std::vector<LiveCheckpointCapture::ActiveMemoryWatchpointSpec>& watchpoints,
+    std::uint32_t id)
+{
+    for (const auto& watchpoint : watchpoints) {
+        if (watchpoint.id == id) return &watchpoint;
+    }
+    return nullptr;
 }
 
 void append_decoded_memory_access_fields(
@@ -159,6 +180,7 @@ bool LiveCheckpointCapture::start(
     next_sequence_ = 0;
     rng_draw_index_ = 0;
     hit_counts_.clear();
+    active_memory_watchpoints_.clear();
     active_ = true;
     return true;
 }
@@ -172,6 +194,7 @@ void LiveCheckpointCapture::stop()
     next_sequence_ = 0;
     rng_draw_index_ = 0;
     hit_counts_.clear();
+    active_memory_watchpoints_.clear();
 }
 
 bool LiveCheckpointCapture::contains_pc(std::uint32_t pc) const
@@ -187,6 +210,155 @@ std::vector<std::uint32_t> LiveCheckpointCapture::pcs() const
 const std::vector<MemoryWatchpointSpec>& LiveCheckpointCapture::memory_watchpoints() const
 {
     return profile_.memory_watchpoints;
+}
+
+std::vector<LiveCheckpointCapture::ActiveMemoryWatchpointSpec>
+LiveCheckpointCapture::static_memory_watchpoints(WatchpointScope scope) const
+{
+    std::vector<ActiveMemoryWatchpointSpec> out;
+    std::uint32_t id = 1;
+    for (const auto& watchpoint : profile_.memory_watchpoints) {
+        if (watchpoint.scope != scope) {
+            ++id;
+            continue;
+        }
+        out.push_back(ActiveMemoryWatchpointSpec{
+            .id = id,
+            .label = watchpoint.id,
+            .address = watchpoint.address,
+            .size = static_cast<std::uint32_t>(watchpoint.size),
+            .access = watchpoint.access,
+            .scope = watchpoint.scope,
+            .source_pc = 0u,
+            .source_checkpoint_id = "profile_static",
+            .one_shot = false,
+        });
+        ++id;
+    }
+    return out;
+}
+
+void LiveCheckpointCapture::set_active_memory_watchpoints(
+    std::vector<ActiveMemoryWatchpointSpec> watchpoints)
+{
+    active_memory_watchpoints_ = std::move(watchpoints);
+}
+
+std::vector<LiveCheckpointCapture::ActiveMemoryWatchpointSpec>
+LiveCheckpointCapture::derive_dynamic_memory_watchpoints(
+    DolphinWrapper& host,
+    std::uint32_t pc,
+    WatchpointScope scope) const
+{
+    std::vector<ActiveMemoryWatchpointSpec> out;
+    if (!active_) return out;
+
+    const auto address_already_active = [&](std::uint32_t address) {
+        return std::any_of(
+            active_memory_watchpoints_.begin(),
+            active_memory_watchpoints_.end(),
+            [&](const ActiveMemoryWatchpointSpec& active) {
+                return active.address == address;
+            });
+    };
+    const auto find_pending_by_address = [&](std::uint32_t address)
+        -> ActiveMemoryWatchpointSpec* {
+        for (auto& pending : out) {
+            if (pending.address == address) return &pending;
+        }
+        return nullptr;
+    };
+    auto next_active_id = [&]() {
+        std::uint32_t next_id = 1;
+        for (const auto& active : active_memory_watchpoints_) {
+            next_id = std::max(next_id, active.id + 1u);
+        }
+        for (const auto& pending : out) {
+            next_id = std::max(next_id, pending.id + 1u);
+        }
+        return next_id;
+    };
+
+    for (const auto& spec : profile_.dynamic_memory_watchpoints) {
+        if (spec.pc != pc || spec.scope != scope) continue;
+
+        std::uint32_t address = spec.address;
+        if (spec.use_address_program) {
+            const auto eval = addrprog::evaluate(
+                spec.address_program.data(),
+                spec.address_program.size(),
+                0,
+                host,
+                nullptr);
+            if (!eval.ok) {
+                continue;
+            }
+            address = eval.va;
+        } else if (!spec.use_absolute_address) {
+            const auto base = host.getRegister(spec.base_reg);
+            const auto signed_address =
+                static_cast<std::int64_t>(base) + static_cast<std::int64_t>(spec.offset);
+            address = static_cast<std::uint32_t>(signed_address);
+        }
+        if (address == 0 || address_already_active(address)) {
+            continue;
+        }
+
+        if (auto* existing = find_pending_by_address(address)) {
+            existing->label += "|" + spec.id;
+            existing->source_checkpoint_id += "|" + spec.id;
+            continue;
+        }
+
+        ActiveMemoryWatchpointSpec active{};
+        active.id = next_active_id();
+        active.label = spec.id;
+        active.address = address;
+        active.size = static_cast<std::uint32_t>(spec.size);
+        active.access = spec.access;
+        active.scope = spec.scope;
+        active.source_pc = spec.pc;
+        active.source_checkpoint_id = spec.id;
+        active.one_shot = spec.one_shot;
+        out.push_back(std::move(active));
+    }
+    return out;
+}
+
+void LiveCheckpointCapture::append_active_memory_watchpoints(
+    std::vector<ActiveMemoryWatchpointSpec> watchpoints)
+{
+    for (auto& watchpoint : watchpoints) {
+        const auto duplicate = std::any_of(
+            active_memory_watchpoints_.begin(),
+            active_memory_watchpoints_.end(),
+            [&](const ActiveMemoryWatchpointSpec& active) {
+                return active.id == watchpoint.id || active.address == watchpoint.address;
+            });
+        if (!duplicate) {
+            active_memory_watchpoints_.push_back(std::move(watchpoint));
+        }
+    }
+}
+
+bool LiveCheckpointCapture::active_memory_watchpoint_is_one_shot(std::uint32_t id) const
+{
+    if (const auto* active = watchpoint_for_id(active_memory_watchpoints_, id)) {
+        return active->one_shot;
+    }
+    return false;
+}
+
+void LiveCheckpointCapture::remove_active_memory_watchpoint(std::uint32_t id)
+{
+    active_memory_watchpoints_.erase(
+        std::remove_if(
+            active_memory_watchpoints_.begin(),
+            active_memory_watchpoints_.end(),
+            [&](const ActiveMemoryWatchpointSpec& active) {
+                return active.id == id;
+            }),
+        active_memory_watchpoints_.end());
 }
 
 bool LiveCheckpointCapture::capture_hit(DolphinWrapper& host, std::uint32_t pc, std::string* error_out)
@@ -293,7 +465,7 @@ bool LiveCheckpointCapture::capture_memory_watchpoint_hit(
 {
     if (!active_) return true;
 
-    const std::string label = watchpoint_label_for_id(profile_, hit.id);
+    const std::string label = watchpoint_label_for_id(active_memory_watchpoints_, hit.id);
     const std::string checkpoint_id = "memwatch." + label;
 
     CheckpointCaptureRecord record{};
@@ -317,6 +489,11 @@ bool LiveCheckpointCapture::capture_memory_watchpoint_hit(
     record.checkpoint_hit_count = hit_count++;
 
     record.fields.push_back(CaptureField{ "memwatch_id", std::to_string(hit.id), false });
+    if (const auto* active = watchpoint_for_id(active_memory_watchpoints_, hit.id)) {
+        record.fields.push_back(CaptureField{ "memwatch_label", active->label, true });
+        record.fields.push_back(CaptureField{ "memwatch_source_pc", "\"" + HexU32(active->source_pc) + "\"", false });
+        record.fields.push_back(CaptureField{ "memwatch_source_checkpoint_id", active->source_checkpoint_id, true });
+    }
     record.fields.push_back(CaptureField{ "memwatch_addr", "\"" + HexU32(hit.address) + "\"", false });
     record.fields.push_back(CaptureField{ "memwatch_size", std::to_string(hit.size), false });
     record.fields.push_back(CaptureField{ "memwatch_access", watchpoint_access_for_json(static_cast<std::uint32_t>(hit.access)), true });
@@ -338,7 +515,7 @@ bool LiveCheckpointCapture::capture_memory_watchpoint_delta(
 {
     if (!active_) return true;
 
-    const std::string label = watchpoint_label_for_id(profile_, delta.id);
+    const std::string label = watchpoint_label_for_id(active_memory_watchpoints_, delta.id);
     const std::string checkpoint_id = "memwatch_delta." + label;
 
     CheckpointCaptureRecord record{};
@@ -362,6 +539,11 @@ bool LiveCheckpointCapture::capture_memory_watchpoint_delta(
     record.checkpoint_hit_count = hit_count++;
 
     record.fields.push_back(CaptureField{ "memwatch_id", std::to_string(delta.id), false });
+    if (const auto* active = watchpoint_for_id(active_memory_watchpoints_, delta.id)) {
+        record.fields.push_back(CaptureField{ "memwatch_label", active->label, true });
+        record.fields.push_back(CaptureField{ "memwatch_source_pc", "\"" + HexU32(active->source_pc) + "\"", false });
+        record.fields.push_back(CaptureField{ "memwatch_source_checkpoint_id", active->source_checkpoint_id, true });
+    }
     record.fields.push_back(CaptureField{ "memwatch_addr", "\"" + HexU32(delta.address) + "\"", false });
     record.fields.push_back(CaptureField{ "memwatch_size", std::to_string(delta.size), false });
     record.fields.push_back(CaptureField{ "memwatch_access", watchpoint_access_for_json(static_cast<std::uint32_t>(delta.access)), true });

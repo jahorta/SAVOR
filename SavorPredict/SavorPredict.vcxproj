@@ -139,6 +139,7 @@
     <ClCompile Include="EffectRngModel.cpp" />
     <ClCompile Include="EnemyAttackSetupModel.cpp" />
     <ClCompile Include="EnemyEventDataModel.cpp" />
+    <ClCompile Include="Field6WatchpointModel.cpp" />
     <ClCompile Include="FirstBattleDataModel.cpp" />
     <ClCompile Include="LiveCaptureProfile.cpp" />
     <ClCompile Include="Main.cpp" />
@@ -189,6 +190,7 @@
     <ClInclude Include="EffectRngModel.h" />
     <ClInclude Include="EnemyAttackSetupModel.h" />
     <ClInclude Include="EnemyEventDataModel.h" />
+    <ClInclude Include="Field6WatchpointModel.h" />
     <ClInclude Include="FirstBattleDataModel.h" />
     <ClInclude Include="LiveCaptureProfile.h" />
     <ClInclude Include="MovementModel.h" />

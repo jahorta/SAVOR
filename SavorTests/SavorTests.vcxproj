@@ -158,6 +158,7 @@
     <ClCompile Include="..\SavorPredict\EffectRngModel.cpp" />
     <ClCompile Include="..\SavorPredict\EnemyAttackSetupModel.cpp" />
     <ClCompile Include="..\SavorPredict\EnemyEventDataModel.cpp" />
+    <ClCompile Include="..\SavorPredict\Field6WatchpointModel.cpp" />
     <ClCompile Include="..\SavorPredict\FirstBattleDataModel.cpp" />
     <ClCompile Include="..\SavorPredict\LiveCaptureProfile.cpp" />
     <ClCompile Include="..\SavorPredict\MovementModel.cpp" />

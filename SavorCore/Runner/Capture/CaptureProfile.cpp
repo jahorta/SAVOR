@@ -124,6 +124,16 @@ std::optional<WatchpointAccess> parse_watchpoint_access(std::string value)
     return std::nullopt;
 }
 
+std::optional<WatchpointScope> parse_watchpoint_scope(std::string value)
+{
+    value = to_lower(trim(std::move(value)));
+    if (value.empty() || value == "normal" || value == "default") return WatchpointScope::Normal;
+    if (value == "input_macro" || value == "input-macro" || value == "macro") {
+        return WatchpointScope::InputMacro;
+    }
+    return std::nullopt;
+}
+
 bool parse_register_index(std::string value, std::uint8_t& out)
 {
     value = trim(std::move(value));
@@ -330,6 +340,45 @@ std::optional<AddressProgramSampleSpec> parse_address_program_sample(
     builder.op_end();
     spec.program = builder.blob();
     return spec;
+}
+
+std::optional<std::vector<std::uint8_t>> parse_address_program_expression(
+    const std::string& token,
+    std::vector<std::string>& errors,
+    const std::string& section)
+{
+    const auto separator = token.find(':');
+    if (separator == std::string::npos) {
+        errors.push_back(section + ": addrprog must be base:steps, got '" + token + "'");
+        return std::nullopt;
+    }
+
+    std::string base;
+    std::string steps;
+    if (token.rfind("key:", 0) == 0 || token.rfind("KEY:", 0) == 0) {
+        const auto key_separator = token.find(':', 4);
+        if (key_separator == std::string::npos) {
+            base = token;
+        } else {
+            base = token.substr(0, key_separator);
+            steps = token.substr(key_separator + 1);
+        }
+    } else {
+        base = token.substr(0, separator);
+        steps = token.substr(separator + 1);
+    }
+
+    addrprog::Builder builder;
+    if (!append_addrprog_base(builder, base, errors, section, token)) {
+        return std::nullopt;
+    }
+    for (const auto& step : split_pipe_list(steps)) {
+        if (!append_addrprog_step(builder, step, errors, section, token)) {
+            return std::nullopt;
+        }
+    }
+    builder.op_end();
+    return builder.blob();
 }
 
 std::optional<MemorySampleSpec> parse_memory_sample(
@@ -650,11 +699,98 @@ CaptureProfileParseResult ParseCaptureProfileText(const std::string& text)
             watchpoint.access = *access;
         }
 
+        const auto scope = parse_watchpoint_scope(ini.get(section, "scope", ""));
+        if (!scope.has_value()) {
+            result.errors.push_back(section + ": scope must be normal/input_macro");
+        } else {
+            watchpoint.scope = *scope;
+        }
+
         profile.memory_watchpoints.push_back(std::move(watchpoint));
     }
 
-    if (profile.checkpoints.empty() && profile.memory_watchpoints.empty()) {
-        result.errors.push_back("profile must define at least one [checkpoint.*] or [watchpoint.*] section");
+    for (const auto& section : ini.list_sections(false)) {
+        if (section.rfind("dynamic_watchpoint.", 0) != 0) continue;
+
+        DynamicMemoryWatchpointSpec watchpoint{};
+        watchpoint.id = section.substr(std::string("dynamic_watchpoint.").size());
+        if (watchpoint.id.empty()) {
+            result.errors.push_back(section + ": dynamic watchpoint id is empty");
+        } else if (!watchpoint_ids.insert(watchpoint.id).second) {
+            result.errors.push_back(section + ": duplicate watchpoint id");
+        }
+
+        std::uint32_t pc = 0;
+        if (!parse_u32(ini.get(section, "pc", ""), pc) || pc == 0) {
+            result.errors.push_back(section + ": pc is required");
+        }
+        watchpoint.pc = pc;
+
+        const auto address_text = ini.get(section, "address", "");
+        const auto addrprog_text = ini.get(section, "addrprog", ini.get(section, "address_program", ""));
+        if (!address_text.empty()) {
+            if (!addrprog_text.empty()) {
+                result.errors.push_back(section + ": specify only one of address or addrprog");
+            }
+            std::uint32_t address = 0;
+            if (!parse_u32(address_text, address) || address == 0) {
+                result.errors.push_back(section + ": address must be a nonzero u32");
+            } else {
+                watchpoint.use_absolute_address = true;
+                watchpoint.address = address;
+            }
+        } else if (!addrprog_text.empty()) {
+            if (auto program = parse_address_program_expression(addrprog_text, result.errors, section)) {
+                watchpoint.use_address_program = true;
+                watchpoint.address_program = std::move(*program);
+            }
+        } else {
+            const auto base_text = ini.get(section, "base_gpr", ini.get(section, "base_reg", ""));
+            if (!parse_register_index(base_text, watchpoint.base_reg)) {
+                result.errors.push_back(section + ": base_gpr must be r0-r31 when address or addrprog is not provided");
+            }
+
+            std::int32_t offset = 0;
+            if (!parse_i32(ini.get(section, "offset", ""), offset)) {
+                result.errors.push_back(section + ": offset is required when address or addrprog is not provided");
+            }
+            watchpoint.offset = offset;
+        }
+
+        const auto size = parse_width(ini.get(section, "size", ""));
+        if (!size.has_value()) {
+            result.errors.push_back(section + ": size must be u8/u16/u32/u64");
+        } else {
+            watchpoint.size = *size;
+        }
+
+        const auto access = parse_watchpoint_access(ini.get(section, "access", ""));
+        if (!access.has_value()) {
+            result.errors.push_back(section + ": access must be read/write/access");
+        } else {
+            watchpoint.access = *access;
+        }
+
+        const auto scope = parse_watchpoint_scope(ini.get(section, "scope", ""));
+        if (!scope.has_value()) {
+            result.errors.push_back(section + ": scope must be normal/input_macro");
+        } else {
+            watchpoint.scope = *scope;
+        }
+
+        const auto one_shot_text = ini.get(section, "one_shot", "");
+        if (!one_shot_text.empty()
+            && !parse_bool(one_shot_text, watchpoint.one_shot)) {
+            result.errors.push_back(section + ": one_shot must be true/false");
+        }
+
+        profile.dynamic_memory_watchpoints.push_back(std::move(watchpoint));
+    }
+
+    if (profile.checkpoints.empty()
+        && profile.memory_watchpoints.empty()
+        && profile.dynamic_memory_watchpoints.empty()) {
+        result.errors.push_back("profile must define at least one [checkpoint.*], [watchpoint.*], or [dynamic_watchpoint.*] section");
     }
 
     if (result.errors.empty()) {

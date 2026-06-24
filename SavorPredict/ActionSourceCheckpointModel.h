@@ -28,7 +28,7 @@ enum class ActionSourceCheckpointKind {
 struct ActionSourceCheckpointExpectation {
     std::optional<std::string> expected_handler_pc;
     std::optional<std::string> expected_callback_pc;
-    std::string_view source_selection_pc = "8006782C";
+    std::string_view source_selection_pc = "80067B50";
     std::string_view action_source_pc = "8006721C";
     std::string_view expected_first_battle_handler_pc = "800662BC";
 };

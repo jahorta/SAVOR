@@ -174,7 +174,9 @@ namespace phase::battle::turnrunner {
         soa::battle::actions::BattlePath path;
         path.push_back(std::move(turn));
 
-        out_ctx[savor::context::key::core::RUN_MS] = run_ms;
+        const uint32_t effective_run_ms = run_ms > 0 ? run_ms : 120000u;
+        out_ctx[savor::context::key::core::RUN_MS] = effective_run_ms;
+        out_ctx[savor::context::key::battle::RUN_LONG_TIMEOUT_MS] = effective_run_ms;
         out_ctx[savor::context::key::core::VI_STALL_MS] = vi_stall_ms;
 
         // Single-turn runner payload carries exactly one local turn plan.

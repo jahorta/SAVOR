@@ -104,6 +104,9 @@
     <ClCompile Include="EnemyEventDataModel.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="Field6WatchpointModel.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="FirstBattleDataModel.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -248,6 +251,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="EnemyEventDataModel.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Field6WatchpointModel.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="FirstBattleDataModel.h">

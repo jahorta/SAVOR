@@ -80,7 +80,12 @@ namespace savor::context::key::battle {
   X(RNG_OVERRIDE_ENABLED,    0x0373, "battle.rng.override_enabled") \
   X(RNG_OVERRIDE_SEED,       0x0374, "battle.rng.override_seed") \
   X(RNG_ORIGINAL_SEED,       0x0375, "battle.rng.original_seed") \
-  X(RNG_APPLIED_SEED,        0x0376, "battle.rng.applied_seed")
+  X(RNG_APPLIED_SEED,        0x0376, "battle.rng.applied_seed") \
+  X(MACRO_CAPTURE_ONLY_PC_HITS,0x0377, "battle.macro.capture_only.pc_hits") \
+  X(MACRO_CAPTURE_ONLY_MEMWATCH_HITS,0x0378, "battle.macro.capture_only.memwatch_hits") \
+  X(MACRO_CAPTURE_ONLY_UNATTRIBUTED_DELTAS,0x0379, "battle.macro.capture_only.unattributed_deltas") \
+  X(MACRO_CAPTURE_ONLY_LAST_PC,0x037A, "battle.macro.capture_only.last_pc") \
+  X(RUN_LONG_TIMEOUT_MS,     0x037B, "battle.run.long_timeout_ms")
 
 #define DECL_KEY(NAME, ID, STR) inline constexpr savor::context::key::KeyId NAME = static_cast<savor::context::key::KeyId>(ID); \
 static_assert(NAME >= savor::context::key::BATTLE_MIN && NAME <= savor::context::key::BATTLE_MAX, "battle key out of range");

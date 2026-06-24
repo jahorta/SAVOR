@@ -408,6 +408,7 @@ int run_battle_jobs(const BattleJobBatchRunOptions& options, std::ostream& out, 
         clone_requests.push_back({
             .source_exec_job_id = request.exec_job_id,
             .override_start_rng_seed = request.override_start_rng_seed,
+            .battle_run_ms = request.battle_run_ms,
         });
     }
     if (!clone_battle_jobs_for_capture(
