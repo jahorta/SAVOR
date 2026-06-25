@@ -29,6 +29,9 @@
     <ClCompile Include="ActionViewSelectorModel.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="ActionViewStdJsonCache.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="ActionViewStdJsonLoader.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -188,6 +191,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="ActionViewSelectorModel.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="ActionViewStdJsonCache.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="ActionViewStdJsonLoader.h">

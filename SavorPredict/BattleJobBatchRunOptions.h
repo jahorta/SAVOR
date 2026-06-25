@@ -26,6 +26,9 @@ struct BattleJobBatchRunOptions {
     std::filesystem::path dolphin_base_dir;
     std::filesystem::path worker_exe_path;
     std::filesystem::path capture_profile_path;
+    std::filesystem::path action_view_std_json_dir;
+    std::filesystem::path std_disc_dump_root;
+    std::filesystem::path spice_file_parsing_exe;
     savor::dbutils::SandboxMode sandbox_mode = savor::dbutils::SandboxMode::MinimalBattleSingleTurn;
     std::vector<long long> exec_job_ids;
     std::vector<BattleJobBatchRunRequest> seeded_exec_job_requests;

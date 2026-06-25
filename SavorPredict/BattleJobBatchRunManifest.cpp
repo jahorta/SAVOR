@@ -102,6 +102,22 @@ void write_copied_artifacts(std::ostream& out, const std::vector<savor::dbutils:
     out << "],\n";
 }
 
+void write_std_json_cache(std::ostream& out, const ActionViewStdJsonCacheResolution& value) {
+    out << "  \"std_json_cache\": {"
+        << "\"resolved_std_json_dir\":\"" << json_escape(path_string(value.resolved_std_json_dir)) << "\","
+        << "\"cache_dir\":\"" << json_escape(path_string(value.cache_dir)) << "\","
+        << "\"disc_dump_root\":\"" << json_escape(path_string(value.disc_dump_root)) << "\","
+        << "\"spice_file_parsing_exe\":\"" << json_escape(path_string(value.spice_file_parsing_exe)) << "\","
+        << "\"used_explicit_dir\":" << (value.used_explicit_dir ? "true" : "false") << ","
+        << "\"cache_complete_before\":" << (value.cache_complete_before ? "true" : "false") << ","
+        << "\"generation_attempted\":" << (value.generation_attempted ? "true" : "false") << ","
+        << "\"generation_succeeded\":" << (value.generation_succeeded ? "true" : "false") << ","
+        << "\"available\":" << (value.available ? "true" : "false") << ","
+        << "\"fatal_error\":" << (value.fatal_error ? "true" : "false") << ","
+        << "\"spice_exit_code\":" << value.spice_exit_code
+        << "},\n";
+}
+
 void ensure_parent_dir(const std::filesystem::path& path, std::ostream& err, bool* ok) {
     if (!*ok) {
         return;
@@ -232,6 +248,7 @@ bool write_battle_job_batch_run_manifest(
     file << "  \"dolphin_base_dir\": \"" << json_escape(path_string(summary.options.dolphin_base_dir)) << "\",\n";
     file << "  \"worker_exe_path\": \"" << json_escape(path_string(summary.options.worker_exe_path)) << "\",\n";
     file << "  \"capture_profile_path\": \"" << json_escape(path_string(summary.capture_profile_path)) << "\",\n";
+    write_std_json_cache(file, summary.std_json_cache);
     file << "  \"worker_count\": " << summary.worker_count << ",\n";
     file << "  \"max_workers\": " << summary.options.max_workers << ",\n";
     file << "  \"poll_ms\": " << summary.options.poll_ms << ",\n";
@@ -325,6 +342,8 @@ bool write_battle_job_batch_run_text_summary(
     file << "battle_run_ms: " << optional_u32_for_text(summary.options.battle_run_ms) << "\n";
     file << "override_start_rng_seed: " << optional_hex_for_text(summary.options.override_start_rng_seed) << "\n";
     file << "override_fake_attacks_this_turn: " << optional_u32_for_text(summary.options.override_fake_attacks_this_turn) << "\n";
+    file << "std_json_cache: "
+        << summarize_action_view_std_json_cache_resolution(summary.std_json_cache) << "\n";
     file << "timed_out: " << (summary.timed_out ? "true" : "false") << "\n";
     file << "jobs: " << summary.jobs.size() << "\n";
     for (const auto& job : summary.jobs) {

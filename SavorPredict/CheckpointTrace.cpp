@@ -1,5 +1,6 @@
 #include "CheckpointTrace.h"
 
+#include "ActionViewStdJsonCache.h"
 #include "ActionViewCameraModel.h"
 #include "ActionSetupCheckpointModel.h"
 #include "ActionSourceCheckpointModel.h"
@@ -638,6 +639,7 @@ std::vector<PredictedAttackParamChain> build_predicted_attack_param_chains(
     input_options.selector.turn_job_id = options.turn_job_id;
     input_options.selector.exec_job_id = options.exec_job_id;
     input_options.enemy_event_id = 0;
+    input_options.action_view_std_json_dir = options.action_view_std_json_dir;
     input_options.allow_seed_candidate_fallback = true;
     if (const auto live_seed = first_live_rng_seed_before(events); live_seed.has_value()) {
         input_options.start_seed_override = *live_seed;
@@ -5550,17 +5552,36 @@ int run_trace_checkpoints(const TraceCheckpointsOptions& options, std::ostream& 
         return 2;
     }
 
-    std::ifstream input(options.checkpoint_file);
+    auto resolved_options = options;
+    const auto std_resolution = resolve_action_view_std_json_cache({
+        .db_root = options.std_json_cache_db_root.empty()
+            ? options.db_root
+            : options.std_json_cache_db_root,
+        .explicit_std_json_dir = options.action_view_std_json_dir,
+        .std_disc_dump_root = options.std_disc_dump_root,
+        .spice_file_parsing_exe = options.spice_file_parsing_exe,
+    });
+    for (const auto& diagnostic : std_resolution.diagnostics) {
+        err << "STD JSON cache: " << diagnostic << "\n";
+    }
+    if (std_resolution.fatal_error) {
+        return 1;
+    }
+    if (std_resolution.available) {
+        resolved_options.action_view_std_json_dir = std_resolution.resolved_std_json_dir;
+    }
+
+    std::ifstream input(resolved_options.checkpoint_file);
     if (!input) {
-        err << "Failed to open checkpoint file: " << options.checkpoint_file.string() << "\n";
+        err << "Failed to open checkpoint file: " << resolved_options.checkpoint_file.string() << "\n";
         return 1;
     }
 
     auto result = parse_checkpoint_stream(input);
-    if (options.json) {
-        write_json_report(options, result, out);
+    if (resolved_options.json) {
+        write_json_report(resolved_options, result, out);
     } else {
-        write_text_report(options, result, out);
+        write_text_report(resolved_options, result, out);
     }
     return result.errors.empty() ? 0 : 1;
 }

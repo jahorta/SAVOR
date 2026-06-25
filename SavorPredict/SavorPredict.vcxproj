@@ -114,6 +114,7 @@
     <ClCompile Include="ActionViewGateCheckpointModel.cpp" />
     <ClCompile Include="ActionViewResourceCheckpointModel.cpp" />
     <ClCompile Include="ActionViewSelectorModel.cpp" />
+    <ClCompile Include="ActionViewStdJsonCache.cpp" />
     <ClCompile Include="ActionViewStdJsonLoader.cpp" />
     <ClCompile Include="ActionViewStdResourceResolver.cpp" />
     <ClCompile Include="AttackDamageValueCheckpointModel.cpp" />
@@ -169,6 +170,7 @@
     <ClInclude Include="ActionViewGateCheckpointModel.h" />
     <ClInclude Include="ActionViewResourceCheckpointModel.h" />
     <ClInclude Include="ActionViewSelectorModel.h" />
+    <ClInclude Include="ActionViewStdJsonCache.h" />
     <ClInclude Include="ActionViewStdJsonLoader.h" />
     <ClInclude Include="ActionViewStdResourceResolver.h" />
     <ClInclude Include="AttackDamageValueCheckpointModel.h" />

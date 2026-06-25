@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ActionViewStdJsonCache.h"
 #include "BattleJobBatchRunOptions.h"
 #include "BattleJobClone.h"
 #include "BattleJobSandbox.h"
@@ -34,6 +35,7 @@ struct BattleJobBatchRunSummary {
     BattleJobSandboxResult sandbox;
     BattleJobBatchCloneResult clone;
     std::filesystem::path capture_profile_path;
+    ActionViewStdJsonCacheResolution std_json_cache;
     int worker_count = 0;
     int timeout_ms = 0;
     bool timed_out = false;

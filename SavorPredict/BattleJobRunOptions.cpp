@@ -144,6 +144,11 @@ std::vector<std::string> validate_battle_job_run_options(const BattleJobRunOptio
     if (options.worker_exe_path.empty()) {
         errors.push_back("--worker-exe could not be resolved.");
     }
+    if (!options.action_view_std_json_dir.empty()
+        && !std::filesystem::is_directory(options.action_view_std_json_dir)) {
+        errors.push_back("--action-view-std-json-dir must name an existing directory: "
+            + options.action_view_std_json_dir.string());
+    }
     if (options.poll_ms <= 0) {
         errors.push_back("--poll-ms must be positive.");
     }
@@ -208,6 +213,18 @@ BattleJobRunParseResult parse_battle_job_run_tokens(
         } else if (arg == "--capture-profile") {
             if (require_value(args, i, arg, value, result.errors)) {
                 result.options.capture_profile_path = value;
+            }
+        } else if (arg == "--action-view-std-json-dir") {
+            if (require_value(args, i, arg, value, result.errors)) {
+                result.options.action_view_std_json_dir = value;
+            }
+        } else if (arg == "--std-disc-dump-root") {
+            if (require_value(args, i, arg, value, result.errors)) {
+                result.options.std_disc_dump_root = value;
+            }
+        } else if (arg == "--spice-file-parsing-exe") {
+            if (require_value(args, i, arg, value, result.errors)) {
+                result.options.spice_file_parsing_exe = value;
             }
         } else if (arg == "--sandbox-mode") {
             if (require_value(args, i, arg, value, result.errors)) {

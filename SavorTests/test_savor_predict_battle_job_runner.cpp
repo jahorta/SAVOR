@@ -311,6 +311,22 @@ TEST(SavorPredictBattleJobRunOptions, ValidatesSelectorsAndRuntimePaths)
     EXPECT_TRUE(full_copy.errors.empty()) << (full_copy.errors.empty() ? "" : full_copy.errors.front());
     EXPECT_EQ(full_copy.options.sandbox_mode, savor::dbutils::SandboxMode::FullCopy);
 
+    const auto std_options = parse_battle_job_run_tokens(
+        {
+            "--exec-job-id", "34",
+            "--iso", "D:/SoATAS/game.gcm",
+            "--dolphin-base-dir", "D:/SoATAS/dolphin",
+            "--std-disc-dump-root", "D:/disc",
+            "--spice-file-parsing-exe", "D:/tools/SpiceFileParsing.exe",
+        },
+        "SavorPredict.exe");
+    EXPECT_TRUE(std_options.errors.empty())
+        << (std_options.errors.empty() ? "" : std_options.errors.front());
+    EXPECT_EQ(std_options.options.std_disc_dump_root, std::filesystem::path("D:/disc"));
+    EXPECT_EQ(
+        std_options.options.spice_file_parsing_exe,
+        std::filesystem::path("D:/tools/SpiceFileParsing.exe"));
+
     const auto both = parse_battle_job_run_tokens(
         {
             "--turn-job-id", "12",
@@ -474,6 +490,22 @@ TEST(SavorPredictBattleJobBatchRunOptions, ParsesRepeatedIdsListFileAndTimeoutDe
         "SavorPredict.exe");
     EXPECT_TRUE(full_copy.errors.empty()) << (full_copy.errors.empty() ? "" : full_copy.errors.front());
     EXPECT_EQ(full_copy.options.sandbox_mode, savor::dbutils::SandboxMode::FullCopy);
+
+    const auto std_options = parse_battle_job_batch_run_tokens(
+        {
+            "--exec-job-id", "101",
+            "--iso", "D:/SoATAS/game.gcm",
+            "--dolphin-base-dir", "D:/SoATAS/dolphin",
+            "--std-disc-dump-root", "D:/disc",
+            "--spice-file-parsing-exe", "D:/tools/SpiceFileParsing.exe",
+        },
+        "SavorPredict.exe");
+    EXPECT_TRUE(std_options.errors.empty())
+        << (std_options.errors.empty() ? "" : std_options.errors.front());
+    EXPECT_EQ(std_options.options.std_disc_dump_root, std::filesystem::path("D:/disc"));
+    EXPECT_EQ(
+        std_options.options.spice_file_parsing_exe,
+        std::filesystem::path("D:/tools/SpiceFileParsing.exe"));
 
     const auto invalid_workers = parse_battle_job_batch_run_tokens(
         {

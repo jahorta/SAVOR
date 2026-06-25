@@ -79,6 +79,22 @@ void write_copied_artifacts(std::ostream& out, const std::vector<savor::dbutils:
     out << "],\n";
 }
 
+void write_std_json_cache(std::ostream& out, const ActionViewStdJsonCacheResolution& value) {
+    out << "  \"std_json_cache\": {"
+        << "\"resolved_std_json_dir\":\"" << json_escape(path_string(value.resolved_std_json_dir)) << "\","
+        << "\"cache_dir\":\"" << json_escape(path_string(value.cache_dir)) << "\","
+        << "\"disc_dump_root\":\"" << json_escape(path_string(value.disc_dump_root)) << "\","
+        << "\"spice_file_parsing_exe\":\"" << json_escape(path_string(value.spice_file_parsing_exe)) << "\","
+        << "\"used_explicit_dir\":" << (value.used_explicit_dir ? "true" : "false") << ","
+        << "\"cache_complete_before\":" << (value.cache_complete_before ? "true" : "false") << ","
+        << "\"generation_attempted\":" << (value.generation_attempted ? "true" : "false") << ","
+        << "\"generation_succeeded\":" << (value.generation_succeeded ? "true" : "false") << ","
+        << "\"available\":" << (value.available ? "true" : "false") << ","
+        << "\"fatal_error\":" << (value.fatal_error ? "true" : "false") << ","
+        << "\"spice_exit_code\":" << value.spice_exit_code
+        << "},\n";
+}
+
 std::string hex_u32(std::uint32_t value) {
     std::ostringstream out;
     out << "0x" << std::uppercase << std::hex << std::setw(8) << std::setfill('0') << value;
@@ -162,6 +178,7 @@ bool write_battle_job_run_manifest(
     file << "  \"expected_capture_path\": \"" << json_escape(path_string(summary.expected_capture_path)) << "\",\n";
     file << "  \"stable_capture_path\": \"" << json_escape(path_string(summary.stable_capture_path)) << "\",\n";
     file << "  \"trace_report_path\": \"" << json_escape(path_string(summary.trace_report_path)) << "\",\n";
+    write_std_json_cache(file, summary.std_json_cache);
     file << "  \"original_turn_job_id\": " << summary.clone.original_turn_job_id << ",\n";
     file << "  \"original_exec_job_id\": " << summary.clone.original_exec_job_id << ",\n";
     file << "  \"cloned_turn_job_id\": " << summary.clone.cloned_turn_job_id << ",\n";
@@ -237,6 +254,8 @@ bool write_battle_job_run_text_summary(
     file << "capture_found: " << (summary.capture_found ? "true" : "false") << "\n";
     file << "stable_capture_path: " << summary.stable_capture_path.string() << "\n";
     file << "trace_report_path: " << summary.trace_report_path.string() << "\n";
+    file << "std_json_cache: "
+        << summarize_action_view_std_json_cache_resolution(summary.std_json_cache) << "\n";
     for (const auto& error : summary.errors) {
         file << "error: " << error << "\n";
     }

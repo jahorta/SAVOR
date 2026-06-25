@@ -25,6 +25,9 @@ struct TraceCheckpointsOptions {
     std::optional<int> expected_end_turn_status_draws;
     std::optional<int> expected_level_up_stat_rolls;
     std::filesystem::path action_view_std_json_dir;
+    std::filesystem::path std_json_cache_db_root;
+    std::filesystem::path std_disc_dump_root;
+    std::filesystem::path spice_file_parsing_exe;
     bool json = false;
 };
 

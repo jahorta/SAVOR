@@ -2,6 +2,7 @@
 
 #include <ActionViewResourceCheckpointModel.h>
 #include <ActionViewSelectorModel.h>
+#include <ActionViewStdJsonCache.h>
 #include <ActionViewStdJsonLoader.h>
 #include <ActionViewStdResourceResolver.h>
 #include <CheckpointTrace.h>
@@ -2668,6 +2669,21 @@ TEST(SavorPredictBattlePredictorCli, ParsesActionViewStdJsonDir) {
     std::filesystem::remove_all(temp_dir);
 }
 
+TEST(SavorPredictBattlePredictorCli, ParsesStdJsonCacheOptions) {
+    const auto parsed = parse_predict_battle_tokens({
+        "--exec-job-id",
+        "147884",
+        "--std-disc-dump-root",
+        "D:/disc",
+        "--spice-file-parsing-exe",
+        "D:/tools/SpiceFileParsing.exe",
+    });
+
+    EXPECT_TRUE(parsed.errors.empty()) << (parsed.errors.empty() ? "" : parsed.errors.front());
+    EXPECT_EQ(parsed.options.std_disc_dump_root, std::filesystem::path("D:/disc"));
+    EXPECT_EQ(parsed.options.spice_file_parsing_exe, std::filesystem::path("D:/tools/SpiceFileParsing.exe"));
+}
+
 TEST(SavorPredictBattlePredictorCli, RejectsMissingActionViewStdJsonDir) {
     const auto missing_dir =
         std::filesystem::temp_directory_path() / "savor_predict_cli_missing_std_json_dir_test";
@@ -2690,6 +2706,137 @@ TEST(SavorPredictBattlePredictorCli, RejectsMissingActionViewStdJsonDir) {
                     != std::string::npos;
             }),
         parsed.errors.end());
+}
+
+TEST(SavorPredictStdJsonCache, ReportsDefaultPaths) {
+    EXPECT_EQ(
+        default_action_view_std_json_cache_dir("D:/SavorPredictDB"),
+        std::filesystem::path("D:/SavorPredictDB/.std_json"));
+    EXPECT_EQ(
+        default_action_view_std_disc_dump_root(),
+        std::filesystem::path("D:/SoAGC/2002-12-19-gc-us-final_Skies_of_Arcadia_Legends"));
+}
+
+TEST(SavorPredictStdJsonCache, CompleteCacheReturnsWithoutInvokingSpice) {
+    const auto root = std::filesystem::temp_directory_path()
+        / ("savor_std_cache_hit_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    const auto cache = root / ".std_json";
+    std::filesystem::create_directories(cache);
+    for (const auto& name : required_first_battle_action_view_std_json_files()) {
+        std::ofstream(cache / name, std::ios::binary | std::ios::trunc) << "{}";
+    }
+
+    bool invoked = false;
+    const auto resolved = resolve_action_view_std_json_cache(
+        {
+            .db_root = root,
+            .std_disc_dump_root = root / "missing_disc",
+            .spice_file_parsing_exe = root / "missing.exe",
+        },
+        [&](const SpiceStdJsonExportRequest&) {
+            invoked = true;
+            return SpiceStdJsonExportResult{};
+        });
+
+    EXPECT_TRUE(resolved.available);
+    EXPECT_TRUE(resolved.cache_complete_before);
+    EXPECT_FALSE(resolved.generation_attempted);
+    EXPECT_FALSE(invoked);
+    EXPECT_EQ(resolved.resolved_std_json_dir, cache);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(SavorPredictStdJsonCache, GeneratesMissingCacheFromDiscDump) {
+    const auto root = std::filesystem::temp_directory_path()
+        / ("savor_std_cache_generate_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    const auto disc = root / "disc";
+    const auto bchara = disc / "bchara";
+    const auto fake_exe = root / "SpiceFileParsing.exe";
+    std::filesystem::create_directories(bchara);
+    std::ofstream(fake_exe, std::ios::binary | std::ios::trunc) << "fake";
+
+    bool invoked = false;
+    const auto resolved = resolve_action_view_std_json_cache(
+        {
+            .db_root = root / "db",
+            .std_disc_dump_root = disc,
+            .spice_file_parsing_exe = fake_exe,
+        },
+        [&](const SpiceStdJsonExportRequest& request) {
+            invoked = true;
+            EXPECT_EQ(request.bchara_dir, bchara);
+            EXPECT_EQ(request.output_dir, root / "db" / ".std_json");
+            std::filesystem::create_directories(request.output_dir);
+            for (const auto& name : required_first_battle_action_view_std_json_files()) {
+                std::ofstream(request.output_dir / name, std::ios::binary | std::ios::trunc) << "{}";
+            }
+            return SpiceStdJsonExportResult{ .exit_code = 0, .output = "ok" };
+        });
+
+    EXPECT_TRUE(invoked);
+    EXPECT_TRUE(resolved.available);
+    EXPECT_TRUE(resolved.generation_attempted);
+    EXPECT_TRUE(resolved.generation_succeeded);
+    EXPECT_FALSE(resolved.fatal_error);
+    EXPECT_EQ(resolved.resolved_std_json_dir, root / "db" / ".std_json");
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(SavorPredictStdJsonCache, ExplicitDirOverridesCacheGeneration) {
+    const auto root = std::filesystem::temp_directory_path()
+        / ("savor_std_cache_explicit_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    const auto explicit_dir = root / "explicit";
+    std::filesystem::create_directories(explicit_dir);
+
+    bool invoked = false;
+    const auto resolved = resolve_action_view_std_json_cache(
+        {
+            .db_root = root / "db",
+            .explicit_std_json_dir = explicit_dir,
+            .std_disc_dump_root = root / "disc",
+            .spice_file_parsing_exe = root / "SpiceFileParsing.exe",
+        },
+        [&](const SpiceStdJsonExportRequest&) {
+            invoked = true;
+            return SpiceStdJsonExportResult{};
+        });
+
+    EXPECT_TRUE(resolved.available);
+    EXPECT_TRUE(resolved.used_explicit_dir);
+    EXPECT_FALSE(resolved.generation_attempted);
+    EXPECT_FALSE(invoked);
+    EXPECT_EQ(resolved.resolved_std_json_dir, explicit_dir);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(SavorPredictStdJsonCache, MissingFilesAfterExportIsFatal) {
+    const auto root = std::filesystem::temp_directory_path()
+        / ("savor_std_cache_missing_after_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    const auto disc = root / "disc";
+    const auto fake_exe = root / "SpiceFileParsing.exe";
+    std::filesystem::create_directories(disc / "bchara");
+    std::ofstream(fake_exe, std::ios::binary | std::ios::trunc) << "fake";
+
+    const auto resolved = resolve_action_view_std_json_cache(
+        {
+            .db_root = root / "db",
+            .std_disc_dump_root = disc,
+            .spice_file_parsing_exe = fake_exe,
+        },
+        [](const SpiceStdJsonExportRequest&) {
+            return SpiceStdJsonExportResult{ .exit_code = 0, .output = "ok" };
+        });
+
+    EXPECT_FALSE(resolved.available);
+    EXPECT_TRUE(resolved.generation_attempted);
+    EXPECT_FALSE(resolved.generation_succeeded);
+    EXPECT_TRUE(resolved.fatal_error);
+    EXPECT_FALSE(resolved.missing_files_after.empty());
+
+    std::filesystem::remove_all(root);
 }
 
 TEST(SavorPredictBattlePredictorCli, RejectsUnsupportedEnemyEventId) {

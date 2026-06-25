@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ActionViewStdJsonCache.h"
 #include "BattleJobClone.h"
 #include "BattleJobRunOptions.h"
 #include "BattleJobSandbox.h"
@@ -21,6 +22,7 @@ struct BattleJobRunSummary {
     std::filesystem::path expected_capture_path;
     std::filesystem::path stable_capture_path;
     std::filesystem::path trace_report_path;
+    ActionViewStdJsonCacheResolution std_json_cache;
     std::string terminal_state;
     bool timed_out = false;
     bool capture_found = false;

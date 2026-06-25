@@ -1,5 +1,6 @@
 #include "BattlePredictorCli.h"
 
+#include "ActionViewStdJsonCache.h"
 #include "BattlePredictionDbInput.h"
 #include "BattleJobRunOptions.h"
 #include "EnemyEventDataModel.h"
@@ -232,6 +233,14 @@ BattlePredictorCliParseResult parse_predict_battle_tokens(const std::vector<std:
             if (require_value(args, i, arg, value, result.errors)) {
                 result.options.action_view_std_json_dir = value;
             }
+        } else if (arg == "--std-disc-dump-root") {
+            if (require_value(args, i, arg, value, result.errors)) {
+                result.options.std_disc_dump_root = value;
+            }
+        } else if (arg == "--spice-file-parsing-exe") {
+            if (require_value(args, i, arg, value, result.errors)) {
+                result.options.spice_file_parsing_exe = value;
+            }
         } else if (arg == "--turn-job-id") {
             long long parsed = 0;
             if (require_value(args, i, arg, value, result.errors) && parse_ll(value, parsed)) {
@@ -338,16 +347,33 @@ int run_predict_battle(const BattlePredictorCliOptions& options, std::ostream& o
         return 2;
     }
 
+    auto resolved_options = options;
+    const auto std_resolution = resolve_action_view_std_json_cache({
+        .db_root = options.db_root,
+        .explicit_std_json_dir = options.action_view_std_json_dir,
+        .std_disc_dump_root = options.std_disc_dump_root,
+        .spice_file_parsing_exe = options.spice_file_parsing_exe,
+    });
+    for (const auto& diagnostic : std_resolution.diagnostics) {
+        err << "STD JSON cache: " << diagnostic << "\n";
+    }
+    if (std_resolution.fatal_error) {
+        return 1;
+    }
+    if (std_resolution.available) {
+        resolved_options.action_view_std_json_dir = std_resolution.resolved_std_json_dir;
+    }
+
     BattlePredictionInput input;
     input.profile = *profile;
 
-    const bool from_context_file = !options.context_file.empty();
+    const bool from_context_file = !resolved_options.context_file.empty();
     if (from_context_file) {
-        if (!build_input_from_context_file(options, input, err)) {
+        if (!build_input_from_context_file(resolved_options, input, err)) {
             return 1;
         }
         const auto result = predict_battle(input);
-        if (options.json) {
+        if (resolved_options.json) {
             write_battle_prediction_json(result, out);
         } else {
             write_battle_prediction_text(result, out);
@@ -356,25 +382,25 @@ int run_predict_battle(const BattlePredictorCliOptions& options, std::ostream& o
     }
 
     BattlePredictionDbInputOptions db_options;
-    db_options.db_root = options.db_root;
-    db_options.selector.turn_job_id = options.turn_job_id;
-    db_options.selector.exec_job_id = options.exec_job_id;
-    db_options.profile_name = options.profile_name;
-    db_options.fake_attacks_override = options.fake_attacks;
-    db_options.enemy_event_id = options.enemy_event_id;
-    db_options.action_view_std_json_dir = options.action_view_std_json_dir;
-    db_options.allow_seed_candidate_fallback = options.allow_seed_candidate_fallback;
+    db_options.db_root = resolved_options.db_root;
+    db_options.selector.turn_job_id = resolved_options.turn_job_id;
+    db_options.selector.exec_job_id = resolved_options.exec_job_id;
+    db_options.profile_name = resolved_options.profile_name;
+    db_options.fake_attacks_override = resolved_options.fake_attacks;
+    db_options.enemy_event_id = resolved_options.enemy_event_id;
+    db_options.action_view_std_json_dir = resolved_options.action_view_std_json_dir;
+    db_options.allow_seed_candidate_fallback = resolved_options.allow_seed_candidate_fallback;
 
-    if (!options.start_seed_list.empty()) {
+    if (!resolved_options.start_seed_list.empty()) {
         std::vector<std::uint32_t> start_seeds;
-        if (!read_start_seed_list(options.start_seed_list, start_seeds, err)) {
+        if (!read_start_seed_list(resolved_options.start_seed_list, start_seeds, err)) {
             return 1;
         }
 
         int aggregate_rc = 0;
-        if (options.json) {
+        if (resolved_options.json) {
             out << "{\n";
-            out << "  \"start_seed_list\": \"" << json_escape_local(options.start_seed_list.generic_string()) << "\",\n";
+            out << "  \"start_seed_list\": \"" << json_escape_local(resolved_options.start_seed_list.generic_string()) << "\",\n";
             out << "  \"runs\": [\n";
         }
         for (std::size_t i = 0; i < start_seeds.size(); ++i) {
@@ -390,7 +416,7 @@ int run_predict_battle(const BattlePredictorCliOptions& options, std::ostream& o
                 aggregate_rc = run_rc;
             }
 
-            if (options.json) {
+            if (resolved_options.json) {
                 std::ostringstream run_json;
                 write_battle_prediction_run_json(db_input->metadata, result, run_json);
                 if (i > 0) {
@@ -407,7 +433,7 @@ int run_predict_battle(const BattlePredictorCliOptions& options, std::ostream& o
                 write_battle_prediction_text(result, out);
             }
         }
-        if (options.json) {
+        if (resolved_options.json) {
             out << "\n";
             out << "  ]\n";
             out << "}\n";
@@ -415,7 +441,7 @@ int run_predict_battle(const BattlePredictorCliOptions& options, std::ostream& o
         return aggregate_rc;
     }
 
-    db_options.start_seed_override = options.start_seed;
+    db_options.start_seed_override = resolved_options.start_seed;
 
     const auto db_input = build_battle_prediction_input_from_db_root(db_options, err);
     if (!db_input.has_value()) {
@@ -423,7 +449,7 @@ int run_predict_battle(const BattlePredictorCliOptions& options, std::ostream& o
     }
 
     const auto result = predict_battle(db_input->input);
-    if (options.json) {
+    if (resolved_options.json) {
         write_battle_prediction_run_json(db_input->metadata, result, out);
     } else {
         write_battle_prediction_db_metadata_text(db_input->metadata, out);
