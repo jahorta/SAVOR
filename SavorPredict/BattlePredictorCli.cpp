@@ -181,6 +181,7 @@ bool build_input_from_context_file(
 
     input.starting_rng_seed = *options.start_seed;
     input.enemy_event_id = options.enemy_event_id;
+    input.options.action_view_std_json_dir = options.action_view_std_json_dir;
     input.turn_plan.fake_attack_count = static_cast<std::uint32_t>(*options.fake_attacks);
     input.turn_plan.commands = *commands;
     return true;
@@ -226,6 +227,10 @@ BattlePredictorCliParseResult parse_predict_battle_tokens(const std::vector<std:
                 result.options.enemy_event_id = parsed;
             } else {
                 result.errors.push_back("--enemy-event-id requires a non-negative integer.");
+            }
+        } else if (arg == "--action-view-std-json-dir") {
+            if (require_value(args, i, arg, value, result.errors)) {
+                result.options.action_view_std_json_dir = value;
             }
         } else if (arg == "--turn-job-id") {
             long long parsed = 0;
@@ -308,6 +313,12 @@ std::vector<std::string> validate_predict_battle_options(const BattlePredictorCl
     if (has_db_selector && is_mutable_debug_db_root(options.db_root)) {
         errors.push_back("Refusing to use D:/SoaSimDBDebug for prediction; use D:/SavorPredictDB.");
     }
+    if (!options.action_view_std_json_dir.empty()
+        && !std::filesystem::is_directory(options.action_view_std_json_dir)) {
+        errors.push_back(
+            "--action-view-std-json-dir must name an existing directory: "
+            + options.action_view_std_json_dir.string());
+    }
     if (has_turn && *options.turn_job_id <= 0) {
         errors.push_back("--turn-job-id must be positive.");
     }
@@ -351,6 +362,7 @@ int run_predict_battle(const BattlePredictorCliOptions& options, std::ostream& o
     db_options.profile_name = options.profile_name;
     db_options.fake_attacks_override = options.fake_attacks;
     db_options.enemy_event_id = options.enemy_event_id;
+    db_options.action_view_std_json_dir = options.action_view_std_json_dir;
     db_options.allow_seed_candidate_fallback = options.allow_seed_candidate_fallback;
 
     if (!options.start_seed_list.empty()) {

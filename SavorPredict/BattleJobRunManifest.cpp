@@ -170,8 +170,10 @@ bool write_battle_job_run_manifest(
     file << "  \"battle_set_id\": " << summary.clone.battle_set_id << ",\n";
     file << "  \"wave_id\": " << summary.clone.wave_id << ",\n";
     file << "  \"turn_index\": " << summary.clone.turn_index << ",\n";
+    file << "  \"source_fake_attacks_this_turn\": " << summary.clone.source_fake_attacks_this_turn << ",\n";
     file << "  \"fake_attacks_this_turn\": " << summary.clone.fake_attacks_this_turn << ",\n";
     write_optional_hex_u32(file, "override_start_rng_seed", summary.options.override_start_rng_seed, true);
+    write_optional_u32(file, "override_fake_attacks_this_turn", summary.options.override_fake_attacks_this_turn, true);
     write_optional_hex_u32(file, "captured_original_seed", summary.captured_original_seed, true);
     write_optional_hex_u32(file, "captured_override_seed", summary.captured_override_seed, true);
     write_optional_hex_u32(file, "captured_applied_seed", summary.captured_applied_seed, true);
@@ -211,8 +213,15 @@ bool write_battle_job_run_text_summary(
     file << "cloned_exec_job_id: " << summary.clone.cloned_exec_job_id << "\n";
     file << "original_turn_job_id: " << summary.clone.original_turn_job_id << "\n";
     file << "cloned_turn_job_id: " << summary.clone.cloned_turn_job_id << "\n";
+    file << "source_fake_attacks_this_turn: " << summary.clone.source_fake_attacks_this_turn << "\n";
+    file << "fake_attacks_this_turn: " << summary.clone.fake_attacks_this_turn << "\n";
     file << "override_start_rng_seed: "
         << (summary.options.override_start_rng_seed.has_value() ? hex_u32(*summary.options.override_start_rng_seed) : "none")
+        << "\n";
+    file << "override_fake_attacks_this_turn: "
+        << (summary.options.override_fake_attacks_this_turn.has_value()
+            ? std::to_string(*summary.options.override_fake_attacks_this_turn)
+            : "none")
         << "\n";
     file << "battle_run_ms: "
         << (summary.options.battle_run_ms.has_value() ? std::to_string(*summary.options.battle_run_ms) : "none")

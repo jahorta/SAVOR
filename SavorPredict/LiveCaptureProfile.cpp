@@ -577,6 +577,348 @@ std::vector<std::string_view> action_view_category2_gate_samples()
     };
 }
 
+std::vector<std::string> action_view_chain_addrprog_samples()
+{
+    return {
+        "action_view_chain_loaded_resource_0x10:r31:+0x24|load_ptr32|+0x10:u32",
+        "action_view_chain_aux_root_0x30:r31:+0x24|load_ptr32|+0x10|load_ptr32|+0x30:u32",
+    };
+}
+
+std::vector<std::string> action_view_aux_table_fingerprint_addrprog_samples()
+{
+    std::vector<std::string> samples;
+    // First-battle action-view queries need rows 5, 9, 12, 17, and 19
+    // across the known PC/enemy _0_STD tables. Keep this light enough for
+    // normal captures while covering every currently observed key 4/5/8 case.
+    constexpr int kRowsToSample = 32;
+    samples.reserve(kRowsToSample * 7);
+
+    for (int row = 0; row < kRowsToSample; ++row) {
+        const int base = row * 0x10;
+        std::ostringstream prefix;
+        prefix << "aux_row" << std::setw(2) << std::setfill('0') << row;
+        const auto row_name = prefix.str();
+        auto hex_offset = [](int offset) {
+            std::ostringstream out;
+            out << "+0x" << std::hex << std::uppercase << offset;
+            return out.str();
+        };
+
+        samples.push_back(row_name + "_location_code:r3:" + hex_offset(base + 0x00) + ":u16");
+        samples.push_back(row_name + "_opcode:r3:" + hex_offset(base + 0x02) + ":u16");
+        samples.push_back(row_name + "_payload_size:r3:" + hex_offset(base + 0x08) + ":u32");
+        samples.push_back(row_name + "_payload_ptr:r3:" + hex_offset(base + 0x0c) + ":u32");
+        samples.push_back(row_name + "_payload_primary:r3:" + hex_offset(base + 0x0c)
+            + "|load_ptr32|+0x00:u16");
+        samples.push_back(row_name + "_payload_secondary:r3:" + hex_offset(base + 0x0c)
+            + "|load_ptr32|+0x02:u16");
+        samples.push_back(row_name + "_payload_direct_secondary:r3:" + hex_offset(base + 0x0c)
+            + "|load_ptr32|+0x04:u16");
+    }
+    return samples;
+}
+
+std::vector<std::string> action_view_selector_query_addrprog_samples()
+{
+    auto samples = action_view_chain_addrprog_samples();
+    auto aux_table_samples = action_view_aux_table_fingerprint_addrprog_samples();
+    samples.insert(samples.end(), aux_table_samples.begin(), aux_table_samples.end());
+    return samples;
+}
+
+std::vector<std::string_view> as_string_views(const std::vector<std::string>& values)
+{
+    std::vector<std::string_view> views;
+    views.reserve(values.size());
+    for (const auto& value : values) {
+        views.push_back(value);
+    }
+    return views;
+}
+
+std::vector<std::string> std0_cache_global_samples()
+{
+    std::vector<std::string> samples;
+    samples.reserve(26);
+    samples.push_back(memory_sample("std0_transient_handoff_8030a20c", 0x8030A20Cu, "u32"));
+    samples.push_back(memory_sample("std0_combatant_transient_handoff_8030a208", 0x8030A208u, "u32"));
+    for (int i = 0; i < 12; ++i) {
+        std::ostringstream suffix;
+        suffix << std::setw(2) << std::setfill('0') << i;
+        const auto index = suffix.str();
+        const auto offset = static_cast<std::uint32_t>(i) * 4u;
+        samples.push_back(memory_sample(
+            "std0_cache_table_ptr_slot" + index,
+            0x8030A214u + offset,
+            "u32"));
+        samples.push_back(memory_sample(
+            "std0_cache_filename_key_slot" + index,
+            0x8030A244u + offset,
+            "u32"));
+    }
+    return samples;
+}
+
+std::vector<std::string_view> std_resource_string_word_samples_from_r4()
+{
+    return {
+        "filename_word0:r4:0x00:u32",
+        "filename_word4:r4:0x04:u32",
+        "filename_word8:r4:0x08:u32",
+        "filename_wordc:r4:0x0c:u32",
+    };
+}
+
+std::vector<std::string_view> std_resource_string_word_samples_from_r3()
+{
+    return {
+        "filename_word0:r3:0x00:u32",
+        "filename_word4:r3:0x04:u32",
+        "filename_word8:r3:0x08:u32",
+        "filename_wordc:r3:0x0c:u32",
+    };
+}
+
+std::vector<std::string_view> std_root_pointer_samples_from_r4()
+{
+    return {
+        "root_ptr_value_before:r4:+0x00:u32",
+        "root_prefix_location_0x00:r4:+0x00|load_ptr32|+0x00:u16",
+        "root_prefix_opcode_0x02:r4:+0x00|load_ptr32|+0x02:u16",
+        "root_rows_ptr_0x0c:r4:+0x00|load_ptr32|+0x0c:u32",
+    };
+}
+
+void write_action_view_selector_helper_checkpoints(
+    std::ostringstream& out,
+    const std::vector<std::string_view>& action_view_chain_sample_views)
+{
+    auto write_helper_checkpoint = [&](std::string_view id,
+                                       std::string_view pc,
+                                       std::string_view name,
+                                       std::string_view function,
+                                       std::string_view checkpoint) {
+        write_checkpoint(
+            out,
+            id,
+            pc,
+            name,
+            function,
+            checkpoint,
+            false,
+            action_view_globals(),
+            action_view_category2_spawn_gprs(),
+            action_view_category2_gate_samples(),
+            action_view_chain_sample_views);
+    };
+
+    write_helper_checkpoint(
+        "action_view_category2_spawn_80013334",
+        "80013334",
+        "action_view_category2_spawn",
+        "FUN_80053f38",
+        "action_view_spawn");
+
+    write_helper_checkpoint(
+        "action_view_category3_spawn_800133E4",
+        "800133E4",
+        "action_view_category3_spawn",
+        "FUN_80053f38",
+        "action_view_spawn");
+
+    write_helper_checkpoint(
+        "action_view_state0_actor_changed_spawn_8001318C",
+        "8001318C",
+        "action_view_state0_actor_changed_spawn",
+        "FUN_80053f38",
+        "action_view_spawn");
+
+    write_helper_checkpoint(
+        "action_view_mode0_state2_spawn_8001321C",
+        "8001321C",
+        "action_view_mode0_state2_spawn",
+        "FUN_80053f38",
+        "action_view_spawn");
+
+    write_helper_checkpoint(
+        "action_view_mode1_state2_call_8001329C",
+        "8001329C",
+        "action_view_mode1_state2_call",
+        "FUN_80032bbc",
+        "action_view_helper");
+
+    write_helper_checkpoint(
+        "action_view_mode2_tail_call_8001338C",
+        "8001338C",
+        "action_view_mode2_tail_call",
+        "FUN_80032bbc",
+        "action_view_helper");
+
+    write_helper_checkpoint(
+        "action_view_mode5_call_800134A4",
+        "800134A4",
+        "action_view_mode5_call",
+        "FUN_80032bbc",
+        "action_view_helper");
+}
+
+void write_action_view_selector_query_checkpoints(std::ostringstream& out)
+{
+    const auto action_view_chain_samples = action_view_chain_addrprog_samples();
+    const auto action_view_chain_sample_views = as_string_views(action_view_chain_samples);
+    const auto selector_query_samples = action_view_selector_query_addrprog_samples();
+    const auto selector_query_sample_views = as_string_views(selector_query_samples);
+
+    write_checkpoint(
+        out,
+        "action_view_category2_query_call_8001331C",
+        "8001331C",
+        "action_view_category2_query_call",
+        "FUN_80012f58",
+        "action_view_query",
+        false,
+        action_view_globals(),
+        action_view_category2_gate_gprs(),
+        action_view_category2_gate_samples(),
+        selector_query_sample_views);
+
+    write_checkpoint(
+        out,
+        "action_view_category2_query_result_80013320",
+        "80013320",
+        "action_view_category2_query_result",
+        "FUN_80012f58",
+        "action_view_query_result",
+        false,
+        action_view_globals(),
+        action_view_category2_result_gprs(),
+        action_view_category2_gate_samples(),
+        action_view_chain_sample_views);
+
+    write_checkpoint(
+        out,
+        "action_view_category3_query_call_800133CC",
+        "800133CC",
+        "action_view_category3_query_call",
+        "FUN_80012f58",
+        "action_view_query",
+        false,
+        action_view_globals(),
+        action_view_category2_gate_gprs(),
+        action_view_category2_gate_samples(),
+        selector_query_sample_views);
+
+    write_checkpoint(
+        out,
+        "action_view_category3_query_result_800133D0",
+        "800133D0",
+        "action_view_category3_query_result",
+        "FUN_80012f58",
+        "action_view_query_result",
+        false,
+        action_view_globals(),
+        action_view_category2_result_gprs(),
+        action_view_category2_gate_samples(),
+        action_view_chain_sample_views);
+
+    write_checkpoint(
+        out,
+        "action_view_category5_query_call_80013478",
+        "80013478",
+        "action_view_category5_query_call",
+        "FUN_80012f58",
+        "action_view_query",
+        false,
+        action_view_globals(),
+        action_view_category2_gate_gprs(),
+        action_view_category2_gate_samples(),
+        selector_query_sample_views);
+
+    write_checkpoint(
+        out,
+        "action_view_category5_query_result_8001347C",
+        "8001347C",
+        "action_view_category5_query_result",
+        "FUN_80012f58",
+        "action_view_query_result",
+        false,
+        action_view_globals(),
+        action_view_category2_result_gprs(),
+        action_view_category2_gate_samples(),
+        action_view_chain_sample_views);
+
+    write_action_view_selector_helper_checkpoints(out, action_view_chain_sample_views);
+}
+
+std::vector<std::string_view> action_view_selector_core_gprs()
+{
+    return {
+        "requested_mode_r4:4",
+        "selector_worksheet:29",
+        "action_payload:30",
+        "combatant_thread:31",
+    };
+}
+
+void write_action_view_selector_coverage_checkpoints(std::ostringstream& out)
+{
+    const auto chain_samples = action_view_chain_addrprog_samples();
+    const auto chain_sample_views = as_string_views(chain_samples);
+
+    const auto write_selector_checkpoint =
+        [&](std::string_view id,
+            std::string_view pc,
+            std::string_view name,
+            std::string_view checkpoint,
+            const std::vector<std::string_view>& gprs = action_view_selector_core_gprs()) {
+            write_checkpoint(
+                out,
+                id,
+                pc,
+                name,
+                "FUN_80012f58",
+                checkpoint,
+                false,
+                action_view_globals(),
+                gprs,
+                action_view_category2_gate_samples(),
+                chain_sample_views);
+        };
+
+    write_selector_checkpoint(
+        "action_view_selector_field6_classify_80012FCC",
+        "80012FCC",
+        "action_view_selector_field6_classify",
+        "action_view_selector_entry");
+
+    write_selector_checkpoint(
+        "action_view_selector_requested_mode_ready_80013038",
+        "80013038",
+        "action_view_selector_requested_mode_ready",
+        "action_view_selector_requested_mode");
+
+    write_selector_checkpoint(
+        "action_view_selector_state_after_request_800130D8",
+        "800130D8",
+        "action_view_selector_state_after_request",
+        "action_view_selector_state_after_request");
+
+    write_selector_checkpoint(
+        "action_view_selector_state0_effective_mode_write_800130F4",
+        "800130F4",
+        "action_view_selector_state0_effective_mode_write",
+        "action_view_selector_effective_mode_write");
+
+    write_selector_checkpoint(
+        "action_view_selector_dispatch_800131AC",
+        "800131AC",
+        "action_view_selector_dispatch",
+        "action_view_selector_dispatch");
+
+    write_action_view_selector_helper_checkpoints(out, chain_sample_views);
+}
+
 std::vector<std::string_view> first_battle_queued_instruction_samples()
 {
     return {
@@ -1386,41 +1728,7 @@ std::string build_first_battle_capture_profile_ini()
 
     write_counter_internal_checkpoints(out);
 
-    write_checkpoint(
-        out,
-        "action_view_category2_query_call_8001331C",
-        "8001331C",
-        "action_view_category2_query_call",
-        "FUN_80012f58",
-        "action_view_query",
-        false,
-        action_view_globals(),
-        action_view_category2_gate_gprs(),
-        action_view_category2_gate_samples());
-
-    write_checkpoint(
-        out,
-        "action_view_category2_query_result_80013320",
-        "80013320",
-        "action_view_category2_query_result",
-        "FUN_80012f58",
-        "action_view_query_result",
-        false,
-        action_view_globals(),
-        action_view_category2_result_gprs(),
-        action_view_category2_gate_samples());
-
-    write_checkpoint(
-        out,
-        "action_view_category2_spawn_80013334",
-        "80013334",
-        "action_view_category2_spawn",
-        "FUN_80053f38",
-        "action_view_spawn",
-        false,
-        action_view_globals(),
-        action_view_category2_spawn_gprs(),
-        action_view_category2_gate_samples());
+    write_action_view_selector_query_checkpoints(out);
 
     write_checkpoint(
         out,
@@ -1796,41 +2104,230 @@ std::string build_first_battle_predictor_validation_profile_ini()
         },
         action_source_bridge_samples());
 
-    write_checkpoint(
-        out,
-        "action_view_category2_query_call_8001331C",
-        "8001331C",
-        "action_view_category2_query_call",
-        "FUN_80012f58",
-        "action_view_query",
-        false,
-        action_view_globals(),
-        action_view_category2_gate_gprs(),
-        action_view_category2_gate_samples());
+    write_action_view_selector_query_checkpoints(out);
+
+    return out.str();
+}
+
+std::string build_first_battle_action_view_resource_profile_ini()
+{
+    const auto cache_samples = std0_cache_global_samples();
+
+    std::ostringstream out;
+    out << "[profile]\n";
+    out << "name=first_battle_action_view_resource_materialization\n";
+    out << "schema_version=1\n";
+    out << "memory=rng_seed_before:" << hex_u32(addr::AddrRegistry::base(addr::core::RNG_SEED)) << ":u32\n\n";
 
     write_checkpoint(
         out,
-        "action_view_category2_query_result_80013320",
-        "80013320",
-        "action_view_category2_query_result",
-        "FUN_80012f58",
-        "action_view_query_result",
+        "battle_std_resource_pair_entry_80067E8C",
+        "80067E8C",
+        "battle_std_resource_pair_entry",
+        "STD::LoadBattleCombatantStdResourcePair_80067e8c",
+        "std_resource_pair_entry",
         false,
-        action_view_globals(),
-        action_view_category2_result_gprs(),
-        action_view_category2_gate_samples());
+        {},
+        {
+            "file_dir_arg:3",
+            "filename_arg:4",
+        },
+        std_resource_string_word_samples_from_r4());
 
     write_checkpoint(
         out,
-        "action_view_category2_spawn_80013334",
-        "80013334",
-        "action_view_category2_spawn",
-        "FUN_80053f38",
-        "action_view_spawn",
+        "battle_std_root_store_80067FC4",
+        "80067FC4",
+        "battle_std_root_store",
+        "STD::LoadBattleCombatantStdResourcePair_80067e8c",
+        "std_root_store",
         false,
-        action_view_globals(),
-        action_view_category2_spawn_gprs(),
-        action_view_category2_gate_samples());
+        {},
+        {
+            "copied_std_root:31",
+            "loaded_resource:5",
+        },
+        {
+            "loaded_resource_std_root_before_0x30:r5:0x30:u32",
+            "copied_root_rows_ptr_0x0c:r31:0x0c:u32",
+        });
+
+    write_checkpoint(
+        out,
+        "battle_std0_materializer_call_80067FD8",
+        "80067FD8",
+        "battle_std0_materializer_call",
+        "STD::LoadBattleCombatantStdResourcePair_80067e8c",
+        "std0_materializer_call",
+        false,
+        {},
+        {
+            "std0_filename_arg:3",
+            "loaded_resource_root_field_ptr:4",
+        },
+        std_resource_string_word_samples_from_r3(),
+        std_root_pointer_samples_from_r4());
+
+    write_checkpoint_owned(
+        out,
+        "std0_cache_lookup_80035D80",
+        "80035D80",
+        "std0_cache_lookup",
+        "STD::LoadStd0EntryTable_80035d4c",
+        "std0_cache_lookup",
+        false,
+        cache_samples,
+        {
+            "cache_key_expected:4",
+            "cache_slot_index:5",
+            "cache_key_candidate:0",
+            "cache_base:3",
+            "root_field_ptr:24",
+        });
+
+    write_checkpoint_owned(
+        out,
+        "std0_cache_table_read_80035DA8",
+        "80035DA8",
+        "std0_cache_table_read",
+        "STD::LoadStd0EntryTable_80035d4c",
+        "std0_cache_table_read",
+        false,
+        cache_samples,
+        {
+            "cache_slot_index:5",
+            "cache_table_ptr_before_load:27",
+            "root_field_ptr:24",
+        });
+
+    write_checkpoint(
+        out,
+        "std0_cache_result_store_80035E0C",
+        "80035E0C",
+        "std0_cache_result_store",
+        "STD::LoadStd0EntryTable_80035d4c",
+        "std0_cache_result_store",
+        false,
+        {},
+        {
+            "cached_table_ptr:27",
+            "root_field_ptr:24",
+            "temporary_root_before_free:26",
+        },
+        {
+            "root_field_before_store:r24:0x00:u32",
+        });
+
+    write_checkpoint_owned(
+        out,
+        "std0_transient_handoff_read_80035E34",
+        "80035E34",
+        "std0_transient_handoff_read",
+        "STD::LoadStd0EntryTable_80035d4c",
+        "std0_transient_handoff_read",
+        false,
+        cache_samples,
+        {
+            "source_filename_arg:23",
+            "root_field_ptr:24",
+            "source_root_before_materialize:27",
+        });
+
+    write_checkpoint_owned(
+        out,
+        "std0_transient_handoff_clear_80035E48",
+        "80035E48",
+        "std0_transient_handoff_clear",
+        "STD::LoadStd0EntryTable_80035d4c",
+        "std0_transient_handoff_clear",
+        false,
+        cache_samples,
+        {
+            "transient_handoff_value:4",
+            "selected_loaded_buffer:23",
+            "root_field_ptr:24",
+        });
+
+    write_checkpoint(
+        out,
+        "std0_find_loaded_resource_call_80035E54",
+        "80035E54",
+        "std0_find_loaded_resource_call",
+        "STD::LoadStd0EntryTable_80035d4c",
+        "std0_find_loaded_resource_call",
+        false,
+        {},
+        {
+            "source_filename_arg:3",
+            "root_field_ptr:24",
+        },
+        std_resource_string_word_samples_from_r3());
+
+    write_checkpoint(
+        out,
+        "std0_materialized_result_store_80035FA0",
+        "80035FA0",
+        "std0_materialized_result_store",
+        "STD::LoadStd0EntryTable_80035d4c",
+        "std0_materialized_result_store",
+        false,
+        {},
+        {
+            "materialized_table_ptr:30",
+            "root_field_ptr:24",
+            "loaded_source_buffer:25",
+        },
+        {
+            "root_field_before_store:r24:0x00:u32",
+            "materialized_prefix_location_0x00:r30:0x00:u16",
+            "materialized_prefix_opcode_0x02:r30:0x02:u16",
+            "materialized_rows_ptr_0x0c:r30:0x0c:u32",
+        });
+
+    write_checkpoint_owned(
+        out,
+        "std0_cache_producer_materialize_8006DF8C",
+        "8006DF8C",
+        "std0_cache_producer_materialize",
+        "Battle::Resource::ProcessQueuedBattleResourceFile_8006ddbc",
+        "std0_cache_producer_materialize",
+        false,
+        cache_samples,
+        {
+            "loaded_file_ptr_arg:3",
+            "queued_resource_record:30",
+            "cache_index_candidate:31",
+        });
+
+    write_checkpoint_owned(
+        out,
+        "std0_cache_producer_table_store_8006DFA4",
+        "8006DFA4",
+        "std0_cache_producer_table_store",
+        "Battle::Resource::ProcessQueuedBattleResourceFile_8006ddbc",
+        "std0_cache_producer_table_store",
+        false,
+        cache_samples,
+        {
+            "materialized_table_ptr:3",
+            "cache_index_candidate:31",
+        });
+
+    write_checkpoint_owned(
+        out,
+        "std0_cache_producer_key_store_8006DFC4",
+        "8006DFC4",
+        "std0_cache_producer_key_store",
+        "Battle::Resource::ProcessQueuedBattleResourceFile_8006ddbc",
+        "std0_cache_producer_key_store",
+        false,
+        cache_samples,
+        {
+            "filename_key:0",
+            "cache_index_candidate:31",
+        });
+
+    write_action_view_selector_query_checkpoints(out);
 
     return out.str();
 }
@@ -2063,6 +2560,19 @@ std::string build_first_battle_field6_watch_profile_ini()
     return out.str();
 }
 
+std::string build_first_battle_action_view_selector_coverage_profile_ini()
+{
+    std::ostringstream out;
+    out << "[profile]\n";
+    out << "name=first_battle_action_view_selector_coverage\n";
+    out << "schema_version=1\n";
+    out << "memory=rng_seed_before:" << hex_u32(addr::AddrRegistry::base(addr::core::RNG_SEED)) << ":u32\n\n";
+
+    write_action_view_selector_coverage_checkpoints(out);
+
+    return out.str();
+}
+
 int write_first_battle_capture_profile(
     const std::filesystem::path& output_path,
     std::ostream& out,
@@ -2194,6 +2704,74 @@ int write_first_battle_field6_watch_profile(
         return 1;
     }
     out << "Wrote first-battle field6 watch capture profile: "
+        << output_path.string() << "\n";
+    return 0;
+}
+
+int write_first_battle_action_view_resource_profile(
+    const std::filesystem::path& output_path,
+    std::ostream& out,
+    std::ostream& err)
+{
+    if (output_path.empty()) {
+        err << "write-first-battle-action-view-resource-profile requires --output PATH.\n";
+        return 2;
+    }
+    if (const auto parent = output_path.parent_path(); !parent.empty()) {
+        std::error_code ec;
+        std::filesystem::create_directories(parent, ec);
+        if (ec) {
+            err << "Failed to create output directory: " << ec.message() << "\n";
+            return 1;
+        }
+    }
+
+    std::ofstream file(output_path, std::ios::binary | std::ios::trunc);
+    if (!file.is_open()) {
+        err << "Failed to open output profile: " << output_path.string() << "\n";
+        return 1;
+    }
+    const auto text = build_first_battle_action_view_resource_profile_ini();
+    file.write(text.data(), static_cast<std::streamsize>(text.size()));
+    if (!file.good()) {
+        err << "Failed to write output profile: " << output_path.string() << "\n";
+        return 1;
+    }
+    out << "Wrote first-battle action-view resource capture profile: "
+        << output_path.string() << "\n";
+    return 0;
+}
+
+int write_first_battle_action_view_selector_coverage_profile(
+    const std::filesystem::path& output_path,
+    std::ostream& out,
+    std::ostream& err)
+{
+    if (output_path.empty()) {
+        err << "write-first-battle-action-view-selector-coverage-profile requires --output PATH.\n";
+        return 2;
+    }
+    if (const auto parent = output_path.parent_path(); !parent.empty()) {
+        std::error_code ec;
+        std::filesystem::create_directories(parent, ec);
+        if (ec) {
+            err << "Failed to create output directory: " << ec.message() << "\n";
+            return 1;
+        }
+    }
+
+    std::ofstream file(output_path, std::ios::binary | std::ios::trunc);
+    if (!file.is_open()) {
+        err << "Failed to open output profile: " << output_path.string() << "\n";
+        return 1;
+    }
+    const auto text = build_first_battle_action_view_selector_coverage_profile_ini();
+    file.write(text.data(), static_cast<std::streamsize>(text.size()));
+    if (!file.good()) {
+        err << "Failed to write output profile: " << output_path.string() << "\n";
+        return 1;
+    }
+    out << "Wrote first-battle action-view selector coverage capture profile: "
         << output_path.string() << "\n";
     return 0;
 }

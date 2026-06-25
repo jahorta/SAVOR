@@ -233,6 +233,7 @@ std::optional<BattlePredictionDbInput> build_battle_prediction_input_from_analys
 
     BattlePredictionDbInput resolved;
     resolved.input.profile = *profile;
+    resolved.input.options.action_view_std_json_dir = options.action_view_std_json_dir;
     auto& metadata = resolved.metadata;
     metadata.source_db_root = options.db_root;
     metadata.requested_turn_job_id = options.selector.turn_job_id;

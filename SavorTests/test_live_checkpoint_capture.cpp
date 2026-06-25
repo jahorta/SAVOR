@@ -624,6 +624,13 @@ TEST(SavorPredictLiveCaptureProfile, BuildsParseableFirstBattleRngProfile)
     EXPECT_TRUE(has_reg_sample(*action_view_query_call, "target_slot"));
     EXPECT_TRUE(has_reg_sample(*action_view_query_call, "actor_field6_0x6"));
     EXPECT_TRUE(has_reg_sample(*action_view_query_call, "gate_state_0x30"));
+    EXPECT_TRUE(has_addrprog_sample(*action_view_query_call, "aux_row00_location_code"));
+    EXPECT_TRUE(has_addrprog_sample(*action_view_query_call, "aux_row00_payload_primary"));
+    EXPECT_TRUE(has_addrprog_sample(*action_view_query_call, "aux_row05_location_code"));
+    EXPECT_TRUE(has_addrprog_sample(*action_view_query_call, "aux_row05_payload_direct_secondary"));
+    EXPECT_TRUE(has_addrprog_sample(*action_view_query_call, "aux_row12_location_code"));
+    EXPECT_TRUE(has_addrprog_sample(*action_view_query_call, "aux_row17_payload_primary"));
+    EXPECT_TRUE(has_addrprog_sample(*action_view_query_call, "aux_row31_payload_direct_secondary"));
 
     const auto* action_view_query_result =
         find_checkpoint("action_view_category2_query_result_80013320");
@@ -638,6 +645,57 @@ TEST(SavorPredictLiveCaptureProfile, BuildsParseableFirstBattleRngProfile)
     EXPECT_FALSE(action_view_spawn->owns_rng_draw);
     EXPECT_TRUE(has_gpr_sample(*action_view_spawn, "spawn_slot_arg"));
     EXPECT_TRUE(has_gpr_sample(*action_view_spawn, "spawn_mode_arg"));
+
+    for (const auto* helper_checkpoint_id : {
+             "action_view_state0_actor_changed_spawn_8001318C",
+             "action_view_mode0_state2_spawn_8001321C",
+             "action_view_mode1_state2_call_8001329C",
+             "action_view_mode2_tail_call_8001338C",
+             "action_view_category3_spawn_800133E4",
+             "action_view_mode5_call_800134A4",
+         }) {
+        const auto* helper_checkpoint = find_checkpoint(helper_checkpoint_id);
+        ASSERT_NE(helper_checkpoint, nullptr) << helper_checkpoint_id;
+        EXPECT_FALSE(helper_checkpoint->owns_rng_draw) << helper_checkpoint_id;
+        EXPECT_TRUE(has_gpr_sample(*helper_checkpoint, "spawn_slot_arg")) << helper_checkpoint_id;
+        EXPECT_TRUE(has_gpr_sample(*helper_checkpoint, "spawn_mode_arg")) << helper_checkpoint_id;
+        EXPECT_TRUE(has_reg_sample(*helper_checkpoint, "actor_field6_0x6")) << helper_checkpoint_id;
+        EXPECT_TRUE(has_reg_sample(*helper_checkpoint, "gate_state_0x30")) << helper_checkpoint_id;
+    }
+
+    const auto* action_view_category3_query =
+        find_checkpoint("action_view_category3_query_call_800133CC");
+    ASSERT_NE(action_view_category3_query, nullptr);
+    EXPECT_FALSE(action_view_category3_query->owns_rng_draw);
+    EXPECT_TRUE(has_gpr_sample(*action_view_category3_query, "query_arg0"));
+    EXPECT_TRUE(has_reg_sample(*action_view_category3_query, "gate_category_0x2f"));
+    EXPECT_TRUE(has_reg_sample(*action_view_category3_query, "gate_state_0x30"));
+    EXPECT_TRUE(has_addrprog_sample(*action_view_category3_query, "aux_row00_location_code"));
+    EXPECT_TRUE(has_addrprog_sample(*action_view_category3_query, "aux_row05_payload_primary"));
+    EXPECT_TRUE(has_addrprog_sample(*action_view_category3_query, "aux_row12_payload_primary"));
+
+    const auto* action_view_category3_result =
+        find_checkpoint("action_view_category3_query_result_800133D0");
+    ASSERT_NE(action_view_category3_result, nullptr);
+    EXPECT_FALSE(action_view_category3_result->owns_rng_draw);
+    EXPECT_TRUE(has_gpr_sample(*action_view_category3_result, "query_result"));
+
+    const auto* action_view_category5_query =
+        find_checkpoint("action_view_category5_query_call_80013478");
+    ASSERT_NE(action_view_category5_query, nullptr);
+    EXPECT_FALSE(action_view_category5_query->owns_rng_draw);
+    EXPECT_TRUE(has_gpr_sample(*action_view_category5_query, "query_arg0"));
+    EXPECT_TRUE(has_gpr_sample(*action_view_category5_query, "query_arg1"));
+    EXPECT_TRUE(has_reg_sample(*action_view_category5_query, "actor_subtype_0x8"));
+    EXPECT_TRUE(has_addrprog_sample(*action_view_category5_query, "aux_row00_location_code"));
+    EXPECT_TRUE(has_addrprog_sample(*action_view_category5_query, "aux_row05_payload_primary"));
+    EXPECT_TRUE(has_addrprog_sample(*action_view_category5_query, "aux_row17_payload_primary"));
+
+    const auto* action_view_category5_result =
+        find_checkpoint("action_view_category5_query_result_8001347C");
+    ASSERT_NE(action_view_category5_result, nullptr);
+    EXPECT_FALSE(action_view_category5_result->owns_rng_draw);
+    EXPECT_TRUE(has_gpr_sample(*action_view_category5_result, "query_result"));
 
     const auto* effect_record_copy =
         find_checkpoint("effect_record_copy_complete_8003BB24");
@@ -1019,6 +1077,205 @@ TEST(SavorPredictLiveCaptureProfile, BuildsField6WatchProfile)
     ASSERT_NE(sst_case8_source, nullptr);
     EXPECT_EQ(sst_case8_source->base_reg, 30u);
     EXPECT_EQ(sst_case8_source->offset, 0x0a);
+}
+
+TEST(SavorPredictLiveCaptureProfile, BuildsActionViewResourceProfile)
+{
+    const auto text = build_first_battle_action_view_resource_profile_ini();
+    const auto parsed = ParseCaptureProfileText(text);
+    ASSERT_TRUE(parsed.profile.has_value()) << FormatCaptureProfileError(parsed);
+
+    const auto& profile = *parsed.profile;
+    EXPECT_EQ(profile.name, "first_battle_action_view_resource_materialization");
+
+    bool found_progress_pc = false;
+    bool found_targeting_camera = false;
+    for (const auto& checkpoint : profile.checkpoints) {
+        if (checkpoint.pc == 0x800608DCu) {
+            found_targeting_camera = true;
+        }
+        if (checkpoint.id.find("progress") != std::string::npos
+            || checkpoint.name.find("progress") != std::string::npos) {
+            found_progress_pc = true;
+        }
+    }
+    EXPECT_FALSE(found_targeting_camera);
+    EXPECT_FALSE(found_progress_pc);
+
+    const auto find_checkpoint = [&](std::string_view id)
+        -> const CheckpointSpec* {
+        for (const auto& checkpoint : profile.checkpoints) {
+            if (checkpoint.id == id) {
+                return &checkpoint;
+            }
+        }
+        return nullptr;
+    };
+    const auto has_memory_sample = [](const CheckpointSpec& checkpoint, std::string_view name) {
+        for (const auto& sample : checkpoint.memory_samples) {
+            if (sample.name == name) {
+                return true;
+            }
+        }
+        return false;
+    };
+    const auto has_gpr_sample = [](const CheckpointSpec& checkpoint, std::string_view name) {
+        for (const auto& sample : checkpoint.gpr_samples) {
+            if (sample.name == name) {
+                return true;
+            }
+        }
+        return false;
+    };
+    const auto has_reg_sample = [](const CheckpointSpec& checkpoint, std::string_view name) {
+        for (const auto& sample : checkpoint.register_memory_samples) {
+            if (sample.name == name) {
+                return true;
+            }
+        }
+        return false;
+    };
+    const auto has_addrprog_sample = [](const CheckpointSpec& checkpoint, std::string_view name) {
+        for (const auto& sample : checkpoint.address_program_samples) {
+            if (sample.name == name) {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    const auto* resource_entry =
+        find_checkpoint("battle_std_resource_pair_entry_80067E8C");
+    ASSERT_NE(resource_entry, nullptr);
+    EXPECT_TRUE(has_gpr_sample(*resource_entry, "filename_arg"));
+    EXPECT_TRUE(has_reg_sample(*resource_entry, "filename_word0"));
+
+    const auto* materializer_call =
+        find_checkpoint("battle_std0_materializer_call_80067FD8");
+    ASSERT_NE(materializer_call, nullptr);
+    EXPECT_TRUE(has_gpr_sample(*materializer_call, "std0_filename_arg"));
+    EXPECT_TRUE(has_gpr_sample(*materializer_call, "loaded_resource_root_field_ptr"));
+    EXPECT_TRUE(has_reg_sample(*materializer_call, "filename_word0"));
+    EXPECT_TRUE(has_addrprog_sample(*materializer_call, "root_ptr_value_before"));
+    EXPECT_TRUE(has_addrprog_sample(*materializer_call, "root_rows_ptr_0x0c"));
+
+    const auto* cache_lookup =
+        find_checkpoint("std0_cache_lookup_80035D80");
+    ASSERT_NE(cache_lookup, nullptr);
+    EXPECT_TRUE(has_memory_sample(*cache_lookup, "std0_cache_table_ptr_slot00"));
+    EXPECT_TRUE(has_memory_sample(*cache_lookup, "std0_cache_filename_key_slot11"));
+    EXPECT_TRUE(has_memory_sample(*cache_lookup, "std0_transient_handoff_8030a20c"));
+    EXPECT_TRUE(has_gpr_sample(*cache_lookup, "cache_key_expected"));
+    EXPECT_TRUE(has_gpr_sample(*cache_lookup, "cache_slot_index"));
+
+    const auto* cache_result =
+        find_checkpoint("std0_cache_result_store_80035E0C");
+    ASSERT_NE(cache_result, nullptr);
+    EXPECT_TRUE(has_gpr_sample(*cache_result, "cached_table_ptr"));
+    EXPECT_TRUE(has_reg_sample(*cache_result, "root_field_before_store"));
+
+    const auto* transient =
+        find_checkpoint("std0_transient_handoff_clear_80035E48");
+    ASSERT_NE(transient, nullptr);
+    EXPECT_TRUE(has_memory_sample(*transient, "std0_transient_handoff_8030a20c"));
+    EXPECT_TRUE(has_gpr_sample(*transient, "transient_handoff_value"));
+
+    const auto* materialized_store =
+        find_checkpoint("std0_materialized_result_store_80035FA0");
+    ASSERT_NE(materialized_store, nullptr);
+    EXPECT_TRUE(has_gpr_sample(*materialized_store, "materialized_table_ptr"));
+    EXPECT_TRUE(has_reg_sample(*materialized_store, "materialized_rows_ptr_0x0c"));
+
+    const auto* query_call =
+        find_checkpoint("action_view_category2_query_call_8001331C");
+    ASSERT_NE(query_call, nullptr);
+    EXPECT_TRUE(has_addrprog_sample(*query_call, "aux_row17_payload_primary"));
+}
+
+TEST(SavorPredictLiveCaptureProfile, BuildsActionViewSelectorCoverageProfile)
+{
+    const auto text = build_first_battle_action_view_selector_coverage_profile_ini();
+    const auto parsed = ParseCaptureProfileText(text);
+    ASSERT_TRUE(parsed.profile.has_value()) << FormatCaptureProfileError(parsed);
+
+    const auto& profile = *parsed.profile;
+    EXPECT_EQ(profile.name, "first_battle_action_view_selector_coverage");
+
+    bool found_progress_pc = false;
+    bool found_targeting_camera = false;
+    for (const auto& checkpoint : profile.checkpoints) {
+        if (checkpoint.pc == 0x800608DCu) {
+            found_targeting_camera = true;
+        }
+        if (checkpoint.id.find("progress") != std::string::npos
+            || checkpoint.name.find("progress") != std::string::npos) {
+            found_progress_pc = true;
+        }
+    }
+    EXPECT_FALSE(found_targeting_camera);
+    EXPECT_FALSE(found_progress_pc);
+
+    const auto find_checkpoint = [&](std::string_view id)
+        -> const CheckpointSpec* {
+        for (const auto& checkpoint : profile.checkpoints) {
+            if (checkpoint.id == id) {
+                return &checkpoint;
+            }
+        }
+        return nullptr;
+    };
+    const auto has_gpr_sample = [](const CheckpointSpec& checkpoint, std::string_view name) {
+        for (const auto& sample : checkpoint.gpr_samples) {
+            if (sample.name == name) {
+                return true;
+            }
+        }
+        return false;
+    };
+    const auto has_reg_sample = [](const CheckpointSpec& checkpoint, std::string_view name) {
+        for (const auto& sample : checkpoint.register_memory_samples) {
+            if (sample.name == name) {
+                return true;
+            }
+        }
+        return false;
+    };
+    const auto has_addrprog_sample = [](const CheckpointSpec& checkpoint, std::string_view name) {
+        for (const auto& sample : checkpoint.address_program_samples) {
+            if (sample.name == name) {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    const auto* classify =
+        find_checkpoint("action_view_selector_field6_classify_80012FCC");
+    ASSERT_NE(classify, nullptr);
+    EXPECT_EQ(classify->pc, 0x80012FCCu);
+    EXPECT_TRUE(has_gpr_sample(*classify, "combatant_thread"));
+    EXPECT_TRUE(has_reg_sample(*classify, "actor_field6_0x6"));
+    EXPECT_TRUE(has_reg_sample(*classify, "gate_category_0x2f"));
+
+    const auto* requested =
+        find_checkpoint("action_view_selector_requested_mode_ready_80013038");
+    ASSERT_NE(requested, nullptr);
+    EXPECT_TRUE(has_gpr_sample(*requested, "requested_mode_r4"));
+
+    const auto* dispatch =
+        find_checkpoint("action_view_selector_dispatch_800131AC");
+    ASSERT_NE(dispatch, nullptr);
+    EXPECT_TRUE(has_reg_sample(*dispatch, "gate_category_0x2f"));
+    EXPECT_TRUE(has_reg_sample(*dispatch, "gate_state_0x30"));
+    EXPECT_TRUE(has_addrprog_sample(*dispatch, "action_view_chain_loaded_resource_0x10"));
+
+    const auto* mode1 =
+        find_checkpoint("action_view_mode1_state2_call_8001329C");
+    ASSERT_NE(mode1, nullptr);
+    EXPECT_EQ(mode1->pc, 0x8001329Cu);
+    EXPECT_FALSE(mode1->owns_rng_draw);
+    EXPECT_TRUE(has_gpr_sample(*mode1, "spawn_slot_arg"));
+    EXPECT_TRUE(has_gpr_sample(*mode1, "spawn_mode_arg"));
 }
 
 TEST(Field6WatchpointModel, ClassifiesAccessWatchpointsByDecodedInstruction)

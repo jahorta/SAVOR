@@ -23,6 +23,18 @@
     <ClCompile Include="ActionViewGateCheckpointModel.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="ActionViewResourceCheckpointModel.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="ActionViewSelectorModel.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="ActionViewStdJsonLoader.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="ActionViewStdResourceResolver.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="AttackDamageValueCheckpointModel.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -170,6 +182,18 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="ActionViewGateCheckpointModel.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="ActionViewResourceCheckpointModel.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="ActionViewSelectorModel.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="ActionViewStdJsonLoader.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="ActionViewStdResourceResolver.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="AttackDamageValueCheckpointModel.h">

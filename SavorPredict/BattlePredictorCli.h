@@ -19,6 +19,7 @@ struct BattlePredictorCliOptions {
     std::filesystem::path start_seed_list;
     std::optional<int> enemy_event_id;
     std::optional<int> fake_attacks;
+    std::filesystem::path action_view_std_json_dir;
     std::string turn_plan_hex;
     std::string profile_name = "first-battle";
     bool json = false;

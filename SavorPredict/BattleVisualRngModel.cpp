@@ -29,6 +29,86 @@ std::string effect_detail(int source_key, const CombatEffectBurstSequenceModel& 
     return out.str();
 }
 
+std::string action_view_selector_detail(const ActionViewSelectorResult& selector) {
+    std::ostringstream out;
+    out << "requested_mode=" << static_cast<int>(selector.requested_mode)
+        << "; dispatch_effective_mode_0x2f=" << static_cast<int>(selector.dispatch_effective_mode_0x2f)
+        << "; selector_state_0x30=" << selector.selector_state_0x30
+        << "; mode0e_query_reached=" << (selector.mode0e_query_reached ? 1 : 0);
+    if (selector.mode0e_count.has_value()) {
+        out << "; mode0e_count=" << selector.mode0e_count->count
+            << "; scanned_entries=" << selector.mode0e_count->scanned_entries
+            << "; reached_sentinel=" << (selector.mode0e_count->reached_sentinel ? 1 : 0);
+    }
+    if (selector.mode3_count.has_value()) {
+        out << "; mode3_count=" << selector.mode3_count->count;
+    }
+    if (selector.mode5_count.has_value()) {
+        out << "; mode5_count=" << selector.mode5_count->count;
+    }
+    if (selector.unsupported_without_aux_table) {
+        out << "; missing_selected_aux_table=1";
+    }
+    if (!selector.branch_path.empty()) {
+        out << "; branch_path=";
+        for (std::size_t i = 0; i < selector.branch_path.size(); ++i) {
+            if (i != 0) {
+                out << ">";
+            }
+            out << selector.branch_path[i];
+        }
+    }
+    out << "; " << action_view_selector_model_rule_detail();
+    return out.str();
+}
+
+BattleVisualRngStep model_action_view_camera_step(const BattleVisualRngActionInput& input) {
+    if (!input.action_view_selector.has_value()) {
+        return {
+            .label = "mode0_action_view_camera_rewrite_gate",
+            .status = BattleVisualRngStepStatus::Exact,
+            .draws_consumed = 1,
+            .detail = first_battle_action_view_camera_rule_detail(),
+        };
+    }
+
+    const auto& selector = *input.action_view_selector;
+    auto detail = action_view_selector_detail(selector);
+    if (selector.unsupported_without_aux_table) {
+        return {
+            .label = "ambiguous_action_view_camera_missing_aux_table",
+            .status = BattleVisualRngStepStatus::Ambiguous,
+            .draws_consumed = 1,
+            .detail = detail,
+        };
+    }
+
+    if (!selector.mode0e_query_reached || !selector.mode0e_count.has_value()) {
+        return {
+            .label = "ambiguous_action_view_camera_selector_path",
+            .status = BattleVisualRngStepStatus::Ambiguous,
+            .draws_consumed = 1,
+            .detail = detail,
+        };
+    }
+
+    if (selector.mode0e_synthetic_call_selected) {
+        return {
+            .label = "mode0e_action_view_camera",
+            .status = BattleVisualRngStepStatus::Exact,
+            .draws_consumed = 1,
+            .detail = detail,
+        };
+    }
+
+    return {
+        .label = "mode0_action_view_camera_fallback",
+        .status = BattleVisualRngStepStatus::Exact,
+        .draws_consumed = 1,
+        .detail = detail,
+    };
+}
+
 } // namespace
 
 std::optional<int> first_battle_basic_attack_effect_source_key(
@@ -69,12 +149,7 @@ BattleVisualRngModelResult model_first_battle_basic_attack_visual_rng(
     }
 
     if (input.include_action_view_camera) {
-        append_step(result, {
-            .label = "mode0_action_view_camera_rewrite_gate",
-            .status = BattleVisualRngStepStatus::Exact,
-            .draws_consumed = 1,
-            .detail = first_battle_action_view_camera_rule_detail(),
-        });
+        append_step(result, model_action_view_camera_step(input));
     }
 
     if (!input.include_effect_bursts || !input.attack_landed) {

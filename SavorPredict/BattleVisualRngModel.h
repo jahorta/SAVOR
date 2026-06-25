@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ActionViewSelectorModel.h"
+
 #include <optional>
 #include <string>
 #include <vector>
@@ -22,6 +24,7 @@ struct BattleVisualRngActionInput {
     bool counter_follow_up = false;
     bool include_action_view_camera = true;
     bool include_effect_bursts = true;
+    std::optional<ActionViewSelectorResult> action_view_selector;
 };
 
 struct BattleVisualRngStep {

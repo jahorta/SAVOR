@@ -1,6 +1,7 @@
 #include "BattlePredictor.h"
 
 #include "BattleVisualRngModel.h"
+#include "ActionViewStdResourceResolver.h"
 #include "FirstBattleDataModel.h"
 #include "MovementModel.h"
 #include "PreAiCameraModel.h"
@@ -575,7 +576,7 @@ void append_validation_statuses(BattlePredictionResult& result) {
             result,
             "drop",
             BattlePredictionValidationStatus::Validated,
-            "first-battle Soldier drop row order and stop-after-success are validated for Electri Box, Moonberry, and no-drop outcomes");
+            "first-battle Soldier drop row order and stop-after-success are validated for Electri Box, Moonberry, and no-drop outcomes; live ordering shows lethal damage enters death/drop before the following combat-effect RNG burst");
     } else {
         add_validation(
             result,
@@ -622,6 +623,34 @@ void append_validation_statuses(BattlePredictionResult& result) {
             "action_source_selection",
             BattlePredictionValidationStatus::NotExercised,
             "no action visual RNG source key was needed");
+    }
+
+    if (has_event(result, "action_visual_rng", "ambiguous_action_view_camera_missing_aux_table")
+        || has_event(result, "action_visual_rng", "ambiguous_action_view_camera_selector_path")) {
+        add_validation(
+            result,
+            "action_view_selector",
+            BattlePredictionValidationStatus::Ambiguous,
+            "action-view selector was reached but required branch evidence or selected _0_STD table data was missing");
+    } else if (has_event(result, "action_visual_rng", "mode0e_action_view_camera")
+        || has_event(result, "action_visual_rng", "mode0_action_view_camera_fallback")) {
+        add_validation(
+            result,
+            "action_view_selector",
+            BattlePredictionValidationStatus::Provisional,
+            "selector-backed action-view camera owner was modeled; branch-level live validation remains required");
+    } else if (has_event(result, "action_visual_rng", "mode0_action_view_camera_rewrite_gate")) {
+        add_validation(
+            result,
+            "action_view_selector",
+            BattlePredictionValidationStatus::Provisional,
+            "prediction used aggregate first-battle action-view camera fallback because per-action selector state was not supplied");
+    } else {
+        add_validation(
+            result,
+            "action_view_selector",
+            BattlePredictionValidationStatus::NotExercised,
+            "no action-view camera selector event was predicted");
     }
 
     if (has_phase_event(result, "counter") || has_phase_event(result, "counter_follow_up")) {
@@ -1217,10 +1246,95 @@ bool append_visual_rng_steps(
     return !visual.has_ambiguous_steps && !visual.has_unsupported_steps;
 }
 
+std::int16_t first_battle_action_view_field6_for_basic_attack(
+    const QueuedPredictionAction& action) {
+    // This is the Battle_CombatantInstructionWorksheet +0x6 action-view mode field,
+    // not the queued attack movement parameter stored in QueuedPredictionAction.
+    if (action.actor_slot == 1) {
+        return 5;
+    }
+    if (action.actor_slot == 0 || action.actor_slot == 4 || action.actor_slot == 5) {
+        return 4;
+    }
+    return static_cast<std::int16_t>(action.instr_param_0x6);
+}
+
+std::optional<ActionViewSelectorResult> action_view_selector_for_pre_attack(
+    const BattlePredictionProfile& profile,
+    const BattlePredictionOptions& options,
+    const QueuedPredictionAction& action) {
+    if (profile.name != "first-battle" || options.action_view_std_json_dir.empty()) {
+        return std::nullopt;
+    }
+
+    constexpr std::int16_t kUnknownInstructionField8 = -1;
+    const auto action_view_field6 = first_battle_action_view_field6_for_basic_attack(action);
+    const auto requested_mode = action_view_requested_mode_from_field6(
+        action_view_field6,
+        kUnknownInstructionField8,
+        false);
+
+    ActionViewSelectorInput selector_input;
+    selector_input.instruction_field6_0x6 = action_view_field6;
+    selector_input.instruction_field8_0x8 = kUnknownInstructionField8;
+    selector_input.previous_effective_mode_0x2f = requested_mode;
+    selector_input.previous_selector_state_0x30 = 2;
+    selector_input.previous_actor_slot_0x2 = static_cast<std::int16_t>(action.actor_slot);
+    selector_input.current_actor_slot = static_cast<std::int16_t>(action.actor_slot);
+    selector_input.current_secondary_slot = static_cast<std::int16_t>(action.target_slot);
+
+    const auto resolution = resolve_first_battle_action_view_std0_table_for_slot(
+        action.actor_slot,
+        options.action_view_std_json_dir);
+    if (resolution.ok) {
+        selector_input.selected_aux_table = resolution.table;
+    }
+
+    auto selector = select_action_view_mode(selector_input);
+    if (resolution.ok) {
+        selector.branch_path.push_back("std0_resource=" + resolution.std_filename);
+        selector.branch_path.push_back("std0_companion=" + resolution.std0_filename);
+        selector.branch_path.push_back(
+            "action_view_field6_0x6=" + std::to_string(action_view_field6));
+        selector.branch_path.push_back(
+            std::string("std0_materialization_source=")
+            + action_view_std_materialization_source_name(resolution.materialization_source));
+        if (resolution.first_battle_cache_key.has_value()) {
+            selector.branch_path.push_back(
+                "std0_cache_key=" + hex_seed(*resolution.first_battle_cache_key));
+        }
+        if (resolution.first_battle_cache_slot.has_value()) {
+            selector.branch_path.push_back(
+                "std0_cache_slot="
+                + std::to_string(*resolution.first_battle_cache_slot));
+        }
+        selector.branch_path.push_back(
+            std::string("runtime_loaded_resource_plus_0x30_is_aux_root=")
+            + (resolution.runtime_loaded_resource_plus_0x30_is_aux_root ? "1" : "0"));
+        selector.branch_path.push_back("std0_table_source_data_equivalent=1");
+        selector.branch_path.push_back(
+            std::string("runtime_aux_table_action_row_prefix=")
+            + (resolution.runtime_aux_table_has_action_row_prefix ? "1" : "0"));
+        if (resolution.runtime_aux_table_prefix_rows > 0) {
+            selector.branch_path.push_back(
+                "runtime_aux_table_prefix_rows="
+                + std::to_string(resolution.runtime_aux_table_prefix_rows));
+        }
+    } else {
+        selector.unsupported_without_aux_table = true;
+        selector.branch_path.push_back("std0_resolution_failed");
+        for (const auto& error : resolution.errors) {
+            selector.branch_path.push_back("std0_error=" + error);
+        }
+    }
+    return selector;
+}
+
 bool append_pre_attack_visual_rng(
     BattlePredictionResult& result,
     std::uint32_t& state,
     const BattlePredictionProfile& profile,
+    const BattlePredictionOptions& options,
     const QueuedPredictionAction& action) {
     const auto visual = model_first_battle_basic_attack_visual_rng({
         .profile_name = profile.name,
@@ -1228,6 +1342,7 @@ bool append_pre_attack_visual_rng(
         .target_slot = action.target_slot,
         .include_action_view_camera = true,
         .include_effect_bursts = false,
+        .action_view_selector = action_view_selector_for_pre_attack(profile, options, action),
     });
     return append_visual_rng_steps(result, state, action, visual);
 }
@@ -1479,10 +1594,12 @@ void append_counter_follow_up(
     });
 
     append_damage_application(result, slots, counter_action, attack);
-    if (auto* updated_target = find_slot(slots, counter_action.target_slot);
-        updated_target != nullptr && !updated_target->alive) {
+    const bool target_dead = [&]() {
+        const auto* updated_target = find_slot(slots, counter_action.target_slot);
+        return updated_target != nullptr && !updated_target->alive;
+    }();
+    if (target_dead) {
         append_death_and_drop(result, state, context, counter_action);
-        return;
     }
 
     append_post_attack_visual_rng(
@@ -1493,6 +1610,10 @@ void append_counter_follow_up(
         attack.attack_result != 0,
         false,
         true);
+
+    if (target_dead) {
+        return;
+    }
 }
 
 void append_attack_resolution(
@@ -1580,6 +1701,13 @@ void append_attack_resolution(
         append_counter_follow_up(result, state, context, slots, profile, action);
     }
 
+    append_damage_application(result, slots, action, attack);
+
+    const bool target_dead = !target->alive;
+    if (target_dead) {
+        append_death_and_drop(result, state, context, action);
+    }
+
     if (attack.attack_result != 0) {
         append_post_attack_visual_rng(
             result,
@@ -1591,10 +1719,7 @@ void append_attack_resolution(
             false);
     }
 
-    append_damage_application(result, slots, action, attack);
-
-    if (!target->alive) {
-        append_death_and_drop(result, state, context, action);
+    if (target_dead) {
         return;
     }
 }
@@ -1640,7 +1765,12 @@ void append_action_execution(
         }
 
         if (options.include_visual_rng_gap_events) {
-            const bool visual_exact = append_pre_attack_visual_rng(result, state, profile, resolved_action);
+            const bool visual_exact = append_pre_attack_visual_rng(
+                result,
+                state,
+                profile,
+                options,
+                resolved_action);
             if (!visual_exact && !options.continue_after_visual_rng_gap) {
                 continue;
             }

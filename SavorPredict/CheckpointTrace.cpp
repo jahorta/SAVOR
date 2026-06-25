@@ -4,6 +4,7 @@
 #include "ActionSetupCheckpointModel.h"
 #include "ActionSourceCheckpointModel.h"
 #include "ActionViewGateCheckpointModel.h"
+#include "ActionViewResourceCheckpointModel.h"
 #include "AttackDamageValueCheckpointModel.h"
 #include "AttackResolutionCheckpointModel.h"
 #include "BattlePredictionDbInput.h"
@@ -1813,11 +1814,102 @@ void write_text_report(
         }
     }
 
-    const auto action_view_gate = summarize_action_view_gate_checkpoints(result.events);
+    const auto action_view_gate = summarize_action_view_gate_checkpoints(
+        result.events,
+        ActionViewGateCheckpointOptions{
+            .action_view_std_json_dir = options.action_view_std_json_dir,
+        });
+    const auto action_view_resource = summarize_action_view_resource_checkpoints(
+        result.events,
+        action_view_gate);
+    out << "\nAction-view STD resource materialization\n";
+    out << "  status: "
+        << action_view_resource_checkpoint_status_name(action_view_resource.status) << "\n";
+    out << "  rule: " << first_battle_action_view_resource_checkpoint_rule_detail() << "\n";
+    out << "  observed_cache_producer_materialize_events: "
+        << action_view_resource.observed_cache_producer_materialize_events << "\n";
+    out << "  observed_cache_producer_table_store_events: "
+        << action_view_resource.observed_cache_producer_table_store_events << "\n";
+    out << "  observed_cache_producer_key_store_events: "
+        << action_view_resource.observed_cache_producer_key_store_events << "\n";
+    out << "  complete_cache_producers: "
+        << action_view_resource.complete_cache_producers << "\n";
+    out << "  observed_cache_lookup_events: "
+        << action_view_resource.observed_cache_lookup_events << "\n";
+    out << "  observed_cache_table_read_events: "
+        << action_view_resource.observed_cache_table_read_events << "\n";
+    out << "  observed_cache_result_store_events: "
+        << action_view_resource.observed_cache_result_store_events << "\n";
+    out << "  complete_cache_hits: "
+        << action_view_resource.complete_cache_hits << "\n";
+    out << "  selector_aux_roots: "
+        << action_view_resource.selector_aux_roots << "\n";
+    out << "  selector_aux_roots_linked_to_cache_hits: "
+        << action_view_resource.selector_aux_roots_linked_to_cache_hits << "\n";
+    out << "  selector_aux_roots_linked_to_cache_producers: "
+        << action_view_resource.selector_aux_roots_linked_to_cache_producers << "\n";
+    out << "  selector_aux_roots_with_chain_samples: "
+        << action_view_resource.selector_aux_roots_with_chain_samples << "\n";
+    out << "  selector_aux_roots_with_matching_chain: "
+        << action_view_resource.selector_aux_roots_with_matching_chain << "\n";
+    out << "  selector_aux_roots_with_mismatching_chain: "
+        << action_view_resource.selector_aux_roots_with_mismatching_chain << "\n";
+    out << "  selector_aux_roots_with_loaded_resource_root_field_match: "
+        << action_view_resource.selector_aux_roots_with_loaded_resource_root_field_match << "\n";
+    out << "  selector_aux_roots_with_loaded_resource_root_field_mismatch: "
+        << action_view_resource.selector_aux_roots_with_loaded_resource_root_field_mismatch << "\n";
+    if (!action_view_resource.selector_root_links.empty()) {
+        out << "  selector_root_links:\n";
+        for (const auto& link : action_view_resource.selector_root_links) {
+            out << "    seq=";
+            write_optional_int(out, link.capture_sequence);
+            out << " active_slot=";
+            write_optional_int(out, link.active_slot);
+            out << " target_slot=";
+            write_optional_int(out, link.target_slot);
+            out << " aux_root=";
+            write_optional_string(out, link.aux_list_root);
+            out << " chain_payload_0x24=";
+            write_optional_string(out, link.chain_payload_0x24);
+            out << " chain_loaded_resource_0x10=";
+            write_optional_string(out, link.chain_loaded_resource_0x10);
+            out << " chain_aux_root_0x30=";
+            write_optional_string(out, link.chain_aux_root_0x30);
+            out << " chain_matches=";
+            write_optional_bool(out, link.chain_aux_root_matches_query);
+            out << " cache_key=";
+            write_optional_string(out, link.cache_expected_key);
+            out << " cache_slot=";
+            write_optional_int(out, link.cache_slot);
+            out << " root_field_ptr=";
+            write_optional_string(out, link.cache_root_field_ptr);
+            out << " root_field_matches_loaded_resource_plus_0x30=";
+            write_optional_bool(out, link.cache_root_field_matches_loaded_resource_plus_0x30);
+            out << " producer_loaded_file_ptr=";
+            write_optional_string(out, link.producer_loaded_file_ptr);
+            out << " matched_resource_stem=";
+            write_optional_string(out, link.matched_resource_stem);
+            out << " matched_std0_filename=";
+            write_optional_string(out, link.matched_std0_filename);
+            out << " linked_to_cache_hit="
+                << (link.linked_to_cache_hit ? "true" : "false");
+            out << " linked_to_cache_producer="
+                << (link.linked_to_cache_producer ? "true" : "false");
+            out << "\n";
+        }
+    }
+
     out << "\nAction-view gate checkpoints\n";
     out << "  status: " << action_view_gate_checkpoint_status_name(action_view_gate.status) << "\n";
     out << "  rule: " << first_battle_action_view_gate_checkpoint_rule_detail() << "\n";
     out << "  observed_gate_events: " << action_view_gate.observed_gate_events << "\n";
+    out << "  legacy_gate_events: " << action_view_gate.legacy_gate_events << "\n";
+    out << "  query_call_events: " << action_view_gate.query_call_events << "\n";
+    out << "  query_result_events: " << action_view_gate.query_result_events << "\n";
+    out << "  query_call_events_with_query_args: "
+        << action_view_gate.query_call_events_with_query_args << "\n";
+    out << "  query_result_events_with_query_result: "
+        << action_view_gate.query_result_events_with_query_result << "\n";
     out << "  observed_dispatch_events: " << action_view_gate.observed_dispatch_events << "\n";
     out << "  dispatch_events_with_payload_mode: "
         << action_view_gate.dispatch_events_with_payload_mode << "\n";
@@ -1842,6 +1934,46 @@ void write_text_report(
         << action_view_gate.events_with_selected_record_mode << "\n";
     out << "  query_args_match: " << action_view_gate.query_args_match << "\n";
     out << "  query_args_mismatch: " << action_view_gate.query_args_mismatch << "\n";
+    out << "  events_with_selector_inputs: "
+        << action_view_gate.events_with_selector_inputs << "\n";
+    out << "  selector_model_comparisons: "
+        << action_view_gate.selector_model_comparisons << "\n";
+    out << "  selector_query_args_match: "
+        << action_view_gate.selector_query_args_match << "\n";
+    out << "  selector_query_args_mismatch: "
+        << action_view_gate.selector_query_args_mismatch << "\n";
+    out << "  selector_model_missing_expected_query: "
+        << action_view_gate.selector_model_missing_expected_query << "\n";
+    out << "  observed_helper_call_events: "
+        << action_view_gate.observed_helper_call_events << "\n";
+    out << "  helper_call_events_with_selector_inputs: "
+        << action_view_gate.helper_call_events_with_selector_inputs << "\n";
+    out << "  selector_helper_call_comparisons: "
+        << action_view_gate.selector_helper_call_comparisons << "\n";
+    out << "  selector_helper_call_matches: "
+        << action_view_gate.selector_helper_call_matches << "\n";
+    out << "  selector_helper_call_mismatches: "
+        << action_view_gate.selector_helper_call_mismatches << "\n";
+    out << "  selector_helper_call_missing_expected: "
+        << action_view_gate.selector_helper_call_missing_expected << "\n";
+    out << "  events_with_aux_table_fingerprint: "
+        << action_view_gate.events_with_aux_table_fingerprint << "\n";
+    out << "  events_with_aux_table_count: "
+        << action_view_gate.events_with_aux_table_count << "\n";
+    out << "  aux_table_count_matches_query_result: "
+        << action_view_gate.aux_table_count_matches_query_result << "\n";
+    out << "  aux_table_count_mismatches_query_result: "
+        << action_view_gate.aux_table_count_mismatches_query_result << "\n";
+    out << "  aux_table_count_missing_query_result: "
+        << action_view_gate.aux_table_count_missing_query_result << "\n";
+    out << "  aux_table_fingerprint_matches_known_std0: "
+        << action_view_gate.aux_table_fingerprint_matches_known_std0 << "\n";
+    out << "  aux_table_fingerprint_ambiguous_known_std0: "
+        << action_view_gate.aux_table_fingerprint_ambiguous_known_std0 << "\n";
+    out << "  aux_table_fingerprint_matches_actor_slot_std0: "
+        << action_view_gate.aux_table_fingerprint_matches_actor_slot_std0 << "\n";
+    out << "  aux_table_fingerprint_mismatches_actor_slot_std0: "
+        << action_view_gate.aux_table_fingerprint_mismatches_actor_slot_std0 << "\n";
     out << "  selected_mode_matches: " << action_view_gate.selected_mode_matches << "\n";
     out << "  selected_mode_mismatches: " << action_view_gate.selected_mode_mismatches << "\n";
     out << "  events_with_action_child_thread: "
@@ -1909,7 +2041,8 @@ void write_text_report(
     if (!action_view_gate.events.empty()) {
         out << "  events:\n";
         for (const auto& event : action_view_gate.events) {
-            out << "    draw_index=";
+            out << "    checkpoint=" << event.checkpoint;
+            out << " draw_index=";
             if (event.draw_index.has_value()) {
                 out << *event.draw_index;
             } else {
@@ -1947,6 +2080,12 @@ void write_text_report(
             } else {
                 out << "unknown";
             }
+            out << " actor_subtype_0x8=";
+            write_optional_int(out, event.actor_subtype_0x8);
+            out << " gate_category_0x2f=";
+            write_optional_int(out, event.gate_category_0x2f);
+            out << " gate_state_0x30=";
+            write_optional_int(out, event.gate_state_0x30);
             out << " aux_list_root=";
             if (event.aux_list_root.has_value()) {
                 out << *event.aux_list_root;
@@ -1983,12 +2122,76 @@ void write_text_report(
             } else {
                 out << "unknown";
             }
+            out << " query_result_count=";
+            write_optional_int(out, event.query_result_count);
+            out << " selector_expected_query=";
+            if (event.selector_expected_query.has_value()) {
+                out << "("
+                    << event.selector_expected_query->action_key << ","
+                    << event.selector_expected_query->secondary_key << ","
+                    << event.selector_expected_query->location_code << ","
+                    << event.selector_expected_query->opcode << ")";
+            } else {
+                out << "unknown";
+            }
+            out << " selector_query_args_match=";
+            write_optional_bool(out, event.selector_query_args_match);
+            out << " sampled_aux_table_rows=" << event.sampled_aux_table_rows;
+            out << " sampled_aux_table_includes_sentinel="
+                << (event.sampled_aux_table_includes_sentinel ? "true" : "false");
+            out << " sampled_aux_table_count=";
+            write_optional_int(out, event.sampled_aux_table_count);
+            out << " matched_query_result_count=";
+            write_optional_int(out, event.matched_query_result_count);
+            out << " sampled_aux_table_count_matches_query_result=";
+            write_optional_bool(out, event.sampled_aux_table_count_matches_query_result);
+            out << " matched_std0_candidate_count=" << event.matched_std0_candidate_count;
+            out << " matched_resource_stem=";
+            write_optional_string(out, event.matched_resource_stem);
+            out << " matched_std_filename=";
+            write_optional_string(out, event.matched_std_filename);
+            out << " matched_std0_filename=";
+            write_optional_string(out, event.matched_std0_filename);
+            out << " matched_std0_materialization_source=";
+            write_optional_string(out, event.matched_std0_materialization_source);
+            out << " matched_std0_sample_row_offset=";
+            write_optional_int(out, event.matched_std0_sample_row_offset);
+            out << " actor_slot_expected_std0_filename=";
+            write_optional_string(out, event.actor_slot_expected_std0_filename);
+            out << " actor_slot_expected_std0_matches_sample=";
+            write_optional_bool(out, event.actor_slot_expected_std0_matches_sample);
+            out << " actor_slot_expected_std0_sample_row_offset=";
+            write_optional_int(out, event.actor_slot_expected_std0_sample_row_offset);
             out << " selected_record_mode=";
             if (event.selected_record_mode.has_value()) {
                 out << *event.selected_record_mode;
             } else {
                 out << "unknown";
             }
+            out << " helper_call_event=" << (event.helper_call_event ? "true" : "false");
+            out << " helper_call_site_pc=";
+            if (event.helper_call_site_pc.has_value()) {
+                out << "0x" << std::hex << std::uppercase << *event.helper_call_site_pc
+                    << std::nouppercase << std::dec;
+            } else {
+                out << "unknown";
+            }
+            out << " helper_callee=";
+            write_optional_string(out, event.helper_callee);
+            out << " helper_actor_slot=";
+            write_optional_int(out, event.helper_actor_slot);
+            out << " helper_mode_arg=";
+            write_optional_int(out, event.helper_mode_arg);
+            out << " selector_expected_helper_role=";
+            write_optional_string(out, event.selector_expected_helper_role);
+            out << " selector_expected_helper_callee=";
+            write_optional_string(out, event.selector_expected_helper_callee);
+            out << " selector_expected_helper_mode_arg=";
+            write_optional_int(out, event.selector_expected_helper_mode_arg);
+            out << " selector_expected_spawned_record_mode=";
+            write_optional_int(out, event.selector_expected_spawned_record_mode);
+            out << " selector_helper_call_matches=";
+            write_optional_bool(out, event.selector_helper_call_matches);
             out << " action_child_thread=";
             write_optional_string(out, event.action_child_thread);
             out << " child_payload=";
@@ -3850,12 +4053,108 @@ void write_json_report(
     out << "]";
     out << "},\n";
 
-    const auto action_view_gate = summarize_action_view_gate_checkpoints(result.events);
+    const auto action_view_gate = summarize_action_view_gate_checkpoints(
+        result.events,
+        ActionViewGateCheckpointOptions{
+            .action_view_std_json_dir = options.action_view_std_json_dir,
+        });
+    const auto action_view_resource = summarize_action_view_resource_checkpoints(
+        result.events,
+        action_view_gate);
+    out << "  \"action_view_resource_checkpoints\": {";
+    out << "\"status\": \""
+        << action_view_resource_checkpoint_status_name(action_view_resource.status) << "\"";
+    out << ", \"rule\": \""
+        << json_escape(first_battle_action_view_resource_checkpoint_rule_detail()) << "\"";
+    out << ", \"observed_cache_producer_materialize_events\": "
+        << action_view_resource.observed_cache_producer_materialize_events;
+    out << ", \"observed_cache_producer_table_store_events\": "
+        << action_view_resource.observed_cache_producer_table_store_events;
+    out << ", \"observed_cache_producer_key_store_events\": "
+        << action_view_resource.observed_cache_producer_key_store_events;
+    out << ", \"complete_cache_producers\": "
+        << action_view_resource.complete_cache_producers;
+    out << ", \"observed_cache_lookup_events\": "
+        << action_view_resource.observed_cache_lookup_events;
+    out << ", \"observed_cache_table_read_events\": "
+        << action_view_resource.observed_cache_table_read_events;
+    out << ", \"observed_cache_result_store_events\": "
+        << action_view_resource.observed_cache_result_store_events;
+    out << ", \"complete_cache_hits\": "
+        << action_view_resource.complete_cache_hits;
+    out << ", \"selector_aux_roots\": "
+        << action_view_resource.selector_aux_roots;
+    out << ", \"selector_aux_roots_linked_to_cache_hits\": "
+        << action_view_resource.selector_aux_roots_linked_to_cache_hits;
+    out << ", \"selector_aux_roots_linked_to_cache_producers\": "
+        << action_view_resource.selector_aux_roots_linked_to_cache_producers;
+    out << ", \"selector_aux_roots_with_chain_samples\": "
+        << action_view_resource.selector_aux_roots_with_chain_samples;
+    out << ", \"selector_aux_roots_with_matching_chain\": "
+        << action_view_resource.selector_aux_roots_with_matching_chain;
+    out << ", \"selector_aux_roots_with_mismatching_chain\": "
+        << action_view_resource.selector_aux_roots_with_mismatching_chain;
+    out << ", \"selector_aux_roots_with_loaded_resource_root_field_match\": "
+        << action_view_resource.selector_aux_roots_with_loaded_resource_root_field_match;
+    out << ", \"selector_aux_roots_with_loaded_resource_root_field_mismatch\": "
+        << action_view_resource.selector_aux_roots_with_loaded_resource_root_field_mismatch;
+    out << ", \"selector_root_links\": [";
+    for (std::size_t i = 0; i < action_view_resource.selector_root_links.size(); ++i) {
+        if (i != 0) {
+            out << ", ";
+        }
+        const auto& link = action_view_resource.selector_root_links[i];
+        out << "{\"capture_sequence\": ";
+        write_json_optional_int(out, link.capture_sequence);
+        out << ", \"active_slot\": ";
+        write_json_optional_int(out, link.active_slot);
+        out << ", \"target_slot\": ";
+        write_json_optional_int(out, link.target_slot);
+        out << ", \"aux_root\": ";
+        write_json_optional_string(out, link.aux_list_root);
+        out << ", \"chain_payload_0x24\": ";
+        write_json_optional_string(out, link.chain_payload_0x24);
+        out << ", \"chain_loaded_resource_0x10\": ";
+        write_json_optional_string(out, link.chain_loaded_resource_0x10);
+        out << ", \"chain_aux_root_0x30\": ";
+        write_json_optional_string(out, link.chain_aux_root_0x30);
+        out << ", \"chain_matches\": ";
+        write_json_optional_bool(out, link.chain_aux_root_matches_query);
+        out << ", \"cache_key\": ";
+        write_json_optional_string(out, link.cache_expected_key);
+        out << ", \"cache_slot\": ";
+        write_json_optional_int(out, link.cache_slot);
+        out << ", \"root_field_ptr\": ";
+        write_json_optional_string(out, link.cache_root_field_ptr);
+        out << ", \"root_field_matches_loaded_resource_plus_0x30\": ";
+        write_json_optional_bool(out, link.cache_root_field_matches_loaded_resource_plus_0x30);
+        out << ", \"producer_loaded_file_ptr\": ";
+        write_json_optional_string(out, link.producer_loaded_file_ptr);
+        out << ", \"matched_resource_stem\": ";
+        write_json_optional_string(out, link.matched_resource_stem);
+        out << ", \"matched_std0_filename\": ";
+        write_json_optional_string(out, link.matched_std0_filename);
+        out << ", \"linked_to_cache_hit\": "
+            << (link.linked_to_cache_hit ? "true" : "false");
+        out << ", \"linked_to_cache_producer\": "
+            << (link.linked_to_cache_producer ? "true" : "false");
+        out << "}";
+    }
+    out << "]";
+    out << "},\n";
+
     out << "  \"action_view_gate_checkpoints\": {";
     out << "\"status\": \"" << action_view_gate_checkpoint_status_name(action_view_gate.status) << "\"";
     out << ", \"rule\": \""
         << json_escape(first_battle_action_view_gate_checkpoint_rule_detail()) << "\"";
     out << ", \"observed_gate_events\": " << action_view_gate.observed_gate_events;
+    out << ", \"legacy_gate_events\": " << action_view_gate.legacy_gate_events;
+    out << ", \"query_call_events\": " << action_view_gate.query_call_events;
+    out << ", \"query_result_events\": " << action_view_gate.query_result_events;
+    out << ", \"query_call_events_with_query_args\": "
+        << action_view_gate.query_call_events_with_query_args;
+    out << ", \"query_result_events_with_query_result\": "
+        << action_view_gate.query_result_events_with_query_result;
     out << ", \"observed_dispatch_events\": " << action_view_gate.observed_dispatch_events;
     out << ", \"dispatch_events_with_payload_mode\": "
         << action_view_gate.dispatch_events_with_payload_mode;
@@ -3881,6 +4180,46 @@ void write_json_report(
         << action_view_gate.events_with_selected_record_mode;
     out << ", \"query_args_match\": " << action_view_gate.query_args_match;
     out << ", \"query_args_mismatch\": " << action_view_gate.query_args_mismatch;
+    out << ", \"events_with_selector_inputs\": "
+        << action_view_gate.events_with_selector_inputs;
+    out << ", \"selector_model_comparisons\": "
+        << action_view_gate.selector_model_comparisons;
+    out << ", \"selector_query_args_match\": "
+        << action_view_gate.selector_query_args_match;
+    out << ", \"selector_query_args_mismatch\": "
+        << action_view_gate.selector_query_args_mismatch;
+    out << ", \"selector_model_missing_expected_query\": "
+        << action_view_gate.selector_model_missing_expected_query;
+    out << ", \"observed_helper_call_events\": "
+        << action_view_gate.observed_helper_call_events;
+    out << ", \"helper_call_events_with_selector_inputs\": "
+        << action_view_gate.helper_call_events_with_selector_inputs;
+    out << ", \"selector_helper_call_comparisons\": "
+        << action_view_gate.selector_helper_call_comparisons;
+    out << ", \"selector_helper_call_matches\": "
+        << action_view_gate.selector_helper_call_matches;
+    out << ", \"selector_helper_call_mismatches\": "
+        << action_view_gate.selector_helper_call_mismatches;
+    out << ", \"selector_helper_call_missing_expected\": "
+        << action_view_gate.selector_helper_call_missing_expected;
+    out << ", \"events_with_aux_table_fingerprint\": "
+        << action_view_gate.events_with_aux_table_fingerprint;
+    out << ", \"events_with_aux_table_count\": "
+        << action_view_gate.events_with_aux_table_count;
+    out << ", \"aux_table_count_matches_query_result\": "
+        << action_view_gate.aux_table_count_matches_query_result;
+    out << ", \"aux_table_count_mismatches_query_result\": "
+        << action_view_gate.aux_table_count_mismatches_query_result;
+    out << ", \"aux_table_count_missing_query_result\": "
+        << action_view_gate.aux_table_count_missing_query_result;
+    out << ", \"aux_table_fingerprint_matches_known_std0\": "
+        << action_view_gate.aux_table_fingerprint_matches_known_std0;
+    out << ", \"aux_table_fingerprint_ambiguous_known_std0\": "
+        << action_view_gate.aux_table_fingerprint_ambiguous_known_std0;
+    out << ", \"aux_table_fingerprint_matches_actor_slot_std0\": "
+        << action_view_gate.aux_table_fingerprint_matches_actor_slot_std0;
+    out << ", \"aux_table_fingerprint_mismatches_actor_slot_std0\": "
+        << action_view_gate.aux_table_fingerprint_mismatches_actor_slot_std0;
     out << ", \"selected_mode_matches\": " << action_view_gate.selected_mode_matches;
     out << ", \"selected_mode_mismatches\": "
         << action_view_gate.selected_mode_mismatches;
@@ -3952,7 +4291,8 @@ void write_json_report(
             out << ", ";
         }
         const auto& event = action_view_gate.events[i];
-        out << "{\"draw_index\": ";
+        out << "{\"checkpoint\": \"" << json_escape(event.checkpoint) << "\"";
+        out << ", \"draw_index\": ";
         if (event.draw_index.has_value()) {
             out << *event.draw_index;
         } else {
@@ -3990,6 +4330,12 @@ void write_json_report(
         } else {
             out << "null";
         }
+        out << ", \"actor_subtype_0x8\": ";
+        write_json_optional_int(out, event.actor_subtype_0x8);
+        out << ", \"gate_category_0x2f\": ";
+        write_json_optional_int(out, event.gate_category_0x2f);
+        out << ", \"gate_state_0x30\": ";
+        write_json_optional_int(out, event.gate_state_0x30);
         out << ", \"aux_list_root\": ";
         if (event.aux_list_root.has_value()) {
             out << "\"" << json_escape(*event.aux_list_root) << "\"";
@@ -4026,12 +4372,78 @@ void write_json_report(
         } else {
             out << "null";
         }
+        out << ", \"query_result_count\": ";
+        write_json_optional_int(out, event.query_result_count);
+        out << ", \"selector_expected_query\": ";
+        if (event.selector_expected_query.has_value()) {
+            out << "{\"arg0\": " << event.selector_expected_query->action_key
+                << ", \"arg1\": " << event.selector_expected_query->secondary_key
+                << ", \"arg2\": " << event.selector_expected_query->location_code
+                << ", \"arg3\": " << event.selector_expected_query->opcode
+                << "}";
+        } else {
+            out << "null";
+        }
+        out << ", \"selector_query_args_match\": ";
+        write_json_optional_bool(out, event.selector_query_args_match);
+        out << ", \"sampled_aux_table_rows\": " << event.sampled_aux_table_rows;
+        out << ", \"sampled_aux_table_includes_sentinel\": "
+            << (event.sampled_aux_table_includes_sentinel ? "true" : "false");
+        out << ", \"sampled_aux_table_count\": ";
+        write_json_optional_int(out, event.sampled_aux_table_count);
+        out << ", \"matched_query_result_count\": ";
+        write_json_optional_int(out, event.matched_query_result_count);
+        out << ", \"sampled_aux_table_count_matches_query_result\": ";
+        write_json_optional_bool(out, event.sampled_aux_table_count_matches_query_result);
+        out << ", \"matched_std0_candidate_count\": " << event.matched_std0_candidate_count;
+        out << ", \"matched_resource_stem\": ";
+        write_json_optional_string(out, event.matched_resource_stem);
+        out << ", \"matched_std_filename\": ";
+        write_json_optional_string(out, event.matched_std_filename);
+        out << ", \"matched_std0_filename\": ";
+        write_json_optional_string(out, event.matched_std0_filename);
+        out << ", \"matched_std0_json_path\": ";
+        write_json_optional_string(out, event.matched_std0_json_path);
+        out << ", \"matched_std0_materialization_source\": ";
+        write_json_optional_string(out, event.matched_std0_materialization_source);
+        out << ", \"matched_std0_sample_row_offset\": ";
+        write_json_optional_int(out, event.matched_std0_sample_row_offset);
+        out << ", \"actor_slot_expected_std0_filename\": ";
+        write_json_optional_string(out, event.actor_slot_expected_std0_filename);
+        out << ", \"actor_slot_expected_std0_matches_sample\": ";
+        write_json_optional_bool(out, event.actor_slot_expected_std0_matches_sample);
+        out << ", \"actor_slot_expected_std0_sample_row_offset\": ";
+        write_json_optional_int(out, event.actor_slot_expected_std0_sample_row_offset);
         out << ", \"selected_record_mode\": ";
         if (event.selected_record_mode.has_value()) {
             out << *event.selected_record_mode;
         } else {
             out << "null";
         }
+        out << ", \"helper_call_event\": " << (event.helper_call_event ? "true" : "false");
+        out << ", \"helper_call_site_pc\": ";
+        if (event.helper_call_site_pc.has_value()) {
+            out << "\"0x" << std::hex << std::uppercase << *event.helper_call_site_pc
+                << std::nouppercase << std::dec << "\"";
+        } else {
+            out << "null";
+        }
+        out << ", \"helper_callee\": ";
+        write_json_optional_string(out, event.helper_callee);
+        out << ", \"helper_actor_slot\": ";
+        write_json_optional_int(out, event.helper_actor_slot);
+        out << ", \"helper_mode_arg\": ";
+        write_json_optional_int(out, event.helper_mode_arg);
+        out << ", \"selector_expected_helper_role\": ";
+        write_json_optional_string(out, event.selector_expected_helper_role);
+        out << ", \"selector_expected_helper_callee\": ";
+        write_json_optional_string(out, event.selector_expected_helper_callee);
+        out << ", \"selector_expected_helper_mode_arg\": ";
+        write_json_optional_int(out, event.selector_expected_helper_mode_arg);
+        out << ", \"selector_expected_spawned_record_mode\": ";
+        write_json_optional_int(out, event.selector_expected_spawned_record_mode);
+        out << ", \"selector_helper_call_matches\": ";
+        write_json_optional_bool(out, event.selector_helper_call_matches);
         out << ", \"action_child_thread\": ";
         write_json_optional_string(out, event.action_child_thread);
         out << ", \"child_payload\": ";

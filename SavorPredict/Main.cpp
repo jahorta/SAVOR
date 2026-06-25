@@ -27,11 +27,13 @@ void print_usage(std::ostream& out) {
         << "  SavorPredict write-first-battle-predictor-validation-profile --output PATH\n"
         << "  SavorPredict write-first-battle-turn-order-validation-profile --output PATH\n"
         << "  SavorPredict write-first-battle-field6-watch-profile --output PATH\n"
-        << "  SavorPredict run-battle-job (--turn-job-id N | --exec-job-id N) --iso PATH --dolphin-base-dir PATH [--db-root PATH] [--run-root PATH] [--worker-exe PATH] [--capture-profile PATH] [--sandbox-mode minimal|full-copy] [--timeout-ms N] [--battle-run-ms N] [--poll-ms N] [--override-start-rng-seed N]\n"
-        << "  SavorPredict run-battle-jobs --exec-job-id N [--exec-job-id N ...] [--exec-job-list PATH] [--exec-job-seed EXEC_ID:SEED] [--exec-job-seed-list PATH] --iso PATH --dolphin-base-dir PATH [--db-root PATH] [--run-root PATH] [--worker-exe PATH] [--capture-profile PATH] [--sandbox-mode minimal|full-copy] [--max-workers N] [--timeout-ms N] [--battle-run-ms N] [--poll-ms N] [--override-start-rng-seed N]\n"
-        << "  SavorPredict predict-battle (--context-file PATH --turn-plan-hex HEX --fake-attacks N --start-seed N | (--turn-job-id N | --exec-job-id N) [--start-seed N | --start-seed-list PATH]) [--db-root PATH] [--profile first-battle] [--format text|json] [--allow-seed-candidate-fallback]\n"
+        << "  SavorPredict write-first-battle-action-view-resource-profile --output PATH\n"
+        << "  SavorPredict write-first-battle-action-view-selector-coverage-profile --output PATH\n"
+        << "  SavorPredict run-battle-job (--turn-job-id N | --exec-job-id N) --iso PATH --dolphin-base-dir PATH [--db-root PATH] [--run-root PATH] [--worker-exe PATH] [--capture-profile PATH] [--sandbox-mode minimal|full-copy] [--timeout-ms N] [--battle-run-ms N] [--poll-ms N] [--override-start-rng-seed N] [--override-fake-attacks N]\n"
+        << "  SavorPredict run-battle-jobs --exec-job-id N [--exec-job-id N ...] [--exec-job-list PATH] [--exec-job-seed EXEC_ID:SEED[:FAKE_ATTACKS]] [--exec-job-seed-list PATH] [--exec-job-fake-attacks EXEC_ID:FAKE_ATTACKS] [--exec-job-fake-attacks-list PATH] --iso PATH --dolphin-base-dir PATH [--db-root PATH] [--run-root PATH] [--worker-exe PATH] [--capture-profile PATH] [--sandbox-mode minimal|full-copy] [--max-workers N] [--timeout-ms N] [--battle-run-ms N] [--poll-ms N] [--override-start-rng-seed N] [--override-fake-attacks N]\n"
+        << "  SavorPredict predict-battle (--context-file PATH --turn-plan-hex HEX --fake-attacks N --start-seed N | (--turn-job-id N | --exec-job-id N) [--start-seed N | --start-seed-list PATH]) [--db-root PATH] [--profile first-battle] [--action-view-std-json-dir PATH] [--format text|json] [--allow-seed-candidate-fallback]\n"
         << "  SavorPredict trace-job (--turn-job-id N | --exec-job-id N) [--db-root PATH] [--format text|json] [--max-distance N]\n\n"
-        << "  SavorPredict trace-checkpoints --checkpoint-file PATH [--turn-job-id N | --exec-job-id N] [--db-root PATH] [--format text|json] [--expected-fake-attacks N] [--expected-enemy-setup-draws N] [--expected-mode0e-camera-draws N] [--expected-turn-order-draws N] [--expected-attack-events N] [--expected-crit-draws N] [--expected-counter-roll-ceiling N] [--expected-drop-rolls N] [--expected-end-turn-status-draws N] [--expected-level-up-stat-rolls N]\n\n"
+        << "  SavorPredict trace-checkpoints --checkpoint-file PATH [--turn-job-id N | --exec-job-id N] [--db-root PATH] [--action-view-std-json-dir PATH] [--format text|json] [--expected-fake-attacks N] [--expected-enemy-setup-draws N] [--expected-mode0e-camera-draws N] [--expected-turn-order-draws N] [--expected-attack-events N] [--expected-crit-draws N] [--expected-counter-roll-ceiling N] [--expected-drop-rolls N] [--expected-end-turn-status-draws N] [--expected-level-up-stat-rolls N]\n\n"
         << "Defaults:\n"
         << "  prepare-db --source D:/SoaSimDBDebug --dest D:/SavorPredictDB\n"
         << "  predict-battle --db-root D:/SavorPredictDB --profile first-battle --format text\n"
@@ -271,6 +273,56 @@ int run_write_first_battle_field6_watch_profile(int argc, char** argv) {
         std::cerr);
 }
 
+int run_write_first_battle_action_view_resource_profile(int argc, char** argv) {
+    std::filesystem::path output;
+    for (int i = 2; i < argc; ++i) {
+        const std::string arg = argv[i];
+        std::string value;
+        if (arg == "--output") {
+            if (!require_value(argc, argv, i, arg, value, std::cerr)) {
+                return 2;
+            }
+            output = value;
+        } else if (arg == "--help" || arg == "-h") {
+            print_usage(std::cout);
+            return 0;
+        } else {
+            std::cerr << "Unknown write-first-battle-action-view-resource-profile option: "
+                << arg << "\n";
+            return 2;
+        }
+    }
+    return savor::predict::write_first_battle_action_view_resource_profile(
+        output,
+        std::cout,
+        std::cerr);
+}
+
+int run_write_first_battle_action_view_selector_coverage_profile(int argc, char** argv) {
+    std::filesystem::path output;
+    for (int i = 2; i < argc; ++i) {
+        const std::string arg = argv[i];
+        std::string value;
+        if (arg == "--output") {
+            if (!require_value(argc, argv, i, arg, value, std::cerr)) {
+                return 2;
+            }
+            output = value;
+        } else if (arg == "--help" || arg == "-h") {
+            print_usage(std::cout);
+            return 0;
+        } else {
+            std::cerr << "Unknown write-first-battle-action-view-selector-coverage-profile option: "
+                << arg << "\n";
+            return 2;
+        }
+    }
+    return savor::predict::write_first_battle_action_view_selector_coverage_profile(
+        output,
+        std::cout,
+        std::cerr);
+}
+
 int run_battle_job_command(int argc, char** argv) {
     std::vector<std::string> args;
     args.reserve(static_cast<std::size_t>(std::max(0, argc - 2)));
@@ -360,6 +412,16 @@ int run_trace_checkpoints_command(int argc, char** argv) {
                 return 2;
             }
             options.db_root = value;
+        } else if (arg == "--action-view-std-json-dir") {
+            if (!require_value(argc, argv, i, arg, value, std::cerr)) {
+                return 2;
+            }
+            options.action_view_std_json_dir = value;
+            if (!std::filesystem::is_directory(options.action_view_std_json_dir)) {
+                std::cerr << "--action-view-std-json-dir must name an existing directory: "
+                          << options.action_view_std_json_dir.string() << "\n";
+                return 2;
+            }
         } else if (arg == "--format") {
             if (!require_value(argc, argv, i, arg, value, std::cerr)) {
                 return 2;
@@ -481,6 +543,12 @@ int main(int argc, char** argv) {
     }
     if (command == "write-first-battle-field6-watch-profile") {
         return run_write_first_battle_field6_watch_profile(argc, argv);
+    }
+    if (command == "write-first-battle-action-view-resource-profile") {
+        return run_write_first_battle_action_view_resource_profile(argc, argv);
+    }
+    if (command == "write-first-battle-action-view-selector-coverage-profile") {
+        return run_write_first_battle_action_view_selector_coverage_profile(argc, argv);
     }
     if (command == "run-battle-job") {
         return run_battle_job_command(argc, argv);

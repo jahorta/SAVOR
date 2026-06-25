@@ -1,5 +1,9 @@
 #include <gtest/gtest.h>
 
+#include <ActionViewResourceCheckpointModel.h>
+#include <ActionViewSelectorModel.h>
+#include <ActionViewStdJsonLoader.h>
+#include <ActionViewStdResourceResolver.h>
 #include <CheckpointTrace.h>
 #include <BattlePredictionDbInput.h>
 #include <BattlePredictorCli.h>
@@ -20,6 +24,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -29,6 +34,19 @@
 namespace {
 
 using namespace savor::predict;
+
+const ActionViewSelectorHelperCall* find_selector_helper_call(
+    const ActionViewSelectorResult& result,
+    std::uint32_t call_site_pc,
+    std::string_view role) {
+    const auto it = std::find_if(
+        result.helper_calls.begin(),
+        result.helper_calls.end(),
+        [&](const ActionViewSelectorHelperCall& call) {
+            return call.call_site_pc == call_site_pc && call.role == role;
+        });
+    return it == result.helper_calls.end() ? nullptr : &*it;
+}
 
 void append_effect_buffer_trace(
     std::ostringstream& stream,
@@ -639,6 +657,989 @@ TEST(SavorPredictRngModel, FirstBattleVisualRngModelComposesCameraAndEffectDraws
     ASSERT_EQ(unknown_actor.steps.size(), 1u);
     EXPECT_TRUE(unknown_actor.has_ambiguous_steps);
     EXPECT_EQ(unknown_actor.steps[0].label, "ambiguous_effect_source_key");
+}
+
+TEST(SavorPredictRngModel, ActionViewSelectorDrivesCameraOwner) {
+    Std0Table empty_table;
+    empty_table.includes_sentinel = true;
+    empty_table.entries = { { .location_code = -1 } };
+    const auto mode0e_selector = select_action_view_mode({
+        .instruction_field6_0x6 = 4,
+        .previous_effective_mode_0x2f = 2,
+        .previous_selector_state_0x30 = 2,
+        .previous_actor_slot_0x2 = 4,
+        .current_actor_slot = 4,
+        .selected_aux_table = empty_table,
+    });
+    const auto mode0e_camera = model_first_battle_basic_attack_visual_rng({
+        .actor_slot = 4,
+        .target_slot = 0,
+        .include_action_view_camera = true,
+        .include_effect_bursts = false,
+        .action_view_selector = mode0e_selector,
+    });
+    ASSERT_EQ(mode0e_camera.steps.size(), 1u);
+    EXPECT_EQ(mode0e_camera.total_draws, 1);
+    EXPECT_EQ(mode0e_camera.steps[0].label, "mode0e_action_view_camera");
+    EXPECT_EQ(mode0e_camera.steps[0].status, BattleVisualRngStepStatus::Exact);
+    EXPECT_NE(mode0e_camera.steps[0].detail.find("mode0e_count=0"), std::string::npos);
+
+    Std0Table suppressing_table;
+    suppressing_table.includes_sentinel = true;
+    suppressing_table.entries = {
+        {
+            .location_code = 0x2a,
+            .opcode = 3,
+            .payload = { .primary_action_key = 4 },
+            .has_payload = true,
+        },
+        { .location_code = -1 },
+    };
+    const auto fallback_selector = select_action_view_mode({
+        .instruction_field6_0x6 = 4,
+        .previous_effective_mode_0x2f = 2,
+        .previous_selector_state_0x30 = 2,
+        .previous_actor_slot_0x2 = 0,
+        .current_actor_slot = 0,
+        .selected_aux_table = suppressing_table,
+    });
+    const auto fallback_camera = model_first_battle_basic_attack_visual_rng({
+        .actor_slot = 0,
+        .target_slot = 4,
+        .include_action_view_camera = true,
+        .include_effect_bursts = false,
+        .action_view_selector = fallback_selector,
+    });
+    ASSERT_EQ(fallback_camera.steps.size(), 1u);
+    EXPECT_EQ(fallback_camera.total_draws, 1);
+    EXPECT_EQ(fallback_camera.steps[0].label, "mode0_action_view_camera_fallback");
+    EXPECT_EQ(fallback_camera.steps[0].status, BattleVisualRngStepStatus::Exact);
+    EXPECT_NE(fallback_camera.steps[0].detail.find("mode0e_count=1"), std::string::npos);
+
+    const auto missing_selector = select_action_view_mode({
+        .instruction_field6_0x6 = 4,
+        .previous_effective_mode_0x2f = 2,
+        .previous_selector_state_0x30 = 2,
+        .previous_actor_slot_0x2 = 1,
+        .current_actor_slot = 1,
+    });
+    const auto ambiguous_camera = model_first_battle_basic_attack_visual_rng({
+        .actor_slot = 1,
+        .target_slot = 4,
+        .include_action_view_camera = true,
+        .include_effect_bursts = false,
+        .action_view_selector = missing_selector,
+    });
+    ASSERT_EQ(ambiguous_camera.steps.size(), 1u);
+    EXPECT_EQ(ambiguous_camera.steps[0].label, "ambiguous_action_view_camera_missing_aux_table");
+    EXPECT_EQ(ambiguous_camera.steps[0].status, BattleVisualRngStepStatus::Ambiguous);
+    EXPECT_TRUE(ambiguous_camera.has_ambiguous_steps);
+}
+
+TEST(SavorPredictRngModel, ActionViewStdMatcherUsesDirectSecondaryOnlyForSpecialKeys) {
+    EXPECT_TRUE(match_std_payload_action_key(4, 0x1234, 4, -1));
+    EXPECT_FALSE(match_std_payload_action_key(4, 0x1234, 5, -1));
+
+    EXPECT_TRUE(match_std_payload_action_key(0x18, 0x002a, 0x18, 0x002a));
+    EXPECT_FALSE(match_std_payload_action_key(0x18, 0x002b, 0x18, 0x002a));
+    EXPECT_TRUE(match_std_payload_action_key(0x1d, -1, 0x1d, -1));
+    EXPECT_TRUE(match_std_payload_action_key(0x1e, 7, 0x1e, 7));
+
+    EXPECT_TRUE(match_std_payload_action_key(0x1f, 0, 0x1f, 99));
+}
+
+TEST(SavorPredictRngModel, CountMatchingStd0EntriesMatchesDisassemblyPredicate) {
+    Std0Table table;
+    table.includes_sentinel = true;
+    table.entries = {
+        {
+            .location_code = 0x2a,
+            .opcode = 3,
+            .payload = { .primary_action_key = 4, .generic_secondary_key = 77, .direct_gate_secondary_key = 88 },
+            .has_payload = true,
+        },
+        {
+            .location_code = 0x41,
+            .opcode = 3,
+            .payload = { .primary_action_key = 4 },
+            .has_payload = true,
+        },
+        {
+            .location_code = 0x2e,
+            .opcode = 3,
+            .payload = { .primary_action_key = 4 },
+            .has_payload = true,
+        },
+        {
+            .location_code = 0x2a,
+            .opcode = 3,
+            .payload = { .primary_action_key = 5 },
+            .has_payload = true,
+        },
+        { .location_code = -1 },
+    };
+
+    const auto mode0e = count_matching_std0_entries(&table, mode0e_action_view_count_query());
+    EXPECT_EQ(mode0e.count, 1);
+    EXPECT_EQ(mode0e.scanned_entries, 4);
+    EXPECT_TRUE(mode0e.reached_sentinel);
+    EXPECT_TRUE(mode0e.used_combined_id_filter);
+
+    const auto no_table = count_matching_std0_entries(nullptr, mode0e_action_view_count_query());
+    EXPECT_EQ(no_table.count, 0);
+    EXPECT_TRUE(no_table.reached_sentinel);
+}
+
+TEST(SavorPredictRngModel, LoadsSpiceStd0JsonEntryTableGateFields) {
+    const std::string json = R"json({
+  "schema": "spice_std_ir_v1",
+  "layoutKind": "entry_table",
+  "parseOk": true,
+  "entryTable": {
+    "records": [
+      {
+        "index": 0,
+        "isSentinel": false,
+        "locationCode": 42,
+        "opcode": 3,
+        "payloadInBounds": true,
+        "payloadBytesHex": "0004004d0058"
+      },
+      {
+        "index": 1,
+        "isSentinel": false,
+        "locationCode": 65,
+        "opcode": 3,
+        "payloadInBounds": true,
+        "payloadBytesHex": "000400000000"
+      },
+      {
+        "index": 2,
+        "isSentinel": false,
+        "locationCode": 42,
+        "opcode": 3,
+        "payloadInBounds": false,
+        "payloadBytesHex": ""
+      },
+      {
+        "index": 3,
+        "isSentinel": true,
+        "locationCode": -1,
+        "opcode": 0,
+        "payloadInBounds": false,
+        "payloadBytesHex": ""
+      }
+    ]
+  }
+})json";
+
+    const auto loaded = load_spice_std0_table_from_json_text(json);
+    ASSERT_TRUE(loaded.ok);
+    EXPECT_TRUE(loaded.errors.empty());
+    EXPECT_EQ(loaded.records_seen, 4);
+    EXPECT_EQ(loaded.records_imported, 4);
+    EXPECT_TRUE(loaded.table.includes_sentinel);
+    ASSERT_EQ(loaded.table.entries.size(), 4u);
+    EXPECT_EQ(loaded.table.entries[0].location_code, 0x2a);
+    EXPECT_EQ(loaded.table.entries[0].opcode, 3);
+    EXPECT_TRUE(loaded.table.entries[0].has_payload);
+    EXPECT_EQ(loaded.table.entries[0].payload.primary_action_key, 4);
+    EXPECT_EQ(loaded.table.entries[0].payload.generic_secondary_key, 0x4d);
+    EXPECT_EQ(loaded.table.entries[0].payload.direct_gate_secondary_key, 0x58);
+    EXPECT_FALSE(loaded.table.entries[2].has_payload);
+
+    const auto mode0e = count_matching_std0_entries(
+        &loaded.table,
+        mode0e_action_view_count_query());
+    EXPECT_EQ(mode0e.count, 1);
+    EXPECT_EQ(mode0e.scanned_entries, 3);
+    EXPECT_TRUE(mode0e.reached_sentinel);
+}
+
+TEST(SavorPredictRngModel, LoadsSpiceActionRowsRuntimePrefixRecord) {
+    const std::string json = R"json({
+  "schema": "spice_std_ir_v1",
+  "layoutKind": "action_rows",
+  "parseOk": true,
+  "actionRows": {
+    "rows": [
+      {
+        "index": 0,
+        "actionId": 2,
+        "rowType": 1,
+        "callbackIndex": 8
+      },
+      {
+        "index": 1,
+        "actionId": 7,
+        "rowType": 1,
+        "callbackIndex": 8
+      }
+    ]
+  }
+})json";
+
+    const auto loaded = load_spice_std_action_row_prefix_from_json_text(json);
+    ASSERT_TRUE(loaded.ok);
+    EXPECT_TRUE(loaded.errors.empty());
+    EXPECT_EQ(loaded.rows_seen, 2);
+    EXPECT_EQ(loaded.rows_imported, 1);
+    ASSERT_EQ(loaded.table.entries.size(), 1u);
+    EXPECT_EQ(loaded.table.entries[0].location_code, 0);
+    EXPECT_EQ(loaded.table.entries[0].opcode, 1);
+    EXPECT_TRUE(loaded.table.entries[0].has_payload);
+    EXPECT_EQ(loaded.table.entries[0].payload.primary_action_key, 2);
+    EXPECT_EQ(loaded.table.entries[0].payload.generic_secondary_key, 1);
+    EXPECT_EQ(loaded.table.entries[0].payload.direct_gate_secondary_key, 8);
+}
+
+TEST(SavorPredictRngModel, SpiceStd0JsonCanDriveMode0eSelectorGate) {
+    const std::string suppressing_json = R"json({
+  "schema": "spice_std_ir_v1",
+  "layoutKind": "entry_table",
+  "parseOk": true,
+  "entryTable": {
+    "records": [
+      {
+        "index": 0,
+        "isSentinel": false,
+        "locationCode": 42,
+        "opcode": 3,
+        "payloadInBounds": true,
+        "payloadBytesHex": "000400000000"
+      },
+      {
+        "index": 1,
+        "isSentinel": true,
+        "locationCode": -1,
+        "opcode": 0,
+        "payloadInBounds": false,
+        "payloadBytesHex": ""
+      }
+    ]
+  }
+})json";
+    const auto suppressing_table = load_spice_std0_table_from_json_text(suppressing_json);
+    ASSERT_TRUE(suppressing_table.ok);
+
+    const auto suppressed = select_action_view_mode({
+        .instruction_field6_0x6 = 4,
+        .previous_effective_mode_0x2f = 2,
+        .previous_selector_state_0x30 = 2,
+        .previous_actor_slot_0x2 = 1,
+        .current_actor_slot = 1,
+        .selected_aux_table = suppressing_table.table,
+    });
+    ASSERT_TRUE(suppressed.mode0e_count.has_value());
+    EXPECT_EQ(suppressed.mode0e_count->count, 1);
+    EXPECT_FALSE(suppressed.mode0e_synthetic_call_selected);
+
+    const std::string empty_json = R"json({
+  "schema": "spice_std_ir_v1",
+  "layoutKind": "entry_table",
+  "parseOk": true,
+  "entryTable": {
+    "records": [
+      {
+        "index": 0,
+        "isSentinel": true,
+        "locationCode": -1,
+        "opcode": 0,
+        "payloadInBounds": false,
+        "payloadBytesHex": ""
+      }
+    ]
+  }
+})json";
+    const auto empty_table = load_spice_std0_table_from_json_text(empty_json);
+    ASSERT_TRUE(empty_table.ok);
+
+    const auto selected = select_action_view_mode({
+        .instruction_field6_0x6 = 4,
+        .previous_effective_mode_0x2f = 2,
+        .previous_selector_state_0x30 = 2,
+        .previous_actor_slot_0x2 = 1,
+        .current_actor_slot = 1,
+        .selected_aux_table = empty_table.table,
+    });
+    ASSERT_TRUE(selected.mode0e_count.has_value());
+    EXPECT_EQ(selected.mode0e_count->count, 0);
+    EXPECT_TRUE(selected.mode0e_synthetic_call_selected);
+}
+
+TEST(SavorPredictRngModel, FirstBattleActionViewStdResolverMapsSlotsAndCompanions) {
+    ASSERT_TRUE(first_battle_action_view_resource_stem_for_slot(0).has_value());
+    ASSERT_TRUE(first_battle_action_view_resource_stem_for_slot(1).has_value());
+    ASSERT_TRUE(first_battle_action_view_resource_stem_for_slot(4).has_value());
+    ASSERT_TRUE(first_battle_action_view_resource_stem_for_slot(5).has_value());
+    EXPECT_EQ(*first_battle_action_view_resource_stem_for_slot(0), "ma000");
+    EXPECT_EQ(*first_battle_action_view_resource_stem_for_slot(1), "MA001");
+    EXPECT_EQ(*first_battle_action_view_resource_stem_for_slot(4), "MB000");
+    EXPECT_EQ(*first_battle_action_view_resource_stem_for_slot(5), "MB000");
+    EXPECT_FALSE(first_battle_action_view_resource_stem_for_slot(2).has_value());
+    ASSERT_TRUE(first_battle_action_view_std0_cache_key_for_slot(0).has_value());
+    ASSERT_TRUE(first_battle_action_view_std0_cache_key_for_slot(1).has_value());
+    ASSERT_TRUE(first_battle_action_view_std0_cache_key_for_slot(4).has_value());
+    ASSERT_TRUE(first_battle_action_view_std0_cache_key_for_slot(5).has_value());
+    EXPECT_EQ(*first_battle_action_view_std0_cache_key_for_slot(0), 0x00989680u);
+    EXPECT_EQ(*first_battle_action_view_std0_cache_key_for_slot(1), 0x00989681u);
+    EXPECT_EQ(*first_battle_action_view_std0_cache_key_for_slot(4), 0x00989A68u);
+    EXPECT_EQ(*first_battle_action_view_std0_cache_key_for_slot(5), 0x00989A68u);
+    EXPECT_FALSE(first_battle_action_view_std0_cache_key_for_slot(2).has_value());
+    ASSERT_TRUE(first_battle_action_view_std0_cache_slot_for_slot(0).has_value());
+    ASSERT_TRUE(first_battle_action_view_std0_cache_slot_for_slot(1).has_value());
+    ASSERT_TRUE(first_battle_action_view_std0_cache_slot_for_slot(4).has_value());
+    ASSERT_TRUE(first_battle_action_view_std0_cache_slot_for_slot(5).has_value());
+    EXPECT_EQ(*first_battle_action_view_std0_cache_slot_for_slot(0), 0);
+    EXPECT_EQ(*first_battle_action_view_std0_cache_slot_for_slot(1), 1);
+    EXPECT_EQ(*first_battle_action_view_std0_cache_slot_for_slot(4), 2);
+    EXPECT_EQ(*first_battle_action_view_std0_cache_slot_for_slot(5), 2);
+    EXPECT_FALSE(first_battle_action_view_std0_cache_slot_for_slot(2).has_value());
+
+    EXPECT_EQ(
+        action_view_std0_companion_filename_for_std_resource("ma000.std"),
+        "ma0000.std");
+    EXPECT_EQ(
+        action_view_std0_companion_filename_for_std_resource("MA001.std"),
+        "ma0010.std");
+    EXPECT_EQ(
+        action_view_std0_companion_filename_for_std_resource("MB000"),
+        "mb0000.std");
+}
+
+TEST(SavorPredictRngModel, FirstBattleActionViewStdResolverLoadsSelectedStd0Json) {
+    const auto temp_dir =
+        std::filesystem::temp_directory_path() / "savor_predict_first_battle_std_resolver_test";
+    std::filesystem::remove_all(temp_dir);
+    std::filesystem::create_directories(temp_dir);
+
+    const auto json_path = temp_dir / "ma0000.std.json";
+    const auto primary_json_path = temp_dir / "ma000.std.json";
+    {
+        std::ofstream file(primary_json_path);
+        ASSERT_TRUE(file.good());
+        file << R"json({
+  "schema": "spice_std_ir_v1",
+  "layoutKind": "action_rows",
+  "parseOk": true,
+  "actionRows": {
+    "rows": [
+      {
+        "index": 0,
+        "actionId": 2,
+        "rowType": 1,
+        "callbackIndex": 8
+      }
+    ]
+  }
+})json";
+    }
+    {
+        std::ofstream file(json_path);
+        ASSERT_TRUE(file.good());
+        file << R"json({
+  "schema": "spice_std_ir_v1",
+  "layoutKind": "entry_table",
+  "parseOk": true,
+  "entryTable": {
+    "records": [
+      {
+        "index": 0,
+        "isSentinel": false,
+        "locationCode": 42,
+        "opcode": 3,
+        "payloadInBounds": true,
+        "payloadBytesHex": "000400000000"
+      },
+      {
+        "index": 1,
+        "isSentinel": true,
+        "locationCode": -1,
+        "opcode": 0,
+        "payloadInBounds": false,
+        "payloadBytesHex": ""
+      }
+    ]
+  }
+})json";
+    }
+
+    const auto resolved = resolve_first_battle_action_view_std0_table_for_slot(0, temp_dir);
+    EXPECT_TRUE(resolved.ok);
+    EXPECT_TRUE(resolved.errors.empty());
+    EXPECT_EQ(resolved.actor_slot, 0);
+    EXPECT_EQ(resolved.resource_stem, "ma000");
+    EXPECT_EQ(resolved.std_filename, "ma000.std");
+    EXPECT_EQ(resolved.std0_filename, "ma0000.std");
+    EXPECT_EQ(resolved.std_json_path.filename().string(), "ma000.std.json");
+    EXPECT_EQ(resolved.std0_json_path.filename().string(), "ma0000.std.json");
+    EXPECT_EQ(
+        resolved.materialization_source,
+        ActionViewStdMaterializationSource::Cache);
+    ASSERT_TRUE(resolved.first_battle_cache_key.has_value());
+    EXPECT_EQ(*resolved.first_battle_cache_key, 0x00989680u);
+    ASSERT_TRUE(resolved.first_battle_cache_slot.has_value());
+    EXPECT_EQ(*resolved.first_battle_cache_slot, 0);
+    EXPECT_TRUE(resolved.runtime_loaded_resource_plus_0x30_is_aux_root);
+    EXPECT_TRUE(resolved.table_contents_source_data_equivalent);
+    EXPECT_TRUE(resolved.runtime_aux_table_has_action_row_prefix);
+    EXPECT_EQ(resolved.runtime_aux_table_prefix_rows, 1);
+    ASSERT_EQ(resolved.companion_table.entries.size(), 2u);
+    ASSERT_EQ(resolved.table.entries.size(), 3u);
+    EXPECT_EQ(resolved.table.entries[0].location_code, 0);
+    EXPECT_EQ(resolved.table.entries[0].opcode, 1);
+    EXPECT_TRUE(resolved.table.entries[0].has_payload);
+    EXPECT_EQ(resolved.table.entries[0].payload.primary_action_key, 2);
+    EXPECT_EQ(resolved.table.entries[1].location_code, 42);
+    ASSERT_TRUE(resolved.mode0e_count.has_value());
+    EXPECT_EQ(resolved.mode0e_count->count, 1);
+    EXPECT_EQ(resolved.mode0e_count->scanned_entries, 2);
+
+    const auto unsupported = resolve_first_battle_action_view_std0_table_for_slot(2, temp_dir);
+    EXPECT_FALSE(unsupported.ok);
+    EXPECT_FALSE(unsupported.errors.empty());
+    EXPECT_FALSE(unsupported.first_battle_cache_key.has_value());
+    EXPECT_FALSE(unsupported.first_battle_cache_slot.has_value());
+    EXPECT_FALSE(unsupported.runtime_loaded_resource_plus_0x30_is_aux_root);
+
+    std::filesystem::remove_all(temp_dir);
+}
+
+TEST(SavorPredictRngModel, FirstBattleActionViewStdResolverMatchesKnownCountProfiles) {
+    const auto temp_dir =
+        std::filesystem::temp_directory_path() / "savor_predict_first_battle_std_count_profiles_test";
+    std::filesystem::remove_all(temp_dir);
+    std::filesystem::create_directories(temp_dir);
+
+    const auto write_primary = [&](std::string_view filename) {
+        std::ofstream file(temp_dir / std::string(filename));
+        ASSERT_TRUE(file.good());
+        file << R"json({
+  "schema": "spice_std_ir_v1",
+  "layoutKind": "action_rows",
+  "parseOk": true,
+  "actionRows": {
+    "rows": [
+      {
+        "index": 0,
+        "actionId": 2,
+        "rowType": 1,
+        "callbackIndex": 8
+      }
+    ]
+  }
+})json";
+    };
+
+    const auto write_entry_table = [&](
+        std::string_view filename,
+        bool include_mode0e_row,
+        bool include_mode3_row) {
+        std::ofstream file(temp_dir / std::string(filename));
+        ASSERT_TRUE(file.good());
+        file << R"json({
+  "schema": "spice_std_ir_v1",
+  "layoutKind": "entry_table",
+  "parseOk": true,
+  "entryTable": {
+    "records": [
+)json";
+        int index = 0;
+        const auto write_row = [&](int action_key) {
+            if (index != 0) {
+                file << ",\n";
+            }
+            file << R"json(      {
+        "index": )json" << index << R"json(,
+        "isSentinel": false,
+        "locationCode": 42,
+        "opcode": 3,
+        "payloadInBounds": true,
+        "payloadBytesHex": ")json"
+                 << std::hex << std::setw(4) << std::setfill('0') << action_key
+                 << R"json(00000000"
+      })json";
+            ++index;
+        };
+        if (include_mode0e_row) {
+            write_row(4);
+        }
+        if (include_mode3_row) {
+            write_row(5);
+        }
+        if (index != 0) {
+            file << ",\n";
+        }
+        file << R"json(      {
+        "index": )json" << index << R"json(,
+        "isSentinel": true,
+        "locationCode": -1,
+        "opcode": 0,
+        "payloadInBounds": false,
+        "payloadBytesHex": ""
+      }
+    ]
+  }
+})json";
+    };
+
+    write_primary("ma000.std.json");
+    write_primary("MA001.std.json");
+    write_primary("MB000.std.json");
+    write_entry_table("ma0000.std.json", true, true);
+    write_entry_table("ma0010.std.json", true, true);
+    write_entry_table("mb0000.std.json", false, true);
+
+    struct Expected {
+        int slot = -1;
+        const char* std0_filename = "";
+        std::uint32_t cache_key = 0;
+        int cache_slot = -1;
+        int mode0e_count = 0;
+        int mode3_count = 0;
+    };
+
+    for (const auto& expected : {
+             Expected{0, "ma0000.std", 0x00989680u, 0, 1, 1},
+             Expected{1, "ma0010.std", 0x00989681u, 1, 1, 1},
+             Expected{4, "mb0000.std", 0x00989A68u, 2, 0, 1},
+             Expected{5, "mb0000.std", 0x00989A68u, 2, 0, 1},
+         }) {
+        const auto resolved =
+            resolve_first_battle_action_view_std0_table_for_slot(expected.slot, temp_dir);
+        ASSERT_TRUE(resolved.ok) << expected.slot;
+        EXPECT_EQ(resolved.std0_filename, expected.std0_filename);
+        ASSERT_TRUE(resolved.first_battle_cache_key.has_value());
+        EXPECT_EQ(*resolved.first_battle_cache_key, expected.cache_key);
+        ASSERT_TRUE(resolved.first_battle_cache_slot.has_value());
+        EXPECT_EQ(*resolved.first_battle_cache_slot, expected.cache_slot);
+        EXPECT_TRUE(resolved.runtime_aux_table_has_action_row_prefix);
+        ASSERT_TRUE(resolved.mode0e_count.has_value());
+        EXPECT_EQ(resolved.mode0e_count->count, expected.mode0e_count);
+
+        const auto mode3_count =
+            count_matching_std0_entries(&resolved.table, mode3_action_view_count_query());
+        EXPECT_EQ(mode3_count.count, expected.mode3_count);
+
+        const auto mode5_count = count_matching_std0_entries(
+            &resolved.table,
+            mode5_action_view_count_query(0x1d, 0x34));
+        EXPECT_EQ(mode5_count.count, 0);
+    }
+
+    std::filesystem::remove_all(temp_dir);
+}
+
+TEST(SavorPredictRngModel, ActionViewRequestedModeUsesField6JumpTableMapping) {
+    EXPECT_EQ(action_view_requested_mode_from_field6(6, 0, false), 0);
+    EXPECT_EQ(action_view_requested_mode_from_field6(4, 0, false), 2);
+    EXPECT_EQ(action_view_requested_mode_from_field6(8, 0, false), 2);
+    EXPECT_EQ(action_view_requested_mode_from_field6(5, 0, false), 3);
+    EXPECT_EQ(action_view_requested_mode_from_field6(2, 0, false), 4);
+    EXPECT_EQ(action_view_requested_mode_from_field6(12, 0, false), 4);
+    EXPECT_EQ(action_view_requested_mode_from_field6(29, 0x24, true), 1);
+    EXPECT_EQ(action_view_requested_mode_from_field6(29, 0x24, false), 5);
+    EXPECT_EQ(action_view_requested_mode_from_field6(14, 0, false), 1);
+}
+
+TEST(SavorPredictRngModel, ActionViewSelectorKeepsOnlyDisassemblySpecialField6States) {
+    const auto field6_0b_keep = select_action_view_mode({
+        .instruction_field6_0x6 = 0x0b,
+        .previous_effective_mode_0x2f = 2,
+        .previous_selector_state_0x30 = 3,
+        .previous_actor_slot_0x2 = 1,
+        .current_actor_slot = 1,
+    });
+    EXPECT_EQ(field6_0b_keep.requested_mode, 1);
+    EXPECT_EQ(field6_0b_keep.dispatch_effective_mode_0x2f, 2);
+    EXPECT_EQ(field6_0b_keep.selector_state_0x30, 3);
+    EXPECT_TRUE(field6_0b_keep.helper_family_selected);
+
+    const auto field6_0c_reset = select_action_view_mode({
+        .instruction_field6_0x6 = 0x0c,
+        .previous_effective_mode_0x2f = 2,
+        .previous_selector_state_0x30 = 3,
+        .previous_actor_slot_0x2 = 1,
+        .current_actor_slot = 1,
+        .instruction_flags_bit6_set = false,
+    });
+    EXPECT_EQ(field6_0c_reset.requested_mode, 4);
+    EXPECT_EQ(field6_0c_reset.dispatch_effective_mode_0x2f, 4);
+    EXPECT_EQ(field6_0c_reset.selector_state_0x30, 3);
+    EXPECT_TRUE(field6_0c_reset.synthetic_call_80053f38_selected);
+    const auto* mode4_spawn = find_selector_helper_call(
+        field6_0c_reset,
+        0x8001321cu,
+        "mode4_state2_spawn_mode0");
+    ASSERT_NE(mode4_spawn, nullptr);
+    EXPECT_NE(
+        std::find(
+            field6_0c_reset.branch_path.begin(),
+            field6_0c_reset.branch_path.end(),
+            "state0_transition_result=2"),
+        field6_0c_reset.branch_path.end());
+}
+
+TEST(SavorPredictRngModel, ActionViewSelectorModelsMode0eAuxListGate) {
+    Std0Table empty_table;
+    empty_table.includes_sentinel = true;
+    empty_table.entries = { { .location_code = -1 } };
+
+    const auto selected = select_action_view_mode({
+        .instruction_field6_0x6 = 4,
+        .previous_effective_mode_0x2f = 2,
+        .previous_selector_state_0x30 = 2,
+        .previous_actor_slot_0x2 = 1,
+        .current_actor_slot = 1,
+        .selected_aux_table = empty_table,
+    });
+    EXPECT_EQ(selected.requested_mode, 2);
+    EXPECT_TRUE(selected.mode0e_query_reached);
+    ASSERT_TRUE(selected.mode0e_count.has_value());
+    EXPECT_EQ(selected.mode0e_count->count, 0);
+    EXPECT_TRUE(selected.mode0e_synthetic_call_selected);
+    ASSERT_TRUE(selected.spawned_action_view_record_mode_if_known.has_value());
+    EXPECT_EQ(*selected.spawned_action_view_record_mode_if_known, 0xe);
+    EXPECT_EQ(selected.selector_state_0x30, 3);
+    const auto* selected_spawn = find_selector_helper_call(
+        selected,
+        0x80013334u,
+        "mode2_count_zero_spawn_mode0");
+    ASSERT_NE(selected_spawn, nullptr);
+    EXPECT_EQ(selected_spawn->callee, "FUN_80053f38");
+    ASSERT_TRUE(selected_spawn->mode_arg.has_value());
+    EXPECT_EQ(*selected_spawn->mode_arg, 0);
+    const auto* selected_tail = find_selector_helper_call(
+        selected,
+        0x8001338cu,
+        "mode2_tail_call_mode1");
+    ASSERT_NE(selected_tail, nullptr);
+    EXPECT_EQ(selected_tail->callee, "FUN_80032bbc");
+    ASSERT_TRUE(selected_tail->mode_arg.has_value());
+    EXPECT_EQ(*selected_tail->mode_arg, 1);
+
+    Std0Table suppressing_table;
+    suppressing_table.includes_sentinel = true;
+    suppressing_table.entries = {
+        {
+            .location_code = 0x2a,
+            .opcode = 3,
+            .payload = { .primary_action_key = 4 },
+            .has_payload = true,
+        },
+        { .location_code = -1 },
+    };
+
+    const auto suppressed = select_action_view_mode({
+        .instruction_field6_0x6 = 4,
+        .previous_effective_mode_0x2f = 2,
+        .previous_selector_state_0x30 = 2,
+        .previous_actor_slot_0x2 = 1,
+        .current_actor_slot = 1,
+        .selected_aux_table = suppressing_table,
+    });
+    ASSERT_TRUE(suppressed.mode0e_count.has_value());
+    EXPECT_EQ(suppressed.mode0e_count->count, 1);
+    EXPECT_FALSE(suppressed.mode0e_synthetic_call_selected);
+    EXPECT_FALSE(suppressed.spawned_action_view_record_mode_if_known.has_value());
+    EXPECT_EQ(
+        find_selector_helper_call(
+            suppressed,
+            0x80013334u,
+            "mode2_count_zero_spawn_mode0"),
+        nullptr);
+    EXPECT_NE(
+        find_selector_helper_call(
+            suppressed,
+            0x8001338cu,
+            "mode2_tail_call_mode1"),
+        nullptr);
+}
+
+TEST(SavorPredictRngModel, ActionViewSelectorReportsMissingAuxTableOnlyWhenGateIsReached) {
+    const auto skipped = select_action_view_mode({
+        .instruction_field6_0x6 = 14,
+        .previous_effective_mode_0x2f = 1,
+        .previous_selector_state_0x30 = 2,
+    });
+    EXPECT_FALSE(skipped.mode0e_query_reached);
+    EXPECT_FALSE(skipped.unsupported_without_aux_table);
+
+    const auto missing = select_action_view_mode({
+        .instruction_field6_0x6 = 4,
+        .previous_effective_mode_0x2f = 2,
+        .previous_selector_state_0x30 = 2,
+    });
+    EXPECT_TRUE(missing.mode0e_query_reached);
+    EXPECT_TRUE(missing.unsupported_without_aux_table);
+    EXPECT_FALSE(missing.mode0e_synthetic_call_selected);
+}
+
+TEST(SavorPredictRngModel, ActionViewSelectorRunsState0TransitionAfterModeChange) {
+    Std0Table empty_table;
+    empty_table.includes_sentinel = true;
+    empty_table.entries = { { .location_code = -1 } };
+
+    const auto changed_mode = select_action_view_mode({
+        .instruction_field6_0x6 = 4,
+        .previous_effective_mode_0x2f = 1,
+        .previous_selector_state_0x30 = 3,
+        .previous_actor_slot_0x2 = 0,
+        .current_actor_slot = 0,
+        .instruction_flags_bit6_set = false,
+        .selected_aux_table = empty_table,
+    });
+
+    EXPECT_EQ(changed_mode.requested_mode, 2);
+    EXPECT_EQ(changed_mode.dispatch_effective_mode_0x2f, 2);
+    EXPECT_TRUE(changed_mode.mode0e_query_reached);
+    EXPECT_TRUE(changed_mode.mode0e_synthetic_call_selected);
+    ASSERT_TRUE(changed_mode.spawned_action_view_record_mode_if_known.has_value());
+    EXPECT_EQ(*changed_mode.spawned_action_view_record_mode_if_known, 0xe);
+    EXPECT_NE(
+        std::find(
+            changed_mode.branch_path.begin(),
+            changed_mode.branch_path.end(),
+            "state0_transition_result=2"),
+        changed_mode.branch_path.end());
+
+    const auto actor_changed = select_action_view_mode({
+        .instruction_field6_0x6 = 4,
+        .previous_effective_mode_0x2f = 1,
+        .previous_selector_state_0x30 = 3,
+        .previous_actor_slot_0x2 = 1,
+        .current_actor_slot = 0,
+        .instruction_flags_bit6_set = true,
+        .selected_aux_table = empty_table,
+    });
+    const auto* state0_spawn = find_selector_helper_call(
+        actor_changed,
+        0x8001318cu,
+        "state0_actor_changed_spawn_mode1");
+    ASSERT_NE(state0_spawn, nullptr);
+    EXPECT_EQ(state0_spawn->callee, "FUN_80053f38");
+    EXPECT_EQ(state0_spawn->actor_slot, 0);
+    ASSERT_TRUE(state0_spawn->mode_arg.has_value());
+    EXPECT_EQ(*state0_spawn->mode_arg, 1);
+    EXPECT_FALSE(actor_changed.mode0e_query_reached);
+
+    const auto waiting_on_flags = select_action_view_mode({
+        .instruction_field6_0x6 = 4,
+        .previous_effective_mode_0x2f = 1,
+        .previous_selector_state_0x30 = 3,
+        .previous_actor_slot_0x2 = 0,
+        .current_actor_slot = 0,
+        .instruction_flags_bit6_set = true,
+        .selected_aux_table = empty_table,
+    });
+
+    EXPECT_EQ(waiting_on_flags.dispatch_effective_mode_0x2f, 2);
+    EXPECT_EQ(waiting_on_flags.selector_state_0x30, 1);
+    EXPECT_FALSE(waiting_on_flags.mode0e_query_reached);
+}
+
+TEST(SavorPredictRngModel, ActionViewSelectorModelsEntryActorChangeLookupStateWrite) {
+    Std0Table empty_table;
+    empty_table.includes_sentinel = true;
+    empty_table.entries = { { .location_code = -1 } };
+
+    const auto lookup_zero = select_action_view_mode({
+        .instruction_field6_0x6 = 4,
+        .previous_effective_mode_0x2f = 2,
+        .previous_selector_state_0x30 = 3,
+        .previous_actor_slot_0x2 = 1,
+        .current_actor_slot = 5,
+        .current_secondary_slot = 0,
+        .instruction_flags_bit6_set = false,
+        .actor_lookup_8001d41c_nonzero = false,
+        .selected_aux_table = empty_table,
+    });
+
+    EXPECT_EQ(lookup_zero.dispatch_effective_mode_0x2f, 2);
+    EXPECT_TRUE(lookup_zero.mode0e_query_reached);
+    EXPECT_TRUE(lookup_zero.mode0e_synthetic_call_selected);
+    EXPECT_EQ(lookup_zero.selector_actor_slot_0x2_written, 5);
+    EXPECT_EQ(lookup_zero.selector_secondary_slot_0x4_written, 0);
+    EXPECT_NE(
+        std::find(
+            lookup_zero.branch_path.begin(),
+            lookup_zero.branch_path.end(),
+            "entry_actor_changed_lookup_zero_state0"),
+        lookup_zero.branch_path.end());
+    EXPECT_NE(
+        std::find(
+            lookup_zero.branch_path.begin(),
+            lookup_zero.branch_path.end(),
+            "state0_transition_result=2"),
+        lookup_zero.branch_path.end());
+
+    const auto lookup_nonzero = select_action_view_mode({
+        .instruction_field6_0x6 = 4,
+        .previous_effective_mode_0x2f = 2,
+        .previous_selector_state_0x30 = 3,
+        .previous_actor_slot_0x2 = 1,
+        .current_actor_slot = 5,
+        .current_secondary_slot = 0,
+        .instruction_flags_bit6_set = true,
+        .actor_lookup_8001d41c_nonzero = true,
+        .selected_aux_table = empty_table,
+    });
+
+    EXPECT_EQ(lookup_nonzero.dispatch_effective_mode_0x2f, 2);
+    EXPECT_TRUE(lookup_nonzero.mode0e_query_reached);
+    EXPECT_NE(
+        std::find(
+            lookup_nonzero.branch_path.begin(),
+            lookup_nonzero.branch_path.end(),
+            "entry_actor_changed_lookup_nonzero_state2"),
+        lookup_nonzero.branch_path.end());
+}
+
+TEST(SavorPredictRngModel, ActionViewSelectorModelsSiblingAuxQueryPaths) {
+    Std0Table table;
+    table.includes_sentinel = true;
+    table.entries = {
+        {
+            .location_code = 0x2a,
+            .opcode = 3,
+            .payload = { .primary_action_key = 5 },
+            .has_payload = true,
+        },
+        {
+            .location_code = 0x2e,
+            .opcode = 3,
+            .payload = { .primary_action_key = 29, .direct_gate_secondary_key = 0x34 },
+            .has_payload = true,
+        },
+        { .location_code = -1 },
+    };
+
+    const auto mode3 = select_action_view_mode({
+        .instruction_field6_0x6 = 5,
+        .previous_effective_mode_0x2f = 3,
+        .previous_selector_state_0x30 = 2,
+        .selected_aux_table = table,
+    });
+    EXPECT_EQ(mode3.dispatch_effective_mode_0x2f, 3);
+    EXPECT_TRUE(mode3.mode3_query_reached);
+    ASSERT_TRUE(mode3.mode3_count.has_value());
+    EXPECT_EQ(mode3.mode3_count->count, 1);
+    EXPECT_FALSE(mode3.mode3_synthetic_call_selected);
+    EXPECT_EQ(mode3.selector_state_0x30, 3);
+    EXPECT_FALSE(mode3.synthetic_call_80053f38_selected);
+
+    const auto mode3_zero = select_action_view_mode({
+        .instruction_field6_0x6 = 5,
+        .previous_effective_mode_0x2f = 3,
+        .previous_selector_state_0x30 = 2,
+        .selected_aux_table = Std0Table{ .entries = { { .location_code = -1 } }, .includes_sentinel = true },
+    });
+    ASSERT_TRUE(mode3_zero.mode3_count.has_value());
+    EXPECT_EQ(mode3_zero.mode3_count->count, 0);
+    EXPECT_TRUE(mode3_zero.mode3_synthetic_call_selected);
+    EXPECT_TRUE(mode3_zero.synthetic_call_80053f38_selected);
+    EXPECT_FALSE(mode3_zero.spawned_action_view_record_mode_if_known.has_value());
+    const auto* mode3_spawn = find_selector_helper_call(
+        mode3_zero,
+        0x800133e4u,
+        "mode3_count_zero_spawn_mode0");
+    ASSERT_NE(mode3_spawn, nullptr);
+    ASSERT_TRUE(mode3_spawn->mode_arg.has_value());
+    EXPECT_EQ(*mode3_spawn->mode_arg, 0);
+
+    const auto mode5 = select_action_view_mode({
+        .instruction_field6_0x6 = 29,
+        .instruction_field8_0x8 = 0x34,
+        .previous_effective_mode_0x2f = 5,
+        .previous_selector_state_0x30 = 2,
+        .helper_800153e0_result = false,
+        .selected_aux_table = table,
+    });
+    EXPECT_EQ(mode5.dispatch_effective_mode_0x2f, 5);
+    EXPECT_TRUE(mode5.mode5_query_reached);
+    ASSERT_TRUE(mode5.mode5_count.has_value());
+    EXPECT_EQ(mode5.mode5_count->count, 1);
+    EXPECT_TRUE(mode5.mode5_count_selected_state4);
+    EXPECT_EQ(mode5.selector_state_0x30, 4);
+    EXPECT_FALSE(mode5.call_80032bbc_selected);
+
+    const auto mode5_zero = select_action_view_mode({
+        .instruction_field6_0x6 = 29,
+        .instruction_field8_0x8 = 0x77,
+        .previous_effective_mode_0x2f = 5,
+        .previous_selector_state_0x30 = 2,
+        .helper_800153e0_result = false,
+        .selected_aux_table = table,
+    });
+    ASSERT_TRUE(mode5_zero.mode5_count.has_value());
+    EXPECT_EQ(mode5_zero.mode5_count->count, 0);
+    EXPECT_FALSE(mode5_zero.mode5_count_selected_state4);
+    EXPECT_EQ(mode5_zero.selector_state_0x30, 3);
+    EXPECT_TRUE(mode5_zero.call_80032bbc_selected);
+    EXPECT_TRUE(mode5_zero.helper_family_selected);
+    const auto* mode5_call = find_selector_helper_call(
+        mode5_zero,
+        0x800134a4u,
+        "mode5_count_zero_call_mode0");
+    ASSERT_NE(mode5_call, nullptr);
+    EXPECT_EQ(mode5_call->callee, "FUN_80032bbc");
+    ASSERT_TRUE(mode5_call->mode_arg.has_value());
+    EXPECT_EQ(*mode5_call->mode_arg, 0);
+}
+
+TEST(SavorPredictRngModel, ActionViewSelectorModelsMode1State2HelperPath) {
+    const auto mode1 = select_action_view_mode({
+        .instruction_field6_0x6 = 13,
+        .previous_effective_mode_0x2f = 1,
+        .previous_selector_state_0x30 = 2,
+        .current_actor_slot = 1,
+        .current_secondary_slot = 4,
+    });
+
+    EXPECT_EQ(mode1.requested_mode, 1);
+    EXPECT_EQ(mode1.dispatch_effective_mode_0x2f, 1);
+    EXPECT_EQ(mode1.selector_state_0x30, 3);
+    EXPECT_FALSE(mode1.mode0e_query_reached);
+    EXPECT_FALSE(mode1.mode3_query_reached);
+    EXPECT_FALSE(mode1.mode5_query_reached);
+    EXPECT_TRUE(mode1.call_80032bbc_selected);
+    EXPECT_FALSE(mode1.synthetic_call_80053f38_selected);
+    const auto* mode1_call = find_selector_helper_call(
+        mode1,
+        0x8001329cu,
+        "mode1_state2_call_mode0");
+    ASSERT_NE(mode1_call, nullptr);
+    EXPECT_EQ(mode1_call->callee, "FUN_80032bbc");
+    EXPECT_EQ(mode1_call->actor_slot, 1);
+    ASSERT_TRUE(mode1_call->mode_arg.has_value());
+    EXPECT_EQ(*mode1_call->mode_arg, 0);
+}
+
+TEST(SavorPredictRngModel, ActionViewEffectiveMode4FallsThroughToMode0Dispatch) {
+    const auto mode4 = select_action_view_mode({
+        .instruction_field6_0x6 = 2,
+        .previous_effective_mode_0x2f = 4,
+        .previous_selector_state_0x30 = 2,
+    });
+    EXPECT_EQ(mode4.dispatch_effective_mode_0x2f, 4);
+    EXPECT_FALSE(mode4.mode5_query_reached);
+    EXPECT_TRUE(mode4.synthetic_call_80053f38_selected);
+    EXPECT_EQ(mode4.selector_state_0x30, 3);
+    EXPECT_FALSE(mode4.spawned_action_view_record_mode_if_known.has_value());
+    const auto* mode4_spawn = find_selector_helper_call(
+        mode4,
+        0x8001321cu,
+        "mode4_state2_spawn_mode0");
+    ASSERT_NE(mode4_spawn, nullptr);
+    ASSERT_TRUE(mode4_spawn->mode_arg.has_value());
+    EXPECT_EQ(*mode4_spawn->mode_arg, 0);
+    ASSERT_FALSE(mode4.branch_path.empty());
+    EXPECT_NE(
+        std::find(
+            mode4.branch_path.begin(),
+            mode4.branch_path.end(),
+            "effective_mode_4_falls_through_to_mode0_path"),
+        mode4.branch_path.end());
 }
 
 TEST(SavorPredictRngModel, FirstBattleCounterFollowUpVisualsUseCounterSourceKeys) {
@@ -1295,6 +2296,173 @@ TEST(SavorPredictBattlePredictor, PredictsFirstBattleThroughTurnOrderWithFixedPr
     EXPECT_EQ(total_draws_validation->draws_exact_through, result.exact_draws_through_turn_order);
 }
 
+TEST(SavorPredictBattlePredictor, OrdersLethalDropBeforeCombatEffectBurst) {
+    std::optional<BattlePredictionResult> matched;
+    for (std::uint32_t seed = 0; seed < 512 && !matched.has_value(); ++seed) {
+        BattlePredictionInput input;
+        input.profile = first_battle_prediction_profile();
+        input.starting_rng_seed = seed;
+        input.context = make_predictor_first_battle_context(1);
+        input.turn_plan = make_two_pc_attack_turn_plan(0);
+
+        auto result = predict_battle(input);
+        const auto lethal = std::find_if(
+            result.events.begin(),
+            result.events.end(),
+            [](const BattlePredictionEvent& event) {
+                return event.phase == "damage_application"
+                    && event.label == "damage_applied_lethal";
+            });
+        if (lethal == result.events.end()) {
+            continue;
+        }
+
+        const auto drop = std::find_if(
+            result.events.begin(),
+            result.events.end(),
+            [&](const BattlePredictionEvent& event) {
+                return event.phase == "death_drop"
+                    && (event.label == "enemy_drop" || event.label == "enemy_no_drop")
+                    && event.actor_slot == lethal->actor_slot
+                    && event.target_slot == lethal->target_slot;
+            });
+        const auto burst = std::find_if(
+            result.events.begin(),
+            result.events.end(),
+            [&](const BattlePredictionEvent& event) {
+                return event.phase == "action_visual_rng"
+                    && event.label == "combat_effect_burst"
+                    && event.actor_slot == lethal->actor_slot
+                    && event.target_slot == lethal->target_slot;
+            });
+        if (drop != result.events.end() && burst != result.events.end()) {
+            matched = std::move(result);
+        }
+    }
+
+    ASSERT_TRUE(matched.has_value());
+    const auto& result = *matched;
+    const auto lethal = std::find_if(
+        result.events.begin(),
+        result.events.end(),
+        [](const BattlePredictionEvent& event) {
+            return event.phase == "damage_application"
+                && event.label == "damage_applied_lethal";
+        });
+    ASSERT_NE(lethal, result.events.end());
+
+    const auto drop = std::find_if(
+        result.events.begin(),
+        result.events.end(),
+        [&](const BattlePredictionEvent& event) {
+            return event.phase == "death_drop"
+                && (event.label == "enemy_drop" || event.label == "enemy_no_drop")
+                && event.actor_slot == lethal->actor_slot
+                && event.target_slot == lethal->target_slot;
+        });
+    ASSERT_NE(drop, result.events.end());
+
+    const auto burst = std::find_if(
+        result.events.begin(),
+        result.events.end(),
+        [&](const BattlePredictionEvent& event) {
+            return event.phase == "action_visual_rng"
+                && event.label == "combat_effect_burst"
+                && event.actor_slot == lethal->actor_slot
+                && event.target_slot == lethal->target_slot;
+        });
+    ASSERT_NE(burst, result.events.end());
+
+    EXPECT_LT(lethal->sequence, drop->sequence);
+    EXPECT_LT(drop->sequence, burst->sequence);
+
+    const auto* drop_validation = find_prediction_validation(result, "drop");
+    ASSERT_NE(drop_validation, nullptr);
+    EXPECT_NE(drop_validation->detail.find("before the following combat-effect RNG burst"), std::string::npos);
+}
+
+TEST(SavorPredictBattlePredictor, UsesActionViewStdJsonDirForSelectorBackedCameraPrediction) {
+    const auto temp_dir =
+        std::filesystem::temp_directory_path() / "savor_predict_battle_predictor_std_json_test";
+    std::filesystem::remove_all(temp_dir);
+    std::filesystem::create_directories(temp_dir);
+
+    const auto write_table = [&](std::string_view filename, int action_key) {
+        std::ofstream file(temp_dir / std::string(filename));
+        ASSERT_TRUE(file.good());
+        file << R"json({
+  "schema": "spice_std_ir_v1",
+  "layoutKind": "entry_table",
+  "parseOk": true,
+  "entryTable": {
+    "records": [
+      {
+        "index": 0,
+        "isSentinel": false,
+        "locationCode": 42,
+        "opcode": 3,
+        "payloadInBounds": true,
+        "payloadBytesHex": ")json"
+             << std::hex << std::setw(4) << std::setfill('0') << action_key
+             << R"json(00000000"
+      },
+      {
+        "index": 1,
+        "isSentinel": true,
+        "locationCode": -1,
+        "opcode": 0,
+        "payloadInBounds": false,
+        "payloadBytesHex": ""
+      }
+    ]
+  }
+})json";
+    };
+    write_table("ma0000.std.json", 4);
+    write_table("ma0010.std.json", 5);
+    write_table("mb0000.std.json", 4);
+
+    BattlePredictionInput input;
+    input.profile = first_battle_prediction_profile();
+    input.starting_rng_seed = 15u;
+    input.enemy_event_id = 0;
+    input.context = make_predictor_first_battle_context();
+    input.turn_plan.fake_attack_count = 0;
+    input.turn_plan.commands.push_back(soa::battle::actions::BattleCommand{
+        .actor_slot = 0,
+        .macro = soa::battle::actions::BattleAction::Attack,
+        .params = soa::battle::actions::ActionParameters{.target_slot = 4},
+    });
+    input.options.action_view_std_json_dir = temp_dir;
+
+    const auto result = predict_battle(input);
+
+    const auto action_view = std::find_if(
+        result.events.begin(),
+        result.events.end(),
+        [](const BattlePredictionEvent& event) {
+            return event.phase == "action_visual_rng"
+                && event.label == "mode0_action_view_camera_fallback"
+                && event.actor_slot == 0;
+        });
+    ASSERT_NE(action_view, result.events.end());
+    EXPECT_EQ(action_view->status, BattlePredictionEventStatus::Exact);
+    EXPECT_NE(action_view->detail.find("mode0e_count=1"), std::string::npos);
+    EXPECT_NE(action_view->detail.find("std0_companion=ma0000.std"), std::string::npos);
+    EXPECT_NE(action_view->detail.find("std0_materialization_source=cache"), std::string::npos);
+    EXPECT_NE(action_view->detail.find("std0_cache_key=0x00989680"), std::string::npos);
+    EXPECT_NE(action_view->detail.find("std0_cache_slot=0"), std::string::npos);
+    EXPECT_NE(
+        action_view->detail.find("runtime_loaded_resource_plus_0x30_is_aux_root=1"),
+        std::string::npos);
+
+    const auto* selector_validation = find_prediction_validation(result, "action_view_selector");
+    ASSERT_NE(selector_validation, nullptr);
+    EXPECT_EQ(selector_validation->status, BattlePredictionValidationStatus::Provisional);
+
+    std::filesystem::remove_all(temp_dir);
+}
+
 TEST(SavorPredictBattlePredictor, UsesEnemyEventStartPositionsWhenSpecified) {
     BattlePredictionInput input;
     input.profile = first_battle_prediction_profile();
@@ -1481,6 +2649,49 @@ TEST(SavorPredictBattlePredictorCli, ParsesEnemyEventId) {
     EXPECT_EQ(*parsed.options.enemy_event_id, 0);
 }
 
+TEST(SavorPredictBattlePredictorCli, ParsesActionViewStdJsonDir) {
+    const auto temp_dir =
+        std::filesystem::temp_directory_path() / "savor_predict_cli_std_json_dir_test";
+    std::filesystem::remove_all(temp_dir);
+    std::filesystem::create_directories(temp_dir);
+
+    const auto parsed = parse_predict_battle_tokens({
+        "--exec-job-id",
+        "147884",
+        "--action-view-std-json-dir",
+        temp_dir.string(),
+    });
+
+    EXPECT_TRUE(parsed.errors.empty());
+    EXPECT_EQ(parsed.options.action_view_std_json_dir, temp_dir);
+
+    std::filesystem::remove_all(temp_dir);
+}
+
+TEST(SavorPredictBattlePredictorCli, RejectsMissingActionViewStdJsonDir) {
+    const auto missing_dir =
+        std::filesystem::temp_directory_path() / "savor_predict_cli_missing_std_json_dir_test";
+    std::filesystem::remove_all(missing_dir);
+
+    const auto parsed = parse_predict_battle_tokens({
+        "--exec-job-id",
+        "147884",
+        "--action-view-std-json-dir",
+        missing_dir.string(),
+    });
+
+    EXPECT_FALSE(parsed.errors.empty());
+    EXPECT_NE(
+        std::find_if(
+            parsed.errors.begin(),
+            parsed.errors.end(),
+            [](const std::string& error) {
+                return error.find("--action-view-std-json-dir must name an existing directory")
+                    != std::string::npos;
+            }),
+        parsed.errors.end());
+}
+
 TEST(SavorPredictBattlePredictorCli, RejectsUnsupportedEnemyEventId) {
     const auto parsed = parse_predict_battle_tokens({
         "--exec-job-id",
@@ -1556,6 +2767,7 @@ TEST_F(SavorPredictDbInputFixture, UsesSeedProbeUniqueSeedForExecJob) {
     BattlePredictionDbInputOptions options;
     options.selector.exec_job_id = rows.turn_exec_job_id;
     options.enemy_event_id = 0;
+    options.action_view_std_json_dir = "C:/savor/std-json-fixture";
     std::ostringstream err;
 
     const auto resolved = build_battle_prediction_input_from_analysis_db(
@@ -1573,6 +2785,9 @@ TEST_F(SavorPredictDbInputFixture, UsesSeedProbeUniqueSeedForExecJob) {
     EXPECT_EQ(resolved->metadata.fake_attack_source, BattlePredictionFakeAttackSource::TurnJob);
     EXPECT_EQ(resolved->input.turn_plan.fake_attack_count, 2u);
     EXPECT_EQ(resolved->input.enemy_event_id.value_or(-1), 0);
+    EXPECT_EQ(
+        resolved->input.options.action_view_std_json_dir,
+        std::filesystem::path("C:/savor/std-json-fixture"));
     EXPECT_EQ(resolved->metadata.enemy_event_id.value_or(-1), 0);
     ASSERT_EQ(resolved->input.turn_plan.commands.size(), 2u);
     EXPECT_EQ(resolved->input.turn_plan.commands[0].actor_slot, 0);
@@ -2839,7 +4054,9 @@ TEST(SavorPredictCheckpointTrace, SummarizesActionViewGateCheckpoints) {
     std::istringstream input(
         "pc=80012f58 function=FUN_80012f58 checkpoint=action_view_gate rng_draw_index_before=18 "
         "action_sequence_id=7 "
-        "active_slot=1 source_slot=1 target_slot=4 source_field6_0x6=14 actor_field6_0x6=14 "
+        "active_slot=1 source_slot=1 target_slot=4 source_field6_0x6=4 actor_field6_0x6=4 "
+        "actor_subtype_0x8=0 gate_category_0x2f=2 gate_state_0x30=2 "
+        "gate_active_slot_0x02=1 gate_target_slot_0x04=4 instruction_flags_0xf0=0x00000000 "
         "aux_list_root=0x80346bd8 query_arg0=4 query_arg1=0xFFFFFFFF query_arg2=0x2a query_arg3=3 "
         "query_result=0x81234567 selected_record_mode=0 "
         "action_child_thread=0x81230000 child_payload=0x81231000 nested_payload=0x81232000 "
@@ -2874,6 +4091,11 @@ TEST(SavorPredictCheckpointTrace, SummarizesActionViewGateCheckpoints) {
     EXPECT_EQ(matched.events_with_query_result, 1);
     EXPECT_EQ(matched.events_with_selected_record_mode, 1);
     EXPECT_EQ(matched.query_args_match, 1);
+    EXPECT_EQ(matched.events_with_selector_inputs, 1);
+    EXPECT_EQ(matched.selector_model_comparisons, 1);
+    EXPECT_EQ(matched.selector_query_args_match, 1);
+    EXPECT_EQ(matched.selector_query_args_mismatch, 0);
+    EXPECT_EQ(matched.selector_model_missing_expected_query, 0);
     EXPECT_EQ(matched.selected_mode_matches, 1);
     EXPECT_EQ(matched.events_with_action_child_thread, 1);
     EXPECT_EQ(matched.events_with_child_payload, 1);
@@ -2902,6 +4124,10 @@ TEST(SavorPredictCheckpointTrace, SummarizesActionViewGateCheckpoints) {
     EXPECT_EQ(*matched.events[0].query_arg2, 0x2a);
     ASSERT_TRUE(matched.events[0].query_arg1.has_value());
     EXPECT_EQ(*matched.events[0].query_arg1, -1);
+    ASSERT_TRUE(matched.events[0].selector_expected_query.has_value());
+    EXPECT_EQ(matched.events[0].selector_expected_query->action_key, 4);
+    ASSERT_TRUE(matched.events[0].selector_query_args_match.has_value());
+    EXPECT_TRUE(*matched.events[0].selector_query_args_match);
     ASSERT_TRUE(matched.events[0].selected_record_mode.has_value());
     EXPECT_EQ(*matched.events[0].selected_record_mode, 0);
     ASSERT_EQ(matched.dispatch_events.size(), 1u);
@@ -2924,6 +4150,89 @@ TEST(SavorPredictCheckpointTrace, SummarizesActionViewGateCheckpoints) {
     ASSERT_TRUE(matched.events[0].mode0e_draw_before_attack_hit_draw.has_value());
     EXPECT_TRUE(*matched.events[0].mode0e_draw_before_attack_hit_draw);
 
+    std::istringstream split_input(
+        "pc=8001331c function=FUN_80012f58 checkpoint=action_view_query rng_draw_index_before=18 "
+        "action_sequence_id=7 active_slot=1 target_slot=4 actor_field6_0x6=4 actor_subtype_0x8=0 "
+        "gate_category_0x2f=2 gate_state_0x30=2 gate_active_slot_0x02=1 "
+        "instruction_flags_0xf0=0x00000000 aux_list_root=0x80346bd8 "
+        "query_arg0=4 query_arg1=-1 query_arg2=0x2a query_arg3=3 "
+        "aux_row00_location_code=0x2a aux_row00_opcode=3 "
+        "aux_row00_payload_primary=4 aux_row00_payload_secondary=0 "
+        "aux_row00_payload_direct_secondary=0 "
+        "aux_row01_location_code=0xffff aux_row01_opcode=0\n"
+        "pc=80013320 function=FUN_80012f58 checkpoint=action_view_query_result rng_draw_index_before=18 "
+        "action_sequence_id=7 active_slot=1 target_slot=4 actor_field6_0x6=4 actor_subtype_0x8=0 "
+        "gate_category_0x2f=2 gate_state_0x30=2 gate_active_slot_0x02=1 "
+        "instruction_flags_0xf0=0x00000000 query_result=1\n");
+    const auto split_parsed = parse_checkpoint_stream(split_input);
+    ASSERT_TRUE(split_parsed.errors.empty());
+    const auto split = summarize_action_view_gate_checkpoints(split_parsed.events);
+    EXPECT_EQ(split.status, ActionViewGateCheckpointStatus::MatchesExpected);
+    EXPECT_EQ(split.observed_gate_events, 2);
+    EXPECT_EQ(split.legacy_gate_events, 0);
+    EXPECT_EQ(split.query_call_events, 1);
+    EXPECT_EQ(split.query_result_events, 1);
+    EXPECT_EQ(split.query_call_events_with_query_args, 1);
+    EXPECT_EQ(split.query_result_events_with_query_result, 1);
+    EXPECT_EQ(split.events_with_selector_inputs, 2);
+    EXPECT_EQ(split.selector_model_comparisons, 1);
+    EXPECT_EQ(split.selector_query_args_match, 1);
+    EXPECT_EQ(split.selector_model_missing_expected_query, 0);
+    EXPECT_EQ(split.events_with_aux_table_fingerprint, 1);
+    EXPECT_EQ(split.events_with_aux_table_count, 1);
+    EXPECT_EQ(split.aux_table_count_matches_query_result, 1);
+    EXPECT_EQ(split.aux_table_count_mismatches_query_result, 0);
+    ASSERT_EQ(split.events.size(), 2u);
+    ASSERT_TRUE(split.events[0].sampled_aux_table_count.has_value());
+    EXPECT_EQ(*split.events[0].sampled_aux_table_count, 1);
+    ASSERT_TRUE(split.events[0].matched_query_result_count.has_value());
+    EXPECT_EQ(*split.events[0].matched_query_result_count, 1);
+    ASSERT_TRUE(split.events[0].sampled_aux_table_count_matches_query_result.has_value());
+    EXPECT_TRUE(*split.events[0].sampled_aux_table_count_matches_query_result);
+
+    std::ostringstream row12_input_text;
+    row12_input_text
+        << "pc=800133cc function=FUN_80012f58 checkpoint=action_view_query rng_draw_index_before=18 "
+        << "action_sequence_id=7 active_slot=1 target_slot=4 actor_field6_0x6=5 actor_subtype_0x8=0 "
+        << "gate_category_0x2f=3 gate_state_0x30=2 gate_active_slot_0x02=1 "
+        << "instruction_flags_0xf0=0x00000000 aux_list_root=0x80346bd8 "
+        << "query_arg0=5 query_arg1=-1 query_arg2=0x2a query_arg3=3 ";
+    for (int row = 0; row <= 13; ++row) {
+        row12_input_text
+            << "aux_row" << std::setw(2) << std::setfill('0') << row
+            << "_location_code=" << (row == 13 ? "0xffff" : (row == 12 ? "0x2a" : "0x01")) << " ";
+        row12_input_text
+            << "aux_row" << std::setw(2) << std::setfill('0') << row
+            << "_opcode=3 ";
+        row12_input_text
+            << "aux_row" << std::setw(2) << std::setfill('0') << row
+            << "_payload_primary=" << (row == 12 ? "5" : "4") << " ";
+        row12_input_text
+            << "aux_row" << std::setw(2) << std::setfill('0') << row
+            << "_payload_secondary=0 ";
+        row12_input_text
+            << "aux_row" << std::setw(2) << std::setfill('0') << row
+            << "_payload_direct_secondary=0 ";
+    }
+    row12_input_text
+        << "\n"
+        << "pc=800133d0 function=FUN_80012f58 checkpoint=action_view_query_result rng_draw_index_before=18 "
+        << "action_sequence_id=7 active_slot=1 target_slot=4 actor_field6_0x6=5 actor_subtype_0x8=0 "
+        << "gate_category_0x2f=3 gate_state_0x30=2 gate_active_slot_0x02=1 "
+        << "instruction_flags_0xf0=0x00000000 query_result=1\n";
+    std::istringstream row12_input(row12_input_text.str());
+    const auto row12_parsed = parse_checkpoint_stream(row12_input);
+    ASSERT_TRUE(row12_parsed.errors.empty());
+    const auto row12_summary = summarize_action_view_gate_checkpoints(row12_parsed.events);
+    EXPECT_EQ(row12_summary.status, ActionViewGateCheckpointStatus::MatchesExpected);
+    ASSERT_EQ(row12_summary.events.size(), 2u);
+    ASSERT_TRUE(row12_summary.events[0].sampled_aux_table_count.has_value());
+    EXPECT_EQ(*row12_summary.events[0].sampled_aux_table_count, 1);
+    ASSERT_TRUE(row12_summary.events[0].matched_query_result_count.has_value());
+    EXPECT_EQ(*row12_summary.events[0].matched_query_result_count, 1);
+    ASSERT_TRUE(row12_summary.events[0].sampled_aux_table_count_matches_query_result.has_value());
+    EXPECT_TRUE(*row12_summary.events[0].sampled_aux_table_count_matches_query_result);
+
     std::istringstream query_mismatch_input(
         "pc=80012f58 function=FUN_80012f58 checkpoint=action_view_gate rng_draw_index_before=18 "
         "aux_list_root=0x80346bd8 query_arg0=4 query_arg1=-1 query_arg2=0x2b query_arg3=3 "
@@ -2932,6 +4241,26 @@ TEST(SavorPredictCheckpointTrace, SummarizesActionViewGateCheckpoints) {
     ASSERT_TRUE(query_mismatch_parsed.errors.empty());
     const auto query_mismatch = summarize_action_view_gate_checkpoints(query_mismatch_parsed.events);
     EXPECT_EQ(query_mismatch.status, ActionViewGateCheckpointStatus::QueryArgsMismatch);
+
+    std::istringstream selector_mismatch_input(
+        "pc=80012f58 function=FUN_80012f58 checkpoint=action_view_gate rng_draw_index_before=18 "
+        "action_sequence_id=7 active_slot=1 target_slot=4 actor_field6_0x6=5 actor_subtype_0x8=0 "
+        "gate_category_0x2f=3 gate_state_0x30=2 gate_active_slot_0x02=1 "
+        "instruction_flags_0xf0=0x00000000 aux_list_root=0x80346bd8 "
+        "query_arg0=4 query_arg1=-1 query_arg2=0x2a query_arg3=3 "
+        "query_result=1 selected_record_mode=0 "
+        "action_child_thread=0x81230000 child_payload=0x81231000 nested_payload=0x81232000 "
+        "child_thread_state_byte=1 mode0_fallback_reached=0\n");
+    const auto selector_mismatch_parsed = parse_checkpoint_stream(selector_mismatch_input);
+    ASSERT_TRUE(selector_mismatch_parsed.errors.empty());
+    const auto selector_mismatch =
+        summarize_action_view_gate_checkpoints(selector_mismatch_parsed.events);
+    EXPECT_EQ(selector_mismatch.status, ActionViewGateCheckpointStatus::SelectorModelMismatch);
+    EXPECT_EQ(selector_mismatch.selector_model_comparisons, 1);
+    EXPECT_EQ(selector_mismatch.selector_query_args_mismatch, 1);
+    ASSERT_EQ(selector_mismatch.events.size(), 1u);
+    ASSERT_TRUE(selector_mismatch.events[0].selector_expected_query.has_value());
+    EXPECT_EQ(selector_mismatch.events[0].selector_expected_query->action_key, 5);
 
     std::istringstream mode_mismatch_input(
         "pc=80012f58 function=FUN_80012f58 checkpoint=action_view_gate rng_draw_index_before=18 "
@@ -3004,6 +4333,231 @@ TEST(SavorPredictCheckpointTrace, SummarizesActionViewGateCheckpoints) {
         std::string("MatchesExpected"));
     EXPECT_EQ(fallback.mode0_fallback_reached_events, 1);
     EXPECT_EQ(fallback.observed_mode0_fallback_draws, 1);
+}
+
+TEST(SavorPredictCheckpointTrace, IdentifiesSampledActionViewAuxTableFromStdJsonDirectory) {
+    const auto temp_dir =
+        std::filesystem::temp_directory_path() / "savor_predict_trace_std_identity_test";
+    std::filesystem::remove_all(temp_dir);
+    std::filesystem::create_directories(temp_dir);
+
+    const auto write_table = [&](std::string_view filename, int action_key) {
+        std::ofstream file(temp_dir / std::string(filename));
+        ASSERT_TRUE(file.good());
+        file << R"json({
+  "schema": "spice_std_ir_v1",
+  "layoutKind": "entry_table",
+  "parseOk": true,
+  "entryTable": {
+    "records": [
+      {
+        "index": 0,
+        "isSentinel": false,
+        "locationCode": 42,
+        "opcode": 3,
+        "payloadInBounds": true,
+        "payloadBytesHex": ")json"
+             << std::hex << std::setw(4) << std::setfill('0') << action_key
+             << R"json(00000000"
+      },
+      {
+        "index": 1,
+        "isSentinel": true,
+        "locationCode": -1,
+        "opcode": 0,
+        "payloadInBounds": false,
+        "payloadBytesHex": ""
+      }
+    ]
+  }
+})json";
+    };
+    write_table("ma0000.std.json", 4);
+    write_table("ma0010.std.json", 5);
+    write_table("mb0000.std.json", 8);
+
+    std::istringstream input(
+        "pc=8001331c function=FUN_80012f58 checkpoint=action_view_query rng_draw_index_before=18 "
+        "action_sequence_id=7 active_slot=0 target_slot=4 actor_field6_0x6=4 actor_subtype_0x8=0 "
+          "gate_category_0x2f=2 gate_state_0x30=2 gate_active_slot_0x02=0 "
+          "instruction_flags_0xf0=0x00000000 aux_list_root=0x80346bd8 "
+          "query_arg0=4 query_arg1=-1 query_arg2=0x2a query_arg3=3 "
+          "aux_row00_location_code=0 aux_row00_opcode=1 "
+          "aux_row00_payload_primary=2 aux_row00_payload_secondary=1 "
+          "aux_row00_payload_direct_secondary=8 "
+          "aux_row01_location_code=0x2a aux_row01_opcode=3 "
+          "aux_row01_payload_primary=4 aux_row01_payload_secondary=0 "
+          "aux_row01_payload_direct_secondary=0 "
+          "aux_row02_location_code=0xffff aux_row02_opcode=0\n"
+        "pc=80013320 function=FUN_80012f58 checkpoint=action_view_query_result rng_draw_index_before=18 "
+        "action_sequence_id=7 active_slot=0 target_slot=4 actor_field6_0x6=4 actor_subtype_0x8=0 "
+        "gate_category_0x2f=2 gate_state_0x30=2 gate_active_slot_0x02=0 "
+        "instruction_flags_0xf0=0x00000000 query_result=1\n");
+    const auto parsed = parse_checkpoint_stream(input);
+    ASSERT_TRUE(parsed.errors.empty());
+    const auto summary = summarize_action_view_gate_checkpoints(
+        parsed.events,
+        ActionViewGateCheckpointOptions{.action_view_std_json_dir = temp_dir});
+
+    EXPECT_EQ(summary.status, ActionViewGateCheckpointStatus::MatchesExpected);
+    EXPECT_EQ(summary.aux_table_fingerprint_matches_known_std0, 1);
+    EXPECT_EQ(summary.aux_table_fingerprint_ambiguous_known_std0, 0);
+    EXPECT_EQ(summary.aux_table_fingerprint_matches_actor_slot_std0, 1);
+    EXPECT_EQ(summary.aux_table_fingerprint_mismatches_actor_slot_std0, 0);
+    ASSERT_EQ(summary.events.size(), 2u);
+    EXPECT_EQ(summary.events[0].matched_std0_candidate_count, 1);
+    ASSERT_TRUE(summary.events[0].matched_resource_stem.has_value());
+    EXPECT_EQ(*summary.events[0].matched_resource_stem, "ma000");
+    ASSERT_TRUE(summary.events[0].matched_std_filename.has_value());
+    EXPECT_EQ(*summary.events[0].matched_std_filename, "ma000.std");
+      ASSERT_TRUE(summary.events[0].matched_std0_filename.has_value());
+      EXPECT_EQ(*summary.events[0].matched_std0_filename, "ma0000.std");
+      ASSERT_TRUE(summary.events[0].matched_std0_sample_row_offset.has_value());
+      EXPECT_EQ(*summary.events[0].matched_std0_sample_row_offset, 1);
+      ASSERT_TRUE(summary.events[0].actor_slot_expected_std0_filename.has_value());
+      EXPECT_EQ(*summary.events[0].actor_slot_expected_std0_filename, "ma0000.std");
+      ASSERT_TRUE(summary.events[0].actor_slot_expected_std0_matches_sample.has_value());
+      EXPECT_TRUE(*summary.events[0].actor_slot_expected_std0_matches_sample);
+      ASSERT_TRUE(summary.events[0].actor_slot_expected_std0_sample_row_offset.has_value());
+      EXPECT_EQ(*summary.events[0].actor_slot_expected_std0_sample_row_offset, 1);
+
+    std::filesystem::remove_all(temp_dir);
+}
+
+TEST(SavorPredictCheckpointTrace, ComparesActionViewHelperCallAgainstSelectorPrediction) {
+    std::istringstream input(
+        "pc=80013334 function=FUN_80053f38 checkpoint=action_view_spawn rng_draw_index_before=18 "
+        "action_sequence_id=7 active_slot=5 target_slot=0 actor_field6_0x6=4 actor_subtype_0x8=0 "
+        "gate_category_0x2f=2 gate_state_0x30=2 gate_active_slot_0x02=5 "
+        "instruction_flags_0xf0=0x00000000 spawn_slot_arg=5 spawn_mode_arg=0 "
+        "aux_row00_location_code=0xffff aux_row00_opcode=0\n");
+    const auto parsed = parse_checkpoint_stream(input);
+    ASSERT_TRUE(parsed.errors.empty());
+
+    const auto summary = summarize_action_view_gate_checkpoints(parsed.events);
+
+    EXPECT_EQ(summary.status, ActionViewGateCheckpointStatus::MatchesExpected);
+    EXPECT_EQ(summary.observed_gate_events, 0);
+    EXPECT_EQ(summary.observed_helper_call_events, 1);
+    EXPECT_EQ(summary.helper_call_events_with_selector_inputs, 1);
+    EXPECT_EQ(summary.selector_helper_call_comparisons, 1);
+    EXPECT_EQ(summary.selector_helper_call_matches, 1);
+    EXPECT_EQ(summary.selector_helper_call_mismatches, 0);
+    ASSERT_EQ(summary.events.size(), 1u);
+    const auto& event = summary.events.front();
+    EXPECT_TRUE(event.helper_call_event);
+    ASSERT_TRUE(event.helper_call_site_pc.has_value());
+    EXPECT_EQ(*event.helper_call_site_pc, 0x80013334u);
+    ASSERT_TRUE(event.selector_expected_helper_role.has_value());
+    EXPECT_EQ(*event.selector_expected_helper_role, "mode2_count_zero_spawn_mode0");
+    ASSERT_TRUE(event.selector_expected_helper_mode_arg.has_value());
+    EXPECT_EQ(*event.selector_expected_helper_mode_arg, 0);
+    ASSERT_TRUE(event.selector_expected_spawned_record_mode.has_value());
+    EXPECT_EQ(*event.selector_expected_spawned_record_mode, 0xe);
+    ASSERT_TRUE(event.selector_helper_call_matches.has_value());
+    EXPECT_TRUE(*event.selector_helper_call_matches);
+}
+
+TEST(SavorPredictCheckpointTrace, FlagsActionViewHelperCallModeMismatch) {
+    std::istringstream input(
+        "pc=80013334 function=FUN_80053f38 checkpoint=action_view_spawn rng_draw_index_before=18 "
+        "action_sequence_id=7 active_slot=5 target_slot=0 actor_field6_0x6=4 actor_subtype_0x8=0 "
+        "gate_category_0x2f=2 gate_state_0x30=2 gate_active_slot_0x02=5 "
+        "instruction_flags_0xf0=0x00000000 spawn_slot_arg=5 spawn_mode_arg=1 "
+        "aux_row00_location_code=0xffff aux_row00_opcode=0\n");
+    const auto parsed = parse_checkpoint_stream(input);
+    ASSERT_TRUE(parsed.errors.empty());
+
+    const auto summary = summarize_action_view_gate_checkpoints(parsed.events);
+
+    EXPECT_EQ(summary.status, ActionViewGateCheckpointStatus::SelectorModelMismatch);
+    EXPECT_EQ(summary.observed_helper_call_events, 1);
+    EXPECT_EQ(summary.selector_helper_call_comparisons, 1);
+    EXPECT_EQ(summary.selector_helper_call_matches, 0);
+    EXPECT_EQ(summary.selector_helper_call_mismatches, 1);
+    ASSERT_EQ(summary.events.size(), 1u);
+    const auto& event = summary.events.front();
+    ASSERT_TRUE(event.helper_mode_arg.has_value());
+    EXPECT_EQ(*event.helper_mode_arg, 1);
+    ASSERT_TRUE(event.selector_expected_helper_mode_arg.has_value());
+    EXPECT_EQ(*event.selector_expected_helper_mode_arg, 0);
+    ASSERT_TRUE(event.selector_helper_call_matches.has_value());
+    EXPECT_FALSE(*event.selector_helper_call_matches);
+}
+
+TEST(SavorPredictCheckpointTrace, LinksActionViewAuxRootToStd0CacheResource) {
+    std::istringstream input(
+        "pc=8006df8c function=Battle::Resource::ProcessQueuedBattleResourceFile_8006ddbc "
+        "checkpoint=std0_cache_producer_materialize capture_sequence=1 rng_draw_index_before=0 "
+        "loaded_file_ptr_arg=0x81230000\n"
+        "pc=8006dfa4 function=Battle::Resource::ProcessQueuedBattleResourceFile_8006ddbc "
+        "checkpoint=std0_cache_producer_table_store capture_sequence=2 rng_draw_index_before=0 "
+        "materialized_table_ptr=0x81240000\n"
+        "pc=8006dfc4 function=Battle::Resource::ProcessQueuedBattleResourceFile_8006ddbc "
+        "checkpoint=std0_cache_producer_key_store capture_sequence=3 rng_draw_index_before=0 "
+        "filename_key=0x00989680\n"
+        "pc=80035d80 function=STD::LoadStd0EntryTable_80035d4c "
+        "checkpoint=std0_cache_lookup capture_sequence=4 rng_draw_index_before=0 "
+        "root_field_ptr=0x81230030 cache_key_expected=0x00989680 cache_slot_index=0\n"
+        "pc=80035da8 function=STD::LoadStd0EntryTable_80035d4c "
+        "checkpoint=std0_cache_table_read capture_sequence=5 rng_draw_index_before=0 "
+        "root_field_ptr=0x81230030 cache_slot_index=0\n"
+        "pc=80035e0c function=STD::LoadStd0EntryTable_80035d4c "
+        "checkpoint=std0_cache_result_store capture_sequence=6 rng_draw_index_before=0 "
+        "root_field_ptr=0x81230030 cached_table_ptr=0x81240000\n"
+        "pc=8001331c function=FUN_80012f58 checkpoint=action_view_query "
+        "capture_sequence=7 rng_draw_index_before=18 active_slot=0 target_slot=4 "
+        "actor_field6_0x6=4 actor_subtype_0x8=0 gate_category_0x2f=2 "
+        "gate_state_0x30=2 gate_active_slot_0x02=0 instruction_flags_0xf0=0x00000000 "
+        "aux_list_root=0x81240000 query_arg0=4 query_arg1=-1 query_arg2=0x2a query_arg3=3 "
+        "action_view_chain_payload_0x24=0x8122ff00 "
+        "action_view_chain_loaded_resource_0x10=0x81230000 "
+        "action_view_chain_aux_root_0x30=0x81240000 "
+        "aux_row00_location_code=0x2a aux_row00_opcode=3 "
+        "aux_row00_payload_primary=4 aux_row00_payload_secondary=0 "
+        "aux_row00_payload_direct_secondary=0 "
+        "aux_row01_location_code=0xffff aux_row01_opcode=0\n"
+        "pc=80013320 function=FUN_80012f58 checkpoint=action_view_query_result "
+        "capture_sequence=8 rng_draw_index_before=18 active_slot=0 target_slot=4 "
+        "actor_field6_0x6=4 actor_subtype_0x8=0 gate_category_0x2f=2 "
+        "gate_state_0x30=2 gate_active_slot_0x02=0 instruction_flags_0xf0=0x00000000 "
+        "query_result=1\n");
+
+    const auto parsed = parse_checkpoint_stream(input);
+    ASSERT_TRUE(parsed.errors.empty());
+    const auto gate_summary = summarize_action_view_gate_checkpoints(parsed.events);
+    const auto resource_summary = summarize_action_view_resource_checkpoints(
+        parsed.events,
+        gate_summary);
+
+    EXPECT_EQ(
+        resource_summary.status,
+        ActionViewResourceCheckpointStatus::MatchesSelectorRoots);
+    EXPECT_EQ(resource_summary.complete_cache_producers, 1);
+    EXPECT_EQ(resource_summary.complete_cache_hits, 1);
+    EXPECT_EQ(resource_summary.selector_aux_roots, 1);
+    EXPECT_EQ(resource_summary.selector_aux_roots_linked_to_cache_hits, 1);
+    EXPECT_EQ(resource_summary.selector_aux_roots_linked_to_cache_producers, 1);
+    EXPECT_EQ(resource_summary.selector_aux_roots_with_chain_samples, 1);
+    EXPECT_EQ(resource_summary.selector_aux_roots_with_matching_chain, 1);
+    EXPECT_EQ(resource_summary.selector_aux_roots_with_mismatching_chain, 0);
+    EXPECT_EQ(resource_summary.selector_aux_roots_with_loaded_resource_root_field_match, 1);
+    ASSERT_EQ(resource_summary.selector_root_links.size(), 1u);
+    const auto& link = resource_summary.selector_root_links[0];
+    ASSERT_TRUE(link.capture_sequence.has_value());
+    EXPECT_EQ(*link.capture_sequence, 7);
+    ASSERT_TRUE(link.cache_expected_key.has_value());
+    EXPECT_EQ(*link.cache_expected_key, "0x00989680");
+    ASSERT_TRUE(link.cache_slot.has_value());
+    EXPECT_EQ(*link.cache_slot, 0);
+    ASSERT_TRUE(link.cache_root_field_ptr.has_value());
+    EXPECT_EQ(*link.cache_root_field_ptr, "0x81230030");
+    ASSERT_TRUE(link.chain_aux_root_matches_query.has_value());
+    EXPECT_TRUE(*link.chain_aux_root_matches_query);
+    ASSERT_TRUE(link.cache_root_field_matches_loaded_resource_plus_0x30.has_value());
+    EXPECT_TRUE(*link.cache_root_field_matches_loaded_resource_plus_0x30);
+    ASSERT_TRUE(link.producer_loaded_file_ptr.has_value());
+    EXPECT_EQ(*link.producer_loaded_file_ptr, "0x81230000");
 }
 
 TEST(SavorPredictCheckpointTrace, SummarizesActionViewCameraCheckpoints) {

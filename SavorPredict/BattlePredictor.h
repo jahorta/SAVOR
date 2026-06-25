@@ -11,6 +11,7 @@
 #include <Core/Memory/Soa/Battle/BattleContext.h>
 
 #include <cstdint>
+#include <filesystem>
 #include <iosfwd>
 #include <optional>
 #include <string>
@@ -54,6 +55,7 @@ struct BattlePredictionProfile {
 struct BattlePredictionOptions {
     bool include_visual_rng_gap_events = true;
     bool continue_after_visual_rng_gap = true;
+    std::filesystem::path action_view_std_json_dir;
 };
 
 struct BattlePredictionInput {

@@ -282,6 +282,7 @@ TEST(SavorPredictBattleJobRunOptions, ValidatesSelectorsAndRuntimePaths)
             "--dolphin-base-dir", "D:/SoATAS/dolphin",
             "--battle-run-ms", "900000",
             "--override-start-rng-seed", "0x12345678",
+            "--override-fake-attacks", "2",
         },
         "C:/repo/bin/x64/Debug/SavorPredict.exe");
 
@@ -295,6 +296,8 @@ TEST(SavorPredictBattleJobRunOptions, ValidatesSelectorsAndRuntimePaths)
     EXPECT_EQ(parsed.options.timeout_ms, 960000);
     ASSERT_TRUE(parsed.options.override_start_rng_seed.has_value());
     EXPECT_EQ(*parsed.options.override_start_rng_seed, 0x12345678u);
+    ASSERT_TRUE(parsed.options.override_fake_attacks_this_turn.has_value());
+    EXPECT_EQ(*parsed.options.override_fake_attacks_this_turn, 2u);
     EXPECT_NE(parsed.options.run_root.generic_string().find("Analyses/battle_runs_first_battle/live_capture_runs/"), std::string::npos);
 
     const auto full_copy = parse_battle_job_run_tokens(
@@ -356,6 +359,7 @@ TEST(SavorPredictBattleJobBatchRunOptions, ParsesRepeatedIdsListFileAndTimeoutDe
             "--iso", "D:/SoATAS/game.gcm",
             "--dolphin-base-dir", "D:/SoATAS/dolphin",
             "--override-start-rng-seed", "305419896",
+            "--override-fake-attacks", "2",
         },
         "C:/repo/bin/x64/Debug/SavorPredict.exe");
     std::error_code ec;
@@ -371,8 +375,12 @@ TEST(SavorPredictBattleJobBatchRunOptions, ParsesRepeatedIdsListFileAndTimeoutDe
     EXPECT_EQ(parsed_requests[1].exec_job_id, 102);
     ASSERT_TRUE(parsed_requests[0].override_start_rng_seed.has_value());
     ASSERT_TRUE(parsed_requests[1].override_start_rng_seed.has_value());
+    ASSERT_TRUE(parsed_requests[0].override_fake_attacks_this_turn.has_value());
+    ASSERT_TRUE(parsed_requests[1].override_fake_attacks_this_turn.has_value());
     EXPECT_EQ(*parsed_requests[0].override_start_rng_seed, 0x12345678u);
     EXPECT_EQ(*parsed_requests[1].override_start_rng_seed, 0x12345678u);
+    EXPECT_EQ(*parsed_requests[0].override_fake_attacks_this_turn, 2u);
+    EXPECT_EQ(*parsed_requests[1].override_fake_attacks_this_turn, 2u);
     EXPECT_EQ(parsed.options.max_workers, 2);
     ASSERT_TRUE(parsed.options.override_start_rng_seed.has_value());
     EXPECT_EQ(*parsed.options.override_start_rng_seed, 0x12345678u);
@@ -389,7 +397,8 @@ TEST(SavorPredictBattleJobBatchRunOptions, ParsesRepeatedIdsListFileAndTimeoutDe
     const auto seeded_runs = parse_battle_job_batch_run_tokens(
         {
             "--exec-job-seed", "101:0x11111111",
-            "--exec-job-seed", "101:572662306",
+            "--exec-job-seed", "101:572662306:3",
+            "--exec-job-fake-attacks", "101:4",
             "--max-workers", "2",
             "--iso", "D:/SoATAS/game.gcm",
             "--dolphin-base-dir", "D:/SoATAS/dolphin",
@@ -397,17 +406,23 @@ TEST(SavorPredictBattleJobBatchRunOptions, ParsesRepeatedIdsListFileAndTimeoutDe
         "SavorPredict.exe");
     EXPECT_TRUE(seeded_runs.errors.empty()) << (seeded_runs.errors.empty() ? "" : seeded_runs.errors.front());
     const auto seeded_requests = resolved_battle_job_batch_requests(seeded_runs.options);
-    ASSERT_EQ(seeded_requests.size(), 2u);
+    ASSERT_EQ(seeded_requests.size(), 3u);
     EXPECT_EQ(seeded_requests[0].exec_job_id, 101);
     EXPECT_EQ(seeded_requests[1].exec_job_id, 101);
+    EXPECT_EQ(seeded_requests[2].exec_job_id, 101);
     ASSERT_TRUE(seeded_requests[0].override_start_rng_seed.has_value());
     ASSERT_TRUE(seeded_requests[1].override_start_rng_seed.has_value());
     EXPECT_EQ(*seeded_requests[0].override_start_rng_seed, 0x11111111u);
     EXPECT_EQ(*seeded_requests[1].override_start_rng_seed, 0x22222222u);
+    EXPECT_FALSE(seeded_requests[0].override_fake_attacks_this_turn.has_value());
+    ASSERT_TRUE(seeded_requests[1].override_fake_attacks_this_turn.has_value());
+    ASSERT_TRUE(seeded_requests[2].override_fake_attacks_this_turn.has_value());
+    EXPECT_EQ(*seeded_requests[1].override_fake_attacks_this_turn, 3u);
+    EXPECT_EQ(*seeded_requests[2].override_fake_attacks_this_turn, 4u);
     const auto seeded_sources = unique_battle_job_batch_source_exec_job_ids(seeded_runs.options);
     ASSERT_EQ(seeded_sources.size(), 1u);
     EXPECT_EQ(seeded_sources[0], 101);
-    EXPECT_EQ(resolved_battle_job_batch_timeout_ms(seeded_runs.options), 180000);
+    EXPECT_EQ(resolved_battle_job_batch_timeout_ms(seeded_runs.options), 360000);
 
     const auto duplicate = parse_battle_job_batch_run_tokens(
         {
@@ -421,13 +436,33 @@ TEST(SavorPredictBattleJobBatchRunOptions, ParsesRepeatedIdsListFileAndTimeoutDe
 
     const auto duplicate_seeded = parse_battle_job_batch_run_tokens(
         {
-            "--exec-job-seed", "101:0x11111111",
-            "--exec-job-seed", "101:0x11111111",
+            "--exec-job-seed", "101:0x11111111:2",
+            "--exec-job-seed", "101:0x11111111:2",
             "--iso", "D:/SoATAS/game.gcm",
             "--dolphin-base-dir", "D:/SoATAS/dolphin",
         },
         "SavorPredict.exe");
     EXPECT_FALSE(duplicate_seeded.errors.empty());
+
+    const auto same_seed_different_fake = parse_battle_job_batch_run_tokens(
+        {
+            "--exec-job-seed", "101:0x11111111:1",
+            "--exec-job-seed", "101:0x11111111:2",
+            "--iso", "D:/SoATAS/game.gcm",
+            "--dolphin-base-dir", "D:/SoATAS/dolphin",
+        },
+        "SavorPredict.exe");
+    EXPECT_TRUE(same_seed_different_fake.errors.empty())
+        << (same_seed_different_fake.errors.empty() ? "" : same_seed_different_fake.errors.front());
+
+    const auto invalid_fake_override = parse_battle_job_batch_run_tokens(
+        {
+            "--exec-job-fake-attacks", "101:256",
+            "--iso", "D:/SoATAS/game.gcm",
+            "--dolphin-base-dir", "D:/SoATAS/dolphin",
+        },
+        "SavorPredict.exe");
+    EXPECT_FALSE(invalid_fake_override.errors.empty());
 
     const auto full_copy = parse_battle_job_batch_run_tokens(
         {
@@ -510,10 +545,12 @@ TEST(SavorPredictBattleJobClone, PatchesCaptureProfileWithoutDroppingJobFields)
         BuildInputIni(10, 20, 30, 40, 2),
         "C:/runs/capture_profile.ini",
         0x12345678u,
-        900000u);
+        900000u,
+        0u);
     const auto run_ms_ini = IniDoc::parse(patched_with_run_ms);
     EXPECT_EQ(run_ms_ini.get_u32("BattleSingleTurn.Job", "run_ms_override", 0), 900000u);
     EXPECT_EQ(run_ms_ini.get_u32("BattleSingleTurn.Job", "override_start_rng_seed", 0), 0x12345678u);
+    EXPECT_EQ(run_ms_ini.get_i64("BattleSingleTurn.Job", "fake_attacks_this_turn", -1), 0);
 }
 
 TEST_F(SavorPredictBattleJobRunnerDb, ClonesTurnAndExecRowsThenQuarantinesOtherReadyJobs)
@@ -527,6 +564,7 @@ TEST_F(SavorPredictBattleJobRunnerDb, ClonesTurnAndExecRowsThenQuarantinesOtherR
     options.run_root = temp_root_ / "run";
     options.battle_run_ms = 900000u;
     options.override_start_rng_seed = 0xA5A5A5A5u;
+    options.override_fake_attacks_this_turn = 0u;
 
     BattleJobCloneResult clone;
     std::ostringstream err;
@@ -541,10 +579,13 @@ TEST_F(SavorPredictBattleJobRunnerDb, ClonesTurnAndExecRowsThenQuarantinesOtherR
     EXPECT_EQ(clone.original_exec_job_id, seeded.exec_job_id);
     EXPECT_NE(clone.cloned_turn_job_id, seeded.turn_job_id);
     EXPECT_NE(clone.cloned_exec_job_id, seeded.exec_job_id);
-    EXPECT_EQ(clone.fake_attacks_this_turn, 1);
+    EXPECT_EQ(clone.source_fake_attacks_this_turn, 1);
+    EXPECT_EQ(clone.fake_attacks_this_turn, 0);
     EXPECT_GE(clone.quarantined_ready_jobs, 1);
     ASSERT_TRUE(clone.battle_run_ms.has_value());
     EXPECT_EQ(*clone.battle_run_ms, 900000u);
+    ASSERT_TRUE(clone.override_fake_attacks_this_turn.has_value());
+    EXPECT_EQ(*clone.override_fake_attacks_this_turn, 0u);
 
     const auto source_turn = db_service_->AnalysisDb()->GetBattleTurnJobForExecJob(seeded.exec_job_id);
     ASSERT_TRUE(source_turn.has_value());
@@ -553,6 +594,7 @@ TEST_F(SavorPredictBattleJobRunnerDb, ClonesTurnAndExecRowsThenQuarantinesOtherR
     const auto cloned_turn = db_service_->AnalysisDb()->GetBattleTurnJobForExecJob(clone.cloned_exec_job_id);
     ASSERT_TRUE(cloned_turn.has_value());
     EXPECT_EQ(cloned_turn->turn_job_id, clone.cloned_turn_job_id);
+    EXPECT_EQ(cloned_turn->fake_attacks_this_turn, 0);
 
     const auto cloned_exec = db_service_->ExecutionDb()->GetJob(clone.cloned_exec_job_id);
     ASSERT_TRUE(cloned_exec.has_value());
@@ -561,6 +603,8 @@ TEST_F(SavorPredictBattleJobRunnerDb, ClonesTurnAndExecRowsThenQuarantinesOtherR
     EXPECT_EQ(cloned_exec->state, "QUEUED");
     EXPECT_NE(cloned_exec->input_ini.find("capture_profile_path"), std::string::npos);
     EXPECT_NE(cloned_exec->input_ini.find("run_ms_override"), std::string::npos);
+    const auto cloned_ini = IniDoc::parse(cloned_exec->input_ini);
+    EXPECT_EQ(cloned_ini.get_i64("BattleSingleTurn.Job", "fake_attacks_this_turn", -1), 0);
 
     const auto unrelated_state = QueryText(db_, "SELECT state FROM exec_job WHERE job_id=?1;", seeded.unrelated_exec_job_id);
     ASSERT_TRUE(unrelated_state.has_value());
@@ -619,11 +663,13 @@ TEST_F(SavorPredictBattleJobRunnerDb, BatchCloneAllowsSameSourceExecWithDifferen
             {
                 .source_exec_job_id = seeded.exec_job_id,
                 .override_start_rng_seed = 0x11111111u,
+                .override_fake_attacks_this_turn = 0u,
                 .battle_run_ms = 900000u,
             },
             {
                 .source_exec_job_id = seeded.exec_job_id,
                 .override_start_rng_seed = 0x22222222u,
+                .override_fake_attacks_this_turn = 2u,
                 .battle_run_ms = 900000u,
             },
         },
@@ -638,10 +684,18 @@ TEST_F(SavorPredictBattleJobRunnerDb, BatchCloneAllowsSameSourceExecWithDifferen
     EXPECT_NE(batch.clones[0].cloned_turn_job_id, batch.clones[1].cloned_turn_job_id);
     ASSERT_TRUE(batch.clones[0].override_start_rng_seed.has_value());
     ASSERT_TRUE(batch.clones[1].override_start_rng_seed.has_value());
+    ASSERT_TRUE(batch.clones[0].override_fake_attacks_this_turn.has_value());
+    ASSERT_TRUE(batch.clones[1].override_fake_attacks_this_turn.has_value());
     ASSERT_TRUE(batch.clones[0].battle_run_ms.has_value());
     ASSERT_TRUE(batch.clones[1].battle_run_ms.has_value());
     EXPECT_EQ(*batch.clones[0].override_start_rng_seed, 0x11111111u);
     EXPECT_EQ(*batch.clones[1].override_start_rng_seed, 0x22222222u);
+    EXPECT_EQ(*batch.clones[0].override_fake_attacks_this_turn, 0u);
+    EXPECT_EQ(*batch.clones[1].override_fake_attacks_this_turn, 2u);
+    EXPECT_EQ(batch.clones[0].source_fake_attacks_this_turn, 1);
+    EXPECT_EQ(batch.clones[1].source_fake_attacks_this_turn, 1);
+    EXPECT_EQ(batch.clones[0].fake_attacks_this_turn, 0);
+    EXPECT_EQ(batch.clones[1].fake_attacks_this_turn, 2);
     EXPECT_EQ(*batch.clones[0].battle_run_ms, 900000u);
     EXPECT_EQ(*batch.clones[1].battle_run_ms, 900000u);
 
@@ -649,6 +703,8 @@ TEST_F(SavorPredictBattleJobRunnerDb, BatchCloneAllowsSameSourceExecWithDifferen
     const auto second_ini = IniDoc::parse(batch.clones[1].patched_input_ini);
     EXPECT_EQ(first_ini.get_u32("BattleSingleTurn.Job", "override_start_rng_seed", 0), 0x11111111u);
     EXPECT_EQ(second_ini.get_u32("BattleSingleTurn.Job", "override_start_rng_seed", 0), 0x22222222u);
+    EXPECT_EQ(first_ini.get_i64("BattleSingleTurn.Job", "fake_attacks_this_turn", -1), 0);
+    EXPECT_EQ(second_ini.get_i64("BattleSingleTurn.Job", "fake_attacks_this_turn", -1), 2);
     EXPECT_EQ(first_ini.get_u32("BattleSingleTurn.Job", "run_ms_override", 0), 900000u);
     EXPECT_EQ(second_ini.get_u32("BattleSingleTurn.Job", "run_ms_override", 0), 900000u);
 
@@ -682,6 +738,7 @@ TEST_F(SavorPredictBattleJobRunnerDb, ClonedJobMaterializesCapturePayload)
     options.run_root = temp_root_ / "run";
     options.battle_run_ms = 900000u;
     options.override_start_rng_seed = 0xA5A5A5A5u;
+    options.override_fake_attacks_this_turn = 0u;
 
     const auto capture_profile = temp_root_ / "capture_profile.ini";
     BattleJobCloneResult clone;
@@ -719,6 +776,9 @@ TEST_F(SavorPredictBattleJobRunnerDb, ClonedJobMaterializesCapturePayload)
     ASSERT_TRUE(ctx.get(savor::context::key::battle::RNG_OVERRIDE_SEED, override_seed));
     EXPECT_EQ(override_enabled, 1u);
     EXPECT_EQ(override_seed, 0xA5A5A5A5u);
+    uint32_t fake_attacks_this_turn = 99;
+    ASSERT_TRUE(ctx.get(savor::context::key::battle::FAKE_ATTACK_COUNT_THIS_TURN, fake_attacks_this_turn));
+    EXPECT_EQ(fake_attacks_this_turn, 0u);
     uint32_t core_run_ms = 0;
     uint32_t battle_run_ms = 0;
     ASSERT_TRUE(ctx.get(savor::context::key::core::RUN_MS, core_run_ms));

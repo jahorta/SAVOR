@@ -15,6 +15,7 @@ namespace savor::predict {
 struct BattleJobBatchRunRequest {
     long long exec_job_id = 0;
     std::optional<std::uint32_t> override_start_rng_seed;
+    std::optional<std::uint32_t> override_fake_attacks_this_turn;
     std::optional<std::uint32_t> battle_run_ms;
 };
 
@@ -33,6 +34,7 @@ struct BattleJobBatchRunOptions {
     int max_workers = 2;
     std::optional<std::uint32_t> battle_run_ms;
     std::optional<std::uint32_t> override_start_rng_seed;
+    std::optional<std::uint32_t> override_fake_attacks_this_turn;
 };
 
 struct BattleJobBatchRunParseResult {

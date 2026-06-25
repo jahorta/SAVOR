@@ -9,6 +9,7 @@
 #include <limits>
 #include <set>
 #include <sstream>
+#include <tuple>
 #include <utility>
 
 namespace savor::predict {
@@ -38,6 +39,13 @@ bool parse_u32_auto(const std::string& value, std::uint32_t& out) {
     }
     out = static_cast<std::uint32_t>(parsed);
     return true;
+}
+
+bool parse_fake_attack_count(const std::string& value, std::uint32_t& out) {
+    if (!parse_u32_auto(value, out)) {
+        return false;
+    }
+    return out <= 255u;
 }
 
 std::string timestamp_slug() {
@@ -108,7 +116,7 @@ void append_exec_job_list_file(
                 "--exec-job-list contains a non-integer at line " + std::to_string(line_number));
             continue;
         }
-        ids->push_back(parsed);
+    ids->push_back(parsed);
     }
 }
 
@@ -118,21 +126,63 @@ bool parse_exec_job_seed_spec(
     std::vector<std::string>* errors) {
     const auto colon = value.find(':');
     if (colon == std::string::npos || colon == 0 || colon + 1 >= value.size()) {
-        errors->push_back("--exec-job-seed must be EXEC_ID:SEED, with SEED decimal or 0x hex.");
+        errors->push_back("--exec-job-seed must be EXEC_ID:SEED[:FAKE_ATTACKS], with SEED decimal or 0x hex.");
+        return false;
+    }
+    const auto second_colon = value.find(':', colon + 1);
+    if (second_colon != std::string::npos
+        && (second_colon + 1 >= value.size() || value.find(':', second_colon + 1) != std::string::npos)) {
+        errors->push_back("--exec-job-seed must be EXEC_ID:SEED[:FAKE_ATTACKS].");
         return false;
     }
     long long exec_job_id = 0;
     std::uint32_t seed = 0;
+    std::uint32_t fake_attacks = 0;
     if (!parse_ll(value.substr(0, colon), exec_job_id) || exec_job_id <= 0) {
         errors->push_back("--exec-job-seed requires a positive integer exec job id before ':'.");
         return false;
     }
-    if (!parse_u32_auto(value.substr(colon + 1), seed)) {
+    const auto seed_text = second_colon == std::string::npos
+        ? value.substr(colon + 1)
+        : value.substr(colon + 1, second_colon - colon - 1);
+    if (!parse_u32_auto(seed_text, seed)) {
         errors->push_back("--exec-job-seed requires a uint32 seed after ':' in decimal or 0x hex.");
         return false;
     }
+    if (second_colon != std::string::npos) {
+        if (!parse_fake_attack_count(value.substr(second_colon + 1), fake_attacks)) {
+            errors->push_back("--exec-job-seed fake attack override must be an integer in the range 0..255.");
+            return false;
+        }
+        request->override_fake_attacks_this_turn = fake_attacks;
+    }
     request->exec_job_id = exec_job_id;
     request->override_start_rng_seed = seed;
+    return true;
+}
+
+bool parse_exec_job_fake_attacks_spec(
+    const std::string& value,
+    BattleJobBatchRunRequest* request,
+    std::vector<std::string>* errors) {
+    const auto colon = value.find(':');
+    if (colon == std::string::npos || colon == 0 || colon + 1 >= value.size()
+        || value.find(':', colon + 1) != std::string::npos) {
+        errors->push_back("--exec-job-fake-attacks must be EXEC_ID:FAKE_ATTACKS.");
+        return false;
+    }
+    long long exec_job_id = 0;
+    std::uint32_t fake_attacks = 0;
+    if (!parse_ll(value.substr(0, colon), exec_job_id) || exec_job_id <= 0) {
+        errors->push_back("--exec-job-fake-attacks requires a positive integer exec job id before ':'.");
+        return false;
+    }
+    if (!parse_fake_attack_count(value.substr(colon + 1), fake_attacks)) {
+        errors->push_back("--exec-job-fake-attacks requires an integer in the range 0..255 after ':'.");
+        return false;
+    }
+    request->exec_job_id = exec_job_id;
+    request->override_fake_attacks_this_turn = fake_attacks;
     return true;
 }
 
@@ -166,6 +216,37 @@ void append_exec_job_seed_list_file(
     }
 }
 
+void append_exec_job_fake_attacks_list_file(
+    const std::filesystem::path& path,
+    std::vector<BattleJobBatchRunRequest>* requests,
+    std::vector<std::string>* errors) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file.is_open()) {
+        errors->push_back("Failed opening --exec-job-fake-attacks-list: " + path.string());
+        return;
+    }
+    std::string line;
+    int line_number = 0;
+    while (std::getline(file, line)) {
+        ++line_number;
+        if (const auto hash = line.find('#'); hash != std::string::npos) {
+            line.resize(hash);
+        }
+        line = trim(line);
+        if (line.empty()) {
+            continue;
+        }
+        BattleJobBatchRunRequest request;
+        if (!parse_exec_job_fake_attacks_spec(line, &request, errors)) {
+            errors->push_back(
+                "--exec-job-fake-attacks-list contains an invalid run spec at line "
+                + std::to_string(line_number));
+            continue;
+        }
+        requests->push_back(request);
+    }
+}
+
 } // namespace
 
 std::filesystem::path default_battle_job_batch_run_root() {
@@ -182,6 +263,7 @@ std::vector<BattleJobBatchRunRequest> resolved_battle_job_batch_requests(const B
         requests.push_back({
             .exec_job_id = exec_job_id,
             .override_start_rng_seed = options.override_start_rng_seed,
+            .override_fake_attacks_this_turn = options.override_fake_attacks_this_turn,
             .battle_run_ms = options.battle_run_ms,
         });
     }
@@ -192,6 +274,13 @@ std::vector<BattleJobBatchRunRequest> resolved_battle_job_batch_requests(const B
     if (options.battle_run_ms.has_value()) {
         for (auto& request : requests) {
             request.battle_run_ms = options.battle_run_ms;
+        }
+    }
+    if (options.override_fake_attacks_this_turn.has_value()) {
+        for (auto& request : requests) {
+            if (!request.override_fake_attacks_this_turn.has_value()) {
+                request.override_fake_attacks_this_turn = options.override_fake_attacks_this_turn;
+            }
         }
     }
     return requests;
@@ -232,7 +321,7 @@ std::vector<std::string> validate_battle_job_batch_run_options(const BattleJobBa
     if (requests.empty()) {
         errors.push_back("Specify at least one --exec-job-id, --exec-job-list, --exec-job-seed, or --exec-job-seed-list.");
     }
-    std::set<std::pair<long long, std::uint64_t>> seen;
+    std::set<std::tuple<long long, std::uint64_t, std::uint64_t>> seen;
     for (const auto& request : requests) {
         if (request.exec_job_id <= 0) {
             errors.push_back("Batch exec job ids must be positive.");
@@ -241,12 +330,23 @@ std::vector<std::string> validate_battle_job_batch_run_options(const BattleJobBa
         const auto seed_key = request.override_start_rng_seed.has_value()
             ? static_cast<std::uint64_t>(*request.override_start_rng_seed)
             : (std::uint64_t{1} << 32);
-        if (!seen.insert({ request.exec_job_id, seed_key }).second) {
+        const auto fake_key = request.override_fake_attacks_this_turn.has_value()
+            ? static_cast<std::uint64_t>(*request.override_fake_attacks_this_turn)
+            : (std::uint64_t{1} << 32);
+        if (!seen.insert({ request.exec_job_id, seed_key, fake_key }).second) {
             errors.push_back("Duplicate batch run request for exec job "
                 + std::to_string(request.exec_job_id)
                 + (request.override_start_rng_seed.has_value()
                     ? " with the same override seed."
-                    : " with no override seed."));
+                    : " with no override seed.")
+                + (request.override_fake_attacks_this_turn.has_value()
+                    ? " and the same fake attack override."
+                    : " and no fake attack override."));
+            break;
+        }
+        if (request.override_fake_attacks_this_turn.has_value()
+            && *request.override_fake_attacks_this_turn > 255u) {
+            errors.push_back("Batch fake attack overrides must be in the range 0..255.");
             break;
         }
     }
@@ -278,6 +378,10 @@ std::vector<std::string> validate_battle_job_batch_run_options(const BattleJobBa
     }
     if (options.battle_run_ms.has_value() && *options.battle_run_ms == 0) {
         errors.push_back("--battle-run-ms must be positive.");
+    }
+    if (options.override_fake_attacks_this_turn.has_value()
+        && *options.override_fake_attacks_this_turn > 255u) {
+        errors.push_back("--override-fake-attacks must be in the range 0..255.");
     }
     return errors;
 }
@@ -313,6 +417,20 @@ BattleJobBatchRunParseResult parse_battle_job_batch_run_tokens(
         } else if (arg == "--exec-job-seed-list") {
             if (require_value(args, i, arg, value, result.errors)) {
                 append_exec_job_seed_list_file(
+                    value,
+                    &result.options.seeded_exec_job_requests,
+                    &result.errors);
+            }
+        } else if (arg == "--exec-job-fake-attacks") {
+            if (require_value(args, i, arg, value, result.errors)) {
+                BattleJobBatchRunRequest request;
+                if (parse_exec_job_fake_attacks_spec(value, &request, &result.errors)) {
+                    result.options.seeded_exec_job_requests.push_back(request);
+                }
+            }
+        } else if (arg == "--exec-job-fake-attacks-list") {
+            if (require_value(args, i, arg, value, result.errors)) {
+                append_exec_job_fake_attacks_list_file(
                     value,
                     &result.options.seeded_exec_job_requests,
                     &result.errors);
@@ -383,6 +501,13 @@ BattleJobBatchRunParseResult parse_battle_job_batch_run_tokens(
                 result.options.override_start_rng_seed = parsed;
             } else {
                 result.errors.push_back("--override-start-rng-seed requires a uint32 seed in decimal or 0x hex.");
+            }
+        } else if (arg == "--override-fake-attacks") {
+            std::uint32_t parsed = 0;
+            if (require_value(args, i, arg, value, result.errors) && parse_fake_attack_count(value, parsed)) {
+                result.options.override_fake_attacks_this_turn = parsed;
+            } else {
+                result.errors.push_back("--override-fake-attacks requires an integer in the range 0..255.");
             }
         } else if (arg == "--help" || arg == "-h") {
             result.help_requested = true;

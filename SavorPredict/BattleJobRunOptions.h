@@ -24,6 +24,7 @@ struct BattleJobRunOptions {
     int timeout_ms = 180000;
     std::optional<std::uint32_t> battle_run_ms;
     std::optional<std::uint32_t> override_start_rng_seed;
+    std::optional<std::uint32_t> override_fake_attacks_this_turn;
 };
 
 struct BattleJobRunParseResult {

@@ -37,6 +37,13 @@ bool parse_u32_auto(const std::string& value, std::uint32_t& out) {
     return true;
 }
 
+bool parse_fake_attack_count(const std::string& value, std::uint32_t& out) {
+    if (!parse_u32_auto(value, out)) {
+        return false;
+    }
+    return out <= 255u;
+}
+
 int outer_timeout_for_battle_run_ms(std::uint32_t battle_run_ms) {
     constexpr long long kMarginMs = 60000;
     const auto adjusted = static_cast<long long>(battle_run_ms) + kMarginMs;
@@ -146,6 +153,10 @@ std::vector<std::string> validate_battle_job_run_options(const BattleJobRunOptio
     if (options.battle_run_ms.has_value() && *options.battle_run_ms == 0) {
         errors.push_back("--battle-run-ms must be positive.");
     }
+    if (options.override_fake_attacks_this_turn.has_value()
+        && *options.override_fake_attacks_this_turn > 255u) {
+        errors.push_back("--override-fake-attacks must be in the range 0..255.");
+    }
     return errors;
 }
 
@@ -234,6 +245,13 @@ BattleJobRunParseResult parse_battle_job_run_tokens(
                 result.options.override_start_rng_seed = parsed;
             } else {
                 result.errors.push_back("--override-start-rng-seed requires a uint32 seed in decimal or 0x hex.");
+            }
+        } else if (arg == "--override-fake-attacks") {
+            std::uint32_t parsed = 0;
+            if (require_value(args, i, arg, value, result.errors) && parse_fake_attack_count(value, parsed)) {
+                result.options.override_fake_attacks_this_turn = parsed;
+            } else {
+                result.errors.push_back("--override-fake-attacks requires an integer in the range 0..255.");
             }
         } else if (arg == "--help" || arg == "-h") {
             result.help_requested = true;
