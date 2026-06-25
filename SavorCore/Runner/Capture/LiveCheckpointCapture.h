@@ -22,6 +22,7 @@ public:
         std::uint32_t source_pc = 0;
         std::string source_checkpoint_id;
         bool one_shot = false;
+        bool owns_rng_draw = false;
     };
 
     bool start(

@@ -69,6 +69,7 @@ struct MemoryWatchpointSpec {
     SampleWidth size = SampleWidth::U32;
     WatchpointAccess access = WatchpointAccess::Write;
     WatchpointScope scope = WatchpointScope::Normal;
+    bool owns_rng_draw = false;
 };
 
 struct DynamicMemoryWatchpointSpec {
@@ -84,6 +85,7 @@ struct DynamicMemoryWatchpointSpec {
     WatchpointAccess access = WatchpointAccess::Write;
     WatchpointScope scope = WatchpointScope::Normal;
     bool one_shot = false;
+    bool owns_rng_draw = false;
 };
 
 struct CaptureProfile {

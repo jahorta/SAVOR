@@ -66,6 +66,43 @@ std::string gpr_name(std::uint8_t reg)
     return "r" + std::to_string(static_cast<unsigned>(reg));
 }
 
+void append_powerpc_call_stack_fields(CheckpointCaptureRecord& record, DolphinWrapper& host)
+{
+    const auto lr = host.getLinkRegister();
+    record.fields.push_back(CaptureField{ "lr", "\"" + HexU32(lr) + "\"", false });
+    record.fields.push_back(CaptureField{ "lr_callsite_pc", "\"" + HexU32(lr >= 4u ? lr - 4u : 0u) + "\"", false });
+
+    const auto frames = host.getPowerPcCallStack(8);
+    record.fields.push_back(CaptureField{ "stack_frame_count", std::to_string(frames.size()), false });
+
+    auto caller = std::find_if(
+        frames.begin(),
+        frames.end(),
+        [](const DolphinWrapper::PowerPcStackFrame& frame) {
+            return frame.return_pc != 0;
+        });
+    if (caller != frames.end()) {
+        record.fields.push_back(CaptureField{
+            "caller_source",
+            "stack_frame_" + std::to_string(caller->depth),
+            true });
+        record.fields.push_back(CaptureField{ "caller_return_pc", "\"" + HexU32(caller->return_pc) + "\"", false });
+        record.fields.push_back(CaptureField{ "caller_callsite_pc", "\"" + HexU32(caller->callsite_pc) + "\"", false });
+    } else {
+        record.fields.push_back(CaptureField{ "caller_source", "lr_fallback", true });
+        record.fields.push_back(CaptureField{ "caller_return_pc", "\"" + HexU32(lr) + "\"", false });
+        record.fields.push_back(CaptureField{ "caller_callsite_pc", "\"" + HexU32(lr >= 4u ? lr - 4u : 0u) + "\"", false });
+    }
+
+    for (const auto& frame : frames) {
+        const auto prefix = "stack_frame_" + std::to_string(frame.depth);
+        record.fields.push_back(CaptureField{ prefix + "_sp", "\"" + HexU32(frame.sp) + "\"", false });
+        record.fields.push_back(CaptureField{ prefix + "_next_sp", "\"" + HexU32(frame.next_sp) + "\"", false });
+        record.fields.push_back(CaptureField{ prefix + "_return_pc", "\"" + HexU32(frame.return_pc) + "\"", false });
+        record.fields.push_back(CaptureField{ prefix + "_callsite_pc", "\"" + HexU32(frame.callsite_pc) + "\"", false });
+    }
+}
+
 std::string watchpoint_access_for_json(WatchpointAccess access)
 {
     return watchpoint_access_for_json(static_cast<std::uint32_t>(access));
@@ -232,6 +269,7 @@ LiveCheckpointCapture::static_memory_watchpoints(WatchpointScope scope) const
             .source_pc = 0u,
             .source_checkpoint_id = "profile_static",
             .one_shot = false,
+            .owns_rng_draw = watchpoint.owns_rng_draw,
         });
         ++id;
     }
@@ -307,6 +345,7 @@ LiveCheckpointCapture::derive_dynamic_memory_watchpoints(
         if (auto* existing = find_pending_by_address(address)) {
             existing->label += "|" + spec.id;
             existing->source_checkpoint_id += "|" + spec.id;
+            existing->owns_rng_draw = existing->owns_rng_draw || spec.owns_rng_draw;
             continue;
         }
 
@@ -320,6 +359,7 @@ LiveCheckpointCapture::derive_dynamic_memory_watchpoints(
         active.source_pc = spec.pc;
         active.source_checkpoint_id = spec.id;
         active.one_shot = spec.one_shot;
+        active.owns_rng_draw = spec.owns_rng_draw;
         out.push_back(std::move(active));
     }
     return out;
@@ -483,7 +523,7 @@ bool LiveCheckpointCapture::capture_memory_watchpoint_hit(
     record.tbr_high = static_cast<std::uint32_t>(record.tbr_u64 >> 32);
     record.tbr_low = static_cast<std::uint32_t>(record.tbr_u64);
     record.rng_draw_index_before = rng_draw_index_;
-    record.owns_rng_draw = false;
+    bool owns_rng_draw = false;
 
     auto& hit_count = hit_counts_[checkpoint_id];
     record.checkpoint_hit_count = hit_count++;
@@ -493,7 +533,9 @@ bool LiveCheckpointCapture::capture_memory_watchpoint_hit(
         record.fields.push_back(CaptureField{ "memwatch_label", active->label, true });
         record.fields.push_back(CaptureField{ "memwatch_source_pc", "\"" + HexU32(active->source_pc) + "\"", false });
         record.fields.push_back(CaptureField{ "memwatch_source_checkpoint_id", active->source_checkpoint_id, true });
+        owns_rng_draw = active->owns_rng_draw;
     }
+    record.owns_rng_draw = owns_rng_draw;
     record.fields.push_back(CaptureField{ "memwatch_addr", "\"" + HexU32(hit.address) + "\"", false });
     record.fields.push_back(CaptureField{ "memwatch_size", std::to_string(hit.size), false });
     record.fields.push_back(CaptureField{ "memwatch_access", watchpoint_access_for_json(static_cast<std::uint32_t>(hit.access)), true });
@@ -501,9 +543,30 @@ bool LiveCheckpointCapture::capture_memory_watchpoint_hit(
     record.fields.push_back(CaptureField{ "memwatch_hits_after", std::to_string(hit.num_hits_after), false });
     record.fields.push_back(CaptureField{ "memwatch_confirmed_current_instruction", "true", false });
     record.fields.push_back(CaptureField{ "memwatch_unattributed_extra_hits", std::to_string(hit.unattributed_extra_hits), false });
+    append_powerpc_call_stack_fields(record, host);
+    if (owns_rng_draw) {
+        if (hit.decoded_access.memory_value_available) {
+            record.fields.push_back(CaptureField{
+                "rng_seed_before",
+                "\"" + HexU32(static_cast<std::uint32_t>(hit.decoded_access.memory_value)) + "\"",
+                false });
+        }
+        if (hit.decoded_access.value_available) {
+            record.fields.push_back(CaptureField{
+                "rng_seed_after",
+                "\"" + HexU32(static_cast<std::uint32_t>(hit.decoded_access.value)) + "\"",
+                false });
+        }
+    }
     append_decoded_memory_access_fields(record, hit.decoded_access);
 
-    return writer_.write(record, error_out);
+    if (!writer_.write(record, error_out)) {
+        return false;
+    }
+    if (owns_rng_draw) {
+        ++rng_draw_index_;
+    }
+    return true;
 }
 
 bool LiveCheckpointCapture::capture_memory_watchpoint_delta(
@@ -533,7 +596,7 @@ bool LiveCheckpointCapture::capture_memory_watchpoint_delta(
     record.tbr_high = static_cast<std::uint32_t>(record.tbr_u64 >> 32);
     record.tbr_low = static_cast<std::uint32_t>(record.tbr_u64);
     record.rng_draw_index_before = rng_draw_index_;
-    record.owns_rng_draw = false;
+    bool owns_rng_draw = false;
 
     auto& hit_count = hit_counts_[checkpoint_id];
     record.checkpoint_hit_count = hit_count++;
@@ -543,13 +606,17 @@ bool LiveCheckpointCapture::capture_memory_watchpoint_delta(
         record.fields.push_back(CaptureField{ "memwatch_label", active->label, true });
         record.fields.push_back(CaptureField{ "memwatch_source_pc", "\"" + HexU32(active->source_pc) + "\"", false });
         record.fields.push_back(CaptureField{ "memwatch_source_checkpoint_id", active->source_checkpoint_id, true });
+        owns_rng_draw = active->owns_rng_draw;
     }
+    record.owns_rng_draw = false;
+    record.fields.push_back(CaptureField{ "memwatch_would_own_rng_draw_if_confirmed", owns_rng_draw ? "true" : "false", false });
     record.fields.push_back(CaptureField{ "memwatch_addr", "\"" + HexU32(delta.address) + "\"", false });
     record.fields.push_back(CaptureField{ "memwatch_size", std::to_string(delta.size), false });
     record.fields.push_back(CaptureField{ "memwatch_access", watchpoint_access_for_json(static_cast<std::uint32_t>(delta.access)), true });
     record.fields.push_back(CaptureField{ "memwatch_hits_before", std::to_string(delta.num_hits_before), false });
     record.fields.push_back(CaptureField{ "memwatch_hits_after", std::to_string(delta.num_hits_after), false });
     record.fields.push_back(CaptureField{ "memwatch_confirmed_current_instruction", "false", false });
+    append_powerpc_call_stack_fields(record, host);
     append_decoded_memory_access_fields(record, decoded_current_access);
 
     return writer_.write(record, error_out);

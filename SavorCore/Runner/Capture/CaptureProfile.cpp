@@ -706,6 +706,12 @@ CaptureProfileParseResult ParseCaptureProfileText(const std::string& text)
             watchpoint.scope = *scope;
         }
 
+        const auto owns_text = ini.get(section, "owns_rng_draw", "");
+        if (!owns_text.empty()
+            && !parse_bool(owns_text, watchpoint.owns_rng_draw)) {
+            result.errors.push_back(section + ": owns_rng_draw must be true/false");
+        }
+
         profile.memory_watchpoints.push_back(std::move(watchpoint));
     }
 
@@ -782,6 +788,12 @@ CaptureProfileParseResult ParseCaptureProfileText(const std::string& text)
         if (!one_shot_text.empty()
             && !parse_bool(one_shot_text, watchpoint.one_shot)) {
             result.errors.push_back(section + ": one_shot must be true/false");
+        }
+
+        const auto owns_text = ini.get(section, "owns_rng_draw", "");
+        if (!owns_text.empty()
+            && !parse_bool(owns_text, watchpoint.owns_rng_draw)) {
+            result.errors.push_back(section + ": owns_rng_draw must be true/false");
         }
 
         profile.dynamic_memory_watchpoints.push_back(std::move(watchpoint));

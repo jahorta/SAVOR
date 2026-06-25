@@ -342,6 +342,54 @@ namespace savor {
         return value;
     }
 
+    uint32_t DolphinWrapper::getLinkRegister()
+    {
+        if (Core::GetState(*m_system) == Core::State::Paused)
+            return LR(m_system->GetPowerPC().GetPPCState());
+
+        uint32_t value = 0;
+        runOnCpuThread([&] {
+            value = LR(m_system->GetPowerPC().GetPPCState());
+            }, true);
+        return value;
+    }
+
+    std::vector<DolphinWrapper::PowerPcStackFrame> DolphinWrapper::getPowerPcCallStack(uint32_t max_depth)
+    {
+        std::vector<PowerPcStackFrame> frames;
+        if (max_depth == 0) {
+            return frames;
+        }
+
+        std::unordered_set<uint32_t> seen_sps;
+        uint32_t sp = getRegister(1);
+        for (uint32_t depth = 0; depth < max_depth && sp != 0; ++depth) {
+            if (!seen_sps.insert(sp).second) {
+                break;
+            }
+
+            uint32_t next_sp = 0;
+            uint32_t return_pc = 0;
+            if (!readU32(sp, next_sp) || !readU32(sp + 4u, return_pc)) {
+                break;
+            }
+
+            frames.push_back(PowerPcStackFrame{
+                .depth = depth,
+                .sp = sp,
+                .next_sp = next_sp,
+                .return_pc = return_pc,
+                .callsite_pc = return_pc >= 4u ? return_pc - 4u : 0u,
+            });
+
+            if (next_sp == 0 || next_sp == sp || (next_sp & 0x3u) != 0) {
+                break;
+            }
+            sp = next_sp;
+        }
+        return frames;
+    }
+
     uint32_t DolphinWrapper::getPC()
     {
         if (Core::GetState(*m_system) == Core::State::Paused)

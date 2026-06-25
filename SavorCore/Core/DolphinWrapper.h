@@ -63,6 +63,15 @@ namespace savor {
         bool getMem1(std::string& out) const; // fills out with 24 MiB MEM1 snapshot
         bool getMem1RangeRaw(std::string& out, uint32_t va, uint32_t size) const;
         uint32_t getRegister(uint8_t reg);
+        uint32_t getLinkRegister();
+        struct PowerPcStackFrame {
+            uint32_t depth = 0;
+            uint32_t sp = 0;
+            uint32_t next_sp = 0;
+            uint32_t return_pc = 0;
+            uint32_t callsite_pc = 0;
+        };
+        std::vector<PowerPcStackFrame> getPowerPcCallStack(uint32_t max_depth = 8);
         uint32_t getPC();
         uint64_t getTBR();
         uint32_t getConfigRTC(bool offset = true);

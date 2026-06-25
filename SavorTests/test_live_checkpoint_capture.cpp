@@ -63,6 +63,7 @@ TEST(LiveCheckpointCaptureProfile, ParsesDefaultSamplesAndUniquePcs)
         "size=u16\n"
         "access=write\n"
         "scope=input_macro\n"
+        "owns_rng_draw=true\n"
         "\n"
         "[dynamic_watchpoint.actor_field6]\n"
         "pc=0x8001331C\n"
@@ -85,6 +86,7 @@ TEST(LiveCheckpointCaptureProfile, ParsesDefaultSamplesAndUniquePcs)
         "size=u16\n"
         "access=access\n"
         "one_shot=true\n"
+        "owns_rng_draw=true\n"
         "\n"
         "[checkpoint.first]\n"
         "pc=0x80001000\n"
@@ -116,6 +118,7 @@ TEST(LiveCheckpointCaptureProfile, ParsesDefaultSamplesAndUniquePcs)
     EXPECT_EQ(profile.memory_watchpoints[0].size, SampleWidth::U16);
     EXPECT_EQ(profile.memory_watchpoints[0].access, WatchpointAccess::Write);
     EXPECT_EQ(profile.memory_watchpoints[0].scope, WatchpointScope::InputMacro);
+    EXPECT_TRUE(profile.memory_watchpoints[0].owns_rng_draw);
     EXPECT_EQ(profile.dynamic_memory_watchpoints[0].id, "actor_field6");
     EXPECT_EQ(profile.dynamic_memory_watchpoints[0].pc, 0x8001331Cu);
     EXPECT_EQ(profile.dynamic_memory_watchpoints[0].base_reg, 28u);
@@ -131,6 +134,7 @@ TEST(LiveCheckpointCaptureProfile, ParsesDefaultSamplesAndUniquePcs)
     EXPECT_EQ(profile.dynamic_memory_watchpoints[1].size, SampleWidth::U16);
     EXPECT_EQ(profile.dynamic_memory_watchpoints[1].access, WatchpointAccess::Access);
     EXPECT_EQ(profile.dynamic_memory_watchpoints[1].scope, WatchpointScope::Normal);
+    EXPECT_FALSE(profile.dynamic_memory_watchpoints[1].owns_rng_draw);
     EXPECT_EQ(profile.dynamic_memory_watchpoints[2].id, "pointer_chased_field6");
     EXPECT_EQ(profile.dynamic_memory_watchpoints[2].pc, 0x80086F48u);
     EXPECT_TRUE(profile.dynamic_memory_watchpoints[2].use_address_program);
@@ -138,6 +142,7 @@ TEST(LiveCheckpointCaptureProfile, ParsesDefaultSamplesAndUniquePcs)
     EXPECT_EQ(profile.dynamic_memory_watchpoints[2].size, SampleWidth::U16);
     EXPECT_EQ(profile.dynamic_memory_watchpoints[2].access, WatchpointAccess::Access);
     EXPECT_TRUE(profile.dynamic_memory_watchpoints[2].one_shot);
+    EXPECT_TRUE(profile.dynamic_memory_watchpoints[2].owns_rng_draw);
     EXPECT_FALSE(profile.dynamic_memory_watchpoints[1].one_shot);
     EXPECT_EQ(profile.checkpoints[0].memory_samples.size(), 2u);
     EXPECT_EQ(profile.checkpoints[0].memory_samples[0].name, "rng_seed_before");
