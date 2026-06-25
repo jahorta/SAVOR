@@ -1602,6 +1602,8 @@ void append_counter_follow_up(
         append_death_and_drop(result, state, context, counter_action);
     }
 
+    // The 8004 landed-hit effect burst is part of this action's tail; drain it
+    // before returning to the outer turn-order executor.
     append_post_attack_visual_rng(
         result,
         state,
@@ -1709,6 +1711,8 @@ void append_attack_resolution(
     }
 
     if (attack.attack_result != 0) {
+        // The 8004 landed-hit effect burst is part of this action's tail; drain it
+        // before the next actor's setup starts.
         append_post_attack_visual_rng(
             result,
             state,

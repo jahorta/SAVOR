@@ -2382,6 +2382,93 @@ TEST(SavorPredictBattlePredictor, OrdersLethalDropBeforeCombatEffectBurst) {
     EXPECT_NE(drop_validation->detail.find("before the following combat-effect RNG burst"), std::string::npos);
 }
 
+TEST(SavorPredictBattlePredictor, DrainsLandedEffectBurstBeforeNextActorSetup) {
+    std::optional<BattlePredictionResult> matched;
+    for (std::uint32_t seed = 0; seed < 4096 && !matched.has_value(); ++seed) {
+        BattlePredictionInput input;
+        input.profile = first_battle_prediction_profile();
+        input.starting_rng_seed = seed;
+        input.context = make_predictor_first_battle_context(1000);
+        input.turn_plan = make_two_pc_attack_turn_plan(0);
+
+        auto result = predict_battle(input);
+
+        const auto aika_burst = std::find_if(
+            result.events.begin(),
+            result.events.end(),
+            [](const BattlePredictionEvent& event) {
+                return event.phase == "action_visual_rng"
+                    && event.label == "combat_effect_burst"
+                    && event.actor_slot == 1
+                    && event.target_slot == 4;
+            });
+        if (aika_burst == result.events.end()) {
+            continue;
+        }
+
+        const auto vyse_setup = std::find_if(
+            result.events.begin(),
+            result.events.end(),
+            [](const BattlePredictionEvent& event) {
+                return event.phase == "movement_setup"
+                    && event.label == "worker_select"
+                    && event.actor_slot == 0
+                    && event.target_slot == 4;
+            });
+        if (vyse_setup == result.events.end()) {
+            continue;
+        }
+
+        if (aika_burst->sequence < vyse_setup->sequence) {
+            matched = std::move(result);
+        }
+    }
+
+    ASSERT_TRUE(matched.has_value());
+    const auto& result = *matched;
+
+    const auto aika_attack = std::find_if(
+        result.events.begin(),
+        result.events.end(),
+        [](const BattlePredictionEvent& event) {
+            return event.phase == "attack_resolution"
+                && (event.label == "attack_hit" || event.label == "attack_crit")
+                && event.actor_slot == 1
+                && event.target_slot == 4;
+        });
+    ASSERT_NE(aika_attack, result.events.end());
+
+    const auto aika_burst = std::find_if(
+        result.events.begin(),
+        result.events.end(),
+        [](const BattlePredictionEvent& event) {
+            return event.phase == "action_visual_rng"
+                && event.label == "combat_effect_burst"
+                && event.actor_slot == 1
+                && event.target_slot == 4;
+        });
+    ASSERT_NE(aika_burst, result.events.end());
+    EXPECT_EQ(aika_burst->draws_consumed, 110);
+    ASSERT_TRUE(aika_burst->effect_source_key.has_value());
+    EXPECT_EQ(*aika_burst->effect_source_key, 5);
+    EXPECT_TRUE(aika_burst->rng_seed_before.has_value());
+    EXPECT_TRUE(aika_burst->rng_seed_after.has_value());
+
+    const auto vyse_setup = std::find_if(
+        result.events.begin(),
+        result.events.end(),
+        [](const BattlePredictionEvent& event) {
+            return event.phase == "movement_setup"
+                && event.label == "worker_select"
+                && event.actor_slot == 0
+                && event.target_slot == 4;
+        });
+    ASSERT_NE(vyse_setup, result.events.end());
+
+    EXPECT_LT(aika_attack->sequence, aika_burst->sequence);
+    EXPECT_LT(aika_burst->sequence, vyse_setup->sequence);
+}
+
 TEST(SavorPredictBattlePredictor, UsesActionViewStdJsonDirForSelectorBackedCameraPrediction) {
     const auto temp_dir =
         std::filesystem::temp_directory_path() / "savor_predict_battle_predictor_std_json_test";

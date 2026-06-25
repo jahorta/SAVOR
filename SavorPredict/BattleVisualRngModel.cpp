@@ -204,7 +204,8 @@ const char* battle_visual_rng_step_status_name(BattleVisualRngStepStatus status)
 
 const char* first_battle_basic_attack_visual_rng_rule_detail() {
     return "first-battle basic attacks model one action-view mode-0 rewrite-gate camera draw "
-           "before hit/damage resolution, then landed-hit combat effect bursts using source "
+           "before hit/damage resolution, then landed-hit combat effect bursts as the action "
+           "tail before the battle controller advances to the next actor; the tail uses source "
            "keys 4/5 for non-critical first-battle actors and source key 8 for the observed "
            "successful-critical path; counter follow-ups use the forced-hit path and select "
            "source key 4 for enemy counters or source key 5 for PC counters";
