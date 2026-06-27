@@ -10,6 +10,7 @@
 #include <limits>
 #include <set>
 #include <sstream>
+#include <unordered_set>
 
 namespace savor::capture {
 namespace {
@@ -166,6 +167,18 @@ std::vector<std::string> split_pipe_list(const std::string& value)
     std::string cur;
     std::istringstream in(value);
     while (std::getline(in, cur, '|')) {
+        cur = trim(cur);
+        if (!cur.empty()) out.push_back(cur);
+    }
+    return out;
+}
+
+std::vector<std::string> split_semicolon_list(const std::string& value)
+{
+    std::vector<std::string> out;
+    std::string cur;
+    std::istringstream in(value);
+    while (std::getline(in, cur, ';')) {
         cur = trim(cur);
         if (!cur.empty()) out.push_back(cur);
     }
@@ -476,6 +489,138 @@ std::optional<GprSampleSpec> parse_gpr_sample(
     return spec;
 }
 
+std::optional<LinkedListFieldSpec> parse_linked_list_field(
+    const std::string& token,
+    std::vector<std::string>& errors,
+    const std::string& section,
+    const std::string& list_name)
+{
+    const auto at = token.find('@');
+    const auto colon = token.rfind(':');
+    if (at == std::string::npos || colon == std::string::npos || at >= colon) {
+        errors.push_back(section + ": linked_list field must be name@offset:width in '" + token + "'");
+        return std::nullopt;
+    }
+
+    LinkedListFieldSpec spec{};
+    spec.name = trim(token.substr(0, at));
+    if (spec.name.empty()) {
+        errors.push_back(section + ": linked_list '" + list_name + "' has an empty field name");
+        return std::nullopt;
+    }
+    if (!parse_i32(token.substr(at + 1, colon - at - 1), spec.offset)) {
+        errors.push_back(section + ": linked_list '" + list_name + "' has invalid field offset in '" + token + "'");
+        return std::nullopt;
+    }
+    const auto width = parse_width(token.substr(colon + 1));
+    if (!width.has_value()) {
+        errors.push_back(section + ": linked_list '" + list_name + "' has invalid field width in '" + token + "'");
+        return std::nullopt;
+    }
+    spec.width = *width;
+    return spec;
+}
+
+std::optional<LinkedListSnapshotSpec> parse_linked_list_sample(
+    const std::string& token,
+    std::vector<std::string>& errors,
+    const std::string& section)
+{
+    const auto colon = token.find(':');
+    if (colon == std::string::npos) {
+        errors.push_back(section + ": linked_list sample must be name:head_ptr=...,next=...,max=...,fields=..., got '" + token + "'");
+        return std::nullopt;
+    }
+
+    LinkedListSnapshotSpec spec{};
+    spec.name = trim(token.substr(0, colon));
+    if (spec.name.empty()) {
+        errors.push_back(section + ": linked_list sample name is empty");
+        return std::nullopt;
+    }
+
+    bool has_head_ptr = false;
+    bool has_next = false;
+    bool has_max = false;
+    bool has_fields = false;
+    std::unordered_set<std::string> field_names;
+
+    for (const auto& option : split_list(token.substr(colon + 1))) {
+        const auto eq = option.find('=');
+        if (eq == std::string::npos) {
+            errors.push_back(section + ": linked_list '" + spec.name + "' option must be key=value, got '" + option + "'");
+            return std::nullopt;
+        }
+        const auto key = to_lower(trim(option.substr(0, eq)));
+        const auto value = trim(option.substr(eq + 1));
+        if (key == "head_ptr" || key == "head") {
+            std::uint32_t address = 0;
+            if (!parse_u32(value, address) || address == 0) {
+                errors.push_back(section + ": linked_list '" + spec.name + "' has invalid head_ptr");
+                return std::nullopt;
+            }
+            spec.head_ptr_address = address;
+            has_head_ptr = true;
+        } else if (key == "next") {
+            std::int32_t offset = 0;
+            if (!parse_i32(value, offset)) {
+                errors.push_back(section + ": linked_list '" + spec.name + "' has invalid next offset");
+                return std::nullopt;
+            }
+            spec.next_offset = offset;
+            has_next = true;
+        } else if (key == "max" || key == "max_nodes") {
+            std::uint32_t max_nodes = 0;
+            if (!parse_u32(value, max_nodes) || max_nodes == 0 || max_nodes > 256) {
+                errors.push_back(section + ": linked_list '" + spec.name + "' max must be 1..256");
+                return std::nullopt;
+            }
+            spec.max_nodes = max_nodes;
+            has_max = true;
+        } else if (key == "fields") {
+            has_fields = true;
+            for (const auto& field_token : split_pipe_list(value)) {
+                auto field = parse_linked_list_field(field_token, errors, section, spec.name);
+                if (!field.has_value()) {
+                    return std::nullopt;
+                }
+                if (!field_names.insert(field->name).second) {
+                    errors.push_back(section + ": linked_list '" + spec.name + "' duplicate field '" + field->name + "'");
+                    return std::nullopt;
+                }
+                spec.fields.push_back(*field);
+            }
+        } else {
+            errors.push_back(section + ": linked_list '" + spec.name + "' has unknown option '" + key + "'");
+            return std::nullopt;
+        }
+    }
+
+    if (!has_head_ptr) errors.push_back(section + ": linked_list '" + spec.name + "' missing head_ptr");
+    if (!has_next) errors.push_back(section + ": linked_list '" + spec.name + "' missing next");
+    if (!has_max) errors.push_back(section + ": linked_list '" + spec.name + "' missing max");
+    if (!has_fields || spec.fields.empty()) {
+        errors.push_back(section + ": linked_list '" + spec.name + "' missing fields");
+    }
+    if (!has_head_ptr || !has_next || !has_max || !has_fields || spec.fields.empty()) {
+        return std::nullopt;
+    }
+    return spec;
+}
+
+void append_linked_list_samples(
+    std::vector<LinkedListSnapshotSpec>& out,
+    const std::string& value,
+    std::vector<std::string>& errors,
+    const std::string& section)
+{
+    for (const auto& token : split_semicolon_list(value)) {
+        if (auto parsed = parse_linked_list_sample(token, errors, section)) {
+            out.push_back(*parsed);
+        }
+    }
+}
+
 void append_register_memory_samples(
     std::vector<RegisterMemorySampleSpec>& out,
     const std::string& value,
@@ -596,6 +741,11 @@ CaptureProfileParseResult ParseCaptureProfileText(const std::string& text)
         ini.get("profile", "addrprog", ""),
         result.errors,
         "profile");
+    append_linked_list_samples(
+        profile.default_linked_list_samples,
+        ini.get("profile", "linked_list", ""),
+        result.errors,
+        "profile");
     const auto default_addrprog_trace_text = ini.get("profile", "addrprog_trace", "false");
     if (!parse_bool(default_addrprog_trace_text, profile.default_address_program_trace)) {
         result.errors.push_back("profile: addrprog_trace must be true/false");
@@ -623,6 +773,15 @@ CaptureProfileParseResult ParseCaptureProfileText(const std::string& text)
             result.errors.push_back(section + ": owns_rng_draw must be true/false");
         }
         checkpoint.owns_rng_draw = owns_rng_draw;
+        const auto max_hits_text = ini.get(section, "max_hits", "");
+        if (!max_hits_text.empty()) {
+            std::uint32_t max_hits = 0;
+            if (!parse_u32(max_hits_text, max_hits) || max_hits == 0) {
+                result.errors.push_back(section + ": max_hits must be a positive integer");
+            } else {
+                checkpoint.max_hits = max_hits;
+            }
+        }
         checkpoint.address_program_trace = profile.default_address_program_trace;
         const auto addrprog_trace_text = ini.get(section, "addrprog_trace", "");
         if (!addrprog_trace_text.empty()
@@ -634,6 +793,7 @@ CaptureProfileParseResult ParseCaptureProfileText(const std::string& text)
         checkpoint.gpr_samples = profile.default_gpr_samples;
         checkpoint.register_memory_samples = profile.default_register_memory_samples;
         checkpoint.address_program_samples = profile.default_address_program_samples;
+        checkpoint.linked_list_samples = profile.default_linked_list_samples;
         append_memory_samples(
             checkpoint.memory_samples,
             ini.get(section, "memory", ""),
@@ -652,6 +812,11 @@ CaptureProfileParseResult ParseCaptureProfileText(const std::string& text)
         append_address_program_samples(
             checkpoint.address_program_samples,
             ini.get(section, "addrprog", ""),
+            result.errors,
+            section);
+        append_linked_list_samples(
+            checkpoint.linked_list_samples,
+            ini.get(section, "linked_list", ""),
             result.errors,
             section);
 

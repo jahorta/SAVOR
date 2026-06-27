@@ -46,7 +46,9 @@ void write_checkpoint(
     const std::vector<std::string_view>& memory = {},
     const std::vector<std::string_view>& gprs = {},
     const std::vector<std::string_view>& reg_memory = {},
-    const std::vector<std::string_view>& addrprog = {})
+    const std::vector<std::string_view>& addrprog = {},
+    const std::vector<std::string_view>& linked_list = {},
+    std::uint32_t max_hits = 0)
 {
     out << "[checkpoint." << id << "]\n";
     out << "pc=0x" << pc << "\n";
@@ -54,6 +56,9 @@ void write_checkpoint(
     out << "function=" << function << "\n";
     out << "checkpoint=" << checkpoint << "\n";
     out << "owns_rng_draw=" << (owns_rng_draw ? "true" : "false") << "\n";
+    if (max_hits != 0) {
+        out << "max_hits=" << max_hits << "\n";
+    }
     if (!memory.empty()) {
         out << "memory=";
         for (std::size_t i = 0; i < memory.size(); ++i) {
@@ -83,6 +88,14 @@ void write_checkpoint(
         for (std::size_t i = 0; i < addrprog.size(); ++i) {
             if (i != 0) out << ",";
             out << addrprog[i];
+        }
+        out << "\n";
+    }
+    if (!linked_list.empty()) {
+        out << "linked_list=";
+        for (std::size_t i = 0; i < linked_list.size(); ++i) {
+            if (i != 0) out << ";";
+            out << linked_list[i];
         }
         out << "\n";
     }
@@ -163,6 +176,13 @@ std::vector<std::string_view> action_view_globals()
         "global_camera_override_80347394:0x80347394:u32",
         "global_camera_flags_803472F4:0x803472F4:u32",
     };
+}
+
+std::string thread_runner_list_snapshot_sample()
+{
+    return "thread_list:head_ptr=0x80311A84,next=0x04,max=64,"
+        "fields=callback@0x00:u32|next@0x04:u32|parent@0x08:u32|"
+        "flags@0x18:u8|depth@0x1b:u8|order_bits@0x20:u32|payload_word@0x24:u32";
 }
 
 std::vector<std::string_view> action_source_globals()
@@ -2573,6 +2593,146 @@ std::string build_first_battle_action_view_selector_coverage_profile_ini()
     return out.str();
 }
 
+std::string build_first_battle_thread_list_profile_ini()
+{
+    std::ostringstream out;
+    out << "[profile]\n";
+    out << "name=first_battle_thread_list_ordering\n";
+    out << "schema_version=1\n";
+    out << "memory=rng_seed_before:" << hex_u32(addr::AddrRegistry::base(addr::core::RNG_SEED)) << ":u32\n";
+    out << "linked_list=" << thread_runner_list_snapshot_sample() << "\n\n";
+
+    write_checkpoint(
+        out,
+        "thread_runner_entry_800136DC",
+        "800136DC",
+        "thread_runner_entry",
+        "FUN_800136dc",
+        "thread_runner_entry",
+        false,
+        {},
+        {
+            "thread_arg:3",
+        },
+        {},
+        {},
+        {},
+        1);
+
+    write_checkpoint(
+        out,
+        "setup_turn_action_entry_80082134",
+        "80082134",
+        "setup_turn_action_entry",
+        "setupTurnAction_80082134",
+        "setup_turn_action",
+        false,
+        {},
+        {
+            "actor_slot_arg:3",
+        });
+
+    write_checkpoint(
+        out,
+        "action_view_update_entry_80051264",
+        "80051264",
+        "action_view_update_entry",
+        "UpdateActionViewRecord_80051264",
+        "action_view_update",
+        false,
+        {},
+        {
+            "action_thread_arg:3",
+        });
+
+    write_checkpoint(
+        out,
+        "action_view_tail_draw_gate_80051320",
+        "80051320",
+        "action_view_tail_draw_gate",
+        "UpdateActionViewRecord_80051264",
+        "action_view_tail",
+        false,
+        {},
+        action_view_update_gprs(),
+        action_view_worksheet_from_r31_samples());
+
+    write_checkpoint(
+        out,
+        "action_view_pathing_tail_gate_800514B0",
+        "800514B0",
+        "action_view_pathing_tail_gate",
+        "UpdateActionViewRecord_80051264",
+        "action_view_pathing_tail",
+        false,
+        {},
+        action_view_update_gprs(),
+        action_view_worksheet_from_r31_samples());
+
+    write_checkpoint(
+        out,
+        "effect_record_spawn_copy_entry_8003BA08",
+        "8003BA08",
+        "effect_record_spawn_copy_entry",
+        "FUN_8003ba08",
+        "effect_record_spawn_copy",
+        false,
+        {},
+        {
+            "effect_record_arg:3",
+            "parent_action_thread_arg:4",
+        },
+        {},
+        {},
+        {},
+        8);
+
+    write_checkpoint(
+        out,
+        "combat_effect_worker_entry_80042B10",
+        "80042B10",
+        "combat_effect_worker_entry",
+        "FUN_80042b10",
+        "combat_effect_worker",
+        false,
+        {},
+        {
+            "effect_thread_arg:3",
+        });
+
+    write_checkpoint(
+        out,
+        "combat_effect_rng_key_gate_80042EB8",
+        "80042EB8",
+        "combat_effect_rng_key_gate",
+        "FUN_80042b10",
+        "combat_effect_key_gate",
+        false,
+        {},
+        {
+            "effect_record:29",
+            "effect_thread:30",
+        },
+        combat_effect_burst_samples());
+
+    write_checkpoint(
+        out,
+        "position_line_score_entry_8001AB60",
+        "8001AB60",
+        "position_line_score_entry",
+        "FUN_8001ab60",
+        "position_line_score",
+        false,
+        {},
+        {
+            "position_arg0:3",
+            "position_arg1:4",
+            "position_arg2:5",
+        });
+
+    return out.str();
+}
+
 int write_first_battle_capture_profile(
     const std::filesystem::path& output_path,
     std::ostream& out,
@@ -2772,6 +2932,40 @@ int write_first_battle_action_view_selector_coverage_profile(
         return 1;
     }
     out << "Wrote first-battle action-view selector coverage capture profile: "
+        << output_path.string() << "\n";
+    return 0;
+}
+
+int write_first_battle_thread_list_profile(
+    const std::filesystem::path& output_path,
+    std::ostream& out,
+    std::ostream& err)
+{
+    if (output_path.empty()) {
+        err << "write-first-battle-thread-list-profile requires --output PATH.\n";
+        return 2;
+    }
+    if (const auto parent = output_path.parent_path(); !parent.empty()) {
+        std::error_code ec;
+        std::filesystem::create_directories(parent, ec);
+        if (ec) {
+            err << "Failed to create output directory: " << ec.message() << "\n";
+            return 1;
+        }
+    }
+
+    std::ofstream file(output_path, std::ios::binary | std::ios::trunc);
+    if (!file.is_open()) {
+        err << "Failed to open output profile: " << output_path.string() << "\n";
+        return 1;
+    }
+    const auto text = build_first_battle_thread_list_profile_ini();
+    file.write(text.data(), static_cast<std::streamsize>(text.size()));
+    if (!file.good()) {
+        err << "Failed to write output profile: " << output_path.string() << "\n";
+        return 1;
+    }
+    out << "Wrote first-battle thread-list capture profile: "
         << output_path.string() << "\n";
     return 0;
 }

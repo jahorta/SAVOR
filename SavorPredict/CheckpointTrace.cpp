@@ -228,6 +228,39 @@ bool parse_json_value_token(const std::string& line, std::size_t& index, std::st
     if (line[index] == '"') {
         return parse_json_string_token(line, index, out);
     }
+    if (line[index] == '[' || line[index] == '{') {
+        const char open = line[index];
+        const char close = open == '[' ? ']' : '}';
+        const auto start = index;
+        int depth = 0;
+        bool in_string = false;
+        bool escaped = false;
+        while (index < line.size()) {
+            const char c = line[index++];
+            if (in_string) {
+                if (escaped) {
+                    escaped = false;
+                } else if (c == '\\') {
+                    escaped = true;
+                } else if (c == '"') {
+                    in_string = false;
+                }
+                continue;
+            }
+            if (c == '"') {
+                in_string = true;
+            } else if (c == open) {
+                ++depth;
+            } else if (c == close) {
+                --depth;
+                if (depth == 0) {
+                    out = line.substr(start, index - start);
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
     const auto start = index;
     while (index < line.size() && line[index] != ',' && line[index] != '}') {
         ++index;

@@ -192,6 +192,9 @@
     <ClInclude Include="Runner\Capture\CaptureProfile.h">
       <Filter>Runner\Capture</Filter>
     </ClInclude>
+    <ClInclude Include="Runner\Capture\LinkedListSnapshot.h">
+      <Filter>Runner\Capture</Filter>
+    </ClInclude>
     <ClInclude Include="Runner\Capture\LiveCheckpointCapture.h">
       <Filter>Runner\Capture</Filter>
     </ClInclude>
@@ -414,6 +417,9 @@
       <Filter>Runner\Capture</Filter>
     </ClCompile>
     <ClCompile Include="Runner\Capture\CaptureProfile.cpp">
+      <Filter>Runner\Capture</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Capture\LinkedListSnapshot.cpp">
       <Filter>Runner\Capture</Filter>
     </ClCompile>
     <ClCompile Include="Runner\Capture\LiveCheckpointCapture.cpp">

@@ -296,6 +296,48 @@ namespace savor {
         }
     }
 
+    void PhaseScriptVM::disarm_exhausted_capture_pcs() {
+        if (!capture_ || !capture_->active()) {
+            return;
+        }
+
+        auto exhausted = capture_->take_newly_exhausted_pcs();
+        if (exhausted.empty()) {
+            return;
+        }
+
+        const auto pc_is_program_armed = [&](uint32_t pc) {
+            if (std::find(armed_pcs_.begin(), armed_pcs_.end(), pc) != armed_pcs_.end()) {
+                return true;
+            }
+            for (const auto key : predicate_bp_keys_) {
+                if (const auto* e = bpmap_.find(key); e != nullptr && e->pc == pc) {
+                    return true;
+                }
+            }
+            for (const auto key : macro_enabled_bp_keys_) {
+                if (const auto* e = bpmap_.find(key); e != nullptr && e->pc == pc) {
+                    return true;
+                }
+            }
+            return false;
+        };
+
+        std::vector<uint32_t> to_disarm;
+        for (const auto pc : exhausted) {
+            capture_armed_pcs_.erase(
+                std::remove(capture_armed_pcs_.begin(), capture_armed_pcs_.end(), pc),
+                capture_armed_pcs_.end());
+            if (!pc_is_program_armed(pc)
+                && std::find(to_disarm.begin(), to_disarm.end(), pc) == to_disarm.end()) {
+                to_disarm.push_back(pc);
+            }
+        }
+        if (!to_disarm.empty()) {
+            host_.disarmPcBreakpoints(to_disarm);
+        }
+    }
+
     bool PhaseScriptVM::configure_capture_from_context(const PSContext& ctx, PSResult& result) {
         std::string profile_path;
         std::string output_path;
@@ -442,6 +484,7 @@ namespace savor {
                 return false;
             }
         }
+        disarm_exhausted_capture_pcs();
         return true;
     }
 

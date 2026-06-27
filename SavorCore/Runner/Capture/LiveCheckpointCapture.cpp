@@ -2,9 +2,11 @@
 
 #include "../../Core/DolphinWrapper.h"
 #include "../../Core/Memory/Soa/SoaAddrProgram.h"
+#include "LinkedListSnapshot.h"
 
 #include <algorithm>
 #include <cstddef>
+#include <iterator>
 #include <sstream>
 #include <string>
 
@@ -217,6 +219,8 @@ bool LiveCheckpointCapture::start(
     next_sequence_ = 0;
     rng_draw_index_ = 0;
     hit_counts_.clear();
+    exhausted_checkpoint_ids_.clear();
+    newly_exhausted_pcs_.clear();
     active_memory_watchpoints_.clear();
     active_ = true;
     return true;
@@ -231,17 +235,43 @@ void LiveCheckpointCapture::stop()
     next_sequence_ = 0;
     rng_draw_index_ = 0;
     hit_counts_.clear();
+    exhausted_checkpoint_ids_.clear();
+    newly_exhausted_pcs_.clear();
     active_memory_watchpoints_.clear();
 }
 
 bool LiveCheckpointCapture::contains_pc(std::uint32_t pc) const
 {
-    return active_ && !profile_.find_checkpoints(pc).empty();
+    if (!active_) return false;
+    for (const auto* checkpoint : profile_.find_checkpoints(pc)) {
+        if (exhausted_checkpoint_ids_.find(checkpoint->id) == exhausted_checkpoint_ids_.end()) {
+            return true;
+        }
+    }
+    return false;
 }
 
 std::vector<std::uint32_t> LiveCheckpointCapture::pcs() const
 {
-    return active_ ? profile_.pcs() : std::vector<std::uint32_t>{};
+    std::vector<std::uint32_t> out;
+    if (!active_) return out;
+    out.reserve(profile_.checkpoints.size());
+    for (const auto& checkpoint : profile_.checkpoints) {
+        if (exhausted_checkpoint_ids_.find(checkpoint.id) != exhausted_checkpoint_ids_.end()) {
+            continue;
+        }
+        if (std::find(out.begin(), out.end(), checkpoint.pc) == out.end()) {
+            out.push_back(checkpoint.pc);
+        }
+    }
+    return out;
+}
+
+std::vector<std::uint32_t> LiveCheckpointCapture::take_newly_exhausted_pcs()
+{
+    std::vector<std::uint32_t> out = std::move(newly_exhausted_pcs_);
+    newly_exhausted_pcs_.clear();
+    return out;
 }
 
 const std::vector<MemoryWatchpointSpec>& LiveCheckpointCapture::memory_watchpoints() const
@@ -407,7 +437,12 @@ bool LiveCheckpointCapture::capture_hit(DolphinWrapper& host, std::uint32_t pc, 
     const auto checkpoints = profile_.find_checkpoints(pc);
     if (checkpoints.empty()) return true;
 
+    bool captured_any = false;
     for (const auto* checkpoint : checkpoints) {
+        if (exhausted_checkpoint_ids_.find(checkpoint->id) != exhausted_checkpoint_ids_.end()) {
+            continue;
+        }
+
         CheckpointCaptureRecord record{};
         record.capture_sequence = next_sequence_++;
         record.pc = pc;
@@ -425,7 +460,10 @@ bool LiveCheckpointCapture::capture_hit(DolphinWrapper& host, std::uint32_t pc, 
         record.owns_rng_draw = checkpoint->owns_rng_draw;
 
         auto& hit_count = hit_counts_[checkpoint->id];
-        record.checkpoint_hit_count = hit_count++;
+        record.checkpoint_hit_count = hit_count;
+        const bool exhaust_after_write =
+            checkpoint->max_hits.has_value()
+            && hit_count + 1u >= *checkpoint->max_hits;
 
         for (const auto& sample : checkpoint->memory_samples) {
             std::uint64_t value = 0;
@@ -487,11 +525,34 @@ bool LiveCheckpointCapture::capture_hit(DolphinWrapper& host, std::uint32_t pc, 
             }
         }
 
+        for (const auto& sample : checkpoint->linked_list_samples) {
+            auto fields = BuildLinkedListSnapshotFields(
+                sample,
+                [&](std::uint32_t address, SampleWidth width, std::uint64_t& out) {
+                    return read_memory_sample(host, MemorySampleSpec{ {}, address, width }, out);
+                });
+            record.fields.insert(
+                record.fields.end(),
+                std::make_move_iterator(fields.begin()),
+                std::make_move_iterator(fields.end()));
+        }
+
         if (!writer_.write(record, error_out)) {
             return false;
         }
+        ++hit_count;
+        captured_any = true;
+        if (exhaust_after_write) {
+            exhausted_checkpoint_ids_.insert(checkpoint->id);
+        }
         if (checkpoint->owns_rng_draw) {
             ++rng_draw_index_;
+        }
+    }
+    if (captured_any && !contains_pc(pc)) {
+        if (std::find(newly_exhausted_pcs_.begin(), newly_exhausted_pcs_.end(), pc)
+            == newly_exhausted_pcs_.end()) {
+            newly_exhausted_pcs_.push_back(pc);
         }
     }
     return true;

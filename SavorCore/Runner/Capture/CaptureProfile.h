@@ -49,6 +49,20 @@ struct AddressProgramSampleSpec {
     SampleWidth width = SampleWidth::U32;
 };
 
+struct LinkedListFieldSpec {
+    std::string name;
+    std::int32_t offset = 0;
+    SampleWidth width = SampleWidth::U32;
+};
+
+struct LinkedListSnapshotSpec {
+    std::string name;
+    std::uint32_t head_ptr_address = 0;
+    std::int32_t next_offset = 0;
+    std::uint32_t max_nodes = 0;
+    std::vector<LinkedListFieldSpec> fields;
+};
+
 struct CheckpointSpec {
     std::string id;
     std::string name;
@@ -57,10 +71,12 @@ struct CheckpointSpec {
     std::uint32_t pc = 0;
     bool owns_rng_draw = false;
     bool address_program_trace = false;
+    std::optional<std::uint32_t> max_hits;
     std::vector<MemorySampleSpec> memory_samples;
     std::vector<GprSampleSpec> gpr_samples;
     std::vector<RegisterMemorySampleSpec> register_memory_samples;
     std::vector<AddressProgramSampleSpec> address_program_samples;
+    std::vector<LinkedListSnapshotSpec> linked_list_samples;
 };
 
 struct MemoryWatchpointSpec {
@@ -95,6 +111,7 @@ struct CaptureProfile {
     std::vector<GprSampleSpec> default_gpr_samples;
     std::vector<RegisterMemorySampleSpec> default_register_memory_samples;
     std::vector<AddressProgramSampleSpec> default_address_program_samples;
+    std::vector<LinkedListSnapshotSpec> default_linked_list_samples;
     bool default_address_program_trace = false;
     std::vector<CheckpointSpec> checkpoints;
     std::vector<MemoryWatchpointSpec> memory_watchpoints;

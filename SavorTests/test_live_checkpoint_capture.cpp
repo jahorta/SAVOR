@@ -7,6 +7,7 @@
 #include "LiveCaptureProfile.h"
 #include "Phases/Programs/BattleTurnRunner/BattleTurnRunnerPayload.h"
 #include "Runner/Capture/CaptureJsonlWriter.h"
+#include "Runner/Capture/LinkedListSnapshot.h"
 #include "Runner/Capture/CaptureProfile.h"
 #include "Runner/Script/CtxRegistry.h"
 #include "Runner/Script/PSContext.h"
@@ -17,6 +18,7 @@
 #include <sstream>
 #include <string>
 #include <tuple>
+#include <unordered_map>
 #include <vector>
 
 namespace {
@@ -46,6 +48,32 @@ struct TestRegisterFile {
     }
 };
 
+LinkedListSnapshotSpec TestThreadListSpec(std::uint32_t max_nodes = 64)
+{
+    LinkedListSnapshotSpec spec{};
+    spec.name = "thread_list";
+    spec.head_ptr_address = 0x80311A84u;
+    spec.next_offset = 0x04;
+    spec.max_nodes = max_nodes;
+    spec.fields = {
+        LinkedListFieldSpec{ "callback", 0x00, SampleWidth::U32 },
+        LinkedListFieldSpec{ "next", 0x04, SampleWidth::U32 },
+        LinkedListFieldSpec{ "parent", 0x08, SampleWidth::U32 },
+        LinkedListFieldSpec{ "flags", 0x18, SampleWidth::U8 },
+    };
+    return spec;
+}
+
+std::string capture_field_value(const std::vector<CaptureField>& fields, std::string_view name)
+{
+    for (const auto& field : fields) {
+        if (field.name == name) {
+            return field.value;
+        }
+    }
+    return {};
+}
+
 TEST(LiveCheckpointCaptureProfile, ParsesDefaultSamplesAndUniquePcs)
 {
     const std::string text =
@@ -56,6 +84,7 @@ TEST(LiveCheckpointCaptureProfile, ParsesDefaultSamplesAndUniquePcs)
         "gprs=return_value:3\n"
         "reg_memory=payload_mode:r3:0x22:u16, saved_mode:31:-0x10:u16\n"
         "addrprog=payload_mode_chain:r3:+0x24|load_ptr32|+0x22:u16\n"
+        "linked_list=thread_list:head_ptr=0x80311A84,next=0x04,max=64,fields=callback@0x00:u32|next@0x04:u32|parent@0x08:u32|flags@0x18:u8|depth@0x1b:u8|order_bits@0x20:u32|payload_word@0x24:u32\n"
         "addrprog_trace=true\n"
         "\n"
         "[watchpoint.field6_writer]\n"
@@ -94,8 +123,10 @@ TEST(LiveCheckpointCaptureProfile, ParsesDefaultSamplesAndUniquePcs)
         "function=RNG\n"
         "checkpoint=draw\n"
         "owns_rng_draw=true\n"
+        "max_hits=2\n"
         "reg_memory=payload_flags:r3:0x10:u32\n"
         "addrprog=actor_field6:r29:+0x6:u16\n"
+        "linked_list=local_thread_children:head_ptr=0x80311A90,next=0x04,max=4,fields=callback@0x00:u32|parent@0x08:u32\n"
         "addrprog_trace=false\n"
         "\n"
         "[checkpoint.second]\n"
@@ -119,6 +150,16 @@ TEST(LiveCheckpointCaptureProfile, ParsesDefaultSamplesAndUniquePcs)
     EXPECT_EQ(profile.memory_watchpoints[0].access, WatchpointAccess::Write);
     EXPECT_EQ(profile.memory_watchpoints[0].scope, WatchpointScope::InputMacro);
     EXPECT_TRUE(profile.memory_watchpoints[0].owns_rng_draw);
+    ASSERT_EQ(profile.default_linked_list_samples.size(), 1u);
+    EXPECT_EQ(profile.default_linked_list_samples[0].name, "thread_list");
+    EXPECT_EQ(profile.default_linked_list_samples[0].head_ptr_address, 0x80311A84u);
+    EXPECT_EQ(profile.default_linked_list_samples[0].next_offset, 0x04);
+    EXPECT_EQ(profile.default_linked_list_samples[0].max_nodes, 64u);
+    ASSERT_EQ(profile.default_linked_list_samples[0].fields.size(), 7u);
+    EXPECT_EQ(profile.default_linked_list_samples[0].fields[0].name, "callback");
+    EXPECT_EQ(profile.default_linked_list_samples[0].fields[0].width, SampleWidth::U32);
+    EXPECT_EQ(profile.default_linked_list_samples[0].fields[4].name, "depth");
+    EXPECT_EQ(profile.default_linked_list_samples[0].fields[4].width, SampleWidth::U8);
     EXPECT_EQ(profile.dynamic_memory_watchpoints[0].id, "actor_field6");
     EXPECT_EQ(profile.dynamic_memory_watchpoints[0].pc, 0x8001331Cu);
     EXPECT_EQ(profile.dynamic_memory_watchpoints[0].base_reg, 28u);
@@ -161,13 +202,205 @@ TEST(LiveCheckpointCaptureProfile, ParsesDefaultSamplesAndUniquePcs)
     EXPECT_EQ(profile.checkpoints[0].address_program_samples[0].width, SampleWidth::U16);
     EXPECT_EQ(profile.checkpoints[0].address_program_samples[1].name, "actor_field6");
     EXPECT_EQ(profile.checkpoints[0].address_program_samples[1].width, SampleWidth::U16);
+    ASSERT_EQ(profile.checkpoints[0].linked_list_samples.size(), 2u);
+    EXPECT_EQ(profile.checkpoints[0].linked_list_samples[0].name, "thread_list");
+    EXPECT_EQ(profile.checkpoints[0].linked_list_samples[1].name, "local_thread_children");
+    EXPECT_EQ(profile.checkpoints[0].linked_list_samples[1].head_ptr_address, 0x80311A90u);
+    EXPECT_EQ(profile.checkpoints[0].linked_list_samples[1].max_nodes, 4u);
+    ASSERT_EQ(profile.checkpoints[1].linked_list_samples.size(), 1u);
+    EXPECT_EQ(profile.checkpoints[1].linked_list_samples[0].name, "thread_list");
     EXPECT_FALSE(profile.checkpoints[0].address_program_trace);
     EXPECT_TRUE(profile.checkpoints[0].owns_rng_draw);
+    ASSERT_TRUE(profile.checkpoints[0].max_hits.has_value());
+    EXPECT_EQ(*profile.checkpoints[0].max_hits, 2u);
     EXPECT_FALSE(profile.checkpoints[1].owns_rng_draw);
+    EXPECT_FALSE(profile.checkpoints[1].max_hits.has_value());
 
     const auto pcs = profile.pcs();
     ASSERT_EQ(pcs.size(), 1u);
     EXPECT_EQ(pcs[0], 0x80001000u);
+}
+
+TEST(LiveCheckpointCaptureProfile, RejectsInvalidLinkedListSamples)
+{
+    const auto parse_with_linked_list = [](std::string linked_list) {
+        const std::string text =
+            "[profile]\n"
+            "name=bad_capture\n"
+            "schema_version=1\n"
+            "linked_list=" + linked_list + "\n\n"
+            "[checkpoint.first]\n"
+            "pc=0x80001000\n"
+            "name=first\n"
+            "function=test\n"
+            "checkpoint=test\n"
+            "owns_rng_draw=false\n";
+        return ParseCaptureProfileText(text);
+    };
+
+    EXPECT_FALSE(parse_with_linked_list(
+        "thread_list:next=0x04,max=64,fields=callback@0x00:u32").profile.has_value());
+    EXPECT_FALSE(parse_with_linked_list(
+        "thread_list:head_ptr=0x80311A84,max=64,fields=callback@0x00:u32").profile.has_value());
+    EXPECT_FALSE(parse_with_linked_list(
+        "thread_list:head_ptr=0x80311A84,next=0x04,max=0,fields=callback@0x00:u32").profile.has_value());
+    EXPECT_FALSE(parse_with_linked_list(
+        "thread_list:head_ptr=0x80311A84,next=0x04,max=257,fields=callback@0x00:u32").profile.has_value());
+    EXPECT_FALSE(parse_with_linked_list(
+        "thread_list:head_ptr=0x80311A84,next=0x04,max=64,fields=callback@0x00:f32").profile.has_value());
+    EXPECT_FALSE(parse_with_linked_list(
+        "thread_list:head_ptr=0x80311A84,next=0x04,max=64,fields=callback@0x00:u32|callback@0x04:u32").profile.has_value());
+}
+
+TEST(LiveCheckpointCaptureProfile, RejectsInvalidCheckpointMaxHits)
+{
+    const auto parse_with_max_hits = [](std::string max_hits) {
+        const std::string text =
+            "[profile]\n"
+            "name=bad_capture\n"
+            "schema_version=1\n\n"
+            "[checkpoint.first]\n"
+            "pc=0x80001000\n"
+            "name=first\n"
+            "function=test\n"
+            "checkpoint=test\n"
+            "owns_rng_draw=false\n"
+            "max_hits=" + max_hits + "\n";
+        return ParseCaptureProfileText(text);
+    };
+
+    EXPECT_TRUE(parse_with_max_hits("1").profile.has_value());
+    EXPECT_FALSE(parse_with_max_hits("0").profile.has_value());
+    EXPECT_FALSE(parse_with_max_hits("-1").profile.has_value());
+    EXPECT_FALSE(parse_with_max_hits("abc").profile.has_value());
+}
+
+TEST(LiveCheckpointLinkedListSnapshot, CapturesEmptyList)
+{
+    std::unordered_map<std::uint32_t, std::uint64_t> memory{
+        { 0x80311A84u, 0u },
+    };
+    const auto fields = BuildLinkedListSnapshotFields(
+        TestThreadListSpec(),
+        [&](std::uint32_t address, SampleWidth, std::uint64_t& out) {
+            const auto found = memory.find(address);
+            if (found == memory.end()) return false;
+            out = found->second;
+            return true;
+        });
+
+    EXPECT_EQ(capture_field_value(fields, "thread_list_read_ok"), "true");
+    EXPECT_EQ(capture_field_value(fields, "thread_list_first_node"), "\"0x00000000\"");
+    EXPECT_EQ(capture_field_value(fields, "thread_list_node_count"), "0");
+    EXPECT_EQ(capture_field_value(fields, "thread_list_truncated"), "false");
+    EXPECT_EQ(capture_field_value(fields, "thread_list_cycle_detected"), "false");
+    EXPECT_EQ(capture_field_value(fields, "thread_list_nodes"), "[]");
+}
+
+TEST(LiveCheckpointLinkedListSnapshot, CapturesMultiNodeList)
+{
+    std::unordered_map<std::uint32_t, std::uint64_t> memory{
+        { 0x80311A84u, 0x81230000u },
+        { 0x81230000u, 0x800136DCu },
+        { 0x81230004u, 0x81230040u },
+        { 0x81230008u, 0u },
+        { 0x81230018u, 0x12u },
+        { 0x81230040u, 0x80051264u },
+        { 0x81230044u, 0u },
+        { 0x81230048u, 0x81230000u },
+        { 0x81230058u, 0x34u },
+    };
+    const auto fields = BuildLinkedListSnapshotFields(
+        TestThreadListSpec(),
+        [&](std::uint32_t address, SampleWidth, std::uint64_t& out) {
+            const auto found = memory.find(address);
+            if (found == memory.end()) return false;
+            out = found->second;
+            return true;
+        });
+
+    EXPECT_EQ(capture_field_value(fields, "thread_list_read_ok"), "true");
+    EXPECT_EQ(capture_field_value(fields, "thread_list_node_count"), "2");
+    const auto nodes = capture_field_value(fields, "thread_list_nodes");
+    EXPECT_NE(nodes.find("\"node\":\"0x81230000\""), std::string::npos);
+    EXPECT_NE(nodes.find("\"callback\":\"0x800136DC\""), std::string::npos);
+    EXPECT_NE(nodes.find("\"node\":\"0x81230040\""), std::string::npos);
+    EXPECT_NE(nodes.find("\"parent\":\"0x81230000\""), std::string::npos);
+}
+
+TEST(LiveCheckpointLinkedListSnapshot, DetectsCycle)
+{
+    std::unordered_map<std::uint32_t, std::uint64_t> memory{
+        { 0x80311A84u, 0x81230000u },
+        { 0x81230000u, 0x800136DCu },
+        { 0x81230004u, 0x81230000u },
+        { 0x81230008u, 0u },
+        { 0x81230018u, 0u },
+    };
+    const auto fields = BuildLinkedListSnapshotFields(
+        TestThreadListSpec(),
+        [&](std::uint32_t address, SampleWidth, std::uint64_t& out) {
+            const auto found = memory.find(address);
+            if (found == memory.end()) return false;
+            out = found->second;
+            return true;
+        });
+
+    EXPECT_EQ(capture_field_value(fields, "thread_list_read_ok"), "true");
+    EXPECT_EQ(capture_field_value(fields, "thread_list_node_count"), "1");
+    EXPECT_EQ(capture_field_value(fields, "thread_list_cycle_detected"), "true");
+    EXPECT_EQ(capture_field_value(fields, "thread_list_error"), "cycle detected at 0x81230000");
+}
+
+TEST(LiveCheckpointLinkedListSnapshot, MarksMaxTruncation)
+{
+    std::unordered_map<std::uint32_t, std::uint64_t> memory{
+        { 0x80311A84u, 0x81230000u },
+        { 0x81230000u, 0x800136DCu },
+        { 0x81230004u, 0x81230040u },
+        { 0x81230008u, 0u },
+        { 0x81230018u, 0u },
+    };
+    const auto fields = BuildLinkedListSnapshotFields(
+        TestThreadListSpec(1),
+        [&](std::uint32_t address, SampleWidth, std::uint64_t& out) {
+            const auto found = memory.find(address);
+            if (found == memory.end()) return false;
+            out = found->second;
+            return true;
+        });
+
+    EXPECT_EQ(capture_field_value(fields, "thread_list_read_ok"), "true");
+    EXPECT_EQ(capture_field_value(fields, "thread_list_node_count"), "1");
+    EXPECT_EQ(capture_field_value(fields, "thread_list_truncated"), "true");
+    EXPECT_EQ(capture_field_value(fields, "thread_list_error"), "max nodes reached before null");
+}
+
+TEST(LiveCheckpointLinkedListSnapshot, RecordsPartialDataOnReadFailure)
+{
+    std::unordered_map<std::uint32_t, std::uint64_t> memory{
+        { 0x80311A84u, 0x81230000u },
+        { 0x81230004u, 0u },
+        { 0x81230008u, 0u },
+        { 0x81230018u, 0u },
+    };
+    const auto fields = BuildLinkedListSnapshotFields(
+        TestThreadListSpec(),
+        [&](std::uint32_t address, SampleWidth, std::uint64_t& out) {
+            const auto found = memory.find(address);
+            if (found == memory.end()) return false;
+            out = found->second;
+            return true;
+        });
+
+    EXPECT_EQ(capture_field_value(fields, "thread_list_read_ok"), "false");
+    EXPECT_EQ(capture_field_value(fields, "thread_list_node_count"), "1");
+    EXPECT_EQ(
+        capture_field_value(fields, "thread_list_error"),
+        "failed to read field 'callback' at 0x81230000");
+    EXPECT_NE(
+        capture_field_value(fields, "thread_list_nodes").find("\"callback_read_ok\":false"),
+        std::string::npos);
 }
 
 TEST(AddrProgramEvaluator, EvaluatesRegisterRootedAddressWithTrace)
@@ -277,6 +510,45 @@ TEST(LiveCheckpointCaptureJsonl, SerializesRequiredFieldsAndStableRepeatedHitOrd
     ASSERT_TRUE(parsed.events[1].rng_seed_before.has_value());
     EXPECT_EQ(*parsed.events[1].rng_draw_index_before, 6);
     EXPECT_EQ(*parsed.events[1].rng_seed_before, 0x23456789u);
+}
+
+TEST(LiveCheckpointCaptureJsonl, ParsesRawLinkedListNodeArrayField)
+{
+    CheckpointCaptureRecord record{};
+    record.capture_sequence = 7;
+    record.checkpoint_hit_count = 0;
+    record.pc = 0x800136DC;
+    record.checkpoint_id = "thread_runner_entry";
+    record.checkpoint_name = "thread_runner_entry";
+    record.function = "FUN_800136dc";
+    record.checkpoint = "thread_runner_entry";
+    record.movie_input_count = 1;
+    record.vi_field_count = 2;
+    record.frame_count = 3;
+    record.tbr_u64 = 0x1111111122222222ull;
+    record.tbr_high = 0x11111111u;
+    record.tbr_low = 0x22222222u;
+    record.fields.push_back(CaptureField{ "thread_list_read_ok", "true", false });
+    record.fields.push_back(CaptureField{ "thread_list_node_count", "2", false });
+    record.fields.push_back(CaptureField{
+        "thread_list_nodes",
+        "[{\"index\":0,\"node\":\"0x81230000\",\"callback\":\"0x800136DC\"},"
+        "{\"index\":1,\"node\":\"0x81230040\",\"callback\":\"0x80051264\"}]",
+        false });
+
+    const auto line = SerializeJsonlRecord(record);
+    EXPECT_NE(line.find("\"thread_list_nodes\":[{\"index\":0"), std::string::npos);
+
+    std::istringstream input(line + "\n");
+    const auto parsed = parse_checkpoint_stream(input);
+    ASSERT_TRUE(parsed.errors.empty()) << (parsed.errors.empty() ? "" : parsed.errors.front());
+    ASSERT_EQ(parsed.events.size(), 1u);
+    EXPECT_EQ(parsed.events[0].fields.at("thread_list_read_ok"), "true");
+    EXPECT_EQ(parsed.events[0].fields.at("thread_list_node_count"), "2");
+    EXPECT_EQ(
+        parsed.events[0].fields.at("thread_list_nodes"),
+        "[{\"index\":0,\"node\":\"0x81230000\",\"callback\":\"0x800136DC\"},"
+        "{\"index\":1,\"node\":\"0x81230040\",\"callback\":\"0x80051264\"}]");
 }
 
 TEST(LiveCheckpointCaptureJsonl, SerializesMemoryWatchpointProofFields)
@@ -1281,6 +1553,71 @@ TEST(SavorPredictLiveCaptureProfile, BuildsActionViewSelectorCoverageProfile)
     EXPECT_FALSE(mode1->owns_rng_draw);
     EXPECT_TRUE(has_gpr_sample(*mode1, "spawn_slot_arg"));
     EXPECT_TRUE(has_gpr_sample(*mode1, "spawn_mode_arg"));
+}
+
+TEST(SavorPredictLiveCaptureProfile, BuildsThreadListProfile)
+{
+    const auto text = build_first_battle_thread_list_profile_ini();
+    const auto parsed = ParseCaptureProfileText(text);
+    ASSERT_TRUE(parsed.profile.has_value()) << FormatCaptureProfileError(parsed);
+
+    const auto& profile = *parsed.profile;
+    EXPECT_EQ(profile.name, "first_battle_thread_list_ordering");
+    ASSERT_EQ(profile.default_linked_list_samples.size(), 1u);
+    const auto& list = profile.default_linked_list_samples[0];
+    EXPECT_EQ(list.name, "thread_list");
+    EXPECT_EQ(list.head_ptr_address, 0x80311A84u);
+    EXPECT_EQ(list.next_offset, 0x04);
+    EXPECT_EQ(list.max_nodes, 64u);
+    ASSERT_EQ(list.fields.size(), 7u);
+    EXPECT_EQ(list.fields[0].name, "callback");
+    EXPECT_EQ(list.fields[1].name, "next");
+    EXPECT_EQ(list.fields[2].name, "parent");
+    EXPECT_EQ(list.fields[3].name, "flags");
+    EXPECT_EQ(list.fields[4].name, "depth");
+    EXPECT_EQ(list.fields[5].name, "order_bits");
+    EXPECT_EQ(list.fields[6].name, "payload_word");
+
+    bool found_progress_pc = false;
+    bool found_targeting_camera = false;
+    for (const auto& checkpoint : profile.checkpoints) {
+        if (checkpoint.pc == 0x800608DCu) {
+            found_targeting_camera = true;
+        }
+        if (checkpoint.id.find("progress") != std::string::npos
+            || checkpoint.name.find("progress") != std::string::npos) {
+            found_progress_pc = true;
+        }
+        ASSERT_EQ(checkpoint.linked_list_samples.size(), 1u) << checkpoint.id;
+        EXPECT_EQ(checkpoint.linked_list_samples[0].name, "thread_list") << checkpoint.id;
+    }
+    EXPECT_FALSE(found_targeting_camera);
+    EXPECT_FALSE(found_progress_pc);
+
+    const auto find_checkpoint = [&](std::string_view id)
+        -> const CheckpointSpec* {
+        for (const auto& checkpoint : profile.checkpoints) {
+            if (checkpoint.id == id) {
+                return &checkpoint;
+            }
+        }
+        return nullptr;
+    };
+
+    EXPECT_NE(find_checkpoint("thread_runner_entry_800136DC"), nullptr);
+    ASSERT_NE(find_checkpoint("thread_runner_entry_800136DC"), nullptr);
+    ASSERT_TRUE(find_checkpoint("thread_runner_entry_800136DC")->max_hits.has_value());
+    EXPECT_EQ(*find_checkpoint("thread_runner_entry_800136DC")->max_hits, 1u);
+    ASSERT_NE(find_checkpoint("effect_record_spawn_copy_entry_8003BA08"), nullptr);
+    ASSERT_TRUE(find_checkpoint("effect_record_spawn_copy_entry_8003BA08")->max_hits.has_value());
+    EXPECT_EQ(*find_checkpoint("effect_record_spawn_copy_entry_8003BA08")->max_hits, 8u);
+    EXPECT_NE(find_checkpoint("setup_turn_action_entry_80082134"), nullptr);
+    EXPECT_NE(find_checkpoint("action_view_update_entry_80051264"), nullptr);
+    EXPECT_NE(find_checkpoint("action_view_tail_draw_gate_80051320"), nullptr);
+    EXPECT_NE(find_checkpoint("action_view_pathing_tail_gate_800514B0"), nullptr);
+    EXPECT_NE(find_checkpoint("combat_effect_worker_entry_80042B10"), nullptr);
+    EXPECT_NE(find_checkpoint("combat_effect_rng_key_gate_80042EB8"), nullptr);
+    EXPECT_NE(find_checkpoint("position_line_score_entry_8001AB60"), nullptr);
 }
 
 TEST(Field6WatchpointModel, ClassifiesAccessWatchpointsByDecodedInstruction)
