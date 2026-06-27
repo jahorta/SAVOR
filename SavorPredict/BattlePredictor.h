@@ -24,14 +24,24 @@ enum class BattlePredictionOutcome {
     ReachedNextTurn,
     Victory,
     Defeat,
+    MissingInput,
     Unsupported,
     Ambiguous,
+    Provisional,
 };
 
+// Event status rules:
+// Exact: statically understood and validated enough to advance RNG deterministically.
+// Provisional: statically backed and may advance RNG, but still needs broader live validation.
+// Skipped: known no-op path that does not advance RNG.
+// MissingInput: required model input is absent; prediction fail-fasts and the event does not advance RNG.
+// Unsupported: outside the current prediction profile or action scope.
+// Ambiguous: behavior is not understood enough to model; ambiguous events must not advance RNG.
 enum class BattlePredictionEventStatus {
     Exact,
     Provisional,
     Skipped,
+    MissingInput,
     Unsupported,
     Ambiguous,
 };
@@ -41,8 +51,15 @@ enum class BattlePredictionValidationStatus {
     Validated,
     Provisional,
     NotExercised,
+    MissingInput,
     Unsupported,
     Ambiguous,
+};
+
+enum class BattlePredictionMovementBackend {
+    HandlerLevelFirstBattle,
+    FrameStateMachine,
+    Compare,
 };
 
 struct BattlePredictionProfile {
@@ -55,6 +72,7 @@ struct BattlePredictionProfile {
 struct BattlePredictionOptions {
     bool include_visual_rng_gap_events = true;
     bool continue_after_visual_rng_gap = true;
+    BattlePredictionMovementBackend movement_backend = BattlePredictionMovementBackend::HandlerLevelFirstBattle;
     std::filesystem::path action_view_std_json_dir;
 };
 
@@ -119,6 +137,10 @@ struct BattlePredictionEvent {
     std::optional<int> assigned_priority;
     std::optional<int> qsort_index;
     std::optional<int> execution_index;
+    std::optional<int> frame_index;
+    std::optional<int> pathing_accepted_candidates;
+    std::optional<double> pathing_aggregate_score;
+    std::string movement_backend;
     std::string movement_worker;
     std::string detail;
 };
@@ -139,6 +161,8 @@ struct BattlePredictionResult {
     int total_draws_consumed = 0;
     int exact_draws_through_turn_order = 0;
     bool exact_through_turn_order = false;
+    bool has_missing_input_events = false;
+    bool has_provisional_events = false;
     bool has_ambiguous_events = false;
     bool has_unsupported_events = false;
     std::vector<BattlePredictionValidationItem> validation;
@@ -156,6 +180,7 @@ BattlePredictionResult predict_battle(const BattlePredictionInput& input);
 const char* battle_prediction_outcome_name(BattlePredictionOutcome outcome);
 const char* battle_prediction_event_status_name(BattlePredictionEventStatus status);
 const char* battle_prediction_validation_status_name(BattlePredictionValidationStatus status);
+const char* battle_prediction_movement_backend_name(BattlePredictionMovementBackend backend);
 
 void write_battle_prediction_text(const BattlePredictionResult& result, std::ostream& out);
 void write_battle_prediction_json(const BattlePredictionResult& result, std::ostream& out);

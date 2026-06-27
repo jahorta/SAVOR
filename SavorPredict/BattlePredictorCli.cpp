@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <fstream>
+#include <optional>
 #include <ostream>
 #include <sstream>
 #include <string>
@@ -55,6 +56,19 @@ bool parse_u32_seed(std::string_view value, std::uint32_t& out) {
     }
     out = static_cast<std::uint32_t>(parsed);
     return parsed <= 0xFFFFFFFFul;
+}
+
+std::optional<BattlePredictionMovementBackend> parse_movement_backend(std::string_view value) {
+    if (value == "handler") {
+        return BattlePredictionMovementBackend::HandlerLevelFirstBattle;
+    }
+    if (value == "frame") {
+        return BattlePredictionMovementBackend::FrameStateMachine;
+    }
+    if (value == "compare") {
+        return BattlePredictionMovementBackend::Compare;
+    }
+    return std::nullopt;
 }
 
 bool require_value(
@@ -182,6 +196,7 @@ bool build_input_from_context_file(
 
     input.starting_rng_seed = *options.start_seed;
     input.enemy_event_id = options.enemy_event_id;
+    input.options.movement_backend = options.movement_backend;
     input.options.action_view_std_json_dir = options.action_view_std_json_dir;
     input.turn_plan.fake_attack_count = static_cast<std::uint32_t>(*options.fake_attacks);
     input.turn_plan.commands = *commands;
@@ -262,6 +277,15 @@ BattlePredictorCliParseResult parse_predict_battle_tokens(const std::vector<std:
         } else if (arg == "--profile") {
             if (require_value(args, i, arg, value, result.errors)) {
                 result.options.profile_name = value;
+            }
+        } else if (arg == "--movement-backend") {
+            if (require_value(args, i, arg, value, result.errors)) {
+                const auto parsed = parse_movement_backend(value);
+                if (parsed.has_value()) {
+                    result.options.movement_backend = *parsed;
+                } else {
+                    result.errors.push_back("--movement-backend must be handler, frame, or compare.");
+                }
             }
         } else if (arg == "--format") {
             if (require_value(args, i, arg, value, result.errors)) {
@@ -378,7 +402,10 @@ int run_predict_battle(const BattlePredictorCliOptions& options, std::ostream& o
         } else {
             write_battle_prediction_text(result, out);
         }
-        return result.has_unsupported_events || !result.errors.empty() ? 1 : 0;
+        return result.has_missing_input_events
+            || result.has_unsupported_events
+            || result.has_ambiguous_events
+            || !result.errors.empty() ? 1 : 0;
     }
 
     BattlePredictionDbInputOptions db_options;
@@ -388,6 +415,7 @@ int run_predict_battle(const BattlePredictorCliOptions& options, std::ostream& o
     db_options.profile_name = resolved_options.profile_name;
     db_options.fake_attacks_override = resolved_options.fake_attacks;
     db_options.enemy_event_id = resolved_options.enemy_event_id;
+    db_options.movement_backend = resolved_options.movement_backend;
     db_options.action_view_std_json_dir = resolved_options.action_view_std_json_dir;
     db_options.allow_seed_candidate_fallback = resolved_options.allow_seed_candidate_fallback;
 
@@ -411,7 +439,11 @@ int run_predict_battle(const BattlePredictorCliOptions& options, std::ostream& o
             }
 
             const auto result = predict_battle(db_input->input);
-            const int run_rc = result.has_unsupported_events || !result.errors.empty() ? 1 : 0;
+            const int run_rc =
+                result.has_missing_input_events
+                || result.has_unsupported_events
+                || result.has_ambiguous_events
+                || !result.errors.empty() ? 1 : 0;
             if (run_rc != 0) {
                 aggregate_rc = run_rc;
             }
@@ -456,7 +488,10 @@ int run_predict_battle(const BattlePredictorCliOptions& options, std::ostream& o
         out << "\n";
         write_battle_prediction_text(result, out);
     }
-    return result.has_unsupported_events || !result.errors.empty() ? 1 : 0;
+    return result.has_missing_input_events
+        || result.has_unsupported_events
+        || result.has_ambiguous_events
+        || !result.errors.empty() ? 1 : 0;
 }
 
 } // namespace savor::predict

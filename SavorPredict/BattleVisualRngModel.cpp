@@ -11,6 +11,9 @@ namespace {
 
 void append_step(BattleVisualRngModelResult& result, BattleVisualRngStep step) {
     result.total_draws += step.draws_consumed;
+    if (step.status == BattleVisualRngStepStatus::MissingInput) {
+        result.has_missing_input_steps = true;
+    }
     if (step.status == BattleVisualRngStepStatus::Ambiguous) {
         result.has_ambiguous_steps = true;
     }
@@ -76,18 +79,23 @@ BattleVisualRngStep model_action_view_camera_step(const BattleVisualRngActionInp
     auto detail = action_view_selector_detail(selector);
     if (selector.unsupported_without_aux_table) {
         return {
-            .label = "ambiguous_action_view_camera_missing_aux_table",
-            .status = BattleVisualRngStepStatus::Ambiguous,
-            .draws_consumed = 1,
+            .label = "missing_input_action_view_camera_aux_table",
+            .status = BattleVisualRngStepStatus::MissingInput,
             .detail = detail,
         };
     }
 
-    if (!selector.mode0e_query_reached || !selector.mode0e_count.has_value()) {
+    if (!selector.mode0e_query_reached) {
         return {
             .label = "ambiguous_action_view_camera_selector_path",
             .status = BattleVisualRngStepStatus::Ambiguous,
-            .draws_consumed = 1,
+            .detail = detail,
+        };
+    }
+    if (!selector.mode0e_count.has_value()) {
+        return {
+            .label = "missing_input_action_view_camera_mode0e_count",
+            .status = BattleVisualRngStepStatus::MissingInput,
             .detail = detail,
         };
     }
@@ -150,6 +158,9 @@ BattleVisualRngModelResult model_first_battle_basic_attack_visual_rng(
 
     if (input.include_action_view_camera) {
         append_step(result, model_action_view_camera_step(input));
+        if (result.has_missing_input_steps) {
+            return result;
+        }
     }
 
     if (!input.include_effect_bursts || !input.attack_landed) {
@@ -162,9 +173,9 @@ BattleVisualRngModelResult model_first_battle_basic_attack_visual_rng(
         input.counter_follow_up);
     if (!source_key.has_value()) {
         append_step(result, {
-            .label = "ambiguous_effect_source_key",
-            .status = BattleVisualRngStepStatus::Ambiguous,
-            .detail = "first-battle effect source key is not known for this actor slot",
+            .label = "unsupported_effect_source_actor_slot",
+            .status = BattleVisualRngStepStatus::Unsupported,
+            .detail = "first-battle effect source key supports basic attacks from slots 0, 1, 4, and 5 only",
         });
         return result;
     }
@@ -196,6 +207,7 @@ const char* battle_visual_rng_step_status_name(BattleVisualRngStepStatus status)
     switch (status) {
     case BattleVisualRngStepStatus::Exact: return "Exact";
     case BattleVisualRngStepStatus::Provisional: return "Provisional";
+    case BattleVisualRngStepStatus::MissingInput: return "MissingInput";
     case BattleVisualRngStepStatus::Ambiguous: return "Ambiguous";
     case BattleVisualRngStepStatus::Unsupported: return "Unsupported";
     }

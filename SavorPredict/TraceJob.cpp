@@ -363,6 +363,12 @@ std::optional<int> first_battle_expected_instr_param_for_attack(
             : movement.detail;
         return std::nullopt;
     }
+    if (movement.status == MovementSimulationStatus::MissingInput) {
+        note = movement.detail.empty()
+            ? "movement model missing inputs for instrParam_0x6"
+            : movement.detail;
+        return std::nullopt;
+    }
 
     std::ostringstream detail;
     detail << "event0 movement model "

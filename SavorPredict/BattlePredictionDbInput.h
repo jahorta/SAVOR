@@ -45,6 +45,7 @@ struct BattlePredictionDbInputOptions {
     std::optional<std::uint32_t> start_seed_override;
     std::optional<int> fake_attacks_override;
     std::optional<int> enemy_event_id;
+    BattlePredictionMovementBackend movement_backend = BattlePredictionMovementBackend::HandlerLevelFirstBattle;
     std::filesystem::path action_view_std_json_dir;
     bool allow_seed_candidate_fallback = false;
 };

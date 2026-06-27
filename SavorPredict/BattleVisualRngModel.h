@@ -11,6 +11,7 @@ namespace savor::predict {
 enum class BattleVisualRngStepStatus {
     Exact,
     Provisional,
+    MissingInput,
     Ambiguous,
     Unsupported,
 };
@@ -39,6 +40,7 @@ struct BattleVisualRngStep {
 struct BattleVisualRngModelResult {
     std::vector<BattleVisualRngStep> steps;
     int total_draws = 0;
+    bool has_missing_input_steps = false;
     bool has_ambiguous_steps = false;
     bool has_unsupported_steps = false;
 };

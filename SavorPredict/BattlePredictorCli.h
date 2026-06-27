@@ -24,6 +24,7 @@ struct BattlePredictorCliOptions {
     std::filesystem::path spice_file_parsing_exe;
     std::string turn_plan_hex;
     std::string profile_name = "first-battle";
+    BattlePredictionMovementBackend movement_backend = BattlePredictionMovementBackend::HandlerLevelFirstBattle;
     bool json = false;
     bool allow_seed_candidate_fallback = false;
 };
