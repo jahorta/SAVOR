@@ -113,6 +113,7 @@
     <ClCompile Include="ActionSourceCheckpointModel.cpp" />
     <ClCompile Include="ActionViewGateCheckpointModel.cpp" />
     <ClCompile Include="ActionViewResourceCheckpointModel.cpp" />
+    <ClCompile Include="ActionViewPathingTailModel.cpp" />
     <ClCompile Include="ActionViewSelectorModel.cpp" />
     <ClCompile Include="ActionViewStdJsonCache.cpp" />
     <ClCompile Include="ActionViewStdJsonLoader.cpp" />
@@ -121,6 +122,8 @@
     <ClCompile Include="AttackResolutionCheckpointModel.cpp" />
     <ClCompile Include="AttackResolutionModel.cpp" />
     <ClCompile Include="BattlePredictionDbInput.cpp" />
+    <ClCompile Include="BattleFrameSchedulerModel.cpp" />
+    <ClCompile Include="BattleFrameStateModel.cpp" />
     <ClCompile Include="BattlePredictor.cpp" />
     <ClCompile Include="BattlePredictorCli.cpp" />
     <ClCompile Include="BattleVisualRngModel.cpp" />
@@ -169,6 +172,7 @@
     <ClInclude Include="ActionSourceCheckpointModel.h" />
     <ClInclude Include="ActionViewGateCheckpointModel.h" />
     <ClInclude Include="ActionViewResourceCheckpointModel.h" />
+    <ClInclude Include="ActionViewPathingTailModel.h" />
     <ClInclude Include="ActionViewSelectorModel.h" />
     <ClInclude Include="ActionViewStdJsonCache.h" />
     <ClInclude Include="ActionViewStdJsonLoader.h" />
@@ -177,6 +181,8 @@
     <ClInclude Include="AttackResolutionCheckpointModel.h" />
     <ClInclude Include="AttackResolutionModel.h" />
     <ClInclude Include="BattlePredictionDbInput.h" />
+    <ClInclude Include="BattleFrameSchedulerModel.h" />
+    <ClInclude Include="BattleFrameStateModel.h" />
     <ClInclude Include="BattlePredictor.h" />
     <ClInclude Include="BattlePredictorCli.h" />
     <ClInclude Include="BattleVisualRngModel.h" />

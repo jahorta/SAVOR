@@ -19,6 +19,7 @@ enum class MovementSimulationStatus {
     Exact,
     Provisional,
     Skipped,
+    MissingInput,
     Unsupported,
     Ambiguous,
 };

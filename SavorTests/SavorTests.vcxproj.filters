@@ -10,6 +10,7 @@
     <ClCompile Include="..\SavorPredict\ActionViewGateCheckpointModel.cpp" />
     <ClCompile Include="..\SavorPredict\ActionViewResourceCheckpointModel.cpp" />
     <ClCompile Include="..\SavorPredict\ActionViewSelectorModel.cpp" />
+    <ClCompile Include="..\SavorPredict\ActionViewPathingTailModel.cpp" />
     <ClCompile Include="..\SavorPredict\ActionViewStdJsonCache.cpp" />
     <ClCompile Include="..\SavorPredict\ActionViewStdJsonLoader.cpp" />
     <ClCompile Include="..\SavorPredict\ActionViewStdResourceResolver.cpp" />
@@ -17,6 +18,8 @@
     <ClCompile Include="..\SavorPredict\AttackResolutionCheckpointModel.cpp" />
     <ClCompile Include="..\SavorPredict\AttackResolutionModel.cpp" />
     <ClCompile Include="..\SavorPredict\BattlePredictionDbInput.cpp" />
+    <ClCompile Include="..\SavorPredict\BattleFrameSchedulerModel.cpp" />
+    <ClCompile Include="..\SavorPredict\BattleFrameStateModel.cpp" />
     <ClCompile Include="..\SavorPredict\BattlePredictor.cpp" />
     <ClCompile Include="..\SavorPredict\BattlePredictorCli.cpp" />
     <ClCompile Include="..\SavorPredict\BattleJobBatchRunManifest.cpp" />

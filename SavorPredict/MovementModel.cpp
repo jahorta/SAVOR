@@ -1,5 +1,7 @@
 #include "MovementModel.h"
 
+#include "BattleFrameStateModel.h"
+
 #include <algorithm>
 #include <cstdlib>
 #include <sstream>
@@ -15,6 +17,14 @@ const MovementSlotState* find_slot(const std::vector<MovementSlotState>& slots, 
             return state.slot == slot;
         });
     return it == slots.end() ? nullptr : &*it;
+}
+
+MovementRawStagePosition to_movement_raw_stage_position(const BattleFrameVec3& position) {
+    return MovementRawStagePosition{
+        .raw_x = static_cast<int>(position.x),
+        .raw_y = static_cast<int>(position.y),
+        .raw_z = static_cast<int>(position.z),
+    };
 }
 
 bool target_valid_for_action(const std::vector<MovementSlotState>& slots, int target_slot, bool enemy_owned) {
@@ -117,8 +127,8 @@ bool worksheet_proves_enemy_direct_close(const MovementWorksheetSnapshot& worksh
     return false;
 }
 
-void mark_ambiguous(MovementSimulation* result, const std::string& reason) {
-    result->status = MovementSimulationStatus::Ambiguous;
+void mark_missing_input(MovementSimulation* result, const std::string& reason) {
+    result->status = MovementSimulationStatus::MissingInput;
     result->reachability = MovementReachabilityStatus::Ambiguous;
     if (!result->detail.empty()) {
         result->detail += "; ";
@@ -169,7 +179,7 @@ void simulate_pc_attack(const MovementModelInputs& inputs, MovementSimulation* r
             final_param = 1;
             result->reachability = reachability;
         } else {
-            mark_ambiguous(result, "PC direct/fallback setup needs FUN_80083728, FUN_80082340, and dist_to_target_0x14");
+            mark_missing_input(result, "PC direct/fallback setup needs FUN_80083728, FUN_80082340, and dist_to_target_0x14");
         }
     } else {
         if (worksheet_proves_adjacent(inputs.actor_worksheet)) {
@@ -178,7 +188,7 @@ void simulate_pc_attack(const MovementModelInputs& inputs, MovementSimulation* r
         } else if (worksheet_proves_not_adjacent(inputs.actor_worksheet)) {
             result->reachability = MovementReachabilityStatus::Failed0;
         } else {
-            mark_ambiguous(result, "PC fallback reset gate needs FUN_8008571c and checkTargetAdjacent");
+            mark_missing_input(result, "PC fallback reset gate needs FUN_8008571c and checkTargetAdjacent");
         }
     }
 
@@ -227,7 +237,7 @@ void simulate_enemy_attack(const MovementModelInputs& inputs, MovementSimulation
         final_param = 1;
         result->reachability = MovementReachabilityStatus::Failed0;
     } else {
-        mark_ambiguous(result, "enemy direct/fallback setup needs FUN_8008a174/FUN_8008a280 path and checkTargetAdjacent");
+        mark_missing_input(result, "enemy direct/fallback setup needs FUN_8008a174/FUN_8008a280 path and checkTargetAdjacent");
     }
 
     result->final_instr_param_0x6 = final_param;
@@ -288,10 +298,11 @@ MovementSimulation simulate_first_battle_movement_setup(const MovementModelInput
     result.initial_instr_param_0x6 = inputs.instr_param_0x6;
     result.final_instr_param_0x6 = inputs.instr_param_0x6;
 
-    if (inputs.backend != MovementBackend::HandlerLevelFirstBattle) {
+    if (inputs.backend != MovementBackend::HandlerLevelFirstBattle
+        && inputs.backend != MovementBackend::FrameStateMachine) {
         result.status = MovementSimulationStatus::Unsupported;
         result.can_execute = false;
-        result.detail = "frame-state-machine movement backend is not implemented";
+        result.detail = "movement backend is not implemented";
         return result;
     }
     if (inputs.queued_instruction != 3) {
@@ -352,6 +363,14 @@ MovementWorksheetSnapshot project_enemy_event0_movement_worksheet_snapshot(const
         .grid_x = target_pos.grid_x,
         .grid_z = target_pos.grid_z,
     };
+    snapshot.actor_raw_stage_position = to_movement_raw_stage_position(first_battle_grid_to_raw_stage_position(
+        *snapshot.actor_grid_position,
+        actor->width,
+        actor->depth));
+    snapshot.target_raw_stage_position = to_movement_raw_stage_position(first_battle_grid_to_raw_stage_position(
+        *snapshot.target_grid_position,
+        target->width,
+        target->depth));
     snapshot.target_adjacent = dx + dz <= 1;
     snapshot.reachability_result = direct_path
         ? (axis_distance <= 1 ? 1 : 4)
@@ -360,7 +379,9 @@ MovementWorksheetSnapshot project_enemy_event0_movement_worksheet_snapshot(const
     snapshot.dist_to_target = axis_distance;
     snapshot.helper_8008a174_result = 1;
     snapshot.helper_80082340_result = direct_path ? 0 : 1;
-    snapshot.source = "enemy_event_0_alx_grid_projection";
+    snapshot.source = inputs.backend == MovementBackend::FrameStateMachine
+        ? "enemy_event_0_frame_state_projection"
+        : "enemy_event_0_alx_grid_projection";
     return snapshot;
 }
 
@@ -372,6 +393,8 @@ const char* movement_simulation_status_name(MovementSimulationStatus status) {
         return "Provisional";
     case MovementSimulationStatus::Skipped:
         return "Skipped";
+    case MovementSimulationStatus::MissingInput:
+        return "MissingInput";
     case MovementSimulationStatus::Unsupported:
         return "Unsupported";
     case MovementSimulationStatus::Ambiguous:
