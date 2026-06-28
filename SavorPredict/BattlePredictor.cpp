@@ -135,7 +135,11 @@ BattlePredictionSlotState make_slot_state(
     state.base_counter_chance = source.instance.base_counter_chance;
     state.current_counter_chance = source.instance.current_counter_chance;
     state.counter_chance_increment = source.instance.counter_chance;
-    state.agile = source.instance.current_base_stats.Agility;
+    state.agile = source.instance.current_base_stats.Agile;
+    if (state.present && source.instance.current_base_stats.Quick > 0) {
+        state.quick = source.instance.current_base_stats.Quick;
+        state.quick_known = true;
+    }
     state.attack = source.instance.current_derived_stats.Attack;
     state.defense = source.instance.current_derived_stats.Defense;
     state.hit = source.instance.current_derived_stats.HitChance;
@@ -146,8 +150,10 @@ BattlePredictionSlotState make_slot_state(
 
     if (profile.name == "first-battle") {
         if (const auto first_battle = first_battle_actor_by_slot(slot_index); first_battle.has_value()) {
-            state.quick = first_battle->quick;
-            state.quick_known = true;
+            if (!state.quick_known) {
+                state.quick = first_battle->quick;
+                state.quick_known = true;
+            }
             if (state.agile == 0) {
                 state.agile = first_battle->agile;
             }

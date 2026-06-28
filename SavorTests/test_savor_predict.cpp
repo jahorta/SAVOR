@@ -132,6 +132,7 @@ void fill_predictor_slot(
     int hit,
     int dodge,
     int agile,
+    int quick,
     int element,
     int counter_chance,
     std::uint16_t movement_flags) {
@@ -146,7 +147,8 @@ void fill_predictor_slot(
     battle_slot.instance.current_derived_stats.Defense = static_cast<std::uint16_t>(defense);
     battle_slot.instance.current_derived_stats.HitChance = static_cast<std::uint16_t>(hit);
     battle_slot.instance.current_derived_stats.DodgeChance = static_cast<std::uint16_t>(dodge);
-    battle_slot.instance.current_base_stats.Agility = static_cast<std::int16_t>(agile);
+    battle_slot.instance.current_base_stats.Agile = static_cast<std::int16_t>(agile);
+    battle_slot.instance.current_base_stats.Quick = static_cast<std::int16_t>(quick);
     battle_slot.instance.current_weapon_element = static_cast<std::uint8_t>(element);
     battle_slot.instance.counter_chance = static_cast<std::uint16_t>(counter_chance);
     battle_slot.instance.base_counter_chance = static_cast<std::uint16_t>(counter_chance);
@@ -157,10 +159,10 @@ void fill_predictor_slot(
 
 soa::battle::ctx::BattleContext make_predictor_first_battle_context(int soldier_hp = 58) {
     soa::battle::ctx::BattleContext context{};
-    fill_predictor_slot(context, 0, true, 420, 43, 0, 90, 0, 11, 0, 15, 0x0FC7);
-    fill_predictor_slot(context, 1, true, 360, 36, 0, 110, 0, 22, 1, 6, 0x0FF7);
-    fill_predictor_slot(context, 4, false, soldier_hp, 43, 42, 95, 15, 10, 4, 10, 0x0FC7);
-    fill_predictor_slot(context, 5, false, soldier_hp, 43, 42, 95, 15, 10, 4, 10, 0x0FC7);
+    fill_predictor_slot(context, 0, true, 420, 43, 0, 90, 0, 11, 22, 0, 15, 0x0FC7);
+    fill_predictor_slot(context, 1, true, 360, 36, 0, 110, 0, 22, 26, 1, 6, 0x0FF7);
+    fill_predictor_slot(context, 4, false, soldier_hp, 43, 42, 95, 15, 10, 18, 4, 10, 0x0FC7);
+    fill_predictor_slot(context, 5, false, soldier_hp, 43, 42, 95, 15, 10, 18, 4, 10, 0x0FC7);
     for (int slot : {4, 5}) {
         auto& battle_slot = context.slots_[slot];
         battle_slot.has_enemy_def = 1;
@@ -3691,7 +3693,7 @@ TEST(SavorPredictRngModel, FirstBattleTurnOrderSpendsOneDrawPerQueuedBasicAction
     EXPECT_EQ(entries[0].slot, 0);
     EXPECT_EQ(entries[0].quick, 22);
     EXPECT_EQ(entries[1].slot, 1);
-    EXPECT_EQ(entries[1].quick, 24);
+    EXPECT_EQ(entries[1].quick, 26);
     EXPECT_EQ(entries[2].slot, 4);
     EXPECT_EQ(entries[2].quick, 18);
     EXPECT_EQ(entries[3].slot, 5);
@@ -3699,7 +3701,7 @@ TEST(SavorPredictRngModel, FirstBattleTurnOrderSpendsOneDrawPerQueuedBasicAction
 
     const auto result = simulate_turn_order(0, entries);
     EXPECT_EQ(result.queued_count, 4);
-    EXPECT_EQ(result.sum_quick, 82);
+    EXPECT_EQ(result.sum_quick, 84);
     EXPECT_EQ(result.jitter_modulus, 10);
     EXPECT_EQ(result.draws_consumed, 4);
     EXPECT_TRUE(result.priorities_complete);
@@ -3726,7 +3728,7 @@ TEST(SavorPredictRngModel, FirstBattleTurnOrderCheckpointExpectationUsesSimulati
 
     EXPECT_EQ(expectation.expected_priority_jitter_draws, 3);
     EXPECT_EQ(expectation.expected_queued_entries, 3);
-    EXPECT_EQ(expectation.expected_jitter_modulus, 10);
+    EXPECT_EQ(expectation.expected_jitter_modulus, 11);
     EXPECT_EQ(expectation.owner, std::string_view("turn_order_priority_jitter"));
     EXPECT_EQ(expectation.pc, std::string_view("800711F8"));
     EXPECT_NE(
@@ -3815,6 +3817,61 @@ TEST(SavorPredictRngModel, TurnOrderKeepsUnresolvedFixedPriorityVisible) {
         std::string("FixedPriorityUnresolved"));
 }
 
+TEST(SavorPredictRngModel, CorpusTurnOrderSeedsMatchObservedQSortInputsWithCurrentQuick) {
+    {
+        std::vector<TurnOrderEntryInput> entries;
+        entries.push_back({.slot = 0, .quick = 22});
+        entries.push_back({.slot = 1, .quick = 26});
+        entries.push_back({.slot = 4, .quick = 18});
+
+        const auto result = simulate_turn_order(0xE2D779A5u, entries);
+
+        ASSERT_EQ(result.entries.size(), 3u);
+        EXPECT_EQ(result.jitter_modulus, 11);
+        EXPECT_EQ(result.entries[0].assigned_priority, 32);
+        EXPECT_EQ(result.entries[1].assigned_priority, 32);
+        EXPECT_EQ(result.entries[2].assigned_priority, 19);
+        EXPECT_EQ(result.qsort_sorted_slots, std::vector<int>({4, 1, 0}));
+        EXPECT_EQ(result.execution_slots, std::vector<int>({0, 1, 4}));
+    }
+
+    {
+        std::vector<TurnOrderEntryInput> entries;
+        entries.push_back({.slot = 0, .quick = 22});
+        entries.push_back({.slot = 1, .quick = 26});
+        entries.push_back({.slot = 5, .quick = 18});
+
+        const auto result = simulate_turn_order(0xBDC51FF4u, entries);
+
+        ASSERT_EQ(result.entries.size(), 3u);
+        EXPECT_EQ(result.jitter_modulus, 11);
+        EXPECT_EQ(result.entries[0].assigned_priority, 32);
+        EXPECT_EQ(result.entries[1].assigned_priority, 34);
+        EXPECT_EQ(result.entries[2].assigned_priority, 20);
+        EXPECT_EQ(result.qsort_sorted_slots, std::vector<int>({5, 0, 1}));
+        EXPECT_EQ(result.execution_slots, std::vector<int>({1, 0, 5}));
+    }
+
+    {
+        std::vector<TurnOrderEntryInput> entries;
+        entries.push_back({.slot = 0, .quick = 22});
+        entries.push_back({.slot = 1, .quick = 26});
+        entries.push_back({.slot = 4, .quick = 18});
+        entries.push_back({.slot = 5, .quick = 18});
+
+        const auto result = simulate_turn_order(0x3FEEDED1u, entries);
+
+        ASSERT_EQ(result.entries.size(), 4u);
+        EXPECT_EQ(result.jitter_modulus, 10);
+        EXPECT_EQ(result.entries[0].assigned_priority, 22);
+        EXPECT_EQ(result.entries[1].assigned_priority, 27);
+        EXPECT_EQ(result.entries[2].assigned_priority, 26);
+        EXPECT_EQ(result.entries[3].assigned_priority, 23);
+        EXPECT_EQ(result.qsort_sorted_slots, std::vector<int>({0, 5, 4, 1}));
+        EXPECT_EQ(result.execution_slots, std::vector<int>({1, 4, 5, 0}));
+    }
+}
+
 TEST(SavorPredictRngModel, FirstBattleDataProvidesCentralActorStats) {
     const auto vyse = first_battle_actor_by_slot(0);
     ASSERT_TRUE(vyse.has_value());
@@ -3829,7 +3886,7 @@ TEST(SavorPredictRngModel, FirstBattleDataProvidesCentralActorStats) {
     const auto aika = first_battle_actor_by_progress_name("Aika");
     ASSERT_TRUE(aika.has_value());
     EXPECT_EQ(aika->slot, 1);
-    EXPECT_EQ(aika->quick, 24);
+    EXPECT_EQ(aika->quick, 26);
     EXPECT_EQ(aika->attack, 36);
     EXPECT_EQ(aika->hit, 110);
 
@@ -5419,13 +5476,13 @@ TEST(SavorPredictCheckpointTrace, SummarizesTurnOrderCheckpoints) {
     std::istringstream input(
         "pc=800711f8 function=setupTurn checkpoint=priority rng_draw_index_before=10 "
         "active_slot=0 quick=22 fixed_priority_result=0 assigned_priority=27 "
-        "rand_value=5 jitter_modulus=10 sum_quick=64 queued_count=3\n"
+        "rand_value=5 jitter_modulus=11 sum_quick=66 queued_count=3\n"
         "pc=800711f8 function=setupTurn checkpoint=priority rng_draw_index_before=11 "
-        "active_slot=1 quick=24 fixed_priority_result=0 assigned_priority=30 "
-        "rand_value=6 jitter_modulus=10 sum_quick=64 queued_count=3\n"
+        "active_slot=1 quick=26 fixed_priority_result=0 assigned_priority=32 "
+        "rand_value=6 jitter_modulus=11 sum_quick=66 queued_count=3\n"
         "pc=800711f8 function=setupTurn checkpoint=priority rng_draw_index_before=12 "
         "slot=4 quick=18 fixed_priority_result=0 assigned_priority=21 "
-        "rand_value=3 jitter_modulus=10 sum_quick=64 queued_count=3\n");
+        "rand_value=3 jitter_modulus=11 sum_quick=66 queued_count=3\n");
 
     const auto parsed = parse_checkpoint_stream(input);
     ASSERT_TRUE(parsed.errors.empty());
@@ -5528,28 +5585,28 @@ TEST(SavorPredictCheckpointTrace, SummarizesTurnOrderExecutionOrderCheckpoints) 
     std::istringstream input(
         "pc=800711f8 function=setupTurn checkpoint=priority rng_draw_index_before=10 "
         "active_slot=0 quick=22 fixed_priority_result=0 assigned_priority=27 "
-        "rand_value=5 jitter_modulus=10 sum_quick=64 queued_count=3\n"
+        "rand_value=5 jitter_modulus=11 sum_quick=66 queued_count=3\n"
         "pc=800711f8 function=setupTurn checkpoint=priority rng_draw_index_before=11 "
-        "active_slot=1 quick=24 fixed_priority_result=0 assigned_priority=30 "
-        "rand_value=6 jitter_modulus=10 sum_quick=64 queued_count=3\n"
+        "active_slot=1 quick=26 fixed_priority_result=0 assigned_priority=32 "
+        "rand_value=6 jitter_modulus=11 sum_quick=66 queued_count=3\n"
         "pc=800711f8 function=setupTurn checkpoint=priority rng_draw_index_before=12 "
         "slot=4 quick=18 fixed_priority_result=0 assigned_priority=21 "
-        "rand_value=3 jitter_modulus=10 sum_quick=64 queued_count=3\n"
+        "rand_value=3 jitter_modulus=11 sum_quick=66 queued_count=3\n"
         "pc=80070c18 function=setupTurn checkpoint=queued_entry rng_draw_index_before=20 "
         "queue_index=0 slot=0 quick=22 fixed_priority_result=0 assigned_priority=27 "
-        "queued_instruction=3 jitter_modulus=10 sum_quick=64 queued_count=3\n"
+        "queued_instruction=3 jitter_modulus=11 sum_quick=66 queued_count=3\n"
         "pc=80070c18 function=setupTurn checkpoint=queued_entry rng_draw_index_before=20 "
-        "queue_index=1 slot=1 quick=24 fixed_priority_result=0 assigned_priority=30 "
-        "queued_instruction=3 jitter_modulus=10 sum_quick=64 queued_count=3\n"
+        "queue_index=1 slot=1 quick=26 fixed_priority_result=0 assigned_priority=32 "
+        "queued_instruction=3 jitter_modulus=11 sum_quick=66 queued_count=3\n"
         "pc=80070c18 function=setupTurn checkpoint=queued_entry rng_draw_index_before=20 "
         "queue_index=2 slot=4 quick=18 fixed_priority_result=0 assigned_priority=21 "
-        "queued_instruction=3 jitter_modulus=10 sum_quick=64 queued_count=3\n"
+        "queued_instruction=3 jitter_modulus=11 sum_quick=66 queued_count=3\n"
         "pc=8007140c function=setupTurn checkpoint=qsort_output rng_draw_index_before=20 "
         "queue_index=0 slot=4 assigned_priority=21\n"
         "pc=8007140c function=setupTurn checkpoint=qsort_output rng_draw_index_before=20 "
         "queue_index=1 slot=0 assigned_priority=27\n"
         "pc=8007140c function=setupTurn checkpoint=qsort_output rng_draw_index_before=20 "
-        "queue_index=2 slot=1 assigned_priority=30\n"
+        "queue_index=2 slot=1 assigned_priority=32\n"
         "pc=80071280 function=setupTurn checkpoint=execution_order rng_draw_index_before=20 "
         "execution_index=0 slot=1\n"
         "pc=80071280 function=setupTurn checkpoint=execution_order rng_draw_index_before=20 "
@@ -5748,7 +5805,7 @@ TEST(SavorPredictCheckpointTrace, SummarizesTurnOrderExecutionOrderCheckpoints) 
         "pc=80070c18 function=setupTurn checkpoint=queued_entry rng_draw_index_before=20 "
         "slot=0 quick=22 fixed_priority_result=0 assigned_priority=27\n"
         "pc=80070c18 function=setupTurn checkpoint=queued_entry rng_draw_index_before=20 "
-        "slot=1 quick=24 fixed_priority_result=0 assigned_priority=30\n"
+        "slot=1 quick=26 fixed_priority_result=0 assigned_priority=32\n"
         "pc=80071280 function=setupTurn checkpoint=execution_order rng_draw_index_before=20 "
         "execution_index=0 slot=0\n"
         "pc=80071280 function=setupTurn checkpoint=execution_order rng_draw_index_before=20 "
@@ -5762,9 +5819,9 @@ TEST(SavorPredictCheckpointTrace, SummarizesTurnOrderExecutionOrderCheckpoints) 
         "pc=80070c18 function=setupTurn checkpoint=queued_entry rng_draw_index_before=20 "
         "queue_index=0 slot=0 quick=22 fixed_priority_result=0 assigned_priority=27\n"
         "pc=80070c18 function=setupTurn checkpoint=queued_entry rng_draw_index_before=20 "
-        "queue_index=1 slot=1 quick=24 fixed_priority_result=0 assigned_priority=30\n"
+        "queue_index=1 slot=1 quick=26 fixed_priority_result=0 assigned_priority=32\n"
         "pc=8007140c function=setupTurn checkpoint=qsort_output rng_draw_index_before=20 "
-        "queue_index=0 slot=1 assigned_priority=30\n"
+        "queue_index=0 slot=1 assigned_priority=32\n"
         "pc=8007140c function=setupTurn checkpoint=qsort_output rng_draw_index_before=20 "
         "queue_index=1 slot=0 assigned_priority=27\n");
     const auto qsort_mismatch_parsed = parse_checkpoint_stream(qsort_mismatch_input);

@@ -39,7 +39,7 @@ constexpr FirstBattleActorStats kAika{
     .will = 21,
     .vigor = 18,
     .agile = 22,
-    .quick = 24,
+    .quick = 26,
     .attack = 36,
     .hit = 110,
     .weapon_id = 16,

@@ -150,13 +150,18 @@ namespace soa {
     static_assert(sizeof(Magic_Ranks) == 6, "size");
 
     struct Character_Stats {
-        int16_t Strength;
+        int16_t Power;
         int16_t Will;
         int16_t Vigor;
-        int16_t Agility;
-        int16_t Magic;
+        int16_t Agile;
+        int16_t Quick;
     };
     static_assert(sizeof(Character_Stats) == 10, "size");
+    static_assert(offsetof(Character_Stats, Power) == 0x0, "offset");
+    static_assert(offsetof(Character_Stats, Will) == 0x2, "offset");
+    static_assert(offsetof(Character_Stats, Vigor) == 0x4, "offset");
+    static_assert(offsetof(Character_Stats, Agile) == 0x6, "offset");
+    static_assert(offsetof(Character_Stats, Quick) == 0x8, "offset");
 
     struct Color_XP {
         int32_t Green;

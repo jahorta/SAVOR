@@ -186,11 +186,11 @@ template <> struct reflect<soa::Magic_Ranks> {
 template <> struct reflect<soa::Character_Stats> {
   using type = soa::Character_Stats;
   static constexpr auto members = std::make_tuple(
-    &type::Strength,
+    &type::Power,
     &type::Will,
     &type::Vigor,
-    &type::Agility,
-    &type::Magic
+    &type::Agile,
+    &type::Quick
   );
 };
 
