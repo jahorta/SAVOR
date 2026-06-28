@@ -767,6 +767,16 @@ CaptureProfileParseResult ParseCaptureProfileText(const std::string& text)
         }
         checkpoint.pc = pc;
 
+        const auto activate_on_pc_text = ini.get(section, "activate_on_pc", ini.get(section, "activation_pc", ""));
+        if (!activate_on_pc_text.empty()) {
+            std::uint32_t activation_pc = 0;
+            if (!parse_u32(activate_on_pc_text, activation_pc) || activation_pc == 0) {
+                result.errors.push_back(section + ": activate_on_pc must be a nonzero u32");
+            } else {
+                checkpoint.activate_on_pc = activation_pc;
+            }
+        }
+
         bool owns_rng_draw = false;
         const auto owns_text = ini.get(section, "owns_rng_draw", "false");
         if (!parse_bool(owns_text, owns_rng_draw)) {

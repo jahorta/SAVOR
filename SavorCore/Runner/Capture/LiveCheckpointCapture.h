@@ -35,6 +35,8 @@ public:
     bool active() const { return active_; }
     bool contains_pc(std::uint32_t pc) const;
     std::vector<std::uint32_t> pcs() const;
+    void activate_deferred_checkpoints_for_pc(std::uint32_t pc);
+    std::vector<std::uint32_t> take_newly_activated_pcs();
     std::vector<std::uint32_t> take_newly_exhausted_pcs();
     const std::vector<MemoryWatchpointSpec>& memory_watchpoints() const;
     const std::vector<ActiveMemoryWatchpointSpec>& active_memory_watchpoints() const {
@@ -80,7 +82,9 @@ private:
     std::uint64_t next_sequence_ = 0;
     std::uint32_t rng_draw_index_ = 0;
     std::unordered_map<std::string, std::uint64_t> hit_counts_;
+    std::unordered_set<std::string> activated_checkpoint_ids_;
     std::unordered_set<std::string> exhausted_checkpoint_ids_;
+    std::vector<std::uint32_t> newly_activated_pcs_;
     std::vector<std::uint32_t> newly_exhausted_pcs_;
     std::vector<ActiveMemoryWatchpointSpec> active_memory_watchpoints_;
 };

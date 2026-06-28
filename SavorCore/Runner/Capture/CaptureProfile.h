@@ -69,6 +69,7 @@ struct CheckpointSpec {
     std::string function;
     std::string checkpoint;
     std::uint32_t pc = 0;
+    std::optional<std::uint32_t> activate_on_pc;
     bool owns_rng_draw = false;
     bool address_program_trace = false;
     std::optional<std::uint32_t> max_hits;

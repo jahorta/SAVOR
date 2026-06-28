@@ -15,6 +15,8 @@
 
 #include <array>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <sstream>
 #include <string>
 #include <tuple>
@@ -273,6 +275,68 @@ TEST(LiveCheckpointCaptureProfile, RejectsInvalidCheckpointMaxHits)
     EXPECT_FALSE(parse_with_max_hits("0").profile.has_value());
     EXPECT_FALSE(parse_with_max_hits("-1").profile.has_value());
     EXPECT_FALSE(parse_with_max_hits("abc").profile.has_value());
+}
+
+TEST(LiveCheckpointCaptureProfile, ParsesDeferredCheckpointActivationPc)
+{
+    const std::string text =
+        "[profile]\n"
+        "name=deferred_capture\n"
+        "schema_version=1\n\n"
+        "[checkpoint.frame_after_setup]\n"
+        "pc=0x8000A2FC\n"
+        "activate_on_pc=0x80082134\n"
+        "name=frame_after_setup\n"
+        "function=Battle::_battleController_8000a118\n"
+        "checkpoint=case5_after_threads\n"
+        "owns_rng_draw=false\n";
+
+    const auto parsed = ParseCaptureProfileText(text);
+    ASSERT_TRUE(parsed.profile.has_value()) << FormatCaptureProfileError(parsed);
+    ASSERT_EQ(parsed.profile->checkpoints.size(), 1u);
+    ASSERT_TRUE(parsed.profile->checkpoints[0].activate_on_pc.has_value());
+    EXPECT_EQ(*parsed.profile->checkpoints[0].activate_on_pc, 0x80082134u);
+}
+
+TEST(LiveCheckpointCapture, ArmsDeferredCheckpointAfterActivationPc)
+{
+    const std::string text =
+        "[profile]\n"
+        "name=deferred_capture\n"
+        "schema_version=1\n\n"
+        "[checkpoint.frame_after_setup]\n"
+        "pc=0x8000A2FC\n"
+        "activate_on_pc=0x80082134\n"
+        "name=frame_after_setup\n"
+        "function=Battle::_battleController_8000a118\n"
+        "checkpoint=case5_after_threads\n"
+        "owns_rng_draw=false\n";
+
+    const auto temp_root = std::filesystem::temp_directory_path() / "savor_deferred_capture_test";
+    std::filesystem::create_directories(temp_root);
+    const auto profile_path = temp_root / "profile.ini";
+    const auto output_path = temp_root / "capture.jsonl";
+    {
+        std::ofstream out(profile_path, std::ios::binary | std::ios::trunc);
+        out << text;
+    }
+
+    LiveCheckpointCapture capture;
+    std::string error;
+    ASSERT_TRUE(capture.start(profile_path, output_path, &error)) << error;
+
+    EXPECT_TRUE(capture.contains_pc(0x80082134u));
+    EXPECT_FALSE(capture.contains_pc(0x8000A2FCu));
+    ASSERT_EQ(capture.pcs().size(), 1u);
+    EXPECT_EQ(capture.pcs()[0], 0x80082134u);
+
+    capture.activate_deferred_checkpoints_for_pc(0x80082134u);
+
+    const auto activated = capture.take_newly_activated_pcs();
+    ASSERT_EQ(activated.size(), 1u);
+    EXPECT_EQ(activated[0], 0x8000A2FCu);
+    EXPECT_FALSE(capture.contains_pc(0x80082134u));
+    EXPECT_TRUE(capture.contains_pc(0x8000A2FCu));
 }
 
 TEST(LiveCheckpointLinkedListSnapshot, CapturesEmptyList)

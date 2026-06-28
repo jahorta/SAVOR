@@ -296,6 +296,29 @@ namespace savor {
         }
     }
 
+    void PhaseScriptVM::arm_newly_activated_capture_pcs() {
+        if (!capture_ || !capture_->active()) {
+            return;
+        }
+
+        auto activated = capture_->take_newly_activated_pcs();
+        if (activated.empty()) {
+            return;
+        }
+
+        std::vector<uint32_t> to_arm;
+        for (const auto pc : activated) {
+            if (std::find(capture_armed_pcs_.begin(), capture_armed_pcs_.end(), pc)
+                == capture_armed_pcs_.end()) {
+                capture_armed_pcs_.push_back(pc);
+                to_arm.push_back(pc);
+            }
+        }
+        if (!to_arm.empty()) {
+            host_.armPcBreakpoints(to_arm);
+        }
+    }
+
     void PhaseScriptVM::disarm_exhausted_capture_pcs() {
         if (!capture_ || !capture_->active()) {
             return;
@@ -470,6 +493,7 @@ namespace savor {
             SCLOGW("[capture] checkpoint write failed pc=%08X error=%s", pc, error.c_str());
             return false;
         }
+        arm_newly_activated_capture_pcs();
         auto dynamic_watchpoints = capture_->derive_dynamic_memory_watchpoints(host_, pc, scope);
         if (!dynamic_watchpoints.empty()) {
             capture_->append_active_memory_watchpoints(std::move(dynamic_watchpoints));

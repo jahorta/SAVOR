@@ -331,6 +331,7 @@ namespace savor {
 		void restore_canonical_breakpoint_scope();
 		std::vector<uint32_t> capture_pcs() const;
 		void append_capture_pcs(std::vector<uint32_t>& pcs) const;
+		void arm_newly_activated_capture_pcs();
 		void disarm_exhausted_capture_pcs();
 		bool configure_capture_from_context(const PSContext& ctx, PSResult& result);
 		void arm_capture_breakpoints();

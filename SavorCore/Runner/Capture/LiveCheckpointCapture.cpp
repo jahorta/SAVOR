@@ -132,6 +132,15 @@ const LiveCheckpointCapture::ActiveMemoryWatchpointSpec* watchpoint_for_id(
     return nullptr;
 }
 
+bool append_unique_pc(std::vector<std::uint32_t>& pcs, std::uint32_t pc)
+{
+    if (std::find(pcs.begin(), pcs.end(), pc) != pcs.end()) {
+        return false;
+    }
+    pcs.push_back(pc);
+    return true;
+}
+
 void append_decoded_memory_access_fields(
     CheckpointCaptureRecord& record,
     const DolphinWrapper::DecodedMemoryAccess& decoded)
@@ -219,7 +228,9 @@ bool LiveCheckpointCapture::start(
     next_sequence_ = 0;
     rng_draw_index_ = 0;
     hit_counts_.clear();
+    activated_checkpoint_ids_.clear();
     exhausted_checkpoint_ids_.clear();
+    newly_activated_pcs_.clear();
     newly_exhausted_pcs_.clear();
     active_memory_watchpoints_.clear();
     active_ = true;
@@ -235,7 +246,9 @@ void LiveCheckpointCapture::stop()
     next_sequence_ = 0;
     rng_draw_index_ = 0;
     hit_counts_.clear();
+    activated_checkpoint_ids_.clear();
     exhausted_checkpoint_ids_.clear();
+    newly_activated_pcs_.clear();
     newly_exhausted_pcs_.clear();
     active_memory_watchpoints_.clear();
 }
@@ -243,8 +256,16 @@ void LiveCheckpointCapture::stop()
 bool LiveCheckpointCapture::contains_pc(std::uint32_t pc) const
 {
     if (!active_) return false;
-    for (const auto* checkpoint : profile_.find_checkpoints(pc)) {
-        if (exhausted_checkpoint_ids_.find(checkpoint->id) == exhausted_checkpoint_ids_.end()) {
+    for (const auto& checkpoint : profile_.checkpoints) {
+        if (exhausted_checkpoint_ids_.find(checkpoint.id) != exhausted_checkpoint_ids_.end()) {
+            continue;
+        }
+        const bool activated = !checkpoint.activate_on_pc.has_value()
+            || activated_checkpoint_ids_.find(checkpoint.id) != activated_checkpoint_ids_.end();
+        if (activated && checkpoint.pc == pc) {
+            return true;
+        }
+        if (!activated && checkpoint.activate_on_pc.has_value() && *checkpoint.activate_on_pc == pc) {
             return true;
         }
     }
@@ -260,10 +281,44 @@ std::vector<std::uint32_t> LiveCheckpointCapture::pcs() const
         if (exhausted_checkpoint_ids_.find(checkpoint.id) != exhausted_checkpoint_ids_.end()) {
             continue;
         }
-        if (std::find(out.begin(), out.end(), checkpoint.pc) == out.end()) {
-            out.push_back(checkpoint.pc);
+        const bool activated = !checkpoint.activate_on_pc.has_value()
+            || activated_checkpoint_ids_.find(checkpoint.id) != activated_checkpoint_ids_.end();
+        if (activated) {
+            append_unique_pc(out, checkpoint.pc);
+        } else if (checkpoint.activate_on_pc.has_value()) {
+            append_unique_pc(out, *checkpoint.activate_on_pc);
         }
     }
+    return out;
+}
+
+void LiveCheckpointCapture::activate_deferred_checkpoints_for_pc(std::uint32_t pc)
+{
+    if (!active_) return;
+
+    bool activated_any = false;
+    for (const auto& checkpoint : profile_.checkpoints) {
+        if (!checkpoint.activate_on_pc.has_value() || *checkpoint.activate_on_pc != pc) {
+            continue;
+        }
+        if (exhausted_checkpoint_ids_.find(checkpoint.id) != exhausted_checkpoint_ids_.end()) {
+            continue;
+        }
+        if (activated_checkpoint_ids_.insert(checkpoint.id).second) {
+            append_unique_pc(newly_activated_pcs_, checkpoint.pc);
+            activated_any = true;
+        }
+    }
+
+    if (activated_any && !contains_pc(pc)) {
+        append_unique_pc(newly_exhausted_pcs_, pc);
+    }
+}
+
+std::vector<std::uint32_t> LiveCheckpointCapture::take_newly_activated_pcs()
+{
+    std::vector<std::uint32_t> out = std::move(newly_activated_pcs_);
+    newly_activated_pcs_.clear();
     return out;
 }
 
@@ -435,11 +490,18 @@ bool LiveCheckpointCapture::capture_hit(DolphinWrapper& host, std::uint32_t pc, 
 {
     if (!active_) return true;
     const auto checkpoints = profile_.find_checkpoints(pc);
-    if (checkpoints.empty()) return true;
+    if (checkpoints.empty()) {
+        activate_deferred_checkpoints_for_pc(pc);
+        return true;
+    }
 
     bool captured_any = false;
     for (const auto* checkpoint : checkpoints) {
         if (exhausted_checkpoint_ids_.find(checkpoint->id) != exhausted_checkpoint_ids_.end()) {
+            continue;
+        }
+        if (checkpoint->activate_on_pc.has_value()
+            && activated_checkpoint_ids_.find(checkpoint->id) == activated_checkpoint_ids_.end()) {
             continue;
         }
 
@@ -549,11 +611,9 @@ bool LiveCheckpointCapture::capture_hit(DolphinWrapper& host, std::uint32_t pc, 
             ++rng_draw_index_;
         }
     }
+    activate_deferred_checkpoints_for_pc(pc);
     if (captured_any && !contains_pc(pc)) {
-        if (std::find(newly_exhausted_pcs_.begin(), newly_exhausted_pcs_.end(), pc)
-            == newly_exhausted_pcs_.end()) {
-            newly_exhausted_pcs_.push_back(pc);
-        }
+        append_unique_pc(newly_exhausted_pcs_, pc);
     }
     return true;
 }
