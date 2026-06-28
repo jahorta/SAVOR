@@ -660,6 +660,20 @@ void append_validation_statuses(BattlePredictionResult& result) {
             "no lethal enemy damage reached the drop table");
     }
 
+    if (has_event(result, "frame_scheduler", "fun_8002eb4c_passive_clash")) {
+        add_validation(
+            result,
+            "passive_clash",
+            BattlePredictionValidationStatus::Provisional,
+            "frame backend models FUN_8002eb4c as a passive clash reaction choosing observed modes 0x0C/0x0D; trigger timing remains evidence-gated");
+    } else {
+        add_validation(
+            result,
+            "passive_clash",
+            BattlePredictionValidationStatus::NotExercised,
+            "no frame-backed passive clash event was predicted");
+    }
+
     if (has_event(result, "action_visual_rng", "ambiguous_effect_source_key")) {
         add_validation(
             result,
@@ -667,12 +681,20 @@ void append_validation_statuses(BattlePredictionResult& result) {
             BattlePredictionValidationStatus::Ambiguous,
             "effect burst source key is ambiguous for at least one action");
     } else if (has_event(result, "action_visual_rng", "unsupported_effect_source_key")
-        || has_event(result, "action_visual_rng", "unsupported_effect_source_actor_slot")) {
+        || has_event(result, "action_visual_rng", "unsupported_effect_source_actor_slot")
+        || has_event(result, "frame_scheduler", "unsupported_effect_source_key")
+        || has_event(result, "frame_scheduler", "unsupported_effect_source_actor_slot")) {
         add_validation(
             result,
             "effect_burst",
             BattlePredictionValidationStatus::Unsupported,
             "an effect source key lacked a supported first-battle burst model");
+    } else if (has_event(result, "frame_scheduler", "combat_effect_chunk")) {
+        add_validation(
+            result,
+            "effect_burst",
+            BattlePredictionValidationStatus::Provisional,
+            "frame backend splits supported first-battle effect bursts into provisional chunks while preserving source-key draw totals");
     } else if (has_event(result, "action_visual_rng", "combat_effect_burst")) {
         add_validation(
             result,
@@ -687,7 +709,8 @@ void append_validation_statuses(BattlePredictionResult& result) {
             "no landed attack effect burst was predicted");
     }
 
-    if (has_phase_event(result, "action_visual_rng")) {
+    if (has_phase_event(result, "action_visual_rng")
+        || has_event(result, "frame_scheduler", "combat_effect_chunk")) {
         add_validation(
             result,
             "action_source_selection",
@@ -702,26 +725,32 @@ void append_validation_statuses(BattlePredictionResult& result) {
     }
 
     if (has_event(result, "action_visual_rng", "missing_input_action_view_camera_aux_table")
-        || has_event(result, "action_visual_rng", "missing_input_action_view_camera_mode0e_count")) {
+        || has_event(result, "action_visual_rng", "missing_input_action_view_camera_mode0e_count")
+        || has_event(result, "frame_scheduler", "missing_input_action_view_camera_aux_table")
+        || has_event(result, "frame_scheduler", "missing_input_action_view_camera_mode0e_count")) {
         add_validation(
             result,
             "action_view_selector",
             BattlePredictionValidationStatus::MissingInput,
             "action-view selector needs the selected _0_STD aux table data");
-    } else if (has_event(result, "action_visual_rng", "ambiguous_action_view_camera_selector_path")) {
+    } else if (has_event(result, "action_visual_rng", "ambiguous_action_view_camera_selector_path")
+        || has_event(result, "frame_scheduler", "ambiguous_action_view_camera_selector_path")) {
         add_validation(
             result,
             "action_view_selector",
             BattlePredictionValidationStatus::Ambiguous,
             "action-view selector was reached but required branch evidence or selected _0_STD table data was missing");
     } else if (has_event(result, "action_visual_rng", "mode0e_action_view_camera")
-        || has_event(result, "action_visual_rng", "mode0_action_view_camera_fallback")) {
+        || has_event(result, "action_visual_rng", "mode0_action_view_camera_fallback")
+        || has_event(result, "frame_scheduler", "mode0e_action_view_camera")
+        || has_event(result, "frame_scheduler", "mode0_action_view_camera_fallback")) {
         add_validation(
             result,
             "action_view_selector",
             BattlePredictionValidationStatus::Provisional,
             "selector-backed action-view camera owner was modeled; branch-level live validation remains required");
-    } else if (has_event(result, "action_visual_rng", "mode0_action_view_camera_rewrite_gate")) {
+    } else if (has_event(result, "action_visual_rng", "mode0_action_view_camera_rewrite_gate")
+        || has_event(result, "frame_scheduler", "mode0_action_view_camera_rewrite_gate")) {
         add_validation(
             result,
             "action_view_selector",
@@ -1212,6 +1241,7 @@ void append_turn_order(
 
 BattlePredictionEventStatus battle_event_status_from_movement_status(MovementSimulationStatus status);
 int movement_reachability_code(MovementReachabilityStatus status);
+BattlePredictionEventStatus battle_event_status_from_frame_status(BattleFrameEventStatus status);
 void append_frame_scheduler_events(
     BattlePredictionResult& result,
     const BattleFrameRunResult& frame_result,
@@ -1295,7 +1325,7 @@ bool append_movement_setup(
                 .detail = "frame movement backend requested but runtime was not initialized",
             });
         } else {
-            schedule_first_battle_action_workers(
+            schedule_first_turn_actor_action(
                 *frame_runtime,
                 BattleFrameScheduleActionInput{
                     .actor_slot = action.actor_slot,
@@ -1305,7 +1335,7 @@ bool append_movement_setup(
                     .selected_worker = movement.selected_worker,
                     .passive_routes = movement.passive_routes,
                 });
-            const auto frame_result = run_scheduled_frame_workers(*frame_runtime, 16);
+            const auto frame_result = run_first_turn_frame(*frame_runtime, state);
             append_frame_scheduler_events(
                 result,
                 frame_result,
@@ -1393,6 +1423,21 @@ BattlePredictionEventStatus battle_event_status_from_visual_status(BattleVisualR
     return BattlePredictionEventStatus::Unsupported;
 }
 
+BattleFrameEventStatus frame_event_status_from_visual_status(BattleVisualRngStepStatus status) {
+    switch (status) {
+    case BattleVisualRngStepStatus::Exact:
+    case BattleVisualRngStepStatus::Provisional:
+        return BattleFrameEventStatus::Provisional;
+    case BattleVisualRngStepStatus::MissingInput:
+        return BattleFrameEventStatus::MissingInput;
+    case BattleVisualRngStepStatus::Ambiguous:
+        return BattleFrameEventStatus::Ambiguous;
+    case BattleVisualRngStepStatus::Unsupported:
+        return BattleFrameEventStatus::Unsupported;
+    }
+    return BattleFrameEventStatus::Unsupported;
+}
+
 BattlePredictionEventStatus battle_event_status_from_pathing_tail_status(ActionViewPathingTailStatus status) {
     switch (status) {
     case ActionViewPathingTailStatus::Exact:
@@ -1424,6 +1469,22 @@ BattlePredictionEventStatus battle_event_status_from_movement_status(MovementSim
     case MovementSimulationStatus::Unsupported:
         return BattlePredictionEventStatus::Unsupported;
     case MovementSimulationStatus::Ambiguous:
+        return BattlePredictionEventStatus::Ambiguous;
+    }
+    return BattlePredictionEventStatus::Unsupported;
+}
+
+BattlePredictionEventStatus battle_event_status_from_frame_status(BattleFrameEventStatus status) {
+    switch (status) {
+    case BattleFrameEventStatus::Matched:
+        return BattlePredictionEventStatus::Exact;
+    case BattleFrameEventStatus::Provisional:
+        return BattlePredictionEventStatus::Provisional;
+    case BattleFrameEventStatus::MissingInput:
+        return BattlePredictionEventStatus::MissingInput;
+    case BattleFrameEventStatus::Unsupported:
+        return BattlePredictionEventStatus::Unsupported;
+    case BattleFrameEventStatus::Ambiguous:
         return BattlePredictionEventStatus::Ambiguous;
     }
     return BattlePredictionEventStatus::Unsupported;
@@ -1466,8 +1527,11 @@ void append_frame_scheduler_events(
         std::ostringstream detail;
         detail << "callback=" << frame_event.callback
                << "; worker_kind=" << battle_frame_worker_kind_name(frame_event.worker_kind)
+               << "; frame_status=" << battle_frame_event_status_name(frame_event.status)
                << "; action_mode=" << frame_event.old_action_mode
                << "->" << frame_event.new_action_mode
+               << " (" << battle_frame_action_mode_name(frame_event.old_action_mode)
+               << "->" << battle_frame_action_mode_name(frame_event.new_action_mode) << ")"
                << "; grid=" << grid_detail(frame_event.old_grid)
                << "->" << grid_detail(frame_event.new_grid)
                << "; pos_holder=" << frame_vec_detail(frame_event.old_pos_holder)
@@ -1475,12 +1539,30 @@ void append_frame_scheduler_events(
                << "; combatant_position=" << frame_vec_detail(frame_event.old_combatant_position)
                << "->" << frame_vec_detail(frame_event.new_combatant_position)
                << "; bridged_position=" << (frame_event.bridged_position ? 1 : 0);
+        if (frame_event.rng_event) {
+            detail << "; rng_label=" << frame_event.rng_label
+                   << "; draws=" << frame_event.draws_consumed;
+        }
+        if (frame_event.passive_clash_selected_index.has_value()) {
+            detail << "; passive_clash_selected_index=" << *frame_event.passive_clash_selected_index;
+        }
+        if (!frame_event.detail.empty()) {
+            detail << "; " << frame_event.detail;
+        }
+        const auto event_status = frame_event.status == BattleFrameEventStatus::Matched
+            ? status
+            : battle_event_status_from_frame_status(frame_event.status);
         append_event(result, {
             .phase = "frame_scheduler",
-            .label = "worker_frame",
-            .status = status,
+            .label = frame_event.rng_event ? frame_event.rng_label : "worker_frame",
+            .status = event_status,
             .actor_slot = frame_event.slot,
             .target_slot = frame_event.target_slot,
+            .rng_seed_before = frame_event.rng_seed_before,
+            .rng_seed_after = frame_event.rng_seed_after,
+            .draws_consumed = frame_event.draws_consumed,
+            .rand_value = frame_event.rand_value,
+            .effect_source_key = frame_event.effect_source_key,
             .frame_index = frame_event.frame_index,
             .movement_backend = "frame",
             .movement_worker = frame_event.callback,
@@ -1627,6 +1709,74 @@ bool append_pre_attack_visual_rng(
     return append_visual_rng_steps(result, state, action, visual);
 }
 
+bool append_pre_attack_visual_rng_frame(
+    BattlePredictionResult& result,
+    std::uint32_t& state,
+    const BattlePredictionProfile& profile,
+    const BattlePredictionOptions& options,
+    const QueuedPredictionAction& action,
+    BattleFrameRuntime* frame_runtime) {
+    if (frame_runtime == nullptr || !frame_runtime->initialized) {
+        append_event(result, {
+            .phase = "frame_scheduler",
+            .label = "missing_action_view_frame_runtime",
+            .status = BattlePredictionEventStatus::MissingInput,
+            .actor_slot = action.actor_slot,
+            .target_slot = action.target_slot,
+            .movement_backend = "frame",
+            .detail = "frame-backed action-view RNG needs an initialized frame runtime",
+        });
+        return false;
+    }
+
+    const auto visual = model_first_battle_basic_attack_visual_rng({
+        .profile_name = profile.name,
+        .actor_slot = action.actor_slot,
+        .target_slot = action.target_slot,
+        .include_action_view_camera = true,
+        .include_effect_bursts = false,
+        .action_view_selector = action_view_selector_for_pre_attack(profile, options, action),
+    });
+
+    for (const auto& step : visual.steps) {
+        const auto status = battle_event_status_from_visual_status(step.status);
+        if (status == BattlePredictionEventStatus::Exact
+            || status == BattlePredictionEventStatus::Provisional) {
+            schedule_first_turn_action_view_rng(
+                *frame_runtime,
+                action.actor_slot,
+                action.target_slot,
+                step.label,
+                step.draws_consumed,
+                step.detail,
+                frame_event_status_from_visual_status(step.status));
+        } else {
+            append_event(result, {
+                .phase = "frame_scheduler",
+                .label = step.label,
+                .status = status,
+                .actor_slot = action.actor_slot,
+                .target_slot = action.target_slot,
+                .effect_source_key = step.effect_source_key,
+                .movement_backend = "frame",
+                .detail = step.detail,
+            });
+        }
+    }
+
+    const auto frame_result = run_first_turn_until_idle(*frame_runtime, state, 32);
+    append_frame_scheduler_events(
+        result,
+        frame_result,
+        frame_result.ok
+            ? BattlePredictionEventStatus::Provisional
+            : BattlePredictionEventStatus::Ambiguous);
+    return !visual.has_missing_input_steps
+        && !visual.has_ambiguous_steps
+        && !visual.has_unsupported_steps
+        && frame_result.ok;
+}
+
 bool append_post_attack_visual_rng(
     BattlePredictionResult& result,
     std::uint32_t& state,
@@ -1646,6 +1796,75 @@ bool append_post_attack_visual_rng(
         .include_effect_bursts = true,
     });
     return append_visual_rng_steps(result, state, action, visual);
+}
+
+bool append_post_attack_effect_chunks_frame(
+    BattlePredictionResult& result,
+    std::uint32_t& state,
+    const QueuedPredictionAction& action,
+    bool attack_landed,
+    bool attack_was_critical,
+    bool counter_follow_up,
+    BattleFrameRuntime* frame_runtime) {
+    if (!attack_landed) {
+        return true;
+    }
+    if (frame_runtime == nullptr || !frame_runtime->initialized) {
+        append_event(result, {
+            .phase = "frame_scheduler",
+            .label = "missing_effect_chunk_frame_runtime",
+            .status = BattlePredictionEventStatus::MissingInput,
+            .actor_slot = action.actor_slot,
+            .target_slot = action.target_slot,
+            .movement_backend = "frame",
+            .detail = "frame-backed effect chunks need an initialized frame runtime",
+        });
+        return false;
+    }
+
+    const auto source_key = first_battle_basic_attack_effect_source_key(
+        action.actor_slot,
+        attack_was_critical,
+        counter_follow_up);
+    if (!source_key.has_value()) {
+        append_event(result, {
+            .phase = "frame_scheduler",
+            .label = "unsupported_effect_source_actor_slot",
+            .status = BattlePredictionEventStatus::Unsupported,
+            .actor_slot = action.actor_slot,
+            .target_slot = action.target_slot,
+            .movement_backend = "frame",
+            .detail = "first-battle effect source key supports basic attacks from slots 0, 1, 4, and 5 only",
+        });
+        return false;
+    }
+
+    if (!schedule_effect_chunks_for_source_key(
+            *frame_runtime,
+            action.actor_slot,
+            action.target_slot,
+            *source_key)) {
+        append_event(result, {
+            .phase = "frame_scheduler",
+            .label = "unsupported_effect_source_key",
+            .status = BattlePredictionEventStatus::Unsupported,
+            .actor_slot = action.actor_slot,
+            .target_slot = action.target_slot,
+            .effect_source_key = source_key,
+            .movement_backend = "frame",
+            .detail = "no first-battle effect burst chunk model is available for this source key",
+        });
+        return false;
+    }
+
+    const auto frame_result = run_first_turn_frame(*frame_runtime, state);
+    append_frame_scheduler_events(
+        result,
+        frame_result,
+        frame_result.ok
+            ? BattlePredictionEventStatus::Provisional
+            : BattlePredictionEventStatus::Ambiguous);
+    return frame_result.ok;
 }
 
 bool append_action_view_pathing_tail(
@@ -1954,16 +2173,26 @@ void append_counter_follow_up(
         return;
     }
 
-    // The 8004 landed-hit effect burst is part of this action's tail; drain it
-    // before returning to the outer turn-order executor.
-    append_post_attack_visual_rng(
-        result,
-        state,
-        profile,
-        counter_action,
-        attack.attack_result != 0,
-        false,
-        true);
+    if (frame_runtime != nullptr && frame_runtime->initialized) {
+        append_post_attack_effect_chunks_frame(
+            result,
+            state,
+            counter_action,
+            attack.attack_result != 0,
+            false,
+            true,
+            frame_runtime);
+    } else {
+        // Legacy handler-level backend keeps the aggregate landed-hit effect drain.
+        append_post_attack_visual_rng(
+            result,
+            state,
+            profile,
+            counter_action,
+            attack.attack_result != 0,
+            false,
+            true);
+    }
     if (result.has_missing_input_events) {
         return;
     }
@@ -2085,16 +2314,26 @@ void append_attack_resolution(
             return;
         }
 
-        // The 8004 landed-hit effect burst is part of this action's tail; drain it
-        // before the next actor's setup starts.
-        append_post_attack_visual_rng(
-            result,
-            state,
-            profile,
-            action,
-            true,
-            attack.attack_result == 2,
-            false);
+        if (frame_runtime != nullptr && frame_runtime->initialized) {
+            append_post_attack_effect_chunks_frame(
+                result,
+                state,
+                action,
+                true,
+                attack.attack_result == 2,
+                false,
+                frame_runtime);
+        } else {
+            // Legacy handler-level backend keeps the aggregate landed-hit effect drain.
+            append_post_attack_visual_rng(
+                result,
+                state,
+                profile,
+                action,
+                true,
+                attack.attack_result == 2,
+                false);
+        }
         if (result.has_missing_input_events) {
             return;
         }
@@ -2158,12 +2397,20 @@ void append_action_execution(
         }
 
         if (options.include_visual_rng_gap_events) {
-            const bool visual_exact = append_pre_attack_visual_rng(
-                result,
-                state,
-                profile,
-                options,
-                resolved_action);
+            const bool visual_exact = frame_runtime != nullptr && frame_runtime->initialized
+                ? append_pre_attack_visual_rng_frame(
+                    result,
+                    state,
+                    profile,
+                    options,
+                    resolved_action,
+                    frame_runtime)
+                : append_pre_attack_visual_rng(
+                    result,
+                    state,
+                    profile,
+                    options,
+                    resolved_action);
             if (result.has_missing_input_events) {
                 break;
             }
@@ -2179,6 +2426,16 @@ void append_action_execution(
         if (!has_alive_enemy(slots) || !has_alive_pc(slots)) {
             break;
         }
+    }
+
+    if (frame_runtime != nullptr && frame_runtime->initialized && !result.has_missing_input_events) {
+        const auto frame_result = run_first_turn_until_idle(*frame_runtime, state, 64);
+        append_frame_scheduler_events(
+            result,
+            frame_result,
+            frame_result.ok
+                ? BattlePredictionEventStatus::Provisional
+                : BattlePredictionEventStatus::Ambiguous);
     }
 }
 

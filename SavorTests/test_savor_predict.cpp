@@ -2348,6 +2348,126 @@ TEST(SavorPredictBattleFrameSchedulerModel, RunsWorkersForActiveAndPassiveCombat
         result.events.end());
 }
 
+TEST(SavorPredictBattleFrameSchedulerModel, TicksPersistentWorkersOneFrameAtATime) {
+    auto runtime = initialize_first_battle_frame_runtime(
+        0,
+        make_first_battle_movement_slots_with_event0_positions());
+    ASSERT_TRUE(runtime.has_value());
+
+    schedule_first_turn_actor_action(
+        *runtime,
+        BattleFrameScheduleActionInput{
+            .actor_slot = 0,
+            .target_slot = 4,
+            .enemy_owned = false,
+            .combatant_command_parameter = 0,
+            .selected_worker = MovementSelectedWorker::PcDirectAttack_80086308,
+            .passive_routes = {
+                PassiveMovementRoute{
+                    .slot = 4,
+                    .route = PassiveMovementRouteKind::TargetParticipant,
+                    .selected_worker = MovementSelectedWorker::None,
+                    .status = MovementSimulationStatus::Provisional,
+                },
+            },
+        });
+
+    std::uint32_t rng_state = 0x12345678u;
+    const auto first_frame = run_first_turn_frame(*runtime, rng_state);
+
+    EXPECT_TRUE(first_frame.ok);
+    EXPECT_EQ(first_frame.frames_executed, 1);
+    EXPECT_EQ(runtime->state.frame_index, 1);
+    EXPECT_NE(
+        std::find_if(
+            runtime->workers.begin(),
+            runtime->workers.end(),
+            [](const BattleFrameWorker& worker) {
+                return worker.slot == 0 && !worker.complete;
+            }),
+        runtime->workers.end());
+}
+
+TEST(SavorPredictBattleFrameSchedulerModel, SchedulesEffectChunksPreservingBurstDrawTotal) {
+    auto runtime = initialize_first_battle_frame_runtime(
+        0,
+        make_first_battle_movement_slots_with_event0_positions());
+    ASSERT_TRUE(runtime.has_value());
+
+    ASSERT_TRUE(schedule_effect_chunks_for_source_key(*runtime, 1, 4, 5));
+    std::uint32_t rng_state = 0x12345678u;
+    const auto seed_before = rng_state;
+    const auto result = run_first_turn_until_idle(*runtime, rng_state, 16);
+
+    const auto expected = model_combat_effect_burst_sequence_draws(
+        first_battle_effect_burst_sequence_for_source_key(5));
+    int chunk_draws = 0;
+    int chunk_rng_events = 0;
+    for (const auto& event : result.events) {
+        if (event.worker_kind != BattleFrameWorkerKind::EffectChunk || !event.rng_event) {
+            continue;
+        }
+        chunk_draws += event.draws_consumed;
+        ++chunk_rng_events;
+        EXPECT_EQ(event.rng_label, "combat_effect_chunk");
+        EXPECT_EQ(event.status, BattleFrameEventStatus::Provisional);
+        ASSERT_TRUE(event.effect_source_key.has_value());
+        EXPECT_EQ(*event.effect_source_key, 5);
+    }
+
+    EXPECT_TRUE(result.ok);
+    EXPECT_EQ(chunk_rng_events, 2);
+    EXPECT_EQ(chunk_draws, expected.total_draws);
+    EXPECT_NE(rng_state, seed_before);
+}
+
+TEST(SavorPredictBattleFrameSchedulerModel, PassiveClashConsumesOneDrawAndSelectsObservedMode) {
+    auto runtime = initialize_first_battle_frame_runtime(
+        0,
+        make_first_battle_movement_slots_with_event0_positions());
+    ASSERT_TRUE(runtime.has_value());
+
+    schedule_first_turn_actor_action(
+        *runtime,
+        BattleFrameScheduleActionInput{
+            .actor_slot = 0,
+            .target_slot = 4,
+            .enemy_owned = false,
+            .combatant_command_parameter = 0,
+            .selected_worker = MovementSelectedWorker::PcDirectAttack_80086308,
+            .passive_routes = {
+                PassiveMovementRoute{
+                    .slot = 4,
+                    .route = PassiveMovementRouteKind::TargetParticipant,
+                    .selected_worker = MovementSelectedWorker::None,
+                    .status = MovementSimulationStatus::Provisional,
+                },
+            },
+        });
+
+    std::uint32_t rng_state = 0x12345678u;
+    const auto expected_draw = draw_rand15(rng_state);
+    const auto result = run_first_turn_until_idle(*runtime, rng_state, 16);
+
+    const auto clash = std::find_if(
+        result.events.begin(),
+        result.events.end(),
+        [](const BattleFrameStepEvent& event) {
+            return event.worker_kind == BattleFrameWorkerKind::PassiveClashReaction;
+        });
+    ASSERT_NE(clash, result.events.end());
+    EXPECT_EQ(clash->rng_label, "fun_8002eb4c_passive_clash");
+    EXPECT_EQ(clash->draws_consumed, 1);
+    ASSERT_TRUE(clash->rand_value.has_value());
+    EXPECT_EQ(*clash->rand_value, expected_draw.value);
+    EXPECT_EQ(clash->old_action_mode, BattleFrameActionMode::Standing);
+    EXPECT_TRUE(
+        clash->new_action_mode == BattleFrameActionMode::PassiveBlock
+        || clash->new_action_mode == BattleFrameActionMode::PassiveDodge);
+    ASSERT_TRUE(clash->passive_clash_selected_index.has_value());
+    EXPECT_EQ(*clash->passive_clash_selected_index, expected_draw.value % 2);
+}
+
 TEST(SavorPredictActionViewPathingTailModel, AngleShortConversionDoesNotImplyCircularDelta) {
     const float near_359 = angle_short_to_degrees_8006116c(0xff49u);
     const float near_1 = angle_short_to_degrees_8006116c(0x00b6u);
@@ -2871,6 +2991,70 @@ TEST(SavorPredictBattlePredictor, CompareMovementBackendEmitsFrameAndComparisonE
     const auto* movement_validation = find_prediction_validation(result, "movement_setup");
     ASSERT_NE(movement_validation, nullptr);
     EXPECT_NE(movement_validation->detail.find("persistent frame scheduler"), std::string::npos);
+}
+
+TEST(SavorPredictBattlePredictor, FrameBackendEmitsPassiveClashAndChunkedEffects) {
+    std::optional<BattlePredictionResult> matched;
+    for (std::uint32_t seed = 0; seed < 4096 && !matched.has_value(); ++seed) {
+        BattlePredictionInput input;
+        input.profile = first_battle_prediction_profile();
+        input.starting_rng_seed = seed;
+        input.enemy_event_id = 0;
+        input.context = make_predictor_first_battle_context(1000);
+        input.turn_plan = make_two_pc_attack_turn_plan(0);
+        input.options.movement_backend = BattlePredictionMovementBackend::FrameStateMachine;
+
+        auto result = predict_battle(input);
+        const auto effect_chunk = find_prediction_event(
+            result,
+            "frame_scheduler",
+            "combat_effect_chunk");
+        const auto passive_clash = find_prediction_event(
+            result,
+            "frame_scheduler",
+            "fun_8002eb4c_passive_clash");
+        if (effect_chunk != nullptr && passive_clash != nullptr) {
+            matched = std::move(result);
+        }
+    }
+
+    ASSERT_TRUE(matched.has_value());
+    const auto& result = *matched;
+
+    const auto aggregate_burst = std::find_if(
+        result.events.begin(),
+        result.events.end(),
+        [](const BattlePredictionEvent& event) {
+            return event.phase == "action_visual_rng"
+                && event.label == "combat_effect_burst";
+        });
+    EXPECT_EQ(aggregate_burst, result.events.end());
+
+    int effect_chunk_events = 0;
+    int effect_chunk_draws = 0;
+    for (const auto& event : result.events) {
+        if (event.phase != "frame_scheduler" || event.label != "combat_effect_chunk") {
+            continue;
+        }
+        ++effect_chunk_events;
+        effect_chunk_draws += event.draws_consumed;
+        EXPECT_EQ(event.status, BattlePredictionEventStatus::Provisional);
+        EXPECT_TRUE(event.frame_index.has_value());
+        EXPECT_TRUE(event.effect_source_key.has_value());
+    }
+
+    EXPECT_GE(effect_chunk_events, 2);
+    EXPECT_TRUE(effect_chunk_draws == 100 || effect_chunk_draws == 110 || effect_chunk_draws > 110);
+
+    const auto* passive_clash = find_prediction_event(
+        result,
+        "frame_scheduler",
+        "fun_8002eb4c_passive_clash");
+    ASSERT_NE(passive_clash, nullptr);
+    EXPECT_EQ(passive_clash->draws_consumed, 1);
+    EXPECT_TRUE(passive_clash->rand_value.has_value());
+    EXPECT_NE(passive_clash->detail.find("candidate0=0x0000000D"), std::string::npos);
+    EXPECT_NE(passive_clash->detail.find("candidate1=0x0000000C"), std::string::npos);
 }
 
 TEST(SavorPredictBattlePredictor, UsesBattleInstanceCounterChanceAsDamageIncrement) {
