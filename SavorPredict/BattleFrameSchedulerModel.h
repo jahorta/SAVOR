@@ -62,6 +62,7 @@ enum class BattleFrameWorkerStepKind {
     FrameStartPositionSync,
     ActionMotionPositionSync,
     ActionMotionSetup_8001fabc,
+    ActionMotionRotateStep_8001b630_80061114,
     ActionMotionMoveStep_8001e910,
     MoveIncrementApply_80061340,
     Rng,
@@ -136,7 +137,17 @@ struct BattleFrameStepEvent {
     BattleFrameVec3 move_increment_0x104{};
     BattleFrameVec3 applied_move_increment{};
     float selected_motion_speed = 0.0f;
+    std::uint32_t old_combatant_facing_angle_0x2c = 0;
+    std::uint32_t new_combatant_facing_angle_0x2c = 0;
+    float turn_current_degrees_0x11c = 0.0f;
+    float turn_target_degrees_0x120 = 0.0f;
+    float turn_step_degrees_0x124 = 0.0f;
+    float turn_speed_degrees_0x128 = 0.0f;
+    std::uint32_t turn_speed_bits_0x128 = 0;
     bool action_motion_setup_event = false;
+    bool rotation_apply_event = false;
+    bool rotation_reached_target = false;
+    bool combatant_facing_angle_changed = false;
     bool move_increment_apply_event = false;
     bool motion_reached_target = false;
     bool grid_changed = false;

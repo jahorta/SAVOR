@@ -69,6 +69,9 @@ struct MovementSlotState {
     float motion_base_speed = 0.0f;
     float motion_alt_speed = 0.0f;
     bool motion_speeds_known = false;
+    float motion_turn_speed = 0.0f;
+    std::uint32_t motion_turn_speed_bits = 0;
+    bool motion_turn_speed_known = false;
     int width = 1;
     int depth = 1;
     std::optional<BattleStartPosition> start_position;

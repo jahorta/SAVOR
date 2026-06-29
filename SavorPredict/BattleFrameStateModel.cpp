@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 
 namespace savor::predict {
 namespace {
@@ -60,14 +61,34 @@ void write_footprint(BattleFrameState& state, const BattleFrameCombatantState& c
     }
 }
 
-void apply_first_battle_motion_speed_defaults(BattleFrameCombatantState& combatant) {
+constexpr float kPi = 3.14159265358979323846f;
+constexpr float kAngleUnitsPerDegree = 65536.0f / 360.0f;
+
+float normalize_degrees_0_360(float degrees) {
+    while (degrees < 0.0f) {
+        degrees += 360.0f;
+    }
+    while (degrees >= 360.0f) {
+        degrees -= 360.0f;
+    }
+    return degrees;
+}
+
+void apply_first_battle_motion_defaults(BattleFrameCombatantState& combatant) {
     const auto defaults = first_battle_actor_by_slot(combatant.slot);
-    if (!defaults.has_value() || !defaults->motion_speeds_known) {
+    if (!defaults.has_value()) {
         return;
     }
-    combatant.motion_base_speed_0x12c = defaults->motion_base_speed;
-    combatant.motion_alt_speed_0x130 = defaults->motion_alt_speed;
-    combatant.motion_speeds_known = true;
+    if (!combatant.motion_speeds_known && defaults->motion_speeds_known) {
+        combatant.motion_base_speed_0x12c = defaults->motion_base_speed;
+        combatant.motion_alt_speed_0x130 = defaults->motion_alt_speed;
+        combatant.motion_speeds_known = true;
+    }
+    if (!combatant.turn_speed_known && defaults->motion_turn_speed_known) {
+        combatant.turn_speed_degrees_0x128 = defaults->motion_turn_speed;
+        combatant.turn_speed_bits_0x128 = defaults->motion_turn_speed_bits;
+        combatant.turn_speed_known = true;
+    }
 }
 
 } // namespace
@@ -125,9 +146,10 @@ std::optional<BattleFrameState> initialize_first_battle_frame_state(
         combatant.motion_base_speed_0x12c = slot.motion_base_speed;
         combatant.motion_alt_speed_0x130 = slot.motion_alt_speed;
         combatant.motion_speeds_known = slot.motion_speeds_known;
-        if (!combatant.motion_speeds_known) {
-            apply_first_battle_motion_speed_defaults(combatant);
-        }
+        combatant.turn_speed_degrees_0x128 = slot.motion_turn_speed;
+        combatant.turn_speed_bits_0x128 = slot.motion_turn_speed_bits;
+        combatant.turn_speed_known = slot.motion_turn_speed_known;
+        apply_first_battle_motion_defaults(combatant);
         combatant.grid_position = MovementGridPosition{.grid_x = start->grid_x, .grid_z = start->grid_z};
         combatant.previous_grid_position = combatant.grid_position;
         combatant.pos_holder = first_battle_grid_to_raw_stage_position(
@@ -137,6 +159,10 @@ std::optional<BattleFrameState> initialize_first_battle_frame_state(
         combatant.combatant_cur_pos_0x1c = combatant.pos_holder;
         combatant.instruction_field_0xf8 = combatant.pos_holder;
         combatant.pos_to_move_to_0x110 = combatant.pos_holder;
+        combatant.turn_current_degrees_0x11c =
+            battle_frame_angle_short_to_degrees_8006116c(combatant.combatant_facing_angle_0x2c);
+        combatant.turn_target_degrees_0x120 = combatant.turn_current_degrees_0x11c;
+        combatant.last_written_facing_angle_0x2c = combatant.combatant_facing_angle_0x2c;
         combatant.instruction_compare_0x15c = combatant.slot;
         combatant.selected_action_row_flags = 0x01000000u;
         combatant.selected_action_row_index = 0;
@@ -267,6 +293,66 @@ bool move_combatant_increment_80061340(
 
     return current_position.x == target_position.x
         && current_position.z == target_position.z;
+}
+
+float battle_frame_angle_short_to_degrees_8006116c(std::uint32_t angle_word) {
+    const auto angle = static_cast<std::uint16_t>(angle_word & 0xffffu);
+    return static_cast<float>(angle) * 360.0f / 65536.0f;
+}
+
+std::uint32_t battle_frame_degrees_to_angle_short_8001b1b0(float degrees) {
+    const float normalized = normalize_degrees_0_360(degrees);
+    const auto angle = static_cast<std::uint32_t>(normalized * kAngleUnitsPerDegree);
+    return angle & 0xffffu;
+}
+
+void normalize_turn_shortest_path_80061080(float& current_degrees, float& target_degrees) {
+    current_degrees = normalize_degrees_0_360(current_degrees);
+    target_degrees = normalize_degrees_0_360(target_degrees);
+    while (target_degrees - current_degrees > 180.0f) {
+        target_degrees -= 360.0f;
+    }
+    while (target_degrees - current_degrees < -180.0f) {
+        target_degrees += 360.0f;
+    }
+}
+
+bool apply_rotation_increment_80061114(
+    float& current_degrees,
+    float target_degrees,
+    float step_degrees) {
+    if (current_degrees == target_degrees) {
+        return true;
+    }
+    if (step_degrees == 0.0f
+        || (target_degrees > current_degrees && step_degrees < 0.0f)
+        || (target_degrees < current_degrees && step_degrees > 0.0f)) {
+        current_degrees = target_degrees;
+        return true;
+    }
+
+    const float next = current_degrees + step_degrees;
+    if ((step_degrees > 0.0f && next >= target_degrees)
+        || (step_degrees < 0.0f && next <= target_degrees)) {
+        current_degrees = target_degrees;
+        return true;
+    }
+    current_degrees = next;
+    return false;
+}
+
+float battle_frame_target_facing_degrees_xz(
+    const BattleFrameVec3& from,
+    const BattleFrameVec3& to,
+    float fallback_degrees) {
+    const float dx = to.x - from.x;
+    const float dz = to.z - from.z;
+    if (dx == 0.0f && dz == 0.0f) {
+        return normalize_degrees_0_360(fallback_degrees);
+    }
+
+    const float degrees = std::atan2(dx, -dz) * 180.0f / kPi;
+    return normalize_degrees_0_360(degrees);
 }
 
 } // namespace savor::predict

@@ -35,6 +35,15 @@ struct BattleFrameCombatantState {
     float motion_alt_speed_0x130 = 0.0f;
     float selected_motion_speed = 0.0f;
     bool motion_speeds_known = false;
+    std::uint32_t combatant_facing_angle_0x2c = 0;
+    std::uint32_t last_written_facing_angle_0x2c = 0;
+    float turn_current_degrees_0x11c = 0.0f;
+    float turn_target_degrees_0x120 = 0.0f;
+    float turn_step_degrees_0x124 = 0.0f;
+    float turn_speed_degrees_0x128 = 0.0f;
+    std::uint32_t turn_speed_bits_0x128 = 0;
+    bool turn_speed_known = false;
+    bool turn_state_known = false;
     std::uint32_t selected_action_row_flags = 0;
     int selected_action_row_index = -1;
     bool pending_frame_start_position_sync = false;
@@ -93,5 +102,17 @@ bool move_combatant_increment_80061340(
     BattleFrameVec3& current_position,
     const BattleFrameVec3& target_position,
     const BattleFrameVec3& increment);
+
+float battle_frame_angle_short_to_degrees_8006116c(std::uint32_t angle_word);
+std::uint32_t battle_frame_degrees_to_angle_short_8001b1b0(float degrees);
+void normalize_turn_shortest_path_80061080(float& current_degrees, float& target_degrees);
+bool apply_rotation_increment_80061114(
+    float& current_degrees,
+    float target_degrees,
+    float step_degrees);
+float battle_frame_target_facing_degrees_xz(
+    const BattleFrameVec3& from,
+    const BattleFrameVec3& to,
+    float fallback_degrees);
 
 } // namespace savor::predict

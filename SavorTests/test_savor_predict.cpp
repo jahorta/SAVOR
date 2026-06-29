@@ -25,6 +25,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstring>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -234,8 +235,17 @@ std::vector<MovementSlotState> make_first_battle_movement_slots(bool soldier4_al
         slot.motion_base_speed = first_battle->motion_base_speed;
         slot.motion_alt_speed = first_battle->motion_alt_speed;
         slot.motion_speeds_known = true;
+        slot.motion_turn_speed = first_battle->motion_turn_speed;
+        slot.motion_turn_speed_bits = first_battle->motion_turn_speed_bits;
+        slot.motion_turn_speed_known = first_battle->motion_turn_speed_known;
     }
     return slots;
+}
+
+std::uint32_t float_bits(float value) {
+    std::uint32_t bits = 0;
+    std::memcpy(&bits, &value, sizeof(bits));
+    return bits;
 }
 
 std::vector<MovementSlotState> make_first_battle_movement_slots_with_event0_positions(
@@ -2351,6 +2361,39 @@ TEST(SavorPredictBattleFrameSchedulerModel, InitializesRuntimeWithPackedThreadOr
     EXPECT_TRUE(aika->motion_speeds_known);
     EXPECT_FLOAT_EQ(aika->motion_base_speed_0x12c, 2.25f);
     EXPECT_FLOAT_EQ(aika->motion_alt_speed_0x130, 0.6f);
+    EXPECT_TRUE(aika->turn_speed_known);
+    EXPECT_EQ(aika->turn_speed_bits_0x128, 0x41B0CCC4u);
+    EXPECT_EQ(float_bits(aika->turn_speed_degrees_0x128), 0x41B0CCC4u);
+    EXPECT_FLOAT_EQ(aika->turn_speed_degrees_0x128, 22.0999832f);
+}
+
+TEST(SavorPredictBattleFrameSchedulerModel, FirstBattleTurnSpeedDefaultsPopulateBySlot) {
+    auto slots = make_first_battle_movement_slots_with_event0_positions();
+    for (auto& slot : slots) {
+        slot.motion_turn_speed = 0.0f;
+        slot.motion_turn_speed_bits = 0;
+        slot.motion_turn_speed_known = false;
+    }
+
+    const auto runtime = initialize_first_battle_frame_runtime(0, slots);
+
+    ASSERT_TRUE(runtime.has_value());
+    const auto* vyse = find_frame_combatant(runtime->state, 0);
+    const auto* aika = find_frame_combatant(runtime->state, 1);
+    const auto* soldier4 = find_frame_combatant(runtime->state, 4);
+    const auto* soldier5 = find_frame_combatant(runtime->state, 5);
+    ASSERT_NE(vyse, nullptr);
+    ASSERT_NE(aika, nullptr);
+    ASSERT_NE(soldier4, nullptr);
+    ASSERT_NE(soldier5, nullptr);
+    EXPECT_EQ(vyse->turn_speed_bits_0x128, 0x41C8CCC9u);
+    EXPECT_EQ(aika->turn_speed_bits_0x128, 0x41B0CCC4u);
+    EXPECT_EQ(soldier4->turn_speed_bits_0x128, 0x41A0CCBFu);
+    EXPECT_EQ(soldier5->turn_speed_bits_0x128, 0x41A0CCBFu);
+    EXPECT_EQ(float_bits(vyse->turn_speed_degrees_0x128), 0x41C8CCC9u);
+    EXPECT_EQ(float_bits(aika->turn_speed_degrees_0x128), 0x41B0CCC4u);
+    EXPECT_EQ(float_bits(soldier4->turn_speed_degrees_0x128), 0x41A0CCBFu);
+    EXPECT_EQ(float_bits(soldier5->turn_speed_degrees_0x128), 0x41A0CCBFu);
 }
 
 TEST(SavorPredictBattleFrameSchedulerModel, MoveCombatantIncrementAppliesXZAndClampsOvershoot) {
@@ -2382,6 +2425,59 @@ TEST(SavorPredictBattleFrameSchedulerModel, MoveCombatantIncrementSnapsZeroAxes)
     EXPECT_FLOAT_EQ(current.x, -6.0f);
     EXPECT_FLOAT_EQ(current.y, 4.0f);
     EXPECT_FLOAT_EQ(current.z, 0.0f);
+}
+
+TEST(SavorPredictBattleFrameSchedulerModel, RotationIncrementAppliesSignedStepsAndClampsOvershoot) {
+    float current = 10.0f;
+    EXPECT_FALSE(apply_rotation_increment_80061114(current, 55.0f, 20.0f));
+    EXPECT_FLOAT_EQ(current, 30.0f);
+    EXPECT_FALSE(apply_rotation_increment_80061114(current, 55.0f, 20.0f));
+    EXPECT_FLOAT_EQ(current, 50.0f);
+    EXPECT_TRUE(apply_rotation_increment_80061114(current, 55.0f, 20.0f));
+    EXPECT_FLOAT_EQ(current, 55.0f);
+
+    current = 350.0f;
+    EXPECT_FALSE(apply_rotation_increment_80061114(current, 300.0f, -25.0f));
+    EXPECT_FLOAT_EQ(current, 325.0f);
+    EXPECT_TRUE(apply_rotation_increment_80061114(current, 300.0f, -25.0f));
+    EXPECT_FLOAT_EQ(current, 300.0f);
+}
+
+TEST(SavorPredictBattleFrameSchedulerModel, RotationIncrementSnapsZeroOrWrongSignStep) {
+    float current = 45.0f;
+    EXPECT_TRUE(apply_rotation_increment_80061114(current, 90.0f, 0.0f));
+    EXPECT_FLOAT_EQ(current, 90.0f);
+
+    current = 45.0f;
+    EXPECT_TRUE(apply_rotation_increment_80061114(current, 90.0f, -10.0f));
+    EXPECT_FLOAT_EQ(current, 90.0f);
+}
+
+TEST(SavorPredictBattleFrameSchedulerModel, TurnSetupNormalizesShortestPathAndTargetVectors) {
+    float current = 350.0f;
+    float target = 10.0f;
+    normalize_turn_shortest_path_80061080(current, target);
+    EXPECT_FLOAT_EQ(current, 350.0f);
+    EXPECT_FLOAT_EQ(target, 370.0f);
+
+    EXPECT_FLOAT_EQ(
+        battle_frame_target_facing_degrees_xz(
+            BattleFrameVec3{.x = 0.0f, .y = 0.0f, .z = 0.0f},
+            BattleFrameVec3{.x = 0.0f, .y = 0.0f, .z = -15.0f},
+            123.0f),
+        0.0f);
+    EXPECT_FLOAT_EQ(
+        battle_frame_target_facing_degrees_xz(
+            BattleFrameVec3{.x = 0.0f, .y = 0.0f, .z = 0.0f},
+            BattleFrameVec3{.x = 15.0f, .y = 0.0f, .z = 0.0f},
+            123.0f),
+        90.0f);
+    EXPECT_FLOAT_EQ(
+        battle_frame_target_facing_degrees_xz(
+            BattleFrameVec3{.x = 0.0f, .y = 0.0f, .z = 0.0f},
+            BattleFrameVec3{.x = 15.0f, .y = 0.0f, .z = -15.0f},
+            123.0f),
+        45.0f);
 }
 
 TEST(SavorPredictBattleFrameSchedulerModel, CommitPublishesPosHolderAndExplicitSyncCopiesSourceSlot) {
@@ -2491,6 +2587,29 @@ TEST(SavorPredictBattleFrameSchedulerModel, SchedulesStaticWorkerProgramsWithCal
                 return step.kind == BattleFrameWorkerStepKind::MoveIncrementApply_80061340;
             }),
         active->program_steps.end());
+    const auto active_setup_index = std::find_if(
+        active->program_steps.begin(),
+        active->program_steps.end(),
+        [](const BattleFrameWorkerProgramStep& step) {
+            return step.kind == BattleFrameWorkerStepKind::ActionMotionSetup_8001fabc;
+        });
+    const auto active_rotation_index = std::find_if(
+        active->program_steps.begin(),
+        active->program_steps.end(),
+        [](const BattleFrameWorkerProgramStep& step) {
+            return step.kind == BattleFrameWorkerStepKind::ActionMotionRotateStep_8001b630_80061114;
+        });
+    const auto active_move_index = std::find_if(
+        active->program_steps.begin(),
+        active->program_steps.end(),
+        [](const BattleFrameWorkerProgramStep& step) {
+            return step.kind == BattleFrameWorkerStepKind::MoveIncrementApply_80061340;
+        });
+    ASSERT_NE(active_setup_index, active->program_steps.end());
+    ASSERT_NE(active_rotation_index, active->program_steps.end());
+    ASSERT_NE(active_move_index, active->program_steps.end());
+    EXPECT_LT(active_setup_index, active_rotation_index);
+    EXPECT_LT(active_rotation_index, active_move_index);
     EXPECT_EQ(
         std::find_if(
             active->program_steps.begin(),
@@ -2557,6 +2676,7 @@ TEST(SavorPredictBattleFrameSchedulerModel, WorkerMotionAppliesFloatStepsBeforeP
     std::uint32_t rng_state = 0x12345678u;
 
     bool saw_setup = false;
+    bool saw_rotation_before_apply = false;
     bool saw_apply_before_commit = false;
     BattleFrameRunResult commit_frame;
     for (int i = 0; i < 64; ++i) {
@@ -2573,13 +2693,26 @@ TEST(SavorPredictBattleFrameSchedulerModel, WorkerMotionAppliesFloatStepsBeforeP
                 EXPECT_TRUE(
                     event.move_increment_0x104.x != 0.0f
                     || event.move_increment_0x104.z != 0.0f);
+                EXPECT_EQ(event.turn_speed_bits_0x128, 0x41C8CCC9u);
                 vyse = find_frame_combatant(runtime->state, 0);
                 ASSERT_NE(vyse, nullptr);
                 EXPECT_EQ(vyse->pos_holder.x, initial_pos_holder.x);
                 EXPECT_EQ(vyse->pos_holder.z, initial_pos_holder.z);
             }
+            if (event.step_kind == BattleFrameWorkerStepKind::ActionMotionRotateStep_8001b630_80061114) {
+                saw_rotation_before_apply = true;
+                EXPECT_TRUE(event.rotation_apply_event);
+                EXPECT_EQ(event.turn_speed_bits_0x128, 0x41C8CCC9u);
+                vyse = find_frame_combatant(runtime->state, 0);
+                ASSERT_NE(vyse, nullptr);
+                EXPECT_EQ(vyse->pos_holder.x, initial_pos_holder.x);
+                EXPECT_EQ(vyse->pos_holder.z, initial_pos_holder.z);
+                EXPECT_FLOAT_EQ(vyse->combatant_cur_pos_0x1c.x, initial_combatant_cur_pos_0x1c.x);
+                EXPECT_FLOAT_EQ(vyse->combatant_cur_pos_0x1c.z, initial_combatant_cur_pos_0x1c.z);
+            }
             if (event.step_kind == BattleFrameWorkerStepKind::MoveIncrementApply_80061340) {
                 saw_apply_before_commit = true;
+                EXPECT_TRUE(saw_rotation_before_apply);
                 EXPECT_TRUE(event.move_increment_apply_event);
                 EXPECT_FALSE(event.action_motion_position_synced);
                 vyse = find_frame_combatant(runtime->state, 0);
@@ -2599,6 +2732,7 @@ TEST(SavorPredictBattleFrameSchedulerModel, WorkerMotionAppliesFloatStepsBeforeP
     }
 
     EXPECT_TRUE(saw_setup);
+    EXPECT_TRUE(saw_rotation_before_apply);
     EXPECT_TRUE(saw_apply_before_commit);
     ASSERT_FALSE(commit_frame.events.empty());
     const auto commit_event = std::find_if(
@@ -2683,6 +2817,56 @@ TEST(SavorPredictBattleFrameSchedulerModel, Mode13AppliesHalfMoveIncrement) {
     EXPECT_FLOAT_EQ(apply_event->applied_move_increment.x, apply_event->move_increment_0x104.x * 0.5f);
     EXPECT_FLOAT_EQ(apply_event->applied_move_increment.y, apply_event->move_increment_0x104.y * 0.5f);
     EXPECT_FLOAT_EQ(apply_event->applied_move_increment.z, apply_event->move_increment_0x104.z * 0.5f);
+}
+
+TEST(SavorPredictBattleFrameSchedulerModel, MissingRotationSpeedEmitsMissingInputBeforeMoveFrame) {
+    auto runtime = initialize_first_battle_frame_runtime(
+        0,
+        make_first_battle_movement_slots_with_event0_positions());
+    ASSERT_TRUE(runtime.has_value());
+
+    auto* vyse = find_frame_combatant(runtime->state, 0);
+    ASSERT_NE(vyse, nullptr);
+    vyse->turn_speed_known = false;
+    vyse->turn_speed_degrees_0x128 = 0.0f;
+    vyse->turn_speed_bits_0x128 = 0;
+
+    schedule_first_turn_actor_action(
+        *runtime,
+        BattleFrameScheduleActionInput{
+            .actor_slot = 0,
+            .target_slot = 4,
+            .enemy_owned = false,
+            .combatant_command_parameter = 0,
+            .selected_worker = MovementSelectedWorker::PcDirectAttack_80086308,
+            .passive_routes = {},
+        });
+
+    std::uint32_t rng_state = 0x12345678u;
+    std::optional<BattleFrameStepEvent> rotation_event;
+    std::optional<BattleFrameStepEvent> move_event;
+    for (int i = 0; i < 16 && (!rotation_event.has_value() || !move_event.has_value()); ++i) {
+        const auto step = run_first_turn_frame(*runtime, rng_state);
+        ASSERT_TRUE(step.ok);
+        for (const auto& event : step.events) {
+            if (event.slot != 0) {
+                continue;
+            }
+            if (event.step_kind == BattleFrameWorkerStepKind::ActionMotionRotateStep_8001b630_80061114) {
+                rotation_event = event;
+            }
+            if (event.step_kind == BattleFrameWorkerStepKind::MoveIncrementApply_80061340) {
+                move_event = event;
+            }
+        }
+    }
+
+    ASSERT_TRUE(rotation_event.has_value());
+    EXPECT_EQ(rotation_event->status, BattleFrameEventStatus::MissingInput);
+    EXPECT_TRUE(rotation_event->rotation_apply_event);
+    EXPECT_TRUE(rotation_event->rotation_reached_target);
+    ASSERT_TRUE(move_event.has_value());
+    EXPECT_GT(move_event->frame_index, rotation_event->frame_index);
 }
 
 TEST(SavorPredictBattleFrameSchedulerModel, RunsWorkersForActiveAndPassiveCombatants) {

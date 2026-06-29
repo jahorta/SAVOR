@@ -175,7 +175,20 @@ void add_action_motion_setup_step(BattleFrameWorker& worker) {
         action_mode_for_worker(worker),
         -1,
         "action_motion_setup_8001fabc",
-        "helper_pc=0x8001fabc; seeds pos_to_move_to_0x110 and move_increment_0x104; timing=provisional");
+        "helper_pc=0x8001fabc; seeds turn fields, pos_to_move_to_0x110, and move_increment_0x104; timing=provisional");
+}
+
+void add_rotation_apply_step(BattleFrameWorker& worker) {
+    add_step(
+        worker,
+        BattleFrameWorkerStepKind::ActionMotionRotateStep_8001b630_80061114,
+        0x8001b630u,
+        0x80061114u,
+        std::nullopt,
+        action_mode_for_worker(worker),
+        -1,
+        "action_motion_rotate_80061114",
+        "selector_pc=0x8001b1b0; callsite_pc=0x8001b630; helper_pc=0x80061114; writes CW+0x2c at 0x8001b65c when reached or 0x8001b6cc while rotating; repeats until target reached; timing=provisional");
 }
 
 void add_move_increment_apply_step(BattleFrameWorker& worker) {
@@ -380,6 +393,7 @@ void build_static_worker_program(BattleFrameWorker& worker) {
         add_path_build_step(worker);
         add_grid_refresh_step(worker);
         add_action_motion_setup_step(worker);
+        add_rotation_apply_step(worker);
         add_move_increment_apply_step(worker);
         add_commit_step(
             worker,
@@ -401,6 +415,7 @@ void build_static_worker_program(BattleFrameWorker& worker) {
         add_path_build_step(worker);
         add_grid_refresh_step(worker);
         add_action_motion_setup_step(worker);
+        add_rotation_apply_step(worker);
         add_move_increment_apply_step(worker);
         add_commit_step(
             worker,
@@ -414,6 +429,7 @@ void build_static_worker_program(BattleFrameWorker& worker) {
         add_callback_entry_step(worker);
         add_grid_refresh_step(worker);
         add_action_motion_setup_step(worker);
+        add_rotation_apply_step(worker);
         add_move_increment_apply_step(worker);
         add_commit_step(
             worker,
@@ -437,6 +453,7 @@ void build_static_worker_program(BattleFrameWorker& worker) {
             "passive_path_commit_helper_8008c4c0",
             "dispatch=0x8008c21c->0x8008c4c0");
         add_action_motion_setup_step(worker);
+        add_rotation_apply_step(worker);
         add_move_increment_apply_step(worker);
         add_commit_step(
             worker,
@@ -451,6 +468,7 @@ void build_static_worker_program(BattleFrameWorker& worker) {
         add_callback_entry_step(worker);
         add_grid_refresh_step(worker);
         add_action_motion_setup_step(worker);
+        add_rotation_apply_step(worker);
         add_move_increment_apply_step(worker);
         add_commit_step(
             worker,
@@ -565,6 +583,12 @@ std::string frame_vec_detail(const BattleFrameVec3& value) {
     return out.str();
 }
 
+std::string angle_detail(float value) {
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(6) << value;
+    return out.str();
+}
+
 float selected_motion_speed_for_mode(const BattleFrameCombatantState& combatant) {
     if (combatant.combatant_action_mode == BattleFrameActionMode::ActionMotionAltSpeed) {
         return combatant.motion_alt_speed_0x130;
@@ -579,6 +603,20 @@ void seed_action_motion_8001fabc(
     combatant.pos_to_move_to_0x110 = worker.destination_position;
     combatant.selected_motion_speed = selected_motion_speed_for_mode(combatant);
     event.selected_motion_speed = combatant.selected_motion_speed;
+    combatant.turn_current_degrees_0x11c =
+        battle_frame_angle_short_to_degrees_8006116c(combatant.combatant_facing_angle_0x2c);
+    combatant.turn_target_degrees_0x120 = battle_frame_target_facing_degrees_xz(
+        combatant.combatant_cur_pos_0x1c,
+        worker.destination_position,
+        combatant.turn_current_degrees_0x11c);
+    normalize_turn_shortest_path_80061080(
+        combatant.turn_current_degrees_0x11c,
+        combatant.turn_target_degrees_0x120);
+    combatant.turn_step_degrees_0x124 =
+        combatant.turn_target_degrees_0x120 - combatant.turn_current_degrees_0x11c >= 0.0f
+            ? combatant.turn_speed_degrees_0x128
+            : -combatant.turn_speed_degrees_0x128;
+    combatant.turn_state_known = combatant.turn_speed_known;
 
     const float distance = xz_distance(combatant.combatant_cur_pos_0x1c, combatant.pos_to_move_to_0x110);
     if (!combatant.motion_speeds_known || (distance > 0.0f && combatant.selected_motion_speed <= 0.0f)) {
@@ -599,9 +637,24 @@ void seed_action_motion_8001fabc(
     event.action_motion_setup_event = true;
     event.pos_to_move_to_0x110 = combatant.pos_to_move_to_0x110;
     event.move_increment_0x104 = combatant.move_increment_0x104;
+    event.turn_current_degrees_0x11c = combatant.turn_current_degrees_0x11c;
+    event.turn_target_degrees_0x120 = combatant.turn_target_degrees_0x120;
+    event.turn_step_degrees_0x124 = combatant.turn_step_degrees_0x124;
+    event.turn_speed_degrees_0x128 = combatant.turn_speed_degrees_0x128;
+    event.turn_speed_bits_0x128 = combatant.turn_speed_bits_0x128;
     event.detail += "; target=" + frame_vec_detail(combatant.pos_to_move_to_0x110)
         + "; selected_speed=" + std::to_string(combatant.selected_motion_speed)
         + "; move_increment_0x104=" + frame_vec_detail(combatant.move_increment_0x104)
+        + "; turn_current_0x11c=" + angle_detail(combatant.turn_current_degrees_0x11c)
+        + "; turn_target_0x120=" + angle_detail(combatant.turn_target_degrees_0x120)
+        + "; turn_step_0x124=" + angle_detail(combatant.turn_step_degrees_0x124)
+        + "; turn_speed_0x128=" + angle_detail(combatant.turn_speed_degrees_0x128)
+        + "; turn_speed_bits_0x128=0x" + [&combatant] {
+            std::ostringstream bits;
+            bits << std::hex << std::setw(8) << std::setfill('0') << std::nouppercase
+                 << combatant.turn_speed_bits_0x128;
+            return bits.str();
+        }()
         + "; iw_base_speed_0x12c=" + std::to_string(combatant.motion_base_speed_0x12c)
         + "; iw_alt_speed_0x130=" + std::to_string(combatant.motion_alt_speed_0x130)
         + "; selected_action_row_flags=0x" + [&combatant] {
@@ -609,6 +662,55 @@ void seed_action_motion_8001fabc(
             flags << std::hex << std::nouppercase << combatant.selected_action_row_flags;
             return flags.str();
         }();
+}
+
+bool apply_rotation_8001b630(
+    BattleFrameCombatantState& combatant,
+    BattleFrameStepEvent& event) {
+    event.rotation_apply_event = true;
+    event.turn_current_degrees_0x11c = combatant.turn_current_degrees_0x11c;
+    event.turn_target_degrees_0x120 = combatant.turn_target_degrees_0x120;
+    event.turn_step_degrees_0x124 = combatant.turn_step_degrees_0x124;
+    event.turn_speed_degrees_0x128 = combatant.turn_speed_degrees_0x128;
+    event.turn_speed_bits_0x128 = combatant.turn_speed_bits_0x128;
+
+    if (!combatant.turn_state_known || !combatant.turn_speed_known) {
+        event.status = BattleFrameEventStatus::MissingInput;
+        event.rotation_reached_target = true;
+        event.detail += "; missing first-battle rotation speed for slot " + std::to_string(combatant.slot)
+            + "; selector_pc=0x8001b1b0; callsite_pc=0x8001b630; helper_pc=0x80061114";
+        return true;
+    }
+
+    const bool reached = apply_rotation_increment_80061114(
+        combatant.turn_current_degrees_0x11c,
+        combatant.turn_target_degrees_0x120,
+        combatant.turn_step_degrees_0x124);
+    combatant.combatant_facing_angle_0x2c =
+        battle_frame_degrees_to_angle_short_8001b1b0(
+            reached ? combatant.turn_target_degrees_0x120 : combatant.turn_current_degrees_0x11c);
+    combatant.last_written_facing_angle_0x2c = combatant.combatant_facing_angle_0x2c;
+    if (reached) {
+        combatant.instruction_flags_0xf0 |= 0x200u;
+    }
+
+    event.rotation_reached_target = reached;
+    event.turn_current_degrees_0x11c = combatant.turn_current_degrees_0x11c;
+    event.new_combatant_facing_angle_0x2c = combatant.combatant_facing_angle_0x2c;
+    event.detail += "; turn_current_0x11c=" + angle_detail(combatant.turn_current_degrees_0x11c)
+        + "; turn_target_0x120=" + angle_detail(combatant.turn_target_degrees_0x120)
+        + "; turn_step_0x124=" + angle_detail(combatant.turn_step_degrees_0x124)
+        + "; turn_speed_0x128=" + angle_detail(combatant.turn_speed_degrees_0x128)
+        + "; turn_speed_bits_0x128=0x" + [&combatant] {
+            std::ostringstream bits;
+            bits << std::hex << std::setw(8) << std::setfill('0') << std::nouppercase
+                 << combatant.turn_speed_bits_0x128;
+            return bits.str();
+        }()
+        + "; facing_write_pc=" + std::string(reached ? "0x8001b65c" : "0x8001b6cc")
+        + "; reached=" + std::to_string(reached ? 1 : 0)
+        + "; selector_pc=0x8001b1b0; callsite_pc=0x8001b630; helper_pc=0x80061114";
+    return reached;
 }
 
 bool apply_move_increment_8001e910(
@@ -760,6 +862,8 @@ void append_frame_start_position_sync_events(
         event.old_pos_holder = before.pos_holder;
         event.new_pos_holder = before.pos_holder;
         event.old_combatant_cur_pos_0x1c = before.combatant_cur_pos_0x1c;
+        event.old_combatant_facing_angle_0x2c = before.combatant_facing_angle_0x2c;
+        event.new_combatant_facing_angle_0x2c = before.combatant_facing_angle_0x2c;
 
         sync_frame_start_position_from_pos_holder(runtime.state, before.slot);
         const auto* after = find_frame_combatant(runtime.state, before.slot);
@@ -771,11 +875,14 @@ void append_frame_start_position_sync_events(
             event.new_grid = after->grid_position;
             event.new_pos_holder = after->pos_holder;
             event.new_combatant_cur_pos_0x1c = after->combatant_cur_pos_0x1c;
+            event.new_combatant_facing_angle_0x2c = after->combatant_facing_angle_0x2c;
         }
         event.grid_changed = !same_grid(event.old_grid, event.new_grid);
         event.pos_holder_changed = !same_vec(event.old_pos_holder, event.new_pos_holder);
         event.combatant_cur_pos_changed =
             !same_vec(event.old_combatant_cur_pos_0x1c, event.new_combatant_cur_pos_0x1c);
+        event.combatant_facing_angle_changed =
+            event.old_combatant_facing_angle_0x2c != event.new_combatant_facing_angle_0x2c;
         event.action_motion_position_synced = true;
         event.detail =
             "step_kind=FrameStartPositionSync; frame_phase=top_of_8000a2fc; consumes explicit pending sync flag; copies current slot posHolder into combatant_cur_pos_0x1c and instruction_field_0xf8; function_neutral=1; not_FUN_8001ab60; provisional=1";
@@ -838,6 +945,8 @@ BattleFrameStepEvent execute_worker_frame(
     event.old_grid = combatant->grid_position;
     event.old_pos_holder = combatant->pos_holder;
     event.old_combatant_cur_pos_0x1c = combatant->combatant_cur_pos_0x1c;
+    event.old_combatant_facing_angle_0x2c = combatant->combatant_facing_angle_0x2c;
+    event.new_combatant_facing_angle_0x2c = combatant->combatant_facing_angle_0x2c;
 
     if (worker.program_index >= worker.program_steps.size()) {
         worker.complete = true;
@@ -858,6 +967,11 @@ BattleFrameStepEvent execute_worker_frame(
         case BattleFrameWorkerStepKind::ActionMotionSetup_8001fabc:
             seed_action_motion_8001fabc(*combatant, worker, event);
             break;
+        case BattleFrameWorkerStepKind::ActionMotionRotateStep_8001b630_80061114: {
+            const bool reached = apply_rotation_8001b630(*combatant, event);
+            advance_program = reached;
+            break;
+        }
         case BattleFrameWorkerStepKind::ActionMotionMoveStep_8001e910:
         case BattleFrameWorkerStepKind::MoveIncrementApply_80061340: {
             const bool reached = apply_move_increment_8001e910(*combatant, event);
@@ -917,10 +1031,13 @@ BattleFrameStepEvent execute_worker_frame(
         event.new_grid = combatant->grid_position;
         event.new_pos_holder = combatant->pos_holder;
         event.new_combatant_cur_pos_0x1c = combatant->combatant_cur_pos_0x1c;
+        event.new_combatant_facing_angle_0x2c = combatant->combatant_facing_angle_0x2c;
         event.grid_changed = !same_grid(event.old_grid, event.new_grid);
         event.pos_holder_changed = !same_vec(event.old_pos_holder, event.new_pos_holder);
         event.combatant_cur_pos_changed =
             !same_vec(event.old_combatant_cur_pos_0x1c, event.new_combatant_cur_pos_0x1c);
+        event.combatant_facing_angle_changed =
+            event.old_combatant_facing_angle_0x2c != event.new_combatant_facing_angle_0x2c;
         event.action_motion_position_synced =
             event.step_kind == BattleFrameWorkerStepKind::ActionMotionPositionSync
             || event.step_kind == BattleFrameWorkerStepKind::FrameStartPositionSync;
@@ -1410,6 +1527,8 @@ const char* battle_frame_worker_step_kind_name(BattleFrameWorkerStepKind kind) {
         return "ActionMotionPositionSync";
     case BattleFrameWorkerStepKind::ActionMotionSetup_8001fabc:
         return "ActionMotionSetup_8001fabc";
+    case BattleFrameWorkerStepKind::ActionMotionRotateStep_8001b630_80061114:
+        return "ActionMotionRotateStep_8001b630_80061114";
     case BattleFrameWorkerStepKind::ActionMotionMoveStep_8001e910:
         return "ActionMotionMoveStep_8001e910";
     case BattleFrameWorkerStepKind::MoveIncrementApply_80061340:

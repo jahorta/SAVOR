@@ -2,6 +2,7 @@
 
 #include "AttackResolutionModel.h"
 
+#include <cstdint>
 #include <optional>
 #include <string>
 
@@ -39,6 +40,9 @@ struct FirstBattleActorStats {
     float motion_base_speed = 0.0f;
     float motion_alt_speed = 0.0f;
     bool motion_speeds_known = false;
+    float motion_turn_speed = 0.0f;
+    std::uint32_t motion_turn_speed_bits = 0;
+    bool motion_turn_speed_known = false;
     bool attack_known = false;
     bool hit_known = false;
     bool defense_known = false;

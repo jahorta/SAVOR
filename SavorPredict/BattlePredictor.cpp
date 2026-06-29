@@ -192,6 +192,11 @@ BattlePredictionSlotState make_slot_state(
                 state.motion_alt_speed = first_battle->motion_alt_speed;
                 state.motion_speeds_known = true;
             }
+            if (first_battle->motion_turn_speed_known) {
+                state.motion_turn_speed = first_battle->motion_turn_speed;
+                state.motion_turn_speed_bits = first_battle->motion_turn_speed_bits;
+                state.motion_turn_speed_known = true;
+            }
             state.attack_inputs_known =
                 state.attack > 0 && state.hit > 0 && state.defense >= 0 && state.dodge >= 0;
         }
@@ -267,6 +272,9 @@ std::vector<MovementSlotState> movement_slots_from_prediction_slots(
             .motion_base_speed = slot.motion_base_speed,
             .motion_alt_speed = slot.motion_alt_speed,
             .motion_speeds_known = slot.motion_speeds_known,
+            .motion_turn_speed = slot.motion_turn_speed,
+            .motion_turn_speed_bits = slot.motion_turn_speed_bits,
+            .motion_turn_speed_known = slot.motion_turn_speed_known,
             .width = width,
             .depth = depth,
             .start_position = slot.start_position,
