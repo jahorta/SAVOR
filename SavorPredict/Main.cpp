@@ -30,6 +30,9 @@ void print_usage(std::ostream& out) {
         << "  SavorPredict write-first-battle-action-view-resource-profile --output PATH\n"
         << "  SavorPredict write-first-battle-action-view-selector-coverage-profile --output PATH\n"
         << "  SavorPredict write-first-battle-thread-list-profile --output PATH\n"
+        << "  SavorPredict write-first-battle-pre-handler-frame-pathing-profile --output PATH\n"
+        << "  SavorPredict write-first-battle-float-motion-profile --output PATH\n"
+        << "  SavorPredict write-first-battle-move-increment-read-watch-profile --output PATH\n"
         << "  SavorPredict run-battle-job (--turn-job-id N | --exec-job-id N) --iso PATH --dolphin-base-dir PATH [--db-root PATH] [--run-root PATH] [--worker-exe PATH] [--capture-profile PATH] [--sandbox-mode minimal|full-copy] [--timeout-ms N] [--battle-run-ms N] [--poll-ms N] [--override-start-rng-seed N] [--override-fake-attacks N] [--action-view-std-json-dir PATH] [--std-disc-dump-root PATH] [--spice-file-parsing-exe PATH]\n"
         << "  SavorPredict run-battle-jobs --exec-job-id N [--exec-job-id N ...] [--exec-job-list PATH] [--exec-job-seed EXEC_ID:SEED[:FAKE_ATTACKS]] [--exec-job-seed-list PATH] [--exec-job-fake-attacks EXEC_ID:FAKE_ATTACKS] [--exec-job-fake-attacks-list PATH] --iso PATH --dolphin-base-dir PATH [--db-root PATH] [--run-root PATH] [--worker-exe PATH] [--capture-profile PATH] [--sandbox-mode minimal|full-copy] [--max-workers N] [--timeout-ms N] [--battle-run-ms N] [--poll-ms N] [--override-start-rng-seed N] [--override-fake-attacks N] [--action-view-std-json-dir PATH] [--std-disc-dump-root PATH] [--spice-file-parsing-exe PATH]\n"
         << "  SavorPredict predict-battle (--context-file PATH --turn-plan-hex HEX --fake-attacks N --start-seed N | (--turn-job-id N | --exec-job-id N) [--start-seed N | --start-seed-list PATH]) [--db-root PATH] [--profile first-battle] [--movement-backend handler|frame|compare] [--action-view-std-json-dir PATH] [--std-disc-dump-root PATH] [--spice-file-parsing-exe PATH] [--format text|json] [--allow-seed-candidate-fallback]\n"
@@ -350,6 +353,81 @@ int run_write_first_battle_thread_list_profile(int argc, char** argv) {
         std::cerr);
 }
 
+int run_write_first_battle_pre_handler_frame_pathing_profile(int argc, char** argv) {
+    std::filesystem::path output;
+    for (int i = 2; i < argc; ++i) {
+        const std::string arg = argv[i];
+        std::string value;
+        if (arg == "--output") {
+            if (!require_value(argc, argv, i, arg, value, std::cerr)) {
+                return 2;
+            }
+            output = value;
+        } else if (arg == "--help" || arg == "-h") {
+            print_usage(std::cout);
+            return 0;
+        } else {
+            std::cerr << "Unknown write-first-battle-pre-handler-frame-pathing-profile option: "
+                << arg << "\n";
+            return 2;
+        }
+    }
+    return savor::predict::write_first_battle_pre_handler_frame_pathing_profile(
+        output,
+        std::cout,
+        std::cerr);
+}
+
+int run_write_first_battle_float_motion_profile(int argc, char** argv) {
+    std::filesystem::path output;
+    for (int i = 2; i < argc; ++i) {
+        const std::string arg = argv[i];
+        std::string value;
+        if (arg == "--output") {
+            if (!require_value(argc, argv, i, arg, value, std::cerr)) {
+                return 2;
+            }
+            output = value;
+        } else if (arg == "--help" || arg == "-h") {
+            print_usage(std::cout);
+            return 0;
+        } else {
+            std::cerr << "Unknown write-first-battle-float-motion-profile option: "
+                << arg << "\n";
+            return 2;
+        }
+    }
+    return savor::predict::write_first_battle_float_motion_profile(
+        output,
+        std::cout,
+        std::cerr);
+}
+
+int run_write_first_battle_move_increment_read_watch_profile(int argc, char** argv) {
+    std::filesystem::path output;
+    for (int i = 2; i < argc; ++i) {
+        const std::string arg = argv[i];
+        std::string value;
+        if (arg == "--output") {
+            if (!require_value(argc, argv, i, arg, value, std::cerr)) {
+                return 2;
+            }
+            output = value;
+        } else if (arg == "--help" || arg == "-h") {
+            print_usage(std::cout);
+            return 0;
+        } else {
+            std::cerr << "Unknown write-first-battle-move-increment-read-watch-profile option: "
+                << arg << "\n";
+            return 2;
+        }
+    }
+    return savor::predict::write_first_battle_move_increment_read_watch_profile(
+        output,
+        std::cout,
+        std::cerr);
+}
+
 int run_battle_job_command(int argc, char** argv) {
     std::vector<std::string> args;
     args.reserve(static_cast<std::size_t>(std::max(0, argc - 2)));
@@ -589,6 +667,15 @@ int main(int argc, char** argv) {
     }
     if (command == "write-first-battle-thread-list-profile") {
         return run_write_first_battle_thread_list_profile(argc, argv);
+    }
+    if (command == "write-first-battle-pre-handler-frame-pathing-profile") {
+        return run_write_first_battle_pre_handler_frame_pathing_profile(argc, argv);
+    }
+    if (command == "write-first-battle-float-motion-profile") {
+        return run_write_first_battle_float_motion_profile(argc, argv);
+    }
+    if (command == "write-first-battle-move-increment-read-watch-profile") {
+        return run_write_first_battle_move_increment_read_watch_profile(argc, argv);
     }
     if (command == "run-battle-job") {
         return run_battle_job_command(argc, argv);

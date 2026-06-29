@@ -1684,6 +1684,260 @@ TEST(SavorPredictLiveCaptureProfile, BuildsThreadListProfile)
     EXPECT_NE(find_checkpoint("position_line_score_entry_8001AB60"), nullptr);
 }
 
+TEST(SavorPredictLiveCaptureProfile, BuildsPreHandlerFramePathingProfile)
+{
+    const auto text = build_first_battle_pre_handler_frame_pathing_profile_ini();
+    const auto parsed = ParseCaptureProfileText(text);
+    ASSERT_TRUE(parsed.profile.has_value()) << FormatCaptureProfileError(parsed);
+
+    const auto& profile = *parsed.profile;
+    EXPECT_EQ(profile.name, "first_battle_pre_handler_frame_pathing");
+    ASSERT_EQ(profile.default_linked_list_samples.size(), 1u);
+    EXPECT_EQ(profile.default_linked_list_samples[0].name, "thread_list");
+
+    const auto has_default_memory_sample = [&](std::string_view name) {
+        for (const auto& sample : profile.default_memory_samples) {
+            if (sample.name == name) return true;
+        }
+        return false;
+    };
+    const auto has_default_addrprog_sample = [&](std::string_view name) {
+        for (const auto& sample : profile.default_address_program_samples) {
+            if (sample.name == name) return true;
+        }
+        return false;
+    };
+    const auto find_checkpoint = [&](std::string_view id)
+        -> const CheckpointSpec* {
+        for (const auto& checkpoint : profile.checkpoints) {
+            if (checkpoint.id == id) {
+                return &checkpoint;
+            }
+        }
+        return nullptr;
+    };
+    const auto has_gpr_sample = [](const CheckpointSpec& checkpoint, std::string_view name) {
+        for (const auto& sample : checkpoint.gpr_samples) {
+            if (sample.name == name) return true;
+        }
+        return false;
+    };
+    const auto has_reg_sample = [](const CheckpointSpec& checkpoint, std::string_view name) {
+        for (const auto& sample : checkpoint.register_memory_samples) {
+            if (sample.name == name) return true;
+        }
+        return false;
+    };
+
+    EXPECT_TRUE(has_default_memory_sample("turn_phase_8034733c"));
+    EXPECT_TRUE(has_default_memory_sample("pos4_x_bits"));
+    EXPECT_TRUE(has_default_memory_sample("slot5_instr_param_0x6"));
+    EXPECT_TRUE(has_default_addrprog_sample("slot4_movement_worksheet_pending_handler_0x10"));
+    EXPECT_TRUE(has_default_addrprog_sample("slot5_movement_worksheet_cur_grid_x_0x0c"));
+    EXPECT_TRUE(has_default_addrprog_sample("slot0_movement_worksheet_status_0x16"));
+
+    const auto* pc_store = find_checkpoint("setup_action_pc_handler_store_80070A54");
+    ASSERT_NE(pc_store, nullptr);
+    EXPECT_EQ(pc_store->pc, 0x80070A54u);
+    EXPECT_TRUE(has_gpr_sample(*pc_store, "handler_pc"));
+    EXPECT_TRUE(has_reg_sample(*pc_store, "selected_movement_worksheet_pending_handler_before_0x10"));
+
+    const auto* enemy_store = find_checkpoint("setup_action_enemy_handler_store_80070A74");
+    ASSERT_NE(enemy_store, nullptr);
+    EXPECT_EQ(enemy_store->pc, 0x80070A74u);
+    EXPECT_TRUE(has_gpr_sample(*enemy_store, "actor_slot"));
+
+    const auto* promote = find_checkpoint("movement_handler_promote_80080244");
+    ASSERT_NE(promote, nullptr);
+    EXPECT_EQ(promote->pc, 0x80080244u);
+    EXPECT_TRUE(has_gpr_sample(*promote, "pending_handler_pc"));
+    EXPECT_TRUE(has_reg_sample(*promote, "movement_buffer_callback_before_0x00"));
+    EXPECT_TRUE(has_reg_sample(*promote, "selected_movement_worksheet_pending_handler_0x10"));
+
+    const auto* frame = find_checkpoint("battle_case5_after_threads_8000A2FC");
+    ASSERT_NE(frame, nullptr);
+    EXPECT_EQ(frame->pc, 0x8000A2FCu);
+    ASSERT_TRUE(frame->activate_on_pc.has_value());
+    EXPECT_EQ(*frame->activate_on_pc, 0x80080244u);
+    ASSERT_TRUE(frame->max_hits.has_value());
+    EXPECT_EQ(*frame->max_hits, 1200u);
+
+    EXPECT_NE(find_checkpoint("movement_commit_entry_8008178C"), nullptr);
+    EXPECT_NE(find_checkpoint("movement_posholder_x_store_800819A0"), nullptr);
+    EXPECT_NE(find_checkpoint("movement_posholder_z_store_800819B8"), nullptr);
+    const auto* bridge_link = find_checkpoint("bridge_link_read_8001AD2C");
+    ASSERT_NE(bridge_link, nullptr);
+    EXPECT_TRUE(has_reg_sample(*bridge_link, "iw_action_mode_0x06"));
+    ASSERT_TRUE(bridge_link->max_hits.has_value());
+    EXPECT_EQ(*bridge_link->max_hits, 2400u);
+    const auto* bridge_cw_x = find_checkpoint("bridge_cw_x_store_8001AD54");
+    ASSERT_NE(bridge_cw_x, nullptr);
+    ASSERT_TRUE(bridge_cw_x->max_hits.has_value());
+    EXPECT_EQ(*bridge_cw_x->max_hits, 2400u);
+    const auto* bridge_cw_z = find_checkpoint("bridge_cw_z_store_8001AD5C");
+    ASSERT_NE(bridge_cw_z, nullptr);
+    ASSERT_TRUE(bridge_cw_z->max_hits.has_value());
+    EXPECT_EQ(*bridge_cw_z->max_hits, 2400u);
+    const auto* bridge_snapshot = find_checkpoint("bridge_snapshot_call_8001AD68");
+    ASSERT_NE(bridge_snapshot, nullptr);
+    ASSERT_TRUE(bridge_snapshot->max_hits.has_value());
+    EXPECT_EQ(*bridge_snapshot->max_hits, 2400u);
+    EXPECT_NE(find_checkpoint("pc_handler_entry_80086C68"), nullptr);
+    EXPECT_NE(find_checkpoint("enemy_handler_entry_8008B9E0"), nullptr);
+}
+
+TEST(SavorPredictLiveCaptureProfile, BuildsFloatMotionProfile)
+{
+    const auto text = build_first_battle_float_motion_profile_ini();
+    const auto parsed = ParseCaptureProfileText(text);
+    ASSERT_TRUE(parsed.profile.has_value()) << FormatCaptureProfileError(parsed);
+
+    const auto& profile = *parsed.profile;
+    EXPECT_EQ(profile.name, "first_battle_float_motion");
+    ASSERT_EQ(profile.default_linked_list_samples.size(), 1u);
+    EXPECT_EQ(profile.default_linked_list_samples[0].name, "thread_list");
+
+    const auto has_default_addrprog_sample = [&](std::string_view name) {
+        for (const auto& sample : profile.default_address_program_samples) {
+            if (sample.name == name) return true;
+        }
+        return false;
+    };
+    const auto find_checkpoint = [&](std::string_view id)
+        -> const CheckpointSpec* {
+        for (const auto& checkpoint : profile.checkpoints) {
+            if (checkpoint.id == id) {
+                return &checkpoint;
+            }
+        }
+        return nullptr;
+    };
+    const auto has_reg_sample = [](const CheckpointSpec& checkpoint, std::string_view name) {
+        for (const auto& sample : checkpoint.register_memory_samples) {
+            if (sample.name == name) return true;
+        }
+        return false;
+    };
+    const auto has_addrprog_sample = [](const CheckpointSpec& checkpoint, std::string_view name) {
+        for (const auto& sample : checkpoint.address_program_samples) {
+            if (sample.name == name) return true;
+        }
+        return false;
+    };
+
+    EXPECT_TRUE(has_default_addrprog_sample("slot4_cw_cur_x_0x1c"));
+    EXPECT_TRUE(has_default_addrprog_sample("slot5_iw_move_inc_z_0x10c"));
+    EXPECT_TRUE(has_default_addrprog_sample("slot0_iw_speed_0x12c"));
+    EXPECT_TRUE(has_default_addrprog_sample("slot1_iw_alt_speed_0x130"));
+
+    const auto* frame = find_checkpoint("battle_case5_after_threads_8000A2FC");
+    ASSERT_NE(frame, nullptr);
+    ASSERT_TRUE(frame->activate_on_pc.has_value());
+    EXPECT_EQ(*frame->activate_on_pc, 0x80080244u);
+    ASSERT_TRUE(frame->max_hits.has_value());
+    EXPECT_EQ(*frame->max_hits, 2400u);
+
+    const auto* setup_alt = find_checkpoint("float_motion_setup_alt_speed_call_8001FBEC");
+    ASSERT_NE(setup_alt, nullptr);
+    EXPECT_EQ(setup_alt->pc, 0x8001FBECu);
+    EXPECT_TRUE(has_reg_sample(*setup_alt, "inst_alt_speed_0x130"));
+
+    const auto* setup_base = find_checkpoint("float_motion_setup_base_speed_call_8001FC00");
+    ASSERT_NE(setup_base, nullptr);
+    EXPECT_EQ(setup_base->pc, 0x8001FC00u);
+    EXPECT_TRUE(has_reg_sample(*setup_base, "inst_speed_0x12c"));
+
+    const auto* worker = find_checkpoint("float_motion_worker_loaded_800506D8");
+    ASSERT_NE(worker, nullptr);
+    EXPECT_TRUE(has_reg_sample(*worker, "payload_primary_thread_0x04"));
+    EXPECT_TRUE(has_addrprog_sample(*worker, "primary_cw_cur_x_0x1c"));
+    EXPECT_TRUE(has_addrprog_sample(*worker, "secondary_iw_flags_0xf0"));
+
+    const auto* primary_x_before = find_checkpoint("float_motion_primary_x_store_before_80050984");
+    ASSERT_NE(primary_x_before, nullptr);
+    EXPECT_TRUE(has_reg_sample(*primary_x_before, "dest_cw_cur_x_0x1c"));
+    EXPECT_TRUE(has_reg_sample(*primary_x_before, "delta_x_bits_stack_0x08"));
+
+    EXPECT_NE(find_checkpoint("float_motion_primary_x_store_after_80050988"), nullptr);
+    EXPECT_NE(find_checkpoint("float_motion_primary_z_store_before_8005099C"), nullptr);
+    EXPECT_NE(find_checkpoint("float_motion_primary_z_store_after_800509A0"), nullptr);
+    EXPECT_NE(find_checkpoint("float_motion_secondary_step_call_800509FC"), nullptr);
+    EXPECT_NE(find_checkpoint("float_motion_secondary_x_store_before_80050A14"), nullptr);
+    EXPECT_NE(find_checkpoint("float_motion_secondary_x_store_after_80050A18"), nullptr);
+    EXPECT_NE(find_checkpoint("float_motion_secondary_z_store_before_80050A2C"), nullptr);
+    EXPECT_NE(find_checkpoint("float_motion_secondary_z_store_after_80050A30"), nullptr);
+    EXPECT_NE(find_checkpoint("movement_commit_entry_8008178C"), nullptr);
+    EXPECT_NE(find_checkpoint("position_sync_entry_8001AB60"), nullptr);
+}
+
+TEST(SavorPredictLiveCaptureProfile, BuildsMoveIncrementReadWatchProfile)
+{
+    const auto text = build_first_battle_move_increment_read_watch_profile_ini();
+    const auto parsed = ParseCaptureProfileText(text);
+    ASSERT_TRUE(parsed.profile.has_value()) << FormatCaptureProfileError(parsed);
+
+    const auto& profile = *parsed.profile;
+    EXPECT_EQ(profile.name, "first_battle_move_increment_read_watch");
+    ASSERT_EQ(profile.default_linked_list_samples.size(), 1u);
+    EXPECT_EQ(profile.default_linked_list_samples[0].name, "thread_list");
+    ASSERT_EQ(profile.dynamic_memory_watchpoints.size(), 3u);
+
+    const auto find_watchpoint = [&](std::string_view id)
+        -> const DynamicMemoryWatchpointSpec* {
+        for (const auto& watchpoint : profile.dynamic_memory_watchpoints) {
+            if (watchpoint.id == id) {
+                return &watchpoint;
+            }
+        }
+        return nullptr;
+    };
+    const auto expect_component = [&](std::string_view id, std::int32_t offset) {
+        const auto* watchpoint = find_watchpoint(id);
+        ASSERT_NE(watchpoint, nullptr) << id;
+        EXPECT_EQ(watchpoint->pc, 0x8001FC04u);
+        EXPECT_EQ(watchpoint->base_reg, 31u);
+        EXPECT_EQ(watchpoint->offset, offset);
+        EXPECT_EQ(watchpoint->size, SampleWidth::U32);
+        EXPECT_EQ(watchpoint->access, WatchpointAccess::Read);
+        EXPECT_EQ(watchpoint->scope, WatchpointScope::Normal);
+        EXPECT_FALSE(watchpoint->one_shot);
+        EXPECT_FALSE(watchpoint->owns_rng_draw);
+    };
+    expect_component("move_increment_x_read_after_8001FC04", 0x104);
+    expect_component("move_increment_y_read_after_8001FC04", 0x108);
+    expect_component("move_increment_z_read_after_8001FC04", 0x10c);
+
+    const auto has_default_addrprog_sample = [&](std::string_view name) {
+        for (const auto& sample : profile.default_address_program_samples) {
+            if (sample.name == name) return true;
+        }
+        return false;
+    };
+    const auto find_checkpoint = [&](std::string_view id)
+        -> const CheckpointSpec* {
+        for (const auto& checkpoint : profile.checkpoints) {
+            if (checkpoint.id == id) {
+                return &checkpoint;
+            }
+        }
+        return nullptr;
+    };
+
+    EXPECT_TRUE(has_default_addrprog_sample("slot4_iw_move_inc_x_0x104"));
+    EXPECT_TRUE(has_default_addrprog_sample("slot5_iw_move_inc_z_0x10c"));
+
+    const auto* frame = find_checkpoint("battle_case5_after_threads_8000A2FC");
+    ASSERT_NE(frame, nullptr);
+    ASSERT_TRUE(frame->activate_on_pc.has_value());
+    EXPECT_EQ(*frame->activate_on_pc, 0x8001FC04u);
+    ASSERT_TRUE(frame->max_hits.has_value());
+    EXPECT_EQ(*frame->max_hits, 2400u);
+
+    EXPECT_NE(find_checkpoint("float_motion_setup_after_increment_8001FC04"), nullptr);
+    EXPECT_NE(find_checkpoint("movement_commit_entry_8008178C"), nullptr);
+    EXPECT_NE(find_checkpoint("position_sync_entry_8001AB60"), nullptr);
+}
+
 TEST(Field6WatchpointModel, ClassifiesAccessWatchpointsByDecodedInstruction)
 {
     CheckpointEvent read{};

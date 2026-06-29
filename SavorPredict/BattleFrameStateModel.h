@@ -26,8 +26,18 @@ struct BattleFrameCombatantState {
     MovementGridPosition grid_position{};
     MovementGridPosition previous_grid_position{};
     BattleFrameVec3 pos_holder{};
-    BattleFrameVec3 combatant_position{};
-    BattleFrameVec3 instruction_snapshot_position{};
+    BattleFrameVec3 combatant_cur_pos_0x1c{};
+    BattleFrameVec3 instruction_field_0xf8{};
+    BattleFrameVec3 pos_to_move_to_0x110{};
+    BattleFrameVec3 move_increment_0x104{};
+    BattleFrameVec3 last_applied_move_increment{};
+    float motion_base_speed_0x12c = 0.0f;
+    float motion_alt_speed_0x130 = 0.0f;
+    float selected_motion_speed = 0.0f;
+    bool motion_speeds_known = false;
+    std::uint32_t selected_action_row_flags = 0;
+    int selected_action_row_index = -1;
+    bool pending_frame_start_position_sync = false;
     std::uint32_t instruction_flags_0xec = 0;
     std::uint32_t instruction_flags_0xf0 = 0;
     int instruction_compare_0x15c = 0;
@@ -70,6 +80,18 @@ bool commit_movement_grid_8008178c(
     int slot,
     const MovementGridPosition& destination);
 
-bool bridge_pos_holder_to_combatant_8001ab60(BattleFrameState& state, int slot);
+bool sync_action_motion_position_8001ab60(
+    BattleFrameState& state,
+    int current_slot,
+    int source_slot);
+
+bool sync_frame_start_position_from_pos_holder(
+    BattleFrameState& state,
+    int slot);
+
+bool move_combatant_increment_80061340(
+    BattleFrameVec3& current_position,
+    const BattleFrameVec3& target_position,
+    const BattleFrameVec3& increment);
 
 } // namespace savor::predict

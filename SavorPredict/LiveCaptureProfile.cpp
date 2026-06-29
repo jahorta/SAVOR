@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <fstream>
 #include <cctype>
+#include <array>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
@@ -48,10 +49,14 @@ void write_checkpoint(
     const std::vector<std::string_view>& reg_memory = {},
     const std::vector<std::string_view>& addrprog = {},
     const std::vector<std::string_view>& linked_list = {},
-    std::uint32_t max_hits = 0)
+    std::uint32_t max_hits = 0,
+    std::uint32_t activate_on_pc = 0)
 {
     out << "[checkpoint." << id << "]\n";
     out << "pc=0x" << pc << "\n";
+    if (activate_on_pc != 0) {
+        out << "activate_on_pc=" << hex_u32(activate_on_pc) << "\n";
+    }
     out << "name=" << name << "\n";
     out << "function=" << function << "\n";
     out << "checkpoint=" << checkpoint << "\n";
@@ -161,6 +166,14 @@ void write_checkpoint_owned(
         memory_views.push_back(sample);
     }
     write_checkpoint(out, id, pc, name, function, checkpoint, owns_rng_draw, memory_views, gprs);
+}
+
+void write_owned_csv(std::ostringstream& out, const std::vector<std::string>& values)
+{
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        if (i != 0) out << ",";
+        out << values[i];
+    }
 }
 
 std::string memory_sample(std::string_view name, std::uint32_t address, std::string_view type)
@@ -972,6 +985,200 @@ std::vector<std::string_view> first_battle_counter_state_samples()
         "slot4_critical_marker_0x8:0x80309778:u8",
         "slot5_action_marker_0x0:0x80309780:u8",
         "slot5_critical_marker_0x8:0x80309788:u8",
+    };
+}
+
+std::array<int, 4> first_battle_focus_slots()
+{
+    return { 0, 1, 4, 5 };
+}
+
+std::vector<std::string> first_battle_pre_handler_frame_memory_samples()
+{
+    std::vector<std::string> samples;
+    samples.push_back(memory_sample("rng_seed_before", addr::AddrRegistry::base(addr::core::RNG_SEED), "u32"));
+    samples.push_back("turn_phase_8034733c:0x8034733C:u32");
+    samples.push_back("battle_input_state_80347338:0x80347338:u32");
+    samples.push_back("active_actor_slot_80347334:0x80347334:u8");
+    samples.push_back("action_sequence_80347335:0x80347335:u8");
+
+    for (const int slot : first_battle_focus_slots()) {
+        const auto slot_text = std::to_string(slot);
+        const auto slot_offset = static_cast<std::uint32_t>(slot);
+        samples.push_back(memory_sample(
+            "slot" + slot_text + "_movement_buffer_ptr",
+            0x80309700u + slot_offset * 4u,
+            "u32"));
+        samples.push_back(memory_sample(
+            "slot" + slot_text + "_combatant_thread_ptr",
+            0x80309E24u + slot_offset * 4u,
+            "u32"));
+        samples.push_back(memory_sample(
+            "pos" + slot_text + "_x_bits",
+            0x8030980Cu + slot_offset * 0x10u,
+            "u32"));
+        samples.push_back(memory_sample(
+            "pos" + slot_text + "_z_bits",
+            0x80309810u + slot_offset * 0x10u,
+            "u32"));
+    }
+
+    for (const auto sample : first_battle_queued_instruction_samples()) {
+        samples.emplace_back(sample);
+    }
+    for (const auto sample : first_battle_counter_state_samples()) {
+        samples.emplace_back(sample);
+    }
+    return samples;
+}
+
+std::vector<std::string> first_battle_pre_handler_frame_addrprog_samples()
+{
+    std::vector<std::string> samples;
+    for (const int slot : first_battle_focus_slots()) {
+        const auto slot_text = std::to_string(slot);
+        const auto slot_offset = static_cast<std::uint32_t>(slot);
+        const auto movement_base = hex_u32(0x80309700u + slot_offset * 4u);
+        const auto movement_prefix = "slot" + slot_text + "_movement";
+
+        samples.push_back(movement_prefix + "_callback_0x00:" + movement_base + ":load_ptr32|+0x00:u32");
+        samples.push_back(movement_prefix + "_state_0x19:" + movement_base + ":load_ptr32|+0x19:u8");
+        samples.push_back(movement_prefix + "_order_bits_0x20:" + movement_base + ":load_ptr32|+0x20:u32");
+        samples.push_back(movement_prefix + "_worksheet_ptr_0x24:" + movement_base + ":load_ptr32|+0x24:u32");
+        samples.push_back(movement_prefix + "_worksheet_slot_0x00:" + movement_base + ":load_ptr32|+0x24|load_ptr32|+0x00:u8");
+        samples.push_back(movement_prefix + "_worksheet_flags_0x04:" + movement_base + ":load_ptr32|+0x24|load_ptr32|+0x04:u32");
+        samples.push_back(movement_prefix + "_worksheet_cur_grid_x_0x0c:" + movement_base + ":load_ptr32|+0x24|load_ptr32|+0x0c:u8");
+        samples.push_back(movement_prefix + "_worksheet_cur_grid_z_0x0d:" + movement_base + ":load_ptr32|+0x24|load_ptr32|+0x0d:u8");
+        samples.push_back(movement_prefix + "_worksheet_prev_grid_x_0x0e:" + movement_base + ":load_ptr32|+0x24|load_ptr32|+0x0e:u8");
+        samples.push_back(movement_prefix + "_worksheet_prev_grid_z_0x0f:" + movement_base + ":load_ptr32|+0x24|load_ptr32|+0x0f:u8");
+        samples.push_back(movement_prefix + "_worksheet_pending_handler_0x10:" + movement_base + ":load_ptr32|+0x24|load_ptr32|+0x10:u32");
+        samples.push_back(movement_prefix + "_worksheet_path_index_0x15:" + movement_base + ":load_ptr32|+0x24|load_ptr32|+0x15:u8");
+        samples.push_back(movement_prefix + "_worksheet_status_0x16:" + movement_base + ":load_ptr32|+0x24|load_ptr32|+0x16:u8");
+        samples.push_back(movement_prefix + "_worksheet_setup_byte_0x50:" + movement_base + ":load_ptr32|+0x24|load_ptr32|+0x50:u8");
+    }
+    return samples;
+}
+
+std::vector<std::string> first_battle_float_motion_addrprog_samples()
+{
+    auto samples = first_battle_pre_handler_frame_addrprog_samples();
+    for (const int slot : first_battle_focus_slots()) {
+        const auto slot_text = std::to_string(slot);
+        const auto slot_offset = static_cast<std::uint32_t>(slot);
+        const auto thread_base = hex_u32(0x80309E24u + slot_offset * 4u);
+        const auto prefix = "slot" + slot_text;
+        const auto thread_chain = thread_base + ":load_ptr32";
+        const auto cw_chain = thread_chain + "|+0x24|load_ptr32";
+        const auto iw_chain = cw_chain + "|+0x4c|load_ptr32";
+
+        samples.push_back(prefix + "_thread_callback_0x00:" + thread_chain + "|+0x00:u32");
+        samples.push_back(prefix + "_thread_state_0x19:" + thread_chain + "|+0x19:u8");
+        samples.push_back(prefix + "_thread_payload_0x24:" + thread_chain + "|+0x24:u32");
+        samples.push_back(prefix + "_cw_slot_0x00:" + cw_chain + "|+0x00:u8");
+        samples.push_back(prefix + "_cw_cur_x_0x1c:" + cw_chain + "|+0x1c:u32");
+        samples.push_back(prefix + "_cw_cur_y_0x20:" + cw_chain + "|+0x20:u32");
+        samples.push_back(prefix + "_cw_cur_z_0x24:" + cw_chain + "|+0x24:u32");
+        samples.push_back(prefix + "_iw_ptr_0x4c:" + cw_chain + "|+0x4c:u32");
+        samples.push_back(prefix + "_iw_slot_0x00:" + iw_chain + "|+0x00:u8");
+        samples.push_back(prefix + "_iw_target_0x04:" + iw_chain + "|+0x04:u8");
+        samples.push_back(prefix + "_iw_action_mode_0x06:" + iw_chain + "|+0x06:u16");
+        samples.push_back(prefix + "_iw_action_row_0xe4:" + iw_chain + "|+0xe4:u16");
+        samples.push_back(prefix + "_iw_flags_0xec:" + iw_chain + "|+0xec:u32");
+        samples.push_back(prefix + "_iw_flags_0xf0:" + iw_chain + "|+0xf0:u32");
+        samples.push_back(prefix + "_iw_snapshot_x_0xf8:" + iw_chain + "|+0xf8:u32");
+        samples.push_back(prefix + "_iw_snapshot_z_0x100:" + iw_chain + "|+0x100:u32");
+        samples.push_back(prefix + "_iw_move_inc_x_0x104:" + iw_chain + "|+0x104:u32");
+        samples.push_back(prefix + "_iw_move_inc_y_0x108:" + iw_chain + "|+0x108:u32");
+        samples.push_back(prefix + "_iw_move_inc_z_0x10c:" + iw_chain + "|+0x10c:u32");
+        samples.push_back(prefix + "_iw_target_x_0x110:" + iw_chain + "|+0x110:u32");
+        samples.push_back(prefix + "_iw_target_y_0x114:" + iw_chain + "|+0x114:u32");
+        samples.push_back(prefix + "_iw_target_z_0x118:" + iw_chain + "|+0x118:u32");
+        samples.push_back(prefix + "_iw_speed_0x12c:" + iw_chain + "|+0x12c:u32");
+        samples.push_back(prefix + "_iw_alt_speed_0x130:" + iw_chain + "|+0x130:u32");
+    }
+    return samples;
+}
+
+std::vector<std::string_view> float_motion_instruction_samples_from_r31()
+{
+    return {
+        "inst_slot_0x00:r31:0x00:u8",
+        "inst_target_0x04:r31:0x04:u8",
+        "inst_action_mode_0x06:r31:0x06:u16",
+        "inst_action_row_0xe4:r31:0xe4:u16",
+        "inst_flags_0xec:r31:0xec:u32",
+        "inst_flags_0xf0:r31:0xf0:u32",
+        "inst_snapshot_x_0xf8:r31:0xf8:u32",
+        "inst_snapshot_y_0xfc:r31:0xfc:u32",
+        "inst_snapshot_z_0x100:r31:0x100:u32",
+        "inst_move_inc_x_0x104:r31:0x104:u32",
+        "inst_move_inc_y_0x108:r31:0x108:u32",
+        "inst_move_inc_z_0x10c:r31:0x10c:u32",
+        "inst_target_x_0x110:r31:0x110:u32",
+        "inst_target_y_0x114:r31:0x114:u32",
+        "inst_target_z_0x118:r31:0x118:u32",
+        "inst_speed_0x12c:r31:0x12c:u32",
+        "inst_alt_speed_0x130:r31:0x130:u32",
+    };
+}
+
+std::vector<std::string_view> float_motion_worker_loaded_samples()
+{
+    return {
+        "worker_callback_0x00:r28:0x00:u32",
+        "worker_state_0x19:r28:0x19:u8",
+        "worker_order_bits_0x20:r28:0x20:u32",
+        "worker_payload_0x24:r28:0x24:u32",
+        "payload_frame_or_index_0x00:r31:0x00:u16",
+        "payload_primary_thread_0x04:r31:0x04:u32",
+        "payload_secondary_thread_0x08:r31:0x08:u32",
+        "payload_vector_x_0x0c:r31:0x0c:u32",
+        "payload_vector_y_0x10:r31:0x10:u32",
+        "payload_vector_z_0x14:r31:0x14:u32",
+        "payload_action_record_0x2c:r31:0x2c:u32",
+        "payload_phase_0x30:r31:0x30:u8",
+    };
+}
+
+std::vector<std::string> float_motion_worker_actor_addrprog_samples()
+{
+    return {
+        "primary_cw_slot_0x00:r31:+0x04|load_ptr32|+0x24|load_ptr32|+0x00:u8",
+        "primary_cw_cur_x_0x1c:r31:+0x04|load_ptr32|+0x24|load_ptr32|+0x1c:u32",
+        "primary_cw_cur_y_0x20:r31:+0x04|load_ptr32|+0x24|load_ptr32|+0x20:u32",
+        "primary_cw_cur_z_0x24:r31:+0x04|load_ptr32|+0x24|load_ptr32|+0x24:u32",
+        "primary_iw_action_mode_0x06:r31:+0x04|load_ptr32|+0x24|load_ptr32|+0x4c|load_ptr32|+0x06:u16",
+        "primary_iw_flags_0xec:r31:+0x04|load_ptr32|+0x24|load_ptr32|+0x4c|load_ptr32|+0xec:u32",
+        "primary_iw_flags_0xf0:r31:+0x04|load_ptr32|+0x24|load_ptr32|+0x4c|load_ptr32|+0xf0:u32",
+        "secondary_cw_slot_0x00:r31:+0x08|load_ptr32|+0x24|load_ptr32|+0x00:u8",
+        "secondary_cw_cur_x_0x1c:r31:+0x08|load_ptr32|+0x24|load_ptr32|+0x1c:u32",
+        "secondary_cw_cur_y_0x20:r31:+0x08|load_ptr32|+0x24|load_ptr32|+0x20:u32",
+        "secondary_cw_cur_z_0x24:r31:+0x08|load_ptr32|+0x24|load_ptr32|+0x24:u32",
+        "secondary_iw_action_mode_0x06:r31:+0x08|load_ptr32|+0x24|load_ptr32|+0x4c|load_ptr32|+0x06:u16",
+        "secondary_iw_flags_0xec:r31:+0x08|load_ptr32|+0x24|load_ptr32|+0x4c|load_ptr32|+0xec:u32",
+        "secondary_iw_flags_0xf0:r31:+0x08|load_ptr32|+0x24|load_ptr32|+0x4c|load_ptr32|+0xf0:u32",
+    };
+}
+
+std::vector<std::string_view> float_motion_store_samples_from_r3()
+{
+    return {
+        "dest_cw_slot_0x00:r3:0x00:u8",
+        "dest_cw_cur_x_0x1c:r3:0x1c:u32",
+        "dest_cw_cur_y_0x20:r3:0x20:u32",
+        "dest_cw_cur_z_0x24:r3:0x24:u32",
+        "delta_x_bits_stack_0x08:r1:0x08:u32",
+        "delta_z_bits_stack_0x10:r1:0x10:u32",
+    };
+}
+
+std::vector<std::string_view> float_motion_worker_gprs()
+{
+    return {
+        "thread_arg_or_dest_cw:3",
+        "thread_saved:28",
+        "instruction_wksht:30",
+        "payload:31",
     };
 }
 
@@ -2733,6 +2940,851 @@ std::string build_first_battle_thread_list_profile_ini()
     return out.str();
 }
 
+std::string build_first_battle_pre_handler_frame_pathing_profile_ini()
+{
+    const auto memory_samples = first_battle_pre_handler_frame_memory_samples();
+    const auto addrprog_samples = first_battle_pre_handler_frame_addrprog_samples();
+
+    std::ostringstream out;
+    out << "[profile]\n";
+    out << "name=first_battle_pre_handler_frame_pathing\n";
+    out << "schema_version=1\n";
+    out << "memory=";
+    write_owned_csv(out, memory_samples);
+    out << "\n";
+    out << "addrprog=";
+    write_owned_csv(out, addrprog_samples);
+    out << "\n";
+    out << "linked_list=" << thread_runner_list_snapshot_sample() << "\n\n";
+
+    write_checkpoint(
+        out,
+        "setup_action_pc_handler_store_80070A54",
+        "80070A54",
+        "setup_action_pc_handler_store",
+        "Battle::Run::setupAction_800708c0",
+        "setup_action_handler_install",
+        false,
+        {},
+        {
+            "actor_slot:30",
+            "actor_slot_x4:31",
+            "movement_worksheet:3",
+            "handler_pc:0",
+        },
+        {
+            "selected_movement_worksheet_slot_0x00:r3:0x00:u8",
+            "selected_movement_worksheet_flags_0x04:r3:0x04:u32",
+            "selected_movement_worksheet_pending_handler_before_0x10:r3:0x10:u32",
+        },
+        {},
+        {},
+        8);
+
+    write_checkpoint(
+        out,
+        "setup_action_enemy_handler_store_80070A74",
+        "80070A74",
+        "setup_action_enemy_handler_store",
+        "Battle::Run::setupAction_800708c0",
+        "setup_action_handler_install",
+        false,
+        {},
+        {
+            "actor_slot:30",
+            "actor_slot_x4:31",
+            "movement_worksheet:3",
+            "handler_pc:0",
+        },
+        {
+            "selected_movement_worksheet_slot_0x00:r3:0x00:u8",
+            "selected_movement_worksheet_flags_0x04:r3:0x04:u32",
+            "selected_movement_worksheet_pending_handler_before_0x10:r3:0x10:u32",
+        },
+        {},
+        {},
+        8);
+
+    write_checkpoint(
+        out,
+        "setup_action_before_passive_scheduler_80070B54",
+        "80070B54",
+        "setup_action_before_passive_scheduler",
+        "Battle::Run::setupAction_800708c0",
+        "setup_action_before_passive_scheduler",
+        false,
+        {},
+        {
+            "actor_slot_arg:3",
+            "selected_movement_worksheet:4",
+        },
+        {
+            "selected_movement_worksheet_slot_0x00:r4:0x00:u8",
+            "selected_movement_worksheet_flags_after_clear_0x04:r4:0x04:u32",
+            "selected_movement_worksheet_pending_handler_0x10:r4:0x10:u32",
+        },
+        {},
+        {},
+        8);
+
+    write_checkpoint(
+        out,
+        "movement_handler_promote_80080244",
+        "80080244",
+        "movement_handler_promote",
+        "FUN_800801a8",
+        "movement_handler_promote",
+        false,
+        {},
+        {
+            "slot:31",
+            "movement_buffer:6",
+            "movement_worksheet:3",
+            "pending_handler_pc:0",
+        },
+        {
+            "movement_buffer_callback_before_0x00:r6:0x00:u32",
+            "movement_buffer_state_0x19:r6:0x19:u8",
+            "movement_buffer_order_bits_0x20:r6:0x20:u32",
+            "selected_movement_worksheet_slot_0x00:r3:0x00:u8",
+            "selected_movement_worksheet_flags_0x04:r3:0x04:u32",
+            "selected_movement_worksheet_pending_handler_0x10:r3:0x10:u32",
+            "selected_movement_worksheet_cur_grid_x_0x0c:r3:0x0c:u8",
+            "selected_movement_worksheet_cur_grid_z_0x0d:r3:0x0d:u8",
+            "selected_movement_worksheet_prev_grid_x_0x0e:r3:0x0e:u8",
+            "selected_movement_worksheet_prev_grid_z_0x0f:r3:0x0f:u8",
+            "selected_movement_worksheet_path_index_0x15:r3:0x15:u8",
+            "selected_movement_worksheet_status_0x16:r3:0x16:u8",
+        },
+        {},
+        {},
+        20);
+
+    write_checkpoint(
+        out,
+        "battle_case5_after_threads_8000A2FC",
+        "8000A2FC",
+        "battle_case5_after_threads",
+        "Battle::_battleController_8000a118",
+        "case5_after_runBattleThreads",
+        false,
+        {},
+        {},
+        {},
+        {},
+        {},
+        1200,
+        0x80080244u);
+
+    write_checkpoint(
+        out,
+        "movement_commit_entry_8008178C",
+        "8008178C",
+        "movement_commit_entry",
+        "FUN_8008178c",
+        "movement_commit_entry",
+        false,
+        {},
+        {
+            "movement_wksht:3",
+            "next_grid_x:4",
+            "next_grid_z:5",
+            "slot:6",
+        },
+        {
+            "movement_cur_x_0x0c:r3:0x0c:u8",
+            "movement_cur_z_0x0d:r3:0x0d:u8",
+            "movement_prev_x_0x0e:r3:0x0e:u8",
+            "movement_prev_z_0x0f:r3:0x0f:u8",
+            "movement_pending_handler_0x10:r3:0x10:u32",
+            "movement_path_index_0x15:r3:0x15:u8",
+            "movement_status_0x16:r3:0x16:u8",
+        },
+        {},
+        {},
+        160);
+
+    write_checkpoint(
+        out,
+        "movement_posholder_x_store_800819A0",
+        "800819A0",
+        "movement_posholder_x_store",
+        "FUN_8008178c",
+        "movement_posholder_x_store",
+        false,
+        {},
+        {
+            "posholder_row:5",
+            "slot:31",
+            "grid_x:29",
+            "grid_z:30",
+        },
+        {
+            "posholder_x_before:r5:0x1c:u32",
+            "posholder_z_current:r5:0x20:u32",
+        },
+        {},
+        {},
+        160);
+
+    write_checkpoint(
+        out,
+        "movement_posholder_z_store_800819B8",
+        "800819B8",
+        "movement_posholder_z_store",
+        "FUN_8008178c",
+        "movement_posholder_z_store",
+        false,
+        {},
+        {
+            "posholder_row:4",
+            "slot:31",
+            "grid_x:29",
+            "grid_z:30",
+        },
+        {
+            "posholder_x_current:r4:0x1c:u32",
+            "posholder_z_before:r4:0x20:u32",
+        },
+        {},
+        {},
+        160);
+
+    write_checkpoint(
+        out,
+        "bridge_link_read_8001AD2C",
+        "8001AD2C",
+        "position_bridge_link_read",
+        "FUN_8001ab60",
+        "position_bridge_link_read",
+        false,
+        {},
+        {
+            "thread:28",
+            "combatant_wksht:31",
+            "instr_wksht:30",
+        },
+        {
+            "cw_slot_0x00:r31:0x00:u8",
+            "cw_cur_x_0x1c:r31:0x1c:u32",
+            "cw_cur_y_0x20:r31:0x20:u32",
+            "cw_cur_z_0x24:r31:0x24:u32",
+            "iw_slot_0x00:r30:0x00:u8",
+            "iw_target_0x04:r30:0x04:u8",
+            "iw_action_mode_0x06:r30:0x06:u16",
+            "iw_linked_thread_0x1dc:r30:0x1dc:u32",
+        },
+        {},
+        {},
+        2400);
+
+    write_checkpoint(
+        out,
+        "bridge_cw_x_store_8001AD54",
+        "8001AD54",
+        "position_bridge_cw_x_store",
+        "FUN_8001ab60",
+        "position_bridge_cw_x_store",
+        false,
+        {},
+        {
+            "posholder_row:3",
+            "linked_slot_times_16:0",
+            "thread:28",
+            "combatant_wksht:31",
+            "instr_wksht:30",
+        },
+        {
+            "posholder_x_bits:r3:0x1c:u32",
+            "posholder_z_bits:r3:0x20:u32",
+            "cw_cur_x_before:r31:0x1c:u32",
+            "cw_cur_y:r31:0x20:u32",
+            "cw_cur_z:r31:0x24:u32",
+        },
+        {},
+        {},
+        2400);
+
+    write_checkpoint(
+        out,
+        "bridge_cw_z_store_8001AD5C",
+        "8001AD5C",
+        "position_bridge_cw_z_store",
+        "FUN_8001ab60",
+        "position_bridge_cw_z_store",
+        false,
+        {},
+        {
+            "posholder_row:3",
+            "linked_slot_times_16:0",
+            "thread:28",
+            "combatant_wksht:31",
+            "instr_wksht:30",
+        },
+        {
+            "posholder_x_bits:r3:0x1c:u32",
+            "posholder_z_bits:r3:0x20:u32",
+            "cw_cur_x_after:r31:0x1c:u32",
+            "cw_cur_y:r31:0x20:u32",
+            "cw_cur_z_before:r31:0x24:u32",
+        },
+        {},
+        {},
+        2400);
+
+    write_checkpoint(
+        out,
+        "bridge_snapshot_call_8001AD68",
+        "8001AD68",
+        "position_bridge_snapshot_call",
+        "FUN_8001ab60",
+        "position_bridge_snapshot_call",
+        false,
+        {},
+        {
+            "source_vector:3",
+            "dest_vector:4",
+            "thread:28",
+            "combatant_wksht:31",
+            "instr_wksht:30",
+        },
+        {
+            "cw_cur_x_after:r31:0x1c:u32",
+            "cw_cur_y:r31:0x20:u32",
+            "cw_cur_z_after:r31:0x24:u32",
+            "iw_snap_x_before:r30:0xf8:u32",
+            "iw_snap_y_before:r30:0xfc:u32",
+            "iw_snap_z_before:r30:0x100:u32",
+        },
+        {},
+        {},
+        2400);
+
+    write_checkpoint(
+        out,
+        "pc_handler_entry_80086C68",
+        "80086C68",
+        "pc_handler_entry",
+        "Battle::HandlePCInst_80086c68",
+        "pc_handler_entry",
+        false,
+        {},
+        pc_handler_gprs(),
+        {},
+        {},
+        {},
+        8);
+
+    write_checkpoint(
+        out,
+        "enemy_handler_entry_8008B9E0",
+        "8008B9E0",
+        "enemy_handler_entry",
+        "Battle::HandleECInst_8008b9e0",
+        "enemy_handler_entry",
+        false,
+        {},
+        enemy_handler_gprs(),
+        {},
+        {},
+        {},
+        8);
+
+    return out.str();
+}
+
+std::string build_first_battle_float_motion_profile_ini()
+{
+    const auto memory_samples = first_battle_pre_handler_frame_memory_samples();
+    const auto addrprog_samples = first_battle_float_motion_addrprog_samples();
+    const auto worker_actor_addrprog = float_motion_worker_actor_addrprog_samples();
+
+    std::vector<std::string_view> worker_actor_addrprog_views;
+    worker_actor_addrprog_views.reserve(worker_actor_addrprog.size());
+    for (const auto& sample : worker_actor_addrprog) {
+        worker_actor_addrprog_views.push_back(sample);
+    }
+
+    std::ostringstream out;
+    out << "[profile]\n";
+    out << "name=first_battle_float_motion\n";
+    out << "schema_version=1\n";
+    out << "memory=";
+    write_owned_csv(out, memory_samples);
+    out << "\n";
+    out << "addrprog=";
+    write_owned_csv(out, addrprog_samples);
+    out << "\n";
+    out << "linked_list=" << thread_runner_list_snapshot_sample() << "\n\n";
+
+    write_checkpoint(
+        out,
+        "movement_handler_promote_80080244",
+        "80080244",
+        "movement_handler_promote",
+        "FUN_800801a8",
+        "movement_handler_promote",
+        false,
+        {},
+        {
+            "slot:31",
+            "movement_buffer:6",
+            "movement_worksheet:3",
+            "pending_handler_pc:0",
+        },
+        {
+            "movement_buffer_callback_before_0x00:r6:0x00:u32",
+            "movement_buffer_state_0x19:r6:0x19:u8",
+            "movement_buffer_order_bits_0x20:r6:0x20:u32",
+            "selected_movement_worksheet_slot_0x00:r3:0x00:u8",
+            "selected_movement_worksheet_pending_handler_0x10:r3:0x10:u32",
+            "selected_movement_worksheet_cur_grid_x_0x0c:r3:0x0c:u8",
+            "selected_movement_worksheet_cur_grid_z_0x0d:r3:0x0d:u8",
+        },
+        {},
+        {},
+        40);
+
+    write_checkpoint(
+        out,
+        "battle_case5_after_threads_8000A2FC",
+        "8000A2FC",
+        "battle_case5_after_threads",
+        "Battle::_battleController_8000a118",
+        "case5_after_runBattleThreads",
+        false,
+        {},
+        {},
+        {},
+        {},
+        {},
+        2400,
+        0x80080244u);
+
+    write_checkpoint(
+        out,
+        "float_motion_setup_alt_speed_call_8001FBEC",
+        "8001FBEC",
+        "float_motion_setup_alt_speed_call",
+        "FUN_8001fabc",
+        "float_motion_increment_setup",
+        false,
+        {},
+        {
+            "move_increment_dest:3",
+            "angle:4",
+            "angle_saved:27",
+            "combatant_wksht:30",
+            "instruction_wksht:31",
+        },
+        float_motion_instruction_samples_from_r31(),
+        {},
+        {},
+        240);
+
+    write_checkpoint(
+        out,
+        "float_motion_setup_base_speed_call_8001FC00",
+        "8001FC00",
+        "float_motion_setup_base_speed_call",
+        "FUN_8001fabc",
+        "float_motion_increment_setup",
+        false,
+        {},
+        {
+            "move_increment_dest:3",
+            "angle:4",
+            "angle_saved:27",
+            "combatant_wksht:30",
+            "instruction_wksht:31",
+        },
+        float_motion_instruction_samples_from_r31(),
+        {},
+        {},
+        240);
+
+    write_checkpoint(
+        out,
+        "float_motion_setup_after_increment_8001FC04",
+        "8001FC04",
+        "float_motion_setup_after_increment",
+        "FUN_8001fabc",
+        "float_motion_increment_ready",
+        false,
+        {},
+        {
+            "combatant_wksht:30",
+            "instruction_wksht:31",
+        },
+        float_motion_instruction_samples_from_r31(),
+        {},
+        {},
+        240);
+
+    write_checkpoint(
+        out,
+        "float_motion_worker_loaded_800506D8",
+        "800506D8",
+        "float_motion_worker_loaded",
+        "FUN_800506b0",
+        "float_motion_worker_loaded",
+        false,
+        {},
+        float_motion_worker_gprs(),
+        float_motion_worker_loaded_samples(),
+        worker_actor_addrprog_views,
+        {},
+        2400);
+
+    write_checkpoint(
+        out,
+        "float_motion_primary_step_call_8005096C",
+        "8005096C",
+        "float_motion_primary_step_call",
+        "FUN_800506b0",
+        "float_motion_step_delta_setup",
+        false,
+        {},
+        float_motion_worker_gprs(),
+        float_motion_worker_loaded_samples(),
+        worker_actor_addrprog_views,
+        {},
+        2400);
+
+    write_checkpoint(
+        out,
+        "float_motion_primary_x_store_before_80050984",
+        "80050984",
+        "float_motion_primary_x_store_before",
+        "FUN_800506b0",
+        "float_motion_raw_position_store_before",
+        false,
+        {},
+        float_motion_worker_gprs(),
+        float_motion_store_samples_from_r3(),
+        worker_actor_addrprog_views,
+        {},
+        2400);
+
+    write_checkpoint(
+        out,
+        "float_motion_primary_x_store_after_80050988",
+        "80050988",
+        "float_motion_primary_x_store_after",
+        "FUN_800506b0",
+        "float_motion_raw_position_store_after",
+        false,
+        {},
+        float_motion_worker_gprs(),
+        float_motion_store_samples_from_r3(),
+        worker_actor_addrprog_views,
+        {},
+        2400);
+
+    write_checkpoint(
+        out,
+        "float_motion_primary_z_store_before_8005099C",
+        "8005099C",
+        "float_motion_primary_z_store_before",
+        "FUN_800506b0",
+        "float_motion_raw_position_store_before",
+        false,
+        {},
+        float_motion_worker_gprs(),
+        float_motion_store_samples_from_r3(),
+        worker_actor_addrprog_views,
+        {},
+        2400);
+
+    write_checkpoint(
+        out,
+        "float_motion_primary_z_store_after_800509A0",
+        "800509A0",
+        "float_motion_primary_z_store_after",
+        "FUN_800506b0",
+        "float_motion_raw_position_store_after",
+        false,
+        {},
+        float_motion_worker_gprs(),
+        float_motion_store_samples_from_r3(),
+        worker_actor_addrprog_views,
+        {},
+        2400);
+
+    write_checkpoint(
+        out,
+        "float_motion_secondary_step_call_800509FC",
+        "800509FC",
+        "float_motion_secondary_step_call",
+        "FUN_800506b0",
+        "float_motion_step_delta_setup",
+        false,
+        {},
+        float_motion_worker_gprs(),
+        float_motion_worker_loaded_samples(),
+        worker_actor_addrprog_views,
+        {},
+        2400);
+
+    write_checkpoint(
+        out,
+        "float_motion_secondary_x_store_before_80050A14",
+        "80050A14",
+        "float_motion_secondary_x_store_before",
+        "FUN_800506b0",
+        "float_motion_raw_position_store_before",
+        false,
+        {},
+        float_motion_worker_gprs(),
+        float_motion_store_samples_from_r3(),
+        worker_actor_addrprog_views,
+        {},
+        2400);
+
+    write_checkpoint(
+        out,
+        "float_motion_secondary_x_store_after_80050A18",
+        "80050A18",
+        "float_motion_secondary_x_store_after",
+        "FUN_800506b0",
+        "float_motion_raw_position_store_after",
+        false,
+        {},
+        float_motion_worker_gprs(),
+        float_motion_store_samples_from_r3(),
+        worker_actor_addrprog_views,
+        {},
+        2400);
+
+    write_checkpoint(
+        out,
+        "float_motion_secondary_z_store_before_80050A2C",
+        "80050A2C",
+        "float_motion_secondary_z_store_before",
+        "FUN_800506b0",
+        "float_motion_raw_position_store_before",
+        false,
+        {},
+        float_motion_worker_gprs(),
+        float_motion_store_samples_from_r3(),
+        worker_actor_addrprog_views,
+        {},
+        2400);
+
+    write_checkpoint(
+        out,
+        "float_motion_secondary_z_store_after_80050A30",
+        "80050A30",
+        "float_motion_secondary_z_store_after",
+        "FUN_800506b0",
+        "float_motion_raw_position_store_after",
+        false,
+        {},
+        float_motion_worker_gprs(),
+        float_motion_store_samples_from_r3(),
+        worker_actor_addrprog_views,
+        {},
+        2400);
+
+    write_checkpoint(
+        out,
+        "movement_commit_entry_8008178C",
+        "8008178C",
+        "movement_commit_entry",
+        "FUN_8008178c",
+        "movement_commit_entry",
+        false,
+        {},
+        {
+            "movement_wksht:3",
+            "next_grid_x:4",
+            "next_grid_z:5",
+            "slot:6",
+        },
+        {
+            "movement_cur_x_0x0c:r3:0x0c:u8",
+            "movement_cur_z_0x0d:r3:0x0d:u8",
+            "movement_pending_handler_0x10:r3:0x10:u32",
+            "movement_path_index_0x15:r3:0x15:u8",
+            "movement_status_0x16:r3:0x16:u8",
+        },
+        {},
+        {},
+        240);
+
+    write_checkpoint(
+        out,
+        "position_sync_entry_8001AB60",
+        "8001AB60",
+        "position_sync_entry",
+        "FUN_8001ab60",
+        "position_sync_entry",
+        false,
+        {},
+        {
+            "thread_arg:3",
+        },
+        {},
+        {},
+        {},
+        2400);
+
+    return out.str();
+}
+
+std::string build_first_battle_move_increment_read_watch_profile_ini()
+{
+    const auto memory_samples = first_battle_pre_handler_frame_memory_samples();
+    const auto addrprog_samples = first_battle_float_motion_addrprog_samples();
+
+    std::ostringstream out;
+    out << "[profile]\n";
+    out << "name=first_battle_move_increment_read_watch\n";
+    out << "schema_version=1\n";
+    out << "memory=";
+    write_owned_csv(out, memory_samples);
+    out << "\n";
+    out << "addrprog=";
+    write_owned_csv(out, addrprog_samples);
+    out << "\n";
+    out << "linked_list=" << thread_runner_list_snapshot_sample() << "\n\n";
+
+    write_dynamic_watchpoint(
+        out,
+        "move_increment_x_read_after_8001FC04",
+        "8001FC04",
+        "r31",
+        "0x104",
+        "u32",
+        "read",
+        "normal");
+    write_dynamic_watchpoint(
+        out,
+        "move_increment_y_read_after_8001FC04",
+        "8001FC04",
+        "r31",
+        "0x108",
+        "u32",
+        "read",
+        "normal");
+    write_dynamic_watchpoint(
+        out,
+        "move_increment_z_read_after_8001FC04",
+        "8001FC04",
+        "r31",
+        "0x10c",
+        "u32",
+        "read",
+        "normal");
+
+    write_checkpoint(
+        out,
+        "movement_handler_promote_80080244",
+        "80080244",
+        "movement_handler_promote",
+        "FUN_800801a8",
+        "movement_handler_promote",
+        false,
+        {},
+        {
+            "slot:31",
+            "movement_buffer:6",
+            "movement_worksheet:3",
+            "pending_handler_pc:0",
+        },
+        {
+            "movement_buffer_callback_before_0x00:r6:0x00:u32",
+            "movement_buffer_state_0x19:r6:0x19:u8",
+            "movement_buffer_order_bits_0x20:r6:0x20:u32",
+            "selected_movement_worksheet_slot_0x00:r3:0x00:u8",
+            "selected_movement_worksheet_pending_handler_0x10:r3:0x10:u32",
+            "selected_movement_worksheet_cur_grid_x_0x0c:r3:0x0c:u8",
+            "selected_movement_worksheet_cur_grid_z_0x0d:r3:0x0d:u8",
+        },
+        {},
+        {},
+        80);
+
+    write_checkpoint(
+        out,
+        "battle_case5_after_threads_8000A2FC",
+        "8000A2FC",
+        "battle_case5_after_threads",
+        "Battle::_battleController_8000a118",
+        "case5_after_runBattleThreads",
+        false,
+        {},
+        {},
+        {},
+        {},
+        {},
+        2400,
+        0x8001FC04u);
+
+    write_checkpoint(
+        out,
+        "float_motion_setup_after_increment_8001FC04",
+        "8001FC04",
+        "float_motion_setup_after_increment",
+        "FUN_8001fabc",
+        "move_increment_watch_armed",
+        false,
+        {},
+        {
+            "combatant_wksht:30",
+            "instruction_wksht:31",
+        },
+        float_motion_instruction_samples_from_r31(),
+        {},
+        {},
+        240);
+
+    write_checkpoint(
+        out,
+        "movement_commit_entry_8008178C",
+        "8008178C",
+        "movement_commit_entry",
+        "FUN_8008178c",
+        "movement_commit_entry",
+        false,
+        {},
+        {
+            "movement_wksht:3",
+            "next_grid_x:4",
+            "next_grid_z:5",
+            "slot:6",
+        },
+        {
+            "movement_cur_x_0x0c:r3:0x0c:u8",
+            "movement_cur_z_0x0d:r3:0x0d:u8",
+            "movement_pending_handler_0x10:r3:0x10:u32",
+            "movement_path_index_0x15:r3:0x15:u8",
+            "movement_status_0x16:r3:0x16:u8",
+        },
+        {},
+        {},
+        400);
+
+    write_checkpoint(
+        out,
+        "position_sync_entry_8001AB60",
+        "8001AB60",
+        "position_sync_entry",
+        "FUN_8001ab60",
+        "position_sync_entry",
+        false,
+        {},
+        {
+            "thread_arg:3",
+        },
+        {},
+        {},
+        {},
+        2400);
+
+    return out.str();
+}
+
 int write_first_battle_capture_profile(
     const std::filesystem::path& output_path,
     std::ostream& out,
@@ -2966,6 +4018,108 @@ int write_first_battle_thread_list_profile(
         return 1;
     }
     out << "Wrote first-battle thread-list capture profile: "
+        << output_path.string() << "\n";
+    return 0;
+}
+
+int write_first_battle_pre_handler_frame_pathing_profile(
+    const std::filesystem::path& output_path,
+    std::ostream& out,
+    std::ostream& err)
+{
+    if (output_path.empty()) {
+        err << "write-first-battle-pre-handler-frame-pathing-profile requires --output PATH.\n";
+        return 2;
+    }
+    if (const auto parent = output_path.parent_path(); !parent.empty()) {
+        std::error_code ec;
+        std::filesystem::create_directories(parent, ec);
+        if (ec) {
+            err << "Failed to create output directory: " << ec.message() << "\n";
+            return 1;
+        }
+    }
+
+    std::ofstream file(output_path, std::ios::binary | std::ios::trunc);
+    if (!file.is_open()) {
+        err << "Failed to open output profile: " << output_path.string() << "\n";
+        return 1;
+    }
+    const auto text = build_first_battle_pre_handler_frame_pathing_profile_ini();
+    file.write(text.data(), static_cast<std::streamsize>(text.size()));
+    if (!file.good()) {
+        err << "Failed to write output profile: " << output_path.string() << "\n";
+        return 1;
+    }
+    out << "Wrote first-battle pre-handler frame pathing capture profile: "
+        << output_path.string() << "\n";
+    return 0;
+}
+
+int write_first_battle_float_motion_profile(
+    const std::filesystem::path& output_path,
+    std::ostream& out,
+    std::ostream& err)
+{
+    if (output_path.empty()) {
+        err << "write-first-battle-float-motion-profile requires --output PATH.\n";
+        return 2;
+    }
+    if (const auto parent = output_path.parent_path(); !parent.empty()) {
+        std::error_code ec;
+        std::filesystem::create_directories(parent, ec);
+        if (ec) {
+            err << "Failed to create output directory: " << ec.message() << "\n";
+            return 1;
+        }
+    }
+
+    std::ofstream file(output_path, std::ios::binary | std::ios::trunc);
+    if (!file.is_open()) {
+        err << "Failed to open output profile: " << output_path.string() << "\n";
+        return 1;
+    }
+    const auto text = build_first_battle_float_motion_profile_ini();
+    file.write(text.data(), static_cast<std::streamsize>(text.size()));
+    if (!file.good()) {
+        err << "Failed to write output profile: " << output_path.string() << "\n";
+        return 1;
+    }
+    out << "Wrote first-battle float-motion capture profile: "
+        << output_path.string() << "\n";
+    return 0;
+}
+
+int write_first_battle_move_increment_read_watch_profile(
+    const std::filesystem::path& output_path,
+    std::ostream& out,
+    std::ostream& err)
+{
+    if (output_path.empty()) {
+        err << "write-first-battle-move-increment-read-watch-profile requires --output PATH.\n";
+        return 2;
+    }
+    if (const auto parent = output_path.parent_path(); !parent.empty()) {
+        std::error_code ec;
+        std::filesystem::create_directories(parent, ec);
+        if (ec) {
+            err << "Failed to create output directory: " << ec.message() << "\n";
+            return 1;
+        }
+    }
+
+    std::ofstream file(output_path, std::ios::binary | std::ios::trunc);
+    if (!file.is_open()) {
+        err << "Failed to open output profile: " << output_path.string() << "\n";
+        return 1;
+    }
+    const auto text = build_first_battle_move_increment_read_watch_profile_ini();
+    file.write(text.data(), static_cast<std::streamsize>(text.size()));
+    if (!file.good()) {
+        err << "Failed to write output profile: " << output_path.string() << "\n";
+        return 1;
+    }
+    out << "Wrote first-battle move-increment read-watch capture profile: "
         << output_path.string() << "\n";
     return 0;
 }

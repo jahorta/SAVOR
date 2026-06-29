@@ -3,11 +3,17 @@
 #include "ActionViewCameraModel.h"
 #include "EffectRngModel.h"
 
+#include <iomanip>
 #include <sstream>
 #include <utility>
 
 namespace savor::predict {
 namespace {
+
+constexpr int kMode0eRecordMode = 0x0e;
+constexpr std::uint32_t kMode0eCameraRngPc = 0x80052bf0U;
+constexpr std::uint32_t kMode0FallbackRngPc = 0x800513d4U;
+constexpr std::uint32_t kMode0eDispatchPc = 0x800514c4U;
 
 void append_step(BattleVisualRngModelResult& result, BattleVisualRngStep step) {
     result.total_draws += step.draws_consumed;
@@ -32,12 +38,22 @@ std::string effect_detail(int source_key, const CombatEffectBurstSequenceModel& 
     return out.str();
 }
 
+std::string hex_u32(std::uint32_t value) {
+    std::ostringstream out;
+    out << "0x" << std::hex << std::nouppercase << value;
+    return out.str();
+}
+
 std::string action_view_selector_detail(const ActionViewSelectorResult& selector) {
     std::ostringstream out;
     out << "requested_mode=" << static_cast<int>(selector.requested_mode)
         << "; dispatch_effective_mode_0x2f=" << static_cast<int>(selector.dispatch_effective_mode_0x2f)
         << "; selector_state_0x30=" << selector.selector_state_0x30
         << "; mode0e_query_reached=" << (selector.mode0e_query_reached ? 1 : 0);
+    if (selector.spawned_action_view_record_mode_if_known.has_value()) {
+        out << "; spawned_action_view_record_mode="
+            << *selector.spawned_action_view_record_mode_if_known;
+    }
     if (selector.mode0e_count.has_value()) {
         out << "; mode0e_count=" << selector.mode0e_count->count
             << "; scanned_entries=" << selector.mode0e_count->scanned_entries
@@ -65,18 +81,125 @@ std::string action_view_selector_detail(const ActionViewSelectorResult& selector
     return out.str();
 }
 
+void append_dispatch_evidence_detail(
+    std::string& detail,
+    const ActionViewDispatchEvidence& evidence) {
+    std::ostringstream out;
+    out << "; action_view_dispatch_evidence=1";
+    if (evidence.record_mode_0x22.has_value()) {
+        out << "; live_record_mode_0x22=" << *evidence.record_mode_0x22;
+    }
+    if (evidence.effective_mode_0x112.has_value()) {
+        out << "; live_effective_mode_0x112=" << *evidence.effective_mode_0x112;
+    }
+    if (evidence.saved_mode_0x110.has_value()) {
+        out << "; live_saved_mode_0x110=" << *evidence.saved_mode_0x110;
+    }
+    if (evidence.dispatch_pc.has_value()) {
+        out << "; live_dispatch_pc=" << hex_u32(*evidence.dispatch_pc);
+    }
+    if (evidence.rng_pc.has_value()) {
+        out << "; live_rng_pc=" << hex_u32(*evidence.rng_pc);
+    }
+    if (!evidence.source_tag.empty()) {
+        out << "; live_source=" << evidence.source_tag;
+    }
+    detail += out.str();
+}
+
+BattleVisualRngStep mode0e_camera_step(std::string detail) {
+    return {
+        .label = "mode0e_action_view_camera",
+        .status = BattleVisualRngStepStatus::Provisional,
+        .draws_consumed = 1,
+        .detail = std::move(detail),
+    };
+}
+
+BattleVisualRngStep mode0_fallback_camera_step(std::string detail) {
+    return {
+        .label = "mode0_action_view_camera_fallback",
+        .status = BattleVisualRngStepStatus::Provisional,
+        .draws_consumed = 1,
+        .detail = std::move(detail),
+    };
+}
+
+BattleVisualRngStep known_no_camera_step(std::string detail) {
+    return {
+        .label = "action_view_record_mode_no_camera_rng",
+        .status = BattleVisualRngStepStatus::Provisional,
+        .detail = std::move(detail),
+    };
+}
+
+BattleVisualRngStep ambiguous_dispatch_evidence_step(std::string detail) {
+    return {
+        .label = "ambiguous_action_view_camera_dispatch_evidence",
+        .status = BattleVisualRngStepStatus::Ambiguous,
+        .detail = std::move(detail),
+    };
+}
+
+std::optional<BattleVisualRngStep> model_action_view_camera_from_dispatch_evidence(
+    const ActionViewDispatchEvidence& evidence,
+    std::string detail) {
+    append_dispatch_evidence_detail(detail, evidence);
+
+    const bool rng_pc_is_mode0e =
+        evidence.rng_pc.has_value() && *evidence.rng_pc == kMode0eCameraRngPc;
+    const bool rng_pc_is_mode0_fallback =
+        evidence.rng_pc.has_value() && *evidence.rng_pc == kMode0FallbackRngPc;
+    const bool dispatch_pc_is_mode0e =
+        evidence.dispatch_pc.has_value() && *evidence.dispatch_pc == kMode0eDispatchPc;
+    const bool record_mode_is_mode0e =
+        evidence.record_mode_0x22.has_value() && *evidence.record_mode_0x22 == kMode0eRecordMode;
+    const bool record_mode_conflicts_with_mode0e_pc =
+        evidence.record_mode_0x22.has_value()
+        && *evidence.record_mode_0x22 != kMode0eRecordMode
+        && (rng_pc_is_mode0e || dispatch_pc_is_mode0e);
+    const bool record_mode_conflicts_with_fallback_pc =
+        record_mode_is_mode0e && rng_pc_is_mode0_fallback;
+
+    if (record_mode_conflicts_with_mode0e_pc || record_mode_conflicts_with_fallback_pc) {
+        return ambiguous_dispatch_evidence_step(std::move(detail));
+    }
+    if (rng_pc_is_mode0e || dispatch_pc_is_mode0e || record_mode_is_mode0e) {
+        return mode0e_camera_step(std::move(detail));
+    }
+    if (rng_pc_is_mode0_fallback) {
+        return mode0_fallback_camera_step(std::move(detail));
+    }
+    if (evidence.record_mode_0x22.has_value()) {
+        return known_no_camera_step(std::move(detail));
+    }
+
+    return std::nullopt;
+}
+
 BattleVisualRngStep model_action_view_camera_step(const BattleVisualRngActionInput& input) {
+    auto detail = input.action_view_selector.has_value()
+        ? action_view_selector_detail(*input.action_view_selector)
+        : std::string(first_battle_action_view_camera_rule_detail());
+    if (input.action_view_dispatch_evidence.has_value()) {
+        const auto live_step = model_action_view_camera_from_dispatch_evidence(
+            *input.action_view_dispatch_evidence,
+            detail);
+        if (live_step.has_value()) {
+            return *live_step;
+        }
+    }
+
     if (!input.action_view_selector.has_value()) {
         return {
             .label = "mode0_action_view_camera_rewrite_gate",
             .status = BattleVisualRngStepStatus::Exact,
             .draws_consumed = 1,
-            .detail = first_battle_action_view_camera_rule_detail(),
+            .detail = std::move(detail),
         };
     }
 
     const auto& selector = *input.action_view_selector;
-    auto detail = action_view_selector_detail(selector);
     if (selector.unsupported_without_aux_table) {
         return {
             .label = "missing_input_action_view_camera_aux_table",
@@ -86,11 +209,13 @@ BattleVisualRngStep model_action_view_camera_step(const BattleVisualRngActionInp
     }
 
     if (!selector.mode0e_query_reached) {
-        return {
-            .label = "ambiguous_action_view_camera_selector_path",
-            .status = BattleVisualRngStepStatus::Ambiguous,
-            .detail = detail,
-        };
+        if (selector.spawned_action_view_record_mode_if_known.has_value()) {
+            if (*selector.spawned_action_view_record_mode_if_known == kMode0eRecordMode) {
+                return mode0e_camera_step(std::move(detail));
+            }
+            return known_no_camera_step(std::move(detail));
+        }
+        return known_no_camera_step(std::move(detail));
     }
     if (!selector.mode0e_count.has_value()) {
         return {
@@ -101,20 +226,14 @@ BattleVisualRngStep model_action_view_camera_step(const BattleVisualRngActionInp
     }
 
     if (selector.mode0e_synthetic_call_selected) {
-        return {
-            .label = "mode0e_action_view_camera",
-            .status = BattleVisualRngStepStatus::Exact,
-            .draws_consumed = 1,
-            .detail = detail,
-        };
+        if (selector.spawned_action_view_record_mode_if_known.has_value()
+            && *selector.spawned_action_view_record_mode_if_known != kMode0eRecordMode) {
+            return known_no_camera_step(std::move(detail));
+        }
+        return mode0e_camera_step(std::move(detail));
     }
 
-    return {
-        .label = "mode0_action_view_camera_fallback",
-        .status = BattleVisualRngStepStatus::Exact,
-        .draws_consumed = 1,
-        .detail = detail,
-    };
+    return mode0_fallback_camera_step(std::move(detail));
 }
 
 } // namespace

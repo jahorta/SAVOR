@@ -3,6 +3,8 @@
 #include "BattleFrameStateModel.h"
 #include "MovementModel.h"
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -18,6 +20,7 @@ constexpr std::int16_t PassiveTarget = 0x0b;
 constexpr std::int16_t PassiveSameSide = 0x06;
 constexpr std::int16_t PassiveBlock = 0x0c;
 constexpr std::int16_t PassiveDodge = 0x0d;
+constexpr std::int16_t ActionMotionAltSpeed = 0x13;
 } // namespace BattleFrameActionMode
 
 enum class BattleFrameWorkerKind {
@@ -35,7 +38,9 @@ enum class BattleFrameWorkerKind {
     EnemyFallbackAttack,
     PassiveTarget,
     PassiveSameSide,
+    PassiveSpecial,
     CleanupStanding,
+    FrameStartPositionSync,
 };
 
 enum class BattleFrameEventStatus {
@@ -44,6 +49,36 @@ enum class BattleFrameEventStatus {
     MissingInput,
     Unsupported,
     Ambiguous,
+};
+
+enum class BattleFrameWorkerStepKind {
+    CallbackEntry,
+    PathBuild,
+    GridRefresh,
+    MovementCommit,
+    PostCommit,
+    ModeHelper,
+    PassiveCleanup,
+    FrameStartPositionSync,
+    ActionMotionPositionSync,
+    ActionMotionSetup_8001fabc,
+    ActionMotionMoveStep_8001e910,
+    MoveIncrementApply_80061340,
+    Rng,
+    Marker,
+    NoCommit,
+    Unsupported,
+};
+
+struct BattleFrameWorkerProgramStep {
+    BattleFrameWorkerStepKind kind = BattleFrameWorkerStepKind::CallbackEntry;
+    std::uint32_t pc = 0;
+    std::uint32_t helper_pc = 0;
+    std::optional<std::uint32_t> commit_callsite_pc;
+    std::int16_t action_mode = 0;
+    int worksheet_state_after = -1;
+    std::string label;
+    std::string detail;
 };
 
 struct BattleFrameWorker {
@@ -65,6 +100,16 @@ struct BattleFrameWorker {
     std::string detail;
     BattleFrameEventStatus event_status = BattleFrameEventStatus::Matched;
     bool clash_emitted = false;
+    std::uint32_t callback_pc = 0;
+    std::uint32_t current_pc = 0;
+    std::optional<std::uint32_t> commit_callsite_pc;
+    std::uint8_t worksheet_state_0x19 = 0;
+    std::uint8_t path_index_0x15 = 0;
+    int queue_sequence = 0;
+    int action_motion_position_source_slot = -1;
+    std::vector<BattleFrameWorkerProgramStep> program_steps;
+    std::size_t program_index = 0;
+    bool destination_committed = false;
 };
 
 struct BattleFrameStepEvent {
@@ -73,19 +118,31 @@ struct BattleFrameStepEvent {
     int target_slot = -1;
     std::string callback;
     BattleFrameWorkerKind worker_kind = BattleFrameWorkerKind::None;
+    BattleFrameWorkerStepKind step_kind = BattleFrameWorkerStepKind::CallbackEntry;
     BattleFrameEventStatus status = BattleFrameEventStatus::Matched;
+    std::uint32_t callback_pc = 0;
+    std::uint32_t step_pc = 0;
+    std::uint32_t helper_pc = 0;
+    std::optional<std::uint32_t> commit_callsite_pc;
     std::int16_t old_action_mode = 0;
     std::int16_t new_action_mode = 0;
     MovementGridPosition old_grid{};
     MovementGridPosition new_grid{};
     BattleFrameVec3 old_pos_holder{};
     BattleFrameVec3 new_pos_holder{};
-    BattleFrameVec3 old_combatant_position{};
-    BattleFrameVec3 new_combatant_position{};
+    BattleFrameVec3 old_combatant_cur_pos_0x1c{};
+    BattleFrameVec3 new_combatant_cur_pos_0x1c{};
+    BattleFrameVec3 pos_to_move_to_0x110{};
+    BattleFrameVec3 move_increment_0x104{};
+    BattleFrameVec3 applied_move_increment{};
+    float selected_motion_speed = 0.0f;
+    bool action_motion_setup_event = false;
+    bool move_increment_apply_event = false;
+    bool motion_reached_target = false;
     bool grid_changed = false;
     bool pos_holder_changed = false;
-    bool combatant_position_changed = false;
-    bool bridged_position = false;
+    bool combatant_cur_pos_changed = false;
+    bool action_motion_position_synced = false;
     bool rng_event = false;
     std::string rng_label;
     int draws_consumed = 0;
@@ -102,6 +159,8 @@ struct BattleFrameRuntime {
     bool initialized = false;
     bool enable_passive_clash_reaction = false;
     std::vector<BattleFrameWorker> workers;
+    std::array<std::vector<int>, 8> slot_worker_queues;
+    int next_worker_sequence = 0;
     std::vector<BattleFrameStepEvent> last_step_events;
     std::vector<BattleFrameStepEvent> history;
     std::vector<std::string> warnings;
@@ -151,6 +210,11 @@ bool schedule_effect_chunks_for_source_key(
     int target_slot,
     int source_key);
 
+void schedule_first_turn_mechanical_attack(
+    BattleFrameRuntime& runtime,
+    int actor_slot,
+    int target_slot);
+
 std::optional<BattleFrameStepEvent> maybe_emit_passive_clash_reaction(
     BattleFrameRuntime& runtime,
     BattleFrameWorker& completed_worker,
@@ -172,5 +236,6 @@ BattleFrameRunResult run_scheduled_frame_workers(
 const char* battle_frame_worker_kind_name(BattleFrameWorkerKind kind);
 const char* battle_frame_event_status_name(BattleFrameEventStatus status);
 const char* battle_frame_action_mode_name(std::int16_t action_mode);
+const char* battle_frame_worker_step_kind_name(BattleFrameWorkerStepKind kind);
 
 } // namespace savor::predict

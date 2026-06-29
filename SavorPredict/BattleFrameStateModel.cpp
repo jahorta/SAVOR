@@ -1,6 +1,7 @@
 #include "BattleFrameStateModel.h"
 
 #include "EnemyEventDataModel.h"
+#include "FirstBattleDataModel.h"
 
 #include <algorithm>
 #include <cmath>
@@ -59,6 +60,16 @@ void write_footprint(BattleFrameState& state, const BattleFrameCombatantState& c
     }
 }
 
+void apply_first_battle_motion_speed_defaults(BattleFrameCombatantState& combatant) {
+    const auto defaults = first_battle_actor_by_slot(combatant.slot);
+    if (!defaults.has_value() || !defaults->motion_speeds_known) {
+        return;
+    }
+    combatant.motion_base_speed_0x12c = defaults->motion_base_speed;
+    combatant.motion_alt_speed_0x130 = defaults->motion_alt_speed;
+    combatant.motion_speeds_known = true;
+}
+
 } // namespace
 
 int first_battle_grid_to_raw_stage_coord(int grid, int footprint) {
@@ -111,15 +122,24 @@ std::optional<BattleFrameState> initialize_first_battle_frame_state(
         combatant.is_player = slot.is_player;
         combatant.width = std::max(1, slot.width);
         combatant.depth = std::max(1, slot.depth);
+        combatant.motion_base_speed_0x12c = slot.motion_base_speed;
+        combatant.motion_alt_speed_0x130 = slot.motion_alt_speed;
+        combatant.motion_speeds_known = slot.motion_speeds_known;
+        if (!combatant.motion_speeds_known) {
+            apply_first_battle_motion_speed_defaults(combatant);
+        }
         combatant.grid_position = MovementGridPosition{.grid_x = start->grid_x, .grid_z = start->grid_z};
         combatant.previous_grid_position = combatant.grid_position;
         combatant.pos_holder = first_battle_grid_to_raw_stage_position(
             combatant.grid_position,
             combatant.width,
             combatant.depth);
-        combatant.combatant_position = combatant.pos_holder;
-        combatant.instruction_snapshot_position = combatant.pos_holder;
+        combatant.combatant_cur_pos_0x1c = combatant.pos_holder;
+        combatant.instruction_field_0xf8 = combatant.pos_holder;
+        combatant.pos_to_move_to_0x110 = combatant.pos_holder;
         combatant.instruction_compare_0x15c = combatant.slot;
+        combatant.selected_action_row_flags = 0x01000000u;
+        combatant.selected_action_row_index = 0;
         state.combatants.push_back(combatant);
     }
 
@@ -178,18 +198,75 @@ bool commit_movement_grid_8008178c(
         destination,
         combatant->width,
         combatant->depth);
+    combatant->pending_frame_start_position_sync = true;
     write_footprint(state, *combatant);
     return true;
 }
 
-bool bridge_pos_holder_to_combatant_8001ab60(BattleFrameState& state, int slot) {
+bool sync_action_motion_position_8001ab60(
+    BattleFrameState& state,
+    int current_slot,
+    int source_slot) {
+    auto* current = find_frame_combatant(state, current_slot);
+    const auto* source = find_frame_combatant(state, source_slot);
+    if (current == nullptr || source == nullptr) {
+        return false;
+    }
+    current->combatant_cur_pos_0x1c.x = source->pos_holder.x;
+    current->combatant_cur_pos_0x1c.z = source->pos_holder.z;
+    current->instruction_field_0xf8 = current->combatant_cur_pos_0x1c;
+    current->pending_frame_start_position_sync = false;
+    return true;
+}
+
+bool sync_frame_start_position_from_pos_holder(
+    BattleFrameState& state,
+    int slot) {
     auto* combatant = find_frame_combatant(state, slot);
     if (combatant == nullptr) {
         return false;
     }
-    combatant->combatant_position = combatant->pos_holder;
-    combatant->instruction_snapshot_position = combatant->pos_holder;
+    combatant->combatant_cur_pos_0x1c.x = combatant->pos_holder.x;
+    combatant->combatant_cur_pos_0x1c.z = combatant->pos_holder.z;
+    combatant->instruction_field_0xf8 = combatant->combatant_cur_pos_0x1c;
+    combatant->pending_frame_start_position_sync = false;
     return true;
+}
+
+bool move_combatant_increment_80061340(
+    BattleFrameVec3& current_position,
+    const BattleFrameVec3& target_position,
+    const BattleFrameVec3& increment) {
+    if (increment.x == 0.0f) {
+        current_position.x = target_position.x;
+    }
+    if (increment.z == 0.0f) {
+        current_position.z = target_position.z;
+    }
+
+    if (current_position.x == target_position.x
+        && current_position.z == target_position.z) {
+        return true;
+    }
+
+    if (current_position.x != target_position.x) {
+        current_position.x += increment.x;
+        if ((increment.x <= 0.0f && current_position.x <= target_position.x)
+            || (increment.x > 0.0f && current_position.x >= target_position.x)) {
+            current_position.x = target_position.x;
+        }
+    }
+
+    if (current_position.z != target_position.z) {
+        current_position.z += increment.z;
+        if ((increment.z <= 0.0f && current_position.z <= target_position.z)
+            || (increment.z > 0.0f && current_position.z >= target_position.z)) {
+            current_position.z = target_position.z;
+        }
+    }
+
+    return current_position.x == target_position.x
+        && current_position.z == target_position.z;
 }
 
 } // namespace savor::predict

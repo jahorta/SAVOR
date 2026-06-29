@@ -103,6 +103,10 @@ Std0CountQuery mode5_action_view_count_query(
     std::int16_t instruction_field6_0x6,
     std::int16_t instruction_field8_0x8);
 
+std::int16_t action_view_record_mode_from_80053f38(
+    std::int16_t instruction_field6_0x6,
+    std::int16_t helper_param_2);
+
 std::int8_t action_view_requested_mode_from_field6(
     std::int16_t instruction_field6_0x6,
     std::int16_t instruction_field8_0x8,

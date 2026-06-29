@@ -160,7 +160,7 @@ Fun80011694Result run_fun_80011694(
 
         const auto geometry = score_geometry_800117ec({
             .input_reference = input_reference,
-            .candidate_position = combatant->combatant_position,
+            .candidate_position = combatant->combatant_cur_pos_0x1c,
             .path_base = path_base,
         });
         if (!geometry.accepted) {
@@ -270,11 +270,11 @@ ActionViewPathingTailResult model_first_battle_action_view_pathing_tail(
     // Use the target reference as the visible input and the same target point as
     // the current path base for the validated zero-score path until broader
     // turn worksheet state is captured for other battles.
-    const BattleFrameVec3 target_side_base = target->combatant_position;
+    const BattleFrameVec3 target_side_base = target->combatant_cur_pos_0x1c;
     for (int i = 0; i < scan_count; ++i) {
         last_scan = run_fun_80011694(
             *frame_state,
-            target->combatant_position,
+            target->combatant_cur_pos_0x1c,
             input.target_slot,
             target_side_base);
         if (last_scan.fallback_rng_draw) {
@@ -294,8 +294,8 @@ ActionViewPathingTailResult model_first_battle_action_view_pathing_tail(
         .detail = fun80011694_detail(last_scan, scan_count)
             + "; repeated_scans=" + std::to_string(scan_count)
             + "; fallback_draws=" + std::to_string(fallback_draws)
-            + "; actor_pos=" + vec_detail(actor->combatant_position)
-            + "; target_pos=" + vec_detail(target->combatant_position),
+            + "; actor_pos=" + vec_detail(actor->combatant_cur_pos_0x1c)
+            + "; target_pos=" + vec_detail(target->combatant_cur_pos_0x1c),
     });
 
     return result;

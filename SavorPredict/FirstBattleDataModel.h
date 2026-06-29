@@ -36,6 +36,9 @@ struct FirstBattleActorStats {
     int weapon_attack = 0;
     int weapon_hit = 0;
     int effect_id = -1;
+    float motion_base_speed = 0.0f;
+    float motion_alt_speed = 0.0f;
+    bool motion_speeds_known = false;
     bool attack_known = false;
     bool hit_known = false;
     bool defense_known = false;

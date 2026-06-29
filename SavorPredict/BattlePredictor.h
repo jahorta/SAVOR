@@ -95,6 +95,9 @@ struct BattlePredictionSlotState {
     int max_hp = 0;
     std::uint32_t status_flags = 0;
     std::uint16_t movement_flags = 0;
+    float motion_base_speed = 0.0f;
+    float motion_alt_speed = 0.0f;
+    bool motion_speeds_known = false;
     int base_counter_chance = 0;
     int current_counter_chance = 0;
     int counter_chance_increment = 0;

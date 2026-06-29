@@ -37,12 +37,15 @@ void append_helper_call(
     });
 }
 
-std::optional<std::int16_t> known_action_view_record_mode_for_80053f38_mode0(
-    std::int16_t instruction_field6_0x6) {
-    if (instruction_field6_0x6 == 4 || instruction_field6_0x6 == 8) {
-        return 0xe;
-    }
-    return std::nullopt;
+void record_spawned_action_view_record_mode(
+    ActionViewSelectorResult& result,
+    const ActionViewSelectorInput& input,
+    std::int16_t helper_param_2) {
+    const auto record_mode = action_view_record_mode_from_80053f38(
+        input.instruction_field6_0x6,
+        helper_param_2);
+    result.spawned_action_view_record_mode_if_known = record_mode;
+    append_branch_value(result, "spawned_action_view_record_mode", record_mode);
 }
 
 std::int16_t normalize_selector_state_for_request(
@@ -175,6 +178,29 @@ Std0CountQuery mode5_action_view_count_query(
     };
 }
 
+std::int16_t action_view_record_mode_from_80053f38(
+    std::int16_t instruction_field6_0x6,
+    std::int16_t helper_param_2) {
+    if (helper_param_2 != 0) {
+        return 0x11;
+    }
+
+    switch (instruction_field6_0x6) {
+    case 4:
+    case 8:
+        return 0xe;
+    case 5:
+    case 0x1d:
+        return 1;
+    case 0x0c:
+        return 0x0f;
+    case 0x11:
+        return 0x10;
+    default:
+        return 2;
+    }
+}
+
 std::int8_t action_view_requested_mode_from_field6(
     std::int16_t instruction_field6_0x6,
     std::int16_t instruction_field8_0x8,
@@ -241,6 +267,7 @@ ActionViewSelectorResult select_action_view_mode(const ActionViewSelectorInput& 
                 input.current_actor_slot,
                 1,
                 "state0_actor_changed_spawn_mode1");
+            record_spawned_action_view_record_mode(result, input, 1);
             append_branch(result, "state0_actor_changed_call_80053f38_mode1");
         }
     }
@@ -271,9 +298,7 @@ ActionViewSelectorResult select_action_view_mode(const ActionViewSelectorInput& 
                 dispatch_effective_mode == 0
                     ? "mode0_state2_spawn_mode0"
                     : "mode4_state2_spawn_mode0");
-            result.spawned_action_view_record_mode_if_known =
-                known_action_view_record_mode_for_80053f38_mode0(
-                    input.instruction_field6_0x6);
+            record_spawned_action_view_record_mode(result, input, 0);
             result.selector_state_0x30 = 3;
             append_branch(result, "state2_call_80053f38_mode0_then_state3");
         } else {
@@ -365,9 +390,7 @@ ActionViewSelectorResult select_action_view_mode(const ActionViewSelectorInput& 
                 input.current_actor_slot,
                 0,
                 "mode2_count_zero_spawn_mode0");
-            result.spawned_action_view_record_mode_if_known =
-                known_action_view_record_mode_for_80053f38_mode0(
-                    input.instruction_field6_0x6);
+            record_spawned_action_view_record_mode(result, input, 0);
         }
         append_branch(result, result.mode0e_synthetic_call_selected
             ? "mode0e_synthetic_call_selected"
@@ -418,9 +441,7 @@ ActionViewSelectorResult select_action_view_mode(const ActionViewSelectorInput& 
                 input.current_actor_slot,
                 0,
                 "mode3_count_zero_spawn_mode0");
-            result.spawned_action_view_record_mode_if_known =
-                known_action_view_record_mode_for_80053f38_mode0(
-                    input.instruction_field6_0x6);
+            record_spawned_action_view_record_mode(result, input, 0);
         }
         append_branch(result, result.mode3_synthetic_call_selected
             ? "mode3_synthetic_call_selected"
@@ -501,6 +522,10 @@ const char* action_view_selector_model_rule_detail() {
            "when entry actor-change lookup data is supplied, the 8001d41c return "
            "initializes selector state 0x30 to 2 for nonzero or 0 for zero; "
            "field6_0x6 is mapped through jump table 802db024 to a requested mode; "
+           "FUN_80053f38 writes action-view record mode from its own table "
+           "802df24c: param_2 != 0 selects 0x11, field6 4/8 selects 0xe, "
+           "5/0x1d selects 1, 0xc selects 0xf, 0x11 selects 0x10, and "
+           "default selects 2; "
            "state-0 transition writes requested mode to 0x2f before dispatch; "
            "the effective mode 2 / selector state 2 path loads "
            "action_thread->0x24->0x10->0x30 and calls "

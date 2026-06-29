@@ -2,6 +2,7 @@
 
 #include "ActionViewSelectorModel.h"
 
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <vector>
@@ -16,6 +17,15 @@ enum class BattleVisualRngStepStatus {
     Unsupported,
 };
 
+struct ActionViewDispatchEvidence {
+    std::optional<int> record_mode_0x22;
+    std::optional<int> effective_mode_0x112;
+    std::optional<int> saved_mode_0x110;
+    std::optional<std::uint32_t> dispatch_pc;
+    std::optional<std::uint32_t> rng_pc;
+    std::string source_tag;
+};
+
 struct BattleVisualRngActionInput {
     std::string profile_name = "first-battle";
     int actor_slot = -1;
@@ -26,6 +36,7 @@ struct BattleVisualRngActionInput {
     bool include_action_view_camera = true;
     bool include_effect_bursts = true;
     std::optional<ActionViewSelectorResult> action_view_selector;
+    std::optional<ActionViewDispatchEvidence> action_view_dispatch_evidence;
 };
 
 struct BattleVisualRngStep {
