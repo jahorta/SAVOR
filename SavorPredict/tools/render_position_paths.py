@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """Render first-turn combatant position captures as SVG path maps.
 
-The default input is the current path-list/bend capture under C:\\savor.  The
-script uses the reduced TSV files to choose representative action windows and
-streams the raw JSONL capture only for the per-frame battle-controller position
-rows.
+The default input is the render-focused movement capture under C:\\savor.  This
+renderer intentionally consumes that capture schema directly: action windows
+come from the captured selected-slot/action-sequence frame globals and movement
+publish metadata comes from the captured FUN_8008178c rows.
 
 Examples:
   python SavorPredict/tools/render_position_paths.py --examples
-  python SavorPredict/tools/render_position_paths.py --source-exec 1050837 --sequence 260
+  python SavorPredict/tools/render_position_paths.py --source-exec 1050837 --sequence 0
 """
 
 from __future__ import annotations
@@ -19,7 +19,6 @@ import html
 import json
 import math
 import struct
-from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
@@ -27,7 +26,7 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 from PIL import Image, ImageDraw, ImageFont
 
 
-DEFAULT_RUN_ROOT = Path(r"C:\savor\path_list_bend_capture_20260630_release")
+DEFAULT_RUN_ROOT = Path(r"C:\savor\render_position_paths_corpus_20260630_release")
 DEFAULT_OUT_DIR = Path("Analyses") / "20260630_position_path_images"
 
 SLOTS = (0, 1, 4, 5)
@@ -60,17 +59,25 @@ class PositionSample:
 
 
 @dataclass(frozen=True)
-class RenderExample:
-    key: str
-    title: str
-    source_exec: str
-    clone_exec: str
-    event_seq: int
+class ActionBookmark:
+    seq: int
+    frame: int
+    kind: str
+    selected_slot: Optional[int]
+    action_sequence: Optional[int]
+
+
+@dataclass(frozen=True)
+class ActionWindow:
+    turn_index: int
+    action_sequence: int
+    active_slot: int
     start_seq: int
     end_seq: int
-    event: Dict[str, str]
-    event_kind: str
-    capture_path: Path
+    first_frame_seq: int
+    last_frame_seq: int
+    selected_seq: Optional[int]
+    scheduled_seq: Optional[int]
 
 
 @dataclass(frozen=True)
@@ -80,9 +87,14 @@ class TurnProgression:
     source_exec: str
     clone_exec: str
     turn_index: int
-    active_slot: Optional[int]
+    action_sequence: int
+    active_slot: int
     start_seq: int
     end_seq: int
+    first_frame_seq: int
+    last_frame_seq: int
+    selected_seq: Optional[int]
+    scheduled_seq: Optional[int]
     events: List[Dict[str, str]]
     capture_path: Path
 
@@ -106,38 +118,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--examples",
         action="store_true",
-        help="Render the built-in representative examples from the reduced TSV evidence.",
+        help="Render all complete action windows from the render-position capture root.",
     )
     parser.add_argument(
         "--turn-progressions",
         action="store_true",
         help=(
-            "Render one SVG per source job and action_sequence in the capture. "
+            "Render one SVG per complete action window in the capture. "
             "If --source-exec is omitted, every row in summary.csv is rendered."
         ),
     )
     parser.add_argument(
         "--source-exec",
-        help="Render one source execution job. Requires --sequence unless --examples is used.",
+        help="Render only one source execution job.",
     )
     parser.add_argument(
         "--sequence",
         type=int,
-        help="Publish/commit capture_sequence to render for --source-exec.",
-    )
-    parser.add_argument(
-        "--label",
-        help="Optional label for a single rendered example.",
-    )
-    parser.add_argument(
-        "--window-start",
-        type=int,
-        help="Override start capture_sequence for a single rendered example.",
-    )
-    parser.add_argument(
-        "--window-end",
-        type=int,
-        help="Override end capture_sequence for a single rendered example.",
+        help="Render only this raw action_sequence value from the action-window stream.",
     )
     parser.add_argument(
         "--terrain-square",
@@ -200,10 +198,6 @@ def decode_float_bits(value: object) -> Optional[float]:
         return None
     data = parsed.to_bytes(4, byteorder="big", signed=False)
     return struct.unpack(">f", data)[0]
-
-
-def parse_bool(value: object) -> bool:
-    return str(value).strip().lower() == "true"
 
 
 def parse_grid_pair(text: str) -> Optional[Tuple[int, int]]:
@@ -276,185 +270,6 @@ def summary_capture_path(summary: Dict[str, Dict[str, str]], source_exec: str, r
     return clone_exec, capture_path
 
 
-def find_row(rows: Iterable[Dict[str, str]], source_exec: str, seq_key: str, seq: int) -> Optional[Dict[str, str]]:
-    seq_text = str(seq)
-    for row in rows:
-        if row.get("source_exec") == source_exec and row.get(seq_key) == seq_text:
-            return row
-    return None
-
-
-def choose_window_for_followup(row: Dict[str, str]) -> Tuple[int, int]:
-    publish_seq = required_int(row["publish_seq"], "publish_seq")
-    setup_seq = maybe_int(row.get("follow_setup_seq"))
-    first_move_seq = maybe_int(row.get("first_move_seq"))
-    last_move_seq = maybe_int(row.get("last_move_seq"))
-    next_commit_seq = maybe_int(row.get("next_commit_seq"))
-
-    starts = [publish_seq]
-    if setup_seq is not None:
-        starts.append(setup_seq)
-    if first_move_seq is not None:
-        starts.append(first_move_seq)
-
-    ends = [publish_seq]
-    if last_move_seq is not None:
-        ends.append(last_move_seq)
-    if next_commit_seq is not None and next_commit_seq - publish_seq <= 90:
-        ends.append(next_commit_seq)
-    elif last_move_seq is None and next_commit_seq is not None:
-        ends.append(min(next_commit_seq, publish_seq + 90))
-    if setup_seq is not None:
-        ends.append(setup_seq + 40)
-
-    return max(0, min(starts) - 10), max(ends) + 10
-
-
-def choose_window_for_commit(row: Dict[str, str]) -> Tuple[int, int]:
-    seq = required_int(row["capture_sequence"], "capture_sequence")
-    return max(0, seq - 35), seq + 35
-
-
-def make_followup_example(
-    summary: Dict[str, Dict[str, str]],
-    row: Dict[str, str],
-    run_root: Path,
-    key: str,
-    title: str,
-) -> RenderExample:
-    source_exec = row["source_exec"]
-    clone_exec, capture_path = summary_capture_path(summary, source_exec, run_root)
-    start_seq, end_seq = choose_window_for_followup(row)
-    return RenderExample(
-        key=key,
-        title=title,
-        source_exec=source_exec,
-        clone_exec=clone_exec,
-        event_seq=required_int(row["publish_seq"], "publish_seq"),
-        start_seq=start_seq,
-        end_seq=end_seq,
-        event=row,
-        event_kind="multi-square publish follow-up",
-        capture_path=capture_path,
-    )
-
-
-def make_commit_example(
-    summary: Dict[str, Dict[str, str]],
-    row: Dict[str, str],
-    run_root: Path,
-    key: str,
-    title: str,
-) -> RenderExample:
-    source_exec = row["source_exec"]
-    clone_exec, capture_path = summary_capture_path(summary, source_exec, run_root)
-    start_seq, end_seq = choose_window_for_commit(row)
-    return RenderExample(
-        key=key,
-        title=title,
-        source_exec=source_exec,
-        clone_exec=clone_exec,
-        event_seq=required_int(row["capture_sequence"], "capture_sequence"),
-        start_seq=start_seq,
-        end_seq=end_seq,
-        event=row,
-        event_kind="movement commit",
-        capture_path=capture_path,
-    )
-
-
-def choose_default_examples(run_root: Path) -> List[RenderExample]:
-    summary = read_summary(run_root)
-    analysis_dir = run_root / "analysis"
-    followup_rows = read_csv_rows(analysis_dir / "multi_square_publish_followup_segments.tsv", delimiter="\t")
-    commit_rows = read_csv_rows(analysis_dir / "movement_commit_pathlist.tsv", delimiter="\t")
-
-    examples: List[RenderExample] = []
-    selections = [
-        ("single_square_axis_aika_1050837_seq098", "Single-square axial movement, Aika", "1050837", "capture_sequence", 98),
-        ("single_square_diagonal_slot5_1050837_seq135", "Single-square diagonal movement, slot 5", "1050837", "capture_sequence", 135),
-    ]
-    for key, title, source_exec, seq_key, seq in selections:
-        row = find_row(commit_rows, source_exec, seq_key, seq)
-        if row is not None:
-            examples.append(make_commit_example(summary, row, run_root, key, title))
-
-    multi_selections = [
-        (
-            "multi_square_non_axis_aika_1050837_seq260",
-            "Multi-square non-axis path-index target, Aika",
-            "1050837",
-            260,
-        ),
-        (
-            "multi_square_non_axis_aika_1221189_seq260",
-            "Multi-square non-axis repeat, Aika",
-            "1221189",
-            260,
-        ),
-        (
-            "multi_square_axis_aika_1755292_seq260",
-            "Multi-square axial path-index target, Aika",
-            "1755292",
-            260,
-        ),
-    ]
-    for key, title, source_exec, seq in multi_selections:
-        row = find_row(followup_rows, source_exec, "publish_seq", seq)
-        if row is not None:
-            examples.append(make_followup_example(summary, row, run_root, key, title))
-
-    return examples
-
-
-def make_single_example(args: argparse.Namespace, run_root: Path) -> RenderExample:
-    if not args.source_exec or args.sequence is None:
-        raise ValueError("A single render requires --source-exec and --sequence, or use --examples.")
-
-    summary = read_summary(run_root)
-    analysis_dir = run_root / "analysis"
-    followup_rows = read_csv_rows(analysis_dir / "multi_square_publish_followup_segments.tsv", delimiter="\t")
-    commit_rows = read_csv_rows(analysis_dir / "movement_commit_pathlist.tsv", delimiter="\t")
-
-    source_exec = args.source_exec
-    seq = args.sequence
-    row = find_row(followup_rows, source_exec, "publish_seq", seq)
-    if row is not None:
-        example = make_followup_example(
-            summary,
-            row,
-            run_root,
-            f"source{source_exec}_publish{seq}",
-            args.label or f"source {source_exec} publish {seq}",
-        )
-    else:
-        row = find_row(commit_rows, source_exec, "capture_sequence", seq)
-        if row is None:
-            raise ValueError(f"No follow-up publish or movement commit row for source {source_exec}, seq {seq}")
-        example = make_commit_example(
-            summary,
-            row,
-            run_root,
-            f"source{source_exec}_commit{seq}",
-            args.label or f"source {source_exec} commit {seq}",
-        )
-
-    if args.window_start is None and args.window_end is None:
-        return example
-    return RenderExample(
-        key=example.key,
-        title=example.title,
-        source_exec=example.source_exec,
-        clone_exec=example.clone_exec,
-        event_seq=example.event_seq,
-        start_seq=args.window_start if args.window_start is not None else example.start_seq,
-        end_seq=args.window_end if args.window_end is not None else example.end_seq,
-        event=example.event,
-        event_kind=example.event_kind,
-        capture_path=example.capture_path,
-    )
-
-
 def is_frame_position_row(row: Dict[str, object]) -> bool:
     checkpoint_name = str(row.get("checkpoint_name", ""))
     checkpoint = str(row.get("checkpoint", ""))
@@ -463,14 +278,19 @@ def is_frame_position_row(row: Dict[str, object]) -> bool:
     return checkpoint == "case5_after_runBattleThreads"
 
 
-def slot_position_from_row(row: Dict[str, object], slot: int) -> Optional[Tuple[float, float]]:
-    thread_ptr = maybe_int(row.get(f"slot{slot}_combatant_thread_ptr"))
-    if thread_ptr is not None and thread_ptr != 0:
-        x = decode_float_bits(row.get(f"slot{slot}_cw_cur_x_0x1c"))
-        z = decode_float_bits(row.get(f"slot{slot}_cw_cur_z_0x24"))
-        if x is not None and z is not None and math.isfinite(x) and math.isfinite(z):
-            return x, z
+def is_action_bookmark_row(row: Dict[str, object], kind: str) -> bool:
+    checkpoint_name = str(row.get("checkpoint_name", ""))
+    checkpoint = str(row.get("checkpoint", ""))
+    return checkpoint_name == kind or checkpoint == kind
 
+
+def is_movement_publish_row(row: Dict[str, object]) -> bool:
+    checkpoint_name = str(row.get("checkpoint_name", ""))
+    checkpoint = str(row.get("checkpoint", ""))
+    return checkpoint_name == "movement_commit_entry" or checkpoint == "movement_publish"
+
+
+def slot_position_from_row(row: Dict[str, object], slot: int) -> Optional[Tuple[float, float]]:
     x = decode_float_bits(row.get(f"pos{slot}_x_bits"))
     z = decode_float_bits(row.get(f"pos{slot}_z_bits"))
     if x is None or z is None:
@@ -525,7 +345,7 @@ def load_position_samples(capture_path: Path, start_seq: int, end_seq: int) -> L
                         frame=required_int(row.get("frame_count"), "frame_count"),
                         positions=positions,
                         grids=grids,
-                        active_actor_slot=maybe_int(row.get("active_actor_slot_80347334")),
+                        active_actor_slot=maybe_int(row.get("selected_slot_80347334")),
                         action_sequence=maybe_int(row.get("action_sequence_80347335")),
                     )
                 )
@@ -534,6 +354,244 @@ def load_position_samples(capture_path: Path, start_seq: int, end_seq: int) -> L
 
 def load_all_position_samples(capture_path: Path) -> List[PositionSample]:
     return load_position_samples(capture_path, 0, 2_147_483_647)
+
+
+def iter_capture_rows(capture_path: Path) -> Iterable[Dict[str, object]]:
+    with capture_path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            try:
+                yield json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+
+def load_action_bookmarks(capture_path: Path) -> List[ActionBookmark]:
+    bookmarks: List[ActionBookmark] = []
+    for row in iter_capture_rows(capture_path):
+        if is_action_bookmark_row(row, "action_slot_selected"):
+            kind = "selected"
+        elif is_action_bookmark_row(row, "action_scheduled"):
+            kind = "scheduled"
+        else:
+            continue
+
+        seq = maybe_int(row.get("capture_sequence"))
+        if seq is None:
+            continue
+        bookmarks.append(
+            ActionBookmark(
+                seq=seq,
+                frame=required_int(row.get("frame_count"), "frame_count"),
+                kind=kind,
+                selected_slot=maybe_int(row.get("selected_slot_80347334")),
+                action_sequence=maybe_int(row.get("action_sequence_80347335")),
+            )
+        )
+    return sorted(bookmarks, key=lambda item: item.seq)
+
+
+def matching_bookmark_seq(
+    bookmarks: Sequence[ActionBookmark],
+    kind: str,
+    action_sequence: int,
+    active_slot: int,
+    first_frame_seq: int,
+    previous_frame_seq: Optional[int],
+) -> Optional[int]:
+    candidates = [
+        bookmark
+        for bookmark in bookmarks
+        if bookmark.kind == kind
+        and bookmark.action_sequence == action_sequence
+        and bookmark.selected_slot == active_slot
+        and bookmark.seq <= first_frame_seq
+        and (previous_frame_seq is None or bookmark.seq > previous_frame_seq)
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: item.seq).seq
+
+
+def build_action_windows(samples: Sequence[PositionSample], bookmarks: Sequence[ActionBookmark]) -> List[ActionWindow]:
+    keyed_samples = [
+        sample
+        for sample in samples
+        if sample.action_sequence is not None and sample.active_actor_slot is not None
+    ]
+    if not keyed_samples:
+        return []
+
+    windows: List[ActionWindow] = []
+    scheduled_bookmarks = [
+        bookmark
+        for bookmark in bookmarks
+        if bookmark.kind == "scheduled"
+        and bookmark.action_sequence is not None
+        and bookmark.selected_slot is not None
+    ]
+
+    def append_window(
+        action_sequence: int,
+        active_slot: int,
+        start_boundary: int,
+        end_boundary: int,
+        selected_seq: Optional[int],
+        scheduled_seq: Optional[int],
+    ) -> None:
+        frame_samples = [
+            sample
+            for sample in keyed_samples
+            if start_boundary <= sample.seq <= end_boundary
+        ]
+        if not frame_samples:
+            return
+
+        first_sample = frame_samples[0]
+        last_sample = frame_samples[-1]
+        start_candidates = [start_boundary]
+        if selected_seq is not None:
+            start_candidates.append(selected_seq)
+        if scheduled_seq is not None:
+            start_candidates.append(scheduled_seq)
+        windows.append(
+            ActionWindow(
+                turn_index=len(windows),
+                action_sequence=action_sequence,
+                active_slot=active_slot,
+                start_seq=min(start_candidates),
+                end_seq=end_boundary,
+                first_frame_seq=first_sample.seq,
+                last_frame_seq=last_sample.seq,
+                selected_seq=selected_seq,
+                scheduled_seq=scheduled_seq,
+            )
+        )
+
+    if not scheduled_bookmarks:
+        first_sample = keyed_samples[0]
+        append_window(
+            required_int(first_sample.action_sequence, "action_sequence"),
+            required_int(first_sample.active_actor_slot, "active_actor_slot"),
+            first_sample.seq,
+            keyed_samples[-1].seq,
+            None,
+            None,
+        )
+        return windows
+
+    accepted_actions: List[Tuple[ActionBookmark, int, int, Optional[int], int]] = []
+    for scheduled in scheduled_bookmarks:
+        action_sequence = required_int(scheduled.action_sequence, "action_sequence")
+        active_slot = required_int(scheduled.selected_slot, "selected_slot")
+        selected_seq = matching_bookmark_seq(
+            bookmarks,
+            "selected",
+            action_sequence,
+            active_slot,
+            scheduled.seq,
+            None,
+        )
+        action_start_seq = min(scheduled.seq, selected_seq) if selected_seq is not None else scheduled.seq
+        accepted_actions.append((scheduled, action_sequence, active_slot, selected_seq, action_start_seq))
+
+    first_action_start = accepted_actions[0][4]
+    initial_frames = [sample for sample in keyed_samples if sample.seq < first_action_start]
+    if initial_frames:
+        first_initial = initial_frames[0]
+        append_window(
+            required_int(first_initial.action_sequence, "action_sequence"),
+            required_int(first_initial.active_actor_slot, "active_actor_slot"),
+            first_initial.seq,
+            first_action_start - 1,
+            None,
+            None,
+        )
+
+    for index, (scheduled, action_sequence, active_slot, selected_seq, _action_start_seq) in enumerate(accepted_actions):
+        next_action_start = accepted_actions[index + 1][4] if index + 1 < len(accepted_actions) else None
+        end_boundary = next_action_start - 1 if next_action_start is not None else keyed_samples[-1].seq
+        append_window(
+            action_sequence,
+            active_slot,
+            scheduled.seq,
+            end_boundary,
+            selected_seq,
+            scheduled.seq,
+        )
+    return windows
+
+
+def movement_path_node_value(row: Dict[str, object], index: int, axis: str) -> Optional[int]:
+    offset = 0x17 + index * 2 if axis == "x" else 0x18 + index * 2
+    return maybe_int(row.get(f"movement_path_node{index}_{axis}_0x{offset:x}"))
+
+
+def normalize_movement_publish_row(row: Dict[str, object]) -> Optional[Dict[str, str]]:
+    seq = maybe_int(row.get("capture_sequence"))
+    slot = maybe_int(row.get("slot"))
+    cur_x = maybe_int(row.get("movement_cur_x_0x0c"))
+    cur_z = maybe_int(row.get("movement_cur_z_0x0d"))
+    next_x = maybe_int(row.get("next_grid_x"))
+    next_z = maybe_int(row.get("next_grid_z"))
+    if seq is None or slot is None or cur_x is None or cur_z is None or next_x is None or next_z is None:
+        return None
+
+    path_nodes: List[str] = []
+    for index in range(8):
+        node_x = movement_path_node_value(row, index, "x")
+        node_z = movement_path_node_value(row, index, "z")
+        if node_x is None or node_z is None:
+            continue
+        path_nodes.append(f"{index}:({node_x},{node_z})")
+
+    dx = next_x - cur_x
+    dz = next_z - cur_z
+    cheb = max(abs(dx), abs(dz))
+    path_index = maybe_int(row.get("movement_path_index_0x15"))
+    selected_node = f"({next_x},{next_z})"
+    if path_index is not None and 0 <= path_index < 8:
+        selected_x = movement_path_node_value(row, path_index, "x")
+        selected_z = movement_path_node_value(row, path_index, "z")
+        if selected_x is not None and selected_z is not None and selected_x > 0 and selected_z > 0:
+            selected_node = f"({selected_x},{selected_z})"
+
+    selected_slot = maybe_int(row.get("selected_slot_80347334"))
+    action_sequence = maybe_int(row.get("action_sequence_80347335"))
+    dist_to_target = maybe_int(row.get("movement_dist_to_target_0x14"))
+    status = maybe_int(row.get("movement_status_0x16"))
+    normalized = {
+        "capture_sequence": str(seq),
+        "slot": str(slot),
+        "selected_slot": str(selected_slot) if selected_slot is not None else "",
+        "action_sequence": str(action_sequence) if action_sequence is not None else "",
+        "publish_grid": f"({cur_x},{cur_z})->({next_x},{next_z})",
+        "cur_grid_x": str(cur_x),
+        "cur_grid_z": str(cur_z),
+        "next_grid_x": str(next_x),
+        "next_grid_z": str(next_z),
+        "cheb": str(cheb),
+        "axis": "true" if dx == 0 or dz == 0 else "false",
+        "diagonal": "true" if abs(dx) == abs(dz) else "false",
+        "path_index": str(path_index) if path_index is not None else "",
+        "dist_to_target": str(dist_to_target) if dist_to_target is not None else "",
+        "status": str(status) if status is not None else "",
+        "selected_node": selected_node,
+        "path_nodes": " ".join(path_nodes),
+    }
+    return normalized
+
+
+def load_movement_publish_events(capture_path: Path) -> List[Dict[str, str]]:
+    events: List[Dict[str, str]] = []
+    for row in iter_capture_rows(capture_path):
+        if not is_movement_publish_row(row):
+            continue
+        normalized = normalize_movement_publish_row(row)
+        if normalized is not None:
+            events.append(normalized)
+    return sorted(events, key=lambda item: event_sequence(item) or -1)
 
 
 def rgb_from_hex(color: str) -> Tuple[int, int, int]:
@@ -1024,81 +1082,32 @@ def slot_short_name(slot: int) -> str:
     return value
 
 
-def turn_order_details(samples: Sequence[PositionSample], event_seq: int) -> List[str]:
-    candidates = [
+def samples_in_window(samples: Sequence[PositionSample], window: ActionWindow) -> List[PositionSample]:
+    return [
         sample
         for sample in samples
-        if sample.action_sequence is not None or sample.active_actor_slot is not None
+        if window.first_frame_seq <= sample.seq <= window.last_frame_seq
     ]
-    if not candidates:
-        return ["turn_order: missing from frame rows"]
-
-    before = [sample for sample in candidates if sample.seq <= event_seq]
-    if before:
-        sample = max(before, key=lambda item: item.seq)
-    else:
-        sample = min(candidates, key=lambda item: abs(item.seq - event_seq))
-
-    details: List[str] = []
-    if sample.action_sequence is not None:
-        details.append(f"turn_order: #{sample.action_sequence + 1} (action_sequence={sample.action_sequence})")
-    else:
-        details.append("turn_order: missing action_sequence")
-
-    if sample.active_actor_slot is not None:
-        details.append(
-            f"active_slot: {sample.active_actor_slot} {slot_short_name(sample.active_actor_slot)}"
-        )
-    else:
-        details.append("active_slot: missing")
-
-    details.append(f"turn_order_source_seq: {sample.seq}, frame {sample.frame}")
-    return details
 
 
-def active_slot_for_samples(samples: Sequence[PositionSample]) -> Optional[int]:
-    counts: Counter[int] = Counter(
-        sample.active_actor_slot for sample in samples if sample.active_actor_slot is not None
-    )
-    if not counts:
-        return None
-    return counts.most_common(1)[0][0]
-
-
-def samples_by_action_sequence(samples: Sequence[PositionSample]) -> Dict[int, List[PositionSample]]:
-    grouped: Dict[int, List[PositionSample]] = {}
-    for sample in samples:
-        if sample.action_sequence is None:
-            continue
-        grouped.setdefault(sample.action_sequence, []).append(sample)
-    return grouped
-
-
-def commit_rows_by_source(run_root: Path) -> Dict[str, List[Dict[str, str]]]:
-    path = run_root / "analysis" / "movement_commit_pathlist.tsv"
-    if not path.exists():
-        return {}
-    rows = read_csv_rows(path, delimiter="\t")
-    grouped: Dict[str, List[Dict[str, str]]] = {}
-    for row in rows:
-        grouped.setdefault(row.get("source_exec", ""), []).append(row)
-    return grouped
-
-
-def event_rows_in_window(events: Sequence[Dict[str, str]], start_seq: int, end_seq: int) -> List[Dict[str, str]]:
+def event_rows_in_window(events: Sequence[Dict[str, str]], window: ActionWindow) -> List[Dict[str, str]]:
     result = []
     for event in events:
         seq = event_sequence(event)
         if seq is None:
             continue
-        if start_seq <= seq <= end_seq:
-            result.append(event)
+        if not (window.start_seq <= seq <= window.end_seq):
+            continue
+        result.append(event)
     return sorted(result, key=lambda row: event_sequence(row) or -1)
 
 
-def build_turn_progressions(run_root: Path, source_filter: Optional[str]) -> List[Tuple[TurnProgression, List[PositionSample]]]:
+def build_turn_progressions(
+    run_root: Path,
+    source_filter: Optional[str],
+    action_sequence_filter: Optional[int],
+) -> List[Tuple[TurnProgression, List[PositionSample]]]:
     summary = read_summary(run_root)
-    source_events = commit_rows_by_source(run_root)
     result: List[Tuple[TurnProgression, List[PositionSample]]] = []
 
     for source_exec in sorted(summary, key=lambda value: int(value)):
@@ -1107,78 +1116,43 @@ def build_turn_progressions(run_root: Path, source_filter: Optional[str]) -> Lis
 
         clone_exec, capture_path = summary_capture_path(summary, source_exec, run_root)
         samples = load_all_position_samples(capture_path)
-        grouped = samples_by_action_sequence(samples)
-        events = source_events.get(source_exec, [])
+        bookmarks = load_action_bookmarks(capture_path)
+        windows = build_action_windows(samples, bookmarks)
+        events = load_movement_publish_events(capture_path)
 
-        for action_sequence in sorted(grouped):
-            turn_samples = grouped[action_sequence]
-            start_seq = min(sample.seq for sample in turn_samples)
-            end_seq = max(sample.seq for sample in turn_samples)
-            active_slot = active_slot_for_samples(turn_samples)
-            active_label = (
-                f"slot{active_slot}_{slot_short_name(active_slot).lower().replace(' ', '_')}"
-                if active_slot is not None
-                else "slot_unknown"
-            )
+        for window in windows:
+            if action_sequence_filter is not None and window.action_sequence != action_sequence_filter:
+                continue
+            window_samples = samples_in_window(samples, window)
+            if not window_samples:
+                continue
+            active_label = f"slot{window.active_slot}_{slot_short_name(window.active_slot).lower().replace(' ', '_')}"
             key = (
                 f"source{source_exec}_clone{clone_exec}_"
-                f"turn{action_sequence + 1:02d}_actionseq{action_sequence}_{active_label}"
+                f"turn{window.turn_index + 1:02d}_actionseq{window.action_sequence}_{active_label}"
             )
-            active_text = (
-                f"{active_slot} {slot_short_name(active_slot)}" if active_slot is not None else "unknown"
-            )
-            title = f"Source {source_exec} turn #{action_sequence + 1}: active slot {active_text}"
+            active_text = f"{window.active_slot} {slot_short_name(window.active_slot)}"
+            title = f"Source {source_exec} action #{window.turn_index + 1}: active slot {active_text}"
             progression = TurnProgression(
                 key=key,
                 title=title,
                 source_exec=source_exec,
                 clone_exec=clone_exec,
-                turn_index=action_sequence,
-                active_slot=active_slot,
-                start_seq=start_seq,
-                end_seq=end_seq,
-                events=event_rows_in_window(events, start_seq, end_seq),
+                turn_index=window.turn_index,
+                action_sequence=window.action_sequence,
+                active_slot=window.active_slot,
+                start_seq=window.start_seq,
+                end_seq=window.end_seq,
+                first_frame_seq=window.first_frame_seq,
+                last_frame_seq=window.last_frame_seq,
+                selected_seq=window.selected_seq,
+                scheduled_seq=window.scheduled_seq,
+                events=event_rows_in_window(events, window),
                 capture_path=capture_path,
             )
-            result.append((progression, turn_samples))
+            result.append((progression, window_samples))
 
     return result
-
-
-def event_details(event: Dict[str, str], kind: str) -> List[str]:
-    details = [f"event kind: {kind}"]
-    for key in (
-        "slot",
-        "publish_grid",
-        "capture_sequence",
-        "cheb",
-        "axis",
-        "diagonal",
-        "path_index",
-        "dist_to_target",
-        "status",
-        "selected_node",
-        "follow_setup_seq",
-        "follow_target",
-        "follow_inc",
-        "next_commit_seq",
-        "direction_change_count",
-        "bend_detected",
-    ):
-        value = event.get(key)
-        if value:
-            details.append(f"{key}: {value}")
-    first_move_seq = event.get("first_move_seq")
-    last_move_seq = event.get("last_move_seq")
-    if first_move_seq or last_move_seq:
-        details.append(f"move_seq: {first_move_seq or '?'} -> {last_move_seq or '?'}")
-    path_nodes = event.get("path_nodes")
-    if path_nodes:
-        visible_nodes = parse_path_nodes(path_nodes)
-        if visible_nodes:
-            rendered = " ".join(f"{index}:{x},{z}" for index, x, z in visible_nodes)
-            details.append(f"path_nodes_rendered: {rendered}")
-    return details
 
 
 def turn_progression_event_lines(events: Sequence[Dict[str, str]]) -> List[str]:
@@ -1200,89 +1174,6 @@ def turn_progression_event_lines(events: Sequence[Dict[str, str]]) -> List[str]:
     if len(events) > 14:
         lines.append(f"... {len(events) - 14} more commits")
     return lines
-
-
-def render_example(
-    example: RenderExample,
-    samples: Sequence[PositionSample],
-    output_path: Path,
-    terrain_squares: set[Tuple[int, int]],
-    cell_px: int,
-) -> None:
-    svg = SvgMap(cell_px=cell_px)
-    svg.start()
-    draw_grid(svg, terrain_squares)
-    draw_event_nodes(svg, example.event)
-    draw_slot_paths(svg, samples)
-    draw_capture_footer(svg, example.capture_path)
-
-    title_x = svg.margin_left
-    svg.text(title_x, 32, example.title, 20, "#111827", "700")
-    subtitle = (
-        f"source {example.source_exec} -> clone {example.clone_exec}; "
-        f"seq window {example.start_seq}-{example.end_seq}; {len(samples)} frame samples"
-    )
-    svg.text(title_x, 54, subtitle, 12, "#374151")
-
-    panel_x = svg.margin_left + svg.grid_px + 34
-    panel_y = svg.margin_top + 8
-    svg.text(panel_x, panel_y, "Event", 15, "#111827", "700")
-    panel_y += 22
-    for detail in turn_order_details(samples, example.event_seq):
-        svg.text(panel_x, panel_y, detail, 11, "#374151")
-        panel_y += 17
-    panel_y += 5
-    for detail in event_details(example.event, example.event_kind):
-        if len(detail) > 68:
-            detail = detail[:65] + "..."
-        svg.text(panel_x, panel_y, detail, 11, "#374151")
-        panel_y += 17
-    panel_y += 16
-    draw_legend(svg, panel_x, panel_y)
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(svg.end(), encoding="utf-8")
-
-
-def render_example_png(
-    example: RenderExample,
-    samples: Sequence[PositionSample],
-    output_path: Path,
-    terrain_squares: set[Tuple[int, int]],
-    cell_px: int,
-) -> None:
-    png = PngMap(cell_px=cell_px)
-    png.start()
-    draw_grid(png, terrain_squares)  # type: ignore[arg-type]
-    draw_event_nodes(png, example.event)  # type: ignore[arg-type]
-    draw_slot_paths(png, samples)  # type: ignore[arg-type]
-    draw_capture_footer(png, example.capture_path)  # type: ignore[arg-type]
-
-    title_x = png.margin_left
-    png.text(title_x, 32, example.title, 20, "#111827", "700")
-    subtitle = (
-        f"source {example.source_exec} -> clone {example.clone_exec}; "
-        f"seq window {example.start_seq}-{example.end_seq}; {len(samples)} frame samples"
-    )
-    png.text(title_x, 54, subtitle, 12, "#374151")
-
-    panel_x = png.margin_left + png.grid_px + 34
-    panel_y = png.margin_top + 8
-    png.text(panel_x, panel_y, "Event", 15, "#111827", "700")
-    panel_y += 22
-    for detail in turn_order_details(samples, example.event_seq):
-        png.text(panel_x, panel_y, detail, 11, "#374151")
-        panel_y += 17
-    panel_y += 5
-    for detail in event_details(example.event, example.event_kind):
-        if len(detail) > 68:
-            detail = detail[:65] + "..."
-        png.text(panel_x, panel_y, detail, 11, "#374151")
-        panel_y += 17
-    panel_y += 16
-    draw_legend(png, panel_x, panel_y)  # type: ignore[arg-type]
-
-    png.save(output_path)
 
 
 def render_turn_progression(
@@ -1312,28 +1203,43 @@ def render_turn_progression(
 
     panel_x = svg.margin_left + svg.grid_px + 34
     panel_y = svg.margin_top + 8
-    svg.text(panel_x, panel_y, "Turn", 15, "#111827", "700")
+    svg.text(panel_x, panel_y, "Action Window", 15, "#111827", "700")
     panel_y += 22
     svg.text(
         panel_x,
         panel_y,
-        f"turn_order: #{progression.turn_index + 1} (action_sequence={progression.turn_index})",
+        f"turn_order: #{progression.turn_index + 1}",
         11,
         "#374151",
     )
     panel_y += 17
-    if progression.active_slot is not None:
-        svg.text(
-            panel_x,
-            panel_y,
-            f"active_slot: {progression.active_slot} {slot_short_name(progression.active_slot)}",
-            11,
-            "#374151",
-        )
-    else:
-        svg.text(panel_x, panel_y, "active_slot: unknown", 11, "#374151")
+    svg.text(panel_x, panel_y, f"action_sequence: {progression.action_sequence}", 11, "#374151")
+    panel_y += 17
+    svg.text(
+        panel_x,
+        panel_y,
+        f"active_slot: {progression.active_slot} {slot_short_name(progression.active_slot)}",
+        11,
+        "#374151",
+    )
     panel_y += 17
     svg.text(panel_x, panel_y, f"seq_window: {progression.start_seq}-{progression.end_seq}", 11, "#374151")
+    panel_y += 17
+    svg.text(
+        panel_x,
+        panel_y,
+        f"frame_seq: {progression.first_frame_seq}-{progression.last_frame_seq}",
+        11,
+        "#374151",
+    )
+    panel_y += 17
+    svg.text(
+        panel_x,
+        panel_y,
+        f"bookmarks: selected={progression.selected_seq or '?'} scheduled={progression.scheduled_seq or '?'}",
+        11,
+        "#374151",
+    )
     panel_y += 17
     svg.text(panel_x, panel_y, f"frame_samples: {len(samples)}", 11, "#374151")
     panel_y += 25
@@ -1380,28 +1286,43 @@ def render_turn_progression_png(
 
     panel_x = png.margin_left + png.grid_px + 34
     panel_y = png.margin_top + 8
-    png.text(panel_x, panel_y, "Turn", 15, "#111827", "700")
+    png.text(panel_x, panel_y, "Action Window", 15, "#111827", "700")
     panel_y += 22
     png.text(
         panel_x,
         panel_y,
-        f"turn_order: #{progression.turn_index + 1} (action_sequence={progression.turn_index})",
+        f"turn_order: #{progression.turn_index + 1}",
         11,
         "#374151",
     )
     panel_y += 17
-    if progression.active_slot is not None:
-        png.text(
-            panel_x,
-            panel_y,
-            f"active_slot: {progression.active_slot} {slot_short_name(progression.active_slot)}",
-            11,
-            "#374151",
-        )
-    else:
-        png.text(panel_x, panel_y, "active_slot: unknown", 11, "#374151")
+    png.text(panel_x, panel_y, f"action_sequence: {progression.action_sequence}", 11, "#374151")
+    panel_y += 17
+    png.text(
+        panel_x,
+        panel_y,
+        f"active_slot: {progression.active_slot} {slot_short_name(progression.active_slot)}",
+        11,
+        "#374151",
+    )
     panel_y += 17
     png.text(panel_x, panel_y, f"seq_window: {progression.start_seq}-{progression.end_seq}", 11, "#374151")
+    panel_y += 17
+    png.text(
+        panel_x,
+        panel_y,
+        f"frame_seq: {progression.first_frame_seq}-{progression.last_frame_seq}",
+        11,
+        "#374151",
+    )
+    panel_y += 17
+    png.text(
+        panel_x,
+        panel_y,
+        f"bookmarks: selected={progression.selected_seq or '?'} scheduled={progression.scheduled_seq or '?'}",
+        11,
+        "#374151",
+    )
     panel_y += 17
     png.text(panel_x, panel_y, f"frame_samples: {len(samples)}", 11, "#374151")
     panel_y += 25
@@ -1431,6 +1352,10 @@ def write_turn_progression_manifest(rows: Sequence[Dict[str, object]], output_pa
         "active_slot_name",
         "start_seq",
         "end_seq",
+        "first_frame_seq",
+        "last_frame_seq",
+        "selected_seq",
+        "scheduled_seq",
         "frame_samples",
         "movement_commit_count",
         "svg_path",
@@ -1447,31 +1372,34 @@ def render_turn_progressions(
     run_root: Path,
     output_dir: Path,
     source_filter: Optional[str],
+    action_sequence_filter: Optional[int],
     terrain_squares: set[Tuple[int, int]],
     cell_px: int,
     export_png_files: bool,
 ) -> List[Dict[str, object]]:
     rendered: List[Dict[str, object]] = []
     turn_dir = output_dir / "turn_progression"
-    for progression, samples in build_turn_progressions(run_root, source_filter):
+    for progression, samples in build_turn_progressions(run_root, source_filter, action_sequence_filter):
         output_path = turn_dir / f"{progression.key}.svg"
         render_turn_progression(progression, samples, output_path, terrain_squares, cell_px)
         png_path = output_path.with_suffix(".png") if export_png_files else None
         if png_path is not None:
             render_turn_progression_png(progression, samples, png_path, terrain_squares, cell_px)
-        active_name = (
-            slot_short_name(progression.active_slot) if progression.active_slot is not None else ""
-        )
+        active_name = slot_short_name(progression.active_slot)
         rendered.append(
             {
                 "source_exec": progression.source_exec,
                 "clone_exec": progression.clone_exec,
                 "turn_order": progression.turn_index + 1,
-                "action_sequence": progression.turn_index,
-                "active_slot": progression.active_slot if progression.active_slot is not None else "",
+                "action_sequence": progression.action_sequence,
+                "active_slot": progression.active_slot,
                 "active_slot_name": active_name,
                 "start_seq": progression.start_seq,
                 "end_seq": progression.end_seq,
+                "first_frame_seq": progression.first_frame_seq,
+                "last_frame_seq": progression.last_frame_seq,
+                "selected_seq": progression.selected_seq if progression.selected_seq is not None else "",
+                "scheduled_seq": progression.scheduled_seq if progression.scheduled_seq is not None else "",
                 "frame_samples": len(samples),
                 "movement_commit_count": len(progression.events),
                 "svg_path": str(output_path),
@@ -1494,38 +1422,17 @@ def main() -> int:
         raise FileNotFoundError(f"Run root does not exist: {run_root}")
 
     terrain_squares = terrain_squares_from_args(args.terrain_square)
-    if args.turn_progressions:
-        rendered = render_turn_progressions(
-            run_root,
-            args.out_dir,
-            args.source_exec,
-            terrain_squares,
-            args.cell_px,
-            args.export_png,
-        )
-        if not rendered:
-            raise RuntimeError("No turn progressions rendered.")
-        return 0
-
-    if args.examples or not args.source_exec:
-        examples = choose_default_examples(run_root)
-    else:
-        examples = [make_single_example(args, run_root)]
-
-    if not examples:
-        raise RuntimeError("No examples selected.")
-
-    output_dir = args.out_dir
-    for example in examples:
-        samples = load_position_samples(example.capture_path, example.start_seq, example.end_seq)
-        output_path = output_dir / f"{example.key}.svg"
-        render_example(example, samples, output_path, terrain_squares, args.cell_px)
-        png_path = output_path.with_suffix(".png") if args.export_png else None
-        if png_path is not None:
-            render_example_png(example, samples, png_path, terrain_squares, args.cell_px)
-        suffix = f", png {png_path}" if png_path is not None else ""
-        print(f"{output_path} ({len(samples)} frame samples{suffix})")
-
+    rendered = render_turn_progressions(
+        run_root,
+        args.out_dir,
+        args.source_exec,
+        args.sequence,
+        terrain_squares,
+        args.cell_px,
+        args.export_png,
+    )
+    if not rendered:
+        raise RuntimeError("No action windows rendered.")
     return 0
 
 
