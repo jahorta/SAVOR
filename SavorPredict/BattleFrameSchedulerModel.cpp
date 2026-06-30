@@ -22,7 +22,7 @@ int signum(int value) {
     return 0;
 }
 
-MovementGridPosition adjacent_grid_toward(
+MovementGridPosition provisional_path_destination_toward(
     const BattleFrameCombatantState& actor,
     const BattleFrameCombatantState& target) {
     const int dx = target.grid_position.grid_x - actor.grid_position.grid_x;
@@ -36,6 +36,75 @@ MovementGridPosition adjacent_grid_toward(
         destination.grid_z = target.grid_position.grid_z - signum(dz);
     }
     return destination;
+}
+
+bool movement_grid_valid(const MovementGridPosition& grid) {
+    return grid.grid_x >= 0 && grid.grid_x < 11
+        && grid.grid_z >= 0 && grid.grid_z < 11;
+}
+
+bool movement_grid_same(const MovementGridPosition& a, const MovementGridPosition& b) {
+    return a.grid_x == b.grid_x && a.grid_z == b.grid_z;
+}
+
+MovementGridPosition next_direct_path_grid(
+    const MovementGridPosition& current,
+    const MovementGridPosition& destination) {
+    MovementGridPosition next = current;
+    const int dx = destination.grid_x - current.grid_x;
+    const int dz = destination.grid_z - current.grid_z;
+    const int abs_dx = std::abs(dx);
+    const int abs_dz = std::abs(dz);
+
+    if (dx == 0 && dz == 0) {
+        return next;
+    }
+    if (dx == 0) {
+        next.grid_z += signum(dz);
+        return next;
+    }
+    if (dz == 0) {
+        next.grid_x += signum(dx);
+        return next;
+    }
+    if (abs_dx == abs_dz) {
+        next.grid_x += signum(dx);
+        next.grid_z += signum(dz);
+        return next;
+    }
+    if (abs_dx > abs_dz) {
+        next.grid_x += signum(dx);
+        return next;
+    }
+
+    next.grid_z += signum(dz);
+    return next;
+}
+
+BattleFrameMovementPathState build_provisional_direct_path(
+    const MovementGridPosition& start,
+    const MovementGridPosition& destination) {
+    BattleFrameMovementPathState path;
+    path.available = movement_grid_valid(start) && movement_grid_valid(destination);
+    path.zero_distance_target = path.available && movement_grid_same(start, destination);
+    path.status_0x16 = path.zero_distance_target ? 1 : 4;
+    if (!path.available || path.zero_distance_target) {
+        path.terminator_seen = path.available;
+        return path;
+    }
+
+    MovementGridPosition current = start;
+    while (!movement_grid_same(current, destination)
+        && path.entry_count < kBattleFrameMovementPathEntryCapacity) {
+        current = next_direct_path_grid(current, destination);
+        path.entries[path.entry_count++] = current;
+    }
+    path.dist_to_target_0x14 = static_cast<std::uint8_t>(path.entry_count);
+    if (path.entry_count > 0) {
+        path.path_index_0x15 = static_cast<std::uint8_t>(path.entry_count - 1);
+    }
+    path.terminator_seen = path.entry_count < kBattleFrameMovementPathEntryCapacity;
+    return path;
 }
 
 BattleFrameWorkerKind active_worker_kind(MovementSelectedWorker worker, bool enemy_owned) {
@@ -372,17 +441,97 @@ bool is_movement_worker(BattleFrameWorkerKind kind) {
 
 bool same_grid(const MovementGridPosition& a, const MovementGridPosition& b);
 
-void set_worker_destination_from_target(BattleFrameState& state, BattleFrameWorker& worker) {
-    auto* combatant = find_frame_combatant(state, worker.slot);
-    const auto* target = find_frame_combatant(state, worker.target_slot);
-    if (combatant == nullptr || target == nullptr) {
-        return;
+std::string movement_grid_detail(const MovementGridPosition& grid) {
+    std::ostringstream out;
+    out << "(" << grid.grid_x << "," << grid.grid_z << ")";
+    return out.str();
+}
+
+std::string movement_path_entries_detail(const BattleFrameMovementPathState& path) {
+    std::ostringstream out;
+    for (std::size_t i = 0; i < path.entry_count; ++i) {
+        if (i != 0) {
+            out << " ";
+        }
+        out << i << ":" << movement_grid_detail(path.entries[i]);
     }
-    worker.destination_grid = adjacent_grid_toward(*combatant, *target);
+    if (path.terminator_seen) {
+        if (path.entry_count != 0) {
+            out << " ";
+        }
+        out << "terminator=0xff";
+    }
+    if (path.zero_distance_target) {
+        if (path.entry_count != 0 || path.terminator_seen) {
+            out << " ";
+        }
+        out << "zero_distance_target=1";
+    }
+    return out.str();
+}
+
+bool select_worker_destination_from_path_index(
+    BattleFrameState& state,
+    BattleFrameWorker& worker,
+    std::string* reason) {
+    auto* combatant = find_frame_combatant(state, worker.slot);
+    if (combatant == nullptr) {
+        if (reason != nullptr) {
+            *reason = "movement path selection missing combatant slot";
+        }
+        worker.event_status = BattleFrameEventStatus::MissingInput;
+        return false;
+    }
+    if (!worker.movement_path.available || worker.movement_path.entry_count == 0) {
+        if (worker.movement_path.available && worker.movement_path.zero_distance_target) {
+            worker.path_index_0x15 = worker.movement_path.path_index_0x15;
+            worker.destination_grid = combatant->grid_position;
+            worker.destination_position = combatant->pos_holder;
+            return true;
+        }
+        if (reason != nullptr) {
+            *reason = "movement path list is missing";
+        }
+        worker.event_status = BattleFrameEventStatus::MissingInput;
+        return false;
+    }
+    if (worker.movement_path.path_index_0x15 >= worker.movement_path.entry_count) {
+        if (reason != nullptr) {
+            *reason = "movement path_index_0x15 points past path terminator";
+        }
+        worker.event_status = BattleFrameEventStatus::Unsupported;
+        return false;
+    }
+
+    worker.path_index_0x15 = worker.movement_path.path_index_0x15;
+    worker.destination_grid =
+        worker.movement_path.entries[worker.movement_path.path_index_0x15];
     worker.destination_position = first_battle_grid_to_raw_stage_position(
         worker.destination_grid,
         combatant->width,
         combatant->depth);
+    return true;
+}
+
+void set_worker_destination_from_target(BattleFrameState& state, BattleFrameWorker& worker) {
+    auto* combatant = find_frame_combatant(state, worker.slot);
+    const auto* target = find_frame_combatant(state, worker.target_slot);
+    if (combatant == nullptr || target == nullptr) {
+        worker.event_status = BattleFrameEventStatus::MissingInput;
+        worker.detail += "; movement path selection missing actor or target combatant";
+        return;
+    }
+
+    const auto provisional_destination = provisional_path_destination_toward(*combatant, *target);
+    worker.movement_path = build_provisional_direct_path(
+        combatant->grid_position,
+        provisional_destination);
+    std::string reason;
+    if (!select_worker_destination_from_path_index(state, worker, &reason)) {
+        worker.detail += "; " + reason;
+        return;
+    }
+    worker.detail += "; path_list_source=provisional_direct_path_to_selected_destination";
 }
 
 void build_static_worker_program(BattleFrameWorker& worker) {
@@ -911,6 +1060,26 @@ void append_event_detail(BattleFrameStepEvent& event, const BattleFrameWorker& w
     event.detail = detail.str();
 }
 
+void append_movement_path_event_detail(BattleFrameStepEvent& event, const BattleFrameWorker& worker) {
+    if (!worker.movement_path.available) {
+        return;
+    }
+
+    event.movement_path = worker.movement_path;
+    event.selected_path_node = worker.destination_grid;
+    event.detail += "; dist_to_target_0x14="
+        + std::to_string(worker.movement_path.dist_to_target_0x14);
+    event.detail += "; old_path_index_0x15=" + std::to_string(event.old_path_index_0x15);
+    event.detail += "; new_path_index_0x15=" + std::to_string(event.new_path_index_0x15);
+    event.detail += "; status_0x16=" + std::to_string(worker.movement_path.status_0x16);
+    event.detail += "; selected_path_node=" + movement_grid_detail(worker.destination_grid);
+    event.detail += "; path_entries=" + movement_path_entries_detail(worker.movement_path);
+    event.detail += "; path_target_direct=1";
+    if (worker.movement_path.zero_distance_target) {
+        event.detail += "; zero_distance_path=1";
+    }
+}
+
 BattleFrameStepEvent execute_worker_frame(
     BattleFrameRuntime& runtime,
     BattleFrameWorker& worker,
@@ -943,6 +1112,11 @@ BattleFrameStepEvent execute_worker_frame(
 
     event.old_action_mode = combatant->combatant_action_mode;
     event.old_grid = combatant->grid_position;
+    event.movement_path = worker.movement_path;
+    event.old_path_index_0x15 = worker.path_index_0x15;
+    if (worker.movement_path.available) {
+        event.selected_path_node = worker.destination_grid;
+    }
     event.old_pos_holder = combatant->pos_holder;
     event.old_combatant_cur_pos_0x1c = combatant->combatant_cur_pos_0x1c;
     event.old_combatant_facing_angle_0x2c = combatant->combatant_facing_angle_0x2c;
@@ -982,7 +1156,10 @@ BattleFrameStepEvent execute_worker_frame(
             commit_movement_grid_8008178c(runtime.state, worker.slot, worker.destination_grid);
             combatant = find_frame_combatant(runtime.state, worker.slot);
             if (combatant != nullptr) {
-                worker.path_index_0x15 = static_cast<std::uint8_t>(worker.path_index_0x15 + 1);
+                if (worker.path_index_0x15 < 0xffu) {
+                    worker.path_index_0x15 = static_cast<std::uint8_t>(worker.path_index_0x15 + 1);
+                    worker.movement_path.path_index_0x15 = worker.path_index_0x15;
+                }
                 worker.destination_committed = true;
             }
             break;
@@ -1029,6 +1206,8 @@ BattleFrameStepEvent execute_worker_frame(
     if (combatant != nullptr) {
         event.new_action_mode = combatant->combatant_action_mode;
         event.new_grid = combatant->grid_position;
+        event.new_path_index_0x15 = worker.path_index_0x15;
+        event.movement_path = worker.movement_path;
         event.new_pos_holder = combatant->pos_holder;
         event.new_combatant_cur_pos_0x1c = combatant->combatant_cur_pos_0x1c;
         event.new_combatant_facing_angle_0x2c = combatant->combatant_facing_angle_0x2c;
@@ -1042,6 +1221,7 @@ BattleFrameStepEvent execute_worker_frame(
             event.step_kind == BattleFrameWorkerStepKind::ActionMotionPositionSync
             || event.step_kind == BattleFrameWorkerStepKind::FrameStartPositionSync;
     }
+    append_movement_path_event_detail(event, worker);
     return event;
 }
 
@@ -1082,6 +1262,38 @@ std::optional<BattleFrameRuntime> initialize_first_battle_frame_runtime(
     runtime.state = std::move(*frame_state);
     runtime.warnings = runtime.state.warnings;
     return runtime;
+}
+
+bool set_worker_movement_path_from_entries(
+    BattleFrameState& state,
+    BattleFrameWorker& worker,
+    std::uint8_t dist_to_target_0x14,
+    std::uint8_t path_index_0x15,
+    std::uint8_t status_0x16,
+    const std::vector<MovementGridPosition>& entries) {
+    BattleFrameMovementPathState path;
+    path.available = true;
+    path.dist_to_target_0x14 = dist_to_target_0x14;
+    path.path_index_0x15 = path_index_0x15;
+    path.status_0x16 = status_0x16;
+    path.entry_count = std::min(
+        entries.size(),
+        kBattleFrameMovementPathEntryCapacity);
+    for (std::size_t i = 0; i < path.entry_count; ++i) {
+        path.entries[i] = entries[i];
+    }
+    path.terminator_seen = path.entry_count < kBattleFrameMovementPathEntryCapacity;
+    worker.movement_path = path;
+
+    std::string reason;
+    const bool selected = select_worker_destination_from_path_index(state, worker, &reason);
+    if (!selected) {
+        if (!worker.detail.empty()) {
+            worker.detail += "; ";
+        }
+        worker.detail += reason;
+    }
+    return selected;
 }
 
 void schedule_first_battle_action_workers(

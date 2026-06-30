@@ -248,6 +248,24 @@ std::uint32_t float_bits(float value) {
     return bits;
 }
 
+void set_frame_combatant_grid_for_test(
+    BattleFrameState& state,
+    int slot,
+    MovementGridPosition grid) {
+    auto* combatant = find_frame_combatant(state, slot);
+    ASSERT_NE(combatant, nullptr);
+    combatant->grid_position = grid;
+    combatant->previous_grid_position = grid;
+    combatant->pos_holder = first_battle_grid_to_raw_stage_position(
+        grid,
+        combatant->width,
+        combatant->depth);
+    combatant->combatant_cur_pos_0x1c = combatant->pos_holder;
+    combatant->instruction_field_0xf8 = combatant->pos_holder;
+    combatant->pos_to_move_to_0x110 = combatant->pos_holder;
+    combatant->pending_frame_start_position_sync = false;
+}
+
 std::vector<MovementSlotState> make_first_battle_movement_slots_with_event0_positions(
     bool soldier4_alive = true) {
     auto slots = make_first_battle_movement_slots(soldier4_alive);
@@ -2650,6 +2668,264 @@ TEST(SavorPredictBattleFrameSchedulerModel, SchedulesStaticWorkerProgramsWithCal
     EXPECT_EQ(passive_same_side->callback_pc, 0x8008c7b0u);
     ASSERT_TRUE(passive_same_side->commit_callsite_pc.has_value());
     EXPECT_EQ(*passive_same_side->commit_callsite_pc, 0x8008c844u);
+}
+
+TEST(SavorPredictBattleFrameSchedulerModel, PathIndexedSelectionUsesSelectedNodeNotFirstEntry) {
+    auto runtime = initialize_first_battle_frame_runtime(
+        0,
+        make_first_battle_movement_slots_with_event0_positions());
+    ASSERT_TRUE(runtime.has_value());
+    set_frame_combatant_grid_for_test(
+        runtime->state,
+        1,
+        MovementGridPosition{.grid_x = 7, .grid_z = 7});
+
+    schedule_first_turn_actor_action(
+        *runtime,
+        BattleFrameScheduleActionInput{
+            .actor_slot = 1,
+            .target_slot = 4,
+            .enemy_owned = false,
+            .combatant_command_parameter = 0,
+            .selected_worker = MovementSelectedWorker::PcDirectAttack_80086308,
+            .passive_routes = {},
+        });
+
+    ASSERT_EQ(runtime->slot_worker_queues[1].size(), 1u);
+    auto& worker = runtime->workers[runtime->slot_worker_queues[1][0]];
+    ASSERT_TRUE(set_worker_movement_path_from_entries(
+        runtime->state,
+        worker,
+        4,
+        2,
+        4,
+        {
+            MovementGridPosition{.grid_x = 7, .grid_z = 6},
+            MovementGridPosition{.grid_x = 7, .grid_z = 5},
+            MovementGridPosition{.grid_x = 6, .grid_z = 4},
+            MovementGridPosition{.grid_x = 5, .grid_z = 3},
+        }));
+
+    EXPECT_EQ(worker.movement_path.dist_to_target_0x14, 4);
+    EXPECT_EQ(worker.movement_path.path_index_0x15, 2);
+    ASSERT_EQ(worker.movement_path.entry_count, 4u);
+    EXPECT_EQ(worker.destination_grid.grid_x, 6);
+    EXPECT_EQ(worker.destination_grid.grid_z, 4);
+    EXPECT_FLOAT_EQ(worker.destination_position.x, 15.0f);
+    EXPECT_FLOAT_EQ(worker.destination_position.z, -15.0f);
+}
+
+TEST(SavorPredictBattleFrameSchedulerModel, PathIndexedSelectionRejectsMissingOrInvalidIndex) {
+    auto runtime = initialize_first_battle_frame_runtime(
+        0,
+        make_first_battle_movement_slots_with_event0_positions());
+    ASSERT_TRUE(runtime.has_value());
+
+    schedule_first_turn_actor_action(
+        *runtime,
+        BattleFrameScheduleActionInput{
+            .actor_slot = 1,
+            .target_slot = 4,
+            .enemy_owned = false,
+            .combatant_command_parameter = 0,
+            .selected_worker = MovementSelectedWorker::PcDirectAttack_80086308,
+            .passive_routes = {},
+        });
+
+    ASSERT_EQ(runtime->slot_worker_queues[1].size(), 1u);
+    auto& worker = runtime->workers[runtime->slot_worker_queues[1][0]];
+    EXPECT_FALSE(set_worker_movement_path_from_entries(
+        runtime->state,
+        worker,
+        0,
+        0,
+        4,
+        {}));
+    EXPECT_EQ(worker.event_status, BattleFrameEventStatus::MissingInput);
+
+    EXPECT_FALSE(set_worker_movement_path_from_entries(
+        runtime->state,
+        worker,
+        4,
+        3,
+        4,
+        {
+            MovementGridPosition{.grid_x = 7, .grid_z = 6},
+            MovementGridPosition{.grid_x = 7, .grid_z = 5},
+        }));
+    EXPECT_EQ(worker.event_status, BattleFrameEventStatus::Unsupported);
+}
+
+TEST(SavorPredictBattleFrameSchedulerModel, PathIndexedZeroDistanceTargetIsNoopNotMissingInput) {
+    auto runtime = initialize_first_battle_frame_runtime(
+        0,
+        make_first_battle_movement_slots_with_event0_positions());
+    ASSERT_TRUE(runtime.has_value());
+    set_frame_combatant_grid_for_test(
+        runtime->state,
+        4,
+        MovementGridPosition{.grid_x = 5, .grid_z = 2});
+    set_frame_combatant_grid_for_test(
+        runtime->state,
+        0,
+        MovementGridPosition{.grid_x = 4, .grid_z = 2});
+
+    schedule_first_turn_actor_action(
+        *runtime,
+        BattleFrameScheduleActionInput{
+            .actor_slot = 1,
+            .target_slot = 0,
+            .enemy_owned = false,
+            .combatant_command_parameter = 0,
+            .selected_worker = MovementSelectedWorker::PcDirectAttack_80086308,
+            .passive_routes = {
+                PassiveMovementRoute{
+                    .slot = 4,
+                    .route = PassiveMovementRouteKind::SameSideParticipant,
+                    .selected_worker = MovementSelectedWorker::None,
+                },
+            },
+        });
+
+    auto passive_same_side = std::find_if(
+        runtime->workers.begin(),
+        runtime->workers.end(),
+        [](const BattleFrameWorker& worker) {
+            return worker.slot == 4
+                && worker.kind == BattleFrameWorkerKind::PassiveSameSide;
+        });
+    ASSERT_NE(passive_same_side, runtime->workers.end());
+    EXPECT_EQ(passive_same_side->event_status, BattleFrameEventStatus::Provisional);
+    EXPECT_TRUE(passive_same_side->movement_path.available);
+    EXPECT_TRUE(passive_same_side->movement_path.zero_distance_target);
+    EXPECT_EQ(passive_same_side->movement_path.entry_count, 0u);
+    EXPECT_EQ(passive_same_side->destination_grid.grid_x, 5);
+    EXPECT_EQ(passive_same_side->destination_grid.grid_z, 2);
+
+    std::uint32_t rng_state = 0x12345678u;
+    std::optional<BattleFrameStepEvent> setup_event;
+    for (int i = 0; i < 32 && !setup_event.has_value(); ++i) {
+        const auto step = run_first_turn_frame(*runtime, rng_state);
+        ASSERT_TRUE(step.ok);
+        for (const auto& event : step.events) {
+            if (event.slot == 4
+                && event.step_kind == BattleFrameWorkerStepKind::ActionMotionSetup_8001fabc) {
+                setup_event = event;
+                break;
+            }
+        }
+    }
+
+    ASSERT_TRUE(setup_event.has_value());
+    EXPECT_EQ(setup_event->status, BattleFrameEventStatus::Provisional);
+    ASSERT_TRUE(setup_event->selected_path_node.has_value());
+    EXPECT_EQ(setup_event->selected_path_node->grid_x, 5);
+    EXPECT_EQ(setup_event->selected_path_node->grid_z, 2);
+    EXPECT_NE(setup_event->detail.find("zero_distance_path=1"), std::string::npos);
+    EXPECT_NE(setup_event->detail.find("zero_distance_target=1"), std::string::npos);
+}
+
+TEST(SavorPredictBattleFrameSchedulerModel, PathIndexedMultiSquareMotionDoesNotBendThroughEarlierNodes) {
+    auto runtime = initialize_first_battle_frame_runtime(
+        0,
+        make_first_battle_movement_slots_with_event0_positions());
+    ASSERT_TRUE(runtime.has_value());
+    set_frame_combatant_grid_for_test(
+        runtime->state,
+        1,
+        MovementGridPosition{.grid_x = 7, .grid_z = 7});
+
+    schedule_first_turn_actor_action(
+        *runtime,
+        BattleFrameScheduleActionInput{
+            .actor_slot = 1,
+            .target_slot = 4,
+            .enemy_owned = false,
+            .combatant_command_parameter = 0,
+            .selected_worker = MovementSelectedWorker::PcDirectAttack_80086308,
+            .passive_routes = {},
+        });
+
+    ASSERT_EQ(runtime->slot_worker_queues[1].size(), 1u);
+    auto& worker = runtime->workers[runtime->slot_worker_queues[1][0]];
+    ASSERT_TRUE(set_worker_movement_path_from_entries(
+        runtime->state,
+        worker,
+        4,
+        2,
+        4,
+        {
+            MovementGridPosition{.grid_x = 7, .grid_z = 6},
+            MovementGridPosition{.grid_x = 7, .grid_z = 5},
+            MovementGridPosition{.grid_x = 6, .grid_z = 4},
+            MovementGridPosition{.grid_x = 5, .grid_z = 3},
+        }));
+
+    std::uint32_t rng_state = 0x12345678u;
+    std::optional<BattleFrameStepEvent> setup_event;
+    std::optional<BattleFrameStepEvent> commit_event;
+    std::optional<BattleFrameVec3> first_applied_increment;
+    int move_event_count = 0;
+    int intermediate_commit_count = 0;
+
+    for (int i = 0; i < 128 && !commit_event.has_value(); ++i) {
+        const auto step = run_first_turn_frame(*runtime, rng_state);
+        ASSERT_TRUE(step.ok);
+        for (const auto& event : step.events) {
+            if (event.slot != 1) {
+                continue;
+            }
+            if (event.step_kind == BattleFrameWorkerStepKind::ActionMotionSetup_8001fabc) {
+                setup_event = event;
+            }
+            if (event.step_kind == BattleFrameWorkerStepKind::MoveIncrementApply_80061340) {
+                ++move_event_count;
+                ASSERT_TRUE(event.selected_path_node.has_value());
+                EXPECT_EQ(event.selected_path_node->grid_x, 6);
+                EXPECT_EQ(event.selected_path_node->grid_z, 4);
+                EXPECT_FLOAT_EQ(event.pos_to_move_to_0x110.x, 15.0f);
+                EXPECT_FLOAT_EQ(event.pos_to_move_to_0x110.z, -15.0f);
+                if (!first_applied_increment.has_value()) {
+                    first_applied_increment = event.applied_move_increment;
+                } else {
+                    EXPECT_FLOAT_EQ(event.applied_move_increment.x, first_applied_increment->x);
+                    EXPECT_FLOAT_EQ(event.applied_move_increment.z, first_applied_increment->z);
+                }
+                EXPECT_EQ(event.old_grid.grid_x, 7);
+                EXPECT_EQ(event.old_grid.grid_z, 7);
+                EXPECT_EQ(event.new_grid.grid_x, 7);
+                EXPECT_EQ(event.new_grid.grid_z, 7);
+            }
+            if (event.step_kind == BattleFrameWorkerStepKind::MovementCommit) {
+                if ((event.new_grid.grid_x == 7 && event.new_grid.grid_z == 6)
+                    || (event.new_grid.grid_x == 7 && event.new_grid.grid_z == 5)) {
+                    ++intermediate_commit_count;
+                }
+                commit_event = event;
+                break;
+            }
+        }
+    }
+
+    ASSERT_TRUE(setup_event.has_value());
+    ASSERT_TRUE(setup_event->selected_path_node.has_value());
+    EXPECT_EQ(setup_event->selected_path_node->grid_x, 6);
+    EXPECT_EQ(setup_event->selected_path_node->grid_z, 4);
+    EXPECT_FLOAT_EQ(setup_event->pos_to_move_to_0x110.x, 15.0f);
+    EXPECT_FLOAT_EQ(setup_event->pos_to_move_to_0x110.z, -15.0f);
+    EXPECT_NE(setup_event->detail.find("path_target_direct=1"), std::string::npos);
+    EXPECT_NE(setup_event->detail.find("2:(6,4)"), std::string::npos);
+
+    EXPECT_GT(move_event_count, 0);
+    EXPECT_EQ(intermediate_commit_count, 0);
+    ASSERT_TRUE(commit_event.has_value());
+    EXPECT_EQ(commit_event->new_grid.grid_x, 6);
+    EXPECT_EQ(commit_event->new_grid.grid_z, 4);
+    EXPECT_EQ(commit_event->old_path_index_0x15, 2);
+    EXPECT_EQ(commit_event->new_path_index_0x15, 3);
+    EXPECT_NE(commit_event->detail.find("old_path_index_0x15=2"), std::string::npos);
+    EXPECT_NE(commit_event->detail.find("new_path_index_0x15=3"), std::string::npos);
+    EXPECT_NE(commit_event->detail.find("path_entries=0:(7,6) 1:(7,5) 2:(6,4) 3:(5,3)"), std::string::npos);
 }
 
 TEST(SavorPredictBattleFrameSchedulerModel, WorkerMotionAppliesFloatStepsBeforePosHolderPublish) {

@@ -1826,6 +1826,10 @@ TEST(SavorPredictLiveCaptureProfile, BuildsFloatMotionProfile)
     };
 
     EXPECT_TRUE(has_default_addrprog_sample("slot4_cw_cur_x_0x1c"));
+    EXPECT_TRUE(has_default_addrprog_sample("slot0_cw_cur_x_0x1c"));
+    EXPECT_TRUE(has_default_addrprog_sample("slot0_cw_cur_z_0x24"));
+    EXPECT_TRUE(has_default_addrprog_sample("slot1_cw_cur_x_0x1c"));
+    EXPECT_TRUE(has_default_addrprog_sample("slot1_cw_cur_z_0x24"));
     EXPECT_TRUE(has_default_addrprog_sample("slot5_iw_move_inc_z_0x10c"));
     EXPECT_TRUE(has_default_addrprog_sample("slot0_iw_speed_0x12c"));
     EXPECT_TRUE(has_default_addrprog_sample("slot1_iw_alt_speed_0x130"));
@@ -1866,7 +1870,15 @@ TEST(SavorPredictLiveCaptureProfile, BuildsFloatMotionProfile)
     EXPECT_NE(find_checkpoint("float_motion_secondary_x_store_after_80050A18"), nullptr);
     EXPECT_NE(find_checkpoint("float_motion_secondary_z_store_before_80050A2C"), nullptr);
     EXPECT_NE(find_checkpoint("float_motion_secondary_z_store_after_80050A30"), nullptr);
-    EXPECT_NE(find_checkpoint("movement_commit_entry_8008178C"), nullptr);
+    const auto* movement_commit = find_checkpoint("movement_commit_entry_8008178C");
+    ASSERT_NE(movement_commit, nullptr);
+    EXPECT_TRUE(has_reg_sample(*movement_commit, "movement_dist_to_target_0x14"));
+    EXPECT_TRUE(has_reg_sample(*movement_commit, "movement_path_node0_x_0x17"));
+    EXPECT_TRUE(has_reg_sample(*movement_commit, "movement_path_node0_z_0x18"));
+    EXPECT_TRUE(has_reg_sample(*movement_commit, "movement_path_node3_x_0x1d"));
+    EXPECT_TRUE(has_reg_sample(*movement_commit, "movement_path_node3_z_0x1e"));
+    EXPECT_TRUE(has_reg_sample(*movement_commit, "movement_path_node7_x_0x25"));
+    EXPECT_TRUE(has_reg_sample(*movement_commit, "movement_path_node7_z_0x26"));
     EXPECT_NE(find_checkpoint("position_sync_entry_8001AB60"), nullptr);
 }
 

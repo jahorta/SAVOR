@@ -71,6 +71,19 @@ enum class BattleFrameWorkerStepKind {
     Unsupported,
 };
 
+constexpr std::size_t kBattleFrameMovementPathEntryCapacity = 8;
+
+struct BattleFrameMovementPathState {
+    bool available = false;
+    std::uint8_t dist_to_target_0x14 = 0;
+    std::uint8_t path_index_0x15 = 0;
+    std::uint8_t status_0x16 = 0;
+    std::array<MovementGridPosition, kBattleFrameMovementPathEntryCapacity> entries{};
+    std::size_t entry_count = 0;
+    bool terminator_seen = false;
+    bool zero_distance_target = false;
+};
+
 struct BattleFrameWorkerProgramStep {
     BattleFrameWorkerStepKind kind = BattleFrameWorkerStepKind::CallbackEntry;
     std::uint32_t pc = 0;
@@ -106,6 +119,7 @@ struct BattleFrameWorker {
     std::optional<std::uint32_t> commit_callsite_pc;
     std::uint8_t worksheet_state_0x19 = 0;
     std::uint8_t path_index_0x15 = 0;
+    BattleFrameMovementPathState movement_path{};
     int queue_sequence = 0;
     int action_motion_position_source_slot = -1;
     std::vector<BattleFrameWorkerProgramStep> program_steps;
@@ -129,6 +143,10 @@ struct BattleFrameStepEvent {
     std::int16_t new_action_mode = 0;
     MovementGridPosition old_grid{};
     MovementGridPosition new_grid{};
+    BattleFrameMovementPathState movement_path{};
+    std::uint8_t old_path_index_0x15 = 0;
+    std::uint8_t new_path_index_0x15 = 0;
+    std::optional<MovementGridPosition> selected_path_node;
     BattleFrameVec3 old_pos_holder{};
     BattleFrameVec3 new_pos_holder{};
     BattleFrameVec3 old_combatant_cur_pos_0x1c{};
@@ -201,6 +219,14 @@ std::optional<BattleFrameRuntime> initialize_first_battle_frame_runtime(
 void schedule_first_battle_action_workers(
     BattleFrameRuntime& runtime,
     const BattleFrameScheduleActionInput& input);
+
+bool set_worker_movement_path_from_entries(
+    BattleFrameState& state,
+    BattleFrameWorker& worker,
+    std::uint8_t dist_to_target_0x14,
+    std::uint8_t path_index_0x15,
+    std::uint8_t status_0x16,
+    const std::vector<MovementGridPosition>& entries);
 
 void schedule_first_turn_actor_action(
     BattleFrameRuntime& runtime,

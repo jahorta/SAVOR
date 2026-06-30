@@ -1099,6 +1099,43 @@ std::vector<std::string> first_battle_float_motion_addrprog_samples()
     return samples;
 }
 
+std::vector<std::string_view> movement_path_list_samples_from_r3()
+{
+    return {
+        "movement_dist_to_target_0x14:r3:0x14:u8",
+        "movement_path_node0_x_0x17:r3:0x17:u8",
+        "movement_path_node0_z_0x18:r3:0x18:u8",
+        "movement_path_node1_x_0x19:r3:0x19:u8",
+        "movement_path_node1_z_0x1a:r3:0x1a:u8",
+        "movement_path_node2_x_0x1b:r3:0x1b:u8",
+        "movement_path_node2_z_0x1c:r3:0x1c:u8",
+        "movement_path_node3_x_0x1d:r3:0x1d:u8",
+        "movement_path_node3_z_0x1e:r3:0x1e:u8",
+        "movement_path_node4_x_0x1f:r3:0x1f:u8",
+        "movement_path_node4_z_0x20:r3:0x20:u8",
+        "movement_path_node5_x_0x21:r3:0x21:u8",
+        "movement_path_node5_z_0x22:r3:0x22:u8",
+        "movement_path_node6_x_0x23:r3:0x23:u8",
+        "movement_path_node6_z_0x24:r3:0x24:u8",
+        "movement_path_node7_x_0x25:r3:0x25:u8",
+        "movement_path_node7_z_0x26:r3:0x26:u8",
+    };
+}
+
+std::vector<std::string_view> movement_commit_samples_from_r3()
+{
+    auto samples = std::vector<std::string_view>{
+        "movement_cur_x_0x0c:r3:0x0c:u8",
+        "movement_cur_z_0x0d:r3:0x0d:u8",
+        "movement_pending_handler_0x10:r3:0x10:u32",
+        "movement_path_index_0x15:r3:0x15:u8",
+        "movement_status_0x16:r3:0x16:u8",
+    };
+    const auto path_samples = movement_path_list_samples_from_r3();
+    samples.insert(samples.end(), path_samples.begin(), path_samples.end());
+    return samples;
+}
+
 std::vector<std::string_view> float_motion_instruction_samples_from_r31()
 {
     return {
@@ -3586,6 +3623,7 @@ std::string build_first_battle_float_motion_profile_ini()
         {},
         2400);
 
+    const auto movement_commit_samples = movement_commit_samples_from_r3();
     write_checkpoint(
         out,
         "movement_commit_entry_8008178C",
@@ -3601,13 +3639,7 @@ std::string build_first_battle_float_motion_profile_ini()
             "next_grid_z:5",
             "slot:6",
         },
-        {
-            "movement_cur_x_0x0c:r3:0x0c:u8",
-            "movement_cur_z_0x0d:r3:0x0d:u8",
-            "movement_pending_handler_0x10:r3:0x10:u32",
-            "movement_path_index_0x15:r3:0x15:u8",
-            "movement_status_0x16:r3:0x16:u8",
-        },
+        movement_commit_samples,
         {},
         {},
         240);
