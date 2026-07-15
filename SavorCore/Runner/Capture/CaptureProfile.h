@@ -108,6 +108,7 @@ struct DynamicMemoryWatchpointSpec {
 struct CaptureProfile {
     std::string name;
     std::uint32_t schema_version = 1;
+    std::uint32_t capture_only_hit_limit = 4096;
     std::vector<MemorySampleSpec> default_memory_samples;
     std::vector<GprSampleSpec> default_gpr_samples;
     std::vector<RegisterMemorySampleSpec> default_register_memory_samples;

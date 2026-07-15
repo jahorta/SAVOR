@@ -470,6 +470,8 @@ int run_battle_jobs(const BattleJobBatchRunOptions& options, std::ostream& out, 
         savor::runner::parallel::savordb::DBWorkflowWorkerCoordinatorConfig{
             .desired_workers = static_cast<std::uint32_t>(summary.worker_count),
             .controller_sleep_ms = static_cast<std::uint32_t>(options.poll_ms),
+            .worker_silence_in_flight_timeout_ms =
+                static_cast<std::uint32_t>(summary.timeout_ms),
             .max_concurrent_worker_starts = 1u,
             .worker_exe_path = options.worker_exe_path.string(),
             .iso_path = options.iso_path.string(),

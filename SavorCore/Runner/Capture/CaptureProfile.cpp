@@ -714,11 +714,16 @@ CaptureProfileParseResult ParseCaptureProfileText(const std::string& text)
     CaptureProfile profile{};
     profile.name = ini.get("profile", "name", "");
     profile.schema_version = ini.get_u32("profile", "schema_version", 1);
+    profile.capture_only_hit_limit =
+        ini.get_u32("profile", "capture_only_hit_limit", 4096);
     if (profile.name.empty()) {
         result.errors.push_back("profile.name is required");
     }
     if (profile.schema_version != 1) {
         result.errors.push_back("unsupported profile.schema_version=" + std::to_string(profile.schema_version));
+    }
+    if (profile.capture_only_hit_limit == 0) {
+        result.errors.push_back("profile.capture_only_hit_limit must be a positive integer");
     }
 
     append_memory_samples(

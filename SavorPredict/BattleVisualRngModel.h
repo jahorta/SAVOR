@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ActionViewSelectorModel.h"
+#include "BattlePredictionProfileNames.h"
 
 #include <cstdint>
 #include <optional>
@@ -27,7 +28,7 @@ struct ActionViewDispatchEvidence {
 };
 
 struct BattleVisualRngActionInput {
-    std::string profile_name = "first-battle";
+    std::string profile_name = std::string(kFirstBattleSoldiersProfileName);
     int actor_slot = -1;
     int target_slot = -1;
     bool attack_landed = false;
@@ -35,6 +36,7 @@ struct BattleVisualRngActionInput {
     bool counter_follow_up = false;
     bool include_action_view_camera = true;
     bool include_effect_bursts = true;
+    std::optional<int> instruction_mode_0x6;
     std::optional<ActionViewSelectorResult> action_view_selector;
     std::optional<ActionViewDispatchEvidence> action_view_dispatch_evidence;
 };
@@ -59,7 +61,8 @@ struct BattleVisualRngModelResult {
 std::optional<int> first_battle_basic_attack_effect_source_key(
     int actor_slot,
     bool attack_was_critical,
-    bool counter_follow_up = false);
+    bool counter_follow_up = false,
+    std::optional<int> instruction_mode_0x6 = std::nullopt);
 
 BattleVisualRngModelResult model_first_battle_basic_attack_visual_rng(
     const BattleVisualRngActionInput& input);

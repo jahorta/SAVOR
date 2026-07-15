@@ -18,10 +18,20 @@
     <ClCompile Include="..\SavorPredict\AttackResolutionCheckpointModel.cpp" />
     <ClCompile Include="..\SavorPredict\AttackResolutionModel.cpp" />
     <ClCompile Include="..\SavorPredict\BattlePredictionDbInput.cpp" />
+    <ClCompile Include="..\SavorPredict\BattlePredictionScenario.cpp" />
+    <ClCompile Include="..\SavorPredict\BattleMovementInvocationModel.cpp" />
     <ClCompile Include="..\SavorPredict\BattleFrameSchedulerModel.cpp" />
+    <ClCompile Include="..\SavorPredict\BattleFrameThreadListModel.cpp" />
+    <ClCompile Include="..\SavorPredict\BattleSourceModel.cpp" />
     <ClCompile Include="..\SavorPredict\BattleFrameStateModel.cpp" />
     <ClCompile Include="..\SavorPredict\BattlePredictor.cpp" />
+    <ClCompile Include="..\SavorPredict\BattleInitialFacingModel.cpp" />
+    <ClCompile Include="..\SavorPredict\BattleInitialTurnTypeModel.cpp" />
     <ClCompile Include="..\SavorPredict\BattlePredictorCli.cpp" />
+    <ClCompile Include="..\SavorPredict\CombatantInstructionModeModel.cpp" />
+    <ClCompile Include="..\SavorPredict\CombatantVisualDispatcherModel.cpp" />
+    <ClCompile Include="..\SavorPredict\ActionMotionTargetModel.cpp" />
+    <ClCompile Include="..\SavorPredict\BattleMovementPathModel.cpp" />
     <ClCompile Include="..\SavorPredict\BattleJobBatchRunManifest.cpp" />
     <ClCompile Include="..\SavorPredict\BattleJobBatchRunOptions.cpp" />
     <ClCompile Include="..\SavorPredict\BattleJobClone.cpp" />
@@ -52,6 +62,8 @@
     <ClCompile Include="..\SavorPredict\SstActionCommandCheckpointModel.cpp" />
     <ClCompile Include="..\SavorPredict\TurnOrderCheckpointModel.cpp" />
     <ClCompile Include="..\SavorPredict\TurnOrderModel.cpp" />
+    <ClCompile Include="..\SavorPredict\ViewPlacementCacheModel.cpp" />
+    <ClCompile Include="..\SavorPredict\ViewPlacementGeometryModel.cpp" />
     <ClCompile Include="..\third-party\googletest-1.17.0\googlemock\src\gmock-all.cc" />
     <ClCompile Include="..\third-party\googletest-1.17.0\googletest\src\gtest-all.cc" />
     <ClCompile Include="run_tests.cpp" />
@@ -61,6 +73,12 @@
     <ClCompile Include="test_GC_input_frame_builder.cpp" />
     <ClCompile Include="test_import_from_qt.cpp" />
     <ClCompile Include="test_live_checkpoint_capture.cpp" />
+    <ClCompile Include="test_battle_coordinator_initialization.cpp" />
+    <ClCompile Include="test_battle_frame_thread_list.cpp" />
+    <ClCompile Include="test_battle_movement_path.cpp" />
+    <ClCompile Include="test_battle_movement_invocation.cpp" />
+    <ClCompile Include="test_battle_source_model.cpp" />
+    <ClCompile Include="test_combatant_visual_dispatcher.cpp" />
     <ClCompile Include="test_pad_poll_isolated_user.cpp" />
     <ClCompile Include="test_savordb_utils_minimal_copy.cpp" />
     <ClCompile Include="test_simconfig.cpp" />
@@ -71,6 +89,8 @@
     <ClCompile Include="test_savor_predict_battle_job_runner.cpp" />
     <ClCompile Include="test_savordb_debug_tool.cpp" />
     <ClCompile Include="test_savor_predict.cpp" />
+    <ClCompile Include="test_view_placement_cache.cpp" />
+    <ClCompile Include="test_view_placement_geometry.cpp" />
     <ClCompile Include="test_tsqueue.cpp" />
     <ClCompile Include="test_TASPad.cpp" />
     <ClCompile Include="test_worker_runtime_materialization.cpp" />
@@ -102,6 +122,12 @@
     </ClInclude>
     <ClInclude Include="..\SavorDbDebugTool\BackfillAnalysisBattle.h" />
     <ClInclude Include="..\SavorDbDebugTool\ReprojectUiRead.h" />
+    <ClInclude Include="..\SavorPredict\ViewPlacementCacheModel.h" />
+    <ClInclude Include="..\SavorPredict\ViewPlacementGeometryModel.h" />
+    <ClInclude Include="..\SavorPredict\ActionMotionTargetModel.h" />
+    <ClInclude Include="..\SavorPredict\BattleMovementInvocationModel.h" />
+    <ClInclude Include="..\SavorPredict\BattleMovementPathModel.h" />
+    <ClInclude Include="..\SavorPredict\CombatantVisualDispatcherModel.h" />
   </ItemGroup>
   <ItemGroup>
     <Filter Include="common">

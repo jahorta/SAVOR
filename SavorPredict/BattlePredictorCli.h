@@ -17,16 +17,19 @@ struct BattlePredictorCliOptions {
     std::optional<long long> exec_job_id;
     std::optional<std::uint32_t> start_seed;
     std::filesystem::path start_seed_list;
-    std::optional<int> enemy_event_id;
+    std::optional<std::string> scenario_name;
     std::optional<int> fake_attacks;
     std::filesystem::path action_view_std_json_dir;
     std::filesystem::path std_disc_dump_root;
     std::filesystem::path spice_file_parsing_exe;
     std::string turn_plan_hex;
-    std::string profile_name = "first-battle";
-    BattlePredictionMovementBackend movement_backend = BattlePredictionMovementBackend::HandlerLevelFirstBattle;
+    std::string profile_name = std::string(kFirstBattleSoldiersProfileName);
+    BattlePredictionMovementBackend movement_backend = BattlePredictionMovementBackend::FrameStateMachine;
     bool json = false;
     bool allow_seed_candidate_fallback = false;
+    bool allow_profile_overrides = false;
+    bool profile_explicit = false;
+    bool movement_backend_explicit = false;
 };
 
 struct BattlePredictorCliParseResult {

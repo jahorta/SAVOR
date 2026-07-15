@@ -1,5 +1,6 @@
 #pragma once
 
+#include "BattlePredictionProfileNames.h"
 #include "BattleFrameStateModel.h"
 
 #include <cstdint>
@@ -50,15 +51,38 @@ struct Fun80011694Result {
     std::string detail;
 };
 
+struct Fun8005174cScanIteration {
+    int yaw_iteration = 0;
+    float yaw_degrees = 0.0f;
+    BattleFrameVec3 path_base{};
+    Fun80011694Result actor_scan{};
+    Fun80011694Result target_scan{};
+};
+
+struct Fun8005174cResult {
+    ActionViewPathingTailStatus status = ActionViewPathingTailStatus::Provisional;
+    std::optional<std::uint16_t> setup_rand;
+    BattleFrameVec3 actor_endpoint{};
+    BattleFrameVec3 target_endpoint{};
+    float endpoint_distance = 0.0f;
+    float camera_distance = 0.0f;
+    float initial_yaw_degrees = 0.0f;
+    float selected_yaw_degrees = 0.0f;
+    int actor_fallback_draws = 0;
+    int target_fallback_draws = 0;
+    std::vector<Fun8005174cScanIteration> scans;
+    std::string detail;
+};
+
 struct ActionViewPathingTailInput {
-    std::string profile_name = "first-battle";
+    std::string profile_name = std::string(kFirstBattleSoldiersProfileName);
     int actor_slot = -1;
     int target_slot = -1;
     int combatant_action_mode = 0;
     int combatant_command_parameter = 0;
-    bool attack_landed = false;
+    std::optional<bool> attack_landed;
     bool counter_follow_up = false;
-    std::optional<int> enemy_event_id;
+    std::optional<std::uint32_t> rng_seed_before;
     std::vector<MovementSlotState> slots;
     const BattleFrameState* frame_state = nullptr;
 };
@@ -73,6 +97,8 @@ struct ActionViewPathingTailStep {
     int frame_index = 0;
     std::optional<int> accepted_candidates;
     std::optional<float> aggregate_score;
+    std::optional<int> actor_side_fallback_draws;
+    std::optional<int> target_side_fallback_draws;
     std::string detail;
 };
 
@@ -91,6 +117,11 @@ Fun80011694Result run_fun_80011694(
     const BattleFrameVec3& input_reference,
     int excluded_slot,
     const BattleFrameVec3& path_base);
+Fun8005174cResult run_fun_8005174c_pathing_scans(
+    const BattleFrameState& frame_state,
+    int actor_slot,
+    int target_slot,
+    std::uint32_t rng_seed_before);
 
 ActionViewPathingTailResult model_first_battle_action_view_pathing_tail(
     const ActionViewPathingTailInput& input);

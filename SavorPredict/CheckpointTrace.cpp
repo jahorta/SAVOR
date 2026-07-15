@@ -671,7 +671,6 @@ std::vector<PredictedAttackParamChain> build_predicted_attack_param_chains(
     input_options.db_root = options.db_root;
     input_options.selector.turn_job_id = options.turn_job_id;
     input_options.selector.exec_job_id = options.exec_job_id;
-    input_options.enemy_event_id = 0;
     input_options.action_view_std_json_dir = options.action_view_std_json_dir;
     input_options.allow_seed_candidate_fallback = true;
     if (const auto live_seed = first_live_rng_seed_before(events); live_seed.has_value()) {

@@ -134,6 +134,7 @@ namespace {
                 case addr::Region::MEM1:
                 case addr::Region::MEM2:
                     if (!host.readU32(va, tmp)) return fail("host LOAD_PTR32 read failed", result);
+                    if (tmp == 0) return fail("LOAD_PTR32 resolved null", result);
                     va = tmp;
                     break;
                 case addr::Region::DERIVED: {
@@ -142,6 +143,7 @@ namespace {
                     // requires IDerivedBuffer::read_raw(offset,width,...)
                     if (!derived->read_raw(va, /*width*/4, bits)) return fail("derived LOAD_PTR32 read failed", result);
                     va = static_cast<uint32_t>(bits);
+                    if (va == 0) return fail("LOAD_PTR32 resolved null", result);
                     break;
                 }
                 default: return fail("unsupported LOAD_PTR32 region", result);

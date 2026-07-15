@@ -98,7 +98,9 @@ bool worksheet_proves_fallback(const MovementWorksheetSnapshot& worksheet, Movem
         return false;
     }
     *reachability = reachability_from_return(*worksheet.reachability_result);
-    return *worksheet.path_shape_forces_fallback || !reachability_allows_direct(*reachability);
+    return *worksheet.path_shape_forces_fallback
+        || !reachability_allows_direct(*reachability)
+        || *worksheet.dist_to_target > 4;
 }
 
 bool worksheet_proves_adjacent(const MovementWorksheetSnapshot& worksheet) {
@@ -246,48 +248,6 @@ void simulate_enemy_attack(const MovementModelInputs& inputs, MovementSimulation
         : MovementSelectedWorker::EnemyFallbackAttack_80087844;
 }
 
-PassiveMovementRouteKind classify_passive_route(
-    const MovementModelInputs& inputs,
-    const MovementSlotState& slot,
-    int final_target_slot) {
-    if (!slot.present || !slot.alive || slot.slot == inputs.actor_slot) {
-        return PassiveMovementRouteKind::Unaffected;
-    }
-    if (slot.slot == final_target_slot) {
-        return PassiveMovementRouteKind::TargetParticipant;
-    }
-    if (slot.is_player == inputs.enemy_owned) {
-        return PassiveMovementRouteKind::SameSideParticipant;
-    }
-    return PassiveMovementRouteKind::Unaffected;
-}
-
-MovementSelectedWorker passive_worker_for_route(PassiveMovementRouteKind route) {
-    switch (route) {
-    case PassiveMovementRouteKind::TargetParticipant:
-    case PassiveMovementRouteKind::SameSideParticipant:
-    case PassiveMovementRouteKind::SpecialParticipant:
-    case PassiveMovementRouteKind::Unaffected:
-        return MovementSelectedWorker::None;
-    }
-    return MovementSelectedWorker::None;
-}
-
-void append_passive_routes(const MovementModelInputs& inputs, MovementSimulation* result) {
-    for (const auto& slot : inputs.slots) {
-        if (!slot.present || !slot.alive || slot.slot == inputs.actor_slot) {
-            continue;
-        }
-        const auto route = classify_passive_route(inputs, slot, result->final_target_slot);
-        result->passive_routes.push_back(PassiveMovementRoute{
-            .slot = slot.slot,
-            .route = route,
-            .selected_worker = passive_worker_for_route(route),
-            .status = MovementSimulationStatus::Provisional,
-        });
-    }
-}
-
 } // namespace
 
 MovementSimulation simulate_first_battle_movement_setup(const MovementModelInputs& inputs) {
@@ -326,7 +286,6 @@ MovementSimulation simulate_first_battle_movement_setup(const MovementModelInput
         simulate_pc_attack(inputs, &result);
     }
 
-    append_passive_routes(inputs, &result);
     return result;
 }
 
@@ -385,6 +344,30 @@ MovementWorksheetSnapshot project_enemy_event0_movement_worksheet_snapshot(const
     return snapshot;
 }
 
+std::optional<bool> model_pc_path_shape_80082340(
+    const MovementGridPosition& current_grid,
+    const std::array<MovementGridPosition, 11>& raw_path_entries) {
+    if (current_grid.grid_x < 0 || current_grid.grid_z < 0) {
+        return std::nullopt;
+    }
+    if (raw_path_entries[0].grid_x == -1
+        || raw_path_entries[1].grid_x == -1) {
+        return false;
+    }
+
+    const bool first_node_differs =
+        raw_path_entries[0].grid_x != current_grid.grid_x
+        || raw_path_entries[0].grid_z != current_grid.grid_z;
+    if (!first_node_differs) {
+        return false;
+    }
+
+    // FUN_80082340 computes the node-0 delta once, then reuses it while
+    // scanning subsequent x bytes for a terminator. Two counted iterations
+    // therefore require node 2 to be nonterminal.
+    return raw_path_entries[2].grid_x != -1;
+}
+
 const char* movement_simulation_status_name(MovementSimulationStatus status) {
     switch (status) {
     case MovementSimulationStatus::Exact:
@@ -435,20 +418,6 @@ const char* movement_reachability_status_name(MovementReachabilityStatus status)
         return "Ambiguous";
     }
     return "Unknown";
-}
-
-const char* passive_movement_route_kind_name(PassiveMovementRouteKind route) {
-    switch (route) {
-    case PassiveMovementRouteKind::Unaffected:
-        return "Unaffected";
-    case PassiveMovementRouteKind::TargetParticipant:
-        return "TargetParticipant";
-    case PassiveMovementRouteKind::SameSideParticipant:
-        return "SameSideParticipant";
-    case PassiveMovementRouteKind::SpecialParticipant:
-        return "SpecialParticipant";
-    }
-    return "Unaffected";
 }
 
 } // namespace savor::predict

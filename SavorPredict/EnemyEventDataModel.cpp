@@ -1,59 +1,50 @@
 #include "EnemyEventDataModel.h"
 
+#include "BattleSourceModel.h"
+
 #include <algorithm>
 
 namespace savor::predict {
 namespace {
 
-EnemyEventStartPositionSet first_battle_positions() {
-    return EnemyEventStartPositionSet{
-        .enemy_event_id = 0,
-        .positions = {
-            BattleStartPosition{.slot = 0, .present = true, .is_player = true, .combatant_id = 0, .combatant_name = "Vyse", .grid_x = 4, .grid_z = 6},
-            BattleStartPosition{.slot = 1, .present = true, .is_player = true, .combatant_id = 1, .combatant_name = "Aika", .grid_x = 6, .grid_z = 6},
-            BattleStartPosition{.slot = 2, .present = false, .is_player = true, .combatant_id = -1, .combatant_name = "None", .grid_x = -1, .grid_z = -1},
-            BattleStartPosition{.slot = 3, .present = false, .is_player = true, .combatant_id = -1, .combatant_name = "None", .grid_x = -1, .grid_z = -1},
-            BattleStartPosition{.slot = 4, .present = true, .is_player = false, .combatant_id = 0, .combatant_name = "Soldier", .grid_x = 4, .grid_z = 2},
-            BattleStartPosition{.slot = 5, .present = true, .is_player = false, .combatant_id = 0, .combatant_name = "Soldier", .grid_x = 6, .grid_z = 2},
-            BattleStartPosition{.slot = 6, .present = false, .is_player = false, .combatant_id = 255, .combatant_name = "None", .grid_x = -1, .grid_z = -1},
-            BattleStartPosition{.slot = 7, .present = false, .is_player = false, .combatant_id = 255, .combatant_name = "None", .grid_x = -1, .grid_z = -1},
-            BattleStartPosition{.slot = 8, .present = false, .is_player = false, .combatant_id = 255, .combatant_name = "None", .grid_x = -1, .grid_z = -1},
-            BattleStartPosition{.slot = 9, .present = false, .is_player = false, .combatant_id = 255, .combatant_name = "None", .grid_x = -1, .grid_z = -1},
-            BattleStartPosition{.slot = 10, .present = false, .is_player = false, .combatant_id = 255, .combatant_name = "None", .grid_x = -1, .grid_z = -1},
-        },
-    };
-}
+std::optional<EnemyEventStartPositionSet> canonical_first_battle_positions() {
+    const auto bundle = load_battle_source_bundle(
+        "first-battle-soldiers-us-final");
+    if (!bundle.ok || bundle.snapshot.encounter_id < 0) {
+        return std::nullopt;
+    }
 
-EnemyEventStartPositionSet second_battle_positions() {
-    return EnemyEventStartPositionSet{
-        .enemy_event_id = 1,
-        .positions = {
-            BattleStartPosition{.slot = 0, .present = true, .is_player = true, .combatant_id = 0, .combatant_name = "Vyse", .grid_x = 4, .grid_z = 8},
-            BattleStartPosition{.slot = 1, .present = true, .is_player = true, .combatant_id = 1, .combatant_name = "Aika", .grid_x = 6, .grid_z = 8},
-            BattleStartPosition{.slot = 2, .present = false, .is_player = true, .combatant_id = -1, .combatant_name = "None", .grid_x = -1, .grid_z = -1},
-            BattleStartPosition{.slot = 3, .present = false, .is_player = true, .combatant_id = -1, .combatant_name = "None", .grid_x = -1, .grid_z = -1},
-            BattleStartPosition{.slot = 4, .present = true, .is_player = false, .combatant_id = 1, .combatant_name = "Guard", .grid_x = 4, .grid_z = 2},
-            BattleStartPosition{.slot = 5, .present = true, .is_player = false, .combatant_id = 1, .combatant_name = "Guard", .grid_x = 6, .grid_z = 2},
-            BattleStartPosition{.slot = 6, .present = true, .is_player = false, .combatant_id = 1, .combatant_name = "Guard", .grid_x = 2, .grid_z = 3},
-            BattleStartPosition{.slot = 7, .present = true, .is_player = false, .combatant_id = 1, .combatant_name = "Guard", .grid_x = 8, .grid_z = 3},
-            BattleStartPosition{.slot = 8, .present = false, .is_player = false, .combatant_id = 255, .combatant_name = "None", .grid_x = -1, .grid_z = -1},
-            BattleStartPosition{.slot = 9, .present = false, .is_player = false, .combatant_id = 255, .combatant_name = "None", .grid_x = -1, .grid_z = -1},
-            BattleStartPosition{.slot = 10, .present = false, .is_player = false, .combatant_id = 255, .combatant_name = "None", .grid_x = -1, .grid_z = -1},
-        },
-    };
+    EnemyEventStartPositionSet result;
+    result.enemy_event_id = bundle.snapshot.encounter_id;
+    result.source = "hash-validated BattleSourceSnapshot";
+    result.positions.reserve(bundle.snapshot.placements.size());
+    for (const auto& placement : bundle.snapshot.placements) {
+        if (placement.status != BattleSourceFieldStatus::Exact) {
+            return std::nullopt;
+        }
+        result.positions.push_back(BattleStartPosition{
+            .slot = placement.slot,
+            .present = true,
+            .is_player = placement.is_player,
+            .combatant_id = placement.combatant_id,
+            .combatant_name = placement.combatant_name,
+            .grid_x = placement.grid_x,
+            .grid_z = placement.grid_z,
+        });
+    }
+    return result;
 }
 
 } // namespace
 
-std::optional<EnemyEventStartPositionSet> enemy_event_start_positions(int enemy_event_id) {
-    switch (enemy_event_id) {
-    case 0:
-        return first_battle_positions();
-    case 1:
-        return second_battle_positions();
-    default:
+std::optional<EnemyEventStartPositionSet> enemy_event_start_positions(
+    int enemy_event_id) {
+    const auto first_battle = canonical_first_battle_positions();
+    if (!first_battle.has_value()
+        || first_battle->enemy_event_id != enemy_event_id) {
         return std::nullopt;
     }
+    return first_battle;
 }
 
 std::optional<BattleStartPosition> enemy_event_start_position_for_slot(

@@ -1,6 +1,9 @@
 #pragma once
 
+#include "CombatantVisualDispatcherModel.h"
 #include "MovementModel.h"
+
+#include <Core/Memory/Soa/SoaConstants.h>
 
 #include <array>
 #include <cstdint>
@@ -21,6 +24,8 @@ struct BattleFrameCombatantState {
     bool present = false;
     bool alive = false;
     bool is_player = false;
+    std::uint32_t status_flags = 0;
+    std::uint16_t movement_flags = 0;
     int width = 1;
     int depth = 1;
     MovementGridPosition grid_position{};
@@ -46,28 +51,30 @@ struct BattleFrameCombatantState {
     bool turn_state_known = false;
     std::uint32_t selected_action_row_flags = 0;
     int selected_action_row_index = -1;
+    bool selected_action_row_known = false;
     bool pending_frame_start_position_sync = false;
     std::uint32_t instruction_flags_0xec = 0;
     std::uint32_t instruction_flags_0xf0 = 0;
+    int instruction_target_slot_0x4 = -1;
+    std::int16_t visual_instruction_mode_0x6 = 0;
+    std::int16_t visual_instruction_subtype_0x8 = -1;
+    CombatantVisualInstructionKnowledge visual_instruction_knowledge =
+        CombatantVisualInstructionKnowledge::Unknown;
+    std::string visual_instruction_provenance;
     int instruction_compare_0x15c = 0;
+    bool instruction_compare_known = false;
     std::int16_t combatant_action_mode = 0;
-};
-
-struct BattleFrameThreadState {
-    int node_id = -1;
-    int slot = -1;
-    bool active = false;
-    std::string callback_name;
+    int queued_controller_state = 0;
 };
 
 struct BattleFrameState {
     bool initialized = false;
     int enemy_event_id = -1;
+    soa::battle::TurnType initial_turn_type = soa::battle::TurnType::Normal;
     int frame_index = 0;
     std::array<std::uint8_t, 121> active_grid{};
     std::array<std::uint8_t, 121> base_grid{};
     std::vector<BattleFrameCombatantState> combatants;
-    std::vector<BattleFrameThreadState> packed_thread_order;
     std::vector<std::string> warnings;
 };
 
@@ -79,7 +86,9 @@ BattleFrameVec3 first_battle_grid_to_raw_stage_position(
 
 std::optional<BattleFrameState> initialize_first_battle_frame_state(
     int enemy_event_id,
-    const std::vector<MovementSlotState>& slots);
+    const std::vector<MovementSlotState>& slots,
+    const std::optional<std::array<std::uint8_t, 81>>& terrain_source_9x9 = std::nullopt,
+    soa::battle::TurnType initial_turn_type = soa::battle::TurnType::Normal);
 
 BattleFrameCombatantState* find_frame_combatant(BattleFrameState& state, int slot);
 const BattleFrameCombatantState* find_frame_combatant(const BattleFrameState& state, int slot);

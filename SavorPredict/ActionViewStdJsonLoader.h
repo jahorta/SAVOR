@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ActionViewSelectorModel.h"
+#include "CombatantVisualDispatcherModel.h"
 
 #include <filesystem>
 #include <string>
@@ -25,6 +26,23 @@ struct SpiceStdActionRowPrefixLoadResult {
     std::vector<std::string> errors;
 };
 
+struct SpiceStdVisualJsonLoadResult {
+    CombatantVisualResource resource;
+    bool ok = false;
+    int records_seen = 0;
+    int records_imported = 0;
+    int visual_records_decoded = 0;
+    std::vector<std::string> errors;
+};
+
+struct SpiceStdActionRowsLoadResult {
+    std::vector<CombatantStdActionRow> rows;
+    bool ok = false;
+    int rows_seen = 0;
+    int rows_imported = 0;
+    std::vector<std::string> errors;
+};
+
 SpiceStd0JsonLoadResult load_spice_std0_table_from_json_text(std::string_view json_text);
 
 SpiceStd0JsonLoadResult load_spice_std0_table_from_json_file(
@@ -34,6 +52,18 @@ SpiceStdActionRowPrefixLoadResult load_spice_std_action_row_prefix_from_json_tex
     std::string_view json_text);
 
 SpiceStdActionRowPrefixLoadResult load_spice_std_action_row_prefix_from_json_file(
+    const std::filesystem::path& path);
+
+SpiceStdVisualJsonLoadResult load_spice_std_visual_resource_from_json_text(
+    std::string_view json_text);
+
+SpiceStdVisualJsonLoadResult load_spice_std_visual_resource_from_json_file(
+    const std::filesystem::path& path);
+
+SpiceStdActionRowsLoadResult load_spice_std_action_rows_from_json_text(
+    std::string_view json_text);
+
+SpiceStdActionRowsLoadResult load_spice_std_action_rows_from_json_file(
     const std::filesystem::path& path);
 
 const char* spice_std0_json_loader_rule_detail();

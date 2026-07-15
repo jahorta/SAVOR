@@ -1,6 +1,7 @@
 #pragma once
 
 #include <optional>
+#include <string>
 #include <vector>
 
 namespace savor::predict {
@@ -10,7 +11,7 @@ struct BattleStartPosition {
     bool present = false;
     bool is_player = false;
     int combatant_id = -1;
-    const char* combatant_name = "None";
+    std::string combatant_name = "None";
     // ALX enemyevent.csv stores grid-space coordinates only. Movement worksheets
     // also carry raw stage-unit position fields, which are modeled separately.
     int grid_x = -1;
@@ -19,7 +20,7 @@ struct BattleStartPosition {
 
 struct EnemyEventStartPositionSet {
     int enemy_event_id = -1;
-    const char* source = "ALX-5.0.0 enemyevent.csv";
+    const char* source = "BattleSourceSnapshot";
     std::vector<BattleStartPosition> positions;
 };
 

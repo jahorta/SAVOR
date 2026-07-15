@@ -1,7 +1,7 @@
 #include "BattleFrameStateModel.h"
 
-#include "EnemyEventDataModel.h"
-#include "FirstBattleDataModel.h"
+#include "BattleInitialFacingModel.h"
+#include "BattleMovementPathModel.h"
 
 #include <algorithm>
 #include <cmath>
@@ -27,17 +27,15 @@ std::uint8_t footprint_marker(int slot) {
     return static_cast<std::uint8_t>(slot + 0x50);
 }
 
-void initialize_flat_first_battle_grid(BattleFrameState& state) {
-    state.active_grid.fill(0);
-    state.base_grid.fill(0);
-    for (int z = 0; z < 11; ++z) {
-        for (int x = 0; x < 11; ++x) {
-            if (x == 0 || z == 0 || x == 10 || z == 10) {
-                state.active_grid[static_cast<std::size_t>(z * 11 + x)] = 0x7f;
-                state.base_grid[static_cast<std::size_t>(z * 11 + x)] = 0x7f;
-            }
-        }
+bool initialize_first_battle_grid(
+    BattleFrameState& state,
+    const std::optional<std::array<std::uint8_t, 81>>& terrain_source_9x9) {
+    if (terrain_source_9x9.has_value()) {
+        state.base_grid = map_battle_terrain_9x9_to_grid_11x11(*terrain_source_9x9);
+        state.active_grid = state.base_grid;
+        return true;
     }
+    return false;
 }
 
 bool in_grid(const MovementGridPosition& position) {
@@ -74,23 +72,6 @@ float normalize_degrees_0_360(float degrees) {
     return degrees;
 }
 
-void apply_first_battle_motion_defaults(BattleFrameCombatantState& combatant) {
-    const auto defaults = first_battle_actor_by_slot(combatant.slot);
-    if (!defaults.has_value()) {
-        return;
-    }
-    if (!combatant.motion_speeds_known && defaults->motion_speeds_known) {
-        combatant.motion_base_speed_0x12c = defaults->motion_base_speed;
-        combatant.motion_alt_speed_0x130 = defaults->motion_alt_speed;
-        combatant.motion_speeds_known = true;
-    }
-    if (!combatant.turn_speed_known && defaults->motion_turn_speed_known) {
-        combatant.turn_speed_degrees_0x128 = defaults->motion_turn_speed;
-        combatant.turn_speed_bits_0x128 = defaults->motion_turn_speed_bits;
-        combatant.turn_speed_known = true;
-    }
-}
-
 } // namespace
 
 int first_battle_grid_to_raw_stage_coord(int grid, int footprint) {
@@ -110,26 +91,23 @@ BattleFrameVec3 first_battle_grid_to_raw_stage_position(
 
 std::optional<BattleFrameState> initialize_first_battle_frame_state(
     int enemy_event_id,
-    const std::vector<MovementSlotState>& slots) {
-    if (enemy_event_id != 0) {
-        return std::nullopt;
-    }
-
+    const std::vector<MovementSlotState>& slots,
+    const std::optional<std::array<std::uint8_t, 81>>& terrain_source_9x9,
+    soa::battle::TurnType initial_turn_type) {
     BattleFrameState state;
     state.initialized = true;
     state.enemy_event_id = enemy_event_id;
-    initialize_flat_first_battle_grid(state);
+    state.initial_turn_type = initial_turn_type;
+    if (!initialize_first_battle_grid(state, terrain_source_9x9)) {
+        return std::nullopt;
+    }
 
-    int node_id = 0;
     for (const auto& slot : slots) {
         if (!slot.present) {
             continue;
         }
 
         auto start = slot.start_position;
-        if (!start.has_value()) {
-            start = enemy_event_start_position_for_slot(enemy_event_id, slot.slot);
-        }
         if (!start.has_value() || !start->present || start->grid_x < 0 || start->grid_z < 0) {
             state.warnings.push_back(
                 "missing first-battle start position for slot " + std::to_string(slot.slot));
@@ -141,6 +119,8 @@ std::optional<BattleFrameState> initialize_first_battle_frame_state(
         combatant.present = slot.present;
         combatant.alive = slot.alive;
         combatant.is_player = slot.is_player;
+        combatant.status_flags = slot.status_flags;
+        combatant.movement_flags = slot.movement_flags;
         combatant.width = std::max(1, slot.width);
         combatant.depth = std::max(1, slot.depth);
         combatant.motion_base_speed_0x12c = slot.motion_base_speed;
@@ -149,7 +129,6 @@ std::optional<BattleFrameState> initialize_first_battle_frame_state(
         combatant.turn_speed_degrees_0x128 = slot.motion_turn_speed;
         combatant.turn_speed_bits_0x128 = slot.motion_turn_speed_bits;
         combatant.turn_speed_known = slot.motion_turn_speed_known;
-        apply_first_battle_motion_defaults(combatant);
         combatant.grid_position = MovementGridPosition{.grid_x = start->grid_x, .grid_z = start->grid_z};
         combatant.previous_grid_position = combatant.grid_position;
         combatant.pos_holder = first_battle_grid_to_raw_stage_position(
@@ -159,13 +138,24 @@ std::optional<BattleFrameState> initialize_first_battle_frame_state(
         combatant.combatant_cur_pos_0x1c = combatant.pos_holder;
         combatant.instruction_field_0xf8 = combatant.pos_holder;
         combatant.pos_to_move_to_0x110 = combatant.pos_holder;
+        const auto initial_facing = model_initial_battle_facing({
+            .slot = combatant.slot,
+            .present = combatant.present,
+            .is_player = combatant.is_player,
+            .turn_type = initial_turn_type,
+        });
+        if (initial_facing.facing_angle_0x2c.has_value()) {
+            combatant.combatant_facing_angle_0x2c =
+                *initial_facing.facing_angle_0x2c;
+        } else {
+            state.warnings.push_back(
+                "missing initial facing for slot " + std::to_string(combatant.slot)
+                + "; " + initial_facing.provenance);
+        }
         combatant.turn_current_degrees_0x11c =
             battle_frame_angle_short_to_degrees_8006116c(combatant.combatant_facing_angle_0x2c);
         combatant.turn_target_degrees_0x120 = combatant.turn_current_degrees_0x11c;
         combatant.last_written_facing_angle_0x2c = combatant.combatant_facing_angle_0x2c;
-        combatant.instruction_compare_0x15c = combatant.slot;
-        combatant.selected_action_row_flags = 0x01000000u;
-        combatant.selected_action_row_index = 0;
         state.combatants.push_back(combatant);
     }
 
@@ -178,12 +168,6 @@ std::optional<BattleFrameState> initialize_first_battle_frame_state(
 
     for (const auto& combatant : state.combatants) {
         write_footprint(state, combatant);
-        state.packed_thread_order.push_back(BattleFrameThreadState{
-            .node_id = node_id++,
-            .slot = combatant.slot,
-            .active = combatant.present,
-            .callback_name = "Thread_BattleCombatant",
-        });
     }
 
     return state;
@@ -224,7 +208,7 @@ bool commit_movement_grid_8008178c(
         destination,
         combatant->width,
         combatant->depth);
-    combatant->pending_frame_start_position_sync = true;
+    combatant->pending_frame_start_position_sync = false;
     write_footprint(state, *combatant);
     return true;
 }
@@ -301,9 +285,8 @@ float battle_frame_angle_short_to_degrees_8006116c(std::uint32_t angle_word) {
 }
 
 std::uint32_t battle_frame_degrees_to_angle_short_8001b1b0(float degrees) {
-    const float normalized = normalize_degrees_0_360(degrees);
-    const auto angle = static_cast<std::uint32_t>(normalized * kAngleUnitsPerDegree);
-    return angle & 0xffffu;
+    const auto angle = static_cast<std::int32_t>(degrees * kAngleUnitsPerDegree);
+    return static_cast<std::uint32_t>(angle) & 0xffffu;
 }
 
 void normalize_turn_shortest_path_80061080(float& current_degrees, float& target_degrees) {

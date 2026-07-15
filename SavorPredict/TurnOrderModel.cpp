@@ -11,15 +11,24 @@ std::vector<TurnOrderEntryInput> first_battle_basic_turn_order_entries(bool sold
     std::vector<TurnOrderEntryInput> entries;
     const auto vyse = first_battle_actor_by_slot(0);
     const auto aika = first_battle_actor_by_slot(1);
-    entries.push_back({.slot = 0, .quick = vyse.has_value() ? vyse->quick : 22});
-    entries.push_back({.slot = 1, .quick = aika.has_value() ? aika->quick : 24});
+    if (!vyse.has_value() || !aika.has_value()) {
+        return {};
+    }
+    entries.push_back({.slot = 0, .quick = vyse->quick});
+    entries.push_back({.slot = 1, .quick = aika->quick});
     if (soldier4_attacks) {
         const auto soldier = first_battle_actor_by_slot(4);
-        entries.push_back({.slot = 4, .quick = soldier.has_value() ? soldier->quick : 18});
+        if (!soldier.has_value()) {
+            return {};
+        }
+        entries.push_back({.slot = 4, .quick = soldier->quick});
     }
     if (soldier5_attacks) {
         const auto soldier = first_battle_actor_by_slot(5);
-        entries.push_back({.slot = 5, .quick = soldier.has_value() ? soldier->quick : 18});
+        if (!soldier.has_value()) {
+            return {};
+        }
+        entries.push_back({.slot = 5, .quick = soldier->quick});
     }
     return entries;
 }

@@ -1,6 +1,9 @@
 #pragma once
 
 #include "AttackResolutionModel.h"
+#include "BattleInitialTurnTypeModel.h"
+#include "BattlePredictionProfileNames.h"
+#include "BattleSourceModel.h"
 #include "CounterModel.h"
 #include "EnemyEventDataModel.h"
 #include "EnemyAttackSetupModel.h"
@@ -62,23 +65,36 @@ enum class BattlePredictionMovementBackend {
     Compare,
 };
 
+enum class BattlePredictionStartBoundary {
+    CapturedTurnStart,
+    BattleCoordinatorStart,
+};
+
 struct BattlePredictionProfile {
-    std::string name = "first-battle";
+    std::string name = std::string(kFirstBattleSoldiersProfileName);
     int supported_turn_index = 1;
     bool supports_status_effects = false;
     bool supports_non_soldier_ai = false;
+    BattlePredictionMovementBackend default_movement_backend =
+        BattlePredictionMovementBackend::FrameStateMachine;
 };
 
 struct BattlePredictionOptions {
     bool include_visual_rng_gap_events = true;
     bool continue_after_visual_rng_gap = true;
-    BattlePredictionMovementBackend movement_backend = BattlePredictionMovementBackend::HandlerLevelFirstBattle;
+    BattlePredictionMovementBackend movement_backend = BattlePredictionMovementBackend::FrameStateMachine;
     std::filesystem::path action_view_std_json_dir;
+    std::filesystem::path battle_source_manifest_root;
+    bool allow_profile_overrides = false;
 };
 
 struct BattlePredictionInput {
     std::uint32_t starting_rng_seed = 0;
-    std::optional<int> enemy_event_id;
+    BattlePredictionStartBoundary start_boundary =
+        BattlePredictionStartBoundary::BattleCoordinatorStart;
+    std::optional<int> turn_index = 1;
+    std::optional<std::string> scenario_name;
+    BattleSourceValidationInput source_validation{};
     soa::battle::ctx::BattleContext context{};
     soa::battle::actions::TurnPlan turn_plan{};
     BattlePredictionProfile profile{};
@@ -133,6 +149,7 @@ struct BattlePredictionEvent {
     std::optional<int> hp_after;
     std::optional<int> effect_source_key;
     std::optional<int> instr_param_0x6;
+    std::optional<int> instruction_mode_0x6;
     std::optional<int> movement_reachability;
     std::optional<int> item_id;
     std::optional<int> amount;
@@ -143,11 +160,33 @@ struct BattlePredictionEvent {
     std::optional<int> assigned_priority;
     std::optional<int> qsort_index;
     std::optional<int> execution_index;
+    std::optional<int> action_ordinal;
     std::optional<int> frame_index;
+    std::optional<int> turn_type;
+    std::optional<std::uint32_t> facing_angle_0x2c;
     std::optional<int> pathing_accepted_candidates;
     std::optional<double> pathing_aggregate_score;
     std::string movement_backend;
     std::string movement_worker;
+    std::string movement_controller_family;
+    std::string movement_relation_route;
+    std::string movement_action_phase;
+    std::string movement_activation_timing;
+    std::optional<int> movement_thread_order_index;
+    std::optional<std::uint32_t> movement_callback_pc;
+    std::optional<std::uint32_t> movement_deferred_callback_pc;
+    std::optional<std::uint16_t> passive_completion_mask_before;
+    std::optional<std::uint16_t> passive_completion_mask_after;
+    std::string passive_completion_reason;
+    std::string visual_command_kind;
+    std::string visual_resource;
+    std::optional<int> visual_record_index;
+    std::optional<std::uint64_t> visual_epoch;
+    std::optional<int> visual_task_sequence;
+    std::optional<int> visual_payload_mode;
+    std::optional<int> visual_effective_mode;
+    std::string visual_child_kind;
+    std::string instruction_mode_provenance;
     std::string detail;
 };
 
@@ -160,10 +199,19 @@ struct BattlePredictionValidationItem {
 
 struct BattlePredictionResult {
     BattlePredictionProfile profile{};
+    std::optional<std::string> scenario_name;
+    std::optional<int> turn_index;
+    BattlePredictionMovementBackend movement_backend =
+        BattlePredictionMovementBackend::FrameStateMachine;
     BattlePredictionOutcome outcome = BattlePredictionOutcome::ReachedNextTurn;
     std::uint32_t starting_rng_seed = 0;
+    BattlePredictionStartBoundary start_boundary =
+        BattlePredictionStartBoundary::BattleCoordinatorStart;
     std::uint32_t final_rng_seed = 0;
-    std::optional<int> enemy_event_id;
+    std::optional<int> encounter_id;
+    std::string source_manifest_key;
+    std::string source_manifest_sha256;
+    std::optional<soa::battle::TurnType> initial_turn_type;
     int total_draws_consumed = 0;
     int exact_draws_through_turn_order = 0;
     bool exact_through_turn_order = false;
@@ -178,6 +226,7 @@ struct BattlePredictionResult {
     std::vector<std::string> errors;
 };
 
+BattlePredictionProfile first_battle_soldiers_prediction_profile();
 BattlePredictionProfile first_battle_prediction_profile();
 std::optional<BattlePredictionProfile> battle_prediction_profile_by_name(std::string_view name);
 
@@ -187,6 +236,7 @@ const char* battle_prediction_outcome_name(BattlePredictionOutcome outcome);
 const char* battle_prediction_event_status_name(BattlePredictionEventStatus status);
 const char* battle_prediction_validation_status_name(BattlePredictionValidationStatus status);
 const char* battle_prediction_movement_backend_name(BattlePredictionMovementBackend backend);
+const char* battle_prediction_start_boundary_name(BattlePredictionStartBoundary boundary);
 
 void write_battle_prediction_text(const BattlePredictionResult& result, std::ostream& out);
 void write_battle_prediction_json(const BattlePredictionResult& result, std::ostream& out);

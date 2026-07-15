@@ -2,12 +2,13 @@
 
 #include "ActionViewStdJsonCache.h"
 #include "BattlePredictionDbInput.h"
+#include "BattlePredictionScenario.h"
 #include "BattleJobRunOptions.h"
-#include "EnemyEventDataModel.h"
 
 #include <Core/Input/SoaBattle/BattleCommandCodec.h>
 #include <Core/Memory/Soa/Battle/BattleContextCodec.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdlib>
 #include <fstream>
@@ -69,6 +70,55 @@ std::optional<BattlePredictionMovementBackend> parse_movement_backend(std::strin
         return BattlePredictionMovementBackend::Compare;
     }
     return std::nullopt;
+}
+
+void add_unique_error(std::vector<std::string>& errors, std::string error) {
+    if (std::find(errors.begin(), errors.end(), error) == errors.end()) {
+        errors.push_back(std::move(error));
+    }
+}
+
+void apply_scenario_defaults(
+    BattlePredictorCliOptions& options,
+    std::vector<std::string>& errors) {
+    if (!options.scenario_name.has_value()) {
+        if (const auto profile = battle_prediction_profile_by_name(options.profile_name);
+            profile.has_value()) {
+            options.profile_name = profile->name;
+            if (!options.movement_backend_explicit) {
+                options.movement_backend = profile->default_movement_backend;
+            }
+        }
+        return;
+    }
+
+    const auto scenario = battle_prediction_scenario_by_name(*options.scenario_name);
+    if (!scenario.has_value()) {
+        add_unique_error(errors, "Unsupported --scenario: " + *options.scenario_name);
+        return;
+    }
+    options.scenario_name = scenario->name;
+
+    if (options.profile_explicit) {
+        const auto profile = battle_prediction_profile_by_name(options.profile_name);
+        if ((!profile.has_value() || profile->name != scenario->profile_name)
+            && !options.allow_profile_overrides) {
+            add_unique_error(
+                errors,
+                "--scenario " + scenario->name
+                    + " requires --profile " + scenario->profile_name);
+        }
+    } else {
+        options.profile_name = scenario->profile_name;
+    }
+
+    if (!options.movement_backend_explicit) {
+        options.movement_backend = scenario->movement_backend;
+    }
+    if (const auto profile = battle_prediction_profile_by_name(options.profile_name);
+        profile.has_value()) {
+        options.profile_name = profile->name;
+    }
 }
 
 bool require_value(
@@ -195,9 +245,12 @@ bool build_input_from_context_file(
     }
 
     input.starting_rng_seed = *options.start_seed;
-    input.enemy_event_id = options.enemy_event_id;
+    input.start_boundary = BattlePredictionStartBoundary::BattleCoordinatorStart;
+    input.turn_index = input.profile.supported_turn_index;
+    input.scenario_name = options.scenario_name;
     input.options.movement_backend = options.movement_backend;
     input.options.action_view_std_json_dir = options.action_view_std_json_dir;
+    input.options.allow_profile_overrides = options.allow_profile_overrides;
     input.turn_plan.fake_attack_count = static_cast<std::uint32_t>(*options.fake_attacks);
     input.turn_plan.commands = *commands;
     return true;
@@ -237,12 +290,9 @@ BattlePredictorCliParseResult parse_predict_battle_tokens(const std::vector<std:
             if (require_value(args, i, arg, value, result.errors)) {
                 result.options.start_seed_list = value;
             }
-        } else if (arg == "--enemy-event-id") {
-            int parsed = 0;
-            if (require_value(args, i, arg, value, result.errors) && parse_int(value, parsed) && parsed >= 0) {
-                result.options.enemy_event_id = parsed;
-            } else {
-                result.errors.push_back("--enemy-event-id requires a non-negative integer.");
+        } else if (arg == "--scenario") {
+            if (require_value(args, i, arg, value, result.errors)) {
+                result.options.scenario_name = value;
             }
         } else if (arg == "--action-view-std-json-dir") {
             if (require_value(args, i, arg, value, result.errors)) {
@@ -277,12 +327,14 @@ BattlePredictorCliParseResult parse_predict_battle_tokens(const std::vector<std:
         } else if (arg == "--profile") {
             if (require_value(args, i, arg, value, result.errors)) {
                 result.options.profile_name = value;
+                result.options.profile_explicit = true;
             }
         } else if (arg == "--movement-backend") {
             if (require_value(args, i, arg, value, result.errors)) {
                 const auto parsed = parse_movement_backend(value);
                 if (parsed.has_value()) {
                     result.options.movement_backend = *parsed;
+                    result.options.movement_backend_explicit = true;
                 } else {
                     result.errors.push_back("--movement-backend must be handler, frame, or compare.");
                 }
@@ -299,6 +351,8 @@ BattlePredictorCliParseResult parse_predict_battle_tokens(const std::vector<std:
             }
         } else if (arg == "--allow-seed-candidate-fallback") {
             result.options.allow_seed_candidate_fallback = true;
+        } else if (arg == "--allow-profile-overrides") {
+            result.options.allow_profile_overrides = true;
         } else if (arg == "--help" || arg == "-h") {
             result.help_requested = true;
         } else {
@@ -307,14 +361,20 @@ BattlePredictorCliParseResult parse_predict_battle_tokens(const std::vector<std:
     }
 
     if (!result.help_requested) {
+        apply_scenario_defaults(result.options, result.errors);
         const auto validation = validate_predict_battle_options(result.options);
-        result.errors.insert(result.errors.end(), validation.begin(), validation.end());
+        for (const auto& error : validation) {
+            add_unique_error(result.errors, error);
+        }
     }
     return result;
 }
 
-std::vector<std::string> validate_predict_battle_options(const BattlePredictorCliOptions& options) {
+std::vector<std::string> validate_predict_battle_options(
+    const BattlePredictorCliOptions& raw_options) {
     std::vector<std::string> errors;
+    auto options = raw_options;
+    apply_scenario_defaults(options, errors);
     const bool has_context_file = !options.context_file.empty();
     const bool has_turn = options.turn_job_id.has_value();
     const bool has_exec = options.exec_job_id.has_value();
@@ -339,10 +399,6 @@ std::vector<std::string> validate_predict_battle_options(const BattlePredictorCl
     if (has_start_seed_list && !has_db_selector) {
         errors.push_back("--start-seed-list requires --turn-job-id or --exec-job-id.");
     }
-    if (options.enemy_event_id.has_value()
-        && !enemy_event_start_positions(*options.enemy_event_id).has_value()) {
-        errors.push_back("Unsupported --enemy-event-id: " + std::to_string(*options.enemy_event_id));
-    }
     if (has_db_selector && is_mutable_debug_db_root(options.db_root)) {
         errors.push_back("Refusing to use D:/SoaSimDBDebug for prediction; use D:/SavorPredictDB.");
     }
@@ -358,25 +414,38 @@ std::vector<std::string> validate_predict_battle_options(const BattlePredictorCl
     if (has_exec && *options.exec_job_id <= 0) {
         errors.push_back("--exec-job-id must be positive.");
     }
-    if (!battle_prediction_profile_by_name(options.profile_name).has_value()) {
+    const auto profile = battle_prediction_profile_by_name(options.profile_name);
+    if (!profile.has_value()) {
         errors.push_back("Unsupported --profile: " + options.profile_name);
     }
     return errors;
 }
 
 int run_predict_battle(const BattlePredictorCliOptions& options, std::ostream& out, std::ostream& err) {
-    const auto profile = battle_prediction_profile_by_name(options.profile_name);
-    if (!profile.has_value()) {
-        err << "Unsupported profile: " << options.profile_name << "\n";
+    auto resolved_options = options;
+    std::vector<std::string> option_errors;
+    apply_scenario_defaults(resolved_options, option_errors);
+    for (const auto& validation_error : validate_predict_battle_options(resolved_options)) {
+        add_unique_error(option_errors, validation_error);
+    }
+    if (!option_errors.empty()) {
+        for (const auto& option_error : option_errors) {
+            err << option_error << "\n";
+        }
         return 2;
     }
 
-    auto resolved_options = options;
+    const auto profile = battle_prediction_profile_by_name(resolved_options.profile_name);
+    if (!profile.has_value()) {
+        err << "Unsupported profile: " << resolved_options.profile_name << "\n";
+        return 2;
+    }
+
     const auto std_resolution = resolve_action_view_std_json_cache({
-        .db_root = options.db_root,
-        .explicit_std_json_dir = options.action_view_std_json_dir,
-        .std_disc_dump_root = options.std_disc_dump_root,
-        .spice_file_parsing_exe = options.spice_file_parsing_exe,
+        .db_root = resolved_options.db_root,
+        .explicit_std_json_dir = resolved_options.action_view_std_json_dir,
+        .std_disc_dump_root = resolved_options.std_disc_dump_root,
+        .spice_file_parsing_exe = resolved_options.spice_file_parsing_exe,
     });
     for (const auto& diagnostic : std_resolution.diagnostics) {
         err << "STD JSON cache: " << diagnostic << "\n";
@@ -413,11 +482,12 @@ int run_predict_battle(const BattlePredictorCliOptions& options, std::ostream& o
     db_options.selector.turn_job_id = resolved_options.turn_job_id;
     db_options.selector.exec_job_id = resolved_options.exec_job_id;
     db_options.profile_name = resolved_options.profile_name;
+    db_options.scenario_name = resolved_options.scenario_name;
     db_options.fake_attacks_override = resolved_options.fake_attacks;
-    db_options.enemy_event_id = resolved_options.enemy_event_id;
     db_options.movement_backend = resolved_options.movement_backend;
     db_options.action_view_std_json_dir = resolved_options.action_view_std_json_dir;
     db_options.allow_seed_candidate_fallback = resolved_options.allow_seed_candidate_fallback;
+    db_options.allow_profile_overrides = resolved_options.allow_profile_overrides;
 
     if (!resolved_options.start_seed_list.empty()) {
         std::vector<std::uint32_t> start_seeds;

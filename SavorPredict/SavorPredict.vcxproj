@@ -118,15 +118,25 @@
     <ClCompile Include="ActionViewStdJsonCache.cpp" />
     <ClCompile Include="ActionViewStdJsonLoader.cpp" />
     <ClCompile Include="ActionViewStdResourceResolver.cpp" />
+    <ClCompile Include="ActionMotionTargetModel.cpp" />
     <ClCompile Include="AttackDamageValueCheckpointModel.cpp" />
     <ClCompile Include="AttackResolutionCheckpointModel.cpp" />
     <ClCompile Include="AttackResolutionModel.cpp" />
+    <ClCompile Include="BattleInitialFacingModel.cpp" />
+    <ClCompile Include="BattleInitialTurnTypeModel.cpp" />
     <ClCompile Include="BattlePredictionDbInput.cpp" />
+    <ClCompile Include="BattlePredictionScenario.cpp" />
+    <ClCompile Include="BattleMovementInvocationModel.cpp" />
+    <ClCompile Include="BattleMovementPathModel.cpp" />
     <ClCompile Include="BattleFrameSchedulerModel.cpp" />
     <ClCompile Include="BattleFrameStateModel.cpp" />
+    <ClCompile Include="BattleFrameThreadListModel.cpp" />
+    <ClCompile Include="BattleSourceModel.cpp" />
     <ClCompile Include="BattlePredictor.cpp" />
     <ClCompile Include="BattlePredictorCli.cpp" />
     <ClCompile Include="BattleVisualRngModel.cpp" />
+    <ClCompile Include="CombatantInstructionModeModel.cpp" />
+    <ClCompile Include="CombatantVisualDispatcherModel.cpp" />
     <ClCompile Include="BattleJobBatchRunManifest.cpp" />
     <ClCompile Include="BattleJobBatchRunOptions.cpp" />
     <ClCompile Include="BattleJobBatchWorkerRun.cpp" />
@@ -165,6 +175,8 @@
     <ClCompile Include="TurnOrderCheckpointModel.cpp" />
     <ClCompile Include="TurnOrderModel.cpp" />
     <ClCompile Include="TraceJob.cpp" />
+    <ClCompile Include="ViewPlacementCacheModel.cpp" />
+    <ClCompile Include="ViewPlacementGeometryModel.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="ActionViewCameraModel.h" />
@@ -177,15 +189,26 @@
     <ClInclude Include="ActionViewStdJsonCache.h" />
     <ClInclude Include="ActionViewStdJsonLoader.h" />
     <ClInclude Include="ActionViewStdResourceResolver.h" />
+    <ClInclude Include="ActionMotionTargetModel.h" />
     <ClInclude Include="AttackDamageValueCheckpointModel.h" />
     <ClInclude Include="AttackResolutionCheckpointModel.h" />
     <ClInclude Include="AttackResolutionModel.h" />
+    <ClInclude Include="BattleInitialFacingModel.h" />
+    <ClInclude Include="BattleInitialTurnTypeModel.h" />
     <ClInclude Include="BattlePredictionDbInput.h" />
+    <ClInclude Include="BattlePredictionProfileNames.h" />
+    <ClInclude Include="BattlePredictionScenario.h" />
+    <ClInclude Include="BattleMovementInvocationModel.h" />
+    <ClInclude Include="BattleMovementPathModel.h" />
     <ClInclude Include="BattleFrameSchedulerModel.h" />
     <ClInclude Include="BattleFrameStateModel.h" />
+    <ClInclude Include="BattleFrameThreadListModel.h" />
+    <ClInclude Include="BattleSourceModel.h" />
     <ClInclude Include="BattlePredictor.h" />
     <ClInclude Include="BattlePredictorCli.h" />
     <ClInclude Include="BattleVisualRngModel.h" />
+    <ClInclude Include="CombatantInstructionModeModel.h" />
+    <ClInclude Include="CombatantVisualDispatcherModel.h" />
     <ClInclude Include="BattleJobBatchRunManifest.h" />
     <ClInclude Include="BattleJobBatchRunOptions.h" />
     <ClInclude Include="BattleJobBatchWorkerRun.h" />
@@ -223,6 +246,8 @@
     <ClInclude Include="TurnOrderCheckpointModel.h" />
     <ClInclude Include="TurnOrderModel.h" />
     <ClInclude Include="TraceJob.h" />
+    <ClInclude Include="ViewPlacementCacheModel.h" />
+    <ClInclude Include="ViewPlacementGeometryModel.h" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\SavorDb\SavorDb.vcxproj">

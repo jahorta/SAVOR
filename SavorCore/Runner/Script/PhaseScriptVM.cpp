@@ -994,9 +994,15 @@ namespace savor {
 
             const uint32_t capture_only_total =
                 capture_only_pc_hits + capture_only_memwatch_hits + 1u;
-            if (capture_only_total > spec.capture_only_hit_limit) {
+            const uint32_t capture_only_hit_limit =
+                spec.capture_watchpoint_scope == savor::capture::WatchpointScope::Normal
+                    && capture_
+                    && capture_->active()
+                ? capture_->capture_only_hit_limit()
+                : spec.capture_only_hit_limit;
+            if (capture_only_total > capture_only_hit_limit) {
                 SCLOGW("[capture] capture-only hit limit exceeded limit=%u pc=%08X",
-                    spec.capture_only_hit_limit,
+                    capture_only_hit_limit,
                     hit_pc);
                 rr = { false, 0u, "capture_hit_limit" };
                 break;

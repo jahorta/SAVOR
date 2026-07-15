@@ -41,30 +41,38 @@ struct BattlePredictionJobSelector {
 struct BattlePredictionDbInputOptions {
     std::filesystem::path db_root = "D:/SavorPredictDB";
     BattlePredictionJobSelector selector;
-    std::string profile_name = "first-battle";
+    std::string profile_name = std::string(kFirstBattleSoldiersProfileName);
+    std::optional<std::string> scenario_name;
     std::optional<std::uint32_t> start_seed_override;
     std::optional<int> fake_attacks_override;
-    std::optional<int> enemy_event_id;
-    BattlePredictionMovementBackend movement_backend = BattlePredictionMovementBackend::HandlerLevelFirstBattle;
+    BattlePredictionMovementBackend movement_backend = BattlePredictionMovementBackend::FrameStateMachine;
     std::filesystem::path action_view_std_json_dir;
     bool allow_seed_candidate_fallback = false;
+    bool allow_profile_overrides = false;
 };
 
 struct BattlePredictionDbInputMetadata {
     std::filesystem::path source_db_root;
+    std::string profile_name = std::string(kFirstBattleSoldiersProfileName);
+    std::optional<std::string> scenario_name;
+    BattlePredictionMovementBackend movement_backend =
+        BattlePredictionMovementBackend::FrameStateMachine;
     std::optional<long long> requested_turn_job_id;
     std::optional<long long> requested_exec_job_id;
     long long turn_job_id = 0;
     std::optional<long long> exec_job_id;
     long long wave_id = 0;
     long long battle_set_id = 0;
+    long long entry_savestate_id = 0;
+    std::optional<std::string> entry_savestate_sha256;
     int turn_index = 0;
     std::optional<long long> seed_candidate_id;
     std::uint32_t starting_rng_seed = 0;
     BattlePredictionSeedSource seed_source = BattlePredictionSeedSource::Unknown;
+    BattlePredictionStartBoundary start_boundary =
+        BattlePredictionStartBoundary::CapturedTurnStart;
     int fake_attacks = 0;
     BattlePredictionFakeAttackSource fake_attack_source = BattlePredictionFakeAttackSource::Unknown;
-    std::optional<int> enemy_event_id;
     std::optional<long long> context_probe_id;
     BattlePredictionContextSource context_source = BattlePredictionContextSource::Unknown;
     std::optional<int> context_version;

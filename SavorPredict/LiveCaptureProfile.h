@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <filesystem>
 #include <iosfwd>
 #include <string>
@@ -10,6 +11,25 @@ std::string build_first_battle_capture_profile_ini();
 std::string build_first_battle_predictor_validation_profile_ini();
 std::string build_first_battle_turn_order_validation_profile_ini();
 std::string build_first_battle_field6_watch_profile_ini();
+std::string build_first_battle_view_eligibility_profile_ini();
+std::string build_first_battle_view_placement_cache_profile_ini();
+std::string build_first_battle_view_placement_frame_thread_profile_ini(
+    std::uint32_t thread_list_max_nodes = 128);
+std::string build_first_battle_view_placement_semantic_hooks_profile_ini(
+    std::uint32_t thread_list_max_nodes = 128);
+std::string build_first_battle_predictor_live_comparison_profile_ini(
+    std::uint32_t thread_list_max_nodes = 128);
+std::string build_first_battle_movement_destination_stop_profile_ini(
+    std::uint32_t thread_list_max_nodes = 128);
+std::string build_first_battle_action_view_service_lifecycle_profile_ini(
+    std::uint32_t thread_list_max_nodes = 128);
+std::string build_first_battle_pc_worker_selector_lifetime_profile_ini(
+    std::uint32_t thread_list_max_nodes = 128);
+std::string build_first_battle_action_view_pathing_loop_profile_ini();
+std::string build_first_battle_thread_pathing_timing_profile_ini(
+    std::uint32_t thread_list_max_nodes = 128);
+std::string build_battle_thread_producer_profile_ini(
+    std::uint32_t thread_list_max_nodes = 128);
 std::string build_first_battle_action_view_resource_profile_ini();
 std::string build_first_battle_action_view_selector_coverage_profile_ini();
 std::string build_first_battle_thread_list_profile_ini();
@@ -32,6 +52,58 @@ int write_first_battle_field6_watch_profile(
     const std::filesystem::path& output_path,
     std::ostream& out,
     std::ostream& err);
+int write_first_battle_view_eligibility_profile(
+    const std::filesystem::path& output_path,
+    std::ostream& out,
+    std::ostream& err);
+int write_first_battle_view_placement_cache_profile(
+    const std::filesystem::path& output_path,
+    std::ostream& out,
+    std::ostream& err);
+int write_first_battle_view_placement_frame_thread_profile(
+    const std::filesystem::path& output_path,
+    std::ostream& out,
+    std::ostream& err,
+    std::uint32_t thread_list_max_nodes = 128);
+int write_first_battle_view_placement_semantic_hooks_profile(
+    const std::filesystem::path& output_path,
+    std::ostream& out,
+    std::ostream& err,
+    std::uint32_t thread_list_max_nodes = 128);
+int write_first_battle_predictor_live_comparison_profile(
+    const std::filesystem::path& output_path,
+    std::ostream& out,
+    std::ostream& err,
+    std::uint32_t thread_list_max_nodes = 128);
+int write_first_battle_movement_destination_stop_profile(
+    const std::filesystem::path& output_path,
+    std::ostream& out,
+    std::ostream& err,
+    std::uint32_t thread_list_max_nodes = 128);
+int write_first_battle_action_view_service_lifecycle_profile(
+    const std::filesystem::path& output_path,
+    std::ostream& out,
+    std::ostream& err,
+    std::uint32_t thread_list_max_nodes = 128);
+int write_first_battle_pc_worker_selector_lifetime_profile(
+    const std::filesystem::path& output_path,
+    std::ostream& out,
+    std::ostream& err,
+    std::uint32_t thread_list_max_nodes = 128);
+int write_first_battle_action_view_pathing_loop_profile(
+    const std::filesystem::path& output_path,
+    std::ostream& out,
+    std::ostream& err);
+int write_first_battle_thread_pathing_timing_profile(
+    const std::filesystem::path& output_path,
+    std::ostream& out,
+    std::ostream& err,
+    std::uint32_t thread_list_max_nodes = 128);
+int write_battle_thread_producer_profile(
+    const std::filesystem::path& output_path,
+    std::ostream& out,
+    std::ostream& err,
+    std::uint32_t thread_list_max_nodes = 128);
 int write_first_battle_action_view_resource_profile(
     const std::filesystem::path& output_path,
     std::ostream& out,

@@ -3,6 +3,7 @@
 #include "EnemyEventDataModel.h"
 #include "EnemyAttackSetupModel.h"
 
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -39,13 +40,6 @@ enum class MovementReachabilityStatus {
     AdjustedAdjacent2,
     Path4,
     Ambiguous,
-};
-
-enum class PassiveMovementRouteKind {
-    Unaffected,
-    TargetParticipant,
-    SameSideParticipant,
-    SpecialParticipant,
 };
 
 struct MovementGridPosition {
@@ -104,13 +98,6 @@ struct MovementModelInputs {
     MovementWorksheetSnapshot actor_worksheet{};
 };
 
-struct PassiveMovementRoute {
-    int slot = -1;
-    PassiveMovementRouteKind route = PassiveMovementRouteKind::Unaffected;
-    MovementSelectedWorker selected_worker = MovementSelectedWorker::None;
-    MovementSimulationStatus status = MovementSimulationStatus::Provisional;
-};
-
 struct MovementSimulation {
     std::uint32_t end_state = 0;
     int draws_consumed = 0;
@@ -128,16 +115,16 @@ struct MovementSimulation {
     MovementSelectedWorker selected_worker = MovementSelectedWorker::None;
     EnemyAttackSetupPath enemy_setup_path = EnemyAttackSetupPath::NotAttack;
     bool enemy_direct_close_candidate = false;
-    std::vector<PassiveMovementRoute> passive_routes;
     std::string detail;
 };
 
 MovementSimulation simulate_first_battle_movement_setup(const MovementModelInputs& inputs);
 MovementWorksheetSnapshot project_enemy_event0_movement_worksheet_snapshot(const MovementModelInputs& inputs);
+std::optional<bool> model_pc_path_shape_80082340(
+    const MovementGridPosition& current_grid,
+    const std::array<MovementGridPosition, 11>& raw_path_entries);
 
 const char* movement_simulation_status_name(MovementSimulationStatus status);
 const char* movement_selected_worker_name(MovementSelectedWorker worker);
 const char* movement_reachability_status_name(MovementReachabilityStatus status);
-const char* passive_movement_route_kind_name(PassiveMovementRouteKind route);
-
 } // namespace savor::predict

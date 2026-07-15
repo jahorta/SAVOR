@@ -42,6 +42,7 @@ struct DBWorkflowWorkerCoordinatorConfig {
 
     size_t desired_workers = 1;
     uint32_t controller_sleep_ms = 5;
+    uint32_t worker_silence_in_flight_timeout_ms = 30000;
     uint32_t worker_start_timeout_ms = 20000;
     uint32_t worker_start_retry_backoff_ms = 5000;
     uint32_t max_worker_start_attempts = 3;

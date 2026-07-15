@@ -53,7 +53,25 @@
     <ClCompile Include="BattlePredictionDbInput.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="BattlePredictionScenario.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="BattleInitialFacingModel.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="BattleInitialTurnTypeModel.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="BattleMovementInvocationModel.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="BattleFrameSchedulerModel.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="BattleFrameThreadListModel.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="BattleSourceModel.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="BattleFrameStateModel.cpp">
@@ -68,6 +86,14 @@
     <ClCompile Include="BattleVisualRngModel.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="CombatantInstructionModeModel.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="CombatantVisualDispatcherModel.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="ActionMotionTargetModel.cpp" />
+    <ClCompile Include="BattleMovementPathModel.cpp" />
     <ClCompile Include="BattleJobBatchRunManifest.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -182,6 +208,12 @@
     <ClCompile Include="TraceJob.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="ViewPlacementCacheModel.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="ViewPlacementGeometryModel.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="ActionViewCameraModel.h">
@@ -226,7 +258,25 @@
     <ClInclude Include="BattlePredictionDbInput.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="BattlePredictionProfileNames.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="BattlePredictionScenario.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="BattleInitialFacingModel.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="BattleInitialTurnTypeModel.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="BattleFrameSchedulerModel.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="BattleFrameThreadListModel.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="BattleSourceModel.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="BattleFrameStateModel.h">
@@ -241,6 +291,15 @@
     <ClInclude Include="BattleVisualRngModel.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="CombatantInstructionModeModel.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="CombatantVisualDispatcherModel.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="ActionMotionTargetModel.h" />
+    <ClInclude Include="BattleMovementInvocationModel.h" />
+    <ClInclude Include="BattleMovementPathModel.h" />
     <ClInclude Include="BattleJobBatchRunManifest.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -350,6 +409,12 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="TraceJob.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="ViewPlacementCacheModel.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="ViewPlacementGeometryModel.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

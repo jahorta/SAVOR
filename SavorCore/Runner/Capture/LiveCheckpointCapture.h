@@ -43,6 +43,9 @@ public:
         return active_memory_watchpoints_;
     }
     const std::filesystem::path& output_path() const { return output_path_; }
+    std::uint32_t capture_only_hit_limit() const {
+        return profile_.capture_only_hit_limit;
+    }
 
     std::vector<ActiveMemoryWatchpointSpec> static_memory_watchpoints(WatchpointScope scope) const;
     void set_active_memory_watchpoints(std::vector<ActiveMemoryWatchpointSpec> watchpoints);

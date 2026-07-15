@@ -176,8 +176,6 @@ bool IsNoWorkWorkflowStep(const WorkflowReadyStep& step) {
     return step.step_kind == "seedprobe.done";
 }
 
-constexpr auto kWorkerSilenceInFlightCutoff = std::chrono::seconds(30);
-
 std::filesystem::path WeaklyCanonicalOrAbsolute(const std::filesystem::path& path) {
     std::error_code ec;
     auto canonical = std::filesystem::weakly_canonical(path, ec);
@@ -1589,6 +1587,10 @@ void DBWorkflowWorkerCoordinator::RecoverDeadInFlightWorkers() {
 
     constexpr auto kDeadWorkerResultGrace = std::chrono::seconds(2);
     const auto now = std::chrono::steady_clock::now();
+    const auto worker_silence_cutoff = std::chrono::milliseconds(
+        worker_cfg_.worker_silence_in_flight_timeout_ms != 0
+            ? worker_cfg_.worker_silence_in_flight_timeout_ms
+            : 30000u);
     std::vector<LostJob> lost_jobs;
     std::vector<std::string> event_lines;
     std::vector<std::shared_ptr<savor::ProcessWorker>> workers_to_stop;
@@ -1603,7 +1605,7 @@ void DBWorkflowWorkerCoordinator::RecoverDeadInFlightWorkers() {
         }
         auto& slot = *slot_ptr;
         const bool worker_silent = slot.last_worker_contact_at != std::chrono::steady_clock::time_point{}
-            && now - slot.last_worker_contact_at >= kWorkerSilenceInFlightCutoff;
+            && now - slot.last_worker_contact_at >= worker_silence_cutoff;
         if (slot.worker->is_running() && !worker_silent) {
             slot.dead_in_flight_observed_at = {};
             continue;
@@ -1629,7 +1631,9 @@ void DBWorkflowWorkerCoordinator::RecoverDeadInFlightWorkers() {
         }
         event_lines.push_back(line.str());
         MarkWorkerError(slot, worker_silent
-            ? "worker was silent for 30 seconds while job was in flight"
+            ? "worker was silent for "
+                + std::to_string(worker_silence_cutoff.count())
+                + " milliseconds while job was in flight"
             : "worker exited while job was in flight");
         (void)job_materialization_service_.CleanupDispatchedOrExpired(static_cast<std::int64_t>(job_id));
         lost_jobs.push_back(LostJob{

@@ -1,0 +1,34 @@
+{
+  "schema": "savor_battle_source_manifest_v1",
+  "key": "first-battle-soldiers-us-final",
+  "snapshotFile": "snapshot.json",
+  "snapshotSha256": "2066f65dab8a4f40f6bc34220fb1504f7416c01ed04051ed64d8e23b174c258a",
+  "encounterIdentity": "alx-enemyevent-0",
+  "stageIdentity": "sst-s001-record-0",
+  "sources": [
+    {
+      "kind": "alx_enemy_event_csv",
+      "identity": "ALX-5.0.0/2002-12-19-gc-us-final/enemyevent.csv",
+      "sha256": "26fce2ddcc1f72d62ff05b5b45284203eb26f5f58eccf3558e4bf88b2c441410"
+    },
+    {
+      "kind": "spice_alx_enemy_events_v1",
+      "identity": "enemyevent.spice.json",
+      "sha256": "0589e506dc5d4fe2367646c9a3a6329339323f862ab8d23ab21bb9116fdffe5a"
+    },
+    {
+      "kind": "spice_sst_sml_command_map",
+      "identity": "s001.sst_sml_command_map.json",
+      "sha256": "699e2a9df144b298d54f6db0c2f883917ebbdd6d5da7f67cbb83a18ecbb8a910"
+    }
+  ],
+  "validation": {
+    "rosterFingerprint": "0:pc:0|1:pc:1|4:enemy:0|5:enemy:0",
+    "acceptedSavestateSha256": [
+      "83bf5d205d9e77d92d47996bf731715de4440ce4bb6475623432a58df77fcf42",
+      "af59e7828407e06e65c403bcbb28bba26f9d66ff5b1ce0ed1bcd16bb7426e4b6",
+      "d347d703ffef3a9b1e8969bdb0d46c97233631b7ec2aae6e414721b671828fb3",
+      "ddeb61d675cfe8d3dfd2fe35053994ecdd49455cbe7ce81616a28112fc89a4cf"
+    ]
+  }
+}

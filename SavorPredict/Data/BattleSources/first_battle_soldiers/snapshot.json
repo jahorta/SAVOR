@@ -1,0 +1,173 @@
+{
+  "schema": "savor_battle_source_snapshot_v1",
+  "manifestKey": "first-battle-soldiers-us-final",
+  "encounter": {
+    "sourceKind": "alx_enemy_event",
+    "entryId": 0,
+    "initiative": 14,
+    "status": "Exact",
+    "provenance": "SPICE versioned ALX import"
+  },
+  "stage": {
+    "stageId": "s001",
+    "sstRecordIndex": 0,
+    "status": "Exact",
+    "provenance": "SPICE SST/SML command-map export"
+  },
+  "placements": [
+    {
+      "slot": 0,
+      "side": "pc",
+      "id": 0,
+      "name": "Vyse",
+      "gridX": 4,
+      "gridZ": 6,
+      "present": true,
+      "status": "Exact",
+      "provenance": "spice_alx_enemy_events_v1 entryId=0"
+    },
+    {
+      "slot": 1,
+      "side": "pc",
+      "id": 1,
+      "name": "Aika",
+      "gridX": 6,
+      "gridZ": 6,
+      "present": true,
+      "status": "Exact",
+      "provenance": "spice_alx_enemy_events_v1 entryId=0"
+    },
+    {
+      "slot": 4,
+      "side": "enemy",
+      "id": 0,
+      "name": "Soldier",
+      "gridX": 4,
+      "gridZ": 2,
+      "present": true,
+      "status": "Exact",
+      "provenance": "spice_alx_enemy_events_v1 entryId=0"
+    },
+    {
+      "slot": 5,
+      "side": "enemy",
+      "id": 0,
+      "name": "Soldier",
+      "gridX": 6,
+      "gridZ": 2,
+      "present": true,
+      "status": "Exact",
+      "provenance": "spice_alx_enemy_events_v1 entryId=0"
+    }
+  ],
+  "terrain": {
+    "source9x9Rows": [
+      [
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      [
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      [
+        1,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        1
+      ],
+      [
+        1,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        1
+      ],
+      [
+        1,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        1
+      ],
+      [
+        1,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        1
+      ],
+      [
+        1,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        1
+      ],
+      [
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      [
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ]
+    ],
+    "status": "Exact",
+    "provenance": "SPICE SST battleGridTerrainSource9x9 record=0 offset=504"
+  },
+  "resourceIdentityRule": {
+    "id": "combatant-side-and-id-v1",
+    "status": "Exact",
+    "provenance": "LoadMovementStdResourceById_80030280 naming branches"
+  }
+}

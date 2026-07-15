@@ -27,6 +27,17 @@ void print_usage(std::ostream& out) {
         << "  SavorPredict write-first-battle-predictor-validation-profile --output PATH\n"
         << "  SavorPredict write-first-battle-turn-order-validation-profile --output PATH\n"
         << "  SavorPredict write-first-battle-field6-watch-profile --output PATH\n"
+        << "  SavorPredict write-first-battle-view-eligibility-profile --output PATH\n"
+        << "  SavorPredict write-first-battle-view-placement-cache-profile --output PATH\n"
+        << "  SavorPredict write-first-battle-view-placement-frame-thread-profile --output PATH [--list-max 128|256]\n"
+        << "  SavorPredict write-first-battle-view-placement-semantic-hooks-profile --output PATH [--list-max 128|256]\n"
+        << "  SavorPredict write-first-battle-predictor-live-comparison-profile --output PATH [--list-max 128|256]\n"
+        << "  SavorPredict write-first-battle-movement-destination-stop-profile --output PATH [--list-max 128|256]\n"
+        << "  SavorPredict write-first-battle-action-view-service-lifecycle-profile --output PATH [--list-max 128|256]\n"
+        << "  SavorPredict write-first-battle-pc-worker-selector-lifetime-profile --output PATH [--list-max 128|256]\n"
+        << "  SavorPredict write-first-battle-action-view-pathing-loop-profile --output PATH\n"
+        << "  SavorPredict write-first-battle-thread-pathing-timing-profile --output PATH [--list-max 128|256]\n"
+        << "  SavorPredict write-battle-thread-producer-profile --output PATH [--list-max 128|256]\n"
         << "  SavorPredict write-first-battle-action-view-resource-profile --output PATH\n"
         << "  SavorPredict write-first-battle-action-view-selector-coverage-profile --output PATH\n"
         << "  SavorPredict write-first-battle-thread-list-profile --output PATH\n"
@@ -35,12 +46,14 @@ void print_usage(std::ostream& out) {
         << "  SavorPredict write-first-battle-move-increment-read-watch-profile --output PATH\n"
         << "  SavorPredict run-battle-job (--turn-job-id N | --exec-job-id N) --iso PATH --dolphin-base-dir PATH [--db-root PATH] [--run-root PATH] [--worker-exe PATH] [--capture-profile PATH] [--sandbox-mode minimal|full-copy] [--timeout-ms N] [--battle-run-ms N] [--poll-ms N] [--override-start-rng-seed N] [--override-fake-attacks N] [--action-view-std-json-dir PATH] [--std-disc-dump-root PATH] [--spice-file-parsing-exe PATH]\n"
         << "  SavorPredict run-battle-jobs --exec-job-id N [--exec-job-id N ...] [--exec-job-list PATH] [--exec-job-seed EXEC_ID:SEED[:FAKE_ATTACKS]] [--exec-job-seed-list PATH] [--exec-job-fake-attacks EXEC_ID:FAKE_ATTACKS] [--exec-job-fake-attacks-list PATH] --iso PATH --dolphin-base-dir PATH [--db-root PATH] [--run-root PATH] [--worker-exe PATH] [--capture-profile PATH] [--sandbox-mode minimal|full-copy] [--max-workers N] [--timeout-ms N] [--battle-run-ms N] [--poll-ms N] [--override-start-rng-seed N] [--override-fake-attacks N] [--action-view-std-json-dir PATH] [--std-disc-dump-root PATH] [--spice-file-parsing-exe PATH]\n"
-        << "  SavorPredict predict-battle (--context-file PATH --turn-plan-hex HEX --fake-attacks N --start-seed N | (--turn-job-id N | --exec-job-id N) [--start-seed N | --start-seed-list PATH]) [--db-root PATH] [--profile first-battle] [--movement-backend handler|frame|compare] [--action-view-std-json-dir PATH] [--std-disc-dump-root PATH] [--spice-file-parsing-exe PATH] [--format text|json] [--allow-seed-candidate-fallback]\n"
+        << "  SavorPredict predict-battle (--context-file PATH --turn-plan-hex HEX --fake-attacks N --start-seed N | (--turn-job-id N | --exec-job-id N) [--start-seed N | --start-seed-list PATH]) [--db-root PATH] [--scenario first-battle-soldiers] [--profile first-battle-soldiers] [--movement-backend handler|frame|compare] [--action-view-std-json-dir PATH] [--std-disc-dump-root PATH] [--spice-file-parsing-exe PATH] [--format text|json] [--allow-seed-candidate-fallback] [--allow-profile-overrides]\n"
+        << "    Custom --start-seed values begin at the battle coordinator; stored job seeds retain their captured-turn boundary.\n"
         << "  SavorPredict trace-job (--turn-job-id N | --exec-job-id N) [--db-root PATH] [--format text|json] [--max-distance N]\n\n"
         << "  SavorPredict trace-checkpoints --checkpoint-file PATH [--turn-job-id N | --exec-job-id N] [--db-root PATH] [--action-view-std-json-dir PATH] [--std-disc-dump-root PATH] [--spice-file-parsing-exe PATH] [--format text|json] [--expected-fake-attacks N] [--expected-enemy-setup-draws N] [--expected-mode0e-camera-draws N] [--expected-turn-order-draws N] [--expected-attack-events N] [--expected-crit-draws N] [--expected-counter-roll-ceiling N] [--expected-drop-rolls N] [--expected-end-turn-status-draws N] [--expected-level-up-stat-rolls N]\n\n"
         << "Defaults:\n"
         << "  prepare-db --source D:/SoaSimDBDebug --dest D:/SavorPredictDB\n"
-        << "  predict-battle --db-root D:/SavorPredictDB --profile first-battle --format text\n"
+        << "  predict-battle --exec-job-id 147896\n"
+        << "  predict-battle --scenario first-battle-soldiers --exec-job-id 147896 --format text\n"
         << "  trace-job --db-root D:/SavorPredictDB --format text --max-distance 5000\n\n"
         << "  action-view STD JSON cache: <db-root>/.std_json, generated from D:/SoAGC/2002-12-19-gc-us-final_Skies_of_Arcadia_Legends when available\n\n"
         << "Policy:\n"
@@ -276,6 +289,371 @@ int run_write_first_battle_field6_watch_profile(int argc, char** argv) {
         output,
         std::cout,
         std::cerr);
+}
+
+int run_write_first_battle_view_eligibility_profile(int argc, char** argv) {
+    std::filesystem::path output;
+    for (int i = 2; i < argc; ++i) {
+        const std::string arg = argv[i];
+        std::string value;
+        if (arg == "--output") {
+            if (!require_value(argc, argv, i, arg, value, std::cerr)) {
+                return 2;
+            }
+            output = value;
+        } else if (arg == "--help" || arg == "-h") {
+            print_usage(std::cout);
+            return 0;
+        } else {
+            std::cerr << "Unknown write-first-battle-view-eligibility-profile option: "
+                << arg << "\n";
+            return 2;
+        }
+    }
+    return savor::predict::write_first_battle_view_eligibility_profile(
+        output,
+        std::cout,
+        std::cerr);
+}
+
+int run_write_first_battle_view_placement_cache_profile(int argc, char** argv) {
+    std::filesystem::path output;
+    for (int i = 2; i < argc; ++i) {
+        const std::string arg = argv[i];
+        std::string value;
+        if (arg == "--output") {
+            if (!require_value(argc, argv, i, arg, value, std::cerr)) {
+                return 2;
+            }
+            output = value;
+        } else if (arg == "--help" || arg == "-h") {
+            print_usage(std::cout);
+            return 0;
+        } else {
+            std::cerr << "Unknown write-first-battle-view-placement-cache-profile option: "
+                << arg << "\n";
+            return 2;
+        }
+    }
+    return savor::predict::write_first_battle_view_placement_cache_profile(
+        output,
+        std::cout,
+        std::cerr);
+}
+
+int run_write_first_battle_view_placement_frame_thread_profile(int argc, char** argv) {
+    std::filesystem::path output;
+    std::uint32_t list_max = 128;
+    for (int i = 2; i < argc; ++i) {
+        const std::string arg = argv[i];
+        std::string value;
+        if (arg == "--output") {
+            if (!require_value(argc, argv, i, arg, value, std::cerr)) {
+                return 2;
+            }
+            output = value;
+        } else if (arg == "--list-max") {
+            int parsed = 0;
+            if (!require_value(argc, argv, i, arg, value, std::cerr)
+                || !parse_int(value, parsed)
+                || (parsed != 128 && parsed != 256)) {
+                std::cerr << "--list-max must be 128 or 256.\n";
+                return 2;
+            }
+            list_max = static_cast<std::uint32_t>(parsed);
+        } else if (arg == "--help" || arg == "-h") {
+            print_usage(std::cout);
+            return 0;
+        } else {
+            std::cerr << "Unknown write-first-battle-view-placement-frame-thread-profile option: "
+                << arg << "\n";
+            return 2;
+        }
+    }
+    return savor::predict::write_first_battle_view_placement_frame_thread_profile(
+        output,
+        std::cout,
+        std::cerr,
+        list_max);
+}
+
+int run_write_first_battle_view_placement_semantic_hooks_profile(int argc, char** argv) {
+    std::filesystem::path output;
+    std::uint32_t list_max = 128;
+    for (int i = 2; i < argc; ++i) {
+        const std::string arg = argv[i];
+        std::string value;
+        if (arg == "--output") {
+            if (!require_value(argc, argv, i, arg, value, std::cerr)) {
+                return 2;
+            }
+            output = value;
+        } else if (arg == "--list-max") {
+            int parsed = 0;
+            if (!require_value(argc, argv, i, arg, value, std::cerr)
+                || !parse_int(value, parsed)
+                || (parsed != 128 && parsed != 256)) {
+                std::cerr << "--list-max must be 128 or 256.\n";
+                return 2;
+            }
+            list_max = static_cast<std::uint32_t>(parsed);
+        } else if (arg == "--help" || arg == "-h") {
+            print_usage(std::cout);
+            return 0;
+        } else {
+            std::cerr << "Unknown write-first-battle-view-placement-semantic-hooks-profile option: "
+                << arg << "\n";
+            return 2;
+        }
+    }
+    return savor::predict::write_first_battle_view_placement_semantic_hooks_profile(
+        output,
+        std::cout,
+        std::cerr,
+        list_max);
+}
+
+int run_write_first_battle_predictor_live_comparison_profile(int argc, char** argv) {
+    std::filesystem::path output;
+    std::uint32_t list_max = 128;
+    for (int i = 2; i < argc; ++i) {
+        const std::string arg = argv[i];
+        std::string value;
+        if (arg == "--output") {
+            if (!require_value(argc, argv, i, arg, value, std::cerr)) {
+                return 2;
+            }
+            output = value;
+        } else if (arg == "--list-max") {
+            int parsed = 0;
+            if (!require_value(argc, argv, i, arg, value, std::cerr)
+                || !parse_int(value, parsed)
+                || (parsed != 128 && parsed != 256)) {
+                std::cerr << "--list-max must be 128 or 256.\n";
+                return 2;
+            }
+            list_max = static_cast<std::uint32_t>(parsed);
+        } else if (arg == "--help" || arg == "-h") {
+            print_usage(std::cout);
+            return 0;
+        } else {
+            std::cerr << "Unknown write-first-battle-predictor-live-comparison-profile option: "
+                << arg << "\n";
+            return 2;
+        }
+    }
+    return savor::predict::write_first_battle_predictor_live_comparison_profile(
+        output,
+        std::cout,
+        std::cerr,
+        list_max);
+}
+
+int run_write_first_battle_movement_destination_stop_profile(int argc, char** argv) {
+    std::filesystem::path output;
+    std::uint32_t list_max = 128;
+    for (int i = 2; i < argc; ++i) {
+        const std::string arg = argv[i];
+        std::string value;
+        if (arg == "--output") {
+            if (!require_value(argc, argv, i, arg, value, std::cerr)) {
+                return 2;
+            }
+            output = value;
+        } else if (arg == "--list-max") {
+            int parsed = 0;
+            if (!require_value(argc, argv, i, arg, value, std::cerr)
+                || !parse_int(value, parsed)
+                || (parsed != 128 && parsed != 256)) {
+                std::cerr << "--list-max must be 128 or 256.\n";
+                return 2;
+            }
+            list_max = static_cast<std::uint32_t>(parsed);
+        } else if (arg == "--help" || arg == "-h") {
+            print_usage(std::cout);
+            return 0;
+        } else {
+            std::cerr << "Unknown write-first-battle-movement-destination-stop-profile option: "
+                << arg << "\n";
+            return 2;
+        }
+    }
+    return savor::predict::write_first_battle_movement_destination_stop_profile(
+        output,
+        std::cout,
+        std::cerr,
+        list_max);
+}
+
+int run_write_first_battle_action_view_service_lifecycle_profile(int argc, char** argv) {
+    std::filesystem::path output;
+    std::uint32_t list_max = 128;
+    for (int i = 2; i < argc; ++i) {
+        const std::string arg = argv[i];
+        std::string value;
+        if (arg == "--output") {
+            if (!require_value(argc, argv, i, arg, value, std::cerr)) {
+                return 2;
+            }
+            output = value;
+        } else if (arg == "--list-max") {
+            int parsed = 0;
+            if (!require_value(argc, argv, i, arg, value, std::cerr)
+                || !parse_int(value, parsed)
+                || (parsed != 128 && parsed != 256)) {
+                std::cerr << "--list-max must be 128 or 256.\n";
+                return 2;
+            }
+            list_max = static_cast<std::uint32_t>(parsed);
+        } else if (arg == "--help" || arg == "-h") {
+            print_usage(std::cout);
+            return 0;
+        } else {
+            std::cerr
+                << "Unknown write-first-battle-action-view-service-lifecycle-profile option: "
+                << arg << "\n";
+            return 2;
+        }
+    }
+    return savor::predict::write_first_battle_action_view_service_lifecycle_profile(
+        output,
+        std::cout,
+        std::cerr,
+        list_max);
+}
+
+int run_write_first_battle_pc_worker_selector_lifetime_profile(int argc, char** argv) {
+    std::filesystem::path output;
+    std::uint32_t list_max = 128;
+    for (int i = 2; i < argc; ++i) {
+        const std::string arg = argv[i];
+        std::string value;
+        if (arg == "--output") {
+            if (!require_value(argc, argv, i, arg, value, std::cerr)) {
+                return 2;
+            }
+            output = value;
+        } else if (arg == "--list-max") {
+            int parsed = 0;
+            if (!require_value(argc, argv, i, arg, value, std::cerr)
+                || !parse_int(value, parsed)
+                || (parsed != 128 && parsed != 256)) {
+                std::cerr << "--list-max must be 128 or 256.\n";
+                return 2;
+            }
+            list_max = static_cast<std::uint32_t>(parsed);
+        } else if (arg == "--help" || arg == "-h") {
+            print_usage(std::cout);
+            return 0;
+        } else {
+            std::cerr
+                << "Unknown write-first-battle-pc-worker-selector-lifetime-profile option: "
+                << arg << "\n";
+            return 2;
+        }
+    }
+    return savor::predict::write_first_battle_pc_worker_selector_lifetime_profile(
+        output,
+        std::cout,
+        std::cerr,
+        list_max);
+}
+
+int run_write_first_battle_action_view_pathing_loop_profile(int argc, char** argv) {
+    std::filesystem::path output;
+    for (int i = 2; i < argc; ++i) {
+        const std::string arg = argv[i];
+        std::string value;
+        if (arg == "--output") {
+            if (!require_value(argc, argv, i, arg, value, std::cerr)) {
+                return 2;
+            }
+            output = value;
+        } else if (arg == "--help" || arg == "-h") {
+            print_usage(std::cout);
+            return 0;
+        } else {
+            std::cerr << "Unknown write-first-battle-action-view-pathing-loop-profile option: "
+                << arg << "\n";
+            return 2;
+        }
+    }
+    return savor::predict::write_first_battle_action_view_pathing_loop_profile(
+        output,
+        std::cout,
+        std::cerr);
+}
+
+int run_write_first_battle_thread_pathing_timing_profile(int argc, char** argv) {
+    std::filesystem::path output;
+    std::uint32_t list_max = 128;
+    for (int i = 2; i < argc; ++i) {
+        const std::string arg = argv[i];
+        std::string value;
+        if (arg == "--output") {
+            if (!require_value(argc, argv, i, arg, value, std::cerr)) {
+                return 2;
+            }
+            output = value;
+        } else if (arg == "--list-max") {
+            int parsed = 0;
+            if (!require_value(argc, argv, i, arg, value, std::cerr)
+                || !parse_int(value, parsed)
+                || (parsed != 128 && parsed != 256)) {
+                std::cerr << "--list-max must be 128 or 256.\n";
+                return 2;
+            }
+            list_max = static_cast<std::uint32_t>(parsed);
+        } else if (arg == "--help" || arg == "-h") {
+            print_usage(std::cout);
+            return 0;
+        } else {
+            std::cerr << "Unknown write-first-battle-thread-pathing-timing-profile option: "
+                << arg << "\n";
+            return 2;
+        }
+    }
+    return savor::predict::write_first_battle_thread_pathing_timing_profile(
+        output,
+        std::cout,
+        std::cerr,
+        list_max);
+}
+
+int run_write_battle_thread_producer_profile(int argc, char** argv) {
+    std::filesystem::path output;
+    std::uint32_t list_max = 128;
+    for (int i = 2; i < argc; ++i) {
+        const std::string arg = argv[i];
+        std::string value;
+        if (arg == "--output") {
+            if (!require_value(argc, argv, i, arg, value, std::cerr)) {
+                return 2;
+            }
+            output = value;
+        } else if (arg == "--list-max") {
+            int parsed = 0;
+            if (!require_value(argc, argv, i, arg, value, std::cerr)
+                || !parse_int(value, parsed)
+                || (parsed != 128 && parsed != 256)) {
+                std::cerr << "--list-max must be 128 or 256.\n";
+                return 2;
+            }
+            list_max = static_cast<std::uint32_t>(parsed);
+        } else if (arg == "--help" || arg == "-h") {
+            print_usage(std::cout);
+            return 0;
+        } else {
+            std::cerr << "Unknown write-battle-thread-producer-profile option: "
+                << arg << "\n";
+            return 2;
+        }
+    }
+    return savor::predict::write_battle_thread_producer_profile(
+        output,
+        std::cout,
+        std::cerr,
+        list_max);
 }
 
 int run_write_first_battle_action_view_resource_profile(int argc, char** argv) {
@@ -658,6 +1036,39 @@ int main(int argc, char** argv) {
     }
     if (command == "write-first-battle-field6-watch-profile") {
         return run_write_first_battle_field6_watch_profile(argc, argv);
+    }
+    if (command == "write-first-battle-view-eligibility-profile") {
+        return run_write_first_battle_view_eligibility_profile(argc, argv);
+    }
+    if (command == "write-first-battle-view-placement-cache-profile") {
+        return run_write_first_battle_view_placement_cache_profile(argc, argv);
+    }
+    if (command == "write-first-battle-view-placement-frame-thread-profile") {
+        return run_write_first_battle_view_placement_frame_thread_profile(argc, argv);
+    }
+    if (command == "write-first-battle-view-placement-semantic-hooks-profile") {
+        return run_write_first_battle_view_placement_semantic_hooks_profile(argc, argv);
+    }
+    if (command == "write-first-battle-predictor-live-comparison-profile") {
+        return run_write_first_battle_predictor_live_comparison_profile(argc, argv);
+    }
+    if (command == "write-first-battle-movement-destination-stop-profile") {
+        return run_write_first_battle_movement_destination_stop_profile(argc, argv);
+    }
+    if (command == "write-first-battle-action-view-service-lifecycle-profile") {
+        return run_write_first_battle_action_view_service_lifecycle_profile(argc, argv);
+    }
+    if (command == "write-first-battle-pc-worker-selector-lifetime-profile") {
+        return run_write_first_battle_pc_worker_selector_lifetime_profile(argc, argv);
+    }
+    if (command == "write-first-battle-action-view-pathing-loop-profile") {
+        return run_write_first_battle_action_view_pathing_loop_profile(argc, argv);
+    }
+    if (command == "write-first-battle-thread-pathing-timing-profile") {
+        return run_write_first_battle_thread_pathing_timing_profile(argc, argv);
+    }
+    if (command == "write-battle-thread-producer-profile") {
+        return run_write_battle_thread_producer_profile(argc, argv);
     }
     if (command == "write-first-battle-action-view-resource-profile") {
         return run_write_first_battle_action_view_resource_profile(argc, argv);

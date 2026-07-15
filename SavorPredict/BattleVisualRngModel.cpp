@@ -29,12 +29,27 @@ void append_step(BattleVisualRngModelResult& result, BattleVisualRngStep step) {
     result.steps.push_back(std::move(step));
 }
 
-std::string effect_detail(int source_key, const CombatEffectBurstSequenceModel& model) {
+std::string effect_detail(
+    int source_key,
+    const CombatEffectBurstSequenceModel& model,
+    std::optional<int> instruction_mode_0x6,
+    bool attack_was_critical,
+    bool counter_follow_up) {
     std::ostringstream out;
     out << "source_key=" << source_key
         << "; buffers=" << model.bursts.size()
-        << "; total_loops=" << model.total_loop_count
-        << "; " << combat_effect_burst_rule_detail();
+        << "; total_loops=" << model.total_loop_count;
+    if (counter_follow_up) {
+        out << "; source_key_selection=counter_follow_up_forced_hit";
+    } else if (instruction_mode_0x6.has_value()) {
+        out << "; instruction_mode_0x6=" << *instruction_mode_0x6
+            << "; source_key_selection=instruction_mode";
+    } else if (attack_was_critical) {
+        out << "; source_key_selection=legacy_critical_fallback";
+    } else {
+        out << "; source_key_selection=legacy_actor_slot_fallback";
+    }
+    out << "; " << combat_effect_burst_rule_detail();
     return out.str();
 }
 
@@ -241,9 +256,23 @@ BattleVisualRngStep model_action_view_camera_step(const BattleVisualRngActionInp
 std::optional<int> first_battle_basic_attack_effect_source_key(
     int actor_slot,
     bool attack_was_critical,
-    bool counter_follow_up) {
+    bool counter_follow_up,
+    std::optional<int> instruction_mode_0x6) {
     if (counter_follow_up) {
         return actor_slot < 4 ? 5 : 4;
+    }
+
+    if (instruction_mode_0x6.has_value()) {
+        switch (*instruction_mode_0x6) {
+        case 4:
+            return 4;
+        case 5:
+            return 5;
+        case 8:
+            return 8;
+        default:
+            return std::nullopt;
+        }
     }
 
     if (attack_was_critical) {
@@ -266,7 +295,7 @@ BattleVisualRngModelResult model_first_battle_basic_attack_visual_rng(
     const BattleVisualRngActionInput& input) {
     BattleVisualRngModelResult result;
 
-    if (input.profile_name != "first-battle") {
+    if (!is_first_battle_soldiers_profile_name(input.profile_name)) {
         append_step(result, {
             .label = "unsupported_visual_rng_profile",
             .status = BattleVisualRngStepStatus::Unsupported,
@@ -289,7 +318,8 @@ BattleVisualRngModelResult model_first_battle_basic_attack_visual_rng(
     const auto source_key = first_battle_basic_attack_effect_source_key(
         input.actor_slot,
         input.attack_was_critical,
-        input.counter_follow_up);
+        input.counter_follow_up,
+        input.instruction_mode_0x6);
     if (!source_key.has_value()) {
         append_step(result, {
             .label = "unsupported_effect_source_actor_slot",
@@ -311,12 +341,23 @@ BattleVisualRngModelResult model_first_battle_basic_attack_visual_rng(
     }
 
     const auto model = model_combat_effect_burst_sequence_draws(burst_inputs);
+    const bool legacy_critical_fallback =
+        input.attack_was_critical
+        && !input.counter_follow_up
+        && !input.instruction_mode_0x6.has_value();
     append_step(result, {
         .label = "combat_effect_burst",
-        .status = BattleVisualRngStepStatus::Exact,
+        .status = legacy_critical_fallback
+            ? BattleVisualRngStepStatus::Provisional
+            : BattleVisualRngStepStatus::Exact,
         .draws_consumed = model.total_draws,
         .effect_source_key = source_key,
-        .detail = effect_detail(*source_key, model),
+        .detail = effect_detail(
+            *source_key,
+            model,
+            input.instruction_mode_0x6,
+            input.attack_was_critical,
+            input.counter_follow_up),
     });
 
     return result;
@@ -337,8 +378,9 @@ const char* first_battle_basic_attack_visual_rng_rule_detail() {
     return "first-battle basic attacks model one action-view mode-0 rewrite-gate camera draw "
            "before hit/damage resolution, then landed-hit combat effect bursts as the action "
            "tail before the battle controller advances to the next actor; the tail uses source "
-           "keys 4/5 for non-critical first-battle actors and source key 8 for the observed "
-           "successful-critical path; counter follow-ups use the forced-hit path and select "
+           "keys 4/5/8; modeled InstructionWorksheet+0x6 mode is preferred over raw critical "
+           "state, with the critical-to-key8 shortcut retained only as a visible fallback; "
+           "counter follow-ups use the forced-hit path and select "
            "source key 4 for enemy counters or source key 5 for PC counters";
 }
 

@@ -423,7 +423,9 @@ LiveCheckpointCapture::derive_dynamic_memory_watchpoints(
                 static_cast<std::int64_t>(base) + static_cast<std::int64_t>(spec.offset);
             address = static_cast<std::uint32_t>(signed_address);
         }
-        if (address == 0 || address_already_active(address)) {
+        // Capture profiles use effective RAM addresses. Reject unresolved or
+        // malformed pointer chains before Dolphin sees them as watchpoints.
+        if ((address & 0x80000000u) == 0 || address_already_active(address)) {
             continue;
         }
 

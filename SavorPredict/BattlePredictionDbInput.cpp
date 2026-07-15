@@ -1,6 +1,7 @@
 #include "BattlePredictionDbInput.h"
 
 #include "BattleJobRunOptions.h"
+#include "BattlePredictionScenario.h"
 
 #include <Core/Input/SoaBattle/BattleCommandCodec.h>
 #include <Core/Memory/Soa/Battle/BattleContextCodec.h>
@@ -171,6 +172,38 @@ std::optional<savor::db::BattleContextProbeSnapshot> resolve_context_probe(
     return probe;
 }
 
+std::optional<std::string> lookup_savestate_sha256(
+    sqlite3* state_db,
+    std::int64_t savestate_id,
+    std::ostream& err) {
+    sqlite3_stmt* statement = nullptr;
+    const char* sql =
+        "SELECT a.sha256 "
+        "FROM state_savestate s "
+        "JOIN state_artifact a ON a.artifact_id=s.artifact_id "
+        "WHERE s.savestate_id=?1 AND s.is_complete=1;";
+    if (sqlite3_prepare_v2(state_db, sql, -1, &statement, nullptr) != SQLITE_OK) {
+        err << "Failed preparing entry-savestate fingerprint query: "
+            << sqlite3_errmsg(state_db) << "\n";
+        return std::nullopt;
+    }
+    sqlite3_bind_int64(statement, 1, savestate_id);
+    std::optional<std::string> result;
+    if (sqlite3_step(statement) == SQLITE_ROW) {
+        const auto* value = sqlite3_column_text(statement, 0);
+        if (value != nullptr) {
+            result = reinterpret_cast<const char*>(value);
+        }
+    }
+    sqlite3_finalize(statement);
+    if (!result.has_value() || result->empty()) {
+        err << "No complete state_savestate artifact fingerprint found for savestate "
+            << savestate_id << ".\n";
+        return std::nullopt;
+    }
+    return result;
+}
+
 } // namespace
 
 const char* battle_prediction_seed_source_name(BattlePredictionSeedSource source) {
@@ -212,6 +245,35 @@ std::optional<BattlePredictionDbInput> build_battle_prediction_input_from_analys
         return std::nullopt;
     }
 
+    std::vector<std::string> profile_override_warnings;
+    const auto check_profile_constraint = [&](bool satisfied, const std::string& message) {
+        if (satisfied) {
+            return true;
+        }
+        if (!options.allow_profile_overrides) {
+            err << message << "\n";
+            return false;
+        }
+        profile_override_warnings.push_back(message);
+        return true;
+    };
+
+    std::optional<BattlePredictionScenario> resolved_scenario;
+    if (options.scenario_name.has_value()) {
+        const auto scenario = battle_prediction_scenario_by_name(*options.scenario_name);
+        if (!scenario.has_value()) {
+            err << "Unsupported scenario: " << *options.scenario_name << "\n";
+            return std::nullopt;
+        }
+        resolved_scenario = *scenario;
+        if (!check_profile_constraint(
+                scenario->profile_name == profile->name,
+                "Scenario " + scenario->name + " requires profile "
+                    + scenario->profile_name)) {
+            return std::nullopt;
+        }
+    }
+
     auto turn_job = resolve_turn_job(analysis_db, options.selector, err);
     if (!turn_job.has_value()) {
         return std::nullopt;
@@ -220,6 +282,14 @@ std::optional<BattlePredictionDbInput> build_battle_prediction_input_from_analys
     const auto wave = analysis_db.GetBattleTurnWave(turn_job->wave_id);
     if (!wave.has_value()) {
         err << "Selected turn job references missing wave " << turn_job->wave_id << ".\n";
+        return std::nullopt;
+    }
+    if (!check_profile_constraint(
+            wave->turn_index == profile->supported_turn_index,
+            "Profile " + profile->name + " requires turn_index "
+                + std::to_string(profile->supported_turn_index)
+                + "; selected job uses turn_index "
+                + std::to_string(wave->turn_index))) {
         return std::nullopt;
     }
     const auto battle_set = analysis_db.GetBattleSet(wave->battle_set_id);
@@ -233,19 +303,37 @@ std::optional<BattlePredictionDbInput> build_battle_prediction_input_from_analys
 
     BattlePredictionDbInput resolved;
     resolved.input.profile = *profile;
+    resolved.input.scenario_name = resolved_scenario.has_value()
+        ? std::optional<std::string>{resolved_scenario->name}
+        : std::nullopt;
+    resolved.input.turn_index = wave->turn_index;
     resolved.input.options.movement_backend = options.movement_backend;
     resolved.input.options.action_view_std_json_dir = options.action_view_std_json_dir;
+    resolved.input.options.allow_profile_overrides = options.allow_profile_overrides;
     auto& metadata = resolved.metadata;
     metadata.source_db_root = options.db_root;
+    metadata.profile_name = profile->name;
+    metadata.scenario_name = resolved.input.scenario_name;
+    metadata.movement_backend = options.movement_backend;
     metadata.requested_turn_job_id = options.selector.turn_job_id;
     metadata.requested_exec_job_id = options.selector.exec_job_id;
     metadata.turn_job_id = turn_job->turn_job_id;
     metadata.exec_job_id = turn_job->exec_job_id;
     metadata.wave_id = wave->wave_id;
     metadata.battle_set_id = wave->battle_set_id;
+    metadata.entry_savestate_id = battle_set->entry_savestate_id;
     metadata.turn_index = wave->turn_index;
     metadata.seed_candidate_id = seed_candidate_id;
     metadata.resolved_turn_variant_key = turn_job->resolved_turn_variant_key;
+    metadata.warnings.insert(
+        metadata.warnings.end(),
+        profile_override_warnings.begin(),
+        profile_override_warnings.end());
+
+    resolved.input.start_boundary = options.start_seed_override.has_value()
+        ? BattlePredictionStartBoundary::BattleCoordinatorStart
+        : BattlePredictionStartBoundary::CapturedTurnStart;
+    metadata.start_boundary = resolved.input.start_boundary;
 
     if (options.start_seed_override.has_value()) {
         resolved.input.starting_rng_seed = *options.start_seed_override;
@@ -320,9 +408,6 @@ std::optional<BattlePredictionDbInput> build_battle_prediction_input_from_analys
         metadata.fake_attacks = turn_job->fake_attacks_this_turn;
         metadata.fake_attack_source = BattlePredictionFakeAttackSource::TurnJob;
     }
-    resolved.input.enemy_event_id = options.enemy_event_id;
-    metadata.enemy_event_id = options.enemy_event_id;
-
     if (!turn_job->resolved_turn_commands_blob.has_value() || turn_job->resolved_turn_commands_blob->empty()) {
         err << "Selected turn job has no resolved turn command blob.\n";
         return std::nullopt;
@@ -366,7 +451,25 @@ std::optional<BattlePredictionDbInput> build_battle_prediction_input_from_db_roo
         return std::nullopt;
     }
     savor::db::analysis::SqliteAnalysisDb analysis_db(handle.get());
-    return build_battle_prediction_input_from_analysis_db(analysis_db, options, err);
+    auto resolved = build_battle_prediction_input_from_analysis_db(
+        analysis_db, options, err);
+    if (!resolved.has_value()) {
+        return std::nullopt;
+    }
+
+    SqliteReadHandle state_handle;
+    if (!state_handle.open(options.db_root / "state.db", err)) {
+        return std::nullopt;
+    }
+    const auto savestate_sha256 = lookup_savestate_sha256(
+        state_handle.get(), resolved->metadata.entry_savestate_id, err);
+    if (!savestate_sha256.has_value()) {
+        return std::nullopt;
+    }
+    resolved->metadata.entry_savestate_sha256 = *savestate_sha256;
+    resolved->input.source_validation.savestate_sha256 = *savestate_sha256;
+    resolved->input.source_validation.require_savestate_match = true;
+    return resolved;
 }
 
 void write_battle_prediction_db_metadata_text(
@@ -374,21 +477,30 @@ void write_battle_prediction_db_metadata_text(
     std::ostream& out) {
     out << "DB-backed prediction input\n";
     out << "  db_root: " << metadata.source_db_root.string() << "\n";
+    out << "  profile: " << metadata.profile_name << "\n";
+    if (metadata.scenario_name.has_value()) {
+        out << "  scenario: " << *metadata.scenario_name << "\n";
+    }
+    out << "  movement_backend: "
+        << battle_prediction_movement_backend_name(metadata.movement_backend) << "\n";
     out << "  turn_job_id: " << metadata.turn_job_id << "\n";
     if (metadata.exec_job_id.has_value()) {
         out << "  exec_job_id: " << *metadata.exec_job_id << "\n";
     }
     out << "  wave_id: " << metadata.wave_id << "\n";
     out << "  battle_set_id: " << metadata.battle_set_id << "\n";
+    out << "  entry_savestate_id: " << metadata.entry_savestate_id << "\n";
+    if (metadata.entry_savestate_sha256.has_value()) {
+        out << "  entry_savestate_sha256: " << *metadata.entry_savestate_sha256 << "\n";
+    }
     out << "  turn_index: " << metadata.turn_index << "\n";
     out << "  start_seed: " << metadata.starting_rng_seed << " ("
         << hex_seed(metadata.starting_rng_seed) << ")"
         << " source=" << battle_prediction_seed_source_name(metadata.seed_source) << "\n";
+    out << "  start_boundary: "
+        << battle_prediction_start_boundary_name(metadata.start_boundary) << "\n";
     out << "  fake_attacks: " << metadata.fake_attacks
         << " source=" << battle_prediction_fake_attack_source_name(metadata.fake_attack_source) << "\n";
-    if (metadata.enemy_event_id.has_value()) {
-        out << "  enemy_event_id: " << *metadata.enemy_event_id << "\n";
-    }
     if (metadata.context_probe_id.has_value()) {
         out << "  context_probe_id: " << *metadata.context_probe_id
             << " source=" << battle_prediction_context_source_name(metadata.context_source);
@@ -416,6 +528,15 @@ void write_battle_prediction_run_json(
     out << "  \"input\": {\n";
     bool first = true;
     write_json_string_field(out, "db_root", metadata.source_db_root.generic_string(), first);
+    write_json_string_field(out, "profile", metadata.profile_name, first);
+    if (metadata.scenario_name.has_value()) {
+        write_json_string_field(out, "scenario", *metadata.scenario_name, first);
+    }
+    write_json_string_field(
+        out,
+        "movement_backend",
+        battle_prediction_movement_backend_name(metadata.movement_backend),
+        first);
     if (metadata.requested_turn_job_id.has_value()) {
         write_json_i64_field(out, "requested_turn_job_id", *metadata.requested_turn_job_id, first);
     }
@@ -428,6 +549,14 @@ void write_battle_prediction_run_json(
     }
     write_json_i64_field(out, "wave_id", metadata.wave_id, first);
     write_json_i64_field(out, "battle_set_id", metadata.battle_set_id, first);
+    write_json_i64_field(out, "entry_savestate_id", metadata.entry_savestate_id, first);
+    if (metadata.entry_savestate_sha256.has_value()) {
+        write_json_string_field(
+            out,
+            "entry_savestate_sha256",
+            *metadata.entry_savestate_sha256,
+            first);
+    }
     write_json_int_field(out, "turn_index", metadata.turn_index, first);
     if (metadata.seed_candidate_id.has_value()) {
         write_json_i64_field(out, "seed_candidate_id", *metadata.seed_candidate_id, first);
@@ -435,11 +564,13 @@ void write_battle_prediction_run_json(
     write_json_u32_field(out, "starting_rng_seed", metadata.starting_rng_seed, first);
     write_json_string_field(out, "starting_rng_seed_hex", hex_seed(metadata.starting_rng_seed), first);
     write_json_string_field(out, "seed_source", battle_prediction_seed_source_name(metadata.seed_source), first);
+    write_json_string_field(
+        out,
+        "start_boundary",
+        battle_prediction_start_boundary_name(metadata.start_boundary),
+        first);
     write_json_int_field(out, "fake_attacks", metadata.fake_attacks, first);
     write_json_string_field(out, "fake_attack_source", battle_prediction_fake_attack_source_name(metadata.fake_attack_source), first);
-    if (metadata.enemy_event_id.has_value()) {
-        write_json_int_field(out, "enemy_event_id", *metadata.enemy_event_id, first);
-    }
     if (metadata.context_probe_id.has_value()) {
         write_json_i64_field(out, "context_probe_id", *metadata.context_probe_id, first);
         write_json_string_field(out, "context_source", battle_prediction_context_source_name(metadata.context_source), first);
