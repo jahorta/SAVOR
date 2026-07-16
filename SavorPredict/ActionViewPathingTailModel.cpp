@@ -12,6 +12,8 @@ namespace savor::predict {
 namespace {
 
 constexpr float kPi = 3.14159265358979323846f;
+constexpr float kAngleShortUnitsPerRadian = 10430.37890625f;
+constexpr float kVectorComponentSnapThreshold = 0.00001f;
 
 void append_step(ActionViewPathingTailResult& result, ActionViewPathingTailStep step) {
     result.total_draws += step.draws_consumed;
@@ -33,12 +35,36 @@ float distance_xz(const BattleFrameVec3& a, const BattleFrameVec3& b) {
     return std::sqrt(dx * dx + dz * dz);
 }
 
-float raw_angle_degrees_xz(const BattleFrameVec3& from, const BattleFrameVec3& to) {
-    float degrees = std::atan2(to.z - from.z, to.x - from.x) * 180.0f / kPi;
-    if (degrees < 0.0f) {
-        degrees += 360.0f;
+float snap_angle_vector_component(float value) {
+    if (value < kVectorComponentSnapThreshold
+        && -kVectorComponentSnapThreshold < value) {
+        return 0.0f;
     }
-    return degrees;
+    return value;
+}
+
+std::uint16_t angle_xz_short_8007201c(
+    const BattleFrameVec3& from,
+    const BattleFrameVec3& to) {
+    const float x = snap_angle_vector_component(to.x - from.x);
+    const float z = snap_angle_vector_component(to.z - from.z);
+    if (x == 0.0f) {
+        return z > 0.0f ? 0x8000u : 0u;
+    }
+
+    const float radians = static_cast<float>(
+        std::atan2(static_cast<double>(x), -static_cast<double>(z)));
+    int angle = -static_cast<int>(kAngleShortUnitsPerRadian * radians);
+    if (angle > 0x7fff) {
+        angle -= 0x10000;
+    } else if (angle < -0x8000) {
+        angle += 0x10000;
+    }
+    return static_cast<std::uint16_t>(angle);
+}
+
+float raw_angle_degrees_xz(const BattleFrameVec3& from, const BattleFrameVec3& to) {
+    return angle_short_to_degrees_8006116c(angle_xz_short_8007201c(from, to));
 }
 
 float raw_abs_angle_delta(float a, float b) {
@@ -106,7 +132,7 @@ BattleFrameVec3 build_orbit_path_base(
 
 float angle_short_to_degrees_8006116c(std::uint32_t angle_word) {
     const auto angle = static_cast<std::uint16_t>(angle_word & 0xffffu);
-    return static_cast<float>(angle) * 360.0f / 65536.0f;
+    return static_cast<float>(360.0 * static_cast<double>(angle) / 65536.0);
 }
 
 GeometryScorer117ecResult score_geometry_800117ec(const GeometryScorer117ecInput& input) {

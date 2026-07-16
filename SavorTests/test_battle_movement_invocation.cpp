@@ -148,6 +148,10 @@ BattleFrameActionScheduleResult schedule_fallback_action(
             .actor_slot = actor,
             .target_slot = target,
             .enemy_owned = actor >= 4,
+            .combatant_command_parameter = 1,
+            .initial_instruction_parameter = 1,
+            .final_instruction_parameter = 1,
+            .execution_route = BasicAttackExecutionRoute::FallbackRanged,
             .selected_worker = actor >= 4
                 ? MovementSelectedWorker::EnemyFallbackAttack_80087844
                 : MovementSelectedWorker::PcFallbackAttack_80085ce0,
@@ -339,7 +343,7 @@ TEST(SavorPredictBattleMovementInvocationRuntime, PassiveActivationResetsPriorQu
     EXPECT_EQ(rng, 0x10293847u);
 }
 
-TEST(SavorPredictBattleMovementInvocationRuntime, DirectInstructionBoundaryPrecedesMotionCompletion) {
+TEST(SavorPredictBattleMovementInvocationRuntime, QueuedStdActionTransitionSeparatesWorksheetModeFromMotionMode) {
     auto runtime = initialize_frame_runtime(frame_slots());
     ASSERT_TRUE(runtime.has_value());
     const auto scheduled = schedule_first_turn_actor_action(
@@ -356,21 +360,28 @@ TEST(SavorPredictBattleMovementInvocationRuntime, DirectInstructionBoundaryPrece
     ASSERT_TRUE(scheduled.scheduled);
 
     std::uint32_t rng = 0x31415926u;
-    bool saw_handoff = false;
-    for (int frame = 0; frame < 64 && !saw_handoff; ++frame) {
+    bool saw_instruction_state = false;
+    std::string instruction_state_detail;
+    for (int frame = 0; frame < 64 && !saw_instruction_state; ++frame) {
         const auto step = run_first_turn_frame(*runtime, rng);
         ASSERT_TRUE(step.ok);
-        saw_handoff = std::any_of(
+        const auto publication = std::find_if(
             step.events.begin(), step.events.end(),
             [](const BattleFrameStepEvent& event) {
-                return event.step_kind == BattleFrameWorkerStepKind::ActionPhaseTransition
-                    && event.callback == "active_instruction_producer_boundary"
-                    && event.completion_reason.find("direct movement commit")
+                return event.step_kind
+                        == BattleFrameWorkerStepKind::VisualInstructionStatePublish
+                    && event.slot == 0
+                    && event.detail.find("installs_epoch=0")
                         != std::string::npos;
             });
+        saw_instruction_state = publication != step.events.end();
+        if (saw_instruction_state) {
+            instruction_state_detail = publication->detail;
+        }
     }
 
-    ASSERT_TRUE(saw_handoff);
+    ASSERT_TRUE(saw_instruction_state);
+    EXPECT_NE(instruction_state_detail.find("action_key=6"), std::string::npos);
     ASSERT_TRUE(runtime->active_action.has_value());
     EXPECT_EQ(runtime->active_action->phase,
               BattleFrameActionPhase::PassiveDispatched);
@@ -379,9 +390,158 @@ TEST(SavorPredictBattleMovementInvocationRuntime, DirectInstructionBoundaryPrece
     EXPECT_FALSE(active.complete);
     EXPECT_EQ(active.completed_motion_legs, 0);
     EXPECT_EQ(rng, 0x31415926u);
+    const auto* combatant = find_frame_combatant(runtime->state, 0);
+    ASSERT_NE(combatant, nullptr);
+    EXPECT_EQ(combatant->visual_instruction_mode_0x6, 6);
+    EXPECT_EQ(runtime->combatant_instructions[0].action_mode,
+              BattleFrameActionMode::ActiveApproach);
+
+    for (int frame = 0;
+         frame < 8 && runtime->visual.timelines[0].epoch == 0;
+         ++frame) {
+        ASSERT_TRUE(run_first_turn_frame(*runtime, rng).ok);
+    }
+    ASSERT_GT(runtime->visual.timelines[0].epoch, 0u);
+    EXPECT_EQ(
+        runtime->visual.timelines[0].instruction.runtime_instruction_mode,
+        std::optional<std::int16_t>{6});
+    const auto motion_epoch = runtime->visual.timelines[0].epoch;
+    const auto instruction_revision = combatant->visual_instruction_revision;
+
+    ASSERT_TRUE(notify_first_turn_action_resolution(
+        *runtime,
+        BattleFrameActionResolution{
+            .action_ordinal = runtime->active_action->action_ordinal,
+            .attack_result = 1,
+            .attack_landed = true,
+            .target_dead = false,
+        }));
+    EXPECT_EQ(rng, 0x31415926u);
+    EXPECT_EQ(runtime->combatant_instructions[0].action_mode,
+              BattleFrameActionMode::ActiveApproach);
+    EXPECT_EQ(combatant->visual_instruction_mode_0x6, 6);
+    EXPECT_EQ(combatant->visual_instruction_revision, instruction_revision);
+    EXPECT_EQ(runtime->visual.timelines[0].epoch, motion_epoch);
+    EXPECT_TRUE(runtime->active_action->queued_state_transition_pending);
+
+    bool installed_queued_mode = false;
+    for (int frame = 0; frame < 8 && !installed_queued_mode; ++frame) {
+        const auto step = run_first_turn_frame(*runtime, rng);
+        ASSERT_TRUE(step.ok);
+        installed_queued_mode = std::any_of(
+            step.events.begin(), step.events.end(),
+            [](const BattleFrameStepEvent& event) {
+                    return event.step_kind
+                        == BattleFrameWorkerStepKind::VisualInstructionInstall
+                    && event.slot == 0
+                    && event.detail.find("action_key=4") != std::string::npos;
+            });
+    }
+    EXPECT_TRUE(installed_queued_mode);
+    EXPECT_GT(runtime->visual.timelines[0].epoch, motion_epoch);
+    EXPECT_EQ(
+        runtime->visual.timelines[0].instruction.runtime_instruction_mode,
+        std::optional<std::int16_t>{4});
+    EXPECT_EQ(combatant->selected_action_row_action_id, 4);
+    EXPECT_TRUE(runtime->active_action->queued_state_transition_published);
+    EXPECT_EQ(rng, 0x31415926u);
 
     EXPECT_EQ(runtime->active_action->passive_completion_mask, 0x32);
     EXPECT_EQ(runtime->active_action->completion_turn_phase, 4);
+}
+
+TEST(SavorPredictBattleMovementInvocationRuntime, QueuedStdActionTransitionPublishesCriticalAndFallbackModes) {
+    const auto run_case = [](
+                              MovementSelectedWorker worker,
+                              std::int16_t parameter,
+                              BasicAttackExecutionRoute route,
+                              int attack_result,
+                              int expected_state,
+                              int expected_mode) {
+        auto runtime = initialize_frame_runtime(frame_slots());
+        ASSERT_TRUE(runtime.has_value());
+        const auto scheduled = schedule_first_turn_actor_action(
+            *runtime,
+            BattleFrameScheduleActionInput{
+                .actor_slot = 0,
+                .target_slot = 4,
+                .enemy_owned = false,
+                .combatant_command_parameter = parameter,
+                .initial_instruction_parameter = parameter,
+                .final_instruction_parameter = parameter,
+                .execution_route = route,
+                .selected_worker = worker,
+                .action_kind = BattleMovementActionKind::BasicAttack,
+                .relation_scope = BattleMovementRelationScope::SingleTarget,
+                .turn_type = BattleMovementTurnType::Normal,
+            });
+        ASSERT_TRUE(scheduled.scheduled);
+
+        std::uint32_t rng = 0x51425364u;
+        if (route == BasicAttackExecutionRoute::DirectMelee) {
+            for (int frame = 0;
+                 frame < 72 && runtime->visual.timelines[0].epoch == 0;
+                 ++frame) {
+                ASSERT_TRUE(run_first_turn_frame(*runtime, rng).ok);
+            }
+            ASSERT_GT(runtime->visual.timelines[0].epoch, 0u);
+        }
+        const auto setup_epoch = runtime->visual.timelines[0].epoch;
+
+        ASSERT_TRUE(notify_first_turn_action_resolution(
+            *runtime,
+            BattleFrameActionResolution{
+                .action_ordinal = scheduled.action_ordinal,
+                .attack_result = attack_result,
+                .attack_landed = attack_result != 0,
+                .target_dead = false,
+            }));
+        ASSERT_TRUE(runtime->active_action.has_value());
+        ASSERT_TRUE(runtime->active_action->queued_state_transition.has_value());
+        ASSERT_TRUE(runtime->active_action->queued_state_transition->queued_state.has_value());
+        EXPECT_EQ(
+            static_cast<int>(*runtime->active_action->queued_state_transition->queued_state),
+            expected_state);
+
+        bool installed = false;
+        for (int frame = 0; frame < 8 && !installed; ++frame) {
+            const auto step = run_first_turn_frame(*runtime, rng);
+            ASSERT_TRUE(step.ok);
+            installed = std::any_of(
+                step.events.begin(), step.events.end(),
+                [expected_mode](const BattleFrameStepEvent& event) {
+                    return event.step_kind
+                            == BattleFrameWorkerStepKind::VisualInstructionInstall
+                        && event.slot == 0
+                        && event.detail.find(
+                            "action_key=" + std::to_string(expected_mode))
+                            != std::string::npos;
+                });
+        }
+
+        EXPECT_TRUE(installed);
+        EXPECT_GT(runtime->visual.timelines[0].epoch, setup_epoch);
+        EXPECT_TRUE(runtime->active_action->queued_state_transition_published);
+        EXPECT_EQ(
+            runtime->visual.timelines[0].instruction.runtime_instruction_mode,
+            std::optional<std::int16_t>{static_cast<std::int16_t>(expected_mode)});
+        EXPECT_EQ(rng, 0x51425364u);
+    };
+
+    run_case(
+        MovementSelectedWorker::PcDirectAttack_80086308,
+        0,
+        BasicAttackExecutionRoute::DirectMelee,
+        2,
+        6,
+        8);
+    run_case(
+        MovementSelectedWorker::PcFallbackAttack_80085ce0,
+        1,
+        BasicAttackExecutionRoute::FallbackRanged,
+        1,
+        7,
+        5);
 }
 
 TEST(SavorPredictBattleMovementInvocationRuntime, RejectsSecondActionUntilMaskDrains) {

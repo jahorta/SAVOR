@@ -174,6 +174,35 @@ void write_dynamic_addrprog_watchpoint(
     }
 }
 
+void write_dynamic_absolute_watchpoint(
+    std::ostringstream& out,
+    std::string_view id,
+    std::string_view pc,
+    std::uint32_t address,
+    std::string_view size,
+    std::string_view access,
+    std::string_view scope = {},
+    bool one_shot = false,
+    bool owns_rng_draw = false)
+{
+    out << "[dynamic_watchpoint." << id << "]\n";
+    out << "pc=0x" << pc << "\n";
+    out << "address=" << hex_u32(address) << "\n";
+    out << "size=" << size << "\n";
+    out << "access=" << access << "\n";
+    if (one_shot) {
+        out << "one_shot=true\n";
+    }
+    if (owns_rng_draw) {
+        out << "owns_rng_draw=true\n";
+    }
+    if (!scope.empty()) {
+        out << "scope=" << scope << "\n\n";
+    } else {
+        out << "\n";
+    }
+}
+
 void write_checkpoint_owned(
     std::ostringstream& out,
     std::string_view id,
@@ -749,6 +778,246 @@ std::vector<std::string> action_view_service_lifecycle_slot_addrprog_samples()
         samples.push_back(prefix + "_iw_visual_timer_0x164:" + instruction + "|+0x164:u32");
     }
     return samples;
+}
+
+std::vector<std::string> visual_publication_origin_thread_addrprog_samples(
+    std::string_view base,
+    std::string_view prefix)
+{
+    const auto thread = std::string(base);
+    const auto worksheet = thread + ":+0x24|load_ptr32";
+    const auto instruction = worksheet + "|+0x4c|load_ptr32";
+    const auto name = std::string(prefix);
+    return {
+        name + "_thread_callback_0x00:" + thread + ":+0x00:u32",
+        name + "_thread_flags_0x18:" + thread + ":+0x18:u8",
+        name + "_thread_state_0x19:" + thread + ":+0x19:u8",
+        name + "_worksheet_ptr_0x24:" + thread + ":+0x24:u32",
+        name + "_iw_ptr_0x4c:" + worksheet + "|+0x4c:u32",
+        name + "_iw_slot_0x00:" + instruction + "|+0x00:u8",
+        name + "_iw_target_0x04:" + instruction + "|+0x04:u8",
+        name + "_iw_mode_0x06:" + instruction + "|+0x06:u16",
+        name + "_iw_subtype_0x08:" + instruction + "|+0x08:u16",
+        name + "_iw_staged_mode_0x0a:" + instruction + "|+0x0a:u16",
+        name + "_iw_action_row_0xe4:" + instruction + "|+0xe4:u16",
+        name + "_iw_flags_0xec:" + instruction + "|+0xec:u32",
+        name + "_iw_flags_0xf0:" + instruction + "|+0xf0:u32",
+    };
+}
+
+std::vector<std::string> visual_publication_instruction_addrprog_samples(
+    std::string_view base,
+    std::string_view prefix)
+{
+    const auto instruction = std::string(base);
+    const auto name = std::string(prefix);
+    return {
+        name + "_iw_slot_0x00:" + instruction + ":+0x00:u8",
+        name + "_iw_target_0x04:" + instruction + ":+0x04:u8",
+        name + "_iw_mode_0x06:" + instruction + ":+0x06:u16",
+        name + "_iw_subtype_0x08:" + instruction + ":+0x08:u16",
+        name + "_iw_staged_mode_0x0a:" + instruction + ":+0x0a:u16",
+        name + "_iw_action_row_0xe4:" + instruction + ":+0xe4:u16",
+        name + "_iw_flags_0xec:" + instruction + ":+0xec:u32",
+        name + "_iw_flags_0xf0:" + instruction + ":+0xf0:u32",
+    };
+}
+
+std::vector<std::string> mode1_attack_callback_thread_addrprog_samples(
+    std::string_view base,
+    std::string_view prefix)
+{
+    const auto thread = std::string(base);
+    const auto worksheet = thread + ":+0x24|load_ptr32";
+    const auto instruction = worksheet + "|+0x4c|load_ptr32";
+    const auto aux_table = worksheet + "|+0x10|load_ptr32";
+    const auto name = std::string(prefix);
+    return {
+        name + "_thread_callback_0x00:" + thread + ":+0x00:u32",
+        name + "_thread_flags_0x18:" + thread + ":+0x18:u8",
+        name + "_thread_state_0x19:" + thread + ":+0x19:u8",
+        name + "_worksheet_ptr_0x24:" + thread + ":+0x24:u32",
+        name + "_worksheet_pos_x_0x1c:" + worksheet + "|+0x1c:u32",
+        name + "_worksheet_pos_y_0x20:" + worksheet + "|+0x20:u32",
+        name + "_worksheet_pos_z_0x24:" + worksheet + "|+0x24:u32",
+        name + "_worksheet_facing_0x2c:" + worksheet + "|+0x2c:u32",
+        name + "_aux_table_ptr_0x10:" + worksheet + "|+0x10:u32",
+        name + "_delay_descriptor_root_0x30:" + aux_table + "|+0x30:u32",
+        name + "_iw_ptr_0x4c:" + worksheet + "|+0x4c:u32",
+        name + "_iw_slot_0x00:" + instruction + "|+0x00:u8",
+        name + "_iw_target_0x04:" + instruction + "|+0x04:u8",
+        name + "_iw_mode_0x06:" + instruction + "|+0x06:u16",
+        name + "_iw_subtype_0x08:" + instruction + "|+0x08:u16",
+        name + "_iw_staged_mode_0x0a:" + instruction + "|+0x0a:u16",
+        name + "_iw_control_0x12:" + instruction + "|+0x12:u16",
+        name + "_iw_previous_mode_0x1c:" + instruction + "|+0x1c:u16",
+        name + "_iw_gate_0x50:" + instruction + "|+0x50:u32",
+        name + "_iw_motion_resource_0x5c:" + instruction + "|+0x5c:u32",
+        name + "_iw_motion_resource_alt_0x60:" + instruction + "|+0x60:u32",
+        name + "_iw_motion_id_0x64:" + instruction + "|+0x64:u16",
+        name + "_iw_motion_progress_0x68:" + instruction + "|+0x68:u32",
+        name + "_iw_motion_increment_0x6c:" + instruction + "|+0x6c:u32",
+        name + "_iw_motion_complete_0x70:" + instruction + "|+0x70:u32",
+        name + "_iw_previous_motion_resource_0x74:" + instruction + "|+0x74:u32",
+        name + "_iw_previous_motion_progress_0x7c:" + instruction + "|+0x7c:u32",
+        name + "_iw_action_table_0xdc:" + instruction + "|+0xdc:u32",
+        name + "_iw_handler_0xe0:" + instruction + "|+0xe0:u32",
+        name + "_iw_action_row_0xe4:" + instruction + "|+0xe4:u16",
+        name + "_iw_alt_action_row_0xe6:" + instruction + "|+0xe6:u16",
+        name + "_iw_previous_action_row_0xe8:" + instruction + "|+0xe8:u16",
+        name + "_iw_flags_0xec:" + instruction + "|+0xec:u32",
+        name + "_iw_flags_0xf0:" + instruction + "|+0xf0:u32",
+        name + "_iw_motion_angle_0x11c:" + instruction + "|+0x11c:u32",
+        name + "_iw_motion_start_0x120:" + instruction + "|+0x120:u32",
+        name + "_iw_motion_target_0x124:" + instruction + "|+0x124:u32",
+        name + "_iw_motion_field_0x128:" + instruction + "|+0x128:u32",
+        name + "_iw_motion_field_0x12c:" + instruction + "|+0x12c:u32",
+        name + "_iw_motion_field_0x130:" + instruction + "|+0x130:u32",
+        name + "_iw_runtime_word_0x134:" + instruction + "|+0x134:u32",
+        name + "_iw_delay_0x138:" + instruction + "|+0x138:u16",
+        name + "_iw_geometry_x_0x154:" + instruction + "|+0x154:u32",
+        name + "_iw_geometry_z_0x158:" + instruction + "|+0x158:u32",
+        name + "_iw_geometry_extent_0x15c:" + instruction + "|+0x15c:u32",
+        name + "_iw_resource_ptr_0x1dc:" + instruction + "|+0x1dc:u32",
+        name + "_iw_gate_0x20c:" + instruction + "|+0x20c:u16",
+        name + "_iw_gate_0x20e:" + instruction + "|+0x20e:u16",
+        name + "_iw_gate_0x210:" + instruction + "|+0x210:u16",
+        name + "_iw_gate_0x212:" + instruction + "|+0x212:u16",
+        name + "_iw_gate_counter_0x214:" + instruction + "|+0x214:u32",
+    };
+}
+
+std::vector<std::string> mode1_attack_callback_instruction_addrprog_samples(
+    std::string_view base,
+    std::string_view prefix)
+{
+    const auto instruction = std::string(base);
+    const auto name = std::string(prefix);
+    return {
+        name + "_iw_slot_0x00:" + instruction + ":+0x00:u8",
+        name + "_iw_target_0x04:" + instruction + ":+0x04:u8",
+        name + "_iw_mode_0x06:" + instruction + ":+0x06:u16",
+        name + "_iw_subtype_0x08:" + instruction + ":+0x08:u16",
+        name + "_iw_control_0x12:" + instruction + ":+0x12:u16",
+        name + "_iw_motion_resource_0x5c:" + instruction + ":+0x5c:u32",
+        name + "_iw_motion_resource_alt_0x60:" + instruction + ":+0x60:u32",
+        name + "_iw_motion_id_0x64:" + instruction + ":+0x64:u16",
+        name + "_iw_motion_progress_0x68:" + instruction + ":+0x68:u32",
+        name + "_iw_motion_increment_0x6c:" + instruction + ":+0x6c:u32",
+        name + "_iw_motion_complete_0x70:" + instruction + ":+0x70:u32",
+        name + "_iw_handler_0xe0:" + instruction + ":+0xe0:u32",
+        name + "_iw_action_row_0xe4:" + instruction + ":+0xe4:u16",
+        name + "_iw_flags_0xec:" + instruction + ":+0xec:u32",
+        name + "_iw_flags_0xf0:" + instruction + ":+0xf0:u32",
+        name + "_iw_delay_0x138:" + instruction + ":+0x138:u16",
+    };
+}
+
+std::vector<std::string> mode1_state6_progress_root_addrprog_samples()
+{
+    std::vector<std::string> samples;
+    samples.reserve(12 * 18);
+    for (int root_index = 0; root_index < 12; ++root_index) {
+        const auto prefix = "root" + std::to_string(root_index);
+        const auto root = hex_u32(
+            0x80309E24u + static_cast<std::uint32_t>(root_index) * 4u);
+        const auto thread = root + ":load_ptr32";
+        const auto worksheet = thread + "|+0x24|load_ptr32";
+        const auto instruction = worksheet + "|+0x4c|load_ptr32";
+        samples.push_back(prefix + "_thread_callback_0x00:" + thread + "|+0x00:u32");
+        samples.push_back(prefix + "_thread_state_0x19:" + thread + "|+0x19:u8");
+        samples.push_back(prefix + "_iw_slot_0x00:" + instruction + "|+0x00:u8");
+        samples.push_back(prefix + "_iw_target_0x04:" + instruction + "|+0x04:u8");
+        samples.push_back(prefix + "_iw_mode_0x06:" + instruction + "|+0x06:u16");
+        samples.push_back(prefix + "_iw_control_0x12:" + instruction + "|+0x12:u16");
+        samples.push_back(prefix + "_iw_motion_resource_0x5c:" + instruction + "|+0x5c:u32");
+        samples.push_back(prefix + "_iw_motion_resource_alt_0x60:" + instruction + "|+0x60:u32");
+        samples.push_back(prefix + "_iw_motion_id_0x64:" + instruction + "|+0x64:u16");
+        samples.push_back(prefix + "_iw_motion_progress_0x68:" + instruction + "|+0x68:u32");
+        samples.push_back(prefix + "_iw_motion_increment_0x6c:" + instruction + "|+0x6c:u32");
+        samples.push_back(prefix + "_iw_motion_complete_0x70:" + instruction + "|+0x70:u32");
+        samples.push_back(prefix + "_iw_action_table_0xdc:" + instruction + "|+0xdc:u32");
+        samples.push_back(prefix + "_iw_action_row_0xe4:" + instruction + "|+0xe4:u16");
+        samples.push_back(prefix + "_iw_alt_action_row_0xe6:" + instruction + "|+0xe6:u16");
+        samples.push_back(prefix + "_iw_previous_action_row_0xe8:" + instruction + "|+0xe8:u16");
+        samples.push_back(prefix + "_iw_flags_0xec:" + instruction + "|+0xec:u32");
+        samples.push_back(prefix + "_iw_flags_0xf0:" + instruction + "|+0xf0:u32");
+    }
+    return samples;
+}
+
+std::vector<std::string> mode1_state6_action_row_addrprog_samples(
+    std::string_view base,
+    std::string_view prefix)
+{
+    const auto row = std::string(base);
+    const auto name = std::string(prefix);
+    return {
+        name + "_row_word_0x00:" + row + ":+0x00:u32",
+        name + "_row_motion_id_0x06:" + row + ":+0x06:u16",
+        name + "_row_flags_0x08:" + row + ":+0x08:u32",
+        name + "_row_argument_0x0c:" + row + ":+0x0c:u16",
+        name + "_row_duration_0x10:" + row + ":+0x10:u32",
+        name + "_row_frame_step_0x14:" + row + ":+0x14:u32",
+    };
+}
+
+std::vector<std::string> mode1_delay_descriptor_addrprog_samples(std::string_view base)
+{
+    const auto descriptor = std::string(base);
+    const auto payload = descriptor + ":+0x0c|load_ptr32";
+    return {
+        "delay_descriptor_key_low_0x00:" + descriptor + ":+0x00:u16",
+        "delay_descriptor_key_high_0x02:" + descriptor + ":+0x02:u16",
+        "delay_descriptor_word_0x04:" + descriptor + ":+0x04:u32",
+        "delay_descriptor_word_0x08:" + descriptor + ":+0x08:u32",
+        "delay_descriptor_payload_ptr_0x0c:" + descriptor + ":+0x0c:u32",
+        "delay_payload_word_0x00:" + payload + "|+0x00:u32",
+        "delay_payload_word_0x04:" + payload + "|+0x04:u32",
+        "delay_payload_word_0x08:" + payload + "|+0x08:u32",
+        "delay_payload_word_0x0c:" + payload + "|+0x0c:u32",
+        "delay_payload_delay_0x10:" + payload + "|+0x10:u16",
+        "delay_payload_word_0x12:" + payload + "|+0x12:u16",
+        "delay_payload_word_0x14:" + payload + "|+0x14:u32",
+        "delay_payload_word_0x18:" + payload + "|+0x18:u32",
+        "delay_payload_word_0x1c:" + payload + "|+0x1c:u32",
+        "delay_payload_word_0x20:" + payload + "|+0x20:u32",
+    };
+}
+
+std::vector<std::string> mode1_delay_payload_addrprog_samples(std::string_view base)
+{
+    const auto payload = std::string(base);
+    return {
+        "delay_payload_word_0x00:" + payload + ":+0x00:u32",
+        "delay_payload_word_0x04:" + payload + ":+0x04:u32",
+        "delay_payload_word_0x08:" + payload + ":+0x08:u32",
+        "delay_payload_word_0x0c:" + payload + ":+0x0c:u32",
+        "delay_payload_delay_0x10:" + payload + ":+0x10:u16",
+        "delay_payload_word_0x12:" + payload + ":+0x12:u16",
+        "delay_payload_word_0x14:" + payload + ":+0x14:u32",
+        "delay_payload_word_0x18:" + payload + ":+0x18:u32",
+        "delay_payload_word_0x1c:" + payload + ":+0x1c:u32",
+        "delay_payload_word_0x20:" + payload + ":+0x20:u32",
+    };
+}
+
+std::vector<std::string> visual_publication_command_row_addrprog_samples(
+    std::string_view base,
+    std::string_view prefix)
+{
+    const auto row = std::string(base);
+    const auto name = std::string(prefix);
+    return {
+        name + "_command_id_low_0x00:" + row + ":+0x00:u16",
+        name + "_command_id_high_0x02:" + row + ":+0x02:u16",
+        name + "_selector_0x04:" + row + ":+0x04:u16",
+        name + "_payload_size_0x08:" + row + ":+0x08:u32",
+        name + "_payload_ptr_0x0c:" + row + ":+0x0c:u32",
+        name + "_payload_primary_0x00:" + row + ":+0x0c|load_ptr32|+0x00:u16",
+        name + "_payload_secondary_0x02:" + row + ":+0x0c|load_ptr32|+0x02:u16",
+        name + "_payload_mode_0x22:" + row + ":+0x0c|load_ptr32|+0x22:u16",
+    };
 }
 
 std::vector<std::string> action_view_pathing_loop_slot_addrprog_samples()
@@ -2374,6 +2643,36 @@ std::vector<std::string> pc_worker_selector_memory_samples()
             "slot" + slot_text + "_movement_thread_ptr",
             0x80309700u + static_cast<std::uint32_t>(slot) * 4u,
             "u32"));
+    }
+    return samples;
+}
+
+std::vector<std::string> queued_instruction_param_memory_samples()
+{
+    std::vector<std::string> samples;
+    samples.reserve(12 * 9);
+    for (int slot = 0; slot < 12; ++slot) {
+        const auto slot_text = std::to_string(slot);
+        const auto queued = 0x80309174u + static_cast<std::uint32_t>(slot) * 0x20u;
+        const auto state = 0x80309730u + static_cast<std::uint32_t>(slot) * 0x10u;
+        samples.push_back(memory_sample(
+            "slot" + slot_text + "_queued_instruction_0x00", queued, "u32"));
+        samples.push_back(memory_sample(
+            "slot" + slot_text + "_queued_target_0x04", queued + 0x04u, "u8"));
+        samples.push_back(memory_sample(
+            "slot" + slot_text + "_queued_instr_param_0x06", queued + 0x06u, "u16"));
+        samples.push_back(memory_sample(
+            "slot" + slot_text + "_queued_result_0x08", queued + 0x08u, "u8"));
+        samples.push_back(memory_sample(
+            "slot" + slot_text + "_queued_result_copy_0x09", queued + 0x09u, "u8"));
+        samples.push_back(memory_sample(
+            "slot" + slot_text + "_special_state_0x00", state, "u32"));
+        samples.push_back(memory_sample(
+            "slot" + slot_text + "_special_target_0x04", state + 0x04u, "u8"));
+        samples.push_back(memory_sample(
+            "slot" + slot_text + "_special_secondary_0x06", state + 0x06u, "u16"));
+        samples.push_back(memory_sample(
+            "slot" + slot_text + "_special_result_0x08", state + 0x08u, "u8"));
     }
     return samples;
 }
@@ -6070,6 +6369,622 @@ std::string build_first_battle_action_view_service_lifecycle_profile_ini(
     return out.str();
 }
 
+std::string build_first_battle_visual_publication_order_profile_ini(
+    std::uint32_t thread_list_max_nodes)
+{
+    const auto memory_samples = action_view_service_lifecycle_memory_samples();
+    const auto memory_views = as_string_views(memory_samples);
+    const auto slot_samples = action_view_service_lifecycle_slot_addrprog_samples();
+    const auto slot_views = as_string_views(slot_samples);
+    const auto thread_list_sample =
+        pc_worker_thread_list_snapshot_sample(thread_list_max_nodes);
+    const std::vector<std::string_view> thread_list_views = {thread_list_sample};
+
+    const auto combine = [](std::vector<std::string> lhs, const std::vector<std::string>& rhs) {
+        lhs.insert(lhs.end(), rhs.begin(), rhs.end());
+        return lhs;
+    };
+    const auto probe_entry_samples =
+        visual_publication_origin_thread_addrprog_samples("r3", "probe_origin");
+    const auto probe_live_samples = combine(
+        visual_publication_origin_thread_addrprog_samples("r26", "probe_origin"),
+        visual_publication_instruction_addrprog_samples("r30", "probe_live"));
+    const auto aux_entry_samples =
+        visual_publication_origin_thread_addrprog_samples("r3", "aux_origin");
+    const auto aux_dispatch_samples = combine(
+        visual_publication_origin_thread_addrprog_samples("r26", "aux_origin"),
+        visual_publication_command_row_addrprog_samples("r30", "aux_row"));
+    const auto dispatch_entry_samples = combine(
+        visual_publication_origin_thread_addrprog_samples("r5", "dispatch_origin"),
+        visual_publication_command_row_addrprog_samples("r4", "dispatch_row"));
+    const auto handler_call_samples = combine(
+        visual_publication_origin_thread_addrprog_samples("r4", "handler_origin"),
+        visual_publication_command_row_addrprog_samples("r3", "handler_row"));
+    const auto handler_return_samples =
+        visual_publication_origin_thread_addrprog_samples("r4", "handler_origin");
+    const auto probe_entry_views = as_string_views(probe_entry_samples);
+    const auto probe_live_views = as_string_views(probe_live_samples);
+    const auto aux_entry_views = as_string_views(aux_entry_samples);
+    const auto aux_dispatch_views = as_string_views(aux_dispatch_samples);
+    const auto dispatch_entry_views = as_string_views(dispatch_entry_samples);
+    const auto handler_call_views = as_string_views(handler_call_samples);
+    const auto handler_return_views = as_string_views(handler_return_samples);
+
+    const auto record_r29_samples = action_view_record_addrprog_samples("r29");
+    const auto record_r29_views = as_string_views(record_r29_samples);
+    const auto record_r31_samples = action_view_record_addrprog_samples("r31");
+    const auto record_r31_views = as_string_views(record_r31_samples);
+    const auto service_r29_samples = action_service_child_addrprog_samples("r29");
+    const auto service_r29_views = as_string_views(service_r29_samples);
+    const auto mode1_samples = combine(
+        visual_publication_instruction_addrprog_samples("r31", "mode1_origin"),
+        {
+            "mode1_record_origin_thread_0x74:r29:+0x74:u32",
+            "mode1_record_payload_ptr_0x178:r29:+0x178:u32",
+            "mode1_record_payload_mode_0x22:r29:+0x178|load_ptr32|+0x22:u16",
+            "mode1_camera_yaw_bits_0xd4:r29:+0xd4:u32",
+            "mode1_camera_roll_bits_0xd8:r29:+0xd8:u32",
+        });
+    const auto mode1_views = as_string_views(mode1_samples);
+    const auto attack_memory =
+        concat(memory_views, first_battle_queued_instruction_samples());
+    const auto counter_memory =
+        concat(attack_memory, first_battle_counter_state_samples());
+
+    const std::vector<std::string_view> serialized_creator_entry_addrprog = {
+        "serialized_payload_ptr_0x0c:r3:+0x0c:u32",
+        "serialized_payload_mode_0x22:r3:+0x0c|load_ptr32|+0x22:u16",
+        "serialized_payload_flags_0x10:r3:+0x0c|load_ptr32|+0x10:u32",
+        "serialized_origin_callback_0x00:r4:+0x00:u32",
+        "serialized_origin_iw_slot_0x00:r4:+0x24|load_ptr32|+0x4c|load_ptr32|+0x00:u8",
+        "serialized_origin_iw_mode_0x06:r4:+0x24|load_ptr32|+0x4c|load_ptr32|+0x06:u16",
+    };
+    const std::vector<std::string_view> service_creator_entry_addrprog = {
+        "command_payload_ptr_0x0c:r3:+0x0c:u32",
+        "command_mode_0x02:r3:+0x0c|load_ptr32|+0x02:u16",
+        "command_subtype_0x04:r3:+0x0c|load_ptr32|+0x04:u16",
+        "command_flags_0x20:r3:+0x0c|load_ptr32|+0x20:u32",
+        "command_origin_callback_0x00:r4:+0x00:u32",
+        "command_origin_iw_slot_0x00:r4:+0x24|load_ptr32|+0x4c|load_ptr32|+0x00:u8",
+        "command_origin_iw_mode_0x06:r4:+0x24|load_ptr32|+0x4c|load_ptr32|+0x06:u16",
+    };
+
+    std::ostringstream out;
+    out << "[profile]\n";
+    out << "name=first_battle_visual_publication_order\n";
+    out << "schema_version=1\n\n";
+
+    // Dolphin stops after the seed write. This watchpoint is the only draw
+    // owner; the PC checkpoints below provide source and ordering context.
+    write_dynamic_absolute_watchpoint(
+        out,
+        "rng_seed_write_803469A8",
+        "80082134",
+        addr::AddrRegistry::base(addr::core::RNG_SEED),
+        "u32",
+        "write",
+        "normal",
+        false,
+        true);
+
+    write_checkpoint(
+        out,
+        "setup_turn_action_entry_80082134",
+        "80082134",
+        "setup_turn_action_entry",
+        "setupTurnAction_80082134",
+        "capture_activation_boundary",
+        false,
+        memory_views,
+        {"actor_slot_arg:3"},
+        {},
+        slot_views,
+        thread_list_views,
+        16);
+    write_checkpoint(
+        out,
+        "battle_case5_after_threads_8000A2FC",
+        "8000A2FC",
+        "battle_case5_after_threads",
+        "Battle::_battleController_8000a118",
+        "frame_thread_order",
+        false,
+        memory_views,
+        {},
+        {},
+        slot_views,
+        thread_list_views,
+        2400,
+        0x80082134u);
+
+    write_checkpoint(
+        out,
+        "movement_commit_entry_8008178C",
+        "8008178C",
+        "movement_commit_entry",
+        "FUN_8008178c",
+        "active_movement_commit",
+        false,
+        memory_views,
+        {"movement_worksheet:3", "next_grid_x:4", "next_grid_z:5", "slot:6"},
+        movement_commit_samples_from_r3(),
+        {},
+        {},
+        512);
+    write_checkpoint(
+        out,
+        "action_motion_setup_complete_8001FC04",
+        "8001FC04",
+        "action_motion_setup_complete",
+        "FUN_8001fabc",
+        "action_motion_increment_ready",
+        false,
+        memory_views,
+        {"combatant_worksheet:30", "instruction_worksheet:31"},
+        float_motion_instruction_samples_from_r31(),
+        {},
+        {},
+        1024);
+    write_checkpoint(
+        out,
+        "action_motion_final_result_8001EB54",
+        "8001EB54",
+        "action_motion_final_result",
+        "FUN_8001e8c8",
+        "action_motion_complete",
+        false,
+        memory_views,
+        {"motion_result:3", "motion_context_r29:29", "motion_context_r30:30", "motion_context_r31:31"},
+        {},
+        {},
+        {},
+        2400);
+    write_checkpoint(
+        out,
+        "action_motion_caller_consumption_8001B778",
+        "8001B778",
+        "action_motion_caller_consumption",
+        "FUN_8001ab60",
+        "action_motion_result_consumed",
+        false,
+        memory_views,
+        {"motion_result:3", "origin_thread:31"},
+        {},
+        {},
+        {},
+        1024);
+
+    write_checkpoint(
+        out,
+        "attack_hit_dodge_80010BDC",
+        "80010BDC",
+        "attack_hit_dodge",
+        "getAttackResult_80010b8c",
+        "hit_rng_call",
+        false,
+        attack_memory,
+        attack_result_rng_gprs(),
+        {},
+        {},
+        {},
+        256);
+    write_checkpoint(
+        out,
+        "attack_critical_80010C44",
+        "80010C44",
+        "attack_critical",
+        "getAttackResult_80010b8c",
+        "critical_rng_call",
+        false,
+        attack_memory,
+        attack_result_rng_gprs(),
+        {},
+        {},
+        {},
+        256);
+    write_checkpoint(
+        out,
+        "crit_gate_return_80010CA4",
+        "80010CA4",
+        "crit_gate_return",
+        "getAttackResult_80010b8c",
+        "critical_result",
+        false,
+        attack_memory,
+        {"crit_result:3", "attack_result:26", "active_slot:28", "target_slot_word:31"},
+        {},
+        {},
+        {},
+        256);
+    write_checkpoint(
+        out,
+        "counter_roll_80081A88",
+        "80081A88",
+        "counter_roll",
+        "Battle::AtkMethods::shouldCounter_800819d0",
+        "counter_rng_call",
+        false,
+        counter_memory,
+        counter_gate_gprs(),
+        counter_target_instance_samples(),
+        {},
+        {},
+        256);
+    write_checkpoint(
+        out,
+        "counter_gate_return_80081B80",
+        "80081B80",
+        "counter_gate_return",
+        "Battle::AtkMethods::shouldCounter_800819d0",
+        "counter_result",
+        false,
+        counter_memory,
+        counter_return_gprs(),
+        counter_target_instance_samples(),
+        {},
+        {},
+        256);
+    write_checkpoint(
+        out,
+        "attack_resolution_begin_80081B94",
+        "80081B94",
+        "attack_resolution_begin",
+        "Battle::AtkMethods::performAttack_80081b94",
+        "attack_begin",
+        false,
+        attack_memory,
+        attack_resolution_begin_gprs(),
+        {},
+        {},
+        {},
+        256);
+    write_checkpoint(
+        out,
+        "attack_result_return_80081BE8",
+        "80081BE8",
+        "attack_result_return",
+        "Battle::AtkMethods::performAttack_80081b94",
+        "attack_result_return",
+        false,
+        attack_memory,
+        {"attack_result:3", "actor_slot:4", "target_slot:29"},
+        {},
+        {},
+        {},
+        256);
+    write_checkpoint(
+        out,
+        "attack_result_write_80081C48",
+        "80081C48",
+        "attack_result_write",
+        "Battle::AtkMethods::performAttack_80081b94",
+        "attack_result_publication",
+        false,
+        attack_memory,
+        {"attack_result:0", "actor_slot:4", "target_slot:29"},
+        {},
+        {},
+        {},
+        256);
+
+    const std::array<std::pair<std::string_view, std::string_view>, 8> probe_callsites = {{
+        {"80008568", "FUN_80008530"},
+        {"80008624", "FUN_800085ec"},
+        {"80008664", "FUN_800085ec"},
+        {"800086A8", "FUN_80008694"},
+        {"8001C500", "FUN_8001c474"},
+        {"8001C528", "FUN_8001c474"},
+        {"8001C634", "FUN_8001c474"},
+        {"8001AE98", "FUN_8001ab60"},
+    }};
+    for (const auto& [pc, function] : probe_callsites) {
+        write_checkpoint(
+            out,
+            "visual_probe_callsite_" + std::string(pc),
+            pc,
+            "visual_probe_callsite",
+            function,
+            "before_FUN_800086BC",
+            false,
+            memory_views,
+            {
+                "origin_thread:3",
+                "temporary_mode:4",
+                "temporary_subtype:5",
+                "command_rows:6",
+                "row_selector:7",
+                "probe_flags:8",
+            },
+            {},
+            probe_entry_views,
+            {},
+            512);
+    }
+    write_checkpoint(
+        out,
+        "visual_probe_entry_800086BC",
+        "800086BC",
+        "visual_probe_entry",
+        "FUN_800086bc",
+        "temporary_instruction_probe",
+        false,
+        memory_views,
+        {
+            "origin_thread:3",
+            "temporary_mode:4",
+            "temporary_subtype:5",
+            "command_rows:6",
+            "row_selector:7",
+            "probe_flags:8",
+        },
+        {},
+        probe_entry_views,
+        thread_list_views,
+        512);
+    write_checkpoint(
+        out,
+        "visual_probe_mode_write_800086F4",
+        "800086F4",
+        "visual_probe_mode_write",
+        "FUN_800086bc",
+        "temporary_instruction_apply",
+        false,
+        memory_views,
+        {"temporary_mode:4", "temporary_subtype:5", "origin_thread:26", "command_rows:27", "instruction_worksheet:30"},
+        {},
+        probe_live_views,
+        {},
+        512);
+    write_checkpoint(
+        out,
+        "visual_probe_subtype_write_800086F8",
+        "800086F8",
+        "visual_probe_subtype_write",
+        "FUN_800086bc",
+        "temporary_subtype_apply",
+        false,
+        memory_views,
+        {"temporary_subtype:5", "origin_thread:26", "command_rows:27", "instruction_worksheet:30"},
+        {},
+        probe_live_views,
+        {},
+        512);
+    for (const auto pc : {"8000870C", "80008720", "8000875C", "80008774", "800087C4", "800087D8"}) {
+        write_checkpoint(
+            out,
+            "visual_probe_apply_branch_" + std::string(pc),
+            pc,
+            "visual_probe_apply_branch",
+            "FUN_800086bc",
+            "FUN_8000832C_call",
+            false,
+            memory_views,
+            {"origin_thread:3", "command_rows:4", "row_selector:5", "probe_origin_thread:26", "probe_command_rows:27", "instruction_worksheet:30"},
+            {},
+            probe_live_views,
+            {},
+            512);
+    }
+    write_checkpoint(
+        out,
+        "visual_probe_mode_restore_800087E0",
+        "800087E0",
+        "visual_probe_mode_restore",
+        "FUN_800086bc",
+        "temporary_instruction_restore",
+        false,
+        memory_views,
+        {"saved_mode:29", "saved_subtype:28", "instruction_worksheet:30"},
+        {},
+        probe_live_views,
+        {},
+        512);
+    write_checkpoint(
+        out,
+        "visual_probe_subtype_restore_800087E8",
+        "800087E8",
+        "visual_probe_subtype_restore",
+        "FUN_800086bc",
+        "temporary_subtype_restore",
+        false,
+        memory_views,
+        {"saved_mode:29", "saved_subtype:28", "instruction_worksheet:30"},
+        {},
+        probe_live_views,
+        {},
+        512);
+
+    write_checkpoint(
+        out,
+        "aux_row_apply_entry_8000832C",
+        "8000832C",
+        "aux_row_apply_entry",
+        "FUN_8000832c",
+        "aux_row_scan_begin",
+        false,
+        memory_views,
+        {"origin_thread:3", "command_rows:4", "row_selector:5"},
+        {},
+        aux_entry_views,
+        thread_list_views,
+        1024);
+    write_checkpoint(
+        out,
+        "aux_dispatch_call_800084C8",
+        "800084C8",
+        "aux_dispatch_call",
+        "FUN_8000832c",
+        "FUN_800367E8_call",
+        false,
+        memory_views,
+        {"command_id:24", "origin_thread:26", "current_row:30"},
+        {},
+        aux_dispatch_views,
+        thread_list_views,
+        1024);
+    write_checkpoint(
+        out,
+        "aux_dispatch_return_800084CC",
+        "800084CC",
+        "aux_dispatch_return",
+        "FUN_8000832c",
+        "FUN_800367E8_return",
+        false,
+        memory_views,
+        {"handler_result:3", "command_id:24", "origin_thread:26", "current_row:30"},
+        {},
+        aux_dispatch_views,
+        {},
+        1024);
+    write_checkpoint(
+        out,
+        "command_dispatch_entry_800367E8",
+        "800367E8",
+        "command_dispatch_entry",
+        "FUN_800367e8",
+        "handler_lookup_begin",
+        false,
+        memory_views,
+        {"command_id:3", "current_row:4", "origin_thread:5"},
+        {},
+        dispatch_entry_views,
+        thread_list_views,
+        1024);
+    write_checkpoint(
+        out,
+        "command_handler_call_80036864",
+        "80036864",
+        "command_handler_call",
+        "FUN_800367e8",
+        "computed_handler_call",
+        false,
+        memory_views,
+        {"current_row:3", "origin_thread:4", "handler:12"},
+        {},
+        handler_call_views,
+        thread_list_views,
+        1024);
+    write_checkpoint(
+        out,
+        "command_handler_return_80036868",
+        "80036868",
+        "command_handler_return",
+        "FUN_800367e8",
+        "computed_handler_return",
+        false,
+        memory_views,
+        {"handler_result:3", "origin_thread:4", "handler:12"},
+        {},
+        handler_return_views,
+        {},
+        1024);
+
+    write_checkpoint(
+        out,
+        "action_service_creator_entry_8003B1D8",
+        "8003B1D8",
+        "action_service_creator_entry",
+        "Battle::Gfx::Combatants::SetCommandHandler_8003b1d8",
+        "set_command_entry",
+        false,
+        memory_views,
+        {"command_wrapper:3", "origin_thread:4"},
+        {},
+        service_creator_entry_addrprog,
+        thread_list_views,
+        512);
+    write_checkpoint(
+        out,
+        "action_service_publication_8003B2B4",
+        "8003B2B4",
+        "action_service_publication",
+        "Battle::Gfx::Combatants::SetCommandHandler_8003b1d8",
+        "set_command_publication",
+        false,
+        memory_views,
+        {"service_thread:29", "command_payload:31", "origin_thread:30"},
+        {},
+        service_r29_views,
+        thread_list_views,
+        512);
+    write_checkpoint(
+        out,
+        "serialized_action_view_creator_entry_8003C690",
+        "8003C690",
+        "serialized_action_view_creator_entry",
+        "Battle::Gfx::Combatants::SystemCameraHandler_8003c690",
+        "system_camera_entry",
+        false,
+        memory_views,
+        {"command_wrapper:3", "origin_thread:4"},
+        {},
+        serialized_creator_entry_addrprog,
+        thread_list_views,
+        512);
+    write_checkpoint(
+        out,
+        "serialized_action_view_publication_8003C738",
+        "8003C738",
+        "serialized_action_view_publication",
+        "Battle::Gfx::Combatants::SystemCameraHandler_8003c690",
+        "system_camera_publication",
+        false,
+        memory_views,
+        {"record_thread:31", "serialized_payload:30", "origin_thread:29"},
+        {},
+        record_r31_views,
+        thread_list_views,
+        512);
+    write_checkpoint(
+        out,
+        "action_view_record_state0_helper_80051320",
+        "80051320",
+        "action_view_record_state0_helper",
+        "Battle::Turn::UpdateActionViewRecord_80051264",
+        "first_child_visit",
+        false,
+        memory_views,
+        {"record_thread:29", "record_worksheet:31", "origin_instruction:30"},
+        {},
+        record_r29_views,
+        thread_list_views,
+        512);
+    write_checkpoint(
+        out,
+        "action_view_record_mode1_call_800514B0",
+        "800514B0",
+        "action_view_record_mode1_call",
+        "Battle::Turn::UpdateActionViewRecord_80051264",
+        "mode1_child_dispatch",
+        false,
+        memory_views,
+        {"record_thread:29", "record_worksheet:31", "origin_instruction:30"},
+        {},
+        record_r29_views,
+        thread_list_views,
+        512);
+    write_checkpoint(
+        out,
+        "mode1_geometry_call_80051BB0",
+        "80051BB0",
+        "mode1_geometry_call",
+        "FUN_800519f4",
+        "mode1_camera_geometry_ready",
+        false,
+        memory_views,
+        {"record_worksheet:29", "origin_instruction:31"},
+        {
+            "mode1_vector_x_stack_0x38:r1:0x38:u32",
+            "mode1_vector_y_stack_0x3c:r1:0x3c:u32",
+            "mode1_vector_z_stack_0x40:r1:0x40:u32",
+        },
+        mode1_views,
+        thread_list_views,
+        512);
+
+    return out.str();
+}
+
 std::string build_first_battle_pc_worker_selector_lifetime_profile_ini(
     std::uint32_t thread_list_max_nodes)
 {
@@ -6322,6 +7237,1232 @@ std::string build_first_battle_pc_worker_selector_lifetime_profile_ini(
         "action_view_record_mode1_call_800514B0", "800514B0",
         "action_view_record_mode1_call", "FUN_800512c0", "action_view_pathing",
         {"action_view_record:31"}, 512);
+
+    return out.str();
+}
+
+std::string build_first_battle_queued_instruction_param_profile_ini()
+{
+    const auto memory_samples = queued_instruction_param_memory_samples();
+    const auto memory_views = as_string_views(memory_samples);
+    const std::vector<std::string_view> pc_consumer_reg_memory = {
+        "pc_consumer_instruction:r3:0x00:u32",
+        "pc_consumer_target:r3:0x04:u8",
+        "pc_consumer_instr_param:r3:0x06:u16",
+        "pc_consumer_result:r3:0x08:u8",
+        "pc_consumer_result_copy:r3:0x09:u8",
+    };
+    const std::vector<std::string_view> enemy_consumer_reg_memory = {
+        "enemy_consumer_instr_param:r30:0x00:u16",
+        "enemy_consumer_result:r30:0x02:u8",
+        "enemy_consumer_result_copy:r30:0x03:u8",
+    };
+    const std::vector<std::string_view> instruction_thread_addrprog = {
+        "instruction_thread_callback_0x00:r3:+0x00:u32",
+        "instruction_thread_state_0x19:r3:+0x19:u8",
+        "instruction_thread_payload_0x24:r3:+0x24:u32",
+        "instruction_slot_0x00:r3:+0x24|load_ptr32|+0x4c|load_ptr32|+0x00:u8",
+        "instruction_mode_0x06:r3:+0x24|load_ptr32|+0x4c|load_ptr32|+0x06:u16",
+        "instruction_state_0x08:r3:+0x24|load_ptr32|+0x4c|load_ptr32|+0x08:u16",
+        "instruction_flags_0xec:r3:+0x24|load_ptr32|+0x4c|load_ptr32|+0xec:u32",
+    };
+    const std::vector<std::string_view> resolver_iw_addrprog = {
+        "resolver_iw_slot_0x00:r28:+0x00:u8",
+        "resolver_iw_flags_0x04:r28:+0x04:u32",
+        "resolver_iw_mode_0x06:r28:+0x06:u16",
+        "resolver_iw_state_0x08:r28:+0x08:u16",
+        "resolver_iw_handler_0xe0:r28:+0xe0:u32",
+        "resolver_iw_flags_0xec:r28:+0xec:u32",
+    };
+
+    std::ostringstream out;
+    out << "[profile]\n";
+    out << "name=first_battle_queued_instruction_param\n";
+    out << "schema_version=1\n\n";
+
+    // Dolphin reports post-write values. These macro-time observations are
+    // deliberately diagnostic; reliable static snapshots and normal-scope
+    // consumers remain authoritative when the macro does not stop cleanly.
+    for (int slot = 0; slot < 12; ++slot) {
+        const auto address = 0x8030917Au + static_cast<std::uint32_t>(slot) * 0x20u;
+        write_static_watchpoint(
+            out,
+            "macro_untrusted_slot" + std::to_string(slot) + "_instr_param_0x06",
+            address,
+            "u16",
+            "write",
+            "input_macro");
+    }
+    write_static_watchpoint(
+        out,
+        "rng_seed_write_803469A8",
+        addr::AddrRegistry::base(addr::core::RNG_SEED),
+        "u32",
+        "write",
+        "normal",
+        true);
+
+    const auto write_root_checkpoint = [&out, &memory_views](
+        std::string_view id,
+        std::string_view pc,
+        std::string_view name,
+        std::string_view function,
+        std::string_view checkpoint,
+        std::initializer_list<std::string_view> gprs,
+        std::uint32_t max_hits,
+        std::uint32_t activate_on_pc = 0,
+        const std::vector<std::string_view>& reg_memory = {},
+        const std::vector<std::string_view>& addrprog = {}) {
+        write_checkpoint(
+            out,
+            id,
+            pc,
+            name,
+            function,
+            checkpoint,
+            false,
+            memory_views,
+            std::vector<std::string_view>(gprs),
+            reg_memory,
+            addrprog,
+            {},
+            max_hits,
+            activate_on_pc);
+    };
+
+    write_root_checkpoint(
+        "queued_rows_initialized_80071A68", "80071A68",
+        "queued_rows_initialized", "Battle::Run::setupBattle_80071990",
+        "reliable_pre_macro_snapshot", {}, 4);
+    write_root_checkpoint(
+        "setup_action_pc_handler_store_80070A54", "80070A54",
+        "setup_action_pc_handler_store", "Battle::Run::setupAction_800708C0",
+        "reliable_post_macro_accepted_command", {"actor_slot_x4:31", "target_slot:29"},
+        64);
+
+    for (const auto& checkpoint : std::array{
+             std::tuple{"pc_execution_rewrite_entry_800855AC", "800855AC",
+                        "pc_execution_rewrite_entry", "FUN_800855AC"},
+             std::tuple{"pc_execution_rewrite_return_80085708", "80085708",
+                        "pc_execution_rewrite_return", "FUN_800855AC"},
+             std::tuple{"pc_final_param_consumer_80086F10", "80086F10",
+                        "pc_final_param_consumer", "Battle::HandlePCInst_80086C68"},
+             std::tuple{"pc_direct_worker_selected_80086F48", "80086F48",
+                        "pc_direct_worker_selected", "Battle::HandlePCInst_80086C68"},
+             std::tuple{"pc_fallback_worker_selected_80086F70", "80086F70",
+                        "pc_fallback_worker_selected", "Battle::HandlePCInst_80086C68"},
+             std::tuple{"enemy_final_param_consumer_8008BD80", "8008BD80",
+                        "enemy_final_param_consumer", "Battle::HandleECInst_8008B9E0"},
+             std::tuple{"enemy_direct_worker_selected_8008BDAC", "8008BDAC",
+                        "enemy_direct_worker_selected", "Battle::HandleECInst_8008B9E0"},
+             std::tuple{"enemy_fallback_worker_selected_8008BDDC", "8008BDDC",
+                        "enemy_fallback_worker_selected", "Battle::HandleECInst_8008B9E0"}}) {
+        const auto id = std::get<0>(checkpoint);
+        const auto is_pc_consumer = std::string_view(id) == "pc_final_param_consumer_80086F10";
+        const auto is_enemy_consumer = std::string_view(id) == "enemy_final_param_consumer_8008BD80";
+        write_root_checkpoint(
+            id,
+            std::get<1>(checkpoint),
+            std::get<2>(checkpoint),
+            std::get<3>(checkpoint),
+            "execution_route_resolution",
+            {"r0:0", "r3:3", "r26:26", "r27:27", "r28:28", "r29:29", "r30:30", "r31:31"},
+            256,
+            0x80070A54u,
+            is_pc_consumer ? pc_consumer_reg_memory
+                           : (is_enemy_consumer ? enemy_consumer_reg_memory
+                                                : std::vector<std::string_view>{}));
+    }
+
+    // These events occur only around attack resolution and state publication.
+    // Keep them available from accepted command setup, but do not give sparse
+    // events enough budget to crowd out the transition window below.
+    for (const auto& checkpoint : std::array{
+             std::tuple{"attack_critical_80010C44", "80010C44", "attack_critical",
+                        "FUN_80010BF0", "critical_gate"},
+             std::tuple{"attack_result_return_80081BE8", "80081BE8", "attack_result_return",
+                        "FUN_80081B94", "attack_result"},
+             std::tuple{"attack_result_write_80081C48", "80081C48", "attack_result_write",
+                        "FUN_80081C04", "attack_result"},
+             std::tuple{"queued_state_setter_entry_80081168", "80081168",
+                        "queued_state_setter_entry",
+                        "Battle::Action::SetQueuedSpecialActionState_80081168",
+                        "queued_state_publication"},
+             std::tuple{"queued_state_write_complete_800811C8", "800811C8",
+                        "queued_state_write_complete",
+                        "Battle::Action::SetQueuedSpecialActionState_80081168",
+                        "queued_state_publication"}}) {
+        write_root_checkpoint(
+            std::get<0>(checkpoint),
+            std::get<1>(checkpoint),
+            std::get<2>(checkpoint),
+            std::get<3>(checkpoint),
+            std::get<4>(checkpoint),
+            {"r0:0", "r3:3", "r4:4", "r5:5", "r6:6", "r28:28", "r29:29", "r30:30", "r31:31"},
+            64,
+            0x80070A54u);
+    }
+
+    // The mapper entry is polled once per combatant instruction visit. Capture
+    // only the three validated case exits so later actions remain visible for
+    // the full turn without exhausting the global event budget.
+    for (const auto& checkpoint : std::array{
+             std::tuple{"queued_state_case5_mode4_80021810", "80021810",
+                        "queued_state_case5_mode4",
+                        "Battle::Action::MapQueuedStateToStdActionId_800217D0",
+                        "queued_state_mode_mapping"},
+             std::tuple{"queued_state_case6_mode8_80021818", "80021818",
+                        "queued_state_case6_mode8",
+                        "Battle::Action::MapQueuedStateToStdActionId_800217D0",
+                        "queued_state_mode_mapping"},
+             std::tuple{"queued_state_case7_mode5_80021820", "80021820",
+                        "queued_state_case7_mode5",
+                        "Battle::Action::MapQueuedStateToStdActionId_800217D0",
+                        "queued_state_mode_mapping"},
+             std::tuple{"queued_transition_mode_write_complete_8002279C", "8002279C",
+                        "queued_transition_mode_write_complete",
+                        "Battle::Action::ResolveQueuedStdActionTransition_800221FC",
+                        "instruction_transition"},
+             std::tuple{"instruction_thread_visit_80022850", "80022850",
+                        "instruction_thread_visit", "FUN_80022850",
+                        "instruction_row_consumer"}}) {
+        const auto id = std::string_view(std::get<0>(checkpoint));
+        const bool instruction_thread = id.starts_with("instruction_thread_");
+        const bool resolver_iw = id.starts_with("queued_state_case")
+            || id == "queued_transition_mode_write_complete_8002279C";
+        write_root_checkpoint(
+            id,
+            std::get<1>(checkpoint),
+            std::get<2>(checkpoint),
+            std::get<3>(checkpoint),
+            std::get<4>(checkpoint),
+            {"r0:0", "r3:3", "r4:4", "r5:5", "r6:6", "r28:28", "r29:29", "r30:30", "r31:31"},
+            instruction_thread ? 512 : 192,
+            0x800811C8u,
+            {},
+            instruction_thread ? instruction_thread_addrprog
+                               : (resolver_iw ? resolver_iw_addrprog
+                                              : std::vector<std::string_view>{}));
+    }
+
+    return out.str();
+}
+
+std::string build_first_battle_mode1_pathing_lifetime_profile_ini(
+    std::uint32_t thread_list_max_nodes)
+{
+    constexpr std::uint32_t kHighFrequencyHitLimit = 256;
+    const auto thread_list_sample =
+        pc_worker_thread_list_snapshot_sample(thread_list_max_nodes);
+    const std::vector<std::string_view> thread_list_views = {thread_list_sample};
+    const auto slot_samples = action_view_service_lifecycle_slot_addrprog_samples();
+    const auto slot_views = as_string_views(slot_samples);
+
+    const auto combine = [](std::vector<std::string> lhs, const std::vector<std::string>& rhs) {
+        lhs.insert(lhs.end(), rhs.begin(), rhs.end());
+        return lhs;
+    };
+
+    const auto entry_samples =
+        mode1_attack_callback_thread_addrprog_samples("r3", "callback_entry");
+    const auto entry_views = as_string_views(entry_samples);
+    const auto visit_samples =
+        mode1_attack_callback_thread_addrprog_samples("r3", "instruction_visit");
+    const auto visit_views = as_string_views(visit_samples);
+    const auto dispatch_samples =
+        mode1_attack_callback_thread_addrprog_samples("r29", "instruction_dispatch");
+    const auto dispatch_views = as_string_views(dispatch_samples);
+    const auto state_samples =
+        mode1_attack_callback_thread_addrprog_samples("r30", "callback_state");
+    const auto state_views = as_string_views(state_samples);
+    const auto state_iw_samples =
+        mode1_attack_callback_instruction_addrprog_samples("r31", "callback_state");
+    const auto state_iw_views = as_string_views(state_iw_samples);
+    const auto resolver_samples =
+        mode1_attack_callback_instruction_addrprog_samples("r28", "resolver");
+    const auto resolver_views = as_string_views(resolver_samples);
+
+    const auto delay_entry_samples =
+        mode1_attack_callback_thread_addrprog_samples("r3", "delay_entry");
+    const auto delay_entry_views = as_string_views(delay_entry_samples);
+    const auto delay_descriptor_samples = mode1_delay_descriptor_addrprog_samples("r31");
+    const auto delay_descriptor_views = as_string_views(delay_descriptor_samples);
+    const auto delay_gate_entry_samples = combine(
+        mode1_delay_payload_addrprog_samples("r3"),
+        mode1_attack_callback_instruction_addrprog_samples("r4", "delay_gate"));
+    const auto delay_gate_entry_views = as_string_views(delay_gate_entry_samples);
+    const auto delay_gate_return_samples = combine(
+        mode1_delay_payload_addrprog_samples("r29"),
+        mode1_attack_callback_instruction_addrprog_samples("r30", "delay_gate"));
+    const auto delay_gate_return_views = as_string_views(delay_gate_return_samples);
+
+    const auto record_r31_samples = action_view_record_addrprog_samples("r31");
+    const auto record_r31_views = as_string_views(record_r31_samples);
+    const auto record_r29_samples = action_view_record_addrprog_samples("r29");
+    const auto record_r29_views = as_string_views(record_r29_samples);
+    const auto turn_r29_samples = action_view_pathing_turn_worksheet_addrprog_samples("r29");
+    const auto turn_r29_views = as_string_views(turn_r29_samples);
+    const auto mode1_samples = combine(
+        visual_publication_instruction_addrprog_samples("r31", "mode1_origin"),
+        {
+            "mode1_record_origin_thread_0x74:r29:+0x74:u32",
+            "mode1_record_payload_ptr_0x178:r29:+0x178:u32",
+            "mode1_record_payload_mode_0x22:r29:+0x178|load_ptr32|+0x22:u16",
+            "mode1_camera_yaw_bits_0xd4:r29:+0xd4:u32",
+            "mode1_camera_roll_bits_0xd8:r29:+0xd8:u32",
+        });
+    const auto mode1_views = as_string_views(mode1_samples);
+
+    const std::vector<std::string_view> serialized_creator_entry_addrprog = {
+        "serialized_payload_ptr_0x0c:r3:+0x0c:u32",
+        "serialized_payload_mode_0x22:r3:+0x0c|load_ptr32|+0x22:u16",
+        "serialized_payload_flags_0x10:r3:+0x0c|load_ptr32|+0x10:u32",
+        "serialized_origin_callback_0x00:r4:+0x00:u32",
+        "serialized_origin_iw_slot_0x00:r4:+0x24|load_ptr32|+0x4c|load_ptr32|+0x00:u8",
+        "serialized_origin_iw_mode_0x06:r4:+0x24|load_ptr32|+0x4c|load_ptr32|+0x06:u16",
+        "serialized_origin_iw_control_0x12:r4:+0x24|load_ptr32|+0x4c|load_ptr32|+0x12:u16",
+    };
+
+    std::ostringstream out;
+    out << "[profile]\n";
+    out << "name=first_battle_mode1_pathing_lifetime\n";
+    out << "schema_version=1\n\n";
+
+    // The reliable callback window begins after setupTurnAction on some source
+    // jobs, so a dynamic watchpoint armed at 0x80082134 can miss every later
+    // draw. Keep the normal-scope seed watch active from capture start;
+    // InputMacro writes remain out of scope.
+    write_static_watchpoint(
+        out,
+        "rng_seed_write_803469A8",
+        addr::AddrRegistry::base(addr::core::RNG_SEED),
+        "u32",
+        "write",
+        "normal",
+        true);
+
+    write_checkpoint(
+        out,
+        "queued_state_write_complete_800811C8",
+        "800811C8",
+        "queued_state_write_complete",
+        "Battle::Action::SetQueuedSpecialActionState_80081168",
+        "capture_activation_boundary",
+        false,
+        first_battle_queued_instruction_samples(),
+        {"r0:0", "r3:3", "r4:4", "r5:5", "r28:28", "r29:29", "r30:30", "r31:31"},
+        {},
+        {},
+        {},
+        64);
+
+    for (const auto& checkpoint : std::array{
+             std::tuple{"queued_state_case5_mode4_80021810", "80021810", "queued_state_case5_mode4"},
+             std::tuple{"queued_state_case6_mode8_80021818", "80021818", "queued_state_case6_mode8"},
+             std::tuple{"queued_state_case7_mode5_80021820", "80021820", "queued_state_case7_mode5"}}) {
+        write_checkpoint(
+            out,
+            std::get<0>(checkpoint),
+            std::get<1>(checkpoint),
+            std::get<2>(checkpoint),
+            "Battle::Action::MapQueuedStateToStdActionId_800217D0",
+            "persistent_mode_mapping",
+            false,
+            {},
+            {"mapped_mode:6", "thread:30", "instruction_worksheet:28", "queued_state:29"},
+            {},
+            resolver_views,
+            {},
+            192,
+            0x800811C8u);
+    }
+
+    write_checkpoint(
+        out,
+        "queued_transition_mode_write_complete_8002279C",
+        "8002279C",
+        "queued_transition_mode_write_complete",
+        "Battle::Action::ResolveQueuedStdActionTransition_800221FC",
+        "persistent_mode_write",
+        false,
+        {},
+        {"thread:30", "instruction_worksheet:28", "mapped_mode:4"},
+        {},
+        resolver_views,
+        {},
+        192,
+        0x800811C8u);
+
+    write_checkpoint(
+        out,
+        "instruction_thread_visit_80022850",
+        "80022850",
+        "instruction_thread_visit",
+        "FUN_80022850",
+        "instruction_visit_entry",
+        false,
+        {},
+        {"thread:3"},
+        {},
+        visit_views,
+        {},
+        kHighFrequencyHitLimit,
+        0x800811C8u);
+    write_checkpoint(
+        out,
+        "instruction_callback_dispatch_80022A40",
+        "80022A40",
+        "instruction_callback_dispatch",
+        "FUN_80022850",
+        "before_indirect_callback",
+        false,
+        {},
+        {"thread:3", "thread_saved:29", "instruction_worksheet:30", "handler:12"},
+        {},
+        dispatch_views,
+        {},
+        kHighFrequencyHitLimit,
+        0x800811C8u);
+    write_checkpoint(
+        out,
+        "instruction_callback_return_80022A44",
+        "80022A44",
+        "instruction_callback_return",
+        "FUN_80022850",
+        "after_indirect_callback",
+        false,
+        {},
+        {"thread:29", "instruction_worksheet:30", "handler:12"},
+        {},
+        dispatch_views,
+        {},
+        kHighFrequencyHitLimit,
+        0x800811C8u);
+
+    write_checkpoint(
+        out,
+        "basic_attack_callback_entry_8001B1B0",
+        "8001B1B0",
+        "basic_attack_callback_entry",
+        "FUN_8001B1B0",
+        "persistent_callback_entry",
+        false,
+        {},
+        {"thread:3"},
+        {},
+        entry_views,
+        {},
+        kHighFrequencyHitLimit,
+        0x800811C8u);
+    write_checkpoint(
+        out,
+        "basic_attack_callback_return_8001BAAC",
+        "8001BAAC",
+        "basic_attack_callback_return",
+        "FUN_8001B1B0",
+        "persistent_callback_return",
+        false,
+        {},
+        {"thread:30", "instruction_worksheet:31", "result:3"},
+        {},
+        state_views,
+        {},
+        kHighFrequencyHitLimit,
+        0x800811C8u);
+
+    const std::array<std::tuple<std::string_view, std::string_view, int>, 11> state_entries = {{
+        {"basic_attack_callback_state0_8001B260", "8001B260", 0},
+        {"basic_attack_callback_state1_8001B294", "8001B294", 1},
+        {"basic_attack_callback_state2_8001B3BC", "8001B3BC", 2},
+        {"basic_attack_callback_state3_8001B3DC", "8001B3DC", 3},
+        {"basic_attack_callback_state4_8001B624", "8001B624", 4},
+        {"basic_attack_callback_state5_8001B5F8", "8001B5F8", 5},
+        {"basic_attack_callback_state6_8001B6D4", "8001B6D4", 6},
+        {"basic_attack_callback_state7_8001B9A4", "8001B9A4", 7},
+        {"basic_attack_callback_state8_8001B6F8", "8001B6F8", 8},
+        {"basic_attack_callback_state9_8001B718", "8001B718", 9},
+        {"basic_attack_callback_state10_8001B738", "8001B738", 10},
+    }};
+    for (const auto& [id, pc, state] : state_entries) {
+        write_checkpoint(
+            out,
+            id,
+            pc,
+            "basic_attack_callback_state",
+            "FUN_8001B1B0",
+            "control_state_" + std::to_string(state),
+            false,
+            {},
+            {"thread:30", "instruction_worksheet:31", "r3:3", "r4:4", "r5:5", "r6:6"},
+            {},
+            state_views,
+            {},
+            128,
+            0x800811C8u);
+    }
+
+    const std::array<std::tuple<std::string_view, std::string_view, std::string_view>, 13>
+        gate_returns = {{
+            {"callback_gate_readiness_return_8001B1DC", "8001B1DC", "FUN_8001BCC8_return"},
+            {"callback_gate_global_ready_return_8001B204", "8001B204", "FUN_8006DB94_return"},
+            {"callback_gate_resource_return_8001B2C4", "8001B2C4", "FUN_800593AC_return"},
+            {"callback_gate_setup_return_8001B2F0", "8001B2F0", "FUN_8003F5B8_return"},
+            {"callback_gate_fallback_ready_return_8001B368", "8001B368", "FUN_8002F674_return"},
+            {"callback_gate_state2_return_8001B3CC", "8001B3CC", "FUN_8003FA70_return"},
+            {"callback_gate_motion_setup_return_8001B4E0", "8001B4E0", "FUN_8001FABC_return"},
+            {"callback_gate_motion_select_return_8001B508", "8001B508", "FUN_8001ECB4_return"},
+            {"callback_gate_motion_fallback_return_8001B590", "8001B590", "FUN_8001ECB4_return"},
+            {"callback_gate_state5_motion_return_8001B600", "8001B600", "FUN_80075D64_return"},
+            {"callback_gate_state4_angle_return_8001B634", "8001B634", "FUN_80061114_return"},
+            {"callback_gate_state4_motion_return_8001B66C", "8001B66C", "FUN_8001ECB4_return"},
+            {"callback_gate_state6_motion_return_8001B6DC", "8001B6DC", "FUN_80075D64_return"},
+        }};
+    for (const auto& [id, pc, checkpoint] : gate_returns) {
+        write_checkpoint(
+            out,
+            id,
+            pc,
+            "basic_attack_callback_gate_return",
+            "FUN_8001B1B0",
+            checkpoint,
+            false,
+            {},
+            {"result:3", "thread:30", "instruction_worksheet:31", "r0:0", "r4:4", "r5:5", "r6:6"},
+            {},
+            state_views,
+            {},
+            128,
+            0x800811C8u);
+    }
+    write_checkpoint(
+        out,
+        "callback_gate_state7_motion_return_8001B9AC",
+        "8001B9AC",
+        "basic_attack_callback_gate_return",
+        "FUN_8001B1B0",
+        "FUN_80075D64_return",
+        false,
+        {},
+        {"result:3", "thread:30", "instruction_worksheet:31"},
+        {},
+        state_views,
+        {},
+        128,
+        0x800811C8u);
+
+    write_checkpoint(
+        out,
+        "delay_lookup_entry_8001DDE0",
+        "8001DDE0",
+        "delay_lookup_entry",
+        "FUN_8001DDE0",
+        "delay_descriptor_scan_entry",
+        false,
+        {},
+        {"thread:3", "descriptor_root:4"},
+        {},
+        delay_entry_views,
+        {},
+        64,
+        0x800811C8u);
+    write_checkpoint(
+        out,
+        "delay_descriptor_match_8001DE30",
+        "8001DE30",
+        "delay_descriptor_match",
+        "FUN_8001DDE0",
+        "command_0x00030032_match",
+        false,
+        {},
+        {"descriptor:31", "instruction_worksheet:30"},
+        {},
+        delay_descriptor_views,
+        {},
+        64,
+        0x800811C8u);
+    write_checkpoint(
+        out,
+        "delay_gate_call_8001DE3C",
+        "8001DE3C",
+        "delay_gate_call",
+        "FUN_8001DDE0",
+        "before_FUN_8003DCF4",
+        false,
+        {},
+        {"payload:3", "instruction_worksheet:4", "descriptor:31"},
+        {},
+        delay_gate_entry_views,
+        {},
+        64,
+        0x800811C8u);
+    write_checkpoint(
+        out,
+        "delay_gate_return_8001DE40",
+        "8001DE40",
+        "delay_gate_return",
+        "FUN_8001DDE0",
+        "after_FUN_8003DCF4",
+        false,
+        {},
+        {"gate_result:3", "payload:29", "instruction_worksheet:30", "descriptor:31"},
+        {},
+        delay_gate_return_views,
+        {},
+        64,
+        0x800811C8u);
+    write_checkpoint(
+        out,
+        "delay_value_return_8001DE4C",
+        "8001DE4C",
+        "delay_value_return",
+        "FUN_8001DDE0",
+        "matched_delay_value",
+        false,
+        {},
+        {"delay:3", "payload:29", "instruction_worksheet:30", "descriptor:31"},
+        {},
+        delay_gate_return_views,
+        {},
+        64,
+        0x800811C8u);
+    write_checkpoint(
+        out,
+        "callback_delay_store_8001B70C",
+        "8001B70C",
+        "callback_delay_store",
+        "FUN_8001B1B0",
+        "before_IW_0x138_store",
+        false,
+        {},
+        {"delay:3", "thread:30", "instruction_worksheet:31"},
+        {},
+        state_iw_views,
+        {},
+        64,
+        0x800811C8u);
+    write_checkpoint(
+        out,
+        "callback_state9_store_8001B714",
+        "8001B714",
+        "callback_state9_store",
+        "FUN_8001B1B0",
+        "before_state9_store",
+        false,
+        {},
+        {"thread:30", "instruction_worksheet:31"},
+        {},
+        state_iw_views,
+        {},
+        64,
+        0x800811C8u);
+    write_checkpoint(
+        out,
+        "callback_delay_decrement_8001B728",
+        "8001B728",
+        "callback_delay_decrement",
+        "FUN_8001B1B0",
+        "before_decrement_store",
+        false,
+        {},
+        {"delay_before:3", "delay_after:0", "thread:30", "instruction_worksheet:31"},
+        {},
+        state_iw_views,
+        {},
+        256,
+        0x800811C8u);
+
+    write_checkpoint(
+        out,
+        "callback_aux_publication_call_8001B750",
+        "8001B750",
+        "callback_aux_publication_call",
+        "FUN_8001B1B0",
+        "before_FUN_8001CAA8",
+        false,
+        {},
+        {"thread:3", "thread_saved:30", "instruction_worksheet:31"},
+        {},
+        state_views,
+        thread_list_views,
+        64,
+        0x800811C8u);
+    write_checkpoint(
+        out,
+        "callback_aux_publication_return_8001B754",
+        "8001B754",
+        "callback_aux_publication_return",
+        "FUN_8001B1B0",
+        "after_FUN_8001CAA8",
+        false,
+        {},
+        {"thread:30", "instruction_worksheet:31", "result:3"},
+        {},
+        state_views,
+        thread_list_views,
+        64,
+        0x800811C8u);
+
+    write_checkpoint(
+        out,
+        "serialized_action_view_creator_entry_8003C690",
+        "8003C690",
+        "serialized_action_view_creator_entry",
+        "Battle::Gfx::Combatants::SystemCameraHandler_8003C690",
+        "system_camera_entry",
+        false,
+        {},
+        {"command_wrapper:3", "origin_thread:4"},
+        {},
+        serialized_creator_entry_addrprog,
+        thread_list_views,
+        64,
+        0x800811C8u);
+    write_checkpoint(
+        out,
+        "serialized_action_view_publication_8003C738",
+        "8003C738",
+        "serialized_action_view_publication",
+        "Battle::Gfx::Combatants::SystemCameraHandler_8003C690",
+        "system_camera_publication",
+        false,
+        {},
+        {"record_thread:31", "serialized_payload:30", "origin_thread:29"},
+        {},
+        record_r31_views,
+        thread_list_views,
+        64,
+        0x800811C8u);
+    write_checkpoint(
+        out,
+        "origin_motion_consumption_8001B778",
+        "8001B778",
+        "origin_motion_consumption",
+        "FUN_8001B1B0",
+        "motion_after_aux_publication",
+        false,
+        {},
+        {"motion_result:3", "thread:30", "instruction_worksheet:31"},
+        {},
+        state_views,
+        thread_list_views,
+        256,
+        0x800811C8u);
+    write_checkpoint(
+        out,
+        "action_view_record_state0_helper_80051320",
+        "80051320",
+        "action_view_record_state0_helper",
+        "Battle::Turn::UpdateActionViewRecord_80051264",
+        "first_child_visit",
+        false,
+        {},
+        {"record_thread:29", "record_worksheet:31", "origin_instruction:30"},
+        {},
+        record_r29_views,
+        thread_list_views,
+        64,
+        0x800811C8u);
+    write_checkpoint(
+        out,
+        "mode1_geometry_call_80051BB0",
+        "80051BB0",
+        "mode1_geometry_call",
+        "FUN_800519F4",
+        "mode1_geometry_ready",
+        false,
+        {},
+        {"record_worksheet:29", "origin_instruction:31"},
+        {
+            "mode1_vector_x_stack_0x38:r1:0x38:u32",
+            "mode1_vector_y_stack_0x3c:r1:0x3c:u32",
+            "mode1_vector_z_stack_0x40:r1:0x40:u32",
+        },
+        concat(mode1_views, slot_views),
+        thread_list_views,
+        64,
+        0x800811C8u);
+    write_checkpoint(
+        out,
+        "pathing_outer_loop_entry_800526EC",
+        "800526EC",
+        "pathing_outer_loop_entry",
+        "FUN_8005259C",
+        "before_FUN_8005174C",
+        false,
+        {},
+        {"turn_worksheet:29"},
+        {},
+        concat(turn_r29_views, slot_views),
+        thread_list_views,
+        64,
+        0x800811C8u);
+
+    return out.str();
+}
+
+std::string build_first_battle_mode1_state6_progress_profile_ini(
+    std::uint32_t thread_list_max_nodes,
+    Mode1State6ProgressActivation activation)
+{
+    const bool activate_at_counter =
+        activation == Mode1State6ProgressActivation::CounterFollowup;
+    const std::uint32_t activation_pc =
+        activate_at_counter ? 0x80081DE0u : 0x800811C8u;
+    const std::string_view activation_pc_text =
+        activate_at_counter ? "80081DE0" : "800811C8";
+    const std::uint32_t queued_state_activation_pc =
+        activate_at_counter ? activation_pc : 0u;
+    const auto memory_samples = action_view_service_lifecycle_memory_samples();
+    const auto memory_views = as_string_views(memory_samples);
+    const auto root_samples = mode1_state6_progress_root_addrprog_samples();
+    const auto root_views = as_string_views(root_samples);
+    const auto thread_list_sample =
+        pc_worker_thread_list_snapshot_sample(thread_list_max_nodes);
+    const std::vector<std::string_view> thread_list_views = {thread_list_sample};
+
+    const auto state_thread_samples =
+        mode1_attack_callback_thread_addrprog_samples("r30", "callback_state");
+    const auto state_thread_views = as_string_views(state_thread_samples);
+    const auto entry_thread_samples =
+        mode1_attack_callback_thread_addrprog_samples("r3", "motion_entry");
+    const auto entry_thread_views = as_string_views(entry_thread_samples);
+    const auto iw_r31_samples =
+        mode1_attack_callback_instruction_addrprog_samples("r31", "motion_iw");
+    const auto iw_r31_views = as_string_views(iw_r31_samples);
+    const auto iw_r29_samples =
+        mode1_attack_callback_instruction_addrprog_samples("r29", "renderer_iw");
+    const auto iw_r29_views = as_string_views(iw_r29_samples);
+    const auto iw_r4_samples =
+        mode1_attack_callback_instruction_addrprog_samples("r4", "gate_iw");
+    const auto iw_r4_views = as_string_views(iw_r4_samples);
+    const auto row_r4_samples =
+        mode1_state6_action_row_addrprog_samples("r4", "selected_action");
+    const auto row_r4_views = as_string_views(row_r4_samples);
+    const auto record_r31_samples = action_view_record_addrprog_samples("r31");
+    const auto record_r31_views = as_string_views(record_r31_samples);
+    const auto record_r29_samples = action_view_record_addrprog_samples("r29");
+    const auto record_r29_views = as_string_views(record_r29_samples);
+
+    const std::vector<std::string_view> setup_from_worksheet = {
+        "motion_setup_iw_ptr_0x4c:r3:+0x4c:u32",
+        "motion_setup_iw_slot_0x00:r3:+0x4c|load_ptr32|+0x00:u8",
+        "motion_setup_iw_mode_0x06:r3:+0x4c|load_ptr32|+0x06:u16",
+        "motion_setup_iw_control_0x12:r3:+0x4c|load_ptr32|+0x12:u16",
+        "motion_setup_iw_motion_resource_0x5c:r3:+0x4c|load_ptr32|+0x5c:u32",
+        "motion_setup_iw_motion_id_0x64:r3:+0x4c|load_ptr32|+0x64:u16",
+        "motion_setup_iw_progress_0x68:r3:+0x4c|load_ptr32|+0x68:u32",
+        "motion_setup_iw_increment_0x6c:r3:+0x4c|load_ptr32|+0x6c:u32",
+        "motion_setup_iw_action_row_0xe4:r3:+0x4c|load_ptr32|+0xe4:u16",
+        "motion_setup_iw_flags_0xec:r3:+0x4c|load_ptr32|+0xec:u32",
+        "motion_setup_iw_flags_0xf0:r3:+0x4c|load_ptr32|+0xf0:u32",
+    };
+
+    std::ostringstream out;
+    out << "[profile]\n";
+    out << "name=first_battle_mode1_state6_progress\n";
+    out << "schema_version=1\n";
+    out << "capture_only_hit_limit=131072\n\n";
+
+    // Dolphin reports these values after the write has committed. Heap
+    // addresses are resolved from the current static roots each time the
+    // accepted-command boundary is observed.
+    if (activate_at_counter) {
+        write_dynamic_absolute_watchpoint(
+            out,
+            "rng_seed_write_803469A8",
+            activation_pc_text,
+            addr::AddrRegistry::base(addr::core::RNG_SEED),
+            "u32",
+            "write",
+            "normal",
+            false,
+            true);
+    } else {
+        write_static_watchpoint(
+            out,
+            "rng_seed_write_803469A8",
+            addr::AddrRegistry::base(addr::core::RNG_SEED),
+            "u32",
+            "write",
+            "normal",
+            true);
+    }
+    for (int root_index = 0; root_index < 12; ++root_index) {
+        const auto root_text = std::to_string(root_index);
+        const auto root =
+            hex_u32(0x80309E24u + static_cast<std::uint32_t>(root_index) * 4u);
+        const auto instruction =
+            root + ":load_ptr32|+0x24|load_ptr32|+0x4c|load_ptr32";
+        write_dynamic_addrprog_watchpoint(
+            out,
+            "root" + root_text + "_iw_motion_progress_write",
+            activation_pc_text,
+            instruction + "|+0x68",
+            "u32",
+            "write",
+            "normal");
+        write_dynamic_addrprog_watchpoint(
+            out,
+            "root" + root_text + "_iw_flags_write",
+            activation_pc_text,
+            instruction + "|+0xec",
+            "u32",
+            "write",
+            "normal");
+    }
+
+    if (activate_at_counter) {
+        write_checkpoint(
+            out,
+            "counter_followup_action_activation_80081DE0",
+            "80081DE0",
+            "counter_followup_action_activation",
+            "FUN_80081D5C",
+            "late_capture_activation_before_counter_followup",
+            false,
+            memory_views,
+            {"thread:3", "actor_slot:4", "target_slot:5", "r28:28", "r29:29", "r30:30", "r31:31"},
+            {},
+            root_views,
+            thread_list_views,
+            8);
+    }
+
+    write_checkpoint(
+        out,
+        "queued_state_write_complete_800811C8",
+        "800811C8",
+        "queued_state_write_complete",
+        "Battle::Action::SetQueuedSpecialActionState_80081168",
+        "capture_activation_and_live_watch_derivation",
+        false,
+        memory_views,
+        {"r0:0", "r3:3", "r4:4", "r5:5", "r28:28", "r29:29", "r30:30", "r31:31"},
+        {},
+        root_views,
+        thread_list_views,
+        64,
+        queued_state_activation_pc);
+
+    write_checkpoint(
+        out,
+        "battle_case5_after_threads_8000A2FC",
+        "8000A2FC",
+        "battle_case5_after_threads",
+        "Battle::_battleController_8000A118",
+        "frame_end_after_thread_traversal",
+        false,
+        memory_views,
+        {"r0:0", "r3:3", "r30:30", "r31:31"},
+        {},
+        root_views,
+        thread_list_views,
+        2400,
+        activation_pc);
+
+    for (const auto& [id, pc, state] : std::array{
+             std::tuple{"basic_attack_callback_state4_8001B624", "8001B624", 4},
+             std::tuple{"basic_attack_callback_state5_8001B5F8", "8001B5F8", 5},
+             std::tuple{"basic_attack_callback_state6_8001B6D4", "8001B6D4", 6},
+             std::tuple{"basic_attack_callback_state7_8001B9A4", "8001B9A4", 7},
+             std::tuple{"basic_attack_callback_state8_8001B6F8", "8001B6F8", 8},
+             std::tuple{"basic_attack_callback_state9_8001B718", "8001B718", 9},
+             std::tuple{"basic_attack_callback_state10_8001B738", "8001B738", 10},
+         }) {
+        write_checkpoint(
+            out,
+            id,
+            pc,
+            "basic_attack_callback_state",
+            "FUN_8001B1B0",
+            "control_state_" + std::to_string(state),
+            false,
+            memory_views,
+            {"thread:30", "instruction_worksheet:31", "r3:3", "r4:4", "r5:5", "r6:6"},
+            {},
+            state_thread_views,
+            {},
+            128,
+            activation_pc);
+    }
+
+    write_checkpoint(
+        out,
+        "motion_install_entry_8001EBA4",
+        "8001EBA4",
+        "motion_install_entry",
+        "FUN_8001EBA4",
+        "selected_action_motion_install",
+        false,
+        memory_views,
+        {"thread:3", "requested_action_row:4"},
+        {},
+        entry_thread_views,
+        {},
+        128,
+        activation_pc);
+    write_checkpoint(
+        out,
+        "motion_duration_read_8001EC38",
+        "8001EC38",
+        "motion_duration_read",
+        "FUN_8001EBA4",
+        "selected_action_row_duration_operand",
+        false,
+        memory_views,
+        {"action_row:4", "instruction_worksheet:31", "row_offset:5", "action_table:6"},
+        {},
+        concat(row_r4_views, iw_r31_views),
+        {},
+        128,
+        activation_pc);
+    write_checkpoint(
+        out,
+        "motion_setup_call_8001EC70",
+        "8001EC70",
+        "motion_setup_call",
+        "FUN_8001EBA4",
+        "before_FUN_80076170",
+        false,
+        memory_views,
+        {"combatant_worksheet:3", "motion_id:4", "row_word:5", "row_argument:6", "instruction_worksheet:31"},
+        {},
+        iw_r31_views,
+        {},
+        128,
+        activation_pc);
+    write_checkpoint(
+        out,
+        "motion_setup_return_8001EC74",
+        "8001EC74",
+        "motion_setup_return",
+        "FUN_8001EBA4",
+        "after_FUN_80076170",
+        false,
+        memory_views,
+        {"result:3", "thread:30", "instruction_worksheet:31"},
+        {},
+        iw_r31_views,
+        {},
+        128,
+        activation_pc);
+    write_checkpoint(
+        out,
+        "motion_bit31_set_complete_8001EC8C",
+        "8001EC8C",
+        "motion_bit31_set_complete",
+        "FUN_8001EBA4",
+        "after_IW_0xEC_bit31_set",
+        false,
+        memory_views,
+        {"thread:30", "instruction_worksheet:31"},
+        {},
+        iw_r31_views,
+        thread_list_views,
+        128,
+        activation_pc);
+
+    write_checkpoint(
+        out,
+        "motion_setup_core_entry_80076170",
+        "80076170",
+        "motion_setup_core_entry",
+        "FUN_80076170",
+        "motion_progress_and_increment_inputs",
+        false,
+        memory_views,
+        {"combatant_worksheet:3", "motion_id:4", "row_word:5", "row_argument:6"},
+        {},
+        setup_from_worksheet,
+        {},
+        128,
+        activation_pc);
+    for (const auto& [id, pc, checkpoint] : std::array{
+             std::tuple{"motion_resolver_progress_write_complete_80075F00", "80075F00", "after_resolver_progress_store"},
+             std::tuple{"motion_setup_progress_reset_complete_80076270", "80076270", "after_progress_zero_store"},
+         }) {
+        write_checkpoint(
+            out,
+            id,
+            pc,
+            "motion_progress_initialization",
+            pc == std::string_view("80075F00")
+                ? "STD::ResolveActionRowMldMotion_80075DAC"
+                : "FUN_80076170",
+            checkpoint,
+            false,
+            memory_views,
+            {"instruction_worksheet:31", "r3:3", "r4:4", "r5:5", "r6:6"},
+            {},
+            iw_r31_views,
+            {},
+            128,
+            activation_pc);
+    }
+
+    write_checkpoint(
+        out,
+        "motion_renderer_entry_80018CBC",
+        "80018CBC",
+        "motion_renderer_entry",
+        "FUN_80018CBC",
+        "per_instruction_visit_motion_update",
+        false,
+        memory_views,
+        {"thread:3", "action_row:4", "render_source:5", "render_payload:6", "slot:7"},
+        {},
+        entry_thread_views,
+        {},
+        512,
+        activation_pc);
+    for (const auto& [id, pc, checkpoint] : std::array{
+             std::tuple{"motion_renderer_increment_before_80018F98", "80018F98", "before_progress_increment_store"},
+             std::tuple{"motion_renderer_increment_complete_80018F9C", "80018F9C", "after_progress_increment_store"},
+             std::tuple{"motion_renderer_clamp_complete_80018FAC", "80018FAC", "after_progress_clamp_store"},
+         }) {
+        write_checkpoint(
+            out,
+            id,
+            pc,
+            "motion_renderer_progress_update",
+            "FUN_80018CBC",
+            checkpoint,
+            false,
+            memory_views,
+            {"instruction_worksheet:29", "action_row:23", "thread:22", "r3:3", "r4:4"},
+            {},
+            iw_r29_views,
+            pc == std::string_view("80018F9C") ? thread_list_views
+                                                : std::vector<std::string_view>{},
+            512,
+            activation_pc);
+    }
+
+    write_checkpoint(
+        out,
+        "motion_gate_entry_80075D64",
+        "80075D64",
+        "motion_gate_entry",
+        "FUN_80075D64",
+        "state_gate_entry",
+        false,
+        memory_views,
+        {"thread:3"},
+        {},
+        entry_thread_views,
+        {},
+        512,
+        activation_pc);
+    for (const auto& [id, pc, checkpoint] : std::array{
+             std::tuple{"motion_gate_bit31_path_80075D80", "80075D80", "bit31_set_progress_test"},
+             std::tuple{"motion_gate_threshold_met_80075D94", "80075D94", "progress_at_least_one"},
+             std::tuple{"motion_gate_bit31_clear_complete_80075DA0", "80075DA0", "after_bit31_clear"},
+             std::tuple{"motion_gate_false_80075DA4", "80075DA4", "progress_below_one"},
+         }) {
+        write_checkpoint(
+            out,
+            id,
+            pc,
+            "motion_gate_decision",
+            "FUN_80075D64",
+            checkpoint,
+            false,
+            memory_views,
+            {"instruction_worksheet:4", "flags_or_result:3", "r0:0"},
+            {},
+            iw_r4_views,
+            pc == std::string_view("80075DA0") ? thread_list_views
+                                                : std::vector<std::string_view>{},
+            512,
+            activation_pc);
+    }
+
+    for (const auto& [id, pc, checkpoint] : std::array{
+             std::tuple{"callback_gate_state5_motion_return_8001B600", "8001B600", "state5_gate_return"},
+             std::tuple{"callback_gate_state6_motion_return_8001B6DC", "8001B6DC", "state6_gate_return"},
+             std::tuple{"callback_gate_state7_motion_return_8001B9AC", "8001B9AC", "state7_gate_return"},
+         }) {
+        write_checkpoint(
+            out,
+            id,
+            pc,
+            "basic_attack_callback_motion_gate_return",
+            "FUN_8001B1B0",
+            checkpoint,
+            false,
+            memory_views,
+            {"result:3", "thread:30", "instruction_worksheet:31"},
+            {},
+            state_thread_views,
+            {},
+            256,
+            activation_pc);
+    }
+
+    write_checkpoint(
+        out,
+        "callback_aux_publication_call_8001B750",
+        "8001B750",
+        "callback_aux_publication_call",
+        "FUN_8001B1B0",
+        "before_FUN_8001CAA8",
+        false,
+        memory_views,
+        {"thread:3", "thread_saved:30", "instruction_worksheet:31"},
+        {},
+        state_thread_views,
+        thread_list_views,
+        64,
+        activation_pc);
+    write_checkpoint(
+        out,
+        "serialized_action_view_publication_8003C738",
+        "8003C738",
+        "serialized_action_view_publication",
+        "Battle::Gfx::Combatants::SystemCameraHandler_8003C690",
+        "system_camera_publication",
+        false,
+        memory_views,
+        {"record_thread:31", "serialized_payload:30", "origin_thread:29"},
+        {},
+        record_r31_views,
+        thread_list_views,
+        64,
+        activation_pc);
+    write_checkpoint(
+        out,
+        "action_view_record_state0_helper_80051320",
+        "80051320",
+        "action_view_record_state0_helper",
+        "Battle::Turn::UpdateActionViewRecord_80051264",
+        "first_child_visit",
+        false,
+        memory_views,
+        {"record_thread:29", "record_worksheet:31", "origin_instruction:30"},
+        {},
+        record_r29_views,
+        thread_list_views,
+        64,
+        activation_pc);
+    write_checkpoint(
+        out,
+        "mode1_geometry_call_80051BB0",
+        "80051BB0",
+        "mode1_geometry_call",
+        "FUN_800519F4",
+        "mode1_pathing_consumption",
+        false,
+        memory_views,
+        {"record_worksheet:29", "origin_instruction:31"},
+        {
+            "mode1_vector_x_stack_0x38:r1:0x38:u32",
+            "mode1_vector_y_stack_0x3c:r1:0x3c:u32",
+            "mode1_vector_z_stack_0x40:r1:0x40:u32",
+        },
+        concat(iw_r31_views, root_views),
+        thread_list_views,
+        64,
+        activation_pc);
 
     return out.str();
 }
@@ -8450,6 +10591,46 @@ int write_first_battle_action_view_service_lifecycle_profile(
     return 0;
 }
 
+int write_first_battle_visual_publication_order_profile(
+    const std::filesystem::path& output_path,
+    std::ostream& out,
+    std::ostream& err,
+    std::uint32_t thread_list_max_nodes)
+{
+    if (output_path.empty()) {
+        err << "write-first-battle-visual-publication-order-profile requires --output PATH.\n";
+        return 2;
+    }
+    if (thread_list_max_nodes != 128 && thread_list_max_nodes != 256) {
+        err << "write-first-battle-visual-publication-order-profile --list-max must be 128 or 256.\n";
+        return 2;
+    }
+    if (const auto parent = output_path.parent_path(); !parent.empty()) {
+        std::error_code ec;
+        std::filesystem::create_directories(parent, ec);
+        if (ec) {
+            err << "Failed to create output directory: " << ec.message() << "\n";
+            return 1;
+        }
+    }
+
+    std::ofstream file(output_path, std::ios::binary | std::ios::trunc);
+    if (!file.is_open()) {
+        err << "Failed to open output profile: " << output_path.string() << "\n";
+        return 1;
+    }
+    const auto text =
+        build_first_battle_visual_publication_order_profile_ini(thread_list_max_nodes);
+    file.write(text.data(), static_cast<std::streamsize>(text.size()));
+    if (!file.good()) {
+        err << "Failed to write output profile: " << output_path.string() << "\n";
+        return 1;
+    }
+    out << "Wrote first-battle visual publication order capture profile: "
+        << output_path.string() << "\n";
+    return 0;
+}
+
 int write_first_battle_pc_worker_selector_lifetime_profile(
     const std::filesystem::path& output_path,
     std::ostream& out,
@@ -8488,6 +10669,126 @@ int write_first_battle_pc_worker_selector_lifetime_profile(
     }
     out << "Wrote first-battle PC worker selector/lifetime capture profile: "
         << output_path.string() << "\n";
+    return 0;
+}
+
+int write_first_battle_queued_instruction_param_profile(
+    const std::filesystem::path& output_path,
+    std::ostream& out,
+    std::ostream& err)
+{
+    if (output_path.empty()) {
+        err << "write-first-battle-queued-instruction-param-profile requires --output PATH.\n";
+        return 2;
+    }
+    if (const auto parent = output_path.parent_path(); !parent.empty()) {
+        std::error_code ec;
+        std::filesystem::create_directories(parent, ec);
+        if (ec) {
+            err << "Failed to create output directory: " << ec.message() << "\n";
+            return 1;
+        }
+    }
+
+    std::ofstream file(output_path, std::ios::binary | std::ios::trunc);
+    if (!file.is_open()) {
+        err << "Failed to open output profile: " << output_path.string() << "\n";
+        return 1;
+    }
+    const auto text = build_first_battle_queued_instruction_param_profile_ini();
+    file.write(text.data(), static_cast<std::streamsize>(text.size()));
+    if (!file.good()) {
+        err << "Failed to write output profile: " << output_path.string() << "\n";
+        return 1;
+    }
+    out << "Wrote first-battle queued-instruction parameter capture profile: "
+        << output_path.string() << "\n";
+    return 0;
+}
+
+int write_first_battle_mode1_pathing_lifetime_profile(
+    const std::filesystem::path& output_path,
+    std::ostream& out,
+    std::ostream& err,
+    std::uint32_t thread_list_max_nodes)
+{
+    if (output_path.empty()) {
+        err << "write-first-battle-mode1-pathing-lifetime-profile requires --output PATH.\n";
+        return 2;
+    }
+    if (thread_list_max_nodes != 128 && thread_list_max_nodes != 256) {
+        err << "write-first-battle-mode1-pathing-lifetime-profile --list-max must be 128 or 256.\n";
+        return 2;
+    }
+    if (const auto parent = output_path.parent_path(); !parent.empty()) {
+        std::error_code ec;
+        std::filesystem::create_directories(parent, ec);
+        if (ec) {
+            err << "Failed to create output directory: " << ec.message() << "\n";
+            return 1;
+        }
+    }
+
+    std::ofstream file(output_path, std::ios::binary | std::ios::trunc);
+    if (!file.is_open()) {
+        err << "Failed to open output profile: " << output_path.string() << "\n";
+        return 1;
+    }
+    const auto text =
+        build_first_battle_mode1_pathing_lifetime_profile_ini(thread_list_max_nodes);
+    file.write(text.data(), static_cast<std::streamsize>(text.size()));
+    if (!file.good()) {
+        err << "Failed to write output profile: " << output_path.string() << "\n";
+        return 1;
+    }
+    out << "Wrote first-battle mode-1 pathing lifetime capture profile: "
+        << output_path.string() << "\n";
+    return 0;
+}
+
+int write_first_battle_mode1_state6_progress_profile(
+    const std::filesystem::path& output_path,
+    std::ostream& out,
+    std::ostream& err,
+    std::uint32_t thread_list_max_nodes,
+    Mode1State6ProgressActivation activation)
+{
+    if (output_path.empty()) {
+        err << "write-first-battle-mode1-state6-progress-profile requires --output PATH.\n";
+        return 2;
+    }
+    if (thread_list_max_nodes != 128 && thread_list_max_nodes != 256) {
+        err << "write-first-battle-mode1-state6-progress-profile --list-max must be 128 or 256.\n";
+        return 2;
+    }
+    if (const auto parent = output_path.parent_path(); !parent.empty()) {
+        std::error_code ec;
+        std::filesystem::create_directories(parent, ec);
+        if (ec) {
+            err << "Failed to create output directory: " << ec.message() << "\n";
+            return 1;
+        }
+    }
+
+    std::ofstream file(output_path, std::ios::binary | std::ios::trunc);
+    if (!file.is_open()) {
+        err << "Failed to open output profile: " << output_path.string() << "\n";
+        return 1;
+    }
+    const auto text = build_first_battle_mode1_state6_progress_profile_ini(
+        thread_list_max_nodes,
+        activation);
+    file.write(text.data(), static_cast<std::streamsize>(text.size()));
+    if (!file.good()) {
+        err << "Failed to write output profile: " << output_path.string() << "\n";
+        return 1;
+    }
+    out << "Wrote first-battle mode-1 state-6 progress capture profile: "
+        << output_path.string() << " (activation="
+        << (activation == Mode1State6ProgressActivation::CounterFollowup
+                ? "counter-followup"
+                : "queued-state")
+        << ")\n";
     return 0;
 }
 

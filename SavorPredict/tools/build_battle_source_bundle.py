@@ -6,6 +6,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
+import struct
 from pathlib import Path
 
 
@@ -29,28 +31,107 @@ def roster_fingerprint(combatants: list[dict[str, object]]) -> str:
     )
 
 
+def signed_low_16(value: int) -> int:
+    low = value & 0xFFFF
+    return low if low < 0x8000 else low - 0x10000
+
+
+def literal_expression_value(parameter: dict[str, object]) -> int:
+    expression = parameter.get("expression")
+    if not isinstance(expression, dict):
+        raise ValueError("opcode 112 parameter has no decoded expression")
+    ast = expression.get("ast")
+    if not isinstance(ast, dict) or ast.get("kind") != "float_literal":
+        raise ValueError("opcode 112 parameter is not an immutable float literal")
+    raw_words = ast.get("rawWords")
+    if not isinstance(raw_words, list) or len(raw_words) != 2:
+        raise ValueError("opcode 112 literal has an unexpected raw-word shape")
+    value = struct.unpack(">f", struct.pack(">I", int(raw_words[1])))[0]
+    if not math.isfinite(value):
+        raise ValueError("opcode 112 literal is not finite")
+    return int(value)
+
+
+def scripted_battle_request(
+    document: dict[str, object],
+    section_name: str,
+    payload_offset: int,
+) -> dict[str, int]:
+    if document.get("schema") != "spice_sct_ir_v1" or document.get("parseOk") is not True:
+        raise ValueError("SCT JSON is not a successful spice_sct_ir_v1 decode")
+    sections = [
+        section
+        for section in document.get("sections", [])
+        if section.get("name") == section_name
+    ]
+    if len(sections) != 1:
+        raise ValueError(f"SCT section {section_name!r} is absent or ambiguous")
+    instructions = [
+        instruction
+        for instruction in sections[0].get("instructions", [])
+        if instruction.get("payloadOffset") == payload_offset
+    ]
+    if len(instructions) != 1:
+        raise ValueError(f"SCT payload offset {payload_offset} is absent or ambiguous")
+    instruction = instructions[0]
+    if instruction.get("opcode") != 112 or instruction.get("decodeOk") is not True:
+        raise ValueError("selected SCT instruction is not a decoded opcode 112")
+    parameters = sorted(instruction.get("parameters", []), key=lambda item: item.get("index", -1))
+    if [parameter.get("index") for parameter in parameters] != [0, 1, 2, 3]:
+        raise ValueError("opcode 112 does not contain exactly four indexed parameters")
+    values = [literal_expression_value(parameter) for parameter in parameters]
+    return {
+        "instruction_offset": int(instruction["offset"]),
+        "event_mode": values[0],
+        "event_or_encounter_id": values[1],
+        "stage_id": values[2],
+        "transition_selector": values[3],
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--key", required=True)
     parser.add_argument("--alx-json", type=Path, required=True)
     parser.add_argument("--alx-csv", type=Path, required=True)
     parser.add_argument("--sst-json", type=Path, required=True)
-    parser.add_argument("--savestate", type=Path, action="append", required=True)
-    parser.add_argument("--event-id", type=int, required=True)
-    parser.add_argument("--stage-id", required=True)
+    parser.add_argument("--sct-json", type=Path, required=True)
+    parser.add_argument("--sct-source", type=Path, required=True)
+    parser.add_argument("--sct-section", required=True)
+    parser.add_argument("--sct-payload-offset", type=int, required=True)
+    parser.add_argument("--savestate", type=Path, action="append", default=[])
     parser.add_argument("--sst-record-index", type=int, default=0)
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args()
+
+    sct_document = json.loads(args.sct_json.read_text(encoding="utf-8"))
+    request = scripted_battle_request(
+        sct_document, args.sct_section, args.sct_payload_offset
+    )
+    if request["event_mode"] == 0:
+        raise ValueError(
+            "this bundle builder currently requires an opcode-112 EnemyEvent request"
+        )
+    decoded_source = Path(str(sct_document.get("source", ""))).name
+    if decoded_source.lower() != args.sct_source.name.lower():
+        raise ValueError("SCT decode source does not match --sct-source")
+    event_id = signed_low_16(request["event_or_encounter_id"])
+    stage_number = signed_low_16(request["stage_id"])
+    stage_identity = f"s{stage_number:03d}"
+    if not args.sst_json.name.lower().startswith(stage_identity.lower()):
+        raise ValueError(
+            f"SST export {args.sst_json.name} does not match scripted stage {stage_identity}"
+        )
 
     alx_document = json.loads(args.alx_json.read_text(encoding="utf-8"))
     if alx_document.get("schema") != "spice_alx_enemy_events_v1":
         raise ValueError("ALX JSON is not spice_alx_enemy_events_v1")
     encounter = next(
-        (event for event in alx_document["events"] if event["entryId"] == args.event_id),
+        (event for event in alx_document["events"] if event["entryId"] == event_id),
         None,
     )
     if encounter is None:
-        raise ValueError(f"event {args.event_id} is absent from the ALX export")
+        raise ValueError(f"event {event_id} is absent from the ALX export")
 
     sst_document = json.loads(args.sst_json.read_text(encoding="utf-8"))
     record = next(
@@ -76,7 +157,7 @@ def main() -> int:
             "gridZ": int(item["gridZ"]),
             "present": bool(item["present"]),
             "status": "Exact",
-            "provenance": f"spice_alx_enemy_events_v1 entryId={args.event_id}",
+            "provenance": f"spice_alx_enemy_events_v1 entryId={event_id}",
         }
         for item in encounter["combatants"]
         if item["present"] is True
@@ -86,13 +167,14 @@ def main() -> int:
         "manifestKey": args.key,
         "encounter": {
             "sourceKind": "alx_enemy_event",
-            "entryId": args.event_id,
+            "requestedEntryId": event_id,
+            "entryId": event_id,
             "initiative": int(encounter["initiative"]),
             "status": "Exact",
             "provenance": "SPICE versioned ALX import",
         },
         "stage": {
-            "stageId": args.stage_id,
+            "stageId": stage_identity,
             "sstRecordIndex": args.sst_record_index,
             "status": "Exact",
             "provenance": "SPICE SST/SML command-map export",
@@ -118,12 +200,29 @@ def main() -> int:
     snapshot_path.write_bytes(compact_json_bytes(snapshot))
 
     manifest = {
-        "schema": "savor_battle_source_manifest_v1",
+        "schema": "savor_battle_source_manifest_v2",
         "key": args.key,
         "snapshotFile": snapshot_path.name,
         "snapshotSha256": sha256(snapshot_path),
-        "encounterIdentity": f"alx-enemyevent-{args.event_id}",
-        "stageIdentity": f"sst-{args.stage_id}-record-{args.sst_record_index}",
+        "encounterIdentity": f"alx-enemyevent-{event_id}",
+        "stageIdentity": f"sst-{stage_identity}-record-{args.sst_record_index}",
+        "scriptedBattleRequest": {
+            "kind": "scpt_opcode_112",
+            "scriptIdentity": args.sct_source.name,
+            "sectionIdentity": args.sct_section,
+            "instructionOffset": request["instruction_offset"],
+            "instructionPayloadOffset": args.sct_payload_offset,
+            "eventMode": request["event_mode"],
+            "eventOrEncounterId": request["event_or_encounter_id"],
+            "stageId": request["stage_id"],
+            "transitionSelector": request["transition_selector"],
+            "status": "Exact",
+            "provenance": (
+                f"SPICE spice_sct_ir_v1 decodes {args.sct_source.name} section "
+                f"{args.sct_section} payload {args.sct_payload_offset} as opcode 112 "
+                "with four immutable literal operands"
+            ),
+        },
         "sources": [
             {
                 "kind": "alx_enemy_event_csv",
@@ -139,6 +238,19 @@ def main() -> int:
                 "kind": "spice_sst_sml_command_map",
                 "identity": args.sst_json.name,
                 "sha256": sha256(args.sst_json),
+            },
+            {
+                "kind": "spice_sct_ir_v1",
+                "identity": args.sct_json.name,
+                "sha256": sha256(args.sct_json),
+            },
+            {
+                "kind": "scpt_script_source",
+                "identity": (
+                    "soa_parser_reference_bundle/sct_context/sct_input/"
+                    f"{args.sct_source.name}"
+                ),
+                "sha256": sha256(args.sct_source),
             },
         ],
         "validation": {

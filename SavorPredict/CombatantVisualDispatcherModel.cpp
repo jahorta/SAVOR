@@ -90,6 +90,44 @@ bool combatant_visual_record_temporally_active(
     return end_frame == 0 || visual_frame <= end_frame;
 }
 
+bool combatant_visual_timeline_has_pending_publications(
+    const CombatantVisualTimelineState& timeline,
+    const CombatantVisualResource* resource) {
+    if (!timeline.installed || resource == nullptr) {
+        return false;
+    }
+    const auto key = resolve_combatant_visual_action_key(timeline.instruction);
+    if (!key.action_key.has_value()) {
+        return false;
+    }
+    const auto secondary = timeline.instruction.subtype.value_or(-1);
+    for (const auto& record : resource->records) {
+        if (record.location_code < 0 || already_published(timeline, record.index)
+            || !record.gate_fields_known) {
+            continue;
+        }
+        if (record.kind != CombatantVisualCommandKind::SetCommand
+            && record.kind != CombatantVisualCommandKind::SystemCamera) {
+            continue;
+        }
+        if (!match_std_payload_action_key(
+                record.gate_fields.primary_action_key,
+                record.gate_fields.direct_gate_secondary_key,
+                *key.action_key,
+                secondary)) {
+            continue;
+        }
+        const auto end_frame = record.system_camera.has_value()
+            ? decoded_visual_frame(record.system_camera->end_frame)
+            : 0U;
+        if (end_frame != 0 && timeline.owning_thread_visits > end_frame) {
+            continue;
+        }
+        return true;
+    }
+    return false;
+}
+
 CombatantVisualTimelineAdvanceResult advance_combatant_visual_timeline(
     CombatantVisualTimelineState& timeline,
     const CombatantVisualResource* resource) {
@@ -163,6 +201,109 @@ CombatantVisualTimelineAdvanceResult advance_combatant_visual_timeline(
     }
 
     ++timeline.owning_thread_visits;
+    return result;
+}
+
+CombatantInstructionStdRowProducerResult
+visit_combatant_instruction_std_row_producer(
+    const CombatantInstructionStdRowProducerCursor& cursor,
+    const CombatantInstructionStdRowProducerRequest& request) {
+    CombatantInstructionStdRowProducerResult result;
+    result.cursor_after = cursor;
+
+    if (cursor.thread_state_0x19 == 0) {
+        result.status = CombatantInstructionStdRowProducerStatus::DeferredState0;
+        result.visual_status = CombatantVisualModelStatus::Provisional;
+        result.cursor_after.thread_state_0x19 = 1;
+        result.provenance =
+            "FUN_80022850 state 0 initializes the persistent instruction thread; "
+            "STD auxiliary rows are not visited until state 1";
+        return result;
+    }
+    if (cursor.thread_state_0x19 != 1) {
+        result.status = CombatantInstructionStdRowProducerStatus::Unsupported;
+        result.visual_status = CombatantVisualModelStatus::Unsupported;
+        result.provenance =
+            "combatant-instruction thread state is outside the captured state-1 producer path";
+        return result;
+    }
+
+    const bool same_input = cursor.has_observed_state1_input
+        && cursor.last_action_ordinal == request.action_ordinal
+        && cursor.last_instruction_revision == request.instruction_revision
+        && cursor.last_instruction_state_revision
+            == request.instruction_state_revision
+        && cursor.last_selected_action_row_index
+            == request.selected_action_row_index;
+    if (same_input) {
+        result.status = CombatantInstructionStdRowProducerStatus::Unchanged;
+        result.visual_status = CombatantVisualModelStatus::Matched;
+        result.provenance =
+            "state-1 visit continues the existing STD-row publication epoch";
+        return result;
+    }
+
+    result.cursor_after.has_observed_state1_input = true;
+    result.cursor_after.last_action_ordinal = request.action_ordinal;
+    result.cursor_after.last_instruction_revision = request.instruction_revision;
+    result.cursor_after.last_instruction_state_revision =
+        request.instruction_state_revision;
+    result.cursor_after.last_selected_action_row_index =
+        request.selected_action_row_index;
+
+    if (request.action_ordinal < 0
+        && request.instruction_state_revision == 0) {
+        result.status = CombatantInstructionStdRowProducerStatus::Idle;
+        result.visual_status = CombatantVisualModelStatus::Provisional;
+        result.provenance =
+            "state-1 instruction thread has no persistent worksheet publication to dispatch";
+        return result;
+    }
+
+    if (request.slot < 0 || request.action_ordinal < 0
+        || request.instruction_state_revision == 0
+        || !request.selected_action_row_known
+        || request.selected_action_row_index < 0
+        || !request.selected_action_key.has_value()) {
+        result.status = CombatantInstructionStdRowProducerStatus::MissingInput;
+        result.visual_status = CombatantVisualModelStatus::MissingInput;
+        result.provenance =
+            "state-1 STD-row producer requires a persistent instruction publication "
+            "and the current selected action row";
+        return result;
+    }
+
+    CombatantVisualInstructionSnapshot instruction;
+    instruction.slot = request.slot;
+    instruction.runtime_instruction_mode = request.runtime_instruction_mode;
+    instruction.selected_std_action_key = request.selected_action_key;
+    instruction.subtype = request.subtype;
+    instruction.target_slot = request.target_slot;
+    instruction.instruction_flags = request.instruction_flags;
+    instruction.knowledge = request.knowledge;
+    instruction.provenance = request.provenance;
+    if (!instruction.provenance.empty()) {
+        instruction.provenance += "; ";
+    }
+    instruction.provenance +=
+        "producer=FUN_80022850_state1_IW+0xE0; "
+        "payload_match=FUN_800085EC_to_FUN_800086BC; "
+        "aux_dispatch=FUN_8000832C_to_FUN_800367E8; "
+        "outer_callback_family=provisional";
+
+    const auto key = resolve_combatant_visual_action_key(instruction);
+    if (!key.action_key.has_value()) {
+        result.status = CombatantInstructionStdRowProducerStatus::MissingInput;
+        result.visual_status = CombatantVisualModelStatus::MissingInput;
+        result.provenance = key.provenance;
+        return result;
+    }
+
+    result.status = CombatantInstructionStdRowProducerStatus::Published;
+    result.visual_status = key.status;
+    result.install_epoch = true;
+    result.instruction = std::move(instruction);
+    result.provenance = key.provenance;
     return result;
 }
 
@@ -377,6 +518,25 @@ const char* combatant_visual_key_source_name(CombatantVisualKeySource source) {
     return "missing";
 }
 
+const char* combatant_instruction_std_row_producer_status_name(
+    CombatantInstructionStdRowProducerStatus status) {
+    switch (status) {
+    case CombatantInstructionStdRowProducerStatus::DeferredState0:
+        return "DeferredState0";
+    case CombatantInstructionStdRowProducerStatus::Idle:
+        return "Idle";
+    case CombatantInstructionStdRowProducerStatus::Published:
+        return "Published";
+    case CombatantInstructionStdRowProducerStatus::Unchanged:
+        return "Unchanged";
+    case CombatantInstructionStdRowProducerStatus::MissingInput:
+        return "MissingInput";
+    case CombatantInstructionStdRowProducerStatus::Unsupported:
+        return "Unsupported";
+    }
+    return "Unsupported";
+}
+
 const char* combatant_std_action_row_selection_status_name(
     CombatantStdActionRowSelectionStatus status) {
     switch (status) {
@@ -399,8 +559,10 @@ const char* combatant_std_motion_initialization_status_name(
 }
 
 const char* combatant_visual_dispatcher_rule_detail() {
-    return "Each instruction installation, including a same-mode reapplication, creates a new "
-           "visual epoch. The owning combatant advances the epoch once per packed-thread visit. "
+    return "The FUN_80022850 state-1 STD-row producer creates a visual epoch when it observes "
+           "a new persistent instruction or selected-row revision. Same-mode state "
+           "republication therefore creates a new epoch on the next state-1 visit. The owning "
+           "combatant advances the epoch once per packed-thread visit. "
            "SET COMMAND and SYSTEM CAMERA rows are matched with the validated STD action-key "
            "predicate and publish at most once per epoch. SYSTEM CAMERA start/end fields gate "
            "the provisional visual-frame cursor. Runtime instruction and validated transition "

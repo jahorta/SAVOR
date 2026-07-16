@@ -118,6 +118,7 @@
     <ClCompile Include="ActionViewStdJsonCache.cpp" />
     <ClCompile Include="ActionViewStdJsonLoader.cpp" />
     <ClCompile Include="ActionViewStdResourceResolver.cpp" />
+    <ClCompile Include="ActionMotionPlaybackModel.cpp" />
     <ClCompile Include="ActionMotionTargetModel.cpp" />
     <ClCompile Include="AttackDamageValueCheckpointModel.cpp" />
     <ClCompile Include="AttackResolutionCheckpointModel.cpp" />
@@ -166,6 +167,7 @@
     <ClCompile Include="PreAiCameraModel.cpp" />
     <ClCompile Include="PreAiCheckpointModel.cpp" />
     <ClCompile Include="ProgressEventParser.cpp" />
+    <ClCompile Include="QueuedInstructionParamModel.cpp" />
     <ClCompile Include="RngCore.cpp" />
     <ClCompile Include="RngModel.cpp" />
     <ClCompile Include="SoldierActionExecutionModel.cpp" />
@@ -189,6 +191,7 @@
     <ClInclude Include="ActionViewStdJsonCache.h" />
     <ClInclude Include="ActionViewStdJsonLoader.h" />
     <ClInclude Include="ActionViewStdResourceResolver.h" />
+    <ClInclude Include="ActionMotionPlaybackModel.h" />
     <ClInclude Include="ActionMotionTargetModel.h" />
     <ClInclude Include="AttackDamageValueCheckpointModel.h" />
     <ClInclude Include="AttackResolutionCheckpointModel.h" />
@@ -237,6 +240,7 @@
     <ClInclude Include="PreAiCameraModel.h" />
     <ClInclude Include="PreAiCheckpointModel.h" />
     <ClInclude Include="ProgressEventParser.h" />
+    <ClInclude Include="QueuedInstructionParamModel.h" />
     <ClInclude Include="RngCore.h" />
     <ClInclude Include="RngModel.h" />
     <ClInclude Include="SoldierActionExecutionModel.h" />

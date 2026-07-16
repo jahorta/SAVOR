@@ -306,15 +306,25 @@ std::optional<BattlePredictionDbInput> build_battle_prediction_input_from_analys
     resolved.input.scenario_name = resolved_scenario.has_value()
         ? std::optional<std::string>{resolved_scenario->name}
         : std::nullopt;
+    resolved.input.source_selection = options.source_selection;
+    if (!resolved.input.source_selection.has_value()) {
+        const auto source_scenario = resolved_scenario.has_value()
+            ? resolved_scenario
+            : battle_prediction_scenario_by_name(profile->name);
+        if (source_scenario.has_value()) {
+            resolved.input.source_selection = source_scenario->source_selection;
+        }
+    }
+    resolved.input.source_validation.expected_encounter = options.expected_encounter;
     resolved.input.turn_index = wave->turn_index;
-    resolved.input.options.movement_backend = options.movement_backend;
     resolved.input.options.action_view_std_json_dir = options.action_view_std_json_dir;
     resolved.input.options.allow_profile_overrides = options.allow_profile_overrides;
     auto& metadata = resolved.metadata;
     metadata.source_db_root = options.db_root;
     metadata.profile_name = profile->name;
     metadata.scenario_name = resolved.input.scenario_name;
-    metadata.movement_backend = options.movement_backend;
+    metadata.source_selection = resolved.input.source_selection;
+    metadata.expected_encounter = options.expected_encounter;
     metadata.requested_turn_job_id = options.selector.turn_job_id;
     metadata.requested_exec_job_id = options.selector.exec_job_id;
     metadata.turn_job_id = turn_job->turn_job_id;
@@ -468,7 +478,6 @@ std::optional<BattlePredictionDbInput> build_battle_prediction_input_from_db_roo
     }
     resolved->metadata.entry_savestate_sha256 = *savestate_sha256;
     resolved->input.source_validation.savestate_sha256 = *savestate_sha256;
-    resolved->input.source_validation.require_savestate_match = true;
     return resolved;
 }
 
@@ -481,8 +490,30 @@ void write_battle_prediction_db_metadata_text(
     if (metadata.scenario_name.has_value()) {
         out << "  scenario: " << *metadata.scenario_name << "\n";
     }
-    out << "  movement_backend: "
-        << battle_prediction_movement_backend_name(metadata.movement_backend) << "\n";
+    if (metadata.source_selection.has_value()) {
+        out << "  source_producer: "
+            << battle_source_producer_kind_name(
+                metadata.source_selection->producer_kind)
+            << "\n";
+        if (metadata.source_selection->producer_kind
+            == BattleSourceProducerKind::ScriptedBattleRequest) {
+            out << "  source_script: "
+                << metadata.source_selection->scripted_request.script_identity << "\n";
+            out << "  source_section: "
+                << metadata.source_selection->scripted_request.section_identity << "\n";
+            out << "  source_payload_offset: "
+                << metadata.source_selection->scripted_request.instruction_payload_offset
+                << "\n";
+        }
+    }
+    if (metadata.expected_encounter.has_value()) {
+        out << "  expected_encounter_source: "
+            << battle_encounter_source_kind_name(
+                metadata.expected_encounter->source_kind)
+            << "\n";
+        out << "  expected_encounter_id: "
+            << metadata.expected_encounter->encounter_id << "\n";
+    }
     out << "  turn_job_id: " << metadata.turn_job_id << "\n";
     if (metadata.exec_job_id.has_value()) {
         out << "  exec_job_id: " << *metadata.exec_job_id << "\n";
@@ -532,11 +563,45 @@ void write_battle_prediction_run_json(
     if (metadata.scenario_name.has_value()) {
         write_json_string_field(out, "scenario", *metadata.scenario_name, first);
     }
-    write_json_string_field(
-        out,
-        "movement_backend",
-        battle_prediction_movement_backend_name(metadata.movement_backend),
-        first);
+    if (metadata.source_selection.has_value()) {
+        write_json_string_field(
+            out,
+            "source_producer",
+            battle_source_producer_kind_name(
+                metadata.source_selection->producer_kind),
+            first);
+        if (metadata.source_selection->producer_kind
+            == BattleSourceProducerKind::ScriptedBattleRequest) {
+            write_json_string_field(
+                out,
+                "source_script",
+                metadata.source_selection->scripted_request.script_identity,
+                first);
+            write_json_string_field(
+                out,
+                "source_section",
+                metadata.source_selection->scripted_request.section_identity,
+                first);
+            write_json_int_field(
+                out,
+                "source_payload_offset",
+                metadata.source_selection->scripted_request.instruction_payload_offset,
+                first);
+        }
+    }
+    if (metadata.expected_encounter.has_value()) {
+        write_json_string_field(
+            out,
+            "expected_encounter_source",
+            battle_encounter_source_kind_name(
+                metadata.expected_encounter->source_kind),
+            first);
+        write_json_int_field(
+            out,
+            "expected_encounter_id",
+            metadata.expected_encounter->encounter_id,
+            first);
+    }
     if (metadata.requested_turn_job_id.has_value()) {
         write_json_i64_field(out, "requested_turn_job_id", *metadata.requested_turn_job_id, first);
     }

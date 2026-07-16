@@ -1,5 +1,7 @@
 #pragma once
 
+#include "QueuedInstructionParamModel.h"
+
 #include <optional>
 #include <string>
 
@@ -21,6 +23,7 @@ enum class CombatantInstructionModeStatus {
 
 enum class CombatantInstructionTransitionTrigger {
     MovementInvocation,
+    QueuedStdActionResolution,
     ActiveMovementHandoff,
 };
 
@@ -43,11 +46,13 @@ struct CombatantInstructionModeInput {
     bool attack_landed = false;
     bool counter_follow_up = false;
     int queued_command_parameter = 0;
+    BasicAttackExecutionRoute execution_route = BasicAttackExecutionRoute::Unknown;
     std::optional<int> prior_instruction_mode_0x6;
 };
 
 struct CombatantInstructionModeResult {
     CombatantInstructionModeStatus status = CombatantInstructionModeStatus::Unsupported;
+    std::optional<QueuedStdActionState> queued_state;
     std::optional<int> instruction_mode_0x6;
     std::string provenance;
     std::string detail;

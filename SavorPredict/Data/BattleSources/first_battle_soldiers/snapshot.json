@@ -3,6 +3,7 @@
   "manifestKey": "first-battle-soldiers-us-final",
   "encounter": {
     "sourceKind": "alx_enemy_event",
+    "requestedEntryId": 0,
     "entryId": 0,
     "initiative": 14,
     "status": "Exact",

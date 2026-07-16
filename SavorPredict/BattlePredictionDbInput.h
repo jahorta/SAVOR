@@ -43,9 +43,10 @@ struct BattlePredictionDbInputOptions {
     BattlePredictionJobSelector selector;
     std::string profile_name = std::string(kFirstBattleSoldiersProfileName);
     std::optional<std::string> scenario_name;
+    std::optional<BattleSourceSelection> source_selection;
+    std::optional<BattleEncounterIdentity> expected_encounter;
     std::optional<std::uint32_t> start_seed_override;
     std::optional<int> fake_attacks_override;
-    BattlePredictionMovementBackend movement_backend = BattlePredictionMovementBackend::FrameStateMachine;
     std::filesystem::path action_view_std_json_dir;
     bool allow_seed_candidate_fallback = false;
     bool allow_profile_overrides = false;
@@ -55,8 +56,8 @@ struct BattlePredictionDbInputMetadata {
     std::filesystem::path source_db_root;
     std::string profile_name = std::string(kFirstBattleSoldiersProfileName);
     std::optional<std::string> scenario_name;
-    BattlePredictionMovementBackend movement_backend =
-        BattlePredictionMovementBackend::FrameStateMachine;
+    std::optional<BattleSourceSelection> source_selection;
+    std::optional<BattleEncounterIdentity> expected_encounter;
     std::optional<long long> requested_turn_job_id;
     std::optional<long long> requested_exec_job_id;
     long long turn_job_id = 0;

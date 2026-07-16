@@ -86,8 +86,10 @@ BattleMovementPathInput captured_s001_path_input(
     const std::vector<CapturedGridCell>& active_cells)
 {
     const auto scenario = first_battle_soldiers_prediction_scenario();
-    const auto source = load_battle_source_bundle(scenario.source_manifest_key);
-    EXPECT_TRUE(source.ok);
+    const auto resolved = resolve_battle_source_bundle(
+        scenario.source_selection);
+    EXPECT_TRUE(resolved.bundle.ok);
+    const auto& source = resolved.bundle;
 
     BattleMovementPathInput input;
     input.base_grid = map_battle_terrain_9x9_to_grid_11x11(

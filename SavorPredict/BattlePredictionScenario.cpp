@@ -7,8 +7,14 @@ BattlePredictionScenario first_battle_soldiers_prediction_scenario() {
     return BattlePredictionScenario{
         .name = std::string(kFirstBattleSoldiersProfileName),
         .profile_name = std::string(kFirstBattleSoldiersProfileName),
-        .source_manifest_key = "first-battle-soldiers-us-final",
-        .movement_backend = BattlePredictionMovementBackend::FrameStateMachine,
+        .source_selection = BattleSourceSelection{
+            .producer_kind = BattleSourceProducerKind::ScriptedBattleRequest,
+            .scripted_request = ScriptedBattleRequestIdentity{
+                .script_identity = "me201a.sct",
+                .section_identity = "loop",
+                .instruction_payload_offset = 396,
+            },
+        },
     };
 }
 

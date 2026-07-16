@@ -34,7 +34,11 @@ void print_usage(std::ostream& out) {
         << "  SavorPredict write-first-battle-predictor-live-comparison-profile --output PATH [--list-max 128|256]\n"
         << "  SavorPredict write-first-battle-movement-destination-stop-profile --output PATH [--list-max 128|256]\n"
         << "  SavorPredict write-first-battle-action-view-service-lifecycle-profile --output PATH [--list-max 128|256]\n"
+        << "  SavorPredict write-first-battle-visual-publication-order-profile --output PATH [--list-max 128|256]\n"
         << "  SavorPredict write-first-battle-pc-worker-selector-lifetime-profile --output PATH [--list-max 128|256]\n"
+        << "  SavorPredict write-first-battle-queued-instruction-param-profile --output PATH\n"
+        << "  SavorPredict write-first-battle-mode1-pathing-lifetime-profile --output PATH [--list-max 128|256]\n"
+        << "  SavorPredict write-first-battle-mode1-state6-progress-profile --output PATH [--list-max 128|256] [--activation queued-state|counter-followup]\n"
         << "  SavorPredict write-first-battle-action-view-pathing-loop-profile --output PATH\n"
         << "  SavorPredict write-first-battle-thread-pathing-timing-profile --output PATH [--list-max 128|256]\n"
         << "  SavorPredict write-battle-thread-producer-profile --output PATH [--list-max 128|256]\n"
@@ -46,7 +50,7 @@ void print_usage(std::ostream& out) {
         << "  SavorPredict write-first-battle-move-increment-read-watch-profile --output PATH\n"
         << "  SavorPredict run-battle-job (--turn-job-id N | --exec-job-id N) --iso PATH --dolphin-base-dir PATH [--db-root PATH] [--run-root PATH] [--worker-exe PATH] [--capture-profile PATH] [--sandbox-mode minimal|full-copy] [--timeout-ms N] [--battle-run-ms N] [--poll-ms N] [--override-start-rng-seed N] [--override-fake-attacks N] [--action-view-std-json-dir PATH] [--std-disc-dump-root PATH] [--spice-file-parsing-exe PATH]\n"
         << "  SavorPredict run-battle-jobs --exec-job-id N [--exec-job-id N ...] [--exec-job-list PATH] [--exec-job-seed EXEC_ID:SEED[:FAKE_ATTACKS]] [--exec-job-seed-list PATH] [--exec-job-fake-attacks EXEC_ID:FAKE_ATTACKS] [--exec-job-fake-attacks-list PATH] --iso PATH --dolphin-base-dir PATH [--db-root PATH] [--run-root PATH] [--worker-exe PATH] [--capture-profile PATH] [--sandbox-mode minimal|full-copy] [--max-workers N] [--timeout-ms N] [--battle-run-ms N] [--poll-ms N] [--override-start-rng-seed N] [--override-fake-attacks N] [--action-view-std-json-dir PATH] [--std-disc-dump-root PATH] [--spice-file-parsing-exe PATH]\n"
-        << "  SavorPredict predict-battle (--context-file PATH --turn-plan-hex HEX --fake-attacks N --start-seed N | (--turn-job-id N | --exec-job-id N) [--start-seed N | --start-seed-list PATH]) [--db-root PATH] [--scenario first-battle-soldiers] [--profile first-battle-soldiers] [--movement-backend handler|frame|compare] [--action-view-std-json-dir PATH] [--std-disc-dump-root PATH] [--spice-file-parsing-exe PATH] [--format text|json] [--allow-seed-candidate-fallback] [--allow-profile-overrides]\n"
+        << "  SavorPredict predict-battle (--context-file PATH --turn-plan-hex HEX --fake-attacks N --start-seed N | (--turn-job-id N | --exec-job-id N) [--start-seed N | --start-seed-list PATH]) [--db-root PATH] [--scenario first-battle-soldiers] [--encounter-event-id N] [--scripted-battle-script NAME --scripted-battle-section NAME --scripted-battle-payload-offset N] [--profile first-battle-soldiers] [--action-view-std-json-dir PATH] [--std-disc-dump-root PATH] [--spice-file-parsing-exe PATH] [--format text|json] [--allow-seed-candidate-fallback] [--allow-profile-overrides]\n"
         << "    Custom --start-seed values begin at the battle coordinator; stored job seeds retain their captured-turn boundary.\n"
         << "  SavorPredict trace-job (--turn-job-id N | --exec-job-id N) [--db-root PATH] [--format text|json] [--max-distance N]\n\n"
         << "  SavorPredict trace-checkpoints --checkpoint-file PATH [--turn-job-id N | --exec-job-id N] [--db-root PATH] [--action-view-std-json-dir PATH] [--std-disc-dump-root PATH] [--spice-file-parsing-exe PATH] [--format text|json] [--expected-fake-attacks N] [--expected-enemy-setup-draws N] [--expected-mode0e-camera-draws N] [--expected-turn-order-draws N] [--expected-attack-events N] [--expected-crit-draws N] [--expected-counter-roll-ceiling N] [--expected-drop-rolls N] [--expected-end-turn-status-draws N] [--expected-level-up-stat-rolls N]\n\n"
@@ -522,6 +526,43 @@ int run_write_first_battle_action_view_service_lifecycle_profile(int argc, char*
         list_max);
 }
 
+int run_write_first_battle_visual_publication_order_profile(int argc, char** argv) {
+    std::filesystem::path output;
+    std::uint32_t list_max = 128;
+    for (int i = 2; i < argc; ++i) {
+        const std::string arg = argv[i];
+        std::string value;
+        if (arg == "--output") {
+            if (!require_value(argc, argv, i, arg, value, std::cerr)) {
+                return 2;
+            }
+            output = value;
+        } else if (arg == "--list-max") {
+            int parsed = 0;
+            if (!require_value(argc, argv, i, arg, value, std::cerr)
+                || !parse_int(value, parsed)
+                || (parsed != 128 && parsed != 256)) {
+                std::cerr << "--list-max must be 128 or 256.\n";
+                return 2;
+            }
+            list_max = static_cast<std::uint32_t>(parsed);
+        } else if (arg == "--help" || arg == "-h") {
+            print_usage(std::cout);
+            return 0;
+        } else {
+            std::cerr
+                << "Unknown write-first-battle-visual-publication-order-profile option: "
+                << arg << "\n";
+            return 2;
+        }
+    }
+    return savor::predict::write_first_battle_visual_publication_order_profile(
+        output,
+        std::cout,
+        std::cerr,
+        list_max);
+}
+
 int run_write_first_battle_pc_worker_selector_lifetime_profile(int argc, char** argv) {
     std::filesystem::path output;
     std::uint32_t list_max = 128;
@@ -557,6 +598,122 @@ int run_write_first_battle_pc_worker_selector_lifetime_profile(int argc, char** 
         std::cout,
         std::cerr,
         list_max);
+}
+
+int run_write_first_battle_queued_instruction_param_profile(int argc, char** argv) {
+    std::filesystem::path output;
+    for (int i = 2; i < argc; ++i) {
+        const std::string arg = argv[i];
+        std::string value;
+        if (arg == "--output") {
+            if (!require_value(argc, argv, i, arg, value, std::cerr)) {
+                return 2;
+            }
+            output = value;
+        } else if (arg == "--help" || arg == "-h") {
+            print_usage(std::cout);
+            return 0;
+        } else {
+            std::cerr
+                << "Unknown write-first-battle-queued-instruction-param-profile option: "
+                << arg << "\n";
+            return 2;
+        }
+    }
+    return savor::predict::write_first_battle_queued_instruction_param_profile(
+        output,
+        std::cout,
+        std::cerr);
+}
+
+int run_write_first_battle_mode1_pathing_lifetime_profile(int argc, char** argv) {
+    std::filesystem::path output;
+    std::uint32_t list_max = 128;
+    for (int i = 2; i < argc; ++i) {
+        const std::string arg = argv[i];
+        std::string value;
+        if (arg == "--output") {
+            if (!require_value(argc, argv, i, arg, value, std::cerr)) {
+                return 2;
+            }
+            output = value;
+        } else if (arg == "--list-max") {
+            int parsed = 0;
+            if (!require_value(argc, argv, i, arg, value, std::cerr)
+                || !parse_int(value, parsed)
+                || (parsed != 128 && parsed != 256)) {
+                std::cerr << "--list-max must be 128 or 256.\n";
+                return 2;
+            }
+            list_max = static_cast<std::uint32_t>(parsed);
+        } else if (arg == "--help" || arg == "-h") {
+            print_usage(std::cout);
+            return 0;
+        } else {
+            std::cerr
+                << "Unknown write-first-battle-mode1-pathing-lifetime-profile option: "
+                << arg << "\n";
+            return 2;
+        }
+    }
+    return savor::predict::write_first_battle_mode1_pathing_lifetime_profile(
+        output,
+        std::cout,
+        std::cerr,
+        list_max);
+}
+
+int run_write_first_battle_mode1_state6_progress_profile(int argc, char** argv) {
+    std::filesystem::path output;
+    std::uint32_t list_max = 128;
+    auto activation = savor::predict::Mode1State6ProgressActivation::QueuedState;
+    for (int i = 2; i < argc; ++i) {
+        const std::string arg = argv[i];
+        std::string value;
+        if (arg == "--output") {
+            if (!require_value(argc, argv, i, arg, value, std::cerr)) {
+                return 2;
+            }
+            output = value;
+        } else if (arg == "--list-max") {
+            int parsed = 0;
+            if (!require_value(argc, argv, i, arg, value, std::cerr)
+                || !parse_int(value, parsed)
+                || (parsed != 128 && parsed != 256)) {
+                std::cerr << "--list-max must be 128 or 256.\n";
+                return 2;
+            }
+            list_max = static_cast<std::uint32_t>(parsed);
+        } else if (arg == "--activation") {
+            if (!require_value(argc, argv, i, arg, value, std::cerr)) {
+                return 2;
+            }
+            if (value == "queued-state") {
+                activation = savor::predict::Mode1State6ProgressActivation::QueuedState;
+            } else if (value == "counter-followup") {
+                activation =
+                    savor::predict::Mode1State6ProgressActivation::CounterFollowup;
+            } else {
+                std::cerr
+                    << "--activation must be queued-state or counter-followup.\n";
+                return 2;
+            }
+        } else if (arg == "--help" || arg == "-h") {
+            print_usage(std::cout);
+            return 0;
+        } else {
+            std::cerr
+                << "Unknown write-first-battle-mode1-state6-progress-profile option: "
+                << arg << "\n";
+            return 2;
+        }
+    }
+    return savor::predict::write_first_battle_mode1_state6_progress_profile(
+        output,
+        std::cout,
+        std::cerr,
+        list_max,
+        activation);
 }
 
 int run_write_first_battle_action_view_pathing_loop_profile(int argc, char** argv) {
@@ -1058,8 +1215,20 @@ int main(int argc, char** argv) {
     if (command == "write-first-battle-action-view-service-lifecycle-profile") {
         return run_write_first_battle_action_view_service_lifecycle_profile(argc, argv);
     }
+    if (command == "write-first-battle-visual-publication-order-profile") {
+        return run_write_first_battle_visual_publication_order_profile(argc, argv);
+    }
     if (command == "write-first-battle-pc-worker-selector-lifetime-profile") {
         return run_write_first_battle_pc_worker_selector_lifetime_profile(argc, argv);
+    }
+    if (command == "write-first-battle-queued-instruction-param-profile") {
+        return run_write_first_battle_queued_instruction_param_profile(argc, argv);
+    }
+    if (command == "write-first-battle-mode1-pathing-lifetime-profile") {
+        return run_write_first_battle_mode1_pathing_lifetime_profile(argc, argv);
+    }
+    if (command == "write-first-battle-mode1-state6-progress-profile") {
+        return run_write_first_battle_mode1_state6_progress_profile(argc, argv);
     }
     if (command == "write-first-battle-action-view-pathing-loop-profile") {
         return run_write_first_battle_action_view_pathing_loop_profile(argc, argv);

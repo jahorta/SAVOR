@@ -193,6 +193,52 @@ struct CombatantVisualTimelineAdvanceResult {
     std::vector<std::string> diagnostics;
 };
 
+enum class CombatantInstructionStdRowProducerStatus {
+    DeferredState0,
+    Idle,
+    Published,
+    Unchanged,
+    MissingInput,
+    Unsupported,
+};
+
+struct CombatantInstructionStdRowProducerCursor {
+    int thread_state_0x19 = 0;
+    bool has_observed_state1_input = false;
+    int last_action_ordinal = -1;
+    int last_instruction_revision = -1;
+    std::uint64_t last_instruction_state_revision = 0;
+    int last_selected_action_row_index = -1;
+};
+
+struct CombatantInstructionStdRowProducerRequest {
+    int action_ordinal = -1;
+    int slot = -1;
+    int instruction_revision = 0;
+    std::uint64_t instruction_state_revision = 0;
+    bool selected_action_row_known = false;
+    int selected_action_row_index = -1;
+    std::optional<std::int16_t> selected_action_key;
+    std::optional<std::int16_t> runtime_instruction_mode;
+    std::optional<std::int16_t> subtype;
+    std::optional<int> target_slot;
+    std::optional<std::uint32_t> instruction_flags;
+    CombatantVisualInstructionKnowledge knowledge =
+        CombatantVisualInstructionKnowledge::Unknown;
+    std::string provenance;
+};
+
+struct CombatantInstructionStdRowProducerResult {
+    CombatantInstructionStdRowProducerStatus status =
+        CombatantInstructionStdRowProducerStatus::MissingInput;
+    CombatantVisualModelStatus visual_status =
+        CombatantVisualModelStatus::MissingInput;
+    bool install_epoch = false;
+    CombatantInstructionStdRowProducerCursor cursor_after{};
+    std::optional<CombatantVisualInstructionSnapshot> instruction;
+    std::string provenance;
+};
+
 struct CombatantVisualActionViewRngPlan {
     bool mode0_rewrite_draw = false;
     bool mode0e_camera_draw = false;
@@ -211,9 +257,18 @@ bool combatant_visual_record_temporally_active(
     const CombatantVisualCommandRecord& record,
     std::uint32_t visual_frame);
 
+bool combatant_visual_timeline_has_pending_publications(
+    const CombatantVisualTimelineState& timeline,
+    const CombatantVisualResource* resource);
+
 CombatantVisualTimelineAdvanceResult advance_combatant_visual_timeline(
     CombatantVisualTimelineState& timeline,
     const CombatantVisualResource* resource);
+
+CombatantInstructionStdRowProducerResult
+visit_combatant_instruction_std_row_producer(
+    const CombatantInstructionStdRowProducerCursor& cursor,
+    const CombatantInstructionStdRowProducerRequest& request);
 
 CombatantVisualActionViewRngPlan combatant_visual_action_view_rng_plan(
     std::int16_t payload_mode,
@@ -231,6 +286,8 @@ Std0Table combatant_visual_selector_table(const CombatantVisualResource& resourc
 const char* combatant_visual_command_kind_name(CombatantVisualCommandKind kind);
 const char* combatant_visual_model_status_name(CombatantVisualModelStatus status);
 const char* combatant_visual_key_source_name(CombatantVisualKeySource source);
+const char* combatant_instruction_std_row_producer_status_name(
+    CombatantInstructionStdRowProducerStatus status);
 const char* combatant_std_action_row_selection_status_name(
     CombatantStdActionRowSelectionStatus status);
 const char* combatant_std_motion_initialization_status_name(

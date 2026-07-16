@@ -59,23 +59,28 @@ bool parse_u32_seed(std::string_view value, std::uint32_t& out) {
     return parsed <= 0xFFFFFFFFul;
 }
 
-std::optional<BattlePredictionMovementBackend> parse_movement_backend(std::string_view value) {
-    if (value == "handler") {
-        return BattlePredictionMovementBackend::HandlerLevelFirstBattle;
-    }
-    if (value == "frame") {
-        return BattlePredictionMovementBackend::FrameStateMachine;
-    }
-    if (value == "compare") {
-        return BattlePredictionMovementBackend::Compare;
-    }
-    return std::nullopt;
-}
-
 void add_unique_error(std::vector<std::string>& errors, std::string error) {
     if (std::find(errors.begin(), errors.end(), error) == errors.end()) {
         errors.push_back(std::move(error));
     }
+}
+
+BattleSourceSelection* ensure_scripted_source_selection(
+    BattlePredictorCliOptions& options,
+    std::vector<std::string>& errors) {
+    if (!options.source_selection.has_value()) {
+        options.source_selection = BattleSourceSelection{
+            .producer_kind = BattleSourceProducerKind::ScriptedBattleRequest,
+        };
+    }
+    if (options.source_selection->producer_kind
+        != BattleSourceProducerKind::ScriptedBattleRequest) {
+        add_unique_error(
+            errors,
+            "scripted battle source options conflict with another source producer");
+        return nullptr;
+    }
+    return &*options.source_selection;
 }
 
 void apply_scenario_defaults(
@@ -85,9 +90,6 @@ void apply_scenario_defaults(
         if (const auto profile = battle_prediction_profile_by_name(options.profile_name);
             profile.has_value()) {
             options.profile_name = profile->name;
-            if (!options.movement_backend_explicit) {
-                options.movement_backend = profile->default_movement_backend;
-            }
         }
         return;
     }
@@ -98,6 +100,9 @@ void apply_scenario_defaults(
         return;
     }
     options.scenario_name = scenario->name;
+    if (!options.source_selection.has_value()) {
+        options.source_selection = scenario->source_selection;
+    }
 
     if (options.profile_explicit) {
         const auto profile = battle_prediction_profile_by_name(options.profile_name);
@@ -112,9 +117,6 @@ void apply_scenario_defaults(
         options.profile_name = scenario->profile_name;
     }
 
-    if (!options.movement_backend_explicit) {
-        options.movement_backend = scenario->movement_backend;
-    }
     if (const auto profile = battle_prediction_profile_by_name(options.profile_name);
         profile.has_value()) {
         options.profile_name = profile->name;
@@ -248,7 +250,8 @@ bool build_input_from_context_file(
     input.start_boundary = BattlePredictionStartBoundary::BattleCoordinatorStart;
     input.turn_index = input.profile.supported_turn_index;
     input.scenario_name = options.scenario_name;
-    input.options.movement_backend = options.movement_backend;
+    input.source_selection = options.source_selection;
+    input.source_validation.expected_encounter = options.expected_encounter;
     input.options.action_view_std_json_dir = options.action_view_std_json_dir;
     input.options.allow_profile_overrides = options.allow_profile_overrides;
     input.turn_plan.fake_attack_count = static_cast<std::uint32_t>(*options.fake_attacks);
@@ -294,6 +297,44 @@ BattlePredictorCliParseResult parse_predict_battle_tokens(const std::vector<std:
             if (require_value(args, i, arg, value, result.errors)) {
                 result.options.scenario_name = value;
             }
+        } else if (arg == "--encounter-event-id") {
+            int parsed = -1;
+            if (require_value(args, i, arg, value, result.errors)
+                && parse_int(value, parsed) && parsed >= 0) {
+                result.options.expected_encounter = BattleEncounterIdentity{
+                    .source_kind = BattleEncounterSourceKind::EventDefinition,
+                    .encounter_id = parsed,
+                };
+            } else {
+                result.errors.push_back(
+                    "--encounter-event-id requires a non-negative integer.");
+            }
+        } else if (arg == "--scripted-battle-script") {
+            if (require_value(args, i, arg, value, result.errors)) {
+                if (auto* selection = ensure_scripted_source_selection(
+                        result.options, result.errors)) {
+                    selection->scripted_request.script_identity = value;
+                }
+            }
+        } else if (arg == "--scripted-battle-section") {
+            if (require_value(args, i, arg, value, result.errors)) {
+                if (auto* selection = ensure_scripted_source_selection(
+                        result.options, result.errors)) {
+                    selection->scripted_request.section_identity = value;
+                }
+            }
+        } else if (arg == "--scripted-battle-payload-offset") {
+            int parsed = -1;
+            if (require_value(args, i, arg, value, result.errors)
+                && parse_int(value, parsed) && parsed >= 0) {
+                if (auto* selection = ensure_scripted_source_selection(
+                        result.options, result.errors)) {
+                    selection->scripted_request.instruction_payload_offset = parsed;
+                }
+            } else {
+                result.errors.push_back(
+                    "--scripted-battle-payload-offset requires a non-negative integer.");
+            }
         } else if (arg == "--action-view-std-json-dir") {
             if (require_value(args, i, arg, value, result.errors)) {
                 result.options.action_view_std_json_dir = value;
@@ -328,16 +369,6 @@ BattlePredictorCliParseResult parse_predict_battle_tokens(const std::vector<std:
             if (require_value(args, i, arg, value, result.errors)) {
                 result.options.profile_name = value;
                 result.options.profile_explicit = true;
-            }
-        } else if (arg == "--movement-backend") {
-            if (require_value(args, i, arg, value, result.errors)) {
-                const auto parsed = parse_movement_backend(value);
-                if (parsed.has_value()) {
-                    result.options.movement_backend = *parsed;
-                    result.options.movement_backend_explicit = true;
-                } else {
-                    result.errors.push_back("--movement-backend must be handler, frame, or compare.");
-                }
             }
         } else if (arg == "--format") {
             if (require_value(args, i, arg, value, result.errors)) {
@@ -414,6 +445,18 @@ std::vector<std::string> validate_predict_battle_options(
     if (has_exec && *options.exec_job_id <= 0) {
         errors.push_back("--exec-job-id must be positive.");
     }
+    if (options.source_selection.has_value()) {
+        const auto& selection = *options.source_selection;
+        if (selection.producer_kind
+                != BattleSourceProducerKind::ScriptedBattleRequest
+            || selection.scripted_request.script_identity.empty()
+            || selection.scripted_request.section_identity.empty()
+            || selection.scripted_request.instruction_payload_offset < 0) {
+            errors.push_back(
+                "A scripted battle source requires --scripted-battle-script, "
+                "--scripted-battle-section, and --scripted-battle-payload-offset.");
+        }
+    }
     const auto profile = battle_prediction_profile_by_name(options.profile_name);
     if (!profile.has_value()) {
         errors.push_back("Unsupported --profile: " + options.profile_name);
@@ -483,8 +526,9 @@ int run_predict_battle(const BattlePredictorCliOptions& options, std::ostream& o
     db_options.selector.exec_job_id = resolved_options.exec_job_id;
     db_options.profile_name = resolved_options.profile_name;
     db_options.scenario_name = resolved_options.scenario_name;
+    db_options.source_selection = resolved_options.source_selection;
+    db_options.expected_encounter = resolved_options.expected_encounter;
     db_options.fake_attacks_override = resolved_options.fake_attacks;
-    db_options.movement_backend = resolved_options.movement_backend;
     db_options.action_view_std_json_dir = resolved_options.action_view_std_json_dir;
     db_options.allow_seed_candidate_fallback = resolved_options.allow_seed_candidate_fallback;
     db_options.allow_profile_overrides = resolved_options.allow_profile_overrides;

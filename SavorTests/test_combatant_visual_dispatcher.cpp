@@ -174,12 +174,44 @@ std::optional<BattleFrameRuntime> initialize_frame_runtime() {
         }
         combatant.selected_action_row_index = 0;
         combatant.selected_action_row_flags = 0x01000000u;
+        combatant.selected_action_row_action_id = 5;
         combatant.selected_action_row_known = true;
     }
     return runtime;
 }
 
-BattleFrameActionScheduleResult schedule_action(BattleFrameRuntime& runtime) {
+bool publish_fixture_visual_instruction_state(
+    BattleFrameRuntime& runtime,
+    int slot = 0,
+    int action_ordinal = 0,
+    std::int16_t mode = 5) {
+    auto* combatant = find_frame_combatant(runtime.state, slot);
+    if (combatant == nullptr) {
+        return false;
+    }
+    runtime.visual.timelines[static_cast<std::size_t>(slot)] = {};
+    runtime.visual.timeline_action_ordinals[static_cast<std::size_t>(slot)] = -1;
+    runtime.visual.controller = {};
+    combatant->selected_action_row_action_id = mode;
+    CombatantVisualInstructionSnapshot instruction;
+    instruction.slot = slot;
+    instruction.runtime_instruction_mode = mode;
+    instruction.selected_std_action_key = mode;
+    instruction.target_slot = 4;
+    instruction.subtype = -1;
+    instruction.instruction_flags = combatant->instruction_flags_0xec;
+    instruction.knowledge = CombatantVisualInstructionKnowledge::Known;
+    instruction.provenance =
+        "low-level visual runtime fixture publishes persistent IW state";
+    return publish_battle_frame_visual_instruction_state(
+        runtime,
+        action_ordinal,
+        std::move(instruction));
+}
+
+BattleFrameActionScheduleResult schedule_action(
+    BattleFrameRuntime& runtime,
+    bool automatic_basic_attack_transition = true) {
     return schedule_first_turn_actor_action(
         runtime,
         BattleFrameScheduleActionInput{
@@ -188,7 +220,9 @@ BattleFrameActionScheduleResult schedule_action(BattleFrameRuntime& runtime) {
             .target_slot = 4,
             .enemy_owned = false,
             .selected_worker = MovementSelectedWorker::PcDirectAttack_80086308,
-            .action_kind = BattleMovementActionKind::BasicAttack,
+            .action_kind = automatic_basic_attack_transition
+                ? BattleMovementActionKind::BasicAttack
+                : BattleMovementActionKind::Guard,
             .relation_scope = BattleMovementRelationScope::SingleTarget,
             .turn_type = BattleMovementTurnType::Normal,
         });
@@ -208,6 +242,21 @@ int count_rng_label(
     return static_cast<int>(std::count_if(
         events.begin(), events.end(),
         [&label](const BattleFrameStepEvent& event) { return event.rng_label == label; }));
+}
+
+std::vector<BattleFrameStepEvent> run_until_visual_publication(
+    BattleFrameRuntime& runtime,
+    std::uint32_t& rng,
+    int max_frames = 16) {
+    std::vector<BattleFrameStepEvent> events;
+    for (int frame = 0; frame < max_frames; ++frame) {
+        const auto step = run_first_turn_frame(runtime, rng);
+        events.insert(events.end(), step.events.begin(), step.events.end());
+        if (count_step(events, BattleFrameWorkerStepKind::VisualCommandPublish) > 0) {
+            break;
+        }
+    }
+    return events;
 }
 
 TEST(SavorPredictCombatantVisualLoader, DecodesCompleteSetAndSystemCameraPayloads) {
@@ -277,6 +326,86 @@ TEST(SavorPredictCombatantVisualModel, KeyPriorityAndSameModeEpochsAreExplicit) 
     install_combatant_visual_instruction(timeline, instruction);
     EXPECT_EQ(timeline.epoch, first_epoch + 1);
     EXPECT_EQ(advance_combatant_visual_timeline(timeline, &resource).publications.size(), 2u);
+}
+
+TEST(SavorPredictCombatantVisualModel, StdRowProducerDefersState0AndPublishesChangedState1Input) {
+    CombatantInstructionStdRowProducerCursor cursor;
+    const CombatantInstructionStdRowProducerRequest request{
+        .action_ordinal = 3,
+        .slot = 0,
+        .instruction_revision = 7,
+        .instruction_state_revision = 11,
+        .selected_action_row_known = true,
+        .selected_action_row_index = 42,
+        .selected_action_key = 5,
+        .runtime_instruction_mode = 5,
+        .subtype = -1,
+        .target_slot = 4,
+        .instruction_flags = 0x00100000u,
+        .knowledge = CombatantVisualInstructionKnowledge::Known,
+        .provenance = "captured persistent instruction state",
+    };
+
+    const auto state0 = visit_combatant_instruction_std_row_producer(
+        cursor, request);
+    EXPECT_EQ(
+        state0.status,
+        CombatantInstructionStdRowProducerStatus::DeferredState0);
+    EXPECT_FALSE(state0.install_epoch);
+    EXPECT_EQ(state0.cursor_after.thread_state_0x19, 1);
+
+    const auto published = visit_combatant_instruction_std_row_producer(
+        state0.cursor_after, request);
+    ASSERT_EQ(
+        published.status,
+        CombatantInstructionStdRowProducerStatus::Published);
+    ASSERT_TRUE(published.install_epoch);
+    ASSERT_TRUE(published.instruction.has_value());
+    EXPECT_EQ(published.instruction->runtime_instruction_mode, 5);
+    EXPECT_EQ(published.instruction->selected_std_action_key, 5);
+
+    const auto unchanged = visit_combatant_instruction_std_row_producer(
+        published.cursor_after, request);
+    EXPECT_EQ(
+        unchanged.status,
+        CombatantInstructionStdRowProducerStatus::Unchanged);
+    EXPECT_FALSE(unchanged.install_epoch);
+
+    auto revised = request;
+    revised.instruction_state_revision = 12;
+    const auto same_mode_republication =
+        visit_combatant_instruction_std_row_producer(
+            unchanged.cursor_after, revised);
+    EXPECT_EQ(
+        same_mode_republication.status,
+        CombatantInstructionStdRowProducerStatus::Published);
+    EXPECT_TRUE(same_mode_republication.install_epoch);
+}
+
+TEST(SavorPredictCombatantVisualModel, StdRowProducerDoesNotGuessMissingCurrentRow) {
+    CombatantInstructionStdRowProducerCursor cursor;
+    cursor.thread_state_0x19 = 1;
+    const auto idle = visit_combatant_instruction_std_row_producer(
+        cursor,
+        CombatantInstructionStdRowProducerRequest{
+            .slot = 0,
+        });
+    EXPECT_EQ(idle.status, CombatantInstructionStdRowProducerStatus::Idle);
+    EXPECT_FALSE(idle.install_epoch);
+
+    const auto missing = visit_combatant_instruction_std_row_producer(
+        idle.cursor_after,
+        CombatantInstructionStdRowProducerRequest{
+            .action_ordinal = 0,
+            .slot = 0,
+            .instruction_revision = 1,
+            .instruction_state_revision = 1,
+        });
+    EXPECT_EQ(
+        missing.status,
+        CombatantInstructionStdRowProducerStatus::MissingInput);
+    EXPECT_FALSE(missing.install_epoch);
+    EXPECT_FALSE(missing.instruction.has_value());
 }
 
 TEST(SavorPredictCombatantVisualModel, SelectsStdActionRowsFromProducerInputs) {
@@ -418,96 +547,209 @@ TEST(SavorPredictCombatantVisualRuntime, PublishesAndRunsChildrenAfterOwnerInSam
     auto runtime = initialize_frame_runtime();
     ASSERT_TRUE(runtime.has_value());
     ASSERT_TRUE(configure_battle_frame_visual_resource(*runtime, decoded_resource(0, false, 2)));
-    ASSERT_TRUE(schedule_action(*runtime).scheduled);
+    ASSERT_TRUE(schedule_action(*runtime, false).scheduled);
 
     std::uint32_t rng = 0x12345678U;
     const auto placement = draw_rand15(rng);
-    const auto frame = run_first_turn_frame(*runtime, rng);
+    ASSERT_TRUE(publish_fixture_visual_instruction_state(*runtime));
+    const auto events = run_until_visual_publication(*runtime, rng);
 
     EXPECT_EQ(rng, placement.next_state);
-    EXPECT_EQ(count_step(frame.events, BattleFrameWorkerStepKind::VisualInstructionInstall), 1);
-    EXPECT_EQ(count_step(frame.events, BattleFrameWorkerStepKind::VisualCommandPublish), 2);
-    EXPECT_EQ(count_step(frame.events, BattleFrameWorkerStepKind::VisualChildState0), 2);
+    EXPECT_EQ(count_step(events, BattleFrameWorkerStepKind::VisualInstructionInstall), 1);
+    EXPECT_EQ(count_step(events, BattleFrameWorkerStepKind::VisualCommandPublish), 2);
+    EXPECT_EQ(count_step(events, BattleFrameWorkerStepKind::VisualChildState0), 2);
     const auto publication = std::find_if(
-        frame.events.begin(), frame.events.end(),
+        events.begin(), events.end(),
         [](const BattleFrameStepEvent& event) {
             return event.step_kind == BattleFrameWorkerStepKind::VisualCommandPublish;
         });
     const auto child = std::find_if(
-        frame.events.begin(), frame.events.end(),
+        events.begin(), events.end(),
         [](const BattleFrameStepEvent& event) {
             return event.step_kind == BattleFrameWorkerStepKind::VisualChildState0;
         });
-    ASSERT_NE(publication, frame.events.end());
-    ASSERT_NE(child, frame.events.end());
-    EXPECT_LT(std::distance(frame.events.begin(), publication),
-              std::distance(frame.events.begin(), child));
+    ASSERT_NE(publication, events.end());
+    ASSERT_NE(child, events.end());
+    EXPECT_LT(std::distance(events.begin(), publication),
+              std::distance(events.begin(), child));
 }
 
-TEST(SavorPredictCombatantVisualRuntime, ControllerTransitionsReplacePerWorkerFallbackEpochs) {
+TEST(SavorPredictCombatantVisualRuntime, ControllerPublicationWaitsForState1StdRowProducer) {
     auto runtime = initialize_frame_runtime();
     ASSERT_TRUE(runtime.has_value());
     ASSERT_TRUE(schedule_action(*runtime).scheduled);
 
     std::uint32_t rng = 0x22446688U;
-    const auto first = run_first_turn_frame(*runtime, rng);
-    ASSERT_TRUE(first.ok);
-    const auto& initial = runtime->visual.timelines[0];
-    ASSERT_TRUE(initial.installed);
-    EXPECT_EQ(initial.epoch, 1u);
-    EXPECT_EQ(initial.instruction.runtime_instruction_mode, 5);
-    EXPECT_EQ(initial.instruction.knowledge,
-              CombatantVisualInstructionKnowledge::Provisional);
-    const auto first_mode5 = std::find_if(
-        first.events.begin(),
-        first.events.end(),
+    std::vector<BattleFrameStepEvent> events;
+    for (int frame = 0; frame < 512; ++frame) {
+        const auto step = run_first_turn_frame(*runtime, rng);
+        ASSERT_TRUE(step.ok);
+        events.insert(events.end(), step.events.begin(), step.events.end());
+        if (count_step(events, BattleFrameWorkerStepKind::VisualInstructionInstall) > 0) {
+            break;
+        }
+    }
+    const auto state_publication = std::find_if(
+        events.begin(), events.end(),
+        [](const BattleFrameStepEvent& event) {
+            return event.step_kind
+                    == BattleFrameWorkerStepKind::VisualInstructionStatePublish
+                && event.slot == 0;
+        });
+    const auto epoch_install = std::find_if(
+        events.begin(), events.end(),
         [](const BattleFrameStepEvent& event) {
             return event.step_kind == BattleFrameWorkerStepKind::VisualInstructionInstall
                 && event.slot == 0
-                && event.detail.find("action_key=5") != std::string::npos;
+                && event.detail.find("FUN_80022850_state1") != std::string::npos;
         });
-    const auto handoff_decision = std::find_if(
-        first.events.begin(),
-        first.events.end(),
-        [](const BattleFrameStepEvent& event) {
-            return event.step_kind == BattleFrameWorkerStepKind::VisualInstructionDecision
-                && event.slot == 0
-                && event.detail.find("trigger=ActiveMovementHandoff")
-                    != std::string::npos
-                && event.detail.find("installs_epoch=0") != std::string::npos;
-        });
-    ASSERT_NE(first_mode5, first.events.end());
-    ASSERT_NE(handoff_decision, first.events.end());
-    EXPECT_LT(std::distance(first.events.begin(), first_mode5),
-              std::distance(first.events.begin(), handoff_decision));
+    ASSERT_NE(state_publication, events.end());
+    ASSERT_NE(epoch_install, events.end());
+    EXPECT_LT(std::distance(events.begin(), state_publication),
+              std::distance(events.begin(), epoch_install));
+    EXPECT_EQ(count_step(events, BattleFrameWorkerStepKind::VisualInstructionDecision), 0);
+    EXPECT_EQ(runtime->visual.timelines[0].instruction.runtime_instruction_mode, 6);
     EXPECT_EQ(rng, 0x22446688U);
 }
 
-TEST(SavorPredictCombatantVisualRuntime, UnsupportedPassiveFamilyCreatesNoEpochOrRng) {
+TEST(SavorPredictCombatantVisualRuntime, ValidatedStateTransitionWaitsForNextState1Visit) {
+    auto runtime = initialize_frame_runtime();
+    ASSERT_TRUE(runtime.has_value());
+    ASSERT_TRUE(configure_battle_frame_visual_resource(
+        *runtime, decoded_resource(0, false, 2)));
+    ASSERT_TRUE(schedule_action(*runtime, false).scheduled);
+
+    std::uint32_t rng = 0x88776655U;
+    ASSERT_TRUE(publish_fixture_visual_instruction_state(*runtime));
+    const auto initial = run_until_visual_publication(*runtime, rng);
+    ASSERT_GT(count_step(
+        initial,
+        BattleFrameWorkerStepKind::VisualInstructionInstall), 0);
+    const auto epoch_before = runtime->visual.timelines[0].epoch;
+    const auto task_count_before = runtime->visual.child_tasks.size();
+
+    ASSERT_TRUE(publish_battle_frame_validated_instruction_transition(
+        *runtime,
+        0,
+        0,
+        4,
+        8,
+        "validated attack-result mode-8 state transition"));
+    EXPECT_EQ(runtime->visual.timelines[0].epoch, epoch_before);
+    EXPECT_EQ(runtime->visual.child_tasks.size(), task_count_before);
+
+    const auto next_visit = run_first_turn_frame(*runtime, rng);
+    EXPECT_EQ(runtime->visual.timelines[0].epoch, epoch_before + 1);
+    EXPECT_EQ(runtime->visual.timelines[0].instruction.runtime_instruction_mode, 8);
+    const auto state_event = std::find_if(
+        next_visit.events.begin(), next_visit.events.end(),
+        [](const BattleFrameStepEvent& event) {
+            return event.step_kind
+                == BattleFrameWorkerStepKind::VisualInstructionStatePublish;
+        });
+    const auto install_event = std::find_if(
+        next_visit.events.begin(), next_visit.events.end(),
+        [](const BattleFrameStepEvent& event) {
+            return event.step_kind
+                == BattleFrameWorkerStepKind::VisualInstructionInstall;
+        });
+    ASSERT_NE(state_event, next_visit.events.end());
+    ASSERT_NE(install_event, next_visit.events.end());
+    EXPECT_LT(std::distance(next_visit.events.begin(), state_event),
+              std::distance(next_visit.events.begin(), install_event));
+}
+
+TEST(SavorPredictCombatantVisualRuntime, Mode8PublicationWaitsForCapturedState6Playback) {
+    auto runtime = initialize_frame_runtime();
+    ASSERT_TRUE(runtime.has_value());
+    ASSERT_TRUE(configure_battle_frame_visual_resource(
+        *runtime, decoded_resource(0, false, 0, 2, 8)));
+    ASSERT_TRUE(schedule_action(*runtime, false).scheduled);
+
+    auto* combatant = find_frame_combatant(runtime->state, 0);
+    ASSERT_NE(combatant, nullptr);
+    combatant->selected_action_row_index = 4;
+    combatant->selected_action_row_action_id = 8;
+    combatant->selected_action_row_duration_bits = 0x40a00000u;
+    combatant->selected_action_row_duration_known = true;
+    runtime->visual.std_row_producers[0].thread_state_0x19 = 1;
+
+    ASSERT_TRUE(publish_fixture_visual_instruction_state(*runtime, 0, 0, 8));
+    EXPECT_TRUE(battle_frame_action_visual_publication_pending(*runtime, 0));
+    std::uint32_t rng = 0x53746174u;
+    std::vector<BattleFrameStepEvent> events;
+    for (int frame = 0; frame < 12; ++frame) {
+        const auto step = run_first_turn_frame(*runtime, rng);
+        ASSERT_TRUE(step.ok);
+        events.insert(events.end(), step.events.begin(), step.events.end());
+        if (count_step(events, BattleFrameWorkerStepKind::VisualCommandPublish) > 0) {
+            break;
+        }
+    }
+
+    const auto true_gate = std::find_if(
+        events.begin(), events.end(),
+        [](const BattleFrameStepEvent& event) {
+            return event.step_kind == BattleFrameWorkerStepKind::ActionMotionState6Poll
+                && event.action_motion_gate_result.value_or(false);
+        });
+    const auto release = std::find_if(
+        events.begin(), events.end(),
+        [](const BattleFrameStepEvent& event) {
+            return event.step_kind
+                == BattleFrameWorkerStepKind::ActionMotionPublicationRelease;
+        });
+    const auto publication = std::find_if(
+        events.begin(), events.end(),
+        [](const BattleFrameStepEvent& event) {
+            return event.step_kind == BattleFrameWorkerStepKind::VisualCommandPublish;
+        });
+    const auto first_child = std::find_if(
+        events.begin(), events.end(),
+        [](const BattleFrameStepEvent& event) {
+            return event.step_kind == BattleFrameWorkerStepKind::VisualChildState0;
+        });
+    ASSERT_NE(true_gate, events.end());
+    ASSERT_NE(release, events.end());
+    ASSERT_NE(publication, events.end());
+    ASSERT_NE(first_child, events.end());
+    EXPECT_EQ(true_gate->frame_index + 1, release->frame_index);
+    EXPECT_EQ(release->frame_index, publication->frame_index);
+    EXPECT_EQ(publication->frame_index, first_child->frame_index);
+    EXPECT_EQ(true_gate->action_motion_progress_after_bits, 0x3f800000u);
+    EXPECT_EQ(true_gate->action_motion_flags_after & 0x80000000u, 0u);
+    EXPECT_EQ(release->action_motion_control_before, 6);
+    EXPECT_EQ(release->action_motion_control_after, 11);
+    EXPECT_EQ(runtime->visual.timelines[0].instruction.runtime_instruction_mode, 8);
+    EXPECT_FALSE(battle_frame_action_visual_publication_pending(*runtime, 0));
+    EXPECT_TRUE(std::none_of(
+        events.begin(), events.end(),
+        [](const BattleFrameStepEvent& event) {
+            const bool playback_event =
+                event.step_kind == BattleFrameWorkerStepKind::ActionMotionPlaybackInstall
+                || event.step_kind == BattleFrameWorkerStepKind::ActionMotionRendererAdvance
+                || event.step_kind == BattleFrameWorkerStepKind::ActionMotionState6Poll
+                || event.step_kind == BattleFrameWorkerStepKind::ActionMotionPublicationRelease;
+            return playback_event && (event.rng_event || event.draws_consumed != 0);
+        }));
+}
+
+TEST(SavorPredictCombatantVisualRuntime, MovementActivationDoesNotCreateVisualEpoch) {
     auto runtime = initialize_frame_runtime();
     ASSERT_TRUE(runtime.has_value());
     ASSERT_TRUE(schedule_action(*runtime).scheduled);
 
     std::uint32_t rng = 0x13579bdfU;
-    bool saw_unsupported_slot5 = false;
-    for (int frame = 0; frame < 320 && !saw_unsupported_slot5; ++frame) {
-        const auto step = run_first_turn_frame(*runtime, rng);
-        ASSERT_TRUE(step.ok);
-        saw_unsupported_slot5 = std::any_of(
-            step.events.begin(),
-            step.events.end(),
-            [](const BattleFrameStepEvent& event) {
-                return event.step_kind
-                        == BattleFrameWorkerStepKind::VisualInstructionDecision
-                    && event.slot == 5
-                    && event.status == BattleFrameEventStatus::Skipped
-                    && event.detail.find("transition_status=Unsupported")
-                        != std::string::npos;
-            });
-    }
-    ASSERT_TRUE(saw_unsupported_slot5);
-    EXPECT_FALSE(runtime->visual.timelines[5].installed);
-    EXPECT_EQ(runtime->visual.timelines[5].epoch, 0u);
+    const auto first = run_first_turn_frame(*runtime, rng);
+    EXPECT_GT(
+        count_step(first.events, BattleFrameWorkerStepKind::MovementInvocationActivate),
+        0);
+    EXPECT_EQ(
+        count_step(first.events, BattleFrameWorkerStepKind::VisualInstructionInstall),
+        0);
+    EXPECT_EQ(count_step(
+        first.events,
+        BattleFrameWorkerStepKind::VisualInstructionDecision), 0);
     EXPECT_EQ(rng, 0x13579bdfU);
 }
 
@@ -518,9 +760,10 @@ TEST(SavorPredictCombatantVisualRuntime, Mode1RunsOnRecordVisitBeforeActionResol
         *runtime, decoded_resource(0, false, 1)));
     configure_battle_frame_visual_pathing_profile(
         *runtime, "first-battle-soldiers");
-    ASSERT_TRUE(schedule_action(*runtime).scheduled);
+    ASSERT_TRUE(schedule_action(*runtime, false).scheduled);
 
     std::uint32_t rng = 0x31415926U;
+    ASSERT_TRUE(publish_fixture_visual_instruction_state(*runtime));
     const auto find_mode1 = [&]() -> BattleFrameVisualChildTask* {
         const auto found = std::find_if(
             runtime->visual.child_tasks.begin(),
@@ -558,12 +801,13 @@ TEST(SavorPredictCombatantVisualRuntime, ServiceDelayHasNDecrementsAndZeroVisitC
     resource.selector_table = {};
     resource.selector_table = combatant_visual_selector_table(resource);
     ASSERT_TRUE(configure_battle_frame_visual_resource(*runtime, std::move(resource)));
-    ASSERT_TRUE(schedule_action(*runtime).scheduled);
+    ASSERT_TRUE(schedule_action(*runtime, false).scheduled);
 
     std::uint32_t rng = 0x24681357U;
     const auto placement = draw_rand15(rng);
     std::vector<BattleFrameStepEvent> events;
-    for (int frame = 0; frame < 5; ++frame) {
+    ASSERT_TRUE(publish_fixture_visual_instruction_state(*runtime));
+    for (int frame = 0; frame < 6; ++frame) {
         const auto step = run_first_turn_frame(*runtime, rng);
         events.insert(events.end(), step.events.begin(), step.events.end());
         if (frame == 0) {
@@ -589,11 +833,12 @@ TEST(SavorPredictCombatantVisualRuntime, FlaggedActionServiceIsTheEb4cRngOwner) 
     auto* origin = find_frame_combatant(runtime->state, 0);
     ASSERT_NE(origin, nullptr);
     origin->instruction_flags_0xec |= 0x00100000U;
-    ASSERT_TRUE(schedule_action(*runtime).scheduled);
+    ASSERT_TRUE(schedule_action(*runtime, false).scheduled);
 
     std::uint32_t rng = 0x13572468U;
-    const auto state0 = run_first_turn_frame(*runtime, rng);
-    EXPECT_EQ(count_step(state0.events, BattleFrameWorkerStepKind::VisualChildState0), 1);
+    ASSERT_TRUE(publish_fixture_visual_instruction_state(*runtime));
+    const auto state0 = run_until_visual_publication(*runtime, rng);
+    EXPECT_EQ(count_step(state0, BattleFrameWorkerStepKind::VisualChildState0), 1);
     runtime->active_action.reset();
     const auto expected = draw_rand15(rng);
     const auto nested = run_first_turn_frame(*runtime, rng);
@@ -619,10 +864,14 @@ TEST(SavorPredictCombatantVisualRuntime, SerializedChildHoldsActionBarrierUntilC
     resource.selector_table = {};
     resource.selector_table = combatant_visual_selector_table(resource);
     ASSERT_TRUE(configure_battle_frame_visual_resource(*runtime, std::move(resource)));
-    ASSERT_TRUE(schedule_action(*runtime).scheduled);
+    ASSERT_TRUE(schedule_action(*runtime, false).scheduled);
 
     std::uint32_t rng = 0x10203040U;
-    ASSERT_TRUE(run_first_turn_frame(*runtime, rng).ok);
+    ASSERT_TRUE(publish_fixture_visual_instruction_state(*runtime));
+    const auto published = run_until_visual_publication(*runtime, rng);
+    ASSERT_EQ(count_step(
+        published,
+        BattleFrameWorkerStepKind::VisualCommandPublish), 1);
     ASSERT_EQ(runtime->visual.child_tasks.size(), 1u);
     for (auto& worker : runtime->workers) {
         worker.complete = true;
@@ -654,7 +903,7 @@ TEST(SavorPredictCombatantVisualRuntime, Mode0RewriteAndMode0eDrawHaveSeparateOw
     resource.selector_table = {};
     resource.selector_table = combatant_visual_selector_table(resource);
     ASSERT_TRUE(configure_battle_frame_visual_resource(*runtime, std::move(resource)));
-    ASSERT_TRUE(schedule_action(*runtime).scheduled);
+    ASSERT_TRUE(schedule_action(*runtime, false).scheduled);
 
     std::uint32_t rng = 1;
     while ((draw_rand15(draw_rand15(rng).next_state).value % 2U) != 0U) {
@@ -663,10 +912,11 @@ TEST(SavorPredictCombatantVisualRuntime, Mode0RewriteAndMode0eDrawHaveSeparateOw
     const auto placement = draw_rand15(rng);
     const auto first = draw_rand15(placement.next_state);
     const auto second = draw_rand15(first.next_state);
-    const auto frame = run_first_turn_frame(*runtime, rng);
+    ASSERT_TRUE(publish_fixture_visual_instruction_state(*runtime));
+    const auto frame = run_until_visual_publication(*runtime, rng);
 
-    EXPECT_EQ(count_step(frame.events, BattleFrameWorkerStepKind::VisualMode0Rewrite), 1);
-    EXPECT_EQ(count_step(frame.events, BattleFrameWorkerStepKind::VisualMode0eCamera), 1);
+    EXPECT_EQ(count_step(frame, BattleFrameWorkerStepKind::VisualMode0Rewrite), 1);
+    EXPECT_EQ(count_step(frame, BattleFrameWorkerStepKind::VisualMode0eCamera), 1);
     EXPECT_EQ(rng, second.next_state);
 }
 
@@ -679,16 +929,21 @@ TEST(SavorPredictCombatantVisualRuntime, MissingResourceDoesNotInventRng) {
         .resource_stem = "missing",
     };
     ASSERT_TRUE(configure_battle_frame_visual_resource(*runtime, std::move(unavailable)));
-    ASSERT_TRUE(schedule_action(*runtime).scheduled);
+    ASSERT_TRUE(schedule_action(*runtime, false).scheduled);
 
     std::uint32_t rng = 0xabcdef01U;
     const auto placement = draw_rand15(rng);
-    const auto frame = run_first_turn_frame(*runtime, rng);
+    std::vector<BattleFrameStepEvent> frame;
+    ASSERT_TRUE(publish_fixture_visual_instruction_state(*runtime));
+    for (int index = 0; index < 3; ++index) {
+        const auto step = run_first_turn_frame(*runtime, rng);
+        frame.insert(frame.end(), step.events.begin(), step.events.end());
+    }
     EXPECT_EQ(rng, placement.next_state);
-    EXPECT_EQ(count_step(frame.events, BattleFrameWorkerStepKind::ViewPlacementResolve), 1);
-    EXPECT_EQ(count_step(frame.events, BattleFrameWorkerStepKind::VisualCommandPublish), 0);
-    EXPECT_EQ(count_step(frame.events, BattleFrameWorkerStepKind::VisualMode0Rewrite), 0);
-    EXPECT_EQ(count_step(frame.events, BattleFrameWorkerStepKind::VisualMode0eCamera), 0);
+    EXPECT_GE(count_step(frame, BattleFrameWorkerStepKind::ViewPlacementResolve), 1);
+    EXPECT_EQ(count_step(frame, BattleFrameWorkerStepKind::VisualCommandPublish), 0);
+    EXPECT_EQ(count_step(frame, BattleFrameWorkerStepKind::VisualMode0Rewrite), 0);
+    EXPECT_EQ(count_step(frame, BattleFrameWorkerStepKind::VisualMode0eCamera), 0);
 }
 
 TEST(SavorPredictCombatantVisualRuntime, ReplaysAcceptedFourteenServiceVisitContracts) {
@@ -714,11 +969,12 @@ TEST(SavorPredictCombatantVisualRuntime, ReplaysAcceptedFourteenServiceVisitCont
         auto* origin = find_frame_combatant(runtime->state, 0);
         ASSERT_NE(origin, nullptr);
         origin->instruction_flags_0xec = captured.eb4c_gate ? 0x00180000U : 0x00080000U;
-        ASSERT_TRUE(schedule_action(*runtime).scheduled);
+        ASSERT_TRUE(schedule_action(*runtime, false).scheduled);
 
         std::uint32_t rng = 0x31415926U;
         std::vector<BattleFrameStepEvent> events;
-        for (int frame = 0; frame < captured.delay + 4; ++frame) {
+        ASSERT_TRUE(publish_fixture_visual_instruction_state(*runtime));
+        for (int frame = 0; frame < captured.delay + 5; ++frame) {
             const auto step = run_first_turn_frame(*runtime, rng);
             events.insert(events.end(), step.events.begin(), step.events.end());
             if (frame == 0) {

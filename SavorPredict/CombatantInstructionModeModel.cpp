@@ -13,7 +13,9 @@ std::string input_detail(const CombatantInstructionModeInput& input) {
         << "; action_kind=" << combatant_instruction_action_kind_name(input.action_kind)
         << "; attack_landed=" << (input.attack_landed ? 1 : 0)
         << "; counter_follow_up=" << (input.counter_follow_up ? 1 : 0)
-        << "; queued_command_parameter=" << input.queued_command_parameter;
+        << "; queued_command_parameter=" << input.queued_command_parameter
+        << "; execution_route="
+        << basic_attack_execution_route_name(input.execution_route);
     if (input.attack_result.has_value()) {
         out << "; attack_result=" << *input.attack_result;
     }
@@ -71,20 +73,6 @@ CombatantInstructionModeResult model_combatant_instruction_mode_transition(
         return result;
     }
 
-    if (!input.attack_landed) {
-        result.status = CombatantInstructionModeStatus::Skipped;
-        result.provenance = "unlanded_attack_no_post_attack_mode_handoff";
-        result.detail += "; " + std::string(combatant_instruction_mode_rule_detail());
-        return result;
-    }
-
-    if (input.counter_follow_up) {
-        result.status = CombatantInstructionModeStatus::Skipped;
-        result.provenance = "counter_follow_up_mode_not_modeled";
-        result.detail += "; " + std::string(combatant_instruction_mode_rule_detail());
-        return result;
-    }
-
     if (input.action_kind != CombatantInstructionActionKind::BasicAttack) {
         result.status = CombatantInstructionModeStatus::Unsupported;
         result.provenance = "unsupported_non_basic_action";
@@ -92,24 +80,37 @@ CombatantInstructionModeResult model_combatant_instruction_mode_transition(
         return result;
     }
 
-    if (!input.attack_result.has_value()) {
-        result.status = CombatantInstructionModeStatus::MissingInput;
-        result.provenance = "missing_attack_result";
-        result.detail += "; " + std::string(combatant_instruction_mode_rule_detail());
-        return result;
-    }
-
-    if (*input.attack_result == 2) {
+    const auto queued = model_basic_attack_queued_state({
+        .route = input.execution_route,
+        .attack_result = input.attack_result,
+        .counter_follow_up = input.counter_follow_up,
+    });
+    switch (queued.status) {
+    case QueuedInstructionParamStatus::Validated:
         result.status = CombatantInstructionModeStatus::Validated;
-        result.instruction_mode_0x6 = 8;
-        result.provenance = "validated_critical_result_to_mode8_handoff";
-        result.detail += "; selected_instruction_mode_0x6=8";
-        result.detail += "; " + std::string(combatant_instruction_mode_rule_detail());
-        return result;
+        break;
+    case QueuedInstructionParamStatus::Provisional:
+        result.status = CombatantInstructionModeStatus::Provisional;
+        break;
+    case QueuedInstructionParamStatus::MissingInput:
+        result.status = CombatantInstructionModeStatus::MissingInput;
+        break;
+    case QueuedInstructionParamStatus::Unsupported:
+    case QueuedInstructionParamStatus::Inconsistent:
+        result.status = CombatantInstructionModeStatus::Unsupported;
+        break;
     }
-
-    result.status = CombatantInstructionModeStatus::Unsupported;
-    result.provenance = "noncritical_basic_attack_mode_producer_not_modeled";
+    result.queued_state = queued.queued_state;
+    result.instruction_mode_0x6 = queued.instruction_mode;
+    result.provenance = queued.provenance;
+    if (queued.queued_state.has_value()) {
+        result.detail += "; queued_state="
+            + std::to_string(static_cast<int>(*queued.queued_state));
+    }
+    if (queued.instruction_mode.has_value()) {
+        result.detail += "; selected_instruction_mode_0x6="
+            + std::to_string(*queued.instruction_mode);
+    }
     result.detail += "; " + std::string(combatant_instruction_mode_rule_detail());
     return result;
 }
@@ -135,15 +136,11 @@ CombatantInstructionModeResult model_combatant_instruction_controller_transition
 
     switch (input.producer_family) {
     case CombatantInstructionProducerFamily::ActivePcDirect:
-        return provisional_controller_mode(
-            input,
-            5,
-            "provisional_active_pc_direct_invocation_mode5");
     case CombatantInstructionProducerFamily::ActivePcFallback:
-        return provisional_controller_mode(
-            input,
-            5,
-            "provisional_active_pc_fallback_invocation_mode5");
+        result.status = CombatantInstructionModeStatus::Unsupported;
+        result.provenance =
+            "active attack mode requires the final execution route and post-resolution queued state";
+        return result;
     case CombatantInstructionProducerFamily::AmbientFormation:
         return provisional_controller_mode(
             input,
@@ -181,6 +178,8 @@ const char* combatant_instruction_transition_trigger_name(
     switch (trigger) {
     case CombatantInstructionTransitionTrigger::MovementInvocation:
         return "MovementInvocation";
+    case CombatantInstructionTransitionTrigger::QueuedStdActionResolution:
+        return "QueuedStdActionResolution";
     case CombatantInstructionTransitionTrigger::ActiveMovementHandoff:
         return "ActiveMovementHandoff";
     }
@@ -205,13 +204,11 @@ const char* combatant_instruction_producer_family_name(
 
 const char* combatant_instruction_mode_rule_detail() {
     return "generic instruction-mode handoff models frame-relevant writes to "
-           "Battle_CombatantInstructionWorksheet+0x6; the current validated rule "
-           "is the captured critical-hit chain where attack_result 2 reaches mode 8 "
-           "before action-view and effect consumers; controller transitions for active "
-           "PC direct, active PC fallback, and ambient formation are provisional "
-           "corpus-backed producers; the active movement handoff does not guess a mode; "
-           "broader producer operand staging "
-           "remains intentionally unmodeled";
+           "Battle_CombatantInstructionWorksheet+0x6; final direct attacks publish "
+           "queued state 5 for miss/hit or 6 for critical and map to modes 4 or 8; "
+           "final fallback attacks publish queued state 7 and map to mode 5; "
+           "ambient formation remains a separate provisional controller mode; "
+           "the active movement handoff does not guess an attack mode";
 }
 
 } // namespace savor::predict

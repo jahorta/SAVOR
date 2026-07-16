@@ -30,7 +30,9 @@
     <ClCompile Include="..\SavorPredict\BattlePredictorCli.cpp" />
     <ClCompile Include="..\SavorPredict\CombatantInstructionModeModel.cpp" />
     <ClCompile Include="..\SavorPredict\CombatantVisualDispatcherModel.cpp" />
+    <ClCompile Include="..\SavorPredict\ActionMotionPlaybackModel.cpp" />
     <ClCompile Include="..\SavorPredict\ActionMotionTargetModel.cpp" />
+    <ClCompile Include="test_action_motion_playback.cpp" />
     <ClCompile Include="..\SavorPredict\BattleMovementPathModel.cpp" />
     <ClCompile Include="..\SavorPredict\BattleJobBatchRunManifest.cpp" />
     <ClCompile Include="..\SavorPredict\BattleJobBatchRunOptions.cpp" />
@@ -54,6 +56,7 @@
     <ClCompile Include="..\SavorPredict\PreAiCameraModel.cpp" />
     <ClCompile Include="..\SavorPredict\PreAiCheckpointModel.cpp" />
     <ClCompile Include="..\SavorPredict\ProgressEventParser.cpp" />
+    <ClCompile Include="..\SavorPredict\QueuedInstructionParamModel.cpp" />
     <ClCompile Include="..\SavorPredict\RngCore.cpp" />
     <ClCompile Include="..\SavorPredict\RngModel.cpp" />
     <ClCompile Include="..\SavorPredict\SoldierActionExecutionModel.cpp" />
@@ -80,6 +83,7 @@
     <ClCompile Include="test_battle_source_model.cpp" />
     <ClCompile Include="test_combatant_visual_dispatcher.cpp" />
     <ClCompile Include="test_pad_poll_isolated_user.cpp" />
+    <ClCompile Include="test_queued_instruction_param.cpp" />
     <ClCompile Include="test_savordb_utils_minimal_copy.cpp" />
     <ClCompile Include="test_simconfig.cpp" />
     <ClCompile Include="test_savordb.cpp" />
@@ -124,7 +128,9 @@
     <ClInclude Include="..\SavorDbDebugTool\ReprojectUiRead.h" />
     <ClInclude Include="..\SavorPredict\ViewPlacementCacheModel.h" />
     <ClInclude Include="..\SavorPredict\ViewPlacementGeometryModel.h" />
+    <ClInclude Include="..\SavorPredict\ActionMotionPlaybackModel.h" />
     <ClInclude Include="..\SavorPredict\ActionMotionTargetModel.h" />
+    <ClInclude Include="..\SavorPredict\QueuedInstructionParamModel.h" />
     <ClInclude Include="..\SavorPredict\BattleMovementInvocationModel.h" />
     <ClInclude Include="..\SavorPredict\BattleMovementPathModel.h" />
     <ClInclude Include="..\SavorPredict\CombatantVisualDispatcherModel.h" />

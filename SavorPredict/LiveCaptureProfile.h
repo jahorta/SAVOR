@@ -7,6 +7,11 @@
 
 namespace savor::predict {
 
+enum class Mode1State6ProgressActivation {
+    QueuedState,
+    CounterFollowup,
+};
+
 std::string build_first_battle_capture_profile_ini();
 std::string build_first_battle_predictor_validation_profile_ini();
 std::string build_first_battle_turn_order_validation_profile_ini();
@@ -23,8 +28,17 @@ std::string build_first_battle_movement_destination_stop_profile_ini(
     std::uint32_t thread_list_max_nodes = 128);
 std::string build_first_battle_action_view_service_lifecycle_profile_ini(
     std::uint32_t thread_list_max_nodes = 128);
+std::string build_first_battle_visual_publication_order_profile_ini(
+    std::uint32_t thread_list_max_nodes = 128);
 std::string build_first_battle_pc_worker_selector_lifetime_profile_ini(
     std::uint32_t thread_list_max_nodes = 128);
+std::string build_first_battle_queued_instruction_param_profile_ini();
+std::string build_first_battle_mode1_pathing_lifetime_profile_ini(
+    std::uint32_t thread_list_max_nodes = 128);
+std::string build_first_battle_mode1_state6_progress_profile_ini(
+    std::uint32_t thread_list_max_nodes = 128,
+    Mode1State6ProgressActivation activation =
+        Mode1State6ProgressActivation::QueuedState);
 std::string build_first_battle_action_view_pathing_loop_profile_ini();
 std::string build_first_battle_thread_pathing_timing_profile_ini(
     std::uint32_t thread_list_max_nodes = 128);
@@ -85,11 +99,32 @@ int write_first_battle_action_view_service_lifecycle_profile(
     std::ostream& out,
     std::ostream& err,
     std::uint32_t thread_list_max_nodes = 128);
+int write_first_battle_visual_publication_order_profile(
+    const std::filesystem::path& output_path,
+    std::ostream& out,
+    std::ostream& err,
+    std::uint32_t thread_list_max_nodes = 128);
 int write_first_battle_pc_worker_selector_lifetime_profile(
     const std::filesystem::path& output_path,
     std::ostream& out,
     std::ostream& err,
     std::uint32_t thread_list_max_nodes = 128);
+int write_first_battle_queued_instruction_param_profile(
+    const std::filesystem::path& output_path,
+    std::ostream& out,
+    std::ostream& err);
+int write_first_battle_mode1_pathing_lifetime_profile(
+    const std::filesystem::path& output_path,
+    std::ostream& out,
+    std::ostream& err,
+    std::uint32_t thread_list_max_nodes = 128);
+int write_first_battle_mode1_state6_progress_profile(
+    const std::filesystem::path& output_path,
+    std::ostream& out,
+    std::ostream& err,
+    std::uint32_t thread_list_max_nodes = 128,
+    Mode1State6ProgressActivation activation =
+        Mode1State6ProgressActivation::QueuedState);
 int write_first_battle_action_view_pathing_loop_profile(
     const std::filesystem::path& output_path,
     std::ostream& out,

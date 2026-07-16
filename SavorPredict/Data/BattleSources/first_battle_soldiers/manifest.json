@@ -1,10 +1,23 @@
 {
-  "schema": "savor_battle_source_manifest_v1",
+  "schema": "savor_battle_source_manifest_v2",
   "key": "first-battle-soldiers-us-final",
   "snapshotFile": "snapshot.json",
-  "snapshotSha256": "2066f65dab8a4f40f6bc34220fb1504f7416c01ed04051ed64d8e23b174c258a",
+  "snapshotSha256": "26db0ea167ee17ed848e30f1ed3b84aef625ef926b696316b0e630609cf26667",
   "encounterIdentity": "alx-enemyevent-0",
   "stageIdentity": "sst-s001-record-0",
+  "scriptedBattleRequest": {
+    "kind": "scpt_opcode_112",
+    "scriptIdentity": "me201a.sct",
+    "sectionIdentity": "loop",
+    "instructionOffset": 244,
+    "instructionPayloadOffset": 396,
+    "eventMode": 1,
+    "eventOrEncounterId": 0,
+    "stageId": 1,
+    "transitionSelector": 3,
+    "status": "Exact",
+    "provenance": "SPICE spice_sct_ir_v1 decodes me201a.sct section loop payload 396 as opcode 112 with literal operands {1,0,1,3}; SCPT opcode 112 -> FUN_800c1a34 -> StepCounter_800c1c24 copies operand 2 directly to BattleStage before SetupBattle_8000abcc"
+  },
   "sources": [
     {
       "kind": "alx_enemy_event_csv",
@@ -20,13 +33,26 @@
       "kind": "spice_sst_sml_command_map",
       "identity": "s001.sst_sml_command_map.json",
       "sha256": "699e2a9df144b298d54f6db0c2f883917ebbdd6d5da7f67cbb83a18ecbb8a910"
+    },
+    {
+      "kind": "scpt_script_source",
+      "identity": "soa_parser_reference_bundle/sct_context/sct_input/me201a.sct",
+      "sha256": "dbaf96036925ab0d2ecf6f38eb35397898ab83154a6948aa59285d2ab85beeb0"
+    },
+    {
+      "kind": "spice_sct_ir_v1",
+      "identity": "me201a.sct.json",
+      "sha256": "94ef0ce8a9a0d49255d8d653ddce62f233a378d97b3c8ba26dc6574346b20a8e"
     }
   ],
   "validation": {
     "rosterFingerprint": "0:pc:0|1:pc:1|4:enemy:0|5:enemy:0",
     "acceptedSavestateSha256": [
       "83bf5d205d9e77d92d47996bf731715de4440ce4bb6475623432a58df77fcf42",
+      "6a49d9dce2929995031b6d67245d01a6779675ba6198f1f68ff81bbfa0c40261",
+      "9247a369a45d6d3e135133bc2234431483ef9fc245fab9cef12d2565cda08d8c",
       "af59e7828407e06e65c403bcbb28bba26f9d66ff5b1ce0ed1bcd16bb7426e4b6",
+      "b73e1aff52e1abb1fc113b62c304d84f703ec36e0d00084df97f8da8278f12cc",
       "d347d703ffef3a9b1e8969bdb0d46c97233631b7ec2aae6e414721b671828fb3",
       "ddeb61d675cfe8d3dfd2fe35053994ecdd49455cbe7ce81616a28112fc89a4cf"
     ]

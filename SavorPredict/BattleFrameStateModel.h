@@ -51,7 +51,10 @@ struct BattleFrameCombatantState {
     bool turn_state_known = false;
     std::uint32_t selected_action_row_flags = 0;
     int selected_action_row_index = -1;
+    std::int16_t selected_action_row_action_id = -1;
     bool selected_action_row_known = false;
+    std::uint32_t selected_action_row_duration_bits = 0;
+    bool selected_action_row_duration_known = false;
     bool pending_frame_start_position_sync = false;
     std::uint32_t instruction_flags_0xec = 0;
     std::uint32_t instruction_flags_0xf0 = 0;
@@ -60,6 +63,8 @@ struct BattleFrameCombatantState {
     std::int16_t visual_instruction_subtype_0x8 = -1;
     CombatantVisualInstructionKnowledge visual_instruction_knowledge =
         CombatantVisualInstructionKnowledge::Unknown;
+    std::uint64_t visual_instruction_revision = 0;
+    int visual_instruction_action_ordinal = -1;
     std::string visual_instruction_provenance;
     int instruction_compare_0x15c = 0;
     bool instruction_compare_known = false;

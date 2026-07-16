@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ActionMotionPlaybackModel.h"
 #include "BattleFrameStateModel.h"
 #include "BattleFrameThreadListModel.h"
 #include "BattleMovementInvocationModel.h"
@@ -79,6 +80,12 @@ enum class BattleFrameWorkerStepKind {
     ActionComplete,
     VisualControllerVisit,
     VisualInstructionDecision,
+    VisualInstructionStatePublish,
+    ActionMotionPlaybackInstall,
+    ActionMotionRendererAdvance,
+    ActionMotionState6Poll,
+    ActionMotionPublicationRelease,
+    VisualStdRowProducerVisit,
     VisualInstructionInstall,
     VisualCommandPublish,
     VisualChildState0,
@@ -334,6 +341,22 @@ struct BattleFrameStepEvent {
     bool pos_holder_changed = false;
     bool combatant_cur_pos_changed = false;
     bool action_motion_position_synced = false;
+    ActionMotionPlaybackPhase action_motion_playback_phase_before =
+        ActionMotionPlaybackPhase::Inactive;
+    ActionMotionPlaybackPhase action_motion_playback_phase_after =
+        ActionMotionPlaybackPhase::Inactive;
+    std::uint32_t action_motion_duration_bits = 0;
+    std::uint32_t action_motion_effective_duration_bits = 0;
+    std::uint32_t action_motion_progress_before_bits = 0;
+    std::uint32_t action_motion_progress_after_bits = 0;
+    std::uint32_t action_motion_increment_bits = 0;
+    std::uint32_t action_motion_flags_before = 0;
+    std::uint32_t action_motion_flags_after = 0;
+    int action_motion_control_before = 0;
+    int action_motion_control_after = 0;
+    bool action_motion_renderer_advanced = false;
+    bool action_motion_gate_polled = false;
+    std::optional<bool> action_motion_gate_result;
     bool rng_event = false;
     std::string rng_label;
     int draws_consumed = 0;
@@ -441,6 +464,9 @@ struct BattleFrameActionRuntime {
     BattleMovementActionKind action_kind = BattleMovementActionKind::Unknown;
     BattleMovementRelationScope relation_scope = BattleMovementRelationScope::Unknown;
     BattleMovementTurnType turn_type = BattleMovementTurnType::Unknown;
+    std::optional<std::int16_t> initial_instruction_parameter;
+    std::optional<std::int16_t> final_instruction_parameter;
+    BasicAttackExecutionRoute execution_route = BasicAttackExecutionRoute::Unknown;
     BattleFrameActionPhase phase = BattleFrameActionPhase::None;
     int active_worker_index = -1;
     std::uint16_t passive_completion_mask = 0;
@@ -448,6 +474,9 @@ struct BattleFrameActionRuntime {
     int attack_result = -1;
     bool attack_landed = false;
     bool target_dead = false;
+    std::optional<BasicAttackQueuedStateResult> queued_state_transition;
+    bool queued_state_transition_pending = false;
+    bool queued_state_transition_published = false;
     std::uint8_t completion_turn_phase = 3;
     bool completion_override = false;
     bool completion_gate_open = false;
@@ -540,6 +569,11 @@ struct BattleFrameVisualRuntime {
     std::array<CombatantVisualTimelineState, kBattleFrameCombatantSlotCapacity>
         timelines{};
     std::array<int, kBattleFrameCombatantSlotCapacity> timeline_action_ordinals{};
+    std::array<CombatantInstructionStdRowProducerCursor,
+               kBattleFrameCombatantSlotCapacity>
+        std_row_producers{};
+    std::array<ActionMotionPlaybackRuntime, kBattleFrameCombatantSlotCapacity>
+        action_motion_playbacks{};
     std::vector<BattleFrameVisualChildTask> child_tasks;
     std::vector<BattleFrameStepEvent> history;
     std::vector<BattleFrameStepEvent> pending_events;
@@ -590,6 +624,9 @@ struct BattleFrameScheduleActionInput {
     int target_slot = -1;
     bool enemy_owned = false;
     int combatant_command_parameter = 0;
+    std::optional<std::int16_t> initial_instruction_parameter;
+    std::optional<std::int16_t> final_instruction_parameter;
+    BasicAttackExecutionRoute execution_route = BasicAttackExecutionRoute::Unknown;
     MovementSelectedWorker selected_worker = MovementSelectedWorker::None;
     BattleMovementActionKind action_kind = BattleMovementActionKind::Unknown;
     BattleMovementRelationScope relation_scope = BattleMovementRelationScope::Unknown;
@@ -654,18 +691,26 @@ void configure_battle_frame_visual_pathing_profile(
     BattleFrameRuntime& runtime,
     std::string profile_name);
 
-bool install_battle_frame_visual_instruction(
+bool publish_battle_frame_visual_instruction_state(
     BattleFrameRuntime& runtime,
     int action_ordinal,
     CombatantVisualInstructionSnapshot instruction);
 
-bool install_battle_frame_validated_instruction_transition(
+bool publish_battle_frame_validated_instruction_transition(
     BattleFrameRuntime& runtime,
     int action_ordinal,
     int slot,
     int target_slot,
     std::int16_t instruction_mode,
     std::string provenance);
+
+bool publish_battle_frame_queued_std_action_transition(
+    BattleFrameRuntime& runtime,
+    int action_ordinal);
+
+bool battle_frame_action_visual_publication_pending(
+    const BattleFrameRuntime& runtime,
+    int action_ordinal);
 
 bool set_first_turn_action_completion_override(
     BattleFrameRuntime& runtime,

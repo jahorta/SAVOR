@@ -98,17 +98,33 @@ BattleFrameEventStatus frame_event_status(
     return BattleFrameEventStatus::Ambiguous;
 }
 
-BattleFrameEventStatus frame_event_status(CombatantInstructionModeStatus status) {
+BattleFrameEventStatus frame_event_status(
+    CombatantInstructionStdRowProducerStatus status) {
     switch (status) {
-    case CombatantInstructionModeStatus::Validated:
+    case CombatantInstructionStdRowProducerStatus::Published:
+    case CombatantInstructionStdRowProducerStatus::Unchanged:
         return BattleFrameEventStatus::Matched;
-    case CombatantInstructionModeStatus::Provisional:
+    case CombatantInstructionStdRowProducerStatus::DeferredState0:
         return BattleFrameEventStatus::Provisional;
-    case CombatantInstructionModeStatus::Skipped:
+    case CombatantInstructionStdRowProducerStatus::Idle:
         return BattleFrameEventStatus::Skipped;
-    case CombatantInstructionModeStatus::MissingInput:
+    case CombatantInstructionStdRowProducerStatus::MissingInput:
         return BattleFrameEventStatus::MissingInput;
-    case CombatantInstructionModeStatus::Unsupported:
+    case CombatantInstructionStdRowProducerStatus::Unsupported:
+        return BattleFrameEventStatus::Unsupported;
+    }
+    return BattleFrameEventStatus::Unsupported;
+}
+
+BattleFrameEventStatus frame_event_status(ActionMotionPlaybackStatus status) {
+    switch (status) {
+    case ActionMotionPlaybackStatus::Matched:
+        return BattleFrameEventStatus::Matched;
+    case ActionMotionPlaybackStatus::Provisional:
+        return BattleFrameEventStatus::Provisional;
+    case ActionMotionPlaybackStatus::MissingInput:
+        return BattleFrameEventStatus::MissingInput;
+    case ActionMotionPlaybackStatus::Unsupported:
         return BattleFrameEventStatus::Unsupported;
     }
     return BattleFrameEventStatus::Unsupported;
@@ -189,6 +205,18 @@ std::int16_t action_mode_for_worker(const BattleFrameWorker& worker) {
         return BattleFrameActionMode::Standing;
     }
     return BattleFrameActionMode::Standing;
+}
+
+std::int16_t action_motion_mode_for_worker(
+    const BattleFrameWorker& worker,
+    std::int16_t published_controller_mode) {
+    if (!worker.complete
+        && (worker.kind == BattleFrameWorkerKind::ActiveFallbackAttack
+            || worker.kind == BattleFrameWorkerKind::EnemyFallbackAttack)
+        && published_controller_mode == BattleFrameActionMode::ActiveFallback) {
+        return BattleFrameActionMode::ActiveApproach;
+    }
+    return published_controller_mode;
 }
 
 std::string hex_pc(std::uint32_t pc) {
@@ -544,21 +572,6 @@ bool is_movement_worker(BattleFrameWorkerKind kind) {
         || kind == BattleFrameWorkerKind::PassiveController
         || kind == BattleFrameWorkerKind::CleanupStanding
         || kind == BattleFrameWorkerKind::Cleanup;
-}
-
-bool active_worker_reached_visual_instruction_boundary(
-    const BattleFrameWorker& worker,
-    BattleFrameWorkerStepKind executed_step) {
-    switch (worker.kind) {
-    case BattleFrameWorkerKind::ActiveDirectAttack:
-    case BattleFrameWorkerKind::EnemyDirectAttack:
-    case BattleFrameWorkerKind::EnemyFallbackAttack:
-        return executed_step == BattleFrameWorkerStepKind::MovementCommit;
-    case BattleFrameWorkerKind::ActiveFallbackAttack:
-        return executed_step == BattleFrameWorkerStepKind::FallbackMode7Publish;
-    default:
-        return false;
-    }
 }
 
 bool continue_worker_in_same_thread_visit(
@@ -1626,6 +1639,12 @@ bool is_visual_step_kind(BattleFrameWorkerStepKind kind) {
     switch (kind) {
     case BattleFrameWorkerStepKind::VisualControllerVisit:
     case BattleFrameWorkerStepKind::VisualInstructionDecision:
+    case BattleFrameWorkerStepKind::VisualInstructionStatePublish:
+    case BattleFrameWorkerStepKind::ActionMotionPlaybackInstall:
+    case BattleFrameWorkerStepKind::ActionMotionRendererAdvance:
+    case BattleFrameWorkerStepKind::ActionMotionState6Poll:
+    case BattleFrameWorkerStepKind::ActionMotionPublicationRelease:
+    case BattleFrameWorkerStepKind::VisualStdRowProducerVisit:
     case BattleFrameWorkerStepKind::VisualInstructionInstall:
     case BattleFrameWorkerStepKind::VisualCommandPublish:
     case BattleFrameWorkerStepKind::VisualChildState0:
@@ -1838,16 +1857,35 @@ int enqueue_synthetic_action_view_child(
 }
 
 bool has_active_visual_task(const BattleFrameRuntime& runtime) {
-    return std::any_of(
+    const bool active_child = std::any_of(
         runtime.visual.child_tasks.begin(),
         runtime.visual.child_tasks.end(),
         [](const BattleFrameVisualChildTask& task) { return !task.complete; });
+    if (active_child) {
+        return true;
+    }
+    return std::any_of(
+        runtime.visual.action_motion_playbacks.begin(),
+        runtime.visual.action_motion_playbacks.end(),
+        [](const ActionMotionPlaybackRuntime& playback) {
+            return action_motion_playback_blocks_publication(playback);
+        });
 }
 
 bool has_action_visual_barrier(
     const BattleFrameRuntime& runtime,
     int action_ordinal) {
-    return std::any_of(
+    const bool active_playback = std::any_of(
+        runtime.visual.action_motion_playbacks.begin(),
+        runtime.visual.action_motion_playbacks.end(),
+        [action_ordinal](const ActionMotionPlaybackRuntime& playback) {
+            return playback.action_ordinal == action_ordinal
+                && action_motion_playback_blocks_publication(playback);
+        });
+    if (active_playback) {
+        return true;
+    }
+    const bool active_child = std::any_of(
         runtime.visual.child_tasks.begin(),
         runtime.visual.child_tasks.end(),
         [action_ordinal](const BattleFrameVisualChildTask& task) {
@@ -1855,6 +1893,36 @@ bool has_action_visual_barrier(
                 && task.participates_in_action_barrier
                 && task.action_ordinal == action_ordinal;
         });
+    if (active_child) {
+        return true;
+    }
+    for (std::size_t slot = 0; slot < runtime.visual.timelines.size(); ++slot) {
+        if (runtime.visual.timeline_action_ordinals[slot] != action_ordinal) {
+            continue;
+        }
+        if (combatant_visual_timeline_has_pending_publications(
+                runtime.visual.timelines[slot],
+                visual_resource_for(runtime, static_cast<int>(slot)))) {
+            return true;
+        }
+    }
+    for (const auto& combatant : runtime.state.combatants) {
+        if (!combatant.present
+            || combatant.visual_instruction_action_ordinal != action_ordinal
+            || combatant.visual_instruction_revision == 0
+            || combatant.slot < 0
+            || combatant.slot
+                >= static_cast<int>(runtime.visual.std_row_producers.size())) {
+            continue;
+        }
+        const auto& producer = runtime.visual.std_row_producers[
+            static_cast<std::size_t>(combatant.slot)];
+        if (producer.last_instruction_state_revision
+            != combatant.visual_instruction_revision) {
+            return true;
+        }
+    }
+    return false;
 }
 
 void flush_pending_visual_events(
@@ -1875,6 +1943,9 @@ void visit_persistent_action_view_controller(
         return;
     }
     const auto& action = *runtime.active_action;
+    if (action.phase == BattleFrameActionPhase::Complete) {
+        return;
+    }
     if (action.actor_slot < 0
         || action.actor_slot >= static_cast<int>(runtime.visual.timelines.size())) {
         return;
@@ -2065,6 +2136,227 @@ void advance_visual_timeline_for_slot(
     }
 }
 
+bool visit_action_motion_playback_for_slot(
+    BattleFrameRuntime& runtime,
+    int slot,
+    BattleFrameRunResult& result) {
+    if (slot < 0
+        || slot >= static_cast<int>(runtime.visual.action_motion_playbacks.size())) {
+        return true;
+    }
+    auto& playback = runtime.visual.action_motion_playbacks[
+        static_cast<std::size_t>(slot)];
+    if (!action_motion_playback_blocks_publication(playback)) {
+        return true;
+    }
+
+    const auto phase_before = playback.phase;
+    const auto visited = visit_action_motion_playback(playback);
+    playback = visited.runtime;
+    auto* combatant = find_frame_combatant(runtime.state, slot);
+    if (combatant != nullptr) {
+        combatant->instruction_flags_0xec = visited.flags_after;
+    }
+
+    BattleFrameWorkerStepKind step_kind =
+        BattleFrameWorkerStepKind::ActionMotionRendererAdvance;
+    std::string callback = "FUN_80018CBC";
+    switch (visited.kind) {
+    case ActionMotionPlaybackVisitKind::InitialRendererAdvance:
+        break;
+    case ActionMotionPlaybackVisitKind::State6Deferred:
+    case ActionMotionPlaybackVisitKind::State6Satisfied:
+        step_kind = BattleFrameWorkerStepKind::ActionMotionState6Poll;
+        callback = "FUN_80075D64";
+        break;
+    case ActionMotionPlaybackVisitKind::PublicationReleased:
+        step_kind = BattleFrameWorkerStepKind::ActionMotionPublicationRelease;
+        callback = "FUN_8001B6D4_states8_9_10";
+        break;
+    case ActionMotionPlaybackVisitKind::None:
+        return !action_motion_playback_blocks_publication(playback);
+    }
+
+    std::ostringstream detail;
+    detail << "playback_visit="
+           << action_motion_playback_visit_kind_name(visited.kind)
+           << "; phase_before="
+           << action_motion_playback_phase_name(phase_before)
+           << "; progress_before_bits=0x" << std::hex
+           << std::setw(8) << std::setfill('0') << visited.progress_before
+           << "; progress_after_bits=0x" << std::setw(8)
+           << visited.progress_after
+           << "; increment_bits=0x" << std::setw(8)
+           << playback.increment_bits_0x6c
+           << "; flags_before=0x" << std::setw(8) << visited.flags_before
+           << "; flags_after=0x" << std::setw(8) << visited.flags_after
+           << std::dec
+           << "; control=" << visited.control_state_before
+           << "->" << visited.control_state_after
+           << "; renderer_visits=" << playback.renderer_visits
+           << "; state6_polls=" << playback.state6_polls;
+    if (visited.gate_result.has_value()) {
+        detail << "; gate_result=" << (*visited.gate_result ? 1 : 0);
+    }
+    detail << "; draws=0; " << visited.detail;
+
+    auto event = make_visual_event(
+        runtime,
+        nullptr,
+        step_kind,
+        callback,
+        playback.status == ActionMotionPlaybackStatus::Matched
+            ? BattleFrameEventStatus::Provisional
+            : frame_event_status(playback.status),
+        detail.str()
+            + "; primitive=validated; frame-thread invocation=provisional");
+    event.action_ordinal = playback.action_ordinal;
+    event.slot = slot;
+    event.target_slot = combatant != nullptr
+        ? combatant->instruction_target_slot_0x4
+        : -1;
+    event.action_motion_playback_phase_before = phase_before;
+    event.action_motion_playback_phase_after = playback.phase;
+    event.action_motion_duration_bits = playback.raw_duration_bits;
+    event.action_motion_effective_duration_bits = playback.effective_duration_bits;
+    event.action_motion_progress_before_bits = visited.progress_before;
+    event.action_motion_progress_after_bits = visited.progress_after;
+    event.action_motion_increment_bits = playback.increment_bits_0x6c;
+    event.action_motion_flags_before = visited.flags_before;
+    event.action_motion_flags_after = visited.flags_after;
+    event.action_motion_control_before = visited.control_state_before;
+    event.action_motion_control_after = visited.control_state_after;
+    event.action_motion_renderer_advanced = visited.renderer_advanced;
+    event.action_motion_gate_polled = visited.gate_polled;
+    event.action_motion_gate_result = visited.gate_result;
+    append_recorded_event(runtime, result, std::move(event));
+    return !action_motion_playback_blocks_publication(playback);
+}
+
+void visit_std_row_producer_for_slot(
+    BattleFrameRuntime& runtime,
+    int slot,
+    BattleFrameRunResult& result) {
+    if (slot < 0
+        || slot >= static_cast<int>(runtime.visual.std_row_producers.size())) {
+        return;
+    }
+    auto* combatant = find_frame_combatant(runtime.state, slot);
+    if (combatant == nullptr || !combatant->present) {
+        return;
+    }
+
+    const auto& instruction_runtime = runtime.combatant_instructions[
+        static_cast<std::size_t>(slot)];
+    const auto selected_key = combatant->selected_action_row_known
+            && combatant->selected_action_row_action_id >= 0
+        ? std::optional<std::int16_t>{combatant->selected_action_row_action_id}
+        : std::nullopt;
+    const auto runtime_mode = combatant->visual_instruction_knowledge
+            != CombatantVisualInstructionKnowledge::Unknown
+        ? std::optional<std::int16_t>{combatant->visual_instruction_mode_0x6}
+        : std::nullopt;
+    auto& cursor = runtime.visual.std_row_producers[
+        static_cast<std::size_t>(slot)];
+    const auto produced = visit_combatant_instruction_std_row_producer(
+        cursor,
+        CombatantInstructionStdRowProducerRequest{
+            .action_ordinal = combatant->visual_instruction_action_ordinal,
+            .slot = slot,
+            .instruction_revision = instruction_runtime.revision,
+            .instruction_state_revision = combatant->visual_instruction_revision,
+            .selected_action_row_known = combatant->selected_action_row_known,
+            .selected_action_row_index = combatant->selected_action_row_index,
+            .selected_action_key = selected_key,
+            .runtime_instruction_mode = runtime_mode,
+            .subtype = combatant->visual_instruction_subtype_0x8 >= 0
+                ? std::optional<std::int16_t>{
+                    combatant->visual_instruction_subtype_0x8}
+                : std::nullopt,
+            .target_slot = combatant->instruction_target_slot_0x4 >= 0
+                ? std::optional<int>{combatant->instruction_target_slot_0x4}
+                : std::nullopt,
+            .instruction_flags = combatant->instruction_flags_0xec,
+            .knowledge = combatant->visual_instruction_knowledge,
+            .provenance = combatant->visual_instruction_provenance,
+        });
+    cursor = produced.cursor_after;
+
+    if (produced.status
+        == CombatantInstructionStdRowProducerStatus::Unchanged) {
+        return;
+    }
+
+    auto producer_event = make_visual_event(
+        runtime,
+        nullptr,
+        BattleFrameWorkerStepKind::VisualStdRowProducerVisit,
+        "CombatantInstructionStdRowProducer",
+        produced.status == CombatantInstructionStdRowProducerStatus::Published
+            ? frame_event_status(produced.visual_status)
+            : frame_event_status(produced.status),
+        "producer_status="
+            + std::string(combatant_instruction_std_row_producer_status_name(
+                produced.status))
+            + "; thread_state_0x19="
+            + std::to_string(cursor.thread_state_0x19)
+            + "; instruction_revision="
+            + std::to_string(instruction_runtime.revision)
+            + "; instruction_state_revision="
+            + std::to_string(combatant->visual_instruction_revision)
+            + "; selected_action_row="
+            + std::to_string(combatant->selected_action_row_index)
+            + "; selected_action_key="
+            + (selected_key.has_value()
+                ? std::to_string(*selected_key)
+                : std::string("missing"))
+            + "; installs_epoch="
+            + std::to_string(produced.install_epoch ? 1 : 0)
+            + "; provenance=" + produced.provenance);
+    producer_event.action_ordinal = combatant->visual_instruction_action_ordinal;
+    producer_event.slot = slot;
+    producer_event.target_slot = combatant->instruction_target_slot_0x4;
+    producer_event.combatant_instruction_revision = instruction_runtime.revision;
+    append_recorded_event(runtime, result, std::move(producer_event));
+
+    if (!produced.install_epoch || !produced.instruction.has_value()) {
+        return;
+    }
+
+    auto& timeline = runtime.visual.timelines[static_cast<std::size_t>(slot)];
+    install_combatant_visual_instruction(timeline, *produced.instruction);
+    runtime.visual.timeline_action_ordinals[static_cast<std::size_t>(slot)] =
+        combatant->visual_instruction_action_ordinal;
+    const auto key = resolve_combatant_visual_action_key(timeline.instruction);
+    auto install_event = make_visual_event(
+        runtime,
+        nullptr,
+        BattleFrameWorkerStepKind::VisualInstructionInstall,
+        "CombatantInstructionStdRowEpochInstall",
+        frame_event_status(key.status),
+        "action_key="
+            + (key.action_key.has_value()
+                ? std::to_string(*key.action_key)
+                : std::string("missing"))
+            + "; key_source=" + combatant_visual_key_source_name(key.source)
+            + "; epoch=" + std::to_string(timeline.epoch)
+            + "; instruction_state_revision="
+            + std::to_string(combatant->visual_instruction_revision)
+            + "; producer_chain=FUN_80022850_state1_IW+0xE0_to_"
+              "FUN_800085EC_to_FUN_800086BC_to_FUN_8000832C_to_FUN_800367E8"
+            + "; outer_callback_family=provisional; provenance="
+            + produced.provenance);
+    install_event.action_ordinal = combatant->visual_instruction_action_ordinal;
+    install_event.slot = slot;
+    install_event.target_slot = combatant->instruction_target_slot_0x4;
+    install_event.visual_epoch = timeline.epoch;
+    if (const auto* resource = visual_resource_for(runtime, slot);
+        resource != nullptr) {
+        install_event.visual_resource = resource->binding.resource_stem;
+    }
+    append_recorded_event(runtime, result, std::move(install_event));
+}
+
 void append_visual_cleanup(
     BattleFrameRuntime& runtime,
     BattleFrameRunResult& result,
@@ -2181,7 +2473,7 @@ void advance_action_service_child(
             origin->instruction_flags_0xec &= ~0x00100000U;
         }
         if (task.target_slot >= 0) {
-            install_battle_frame_validated_instruction_transition(
+            publish_battle_frame_validated_instruction_transition(
                 runtime,
                 task.action_ordinal,
                 task.target_slot,
@@ -2428,97 +2720,6 @@ void advance_visual_children_at_cursor(
     }
 }
 
-CombatantInstructionModeResult install_visual_instruction_for_controller_transition(
-    BattleFrameRuntime& runtime,
-    BattleFrameRunResult& run_result,
-    int action_ordinal,
-    int actor_slot,
-    int slot,
-    std::optional<int> target_slot,
-    BattleMovementActionKind action_kind,
-    BattleMovementControllerFamily controller_family,
-    CombatantInstructionTransitionTrigger trigger) {
-    std::optional<int> prior_mode;
-    if (const auto* combatant = find_frame_combatant(runtime.state, slot);
-        combatant != nullptr
-        && combatant->visual_instruction_knowledge
-            != CombatantVisualInstructionKnowledge::Unknown) {
-        prior_mode = combatant->visual_instruction_mode_0x6;
-    }
-    const auto transition = model_combatant_instruction_controller_transition({
-        .action_ordinal = action_ordinal,
-        .actor_slot = actor_slot,
-        .slot = slot,
-        .target_slot = target_slot.value_or(-1),
-        .action_kind = instruction_action_kind(action_kind),
-        .trigger = trigger,
-        .producer_family = instruction_producer_family(controller_family),
-        .prior_instruction_mode_0x6 = prior_mode,
-    });
-
-    auto decision_event = make_visual_event(
-        runtime,
-        nullptr,
-        BattleFrameWorkerStepKind::VisualInstructionDecision,
-        "CombatantInstructionModeTransitionDecision",
-        transition.status == CombatantInstructionModeStatus::Unsupported
-            ? BattleFrameEventStatus::Skipped
-            : frame_event_status(transition.status),
-        transition.detail + "; transition_status="
-            + combatant_instruction_mode_status_name(transition.status)
-            + "; provenance=" + transition.provenance
-            + "; installs_epoch="
-            + std::to_string(transition.instruction_mode_0x6.has_value() ? 1 : 0));
-    decision_event.action_ordinal = action_ordinal;
-    decision_event.slot = slot;
-    decision_event.target_slot = target_slot.value_or(-1);
-    runtime.visual.pending_events.push_back(std::move(decision_event));
-
-    if (transition.instruction_mode_0x6.has_value()) {
-        CombatantVisualInstructionSnapshot instruction;
-        instruction.slot = slot;
-        instruction.runtime_instruction_mode = static_cast<std::int16_t>(
-            *transition.instruction_mode_0x6);
-        instruction.target_slot = target_slot;
-        instruction.subtype = -1;
-        instruction.knowledge = transition.status
-                == CombatantInstructionModeStatus::Validated
-            ? CombatantVisualInstructionKnowledge::Known
-            : CombatantVisualInstructionKnowledge::Provisional;
-        instruction.provenance = transition.provenance;
-        (void)install_battle_frame_visual_instruction(
-            runtime,
-            action_ordinal,
-            std::move(instruction));
-    }
-    flush_pending_visual_events(runtime, run_result);
-    return transition;
-}
-
-CombatantInstructionModeResult install_visual_instruction_for_invocation(
-    BattleFrameRuntime& runtime,
-    BattleFrameRunResult& result,
-    const BattleFramePendingMovementInvocation& pending) {
-    const auto action_kind = runtime.active_action.has_value()
-            && runtime.active_action->action_ordinal == pending.decision.action_ordinal
-        ? runtime.active_action->action_kind
-        : BattleMovementActionKind::Unknown;
-    const int actor_slot = runtime.active_action.has_value()
-            && runtime.active_action->action_ordinal == pending.decision.action_ordinal
-        ? runtime.active_action->actor_slot
-        : pending.decision.slot;
-    return install_visual_instruction_for_controller_transition(
-        runtime,
-        result,
-        pending.decision.action_ordinal,
-        actor_slot,
-        pending.decision.slot,
-        pending.decision.semantic_target_slot,
-        action_kind,
-        pending.decision.controller_family,
-        CombatantInstructionTransitionTrigger::MovementInvocation);
-}
-
 BattleFramePendingMovementInvocation* find_pending_invocation(
     BattleFrameRuntime& runtime,
     int worker_index) {
@@ -2653,7 +2854,6 @@ void activate_pending_invocation(
     }
 
     auto& worker = runtime.workers[static_cast<std::size_t>(worker_index)];
-    (void)install_visual_instruction_for_invocation(runtime, result, *pending);
     const auto slot_index = static_cast<std::size_t>(worker.slot);
     if (worker.kind == BattleFrameWorkerKind::PassiveController) {
         if (auto* combatant = find_frame_combatant(runtime.state, worker.slot);
@@ -2997,9 +3197,12 @@ bool publish_combatant_instruction(
 
     const int revision = instruction.revision + 1;
     auto* combatant = find_frame_combatant(runtime.state, worker.slot);
-    const auto published_action_mode = combatant != nullptr
+    const auto published_controller_mode = combatant != nullptr
         ? combatant->combatant_action_mode
         : action_mode_for_worker(worker);
+    const auto motion_action_mode = action_motion_mode_for_worker(
+        worker,
+        published_controller_mode);
     if (combatant == nullptr) {
         instruction.active = false;
         instruction.phase = BattleFrameCombatantInstructionPhase::Unsupported;
@@ -3012,36 +3215,39 @@ bool publish_combatant_instruction(
         return false;
     }
 
+    const int selected_action_mode = motion_action_mode;
+
     CombatantStdActionRowSelectionResult selected_row;
-    if (combatant->selected_action_row_known) {
+    const auto* resource = visual_resource_for(runtime, worker.slot);
+    if (resource != nullptr) {
+        selected_row = select_combatant_std_action_row(
+            resource->action_rows,
+            CombatantStdActionRowSelectionRequest{
+                .action_id = static_cast<std::int16_t>(selected_action_mode),
+                .secondary_key = combatant->visual_instruction_subtype_0x8 >= 0
+                    ? std::optional<std::int16_t>{
+                        combatant->visual_instruction_subtype_0x8}
+                    : std::nullopt,
+                .allow_transition_fallback = true,
+            });
+    } else if (combatant->selected_action_row_known) {
         selected_row.status = CombatantStdActionRowSelectionStatus::Matched;
-        selected_row.requested_action_id = published_action_mode;
-        selected_row.selected_action_id = published_action_mode;
+        selected_row.requested_action_id = selected_action_mode;
+        selected_row.selected_action_id =
+            combatant->selected_action_row_action_id >= 0
+            ? combatant->selected_action_row_action_id
+            : static_cast<std::int16_t>(selected_action_mode);
         selected_row.row = CombatantStdActionRow{
             .index = combatant->selected_action_row_index,
-            .action_id = published_action_mode,
+            .action_id = selected_row.selected_action_id,
             .flags = combatant->selected_action_row_flags,
         };
         selected_row.provenance =
             "selected action row was explicitly supplied by a low-level runtime fixture";
     } else {
-        const auto* resource = visual_resource_for(runtime, worker.slot);
-        if (resource != nullptr) {
-            selected_row = select_combatant_std_action_row(
-                resource->action_rows,
-                CombatantStdActionRowSelectionRequest{
-                    .action_id = published_action_mode,
-                    .secondary_key = combatant->visual_instruction_subtype_0x8 >= 0
-                        ? std::optional<std::int16_t>{
-                            combatant->visual_instruction_subtype_0x8}
-                        : std::nullopt,
-                    .allow_transition_fallback = true,
-                });
-        } else {
-            selected_row.status = CombatantStdActionRowSelectionStatus::MissingInput;
-            selected_row.provenance =
-                "selected-action-row producer has no published STD resource";
-        }
+        selected_row.status = CombatantStdActionRowSelectionStatus::MissingInput;
+        selected_row.provenance =
+            "selected-action-row producer has no published STD resource";
     }
     if (!selected_row.row.has_value()) {
         instruction.active = false;
@@ -3063,7 +3269,12 @@ bool publish_combatant_instruction(
     }
     combatant->selected_action_row_index = selected_row.row->index;
     combatant->selected_action_row_flags = selected_row.row->flags;
+    combatant->selected_action_row_action_id = selected_row.selected_action_id;
     combatant->selected_action_row_known = true;
+    combatant->selected_action_row_duration_bits =
+        selected_row.row->transition_gate_divisor_bits;
+    combatant->selected_action_row_duration_known =
+        resource != nullptr;
     if (selected_row.status == CombatantStdActionRowSelectionStatus::Provisional
         && event.status == BattleFrameEventStatus::Matched) {
         event.status = BattleFrameEventStatus::Provisional;
@@ -3079,7 +3290,7 @@ bool publish_combatant_instruction(
         .controller_family = worker.controller_family,
         .relation_route = worker.relation_route,
         .thread_order_index = worker.thread_order_index,
-        .action_mode = published_action_mode,
+        .action_mode = motion_action_mode,
         .provisional_fallback_target = worker.destination_position,
         .destination_grid = worker.destination_grid,
         .destination_source = worker.destination_source,
@@ -3091,10 +3302,34 @@ bool publish_combatant_instruction(
     };
     worker.combatant_instruction_revision = revision;
     worker.waiting_for_combatant_instruction = true;
+    CombatantVisualInstructionSnapshot visual_instruction;
+    visual_instruction.slot = worker.slot;
+    visual_instruction.runtime_instruction_mode = static_cast<std::int16_t>(
+        motion_action_mode);
+    visual_instruction.selected_std_action_key = selected_row.selected_action_id;
+    visual_instruction.subtype = combatant->visual_instruction_subtype_0x8 >= 0
+        ? std::optional<std::int16_t>{
+            combatant->visual_instruction_subtype_0x8}
+        : std::nullopt;
+    visual_instruction.target_slot = worker.target_slot;
+    visual_instruction.instruction_flags = combatant->instruction_flags_0xec;
+    visual_instruction.knowledge =
+        selected_row.status == CombatantStdActionRowSelectionStatus::Matched
+        && worker.event_status == BattleFrameEventStatus::Matched
+        ? CombatantVisualInstructionKnowledge::Known
+        : CombatantVisualInstructionKnowledge::Provisional;
+    visual_instruction.provenance =
+        "movement controller published the action-motion STD row for the persistent "
+        "FUN_80022850 runtime; " + selected_row.provenance;
+    (void)publish_battle_frame_visual_instruction_state(
+        runtime,
+        worker.action_ordinal,
+        std::move(visual_instruction));
     event.combatant_instruction_revision = revision;
     event.instruction_phase_after = instruction.phase;
     event.detail += "; published combatant_instruction_revision="
         + std::to_string(revision)
+        + "; motion_action_mode=" + std::to_string(motion_action_mode)
         + "; selected_action_row=" + std::to_string(selected_row.row->index)
         + "; selected_action_id=" + std::to_string(selected_row.selected_action_id)
         + "; selected_action_row_status="
@@ -4900,7 +5135,7 @@ BattleFrameThreadMutationResult publish_battle_frame_std_resource(
         };
     }
 
-    return create_battle_frame_thread(
+    auto created = create_battle_frame_thread(
         runtime.thread_list,
         BattleFrameThreadCreateRequest{
             .kind = BattleFrameThreadNodeKind::CombatantInstruction,
@@ -4914,6 +5149,14 @@ BattleFrameThreadMutationResult publish_battle_frame_std_resource(
                 + "; mkChild insertion uses the live runner cursor; parent is metadata only",
             .frame_index = runtime.state.frame_index,
         });
+    if (created.status == BattleFrameThreadMutationStatus::Applied) {
+        const auto slot_index = static_cast<std::size_t>(slot);
+        runtime.visual.std_row_producers[slot_index] = {};
+        runtime.visual.timelines[slot_index] = {};
+        runtime.visual.action_motion_playbacks[slot_index] = {};
+        runtime.visual.timeline_action_ordinals[slot_index] = -1;
+    }
+    return created;
 }
 
 BattleFrameStdResourcePublicationResult
@@ -5053,7 +5296,7 @@ void configure_battle_frame_visual_pathing_profile(
     runtime.visual.pathing_profile_name = std::move(profile_name);
 }
 
-bool install_battle_frame_visual_instruction(
+bool publish_battle_frame_visual_instruction_state(
     BattleFrameRuntime& runtime,
     int action_ordinal,
     CombatantVisualInstructionSnapshot instruction) {
@@ -5061,75 +5304,137 @@ bool install_battle_frame_visual_instruction(
         || instruction.slot < 0
         || instruction.slot >= static_cast<int>(runtime.visual.timelines.size())) {
         runtime.warnings.push_back(
-            "visual instruction installation has an invalid combatant slot");
+            "visual instruction-state publication has an invalid combatant slot");
         return false;
     }
 
-    const auto slot_index = static_cast<std::size_t>(instruction.slot);
     auto* combatant = find_frame_combatant(runtime.state, instruction.slot);
     const auto* resource = visual_resource_for(runtime, instruction.slot);
-    if (combatant != nullptr) {
-        if (!instruction.target_slot.has_value()
-            && combatant->instruction_target_slot_0x4 >= 0) {
-            instruction.target_slot = combatant->instruction_target_slot_0x4;
-        }
-        if (!instruction.subtype.has_value()
-            && combatant->visual_instruction_subtype_0x8 >= 0) {
-            instruction.subtype = combatant->visual_instruction_subtype_0x8;
-        }
-        if (!instruction.instruction_flags.has_value()) {
-            instruction.instruction_flags = combatant->instruction_flags_0xec;
-        }
+    if (combatant == nullptr) {
+        runtime.warnings.push_back(
+            "visual instruction-state publication has no combatant state");
+        return false;
+    }
+    if (!instruction.target_slot.has_value()
+        && combatant->instruction_target_slot_0x4 >= 0) {
+        instruction.target_slot = combatant->instruction_target_slot_0x4;
+    }
+    if (!instruction.subtype.has_value()
+        && combatant->visual_instruction_subtype_0x8 >= 0) {
+        instruction.subtype = combatant->visual_instruction_subtype_0x8;
+    }
+    if (!instruction.instruction_flags.has_value()) {
+        instruction.instruction_flags = combatant->instruction_flags_0xec;
     }
 
-    install_combatant_visual_instruction(
-        runtime.visual.timelines[slot_index],
-        instruction);
-    runtime.visual.timeline_action_ordinals[slot_index] = action_ordinal;
-    const auto& timeline = runtime.visual.timelines[slot_index];
-    const auto key = resolve_combatant_visual_action_key(timeline.instruction);
-
-    if (combatant != nullptr) {
-        combatant->instruction_target_slot_0x4 =
-            timeline.instruction.target_slot.value_or(-1);
-        combatant->visual_instruction_subtype_0x8 =
-            timeline.instruction.subtype.value_or(-1);
-        combatant->visual_instruction_knowledge = timeline.instruction.knowledge;
-        combatant->visual_instruction_provenance = timeline.instruction.provenance;
-        if (timeline.instruction.runtime_instruction_mode.has_value()) {
-            combatant->visual_instruction_mode_0x6 =
-                *timeline.instruction.runtime_instruction_mode;
-        } else if (timeline.instruction.validated_transition_mode.has_value()) {
-            combatant->visual_instruction_mode_0x6 =
-                *timeline.instruction.validated_transition_mode;
-        } else if (key.action_key.has_value()) {
-            combatant->visual_instruction_mode_0x6 = *key.action_key;
-        }
+    const auto key = resolve_combatant_visual_action_key(instruction);
+    combatant->instruction_target_slot_0x4 = instruction.target_slot.value_or(-1);
+    combatant->visual_instruction_subtype_0x8 = instruction.subtype.value_or(-1);
+    combatant->visual_instruction_knowledge = instruction.knowledge;
+    combatant->visual_instruction_provenance = instruction.provenance;
+    combatant->visual_instruction_action_ordinal = action_ordinal;
+    ++combatant->visual_instruction_revision;
+    if (instruction.runtime_instruction_mode.has_value()) {
+        combatant->visual_instruction_mode_0x6 =
+            *instruction.runtime_instruction_mode;
+    } else if (instruction.validated_transition_mode.has_value()) {
+        combatant->visual_instruction_mode_0x6 =
+            *instruction.validated_transition_mode;
+    } else if (key.action_key.has_value()) {
+        combatant->visual_instruction_mode_0x6 = *key.action_key;
     }
+
+    std::optional<std::uint32_t> row_duration_bits;
+    const auto selected_key = instruction.selected_std_action_key.has_value()
+        ? instruction.selected_std_action_key
+        : key.action_key;
+    if (combatant->selected_action_row_duration_known
+        && selected_key.has_value()
+        && combatant->selected_action_row_action_id == *selected_key) {
+        row_duration_bits = combatant->selected_action_row_duration_bits;
+    }
+    const auto playback_install = install_action_motion_playback(
+        ActionMotionPlaybackInstallRequest{
+            .action_ordinal = action_ordinal,
+            .slot = instruction.slot,
+            .instruction_state_revision = combatant->visual_instruction_revision,
+            .selected_action_row_index = combatant->selected_action_row_index,
+            .selected_action_row_duration_bits = row_duration_bits,
+            .instruction_flags_0xec = combatant->instruction_flags_0xec,
+            .instruction_flags_0xf0 = combatant->instruction_flags_0xf0,
+            .provenance = instruction.provenance,
+        });
+    runtime.visual.action_motion_playbacks[
+        static_cast<std::size_t>(instruction.slot)] = playback_install.runtime;
+    if (playback_install.installed) {
+        combatant->instruction_flags_0xec = playback_install.flags_after;
+    }
+
+    auto playback_event = make_visual_event(
+        runtime,
+        nullptr,
+        BattleFrameWorkerStepKind::ActionMotionPlaybackInstall,
+        "FUN_8001EBA4/FUN_80076170",
+        playback_install.runtime.status == ActionMotionPlaybackStatus::Matched
+            ? BattleFrameEventStatus::Provisional
+            : frame_event_status(playback_install.runtime.status),
+        playback_install.detail
+            + "; instruction_state_revision="
+            + std::to_string(combatant->visual_instruction_revision)
+            + "; publication_blocked="
+            + std::to_string(playback_install.blocks_publication ? 1 : 0)
+            + "; primitive=validated; frame-thread invocation=provisional"
+            + "; provenance=" + playback_install.runtime.provenance);
+    playback_event.action_ordinal = action_ordinal;
+    playback_event.slot = instruction.slot;
+    playback_event.target_slot = instruction.target_slot.value_or(-1);
+    playback_event.action_motion_playback_phase_before =
+        ActionMotionPlaybackPhase::Inactive;
+    playback_event.action_motion_playback_phase_after =
+        playback_install.runtime.phase;
+    playback_event.action_motion_duration_bits =
+        playback_install.runtime.raw_duration_bits;
+    playback_event.action_motion_effective_duration_bits =
+        playback_install.runtime.effective_duration_bits;
+    playback_event.action_motion_progress_before_bits = 0;
+    playback_event.action_motion_progress_after_bits =
+        playback_install.runtime.progress_bits_0x68;
+    playback_event.action_motion_increment_bits =
+        playback_install.runtime.increment_bits_0x6c;
+    playback_event.action_motion_flags_before = playback_install.flags_before;
+    playback_event.action_motion_flags_after = playback_install.flags_after;
+    playback_event.action_motion_control_before = 0;
+    playback_event.action_motion_control_after =
+        playback_install.runtime.callback_control_state;
 
     BattleFrameStepEvent event = make_visual_event(
         runtime,
         nullptr,
-        BattleFrameWorkerStepKind::VisualInstructionInstall,
-        "CombatantVisualInstructionInstall",
+        BattleFrameWorkerStepKind::VisualInstructionStatePublish,
+        "CombatantVisualInstructionStatePublish",
         frame_event_status(key.status),
         "action_key="
             + (key.action_key.has_value() ? std::to_string(*key.action_key) : "missing")
             + "; key_source=" + combatant_visual_key_source_name(key.source)
-            + "; same_mode_reapplication_starts_new_epoch=1; provenance="
+            + "; instruction_state_revision="
+            + std::to_string(combatant->visual_instruction_revision)
+            + "; installs_epoch=0; auxiliary_dispatch_deferred_to="
+              "FUN_80022850_state1_IW+0xE0; provenance="
             + key.provenance);
     event.action_ordinal = action_ordinal;
-    event.slot = timeline.instruction.slot;
-    event.target_slot = timeline.instruction.target_slot.value_or(-1);
+    event.slot = instruction.slot;
+    event.target_slot = instruction.target_slot.value_or(-1);
     event.visual_resource = resource != nullptr
         ? resource->binding.resource_stem
         : std::string{};
-    event.visual_epoch = timeline.epoch;
+    event.visual_epoch = runtime.visual.timelines[
+        static_cast<std::size_t>(instruction.slot)].epoch;
     runtime.visual.pending_events.push_back(std::move(event));
+    runtime.visual.pending_events.push_back(std::move(playback_event));
     return true;
 }
 
-bool install_battle_frame_validated_instruction_transition(
+bool publish_battle_frame_validated_instruction_transition(
     BattleFrameRuntime& runtime,
     int action_ordinal,
     int slot,
@@ -5142,10 +5447,181 @@ bool install_battle_frame_validated_instruction_transition(
     instruction.validated_transition_mode = instruction_mode;
     instruction.knowledge = CombatantVisualInstructionKnowledge::Known;
     instruction.provenance = std::move(provenance);
-    return install_battle_frame_visual_instruction(
+    return publish_battle_frame_visual_instruction_state(
         runtime,
         action_ordinal,
         std::move(instruction));
+}
+
+bool publish_battle_frame_queued_std_action_transition(
+    BattleFrameRuntime& runtime,
+    int action_ordinal) {
+    if (!runtime.initialized
+        || !runtime.active_action.has_value()
+        || runtime.active_action->action_ordinal != action_ordinal) {
+        return false;
+    }
+
+    auto& action = *runtime.active_action;
+    if (!action.action_resolution_available
+        || !action.queued_state_transition_pending
+        || action.queued_state_transition_published
+        || !action.queued_state_transition.has_value()) {
+        return false;
+    }
+    auto* combatant = find_frame_combatant(runtime.state, action.actor_slot);
+    if (combatant == nullptr || !combatant->present) {
+        return false;
+    }
+
+    const auto& transition = *action.queued_state_transition;
+    if (!transition.instruction_mode.has_value()) {
+        action.queued_state_transition_pending = false;
+        auto event = make_visual_event(
+            runtime,
+            nullptr,
+            BattleFrameWorkerStepKind::VisualInstructionStatePublish,
+            "QueuedStdActionTransitionUnsupported",
+            transition.status == QueuedInstructionParamStatus::MissingInput
+                ? BattleFrameEventStatus::MissingInput
+                : BattleFrameEventStatus::Unsupported,
+            "route=" + std::string(basic_attack_execution_route_name(action.execution_route))
+                + "; transition_status="
+                + queued_instruction_param_status_name(transition.status)
+                + "; provenance=" + transition.provenance);
+        event.action_ordinal = action.action_ordinal;
+        event.slot = action.actor_slot;
+        event.target_slot = action.target_slot;
+        runtime.visual.pending_events.push_back(std::move(event));
+        return false;
+    }
+
+    const auto selected_mode = static_cast<std::int16_t>(
+        *transition.instruction_mode);
+    CombatantStdActionRowSelectionResult selected_row;
+    const auto* resource = visual_resource_for(runtime, action.actor_slot);
+    if (resource != nullptr) {
+        selected_row = select_combatant_std_action_row(
+            resource->action_rows,
+            CombatantStdActionRowSelectionRequest{
+                .action_id = selected_mode,
+                .secondary_key = combatant->visual_instruction_subtype_0x8 >= 0
+                    ? std::optional<std::int16_t>{
+                        combatant->visual_instruction_subtype_0x8}
+                    : std::nullopt,
+                .allow_transition_fallback = true,
+            });
+    } else if (combatant->selected_action_row_known) {
+        selected_row.status = CombatantStdActionRowSelectionStatus::Matched;
+        selected_row.requested_action_id = selected_mode;
+        selected_row.selected_action_id = selected_mode;
+        selected_row.row = CombatantStdActionRow{
+            .index = combatant->selected_action_row_index,
+            .action_id = selected_mode,
+            .flags = combatant->selected_action_row_flags,
+        };
+        selected_row.provenance =
+            "queued STD action row was explicitly supplied by a low-level runtime fixture";
+    } else {
+        return false;
+    }
+
+    if (!selected_row.row.has_value()) {
+        return false;
+    }
+
+    combatant->selected_action_row_index = selected_row.row->index;
+    combatant->selected_action_row_flags = selected_row.row->flags;
+    combatant->selected_action_row_action_id = selected_row.selected_action_id;
+    combatant->selected_action_row_known = true;
+    combatant->selected_action_row_duration_bits =
+        selected_row.row->transition_gate_divisor_bits;
+    combatant->selected_action_row_duration_known =
+        resource != nullptr;
+
+    CombatantVisualInstructionSnapshot instruction;
+    instruction.slot = action.actor_slot;
+    instruction.target_slot = action.target_slot;
+    instruction.runtime_instruction_mode = selected_mode;
+    instruction.selected_std_action_key = selected_row.selected_action_id;
+    instruction.subtype = combatant->visual_instruction_subtype_0x8 >= 0
+        ? std::optional<std::int16_t>{combatant->visual_instruction_subtype_0x8}
+        : std::nullopt;
+    instruction.instruction_flags = combatant->instruction_flags_0xec;
+    instruction.knowledge =
+        transition.status == QueuedInstructionParamStatus::Validated
+            && selected_row.status == CombatantStdActionRowSelectionStatus::Matched
+        ? CombatantVisualInstructionKnowledge::Known
+        : CombatantVisualInstructionKnowledge::Provisional;
+    instruction.provenance =
+        "FUN_800221FC resolved the queued controller transition after attack result "
+        "on the actor combatant-instruction visit and before the same visit's STD-row producer; queued_state="
+        + (transition.queued_state.has_value()
+            ? std::to_string(static_cast<int>(*transition.queued_state))
+            : std::string("missing"))
+        + "; transition_status="
+        + std::string(queued_instruction_param_status_name(transition.status))
+        + "; transition_provenance=" + transition.provenance
+        + "; selected_action_row_status="
+        + combatant_std_action_row_selection_status_name(selected_row.status)
+        + "; selected_action_row_provenance=" + selected_row.provenance;
+    const bool published = publish_battle_frame_visual_instruction_state(
+        runtime,
+        action_ordinal,
+        std::move(instruction));
+    if (published) {
+        action.queued_state_transition_pending = false;
+        action.queued_state_transition_published = true;
+    }
+    return published;
+}
+
+bool battle_frame_action_visual_publication_pending(
+    const BattleFrameRuntime& runtime,
+    int action_ordinal) {
+    if (!runtime.initialized || action_ordinal < 0) {
+        return false;
+    }
+    if (runtime.active_action.has_value()
+        && runtime.active_action->action_ordinal == action_ordinal
+        && runtime.active_action->queued_state_transition_pending) {
+        return true;
+    }
+    if (std::any_of(
+            runtime.visual.action_motion_playbacks.begin(),
+            runtime.visual.action_motion_playbacks.end(),
+            [action_ordinal](const ActionMotionPlaybackRuntime& playback) {
+                return playback.action_ordinal == action_ordinal
+                    && action_motion_playback_blocks_publication(playback);
+            })) {
+        return true;
+    }
+    for (const auto& combatant : runtime.state.combatants) {
+        if (!combatant.present
+            || combatant.visual_instruction_action_ordinal != action_ordinal
+            || combatant.visual_instruction_revision == 0
+            || combatant.slot < 0
+            || combatant.slot
+                >= static_cast<int>(runtime.visual.std_row_producers.size())) {
+            continue;
+        }
+        const auto& producer = runtime.visual.std_row_producers[
+            static_cast<std::size_t>(combatant.slot)];
+        if (producer.last_instruction_state_revision
+            != combatant.visual_instruction_revision) {
+            return true;
+        }
+    }
+    return std::any_of(
+        runtime.visual.child_tasks.begin(),
+        runtime.visual.child_tasks.end(),
+        [action_ordinal](const BattleFrameVisualChildTask& task) {
+            return !task.complete
+                && task.action_ordinal == action_ordinal
+                && task.kind == BattleFrameVisualChildKind::ActionViewRecord
+                && task.effective_mode == 1
+                && !task.mode1_pathing_consumed;
+        });
 }
 
 bool set_worker_movement_path_from_entries(
@@ -5231,6 +5707,29 @@ BattleFrameActionScheduleResult schedule_first_turn_actor_action(
         return result;
     }
 
+    const auto initial_parameter = input.initial_instruction_parameter.has_value()
+        ? input.initial_instruction_parameter
+        : std::optional<std::int16_t>{
+            static_cast<std::int16_t>(input.combatant_command_parameter)};
+    const auto final_parameter = input.final_instruction_parameter.has_value()
+        ? input.final_instruction_parameter
+        : std::optional<std::int16_t>{
+            static_cast<std::int16_t>(input.combatant_command_parameter)};
+    const auto execution_route = input.execution_route != BasicAttackExecutionRoute::Unknown
+        ? input.execution_route
+        : basic_attack_route_from_final_parameter(final_parameter);
+    if (input.action_kind == BattleMovementActionKind::BasicAttack
+        && !movement_worker_matches_basic_attack_route(
+            input.selected_worker,
+            execution_route)) {
+        result.action_ordinal = action_ordinal;
+        result.status = BattleMovementInvocationStatus::Ambiguous;
+        result.detail =
+            "final queued parameter, typed execution route, and selected movement worker are inconsistent";
+        runtime.warnings.push_back(result.detail);
+        return result;
+    }
+
     const int active_worker_index = static_cast<int>(runtime.workers.size());
     runtime.active_action = BattleFrameActionRuntime{
         .active = true,
@@ -5240,6 +5739,9 @@ BattleFrameActionScheduleResult schedule_first_turn_actor_action(
         .action_kind = input.action_kind,
         .relation_scope = input.relation_scope,
         .turn_type = input.turn_type,
+        .initial_instruction_parameter = initial_parameter,
+        .final_instruction_parameter = final_parameter,
+        .execution_route = execution_route,
         .phase = BattleFrameActionPhase::Scheduled,
         .active_worker_index = active_worker_index,
         .setup_publication_events_pending = true,
@@ -5305,6 +5807,13 @@ bool notify_first_turn_action_resolution(
     action.attack_result = resolution.attack_result;
     action.attack_landed = resolution.attack_landed;
     action.target_dead = resolution.target_dead;
+    action.queued_state_transition = model_basic_attack_queued_state({
+        .route = action.execution_route,
+        .attack_result = resolution.attack_result,
+        .counter_follow_up = false,
+    });
+    action.queued_state_transition_pending = true;
+    action.queued_state_transition_published = false;
     if (action.phase == BattleFrameActionPhase::PassiveDispatched) {
         action.phase = BattleFrameActionPhase::Resolving;
     }
@@ -5528,11 +6037,25 @@ BattleFrameRunResult run_first_turn_frame(
             runtime.state.frame_index);
         runtime.visual.current_visit_cursor = packed_visit_cursor++;
         if (thread.kind == BattleFrameThreadNodeKind::CombatantInstruction) {
+            if (runtime.active_action.has_value()
+                && runtime.active_action->actor_slot == thread.owner_slot
+                && runtime.active_action->queued_state_transition_pending) {
+                (void)publish_battle_frame_queued_std_action_transition(
+                    runtime,
+                    runtime.active_action->action_ordinal);
+                flush_pending_visual_events(runtime, result);
+            }
+            if (visit_action_motion_playback_for_slot(
+                    runtime, thread.owner_slot, result)) {
+                visit_std_row_producer_for_slot(
+                    runtime, thread.owner_slot, result);
+                advance_visual_timeline_for_slot(
+                    runtime, thread.owner_slot, result);
+            }
             if (auto event = advance_combatant_instruction(
                     runtime, thread.owner_slot)) {
                 append_recorded_event(runtime, result, std::move(*event));
             }
-            advance_visual_timeline_for_slot(runtime, thread.owner_slot, result);
             advance_visual_children_at_cursor(
                 runtime, result, rng_state, runtime.visual.current_visit_cursor);
             continue;
@@ -5572,7 +6095,6 @@ BattleFrameRunResult run_first_turn_frame(
         }
         int same_visit_steps = 0;
         bool continue_same_visit = false;
-        bool publish_active_handoff_instruction_after_visit = false;
         do {
             const auto executed_step_kind = worker.program_index < worker.program_steps.size()
                 ? worker.program_steps[worker.program_index].kind
@@ -5581,6 +6103,7 @@ BattleFrameRunResult run_first_turn_frame(
                 && runtime.active_action->completion_override;
             auto event = execute_worker_frame(runtime, worker, &rng_state);
             append_recorded_event(runtime, result, std::move(event));
+            flush_pending_visual_events(runtime, result);
 
             if (!completion_override_before
                 && runtime.active_action.has_value()
@@ -5597,27 +6120,6 @@ BattleFrameRunResult run_first_turn_frame(
                         runtime.active_action->passive_completion_mask,
                         runtime.active_action->passive_completion_mask,
                         "active callback reached its evidence-backed post-resolution override publication"));
-            }
-
-            if (runtime.active_action.has_value()
-                && runtime.active_action->active_worker_index == worker_index
-                && active_worker_reached_visual_instruction_boundary(
-                    worker, executed_step_kind)) {
-                publish_active_handoff_instruction_after_visit = true;
-                append_recorded_event(
-                    runtime,
-                    result,
-                    make_action_lifecycle_event(
-                        runtime,
-                        nullptr,
-                        BattleFrameWorkerStepKind::ActionPhaseTransition,
-                        "active_instruction_producer_boundary",
-                        worker.current_pc,
-                        runtime.active_action->passive_completion_mask,
-                        runtime.active_action->passive_completion_mask,
-                        executed_step_kind == BattleFrameWorkerStepKind::MovementCommit
-                            ? "direct movement commit reached the provisional instruction producer boundary"
-                            : "fallback state 0x64 published instruction mode 7 before state 0x0b"));
             }
 
             continue_same_visit = continue_worker_in_same_thread_visit(
@@ -5649,19 +6151,6 @@ BattleFrameRunResult run_first_turn_frame(
         }
         advance_visual_children_at_cursor(
             runtime, result, rng_state, runtime.visual.current_visit_cursor);
-        if (publish_active_handoff_instruction_after_visit
-            && runtime.active_action.has_value()) {
-            (void)install_visual_instruction_for_controller_transition(
-                runtime,
-                result,
-                runtime.active_action->action_ordinal,
-                runtime.active_action->actor_slot,
-                worker.slot,
-                runtime.active_action->target_slot,
-                runtime.active_action->action_kind,
-                worker.controller_family,
-                CombatantInstructionTransitionTrigger::ActiveMovementHandoff);
-        }
     }
 
     runtime.visual.current_visit_cursor = packed_visit_cursor;
@@ -5949,6 +6438,18 @@ const char* battle_frame_worker_step_kind_name(BattleFrameWorkerStepKind kind) {
         return "VisualControllerVisit";
     case BattleFrameWorkerStepKind::VisualInstructionDecision:
         return "VisualInstructionDecision";
+    case BattleFrameWorkerStepKind::VisualInstructionStatePublish:
+        return "VisualInstructionStatePublish";
+    case BattleFrameWorkerStepKind::ActionMotionPlaybackInstall:
+        return "ActionMotionPlaybackInstall";
+    case BattleFrameWorkerStepKind::ActionMotionRendererAdvance:
+        return "ActionMotionRendererAdvance";
+    case BattleFrameWorkerStepKind::ActionMotionState6Poll:
+        return "ActionMotionState6Poll";
+    case BattleFrameWorkerStepKind::ActionMotionPublicationRelease:
+        return "ActionMotionPublicationRelease";
+    case BattleFrameWorkerStepKind::VisualStdRowProducerVisit:
+        return "VisualStdRowProducerVisit";
     case BattleFrameWorkerStepKind::VisualInstructionInstall:
         return "VisualInstructionInstall";
     case BattleFrameWorkerStepKind::VisualCommandPublish:

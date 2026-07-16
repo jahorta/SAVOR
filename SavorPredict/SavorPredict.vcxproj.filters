@@ -92,6 +92,7 @@
     <ClCompile Include="CombatantVisualDispatcherModel.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="ActionMotionPlaybackModel.cpp" />
     <ClCompile Include="ActionMotionTargetModel.cpp" />
     <ClCompile Include="BattleMovementPathModel.cpp" />
     <ClCompile Include="BattleJobBatchRunManifest.cpp">
@@ -179,6 +180,9 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="ProgressEventParser.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="QueuedInstructionParamModel.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="RngCore.cpp">
@@ -297,6 +301,7 @@
     <ClInclude Include="CombatantVisualDispatcherModel.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="ActionMotionPlaybackModel.h" />
     <ClInclude Include="ActionMotionTargetModel.h" />
     <ClInclude Include="BattleMovementInvocationModel.h" />
     <ClInclude Include="BattleMovementPathModel.h" />
@@ -382,6 +387,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="ProgressEventParser.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="QueuedInstructionParamModel.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="RngCore.h">

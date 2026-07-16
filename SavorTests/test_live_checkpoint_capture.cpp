@@ -2680,6 +2680,160 @@ TEST(SavorPredictLiveCaptureProfile, BuildsActionViewServiceLifecycleProfile)
             EXPECT_TRUE(has_thread_list(checkpoint, 256)) << checkpoint.id;
         }
     }
+
+}
+
+TEST(SavorPredictLiveCaptureProfile, BuildsVisualPublicationOrderProfile)
+{
+    const auto text = build_first_battle_visual_publication_order_profile_ini(128);
+    const auto parsed = ParseCaptureProfileText(text);
+    ASSERT_TRUE(parsed.profile.has_value()) << FormatCaptureProfileError(parsed);
+
+    const auto& profile = *parsed.profile;
+    EXPECT_EQ(profile.name, "first_battle_visual_publication_order");
+    EXPECT_TRUE(profile.memory_watchpoints.empty());
+    ASSERT_EQ(profile.dynamic_memory_watchpoints.size(), 1u);
+    const auto& rng_watchpoint = profile.dynamic_memory_watchpoints[0];
+    EXPECT_EQ(rng_watchpoint.id, "rng_seed_write_803469A8");
+    EXPECT_EQ(rng_watchpoint.pc, 0x80082134u);
+    EXPECT_TRUE(rng_watchpoint.use_absolute_address);
+    EXPECT_EQ(rng_watchpoint.address, 0x803469A8u);
+    EXPECT_EQ(rng_watchpoint.access, WatchpointAccess::Write);
+    EXPECT_FALSE(rng_watchpoint.one_shot);
+    EXPECT_TRUE(rng_watchpoint.owns_rng_draw);
+
+    const auto find_checkpoint = [&](std::string_view id) -> const CheckpointSpec* {
+        const auto found = std::find_if(
+            profile.checkpoints.begin(),
+            profile.checkpoints.end(),
+            [id](const auto& checkpoint) { return checkpoint.id == id; });
+        return found == profile.checkpoints.end() ? nullptr : &*found;
+    };
+    const auto has_addrprog = [](const CheckpointSpec& checkpoint, std::string_view name) {
+        return std::any_of(
+            checkpoint.address_program_samples.begin(),
+            checkpoint.address_program_samples.end(),
+            [name](const auto& sample) { return sample.name == name; });
+    };
+    const auto has_thread_list = [](const CheckpointSpec& checkpoint, std::uint32_t max_nodes) {
+        if (checkpoint.linked_list_samples.size() != 1u) {
+            return false;
+        }
+        const auto& list = checkpoint.linked_list_samples.front();
+        return list.name == "thread_list"
+            && list.head_ptr_address == 0x80311A84u
+            && list.next_offset == 0x04u
+            && list.max_nodes == max_nodes
+            && list.fields.size() == 8u;
+    };
+
+    const auto* frame = find_checkpoint("battle_case5_after_threads_8000A2FC");
+    ASSERT_NE(frame, nullptr);
+    ASSERT_TRUE(frame->activate_on_pc.has_value());
+    EXPECT_EQ(*frame->activate_on_pc, 0x80082134u);
+    ASSERT_TRUE(frame->max_hits.has_value());
+    EXPECT_EQ(*frame->max_hits, 2400u);
+    EXPECT_TRUE(has_thread_list(*frame, 128));
+    EXPECT_TRUE(has_addrprog(*frame, "slot0_iw_action_mode_0x06"));
+    EXPECT_TRUE(has_addrprog(*frame, "slot11_iw_action_mode_0x06"));
+
+    const std::vector<std::string_view> required_ids = {
+        "setup_turn_action_entry_80082134",
+        "battle_case5_after_threads_8000A2FC",
+        "movement_commit_entry_8008178C",
+        "action_motion_setup_complete_8001FC04",
+        "action_motion_final_result_8001EB54",
+        "action_motion_caller_consumption_8001B778",
+        "attack_hit_dodge_80010BDC",
+        "attack_critical_80010C44",
+        "crit_gate_return_80010CA4",
+        "counter_roll_80081A88",
+        "counter_gate_return_80081B80",
+        "attack_resolution_begin_80081B94",
+        "attack_result_return_80081BE8",
+        "attack_result_write_80081C48",
+        "visual_probe_entry_800086BC",
+        "visual_probe_mode_write_800086F4",
+        "visual_probe_subtype_write_800086F8",
+        "visual_probe_mode_restore_800087E0",
+        "visual_probe_subtype_restore_800087E8",
+        "aux_row_apply_entry_8000832C",
+        "aux_dispatch_call_800084C8",
+        "aux_dispatch_return_800084CC",
+        "command_dispatch_entry_800367E8",
+        "command_handler_call_80036864",
+        "command_handler_return_80036868",
+        "action_service_creator_entry_8003B1D8",
+        "action_service_publication_8003B2B4",
+        "serialized_action_view_creator_entry_8003C690",
+        "serialized_action_view_publication_8003C738",
+        "action_view_record_state0_helper_80051320",
+        "action_view_record_mode1_call_800514B0",
+        "mode1_geometry_call_80051BB0",
+    };
+    for (const auto id : required_ids) {
+        EXPECT_NE(find_checkpoint(id), nullptr) << id;
+    }
+    for (const auto pc : {
+             "80008568", "80008624", "80008664", "800086A8",
+             "8001C500", "8001C528", "8001C634", "8001AE98"}) {
+        EXPECT_NE(find_checkpoint("visual_probe_callsite_" + std::string(pc)), nullptr) << pc;
+    }
+    for (const auto pc : {
+             "8000870C", "80008720", "8000875C",
+             "80008774", "800087C4", "800087D8"}) {
+        EXPECT_NE(find_checkpoint("visual_probe_apply_branch_" + std::string(pc)), nullptr) << pc;
+    }
+
+    const auto* probe = find_checkpoint("visual_probe_entry_800086BC");
+    ASSERT_NE(probe, nullptr);
+    EXPECT_TRUE(has_addrprog(*probe, "probe_origin_iw_mode_0x06"));
+    EXPECT_TRUE(has_thread_list(*probe, 128));
+    const auto* aux_dispatch = find_checkpoint("aux_dispatch_call_800084C8");
+    ASSERT_NE(aux_dispatch, nullptr);
+    EXPECT_TRUE(has_addrprog(*aux_dispatch, "aux_row_command_id_low_0x00"));
+    EXPECT_TRUE(has_addrprog(*aux_dispatch, "aux_origin_iw_mode_0x06"));
+    EXPECT_TRUE(has_thread_list(*aux_dispatch, 128));
+    const auto* handler_call = find_checkpoint("command_handler_call_80036864");
+    ASSERT_NE(handler_call, nullptr);
+    EXPECT_TRUE(has_addrprog(*handler_call, "handler_row_payload_ptr_0x0c"));
+    EXPECT_TRUE(has_addrprog(*handler_call, "handler_origin_iw_slot_0x00"));
+    EXPECT_TRUE(has_thread_list(*handler_call, 128));
+    const auto* camera_entry =
+        find_checkpoint("serialized_action_view_creator_entry_8003C690");
+    ASSERT_NE(camera_entry, nullptr);
+    EXPECT_TRUE(has_thread_list(*camera_entry, 128));
+    const auto* camera_publication =
+        find_checkpoint("serialized_action_view_publication_8003C738");
+    ASSERT_NE(camera_publication, nullptr);
+    EXPECT_TRUE(has_thread_list(*camera_publication, 128));
+    const auto* child_state0 =
+        find_checkpoint("action_view_record_state0_helper_80051320");
+    ASSERT_NE(child_state0, nullptr);
+    EXPECT_TRUE(has_thread_list(*child_state0, 128));
+    const auto* mode1 = find_checkpoint("mode1_geometry_call_80051BB0");
+    ASSERT_NE(mode1, nullptr);
+    EXPECT_TRUE(has_addrprog(*mode1, "mode1_origin_iw_mode_0x06"));
+    EXPECT_TRUE(has_addrprog(*mode1, "mode1_record_payload_mode_0x22"));
+
+    std::unordered_set<std::string> checkpoint_ids;
+    for (const auto& checkpoint : profile.checkpoints) {
+        EXPECT_TRUE(checkpoint_ids.insert(checkpoint.id).second) << checkpoint.id;
+        EXPECT_FALSE(checkpoint.owns_rng_draw) << checkpoint.id;
+        ASSERT_TRUE(checkpoint.max_hits.has_value()) << checkpoint.id;
+        EXPECT_LE(*checkpoint.max_hits, 2400u) << checkpoint.id;
+        EXPECT_EQ(checkpoint.id.find("handler_tick"), std::string::npos) << checkpoint.id;
+        EXPECT_NE(checkpoint.pc, 0x802265BCu) << checkpoint.id;
+    }
+
+    const auto rerun_text = build_first_battle_visual_publication_order_profile_ini(256);
+    const auto rerun_parsed = ParseCaptureProfileText(rerun_text);
+    ASSERT_TRUE(rerun_parsed.profile.has_value()) << FormatCaptureProfileError(rerun_parsed);
+    for (const auto& checkpoint : rerun_parsed.profile->checkpoints) {
+        if (!checkpoint.linked_list_samples.empty()) {
+            EXPECT_TRUE(has_thread_list(checkpoint, 256)) << checkpoint.id;
+        }
+    }
 }
 
 TEST(SavorPredictLiveCaptureProfile, BuildsPcWorkerSelectorLifetimeProfile)
@@ -2805,6 +2959,448 @@ TEST(SavorPredictLiveCaptureProfile, BuildsPcWorkerSelectorLifetimeProfile)
     ASSERT_NE(rerun_frame, rerun_parsed.profile->checkpoints.end());
     ASSERT_EQ(rerun_frame->linked_list_samples.size(), 1u);
     EXPECT_EQ(rerun_frame->linked_list_samples[0].max_nodes, 256u);
+}
+
+TEST(SavorPredictLiveCaptureProfile, BuildsQueuedInstructionParamProfile)
+{
+    const auto text = build_first_battle_queued_instruction_param_profile_ini();
+    const auto parsed = ParseCaptureProfileText(text);
+    ASSERT_TRUE(parsed.profile.has_value()) << FormatCaptureProfileError(parsed);
+
+    const auto& profile = *parsed.profile;
+    EXPECT_EQ(profile.name, "first_battle_queued_instruction_param");
+    ASSERT_EQ(profile.memory_watchpoints.size(), 13u);
+
+    for (int slot = 0; slot < 12; ++slot) {
+        const auto id = "macro_untrusted_slot" + std::to_string(slot)
+            + "_instr_param_0x06";
+        const auto found = std::find_if(
+            profile.memory_watchpoints.begin(),
+            profile.memory_watchpoints.end(),
+            [&id](const auto& watchpoint) { return watchpoint.id == id; });
+        ASSERT_NE(found, profile.memory_watchpoints.end()) << id;
+        EXPECT_EQ(found->address, 0x8030917Au + static_cast<std::uint32_t>(slot) * 0x20u);
+        EXPECT_EQ(found->access, WatchpointAccess::Write);
+        EXPECT_EQ(found->scope, WatchpointScope::InputMacro);
+        EXPECT_FALSE(found->owns_rng_draw);
+    }
+    const auto rng = std::find_if(
+        profile.memory_watchpoints.begin(),
+        profile.memory_watchpoints.end(),
+        [](const auto& watchpoint) { return watchpoint.id == "rng_seed_write_803469A8"; });
+    ASSERT_NE(rng, profile.memory_watchpoints.end());
+    EXPECT_EQ(rng->scope, WatchpointScope::Normal);
+    EXPECT_TRUE(rng->owns_rng_draw);
+
+    const auto find_checkpoint = [&](std::string_view id) -> const CheckpointSpec* {
+        const auto found = std::find_if(
+            profile.checkpoints.begin(),
+            profile.checkpoints.end(),
+            [id](const auto& checkpoint) { return checkpoint.id == id; });
+        return found == profile.checkpoints.end() ? nullptr : &*found;
+    };
+    const auto has_memory = [](const CheckpointSpec& checkpoint, std::string_view name) {
+        return std::any_of(
+            checkpoint.memory_samples.begin(),
+            checkpoint.memory_samples.end(),
+            [name](const auto& sample) { return sample.name == name; });
+    };
+    const auto has_addrprog = [](const CheckpointSpec& checkpoint, std::string_view name) {
+        return std::any_of(
+            checkpoint.address_program_samples.begin(),
+            checkpoint.address_program_samples.end(),
+            [name](const auto& sample) { return sample.name == name; });
+    };
+
+    const auto* initialized = find_checkpoint("queued_rows_initialized_80071A68");
+    ASSERT_NE(initialized, nullptr);
+    EXPECT_FALSE(initialized->activate_on_pc.has_value());
+    EXPECT_TRUE(has_memory(*initialized, "slot0_queued_instr_param_0x06"));
+    EXPECT_TRUE(has_memory(*initialized, "slot11_queued_instr_param_0x06"));
+    EXPECT_TRUE(has_memory(*initialized, "slot11_special_state_0x00"));
+
+    const auto* accepted = find_checkpoint("setup_action_pc_handler_store_80070A54");
+    ASSERT_NE(accepted, nullptr);
+    EXPECT_TRUE(has_memory(*accepted, "slot0_queued_instruction_0x00"));
+    EXPECT_TRUE(has_memory(*accepted, "slot11_queued_result_copy_0x09"));
+
+    for (const auto id : {
+             "pc_execution_rewrite_entry_800855AC",
+             "pc_final_param_consumer_80086F10",
+             "pc_direct_worker_selected_80086F48",
+             "pc_fallback_worker_selected_80086F70",
+             "enemy_final_param_consumer_8008BD80",
+             "enemy_direct_worker_selected_8008BDAC",
+             "enemy_fallback_worker_selected_8008BDDC",
+             "attack_critical_80010C44",
+             "attack_result_return_80081BE8",
+             "attack_result_write_80081C48",
+             "queued_state_setter_entry_80081168",
+             "queued_state_write_complete_800811C8"}) {
+        const auto* checkpoint = find_checkpoint(id);
+        ASSERT_NE(checkpoint, nullptr) << id;
+        ASSERT_TRUE(checkpoint->max_hits.has_value()) << id;
+        EXPECT_LE(*checkpoint->max_hits, 256u) << id;
+        ASSERT_TRUE(checkpoint->activate_on_pc.has_value()) << id;
+        EXPECT_EQ(*checkpoint->activate_on_pc, 0x80070A54u) << id;
+    }
+
+    for (const auto id : {
+             "queued_state_case5_mode4_80021810",
+             "queued_state_case6_mode8_80021818",
+             "queued_state_case7_mode5_80021820",
+             "queued_transition_mode_write_complete_8002279C",
+             "instruction_thread_visit_80022850"}) {
+        const auto* checkpoint = find_checkpoint(id);
+        ASSERT_NE(checkpoint, nullptr) << id;
+        ASSERT_TRUE(checkpoint->max_hits.has_value()) << id;
+        EXPECT_LE(*checkpoint->max_hits, 512u) << id;
+        ASSERT_TRUE(checkpoint->activate_on_pc.has_value()) << id;
+        EXPECT_EQ(*checkpoint->activate_on_pc, 0x800811C8u) << id;
+    }
+
+    for (const auto id : {
+             "queued_state_case5_mode4_80021810",
+             "queued_state_case6_mode8_80021818",
+             "queued_state_case7_mode5_80021820"}) {
+        const auto* checkpoint = find_checkpoint(id);
+        ASSERT_NE(checkpoint, nullptr) << id;
+        EXPECT_TRUE(has_addrprog(*checkpoint, "resolver_iw_slot_0x00")) << id;
+        EXPECT_LE(*checkpoint->max_hits, 192u) << id;
+    }
+
+    const auto* consumer = find_checkpoint("pc_final_param_consumer_80086F10");
+    ASSERT_NE(consumer, nullptr);
+    EXPECT_TRUE(std::any_of(
+        consumer->register_memory_samples.begin(),
+        consumer->register_memory_samples.end(),
+        [](const auto& sample) { return sample.name == "pc_consumer_instr_param"; }));
+    const auto* instruction_visit = find_checkpoint("instruction_thread_visit_80022850");
+    ASSERT_NE(instruction_visit, nullptr);
+    EXPECT_TRUE(has_addrprog(*instruction_visit, "instruction_mode_0x06"));
+    EXPECT_TRUE(has_addrprog(*instruction_visit, "instruction_slot_0x00"));
+    const auto* mode_write =
+        find_checkpoint("queued_transition_mode_write_complete_8002279C");
+    ASSERT_NE(mode_write, nullptr);
+    EXPECT_TRUE(has_addrprog(*mode_write, "resolver_iw_mode_0x06"));
+    EXPECT_TRUE(has_addrprog(*mode_write, "resolver_iw_slot_0x00"));
+
+    std::unordered_set<std::string> checkpoint_ids;
+    for (const auto& checkpoint : profile.checkpoints) {
+        EXPECT_TRUE(checkpoint_ids.insert(checkpoint.id).second) << checkpoint.id;
+        EXPECT_EQ(checkpoint.id.find("handler_tick"), std::string::npos)
+            << checkpoint.id;
+        EXPECT_NE(checkpoint.pc, 0x802265BCu) << checkpoint.id;
+    }
+}
+
+TEST(SavorPredictLiveCaptureProfile, BuildsMode1PathingLifetimeProfile)
+{
+    const auto text = build_first_battle_mode1_pathing_lifetime_profile_ini(128);
+    const auto parsed = ParseCaptureProfileText(text);
+    ASSERT_TRUE(parsed.profile.has_value()) << FormatCaptureProfileError(parsed);
+
+    const auto& profile = *parsed.profile;
+    EXPECT_EQ(profile.name, "first_battle_mode1_pathing_lifetime");
+    ASSERT_EQ(profile.memory_watchpoints.size(), 1u);
+    EXPECT_TRUE(profile.dynamic_memory_watchpoints.empty());
+    const auto& rng_watchpoint = profile.memory_watchpoints.front();
+    EXPECT_EQ(rng_watchpoint.id, "rng_seed_write_803469A8");
+    EXPECT_EQ(rng_watchpoint.address, 0x803469A8u);
+    EXPECT_EQ(rng_watchpoint.access, WatchpointAccess::Write);
+    EXPECT_EQ(rng_watchpoint.scope, WatchpointScope::Normal);
+    EXPECT_TRUE(rng_watchpoint.owns_rng_draw);
+
+    const auto find_checkpoint = [&](std::string_view id) -> const CheckpointSpec* {
+        const auto found = std::find_if(
+            profile.checkpoints.begin(),
+            profile.checkpoints.end(),
+            [id](const auto& checkpoint) { return checkpoint.id == id; });
+        return found == profile.checkpoints.end() ? nullptr : &*found;
+    };
+    const auto has_addrprog = [](const CheckpointSpec& checkpoint, std::string_view name) {
+        return std::any_of(
+            checkpoint.address_program_samples.begin(),
+            checkpoint.address_program_samples.end(),
+            [name](const auto& sample) { return sample.name == name; });
+    };
+    const auto has_thread_list = [](const CheckpointSpec& checkpoint, std::uint32_t max_nodes) {
+        if (checkpoint.linked_list_samples.size() != 1u) {
+            return false;
+        }
+        const auto& list = checkpoint.linked_list_samples.front();
+        return list.name == "thread_list"
+            && list.head_ptr_address == 0x80311A84u
+            && list.next_offset == 0x04u
+            && list.max_nodes == max_nodes
+            && list.fields.size() == 8u;
+    };
+
+    const auto* activation = find_checkpoint("queued_state_write_complete_800811C8");
+    ASSERT_NE(activation, nullptr);
+    EXPECT_FALSE(activation->activate_on_pc.has_value());
+    ASSERT_TRUE(activation->max_hits.has_value());
+    EXPECT_EQ(*activation->max_hits, 64u);
+
+    for (const auto id : {
+             "queued_state_case5_mode4_80021810",
+             "queued_state_case6_mode8_80021818",
+             "queued_state_case7_mode5_80021820",
+             "queued_transition_mode_write_complete_8002279C",
+             "instruction_thread_visit_80022850",
+             "instruction_callback_dispatch_80022A40",
+             "instruction_callback_return_80022A44",
+             "basic_attack_callback_entry_8001B1B0",
+             "basic_attack_callback_return_8001BAAC",
+             "delay_lookup_entry_8001DDE0",
+             "delay_descriptor_match_8001DE30",
+             "delay_gate_call_8001DE3C",
+             "delay_gate_return_8001DE40",
+             "delay_value_return_8001DE4C",
+             "callback_delay_store_8001B70C",
+             "callback_state9_store_8001B714",
+             "callback_delay_decrement_8001B728",
+             "callback_aux_publication_call_8001B750",
+             "callback_aux_publication_return_8001B754",
+             "serialized_action_view_creator_entry_8003C690",
+             "serialized_action_view_publication_8003C738",
+             "origin_motion_consumption_8001B778",
+             "action_view_record_state0_helper_80051320",
+             "mode1_geometry_call_80051BB0",
+             "pathing_outer_loop_entry_800526EC"}) {
+        const auto* checkpoint = find_checkpoint(id);
+        ASSERT_NE(checkpoint, nullptr) << id;
+        ASSERT_TRUE(checkpoint->activate_on_pc.has_value()) << id;
+        EXPECT_EQ(*checkpoint->activate_on_pc, 0x800811C8u) << id;
+    }
+
+    for (const auto id : {
+             "basic_attack_callback_state0_8001B260",
+             "basic_attack_callback_state1_8001B294",
+             "basic_attack_callback_state2_8001B3BC",
+             "basic_attack_callback_state3_8001B3DC",
+             "basic_attack_callback_state4_8001B624",
+             "basic_attack_callback_state5_8001B5F8",
+             "basic_attack_callback_state6_8001B6D4",
+             "basic_attack_callback_state7_8001B9A4",
+             "basic_attack_callback_state8_8001B6F8",
+             "basic_attack_callback_state9_8001B718",
+             "basic_attack_callback_state10_8001B738"}) {
+        const auto* checkpoint = find_checkpoint(id);
+        ASSERT_NE(checkpoint, nullptr) << id;
+        EXPECT_TRUE(has_addrprog(*checkpoint, "callback_state_iw_control_0x12")) << id;
+        EXPECT_TRUE(has_addrprog(*checkpoint, "callback_state_iw_delay_0x138")) << id;
+        ASSERT_TRUE(checkpoint->max_hits.has_value()) << id;
+        EXPECT_EQ(*checkpoint->max_hits, 128u) << id;
+    }
+
+    const auto* entry = find_checkpoint("basic_attack_callback_entry_8001B1B0");
+    ASSERT_NE(entry, nullptr);
+    ASSERT_TRUE(entry->max_hits.has_value());
+    EXPECT_EQ(*entry->max_hits, 256u);
+    EXPECT_TRUE(has_addrprog(*entry, "callback_entry_iw_handler_0xe0"));
+    EXPECT_TRUE(has_addrprog(*entry, "callback_entry_delay_descriptor_root_0x30"));
+    for (const auto id : {
+             "instruction_thread_visit_80022850",
+             "instruction_callback_dispatch_80022A40",
+             "instruction_callback_return_80022A44",
+             "basic_attack_callback_return_8001BAAC"}) {
+        const auto* checkpoint = find_checkpoint(id);
+        ASSERT_NE(checkpoint, nullptr) << id;
+        ASSERT_TRUE(checkpoint->max_hits.has_value()) << id;
+        EXPECT_EQ(*checkpoint->max_hits, 256u) << id;
+    }
+    const auto* descriptor = find_checkpoint("delay_descriptor_match_8001DE30");
+    ASSERT_NE(descriptor, nullptr);
+    EXPECT_TRUE(has_addrprog(*descriptor, "delay_descriptor_key_low_0x00"));
+    EXPECT_TRUE(has_addrprog(*descriptor, "delay_descriptor_payload_ptr_0x0c"));
+    EXPECT_TRUE(has_addrprog(*descriptor, "delay_payload_delay_0x10"));
+    const auto* gate = find_checkpoint("delay_gate_return_8001DE40");
+    ASSERT_NE(gate, nullptr);
+    EXPECT_TRUE(has_addrprog(*gate, "delay_gate_iw_control_0x12"));
+    EXPECT_TRUE(has_addrprog(*gate, "delay_payload_delay_0x10"));
+
+    for (const auto id : {
+             "callback_aux_publication_call_8001B750",
+             "callback_aux_publication_return_8001B754",
+             "serialized_action_view_creator_entry_8003C690",
+             "serialized_action_view_publication_8003C738",
+             "origin_motion_consumption_8001B778",
+             "action_view_record_state0_helper_80051320",
+             "mode1_geometry_call_80051BB0",
+             "pathing_outer_loop_entry_800526EC"}) {
+        const auto* checkpoint = find_checkpoint(id);
+        ASSERT_NE(checkpoint, nullptr) << id;
+        EXPECT_TRUE(has_thread_list(*checkpoint, 128)) << id;
+    }
+    const auto* geometry = find_checkpoint("mode1_geometry_call_80051BB0");
+    ASSERT_NE(geometry, nullptr);
+    EXPECT_TRUE(has_addrprog(*geometry, "mode1_origin_iw_mode_0x06"));
+    EXPECT_TRUE(has_addrprog(*geometry, "slot0_iw_action_mode_0x06"));
+    EXPECT_TRUE(has_addrprog(*geometry, "slot11_iw_action_mode_0x06"));
+
+    std::unordered_set<std::string> checkpoint_ids;
+    for (const auto& checkpoint : profile.checkpoints) {
+        EXPECT_TRUE(checkpoint_ids.insert(checkpoint.id).second) << checkpoint.id;
+        EXPECT_FALSE(checkpoint.owns_rng_draw) << checkpoint.id;
+        ASSERT_TRUE(checkpoint.max_hits.has_value()) << checkpoint.id;
+        EXPECT_LE(*checkpoint.max_hits, 512u) << checkpoint.id;
+        EXPECT_NE(checkpoint.pc, 0x802265BCu) << checkpoint.id;
+        EXPECT_NE(checkpoint.pc, 0x8000A2FCu) << checkpoint.id;
+    }
+
+    const auto rerun_text = build_first_battle_mode1_pathing_lifetime_profile_ini(256);
+    const auto rerun_parsed = ParseCaptureProfileText(rerun_text);
+    ASSERT_TRUE(rerun_parsed.profile.has_value()) << FormatCaptureProfileError(rerun_parsed);
+    for (const auto& checkpoint : rerun_parsed.profile->checkpoints) {
+        if (!checkpoint.linked_list_samples.empty()) {
+            EXPECT_TRUE(has_thread_list(checkpoint, 256)) << checkpoint.id;
+        }
+    }
+}
+
+TEST(SavorPredictLiveCaptureProfile, BuildsMode1State6ProgressProfile)
+{
+    const auto text = build_first_battle_mode1_state6_progress_profile_ini(128);
+    const auto parsed = ParseCaptureProfileText(text);
+    ASSERT_TRUE(parsed.profile.has_value()) << FormatCaptureProfileError(parsed);
+
+    const auto& profile = *parsed.profile;
+    EXPECT_EQ(profile.name, "first_battle_mode1_state6_progress");
+    ASSERT_EQ(profile.memory_watchpoints.size(), 1u);
+    EXPECT_EQ(profile.memory_watchpoints.front().id, "rng_seed_write_803469A8");
+    EXPECT_TRUE(profile.memory_watchpoints.front().owns_rng_draw);
+    ASSERT_EQ(profile.dynamic_memory_watchpoints.size(), 24u);
+    for (const auto& watchpoint : profile.dynamic_memory_watchpoints) {
+        EXPECT_EQ(watchpoint.pc, 0x800811C8u) << watchpoint.id;
+        EXPECT_TRUE(watchpoint.use_address_program) << watchpoint.id;
+        EXPECT_EQ(watchpoint.size, SampleWidth::U32) << watchpoint.id;
+        EXPECT_EQ(watchpoint.access, WatchpointAccess::Write) << watchpoint.id;
+        EXPECT_EQ(watchpoint.scope, WatchpointScope::Normal) << watchpoint.id;
+    }
+
+    const auto find_checkpoint = [&](std::string_view id) -> const CheckpointSpec* {
+        const auto found = std::find_if(
+            profile.checkpoints.begin(),
+            profile.checkpoints.end(),
+            [id](const auto& checkpoint) { return checkpoint.id == id; });
+        return found == profile.checkpoints.end() ? nullptr : &*found;
+    };
+    const auto has_addrprog = [](const CheckpointSpec& checkpoint, std::string_view name) {
+        return std::any_of(
+            checkpoint.address_program_samples.begin(),
+            checkpoint.address_program_samples.end(),
+            [name](const auto& sample) { return sample.name == name; });
+    };
+    const auto has_thread_list = [](const CheckpointSpec& checkpoint, std::uint32_t max_nodes) {
+        if (checkpoint.linked_list_samples.size() != 1u) {
+            return false;
+        }
+        const auto& list = checkpoint.linked_list_samples.front();
+        return list.name == "thread_list"
+            && list.head_ptr_address == 0x80311A84u
+            && list.next_offset == 0x04u
+            && list.max_nodes == max_nodes
+            && list.fields.size() == 8u;
+    };
+
+    const auto* activation = find_checkpoint("queued_state_write_complete_800811C8");
+    ASSERT_NE(activation, nullptr);
+    EXPECT_TRUE(has_addrprog(*activation, "root0_iw_motion_progress_0x68"));
+    EXPECT_TRUE(has_addrprog(*activation, "root11_iw_motion_increment_0x6c"));
+    EXPECT_TRUE(has_thread_list(*activation, 128));
+
+    const auto* frame = find_checkpoint("battle_case5_after_threads_8000A2FC");
+    ASSERT_NE(frame, nullptr);
+    ASSERT_TRUE(frame->max_hits.has_value());
+    EXPECT_EQ(*frame->max_hits, 2400u);
+    EXPECT_TRUE(has_addrprog(*frame, "root0_iw_flags_0xec"));
+    EXPECT_TRUE(has_addrprog(*frame, "root11_iw_motion_progress_0x68"));
+    EXPECT_TRUE(has_thread_list(*frame, 128));
+
+    const auto* row = find_checkpoint("motion_duration_read_8001EC38");
+    ASSERT_NE(row, nullptr);
+    EXPECT_TRUE(has_addrprog(*row, "selected_action_row_duration_0x10"));
+    EXPECT_TRUE(has_addrprog(*row, "selected_action_row_frame_step_0x14"));
+    EXPECT_TRUE(has_addrprog(*row, "motion_iw_iw_flags_0xf0"));
+
+    for (const auto id : {
+             "motion_setup_core_entry_80076170",
+             "motion_resolver_progress_write_complete_80075F00",
+             "motion_setup_progress_reset_complete_80076270",
+             "motion_bit31_set_complete_8001EC8C",
+             "motion_renderer_increment_before_80018F98",
+             "motion_renderer_increment_complete_80018F9C",
+             "motion_gate_entry_80075D64",
+             "motion_gate_bit31_path_80075D80",
+             "motion_gate_threshold_met_80075D94",
+             "motion_gate_bit31_clear_complete_80075DA0",
+             "motion_gate_false_80075DA4",
+             "callback_gate_state5_motion_return_8001B600",
+             "callback_gate_state6_motion_return_8001B6DC",
+             "callback_gate_state7_motion_return_8001B9AC",
+             "callback_aux_publication_call_8001B750",
+             "serialized_action_view_publication_8003C738",
+             "action_view_record_state0_helper_80051320",
+             "mode1_geometry_call_80051BB0"}) {
+        const auto* checkpoint = find_checkpoint(id);
+        ASSERT_NE(checkpoint, nullptr) << id;
+        ASSERT_TRUE(checkpoint->activate_on_pc.has_value()) << id;
+        EXPECT_EQ(*checkpoint->activate_on_pc, 0x800811C8u) << id;
+    }
+
+    const auto* set_complete = find_checkpoint("motion_bit31_set_complete_8001EC8C");
+    ASSERT_NE(set_complete, nullptr);
+    EXPECT_TRUE(has_addrprog(*set_complete, "motion_iw_iw_motion_progress_0x68"));
+    EXPECT_TRUE(has_addrprog(*set_complete, "motion_iw_iw_motion_increment_0x6c"));
+    EXPECT_TRUE(has_addrprog(*set_complete, "motion_iw_iw_flags_0xec"));
+
+    std::unordered_set<std::string> checkpoint_ids;
+    for (const auto& checkpoint : profile.checkpoints) {
+        EXPECT_TRUE(checkpoint_ids.insert(checkpoint.id).second) << checkpoint.id;
+        EXPECT_EQ(checkpoint.id.find("handler_tick"), std::string::npos) << checkpoint.id;
+        EXPECT_NE(checkpoint.pc, 0x802265BCu) << checkpoint.id;
+    }
+
+    const auto rerun_text = build_first_battle_mode1_state6_progress_profile_ini(256);
+    const auto rerun_parsed = ParseCaptureProfileText(rerun_text);
+    ASSERT_TRUE(rerun_parsed.profile.has_value()) << FormatCaptureProfileError(rerun_parsed);
+    for (const auto& checkpoint : rerun_parsed.profile->checkpoints) {
+        if (!checkpoint.linked_list_samples.empty()) {
+            EXPECT_TRUE(has_thread_list(checkpoint, 256)) << checkpoint.id;
+        }
+    }
+
+    const auto late_text = build_first_battle_mode1_state6_progress_profile_ini(
+        128,
+        Mode1State6ProgressActivation::CounterFollowup);
+    const auto late_parsed = ParseCaptureProfileText(late_text);
+    ASSERT_TRUE(late_parsed.profile.has_value())
+        << FormatCaptureProfileError(late_parsed);
+    const auto& late_profile = *late_parsed.profile;
+    EXPECT_TRUE(late_profile.memory_watchpoints.empty());
+    ASSERT_EQ(late_profile.dynamic_memory_watchpoints.size(), 25u);
+    for (const auto& watchpoint : late_profile.dynamic_memory_watchpoints) {
+        EXPECT_EQ(watchpoint.pc, 0x80081DE0u) << watchpoint.id;
+    }
+    const auto late_rng = std::find_if(
+        late_profile.dynamic_memory_watchpoints.begin(),
+        late_profile.dynamic_memory_watchpoints.end(),
+        [](const auto& watchpoint) {
+            return watchpoint.id == "rng_seed_write_803469A8";
+        });
+    ASSERT_NE(late_rng, late_profile.dynamic_memory_watchpoints.end());
+    EXPECT_TRUE(late_rng->owns_rng_draw);
+
+    for (const auto& checkpoint : late_profile.checkpoints) {
+        if (checkpoint.id == "counter_followup_action_activation_80081DE0") {
+            EXPECT_FALSE(checkpoint.activate_on_pc.has_value());
+            EXPECT_EQ(checkpoint.pc, 0x80081DE0u);
+            continue;
+        }
+        ASSERT_TRUE(checkpoint.activate_on_pc.has_value()) << checkpoint.id;
+        EXPECT_EQ(*checkpoint.activate_on_pc, 0x80081DE0u) << checkpoint.id;
+    }
 }
 
 TEST(SavorPredictLiveCaptureProfile, BuildsActionViewPathingLoopProfile)

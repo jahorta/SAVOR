@@ -174,15 +174,6 @@ BattleInitialTurnTypeResult model_initial_battle_turn_type(
     return result;
 }
 
-const char* battle_encounter_source_kind_name(BattleEncounterSourceKind kind) {
-    switch (kind) {
-    case BattleEncounterSourceKind::Unknown: return "Unknown";
-    case BattleEncounterSourceKind::EventDefinition: return "EventDefinition";
-    case BattleEncounterSourceKind::RandomTable: return "RandomTable";
-    }
-    return "Unknown";
-}
-
 const char* battle_initial_turn_type_status_name(BattleInitialTurnTypeStatus status) {
     switch (status) {
     case BattleInitialTurnTypeStatus::Exact: return "Exact";

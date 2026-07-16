@@ -2,6 +2,7 @@
 
 #include "EnemyEventDataModel.h"
 #include "EnemyAttackSetupModel.h"
+#include "QueuedInstructionParamModel.h"
 
 #include <array>
 #include <cstdint>
@@ -10,11 +11,6 @@
 #include <vector>
 
 namespace savor::predict {
-
-enum class MovementBackend {
-    HandlerLevelFirstBattle,
-    FrameStateMachine,
-};
 
 enum class MovementSimulationStatus {
     Exact,
@@ -87,7 +83,6 @@ struct MovementWorksheetSnapshot {
 };
 
 struct MovementModelInputs {
-    MovementBackend backend = MovementBackend::HandlerLevelFirstBattle;
     std::uint32_t rng_state = 0;
     int actor_slot = -1;
     int target_slot = -1;
@@ -113,6 +108,8 @@ struct MovementSimulation {
     MovementSimulationStatus target_repair_status = MovementSimulationStatus::Exact;
     MovementReachabilityStatus reachability = MovementReachabilityStatus::Unknown;
     MovementSelectedWorker selected_worker = MovementSelectedWorker::None;
+    BasicAttackExecutionRoute execution_route = BasicAttackExecutionRoute::Unknown;
+    bool execution_route_consistent = false;
     EnemyAttackSetupPath enemy_setup_path = EnemyAttackSetupPath::NotAttack;
     bool enemy_direct_close_candidate = false;
     std::string detail;
@@ -127,4 +124,7 @@ std::optional<bool> model_pc_path_shape_80082340(
 const char* movement_simulation_status_name(MovementSimulationStatus status);
 const char* movement_selected_worker_name(MovementSelectedWorker worker);
 const char* movement_reachability_status_name(MovementReachabilityStatus status);
+bool movement_worker_matches_basic_attack_route(
+    MovementSelectedWorker worker,
+    BasicAttackExecutionRoute route);
 } // namespace savor::predict

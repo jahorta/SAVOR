@@ -258,13 +258,6 @@ MovementSimulation simulate_first_battle_movement_setup(const MovementModelInput
     result.initial_instr_param_0x6 = inputs.instr_param_0x6;
     result.final_instr_param_0x6 = inputs.instr_param_0x6;
 
-    if (inputs.backend != MovementBackend::HandlerLevelFirstBattle
-        && inputs.backend != MovementBackend::FrameStateMachine) {
-        result.status = MovementSimulationStatus::Unsupported;
-        result.can_execute = false;
-        result.detail = "movement backend is not implemented";
-        return result;
-    }
     if (inputs.queued_instruction != 3) {
         result.status = MovementSimulationStatus::Unsupported;
         result.can_execute = false;
@@ -284,6 +277,19 @@ MovementSimulation simulate_first_battle_movement_setup(const MovementModelInput
         simulate_enemy_attack(inputs, &result);
     } else {
         simulate_pc_attack(inputs, &result);
+    }
+
+    result.execution_route = basic_attack_route_from_final_parameter(
+        static_cast<std::int16_t>(result.final_instr_param_0x6));
+    result.execution_route_consistent = movement_worker_matches_basic_attack_route(
+        result.selected_worker,
+        result.execution_route);
+    if (!result.execution_route_consistent && result.can_execute) {
+        result.status = MovementSimulationStatus::Ambiguous;
+        if (!result.detail.empty()) {
+            result.detail += "; ";
+        }
+        result.detail += "final instrParam and selected attack worker imply different execution routes";
     }
 
     return result;
@@ -338,9 +344,7 @@ MovementWorksheetSnapshot project_enemy_event0_movement_worksheet_snapshot(const
     snapshot.dist_to_target = axis_distance;
     snapshot.helper_8008a174_result = 1;
     snapshot.helper_80082340_result = direct_path ? 0 : 1;
-    snapshot.source = inputs.backend == MovementBackend::FrameStateMachine
-        ? "enemy_event_0_frame_state_projection"
-        : "enemy_event_0_alx_grid_projection";
+    snapshot.source = "enemy_event_0_source_grid_projection";
     return snapshot;
 }
 
@@ -418,6 +422,22 @@ const char* movement_reachability_status_name(MovementReachabilityStatus status)
         return "Ambiguous";
     }
     return "Unknown";
+}
+
+bool movement_worker_matches_basic_attack_route(
+    MovementSelectedWorker worker,
+    BasicAttackExecutionRoute route) {
+    switch (route) {
+    case BasicAttackExecutionRoute::DirectMelee:
+        return worker == MovementSelectedWorker::PcDirectAttack_80086308
+            || worker == MovementSelectedWorker::EnemyDirectAttack_80087f6c;
+    case BasicAttackExecutionRoute::FallbackRanged:
+        return worker == MovementSelectedWorker::PcFallbackAttack_80085ce0
+            || worker == MovementSelectedWorker::EnemyFallbackAttack_80087844;
+    case BasicAttackExecutionRoute::Unknown:
+        return worker == MovementSelectedWorker::None;
+    }
+    return false;
 }
 
 } // namespace savor::predict

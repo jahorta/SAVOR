@@ -1,5 +1,7 @@
 #pragma once
 
+#include "BattleSourceModel.h"
+
 #include <Core/Memory/Soa/SoaConstants.h>
 
 #include <cstdint>
@@ -7,12 +9,6 @@
 #include <string>
 
 namespace savor::predict {
-
-enum class BattleEncounterSourceKind {
-    Unknown,
-    EventDefinition,
-    RandomTable,
-};
 
 enum class BattleInitialTurnTypeStatus {
     Exact,
@@ -59,7 +55,6 @@ struct BattleInitialTurnTypeResult {
 BattleInitialTurnTypeResult model_initial_battle_turn_type(
     const BattleInitialTurnTypeInput& input);
 
-const char* battle_encounter_source_kind_name(BattleEncounterSourceKind kind);
 const char* battle_initial_turn_type_status_name(BattleInitialTurnTypeStatus status);
 const char* battle_turn_type_name(soa::battle::TurnType turn_type);
 
