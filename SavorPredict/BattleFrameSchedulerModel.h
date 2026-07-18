@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ActionMotionInvocationModel.h"
 #include "ActionMotionPlaybackModel.h"
 #include "BattleFrameStateModel.h"
 #include "BattleFrameThreadListModel.h"
@@ -81,6 +82,7 @@ enum class BattleFrameWorkerStepKind {
     VisualControllerVisit,
     VisualInstructionDecision,
     VisualInstructionStatePublish,
+    ActionMotionInvocationDecision,
     ActionMotionPlaybackInstall,
     ActionMotionRendererAdvance,
     ActionMotionState6Poll,
@@ -364,6 +366,22 @@ struct BattleFrameStepEvent {
     int action_motion_delay_descriptor_record_index = -1;
     int action_motion_delay_before = 0;
     int action_motion_delay_after = 0;
+    ActionMotionPersistentCallbackFamily action_motion_callback_family =
+        ActionMotionPersistentCallbackFamily::Unknown;
+    std::uint64_t persistent_callback_publication_revision = 0;
+    std::int16_t persistent_callback_index = -1;
+    bool persistent_callback_changed = false;
+    bool persistent_callback_same_value = false;
+    ActionMotionInvocationDecisionKind action_motion_invocation_decision =
+        ActionMotionInvocationDecisionKind::Unsupported;
+    ActionMotionInvocationStatus action_motion_invocation_status =
+        ActionMotionInvocationStatus::MissingInput;
+    ActionMotionResolverCode action_motion_resolver_code =
+        ActionMotionResolverCode::NoChange;
+    int action_motion_callback_state_before = 0;
+    int action_motion_callback_state_after = 0;
+    int action_motion_resolver_row = -1;
+    int action_motion_resolved_motion_id = -1;
     bool rng_event = false;
     std::string rng_label;
     int draws_consumed = 0;
@@ -569,6 +587,42 @@ struct BattleFrameVisualChildTask {
     std::string provenance;
 };
 
+enum class BattleFrameInstructionCallbackPublicationSource {
+    State0Initialization,
+    State1CurrentInstruction,
+    State1QueuedTransition,
+    ExplicitModeledTransition,
+};
+
+struct BattleFramePersistentInstructionCallbackRuntime {
+    bool installed = false;
+    std::uint8_t thread_state_0x19 = 0;
+    int action_ordinal = -1;
+    int slot = -1;
+    std::uint64_t publication_revision = 0;
+    std::uint64_t instruction_state_revision = 0;
+    std::int16_t callback_index = -1;
+    ActionMotionPersistentCallbackFamily callback_family =
+        ActionMotionPersistentCallbackFamily::Unknown;
+    int callback_state = 0;
+    std::optional<CombatantStdActionRow> current_instruction_row;
+    std::optional<CombatantStdActionRow> previous_instruction_row;
+    std::optional<BattleFrameInstructionCallbackPublicationSource>
+        pending_publication_source;
+    std::optional<bool> current_motion_resource_present;
+    std::optional<std::int16_t> current_motion_id;
+    int visits = 0;
+    int publications = 0;
+    int same_value_publications = 0;
+    int callback_changes = 0;
+    int installs = 0;
+    int loads = 0;
+    int state8_delay_remaining = -1;
+    ActionMotionInvocationStatus status =
+        ActionMotionInvocationStatus::MissingInput;
+    std::string provenance;
+};
+
 struct BattleFrameVisualRuntime {
     BattleFrameActionViewControllerRuntime controller{};
     std::array<std::optional<CombatantVisualResource>, kBattleFrameCombatantSlotCapacity>
@@ -581,6 +635,9 @@ struct BattleFrameVisualRuntime {
         std_row_producers{};
     std::array<ActionMotionPlaybackRuntime, kBattleFrameCombatantSlotCapacity>
         action_motion_playbacks{};
+    std::array<BattleFramePersistentInstructionCallbackRuntime,
+               kBattleFrameCombatantSlotCapacity>
+        persistent_instruction_callbacks{};
     std::vector<BattleFrameVisualChildTask> child_tasks;
     std::vector<BattleFrameStepEvent> history;
     std::vector<BattleFrameStepEvent> pending_events;
@@ -698,12 +755,12 @@ void configure_battle_frame_visual_pathing_profile(
     BattleFrameRuntime& runtime,
     std::string profile_name);
 
-bool publish_battle_frame_visual_instruction_state(
+bool stage_battle_frame_visual_instruction_state(
     BattleFrameRuntime& runtime,
     int action_ordinal,
     CombatantVisualInstructionSnapshot instruction);
 
-bool publish_battle_frame_validated_instruction_transition(
+bool stage_battle_frame_validated_instruction_transition(
     BattleFrameRuntime& runtime,
     int action_ordinal,
     int slot,
@@ -711,9 +768,15 @@ bool publish_battle_frame_validated_instruction_transition(
     std::int16_t instruction_mode,
     std::string provenance);
 
-bool publish_battle_frame_queued_std_action_transition(
+bool stage_battle_frame_queued_std_action_transition(
     BattleFrameRuntime& runtime,
     int action_ordinal);
+
+bool publish_battle_frame_persistent_instruction_callback(
+    BattleFrameRuntime& runtime,
+    int slot,
+    BattleFrameInstructionCallbackPublicationSource source,
+    std::string provenance);
 
 bool battle_frame_action_visual_publication_pending(
     const BattleFrameRuntime& runtime,

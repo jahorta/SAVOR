@@ -52,6 +52,8 @@ struct BattleFrameCombatantState {
     std::uint32_t selected_action_row_flags = 0;
     int selected_action_row_index = -1;
     std::int16_t selected_action_row_action_id = -1;
+    std::int16_t selected_action_row_callback_index = -1;
+    std::int16_t selected_action_row_callback_ordinal = -1;
     bool selected_action_row_known = false;
     std::uint32_t selected_action_row_duration_bits = 0;
     bool selected_action_row_duration_known = false;

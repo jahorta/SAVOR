@@ -12,6 +12,7 @@
 #include <iomanip>
 #include <iostream>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -10322,6 +10323,557 @@ std::string build_first_battle_probe_layer_validation_profile_ini()
     return picojson::value(std::move(root)).serialize(true);
 }
 
+std::string build_first_battle_action_motion_invocation_profile_ini(
+    std::uint32_t thread_list_max_nodes)
+{
+    using Array = picojson::value::array;
+    using Object = picojson::value::object;
+
+    if (thread_list_max_nodes != 128 && thread_list_max_nodes != 256) {
+        throw std::invalid_argument("action-motion invocation thread-list max must be 128 or 256");
+    }
+
+    const auto number = [](std::uint64_t value) {
+        return picojson::value(static_cast<double>(value));
+    };
+    const auto append_u32 = [&](Array& bytes, std::uint32_t value) {
+        bytes.emplace_back(number(value & 0xffu));
+        bytes.emplace_back(number((value >> 8) & 0xffu));
+        bytes.emplace_back(number((value >> 16) & 0xffu));
+        bytes.emplace_back(number((value >> 24) & 0xffu));
+    };
+    const auto append_add = [&](Array& bytes, std::int32_t offset) {
+        bytes.emplace_back(number(0x03));
+        append_u32(bytes, static_cast<std::uint32_t>(offset));
+    };
+    const auto absolute_program = [&](std::uint32_t address) {
+        Array bytes{ number(0x07) };
+        append_u32(bytes, address);
+        bytes.emplace_back(number(0x00));
+        return bytes;
+    };
+    const auto instruction_program = [&](int slot, std::int32_t offset) {
+        Array bytes{ number(0x07) };
+        append_u32(bytes, 0x80309E24u + static_cast<std::uint32_t>(slot) * 4u);
+        bytes.emplace_back(number(0x02));
+        append_add(bytes, 0x24);
+        bytes.emplace_back(number(0x02));
+        append_add(bytes, 0x4c);
+        bytes.emplace_back(number(0x02));
+        append_add(bytes, offset);
+        bytes.emplace_back(number(0x00));
+        return bytes;
+    };
+    const auto thread_program = [&](int slot, std::int32_t offset) {
+        Array bytes{ number(0x07) };
+        append_u32(bytes, 0x80309E24u + static_cast<std::uint32_t>(slot) * 4u);
+        bytes.emplace_back(number(0x02));
+        append_add(bytes, offset);
+        bytes.emplace_back(number(0x00));
+        return bytes;
+    };
+    const auto combatant_worksheet_pointer_program = [&](int slot) {
+        Array bytes{ number(0x07) };
+        append_u32(bytes, 0x80309E24u + static_cast<std::uint32_t>(slot) * 4u);
+        bytes.emplace_back(number(0x02));
+        append_add(bytes, 0x24);
+        bytes.emplace_back(number(0x00));
+        return bytes;
+    };
+    const auto instruction_worksheet_pointer_program = [&](int slot) {
+        auto bytes = combatant_worksheet_pointer_program(slot);
+        bytes.pop_back();
+        bytes.emplace_back(number(0x02));
+        append_add(bytes, 0x4c);
+        bytes.emplace_back(number(0x00));
+        return bytes;
+    };
+    const auto action_row_program = [&](std::int32_t row_offset) {
+        Array bytes{ number(0x06), number(3) };
+        append_add(bytes, 0x24);
+        bytes.emplace_back(number(0x02));
+        append_add(bytes, 0x4c);
+        bytes.emplace_back(number(0x02));
+        append_add(bytes, 0xdc);
+        bytes.emplace_back(number(0x02));
+        bytes.emplace_back(number(0x08));
+        bytes.emplace_back(number(4));
+        append_u32(bytes, 0x18);
+        append_add(bytes, row_offset);
+        bytes.emplace_back(number(0x00));
+        return bytes;
+    };
+    const auto gpr_sample = [&](std::string name, std::uint32_t reg,
+                                std::uint32_t width = 4) {
+        return picojson::value(Object{
+            { "name", picojson::value(std::move(name)) },
+            { "type", picojson::value("gpr") },
+            { "register", number(reg) },
+            { "width", number(width) },
+        });
+    };
+    const auto memory_sample = [&](std::string name, std::uint32_t address,
+                                   std::uint32_t width) {
+        return picojson::value(Object{
+            { "name", picojson::value(std::move(name)) },
+            { "type", picojson::value("memory") },
+            { "address", number(address) },
+            { "width", number(width) },
+        });
+    };
+    const auto register_memory_sample = [&](std::string name, std::uint32_t reg,
+                                            std::int32_t offset, std::uint32_t width) {
+        return picojson::value(Object{
+            { "name", picojson::value(std::move(name)) },
+            { "type", picojson::value("register_memory") },
+            { "register", number(reg) },
+            { "offset", picojson::value(static_cast<double>(offset)) },
+            { "width", number(width) },
+        });
+    };
+    const auto program_sample = [&](std::string name, Array program,
+                                    std::uint32_t width,
+                                    std::string_view trace = "off") {
+        return picojson::value(Object{
+            { "name", picojson::value(std::move(name)) },
+            { "type", picojson::value("address_program") },
+            { "program", picojson::value(std::move(program)) },
+            { "trace", picojson::value(std::string(trace)) },
+            { "width", number(width) },
+        });
+    };
+    const auto stack_sample = [&] {
+        return picojson::value(Object{
+            { "name", picojson::value("call_stack") },
+            { "type", picojson::value("stack_trace") },
+            { "max_frames", number(8) },
+        });
+    };
+    const auto list_field = [&](const char* name, std::int32_t offset,
+                                std::uint32_t width) {
+        return picojson::value(Object{
+            { "name", picojson::value(name) },
+            { "offset", picojson::value(static_cast<double>(offset)) },
+            { "width", number(width) },
+        });
+    };
+    const auto thread_list_sample = [&] {
+        return picojson::value(Object{
+            { "name", picojson::value("thread_list") },
+            { "type", picojson::value("linked_list") },
+            { "program", picojson::value(absolute_program(0x80311A84u)) },
+            { "trace", picojson::value("on_failure") },
+            { "next_offset", number(0x04) },
+            { "max_nodes", number(thread_list_max_nodes) },
+            { "fields", picojson::value(Array{
+                list_field("callback", 0x00, 4),
+                list_field("next", 0x04, 4),
+                list_field("parent", 0x08, 4),
+                list_field("flags", 0x18, 1),
+                list_field("state", 0x19, 1),
+                list_field("depth", 0x1b, 1),
+                list_field("order_bits", 0x20, 4),
+                list_field("payload_word", 0x24, 4),
+            }) },
+        });
+    };
+
+    // The root array is packed by publication order. The instruction worksheet
+    // supplies the semantic combatant slot; a root index is not a slot number.
+    const std::array<int, 4> live_root_indices{ 0, 1, 2, 3 };
+    const auto append_frame_context = [&](Array& samples) {
+        samples.emplace_back(memory_sample("turn_phase", 0x8034733cu, 4));
+        samples.emplace_back(memory_sample("input_state", 0x80347338u, 4));
+        samples.emplace_back(memory_sample("active_actor", 0x80347334u, 1));
+        samples.emplace_back(memory_sample("action_sequence", 0x80347335u, 1));
+        samples.emplace_back(memory_sample("completion_mask", 0x80347374u, 2));
+    };
+    const auto append_root_state = [&](Array& samples, int root_index) {
+        const auto prefix = "root" + std::to_string(root_index) + "_";
+        samples.emplace_back(program_sample(
+            prefix + "thread_ptr",
+            absolute_program(0x80309E24u + static_cast<std::uint32_t>(root_index) * 4u), 4));
+        samples.emplace_back(program_sample(
+            prefix + "combatant_worksheet_ptr",
+            combatant_worksheet_pointer_program(root_index), 4));
+        samples.emplace_back(program_sample(
+            prefix + "instruction_worksheet_ptr",
+            instruction_worksheet_pointer_program(root_index), 4));
+        samples.emplace_back(program_sample(
+            prefix + "thread_callback", thread_program(root_index, 0x00), 4));
+        samples.emplace_back(program_sample(
+            prefix + "thread_flags", thread_program(root_index, 0x18), 1));
+        samples.emplace_back(program_sample(
+            prefix + "thread_state", thread_program(root_index, 0x19), 1));
+        samples.emplace_back(program_sample(
+            prefix + "iw_slot", instruction_program(root_index, 0x00), 1));
+        samples.emplace_back(program_sample(
+            prefix + "iw_target", instruction_program(root_index, 0x04), 1));
+        samples.emplace_back(program_sample(
+            prefix + "iw_mode", instruction_program(root_index, 0x06), 2));
+        samples.emplace_back(program_sample(
+            prefix + "iw_subtype", instruction_program(root_index, 0x08), 2));
+        samples.emplace_back(program_sample(
+            prefix + "iw_callback_control", instruction_program(root_index, 0x12), 2));
+        samples.emplace_back(program_sample(
+            prefix + "iw_motion_resource", instruction_program(root_index, 0x5c), 4));
+        samples.emplace_back(program_sample(
+            prefix + "iw_motion_id", instruction_program(root_index, 0x64), 2));
+        samples.emplace_back(program_sample(
+            prefix + "iw_motion_progress", instruction_program(root_index, 0x68), 4));
+        samples.emplace_back(program_sample(
+            prefix + "iw_motion_increment", instruction_program(root_index, 0x6c), 4));
+        samples.emplace_back(program_sample(
+            prefix + "iw_motion_completion", instruction_program(root_index, 0x70), 4));
+        samples.emplace_back(program_sample(
+            prefix + "iw_action_table", instruction_program(root_index, 0xdc), 4));
+        samples.emplace_back(program_sample(
+            prefix + "iw_persistent_callback", instruction_program(root_index, 0xe0), 4));
+        samples.emplace_back(program_sample(
+            prefix + "iw_selected_row", instruction_program(root_index, 0xe4), 2));
+        samples.emplace_back(program_sample(
+            prefix + "iw_alt_row", instruction_program(root_index, 0xe6), 2));
+        samples.emplace_back(program_sample(
+            prefix + "iw_previous_row", instruction_program(root_index, 0xe8), 2));
+        samples.emplace_back(program_sample(
+            prefix + "iw_flags_ec", instruction_program(root_index, 0xec), 4));
+        samples.emplace_back(program_sample(
+            prefix + "iw_flags_f0", instruction_program(root_index, 0xf0), 4));
+        samples.emplace_back(program_sample(
+            prefix + "iw_runtime_word", instruction_program(root_index, 0x134), 4));
+        samples.emplace_back(program_sample(
+            prefix + "iw_descriptor_delay", instruction_program(root_index, 0x138), 4));
+    };
+    const auto diagnostic_samples = [&](bool all_slots = true) {
+        Array samples;
+        append_frame_context(samples);
+        for (const auto reg : { 0u, 1u, 3u, 4u, 5u, 6u, 26u, 27u, 28u, 29u, 30u, 31u })
+            samples.emplace_back(gpr_sample("r" + std::to_string(reg), reg));
+        if (all_slots) {
+            for (const auto root_index : live_root_indices)
+                append_root_state(samples, root_index);
+        }
+        samples.emplace_back(stack_sample());
+        return samples;
+    };
+    const auto symbol = [&](std::string name, std::string function,
+                            std::string checkpoint) {
+        return picojson::value(Object{
+            { "name", picojson::value(std::move(name)) },
+            { "function", picojson::value(std::move(function)) },
+            { "checkpoint", picojson::value(std::move(checkpoint)) },
+        });
+    };
+
+    Array probes;
+    const auto add_pc_probe = [&](std::string id, std::uint32_t address,
+                                  std::string function, std::string checkpoint,
+                                  Array samples, bool in_window = true,
+                                  std::uint64_t max_hits = 1024) {
+        Object probe{
+            { "id", picojson::value(id) },
+            { "group", picojson::value("action_motion_invocation") },
+            { "kind", picojson::value("pc") },
+            { "address", number(address) },
+            { "subscriptions", picojson::value(Array{ picojson::value("capture") }) },
+            { "max_hits", number(max_hits) },
+            { "samples", picojson::value(std::move(samples)) },
+            { "symbol", symbol(id, std::move(function), std::move(checkpoint)) },
+        };
+        if (in_window)
+            probe["window"] = picojson::value("instruction_lifetime");
+        probes.emplace_back(std::move(probe));
+    };
+
+    probes.emplace_back(Object{
+        { "id", picojson::value("rng_seed_write_803469A8") },
+        { "group", picojson::value("action_motion_invocation") },
+        { "kind", picojson::value("memory") },
+        { "address", number(0x803469A8u) },
+        { "size", number(4) },
+        { "access", picojson::value("write") },
+        { "owns_rng_draw", picojson::value(true) },
+        { "subscriptions", picojson::value(Array{ picojson::value("capture") }) },
+        { "samples", picojson::value(Array{ stack_sample() }) },
+        { "symbol", symbol("rng_seed_write", "rand", "authoritative_post_write_seed") },
+    });
+
+    {
+        auto samples = diagnostic_samples();
+        Object macro{
+            { "id", picojson::value("input_macro_command_diagnostic_800798C4") },
+            { "group", picojson::value("action_motion_invocation") },
+            { "kind", picojson::value("pc") },
+            { "address", number(0x800798C4u) },
+            { "subscriptions", picojson::value(Array{ picojson::value("capture") }) },
+            { "max_hits", number(64) },
+            { "samples", picojson::value(std::move(samples)) },
+            { "symbol", symbol("input_macro_command_diagnostic_after_vm_control",
+                "EnemyTargetSelectController_800794D8", "macro_untrusted_command") },
+        };
+        probes.emplace_back(std::move(macro));
+    }
+
+    {
+        auto samples = diagnostic_samples();
+        add_pc_probe("setup_turn_end_800715EC", 0x800715ECu,
+            "Battle::SetupTurn", "authoritative_instruction_window_open",
+            std::move(samples), false, 32);
+    }
+
+    std::vector<std::string> flight_triggers;
+    for (int pair = 0; pair < 6; ++pair) {
+        const auto id = "combatant_thread_roots_" + std::to_string(pair * 2)
+            + "_" + std::to_string(pair * 2 + 1) + "_write";
+        Array samples;
+        append_frame_context(samples);
+        samples.emplace_back(stack_sample());
+        probes.emplace_back(Object{
+            { "id", picojson::value(id) },
+            { "group", picojson::value("action_motion_invocation") },
+            { "kind", picojson::value("memory") },
+            { "address", number(0x80309E24u + static_cast<std::uint32_t>(pair) * 8u) },
+            { "size", number(8) },
+            { "access", picojson::value("write") },
+            { "subscriptions", picojson::value(Array{ picojson::value("capture") }) },
+            { "samples", picojson::value(std::move(samples)) },
+            { "symbol", symbol(id, "CombatantThreadRoots", "root_pair_post_write") },
+        });
+        flight_triggers.push_back(id);
+    }
+
+    struct WatchSegment {
+        const char* name;
+        std::int32_t offset;
+        std::uint32_t size;
+        bool flight_trigger;
+    };
+    const std::array<WatchSegment, 10> watch_segments{{
+        { "mode_subtype_06", 0x06, 8, false },
+        { "callback_control_0e", 0x0e, 4, false },
+        { "callback_control_12", 0x12, 2, true },
+        { "motion_5c", 0x5c, 8, false },
+        { "motion_64", 0x64, 8, false },
+        { "motion_6c", 0x6c, 8, false },
+        { "action_table_dc", 0xdc, 8, true },
+        { "callback_rows_e4", 0xe4, 8, true },
+        { "flags_ec", 0xec, 8, true },
+        { "runtime_delay_134", 0x134, 8, true },
+    }};
+    for (const auto root_index : live_root_indices) {
+        for (const auto& segment : watch_segments) {
+            const auto id = "root" + std::to_string(root_index) + "_iw_"
+                + segment.name + "_write";
+            Array samples;
+            append_frame_context(samples);
+            append_root_state(samples, root_index);
+            samples.emplace_back(stack_sample());
+            probes.emplace_back(Object{
+                { "id", picojson::value(id) },
+                { "group", picojson::value("action_motion_invocation") },
+                { "kind", picojson::value("memory") },
+                { "size", number(segment.size) },
+                { "access", picojson::value("write") },
+                { "activate_on_pc", number(0x800715ECu) },
+                { "address_program", picojson::value(instruction_program(root_index, segment.offset)) },
+                { "trace", picojson::value("on_failure") },
+                { "window", picojson::value("instruction_lifetime") },
+                { "subscriptions", picojson::value(Array{ picojson::value("capture") }) },
+                { "samples", picojson::value(std::move(samples)) },
+                { "symbol", symbol(id, "InstructionWorksheet", "authoritative_post_write") },
+            });
+            if (segment.flight_trigger)
+                flight_triggers.push_back(id);
+        }
+    }
+
+    for (const auto& [id, address, function, checkpoint] :
+         std::array<std::tuple<const char*, std::uint32_t, const char*, const char*>, 9>{{
+             { "instruction_dispatch_resolve_call_80022A30", 0x80022A30u, "FUN_80022850", "before_transition_resolver" },
+             { "instruction_dispatch_resolve_return_80022A34", 0x80022A34u, "FUN_80022850", "after_transition_resolver" },
+             { "instruction_dispatch_callback_call_80022A40", 0x80022A40u, "FUN_80022850", "before_persistent_callback" },
+             { "instruction_dispatch_callback_return_80022A44", 0x80022A44u, "FUN_80022850", "after_persistent_callback" },
+             { "queued_transition_entry_800221FC", 0x800221FCu, "ResolveQueuedStdActionTransition_800221FC", "entry" },
+             { "queued_transition_return_8002284C", 0x8002284Cu, "ResolveQueuedStdActionTransition_800221FC", "return" },
+             { "worksheet_action_row_resolver_entry_80020094", 0x80020094u, "FindWorksheetActionRowAndInstallCallback_80020094", "entry" },
+             { "worksheet_action_row_resolver_return_8002024C", 0x8002024Cu, "FindWorksheetActionRowAndInstallCallback_80020094", "return" },
+             { "action_motion_resolver_entry_8001ECB4", 0x8001ECB4u, "FUN_8001ECB4", "entry" },
+         }}) {
+        add_pc_probe(id, address, function, checkpoint, diagnostic_samples(), true, 2048);
+    }
+
+    const std::array<std::uint32_t, 24> resolver_callsites{{
+        0x80017BE4u, 0x80019888u, 0x800198ECu, 0x80019994u,
+        0x8001A06Cu, 0x8001A0B8u, 0x8001A8D8u, 0x8001A928u,
+        0x8001B094u, 0x8001B504u, 0x8001B58Cu, 0x8001B668u,
+        0x8001B828u, 0x8001B974u, 0x80066208u, 0x80066578u,
+        0x8006683Cu, 0x80066850u, 0x80066A3Cu, 0x80066BA4u,
+        0x80066E28u, 0x80066E3Cu, 0x80066FB0u, 0x80066FC4u,
+    }};
+    for (const auto callsite : resolver_callsites) {
+        const auto return_pc = callsite + 4u;
+        auto samples = diagnostic_samples();
+        samples.emplace_back(register_memory_sample("resolver_output_row", 1, 8, 2));
+        const auto id = "action_motion_resolver_return_" + hex_u32(return_pc).substr(2);
+        add_pc_probe(id, return_pc, "FUN_8001ECB4 caller",
+            "resolver_result_and_output_row", std::move(samples), true, 512);
+    }
+
+    {
+        auto samples = diagnostic_samples();
+        for (const auto& [name, offset, width] :
+             std::array<std::tuple<const char*, std::int32_t, std::uint32_t>, 8>{{
+                 { "row_motion_id", 0x00, 2 }, { "row_word_02", 0x02, 2 },
+                 { "row_argument_04", 0x04, 2 }, { "row_flags_06", 0x06, 2 },
+                 { "row_duration", 0x08, 4 }, { "row_word_0c", 0x0c, 4 },
+                 { "row_word_10", 0x10, 4 }, { "row_word_14", 0x14, 4 },
+             }}) {
+            samples.emplace_back(program_sample(name, action_row_program(offset), width,
+                "on_failure"));
+        }
+        add_pc_probe("action_motion_install_entry_8001EBA4", 0x8001EBA4u,
+            "FUN_8001EBA4", "install_action_motion_playback", std::move(samples), true, 1024);
+        flight_triggers.push_back("action_motion_install_entry_8001EBA4");
+    }
+    for (const auto& [id, address, checkpoint] :
+         std::array<std::tuple<const char*, std::uint32_t, const char*>, 4>{{
+             { "action_motion_setup_return_8001EC74", 0x8001EC74u, "motion_setup_result" },
+             { "action_motion_apply_call_8001EC8C", 0x8001EC8Cu, "before_motion_apply" },
+             { "action_motion_setup_complete_8001EC9C", 0x8001EC9Cu, "setup_complete" },
+             { "action_motion_install_return_8001ECB0", 0x8001ECB0u, "installer_return" },
+         }}) {
+        add_pc_probe(id, address, "FUN_8001EBA4", checkpoint,
+            diagnostic_samples(), true, 1024);
+    }
+
+    const std::array<std::uint32_t, 17> install_callsites{{
+        0x800198B0u, 0x80019904u, 0x800199BCu, 0x8001A084u,
+        0x8001A0E0u, 0x8001A93Cu, 0x8001B0C4u, 0x8001B52Cu,
+        0x8001B5BCu, 0x8001B690u, 0x8001B988u, 0x80066220u,
+        0x800665A0u, 0x80066874u, 0x80066A64u, 0x80066BD8u,
+        0x80066FD8u,
+    }};
+    for (const auto callsite : install_callsites) {
+        const auto return_pc = callsite + 4u;
+        const auto id = "action_motion_install_caller_return_" + hex_u32(return_pc).substr(2);
+        add_pc_probe(id, return_pc, "FUN_8001EBA4 caller", "post_install_state",
+            diagnostic_samples(), true, 512);
+    }
+
+    for (const auto& [id, address, function, checkpoint] :
+         std::array<std::tuple<const char*, std::uint32_t, const char*, const char*>, 8>{{
+             { "selected_row_loader_entry_80075F2C", 0x80075F2Cu, "STD::LoadSelectedActionRowMotion_80075F2C", "load_without_install_entry" },
+             { "selected_row_loader_return_80075FC8", 0x80075FC8u, "STD::LoadSelectedActionRowMotion_80075F2C", "load_without_install_return" },
+             { "looked_up_row_loader_entry_80075FF0", 0x80075FF0u, "STD::LoadLookedUpActionRowMotion_80075FF0", "load_without_install_entry" },
+             { "looked_up_row_loader_return_800760E8", 0x800760E8u, "STD::LoadLookedUpActionRowMotion_80075FF0", "load_without_install_return" },
+             { "position_sync_callback_entry_8001AB60", 0x8001AB60u, "FUN_8001AB60", "callback_entry" },
+             { "position_sync_callback_return_8001B1AC", 0x8001B1ACu, "FUN_8001AB60", "callback_return" },
+             { "basic_attack_callback_entry_8001B1B0", 0x8001B1B0u, "FUN_8001B1B0", "callback_entry" },
+             { "basic_attack_callback_return_8001BABC", 0x8001BABCu, "FUN_8001B1B0", "callback_return" },
+         }}) {
+        add_pc_probe(id, address, function, checkpoint, diagnostic_samples(), true, 2048);
+    }
+
+    for (const auto& [id, address, function, checkpoint, max_hits] :
+         std::array<std::tuple<const char*, std::uint32_t, const char*, const char*, std::uint64_t>, 18>{{
+             { "action_setup_entry_80082134", 0x80082134u, "BattleActionSetup", "action_ordinal_boundary", 64 },
+             { "attack_hit_dodge_80010BDC", 0x80010BDCu, "AttackResolution", "hit_or_dodge_result", 128 },
+             { "attack_critical_80010C44", 0x80010C44u, "AttackResolution", "critical_result", 128 },
+             { "crit_gate_return_80010CA4", 0x80010CA4u, "AttackResolution", "critical_gate_return", 128 },
+             { "counter_roll_80081A88", 0x80081A88u, "AttackResolution", "counter_roll", 128 },
+             { "counter_return_80081B80", 0x80081B80u, "AttackResolution", "counter_result", 128 },
+             { "attack_resolution_begin_80081B94", 0x80081B94u, "AttackResolution", "resolution_begin", 128 },
+             { "attack_result_return_80081BE8", 0x80081BE8u, "AttackResolution", "result_return", 128 },
+             { "attack_result_write_80081C48", 0x80081C48u, "AttackResolution", "result_publication", 128 },
+             { "passive_initial_relay_800804B8", 0x800804B8u, "BattlePassiveRelay", "initial_relay", 512 },
+             { "passive_deferred_relay_800801A8", 0x800801A8u, "BattlePassiveRelay", "deferred_relay", 512 },
+             { "passive_dispatch_publish_80080244", 0x80080244u, "BattlePassiveRelay", "dispatch_publication", 512 },
+             { "passive_dispatch_entry_8008DEEC", 0x8008DEECu, "FUN_8008DEEC", "passive_family_selection", 512 },
+             { "action_motion_release_8001B750", 0x8001B750u, "FUN_8001B1B0", "terminal_action_motion_release", 256 },
+             { "motion_setup_core_entry_80076170", 0x80076170u, "FUN_80076170", "motion_state_publication", 1024 },
+             { "action_motion_playback_entry_80075D64", 0x80075D64u, "FUN_80075D64", "playback_visit", 4096 },
+             { "action_motion_playback_return_80075F08", 0x80075F08u, "FUN_80075D64", "playback_result", 4096 },
+             { "instruction_dispatch_entry_80022850", 0x80022850u, "FUN_80022850", "persistent_dispatch_entry", 4096 },
+         }}) {
+        add_pc_probe(id, address, function, checkpoint, diagnostic_samples(), true, max_hits);
+    }
+
+    {
+        Array samples;
+        append_frame_context(samples);
+        for (const auto root_index : live_root_indices)
+            append_root_state(samples, root_index);
+        Object frame{
+            { "id", picojson::value("battle_case5_frame_clock_8000A2FC") },
+            { "group", picojson::value("action_motion_invocation") },
+            { "kind", picojson::value("pc") },
+            { "address", number(0x8000A2FCu) },
+            { "subscriptions", picojson::value(Array{ picojson::value("capture") }) },
+            { "frame_clock", picojson::value(true) },
+            { "max_hits", number(2400) },
+            { "window", picojson::value("instruction_lifetime") },
+            { "samples", picojson::value(std::move(samples)) },
+            { "symbol", symbol("battle_case5_frame_clock", "Battle::_battleController_8000A118", "case5_complete") },
+        };
+        probes.emplace_back(std::move(frame));
+    }
+    probes.emplace_back(Object{
+        { "id", picojson::value("battle_case5_thread_list_changed_8000A2FC") },
+        { "group", picojson::value("action_motion_invocation") },
+        { "kind", picojson::value("pc") },
+        { "address", number(0x8000A2FCu) },
+        { "subscriptions", picojson::value(Array{ picojson::value("capture") }) },
+        { "max_hits", number(2400) },
+        { "window", picojson::value("instruction_lifetime") },
+        { "sampling", picojson::value(Object{ { "mode", picojson::value("changed_only") } }) },
+        { "samples", picojson::value(Array{ thread_list_sample() }) },
+        { "symbol", symbol("battle_case5_thread_list_changed", "Battle::_battleController_8000A118", "changed_thread_list") },
+    });
+    probes.emplace_back(Object{
+        { "id", picojson::value("battle_case5_thread_list_flight_8000A2FC") },
+        { "group", picojson::value("action_motion_invocation") },
+        { "kind", picojson::value("pc") },
+        { "address", number(0x8000A2FCu) },
+        { "subscriptions", picojson::value(Array{ picojson::value("capture") }) },
+        { "max_hits", number(2400) },
+        { "window", picojson::value("instruction_lifetime") },
+        { "samples", picojson::value(Array{ thread_list_sample() }) },
+        { "symbol", symbol("battle_case5_thread_list_flight", "Battle::_battleController_8000A118", "flight_thread_list") },
+    });
+
+    Array trigger_values;
+    for (const auto& trigger : flight_triggers)
+        trigger_values.emplace_back(picojson::value(trigger));
+
+    Object root{
+        { "schema", picojson::value("savor.capture.profile/1") },
+        { "name", picojson::value("first_battle_action_motion_invocation") },
+        { "revision", number(1) },
+        { "battle_progress_enabled", picojson::value(true) },
+        { "limits", picojson::value(Object{
+            { "queue_bytes", number(128ull * 1024ull * 1024ull) },
+            { "max_events", number(2048) },
+            { "progress_events", number(256) },
+            { "chunk_events", number(2048) },
+        }) },
+        { "probes", picojson::value(std::move(probes)) },
+        { "windows", picojson::value(Array{ picojson::value(Object{
+            { "id", picojson::value("instruction_lifetime") },
+            { "open_probe", picojson::value("setup_turn_end_800715EC") },
+            { "initially_open", picojson::value(false) },
+        }) }) },
+        { "flight_recorders", picojson::value(Array{ picojson::value(Object{
+            { "id", picojson::value("action_motion_thread_window") },
+            { "member_probes", picojson::value(Array{
+                picojson::value("battle_case5_thread_list_flight_8000A2FC") }) },
+            { "pre_events", number(3) },
+            { "post_events", number(4) },
+            { "trigger_probes", picojson::value(std::move(trigger_values)) },
+        }) }) },
+    };
+    return picojson::value(std::move(root)).serialize(true);
+}
+
 int write_first_battle_probe_layer_validation_profile(
     const std::filesystem::path& output_path,
     std::ostream& out,
@@ -10351,6 +10903,47 @@ int write_first_battle_probe_layer_validation_profile(
         return 1;
     }
     out << "Wrote first-battle probe-layer validation profile: " << output_path.string() << "\n";
+    return 0;
+}
+
+int write_first_battle_action_motion_invocation_profile(
+    const std::filesystem::path& output_path,
+    std::ostream& out,
+    std::ostream& err,
+    std::uint32_t thread_list_max_nodes)
+{
+    if (output_path.empty()) {
+        err << "write-first-battle-action-motion-invocation-profile requires --output PATH.\n";
+        return 2;
+    }
+    if (const auto parent = output_path.parent_path(); !parent.empty()) {
+        std::error_code ec;
+        std::filesystem::create_directories(parent, ec);
+        if (ec) {
+            err << "Failed to create output directory: " << ec.message() << "\n";
+            return 1;
+        }
+    }
+    std::ofstream file(output_path, std::ios::binary | std::ios::trunc);
+    if (!file.is_open()) {
+        err << "Failed to open output profile: " << output_path.string() << "\n";
+        return 1;
+    }
+    std::string text;
+    try {
+        text = build_first_battle_action_motion_invocation_profile_ini(
+            thread_list_max_nodes);
+    } catch (const std::exception& ex) {
+        err << "Failed to build action-motion invocation profile: " << ex.what() << "\n";
+        return 1;
+    }
+    file.write(text.data(), static_cast<std::streamsize>(text.size()));
+    if (!file.good()) {
+        err << "Failed to write output profile: " << output_path.string() << "\n";
+        return 1;
+    }
+    out << "Wrote first-battle action-motion invocation profile: "
+        << output_path.string() << "\n";
     return 0;
 }
 

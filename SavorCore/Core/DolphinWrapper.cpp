@@ -296,6 +296,7 @@ namespace savor {
             "{}-{}",
             GetCurrentProcessId(),
             options.metadata.created_utc_ns);
+        options.writer_options.events_per_chunk = profile.limits.chunk_events;
         options.progress_callback = [this](
             const savor::capture_format::Event& event,
             bool record_progress) {

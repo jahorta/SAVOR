@@ -31,8 +31,10 @@
     <ClCompile Include="..\SavorPredict\CombatantInstructionModeModel.cpp" />
     <ClCompile Include="..\SavorPredict\CombatantVisualDispatcherModel.cpp" />
     <ClCompile Include="..\SavorPredict\ActionMotionPlaybackModel.cpp" />
+    <ClCompile Include="..\SavorPredict\ActionMotionInvocationModel.cpp" />
     <ClCompile Include="..\SavorPredict\ActionMotionTargetModel.cpp" />
     <ClCompile Include="test_action_motion_playback.cpp" />
+    <ClCompile Include="test_action_motion_invocation.cpp" />
     <ClCompile Include="..\SavorPredict\BattleMovementPathModel.cpp" />
     <ClCompile Include="..\SavorPredict\BattleJobBatchRunManifest.cpp" />
     <ClCompile Include="..\SavorPredict\BattleJobBatchRunOptions.cpp" />
@@ -134,6 +136,7 @@
     <ClInclude Include="..\SavorPredict\ViewPlacementCacheModel.h" />
     <ClInclude Include="..\SavorPredict\ViewPlacementGeometryModel.h" />
     <ClInclude Include="..\SavorPredict\ActionMotionPlaybackModel.h" />
+    <ClInclude Include="..\SavorPredict\ActionMotionInvocationModel.h" />
     <ClInclude Include="..\SavorPredict\ActionMotionTargetModel.h" />
     <ClInclude Include="..\SavorPredict\QueuedInstructionParamModel.h" />
     <ClInclude Include="..\SavorPredict\BattleMovementInvocationModel.h" />

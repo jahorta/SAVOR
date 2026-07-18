@@ -628,18 +628,22 @@ ProfileParseResult parse_profile_json(const std::string& text)
         } else {
             const auto& limit_object = limits->get<Object>();
             reject_unknown_keys(limit_object,
-                { "queue_bytes", "max_events", "progress_events" }, "capture profile limits", result.errors);
+                { "queue_bytes", "max_events", "progress_events", "chunk_events" },
+                "capture profile limits", result.errors);
             if (const auto value = unsigned_value(limit_object, "queue_bytes")) profile.limits.queue_bytes = *value;
             else if (member(limit_object, "queue_bytes")) result.errors.push_back("limits.queue_bytes must be an unsigned integer");
             if (const auto value = unsigned_value(limit_object, "max_events")) profile.limits.max_events = static_cast<std::uint32_t>(*value);
             else if (member(limit_object, "max_events")) result.errors.push_back("limits.max_events must be an unsigned integer");
             if (const auto value = unsigned_value(limit_object, "progress_events")) profile.limits.progress_events = static_cast<std::uint32_t>(*value);
             else if (member(limit_object, "progress_events")) result.errors.push_back("limits.progress_events must be an unsigned integer");
+            if (const auto value = unsigned_value(limit_object, "chunk_events")) profile.limits.chunk_events = static_cast<std::uint32_t>(*value);
+            else if (member(limit_object, "chunk_events")) result.errors.push_back("limits.chunk_events must be an unsigned integer");
         }
     }
     if (profile.limits.queue_bytes < sizeof(std::uint64_t)
         || profile.limits.max_events < 16 || profile.limits.max_events > 4096
-        || profile.limits.progress_events < 16 || profile.limits.progress_events > 4096) {
+        || profile.limits.progress_events < 16 || profile.limits.progress_events > 4096
+        || profile.limits.chunk_events < 16 || profile.limits.chunk_events > 4096) {
         result.errors.push_back("capture profile limits are outside their bounded ranges");
     }
 
@@ -992,6 +996,7 @@ std::string serialize_profile_json(const Profile& profile)
             { "queue_bytes", json_u64(profile.limits.queue_bytes) },
             { "max_events", json_u64(profile.limits.max_events) },
             { "progress_events", json_u64(profile.limits.progress_events) },
+            { "chunk_events", json_u64(profile.limits.chunk_events) },
         }) },
     };
     if (!profile.expected_module_sha256.empty())

@@ -1877,7 +1877,13 @@ void append_frame_scheduler_events(
             event_label = "visual_instruction_decision";
         } else if (frame_event.step_kind
             == BattleFrameWorkerStepKind::VisualInstructionStatePublish) {
-            event_label = "visual_instruction_state_publish";
+            event_label = "persistent_instruction_callback_publish";
+        } else if (frame_event.step_kind
+            == BattleFrameWorkerStepKind::ActionMotionInvocationDecision) {
+            event_label = "action_motion_invocation_decision";
+        } else if (frame_event.step_kind
+            == BattleFrameWorkerStepKind::ActionMotionPlaybackInstall) {
+            event_label = "action_motion_playback_install";
         } else if (frame_event.step_kind
             == BattleFrameWorkerStepKind::VisualStdRowProducerVisit) {
             event_label = "visual_std_row_producer_visit";

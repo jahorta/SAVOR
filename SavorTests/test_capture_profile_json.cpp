@@ -47,6 +47,7 @@ TEST(SavorCaptureProfileJson, EveryTrackedProfileBuildsAsTheNewSchema)
         { "float_motion", [] { return build_first_battle_float_motion_profile_ini(); } },
         { "move_increment", [] { return build_first_battle_move_increment_read_watch_profile_ini(); } },
         { "probe_layer_validation", [] { return build_first_battle_probe_layer_validation_profile_ini(); } },
+        { "action_motion_invocation", [] { return build_first_battle_action_motion_invocation_profile_ini(); } },
     };
 
     for (const auto& [name, build] : builders) {
@@ -59,6 +60,115 @@ TEST(SavorCaptureProfileJson, EveryTrackedProfileBuildsAsTheNewSchema)
         EXPECT_FALSE(parsed.profile->name.empty());
         EXPECT_FALSE(parsed.profile->probes.empty());
     }
+}
+
+TEST(SavorCaptureProfileJson, ActionMotionInvocationProfileCoversAttributionAndLifetime)
+{
+    const auto parsed = parse_profile_json(
+        build_first_battle_action_motion_invocation_profile_ini(128));
+    ASSERT_TRUE(parsed.profile.has_value()) << format_profile_errors(parsed);
+    const auto& profile = *parsed.profile;
+    EXPECT_EQ(profile.name, "first_battle_action_motion_invocation");
+    EXPECT_EQ(profile.limits.queue_bytes, 128ull * 1024ull * 1024ull);
+    EXPECT_EQ(profile.limits.max_events, 2048u);
+    EXPECT_EQ(profile.limits.chunk_events, 2048u);
+
+    const auto rng = std::ranges::find(
+        profile.probes, std::string("rng_seed_write_803469A8"), &ProbeDefinition::id);
+    ASSERT_NE(rng, profile.probes.end());
+    EXPECT_EQ(rng->address, 0x803469A8u);
+    EXPECT_FALSE(rng->activate_on_pc.has_value());
+    EXPECT_TRUE(rng->owns_rng_draw);
+    const auto rng_stack = std::ranges::find_if(rng->samples, [](const auto& sample) {
+        return sample.kind == SampleKind::StackTrace;
+    });
+    ASSERT_NE(rng_stack, rng->samples.end());
+    EXPECT_EQ(rng_stack->max_frames, 8u);
+
+    const auto dynamic_count = std::ranges::count_if(profile.probes, [](const auto& probe) {
+        return probe.kind == ProbeKind::Memory
+            && probe.id.starts_with("root") && probe.id.find("_iw_") != std::string::npos;
+    });
+    EXPECT_EQ(dynamic_count, 40);
+    for (const auto root_index : { 0, 1, 2, 3 }) {
+        const auto prefix = "root" + std::to_string(root_index) + "_iw_";
+        EXPECT_EQ(std::ranges::count_if(profile.probes, [&](const auto& probe) {
+            return probe.id.starts_with(prefix);
+        }), 10) << "root " << root_index;
+    }
+    for (const auto& probe : profile.probes) {
+        if (!(probe.kind == ProbeKind::Memory
+              && probe.id.starts_with("root")
+              && probe.id.find("_iw_") != std::string::npos)) {
+            continue;
+        }
+        ASSERT_TRUE(probe.activate_on_pc.has_value());
+        EXPECT_EQ(*probe.activate_on_pc, 0x800715ECu);
+        EXPECT_EQ(probe.address_trace, AddressTracePolicy::OnFailure);
+        EXPECT_TRUE(validate_address_program(probe.address_program).valid);
+        EXPECT_EQ(probe.window_id, "instruction_lifetime");
+        EXPECT_TRUE(probe.size == 2 || probe.size == 4 || probe.size == 8);
+        const auto stack = std::ranges::find_if(probe.samples, [](const auto& sample) {
+            return sample.kind == SampleKind::StackTrace;
+        });
+        ASSERT_NE(stack, probe.samples.end());
+        EXPECT_EQ(stack->max_frames, 8u);
+    }
+
+    EXPECT_EQ(std::ranges::count_if(profile.probes, [](const auto& probe) {
+        return probe.id.starts_with("combatant_thread_roots_");
+    }), 6);
+    EXPECT_EQ(std::ranges::count_if(profile.probes, [](const auto& probe) {
+        return probe.id.starts_with("action_motion_resolver_return_");
+    }), 24);
+    EXPECT_EQ(std::ranges::count_if(profile.probes, [](const auto& probe) {
+        return probe.id.starts_with("action_motion_install_caller_return_");
+    }), 17);
+
+    const auto macro = std::ranges::find(
+        profile.probes, std::string("input_macro_command_diagnostic_800798C4"),
+        &ProbeDefinition::id);
+    ASSERT_NE(macro, profile.probes.end());
+    EXPECT_TRUE(has_subscription(macro->subscriptions, Subscription::Capture));
+    EXPECT_FALSE(has_subscription(macro->subscriptions, Subscription::Control));
+
+    const auto window = std::ranges::find(
+        profile.windows, std::string("instruction_lifetime"), &WindowDefinition::id);
+    ASSERT_NE(window, profile.windows.end());
+    EXPECT_EQ(window->open_probe, "setup_turn_end_800715EC");
+    EXPECT_FALSE(window->initially_open);
+
+    const auto frames = std::ranges::count_if(profile.probes, [](const auto& probe) {
+        return probe.kind == ProbeKind::Pc && probe.address == 0x8000A2FCu;
+    });
+    EXPECT_EQ(frames, 3);
+    const auto frame_clock = std::ranges::find_if(profile.probes, [](const auto& probe) {
+        return probe.address == 0x8000A2FCu && probe.frame_clock;
+    });
+    ASSERT_NE(frame_clock, profile.probes.end());
+    ASSERT_TRUE(frame_clock->max_hits.has_value());
+    EXPECT_EQ(*frame_clock->max_hits, 2400u);
+    const auto changed_list = std::ranges::find(
+        profile.probes, std::string("battle_case5_thread_list_changed_8000A2FC"),
+        &ProbeDefinition::id);
+    ASSERT_NE(changed_list, profile.probes.end());
+    EXPECT_EQ(changed_list->sampling.mode, SamplingMode::ChangedOnly);
+    const auto list_samples = std::ranges::count_if(profile.probes, [](const auto& probe) {
+        return std::ranges::any_of(probe.samples, [](const auto& sample) {
+            return sample.kind == SampleKind::LinkedList && sample.max_nodes == 128;
+        });
+    });
+    EXPECT_EQ(list_samples, 2);
+
+    ASSERT_EQ(profile.flight_recorders.size(), 1u);
+    const auto& recorder = profile.flight_recorders.front();
+    EXPECT_EQ(recorder.pre_events, 3u);
+    EXPECT_EQ(recorder.post_events, 4u);
+    EXPECT_EQ(recorder.member_probes,
+        std::vector<std::string>{ "battle_case5_thread_list_flight_8000A2FC" });
+    EXPECT_NE(std::ranges::find(
+        recorder.trigger_probes, "action_motion_install_entry_8001EBA4"),
+        recorder.trigger_probes.end());
 }
 
 TEST(SavorCaptureProfileJson, ValidationProfileExercisesDynamicRootsSharedSubscriptionsAndFlightRecorder)

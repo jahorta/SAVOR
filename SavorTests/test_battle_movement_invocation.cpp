@@ -132,6 +132,10 @@ std::optional<BattleFrameRuntime> initialize_frame_runtime(
         combatant.selected_action_row_index = 0;
         combatant.selected_action_row_flags = 0x01000000u;
         combatant.selected_action_row_known = true;
+        runtime->visual.persistent_instruction_callbacks[
+            static_cast<std::size_t>(combatant.slot)].thread_state_0x19 = 1;
+        runtime->visual.std_row_producers[
+            static_cast<std::size_t>(combatant.slot)].thread_state_0x19 = 1;
     }
     return runtime;
 }
@@ -369,7 +373,7 @@ TEST(SavorPredictBattleMovementInvocationRuntime, QueuedStdActionTransitionSepar
             step.events.begin(), step.events.end(),
             [](const BattleFrameStepEvent& event) {
                 return event.step_kind
-                        == BattleFrameWorkerStepKind::VisualInstructionStatePublish
+                        == BattleFrameWorkerStepKind::VisualInstructionDecision
                     && event.slot == 0
                     && event.detail.find("installs_epoch=0")
                         != std::string::npos;

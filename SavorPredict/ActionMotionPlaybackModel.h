@@ -34,6 +34,13 @@ enum class ActionMotionPlaybackVisitKind {
     PublicationReleased,
 };
 
+enum class ActionMotionPlaybackContinuation {
+    State5LoadLookedUpTo4,
+    State6PostDelayTo11,
+    State7LoadLookedUpTo14,
+    GenericRelease,
+};
+
 enum class ActionMotionDelayStatus {
     Matched,
     NoMatch,
@@ -90,6 +97,8 @@ struct ActionMotionPlaybackInstallRequest {
     std::optional<std::uint32_t> selected_action_row_duration_bits;
     std::uint32_t instruction_flags_0xec = 0;
     std::uint32_t instruction_flags_0xf0 = 0;
+    ActionMotionPlaybackContinuation continuation =
+        ActionMotionPlaybackContinuation::State6PostDelayTo11;
     std::string provenance;
 };
 
@@ -106,6 +115,8 @@ struct ActionMotionPlaybackRuntime {
     std::uint32_t increment_bits_0x6c = 0;
     std::uint32_t instruction_flags_0xec = 0;
     std::uint32_t instruction_flags_0xf0 = 0;
+    ActionMotionPlaybackContinuation continuation =
+        ActionMotionPlaybackContinuation::State6PostDelayTo11;
     int callback_control_state = 0;
     int renderer_visits = 0;
     int state6_polls = 0;
@@ -166,6 +177,8 @@ bool action_motion_playback_blocks_publication(
 const char* action_motion_playback_status_name(ActionMotionPlaybackStatus status);
 const char* action_motion_playback_phase_name(ActionMotionPlaybackPhase phase);
 const char* action_motion_playback_visit_kind_name(ActionMotionPlaybackVisitKind kind);
+const char* action_motion_playback_continuation_name(
+    ActionMotionPlaybackContinuation continuation);
 const char* action_motion_delay_status_name(ActionMotionDelayStatus status);
 
 } // namespace savor::predict

@@ -12,7 +12,9 @@ using namespace savor::predict;
 
 ActionMotionPlaybackRuntime install_duration(
     std::uint32_t duration_bits,
-    std::uint32_t flags_f0 = 0) {
+    std::uint32_t flags_f0 = 0,
+    ActionMotionPlaybackContinuation continuation =
+        ActionMotionPlaybackContinuation::State6PostDelayTo11) {
     const auto installed = install_action_motion_playback({
         .action_ordinal = 3,
         .slot = 0,
@@ -21,6 +23,7 @@ ActionMotionPlaybackRuntime install_duration(
         .selected_action_row_duration_bits = duration_bits,
         .instruction_flags_0xec = 0x00180000u,
         .instruction_flags_0xf0 = flags_f0,
+        .continuation = continuation,
         .provenance = "captured action-row playback fixture",
     });
     EXPECT_TRUE(installed.installed);
@@ -147,6 +150,33 @@ TEST(SavorPredictActionMotionPlayback, FlaggedShortDurationSubstitutesFive) {
     EXPECT_TRUE(runtime.substituted_default_duration);
     EXPECT_EQ(runtime.effective_duration_bits, 0x40a00000u);
     EXPECT_EQ(runtime.increment_bits_0x6c, 0x3e4ccccdu);
+}
+
+TEST(SavorPredictActionMotionPlayback, State5ContinuationReleasesToState4WithoutDelay) {
+    auto runtime = install_duration(
+        0x3dccc954u,
+        0,
+        ActionMotionPlaybackContinuation::State5LoadLookedUpTo4);
+    EXPECT_EQ(runtime.callback_control_state, 5);
+    runtime = visit_action_motion_playback(runtime).runtime;
+    const auto completed = visit_action_motion_playback(runtime);
+    EXPECT_EQ(completed.kind, ActionMotionPlaybackVisitKind::State6Satisfied);
+    EXPECT_TRUE(completed.publication_released_this_visit);
+    EXPECT_EQ(completed.control_state_after, 4);
+    EXPECT_FALSE(action_motion_playback_blocks_publication(completed.runtime));
+}
+
+TEST(SavorPredictActionMotionPlayback, State7ContinuationReleasesToState14WithoutDelay) {
+    auto runtime = install_duration(
+        0x3dccc954u,
+        0,
+        ActionMotionPlaybackContinuation::State7LoadLookedUpTo14);
+    EXPECT_EQ(runtime.callback_control_state, 7);
+    runtime = visit_action_motion_playback(runtime).runtime;
+    const auto completed = visit_action_motion_playback(runtime);
+    EXPECT_TRUE(completed.publication_released_this_visit);
+    EXPECT_EQ(completed.control_state_after, 14);
+    EXPECT_FALSE(action_motion_playback_blocks_publication(completed.runtime));
 }
 
 TEST(SavorPredictActionMotionPlayback, DescriptorDelayMatchesModeFiveAndCountsState9Visits) {

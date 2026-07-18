@@ -119,6 +119,7 @@
     <ClCompile Include="ActionViewStdJsonLoader.cpp" />
     <ClCompile Include="ActionViewStdResourceResolver.cpp" />
     <ClCompile Include="ActionMotionPlaybackModel.cpp" />
+    <ClCompile Include="ActionMotionInvocationModel.cpp" />
     <ClCompile Include="ActionMotionTargetModel.cpp" />
     <ClCompile Include="AttackDamageValueCheckpointModel.cpp" />
     <ClCompile Include="AttackResolutionCheckpointModel.cpp" />
@@ -194,6 +195,7 @@
     <ClInclude Include="ActionViewStdJsonLoader.h" />
     <ClInclude Include="ActionViewStdResourceResolver.h" />
     <ClInclude Include="ActionMotionPlaybackModel.h" />
+    <ClInclude Include="ActionMotionInvocationModel.h" />
     <ClInclude Include="ActionMotionTargetModel.h" />
     <ClInclude Include="AttackDamageValueCheckpointModel.h" />
     <ClInclude Include="AttackResolutionCheckpointModel.h" />

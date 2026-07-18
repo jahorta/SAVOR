@@ -93,6 +93,7 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="ActionMotionPlaybackModel.cpp" />
+    <ClCompile Include="ActionMotionInvocationModel.cpp" />
     <ClCompile Include="ActionMotionTargetModel.cpp" />
     <ClCompile Include="BattleMovementPathModel.cpp" />
     <ClCompile Include="BattleJobBatchRunManifest.cpp">
@@ -308,6 +309,7 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="ActionMotionPlaybackModel.h" />
+    <ClInclude Include="ActionMotionInvocationModel.h" />
     <ClInclude Include="ActionMotionTargetModel.h" />
     <ClInclude Include="BattleMovementInvocationModel.h" />
     <ClInclude Include="BattleMovementPathModel.h" />

@@ -130,6 +130,20 @@ BattleFrameEventStatus frame_event_status(ActionMotionPlaybackStatus status) {
     return BattleFrameEventStatus::Unsupported;
 }
 
+BattleFrameEventStatus frame_event_status(ActionMotionInvocationStatus status) {
+    switch (status) {
+    case ActionMotionInvocationStatus::Matched:
+        return BattleFrameEventStatus::Matched;
+    case ActionMotionInvocationStatus::Provisional:
+        return BattleFrameEventStatus::Provisional;
+    case ActionMotionInvocationStatus::MissingInput:
+        return BattleFrameEventStatus::MissingInput;
+    case ActionMotionInvocationStatus::Unsupported:
+        return BattleFrameEventStatus::Unsupported;
+    }
+    return BattleFrameEventStatus::Unsupported;
+}
+
 CombatantInstructionActionKind instruction_action_kind(
     BattleMovementActionKind action_kind) {
     switch (action_kind) {
@@ -1640,6 +1654,7 @@ bool is_visual_step_kind(BattleFrameWorkerStepKind kind) {
     case BattleFrameWorkerStepKind::VisualControllerVisit:
     case BattleFrameWorkerStepKind::VisualInstructionDecision:
     case BattleFrameWorkerStepKind::VisualInstructionStatePublish:
+    case BattleFrameWorkerStepKind::ActionMotionInvocationDecision:
     case BattleFrameWorkerStepKind::ActionMotionPlaybackInstall:
     case BattleFrameWorkerStepKind::ActionMotionRendererAdvance:
     case BattleFrameWorkerStepKind::ActionMotionState6Poll:
@@ -1724,6 +1739,80 @@ CombatantVisualResource* visual_resource_for(
     }
     auto& resource = runtime.visual.resources[static_cast<std::size_t>(slot)];
     return resource.has_value() ? &*resource : nullptr;
+}
+
+std::optional<CombatantStdActionRow> selected_action_row_for(
+    const CombatantVisualResource* resource,
+    const BattleFrameCombatantState& combatant) {
+    if (!combatant.selected_action_row_known
+        || combatant.selected_action_row_index < 0) {
+        return std::nullopt;
+    }
+    if (resource != nullptr) {
+        const auto found = std::find_if(
+            resource->action_rows.begin(),
+            resource->action_rows.end(),
+            [&](const CombatantStdActionRow& row) {
+                return row.index == combatant.selected_action_row_index;
+            });
+        if (found != resource->action_rows.end()) {
+            auto row = *found;
+            if (combatant.selected_action_row_duration_known
+                && combatant.selected_action_row_action_id == row.action_id) {
+                row.transition_gate_divisor_bits =
+                    combatant.selected_action_row_duration_bits;
+            }
+            if (combatant.selected_action_row_callback_index >= 0) {
+                row.callback_index =
+                    combatant.selected_action_row_callback_index;
+            }
+            if (combatant.selected_action_row_callback_ordinal >= 0) {
+                row.callback_ordinal =
+                    combatant.selected_action_row_callback_ordinal;
+            }
+            return row;
+        }
+    }
+    return CombatantStdActionRow{
+        .index = combatant.selected_action_row_index,
+        .action_id = combatant.selected_action_row_action_id,
+        .callback_index = combatant.selected_action_row_callback_index,
+        .callback_ordinal = combatant.selected_action_row_callback_ordinal,
+        .flags = combatant.selected_action_row_flags,
+        .transition_gate_divisor_bits =
+            combatant.selected_action_row_duration_bits,
+    };
+}
+
+void apply_selected_action_row(
+    BattleFrameCombatantState& combatant,
+    const CombatantStdActionRow& row,
+    std::int16_t selected_action_id,
+    bool duration_known) {
+    combatant.selected_action_row_index = row.index;
+    combatant.selected_action_row_flags = row.flags;
+    combatant.selected_action_row_action_id = selected_action_id;
+    combatant.selected_action_row_callback_index = row.callback_index;
+    combatant.selected_action_row_callback_ordinal = row.callback_ordinal;
+    combatant.selected_action_row_known = true;
+    combatant.selected_action_row_duration_bits =
+        row.transition_gate_divisor_bits;
+    combatant.selected_action_row_duration_known = duration_known;
+}
+
+const char* callback_publication_source_name(
+    BattleFrameInstructionCallbackPublicationSource source) {
+    switch (source) {
+    case BattleFrameInstructionCallbackPublicationSource::State0Initialization:
+        return "State0Initialization";
+    case BattleFrameInstructionCallbackPublicationSource::State1CurrentInstruction:
+        return "State1CurrentInstruction";
+    case BattleFrameInstructionCallbackPublicationSource::State1QueuedTransition:
+        return "State1QueuedTransition";
+    case BattleFrameInstructionCallbackPublicationSource::ExplicitModeledTransition:
+        return "ExplicitModeledTransition";
+    }
+    return "State1CurrentInstruction";
 }
 
 ActionMotionDelayTable action_motion_delay_table_for(
@@ -2208,6 +2297,29 @@ bool visit_action_motion_playback_for_slot(
     if (combatant != nullptr) {
         combatant->instruction_flags_0xec = visited.flags_after;
     }
+    if (visited.publication_released_this_visit
+        && slot < static_cast<int>(
+            runtime.visual.persistent_instruction_callbacks.size())) {
+        auto& callback_runtime =
+            runtime.visual.persistent_instruction_callbacks[
+            static_cast<std::size_t>(slot)];
+        if (callback_runtime.installed
+            && callback_runtime.action_ordinal == playback.action_ordinal) {
+            switch (playback.continuation) {
+            case ActionMotionPlaybackContinuation::State5LoadLookedUpTo4:
+                callback_runtime.callback_state = 4;
+                break;
+            case ActionMotionPlaybackContinuation::State6PostDelayTo11:
+                callback_runtime.callback_state = 11;
+                break;
+            case ActionMotionPlaybackContinuation::State7LoadLookedUpTo14:
+                callback_runtime.callback_state = 14;
+                break;
+            case ActionMotionPlaybackContinuation::GenericRelease:
+                break;
+            }
+        }
+    }
 
     BattleFrameWorkerStepKind step_kind =
         BattleFrameWorkerStepKind::ActionMotionRendererAdvance;
@@ -2305,6 +2417,247 @@ bool visit_action_motion_playback_for_slot(
     event.action_motion_delay_after = visited.post_state6_delay_after;
     append_recorded_event(runtime, result, std::move(event));
     return !action_motion_playback_blocks_publication(playback);
+}
+
+bool visit_persistent_instruction_callback_for_slot(
+    BattleFrameRuntime& runtime,
+    int slot,
+    BattleFrameRunResult& result) {
+    if (slot < 0
+        || slot >= static_cast<int>(
+            runtime.visual.persistent_instruction_callbacks.size())) {
+        return true;
+    }
+    auto& invocation = runtime.visual.persistent_instruction_callbacks[
+        static_cast<std::size_t>(slot)];
+    if (!invocation.installed || invocation.thread_state_0x19 != 1) {
+        return true;
+    }
+    auto* combatant = find_frame_combatant(runtime.state, slot);
+    const auto* resource = visual_resource_for(runtime, slot);
+    if (combatant == nullptr || resource == nullptr) {
+        invocation.status = ActionMotionInvocationStatus::MissingInput;
+        return true;
+    }
+    if (invocation.instruction_state_revision
+        != combatant->visual_instruction_revision) {
+        invocation.status = ActionMotionInvocationStatus::Unsupported;
+        return true;
+    }
+
+    const int callback_state_before = invocation.callback_state;
+    std::optional<bool> rotation_complete;
+    if (combatant->turn_state_known) {
+        rotation_complete =
+            combatant->turn_current_degrees_0x11c
+            == combatant->turn_target_degrees_0x120;
+    }
+    std::optional<int> state8_descriptor_delay;
+    if (invocation.callback_family
+            == ActionMotionPersistentCallbackFamily::ActionMotionBasic_8001B1B0
+        && invocation.callback_state == 8) {
+        const auto delay = resolve_action_motion_post_state6_delay(
+            action_motion_delay_table_for(resource),
+            action_motion_delay_gate_input_for(combatant));
+        if ((delay.status == ActionMotionDelayStatus::Matched
+                || delay.status == ActionMotionDelayStatus::NoMatch)
+            && delay.delay.has_value()) {
+            state8_descriptor_delay = *delay.delay;
+        }
+    }
+    const auto decision = resolve_action_motion_invocation(
+        resource->action_rows,
+        ActionMotionInvocationRequest{
+            .callback_family = invocation.callback_family,
+            .callback_state = invocation.callback_state,
+            .instruction_mode = combatant->visual_instruction_mode_0x6,
+            .instruction_subtype = combatant->visual_instruction_subtype_0x8 >= 0
+                ? std::optional<std::int16_t>{
+                    combatant->visual_instruction_subtype_0x8}
+                : std::nullopt,
+            .instruction_flags_0xf0 = combatant->instruction_flags_0xf0,
+            .rotation_complete = rotation_complete,
+            .state8_descriptor_delay = state8_descriptor_delay,
+            .state8_delay_remaining = invocation.state8_delay_remaining,
+            .ranged_flag_0x2_set =
+                (combatant->instruction_flags_0xec & 0x2u) != 0,
+            .current_motion_resource_present =
+                invocation.current_motion_resource_present,
+            .current_motion_id = invocation.current_motion_id,
+            .selected_instruction_row = invocation.current_instruction_row,
+        });
+    ++invocation.visits;
+    invocation.status = decision.status;
+    invocation.callback_state = decision.callback_state_after;
+    invocation.state8_delay_remaining = decision.state8_delay_remaining;
+
+    std::ostringstream detail;
+    detail << "persistent_callback="
+           << action_motion_callback_family_name(invocation.callback_family)
+           << "; callback_index=" << invocation.callback_index
+           << "; callback_state=" << callback_state_before
+           << "->" << decision.callback_state_after
+           << "; decision="
+           << action_motion_invocation_decision_name(decision.decision)
+           << "; resolver_called=" << (decision.resolver_called ? 1 : 0)
+           << "; resolver_result="
+           << action_motion_resolver_code_name(decision.resolver.code)
+           << "; resolver_callsite=" << decision.resolver_callsite
+           << "; operation_callsite=" << decision.operation_callsite
+           << "; row_source="
+           << action_motion_invocation_row_source_name(decision.row_source)
+           << "; output_row="
+           << (decision.operation_row.has_value()
+               ? decision.operation_row->index
+               : -1)
+           << "; resolved_motion_id="
+           << (decision.resolver.resolved_motion_id.has_value()
+               ? *decision.resolver.resolved_motion_id
+               : -1)
+           << "; state8_delay_remaining="
+           << decision.state8_delay_remaining
+           << "; visits=" << invocation.visits
+           << "; draws=0; provenance=" << decision.provenance;
+
+    auto decision_event = make_visual_event(
+        runtime,
+        nullptr,
+        BattleFrameWorkerStepKind::ActionMotionInvocationDecision,
+        "FUN_80022850_persistent_callback_visit",
+        frame_event_status(decision.status),
+        detail.str());
+    decision_event.action_ordinal = invocation.action_ordinal;
+    decision_event.slot = slot;
+    decision_event.target_slot = combatant->instruction_target_slot_0x4;
+    decision_event.action_motion_callback_family = invocation.callback_family;
+    decision_event.action_motion_invocation_decision = decision.decision;
+    decision_event.action_motion_invocation_status = decision.status;
+    decision_event.action_motion_resolver_code = decision.resolver.code;
+    decision_event.action_motion_callback_state_before = callback_state_before;
+    decision_event.action_motion_callback_state_after =
+        decision.callback_state_after;
+    decision_event.action_motion_resolver_row =
+        decision.operation_row.has_value() ? decision.operation_row->index : -1;
+    decision_event.action_motion_resolved_motion_id =
+        decision.resolver.resolved_motion_id.value_or(-1);
+    append_recorded_event(runtime, result, std::move(decision_event));
+
+    switch (decision.decision) {
+    case ActionMotionInvocationDecisionKind::InstallPlayback: {
+        const auto duration_bits = decision.operation_row.has_value()
+            ? std::optional<std::uint32_t>{
+                decision.operation_row->transition_gate_divisor_bits}
+            : std::nullopt;
+        const auto playback_install = install_action_motion_playback(
+            ActionMotionPlaybackInstallRequest{
+                .action_ordinal = invocation.action_ordinal,
+                .slot = slot,
+                .instruction_state_revision =
+                    invocation.instruction_state_revision,
+                .selected_action_row_index = decision.operation_row.has_value()
+                    ? decision.operation_row->index
+                    : -1,
+                .selected_action_row_duration_bits = duration_bits,
+                .instruction_flags_0xec = combatant->instruction_flags_0xec,
+                .instruction_flags_0xf0 = combatant->instruction_flags_0xf0,
+                .continuation = decision.playback_continuation,
+                .provenance = invocation.provenance
+                    + "; " + decision.provenance,
+            });
+        runtime.visual.action_motion_playbacks[
+            static_cast<std::size_t>(slot)] = playback_install.runtime;
+        if (playback_install.installed) {
+            combatant->instruction_flags_0xec = playback_install.flags_after;
+            invocation.current_motion_resource_present = true;
+            invocation.current_motion_id =
+                decision.resolver.resolved_motion_id;
+            ++invocation.installs;
+        }
+
+        auto playback_event = make_visual_event(
+            runtime,
+            nullptr,
+            BattleFrameWorkerStepKind::ActionMotionPlaybackInstall,
+            "FUN_8001EBA4/FUN_80076170",
+            playback_install.runtime.status == ActionMotionPlaybackStatus::Matched
+                ? frame_event_status(decision.status)
+                : frame_event_status(playback_install.runtime.status),
+            playback_install.detail
+                + "; persistent_callback="
+                + action_motion_callback_family_name(invocation.callback_family)
+                + "; resolver_callsite=" + decision.resolver_callsite
+                + "; install_callsite=" + decision.operation_callsite
+                + "; resolver_result="
+                + action_motion_resolver_code_name(decision.resolver.code)
+                + "; instruction_state_revision="
+                + std::to_string(invocation.instruction_state_revision)
+                + "; publication_blocked="
+                + std::to_string(playback_install.blocks_publication ? 1 : 0)
+                + "; primitive=validated; invocation_policy="
+                + action_motion_invocation_status_name(decision.status)
+                + "; provenance=" + playback_install.runtime.provenance);
+        playback_event.action_ordinal = invocation.action_ordinal;
+        playback_event.slot = slot;
+        playback_event.target_slot = combatant->instruction_target_slot_0x4;
+        playback_event.action_motion_callback_family = invocation.callback_family;
+        playback_event.action_motion_invocation_decision = decision.decision;
+        playback_event.action_motion_invocation_status = decision.status;
+        playback_event.action_motion_resolver_code = decision.resolver.code;
+        playback_event.action_motion_callback_state_before =
+            callback_state_before;
+        playback_event.action_motion_callback_state_after =
+            decision.callback_state_after;
+        playback_event.action_motion_resolver_row =
+            decision.operation_row.has_value()
+                ? decision.operation_row->index
+                : -1;
+        playback_event.action_motion_resolved_motion_id =
+            decision.resolver.resolved_motion_id.value_or(-1);
+        playback_event.action_motion_playback_phase_before =
+            ActionMotionPlaybackPhase::Inactive;
+        playback_event.action_motion_playback_phase_after =
+            playback_install.runtime.phase;
+        playback_event.action_motion_duration_bits =
+            playback_install.runtime.raw_duration_bits;
+        playback_event.action_motion_effective_duration_bits =
+            playback_install.runtime.effective_duration_bits;
+        playback_event.action_motion_progress_after_bits =
+            playback_install.runtime.progress_bits_0x68;
+        playback_event.action_motion_increment_bits =
+            playback_install.runtime.increment_bits_0x6c;
+        playback_event.action_motion_flags_before = playback_install.flags_before;
+        playback_event.action_motion_flags_after = playback_install.flags_after;
+        playback_event.action_motion_control_before = callback_state_before;
+        playback_event.action_motion_control_after =
+            playback_install.runtime.callback_control_state;
+        append_recorded_event(runtime, result, std::move(playback_event));
+        return !playback_install.blocks_publication;
+    }
+    case ActionMotionInvocationDecisionKind::LoadSelected:
+    case ActionMotionInvocationDecisionKind::LoadLookedUp:
+        if (decision.operation_row.has_value()) {
+            invocation.current_motion_resource_present = true;
+            invocation.current_motion_id =
+                decision.operation_row->callback_ordinal;
+            ++invocation.loads;
+        }
+        break;
+    case ActionMotionInvocationDecisionKind::Restore:
+        if (decision.callback_state_after == 15) {
+            invocation.current_motion_resource_present = false;
+            invocation.current_motion_id.reset();
+        }
+        break;
+    case ActionMotionInvocationDecisionKind::Release:
+        // Playback and callback-local action completion do not uninstall IW+0xE0.
+        break;
+    case ActionMotionInvocationDecisionKind::Unsupported:
+        // Unknown callback families remain installed and consume no RNG.
+        break;
+    case ActionMotionInvocationDecisionKind::Wait:
+        break;
+    }
+    return true;
 }
 
 void visit_std_row_producer_for_slot(
@@ -2547,13 +2900,13 @@ void advance_action_service_child(
             origin->instruction_flags_0xec &= ~0x00100000U;
         }
         if (task.target_slot >= 0) {
-            publish_battle_frame_validated_instruction_transition(
+            stage_battle_frame_validated_instruction_transition(
                 runtime,
                 task.action_ordinal,
                 task.target_slot,
                 task.origin_slot,
                 static_cast<std::int16_t>(selected_mode),
-                "FUN_8002EB4C selected candidate published through FUN_800214FC");
+                "FUN_8002EB4C selected a candidate and staged FUN_800214FC inputs; callback publication waits for the target instruction-thread visit");
         }
     } else {
         nested.detail += "; eb4c_gate=0; draws=0; unresolved flag producer is not guessed";
@@ -3314,7 +3667,11 @@ bool publish_combatant_instruction(
         selected_row.row = CombatantStdActionRow{
             .index = combatant->selected_action_row_index,
             .action_id = selected_row.selected_action_id,
+            .callback_index = combatant->selected_action_row_callback_index,
+            .callback_ordinal = combatant->selected_action_row_callback_ordinal,
             .flags = combatant->selected_action_row_flags,
+            .transition_gate_divisor_bits =
+                combatant->selected_action_row_duration_bits,
         };
         selected_row.provenance =
             "selected action row was explicitly supplied by a low-level runtime fixture";
@@ -3341,14 +3698,11 @@ bool publish_combatant_instruction(
             + "; no movement or RNG was synthesized";
         return false;
     }
-    combatant->selected_action_row_index = selected_row.row->index;
-    combatant->selected_action_row_flags = selected_row.row->flags;
-    combatant->selected_action_row_action_id = selected_row.selected_action_id;
-    combatant->selected_action_row_known = true;
-    combatant->selected_action_row_duration_bits =
-        selected_row.row->transition_gate_divisor_bits;
-    combatant->selected_action_row_duration_known =
-        resource != nullptr;
+    apply_selected_action_row(
+        *combatant,
+        *selected_row.row,
+        selected_row.selected_action_id,
+        resource != nullptr);
     if (selected_row.status == CombatantStdActionRowSelectionStatus::Provisional
         && event.status == BattleFrameEventStatus::Matched) {
         event.status = BattleFrameEventStatus::Provisional;
@@ -3372,7 +3726,7 @@ bool publish_combatant_instruction(
         .status = worker.event_status,
         .phase = BattleFrameCombatantInstructionPhase::SetupPending,
         .provenance =
-            "movement controller publication consumed by persistent FUN_80022850 -> FUN_800221FC -> IW+0xE0 runtime",
+            "movement controller staged mode/row inputs; the next persistent FUN_80022850 state-1 visit owns FUN_800221FC and IW+0xE0 publication",
     };
     worker.combatant_instruction_revision = revision;
     worker.waiting_for_combatant_instruction = true;
@@ -3393,9 +3747,9 @@ bool publish_combatant_instruction(
         ? CombatantVisualInstructionKnowledge::Known
         : CombatantVisualInstructionKnowledge::Provisional;
     visual_instruction.provenance =
-        "movement controller published the action-motion STD row for the persistent "
-        "FUN_80022850 runtime; " + selected_row.provenance;
-    (void)publish_battle_frame_visual_instruction_state(
+        "movement controller staged the action-motion mode and selected row without publishing IW+0xE0; "
+        + selected_row.provenance;
+    (void)stage_battle_frame_visual_instruction_state(
         runtime,
         worker.action_ordinal,
         std::move(visual_instruction));
@@ -3409,7 +3763,7 @@ bool publish_combatant_instruction(
         + "; selected_action_row_status="
         + combatant_std_action_row_selection_status_name(selected_row.status)
         + "; selected_action_row_provenance=" + selected_row.provenance
-        + "; consumer=FUN_80022850; ownership=controller_publish_then_combatant_visit";
+        + "; consumer=FUN_80022850; ownership=controller_stage_then_instruction_thread_publish";
     return true;
 }
 
@@ -5228,6 +5582,7 @@ BattleFrameThreadMutationResult publish_battle_frame_std_resource(
         runtime.visual.std_row_producers[slot_index] = {};
         runtime.visual.timelines[slot_index] = {};
         runtime.visual.action_motion_playbacks[slot_index] = {};
+        runtime.visual.persistent_instruction_callbacks[slot_index] = {};
         runtime.visual.timeline_action_ordinals[slot_index] = -1;
     }
     return created;
@@ -5370,7 +5725,7 @@ void configure_battle_frame_visual_pathing_profile(
     runtime.visual.pathing_profile_name = std::move(profile_name);
 }
 
-bool publish_battle_frame_visual_instruction_state(
+bool stage_battle_frame_visual_instruction_state(
     BattleFrameRuntime& runtime,
     int action_ordinal,
     CombatantVisualInstructionSnapshot instruction) {
@@ -5378,7 +5733,7 @@ bool publish_battle_frame_visual_instruction_state(
         || instruction.slot < 0
         || instruction.slot >= static_cast<int>(runtime.visual.timelines.size())) {
         runtime.warnings.push_back(
-            "visual instruction-state publication has an invalid combatant slot");
+            "visual instruction-state staging has an invalid combatant slot");
         return false;
     }
 
@@ -5386,7 +5741,7 @@ bool publish_battle_frame_visual_instruction_state(
     const auto* resource = visual_resource_for(runtime, instruction.slot);
     if (combatant == nullptr) {
         runtime.warnings.push_back(
-            "visual instruction-state publication has no combatant state");
+            "visual instruction-state staging has no combatant state");
         return false;
     }
     if (!instruction.target_slot.has_value()
@@ -5418,82 +5773,30 @@ bool publish_battle_frame_visual_instruction_state(
         combatant->visual_instruction_mode_0x6 = *key.action_key;
     }
 
-    std::optional<std::uint32_t> row_duration_bits;
-    const auto selected_key = instruction.selected_std_action_key.has_value()
-        ? instruction.selected_std_action_key
-        : key.action_key;
-    if (combatant->selected_action_row_duration_known
-        && selected_key.has_value()
-        && combatant->selected_action_row_action_id == *selected_key) {
-        row_duration_bits = combatant->selected_action_row_duration_bits;
-    }
-    const auto playback_install = install_action_motion_playback(
-        ActionMotionPlaybackInstallRequest{
-            .action_ordinal = action_ordinal,
-            .slot = instruction.slot,
-            .instruction_state_revision = combatant->visual_instruction_revision,
-            .selected_action_row_index = combatant->selected_action_row_index,
-            .selected_action_row_duration_bits = row_duration_bits,
-            .instruction_flags_0xec = combatant->instruction_flags_0xec,
-            .instruction_flags_0xf0 = combatant->instruction_flags_0xf0,
-            .provenance = instruction.provenance,
-        });
-    runtime.visual.action_motion_playbacks[
-        static_cast<std::size_t>(instruction.slot)] = playback_install.runtime;
-    if (playback_install.installed) {
-        combatant->instruction_flags_0xec = playback_install.flags_after;
-    }
-
-    auto playback_event = make_visual_event(
-        runtime,
-        nullptr,
-        BattleFrameWorkerStepKind::ActionMotionPlaybackInstall,
-        "FUN_8001EBA4/FUN_80076170",
-        playback_install.runtime.status == ActionMotionPlaybackStatus::Matched
-            ? BattleFrameEventStatus::Provisional
-            : frame_event_status(playback_install.runtime.status),
-        playback_install.detail
-            + "; instruction_state_revision="
-            + std::to_string(combatant->visual_instruction_revision)
-            + "; publication_blocked="
-            + std::to_string(playback_install.blocks_publication ? 1 : 0)
-            + "; primitive=validated; frame-thread invocation=provisional"
-            + "; provenance=" + playback_install.runtime.provenance);
-    playback_event.action_ordinal = action_ordinal;
-    playback_event.slot = instruction.slot;
-    playback_event.target_slot = instruction.target_slot.value_or(-1);
-    playback_event.action_motion_playback_phase_before =
-        ActionMotionPlaybackPhase::Inactive;
-    playback_event.action_motion_playback_phase_after =
-        playback_install.runtime.phase;
-    playback_event.action_motion_duration_bits =
-        playback_install.runtime.raw_duration_bits;
-    playback_event.action_motion_effective_duration_bits =
-        playback_install.runtime.effective_duration_bits;
-    playback_event.action_motion_progress_before_bits = 0;
-    playback_event.action_motion_progress_after_bits =
-        playback_install.runtime.progress_bits_0x68;
-    playback_event.action_motion_increment_bits =
-        playback_install.runtime.increment_bits_0x6c;
-    playback_event.action_motion_flags_before = playback_install.flags_before;
-    playback_event.action_motion_flags_after = playback_install.flags_after;
-    playback_event.action_motion_control_before = 0;
-    playback_event.action_motion_control_after =
-        playback_install.runtime.callback_control_state;
+    const auto& callback_runtime =
+        runtime.visual.persistent_instruction_callbacks[
+            static_cast<std::size_t>(instruction.slot)];
 
     BattleFrameStepEvent event = make_visual_event(
         runtime,
         nullptr,
-        BattleFrameWorkerStepKind::VisualInstructionStatePublish,
-        "CombatantVisualInstructionStatePublish",
+        BattleFrameWorkerStepKind::VisualInstructionDecision,
+        "CombatantVisualInstructionStateStage",
         frame_event_status(key.status),
         "action_key="
             + (key.action_key.has_value() ? std::to_string(*key.action_key) : "missing")
             + "; key_source=" + combatant_visual_key_source_name(key.source)
             + "; instruction_state_revision="
             + std::to_string(combatant->visual_instruction_revision)
-            + "; installs_epoch=0; auxiliary_dispatch_deferred_to="
-              "FUN_80022850_state1_IW+0xE0; provenance="
+            + "; selected_action_row="
+            + std::to_string(combatant->selected_action_row_index)
+            + "; installed_callback_index="
+            + std::to_string(callback_runtime.callback_index)
+            + "; installed_persistent_callback="
+            + action_motion_callback_family_name(
+                callback_runtime.callback_family)
+            + "; callback_publication=deferred_to_param4_0_instruction_thread_publisher"
+            + "; installs_epoch=0; provenance="
             + key.provenance);
     event.action_ordinal = action_ordinal;
     event.slot = instruction.slot;
@@ -5504,30 +5807,73 @@ bool publish_battle_frame_visual_instruction_state(
     event.visual_epoch = runtime.visual.timelines[
         static_cast<std::size_t>(instruction.slot)].epoch;
     runtime.visual.pending_events.push_back(std::move(event));
-    runtime.visual.pending_events.push_back(std::move(playback_event));
     return true;
 }
 
-bool publish_battle_frame_validated_instruction_transition(
+bool stage_battle_frame_validated_instruction_transition(
     BattleFrameRuntime& runtime,
     int action_ordinal,
     int slot,
     int target_slot,
     std::int16_t instruction_mode,
     std::string provenance) {
+    auto* combatant = find_frame_combatant(runtime.state, slot);
+    const auto* resource = visual_resource_for(runtime, slot);
+    if (combatant == nullptr || resource == nullptr) {
+        return false;
+    }
+    const auto selected_row = select_combatant_std_action_row(
+        resource->action_rows,
+        CombatantStdActionRowSelectionRequest{
+            .action_id = instruction_mode,
+            .secondary_key = combatant->visual_instruction_subtype_0x8 >= 0
+                ? std::optional<std::int16_t>{
+                    combatant->visual_instruction_subtype_0x8}
+                : std::nullopt,
+            .allow_transition_fallback = true,
+        });
+    if (!selected_row.row.has_value()) {
+        return false;
+    }
+    apply_selected_action_row(
+        *combatant,
+        *selected_row.row,
+        selected_row.selected_action_id,
+        true);
+
     CombatantVisualInstructionSnapshot instruction;
     instruction.slot = slot;
     instruction.target_slot = target_slot;
     instruction.validated_transition_mode = instruction_mode;
-    instruction.knowledge = CombatantVisualInstructionKnowledge::Known;
-    instruction.provenance = std::move(provenance);
-    return publish_battle_frame_visual_instruction_state(
+    instruction.selected_std_action_key = selected_row.selected_action_id;
+    instruction.subtype = combatant->visual_instruction_subtype_0x8 >= 0
+        ? std::optional<std::int16_t>{combatant->visual_instruction_subtype_0x8}
+        : std::nullopt;
+    instruction.knowledge =
+        selected_row.status == CombatantStdActionRowSelectionStatus::Matched
+        ? CombatantVisualInstructionKnowledge::Known
+        : CombatantVisualInstructionKnowledge::Provisional;
+    instruction.provenance = std::move(provenance)
+        + "; FUN_800214FC selected action row "
+        + std::to_string(selected_row.row->index)
+        + " and staged the generic param4=0 publisher";
+    const bool staged = stage_battle_frame_visual_instruction_state(
         runtime,
         action_ordinal,
         std::move(instruction));
+    if (staged
+        && slot >= 0
+        && slot < static_cast<int>(
+            runtime.visual.persistent_instruction_callbacks.size())) {
+        runtime.visual.persistent_instruction_callbacks[
+            static_cast<std::size_t>(slot)].pending_publication_source =
+            BattleFrameInstructionCallbackPublicationSource::
+                ExplicitModeledTransition;
+    }
+    return staged;
 }
 
-bool publish_battle_frame_queued_std_action_transition(
+bool stage_battle_frame_queued_std_action_transition(
     BattleFrameRuntime& runtime,
     int action_ordinal) {
     if (!runtime.initialized
@@ -5554,7 +5900,7 @@ bool publish_battle_frame_queued_std_action_transition(
         auto event = make_visual_event(
             runtime,
             nullptr,
-            BattleFrameWorkerStepKind::VisualInstructionStatePublish,
+            BattleFrameWorkerStepKind::VisualInstructionDecision,
             "QueuedStdActionTransitionUnsupported",
             transition.status == QueuedInstructionParamStatus::MissingInput
                 ? BattleFrameEventStatus::MissingInput
@@ -5592,7 +5938,11 @@ bool publish_battle_frame_queued_std_action_transition(
         selected_row.row = CombatantStdActionRow{
             .index = combatant->selected_action_row_index,
             .action_id = selected_mode,
+            .callback_index = combatant->selected_action_row_callback_index,
+            .callback_ordinal = combatant->selected_action_row_callback_ordinal,
             .flags = combatant->selected_action_row_flags,
+            .transition_gate_divisor_bits =
+                combatant->selected_action_row_duration_bits,
         };
         selected_row.provenance =
             "queued STD action row was explicitly supplied by a low-level runtime fixture";
@@ -5604,14 +5954,11 @@ bool publish_battle_frame_queued_std_action_transition(
         return false;
     }
 
-    combatant->selected_action_row_index = selected_row.row->index;
-    combatant->selected_action_row_flags = selected_row.row->flags;
-    combatant->selected_action_row_action_id = selected_row.selected_action_id;
-    combatant->selected_action_row_known = true;
-    combatant->selected_action_row_duration_bits =
-        selected_row.row->transition_gate_divisor_bits;
-    combatant->selected_action_row_duration_known =
-        resource != nullptr;
+    apply_selected_action_row(
+        *combatant,
+        *selected_row.row,
+        selected_row.selected_action_id,
+        resource != nullptr);
 
     CombatantVisualInstructionSnapshot instruction;
     instruction.slot = action.actor_slot;
@@ -5639,15 +5986,217 @@ bool publish_battle_frame_queued_std_action_transition(
         + "; selected_action_row_status="
         + combatant_std_action_row_selection_status_name(selected_row.status)
         + "; selected_action_row_provenance=" + selected_row.provenance;
-    const bool published = publish_battle_frame_visual_instruction_state(
+    const bool staged = stage_battle_frame_visual_instruction_state(
         runtime,
         action_ordinal,
         std::move(instruction));
-    if (published) {
+    if (staged) {
         action.queued_state_transition_pending = false;
         action.queued_state_transition_published = true;
+        runtime.visual.persistent_instruction_callbacks[
+            static_cast<std::size_t>(action.actor_slot)]
+            .pending_publication_source =
+            BattleFrameInstructionCallbackPublicationSource::
+                State1QueuedTransition;
     }
-    return published;
+    return staged;
+}
+
+bool publish_battle_frame_persistent_instruction_callback(
+    BattleFrameRuntime& runtime,
+    int slot,
+    BattleFrameInstructionCallbackPublicationSource source,
+    std::string provenance) {
+    if (!runtime.initialized
+        || slot < 0
+        || slot >= static_cast<int>(
+            runtime.visual.persistent_instruction_callbacks.size())) {
+        runtime.warnings.push_back(
+            "persistent instruction callback publication has an invalid slot");
+        return false;
+    }
+
+    auto* combatant = find_frame_combatant(runtime.state, slot);
+    const auto* resource = visual_resource_for(runtime, slot);
+    auto& callback_runtime =
+        runtime.visual.persistent_instruction_callbacks[
+            static_cast<std::size_t>(slot)];
+    if (combatant == nullptr || resource == nullptr) {
+        runtime.warnings.push_back(
+            "persistent instruction callback publication has no combatant or STD resource");
+        return false;
+    }
+
+    const bool state0 = source
+        == BattleFrameInstructionCallbackPublicationSource::State0Initialization;
+    if (state0) {
+        if (callback_runtime.thread_state_0x19 != 0) {
+            return false;
+        }
+        const auto selected = select_combatant_std_action_row(
+            resource->action_rows,
+            CombatantStdActionRowSelectionRequest{
+                .action_id = 1,
+                .allow_transition_fallback = false,
+            });
+        if (!selected.row.has_value()) {
+            auto event = make_visual_event(
+                runtime,
+                nullptr,
+                BattleFrameWorkerStepKind::VisualInstructionStatePublish,
+                "FUN_80022850_state0_callback_publication",
+                selected.status
+                        == CombatantStdActionRowSelectionStatus::MissingInput
+                    ? BattleFrameEventStatus::MissingInput
+                    : BattleFrameEventStatus::Unsupported,
+                "source=State0Initialization; selected_action_id=1; callback_store=not_executed; provenance="
+                    + selected.provenance);
+            event.slot = slot;
+            runtime.visual.pending_events.push_back(std::move(event));
+            return false;
+        }
+        apply_selected_action_row(
+            *combatant,
+            *selected.row,
+            selected.selected_action_id,
+            true);
+        CombatantVisualInstructionSnapshot initial_instruction;
+        initial_instruction.slot = slot;
+        initial_instruction.runtime_instruction_mode = 1;
+        initial_instruction.selected_std_action_key = selected.selected_action_id;
+        initial_instruction.subtype = 0;
+        initial_instruction.target_slot = combatant->instruction_target_slot_0x4 >= 0
+            ? std::optional<int>{combatant->instruction_target_slot_0x4}
+            : std::nullopt;
+        initial_instruction.instruction_flags = combatant->instruction_flags_0xec;
+        initial_instruction.knowledge =
+            selected.status == CombatantStdActionRowSelectionStatus::Matched
+            ? CombatantVisualInstructionKnowledge::Known
+            : CombatantVisualInstructionKnowledge::Provisional;
+        initial_instruction.provenance =
+            "FUN_80022850 state 0 selected mode 1/subtype 0 before the exact param4=0 callback publisher; "
+            + selected.provenance;
+        if (!stage_battle_frame_visual_instruction_state(
+                runtime,
+                -1,
+                std::move(initial_instruction))) {
+            return false;
+        }
+    } else if (callback_runtime.thread_state_0x19 != 1) {
+        return false;
+    }
+
+    const auto selected_row = selected_action_row_for(resource, *combatant);
+    if (!selected_row.has_value() || selected_row->callback_index < 0) {
+        auto event = make_visual_event(
+            runtime,
+            nullptr,
+            BattleFrameWorkerStepKind::VisualInstructionStatePublish,
+            "FindWorksheetActionRowAndInstallCallback_80020094",
+            BattleFrameEventStatus::MissingInput,
+            "source="
+                + std::string(callback_publication_source_name(source))
+                + "; callback_store=not_executed; selected action row or callback index is missing; provenance="
+                + provenance);
+        event.action_ordinal = combatant->visual_instruction_action_ordinal;
+        event.slot = slot;
+        event.target_slot = combatant->instruction_target_slot_0x4;
+        runtime.visual.pending_events.push_back(std::move(event));
+        return false;
+    }
+
+    const bool was_installed = callback_runtime.installed;
+    const auto callback_before = callback_runtime.callback_index;
+    const bool callback_changed = !was_installed
+        || callback_before != selected_row->callback_index;
+    const bool same_value = was_installed && !callback_changed;
+    const int callback_state_before = callback_runtime.callback_state;
+
+    callback_runtime.previous_instruction_row =
+        callback_runtime.current_instruction_row;
+    callback_runtime.current_instruction_row = selected_row;
+    callback_runtime.installed = true;
+    callback_runtime.slot = slot;
+    callback_runtime.action_ordinal = state0
+        ? -1
+        : combatant->visual_instruction_action_ordinal;
+    callback_runtime.instruction_state_revision =
+        combatant->visual_instruction_revision;
+    callback_runtime.callback_index = selected_row->callback_index;
+    callback_runtime.callback_family = action_motion_callback_family_for_index(
+        selected_row->callback_index);
+    ++callback_runtime.publication_revision;
+    ++callback_runtime.publications;
+    if (same_value) {
+        ++callback_runtime.same_value_publications;
+    } else if (was_installed) {
+        ++callback_runtime.callback_changes;
+    }
+    if (!was_installed) {
+        callback_runtime.callback_state = 0;
+    }
+    callback_runtime.status =
+        callback_runtime.callback_family
+                == ActionMotionPersistentCallbackFamily::Unknown
+            ? ActionMotionInvocationStatus::Unsupported
+            : ActionMotionInvocationStatus::Matched;
+    callback_runtime.provenance = std::move(provenance);
+    if (state0) {
+        callback_runtime.thread_state_0x19 = 1;
+        runtime.visual.std_row_producers[static_cast<std::size_t>(slot)]
+            .thread_state_0x19 = 1;
+    }
+
+    const char* publisher_callsite = state0
+        ? "FUN_80022850_state0_800229F8"
+        : source
+                == BattleFrameInstructionCallbackPublicationSource::ExplicitModeledTransition
+            ? "FUN_800214FC_to_800202B4"
+            : "FUN_800221FC_state1_800224E0";
+    std::ostringstream detail;
+    detail << "source=" << callback_publication_source_name(source)
+           << "; publisher=" << publisher_callsite
+           << "; helper=FUN_80020094(param4=0)"
+           << "; callback_store=executed"
+           << "; callback_index=" << callback_before
+           << "->" << callback_runtime.callback_index
+           << "; callback_family="
+           << action_motion_callback_family_name(
+                callback_runtime.callback_family)
+           << "; publication_revision="
+           << callback_runtime.publication_revision
+           << "; same_value=" << (same_value ? 1 : 0)
+           << "; callback_changed=" << (callback_changed ? 1 : 0)
+           << "; callback_state_preserved=" << callback_state_before
+           << "->" << callback_runtime.callback_state
+           << "; instruction_state_revision="
+           << callback_runtime.instruction_state_revision
+           << "; selected_action_row=" << selected_row->index
+           << "; draws=0; provenance=" << callback_runtime.provenance;
+    auto event = make_visual_event(
+        runtime,
+        nullptr,
+        BattleFrameWorkerStepKind::VisualInstructionStatePublish,
+        publisher_callsite,
+        callback_runtime.status == ActionMotionInvocationStatus::Unsupported
+            ? BattleFrameEventStatus::Unsupported
+            : state0
+                ? BattleFrameEventStatus::Matched
+                : BattleFrameEventStatus::Provisional,
+        detail.str());
+    event.action_ordinal = callback_runtime.action_ordinal;
+    event.slot = slot;
+    event.target_slot = combatant->instruction_target_slot_0x4;
+    event.action_motion_callback_family = callback_runtime.callback_family;
+    event.action_motion_callback_state_before = callback_state_before;
+    event.action_motion_callback_state_after = callback_runtime.callback_state;
+    event.persistent_callback_publication_revision =
+        callback_runtime.publication_revision;
+    event.persistent_callback_index = callback_runtime.callback_index;
+    event.persistent_callback_changed = callback_changed;
+    event.persistent_callback_same_value = same_value;
+    runtime.visual.pending_events.push_back(std::move(event));
+    return true;
 }
 
 bool battle_frame_action_visual_publication_pending(
@@ -6111,16 +6660,68 @@ BattleFrameRunResult run_first_turn_frame(
             runtime.state.frame_index);
         runtime.visual.current_visit_cursor = packed_visit_cursor++;
         if (thread.kind == BattleFrameThreadNodeKind::CombatantInstruction) {
+            if (thread.owner_slot < 0
+                || thread.owner_slot >= static_cast<int>(
+                    runtime.visual.persistent_instruction_callbacks.size())) {
+                advance_visual_children_at_cursor(
+                    runtime,
+                    result,
+                    rng_state,
+                    runtime.visual.current_visit_cursor);
+                continue;
+            }
+            if (runtime.visual.persistent_instruction_callbacks[
+                    static_cast<std::size_t>(thread.owner_slot)]
+                        .thread_state_0x19 == 0) {
+                (void)publish_battle_frame_persistent_instruction_callback(
+                    runtime,
+                    thread.owner_slot,
+                    BattleFrameInstructionCallbackPublicationSource::
+                        State0Initialization,
+                    "state-0 instruction-thread visit installed the initial callback; no callback invocation occurs on this visit");
+                flush_pending_visual_events(runtime, result);
+                advance_visual_children_at_cursor(
+                    runtime,
+                    result,
+                    rng_state,
+                    runtime.visual.current_visit_cursor);
+                continue;
+            }
             if (runtime.active_action.has_value()
                 && runtime.active_action->actor_slot == thread.owner_slot
                 && runtime.active_action->queued_state_transition_pending) {
-                (void)publish_battle_frame_queued_std_action_transition(
+                (void)stage_battle_frame_queued_std_action_transition(
                     runtime,
                     runtime.active_action->action_ordinal);
-                flush_pending_visual_events(runtime, result);
             }
-            if (visit_action_motion_playback_for_slot(
-                    runtime, thread.owner_slot, result)) {
+            auto& callback_runtime =
+                runtime.visual.persistent_instruction_callbacks[
+                    static_cast<std::size_t>(thread.owner_slot)];
+            const auto publication_source =
+                callback_runtime.pending_publication_source.value_or(
+                    BattleFrameInstructionCallbackPublicationSource::
+                        State1CurrentInstruction);
+            if (publish_battle_frame_persistent_instruction_callback(
+                    runtime,
+                    thread.owner_slot,
+                    publication_source,
+                    "state-1 instruction-thread visit executed the exact param4=0 callback publisher before invoking IW+0xE0")) {
+                callback_runtime.pending_publication_source.reset();
+            }
+            flush_pending_visual_events(runtime, result);
+            const bool playback_was_blocking = thread.owner_slot >= 0
+                && thread.owner_slot < static_cast<int>(
+                    runtime.visual.action_motion_playbacks.size())
+                && action_motion_playback_blocks_publication(
+                    runtime.visual.action_motion_playbacks[
+                        static_cast<std::size_t>(thread.owner_slot)]);
+            bool publication_allowed = visit_action_motion_playback_for_slot(
+                runtime, thread.owner_slot, result);
+            if (publication_allowed && !playback_was_blocking) {
+                publication_allowed = visit_persistent_instruction_callback_for_slot(
+                    runtime, thread.owner_slot, result);
+            }
+            if (publication_allowed) {
                 visit_std_row_producer_for_slot(
                     runtime, thread.owner_slot, result);
                 advance_visual_timeline_for_slot(
@@ -6514,6 +7115,8 @@ const char* battle_frame_worker_step_kind_name(BattleFrameWorkerStepKind kind) {
         return "VisualInstructionDecision";
     case BattleFrameWorkerStepKind::VisualInstructionStatePublish:
         return "VisualInstructionStatePublish";
+    case BattleFrameWorkerStepKind::ActionMotionInvocationDecision:
+        return "ActionMotionInvocationDecision";
     case BattleFrameWorkerStepKind::ActionMotionPlaybackInstall:
         return "ActionMotionPlaybackInstall";
     case BattleFrameWorkerStepKind::ActionMotionRendererAdvance:

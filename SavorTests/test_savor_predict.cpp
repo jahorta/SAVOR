@@ -346,6 +346,10 @@ void publish_test_combatant_instruction_threads(BattleFrameRuntime& runtime) {
         combatant.selected_action_row_index = 0;
         combatant.selected_action_row_flags = 0x01000000u;
         combatant.selected_action_row_known = true;
+        runtime.visual.persistent_instruction_callbacks[
+            static_cast<std::size_t>(combatant.slot)].thread_state_0x19 = 1;
+        runtime.visual.std_row_producers[
+            static_cast<std::size_t>(combatant.slot)].thread_state_0x19 = 1;
     }
 }
 
@@ -5037,6 +5041,10 @@ TEST(SavorPredictBattlePredictor, FrameSchedulerKeepsWorkersInsideActionLifetime
         if (!event.action_ordinal.has_value() || event.phase != "frame_scheduler") {
             continue;
         }
+        if (event.label == "persistent_instruction_callback_publish"
+            || event.label == "action_motion_invocation_decision") {
+            continue;
+        }
         const int ordinal = *event.action_ordinal;
         const auto [it, inserted] = ranges.try_emplace(
             ordinal, std::pair<int, int>{event.sequence, event.sequence});
@@ -5071,6 +5079,17 @@ TEST(SavorPredictBattlePredictor, FrameSchedulerKeepsWorkersInsideActionLifetime
             EXPECT_LT(current->second.second, next->second.first);
         }
     }
+
+    ASSERT_TRUE(completions.contains(0));
+    const auto persistent_after_action = std::find_if(
+        result.events.begin(), result.events.end(),
+        [&](const BattlePredictionEvent& event) {
+            return event.phase == "frame_scheduler"
+                && event.label == "persistent_instruction_callback_publish"
+                && event.action_ordinal == 0
+                && event.sequence > completions.at(0);
+        });
+    EXPECT_NE(persistent_after_action, result.events.end());
 }
 
 TEST(SavorPredictBattlePredictor, FrameSchedulerRetainsSkippedDeadTurnOrdinal) {

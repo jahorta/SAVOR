@@ -218,6 +218,7 @@ struct ProfileLimits {
     std::uint64_t queue_bytes = 64ull * 1024ull * 1024ull;
     std::uint32_t max_events = 4096;
     std::uint32_t progress_events = 256;
+    std::uint32_t chunk_events = 1024;
 };
 
 struct Profile {

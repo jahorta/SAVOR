@@ -1426,9 +1426,25 @@ bool ProbeRuntime::sample_probe(
                 break;
             }
             auto stack_pointer = ppc_state.gpr[1];
+            const auto current_return_pc = ppc_state.spr[SPR_LR];
+            if (sample.max_frames != 0 && current_return_pc != 0) {
+                const std::uint32_t register_frame_pointer = 0;
+                const auto current_callsite_pc = current_return_pc >= 4
+                    ? current_return_pc - 4
+                    : 0;
+                if (!payload_append(event, register_frame_pointer)
+                    || !payload_append(event, stack_pointer)
+                    || !payload_append(event, current_return_pc)
+                    || !payload_append(event, current_callsite_pc)) {
+                    flags |= 0x1;
+                } else {
+                    ++frame_count;
+                }
+            }
+            std::uint8_t seen_count = 0;
             while (stack_pointer != 0 && frame_count < sample.max_frames) {
                 bool cycle = false;
-                for (std::uint8_t i = 0; i < frame_count; ++i) {
+                for (std::uint8_t i = 0; i < seen_count; ++i) {
                     if (seen[i] == stack_pointer) {
                         cycle = true;
                         break;
@@ -1438,7 +1454,7 @@ bool ProbeRuntime::sample_probe(
                     flags |= 0x2;
                     break;
                 }
-                seen[frame_count] = stack_pointer;
+                seen[seen_count++] = stack_pointer;
                 std::uint64_t next_value = 0;
                 std::uint64_t return_value = 0;
                 if (!read_guest_value(system, stack_pointer, SampleWidth::U32, next_value)

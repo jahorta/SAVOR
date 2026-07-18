@@ -251,6 +251,7 @@ ActionMotionPlaybackInstallResult install_action_motion_playback(
     result.runtime.selected_action_row_index = request.selected_action_row_index;
     result.runtime.instruction_flags_0xec = request.instruction_flags_0xec;
     result.runtime.instruction_flags_0xf0 = request.instruction_flags_0xf0;
+    result.runtime.continuation = request.continuation;
     result.runtime.provenance = request.provenance;
 
     if (request.action_ordinal < 0 || request.slot < 0
@@ -305,7 +306,20 @@ ActionMotionPlaybackInstallResult install_action_motion_playback(
     result.runtime.progress_bits_0x68 = kZeroBits;
     result.runtime.increment_bits_0x6c = bits(increment);
     result.runtime.instruction_flags_0xec |= kMotionActiveBit;
-    result.runtime.callback_control_state = 6;
+    switch (request.continuation) {
+    case ActionMotionPlaybackContinuation::State5LoadLookedUpTo4:
+        result.runtime.callback_control_state = 5;
+        break;
+    case ActionMotionPlaybackContinuation::State6PostDelayTo11:
+        result.runtime.callback_control_state = 6;
+        break;
+    case ActionMotionPlaybackContinuation::State7LoadLookedUpTo14:
+        result.runtime.callback_control_state = 7;
+        break;
+    case ActionMotionPlaybackContinuation::GenericRelease:
+        result.runtime.callback_control_state = 0;
+        break;
+    }
     result.flags_after = result.runtime.instruction_flags_0xec;
     result.installed = true;
     result.blocks_publication = true;
@@ -318,6 +332,8 @@ ActionMotionPlaybackInstallResult install_action_motion_playback(
            << "; increment_bits=" << result.runtime.increment_bits_0x6c
            << "; default_duration_substituted="
            << (result.runtime.substituted_default_duration ? 1 : 0)
+           << "; continuation="
+           << action_motion_playback_continuation_name(request.continuation)
            << "; IW+0xEC_bit31=1";
     result.detail = detail.str();
     return result;
@@ -364,7 +380,27 @@ ActionMotionPlaybackVisitResult visit_action_motion_playback(
         if (satisfied) {
             result.kind = ActionMotionPlaybackVisitKind::State6Satisfied;
             result.runtime.instruction_flags_0xec &= ~kMotionActiveBit;
-            result.runtime.phase = ActionMotionPlaybackPhase::State6Satisfied;
+            if (runtime.continuation
+                == ActionMotionPlaybackContinuation::State6PostDelayTo11) {
+                result.runtime.phase = ActionMotionPlaybackPhase::State6Satisfied;
+            } else {
+                result.runtime.phase = ActionMotionPlaybackPhase::PublicationReleased;
+                result.publication_released_this_visit = true;
+                switch (runtime.continuation) {
+                case ActionMotionPlaybackContinuation::State5LoadLookedUpTo4:
+                    result.runtime.callback_control_state = 4;
+                    break;
+                case ActionMotionPlaybackContinuation::State7LoadLookedUpTo14:
+                    result.runtime.callback_control_state = 14;
+                    break;
+                case ActionMotionPlaybackContinuation::GenericRelease:
+                    result.runtime.callback_control_state = 0;
+                    break;
+                case ActionMotionPlaybackContinuation::State6PostDelayTo11:
+                    break;
+                }
+                result.control_state_after = result.runtime.callback_control_state;
+            }
             result.flags_after = result.runtime.instruction_flags_0xec;
             result.detail = active_bit_set
                 ? "FUN_80075D64 observed progress at least one, cleared IW+0xEC bit 31, and returned true"
@@ -547,6 +583,21 @@ const char* action_motion_playback_visit_kind_name(ActionMotionPlaybackVisitKind
         return "PublicationReleased";
     }
     return "Unknown";
+}
+
+const char* action_motion_playback_continuation_name(
+    ActionMotionPlaybackContinuation continuation) {
+    switch (continuation) {
+    case ActionMotionPlaybackContinuation::State5LoadLookedUpTo4:
+        return "State5LoadLookedUpTo4";
+    case ActionMotionPlaybackContinuation::State6PostDelayTo11:
+        return "State6PostDelayTo11";
+    case ActionMotionPlaybackContinuation::State7LoadLookedUpTo14:
+        return "State7LoadLookedUpTo14";
+    case ActionMotionPlaybackContinuation::GenericRelease:
+        return "GenericRelease";
+    }
+    return "State6PostDelayTo11";
 }
 
 const char* action_motion_delay_status_name(ActionMotionDelayStatus status) {

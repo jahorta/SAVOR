@@ -251,12 +251,11 @@ visit_combatant_instruction_std_row_producer(
     result.cursor_after.last_selected_action_row_index =
         request.selected_action_row_index;
 
-    if (request.action_ordinal < 0
-        && request.instruction_state_revision == 0) {
+    if (request.action_ordinal < 0) {
         result.status = CombatantInstructionStdRowProducerStatus::Idle;
         result.visual_status = CombatantVisualModelStatus::Provisional;
         result.provenance =
-            "state-1 instruction thread has no persistent worksheet publication to dispatch";
+            "state-1 instruction thread has no action-owned worksheet publication to dispatch";
         return result;
     }
 
