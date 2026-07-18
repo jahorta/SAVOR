@@ -29,12 +29,15 @@ struct BattleJobBatchRunOptions {
     std::filesystem::path action_view_std_json_dir;
     std::filesystem::path std_disc_dump_root;
     std::filesystem::path spice_file_parsing_exe;
+    ProbeMode probe_mode = ProbeMode::Capture;
+    ProbeCpuCore probe_cpu_core = ProbeCpuCore::Default;
     savor::dbutils::SandboxMode sandbox_mode = savor::dbutils::SandboxMode::MinimalBattleSingleTurn;
     std::vector<long long> exec_job_ids;
     std::vector<BattleJobBatchRunRequest> seeded_exec_job_requests;
     int poll_ms = 100;
     std::optional<int> timeout_ms;
     int max_workers = 2;
+    bool wait_for_workers_ready = false;
     std::optional<std::uint32_t> battle_run_ms;
     std::optional<std::uint32_t> override_start_rng_seed;
     std::optional<std::uint32_t> override_fake_attacks_this_turn;

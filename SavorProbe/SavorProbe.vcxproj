@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64"><Configuration>Debug</Configuration><Platform>x64</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>17.0</VCProjectVersion>
+    <Keyword>Win32Proj</Keyword>
+    <ProjectGuid>{6EA1CA9D-0D84-4A69-BD65-29CDE443BF4A}</ProjectGuid>
+    <RootNamespace>SavorProbe</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType><UseDebugLibraries>true</UseDebugLibraries><PlatformToolset>v145</PlatformToolset><CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType><UseDebugLibraries>false</UseDebugLibraries><PlatformToolset>v145</PlatformToolset><WholeProgramOptimization>true</WholeProgramOptimization><CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="PropertySheets"><Import Project="..\ThirdParty.props" /></ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup><OutDir>$(ProjectDir)..\bin\$(Platform)\$(Configuration)\</OutDir></PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel><SDLCheck>true</SDLCheck><ConformanceMode>true</ConformanceMode><LanguageStandard>stdcpp20</LanguageStandard><UseStandardPreprocessor>true</UseStandardPreprocessor>
+      <PreprocessorDefinitions>NOMINMAX;WIN32_LEAN_AND_MEAN;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(ProjectDir);$(ProjectDir)..\SavorCaptureFormat;$(ProjectDir)..\third-party\minhook\include;$(ProjectDir)..\third-party\minhook\src;$(ProjectDir)..\third-party\minhook\src\hde;$(ProjectDir)..\third-party\dolphin-2506a\include\Source;$(ProjectDir)..\third-party\dolphin-2506a\include\Source\Core;$(ProjectDir)..\third-party\dolphin-2506a\include\Externals\fmt\fmt\include;$(ProjectDir)..\third-party\dolphin-2506a\include\Externals\picojson;$(ProjectDir)..\third-party\dolphin-2506a\include\Externals\xxhash\xxHash;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <Lib><AdditionalDependencies>%(AdditionalDependencies)</AdditionalDependencies></Lib>
+    <Lib><AdditionalLibraryDirectories>$(ProjectDir)..\third-party\dolphin-2506a\lib\x64\$(Configuration);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories></Lib>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClInclude Include="AddressProgramEvaluator.h" />
+    <ClInclude Include="CaptureRetention.h" />
+    <ClInclude Include="NativeHookSemantics.h" />
+    <ClInclude Include="ProbeEvent.h" />
+    <ClInclude Include="ProbeDispatchPolicy.h" />
+    <ClInclude Include="ProbeProfile.h" />
+    <ClInclude Include="ProbeRuntime.h" />
+    <ClInclude Include="ProbeWatchpointRegistry.h" />
+    <ClInclude Include="ProbeWindowState.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="CaptureRetention.cpp" />
+    <ClCompile Include="NativeHooks.cpp" />
+    <ClCompile Include="ProbeEvent.cpp" />
+    <ClCompile Include="ProbeProfile.cpp" />
+    <ClCompile Include="ProbeRuntime.cpp" />
+    <ClCompile Include="ProbeWatchpointRegistry.cpp" />
+    <ClCompile Include="..\third-party\minhook\src\buffer.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="..\third-party\minhook\src\hook.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="..\third-party\minhook\src\trampoline.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="..\third-party\minhook\src\hde\hde64.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\SavorCaptureFormat\SavorCaptureFormat.vcxproj"><Project>{A66262AE-CE77-4FD0-858A-E78CE6011DD1}</Project></ProjectReference>
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

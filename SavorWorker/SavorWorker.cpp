@@ -7,15 +7,19 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstdint>
+#include <cstring>
 #include <atomic>
 #include <thread>
 #include <filesystem>
 #include <mutex>
 
 #include "Utils/Log.h"
+#include "Common/Config/Config.h"
 #include "Boot/Boot.h"
+#include "Core/Config/MainSettings.h"
 #include "Core/DolphinWrapper.h"
 #include "Core/HostStubs.h"
+#include "Core/PowerPC/PowerPC.h"
 #include "Runner/Breakpoints/BpRegistry.h"
 #include "Runner/Script/PhaseScriptVM.h"
 #include "Runner/Script/PSContextCodec.h"
@@ -23,6 +27,7 @@
 #include "Phases/Programs/ProgramRegistry.h"
 #include "Runner/Parallel/WorkerBootPlan.h"
 #include "Runner/IPC/Wire.h"
+#include "Runner/IPC/WorkerWireWriter.h"
 
 #include <windows.h>
 #include <Utils/ThreadName.h>
@@ -45,6 +50,25 @@ static uint64_t parse_u64(const char* s) {
     return s ? static_cast<uint64_t>(std::strtoull(s, nullptr, 10)) : 0ull;
 }
 static const char* argv_next(int& i, int argc, char** argv) { return (i + 1 < argc) ? argv[++i] : ""; }
+
+static bool configure_probe_cpu_core()
+{
+    const char* value = std::getenv("SAVOR_PROBE_CPU_CORE");
+    if (value == nullptr || *value == '\0')
+        return true;
+    if (std::strcmp(value, "jit") == 0) {
+        Config::SetCurrent(Config::MAIN_CPU_CORE, PowerPC::CPUCore::JIT64);
+        SCLOGI("[probe] CPU core override=jit");
+        return true;
+    }
+    if (std::strcmp(value, "interpreter") == 0) {
+        Config::SetCurrent(Config::MAIN_CPU_CORE, PowerPC::CPUCore::Interpreter);
+        SCLOGI("[probe] CPU core override=interpreter");
+        return true;
+    }
+    SCLOGE("[probe] invalid SAVOR_PROBE_CPU_CORE=%s", value);
+    return false;
+}
 
 enum WorkerExitCode : uint8_t {
     INVALID_HANDLES = 100,
@@ -156,11 +180,14 @@ int main(int argc, char** argv)
         SCLOGE("[Worker %zu] invalid std handles", worker_id);
         return WorkerExitCode::INVALID_HANDLES;
     }
+    WorkerWireWriter wire_writer([hOut](const void* data, std::size_t size) {
+        return write_all(hOut, data, size);
+    });
 
     auto sys_dsp = std::filesystem::path(exe_dir_w()) / "Sys" / "GC" / "dsp_coef.bin";
     if (!std::filesystem::exists(sys_dsp)) {
         WireReady wr{}; wr.tag = MSG_READY; wr.ok = 0; wr.error = WERR_SysMissing;
-        (void)write_all(hOut, &wr, sizeof(wr));
+        (void)wire_writer.write_object(wr);
         SCLOGE("[Worker %zu] Missing Sys beside exe (%ws). Ensure coordinator materialized the worker runtime.", worker_id, sys_dsp.c_str());
         return WERR_SysMissing;
     }
@@ -185,16 +212,22 @@ int main(int argc, char** argv)
     std::string err;
     if (!simboot::BootDolphinWrapper(host, boot.boot, &err)) {
         WireReady wr{}; wr.tag = MSG_READY; wr.ok = 0; wr.error = WERR_BootFail;
-        (void)write_all(hOut, &wr, sizeof(wr));
+        (void)wire_writer.write_object(wr);
         SCLOGEX(SC_TAGS("worker", "replay", "boot", "error"), "[Worker %zu] Boot failed: %s", worker_id, err.c_str());
         return WERR_BootFail;
     }
     SCLOGDX(SC_TAGS("worker", "replay", "boot"), "[Worker %zu] BootDolphinWrapper ok", worker_id);
 
+    if (!configure_probe_cpu_core()) {
+        WireReady wr{}; wr.tag = MSG_READY; wr.ok = 0; wr.error = WERR_BootFail;
+        (void)wire_writer.write_object(wr);
+        return WERR_BootFail;
+    }
+
     SCLOGD("[Worker %zu] loadGame(%s) begin", worker_id, boot.iso_path.c_str());
     if (!host.loadGame(boot.iso_path)) {
         WireReady wr{}; wr.tag = MSG_READY; wr.ok = 0; wr.error = WERR_LoadGame;
-        (void)write_all(hOut, &wr, sizeof(wr));
+        (void)wire_writer.write_object(wr);
         SCLOGE("[Worker %zu] loadGame failed: %s", worker_id, boot.iso_path.c_str());
         return WERR_LoadGame;
     }
@@ -312,7 +345,7 @@ int main(int argc, char** argv)
     // Advertise "NoProgram" at startup
     {
         WireReady wrdy{}; wrdy.tag = MSG_READY; wrdy.ok = 1; wrdy.state = WSTATE_NoProgram; wrdy.error = WERR_None;
-        if (!write_all(hOut, &wrdy, sizeof(wrdy))) {
+        if (!wire_writer.write_object(wrdy)) {
             SCLOGE("[Worker %zu] failed to write READY(NoProgram)", worker_id);
             return SEND_READY_FAILED;
         }
@@ -345,7 +378,7 @@ int main(int argc, char** argv)
             main_active = false;
 
             WireAck ack{}; ack.tag = MSG_ACK; ack.ok = 1; ack.code = 'S';
-            (void)write_all(hOut, &ack, sizeof(ack));
+            (void)wire_writer.write_object(ack);
             SCLOGD("[Worker %zu] SET_PROGRAM ok (init=%u main=%u, sav='%s', to=%u)",
                 worker_id, sp.init_kind, sp.main_kind, psinit.savestate_path.c_str(), psinit.default_timeout_ms);
         }
@@ -353,20 +386,20 @@ int main(int argc, char** argv)
             if (!init_prog.ops.empty()) {
                 if (!vm.init(psinit, init_prog)) {
                     WireAck ack{}; ack.tag = MSG_ACK; ack.ok = 0; ack.code = 'I';
-                    (void)write_all(hOut, &ack, sizeof(ack));
+                    (void)wire_writer.write_object(ack);
                     SCLOGE("[Worker %zu] VM init failed for INIT", worker_id);
                     continue;
                 }
                 (void)vm.run(PSJob{}); // single-shot
             }
             WireAck ack{}; ack.tag = MSG_ACK; ack.ok = 1; ack.code = 'I';
-            (void)write_all(hOut, &ack, sizeof(ack));
+            (void)wire_writer.write_object(ack);
             SCLOGD("[Worker %zu] RUN_INIT_ONCE ok", worker_id);
         }
         else if (tag == MSG_ACTIVATE_MAIN) {
             if (!vm.init(psinit, main_prog)) {
                 WireAck ack{}; ack.tag = MSG_ACK; ack.ok = 0; ack.code = 'A';
-                (void)write_all(hOut, &ack, sizeof(ack));
+                (void)wire_writer.write_object(ack);
                 SCLOGE("[Worker %zu] VM init failed for MAIN", worker_id);
                 continue;
             }
@@ -376,7 +409,7 @@ int main(int argc, char** argv)
                 vm.SetVisualDebugPaused(true);
             }
             WireAck ack{}; ack.tag = MSG_ACK; ack.ok = 1; ack.code = 'A';
-            (void)write_all(hOut, &ack, sizeof(ack));
+            (void)wire_writer.write_object(ack);
             SCLOGD("[Worker %zu] ACTIVATE_MAIN ok", worker_id);
         }
         else if (tag == MSG_JOB) {
@@ -397,7 +430,7 @@ int main(int argc, char** argv)
             if (!main_active) {
                 wr.ok = 0;
                 wr.err = WERR_NoProgramLoaded;
-                (void)write_all(hOut, &wr, sizeof(wr));
+                (void)wire_writer.write_object(wr);
                 SCLOGD("[Worker %zu] JOB before ACTIVATE_MAIN -> NoProgram", worker_id);
                 continue;
             }
@@ -409,14 +442,14 @@ int main(int argc, char** argv)
             if (!decode_ok) {
                 wr.ok = 0;
                 wr.err = WERR_DecodePayloadFail;
-                (void)write_all(hOut, &wr, sizeof(wr));
+                (void)wire_writer.write_object(wr);
                 SCLOGE("[Worker %zu] payload decode failed for active program", worker_id);
                 continue;
             }
 
             pj.ctx[savor::context::key::core::GAME_ISO_PATH] = boot.iso_path;
 
-            auto progress_sink = [hOut, jh](const char* text, bool record = true)
+            auto progress_sink = [&wire_writer, jh](const char* text, bool record = true)
                 {
                     WireProgress wp{};
                     wp.tag = MSG_PROGRESS;
@@ -426,7 +459,7 @@ int main(int argc, char** argv)
                     if (text && *text)
                         std::strncpy(wp.text, text, sizeof(wp.text) - 1);
 
-                    (void)write_all(hOut, &wp, sizeof(wp));
+                    (void)wire_writer.write_object(wp);
                 };
 
             uint32_t progress_flags;
@@ -466,8 +499,10 @@ int main(int argc, char** argv)
             wr.ctx_len = static_cast<uint32_t>(blob.size());
 
             // Send tag, then send full header, then blob (if any)
-            (void)write_all(hOut, &wr, sizeof(wr));
-            if (wr.ctx_len) (void)write_all(hOut, blob.data(), blob.size());
+            (void)wire_writer.write_parts({
+                WorkerWirePart{ &wr, sizeof(wr) },
+                WorkerWirePart{ blob.data(), blob.size() },
+            });
         }
         else {
             SCLOGD("[Worker %zu] unknown tag=%u (closing)", worker_id, tag);

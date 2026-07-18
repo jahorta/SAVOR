@@ -2,8 +2,11 @@
 
 #include "BattleJobBatchRunManifest.h"
 #include "BattleJobClone.h"
+#include "CaptureArtifact.h"
+#include "CaptureProfileJson.h"
 #include "CheckpointTrace.h"
 #include "LiveCaptureProfile.h"
+#include "ProbeCpuCoreEnvironment.h"
 
 #include "Common/DbConfigPaths.h"
 #include "Common/DbService.h"
@@ -13,6 +16,7 @@
 #include "Execution/ProgramDB/BattleSingleTurn/BattleSingleTurnPhaseRegistration.h"
 #include "Execution/ProgramDB/ProgramKindRegistry.h"
 #include "Execution/Workflow/SqliteExecutionDb.h"
+#include "Utils/Hash.h"
 
 #include <algorithm>
 #include <chrono>
@@ -62,18 +66,29 @@ bool write_or_copy_capture_profile(
         err << "Failed creating capture profile directory: " << ec.message() << "\n";
         return false;
     }
-    if (!options.capture_profile_path.empty()) {
-        std::filesystem::copy_file(
-            options.capture_profile_path,
-            output_path,
-            std::filesystem::copy_options::overwrite_existing,
-            ec);
-        if (ec) {
-            err << "Failed copying capture profile " << options.capture_profile_path.string()
-                << " to " << output_path.string() << ": " << ec.message() << "\n";
+    std::string text;
+    if (options.probe_mode == ProbeMode::ControlOnly) {
+        text = R"({"schema":"savor.capture.profile/1","name":"savor_control_only","revision":1,"battle_progress_enabled":false,"probes":[]})";
+    } else if (!options.capture_profile_path.empty()) {
+        std::ifstream source(options.capture_profile_path, std::ios::binary);
+        if (!source) {
+            err << "Failed opening capture profile " << options.capture_profile_path.string() << "\n";
             return false;
         }
-        return true;
+        text.assign(std::istreambuf_iterator<char>(source), std::istreambuf_iterator<char>());
+    } else if (options.probe_mode == ProbeMode::Capture) {
+        text = build_first_battle_capture_profile_ini();
+    } else {
+        err << "Internal error: progress-only mode must not materialize a profile.\n";
+        return false;
+    }
+    try {
+        text = pin_capture_profile_module_hash(
+            text,
+            hash::sha256_of_file(options.worker_exe_path.string()));
+    } catch (const std::exception& ex) {
+        err << "Failed pinning capture profile to worker module: " << ex.what() << "\n";
+        return false;
     }
 
     std::ofstream profile(output_path, std::ios::binary | std::ios::trunc);
@@ -81,7 +96,6 @@ bool write_or_copy_capture_profile(
         err << "Failed opening capture profile output: " << output_path.string() << "\n";
         return false;
     }
-    const auto text = build_first_battle_capture_profile_ini();
     profile.write(text.data(), static_cast<std::streamsize>(text.size()));
     if (!profile.good()) {
         err << "Failed writing capture profile: " << output_path.string() << "\n";
@@ -117,61 +131,6 @@ void append_error(BattleJobBatchRunSummary& summary, const std::string& message)
 
 void append_error(BattleJobBatchRunJobSummary& summary, const std::string& message) {
     summary.errors.push_back(message);
-}
-
-std::optional<std::uint32_t> parse_hex_u32_json_field(const std::string& line, const char* key) {
-    const std::string marker = "\"" + std::string(key) + "\":\"0x";
-    const auto pos = line.find(marker);
-    if (pos == std::string::npos) {
-        return std::nullopt;
-    }
-    const auto start = pos + marker.size();
-    if (start + 8 > line.size()) {
-        return std::nullopt;
-    }
-    const auto text = line.substr(start, 8);
-    try {
-        return static_cast<std::uint32_t>(std::stoul(text, nullptr, 16));
-    } catch (...) {
-        return std::nullopt;
-    }
-}
-
-std::optional<bool> parse_bool_json_field(const std::string& line, const char* key) {
-    const std::string marker = "\"" + std::string(key) + "\":";
-    const auto pos = line.find(marker);
-    if (pos == std::string::npos) {
-        return std::nullopt;
-    }
-    const auto start = pos + marker.size();
-    if (line.compare(start, 4, "true") == 0) {
-        return true;
-    }
-    if (line.compare(start, 5, "false") == 0) {
-        return false;
-    }
-    return std::nullopt;
-}
-
-void collect_seed_override_capture_summary(const std::filesystem::path& capture_path, BattleJobBatchRunJobSummary* summary) {
-    if (summary == nullptr) {
-        return;
-    }
-    std::ifstream file(capture_path, std::ios::binary);
-    if (!file.is_open()) {
-        return;
-    }
-    std::string line;
-    while (std::getline(file, line)) {
-        if (line.find("\"checkpoint_id\":\"prebattle.seed_override\"") == std::string::npos) {
-            continue;
-        }
-        summary->captured_original_seed = parse_hex_u32_json_field(line, "original_seed");
-        summary->captured_override_seed = parse_hex_u32_json_field(line, "override_seed");
-        summary->captured_applied_seed = parse_hex_u32_json_field(line, "applied_seed");
-        summary->captured_seed_readback_matches = parse_bool_json_field(line, "readback_matches");
-        return;
-    }
 }
 
 void write_manifest_outputs(BattleJobBatchRunSummary& summary, std::ostream& err) {
@@ -263,12 +222,12 @@ BattleJobBatchRunJobSummary make_job_summary(
     summary.clone = clone;
     summary.expected_capture_path = working_root
         / ("job-" + std::to_string(clone.cloned_exec_job_id))
-        / "battle_checkpoint_capture.jsonl";
-    summary.stable_capture_path = run_root
-        / "captures"
+        / "battle_capture.scap";
+    summary.stable_capture_path = run_root / "captures"
+        / ("job-" + std::to_string(clone.cloned_exec_job_id) + ".scap");
+    summary.capture_export_path = run_root / "exports"
         / ("job-" + std::to_string(clone.cloned_exec_job_id) + ".jsonl");
-    summary.trace_report_path = run_root
-        / "traces"
+    summary.trace_report_path = run_root / "traces"
         / ("job-" + std::to_string(clone.cloned_exec_job_id) + ".txt");
     return summary;
 }
@@ -296,6 +255,18 @@ void collect_capture_and_trace_artifacts(
     savor::db::core::DBService* db_service,
     std::ostream& err) {
     std::error_code ec;
+    if (summary->options.probe_mode != ProbeMode::Capture) {
+        for (auto& job : summary->jobs) {
+            if (std::filesystem::exists(job.expected_capture_path, ec)) {
+                append_error(job, "non-capture probe mode unexpectedly produced a .scap");
+            }
+            job.expected_capture_path.clear();
+            job.stable_capture_path.clear();
+            job.capture_export_path.clear();
+            job.trace_report_path.clear();
+        }
+        return;
+    }
     std::filesystem::create_directories(summary->sandbox.run_root / "captures", ec);
     if (ec) {
         append_error(*summary, "failed creating captures directory: " + ec.message());
@@ -323,21 +294,38 @@ void collect_capture_and_trace_artifacts(
         ec.clear();
         job.capture_found = std::filesystem::exists(job.expected_capture_path, ec);
         if (!job.capture_found) {
-            append_error(job, "capture JSONL was not produced at expected path");
+            append_error(job, "capture .scap was not produced at expected path");
             continue;
         }
 
-        ec.clear();
-        std::filesystem::copy_file(
-            job.expected_capture_path,
-            job.stable_capture_path,
-            std::filesystem::copy_options::overwrite_existing,
-            ec);
-        if (ec) {
-            append_error(job, "failed copying stable capture: " + ec.message());
+        std::vector<std::filesystem::path> copied_segments;
+        std::string copy_error;
+        if (!copy_capture_segments(
+                job.expected_capture_path,
+                job.stable_capture_path,
+                &copied_segments,
+                &copy_error)) {
+            append_error(job, copy_error);
             continue;
         }
-        collect_seed_override_capture_summary(job.stable_capture_path, &job);
+        PreparedCaptureArtifact capture;
+        std::string capture_error;
+        if (!prepare_capture_artifact(
+                job.stable_capture_path,
+                job.capture_export_path,
+                &capture,
+                &capture_error)) {
+            append_error(job, capture_error);
+            continue;
+        }
+        job.capture_artifact = capture;
+        if (!capture.complete) {
+            append_error(job, "capture session is incomplete: " + capture.incomplete_reason);
+        }
+        job.captured_original_seed = capture.seed_override.original_seed;
+        job.captured_override_seed = capture.seed_override.requested_seed;
+        job.captured_applied_seed = capture.seed_override.applied_seed;
+        job.captured_seed_readback_matches = capture.seed_override.readback_matches;
 
         std::ofstream trace(job.trace_report_path, std::ios::binary | std::ios::trunc);
         if (!trace.is_open()) {
@@ -348,7 +336,7 @@ void collect_capture_and_trace_artifacts(
         TraceCheckpointsOptions trace_options;
         trace_options.db_root = summary->sandbox.db_root;
         trace_options.std_json_cache_db_root = summary->options.db_root;
-        trace_options.checkpoint_file = job.stable_capture_path;
+        trace_options.checkpoint_file = job.capture_export_path;
         trace_options.exec_job_id = job.clone.cloned_exec_job_id;
         trace_options.action_view_std_json_dir =
             summary->std_json_cache.available
@@ -404,8 +392,11 @@ int run_battle_jobs(const BattleJobBatchRunOptions& options, std::ostream& out, 
         return rc;
     }
 
-    summary.capture_profile_path = summary.sandbox.run_root / "capture_profile.ini";
-    if (!write_or_copy_capture_profile(options, summary.capture_profile_path, err)) {
+    if (options.probe_mode != ProbeMode::ProgressOnly) {
+        summary.capture_profile_path = summary.sandbox.run_root / "capture_profile.json";
+    }
+    if (options.probe_mode != ProbeMode::ProgressOnly
+        && !write_or_copy_capture_profile(options, summary.capture_profile_path, err)) {
         append_error(summary, "failed to prepare capture profile");
         write_manifest_outputs(summary, err);
         return 1;
@@ -498,12 +489,46 @@ int run_battle_jobs(const BattleJobBatchRunOptions& options, std::ostream& out, 
         summary.events.push_back(line);
     });
 
+    ScopedProbeCpuCoreEnvironment cpu_core_environment(options.probe_cpu_core);
+    if (!cpu_core_environment.ok()) {
+        append_error(summary, "failed configuring probe CPU core environment");
+        write_manifest_outputs(summary, err);
+        db_service->Stop();
+        return 1;
+    }
+
     out << "Running " << summary.clone.clones.size()
         << " cloned battle jobs with " << summary.worker_count
         << " workers in sandbox " << summary.sandbox.db_root.string() << "\n";
+    const bool wait_for_initial_worker_pool = options.wait_for_workers_ready
+        && summary.worker_count > 1;
+    coordinator.SetPaused(wait_for_initial_worker_pool);
     coordinator.Start();
 
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(summary.timeout_ms);
+    if (wait_for_initial_worker_pool) {
+        std::size_t ready_workers = 0;
+        while (std::chrono::steady_clock::now() < deadline) {
+            const auto workers = coordinator.SnapshotWorkers();
+            ready_workers = static_cast<std::size_t>(std::count_if(
+                workers.begin(), workers.end(), [](const WorkerSnapshot& worker) {
+                    return worker.pid > 0 && worker.state == WorkerStateKind::Idle;
+                }));
+            if (ready_workers >= static_cast<std::size_t>(summary.worker_count))
+                break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(options.poll_ms));
+        }
+        {
+            std::lock_guard<std::mutex> lock(events_mutex);
+            summary.events.push_back(
+                "[batch-worker-start-barrier] expected=" + std::to_string(summary.worker_count)
+                + " ready=" + std::to_string(ready_workers)
+                + " complete=" + (ready_workers >= static_cast<std::size_t>(summary.worker_count)
+                    ? "true" : "false"));
+        }
+        coordinator.SetPaused(false);
+    }
+
     while (std::chrono::steady_clock::now() < deadline) {
         if (all_jobs_terminal(db_service->ExecutionDb(), &summary.jobs)) {
             break;
@@ -538,7 +563,9 @@ int run_battle_jobs(const BattleJobBatchRunOptions& options, std::ostream& out, 
         out << "Job original_exec=" << job.clone.original_exec_job_id
             << " cloned_exec=" << job.clone.cloned_exec_job_id
             << " state=" << (job.terminal_state.empty() ? "unknown" : job.terminal_state)
-            << " capture=" << (job.capture_found ? job.stable_capture_path.string() : "missing")
+            << " capture=" << (options.probe_mode == ProbeMode::Capture
+                ? (job.capture_found ? job.stable_capture_path.string() : "missing")
+                : "disabled")
             << "\n";
     }
 

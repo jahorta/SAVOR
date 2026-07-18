@@ -1049,7 +1049,7 @@ public:
         spec.output_savestate_path = (out_dir / "battle_single_turn_output.sav").string();
         spec.capture_profile_path = job_ini.capture_profile_path;
         if (!spec.capture_profile_path.empty()) {
-            spec.capture_output_path = (out_dir / "battle_checkpoint_capture.jsonl").string();
+            spec.capture_output_path = (out_dir / "battle_capture.scap").string();
         }
         spec.override_start_rng_seed = job_ini.override_start_rng_seed;
 

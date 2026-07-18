@@ -216,6 +216,43 @@ void write_requested_runs(std::ostream& out, const BattleJobBatchRunOptions& opt
     out << "],\n";
 }
 
+void write_capture_artifact(
+    std::ostream& out,
+    const char* indent,
+    const PreparedCaptureArtifact& value,
+    bool comma)
+{
+    out << indent << "\"capture_artifact\": {"
+        << "\"verified\":" << (value.verified ? "true" : "false") << ","
+        << "\"complete\":" << (value.complete ? "true" : "false") << ","
+        << "\"incomplete_reason\":\"" << json_escape(value.incomplete_reason) << "\","
+        << "\"segment_count\":" << value.segment_count << ","
+        << "\"chunk_count\":" << value.chunk_count << ","
+        << "\"event_count\":" << value.event_count << ","
+        << "\"gap_count\":" << value.gap_count << ","
+        << "\"revision_count\":" << value.revision_count << ","
+        << "\"metrics_event_count\":" << value.metrics_event_count << ","
+        << "\"hits\":" << value.hits << ","
+        << "\"filter_rejections\":" << value.filter_rejections << ","
+        << "\"capture_deliveries\":" << value.capture_deliveries << ","
+        << "\"progress_deliveries\":" << value.progress_deliveries << ","
+        << "\"control_publications\":" << value.control_publications << ","
+        << "\"drops\":" << value.drops << ","
+        << "\"progress_coalesced\":" << value.progress_coalesced << ","
+        << "\"bytes\":" << value.bytes << ","
+        << "\"traces\":" << value.traces << ","
+        << "\"trace_failures\":" << value.trace_failures << ","
+        << "\"flight_triggers\":" << value.flight_triggers << ","
+        << "\"flight_completed_windows\":" << value.flight_completed_windows << ","
+        << "\"flight_window_active\":" << (value.flight_window_active ? "true" : "false") << ","
+        << "\"segments\":[";
+    for (std::size_t i = 0; i < value.segments.size(); ++i) {
+        if (i != 0) out << ',';
+        out << '"' << json_escape(path_string(value.segments[i])) << '"';
+    }
+    out << "]}" << (comma ? "," : "") << "\n";
+}
+
 } // namespace
 
 bool write_battle_job_batch_run_manifest(
@@ -247,10 +284,14 @@ bool write_battle_job_batch_run_manifest(
     file << "  \"iso_path\": \"" << json_escape(path_string(summary.options.iso_path)) << "\",\n";
     file << "  \"dolphin_base_dir\": \"" << json_escape(path_string(summary.options.dolphin_base_dir)) << "\",\n";
     file << "  \"worker_exe_path\": \"" << json_escape(path_string(summary.options.worker_exe_path)) << "\",\n";
+    file << "  \"probe_mode\": \"" << probe_mode_name(summary.options.probe_mode) << "\",\n";
+    file << "  \"probe_cpu_core\": \"" << probe_cpu_core_name(summary.options.probe_cpu_core) << "\",\n";
     file << "  \"capture_profile_path\": \"" << json_escape(path_string(summary.capture_profile_path)) << "\",\n";
     write_std_json_cache(file, summary.std_json_cache);
     file << "  \"worker_count\": " << summary.worker_count << ",\n";
     file << "  \"max_workers\": " << summary.options.max_workers << ",\n";
+    file << "  \"wait_for_workers_ready\": "
+        << (summary.options.wait_for_workers_ready ? "true" : "false") << ",\n";
     file << "  \"poll_ms\": " << summary.options.poll_ms << ",\n";
     file << "  \"timeout_ms\": " << summary.timeout_ms << ",\n";
     write_optional_u32(file, "  ", "battle_run_ms", summary.options.battle_run_ms, true);
@@ -298,9 +339,11 @@ bool write_battle_job_batch_run_manifest(
         file << "      \"terminal_state\": \"" << json_escape(job.terminal_state) << "\",\n";
         file << "      \"timed_out\": " << (job.timed_out ? "true" : "false") << ",\n";
         file << "      \"capture_found\": " << (job.capture_found ? "true" : "false") << ",\n";
+        write_capture_artifact(file, "      ", job.capture_artifact, true);
         file << "      \"trace_exit_code\": " << job.trace_exit_code << ",\n";
         file << "      \"expected_capture_path\": \"" << json_escape(path_string(job.expected_capture_path)) << "\",\n";
         file << "      \"stable_capture_path\": \"" << json_escape(path_string(job.stable_capture_path)) << "\",\n";
+        file << "      \"capture_export_path\": \"" << json_escape(path_string(job.capture_export_path)) << "\",\n";
         file << "      \"trace_report_path\": \"" << json_escape(path_string(job.trace_report_path)) << "\",\n";
         file << "      \"errors\": [";
         for (std::size_t e = 0; e < job.errors.size(); ++e) {
@@ -337,7 +380,11 @@ bool write_battle_job_batch_run_text_summary(
     file << "source_db_root: " << summary.options.db_root.string() << "\n";
     file << "sandbox_db_root: " << summary.sandbox.db_root.string() << "\n";
     file << "sandbox_mode: " << savor::dbutils::ToString(summary.sandbox.sandbox_mode) << "\n";
+    file << "probe_mode: " << probe_mode_name(summary.options.probe_mode) << "\n";
+    file << "probe_cpu_core: " << probe_cpu_core_name(summary.options.probe_cpu_core) << "\n";
     file << "worker_count: " << summary.worker_count << "\n";
+    file << "wait_for_workers_ready: "
+        << (summary.options.wait_for_workers_ready ? "true" : "false") << "\n";
     file << "timeout_ms: " << summary.timeout_ms << "\n";
     file << "battle_run_ms: " << optional_u32_for_text(summary.options.battle_run_ms) << "\n";
     file << "override_start_rng_seed: " << optional_hex_for_text(summary.options.override_start_rng_seed) << "\n";
@@ -357,7 +404,15 @@ bool write_battle_job_batch_run_text_summary(
             << " override_fake_attacks=" << optional_u32_for_text(job.clone.override_fake_attacks_this_turn)
             << " original_seed=" << optional_hex_for_text(job.captured_original_seed)
             << " applied_seed=" << optional_hex_for_text(job.captured_applied_seed)
-            << " capture=" << (job.capture_found ? job.stable_capture_path.string() : "missing")
+            << " capture=" << (job.capture_found
+                ? job.stable_capture_path.string()
+                : (summary.options.probe_mode == ProbeMode::Capture ? "missing" : "disabled"))
+            << " segments=" << job.capture_artifact.segment_count
+            << " chunks=" << job.capture_artifact.chunk_count
+            << " complete=" << (job.capture_artifact.complete ? "true" : "false")
+            << " gaps=" << job.capture_artifact.gap_count
+            << " drops=" << job.capture_artifact.drops
+            << " revisions=" << job.capture_artifact.revision_count
             << " trace=" << job.trace_report_path.string()
             << " errors=" << job.errors.size() << "\n";
         for (const auto& error : job.errors) {
@@ -385,7 +440,7 @@ bool write_battle_job_batch_run_csv_summary(
     }
     file << "original_exec_job_id,cloned_exec_job_id,original_turn_job_id,cloned_turn_job_id,"
         << "source_fake_attacks_this_turn,fake_attacks_this_turn,battle_run_ms,override_start_rng_seed,override_fake_attacks_this_turn,captured_original_seed,captured_override_seed,captured_applied_seed,"
-        << "captured_seed_readback_matches,terminal_state,timed_out,capture_found,trace_exit_code,stable_capture_path,trace_report_path,error_count\n";
+        << "captured_seed_readback_matches,terminal_state,timed_out,probe_mode,capture_found,capture_complete,capture_segments,capture_chunks,capture_gaps,capture_drops,capture_revisions,trace_exit_code,stable_capture_path,capture_export_path,trace_report_path,error_count\n";
     for (const auto& job : summary.jobs) {
         file << job.clone.original_exec_job_id << ","
             << job.clone.cloned_exec_job_id << ","
@@ -404,9 +459,17 @@ bool write_battle_job_batch_run_csv_summary(
                 : "none") << ","
             << csv_escape(job.terminal_state) << ","
             << (job.timed_out ? "true" : "false") << ","
+            << probe_mode_name(summary.options.probe_mode) << ","
             << (job.capture_found ? "true" : "false") << ","
+            << (job.capture_artifact.complete ? "true" : "false") << ","
+            << job.capture_artifact.segment_count << ","
+            << job.capture_artifact.chunk_count << ","
+            << job.capture_artifact.gap_count << ","
+            << job.capture_artifact.drops << ","
+            << job.capture_artifact.revision_count << ","
             << job.trace_exit_code << ","
             << csv_escape(path_string(job.stable_capture_path)) << ","
+            << csv_escape(path_string(job.capture_export_path)) << ","
             << csv_escape(path_string(job.trace_report_path)) << ","
             << job.errors.size() << "\n";
     }

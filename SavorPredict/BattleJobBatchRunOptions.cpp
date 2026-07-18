@@ -388,6 +388,9 @@ std::vector<std::string> validate_battle_job_batch_run_options(const BattleJobBa
         && *options.override_fake_attacks_this_turn > 255u) {
         errors.push_back("--override-fake-attacks must be in the range 0..255.");
     }
+    if (options.probe_mode != ProbeMode::Capture && !options.capture_profile_path.empty()) {
+        errors.push_back("--capture-profile is only valid with --probe-mode capture.");
+    }
     return errors;
 }
 
@@ -464,6 +467,24 @@ BattleJobBatchRunParseResult parse_battle_job_batch_run_tokens(
             if (require_value(args, i, arg, value, result.errors)) {
                 result.options.capture_profile_path = value;
             }
+        } else if (arg == "--probe-mode") {
+            if (require_value(args, i, arg, value, result.errors)) {
+                if (const auto mode = parse_probe_mode(value); mode.has_value()) {
+                    result.options.probe_mode = *mode;
+                } else {
+                    result.errors.push_back(
+                        "--probe-mode must be capture, progress-only, or control-only.");
+                }
+            }
+        } else if (arg == "--probe-cpu-core") {
+            if (require_value(args, i, arg, value, result.errors)) {
+                if (const auto core = parse_probe_cpu_core(value); core.has_value()) {
+                    result.options.probe_cpu_core = *core;
+                } else {
+                    result.errors.push_back(
+                        "--probe-cpu-core must be default, jit, or interpreter.");
+                }
+            }
         } else if (arg == "--action-view-std-json-dir") {
             if (require_value(args, i, arg, value, result.errors)) {
                 result.options.action_view_std_json_dir = value;
@@ -505,6 +526,8 @@ BattleJobBatchRunParseResult parse_battle_job_batch_run_tokens(
             } else {
                 result.errors.push_back("--max-workers requires an integer.");
             }
+        } else if (arg == "--wait-for-workers-ready") {
+            result.options.wait_for_workers_ready = true;
         } else if (arg == "--battle-run-ms") {
             std::uint32_t parsed = 0;
             if (require_value(args, i, arg, value, result.errors) && parse_u32_auto(value, parsed)) {

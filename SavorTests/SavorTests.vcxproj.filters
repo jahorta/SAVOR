@@ -50,6 +50,8 @@
       <ClCompile Include="..\SavorPredict\EnemyAttackSetupModel.cpp" />
       <ClCompile Include="..\SavorPredict\EnemyEventDataModel.cpp" />
       <ClCompile Include="..\SavorPredict\FirstBattleDataModel.cpp" />
+    <ClCompile Include="..\SavorPredict\CaptureArtifact.cpp" />
+    <ClCompile Include="..\SavorPredict\CaptureProfileJson.cpp" />
     <ClCompile Include="..\SavorPredict\LiveCaptureProfile.cpp" />
     <ClCompile Include="..\SavorPredict\MovementModel.cpp" />
     <ClCompile Include="..\SavorPredict\OutcomeCheckpointModel.cpp" />
@@ -75,7 +77,10 @@
     <ClCompile Include="test_framestep.cpp" />
     <ClCompile Include="test_GC_input_frame_builder.cpp" />
     <ClCompile Include="test_import_from_qt.cpp" />
-    <ClCompile Include="test_live_checkpoint_capture.cpp" />
+    <ClCompile Include="test_capture_format.cpp" />
+    <ClCompile Include="test_capture_profile_json.cpp" />
+    <ClCompile Include="test_probe_profile.cpp" />
+    <ClCompile Include="test_probe_progress_and_wire.cpp" />
     <ClCompile Include="test_battle_coordinator_initialization.cpp" />
     <ClCompile Include="test_battle_frame_thread_list.cpp" />
     <ClCompile Include="test_battle_movement_path.cpp" />

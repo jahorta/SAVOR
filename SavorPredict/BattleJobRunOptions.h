@@ -4,11 +4,30 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "DbRootCopy.h"
 
 namespace savor::predict {
+
+enum class ProbeMode {
+    Capture,
+    ProgressOnly,
+    ControlOnly,
+};
+
+const char* probe_mode_name(ProbeMode mode);
+std::optional<ProbeMode> parse_probe_mode(std::string_view value);
+
+enum class ProbeCpuCore {
+    Default,
+    Jit,
+    Interpreter,
+};
+
+const char* probe_cpu_core_name(ProbeCpuCore core);
+std::optional<ProbeCpuCore> parse_probe_cpu_core(std::string_view value);
 
 struct BattleJobRunOptions {
     std::filesystem::path db_root = "D:/SavorPredictDB";
@@ -20,6 +39,8 @@ struct BattleJobRunOptions {
     std::filesystem::path action_view_std_json_dir;
     std::filesystem::path std_disc_dump_root;
     std::filesystem::path spice_file_parsing_exe;
+    ProbeMode probe_mode = ProbeMode::Capture;
+    ProbeCpuCore probe_cpu_core = ProbeCpuCore::Default;
     savor::dbutils::SandboxMode sandbox_mode = savor::dbutils::SandboxMode::MinimalBattleSingleTurn;
     std::optional<long long> turn_job_id;
     std::optional<long long> exec_job_id;

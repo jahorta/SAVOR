@@ -119,6 +119,9 @@
     <ClCompile Include="BattleJobWorkerRun.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="CaptureArtifact.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="CheckpointTrace.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -159,6 +162,9 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="FirstBattleDataModel.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="CaptureProfileJson.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="LiveCaptureProfile.cpp">
@@ -323,10 +329,16 @@
     <ClInclude Include="BattleJobRunOptions.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="ProbeCpuCoreEnvironment.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="BattleJobSandbox.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="BattleJobWorkerRun.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="CaptureArtifact.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="CheckpointTrace.h">
@@ -369,6 +381,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="FirstBattleDataModel.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="CaptureProfileJson.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="LiveCaptureProfile.h">

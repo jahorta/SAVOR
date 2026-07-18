@@ -24,6 +24,7 @@ void print_usage(std::ostream& out) {
         << "Usage:\n"
         << "  SavorPredict prepare-db [--source PATH] [--dest PATH] [--overwrite]\n"
         << "  SavorPredict write-first-battle-capture-profile --output PATH\n"
+        << "  SavorPredict write-first-battle-probe-layer-validation-profile --output PATH\n"
         << "  SavorPredict write-first-battle-predictor-validation-profile --output PATH\n"
         << "  SavorPredict write-first-battle-turn-order-validation-profile --output PATH\n"
         << "  SavorPredict write-first-battle-field6-watch-profile --output PATH\n"
@@ -48,8 +49,8 @@ void print_usage(std::ostream& out) {
         << "  SavorPredict write-first-battle-pre-handler-frame-pathing-profile --output PATH\n"
         << "  SavorPredict write-first-battle-float-motion-profile --output PATH\n"
         << "  SavorPredict write-first-battle-move-increment-read-watch-profile --output PATH\n"
-        << "  SavorPredict run-battle-job (--turn-job-id N | --exec-job-id N) --iso PATH --dolphin-base-dir PATH [--db-root PATH] [--run-root PATH] [--worker-exe PATH] [--capture-profile PATH] [--sandbox-mode minimal|full-copy] [--timeout-ms N] [--battle-run-ms N] [--poll-ms N] [--override-start-rng-seed N] [--override-fake-attacks N] [--action-view-std-json-dir PATH] [--std-disc-dump-root PATH] [--spice-file-parsing-exe PATH]\n"
-        << "  SavorPredict run-battle-jobs --exec-job-id N [--exec-job-id N ...] [--exec-job-list PATH] [--exec-job-seed EXEC_ID:SEED[:FAKE_ATTACKS]] [--exec-job-seed-list PATH] [--exec-job-fake-attacks EXEC_ID:FAKE_ATTACKS] [--exec-job-fake-attacks-list PATH] --iso PATH --dolphin-base-dir PATH [--db-root PATH] [--run-root PATH] [--worker-exe PATH] [--capture-profile PATH] [--sandbox-mode minimal|full-copy] [--max-workers N] [--timeout-ms N] [--battle-run-ms N] [--poll-ms N] [--override-start-rng-seed N] [--override-fake-attacks N] [--action-view-std-json-dir PATH] [--std-disc-dump-root PATH] [--spice-file-parsing-exe PATH]\n"
+        << "  SavorPredict run-battle-job (--turn-job-id N | --exec-job-id N) --iso PATH --dolphin-base-dir PATH [--db-root PATH] [--run-root PATH] [--worker-exe PATH] [--probe-mode capture|progress-only|control-only] [--probe-cpu-core default|jit|interpreter] [--capture-profile PATH] [--sandbox-mode minimal|full-copy] [--timeout-ms N] [--battle-run-ms N] [--poll-ms N] [--override-start-rng-seed N] [--override-fake-attacks N] [--action-view-std-json-dir PATH] [--std-disc-dump-root PATH] [--spice-file-parsing-exe PATH]\n"
+        << "  SavorPredict run-battle-jobs --exec-job-id N [--exec-job-id N ...] [--exec-job-list PATH] [--exec-job-seed EXEC_ID:SEED[:FAKE_ATTACKS]] [--exec-job-seed-list PATH] [--exec-job-fake-attacks EXEC_ID:FAKE_ATTACKS] [--exec-job-fake-attacks-list PATH] --iso PATH --dolphin-base-dir PATH [--db-root PATH] [--run-root PATH] [--worker-exe PATH] [--probe-mode capture|progress-only|control-only] [--probe-cpu-core default|jit|interpreter] [--capture-profile PATH] [--sandbox-mode minimal|full-copy] [--max-workers N] [--wait-for-workers-ready] [--timeout-ms N] [--battle-run-ms N] [--poll-ms N] [--override-start-rng-seed N] [--override-fake-attacks N] [--action-view-std-json-dir PATH] [--std-disc-dump-root PATH] [--spice-file-parsing-exe PATH]\n"
         << "  SavorPredict predict-battle (--context-file PATH --turn-plan-hex HEX --fake-attacks N --start-seed N | (--turn-job-id N | --exec-job-id N) [--start-seed N | --start-seed-list PATH]) [--db-root PATH] [--scenario first-battle-soldiers] [--encounter-event-id N] [--scripted-battle-script NAME --scripted-battle-section NAME --scripted-battle-payload-offset N] [--profile first-battle-soldiers] [--action-view-std-json-dir PATH] [--std-disc-dump-root PATH] [--spice-file-parsing-exe PATH] [--format text|json] [--allow-seed-candidate-fallback] [--allow-profile-overrides]\n"
         << "    Custom --start-seed values begin at the battle coordinator; stored job seeds retain their captured-turn boundary.\n"
         << "  SavorPredict trace-job (--turn-job-id N | --exec-job-id N) [--db-root PATH] [--format text|json] [--max-distance N]\n\n"
@@ -218,6 +219,29 @@ int run_write_first_battle_capture_profile(int argc, char** argv) {
         }
     }
     return savor::predict::write_first_battle_capture_profile(output, std::cout, std::cerr);
+}
+
+int run_write_first_battle_probe_layer_validation_profile(int argc, char** argv) {
+    std::filesystem::path output;
+    for (int i = 2; i < argc; ++i) {
+        const std::string arg = argv[i];
+        std::string value;
+        if (arg == "--output") {
+            if (!require_value(argc, argv, i, arg, value, std::cerr)) {
+                return 2;
+            }
+            output = value;
+        } else if (arg == "--help" || arg == "-h") {
+            print_usage(std::cout);
+            return 0;
+        } else {
+            std::cerr << "Unknown write-first-battle-probe-layer-validation-profile option: "
+                << arg << "\n";
+            return 2;
+        }
+    }
+    return savor::predict::write_first_battle_probe_layer_validation_profile(
+        output, std::cout, std::cerr);
 }
 
 int run_write_first_battle_predictor_validation_profile(int argc, char** argv) {
@@ -1184,6 +1208,9 @@ int main(int argc, char** argv) {
     }
     if (command == "write-first-battle-capture-profile") {
         return run_write_first_battle_capture_profile(argc, argv);
+    }
+    if (command == "write-first-battle-probe-layer-validation-profile") {
+        return run_write_first_battle_probe_layer_validation_profile(argc, argv);
     }
     if (command == "write-first-battle-predictor-validation-profile") {
         return run_write_first_battle_predictor_validation_profile(argc, argv);

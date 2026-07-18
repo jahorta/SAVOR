@@ -81,7 +81,7 @@
       <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
       <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
       <WarningLevel>Level3</WarningLevel>
-      <AdditionalIncludeDirectories>$(SolutionDir)third-party\googletest-1.17.0\googlemock\include;$(SolutionDir)third-party\googletest-1.17.0\googletest\include;$(SolutionDir)third-party\googletest-1.17.0\googlemock;$(SolutionDir)third-party\googletest-1.17.0\googletest;$(SolutionDir)SavorCore;$(SolutionDir)SavorDb;$(SolutionDir)SavorDbUtils;$(SolutionDir)SavorWorkflow;$(SolutionDir)SavorE2E;$(SolutionDir)SavorDbDebugTool;$(SolutionDir)SavorPredict;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)third-party\googletest-1.17.0\googlemock\include;$(SolutionDir)third-party\googletest-1.17.0\googletest\include;$(SolutionDir)third-party\googletest-1.17.0\googlemock;$(SolutionDir)third-party\googletest-1.17.0\googletest;$(SolutionDir)third-party\dolphin-2506a\include\Externals\picojson;$(SolutionDir)SavorCore;$(SolutionDir)SavorDb;$(SolutionDir)SavorDbUtils;$(SolutionDir)SavorWorkflow;$(SolutionDir)SavorE2E;$(SolutionDir)SavorDbDebugTool;$(SolutionDir)SavorPredict;$(SolutionDir)SavorProbe;$(SolutionDir)SavorCaptureFormat;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpplatest</LanguageStandard>
       <AdditionalOptions>/FS %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
@@ -116,7 +116,7 @@
       <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
       <WarningLevel>Level3</WarningLevel>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
-      <AdditionalIncludeDirectories>$(SolutionDir)third-party\googletest-1.17.0\googlemock\include;$(SolutionDir)third-party\googletest-1.17.0\googletest\include;$(SolutionDir)third-party\googletest-1.17.0\googlemock;$(SolutionDir)third-party\googletest-1.17.0\googletest;$(SolutionDir)SavorCore;$(SolutionDir)SavorDb;$(SolutionDir)SavorDbUtils;$(SolutionDir)SavorWorkflow;$(SolutionDir)SavorE2E;$(SolutionDir)SavorDbDebugTool;$(SolutionDir)SavorPredict;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)third-party\googletest-1.17.0\googlemock\include;$(SolutionDir)third-party\googletest-1.17.0\googletest\include;$(SolutionDir)third-party\googletest-1.17.0\googlemock;$(SolutionDir)third-party\googletest-1.17.0\googletest;$(SolutionDir)third-party\dolphin-2506a\include\Externals\picojson;$(SolutionDir)SavorCore;$(SolutionDir)SavorDb;$(SolutionDir)SavorDbUtils;$(SolutionDir)SavorWorkflow;$(SolutionDir)SavorE2E;$(SolutionDir)SavorDbDebugTool;$(SolutionDir)SavorPredict;$(SolutionDir)SavorProbe;$(SolutionDir)SavorCaptureFormat;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpplatest</LanguageStandard>
       <AdditionalOptions>/FS %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
@@ -180,6 +180,8 @@
     <ClCompile Include="..\SavorPredict\EnemyEventDataModel.cpp" />
     <ClCompile Include="..\SavorPredict\Field6WatchpointModel.cpp" />
     <ClCompile Include="..\SavorPredict\FirstBattleDataModel.cpp" />
+    <ClCompile Include="..\SavorPredict\CaptureArtifact.cpp" />
+    <ClCompile Include="..\SavorPredict\CaptureProfileJson.cpp" />
     <ClCompile Include="..\SavorPredict\LiveCaptureProfile.cpp" />
     <ClCompile Include="..\SavorPredict\MovementModel.cpp" />
     <ClCompile Include="..\SavorPredict\OutcomeCheckpointModel.cpp" />
@@ -214,7 +216,11 @@
     <ClCompile Include="test_framestep.cpp" />
     <ClCompile Include="test_GC_input_frame_builder.cpp" />
     <ClCompile Include="test_import_from_qt.cpp" />
-    <ClCompile Include="test_live_checkpoint_capture.cpp" />
+    <ClCompile Include="test_capture_format.cpp" />
+    <ClCompile Include="test_capture_profile_json.cpp" />
+    <ClCompile Include="test_probe_profile.cpp" />
+    <ClCompile Include="test_probe_progress_and_wire.cpp" />
+    <ClCompile Include="test_probe_watchpoint_registry.cpp" />
     <ClCompile Include="test_pad_poll_isolated_user.cpp" />
     <ClCompile Include="test_queued_instruction_param.cpp" />
     <ClCompile Include="test_savordb_utils_minimal_copy.cpp" />
@@ -233,6 +239,9 @@
     <ClCompile Include="test_worker_runtime_materialization.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ProjectReference Include="..\SavorCaptureFormat\SavorCaptureFormat.vcxproj">
+      <Project>{A66262AE-CE77-4FD0-858A-E78CE6011DD1}</Project>
+    </ProjectReference>
     <ProjectReference Include="..\SavorCore\SavorCore.vcxproj">
       <Project>{673e613d-f810-4aea-b4f6-40e80a21301a}</Project>
     </ProjectReference>
@@ -244,6 +253,9 @@
     </ProjectReference>
     <ProjectReference Include="..\SavorWorkflow\SavorWorkflow.vcxproj">
       <Project>{9F364C36-2F44-4B54-8A7B-58C18D0F6852}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\SavorProbe\SavorProbe.vcxproj">
+      <Project>{6EA1CA9D-0D84-4A69-BD65-29CDE443BF4A}</Project>
     </ProjectReference>
   </ItemGroup>
   <ItemGroup>

@@ -92,6 +92,38 @@ bool require_value(
 
 } // namespace
 
+const char* probe_mode_name(ProbeMode mode) {
+    switch (mode) {
+    case ProbeMode::Capture: return "capture";
+    case ProbeMode::ProgressOnly: return "progress-only";
+    case ProbeMode::ControlOnly: return "control-only";
+    }
+    return "capture";
+}
+
+std::optional<ProbeMode> parse_probe_mode(std::string_view value) {
+    if (value == "capture") return ProbeMode::Capture;
+    if (value == "progress-only") return ProbeMode::ProgressOnly;
+    if (value == "control-only") return ProbeMode::ControlOnly;
+    return std::nullopt;
+}
+
+const char* probe_cpu_core_name(ProbeCpuCore core) {
+    switch (core) {
+    case ProbeCpuCore::Default: return "default";
+    case ProbeCpuCore::Jit: return "jit";
+    case ProbeCpuCore::Interpreter: return "interpreter";
+    }
+    return "default";
+}
+
+std::optional<ProbeCpuCore> parse_probe_cpu_core(std::string_view value) {
+    if (value == "default") return ProbeCpuCore::Default;
+    if (value == "jit") return ProbeCpuCore::Jit;
+    if (value == "interpreter") return ProbeCpuCore::Interpreter;
+    return std::nullopt;
+}
+
 std::filesystem::path default_battle_job_run_root() {
     return std::filesystem::path("Analyses")
         / "battle_runs_first_battle"
@@ -162,6 +194,9 @@ std::vector<std::string> validate_battle_job_run_options(const BattleJobRunOptio
         && *options.override_fake_attacks_this_turn > 255u) {
         errors.push_back("--override-fake-attacks must be in the range 0..255.");
     }
+    if (options.probe_mode != ProbeMode::Capture && !options.capture_profile_path.empty()) {
+        errors.push_back("--capture-profile is only valid with --probe-mode capture.");
+    }
     return errors;
 }
 
@@ -213,6 +248,24 @@ BattleJobRunParseResult parse_battle_job_run_tokens(
         } else if (arg == "--capture-profile") {
             if (require_value(args, i, arg, value, result.errors)) {
                 result.options.capture_profile_path = value;
+            }
+        } else if (arg == "--probe-mode") {
+            if (require_value(args, i, arg, value, result.errors)) {
+                if (const auto mode = parse_probe_mode(value); mode.has_value()) {
+                    result.options.probe_mode = *mode;
+                } else {
+                    result.errors.push_back(
+                        "--probe-mode must be capture, progress-only, or control-only.");
+                }
+            }
+        } else if (arg == "--probe-cpu-core") {
+            if (require_value(args, i, arg, value, result.errors)) {
+                if (const auto core = parse_probe_cpu_core(value); core.has_value()) {
+                    result.options.probe_cpu_core = *core;
+                } else {
+                    result.errors.push_back(
+                        "--probe-cpu-core must be default, jit, or interpreter.");
+                }
             }
         } else if (arg == "--action-view-std-json-dir") {
             if (require_value(args, i, arg, value, result.errors)) {

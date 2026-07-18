@@ -1,5 +1,6 @@
 #include "LiveCaptureProfile.h"
 
+#include "CaptureProfileJson.h"
 #include "CheckpointTrace.h"
 
 #include "Core/Memory/Soa/SoaAddrRegistry.h"
@@ -15,6 +16,8 @@
 #include <string_view>
 #include <tuple>
 #include <vector>
+
+#include <picojson.h>
 
 namespace savor::predict {
 namespace {
@@ -3115,7 +3118,7 @@ std::string build_first_battle_capture_profile_ini()
         },
         combat_effect_burst_samples());
 
-    return out.str();
+    return build_capture_profile_json(out.str());
 }
 
 std::string build_first_battle_predictor_validation_profile_ini()
@@ -3448,7 +3451,7 @@ std::string build_first_battle_predictor_validation_profile_ini()
 
     write_action_view_selector_query_checkpoints(out);
 
-    return out.str();
+    return build_capture_profile_json(out.str());
 }
 
 std::string build_first_battle_action_view_resource_profile_ini()
@@ -3671,7 +3674,7 @@ std::string build_first_battle_action_view_resource_profile_ini()
 
     write_action_view_selector_query_checkpoints(out);
 
-    return out.str();
+    return build_capture_profile_json(out.str());
 }
 
 std::string build_first_battle_turn_order_validation_profile_ini()
@@ -3766,7 +3769,7 @@ std::string build_first_battle_turn_order_validation_profile_ini()
             });
     }
 
-    return out.str();
+    return build_capture_profile_json(out.str());
 }
 
 std::string build_first_battle_field6_watch_profile_ini()
@@ -3899,7 +3902,7 @@ std::string build_first_battle_field6_watch_profile_ini()
     write_dynamic_watchpoint(out, "sst_case8_source_field6_8000C6E8", "8000C6E8", "r30", "0x0a", "u16", "access", "input_macro");
     write_dynamic_watchpoint(out, "sst_case8_dest_field6_8000C6E8", "8000C6E8", "r3", "0x6", "u16", "access", "input_macro");
 
-    return out.str();
+    return build_capture_profile_json(out.str());
 }
 
 std::string build_first_battle_view_eligibility_profile_ini()
@@ -4155,7 +4158,7 @@ std::string build_first_battle_view_eligibility_profile_ini()
         16,
         0x800144E8u);
 
-    return out.str();
+    return build_capture_profile_json(out.str());
 }
 
 std::string build_first_battle_view_placement_cache_profile_ini()
@@ -4434,7 +4437,7 @@ std::string build_first_battle_view_placement_cache_profile_ini()
         {},
         96);
 
-    return out.str();
+    return build_capture_profile_json(out.str());
 }
 
 std::string build_first_battle_view_placement_frame_thread_profile_ini(
@@ -4693,7 +4696,7 @@ std::string build_first_battle_view_placement_frame_thread_profile_ini(
         thread_list_views,
         512);
 
-    return out.str();
+    return build_capture_profile_json(out.str());
 }
 
 static std::string build_first_battle_view_placement_profile_ini(
@@ -5285,7 +5288,7 @@ static std::string build_first_battle_view_placement_profile_ini(
         thread_list_views,
         1024);
 
-    return out.str();
+    return build_capture_profile_json(out.str());
 }
 
 std::string build_first_battle_view_placement_semantic_hooks_profile_ini(
@@ -5656,7 +5659,7 @@ std::string build_first_battle_movement_destination_stop_profile_ini(
         {},
         2048);
 
-    return out.str();
+    return build_capture_profile_json(out.str());
 }
 
 std::string build_first_battle_action_view_service_lifecycle_profile_ini(
@@ -6366,7 +6369,7 @@ std::string build_first_battle_action_view_service_lifecycle_profile_ini(
         true,
         true);
 
-    return out.str();
+    return build_capture_profile_json(out.str());
 }
 
 std::string build_first_battle_visual_publication_order_profile_ini(
@@ -6982,7 +6985,7 @@ std::string build_first_battle_visual_publication_order_profile_ini(
         thread_list_views,
         512);
 
-    return out.str();
+    return build_capture_profile_json(out.str());
 }
 
 std::string build_first_battle_pc_worker_selector_lifetime_profile_ini(
@@ -7238,7 +7241,7 @@ std::string build_first_battle_pc_worker_selector_lifetime_profile_ini(
         "action_view_record_mode1_call", "FUN_800512c0", "action_view_pathing",
         {"action_view_record:31"}, 512);
 
-    return out.str();
+    return build_capture_profile_json(out.str());
 }
 
 std::string build_first_battle_queued_instruction_param_profile_ini()
@@ -7445,7 +7448,7 @@ std::string build_first_battle_queued_instruction_param_profile_ini()
                                               : std::vector<std::string_view>{}));
     }
 
-    return out.str();
+    return build_capture_profile_json(out.str());
 }
 
 std::string build_first_battle_mode1_pathing_lifetime_profile_ini(
@@ -7997,7 +8000,7 @@ std::string build_first_battle_mode1_pathing_lifetime_profile_ini(
         64,
         0x800811C8u);
 
-    return out.str();
+    return build_capture_profile_json(out.str());
 }
 
 std::string build_first_battle_mode1_state6_progress_profile_ini(
@@ -8464,7 +8467,7 @@ std::string build_first_battle_mode1_state6_progress_profile_ini(
         64,
         activation_pc);
 
-    return out.str();
+    return build_capture_profile_json(out.str());
 }
 
 std::string build_first_battle_action_view_pathing_loop_profile_ini()
@@ -8710,7 +8713,7 @@ std::string build_first_battle_action_view_pathing_loop_profile_ini()
         32,
         0x80082134u);
 
-    return out.str();
+    return build_capture_profile_json(out.str());
 }
 
 std::string build_first_battle_thread_pathing_timing_profile_ini(
@@ -8984,7 +8987,7 @@ std::string build_first_battle_thread_pathing_timing_profile_ini(
             0x80082134u);
     }
 
-    return out.str();
+    return build_capture_profile_json(out.str());
 }
 
 std::string build_battle_thread_producer_profile_ini(
@@ -9193,7 +9196,7 @@ std::string build_battle_thread_producer_profile_ini(
             512);
     }
 
-    return out.str();
+    return build_capture_profile_json(out.str());
 }
 
 std::string build_first_battle_action_view_selector_coverage_profile_ini()
@@ -9206,7 +9209,7 @@ std::string build_first_battle_action_view_selector_coverage_profile_ini()
 
     write_action_view_selector_coverage_checkpoints(out);
 
-    return out.str();
+    return build_capture_profile_json(out.str());
 }
 
 std::string build_first_battle_thread_list_profile_ini()
@@ -9346,7 +9349,7 @@ std::string build_first_battle_thread_list_profile_ini()
             "position_arg2:5",
         });
 
-    return out.str();
+    return build_capture_profile_json(out.str());
 }
 
 std::string build_first_battle_pre_handler_frame_pathing_profile_ini()
@@ -9699,7 +9702,7 @@ std::string build_first_battle_pre_handler_frame_pathing_profile_ini()
         {},
         8);
 
-    return out.str();
+    return build_capture_profile_json(out.str());
 }
 
 std::string build_first_battle_float_motion_profile_ini()
@@ -10033,7 +10036,7 @@ std::string build_first_battle_float_motion_profile_ini()
         {},
         2400);
 
-    return out.str();
+    return build_capture_profile_json(out.str());
 }
 
 std::string build_first_battle_move_increment_read_watch_profile_ini()
@@ -10186,7 +10189,169 @@ std::string build_first_battle_move_increment_read_watch_profile_ini()
         {},
         2400);
 
-    return out.str();
+    return build_capture_profile_json(out.str());
+}
+
+std::string build_first_battle_probe_layer_validation_profile_ini()
+{
+    using Array = picojson::value::array;
+    using Object = picojson::value::object;
+    const auto number = [](std::uint64_t value) {
+        return picojson::value(static_cast<double>(value));
+    };
+    const auto byte_program = [&](std::uint32_t address) {
+        return picojson::value(Array{
+            number(0x07),
+            number(address & 0xffu),
+            number((address >> 8) & 0xffu),
+            number((address >> 16) & 0xffu),
+            number((address >> 24) & 0xffu),
+            number(0x00),
+        });
+    };
+    const auto list_field = [&](const char* name, std::int32_t offset, std::uint32_t width) {
+        return picojson::value(Object{
+            { "name", picojson::value(name) },
+            { "offset", picojson::value(static_cast<double>(offset)) },
+            { "width", number(width) },
+        });
+    };
+
+    Array thread_fields{
+        list_field("callback", 0x00, 4),
+        list_field("next", 0x04, 4),
+        list_field("parent", 0x08, 4),
+        list_field("flags", 0x18, 1),
+        list_field("state", 0x19, 1),
+        list_field("depth", 0x1b, 1),
+        list_field("order_bits", 0x20, 4),
+        list_field("payload_word", 0x24, 4),
+    };
+    Array probes;
+    probes.emplace_back(Object{
+        { "id", picojson::value("battle_case5_after_threads_8000A2FC") },
+        { "group", picojson::value("probe_layer_validation") },
+        { "kind", picojson::value("pc") },
+        { "address", number(0x8000A2FCu) },
+        { "subscriptions", picojson::value(Array{ picojson::value("capture") }) },
+        { "frame_clock", picojson::value(true) },
+        { "max_hits", number(2400) },
+        { "samples", picojson::value(Array{ picojson::value(Object{
+            { "name", picojson::value("thread_list") },
+            { "type", picojson::value("linked_list") },
+            { "program", byte_program(0x80311A84u) },
+            { "trace", picojson::value("off") },
+            { "next_offset", number(0x04) },
+            { "max_nodes", number(128) },
+            { "fields", picojson::value(std::move(thread_fields)) },
+        }) }) },
+        { "symbol", picojson::value(Object{
+            { "name", picojson::value("battle_case5_after_threads") },
+            { "function", picojson::value("Battle::_battleController_8000a118") },
+            { "checkpoint", picojson::value("case5_complete") },
+        }) },
+    });
+    probes.emplace_back(Object{
+        { "id", picojson::value("rng_seed_write_803469A8") },
+        { "group", picojson::value("probe_layer_validation") },
+        { "kind", picojson::value("memory") },
+        { "size", number(4) },
+        { "access", picojson::value("write") },
+        { "activate_on_pc", number(0x80070A54u) },
+        { "address_program", byte_program(0x803469A8u) },
+        { "trace", picojson::value("on_failure") },
+        { "owns_rng_draw", picojson::value(true) },
+        { "subscriptions", picojson::value(Array{ picojson::value("capture") }) },
+        { "samples", picojson::value(Array{ picojson::value(Object{
+            { "name", picojson::value("call_stack") },
+            { "type", picojson::value("stack_trace") },
+            { "max_frames", number(8) },
+        }) }) },
+        { "symbol", picojson::value(Object{
+            { "name", picojson::value("rng_seed_write") },
+            { "function", picojson::value("rand") },
+            { "checkpoint", picojson::value("post_write_seed") },
+        }) },
+    });
+    probes.emplace_back(Object{
+        { "id", picojson::value("turn_input_shared_80070A54") },
+        { "group", picojson::value("probe_layer_validation") },
+        { "kind", picojson::value("pc") },
+        { "address", number(0x80070A54u) },
+        { "subscriptions", picojson::value(Array{
+            picojson::value("capture"),
+            picojson::value("progress"),
+            picojson::value("control"),
+        }) },
+        { "samples", picojson::value(Array{
+            picojson::value(Object{
+                { "name", picojson::value("queued_instruction_row") },
+                { "type", picojson::value("gpr") },
+                { "register", number(31) },
+            }),
+        }) },
+        { "symbol", picojson::value(Object{
+            { "name", picojson::value("turn_input_shared") },
+            { "function", picojson::value("setup_action_pc_handler") },
+            { "checkpoint", picojson::value("accepted_command_store") },
+        }) },
+    });
+
+    Object root{
+        { "schema", picojson::value("savor.capture.profile/1") },
+        { "name", picojson::value("first_battle_probe_layer_validation") },
+        { "revision", number(1) },
+        { "limits", picojson::value(Object{
+            { "queue_bytes", number(64ull * 1024ull * 1024ull) },
+            { "max_events", number(4096) },
+            { "progress_events", number(256) },
+        }) },
+        { "probes", picojson::value(std::move(probes)) },
+        { "flight_recorders", picojson::value(Array{ picojson::value(Object{
+            { "id", picojson::value("turn_input_context") },
+            { "member_probes", picojson::value(Array{
+                picojson::value("battle_case5_after_threads_8000A2FC"),
+            }) },
+            { "pre_events", number(2) },
+            { "post_events", number(4) },
+            { "trigger_probes", picojson::value(Array{
+                picojson::value("turn_input_shared_80070A54"),
+            }) },
+        }) }) },
+    };
+    return picojson::value(std::move(root)).serialize(true);
+}
+
+int write_first_battle_probe_layer_validation_profile(
+    const std::filesystem::path& output_path,
+    std::ostream& out,
+    std::ostream& err)
+{
+    if (output_path.empty()) {
+        err << "write-first-battle-probe-layer-validation-profile requires --output PATH.\n";
+        return 2;
+    }
+    if (const auto parent = output_path.parent_path(); !parent.empty()) {
+        std::error_code ec;
+        std::filesystem::create_directories(parent, ec);
+        if (ec) {
+            err << "Failed to create output directory: " << ec.message() << "\n";
+            return 1;
+        }
+    }
+    std::ofstream file(output_path, std::ios::binary | std::ios::trunc);
+    if (!file.is_open()) {
+        err << "Failed to open output profile: " << output_path.string() << "\n";
+        return 1;
+    }
+    const auto text = build_first_battle_probe_layer_validation_profile_ini();
+    file.write(text.data(), static_cast<std::streamsize>(text.size()));
+    if (!file.good()) {
+        err << "Failed to write output profile: " << output_path.string() << "\n";
+        return 1;
+    }
+    out << "Wrote first-battle probe-layer validation profile: " << output_path.string() << "\n";
+    return 0;
 }
 
 int write_first_battle_capture_profile(

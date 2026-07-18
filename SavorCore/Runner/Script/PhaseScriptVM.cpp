@@ -158,47 +158,6 @@ namespace savor {
             return out.str();
         }
 
-        DolphinWrapper::MemoryWatchpointAccess capture_access_to_wrapper_access(
-            savor::capture::WatchpointAccess access)
-        {
-            switch (access) {
-            case savor::capture::WatchpointAccess::Read:
-                return DolphinWrapper::MemoryWatchpointAccess::Read;
-            case savor::capture::WatchpointAccess::Access:
-                return DolphinWrapper::MemoryWatchpointAccess::Access;
-            case savor::capture::WatchpointAccess::Write:
-            default:
-                return DolphinWrapper::MemoryWatchpointAccess::Write;
-            }
-        }
-
-        std::vector<DolphinWrapper::MemoryWatchpointSpec> active_capture_watchpoints_to_wrapper_specs(
-            const std::vector<savor::capture::LiveCheckpointCapture::ActiveMemoryWatchpointSpec>& active_watchpoints)
-        {
-            std::vector<DolphinWrapper::MemoryWatchpointSpec> out;
-            out.reserve(active_watchpoints.size());
-            for (const auto& watchpoint : active_watchpoints) {
-                out.push_back(DolphinWrapper::MemoryWatchpointSpec{
-                    .id = watchpoint.id,
-                    .address = watchpoint.address,
-                    .size = watchpoint.size,
-                    .access = capture_access_to_wrapper_access(watchpoint.access),
-                });
-            }
-            return out;
-        }
-
-        const char* debug_stop_kind_to_string(DolphinWrapper::DebugStopKind kind)
-        {
-            switch (kind) {
-            case DolphinWrapper::DebugStopKind::PcBreakpoint: return "pc_breakpoint";
-            case DolphinWrapper::DebugStopKind::Memcheck: return "memcheck";
-            case DolphinWrapper::DebugStopKind::PcBreakpointAndMemcheck: return "pc_breakpoint_and_memcheck";
-            case DolphinWrapper::DebugStopKind::None:
-            default:
-                return "none";
-            }
-        }
     }
 
     PhaseScriptVM::PhaseScriptVM(savor::DolphinWrapper& host, const BreakpointMap& bpmap)
@@ -284,286 +243,29 @@ namespace savor {
         armed_ = true;
     }
 
-    std::vector<uint32_t> PhaseScriptVM::capture_pcs() const {
-        return capture_ && capture_->active() ? capture_->pcs() : std::vector<uint32_t>{};
-    }
-
-    void PhaseScriptVM::append_capture_pcs(std::vector<uint32_t>& pcs) const {
-        for (const auto pc : capture_pcs()) {
-            if (std::find(pcs.begin(), pcs.end(), pc) == pcs.end()) {
-                pcs.push_back(pc);
-            }
-        }
-    }
-
-    void PhaseScriptVM::arm_newly_activated_capture_pcs() {
-        if (!capture_ || !capture_->active()) {
-            return;
-        }
-
-        auto activated = capture_->take_newly_activated_pcs();
-        if (activated.empty()) {
-            return;
-        }
-
-        std::vector<uint32_t> to_arm;
-        for (const auto pc : activated) {
-            if (std::find(capture_armed_pcs_.begin(), capture_armed_pcs_.end(), pc)
-                == capture_armed_pcs_.end()) {
-                capture_armed_pcs_.push_back(pc);
-                to_arm.push_back(pc);
-            }
-        }
-        if (!to_arm.empty()) {
-            host_.armPcBreakpoints(to_arm);
-        }
-    }
-
-    void PhaseScriptVM::disarm_exhausted_capture_pcs() {
-        if (!capture_ || !capture_->active()) {
-            return;
-        }
-
-        auto exhausted = capture_->take_newly_exhausted_pcs();
-        if (exhausted.empty()) {
-            return;
-        }
-
-        const auto pc_is_program_armed = [&](uint32_t pc) {
-            if (std::find(armed_pcs_.begin(), armed_pcs_.end(), pc) != armed_pcs_.end()) {
-                return true;
-            }
-            for (const auto key : predicate_bp_keys_) {
-                if (const auto* e = bpmap_.find(key); e != nullptr && e->pc == pc) {
-                    return true;
-                }
-            }
-            for (const auto key : macro_enabled_bp_keys_) {
-                if (const auto* e = bpmap_.find(key); e != nullptr && e->pc == pc) {
-                    return true;
-                }
-            }
-            return false;
-        };
-
-        std::vector<uint32_t> to_disarm;
-        for (const auto pc : exhausted) {
-            capture_armed_pcs_.erase(
-                std::remove(capture_armed_pcs_.begin(), capture_armed_pcs_.end(), pc),
-                capture_armed_pcs_.end());
-            if (!pc_is_program_armed(pc)
-                && std::find(to_disarm.begin(), to_disarm.end(), pc) == to_disarm.end()) {
-                to_disarm.push_back(pc);
-            }
-        }
-        if (!to_disarm.empty()) {
-            host_.disarmPcBreakpoints(to_disarm);
-        }
-    }
-
     bool PhaseScriptVM::configure_capture_from_context(const PSContext& ctx, PSResult& result) {
         std::string profile_path;
         std::string output_path;
         const bool has_profile = ctx.get<std::string>(savor::context::key::core::CAPTURE_PROFILE_PATH, profile_path);
         const bool has_output = ctx.get<std::string>(savor::context::key::core::CAPTURE_OUTPUT_PATH, output_path);
-        if (!has_profile && !has_output) {
-            reset_capture_session(true);
-            return true;
-        }
-        if (!has_profile || !has_output || profile_path.empty() || output_path.empty()) {
-            result.ctx = ctx;
-            SCLOGW("[capture] profile and output paths are both required");
-            return false;
-        }
-        reset_capture_session(false);
-        if (!capture_) {
-            capture_ = std::make_unique<savor::capture::LiveCheckpointCapture>();
-        }
+        uint32_t progress_flags = 0;
+        ctx.get<uint32_t>(savor::context::key::core::PROGRESS_CORE_FLAGS, progress_flags);
+
         std::string error;
-        if (!capture_->start(profile_path, output_path, &error)) {
+        if (!host_.startProbeJob(
+            has_profile ? std::filesystem::path(profile_path) : std::filesystem::path{},
+            has_output ? std::filesystem::path(output_path) : std::filesystem::path{},
+            progress_flags,
+            &error)) {
             result.ctx = ctx;
-            SCLOGW("[capture] start failed profile=%s output=%s error=%s",
+            SCLOGW("[probe] start failed profile=%s output=%s error=%s",
                 profile_path.c_str(), output_path.c_str(), error.c_str());
             return false;
         }
-
-        if (!arm_capture_memory_watchpoints(savor::capture::WatchpointScope::Normal)) {
-            result.ctx = ctx;
-            SCLOGW("[capture] memory watchpoint arm failed profile=%s", profile_path.c_str());
-            capture_->stop();
-            return false;
-        }
-
-        arm_capture_breakpoints();
-        SCLOGI("[capture] active profile=%s output=%s pc_count=%zu watchpoint_count=%zu",
+        SCLOGI("[probe] active profile=%s output=%s battle_progress=%u",
             profile_path.c_str(),
             output_path.c_str(),
-            capture_armed_pcs_.size(),
-            capture_->memory_watchpoints().size());
-        return true;
-    }
-
-    void PhaseScriptVM::arm_capture_breakpoints() {
-        if (!capture_ || !capture_->active()) {
-            capture_armed_pcs_.clear();
-            return;
-        }
-        capture_armed_pcs_ = capture_->pcs();
-        if (!capture_armed_pcs_.empty()) {
-            host_.armPcBreakpoints(capture_armed_pcs_);
-        }
-        restore_canonical_breakpoint_scope();
-    }
-
-    bool PhaseScriptVM::arm_capture_memory_watchpoints(savor::capture::WatchpointScope scope) {
-        if (!capture_ || !capture_->active()) {
-            return true;
-        }
-        auto active_watchpoints = capture_->static_memory_watchpoints(scope);
-        const auto memory_watchpoints =
-            active_capture_watchpoints_to_wrapper_specs(active_watchpoints);
-        if (memory_watchpoints.empty()) {
-            host_.clearMemoryWatchpoints();
-            capture_->set_active_memory_watchpoints({});
-            return true;
-        }
-        host_.clearMemoryWatchpoints();
-        if (!host_.armMemoryWatchpoints(memory_watchpoints)) {
-            capture_->set_active_memory_watchpoints({});
-            return false;
-        }
-        capture_->set_active_memory_watchpoints(std::move(active_watchpoints));
-        return true;
-    }
-
-    void PhaseScriptVM::clear_capture_memory_watchpoints() {
-        host_.clearMemoryWatchpoints();
-        if (capture_ && capture_->active()) {
-            capture_->set_active_memory_watchpoints({});
-        }
-    }
-
-    void PhaseScriptVM::reset_capture_session(bool restore_scope) {
-        const auto pc_is_program_armed = [&](uint32_t pc) {
-            if (std::find(armed_pcs_.begin(), armed_pcs_.end(), pc) != armed_pcs_.end()) {
-                return true;
-            }
-            for (const auto key : predicate_bp_keys_) {
-                if (const auto* e = bpmap_.find(key); e != nullptr && e->pc == pc) {
-                    return true;
-                }
-            }
-            for (const auto key : macro_enabled_bp_keys_) {
-                if (const auto* e = bpmap_.find(key); e != nullptr && e->pc == pc) {
-                    return true;
-                }
-            }
-            return false;
-        };
-
-        std::vector<uint32_t> to_disarm;
-        for (const auto pc : capture_armed_pcs_) {
-            if (!pc_is_program_armed(pc)) {
-                to_disarm.push_back(pc);
-            }
-        }
-        if (!to_disarm.empty()) {
-            host_.disarmPcBreakpoints(to_disarm);
-        }
-        if (capture_) {
-            capture_->stop();
-        }
-        host_.clearMemoryWatchpoints();
-        capture_armed_pcs_.clear();
-        if (restore_scope) {
-            restore_canonical_breakpoint_scope();
-        }
-    }
-
-    bool PhaseScriptVM::capture_current_hit(
-        uint32_t pc,
-        PSContext& ctx,
-        savor::capture::WatchpointScope scope) {
-        if (!capture_ || !capture_->active() || !capture_->contains_pc(pc)) {
-            return true;
-        }
-        std::string error;
-        if (!capture_->capture_hit(host_, pc, &error)) {
-            ctx[savor::context::key::core::WORKER_ERROR] = static_cast<uint32_t>(WERR_UnknownError);
-            SCLOGW("[capture] checkpoint write failed pc=%08X error=%s", pc, error.c_str());
-            return false;
-        }
-        arm_newly_activated_capture_pcs();
-        auto dynamic_watchpoints = capture_->derive_dynamic_memory_watchpoints(host_, pc, scope);
-        if (!dynamic_watchpoints.empty()) {
-            capture_->append_active_memory_watchpoints(std::move(dynamic_watchpoints));
-            const auto specs =
-                active_capture_watchpoints_to_wrapper_specs(capture_->active_memory_watchpoints());
-            host_.clearMemoryWatchpoints();
-            if (!host_.armMemoryWatchpoints(specs)) {
-                ctx[savor::context::key::core::WORKER_ERROR] = static_cast<uint32_t>(WERR_UnknownError);
-                SCLOGW("[capture] dynamic memory watchpoint arm failed pc=%08X count=%zu",
-                    pc,
-                    specs.size());
-                return false;
-            }
-        }
-        disarm_exhausted_capture_pcs();
-        return true;
-    }
-
-    void PhaseScriptVM::step_past_capture_only_breakpoint(uint32_t timeout_ms, const RunUntilBpSpec& spec) {
-        host_.setEnabledPcBreakpointsOnly({});
-        (void)host_.stepOneOpcodeBlocking(static_cast<int>(timeout_ms));
-        if (spec.expected_only_scope) {
-            std::vector<uint32_t> pcs;
-            pcs.reserve(spec.expected_bp_keys.size() + capture_armed_pcs_.size());
-            for (const auto expected_bp : spec.expected_bp_keys) {
-                if (const auto* e = bpmap_.find(expected_bp)) {
-                    if (std::find(pcs.begin(), pcs.end(), e->pc) == pcs.end()) {
-                        pcs.push_back(e->pc);
-                    }
-                }
-            }
-            append_capture_pcs(pcs);
-            host_.setEnabledPcBreakpointsOnly(pcs);
-        } else {
-            restore_canonical_breakpoint_scope();
-        }
-    }
-
-    bool PhaseScriptVM::step_past_capture_only_memory_watchpoint(uint32_t timeout_ms, const RunUntilBpSpec& spec) {
-        std::vector<savor::capture::LiveCheckpointCapture::ActiveMemoryWatchpointSpec> active_watchpoints;
-        if (capture_ && capture_->active()) {
-            active_watchpoints = capture_->active_memory_watchpoints();
-        }
-
-        host_.clearMemoryWatchpoints();
-        host_.setEnabledPcBreakpointsOnly({});
-        (void)host_.stepOneOpcodeBlocking(static_cast<int>(timeout_ms));
-
-        if (!active_watchpoints.empty()) {
-            if (!host_.armMemoryWatchpoints(active_capture_watchpoints_to_wrapper_specs(active_watchpoints))) {
-                SCLOGW("[capture] memory watchpoint rearm failed after capture-only memcheck");
-                return false;
-            }
-        }
-
-        if (spec.expected_only_scope) {
-            std::vector<uint32_t> pcs;
-            pcs.reserve(spec.expected_bp_keys.size() + capture_armed_pcs_.size());
-            for (const auto expected_bp : spec.expected_bp_keys) {
-                if (const auto* e = bpmap_.find(expected_bp)) {
-                    if (std::find(pcs.begin(), pcs.end(), e->pc) == pcs.end()) {
-                        pcs.push_back(e->pc);
-                    }
-                }
-            }
-            append_capture_pcs(pcs);
-            host_.setEnabledPcBreakpointsOnly(pcs);
-        } else {
-            restore_canonical_breakpoint_scope();
-        }
+            (progress_flags & static_cast<uint32_t>(CoreProgressFlags::BattleProgress)) != 0 ? 1u : 0u);
         return true;
     }
 
@@ -583,7 +285,6 @@ namespace savor {
         for (const auto& k : predicate_bp_keys_) {
             append_pc(k);
         }
-        append_capture_pcs(enabled_pcs);
         host_.setEnabledPcBreakpointsOnly(enabled_pcs);
     }
 
@@ -591,6 +292,7 @@ namespace savor {
         disable_macro_step_breakpoint();
         host_.setEnabledPcBreakpointsOnly({});
         macro_breakpoint_scope_active_ = true;
+        host_.emitProbeMarker("macro.begin");
         SCLOGI("[battle-macro-scope] begin");
     }
 
@@ -598,7 +300,6 @@ namespace savor {
         disable_macro_step_breakpoint();
         if (const auto* e = bpmap_.find(key)) {
             std::vector<uint32_t> enabled{ e->pc };
-            append_capture_pcs(enabled);
             host_.setEnabledPcBreakpointsOnly(enabled);
             macro_enabled_bp_keys_.push_back(key);
             SCLOGI("[battle-macro-scope] enable key=%u pc=%08X",
@@ -628,9 +329,10 @@ namespace savor {
             return;
         }
         disable_macro_step_breakpoint();
-        clear_capture_memory_watchpoints();
+        host_.clearMemoryWatchpoints();
         macro_breakpoint_scope_active_ = false;
         restore_canonical_breakpoint_scope();
+        host_.emitProbeMarker("macro.end");
         SCLOGI("[battle-macro-scope] end");
     }
 
@@ -717,14 +419,7 @@ namespace savor {
         armed_ = false;
         armed_pcs_.clear();
         arm_bps_once();
-        if (capture_ && capture_->active()) {
-            if (!arm_capture_memory_watchpoints(savor::capture::WatchpointScope::Normal)) {
-                ctx[savor::context::key::core::WORKER_ERROR] = static_cast<uint32_t>(WERR_UnknownError);
-                result.ctx = ctx;
-                return false;
-            }
-            arm_capture_breakpoints();
-        }
+        host_.emitProbeMarker("reboot.complete");
         return true;
     }
     void PhaseScriptVM::op_label() const {}
@@ -789,9 +484,6 @@ namespace savor {
 
         SCLOGI("[VM] MOVIE_PLAY arm-before-start path=%s", path.c_str());
         arm_bps_once();
-        if (capture_ && capture_->active()) {
-            arm_capture_breakpoints();
-        }
 
         if (!host_.startMoviePlayback(path))
             return false;
@@ -803,9 +495,7 @@ namespace savor {
         armed_ = false;
         armed_pcs_.clear();
         arm_bps_once();
-        if (capture_ && capture_->active()) {
-            arm_capture_breakpoints();
-        }
+        host_.emitProbeMarker("movie.start");
         return true;
     }
     bool PhaseScriptVM::op_save_savestate_from(const PSOp& op, PSResult& result, PSContext& ctx) {
@@ -841,16 +531,13 @@ namespace savor {
         if (poll_ms == 0) {
             ctx.get<uint32_t>(savor::context::key::core::RUN_POLL_MS, poll_ms);
         }
-        if (poll_ms == 0 && capture_ && capture_->active()) {
-            poll_ms = 1;
-        }
         if (poll_ms == 0) {
             poll_ms = host_.pickPollIntervalMs(timeout_ms);
         }
 
         const auto collect_expected_pcs = [&]() {
             std::vector<uint32_t> pcs;
-            pcs.reserve(spec.expected_bp_keys.size() + capture_armed_pcs_.size());
+            pcs.reserve(spec.expected_bp_keys.size());
             for (const auto expected_bp : spec.expected_bp_keys) {
                 if (const auto* e = bpmap_.find(expected_bp)) {
                     if (std::find(pcs.begin(), pcs.end(), e->pc) == pcs.end()) {
@@ -858,7 +545,6 @@ namespace savor {
                     }
                 }
             }
-            append_capture_pcs(pcs);
             return pcs;
         };
 
@@ -893,144 +579,17 @@ namespace savor {
         }
 
         const auto t0 = std::chrono::steady_clock::now();
-        auto t1 = t0;
-        const auto deadline = t0 + std::chrono::milliseconds(timeout_ms);
         DolphinWrapper::RunUntilHitResult rr{};
-        uint32_t capture_only_pc_hits = 0;
-        uint32_t capture_only_memwatch_hits = 0;
-        uint32_t capture_only_unattributed_deltas = 0;
-        uint32_t capture_only_last_pc = 0;
 
         run_until_bp_active_.store(true, std::memory_order_release);
         host_.disableThrottle();
-        for (;;) {
-            const auto now = std::chrono::steady_clock::now();
-            const uint32_t remaining_ms = now >= deadline
-                ? 1u
-                : static_cast<uint32_t>(std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count());
-
-            rr = host_.runUntilBreakpointFlexible(
-                remaining_ms,
-                vi_stall_ms,
-                spec.watch_movie,
-                poll_ms,
-                progress_flags);
-            t1 = std::chrono::steady_clock::now();
-
-            if (!rr.hit) {
-                break;
-            }
-
-            const uint32_t hit_pc = static_cast<uint32_t>(rr.pc);
-            bool captured_memwatch_event = false;
-            bool captured_unattributed_delta = false;
-            if (rr.memory_watchpoint.has_value() && capture_ && capture_->active()) {
-                const auto& hit = *rr.memory_watchpoint;
-                const bool remove_after_capture =
-                    capture_->active_memory_watchpoint_is_one_shot(hit.id);
-                std::string error;
-                if (!capture_->capture_memory_watchpoint_hit(
-                    host_,
-                    debug_stop_kind_to_string(rr.stop_kind),
-                    hit,
-                    &error)) {
-                    ctx[savor::context::key::core::WORKER_ERROR] = static_cast<uint32_t>(WERR_UnknownError);
-                    SCLOGW("[capture] memory watchpoint write failed pc=%08X error=%s", hit_pc, error.c_str());
-                    rr = { false, 0u, "capture_failed" };
-                    break;
-                }
-                if (remove_after_capture) {
-                    capture_->remove_active_memory_watchpoint(hit.id);
-                }
-                captured_memwatch_event = true;
-            }
-            if (!rr.memory_watchpoint.has_value()
-                && !rr.memory_watchpoint_deltas.empty()
-                && capture_
-                && capture_->active()) {
-                for (const auto& delta : rr.memory_watchpoint_deltas) {
-                    std::string error;
-                    if (!capture_->capture_memory_watchpoint_delta(
-                        host_,
-                        debug_stop_kind_to_string(rr.stop_kind),
-                        delta,
-                        rr.decoded_current_access,
-                        &error)) {
-                        ctx[savor::context::key::core::WORKER_ERROR] = static_cast<uint32_t>(WERR_UnknownError);
-                        SCLOGW("[capture] memory watchpoint delta write failed pc=%08X error=%s", hit_pc, error.c_str());
-                        rr = { false, 0u, "capture_failed" };
-                        break;
-                    }
-                }
-                if (!rr.hit) {
-                    break;
-                }
-                captured_memwatch_event = true;
-                captured_unattributed_delta = true;
-            }
-            const bool capture_hit = capture_ && capture_->active() && capture_->contains_pc(hit_pc);
-            const BPAddr* program_hit = nullptr;
-            if (!spec.expected_bp_keys.empty()) {
-                program_hit = find_hit_bp_in_keys(bpmap_, spec.expected_bp_keys, hit_pc);
-            }
-            if (program_hit == nullptr) {
-                program_hit = spec.include_reserved_hit_lookup
-                    ? find_hit_bp(bpmap_, canonical_bp_keys_, reserved_bp_keys_, predicate_bp_keys_, hit_pc)
-                    : find_hit_bp(bpmap_, canonical_bp_keys_, predicate_bp_keys_, hit_pc);
-            }
-
-            if (capture_hit && !capture_current_hit(hit_pc, ctx, spec.capture_watchpoint_scope)) {
-                rr = { false, 0u, "capture_failed" };
-                break;
-            }
-
-            if (program_hit != nullptr) {
-                break;
-            }
-
-            if (!capture_hit && !captured_memwatch_event) {
-                break;
-            }
-
-            const uint32_t capture_only_total =
-                capture_only_pc_hits + capture_only_memwatch_hits + 1u;
-            const uint32_t capture_only_hit_limit =
-                spec.capture_watchpoint_scope == savor::capture::WatchpointScope::Normal
-                    && capture_
-                    && capture_->active()
-                ? capture_->capture_only_hit_limit()
-                : spec.capture_only_hit_limit;
-            if (capture_only_total > capture_only_hit_limit) {
-                SCLOGW("[capture] capture-only hit limit exceeded limit=%u pc=%08X",
-                    capture_only_hit_limit,
-                    hit_pc);
-                rr = { false, 0u, "capture_hit_limit" };
-                break;
-            }
-
-            capture_only_last_pc = hit_pc;
-            if (capture_hit) {
-                ++capture_only_pc_hits;
-            }
-            if (captured_memwatch_event) {
-                ++capture_only_memwatch_hits;
-            }
-            if (captured_unattributed_delta) {
-                capture_only_unattributed_deltas +=
-                    static_cast<uint32_t>(rr.memory_watchpoint_deltas.size());
-            }
-
-            if (captured_memwatch_event) {
-                SCLOGT("[capture] continuing past capture-only memory watchpoint pc=%08X", hit_pc);
-                if (!step_past_capture_only_memory_watchpoint(remaining_ms, spec)) {
-                    rr = { false, 0u, "capture_failed" };
-                    break;
-                }
-            } else {
-                SCLOGT("[capture] continuing past capture-only breakpoint pc=%08X", hit_pc);
-                step_past_capture_only_breakpoint(remaining_ms, spec);
-            }
-        }
+        rr = host_.runUntilBreakpointFlexible(
+            timeout_ms,
+            vi_stall_ms,
+            spec.watch_movie,
+            poll_ms,
+            progress_flags);
+        const auto t1 = std::chrono::steady_clock::now();
         host_.enableThrottle();
         run_until_bp_active_.store(false, std::memory_order_release);
 
@@ -1061,8 +620,12 @@ namespace savor {
             if (std::strcmp(rr.reason, "timeout") == 0) outcome = RunToBpOutcome::Timeout;
             else if (std::strcmp(rr.reason, "vi_stalled") == 0) outcome = RunToBpOutcome::ViStalled;
             else if (std::strcmp(rr.reason, "movie_ended") == 0) outcome = RunToBpOutcome::MovieEnded;
-            else if (std::strcmp(rr.reason, "capture_failed") == 0) outcome = RunToBpOutcome::Aborted;
-            else if (std::strcmp(rr.reason, "capture_hit_limit") == 0) outcome = RunToBpOutcome::Aborted;
+            else if (std::strcmp(rr.reason, "cancelled") == 0
+                || std::strcmp(rr.reason, "shutdown") == 0
+                || std::strcmp(rr.reason, "control_unavailable") == 0
+                || std::strcmp(rr.reason, "control_pause_failed") == 0) {
+                outcome = RunToBpOutcome::Aborted;
+            }
         }
 
         const BPAddr* hit_bp = nullptr;
@@ -1116,10 +679,10 @@ namespace savor {
         ctx[savor::context::key::core::VI_DELTA] = static_cast<uint32_t>(host_.getViFieldCountApproxFromBaseline() & 0xFFFFFFFFull);
         ctx[savor::context::key::core::POLL_MS] = poll_ms;
         ctx[savor::context::key::core::VI_LAST] = static_cast<uint32_t>(host_.getViFieldCountApprox() & 0xFFFFFFFFull);
-        ctx[savor::context::key::battle::MACRO_CAPTURE_ONLY_PC_HITS] = capture_only_pc_hits;
-        ctx[savor::context::key::battle::MACRO_CAPTURE_ONLY_MEMWATCH_HITS] = capture_only_memwatch_hits;
-        ctx[savor::context::key::battle::MACRO_CAPTURE_ONLY_UNATTRIBUTED_DELTAS] = capture_only_unattributed_deltas;
-        ctx[savor::context::key::battle::MACRO_CAPTURE_ONLY_LAST_PC] = capture_only_last_pc;
+        ctx[savor::context::key::battle::MACRO_CAPTURE_ONLY_PC_HITS] = 0u;
+        ctx[savor::context::key::battle::MACRO_CAPTURE_ONLY_MEMWATCH_HITS] = 0u;
+        ctx[savor::context::key::battle::MACRO_CAPTURE_ONLY_UNATTRIBUTED_DELTAS] = 0u;
+        ctx[savor::context::key::battle::MACRO_CAPTURE_ONLY_LAST_PC] = 0u;
 
         SCLOGDX(
             SC_TAGS("vm", "breakpoint"),
@@ -1660,7 +1223,7 @@ namespace savor {
         };
 
         if (step.kind == RuntimeMacroStepKind::CaptureMemoryU32) {
-            clear_capture_memory_watchpoints();
+            host_.clearMemoryWatchpoints();
             uint32_t value = 0;
             if (!read_u32(step.memory_addr, value)) {
                 ctx[savor::context::key::core::DW_RUN_OUTCOME_CODE] = static_cast<uint32_t>(RunToBpOutcome::InputPlaybackFailed);
@@ -1689,7 +1252,7 @@ namespace savor {
         }
 
         if (step.kind == RuntimeMacroStepKind::WaitMemoryU32Changed) {
-            clear_capture_memory_watchpoints();
+            host_.clearMemoryWatchpoints();
             if (!battle_macro_memory_baseline_valid_ || battle_macro_memory_addr_ != step.memory_addr) {
                 ctx[savor::context::key::core::DW_RUN_OUTCOME_CODE] = static_cast<uint32_t>(RunToBpOutcome::InputPlaybackFailed);
                 ctx[savor::context::key::battle::MACRO_FAILURE_CODE] = static_cast<uint32_t>(FailureCode::MemoryReadFailed);
@@ -1785,7 +1348,7 @@ namespace savor {
         }
 
         if (step.kind == RuntimeMacroStepKind::NeutralFrames) {
-            clear_capture_memory_watchpoints();
+            host_.clearMemoryWatchpoints();
             host_.setInput(GCInputFrame{});
             host_.setEnabledPcBreakpointsOnly({});
             for (uint32_t frame = 0; frame < step.frame_count; ++frame) {
@@ -1814,14 +1377,7 @@ namespace savor {
             return;
         }
 
-        if (!arm_capture_memory_watchpoints(savor::capture::WatchpointScope::InputMacro)) {
-            ctx[savor::context::key::core::DW_RUN_OUTCOME_CODE] =
-                static_cast<uint32_t>(RunToBpOutcome::InputPlaybackFailed);
-            ctx[savor::context::key::battle::MACRO_FAILURE_CODE] =
-                static_cast<uint32_t>(FailureCode::UnexpectedBreakpoint);
-            end_macro_breakpoint_scope();
-            return;
-        }
+        host_.emitProbeMarker("macro.step.begin", step_index);
         enable_macro_step_breakpoint(step.expected_bp_keys.front());
         const auto rr = run_until_bp_core(ctx, RunUntilBpSpec{
             .expected_bp_keys = step.expected_bp_keys,
@@ -1834,11 +1390,10 @@ namespace savor {
             .watch_movie = false,
             .include_reserved_hit_lookup = true,
             .update_derived = false,
-            .capture_watchpoint_scope = savor::capture::WatchpointScope::InputMacro,
-            .capture_only_hit_limit = 1024u,
         });
         disable_macro_step_breakpoint();
-        clear_capture_memory_watchpoints();
+        host_.clearMemoryWatchpoints();
+        host_.emitProbeMarker("macro.step.end", step_index);
         GCInputFrame released_input = step.input;
         released_input.buttons = static_cast<uint16_t>(released_input.buttons & ~step.input.buttons);
         host_.setInput(released_input);
@@ -1857,7 +1412,7 @@ namespace savor {
             if (rr.outcome == RunToBpOutcome::Aborted) {
                 ctx[savor::context::key::core::DW_RUN_OUTCOME_CODE] = static_cast<uint32_t>(RunToBpOutcome::Aborted);
                 ctx[savor::context::key::battle::MACRO_FAILURE_CODE] =
-                    static_cast<uint32_t>(FailureCode::CaptureOnlyHitLimit);
+                    static_cast<uint32_t>(FailureCode::UnexpectedBreakpoint);
             } else {
                 ctx[savor::context::key::core::DW_RUN_OUTCOME_CODE] = static_cast<uint32_t>(RunToBpOutcome::Timeout);
                 ctx[savor::context::key::battle::MACRO_FAILURE_CODE] = static_cast<uint32_t>(FailureCode::Timeout);
@@ -2043,42 +1598,23 @@ namespace savor {
     }
     void PhaseScriptVM::op_clear_memory_watchpoints() const {
         host_.clearMemoryWatchpoints();
-        if (capture_ && capture_->active()) {
-            capture_->set_active_memory_watchpoints({});
-        }
     }
-    bool PhaseScriptVM::op_capture_seed_override(PSResult& result, PSContext& ctx) {
-        if (!capture_ || !capture_->active()) {
-            return true;
-        }
-
+    bool PhaseScriptVM::op_capture_seed_override(PSResult&, PSContext& ctx) {
         uint32_t original_seed = 0;
         uint32_t override_seed = 0;
         uint32_t applied_seed = 0;
         ctx.get<uint32_t>(savor::context::key::battle::RNG_ORIGINAL_SEED, original_seed);
         ctx.get<uint32_t>(savor::context::key::battle::RNG_OVERRIDE_SEED, override_seed);
         ctx.get<uint32_t>(savor::context::key::battle::RNG_APPLIED_SEED, applied_seed);
-
-        std::string error;
-        if (!capture_->capture_seed_override(host_, host_.getPC(), original_seed, override_seed, applied_seed, &error)) {
-            ctx[savor::context::key::core::WORKER_ERROR] = static_cast<uint32_t>(WERR_UnknownError);
-            result.ctx = ctx;
-            SCLOGW("[capture] seed override write failed error=%s", error.c_str());
-            return false;
-        }
+        host_.emitProbeMarker("rng.seed_override.original", original_seed);
+        host_.emitProbeMarker("rng.seed_override.requested", override_seed);
+        host_.emitProbeMarker("rng.seed_override.applied", applied_seed);
         return true;
     }
-    bool PhaseScriptVM::op_arm_capture_memory_watchpoints(PSResult& result, PSContext& ctx) {
-        if (!capture_ || !capture_->active()) {
-            return true;
-        }
-        if (arm_capture_memory_watchpoints(savor::capture::WatchpointScope::Normal)) {
-            return true;
-        }
-        ctx[savor::context::key::core::DW_RUN_OUTCOME_CODE] = static_cast<uint32_t>(RunToBpOutcome::InputPlaybackFailed);
-        ctx[savor::context::key::core::WORKER_ERROR] = static_cast<uint32_t>(WERR_UnknownError);
-        result.ctx = ctx;
-        return false;
+    bool PhaseScriptVM::op_arm_capture_memory_watchpoints(PSResult&, PSContext&) {
+        // Probe profile memory subscriptions are active for the full job scope.
+        host_.emitProbeMarker("capture.memory_probes.active");
+        return true;
     }
     void PhaseScriptVM::op_record_current_bp(PSContext& ctx) {
         const uint32_t pc = host_.getPC();
@@ -2229,10 +1765,11 @@ namespace savor {
             switch (r.cmp) { case 0: ok = (lhs == rhs); break; case 1: ok = (lhs != rhs); break; case 2: ok = (lhs < rhs); break; case 3: ok = (lhs <= rhs); break; case 4: ok = (lhs > rhs); break; case 5: ok = (lhs >= rhs); break; default: ok = false; break; }
             std::string cmp_string = std::to_string(lhs) + " " + pred::get_cmp_string((pred::CmpOp)r.cmp) + " " + std::to_string(rhs);
             uint32_t progress;
-            if (ctx.get(savor::context::key::core::PROGRESS_CORE_FLAGS, progress) && (progress & (uint32_t)CoreProgressFlags::PredicateProgress) != 0 && host_.getProgressSink()) {
+            if (ctx.get(savor::context::key::core::PROGRESS_CORE_FLAGS, progress)
+                && (progress & (uint32_t)CoreProgressFlags::PredicateProgress) != 0) {
                 std::string msg = std::format("{} - {}", r.name, cmp_string);
                 msg = std::string("Pred") + (ok ? "(Passed): " : "(Failed): ") + msg;
-                host_.getProgressSink()(msg.c_str(), true);
+                host_.emitProgress(msg, true);
             }
             ++total; if (ok) ++pass;
             if (!ok && r.has_flag(pred::PredFlag::AbortOnFail)) { ctx[savor::context::key::core::PRED_ABORT_RUN] = (uint32_t)1; break; }
@@ -2253,12 +1790,17 @@ namespace savor {
         host_.clearMemoryWatchpoints();
         predicate_bp_keys_.clear();
         std::string _section = "Entry Point";
-        // Always start by restoring the pre-captured snapshot for each job
-        if (!load_snapshot()) return R;
 
         if (!configure_capture_from_context(ctx, R)) {
             return R;
         }
+        struct ProbeJobRunScope {
+            DolphinWrapper& host;
+            ~ProbeJobRunScope() { host.stopProbeJob(); }
+        } probe_job_scope{ host_ };
+
+        // Restore the job baseline while the probe layer is active so the epoch marker is durable.
+        if (!load_snapshot()) return R;
 
         ctx[savor::context::key::core::VI_FIRST] = (uint32_t)(host_.getViFieldCountApprox() & 0xFFFFFFFFull);
 

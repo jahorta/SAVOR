@@ -140,6 +140,38 @@ void write_optional_bool(std::ostream& out, const char* name, const std::optiona
     out << "\n";
 }
 
+void write_capture_artifact(std::ostream& out, const PreparedCaptureArtifact& value) {
+    out << "  \"capture_artifact\": {"
+        << "\"verified\":" << (value.verified ? "true" : "false") << ","
+        << "\"complete\":" << (value.complete ? "true" : "false") << ","
+        << "\"incomplete_reason\":\"" << json_escape(value.incomplete_reason) << "\","
+        << "\"segment_count\":" << value.segment_count << ","
+        << "\"chunk_count\":" << value.chunk_count << ","
+        << "\"event_count\":" << value.event_count << ","
+        << "\"gap_count\":" << value.gap_count << ","
+        << "\"revision_count\":" << value.revision_count << ","
+        << "\"metrics_event_count\":" << value.metrics_event_count << ","
+        << "\"hits\":" << value.hits << ","
+        << "\"filter_rejections\":" << value.filter_rejections << ","
+        << "\"capture_deliveries\":" << value.capture_deliveries << ","
+        << "\"progress_deliveries\":" << value.progress_deliveries << ","
+        << "\"control_publications\":" << value.control_publications << ","
+        << "\"drops\":" << value.drops << ","
+        << "\"progress_coalesced\":" << value.progress_coalesced << ","
+        << "\"bytes\":" << value.bytes << ","
+        << "\"traces\":" << value.traces << ","
+        << "\"trace_failures\":" << value.trace_failures << ","
+        << "\"flight_triggers\":" << value.flight_triggers << ","
+        << "\"flight_completed_windows\":" << value.flight_completed_windows << ","
+        << "\"flight_window_active\":" << (value.flight_window_active ? "true" : "false") << ","
+        << "\"segments\":[";
+    for (std::size_t i = 0; i < value.segments.size(); ++i) {
+        if (i != 0) out << ',';
+        out << '"' << json_escape(path_string(value.segments[i])) << '"';
+    }
+    out << "]},\n";
+}
+
 } // namespace
 
 bool write_battle_job_run_manifest(
@@ -172,11 +204,14 @@ bool write_battle_job_run_manifest(
     file << "  \"iso_path\": \"" << json_escape(path_string(summary.options.iso_path)) << "\",\n";
     file << "  \"dolphin_base_dir\": \"" << json_escape(path_string(summary.options.dolphin_base_dir)) << "\",\n";
     file << "  \"worker_exe_path\": \"" << json_escape(path_string(summary.options.worker_exe_path)) << "\",\n";
+    file << "  \"probe_mode\": \"" << probe_mode_name(summary.options.probe_mode) << "\",\n";
+    file << "  \"probe_cpu_core\": \"" << probe_cpu_core_name(summary.options.probe_cpu_core) << "\",\n";
     file << "  \"capture_profile_path\": \"" << json_escape(path_string(summary.capture_profile_path)) << "\",\n";
     file << "  \"timeout_ms\": " << summary.options.timeout_ms << ",\n";
     write_optional_u32(file, "battle_run_ms", summary.options.battle_run_ms, true);
     file << "  \"expected_capture_path\": \"" << json_escape(path_string(summary.expected_capture_path)) << "\",\n";
     file << "  \"stable_capture_path\": \"" << json_escape(path_string(summary.stable_capture_path)) << "\",\n";
+    file << "  \"capture_export_path\": \"" << json_escape(path_string(summary.capture_export_path)) << "\",\n";
     file << "  \"trace_report_path\": \"" << json_escape(path_string(summary.trace_report_path)) << "\",\n";
     write_std_json_cache(file, summary.std_json_cache);
     file << "  \"original_turn_job_id\": " << summary.clone.original_turn_job_id << ",\n";
@@ -199,6 +234,7 @@ bool write_battle_job_run_manifest(
     file << "  \"terminal_state\": \"" << json_escape(summary.terminal_state) << "\",\n";
     file << "  \"timed_out\": " << (summary.timed_out ? "true" : "false") << ",\n";
     file << "  \"capture_found\": " << (summary.capture_found ? "true" : "false") << ",\n";
+    write_capture_artifact(file, summary.capture_artifact);
     file << "  \"trace_exit_code\": " << summary.trace_exit_code << ",\n";
     write_table_counts(file, summary.sandbox.table_counts);
     write_copied_artifacts(file, summary.sandbox.copied_artifacts);
@@ -226,6 +262,8 @@ bool write_battle_job_run_text_summary(
     file << "source_db_root: " << summary.options.db_root.string() << "\n";
     file << "sandbox_db_root: " << summary.sandbox.db_root.string() << "\n";
     file << "sandbox_mode: " << savor::dbutils::ToString(summary.sandbox.sandbox_mode) << "\n";
+    file << "probe_mode: " << probe_mode_name(summary.options.probe_mode) << "\n";
+    file << "probe_cpu_core: " << probe_cpu_core_name(summary.options.probe_cpu_core) << "\n";
     file << "original_exec_job_id: " << summary.clone.original_exec_job_id << "\n";
     file << "cloned_exec_job_id: " << summary.clone.cloned_exec_job_id << "\n";
     file << "original_turn_job_id: " << summary.clone.original_turn_job_id << "\n";
@@ -252,7 +290,15 @@ bool write_battle_job_run_text_summary(
     }
     file << "terminal_state: " << summary.terminal_state << "\n";
     file << "capture_found: " << (summary.capture_found ? "true" : "false") << "\n";
+    file << "capture_segments: " << summary.capture_artifact.segment_count << "\n";
+    file << "capture_chunks: " << summary.capture_artifact.chunk_count << "\n";
+    file << "capture_complete: " << (summary.capture_artifact.complete ? "true" : "false") << "\n";
+    file << "capture_gaps: " << summary.capture_artifact.gap_count << "\n";
+    file << "capture_drops: " << summary.capture_artifact.drops << "\n";
+    file << "capture_revisions: " << summary.capture_artifact.revision_count << "\n";
+    file << "capture_metrics_events: " << summary.capture_artifact.metrics_event_count << "\n";
     file << "stable_capture_path: " << summary.stable_capture_path.string() << "\n";
+    file << "capture_export_path: " << summary.capture_export_path.string() << "\n";
     file << "trace_report_path: " << summary.trace_report_path.string() << "\n";
     file << "std_json_cache: "
         << summarize_action_view_std_json_cache_resolution(summary.std_json_cache) << "\n";

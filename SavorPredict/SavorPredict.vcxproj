@@ -81,7 +81,7 @@
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
-      <AdditionalIncludeDirectories>$(SolutionDir)SavorCore;$(SolutionDir)SavorDb;$(SolutionDir)SavorDbUtils;$(SolutionDir)SavorWorkflow;$(IntDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)SavorCore;$(SolutionDir)SavorDb;$(SolutionDir)SavorDbUtils;$(SolutionDir)SavorWorkflow;$(SolutionDir)third-party\dolphin-2506a\include\Externals\picojson;$(IntDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
       <UseStandardPreprocessor>true</UseStandardPreprocessor>
     </ClCompile>
@@ -99,7 +99,7 @@
       <PreprocessorDefinitions>NDEBUG;_CONSOLE;NOMINMAX;WIN32;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(SolutionDir)SavorCore;$(SolutionDir)SavorDb;$(SolutionDir)SavorDbUtils;$(SolutionDir)SavorWorkflow;$(IntDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)SavorCore;$(SolutionDir)SavorDb;$(SolutionDir)SavorDbUtils;$(SolutionDir)SavorWorkflow;$(SolutionDir)third-party\dolphin-2506a\include\Externals\picojson;$(IntDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <UseStandardPreprocessor>true</UseStandardPreprocessor>
     </ClCompile>
     <Link>
@@ -146,6 +146,7 @@
     <ClCompile Include="BattleJobRunOptions.cpp" />
     <ClCompile Include="BattleJobSandbox.cpp" />
     <ClCompile Include="BattleJobWorkerRun.cpp" />
+    <ClCompile Include="CaptureArtifact.cpp" />
     <ClCompile Include="CheckpointTrace.cpp" />
     <ClCompile Include="CritGateCheckpointModel.cpp" />
     <ClCompile Include="CounterCheckpointModel.cpp" />
@@ -160,6 +161,7 @@
     <ClCompile Include="EnemyEventDataModel.cpp" />
     <ClCompile Include="Field6WatchpointModel.cpp" />
     <ClCompile Include="FirstBattleDataModel.cpp" />
+    <ClCompile Include="CaptureProfileJson.cpp" />
     <ClCompile Include="LiveCaptureProfile.cpp" />
     <ClCompile Include="Main.cpp" />
     <ClCompile Include="MovementModel.cpp" />
@@ -218,8 +220,10 @@
     <ClInclude Include="BattleJobClone.h" />
     <ClInclude Include="BattleJobRunManifest.h" />
     <ClInclude Include="BattleJobRunOptions.h" />
+    <ClInclude Include="ProbeCpuCoreEnvironment.h" />
     <ClInclude Include="BattleJobSandbox.h" />
     <ClInclude Include="BattleJobWorkerRun.h" />
+    <ClInclude Include="CaptureArtifact.h" />
     <ClInclude Include="CheckpointTrace.h" />
     <ClInclude Include="CritGateCheckpointModel.h" />
     <ClInclude Include="CounterCheckpointModel.h" />
@@ -234,6 +238,7 @@
     <ClInclude Include="EnemyEventDataModel.h" />
     <ClInclude Include="Field6WatchpointModel.h" />
     <ClInclude Include="FirstBattleDataModel.h" />
+    <ClInclude Include="CaptureProfileJson.h" />
     <ClInclude Include="LiveCaptureProfile.h" />
     <ClInclude Include="MovementModel.h" />
     <ClInclude Include="OutcomeCheckpointModel.h" />
@@ -254,6 +259,9 @@
     <ClInclude Include="ViewPlacementGeometryModel.h" />
   </ItemGroup>
   <ItemGroup>
+    <ProjectReference Include="..\SavorCaptureFormat\SavorCaptureFormat.vcxproj">
+      <Project>{A66262AE-CE77-4FD0-858A-E78CE6011DD1}</Project>
+    </ProjectReference>
     <ProjectReference Include="..\SavorDb\SavorDb.vcxproj">
       <Project>{A18AF4B4-3A2E-47D9-A252-ACF2E68DB8A8}</Project>
     </ProjectReference>

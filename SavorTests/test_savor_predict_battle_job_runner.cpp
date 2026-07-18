@@ -3,6 +3,7 @@
 #include "BattleJobBatchRunOptions.h"
 #include "BattleJobClone.h"
 #include "BattleJobRunOptions.h"
+#include "ProbeCpuCoreEnvironment.h"
 #include "common/SqliteDbFixture.h"
 
 #include "Common/Types/UtcTimestamp.h"
@@ -356,6 +357,53 @@ TEST(SavorPredictBattleJobRunOptions, ValidatesSelectorsAndRuntimePaths)
         },
         "SavorPredict.exe");
     EXPECT_FALSE(invalid_battle_run_ms.errors.empty());
+
+    const auto progress_only = parse_battle_job_run_tokens(
+        {
+            "--exec-job-id", "34", "--probe-mode", "progress-only",
+            "--iso", "D:/SoATAS/game.gcm", "--dolphin-base-dir", "D:/SoATAS/dolphin",
+        },
+        "SavorPredict.exe");
+    EXPECT_TRUE(progress_only.errors.empty())
+        << (progress_only.errors.empty() ? "" : progress_only.errors.front());
+    EXPECT_EQ(progress_only.options.probe_mode, ProbeMode::ProgressOnly);
+
+    const auto control_only = parse_battle_job_run_tokens(
+        {
+            "--exec-job-id", "34", "--probe-mode", "control-only",
+            "--iso", "D:/SoATAS/game.gcm", "--dolphin-base-dir", "D:/SoATAS/dolphin",
+        },
+        "SavorPredict.exe");
+    EXPECT_TRUE(control_only.errors.empty())
+        << (control_only.errors.empty() ? "" : control_only.errors.front());
+    EXPECT_EQ(control_only.options.probe_mode, ProbeMode::ControlOnly);
+
+    const auto interpreter = parse_battle_job_run_tokens(
+        {
+            "--exec-job-id", "34", "--probe-cpu-core", "interpreter",
+            "--iso", "D:/SoATAS/game.gcm", "--dolphin-base-dir", "D:/SoATAS/dolphin",
+        },
+        "SavorPredict.exe");
+    EXPECT_TRUE(interpreter.errors.empty())
+        << (interpreter.errors.empty() ? "" : interpreter.errors.front());
+    EXPECT_EQ(interpreter.options.probe_cpu_core, ProbeCpuCore::Interpreter);
+
+    const auto invalid_cpu_core = parse_battle_job_run_tokens(
+        {
+            "--exec-job-id", "34", "--probe-cpu-core", "fast",
+            "--iso", "D:/SoATAS/game.gcm", "--dolphin-base-dir", "D:/SoATAS/dolphin",
+        },
+        "SavorPredict.exe");
+    EXPECT_FALSE(invalid_cpu_core.errors.empty());
+
+    const auto incompatible_profile = parse_battle_job_run_tokens(
+        {
+            "--exec-job-id", "34", "--probe-mode", "progress-only",
+            "--capture-profile", "capture.json",
+            "--iso", "D:/SoATAS/game.gcm", "--dolphin-base-dir", "D:/SoATAS/dolphin",
+        },
+        "SavorPredict.exe");
+    EXPECT_FALSE(incompatible_profile.errors.empty());
 }
 
 TEST(SavorPredictBattleJobBatchRunOptions, ParsesRepeatedIdsListFileAndTimeoutDefaults)
@@ -372,6 +420,7 @@ TEST(SavorPredictBattleJobBatchRunOptions, ParsesRepeatedIdsListFileAndTimeoutDe
             "--exec-job-id", "101",
             "--exec-job-list", list_path.string(),
             "--max-workers", "2",
+            "--wait-for-workers-ready",
             "--iso", "D:/SoATAS/game.gcm",
             "--dolphin-base-dir", "D:/SoATAS/dolphin",
             "--override-start-rng-seed", "305419896",
@@ -398,6 +447,7 @@ TEST(SavorPredictBattleJobBatchRunOptions, ParsesRepeatedIdsListFileAndTimeoutDe
     EXPECT_EQ(*parsed_requests[0].override_fake_attacks_this_turn, 2u);
     EXPECT_EQ(*parsed_requests[1].override_fake_attacks_this_turn, 2u);
     EXPECT_EQ(parsed.options.max_workers, 2);
+    EXPECT_TRUE(parsed.options.wait_for_workers_ready);
     ASSERT_TRUE(parsed.options.override_start_rng_seed.has_value());
     EXPECT_EQ(*parsed.options.override_start_rng_seed, 0x12345678u);
     EXPECT_EQ(parsed.options.worker_exe_path.generic_string(), "C:/repo/bin/x64/Debug/SavorWorker.exe");
@@ -421,6 +471,7 @@ TEST(SavorPredictBattleJobBatchRunOptions, ParsesRepeatedIdsListFileAndTimeoutDe
         },
         "SavorPredict.exe");
     EXPECT_TRUE(seeded_runs.errors.empty()) << (seeded_runs.errors.empty() ? "" : seeded_runs.errors.front());
+    EXPECT_FALSE(seeded_runs.options.wait_for_workers_ready);
     const auto seeded_requests = resolved_battle_job_batch_requests(seeded_runs.options);
     ASSERT_EQ(seeded_requests.size(), 3u);
     EXPECT_EQ(seeded_requests[0].exec_job_id, 101);
@@ -555,13 +606,49 @@ TEST(SavorPredictBattleJobBatchRunOptions, ParsesRepeatedIdsListFileAndTimeoutDe
         },
         "SavorPredict.exe");
     EXPECT_FALSE(invalid_battle_run_ms.errors.empty());
+
+    const auto control_only = parse_battle_job_batch_run_tokens(
+        {
+            "--exec-job-id", "101", "--probe-mode", "control-only",
+            "--iso", "D:/SoATAS/game.gcm", "--dolphin-base-dir", "D:/SoATAS/dolphin",
+        },
+        "SavorPredict.exe");
+    EXPECT_TRUE(control_only.errors.empty())
+        << (control_only.errors.empty() ? "" : control_only.errors.front());
+    EXPECT_EQ(control_only.options.probe_mode, ProbeMode::ControlOnly);
+
+    const auto jit = parse_battle_job_batch_run_tokens(
+        {
+            "--exec-job-id", "101", "--probe-cpu-core", "jit",
+            "--iso", "D:/SoATAS/game.gcm", "--dolphin-base-dir", "D:/SoATAS/dolphin",
+        },
+        "SavorPredict.exe");
+    EXPECT_TRUE(jit.errors.empty()) << (jit.errors.empty() ? "" : jit.errors.front());
+    EXPECT_EQ(jit.options.probe_cpu_core, ProbeCpuCore::Jit);
+}
+
+TEST(SavorPredictProbeCpuCoreEnvironment, SetsAndRestoresWorkerOverride)
+{
+    constexpr const char* variable = "SAVOR_PROBE_CPU_CORE";
+    ASSERT_EQ(_putenv_s(variable, "preserved"), 0);
+    {
+        ScopedProbeCpuCoreEnvironment environment(ProbeCpuCore::Interpreter);
+        ASSERT_TRUE(environment.ok());
+        const char* value = std::getenv(variable);
+        ASSERT_NE(value, nullptr);
+        EXPECT_STREQ(value, "interpreter");
+    }
+    const char* value = std::getenv(variable);
+    ASSERT_NE(value, nullptr);
+    EXPECT_STREQ(value, "preserved");
+    ASSERT_EQ(_putenv_s(variable, ""), 0);
 }
 
 TEST(SavorPredictBattleJobClone, PatchesCaptureProfileWithoutDroppingJobFields)
 {
     const auto patched = patch_battle_single_turn_capture_profile(
         BuildInputIni(10, 20, 30, 40, 2),
-        "C:/runs/capture_profile.ini",
+        "C:/runs/capture_profile.json",
         0x12345678u);
     const auto ini = IniDoc::parse(patched);
     EXPECT_EQ(ini.get_i64("BattleSingleTurn.Job", "wave_id", 0), 10);
@@ -570,12 +657,12 @@ TEST(SavorPredictBattleJobClone, PatchesCaptureProfileWithoutDroppingJobFields)
     EXPECT_EQ(ini.get_i64("BattleSingleTurn.Job", "savestate_id", 0), 40);
     EXPECT_EQ(ini.get_i64("BattleSingleTurn.Job", "fake_attacks_this_turn", 0), 2);
     EXPECT_EQ(ini.get("BattleSingleTurn.Job", "target_variant_key", ""), "seeded");
-    EXPECT_EQ(ini.get("BattleSingleTurn.Job", "capture_profile_path", ""), "C:/runs/capture_profile.ini");
+    EXPECT_EQ(ini.get("BattleSingleTurn.Job", "capture_profile_path", ""), "C:/runs/capture_profile.json");
     EXPECT_EQ(ini.get_u32("BattleSingleTurn.Job", "override_start_rng_seed", 0), 0x12345678u);
 
     const auto patched_with_run_ms = patch_battle_single_turn_capture_profile(
         BuildInputIni(10, 20, 30, 40, 2),
-        "C:/runs/capture_profile.ini",
+        "C:/runs/capture_profile.json",
         0x12345678u,
         900000u,
         0u);
@@ -603,7 +690,7 @@ TEST_F(SavorPredictBattleJobRunnerDb, ClonesTurnAndExecRowsThenQuarantinesOtherR
     ASSERT_TRUE(clone_battle_job_for_capture(
         *db_service_,
         options,
-        temp_root_ / "capture_profile.ini",
+        temp_root_ / "capture_profile.json",
         &clone,
         err)) << err.str();
 
@@ -653,7 +740,7 @@ TEST_F(SavorPredictBattleJobRunnerDb, BatchCloneKeepsAllClonesAndQuarantinesOthe
     ASSERT_TRUE(clone_battle_jobs_for_capture(
         *db_service_,
         { first.exec_job_id, second.exec_job_id },
-        temp_root_ / "capture_profile.ini",
+        temp_root_ / "capture_profile.json",
         &batch,
         err)) << err.str();
 
@@ -705,7 +792,7 @@ TEST_F(SavorPredictBattleJobRunnerDb, BatchCloneAllowsSameSourceExecWithDifferen
                 .battle_run_ms = 900000u,
             },
         },
-        temp_root_ / "capture_profile.ini",
+        temp_root_ / "capture_profile.json",
         &batch,
         err)) << err.str();
 
@@ -772,7 +859,7 @@ TEST_F(SavorPredictBattleJobRunnerDb, ClonedJobMaterializesCapturePayload)
     options.override_start_rng_seed = 0xA5A5A5A5u;
     options.override_fake_attacks_this_turn = 0u;
 
-    const auto capture_profile = temp_root_ / "capture_profile.ini";
+    const auto capture_profile = temp_root_ / "capture_profile.json";
     BattleJobCloneResult clone;
     std::ostringstream err;
     ASSERT_TRUE(clone_battle_job_for_capture(*db_service_, options, capture_profile, &clone, err)) << err.str();
@@ -799,7 +886,7 @@ TEST_F(SavorPredictBattleJobRunnerDb, ClonedJobMaterializesCapturePayload)
     ASSERT_TRUE(ctx.get(savor::context::key::core::CAPTURE_PROFILE_PATH, profile_path));
     ASSERT_TRUE(ctx.get(savor::context::key::core::CAPTURE_OUTPUT_PATH, output_path));
     EXPECT_EQ(profile_path, capture_profile.string());
-    EXPECT_NE(output_path.find("battle_checkpoint_capture.jsonl"), std::string::npos);
+    EXPECT_NE(output_path.find("battle_capture.scap"), std::string::npos);
     EXPECT_NE(output_path.find("job-" + std::to_string(clone.cloned_exec_job_id)), std::string::npos);
 
     uint32_t override_enabled = 0;

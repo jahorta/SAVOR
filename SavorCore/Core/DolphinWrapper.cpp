@@ -55,12 +55,15 @@
 #include <cstdarg>
 #include <mutex>
 #include <optional>
+#include <ranges>
 #include <utility>
 
 #include "Core/PowerPC/BreakPoints.h"
 #include <unordered_set>
 #include "Shims/StateBufferShim.h"
 #include "../Runner/Script/ScriptProgress.h"
+#include "../../SavorProbe/ProbeRuntime.h"
+#include "../../SavorProbe/ProbeProfile.h"
 #include "../Tas/DtmFile.h"
 
 
@@ -217,7 +220,130 @@ namespace savor {
         shutdownAll();
     }
 
+    DolphinWrapper::ProgressSink DolphinWrapper::getProgressSink() const
+    {
+        std::scoped_lock lock(m_progress_sink_mutex);
+        return m_progress_sink;
+    }
+
+    void DolphinWrapper::setProgressSink(ProgressSink sink)
+    {
+        std::scoped_lock lock(m_progress_sink_mutex);
+        m_progress_sink = std::move(sink);
+    }
+
+    void DolphinWrapper::emitProgress(const std::string& text, bool record_progress) const
+    {
+        const auto sink = getProgressSink();
+        if (sink)
+            sink(text.c_str(), record_progress);
+    }
+
+    bool DolphinWrapper::startProbeJob(
+        const std::filesystem::path& profile_path,
+        const std::filesystem::path& capture_path,
+        std::uint32_t progress_flags,
+        std::string* error_out)
+    {
+        auto profile = savor::probe::Profile{};
+        profile.name = "savor_job_runtime";
+        if (!profile_path.empty()) {
+            std::ifstream profile_stream(profile_path, std::ios::binary);
+            if (!profile_stream) {
+                if (error_out) *error_out = "failed opening capture profile";
+                return false;
+            }
+            std::string profile_json{
+                std::istreambuf_iterator<char>(profile_stream),
+                std::istreambuf_iterator<char>() };
+            auto parsed = savor::probe::parse_profile_json(profile_json);
+            if (!parsed.profile.has_value()) {
+                if (error_out) *error_out = savor::probe::format_profile_errors(parsed);
+                return false;
+            }
+            profile = std::move(*parsed.profile);
+            if (profile.expected_module_sha256.empty()) {
+                if (error_out) *error_out = "capture profile is not pinned to a worker module SHA-256";
+                return false;
+            }
+        }
+        std::string hash_error;
+        const auto module_hash = savor::probe::current_module_sha256(&hash_error);
+        if (module_hash.empty()) {
+            if (error_out) *error_out = hash_error;
+            return false;
+        }
+        if (profile.expected_module_sha256.empty())
+            profile.expected_module_sha256 = module_hash;
+        if ((progress_flags & static_cast<std::uint32_t>(CoreProgressFlags::BattleProgress)) != 0
+            && profile.battle_progress_enabled)
+            savor::progress::append_battle_progress_probes(profile);
+
+        savor::probe::SessionOptions options;
+        const bool has_capture_subscriber = std::ranges::any_of(
+            profile.probes, [](const auto& probe) {
+                return savor::probe::has_subscription(
+                    probe.subscriptions, savor::probe::Subscription::Capture);
+            });
+        options.capture_path = has_capture_subscriber ? capture_path : std::filesystem::path{};
+        options.metadata.source_identity = profile.name;
+        options.metadata.profile_json = savor::probe::serialize_profile_json(profile);
+        options.metadata.executable_sha256 = module_hash;
+        const auto now = std::chrono::system_clock::now().time_since_epoch();
+        options.metadata.created_utc_ns = static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(now).count());
+        options.metadata.session_id = std::format(
+            "{}-{}",
+            GetCurrentProcessId(),
+            options.metadata.created_utc_ns);
+        options.progress_callback = [this](
+            const savor::capture_format::Event& event,
+            bool record_progress) {
+            if (const auto formatted = savor::progress::format_battle_progress(event, record_progress);
+                formatted.has_value() && !formatted->text.empty()) {
+                emitProgress(formatted->text, formatted->record_progress);
+            }
+        };
+        options.base_key_resolver = [this](std::uint16_t raw_key) -> std::optional<std::uint32_t> {
+            std::uint32_t address = 0;
+            if (!resolveKey(static_cast<addr::AddrKey>(raw_key), address))
+                return std::nullopt;
+            return address;
+        };
+
+        m_probe_epoch = 0;
+        const bool started = savor::probe::ProbeRuntime::instance().start(
+            *m_system, std::move(profile), std::move(options), error_out);
+        if (started) {
+            savor::probe::ProbeRuntime::instance().set_guest_state_epoch(m_probe_epoch);
+            emitProbeMarker("job.start");
+        }
+        return started;
+    }
+
+    void DolphinWrapper::stopProbeJob()
+    {
+        auto& probe = savor::probe::ProbeRuntime::instance();
+        if (probe.active()) {
+            emitProbeMarker("job.end");
+            probe.stop();
+        }
+    }
+
+    bool DolphinWrapper::probeJobActive() const
+    {
+        return savor::probe::ProbeRuntime::instance().active();
+    }
+
+    void DolphinWrapper::emitProbeMarker(std::string_view marker, std::uint64_t value) const
+    {
+        auto& probe = savor::probe::ProbeRuntime::instance();
+        if (probe.active())
+            probe.emit_marker(marker, value);
+    }
+
     void DolphinWrapper::shutdownAll() {
+        stopProbeJob();
         if (Core::IsRunning(*m_system))
             shutdownCore();
         destroyRenderSurfaceWindow();
@@ -229,6 +355,13 @@ namespace savor {
     }
 
     void DolphinWrapper::shutdownCore() {
+        auto& probe = savor::probe::ProbeRuntime::instance();
+        if (probe.active()) {
+            emitProbeMarker("reboot.begin", ++m_probe_epoch);
+            std::string probe_error;
+            if (!probe.prepare_for_core_shutdown(&probe_error))
+                SCLOGW("[probe] failed preparing for core shutdown: %s", probe_error.c_str());
+        }
         clearMemoryWatchpoints();
         if (Core::IsRunning(*m_system))
             Core::Stop(*m_system);
@@ -299,7 +432,18 @@ namespace savor {
         while (!Core::IsRunning(*m_system) && std::chrono::steady_clock::now() < deadline)
             std::this_thread::sleep_until(steady_clock::now() + milliseconds(1));
 
-        return Core::IsRunning(*m_system);
+        const bool running = Core::IsRunning(*m_system);
+        auto& probe = savor::probe::ProbeRuntime::instance();
+        if (running && probe.active()) {
+            std::string probe_error;
+            probe.set_guest_state_epoch(m_probe_epoch);
+            if (!probe.resume_after_core_boot(&probe_error)) {
+                SCLOGE("[probe] failed rearming after core boot: %s", probe_error.c_str());
+                return false;
+            }
+            emitProbeMarker("reboot.end", m_probe_epoch);
+        }
+        return running;
     }
 
     bool DolphinWrapper::runOnCpuThread(const std::function<void()>& fn, const bool waitForCompletion) const
@@ -564,6 +708,11 @@ namespace savor {
 
         if (Core::IsRunning(*m_system) && (pc_before != pc_after || tbr_before != tbr_after || state_path._Equal(m_last_save_state))) {
             m_last_save_state = state_path;
+            auto& probe = savor::probe::ProbeRuntime::instance();
+            if (probe.active()) {
+                probe.set_guest_state_epoch(++m_probe_epoch);
+                emitProbeMarker("savestate.loaded", m_probe_epoch);
+            }
             return true;
         }
         else {
@@ -670,6 +819,11 @@ namespace savor {
         SCLOGD("[DW] loadStateFromBuffer end   state=%d pc:%08X->%08X tbr:%016llX->%016llX",
             (int)Core::GetState(*m_system), pc_before, pc_after,
             (unsigned long long)tbr_before, (unsigned long long)tbr_after);
+        auto& probe = savor::probe::ProbeRuntime::instance();
+        if (probe.active()) {
+            probe.set_guest_state_epoch(++m_probe_epoch);
+            emitProbeMarker("savestate.buffer_loaded", m_probe_epoch);
+        }
         return true;
     }
 
@@ -1461,9 +1615,11 @@ namespace savor {
     }
 
     static bool contains_pc(const std::unordered_set<uint32_t>& s, uint32_t v) { return s.find(v) != s.end(); }
-    struct ArmedSet { std::unordered_set<uint32_t> pcs; };
+    struct ArmedSet {
+        std::unordered_set<uint32_t> pcs;
+        std::unordered_set<uint32_t> enabled;
+    };
     static ArmedSet& armed_singleton() { static ArmedSet a; return a; }
-    static ArmedSet& armed_battle_singleton() { static ArmedSet a; return a; }
 
     bool DolphinWrapper::mutatePcBreakpoints(const char* label, const std::function<void()>& fn) const
     {
@@ -1481,57 +1637,6 @@ namespace savor {
         return runOnCpuThread(fn, true);
     }
 
-    bool DolphinWrapper::armBattleBreakpoints()
-    {
-        if (!armed_battle_singleton().pcs.empty()) return true;
-
-        auto pcs = savor::progress::BattleProgressBPs();
-
-        SCLOGT("[core] arming battle breakpoints");
-        auto& armed = armed_battle_singleton().pcs;
-        bool arm_result = runOnCpuThread([&] {
-            for (auto pc : pcs)
-            {
-                if (armed.insert(pc).second)
-                    m_system->GetPowerPC().GetBreakPoints().Add(pc, true, false, std::nullopt);
-            }
-            }, true);
-        SCLOGT("[core] properly loaded battle breakpoints: %s", arm_result ? "true" : "false");
-        SCLOGT("[core] checking current battle breakpoints");
-        for (auto bp : m_system->GetPowerPC().GetBreakPoints().GetStrings()) {
-            SCLOGT("[core] Battle Breakpoint Present: %s", bp.c_str());
-        }
-        return arm_result;
-    }
-
-    bool DolphinWrapper::disarmBattleBreakpoints()
-    {
-        if (armed_battle_singleton().pcs.empty()) return true;
-
-        auto pcs = savor::progress::BattleProgressBPs();
-
-        SCLOGT("[core] disarming battle breakpoints");
-        auto& armed = armed_battle_singleton().pcs;
-        bool disarm_result = runOnCpuThread([&] {
-            for (auto pc : pcs)
-            {
-                auto it = armed.find(pc);
-                if (it != armed.end())
-                {
-                    m_system->GetPowerPC().GetBreakPoints().Remove(pc);
-                    armed.erase(it);
-                }
-            }
-            }, true);
-
-        SCLOGT("[core] properly removed battle breakpoints: %s", disarm_result ? "true" : "false");
-        SCLOGT("[core] checking current battle breakpoints");
-        for (auto bp : m_system->GetPowerPC().GetBreakPoints().GetStrings()) {
-            SCLOGT("[core] Battle Breakpoint Present: %s", bp.c_str());
-        }
-        return disarm_result;
-    }
-
     bool DolphinWrapper::armPcBreakpoints(const std::vector<uint32_t>& pcs)
     {
         SCLOGT("[core] arming breakpoints");
@@ -1541,6 +1646,7 @@ namespace savor {
             {
                 armed.insert(pc);
                 m_system->GetPowerPC().GetBreakPoints().Add(pc, true, false, std::nullopt);
+                armed_singleton().enabled.insert(pc);
             }
             }, true);
         SCLOGT("[core] properly loaded breakpoints: %s", arm_result ? "true" : "false");
@@ -1563,6 +1669,7 @@ namespace savor {
                 {
                     m_system->GetPowerPC().GetBreakPoints().Remove(pc);
                     armed.erase(it);
+                    armed_singleton().enabled.erase(pc);
                 }
             }
             }, true);
@@ -1582,6 +1689,7 @@ namespace savor {
         bool disarm_result = runOnCpuThread([&] {
             for (auto pc : armed) m_system->GetPowerPC().GetBreakPoints().Remove(pc);
             armed.clear();
+            armed_singleton().enabled.clear();
             }, true);
         SCLOGT("[core] properly removed breakpoints: %s", disarm_result ? "true" : "false");
     }
@@ -1592,6 +1700,8 @@ namespace savor {
         bool enable_result = mutatePcBreakpoints("setEnableBreakpoint", [&] {
             if (m_system->GetPowerPC().GetBreakPoints().IsBreakPointEnable(pc) != enabled)
                 m_system->GetPowerPC().GetBreakPoints().ToggleEnable(pc);
+            if (enabled) armed_singleton().enabled.insert(pc);
+            else armed_singleton().enabled.erase(pc);
             });
 
         return enable_result;
@@ -1607,6 +1717,8 @@ namespace savor {
                 if (m_system->GetPowerPC().GetBreakPoints().IsBreakPointEnable(pc) != enabled) 
                     m_system->GetPowerPC().GetBreakPoints().ToggleEnable(pc);
             }
+            if (enabled) armed_singleton().enabled = armed;
+            else armed_singleton().enabled.clear();
             });
         
         return enable_result;
@@ -1631,6 +1743,7 @@ namespace savor {
                 if (breakpoints.IsBreakPointEnable(pc) != should_enable)
                     breakpoints.ToggleEnable(pc);
             }
+            armed_singleton().enabled = std::move(enabled_set);
             });
     }
 
@@ -1640,89 +1753,6 @@ namespace savor {
             return size == 1u || size == 2u || size == 4u || size == 8u;
         }
 
-        bool memory_watchpoint_breaks_on_read(DolphinWrapper::MemoryWatchpointAccess access)
-        {
-            return access == DolphinWrapper::MemoryWatchpointAccess::Read
-                || access == DolphinWrapper::MemoryWatchpointAccess::Access;
-        }
-
-        bool memory_watchpoint_breaks_on_write(DolphinWrapper::MemoryWatchpointAccess access)
-        {
-            return access == DolphinWrapper::MemoryWatchpointAccess::Write
-                || access == DolphinWrapper::MemoryWatchpointAccess::Access;
-        }
-
-        const char* debug_stop_reason(DolphinWrapper::DebugStopKind kind)
-        {
-            switch (kind) {
-            case DolphinWrapper::DebugStopKind::PcBreakpoint: return "breakpoint";
-            case DolphinWrapper::DebugStopKind::Memcheck: return "memcheck";
-            case DolphinWrapper::DebugStopKind::PcBreakpointAndMemcheck: return "breakpoint+memcheck";
-            default: return "none";
-            }
-        }
-
-        DolphinWrapper::DebugStopKind merge_debug_stop_kind(bool pc_hit, bool memcheck_hit)
-        {
-            if (pc_hit && memcheck_hit) return DolphinWrapper::DebugStopKind::PcBreakpointAndMemcheck;
-            if (pc_hit) return DolphinWrapper::DebugStopKind::PcBreakpoint;
-            if (memcheck_hit) return DolphinWrapper::DebugStopKind::Memcheck;
-            return DolphinWrapper::DebugStopKind::None;
-        }
-
-        bool ranges_intersect(uint32_t left_address, uint32_t left_size, uint32_t right_address, uint32_t right_size)
-        {
-            if (left_size == 0 || right_size == 0) return false;
-            const uint64_t left_begin = left_address;
-            const uint64_t left_end = left_begin + left_size - 1u;
-            const uint64_t right_begin = right_address;
-            const uint64_t right_end = right_begin + right_size - 1u;
-            return left_begin <= right_end && right_begin <= left_end;
-        }
-
-        bool watchpoint_access_matches(
-            DolphinWrapper::MemoryWatchpointAccess watched,
-            ppc::MemoryAccessKind decoded)
-        {
-            return watched == DolphinWrapper::MemoryWatchpointAccess::Access
-                || static_cast<uint32_t>(watched) == static_cast<uint32_t>(decoded);
-        }
-
-        bool read_memory_value_for_decode(
-            DolphinWrapper& host,
-            uint32_t address,
-            uint32_t size,
-            uint64_t& out)
-        {
-            switch (size) {
-            case 1: {
-                uint8_t value = 0;
-                if (!host.readU8(address, value)) return false;
-                out = value;
-                return true;
-            }
-            case 2: {
-                uint16_t value = 0;
-                if (!host.readU16(address, value)) return false;
-                out = value;
-                return true;
-            }
-            case 4: {
-                uint32_t value = 0;
-                if (!host.readU32(address, value)) return false;
-                out = value;
-                return true;
-            }
-            case 8: {
-                uint64_t value = 0;
-                if (!host.readU64(address, value)) return false;
-                out = value;
-                return true;
-            }
-            default:
-                return false;
-            }
-        }
     }
 
     bool DolphinWrapper::armMemoryWatchpoints(const std::vector<MemoryWatchpointSpec>& specs)
@@ -1756,188 +1786,21 @@ namespace savor {
             }
         }
 
-        bool collision = false;
-        const bool arm_result = runOnCpuThread([&] {
-            auto& memchecks = m_system->GetPowerPC().GetMemChecks();
-            for (const auto& spec : specs) {
-                if (memchecks.GetMemCheck(spec.address, spec.size) != nullptr) {
-                    collision = true;
-                    SCLOGW("[core] memory watchpoint overlaps existing memcheck id=%u addr=%08X size=%u",
-                        spec.id,
-                        spec.address,
-                        spec.size);
-                    return;
-                }
-            }
-            for (const auto& spec : specs) {
-                TMemCheck check{};
-                check.start_address = spec.address;
-                check.end_address = spec.address + spec.size - 1u;
-                check.is_enabled = true;
-                check.is_ranged = spec.size > 1u;
-                check.is_break_on_read = memory_watchpoint_breaks_on_read(spec.access);
-                check.is_break_on_write = memory_watchpoint_breaks_on_write(spec.access);
-                check.log_on_hit = false;
-                check.break_on_hit = true;
-                memchecks.Add(std::move(check));
-                SCLOGD("[core] armed memory watchpoint id=%u addr=%08X size=%u access=%u",
-                    spec.id,
-                    spec.address,
-                    spec.size,
-                    static_cast<uint32_t>(spec.access));
-            }
-        }, true);
-
-        if (!arm_result || collision) return false;
-
         m_memory_watchpoints.insert(m_memory_watchpoints.end(), specs.begin(), specs.end());
+        for (const auto& spec : specs) {
+            SCLOGD("[core] registered memory control id=%u addr=%08X size=%u access=%u",
+                spec.id,
+                spec.address,
+                spec.size,
+                static_cast<uint32_t>(spec.access));
+        }
         return true;
     }
 
     void DolphinWrapper::clearMemoryWatchpoints()
     {
-        if (!m_system || m_memory_watchpoints.empty()) {
-            m_memory_watchpoints.clear();
-            return;
-        }
-
-        const auto specs = m_memory_watchpoints;
-        const bool clear_result = runOnCpuThread([&] {
-            auto& memchecks = m_system->GetPowerPC().GetMemChecks();
-            bool removed_any = false;
-            for (const auto& spec : specs) {
-                removed_any = memchecks.Remove(spec.address, false) || removed_any;
-            }
-            if (removed_any) {
-                memchecks.Update();
-            }
-        }, true);
-
-        SCLOGD("[core] cleared memory watchpoints count=%zu ok=%d",
-            specs.size(),
-            clear_result ? 1 : 0);
+        SCLOGD("[core] cleared memory controls count=%zu", m_memory_watchpoints.size());
         m_memory_watchpoints.clear();
-    }
-
-    DolphinWrapper::MemoryWatchpointSnapshot DolphinWrapper::snapshotMemoryWatchpoints() const
-    {
-        MemoryWatchpointSnapshot snapshot{};
-        if (!m_system || m_memory_watchpoints.empty()) return snapshot;
-
-        snapshot.entries.reserve(m_memory_watchpoints.size());
-        const bool ok = runOnCpuThread([&] {
-            const auto& memchecks = m_system->GetPowerPC().GetMemChecks().GetMemChecks();
-            for (const auto& spec : m_memory_watchpoints) {
-                MemoryWatchpointSnapshotEntry entry{};
-                entry.id = spec.id;
-                entry.address = spec.address;
-                entry.size = spec.size;
-                entry.access = spec.access;
-                for (const auto& check : memchecks) {
-                    if (check.start_address == spec.address) {
-                        entry.num_hits = check.num_hits;
-                        break;
-                    }
-                }
-                snapshot.entries.push_back(entry);
-            }
-        }, true);
-        if (!ok) snapshot.entries.clear();
-        return snapshot;
-    }
-
-    DolphinWrapper::DecodedMemoryAccess DolphinWrapper::DecodeCurrentMemoryAccess(
-        uint32_t pc,
-        uint32_t opcode,
-        const std::function<bool(uint8_t, uint32_t&)>& read_gpr,
-        const ppc::MemoryReadFn& read_memory)
-    {
-        return ppc::DecodeCurrentMemoryAccess(pc, opcode, read_gpr, read_memory);
-    }
-
-    std::optional<DolphinWrapper::MemoryWatchpointHit> DolphinWrapper::ProveMemoryWatchpointHitAtCurrentInstruction(
-        const DecodedMemoryAccess& decoded,
-        const std::vector<MemoryWatchpointDelta>& deltas)
-    {
-        if (!decoded.decoded || !decoded.supported || !decoded.is_memory_access || decoded.access_size == 0) {
-            return std::nullopt;
-        }
-
-        for (const auto& delta : deltas) {
-            if (!watchpoint_access_matches(delta.access, decoded.access)) continue;
-            if (!ranges_intersect(delta.address, delta.size, decoded.effective_address, decoded.access_size)) continue;
-
-            const uint32_t delta_hits = delta.num_hits_after > delta.num_hits_before
-                ? delta.num_hits_after - delta.num_hits_before
-                : 0u;
-            return MemoryWatchpointHit{
-                .id = delta.id,
-                .address = delta.address,
-                .size = delta.size,
-                .access = delta.access,
-                .hit_pc = decoded.pc,
-                .num_hits_before = delta.num_hits_before,
-                .num_hits_after = delta.num_hits_after,
-                .confirmed_current_instruction = true,
-                .unattributed_extra_hits = delta_hits > 0 ? delta_hits - 1u : 0u,
-                .decoded_access = decoded,
-            };
-        }
-
-        return std::nullopt;
-    }
-
-    std::vector<DolphinWrapper::MemoryWatchpointDelta>
-        DolphinWrapper::detectMemoryWatchpointDeltasSince(const MemoryWatchpointSnapshot& snapshot) const
-    {
-        std::vector<MemoryWatchpointDelta> deltas;
-        if (!m_system || snapshot.entries.empty()) return deltas;
-
-        const uint32_t pc = const_cast<DolphinWrapper*>(this)->getPC();
-        (void)runOnCpuThread([&] {
-            const auto& memchecks = m_system->GetPowerPC().GetMemChecks().GetMemChecks();
-            for (const auto& before : snapshot.entries) {
-                for (const auto& check : memchecks) {
-                    if (check.start_address != before.address) continue;
-                    if (check.num_hits <= before.num_hits) continue;
-                    deltas.push_back(MemoryWatchpointDelta{
-                        .id = before.id,
-                        .address = before.address,
-                        .size = before.size,
-                        .access = before.access,
-                        .hit_pc = pc,
-                        .num_hits_before = before.num_hits,
-                        .num_hits_after = check.num_hits,
-                    });
-                    break;
-                }
-            }
-        }, true);
-        return deltas;
-    }
-
-    std::optional<DolphinWrapper::MemoryWatchpointHit>
-        DolphinWrapper::detectMemoryWatchpointHitSince(const MemoryWatchpointSnapshot& snapshot) const
-    {
-        const auto deltas = detectMemoryWatchpointDeltasSince(snapshot);
-        if (deltas.empty()) return std::nullopt;
-
-        const uint32_t pc = deltas.front().hit_pc;
-        uint32_t opcode = 0;
-        if (!readU32(pc, opcode)) return std::nullopt;
-
-        auto* self = const_cast<DolphinWrapper*>(this);
-        const auto decoded = DecodeCurrentMemoryAccess(
-            pc,
-            opcode,
-            [self](uint8_t reg, uint32_t& out) {
-                out = self->getRegister(reg);
-                return true;
-            },
-            [self](uint32_t address, uint32_t size, uint64_t& out) {
-                return read_memory_value_for_decode(*self, address, size, out);
-            });
-        return ProveMemoryWatchpointHitAtCurrentInstruction(decoded, deltas);
     }
 
     DolphinWrapper::RunUntilHitResult DolphinWrapper::runUntilBreakpointBlocking(uint32_t timeout_ms)
@@ -1973,396 +1836,171 @@ namespace savor {
             uint32_t progflags,
             ProgressSink sink)
     {
-        using std::chrono::steady_clock;
         using std::chrono::milliseconds;
+        using std::chrono::steady_clock;
+
+        auto& probe = savor::probe::ProbeRuntime::instance();
+        bool temporary_probe_session = false;
+        if (!probe.active()) {
+            savor::probe::Profile profile;
+            profile.name = "dolphin_wrapper_control";
+            savor::probe::SessionOptions options;
+            std::string error;
+            if (!probe.start(*m_system, std::move(profile), std::move(options), &error)) {
+                SCLOGE("[DW/run] failed starting event-driven control: %s", error.c_str());
+                return { false, 0u, "control_unavailable" };
+            }
+            temporary_probe_session = true;
+        }
+        struct TemporaryProbeScope {
+            bool owned = false;
+            savor::probe::ProbeRuntime& runtime;
+            ~TemporaryProbeScope() { if (owned) runtime.stop(); }
+        } temporary_scope{ temporary_probe_session, probe };
+
+        std::vector<std::uint32_t> control_pcs;
+        control_pcs.reserve(armed_singleton().enabled.size());
+        for (const auto pc : armed_singleton().enabled)
+            control_pcs.push_back(pc);
+
+        std::vector<savor::probe::ControlMemorySite> control_memory;
+        control_memory.reserve(m_memory_watchpoints.size());
+        for (const auto& watchpoint : m_memory_watchpoints) {
+            control_memory.push_back(savor::probe::ControlMemorySite{
+                watchpoint.id,
+                watchpoint.address,
+                watchpoint.size,
+                static_cast<savor::probe::MemoryAccess>(watchpoint.access),
+            });
+        }
+
+        std::optional<std::uint32_t> suppress_once;
+        if (Core::GetState(*m_system) == Core::State::Paused) {
+            const auto current_pc = getPC();
+            if (armed_singleton().enabled.contains(current_pc))
+                suppress_once = current_pc;
+        }
+
+        std::string lease_error;
+        auto lease = probe.begin_control_wait(
+            control_pcs, control_memory, suppress_once, &lease_error);
+        if (!lease.active()) {
+            SCLOGE("[DW/run] failed creating control lease: %s", lease_error.c_str());
+            return { false, 0u, "control_unavailable" };
+        }
 
         const auto start = steady_clock::now();
-        const auto deadline_initial = start + milliseconds(timeout_ms);
-
-        auto deadline = deadline_initial;
+        const auto deadline = start + milliseconds(timeout_ms);
+        const bool emit_enabled = static_cast<bool>(sink) || static_cast<bool>(getProgressSink());
+        const auto emit = [this, &sink](const char* text, bool record) {
+            if (sink)
+                sink(text, record);
+            else
+                emitProgress(text ? text : "", record);
+        };
+        auto last_emit = steady_clock::time_point{};
         auto& movie = m_system->GetMovie();
         const bool had_movie = watch_movie && movie.IsPlayingInput();
-
-        
-        const std::string start_s = savor::time_util::steady_to_cstr(start);
-        const std::string deadline_s = savor::time_util::steady_to_cstr(deadline);
-        SCLOGD("[run] timeout set to: %u ms", timeout_ms);
-        SCLOGD("[run] start=%s deadline=%s", start_s.c_str(), deadline_s.c_str());
-
-        // VI stall tracking baseline
         resetViCounterBaseline();
-        uint64_t last_vi = getViFieldCountApproxFromBaseline();
-        auto last_vi_change = steady_clock::now();
-        constexpr uint64_t kViStallGuardStartVi = 100;
+        auto last_vi = getViFieldCountApproxFromBaseline();
+        auto last_vi_change = start;
+        constexpr std::uint64_t kViStallGuardStartVi = 100;
 
-        const ProgressSink& emit = sink ? sink : m_progress_sink; // toggle: null = no progress
-        auto last_emit = steady_clock::time_point{};
-
-        const uint32_t pc = getPC();
-        if (contains_pc(armed_singleton().pcs, pc)) {
-            if (Core::GetState(*m_system) == Core::State::Paused) {
-                SCLOGD("[DW/run] HIT already paused at pc=%08X before run loop", pc);
-                return { true, pc, "breakpoint", DebugStopKind::PcBreakpoint, std::nullopt };
-            }
-            SCLOGD("[DW/run] Stepping past pc=%08X to avoid breakpoint", pc);
-            //setEnableBreakpoint(pc, false);
-            Common::Event sync_event;
-            auto& power_pc = m_system->GetPowerPC();
-            PowerPC::CoreMode old_mode = power_pc.GetMode();
-            power_pc.SetMode(PowerPC::CoreMode::Interpreter);
-            m_system->GetCPU().StepOpcode(&sync_event);
-            sync_event.WaitFor(std::chrono::milliseconds(20));
-            power_pc.SetMode(old_mode);
-            //setEnableBreakpoint(pc, true);
-        }
-
-        if (progflags & (uint32_t)CoreProgressFlags::BattleProgress) armBattleBreakpoints();
-        else disarmBattleBreakpoints();
-
-        if (!armed_singleton().pcs.empty()) {
-            SCLOGD("[DW/run] pc-breakpoint debug=%d mode=%d forced_interpreter=0 bp_count=%zu",
-                Config::IsDebuggingEnabled() ? 1 : 0,
-                static_cast<int>(m_system->GetPowerPC().GetMode()),
-                armed_singleton().pcs.size());
-        }
-
-        auto finish = [&](RunUntilHitResult result) -> RunUntilHitResult {
-            return result;
-        };
-
-        struct CpuProgressSample {
-            bool hit = false;
-            bool progress = false;
-            uint32_t hit_pc = 0;
-            uint32_t first_pc = 0;
-            uint32_t last_pc = 0;
-            size_t distinct_pcs = 0;
-            size_t steps = 0;
-        };
-
-        auto sample_cpu_progress = [&](size_t max_steps, size_t min_distinct_pcs) -> CpuProgressSample {
-            CpuProgressSample sample{};
-            Core::SetState(*m_system, Core::State::Paused);
-            if (!waitForPausedCoreState(250, 1)) {
-                sample.last_pc = getPC();
-                SCLOGW("[DW/run] VI stall CPU sample could not pause core pc=%08X", sample.last_pc);
-                return sample;
-            }
-
-            auto& power_pc = m_system->GetPowerPC();
-            const PowerPC::CoreMode old_mode = power_pc.GetMode();
-            power_pc.SetMode(PowerPC::CoreMode::Interpreter);
-
-            std::unordered_set<uint32_t> pcs_seen;
-            Common::Event sync_event;
-            for (size_t step = 0; step < max_steps; ++step) {
-                const uint32_t before_pc = getPC();
-                if (step == 0)
-                    sample.first_pc = before_pc;
-                pcs_seen.insert(before_pc);
-
-                if (contains_pc(armed_singleton().pcs, before_pc)) {
-                    sample.hit = true;
-                    sample.hit_pc = before_pc;
-                    sample.last_pc = before_pc;
-                    break;
-                }
-
-                m_system->GetCPU().StepOpcode(&sync_event);
-                sync_event.WaitFor(std::chrono::milliseconds(20));
-                ++sample.steps;
-
-                const uint32_t after_pc = getPC();
-                pcs_seen.insert(after_pc);
-                sample.last_pc = after_pc;
-
-                if (contains_pc(armed_singleton().pcs, after_pc)) {
-                    sample.hit = true;
-                    sample.hit_pc = after_pc;
-                    break;
-                }
-            }
-
-            sample.distinct_pcs = pcs_seen.size();
-            sample.progress = sample.distinct_pcs >= min_distinct_pcs;
-            power_pc.SetMode(old_mode);
-            return sample;
-        };
-
-        const auto memory_watchpoint_snapshot = snapshotMemoryWatchpoints();
-
-        // Ensure we begin in Running so time can advance (unless already paused by a BP before entry)
-        if (Core::GetState(*m_system) != Core::State::Paused)
+        probe.emit_marker("control_wait.begin", lease.generation());
+        if (Core::GetState(*m_system) == Core::State::Paused)
             Core::SetState(*m_system, Core::State::Running);
 
-        // m_system->GetSystemTimers().GetLocalTimeRTCOffset()
-        uint32_t rtc = Config::Get(Config::MAIN_CUSTOM_RTC_VALUE);
+        const auto stop_without_hit = [&](const char* reason) {
+            if (Core::GetState(*m_system) != Core::State::Paused)
+                (void)pauseEmulationBlocking(1000);
+            probe.emit_marker(std::string("control_wait.") + reason);
+            return RunUntilHitResult{ false, 0u, reason };
+        };
 
-        size_t polls = 0;
-        while (true)
-        {
+        for (;;) {
             const auto now = steady_clock::now();
-            if (now >= deadline) {
-                // TIMEOUT: enforce postcondition (Paused) then return
-                Core::SetState(*m_system, Core::State::Paused);
-                SCLOGD("[DW/run] TIMEOUT polls=%zu pc=%08X vi=%llu", polls, getPC(),
-                    (unsigned long long)getViFieldCountApproxFromBaseline());
-                return finish({ false, 0u, "timeout" });
-            }
+            if (now >= deadline)
+                return stop_without_hit("timeout");
 
-            const auto st = Core::GetState(*m_system);
-            if (st == Core::State::Paused)
-            {
-                // 1) PC breakpoints remain the normal hit path; memchecks are an optional second stop source.
-                const uint32_t pc = getPC();
-                const bool pc_hit = contains_pc(armed_singleton().pcs, pc);
-                const auto memcheck_deltas = detectMemoryWatchpointDeltasSince(memory_watchpoint_snapshot);
-                DecodedMemoryAccess decoded_current_access{};
-                std::optional<MemoryWatchpointHit> memcheck_hit;
-                if (!memcheck_deltas.empty()) {
-                    uint32_t opcode = 0;
-                    if (readU32(pc, opcode)) {
-                        decoded_current_access = DecodeCurrentMemoryAccess(
-                            pc,
-                            opcode,
-                            [this](uint8_t reg, uint32_t& out) {
-                                out = getRegister(reg);
-                                return true;
-                            },
-                            [this](uint32_t address, uint32_t size, uint64_t& out) {
-                                return read_memory_value_for_decode(*this, address, size, out);
-                            });
-                        memcheck_hit = ProveMemoryWatchpointHitAtCurrentInstruction(
-                            decoded_current_access,
-                            memcheck_deltas);
-                    }
-                }
-                if (pc_hit || memcheck_hit.has_value() || !memcheck_deltas.empty()) {
-                    // HIT: core is already Paused by the BP; leave paused and return
-                    const DebugStopKind stop_kind = merge_debug_stop_kind(pc_hit, memcheck_hit.has_value());
-                    const char* reason = (!pc_hit && !memcheck_hit.has_value() && !memcheck_deltas.empty())
-                        ? "unattributed_memcheck"
-                        : debug_stop_reason(stop_kind);
-                    SCLOGD("[DW/run] HIT pc=%08X polls=%zu reason=%s raw_memcheck_deltas=%zu proved_memcheck=%d",
-                        pc,
-                        polls,
-                        reason,
-                        memcheck_deltas.size(),
-                        memcheck_hit.has_value() ? 1 : 0);
-                    return finish({
+            const auto wait_time = std::min(
+                milliseconds(100),
+                std::chrono::duration_cast<milliseconds>(deadline - now));
+            const auto wait = probe.wait_for_control(lease.generation(), wait_time);
+            if (wait.status == savor::probe::ControlWaitStatus::Hit) {
+                if (!waitForPausedCoreState(1000, 1))
+                    return stop_without_hit("control_pause_failed");
+                probe.emit_marker("control_wait.hit", wait.hit.pc);
+                if (wait.hit.kind == savor::probe::ControlHitKind::Memory) {
+                    MemoryWatchpointHit memory_hit;
+                    memory_hit.id = wait.hit.control_id;
+                    memory_hit.address = wait.hit.address;
+                    memory_hit.size = wait.hit.size;
+                    memory_hit.access = wait.hit.write
+                        ? MemoryWatchpointAccess::Write
+                        : MemoryWatchpointAccess::Read;
+                    memory_hit.hit_pc = wait.hit.pc;
+                    memory_hit.confirmed_current_instruction = true;
+                    return {
                         true,
-                        pc,
-                        reason,
-                        stop_kind,
-                        memcheck_hit,
-                        memcheck_deltas,
-                        decoded_current_access,
-                    });
+                        wait.hit.pc,
+                        "memcheck",
+                        DebugStopKind::Memcheck,
+                        std::move(memory_hit),
+                    };
                 }
-
-                // 2) If movie EOM caused the pause (pause-on-EOM enabled), detect and return without resuming
-                if (had_movie && !movie.IsPlayingInput()) {
-                    Core::SetState(*m_system, Core::State::Paused); // ensure postcondition
-                    SCLOGD("[DW/run] MOVIE_ENDED (paused) polls=%zu pc=%08X", polls, getPC());
-                    return finish({ false, 0u, "movie_ended" });
-                }
+                return {
+                    true,
+                    wait.hit.pc,
+                    "breakpoint",
+                    DebugStopKind::PcBreakpoint,
+                    std::nullopt,
+                };
             }
-            else // Running
-            {
-                // EOM detection while running
-                if (had_movie && !movie.IsPlayingInput()) {
-                    Core::SetState(*m_system, Core::State::Paused); // ensure postcondition
-                    SCLOGD("[DW/run] MOVIE_ENDED polls=%zu pc=%08X", polls, getPC());
-                    return finish({ false, 0u, "movie_ended" });
-                }
+            if (wait.status == savor::probe::ControlWaitStatus::Cancelled)
+                return stop_without_hit("cancelled");
+            if (wait.status == savor::probe::ControlWaitStatus::Shutdown)
+                return stop_without_hit("shutdown");
 
-                // VI-stall detection
-                if (vi_stall_ms > 0) {
-                    const uint64_t vi_now = getViFieldCountApproxFromBaseline();
-                    if (vi_now <= kViStallGuardStartVi) {
-                        last_vi = vi_now;
-                        last_vi_change = now;
-                    }
-                    else
-                    if (vi_now != last_vi) {
-                        last_vi = vi_now;
-                        last_vi_change = now;
-                    }
-                    else {
-                        const auto since_ms = std::chrono::duration_cast<milliseconds>(now - last_vi_change).count();
-                        if (since_ms >= vi_stall_ms) {
-                            const CpuProgressSample sample = sample_cpu_progress(128, 32);
-                            if (sample.hit) {
-                                SCLOGD("[DW/run] HIT pc=%08X polls=%zu during_vi_stall_sample steps=%zu distinct=%zu",
-                                    sample.hit_pc, polls, sample.steps, sample.distinct_pcs);
-                                return finish({
-                                    true,
-                                    sample.hit_pc,
-                                    "breakpoint",
-                                    DebugStopKind::PcBreakpoint,
-                                    std::nullopt,
-                                });
-                            }
-                            if (sample.progress) {
-                                last_vi_change = steady_clock::now();
-                                SCLOGD("[DW/run] VI_STALL_DEFERRED polls=%zu first_pc=%08X last_pc=%08X steps=%zu distinct=%zu",
-                                    polls, sample.first_pc, sample.last_pc, sample.steps, sample.distinct_pcs);
-                                Core::SetState(*m_system, Core::State::Running);
-                                continue;
-                            }
+            if (had_movie && !movie.IsPlayingInput())
+                return stop_without_hit("movie_ended");
 
-                            Core::SetState(*m_system, Core::State::Paused); // ensure postcondition
-                            SCLOGD("[DW/run] VI_STALLED polls=%zu pc=%08X sample_first=%08X sample_last=%08X sample_steps=%zu sample_distinct=%zu",
-                                polls, getPC(), sample.first_pc, sample.last_pc, sample.steps, sample.distinct_pcs);
-                            return finish({ false, 0u, "vi_stalled" });
-                        }
-                    }
-                }
+            const auto vi = getViFieldCountApproxFromBaseline();
+            if (!probe.uses_frame_clock())
+                probe.set_frame_index(getFrameCountApprox(false));
+            if (vi != last_vi) {
+                last_vi = vi;
+                last_vi_change = steady_clock::now();
+            } else if (vi_stall_ms > 0 && vi > kViStallGuardStartVi
+                && steady_clock::now() - last_vi_change >= milliseconds(vi_stall_ms)) {
+                return stop_without_hit("vi_stalled");
             }
 
-            if (emit)
-            {
-                const auto now2 = steady_clock::now();
-                const bool time_ok = (!last_emit.time_since_epoch().count()) ||
-                    (now2 - last_emit) >= milliseconds(std::max<uint32_t>(100u, poll_ms ? poll_ms : 0u));
-
-                std::vector<std::string> msg_strs{};
-                uint32_t flags = 0;
-
-                if (time_ok || ((polls & 0x3F) == 0)) // also piggyback on your 64-poll trace cadence
-                {
-                    flags |= PF_WAITING_FOR_BP;
-                    if (watch_movie && movie.IsPlayingInput()) flags |= PF_MOVIE_PLAYING;
-
-                    // Warn if near timeout
-                    const auto left_ms_now2 = (uint32_t)std::chrono::duration_cast<milliseconds>(deadline - now2).count();
-                    if (left_ms_now2 <= std::max<uint32_t>(2000u, timeout_ms / 10u))
-                    {
-                        SCLOGW("[run] close to timeout! time remaining: %u ms", left_ms_now2);
-                        flags |= PF_TIMEOUT_NEAR;
+            if (emit_enabled) {
+                const auto emit_now = steady_clock::now();
+                const auto interval = milliseconds(std::max<std::uint32_t>(100, poll_ms));
+                if (last_emit.time_since_epoch().count() == 0 || emit_now - last_emit >= interval) {
+                    std::vector<std::string> parts;
+                    if ((progflags & static_cast<std::uint32_t>(CoreProgressFlags::ViDelta)) != 0)
+                        parts.push_back(std::format("VIDelta={}", getFrameCountApprox(false)));
+                    if ((progflags & static_cast<std::uint32_t>(CoreProgressFlags::Filename)) != 0) {
+                        if (auto value = getCurrentSctFileTag(); !value.empty()) parts.push_back(std::move(value));
                     }
-
-                    // VI stall early warning (if configured)
-                    if (vi_stall_ms > 0)
-                    {
-                        const uint64_t vi_now = getViFieldCountApproxFromBaseline();
-                        if (vi_now > kViStallGuardStartVi && vi_now == last_vi)
-                        {
-                            const auto since_ms = (uint32_t)std::chrono::duration_cast<milliseconds>(now2 - last_vi_change).count();
-                            if (since_ms >= (vi_stall_ms / 2u))
-                            {
-                                SCLOGW("[run] close to VI stall!");
-                                if (progflags & (uint32_t)CoreProgressFlags::WarnViStall) msg_strs.push_back("VI stall imminent");
-                            }
-                        }
+                    if ((progflags & static_cast<std::uint32_t>(CoreProgressFlags::ScriptSection)) != 0) {
+                        if (auto value = getCurrentSctSection(); !value.empty()) parts.push_back(std::move(value));
                     }
-
-                    const uint32_t cur_frames = (uint32_t)getFrameCountApprox(false);
-
-                    if (progflags & (uint32_t)CoreProgressFlags::ViDelta) 
-                    {
-                        SCLOGTX(SC_TAGS("progress"), std::format("VIDelta={}", cur_frames).c_str());
-                        msg_strs.push_back(std::format("VIDelta={}", cur_frames));
-                    }
-                    if (progflags & (uint32_t)CoreProgressFlags::Filename) 
-                    {
-                        std::string msg = getCurrentSctFileTag();
-                        SCLOGTX(SC_TAGS("progress"), msg.c_str());
-                        msg_strs.push_back(msg);
-                    }
-                    if (progflags & (uint32_t)CoreProgressFlags::ScriptSection) 
-                    {
-                        std::string msg = getCurrentSctSection();
-                        SCLOGTX(SC_TAGS("progress"), msg.c_str());
-                        msg_strs.push_back(getCurrentSctSection());
-                    }
-
-                    last_emit = now2;
-                }
-
-                if (progflags & (uint32_t)CoreProgressFlags::BattleProgress && Core::GetState(*m_system) == Core::State::Paused) {
-                    uint32_t cur_pc = getPC();
-                    
-                    if (savor::progress::BattleProgressBPs().contains(cur_pc))
-                    {
-                        for (savor::progress::BattleProgressEntry entry : savor::progress::BattleProgress) {
-                            if (entry.key == cur_pc) 
-                            {
-                                std::string msg = entry.fxn(*this);
-                                SCLOGTX(SC_TAGS("progress"), msg.c_str());
-                                msg_strs.push_back(msg);
-                            }
-                        }
-                        SCLOGDX(SC_TAGS("run"), "Stepping past pc=%08X to avoid battle breakpoint", cur_pc);
-                        Common::Event sync_event;
-                        auto& power_pc = m_system->GetPowerPC();
-                        PowerPC::CoreMode old_mode = power_pc.GetMode();
-                        power_pc.SetMode(PowerPC::CoreMode::Interpreter);
-                        m_system->GetCPU().StepOpcode(&sync_event);
-                        sync_event.WaitFor(std::chrono::milliseconds(20));
-                        power_pc.SetMode(old_mode);
-                    }
-
-                }
-
-                bool record = true;
-                if (msg_strs.empty() && time_ok && (progflags & (uint32_t)CoreProgressFlags::DontRecordHeartbeat) != 0) record = false;
-
-                if (msg_strs.empty() && time_ok) msg_strs.push_back((flags & PF_MOVIE_PLAYING) ? "playing" : "waiting on bp");
-                
-                if (!msg_strs.empty())
-                {
-                    std::string message{};
-                    bool first = true;
-                    for (auto s : msg_strs) 
-                    {
-                        if (s.empty()) continue;
-                        if (first) first = false;
-                        else message += " - ";
-                        message += s;
+                    const bool record = !parts.empty()
+                        || (progflags & static_cast<std::uint32_t>(CoreProgressFlags::DontRecordHeartbeat)) == 0;
+                    if (parts.empty())
+                        parts.push_back(had_movie && movie.IsPlayingInput() ? "playing" : "waiting on bp");
+                    std::string message;
+                    for (const auto& part : parts) {
+                        if (!message.empty()) message += " - ";
+                        message += part;
                     }
                     emit(message.c_str(), record);
+                    last_emit = emit_now;
                 }
             }
-
-            if ((polls++ & 0x3F) == 0) {
-                SCLOGDX(SC_TAGS("run"), "poll=%zu state=%d pc=%08X movie=%d vi=%llu",
-                    polls, (int)Core::GetState(*m_system), getPC(),
-                    movie.IsPlayingInput() ? 1 : 0,
-                    (unsigned long long)getViFieldCountApproxFromBaseline());
-            }
-
-            // Dynamic poll interval based on *time remaining* (single-sourced policy)
-            uint32_t dyn_poll = poll_ms;
-            if (dyn_poll == 0) {
-                const auto left_ms = (uint32_t)std::chrono::duration_cast<milliseconds>(deadline - now).count();
-                dyn_poll = DolphinWrapper::pickPollIntervalMsForTimeLeft(timeout_ms, left_ms);
-            }
-
-            // Stall guard: keep polling frequent enough to detect within the configured stall window
-            if (vi_stall_ms > 0) {
-                const uint32_t guard = std::max<uint32_t>(1u, vi_stall_ms / 2u);
-                if (dyn_poll > guard) dyn_poll = guard;
-            }
-
-            // Do not oversleep past the deadline
-            const auto left_ms_now = (uint32_t)std::chrono::duration_cast<milliseconds>(deadline - steady_clock::now()).count();
-            const uint32_t sleep_ms = (left_ms_now > dyn_poll) ? dyn_poll : std::max<uint32_t>(1u, left_ms_now);
-
-            if (Core::GetState(*m_system) == Core::State::Paused) {
-                const uint32_t paused_pc = getPC();
-                if (contains_pc(armed_singleton().pcs, paused_pc)) {
-                    SCLOGD("[DW/run] HIT pc=%08X polls=%zu late=true", paused_pc, polls);
-                    return finish({ true, paused_pc, "breakpoint" });
-                }
-                if (had_movie && !movie.IsPlayingInput()) {
-                    SCLOGD("[DW/run] MOVIE_ENDED (late paused) polls=%zu pc=%08X", polls, paused_pc);
-                    return finish({ false, 0u, "movie_ended" });
-                }
-                Core::SetState(*m_system, Core::State::Running);
-            }
-
-            std::this_thread::sleep_for(milliseconds(sleep_ms));
         }
     }
 

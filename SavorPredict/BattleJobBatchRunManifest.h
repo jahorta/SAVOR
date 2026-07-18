@@ -4,6 +4,7 @@
 #include "BattleJobBatchRunOptions.h"
 #include "BattleJobClone.h"
 #include "BattleJobSandbox.h"
+#include "CaptureArtifact.h"
 
 #include <filesystem>
 #include <cstdint>
@@ -18,10 +19,12 @@ struct BattleJobBatchRunJobSummary {
     BattleJobCloneResult clone;
     std::filesystem::path expected_capture_path;
     std::filesystem::path stable_capture_path;
+    std::filesystem::path capture_export_path;
     std::filesystem::path trace_report_path;
     std::string terminal_state;
     bool timed_out = false;
     bool capture_found = false;
+    PreparedCaptureArtifact capture_artifact;
     int trace_exit_code = -1;
     std::optional<std::uint32_t> captured_original_seed;
     std::optional<std::uint32_t> captured_override_seed;

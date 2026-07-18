@@ -221,11 +221,8 @@
     <ClInclude Include="Runner\Breakpoints\BP.def.h" />
     <ClInclude Include="Runner\Breakpoints\BpRegistry.h" />
     <ClInclude Include="Runner\Breakpoints\Predicate.h" />
-    <ClInclude Include="Runner\Capture\CaptureJsonlWriter.h" />
-    <ClInclude Include="Runner\Capture\CaptureProfile.h" />
-    <ClInclude Include="Runner\Capture\LinkedListSnapshot.h" />
-    <ClInclude Include="Runner\Capture\LiveCheckpointCapture.h" />
     <ClInclude Include="Runner\IPC\Wire.h" />
+    <ClInclude Include="Runner\IPC\WorkerWireWriter.h" />
     <ClInclude Include="Runner\Parallel\ParallelPhaseScriptRunnerApi.h" />
     <ClInclude Include="Runner\Parallel\WorkerBootPlan.h" />
     <ClInclude Include="Runner\Parallel\PRTypes.h" />
@@ -288,13 +285,11 @@
     <ClCompile Include="Phases\RNGSeedDeltaMap.cpp" />
     <ClCompile Include="Runner\Breakpoints\BpRegistry.cpp" />
     <ClCompile Include="Runner\Breakpoints\Predicate.cpp" />
-    <ClCompile Include="Runner\Capture\CaptureJsonlWriter.cpp" />
-    <ClCompile Include="Runner\Capture\CaptureProfile.cpp" />
-    <ClCompile Include="Runner\Capture\LinkedListSnapshot.cpp" />
-    <ClCompile Include="Runner\Capture\LiveCheckpointCapture.cpp" />
     <ClCompile Include="Runner\Script\CtxRegistry.cpp" />
+    <ClCompile Include="Runner\IPC\WorkerWireWriter.cpp" />
     <ClCompile Include="Runner\Script\PhaseScriptVM.cpp" />
     <ClCompile Include="Runner\Script\PSContextCodec.cpp" />
+    <ClCompile Include="Runner\Script\ScriptProgress.cpp" />
     <ClCompile Include="Runner\Symbols\RuntimeSymbolRegistry.cpp" />
     <ClCompile Include="Tas\DtmAnnotationFile.cpp" />
     <ClCompile Include="Tas\DtmFile.cpp" />
@@ -567,6 +562,11 @@
     </None>
     <None Include="Utils\soa_struct_reflector.py" />
     <None Include="_TODO.md" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\SavorProbe\SavorProbe.vcxproj">
+      <Project>{6EA1CA9D-0D84-4A69-BD65-29CDE443BF4A}</Project>
+    </ProjectReference>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
