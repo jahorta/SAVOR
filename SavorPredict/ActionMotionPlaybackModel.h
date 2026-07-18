@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace savor::predict {
 
@@ -18,6 +19,7 @@ enum class ActionMotionPlaybackPhase {
     Primed,
     WaitingForState6,
     State6Satisfied,
+    WaitingForPostState6Delay,
     PublicationReleased,
     Unsupported,
 };
@@ -27,7 +29,57 @@ enum class ActionMotionPlaybackVisitKind {
     InitialRendererAdvance,
     State6Deferred,
     State6Satisfied,
+    PostState6DelayDeferred,
+    PostState6DelayUnavailable,
     PublicationReleased,
+};
+
+enum class ActionMotionDelayStatus {
+    Matched,
+    NoMatch,
+    MissingInput,
+    Malformed,
+    Unsupported,
+};
+
+// A raw FUN_8001DDE0 table entry. The runtime source owns record discovery;
+// this model only evaluates the validated descriptor and instruction fields.
+struct ActionMotionDelayDescriptor {
+    int record_index = -1;
+    std::int16_t location_code = -1;
+    std::uint32_t combined_type = 0;
+    int payload_size = 0;
+    bool payload_in_bounds = false;
+    std::vector<std::uint8_t> payload_bytes;
+};
+
+struct ActionMotionDelayTable {
+    bool table_known = false;
+    bool table_is_null = false;
+    bool includes_sentinel = false;
+    std::vector<ActionMotionDelayDescriptor> descriptors;
+};
+
+struct ActionMotionInstructionGateInput {
+    std::optional<std::int16_t> current_action_key;
+    std::optional<std::int16_t> current_secondary_key;
+    std::optional<std::uint32_t> instruction_flags_0xec;
+    std::optional<std::int16_t> alternate_a_action_key;
+    std::optional<std::int16_t> alternate_a_secondary_key;
+    std::optional<std::int16_t> alternate_b_action_key;
+    std::optional<std::int16_t> alternate_b_secondary_key;
+};
+
+struct ActionMotionDelayLookupResult {
+    ActionMotionDelayStatus status = ActionMotionDelayStatus::MissingInput;
+    int descriptor_record_index = -1;
+    std::optional<int> delay;
+    std::optional<bool> gate_result;
+    std::string provenance;
+};
+
+struct ActionMotionPlaybackVisitInput {
+    std::optional<ActionMotionDelayLookupResult> post_state6_delay;
 };
 
 struct ActionMotionPlaybackInstallRequest {
@@ -57,6 +109,11 @@ struct ActionMotionPlaybackRuntime {
     int callback_control_state = 0;
     int renderer_visits = 0;
     int state6_polls = 0;
+    ActionMotionDelayStatus post_state6_delay_status =
+        ActionMotionDelayStatus::MissingInput;
+    int post_state6_delay_descriptor_record_index = -1;
+    int post_state6_delay_remaining = 0;
+    bool post_state6_delay_lookup_complete = false;
     bool substituted_default_duration = false;
     std::string provenance;
 };
@@ -83,6 +140,12 @@ struct ActionMotionPlaybackVisitResult {
     std::uint32_t flags_after = 0;
     int control_state_before = 0;
     int control_state_after = 0;
+    bool post_state6_delay_lookup_performed = false;
+    ActionMotionDelayStatus post_state6_delay_status =
+        ActionMotionDelayStatus::MissingInput;
+    int post_state6_delay_descriptor_record_index = -1;
+    int post_state6_delay_before = 0;
+    int post_state6_delay_after = 0;
     std::string detail;
 };
 
@@ -90,7 +153,12 @@ ActionMotionPlaybackInstallResult install_action_motion_playback(
     const ActionMotionPlaybackInstallRequest& request);
 
 ActionMotionPlaybackVisitResult visit_action_motion_playback(
-    const ActionMotionPlaybackRuntime& runtime);
+    const ActionMotionPlaybackRuntime& runtime,
+    const ActionMotionPlaybackVisitInput& input = {});
+
+ActionMotionDelayLookupResult resolve_action_motion_post_state6_delay(
+    const ActionMotionDelayTable& table,
+    const ActionMotionInstructionGateInput& input);
 
 bool action_motion_playback_blocks_publication(
     const ActionMotionPlaybackRuntime& runtime);
@@ -98,5 +166,6 @@ bool action_motion_playback_blocks_publication(
 const char* action_motion_playback_status_name(ActionMotionPlaybackStatus status);
 const char* action_motion_playback_phase_name(ActionMotionPlaybackPhase phase);
 const char* action_motion_playback_visit_kind_name(ActionMotionPlaybackVisitKind kind);
+const char* action_motion_delay_status_name(ActionMotionDelayStatus status);
 
 } // namespace savor::predict

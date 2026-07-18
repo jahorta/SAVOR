@@ -538,6 +538,25 @@ def findings_text(
     acceptance: list[dict[str, Any]],
     chains: list[dict[str, Any]],
 ) -> str:
+    delayed_chains = [
+        chain
+        for chain in chains
+        if chain["delay_descriptor_matched"] and chain["stored_delay"] not in (None, 0)
+    ]
+    zero_delay_chains = [
+        chain
+        for chain in chains
+        if chain["stored_delay"] == 0 and chain["delay_decrement_count"] == 0
+    ]
+    delayed_values = sorted({chain["stored_delay"] for chain in delayed_chains})
+    delay_contract_exact = bool(delayed_chains) and all(
+        chain["delay_gate_result"] == 1
+        and chain["payload_delay"] == chain["returned_delay"]
+        and chain["returned_delay"] == chain["stored_delay"]
+        and chain["stored_delay"] == chain["delay_decrement_count"]
+        for chain in delayed_chains
+    )
+
     lines = [
         "# Mode-1 Pathing Publication And Lifetime",
         "",
@@ -553,7 +572,9 @@ def findings_text(
             f"{row['invalid_thread_lists']} invalid thread-list snapshots."
         )
     lines.extend([
-        "- The two jobs ran in one `--max-workers 2` batch with distinct worker/runtime slots. Both source rows have `fake_attack=0` and reached the natural next-turn outcome.",
+        f"- The reduction covers {len(acceptance)} jobs from one isolated batch; "
+        f"{sum(row['fake_attack'] == 0 for row in acceptance)}/{len(acceptance)} source rows "
+        "have `fake_attack=0`.",
         "- Checkpoints that reach their local 256-hit limit are broad visit diagnostics. Each modeled target chain completes before those late-turn limits and the global recorder cap is not reached.",
         "",
         "## Observed Chains",
@@ -577,12 +598,29 @@ def findings_text(
         "## Interpretation",
         "",
         "- `FUN_8001B1B0` owns the observed publication lifetime. The SYSTEM CAMERA child is inserted during its state-10 auxiliary publication, visited later through the thread list, and only then reaches mode-1 geometry and its RNG draw.",
-        "- The target mode-5 chains do not match the `0x00030032` delay descriptor and store delay zero. State 8, state 9, state 10, publication, first child visit, and mode-1 geometry all occur without a countdown; their timing is determined by earlier callback states.",
-        "- The first job-149113 chain polls state 6 five times with `FUN_80075D64` results `0,0,0,0,1`; the first job-453748 chain polls it once and returns `1`. Each poll is two VI apart. Those four extra false polls exactly explain the prior 23-versus-19 instruction-visit publication gap.",
+    ])
+    if delayed_chains:
+        agreement = (
+            "agree exactly for every chain"
+            if delay_contract_exact
+            else "do not agree for every chain"
+        )
+        lines.append(
+            f"- {len(delayed_chains)} descriptor-matched chains loaded nonzero delays "
+            f"{delayed_values}. The payload, gate return, stored delay, and state-9 "
+            f"decrement count {agreement}."
+        )
+    if zero_delay_chains:
+        lines.append(
+            f"- {len(zero_delay_chains)} chains stored delay zero and performed no state-9 "
+            "countdown; those chains advanced from state 8 through state 10 without a "
+            "delayed publication."
+        )
+    lines.extend([
         "- Static code resolves that predicate exactly: `FUN_80075D64` returns true immediately when `IW+0xEC` bit 31 is clear. When the bit is set, it returns false until `IW+0x68 >= FLOAT_80348A74`; the successful threshold path clears bit 31 before returning true.",
-        "- Live post-call flags corroborate that contract: every captured false return retains `IW+0xEC` bit 31, while every successful return has bit 31 cleared and preserves any unrelated lower flag bits. The three reduced target chains use the exact sequences shown above.",
+        "- Live post-call flags corroborate that contract: every captured false return retains `IW+0xEC` bit 31, while every successful return has bit 31 cleared and preserves any unrelated lower flag bits. The reduced chains use the exact sequences shown above.",
         "- The child record is absent from the pre-publication list and present at publication/first visit, so publication and first execution are separate thread-order events.",
-        "- This pass does not justify an eager predictor draw at instruction-mode publication. It captured the post-call `IW+0xEC` flags but not `IW+0x68`; one narrow writer/operand pass is still required to establish the accumulator's producer, increment cadence, threshold bits, and the earlier bit-31 publication before implementing this lifetime in the predictor.",
+        "- The playback model therefore needs an explicit state-8 delay lookup and state-9 countdown before state-10 publication. The existing next-visit publication remains valid only when the lookup returns zero.",
         "- No callback scheduling behavior was changed in this pass.",
         "",
     ])

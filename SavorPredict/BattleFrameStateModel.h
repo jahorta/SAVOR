@@ -61,6 +61,12 @@ struct BattleFrameCombatantState {
     int instruction_target_slot_0x4 = -1;
     std::int16_t visual_instruction_mode_0x6 = 0;
     std::int16_t visual_instruction_subtype_0x8 = -1;
+    // These are only populated by an evidence-backed producer. The delay gate
+    // must remain MissingInput for special branches until that producer exists.
+    std::optional<std::int16_t> visual_instruction_alternate_a_mode_0x4a;
+    std::optional<std::int16_t> visual_instruction_alternate_a_subtype_0x4c;
+    std::optional<std::int16_t> visual_instruction_alternate_b_mode_0x56;
+    std::optional<std::int16_t> visual_instruction_alternate_b_subtype_0x58;
     CombatantVisualInstructionKnowledge visual_instruction_knowledge =
         CombatantVisualInstructionKnowledge::Unknown;
     std::uint64_t visual_instruction_revision = 0;

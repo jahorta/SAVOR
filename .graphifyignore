@@ -8,6 +8,8 @@
 .git/
 .vs/
 .codex/
+.codex-runs/
+.uv-cache/
 .non_qt2_backup/
 _old files if needed/
 .gitattributes
@@ -16,6 +18,9 @@ _old files if needed/
 
 # Graphify output and build/generated output.
 graphify-out/
+Analyses/
+e2e-runs/
+perf-runs/
 bin/
 obj/
 x64/
@@ -31,6 +36,9 @@ SavorQt/SoaSimQt2/
 
 # Vendored Dolphin emulator source overwhelms the SAVOR architecture graph.
 SavorCore/_Dolphin_src/
+
+# Tests are better graphed separately when the question is coverage or fixtures.
+SavorTests/
 
 # External/reference/prose-heavy trees are not part of the repo code graph.
 third-party/

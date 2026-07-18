@@ -84,6 +84,7 @@ enum class BattleFrameWorkerStepKind {
     ActionMotionPlaybackInstall,
     ActionMotionRendererAdvance,
     ActionMotionState6Poll,
+    ActionMotionPostState6Delay,
     ActionMotionPublicationRelease,
     VisualStdRowProducerVisit,
     VisualInstructionInstall,
@@ -357,6 +358,12 @@ struct BattleFrameStepEvent {
     bool action_motion_renderer_advanced = false;
     bool action_motion_gate_polled = false;
     std::optional<bool> action_motion_gate_result;
+    bool action_motion_delay_lookup_performed = false;
+    ActionMotionDelayStatus action_motion_delay_status =
+        ActionMotionDelayStatus::MissingInput;
+    int action_motion_delay_descriptor_record_index = -1;
+    int action_motion_delay_before = 0;
+    int action_motion_delay_after = 0;
     bool rng_event = false;
     std::string rng_label;
     int draws_consumed = 0;

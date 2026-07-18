@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <iomanip>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -78,9 +79,21 @@ std::vector<std::uint8_t> system_camera_payload(
     return payload;
 }
 
+std::vector<std::uint8_t> action_motion_delay_descriptor_payload(
+    std::int16_t delay = 13,
+    std::int16_t action_key = 5) {
+    std::vector<std::uint8_t> payload(0x12, 0);
+    write_u16_be(payload, 0x00, static_cast<std::uint16_t>(action_key));
+    write_u16_be(payload, 0x02, 1);
+    write_u16_be(payload, 0x04, 0);
+    write_u16_be(payload, 0x10, static_cast<std::uint16_t>(delay));
+    return payload;
+}
+
 std::string visual_json(
     const std::vector<std::uint8_t>& set_payload,
-    const std::vector<std::uint8_t>& camera_payload) {
+    const std::vector<std::uint8_t>& camera_payload,
+    const std::optional<std::vector<std::uint8_t>>& delay_descriptor = std::nullopt) {
     std::ostringstream json;
     json << "{\"schema\": \"spice_std_ir_v1\","
          << "\"layoutKind\": \"entry_table\",\"parseOk\": true,"
@@ -92,8 +105,15 @@ std::string visual_json(
          << "{\"index\":1,\"locationCode\":42,\"opcode\":3,"
          << "\"payloadSize\":" << camera_payload.size()
          << ",\"payloadInBounds\":true,\"payloadBytesHex\":\""
-         << bytes_hex(camera_payload) << "\"},"
-         << "{\"index\":2,\"locationCode\":-1,\"opcode\":0,"
+         << bytes_hex(camera_payload) << "\"}";
+    if (delay_descriptor.has_value()) {
+        json << ",{\"index\":2,\"locationCode\":50,\"opcode\":3,"
+             << "\"payloadSize\":" << delay_descriptor->size()
+             << ",\"payloadInBounds\":true,\"payloadBytesHex\":\""
+             << bytes_hex(*delay_descriptor) << "\"}";
+    }
+    const int sentinel_index = delay_descriptor.has_value() ? 3 : 2;
+    json << ",{\"index\":" << sentinel_index << ",\"locationCode\":-1,\"opcode\":0,"
          << "\"payloadSize\":0,\"payloadInBounds\":true,"
          << "\"payloadBytesHex\":\"\"}]}}";
     return json.str();
@@ -104,11 +124,18 @@ CombatantVisualResource decoded_resource(
     bool mode0_rewrite_gate = false,
     std::int16_t camera_mode = 0x0e,
     std::int16_t delay = 2,
-    std::int16_t action_key = 5) {
+    std::int16_t action_key = 5,
+    bool include_action_motion_delay_descriptor = false) {
+    const std::optional<std::vector<std::uint8_t>> descriptor =
+        include_action_motion_delay_descriptor
+        ? std::optional<std::vector<std::uint8_t>>{
+            action_motion_delay_descriptor_payload(13, action_key)}
+        : std::nullopt;
     auto loaded = load_spice_std_visual_resource_from_json_text(
         visual_json(
             set_command_payload(delay, action_key),
-            system_camera_payload(camera_mode, action_key)));
+            system_camera_payload(camera_mode, action_key),
+            descriptor));
     EXPECT_TRUE(loaded.ok);
     loaded.resource.binding = {
         .slot = slot,
@@ -732,6 +759,73 @@ TEST(SavorPredictCombatantVisualRuntime, Mode8PublicationWaitsForCapturedState6P
                 || event.step_kind == BattleFrameWorkerStepKind::ActionMotionPublicationRelease;
             return playback_event && (event.rng_event || event.draws_consumed != 0);
         }));
+}
+
+TEST(SavorPredictCombatantVisualRuntime, DescriptorBackedState9DelayKeepsPublicationOnOwnerVisits) {
+    auto runtime = initialize_frame_runtime();
+    ASSERT_TRUE(runtime.has_value());
+    ASSERT_TRUE(configure_battle_frame_visual_resource(
+        *runtime, decoded_resource(0, false, 0, 2, 5, true)));
+    ASSERT_TRUE(schedule_action(*runtime, false).scheduled);
+
+    auto* combatant = find_frame_combatant(runtime->state, 0);
+    ASSERT_NE(combatant, nullptr);
+    combatant->selected_action_row_index = 4;
+    combatant->selected_action_row_action_id = 5;
+    combatant->selected_action_row_duration_bits = 0x3dccc954u;
+    combatant->selected_action_row_duration_known = true;
+    runtime->visual.std_row_producers[0].thread_state_0x19 = 1;
+
+    ASSERT_TRUE(publish_fixture_visual_instruction_state(*runtime, 0, 0, 5));
+    std::uint32_t rng = 0x53746174u;
+    std::vector<BattleFrameStepEvent> events;
+    for (int frame = 0; frame < 20; ++frame) {
+        const auto step = run_first_turn_frame(*runtime, rng);
+        ASSERT_TRUE(step.ok);
+        events.insert(events.end(), step.events.begin(), step.events.end());
+        if (count_step(events, BattleFrameWorkerStepKind::VisualCommandPublish) > 0) {
+            break;
+        }
+    }
+
+    const auto true_gate = std::find_if(
+        events.begin(), events.end(),
+        [](const BattleFrameStepEvent& event) {
+            return event.step_kind == BattleFrameWorkerStepKind::ActionMotionState6Poll
+                && event.action_motion_gate_result.value_or(false);
+        });
+    const auto first_delay = std::find_if(
+        events.begin(), events.end(),
+        [](const BattleFrameStepEvent& event) {
+            return event.step_kind
+                    == BattleFrameWorkerStepKind::ActionMotionPostState6Delay
+                && event.action_motion_delay_lookup_performed;
+        });
+    const auto release = std::find_if(
+        events.begin(), events.end(),
+        [](const BattleFrameStepEvent& event) {
+            return event.step_kind
+                == BattleFrameWorkerStepKind::ActionMotionPublicationRelease;
+        });
+    const auto publication = std::find_if(
+        events.begin(), events.end(),
+        [](const BattleFrameStepEvent& event) {
+            return event.step_kind == BattleFrameWorkerStepKind::VisualCommandPublish;
+        });
+    ASSERT_NE(true_gate, events.end());
+    ASSERT_NE(first_delay, events.end());
+    ASSERT_NE(release, events.end());
+    ASSERT_NE(publication, events.end());
+    EXPECT_EQ(count_step(
+        events, BattleFrameWorkerStepKind::ActionMotionPostState6Delay), 13);
+    EXPECT_EQ(first_delay->action_motion_delay_status, ActionMotionDelayStatus::Matched);
+    EXPECT_EQ(first_delay->action_motion_delay_descriptor_record_index, 2);
+    EXPECT_EQ(first_delay->action_motion_delay_before, 13);
+    EXPECT_EQ(first_delay->action_motion_delay_after, 12);
+    EXPECT_EQ(true_gate->frame_index + 14, release->frame_index);
+    EXPECT_EQ(release->frame_index, publication->frame_index);
+    EXPECT_EQ(release->action_motion_control_before, 9);
+    EXPECT_EQ(release->action_motion_control_after, 11);
 }
 
 TEST(SavorPredictCombatantVisualRuntime, MovementActivationDoesNotCreateVisualEpoch) {

@@ -1643,6 +1643,7 @@ bool is_visual_step_kind(BattleFrameWorkerStepKind kind) {
     case BattleFrameWorkerStepKind::ActionMotionPlaybackInstall:
     case BattleFrameWorkerStepKind::ActionMotionRendererAdvance:
     case BattleFrameWorkerStepKind::ActionMotionState6Poll:
+    case BattleFrameWorkerStepKind::ActionMotionPostState6Delay:
     case BattleFrameWorkerStepKind::ActionMotionPublicationRelease:
     case BattleFrameWorkerStepKind::VisualStdRowProducerVisit:
     case BattleFrameWorkerStepKind::VisualInstructionInstall:
@@ -1723,6 +1724,50 @@ CombatantVisualResource* visual_resource_for(
     }
     auto& resource = runtime.visual.resources[static_cast<std::size_t>(slot)];
     return resource.has_value() ? &*resource : nullptr;
+}
+
+ActionMotionDelayTable action_motion_delay_table_for(
+    const CombatantVisualResource* resource) {
+    ActionMotionDelayTable table;
+    if (resource == nullptr) {
+        return table;
+    }
+    table.table_known = true;
+    table.includes_sentinel = resource->includes_sentinel;
+    table.descriptors.reserve(resource->records.size());
+    for (const auto& record : resource->records) {
+        table.descriptors.push_back({
+            .record_index = record.index,
+            .location_code = record.location_code,
+            .combined_type = record.combined_type,
+            .payload_size = record.payload_size,
+            .payload_in_bounds = record.payload_in_bounds,
+            .payload_bytes = record.payload_bytes,
+        });
+    }
+    return table;
+}
+
+ActionMotionInstructionGateInput action_motion_delay_gate_input_for(
+    const BattleFrameCombatantState* combatant) {
+    ActionMotionInstructionGateInput input;
+    if (combatant == nullptr
+        || combatant->visual_instruction_knowledge
+            == CombatantVisualInstructionKnowledge::Unknown) {
+        return input;
+    }
+    input.current_action_key = combatant->visual_instruction_mode_0x6;
+    input.current_secondary_key = combatant->visual_instruction_subtype_0x8;
+    input.instruction_flags_0xec = combatant->instruction_flags_0xec;
+    input.alternate_a_action_key =
+        combatant->visual_instruction_alternate_a_mode_0x4a;
+    input.alternate_a_secondary_key =
+        combatant->visual_instruction_alternate_a_subtype_0x4c;
+    input.alternate_b_action_key =
+        combatant->visual_instruction_alternate_b_mode_0x56;
+    input.alternate_b_secondary_key =
+        combatant->visual_instruction_alternate_b_subtype_0x58;
+    return input;
 }
 
 int normalized_camera_duration(const CombatantVisualSystemCameraPayload& camera) {
@@ -2151,9 +2196,15 @@ bool visit_action_motion_playback_for_slot(
     }
 
     const auto phase_before = playback.phase;
-    const auto visited = visit_action_motion_playback(playback);
-    playback = visited.runtime;
     auto* combatant = find_frame_combatant(runtime.state, slot);
+    ActionMotionPlaybackVisitInput visit_input;
+    if (phase_before == ActionMotionPlaybackPhase::State6Satisfied) {
+        visit_input.post_state6_delay = resolve_action_motion_post_state6_delay(
+            action_motion_delay_table_for(visual_resource_for(runtime, slot)),
+            action_motion_delay_gate_input_for(combatant));
+    }
+    const auto visited = visit_action_motion_playback(playback, visit_input);
+    playback = visited.runtime;
     if (combatant != nullptr) {
         combatant->instruction_flags_0xec = visited.flags_after;
     }
@@ -2168,6 +2219,11 @@ bool visit_action_motion_playback_for_slot(
     case ActionMotionPlaybackVisitKind::State6Satisfied:
         step_kind = BattleFrameWorkerStepKind::ActionMotionState6Poll;
         callback = "FUN_80075D64";
+        break;
+    case ActionMotionPlaybackVisitKind::PostState6DelayDeferred:
+    case ActionMotionPlaybackVisitKind::PostState6DelayUnavailable:
+        step_kind = BattleFrameWorkerStepKind::ActionMotionPostState6Delay;
+        callback = "FUN_8001DDE0/FUN_8001B6F8_states8_9";
         break;
     case ActionMotionPlaybackVisitKind::PublicationReleased:
         step_kind = BattleFrameWorkerStepKind::ActionMotionPublicationRelease;
@@ -2197,6 +2253,17 @@ bool visit_action_motion_playback_for_slot(
            << "; state6_polls=" << playback.state6_polls;
     if (visited.gate_result.has_value()) {
         detail << "; gate_result=" << (*visited.gate_result ? 1 : 0);
+    }
+    if (visited.post_state6_delay_lookup_performed
+        || phase_before == ActionMotionPlaybackPhase::WaitingForPostState6Delay) {
+        detail << "; post_state6_delay_status="
+               << action_motion_delay_status_name(visited.post_state6_delay_status)
+               << "; post_state6_delay_descriptor_record="
+               << visited.post_state6_delay_descriptor_record_index
+               << "; post_state6_delay=" << visited.post_state6_delay_before
+               << "->" << visited.post_state6_delay_after
+               << "; delay_lookup="
+               << (visited.post_state6_delay_lookup_performed ? 1 : 0);
     }
     detail << "; draws=0; " << visited.detail;
 
@@ -2229,6 +2296,13 @@ bool visit_action_motion_playback_for_slot(
     event.action_motion_renderer_advanced = visited.renderer_advanced;
     event.action_motion_gate_polled = visited.gate_polled;
     event.action_motion_gate_result = visited.gate_result;
+    event.action_motion_delay_lookup_performed =
+        visited.post_state6_delay_lookup_performed;
+    event.action_motion_delay_status = visited.post_state6_delay_status;
+    event.action_motion_delay_descriptor_record_index =
+        visited.post_state6_delay_descriptor_record_index;
+    event.action_motion_delay_before = visited.post_state6_delay_before;
+    event.action_motion_delay_after = visited.post_state6_delay_after;
     append_recorded_event(runtime, result, std::move(event));
     return !action_motion_playback_blocks_publication(playback);
 }
@@ -6446,6 +6520,8 @@ const char* battle_frame_worker_step_kind_name(BattleFrameWorkerStepKind kind) {
         return "ActionMotionRendererAdvance";
     case BattleFrameWorkerStepKind::ActionMotionState6Poll:
         return "ActionMotionState6Poll";
+    case BattleFrameWorkerStepKind::ActionMotionPostState6Delay:
+        return "ActionMotionPostState6Delay";
     case BattleFrameWorkerStepKind::ActionMotionPublicationRelease:
         return "ActionMotionPublicationRelease";
     case BattleFrameWorkerStepKind::VisualStdRowProducerVisit:
