@@ -31,6 +31,12 @@
     <Filter Include="Runner\VM\Handlers">
       <UniqueIdentifier>{67f28612-9bb0-4f10-a7ce-68df43967218}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Runner\InputMacro">
+      <UniqueIdentifier>{d553c798-a9f8-4633-b1c0-b9beaf13f253}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Runner\InputMacro\Providers">
+      <UniqueIdentifier>{5461c675-31c9-43ee-91cc-96902953033f}</UniqueIdentifier>
+    </Filter>
     <Filter Include="Phases">
       <UniqueIdentifier>{eb879b3c-e922-4ee8-a291-4569a8483ab3}</UniqueIdentifier>
     </Filter>
@@ -134,6 +140,18 @@
     </ClInclude>
     <ClInclude Include="Runner\Script\PhaseScriptVM.h">
       <Filter>Runner\VM</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\InputMacro\IInputMacroHost.h">
+      <Filter>Runner\InputMacro</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\InputMacro\InputMacroPlan.h">
+      <Filter>Runner\InputMacro</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\InputMacro\InputMacroRuntime.h">
+      <Filter>Runner\InputMacro</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\InputMacro\Providers\BattleCommandInputMacroProvider.h">
+      <Filter>Runner\InputMacro\Providers</Filter>
     </ClInclude>
     <ClInclude Include="Runner\Script\PhaseScriptOpcodeTable.inc">
       <Filter>Runner\VM</Filter>
@@ -391,6 +409,12 @@
     </ClCompile>
     <ClCompile Include="Runner\Script\PhaseScriptVM.cpp">
       <Filter>Runner\VM</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\InputMacro\InputMacroRuntime.cpp">
+      <Filter>Runner\InputMacro</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\InputMacro\Providers\BattleCommandInputMacroProvider.cpp">
+      <Filter>Runner\InputMacro\Providers</Filter>
     </ClCompile>
     <ClCompile Include="Runner\Script\PhaseScriptOpFormat.cpp">
       <Filter>Runner\VM</Filter>

@@ -4,6 +4,7 @@
 #include "../../Core/Memory/IKeyReader.h"
 #include "../../Core/Memory/Soa/Battle/DerivedBattleBuffer.h"
 #include "../../Core/Memory/KeyHostRouter.h"
+#include "../InputMacro/InputMacroRuntime.h"
 #include "../IPC/Wire.h"
 #include "ScriptProgress.h"
 #include <thread>
@@ -11,7 +12,21 @@
 
 namespace savor {
     PhaseScriptVM::PhaseScriptVM(savor::DolphinWrapper& host, const BreakpointMap& bpmap)
-        : host_(host), bpmap_(bpmap) {
+        : host_(host),
+          bpmap_(bpmap),
+          input_macro_runtime_(std::make_unique<inputmacro::InputMacroRuntime>(
+              static_cast<inputmacro::IInputMacroHost&>(*this))) {
+    }
+
+    PhaseScriptVM::~PhaseScriptVM()
+    {
+        cancel_input_macro();
+    }
+
+    void PhaseScriptVM::cancel_input_macro()
+    {
+        if (input_macro_runtime_) input_macro_runtime_->Cancel();
+        active_input_macro_context_ = nullptr;
     }
 
     void PhaseScriptVM::SetVisualDebugMode(bool enabled)
@@ -104,6 +119,7 @@ namespace savor {
 
     bool PhaseScriptVM::init(const PSInit& init, const PhaseScript& program)
     {
+        cancel_input_macro();
         init_ = init;
         prog_ = program;
         host_.clearMemoryWatchpoints();
@@ -118,8 +134,6 @@ namespace savor {
 
         // Disarm any previously armed set (enables program swapping)
         if (armed_ && !armed_pcs_.empty()) {
-            macro_breakpoint_scope_active_ = false;
-            macro_enabled_bp_keys_.clear();
             host_.disarmPcBreakpoints(armed_pcs_);
             armed_pcs_.clear();
         }
@@ -301,6 +315,10 @@ namespace savor {
 
     PSResult PhaseScriptVM::run(const PSJob& job)
     {
+        cancel_input_macro();
+        const auto input_macro_run_scope = std::shared_ptr<void>(
+            nullptr,
+            [this](void*) { cancel_input_macro(); });
         PSResult R{};
         auto ctx_heap = std::make_unique<PSContext>(job.ctx);
         PSContext& ctx = *ctx_heap;

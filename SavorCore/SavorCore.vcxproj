@@ -223,6 +223,10 @@
     <ClInclude Include="Runner\Breakpoints\Predicate.h" />
     <ClInclude Include="Runner\IPC\Wire.h" />
     <ClInclude Include="Runner\IPC\WorkerWireWriter.h" />
+    <ClInclude Include="Runner\InputMacro\IInputMacroHost.h" />
+    <ClInclude Include="Runner\InputMacro\InputMacroPlan.h" />
+    <ClInclude Include="Runner\InputMacro\InputMacroRuntime.h" />
+    <ClInclude Include="Runner\InputMacro\Providers\BattleCommandInputMacroProvider.h" />
     <ClInclude Include="Runner\Parallel\ParallelPhaseScriptRunnerApi.h" />
     <ClInclude Include="Runner\Parallel\WorkerBootPlan.h" />
     <ClInclude Include="Runner\Parallel\PRTypes.h" />
@@ -290,6 +294,8 @@
     <ClCompile Include="Runner\Breakpoints\Predicate.cpp" />
     <ClCompile Include="Runner\Script\CtxRegistry.cpp" />
     <ClCompile Include="Runner\IPC\WorkerWireWriter.cpp" />
+    <ClCompile Include="Runner\InputMacro\InputMacroRuntime.cpp" />
+    <ClCompile Include="Runner\InputMacro\Providers\BattleCommandInputMacroProvider.cpp" />
     <ClCompile Include="Runner\Script\PhaseScriptOpFormat.cpp" />
     <ClCompile Include="Runner\Script\PhaseScriptVM.cpp" />
     <ClCompile Include="Runner\Script\PhaseScriptVMControl.cpp" />

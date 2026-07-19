@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../../../Runner/Breakpoints/BpRegistry.h"
+#include "../../../Runner/InputMacro/Providers/BattleCommandInputMacroProvider.h"
 #include "../../../Runner/Script/CtxRegistry.h"
 #include "../../../Runner/Script/PhaseScriptProgram.h"
 
@@ -19,26 +20,9 @@ inline savor::PhaseScript MakeBattleMacroProbeProgram()
         bp::battle::TurnInputs,
         bp::battle::TurnIsReady,
     };
-    ps.gated_bp_keys = {
-        bp::battle::BattleMacroInputReadyGate,
-        bp::battle::BattleMacroMainMenuMoveHigher,
-        bp::battle::BattleMacroMainMenuMoveLower,
-        bp::battle::BattleMacroCommandTransitionDone,
-        bp::battle::BattleMacroMainMenuAcceptDispatch,
-        bp::battle::BattleMacroDirectCommandQueued,
-        bp::battle::BattleMacroAttackTargetSelectorCreated,
-        bp::battle::BattleMacroEnemyTargetMoveDownAccepted,
-        bp::battle::BattleMacroEnemyTargetMoveUpAccepted,
-        bp::battle::BattleMacroEnemyTargetFinalized,
-        bp::battle::BattleMacroMagicReady,
-        bp::battle::BattleMacroSMoveReady,
-        bp::battle::BattleMacroConditionalRunReady,
-        bp::battle::BattleMacroItemCategoryReady,
-        bp::battle::BattleMacroItemRowListReady,
-        bp::battle::BattleMacroItemDetailReady,
-        bp::battle::BattleMacroEnemyTargetReady,
-        bp::battle::BattleMacroAllyTargetReady,
-    };
+    const auto macro_breakpoints =
+        savor::inputmacro::BattleCommandInputMacroProvider::required_breakpoint_keys();
+    ps.gated_bp_keys.assign(macro_breakpoints.begin(), macro_breakpoints.end());
     ps.ops.push_back(savor::OpArmPhaseBps());
     ps.ops.push_back(savor::OpLoadSnapshot());
     ps.ops.push_back(savor::OpMaterializeBattleMacroSteps());

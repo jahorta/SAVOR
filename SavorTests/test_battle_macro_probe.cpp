@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <initializer_list>
 #include <string>
+#include <variant>
 #include <vector>
 
 #include "Cli.h"
@@ -32,6 +33,66 @@ using phase::battle::macroprobe::MacroCommand;
 using phase::battle::macroprobe::MacroMode;
 using phase::battle::macroprobe::MacroStep;
 using phase::battle::macroprobe::ParseCommandPlanSpec;
+using savor::inputmacro::InputMacroActionKind;
+
+const savor::inputmacro::BreakpointWaitAction* BreakpointWait(const MacroStep& step)
+{
+    return std::get_if<savor::inputmacro::BreakpointWaitAction>(&step.action);
+}
+
+const savor::GCInputFrame& StepInput(const MacroStep& step)
+{
+    static const savor::GCInputFrame neutral{};
+    const auto* wait = BreakpointWait(step);
+    return wait != nullptr ? wait->input : neutral;
+}
+
+const std::vector<BPKey>& ExpectedBreakpoints(const MacroStep& step)
+{
+    static const std::vector<BPKey> empty;
+    const auto* wait = BreakpointWait(step);
+    return wait != nullptr ? wait->expected_keys : empty;
+}
+
+InputMacroActionKind StepKind(const MacroStep& step)
+{
+    return savor::inputmacro::ActionKind(step.action);
+}
+
+std::uint32_t StepFrameCount(const MacroStep& step)
+{
+    const auto* action = std::get_if<savor::inputmacro::NeutralFramesAction>(&step.action);
+    return action != nullptr ? action->frame_count : 0u;
+}
+
+std::uint32_t StepMemoryAddress(const MacroStep& step)
+{
+    if (const auto* action = std::get_if<savor::inputmacro::CaptureU32BaselineAction>(&step.action)) {
+        return action->address;
+    }
+    if (const auto* action = std::get_if<savor::inputmacro::WaitU32ChangeAction>(&step.action)) {
+        return action->address;
+    }
+    return 0u;
+}
+
+std::uint32_t StepMemoryTimeout(const MacroStep& step)
+{
+    const auto* action = std::get_if<savor::inputmacro::WaitU32ChangeAction>(&step.action);
+    return action != nullptr ? action->timeout_ms : 0u;
+}
+
+std::uint32_t StepMemoryCycleIndex(const MacroStep& step)
+{
+    const auto* action = std::get_if<savor::inputmacro::WaitU32ChangeAction>(&step.action);
+    return action != nullptr ? action->diagnostic_cycle_index : 0u;
+}
+
+bool HoldsInputThroughHit(const MacroStep& step)
+{
+    const auto* wait = BreakpointWait(step);
+    return wait != nullptr && wait->hold_input_through_hit_opcode;
+}
 
 bool ParseTestArgs(std::initializer_list<const char*> args, savor::e2e::CliOptions* options, std::string* error)
 {
@@ -74,7 +135,7 @@ std::uint32_t CountInput(const std::vector<MacroStep>& steps, std::uint16_t butt
     return static_cast<std::uint32_t>(std::count_if(
         steps.begin(),
         steps.end(),
-        [&](const MacroStep& step) { return step.input.buttons == buttons; }));
+        [&](const MacroStep& step) { return StepInput(step).buttons == buttons; }));
 }
 
 std::uint32_t CountLabel(const std::vector<MacroStep>& steps, const char* label)
@@ -99,8 +160,8 @@ std::vector<size_t> LabelIndexes(const std::vector<MacroStep>& steps, const char
 void ExpectSingleBreakpointInputGates(const std::vector<MacroStep>& steps)
 {
     for (const auto& step : steps) {
-        if (step.kind == MacroStep::Kind::InputGate) {
-            EXPECT_EQ(step.expected_bps.size(), 1u) << step.label;
+        if (StepKind(step) == InputMacroActionKind::BreakpointWait) {
+            EXPECT_EQ(ExpectedBreakpoints(step).size(), 1u) << step.label;
         }
     }
 }
@@ -170,8 +231,8 @@ TEST(BattleMacroProbeCompiler, TurnPlanAttackBlockFocusCompilesInActorOrder)
 
     ASSERT_EQ(err, soa::battle::actions::MaterializeErr::OK);
     ASSERT_FALSE(steps.empty());
-    EXPECT_EQ(steps[0].input.buttons, savor::GC_A);
-    EXPECT_EQ(steps[0].expected_bps.front(), bp::battle::BattleMacroMainMenuAcceptDispatch);
+    EXPECT_EQ(StepInput(steps[0]).buttons, savor::GC_A);
+    EXPECT_EQ(ExpectedBreakpoints(steps[0]).front(), bp::battle::BattleMacroMainMenuAcceptDispatch);
     EXPECT_EQ(CountLabel(steps, "block_menu_up"), 1u);
     EXPECT_EQ(CountLabel(steps, "focus_menu_down"), 3u);
     EXPECT_EQ(CountLabel(steps, "direct_command_queued"), 2u);
@@ -192,17 +253,17 @@ TEST(BattleMacroProbeCompiler, TurnPlanFirstFakeAttackUsesFixedFastPattern)
 
     ASSERT_EQ(err, soa::battle::actions::MaterializeErr::OK);
     ASSERT_EQ(steps.size(), 8u);
-    EXPECT_EQ(steps[0].kind, MacroStep::Kind::CaptureMemoryU32);
+    EXPECT_EQ(StepKind(steps[0]), InputMacroActionKind::CaptureU32Baseline);
     EXPECT_EQ(std::string(steps[0].label), "fake_attack_rng_capture");
-    EXPECT_EQ(steps[1].input.buttons, savor::GC_A);
-    EXPECT_EQ(steps[1].expected_bps.front(), bp::battle::BattleMacroMainMenuAcceptDispatch);
-    EXPECT_EQ(steps[2].expected_bps.front(), bp::battle::BattleMacroEnemyTargetReady);
-    EXPECT_EQ(steps[3].kind, MacroStep::Kind::WaitMemoryU32Changed);
+    EXPECT_EQ(StepInput(steps[1]).buttons, savor::GC_A);
+    EXPECT_EQ(ExpectedBreakpoints(steps[1]).front(), bp::battle::BattleMacroMainMenuAcceptDispatch);
+    EXPECT_EQ(ExpectedBreakpoints(steps[2]).front(), bp::battle::BattleMacroEnemyTargetReady);
+    EXPECT_EQ(StepKind(steps[3]), InputMacroActionKind::WaitU32Change);
     EXPECT_EQ(std::string(steps[3].label), "fake_attack_rng_changed_target");
-    EXPECT_EQ(steps[4].input.buttons, savor::GC_B);
-    EXPECT_EQ(steps[4].expected_bps.front(), bp::battle::BattleMacroInputReadyGate);
-    EXPECT_EQ(steps[5].input.buttons, savor::GC_DU);
-    EXPECT_EQ(steps[7].expected_bps.front(), bp::battle::BattleMacroDirectCommandQueued);
+    EXPECT_EQ(StepInput(steps[4]).buttons, savor::GC_B);
+    EXPECT_EQ(ExpectedBreakpoints(steps[4]).front(), bp::battle::BattleMacroInputReadyGate);
+    EXPECT_EQ(StepInput(steps[5]).buttons, savor::GC_DU);
+    EXPECT_EQ(ExpectedBreakpoints(steps[7]).front(), bp::battle::BattleMacroDirectCommandQueued);
     EXPECT_EQ(CountLabel(steps, "fake_attack_target_neutral_before_b"), 0u);
 }
 
@@ -273,10 +334,10 @@ TEST(BattleMacroProbeCompiler, TurnPlanExcessFakeAttacksUseMeasuredPrefixBeforeF
     ASSERT_EQ(slow_neutrals.size(), 2u);
     ASSERT_EQ(accepts.size(), 2u);
     EXPECT_LT(captures[0], slow_neutrals[0]);
-    EXPECT_EQ(steps[slow_neutrals[0]].frame_count, 7u);
+    EXPECT_EQ(StepFrameCount(steps[slow_neutrals[0]]), 7u);
     EXPECT_LT(slow_neutrals[0], captures[1]);
     EXPECT_LT(captures[1], slow_neutrals[1]);
-    EXPECT_EQ(steps[slow_neutrals[1]].frame_count, 7u);
+    EXPECT_EQ(StepFrameCount(steps[slow_neutrals[1]]), 7u);
     EXPECT_LT(slow_neutrals[1], captures[2]);
     EXPECT_LT(captures[2], accepts[0]);
     EXPECT_LT(accepts[0], accepts[1]);
@@ -357,21 +418,21 @@ TEST(BattleMacroProbeCompiler, FocusCompilesThreeDownsThenAccept)
     const auto steps = BuildMacroSteps(MacroMode::Focus, 4, &failure);
     ASSERT_EQ(failure, FailureCode::Ok);
     ASSERT_EQ(steps.size(), 7u);
-    EXPECT_EQ(steps[0].input.buttons, savor::GC_DD);
-    EXPECT_EQ(steps[1].input.buttons, 0u);
-    EXPECT_EQ(steps[2].input.buttons, savor::GC_DD);
-    EXPECT_EQ(steps[3].input.buttons, 0u);
-    EXPECT_EQ(steps[4].input.buttons, savor::GC_DD);
-    ASSERT_EQ(steps[0].expected_bps.size(), 1u);
-    EXPECT_EQ(steps[0].expected_bps.front(), bp::battle::BattleMacroMainMenuMoveLower);
-    ASSERT_EQ(steps[2].expected_bps.size(), 1u);
-    EXPECT_EQ(steps[2].expected_bps.front(), bp::battle::BattleMacroMainMenuMoveLower);
-    ASSERT_EQ(steps[4].expected_bps.size(), 1u);
-    EXPECT_EQ(steps[4].expected_bps.front(), bp::battle::BattleMacroMainMenuMoveLower);
-    EXPECT_EQ(steps[1].expected_bps.front(), bp::battle::BattleMacroCommandTransitionDone);
-    EXPECT_EQ(steps[6].input.buttons, savor::GC_A);
-    ASSERT_EQ(steps[6].expected_bps.size(), 1u);
-    EXPECT_EQ(steps[6].expected_bps.front(), bp::battle::BattleMacroDirectCommandQueued);
+    EXPECT_EQ(StepInput(steps[0]).buttons, savor::GC_DD);
+    EXPECT_EQ(StepInput(steps[1]).buttons, 0u);
+    EXPECT_EQ(StepInput(steps[2]).buttons, savor::GC_DD);
+    EXPECT_EQ(StepInput(steps[3]).buttons, 0u);
+    EXPECT_EQ(StepInput(steps[4]).buttons, savor::GC_DD);
+    ASSERT_EQ(ExpectedBreakpoints(steps[0]).size(), 1u);
+    EXPECT_EQ(ExpectedBreakpoints(steps[0]).front(), bp::battle::BattleMacroMainMenuMoveLower);
+    ASSERT_EQ(ExpectedBreakpoints(steps[2]).size(), 1u);
+    EXPECT_EQ(ExpectedBreakpoints(steps[2]).front(), bp::battle::BattleMacroMainMenuMoveLower);
+    ASSERT_EQ(ExpectedBreakpoints(steps[4]).size(), 1u);
+    EXPECT_EQ(ExpectedBreakpoints(steps[4]).front(), bp::battle::BattleMacroMainMenuMoveLower);
+    EXPECT_EQ(ExpectedBreakpoints(steps[1]).front(), bp::battle::BattleMacroCommandTransitionDone);
+    EXPECT_EQ(StepInput(steps[6]).buttons, savor::GC_A);
+    ASSERT_EQ(ExpectedBreakpoints(steps[6]).size(), 1u);
+    EXPECT_EQ(ExpectedBreakpoints(steps[6]).front(), bp::battle::BattleMacroDirectCommandQueued);
 }
 
 TEST(BattleMacroProbeCompiler, BlockCompilesUpThenAccept)
@@ -380,14 +441,14 @@ TEST(BattleMacroProbeCompiler, BlockCompilesUpThenAccept)
     const auto steps = BuildMacroSteps(MacroMode::Block, 4, &failure);
     ASSERT_EQ(failure, FailureCode::Ok);
     ASSERT_EQ(steps.size(), 3u);
-    EXPECT_EQ(steps[0].input.buttons, savor::GC_DU);
-    ASSERT_EQ(steps[0].expected_bps.size(), 1u);
-    EXPECT_EQ(steps[0].expected_bps.front(), bp::battle::BattleMacroMainMenuMoveHigher);
-    EXPECT_EQ(steps[1].input.buttons, 0u);
-    EXPECT_EQ(steps[1].expected_bps.front(), bp::battle::BattleMacroCommandTransitionDone);
-    EXPECT_EQ(steps[2].input.buttons, savor::GC_A);
-    ASSERT_EQ(steps[2].expected_bps.size(), 1u);
-    EXPECT_EQ(steps[2].expected_bps.front(), bp::battle::BattleMacroDirectCommandQueued);
+    EXPECT_EQ(StepInput(steps[0]).buttons, savor::GC_DU);
+    ASSERT_EQ(ExpectedBreakpoints(steps[0]).size(), 1u);
+    EXPECT_EQ(ExpectedBreakpoints(steps[0]).front(), bp::battle::BattleMacroMainMenuMoveHigher);
+    EXPECT_EQ(StepInput(steps[1]).buttons, 0u);
+    EXPECT_EQ(ExpectedBreakpoints(steps[1]).front(), bp::battle::BattleMacroCommandTransitionDone);
+    EXPECT_EQ(StepInput(steps[2]).buttons, savor::GC_A);
+    ASSERT_EQ(ExpectedBreakpoints(steps[2]).size(), 1u);
+    EXPECT_EQ(ExpectedBreakpoints(steps[2]).front(), bp::battle::BattleMacroDirectCommandQueued);
 }
 
 TEST(BattleMacroProbeCompiler, AttackCompilesTargetCursorMoves)
@@ -396,22 +457,22 @@ TEST(BattleMacroProbeCompiler, AttackCompilesTargetCursorMoves)
     const auto steps = BuildMacroSteps(MacroMode::Attack, 6, &failure);
     ASSERT_EQ(failure, FailureCode::Ok);
     ASSERT_EQ(steps.size(), 7u);
-    EXPECT_EQ(steps[0].input.buttons, savor::GC_A);
-    EXPECT_EQ(steps[0].expected_bps.front(), bp::battle::BattleMacroMainMenuAcceptDispatch);
-    EXPECT_EQ(steps[1].input.buttons, 0u);
-    EXPECT_EQ(steps[1].expected_bps.front(), bp::battle::BattleMacroEnemyTargetReady);
-    EXPECT_EQ(steps[2].input.buttons, 0u);
-    EXPECT_EQ(steps[2].expected_bps.front(), bp::battle::BattleMacroEnemyTargetReady);
-    EXPECT_EQ(steps[3].input.buttons, savor::GC_DD);
-    EXPECT_EQ(steps[3].expected_bps.front(), bp::battle::BattleMacroEnemyTargetMoveDownAccepted);
-    EXPECT_EQ(steps[4].input.buttons, 0u);
-    EXPECT_EQ(steps[4].expected_bps.front(), bp::battle::BattleMacroEnemyTargetReady);
-    EXPECT_EQ(steps[5].input.buttons, savor::GC_DD);
-    EXPECT_EQ(steps[5].expected_bps.front(), bp::battle::BattleMacroEnemyTargetMoveDownAccepted);
-    EXPECT_EQ(steps[6].input.buttons, savor::GC_A);
-    ASSERT_EQ(steps[6].expected_bps.size(), 1u);
-    EXPECT_EQ(steps[6].expected_bps.front(), bp::battle::BattleMacroEnemyTargetFinalized);
-    EXPECT_TRUE(steps[6].hold_input_through_hit_opcode);
+    EXPECT_EQ(StepInput(steps[0]).buttons, savor::GC_A);
+    EXPECT_EQ(ExpectedBreakpoints(steps[0]).front(), bp::battle::BattleMacroMainMenuAcceptDispatch);
+    EXPECT_EQ(StepInput(steps[1]).buttons, 0u);
+    EXPECT_EQ(ExpectedBreakpoints(steps[1]).front(), bp::battle::BattleMacroEnemyTargetReady);
+    EXPECT_EQ(StepInput(steps[2]).buttons, 0u);
+    EXPECT_EQ(ExpectedBreakpoints(steps[2]).front(), bp::battle::BattleMacroEnemyTargetReady);
+    EXPECT_EQ(StepInput(steps[3]).buttons, savor::GC_DD);
+    EXPECT_EQ(ExpectedBreakpoints(steps[3]).front(), bp::battle::BattleMacroEnemyTargetMoveDownAccepted);
+    EXPECT_EQ(StepInput(steps[4]).buttons, 0u);
+    EXPECT_EQ(ExpectedBreakpoints(steps[4]).front(), bp::battle::BattleMacroEnemyTargetReady);
+    EXPECT_EQ(StepInput(steps[5]).buttons, savor::GC_DD);
+    EXPECT_EQ(ExpectedBreakpoints(steps[5]).front(), bp::battle::BattleMacroEnemyTargetMoveDownAccepted);
+    EXPECT_EQ(StepInput(steps[6]).buttons, savor::GC_A);
+    ASSERT_EQ(ExpectedBreakpoints(steps[6]).size(), 1u);
+    EXPECT_EQ(ExpectedBreakpoints(steps[6]).front(), bp::battle::BattleMacroEnemyTargetFinalized);
+    EXPECT_TRUE(HoldsInputThroughHit(steps[6]));
 }
 
 TEST(BattleMacroProbeCompiler, AttackWithoutTargetMovementGetsSecondEnemyReadyWait)
@@ -420,11 +481,11 @@ TEST(BattleMacroProbeCompiler, AttackWithoutTargetMovementGetsSecondEnemyReadyWa
     const auto steps = BuildMacroSteps(MacroMode::Attack, 4, &failure);
     ASSERT_EQ(failure, FailureCode::Ok);
     ASSERT_EQ(steps.size(), 4u);
-    EXPECT_EQ(steps[0].expected_bps.front(), bp::battle::BattleMacroMainMenuAcceptDispatch);
-    EXPECT_EQ(steps[1].expected_bps.front(), bp::battle::BattleMacroEnemyTargetReady);
-    EXPECT_EQ(steps[2].expected_bps.front(), bp::battle::BattleMacroEnemyTargetReady);
-    EXPECT_EQ(steps[3].input.buttons, savor::GC_A);
-    EXPECT_EQ(steps[3].expected_bps.front(), bp::battle::BattleMacroEnemyTargetFinalized);
+    EXPECT_EQ(ExpectedBreakpoints(steps[0]).front(), bp::battle::BattleMacroMainMenuAcceptDispatch);
+    EXPECT_EQ(ExpectedBreakpoints(steps[1]).front(), bp::battle::BattleMacroEnemyTargetReady);
+    EXPECT_EQ(ExpectedBreakpoints(steps[2]).front(), bp::battle::BattleMacroEnemyTargetReady);
+    EXPECT_EQ(StepInput(steps[3]).buttons, savor::GC_A);
+    EXPECT_EQ(ExpectedBreakpoints(steps[3]).front(), bp::battle::BattleMacroEnemyTargetFinalized);
 }
 
 TEST(BattleMacroProbeCompiler, AttackRejectsInvalidTargetSlot)
@@ -449,9 +510,9 @@ TEST(BattleMacroProbeCompiler, AttackUsesLiveEnemySelectorOrder)
     ASSERT_EQ(failure, FailureCode::Ok);
     ASSERT_EQ(steps.size(), 7u);
     EXPECT_EQ(CountInput(steps, savor::GC_DD), 2u);
-    EXPECT_EQ(steps[3].expected_bps.front(), bp::battle::BattleMacroEnemyTargetMoveDownAccepted);
-    EXPECT_EQ(steps[4].expected_bps.front(), bp::battle::BattleMacroEnemyTargetReady);
-    EXPECT_EQ(steps[5].expected_bps.front(), bp::battle::BattleMacroEnemyTargetMoveDownAccepted);
+    EXPECT_EQ(ExpectedBreakpoints(steps[3]).front(), bp::battle::BattleMacroEnemyTargetMoveDownAccepted);
+    EXPECT_EQ(ExpectedBreakpoints(steps[4]).front(), bp::battle::BattleMacroEnemyTargetReady);
+    EXPECT_EQ(ExpectedBreakpoints(steps[5]).front(), bp::battle::BattleMacroEnemyTargetMoveDownAccepted);
 }
 
 TEST(BattleMacroProbeCompiler, AttackFailsWhenExplicitTargetIsDead)
@@ -482,7 +543,7 @@ TEST(BattleMacroProbeCompiler, AttackTargetsFirstLiveEnemyWithoutCursorMoves)
     ASSERT_EQ(failure, FailureCode::Ok);
     ASSERT_EQ(steps.size(), 4u);
     EXPECT_EQ(CountInput(steps, savor::GC_DD), 0u);
-    EXPECT_EQ(steps[3].expected_bps.front(), bp::battle::BattleMacroEnemyTargetFinalized);
+    EXPECT_EQ(ExpectedBreakpoints(steps[3]).front(), bp::battle::BattleMacroEnemyTargetFinalized);
 }
 
 TEST(BattleMacroProbeCompiler, BlockBlockPlanAddsNeutralCharacterTransition)
@@ -498,13 +559,13 @@ TEST(BattleMacroProbeCompiler, BlockBlockPlanAddsNeutralCharacterTransition)
 
     ASSERT_EQ(failure, FailureCode::Ok);
     ASSERT_EQ(steps.size(), 8u);
-    EXPECT_EQ(steps[0].input.buttons, savor::GC_DU);
-    EXPECT_EQ(steps[2].expected_bps.front(), bp::battle::BattleMacroDirectCommandQueued);
-    EXPECT_EQ(steps[3].expected_bps.front(), bp::battle::BattleMacroInputReadyGate);
-    EXPECT_EQ(steps[4].kind, MacroStep::Kind::NeutralFrames);
-    EXPECT_EQ(steps[4].frame_count, 3u);
-    EXPECT_EQ(steps[5].input.buttons, savor::GC_DU);
-    EXPECT_EQ(steps[7].expected_bps.front(), bp::battle::BattleMacroDirectCommandQueued);
+    EXPECT_EQ(StepInput(steps[0]).buttons, savor::GC_DU);
+    EXPECT_EQ(ExpectedBreakpoints(steps[2]).front(), bp::battle::BattleMacroDirectCommandQueued);
+    EXPECT_EQ(ExpectedBreakpoints(steps[3]).front(), bp::battle::BattleMacroInputReadyGate);
+    EXPECT_EQ(StepKind(steps[4]), InputMacroActionKind::NeutralFrames);
+    EXPECT_EQ(StepFrameCount(steps[4]), 3u);
+    EXPECT_EQ(StepInput(steps[5]).buttons, savor::GC_DU);
+    EXPECT_EQ(ExpectedBreakpoints(steps[7]).front(), bp::battle::BattleMacroDirectCommandQueued);
 }
 
 TEST(BattleMacroProbeCompiler, AttackThenBlockPlanPreservesAttackTargetMovement)
@@ -520,20 +581,20 @@ TEST(BattleMacroProbeCompiler, AttackThenBlockPlanPreservesAttackTargetMovement)
 
     ASSERT_EQ(failure, FailureCode::Ok);
     ASSERT_EQ(steps.size(), 12u);
-    EXPECT_EQ(steps[0].expected_bps.front(), bp::battle::BattleMacroMainMenuAcceptDispatch);
-    EXPECT_EQ(steps[1].expected_bps.front(), bp::battle::BattleMacroEnemyTargetReady);
-    EXPECT_EQ(steps[2].expected_bps.front(), bp::battle::BattleMacroEnemyTargetReady);
-    EXPECT_EQ(steps[3].input.buttons, savor::GC_DD);
-    EXPECT_EQ(steps[3].expected_bps.front(), bp::battle::BattleMacroEnemyTargetMoveDownAccepted);
-    EXPECT_EQ(steps[4].input.buttons, 0u);
-    EXPECT_EQ(steps[4].expected_bps.front(), bp::battle::BattleMacroEnemyTargetReady);
-    EXPECT_EQ(steps[5].input.buttons, savor::GC_DD);
-    EXPECT_EQ(steps[5].expected_bps.front(), bp::battle::BattleMacroEnemyTargetMoveDownAccepted);
-    EXPECT_EQ(steps[6].expected_bps.front(), bp::battle::BattleMacroEnemyTargetFinalized);
-    EXPECT_EQ(steps[7].expected_bps.front(), bp::battle::BattleMacroInputReadyGate);
-    EXPECT_EQ(steps[8].kind, MacroStep::Kind::NeutralFrames);
-    EXPECT_EQ(steps[9].input.buttons, savor::GC_DU);
-    EXPECT_EQ(steps[11].expected_bps.front(), bp::battle::BattleMacroDirectCommandQueued);
+    EXPECT_EQ(ExpectedBreakpoints(steps[0]).front(), bp::battle::BattleMacroMainMenuAcceptDispatch);
+    EXPECT_EQ(ExpectedBreakpoints(steps[1]).front(), bp::battle::BattleMacroEnemyTargetReady);
+    EXPECT_EQ(ExpectedBreakpoints(steps[2]).front(), bp::battle::BattleMacroEnemyTargetReady);
+    EXPECT_EQ(StepInput(steps[3]).buttons, savor::GC_DD);
+    EXPECT_EQ(ExpectedBreakpoints(steps[3]).front(), bp::battle::BattleMacroEnemyTargetMoveDownAccepted);
+    EXPECT_EQ(StepInput(steps[4]).buttons, 0u);
+    EXPECT_EQ(ExpectedBreakpoints(steps[4]).front(), bp::battle::BattleMacroEnemyTargetReady);
+    EXPECT_EQ(StepInput(steps[5]).buttons, savor::GC_DD);
+    EXPECT_EQ(ExpectedBreakpoints(steps[5]).front(), bp::battle::BattleMacroEnemyTargetMoveDownAccepted);
+    EXPECT_EQ(ExpectedBreakpoints(steps[6]).front(), bp::battle::BattleMacroEnemyTargetFinalized);
+    EXPECT_EQ(ExpectedBreakpoints(steps[7]).front(), bp::battle::BattleMacroInputReadyGate);
+    EXPECT_EQ(StepKind(steps[8]), InputMacroActionKind::NeutralFrames);
+    EXPECT_EQ(StepInput(steps[9]).buttons, savor::GC_DU);
+    EXPECT_EQ(ExpectedBreakpoints(steps[11]).front(), bp::battle::BattleMacroDirectCommandQueued);
 }
 
 TEST(BattleMacroProbeCompiler, FakeAttackOneCompilesMemoryGateCycle)
@@ -548,22 +609,22 @@ TEST(BattleMacroProbeCompiler, FakeAttackOneCompilesMemoryGateCycle)
 
     ASSERT_EQ(failure, FailureCode::Ok);
     ASSERT_EQ(steps.size(), 9u);
-    EXPECT_EQ(steps[0].kind, MacroStep::Kind::CaptureMemoryU32);
-    EXPECT_EQ(steps[0].memory_addr, addr::AddrRegistry::base(addr::core::RNG_SEED));
+    EXPECT_EQ(StepKind(steps[0]), InputMacroActionKind::CaptureU32Baseline);
+    EXPECT_EQ(StepMemoryAddress(steps[0]), addr::AddrRegistry::base(addr::core::RNG_SEED));
     EXPECT_EQ(std::string(steps[0].label), "fake_attack_rng_capture");
-    EXPECT_EQ(steps[1].input.buttons, savor::GC_A);
-    EXPECT_EQ(steps[1].expected_bps.front(), bp::battle::BattleMacroMainMenuAcceptDispatch);
-    EXPECT_EQ(steps[2].expected_bps.front(), bp::battle::BattleMacroEnemyTargetReady);
-    EXPECT_EQ(steps[3].kind, MacroStep::Kind::WaitMemoryU32Changed);
+    EXPECT_EQ(StepInput(steps[1]).buttons, savor::GC_A);
+    EXPECT_EQ(ExpectedBreakpoints(steps[1]).front(), bp::battle::BattleMacroMainMenuAcceptDispatch);
+    EXPECT_EQ(ExpectedBreakpoints(steps[2]).front(), bp::battle::BattleMacroEnemyTargetReady);
+    EXPECT_EQ(StepKind(steps[3]), InputMacroActionKind::WaitU32Change);
     EXPECT_EQ(std::string(steps[3].label), "fake_attack_rng_changed_target");
-    EXPECT_EQ(steps[3].memory_addr, addr::AddrRegistry::base(addr::core::RNG_SEED));
-    EXPECT_EQ(steps[3].memory_timeout_ms, 1000u);
-    EXPECT_EQ(steps[3].memory_cycle_index, 0u);
-    EXPECT_EQ(steps[4].input.buttons, savor::GC_B);
-    EXPECT_EQ(steps[4].expected_bps.front(), bp::battle::BattleMacroInputReadyGate);
-    EXPECT_EQ(steps[5].kind, MacroStep::Kind::NeutralFrames);
-    EXPECT_EQ(steps[5].frame_count, 20u);
-    EXPECT_EQ(steps[6].input.buttons, savor::GC_DU);
+    EXPECT_EQ(StepMemoryAddress(steps[3]), addr::AddrRegistry::base(addr::core::RNG_SEED));
+    EXPECT_EQ(StepMemoryTimeout(steps[3]), 1000u);
+    EXPECT_EQ(StepMemoryCycleIndex(steps[3]), 0u);
+    EXPECT_EQ(StepInput(steps[4]).buttons, savor::GC_B);
+    EXPECT_EQ(ExpectedBreakpoints(steps[4]).front(), bp::battle::BattleMacroInputReadyGate);
+    EXPECT_EQ(StepKind(steps[5]), InputMacroActionKind::NeutralFrames);
+    EXPECT_EQ(StepFrameCount(steps[5]), 20u);
+    EXPECT_EQ(StepInput(steps[6]).buttons, savor::GC_DU);
 }
 
 TEST(BattleMacroProbeCompiler, FakeAttackTwoEmitsIndependentCaptureChangeCycles)
@@ -580,12 +641,12 @@ TEST(BattleMacroProbeCompiler, FakeAttackTwoEmitsIndependentCaptureChangeCycles)
     ASSERT_EQ(steps.size(), 15u);
     EXPECT_EQ(CountLabel(steps, "fake_attack_rng_capture"), 2u);
     EXPECT_EQ(CountLabel(steps, "fake_attack_rng_changed_target"), 2u);
-    EXPECT_EQ(steps[0].kind, MacroStep::Kind::CaptureMemoryU32);
-    EXPECT_EQ(steps[3].kind, MacroStep::Kind::WaitMemoryU32Changed);
-    EXPECT_EQ(steps[5].kind, MacroStep::Kind::NeutralFrames);
-    EXPECT_EQ(steps[6].kind, MacroStep::Kind::CaptureMemoryU32);
-    EXPECT_EQ(steps[9].kind, MacroStep::Kind::WaitMemoryU32Changed);
-    EXPECT_EQ(steps[11].kind, MacroStep::Kind::NeutralFrames);
+    EXPECT_EQ(StepKind(steps[0]), InputMacroActionKind::CaptureU32Baseline);
+    EXPECT_EQ(StepKind(steps[3]), InputMacroActionKind::WaitU32Change);
+    EXPECT_EQ(StepKind(steps[5]), InputMacroActionKind::NeutralFrames);
+    EXPECT_EQ(StepKind(steps[6]), InputMacroActionKind::CaptureU32Baseline);
+    EXPECT_EQ(StepKind(steps[9]), InputMacroActionKind::WaitU32Change);
+    EXPECT_EQ(StepKind(steps[11]), InputMacroActionKind::NeutralFrames);
 }
 
 TEST(BattleMacroProbeCompiler, FakeAttackSweepBuilderUsesCandidateFirstAndFixedFinal)
@@ -621,15 +682,15 @@ TEST(BattleMacroProbeCompiler, FakeAttackSweepBuilderUsesCandidateFirstAndFixedF
     EXPECT_EQ(CountLabel(steps, "fake_attack_rng_capture"), 3u);
     EXPECT_EQ(CountLabel(steps, "fake_attack_rng_changed_target"), 3u);
     EXPECT_EQ(CountLabel(steps, "fake_attack_target_neutral_before_b"), 2u);
-    EXPECT_EQ(steps[3].memory_cycle_index, 0u);
-    EXPECT_EQ(steps[9].memory_cycle_index, 1u);
-    EXPECT_EQ(steps[15].memory_cycle_index, 2u);
+    EXPECT_EQ(StepMemoryCycleIndex(steps[3]), 0u);
+    EXPECT_EQ(StepMemoryCycleIndex(steps[9]), 1u);
+    EXPECT_EQ(StepMemoryCycleIndex(steps[15]), 2u);
     EXPECT_EQ(std::string(steps[4].label), "fake_attack_target_neutral_before_b");
-    EXPECT_EQ(steps[4].frame_count, 7u);
+    EXPECT_EQ(StepFrameCount(steps[4]), 7u);
     EXPECT_EQ(std::string(steps[10].label), "fake_attack_target_neutral_before_b");
-    EXPECT_EQ(steps[10].frame_count, 7u);
-    EXPECT_EQ(steps[16].input.buttons, savor::GC_B);
-    EXPECT_EQ(steps[16].expected_bps.front(), bp::battle::BattleMacroInputReadyGate);
+    EXPECT_EQ(StepFrameCount(steps[10]), 7u);
+    EXPECT_EQ(StepInput(steps[16]).buttons, savor::GC_B);
+    EXPECT_EQ(ExpectedBreakpoints(steps[16]).front(), bp::battle::BattleMacroInputReadyGate);
 }
 
 TEST(BattleMacroProbeCompiler, FakeAttackInputSidePatternCompilesMemoryGateAfterInputReady)
@@ -650,15 +711,15 @@ TEST(BattleMacroProbeCompiler, FakeAttackInputSidePatternCompilesMemoryGateAfter
 
     ASSERT_EQ(failure, FailureCode::Ok);
     ASSERT_EQ(steps.size(), 10u);
-    EXPECT_EQ(steps[3].kind, MacroStep::Kind::NeutralFrames);
-    EXPECT_EQ(steps[3].frame_count, 2u);
-    EXPECT_EQ(steps[4].input.buttons, savor::GC_B);
-    EXPECT_EQ(steps[4].expected_bps.front(), bp::battle::BattleMacroInputReadyGate);
-    EXPECT_EQ(steps[5].kind, MacroStep::Kind::NeutralFrames);
-    EXPECT_EQ(steps[5].frame_count, 4u);
-    EXPECT_EQ(steps[6].kind, MacroStep::Kind::WaitMemoryU32Changed);
+    EXPECT_EQ(StepKind(steps[3]), InputMacroActionKind::NeutralFrames);
+    EXPECT_EQ(StepFrameCount(steps[3]), 2u);
+    EXPECT_EQ(StepInput(steps[4]).buttons, savor::GC_B);
+    EXPECT_EQ(ExpectedBreakpoints(steps[4]).front(), bp::battle::BattleMacroInputReadyGate);
+    EXPECT_EQ(StepKind(steps[5]), InputMacroActionKind::NeutralFrames);
+    EXPECT_EQ(StepFrameCount(steps[5]), 4u);
+    EXPECT_EQ(StepKind(steps[6]), InputMacroActionKind::WaitU32Change);
     EXPECT_EQ(std::string(steps[6].label), "fake_attack_rng_changed_input");
-    EXPECT_EQ(steps[6].memory_timeout_ms, 777u);
+    EXPECT_EQ(StepMemoryTimeout(steps[6]), 777u);
 }
 
 TEST(BattleMacroProbeCompiler, ParsesPlanSpec)

@@ -3,6 +3,7 @@
 #include "../../../Runner/Script/PhaseScriptProgram.h"
 #include "../../../Runner/Script/CtxRegistry.h"
 #include "../../../Runner/Breakpoints/BpRegistry.h"
+#include "../../../Runner/InputMacro/Providers/BattleCommandInputMacroProvider.h"
 #include "../../../Core/Memory/Soa/SoaAddrRegistry.h"
 #include "../BattleRunner/BattleOutcome.h"
 
@@ -44,27 +45,10 @@ namespace phase::battle::turnrunner {
 
         savor::PhaseScript ps{};
         ps.canonical_bp_keys = { BP_BattleAcceptInput, BP_BattleInputsDone, BP_Victory, BP_Defeat, BP_BattleLoadComplete };
-        ps.gated_bp_keys = {
-            bp::battle::BattleMacroInputReadyGate,
-            bp::battle::BattleMacroMainMenuMoveHigher,
-            bp::battle::BattleMacroMainMenuMoveLower,
-            bp::battle::BattleMacroCommandTransitionDone,
-            bp::battle::BattleMacroMainMenuAcceptDispatch,
-            bp::battle::BattleMacroDirectCommandQueued,
-            bp::battle::BattleMacroAttackTargetSelectorCreated,
-            bp::battle::BattleMacroEnemyTargetMoveDownAccepted,
-            bp::battle::BattleMacroEnemyTargetMoveUpAccepted,
-            bp::battle::BattleMacroEnemyTargetFinalized,
-            bp::battle::BattleMacroMagicReady,
-            bp::battle::BattleMacroSMoveReady,
-            bp::battle::BattleMacroConditionalRunReady,
-            bp::battle::BattleMacroItemCategoryReady,
-            bp::battle::BattleMacroItemRowListReady,
-            bp::battle::BattleMacroItemDetailReady,
-            bp::battle::BattleMacroEnemyTargetReady,
-            bp::battle::BattleMacroAllyTargetReady,
-            bp::prebattle::AfterRandSeedSet,
-        };
+        const auto macro_breakpoints =
+            savor::inputmacro::BattleCommandInputMacroProvider::required_breakpoint_keys();
+        ps.gated_bp_keys.assign(macro_breakpoints.begin(), macro_breakpoints.end());
+        ps.gated_bp_keys.push_back(bp::prebattle::AfterRandSeedSet);
 
         ps.ops.push_back(savor::OpArmPhaseBps());
         ps.ops.push_back(savor::OpArmBpsFromPredTable());

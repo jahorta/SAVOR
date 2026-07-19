@@ -10,6 +10,7 @@
 #include "../../../Core/Input/SoaBattle/ActionTypes.h"
 #include "../../../Core/Input/SoaBattle/PlanWriter.h"
 #include "../../../Runner/Breakpoints/BpRegistry.h"
+#include "../../../Runner/InputMacro/InputMacroPlan.h"
 #include "../../../Runner/Script/PhaseScriptProgram.h"
 
 namespace phase::battle::macroprobe {
@@ -34,24 +35,10 @@ enum class FailureCode : std::uint32_t {
     CaptureOnlyHitLimit = 8,
 };
 
-struct MacroStep {
-    enum class Kind : std::uint32_t {
-        InputGate = 0,
-        NeutralFrames = 1,
-        CaptureMemoryU32 = 2,
-        WaitMemoryU32Changed = 3,
-    };
-
-    const char* label = "";
-    Kind kind = Kind::InputGate;
-    savor::GCInputFrame input{};
-    std::uint32_t frame_count = 0;
-    bool hold_input_through_hit_opcode = false;
-    std::uint32_t memory_addr = 0;
-    std::uint32_t memory_timeout_ms = 0;
-    std::uint32_t memory_cycle_index = 0;
-    std::vector<BPKey> expected_bps;
-};
+// Compatibility name retained while battle-macro compiler callers migrate to
+// the context-free input-macro subsystem. This is intentionally an alias, not
+// a second runtime representation.
+using MacroStep = savor::inputmacro::InputMacroStep;
 
 struct MacroCommand {
     MacroMode mode{MacroMode::Attack};

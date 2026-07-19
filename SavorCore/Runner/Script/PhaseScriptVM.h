@@ -18,14 +18,23 @@
 #include "CtxRegistry.h"
 #include "PSContext.h"
 #include "PhaseScriptProgram.h"
+#include "../InputMacro/IInputMacroHost.h"
+#include "../InputMacro/Providers/BattleCommandInputMacroProvider.h"
 
 namespace savor {
+	namespace inputmacro {
+		class InputMacroRuntime;
+		struct InputMacroStepResult;
+	}
 
 
 	// ----- VM -----
-	class PhaseScriptVM {
+	class PhaseScriptVM :
+		private inputmacro::IInputMacroHost,
+		private inputmacro::IBattleCommandInputMacroProviderHost {
 	public:
 		PhaseScriptVM(savor::DolphinWrapper& host, const BreakpointMap& bpmap);
+		~PhaseScriptVM();
 
 		// Load state, build phase, arm bps, capture "prebattle" snapshot
 		bool init(const PSInit& init, const PhaseScript& program);
@@ -57,29 +66,11 @@ namespace savor {
 		std::atomic<bool> visual_debug_paused_{ false };
 		std::atomic<uint32_t> visual_debug_vm_step_budget_{ 0 };
 		std::atomic<bool> run_until_bp_active_{ false };
-		bool macro_breakpoint_scope_active_{ false };
-		std::vector<BPKey> macro_enabled_bp_keys_;
+		bool input_macro_session_active_{ false };
+		std::vector<BPKey> input_macro_enabled_bp_keys_;
+		std::vector<BPKey> input_macro_provider_keys_;
 		bool armed_{ false };
 		Common::UniqueBuffer<u8> snapshot_;
-
-		enum class RuntimeMacroStepKind {
-			InputGate,
-			NeutralFrames,
-			CaptureMemoryU32,
-			WaitMemoryU32Changed,
-		};
-
-		struct RuntimeBreakpointStep {
-			std::string label;
-			RuntimeMacroStepKind kind{ RuntimeMacroStepKind::InputGate };
-			GCInputFrame input{};
-			uint32_t frame_count{ 0 };
-			bool hold_input_through_hit_opcode{ false };
-			uint32_t memory_addr{ 0 };
-			uint32_t memory_timeout_ms{ 0 };
-			uint32_t memory_cycle_index{ 0 };
-			std::vector<BPKey> expected_bp_keys;
-		};
 
 		struct RunUntilBpSpec {
 			std::vector<BPKey> expected_bp_keys;
@@ -103,19 +94,14 @@ namespace savor {
 			uint32_t elapsed_ms{ 0 };
 		};
 
-		std::vector<RuntimeBreakpointStep> battle_macro_steps_;
-		bool battle_macro_memory_baseline_valid_{ false };
-		uint32_t battle_macro_memory_addr_{ 0 };
-		uint32_t battle_macro_memory_baseline_{ 0 };
+		std::unique_ptr<inputmacro::InputMacroRuntime> input_macro_runtime_;
+		PSContext* active_input_macro_context_{ nullptr };
 
 		// helpers
 		void arm_bps_once();
 		void restore_canonical_breakpoint_scope();
 		bool configure_capture_from_context(const PSContext& ctx, PSResult& result);
-		void begin_macro_breakpoint_scope();
-		void enable_macro_step_breakpoint(BPKey key);
-		void disable_macro_step_breakpoint();
-		void end_macro_breakpoint_scope();
+		void cancel_input_macro();
 		bool save_snapshot();
 		bool load_snapshot();
 
@@ -147,6 +133,13 @@ namespace savor {
 		void op_materialize_battle_macro_steps(PSContext& ctx);
 		void op_materialize_battle_turn_macro_steps(PSContext& ctx);
 		void op_execute_battle_macro_step(PSContext& ctx);
+		void start_prepared_battle_macro(
+			inputmacro::BattleCommandInputMacroProvider::PrepareResult prepared,
+			PSContext& ctx,
+			bool authored_turn);
+		void apply_input_macro_step_result(
+			const inputmacro::InputMacroStepResult& step_result,
+			PSContext& ctx);
 		void op_apply_battle_inputplan_frames(PSContext& ctx);
 		void op_step_frames(const PSOp& op);
 		void op_step_opcode(const PSOp& op);
@@ -180,6 +173,27 @@ namespace savor {
 		bool op_arm_bps_from_pred_table(PSResult& result, PSContext& ctx);
 		void op_capture_pred_baselines(PSContext& ctx, KeyHostRouter& router);
 		void op_eval_predicates_at_hit_bp(PSContext& ctx, KeyHostRouter& router);
+
+		// IInputMacroHost
+		bool acquire_exclusive_session(std::span<const BPKey> provider_keys) override;
+		void release_exclusive_session() override;
+		inputmacro::BreakpointWaitResult run_to_breakpoints(
+			const inputmacro::BreakpointWaitAction& action) override;
+		inputmacro::InputMacroHostStatus step_neutral_frames(uint32_t frame_count) override;
+		bool read_u32(uint32_t address, uint32_t& value) override;
+		inputmacro::MemoryChangeResult wait_for_u32_change(
+			uint32_t address,
+			uint32_t baseline,
+			uint32_t timeout_ms) override;
+		void set_neutral_input() override;
+		void clear_macro_memory_watchpoints() override;
+		void restore_breakpoint_state() override;
+
+		// IBattleCommandInputMacroProviderHost
+		BPKey current_breakpoint_key() const override;
+		inputmacro::BattleCommandProviderWaitResult wait_for_breakpoints(
+			std::span<const BPKey> expected_keys) override;
+		bool capture_mem1(std::string& out_mem1) override;
 
 		// typed reads
 		bool read_u8(uint32_t a, uint8_t& v)  const { return host_.readU8(a, v); }

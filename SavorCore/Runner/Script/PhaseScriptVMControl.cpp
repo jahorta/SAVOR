@@ -103,55 +103,6 @@ namespace savor {
         host_.setEnabledPcBreakpointsOnly(enabled_pcs);
     }
 
-    void PhaseScriptVM::begin_macro_breakpoint_scope() {
-        disable_macro_step_breakpoint();
-        host_.setEnabledPcBreakpointsOnly({});
-        macro_breakpoint_scope_active_ = true;
-        host_.emitProbeMarker("macro.begin");
-        SCLOGI("[battle-macro-scope] begin");
-    }
-
-    void PhaseScriptVM::enable_macro_step_breakpoint(BPKey key) {
-        disable_macro_step_breakpoint();
-        if (const auto* e = bpmap_.find(key)) {
-            std::vector<uint32_t> enabled{ e->pc };
-            host_.setEnabledPcBreakpointsOnly(enabled);
-            macro_enabled_bp_keys_.push_back(key);
-            SCLOGI("[battle-macro-scope] enable key=%u pc=%08X",
-                static_cast<uint32_t>(key),
-                e->pc);
-        } else {
-            SCLOGW("[battle-macro-scope] enable_missing key=%u", static_cast<uint32_t>(key));
-        }
-    }
-
-    void PhaseScriptVM::disable_macro_step_breakpoint() {
-        if (!macro_enabled_bp_keys_.empty()) {
-            host_.setEnabledPcBreakpointsOnly({});
-        }
-        for (const auto key : macro_enabled_bp_keys_) {
-            if (const auto* e = bpmap_.find(key)) {
-                SCLOGI("[battle-macro-scope] disable key=%u pc=%08X",
-                    static_cast<uint32_t>(key),
-                    e->pc);
-            }
-        }
-        macro_enabled_bp_keys_.clear();
-    }
-
-    void PhaseScriptVM::end_macro_breakpoint_scope() {
-        if (!macro_breakpoint_scope_active_ && macro_enabled_bp_keys_.empty()) {
-            return;
-        }
-        disable_macro_step_breakpoint();
-        host_.clearMemoryWatchpoints();
-        macro_breakpoint_scope_active_ = false;
-        restore_canonical_breakpoint_scope();
-        host_.emitProbeMarker("macro.end");
-        SCLOGI("[battle-macro-scope] end");
-    }
-
-
     bool PhaseScriptVM::compare_u32(uint32_t lhs, PSCmp cmp, uint32_t rhs) const {
         switch (cmp) {
         case PSCmp::EQ: return lhs == rhs;
