@@ -127,11 +127,50 @@ TEST(NavigationAreaLoader, A101bIncludesGrndAndGroundRoleGobjSurfaces) {
     std::size_t wallMeshCount = 0;
     std::size_t wallVertexCount = 0;
     std::size_t wallTriangleCount = 0;
+    std::size_t triggerMeshCount = 0;
+    std::size_t triggerVertexCount = 0;
+    std::size_t triggerTriangleCount = 0;
+    std::size_t movingObjectRegionCount = 0;
+    std::size_t movingObjectMeshCount = 0;
+    std::size_t movingObjectVertexCount = 0;
+    std::size_t movingObjectTriangleCount = 0;
+    std::size_t unknownRegionCount = 0;
+    struct TriggerGeometryCounts {
+        std::size_t regions = 0;
+        std::size_t meshes = 0;
+        std::size_t vertices = 0;
+        std::size_t triangles = 0;
+    };
+    std::unordered_map<std::string, TriggerGeometryCounts> triggerGeometryByFxn{};
     std::set<std::uint32_t> wallObjectAddresses{};
     std::unordered_map<std::uint32_t, std::vector<std::array<double, 3>>> centroidsByObjectAddress{};
     for (const auto& region : model.regions) {
         collisionCount += region.kind == NavigationRegionKind::Collision ? 1U : 0U;
         triggerCount += region.kind == NavigationRegionKind::Trigger ? 1U : 0U;
+        unknownRegionCount += region.kind == NavigationRegionKind::Unknown ? 1U : 0U;
+        if (region.kind == NavigationRegionKind::MovingObject) {
+            ++movingObjectRegionCount;
+            EXPECT_EQ(normalizeFxn(region.fxnName), "motscpt");
+            EXPECT_FALSE(region.meshes.empty());
+            for (const auto& regionMesh : region.meshes) {
+                ++movingObjectMeshCount;
+                movingObjectVertexCount += regionMesh.mesh.vertices.size();
+                movingObjectTriangleCount += regionMesh.mesh.indices.size() / 3U;
+            }
+        }
+        if (region.kind == NavigationRegionKind::Trigger) {
+            auto& counts = triggerGeometryByFxn[normalizeFxn(region.fxnName)];
+            ++counts.regions;
+            EXPECT_FALSE(region.meshes.empty());
+            for (const auto& regionMesh : region.meshes) {
+                ++counts.meshes;
+                counts.vertices += regionMesh.mesh.vertices.size();
+                counts.triangles += regionMesh.mesh.indices.size() / 3U;
+                ++triggerMeshCount;
+                triggerVertexCount += regionMesh.mesh.vertices.size();
+                triggerTriangleCount += regionMesh.mesh.indices.size() / 3U;
+            }
+        }
         if (region.kind != NavigationRegionKind::Collision || normalizeFxn(region.fxnName) != "wall") {
             continue;
         }
@@ -175,9 +214,13 @@ TEST(NavigationAreaLoader, A101bIncludesGrndAndGroundRoleGobjSurfaces) {
 
     EXPECT_TRUE(model.hasCompleteGroundGeometry);
     EXPECT_TRUE(model.hasCompleteWallGeometry);
+    EXPECT_TRUE(model.hasCompleteTriggerGeometry);
+    EXPECT_TRUE(model.hasCompleteMovingObjectGeometry);
     EXPECT_TRUE(model.bounds.valid);
     EXPECT_EQ(model.failedGroundResourceCount, 0U);
     EXPECT_EQ(model.failedWallRegionCount, 0U);
+    EXPECT_EQ(model.failedTriggerRegionCount, 0U);
+    EXPECT_EQ(model.failedMovingObjectRegionCount, 0U);
     EXPECT_EQ(model.surfaces.size(), 12U);
     EXPECT_EQ(grndSurfaceCount, 6U);
     EXPECT_EQ(gobjSurfaceCount, 6U);
@@ -185,13 +228,41 @@ TEST(NavigationAreaLoader, A101bIncludesGrndAndGroundRoleGobjSurfaces) {
     EXPECT_EQ(triangleCount, 401U);
     EXPECT_EQ(collisionCount, 59U);
     EXPECT_EQ(triggerCount, 16U);
-    EXPECT_EQ(model.unknownEntryCount, 32U);
+    EXPECT_EQ(model.unknownEntryCount, 21U);
+    EXPECT_EQ(unknownRegionCount, 21U);
     EXPECT_EQ(wallRegionCount, 51U);
     EXPECT_EQ(wallMeshCount, 517U);
     EXPECT_EQ(wallVertexCount, 6795U);
     EXPECT_EQ(wallTriangleCount, 8347U);
     EXPECT_EQ(wallObjectAddresses.size(), 18U);
     EXPECT_TRUE(foundDistinctSharedInstance);
+    EXPECT_EQ(triggerMeshCount, 38U);
+    EXPECT_EQ(triggerVertexCount, 320U);
+    EXPECT_EQ(triggerTriangleCount, 384U);
+    EXPECT_EQ(movingObjectRegionCount, 11U);
+    EXPECT_EQ(movingObjectMeshCount, 55U);
+    EXPECT_EQ(movingObjectVertexCount, 462U);
+    EXPECT_EQ(movingObjectTriangleCount, 566U);
+
+    ASSERT_EQ(triggerGeometryByFxn.size(), 3U);
+    const auto goscript = triggerGeometryByFxn.find("goscript");
+    const auto treasure = triggerGeometryByFxn.find("treasure");
+    const auto wallmot = triggerGeometryByFxn.find("wallmot");
+    ASSERT_NE(goscript, triggerGeometryByFxn.end());
+    ASSERT_NE(treasure, triggerGeometryByFxn.end());
+    ASSERT_NE(wallmot, triggerGeometryByFxn.end());
+    EXPECT_EQ(goscript->second.regions, 11U);
+    EXPECT_EQ(goscript->second.meshes, 11U);
+    EXPECT_EQ(goscript->second.vertices, 88U);
+    EXPECT_EQ(goscript->second.triangles, 132U);
+    EXPECT_EQ(treasure->second.regions, 4U);
+    EXPECT_EQ(treasure->second.meshes, 20U);
+    EXPECT_EQ(treasure->second.vertices, 144U);
+    EXPECT_EQ(treasure->second.triangles, 168U);
+    EXPECT_EQ(wallmot->second.regions, 1U);
+    EXPECT_EQ(wallmot->second.meshes, 7U);
+    EXPECT_EQ(wallmot->second.vertices, 88U);
+    EXPECT_EQ(wallmot->second.triangles, 84U);
 }
 
 } // namespace

@@ -7,12 +7,14 @@ Item {
     property bool showLinks: true
     property bool showCollisions: true
     property bool showTriggers: true
+    property bool showMovingObjects: true
     property bool showUnknowns: true
 
     property var groundMeshes: []
     property var linkMeshes: []
     property var collisionMeshes: []
     property var triggerMeshes: []
+    property var movingObjectMeshes: []
     property var unknownMeshes: []
 
     property vector3d cameraTarget: Qt.vector3d(0, 0, 0)
@@ -198,6 +200,23 @@ Item {
                     : ({})
 
                 visible: root.showTriggers && (mesh.visible !== false)
+                geometry: mesh.geometry
+                materials: DefaultMaterial {
+                    diffuseColor: mesh.color
+                    cullMode: Material.NoCulling
+                    opacity: 0.7
+                }
+            }
+        }
+
+        Repeater3D {
+            model: root.movingObjectMeshes.length
+            delegate: Model {
+                property var mesh: (index >= 0 && index < root.movingObjectMeshes.length)
+                    ? root.movingObjectMeshes[index]
+                    : ({})
+
+                visible: root.showMovingObjects && (mesh.visible !== false)
                 geometry: mesh.geometry
                 materials: DefaultMaterial {
                     diffuseColor: mesh.color

@@ -61,6 +61,14 @@ decisions and the remaining navigation-model, pathfinding, workflow, and UI ques
 7. Exact normalized `fxn=wall` entries use transiently projected object trees to create world-space
    `NavigationRegionMesh` instances. Missing wall geometry sets `hasCompleteWallGeometry=false`, makes the
    load partial, and suppresses the old cube fallback. `walluv` remains an ordinary marker in this slice.
+8. Every SPICE-classified trigger receives the same projected object-tree treatment. Missing trigger
+   geometry sets `hasCompleteTriggerGeometry=false` and increments `failedTriggerRegionCount`, but it is
+   warning-only, does not alter load status, and retains an approximate red cube marker. The mesh is
+   attached MLD geometry, not an inferred interaction radius or SCT/controller activation predicate.
+9. Exact normalized `motscpt` entries are provisionally reclassified from preserved unknown entries as
+   `MovingObject` regions and projected through the same path. They render in a separate orange
+   `MovingObjects` layer. Missing geometry is warning-only with a cube fallback and does not affect load
+   status. This name does not assert that every entry is a door or define runtime motion/collision behavior.
 
 ### E. Camera and controls
 
@@ -96,6 +104,12 @@ decisions and the remaining navigation-model, pathfinding, workflow, and UI ques
 - The `a101b.mld` fixture contract is covered by an isolated navigation test target.
 - Exact wall projection is covered by isolated hierarchy, repeated-instance, weighted-root, malformed
   triangle, and missing-reference tests plus the real `a101b.mld` count contract.
+- Trigger projection reuses that tested projection path with explicit loader-supplied targets. The
+  `a101b.mld` contract covers 16 complete triggers: 11 `goscript` meshes (88 vertices/132 triangles),
+  20 meshes across 4 `treasure` entries (144 vertices/168 triangles), and 7 `wallmot` meshes
+  (88 vertices/84 triangles), totaling 38 meshes, 320 vertices, and 384 triangles.
+- The same fixture contains 11 exact `motscpt` MovingObjects, all complete, totaling 55 meshes,
+  462 vertices, and 566 triangles; 21 entries remain in the generic Unknown category.
 
 ## Immediate Next Experiments
 
@@ -106,3 +120,5 @@ decisions and the remaining navigation-model, pathfinding, workflow, and UI ques
 3. Select two positions and render an initial A* path overlay over the in-memory model.
 4. After the prototype boundary is stable, design automatic area lookup, SCT integration, jobs, and the
    persisted `nav_world_blob` schema.
+5. Correlate `motscpt` entries with controller/SCT behavior to determine which are doors and how their
+   moving collision should affect navigation.

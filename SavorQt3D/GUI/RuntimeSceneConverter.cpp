@@ -127,6 +127,14 @@ RuntimeSceneData RuntimeSceneConverter::convert(const savor::navigation::Navigat
     std::size_t wallMeshCount = 0;
     std::size_t wallVertexCount = 0;
     std::size_t wallTriangleCount = 0;
+    std::size_t triggerRegionCount = 0;
+    std::size_t triggerMeshCount = 0;
+    std::size_t triggerVertexCount = 0;
+    std::size_t triggerTriangleCount = 0;
+    std::size_t movingObjectRegionCount = 0;
+    std::size_t movingObjectMeshCount = 0;
+    std::size_t movingObjectVertexCount = 0;
+    std::size_t movingObjectTriangleCount = 0;
 
     for (const auto& surface : model.surfaces) {
         auto geometry = createTriangleGeometry(meshVertices(surface.mesh), surface.mesh.indices);
@@ -146,13 +154,17 @@ RuntimeSceneData RuntimeSceneConverter::convert(const savor::navigation::Navigat
     }
 
     for (const auto& region : model.regions) {
+        const bool exactWall = region.kind == savor::navigation::NavigationRegionKind::Collision &&
+            isExactWall(region.fxnName);
+        wallRegionCount += exactWall ? 1U : 0U;
+        triggerRegionCount += region.kind == savor::navigation::NavigationRegionKind::Trigger ? 1U : 0U;
+        movingObjectRegionCount += region.kind == savor::navigation::NavigationRegionKind::MovingObject ? 1U : 0U;
+
         if (!region.meshes.empty()) {
-            ++wallRegionCount;
             for (const auto& regionMesh : region.meshes) {
                 auto geometry = createTriangleGeometry(meshVertices(regionMesh.mesh), regionMesh.mesh.indices);
                 QVariantMap item{};
                 item.insert("geometry", QVariant::fromValue(static_cast<QObject*>(geometry.get())));
-                item.insert("color", QColor(QStringLiteral("#4EA7C8")));
                 item.insert("label", QStringLiteral("entry=%1 fxn=%2 tbl=%3 object=0x%4 block=0x%5 node=0x%6 attach=0x%7")
                     .arg(region.sourceEntryId)
                     .arg(QString::fromStdString(region.fxnName))
@@ -161,18 +173,42 @@ RuntimeSceneData RuntimeSceneConverter::convert(const savor::navigation::Navigat
                     .arg(regionMesh.sourceChunkOffset, 0, 16)
                     .arg(regionMesh.sourceNodeOffset, 0, 16)
                     .arg(regionMesh.sourceAttachOffset, 0, 16));
-                out.collisions.push_back(item);
+
+                switch (region.kind) {
+                case savor::navigation::NavigationRegionKind::Collision:
+                    item.insert("color", QColor(QStringLiteral("#4EA7C8")));
+                    out.collisions.push_back(item);
+                    ++wallMeshCount;
+                    wallVertexCount += regionMesh.mesh.vertices.size();
+                    wallTriangleCount += regionMesh.mesh.indices.size() / 3U;
+                    break;
+                case savor::navigation::NavigationRegionKind::Trigger:
+                    item.insert("color", QColor(QStringLiteral("#E06666")));
+                    out.triggers.push_back(item);
+                    ++triggerMeshCount;
+                    triggerVertexCount += regionMesh.mesh.vertices.size();
+                    triggerTriangleCount += regionMesh.mesh.indices.size() / 3U;
+                    break;
+                case savor::navigation::NavigationRegionKind::MovingObject:
+                    item.insert("color", QColor(QStringLiteral("#F6B26B")));
+                    out.movingObjects.push_back(item);
+                    ++movingObjectMeshCount;
+                    movingObjectVertexCount += regionMesh.mesh.vertices.size();
+                    movingObjectTriangleCount += regionMesh.mesh.indices.size() / 3U;
+                    break;
+                case savor::navigation::NavigationRegionKind::Unknown:
+                default:
+                    item.insert("color", QColor(QStringLiteral("#CC00FF")));
+                    out.unknowns.push_back(item);
+                    break;
+                }
                 out.geometries.push_back(std::move(geometry));
-                ++wallMeshCount;
-                wallVertexCount += regionMesh.mesh.vertices.size();
-                wallTriangleCount += regionMesh.mesh.indices.size() / 3U;
             }
             continue;
         }
         // Exact wall entries are collision boundaries. A failed projection remains visible in
         // diagnostics, but a cube would misrepresent its extent and obstruct calibration.
-        if (region.kind == savor::navigation::NavigationRegionKind::Collision && isExactWall(region.fxnName)) {
-            ++wallRegionCount;
+        if (exactWall) {
             continue;
         }
 
@@ -199,6 +235,10 @@ RuntimeSceneData RuntimeSceneConverter::convert(const savor::navigation::Navigat
         case savor::navigation::NavigationRegionKind::Trigger:
             item.insert("color", QColor(QStringLiteral("#E06666")));
             out.triggers.push_back(item);
+            break;
+        case savor::navigation::NavigationRegionKind::MovingObject:
+            item.insert("color", QColor(QStringLiteral("#F6B26B")));
+            out.movingObjects.push_back(item);
             break;
         case savor::navigation::NavigationRegionKind::Unknown:
         default:
@@ -234,9 +274,21 @@ RuntimeSceneData RuntimeSceneConverter::convert(const savor::navigation::Navigat
             << ", wallVertices=" << wallVertexCount
             << ", wallTriangles=" << wallTriangleCount
             << ", failedWallRegions=" << model.failedWallRegionCount
+            << ", triggerRegions=" << triggerRegionCount
+            << ", triggerMeshes=" << triggerMeshCount
+            << ", triggerVertices=" << triggerVertexCount
+            << ", triggerTriangles=" << triggerTriangleCount
+            << ", failedTriggerRegions=" << model.failedTriggerRegionCount
+            << ", movingObjectRegions=" << movingObjectRegionCount
+            << ", movingObjectMeshes=" << movingObjectMeshCount
+            << ", movingObjectVertices=" << movingObjectVertexCount
+            << ", movingObjectTriangles=" << movingObjectTriangleCount
+            << ", failedMovingObjectRegions=" << model.failedMovingObjectRegionCount
             << ", provisionalLinks=" << model.groundLinks.size()
             << ", groundGeometryComplete=" << (model.hasCompleteGroundGeometry ? "yes" : "no")
-            << ", wallGeometryComplete=" << (model.hasCompleteWallGeometry ? "yes" : "no") << '.';
+            << ", wallGeometryComplete=" << (model.hasCompleteWallGeometry ? "yes" : "no")
+            << ", triggerGeometryComplete=" << (model.hasCompleteTriggerGeometry ? "yes" : "no")
+            << ", movingObjectGeometryComplete=" << (model.hasCompleteMovingObjectGeometry ? "yes" : "no") << '.';
     out.diagnostics.push_back(summary.str());
     return out;
 }

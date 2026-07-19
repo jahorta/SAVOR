@@ -18,7 +18,8 @@ public:
         Links = 2,
         Collisions = 3,
         Triggers = 4,
-        Unknowns = 5,
+        MovingObjects = 5,
+        Unknowns = 6,
     };
 
     explicit VisibilityTreeWidget(QWidget* parent = nullptr);
@@ -27,6 +28,7 @@ public:
         const QVariantList& links,
         const QVariantList& collisions,
         const QVariantList& triggers,
+        const QVariantList& movingObjects,
         const QVariantList& unknowns);
 
 signals:
@@ -45,11 +47,13 @@ private:
     QTreeWidgetItem* linksItem_ = nullptr;
     QTreeWidgetItem* collisionsItem_ = nullptr;
     QTreeWidgetItem* triggersItem_ = nullptr;
+    QTreeWidgetItem* movingObjectsItem_ = nullptr;
     QTreeWidgetItem* unknownsItem_ = nullptr;
     QVariantList grounds_{};
     QVariantList links_{};
     QVariantList collisions_{};
     QVariantList triggers_{};
+    QVariantList movingObjects_{};
     QVariantList unknowns_{};
     bool updating_ = false;
 };

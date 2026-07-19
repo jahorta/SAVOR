@@ -15,7 +15,7 @@
     <ClCompile Include="Loading\NavigationAreaLoader.cpp">
       <Filter>Loading</Filter>
     </ClCompile>
-    <ClCompile Include="Projection\WallMeshProjector.cpp">
+    <ClCompile Include="Projection\RegionMeshProjector.cpp">
       <Filter>Projection</Filter>
     </ClCompile>
   </ItemGroup>
@@ -26,7 +26,7 @@
     <ClInclude Include="Model\NavigationAreaModel.h">
       <Filter>Model</Filter>
     </ClInclude>
-    <ClInclude Include="Projection\WallMeshProjector.h">
+    <ClInclude Include="Projection\RegionMeshProjector.h">
       <Filter>Projection</Filter>
     </ClInclude>
   </ItemGroup>

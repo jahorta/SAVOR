@@ -1,10 +1,12 @@
 #include "MainWindow.h"
 
 #include <QAction>
+#include <QDir>
 #include <QDockWidget>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFutureWatcher>
+#include <QKeySequence>
 #include <QMessageBox>
 #include <QMenu>
 #include <QMenuBar>
@@ -25,6 +27,17 @@
 #include <utility>
 
 namespace savor::qt3d::gui {
+namespace {
+
+[[nodiscard]] QString normalizedAbsolutePath(const QString& path) {
+    const QString trimmed = path.trimmed();
+    if (trimmed.isEmpty()) {
+        return {};
+    }
+    return QDir::cleanPath(QFileInfo(trimmed).absoluteFilePath());
+}
+
+} // namespace
 
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent) {
@@ -33,9 +46,13 @@ MainWindow::MainWindow(QWidget* parent)
 }
 
 void MainWindow::buildUi() {
-    auto* fileToolbar = addToolBar("File");
-    openAction_ = fileToolbar->addAction("Open MLD...");
+    auto* fileMenu = menuBar()->addMenu("&File");
+    openAction_ = fileMenu->addAction("&Open MLD...");
+    openAction_->setShortcut(QKeySequence::Open);
     connect(openAction_, &QAction::triggered, this, &MainWindow::chooseAndLoadMldFile);
+    recentFilesMenu_ = fileMenu->addMenu("Recent Files");
+    recentMldFiles_ = readRecentMldFiles();
+    rebuildRecentFilesMenu();
 
     loadWatcher_ = new QFutureWatcher<savor::navigation::NavigationAreaLoadResult>(this);
     connect(loadWatcher_, &QFutureWatcher<savor::navigation::NavigationAreaLoadResult>::finished,
@@ -77,6 +94,13 @@ void MainWindow::buildUi() {
     collisionsAction_->setChecked(true);
     connect(collisionsAction_, &QAction::toggled, this, [this](const bool checked) {
         setLayerVisibility(VisibilityTreeWidget::LayerKind::Collisions, checked);
+    });
+
+    movingObjectsAction_ = viewToolbar->addAction("MovingObjects");
+    movingObjectsAction_->setCheckable(true);
+    movingObjectsAction_->setChecked(true);
+    connect(movingObjectsAction_, &QAction::toggled, this, [this](const bool checked) {
+        setLayerVisibility(VisibilityTreeWidget::LayerKind::MovingObjects, checked);
     });
 
     unknownsAction_ = viewToolbar->addAction("Unknown");
@@ -156,6 +180,7 @@ void MainWindow::syncLayerPropertiesToQml() {
     root->setProperty("showLinks", showLinks_);
     root->setProperty("showCollisions", showCollisions_);
     root->setProperty("showTriggers", showTriggers_);
+    root->setProperty("showMovingObjects", showMovingObjects_);
     root->setProperty("showUnknowns", showUnknowns_);
 }
 
@@ -182,6 +207,7 @@ void MainWindow::startMldLoad(const QString& path) {
     pendingLoadPath_ = path;
     storeLastMldDirectory(path);
     openAction_->setEnabled(false);
+    recentFilesMenu_->setEnabled(false);
     statusBar()->showMessage(QString("Loading %1...").arg(QFileInfo(path).fileName()));
 
     const std::wstring nativePath = path.toStdWString();
@@ -200,6 +226,7 @@ void MainWindow::finishMldLoad() {
     auto result = loadWatcher_->result();
 
     if (!result.hasModel()) {
+        rebuildRecentFilesMenu();
         appendLoadDiagnostics(result.diagnostics);
         statusBar()->showMessage(QString("Failed to load %1").arg(QFileInfo(pendingLoadPath_).fileName()));
         QMessageBox::warning(this,
@@ -209,6 +236,7 @@ void MainWindow::finishMldLoad() {
         return;
     }
 
+    recordRecentMldFile(pendingLoadPath_);
     currentModel_ = std::move(*result.model);
     auto runtimeScene = runtimeSceneConverter_.convert(*currentModel_);
     applyRuntimeScene(std::move(runtimeScene));
@@ -258,6 +286,86 @@ void MainWindow::storeLastMldDirectory(const QString& path) const {
     settings.endGroup();
 }
 
+QStringList MainWindow::readRecentMldFiles() const {
+    QSettings settings;
+    settings.beginGroup(kSettingsGroup);
+    const QStringList storedPaths = settings.value(kRecentMldFilesKey).toStringList();
+    settings.endGroup();
+
+    QStringList recentFiles{};
+    for (const QString& storedPath : storedPaths) {
+        const QString normalized = normalizedAbsolutePath(storedPath);
+        if (normalized.isEmpty()) {
+            continue;
+        }
+
+        bool duplicate = false;
+        for (const QString& existing : recentFiles) {
+            if (existing.compare(normalized, Qt::CaseInsensitive) == 0) {
+                duplicate = true;
+                break;
+            }
+        }
+        if (!duplicate) {
+            recentFiles.push_back(normalized);
+        }
+        if (recentFiles.size() == kMaxRecentMldFiles) {
+            break;
+        }
+    }
+    return recentFiles;
+}
+
+void MainWindow::recordRecentMldFile(const QString& path) {
+    const QString normalized = normalizedAbsolutePath(path);
+    if (normalized.isEmpty()) {
+        return;
+    }
+
+    recentMldFiles_.removeIf([&normalized](const QString& existing) {
+        return existing.compare(normalized, Qt::CaseInsensitive) == 0;
+    });
+    recentMldFiles_.prepend(normalized);
+    while (recentMldFiles_.size() > kMaxRecentMldFiles) {
+        recentMldFiles_.removeLast();
+    }
+
+    QSettings settings;
+    settings.beginGroup(kSettingsGroup);
+    settings.setValue(kRecentMldFilesKey, recentMldFiles_);
+    settings.endGroup();
+    rebuildRecentFilesMenu();
+}
+
+void MainWindow::rebuildRecentFilesMenu() {
+    if (recentFilesMenu_ == nullptr) {
+        return;
+    }
+
+    recentFilesMenu_->clear();
+    if (recentMldFiles_.isEmpty()) {
+        QAction* emptyAction = recentFilesMenu_->addAction("(No Recent Files)");
+        emptyAction->setEnabled(false);
+        recentFilesMenu_->setEnabled(false);
+        return;
+    }
+
+    for (int index = 0; index < recentMldFiles_.size(); ++index) {
+        const QString path = recentMldFiles_.at(index);
+        QString menuPath = QDir::toNativeSeparators(path);
+        menuPath.replace('&', "&&");
+        QAction* action = recentFilesMenu_->addAction(QStringLiteral("&%1 %2")
+            .arg(index + 1)
+            .arg(menuPath));
+        action->setData(path);
+        action->setStatusTip(path);
+        connect(action, &QAction::triggered, this, [this, path]() {
+            startMldLoad(path);
+        });
+    }
+    recentFilesMenu_->setEnabled(true);
+}
+
 void MainWindow::applyRuntimeScene(RuntimeSceneData data) {
     if (quickView_ == nullptr || quickView_->rootObject() == nullptr) {
         appendDiagnosticLine("Viewer is not ready yet; deferring scene assignment.");
@@ -272,6 +380,7 @@ void MainWindow::applyRuntimeScene(RuntimeSceneData data) {
     linkMeshes_ = std::move(data.links);
     collisionMeshes_ = std::move(data.collisions);
     triggerMeshes_ = std::move(data.triggers);
+    movingObjectMeshes_ = std::move(data.movingObjects);
     unknownMeshes_ = std::move(data.unknowns);
 
     auto applyDefaultVisibility = [](QVariantList& list) {
@@ -287,6 +396,7 @@ void MainWindow::applyRuntimeScene(RuntimeSceneData data) {
     applyDefaultVisibility(linkMeshes_);
     applyDefaultVisibility(collisionMeshes_);
     applyDefaultVisibility(triggerMeshes_);
+    applyDefaultVisibility(movingObjectMeshes_);
     applyDefaultVisibility(unknownMeshes_);
 
     setAllVisibility(true);
@@ -299,11 +409,12 @@ void MainWindow::applyRuntimeScene(RuntimeSceneData data) {
         appendDiagnosticLine(QString::fromStdString(line));
     }
 
-    statusBar()->showMessage(QString("Scene updated: Grounds=%1, Links=%2, Collisions=%3, Triggers=%4, Unknown=%5")
+    statusBar()->showMessage(QString("Scene updated: Grounds=%1, Links=%2, Collisions=%3, Triggers=%4, MovingObjects=%5, Unknown=%6")
         .arg(static_cast<int>(groundMeshes_.size()))
         .arg(static_cast<int>(linkMeshes_.size()))
         .arg(static_cast<int>(collisionMeshes_.size()))
         .arg(static_cast<int>(triggerMeshes_.size()))
+        .arg(static_cast<int>(movingObjectMeshes_.size()))
         .arg(static_cast<int>(unknownMeshes_.size())));
 }
 
@@ -327,6 +438,7 @@ void MainWindow::applyMeshesToQml() {
     root->setProperty("linkMeshes", linkMeshes_);
     root->setProperty("collisionMeshes", collisionMeshes_);
     root->setProperty("triggerMeshes", triggerMeshes_);
+    root->setProperty("movingObjectMeshes", movingObjectMeshes_);
     root->setProperty("unknownMeshes", unknownMeshes_);
 
     auto hasVisible = [](const QVariantList& meshes) {
@@ -341,12 +453,14 @@ void MainWindow::applyMeshesToQml() {
     showLinks_ = hasVisible(linkMeshes_);
     showCollisions_ = hasVisible(collisionMeshes_);
     showTriggers_ = hasVisible(triggerMeshes_);
+    showMovingObjects_ = hasVisible(movingObjectMeshes_);
     showUnknowns_ = hasVisible(unknownMeshes_);
 
     setActionCheckedNoSignal(groundsAction_, showGrounds_);
     setActionCheckedNoSignal(linksAction_, showLinks_);
     setActionCheckedNoSignal(collisionsAction_, showCollisions_);
     setActionCheckedNoSignal(triggersAction_, showTriggers_);
+    setActionCheckedNoSignal(movingObjectsAction_, showMovingObjects_);
     setActionCheckedNoSignal(unknownsAction_, showUnknowns_);
 
     syncLayerPropertiesToQml();
@@ -364,7 +478,8 @@ void MainWindow::setLayerVisibility(const VisibilityTreeWidget::LayerKind layer,
         (*meshes)[i] = map;
     }
 
-    visibilityWidget_->setLayers(groundMeshes_, linkMeshes_, collisionMeshes_, triggerMeshes_, unknownMeshes_);
+    visibilityWidget_->setLayers(
+        groundMeshes_, linkMeshes_, collisionMeshes_, triggerMeshes_, movingObjectMeshes_, unknownMeshes_);
     applyMeshesToQml();
 }
 
@@ -380,9 +495,11 @@ void MainWindow::setAllVisibility(const bool visible) {
     setMeshes(linkMeshes_);
     setMeshes(collisionMeshes_);
     setMeshes(triggerMeshes_);
+    setMeshes(movingObjectMeshes_);
     setMeshes(unknownMeshes_);
 
-    visibilityWidget_->setLayers(groundMeshes_, linkMeshes_, collisionMeshes_, triggerMeshes_, unknownMeshes_);
+    visibilityWidget_->setLayers(
+        groundMeshes_, linkMeshes_, collisionMeshes_, triggerMeshes_, movingObjectMeshes_, unknownMeshes_);
     applyMeshesToQml();
 }
 
@@ -396,6 +513,8 @@ QVariantList* MainWindow::meshesForLayer(const VisibilityTreeWidget::LayerKind l
         return &collisionMeshes_;
     case VisibilityTreeWidget::LayerKind::Triggers:
         return &triggerMeshes_;
+    case VisibilityTreeWidget::LayerKind::MovingObjects:
+        return &movingObjectMeshes_;
     case VisibilityTreeWidget::LayerKind::Unknowns:
         return &unknownMeshes_;
     default:
@@ -448,6 +567,7 @@ void MainWindow::logVisibilitySnapshot(const QString& reason) {
     appendDiagnosticLine(QString("[VisibilityDebug] %1").arg(summarizeLayer(QStringLiteral("Links"), linkMeshes_)));
     appendDiagnosticLine(QString("[VisibilityDebug] %1").arg(summarizeLayer(QStringLiteral("Collisions"), collisionMeshes_)));
     appendDiagnosticLine(QString("[VisibilityDebug] %1").arg(summarizeLayer(QStringLiteral("Triggers"), triggerMeshes_)));
+    appendDiagnosticLine(QString("[VisibilityDebug] %1").arg(summarizeLayer(QStringLiteral("MovingObjects"), movingObjectMeshes_)));
     appendDiagnosticLine(QString("[VisibilityDebug] %1").arg(summarizeLayer(QStringLiteral("Unknowns"), unknownMeshes_)));
 }
 

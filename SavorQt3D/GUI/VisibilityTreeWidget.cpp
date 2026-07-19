@@ -9,6 +9,7 @@ namespace savor::qt3d::gui {
 namespace {
 
 constexpr int kLayerRole = Qt::UserRole + 1;
+constexpr int kRenderedLayerCount = 6;
 } // namespace
 
 VisibilityTreeWidget::VisibilityTreeWidget(QWidget* parent)
@@ -75,11 +76,13 @@ void VisibilityTreeWidget::setLayers(const QVariantList& grounds,
     const QVariantList& links,
     const QVariantList& collisions,
     const QVariantList& triggers,
+    const QVariantList& movingObjects,
     const QVariantList& unknowns) {
     grounds_ = grounds;
     links_ = links;
     collisions_ = collisions;
     triggers_ = triggers;
+    movingObjects_ = movingObjects;
     unknowns_ = unknowns;
     rebuildTree();
 }
@@ -87,6 +90,15 @@ void VisibilityTreeWidget::setLayers(const QVariantList& grounds,
 void VisibilityTreeWidget::rebuildTree() {
     const QSignalBlocker blocker(tree_);
     updating_ = true;
+
+    const bool hadExistingTree = allItem_ != nullptr;
+    const bool allExpanded = allItem_ != nullptr && allItem_->isExpanded();
+    const bool groundsExpanded = groundsItem_ != nullptr && groundsItem_->isExpanded();
+    const bool linksExpanded = linksItem_ != nullptr && linksItem_->isExpanded();
+    const bool collisionsExpanded = collisionsItem_ != nullptr && collisionsItem_->isExpanded();
+    const bool triggersExpanded = triggersItem_ != nullptr && triggersItem_->isExpanded();
+    const bool movingObjectsExpanded = movingObjectsItem_ != nullptr && movingObjectsItem_->isExpanded();
+    const bool unknownsExpanded = unknownsItem_ != nullptr && unknownsItem_->isExpanded();
 
     tree_->clear();
 
@@ -118,14 +130,16 @@ void VisibilityTreeWidget::rebuildTree() {
     buildLayer(LayerKind::Links, links_, linksItem_);
     buildLayer(LayerKind::Collisions, collisions_, collisionsItem_);
     buildLayer(LayerKind::Triggers, triggers_, triggersItem_);
+    buildLayer(LayerKind::MovingObjects, movingObjects_, movingObjectsItem_);
     buildLayer(LayerKind::Unknowns, unknowns_, unknownsItem_);
 
-    tree_->expandItem(allItem_);
-    tree_->expandItem(groundsItem_);
-    tree_->expandItem(linksItem_);
-    tree_->expandItem(collisionsItem_);
-    tree_->expandItem(triggersItem_);
-    tree_->expandItem(unknownsItem_);
+    allItem_->setExpanded(!hadExistingTree || allExpanded);
+    groundsItem_->setExpanded(!hadExistingTree || groundsExpanded);
+    linksItem_->setExpanded(!hadExistingTree || linksExpanded);
+    collisionsItem_->setExpanded(!hadExistingTree || collisionsExpanded);
+    triggersItem_->setExpanded(!hadExistingTree || triggersExpanded);
+    movingObjectsItem_->setExpanded(!hadExistingTree || movingObjectsExpanded);
+    unknownsItem_->setExpanded(!hadExistingTree || unknownsExpanded);
 
     updating_ = false;
     updateTriStateChecks();
@@ -161,6 +175,7 @@ void VisibilityTreeWidget::updateTriStateChecks() {
     updateGroup(linksItem_);
     updateGroup(collisionsItem_);
     updateGroup(triggersItem_);
+    updateGroup(movingObjectsItem_);
     updateGroup(unknownsItem_);
 
     int checkedGroups = 0;
@@ -179,12 +194,13 @@ void VisibilityTreeWidget::updateTriStateChecks() {
     observe(linksItem_);
     observe(collisionsItem_);
     observe(triggersItem_);
+    observe(movingObjectsItem_);
     observe(unknownsItem_);
 
     if (allItem_ != nullptr) {
         if (checkedGroups == 0 && partialGroups == 0) {
             allItem_->setCheckState(0, Qt::Unchecked);
-        } else if (checkedGroups == 5 && partialGroups == 0) {
+        } else if (checkedGroups == kRenderedLayerCount && partialGroups == 0) {
             allItem_->setCheckState(0, Qt::Checked);
         } else {
             allItem_->setCheckState(0, Qt::PartiallyChecked);
@@ -204,6 +220,8 @@ QString VisibilityTreeWidget::layerLabel(const LayerKind layer) const {
         return QStringLiteral("Collisions");
     case LayerKind::Triggers:
         return QStringLiteral("Triggers");
+    case LayerKind::MovingObjects:
+        return QStringLiteral("MovingObjects");
     case LayerKind::Unknowns:
         return QStringLiteral("Unknowns");
     default:

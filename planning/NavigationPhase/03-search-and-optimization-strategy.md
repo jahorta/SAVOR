@@ -3,7 +3,8 @@
 ## Status
 
 Future plan. This document assumes `SavorNavigation` has converted canonical SpiceMLD data, projected
-world/search evidence, and transiently flattened wall geometry into an in-memory `NavigationAreaModel`.
+world/search evidence, and transiently flattened wall, trigger, and provisional MovingObject geometry into an in-memory
+`NavigationAreaModel`.
 Route search and Qt code consume only that SAVOR-owned model; they do not consume SpiceMLD/Blender types
 or a serialized SPICE area-view artifact.
 
@@ -29,6 +30,10 @@ artifacts follow after the model and widget boundary are validated.
 - Heuristic: geometric distance + coarse transition penalties.
 - Reject models where either `hasCompleteGroundGeometry` or `hasCompleteWallGeometry` is false; partial
   models are diagnostic visualization inputs, not valid search worlds.
+- Treat `hasCompleteTriggerGeometry` as a visualization diagnostic rather than a search-readiness gate in
+  this prototype. Attached trigger meshes do not yet encode SCT/controller activation semantics.
+- Treat `hasCompleteMovingObjectGeometry` the same way. `motscpt` mesh presence alone does not establish
+  door identity, animation state, collision behavior, or traversability.
 
 ## Edge costs (MVP)
 - base traversal estimate

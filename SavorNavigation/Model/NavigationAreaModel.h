@@ -112,6 +112,7 @@ struct NavigationGroundLink {
 enum class NavigationRegionKind {
     Collision,
     Trigger,
+    MovingObject,
     Unknown,
 };
 
@@ -142,8 +143,12 @@ struct NavigationAreaModel {
     std::size_t skippedObjectRoleGobjCount = 0;
     std::size_t failedGroundResourceCount = 0;
     std::size_t failedWallRegionCount = 0;
+    std::size_t failedTriggerRegionCount = 0;
+    std::size_t failedMovingObjectRegionCount = 0;
     bool hasCompleteGroundGeometry = false;
     bool hasCompleteWallGeometry = false;
+    bool hasCompleteTriggerGeometry = false;
+    bool hasCompleteMovingObjectGeometry = false;
 };
 
 } // namespace savor::navigation

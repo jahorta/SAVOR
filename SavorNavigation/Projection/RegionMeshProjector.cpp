@@ -1,8 +1,7 @@
-#include "WallMeshProjector.h"
+#include "RegionMeshProjector.h"
 
 #include <algorithm>
 #include <cmath>
-#include <cctype>
 #include <functional>
 #include <optional>
 #include <string>
@@ -150,21 +149,23 @@ void appendWarning(std::vector<NavigationDiagnostic>& diagnostics, std::string m
     });
 }
 
-[[nodiscard]] std::string normalizeFxn(std::string value) {
-    value.erase(value.begin(), std::find_if(value.begin(), value.end(), [](const unsigned char c) {
-        return !std::isspace(c);
-    }));
-    value.erase(std::find_if(value.rbegin(), value.rend(), [](const unsigned char c) {
-        return !std::isspace(c);
-    }).base(), value.end());
-    std::transform(value.begin(), value.end(), value.begin(), [](const unsigned char c) {
-        return static_cast<char>(std::tolower(c));
-    });
-    return value;
+[[nodiscard]] std::string regionLabel(const NavigationRegionKind kind) {
+    switch (kind) {
+    case NavigationRegionKind::Collision:
+        return "Wall collision";
+    case NavigationRegionKind::Trigger:
+        return "Trigger";
+    case NavigationRegionKind::MovingObject:
+        return "Moving object";
+    case NavigationRegionKind::Unknown:
+    default:
+        return "Region";
+    }
 }
 
 [[nodiscard]] std::vector<Matrix4> buildNodeWorldMatrices(
     const BlenderIrObjectTree& tree,
+    const NavigationRegionKind kind,
     const std::uint32_t entryId,
     std::vector<NavigationDiagnostic>& diagnostics) {
     std::vector<std::optional<Matrix4>> memo(tree.nodes.size());
@@ -175,7 +176,7 @@ void appendWarning(std::vector<NavigationDiagnostic>& diagnostics, std::string m
             return *memo[nodeIndex];
         }
         if (active[nodeIndex]) {
-            appendWarning(diagnostics, "Wall entry=" + std::to_string(entryId) +
+            appendWarning(diagnostics, regionLabel(kind) + " entry=" + std::to_string(entryId) +
                 " contains an object-tree transform cycle; identity ancestry was used.");
             return identityMatrix();
         }
@@ -185,7 +186,7 @@ void appendWarning(std::vector<NavigationDiagnostic>& diagnostics, std::string m
             if (*parentIndex < tree.nodes.size()) {
                 parent = resolve(*parentIndex);
             } else {
-                appendWarning(diagnostics, "Wall entry=" + std::to_string(entryId) +
+                appendWarning(diagnostics, regionLabel(kind) + " entry=" + std::to_string(entryId) +
                     " contains an invalid parent-node index.");
             }
         }
@@ -204,6 +205,7 @@ void appendWarning(std::vector<NavigationDiagnostic>& diagnostics, std::string m
 [[nodiscard]] NavigationMesh convertMesh(
     const BlenderIrMesh& source,
     const Matrix4& world,
+    const NavigationRegionKind kind,
     const std::uint32_t entryId,
     std::vector<NavigationDiagnostic>& diagnostics) {
     NavigationMesh out{};
@@ -259,11 +261,11 @@ void appendWarning(std::vector<NavigationDiagnostic>& diagnostics, std::string m
     }
 
     if (trailingCorners > 0U) {
-        appendWarning(diagnostics, "Wall entry=" + std::to_string(entryId) + " mesh=" + source.label +
+        appendWarning(diagnostics, regionLabel(kind) + " entry=" + std::to_string(entryId) + " mesh=" + source.label +
             " has trailing non-triangle corners; they were ignored.");
     }
     if (rejectedTriangles > 0U) {
-        appendWarning(diagnostics, "Wall entry=" + std::to_string(entryId) + " mesh=" + source.label +
+        appendWarning(diagnostics, regionLabel(kind) + " entry=" + std::to_string(entryId) + " mesh=" + source.label +
             " rejected " + std::to_string(rejectedTriangles) + " triangle(s) with invalid vertices.");
     }
 
@@ -295,35 +297,58 @@ void appendWarning(std::vector<NavigationDiagnostic>& diagnostics, std::string m
 
 } // namespace
 
-WallMeshProjectionResult WallMeshProjector::project(
-    const spice::mld::model::BlenderIrScene& scene) const {
-    WallMeshProjectionResult out{};
-    for (const auto& instance : scene.indexEntries) {
-        if (normalizeFxn(instance.fxnName) != "wall") {
+RegionMeshProjectionResult RegionMeshProjector::project(
+    const spice::mld::model::BlenderIrScene& scene,
+    const std::span<const RegionMeshProjectionTarget> targets) const {
+    RegionMeshProjectionResult out{};
+    std::vector<bool> claimedInstances(scene.indexEntries.size(), false);
+    for (const auto& target : targets) {
+        ProjectedNavigationRegion region{};
+        region.kind = target.kind;
+        region.sourceEntryId = target.sourceEntryId;
+        region.tblId = target.tblId;
+
+        const spice::mld::model::BlenderIrInstance* instance = nullptr;
+        for (std::size_t index = 0; index < scene.indexEntries.size(); ++index) {
+            const auto& candidate = scene.indexEntries[index];
+            if (!claimedInstances[index] && candidate.sourceEntryId == target.sourceEntryId &&
+                candidate.tblId == target.tblId) {
+                claimedInstances[index] = true;
+                instance = &candidate;
+                break;
+            }
+        }
+        if (instance == nullptr) {
+            appendWarning(out.diagnostics, regionLabel(target.kind) + " entry=" +
+                std::to_string(target.sourceEntryId) + " tbl=" + std::to_string(target.tblId) +
+                " has no matching Blender IR instance.");
+            out.regions.push_back(std::move(region));
             continue;
         }
 
-        ProjectedWallRegion region{};
-        region.sourceEntryId = instance.sourceEntryId;
-        region.sourceTableIndex = instance.tableIndex;
-        region.tblId = instance.tblId;
-        const Matrix4 entryWorld = transformMatrix(instance.transform);
+        region.sourceEntryId = instance->sourceEntryId;
+        region.sourceTableIndex = instance->tableIndex;
+        region.tblId = instance->tblId;
+        const Matrix4 entryWorld = transformMatrix(instance->transform);
 
-        for (const auto treeIndex : instance.objectTreeIndices) {
+        for (const auto treeIndex : instance->objectTreeIndices) {
             if (treeIndex >= scene.objectTrees.size()) {
-                appendWarning(out.diagnostics, "Wall entry=" + std::to_string(instance.sourceEntryId) +
+                appendWarning(out.diagnostics, regionLabel(target.kind) + " entry=" +
+                    std::to_string(instance->sourceEntryId) +
                     " references missing object tree " + std::to_string(treeIndex) + '.');
                 continue;
             }
             const auto& tree = scene.objectTrees[treeIndex];
-            const auto nodeWorld = buildNodeWorldMatrices(tree, instance.sourceEntryId, out.diagnostics);
+            const auto nodeWorld = buildNodeWorldMatrices(
+                tree, target.kind, instance->sourceEntryId, out.diagnostics);
             for (std::size_t nodeIndex = 0; nodeIndex < tree.nodes.size(); ++nodeIndex) {
                 const auto& node = tree.nodes[nodeIndex];
                 if (!node.meshIndex.has_value()) {
                     continue;
                 }
                 if (*node.meshIndex >= scene.meshes.size()) {
-                    appendWarning(out.diagnostics, "Wall entry=" + std::to_string(instance.sourceEntryId) +
+                    appendWarning(out.diagnostics, regionLabel(target.kind) + " entry=" +
+                        std::to_string(instance->sourceEntryId) +
                         " references missing mesh " + std::to_string(*node.meshIndex) + '.');
                     continue;
                 }
@@ -333,7 +358,8 @@ WallMeshProjectionResult WallMeshProjector::project(
                 if (sourceMesh.weightedBinding.has_value()) {
                     transformNodeIndex = sourceMesh.weightedBinding->rootNodeIndex;
                     if (transformNodeIndex >= nodeWorld.size()) {
-                        appendWarning(out.diagnostics, "Wall entry=" + std::to_string(instance.sourceEntryId) +
+                        appendWarning(out.diagnostics, regionLabel(target.kind) + " entry=" +
+                            std::to_string(instance->sourceEntryId) +
                             " mesh=" + sourceMesh.label + " has an invalid weighted root node.");
                         continue;
                     }
@@ -341,7 +367,8 @@ WallMeshProjectionResult WallMeshProjector::project(
 
                 auto mesh = convertMesh(sourceMesh,
                     multiply(entryWorld, nodeWorld[transformNodeIndex]),
-                    instance.sourceEntryId,
+                    target.kind,
+                    instance->sourceEntryId,
                     out.diagnostics);
                 if (mesh.vertices.empty() || mesh.indices.empty()) {
                     continue;
@@ -362,8 +389,9 @@ WallMeshProjectionResult WallMeshProjector::project(
 
         region.complete = !region.meshes.empty();
         if (!region.complete) {
-            appendWarning(out.diagnostics, "Wall entry=" + std::to_string(instance.sourceEntryId) +
-                " tbl=" + std::to_string(instance.tblId) + " produced no usable collision mesh.");
+            appendWarning(out.diagnostics, regionLabel(target.kind) + " entry=" +
+                std::to_string(instance->sourceEntryId) + " tbl=" + std::to_string(instance->tblId) +
+                " produced no usable projected mesh.");
         }
         out.regions.push_back(std::move(region));
     }

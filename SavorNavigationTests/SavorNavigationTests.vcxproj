@@ -60,7 +60,7 @@
     <ClCompile Include="..\third-party\googletest-1.17.0\googletest\src\gtest-all.cc" />
     <ClCompile Include="main.cpp" />
     <ClCompile Include="test_navigation_area_loader.cpp" />
-    <ClCompile Include="test_wall_mesh_projector.cpp" />
+    <ClCompile Include="test_region_mesh_projector.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\SavorNavigation\SavorNavigation.vcxproj">

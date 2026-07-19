@@ -30,7 +30,8 @@ related SCT content, workflow jobs, and durable artifacts.
    - SpiceMLD owns AKLZ detection/decompression and MLD parsing; SAVOR does not duplicate either.
    - Runtime parsing starts from canonical `MldFile`. A compatibility projection supplies `world`,
      `searchWorld`, and a transient in-memory Blender IR scene used only inside `SavorNavigation` to
-     flatten NJ object geometry for exact `fxn=wall` collision regions; export remains disabled.
+     flatten NJ object geometry for exact `fxn=wall` collision regions, every SPICE-classified trigger,
+     and exact normalized `motscpt` entries; export remains disabled.
    - A GOBJ contributes navigation geometry only when an MLD entry references its block through
      `groundAddresses`. Object-role-only GOBJ blocks are counted for diagnostics and excluded from the
      navigation surface set.
@@ -51,7 +52,10 @@ related SCT content, workflow jobs, and durable artifacts.
    - Consume walking-plane and target-discovery data exposed through `NavigationAreaModel`.
    - Include both native GRND meshes and GOBJ meshes used in the ground role, while preserving their
      source kind and entry/block/node identity.
-   - Represent non-walkable obstacles and trigger volumes in SAVOR navigation types.
+   - Represent non-walkable obstacles and trigger volumes in SAVOR navigation types, including their
+     attached projected object meshes when available.
+   - Preserve exact `motscpt` entries as provisional `MovingObject` regions for inspection without yet
+     asserting that every entry is a door or modeling its runtime motion/controller behavior.
 
 2. **Objective-based routing**
    - Route between named objectives:
@@ -109,9 +113,15 @@ related SCT content, workflow jobs, and durable artifacts.
 
 7. **First-slice fixture contract**
    - `a101b.mld` produces 6 GRND surfaces and 6 ground-role GOBJ surfaces (504 vertices and 401 triangles
-     total), plus 59 collision entries, 16 trigger entries, and 32 preserved unknown entries.
+     total), plus 59 collision entries, 16 trigger entries, 11 provisional `motscpt` MovingObjects, and
+     21 remaining unknown entries.
    - Its 51 exact `fxn=wall` regions produce 517 SAVOR-owned mesh instances, 6,795 vertices, and 8,347
      triangles spanning 18 source object addresses, with no failed wall regions.
+   - Its 16 trigger regions all project successfully: 11 `goscript` entries produce 11 meshes/88 vertices/
+     132 triangles, 4 `treasure` entries produce 20 meshes/144 vertices/168 triangles, and 1 `wallmot`
+     entry produces 7 meshes/88 vertices/84 triangles (38 meshes, 320 vertices, and 384 triangles total).
+   - Its 11 exact `motscpt` entries produce 55 meshes, 462 vertices, and 566 triangles with no failed
+     MovingObject regions.
    - Object-role-only GOBJ blocks do not appear as navigation surfaces.
 
 ## Deliverables
@@ -136,5 +146,8 @@ related SCT content, workflow jobs, and durable artifacts.
 - Incorrect coordinate conversion, matrix interpretation, or triangle winding. The first prototype must
   calibrate a centralized `SavorNavigation` coordinate policy against known areas instead of distributing
   renderer-specific fixes.
-- Trigger/script coupling (.SCT + controller behavior) not fully represented initially.
+- Attached trigger meshes show the MLD object geometry, but trigger/script coupling, player interaction
+  radius, and SCT/controller activation predicates are not yet represented.
 - Moving platform/controller rules requiring a second modeling pass.
+- `motscpt` may include doors, but entry meaning and motion/activation behavior require controller/SCT
+  evidence before becoming navigation semantics.

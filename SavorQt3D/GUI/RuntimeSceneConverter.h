@@ -18,6 +18,7 @@ struct RuntimeSceneData {
     QVariantList links{};
     QVariantList collisions{};
     QVariantList triggers{};
+    QVariantList movingObjects{};
     QVariantList unknowns{};
     QVector3D center{ 0.0F, 0.0F, 0.0F };
     float extent = 200.0F;

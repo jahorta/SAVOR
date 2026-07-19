@@ -1,6 +1,6 @@
 #include "NavigationAreaLoader.h"
 
-#include "../Projection/WallMeshProjector.h"
+#include "../Projection/RegionMeshProjector.h"
 
 #include "SpiceMLD/Parsing/MldParser.h"
 
@@ -573,42 +573,79 @@ NavigationAreaLoadResult NavigationAreaLoader::loadFile(const std::filesystem::p
             });
         }
         for (const auto& unknown : parse.world.unknownEntries) {
+            const bool isMovingObject = normalizeFxn(unknown.fxnName) == "motscpt";
             model.regions.push_back(NavigationRegion{
-                .kind = NavigationRegionKind::Unknown,
+                .kind = isMovingObject ? NavigationRegionKind::MovingObject : NavigationRegionKind::Unknown,
                 .sourceEntryId = unknown.sourceEntryId,
                 .fxnName = unknown.fxnName,
                 .tblId = unknown.tblId,
                 .transform = copyTransform(unknown.transform),
                 .rawPayloadSize = unknown.rawPayload.size(),
             });
+            model.unknownEntryCount += isMovingObject ? 0U : 1U;
         }
-        model.unknownEntryCount = parse.world.unknownEntries.size();
 
         std::size_t wallRegionCount = 0;
         std::size_t wallMeshInstanceCount = 0;
         std::size_t wallVertexCount = 0;
         std::size_t wallTriangleCount = 0;
-        std::optional<WallMeshProjectionResult> wallProjection{};
+        std::size_t triggerRegionCount = 0;
+        std::size_t triggerMeshInstanceCount = 0;
+        std::size_t triggerVertexCount = 0;
+        std::size_t triggerTriangleCount = 0;
+        std::size_t movingObjectRegionCount = 0;
+        std::size_t movingObjectMeshInstanceCount = 0;
+        std::size_t movingObjectVertexCount = 0;
+        std::size_t movingObjectTriangleCount = 0;
+        std::vector<RegionMeshProjectionTarget> projectionTargets{};
+        for (const auto& region : model.regions) {
+            const bool isWall = region.kind == NavigationRegionKind::Collision &&
+                normalizeFxn(region.fxnName) == "wall";
+            if (isWall || region.kind == NavigationRegionKind::Trigger ||
+                region.kind == NavigationRegionKind::MovingObject) {
+                projectionTargets.push_back(RegionMeshProjectionTarget{
+                    .kind = region.kind,
+                    .sourceEntryId = region.sourceEntryId,
+                    .tblId = region.tblId,
+                });
+            }
+        }
+
+        std::optional<RegionMeshProjectionResult> regionProjection{};
         if (parse.blenderIrScene.has_value()) {
-            wallProjection = WallMeshProjector{}.project(*parse.blenderIrScene);
-            for (const auto& diagnostic : wallProjection->diagnostics) {
+            regionProjection = RegionMeshProjector{}.project(
+                *parse.blenderIrScene,
+                std::span<const RegionMeshProjectionTarget>{ projectionTargets });
+            for (const auto& diagnostic : regionProjection->diagnostics) {
                 appendDiagnosticOnce(model.diagnostics, diagnostic.severity, diagnostic.message);
             }
         }
         std::vector<bool> claimedProjectionRegions(
-            wallProjection.has_value() ? wallProjection->regions.size() : 0U,
+            regionProjection.has_value() ? regionProjection->regions.size() : 0U,
             false);
         for (auto& region : model.regions) {
-            if (region.kind != NavigationRegionKind::Collision || normalizeFxn(region.fxnName) != "wall") {
+            const bool isWall = region.kind == NavigationRegionKind::Collision &&
+                normalizeFxn(region.fxnName) == "wall";
+            const bool isTrigger = region.kind == NavigationRegionKind::Trigger;
+            const bool isMovingObject = region.kind == NavigationRegionKind::MovingObject;
+            if (!isWall && !isTrigger && !isMovingObject) {
                 continue;
             }
-            ++wallRegionCount;
-            const ProjectedWallRegion* projected = nullptr;
-            if (wallProjection.has_value()) {
-                for (std::size_t index = 0; index < wallProjection->regions.size(); ++index) {
-                    const auto& candidate = wallProjection->regions[index];
+            if (isWall) {
+                ++wallRegionCount;
+            } else if (isTrigger) {
+                ++triggerRegionCount;
+            } else {
+                ++movingObjectRegionCount;
+            }
+
+            const ProjectedNavigationRegion* projected = nullptr;
+            if (regionProjection.has_value()) {
+                for (std::size_t index = 0; index < regionProjection->regions.size(); ++index) {
+                    const auto& candidate = regionProjection->regions[index];
                     if (!claimedProjectionRegions[index] &&
-                        candidate.sourceEntryId == region.sourceEntryId && candidate.tblId == region.tblId) {
+                        candidate.kind == region.kind && candidate.sourceEntryId == region.sourceEntryId &&
+                        candidate.tblId == region.tblId) {
                         claimedProjectionRegions[index] = true;
                         projected = &candidate;
                         break;
@@ -616,23 +653,53 @@ NavigationAreaLoadResult NavigationAreaLoader::loadFile(const std::filesystem::p
                 }
             }
             if (projected == nullptr || !projected->complete) {
-                ++model.failedWallRegionCount;
-                appendDiagnosticOnce(model.diagnostics, NavigationDiagnosticSeverity::Warning,
-                    "Wall collision entry=" + std::to_string(region.sourceEntryId) +
-                    " tbl=" + std::to_string(region.tblId) + " has no usable projected mesh.");
+                if (isWall) {
+                    ++model.failedWallRegionCount;
+                    appendDiagnosticOnce(model.diagnostics, NavigationDiagnosticSeverity::Warning,
+                        "Wall collision entry=" + std::to_string(region.sourceEntryId) +
+                        " tbl=" + std::to_string(region.tblId) + " has no usable projected mesh.");
+                } else if (isTrigger) {
+                    ++model.failedTriggerRegionCount;
+                    appendDiagnosticOnce(model.diagnostics, NavigationDiagnosticSeverity::Warning,
+                        "Trigger entry=" + std::to_string(region.sourceEntryId) +
+                        " tbl=" + std::to_string(region.tblId) +
+                        " has no usable projected mesh; the Qt prototype will use an approximate cube marker.");
+                } else {
+                    ++model.failedMovingObjectRegionCount;
+                    appendDiagnosticOnce(model.diagnostics, NavigationDiagnosticSeverity::Warning,
+                        "Moving object entry=" + std::to_string(region.sourceEntryId) +
+                        " tbl=" + std::to_string(region.tblId) +
+                        " has no usable projected mesh; the Qt prototype will use an approximate cube marker.");
+                }
                 continue;
             }
             region.meshes = projected->meshes;
-            wallMeshInstanceCount += region.meshes.size();
+            if (isWall) {
+                wallMeshInstanceCount += region.meshes.size();
+            } else if (isTrigger) {
+                triggerMeshInstanceCount += region.meshes.size();
+            } else {
+                movingObjectMeshInstanceCount += region.meshes.size();
+            }
             for (const auto& regionMesh : region.meshes) {
-                wallVertexCount += regionMesh.mesh.vertices.size();
-                wallTriangleCount += regionMesh.mesh.indices.size() / 3U;
+                if (isWall) {
+                    wallVertexCount += regionMesh.mesh.vertices.size();
+                    wallTriangleCount += regionMesh.mesh.indices.size() / 3U;
+                } else if (isTrigger) {
+                    triggerVertexCount += regionMesh.mesh.vertices.size();
+                    triggerTriangleCount += regionMesh.mesh.indices.size() / 3U;
+                } else {
+                    movingObjectVertexCount += regionMesh.mesh.vertices.size();
+                    movingObjectTriangleCount += regionMesh.mesh.indices.size() / 3U;
+                }
                 for (const auto& vertex : regionMesh.mesh.vertices) {
                     updateBounds(model.bounds, vertex.position);
                 }
             }
         }
         model.hasCompleteWallGeometry = model.failedWallRegionCount == 0U;
+        model.hasCompleteTriggerGeometry = model.failedTriggerRegionCount == 0U;
+        model.hasCompleteMovingObjectGeometry = model.failedMovingObjectRegionCount == 0U;
 
         std::unordered_map<std::uint32_t, std::vector<NavigationSurfaceSourceKey>> surfacesByEntry{};
         for (const auto& surface : model.surfaces) {
@@ -695,6 +762,16 @@ NavigationAreaLoadResult NavigationAreaLoader::loadFile(const std::filesystem::p
                 << ", wallTriangles=" << wallTriangleCount
                 << ", failedWallRegions=" << model.failedWallRegionCount
                 << ", triggers=" << triggerCount
+                << ", triggerRegions=" << triggerRegionCount
+                << ", triggerMeshes=" << triggerMeshInstanceCount
+                << ", triggerVertices=" << triggerVertexCount
+                << ", triggerTriangles=" << triggerTriangleCount
+                << ", failedTriggerRegions=" << model.failedTriggerRegionCount
+                << ", movingObjectRegions=" << movingObjectRegionCount
+                << ", movingObjectMeshes=" << movingObjectMeshInstanceCount
+                << ", movingObjectVertices=" << movingObjectVertexCount
+                << ", movingObjectTriangles=" << movingObjectTriangleCount
+                << ", failedMovingObjectRegions=" << model.failedMovingObjectRegionCount
                 << ", unknown=" << model.unknownEntryCount
                 << ", skippedObjectRoleGobj=" << model.skippedObjectRoleGobjCount << '.';
         appendDiagnostic(model.diagnostics, NavigationDiagnosticSeverity::Info, summary.str());

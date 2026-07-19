@@ -71,12 +71,12 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="Loading\NavigationAreaLoader.cpp" />
-    <ClCompile Include="Projection\WallMeshProjector.cpp" />
+    <ClCompile Include="Projection\RegionMeshProjector.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Loading\NavigationAreaLoader.h" />
     <ClInclude Include="Model\NavigationAreaModel.h" />
-    <ClInclude Include="Projection\WallMeshProjector.h" />
+    <ClInclude Include="Projection\RegionMeshProjector.h" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\third-party\SPICE\SpiceMLD\SpiceMLD.vcxproj">

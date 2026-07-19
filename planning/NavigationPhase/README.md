@@ -40,23 +40,28 @@ The interactive prototype will:
    parser.
 4. Parse a canonical SpiceMLD `MldFile`, then convert its ground resources plus a transient compatibility
    projection into an in-memory `NavigationAreaModel`. GRND and ground-role GOBJ data come directly from
-   `MldFile.groundResources`; exact `fxn=wall` NJ object geometry is flattened through an in-memory
-   `BlenderIrScene` and immediately converted to SAVOR-owned collision meshes. GOBJ blocks referenced only
-   as objects are not walkable surfaces.
+   `MldFile.groundResources`; exact `fxn=wall` NJ object geometry and every SPICE-classified trigger's
+   attached object geometry, plus exact normalized `motscpt` object geometry, are flattened through an
+   in-memory `BlenderIrScene` and immediately converted to SAVOR-owned region meshes. GOBJ blocks referenced
+   only as objects are not walkable surfaces.
 5. Render the model and later path overlays in a reusable Navigation widget hosted by `SavorQt3D`.
 
-## Implemented first slice (2026-07-18)
+## Implemented prototype slices (2026-07-18 through 2026-07-19)
 
 - SPICE is pinned at `8ebdf50` under `third-party/SPICE`.
 - `SavorNavigation` loads compressed MLD files, owns the public model and diagnostics, applies the
   centralized identity coordinate policy, and marks incomplete ground decoding as a partial model that
   is not pathfinding-ready.
 - `SavorQt3D` loads through a file picker on a background worker, preserves the last directory, and
-  renders GRND and ground-role GOBJ surfaces, real `fxn=wall` collision-boundary meshes, and the remaining
-  collision, trigger, and unknown markers.
+  renders GRND and ground-role GOBJ surfaces, real `fxn=wall` collision-boundary meshes, projected trigger
+  meshes, provisionally classified `motscpt` meshes in a separate orange `MovingObjects` layer, and the
+  remaining collision and unknown markers. A trigger or MovingObject whose attached geometry cannot be
+  projected keeps a warning-backed approximate cube; an exact wall never uses that fallback.
 - `a101b.mld` is the first fixture contract: 6 GRND surfaces and 6 ground-role GOBJ surfaces (504 vertices
   and 401 triangles total), 59 collisions including 51 exact wall regions projected as 517 mesh
-  instances (6,795 vertices and 8,347 triangles), 16 triggers, and 32 preserved unknown entries.
+  instances (6,795 vertices and 8,347 triangles), 16 fully projected triggers totaling 38 meshes,
+  320 vertices, and 384 triangles, 11 fully projected `motscpt` MovingObjects totaling 55 meshes,
+  462 vertices, and 566 triangles, and 21 remaining unknown entries.
 - Link rendering, start/target selection, and path search are intentionally deferred to the next slice.
 
 The local US disc dump at
@@ -94,7 +99,7 @@ and model boundary are stable, the widget will be installed into `SavorQt`.
   GRND/GOBJ model extraction, walking-plane candidate generation, and target discovery from
   script/object content.
 - `SavorNavigation` owns the adapter from SpiceMLD results into SAVOR navigation semantics, coordinate
-  policy, route/search types, and future persisted schema.
+  policy, route/search types, region-geometry completeness diagnostics, and future persisted schema.
 - `SavorQt3D` owns the prototype host and reusable Navigation widget; `SavorQt` is the eventual product
   host.
 - SAVOR owns workflow launch, route/search/control-solver jobs, simulator validation, UI target selection,

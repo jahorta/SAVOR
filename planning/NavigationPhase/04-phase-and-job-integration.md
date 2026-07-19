@@ -35,8 +35,9 @@ persistence, and the widget to `SavorQt`.
 5. SpiceMLD performs AKLZ detection/decompression and MLD parsing.
 6. `SavorNavigation` converts canonical `MldFile` GRND/GOBJ resources plus projected `world` and
    `searchWorld` evidence into `NavigationAreaModel`. A transient, non-exported Blender IR projection is
-   flattened into SAVOR-owned meshes for exact `fxn=wall` collision regions; object-role-only GOBJ blocks
-   remain excluded from walkable surfaces.
+   flattened into SAVOR-owned meshes for exact `fxn=wall` collision regions and every SPICE-classified
+   trigger plus exact normalized `motscpt` MovingObjects; object-role-only GOBJ blocks remain excluded from
+   walkable surfaces.
 7. The UI thread replaces the displayed model after a complete or usable partial load. Partial models are
    visibly diagnosed and never treated as pathfinding-ready.
 
@@ -50,6 +51,10 @@ durable area artifact. The `NavigationAreaModel`, selected path, and overlays re
 - malformed or unsupported MLD content
 - parse warnings or incomplete navigation content
 - missing or unusable exact-wall object trees, meshes, triangles, or weighted roots
+- missing or unusable trigger object trees, meshes, triangles, or weighted roots; this is warning-only and
+  retains an approximate red cube marker rather than making the load partial
+- missing or unusable MovingObject geometry; this is also warning-only and retains an approximate orange
+  cube marker
 - conversion into `NavigationAreaModel` failed
 - renderer rejected otherwise valid navigation geometry
 
@@ -61,13 +66,16 @@ model with pathfinding disabled.
 
 - Open an AKLZ-compressed MLD directly and perform parsing/adaptation off the UI thread.
 - Render native GRND and ground-role GOBJ surfaces in distinct colors, exact `fxn=wall` collision
-  boundaries as meshes, and retain the other collision, trigger, unknown, visibility, and diagnostic
-  layers. Exact wall entries never fall back to cube markers.
+  boundaries as meshes, trigger entries as their attached red meshes, and retain the other collision,
+  unknown, visibility, and diagnostic layers. Exact `motscpt` entries render as orange meshes in a separate
+  `MovingObjects` layer. Exact wall entries never fall back to cube markers; triggers and MovingObjects with
+  missing projected geometry retain approximate cubes.
 - Preserve the source entry/block/node identity and report provisional link evidence without presenting
   it as navigable adjacency.
 - Validate `a101b.mld` as 12 surfaces (6 GRND and 6 ground-role GOBJ), 504 vertices, 401 triangles,
   59 collisions including 51 wall regions and 517 wall meshes (6,795 vertices, 8,347 triangles),
-  16 triggers, and 32 unknown entries.
+  16 fully projected triggers with 38 meshes (320 vertices, 384 triangles), 11 fully projected `motscpt`
+  MovingObjects with 55 meshes (462 vertices, 566 triangles), and 21 remaining unknown entries.
 - Report unreadable/empty files, AKLZ decompression errors, parser diagnostics, and incomplete ground
   content without exposing SpiceMLD types to Qt.
 
@@ -75,6 +83,8 @@ model with pathfinding disabled.
 
 - Open a compressed US field MLD directly from the disc dump without an external decompression step.
 - Display SAVOR-owned surfaces, collision/trigger information, and parser/conversion diagnostics.
+- Keep attached trigger geometry distinct from future SCT/controller activation predicates and interaction
+  radii.
 - Toggle model layers using the existing visibility controls.
 - In the next slice, render derived links, select or supply two positions, and display an initial path
   overlay over the in-memory model.
