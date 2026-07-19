@@ -2,23 +2,56 @@
 
 ## Status
 
-Future plan. SPICE owns MLD/SCT and other Skies of Arcadia filetype parsing; SAVOR consumes SPICE
-area/navigation content and owns route planning, control solving, workflow integration, and UI behavior.
+Future plan. SPICE owns MLD/SCT and other Skies of Arcadia filetype parsing. `SavorNavigation` links the
+vendored parser, converts its output into SAVOR-owned navigation models, and owns route-planning
+semantics. `SavorQt3D` is the first standalone host for the reusable Navigation widget.
 
 ## Problem Statement
 
 Given:
-- Walkable geometry, collision geometry, and interaction/cutscene trigger volumes supplied by SPICE from
-  the current area's MLD/SCT content.
+- An AKLZ-compressed MLD selected manually from a GameCube Legends disc dump.
 - A start condition and target objective.
 
 We need to produce an input strategy that reaches the objective in the fewest VI frames, with acceptable determinism/reliability.
 
+For the first prototype, SpiceMLD supplies walkable geometry, collision geometry, link metadata, and
+available trigger information from the selected MLD. Later milestones add automatic area identity,
+related SCT content, workflow jobs, and durable artifacts.
+
+## First Interactive Prototype
+
+1. **Manual file acquisition**
+   - Select one `.mld` with a file picker and remember the last directory.
+   - Use the local US disc dump as a developer fixture, not a hardcoded runtime default.
+   - Do not require Dolphin, ISO traversal, or automatic area-name resolution.
+
+2. **Direct in-process parsing**
+   - `SavorNavigation` reads the compressed bytes and calls SpiceMLD.
+   - SpiceMLD owns AKLZ detection/decompression and MLD parsing; SAVOR does not duplicate either.
+   - Runtime parsing starts from canonical `MldFile`. A compatibility projection supplies `world`,
+     `searchWorld`, and a transient in-memory Blender IR scene used only inside `SavorNavigation` to
+     flatten NJ object geometry for exact `fxn=wall` collision regions; export remains disabled.
+   - A GOBJ contributes navigation geometry only when an MLD entry references its block through
+     `groundAddresses`. Object-role-only GOBJ blocks are counted for diagnostics and excluded from the
+     navigation surface set.
+
+3. **SAVOR-owned model**
+   - Convert parser results into an in-memory `NavigationAreaModel` before applying data to Qt.
+   - Do not expose SpiceMLD types to `SavorQt3D`, the widget, the planner, or future persistence code.
+
+4. **Standalone widget host**
+   - Revive `SavorQt3D` as the development/test application.
+   - Retain its existing file picker, Quick 3D renderer, layer visibility controls, and diagnostics where
+     useful; the obsolete `SavorMLD` dependency path has been removed.
+   - Load and convert the selected file off the UI thread, then apply the completed model on the UI thread.
+
 ## In-Scope (MVP)
 
 1. **Static world navigation**
-   - Consume SPICE walking-plane and target-discovery output for the active area.
-   - Represent non-walkable obstacles and trigger volumes in SAVOR planning artifacts.
+   - Consume walking-plane and target-discovery data exposed through `NavigationAreaModel`.
+   - Include both native GRND meshes and GOBJ meshes used in the ground role, while preserving their
+     source kind and entry/block/node identity.
+   - Represent non-walkable obstacles and trigger volumes in SAVOR navigation types.
 
 2. **Objective-based routing**
    - Route between named objectives:
@@ -42,6 +75,12 @@ We need to produce an input strategy that reaches the objective in the fewest VI
 ## Non-Goals (MVP)
 
 - Full global route planning across multiple maps with long-term resource constraints.
+- Dolphin/ISO-backed MLD discovery or automatic area-ID lookup in the first prototype.
+- A SAVOR-side MLD parser or AKLZ decompressor.
+- Durable `nav_world_blob` persistence or a required serialized SPICE area-view artifact in the first
+  prototype.
+- Blender IR as a runtime data contract, persisted artifact, or Qt-facing type. A transient internal
+  projection is permitted solely to convert NJ object geometry into SAVOR-owned meshes.
 - Combat strategy co-optimization.
 - Heavy optimization/meta-optimization for search budgets in first pass.
 - Mandatory repeat-run validation gates in first pass (add if deterministic assumptions fail in practice).
@@ -61,11 +100,25 @@ We need to produce an input strategy that reaches the objective in the fewest VI
    - Beats a hand-authored baseline route in at least one benchmark objective pair.
 
 5. **World-model visibility**
-   - UI can render a SPICE-backed 3D world model, available walking planes, potential targets, and selected path for inspection.
+   - `SavorQt3D` can render a `SavorNavigation` 3D world model, available walking planes, potential
+     targets, and selected path for inspection.
+
+6. **Parser boundary**
+   - A selected AKLZ-compressed US field MLD loads without pre-decompression, and no SpiceMLD type crosses
+     the `SavorNavigation` public boundary.
+
+7. **First-slice fixture contract**
+   - `a101b.mld` produces 6 GRND surfaces and 6 ground-role GOBJ surfaces (504 vertices and 401 triangles
+     total), plus 59 collision entries, 16 trigger entries, and 32 preserved unknown entries.
+   - Its 51 exact `fxn=wall` regions produce 517 SAVOR-owned mesh instances, 6,795 vertices, and 8,347
+     triangles spanning 18 source object addresses, with no failed wall regions.
+   - Object-role-only GOBJ blocks do not appear as navigation surfaces.
 
 ## Deliverables
 
-- SPICE integration contract for navigation-relevant world data.
+- Pinned SPICE submodule integration and a `SavorNavigation` adapter contract for navigation-relevant
+  world data.
+- Reusable Navigation widget running in the standalone `SavorQt3D` host.
 - Planner/refiner artifact format for routes and candidate telemetry.
 - Phase integration contract (job payload/result schema and step kinds).
 - 3D world-model viewer and path overlay support in UI.
@@ -80,5 +133,8 @@ We need to produce an input strategy that reaches the objective in the fewest VI
 ## Risks
 
 - Geometry mismatch between extracted data and runtime collision behavior.
+- Incorrect coordinate conversion, matrix interpretation, or triangle winding. The first prototype must
+  calibrate a centralized `SavorNavigation` coordinate policy against known areas instead of distributing
+  renderer-specific fixes.
 - Trigger/script coupling (.SCT + controller behavior) not fully represented initially.
 - Moving platform/controller rules requiring a second modeling pass.

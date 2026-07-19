@@ -15,9 +15,12 @@ the source of truth when a plan conflicts with implementation.
 
 ## Future Plans
 
-- `planning/NavigationPhase/` - future navigation phase. SAVOR owns navigation orchestration, planning,
-  solver execution, UI, and persistence; SPICE owns MLD/SCT and other SoA filetype parsing plus area-content
-  generation.
+- `planning/NavigationPhase/` - future navigation phase with its first interactive loading/visualization
+  slice implemented. A pinned SPICE submodule feeds the non-Qt `SavorNavigation` library, which converts
+  canonical MLD data, native GRND and ground-role GOBJ meshes, and transiently projected `fxn=wall`
+  object meshes into a SAVOR-owned model. `SavorQt3D` loads manually selected AKLZ-compressed MLD files
+  asynchronously and hosts the prototype viewer. Coordinate calibration, adjacency/path search, workflow
+  jobs, and persistence remain future work.
 - `planning/DBMigrateQueues/09-Phase-4-Implementation-Plan.md` - future hardening/tuning work, including
   stress-load analysis for current queued database facades.
 

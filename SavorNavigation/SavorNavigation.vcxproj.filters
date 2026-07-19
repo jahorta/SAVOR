@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Loading">
+      <UniqueIdentifier>{7959636A-AF18-481B-9CDD-DFED5FC0EC02}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Model">
+      <UniqueIdentifier>{94338197-F13F-40A2-9BF7-975ED3C497AF}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Projection">
+      <UniqueIdentifier>{AE775804-05C7-4FB3-A282-B91E1C402D78}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="Loading\NavigationAreaLoader.cpp">
+      <Filter>Loading</Filter>
+    </ClCompile>
+    <ClCompile Include="Projection\WallMeshProjector.cpp">
+      <Filter>Projection</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Loading\NavigationAreaLoader.h">
+      <Filter>Loading</Filter>
+    </ClInclude>
+    <ClInclude Include="Model\NavigationAreaModel.h">
+      <Filter>Model</Filter>
+    </ClInclude>
+    <ClInclude Include="Projection\WallMeshProjector.h">
+      <Filter>Projection</Filter>
+    </ClInclude>
+  </ItemGroup>
+</Project>

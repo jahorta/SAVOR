@@ -1,9 +1,8 @@
 #pragma once
 
 #include "StaticMeshGeometry.h"
-#include "../Scene/QtSceneData.h"
 
-#include "../../SavorMLD/Parsing/MldParser.h"
+#include "../../SavorNavigation/Model/NavigationAreaModel.h"
 
 #include <QVector3D>
 #include <QVariant>
@@ -20,16 +19,15 @@ struct RuntimeSceneData {
     QVariantList collisions{};
     QVariantList triggers{};
     QVariantList unknowns{};
-    QVector3D center{ 0.0f, 0.0f, 0.0f };
-    float extent = 200.0f;
+    QVector3D center{ 0.0F, 0.0F, 0.0F };
+    float extent = 200.0F;
     std::vector<std::string> diagnostics{};
     std::vector<std::unique_ptr<StaticMeshGeometry>> geometries{};
 };
 
 class RuntimeSceneConverter final {
 public:
-    [[nodiscard]] RuntimeSceneData convert(const savor::mld::parsing::ParseResult& parse,
-        const savor::qt3d::scene::SceneBuildResult& scene) const;
+    [[nodiscard]] RuntimeSceneData convert(const savor::navigation::NavigationAreaModel& model) const;
 };
 
 } // namespace savor::qt3d::gui

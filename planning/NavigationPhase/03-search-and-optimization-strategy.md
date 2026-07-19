@@ -2,8 +2,10 @@
 
 ## Status
 
-Future plan. This document assumes SAVOR receives area geometry, walking planes, and target candidates
-from SPICE, then owns route search, spline generation, worker-backed control solving, and telemetry.
+Future plan. This document assumes `SavorNavigation` has converted canonical SpiceMLD data, projected
+world/search evidence, and transiently flattened wall geometry into an in-memory `NavigationAreaModel`.
+Route search and Qt code consume only that SAVOR-owned model; they do not consume SpiceMLD/Blender types
+or a serialized SPICE area-view artifact.
 
 ## High-Level Strategy
 
@@ -14,11 +16,19 @@ Use a two-layer pipeline:
 
 MVP prioritizes correctness and continuity over advanced optimization.
 
+The implemented first slice stops after loading and visualizing one manually selected MLD. It includes
+native GRND surfaces and GOBJ meshes referenced in the ground role, but intentionally does not render
+links or run path search. The next slice calibrates coordinates, derives traversable adjacency, adds
+start/target selection, and exercises path search. Worker-backed control solving and persisted route
+artifacts follow after the model and widget boundary are validated.
+
 ## Stage A: Route Search (MVP)
 
 ## Baseline algorithm
-- A* over 3D walk graph/navmesh.
+- A* over the 3D walk graph/navmesh stored in `NavigationAreaModel`.
 - Heuristic: geometric distance + coarse transition penalties.
+- Reject models where either `hasCompleteGroundGeometry` or `hasCompleteWallGeometry` is false; partial
+  models are diagnostic visualization inputs, not valid search worlds.
 
 ## Edge costs (MVP)
 - base traversal estimate
@@ -32,12 +42,15 @@ No heavy variance or risk modeling in first pass.
 ## Candidate strategy
 - Produce top-K route candidates (small K, TBD).
 - Keep pipeline simple and observable.
+- Return route geometry in SAVOR-owned types that the Navigation widget can overlay without parser or Qt
+  dependencies in the planner.
 
 ## Stage B: Route-to-Spline
 
 - Convert route nodes/edges into a followable spline/path representation.
 - Mark interaction waypoints and cutscene/transition boundaries.
-- Persist checkpoints for downstream workers.
+- Persist checkpoints for downstream workers once workflow integration begins; the interactive prototype
+  may keep its selected path in memory.
 
 ## Stage C: Control Solver (Workers)
 

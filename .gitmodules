@@ -1,0 +1,3 @@
+[submodule "third-party/SPICE"]
+	path = third-party/SPICE
+	url = https://github.com/jahorta/SPICE.git

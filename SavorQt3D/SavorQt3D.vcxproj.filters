@@ -4,9 +4,6 @@
     <Filter Include="GUI">
       <UniqueIdentifier>{AAAE7D69-5C7E-4D01-84A8-95A1B1E88D31}</UniqueIdentifier>
     </Filter>
-    <Filter Include="Scene">
-      <UniqueIdentifier>{2CF0834C-3375-460A-9337-D7CFAE7378C8}</UniqueIdentifier>
-    </Filter>
     <Filter Include="Main">
       <UniqueIdentifier>{A177F4AB-4F53-4253-95BB-00E896CECC80}</UniqueIdentifier>
     </Filter>
@@ -27,9 +24,6 @@
     <ClCompile Include="GUI\VisibilityTreeWidget.cpp">
       <Filter>GUI</Filter>
     </ClCompile>
-    <ClCompile Include="Scene\BasicQtSceneBuilder.cpp">
-      <Filter>Scene</Filter>
-    </ClCompile>
     <ClCompile Include="main.cpp">
       <Filter>Main</Filter>
     </ClCompile>
@@ -40,15 +34,6 @@
     </ClInclude>
     <ClInclude Include="GUI\StaticMeshGeometry.h">
       <Filter>GUI</Filter>
-    </ClInclude>
-    <ClInclude Include="Scene\BasicQtSceneBuilder.h">
-      <Filter>Scene</Filter>
-    </ClInclude>
-    <ClInclude Include="Scene\IQtSceneBuilder.h">
-      <Filter>Scene</Filter>
-    </ClInclude>
-    <ClInclude Include="Scene\QtSceneData.h">
-      <Filter>Scene</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>

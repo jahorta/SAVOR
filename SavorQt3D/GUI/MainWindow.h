@@ -2,47 +2,48 @@
 
 #include "RuntimeSceneConverter.h"
 #include "VisibilityTreeWidget.h"
-#include "../Scene/IQtSceneBuilder.h"
+
+#include "../../SavorNavigation/Loading/NavigationAreaLoader.h"
 
 #include <QMainWindow>
-#include <QString>
 #include <QQuickWidget>
+#include <QString>
 
 #include <memory>
 #include <optional>
 #include <vector>
 
-class QDockWidget;
-class QPlainTextEdit;
-class QQuickWidget;
 class QAction;
+class QPlainTextEdit;
+
+template <typename T>
+class QFutureWatcher;
 
 namespace savor::qt3d::gui {
 
 class MainWindow final : public QMainWindow {
-
     Q_OBJECT;
 
 public:
-    explicit MainWindow(const scene::IQtSceneBuilder& sceneBuilder,
-        QWidget* parent = nullptr);
+    explicit MainWindow(QWidget* parent = nullptr);
 
 public slots:
     void appendDiagnosticLine(const QString& line);
 
-
 private:
     static constexpr const char* kSettingsGroup = "MainWindow";
-    static constexpr const char* kLastMldPathKey = "LastMldPath";
+    static constexpr const char* kLastMldDirectoryKey = "LastMldDirectory";
+    static constexpr const char* kLegacyLastMldPathKey = "LastMldPath";
 
     void buildUi();
-    void tryLoadLastMldOnStartup();
-    QString readLastMldPath() const;
-    void storeLastMldPath(const QString& path) const;
+    QString readLastMldDirectory() const;
+    void storeLastMldDirectory(const QString& path) const;
     void syncLayerPropertiesToQml();
     void handleQuickViewStatusChanged(QQuickWidget::Status status);
     void chooseAndLoadMldFile();
-    bool loadMldFile(const QString& path);
+    void startMldLoad(const QString& path);
+    void finishMldLoad();
+    void appendLoadDiagnostics(const std::vector<savor::navigation::NavigationDiagnostic>& diagnostics);
     void applyRuntimeScene(RuntimeSceneData data);
     void applyMeshesToQml();
     void setLayerVisibility(VisibilityTreeWidget::LayerKind layer, bool visible);
@@ -52,17 +53,18 @@ private:
     void setActionCheckedNoSignal(QAction* action, bool checked);
     void logVisibilitySnapshot(const QString& reason);
 
-    const scene::IQtSceneBuilder& sceneBuilder_;
-
     QQuickWidget* quickView_ = nullptr;
     QPlainTextEdit* diagnosticsView_ = nullptr;
     VisibilityTreeWidget* visibilityWidget_ = nullptr;
+    QAction* openAction_ = nullptr;
     QAction* groundsAction_ = nullptr;
     QAction* linksAction_ = nullptr;
     QAction* collisionsAction_ = nullptr;
     QAction* triggersAction_ = nullptr;
     QAction* unknownsAction_ = nullptr;
     QAction* visibilityDebugAction_ = nullptr;
+    QFutureWatcher<savor::navigation::NavigationAreaLoadResult>* loadWatcher_ = nullptr;
+    QString pendingLoadPath_{};
     bool updatingVisibilityTree_ = false;
     bool visibilityDebugEnabled_ = false;
 
@@ -77,6 +79,7 @@ private:
     QVariantList triggerMeshes_{};
     QVariantList unknownMeshes_{};
 
+    std::optional<savor::navigation::NavigationAreaModel> currentModel_{};
     std::vector<std::unique_ptr<StaticMeshGeometry>> geometryStore_{};
     RuntimeSceneConverter runtimeSceneConverter_{};
     std::optional<RuntimeSceneData> pendingRuntimeScene_{};

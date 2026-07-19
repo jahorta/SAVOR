@@ -1,12 +1,10 @@
 #include "MainWindow.h"
 
-#include "../../SavorMLD/Parsing/GeometryBuilder.h"
-
 #include <QAction>
 #include <QDockWidget>
-#include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QFutureWatcher>
 #include <QMessageBox>
 #include <QMenu>
 #include <QMenuBar>
@@ -21,25 +19,27 @@
 #include <QUrl>
 #include <QVariantMap>
 #include <QStringList>
+#include <QtConcurrent/QtConcurrentRun>
 
-#include <cstdint>
-#include <span>
+#include <filesystem>
 #include <utility>
 
 namespace savor::qt3d::gui {
 
-MainWindow::MainWindow(const scene::IQtSceneBuilder& sceneBuilder, QWidget* parent)
-    : QMainWindow(parent)
-    , sceneBuilder_(sceneBuilder) {
+MainWindow::MainWindow(QWidget* parent)
+    : QMainWindow(parent) {
     buildUi();
     statusBar()->showMessage("Ready. Open an MLD file to render.");
-    tryLoadLastMldOnStartup();
 }
 
 void MainWindow::buildUi() {
     auto* fileToolbar = addToolBar("File");
-    auto* openAction = fileToolbar->addAction("Open MLD...");
-    connect(openAction, &QAction::triggered, this, &MainWindow::chooseAndLoadMldFile);
+    openAction_ = fileToolbar->addAction("Open MLD...");
+    connect(openAction_, &QAction::triggered, this, &MainWindow::chooseAndLoadMldFile);
+
+    loadWatcher_ = new QFutureWatcher<savor::navigation::NavigationAreaLoadResult>(this);
+    connect(loadWatcher_, &QFutureWatcher<savor::navigation::NavigationAreaLoadResult>::finished,
+        this, &MainWindow::finishMldLoad);
 
     auto* viewToolbar = addToolBar("Layers");
     auto* debugMenu = menuBar()->addMenu("Debug");
@@ -162,92 +162,99 @@ void MainWindow::syncLayerPropertiesToQml() {
 void MainWindow::chooseAndLoadMldFile() {
     const QString path = QFileDialog::getOpenFileName(this,
         "Open MLD",
-        readLastMldPath(),
+        readLastMldDirectory(),
         "Skies MLD Files (*.mld *.MLD);;All Files (*.*)");
     if (path.isEmpty()) {
         return;
     }
 
-    if (!loadMldFile(path)) {
-        QMessageBox::warning(this,
-            "Load failed",
-            "Could not parse/render the selected MLD. See Diagnostics pane for details.");
-    }
+    startMldLoad(path);
 }
 
-bool MainWindow::loadMldFile(const QString& path) {
+void MainWindow::startMldLoad(const QString& path) {
+    if (loadWatcher_ == nullptr || loadWatcher_->isRunning()) {
+        return;
+    }
+
     diagnosticsView_->clear();
     appendDiagnosticLine(QString("Loading: %1").arg(path));
-    geometryStore_.clear();
+    appendDiagnosticLine("Parsing and adapting in a background worker...");
+    pendingLoadPath_ = path;
+    storeLastMldDirectory(path);
+    openAction_->setEnabled(false);
+    statusBar()->showMessage(QString("Loading %1...").arg(QFileInfo(path).fileName()));
 
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) {
-        appendDiagnosticLine(QString("ERROR: Failed to open file: %1").arg(path));
-        return false;
+    const std::wstring nativePath = path.toStdWString();
+    loadWatcher_->setFuture(QtConcurrent::run([nativePath]() {
+        savor::navigation::NavigationAreaLoader loader{};
+        return loader.loadFile(std::filesystem::path(nativePath));
+    }));
+}
+
+void MainWindow::finishMldLoad() {
+    if (loadWatcher_ == nullptr) {
+        return;
     }
-    const QByteArray bytes = file.readAll();
-    if (bytes.isEmpty()) {
-        appendDiagnosticLine("ERROR: Selected file is empty.");
-        return false;
+
+    openAction_->setEnabled(true);
+    auto result = loadWatcher_->result();
+
+    if (!result.hasModel()) {
+        appendLoadDiagnostics(result.diagnostics);
+        statusBar()->showMessage(QString("Failed to load %1").arg(QFileInfo(pendingLoadPath_).fileName()));
+        QMessageBox::warning(this,
+            "Load failed",
+            "Could not parse the selected MLD. See Diagnostics for details.");
+        pendingLoadPath_.clear();
+        return;
     }
 
-
-    appendDiagnosticLine(QString("Parsing MLD File."));
-    savor::mld::parsing::MldParser parser{};
-    savor::mld::parsing::ParseOptions options{};
-    options.preserveUnknownEntries = true;
-    const auto parse = parser.parse(
-        std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t*>(bytes.constData()),
-            static_cast<std::size_t>(bytes.size())),
-        options);
-
-    appendDiagnosticLine(QString("Building Geometry."));
-    savor::mld::parsing::GeometryBuilder geometryBuilder{};
-    const auto geometry = geometryBuilder.build(parse);
-
-    appendDiagnosticLine(QString("Building Scene"));
-    const auto scene = sceneBuilder_.buildScene(geometry);
-
-    appendDiagnosticLine(QString("Converting to Runtime Scene"));
-    auto runtimeScene = runtimeSceneConverter_.convert(parse, scene);
-    geometryStore_ = std::move(runtimeScene.geometries);
+    currentModel_ = std::move(*result.model);
+    auto runtimeScene = runtimeSceneConverter_.convert(*currentModel_);
     applyRuntimeScene(std::move(runtimeScene));
 
-    const QFileInfo info(path);
-    storeLastMldPath(path);
-    statusBar()->showMessage(QString("Loaded %1").arg(info.fileName()));
-    return true;
+    const QString fileName = QFileInfo(pendingLoadPath_).fileName();
+    if (result.status == savor::navigation::NavigationAreaLoadStatus::Partial) {
+        appendDiagnosticLine("WARNING: Ground geometry is incomplete; pathfinding must remain disabled for this model.");
+        statusBar()->showMessage(QString("Loaded partial model from %1 (pathfinding unavailable)").arg(fileName));
+    } else {
+        statusBar()->showMessage(QString("Loaded complete model from %1").arg(fileName));
+    }
+    pendingLoadPath_.clear();
 }
 
-void MainWindow::tryLoadLastMldOnStartup() {
-    const QString lastPath = readLastMldPath();
-    if (lastPath.isEmpty()) {
-        return;
-    }
-
-    const QFileInfo fileInfo(lastPath);
-    if (!fileInfo.exists()) {
-        appendDiagnosticLine(QString("Startup: saved MLD file not found: %1").arg(lastPath));
-        return;
-    }
-
-    if (!loadMldFile(lastPath)) {
-        appendDiagnosticLine(QString("Startup: failed to load saved MLD file: %1").arg(lastPath));
+void MainWindow::appendLoadDiagnostics(
+    const std::vector<savor::navigation::NavigationDiagnostic>& diagnostics) {
+    for (const auto& diagnostic : diagnostics) {
+        QString severity = QStringLiteral("INFO");
+        if (diagnostic.severity == savor::navigation::NavigationDiagnosticSeverity::Warning) {
+            severity = QStringLiteral("WARNING");
+        } else if (diagnostic.severity == savor::navigation::NavigationDiagnosticSeverity::Error) {
+            severity = QStringLiteral("ERROR");
+        }
+        appendDiagnosticLine(QStringLiteral("%1: %2")
+            .arg(severity, QString::fromStdString(diagnostic.message)));
     }
 }
 
-QString MainWindow::readLastMldPath() const {
+QString MainWindow::readLastMldDirectory() const {
     QSettings settings;
     settings.beginGroup(kSettingsGroup);
-    const QString path = settings.value(kLastMldPathKey).toString();
+    QString directory = settings.value(kLastMldDirectoryKey).toString();
+    if (directory.isEmpty()) {
+        const QString legacyPath = settings.value(kLegacyLastMldPathKey).toString();
+        if (!legacyPath.isEmpty()) {
+            directory = QFileInfo(legacyPath).absolutePath();
+        }
+    }
     settings.endGroup();
-    return path;
+    return directory;
 }
 
-void MainWindow::storeLastMldPath(const QString& path) const {
+void MainWindow::storeLastMldDirectory(const QString& path) const {
     QSettings settings;
     settings.beginGroup(kSettingsGroup);
-    settings.setValue(kLastMldPathKey, path);
+    settings.setValue(kLastMldDirectoryKey, QFileInfo(path).absolutePath());
     settings.endGroup();
 }
 
@@ -258,7 +265,9 @@ void MainWindow::applyRuntimeScene(RuntimeSceneData data) {
         return;
     }
 
-    appendDiagnosticLine(QString("Assigning objects to layers."));
+    auto previousGeometry = std::move(geometryStore_);
+    geometryStore_ = std::move(data.geometries);
+    appendDiagnosticLine("Assigning objects to layers.");
     groundMeshes_ = std::move(data.grounds);
     linkMeshes_ = std::move(data.links);
     collisionMeshes_ = std::move(data.collisions);
@@ -299,7 +308,9 @@ void MainWindow::applyRuntimeScene(RuntimeSceneData data) {
 }
 
 void MainWindow::appendDiagnosticLine(const QString& line) {
-    diagnosticsView_->appendPlainText(line);
+    if (diagnosticsView_ != nullptr) {
+        diagnosticsView_->appendPlainText(line);
+    }
 }
 
 void MainWindow::applyMeshesToQml() {

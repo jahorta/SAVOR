@@ -2,8 +2,15 @@
 
 ## Status
 
-Historical/reference resource. New MLD/SCT and SoA filetype parsing belongs in SPICE. SAVOR should consume
-SPICE-generated area views and navigation-content artifacts rather than implementing this parser plan directly.
+Historical/reference resource. New MLD/SCT and SoA filetype parsing belongs in SPICE. Do not implement
+this parser plan in SAVOR.
+
+**Superseded first-pass direction (2026-07-18):** The active Navigation plan vendors SPICE directly,
+loads an AKLZ-compressed MLD selected with the standalone `SavorQt3D` file picker, and converts SpiceMLD
+`world`/`searchWorld` output into an in-memory SAVOR-owned model through `SavorNavigation`. References
+below to Dolphin/ISO acquisition, a SAVOR-side parser, or a required serialized SPICE area view are
+historical rather than current implementation requirements. The active slice also includes GOBJ meshes
+referenced through MLD `groundAddresses`; the GRND-only scope below is superseded.
 
 ## Purpose
 

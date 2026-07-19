@@ -2,91 +2,107 @@
 
 ## Status
 
-Future plan. File parsing questions are SPICE-owned; this document tracks SAVOR-side integration,
-navigation model, route planning, control solving, and UI decisions.
+Future plan. File parsing questions are SPICE-owned. This document tracks resolved SAVOR integration
+decisions and the remaining navigation-model, pathfinding, workflow, and UI questions.
 
-This document now captures both resolved decisions and remaining open items.
+## Resolved Decisions
 
-## Resolved Decisions (2026-04-09)
+### A. Dependency and ownership boundary (2026-07-18)
 
-## A. Data & Extraction
+1. Vendor SPICE as a pinned git submodule under `third-party/SPICE`, currently at commit `8ebdf50`.
+2. Add `SavorNavigation` as a non-Qt C++20 static library.
+3. Only `SavorNavigation` may include SpiceMLD types. It converts the parser result into SAVOR-owned
+   `NavigationAreaModel` and normalized diagnostics.
+4. SAVOR owns navigation semantics, pathfinding, UI, workflow integration, and future persistence. SPICE
+   owns AKLZ decompression, MLD/SCT parsing, and low-level content interpretation.
+5. There is no SAVOR-side fallback parser or decompressor.
 
-1. **Source of truth**
-   - Use SPICE as the parsing/content source for MLD/SCT and other SoA filetypes.
-   - SAVOR should request or consume SPICE area-content artifacts rather than walking the ISO filesystem
-     directly for navigation parsing.
-   - No SAVOR-side fallback parser is required in MVP.
+### B. First input path and model lifetime (2026-07-18)
 
-2. **Versioning**
-   - Use Game ID as extraction/version key.
-   - Only US game version is in MVP support scope for memory/breakpoint integration.
+1. The interactive prototype selects an AKLZ-compressed `.mld` with a file picker and remembers the last
+   directory.
+2. The US disc dump at
+   `D:\SoAGC\2002-12-19-gc-us-final_Skies_of_Arcadia_Legends` is a local development fixture only. It is
+   not a hardcoded default, portable configuration value, or durable area identity.
+3. Loading and conversion run off the UI thread; the completed model is applied on the UI thread.
+4. SpiceMLD automatically detects and decompresses AKLZ data before parsing.
+5. The runtime path parses canonical `MldFile` once, then consumes its ground resources plus compatibility
+   `world` and `searchWorld` evidence.
+6. Exact `fxn=wall` NJ object geometry is flattened through a transient in-memory Blender IR projection
+   inside `SavorNavigation`. JSON export, persistence, and exposure to Qt remain prohibited; Blender IR
+   otherwise remains optional SPICE validation tooling.
+7. `NavigationAreaModel` and path overlays remain in memory during the interactive prototype. A durable
+   `nav_world_blob` is deferred to workflow integration.
+8. Serialized SPICE area views are not a required runtime or first-pass artifact contract.
 
-3. **Coverage direction**
-   - SPICE decodes `.SCT` scripts as part of world/trigger modeling inputs.
-   - SPICE exposes MLD controller behavior and target discovery data for SAVOR route planning.
-   - Moving platforms are acknowledged as later-pass behavior modeling.
+### C. Prototype host and widget rollout (2026-07-18)
 
-## B. Geometry Semantics
+1. Revive `SavorQt3D` as a separate development and test application before installing the widget in
+   `SavorQt`.
+2. Retain its useful Quick 3D renderer, file picker, layer controls, diagnostics, and last-directory
+   behavior.
+3. Its obsolete dependency on the removed `SavorMLD` project has been replaced with `SavorNavigation`.
+4. Build the viewer as a reusable Navigation widget inside the prototype host so it can later move into
+   `SavorQt` without exposing SpiceMLD types.
 
-1. **Overlapping Y layers**
-   - Use true 3D search state (do not flatten to 2D).
+### D. Geometry semantics
 
-2. **Portal/transition inference**
-   - Use SPICE-provided link/connectivity metadata for transition generation.
+1. Use true 3D search state; do not flatten overlapping Y layers to 2D.
+2. Preserve SpiceMLD link/connectivity metadata while generating SAVOR navigation edges.
+3. Keep coordinate conversion centralized in `SavorNavigation`; renderer-specific axis, winding, or scale
+   patches are not allowed.
+4. Start with coarse collision fidelity, then use worker probes to refine important bounds in later
+   milestones.
+5. A GOBJ block is part of the navigation surface set when referenced through an entry's
+   `groundAddresses`. Consume it from canonical `MldFile.groundResources`, preserve its entry/block/node
+   source identity, and exclude object-role-only GOBJ blocks.
+6. A partially decoded ground set may be rendered for diagnosis, but it sets
+   `hasCompleteGroundGeometry=false` and cannot enter path search.
+7. Exact normalized `fxn=wall` entries use transiently projected object trees to create world-space
+   `NavigationRegionMesh` instances. Missing wall geometry sets `hasCompleteWallGeometry=false`, makes the
+   load partial, and suppresses the old cube fallback. `walluv` remains an ordinary marker in this slice.
 
-3. **Collision fidelity**
-   - Start coarse.
-   - Launch worker probes on important collisions to refine effective bounds, then rebake.
+### E. Camera and controls
 
-## C. Camera & Controls
+- Camera is not part of route-planning state.
+- The later execution pipeline is route -> spline -> control-solver workers -> candidate selection.
+- Add VM instructions for spline ingestion and iterative following with savestate checkpoints after the
+  interactive pathfinding milestone.
 
-- Camera is not part of route planning state.
-- Pipeline is:
-  1) plan route,
-  2) produce spline,
-  3) send to control-solver workers,
-  4) solve camera+player manipulation needed to follow spline,
-  5) report/select best candidate.
-- Add VM instructions for spline ingestion and iterative follow loop with savestate checkpoints.
+### F. Cutscenes and optimization
 
-## D. Cutscene Modeling
-
-1. **Detection direction**
-   - Use MLD trigger + flag combinations for likely cutscene starts.
-   - Decode scripts, identify section starts, and use runtime breakpoint heuristics to locate boundaries.
-
-2. **Identity/versioning**
-   - Use `FILENUM_FILELETTER_SECTIONNAME`-style key for unique cutscene section identity.
-   - Parse section for player-position set instructions to map post-cutscene transforms.
-
-3. **Branching**
-   - Treat cutscenes as non-branching for this game scope.
-
-## E/F. Optimization + Validation policy
-
-- MVP focuses on baseline optimization only.
-- Do not add heavy optimization stack in first pass.
-- Assume savestate determinism with fixed inputs; only add repeated validation if failures are observed.
-
-## G. Product/Workflow
-
-- Add a service for visual world-model reconstruction.
-- Add 3D viewer to inspect model/path and support start/target selection.
-- Navigation phase is UI-first; CLI objective specification is out of scope.
-
----
+- Use MLD trigger/flag combinations and later SCT analysis for likely cutscene starts and transitions.
+- Treat cutscenes as non-branching for the current game scope.
+- MVP uses baseline optimization and assumes deterministic replay from fixed savestate/input pairs.
+- Add repeated validation only if failures are observed.
 
 ## Remaining Open Questions
 
-1. Minimum SPICE area-content contract for walking planes, links, collision hints, and target discovery.
-2. Initial minimum schema for SAVOR `nav_world_blob` and `nav_script_index`.
-3. Worker fanout strategy for control solving (by segment vs by candidate).
-4. Minimal viable 3D viewer interaction model for selecting start/target descriptors.
-5. Heuristic to prioritize which collision regions get probe/refinement jobs first.
+1. Exact `CoordinatePolicy` for axes, signs, scale, matrix orientation, and triangle winding after visual
+   calibration against known field areas.
+2. Minimum durable schemas for SAVOR `nav_world_blob` and `nav_script_index`.
+3. Automatic mapping from game/area identity to the required MLD, SCT, and related package files.
+4. SCT/controller integration needed to turn first-pass MLD triggers into named objectives and transition
+   outcomes.
+5. Worker fanout strategy for control solving: segment, route candidate, or hybrid.
+6. Heuristic for prioritizing collision regions for probe/refinement jobs.
+7. Final start/target interaction model after basic model loading and layer inspection are usable.
+
+## Implemented First Slice (2026-07-18)
+
+- SPICE is pinned at `8ebdf50`; `SavorNavigation` is the sole SpiceMLD consumer in SAVOR.
+- Direct AKLZ loading, normalized failure diagnostics, GRND plus ground-role GOBJ conversion, partial-model
+  signaling, background Qt loading, and the retained viewer layers are implemented.
+- The `a101b.mld` fixture contract is covered by an isolated navigation test target.
+- Exact wall projection is covered by isolated hierarchy, repeated-instance, weighted-root, malformed
+  triangle, and missing-reference tests plus the real `a101b.mld` count contract.
 
 ## Immediate Next Experiments
 
-1. Add SPICE submodule integration and define the SAVOR request/response artifact contract.
-2. Consume a SPICE-generated 3D area view with walking planes and target candidates in a SAVOR viewer.
-3. Prototype spline-follow VM instructions and a single-worker control solve loop.
-4. Instrument one dungeon objective pair with a known cutscene and verify post-cutscene re-anchor.
+1. Calibrate the centralized coordinate policy against a known area and optional SPICE/Blender validation
+   output.
+2. Decide which provisional entry links and mesh-edge relationships constitute traversable adjacency,
+   including transitions between GRND and ground-role GOBJ surfaces.
+3. Select two positions and render an initial A* path overlay over the in-memory model.
+4. After the prototype boundary is stable, design automatic area lookup, SCT integration, jobs, and the
+   persisted `nav_world_blob` schema.
