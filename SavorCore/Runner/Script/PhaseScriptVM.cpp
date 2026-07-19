@@ -100,12 +100,12 @@ namespace {
     static const BPAddr* find_hit_bp(
         const BreakpointMap& bpmap,
         const std::vector<BPKey>& canonical_bp_keys,
-        const std::vector<BPKey>& reserved_bp_keys,
+        const std::vector<BPKey>& gated_bp_keys,
         const std::vector<BPKey>& predicate_bp_keys,
         uint32_t pc)
     {
         if (const auto* e = find_hit_bp_in_keys(bpmap, canonical_bp_keys, pc)) return e;
-        if (const auto* e = find_hit_bp_in_keys(bpmap, reserved_bp_keys, pc)) return e;
+        if (const auto* e = find_hit_bp_in_keys(bpmap, gated_bp_keys, pc)) return e;
         return find_hit_bp_in_keys(bpmap, predicate_bp_keys, pc);
     }
 
@@ -225,7 +225,7 @@ namespace savor {
     void PhaseScriptVM::arm_bps_once() {
         if (armed_) return;
         std::vector<uint32_t> pcs;
-        pcs.reserve(canonical_bp_keys_.size() + reserved_bp_keys_.size());
+        pcs.reserve(canonical_bp_keys_.size() + gated_bp_keys_.size());
         const auto append_unique_pc = [&](BPKey k) {
             if (const auto* e = bpmap_.find(k)) {
                 if (std::find(pcs.begin(), pcs.end(), e->pc) == pcs.end()) {
@@ -234,7 +234,7 @@ namespace savor {
             }
         };
         for (const auto& k : canonical_bp_keys_) append_unique_pc(k);
-        for (const auto& k : reserved_bp_keys_) append_unique_pc(k);
+        for (const auto& k : gated_bp_keys_) append_unique_pc(k);
         if (!pcs.empty()) {
             host_.armPcBreakpoints(pcs);
             armed_pcs_ = pcs;
@@ -251,11 +251,23 @@ namespace savor {
         uint32_t progress_flags = 0;
         ctx.get<uint32_t>(savor::context::key::core::PROGRESS_CORE_FLAGS, progress_flags);
 
+        std::vector<uint32_t> denied_profile_pcs;
+        denied_profile_pcs.reserve(bpmap_.addrs.size());
+        for (const auto& entry : bpmap_.addrs) {
+            if (entry.visibility != BreakpointVisibility::Internal || entry.pc == 0)
+                continue;
+            if (std::find(denied_profile_pcs.begin(), denied_profile_pcs.end(), entry.pc)
+                == denied_profile_pcs.end()) {
+                denied_profile_pcs.push_back(entry.pc);
+            }
+        }
+
         std::string error;
         if (!host_.startProbeJob(
             has_profile ? std::filesystem::path(profile_path) : std::filesystem::path{},
             has_output ? std::filesystem::path(output_path) : std::filesystem::path{},
             progress_flags,
+            std::move(denied_profile_pcs),
             &error)) {
             result.ctx = ctx;
             SCLOGW("[probe] start failed profile=%s output=%s error=%s",
@@ -365,15 +377,15 @@ namespace savor {
                 return false;
         }
 
-        // Update BP keys and arm once. Reserved keys stay disabled unless a specialized op enables them.
+        // Update BP keys and arm once. Gated keys stay disabled unless a specialized op enables them.
         canonical_bp_keys_ = prog_.canonical_bp_keys;
-        reserved_bp_keys_ = prog_.reserved_bp_keys;
+        gated_bp_keys_ = prog_.gated_bp_keys;
 
         SCLOGDX(
             SC_TAGS("vm", "breakpoint"),
-            "[VM] attach bp count=%zu reserved=%zu",
+            "[VM] attach bp count=%zu gated=%zu",
             program.canonical_bp_keys.size(),
-            program.reserved_bp_keys.size());
+            program.gated_bp_keys.size());
         arm_bps_once();
 
         // Capture a snapshot to use as the per-job baseline
@@ -557,7 +569,7 @@ namespace savor {
             if (const BPAddr* entry_bp = find_hit_bp(
                 bpmap_,
                 canonical_bp_keys_,
-                reserved_bp_keys_,
+                gated_bp_keys_,
                 predicate_bp_keys_,
                 entry_pc)) {
                 SCLOGI("[VM] run_until_bp stepoff pc=%08X bp=%u input_btn=%04X",
@@ -640,8 +652,8 @@ namespace savor {
                 }
             }
             if (hit_bp == nullptr) {
-                hit_bp = spec.include_reserved_hit_lookup
-                    ? find_hit_bp(bpmap_, canonical_bp_keys_, reserved_bp_keys_, predicate_bp_keys_, static_cast<uint32_t>(rr.pc))
+                hit_bp = spec.include_gated_hit_lookup
+                    ? find_hit_bp(bpmap_, canonical_bp_keys_, gated_bp_keys_, predicate_bp_keys_, static_cast<uint32_t>(rr.pc))
                     : find_hit_bp(bpmap_, canonical_bp_keys_, predicate_bp_keys_, static_cast<uint32_t>(rr.pc));
                 if (hit_bp != nullptr) {
                     hit_bp_key = static_cast<uint32_t>(hit_bp->key);
@@ -789,7 +801,7 @@ namespace savor {
         }
 
         const uint32_t current_pc = host_.getPC();
-        const BPAddr* current_bp = find_hit_bp(bpmap_, canonical_bp_keys_, reserved_bp_keys_, predicate_bp_keys_, current_pc);
+        const BPAddr* current_bp = find_hit_bp(bpmap_, canonical_bp_keys_, gated_bp_keys_, predicate_bp_keys_, current_pc);
         const uint32_t current_bp_key = current_bp != nullptr ? static_cast<uint32_t>(current_bp->key) : 0u;
         if (current_bp_key != static_cast<uint32_t>(bp::battle::TurnInputs)) {
             ctx[savor::context::key::battle::MACRO_LAST_EXPECTED_BP] = static_cast<uint32_t>(bp::battle::TurnInputs);
@@ -801,7 +813,7 @@ namespace savor {
                 .step_off_current_bp = true,
                 .expected_only_scope = true,
                 .watch_movie = false,
-                .include_reserved_hit_lookup = true,
+                .include_gated_hit_lookup = true,
                 .update_derived = false,
             });
             ctx[savor::context::key::battle::MACRO_LAST_HIT_BP] = rr.hit_bp_key;
@@ -834,7 +846,7 @@ namespace savor {
             .step_off_current_bp = true,
             .expected_only_scope = true,
             .watch_movie = false,
-            .include_reserved_hit_lookup = true,
+            .include_gated_hit_lookup = true,
             .update_derived = false,
         });
         ctx[savor::context::key::battle::MACRO_LAST_HIT_BP] = ready_rr.hit_bp_key;
@@ -1054,7 +1066,7 @@ namespace savor {
         }
 
         const uint32_t current_pc = host_.getPC();
-        const BPAddr* current_bp = find_hit_bp(bpmap_, canonical_bp_keys_, reserved_bp_keys_, predicate_bp_keys_, current_pc);
+        const BPAddr* current_bp = find_hit_bp(bpmap_, canonical_bp_keys_, gated_bp_keys_, predicate_bp_keys_, current_pc);
         const uint32_t current_bp_key = current_bp != nullptr ? static_cast<uint32_t>(current_bp->key) : 0u;
         if (current_bp_key != static_cast<uint32_t>(bp::battle::TurnInputs)) {
             ctx[savor::context::key::battle::MACRO_LAST_EXPECTED_BP] = static_cast<uint32_t>(bp::battle::TurnInputs);
@@ -1066,7 +1078,7 @@ namespace savor {
                 .step_off_current_bp = true,
                 .expected_only_scope = true,
                 .watch_movie = false,
-                .include_reserved_hit_lookup = true,
+                .include_gated_hit_lookup = true,
                 .update_derived = false,
             });
             ctx[savor::context::key::battle::MACRO_LAST_HIT_BP] = rr.hit_bp_key;
@@ -1099,7 +1111,7 @@ namespace savor {
             .step_off_current_bp = true,
             .expected_only_scope = true,
             .watch_movie = false,
-            .include_reserved_hit_lookup = true,
+            .include_gated_hit_lookup = true,
             .update_derived = false,
         });
         ctx[savor::context::key::battle::MACRO_LAST_HIT_BP] = ready_rr.hit_bp_key;
@@ -1388,7 +1400,7 @@ namespace savor {
             .step_off_current_bp = true,
             .expected_only_scope = true,
             .watch_movie = false,
-            .include_reserved_hit_lookup = true,
+            .include_gated_hit_lookup = true,
             .update_derived = false,
         });
         disable_macro_step_breakpoint();
@@ -1551,12 +1563,22 @@ namespace savor {
     void PhaseScriptVM::op_run_until_bp(PSContext& ctx) {
         (void)run_until_bp_core(ctx, RunUntilBpSpec{});
     }
-    void PhaseScriptVM::op_run_until_bp_key(const PSOp& op, PSContext& ctx) {
+    bool PhaseScriptVM::op_run_until_bp_key(const PSOp& op, PSResult& result, PSContext& ctx) {
+        const auto key = static_cast<BPKey>(op.imm.v);
+        const auto* active_bp = bpmap_.find(key);
+        if (active_bp == nullptr
+            || active_bp->visibility != BreakpointVisibility::PlayerVisible) {
+            SCLOGE("[VM] generic run-until rejected an unavailable breakpoint");
+            ctx[savor::context::key::core::WORKER_ERROR] = static_cast<uint32_t>(WERR_UnknownError);
+            result.ctx = ctx;
+            return false;
+        }
         (void)run_until_bp_core(ctx, RunUntilBpSpec{
-            .expected_bp_keys = { static_cast<BPKey>(op.imm.v) },
+            .expected_bp_keys = { key },
             .expected_only_scope = true,
-            .include_reserved_hit_lookup = true,
+            .include_gated_hit_lookup = true,
         });
+        return true;
     }
     void PhaseScriptVM::op_run_until_debug_stop(PSContext& ctx) {
         (void)run_until_bp_core(ctx, RunUntilBpSpec{});
@@ -1677,13 +1699,13 @@ namespace savor {
         std::string blob; soa::battle::ctx::codec::encode(bc, blob);
         ctx[savor::context::key::battle::CTX_BLOB] = blob;
     }
-    void PhaseScriptVM::op_arm_bps_from_pred_table(PSContext& ctx) {
+    bool PhaseScriptVM::op_arm_bps_from_pred_table(PSResult& result, PSContext& ctx) {
         auto itN = ctx.find(savor::context::key::core::PRED_COUNT);
         auto itT = ctx.find(savor::context::key::core::PRED_TABLE);
-        if (itN == ctx.end() || itT == ctx.end()) return;
+        if (itN == ctx.end() || itT == ctx.end()) return true;
         const uint32_t n = std::get<uint32_t>(itN->second);
         const auto* tbl = std::get_if<std::string>(&itT->second);
-        if (!n || !tbl) return;
+        if (!n || !tbl) return true;
         const auto* rec = reinterpret_cast<const pred::PredicateRecord*>(tbl->data());
         std::vector<uint32_t> bp_keys; bp_keys.reserve(n);
         for (uint32_t i = 0; i < n; ++i) {
@@ -1695,13 +1717,29 @@ namespace savor {
         std::sort(bp_keys.begin(), bp_keys.end());
         bp_keys.erase(std::unique(bp_keys.begin(), bp_keys.end()), bp_keys.end());
 
+        for (const auto bp_key : bp_keys) {
+            if (!bp::BpRegistry::IsAllowed(
+                    static_cast<BPKey>(bp_key), BreakpointConsumer::Predicate)) {
+                SCLOGE("[VM] predicate table references an unavailable breakpoint");
+                ctx[savor::context::key::core::WORKER_ERROR] = static_cast<uint32_t>(WERR_UnknownError);
+                ctx[savor::context::key::core::PRED_ABORT_RUN] = uint32_t{ 1 };
+                result.ctx = ctx;
+                return false;
+            }
+        }
+
         std::vector<uint32_t> pcs; pcs.reserve(bp_keys.size());
         for (const auto bp_key : bp_keys) {
             const BPAddr* e = bpmap_.find(static_cast<BPKey>(bp_key));
-            if (!e || !e->pc) continue;
+            if (!e || !e->pc) {
+                ctx[savor::context::key::core::WORKER_ERROR] = static_cast<uint32_t>(WERR_UnknownError);
+                result.ctx = ctx;
+                return false;
+            }
             pcs.push_back(e->pc); predicate_bp_keys_.push_back(e->key);
         }
         if (!pcs.empty()) host_.armPcBreakpoints(pcs);
+        return true;
     }
     void PhaseScriptVM::op_capture_pred_baselines(PSContext& ctx, KeyHostRouter& router) {
         auto itN = ctx.find(savor::context::key::core::PRED_COUNT);
@@ -1841,7 +1879,7 @@ namespace savor {
             case PSOpCode::START_DETERMINISIC_RUN: op_start_deterministic_run(); break;
             case PSOpCode::END_DETERMINISTIC_RUN: op_end_deterministic_run(); break;
             case PSOpCode::RUN_UNTIL_BP: op_run_until_bp(ctx); break;
-            case PSOpCode::RUN_UNTIL_BP_KEY: op_run_until_bp_key(op, ctx); break;
+            case PSOpCode::RUN_UNTIL_BP_KEY: if (!op_run_until_bp_key(op, R, ctx)) return R; break;
             case PSOpCode::RUN_UNTIL_DEBUG_STOP: op_run_until_debug_stop(ctx); break;
             case PSOpCode::ARM_MEMORY_WATCHPOINT: if (!op_arm_memory_watchpoint(op, R, ctx)) return R; break;
             case PSOpCode::CLEAR_MEMORY_WATCHPOINTS: op_clear_memory_watchpoints(); break;
@@ -1865,7 +1903,7 @@ namespace savor {
             case PSOpCode::MOVIE_STOP: host_.endMoviePlaybackBlocking(); break;
             case PSOpCode::SAVE_SAVESTATE_FROM: if (!op_save_savestate_from(op, R, ctx)) return R; break;
             case PSOpCode::REQUIRE_DISC_GAMEID_FROM: if (!op_require_disc_gameid_from(op, R, ctx)) return R; break;
-            case PSOpCode::ARM_BPS_FROM_PRED_TABLE: op_arm_bps_from_pred_table(ctx); break;
+            case PSOpCode::ARM_BPS_FROM_PRED_TABLE: if (!op_arm_bps_from_pred_table(R, ctx)) return R; break;
             case PSOpCode::CAPTURE_PRED_BASELINES: op_capture_pred_baselines(ctx, *router); break;
             case PSOpCode::EVAL_PREDICATES_AT_HIT_BP: op_eval_predicates_at_hit_bp(ctx, *router); break;
             default: break;

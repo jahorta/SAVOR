@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -68,10 +69,57 @@ TEST(RuntimeRegistryNaming, BuiltinLookupParity)
     EXPECT_EQ(addr::AddrRegistry::base(addr::core::RNG_SEED), 0x803469A8u);
     EXPECT_STREQ(addr::AddrRegistry::name(addr::core::RNG_SEED), "core.RNG_SEED");
 
-    const BPAddr* bp = bp::BpRegistry::find(bp::battle::TurnIsReady);
+    const BPAddr* bp = bp::BpRegistry::FindRuntime(bp::battle::TurnIsReady);
     ASSERT_NE(bp, nullptr);
-    EXPECT_STREQ(bp::BpRegistry::name(bp::battle::TurnIsReady), "TurnIsReady");
-    EXPECT_EQ(bp::BpRegistry::pc(bp::battle::TurnIsReady), bp->pc);
+    EXPECT_STREQ(bp->name, "TurnIsReady");
+    EXPECT_EQ(bp::BpRegistry::FindRuntime(bp->pc), bp);
+}
+
+TEST(BreakpointRegistry, InternalInputMacroBreakpointsAreConsumerScoped)
+{
+    const auto all = bp::BpRegistry::AllRuntime();
+    const auto predicate_bps = bp::BpRegistry::ForConsumer(BreakpointConsumer::Predicate);
+    const auto macro_bps = bp::BpRegistry::ForConsumer(BreakpointConsumer::InputMacroControl);
+    std::size_t input_macro_count = 0;
+
+    for (const auto& record : all) {
+        const bool macro_named = std::string_view(record.name).rfind("BattleMacro", 0) == 0;
+        if (macro_named) {
+            ++input_macro_count;
+            EXPECT_EQ(record.visibility, BreakpointVisibility::Internal);
+            EXPECT_EQ(record.owner, BreakpointOwner::InputMacro);
+            EXPECT_FALSE(bp::BpRegistry::IsAllowed(record.key, BreakpointConsumer::Predicate));
+            EXPECT_FALSE(bp::BpRegistry::IsAllowed(record.key, BreakpointConsumer::CaptureProfile));
+            EXPECT_FALSE(bp::BpRegistry::IsAllowed(record.key, BreakpointConsumer::UserScript));
+            EXPECT_TRUE(bp::BpRegistry::IsAllowed(record.key, BreakpointConsumer::PhaseControl));
+            EXPECT_TRUE(bp::BpRegistry::IsAllowed(record.key, BreakpointConsumer::InputMacroControl));
+            EXPECT_FALSE(bp::BpRegistry::IsAllowedPc(record.pc, BreakpointConsumer::Predicate));
+            EXPECT_TRUE(bp::BpRegistry::IsAllowedPc(record.pc, BreakpointConsumer::InputMacroControl));
+        } else {
+            EXPECT_EQ(record.visibility, BreakpointVisibility::PlayerVisible);
+            EXPECT_EQ(record.owner, BreakpointOwner::Shared);
+        }
+    }
+
+    EXPECT_EQ(input_macro_count, 22u);
+    EXPECT_EQ(std::count_if(predicate_bps.begin(), predicate_bps.end(), [](const BPAddr& record) {
+        return record.visibility == BreakpointVisibility::Internal;
+    }), 0);
+    EXPECT_EQ(std::count_if(macro_bps.begin(), macro_bps.end(), [](const BPAddr& record) {
+        return record.visibility == BreakpointVisibility::Internal;
+    }), static_cast<std::ptrdiff_t>(input_macro_count));
+}
+
+TEST(BreakpointRegistry, InternalAndPlayerVisibleBreakpointsDoNotSharePcs)
+{
+    const auto all = bp::BpRegistry::AllRuntime();
+    for (const auto& internal_bp : all) {
+        if (internal_bp.visibility != BreakpointVisibility::Internal) continue;
+        for (const auto& public_bp : all) {
+            if (public_bp.visibility != BreakpointVisibility::PlayerVisible) continue;
+            EXPECT_NE(internal_bp.pc, public_bp.pc);
+        }
+    }
 }
 
 TEST(RuntimeSymbolRegistry, MergesBuiltinsAndCustomSymbols)
@@ -81,6 +129,7 @@ TEST(RuntimeSymbolRegistry, MergesBuiltinsAndCustomSymbols)
     ASSERT_NE(registry.FindContext("builtin.ctx.core.run.hit_bp"), nullptr);
     ASSERT_NE(registry.FindAddress("builtin.addr.core.RNG_SEED"), nullptr);
     ASSERT_NE(registry.FindBreakpoint("builtin.bp.battle.TurnIsReady"), nullptr);
+    EXPECT_EQ(registry.FindBreakpoint("builtin.bp.battle.BattleMacroInputReadyGate"), nullptr);
 
     std::string error;
     savor::symbols::ContextSymbol ctx;
@@ -112,6 +161,36 @@ TEST(RuntimeSymbolRegistry, MergesBuiltinsAndCustomSymbols)
     EXPECT_GE(custom_addr->key, savor::symbols::RuntimeSymbolRegistry::CustomAddressKeyMin);
     EXPECT_GE(custom_bp->key, savor::symbols::RuntimeSymbolRegistry::CustomBreakpointKeyMin);
     EXPECT_EQ(registry.MatchBreakpointPc(0x81234568u), custom_bp);
+}
+
+TEST(RuntimeSymbolRegistry, RejectsInternalBreakpointIdsAndCustomPcAliases)
+{
+    auto registry = savor::symbols::RuntimeSymbolRegistry::BuiltIns();
+    std::string error;
+
+    savor::symbols::SymbolicPhaseScript symbolic;
+    symbolic.canonical_breakpoint_ids.push_back("builtin.bp.battle.BattleMacroInputReadyGate");
+    savor::PhaseScript lowered;
+    EXPECT_FALSE(registry.LowerSymbolicPhaseScript(symbolic, lowered, &error));
+    EXPECT_TRUE(lowered.canonical_bp_keys.empty());
+
+    const auto* internal_bp = bp::BpRegistry::FindRuntime(bp::battle::BattleMacroInputReadyGate);
+    ASSERT_NE(internal_bp, nullptr);
+
+    savor::symbols::AddressSymbol address;
+    address.stable_id = "user.addr.test.internal_alias";
+    address.name = "Unavailable Address";
+    address.region = addr::Region::MEM1;
+    address.base = internal_bp->pc;
+    ASSERT_TRUE(registry.AddAddressSymbol(std::move(address), &error)) << error;
+
+    savor::symbols::BreakpointSymbol breakpoint;
+    breakpoint.stable_id = "user.bp.test.internal_alias";
+    breakpoint.name = "Unavailable Breakpoint";
+    breakpoint.address_id = "user.addr.test.internal_alias";
+    error.clear();
+    EXPECT_FALSE(registry.AddBreakpointSymbol(std::move(breakpoint), &error));
+    EXPECT_EQ(error, "breakpoint address is unavailable");
 }
 
 TEST(RuntimeSymbolRegistry, LowersSymbolicScripts)

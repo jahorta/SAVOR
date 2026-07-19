@@ -939,11 +939,39 @@ TEST_F(SqliteDbFixture, BattleSingleTurnEnqueueUsesWorkflowStepPriority) {
         &plan_turn_id,
         &err)) << err;
 
+    const auto internal_bp = bp::battle::BattleMacroInputReadyGate;
+    const std::string legacy_predicate_sql =
+        "INSERT INTO au_predicate_spec("
+        "name,breakpoint_name,breakpoint_id,lhs_value,rhs_value,baseline_bps,cmp_op,width,flag_mask,"
+        "value_mask,lhs_address_program_id,rhs_address_program_id,abort_on_fail,created_at_utc) VALUES("
+        "'single-turn-priority-legacy','legacy unavailable'," + std::to_string(internal_bp)
+        + ",4096,0,'','GT',2,2,NULL,NULL,NULL,0,1781000000200);"
+        "INSERT INTO au_predicate_spec_required_breakpoint(predicate_spec_id,breakpoint_id,ordinal) "
+        "VALUES(last_insert_rowid()," + std::to_string(internal_bp) + ",0);";
+    ASSERT_TRUE(ExecSql(db_, legacy_predicate_sql.c_str()));
+    const auto legacy_predicate_id = ReadInt64(
+        db_,
+        "SELECT predicate_spec_id FROM au_predicate_spec WHERE name='single-turn-priority-legacy';");
+    const auto legacy_predicate = authoring_db->GetPredicateSpec(legacy_predicate_id);
+    ASSERT_TRUE(legacy_predicate.has_value());
+    EXPECT_EQ(legacy_predicate->required_breakpoint_ids, std::vector<BPKey>({ internal_bp }));
+
+    std::int64_t predicate_set_id = 0;
+    ASSERT_TRUE(authoring_db->SavePredicateSet(
+        {
+            .name = "single-turn-priority-legacy-set",
+            .predicate_spec_ids = { legacy_predicate_id },
+            .created_at_utc = now,
+        },
+        &predicate_set_id,
+        &err)) << err;
+
     std::int64_t explorer_settings_id = 0;
     ASSERT_TRUE(authoring_db->SaveExplorerSettings(
         {
             .name = "single-turn-priority-settings",
             .default_plan_id = plan_id,
+            .default_predicate_set_id = predicate_set_id,
             .created_at_utc = now,
             .correlation_id = "single-turn-priority",
             .causation_id = "test",
@@ -1044,6 +1072,12 @@ TEST_F(SqliteDbFixture, BattleSingleTurnEnqueueUsesWorkflowStepPriority) {
     EXPECT_EQ(
         ReadInt64(db_, ("SELECT priority FROM exec_job WHERE job_set_id=" + std::to_string(scheduled.root_job_set_id) + ";").c_str()),
         42);
+    ASSERT_NE(descriptor.runtime_init, nullptr);
+    const auto exec_job_id = ReadInt64(
+        db_,
+        ("SELECT job_id FROM exec_job WHERE job_set_id=" + std::to_string(scheduled.root_job_set_id) + ";").c_str());
+    const auto init = descriptor.runtime_init->BuildRuntimeInit(exec_job_id);
+    EXPECT_FALSE(descriptor.runtime_init->MaterializePsJob(exec_job_id, init).has_value());
 }
 
 TEST_F(SqliteDbFixture, BattleSingleTurnTransitionSpawnsNextTurnDirectlyFromReturnedContext) {
@@ -8415,6 +8449,122 @@ TEST_F(SqliteDbFixture, AuthoringPredicateSpecPersistsMultipleRequiredBreakpoint
         },
         &invalid_id,
         &err));
+
+    err.clear();
+    EXPECT_FALSE(authoring_db.SavePredicateSpec(
+        {
+            .name = "internal-trigger",
+            .required_breakpoint_ids = { bp::battle::BattleMacroInputReadyGate },
+            .lhs_value = 0x1000,
+            .rhs_value = 0,
+            .cmp_op = PredicateComparisonOp::GT,
+            .width = 2,
+            .flag_mask = static_cast<std::int64_t>(static_cast<std::uint32_t>(savor::pred::PredFlag::Active)),
+            .created_at_utc = now,
+        },
+        &invalid_id,
+        &err));
+    EXPECT_EQ(err.find("BattleMacro"), std::string::npos);
+
+    err.clear();
+    EXPECT_FALSE(authoring_db.SavePredicateSpec(
+        {
+            .name = "internal-scalar-trigger",
+            .breakpoint_id = bp::battle::BattleMacroInputReadyGate,
+            .lhs_value = 0x1000,
+            .rhs_value = 0,
+            .cmp_op = PredicateComparisonOp::GT,
+            .width = 2,
+            .flag_mask = static_cast<std::int64_t>(static_cast<std::uint32_t>(savor::pred::PredFlag::Active)),
+            .created_at_utc = now,
+        },
+        &invalid_id,
+        &err));
+    EXPECT_EQ(err.find("BattleMacro"), std::string::npos);
+
+    err.clear();
+    EXPECT_FALSE(authoring_db.SavePredicateSpec(
+        {
+            .name = "internal-baseline",
+            .required_breakpoint_ids = { bp::battle::TurnIsReady },
+            .lhs_value = 0x1000,
+            .rhs_value = 0,
+            .baseline_breakpoint_ids = { bp::battle::BattleMacroEnemyTargetFinalized },
+            .cmp_op = PredicateComparisonOp::GT,
+            .width = 2,
+            .flag_mask = static_cast<std::int64_t>(
+                static_cast<std::uint32_t>(savor::pred::PredFlag::Active)
+                | static_cast<std::uint32_t>(savor::pred::PredFlag::RhsIsDelta)),
+            .created_at_utc = now,
+        },
+        &invalid_id,
+        &err));
+    EXPECT_EQ(err.find("BattleMacro"), std::string::npos);
+
+    err.clear();
+    EXPECT_FALSE(authoring_db.UpdatePredicateSpec(
+        predicate_spec_id,
+        {
+            .name = "internal-update",
+            .required_breakpoint_ids = { bp::battle::BattleMacroInputReadyGate },
+            .lhs_value = 0x1000,
+            .rhs_value = 0,
+            .cmp_op = PredicateComparisonOp::GT,
+            .width = 2,
+            .flag_mask = static_cast<std::int64_t>(static_cast<std::uint32_t>(savor::pred::PredFlag::Active)),
+            .created_at_utc = now,
+        },
+        &err));
+    const auto unchanged = authoring_db.GetPredicateSpec(predicate_spec_id);
+    ASSERT_TRUE(unchanged.has_value());
+    EXPECT_EQ(unchanged->name, "multi-trigger-predicate-updated");
+}
+
+TEST_F(SqliteDbFixture, LegacyInternalPredicateBreakpointIsPreservedButFailsClosed) {
+    using namespace savor::db;
+    using namespace savor::db::migrations;
+
+    const MigrationSourceOptions embedded_options{ .source_kind = MigrationSourceKind::Embedded };
+    std::string err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Authoring, embedded_options, &err)) << err;
+
+    const auto internal_bp = bp::battle::BattleMacroInputReadyGate;
+    const std::string sql =
+        "INSERT INTO au_predicate_spec("
+        "name,breakpoint_name,breakpoint_id,lhs_value,rhs_value,baseline_bps,cmp_op,width,flag_mask,"
+        "value_mask,lhs_address_program_id,rhs_address_program_id,abort_on_fail,created_at_utc) VALUES("
+        "'legacy-internal','legacy unavailable'," + std::to_string(internal_bp)
+        + ",4096,0,'','GT',2,2,NULL,NULL,NULL,0,1712304000000);"
+        "INSERT INTO au_predicate_spec_required_breakpoint(predicate_spec_id,breakpoint_id,ordinal) "
+        "VALUES(last_insert_rowid()," + std::to_string(internal_bp) + ",0);";
+    ASSERT_TRUE(ExecSql(db_, sql.c_str()));
+
+    const auto predicate_spec_id = ReadInt64(
+        db_,
+        "SELECT predicate_spec_id FROM au_predicate_spec WHERE name='legacy-internal';");
+    SqliteAuthoringDb authoring_db(db_);
+    const auto snapshot = authoring_db.GetPredicateSpec(predicate_spec_id);
+    ASSERT_TRUE(snapshot.has_value());
+    EXPECT_EQ(snapshot->breakpoint_id, internal_bp);
+    EXPECT_EQ(snapshot->required_breakpoint_ids, std::vector<BPKey>({ internal_bp }));
+
+    savor::pred::Spec spec{};
+    spec.id = 1;
+    spec.required_bp = snapshot->breakpoint_id;
+    spec.required_bps.assign(
+        snapshot->required_breakpoint_ids.begin(),
+        snapshot->required_breakpoint_ids.end());
+    spec.width = static_cast<std::uint8_t>(snapshot->width);
+    spec.cmp = snapshot->cmp_op;
+    spec.flags = static_cast<std::uint32_t>(snapshot->flag_mask.value_or(0));
+    spec.lhs_addr = static_cast<std::uint32_t>(snapshot->lhs_value);
+    spec.rhs_value = static_cast<std::uint64_t>(snapshot->rhs_value);
+
+    std::vector<savor::pred::PredicateRecord> records;
+    std::vector<std::uint8_t> blob;
+    EXPECT_FALSE(savor::pred::BuildTable({ spec }, records, blob));
+    EXPECT_TRUE(records.empty());
+    EXPECT_TRUE(blob.empty());
 }
 
 TEST_F(SqliteDbFixture, PredicateTableExpandsRequiredBreakpointList) {

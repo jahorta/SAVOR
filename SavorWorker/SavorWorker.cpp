@@ -236,7 +236,7 @@ int main(int argc, char** argv)
     host.ConfigurePortsStandardPadP1();
 
     // ----- New control-mode only -----
-    BreakpointMap bpmap = bp::BpRegistry::as_map();
+    BreakpointMap bpmap = bp::BpRegistry::BuildRuntimeMap();
     PhaseScriptVM vm(host, bpmap);
 
     if (visual) {

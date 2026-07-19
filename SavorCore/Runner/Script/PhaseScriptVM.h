@@ -186,7 +186,7 @@ namespace savor {
 
 	struct PhaseScript {
 		std::vector<BPKey> canonical_bp_keys;   // normal phase breakpoints
-		std::vector<BPKey> reserved_bp_keys;    // armed but enabled only by specialized ops
+		std::vector<BPKey> gated_bp_keys;       // pre-armed, enabled only by specialized ops
 		std::vector<PSOp>  ops;                 // executed in order per job
 	};
 
@@ -258,7 +258,7 @@ namespace savor {
 		savor::DolphinWrapper& host_;
 		const BreakpointMap& bpmap_;
 		std::vector<BPKey> canonical_bp_keys_;
-		std::vector<BPKey> reserved_bp_keys_;
+		std::vector<BPKey> gated_bp_keys_;
 		std::vector<BPKey> predicate_bp_keys_;
 		PhaseScript prog_;
 		PSInit init_;
@@ -300,7 +300,7 @@ namespace savor {
 			bool step_off_current_bp{ false };
 			bool expected_only_scope{ false };
 			bool watch_movie{ true };
-			bool include_reserved_hit_lookup{ false };
+			bool include_gated_hit_lookup{ false };
 			bool update_derived{ true };
 			uint32_t poll_ms_override{ 0 };
 		};
@@ -355,7 +355,7 @@ namespace savor {
 		void op_start_deterministic_run() const;
 		void op_end_deterministic_run() const;
 		void op_run_until_bp(PSContext& ctx);
-		void op_run_until_bp_key(const PSOp& op, PSContext& ctx);
+		bool op_run_until_bp_key(const PSOp& op, PSResult& result, PSContext& ctx);
 		void op_run_until_debug_stop(PSContext& ctx);
 		bool op_arm_memory_watchpoint(const PSOp& op, PSResult& result, PSContext& ctx);
 		void op_clear_memory_watchpoints() const;
@@ -378,7 +378,7 @@ namespace savor {
 		bool op_movie_play_from(const PSOp& op, PSResult& result, PSContext& ctx);
 		bool op_save_savestate_from(const PSOp& op, PSResult& result, PSContext& ctx);
 		bool op_require_disc_gameid_from(const PSOp& op, PSResult& result, PSContext& ctx);
-		void op_arm_bps_from_pred_table(PSContext& ctx);
+		bool op_arm_bps_from_pred_table(PSResult& result, PSContext& ctx);
 		void op_capture_pred_baselines(PSContext& ctx, KeyHostRouter& router);
 		void op_eval_predicates_at_hit_bp(PSContext& ctx, KeyHostRouter& router);
 

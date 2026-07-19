@@ -44,7 +44,7 @@ namespace phase::battle::turnrunner {
 
         savor::PhaseScript ps{};
         ps.canonical_bp_keys = { BP_BattleAcceptInput, BP_BattleInputsDone, BP_Victory, BP_Defeat, BP_BattleLoadComplete };
-        ps.reserved_bp_keys = {
+        ps.gated_bp_keys = {
             bp::battle::BattleMacroInputReadyGate,
             bp::battle::BattleMacroMainMenuMoveHigher,
             bp::battle::BattleMacroMainMenuMoveLower,

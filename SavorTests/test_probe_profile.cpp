@@ -5,6 +5,7 @@
 #include "ProbeEvent.h"
 #include "ProbeDispatchPolicy.h"
 #include "ProbeProfile.h"
+#include "ProbeRuntime.h"
 #include "ProbeWindowState.h"
 
 #include <algorithm>
@@ -713,6 +714,57 @@ TEST(SavorProbeDispatch, RequiresAnExactControlLeaseAndIsolatesCaptureOverflow)
     const auto duplicate_control = subscriber_dispatch_decision(
         subscriptions, false, true, true);
     EXPECT_FALSE(duplicate_control.control);
+}
+
+TEST(SavorProbePolicy, RejectsReservedPcProbeAndActivationGate)
+{
+    constexpr std::uint32_t reserved_pc = 0x8007c7e4u;
+    const std::array denied{ reserved_pc };
+
+    Profile profile;
+    profile.probes.push_back(ProbeDefinition{
+        .id = "reserved-pc",
+        .kind = ProbeKind::Pc,
+        .address = reserved_pc,
+    });
+    std::string error;
+    EXPECT_FALSE(ValidateProfilePcAccess(profile, denied, &error));
+    EXPECT_EQ(error, "capture profile references a reserved runtime breakpoint");
+
+    profile.probes = { ProbeDefinition{
+        .id = "reserved-activation",
+        .kind = ProbeKind::Memory,
+        .address = 0x80400000u,
+        .size = 4u,
+        .activate_on_pc = reserved_pc,
+    } };
+    error.clear();
+    EXPECT_FALSE(ValidateProfilePcAccess(profile, denied, &error));
+    EXPECT_EQ(error, "capture profile references a reserved runtime breakpoint");
+}
+
+TEST(SavorProbePolicy, AllowsUnreservedProfilePcs)
+{
+    constexpr std::uint32_t reserved_pc = 0x8007c7e4u;
+    const std::array denied{ reserved_pc };
+    Profile profile;
+    profile.probes = {
+        ProbeDefinition{
+            .id = "public-pc",
+            .kind = ProbeKind::Pc,
+            .address = 0x80001234u,
+        },
+        ProbeDefinition{
+            .id = "public-activation",
+            .kind = ProbeKind::Memory,
+            .address = 0x80400000u,
+            .size = 4u,
+            .activate_on_pc = 0x80005678u,
+        },
+    };
+    std::string error;
+    EXPECT_TRUE(ValidateProfilePcAccess(profile, denied, &error));
+    EXPECT_TRUE(error.empty());
 }
 
 } // namespace

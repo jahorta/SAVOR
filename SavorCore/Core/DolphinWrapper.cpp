@@ -243,6 +243,7 @@ namespace savor {
         const std::filesystem::path& profile_path,
         const std::filesystem::path& capture_path,
         std::uint32_t progress_flags,
+        std::vector<std::uint32_t> denied_profile_pcs,
         std::string* error_out)
     {
         auto profile = savor::probe::Profile{};
@@ -286,6 +287,7 @@ namespace savor {
                     probe.subscriptions, savor::probe::Subscription::Capture);
             });
         options.capture_path = has_capture_subscriber ? capture_path : std::filesystem::path{};
+        options.denied_profile_pcs = std::move(denied_profile_pcs);
         options.metadata.source_identity = profile.name;
         options.metadata.profile_json = savor::probe::serialize_profile_json(profile);
         options.metadata.executable_sha256 = module_hash;

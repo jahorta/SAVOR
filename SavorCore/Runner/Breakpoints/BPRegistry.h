@@ -12,12 +12,32 @@
 // Minimal public types (replaces BPCore.h)
 using BPKey = uint16_t;
 
+enum class BreakpointVisibility : uint8_t {
+    PlayerVisible,
+    Internal,
+};
+
+enum class BreakpointOwner : uint8_t {
+    Shared,
+    InputMacro,
+};
+
+enum class BreakpointConsumer : uint8_t {
+    PhaseControl,
+    Predicate,
+    CaptureProfile,
+    UserScript,
+    InputMacroControl,
+};
+
 struct BPAddr
 {
     BPKey key;
     uint32_t pc;
     const char* name;
     const char* stable_id = nullptr;
+    BreakpointVisibility visibility = BreakpointVisibility::PlayerVisible;
+    BreakpointOwner owner = BreakpointOwner::Shared;
 };
 
 struct BreakpointMap
@@ -51,13 +71,16 @@ namespace bp {
 
     class BpRegistry {
     public:
-        static std::span<const BPAddr> all();
-        static const BPAddr* find(BPKey k);
-        static const BPAddr* find(uint32_t);
-        static std::optional<BPKey> match(uint32_t pc);
-        static const char* name(BPKey k);
-        static uint32_t pc(BPKey k);
-        static BreakpointMap as_map();
+        // Trusted runtime inventory. Player-facing and authored surfaces must
+        // use ForConsumer/IsAllowed instead of filtering this list themselves.
+        static std::span<const BPAddr> AllRuntime();
+        static BreakpointMap BuildRuntimeMap();
+
+        static std::vector<BPAddr> ForConsumer(BreakpointConsumer consumer);
+        static const BPAddr* FindRuntime(BPKey key);
+        static const BPAddr* FindRuntime(uint32_t pc);
+        static bool IsAllowed(BPKey key, BreakpointConsumer consumer);
+        static bool IsAllowedPc(uint32_t pc, BreakpointConsumer consumer);
     };
 
     // Lightweight override loader (same behavior you were using):
@@ -68,19 +91,19 @@ namespace bp {
 
 // Domain alias namespaces (ergonomic names preserved)
 namespace bp::prebattle {
-#define ALIAS_ROW(ns, NAME, ID, PC, STR) inline constexpr BPKey NAME = static_cast<BPKey>(ID);
+#define ALIAS_ROW(ns, NAME, ID, PC, STR, VISIBILITY, OWNER) inline constexpr BPKey NAME = static_cast<BPKey>(ID);
     BP_TABLE_PREBATTLE(ALIAS_ROW)
 #undef ALIAS_ROW
 }
 
 namespace bp::battle {
-#define ALIAS_ROW(ns, NAME, ID, PC, STR) inline constexpr BPKey NAME = static_cast<BPKey>(ID);
+#define ALIAS_ROW(ns, NAME, ID, PC, STR, VISIBILITY, OWNER) inline constexpr BPKey NAME = static_cast<BPKey>(ID);
     BP_TABLE_BATTLE(ALIAS_ROW)
 #undef ALIAS_ROW
 }
 
 namespace bp::overworld {
-#define ALIAS_ROW(ns, NAME, ID, PC, STR) inline constexpr BPKey NAME = static_cast<BPKey>(ID);
+#define ALIAS_ROW(ns, NAME, ID, PC, STR, VISIBILITY, OWNER) inline constexpr BPKey NAME = static_cast<BPKey>(ID);
     BP_TABLE_OVERWORLD(ALIAS_ROW)
 #undef ALIAS_ROW
 }

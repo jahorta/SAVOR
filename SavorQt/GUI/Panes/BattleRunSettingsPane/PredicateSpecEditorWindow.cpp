@@ -177,8 +177,9 @@ void PredicateSpecEditorWindow::loadSnapshot(const savor::db::PredicateSpecSnaps
     const auto requiredBps = snapshot.required_breakpoint_ids.empty()
         ? std::vector<BPKey>{ snapshot.breakpoint_id }
         : snapshot.required_breakpoint_ids;
-    breakpointCombos_[0]->setCurrentIndex(std::max(0, breakpointCombos_[0]->findData(
-        requiredBps.empty() ? 0 : static_cast<int>(requiredBps.front()))));
+    selectBreakpointComboValue(
+        breakpointCombos_[0],
+        requiredBps.empty() ? 0 : static_cast<int>(requiredBps.front()));
     for (size_t i = 1; i < requiredBps.size(); ++i) {
         addRequiredBreakpointField(static_cast<int>(requiredBps[i]));
     }
@@ -190,8 +191,9 @@ void PredicateSpecEditorWindow::loadSnapshot(const savor::db::PredicateSpecSnaps
         addBaselineBreakpointField();
     }
     const auto baselineBps = snapshot.baseline_breakpoint_ids;
-    baselineBreakpointCombos_[0]->setCurrentIndex(std::max(0, baselineBreakpointCombos_[0]->findData(
-        baselineBps.empty() ? 0 : static_cast<int>(baselineBps.front()))));
+    selectBreakpointComboValue(
+        baselineBreakpointCombos_[0],
+        baselineBps.empty() ? 0 : static_cast<int>(baselineBps.front()));
     for (size_t i = 1; i < baselineBps.size(); ++i) {
         addBaselineBreakpointField(static_cast<int>(baselineBps[i]));
     }
@@ -545,12 +547,25 @@ void PredicateSpecEditorWindow::populateBreakpointCombo(QComboBox* combo) const
     }
     combo->clear();
     combo->addItem(QStringLiteral("(none)"), 0);
-    for (const BPAddr& bp : bp::BpRegistry::all()) {
+    for (const BPAddr& bp : bp::BpRegistry::ForConsumer(BreakpointConsumer::Predicate)) {
         combo->addItem(QStringLiteral("%1 @ 0x%2")
                            .arg(QString::fromUtf8(bp.name))
                            .arg(bp.pc, 8, 16, QLatin1Char('0')),
                        static_cast<int>(bp.key));
     }
+}
+
+void PredicateSpecEditorWindow::selectBreakpointComboValue(QComboBox* combo, const int selectedBp) const
+{
+    if (combo == nullptr) {
+        return;
+    }
+    int index = combo->findData(selectedBp);
+    if (selectedBp > 0 && index < 0) {
+        combo->addItem(QStringLiteral("(Unavailable breakpoint)"), selectedBp);
+        index = combo->count() - 1;
+    }
+    combo->setCurrentIndex(std::max(0, index));
 }
 
 void PredicateSpecEditorWindow::addRequiredBreakpointField(const int selectedBp)
@@ -564,7 +579,7 @@ void PredicateSpecEditorWindow::addRequiredBreakpointField(const int selectedBp)
 
     auto* combo = new QComboBox(requiredBpRowsWidget_);
     populateBreakpointCombo(combo);
-    combo->setCurrentIndex(std::max(0, combo->findData(selectedBp)));
+    selectBreakpointComboValue(combo, selectedBp);
     rowLayout->addWidget(combo, 1);
 
     auto* removeButton = new QPushButton(QStringLiteral("Delete"), requiredBpRowsWidget_);
@@ -671,7 +686,7 @@ void PredicateSpecEditorWindow::addBaselineBreakpointField(const int selectedBp)
 
     auto* combo = new QComboBox(baselineBpRowsWidget_);
     populateBreakpointCombo(combo);
-    combo->setCurrentIndex(std::max(0, combo->findData(selectedBp)));
+    selectBreakpointComboValue(combo, selectedBp);
     rowLayout->addWidget(combo, 1);
 
     auto* removeButton = new QPushButton(QStringLiteral("Delete"), baselineBpRowsWidget_);
@@ -839,6 +854,22 @@ std::vector<QString> PredicateSpecEditorWindow::validateDraft() const
     if (breakpoints.empty()) {
         errors.push_back(QStringLiteral("At least one required breakpoint is required."));
     }
+    if (std::any_of(breakpoints.begin(), breakpoints.end(), [](const int breakpoint) {
+            return !bp::BpRegistry::IsAllowed(
+                static_cast<BPKey>(breakpoint),
+                BreakpointConsumer::Predicate);
+        })) {
+        errors.push_back(QStringLiteral("One or more breakpoint selections are unavailable. Choose a different breakpoint."));
+    }
+
+    const auto baselineBreakpoints = selectedBaselineBreakpoints();
+    if (std::any_of(baselineBreakpoints.begin(), baselineBreakpoints.end(), [](const int breakpoint) {
+            return !bp::BpRegistry::IsAllowed(
+                static_cast<BPKey>(breakpoint),
+                BreakpointConsumer::Predicate);
+        })) {
+        errors.push_back(QStringLiteral("One or more breakpoint selections are unavailable. Choose a different breakpoint."));
+    }
 
     std::uint64_t turnMask = 0;
     if (turnMaskEdit_ == nullptr || !parseUnsignedInteger(turnMaskEdit_->text().trimmed(), turnMask)) {
@@ -864,7 +895,7 @@ std::vector<QString> PredicateSpecEditorWindow::validateDraft() const
 
     const auto rhsMode = static_cast<ValueSourceMode>(rhsModeCombo_ != nullptr ? rhsModeCombo_->currentData().toInt() : static_cast<int>(ValueSourceMode::Immediate));
     const bool rhsIsBaseline = rhsMode == ValueSourceMode::Baseline;
-    if (rhsIsBaseline && selectedBaselineBreakpoints().empty()) {
+    if (rhsIsBaseline && baselineBreakpoints.empty()) {
         errors.push_back(QStringLiteral("RHS baseline mode requires at least one baseline breakpoint."));
     }
 

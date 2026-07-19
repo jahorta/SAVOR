@@ -28,6 +28,7 @@
 #include "../../../../SavorCore/Core/Memory/Soa/Battle/BattleContextCodec.h"
 #include "../../../../SavorCore/Phases/Programs/BattleRunner/BattleOutcome.h"
 #include "../../../../SavorCore/Phases/Programs/BattleTurnRunner/BattleTurnRunnerPayload.h"
+#include "../../../../SavorCore/Runner/Breakpoints/BpRegistry.h"
 #include "../../../../SavorCore/Runner/IPC/Wire.h"
 #include "../../../../SavorCore/Runner/Parallel/PRTypes.h"
 #include "../../../../SavorCore/Runner/Script/CtxRegistry.h"
@@ -571,7 +572,7 @@ std::vector<soa::battle::actions::TurnPlanSpec> CompileConcreteTurnSpecs(
     return specs;
 }
 
-std::vector<savor::pred::Spec> BuildPredicates(
+std::optional<std::vector<savor::pred::Spec>> BuildPredicates(
     const savor::db::PredicateSetSnapshot* predicate_set,
     savor::db::IAuthoringDb* authoring_db) {
     std::vector<savor::pred::Spec> out;
@@ -589,11 +590,18 @@ std::vector<savor::pred::Spec> BuildPredicates(
     for (const auto& pred : predicate_set->predicates) {
         savor::pred::Spec spec{};
         spec.id = ordinal++;
-        spec.required_bps.reserve(pred.required_breakpoint_ids.size());
-        for (const auto bp_key : pred.required_breakpoint_ids) {
-            if (bp_key != 0) {
-                spec.required_bps.push_back(static_cast<std::uint16_t>(bp_key));
+        const auto required_bps = pred.required_breakpoint_ids.empty()
+            ? std::vector<BPKey>{ pred.breakpoint_id }
+            : pred.required_breakpoint_ids;
+        if (required_bps.empty()) {
+            return std::nullopt;
+        }
+        spec.required_bps.reserve(required_bps.size());
+        for (const auto bp_key : required_bps) {
+            if (!bp::BpRegistry::IsAllowed(bp_key, BreakpointConsumer::Predicate)) {
+                return std::nullopt;
             }
+            spec.required_bps.push_back(static_cast<std::uint16_t>(bp_key));
         }
         spec.required_bp = spec.required_bps.empty()
             ? pred.breakpoint_id
@@ -604,6 +612,9 @@ std::vector<savor::pred::Spec> BuildPredicates(
         spec.lhs_addr = static_cast<std::uint32_t>(pred.lhs_value);
         spec.rhs_value = static_cast<std::uint64_t>(pred.rhs_value);
         for (const auto bp_key : pred.baseline_breakpoint_ids) {
+            if (!bp::BpRegistry::IsAllowed(bp_key, BreakpointConsumer::Predicate)) {
+                return std::nullopt;
+            }
             spec.baseline_bps.push_back(static_cast<std::uint16_t>(bp_key));
         }
         spec.turn_mask = static_cast<std::uint32_t>(pred.value_mask.value_or(0xFFFFFFFF));
@@ -1025,7 +1036,11 @@ public:
         } else {
             spec.turn_plan = BuildTurnPlan(*turn, job_ini.fake_attacks_this_turn);
         }
-        spec.predicates = BuildPredicates(predicate_set.has_value() ? &*predicate_set : nullptr, authoring_db_);
+        auto predicates = BuildPredicates(predicate_set.has_value() ? &*predicate_set : nullptr, authoring_db_);
+        if (!predicates.has_value()) {
+            return std::nullopt;
+        }
+        spec.predicates = std::move(*predicates);
         spec.fake_attack_budget_max = static_cast<std::uint32_t>(std::max(battle_set->launch_fake_attack_min, battle_set->launch_fake_attack_max));
         spec.fake_attacks_used_before_turn = static_cast<std::uint32_t>(std::max(0, job_ini.fake_attacks_used_before));
 

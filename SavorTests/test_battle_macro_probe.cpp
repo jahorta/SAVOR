@@ -847,31 +847,31 @@ TEST(BattleMacroProbeProgram, ArmsInputReadyStartGate)
         return std::find(program.canonical_bp_keys.begin(), program.canonical_bp_keys.end(), key)
             != program.canonical_bp_keys.end();
     };
-    const auto has_reserved = [&](BPKey key) {
-        return std::find(program.reserved_bp_keys.begin(), program.reserved_bp_keys.end(), key)
-            != program.reserved_bp_keys.end();
+    const auto has_gated = [&](BPKey key) {
+        return std::find(program.gated_bp_keys.begin(), program.gated_bp_keys.end(), key)
+            != program.gated_bp_keys.end();
     };
 
     EXPECT_TRUE(has_canonical(bp::battle::TurnInputs));
     EXPECT_TRUE(has_canonical(bp::battle::TurnIsReady));
     EXPECT_FALSE(has_canonical(bp::battle::BattleMacroInputReadyGate));
-    EXPECT_TRUE(has_reserved(bp::battle::BattleMacroInputReadyGate));
-    EXPECT_TRUE(has_reserved(bp::battle::BattleMacroMainMenuAcceptDispatch));
-    EXPECT_TRUE(has_reserved(bp::battle::BattleMacroMagicReady));
-    EXPECT_TRUE(has_reserved(bp::battle::BattleMacroSMoveReady));
-    EXPECT_TRUE(has_reserved(bp::battle::BattleMacroConditionalRunReady));
-    EXPECT_TRUE(has_reserved(bp::battle::BattleMacroItemCategoryReady));
-    EXPECT_TRUE(has_reserved(bp::battle::BattleMacroItemRowListReady));
-    EXPECT_TRUE(has_reserved(bp::battle::BattleMacroItemDetailReady));
-    EXPECT_TRUE(has_reserved(bp::battle::BattleMacroEnemyTargetReady));
-    EXPECT_TRUE(has_reserved(bp::battle::BattleMacroAllyTargetReady));
-    EXPECT_TRUE(has_reserved(bp::battle::BattleMacroEnemyTargetMoveDownAccepted));
-    EXPECT_TRUE(has_reserved(bp::battle::BattleMacroEnemyTargetMoveUpAccepted));
-    EXPECT_TRUE(has_reserved(bp::battle::BattleMacroEnemyTargetFinalized));
+    EXPECT_TRUE(has_gated(bp::battle::BattleMacroInputReadyGate));
+    EXPECT_TRUE(has_gated(bp::battle::BattleMacroMainMenuAcceptDispatch));
+    EXPECT_TRUE(has_gated(bp::battle::BattleMacroMagicReady));
+    EXPECT_TRUE(has_gated(bp::battle::BattleMacroSMoveReady));
+    EXPECT_TRUE(has_gated(bp::battle::BattleMacroConditionalRunReady));
+    EXPECT_TRUE(has_gated(bp::battle::BattleMacroItemCategoryReady));
+    EXPECT_TRUE(has_gated(bp::battle::BattleMacroItemRowListReady));
+    EXPECT_TRUE(has_gated(bp::battle::BattleMacroItemDetailReady));
+    EXPECT_TRUE(has_gated(bp::battle::BattleMacroEnemyTargetReady));
+    EXPECT_TRUE(has_gated(bp::battle::BattleMacroAllyTargetReady));
+    EXPECT_TRUE(has_gated(bp::battle::BattleMacroEnemyTargetMoveDownAccepted));
+    EXPECT_TRUE(has_gated(bp::battle::BattleMacroEnemyTargetMoveUpAccepted));
+    EXPECT_TRUE(has_gated(bp::battle::BattleMacroEnemyTargetFinalized));
     EXPECT_FALSE(has_canonical(bp::battle::BattleMacroMainMenuAcceptDispatch));
     EXPECT_FALSE(has_canonical(bp::battle::BattleMacroDirectCommandQueued));
-    EXPECT_FALSE(has_reserved(bp::battle::BattleMacroEnemyTargetCursorMoved));
-    EXPECT_FALSE(has_reserved(bp::battle::BattleMacroEnemyTargetWritten));
+    EXPECT_FALSE(has_gated(bp::battle::BattleMacroEnemyTargetCursorMoved));
+    EXPECT_FALSE(has_gated(bp::battle::BattleMacroEnemyTargetWritten));
     ASSERT_EQ(program.ops.size(), 23u);
     EXPECT_EQ(program.ops[0].code, savor::PSOpCode::ARM_PHASE_BPS_ONCE);
     EXPECT_EQ(program.ops[1].code, savor::PSOpCode::LOAD_SNAPSHOT);
@@ -918,9 +918,9 @@ TEST(BattleMacroProbeProgram, ArmsInputReadyStartGate)
 TEST(BattleTurnRunnerProgram, UsesMacroLoopInsteadOfRawInputTape)
 {
     const auto program = phase::battle::turnrunner::MakeBattleTurnRunnerProgram();
-    const auto has_reserved = [&](BPKey key) {
-        return std::find(program.reserved_bp_keys.begin(), program.reserved_bp_keys.end(), key)
-            != program.reserved_bp_keys.end();
+    const auto has_gated = [&](BPKey key) {
+        return std::find(program.gated_bp_keys.begin(), program.gated_bp_keys.end(), key)
+            != program.gated_bp_keys.end();
     };
     const auto has_op = [&](savor::PSOpCode code) {
         return std::any_of(program.ops.begin(), program.ops.end(), [&](const savor::PSOp& op) {
@@ -935,9 +935,9 @@ TEST(BattleTurnRunnerProgram, UsesMacroLoopInsteadOfRawInputTape)
         });
     };
 
-    EXPECT_TRUE(has_reserved(bp::battle::BattleMacroInputReadyGate));
-    EXPECT_TRUE(has_reserved(bp::battle::BattleMacroEnemyTargetReady));
-    EXPECT_TRUE(has_reserved(bp::battle::BattleMacroEnemyTargetFinalized));
+    EXPECT_TRUE(has_gated(bp::battle::BattleMacroInputReadyGate));
+    EXPECT_TRUE(has_gated(bp::battle::BattleMacroEnemyTargetReady));
+    EXPECT_TRUE(has_gated(bp::battle::BattleMacroEnemyTargetFinalized));
     EXPECT_TRUE(has_op(savor::PSOpCode::MATERIALIZE_BATTLE_TURN_MACRO_STEPS));
     EXPECT_TRUE(has_op(savor::PSOpCode::EXECUTE_BATTLE_MACRO_STEP));
     EXPECT_FALSE(has_op(savor::PSOpCode::BUILD_TURN_INPUTPLAN_FROM_BATTLE_PATH));

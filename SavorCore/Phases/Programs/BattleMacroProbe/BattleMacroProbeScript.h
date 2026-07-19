@@ -19,7 +19,7 @@ inline savor::PhaseScript MakeBattleMacroProbeProgram()
         bp::battle::TurnInputs,
         bp::battle::TurnIsReady,
     };
-    ps.reserved_bp_keys = {
+    ps.gated_bp_keys = {
         bp::battle::BattleMacroInputReadyGate,
         bp::battle::BattleMacroMainMenuMoveHigher,
         bp::battle::BattleMacroMainMenuMoveLower,

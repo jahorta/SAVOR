@@ -170,6 +170,30 @@ ProbeRuntime::~ProbeRuntime()
     uninstall_native_hooks();
 }
 
+bool ValidateProfilePcAccess(
+    const Profile& profile,
+    std::span<const std::uint32_t> denied_profile_pcs,
+    std::string* error_out)
+{
+    if (denied_profile_pcs.empty())
+        return true;
+
+    const std::unordered_set<std::uint32_t> denied{
+        denied_profile_pcs.begin(), denied_profile_pcs.end() };
+    for (const auto& probe : profile.probes) {
+        const bool denied_pc_probe = probe.kind == ProbeKind::Pc
+            && denied.contains(probe.address);
+        const bool denied_activation = probe.activate_on_pc.has_value()
+            && denied.contains(*probe.activate_on_pc);
+        if (denied_pc_probe || denied_activation) {
+            if (error_out)
+                *error_out = "capture profile references a reserved runtime breakpoint";
+            return false;
+        }
+    }
+    return true;
+}
+
 bool ProbeRuntime::validate_profile(const Profile& profile, std::string* error_out) const
 {
     if (profile.schema != "savor.capture.profile/1") {
@@ -206,6 +230,8 @@ bool ProbeRuntime::start(
 {
     stop();
     if (!validate_profile(profile, error_out))
+        return false;
+    if (!ValidateProfilePcAccess(profile, options.denied_profile_pcs, error_out))
         return false;
     if (!install_native_hooks(error_out))
         return false;
@@ -543,6 +569,8 @@ bool ProbeRuntime::replace_profile(
         if (error_out) *error_out = "capture profile reload revision must increase";
         return false;
     }
+    if (!ValidateProfilePcAccess(profile, options_.denied_profile_pcs, error_out))
+        return false;
     std::string hash_error;
     const auto module_hash = current_module_sha256(&hash_error);
     if (module_hash.empty() || module_hash != profile.expected_module_sha256) {

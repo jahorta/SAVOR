@@ -1,49 +1,96 @@
 #include "BpRegistry.h"
 #include <cctype>
+#include <iterator>
 
 namespace bp {
 
-    static const BPAddr kAll[] = {
-    #define ROW(ns, NAME, ID, PC, STR) { static_cast<BPKey>(ID), static_cast<uint32_t>(PC), STR, "builtin.bp." #ns "." STR },
+    namespace {
+
+    static constexpr BPAddr kAll[] = {
+    #define ROW(ns, NAME, ID, PC, STR, VISIBILITY, OWNER) \
+        { static_cast<BPKey>(ID), static_cast<uint32_t>(PC), STR, "builtin.bp." #ns "." STR, \
+          BreakpointVisibility::VISIBILITY, BreakpointOwner::OWNER },
     BP_TABLE_ALL(ROW)
     #undef ROW
     };
 
-    std::span<const BPAddr> BpRegistry::all() {
+    constexpr bool IsAllowedRecord(const BPAddr& record, BreakpointConsumer consumer)
+    {
+        if (record.visibility == BreakpointVisibility::PlayerVisible) {
+            return true;
+        }
+        if (consumer == BreakpointConsumer::PhaseControl) {
+            return true;
+        }
+        return consumer == BreakpointConsumer::InputMacroControl
+            && record.owner == BreakpointOwner::InputMacro;
+    }
+
+    constexpr bool HasNoInternalPlayerVisiblePcAlias()
+    {
+        for (size_t i = 0; i < std::size(kAll); ++i) {
+            for (size_t j = i + 1; j < std::size(kAll); ++j) {
+                if (kAll[i].pc == kAll[j].pc
+                    && kAll[i].visibility != kAll[j].visibility) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    static_assert(
+        HasNoInternalPlayerVisiblePcAlias(),
+        "an internal breakpoint PC must not alias a player-visible breakpoint PC");
+
+    } // namespace
+
+    std::span<const BPAddr> BpRegistry::AllRuntime() {
         return std::span<const BPAddr>(kAll, sizeof(kAll) / sizeof(kAll[0]));
     }
 
-    const BPAddr* BpRegistry::find(BPKey k) {
-        for (const auto& r : kAll) if (r.key == k) return &r;
+    const BPAddr* BpRegistry::FindRuntime(BPKey key) {
+        for (const auto& record : kAll) {
+            if (record.key == key) return &record;
+        }
         return nullptr;
     }
 
-    const BPAddr* BpRegistry::find(uint32_t pc)
-    {
-        std::optional<BPKey> m = match(pc);
-        if (!m.has_value()) return nullptr;
-        return find(m.value());
+    const BPAddr* BpRegistry::FindRuntime(uint32_t pc) {
+        for (const auto& record : kAll) {
+            if (record.pc == pc) return &record;
+        }
+        return nullptr;
     }
 
-    std::optional<BPKey> BpRegistry::match(uint32_t pc) {
-        for (const auto& r : kAll) if (r.pc == pc) return r.key;
-        return std::nullopt;
+    bool BpRegistry::IsAllowed(BPKey key, BreakpointConsumer consumer) {
+        const auto* record = FindRuntime(key);
+        return record != nullptr && IsAllowedRecord(*record, consumer);
     }
 
-    const char* BpRegistry::name(BPKey k) {
-        if (auto* r = find(k)) return r->name;
-        return "";
+    bool BpRegistry::IsAllowedPc(uint32_t pc, BreakpointConsumer consumer) {
+        bool matched = false;
+        for (const auto& record : kAll) {
+            if (record.pc != pc) continue;
+            matched = true;
+            if (!IsAllowedRecord(record, consumer)) return false;
+        }
+        return matched;
     }
 
-    uint32_t BpRegistry::pc(BPKey k) {
-        if (auto* r = find(k)) return r->pc;
-        return 0u;
+    std::vector<BPAddr> BpRegistry::ForConsumer(BreakpointConsumer consumer) {
+        std::vector<BPAddr> out;
+        out.reserve(std::size(kAll));
+        for (const auto& record : kAll) {
+            if (IsAllowedRecord(record, consumer)) out.push_back(record);
+        }
+        return out;
     }
 
-    BreakpointMap BpRegistry::as_map() {
+    BreakpointMap BpRegistry::BuildRuntimeMap() {
         BreakpointMap m;
-        m.addrs.reserve(sizeof(kAll) / sizeof(kAll[0]));
-        for (const auto& r : kAll) m.addrs.push_back(BPAddr{ r.key, r.pc, r.name, r.stable_id });
+        m.addrs.reserve(std::size(kAll));
+        for (const auto& record : kAll) m.addrs.push_back(record);
         m.start_key = 0;  // leave to caller if they need it
         m.terminal_key = 0;
         return m;

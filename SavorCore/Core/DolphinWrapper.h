@@ -213,6 +213,7 @@ namespace savor {
             const std::filesystem::path& profile_path,
             const std::filesystem::path& capture_path,
             std::uint32_t progress_flags,
+            std::vector<std::uint32_t> denied_profile_pcs,
             std::string* error_out = nullptr);
         void stopProbeJob();
         bool probeJobActive() const;

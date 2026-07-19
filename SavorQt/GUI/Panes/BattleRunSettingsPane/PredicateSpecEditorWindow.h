@@ -70,6 +70,7 @@ private:
     void savePredicate();
     void populateAddrKeys();
     void populateBreakpointCombo(QComboBox* combo) const;
+    void selectBreakpointComboValue(QComboBox* combo, int selectedBp) const;
     void addRequiredBreakpointField(int selectedBp = 0);
     void removeRequiredBreakpointField(int index);
     void rebuildRequiredBreakpointRows();

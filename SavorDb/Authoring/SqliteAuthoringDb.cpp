@@ -99,6 +99,15 @@ void BindOptionalText(sqlite3_stmt* st, int index, const std::optional<std::stri
     }
 }
 
+bool IsKnownBreakpoint(BPKey key) {
+    return key != 0 && bp::BpRegistry::FindRuntime(key) != nullptr;
+}
+
+bool IsPredicateBreakpoint(BPKey key) {
+    return key != 0
+        && bp::BpRegistry::IsAllowed(key, BreakpointConsumer::Predicate);
+}
+
 bool ValidatePredicateSpecCommand(const SavePredicateSpecCommand& command, std::string* error_out) {
     std::vector<BPKey> required_bps = command.required_breakpoint_ids;
     if (required_bps.empty() && command.breakpoint_id != 0) {
@@ -111,8 +120,8 @@ bool ValidatePredicateSpecCommand(const SavePredicateSpecCommand& command, std::
         return false;
     }
     for (const auto bp_key : required_bps) {
-        if (bp_key == 0 || bp::BpRegistry::find(bp_key) == nullptr) {
-            if (error_out) *error_out = "required breakpoint is invalid";
+        if (!IsPredicateBreakpoint(bp_key)) {
+            if (error_out) *error_out = "required breakpoint is invalid or unavailable";
             return false;
         }
     }
@@ -123,8 +132,8 @@ bool ValidatePredicateSpecCommand(const SavePredicateSpecCommand& command, std::
             return false;
         }
         for (const auto bp_key : command.baseline_breakpoint_ids) {
-            if (bp_key == 0 || bp::BpRegistry::find(bp_key) == nullptr) {
-                if (error_out) *error_out = "baseline breakpoint is invalid";
+            if (!IsPredicateBreakpoint(bp_key)) {
+                if (error_out) *error_out = "baseline breakpoint is invalid or unavailable";
                 return false;
             }
         }
@@ -140,7 +149,7 @@ std::vector<BPKey> NormalizeRequiredBreakpointIds(const SavePredicateSpecCommand
     std::vector<BPKey> normalized;
     normalized.reserve(out.size());
     for (const auto bp_key : out) {
-        if (bp_key == 0 || bp::BpRegistry::find(bp_key) == nullptr) {
+        if (!IsPredicateBreakpoint(bp_key)) {
             continue;
         }
         if (std::find(normalized.begin(), normalized.end(), bp_key) == normalized.end()) {
@@ -154,14 +163,14 @@ std::vector<BPKey> NormalizeReadRequiredBreakpointIds(std::vector<BPKey> values,
     std::vector<BPKey> normalized;
     normalized.reserve(values.size());
     for (const auto bp_key : values) {
-        if (bp_key == 0 || bp::BpRegistry::find(bp_key) == nullptr) {
+        if (!IsKnownBreakpoint(bp_key)) {
             continue;
         }
         if (std::find(normalized.begin(), normalized.end(), bp_key) == normalized.end()) {
             normalized.push_back(bp_key);
         }
     }
-    if (normalized.empty() && fallback != 0 && bp::BpRegistry::find(fallback) != nullptr) {
+    if (normalized.empty() && IsKnownBreakpoint(fallback)) {
         normalized.push_back(fallback);
     }
     return normalized;
@@ -237,7 +246,7 @@ std::string FormatBpKeyList(const std::vector<BPKey>& values) {
     std::vector<BPKey> unique_values;
     unique_values.reserve(values.size());
     for (const auto value : values) {
-        if (value != 0 && bp::BpRegistry::find(value) != nullptr) {
+        if (IsPredicateBreakpoint(value)) {
             unique_values.push_back(value);
         }
     }
@@ -265,7 +274,7 @@ std::vector<BPKey> ParseBpKeyList(std::string_view text) {
         const auto [ptr, ec] = std::from_chars(first, last, value);
         if (ec == std::errc{} && ptr == last && value > 0 && value <= std::numeric_limits<BPKey>::max()) {
             const auto bp_key = static_cast<BPKey>(value);
-            if (bp::BpRegistry::find(bp_key) != nullptr) {
+            if (IsKnownBreakpoint(bp_key)) {
                 out.push_back(bp_key);
             }
         }
@@ -2035,6 +2044,11 @@ bool SqliteAuthoringDb::SavePredicateSpec(
     }
     const auto required_bps = NormalizeRequiredBreakpointIds(command);
     const auto first_required_bp = required_bps.front();
+    const auto* first_required = bp::BpRegistry::FindRuntime(first_required_bp);
+    if (first_required == nullptr) {
+        if (error_out) *error_out = "required breakpoint is invalid or unavailable";
+        return false;
+    }
 
     if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
         if (error_out != nullptr) {
@@ -2060,7 +2074,7 @@ bool SqliteAuthoringDb::SavePredicateSpec(
     }
 
     sqlite3_bind_text(insert_spec.st, 1, command.name.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(insert_spec.st, 2, bp::BpRegistry::name(first_required_bp), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(insert_spec.st, 2, first_required->name, -1, SQLITE_TRANSIENT);
     sqlite3_bind_int(insert_spec.st, 3, static_cast<int>(first_required_bp));
     const auto baseline_bps = FormatBpKeyList(command.baseline_breakpoint_ids);
     const auto cmp_op = ToDbString(command.cmp_op);
@@ -2135,6 +2149,11 @@ bool SqliteAuthoringDb::UpdatePredicateSpec(
     }
     const auto required_bps = NormalizeRequiredBreakpointIds(command);
     const auto first_required_bp = required_bps.front();
+    const auto* first_required = bp::BpRegistry::FindRuntime(first_required_bp);
+    if (first_required == nullptr) {
+        if (error_out) *error_out = "required breakpoint is invalid or unavailable";
+        return false;
+    }
 
     if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
         if (error_out) *error_out = sqlite3_errmsg(db_);
@@ -2168,7 +2187,7 @@ bool SqliteAuthoringDb::UpdatePredicateSpec(
     }
 
     sqlite3_bind_text(update_spec.st, 1, command.name.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(update_spec.st, 2, bp::BpRegistry::name(first_required_bp), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(update_spec.st, 2, first_required->name, -1, SQLITE_TRANSIENT);
     sqlite3_bind_int(update_spec.st, 3, static_cast<int>(first_required_bp));
     const auto baseline_bps = FormatBpKeyList(command.baseline_breakpoint_ids);
     const auto cmp_op = ToDbString(command.cmp_op);

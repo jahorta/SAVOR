@@ -14,6 +14,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <thread>
 #include <vector>
@@ -44,7 +45,15 @@ struct SessionOptions {
     capture_format::WriterOptions writer_options;
     std::function<void(const capture_format::Event&, bool record_progress)> progress_callback;
     std::function<std::optional<std::uint32_t>(std::uint16_t)> base_key_resolver;
+    // Runtime-owned PCs that capture profiles may not observe or use as
+    // activation gates. Trusted control waits are intentionally independent.
+    std::vector<std::uint32_t> denied_profile_pcs;
 };
+
+bool ValidateProfilePcAccess(
+    const Profile& profile,
+    std::span<const std::uint32_t> denied_profile_pcs,
+    std::string* error_out = nullptr);
 
 struct ProbeMetrics {
     std::string id;

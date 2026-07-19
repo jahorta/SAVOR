@@ -55,6 +55,8 @@ struct BreakpointSymbol {
     BPKey key = 0;
     bool enabled = true;
     bool builtin = false;
+    BreakpointVisibility visibility = BreakpointVisibility::PlayerVisible;
+    BreakpointOwner owner = BreakpointOwner::Shared;
 };
 
 struct SymbolicOp {

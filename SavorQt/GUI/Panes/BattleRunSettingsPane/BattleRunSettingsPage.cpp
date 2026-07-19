@@ -4,6 +4,7 @@
 #include "BattlePlanEditorWindow.h"
 #include "PredicateSpecEditorWindow.h"
 #include "DB/SavorDbAuthoringService.h"
+#include "Runner/Breakpoints/BpRegistry.h"
 
 #include <QtCore/QDateTime>
 #include <QtCore/QStringList>
@@ -26,12 +27,16 @@ QString predicateText(const savor::db::PredicateSpecSnapshot& predicate)
     QStringList breakpointIds;
     breakpointIds.reserve(static_cast<int>(requiredBps.size()));
     for (const auto bp : requiredBps) {
-        if (bp != 0) {
+        if (!bp::BpRegistry::IsAllowed(bp, BreakpointConsumer::Predicate)) {
+            breakpointIds.push_back(QStringLiteral("(Unavailable breakpoint)"));
+        } else if (bp != 0) {
             breakpointIds.push_back(QString::number(static_cast<qint64>(bp)));
         }
     }
     const QString breakpointLabel = breakpointIds.size() == 1
-        ? QStringLiteral("Breakpoint %1").arg(breakpointIds.front())
+        ? (breakpointIds.front() == QStringLiteral("(Unavailable breakpoint)")
+            ? breakpointIds.front()
+            : QStringLiteral("Breakpoint %1").arg(breakpointIds.front()))
         : QStringLiteral("Breakpoints %1").arg(breakpointIds.join(QStringLiteral(", ")));
     return QStringLiteral("#%1  %2\n%3")
         .arg(static_cast<qint64>(predicate.predicate_spec_id))

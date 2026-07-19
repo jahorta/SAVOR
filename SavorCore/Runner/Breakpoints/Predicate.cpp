@@ -1,5 +1,6 @@
 // Runner/Breakpoints/Predicate.cpp
 #include "Predicate.h"
+#include "BpRegistry.h"
 
 #include <unordered_map>
 #include <span>
@@ -119,6 +120,13 @@ namespace savor::pred {
         size_t total_records = 0;
         for (const auto& s : in) {
             auto bps = normalize_required_bps(s);
+            if (bps.empty()) return false;
+            for (const auto bp : bps) {
+                if (!bp::BpRegistry::IsAllowed(bp, BreakpointConsumer::Predicate)) return false;
+            }
+            for (const auto bp : normalize_baseline_bps(s)) {
+                if (!bp::BpRegistry::IsAllowed(bp, BreakpointConsumer::Predicate)) return false;
+            }
             total_records += std::max<size_t>(1, bps.size());
         }
         out_records.reserve(total_records);

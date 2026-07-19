@@ -7,16 +7,6 @@ namespace savor::symbols {
 
 namespace {
 
-std::string DomainName(BPKey key)
-{
-    switch (bp::domain_of(key)) {
-    case bp::BPDomain::PreBattle: return "prebattle";
-    case bp::BPDomain::Battle: return "battle";
-    case bp::BPDomain::Overworld: return "overworld";
-    default: return "unknown";
-    }
-}
-
 bool IsCustomId(std::string_view id)
 {
     return id.rfind("user.", 0) == 0;
@@ -113,14 +103,16 @@ RuntimeSymbolRegistry RuntimeSymbolRegistry::BuiltIns()
         registry.AddAddressSymbol(std::move(symbol));
     }
 
-    for (const auto& bp : bp::BpRegistry::all()) {
+    for (const auto& bp : bp::BpRegistry::ForConsumer(BreakpointConsumer::UserScript)) {
         BreakpointSymbol symbol;
-        symbol.stable_id = "builtin.bp." + DomainName(bp.key) + "." + bp.name;
+        symbol.stable_id = bp.stable_id;
         symbol.name = bp.name;
         symbol.pc = bp.pc;
         symbol.key = bp.key;
         symbol.enabled = true;
         symbol.builtin = true;
+        symbol.visibility = bp.visibility;
+        symbol.owner = bp.owner;
         registry.AddBreakpointSymbol(std::move(symbol));
     }
 
@@ -182,7 +174,15 @@ bool RuntimeSymbolRegistry::AddBreakpointSymbol(BreakpointSymbol symbol, std::st
             return false;
         }
         symbol.pc = address->base;
+        if (const auto* runtime_bp = bp::BpRegistry::FindRuntime(symbol.pc);
+            runtime_bp != nullptr
+            && !bp::BpRegistry::IsAllowed(runtime_bp->key, BreakpointConsumer::UserScript)) {
+            if (error_out) *error_out = "breakpoint address is unavailable";
+            return false;
+        }
         if (symbol.key == 0) symbol.key = NextCustomBreakpointKey();
+        symbol.visibility = BreakpointVisibility::PlayerVisible;
+        symbol.owner = BreakpointOwner::Shared;
     }
     if (breakpoint_key_index_.find(symbol.key) != breakpoint_key_index_.end()) {
         if (error_out) *error_out = "duplicate breakpoint key id";
@@ -244,7 +244,14 @@ BreakpointMap RuntimeSymbolRegistry::BuildBreakpointMap() const
     BreakpointMap map;
     for (const auto& symbol : breakpoints_) {
         if (!symbol.enabled) continue;
-        map.addrs.push_back(BPAddr{ symbol.key, symbol.pc, symbol.name.c_str(), symbol.stable_id.c_str() });
+        map.addrs.push_back(BPAddr{
+            symbol.key,
+            symbol.pc,
+            symbol.name.c_str(),
+            symbol.stable_id.c_str(),
+            symbol.visibility,
+            symbol.owner,
+        });
     }
     return map;
 }
@@ -259,6 +266,10 @@ bool RuntimeSymbolRegistry::LowerSymbolicPhaseScript(
         const auto* bp = FindBreakpoint(id);
         if (bp == nullptr) {
             if (error_out) *error_out = "unknown breakpoint symbol: " + id;
+            return false;
+        }
+        if (bp->visibility != BreakpointVisibility::PlayerVisible) {
+            if (error_out) *error_out = "breakpoint symbol is unavailable";
             return false;
         }
         out.canonical_bp_keys.push_back(bp->key);

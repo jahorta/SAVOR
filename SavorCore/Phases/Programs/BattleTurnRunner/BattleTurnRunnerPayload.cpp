@@ -64,7 +64,10 @@ namespace phase::battle::turnrunner {
 
         std::vector<savor::pred::PredicateRecord> records;
         std::vector<uint8_t> blob;
-        savor::pred::BuildTable(spec.predicates, records, blob);
+        if (!savor::pred::BuildTable(spec.predicates, records, blob)) {
+            out.clear();
+            return false;
+        }
 
         const uint32_t np = (uint32_t)records.size();
         put_u32(out, np);
