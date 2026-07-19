@@ -2,7 +2,7 @@
 
 #include "../../../Runner/Breakpoints/BpRegistry.h"
 #include "../../../Runner/Script/CtxRegistry.h"
-#include "../../../Runner/Script/PhaseScriptVM.h"
+#include "../../../Runner/Script/PhaseScriptProgram.h"
 
 namespace phase::battle::macroprobe {
 

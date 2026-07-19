@@ -31,6 +31,10 @@
 #include <thread>
 #include <utility>
 
+#ifdef GetJob
+#undef GetJob
+#endif
+
 namespace savor::predict {
 namespace {
 

@@ -5,7 +5,7 @@
 #include <string>
 #include <variant>
 #include <unordered_map>
-#include "PhaseScriptVM.h"     // PSContext, PSValue
+#include "PSContext.h"
 #include "CtxRegistry.h"
 
 namespace savor::psctx {

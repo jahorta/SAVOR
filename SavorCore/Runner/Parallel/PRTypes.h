@@ -1,7 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <cstddef>
-#include "../Script/PhaseScriptVM.h"  // for PSResult
+#include "../Script/PhaseScriptProgram.h"  // for PSResult
 
 namespace savor {
 

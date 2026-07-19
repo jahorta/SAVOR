@@ -2,7 +2,7 @@
 #include <vector>
 #include <cstdint>
 #include <string>
-#include "../../../Runner/Script/PhaseScriptVM.h"
+#include "../../../Runner/Script/PhaseScriptProgram.h"
 #include "../../../Runner/Breakpoints/Predicate.h"
 
 using namespace savor;

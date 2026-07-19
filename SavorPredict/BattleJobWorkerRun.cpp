@@ -28,6 +28,10 @@
 #include <thread>
 #include <vector>
 
+#ifdef GetJob
+#undef GetJob
+#endif
+
 namespace savor::predict {
 namespace {
 

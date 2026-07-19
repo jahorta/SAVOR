@@ -1,7 +1,7 @@
 #pragma once
 #include <vector>
 #include <cstdint>
-#include "../../Runner/Script/PhaseScriptVM.h"
+#include "../../Runner/Script/PhaseScriptProgram.h"
 
 namespace savor::programs {
 

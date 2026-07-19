@@ -4,7 +4,7 @@
 #include <vector>
 #include <optional>
 
-#include "../../../Runner/Script/PhaseScriptVM.h"                        // PSContext
+#include "../../../Runner/Script/PhaseScriptProgram.h"                   // PSContext
 #include "TasMovieScript.h"                 // canonical TAS keys (K_*)
 
 namespace savor::tasmovie {

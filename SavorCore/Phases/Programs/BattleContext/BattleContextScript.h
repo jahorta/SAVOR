@@ -1,5 +1,5 @@
 #pragma once
-#include "../../../Runner/Script/PhaseScriptVM.h"
+#include "../../../Runner/Script/PhaseScriptProgram.h"
 #include "../../../Runner/Breakpoints/BpRegistry.h" // for battle::FirstTurnInputs
 
 using namespace savor;

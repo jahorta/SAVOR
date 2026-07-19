@@ -4,7 +4,7 @@
 
 #include "../../../Runner/IPC/Wire.h"      // PK_SeedProbe
 #include "../../../Runner/Script/CtxRegistry.h"
-#include "../../../Runner/Script/PhaseScriptVM.h" // savor::vmcore::<common keys>
+#include "../../../Runner/Script/PhaseScriptProgram.h" // savor::vmcore::<common keys>
 #include "../../../Runner/Script/ScriptProgress.h"
 #include "SeedProbeScript.h"
 

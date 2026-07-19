@@ -4,7 +4,7 @@
 #include "Execution/IExecutionDb.h"
 #include "Phases/Programs/BattleTurnRunner/BattleTurnRunnerPayload.h"
 #include "Runner/IPC/Wire.h"
-#include "Runner/Script/PhaseScriptVM.h"
+#include "Runner/Script/PhaseScriptProgram.h"
 #include "Utils/IniDoc.h"
 
 #include <sqlite3.h>

@@ -9,7 +9,7 @@
 
 #include "../Breakpoints/BpRegistry.h"
 #include "../Script/CtxRegistry.h"
-#include "../Script/PhaseScriptVM.h"
+#include "../Script/PhaseScriptProgram.h"
 #include "../../Core/Memory/Soa/SoaAddrRegistry.h"
 
 namespace savor::symbols {

@@ -3,7 +3,7 @@
 #include <string>
 #include <vector>
 
-#include "../../../Runner/Script/PhaseScriptVM.h"   // PSContext
+#include "../../../Runner/Script/PhaseScriptProgram.h"   // PSContext
 
 namespace savor::seedprobe {
 

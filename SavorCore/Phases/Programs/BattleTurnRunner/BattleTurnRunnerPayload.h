@@ -4,7 +4,7 @@
 #include <string>
 #include <optional>
 
-#include "../../../Runner/Script/PhaseScriptVM.h"
+#include "../../../Runner/Script/PhaseScriptProgram.h"
 #include "../../../Runner/Breakpoints/Predicate.h"
 #include "../../../Core/Input/SoaBattle/ActionTypes.h"
 #include "../../../Core/Input/InputPlan.h"

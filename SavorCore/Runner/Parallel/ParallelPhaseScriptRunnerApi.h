@@ -3,7 +3,7 @@
 #include <cstdint>
 #include <cstddef>
 
-#include "../Script/PhaseScriptVM.h"
+#include "../Script/PhaseScriptProgram.h"
 #include "PRTypes.h"
 #include "WorkerBootPlan.h"
 

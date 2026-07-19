@@ -17,226 +17,10 @@
 #include "Core/Common/Buffer.h"
 #include "CtxRegistry.h"
 #include "PSContext.h"
+#include "PhaseScriptProgram.h"
 
 namespace savor {
 
-	// ----- Small, reusable ops -----
-	enum class PSOpCode : uint8_t {
-		ARM_PHASE_BPS_ONCE,
-		LOAD_SNAPSHOT,
-		CAPTURE_SNAPSHOT,
-		REBOOT_CORE,
-
-		APPLY_INPUT_FROM,          // key -> GCInputFrame
-		STEP_FRAMES,               // literal step count ok to keep
-		RUN_UNTIL_BP,              // uses current timeout
-		RUN_UNTIL_BP_KEY,          // run only until the supplied breakpoint key
-		RECORD_CURRENT_BP,         // stores current pc / matching BP key
-		SET_TIMEOUT,               // imm -> time out in ms
-		SET_TIMEOUT_FROM,          // key -> uint32
-		START_DETERMINISIC_RUN,
-		END_DETERMINISTIC_RUN,
-
-		READ_U8, READ_U16, READ_U32, WRITE_U32, READ_F32, READ_F64, GET_BATTLE_CONTEXT,
-
-		EMIT_RESULT,               // literal: which key to emit
-
-		GC_SLOT_A_SET_FROM,        // key -> path
-		MOVIE_PLAY_FROM,           // key -> path
-		MOVIE_STOP,
-		SAVE_SAVESTATE_FROM,       // key -> path
-		REQUIRE_DISC_GAMEID_FROM,  // key -> 6-char string
-
-		LABEL,
-		GOTO,
-		GOTO_IF,                   // key cmp imm -> label
-		GOTO_IF_KEYS,
-		RETURN_RESULT,             // keyimm -> put result (imm) into context (key)
-		CAPTURE_PRED_BASELINES,       
-		EVAL_PREDICATES_AT_HIT_BP,
-		ARM_BPS_FROM_PRED_TABLE,
-		SET_U32,                    // ctx[key] = imm
-		ADD_U32,                    // ctx[key] += imm
-		APPLY_BATTLE_INPUTPLAN_FRAMES,   // plan_id = ctx[key]
-		BUILD_TURN_INPUTPLAN_FROM_BATTLE_PATH, // build plan from actions
-		MATERIALIZE_BATTLE_MACRO_STEPS,
-		MATERIALIZE_BATTLE_TURN_MACRO_STEPS,
-		EXECUTE_BATTLE_MACRO_STEP,
-		RECORD_TAS_INPUT_SAMPLE,
-		STEP_OPCODE,
-		ARM_MEMORY_WATCHPOINT,
-		CLEAR_MEMORY_WATCHPOINTS,
-		ARM_CAPTURE_MEMORY_WATCHPOINTS,
-		RUN_UNTIL_DEBUG_STOP,
-		CAPTURE_SEED_OVERRIDE
-	};
-
-	struct PSOp;
-	static std::string get_psop_name(PSOpCode op);
-	static std::string get_psop_desc(const PSOp& op);
-
-	enum class PSCmp : uint8_t { EQ, NE, LT, LE, GT, GE };
-
-	struct PSArg_Read { uint32_t addr; savor::context::key::KeyId dst; };
-	struct PSArg_Step { uint32_t n; };
-	struct PSArg_Path { std::string path; };
-	struct PSArg_ID6 { char id[6]{}; };
-	struct PSArg_Key { savor::context::key::KeyId id; };
-
-	struct PSArg_Label { std::string name; };
-	struct PSArg_Goto { std::string name; };
-	struct PSArg_GotoIf {
-		savor::context::key::KeyId key;
-		PSCmp cmp;
-		uint32_t imm;
-		std::string name;
-	};
-	struct PSArg_GotoIfKeys {
-		savor::context::key::KeyId left;
-		PSCmp cmp;
-		savor::context::key::KeyId right;
-		std::string name;
-	};
-	struct PSArg_Plan { uint32_t id; };
-	struct PSArg_ImmU32 { uint32_t v; };
-	struct PSArg_KeyImm { savor::context::key::KeyId key; uint32_t imm; };
-	struct PSArg_MemoryWatchpoint {
-		uint32_t id = 0;
-		uint32_t address = 0;
-		savor::context::key::KeyId address_key = 0;
-		uint32_t use_address_key = 0;
-		uint32_t size = 0;
-		uint32_t access = static_cast<uint32_t>(DolphinWrapper::MemoryWatchpointAccess::Write);
-	};
-
-	// Only one of these will be used depending on `code`
-	struct PSOp {           
-		PSOpCode         code{};
-		PSArg_Read       rd{};
-		PSArg_Step       step{};
-		PSArg_Key        key{};
-		PSArg_Label      label{};
-		PSArg_Goto       jmp{};
-		PSArg_GotoIf     jcc{};
-		PSArg_GotoIfKeys jcc2{};
-		PSArg_Plan       plan{};
-		PSArg_ImmU32     imm{};
-		PSArg_KeyImm     keyimm{};
-		PSArg_MemoryWatchpoint memwatch{};
-	};
-
-	inline PSOp OpLabel(const std::string& s) { PSOp o; o.code = PSOpCode::LABEL; o.label.name = s; return o; }
-	inline PSOp OpGoto(const std::string& s) { PSOp o; o.code = PSOpCode::GOTO;  o.jmp.name = s;  return o; }
-	inline PSOp OpGotoIf(savor::context::key::KeyId k, PSCmp c, uint32_t v, const std::string& s) { PSOp o; o.code = PSOpCode::GOTO_IF; o.jcc = { k,c,v,s }; return o; }
-	inline PSOp OpGotoIfKeys(savor::context::key::KeyId left, PSCmp c, savor::context::key::KeyId right, const std::string& s) { PSOp o; o.code = PSOpCode::GOTO_IF_KEYS; o.jcc2 = { left, c, right, s }; return o; }
-	inline PSOp OpReturnResult(savor::context::key::KeyId k, uint32_t code) { PSOp o; o.code = PSOpCode::RETURN_RESULT; o.keyimm = {k, code}; return o; }
-	inline PSOp OpCapturePredBaselines() { PSOp o; o.code = PSOpCode::CAPTURE_PRED_BASELINES; return o; }
-	inline PSOp OpArmBpsFromPredTable() { PSOp o; o.code = PSOpCode::ARM_BPS_FROM_PRED_TABLE; return o; }
-	inline PSOp OpEvalPredicatesAtHitBP() { PSOp o; o.code = PSOpCode::EVAL_PREDICATES_AT_HIT_BP; return o; }
-	inline PSOp OpSetU32(savor::context::key::KeyId key, uint32_t v) { PSOp o; o.code = PSOpCode::SET_U32; o.keyimm = { key,v }; return o; }
-	inline PSOp OpAddU32(savor::context::key::KeyId key, uint32_t v) { PSOp o; o.code = PSOpCode::ADD_U32; o.keyimm = { key,v }; return o; }
-	inline PSOp OpApplyPlanFrameFrom(savor::context::key::KeyId key) { PSOp o; o.code = PSOpCode::APPLY_BATTLE_INPUTPLAN_FRAMES; o.key = { key }; return o; }
-	inline PSOp OpBuildTurnInputFromActions() { PSOp o; o.code = PSOpCode::BUILD_TURN_INPUTPLAN_FROM_BATTLE_PATH; return o; }
-	inline PSOp OpMaterializeBattleMacroSteps() { PSOp o; o.code = PSOpCode::MATERIALIZE_BATTLE_MACRO_STEPS; return o; }
-	inline PSOp OpMaterializeBattleTurnMacroSteps() { PSOp o; o.code = PSOpCode::MATERIALIZE_BATTLE_TURN_MACRO_STEPS; return o; }
-	inline PSOp OpExecuteBattleMacroStep() { PSOp o; o.code = PSOpCode::EXECUTE_BATTLE_MACRO_STEP; return o; }
-	inline PSOp OpRecordTasInputSample() { PSOp o; o.code = PSOpCode::RECORD_TAS_INPUT_SAMPLE; return o; }
-
-	inline PSOp OpStepFrames(uint32_t frame_count, bool disable_breakpoints = false) { PSOp o; o.code = PSOpCode::STEP_FRAMES; o.step = { frame_count }; o.imm = { (uint32_t)(disable_breakpoints ? 1 : 0) }; return o; }
-	inline PSOp OpStepOpcode(bool disable_breakpoints = false) { PSOp o; o.code = PSOpCode::STEP_OPCODE; o.imm = { (uint32_t)(disable_breakpoints ? 1 : 0) }; return o; }
-	inline PSOp OpArmMemoryWatchpoint(uint32_t id, uint32_t address, uint32_t size, DolphinWrapper::MemoryWatchpointAccess access) { PSOp o; o.code = PSOpCode::ARM_MEMORY_WATCHPOINT; o.memwatch = { id, address, 0, 0, size, static_cast<uint32_t>(access) }; return o; }
-	inline PSOp OpArmMemoryWatchpointFromKey(uint32_t id, savor::context::key::KeyId address_key, uint32_t size, DolphinWrapper::MemoryWatchpointAccess access) { PSOp o; o.code = PSOpCode::ARM_MEMORY_WATCHPOINT; o.memwatch = { id, 0, address_key, 1, size, static_cast<uint32_t>(access) }; return o; }
-	inline PSOp OpClearMemoryWatchpoints() { PSOp o; o.code = PSOpCode::CLEAR_MEMORY_WATCHPOINTS; return o; }
-	inline PSOp OpArmCaptureMemoryWatchpoints() { PSOp o; o.code = PSOpCode::ARM_CAPTURE_MEMORY_WATCHPOINTS; return o; }
-
-	inline PSOp OpGcSlotASet(savor::context::key::KeyId k) { PSOp o; o.code = PSOpCode::GC_SLOT_A_SET_FROM; o.key.id = k; return o; }
-	inline PSOp OpApplyInputFrom(savor::context::key::KeyId k) { PSOp o; o.code = PSOpCode::APPLY_INPUT_FROM;   o.key.id = k; return o; }
-	inline PSOp OpSetTimeoutFromKey(savor::context::key::KeyId k) { PSOp o; o.code = PSOpCode::SET_TIMEOUT_FROM;   o.key.id = k; return o; }
-	inline PSOp OpSetTimeoutToMS(uint32_t ms) { PSOp o; o.code = PSOpCode::SET_TIMEOUT;   o.imm.v = ms; return o; }
-	inline PSOp OpMoviePlayFrom(savor::context::key::KeyId k) { PSOp o; o.code = PSOpCode::MOVIE_PLAY_FROM;    o.key.id = k; return o; }
-	inline PSOp OpSaveSavestateFrom(savor::context::key::KeyId k) { PSOp o; o.code = PSOpCode::SAVE_SAVESTATE_FROM; o.key.id = k; return o; }
-	inline PSOp OpRequireDiscGameIdFrom(savor::context::key::KeyId k) { PSOp o; o.code = PSOpCode::REQUIRE_DISC_GAMEID_FROM; o.key.id = k; return o; }
-
-	// READ_* ops now store into a numeric key:
-	inline PSOp OpReadU8(uint32_t addr, savor::context::key::KeyId dst) { PSOp o; o.code = PSOpCode::READ_U8;  o.rd = { addr,dst }; return o; }
-	inline PSOp OpReadU16(uint32_t addr, savor::context::key::KeyId dst) { PSOp o; o.code = PSOpCode::READ_U16; o.rd = { addr,dst }; return o; }
-	inline PSOp OpReadU32(uint32_t addr, savor::context::key::KeyId dst) { PSOp o; o.code = PSOpCode::READ_U32; o.rd = { addr,dst }; return o; }
-	inline PSOp OpWriteU32(uint32_t addr, savor::context::key::KeyId value_key) { PSOp o; o.code = PSOpCode::WRITE_U32; o.rd = { addr,value_key }; return o; }
-	inline PSOp OpReadF32(uint32_t addr, savor::context::key::KeyId dst) { PSOp o; o.code = PSOpCode::READ_F32; o.rd = { addr,dst }; return o; }
-	inline PSOp OpReadF64(uint32_t addr, savor::context::key::KeyId dst) { PSOp o; o.code = PSOpCode::READ_F64; o.rd = { addr,dst }; return o; }
-	inline PSOp OpGetBattleContext() { PSOp o; o.code = PSOpCode::GET_BATTLE_CONTEXT; return o; }
-
-	// EMIT_RESULT now exports a numeric key:
-	inline PSOp OpEmitResult(savor::context::key::KeyId k) { PSOp o; o.code = PSOpCode::EMIT_RESULT; o.key.id = k; return o; }
-
-	// OTHERS
-	inline PSOp OpMovieStop() { PSOp o; o.code = PSOpCode::MOVIE_STOP; return o; }
-	inline PSOp OpArmPhaseBps() { PSOp o; o.code = PSOpCode::ARM_PHASE_BPS_ONCE; return o; }
-	inline PSOp OpLoadSnapshot() { PSOp o; o.code = PSOpCode::LOAD_SNAPSHOT; return o; }
-	inline PSOp OpCaptureSnapshot() { PSOp o; o.code = PSOpCode::CAPTURE_SNAPSHOT; return o; }
-	inline PSOp OpRunUntilBp() { PSOp o; o.code = PSOpCode::RUN_UNTIL_BP; return o; }
-	inline PSOp OpRunUntilBpKey(BPKey key) { PSOp o; o.code = PSOpCode::RUN_UNTIL_BP_KEY; o.imm.v = static_cast<uint32_t>(key); return o; }
-	inline PSOp OpRunUntilDebugStop() { PSOp o; o.code = PSOpCode::RUN_UNTIL_DEBUG_STOP; return o; }
-	inline PSOp OpCaptureSeedOverride() { PSOp o; o.code = PSOpCode::CAPTURE_SEED_OVERRIDE; return o; }
-	inline PSOp OpRecordCurrentBp() { PSOp o; o.code = PSOpCode::RECORD_CURRENT_BP; return o; }
-	inline PSOp OpStartDeterministicRun() { PSOp o; o.code = PSOpCode::START_DETERMINISIC_RUN; return o; }
-	inline PSOp OpEndDeterministicRun() { PSOp o; o.code = PSOpCode::END_DETERMINISTIC_RUN; return o; }
-	inline PSOp OpRebootCore() { PSOp o; o.code = PSOpCode::REBOOT_CORE; return o; }
-
-
-	struct PhaseScript {
-		std::vector<BPKey> canonical_bp_keys;   // normal phase breakpoints
-		std::vector<BPKey> gated_bp_keys;       // pre-armed, enabled only by specialized ops
-		std::vector<PSOp>  ops;                 // executed in order per job
-	};
-
-	enum DBuf : uint8_t {
-		DK_None = 0,
-		DK_Battle = 1,
-		DK_Explore = 2,
-	};
-
-	struct PSInit {
-		std::string savestate_path;
-		uint32_t default_timeout_ms{ 10000 };
-		DBuf derived_buffer_type{ DBuf::DK_None };
-	};
-
-	struct PSJob {
-		std::vector<uint8_t> payload;
-		PSContext ctx;
-	};
-
-	struct PSResult {
-		bool ok{ false };
-		uint8_t w_err;
-		PSContext ctx;                     // values produced by READ_* / EMIT_RESULT
-	};
-
-	enum class RunToBpOutcome : uint32_t {
-		Hit = 0,  // a monitored breakpoint fired
-		Timeout = 1,  // wall-clock limit reached
-		ViStalled = 2,  // VI didn't advance for the configured stall window
-		MovieEnded = 3,  // movie playback ended before any breakpoint fired
-		Aborted = 4,  // reserved for future external aborts
-		InputPlaybackFailed = 5,  // input tape playback failed after retries
-
-		Unknown = 0xffffffff,  // catch-all
-	};
-
-	static inline const char* RunToBpOutcomeToString(uint32_t outcome)
-	{
-		switch (static_cast<RunToBpOutcome>(outcome)) {
-		case RunToBpOutcome::Hit: return "Finished";
-		case RunToBpOutcome::Timeout: return "Timeout";
-		case RunToBpOutcome::ViStalled: return "ViStalled";
-		case RunToBpOutcome::MovieEnded: return "MovieEnded";
-		case RunToBpOutcome::Aborted: return "Aborted";
-		case RunToBpOutcome::InputPlaybackFailed: return "InputPlaybackFailed";
-		case RunToBpOutcome::Unknown: return "Unknown";
-		default: return "UnrecognizedRunOutcome";
-		}
-	}
 
 	// ----- VM -----
 	class PhaseScriptVM {
@@ -255,6 +39,12 @@ namespace savor {
 		bool IsRunUntilBpActive() const;
 
 	private:
+		enum class DispatchResult {
+			Continue,
+			Returned,
+			Failed,
+		};
+
 		savor::DolphinWrapper& host_;
 		const BreakpointMap& bpmap_;
 		std::vector<BPKey> canonical_bp_keys_;
@@ -334,6 +124,14 @@ namespace savor {
 		void jump_to_label_if_exists(const std::string& label, const std::unordered_map<std::string, size_t>& label_vm_pc_map, size_t& vm_pc, std::string& section) const;
 		void wait_for_visual_debug_gate();
 		RunUntilBpCoreResult run_until_bp_core(PSContext& ctx, const RunUntilBpSpec& spec);
+		DispatchResult dispatch_op(
+			const PSOp& op,
+			PSContext& ctx,
+			PSResult& result,
+			KeyHostRouter& router,
+			const std::unordered_map<std::string, size_t>& label_vm_pc_map,
+			size_t& vm_pc,
+			std::string& section);
 
 		bool op_arm_phase_bps_once();
 		bool op_load_snapshot(PSContext& ctx);
@@ -376,6 +174,7 @@ namespace savor {
 		void op_set_timeout(const PSOp& op, PSContext& ctx) const;
 		void op_set_timeout_from(const PSOp& op, PSContext& ctx) const;
 		bool op_movie_play_from(const PSOp& op, PSResult& result, PSContext& ctx);
+		void op_movie_stop();
 		bool op_save_savestate_from(const PSOp& op, PSResult& result, PSContext& ctx);
 		bool op_require_disc_gameid_from(const PSOp& op, PSResult& result, PSContext& ctx);
 		bool op_arm_bps_from_pred_table(PSResult& result, PSContext& ctx);

@@ -233,6 +233,9 @@
     <ClInclude Include="Runner\Script\ContextKeys\TasMovieKeys.reg.h" />
     <ClInclude Include="Runner\Script\ContextKeys\TasFrameDetectorKeys.reg.h" />
     <ClInclude Include="Runner\Script\ContextKeys\VMCoreKeys.reg.h" />
+    <ClInclude Include="Runner\Script\PhaseScriptOpcodeTable.inc" />
+    <ClInclude Include="Runner\Script\PhaseScriptOpcodes.h" />
+    <ClInclude Include="Runner\Script\PhaseScriptProgram.h" />
     <ClInclude Include="Runner\Script\PhaseScriptVM.h" />
     <ClInclude Include="Runner\Script\PSContext.h" />
     <ClInclude Include="Runner\Script\PSContextCodec.h" />
@@ -287,7 +290,13 @@
     <ClCompile Include="Runner\Breakpoints\Predicate.cpp" />
     <ClCompile Include="Runner\Script\CtxRegistry.cpp" />
     <ClCompile Include="Runner\IPC\WorkerWireWriter.cpp" />
+    <ClCompile Include="Runner\Script\PhaseScriptOpFormat.cpp" />
     <ClCompile Include="Runner\Script\PhaseScriptVM.cpp" />
+    <ClCompile Include="Runner\Script\PhaseScriptVMControl.cpp" />
+    <ClCompile Include="Runner\Script\PhaseScriptVMInput.cpp" />
+    <ClCompile Include="Runner\Script\PhaseScriptVMMacro.cpp" />
+    <ClCompile Include="Runner\Script\PhaseScriptVMMemory.cpp" />
+    <ClCompile Include="Runner\Script\PhaseScriptVMPredicates.cpp" />
     <ClCompile Include="Runner\Script\PSContextCodec.cpp" />
     <ClCompile Include="Runner\Script\ScriptProgress.cpp" />
     <ClCompile Include="Runner\Symbols\RuntimeSymbolRegistry.cpp" />

@@ -28,6 +28,9 @@
     <Filter Include="Runner\VM">
       <UniqueIdentifier>{1ade13ea-176c-4287-8a73-b2ec1bb22622}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Runner\VM\Handlers">
+      <UniqueIdentifier>{67f28612-9bb0-4f10-a7ce-68df43967218}</UniqueIdentifier>
+    </Filter>
     <Filter Include="Phases">
       <UniqueIdentifier>{eb879b3c-e922-4ee8-a291-4569a8483ab3}</UniqueIdentifier>
     </Filter>
@@ -130,6 +133,15 @@
       <Filter>Tas</Filter>
     </ClInclude>
     <ClInclude Include="Runner\Script\PhaseScriptVM.h">
+      <Filter>Runner\VM</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Script\PhaseScriptOpcodeTable.inc">
+      <Filter>Runner\VM</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Script\PhaseScriptOpcodes.h">
+      <Filter>Runner\VM</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Script\PhaseScriptProgram.h">
       <Filter>Runner\VM</Filter>
     </ClInclude>
     <ClInclude Include="Runner\Script\PSContextCodec.h">
@@ -379,6 +391,24 @@
     </ClCompile>
     <ClCompile Include="Runner\Script\PhaseScriptVM.cpp">
       <Filter>Runner\VM</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Script\PhaseScriptOpFormat.cpp">
+      <Filter>Runner\VM</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Script\PhaseScriptVMControl.cpp">
+      <Filter>Runner\VM\Handlers</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Script\PhaseScriptVMInput.cpp">
+      <Filter>Runner\VM\Handlers</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Script\PhaseScriptVMMacro.cpp">
+      <Filter>Runner\VM\Handlers</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Script\PhaseScriptVMMemory.cpp">
+      <Filter>Runner\VM\Handlers</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Script\PhaseScriptVMPredicates.cpp">
+      <Filter>Runner\VM\Handlers</Filter>
     </ClCompile>
     <ClCompile Include="Runner\Script\ScriptProgress.cpp">
       <Filter>Runner\VM</Filter>

@@ -3,6 +3,7 @@
 #include <sstream>
 #include <filesystem>
 #include "Utils/ThreadName.h"
+#include "Utils/Log.h"
 #include "Runner/Script/CtxRegistry.h"
 #include "Runner/Script/PSContextCodec.h"
 

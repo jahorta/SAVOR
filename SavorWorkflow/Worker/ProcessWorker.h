@@ -7,7 +7,7 @@
 #include <cstdint>
 #include <windows.h>
 #include "Core/Input/InputPlan.h"
-#include "Runner/Script/PhaseScriptVM.h"  // for PSResult
+#include "Runner/Script/PhaseScriptProgram.h"  // for PSResult
 #include "TSQueue.h"
 #include "Runner/Parallel/PRTypes.h"
 #include "Runner/Breakpoints/BpRegistry.h"

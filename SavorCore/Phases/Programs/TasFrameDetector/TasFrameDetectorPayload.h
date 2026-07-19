@@ -3,7 +3,7 @@
 #include <string>
 #include <vector>
 
-#include "../../../Runner/Script/PhaseScriptVM.h"
+#include "../../../Runner/Script/PhaseScriptProgram.h"
 
 namespace savor::tasframedetector {
 

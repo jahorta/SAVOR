@@ -1,5 +1,5 @@
 #pragma once
-#include "../../../Runner/Script/PhaseScriptVM.h"
+#include "../../../Runner/Script/PhaseScriptProgram.h"
 #include "../../../Runner/Script/CtxRegistry.h"
 #include "../../../Runner/Breakpoints/BpRegistry.h"
 #include "BattleOutcome.h"
