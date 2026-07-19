@@ -12,6 +12,7 @@
 #include <cmath>
 #include <iomanip>
 #include <sstream>
+#include <tuple>
 #include <utility>
 
 namespace savor::predict {
@@ -144,6 +145,51 @@ BattleFrameEventStatus frame_event_status(ActionMotionInvocationStatus status) {
     return BattleFrameEventStatus::Unsupported;
 }
 
+BattleFrameEventStatus frame_event_status(BattleTargetReactionStatus status) {
+    switch (status) {
+    case BattleTargetReactionStatus::Matched:
+        return BattleFrameEventStatus::Matched;
+    case BattleTargetReactionStatus::Provisional:
+        return BattleFrameEventStatus::Provisional;
+    case BattleTargetReactionStatus::MissingInput:
+        return BattleFrameEventStatus::MissingInput;
+    case BattleTargetReactionStatus::Unsupported:
+        return BattleFrameEventStatus::Unsupported;
+    }
+    return BattleFrameEventStatus::Unsupported;
+}
+
+BattleFrameEventStatus frame_event_status(
+    DirectInstructionTransitionStatus status) {
+    switch (status) {
+    case DirectInstructionTransitionStatus::Matched:
+        return BattleFrameEventStatus::Matched;
+    case DirectInstructionTransitionStatus::Provisional:
+        return BattleFrameEventStatus::Provisional;
+    case DirectInstructionTransitionStatus::Skipped:
+        return BattleFrameEventStatus::Skipped;
+    case DirectInstructionTransitionStatus::MissingInput:
+        return BattleFrameEventStatus::MissingInput;
+    case DirectInstructionTransitionStatus::Unsupported:
+        return BattleFrameEventStatus::Unsupported;
+    }
+    return BattleFrameEventStatus::Unsupported;
+}
+
+BattleFrameEventStatus frame_event_status(BattleCollisionModelStatus status) {
+    switch (status) {
+    case BattleCollisionModelStatus::Matched:
+        return BattleFrameEventStatus::Matched;
+    case BattleCollisionModelStatus::Provisional:
+        return BattleFrameEventStatus::Provisional;
+    case BattleCollisionModelStatus::MissingInput:
+        return BattleFrameEventStatus::MissingInput;
+    case BattleCollisionModelStatus::Unsupported:
+        return BattleFrameEventStatus::Unsupported;
+    }
+    return BattleFrameEventStatus::Unsupported;
+}
+
 CombatantInstructionActionKind instruction_action_kind(
     BattleMovementActionKind action_kind) {
     switch (action_kind) {
@@ -208,6 +254,7 @@ std::int16_t action_mode_for_worker(const BattleFrameWorker& worker) {
                 : BattleFrameActionMode::Standing;
     case BattleFrameWorkerKind::VisualController:
     case BattleFrameWorkerKind::VisualActionService:
+    case BattleFrameWorkerKind::VisualCollisionBox:
     case BattleFrameWorkerKind::VisualActionViewRecord:
     case BattleFrameWorkerKind::CombatantInstruction:
         return BattleFrameActionMode::Standing;
@@ -1654,6 +1701,12 @@ bool is_visual_step_kind(BattleFrameWorkerStepKind kind) {
     case BattleFrameWorkerStepKind::VisualControllerVisit:
     case BattleFrameWorkerStepKind::VisualInstructionDecision:
     case BattleFrameWorkerStepKind::VisualInstructionStatePublish:
+    case BattleFrameWorkerStepKind::TargetReactionPublish:
+    case BattleFrameWorkerStepKind::DirectTransitionSelect:
+    case BattleFrameWorkerStepKind::CollisionOccupancyRefresh:
+    case BattleFrameWorkerStepKind::CollisionProbe:
+    case BattleFrameWorkerStepKind::InstructionCallbackControlReset:
+    case BattleFrameWorkerStepKind::InstructionCallbackControlResetConsume:
     case BattleFrameWorkerStepKind::ActionMotionInvocationDecision:
     case BattleFrameWorkerStepKind::ActionMotionPlaybackInstall:
     case BattleFrameWorkerStepKind::ActionMotionRendererAdvance:
@@ -1883,9 +1936,17 @@ BattleFrameStepEvent make_visual_event(
         event.action_ordinal = task->action_ordinal;
         event.slot = task->origin_slot;
         event.target_slot = task->target_slot;
-        event.worker_kind = task->kind == BattleFrameVisualChildKind::ActionService
-            ? BattleFrameWorkerKind::VisualActionService
-            : BattleFrameWorkerKind::VisualActionViewRecord;
+        switch (task->kind) {
+        case BattleFrameVisualChildKind::ActionService:
+            event.worker_kind = BattleFrameWorkerKind::VisualActionService;
+            break;
+        case BattleFrameVisualChildKind::CollisionBox:
+            event.worker_kind = BattleFrameWorkerKind::VisualCollisionBox;
+            break;
+        case BattleFrameVisualChildKind::ActionViewRecord:
+            event.worker_kind = BattleFrameWorkerKind::VisualActionViewRecord;
+            break;
+        }
         event.visual_command_kind = task->command_kind;
         event.visual_resource = task->resource_stem;
         event.visual_record_index = task->record_index;
@@ -1943,6 +2004,35 @@ int enqueue_visual_child(
             task.maximum_visits = std::min(256, task.initial_delay + 4);
         }
         task.derived_mode = publication.action_key;
+    } else if (publication.kind == CombatantVisualCommandKind::CollisionBox) {
+        task.kind = BattleFrameVisualChildKind::CollisionBox;
+        task.collision_box = publication.record->collision_box;
+        if (task.collision_box.has_value()) {
+            const auto& payload = *task.collision_box;
+            task.collision_current = {
+                .x = std::bit_cast<float>(payload.current_x_bits),
+                .y = std::bit_cast<float>(payload.current_y_bits),
+                .z = std::bit_cast<float>(payload.current_z_bits),
+            };
+            task.collision_velocity = {
+                .x = std::bit_cast<float>(payload.velocity_x_bits),
+                .y = std::bit_cast<float>(payload.velocity_y_bits),
+                .z = std::bit_cast<float>(payload.velocity_z_bits),
+            };
+            task.maximum_visits = std::clamp(
+                static_cast<int>(payload.end_counter) + 3,
+                4,
+                1200);
+            if (payload.behavior_flags != 5U
+                || payload.trailing_flags != 0U
+                || payload.start_counter < 0
+                || payload.end_counter < 0) {
+                task.status = CombatantVisualModelStatus::Unsupported;
+            }
+        } else {
+            task.status = CombatantVisualModelStatus::MissingInput;
+            task.maximum_visits = 4;
+        }
     } else {
         task.kind = BattleFrameVisualChildKind::ActionViewRecord;
         task.system_camera = publication.record->system_camera;
@@ -2256,14 +2346,18 @@ void advance_visual_timeline_for_slot(
         diagnostic_task.command_kind = publication.kind;
         diagnostic_task.kind = publication.kind == CombatantVisualCommandKind::SetCommand
             ? BattleFrameVisualChildKind::ActionService
-            : BattleFrameVisualChildKind::ActionViewRecord;
+            : (publication.kind == CombatantVisualCommandKind::CollisionBox
+                ? BattleFrameVisualChildKind::CollisionBox
+                : BattleFrameVisualChildKind::ActionViewRecord);
         auto event = make_visual_event(
             runtime,
             &diagnostic_task,
             BattleFrameWorkerStepKind::VisualCommandPublish,
             publication.kind == CombatantVisualCommandKind::SetCommand
                 ? "SetCommandHandler_8003B1D8"
-                : "SystemCameraHandler_8003C690",
+                : (publication.kind == CombatantVisualCommandKind::CollisionBox
+                    ? "CollisionBoxHandler_8003C9E0"
+                    : "SystemCameraHandler_8003C690"),
             frame_event_status(publication.status),
             detail.str());
         append_recorded_event(runtime, result, std::move(event));
@@ -2801,9 +2895,119 @@ void append_visual_cleanup(
             BattleFrameWorkerStepKind::VisualChildCleanup,
             task.kind == BattleFrameVisualChildKind::ActionService
                 ? "FUN_8004281C_cleanup"
-                : "UpdateActionViewRecord_80051264_cleanup",
+                : (task.kind == BattleFrameVisualChildKind::CollisionBox
+                    ? "FUN_8004B7C4_cleanup"
+                    : "UpdateActionViewRecord_80051264_cleanup"),
             BattleFrameEventStatus::Provisional,
             std::move(reason)));
+}
+
+std::vector<std::int16_t> target_action_ids_for_selector(
+    const BattleFrameRuntime& runtime,
+    int target_slot) {
+    std::vector<std::int16_t> action_ids;
+    const auto* resource = visual_resource_for(runtime, target_slot);
+    if (resource == nullptr) {
+        return action_ids;
+    }
+    for (const auto& row : resource->action_rows) {
+        if (row.row_type == 3) {
+            break;
+        }
+        if (row.action_id >= 0) {
+            action_ids.push_back(row.action_id);
+        }
+    }
+    return action_ids;
+}
+
+DirectInstructionTransitionResult run_direct_transition_selector(
+    BattleFrameRuntime& runtime,
+    BattleFrameRunResult& result,
+    BattleFrameVisualChildTask& task,
+    DirectInstructionTransitionProducer producer,
+    BattleFrameWorkerStepKind step_kind,
+    std::string callback,
+    std::string rng_label,
+    std::uint32_t& rng_state) {
+    auto* origin = find_frame_combatant(runtime.state, task.origin_slot);
+    std::optional<std::uint32_t> target_flags_0xf0;
+    std::optional<std::uint32_t> target_flags_0xf4;
+    if (task.target_slot >= 0
+        && task.target_slot < static_cast<int>(runtime.target_reactions.size())) {
+        const auto& staged = runtime.target_reactions[
+            static_cast<std::size_t>(task.target_slot)];
+        if (staged.available && staged.action_ordinal == task.action_ordinal) {
+            target_flags_0xf0 = staged.reaction.selector_flags_0xf0;
+            target_flags_0xf4 = staged.reaction.selector_flags_0xf4;
+        }
+    }
+    const auto selected = select_direct_instruction_transition({
+        .producer = producer,
+        .origin_slot = task.origin_slot,
+        .target_slot = task.target_slot,
+        .origin_mode = origin != nullptr
+            ? std::optional<std::int16_t>{origin->visual_instruction_mode_0x6}
+            : std::nullopt,
+        .origin_flags_0xec = origin != nullptr
+            ? std::optional<std::uint32_t>{origin->instruction_flags_0xec}
+            : std::nullopt,
+        .target_flags_0xf0 = target_flags_0xf0,
+        .target_flags_0xf4 = target_flags_0xf4,
+        .available_target_action_ids =
+            target_action_ids_for_selector(runtime, task.target_slot),
+        .rng_seed_before = rng_state,
+    });
+
+    auto event = make_visual_event(
+        runtime,
+        &task,
+        step_kind,
+        std::move(callback),
+        frame_event_status(selected.status),
+        "producer="
+            + std::string(direct_instruction_transition_producer_name(producer))
+            + "; branch="
+            + direct_instruction_transition_branch_name(selected.branch)
+            + "; selected_mode="
+            + (selected.selected_mode.has_value()
+                ? std::to_string(*selected.selected_mode)
+                : std::string("missing"))
+            + "; should_reset=" + (selected.should_reset ? "1" : "0")
+            + "; provenance=" + selected.provenance);
+    event.visual_effective_mode = selected.selected_mode.value_or(-1);
+    event.draws_consumed = selected.draws_consumed;
+    event.rand_value = selected.rand_value;
+    event.visual_candidate_selected_index = selected.candidate_index;
+    if (selected.draws_consumed != 0) {
+        event.rng_event = true;
+        event.rng_label = std::move(rng_label);
+        event.rng_seed_before = selected.rng_seed_before;
+        event.rng_seed_after = selected.rng_seed_after;
+        if (selected.rng_seed_after.has_value()) {
+            rng_state = *selected.rng_seed_after;
+        }
+    }
+    if (selected.clear_origin_random_gate && origin != nullptr) {
+        origin->instruction_flags_0xec &= ~0x00100000U;
+    }
+    if (selected.should_reset && selected.selected_mode.has_value()) {
+        const bool staged = stage_battle_frame_validated_instruction_transition(
+            runtime,
+            task.action_ordinal,
+            task.target_slot,
+            task.origin_slot,
+            *selected.selected_mode,
+            selected.provenance,
+            task.sequence);
+        if (!staged) {
+            event.status = BattleFrameEventStatus::MissingInput;
+            event.detail +=
+                "; selected target row could not be published through the validated direct-reset boundary";
+        }
+    }
+    append_recorded_event(runtime, result, std::move(event));
+    return selected;
 }
 
 void advance_action_service_child(
@@ -2869,54 +3073,301 @@ void advance_action_service_child(
     task.phase = BattleFrameVisualChildPhase::Active;
     task.thread_state_0x19 = 2;
     task.nested_call_complete = true;
-    auto nested = make_visual_event(
+    (void)run_direct_transition_selector(
         runtime,
-        &task,
+        result,
+        task,
+        DirectInstructionTransitionProducer::ActionService,
         BattleFrameWorkerStepKind::VisualChildNested,
         "FUN_8004281C/FUN_80020B8C/FUN_8002E5D0",
-        BattleFrameEventStatus::Matched,
-        "state1 zero visit entered nested service and cleanup in the same packed-thread visit");
-    const bool eb4c_gate = origin != nullptr
-        && (origin->instruction_flags_0xec & 0x00100000U) != 0;
-    if (eb4c_gate) {
-        const auto draw = draw_rand15(rng_state);
-        nested.rng_event = true;
-        nested.rng_label = "fun_8002eb4c_action_service";
-        nested.draws_consumed = 1;
-        nested.rng_seed_before = rng_state;
-        nested.rng_seed_after = draw.next_state;
-        nested.rand_value = draw.value;
-        nested.visual_candidate_selected_index = draw.value % 2U;
-        const auto selected_mode = nested.visual_candidate_selected_index == 0
-            ? BattleFrameActionMode::PassiveDodge
-            : BattleFrameActionMode::PassiveBlock;
-        nested.visual_effective_mode = selected_mode;
-        rng_state = draw.next_state;
-        nested.detail += "; eb4c_gate=IW+0xEC&0x00100000"
-            "; candidate0=0x0000000D; candidate1=0x0000000C"
-            "; selected_mode=" + std::to_string(selected_mode)
-            + "; rng_owner=FUN_8002EB4C";
-        if (origin != nullptr) {
-            origin->instruction_flags_0xec &= ~0x00100000U;
-        }
-        if (task.target_slot >= 0) {
-            stage_battle_frame_validated_instruction_transition(
-                runtime,
-                task.action_ordinal,
-                task.target_slot,
-                task.origin_slot,
-                static_cast<std::int16_t>(selected_mode),
-                "FUN_8002EB4C selected a candidate and staged FUN_800214FC inputs; callback publication waits for the target instruction-thread visit");
-        }
-    } else {
-        nested.detail += "; eb4c_gate=0; draws=0; unresolved flag producer is not guessed";
-    }
-    append_recorded_event(runtime, result, std::move(nested));
+        "fun_8002eb4c_action_service",
+        rng_state);
     append_visual_cleanup(
         runtime,
         result,
         task,
         "normal action-service cleanup; nested return and child-count decrement share the zero-delay visit");
+}
+
+BattleCollisionVec3 collision_vec(const BattleFrameVec3& value) {
+    return {.x = value.x, .y = value.y, .z = value.z};
+}
+
+BattleCollisionOccupancyRefreshResult refresh_collision_occupancy_for_slot(
+    BattleFrameRuntime& runtime,
+    int slot,
+    BattleFrameRunResult* result) {
+    const auto* combatant = find_frame_combatant(runtime.state, slot);
+    const auto refreshed = refresh_battle_collision_occupancy(
+        runtime.collision_occupancy,
+        BattleCollisionOccupancyRefreshRequest{
+            .slot = slot,
+            .present = combatant != nullptr && combatant->present,
+            .alive = combatant != nullptr && combatant->alive,
+            .position = combatant != nullptr
+                ? collision_vec(combatant->combatant_cur_pos_0x1c)
+                : BattleCollisionVec3{},
+            .instruction_flags_0xec = combatant != nullptr
+                ? combatant->instruction_flags_0xec
+                : 0U,
+            .mld_slot_valid = combatant != nullptr
+                ? combatant->collision_mld_slot_valid
+                : std::nullopt,
+        });
+    if (result != nullptr) {
+        auto event = make_visual_event(
+            runtime,
+            nullptr,
+            BattleFrameWorkerStepKind::CollisionOccupancyRefresh,
+            "FUN_80018CBC/FUN_800184F0",
+            frame_event_status(refreshed.status),
+            "slot=" + std::to_string(slot)
+                + "; grid=" + std::to_string(refreshed.grid_x) + ','
+                + std::to_string(refreshed.grid_z)
+                + "; cells_written=" + std::to_string(refreshed.cells_written)
+                + "; occupancy_revision=" + std::to_string(refreshed.revision)
+                + "; provenance=" + refreshed.provenance);
+        event.slot = slot;
+        append_recorded_event(runtime, *result, std::move(event));
+    }
+    return refreshed;
+}
+
+void append_collision_probe_event(
+    BattleFrameRuntime& runtime,
+    BattleFrameRunResult& result,
+    BattleFrameVisualChildTask& task,
+    const BattleCollisionVec3& local,
+    const BattleCollisionTransformResult& transformed,
+    int candidate,
+    bool reverse_probe) {
+    std::ostringstream detail;
+    detail << "state=2; counter=" << task.collision_counter
+           << "; probe=" << (reverse_probe ? "reverse_half_step" : "primary")
+           << "; local_bits="
+           << std::hex << std::showbase
+           << std::bit_cast<std::uint32_t>(local.x) << ','
+           << std::bit_cast<std::uint32_t>(local.y) << ','
+           << std::bit_cast<std::uint32_t>(local.z)
+           << "; world_bits="
+           << transformed.world_x_bits << ','
+           << transformed.world_y_bits << ','
+           << transformed.world_z_bits
+           << std::dec << std::noshowbase
+           << "; candidate=" << candidate
+           << "; occupancy_revision=" << runtime.collision_occupancy.revision
+           << "; provenance=" << transformed.provenance;
+    append_recorded_event(
+        runtime,
+        result,
+        make_visual_event(
+            runtime,
+            &task,
+            BattleFrameWorkerStepKind::CollisionProbe,
+            reverse_probe
+                ? "FUN_8004BA88_reverse_occupancy"
+                : "FUN_8004B9CC_primary_occupancy",
+            frame_event_status(transformed.status),
+            detail.str()));
+}
+
+void advance_collision_box_child(
+    BattleFrameRuntime& runtime,
+    BattleFrameRunResult& result,
+    BattleFrameVisualChildTask& task,
+    std::uint32_t& rng_state) {
+    auto* origin = find_frame_combatant(runtime.state, task.origin_slot);
+    if (!task.collision_box.has_value() || origin == nullptr) {
+        append_recorded_event(
+            runtime,
+            result,
+            make_visual_event(
+                runtime,
+                &task,
+                BattleFrameWorkerStepKind::VisualUnsupportedWait,
+                "FUN_8004B7C4_missing_input",
+                BattleFrameEventStatus::MissingInput,
+                "collision child requires a decoded payload and live origin combatant"));
+        append_visual_cleanup(
+            runtime,
+            result,
+            task,
+            "missing CollisionBox input ended the child without RNG or a reset");
+        return;
+    }
+    const auto& payload = *task.collision_box;
+    if (payload.behavior_flags != 5U || payload.trailing_flags != 0U
+        || payload.start_counter < 0 || payload.end_counter < 0) {
+        append_recorded_event(
+            runtime,
+            result,
+            make_visual_event(
+                runtime,
+                &task,
+                BattleFrameWorkerStepKind::VisualUnsupportedWait,
+                "FUN_8004B7C4_unsupported_payload",
+                BattleFrameEventStatus::Unsupported,
+                "only behavior_flags=5, trailing_flags=0, and nonnegative counters are live-validated"));
+        append_visual_cleanup(
+            runtime,
+            result,
+            task,
+            "unsupported CollisionBox variant ended without RNG or a reset");
+        return;
+    }
+
+    if (task.collision_state == 0) {
+        task.phase = BattleFrameVisualChildPhase::Active;
+        task.thread_state_0x19 = 1;
+        task.collision_state = 1;
+        task.derived_mode = origin->visual_instruction_mode_0x6;
+        task.derived_subtype = origin->visual_instruction_subtype_0x8;
+        if (origin->instruction_target_slot_0x4 >= 0) {
+            task.target_slot = origin->instruction_target_slot_0x4;
+        }
+        const int before = task.collision_counter;
+        ++task.collision_counter;
+        append_recorded_event(
+            runtime,
+            result,
+            make_visual_event(
+                runtime,
+                &task,
+                BattleFrameWorkerStepKind::VisualChildState0,
+                "FUN_8004B7C4_state0",
+                frame_event_status(task.status),
+                "state=0->1; counter=" + std::to_string(before) + "->"
+                    + std::to_string(task.collision_counter)
+                    + "; start=" + std::to_string(payload.start_counter)
+                    + "; end=" + std::to_string(payload.end_counter)
+                    + "; object_id=" + std::to_string(payload.object_id)
+                    + "; target=" + std::to_string(task.target_slot)));
+        return;
+    }
+
+    if (task.collision_state == 0xFA) {
+        append_visual_cleanup(
+            runtime,
+            result,
+            task,
+            "CollisionBox state 0xFA was removed on the visit after selector service");
+        return;
+    }
+
+    if (task.collision_state == 1) {
+        const int state_before = task.collision_state;
+        const int counter_before = task.collision_counter;
+        if (task.collision_counter >= payload.start_counter) {
+            task.collision_state = 2;
+        }
+        ++task.collision_counter;
+        append_recorded_event(
+            runtime,
+            result,
+            make_visual_event(
+                runtime,
+                &task,
+                BattleFrameWorkerStepKind::VisualChildDelay,
+                "FUN_8004B7C4_state1_wait",
+                BattleFrameEventStatus::Matched,
+                "state=" + std::to_string(state_before) + "->"
+                    + std::to_string(task.collision_state)
+                    + "; counter=" + std::to_string(counter_before) + "->"
+                    + std::to_string(task.collision_counter)
+                    + "; the transition visit performs no candidate query"));
+        return;
+    }
+
+    if (task.collision_state != 2) {
+        append_visual_cleanup(
+            runtime,
+            result,
+            task,
+            "unknown CollisionBox state ended without RNG or a reset");
+        return;
+    }
+    if (!origin->collision_xz_rotation_known) {
+        append_recorded_event(
+            runtime,
+            result,
+            make_visual_event(
+                runtime,
+                &task,
+                BattleFrameWorkerStepKind::VisualUnsupportedWait,
+                "FUN_80292080_missing_rotation",
+                BattleFrameEventStatus::MissingInput,
+                "collision X/Z worksheet rotation producer is unavailable"));
+        append_visual_cleanup(
+            runtime,
+            result,
+            task,
+            "missing collision rotation ended the child without RNG or a reset");
+        return;
+    }
+
+    const BattleCollisionRotationRaw rotation{
+        .x = origin->collision_rotation_x_0x28,
+        .y = std::bit_cast<std::int32_t>(origin->combatant_facing_angle_0x2c),
+        .z = origin->collision_rotation_z_0x30,
+    };
+    const auto probe = [&](const BattleCollisionVec3& local, bool reverse) {
+        const auto transformed = transform_battle_collision_point({
+            .local = local,
+            .origin = collision_vec(origin->combatant_cur_pos_0x1c),
+            .rotation = rotation,
+        });
+        const int candidate = transformed.status == BattleCollisionModelStatus::Matched
+            ? static_cast<int>(lookup_battle_collision_occupancy(
+                runtime.collision_occupancy,
+                transformed.world.x,
+                transformed.world.z))
+            : -1;
+        append_collision_probe_event(
+            runtime, result, task, local, transformed, candidate, reverse);
+        return std::pair{candidate, transformed.status};
+    };
+
+    auto [candidate, transform_status] = probe(task.collision_current, false);
+    if (candidate == -1 && transform_status == BattleCollisionModelStatus::Matched) {
+        const auto reverse = reverse_half_step_battle_collision_vector(
+            task.collision_current,
+            task.collision_velocity);
+        std::tie(candidate, transform_status) = probe(reverse, true);
+    }
+
+    if (transform_status == BattleCollisionModelStatus::Matched
+        && candidate >= 0
+        && candidate < static_cast<int>(task.collision_visited.size())
+        && candidate != task.origin_slot) {
+        const auto* candidate_combatant =
+            find_frame_combatant(runtime.state, candidate);
+        if (candidate_combatant != nullptr
+            && candidate_combatant->present
+            && candidate_combatant->alive
+            && !task.collision_visited[static_cast<std::size_t>(candidate)]) {
+            task.collision_visited[static_cast<std::size_t>(candidate)] = true;
+            if (candidate == task.target_slot) {
+                task.collision_selector_invoked = true;
+                task.collision_state = 0xFA;
+                (void)run_direct_transition_selector(
+                    runtime,
+                    result,
+                    task,
+                    DirectInstructionTransitionProducer::CollisionBox,
+                    BattleFrameWorkerStepKind::DirectTransitionSelect,
+                    "FUN_8004BB9C/FUN_8002E5D0",
+                    "fun_8002eb4c_collision_box",
+                    rng_state);
+            }
+        }
+    }
+
+    if (payload.end_counter == 0 || task.collision_counter < payload.end_counter) {
+        task.collision_current = advance_battle_collision_vector(
+            task.collision_current,
+            task.collision_velocity);
+    }
+    ++task.collision_counter;
 }
 
 bool mode0_rewrite_gate_for_task(
@@ -3140,6 +3591,8 @@ void advance_visual_children_at_cursor(
         }
         if (task.kind == BattleFrameVisualChildKind::ActionService) {
             advance_action_service_child(runtime, result, task, rng_state);
+        } else if (task.kind == BattleFrameVisualChildKind::CollisionBox) {
+            advance_collision_box_child(runtime, result, task, rng_state);
         } else {
             advance_action_view_child(runtime, result, task, rng_state);
         }
@@ -4912,6 +5365,9 @@ BattleFrameStepEvent make_action_lifecycle_event(
 }
 
 bool action_lifecycle_has_runnable_work(const BattleFrameRuntime& runtime) {
+    if (!runtime.visual.pending_instruction_control_resets.empty()) {
+        return true;
+    }
     if (has_active_visual_task(runtime)) {
         return true;
     }
@@ -5369,6 +5825,331 @@ void complete_action_if_drained(
             "active callback and all action-local passive participants completed or were removed"));
 }
 
+const BattleFrameThreadNode* active_instruction_thread_for_slot(
+    const BattleFrameThreadListRuntime& runtime,
+    int slot) {
+    const auto found = std::find_if(
+        runtime.nodes.begin(),
+        runtime.nodes.end(),
+        [slot](const BattleFrameThreadNode& node) {
+            return node.active
+                && node.kind == BattleFrameThreadNodeKind::CombatantInstruction
+                && node.owner_slot == slot;
+        });
+    return found == runtime.nodes.end() ? nullptr : &*found;
+}
+
+BattleFrameEventStatus instruction_control_reset_event_status(
+    BattleFrameInstructionControlResetLifecycle lifecycle) {
+    switch (lifecycle) {
+    case BattleFrameInstructionControlResetLifecycle::Applied:
+    case BattleFrameInstructionControlResetLifecycle::Consumed:
+        return BattleFrameEventStatus::Matched;
+    case BattleFrameInstructionControlResetLifecycle::TargetRemoved:
+    case BattleFrameInstructionControlResetLifecycle::TargetReplaced:
+    case BattleFrameInstructionControlResetLifecycle::Superseded:
+        return BattleFrameEventStatus::Skipped;
+    case BattleFrameInstructionControlResetLifecycle::MissingInput:
+        return BattleFrameEventStatus::MissingInput;
+    }
+    return BattleFrameEventStatus::Unsupported;
+}
+
+void record_instruction_control_reset(
+    BattleFrameRuntime& runtime,
+    const BattleFramePendingInstructionControlReset& reset,
+    BattleFrameInstructionControlResetLifecycle lifecycle,
+    int callback_state_before,
+    int callback_state_after,
+    std::string provenance,
+    BattleFrameRunResult* result = nullptr) {
+    runtime.visual.instruction_control_reset_history.push_back(
+        BattleFrameInstructionControlResetHistoryEvent{
+            .sequence = reset.sequence,
+            .frame_index = runtime.state.frame_index,
+            .action_ordinal = reset.action_ordinal,
+            .target_slot = reset.target_slot,
+            .producer_node_id = reset.producer_node_id,
+            .producer_visual_task_sequence =
+                reset.producer_visual_task_sequence,
+            .target_node_id = reset.target_node_id,
+            .producer_node_index = reset.producer_node_index,
+            .target_node_index = reset.target_node_index,
+            .traversal_generation = runtime.thread_list.traversal_generation,
+            .callback_publication_revision =
+                reset.callback_publication_revision,
+            .callback_state_before = callback_state_before,
+            .callback_state_after = callback_state_after,
+            .source = reset.source,
+            .lifecycle = lifecycle,
+            .timing = reset.timing,
+            .provenance = provenance,
+        });
+
+    const auto step_kind = lifecycle
+            == BattleFrameInstructionControlResetLifecycle::Consumed
+        || lifecycle == BattleFrameInstructionControlResetLifecycle::TargetRemoved
+        || lifecycle == BattleFrameInstructionControlResetLifecycle::TargetReplaced
+        || lifecycle == BattleFrameInstructionControlResetLifecycle::Superseded
+        ? BattleFrameWorkerStepKind::InstructionCallbackControlResetConsume
+        : BattleFrameWorkerStepKind::InstructionCallbackControlReset;
+    std::ostringstream detail;
+    detail << "reset_source="
+           << battle_frame_instruction_control_reset_source_name(reset.source)
+           << "; reset_lifecycle="
+           << battle_frame_instruction_control_reset_lifecycle_name(lifecycle)
+           << "; reset_timing="
+           << battle_frame_instruction_control_reset_timing_name(reset.timing)
+           << "; reset_sequence=" << reset.sequence
+           << "; producer_node_id=" << reset.producer_node_id
+           << "; producer_visual_task_sequence="
+           << reset.producer_visual_task_sequence
+           << "; target_node_id=" << reset.target_node_id
+           << "; producer_node_index=" << reset.producer_node_index
+           << "; target_node_index=" << reset.target_node_index
+           << "; staged_frame=" << reset.staged_frame_index
+           << "; staged_traversal_generation="
+           << reset.staged_traversal_generation
+           << "; eligible_traversal_generation="
+           << reset.eligible_traversal_generation
+           << "; callback_publication_revision="
+           << reset.callback_publication_revision
+           << "; callback_state=" << callback_state_before
+           << "->" << callback_state_after
+           << "; draws=0; provenance=" << provenance;
+    auto event = make_visual_event(
+        runtime,
+        nullptr,
+        step_kind,
+        reset.source == BattleFrameInstructionControlResetSource::QueuedTransition
+            ? "ResolveQueuedStdActionTransition_800227AC"
+            : "FUN_80020250_80020310",
+        instruction_control_reset_event_status(lifecycle),
+        detail.str());
+    event.action_ordinal = reset.action_ordinal;
+    event.slot = reset.target_slot;
+    event.instruction_control_reset_sequence = reset.sequence;
+    event.instruction_control_reset_source = reset.source;
+    event.instruction_control_reset_lifecycle = lifecycle;
+    event.instruction_control_reset_timing = reset.timing;
+    event.instruction_control_reset_producer_node_id = reset.producer_node_id;
+    event.instruction_control_reset_target_node_id = reset.target_node_id;
+    event.instruction_control_reset_traversal_generation =
+        runtime.thread_list.traversal_generation;
+    event.action_motion_callback_state_before = callback_state_before;
+    event.action_motion_callback_state_after = callback_state_after;
+    event.persistent_callback_publication_revision =
+        reset.callback_publication_revision;
+    if (result != nullptr) {
+        append_recorded_event(runtime, *result, std::move(event));
+    } else {
+        runtime.visual.pending_events.push_back(std::move(event));
+    }
+}
+
+bool apply_queued_instruction_control_reset(
+    BattleFrameRuntime& runtime,
+    int action_ordinal,
+    int slot,
+    std::string provenance) {
+    if (slot < 0
+        || slot >= static_cast<int>(
+            runtime.visual.persistent_instruction_callbacks.size())) {
+        return false;
+    }
+    auto& callback = runtime.visual.persistent_instruction_callbacks[
+        static_cast<std::size_t>(slot)];
+    if (!callback.installed) {
+        return false;
+    }
+    const auto* target = active_instruction_thread_for_slot(
+        runtime.thread_list, slot);
+    BattleFramePendingInstructionControlReset reset;
+    reset.sequence = runtime.visual.next_instruction_control_reset_sequence++;
+    reset.action_ordinal = action_ordinal;
+    reset.target_slot = slot;
+    reset.producer_node_id = runtime.thread_list.current_node_id.value_or(-1);
+    reset.target_node_id = target != nullptr ? target->node_id : -1;
+    reset.target_node_creation_sequence = target != nullptr
+        ? target->creation_sequence
+        : 0;
+    reset.producer_node_index = runtime.thread_list.current_node_index.has_value()
+        ? static_cast<int>(*runtime.thread_list.current_node_index)
+        : -1;
+    reset.target_node_index = reset.producer_node_index;
+    reset.staged_frame_index = runtime.state.frame_index;
+    reset.staged_traversal_generation = runtime.thread_list.traversal_generation;
+    reset.eligible_traversal_generation = runtime.thread_list.traversal_generation;
+    reset.callback_publication_revision = callback.publication_revision;
+    reset.source = BattleFrameInstructionControlResetSource::QueuedTransition;
+    reset.timing =
+        BattleFrameInstructionControlResetTiming::SameInstructionVisit;
+    reset.provenance = std::move(provenance);
+
+    const int before = callback.callback_state;
+    callback.callback_state = reset.reset_value;
+    callback.state8_delay_remaining = -1;
+    record_instruction_control_reset(
+        runtime,
+        reset,
+        target != nullptr
+            ? BattleFrameInstructionControlResetLifecycle::Applied
+            : BattleFrameInstructionControlResetLifecycle::MissingInput,
+        before,
+        callback.callback_state,
+        reset.provenance);
+    return target != nullptr;
+}
+
+bool apply_direct_instruction_control_reset(
+    BattleFrameRuntime& runtime,
+    int action_ordinal,
+    int slot,
+    int producer_visual_task_sequence,
+    std::string provenance) {
+    if (slot < 0
+        || slot >= static_cast<int>(
+            runtime.visual.persistent_instruction_callbacks.size())) {
+        return false;
+    }
+    auto& callback = runtime.visual.persistent_instruction_callbacks[
+        static_cast<std::size_t>(slot)];
+    if (!callback.installed) {
+        return false;
+    }
+
+    const auto* target = active_instruction_thread_for_slot(
+        runtime.thread_list, slot);
+    BattleFramePendingInstructionControlReset reset;
+    reset.sequence = runtime.visual.next_instruction_control_reset_sequence++;
+    reset.action_ordinal = action_ordinal;
+    reset.target_slot = slot;
+    reset.producer_node_id = runtime.thread_list.current_node_id.value_or(-1);
+    reset.producer_visual_task_sequence = producer_visual_task_sequence;
+    reset.target_node_id = target != nullptr ? target->node_id : -1;
+    reset.target_node_creation_sequence = target != nullptr
+        ? target->creation_sequence
+        : 0;
+    reset.producer_node_index = runtime.thread_list.current_node_index.has_value()
+        ? static_cast<int>(*runtime.thread_list.current_node_index)
+        : -1;
+    reset.staged_frame_index = runtime.state.frame_index;
+    reset.callback_publication_revision = callback.publication_revision;
+    reset.source = BattleFrameInstructionControlResetSource::DirectTransition;
+    reset.provenance = std::move(provenance);
+
+    BattleFrameThreadDeliveryDecision delivery;
+    if (target != nullptr) {
+        delivery = plan_battle_frame_thread_delivery(
+            runtime.thread_list, target->node_id);
+        reset.target_node_index = delivery.target_node_index;
+        reset.staged_traversal_generation =
+            delivery.staged_traversal_generation;
+        reset.eligible_traversal_generation =
+            delivery.eligible_traversal_generation;
+        if (delivery.status == BattleFrameThreadDeliveryStatus::SameTraversal) {
+            reset.timing =
+                BattleFrameInstructionControlResetTiming::SameFrameLaterVisit;
+        } else if (runtime.thread_list.traversal_active
+            && runtime.thread_list.current_node_id.has_value()) {
+            reset.timing =
+                BattleFrameInstructionControlResetTiming::NextFrameVisit;
+        }
+        reset.provenance += "; " + delivery.provenance;
+    }
+
+    const int before = callback.callback_state;
+    callback.callback_state = reset.reset_value;
+    callback.state8_delay_remaining = -1;
+    const bool schedulable = target != nullptr
+        && (delivery.status == BattleFrameThreadDeliveryStatus::SameTraversal
+            || delivery.status == BattleFrameThreadDeliveryStatus::NextTraversal);
+    record_instruction_control_reset(
+        runtime,
+        reset,
+        schedulable
+            ? BattleFrameInstructionControlResetLifecycle::Applied
+            : BattleFrameInstructionControlResetLifecycle::MissingInput,
+        before,
+        callback.callback_state,
+        reset.provenance);
+    if (!schedulable) {
+        return false;
+    }
+    runtime.visual.pending_instruction_control_resets.push_back(
+        std::move(reset));
+    return true;
+}
+
+void resolve_unvisitable_instruction_control_resets(
+    BattleFrameRuntime& runtime,
+    BattleFrameRunResult& result) {
+    auto& pending = runtime.visual.pending_instruction_control_resets;
+    for (auto it = pending.begin(); it != pending.end();) {
+        const auto* target = find_battle_frame_thread(
+            runtime.thread_list, it->target_node_id);
+        if (target != nullptr
+            && target->active
+            && target->creation_sequence == it->target_node_creation_sequence) {
+            ++it;
+            continue;
+        }
+        const auto* replacement = active_instruction_thread_for_slot(
+            runtime.thread_list, it->target_slot);
+        const auto lifecycle = replacement != nullptr
+            ? BattleFrameInstructionControlResetLifecycle::TargetReplaced
+            : BattleFrameInstructionControlResetLifecycle::TargetRemoved;
+        const auto& callback = runtime.visual.persistent_instruction_callbacks[
+            static_cast<std::size_t>(it->target_slot)];
+        record_instruction_control_reset(
+            runtime,
+            *it,
+            lifecycle,
+            callback.callback_state,
+            callback.callback_state,
+            replacement != nullptr
+                ? "the captured target instruction node was replaced before its visit"
+                : "the captured target instruction node was removed before its visit",
+            &result);
+        it = pending.erase(it);
+    }
+}
+
+bool consume_instruction_control_resets_for_thread(
+    BattleFrameRuntime& runtime,
+    const BattleFrameThreadNode& thread,
+    BattleFrameRunResult& result) {
+    bool consumed_any = false;
+    auto& pending = runtime.visual.pending_instruction_control_resets;
+    for (auto it = pending.begin(); it != pending.end();) {
+        if (it->target_node_id != thread.node_id
+            || runtime.thread_list.traversal_generation
+                < it->eligible_traversal_generation) {
+            ++it;
+            continue;
+        }
+        auto& callback = runtime.visual.persistent_instruction_callbacks[
+            static_cast<std::size_t>(thread.owner_slot)];
+        const auto lifecycle = callback.publication_revision
+                > it->callback_publication_revision
+            ? BattleFrameInstructionControlResetLifecycle::Superseded
+            : BattleFrameInstructionControlResetLifecycle::Consumed;
+        record_instruction_control_reset(
+            runtime,
+            *it,
+            lifecycle,
+            callback.callback_state,
+            callback.callback_state,
+            lifecycle == BattleFrameInstructionControlResetLifecycle::Consumed
+                ? "the exact target instruction node consumed the direct reset before callback invocation"
+                : "a later direct transition publication superseded this reset before the target visit",
+            &result);
+        consumed_any = true;
+        it = pending.erase(it);
+    }
+    return consumed_any;
+}
+
 } // namespace
 
 std::optional<BattleFrameRuntime> initialize_first_battle_frame_runtime(
@@ -5388,6 +6169,7 @@ std::optional<BattleFrameRuntime> initialize_first_battle_frame_runtime(
     BattleFrameRuntime runtime;
     runtime.initialized = true;
     runtime.state = std::move(*frame_state);
+    runtime.collision_occupancy = make_battle_collision_occupancy_runtime();
     runtime.view_placement_cache = make_default_view_placement_cache_runtime();
     runtime.visual.timeline_action_ordinals.fill(-1);
     runtime.movement_controller_states.fill(
@@ -5429,6 +6211,8 @@ std::optional<BattleFrameRuntime> initialize_first_battle_frame_runtime(
                     "movement-controller thread creation failed for slot "
                     + std::to_string(combatant.slot) + ": " + created.detail);
             }
+            (void)refresh_collision_occupancy_for_slot(
+                runtime, combatant.slot, nullptr);
         }
     }
     const auto resource_worker = create_battle_frame_thread(
@@ -5816,7 +6600,8 @@ bool stage_battle_frame_validated_instruction_transition(
     int slot,
     int target_slot,
     std::int16_t instruction_mode,
-    std::string provenance) {
+    std::string provenance,
+    int producer_visual_task_sequence) {
     auto* combatant = find_frame_combatant(runtime.state, slot);
     const auto* resource = visual_resource_for(runtime, slot);
     if (combatant == nullptr || resource == nullptr) {
@@ -5833,6 +6618,17 @@ bool stage_battle_frame_validated_instruction_transition(
             .allow_transition_fallback = true,
         });
     if (!selected_row.row.has_value()) {
+        return false;
+    }
+    const auto* target_instruction_thread = active_instruction_thread_for_slot(
+        runtime.thread_list, slot);
+    const auto& callback_before_commit =
+        runtime.visual.persistent_instruction_callbacks[
+            static_cast<std::size_t>(slot)];
+    if (target_instruction_thread == nullptr
+        || !callback_before_commit.installed
+        || callback_before_commit.thread_state_0x19 != 1
+        || selected_row.row->callback_index < 0) {
         return false;
     }
     apply_selected_action_row(
@@ -5853,24 +6649,34 @@ bool stage_battle_frame_validated_instruction_transition(
         selected_row.status == CombatantStdActionRowSelectionStatus::Matched
         ? CombatantVisualInstructionKnowledge::Known
         : CombatantVisualInstructionKnowledge::Provisional;
-    instruction.provenance = std::move(provenance)
+    const std::string transition_provenance = std::move(provenance)
         + "; FUN_800214FC selected action row "
         + std::to_string(selected_row.row->index)
-        + " and staged the generic param4=0 publisher";
+        + " and executed the direct param4=0 publisher";
+    instruction.provenance = transition_provenance;
     const bool staged = stage_battle_frame_visual_instruction_state(
         runtime,
         action_ordinal,
         std::move(instruction));
-    if (staged
-        && slot >= 0
-        && slot < static_cast<int>(
-            runtime.visual.persistent_instruction_callbacks.size())) {
-        runtime.visual.persistent_instruction_callbacks[
-            static_cast<std::size_t>(slot)].pending_publication_source =
-            BattleFrameInstructionCallbackPublicationSource::
-                ExplicitModeledTransition;
+    if (!staged) {
+        return false;
     }
-    return staged;
+    if (!publish_battle_frame_persistent_instruction_callback(
+            runtime,
+            slot,
+            BattleFrameInstructionCallbackPublicationSource::
+                ExplicitModeledTransition,
+            transition_provenance
+                + "; FUN_80020250 published IW+0xE0 before resetting IW+0x12")) {
+        return false;
+    }
+    return apply_direct_instruction_control_reset(
+        runtime,
+        action_ordinal,
+        slot,
+        producer_visual_task_sequence,
+        transition_provenance
+            + "; FUN_80020250 committed IW+0x12=0 at 0x80020310");
 }
 
 bool stage_battle_frame_queued_std_action_transition(
@@ -5953,6 +6759,17 @@ bool stage_battle_frame_queued_std_action_transition(
     if (!selected_row.row.has_value()) {
         return false;
     }
+    const auto* target_instruction_thread = active_instruction_thread_for_slot(
+        runtime.thread_list, action.actor_slot);
+    const auto& callback_before_commit =
+        runtime.visual.persistent_instruction_callbacks[
+            static_cast<std::size_t>(action.actor_slot)];
+    if (target_instruction_thread == nullptr
+        || !callback_before_commit.installed
+        || callback_before_commit.thread_state_0x19 != 1
+        || selected_row.row->callback_index < 0) {
+        return false;
+    }
 
     apply_selected_action_row(
         *combatant,
@@ -5990,16 +6807,27 @@ bool stage_battle_frame_queued_std_action_transition(
         runtime,
         action_ordinal,
         std::move(instruction));
-    if (staged) {
-        action.queued_state_transition_pending = false;
-        action.queued_state_transition_published = true;
-        runtime.visual.persistent_instruction_callbacks[
-            static_cast<std::size_t>(action.actor_slot)]
-            .pending_publication_source =
-            BattleFrameInstructionCallbackPublicationSource::
-                State1QueuedTransition;
+    if (!staged) {
+        return false;
     }
-    return staged;
+    if (!publish_battle_frame_persistent_instruction_callback(
+            runtime,
+            action.actor_slot,
+            BattleFrameInstructionCallbackPublicationSource::
+                State1QueuedTransition,
+            "FUN_800221FC accepted the queued transition and executed the exact param4=0 publisher")) {
+        return false;
+    }
+    if (!apply_queued_instruction_control_reset(
+            runtime,
+            action.action_ordinal,
+            action.actor_slot,
+            "ResolveQueuedStdActionTransition_800221FC committed IW+0x12=0 at 0x800227AC after callback publication")) {
+        return false;
+    }
+    action.queued_state_transition_pending = false;
+    action.queued_state_transition_published = true;
+    return true;
 }
 
 bool publish_battle_frame_persistent_instruction_callback(
@@ -6021,14 +6849,13 @@ bool publish_battle_frame_persistent_instruction_callback(
     auto& callback_runtime =
         runtime.visual.persistent_instruction_callbacks[
             static_cast<std::size_t>(slot)];
-    if (combatant == nullptr || resource == nullptr) {
-        runtime.warnings.push_back(
-            "persistent instruction callback publication has no combatant or STD resource");
-        return false;
-    }
-
     const bool state0 = source
         == BattleFrameInstructionCallbackPublicationSource::State0Initialization;
+    if (combatant == nullptr || (state0 && resource == nullptr)) {
+        runtime.warnings.push_back(
+            "persistent instruction callback publication has no combatant or required state-0 STD resource");
+        return false;
+    }
     if (state0) {
         if (callback_runtime.thread_state_0x19 != 0) {
             return false;
@@ -6208,6 +7035,15 @@ bool battle_frame_action_visual_publication_pending(
     if (runtime.active_action.has_value()
         && runtime.active_action->action_ordinal == action_ordinal
         && runtime.active_action->queued_state_transition_pending) {
+        return true;
+    }
+    if (std::any_of(
+            runtime.visual.pending_instruction_control_resets.begin(),
+            runtime.visual.pending_instruction_control_resets.end(),
+            [action_ordinal](
+                const BattleFramePendingInstructionControlReset& reset) {
+                return reset.action_ordinal == action_ordinal;
+            })) {
         return true;
     }
     if (std::any_of(
@@ -6443,6 +7279,64 @@ bool notify_first_turn_action_resolution(
     return true;
 }
 
+bool publish_first_turn_target_reaction(
+    BattleFrameRuntime& runtime,
+    const BattleFrameTargetReactionPublication& publication) {
+    const auto& reaction = publication.reaction;
+    if (!runtime.initialized
+        || publication.action_ordinal < 0
+        || reaction.target_slot < 0
+        || reaction.target_slot >= static_cast<int>(runtime.target_reactions.size())
+        || (reaction.status != BattleTargetReactionStatus::Matched
+            && reaction.status != BattleTargetReactionStatus::Provisional)
+        || !runtime.active_action.has_value()
+        || runtime.active_action->action_ordinal != publication.action_ordinal) {
+        return false;
+    }
+    auto* target = find_frame_combatant(runtime.state, reaction.target_slot);
+    if (target == nullptr || !target->present) {
+        return false;
+    }
+
+    auto& staged = runtime.target_reactions[
+        static_cast<std::size_t>(reaction.target_slot)];
+    staged.available = true;
+    staged.action_ordinal = publication.action_ordinal;
+    ++staged.revision;
+    staged.reaction = reaction;
+
+    target->instruction_flags_0xf0 =
+        (target->instruction_flags_0xf0 & ~0x04000000U)
+        | reaction.selector_flags_0xf0;
+    target->instruction_flags_0xf4 =
+        (target->instruction_flags_0xf4 & ~(0x01000000U | 0x04000000U))
+        | reaction.selector_flags_0xf4;
+
+    auto event = make_visual_event(
+        runtime,
+        nullptr,
+        BattleFrameWorkerStepKind::TargetReactionPublish,
+        "performAttack_80081B94/FUN_8002ECA4",
+        frame_event_status(reaction.status),
+        "queued_result=" + std::to_string(reaction.queued_result)
+            + "; queued_counter_byte="
+            + std::to_string(reaction.queued_counter_byte)
+            + "; pending_damage=" + std::to_string(reaction.pending_damage)
+            + "; hp_before_flush="
+            + std::to_string(reaction.target_hp_before_flush)
+            + "; reaction_flags_0x50="
+            + std::to_string(reaction.reaction_flags_0x50)
+            + "; selector_f0=" + std::to_string(reaction.selector_flags_0xf0)
+            + "; selector_f4=" + std::to_string(reaction.selector_flags_0xf4)
+            + "; revision=" + std::to_string(staged.revision)
+            + "; provenance=" + reaction.provenance);
+    event.action_ordinal = publication.action_ordinal;
+    event.slot = reaction.origin_slot;
+    event.target_slot = reaction.target_slot;
+    runtime.visual.pending_events.push_back(std::move(event));
+    return true;
+}
+
 bool set_first_turn_action_completion_override(
     BattleFrameRuntime& runtime,
     int action_ordinal,
@@ -6610,6 +7504,9 @@ BattleFrameRunResult run_first_turn_frame(
 
     ++runtime.state.frame_index;
     ++result.frames_executed;
+    begin_battle_frame_thread_traversal(
+        runtime.thread_list, runtime.state.frame_index);
+    resolve_unvisitable_instruction_control_resets(runtime, result);
     if (runtime.active_action.has_value()
         && runtime.active_action->setup_publication_events_pending) {
         const auto mask = runtime.active_action->passive_completion_mask;
@@ -6687,26 +7584,25 @@ BattleFrameRunResult run_first_turn_frame(
                     runtime.visual.current_visit_cursor);
                 continue;
             }
+            const bool direct_reset_consumed =
+                consume_instruction_control_resets_for_thread(
+                    runtime, thread, result);
+            bool queued_transition_committed = false;
             if (runtime.active_action.has_value()
                 && runtime.active_action->actor_slot == thread.owner_slot
                 && runtime.active_action->queued_state_transition_pending) {
-                (void)stage_battle_frame_queued_std_action_transition(
+                queued_transition_committed =
+                    stage_battle_frame_queued_std_action_transition(
                     runtime,
                     runtime.active_action->action_ordinal);
             }
-            auto& callback_runtime =
-                runtime.visual.persistent_instruction_callbacks[
-                    static_cast<std::size_t>(thread.owner_slot)];
-            const auto publication_source =
-                callback_runtime.pending_publication_source.value_or(
-                    BattleFrameInstructionCallbackPublicationSource::
-                        State1CurrentInstruction);
-            if (publish_battle_frame_persistent_instruction_callback(
+            if (!direct_reset_consumed && !queued_transition_committed) {
+                (void)publish_battle_frame_persistent_instruction_callback(
                     runtime,
                     thread.owner_slot,
-                    publication_source,
-                    "state-1 instruction-thread visit executed the exact param4=0 callback publisher before invoking IW+0xE0")) {
-                callback_runtime.pending_publication_source.reset();
+                    BattleFrameInstructionCallbackPublicationSource::
+                        State1CurrentInstruction,
+                    "state-1 instruction-thread visit executed the exact param4=0 callback publisher before invoking IW+0xE0");
             }
             flush_pending_visual_events(runtime, result);
             const bool playback_was_blocking = thread.owner_slot >= 0
@@ -6731,6 +7627,8 @@ BattleFrameRunResult run_first_turn_frame(
                     runtime, thread.owner_slot)) {
                 append_recorded_event(runtime, result, std::move(*event));
             }
+            (void)refresh_collision_occupancy_for_slot(
+                runtime, thread.owner_slot, &result);
             advance_visual_children_at_cursor(
                 runtime, result, rng_state, runtime.visual.current_visit_cursor);
             continue;
@@ -6828,6 +7726,7 @@ BattleFrameRunResult run_first_turn_frame(
             runtime, result, rng_state, runtime.visual.current_visit_cursor);
     }
 
+    end_battle_frame_thread_traversal(runtime.thread_list);
     runtime.visual.current_visit_cursor = packed_visit_cursor;
     maybe_publish_completion_override(runtime, result);
     complete_action_if_drained(runtime, result);
@@ -7034,6 +7933,8 @@ const char* battle_frame_worker_kind_name(BattleFrameWorkerKind kind) {
         return "VisualController";
     case BattleFrameWorkerKind::VisualActionService:
         return "VisualActionService";
+    case BattleFrameWorkerKind::VisualCollisionBox:
+        return "VisualCollisionBox";
     case BattleFrameWorkerKind::VisualActionViewRecord:
         return "VisualActionViewRecord";
     case BattleFrameWorkerKind::CombatantInstruction:
@@ -7115,6 +8016,18 @@ const char* battle_frame_worker_step_kind_name(BattleFrameWorkerStepKind kind) {
         return "VisualInstructionDecision";
     case BattleFrameWorkerStepKind::VisualInstructionStatePublish:
         return "VisualInstructionStatePublish";
+    case BattleFrameWorkerStepKind::TargetReactionPublish:
+        return "TargetReactionPublish";
+    case BattleFrameWorkerStepKind::DirectTransitionSelect:
+        return "DirectTransitionSelect";
+    case BattleFrameWorkerStepKind::CollisionOccupancyRefresh:
+        return "CollisionOccupancyRefresh";
+    case BattleFrameWorkerStepKind::CollisionProbe:
+        return "CollisionProbe";
+    case BattleFrameWorkerStepKind::InstructionCallbackControlReset:
+        return "InstructionCallbackControlReset";
+    case BattleFrameWorkerStepKind::InstructionCallbackControlResetConsume:
+        return "InstructionCallbackControlResetConsume";
     case BattleFrameWorkerStepKind::ActionMotionInvocationDecision:
         return "ActionMotionInvocationDecision";
     case BattleFrameWorkerStepKind::ActionMotionPlaybackInstall:
@@ -7262,6 +8175,7 @@ const char* battle_frame_combatant_instruction_phase_name(
 const char* battle_frame_visual_child_kind_name(BattleFrameVisualChildKind kind) {
     switch (kind) {
     case BattleFrameVisualChildKind::ActionService: return "ActionService";
+    case BattleFrameVisualChildKind::CollisionBox: return "CollisionBox";
     case BattleFrameVisualChildKind::ActionViewRecord: return "ActionViewRecord";
     }
     return "ActionViewRecord";
@@ -7277,6 +8191,51 @@ const char* battle_frame_visual_child_phase_name(BattleFrameVisualChildPhase pha
     case BattleFrameVisualChildPhase::Complete: return "Complete";
     }
     return "Complete";
+}
+
+const char* battle_frame_instruction_control_reset_source_name(
+    BattleFrameInstructionControlResetSource source) {
+    switch (source) {
+    case BattleFrameInstructionControlResetSource::QueuedTransition:
+        return "QueuedTransition";
+    case BattleFrameInstructionControlResetSource::DirectTransition:
+        return "DirectTransition";
+    }
+    return "QueuedTransition";
+}
+
+const char* battle_frame_instruction_control_reset_lifecycle_name(
+    BattleFrameInstructionControlResetLifecycle lifecycle) {
+    switch (lifecycle) {
+    case BattleFrameInstructionControlResetLifecycle::Applied:
+        return "Applied";
+    case BattleFrameInstructionControlResetLifecycle::Consumed:
+        return "Consumed";
+    case BattleFrameInstructionControlResetLifecycle::TargetRemoved:
+        return "TargetRemoved";
+    case BattleFrameInstructionControlResetLifecycle::TargetReplaced:
+        return "TargetReplaced";
+    case BattleFrameInstructionControlResetLifecycle::Superseded:
+        return "Superseded";
+    case BattleFrameInstructionControlResetLifecycle::MissingInput:
+        return "MissingInput";
+    }
+    return "MissingInput";
+}
+
+const char* battle_frame_instruction_control_reset_timing_name(
+    BattleFrameInstructionControlResetTiming timing) {
+    switch (timing) {
+    case BattleFrameInstructionControlResetTiming::SameInstructionVisit:
+        return "SameInstructionVisit";
+    case BattleFrameInstructionControlResetTiming::SameFrameLaterVisit:
+        return "SameFrameLaterVisit";
+    case BattleFrameInstructionControlResetTiming::NextFrameVisit:
+        return "NextFrameVisit";
+    case BattleFrameInstructionControlResetTiming::Unknown:
+        return "Unknown";
+    }
+    return "Unknown";
 }
 
 } // namespace savor::predict

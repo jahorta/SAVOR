@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -42,6 +43,24 @@ enum class BattleFrameThreadMutationStatus {
     MissingInput,
     Duplicate,
     NotFound,
+};
+
+enum class BattleFrameThreadDeliveryStatus {
+    SameTraversal,
+    NextTraversal,
+    TargetNotFound,
+    TargetInactive,
+};
+
+struct BattleFrameThreadDeliveryDecision {
+    BattleFrameThreadDeliveryStatus status =
+        BattleFrameThreadDeliveryStatus::TargetNotFound;
+    int target_node_id = -1;
+    int current_node_index = -1;
+    int target_node_index = -1;
+    std::uint64_t staged_traversal_generation = 0;
+    std::uint64_t eligible_traversal_generation = 0;
+    std::string provenance;
 };
 
 struct BattleFrameThreadNode {
@@ -100,11 +119,28 @@ struct BattleFrameThreadMutationResult {
 struct BattleFrameThreadListRuntime {
     std::vector<BattleFrameThreadNode> nodes;
     std::vector<BattleFrameThreadMutationEvent> history;
+    bool traversal_active = false;
+    std::uint64_t traversal_generation = 0;
+    int traversal_frame_index = -1;
+    std::optional<int> previous_node_id;
     std::optional<int> current_node_id;
+    std::optional<std::size_t> current_node_index;
+    std::vector<int> visited_node_ids;
     int next_node_id = 0;
     std::uint64_t next_creation_sequence = 0;
     std::uint64_t next_event_sequence = 0;
 };
+
+void begin_battle_frame_thread_traversal(
+    BattleFrameThreadListRuntime& runtime,
+    int frame_index);
+
+void end_battle_frame_thread_traversal(
+    BattleFrameThreadListRuntime& runtime);
+
+BattleFrameThreadDeliveryDecision plan_battle_frame_thread_delivery(
+    const BattleFrameThreadListRuntime& runtime,
+    int target_node_id);
 
 BattleFrameThreadMutationResult create_battle_frame_thread(
     BattleFrameThreadListRuntime& runtime,

@@ -140,6 +140,42 @@ std::optional<BattleFrameRuntime> initialize_frame_runtime(
     return runtime;
 }
 
+bool install_low_level_invocation_callback(
+    BattleFrameRuntime& runtime,
+    int slot) {
+    auto* combatant = find_frame_combatant(runtime.state, slot);
+    if (combatant == nullptr) {
+        return false;
+    }
+    combatant->selected_action_row_index = 0;
+    combatant->selected_action_row_action_id = 1;
+    combatant->selected_action_row_callback_index = 8;
+    combatant->selected_action_row_callback_ordinal = 0;
+    combatant->selected_action_row_duration_bits = 0x40a00000u;
+    combatant->selected_action_row_duration_known = true;
+    combatant->selected_action_row_known = true;
+    auto& callback = runtime.visual.persistent_instruction_callbacks[
+        static_cast<std::size_t>(slot)];
+    callback.installed = true;
+    callback.thread_state_0x19 = 1;
+    callback.slot = slot;
+    callback.publication_revision = 1;
+    callback.instruction_state_revision = combatant->visual_instruction_revision;
+    callback.callback_index = 8;
+    callback.callback_family =
+        ActionMotionPersistentCallbackFamily::ActionMotionBasic_8001B1B0;
+    callback.callback_state = 15;
+    callback.current_instruction_row = CombatantStdActionRow{
+        .index = combatant->selected_action_row_index,
+        .action_id = combatant->selected_action_row_action_id,
+        .callback_index = combatant->selected_action_row_callback_index,
+        .callback_ordinal = combatant->selected_action_row_callback_ordinal,
+        .transition_gate_divisor_bits =
+            combatant->selected_action_row_duration_bits,
+    };
+    return true;
+}
+
 BattleFrameActionScheduleResult schedule_fallback_action(
     BattleFrameRuntime& runtime,
     int actor,
@@ -350,6 +386,7 @@ TEST(SavorPredictBattleMovementInvocationRuntime, PassiveActivationResetsPriorQu
 TEST(SavorPredictBattleMovementInvocationRuntime, QueuedStdActionTransitionSeparatesWorksheetModeFromMotionMode) {
     auto runtime = initialize_frame_runtime(frame_slots());
     ASSERT_TRUE(runtime.has_value());
+    ASSERT_TRUE(install_low_level_invocation_callback(*runtime, 0));
     const auto scheduled = schedule_first_turn_actor_action(
         *runtime,
         BattleFrameScheduleActionInput{
@@ -464,6 +501,7 @@ TEST(SavorPredictBattleMovementInvocationRuntime, QueuedStdActionTransitionPubli
                               int expected_mode) {
         auto runtime = initialize_frame_runtime(frame_slots());
         ASSERT_TRUE(runtime.has_value());
+        ASSERT_TRUE(install_low_level_invocation_callback(*runtime, 0));
         const auto scheduled = schedule_first_turn_actor_action(
             *runtime,
             BattleFrameScheduleActionInput{

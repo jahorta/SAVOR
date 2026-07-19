@@ -48,6 +48,9 @@ TEST(SavorCaptureProfileJson, EveryTrackedProfileBuildsAsTheNewSchema)
         { "move_increment", [] { return build_first_battle_move_increment_read_watch_profile_ini(); } },
         { "probe_layer_validation", [] { return build_first_battle_probe_layer_validation_profile_ini(); } },
         { "action_motion_invocation", [] { return build_first_battle_action_motion_invocation_profile_ini(); } },
+        { "direct_reset_thread_position", [] { return build_first_battle_direct_reset_thread_position_profile_ini(); } },
+        { "direct_transition_producer", [] { return build_first_battle_direct_transition_producer_profile_ini(); } },
+        { "direct_transition_input_audit", [] { return build_first_battle_direct_transition_input_audit_profile_ini(); } },
     };
 
     for (const auto& [name, build] : builders) {
@@ -60,6 +63,273 @@ TEST(SavorCaptureProfileJson, EveryTrackedProfileBuildsAsTheNewSchema)
         EXPECT_FALSE(parsed.profile->name.empty());
         EXPECT_FALSE(parsed.profile->probes.empty());
     }
+}
+
+TEST(SavorCaptureProfileJson, DirectResetThreadPositionProfileCapturesRunnerAndInsertionOrder)
+{
+    const auto parsed = parse_profile_json(
+        build_first_battle_direct_reset_thread_position_profile_ini(128));
+    ASSERT_TRUE(parsed.profile.has_value()) << format_profile_errors(parsed);
+    const auto& profile = *parsed.profile;
+    EXPECT_EQ(profile.name, "first_battle_direct_reset_thread_position");
+    EXPECT_EQ(profile.limits.queue_bytes, 128ull * 1024ull * 1024ull);
+    EXPECT_EQ(profile.limits.chunk_events, 2048u);
+
+    const auto find_probe = [&](std::string_view id) {
+        return std::ranges::find(profile.probes, id, &ProbeDefinition::id);
+    };
+    const auto reset = find_probe("direct_transition_reset_80020310");
+    ASSERT_NE(reset, profile.probes.end());
+    EXPECT_EQ(reset->address, 0x80020310u);
+    EXPECT_EQ(reset->window_id, "instruction_lifetime");
+    EXPECT_NE(std::ranges::find(reset->samples, std::string("runner_current_node"),
+        &SampleDefinition::name), reset->samples.end());
+    EXPECT_NE(std::ranges::find(reset->samples, std::string("runner_previous_node"),
+        &SampleDefinition::name), reset->samples.end());
+    EXPECT_NE(std::ranges::find(reset->samples, std::string("r31"),
+        &SampleDefinition::name), reset->samples.end());
+    EXPECT_EQ(std::ranges::count_if(reset->samples, [](const auto& sample) {
+        return sample.kind == SampleKind::LinkedList && sample.max_nodes == 128;
+    }), 1);
+    EXPECT_EQ(std::ranges::count_if(reset->samples, [](const auto& sample) {
+        return sample.kind == SampleKind::StackTrace && sample.max_frames == 8;
+    }), 1);
+
+    EXPECT_EQ(find_probe("producer_thread_callback_call_802265BC"), profile.probes.end());
+    EXPECT_EQ(find_probe("instruction_thread_callback_call_802265BC"), profile.probes.end());
+
+    const auto dispatch = find_probe("instruction_dispatch_callback_call_80022A40");
+    ASSERT_NE(dispatch, profile.probes.end());
+    EXPECT_EQ(dispatch->address, 0x80022A40u);
+    EXPECT_NE(std::ranges::find(dispatch->samples, std::string("r29"),
+        &SampleDefinition::name), dispatch->samples.end());
+    EXPECT_EQ(std::ranges::count_if(dispatch->samples, [](const auto& sample) {
+        return sample.kind == SampleKind::StackTrace && sample.max_frames == 8;
+    }), 1);
+
+    const auto create_entry = find_probe("direct_reset_child_create_entry_802268E8");
+    const auto create_publish = find_probe("direct_reset_child_create_publish_80226964");
+    ASSERT_NE(create_entry, profile.probes.end());
+    ASSERT_NE(create_publish, profile.probes.end());
+    EXPECT_EQ(create_entry->address, 0x802268E8u);
+    EXPECT_EQ(create_publish->address, 0x80226964u);
+    EXPECT_EQ(std::ranges::count_if(create_publish->samples, [](const auto& sample) {
+        return sample.kind == SampleKind::LinkedList && sample.max_nodes == 128;
+    }), 1);
+
+    const auto frame = find_probe("battle_case5_frame_clock_8000A2FC");
+    ASSERT_NE(frame, profile.probes.end());
+    EXPECT_TRUE(frame->frame_clock);
+    ASSERT_TRUE(frame->max_hits.has_value());
+    EXPECT_EQ(*frame->max_hits, 2400u);
+    const auto changed = find_probe("battle_case5_thread_list_changed_8000A2FC");
+    ASSERT_NE(changed, profile.probes.end());
+    EXPECT_EQ(changed->sampling.mode, SamplingMode::ChangedOnly);
+
+    ASSERT_EQ(profile.windows.size(), 1u);
+    EXPECT_EQ(profile.windows.front().open_probe, "setup_turn_end_800715EC");
+    ASSERT_EQ(profile.flight_recorders.size(), 1u);
+    EXPECT_EQ(profile.flight_recorders.front().pre_events, 3u);
+    EXPECT_EQ(profile.flight_recorders.front().post_events, 4u);
+    EXPECT_NE(std::ranges::find(profile.flight_recorders.front().trigger_probes,
+        "direct_transition_reset_80020310"),
+        profile.flight_recorders.front().trigger_probes.end());
+
+    EXPECT_THROW(build_first_battle_direct_reset_thread_position_profile_ini(64),
+        std::invalid_argument);
+}
+
+TEST(SavorCaptureProfileJson, DirectTransitionProducerProfileCapturesBothFamiliesAndEligibility)
+{
+    const auto parsed = parse_profile_json(
+        build_first_battle_direct_transition_producer_profile_ini(128));
+    ASSERT_TRUE(parsed.profile.has_value()) << format_profile_errors(parsed);
+    const auto& profile = *parsed.profile;
+    EXPECT_EQ(profile.name, "first_battle_direct_transition_producer");
+    EXPECT_EQ(profile.limits.queue_bytes, 128ull * 1024ull * 1024ull);
+    EXPECT_EQ(profile.limits.chunk_events, 2048u);
+
+    const auto find_probe = [&](std::string_view id) {
+        return std::ranges::find(profile.probes, id, &ProbeDefinition::id);
+    };
+
+    const auto rng = find_probe("rng_seed_write_803469A8");
+    ASSERT_NE(rng, profile.probes.end());
+    EXPECT_EQ(rng->kind, ProbeKind::Memory);
+    EXPECT_EQ(rng->address, 0x803469A8u);
+    EXPECT_TRUE(rng->owns_rng_draw);
+    EXPECT_FALSE(rng->activate_on_pc.has_value());
+    EXPECT_EQ(std::ranges::count_if(rng->samples, [](const auto& sample) {
+        return sample.kind == SampleKind::StackTrace && sample.max_frames == 8;
+    }), 1);
+
+    EXPECT_EQ(std::ranges::count_if(profile.probes, [](const auto& probe) {
+        return probe.id.starts_with("queued_special_state_slot")
+            && probe.kind == ProbeKind::Memory
+            && !probe.activate_on_pc.has_value();
+    }), 12);
+    EXPECT_EQ(std::ranges::count_if(profile.probes, [](const auto& probe) {
+        return probe.id.starts_with("combatant_thread_roots_")
+            && probe.kind == ProbeKind::Memory;
+    }), 6);
+
+    const auto dynamic_instruction_watches = std::ranges::count_if(
+        profile.probes, [](const auto& probe) {
+            return probe.id.starts_with("root")
+                && probe.id.find("_iw_") != std::string::npos
+                && probe.kind == ProbeKind::Memory;
+        });
+    EXPECT_EQ(dynamic_instruction_watches, 12);
+    for (const auto& probe : profile.probes) {
+        if (!(probe.id.starts_with("root")
+              && probe.id.find("_iw_") != std::string::npos
+              && probe.kind == ProbeKind::Memory)) {
+            continue;
+        }
+        ASSERT_TRUE(probe.activate_on_pc.has_value());
+        EXPECT_EQ(*probe.activate_on_pc, 0x800715ECu);
+        EXPECT_EQ(probe.address_trace, AddressTracePolicy::OnFailure);
+        EXPECT_TRUE(validate_address_program(probe.address_program).valid);
+        EXPECT_EQ(probe.window_id, "instruction_lifetime");
+    }
+
+    const auto collision_publish = find_probe("collision_child_publish_8003CAF4");
+    ASSERT_NE(collision_publish, profile.probes.end());
+    EXPECT_TRUE(collision_publish->window_id.empty());
+    EXPECT_EQ(collision_publish->address, 0x8003CAF4u);
+
+    for (const auto id : {
+             "action_service_transition_call_80042990",
+             "collision_transition_call_8004BB9C",
+             "collision_transition_call_8004BC74",
+             "collision_transition_call_8004BDEC",
+             "collision_transition_call_8004BEC4",
+             "temporary_service_transition_call_80020CE4",
+             "temporary_service_transition_call_80020D28",
+             "direct_transition_selector_entry_8002E5D0",
+             "direct_selector_call_8002E9C4",
+             "randomized_selector_draw_8002EBDC",
+             "generic_direct_selector_call_800214DC",
+             "indexed_direct_selector_call_800215D8",
+             "direct_transition_reset_80020310",
+             "queued_state_mapper_entry_800217D0",
+             "queued_state17_flag_post_8002186C" }) {
+        SCOPED_TRACE(id);
+        EXPECT_NE(find_probe(id), profile.probes.end());
+    }
+
+    EXPECT_EQ(std::ranges::count_if(profile.probes, [](const auto& probe) {
+        return probe.id.starts_with("direct_selector_call_8002E");
+    }), 12);
+    EXPECT_EQ(std::ranges::count_if(profile.probes, [](const auto& probe) {
+        return probe.id.starts_with("direct_selector_return_8002E");
+    }), 12);
+
+    ASSERT_EQ(profile.flight_recorders.size(), 1u);
+    const auto& flight = profile.flight_recorders.front();
+    EXPECT_EQ(flight.id, "direct_transition_producer_window");
+    for (const auto trigger : {
+             "direct_transition_reset_80020310",
+             "action_service_transition_call_80042990",
+             "collision_transition_call_8004BB9C",
+             "queued_state17_flag_post_8002186C" }) {
+        EXPECT_NE(std::ranges::find(flight.trigger_probes, trigger),
+            flight.trigger_probes.end());
+    }
+
+    EXPECT_THROW(build_first_battle_direct_transition_producer_profile_ini(64),
+        std::invalid_argument);
+}
+
+TEST(SavorCaptureProfileJson, DirectTransitionInputAuditCapturesReactionOperandsAndCollisionVisits)
+{
+    const auto parsed = parse_profile_json(
+        build_first_battle_direct_transition_input_audit_profile_ini(128));
+    ASSERT_TRUE(parsed.profile.has_value()) << format_profile_errors(parsed);
+    const auto& profile = *parsed.profile;
+    EXPECT_EQ(profile.name, "first_battle_direct_transition_input_audit");
+
+    const auto find_probe = [&](std::string_view id) {
+        return std::ranges::find(profile.probes, id, &ProbeDefinition::id);
+    };
+    EXPECT_EQ(std::ranges::count_if(profile.probes, [](const auto& probe) {
+        return probe.id.starts_with("queued_special_result_slot")
+            && probe.kind == ProbeKind::Memory
+            && probe.memory_access == MemoryAccess::Write;
+    }), 12);
+    EXPECT_EQ(std::ranges::count_if(profile.probes, [](const auto& probe) {
+        return probe.id.starts_with("queued_special_field7_slot")
+            && probe.kind == ProbeKind::Memory
+            && probe.memory_access == MemoryAccess::Write;
+    }), 12);
+
+    for (const auto id : {
+             "target_reaction_entry_8002ECA4",
+             "target_reaction_target_resolved_8002ECE0",
+             "target_reaction_result_loaded_8002EDCC",
+             "target_reaction_complete_8002EE9C",
+             "pending_result_record_gate_80081F70",
+             "pending_result_apply_call_80081FCC",
+             "collision_child_visit_entry_8004B7C4",
+             "collision_child_mode_resolved_8004B86C",
+             "collision_candidate_primary_return_8004B9CC",
+             "collision_candidate_validity_return_8004BA94",
+             "collision_candidate_eligibility_return_8004BAE4",
+             "collision_child_counter_increment_8004BF58" }) {
+        SCOPED_TRACE(id);
+        EXPECT_NE(find_probe(id), profile.probes.end());
+    }
+
+    const auto child_entry = find_probe("collision_child_visit_entry_8004B7C4");
+    ASSERT_NE(child_entry, profile.probes.end());
+    ASSERT_TRUE(child_entry->max_hits.has_value());
+    EXPECT_EQ(*child_entry->max_hits, 32768u);
+    EXPECT_GE(std::ranges::count_if(child_entry->samples, [](const auto& sample) {
+        return sample.kind == SampleKind::AddressProgram
+            && sample.trace == AddressTracePolicy::OnFailure
+            && validate_address_program(sample.address_program).valid;
+    }), 21);
+    EXPECT_LE(child_entry->samples.size(), 64u);
+    EXPECT_NE(std::ranges::find(child_entry->samples,
+        std::string("collision_occupancy_row0_0_7"), &SampleDefinition::name),
+        child_entry->samples.end());
+    EXPECT_NE(std::ranges::find(child_entry->samples,
+        std::string("collision_occupancy_row8_8"), &SampleDefinition::name),
+        child_entry->samples.end());
+
+    const auto reaction = find_probe("target_reaction_result_loaded_8002EDCC");
+    ASSERT_NE(reaction, profile.probes.end());
+    EXPECT_NE(std::ranges::find(reaction->samples, std::string("target_queued_result"),
+        &SampleDefinition::name), reaction->samples.end());
+    EXPECT_NE(std::ranges::find(reaction->samples, std::string("target_iw_reaction_flags"),
+        &SampleDefinition::name), reaction->samples.end());
+    EXPECT_NE(std::ranges::find(reaction->samples,
+        std::string("target_iw_pending_damage"), &SampleDefinition::name),
+        reaction->samples.end());
+
+    const auto primary = find_probe("collision_candidate_primary_return_8004B9CC");
+    ASSERT_NE(primary, profile.probes.end());
+    EXPECT_NE(std::ranges::find(primary->samples, std::string("collision_world_x"),
+        &SampleDefinition::name), primary->samples.end());
+    EXPECT_NE(std::ranges::find(primary->samples,
+        std::string("collision_owner_rotation_y"), &SampleDefinition::name),
+        primary->samples.end());
+    EXPECT_GE(std::ranges::count_if(primary->samples, [](const auto& sample) {
+        return sample.name.starts_with("collision_owner_")
+            && sample.kind == SampleKind::AddressProgram
+            && sample.trace == AddressTracePolicy::OnFailure
+            && validate_address_program(sample.address_program).valid;
+    }), 6);
+
+    const auto publish = find_probe("collision_child_publish_8003CAF4");
+    ASSERT_NE(publish, profile.probes.end());
+    EXPECT_NE(std::ranges::find(publish->samples, std::string("collision_start_counter"),
+        &SampleDefinition::name), publish->samples.end());
+    EXPECT_NE(std::ranges::find(publish->samples, std::string("collision_velocity_z"),
+        &SampleDefinition::name), publish->samples.end());
+
+    EXPECT_THROW(build_first_battle_direct_transition_input_audit_profile_ini(64),
+        std::invalid_argument);
 }
 
 TEST(SavorCaptureProfileJson, ActionMotionInvocationProfileCoversAttributionAndLifetime)

@@ -79,6 +79,40 @@ std::vector<std::uint8_t> system_camera_payload(
     return payload;
 }
 
+std::vector<std::uint8_t> collision_box_payload(
+    std::int16_t action_key = 4) {
+    std::vector<std::uint8_t> payload(0x38, 0);
+    write_u16_be(payload, 0x00, static_cast<std::uint16_t>(action_key));
+    write_u16_be(payload, 0x04, 0xffffU);
+    write_u32_be(payload, 0x10, 5U);
+    write_u16_be(payload, 0x14, 24U);
+    write_u16_be(payload, 0x16, 998U);
+    write_u16_be(payload, 0x18, 83U);
+    write_u32_be(payload, 0x1c, 0x00000000U);
+    write_u32_be(payload, 0x20, 0x40F66658U);
+    write_u32_be(payload, 0x24, 0x415851B6U);
+    write_u32_be(payload, 0x28, 0x00000000U);
+    write_u32_be(payload, 0x2c, 0x00000000U);
+    write_u32_be(payload, 0x30, 0x410FFFFDU);
+    write_u32_be(payload, 0x34, 0U);
+    return payload;
+}
+
+std::string collision_visual_json(const std::vector<std::uint8_t>& payload) {
+    std::ostringstream json;
+    json << "{\"schema\": \"spice_std_ir_v1\","
+         << "\"layoutKind\": \"entry_table\",\"parseOk\": true,"
+         << "\"entryTable\": {\"records\": ["
+         << "{\"index\":0,\"locationCode\":11,\"opcode\":3,"
+         << "\"payloadSize\":" << payload.size()
+         << ",\"payloadInBounds\":true,\"payloadBytesHex\":\""
+         << bytes_hex(payload) << "\"},"
+         << "{\"index\":1,\"locationCode\":-1,\"opcode\":0,"
+         << "\"payloadSize\":0,\"payloadInBounds\":true,"
+         << "\"payloadBytesHex\":\"\"}]}}";
+    return json.str();
+}
+
 std::vector<std::uint8_t> action_motion_delay_descriptor_payload(
     std::int16_t delay = 13,
     std::int16_t action_key = 5) {
@@ -337,6 +371,172 @@ int count_rng_label(
         [&label](const BattleFrameStepEvent& event) { return event.rng_label == label; }));
 }
 
+int active_thread_visit_cursor(
+    const BattleFrameRuntime& runtime,
+    int node_id) {
+    int cursor = 1;
+    for (const auto& node : runtime.thread_list.nodes) {
+        if (!node.active) {
+            continue;
+        }
+        if (node.node_id == node_id) {
+            return cursor;
+        }
+        ++cursor;
+    }
+    return -1;
+}
+
+int instruction_thread_node_id(
+    const BattleFrameRuntime& runtime,
+    int slot) {
+    const auto found = std::find_if(
+        runtime.thread_list.nodes.begin(),
+        runtime.thread_list.nodes.end(),
+        [slot](const BattleFrameThreadNode& node) {
+            return node.active
+                && node.kind == BattleFrameThreadNodeKind::CombatantInstruction
+                && node.owner_slot == slot;
+        });
+    return found == runtime.thread_list.nodes.end() ? -1 : found->node_id;
+}
+
+void add_direct_transition_rows(CombatantVisualResource& resource) {
+    const auto sentinel = std::find_if(
+        resource.action_rows.begin(),
+        resource.action_rows.end(),
+        [](const CombatantStdActionRow& row) { return row.row_type == 3; });
+    resource.action_rows.insert(sentinel, {
+        .index = 10,
+        .action_id = BattleFrameActionMode::PassiveBlock,
+        .row_type = 1,
+        .callback_index = 8,
+        .callback_ordinal = 3,
+        .transition_gate_divisor_bits = 0x40a00000u,
+    });
+    const auto updated_sentinel = std::find_if(
+        resource.action_rows.begin(),
+        resource.action_rows.end(),
+        [](const CombatantStdActionRow& row) { return row.row_type == 3; });
+    resource.action_rows.insert(updated_sentinel, {
+        .index = 11,
+        .action_id = BattleFrameActionMode::PassiveDodge,
+        .row_type = 1,
+        .callback_index = 8,
+        .callback_ordinal = 3,
+        .transition_gate_divisor_bits = 0x40a00000u,
+    });
+    for (const std::int16_t action_id : {12, 13}) {
+        const auto row_sentinel = std::find_if(
+            resource.action_rows.begin(),
+            resource.action_rows.end(),
+            [](const CombatantStdActionRow& row) { return row.row_type == 3; });
+        resource.action_rows.insert(row_sentinel, {
+            .index = action_id,
+            .action_id = action_id,
+            .row_type = 1,
+            .callback_index = 8,
+            .callback_ordinal = 3,
+            .transition_gate_divisor_bits = 0x40a00000u,
+        });
+    }
+}
+
+CombatantVisualResource decoded_collision_resource(
+    int slot,
+    std::int16_t start_counter = 0,
+    std::int16_t end_counter = 50) {
+    auto payload = collision_box_payload(4);
+    write_u16_be(payload, 0x14, static_cast<std::uint16_t>(start_counter));
+    write_u16_be(payload, 0x16, static_cast<std::uint16_t>(end_counter));
+    write_u32_be(payload, 0x1c, 0x00000000U);
+    write_u32_be(payload, 0x20, 0x00000000U);
+    write_u32_be(payload, 0x24, 0x41700000U);
+    write_u32_be(payload, 0x28, 0x00000000U);
+    write_u32_be(payload, 0x2c, 0x00000000U);
+    write_u32_be(payload, 0x30, 0x00000000U);
+    auto loaded = load_spice_std_visual_resource_from_json_text(
+        collision_visual_json(payload));
+    EXPECT_TRUE(loaded.ok);
+    loaded.resource.binding = {
+        .slot = slot,
+        .resource_stem = "collision_fixture",
+    };
+    loaded.resource.action_rows = decoded_resource(slot).action_rows;
+    return std::move(loaded.resource);
+}
+
+std::optional<BattleFrameRuntime> direct_reset_runtime(
+    bool producer_before_target) {
+    auto runtime = initialize_frame_runtime();
+    if (!runtime.has_value()) {
+        return std::nullopt;
+    }
+    auto target_resource = decoded_resource(4, false, 2);
+    add_direct_transition_rows(target_resource);
+    if (!configure_battle_frame_visual_resource(
+            *runtime, std::move(target_resource))
+        || !publish_fixture_visual_instruction_state(*runtime, 4, -1, 5)) {
+        return std::nullopt;
+    }
+    runtime->visual.persistent_instruction_callbacks[4].callback_state = 15;
+    runtime->visual.pending_events.clear();
+    runtime->visual.history.clear();
+    runtime->visual.instruction_control_reset_history.clear();
+
+    const int target_node = instruction_thread_node_id(*runtime, 4);
+    const int relative_node = producer_before_target
+        ? instruction_thread_node_id(*runtime, 1)
+        : -1;
+    const auto producer = create_battle_frame_thread(
+        runtime->thread_list,
+        BattleFrameThreadCreateRequest{
+            .kind = BattleFrameThreadNodeKind::ResourceWorker,
+            .owner_slot = producer_before_target ? 100 : 101,
+            .callback = BattleFrameThreadCallbackIdentity::ResourceQueue,
+            .active = true,
+            .insertion = producer_before_target
+                ? BattleFrameThreadInsertionKind::AfterNode
+                : BattleFrameThreadInsertionKind::Append,
+            .relative_node_id = producer_before_target
+                ? std::optional<int>{relative_node}
+                : std::nullopt,
+            .semantic_source_id = "test.direct_reset.producer",
+            .provenance = "action-service producer ordering fixture",
+        });
+    if (target_node < 0
+        || producer.status != BattleFrameThreadMutationStatus::Applied) {
+        return std::nullopt;
+    }
+
+    auto* origin = find_frame_combatant(runtime->state, 0);
+    if (origin == nullptr) {
+        return std::nullopt;
+    }
+    origin->visual_instruction_mode_0x6 = 4;
+    origin->visual_instruction_knowledge =
+        CombatantVisualInstructionKnowledge::Known;
+    origin->instruction_flags_0xec |= 0x00100000u;
+
+    BattleFrameVisualChildTask task;
+    task.sequence = runtime->visual.next_child_sequence++;
+    task.action_ordinal = 7;
+    task.origin_slot = 0;
+    task.target_slot = 4;
+    task.kind = BattleFrameVisualChildKind::ActionService;
+    task.phase = BattleFrameVisualChildPhase::Delay;
+    task.thread_state_0x19 = 1;
+    task.first_eligible_frame = runtime->state.frame_index + 1;
+    task.publication_visit_cursor = active_thread_visit_cursor(
+        *runtime, producer.node_id);
+    task.maximum_visits = 4;
+    task.delay_remaining = 0;
+    task.status = CombatantVisualModelStatus::Matched;
+    task.provenance = "direct reset ordering fixture";
+    runtime->visual.child_tasks.push_back(std::move(task));
+    return runtime;
+}
+
 std::vector<BattleFrameStepEvent> run_until_visual_publication(
     BattleFrameRuntime& runtime,
     std::uint32_t& rng,
@@ -379,6 +579,24 @@ TEST(SavorPredictCombatantVisualLoader, DecodesCompleteSetAndSystemCameraPayload
     EXPECT_EQ(camera.system_camera->scalar_bits, 0x3f800000U);
     EXPECT_EQ(camera.system_camera->end_frame, 0x0460U);
     EXPECT_EQ(camera.system_camera->mode, 0x0e);
+}
+
+TEST(SavorPredictCombatantVisualLoader, DecodesCollisionBoxPayload) {
+    const auto loaded = load_spice_std_visual_resource_from_json_text(
+        collision_visual_json(collision_box_payload()));
+
+    ASSERT_TRUE(loaded.ok);
+    ASSERT_EQ(loaded.resource.records.size(), 2u);
+    const auto& collision = loaded.resource.records[0];
+    EXPECT_EQ(collision.kind, CombatantVisualCommandKind::CollisionBox);
+    ASSERT_TRUE(collision.collision_box.has_value());
+    EXPECT_EQ(collision.collision_box->behavior_flags, 5U);
+    EXPECT_EQ(collision.collision_box->start_counter, 24);
+    EXPECT_EQ(collision.collision_box->end_counter, 998);
+    EXPECT_EQ(collision.collision_box->object_id, 83);
+    EXPECT_EQ(collision.collision_box->current_y_bits, 0x40F66658U);
+    EXPECT_EQ(collision.collision_box->velocity_z_bits, 0x410FFFFDU);
+    EXPECT_EQ(collision.collision_box->trailing_flags, 0U);
 }
 
 TEST(SavorPredictCombatantVisualModel, KeyPriorityAndSameModeEpochsAreExplicit) {
@@ -746,6 +964,194 @@ TEST(SavorPredictCombatantVisualRuntime, CallbackPublicationIsSeparateFromInstru
         ActionMotionPlaybackPhase::Inactive);
 }
 
+TEST(SavorPredictCombatantVisualRuntime, QueuedTransitionPublishesAndResetsInCurrentInstructionVisit) {
+    auto runtime = initialize_frame_runtime();
+    ASSERT_TRUE(runtime.has_value());
+    ASSERT_TRUE(configure_battle_frame_visual_resource(
+        *runtime, decoded_resource(0, false, 2)));
+    ASSERT_TRUE(publish_fixture_visual_instruction_state(*runtime, 0, -1, 5));
+    auto& callback = runtime->visual.persistent_instruction_callbacks[0];
+    callback.callback_state = 15;
+    runtime->visual.pending_events.clear();
+    runtime->visual.instruction_control_reset_history.clear();
+
+    const int target_node = instruction_thread_node_id(*runtime, 0);
+    ASSERT_GE(target_node, 0);
+    begin_battle_frame_thread_traversal(runtime->thread_list, 1);
+    ASSERT_EQ(set_battle_frame_thread_cursor(
+        runtime->thread_list,
+        target_node,
+        "test.queued_transition.visit",
+        "queued transition instruction visit",
+        1).status, BattleFrameThreadMutationStatus::Applied);
+
+    BattleFrameActionRuntime action;
+    action.active = true;
+    action.action_ordinal = 3;
+    action.actor_slot = 0;
+    action.target_slot = 4;
+    action.action_kind = BattleMovementActionKind::BasicAttack;
+    action.execution_route = BasicAttackExecutionRoute::DirectMelee;
+    action.action_resolution_available = true;
+    action.queued_state_transition = BasicAttackQueuedStateResult{
+        .status = QueuedInstructionParamStatus::Validated,
+        .queued_state = QueuedStdActionState::DirectNoncritical5,
+        .instruction_mode = 4,
+        .confidence = "validated",
+        .provenance = "queued reset fixture",
+    };
+    action.queued_state_transition_pending = true;
+    runtime->active_action = std::move(action);
+
+    const auto publication_before = callback.publication_revision;
+    ASSERT_TRUE(stage_battle_frame_queued_std_action_transition(*runtime, 3));
+    EXPECT_EQ(callback.publication_revision, publication_before + 1);
+    EXPECT_EQ(callback.callback_state, 0);
+    EXPECT_FALSE(runtime->active_action->queued_state_transition_pending);
+    EXPECT_TRUE(runtime->active_action->queued_state_transition_published);
+    EXPECT_TRUE(runtime->visual.pending_instruction_control_resets.empty());
+    ASSERT_EQ(runtime->visual.instruction_control_reset_history.size(), 1u);
+    const auto& reset = runtime->visual.instruction_control_reset_history.back();
+    EXPECT_EQ(reset.source,
+              BattleFrameInstructionControlResetSource::QueuedTransition);
+    EXPECT_EQ(reset.lifecycle,
+              BattleFrameInstructionControlResetLifecycle::Applied);
+    EXPECT_EQ(reset.timing,
+              BattleFrameInstructionControlResetTiming::SameInstructionVisit);
+    EXPECT_EQ(reset.target_node_id, target_node);
+    EXPECT_EQ(reset.callback_state_before, 15);
+    EXPECT_EQ(reset.callback_state_after, 0);
+    end_battle_frame_thread_traversal(runtime->thread_list);
+}
+
+TEST(SavorPredictCombatantVisualRuntime, DirectResetReachesLaterTargetInSameFrameWithoutRepublishing) {
+    auto runtime = direct_reset_runtime(true);
+    ASSERT_TRUE(runtime.has_value());
+
+    std::uint32_t rng = 0x11223344u;
+    const auto frame = run_first_turn_frame(*runtime, rng);
+    ASSERT_TRUE(frame.ok);
+    EXPECT_TRUE(runtime->visual.pending_instruction_control_resets.empty());
+
+    const auto& history = runtime->visual.instruction_control_reset_history;
+    ASSERT_EQ(history.size(), 2u);
+    EXPECT_EQ(history[0].source,
+              BattleFrameInstructionControlResetSource::DirectTransition);
+    EXPECT_EQ(history[0].lifecycle,
+              BattleFrameInstructionControlResetLifecycle::Applied);
+    EXPECT_EQ(history[0].timing,
+              BattleFrameInstructionControlResetTiming::SameFrameLaterVisit);
+    EXPECT_EQ(history[1].lifecycle,
+              BattleFrameInstructionControlResetLifecycle::Consumed);
+    EXPECT_EQ(history[1].frame_index, history[0].frame_index);
+    EXPECT_EQ(history[1].sequence, history[0].sequence);
+
+    EXPECT_EQ(std::count_if(
+        frame.events.begin(),
+        frame.events.end(),
+        [](const BattleFrameStepEvent& event) {
+            return event.slot == 4
+                && event.step_kind
+                    == BattleFrameWorkerStepKind::VisualInstructionStatePublish;
+        }), 1);
+    const auto invocation = std::find_if(
+        frame.events.begin(),
+        frame.events.end(),
+        [](const BattleFrameStepEvent& event) {
+            return event.slot == 4
+                && event.step_kind
+                    == BattleFrameWorkerStepKind::ActionMotionInvocationDecision;
+        });
+    ASSERT_NE(invocation, frame.events.end());
+    EXPECT_EQ(invocation->action_motion_callback_state_before, 0);
+}
+
+TEST(SavorPredictCombatantVisualRuntime, DirectResetReachesEarlierTargetOnNextFrameWithoutRepublishing) {
+    auto runtime = direct_reset_runtime(false);
+    ASSERT_TRUE(runtime.has_value());
+
+    std::uint32_t rng = 0x55667788u;
+    const auto producer_frame = run_first_turn_frame(*runtime, rng);
+    ASSERT_TRUE(producer_frame.ok);
+    ASSERT_EQ(runtime->visual.pending_instruction_control_resets.size(), 1u);
+    ASSERT_EQ(runtime->visual.instruction_control_reset_history.size(), 1u);
+    EXPECT_EQ(runtime->visual.instruction_control_reset_history[0].timing,
+              BattleFrameInstructionControlResetTiming::NextFrameVisit);
+    const int producer_frame_index =
+        runtime->visual.instruction_control_reset_history[0].frame_index;
+
+    const auto target_frame = run_first_turn_frame(*runtime, rng);
+    ASSERT_TRUE(target_frame.ok);
+    EXPECT_TRUE(runtime->visual.pending_instruction_control_resets.empty());
+    ASSERT_EQ(runtime->visual.instruction_control_reset_history.size(), 2u);
+    const auto& consumed =
+        runtime->visual.instruction_control_reset_history.back();
+    EXPECT_EQ(consumed.lifecycle,
+              BattleFrameInstructionControlResetLifecycle::Consumed);
+    EXPECT_EQ(consumed.frame_index, producer_frame_index + 1);
+    EXPECT_EQ(std::count_if(
+        target_frame.events.begin(),
+        target_frame.events.end(),
+        [](const BattleFrameStepEvent& event) {
+            return event.slot == 4
+                && event.step_kind
+                    == BattleFrameWorkerStepKind::VisualInstructionStatePublish;
+        }), 0);
+    const auto invocation = std::find_if(
+        target_frame.events.begin(),
+        target_frame.events.end(),
+        [](const BattleFrameStepEvent& event) {
+            return event.slot == 4
+                && event.step_kind
+                    == BattleFrameWorkerStepKind::ActionMotionInvocationDecision;
+        });
+    ASSERT_NE(invocation, target_frame.events.end());
+    EXPECT_EQ(invocation->action_motion_callback_state_before, 0);
+}
+
+TEST(SavorPredictCombatantVisualRuntime, DirectResetReportsRemovedAndReplacedTargetNodes) {
+    for (const bool replace_target : {false, true}) {
+        SCOPED_TRACE(replace_target ? "replacement" : "removal");
+        auto runtime = direct_reset_runtime(false);
+        ASSERT_TRUE(runtime.has_value());
+        std::uint32_t rng = 0x778899aau;
+        ASSERT_TRUE(run_first_turn_frame(*runtime, rng).ok);
+        ASSERT_EQ(runtime->visual.pending_instruction_control_resets.size(), 1u);
+        const int target_node = runtime->visual
+            .pending_instruction_control_resets.front().target_node_id;
+        ASSERT_EQ(remove_battle_frame_thread(
+            runtime->thread_list,
+            target_node,
+            "test.direct_reset.target_remove",
+            "remove pending target",
+            runtime->state.frame_index).status,
+            BattleFrameThreadMutationStatus::Applied);
+        if (replace_target) {
+            ASSERT_EQ(create_battle_frame_thread(
+                runtime->thread_list,
+                BattleFrameThreadCreateRequest{
+                    .kind = BattleFrameThreadNodeKind::CombatantInstruction,
+                    .owner_slot = 4,
+                    .callback =
+                        BattleFrameThreadCallbackIdentity::CombatantInstruction,
+                    .active = true,
+                    .semantic_source_id = "test.direct_reset.target_replace",
+                    .provenance = "replacement instruction node",
+                }).status, BattleFrameThreadMutationStatus::Applied);
+        }
+
+        const auto next_frame = run_first_turn_frame(*runtime, rng);
+        ASSERT_TRUE(next_frame.ok);
+        EXPECT_TRUE(runtime->visual.pending_instruction_control_resets.empty());
+        ASSERT_EQ(runtime->visual.instruction_control_reset_history.size(), 2u);
+        EXPECT_EQ(
+            runtime->visual.instruction_control_reset_history.back().lifecycle,
+            replace_target
+                ? BattleFrameInstructionControlResetLifecycle::TargetReplaced
+                : BattleFrameInstructionControlResetLifecycle::TargetRemoved);
+    }
+}
+
 TEST(SavorPredictCombatantVisualRuntime, PublishesAndRunsChildrenAfterOwnerInSameFrame) {
     auto runtime = initialize_frame_runtime();
     ASSERT_TRUE(runtime.has_value());
@@ -834,7 +1240,7 @@ TEST(SavorPredictCombatantVisualRuntime, MovementStageWaitsForState1PublisherAnd
         }));
 }
 
-TEST(SavorPredictCombatantVisualRuntime, ValidatedStateTransitionWaitsForNextState1Visit) {
+TEST(SavorPredictCombatantVisualRuntime, ValidatedStateTransitionPublishesAtProducerAndInvokesOnTargetVisit) {
     auto runtime = initialize_frame_runtime();
     ASSERT_TRUE(runtime.has_value());
     ASSERT_TRUE(configure_battle_frame_visual_resource(
@@ -849,6 +1255,9 @@ TEST(SavorPredictCombatantVisualRuntime, ValidatedStateTransitionWaitsForNextSta
         BattleFrameWorkerStepKind::VisualInstructionInstall), 0);
     const auto epoch_before = runtime->visual.timelines[0].epoch;
     const auto task_count_before = runtime->visual.child_tasks.size();
+    auto& callback = runtime->visual.persistent_instruction_callbacks[0];
+    callback.callback_state = 15;
+    const auto publication_before = callback.publication_revision;
 
     ASSERT_TRUE(stage_battle_frame_validated_instruction_transition(
         *runtime,
@@ -857,6 +1266,9 @@ TEST(SavorPredictCombatantVisualRuntime, ValidatedStateTransitionWaitsForNextSta
         4,
         8,
         "validated attack-result mode-8 state transition"));
+    EXPECT_EQ(callback.publication_revision, publication_before + 1);
+    EXPECT_EQ(callback.callback_state, 0);
+    ASSERT_EQ(runtime->visual.pending_instruction_control_resets.size(), 1u);
     EXPECT_EQ(runtime->visual.timelines[0].epoch, epoch_before);
     EXPECT_EQ(runtime->visual.child_tasks.size(), task_count_before);
 
@@ -887,6 +1299,18 @@ TEST(SavorPredictCombatantVisualRuntime, ValidatedStateTransitionWaitsForNextSta
             return event.step_kind
                 == BattleFrameWorkerStepKind::VisualInstructionInstall;
         });
+    const auto reset_event = std::find_if(
+        transition_events.begin(), transition_events.end(),
+        [](const BattleFrameStepEvent& event) {
+            return event.step_kind
+                == BattleFrameWorkerStepKind::InstructionCallbackControlReset;
+        });
+    const auto reset_consume_event = std::find_if(
+        transition_events.begin(), transition_events.end(),
+        [](const BattleFrameStepEvent& event) {
+            return event.step_kind
+                == BattleFrameWorkerStepKind::InstructionCallbackControlResetConsume;
+        });
     const auto invocation_event = std::find_if(
         transition_events.begin(), transition_events.end(),
         [](const BattleFrameStepEvent& event) {
@@ -897,12 +1321,129 @@ TEST(SavorPredictCombatantVisualRuntime, ValidatedStateTransitionWaitsForNextSta
     ASSERT_NE(callback_publication, transition_events.end());
     ASSERT_NE(invocation_event, transition_events.end());
     ASSERT_NE(install_event, transition_events.end());
+    ASSERT_NE(reset_event, transition_events.end());
+    ASSERT_NE(reset_consume_event, transition_events.end());
     EXPECT_LT(std::distance(transition_events.begin(), state_event),
               std::distance(transition_events.begin(), callback_publication));
     EXPECT_LT(std::distance(transition_events.begin(), callback_publication),
+              std::distance(transition_events.begin(), reset_event));
+    EXPECT_LT(std::distance(transition_events.begin(), reset_event),
+              std::distance(transition_events.begin(), reset_consume_event));
+    EXPECT_LT(std::distance(transition_events.begin(), reset_consume_event),
               std::distance(transition_events.begin(), invocation_event));
     EXPECT_LT(std::distance(transition_events.begin(), invocation_event),
               std::distance(transition_events.begin(), install_event));
+}
+
+TEST(SavorPredictCombatantVisualRuntime, CollisionBoxUsesGeometryAndSharedSelectorAtItsThreadCursor) {
+    auto runtime = initialize_frame_runtime();
+    ASSERT_TRUE(runtime.has_value());
+    ASSERT_TRUE(configure_battle_frame_visual_resource(
+        *runtime, decoded_collision_resource(0)));
+    auto target_resource = decoded_resource(4, false, 2, 0, 4);
+    ASSERT_TRUE(configure_battle_frame_visual_resource(
+        *runtime, std::move(target_resource)));
+
+    auto* origin = find_frame_combatant(runtime->state, 0);
+    auto* target = find_frame_combatant(runtime->state, 4);
+    ASSERT_NE(origin, nullptr);
+    ASSERT_NE(target, nullptr);
+    origin->combatant_cur_pos_0x1c = {};
+    origin->pos_holder = {};
+    origin->combatant_facing_angle_0x2c = 0;
+    target->combatant_cur_pos_0x1c = {.x = 0.0f, .y = 0.0f, .z = 15.0f};
+    target->pos_holder = target->combatant_cur_pos_0x1c;
+    runtime->collision_occupancy = make_battle_collision_occupancy_runtime();
+    ASSERT_EQ(refresh_battle_collision_occupancy(
+        runtime->collision_occupancy,
+        {.slot = 0, .present = true, .alive = true,
+         .position = {.x = 0.0f, .y = 0.0f, .z = 0.0f}}).status,
+        BattleCollisionModelStatus::Matched);
+    ASSERT_EQ(refresh_battle_collision_occupancy(
+        runtime->collision_occupancy,
+        {.slot = 4, .present = true, .alive = true,
+         .position = {.x = 0.0f, .y = 0.0f, .z = 15.0f}}).status,
+        BattleCollisionModelStatus::Matched);
+
+    ASSERT_TRUE(schedule_action(*runtime, false).scheduled);
+    ASSERT_TRUE(publish_fixture_visual_instruction_state(*runtime, 4, -1, 5));
+    ASSERT_TRUE(publish_fixture_visual_instruction_state(*runtime, 0, 0, 4));
+    const auto reaction = model_battle_target_reaction({
+        .action_kind = BattleTargetReactionActionKind::BasicAttack,
+        .origin_slot = 0,
+        .target_slot = 4,
+        .hit_check = 1,
+        .pending_damage = 10,
+        .target_hp_before_flush = 100,
+        .target_dead = false,
+        .counter_accepted = false,
+    });
+    ASSERT_TRUE(publish_first_turn_target_reaction(
+        *runtime,
+        {.action_ordinal = 0, .reaction = reaction}));
+
+    std::uint32_t rng = 0x10293847U;
+    std::vector<BattleFrameStepEvent> events;
+    for (int frame = 0; frame < 16; ++frame) {
+        const auto step = run_first_turn_frame(*runtime, rng);
+        ASSERT_TRUE(step.ok);
+        events.insert(events.end(), step.events.begin(), step.events.end());
+        const bool collision_complete = std::any_of(
+            events.begin(), events.end(), [](const BattleFrameStepEvent& event) {
+                return event.step_kind
+                        == BattleFrameWorkerStepKind::VisualChildCleanup
+                    && event.visual_command_kind
+                        == CombatantVisualCommandKind::CollisionBox;
+            });
+        if (collision_complete) {
+            break;
+        }
+    }
+
+    const auto publication = std::find_if(
+        events.begin(), events.end(), [](const BattleFrameStepEvent& event) {
+            return event.step_kind == BattleFrameWorkerStepKind::VisualCommandPublish
+                && event.visual_command_kind == CombatantVisualCommandKind::CollisionBox;
+        });
+    const auto state0 = std::find_if(
+        events.begin(), events.end(), [](const BattleFrameStepEvent& event) {
+            return event.step_kind == BattleFrameWorkerStepKind::VisualChildState0
+                && event.visual_command_kind == CombatantVisualCommandKind::CollisionBox;
+        });
+    const auto selector = std::find_if(
+        events.begin(), events.end(), [](const BattleFrameStepEvent& event) {
+            return event.step_kind == BattleFrameWorkerStepKind::DirectTransitionSelect;
+        });
+    const auto cleanup = std::find_if(
+        events.begin(), events.end(), [](const BattleFrameStepEvent& event) {
+            return event.step_kind == BattleFrameWorkerStepKind::VisualChildCleanup
+                && event.visual_command_kind == CombatantVisualCommandKind::CollisionBox;
+        });
+    std::ostringstream collision_trace;
+    for (const auto& event : events) {
+        if (event.visual_command_kind == CombatantVisualCommandKind::CollisionBox
+            || event.step_kind == BattleFrameWorkerStepKind::DirectTransitionSelect) {
+            collision_trace
+                << "\nframe=" << event.frame_index
+                << " step=" << battle_frame_worker_step_kind_name(event.step_kind)
+                << " child=" << event.visual_child_kind
+                << " slot=" << event.slot
+                << " target=" << event.target_slot
+                << " detail=" << event.detail;
+        }
+    }
+    ASSERT_NE(publication, events.end());
+    ASSERT_NE(state0, events.end());
+    ASSERT_NE(selector, events.end());
+    ASSERT_NE(cleanup, events.end()) << collision_trace.str();
+    EXPECT_EQ(state0->frame_index, publication->frame_index);
+    EXPECT_EQ(selector->frame_index, publication->frame_index + 2);
+    EXPECT_EQ(cleanup->frame_index, selector->frame_index + 1);
+    EXPECT_EQ(selector->visual_effective_mode, 11);
+    EXPECT_EQ(selector->draws_consumed, 0);
+    EXPECT_GT(count_step(events, BattleFrameWorkerStepKind::CollisionProbe), 0);
+    EXPECT_GT(count_step(
+        events, BattleFrameWorkerStepKind::InstructionCallbackControlResetConsume), 0);
 }
 
 TEST(SavorPredictCombatantVisualRuntime, Mode8PublicationWaitsForCapturedState6Playback) {
@@ -1158,6 +1699,10 @@ TEST(SavorPredictCombatantVisualRuntime, FlaggedActionServiceIsTheEb4cRngOwner) 
     resource.selector_table = {};
     resource.selector_table = combatant_visual_selector_table(resource);
     ASSERT_TRUE(configure_battle_frame_visual_resource(*runtime, std::move(resource)));
+    auto target_resource = decoded_resource(4, false, 2, 0);
+    add_direct_transition_rows(target_resource);
+    ASSERT_TRUE(configure_battle_frame_visual_resource(
+        *runtime, std::move(target_resource)));
     auto* origin = find_frame_combatant(runtime->state, 0);
     ASSERT_NE(origin, nullptr);
     origin->instruction_flags_0xec |= 0x00100000U;
@@ -1294,6 +1839,10 @@ TEST(SavorPredictCombatantVisualRuntime, ReplaysAcceptedFourteenServiceVisitCont
         resource.records.erase(resource.records.begin() + 1);
         resource.selector_table = combatant_visual_selector_table(resource);
         ASSERT_TRUE(configure_battle_frame_visual_resource(*runtime, std::move(resource)));
+        auto target_resource = decoded_resource(4, false, 2, 0);
+        add_direct_transition_rows(target_resource);
+        ASSERT_TRUE(configure_battle_frame_visual_resource(
+            *runtime, std::move(target_resource)));
         auto* origin = find_frame_combatant(runtime->state, 0);
         ASSERT_NE(origin, nullptr);
         origin->instruction_flags_0xec = captured.eb4c_gate ? 0x00180000U : 0x00080000U;

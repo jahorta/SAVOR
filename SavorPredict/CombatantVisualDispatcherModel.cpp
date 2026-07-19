@@ -107,6 +107,7 @@ bool combatant_visual_timeline_has_pending_publications(
             continue;
         }
         if (record.kind != CombatantVisualCommandKind::SetCommand
+            && record.kind != CombatantVisualCommandKind::CollisionBox
             && record.kind != CombatantVisualCommandKind::SystemCamera) {
             continue;
         }
@@ -161,6 +162,7 @@ CombatantVisualTimelineAdvanceResult advance_combatant_visual_timeline(
             continue;
         }
         if (record.kind != CombatantVisualCommandKind::SetCommand
+            && record.kind != CombatantVisualCommandKind::CollisionBox
             && record.kind != CombatantVisualCommandKind::SystemCamera) {
             continue;
         }
@@ -491,6 +493,7 @@ const char* combatant_visual_command_kind_name(CombatantVisualCommandKind kind) 
     switch (kind) {
     case CombatantVisualCommandKind::Unknown: return "Unknown";
     case CombatantVisualCommandKind::SetCommand: return "SetCommand";
+    case CombatantVisualCommandKind::CollisionBox: return "CollisionBox";
     case CombatantVisualCommandKind::SystemCamera: return "SystemCamera";
     case CombatantVisualCommandKind::SyntheticActionView: return "SyntheticActionView";
     }

@@ -152,10 +152,12 @@
     <ClCompile Include="..\SavorPredict\AttackResolutionModel.cpp" />
     <ClCompile Include="..\SavorPredict\BattleInitialFacingModel.cpp" />
     <ClCompile Include="..\SavorPredict\BattleInitialTurnTypeModel.cpp" />
+    <ClCompile Include="..\SavorPredict\BattleCollisionBoxModel.cpp" />
     <ClCompile Include="..\SavorPredict\BattlePredictionDbInput.cpp" />
     <ClCompile Include="..\SavorPredict\BattlePredictionScenario.cpp" />
     <ClCompile Include="..\SavorPredict\BattleMovementInvocationModel.cpp" />
     <ClCompile Include="..\SavorPredict\BattleMovementPathModel.cpp" />
+    <ClCompile Include="..\SavorPredict\BattleTargetReactionStateModel.cpp" />
     <ClCompile Include="..\SavorPredict\BattleFrameSchedulerModel.cpp" />
     <ClCompile Include="..\SavorPredict\BattleFrameStateModel.cpp" />
     <ClCompile Include="..\SavorPredict\BattleFrameThreadListModel.cpp" />
@@ -165,6 +167,7 @@
     <ClCompile Include="..\SavorPredict\BattleVisualRngModel.cpp" />
     <ClCompile Include="..\SavorPredict\CombatantInstructionModeModel.cpp" />
     <ClCompile Include="..\SavorPredict\CombatantVisualDispatcherModel.cpp" />
+    <ClCompile Include="..\SavorPredict\DirectInstructionTransitionSelectorModel.cpp" />
     <ClCompile Include="..\SavorPredict\BattleJobBatchRunManifest.cpp" />
     <ClCompile Include="..\SavorPredict\BattleJobBatchRunOptions.cpp" />
     <ClCompile Include="..\SavorPredict\BattleJobClone.cpp" />
@@ -212,6 +215,7 @@
     <ClCompile Include="test_battle_frame_thread_list.cpp" />
     <ClCompile Include="test_battle_movement_path.cpp" />
     <ClCompile Include="test_battle_movement_invocation.cpp" />
+    <ClCompile Include="test_battle_target_reaction_and_collision.cpp" />
     <ClCompile Include="test_battle_source_model.cpp" />
     <ClCompile Include="test_combatant_visual_dispatcher.cpp" />
     <ClCompile Include="test_db_perf_metrics.cpp" />

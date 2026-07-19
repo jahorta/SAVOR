@@ -60,6 +60,11 @@ struct BattleFrameCombatantState {
     bool pending_frame_start_position_sync = false;
     std::uint32_t instruction_flags_0xec = 0;
     std::uint32_t instruction_flags_0xf0 = 0;
+    std::uint32_t instruction_flags_0xf4 = 0;
+    std::int32_t collision_rotation_x_0x28 = 0;
+    std::int32_t collision_rotation_z_0x30 = 0;
+    bool collision_xz_rotation_known = false;
+    std::optional<bool> collision_mld_slot_valid;
     int instruction_target_slot_0x4 = -1;
     std::int16_t visual_instruction_mode_0x6 = 0;
     std::int16_t visual_instruction_subtype_0x8 = -1;

@@ -368,6 +368,9 @@ CombatantVisualCommandKind visual_command_kind(std::uint32_t combined_type) {
     if (combined_type == 0x00030004U) {
         return CombatantVisualCommandKind::SetCommand;
     }
+    if (combined_type == 0x0003000BU) {
+        return CombatantVisualCommandKind::CollisionBox;
+    }
     if (combined_type == 0x0003002AU) {
         return CombatantVisualCommandKind::SystemCamera;
     }
@@ -440,6 +443,42 @@ std::optional<CombatantVisualCommandRecord> import_visual_record(
             .service_flags = *service_flags,
             .delay = *delay,
             .forced_mode = *forced_mode,
+        };
+        ++result.visual_records_decoded;
+    } else if (record.kind == CombatantVisualCommandKind::CollisionBox) {
+        const auto behavior_flags = payload_u32_be(record.payload_bytes, 0x10);
+        const auto start_counter = payload_s16_be(record.payload_bytes, 0x14);
+        const auto end_counter = payload_s16_be(record.payload_bytes, 0x16);
+        const auto object_id = payload_s16_be(record.payload_bytes, 0x18);
+        const auto current_x_bits = payload_u32_be(record.payload_bytes, 0x1c);
+        const auto current_y_bits = payload_u32_be(record.payload_bytes, 0x20);
+        const auto current_z_bits = payload_u32_be(record.payload_bytes, 0x24);
+        const auto velocity_x_bits = payload_u32_be(record.payload_bytes, 0x28);
+        const auto velocity_y_bits = payload_u32_be(record.payload_bytes, 0x2c);
+        const auto velocity_z_bits = payload_u32_be(record.payload_bytes, 0x30);
+        const auto trailing_flags = payload_u32_be(record.payload_bytes, 0x34);
+        if (record.payload_bytes.size() < 0x38U
+            || !behavior_flags.has_value() || !start_counter.has_value()
+            || !end_counter.has_value() || !object_id.has_value()
+            || !current_x_bits.has_value() || !current_y_bits.has_value()
+            || !current_z_bits.has_value() || !velocity_x_bits.has_value()
+            || !velocity_y_bits.has_value() || !velocity_z_bits.has_value()
+            || !trailing_flags.has_value()) {
+            add_error(result, "COLLISION BOX record " + std::to_string(index) + " has a short payload");
+            return std::nullopt;
+        }
+        record.collision_box = CombatantVisualCollisionBoxPayload{
+            .behavior_flags = *behavior_flags,
+            .start_counter = *start_counter,
+            .end_counter = *end_counter,
+            .object_id = *object_id,
+            .current_x_bits = *current_x_bits,
+            .current_y_bits = *current_y_bits,
+            .current_z_bits = *current_z_bits,
+            .velocity_x_bits = *velocity_x_bits,
+            .velocity_y_bits = *velocity_y_bits,
+            .velocity_z_bits = *velocity_z_bits,
+            .trailing_flags = *trailing_flags,
         };
         ++result.visual_records_decoded;
     } else if (record.kind == CombatantVisualCommandKind::SystemCamera) {

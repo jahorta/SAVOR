@@ -1879,6 +1879,12 @@ void append_frame_scheduler_events(
             == BattleFrameWorkerStepKind::VisualInstructionStatePublish) {
             event_label = "persistent_instruction_callback_publish";
         } else if (frame_event.step_kind
+            == BattleFrameWorkerStepKind::InstructionCallbackControlReset) {
+            event_label = "instruction_callback_control_reset";
+        } else if (frame_event.step_kind
+            == BattleFrameWorkerStepKind::InstructionCallbackControlResetConsume) {
+            event_label = "instruction_callback_control_reset_consume";
+        } else if (frame_event.step_kind
             == BattleFrameWorkerStepKind::ActionMotionInvocationDecision) {
             event_label = "action_motion_invocation_decision";
         } else if (frame_event.step_kind
@@ -2580,6 +2586,40 @@ void append_attack_resolution(
                 false);
         } else {
             append_counter_skipped_lethal_damage(result, action, hp_before, attack.damage);
+        }
+    }
+
+    if (frame_runtime != nullptr && frame_runtime->initialized
+        && action.frame_action_ordinal.has_value()) {
+        const auto target_reaction = model_battle_target_reaction({
+            .action_kind = BattleTargetReactionActionKind::BasicAttack,
+            .origin_slot = action.actor_slot,
+            .target_slot = action.target_slot,
+            .hit_check = attack.hit_check,
+            .pending_damage = attack.damage,
+            .target_hp_before_flush = hp_before,
+            .target_dead = target_dead,
+            .counter_accepted = counter_triggered,
+        });
+        if (!publish_first_turn_target_reaction(
+                *frame_runtime,
+                BattleFrameTargetReactionPublication{
+                    .action_ordinal = *action.frame_action_ordinal,
+                    .reaction = target_reaction,
+                })) {
+            append_event(result, {
+                .phase = "frame_scheduler",
+                .label = "target_reaction_publication_rejected",
+                .status = target_reaction.status
+                        == BattleTargetReactionStatus::MissingInput
+                    ? BattlePredictionEventStatus::MissingInput
+                    : BattlePredictionEventStatus::Ambiguous,
+                .actor_slot = action.actor_slot,
+                .target_slot = action.target_slot,
+                .action_ordinal = action.frame_action_ordinal,
+                .detail = target_reaction.provenance,
+            });
+            return;
         }
     }
 

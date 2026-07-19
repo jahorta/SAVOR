@@ -12,6 +12,7 @@ namespace savor::predict {
 enum class CombatantVisualCommandKind {
     Unknown,
     SetCommand,
+    CollisionBox,
     SystemCamera,
     SyntheticActionView,
 };
@@ -55,6 +56,20 @@ struct CombatantVisualSystemCameraPayload {
     std::int16_t mode = 0;
 };
 
+struct CombatantVisualCollisionBoxPayload {
+    std::uint32_t behavior_flags = 0;
+    std::int16_t start_counter = 0;
+    std::int16_t end_counter = 0;
+    std::int16_t object_id = -1;
+    std::uint32_t current_x_bits = 0;
+    std::uint32_t current_y_bits = 0;
+    std::uint32_t current_z_bits = 0;
+    std::uint32_t velocity_x_bits = 0;
+    std::uint32_t velocity_y_bits = 0;
+    std::uint32_t velocity_z_bits = 0;
+    std::uint32_t trailing_flags = 0;
+};
+
 struct CombatantVisualCommandRecord {
     int index = -1;
     std::int16_t location_code = -1;
@@ -68,6 +83,7 @@ struct CombatantVisualCommandRecord {
     CombatantVisualCommandKind kind = CombatantVisualCommandKind::Unknown;
     std::vector<std::uint8_t> payload_bytes;
     std::optional<CombatantVisualSetCommandPayload> set_command;
+    std::optional<CombatantVisualCollisionBoxPayload> collision_box;
     std::optional<CombatantVisualSystemCameraPayload> system_camera;
 };
 

@@ -156,6 +156,9 @@ std::optional<BattleFrameState> initialize_first_battle_frame_state(
             battle_frame_angle_short_to_degrees_8006116c(combatant.combatant_facing_angle_0x2c);
         combatant.turn_target_degrees_0x120 = combatant.turn_current_degrees_0x11c;
         combatant.last_written_facing_angle_0x2c = combatant.combatant_facing_angle_0x2c;
+        combatant.collision_rotation_x_0x28 = 0;
+        combatant.collision_rotation_z_0x30 = 0;
+        combatant.collision_xz_rotation_known = true;
         state.combatants.push_back(combatant);
     }
 

@@ -126,10 +126,12 @@
     <ClCompile Include="AttackResolutionModel.cpp" />
     <ClCompile Include="BattleInitialFacingModel.cpp" />
     <ClCompile Include="BattleInitialTurnTypeModel.cpp" />
+    <ClCompile Include="BattleCollisionBoxModel.cpp" />
     <ClCompile Include="BattlePredictionDbInput.cpp" />
     <ClCompile Include="BattlePredictionScenario.cpp" />
     <ClCompile Include="BattleMovementInvocationModel.cpp" />
     <ClCompile Include="BattleMovementPathModel.cpp" />
+    <ClCompile Include="BattleTargetReactionStateModel.cpp" />
     <ClCompile Include="BattleFrameSchedulerModel.cpp" />
     <ClCompile Include="BattleFrameStateModel.cpp" />
     <ClCompile Include="BattleFrameThreadListModel.cpp" />
@@ -139,6 +141,7 @@
     <ClCompile Include="BattleVisualRngModel.cpp" />
     <ClCompile Include="CombatantInstructionModeModel.cpp" />
     <ClCompile Include="CombatantVisualDispatcherModel.cpp" />
+    <ClCompile Include="DirectInstructionTransitionSelectorModel.cpp" />
     <ClCompile Include="BattleJobBatchRunManifest.cpp" />
     <ClCompile Include="BattleJobBatchRunOptions.cpp" />
     <ClCompile Include="BattleJobBatchWorkerRun.cpp" />
@@ -202,11 +205,13 @@
     <ClInclude Include="AttackResolutionModel.h" />
     <ClInclude Include="BattleInitialFacingModel.h" />
     <ClInclude Include="BattleInitialTurnTypeModel.h" />
+    <ClInclude Include="BattleCollisionBoxModel.h" />
     <ClInclude Include="BattlePredictionDbInput.h" />
     <ClInclude Include="BattlePredictionProfileNames.h" />
     <ClInclude Include="BattlePredictionScenario.h" />
     <ClInclude Include="BattleMovementInvocationModel.h" />
     <ClInclude Include="BattleMovementPathModel.h" />
+    <ClInclude Include="BattleTargetReactionStateModel.h" />
     <ClInclude Include="BattleFrameSchedulerModel.h" />
     <ClInclude Include="BattleFrameStateModel.h" />
     <ClInclude Include="BattleFrameThreadListModel.h" />
@@ -216,6 +221,7 @@
     <ClInclude Include="BattleVisualRngModel.h" />
     <ClInclude Include="CombatantInstructionModeModel.h" />
     <ClInclude Include="CombatantVisualDispatcherModel.h" />
+    <ClInclude Include="DirectInstructionTransitionSelectorModel.h" />
     <ClInclude Include="BattleJobBatchRunManifest.h" />
     <ClInclude Include="BattleJobBatchRunOptions.h" />
     <ClInclude Include="BattleJobBatchWorkerRun.h" />

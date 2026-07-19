@@ -26,6 +26,9 @@ void print_usage(std::ostream& out) {
         << "  SavorPredict write-first-battle-capture-profile --output PATH\n"
         << "  SavorPredict write-first-battle-probe-layer-validation-profile --output PATH\n"
         << "  SavorPredict write-first-battle-action-motion-invocation-profile --output PATH [--list-max 128|256]\n"
+        << "  SavorPredict write-first-battle-direct-reset-thread-position-profile --output PATH [--list-max 128|256]\n"
+        << "  SavorPredict write-first-battle-direct-transition-producer-profile --output PATH [--list-max 128|256]\n"
+        << "  SavorPredict write-first-battle-direct-transition-input-audit-profile --output PATH [--list-max 128|256]\n"
         << "  SavorPredict write-first-battle-predictor-validation-profile --output PATH\n"
         << "  SavorPredict write-first-battle-turn-order-validation-profile --output PATH\n"
         << "  SavorPredict write-first-battle-field6-watch-profile --output PATH\n"
@@ -274,6 +277,105 @@ int run_write_first_battle_action_motion_invocation_profile(int argc, char** arg
         }
     }
     return savor::predict::write_first_battle_action_motion_invocation_profile(
+        output, std::cout, std::cerr, list_max);
+}
+
+int run_write_first_battle_direct_reset_thread_position_profile(int argc, char** argv) {
+    std::filesystem::path output;
+    std::uint32_t list_max = 128;
+    for (int i = 2; i < argc; ++i) {
+        const std::string arg = argv[i];
+        std::string value;
+        if (arg == "--output") {
+            if (!require_value(argc, argv, i, arg, value, std::cerr)) {
+                return 2;
+            }
+            output = value;
+        } else if (arg == "--list-max") {
+            int parsed = 0;
+            if (!require_value(argc, argv, i, arg, value, std::cerr)
+                || !parse_int(value, parsed) || (parsed != 128 && parsed != 256)) {
+                std::cerr << "--list-max must be 128 or 256.\n";
+                return 2;
+            }
+            list_max = static_cast<std::uint32_t>(parsed);
+        } else if (arg == "--help" || arg == "-h") {
+            print_usage(std::cout);
+            return 0;
+        } else {
+            std::cerr
+                << "Unknown write-first-battle-direct-reset-thread-position-profile option: "
+                << arg << "\n";
+            return 2;
+        }
+    }
+    return savor::predict::write_first_battle_direct_reset_thread_position_profile(
+        output, std::cout, std::cerr, list_max);
+}
+
+int run_write_first_battle_direct_transition_producer_profile(int argc, char** argv) {
+    std::filesystem::path output;
+    std::uint32_t list_max = 128;
+    for (int i = 2; i < argc; ++i) {
+        const std::string arg = argv[i];
+        std::string value;
+        if (arg == "--output") {
+            if (!require_value(argc, argv, i, arg, value, std::cerr)) {
+                return 2;
+            }
+            output = value;
+        } else if (arg == "--list-max") {
+            int parsed = 0;
+            if (!require_value(argc, argv, i, arg, value, std::cerr)
+                || !parse_int(value, parsed) || (parsed != 128 && parsed != 256)) {
+                std::cerr << "--list-max must be 128 or 256.\n";
+                return 2;
+            }
+            list_max = static_cast<std::uint32_t>(parsed);
+        } else if (arg == "--help" || arg == "-h") {
+            print_usage(std::cout);
+            return 0;
+        } else {
+            std::cerr
+                << "Unknown write-first-battle-direct-transition-producer-profile option: "
+                << arg << "\n";
+            return 2;
+        }
+    }
+    return savor::predict::write_first_battle_direct_transition_producer_profile(
+        output, std::cout, std::cerr, list_max);
+}
+
+int run_write_first_battle_direct_transition_input_audit_profile(int argc, char** argv) {
+    std::filesystem::path output;
+    std::uint32_t list_max = 128;
+    for (int i = 2; i < argc; ++i) {
+        const std::string arg = argv[i];
+        std::string value;
+        if (arg == "--output") {
+            if (!require_value(argc, argv, i, arg, value, std::cerr)) {
+                return 2;
+            }
+            output = value;
+        } else if (arg == "--list-max") {
+            int parsed = 0;
+            if (!require_value(argc, argv, i, arg, value, std::cerr)
+                || !parse_int(value, parsed) || (parsed != 128 && parsed != 256)) {
+                std::cerr << "--list-max must be 128 or 256.\n";
+                return 2;
+            }
+            list_max = static_cast<std::uint32_t>(parsed);
+        } else if (arg == "--help" || arg == "-h") {
+            print_usage(std::cout);
+            return 0;
+        } else {
+            std::cerr
+                << "Unknown write-first-battle-direct-transition-input-audit-profile option: "
+                << arg << "\n";
+            return 2;
+        }
+    }
+    return savor::predict::write_first_battle_direct_transition_input_audit_profile(
         output, std::cout, std::cerr, list_max);
 }
 
@@ -1247,6 +1349,15 @@ int main(int argc, char** argv) {
     }
     if (command == "write-first-battle-action-motion-invocation-profile") {
         return run_write_first_battle_action_motion_invocation_profile(argc, argv);
+    }
+    if (command == "write-first-battle-direct-reset-thread-position-profile") {
+        return run_write_first_battle_direct_reset_thread_position_profile(argc, argv);
+    }
+    if (command == "write-first-battle-direct-transition-producer-profile") {
+        return run_write_first_battle_direct_transition_producer_profile(argc, argv);
+    }
+    if (command == "write-first-battle-direct-transition-input-audit-profile") {
+        return run_write_first_battle_direct_transition_input_audit_profile(argc, argv);
     }
     if (command == "write-first-battle-predictor-validation-profile") {
         return run_write_first_battle_predictor_validation_profile(argc, argv);

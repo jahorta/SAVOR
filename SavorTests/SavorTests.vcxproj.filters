@@ -36,6 +36,9 @@
     <ClCompile Include="test_action_motion_playback.cpp" />
     <ClCompile Include="test_action_motion_invocation.cpp" />
     <ClCompile Include="..\SavorPredict\BattleMovementPathModel.cpp" />
+    <ClCompile Include="..\SavorPredict\BattleCollisionBoxModel.cpp" />
+    <ClCompile Include="..\SavorPredict\BattleTargetReactionStateModel.cpp" />
+    <ClCompile Include="..\SavorPredict\DirectInstructionTransitionSelectorModel.cpp" />
     <ClCompile Include="..\SavorPredict\BattleJobBatchRunManifest.cpp" />
     <ClCompile Include="..\SavorPredict\BattleJobBatchRunOptions.cpp" />
     <ClCompile Include="..\SavorPredict\BattleJobClone.cpp" />
@@ -87,6 +90,7 @@
     <ClCompile Include="test_battle_frame_thread_list.cpp" />
     <ClCompile Include="test_battle_movement_path.cpp" />
     <ClCompile Include="test_battle_movement_invocation.cpp" />
+    <ClCompile Include="test_battle_target_reaction_and_collision.cpp" />
     <ClCompile Include="test_battle_source_model.cpp" />
     <ClCompile Include="test_combatant_visual_dispatcher.cpp" />
     <ClCompile Include="test_pad_poll_isolated_user.cpp" />

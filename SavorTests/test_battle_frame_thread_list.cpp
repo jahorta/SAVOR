@@ -212,4 +212,83 @@ TEST(SavorPredictBattleFrameThreadList, DuplicateAndUnknownProducerStayTyped) {
               BattleFrameThreadMutationStatus::Duplicate);
 }
 
+TEST(SavorPredictBattleFrameThreadList, TraversalPositionPlansSameOrNextFrameDelivery) {
+    BattleFrameThreadListRuntime runtime;
+    std::vector<int> node_ids;
+    for (const int slot : {0, 1, 2}) {
+        const auto created = create_battle_frame_thread(runtime, {
+            .kind = BattleFrameThreadNodeKind::MovementController,
+            .owner_slot = slot,
+            .callback = BattleFrameThreadCallbackIdentity::MovementController,
+            .semantic_source_id = "test.thread.create",
+            .provenance = "ordered traversal fixture",
+        });
+        ASSERT_EQ(created.status, BattleFrameThreadMutationStatus::Applied);
+        node_ids.push_back(created.node_id);
+    }
+
+    begin_battle_frame_thread_traversal(runtime, 10);
+    ASSERT_EQ(runtime.traversal_generation, 1u);
+    ASSERT_EQ(set_battle_frame_thread_cursor(
+        runtime,
+        node_ids[1],
+        "test.thread.visit",
+        "middle node visit",
+        10).status, BattleFrameThreadMutationStatus::Applied);
+
+    const auto later = plan_battle_frame_thread_delivery(runtime, node_ids[2]);
+    EXPECT_EQ(later.status, BattleFrameThreadDeliveryStatus::SameTraversal);
+    EXPECT_EQ(later.current_node_index, 1);
+    EXPECT_EQ(later.target_node_index, 2);
+    EXPECT_EQ(later.eligible_traversal_generation, 1u);
+
+    const auto earlier = plan_battle_frame_thread_delivery(runtime, node_ids[0]);
+    EXPECT_EQ(earlier.status, BattleFrameThreadDeliveryStatus::NextTraversal);
+    EXPECT_EQ(earlier.current_node_index, 1);
+    EXPECT_EQ(earlier.target_node_index, 0);
+    EXPECT_EQ(earlier.eligible_traversal_generation, 2u);
+
+    const auto current = plan_battle_frame_thread_delivery(runtime, node_ids[1]);
+    EXPECT_EQ(current.status, BattleFrameThreadDeliveryStatus::NextTraversal);
+    EXPECT_EQ(current.eligible_traversal_generation, 2u);
+    end_battle_frame_thread_traversal(runtime);
+
+    const auto outside = plan_battle_frame_thread_delivery(runtime, node_ids[2]);
+    EXPECT_EQ(outside.status, BattleFrameThreadDeliveryStatus::NextTraversal);
+    EXPECT_EQ(outside.eligible_traversal_generation, 2u);
+}
+
+TEST(SavorPredictBattleFrameThreadList, TraversalTracksPreviousCurrentAndVisitedNodes) {
+    BattleFrameThreadListRuntime runtime;
+    std::vector<int> node_ids;
+    for (const int slot : {0, 1, 2}) {
+        const auto created = create_battle_frame_thread(runtime, {
+            .kind = BattleFrameThreadNodeKind::MovementController,
+            .owner_slot = slot,
+            .callback = BattleFrameThreadCallbackIdentity::MovementController,
+            .semantic_source_id = "test.thread.create",
+            .provenance = "cursor fixture",
+        });
+        ASSERT_EQ(created.status, BattleFrameThreadMutationStatus::Applied);
+        node_ids.push_back(created.node_id);
+    }
+
+    begin_battle_frame_thread_traversal(runtime, 22);
+    for (const int node_id : node_ids) {
+        ASSERT_EQ(set_battle_frame_thread_cursor(
+            runtime,
+            node_id,
+            "test.thread.visit",
+            "ordered node visit",
+            22).status, BattleFrameThreadMutationStatus::Applied);
+    }
+    EXPECT_EQ(runtime.previous_node_id, node_ids[1]);
+    EXPECT_EQ(runtime.current_node_id, node_ids[2]);
+    ASSERT_TRUE(runtime.current_node_index.has_value());
+    EXPECT_EQ(*runtime.current_node_index, 2u);
+    EXPECT_EQ(runtime.visited_node_ids, node_ids);
+    end_battle_frame_thread_traversal(runtime);
+    EXPECT_FALSE(runtime.traversal_active);
+}
+
 } // namespace

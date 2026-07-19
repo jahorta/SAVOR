@@ -2,12 +2,15 @@
 
 #include "ActionMotionInvocationModel.h"
 #include "ActionMotionPlaybackModel.h"
+#include "BattleCollisionBoxModel.h"
 #include "BattleFrameStateModel.h"
 #include "BattleFrameThreadListModel.h"
 #include "BattleMovementInvocationModel.h"
 #include "BattleMovementPathModel.h"
 #include "CombatantVisualDispatcherModel.h"
+#include "DirectInstructionTransitionSelectorModel.h"
 #include "MovementModel.h"
+#include "BattleTargetReactionStateModel.h"
 #include "ViewPlacementCacheModel.h"
 
 #include <array>
@@ -45,6 +48,7 @@ enum class BattleFrameWorkerKind {
     PassiveController,
     VisualController,
     VisualActionService,
+    VisualCollisionBox,
     VisualActionViewRecord,
     CombatantInstruction,
     CleanupStanding,
@@ -58,6 +62,27 @@ enum class BattleFrameEventStatus {
     MissingInput,
     Unsupported,
     Ambiguous,
+};
+
+enum class BattleFrameInstructionControlResetSource {
+    QueuedTransition,
+    DirectTransition,
+};
+
+enum class BattleFrameInstructionControlResetLifecycle {
+    Applied,
+    Consumed,
+    TargetRemoved,
+    TargetReplaced,
+    Superseded,
+    MissingInput,
+};
+
+enum class BattleFrameInstructionControlResetTiming {
+    SameInstructionVisit,
+    SameFrameLaterVisit,
+    NextFrameVisit,
+    Unknown,
 };
 
 enum class BattleFrameMovementLegPolicy {
@@ -82,6 +107,12 @@ enum class BattleFrameWorkerStepKind {
     VisualControllerVisit,
     VisualInstructionDecision,
     VisualInstructionStatePublish,
+    TargetReactionPublish,
+    DirectTransitionSelect,
+    CollisionOccupancyRefresh,
+    CollisionProbe,
+    InstructionCallbackControlReset,
+    InstructionCallbackControlResetConsume,
     ActionMotionInvocationDecision,
     ActionMotionPlaybackInstall,
     ActionMotionRendererAdvance,
@@ -372,6 +403,16 @@ struct BattleFrameStepEvent {
     std::int16_t persistent_callback_index = -1;
     bool persistent_callback_changed = false;
     bool persistent_callback_same_value = false;
+    int instruction_control_reset_sequence = -1;
+    BattleFrameInstructionControlResetSource instruction_control_reset_source =
+        BattleFrameInstructionControlResetSource::QueuedTransition;
+    BattleFrameInstructionControlResetLifecycle instruction_control_reset_lifecycle =
+        BattleFrameInstructionControlResetLifecycle::MissingInput;
+    BattleFrameInstructionControlResetTiming instruction_control_reset_timing =
+        BattleFrameInstructionControlResetTiming::Unknown;
+    int instruction_control_reset_producer_node_id = -1;
+    int instruction_control_reset_target_node_id = -1;
+    std::uint64_t instruction_control_reset_traversal_generation = 0;
     ActionMotionInvocationDecisionKind action_motion_invocation_decision =
         ActionMotionInvocationDecisionKind::Unsupported;
     ActionMotionInvocationStatus action_motion_invocation_status =
@@ -526,8 +567,21 @@ struct BattleFrameActionResolution {
     bool target_dead = false;
 };
 
+struct BattleFrameTargetReactionPublication {
+    int action_ordinal = -1;
+    BattleTargetReactionResult reaction{};
+};
+
+struct BattleFrameTargetReactionRuntime {
+    bool available = false;
+    int action_ordinal = -1;
+    std::uint64_t revision = 0;
+    BattleTargetReactionResult reaction{};
+};
+
 enum class BattleFrameVisualChildKind {
     ActionService,
+    CollisionBox,
     ActionViewRecord,
 };
 
@@ -583,7 +637,14 @@ struct BattleFrameVisualChildTask {
     bool nested_call_complete = false;
     CombatantVisualModelStatus status = CombatantVisualModelStatus::Provisional;
     std::optional<CombatantVisualSetCommandPayload> set_command;
+    std::optional<CombatantVisualCollisionBoxPayload> collision_box;
     std::optional<CombatantVisualSystemCameraPayload> system_camera;
+    int collision_state = 0;
+    int collision_counter = 0;
+    BattleCollisionVec3 collision_current{};
+    BattleCollisionVec3 collision_velocity{};
+    std::array<bool, kBattleFrameCombatantSlotCapacity> collision_visited{};
+    bool collision_selector_invoked = false;
     std::string provenance;
 };
 
@@ -607,8 +668,6 @@ struct BattleFramePersistentInstructionCallbackRuntime {
     int callback_state = 0;
     std::optional<CombatantStdActionRow> current_instruction_row;
     std::optional<CombatantStdActionRow> previous_instruction_row;
-    std::optional<BattleFrameInstructionCallbackPublicationSource>
-        pending_publication_source;
     std::optional<bool> current_motion_resource_present;
     std::optional<std::int16_t> current_motion_id;
     int visits = 0;
@@ -620,6 +679,51 @@ struct BattleFramePersistentInstructionCallbackRuntime {
     int state8_delay_remaining = -1;
     ActionMotionInvocationStatus status =
         ActionMotionInvocationStatus::MissingInput;
+    std::string provenance;
+};
+
+struct BattleFramePendingInstructionControlReset {
+    int sequence = -1;
+    int action_ordinal = -1;
+    int target_slot = -1;
+    int producer_node_id = -1;
+    int producer_visual_task_sequence = -1;
+    int target_node_id = -1;
+    std::uint64_t target_node_creation_sequence = 0;
+    int producer_node_index = -1;
+    int target_node_index = -1;
+    int staged_frame_index = -1;
+    std::uint64_t staged_traversal_generation = 0;
+    std::uint64_t eligible_traversal_generation = 0;
+    std::uint64_t callback_publication_revision = 0;
+    int reset_value = 0;
+    BattleFrameInstructionControlResetSource source =
+        BattleFrameInstructionControlResetSource::DirectTransition;
+    BattleFrameInstructionControlResetTiming timing =
+        BattleFrameInstructionControlResetTiming::Unknown;
+    std::string provenance;
+};
+
+struct BattleFrameInstructionControlResetHistoryEvent {
+    int sequence = -1;
+    int frame_index = -1;
+    int action_ordinal = -1;
+    int target_slot = -1;
+    int producer_node_id = -1;
+    int producer_visual_task_sequence = -1;
+    int target_node_id = -1;
+    int producer_node_index = -1;
+    int target_node_index = -1;
+    std::uint64_t traversal_generation = 0;
+    std::uint64_t callback_publication_revision = 0;
+    int callback_state_before = 0;
+    int callback_state_after = 0;
+    BattleFrameInstructionControlResetSource source =
+        BattleFrameInstructionControlResetSource::QueuedTransition;
+    BattleFrameInstructionControlResetLifecycle lifecycle =
+        BattleFrameInstructionControlResetLifecycle::MissingInput;
+    BattleFrameInstructionControlResetTiming timing =
+        BattleFrameInstructionControlResetTiming::Unknown;
     std::string provenance;
 };
 
@@ -638,17 +742,26 @@ struct BattleFrameVisualRuntime {
     std::array<BattleFramePersistentInstructionCallbackRuntime,
                kBattleFrameCombatantSlotCapacity>
         persistent_instruction_callbacks{};
+    std::vector<BattleFramePendingInstructionControlReset>
+        pending_instruction_control_resets;
+    std::vector<BattleFrameInstructionControlResetHistoryEvent>
+        instruction_control_reset_history;
     std::vector<BattleFrameVisualChildTask> child_tasks;
     std::vector<BattleFrameStepEvent> history;
     std::vector<BattleFrameStepEvent> pending_events;
     std::string pathing_profile_name;
     int next_child_sequence = 0;
+    int next_instruction_control_reset_sequence = 0;
     int current_visit_cursor = -1;
 };
 
 struct BattleFrameRuntime {
     BattleFrameState state{};
     BattleFrameThreadListRuntime thread_list{};
+    BattleCollisionOccupancyRuntime collision_occupancy{};
+    std::array<BattleFrameTargetReactionRuntime,
+               kBattleFrameCombatantSlotCapacity>
+        target_reactions{};
     std::optional<int> std_resource_worker_node_id;
     ViewPlacementCacheRuntime view_placement_cache{};
     BattleFrameVisualRuntime visual{};
@@ -736,6 +849,10 @@ bool notify_first_turn_action_resolution(
     BattleFrameRuntime& runtime,
     const BattleFrameActionResolution& resolution);
 
+bool publish_first_turn_target_reaction(
+    BattleFrameRuntime& runtime,
+    const BattleFrameTargetReactionPublication& publication);
+
 bool configure_battle_frame_visual_resource(
     BattleFrameRuntime& runtime,
     CombatantVisualResource resource);
@@ -766,7 +883,8 @@ bool stage_battle_frame_validated_instruction_transition(
     int slot,
     int target_slot,
     std::int16_t instruction_mode,
-    std::string provenance);
+    std::string provenance,
+    int producer_visual_task_sequence = -1);
 
 bool stage_battle_frame_queued_std_action_transition(
     BattleFrameRuntime& runtime,
@@ -845,5 +963,11 @@ const char* battle_frame_combatant_instruction_phase_name(
     BattleFrameCombatantInstructionPhase phase);
 const char* battle_frame_visual_child_kind_name(BattleFrameVisualChildKind kind);
 const char* battle_frame_visual_child_phase_name(BattleFrameVisualChildPhase phase);
+const char* battle_frame_instruction_control_reset_source_name(
+    BattleFrameInstructionControlResetSource source);
+const char* battle_frame_instruction_control_reset_lifecycle_name(
+    BattleFrameInstructionControlResetLifecycle lifecycle);
+const char* battle_frame_instruction_control_reset_timing_name(
+    BattleFrameInstructionControlResetTiming timing);
 
 } // namespace savor::predict

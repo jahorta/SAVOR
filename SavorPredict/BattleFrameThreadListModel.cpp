@@ -88,6 +88,80 @@ BattleFrameThreadMutationResult mutate_existing(
 
 } // namespace
 
+void begin_battle_frame_thread_traversal(
+    BattleFrameThreadListRuntime& runtime,
+    int frame_index) {
+    runtime.traversal_active = true;
+    ++runtime.traversal_generation;
+    runtime.traversal_frame_index = frame_index;
+    runtime.previous_node_id.reset();
+    runtime.current_node_id.reset();
+    runtime.current_node_index.reset();
+    runtime.visited_node_ids.clear();
+}
+
+void end_battle_frame_thread_traversal(
+    BattleFrameThreadListRuntime& runtime) {
+    runtime.traversal_active = false;
+}
+
+BattleFrameThreadDeliveryDecision plan_battle_frame_thread_delivery(
+    const BattleFrameThreadListRuntime& runtime,
+    int target_node_id) {
+    BattleFrameThreadDeliveryDecision result;
+    result.target_node_id = target_node_id;
+    result.staged_traversal_generation = runtime.traversal_generation;
+
+    const auto target = std::find_if(
+        runtime.nodes.begin(),
+        runtime.nodes.end(),
+        [target_node_id](const BattleFrameThreadNode& node) {
+            return node.node_id == target_node_id;
+        });
+    if (target == runtime.nodes.end()) {
+        result.status = BattleFrameThreadDeliveryStatus::TargetNotFound;
+        result.provenance = "target thread node was not found";
+        return result;
+    }
+    result.target_node_index = static_cast<int>(
+        std::distance(runtime.nodes.begin(), target));
+    if (!target->active) {
+        result.status = BattleFrameThreadDeliveryStatus::TargetInactive;
+        result.provenance = "target thread node is inactive";
+        return result;
+    }
+
+    if (!runtime.traversal_active
+        || !runtime.current_node_id.has_value()
+        || !runtime.current_node_index.has_value()) {
+        result.status = BattleFrameThreadDeliveryStatus::NextTraversal;
+        result.eligible_traversal_generation = runtime.traversal_generation + 1;
+        result.provenance =
+            "no active traversal cursor; delivery begins on the next traversal";
+        return result;
+    }
+
+    result.current_node_index = static_cast<int>(*runtime.current_node_index);
+    const bool target_already_visited = std::find(
+        runtime.visited_node_ids.begin(),
+        runtime.visited_node_ids.end(),
+        target_node_id) != runtime.visited_node_ids.end();
+    if (!target_already_visited
+        && result.target_node_index > result.current_node_index) {
+        result.status = BattleFrameThreadDeliveryStatus::SameTraversal;
+        result.eligible_traversal_generation = runtime.traversal_generation;
+        result.provenance =
+            "target remains after the current cursor in this traversal";
+        return result;
+    }
+
+    result.status = BattleFrameThreadDeliveryStatus::NextTraversal;
+    result.eligible_traversal_generation = runtime.traversal_generation + 1;
+    result.provenance =
+        "target is at or before the current cursor and waits for the next traversal";
+    return result;
+}
+
 BattleFrameThreadMutationResult create_battle_frame_thread(
     BattleFrameThreadListRuntime& runtime,
     BattleFrameThreadCreateRequest request) {
@@ -357,6 +431,20 @@ BattleFrameThreadMutationResult set_battle_frame_thread_cursor(
         };
     }
 
+    if (runtime.traversal_active) {
+        runtime.previous_node_id = runtime.current_node_id;
+        const auto index = std::find_if(
+            runtime.nodes.begin(),
+            runtime.nodes.end(),
+            [node_id](const BattleFrameThreadNode& candidate) {
+                return candidate.node_id == node_id;
+            });
+        runtime.current_node_index = index == runtime.nodes.end()
+            ? std::optional<std::size_t>{}
+            : std::optional<std::size_t>{static_cast<std::size_t>(
+                std::distance(runtime.nodes.begin(), index))};
+        runtime.visited_node_ids.push_back(node_id);
+    }
     runtime.current_node_id = node_id;
     append_event(
         runtime,
@@ -393,6 +481,7 @@ BattleFrameThreadMutationResult remove_battle_frame_thread(
     if (result.status == BattleFrameThreadMutationStatus::Applied
         && runtime.current_node_id == node_id) {
         runtime.current_node_id.reset();
+        runtime.current_node_index.reset();
     }
     return result;
 }

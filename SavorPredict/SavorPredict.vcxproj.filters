@@ -96,6 +96,9 @@
     <ClCompile Include="ActionMotionInvocationModel.cpp" />
     <ClCompile Include="ActionMotionTargetModel.cpp" />
     <ClCompile Include="BattleMovementPathModel.cpp" />
+    <ClCompile Include="BattleCollisionBoxModel.cpp" />
+    <ClCompile Include="BattleTargetReactionStateModel.cpp" />
+    <ClCompile Include="DirectInstructionTransitionSelectorModel.cpp" />
     <ClCompile Include="BattleJobBatchRunManifest.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -313,6 +316,9 @@
     <ClInclude Include="ActionMotionTargetModel.h" />
     <ClInclude Include="BattleMovementInvocationModel.h" />
     <ClInclude Include="BattleMovementPathModel.h" />
+    <ClInclude Include="BattleCollisionBoxModel.h" />
+    <ClInclude Include="BattleTargetReactionStateModel.h" />
+    <ClInclude Include="DirectInstructionTransitionSelectorModel.h" />
     <ClInclude Include="BattleJobBatchRunManifest.h">
       <Filter>Header Files</Filter>
     </ClInclude>
