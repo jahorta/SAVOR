@@ -16,16 +16,18 @@ public:
         All = 0,
         Grounds = 1,
         Links = 2,
-        Collisions = 3,
-        Triggers = 4,
-        MovingObjects = 5,
-        Unknowns = 6,
+        Route = 3,
+        Collisions = 4,
+        Triggers = 5,
+        MovingObjects = 6,
+        Unknowns = 7,
     };
 
     explicit VisibilityTreeWidget(QWidget* parent = nullptr);
 
     void setLayers(const QVariantList& grounds,
         const QVariantList& links,
+        const QVariantList& routes,
         const QVariantList& collisions,
         const QVariantList& triggers,
         const QVariantList& movingObjects,
@@ -45,12 +47,14 @@ private:
     QTreeWidgetItem* allItem_ = nullptr;
     QTreeWidgetItem* groundsItem_ = nullptr;
     QTreeWidgetItem* linksItem_ = nullptr;
+    QTreeWidgetItem* routeItem_ = nullptr;
     QTreeWidgetItem* collisionsItem_ = nullptr;
     QTreeWidgetItem* triggersItem_ = nullptr;
     QTreeWidgetItem* movingObjectsItem_ = nullptr;
     QTreeWidgetItem* unknownsItem_ = nullptr;
     QVariantList grounds_{};
     QVariantList links_{};
+    QVariantList routes_{};
     QVariantList collisions_{};
     QVariantList triggers_{};
     QVariantList movingObjects_{};

@@ -5,6 +5,7 @@ Item {
     id: root
     property bool showGrounds: true
     property bool showLinks: true
+    property bool showRoute: true
     property bool showCollisions: true
     property bool showTriggers: true
     property bool showMovingObjects: true
@@ -12,6 +13,7 @@ Item {
 
     property var groundMeshes: []
     property var linkMeshes: []
+    property var routeMeshes: []
     property var collisionMeshes: []
     property var triggerMeshes: []
     property var movingObjectMeshes: []
@@ -19,6 +21,8 @@ Item {
 
     property vector3d cameraTarget: Qt.vector3d(0, 0, 0)
     property real cameraDistance: 500
+    // 0 = orbit only, 1 = set start, 2 = set goal.
+    property int endpointMode: 0
 
     property vector3d orbitCenter: Qt.vector3d(0, 0, 0)
     property real orbitDistance: 500
@@ -146,8 +150,11 @@ Item {
                 property var mesh: (index >= 0 && index < root.groundMeshes.length)
                     ? root.groundMeshes[index]
                     : ({})
+                property int surfaceIndex: Number(mesh.surfaceIndex)
+                objectName: "groundSurface:" + surfaceIndex
 
                 visible: root.showGrounds && (mesh.visible !== false)
+                pickable: root.endpointMode !== 0
                 geometry: mesh.geometry
                 materials: DefaultMaterial {
                     diffuseColor: mesh.color
@@ -166,6 +173,25 @@ Item {
                     : ({})
 
                 visible: root.showLinks && (mesh.visible !== false)
+                pickable: false
+                geometry: mesh.geometry
+                materials: DefaultMaterial {
+                    diffuseColor: mesh.color
+                    cullMode: Material.NoCulling
+                    lighting: DefaultMaterial.NoLighting
+                }
+            }
+        }
+
+        Repeater3D {
+            model: root.routeMeshes.length
+            delegate: Model {
+                property var mesh: (index >= 0 && index < root.routeMeshes.length)
+                    ? root.routeMeshes[index]
+                    : ({})
+
+                visible: root.showRoute && (mesh.visible !== false)
+                pickable: false
                 geometry: mesh.geometry
                 materials: DefaultMaterial {
                     diffuseColor: mesh.color
@@ -183,6 +209,7 @@ Item {
                     : ({})
 
                 visible: root.showCollisions && (mesh.visible !== false)
+                pickable: false
                 geometry: mesh.geometry
                 materials: DefaultMaterial {
                     diffuseColor: mesh.color
@@ -198,8 +225,13 @@ Item {
                 property var mesh: (index >= 0 && index < root.triggerMeshes.length)
                     ? root.triggerMeshes[index]
                     : ({})
+                property int regionIndex: Number(mesh.regionIndex)
+                objectName: mesh.goalPickable === true
+                    ? "triggerRegion:" + regionIndex
+                    : ""
 
                 visible: root.showTriggers && (mesh.visible !== false)
+                pickable: root.endpointMode === 2 && mesh.goalPickable === true
                 geometry: mesh.geometry
                 materials: DefaultMaterial {
                     diffuseColor: mesh.color
@@ -217,6 +249,7 @@ Item {
                     : ({})
 
                 visible: root.showMovingObjects && (mesh.visible !== false)
+                pickable: false
                 geometry: mesh.geometry
                 materials: DefaultMaterial {
                     diffuseColor: mesh.color
@@ -234,6 +267,7 @@ Item {
                     : ({})
 
                 visible: root.showUnknowns && (mesh.visible !== false)
+                pickable: false
                 geometry: mesh.geometry
                 materials: DefaultMaterial {
                     diffuseColor: mesh.color
@@ -251,10 +285,17 @@ Item {
 
         property real lastX: 0
         property real lastY: 0
+        property real pressX: 0
+        property real pressY: 0
+        property bool dragging: false
+        readonly property real clickDragThreshold: 6
 
         onPressed: function(mouse) {
+            pressX = mouse.x
+            pressY = mouse.y
             lastX = mouse.x
             lastY = mouse.y
+            dragging = false
         }
 
         onPositionChanged: function(mouse) {
@@ -264,12 +305,42 @@ Item {
             lastY = mouse.y
 
             if (mouse.buttons & Qt.LeftButton) {
+                const totalDx = mouse.x - pressX
+                const totalDy = mouse.y - pressY
+                if (!dragging && ((totalDx * totalDx) + (totalDy * totalDy)) >=
+                        (clickDragThreshold * clickDragThreshold)) {
+                    dragging = true
+                }
+                if (!dragging)
+                    return
                 root.orbitYaw -= dx * 0.28
                 root.orbitPitch = root.clamp(root.orbitPitch - dy * 0.22, -89, 89)
             } else if ((mouse.buttons & Qt.RightButton) || (mouse.buttons & Qt.MiddleButton)) {
                 root.panByPixels(dx, dy)
             }
         }
+
+        onReleased: function(mouse) {
+            if (mouse.button === Qt.LeftButton && !dragging && root.endpointMode !== 0) {
+                const hit = sceneView.pick(mouse.x, mouse.y)
+                const objectName = hit.objectHit ? hit.objectHit.objectName : ""
+                if (objectName.indexOf("groundSurface:") === 0) {
+                    const surfaceIndex = Number(objectName.substring("groundSurface:".length))
+                    viewerWindow.handleGroundPick(
+                        surfaceIndex,
+                        hit.scenePosition.x,
+                        hit.scenePosition.y,
+                        hit.scenePosition.z)
+                } else if (root.endpointMode === 2 &&
+                           objectName.indexOf("triggerRegion:") === 0) {
+                    const regionIndex = Number(objectName.substring("triggerRegion:".length))
+                    viewerWindow.handleTriggerGoalPick(regionIndex)
+                }
+            }
+            dragging = false
+        }
+
+        onCanceled: dragging = false
 
         onWheel: function(wheel) {
             const direction = wheel.angleDelta.y > 0 ? -1 : 1

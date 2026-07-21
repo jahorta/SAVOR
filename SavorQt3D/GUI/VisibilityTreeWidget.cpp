@@ -9,7 +9,6 @@ namespace savor::qt3d::gui {
 namespace {
 
 constexpr int kLayerRole = Qt::UserRole + 1;
-constexpr int kRenderedLayerCount = 6;
 } // namespace
 
 VisibilityTreeWidget::VisibilityTreeWidget(QWidget* parent)
@@ -29,7 +28,8 @@ VisibilityTreeWidget::VisibilityTreeWidget(QWidget* parent)
             return;
         }
 
-        const bool isLeaf = item->childCount() == 0;
+        const bool isLayerItem = item == allItem_ || item->parent() == allItem_;
+        const bool isLeaf = !isLayerItem;
         QTreeWidgetItem* layerItem = item;
         int leafIndex = -1;
         if (isLeaf) {
@@ -44,12 +44,9 @@ VisibilityTreeWidget::VisibilityTreeWidget(QWidget* parent)
                 : static_cast<int>(LayerKind::All));
         const Qt::CheckState state = item->checkState(0);
 
-        if (state == Qt::PartiallyChecked) {
-            updateTriStateChecks();
-            return;
-        }
-
-        const bool checked = state == Qt::Checked;
+        // A partial parent click means "show this group". Returning here would
+        // leave partially visible groups, including All, impossible to toggle.
+        const bool checked = state != Qt::Unchecked;
 
         if (leafIndex < 0) {
             const QSignalBlocker blocker(tree_);
@@ -74,12 +71,14 @@ VisibilityTreeWidget::VisibilityTreeWidget(QWidget* parent)
 
 void VisibilityTreeWidget::setLayers(const QVariantList& grounds,
     const QVariantList& links,
+    const QVariantList& routes,
     const QVariantList& collisions,
     const QVariantList& triggers,
     const QVariantList& movingObjects,
     const QVariantList& unknowns) {
     grounds_ = grounds;
     links_ = links;
+    routes_ = routes;
     collisions_ = collisions;
     triggers_ = triggers;
     movingObjects_ = movingObjects;
@@ -95,6 +94,7 @@ void VisibilityTreeWidget::rebuildTree() {
     const bool allExpanded = allItem_ != nullptr && allItem_->isExpanded();
     const bool groundsExpanded = groundsItem_ != nullptr && groundsItem_->isExpanded();
     const bool linksExpanded = linksItem_ != nullptr && linksItem_->isExpanded();
+    const bool routeExpanded = routeItem_ != nullptr && routeItem_->isExpanded();
     const bool collisionsExpanded = collisionsItem_ != nullptr && collisionsItem_->isExpanded();
     const bool triggersExpanded = triggersItem_ != nullptr && triggersItem_->isExpanded();
     const bool movingObjectsExpanded = movingObjectsItem_ != nullptr && movingObjectsItem_->isExpanded();
@@ -128,6 +128,7 @@ void VisibilityTreeWidget::rebuildTree() {
 
     buildLayer(LayerKind::Grounds, grounds_, groundsItem_);
     buildLayer(LayerKind::Links, links_, linksItem_);
+    buildLayer(LayerKind::Route, routes_, routeItem_);
     buildLayer(LayerKind::Collisions, collisions_, collisionsItem_);
     buildLayer(LayerKind::Triggers, triggers_, triggersItem_);
     buildLayer(LayerKind::MovingObjects, movingObjects_, movingObjectsItem_);
@@ -136,6 +137,7 @@ void VisibilityTreeWidget::rebuildTree() {
     allItem_->setExpanded(!hadExistingTree || allExpanded);
     groundsItem_->setExpanded(!hadExistingTree || groundsExpanded);
     linksItem_->setExpanded(!hadExistingTree || linksExpanded);
+    routeItem_->setExpanded(!hadExistingTree || routeExpanded);
     collisionsItem_->setExpanded(!hadExistingTree || collisionsExpanded);
     triggersItem_->setExpanded(!hadExistingTree || triggersExpanded);
     movingObjectsItem_->setExpanded(!hadExistingTree || movingObjectsExpanded);
@@ -173,6 +175,7 @@ void VisibilityTreeWidget::updateTriStateChecks() {
 
     updateGroup(groundsItem_);
     updateGroup(linksItem_);
+    updateGroup(routeItem_);
     updateGroup(collisionsItem_);
     updateGroup(triggersItem_);
     updateGroup(movingObjectsItem_);
@@ -180,10 +183,12 @@ void VisibilityTreeWidget::updateTriStateChecks() {
 
     int checkedGroups = 0;
     int partialGroups = 0;
+    int nonEmptyGroups = 0;
     const auto observe = [&](QTreeWidgetItem* item) {
-        if (item == nullptr) {
+        if (item == nullptr || item->childCount() == 0) {
             return;
         }
+        ++nonEmptyGroups;
         if (item->checkState(0) == Qt::Checked) {
             ++checkedGroups;
         } else if (item->checkState(0) == Qt::PartiallyChecked) {
@@ -192,6 +197,7 @@ void VisibilityTreeWidget::updateTriStateChecks() {
     };
     observe(groundsItem_);
     observe(linksItem_);
+    observe(routeItem_);
     observe(collisionsItem_);
     observe(triggersItem_);
     observe(movingObjectsItem_);
@@ -200,7 +206,7 @@ void VisibilityTreeWidget::updateTriStateChecks() {
     if (allItem_ != nullptr) {
         if (checkedGroups == 0 && partialGroups == 0) {
             allItem_->setCheckState(0, Qt::Unchecked);
-        } else if (checkedGroups == kRenderedLayerCount && partialGroups == 0) {
+        } else if (nonEmptyGroups > 0 && checkedGroups == nonEmptyGroups && partialGroups == 0) {
             allItem_->setCheckState(0, Qt::Checked);
         } else {
             allItem_->setCheckState(0, Qt::PartiallyChecked);
@@ -216,6 +222,8 @@ QString VisibilityTreeWidget::layerLabel(const LayerKind layer) const {
         return QStringLiteral("Grounds");
     case LayerKind::Links:
         return QStringLiteral("Links");
+    case LayerKind::Route:
+        return QStringLiteral("Route");
     case LayerKind::Collisions:
         return QStringLiteral("Collisions");
     case LayerKind::Triggers:

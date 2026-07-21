@@ -2,32 +2,82 @@
 
 ## Status
 
-Future plan. SPICE owns MLD/SCT and other Skies of Arcadia filetype parsing. `SavorNavigation` links the
-vendored parser, converts its output into SAVOR-owned navigation models, and owns route-planning
+Future plan. SPICE owns MLD/SCT/ECT and other Skies of Arcadia filetype parsing. The implemented
+prototype foundation currently links the vendored SpiceMLD and SpiceSCT libraries privately from
+`SavorNavigation`, converts their output into SAVOR-owned navigation models, and owns route-planning
 semantics. `SavorQt3D` is the first standalone host for the reusable Navigation widget.
+
+The current implementation target is **Dungeon Navigation**. Its planned encounter layer will add a
+private SpiceEct dependency without changing the public SPICE boundary. A later **Safe Navigation** phase
+will reuse the same surface-constrained 2.5D world, routing, collision-validation, and movement-analysis
+foundation without random-encounter behavior. Area 99 remains a separate Overworld Navigation problem.
+The future runtime/prediction lifecycle is specified normatively in
+[`NavigationContextWorkflow/`](NavigationContextWorkflow/README.md); this document remains the scope and
+success-criteria summary.
 
 ## Problem Statement
 
 Given:
-- An AKLZ-compressed MLD selected manually from a GameCube Legends disc dump.
-- A start condition and target objective.
+- An AKLZ-compressed MLD selected manually from a GameCube Legends disc dump and, when available, its
+  strictly matched SCT and same-key ECT companions.
+- A manual start or selectable statically resolvable opcode-77 placement, plus a manually selected ground
+  or projected-trigger goal, for the first pathfinding slice.
 
-We need to produce an input strategy that reaches the objective in the fewest VI frames, with acceptable determinism/reliability.
+We need to produce a planning route and schedule that can be realized as an input strategy and reaches the
+objective in the fewest VI frames, with acceptable determinism/reliability. `SavorPredict` owns the
+planning-level world-space route and movement/no-movement/interruption schedule; a later control solver
+owns raw controller and camera realization. For Dungeon Navigation, we must also distinguish the authored
+collision model from runtime-validated collision behavior, characterize reproducible movement/collision
+anomalies, and
+  map route-relative random-encounter exposure without making unsupported probability or runtime-state
+  claims. A later `SavorQt` planning module may request a specific modeled outcome from `SavorPredict`, but
+  the Navigation map only displays a selected prediction result and never owns movement-schedule search.
 
 For the first prototype, SpiceMLD supplies walkable geometry, collision geometry, link metadata, and
-available trigger information from the selected MLD. Later milestones add automatic area identity,
-related SCT content, workflow jobs, and durable artifacts.
+available trigger information from the selected MLD. SpiceSCT parses the related script; `SavorNavigation`
+catalogues opcode-77 placements and can use a statically resolvable placement as the start. Manual start
+selection remains the default and the goal remains manual, selected from ground or real projected trigger
+geometry. Later milestones add automatic condition/state evaluation, opcode-156 runtime restore handling,
+broader transition semantics, automatic content resolution beyond the sibling naming rule, workflow jobs,
+and durable artifacts.
+
+The existing viewer, start selection, traversal graph, and A* behavior remain the implemented prototype
+foundation. Area-profile classification, ECT-backed dungeon encounter analysis, collision validation, and
+movement-anomaly discovery described below are planned additions unless explicitly identified otherwise.
+
+## Navigation Epoch and Context Scope
+
+The integrated workflow begins predictions only from a ready `NavigationContextResult` captured after a
+reset-qualified field entry. A qualifying entry is a completed field script/context switch with control
+restored, or a battle return with field control restored. Readiness is measured from a clean, unpatched
+source savestate: ground and placement settled, player velocity zero, authored input neutral, no forced
+movement/cutscene/transition/encounter pending, and the required reset-state capture consistent with the
+working contract. Zero velocity and `stepCount` are observed evidence, not values fabricated for the
+predictor. Save load qualifies only when runtime evidence confirms a reset-producing script switch.
+
+Entering battle terminates the current `NavigationEpoch`; a validated field return starts a new context.
+A cutscene that runs in the same field script and returns control stays inside the current epoch and does
+not reset `stepCount`. The predictor must model that interruption in the same search or return
+`ModelIncomplete`; it must never restart from a clean-entry assumption. Camera/control orientation is not
+part of `NavigationContextResult` or predictor input. It remains execution telemetry for collision/anomaly
+probes and a concern of the downstream control solver.
 
 ## First Interactive Prototype
 
 1. **Manual file acquisition**
    - Select one `.mld` with a file picker and remember the last directory.
+   - For a conforming `aNNNC.mld`, derive area key `NNNC` and look in the same directory for
+     `meNNNC.sct`, comparing the prefix-stripped key case-insensitively.
+   - Parse the matching sibling automatically. If it is missing, warn and offer a manual SCT picker; a
+     manually selected SCT may be elsewhere but must match the current area key.
+   - Reject a mismatched SCT before parsing, report the expected and selected names, and preserve any
+     already loaded valid SCT. A nonconforming MLD remains viewable but has no automatic SCT association.
    - Use the local US disc dump as a developer fixture, not a hardcoded runtime default.
-   - Do not require Dolphin, ISO traversal, or automatic area-name resolution.
+   - Do not require Dolphin, ISO traversal, or disc-wide area-name resolution.
 
 2. **Direct in-process parsing**
-   - `SavorNavigation` reads the compressed bytes and calls SpiceMLD.
-   - SpiceMLD owns AKLZ detection/decompression and MLD parsing; SAVOR does not duplicate either.
+   - `SavorNavigation` reads the compressed bytes and calls SpiceMLD/SpiceSCT.
+   - SPICE owns AKLZ detection/decompression and MLD/SCT parsing; SAVOR does not duplicate them.
    - Runtime parsing starts from canonical `MldFile`. A compatibility projection supplies `world`,
      `searchWorld`, and a transient in-memory Blender IR scene used only inside `SavorNavigation` to
      flatten NJ object geometry for exact `fxn=wall` collision regions, every SPICE-classified trigger,
@@ -37,8 +87,13 @@ related SCT content, workflow jobs, and durable artifacts.
      navigation surface set.
 
 3. **SAVOR-owned model**
-   - Convert parser results into an in-memory `NavigationAreaModel` before applying data to Qt.
-   - Do not expose SpiceMLD types to `SavorQt3D`, the widget, the planner, or future persistence code.
+   - Convert parser results into an in-memory `NavigationScenarioModel` containing the
+     `NavigationAreaModel`, optional `NavigationScriptModel`, traversal graph, and normalized diagnostics
+     before applying data to Qt.
+   - Retain the full SCT parse result only behind an internal opaque boundary; expose source/status/
+     section/instruction summaries and a SAVOR-owned opcode-77 start catalog rather than SpiceSCT types.
+   - Do not expose SpiceMLD or SpiceSCT types to `SavorQt3D`, the widget, the planner, or future
+     persistence code.
 
 4. **Standalone widget host**
    - Revive `SavorQt3D` as the development/test application.
@@ -46,9 +101,52 @@ related SCT content, workflow jobs, and durable artifacts.
      useful; the obsolete `SavorMLD` dependency path has been removed.
    - Load and convert the selected file off the UI thread, then apply the completed model on the UI thread.
 
+5. **First interactive path**
+   - Build a true-3D traversal graph from valid walkable triangles, shared boundaries, provisional MLD
+     links, and geometrically validated cross-surface portals.
+   - Keep manual ground picking as the default for the start. Let the goal select either ground or a real
+     projected trigger mesh, then resolve both endpoints to stable graph triangles and render one
+     deterministic A* route plus its derived portals.
+   - For a trigger goal, ignore fallback cubes, choose the largest usable projected mesh by deterministic
+     world-space bounds, resolve it to walkable graph geometry, and render those bounds as a magenta AABB.
+   - Offer statically readable opcode-77 placements as optional starts. Classify initialization placements
+     as authored arrivals and other occurrences as scripted repositions while preserving their branch,
+     switch, condition, and call provenance. Use known opcode-77 yaw as the scripted start facing; manual
+     starts expose a facing control and a short rendered facing ray.
+   - Ignore opcode 156; do not infer its coordinates from unresolved runtime restore state or automatically
+     choose an opcode-77 variant from current game state.
+
+## Area Profile Scope
+
+`NavigationAreaProfile` is SAVOR-owned and is derived from the normalized area key plus the complete
+same-directory companion-file set. Classification is ordered; later rules never override an earlier one:
+
+1. **Overworld**
+   - Any key beginning with `099` is Overworld regardless of SCT or ECT presence. Area 99 never falls
+     through to Dungeon handling.
+2. **Dungeon**
+   - A non-099 MLD with a case-insensitively matched, same-key ECT is Dungeon.
+   - ECT presence establishes the profile. Readability, decompression, and parse status separately
+     determine encounter-data availability and never reclassify the area.
+3. **Safe**
+   - A non-099 MLD with a matched SCT and no matched ECT is a Safe Navigation candidate when the selected
+     directory is treated as the complete companion set.
+   - Keys below `200a` have evidence of traversability. Keys at or above `200a` remain candidates whose
+     traversability has not yet been validated.
+   - Safe means no random encounters; it does not mean no scripted triggers, events, cutscenes, doors, or
+     other interruptions.
+4. **Unknown / View-only**
+   - Nonconforming names and MLDs with neither a matched SCT nor ECT remain inspectable without a
+     navigation-phase guarantee.
+
+For a conforming `aNNNC.mld`, the expected companions are `meNNNC.sct` and `aNNNC.ect`. Matching is
+case-insensitive while original paths remain provenance. Automatic discovery stays limited to the MLD
+directory. The current target implements Dungeon Navigation; Safe is a later sibling profile, and
+Overworld/Area 99 is deferred.
+
 ## In-Scope (MVP)
 
-1. **Static world navigation**
+1. **Dungeon-first static world navigation**
    - Consume walking-plane and target-discovery data exposed through `NavigationAreaModel`.
    - Include both native GRND meshes and GOBJ meshes used in the ground role, while preserving their
      source kind and entry/block/node identity.
@@ -58,14 +156,18 @@ related SCT content, workflow jobs, and durable artifacts.
      asserting that every entry is a door or modeling its runtime motion/controller behavior.
 
 2. **Objective-based routing**
-   - Route between named objectives:
+   - First pathfinding slice: route from a manual or resolvable opcode-77 start to a manually picked ground
+     or projected-trigger goal resolved onto the loaded walkable geometry.
+   - Later objective workflow: route between named objectives:
      - chest/interaction
      - doorway/zone transition
      - map exit/load trigger
 
 3. **Cutscene-aware progression**
-   - Detect and model cutscene-triggered interruptions.
-   - Continue planning from post-cutscene state.
+   - Detect and model same-script cutscene interruptions without creating a new prediction epoch.
+   - Continue from the post-cutscene state in the same prediction when supported; otherwise return
+     `ModelIncomplete`.
+   - Treat battle entry as epoch termination and battle return as a separate reset-qualified context.
 
 4. **Time-optimal baseline**
    - Optimize for completion time in VI frames, but keep optimization strategy simple in MVP.
@@ -76,16 +178,69 @@ related SCT content, workflow jobs, and durable artifacts.
 6. **UI-first workflow**
    - Navigation phase is UI-driven (no CLI workflow for objective specification in MVP).
 
+7. **Shared collision validation**
+   - Compare extracted GRND/GOBJ and wall geometry with runtime contact and response evidence without
+     silently rebaking or rewriting source geometry.
+   - Track geometry-conversion completeness separately from runtime validation coverage and confidence.
+   - Reuse the same observation and confidence model for the later Safe Navigation phase.
+
+8. **Shared movement-anomaly discovery**
+   - Probe collision corners, seams, slopes, and boundary interactions for reproducible movement changes.
+   - Record the approach pose, facing, camera/input context, observed speed or displacement change,
+     VI-frame cost, repetition, variance, and whether the result is beneficial, neutral, harmful, or
+     unresolved.
+   - Do not assume that every unusual or sticky collision response is a useful speedup.
+
+9. **Dungeon encounter analysis**
+   - Parse a matched ECT privately through SpiceEct and convert it to SAVOR-owned encounter data.
+   - Associate authored encounter selectors with stable walkable triangles by `NavigationTriangleKey`.
+   - Keep encounter analysis optional: ordinary route planning remains available when the present
+     Dungeon-classifying ECT is unreadable, undecompressible, malformed, partial, or unsupported.
+   - Present static selector/table structure and route-relative exposure at an evidence level justified by
+     the supplied encounter state and runtime validation. Do not change geometric A* costs in the first
+     encounter-analysis slice.
+
+10. **Predictor-backed outcome planning (later `SavorQt` slice)**
+    - Add a planning module outside the Navigation widget that invokes the `SavorPredict` predictor
+      subsystem through a future asynchronous boundary.
+    - Search paths and movement/no-movement/interruption schedules for an authored objective such as no
+      encounter or a specific encounter, using an explicit `NavigationContextResult`, content/world,
+      model, and search-bound provenance.
+    - Return an immutable selected-result contract containing a witness path/schedule plus either a
+      route-prefix cutoff or a `NavigationTriangleKey`-keyed 2.5D reachable set and frontier.
+    - Let the Navigation widget validate and render that result without rerunning, extending, or ranking
+      the predictor search.
+
 ## Non-Goals (MVP)
 
 - Full global route planning across multiple maps with long-term resource constraints.
 - Dolphin/ISO-backed MLD discovery or automatic area-ID lookup in the first prototype.
 - A SAVOR-side MLD parser or AKLZ decompressor.
+- Automatic SCT condition/game-state evaluation, opcode-156 runtime restoration, incoming-transition
+  execution, controller activation semantics, or filename inference beyond the strict same-directory
+  `aNNNC.mld` -> `meNNNC.sct` association.
 - Durable `nav_world_blob` persistence or a required serialized SPICE area-view artifact in the first
   prototype.
 - Blender IR as a runtime data contract, persisted artifact, or Qt-facing type. A transient internal
   projection is permitted solely to convert NJ object geometry into SAVOR-owned meshes.
-- Combat strategy co-optimization.
+- Implementing the separate Safe Navigation workflow; this milestone documents its reuse boundary only.
+- Combat strategy co-optimization or expected battle-time/risk-weighted route selection.
+- Area-99/Overworld movement, altitude control, contextual encounter lookup, and RNG semantics in the
+  Dungeon milestone.
+- Treating every non-099 MLD as a validated Dungeon or Safe navigation area merely because its filename
+  conforms. Companion evidence and Safe traversability evidence remain explicit.
+- Automatic inference of encounter step counters, suppressor state, eligible-check cadence, or shared RNG
+  state from a spatial start point alone.
+- Running `SavorPredict`, enumerating movement schedules, or deriving a predictor frontier inside the
+  Navigation widget or `SavorQt3D` prototype host.
+- Treating a manual/opcode-77 spatial start, arbitrary savestate, or same-script cutscene return as a
+  reset-qualified predictor context.
+- Using a patched exploration state as a prediction start or clean validation input.
+- Treating the fraction of sampled/tested schedules that reach a point as natural encounter probability.
+  Predictor reachability is objective- and search-bound-qualified; the static selector/table and marginal
+  exposure layers remain separate.
+- Treating the current exploratory `SavorPredict` executable/CLI as an already-stable Qt-linkable API. Its
+  navigation prediction surface and asynchronous invocation boundary remain future design work.
 - Heavy optimization/meta-optimization for search budgets in first pass.
 - Mandatory repeat-run validation gates in first pass (add if deterministic assumptions fail in practice).
 
@@ -95,7 +250,9 @@ related SCT content, workflow jobs, and durable artifacts.
    - Can produce a successful route between at least two objective pairs in one dungeon.
 
 2. **Cutscene continuity**
-   - If a mandatory cutscene triggers, planner resumes from post-cutscene location and still reaches objective.
+   - If a mandatory same-script cutscene triggers, the planner continues within the same epoch and still
+     reaches the objective, or returns `ModelIncomplete` without inventing a reset. Battle entry closes the
+     epoch and any post-battle continuation explicitly references a newly captured context.
 
 3. **Performance target**
    - Planning + execution pipeline completes within an acceptable offline budget (draft target: < 10 minutes per objective pair on dev hardware).
@@ -124,11 +281,111 @@ related SCT content, workflow jobs, and durable artifacts.
      MovingObject regions.
    - Object-role-only GOBJ blocks do not appear as navigation surfaces.
 
+8. **Matched SCT loading**
+   - Opening `a101b.mld` automatically attempts sibling `me101b.sct`; a missing sibling produces a
+     recoverable warning and manual-load affordance.
+   - A matching SCT parses asynchronously through SpiceSCT and exposes normalized section/instruction
+     summaries plus a SAVOR-owned opcode-77 start catalog without exposing SpiceSCT types.
+   - A mismatched SCT is rejected without replacing a currently valid association, while parse failures
+     leave the MLD and manual pathfinding usable.
+   - Fixture-backed parsing preserves `me101b.sct` as 51 sections with one exact `loop` containing 20
+     instructions and `me201a.sct` as 115 sections with one exact `loop` containing 20 instructions.
+
+9. **Selectable opcode-77 starts**
+   - `me101b.sct` yields the save-load ground-5 placement at `(23.5, 64, 146.5)`, the normal ground-0
+     fallback at `(-64, 16, -86)`, and the `NYUJO_EVENT` ground-0 scripted reposition at
+     `(-32, 16, -104)`, with their yaw and condition/call provenance retained.
+   - Only finite constant ground/XYZ placements can be resolved. Incomplete options remain inspectable but
+     unavailable; opcode 156 produces no option.
+   - The toolbar defaults to `Manual point`; a resolvable option anchors to a unique nearest triangle on
+     its matching ground `tblId`, while ambiguous or failed resolution preserves the existing valid start.
+     Known opcode-77 yaw supplies the selected start's facing.
+
+10. **Initial pathfinding**
+   - Complete ground/wall geometry produces a stable triangle/portal traversal graph.
+   - A manual or resolved opcode-77 start and a manually picked ground or projected-trigger goal can be
+     connected by a deterministic A* route, or produce a visible and specific invalid/unreachable
+     diagnostic.
+   - Compact fixed-size start and ground-goal markers match the `man` fallback scale. A short start-facing
+     ray and a selected trigger goal's magenta world-space AABB are inspectable with derived portals and
+     route geometry in `SavorQt3D`.
+
+11. **Deterministic area profiling**
+   - Area 99 is always classified Overworld before companion-file rules are considered.
+   - A non-099 matched ECT classifies an area as Dungeon even when ECT parsing fails; a matched SCT with no
+     ECT yields Safe only when the directory is accepted as the complete companion set.
+   - A below-`200a` Safe area retains known-traversable evidence, while an at-or-above-`200a` Safe area is
+     visibly marked candidate/unverified.
+
+12. **Collision-validation evidence**
+   - Runtime observations can be traced to the tested source surface or wall boundary, probe position,
+     approach, and input/camera context.
+   - Validation coverage and discrepancies are visible independently of
+     `hasCompleteGroundGeometry`/`hasCompleteWallGeometry`; geometry completeness never masquerades as
+     runtime collision confidence.
+
+13. **Movement-anomaly evidence**
+   - Candidate anomalies retain enough input, camera, timing, baseline, and repeated-run evidence to
+     reproduce and classify their effect.
+   - Only measured, reproducible positive results may later become route actions or edge-cost changes;
+     neutral, harmful, unresolved, or divergent results remain diagnostic evidence.
+
+14. **Optional Dungeon encounter model**
+   - Each selector interpreted under the current authored-field hypothesis is attached to its source
+     triangle by `NavigationTriangleKey`, and both GRND and ground-role GOBJ triangles participate.
+   - The model preserves unknown metadata, unsupported selectors, unresolved tables, overlapping-resource
+     ambiguity, and ECT diagnostics rather than coercing them to no encounter.
+   - Failure to read, decompress, or parse a present Dungeon-classifying ECT disables table-backed
+     encounter results but preserves Dungeon classification and ordinary manual/scripted-start
+     pathfinding. ECT absence instead participates in Safe or Unknown/View-only classification.
+
+15. **Evidence-qualified output**
+   - Static encounter structure, assumed/marginal exposure, complete-model predicted/seeded outcomes, and
+     simulator-observed/validated outcomes are visibly distinct; absent encounter state or check cadence
+     cannot produce a stronger claim.
+   - Worker timeout, divergence, or missing telemetry produces no empirical collision, anomaly, or
+     encounter claim and never overwrites lower-level structural evidence.
+
+16. **Reset-qualified prediction input**
+   - Every prediction explicitly references one ready `NavigationContextResult`; no implicit latest-context
+     lookup or manual spatial-start substitution is allowed.
+   - Readiness proves measured zero velocity, stable control/ground placement, neutral queued input, and a
+     qualifying transition boundary. `NonResetContinuation`, `VelocityNonZero`, `ControlNotStable`,
+     `ResetStateMismatch`, and `IncompleteCapture` remain explicit unavailable outcomes.
+
+## Success and Failure Semantics
+
+- An unusable MLD or failed SAVOR world conversion is a scenario-load failure. Usable partial geometry
+  remains viewable, but pathfinding stays disabled until required ground and wall geometry are complete.
+- SCT absence or failure preserves geometry inspection and manual endpoints while marking scripted starts
+  and transition information incomplete.
+- ECT **association/presence** and ECT **load/parse status** are independent. A matched ECT keeps a
+  non-099 area Dungeon even if ECT I/O, AKLZ decompression, or parsing fails; only encounter-backed results
+  become unavailable.
+- Missing ECT is evidence for Safe classification only for a complete companion directory. It is not by
+  itself proof of traversability; below-`200a` and at-or-above-`200a` evidence levels remain distinct.
+- Geometry completeness reports successful source conversion. Runtime collision validation coverage and
+  confidence are separate and may remain unknown, partial, or contradicted for otherwise complete
+  geometry.
+- Unsupported encounter selectors, missing triangle metadata, unresolved active collision resources,
+  unknown step/check state, and worker failures remain explicit incomplete outcomes. None silently mean
+  no encounter or successful validation.
+
 ## Deliverables
 
 - Pinned SPICE submodule integration and a `SavorNavigation` adapter contract for navigation-relevant
-  world data.
+  world data, a selectable opcode-77 SCT start catalog, and planned private ECT conversion.
 - Reusable Navigation widget running in the standalone `SavorQt3D` host.
+- SAVOR-owned area-profile/companion evidence, shared collision-validation observations, and
+  movement-anomaly candidate models.
+- Optional Dungeon encounter model keyed by `NavigationTriangleKey`, with structural and assumed/marginal
+  evidence; separate predictor-result and simulator-validation artifacts keep predicted/seeded and
+  observed/validated evidence distinct.
+- Future predictor-result contract and map projection for objective-qualified route prefixes or 2.5D
+  reachability frontiers, with immutable context/content/world/model/search provenance and witness
+  references.
+- Reset-qualified `NavigationContextResult`, disc/content bundle, patched exploration/refinement,
+  planning result, control-solve result, and clean-validation contracts with explicit artifact lineage.
 - Planner/refiner artifact format for routes and candidate telemetry.
 - Phase integration contract (job payload/result schema and step kinds).
 - 3D world-model viewer and path overlay support in UI.
@@ -143,11 +400,24 @@ related SCT content, workflow jobs, and durable artifacts.
 ## Risks
 
 - Geometry mismatch between extracted data and runtime collision behavior.
+- A complete mesh conversion can still disagree with runtime collision. Geometry completeness and runtime
+  validation confidence must remain separate signals throughout planning and UI.
 - Incorrect coordinate conversion, matrix interpretation, or triangle winding. The first prototype must
   calibrate a centralized `SavorNavigation` coordinate policy against known areas instead of distributing
   renderer-specific fixes.
-- Attached trigger meshes show the MLD object geometry, but trigger/script coupling, player interaction
-  radius, and SCT/controller activation predicates are not yet represented.
+- Attached trigger meshes may be selected as route goals, but their bounds remain geometry visualization;
+  trigger/script coupling, player interaction radius, and SCT/controller activation predicates are not yet
+  represented.
+- Opcode-77 classification distinguishes likely authored arrivals from lower-confidence scripted
+  repositions, but does not establish which option current runtime state selects; automatic evaluation
+  remains an explicit later slice.
 - Moving platform/controller rules requiring a second modeling pass.
 - `motscpt` may include doors, but entry meaning and motion/activation behavior require controller/SCT
   evidence before becoming navigation semantics.
+- ECT presence classifies Dungeon content, but parser success does not validate selector semantics,
+  encounter cadence, suppressors, or RNG state. Encounter claims must remain evidence-qualified.
+- A predictor frontier can be stale, spatially incompatible, model-incomplete, or truncated by its search
+  budget/horizon. None of those states is a universal gameplay boundary, and the widget must not present a
+  sampled schedule frequency as encounter probability.
+- The below-`200a` Safe rule is evidence-backed scope guidance, not a proof that every later Safe candidate
+  is traversable.

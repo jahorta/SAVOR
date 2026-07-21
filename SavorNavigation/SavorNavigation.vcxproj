@@ -70,17 +70,35 @@
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="Analysis\NavigationStartCatalogBuilder.cpp" />
+    <ClCompile Include="Graph\NavigationTraversalGraph.cpp" />
     <ClCompile Include="Loading\NavigationAreaLoader.cpp" />
+    <ClCompile Include="Loading\NavigationScenarioLoader.cpp" />
+    <ClCompile Include="Loading\NavigationScriptLoader.cpp" />
+    <ClCompile Include="Model\NavigationAreaIdentity.cpp" />
+    <ClCompile Include="Pathfinding\NavigationPathfinder.cpp" />
     <ClCompile Include="Projection\RegionMeshProjector.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="Analysis\NavigationStartCatalogBuilder.h" />
+    <ClInclude Include="Coordinate\NavigationCoordinatePolicy.h" />
+    <ClInclude Include="Graph\NavigationTraversalGraph.h" />
     <ClInclude Include="Loading\NavigationAreaLoader.h" />
+    <ClInclude Include="Loading\NavigationScenarioLoader.h" />
+    <ClInclude Include="Loading\NavigationScriptLoader.h" />
+    <ClInclude Include="Model\NavigationAreaIdentity.h" />
     <ClInclude Include="Model\NavigationAreaModel.h" />
+    <ClInclude Include="Model\NavigationScenarioModel.h" />
+    <ClInclude Include="Model\NavigationScriptModel.h" />
+    <ClInclude Include="Pathfinding\NavigationPathfinder.h" />
     <ClInclude Include="Projection\RegionMeshProjector.h" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\third-party\SPICE\SpiceMLD\SpiceMLD.vcxproj">
       <Project>{C44D37F8-61F5-4A1C-B983-16D79FBC9954}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\third-party\SPICE\SpiceSCT\SpiceSCT.vcxproj">
+      <Project>{8EF58CAF-3DFA-46B9-9197-FE71052A15EB}</Project>
     </ProjectReference>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

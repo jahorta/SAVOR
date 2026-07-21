@@ -2,32 +2,75 @@
 
 ## Status
 
-Future plan. This document assumes `SavorNavigation` has converted canonical SpiceMLD data, projected
-world/search evidence, and transiently flattened wall, trigger, and provisional MovingObject geometry into an in-memory
-`NavigationAreaModel`.
-Route search and Qt code consume only that SAVOR-owned model; they do not consume SpiceMLD/Blender types
-or a serialized SPICE area-view artifact.
+Mixed status. The in-memory graph, endpoints, opcode-77 starts, and deterministic A* are implemented;
+the shared analysis workstreams, spline/control solver, and workflow integration remain future. This
+document assumes `SavorNavigation` has converted canonical SpiceMLD data, projected
+world/search evidence, and transiently flattened wall, trigger, and provisional MovingObject geometry into
+an in-memory `NavigationAreaModel`. A filename-matched SCT may also be parsed and retained in the enclosing
+`NavigationScenarioModel`; its statically resolvable opcode-77 placements may provide an optional start,
+but never a goal or search edge. Route search and Qt code consume only SAVOR-owned types; they do not
+consume SpiceMLD, SpiceSCT, SpiceEct, Blender types, or a serialized SPICE area-view artifact.
+
+The lifecycle, content, exploration/refinement, prediction, control, and validation pipeline is normative
+in [`NavigationContextWorkflow/`](NavigationContextWorkflow/README.md). This document summarizes how the
+current graph/search work and profile analyses participate in it.
 
 ## High-Level Strategy
 
-Use a two-layer pipeline:
+Use a shared analysis and execution pipeline:
 
-1. **Route planner** over 3D graph/navmesh abstractions.
-2. **Control solver** that follows route splines and finds executable player+camera inputs.
+1. **Reset-qualified context capture** from a clean field entry, with measured readiness and an explicit
+   immutable `NavigationContextResult`.
+2. **Layer-preserving 2.5D analysis** over versioned content, walkable surfaces, collision evidence, and
+   triangle metadata.
+3. **Suppressed exploration and world refinement** as separate immutable patched-evidence layers.
+4. **Route planner** over the authoritative 3D graph/navmesh abstractions.
+5. **Collision, anomaly, and dungeon-encounter analysis workstreams** over the shared 2.5D products.
+6. **Later predictor-backed outcome search** in a separate `SavorQt` planning module, using `SavorPredict`
+   to search paths and movement/no-movement/interruption schedules for a requested result.
+7. **Control solver** that follows route splines and finds executable player+camera inputs in simulator
+   workers, followed by validation from an unpatched clean runtime.
 
 MVP prioritizes correctness and continuity over advanced optimization.
 
-The implemented first slice stops after loading and visualizing one manually selected MLD. It includes
-native GRND surfaces and GOBJ meshes referenced in the ground role, but intentionally does not render
-links or run path search. The next slice calibrates coordinates, derives traversable adjacency, adds
-start/target selection, and exercises path search. Worker-backed control solving and persisted route
-artifacts follow after the model and widget boundary are validated.
+The earlier geometry slice stopped after loading and visualizing one manually selected MLD. The implemented
+pathfinding slice retains the identity coordinate policy, loads the strictly matched SCT, builds a
+condition-preserving opcode-77 start catalog, derives traversable adjacency, supports manual or catalogued
+start selection plus a manual ground or projected-trigger goal, and renders one deterministic A* route.
+Worker-backed control solving and persisted route artifacts follow after the model and widget boundary
+are validated.
+
+## Shared 2.5D Analysis Pipeline
+
+The shared analysis pipeline samples or partitions each walkable layer in X/Z while retaining the resolved
+Y position, source surface and triangle identity, normal, GRND/GOBJ provenance, collision evidence, and raw
+triangle metadata. It is **2.5D per layer**, not a global 2D flattening:
+
+- Vertically stacked surfaces remain distinct unless an explicit validated graph portal joins them.
+- The existing true-3D traversal graph remains authoritative for anchoring and A*.
+- The same layer-aware products feed static collision inspection, anomaly detection, and dungeon encounter
+  overlays so those workstreams do not build incompatible spatial maps.
+- The sampling resolution and any later adaptive refinement are analysis configuration, not baked into the
+  source `NavigationAreaModel` or persisted as parser-owned geometry.
+
+This deterministic construction belongs to the CPU-domain `SavorNavigation` layer. Simulator workers may
+later attach observed samples to the same stable surface/triangle identities; they do not own the static
+field construction.
 
 ## Stage A: Route Search (MVP)
 
 ## Baseline algorithm
-- A* over the 3D walk graph/navmesh stored in `NavigationAreaModel`.
-- Heuristic: geometric distance + coarse transition penalties.
+- `NavigationGraphBuilder` creates one stable graph node per valid walkable triangle, retaining its source
+  surface/triangle key, centroid, and normal.
+- Create bidirectional intramesh edges across shared or tolerance-welded boundary segments.
+- Create a directed cross-surface portal only when a provisional `NavigationGroundLink` and geometrically
+  overlapping boundary segments agree. Evaluate all candidates for ambiguous links and warn rather than
+  guess when no pairing validates.
+- Keep vertically stacked X/Z overlaps disconnected unless an explicit validated portal joins them.
+- Diagnose and omit malformed, degenerate, or non-manifold triangles from the search graph.
+- Run deterministic A* over this true-3D graph with a stable node-key tie break.
+- Use 3D Euclidean distance as the admissible heuristic. Edge cost follows centroid -> portal -> centroid
+  geometry plus a nonnegative coarse slope multiplier derived from the centralized up axis.
 - Reject models where either `hasCompleteGroundGeometry` or `hasCompleteWallGeometry` is false; partial
   models are diagnostic visualization inputs, not valid search worlds.
 - Treat `hasCompleteTriggerGeometry` as a visualization diagnostic rather than a search-readiness gate in
@@ -36,19 +79,159 @@ artifacts follow after the model and widget boundary are validated.
   door identity, animation state, collision behavior, or traversability.
 
 ## Edge costs (MVP)
-- base traversal estimate
-- coarse slope modifier
-- interaction/cutscene duration estimate
+- 3D geometric traversal distance through the shared boundary or cross-surface portal
+- nonnegative coarse slope modifier
 
-`cost_mvp = expected_vi_coarse`
+`cost_first_path = geometric_distance * slope_multiplier`
 
-No heavy variance or risk modeling in first pass.
+Interaction, cutscene duration, SCT/controller state, moving-object state, frame-time calibration, heavy
+variance, and risk-weighted routing are deferred. Dungeon encounter analysis is an overlay in its first
+slice and does not alter A* edge costs or the selected route.
 
 ## Candidate strategy
-- Produce top-K route candidates (small K, TBD).
-- Keep pipeline simple and observable.
-- Return route geometry in SAVOR-owned types that the Navigation widget can overlay without parser or Qt
-  dependencies in the planner.
+- Produce one deterministic route for the active slice.
+- `NavigationGraphAnchor` records the picked surface/triangle, exact point, snapped point, and snap
+  distance. Only complete walkable ground geometry can be anchored.
+- `NavigationStartResolver` converts a selected available opcode-77 placement through the centralized
+  coordinate policy, matches its ground selector against surface `tblId`, and chooses the unique nearest
+  matching triangle. It reports effectively tied stacked surfaces as ambiguous instead of guessing.
+- `NavigationPathResult` distinguishes invalid endpoints, incomplete geometry, unreachable goals, and a
+  successful route. A same-triangle query remains a valid direct route.
+- Return a SAVOR-owned polyline from exact/snapped start through portal midpoints to exact/snapped goal,
+  plus route cost, geometric length, and diagnostics.
+- Funnel/string-pulling, splines, top-K alternatives, and simulator-time ranking are later refinements.
+
+## Interactive endpoint selection and overlays
+
+- The Path toolbar exposes a grouped `Start:` selector whose first/default item is `Manual point`.
+  Resolvable authored arrivals and scripted repositions set the existing start anchor; incomplete entries
+  remain visible but disabled with an explanation.
+- `SavorQt3D` also exposes mutually exclusive `Set Start` and `Set Goal` modes. A short left click on ground
+  sets a manual start or ground goal; Set Goal also accepts a real projected trigger mesh. Pointer movement
+  beyond the click threshold retains orbit behavior. A successful manual start pick returns the selector
+  to `Manual point`.
+- Each rendered ground surface carries a stable surface identifier. Qt reports that identifier and the
+  scene-space hit point; C++ anchors it to a triangle rather than relying on a Qt triangle index.
+- Projected trigger meshes are goal-only. Trigger fallback cubes, walls, MovingObjects, markers, links, and
+  the route overlay are not endpoint sources.
+- `NavigationTriggerGoalResolver` chooses the largest usable projected mesh by deterministic world-space
+  AABB size, resolves its nearest unambiguous point to walkable graph geometry, and retains the selected
+  bounds. This produces a route endpoint, not an inferred activation predicate or interaction radius.
+- Populate the existing Links layer with derived portals. Add a Route layer with a thick route line and
+  compact fixed-size start/ground-goal markers matching the `man` fallback scale. Render manual or known
+  opcode-77 start facing as a short green ray; render a selected trigger goal as a magenta AABB. Recompute
+  whenever either endpoint changes.
+- Selecting a resolved catalog start preserves the goal and recomputes the route. A failed resolution
+  preserves the previous valid start. Loading a new MLD resets the selection; a rejected SCT replacement
+  preserves the existing catalog and selection.
+- Show graph node/edge/portal counts, endpoint snap distances, route length/cost, and a specific
+  unreachable/invalid reason in diagnostics.
+
+## SCT start-catalog boundary for this slice
+
+- Loading `aNNNC.mld` attempts to parse sibling `meNNNC.sct`; a valid manual replacement must have the
+  same prefix-stripped key.
+- Report SCT source, match/load status, section count, exact `loop` count, instruction count, and parser
+  diagnostics.
+- Catalog every opcode-77 occurrence with condition and call provenance. Initialization-path placements are
+  authored arrivals; other occurrences are lower-confidence scripted repositions. Only constant finite
+  ground/XYZ values are eligible for graph resolution.
+- Manual start remains the default and goal selection remains manual from ground or real projected trigger
+  geometry. SAVOR does not evaluate current game state to choose a variant automatically.
+- Ignore opcode 156 entirely until the runtime source and lifetime of its saved transform are modeled.
+
+## Collision and anomaly workstreams
+
+The shared 2.5D field supports two related but separately reported workstreams:
+
+1. **Collision analysis** records the static walkable layer, wall/region evidence, boundaries, portals,
+   source metadata, and any coarse clearance facts that can be derived without running Dolphin.
+2. **Anomaly analysis** reports contradictions or uncertainty such as missing metadata, conflicting
+   walkable/collision evidence, invalid or isolated seams, suspect portals, stacked-surface ambiguity, and
+   later disagreement between the static field and simulator observations.
+
+Static diagnostics do not silently rewrite the graph. A correction may affect routing only after a
+specific rule or validated simulator-backed refinement promotes it into the SAVOR-owned world model.
+Probe prioritization, promotion thresholds, and durable anomaly schemas remain later decisions.
+
+## Dungeon encounter analysis workstream
+
+The first encounter slice is deliberately dungeon-only and analysis-only:
+
+- For a Dungeon-classified `aNNNC.mld`, parse the same-directory, same-stem `aNNNC.ect` whose presence
+  established that profile. There is no manual ECT override. SpiceEct owns AKLZ and flat-table parsing;
+  only normalized SAVOR-owned encounter tables and diagnostics leave `SavorNavigation`.
+- Apply the current authored-selector hypothesis to GRND and ground-role GOBJ triangle metadata. Preserve
+  confidence in that interpretation separately from confidence in active runtime resource/triangle
+  selection; parser success alone proves neither. The ground-entry `tblId` remains collision-resource
+  routing metadata and is not an encounter table ID.
+- Treat selector zero, missing metadata, unsupported selector values, a missing ECT table, zero stage,
+  and zero overall rate as distinct states. Preserve the 1-based selector-to-flat-table relationship and
+  the authored row order/weights.
+- Render the whole-area selector/table field independently of the selected start. When a route exists,
+  segment that current deterministic route by encounter state and report active/no-encounter geometric
+  distance plus table transitions. Do not invent a whole-map cumulative-risk value for destinations that
+  can be reached by different paths.
+- Marginal or seeded analysis requires an explicitly selected ready `NavigationContextResult`. It records
+  a reset-qualified entry, measured `stepCount` and zero velocity, stable control/ground placement, and
+  independently captured encounter fields. A manual or opcode-77 spatial start does not prove any of
+  those values, and the workflow never fabricates them to create a fresh-entry assumption.
+- An exact recovered per-active-check probability may be reported for a known check state. A cumulative
+  route value that multiplies marginal survival probabilities is an independence approximation, not an
+  exact seeded TAS result. Formation selection remains a separate sequential RNG process and malformed or
+  ineligible row pools are never silently normalized.
+- Exact check cadence and shared-RNG behavior require captured evidence. A complete versioned
+  `SavorPredict` model
+  may later produce predicted/seeded encounter and formation results; Dolphin replay produces the separate
+  observed/validated evidence level. Geometric distance is not converted to VI frames or encounter checks
+  without calibration.
+- Encounter results do not alter A*, route ranking, trigger semantics, or control solving in this slice.
+
+Safe/no-encounter areas reuse the same 2.5D, graph, collision, anomaly, route, and control pipeline with an
+encounter status of not applicable; absence of encounter data is expected rather than a load failure. Area
+99 is explicitly deferred because its selector is a local lane that also requires position buckets,
+altitude, scenario page, `fldEfcontrol` data, encounter-zone resolution, and runtime table-set context.
+
+## Predictor-Backed Outcome Planning (Later `SavorQt` Slice)
+
+The static selector/table overlay and marginal route exposure do not search movement schedules. A separate
+future planning module in `SavorQt` authors an objective, selects a compatible navigation world and
+explicit ready `NavigationContextResult`, invokes the existing `SavorPredict` subsystem through a future asynchronous boundary, compares
+candidate results, and chooses one for display. The current exploratory `SavorPredict` executable/CLI must
+gain an explicit navigation prediction surface; the Navigation widget must not link to its internals or run
+the search itself.
+
+Initial Dungeon objectives are:
+
+- reach as far as possible without a random encounter; and
+- obtain a specified encounter or formation when the modeled evidence supports that distinction.
+
+`SavorPredict` owns planning-level temporal field/RNG/movement-state evolution, branching over candidate
+paths and movement/no-movement/interruption choices, objective evaluation, witness selection, and frontier
+computation. Its model bundle must expose completeness for every required field RNG source; unfinished
+Moonfish/field analysis is not a source of behavioral assumptions. A* may supply ordinary geometric
+candidates, but the predictor may select a different witness path because temporal outcome is part of its
+explicit objective. This does not retroactively change the static A* result or its edge costs.
+
+The predictor returns an immutable, bounds-qualified result rather than a map-side schedule. A fixed-path
+result contains a reachable route prefix and cutoff. A branching search contains a layer-preserving set of
+reachable triangle/local-coordinate states and one or more frontier edges keyed by
+`NavigationTriangleKey`. The result also carries its objective, start/world/model fingerprints, search
+bounds and completeness, terminal reason, selected witness path, complete
+movement/no-movement/interruption schedule reference, trace reference, and predicted encounter result. Raw controller and
+camera realization belongs to the later `NavigationControlSolveResult`, not to the prediction contract.
+
+The reusable Navigation widget only validates and renders the selected result's spatial projection. It
+keeps the whole-area static encounter layer separate and never treats sampled-search frequency as natural
+probability. Spatially incompatible results are rejected; matching geometry with older start/model/objective
+context may be shown as historical/stale; missing fingerprints are unverifiable. A search-budget,
+prediction-horizon, schedule-exhaustion, event-interruption, or model-incomplete frontier remains labeled by
+that terminal reason and is not presented as a universal gameplay boundary.
+
+One prediction spans one `NavigationEpoch`. A same-script cutscene that returns control stays in that
+epoch and does not reset `stepCount`; the predictor models the interruption or returns `ModelIncomplete`.
+Entering battle terminates the epoch. A post-battle plan must reference a separately captured context after
+the reset-qualified field return, never an implicit continuation or a clean-entry guess.
 
 ## Stage B: Route-to-Spline
 
@@ -57,25 +240,40 @@ No heavy variance or risk modeling in first pass.
 - Persist checkpoints for downstream workers once workflow integration begins; the interactive prototype
   may keep its selected path in memory.
 
-## Stage C: Control Solver (Workers)
+## Stage C: Control Solver (Simulator Workers)
 
 Given spline segments:
 - Iterate on camera+player inputs to follow spline.
 - Use savestate checkpoints at segment boundaries.
 - Emit best successful candidate per segment.
+- When a selected predictor result supplies a witness movement schedule, preserve its timing constraints
+  while translating or validating it as executable controller input rather than asking the widget to
+  reproduce the predictor search.
 
 Planned VM support (new instructions):
 - Load route spline into VM context.
 - Attempt iterative spline-following policy.
-- Return telemetry (deviation, frames, trigger hit status).
+- Return telemetry (deviation, frames, collision/anomaly observations, trigger hit status, and encounter
+  observations when the selected explorer profile supports them).
+
+Static world adaptation, 2.5D construction, graph search, route segmentation, and marginal dungeon
+encounter analysis remain CPU-domain work. Only operations that require Dolphin state, frame stepping,
+controller input, runtime collision behavior, or observed shared-RNG ordering belong in simulator workers.
+Modeled seeded outcome search belongs to the future `SavorPredict` execution boundary; it is neither a
+`SavorNavigation` static-analysis operation nor a Navigation-widget responsibility.
 
 ## Stage D: Cutscene Handling
 
-When a cutscene triggers:
-1. Detect section transition/runtime cutscene boundary.
-2. Execute through cutscene.
-3. Re-anchor at post-cutscene state.
-4. Continue with remaining route/spline.
+When an interruption triggers:
+
+1. Detect and classify the runtime boundary.
+2. For a same-script cutscene, execute/model it inside the current epoch, preserve the ongoing encounter
+   state including `stepCount`, re-anchor afterward, and continue. If the predictor cannot model that
+   boundary, return `ModelIncomplete` without creating a clean context.
+3. For battle entry, terminate the current epoch and its prediction. Capture a separate context only after
+   the battle return satisfies the reset-qualified readiness contract.
+4. For a completed field script/context switch, begin a new epoch only after stable control, settled
+   placement/ground, measured zero velocity, and reset-state evidence are captured.
 
 ## Objective Function (MVP)
 
@@ -99,10 +297,30 @@ Assume deterministic replay from savestate + identical inputs.
 - trigger/cutscene section hits
 - final outcome code
 - spline deviation metrics
+- collision/anomaly sample identity and observed-versus-predicted outcome
+- encounter table segment and explicit `NavigationContextResult` provenance
+- selected prediction-result identity, objective, context/content/world/model compatibility, search bounds and
+  completeness, frontier terminal reason, and witness route/schedule references
+- for simulator-backed encounter probes: eligible-check frame, step state, table/rate/modifier, RNG state,
+  encounter result, and selected formation provenance
 
 ## Open Experiments (post-MVP)
 
-1. Better slope/collision-aware edge costs.
-2. Robust collision-boost exploitation strategy.
-3. Advanced optimizers for global+local coupling.
-4. Optional stability-aware ranking if determinism issues emerge.
+1. Calibrate coordinate and weld/portal tolerances against known areas.
+2. Evaluate catalogued SCT condition paths against runtime game state and resolve incoming transitions.
+3. Determine and model the runtime restore data consumed by opcode 156.
+4. Better slope/collision-aware and frame-time edge costs.
+5. Robust collision-boost exploitation strategy.
+6. Advanced optimizers for global+local coupling and top-K route ranking.
+7. Optional stability-aware ranking if determinism issues emerge.
+8. Calibrate 2.5D sampling/refinement and decide when an anomaly may update the routing model.
+9. Validate exactly which runtime fields reset at script-switch and battle-transition boundaries; the
+   current working contract confirms `stepCount` behavior but does not infer every encounter field.
+10. Complete and version the required dungeon field-RNG model bundle. Until the separate Moonfish/field
+    research is accepted, its detailed lifecycle and draw behavior remain unresolved and unused here.
+11. Define the asynchronous `SavorPredict` navigation invocation, bounded-search strategy, frontier
+    completeness semantics, and witness schedule-to-controller realization boundary.
+12. Add expected battle-time or encounter-risk route costs only after occurrence, formation, battle-cost,
+    and post-battle resume semantics are validated.
+13. Add an Area-99-specific encounter profile only after its position/altitude/scenario/table-set context
+    can be reproduced without applying the dungeon direct-table rule.

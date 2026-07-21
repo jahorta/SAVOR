@@ -5,6 +5,7 @@
 #include <QVariantMap>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cctype>
 #include <cstdint>
@@ -15,6 +16,10 @@ namespace savor::qt3d::gui {
 namespace {
 
 constexpr float kMarkerSize = 15.0F;
+constexpr float kEndpointMarkerHalfSize = kMarkerSize * 0.5F;
+constexpr float kFacingRayLength = kMarkerSize * 2.0F;
+constexpr float kFacingRayHalfWidth = kMarkerSize * 0.08F;
+constexpr float kVectorEpsilon = 1.0e-5F;
 
 [[nodiscard]] PackedVertex makeVertex(const float x, const float y, const float z,
     const float nx = 0.0F, const float ny = 1.0F, const float nz = 0.0F) {
@@ -62,6 +67,76 @@ constexpr float kMarkerSize = 15.0F;
     QQmlEngine::setObjectOwnership(geometry.get(), QQmlEngine::CppOwnership);
     geometry->setTriangleMesh(vertices, indices);
     return geometry;
+}
+
+[[nodiscard]] std::unique_ptr<StaticMeshGeometry> createLineGeometry(
+    const std::vector<PackedVertex>& vertices,
+    const std::vector<std::uint32_t>& indices) {
+    auto geometry = std::make_unique<StaticMeshGeometry>();
+    QQmlEngine::setObjectOwnership(geometry.get(), QQmlEngine::CppOwnership);
+    geometry->setLineMesh(vertices, indices);
+    return geometry;
+}
+
+[[nodiscard]] QVector3D toVector(const savor::navigation::NavigationVec3& value) {
+    return QVector3D(value.x, value.y, value.z);
+}
+
+void appendBoxSegment(std::vector<PackedVertex>& vertices,
+    std::vector<std::uint32_t>& indices,
+    QVector3D first,
+    QVector3D second,
+    const float halfWidth,
+    QVector3D up,
+    const bool liftAboveSurface = true) {
+    const QVector3D delta = second - first;
+    if (delta.lengthSquared() <= kVectorEpsilon * kVectorEpsilon) {
+        return;
+    }
+
+    const QVector3D direction = delta.normalized();
+    if (up.lengthSquared() <= kVectorEpsilon * kVectorEpsilon) {
+        up = QVector3D(0.0F, 1.0F, 0.0F);
+    } else {
+        up.normalize();
+    }
+    QVector3D side = QVector3D::crossProduct(direction, up);
+    if (side.lengthSquared() <= kVectorEpsilon * kVectorEpsilon) {
+        const QVector3D alternate = std::abs(direction.x()) < 0.9F
+            ? QVector3D(1.0F, 0.0F, 0.0F)
+            : QVector3D(0.0F, 0.0F, 1.0F);
+        side = QVector3D::crossProduct(direction, alternate);
+    }
+    side.normalize();
+    QVector3D thicknessAxis = QVector3D::crossProduct(side, direction).normalized();
+
+    // Lift the route slightly above the walk surface so it remains visible without
+    // altering the SAVOR-owned path coordinates.
+    if (liftAboveSurface) {
+        const QVector3D lift = up * (halfWidth * 1.25F);
+        first += lift;
+        second += lift;
+    }
+    const QVector3D sideOffset = side * halfWidth;
+    const QVector3D thicknessOffset = thicknessAxis * halfWidth;
+    const std::array<QVector3D, 8> corners{
+        first - sideOffset - thicknessOffset,
+        first + sideOffset - thicknessOffset,
+        first + sideOffset + thicknessOffset,
+        first - sideOffset + thicknessOffset,
+        second - sideOffset - thicknessOffset,
+        second + sideOffset - thicknessOffset,
+        second + sideOffset + thicknessOffset,
+        second - sideOffset + thicknessOffset,
+    };
+
+    const auto base = static_cast<std::uint32_t>(vertices.size());
+    for (const QVector3D& corner : corners) {
+        vertices.push_back(makeVertex(corner.x(), corner.y(), corner.z()));
+    }
+    for (const std::uint32_t index : cubeIndices()) {
+        indices.push_back(base + index);
+    }
 }
 
 [[nodiscard]] QString surfaceLabel(const savor::navigation::NavigationSurface& surface) {
@@ -136,14 +211,16 @@ RuntimeSceneData RuntimeSceneConverter::convert(const savor::navigation::Navigat
     std::size_t movingObjectVertexCount = 0;
     std::size_t movingObjectTriangleCount = 0;
 
-    for (const auto& surface : model.surfaces) {
+    for (std::size_t surfaceIndex = 0; surfaceIndex < model.surfaces.size(); ++surfaceIndex) {
+        const auto& surface = model.surfaces[surfaceIndex];
         auto geometry = createTriangleGeometry(meshVertices(surface.mesh), surface.mesh.indices);
         QVariantMap item{};
         item.insert("geometry", QVariant::fromValue(static_cast<QObject*>(geometry.get())));
         item.insert("color", surface.sourceKind == savor::navigation::NavigationSurfaceSourceKind::Grnd
-            ? QColor(QStringLiteral("#6FA8DC"))
-            : QColor(QStringLiteral("#93C47D")));
+            ? QColor(QStringLiteral("#FFD84D"))
+            : QColor(QStringLiteral("#FFC04D")));
         item.insert("label", surfaceLabel(surface));
+        item.insert("surfaceIndex", static_cast<qulonglong>(surfaceIndex));
         out.grounds.push_back(item);
         out.geometries.push_back(std::move(geometry));
 
@@ -153,7 +230,8 @@ RuntimeSceneData RuntimeSceneConverter::convert(const savor::navigation::Navigat
         triangleCount += surface.mesh.indices.size() / 3U;
     }
 
-    for (const auto& region : model.regions) {
+    for (std::size_t regionIndex = 0; regionIndex < model.regions.size(); ++regionIndex) {
+        const auto& region = model.regions[regionIndex];
         const bool exactWall = region.kind == savor::navigation::NavigationRegionKind::Collision &&
             isExactWall(region.fxnName);
         wallRegionCount += exactWall ? 1U : 0U;
@@ -161,7 +239,8 @@ RuntimeSceneData RuntimeSceneConverter::convert(const savor::navigation::Navigat
         movingObjectRegionCount += region.kind == savor::navigation::NavigationRegionKind::MovingObject ? 1U : 0U;
 
         if (!region.meshes.empty()) {
-            for (const auto& regionMesh : region.meshes) {
+            for (std::size_t regionMeshIndex = 0; regionMeshIndex < region.meshes.size(); ++regionMeshIndex) {
+                const auto& regionMesh = region.meshes[regionMeshIndex];
                 auto geometry = createTriangleGeometry(meshVertices(regionMesh.mesh), regionMesh.mesh.indices);
                 QVariantMap item{};
                 item.insert("geometry", QVariant::fromValue(static_cast<QObject*>(geometry.get())));
@@ -184,6 +263,9 @@ RuntimeSceneData RuntimeSceneConverter::convert(const savor::navigation::Navigat
                     break;
                 case savor::navigation::NavigationRegionKind::Trigger:
                     item.insert("color", QColor(QStringLiteral("#E06666")));
+                    item.insert("regionIndex", static_cast<qulonglong>(regionIndex));
+                    item.insert("regionMeshIndex", static_cast<qulonglong>(regionMeshIndex));
+                    item.insert("goalPickable", true);
                     out.triggers.push_back(item);
                     ++triggerMeshCount;
                     triggerVertexCount += regionMesh.mesh.vertices.size();
@@ -234,6 +316,7 @@ RuntimeSceneData RuntimeSceneConverter::convert(const savor::navigation::Navigat
             break;
         case savor::navigation::NavigationRegionKind::Trigger:
             item.insert("color", QColor(QStringLiteral("#E06666")));
+            item.insert("goalPickable", false);
             out.triggers.push_back(item);
             break;
         case savor::navigation::NavigationRegionKind::MovingObject:
@@ -290,6 +373,212 @@ RuntimeSceneData RuntimeSceneConverter::convert(const savor::navigation::Navigat
             << ", triggerGeometryComplete=" << (model.hasCompleteTriggerGeometry ? "yes" : "no")
             << ", movingObjectGeometryComplete=" << (model.hasCompleteMovingObjectGeometry ? "yes" : "no") << '.';
     out.diagnostics.push_back(summary.str());
+    return out;
+}
+
+RuntimeSceneData RuntimeSceneConverter::convert(
+    const savor::navigation::NavigationScenarioModel& model) const {
+    RuntimeSceneData out = convert(model.area);
+
+    std::size_t directedEdgeCount = 0;
+    std::size_t renderedPortalCount = 0;
+    for (std::size_t nodeIndex = 0; nodeIndex < model.traversalGraph.nodes.size(); ++nodeIndex) {
+        const auto& node = model.traversalGraph.nodes[nodeIndex];
+        directedEdgeCount += node.edges.size();
+        for (const auto& edge : node.edges) {
+            if (edge.kind != savor::navigation::NavigationGraphEdgeKind::GroundLink) {
+                continue;
+            }
+
+            const std::vector<PackedVertex> vertices{
+                makeVertex(edge.portal.first.x, edge.portal.first.y, edge.portal.first.z),
+                makeVertex(edge.portal.second.x, edge.portal.second.y, edge.portal.second.z),
+            };
+            auto geometry = createLineGeometry(vertices, { 0U, 1U });
+            QVariantMap item{};
+            item.insert("geometry", QVariant::fromValue(static_cast<QObject*>(geometry.get())));
+            item.insert("color", QColor(QStringLiteral("#FFD966")));
+            item.insert("label", QStringLiteral("Portal surface=%1 triangle=%2 -> node=%3 link=%4")
+                .arg(static_cast<qulonglong>(node.key.surfaceIndex))
+                .arg(static_cast<qulonglong>(node.key.triangleIndex))
+                .arg(static_cast<qulonglong>(edge.targetNodeIndex))
+                .arg(edge.groundLinkIndex.has_value()
+                    ? QString::number(static_cast<qulonglong>(*edge.groundLinkIndex))
+                    : QStringLiteral("n/a")));
+            out.links.push_back(item);
+            out.geometries.push_back(std::move(geometry));
+            ++renderedPortalCount;
+        }
+    }
+
+    for (const auto& diagnostic : model.traversalGraph.diagnostics) {
+        out.diagnostics.push_back('[' + severityLabel(diagnostic.severity) + "] " + diagnostic.message);
+    }
+
+    const auto& statistics = model.traversalGraph.statistics;
+    std::ostringstream summary{};
+    summary << "Traversal graph summary: nodes=" << model.traversalGraph.nodes.size()
+            << ", directedEdges=" << directedEdgeCount
+            << ", intraSurfaceConnections=" << statistics.intraSurfaceConnectionCount
+            << ", groundLinkPortals=" << statistics.groundLinkPortalCount
+            << ", renderedPortals=" << renderedPortalCount
+            << ", unresolvedGroundLinks=" << statistics.unresolvedGroundLinkCount
+            << ", skippedInvalidTriangles=" << statistics.skippedInvalidTriangleCount
+            << ", skippedDegenerateTriangles=" << statistics.skippedDegenerateTriangleCount
+            << ", skippedDuplicateTriangles=" << statistics.skippedDuplicateTriangleCount
+            << ", skippedNonManifoldTriangles=" << statistics.skippedNonManifoldTriangleCount
+            << ", nonManifoldEdges=" << statistics.nonManifoldEdgeCount
+            << ", pathfindingReady=" << (model.isPathfindingReady() ? "yes" : "no") << '.';
+    out.diagnostics.push_back(summary.str());
+    return out;
+}
+
+RuntimeRouteData RuntimeSceneConverter::convertRoute(
+    const std::optional<savor::navigation::NavigationGraphAnchor>& start,
+    const std::optional<float>& startFacingYawDegrees,
+    const std::optional<savor::navigation::NavigationGraphAnchor>& goal,
+    const std::optional<savor::navigation::NavigationTriggerGoalTarget>& triggerGoal,
+    const std::optional<savor::navigation::NavigationPathResult>& route,
+    const float sceneExtent,
+    const savor::navigation::NavigationCoordinatePolicy coordinatePolicy) const {
+    RuntimeRouteData out{};
+    constexpr float markerHalfSize = kEndpointMarkerHalfSize;
+    const float routeHalfWidth = std::max(sceneExtent * 0.0025F, 0.35F);
+    QVector3D up = toVector(coordinatePolicy.upAxis());
+    if (up.lengthSquared() <= kVectorEpsilon * kVectorEpsilon) {
+        up = QVector3D(0.0F, 1.0F, 0.0F);
+    } else {
+        up.normalize();
+    }
+
+    const auto appendMarker = [&](const savor::navigation::NavigationGraphAnchor& anchor,
+                                  const QColor& color,
+                                  const QString& label) {
+        const QVector3D center = toVector(anchor.snappedPoint) + (up * markerHalfSize);
+        auto geometry = createTriangleGeometry(cubeVertices(center, markerHalfSize), cubeIndices());
+        QVariantMap item{};
+        item.insert("geometry", QVariant::fromValue(static_cast<QObject*>(geometry.get())));
+        item.insert("color", color);
+        item.insert("label", label);
+        out.routes.push_back(item);
+        out.geometries.push_back(std::move(geometry));
+    };
+
+    if (start.has_value()) {
+        appendMarker(*start, QColor(QStringLiteral("#45D06F")), QStringLiteral("Start"));
+        if (startFacingYawDegrees.has_value()) {
+            QVector3D facing = toVector(
+                coordinatePolicy.sceneFacingDirectionFromConvertedYaw(*startFacingYawDegrees));
+            if (facing.lengthSquared() > kVectorEpsilon * kVectorEpsilon) {
+                facing.normalize();
+                const QVector3D center = toVector(start->snappedPoint) + (up * markerHalfSize);
+                std::vector<PackedVertex> vertices{};
+                std::vector<std::uint32_t> indices{};
+                appendBoxSegment(vertices,
+                    indices,
+                    center + (facing * markerHalfSize),
+                    center + (facing * (markerHalfSize + kFacingRayLength)),
+                    kFacingRayHalfWidth,
+                    up);
+                if (!vertices.empty() && !indices.empty()) {
+                    auto geometry = createTriangleGeometry(vertices, indices);
+                    QVariantMap item{};
+                    item.insert("geometry", QVariant::fromValue(static_cast<QObject*>(geometry.get())));
+                    item.insert("color", QColor(QStringLiteral("#45D06F")));
+                    item.insert("label", QStringLiteral("Start facing (%1 degrees)")
+                        .arg(*startFacingYawDegrees, 0, 'g', 7));
+                    out.routes.push_back(item);
+                    out.geometries.push_back(std::move(geometry));
+                }
+            }
+        }
+    }
+    if (goal.has_value() && !triggerGoal.has_value()) {
+        appendMarker(*goal, QColor(QStringLiteral("#D957E8")), QStringLiteral("Goal"));
+    }
+
+    if (triggerGoal.has_value() && triggerGoal->displayBounds.valid) {
+        const auto& bounds = triggerGoal->displayBounds;
+        const QVector3D minimum = toVector(bounds.minimum);
+        const QVector3D maximum = toVector(bounds.maximum);
+        const std::array<QVector3D, 8> corners{
+            QVector3D(minimum.x(), minimum.y(), minimum.z()),
+            QVector3D(maximum.x(), minimum.y(), minimum.z()),
+            QVector3D(maximum.x(), maximum.y(), minimum.z()),
+            QVector3D(minimum.x(), maximum.y(), minimum.z()),
+            QVector3D(minimum.x(), minimum.y(), maximum.z()),
+            QVector3D(maximum.x(), minimum.y(), maximum.z()),
+            QVector3D(maximum.x(), maximum.y(), maximum.z()),
+            QVector3D(minimum.x(), maximum.y(), maximum.z()),
+        };
+        constexpr std::array<std::array<std::size_t, 2>, 12> edges{
+            std::array<std::size_t, 2>{ 0U, 1U },
+            std::array<std::size_t, 2>{ 1U, 2U },
+            std::array<std::size_t, 2>{ 2U, 3U },
+            std::array<std::size_t, 2>{ 3U, 0U },
+            std::array<std::size_t, 2>{ 4U, 5U },
+            std::array<std::size_t, 2>{ 5U, 6U },
+            std::array<std::size_t, 2>{ 6U, 7U },
+            std::array<std::size_t, 2>{ 7U, 4U },
+            std::array<std::size_t, 2>{ 0U, 4U },
+            std::array<std::size_t, 2>{ 1U, 5U },
+            std::array<std::size_t, 2>{ 2U, 6U },
+            std::array<std::size_t, 2>{ 3U, 7U },
+        };
+        std::vector<PackedVertex> vertices{};
+        std::vector<std::uint32_t> indices{};
+        const float boundsHalfWidth = std::max(sceneExtent * 0.0008F, 0.18F);
+        for (const auto& edge : edges) {
+            appendBoxSegment(vertices,
+                indices,
+                corners[edge[0]],
+                corners[edge[1]],
+                boundsHalfWidth,
+                up,
+                false);
+        }
+        if (!vertices.empty() && !indices.empty()) {
+            auto geometry = createTriangleGeometry(vertices, indices);
+            QVariantMap item{};
+            item.insert("geometry", QVariant::fromValue(static_cast<QObject*>(geometry.get())));
+            item.insert("color", QColor(QStringLiteral("#D957E8")));
+            item.insert("label", QStringLiteral("Trigger goal region=%1 primaryMesh=%2")
+                .arg(static_cast<qulonglong>(triggerGoal->regionIndex))
+                .arg(static_cast<qulonglong>(triggerGoal->primaryMeshIndex)));
+            out.routes.push_back(item);
+            out.geometries.push_back(std::move(geometry));
+        }
+    }
+
+    if (route.has_value() && route->hasPath() && route->polyline.size() >= 2U) {
+        std::vector<PackedVertex> vertices{};
+        std::vector<std::uint32_t> indices{};
+        for (std::size_t index = 1; index < route->polyline.size(); ++index) {
+            appendBoxSegment(vertices,
+                indices,
+                toVector(route->polyline[index - 1U]),
+                toVector(route->polyline[index]),
+                routeHalfWidth,
+                up);
+        }
+        if (!vertices.empty() && !indices.empty()) {
+            auto geometry = createTriangleGeometry(vertices, indices);
+            QVariantMap item{};
+            item.insert("geometry", QVariant::fromValue(static_cast<QObject*>(geometry.get())));
+            item.insert("color", QColor(QStringLiteral("#FFF176")));
+            item.insert("label", QStringLiteral("Route (%1 points)")
+                .arg(static_cast<qulonglong>(route->polyline.size())));
+            out.routes.push_back(item);
+            out.geometries.push_back(std::move(geometry));
+        }
+
+        std::ostringstream summary{};
+        summary << "Route overlay: triangles=" << route->trianglePath.size()
+                << ", points=" << route->polyline.size()
+                << ", length=" << route->routeLength
+                << ", cost=" << route->totalCost << '.';
+        out.diagnostics.push_back(summary.str());
+    }
     return out;
 }
 

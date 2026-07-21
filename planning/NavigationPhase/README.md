@@ -4,28 +4,94 @@
 
 Future plan.
 
-SAVOR owns navigation workflow orchestration, route planning, control solving, simulator execution, UI
-selection, and result persistence. SPICE (Skies Package Interchange and Content Encoder) owns Skies of
-Arcadia filetype parsing and content inspection. SAVOR will vendor SPICE as a pinned git submodule at
-`third-party/SPICE`, currently pinned to SPICE commit `8ebdf50`.
+SAVOR is the project owner for navigation semantics, route planning, eventual control solving and
+simulator execution, UI selection, workflow orchestration, and result persistence. The current
+implementation covers the in-memory `SavorNavigation` model/search boundary and the `SavorQt3D`
+prototype; workflow jobs, durable persistence, and installation in `SavorQt` remain planned work. SPICE
+(Skies Package Interchange and Content Encoder) owns Skies of Arcadia filetype parsing and content
+inspection. SAVOR vendors SPICE as a pinned git submodule at `third-party/SPICE`; the pin advances only
+after required parser changes are regression-tested upstream. The implemented pathfinding slice uses
+SpiceMLD and SpiceSCT at SPICE revision `0b82fe1`.
 
 The dependency boundary is:
 
 `third-party/SPICE -> SavorNavigation -> SavorQt3D prototype host -> eventual SavorQt integration`
 
-`SavorNavigation` is a non-Qt C++20 static library. It is the only SAVOR project allowed to include
-SpiceMLD types. It converts SpiceMLD parse output into SAVOR-owned navigation types so the Qt projects,
-planner, and future persistence code do not depend on the parser's internal model.
+The later predictor-backed flow is separate from that loading/widget dependency chain:
 
-This folder tracks planning documents for a new **Navigation Phase** focused on moving between world objectives in Skies of Arcadia (e.g., chest, door, loading zone) while minimizing total completion time in VI frames.
+`reset-qualified field entry -> NavigationContextResult -> SavorPredict planning search -> NavigationControlSolveResult -> NavigationValidationResult`
+
+`SavorPredict` is the existing predictor subsystem name. Its current exploratory executable/CLI shape is
+not yet a SavorQt integration API; the navigation prediction surface and asynchronous invocation boundary
+remain future work.
+
+The normative lifecycle, content-provenance, context-capture, suppressed-exploration, prediction,
+control-solving, validation, and workflow contracts are in
+[`NavigationContextWorkflow/README.md`](NavigationContextWorkflow/README.md). This overview and documents
+01 through 05 summarize that direction; the workflow package takes precedence for those contracts.
+[`06-area-profiles-and-analysis-workstreams.md`](06-area-profiles-and-analysis-workstreams.md) remains the
+normative source for area-profile classification and evidence levels.
+
+`SavorNavigation` is a non-Qt C++20 static library. It is the only SAVOR project allowed to include
+SpiceMLD or SpiceSCT types. It converts SPICE parse output into SAVOR-owned navigation types so the Qt
+projects, planner, and future persistence code do not depend on either parser's internal model.
+
+This folder tracks planning documents for a new **Navigation Phase** currently focused on start-to-end
+movement within Skies of Arcadia Legends dungeons (for example, chest, door, or loading-zone objectives)
+while minimizing total completion time in VI frames.
+
+## Area scope and shared foundation
+
+The common navigation foundation is **2.5D**: it preserves full XYZ mesh coordinates, vertically stacked
+walkable surfaces, three-dimensional distance, and explicit directed links/portals, while constraining
+player movement to authored walkable surfaces. It must never flatten overlapping Y layers into one X/Z
+plane. Dungeon is the current target profile; the same foundation may support Safe areas later without
+making their interaction or transition semantics part of the current dungeon milestone.
+
+The planned `NavigationAreaProfile` classification is applied in this strict order:
+
+| Priority | Profile | Classification evidence | Example |
+|---:|---|---|---|
+| 1 | Overworld | Area key begins with `099`, regardless of companion presence | `a099a/me099a/a099a.ect` and `a099b/me099b` |
+| 2 | Dungeon | A non-099 MLD has a case-insensitively matched, same-key ECT | `a101b/me101b/a101b.ect` |
+| 3 | Safe | A non-099 MLD has a matched SCT and no matched ECT | `a004a/me004a` is known traversable; `a201a/me201a` is unverified |
+| 4 | Unknown/View-only | Neither a matched SCT nor ECT establishes a navigation profile | MLD without SCT or ECT |
+
+ECT presence selects Dungeon before ECT I/O or parsing. An unreadable, undecompressible, or malformed ECT
+makes encounter data incomplete but never reclassifies the area as Safe. Keys below `200a` are documented
+as known-traversable Safe content; SCT-paired keys at or above `200a` remain Safe candidates until their
+traversability is validated. Profile derivation treats the selected MLD directory as the complete companion
+set. A strict manual SCT may restore script association, but this milestone has no manual ECT override.
+
+This classification and its ECT discovery are approved planning decisions, not current prototype
+behavior. The existing file picker may still load and inspect any MLD that SpiceMLD can parse. A future
+private `SpiceEct` dependency in `SavorNavigation` will parse related ECT content; SPICE will own ECT bytes,
+AKLZ handling, and file-format diagnostics, while SAVOR will own companion association, ordered profile
+classification, dungeon encounter semantics, and conversion into SAVOR-owned types. SpiceEct types must
+not cross the `SavorNavigation` boundary.
+
+Area 99/Overworld navigation is explicitly deferred. Its free-flight movement, altitude-dependent state,
+and special encounter lookup are not extensions of the current dungeon rules and must receive a separate
+design before being admitted to planning or workflow jobs.
 
 ## Goals
 
+- Establish the shared surface-constrained 2.5D model/search foundation, with Dungeon as the current
+  supported navigation target and Safe reuse reserved for a later milestone.
 - Load a manually selected, AKLZ-compressed MLD through SpiceMLD and construct an in-memory,
   SAVOR-owned representation of the area's walkable space.
+- Discover and parse the MLD's strictly matched SCT through SpiceSCT, retain it in memory, and expose
+  statically resolvable opcode-77 placements as optional route starts with their condition provenance.
 - Plan objective-to-objective movement with a frame-time cost function.
-- Account for interruptions (cutscenes, forced transitions, camera shifts).
+- Account for interruptions without inventing reset boundaries: a same-script cutscene remains inside one
+  navigation epoch, while entering battle terminates the epoch and a reset-qualified field return starts a
+  new context.
 - Refine candidate input tapes in simulator for time-optimal results.
+- Add a later `SavorQt` outcome-planning module that invokes `SavorPredict` to search paths and
+  movement/no-movement/interruption schedules for a requested result such as no encounter or a specific
+  encounter.
+- Project a user-selected prediction result onto the Navigation map as a provenance-checked reachable
+  route prefix or 2.5D frontier without making the widget run the predictor search.
 - Integrate into existing SAVOR job/phase infrastructure.
 - Render a 3D area view highlighting walking planes and potential navigation targets such as script
   triggers, treasure chests, doors, and load/zone transitions.
@@ -35,20 +101,31 @@ This folder tracks planning documents for a new **Navigation Phase** focused on 
 The interactive prototype will:
 
 1. Use a file picker to select an `.mld` file and remember the last directory.
-2. Read and parse the selected file asynchronously through `SavorNavigation` and SpiceMLD.
-3. Let SpiceMLD detect and decompress AKLZ data; SAVOR will not implement a second decompressor or MLD
-   parser.
-4. Parse a canonical SpiceMLD `MldFile`, then convert its ground resources plus a transient compatibility
+2. Derive the case-normalized area key from a conforming `aNNNC.mld` name and look only beside that MLD
+   for `meNNNC.sct`. Parse a matching sibling automatically; if it is absent, warn and offer a manual SCT
+   picker. A manual SCT may come from another directory but must carry the same prefix-stripped area key.
+3. Read and parse the selected MLD and any matched SCT asynchronously through `SavorNavigation`,
+   SpiceMLD, and SpiceSCT.
+4. Let SPICE detect and decompress AKLZ data; SAVOR will not implement a second decompressor, MLD parser,
+   or SCT parser.
+5. Parse a canonical SpiceMLD `MldFile`, then convert its ground resources plus a transient compatibility
    projection into an in-memory `NavigationAreaModel`. GRND and ground-role GOBJ data come directly from
    `MldFile.groundResources`; exact `fxn=wall` NJ object geometry and every SPICE-classified trigger's
    attached object geometry, plus exact normalized `motscpt` object geometry, are flattened through an
    in-memory `BlenderIrScene` and immediately converted to SAVOR-owned region meshes. GOBJ blocks referenced
    only as objects are not walkable surfaces.
-5. Render the model and later path overlays in a reusable Navigation widget hosted by `SavorQt3D`.
+6. Retain normalized SCT source/status/section summaries and a SAVOR-owned opcode-77 start catalog in
+   `NavigationScriptModel`, with the full parse result behind an internal opaque boundary. Preserve branch,
+   switch, nested-condition, and resolved-call provenance without exposing SpiceSCT types.
+7. Derive the walkable triangle/portal graph, keep manual point selection as the default, optionally resolve
+   a catalogued opcode-77 placement to the graph start, let the user pick a ground or projected-trigger
+   goal, run deterministic A*, and render link and route overlays in the reusable Navigation widget hosted
+   by `SavorQt3D`.
 
 ## Implemented prototype slices (2026-07-18 through 2026-07-19)
 
-- SPICE is pinned at `8ebdf50` under `third-party/SPICE`.
+- The geometry-projection slice was validated at SPICE revision `8ebdf50`; the current pathfinding work
+  pins the tested SpiceMLD/SpiceSCT revision `0b82fe1` under `third-party/SPICE`.
 - `SavorNavigation` loads compressed MLD files, owns the public model and diagnostics, applies the
   centralized identity coordinate policy, and marks incomplete ground decoding as a partial model that
   is not pathfinding-ready.
@@ -62,14 +139,86 @@ The interactive prototype will:
   instances (6,795 vertices and 8,347 triangles), 16 fully projected triggers totaling 38 meshes,
   320 vertices, and 384 triangles, 11 fully projected `motscpt` MovingObjects totaling 55 meshes,
   462 vertices, and 566 triangles, and 21 remaining unknown entries.
-- Link rendering, start/target selection, and path search are intentionally deferred to the next slice.
+- The geometry-only slices originally deferred link derivation, endpoint selection, and path search; the
+  implemented pathfinding slice below now supplies those capabilities.
+
+## Implemented pathfinding slice (2026-07-19 through 2026-07-20)
+
+- SpiceSCT is a private `SavorNavigation` dependency, and the prototype loads at most one SCT associated
+  with the current MLD. A missing, unreadable, or malformed SCT is recoverable and never disables manual
+  pathfinding; a mismatched manual replacement is rejected before parsing and leaves the current valid
+  SCT unchanged.
+- `File -> Load Related SCT...` provides the strict manual replacement path. Opening another MLD clears the
+  current SCT association and repeats sibling discovery; the recent-files submenu remains MLD-only.
+- Generic relative `CallSubscript` target resolution and typed numeric literals are corrected and covered
+  upstream at the pinned SPICE revision. `SavorNavigation` uses those foundations to catalog opcode-77
+  placements without exposing SPICE control-flow types.
+- Statically readable opcode-77 placements reached from `init` or the `BitVar 1910 == 0` loop
+  initialization path are classified as authored arrivals. Other opcode-77 occurrences remain
+  lower-confidence scripted repositions. Every condition and call path is preserved; incomplete placements
+  remain visible but unavailable for anchoring.
+- A grouped `Start:` selector is present in the Path toolbar. `Manual point` remains the default; choosing a
+  resolvable catalog option anchors it to the uniquely nearest triangle on the selected ground `tblId`.
+  Ambiguous, missing-ground, or otherwise unresolvable options never replace a valid current start. Manual
+  start facing is settable; a catalogued option's opcode-77 yaw supplies its scripted facing when known.
+- The traversal graph has one stable node per valid walkable triangle, bidirectional shared-edge adjacency,
+  and directed cross-surface portals only where provisional MLD link evidence agrees with boundary geometry;
+  ambiguous links are diagnosed instead of guessed.
+- Manual starts and ordinary goals can be picked on ground. Goals can also select real projected trigger
+  meshes; warning-backed trigger fallback cubes are never selectable. Trigger selection deterministically
+  chooses the largest projected mesh by its world-space bounds, resolves it to walkable graph geometry, and
+  renders the chosen bounds as a magenta AABB.
+- Start and ground-goal markers use the same compact fixed-size scale as the `man` fallback marker. Start
+  facing is rendered as a short ray. Opcode 156 remains excluded because its transform comes from unresolved
+  runtime restore state; trigger activation semantics, automatic condition evaluation, funnel smoothing,
+  alternative routes, and other SCT-derived endpoints remain later work.
+
+## Planned Navigation Context workflow
+
+The eventual `SavorQt` product integration will contain a planning module separate from the reusable
+Navigation map. The planning module authors an objective and search bounds, selects a compatible world and
+explicitly referenced ready `NavigationContextResult`, invokes `SavorPredict`, monitors candidate results,
+and lets the user select one result for display. There is no implicit "latest context." Initial Dungeon
+objectives include reaching as far as possible without an encounter and obtaining a particular encounter.
+The widget does not simulate, enumerate, or rank movement schedules.
+
+A `NavigationEpoch` starts only after a reset-qualified field script/context switch or battle return has
+restored stable player control. Readiness is measured from a clean, unpatched source state: placement and
+ground are settled, velocity is zero, authored input is neutral, no forced action is pending, and required
+reset-state capture matches the current contract. Entering battle ends the epoch. A same-script cutscene
+that returns control does not reset `stepCount`, does not create a new context, and must remain within the
+same prediction; an unsupported interruption returns `ModelIncomplete` instead of restarting from a clean
+entry assumption. Save load qualifies only when runtime evidence confirms a reset-producing script switch.
+
+The selected immutable prediction result carries the complete provenance needed to interpret its spatial
+projection: `NavigationContextResult` identity, disc/content/world/graph and coordinate-policy identity,
+predictor/model versions, objective and search bounds, witness path and planning-level
+movement/no-movement/interruption schedule, predicted trace, terminal reason, and search completeness.
+`SavorPredict` does not choose raw stick or camera inputs. `NavigationControlSolveResult` owns controller
+tape and camera realization; `NavigationValidationResult` records comparison against a clean runtime. A
+fixed-path result supplies a reachable route prefix and cutoff. A branching path search may supply a
+`NavigationTriangleKey`-keyed 2.5D reachable set with one or more frontier edges. A search-budget or
+prediction-horizon boundary must be labeled as such; it is not proof that gameplay cannot continue beyond
+it.
+
+The static encounter selector/table overlay remains separate. A predictor result is an objective- and
+state-qualified **Prediction Reachability** overlay, not a probability heatmap. The widget derives
+compatibility from immutable fingerprints: spatial incompatibility rejects the overlay; matching geometry
+with an older start/model/objective may be shown as historical/stale; missing fingerprints are
+unverifiable; and an exact match is current. `SavorNavigation` owns the Qt-neutral spatial compatibility
+and projection boundary, while `SavorPredict` owns temporal state evolution, outcome search, witness
+selection, and frontier computation.
 
 The local US disc dump at
 `D:\SoAGC\2002-12-19-gc-us-final_Skies_of_Arcadia_Legends` is a development fixture and convenient
 initial directory. It must not become a hardcoded default or checked-in configuration value.
 
-The first milestone does not require Dolphin/ISO file acquisition, automatic area lookup, a serialized
-SPICE area-view artifact, or durable navigation persistence.
+The first milestone does not require Dolphin/ISO file acquisition, disc-wide area lookup, automatic
+`NavigationAreaProfile` enforcement, SpiceEct integration, automatic SCT state evaluation, opcode-156
+runtime restoration, a serialized SPICE area-view artifact, or durable navigation persistence. Area 99
+and other Overworld planning remain outside this milestone regardless of what the viewer can display. It
+also does not embed `SavorPredict` execution or movement-schedule search in `SavorQt3D` or the Navigation
+widget.
 
 ## Documents
 
@@ -83,6 +232,12 @@ SPICE area-view artifact, or durable navigation persistence.
   - Proposed phase contracts, step kinds, and artifacts in existing system.
 - `05-open-implementation-questions.md`
   - Unresolved decisions and experiments to de-risk implementation.
+- `06-area-profiles-and-analysis-workstreams.md`
+  - Normative profile precedence, shared component boundaries, and collision, anomaly, and encounter
+    workstreams.
+- `NavigationContextWorkflow/`
+  - Normative reset-qualified entry lifecycle, disc/content identity, context-result, suppressed
+    exploration, prediction/control/validation, phase/job, artifact-lineage, and open-research contracts.
 
 ## Iteration approach
 
@@ -93,16 +248,34 @@ renderer, file picker, visibility controls, and diagnostics are prototype assets
 on the removed `SavorMLD` project was obsolete and has been replaced by `SavorNavigation`. Once the widget
 and model boundary are stable, the widget will be installed into `SavorQt`.
 
-## Ownership Boundary
+## Ownership boundary and current reality
 
-- SPICE owns SoA package/file parsing, including AKLZ decompression, MLD/SCT reads, low-level
-  GRND/GOBJ model extraction, walking-plane candidate generation, and target discovery from
-  script/object content.
-- `SavorNavigation` owns the adapter from SpiceMLD results into SAVOR navigation semantics, coordinate
-  policy, route/search types, region-geometry completeness diagnostics, and future persisted schema.
-- `SavorQt3D` owns the prototype host and reusable Navigation widget; `SavorQt` is the eventual product
-  host.
-- SAVOR owns workflow launch, route/search/control-solver jobs, simulator validation, UI target selection,
-  and future persistence.
+- SPICE currently owns AKLZ handling, MLD/SCT parsing, low-level GRND/GOBJ extraction, and parser
+  diagnostics through SpiceMLD and SpiceSCT. SpiceEct will own ECT parsing when that future dependency is
+  introduced; SPICE does not own SAVOR area-profile or navigation semantics.
+- `SavorNavigation` currently owns the adapters from SpiceMLD/SpiceSCT results into SAVOR models, strict
+  MLD/SCT area-key association, opcode-77 start cataloguing/resolution, coordinate policy, traversal graph,
+  deterministic A*, and geometry-completeness diagnostics. It will later own related-ECT association,
+  ordered `NavigationAreaProfile` classification, dungeon encounter interpretation, and SAVOR-owned
+  navigation serialization/domain contracts; `SavorDb` owns durable storage.
+- `SavorQt3D` currently owns the standalone prototype host and reusable Navigation widget. `SavorQt` is the
+  eventual product host; that integration is not implemented yet. Its planned outcome-planning module will
+  launch and select `SavorPredict` navigation results, while the widget remains a result renderer rather
+  than a schedule-search surface.
+- `SavorPredict` is the intended non-Qt owner of modeled field-update/RNG evolution, path and
+  movement/no-movement/interruption schedule search, requested-outcome evaluation, witness selection, and reachability
+  frontier computation at the planning level. It consumes a ready, explicitly referenced
+  `NavigationContextResult`; it does not own raw controller/camera realization. Its existing exploratory
+  executable/CLI must gain a deliberate navigation prediction and asynchronous integration boundary; no
+  such SavorQt-facing API is implemented here.
+- `SavorCore` already owns runtime memory, breakpoints, inputs, savestate checkpoints, telemetry, and the
+  PhaseScript VM boundary; Navigation-specific PhaseScripts remain future. `SavorWorker` already provides
+  Dolphin-backed execution and will later run Navigation probes.
+- `SavorWorkflow` already coordinates generic claiming, dispatch, fan-out, and transition invocation
+  through `SavorDb` services; Navigation integration remains future. A local CPU execution lane does not
+  exist yet, so deterministic navigation analysis remains in-process domain work until that lane is
+  designed.
+- `SavorDb` owns workflow lifecycle, authored specifications, transition services, artifacts, analysis
+  results, and UI projections.
 - SA3DPort planning has been retired from this repo. Any parser/reference-comparison work belongs behind
   SPICE.

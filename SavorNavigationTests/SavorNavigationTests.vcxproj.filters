@@ -4,6 +4,8 @@
     <ClCompile Include="..\third-party\googletest-1.17.0\googletest\src\gtest-all.cc" />
     <ClCompile Include="main.cpp" />
     <ClCompile Include="test_navigation_area_loader.cpp" />
+    <ClCompile Include="test_navigation_pathfinding.cpp" />
+    <ClCompile Include="test_navigation_script_loader.cpp" />
     <ClCompile Include="test_region_mesh_projector.cpp" />
   </ItemGroup>
 </Project>

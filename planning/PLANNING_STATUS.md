@@ -15,13 +15,60 @@ the source of truth when a plan conflicts with implementation.
 
 ## Future Plans
 
-- `planning/NavigationPhase/` - future navigation phase with its first interactive loading/visualization
-  slice implemented. A pinned SPICE submodule feeds the non-Qt `SavorNavigation` library, which converts
+- `planning/NavigationPhase/` - future dungeon-navigation phase built on a shared, surface-constrained
+  2.5D foundation. The foundation preserves full XYZ geometry, vertically stacked walkable surfaces, and
+  explicit 3D links/portals; "2.5D" means movement is constrained to authored surfaces, not that geometry
+  is flattened to X/Z. A pinned SPICE submodule feeds the non-Qt `SavorNavigation` library, which converts
   canonical MLD data, native GRND and ground-role GOBJ meshes, and transiently projected `fxn=wall`
   collision meshes, SPICE-classified trigger object meshes, and provisionally classified `motscpt`
   MovingObjects into a SAVOR-owned model. `SavorQt3D` loads manually selected AKLZ-compressed MLD files
-  asynchronously and hosts the prototype viewer. Coordinate calibration, adjacency/path search, moving-
-  object/door semantics, trigger activation semantics, workflow jobs, and persistence remain future work.
+  asynchronously and hosts the prototype viewer. The current prototype also includes same-directory
+  `aNNNC.mld` -> `meNNNC.sct` discovery with strict area-key matching, in-memory SCT retention, an
+  opcode-77 start catalog with condition/call provenance, a triangle/portal traversal graph, manual or
+  catalogued start selection with facing, manual ground or projected-trigger goal selection, deterministic
+  A*, and route/link/endpoint overlays. Trigger goals resolve to walkable graph geometry and display their
+  projected bounds.
+
+  The approved future `NavigationAreaProfile` classification is ordered:
+
+  | Priority | Profile | Classification evidence |
+  |---:|---|---|
+  | 1 | Overworld | Area key begins with `099`, regardless of SCT or ECT presence |
+  | 2 | Dungeon | Non-099 MLD has a same-key ECT; ECT presence, not parse success, selects the profile |
+  | 3 | Safe | Non-099 MLD has a matched SCT and no same-key ECT |
+  | 4 | Unknown/View-only | Neither a matched SCT nor ECT establishes an earlier profile |
+
+  Profile derivation treats the selected MLD directory as the complete companion set. A strict manual SCT
+  may restore script association, but this milestone has no manual ECT override.
+
+  Therefore `a099a/me099a/a099a.ect` and `a099b/me099b` are both Overworld,
+  `a101b/me101b/a101b.ect` is Dungeon, `a004a/me004a` without ECT is known-traversable Safe, and
+  `a201a/me201a` without ECT is an unverified Safe candidate. An MLD without SCT or ECT remains
+  Unknown/View-only. Dungeon is the current phase target. Safe areas may reuse the same 2.5D foundation
+  later, while Area 99/Overworld movement and encounter semantics are explicitly deferred to a separate
+  design. `SpiceEct` is a future private parsing dependency behind `SavorNavigation`; it is not integrated
+  into the current prototype, and no SpiceEct type will cross into Qt. Automatic profile enforcement,
+  game-state evaluation, opcode-156 runtime restoration, transition semantics, moving-object/door
+  semantics, trigger activation semantics, workflow jobs, and persistence remain future work.
+
+  A later predictor-backed slice adds a separate outcome-planning module in `SavorQt`. That module will
+  consume an explicitly referenced, reset-qualified `NavigationContextResult` and invoke the existing
+  `SavorPredict` predictor subsystem through a future asynchronous boundary to search paths and
+  movement/no-movement/interruption schedules for objectives such as no encounter or a specific encounter.
+  The reusable Navigation widget will not run or rank those searches. It will validate and render a
+  selected immutable prediction result as either a route prefix/cutoff or a `NavigationTriangleKey`-keyed
+  2.5D reachable set and frontier. The static selector/table overlay remains an independent spatial layer;
+  a predictor frontier is objective-, start-state-, model-, and search-bound-qualified rather than a
+  probability heatmap or universal safety guarantee. `SavorPredict` is currently an exploratory
+  application/CLI, so its navigation API, process boundary, and artifact schema remain planned work.
+
+  `planning/NavigationPhase/NavigationContextWorkflow/` is the normative future-work package for clean
+  disc identity/content materialization, reset-qualified navigation epochs, measured context readiness,
+  encounter- and trigger-suppressed exploration, runtime-refined passability, predictor planning,
+  controller realization, clean validation, workflow steps, and immutable artifact lineage. A same-script
+  cutscene remains in its current epoch and never justifies a fresh-entry reset; battle entry terminates
+  the epoch and a validated battle return may begin another. `planning/NavigationPhase/06-area-profiles-and-analysis-workstreams.md`
+  remains normative for profile precedence and evidence levels.
 - `planning/DBMigrateQueues/09-Phase-4-Implementation-Plan.md` - future hardening/tuning work, including
   stress-load analysis for current queued database facades.
 
