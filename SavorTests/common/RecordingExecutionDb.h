@@ -45,7 +45,7 @@ public:
         savor::db::ExecutionJobRecord record{};
         record.job_id = ++next_job_id_;
         record.job_set_id = command.job_set_id;
-        record.program_kind = std::to_string(command.program_kind);
+        record.program_kind = command.program_kind;
         record.program_version = command.program_version;
         record.program_ref_kind = command.program_ref_kind;
         record.program_ref_id = command.program_ref_id;

@@ -167,6 +167,10 @@ AdapterChainOrchestrator::StepTerminalResult AdapterChainOrchestrator::OnStepTer
 
     if (trace) trace->transition_handler_invoked = true;
     result.transition = descriptor->workflow_transition->EvaluateTransition(context);
+    if (result.transition->terminal_failure) {
+        result.gate.terminal_fail = true;
+        result.gate.blocked_reason = result.transition->blocked_reason;
+    }
     return result;
 }
 

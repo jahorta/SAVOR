@@ -10,6 +10,7 @@
 
 #include "Cli.h"
 #include "BattleMacroProbeScenario.h"
+#include "BattleEndResultsScenario.h"
 #include "BattleSingleTurnScenario.h"
 #include "Common/DbService.h"
 #include "Common/Performance/DbPerfReport.h"
@@ -68,6 +69,8 @@ int main(int argc, char** argv) {
         { "seedprobe_battle", &RunSeedProbeBattleRealWorkerScenario },
         { "battle", &RunBattleWorkflowGraphRealWorkerScenario },
         { "battle_macro_probe", &RunBattleMacroProbeScenario },
+        { "battle_end", &RunBattleEndResultsScenario },
+        { "battle_end_results", &RunBattleEndResultsScenario },
         { "tasmovie_seedprobe_battle", &RunTasMovieSeedProbeBattleWorkflowGraphRealWorkerScenario },
         { "tasmovie_seedprobe_battle_override", &RunTasMovieSeedProbeBattleOverrideWorkflowGraphRealWorkerScenario },
         { "tasmovie_battle", &RunTasMovieBattleWorkflowGraphRealWorkerScenario },

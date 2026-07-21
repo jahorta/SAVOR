@@ -20,6 +20,7 @@ enum class BreakpointVisibility : uint8_t {
 enum class BreakpointOwner : uint8_t {
     Shared,
     InputMacro,
+    SeedProbe,
 };
 
 enum class BreakpointConsumer : uint8_t {

@@ -87,6 +87,8 @@
     <ClCompile Include="test_probe_profile.cpp" />
     <ClCompile Include="test_probe_progress_and_wire.cpp" />
     <ClCompile Include="test_battle_coordinator_initialization.cpp" />
+    <ClCompile Include="test_battle_end_results_db.cpp" />
+    <ClCompile Include="test_battle_end_results.cpp" />
     <ClCompile Include="test_battle_frame_thread_list.cpp" />
     <ClCompile Include="test_battle_movement_path.cpp" />
     <ClCompile Include="test_battle_movement_invocation.cpp" />

@@ -10,6 +10,7 @@
 #include "../../../Authoring/IAuthoringDb.h"
 #include "../../IExecutionDb.h"
 #include "../../../../SavorCore/Runner/IPC/Wire.h"
+#include "../../../../SavorCore/Phases/Programs/SeedProbe/SeedProbePayload.h"
 
 namespace savor::db::execution::programdb::seedprobe {
 
@@ -24,6 +25,7 @@ struct SeedProbeGridBlueprintConfig {
     std::int32_t program_version = 1;
     std::uint32_t run_ms = 0;
     std::uint32_t vi_stall_ms = 0;
+    savor::seedprobe::SeedProbeTarget target = savor::seedprobe::SeedProbeTarget::PreBattle;
 };
 
 struct SeedProbeGridSpec {

@@ -184,6 +184,8 @@
     <ClInclude Include="Common\Events\OutboxRelay.h" />
     <ClInclude Include="Execution\ProgramDB\BattleContext\BattleContextProbeAdapters.h" />
     <ClInclude Include="Execution\ProgramDB\BattleContext\BattleContextProbePhaseRegistration.h" />
+    <ClInclude Include="Execution\ProgramDB\BattleEndResults\BattleEndResultsAdapters.h" />
+    <ClInclude Include="Execution\ProgramDB\BattleEndResults\BattleEndResultsPhaseRegistration.h" />
     <ClInclude Include="Execution\ProgramDB\BattleSingleTurn\BattleSingleTurnAdapters.h" />
     <ClInclude Include="Execution\ProgramDB\BattleSingleTurn\BattleSingleTurnPhaseRegistration.h" />
     <ClInclude Include="Execution\ProgramDB\ProgramKindDescriptor.h" />
@@ -247,6 +249,9 @@
     <ClCompile Include="Execution\QueuedExecutionDb.cpp" />
     <ClCompile Include="Execution\ProgramDB\BattleContext\BattleContextProbeAdapters.cpp" />
     <ClCompile Include="Execution\ProgramDB\BattleContext\BattleContextProbePhaseRegistration.cpp" />
+    <ClCompile Include="Execution\ProgramDB\BattleEndResults\BattleEndResultsAdapters.cpp" />
+    <ClCompile Include="Execution\ProgramDB\BattleEndResults\BattleEndWorkflowAdapters.cpp" />
+    <ClCompile Include="Execution\ProgramDB\BattleEndResults\BattleEndResultsPhaseRegistration.cpp" />
     <ClCompile Include="Execution\ProgramDB\BattleSingleTurn\BattleSingleTurnAdapters.cpp" />
     <ClCompile Include="Execution\ProgramDB\BattleSingleTurn\BattleSingleTurnPhaseRegistration.cpp" />
     <ClCompile Include="Execution\ProgramDB\SeedProbe\SeedProbeGridAdapters.cpp" />
@@ -281,13 +286,16 @@
     <None Include="migration\AnalysisBattle\202604101500_analysisbattle_turn_job_context_blob.sql" />
     <None Include="migration\AnalysisBattle\202606171200_analysisbattle_battle_advancement_terminology.sql" />
     <None Include="migration\AnalysisBattle\202606171500_analysisbattle_turn_job_replication_facts.sql" />
+    <None Include="migration\AnalysisBattle\202607211200_analysisbattle_battle_end_workflow.sql" />
     <None Include="migration\AnalysisSeedProbe\202604051000_analysisseedprobe_stage2_schema.sql" />
+    <None Include="migration\AnalysisSeedProbe\202607211100_analysisseedprobe_field_return_flavor.sql" />
     <None Include="migration\AnalysisSpine\202604051000_analysisspine_stage2_schema.sql" />
     <None Include="migration\Archive\202604051000_archive_stage2_schema.sql" />
     <None Include="migration\Archive\202604051100_archive_stage3_outbox.sql" />
     <None Include="migration\Archive\202604051200_archive_stage4_workflow_archive_kinds.sql" />
     <None Include="migration\Archive\202606201000_archive_workflow_package_membership.sql" />
     <None Include="migration\Archive\202606201100_archive_package_name_notes.sql" />
+    <None Include="migration\Archive\202607211300_archive_battle_end_workflow_kinds.sql" />
     <None Include="migration\Authoring\202604051000_authoring_stage2_schema.sql" />
     <None Include="migration\Authoring\202604101000_authoring_predicate_breakpoint_id.sql" />
     <None Include="migration\Authoring\202604101100_authoring_predicate_width.sql" />

@@ -375,6 +375,8 @@ private:
     std::unordered_set<std::int64_t> seen_workflow_instance_ids_;
     mutable std::mutex workers_mtx_;
     std::vector<WorkerSlotPtr> workers_;
+    std::mutex runtime_preparation_mtx_;
+    std::optional<std::filesystem::path> prepared_runtime_worker_exe_;
     std::unordered_map<std::uint64_t, DispatchedJobContext> dispatched_job_context_by_id_;
     std::unordered_map<size_t, WorkerVisualSurface> worker_visual_surfaces_;
     size_t rr_worker_cursor_ = 0;

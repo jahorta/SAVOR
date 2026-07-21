@@ -102,11 +102,22 @@ struct AnalysisBattleManualFollowupUpdatedPayloadView {
     std::int64_t manual_followup_id = 0;
 };
 
+struct AnalysisBattleCompletionPayloadView {
+    std::int64_t battle_completion_id = 0;
+};
+
+struct AnalysisBattleResultsPayloadView {
+    std::int64_t battle_completion_id = 0;
+    std::int64_t battle_results_id = 0;
+};
+
 // Backward-compatible coarse family view.
 struct AnalysisBattlePayloadView {
     std::int64_t battle_set_id = 0;
     std::int64_t wave_id = 0;
     std::int64_t turn_job_id = 0;
+    std::int64_t battle_completion_id = 0;
+    std::int64_t battle_results_id = 0;
 };
 
 // AnalysisSpine event-specific typed payload views.

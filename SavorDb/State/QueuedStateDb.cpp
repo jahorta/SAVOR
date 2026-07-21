@@ -106,6 +106,26 @@ bool QueuedStateDb::DeriveSavestate(
         error_out);
 }
 
+std::optional<SavestateRecord> QueuedStateDb::GetSavestate(
+    std::int64_t savestate_id) const {
+    return ExecuteRead<std::optional<SavestateRecord>>(
+        [this, savestate_id]() {
+            return inner_ != nullptr ? inner_->GetSavestate(savestate_id) : std::nullopt;
+        },
+        std::nullopt);
+}
+
+std::vector<SavestateDerivationRecord> QueuedStateDb::ListIncomingSavestateDerivations(
+    std::int64_t to_savestate_id) const {
+    return ExecuteRead<std::vector<SavestateDerivationRecord>>(
+        [this, to_savestate_id]() {
+            return inner_ != nullptr
+                ? inner_->ListIncomingSavestateDerivations(to_savestate_id)
+                : std::vector<SavestateDerivationRecord>{};
+        },
+        {});
+}
+
 bool QueuedStateDb::CreateTasVariant(
     const CreateTasVariantCommand& command,
     std::int64_t* tas_variant_id_out,

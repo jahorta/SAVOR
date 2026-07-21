@@ -5,6 +5,7 @@
 #include <array>
 #include <exception>
 #include <iostream>
+#include <stdexcept>
 #include <string_view>
 #include <sstream>
 #include <vector>
@@ -30,6 +31,7 @@ struct ScenarioRequirement {
     bool requires_dtm_file = false;
     bool requires_savestate_file = false;
     bool requires_savestate_file_for_seedprobe_placeholder = false;
+    bool requires_source_savestate_id = false;
 };
 
 ScenarioRequirement GetScenarioRequirement(const std::string_view scenario) {
@@ -44,6 +46,9 @@ ScenarioRequirement GetScenarioRequirement(const std::string_view scenario) {
     }
     if (scenario == "battle_macro_probe") {
         return {.requires_savestate_file = true};
+    }
+    if (scenario == "battle_end" || scenario == "battle_end_results") {
+        return {.requires_source_savestate_id = true};
     }
     if (scenario == "tasmovie_seedprobe") {
         return {
@@ -66,7 +71,7 @@ ScenarioRequirement GetScenarioRequirement(const std::string_view scenario) {
 }
 
 bool IsSupportedScenario(const std::string_view scenario) {
-    if (scenario == "all") {
+    if (scenario == "all" || scenario == "battle_end" || scenario == "battle_end_results") {
         return true;
     }
     for (const auto& supported : kAllScenarioOrder) {
@@ -291,11 +296,14 @@ void PrintUsage() {
               << " --iso <path>"
               << " --dolphin-base-dir <path>"
               << " [--savestate-file <path>]"
+              << " [--source-savestate-id <id>]"
+              << " [--battle-end-seed-selector neutral|seed_value|seed_delta]"
+              << " [--battle-end-seed-value <signed delta or u32 seed>]"
               << " [--dtm-file <path>]"
-              << " [--scenario seedprobe|seedprobe_battle|battle|all]"
+              << " [--scenario seedprobe|seedprobe_battle|battle|battle_end|battle_end_results|all]"
               << " [--timeout-ms <100..800000000 - default 30000>]"
               << " [--poll-ms <100..5000 - default 100>]"
-              << " [--worker-count <1..30 - default 1>"
+              << " [--worker-count <1..30 - default 1>]"
               << " [--migration-root <path>]"
               << " [--workspace-root <path>]"
               << " [--worker-dir-root <path>]"
@@ -327,13 +335,14 @@ void PrintUsage() {
               << " [--battle-fake-sweep-output <path>]"
               << " [--battle-macro-debug]\n\n";
     std::cout << "Durable line modes: quiet, normal, verbose, all, or a comma list.\n";
-    std::cout << "E2E perf mode requires Release builds, worker-count 15, and load-level low|mid|high.\n";
+    std::cout << "E2E perf mode requires Release builds and load-level low|mid|high; worker-count defaults to 15 and accepts 1..30.\n";
     std::cout << "TAS rtc sets one concrete launch value; rtc-min/max fans out graph scenarios into one workflow per value. TAS headroom is the existing x10 value.\n";
     std::cout << "Visual worker locks worker count to 1. battle_macro_probe opens an interactive prompt unless --battle-plan or --battle-macro is supplied.\n";
     std::cout << "Battle macro CLI: use --battle-plan block,attack:5 for a multi-character plan, --battle-fake-attacks N for experimental RNG fake attacks, --battle-fake-attack-sweep to measure fake-attack timing, or --battle-macro attack --battle-macro-target-slot 5 for one command.\n";
+    std::cout << "battle_end (battle_end_results alias) reuses the selected workspace databases and requires --source-savestate-id from a successful BattleSingleTurn victory. Seed selection defaults to neutral.\n";
     std::cout << "Categories: result,failure,warning,workflow,materialization,claim,dispatch,supersede,worker,adapter,db,debug\n\n";
     std::cout << "Scenarios: all, seedprobe, tasmovie, seedprobe_battle, battle, "
-              << "battle_macro_probe, "
+              << "battle_macro_probe, battle_end, battle_end_results, "
               << "tasmovie_seedprobe, tasmovie_seedprobe_battle, "
               << "tasmovie_seedprobe_battle_override, tasmovie_battle\n";
     std::cout << "You may pass --scenario multiple times and they will run in order.\n\n";
@@ -394,6 +403,26 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
             std::string v;
             if (!require_value("--savestate-file", &v)) return false;
             options.savestate_file = std::filesystem::path(v);
+        } else if (arg == "--source-savestate-id") {
+            std::string v;
+            if (!require_value("--source-savestate-id", &v)) return false;
+            try {
+                options.source_savestate_id = std::stoll(v);
+            } catch (const std::exception&) {
+                if (error_out) *error_out = "invalid integer for --source-savestate-id: " + v;
+                return false;
+            }
+        } else if (arg == "--battle-end-seed-selector") {
+            if (!require_value("--battle-end-seed-selector", &options.battle_end_seed_selector)) return false;
+        } else if (arg == "--battle-end-seed-value") {
+            std::string v;
+            if (!require_value("--battle-end-seed-value", &v)) return false;
+            try {
+                options.battle_end_seed_value = std::stoll(v);
+            } catch (const std::exception&) {
+                if (error_out) *error_out = "invalid integer for --battle-end-seed-value: " + v;
+                return false;
+            }
         } else if (arg == "--dtm-file") {
             std::string v;
             if (!require_value("--dtm-file", &v)) return false;
@@ -567,9 +596,6 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
         }
         if (!worker_count_explicit) {
             options.worker_count = 15;
-        } else if (options.worker_count != 15) {
-            if (error_out) *error_out = "E2E perf mode requires --worker-count 15";
-            return false;
         }
 #else
         if (error_out) *error_out = "E2E perf mode must be run from a Release SavorE2E build";
@@ -596,6 +622,7 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
     bool is_tasmovie = false;
     bool is_tasmovie_seedprobe = false;
     bool needs_savestate = false;
+    bool needs_source_savestate_id = false;
     bool needs_dtm = false;
     std::vector<std::string> savestate_required_scenarios;
     std::vector<std::string> dtm_required_scenarios;
@@ -617,6 +644,7 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
         is_tasmovie_seedprobe = is_tasmovie_seedprobe || IsTasMovieSeedProbeScenario(scenario);
         const auto req = GetScenarioRequirement(scenario);
         needs_savestate = needs_savestate || req.requires_savestate_file;
+        needs_source_savestate_id = needs_source_savestate_id || req.requires_source_savestate_id;
         needs_dtm = needs_dtm || req.requires_dtm_file;
 
         if (req.requires_savestate_file) {
@@ -663,6 +691,34 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
         if (error_out) *error_out = "--timeout-ms and --poll-ms must be > 100";
         return false;
     }    
+    if (options.worker_count < 1 || options.worker_count > 30) {
+        if (error_out) *error_out = "--worker-count must be between 1 and 30";
+        return false;
+    }
+    if (needs_source_savestate_id
+        && (!options.source_savestate_id.has_value() || *options.source_savestate_id <= 0)) {
+        if (error_out) *error_out = "--source-savestate-id with a positive BattleSingleTurn victory savestate id is required for battle_end";
+        return false;
+    }
+    if (options.battle_end_seed_selector != "neutral"
+        && options.battle_end_seed_selector != "seed_value"
+        && options.battle_end_seed_selector != "seed_delta") {
+        if (error_out) *error_out = "--battle-end-seed-selector must be neutral, seed_value, or seed_delta";
+        return false;
+    }
+    if (options.battle_end_seed_selector == "neutral" && options.battle_end_seed_value.has_value()) {
+        if (error_out) *error_out = "--battle-end-seed-value is only valid with seed_value or seed_delta selection";
+        return false;
+    }
+    if (options.battle_end_seed_selector != "neutral" && !options.battle_end_seed_value.has_value()) {
+        if (error_out) *error_out = "--battle-end-seed-value is required with seed_value or seed_delta selection";
+        return false;
+    }
+    if (options.battle_end_seed_selector == "seed_value"
+        && (*options.battle_end_seed_value < 0 || *options.battle_end_seed_value > 0xFFFFFFFFll)) {
+        if (error_out) *error_out = "seed_value selection requires --battle-end-seed-value in the u32 range";
+        return false;
+    }
     if (options.timeout_ms > 800000000) {
         if (error_out) *error_out = "--timeout-ms must be <= 800000000";
         return false;

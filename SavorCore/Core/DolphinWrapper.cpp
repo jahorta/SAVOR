@@ -991,6 +991,29 @@ namespace savor {
             f.buttons, f.main_x, f.main_y, f.c_x, f.c_y, f.trig_l, f.trig_r);
     }
 
+    uint64_t DolphinWrapper::publishInputEpoch(const GCInputFrame& f)
+    {
+        if (!m_system_pad_is_inited) return 0;
+
+        uint64_t epoch = ++m_input_playback_sequence;
+        if (epoch == 0) epoch = ++m_input_playback_sequence;
+        m_pad.publishPlaybackFrame(epoch, 0, f);
+        SCLOGD("[INP] publish epoch=%llu btn=%04X main=(%u,%u) c=(%u,%u) trig=(%u,%u)",
+            static_cast<unsigned long long>(epoch),
+            f.buttons, f.main_x, f.main_y, f.c_x, f.c_y, f.trig_l, f.trig_r);
+        return epoch;
+    }
+
+    DolphinWrapper::InputPollReceipt DolphinWrapper::getInputPollReceipt() const
+    {
+        const auto stats = m_pad.getPollStats();
+        return InputPollReceipt{
+            .epoch = stats.sequence,
+            .callback_count = stats.callback_count,
+            .frame = stats.frame,
+        };
+    }
+
     DolphinWrapper::InputTapePlaybackResult DolphinWrapper::playInputTapeBlocking(
         const InputPlan& plan,
         const InputTapePlaybackOptions& options)

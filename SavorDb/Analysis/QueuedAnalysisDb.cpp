@@ -118,6 +118,28 @@ std::optional<SeedProbeUniqueSeedRow> QueuedAnalysisDb::GetSeedProbeUniqueSeed(s
         std::nullopt);
 }
 
+std::optional<SeedProbeNeutralSeedRow> QueuedAnalysisDb::GetSeedProbeNeutralSeed(std::int64_t neutral_seed_id) const {
+    return ExecuteRead<std::optional<SeedProbeNeutralSeedRow>>(
+        [this, neutral_seed_id]() {
+            return inner_ != nullptr ? inner_->GetSeedProbeNeutralSeed(neutral_seed_id) : std::nullopt;
+        },
+        std::nullopt);
+}
+
+bool QueuedAnalysisDb::TryGetSeedProbeNeutralSeedForRun(
+    std::int64_t probe_run_id,
+    std::optional<SeedProbeNeutralSeedRow>* row_out,
+    std::string* error_out) const {
+    return ExecuteRead<bool>(
+        [this, probe_run_id, row_out, error_out]() {
+            return inner_ != nullptr
+                ? inner_->TryGetSeedProbeNeutralSeedForRun(probe_run_id, row_out, error_out)
+                : false;
+        },
+        false,
+        error_out);
+}
+
 std::optional<SeedProbeUniqueSeedRow> QueuedAnalysisDb::FindSeedProbeUniqueSeedForEntrySavestateInputFrame(
     std::int64_t entry_savestate_id,
     std::int64_t input_frame_id) const {
@@ -560,6 +582,21 @@ std::optional<BattleContextProbeSnapshot> QueuedAnalysisDb::GetLatestBattleConte
         std::nullopt);
 }
 
+bool QueuedAnalysisDb::EnsureSeedProbeNeutralSeed(
+    const RecordSeedProbeNeutralSeedCommand& command,
+    bool* inserted_out,
+    std::int64_t* neutral_seed_id_out,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, command, inserted_out, neutral_seed_id_out, error_out]() {
+            return inner_ != nullptr
+                ? inner_->EnsureSeedProbeNeutralSeed(command, inserted_out, neutral_seed_id_out, error_out)
+                : false;
+        },
+        false,
+        error_out);
+}
+
 std::optional<BattleTurnJobSnapshot> QueuedAnalysisDb::GetBattleTurnJob(std::int64_t turn_job_id) const {
     return ExecuteRead<std::optional<BattleTurnJobSnapshot>>(
         [this, turn_job_id]() {
@@ -574,6 +611,17 @@ std::optional<BattleTurnJobSnapshot> QueuedAnalysisDb::GetBattleTurnJobForExecJo
             return inner_ != nullptr ? inner_->GetBattleTurnJobForExecJob(exec_job_id) : std::nullopt;
         },
         std::nullopt);
+}
+
+std::vector<BattleTurnJobSnapshot> QueuedAnalysisDb::ListBattleTurnJobsByOutputSavestateId(
+    std::int64_t output_savestate_id) const {
+    return ExecuteRead<std::vector<BattleTurnJobSnapshot>>(
+        [this, output_savestate_id]() {
+            return inner_ != nullptr
+                ? inner_->ListBattleTurnJobsByOutputSavestateId(output_savestate_id)
+                : std::vector<BattleTurnJobSnapshot>{};
+        },
+        {});
 }
 
 std::vector<BattleTurnJobSnapshot> QueuedAnalysisDb::ListBattleTurnJobsForWave(std::int64_t wave_id) const {
@@ -605,6 +653,119 @@ std::vector<BattleAdvancementDecisionRow> QueuedAnalysisDb::ListBattleAdvancemen
                 : std::vector<BattleAdvancementDecisionRow>{};
         },
         {});
+}
+
+bool QueuedAnalysisDb::CreateBattleCompletion(
+    const CreateBattleCompletionCommand& command,
+    std::int64_t* battle_completion_id_out,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, command, battle_completion_id_out, error_out]() {
+            return inner_ != nullptr
+                ? inner_->CreateBattleCompletion(command, battle_completion_id_out, error_out)
+                : false;
+        },
+        false,
+        error_out);
+}
+
+bool QueuedAnalysisDb::BindBattleCompletionExecutionJob(
+    const BindBattleCompletionExecutionJobCommand& command,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, command, error_out]() {
+            return inner_ != nullptr
+                ? inner_->BindBattleCompletionExecutionJob(command, error_out)
+                : false;
+        },
+        false,
+        error_out);
+}
+
+bool QueuedAnalysisDb::CompleteBattleCompletion(
+    const CompleteBattleCompletionCommand& command,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, command, error_out]() {
+            return inner_ != nullptr ? inner_->CompleteBattleCompletion(command, error_out) : false;
+        },
+        false,
+        error_out);
+}
+
+bool QueuedAnalysisDb::FailBattleCompletion(
+    const FailBattleCompletionCommand& command,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, command, error_out]() {
+            return inner_ != nullptr ? inner_->FailBattleCompletion(command, error_out) : false;
+        },
+        false,
+        error_out);
+}
+
+std::optional<BattleCompletionRecord> QueuedAnalysisDb::GetBattleCompletion(
+    std::int64_t battle_completion_id) const {
+    return ExecuteRead<std::optional<BattleCompletionRecord>>(
+        [this, battle_completion_id]() {
+            return inner_ != nullptr ? inner_->GetBattleCompletion(battle_completion_id) : std::nullopt;
+        },
+        std::nullopt);
+}
+
+bool QueuedAnalysisDb::CreateBattleResults(
+    const CreateBattleResultsCommand& command,
+    std::int64_t* battle_results_id_out,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, command, battle_results_id_out, error_out]() {
+            return inner_ != nullptr ? inner_->CreateBattleResults(command, battle_results_id_out, error_out) : false;
+        },
+        false,
+        error_out);
+}
+
+bool QueuedAnalysisDb::BindBattleResultsExecutionJob(
+    const BindBattleResultsExecutionJobCommand& command,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, command, error_out]() {
+            return inner_ != nullptr
+                ? inner_->BindBattleResultsExecutionJob(command, error_out)
+                : false;
+        },
+        false,
+        error_out);
+}
+
+bool QueuedAnalysisDb::CompleteBattleResults(
+    const CompleteBattleResultsCommand& command,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, command, error_out]() {
+            return inner_ != nullptr ? inner_->CompleteBattleResults(command, error_out) : false;
+        },
+        false,
+        error_out);
+}
+
+bool QueuedAnalysisDb::FailBattleResults(
+    const FailBattleResultsCommand& command,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, command, error_out]() {
+            return inner_ != nullptr ? inner_->FailBattleResults(command, error_out) : false;
+        },
+        false,
+        error_out);
+}
+
+std::optional<BattleResultsRecord> QueuedAnalysisDb::GetBattleResults(std::int64_t battle_results_id) const {
+    return ExecuteRead<std::optional<BattleResultsRecord>>(
+        [this, battle_results_id]() {
+            return inner_ != nullptr ? inner_->GetBattleResults(battle_results_id) : std::nullopt;
+        },
+        std::nullopt);
 }
 
 std::vector<events::EventEnvelope> QueuedAnalysisDb::ReadUnpublishedOutboxBatch(

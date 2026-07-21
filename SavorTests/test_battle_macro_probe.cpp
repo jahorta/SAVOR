@@ -1066,6 +1066,81 @@ TEST(BattleMacroProbeCli, BattleScenarioNamesParse)
     EXPECT_EQ(options.scenarios[0], "battle");
 }
 
+TEST(BattleMacroProbeCli, WorkerCountMustBeWithinDocumentedRange)
+{
+    savor::e2e::CliOptions options;
+    std::string error;
+    ASSERT_TRUE(ParseTestArgs({
+        "SavorE2E",
+        "--scenario", "seedprobe_battle",
+        "--iso", ".",
+        "--dolphin-base-dir", ".",
+        "--savestate-file", ".",
+        "--worker-count", "20",
+    }, &options, &error)) << error;
+    EXPECT_EQ(options.worker_count, 20);
+
+    error.clear();
+    EXPECT_FALSE(ParseTestArgs({
+        "SavorE2E",
+        "--scenario", "seedprobe_battle",
+        "--iso", ".",
+        "--dolphin-base-dir", ".",
+        "--savestate-file", ".",
+        "--worker-count", "0",
+    }, &options, &error));
+    EXPECT_NE(error.find("between 1 and 30"), std::string::npos);
+
+    error.clear();
+    EXPECT_FALSE(ParseTestArgs({
+        "SavorE2E",
+        "--scenario", "seedprobe_battle",
+        "--iso", ".",
+        "--dolphin-base-dir", ".",
+        "--savestate-file", ".",
+        "--worker-count", "31",
+    }, &options, &error));
+    EXPECT_NE(error.find("between 1 and 30"), std::string::npos);
+}
+
+#ifdef NDEBUG
+TEST(BattleMacroProbeCli, PerformanceModeAcceptsExplicitWorkerCount)
+{
+    savor::e2e::CliOptions options;
+    std::string error;
+    ASSERT_TRUE(ParseTestArgs({
+        "SavorE2E",
+        "--scenario", "seedprobe_battle",
+        "--iso", ".",
+        "--dolphin-base-dir", ".",
+        "--savestate-file", ".",
+        "--perf-report-dir", ".",
+        "--load-level", "high",
+        "--worker-count", "20",
+    }, &options, &error)) << error;
+    EXPECT_EQ(options.worker_count, 20);
+    EXPECT_EQ(options.seedprobe_samples_per_axis.value_or(-1), 20);
+    EXPECT_EQ(options.battle_fake_attack_low.value_or(-1), 0);
+    EXPECT_EQ(options.battle_fake_attack_high.value_or(-1), 20);
+}
+
+TEST(BattleMacroProbeCli, PerformanceModeRetainsFifteenWorkerDefault)
+{
+    savor::e2e::CliOptions options;
+    std::string error;
+    ASSERT_TRUE(ParseTestArgs({
+        "SavorE2E",
+        "--scenario", "seedprobe_battle",
+        "--iso", ".",
+        "--dolphin-base-dir", ".",
+        "--savestate-file", ".",
+        "--perf-report-dir", ".",
+        "--load-level", "high",
+    }, &options, &error)) << error;
+    EXPECT_EQ(options.worker_count, 15);
+}
+#endif
+
 TEST(BattleMacroProbeCli, BattleMacroLegacyArgDisablesInteractivePrompt)
 {
     savor::e2e::CliOptions options;

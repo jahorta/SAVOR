@@ -223,6 +223,7 @@ InputMacroStepResult InputMacroRuntime::BaseResultForCurrent() const
         if (const auto* wait = std::get_if<BreakpointWaitAction>(&step->action)) {
             result.expected_keys = wait->expected_keys;
             result.expected_key = wait->expected_keys.empty() ? 0 : wait->expected_keys.front();
+            result.requested_input = wait->input;
         } else if (const auto* capture = std::get_if<CaptureU32BaselineAction>(&step->action)) {
             result.memory_address = capture->address;
         } else if (const auto* change = std::get_if<WaitU32ChangeAction>(&step->action)) {
@@ -300,6 +301,14 @@ InputMacroStepResult InputMacroRuntime::ExecuteNext()
         const auto host_result = host_.run_to_breakpoints(*wait);
         result.hit_key = host_result.hit_key;
         result.hit_pc = host_result.hit_pc;
+        result.stop_sequence = host_result.stop_sequence;
+        result.input_epoch = host_result.input_epoch;
+        // The plan is authoritative for the requested frame. Host telemetry
+        // describes whether that request was observed, not a replacement for
+        // the request itself.
+        result.requested_input = wait->input;
+        result.input_poll_count = host_result.input_poll_count;
+        result.input_acknowledged = host_result.input_acknowledged;
         result.elapsed_ms = host_result.elapsed_ms;
         if (host_result.status == InputMacroHostStatus::Cancelled) {
             return FailResult(std::move(result), InputMacroFailure::Cancelled, "breakpoint wait was cancelled",

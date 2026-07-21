@@ -69,6 +69,11 @@ namespace savor {
         PK_BattleSingleTurnRunner = 5,
         PK_TasInputStreamDetector = 6,
         PK_BattleMacroProbe = 7,
+        PK_BattleResultsScreenRunner = 8,
+        // Source compatibility only. Program kind 8 now denotes the split
+        // results-screen phase; monolithic v1 payloads are not accepted.
+        PK_BattleEndResultsRunner = PK_BattleResultsScreenRunner,
+        PK_BattleCompletionRunner = 9,
     };
 
     // Payload used for TAS jobs (paths are NUL-terminated, Windows MAX_PATH safe)

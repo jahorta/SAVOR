@@ -260,11 +260,22 @@ struct CleanupIni {
     }
 };
 
-static inline std::string fingerprint_for(int64_t probe_id, const std::string& frame_hex, uint32_t run_ms, uint32_t vi_stall_ms) {
+static inline std::string fingerprint_for(int64_t probe_id, const std::string& frame_hex, uint32_t run_ms, uint32_t vi_stall_ms, std::int32_t program_version = 1) {
     std::ostringstream oss;
-    oss << "PK=3;PV=1;probe_id=" << probe_id
+    oss << "PK=1;PV=" << program_version << ";probe_id=" << probe_id
         << ";frame=" << frame_hex << ";run_ms=" << run_ms << ";vi=" << vi_stall_ms;
     return oss.str();
+}
+
+static inline std::string fingerprint_for_target(
+    int64_t probe_id,
+    const std::string& frame_hex,
+    uint32_t run_ms,
+    uint32_t vi_stall_ms,
+    savor::seedprobe::SeedProbeTarget target) {
+    const auto program_version = target == savor::seedprobe::SeedProbeTarget::PreBattle ? 1 : 2;
+    return fingerprint_for(probe_id, frame_hex, run_ms, vi_stall_ms, program_version)
+        + ";target=" + std::to_string(static_cast<std::uint32_t>(target));
 }
 
 static inline std::optional<std::string> fingerprint_value(const std::string& fingerprint, const std::string& key) {
@@ -319,6 +330,9 @@ static inline savor::seedprobe::EncodeSpec build_encode_spec_from_fingerprint(co
     }
     if (const auto vi_stall_ms = parse_u32_or_null(fingerprint_value(fingerprint, "vi")); vi_stall_ms.has_value()) {
         spec.vi_stall_ms = *vi_stall_ms;
+    }
+    if (const auto target = parse_u32_or_null(fingerprint_value(fingerprint, "target")); target.has_value()) {
+        spec.target = static_cast<savor::seedprobe::SeedProbeTarget>(*target);
     }
 
     return spec;

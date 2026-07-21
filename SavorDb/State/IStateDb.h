@@ -77,6 +77,30 @@ struct TasVariantRecord {
     types::UtcTimePoint created_at_utc{};
 };
 
+struct SavestateRecord {
+    std::int64_t savestate_id = 0;
+    std::int64_t artifact_id = 0;
+    std::string savestate_type;
+    std::string note;
+    bool is_complete = false;
+    types::UtcTimePoint created_at_utc{};
+    std::string artifact_sha256;
+    std::int64_t artifact_size_bytes = 0;
+    std::string artifact_filename;
+    std::string artifact_file_ext;
+    std::string artifact_kind;
+};
+
+struct SavestateDerivationRecord {
+    std::int64_t derivation_id = 0;
+    std::int64_t from_savestate_id = 0;
+    std::int64_t to_savestate_id = 0;
+    std::string method_kind;
+    std::string source_context_kind;
+    std::int64_t source_context_id = 0;
+    types::UtcTimePoint created_at_utc{};
+};
+
 struct UpdateTasVariantProducedSavestateCommand {
     std::int64_t tas_variant_id = 0;
     std::int64_t produced_savestate_id = 0;
@@ -102,6 +126,12 @@ struct IStateDb {
         const DeriveSavestateCommand& command,
         std::int64_t* derivation_id_out = nullptr,
         std::string* error_out = nullptr) = 0;
+
+    virtual std::optional<SavestateRecord> GetSavestate(
+        std::int64_t savestate_id) const = 0;
+
+    virtual std::vector<SavestateDerivationRecord> ListIncomingSavestateDerivations(
+        std::int64_t to_savestate_id) const = 0;
 
     virtual bool CreateTasVariant(
         const CreateTasVariantCommand& command,

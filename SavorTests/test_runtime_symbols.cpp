@@ -1,5 +1,7 @@
 #include <algorithm>
+#include <array>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -81,33 +83,41 @@ TEST(BreakpointRegistry, InternalInputMacroBreakpointsAreConsumerScoped)
     const auto predicate_bps = bp::BpRegistry::ForConsumer(BreakpointConsumer::Predicate);
     const auto macro_bps = bp::BpRegistry::ForConsumer(BreakpointConsumer::InputMacroControl);
     std::size_t input_macro_count = 0;
+    std::size_t battle_end_count = 0;
 
     for (const auto& record : all) {
-        const bool macro_named = std::string_view(record.name).rfind("BattleMacro", 0) == 0;
-        if (macro_named) {
+        const bool internal = record.visibility == BreakpointVisibility::Internal;
+        if (internal) {
             ++input_macro_count;
+            if (std::string_view(record.name).rfind("BattleEnd", 0) == 0) {
+                ++battle_end_count;
+            }
             EXPECT_EQ(record.visibility, BreakpointVisibility::Internal);
-            EXPECT_EQ(record.owner, BreakpointOwner::InputMacro);
             EXPECT_FALSE(bp::BpRegistry::IsAllowed(record.key, BreakpointConsumer::Predicate));
             EXPECT_FALSE(bp::BpRegistry::IsAllowed(record.key, BreakpointConsumer::CaptureProfile));
             EXPECT_FALSE(bp::BpRegistry::IsAllowed(record.key, BreakpointConsumer::UserScript));
             EXPECT_TRUE(bp::BpRegistry::IsAllowed(record.key, BreakpointConsumer::PhaseControl));
-            EXPECT_TRUE(bp::BpRegistry::IsAllowed(record.key, BreakpointConsumer::InputMacroControl));
+            EXPECT_EQ(
+                bp::BpRegistry::IsAllowed(record.key, BreakpointConsumer::InputMacroControl),
+                record.owner == BreakpointOwner::InputMacro);
             EXPECT_FALSE(bp::BpRegistry::IsAllowedPc(record.pc, BreakpointConsumer::Predicate));
-            EXPECT_TRUE(bp::BpRegistry::IsAllowedPc(record.pc, BreakpointConsumer::InputMacroControl));
+            EXPECT_EQ(
+                bp::BpRegistry::IsAllowedPc(record.pc, BreakpointConsumer::InputMacroControl),
+                record.owner == BreakpointOwner::InputMacro);
         } else {
             EXPECT_EQ(record.visibility, BreakpointVisibility::PlayerVisible);
             EXPECT_EQ(record.owner, BreakpointOwner::Shared);
         }
     }
 
-    EXPECT_EQ(input_macro_count, 22u);
+    EXPECT_EQ(input_macro_count, 53u);
+    EXPECT_EQ(battle_end_count, 31u);
     EXPECT_EQ(std::count_if(predicate_bps.begin(), predicate_bps.end(), [](const BPAddr& record) {
         return record.visibility == BreakpointVisibility::Internal;
     }), 0);
     EXPECT_EQ(std::count_if(macro_bps.begin(), macro_bps.end(), [](const BPAddr& record) {
         return record.visibility == BreakpointVisibility::Internal;
-    }), static_cast<std::ptrdiff_t>(input_macro_count));
+    }), 52);
 }
 
 TEST(BreakpointRegistry, InternalAndPlayerVisibleBreakpointsDoNotSharePcs)
@@ -119,6 +129,56 @@ TEST(BreakpointRegistry, InternalAndPlayerVisibleBreakpointsDoNotSharePcs)
             if (public_bp.visibility != BreakpointVisibility::PlayerVisible) continue;
             EXPECT_NE(internal_bp.pc, public_bp.pc);
         }
+    }
+}
+
+TEST(BreakpointRegistry, BattleEndInputMacroBreakpointIdsAndPcsAreStable)
+{
+    constexpr std::array<std::pair<BPKey, std::uint32_t>, 31> expected{{
+        {bp::battle::BattleEndVictoryCountdownComplete, 0x8006f554u},
+        {bp::battle::BattleEndVictorySlotsComplete, 0x8006f590u},
+        {bp::battle::BattleEndResultDispatch, 0x800e4660u},
+        {bp::battle::BattleEndResultIntroReady, 0x800e46bcu},
+        {bp::battle::BattleEndResultIntroAccepted, 0x800e46ccu},
+        {bp::battle::BattleEndResultGoldReady, 0x800e4898u},
+        {bp::battle::BattleEndResultGoldAccepted, 0x800e48a8u},
+        {bp::battle::BattleEndResultNormalExpReady, 0x800e4d40u},
+        {bp::battle::BattleEndResultNormalExpAccepted, 0x800e4d50u},
+        {bp::battle::BattleEndResultStatWaveReady, 0x800e4f2cu},
+        {bp::battle::BattleEndResultStatWaveAccepted, 0x800e4f3cu},
+        {bp::battle::BattleEndResultMagicEntryReady, 0x800e52d8u},
+        {bp::battle::BattleEndResultMagicEntryAccepted, 0x800e52e8u},
+        {bp::battle::BattleEndResultMagicExpReady, 0x800e5460u},
+        {bp::battle::BattleEndResultMagicExpAccepted, 0x800e5470u},
+        {bp::battle::BattleEndResultLearnedWaveReady, 0x800e5c3cu},
+        {bp::battle::BattleEndResultLearnedWaveAccepted, 0x800e5c4cu},
+        {bp::battle::BattleEndResultItemPopupReady, 0x800e5f80u},
+        {bp::battle::BattleEndResultItemPopupAccepted, 0x800e5f90u},
+        {bp::battle::BattleEndResultConfirmReady, 0x800e6128u},
+        {bp::battle::BattleEndResultConfirmAccepted, 0x800e6138u},
+        {bp::battle::BattleEndResultFadeReady, 0x800e6470u},
+        {bp::battle::BattleEndResultFadeAccepted, 0x800e6480u},
+        {bp::battle::BattleEndResultLifecycleExit, 0x800e64a0u},
+        {bp::battle::BattleEndResultCleanupComplete, 0x800e3694u},
+        {bp::battle::BattleEndRewardCommitComplete, 0x8006fd58u},
+        {bp::battle::BattleEndController0NeutralCopied, 0x801c7948u},
+        {bp::battle::BattleEndRewardEntry, 0x8006f598u},
+        {bp::battle::BattleEndResultGoldArmed, 0x800e488cu},
+        {bp::battle::BattleEndFieldReturnReseedComplete, 0x801012b4u},
+        {bp::battle::BattleEndResultDescriptorReady, 0x800e35f0u},
+    }};
+
+    for (std::size_t index = 0; index < expected.size(); ++index) {
+        const auto [key, pc] = expected[index];
+        EXPECT_EQ(key, static_cast<BPKey>(242u + index));
+        const auto* record = bp::BpRegistry::FindRuntime(key);
+        ASSERT_NE(record, nullptr);
+        EXPECT_EQ(record->pc, pc);
+        EXPECT_EQ(record->visibility, BreakpointVisibility::Internal);
+        EXPECT_EQ(record->owner,
+            key == bp::battle::BattleEndFieldReturnReseedComplete
+                ? BreakpointOwner::SeedProbe
+                : BreakpointOwner::InputMacro);
     }
 }
 

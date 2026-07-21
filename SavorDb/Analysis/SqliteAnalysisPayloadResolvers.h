@@ -74,6 +74,12 @@ public:
     std::optional<events::AnalysisBattleManualFollowupUpdatedPayloadView> ResolveBattleManualFollowupUpdated(
         std::string_view payload_ref_kind,
         std::int64_t payload_ref_id) const override;
+    std::optional<events::AnalysisBattleCompletionPayloadView> ResolveBattleCompletion(
+        std::string_view payload_ref_kind,
+        std::int64_t payload_ref_id) const override;
+    std::optional<events::AnalysisBattleResultsPayloadView> ResolveBattleResults(
+        std::string_view payload_ref_kind,
+        std::int64_t payload_ref_id) const override;
 
 private:
     sqlite3* db_ = nullptr;

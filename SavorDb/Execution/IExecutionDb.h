@@ -54,7 +54,7 @@ struct EnqueueJobCommand {
 struct ExecutionJobRecord {
     std::int64_t job_id = 0;
     std::int64_t job_set_id = 0;
-    std::string program_kind;
+    std::int32_t program_kind = 0;
     std::int32_t program_version = 0;
     std::string program_ref_kind;
     std::int64_t program_ref_id = 0;

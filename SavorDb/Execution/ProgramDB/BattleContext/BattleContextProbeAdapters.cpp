@@ -695,7 +695,26 @@ public:
                 decision.blocked_reason = "context_probe_not_ready";
                 return decision;
             }
-            const auto waves = analysis_db_->ListBattleTurnWavesForContextProbe(probe->context_probe_id);
+            auto waves = analysis_db_->ListBattleTurnWavesForContextProbe(probe->context_probe_id);
+            // Graph bootstrap links generated waves back to a shared probe. Direct probing instead
+            // links the probe to its pre-created source wave, so use that relationship only as a fallback.
+            if (waves.empty() && probe->wave_id > 0) {
+                if (!context.input_ref_id.has_value()
+                    || (context.input_ref_kind.has_value() && *context.input_ref_kind != kWaveRefKind)) {
+                    decision.blocked_reason = "wave_ref_missing";
+                    return decision;
+                }
+                if (*context.input_ref_id != probe->wave_id) {
+                    decision.blocked_reason = "context_probe_wave_mismatch";
+                    return decision;
+                }
+                const auto wave = analysis_db_->GetBattleTurnWave(probe->wave_id);
+                if (!wave.has_value()) {
+                    decision.blocked_reason = "wave_not_found";
+                    return decision;
+                }
+                waves.push_back(*wave);
+            }
             if (waves.empty()) {
                 decision.blocked_reason = "context_probe_waves_missing";
                 return decision;

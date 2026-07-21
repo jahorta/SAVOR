@@ -120,6 +120,10 @@ struct WorkflowTransitionContext {
 
 struct WorkflowTransitionDecision {
     bool should_advance = false;
+    // A handler-level validation failure is terminal. This is distinct from a
+    // temporarily blocked transition: the coordinator must fail the step and
+    // workflow instead of polling the same terminal job set forever.
+    bool terminal_failure = false;
     std::optional<std::string> blocked_reason;
     std::optional<std::string> next_step_key;
     struct DynamicStep {

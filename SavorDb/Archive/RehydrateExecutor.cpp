@@ -1,6 +1,7 @@
 #include "RehydrateExecutor.h"
 
 #include <algorithm>
+#include <cctype>
 #include <fstream>
 #include <limits>
 #include <optional>
@@ -130,6 +131,42 @@ std::string JsonExtractText(sqlite3* db, std::string_view json, std::string_view
     return text == nullptr ? std::string{} : std::string(text, bytes);
 }
 
+std::optional<std::string> DecodeHex(std::string_view hex) {
+    if ((hex.size() % 2) != 0) return std::nullopt;
+    auto nibble = [](char ch) -> int {
+        if (ch >= '0' && ch <= '9') return ch - '0';
+        if (ch >= 'a' && ch <= 'f') return 10 + ch - 'a';
+        if (ch >= 'A' && ch <= 'F') return 10 + ch - 'A';
+        return -1;
+    };
+    std::string bytes;
+    bytes.reserve(hex.size() / 2);
+    for (std::size_t i = 0; i < hex.size(); i += 2) {
+        const auto hi = nibble(hex[i]);
+        const auto lo = nibble(hex[i + 1]);
+        if (hi < 0 || lo < 0) return std::nullopt;
+        bytes.push_back(static_cast<char>((hi << 4) | lo));
+    }
+    return bytes;
+}
+
+std::string SafeArchiveExtension(std::string_view artifact_kind, std::string_view file_ext) {
+    std::string upper_kind(artifact_kind);
+    std::transform(upper_kind.begin(), upper_kind.end(), upper_kind.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::toupper(ch));
+    });
+    if (upper_kind == "SAV") return ".sav";
+    std::string extension(file_ext);
+    if (!extension.empty() && extension.front() != '.') extension.insert(extension.begin(), '.');
+    if (extension.size() < 2 || extension.size() > 17) return ".bin";
+    for (std::size_t i = 1; i < extension.size(); ++i) {
+        const auto ch = static_cast<unsigned char>(extension[i]);
+        if (!std::isalnum(ch) && ch != '_' && ch != '-') return ".bin";
+        extension[i] = static_cast<char>(std::tolower(ch));
+    }
+    return extension;
+}
+
 std::int64_t AllocateId(std::string_view ns, std::string_view kind, std::int64_t old_id) {
     const auto seed = std::string(ns) + ":" + std::string(kind) + ":" + std::to_string(old_id);
     std::uint64_t hash = 1469598103934665603ULL;
@@ -210,13 +247,13 @@ bool ExtractStoredZipEntry(
         const std::string current_name = zip.substr(name_offset, name_len);
         if (current_name == entry_name) {
             if (compression != 0 || compressed_size != uncompressed_size) {
-                if (error_out) *error_out = "savestate zip entry is not stored";
+                if (error_out) *error_out = "state artifact zip entry is not stored";
                 return false;
             }
             std::filesystem::create_directories(output_path.parent_path());
             std::ofstream out(output_path, std::ios::binary | std::ios::trunc);
             if (!out.is_open()) {
-                if (error_out) *error_out = "failed opening extracted savestate path";
+                if (error_out) *error_out = "failed opening extracted state artifact path";
                 return false;
             }
             out.write(zip.data() + data_offset, compressed_size);
@@ -225,7 +262,7 @@ bool ExtractStoredZipEntry(
         offset = data_offset + compressed_size;
     }
 
-    if (error_out) *error_out = "savestate zip entry not found";
+    if (error_out) *error_out = "state artifact zip entry not found";
     return false;
 }
 
@@ -578,6 +615,8 @@ RehydratePackagePreviewResult SqliteRehydrateExecutor::PreviewPackage(const Rehy
         {"analysis_battle_turn_jobs", "$.turn_job_id", "analysis_battle_turn_job", "ab_turn_job", "turn_job_id", analysis_db_},
         {"analysis_battle_advancement_decisions", "$.battle_advancement_decision_id", "analysis_battle_advancement_decision", "ab_battle_advancement_decision", "battle_advancement_decision_id", analysis_db_},
         {"analysis_manual_followups", "$.manual_followup_id", "analysis_manual_followup", "ab_manual_followup", "manual_followup_id", analysis_db_},
+        {"analysis_battle_completions", "$.battle_completion_id", "analysis_battle_completion", "ab_battle_completion", "battle_completion_id", analysis_db_},
+        {"analysis_battle_results", "$.battle_results_id", "analysis_battle_results", "ab_battle_results", "battle_results_id", analysis_db_},
         {"analysis_seed_probe_sets", "$.probe_set_id", "analysis_seed_probe_set", "sp_probe_set", "probe_set_id", analysis_db_},
         {"analysis_input_sets", "$.input_set_id", "analysis_input_set", "an_input_set", "input_set_id", analysis_db_},
         {"analysis_seed_probe_axis_xy", "$.axis_xy_id", "analysis_seed_probe_axis_xy", "sp_axis_xy", "axis_xy_id", analysis_db_},
@@ -794,6 +833,7 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
 
     std::vector<std::int64_t> restored_jobs;
     std::unordered_map<std::string, std::unordered_map<std::int64_t, std::int64_t>> id_map;
+    std::vector<std::string> pending_state_derivation_lines;
 
     auto map_existing_id = [&](std::string_view map_kind, std::int64_t old_id, std::int64_t new_id, std::string* error_out) -> bool {
         id_map[std::string(map_kind)][old_id] = new_id;
@@ -827,16 +867,24 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                     if (line.empty()) continue;
                     bool ok_artifact = false;
                     bool ok_sha = false;
+                    bool ok_file_ext = false;
+                    bool ok_artifact_kind = false;
                     const auto old_artifact_id = JsonExtractInt(state_db_, line, "$.artifact_id", &ok_artifact);
                     const auto sha = JsonExtractText(state_db_, line, "$.sha256", &ok_sha);
+                    const auto file_ext = JsonExtractText(state_db_, line, "$.file_ext", &ok_file_ext);
+                    const auto artifact_kind = JsonExtractText(state_db_, line, "$.artifact_kind", &ok_artifact_kind);
                     if (!ok_artifact || !ok_sha || sha.empty()) continue;
 
                     auto existing = FindArtifactBySha(state_db_, sha, &state_error);
                     std::int64_t new_artifact_id = existing.value_or(0);
                     if (!state_error.empty()) break;
                     if (new_artifact_id == 0) {
-                        const auto output_path = extracted_root / (sha + ".sav");
-                        if (!ExtractStoredZipEntry(zip_path, sha + ".sav", output_path, &state_error)) break;
+                        const auto extension = SafeArchiveExtension(
+                            ok_artifact_kind ? artifact_kind : std::string_view{},
+                            ok_file_ext ? file_ext : std::string_view{});
+                        const auto entry_name = sha + extension;
+                        const auto output_path = extracted_root / entry_name;
+                        if (!ExtractStoredZipEntry(zip_path, entry_name, output_path, &state_error)) break;
                         try {
                             const auto actual_sha = hash::sha256_of_file(output_path.string());
                             if (actual_sha != sha) {
@@ -908,26 +956,7 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                 std::ifstream in(spec.package_root / derivation_file->rel_path, std::ios::binary);
                 std::string line;
                 while (std::getline(in, line)) {
-                    if (line.empty()) continue;
-                    bool ok_from = false;
-                    bool ok_to = false;
-                    const auto old_from = JsonExtractInt(state_db_, line, "$.from_savestate_id", &ok_from);
-                    const auto old_to = JsonExtractInt(state_db_, line, "$.to_savestate_id", &ok_to);
-                    const auto from_it = id_map["state_savestate"].find(old_from);
-                    const auto to_it = id_map["state_savestate"].find(old_to);
-                    if (!ok_from || !ok_to || from_it == id_map["state_savestate"].end() || to_it == id_map["state_savestate"].end()) continue;
-
-                    Statement insert_derivation;
-                    if (!Prepare(
-                            state_db_,
-                            "INSERT OR IGNORE INTO state_savestate_derivation(from_savestate_id,to_savestate_id,method_kind,source_context_kind,source_context_id,created_at_utc) "
-                            "VALUES(?1,?2,json_extract(?3,'$.method_kind'),json_extract(?3,'$.source_context_kind'),json_extract(?3,'$.source_context_id'),json_extract(?3,'$.created_at_utc'));",
-                            &insert_derivation,
-                            &state_error)) break;
-                    sqlite3_bind_int64(insert_derivation.st, 1, from_it->second);
-                    sqlite3_bind_int64(insert_derivation.st, 2, to_it->second);
-                    sqlite3_bind_text(insert_derivation.st, 3, line.c_str(), -1, SQLITE_TRANSIENT);
-                    if (!StepDone(state_db_, insert_derivation.st, &state_error)) break;
+                    if (!line.empty()) pending_state_derivation_lines.push_back(std::move(line));
                 }
             }
 
@@ -948,21 +977,43 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
             0,
             static_cast<std::int64_t>(spec.stream_files.size()),
             false);
-        sqlite3_exec(execution_db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr);
+        bool execution_transaction_started = false;
+        if (sqlite3_exec(execution_db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+            result.error = StructuredError{
+                "EXECUTION_REHYDRATE_ERROR",
+                "failed starting execution rehydrate transaction",
+                sqlite3_errmsg(execution_db_)
+            }.ToJson();
+        } else {
+            execution_transaction_started = true;
+        }
         const bool has_analysis_streams = std::any_of(spec.stream_files.begin(), spec.stream_files.end(), [](const StreamFile& file) {
             return file.item_kind.rfind("analysis_", 0) == 0;
         });
         bool analysis_transaction_started = false;
         if (has_analysis_streams && analysis_db_ != nullptr) {
-            sqlite3_exec(analysis_db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr);
-            analysis_transaction_started = true;
+            if (analysis_db_ != execution_db_) {
+                if (sqlite3_exec(analysis_db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+                    result.error = StructuredError{
+                        "ANALYSIS_REHYDRATE_ERROR",
+                        "failed starting analysis rehydrate transaction",
+                        sqlite3_errmsg(analysis_db_)
+                    }.ToJson();
+                } else {
+                    analysis_transaction_started = true;
+                }
+            }
         } else if (has_analysis_streams && analysis_db_ == nullptr) {
             result.error = StructuredError{ "ANALYSIS_DB_MISSING", "analysis streams require an analysis database", "analysis_db is null" }.ToJson();
         }
         auto rollback = [&]() {
-            sqlite3_exec(execution_db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+            if (execution_transaction_started) {
+                sqlite3_exec(execution_db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+                execution_transaction_started = false;
+            }
             if (analysis_transaction_started) {
                 sqlite3_exec(analysis_db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+                analysis_transaction_started = false;
             }
         };
 
@@ -1416,6 +1467,71 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                 }
             };
 
+            restore_stream("analysis_battle_completions", [&](const std::string& line) {
+                bool ok_id = false, ok_workflow = false, ok_step = false, ok_job = false;
+                bool ok_entry = false, ok_completion = false, ok_manifest_artifact = false, ok_trace_artifact = false;
+                bool ok_manifest_hex = false;
+                const auto old_id = JsonExtractInt(analysis_db_, line, "$.battle_completion_id", &ok_id);
+                const auto old_workflow = JsonExtractInt(analysis_db_, line, "$.workflow_instance_id", &ok_workflow);
+                const auto old_step = JsonExtractInt(analysis_db_, line, "$.workflow_step_id", &ok_step);
+                const auto old_job = JsonExtractInt(analysis_db_, line, "$.exec_job_id", &ok_job);
+                const auto old_entry = JsonExtractInt(analysis_db_, line, "$.entry_savestate_id", &ok_entry);
+                const auto old_completion = JsonExtractInt(analysis_db_, line, "$.completion_savestate_id", &ok_completion);
+                const auto old_manifest_artifact = JsonExtractInt(analysis_db_, line, "$.manifest_artifact_id", &ok_manifest_artifact);
+                const auto old_trace_artifact = JsonExtractInt(analysis_db_, line, "$.input_trace_artifact_id", &ok_trace_artifact);
+                const auto manifest_hex = JsonExtractText(analysis_db_, line, "$.manifest_blob_hex", &ok_manifest_hex);
+                if (!ok_id || !ok_workflow || !ok_step || !ok_entry) return;
+                const auto new_id = map_id("analysis_battle_completion", old_id);
+                const auto workflow = map_optional("workflow_instance", true, old_workflow);
+                const auto step = map_optional("workflow_step", true, old_step);
+                const auto job = map_optional("job", ok_job, old_job);
+                const auto entry = map_savestate(true, old_entry);
+                const auto completion = map_savestate(ok_completion, old_completion);
+                const auto manifest_blob = ok_manifest_hex
+                    ? DecodeHex(manifest_hex)
+                    : std::optional<std::string>{};
+                if (ok_manifest_hex && !manifest_blob.has_value()) {
+                    db_error = "battle completion manifest hex is invalid";
+                    return;
+                }
+                const auto manifest_artifact = ok_manifest_artifact
+                    ? lookup_map("state_artifact", old_manifest_artifact)
+                    : std::optional<std::int64_t>{};
+                const auto trace_artifact = ok_trace_artifact
+                    ? lookup_map("state_artifact", old_trace_artifact)
+                    : std::optional<std::int64_t>{};
+                if ((ok_manifest_artifact && !manifest_artifact.has_value())
+                    || (ok_trace_artifact && !trace_artifact.has_value())) {
+                    db_error = "battle completion artifact mapping is missing";
+                    return;
+                }
+                if (new_id == 0 || !workflow || !step || !entry) return;
+                Statement st;
+                if (!Prepare(analysis_db_,
+                        "INSERT INTO ab_battle_completion(battle_completion_id,workflow_instance_id,workflow_step_id,exec_job_id,"
+                        "entry_savestate_id,completion_savestate_id,entry_rng_seed,completion_rng_seed,manifest_version,manifest_blob,"
+                        "manifest_artifact_id,input_trace_artifact_id,mismatch_count,invariant_failure_count,status,created_at_utc,completed_at_utc) "
+                        "VALUES(?1,?2,?3,?4,?5,?6,json_extract(?7,'$.entry_rng_seed'),json_extract(?7,'$.completion_rng_seed'),"
+                        "json_extract(?7,'$.manifest_version'),?8,?9,?10,json_extract(?7,'$.mismatch_count'),"
+                        "json_extract(?7,'$.invariant_failure_count'),json_extract(?7,'$.status'),json_extract(?7,'$.created_at_utc'),json_extract(?7,'$.completed_at_utc'));",
+                        &st, &db_error)) return;
+                sqlite3_bind_int64(st.st, 1, new_id);
+                sqlite3_bind_int64(st.st, 2, *workflow);
+                sqlite3_bind_int64(st.st, 3, *step);
+                bind_optional_int64(st.st, 4, job);
+                sqlite3_bind_int64(st.st, 5, *entry);
+                bind_optional_int64(st.st, 6, completion);
+                sqlite3_bind_text(st.st, 7, line.c_str(), -1, SQLITE_TRANSIENT);
+                if (manifest_blob.has_value()) {
+                    sqlite3_bind_blob(st.st, 8, manifest_blob->data(), static_cast<int>(manifest_blob->size()), SQLITE_TRANSIENT);
+                } else {
+                    sqlite3_bind_null(st.st, 8);
+                }
+                bind_optional_int64(st.st, 9, manifest_artifact);
+                bind_optional_int64(st.st, 10, trace_artifact);
+                StepDone(analysis_db_, st.st, &db_error);
+            });
+
             restore_stream("analysis_battle_sets", [&](const std::string& line) {
                 bool ok_id = false;
                 bool ok_entry = false;
@@ -1815,6 +1931,75 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                 sqlite3_bind_text(st.st, 4, line.c_str(), -1, SQLITE_TRANSIENT);
                 StepDone(analysis_db_, st.st, &db_error);
             });
+            restore_stream("analysis_battle_results", [&](const std::string& line) {
+                bool ok_id = false, ok_completion = false, ok_workflow = false, ok_step = false, ok_job = false;
+                bool ok_seed_ref = false, ok_seed_kind = false, ok_entry = false, ok_final = false;
+                bool ok_result_artifact = false, ok_trace_artifact = false;
+                const auto old_id = JsonExtractInt(analysis_db_, line, "$.battle_results_id", &ok_id);
+                const auto old_completion = JsonExtractInt(analysis_db_, line, "$.battle_completion_id", &ok_completion);
+                const auto old_workflow = JsonExtractInt(analysis_db_, line, "$.workflow_instance_id", &ok_workflow);
+                const auto old_step = JsonExtractInt(analysis_db_, line, "$.workflow_step_id", &ok_step);
+                const auto old_job = JsonExtractInt(analysis_db_, line, "$.exec_job_id", &ok_job);
+                const auto seed_kind = JsonExtractText(analysis_db_, line, "$.selected_seed_ref_kind", &ok_seed_kind);
+                const auto old_seed_ref = JsonExtractInt(analysis_db_, line, "$.selected_seed_ref_id", &ok_seed_ref);
+                const auto old_entry = JsonExtractInt(analysis_db_, line, "$.entry_savestate_id", &ok_entry);
+                const auto old_final = JsonExtractInt(analysis_db_, line, "$.final_savestate_id", &ok_final);
+                const auto old_result_artifact = JsonExtractInt(analysis_db_, line, "$.result_artifact_id", &ok_result_artifact);
+                const auto old_trace_artifact = JsonExtractInt(analysis_db_, line, "$.input_trace_artifact_id", &ok_trace_artifact);
+                if (!ok_id || !ok_completion || !ok_workflow || !ok_step || !ok_seed_kind || !ok_seed_ref || !ok_entry) return;
+                const auto new_id = map_id("analysis_battle_results", old_id);
+                const auto completion = map_optional("analysis_battle_completion", true, old_completion);
+                const auto workflow = map_optional("workflow_instance", true, old_workflow);
+                const auto step = map_optional("workflow_step", true, old_step);
+                const auto job = map_optional("job", ok_job, old_job);
+                const auto entry = map_savestate(true, old_entry);
+                const auto final_state = map_savestate(ok_final, old_final);
+                const auto seed_map_kind = seed_kind == "analysisseedprobe.neutral_seed"
+                    ? std::string_view("analysis_seed_probe_neutral_seed")
+                    : seed_kind == "analysisseedprobe.unique_seed"
+                        ? std::string_view("analysis_seed_probe_unique_seed")
+                        : std::string_view{};
+                const auto seed_ref = seed_map_kind.empty() ? std::nullopt : lookup_map(seed_map_kind, old_seed_ref);
+                if (!seed_ref.has_value()) {
+                    db_error = "direct selected seed row mapping is missing during battle results rehydrate";
+                    return;
+                }
+                const auto result_artifact = ok_result_artifact
+                    ? lookup_map("state_artifact", old_result_artifact)
+                    : std::optional<std::int64_t>{};
+                const auto trace_artifact = ok_trace_artifact
+                    ? lookup_map("state_artifact", old_trace_artifact)
+                    : std::optional<std::int64_t>{};
+                if ((ok_result_artifact && !result_artifact.has_value())
+                    || (ok_trace_artifact && !trace_artifact.has_value())) {
+                    db_error = "battle results artifact mapping is missing";
+                    return;
+                }
+                if (new_id == 0 || !completion || !workflow || !step || !entry) return;
+                Statement st;
+                if (!Prepare(analysis_db_,
+                        "INSERT INTO ab_battle_results(battle_results_id,battle_completion_id,workflow_instance_id,workflow_step_id,exec_job_id,"
+                        "selected_seed_ref_kind,selected_seed_ref_id,entry_savestate_id,final_savestate_id,selected_seed_value,entry_rng_seed,final_rng_seed,"
+                        "rng_effect_kind,fixed_draw_count,result_artifact_id,input_trace_artifact_id,mismatch_count,invariant_failure_count,status,created_at_utc,completed_at_utc) "
+                        "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,json_extract(?10,'$.selected_seed_value'),json_extract(?10,'$.entry_rng_seed'),"
+                        "json_extract(?10,'$.final_rng_seed'),json_extract(?10,'$.rng_effect_kind'),json_extract(?10,'$.fixed_draw_count'),?11,?12,"
+                        "json_extract(?10,'$.mismatch_count'),json_extract(?10,'$.invariant_failure_count'),json_extract(?10,'$.status'),"
+                        "json_extract(?10,'$.created_at_utc'),json_extract(?10,'$.completed_at_utc'));",
+                        &st, &db_error)) return;
+                sqlite3_bind_int64(st.st, 1, new_id);
+                sqlite3_bind_int64(st.st, 2, *completion);
+                sqlite3_bind_int64(st.st, 3, *workflow);
+                sqlite3_bind_int64(st.st, 4, *step);
+                bind_optional_int64(st.st, 5, job);
+                sqlite3_bind_text(st.st, 6, seed_kind.c_str(), -1, SQLITE_TRANSIENT);
+                sqlite3_bind_int64(st.st, 7, *seed_ref);
+                sqlite3_bind_int64(st.st, 8, *entry);
+                bind_optional_int64(st.st, 9, final_state);
+                sqlite3_bind_text(st.st, 10, line.c_str(), -1, SQLITE_TRANSIENT);
+                bind_optional_int64(st.st, 11, result_artifact);
+                bind_optional_int64(st.st, 12, trace_artifact);
+                StepDone(analysis_db_, st.st, &db_error);
+            });
             restore_stream("analysis_seed_probe_encounter_projections", [&](const std::string& line) {
                 bool ok_id = false, ok_run = false;
                 const auto old_id = JsonExtractInt(analysis_db_, line, "$.encounter_projection_id", &ok_id);
@@ -1848,14 +2033,37 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                 StepDone(analysis_db_, st.st, &db_error);
             });
 
+            auto map_domain_ref = [&](std::string_view ref_kind, std::int64_t old_id) -> std::optional<std::int64_t> {
+                if (ref_kind == "sp_probe_run") return lookup_map("analysis_seed_probe_run", old_id);
+                if (ref_kind == "analysisseedprobe.neutral_seed") {
+                    return lookup_map("analysis_seed_probe_neutral_seed", old_id);
+                }
+                if (ref_kind == "analysisseedprobe.unique_seed") {
+                    return lookup_map("analysis_seed_probe_unique_seed", old_id);
+                }
+                if (ref_kind == "analysis_battle.battle_completion_id"
+                    || ref_kind == "analysis_battle.battle_completion"
+                    || ref_kind == "analysisbattle.battle_completion"
+                    || ref_kind == "ab_battle_completion") {
+                    return lookup_map("analysis_battle_completion", old_id);
+                }
+                if (ref_kind == "analysis_battle.battle_results_id"
+                    || ref_kind == "analysis_battle.battle_results"
+                    || ref_kind == "analysisbattle.battle_results"
+                    || ref_kind == "ab_battle_results") {
+                    return lookup_map("analysis_battle_results", old_id);
+                }
+                return std::nullopt;
+            };
+
             restore_stream("job_sets", [&](const std::string& line) {
                 bool ok_set = false, ok_ref = false, ok_kind = false;
                 const auto old_set = JsonExtractInt(execution_db_, line, "$.job_set_id", &ok_set);
                 const auto old_ref = JsonExtractInt(execution_db_, line, "$.domain_ref_id", &ok_ref);
                 const auto ref_kind = JsonExtractText(execution_db_, line, "$.domain_ref_kind", &ok_kind);
-                if (!ok_set || !ok_ref || ref_kind != "sp_probe_run") return;
+                if (!ok_set || !ok_ref) return;
                 const auto job_set = map_optional("job_set", true, old_set);
-                const auto mapped = lookup_map("analysis_seed_probe_run", old_ref);
+                const auto mapped = map_domain_ref(ref_kind, old_ref);
                 if (!job_set || !mapped) return;
                 Statement st;
                 if (!Prepare(execution_db_, "UPDATE exec_job_set SET domain_ref_id=?1 WHERE job_set_id=?2;", &st, &db_error)) return;
@@ -1868,9 +2076,9 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                 const auto old_job = JsonExtractInt(execution_db_, line, "$.job_id", &ok_job);
                 const auto old_ref = JsonExtractInt(execution_db_, line, "$.program_ref_id", &ok_ref);
                 const auto ref_kind = JsonExtractText(execution_db_, line, "$.program_ref_kind", &ok_kind);
-                if (!ok_job || !ok_ref || ref_kind != "sp_probe_run") return;
+                if (!ok_job || !ok_ref) return;
                 const auto job = map_optional("job", true, old_job);
-                const auto mapped = lookup_map("analysis_seed_probe_run", old_ref);
+                const auto mapped = map_domain_ref(ref_kind, old_ref);
                 if (!job || !mapped) return;
                 Statement st;
                 if (!Prepare(execution_db_, "UPDATE exec_job SET program_ref_id=?1 WHERE job_id=?2;", &st, &db_error)) return;
@@ -1888,8 +2096,8 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                 const auto output_kind = JsonExtractText(execution_db_, line, "$.output_ref_kind", &ok_output_kind);
                 const auto step = map_optional("workflow_step", ok_step, old_step);
                 if (!step) return;
-                if (ok_input && input_kind == "sp_probe_run") {
-                    const auto mapped = lookup_map("analysis_seed_probe_run", old_input);
+                if (ok_input) {
+                    const auto mapped = map_domain_ref(input_kind, old_input);
                     if (mapped) {
                         Statement st;
                         if (!Prepare(execution_db_, "UPDATE exec_workflow_step SET input_ref_id=?1 WHERE workflow_step_id=?2;", &st, &db_error)) return;
@@ -1899,8 +2107,8 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                     }
                 }
                 if (!db_error.empty()) return;
-                if (ok_output && output_kind == "sp_probe_run") {
-                    const auto mapped = lookup_map("analysis_seed_probe_run", old_output);
+                if (ok_output) {
+                    const auto mapped = map_domain_ref(output_kind, old_output);
                     if (mapped) {
                         Statement st;
                         if (!Prepare(execution_db_, "UPDATE exec_workflow_step SET output_ref_id=?1 WHERE workflow_step_id=?2;", &st, &db_error)) return;
@@ -1915,9 +2123,9 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                 const auto old_id = JsonExtractInt(execution_db_, line, "$.workflow_step_output_id", &ok_id);
                 const auto old_ref = JsonExtractInt(execution_db_, line, "$.ref_id", &ok_ref);
                 const auto ref_kind = JsonExtractText(execution_db_, line, "$.ref_kind", &ok_kind);
-                if (!ok_id || !ok_ref || ref_kind != "sp_probe_run") return;
+                if (!ok_id || !ok_ref) return;
                 const auto output = map_optional("workflow_step_output", true, old_id);
-                const auto mapped = lookup_map("analysis_seed_probe_run", old_ref);
+                const auto mapped = map_domain_ref(ref_kind, old_ref);
                 if (!output || !mapped) return;
                 Statement st;
                 if (!Prepare(execution_db_, "UPDATE exec_workflow_step_output SET ref_id=?1 WHERE workflow_step_output_id=?2;", &st, &db_error)) return;
@@ -1930,9 +2138,9 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                 const auto old_id = JsonExtractInt(execution_db_, line, "$.workflow_instance_input_binding_id", &ok_id);
                 const auto old_ref = JsonExtractInt(execution_db_, line, "$.ref_id", &ok_ref);
                 const auto ref_kind = JsonExtractText(execution_db_, line, "$.ref_kind", &ok_kind);
-                if (!ok_id || !ok_ref || ref_kind != "sp_probe_run") return;
+                if (!ok_id || !ok_ref) return;
                 const auto binding = map_optional("workflow_instance_input_binding", true, old_id);
-                const auto mapped = lookup_map("analysis_seed_probe_run", old_ref);
+                const auto mapped = map_domain_ref(ref_kind, old_ref);
                 if (!binding || !mapped) return;
                 Statement st;
                 if (!Prepare(execution_db_, "UPDATE exec_workflow_instance_input_binding SET ref_id=?1 WHERE workflow_instance_input_binding_id=?2;", &st, &db_error)) return;
@@ -1943,6 +2151,93 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
 
             if (!db_error.empty()) {
                 result.error = StructuredError{ "ANALYSIS_REHYDRATE_ERROR", "failed restoring analysis rows", db_error }.ToJson();
+            }
+        }
+
+        if (!result.error.has_value() && state_db_ != nullptr && !pending_state_derivation_lines.empty()) {
+            std::string state_error;
+            const bool state_reuses_outer_transaction = state_db_ == execution_db_
+                || (analysis_transaction_started && state_db_ == analysis_db_);
+            bool state_transaction_started = false;
+            if (!state_reuses_outer_transaction
+                && sqlite3_exec(state_db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+                state_error = sqlite3_errmsg(state_db_);
+            } else if (!state_reuses_outer_transaction) {
+                state_transaction_started = true;
+            }
+            for (const auto& line : pending_state_derivation_lines) {
+                if (!state_error.empty()) break;
+                bool ok_from = false, ok_to = false, ok_context_kind = false, ok_context_id = false;
+                const auto old_from = JsonExtractInt(state_db_, line, "$.from_savestate_id", &ok_from);
+                const auto old_to = JsonExtractInt(state_db_, line, "$.to_savestate_id", &ok_to);
+                const auto context_kind = JsonExtractText(state_db_, line, "$.source_context_kind", &ok_context_kind);
+                const auto old_context_id = JsonExtractInt(state_db_, line, "$.source_context_id", &ok_context_id);
+                const auto from_it = id_map["state_savestate"].find(old_from);
+                const auto to_it = id_map["state_savestate"].find(old_to);
+                if (!ok_from || !ok_to || !ok_context_kind || !ok_context_id
+                    || from_it == id_map["state_savestate"].end()
+                    || to_it == id_map["state_savestate"].end()) {
+                    state_error = "savestate derivation mapping is incomplete";
+                    break;
+                }
+
+                std::string map_kind;
+                if (context_kind == "analysisseedprobe.neutral_seed") map_kind = "analysis_seed_probe_neutral_seed";
+                else if (context_kind == "analysisseedprobe.unique_seed") map_kind = "analysis_seed_probe_unique_seed";
+                else if (context_kind == "analysis_battle.battle_completion_id"
+                    || context_kind == "analysis_battle.battle_completion"
+                    || context_kind == "analysisbattle.battle_completion"
+                    || context_kind == "ab_battle_completion") map_kind = "analysis_battle_completion";
+                else if (context_kind == "analysis_battle.battle_results_id"
+                    || context_kind == "analysis_battle.battle_results"
+                    || context_kind == "analysisbattle.battle_results"
+                    || context_kind == "ab_battle_results") map_kind = "analysis_battle_results";
+
+                auto new_context_id = old_context_id;
+                if (!map_kind.empty()) {
+                    const auto per_kind = id_map.find(map_kind);
+                    if (per_kind == id_map.end()) {
+                        state_error = "direct savestate derivation context mapping is missing for " + context_kind;
+                        break;
+                    }
+                    const auto mapped = per_kind->second.find(old_context_id);
+                    if (mapped == per_kind->second.end()) {
+                        state_error = "direct savestate derivation context id mapping is missing for " + context_kind;
+                        break;
+                    }
+                    new_context_id = mapped->second;
+                }
+
+                Statement insert_derivation;
+                if (!Prepare(
+                        state_db_,
+                        "INSERT INTO state_savestate_derivation(from_savestate_id,to_savestate_id,method_kind,source_context_kind,source_context_id,created_at_utc) "
+                        "VALUES(?1,?2,json_extract(?3,'$.method_kind'),?4,?5,json_extract(?3,'$.created_at_utc'));",
+                        &insert_derivation,
+                        &state_error)) break;
+                sqlite3_bind_int64(insert_derivation.st, 1, from_it->second);
+                sqlite3_bind_int64(insert_derivation.st, 2, to_it->second);
+                sqlite3_bind_text(insert_derivation.st, 3, line.c_str(), -1, SQLITE_TRANSIENT);
+                sqlite3_bind_text(insert_derivation.st, 4, context_kind.c_str(), -1, SQLITE_TRANSIENT);
+                sqlite3_bind_int64(insert_derivation.st, 5, new_context_id);
+                if (!StepDone(state_db_, insert_derivation.st, &state_error)) break;
+            }
+            if (state_error.empty() && state_transaction_started) {
+                if (sqlite3_exec(state_db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+                    state_error = sqlite3_errmsg(state_db_);
+                } else {
+                    state_transaction_started = false;
+                }
+            }
+            if (!state_error.empty()) {
+                if (state_transaction_started) {
+                    sqlite3_exec(state_db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+                }
+                result.error = StructuredError{
+                    "STATE_DERIVATION_REHYDRATE_ERROR",
+                    "failed restoring savestate derivation lineage",
+                    state_error
+                }.ToJson();
             }
         }
 
@@ -1974,8 +2269,10 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
 
             if (db_error2.empty()) {
                 sqlite3_exec(execution_db_, "COMMIT;", nullptr, nullptr, nullptr);
+                execution_transaction_started = false;
                 if (analysis_transaction_started) {
                     sqlite3_exec(analysis_db_, "COMMIT;", nullptr, nullptr, nullptr);
+                    analysis_transaction_started = false;
                 }
 
                 CompleteRehydrateCommand done{};

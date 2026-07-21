@@ -136,7 +136,8 @@ private:
         const std::string& reason) const;
     void MaybeTerminalFailStepInStrictSmokeMode(
         const WorkflowReadyStepRecord& step,
-        const std::string& requested_by) const;
+        const std::string& requested_by,
+        const std::string& failure_reason) const;
     void EmitEventLine(const std::string& line) const;
 
     savor::db::IExecutionDb* execution_db_ = nullptr;

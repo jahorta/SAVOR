@@ -36,7 +36,8 @@ public:
         const savor::db::execution::programdb::ProgramKindRegistry* program_kind_registry,
         const CliOptions& options,
         std::string* error_out,
-        EventLineCallback event_line_callback = {});
+        EventLineCallback event_line_callback = {},
+        bool strict_smoke_terminal_on_failure = false);
     void Stop();
     [[nodiscard]] bool IsRunning() const;
     [[nodiscard]] savor::db::execution::workflow::WorkflowCoordinatorTelemetry SnapshotTelemetry() const;

@@ -1,44 +1,77 @@
 #pragma once
+
 #include "../../../Runner/Script/PhaseScriptProgram.h"
 #include "../../../Runner/Script/CtxRegistry.h"
 #include "../../../Core/Memory/Soa/SoaAddrRegistry.h"
 #include "../../../Runner/Breakpoints/BpRegistry.h"
 #include "../BattleRunner/BattleOutcome.h"
+#include "SeedProbePayload.h"
 
 namespace savor::seedprobe {
 
-    static constexpr savor::context::key::KeyId DW_Outcome = savor::context::key::core::DW_RUN_OUTCOME_CODE;
-    static constexpr savor::context::key::KeyId Battle_Outcome = savor::context::key::battle::BATTLE_OUTCOME;
+inline PhaseScript MakeSeedProbeProgram()
+{
+    namespace key = savor::context::key;
+    constexpr const char* PreBattle = "SEED_PROBE_PRE_BATTLE";
+    constexpr const char* ReadSeed = "SEED_PROBE_READ_SEED";
+    constexpr const char* Observe = "SEED_PROBE_OBSERVE";
+    constexpr const char* Mismatch = "SEED_PROBE_MISMATCH";
+    constexpr const char* RunError = "SEED_PROBE_RUN_ERROR";
 
-    static const std::string LabelDWErr = "RET_DW_RUN_ERROR";
-    
-    // Build a small program for "apply 1 frame input, then run-until-bp, then read RNG"
-    inline PhaseScript MakeSeedProbeProgram()
-    {
-        PhaseScript ps{};
-        ps.canonical_bp_keys = { bp::prebattle::AfterRandSeedSet };
+    PhaseScript script{};
+    // The internal field-return checkpoint is the only canonical stop. The
+    // public pre-battle checkpoint remains gated and is selected explicitly
+    // by RUN_UNTIL_BP_KEY for legacy/v1 probe jobs.
+    script.canonical_bp_keys = {bp::battle::BattleEndFieldReturnReseedComplete};
+    script.gated_bp_keys = {bp::prebattle::AfterRandSeedSet};
+    script.ops.push_back(OpArmPhaseBps());
+    script.ops.push_back(OpLoadSnapshot());
+    script.ops.push_back(OpApplyInputFrom(key::seed::INPUT));
+    script.ops.push_back(OpGotoIf(
+        key::seed::TARGET, PSCmp::EQ,
+        static_cast<std::uint32_t>(SeedProbeTarget::PreBattle), PreBattle));
 
-        ps.ops.push_back(OpArmPhaseBps());
-        ps.ops.push_back(OpLoadSnapshot());
+    // FieldReturn starts at BattleEndRewardCommitComplete and reaches the
+    // instruction immediately after the field script's RNG::srand call.
+    script.ops.push_back(OpRunUntilBp());
+    script.ops.push_back(OpGotoIf(
+        key::core::DW_RUN_OUTCOME_CODE, PSCmp::NE, 0u, RunError));
+    script.ops.push_back(OpGoto(ReadSeed));
 
-        // Apply input (from numeric key)
-        ps.ops.push_back(OpApplyInputFrom(savor::context::key::seed::INPUT));
+    script.ops.push_back(OpLabel(PreBattle));
+    script.ops.push_back(OpRunUntilBpKey(bp::prebattle::AfterRandSeedSet));
+    script.ops.push_back(OpGotoIf(
+        key::core::DW_RUN_OUTCOME_CODE, PSCmp::NE, 0u, RunError));
 
-        // Run until RNG seed set breakpoint
-        ps.ops.push_back(OpRunUntilBp());
-        ps.ops.push_back(OpGotoIf(DW_Outcome, PSCmp::NE, 0, LabelDWErr));
+    script.ops.push_back(OpLabel(ReadSeed));
+    script.ops.push_back(OpReadU32(
+        addr::AddrRegistry::base(addr::core::RNG_SEED), key::seed::RNG_SEED));
+    script.ops.push_back(OpGotoIf(
+        key::seed::MODE, PSCmp::EQ,
+        static_cast<std::uint32_t>(SeedProbeMode::Observe), Observe));
+    script.ops.push_back(OpGotoIfKeys(
+        key::seed::RNG_SEED, PSCmp::NE, key::seed::EXPECTED_SEED, Mismatch));
+    script.ops.push_back(OpSaveSavestateFrom(key::seed::OUTPUT_SAVESTATE_PATH));
 
-        // Read RNG and emit
-        ps.ops.push_back(OpReadU32(addr::AddrRegistry::base(addr::core::RNG_SEED), savor::context::key::seed::RNG_SEED));
+    script.ops.push_back(OpLabel(Observe));
+    script.ops.push_back(OpEmitResult(key::seed::RNG_SEED));
+    script.ops.push_back(OpReturnResult(
+        key::core::DW_RUN_OUTCOME_CODE,
+        static_cast<std::uint32_t>(RunToBpOutcome::Hit)));
 
-        ps.ops.push_back(OpEmitResult(savor::context::key::seed::RNG_SEED));
-        ps.ops.push_back(OpReturnResult(DW_Outcome, (uint32_t)RunToBpOutcome::Hit));
+    script.ops.push_back(OpLabel(Mismatch));
+    script.ops.push_back(OpSetU32(
+        key::core::DW_RUN_OUTCOME_CODE,
+        static_cast<std::uint32_t>(RunToBpOutcome::InputPlaybackFailed)));
+    script.ops.push_back(OpReturnResult(
+        key::core::DW_RUN_OUTCOME_CODE,
+        static_cast<std::uint32_t>(RunToBpOutcome::InputPlaybackFailed)));
 
-        // ============  Label Dolphin Wrapper Run Error  ===================
-        ps.ops.push_back(OpLabel(LabelDWErr));
-        ps.ops.push_back(OpReturnResult(Battle_Outcome, (uint32_t)savor::battle::Outcome::DWRunErr));
+    script.ops.push_back(OpLabel(RunError));
+    script.ops.push_back(OpReturnResult(
+        key::battle::BATTLE_OUTCOME,
+        static_cast<std::uint32_t>(savor::battle::Outcome::DWRunErr)));
+    return script;
+}
 
-        return ps;
-    }
-
-} // namespace savor
+} // namespace savor::seedprobe

@@ -1,6 +1,5 @@
 #include "JobMaterializationService.h"
 
-#include <charconv>
 #include <sstream>
 #include <string_view>
 #include <utility>
@@ -328,15 +327,7 @@ bool JobMaterializationService::MaterializeJobForDebugReplay(
         return false;
     }
 
-    std::int32_t program_kind = 0;
-    const auto* first = job->program_kind.data();
-    const auto* last = first + job->program_kind.size();
-    const auto parse_result = std::from_chars(first, last, program_kind);
-    if (parse_result.ec != std::errc{} || parse_result.ptr != last) {
-        if (job->program_kind.size() == 1) {
-            program_kind = static_cast<unsigned char>(job->program_kind.front());
-        }
-    }
+    const std::int32_t program_kind = job->program_kind;
     if (program_kind <= 0) {
         if (error_out) *error_out = "job program_kind is not usable";
         return false;

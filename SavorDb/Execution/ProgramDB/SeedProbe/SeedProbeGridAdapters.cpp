@@ -210,7 +210,8 @@ std::string SeedProbeGridJobPersistenceAdapter::FingerprintFor(
         + ";family=" + family
         + ";grid_ref=" + std::to_string(grid_ref)
         + ";run_ms=" + std::to_string(blueprint.run_ms)
-        + ";vi=" + std::to_string(blueprint.vi_stall_ms);
+        + ";vi=" + std::to_string(blueprint.vi_stall_ms)
+        + ";target=" + std::to_string(static_cast<std::uint32_t>(blueprint.target));
     if (!frame_hex.empty()) {
         fingerprint += ";frame=" + frame_hex;
     }

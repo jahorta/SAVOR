@@ -190,8 +190,13 @@ namespace savor {
             return pcs;
         };
 
+        uint64_t input_epoch = 0;
         if (spec.apply_input) {
-            host_.setInput(spec.input);
+            if (spec.track_input_poll) {
+                input_epoch = host_.publishInputEpoch(spec.input);
+            } else {
+                host_.setInput(spec.input);
+            }
         }
 
         if (spec.step_off_current_bp) {
@@ -243,6 +248,16 @@ namespace savor {
             (void)host_.stepOneOpcodeBlocking(static_cast<int>(timeout_ms));
             if (spec.expected_only_scope) {
                 restore_canonical_breakpoint_scope();
+            }
+        }
+
+        uint32_t input_poll_count = 0;
+        bool input_acknowledged = false;
+        if (spec.track_input_poll && input_epoch != 0) {
+            const auto receipt = host_.getInputPollReceipt();
+            if (receipt.epoch == input_epoch) {
+                input_poll_count = receipt.callback_count;
+                input_acknowledged = receipt.acknowledged();
             }
         }
 
@@ -344,6 +359,10 @@ namespace savor {
             .outcome = outcome,
             .hit_bp_key = hit_bp_key,
             .expected_match = expected_match,
+            .input_epoch = input_epoch,
+            .requested_input = spec.input,
+            .input_poll_count = input_poll_count,
+            .input_acknowledged = input_acknowledged,
             .elapsed_ms = elapsed_ms,
         };
     }

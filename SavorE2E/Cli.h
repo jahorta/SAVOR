@@ -71,6 +71,9 @@ struct CliOptions {
     std::filesystem::path dtm_file;
     std::filesystem::path iso_path;
     std::filesystem::path dolphin_base_dir;
+    std::optional<std::int64_t> source_savestate_id;
+    std::string battle_end_seed_selector = "neutral";
+    std::optional<std::int64_t> battle_end_seed_value;
     std::optional<std::filesystem::path> migration_root;
     std::optional<std::filesystem::path> workspace_root;
     std::optional<std::filesystem::path> worker_dir_root;

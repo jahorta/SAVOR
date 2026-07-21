@@ -42,9 +42,17 @@ void AppendTasMovieRtcArgumentIfSingle(
 
 savor::db::DbConfigPaths BuildDbPaths(const CliOptions& options) {
     const auto root = options.workspace_root.value_or(std::filesystem::temp_directory_path() / "savor-e2e-default");
+    const bool reuse_existing_database = std::find(
+        options.scenarios.begin(),
+        options.scenarios.end(),
+        "battle_end") != options.scenarios.end()
+        || std::find(
+            options.scenarios.begin(),
+            options.scenarios.end(),
+            "battle_end_results") != options.scenarios.end();
 
     std::error_code ec;
-    if (std::filesystem::exists(root)) {
+    if (!reuse_existing_database && std::filesystem::exists(root)) {
         for (const auto& entry : std::filesystem::directory_iterator(root, ec)) {
             if (ec) {
                 break;
@@ -86,7 +94,8 @@ bool ScopedWorkflowCoordinatorService::Start(
     const savor::db::execution::programdb::ProgramKindRegistry* program_kind_registry,
     const CliOptions& options,
     std::string* error_out,
-    EventLineCallback event_line_callback) {
+    EventLineCallback event_line_callback,
+    bool strict_smoke_terminal_on_failure) {
     if (service_ != nullptr && service_->IsRunning()) {
         return true;
     }
@@ -99,7 +108,7 @@ bool ScopedWorkflowCoordinatorService::Start(
 
     savor::db::execution::workflow::WorkflowCoordinatorConfig config{};
     config.workflow_enabled = true;
-    config.strict_smoke_terminal_on_failure = false;
+    config.strict_smoke_terminal_on_failure = strict_smoke_terminal_on_failure;
     config.poll_interval = std::chrono::milliseconds(std::max<std::int64_t>(1, options.poll_ms));
 
     auto service = std::make_unique<savor::db::execution::workflow::WorkflowCoordinatorService>(

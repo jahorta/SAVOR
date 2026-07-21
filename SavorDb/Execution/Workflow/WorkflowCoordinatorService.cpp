@@ -469,11 +469,14 @@ bool WorkflowCoordinatorService::MaterializeWorkflowStep(const WorkflowReadyStep
                 EmitEventLine(line);
             }
         }
-        EmitWorkflowFailureEvent(
+        const std::string failure_reason = scheduled.has_value()
+            ? "schedule result did not include a job set"
+            : "no schedule result";
+        EmitWorkflowFailureEvent(step, "MaterializeWorkflowStep", failure_reason);
+        MaybeTerminalFailStepInStrictSmokeMode(
             step,
-            "MaterializeWorkflowStep",
-            scheduled.has_value() ? "schedule result did not include a job set" : "no schedule result");
-        MaybeTerminalFailStepInStrictSmokeMode(step, "workflow_coordinator_materialize_strict_smoke");
+            "workflow_coordinator_materialize_strict_smoke",
+            failure_reason);
         return false;
     }
 
@@ -497,8 +500,12 @@ bool WorkflowCoordinatorService::MaterializeWorkflowStep(const WorkflowReadyStep
         },
         &error)) {
         ++materialization_failure_count_;
-        EmitWorkflowFailureEvent(step, "MarkStepMaterialized", error.empty() ? "unknown error" : error);
-        MaybeTerminalFailStepInStrictSmokeMode(step, "workflow_coordinator_materialize_strict_smoke");
+        const std::string failure_reason = error.empty() ? "unknown error" : error;
+        EmitWorkflowFailureEvent(step, "MarkStepMaterialized", failure_reason);
+        MaybeTerminalFailStepInStrictSmokeMode(
+            step,
+            "workflow_coordinator_materialize_strict_smoke",
+            "failed to mark materialized: " + failure_reason);
         return false;
     }
 
@@ -741,7 +748,8 @@ void WorkflowCoordinatorService::EmitWorkflowFailureEvent(
 
 void WorkflowCoordinatorService::MaybeTerminalFailStepInStrictSmokeMode(
     const WorkflowReadyStepRecord& step,
-    const std::string& requested_by) const {
+    const std::string& requested_by,
+    const std::string& failure_reason) const {
     if (!config_.strict_smoke_terminal_on_failure) {
         return;
     }
@@ -750,13 +758,37 @@ void WorkflowCoordinatorService::MaybeTerminalFailStepInStrictSmokeMode(
         return;
     }
     std::string error;
-    (void)commands->MarkStepTerminal(
+    if (!commands->MarkStepTerminal(
         {
             .workflow_step_id = step.workflow_step_id,
             .terminal_state = "FAILED",
             .requested_by = requested_by,
         },
-        &error);
+        &error)) {
+        EmitWorkflowFailureEvent(
+            step,
+            "StrictSmokeMarkStepTerminal",
+            error.empty() ? "unknown error" : error);
+        return;
+    }
+
+    std::string failure_message = "workflow step '" + step.step_key + "' materialization failed";
+    if (!failure_reason.empty()) {
+        failure_message += ": " + failure_reason;
+    }
+    if (!commands->TerminalFailWorkflowInstance(
+        {
+            .workflow_instance_id = step.workflow_instance_id,
+            .failure_code = "WORKFLOW_STEP_MATERIALIZATION_FAILED",
+            .failure_message = failure_message,
+            .requested_by = requested_by,
+        },
+        &error)) {
+        EmitWorkflowFailureEvent(
+            step,
+            "StrictSmokeTerminalFailWorkflowInstance",
+            error.empty() ? "unknown error" : error);
+    }
 }
 
 void WorkflowCoordinatorService::EmitEventLine(const std::string& line) const {

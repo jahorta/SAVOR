@@ -83,6 +83,14 @@ struct IAnalysisBattlePayloadRowResolver {
     virtual std::optional<AnalysisBattleManualFollowupUpdatedPayloadView> ResolveBattleManualFollowupUpdated(
         std::string_view payload_ref_kind,
         std::int64_t payload_ref_id) const = 0;
+
+    virtual std::optional<AnalysisBattleCompletionPayloadView> ResolveBattleCompletion(
+        std::string_view payload_ref_kind,
+        std::int64_t payload_ref_id) const = 0;
+
+    virtual std::optional<AnalysisBattleResultsPayloadView> ResolveBattleResults(
+        std::string_view payload_ref_kind,
+        std::int64_t payload_ref_id) const = 0;
 };
 
 struct IAnalysisSpinePayloadRowResolver {

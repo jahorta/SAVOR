@@ -25,8 +25,13 @@ namespace savor {
 
     void PhaseScriptVM::cancel_input_macro()
     {
+        if (input_macro_plan_driver_) input_macro_plan_driver_->Cancel();
         if (input_macro_runtime_) input_macro_runtime_->Cancel();
+        input_macro_plan_driver_.reset();
+        input_macro_context_sink_ = InputMacroContextSink::None;
         active_input_macro_context_ = nullptr;
+        input_macro_stop_sequence_ = 0;
+        current_input_macro_stop_ = {};
     }
 
     void PhaseScriptVM::SetVisualDebugMode(bool enabled)
@@ -301,6 +306,12 @@ namespace savor {
             return DispatchResult::Continue;
         case PSOpCode::CAPTURE_SEED_OVERRIDE:
             return op_capture_seed_override(result, ctx) ? DispatchResult::Continue : DispatchResult::Failed;
+        case PSOpCode::MATERIALIZE_BATTLE_RESULTS_SCREEN_MACRO_STEPS:
+            op_materialize_battle_results_screen_macro_steps(ctx);
+            return DispatchResult::Continue;
+        case PSOpCode::MATERIALIZE_BATTLE_COMPLETION_MACRO_STEPS:
+            op_materialize_battle_completion_macro_steps(ctx);
+            return DispatchResult::Continue;
         case PSOpCode::Count:
             break;
         }
@@ -316,12 +327,16 @@ namespace savor {
     PSResult PhaseScriptVM::run(const PSJob& job)
     {
         cancel_input_macro();
-        const auto input_macro_run_scope = std::shared_ptr<void>(
-            nullptr,
-            [this](void*) { cancel_input_macro(); });
         PSResult R{};
         auto ctx_heap = std::make_unique<PSContext>(job.ctx);
         PSContext& ctx = *ctx_heap;
+        // Declare this after the context so its deleter runs first. Macro
+        // cleanup currently does not dereference active_input_macro_context_,
+        // but keeping that pointer live through cancellation makes the job-exit
+        // ownership boundary explicit and robust to future host cleanup work.
+        const auto input_macro_run_scope = std::shared_ptr<void>(
+            nullptr,
+            [this](void*) { cancel_input_macro(); });
         struct MemoryWatchpointRunScope {
             DolphinWrapper& host;
             ~MemoryWatchpointRunScope() { host.clearMemoryWatchpoints(); }

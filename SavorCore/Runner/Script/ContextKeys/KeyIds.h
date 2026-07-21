@@ -13,6 +13,8 @@ namespace savor::context::key {
     inline constexpr KeyId TAS_MIN = 0x0200, TAS_MAX = 0x02FF;
     inline constexpr KeyId BATTLE_MIN = 0x0300, BATTLE_MAX = 0x03FF;
     inline constexpr KeyId TAS_FRAME_DETECTOR_MIN = 0x0400, TAS_FRAME_DETECTOR_MAX = 0x04FF;
+    inline constexpr KeyId BATTLE_END_RESULTS_MIN = 0x0500, BATTLE_END_RESULTS_MAX = 0x05FF;
+    inline constexpr KeyId BATTLE_COMPLETION_MIN = 0x0600, BATTLE_COMPLETION_MAX = 0x06FF;
 
     struct KeyPair {
         KeyId id;

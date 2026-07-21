@@ -7,6 +7,8 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstring>
+#include <limits>
 #include <sstream>
 #include <utility>
 
@@ -204,6 +206,7 @@ inputmacro::BreakpointWaitResult PhaseScriptVM::run_to_breakpoints(
         .watch_movie = false,
         .include_gated_hit_lookup = true,
         .update_derived = false,
+        .track_input_poll = true,
     });
 
     host_.setInput(GCInputFrame{});
@@ -216,6 +219,22 @@ inputmacro::BreakpointWaitResult PhaseScriptVM::run_to_breakpoints(
     result.hit = run.run.hit;
     result.hit_key = static_cast<BPKey>(run.hit_bp_key);
     result.hit_pc = run.run.hit ? static_cast<std::uint32_t>(run.run.pc) : 0u;
+    result.input_epoch = run.input_epoch;
+    result.requested_input = run.requested_input;
+    result.input_poll_count = run.input_poll_count;
+    result.input_acknowledged = run.input_acknowledged;
+    if (run.run.hit) {
+        result.stop_sequence = ++input_macro_stop_sequence_;
+        current_input_macro_stop_ = inputmacro::InputMacroStopInfo{
+            .key = result.hit_key,
+            .pc = result.hit_pc,
+            .stop_sequence = result.stop_sequence,
+            .input_epoch = result.input_epoch,
+            .requested_input = result.requested_input,
+            .input_poll_count = result.input_poll_count,
+            .input_acknowledged = result.input_acknowledged,
+        };
+    }
     result.elapsed_ms = run.elapsed_ms;
     if (run.run.hit && run.expected_match) {
         result.status = inputmacro::InputMacroHostStatus::Succeeded;
@@ -232,11 +251,14 @@ inputmacro::BreakpointWaitResult PhaseScriptVM::run_to_breakpoints(
         result.status = inputmacro::InputMacroHostStatus::TimedOut;
     }
 
-    SCLOGI("[input-macro] wait expected=%s hit=%u pc=%08X status=%u",
+    SCLOGI("[input-macro] wait expected=%s hit=%u pc=%08X status=%u input_epoch=%llu input_polls=%u input_ack=%u",
         BreakpointListDescription(action.expected_keys).c_str(),
         static_cast<std::uint32_t>(result.hit_key),
         result.hit_pc,
-        static_cast<std::uint32_t>(result.status));
+        static_cast<std::uint32_t>(result.status),
+        static_cast<unsigned long long>(result.input_epoch),
+        result.input_poll_count,
+        result.input_acknowledged ? 1u : 0u);
     return result;
 }
 
@@ -319,6 +341,47 @@ void PhaseScriptVM::clear_macro_memory_watchpoints()
 void PhaseScriptVM::restore_breakpoint_state()
 {
     restore_canonical_breakpoint_scope();
+}
+
+inputmacro::InputMacroStopInfo PhaseScriptVM::current_stop() const
+{
+    if (current_input_macro_stop_.stop_sequence != 0
+        && current_input_macro_stop_.stop_sequence == input_macro_stop_sequence_) {
+        return current_input_macro_stop_;
+    }
+
+    auto stop = inputmacro::InputMacroStopInfo{};
+    stop.pc = host_.getPC();
+    stop.stop_sequence = input_macro_stop_sequence_;
+    stop.key = current_breakpoint_key();
+    return stop;
+}
+
+bool PhaseScriptVM::read_guest_memory(
+    std::uint32_t address,
+    std::span<std::byte> output) const
+{
+    if (address == 0
+        || output.size() > static_cast<std::size_t>((std::numeric_limits<std::uint32_t>::max)())) {
+        return false;
+    }
+    if (output.empty()) return true;
+
+    std::string bytes;
+    if (!host_.getMem1RangeRaw(
+            bytes,
+            address,
+            static_cast<std::uint32_t>(output.size()))
+        || bytes.size() != output.size()) {
+        return false;
+    }
+    std::memcpy(output.data(), bytes.data(), output.size());
+    return true;
+}
+
+std::uint64_t PhaseScriptVM::current_vi() const
+{
+    return host_.getViFieldCountApprox();
 }
 
 BPKey PhaseScriptVM::current_breakpoint_key() const
@@ -556,6 +619,101 @@ void PhaseScriptVM::op_materialize_battle_turn_macro_steps(PSContext& ctx)
     start_prepared_battle_macro(provider.prepare(*this, request), ctx, true);
 }
 
+void PhaseScriptVM::op_materialize_battle_results_screen_macro_steps(PSContext& ctx)
+{
+    namespace endresults = phase::battle::endresults;
+    namespace key = context::key;
+
+    cancel_input_macro();
+    active_input_macro_context_ = &ctx;
+    ctx[key::battleend::OUTCOME] = static_cast<std::uint32_t>(endresults::Outcome::Failed);
+    ctx[key::battleend::PROVIDER_FAILURE] =
+        static_cast<std::uint32_t>(endresults::FailureCode::None);
+    ctx[key::battleend::RUNTIME_FAILURE] =
+        static_cast<std::uint32_t>(inputmacro::InputMacroFailure::None);
+    ctx[key::battleend::MACRO_RESULT] = 1u;
+
+    std::uint32_t raw_policy =
+        static_cast<std::uint32_t>(endresults::AccelerationPolicy::FullAdaptive);
+    ctx.get(key::battleend::ACCELERATION_POLICY, raw_policy);
+    std::string manifest_blob;
+    ctx.get(key::battleend::COMPLETION_MANIFEST_BLOB, manifest_blob);
+    auto driver = std::make_unique<inputmacro::BattleResultsScreenInputMacroProvider>(
+        inputmacro::BattleResultsScreenInputMacroProvider::Request{
+            .acceleration_policy =
+                static_cast<endresults::AccelerationPolicy>(raw_policy),
+            .completion_manifest_blob = std::move(manifest_blob),
+        });
+    auto* driver_view = driver.get();
+    input_macro_plan_driver_ = std::move(driver);
+    input_macro_context_sink_ = InputMacroContextSink::BattleResultsScreen;
+
+    auto decision = input_macro_plan_driver_->Start(*this);
+    if (decision.status == inputmacro::InputMacroDriverStatus::PlanReady) {
+        const auto declared = input_macro_plan_driver_->declared_breakpoint_keys();
+        const auto started = input_macro_runtime_->Replace(
+            std::move(decision.plan),
+            declared);
+        if (started.failure != inputmacro::InputMacroFailure::None) {
+            ctx[key::battleend::RUNTIME_FAILURE] =
+                static_cast<std::uint32_t>(started.failure);
+            (void)input_macro_plan_driver_->Advance(*this, started);
+        }
+    } else if (decision.status == inputmacro::InputMacroDriverStatus::Failed) {
+        ctx[key::battleend::RUNTIME_FAILURE] =
+            static_cast<std::uint32_t>(decision.failure);
+    }
+
+    sync_input_macro_driver_context(ctx);
+    std::uint32_t runtime_failure = 0;
+    ctx.get(key::battleend::RUNTIME_FAILURE, runtime_failure);
+    SCLOGI(
+        "[battle-end-results-macro] materialize driver_status=%u provider_failure=%u runtime_failure=%u",
+        static_cast<std::uint32_t>(decision.status),
+        static_cast<std::uint32_t>(driver_view->failure()),
+        runtime_failure);
+}
+
+void PhaseScriptVM::op_materialize_battle_completion_macro_steps(PSContext& ctx)
+{
+    namespace endresults = phase::battle::endresults;
+    namespace key = context::key;
+
+    cancel_input_macro();
+    active_input_macro_context_ = &ctx;
+    ctx[key::battlecompletion::OUTCOME] =
+        static_cast<std::uint32_t>(endresults::Outcome::Failed);
+    ctx[key::battlecompletion::PROVIDER_FAILURE] =
+        static_cast<std::uint32_t>(endresults::FailureCode::None);
+    ctx[key::battlecompletion::RUNTIME_FAILURE] =
+        static_cast<std::uint32_t>(inputmacro::InputMacroFailure::None);
+    ctx[key::battlecompletion::MACRO_RESULT] = 1u;
+
+    auto driver = std::make_unique<inputmacro::BattleCompletionInputMacroProvider>();
+    auto* driver_view = driver.get();
+    input_macro_plan_driver_ = std::move(driver);
+    input_macro_context_sink_ = InputMacroContextSink::BattleCompletion;
+    auto decision = input_macro_plan_driver_->Start(*this);
+    if (decision.status == inputmacro::InputMacroDriverStatus::PlanReady) {
+        const auto started = input_macro_runtime_->Replace(
+            std::move(decision.plan),
+            input_macro_plan_driver_->declared_breakpoint_keys());
+        if (started.failure != inputmacro::InputMacroFailure::None) {
+            ctx[key::battlecompletion::RUNTIME_FAILURE] =
+                static_cast<std::uint32_t>(started.failure);
+            (void)input_macro_plan_driver_->Advance(*this, started);
+        }
+    } else if (decision.status == inputmacro::InputMacroDriverStatus::Failed) {
+        ctx[key::battlecompletion::RUNTIME_FAILURE] =
+            static_cast<std::uint32_t>(decision.failure);
+    }
+    sync_input_macro_driver_context(ctx);
+    SCLOGI(
+        "[battle-completion-macro] materialize driver_status=%u provider_failure=%u",
+        static_cast<std::uint32_t>(decision.status),
+        static_cast<std::uint32_t>(driver_view->failure()));
+}
+
 void PhaseScriptVM::apply_input_macro_step_result(
     const inputmacro::InputMacroStepResult& step_result,
     PSContext& ctx)
@@ -639,6 +797,53 @@ void PhaseScriptVM::apply_input_macro_step_result(
 void PhaseScriptVM::op_execute_battle_macro_step(PSContext& ctx)
 {
     active_input_macro_context_ = &ctx;
+    if (input_macro_plan_driver_) {
+        namespace key = context::key;
+        auto result = input_macro_runtime_->ExecuteNext();
+        const auto set_runtime_failure = [&](inputmacro::InputMacroFailure failure) {
+            if (input_macro_context_sink_ == InputMacroContextSink::BattleCompletion)
+                ctx[key::battlecompletion::RUNTIME_FAILURE] =
+                    static_cast<std::uint32_t>(failure);
+            else if (input_macro_context_sink_ == InputMacroContextSink::BattleResultsScreen)
+                ctx[key::battleend::RUNTIME_FAILURE] =
+                    static_cast<std::uint32_t>(failure);
+        };
+        set_runtime_failure(result.failure);
+
+        inputmacro::InputMacroDriverDecision decision{};
+        bool advanced = false;
+        if (result.terminal()) {
+            decision = input_macro_plan_driver_->Advance(*this, result);
+            advanced = true;
+            if (decision.status == inputmacro::InputMacroDriverStatus::PlanReady) {
+                const auto started = input_macro_runtime_->Replace(
+                    std::move(decision.plan),
+                    input_macro_plan_driver_->declared_breakpoint_keys());
+                if (started.failure != inputmacro::InputMacroFailure::None) {
+                    set_runtime_failure(started.failure);
+                    decision = input_macro_plan_driver_->Advance(*this, started);
+                } else {
+                    set_runtime_failure(inputmacro::InputMacroFailure::None);
+                }
+            } else if (decision.status == inputmacro::InputMacroDriverStatus::Failed) {
+                set_runtime_failure(decision.failure);
+            }
+        }
+
+        sync_input_macro_driver_context(ctx);
+        SCLOGI(
+            "[input-macro-driver] sink=%u step=%zu label=%s failure=%u terminal=%u advanced=%u driver_status=%u hit=%u pc=%08X",
+            static_cast<std::uint32_t>(input_macro_context_sink_),
+            result.step_index,
+            result.label.c_str(),
+            static_cast<std::uint32_t>(result.failure),
+            static_cast<std::uint32_t>(result.terminal_status),
+            advanced ? 1u : 0u,
+            advanced ? static_cast<std::uint32_t>(decision.status) : 0u,
+            static_cast<std::uint32_t>(result.hit_key),
+            result.hit_pc);
+        return;
+    }
     if (!input_macro_runtime_) {
         ctx[context::key::battle::MACRO_FAILURE_CODE] =
             static_cast<std::uint32_t>(phase::battle::macroprobe::FailureCode::InvalidMode);
@@ -661,6 +866,115 @@ void PhaseScriptVM::op_execute_battle_macro_step(PSContext& ctx)
         BreakpointListDescription(result.expected_keys).c_str(),
         static_cast<std::uint32_t>(result.hit_key),
         result.hit_pc);
+}
+
+void PhaseScriptVM::sync_input_macro_driver_context(PSContext& ctx) const
+{
+    switch (input_macro_context_sink_) {
+    case InputMacroContextSink::None: return;
+    case InputMacroContextSink::BattleCompletion:
+        sync_battle_completion_context(ctx);
+        return;
+    case InputMacroContextSink::BattleResultsScreen:
+        sync_battle_results_screen_context(ctx);
+        return;
+    }
+}
+
+void PhaseScriptVM::sync_battle_results_screen_context(PSContext& ctx) const
+{
+    const auto* driver = dynamic_cast<const inputmacro::BattleResultsScreenInputMacroProvider*>(
+        input_macro_plan_driver_.get());
+    if (driver == nullptr) return;
+
+    namespace endresults = phase::battle::endresults;
+    namespace key = context::key;
+    const auto diagnostics = driver->diagnostics();
+    ctx[key::battleend::ACCELERATION_POLICY] =
+        static_cast<std::uint32_t>(diagnostics.policy);
+    ctx[key::battleend::OUTCOME] = static_cast<std::uint32_t>(diagnostics.outcome);
+    ctx[key::battleend::PROVIDER_FAILURE] =
+        static_cast<std::uint32_t>(diagnostics.failure);
+    ctx[key::battleend::MACRO_RESULT] = diagnostics.completed ? 0u : 1u;
+    ctx[key::battleend::ACTION_COUNT] = diagnostics.action_count;
+    ctx[key::battleend::INPUT_REQUEST_COUNT] = diagnostics.input_request_count;
+    ctx[key::battleend::INPUT_OBSERVED_COUNT] = diagnostics.input_observed_count;
+    ctx[key::battleend::RELEASE_REQUEST_COUNT] = diagnostics.release_request_count;
+    ctx[key::battleend::RELEASE_OBSERVED_COUNT] = diagnostics.release_observed_count;
+    ctx[key::battleend::LAST_EXPECTED_BP] =
+        static_cast<std::uint32_t>(diagnostics.last_expected_key);
+    ctx[key::battleend::LAST_HIT_BP] =
+        static_cast<std::uint32_t>(diagnostics.last_hit_key);
+    ctx[key::battleend::LAST_HIT_PC] = diagnostics.last_hit_pc;
+    ctx[key::battleend::LAST_STATE] = diagnostics.last_state;
+    ctx[key::battleend::LAST_SUBSTATE] = diagnostics.last_substate;
+    ctx[key::battleend::LAST_TOKEN_LO] = static_cast<std::uint32_t>(diagnostics.last_token);
+    ctx[key::battleend::LAST_TOKEN_HI] =
+        static_cast<std::uint32_t>(diagnostics.last_token >> 32);
+    ctx[key::battleend::EXPECTED_STAT_WAVES] = diagnostics.expected_stat_waves;
+    ctx[key::battleend::OBSERVED_STAT_WAVES] = diagnostics.observed_stat_waves;
+    ctx[key::battleend::EXPECTED_LEARNED_WAVES] = diagnostics.expected_learned_waves;
+    ctx[key::battleend::OBSERVED_LEARNED_WAVES] = diagnostics.observed_learned_waves;
+    ctx[key::battleend::EXPECTED_ITEM_POPUP] = diagnostics.expected_item_popup ? 1u : 0u;
+    ctx[key::battleend::OBSERVED_ITEM_POPUP] = diagnostics.observed_item_popup ? 1u : 0u;
+    ctx[key::battleend::MISMATCH_FLAGS] = diagnostics.mismatch_flags;
+    ctx[key::battleend::INVARIANT_FLAGS] = diagnostics.invariant_flags;
+    ctx[key::battleend::SOURCE_INVARIANT_FLAGS] =
+        diagnostics.invariant_flags & endresults::InvariantSourcePc;
+    ctx[key::battleend::REWARD_INVARIANT_FLAGS] = diagnostics.invariant_flags
+        & (endresults::InvariantVictoryState | endresults::InvariantRewardPhase);
+    ctx[key::battleend::LIFECYCLE_INVARIANT_FLAGS] =
+        diagnostics.invariant_flags & endresults::InvariantLifecycleState;
+    ctx[key::battleend::COMPLETION_INVARIANT_FLAGS] = diagnostics.invariant_flags
+        & (endresults::InvariantCompletionState
+            | endresults::InvariantCompletionPublished
+            | endresults::InvariantResultPointerCleared);
+    ctx[key::battleend::ENTRY_RNG_SEED] = diagnostics.entry_rng_seed;
+    ctx[key::battleend::FINAL_RNG_SEED] = diagnostics.final_rng_seed;
+    ctx[key::battleend::RNG_EFFECT_KIND] = 0u; // RngEffectKind::Preserve
+    ctx[key::battleend::RNG_ADVANCE_COUNT] = 0u;
+    ctx[key::battleend::REPORT_BLOB] = driver->report_blob();
+    ctx[key::battleend::DIAGNOSTIC] = driver->diagnostic();
+}
+
+void PhaseScriptVM::sync_battle_completion_context(PSContext& ctx) const
+{
+    const auto* driver = dynamic_cast<const inputmacro::BattleCompletionInputMacroProvider*>(
+        input_macro_plan_driver_.get());
+    if (driver == nullptr) return;
+    namespace key = context::key;
+    const auto diagnostics = driver->diagnostics();
+    ctx[key::battlecompletion::OUTCOME] =
+        static_cast<std::uint32_t>(diagnostics.outcome);
+    ctx[key::battlecompletion::PROVIDER_FAILURE] =
+        static_cast<std::uint32_t>(diagnostics.failure);
+    ctx[key::battlecompletion::MACRO_RESULT] = diagnostics.completed ? 0u : 1u;
+    ctx[key::battlecompletion::MANIFEST_BLOB] = driver->manifest_blob();
+    ctx[key::battlecompletion::DIAGNOSTIC] = driver->diagnostic();
+    ctx[key::battlecompletion::INVARIANT_FLAGS] = diagnostics.invariant_flags;
+    ctx[key::battlecompletion::LAST_EXPECTED_BP] =
+        static_cast<std::uint32_t>(diagnostics.last_expected_key);
+    ctx[key::battlecompletion::LAST_HIT_BP] =
+        static_cast<std::uint32_t>(diagnostics.last_hit_key);
+    ctx[key::battlecompletion::LAST_HIT_PC] = diagnostics.last_hit_pc;
+    ctx[key::battlecompletion::EXPECTED_LEVEL_PANELS] =
+        diagnostics.expected_level_panels;
+    ctx[key::battlecompletion::EXPECTED_STAT_WAVES] =
+        diagnostics.expected_stat_waves;
+    ctx[key::battlecompletion::EXPECTED_MAGIC_RANK_EVENTS] =
+        diagnostics.expected_magic_rank_events;
+    ctx[key::battlecompletion::EXPECTED_LEARNED_WAVES] =
+        diagnostics.expected_learned_waves;
+    ctx[key::battlecompletion::EXPECTED_ITEM_POPUPS] =
+        diagnostics.expected_item_popups;
+    ctx[key::battlecompletion::START_VI_LO] =
+        static_cast<std::uint32_t>(diagnostics.start_vi);
+    ctx[key::battlecompletion::START_VI_HI] =
+        static_cast<std::uint32_t>(diagnostics.start_vi >> 32);
+    ctx[key::battlecompletion::END_VI_LO] =
+        static_cast<std::uint32_t>(diagnostics.end_vi);
+    ctx[key::battlecompletion::END_VI_HI] =
+        static_cast<std::uint32_t>(diagnostics.end_vi >> 32);
 }
 
 } // namespace savor

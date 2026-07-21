@@ -41,6 +41,10 @@ public:
         const DeriveSavestateCommand& command,
         std::int64_t* derivation_id_out = nullptr,
         std::string* error_out = nullptr) override;
+    std::optional<SavestateRecord> GetSavestate(
+        std::int64_t savestate_id) const override;
+    std::vector<SavestateDerivationRecord> ListIncomingSavestateDerivations(
+        std::int64_t to_savestate_id) const override;
     bool CreateTasVariant(
         const CreateTasVariantCommand& command,
         std::int64_t* tas_variant_id_out = nullptr,

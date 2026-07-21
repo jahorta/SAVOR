@@ -90,6 +90,38 @@ enum class BattleManualFollowupStatus {
     Recorded,
 };
 
+enum class RngEffectKind {
+    Unknown = 0,
+    Preserve,
+    AdvanceFixed,
+    Variable,
+};
+
+inline std::string_view ToDbString(RngEffectKind value) {
+    switch (value) {
+    case RngEffectKind::Preserve: return "PRESERVE";
+    case RngEffectKind::AdvanceFixed: return "ADVANCE_FIXED";
+    case RngEffectKind::Variable: return "VARIABLE";
+    default: return "";
+    }
+}
+
+inline RngEffectKind ParseRngEffectKind(std::string_view value) {
+    if (value == "PRESERVE") return RngEffectKind::Preserve;
+    if (value == "ADVANCE_FIXED") return RngEffectKind::AdvanceFixed;
+    if (value == "VARIABLE") return RngEffectKind::Variable;
+    return RngEffectKind::Unknown;
+}
+
+struct ResolvedRngLineage {
+    std::string selected_seed_ref_kind;
+    std::int64_t selected_seed_ref_id = 0;
+    std::optional<std::int64_t> selected_seed_value;
+    std::optional<std::int64_t> current_seed_value;
+    std::int64_t cumulative_fixed_draw_count = 0;
+    bool requires_probe = false;
+};
+
 inline std::string_view ToDbString(BattleSetStatus value) {
     switch (value) {
     case BattleSetStatus::Active: return "ACTIVE";
@@ -284,9 +316,19 @@ struct RecordSeedProbeNeutralSeedCommand {
     std::string causation_id;
 };
 
+struct SeedProbeNeutralSeedRow {
+    std::int64_t neutral_seed_id = 0;
+    std::int64_t probe_result_id = 0;
+    std::int64_t probe_run_id = 0;
+    std::int64_t neutral_seed_value = 0;
+    std::string source_kind;
+    types::UtcTimePoint recorded_at_utc{};
+};
+
 struct SeedProbeRunSnapshot {
     std::int64_t probe_run_id = 0;
     std::int64_t probe_set_id = 0;
+    std::string probe_flavor;
     std::int64_t seed_probe_spec_id = 0;
     std::int64_t entry_savestate_id = 0;
     int launch_samples_per_axis = 0;
@@ -329,6 +371,8 @@ struct SeedProbeGridSeedRow {
 struct SeedProbeUniqueSeedRow {
     std::int64_t unique_seed_id = 0;
     std::int64_t probe_result_id = 0;
+    std::int64_t probe_run_id = 0;
+    std::int64_t input_frame_id = 0;
     std::int64_t seed_value = 0;
     std::int64_t seed_delta = 0;
     std::int32_t main_x = 0;
@@ -603,12 +647,159 @@ struct BattleAdvancementDecisionRow {
     types::UtcTimePoint created_at_utc{};
 };
 
+struct CreateBattleCompletionCommand {
+    std::int64_t workflow_instance_id = 0;
+    std::int64_t workflow_step_id = 0;
+    std::optional<std::int64_t> exec_job_id;
+    std::int64_t entry_savestate_id = 0;
+    std::string status;
+    types::UtcTimePoint created_at_utc{};
+    std::string correlation_id;
+    std::string causation_id;
+};
+
+struct BindBattleCompletionExecutionJobCommand {
+    std::int64_t battle_completion_id = 0;
+    std::int64_t workflow_instance_id = 0;
+    std::int64_t workflow_step_id = 0;
+    std::int64_t exec_job_id = 0;
+};
+
+struct CompleteBattleCompletionCommand {
+    std::int64_t battle_completion_id = 0;
+    std::int64_t completion_savestate_id = 0;
+    std::optional<std::int64_t> entry_rng_seed;
+    std::optional<std::int64_t> completion_rng_seed;
+    int manifest_version = 1;
+    std::string manifest_blob;
+    std::optional<std::int64_t> manifest_artifact_id;
+    std::optional<std::int64_t> input_trace_artifact_id;
+    int mismatch_count = 0;
+    int invariant_failure_count = 0;
+    std::string status;
+    types::UtcTimePoint completed_at_utc{};
+    std::string correlation_id;
+    std::string causation_id;
+};
+
+struct FailBattleCompletionCommand {
+    std::int64_t battle_completion_id = 0;
+    std::optional<int> manifest_version;
+    std::optional<std::string> manifest_blob;
+    int mismatch_count = 0;
+    int invariant_failure_count = 0;
+    types::UtcTimePoint completed_at_utc{};
+    std::string correlation_id;
+    std::string causation_id;
+};
+
+struct BattleCompletionRecord {
+    std::int64_t battle_completion_id = 0;
+    std::int64_t workflow_instance_id = 0;
+    std::int64_t workflow_step_id = 0;
+    std::optional<std::int64_t> exec_job_id;
+    std::int64_t entry_savestate_id = 0;
+    std::optional<std::int64_t> completion_savestate_id;
+    std::optional<std::int64_t> entry_rng_seed;
+    std::optional<std::int64_t> completion_rng_seed;
+    std::optional<int> manifest_version;
+    std::optional<std::string> manifest_blob;
+    std::optional<std::int64_t> manifest_artifact_id;
+    std::optional<std::int64_t> input_trace_artifact_id;
+    int mismatch_count = 0;
+    int invariant_failure_count = 0;
+    std::string status;
+    types::UtcTimePoint created_at_utc{};
+    std::optional<types::UtcTimePoint> completed_at_utc;
+};
+
+struct CreateBattleResultsCommand {
+    std::int64_t battle_completion_id = 0;
+    std::int64_t workflow_instance_id = 0;
+    std::int64_t workflow_step_id = 0;
+    std::optional<std::int64_t> exec_job_id;
+    std::string selected_seed_ref_kind;
+    std::int64_t selected_seed_ref_id = 0;
+    std::int64_t entry_savestate_id = 0;
+    std::int64_t selected_seed_value = 0;
+    RngEffectKind rng_effect_kind = RngEffectKind::Unknown;
+    std::optional<std::int64_t> fixed_draw_count;
+    std::string status;
+    types::UtcTimePoint created_at_utc{};
+    std::string correlation_id;
+    std::string causation_id;
+};
+
+struct BindBattleResultsExecutionJobCommand {
+    std::int64_t battle_results_id = 0;
+    std::int64_t workflow_instance_id = 0;
+    std::int64_t workflow_step_id = 0;
+    std::int64_t exec_job_id = 0;
+};
+
+struct CompleteBattleResultsCommand {
+    std::int64_t battle_results_id = 0;
+    std::int64_t final_savestate_id = 0;
+    std::optional<std::int64_t> entry_rng_seed;
+    std::optional<std::int64_t> final_rng_seed;
+    std::optional<std::int64_t> result_artifact_id;
+    std::optional<std::int64_t> input_trace_artifact_id;
+    int mismatch_count = 0;
+    int invariant_failure_count = 0;
+    std::string status;
+    types::UtcTimePoint completed_at_utc{};
+    std::string correlation_id;
+    std::string causation_id;
+};
+
+struct FailBattleResultsCommand {
+    std::int64_t battle_results_id = 0;
+    std::optional<std::int64_t> entry_rng_seed;
+    std::optional<std::int64_t> final_rng_seed;
+    std::optional<std::int64_t> result_artifact_id;
+    std::optional<std::int64_t> input_trace_artifact_id;
+    int mismatch_count = 0;
+    int invariant_failure_count = 0;
+    types::UtcTimePoint completed_at_utc{};
+    std::string correlation_id;
+    std::string causation_id;
+};
+
+struct BattleResultsRecord {
+    std::int64_t battle_results_id = 0;
+    std::int64_t battle_completion_id = 0;
+    std::int64_t workflow_instance_id = 0;
+    std::int64_t workflow_step_id = 0;
+    std::optional<std::int64_t> exec_job_id;
+    std::string selected_seed_ref_kind;
+    std::int64_t selected_seed_ref_id = 0;
+    std::int64_t entry_savestate_id = 0;
+    std::optional<std::int64_t> final_savestate_id;
+    std::int64_t selected_seed_value = 0;
+    std::optional<std::int64_t> entry_rng_seed;
+    std::optional<std::int64_t> final_rng_seed;
+    RngEffectKind rng_effect_kind = RngEffectKind::Unknown;
+    std::optional<std::int64_t> fixed_draw_count;
+    std::optional<std::int64_t> result_artifact_id;
+    std::optional<std::int64_t> input_trace_artifact_id;
+    int mismatch_count = 0;
+    int invariant_failure_count = 0;
+    std::string status;
+    types::UtcTimePoint created_at_utc{};
+    std::optional<types::UtcTimePoint> completed_at_utc;
+};
+
 struct IAnalysisDb {
     virtual ~IAnalysisDb() = default;
 
     virtual std::optional<std::int64_t> LookupSeedProbeRunSavestateId(std::int64_t probe_run_id) const = 0;
     virtual std::optional<std::int64_t> LookupSeedProbeResultId(std::int64_t probe_run_id) const = 0;
     virtual std::optional<std::int64_t> LookupSeedProbeNeutralSeed(std::int64_t probe_run_id) const = 0;
+    virtual std::optional<SeedProbeNeutralSeedRow> GetSeedProbeNeutralSeed(std::int64_t neutral_seed_id) const = 0;
+    virtual bool TryGetSeedProbeNeutralSeedForRun(
+        std::int64_t probe_run_id,
+        std::optional<SeedProbeNeutralSeedRow>* row_out,
+        std::string* error_out = nullptr) const = 0;
     virtual std::vector<SeedProbeGridSeedRow> ListSeedProbeGridSeeds(std::int64_t probe_run_id) const = 0;
     virtual std::vector<SeedProbeUniqueSeedRow> ListSeedProbeUniqueSeeds(std::int64_t probe_run_id) const = 0;
     virtual std::optional<SeedProbeUniqueSeedRow> GetSeedProbeUniqueSeed(std::int64_t unique_seed_id) const = 0;
@@ -658,6 +849,11 @@ struct IAnalysisDb {
 
     virtual bool RecordSeedProbeNeutralSeed(
         const RecordSeedProbeNeutralSeedCommand& command,
+        std::int64_t* neutral_seed_id_out = nullptr,
+        std::string* error_out = nullptr) = 0;
+    virtual bool EnsureSeedProbeNeutralSeed(
+        const RecordSeedProbeNeutralSeedCommand& command,
+        bool* inserted_out = nullptr,
         std::int64_t* neutral_seed_id_out = nullptr,
         std::string* error_out = nullptr) = 0;
 
@@ -767,9 +963,43 @@ struct IAnalysisDb {
     virtual std::optional<BattleContextProbeSnapshot> GetLatestBattleContextForWave(std::int64_t wave_id) const = 0;
     virtual std::optional<BattleTurnJobSnapshot> GetBattleTurnJob(std::int64_t turn_job_id) const = 0;
     virtual std::optional<BattleTurnJobSnapshot> GetBattleTurnJobForExecJob(std::int64_t exec_job_id) const = 0;
+    virtual std::vector<BattleTurnJobSnapshot> ListBattleTurnJobsByOutputSavestateId(
+        std::int64_t output_savestate_id) const = 0;
     virtual std::vector<BattleTurnJobSnapshot> ListBattleTurnJobsForWave(std::int64_t wave_id) const = 0;
     virtual std::vector<BattleTurnJobSnapshot> ListBattleTurnJobsForBattleTurn(std::int64_t battle_set_id, int turn_index) const = 0;
     virtual std::vector<BattleAdvancementDecisionRow> ListBattleAdvancementDecisionsForPool(std::int64_t battle_advancement_pool_id) const = 0;
+
+    virtual bool CreateBattleCompletion(
+        const CreateBattleCompletionCommand& command,
+        std::int64_t* battle_completion_id_out = nullptr,
+        std::string* error_out = nullptr) = 0;
+    virtual bool BindBattleCompletionExecutionJob(
+        const BindBattleCompletionExecutionJobCommand& command,
+        std::string* error_out = nullptr) = 0;
+    virtual bool CompleteBattleCompletion(
+        const CompleteBattleCompletionCommand& command,
+        std::string* error_out = nullptr) = 0;
+    virtual bool FailBattleCompletion(
+        const FailBattleCompletionCommand& command,
+        std::string* error_out = nullptr) = 0;
+    virtual std::optional<BattleCompletionRecord> GetBattleCompletion(
+        std::int64_t battle_completion_id) const = 0;
+
+    virtual bool CreateBattleResults(
+        const CreateBattleResultsCommand& command,
+        std::int64_t* battle_results_id_out = nullptr,
+        std::string* error_out = nullptr) = 0;
+    virtual bool BindBattleResultsExecutionJob(
+        const BindBattleResultsExecutionJobCommand& command,
+        std::string* error_out = nullptr) = 0;
+    virtual bool CompleteBattleResults(
+        const CompleteBattleResultsCommand& command,
+        std::string* error_out = nullptr) = 0;
+    virtual bool FailBattleResults(
+        const FailBattleResultsCommand& command,
+        std::string* error_out = nullptr) = 0;
+    virtual std::optional<BattleResultsRecord> GetBattleResults(
+        std::int64_t battle_results_id) const = 0;
 
     virtual std::vector<events::EventEnvelope> ReadUnpublishedOutboxBatch(
         std::int64_t after_outbox_id,

@@ -4,10 +4,18 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <sstream>
 #include <system_error>
+#include <thread>
 #include <unordered_map>
 #include <utility>
+#include <vector>
+
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <Windows.h>
 
 #include "Execution/Jobs/JobEventOrchestration.h"
 #include "Utils/Hash.h"
@@ -233,42 +241,6 @@ bool CopyTree(const std::filesystem::path& src, const std::filesystem::path& dst
     return true;
 }
 
-std::string WorkerRuntimeFingerprint(
-    const std::filesystem::path& source_worker_exe,
-    const std::filesystem::path& dolphin_base_dir) {
-    const auto canonical_exe = WeaklyCanonicalOrAbsolute(source_worker_exe);
-    const auto canonical_base = WeaklyCanonicalOrAbsolute(dolphin_base_dir);
-    const auto dsp_coef = canonical_base / "Sys" / "GC" / "dsp_coef.bin";
-
-    std::ostringstream input;
-    input << "worker_exe=" << canonical_exe.string() << "\n";
-    input << "worker_exe_stamp=" << FileStamp(canonical_exe) << "\n";
-    input << "dolphin_base=" << canonical_base.string() << "\n";
-    input << "dsp_coef_stamp=" << FileStamp(dsp_coef) << "\n";
-
-    const auto input_text = input.str();
-    const auto digest = ::hash::sha256(input_text.data(), input_text.size());
-    return digest.empty() ? "unknown-runtime" : digest.substr(0, 16);
-}
-
-std::string ExpectedWorkerRuntimeManifest(
-    size_t worker_idx,
-    const std::filesystem::path& source_worker_exe,
-    const std::filesystem::path& dolphin_base_dir,
-    const std::string& fingerprint,
-    const std::string& exe_materialization) {
-    std::ostringstream manifest;
-    manifest << "savor_worker_runtime_manifest_version=2\n";
-    manifest << "slot_id=" << worker_idx << "\n";
-    manifest << "fingerprint=" << fingerprint << "\n";
-    manifest << "source_worker_exe=" << WeaklyCanonicalOrAbsolute(source_worker_exe).string() << "\n";
-    manifest << "source_worker_exe_stamp=" << FileStamp(source_worker_exe) << "\n";
-    manifest << "dolphin_base_dir=" << WeaklyCanonicalOrAbsolute(dolphin_base_dir).string() << "\n";
-    manifest << "dsp_coef_stamp=" << FileStamp(dolphin_base_dir / "Sys" / "GC" / "dsp_coef.bin") << "\n";
-    manifest << "exe_materialization=" << exe_materialization << "\n";
-    return manifest.str();
-}
-
 bool ReadFileToString(const std::filesystem::path& path, std::string* out) {
     if (out == nullptr) {
         return false;
@@ -290,72 +262,248 @@ bool WriteStringToFile(const std::filesystem::path& path, const std::string& tex
         return false;
     }
     out << text;
+    out.flush();
     if (!out) {
         if (error_out) *error_out = "write runtime manifest failed: " + path.string();
+        return false;
+    }
+    out.close();
+    if (!out) {
+        if (error_out) *error_out = "close runtime manifest failed: " + path.string();
         return false;
     }
     return true;
 }
 
-bool MaterializeWorkerExe(
-    const std::filesystem::path& source_worker_exe,
-    const std::filesystem::path& runtime_worker_exe,
-    std::string* exe_materialization,
+std::optional<std::string> DirectoryTreeStamp(
+    const std::filesystem::path& root,
     std::string* error_out) {
     namespace fs = std::filesystem;
     std::error_code ec;
-    fs::create_hard_link(source_worker_exe, runtime_worker_exe, ec);
-    if (!ec) {
-        if (exe_materialization) *exe_materialization = "hardlink";
-        return true;
+    std::vector<std::string> entries;
+    fs::recursive_directory_iterator it(root, ec);
+    const fs::recursive_directory_iterator end;
+    for (; !ec && it != end; it.increment(ec)) {
+        std::error_code item_ec;
+        if (it->is_directory(item_ec)) {
+            continue;
+        }
+        if (item_ec || !it->is_regular_file(item_ec) || item_ec) {
+            if (error_out) {
+                *error_out = "unsupported or unreadable runtime source entry: " + it->path().string();
+            }
+            return std::nullopt;
+        }
+
+        const auto size = it->file_size(item_ec);
+        if (item_ec) {
+            if (error_out) *error_out = "read runtime source file size failed: " + item_ec.message();
+            return std::nullopt;
+        }
+        const auto write_time = it->last_write_time(item_ec);
+        if (item_ec) {
+            if (error_out) *error_out = "read runtime source timestamp failed: " + item_ec.message();
+            return std::nullopt;
+        }
+
+        std::ostringstream entry;
+        entry << it->path().lexically_relative(root).generic_string()
+              << "|" << size
+              << "|" << write_time.time_since_epoch().count();
+        entries.push_back(entry.str());
+    }
+    if (ec) {
+        if (error_out) *error_out = "enumerate runtime source tree failed: " + ec.message();
+        return std::nullopt;
     }
 
-    const auto hardlink_error = ec.message();
-    ec.clear();
-    fs::copy_file(source_worker_exe, runtime_worker_exe, fs::copy_options::overwrite_existing, ec);
-    if (!ec) {
-        if (exe_materialization) *exe_materialization = "copy_after_hardlink_failed:" + hardlink_error;
-        return true;
+    std::sort(entries.begin(), entries.end());
+    std::ostringstream input;
+    input << "file_count=" << entries.size() << "\n";
+    for (const auto& entry : entries) {
+        input << entry << "\n";
     }
-
-    if (error_out) {
-        *error_out = "materialize worker exe failed; hardlink=" + hardlink_error + "; copy=" + ec.message();
+    const auto text = input.str();
+    const auto digest = ::hash::sha256(text.data(), text.size());
+    if (digest.empty()) {
+        if (error_out) *error_out = "hash runtime source tree failed";
+        return std::nullopt;
     }
-    return false;
+    return digest;
 }
 
-void PruneStaleWorkerRuntimeFingerprints(
-    const std::filesystem::path& runtime_cache_root,
-    const std::string& active_fingerprint) {
+struct WorkerRuntimeSourceSnapshot {
+    std::filesystem::path worker_exe;
+    std::filesystem::path dolphin_base;
+    std::filesystem::path sys;
+    std::filesystem::path portable;
+    std::string worker_exe_stamp;
+    std::string sys_tree_stamp;
+    std::string portable_stamp;
+    std::string fingerprint;
+};
+
+std::optional<WorkerRuntimeSourceSnapshot> InspectWorkerRuntimeSource(
+    const DBWorkflowWorkerCoordinatorConfig& worker_cfg,
+    std::string* error_out) {
+    namespace fs = std::filesystem;
+    WorkerRuntimeSourceSnapshot source{};
+    source.worker_exe = WeaklyCanonicalOrAbsolute(worker_cfg.worker_exe_path);
+    source.dolphin_base = WeaklyCanonicalOrAbsolute(worker_cfg.dolphin_base_dir);
+    source.sys = source.dolphin_base / "Sys";
+    source.portable = source.dolphin_base / "portable.txt";
+    const auto dsp_coef = source.sys / "GC" / "dsp_coef.bin";
+
+    std::error_code ec;
+    if (!fs::is_regular_file(source.worker_exe, ec) || ec) {
+        if (error_out) *error_out = "source SavorWorker.exe missing: " + source.worker_exe.string();
+        return std::nullopt;
+    }
+    ec.clear();
+    if (!fs::is_directory(source.sys, ec) || ec) {
+        if (error_out) *error_out = "Dolphin base Sys is missing: " + source.sys.string();
+        return std::nullopt;
+    }
+    ec.clear();
+    if (!fs::is_regular_file(dsp_coef, ec) || ec) {
+        if (error_out) *error_out = "Dolphin base Sys is incomplete: " + source.sys.string();
+        return std::nullopt;
+    }
+    ec.clear();
+    if (!fs::is_regular_file(source.portable, ec) || ec) {
+        if (error_out) *error_out = "Dolphin base portable.txt is missing: " + source.dolphin_base.string();
+        return std::nullopt;
+    }
+
+    source.worker_exe_stamp = FileStamp(source.worker_exe);
+    source.portable_stamp = FileStamp(source.portable);
+    auto sys_tree_stamp = DirectoryTreeStamp(source.sys, error_out);
+    if (!sys_tree_stamp.has_value()) {
+        return std::nullopt;
+    }
+    source.sys_tree_stamp = std::move(*sys_tree_stamp);
+
+    std::ostringstream input;
+    input << "savor_worker_runtime_layout_version=3\n";
+    input << "worker_exe=" << source.worker_exe.string() << "\n";
+    input << "worker_exe_stamp=" << source.worker_exe_stamp << "\n";
+    input << "dolphin_base=" << source.dolphin_base.string() << "\n";
+    input << "sys_tree_stamp=" << source.sys_tree_stamp << "\n";
+    input << "portable_stamp=" << source.portable_stamp << "\n";
+    const auto text = input.str();
+    const auto digest = ::hash::sha256(text.data(), text.size());
+    if (digest.empty()) {
+        if (error_out) *error_out = "hash worker runtime fingerprint failed";
+        return std::nullopt;
+    }
+    source.fingerprint = digest;
+    return source;
+}
+
+std::string ExpectedWorkerRuntimeManifest(const WorkerRuntimeSourceSnapshot& source) {
+    std::ostringstream manifest;
+    manifest << "savor_worker_runtime_manifest_version=3\n";
+    manifest << "layout=shared_immutable\n";
+    manifest << "fingerprint=" << source.fingerprint << "\n";
+    manifest << "source_worker_exe=" << source.worker_exe.string() << "\n";
+    manifest << "source_worker_exe_stamp=" << source.worker_exe_stamp << "\n";
+    manifest << "dolphin_base_dir=" << source.dolphin_base.string() << "\n";
+    manifest << "sys_tree_stamp=" << source.sys_tree_stamp << "\n";
+    manifest << "portable_stamp=" << source.portable_stamp << "\n";
+    manifest << "exe_materialization=copy\n";
+    manifest << "user_template=empty\n";
+    return manifest.str();
+}
+
+bool ValidateWorkerRuntimeImage(
+    const std::filesystem::path& runtime_root,
+    const WorkerRuntimeSourceSnapshot& source,
+    std::string* error_out) {
     namespace fs = std::filesystem;
     std::error_code ec;
-    if (!fs::is_directory(runtime_cache_root, ec) || ec) {
-        return;
-    }
+    const auto worker_exe = runtime_root / "SavorWorker.exe";
+    const auto runtime_sys = runtime_root / "Sys";
+    const auto runtime_user = runtime_root / "User";
+    const auto runtime_portable = runtime_root / "portable.txt";
+    const auto manifest_path = runtime_root / "worker-runtime.manifest";
 
-    for (fs::directory_iterator it(runtime_cache_root, ec), end; !ec && it != end; ++it) {
-        if (!it->is_directory(ec)) {
-            continue;
-        }
-        const auto fingerprint_dir = it->path();
-        if (fingerprint_dir.filename().string() == active_fingerprint) {
-            continue;
-        }
-
-        bool owns_dir = false;
-        std::error_code child_ec;
-        for (fs::directory_iterator child(fingerprint_dir, child_ec), child_end; !child_ec && child != child_end; ++child) {
-            if (fs::exists(child->path() / "worker-runtime.manifest", child_ec) && !child_ec) {
-                owns_dir = true;
-                break;
-            }
-        }
-        if (owns_dir) {
-            fs::remove_all(fingerprint_dir, ec);
-            ec.clear();
-        }
+    std::string manifest;
+    if (!ReadFileToString(manifest_path, &manifest)
+        || manifest != ExpectedWorkerRuntimeManifest(source)) {
+        if (error_out) *error_out = "runtime manifest is missing or does not match its source";
+        return false;
     }
+    if (!fs::is_regular_file(worker_exe, ec) || ec) {
+        if (error_out) *error_out = "runtime worker executable is missing";
+        return false;
+    }
+    ec.clear();
+    if (!fs::is_regular_file(runtime_sys / "GC" / "dsp_coef.bin", ec) || ec) {
+        if (error_out) *error_out = "runtime Sys is missing or incomplete";
+        return false;
+    }
+    ec.clear();
+    if (!fs::is_regular_file(runtime_portable, ec) || ec) {
+        if (error_out) *error_out = "runtime portable.txt is missing";
+        return false;
+    }
+    ec.clear();
+    if (!fs::is_directory(runtime_user, ec) || ec) {
+        if (error_out) *error_out = "runtime User template is missing";
+        return false;
+    }
+    ec.clear();
+    if (!fs::is_empty(runtime_user, ec) || ec) {
+        if (error_out) *error_out = "runtime User template is not empty";
+        return false;
+    }
+    return true;
 }
+
+class RuntimeMaterializationLock {
+public:
+    ~RuntimeMaterializationLock() {
+        if (handle_ != INVALID_HANDLE_VALUE) {
+            CloseHandle(handle_);
+        }
+    }
+
+    RuntimeMaterializationLock(const RuntimeMaterializationLock&) = delete;
+    RuntimeMaterializationLock& operator=(const RuntimeMaterializationLock&) = delete;
+    RuntimeMaterializationLock() = default;
+
+    bool Acquire(const std::filesystem::path& path, std::string* error_out) {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes(5);
+        while (std::chrono::steady_clock::now() < deadline) {
+            handle_ = CreateFileW(
+                path.c_str(),
+                GENERIC_READ | GENERIC_WRITE,
+                0,
+                nullptr,
+                OPEN_ALWAYS,
+                FILE_ATTRIBUTE_NORMAL,
+                nullptr);
+            if (handle_ != INVALID_HANDLE_VALUE) {
+                return true;
+            }
+
+            const auto error = GetLastError();
+            if (error != ERROR_SHARING_VIOLATION && error != ERROR_LOCK_VIOLATION) {
+                if (error_out) {
+                    *error_out = "acquire runtime materialization lock failed: "
+                        + std::to_string(error);
+                }
+                return false;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(25));
+        }
+        if (error_out) *error_out = "timed out waiting for runtime materialization lock";
+        return false;
+    }
+
+private:
+    HANDLE handle_ = INVALID_HANDLE_VALUE;
+};
 
 bool EnsureWorkflowWorkerRuntimeSlot(
     size_t worker_idx,
@@ -363,102 +511,154 @@ bool EnsureWorkflowWorkerRuntimeSlot(
     std::filesystem::path* runtime_worker_exe_out,
     std::string* error_out) {
     namespace fs = std::filesystem;
-    const fs::path source_worker_exe = worker_cfg.worker_exe_path;
-    const fs::path dolphin_base_dir = worker_cfg.dolphin_base_dir;
-    const fs::path source_sys = dolphin_base_dir / "Sys";
-    const fs::path source_portable = dolphin_base_dir / "portable.txt";
-    const fs::path source_dsp_coef = source_sys / "GC" / "dsp_coef.bin";
-
-    std::error_code ec;
-    if (!fs::is_regular_file(source_worker_exe, ec) || ec) {
-        if (error_out) *error_out = "source SavorWorker.exe missing: " + source_worker_exe.string();
-        return false;
+    (void)worker_idx;
+    if (error_out) {
+        error_out->clear();
     }
-    if (!fs::is_directory(source_sys, ec) || ec || !fs::is_regular_file(source_dsp_coef, ec) || ec) {
-        if (error_out) *error_out = "Dolphin base Sys is missing or incomplete: " + source_sys.string();
-        return false;
-    }
-    if (!fs::is_regular_file(source_portable, ec) || ec) {
-        if (error_out) *error_out = "Dolphin base portable.txt is missing: " + dolphin_base_dir.string();
+    auto source = InspectWorkerRuntimeSource(worker_cfg, error_out);
+    if (!source.has_value()) {
         return false;
     }
 
-    const auto fingerprint = WorkerRuntimeFingerprint(source_worker_exe, dolphin_base_dir);
-    const fs::path runtime_cache_root = worker_cfg.worker_binary_runtime_root.empty()
+    const fs::path configured_cache_root = worker_cfg.worker_binary_runtime_root.empty()
         ? utils::getExecutablePath() / ".worker-runtime"
         : fs::path(worker_cfg.worker_binary_runtime_root);
-    PruneStaleWorkerRuntimeFingerprints(runtime_cache_root, fingerprint);
+    const fs::path runtime_cache_root = WeaklyCanonicalOrAbsolute(configured_cache_root);
+    const fs::path fingerprint_root = runtime_cache_root / source->fingerprint;
+    const fs::path runtime_root = fingerprint_root / "runtime";
+    const fs::path runtime_worker_exe = runtime_root / "SavorWorker.exe";
+    const fs::path staging_root = fingerprint_root / "runtime.pending";
+    const fs::path lock_path = runtime_cache_root / (source->fingerprint + ".lock");
 
-    const fs::path slot_root = runtime_cache_root / fingerprint / ("slot-" + std::to_string(worker_idx));
-    const fs::path runtime_worker_exe = slot_root / "SavorWorker.exe";
-    const fs::path runtime_sys = slot_root / "Sys";
-    const fs::path runtime_user = slot_root / "User";
-    const fs::path runtime_portable = slot_root / "portable.txt";
-    const fs::path manifest_path = slot_root / "worker-runtime.manifest";
+    std::string validation_error;
+    std::error_code ec;
+    if (fs::exists(runtime_root, ec) && !ec
+        && ValidateWorkerRuntimeImage(runtime_root, *source, &validation_error)) {
+        if (runtime_worker_exe_out) *runtime_worker_exe_out = runtime_worker_exe;
+        return true;
+    }
+    if (ec) {
+        if (error_out) *error_out = "inspect shared worker runtime failed: " + ec.message();
+        return false;
+    }
 
-    std::string existing_manifest;
-    if (ReadFileToString(manifest_path, &existing_manifest)
-        && fs::is_regular_file(runtime_worker_exe, ec) && !ec
-        && fs::is_regular_file(runtime_sys / "GC" / "dsp_coef.bin", ec) && !ec
-        && fs::is_directory(runtime_user, ec) && !ec
-        && fs::is_regular_file(runtime_portable, ec) && !ec) {
-        const auto expected_hardlink_manifest = ExpectedWorkerRuntimeManifest(
-            worker_idx,
-            source_worker_exe,
-            dolphin_base_dir,
-            fingerprint,
-            "hardlink");
-        if (existing_manifest == expected_hardlink_manifest
-            || existing_manifest.find("savor_worker_runtime_manifest_version=2\n") == 0) {
+    fs::create_directories(runtime_cache_root, ec);
+    if (ec) {
+        if (error_out) *error_out = "create worker runtime cache failed: " + ec.message();
+        return false;
+    }
+
+    RuntimeMaterializationLock lock;
+    if (!lock.Acquire(lock_path, error_out)) {
+        return false;
+    }
+
+    validation_error.clear();
+    ec.clear();
+    if (fs::exists(runtime_root, ec) && !ec) {
+        if (ValidateWorkerRuntimeImage(runtime_root, *source, &validation_error)) {
             if (runtime_worker_exe_out) *runtime_worker_exe_out = runtime_worker_exe;
             return true;
         }
-    }
-
-    fs::remove_all(slot_root, ec);
-    if (ec) {
-        if (error_out) *error_out = "clear stale worker runtime slot failed: " + ec.message();
+        if (error_out) {
+            *error_out = "existing shared worker runtime is invalid and was left untouched: "
+                + validation_error;
+        }
         return false;
     }
-    fs::create_directories(slot_root, ec);
     if (ec) {
-        if (error_out) *error_out = "create worker runtime slot failed: " + ec.message();
+        if (error_out) *error_out = "inspect shared worker runtime failed: " + ec.message();
         return false;
     }
 
-    std::string exe_materialization;
-    if (!MaterializeWorkerExe(source_worker_exe, runtime_worker_exe, &exe_materialization, error_out)) {
-        return false;
-    }
-    if (!CopyTree(source_sys, runtime_sys, error_out)) {
-        return false;
-    }
-    fs::create_directories(runtime_user, ec);
+    fs::create_directories(fingerprint_root, ec);
     if (ec) {
-        if (error_out) *error_out = "create runtime User directory failed: " + ec.message();
-        return false;
-    }
-    fs::copy_file(source_portable, runtime_portable, fs::copy_options::overwrite_existing, ec);
-    if (ec) {
-        if (error_out) *error_out = "copy runtime portable.txt failed: " + ec.message();
+        if (error_out) *error_out = "create worker runtime fingerprint directory failed: " + ec.message();
         return false;
     }
 
-    const auto manifest = ExpectedWorkerRuntimeManifest(
-        worker_idx,
-        source_worker_exe,
-        dolphin_base_dir,
-        fingerprint,
-        exe_materialization);
-    if (!WriteStringToFile(manifest_path, manifest, error_out)) {
+    fs::remove_all(staging_root, ec);
+    if (ec) {
+        if (error_out) *error_out = "clear stale pending worker runtime failed: " + ec.message();
+        return false;
+    }
+    fs::create_directories(staging_root, ec);
+    if (ec) {
+        if (error_out) *error_out = "create pending worker runtime failed: " + ec.message();
         return false;
     }
 
-    if (!fs::is_regular_file(runtime_worker_exe, ec) || ec
-        || !fs::is_regular_file(runtime_sys / "GC" / "dsp_coef.bin", ec) || ec
-        || !fs::is_directory(runtime_user, ec) || ec
-        || !fs::is_regular_file(runtime_portable, ec) || ec) {
-        if (error_out) *error_out = "worker runtime validation failed: " + slot_root.string();
+    const auto fail_pending = [&](const std::string& message) {
+        std::error_code cleanup_ec;
+        fs::remove_all(staging_root, cleanup_ec);
+        if (error_out && error_out->empty()) {
+            *error_out = message;
+        }
+        return false;
+    };
+
+    fs::copy_file(
+        source->worker_exe,
+        staging_root / "SavorWorker.exe",
+        fs::copy_options::none,
+        ec);
+    if (ec) {
+        return fail_pending("copy worker executable into shared runtime failed: " + ec.message());
+    }
+    if (!CopyTree(source->sys, staging_root / "Sys", error_out)) {
+        return fail_pending("copy Sys into shared worker runtime failed");
+    }
+    fs::create_directories(staging_root / "User", ec);
+    if (ec) {
+        return fail_pending("create empty runtime User template failed: " + ec.message());
+    }
+    fs::copy_file(
+        source->portable,
+        staging_root / "portable.txt",
+        fs::copy_options::none,
+        ec);
+    if (ec) {
+        return fail_pending("copy runtime portable.txt failed: " + ec.message());
+    }
+
+    auto source_after_copy = InspectWorkerRuntimeSource(worker_cfg, error_out);
+    if (!source_after_copy.has_value()
+        || source_after_copy->fingerprint != source->fingerprint) {
+        return fail_pending("worker runtime source changed while the shared image was being copied");
+    }
+
+    if (!WriteStringToFile(
+            staging_root / "worker-runtime.manifest",
+            ExpectedWorkerRuntimeManifest(*source),
+            error_out)) {
+        return fail_pending("write shared worker runtime manifest failed");
+    }
+    validation_error.clear();
+    if (!ValidateWorkerRuntimeImage(staging_root, *source, &validation_error)) {
+        return fail_pending("pending shared worker runtime validation failed: " + validation_error);
+    }
+
+    for (int attempt = 0; attempt < 20; ++attempt) {
+        ec.clear();
+        fs::rename(staging_root, runtime_root, ec);
+        if (!ec
+            || (ec.value() != ERROR_ACCESS_DENIED
+                && ec.value() != ERROR_SHARING_VIOLATION
+                && ec.value() != ERROR_LOCK_VIOLATION)
+            || attempt == 19) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    }
+    if (ec) {
+        return fail_pending("publish shared worker runtime failed: " + ec.message());
+    }
+
+    validation_error.clear();
+    if (!ValidateWorkerRuntimeImage(runtime_root, *source, &validation_error)) {
+        if (error_out) {
+            *error_out = "published shared worker runtime validation failed: " + validation_error;
+        }
         return false;
     }
 
@@ -589,12 +789,41 @@ bool DBWorkflowWorkerCoordinator::PrepareRuntimeSlotForWorker(
     if (worker_cfg_.runtime_slot_preparer) {
         return worker_cfg_.runtime_slot_preparer(worker_idx, worker_cfg_, runtime_worker_exe_out, error_out);
     }
-    return EnsureWorkflowWorkerRuntimeSlot(worker_idx, worker_cfg_, runtime_worker_exe_out, error_out);
+
+    std::lock_guard<std::mutex> lock(runtime_preparation_mtx_);
+    std::error_code ec;
+    if (prepared_runtime_worker_exe_.has_value()
+        && std::filesystem::is_regular_file(*prepared_runtime_worker_exe_, ec)
+        && !ec) {
+        if (runtime_worker_exe_out) {
+            *runtime_worker_exe_out = *prepared_runtime_worker_exe_;
+        }
+        if (error_out) {
+            error_out->clear();
+        }
+        return true;
+    }
+
+    prepared_runtime_worker_exe_.reset();
+    std::filesystem::path prepared;
+    if (!EnsureWorkflowWorkerRuntimeSlot(worker_idx, worker_cfg_, &prepared, error_out)) {
+        return false;
+    }
+    prepared_runtime_worker_exe_ = prepared;
+    if (runtime_worker_exe_out) {
+        *runtime_worker_exe_out = std::move(prepared);
+    }
+    return true;
 }
 
 void DBWorkflowWorkerCoordinator::Start() {
     if (worker_job_thread_.joinable() || worker_lifecycle_thread_.joinable()) {
         return;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(runtime_preparation_mtx_);
+        prepared_runtime_worker_exe_.reset();
     }
 
     stop_started_.store(false);
@@ -2189,6 +2418,7 @@ void DBWorkflowWorkerCoordinator::ReconcileWorkerPool() {
             continue;
         }
         bool should_start = false;
+        bool restart_deferred_until_old_worker_stops = false;
         {
             std::lock_guard<std::mutex> slot_lock(slot_handle->mtx);
             auto& slot = *slot_handle;
@@ -2232,12 +2462,16 @@ void DBWorkflowWorkerCoordinator::ReconcileWorkerPool() {
                 event_lines.push_back(line.str());
                 if (auto worker_to_stop = ResetWorkerSlotRuntime(slot)) {
                     workers_to_stop.push_back(std::move(worker_to_stop));
+                    restart_deferred_until_old_worker_stops = true;
                 }
             }
             if (slot.start_attempted) {
                 continue;
             }
             should_start = true;
+        }
+        if (restart_deferred_until_old_worker_stops) {
+            continue;
         }
         if (should_start && StartWorkerSlot(slot_handle)) {
             ++active_startups;
@@ -2591,7 +2825,7 @@ void DBWorkflowWorkerCoordinator::VisualDebugReplayThread(std::uint64_t session_
 
     std::filesystem::path runtime_worker_exe;
     std::string runtime_error;
-    if (!EnsureWorkflowWorkerRuntimeSlot(worker_id, worker_cfg_, &runtime_worker_exe, &runtime_error)) {
+    if (!PrepareRuntimeSlotForWorker(worker_id, &runtime_worker_exe, &runtime_error)) {
         fail("worker runtime setup failed: " + runtime_error);
         return;
     }

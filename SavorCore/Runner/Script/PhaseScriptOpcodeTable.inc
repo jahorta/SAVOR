@@ -51,3 +51,5 @@ SAVOR_PHASE_SCRIPT_OPCODE(44, CLEAR_MEMORY_WATCHPOINTS,             "CLEAR_MEMOR
 SAVOR_PHASE_SCRIPT_OPCODE(45, ARM_CAPTURE_MEMORY_WATCHPOINTS,       "ARM_CAPTURE_MEMORY_WATCHPOINTS",       "Arm Capture Memory Watchpoints",             None,                  Supported)
 SAVOR_PHASE_SCRIPT_OPCODE(46, RUN_UNTIL_DEBUG_STOP,                 "RUN_UNTIL_DEBUG_STOP",                 "Run Until Debug Stop",                       None,                  Supported)
 SAVOR_PHASE_SCRIPT_OPCODE(47, CAPTURE_SEED_OVERRIDE,                "CAPTURE_SEED_OVERRIDE",                "Capture Seed Override",                      None,                  Supported)
+SAVOR_PHASE_SCRIPT_OPCODE(48, MATERIALIZE_BATTLE_RESULTS_SCREEN_MACRO_STEPS, "MATERIALIZE_BATTLE_RESULTS_SCREEN_MACRO_STEPS", "Materialize Battle Results Screen Macro Steps", None,              Supported)
+SAVOR_PHASE_SCRIPT_OPCODE(49, MATERIALIZE_BATTLE_COMPLETION_MACRO_STEPS,     "MATERIALIZE_BATTLE_COMPLETION_MACRO_STEPS",     "Materialize Battle Completion Macro Steps",     None,              Supported)

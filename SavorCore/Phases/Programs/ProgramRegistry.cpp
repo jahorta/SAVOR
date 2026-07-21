@@ -13,6 +13,10 @@
 #include "BattleTurnRunner/BattleTurnRunnerScript.h"
 #include "BattleMacroProbe/BattleMacroProbePayload.h"
 #include "BattleMacroProbe/BattleMacroProbeScript.h"
+#include "BattleEndResults/BattleEndResultsPayload.h"
+#include "BattleEndResults/BattleEndResultsScript.h"
+#include "BattleCompletion/BattleCompletionPayload.h"
+#include "BattleCompletion/BattleCompletionScript.h"
 #include "../../Runner/IPC/Wire.h"
 
 namespace savor::programs {
@@ -50,6 +54,10 @@ namespace savor::programs {
             return phase::battle::turnrunner::MakeBattleTurnRunnerProgram();
         case PK_BattleMacroProbe:
             return phase::battle::macroprobe::MakeBattleMacroProbeProgram();
+        case PK_BattleResultsScreenRunner:
+            return phase::battle::endresults::MakeBattleResultsScreenProgram();
+        case PK_BattleCompletionRunner:
+            return phase::battle::completion::MakeBattleCompletionProgram();
         default:
             return PhaseScript{};
         }
@@ -81,6 +89,10 @@ namespace savor::programs {
             return phase::battle::turnrunner::decode_payload(payload, out_ctx);
         case PK_BattleMacroProbe:
             return phase::battle::macroprobe::decode_payload(payload, out_ctx);
+        case PK_BattleResultsScreenRunner:
+            return phase::battle::endresults::decode_payload(payload, out_ctx);
+        case PK_BattleCompletionRunner:
+            return phase::battle::completion::decode_payload(payload, out_ctx);
         default:
             return false;
         }

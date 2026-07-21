@@ -116,6 +116,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="BattleMacroProbeScenario.cpp" />
+    <ClCompile Include="BattleEndResultsScenario.cpp" />
     <ClCompile Include="BattleSingleTurnScenario.cpp" />
     <ClCompile Include="Cli.cpp" />
     <ClCompile Include="CoordinatorProgress.cpp" />
@@ -129,6 +130,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="BattleMacroProbeScenario.h" />
+    <ClInclude Include="BattleEndResultsScenario.h" />
     <ClInclude Include="BattleSingleTurnScenario.h" />
     <ClInclude Include="Cli.h" />
     <ClInclude Include="CoordinatorProgress.h" />

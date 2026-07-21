@@ -211,6 +211,8 @@
     <ClCompile Include="test.cpp" />
     <ClCompile Include="test_boot_dolphinwrapper.cpp" />
     <ClCompile Include="test_battle_macro_probe.cpp" />
+    <ClCompile Include="test_battle_end_results_db.cpp" />
+    <ClCompile Include="test_battle_end_results.cpp" />
     <ClCompile Include="test_battle_coordinator_initialization.cpp" />
     <ClCompile Include="test_battle_frame_thread_list.cpp" />
     <ClCompile Include="test_battle_movement_path.cpp" />

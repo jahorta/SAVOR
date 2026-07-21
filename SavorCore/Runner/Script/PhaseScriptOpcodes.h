@@ -38,10 +38,12 @@ enum class PSOpCode : uint8_t {
 #define SAVOR_PHASE_SCRIPT_OPCODE(ORDINAL, SYMBOL, IDENTIFIER, DISPLAY, ARG_FORMAT, SUPPORT) SYMBOL = ORDINAL,
 #include "PhaseScriptOpcodeTable.inc"
 #undef SAVOR_PHASE_SCRIPT_OPCODE
-    Count = 48,
+    MATERIALIZE_BATTLE_END_RESULTS_MACRO_STEPS =
+        MATERIALIZE_BATTLE_RESULTS_SCREEN_MACRO_STEPS,
+    Count = 50,
 };
 
-static_assert(static_cast<uint8_t>(PSOpCode::Count) == 48);
+static_assert(static_cast<uint8_t>(PSOpCode::Count) == 50);
 static_assert(static_cast<uint8_t>(PSOpCode::START_DETERMINISTIC_RUN) == 11);
 static_assert(static_cast<uint8_t>(PSOpCode::GC_SLOT_A_SET_FROM) == 21);
 
@@ -132,6 +134,13 @@ inline PSOp OpBuildTurnInputFromActions() { PSOp op; op.code = PSOpCode::BUILD_T
 inline PSOp OpMaterializeBattleMacroSteps() { PSOp op; op.code = PSOpCode::MATERIALIZE_BATTLE_MACRO_STEPS; return op; }
 inline PSOp OpMaterializeBattleTurnMacroSteps() { PSOp op; op.code = PSOpCode::MATERIALIZE_BATTLE_TURN_MACRO_STEPS; return op; }
 inline PSOp OpExecuteBattleMacroStep() { PSOp op; op.code = PSOpCode::EXECUTE_BATTLE_MACRO_STEP; return op; }
+// Ordinal 40 is the generic input-macro execution adapter. Keep the legacy
+// builder above for existing battle-command programs while allowing new macro
+// providers to use a provider-neutral name.
+inline PSOp OpExecuteInputMacroStep() { return OpExecuteBattleMacroStep(); }
+inline PSOp OpMaterializeBattleResultsScreenMacroSteps() { PSOp op; op.code = PSOpCode::MATERIALIZE_BATTLE_RESULTS_SCREEN_MACRO_STEPS; return op; }
+inline PSOp OpMaterializeBattleEndResultsMacroSteps() { return OpMaterializeBattleResultsScreenMacroSteps(); }
+inline PSOp OpMaterializeBattleCompletionMacroSteps() { PSOp op; op.code = PSOpCode::MATERIALIZE_BATTLE_COMPLETION_MACRO_STEPS; return op; }
 inline PSOp OpRecordTasInputSample() { PSOp op; op.code = PSOpCode::RECORD_TAS_INPUT_SAMPLE; return op; }
 
 inline PSOp OpStepFrames(uint32_t frame_count, bool disable_breakpoints = false) { PSOp op; op.code = PSOpCode::STEP_FRAMES; op.step = { frame_count }; op.imm = { disable_breakpoints ? 1u : 0u }; return op; }

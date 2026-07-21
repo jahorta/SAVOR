@@ -52,7 +52,8 @@ std::string BuildUniqueFingerprint(
     std::string fingerprint = "PK=3;PV=" + std::to_string(blueprint.program_version)
         + ";phase=unique;probe_run_id=" + std::to_string(probe_run_id)
         + ";run_ms=" + std::to_string(blueprint.run_ms)
-        + ";vi=" + std::to_string(blueprint.vi_stall_ms);
+        + ";vi=" + std::to_string(blueprint.vi_stall_ms)
+        + ";target=" + std::to_string(static_cast<std::uint32_t>(blueprint.target));
     if (probe_result_id.has_value()) {
         fingerprint += ";probe_result_id=" + std::to_string(*probe_result_id);
     }
@@ -198,7 +199,7 @@ WorkflowStepScheduleResult SeedProbeUniqueJobPersistenceAdapter::EncodeForQueuei
     std::string error;
     if (!execution_db_->CreateJobSet(
             {
-                .program_kind = 3,
+                .program_kind = static_cast<std::int32_t>(savor::PK_SeedProbe),
                 .purpose = "SeedProbe Unique",
                 .created_by = std::string("seedprobe_unique_adapter"),
                 .expected_total = static_cast<int>(planned.singletons.size() + planned.samples.size()),
@@ -227,7 +228,7 @@ WorkflowStepScheduleResult SeedProbeUniqueJobPersistenceAdapter::EncodeForQueuei
         if (!execution_db_->CreateJobSet(
                 {
                     .parent_job_set_id = root_job_set_id,
-                    .program_kind = 3,
+                    .program_kind = static_cast<std::int32_t>(savor::PK_SeedProbe),
                     .purpose = "SeedProbe Unique Singleton",
                     .created_by = std::string("seedprobe_unique_adapter"),
                     .expected_total = child_expected,
@@ -250,7 +251,7 @@ WorkflowStepScheduleResult SeedProbeUniqueJobPersistenceAdapter::EncodeForQueuei
         auto frame_hex = frame.to_frame_hex();
         savor::db::EnqueueJobCommand enqueue{};
         enqueue.job_set_id = child_job_set_id;
-        enqueue.program_kind = 3;
+        enqueue.program_kind = static_cast<std::int32_t>(savor::PK_SeedProbe);
         enqueue.program_version = resolved_blueprint.program_version;
         enqueue.program_ref_kind = "sp_probe_run";
         enqueue.program_ref_id = domain_ref_id;
@@ -279,7 +280,7 @@ WorkflowStepScheduleResult SeedProbeUniqueJobPersistenceAdapter::EncodeForQueuei
         if (!execution_db_->CreateJobSet(
                 {
                     .parent_job_set_id = root_job_set_id,
-                    .program_kind = 3,
+                    .program_kind = static_cast<std::int32_t>(savor::PK_SeedProbe),
                     .purpose = "SeedProbe Unique Delta",
                     .created_by = std::string("seedprobe_unique_adapter"),
                     .expected_total = child_expected,
@@ -300,7 +301,7 @@ WorkflowStepScheduleResult SeedProbeUniqueJobPersistenceAdapter::EncodeForQueuei
             auto frame_hex = frame.to_frame_hex();
             savor::db::EnqueueJobCommand enqueue{};
             enqueue.job_set_id = child_job_set_id;
-            enqueue.program_kind = 3;
+            enqueue.program_kind = static_cast<std::int32_t>(savor::PK_SeedProbe);
             enqueue.program_version = resolved_blueprint.program_version;
             enqueue.program_ref_kind = "sp_probe_run";
             enqueue.program_ref_id = domain_ref_id;

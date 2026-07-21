@@ -60,6 +60,11 @@ struct InputMacroStepResult {
     BPKey expected_key{0};
     BPKey hit_key{0};
     std::uint32_t hit_pc{0};
+    std::uint64_t stop_sequence{0};
+    std::uint64_t input_epoch{0};
+    GCInputFrame requested_input{};
+    std::uint32_t input_poll_count{0};
+    bool input_acknowledged{false};
 
     std::uint32_t memory_address{0};
     std::uint32_t memory_baseline{0};

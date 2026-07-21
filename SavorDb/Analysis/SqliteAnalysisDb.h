@@ -19,6 +19,11 @@ public:
     std::optional<std::int64_t> LookupSeedProbeRunSavestateId(std::int64_t probe_run_id) const override;
     std::optional<std::int64_t> LookupSeedProbeResultId(std::int64_t probe_run_id) const override;
     std::optional<std::int64_t> LookupSeedProbeNeutralSeed(std::int64_t probe_run_id) const override;
+    std::optional<SeedProbeNeutralSeedRow> GetSeedProbeNeutralSeed(std::int64_t neutral_seed_id) const override;
+    bool TryGetSeedProbeNeutralSeedForRun(
+        std::int64_t probe_run_id,
+        std::optional<SeedProbeNeutralSeedRow>* row_out,
+        std::string* error_out = nullptr) const override;
     std::vector<SeedProbeGridSeedRow> ListSeedProbeGridSeeds(std::int64_t probe_run_id) const override;
     std::vector<SeedProbeUniqueSeedRow> ListSeedProbeUniqueSeeds(std::int64_t probe_run_id) const override;
     std::optional<SeedProbeUniqueSeedRow> GetSeedProbeUniqueSeed(std::int64_t unique_seed_id) const override;
@@ -101,6 +106,11 @@ public:
         const CreateBattleTurnWaveCommand& command,
         std::int64_t* wave_id_out = nullptr,
         std::string* error_out = nullptr) override;
+    bool EnsureSeedProbeNeutralSeed(
+        const RecordSeedProbeNeutralSeedCommand& command,
+        bool* inserted_out = nullptr,
+        std::int64_t* neutral_seed_id_out = nullptr,
+        std::string* error_out = nullptr) override;
     bool CreateBattleContextProbe(
         const CreateBattleContextProbeCommand& command,
         std::int64_t* context_probe_id_out = nullptr,
@@ -165,9 +175,39 @@ public:
     std::optional<BattleContextProbeSnapshot> GetLatestBattleContextForWave(std::int64_t wave_id) const override;
     std::optional<BattleTurnJobSnapshot> GetBattleTurnJob(std::int64_t turn_job_id) const override;
     std::optional<BattleTurnJobSnapshot> GetBattleTurnJobForExecJob(std::int64_t exec_job_id) const override;
+    std::vector<BattleTurnJobSnapshot> ListBattleTurnJobsByOutputSavestateId(
+        std::int64_t output_savestate_id) const override;
     std::vector<BattleTurnJobSnapshot> ListBattleTurnJobsForWave(std::int64_t wave_id) const override;
     std::vector<BattleTurnJobSnapshot> ListBattleTurnJobsForBattleTurn(std::int64_t battle_set_id, int turn_index) const override;
     std::vector<BattleAdvancementDecisionRow> ListBattleAdvancementDecisionsForPool(std::int64_t battle_advancement_pool_id) const override;
+    bool CreateBattleCompletion(
+        const CreateBattleCompletionCommand& command,
+        std::int64_t* battle_completion_id_out = nullptr,
+        std::string* error_out = nullptr) override;
+    bool BindBattleCompletionExecutionJob(
+        const BindBattleCompletionExecutionJobCommand& command,
+        std::string* error_out = nullptr) override;
+    bool CompleteBattleCompletion(
+        const CompleteBattleCompletionCommand& command,
+        std::string* error_out = nullptr) override;
+    bool FailBattleCompletion(
+        const FailBattleCompletionCommand& command,
+        std::string* error_out = nullptr) override;
+    std::optional<BattleCompletionRecord> GetBattleCompletion(std::int64_t battle_completion_id) const override;
+    bool CreateBattleResults(
+        const CreateBattleResultsCommand& command,
+        std::int64_t* battle_results_id_out = nullptr,
+        std::string* error_out = nullptr) override;
+    bool BindBattleResultsExecutionJob(
+        const BindBattleResultsExecutionJobCommand& command,
+        std::string* error_out = nullptr) override;
+    bool CompleteBattleResults(
+        const CompleteBattleResultsCommand& command,
+        std::string* error_out = nullptr) override;
+    bool FailBattleResults(
+        const FailBattleResultsCommand& command,
+        std::string* error_out = nullptr) override;
+    std::optional<BattleResultsRecord> GetBattleResults(std::int64_t battle_results_id) const override;
 
     std::vector<events::EventEnvelope> ReadUnpublishedOutboxBatch(
         std::int64_t after_outbox_id,

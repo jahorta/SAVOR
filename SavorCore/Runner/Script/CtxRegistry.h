@@ -9,6 +9,8 @@
 #include "ContextKeys/TasMovieKeys.reg.h"
 #include "ContextKeys/TasFrameDetectorKeys.reg.h"
 #include "ContextKeys/BattleRunnerKeys.reg.h"
+#include "ContextKeys/BattleEndResultsKeys.reg.h"
+#include "ContextKeys/BattleCompletionKeys.reg.h"
 
 namespace savor::context::key {
 

@@ -29,6 +29,9 @@
     <ClCompile Include="BattleSingleTurnScenario.cpp">
       <Filter>Scenarios</Filter>
     </ClCompile>
+    <ClCompile Include="BattleEndResultsScenario.cpp">
+      <Filter>Scenarios</Filter>
+    </ClCompile>
     <ClCompile Include="DbSetup.cpp">
       <Filter>Helpers</Filter>
     </ClCompile>
@@ -68,6 +71,9 @@
       <Filter>Scenarios</Filter>
     </ClInclude>
     <ClInclude Include="BattleSingleTurnScenario.h">
+      <Filter>Scenarios</Filter>
+    </ClInclude>
+    <ClInclude Include="BattleEndResultsScenario.h">
       <Filter>Scenarios</Filter>
     </ClInclude>
     <ClInclude Include="MultiLineProgressRenderer.h">

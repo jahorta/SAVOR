@@ -82,6 +82,12 @@
     <Filter Include="Phases\SeedProbe">
       <UniqueIdentifier>{9970f495-ed71-4548-bb91-77f7142e3522}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Phases\BattleEndResults">
+      <UniqueIdentifier>{7f05199e-d951-4f41-b332-0d6804c48a48}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Phases\BattleCompletion">
+      <UniqueIdentifier>{34e2fa87-d5e5-44e8-8a62-a0f8751bf8ed}</UniqueIdentifier>
+    </Filter>
     <Filter Include="Tas">
       <UniqueIdentifier>{3323c09c-2ff3-43bc-a6ae-4d4bb181334e}</UniqueIdentifier>
     </Filter>
@@ -144,6 +150,9 @@
     <ClInclude Include="Runner\InputMacro\IInputMacroHost.h">
       <Filter>Runner\InputMacro</Filter>
     </ClInclude>
+    <ClInclude Include="Runner\InputMacro\IInputMacroPlanDriver.h">
+      <Filter>Runner\InputMacro</Filter>
+    </ClInclude>
     <ClInclude Include="Runner\InputMacro\InputMacroPlan.h">
       <Filter>Runner\InputMacro</Filter>
     </ClInclude>
@@ -152,6 +161,39 @@
     </ClInclude>
     <ClInclude Include="Runner\InputMacro\Providers\BattleCommandInputMacroProvider.h">
       <Filter>Runner\InputMacro\Providers</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\InputMacro\Providers\BattleCompletionInputMacroProvider.h">
+      <Filter>Runner\InputMacro\Providers</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\InputMacro\Providers\BattleEndResultsInputMacroProvider.h">
+      <Filter>Runner\InputMacro\Providers</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\InputMacro\Providers\BattleResultsScreenInputMacroProvider.h">
+      <Filter>Runner\InputMacro\Providers</Filter>
+    </ClInclude>
+    <ClInclude Include="Phases\Programs\BattleCompletion\BattleCompletionManifest.h">
+      <Filter>Phases\BattleCompletion</Filter>
+    </ClInclude>
+    <ClInclude Include="Phases\Programs\BattleCompletion\BattleCompletionPayload.h">
+      <Filter>Phases\BattleCompletion</Filter>
+    </ClInclude>
+    <ClInclude Include="Phases\Programs\BattleCompletion\BattleCompletionScript.h">
+      <Filter>Phases\BattleCompletion</Filter>
+    </ClInclude>
+    <ClInclude Include="Phases\Programs\BattleEndResults\BattleEndResultsPayload.h">
+      <Filter>Phases\BattleEndResults</Filter>
+    </ClInclude>
+    <ClInclude Include="Phases\Programs\BattleEndResults\BattleEndResultsReport.h">
+      <Filter>Phases\BattleEndResults</Filter>
+    </ClInclude>
+    <ClInclude Include="Phases\Programs\BattleEndResults\BattleEndResultsScript.h">
+      <Filter>Phases\BattleEndResults</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Script\ContextKeys\BattleEndResultsKeys.reg.h">
+      <Filter>Runner\VM\ContextKeys</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Script\ContextKeys\BattleCompletionKeys.reg.h">
+      <Filter>Runner\VM\ContextKeys</Filter>
     </ClInclude>
     <ClInclude Include="Runner\Script\PhaseScriptOpcodeTable.inc">
       <Filter>Runner\VM</Filter>
@@ -415,6 +457,27 @@
     </ClCompile>
     <ClCompile Include="Runner\InputMacro\Providers\BattleCommandInputMacroProvider.cpp">
       <Filter>Runner\InputMacro\Providers</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\InputMacro\Providers\BattleCompletionInputMacroProvider.cpp">
+      <Filter>Runner\InputMacro\Providers</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\InputMacro\Providers\BattleEndResultsInputMacroProvider.cpp">
+      <Filter>Runner\InputMacro\Providers</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\InputMacro\Providers\BattleResultsScreenInputMacroProvider.cpp">
+      <Filter>Runner\InputMacro\Providers</Filter>
+    </ClCompile>
+    <ClCompile Include="Phases\Programs\BattleCompletion\BattleCompletionManifest.cpp">
+      <Filter>Phases\BattleCompletion</Filter>
+    </ClCompile>
+    <ClCompile Include="Phases\Programs\BattleCompletion\BattleCompletionPayload.cpp">
+      <Filter>Phases\BattleCompletion</Filter>
+    </ClCompile>
+    <ClCompile Include="Phases\Programs\BattleEndResults\BattleEndResultsPayload.cpp">
+      <Filter>Phases\BattleEndResults</Filter>
+    </ClCompile>
+    <ClCompile Include="Phases\Programs\BattleEndResults\BattleEndResultsReport.cpp">
+      <Filter>Phases\BattleEndResults</Filter>
     </ClCompile>
     <ClCompile Include="Runner\Script\PhaseScriptOpFormat.cpp">
       <Filter>Runner\VM</Filter>

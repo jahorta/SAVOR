@@ -9,6 +9,7 @@
 
 #include "Execution/ProgramDB/BattleContext/BattleContextProbePhaseRegistration.h"
 #include "Execution/ProgramDB/BattleSingleTurn/BattleSingleTurnPhaseRegistration.h"
+#include "Execution/ProgramDB/BattleEndResults/BattleEndResultsPhaseRegistration.h"
 #include "Execution/ProgramDB/SeedProbe/SeedProbePhaseRegistration.h"
 #include "Execution/ProgramDB/TasMovie/TasMoviePhaseRegistration.h"
 #include "Runner/IPC/Wire.h"
@@ -299,12 +300,28 @@ bool SavorDbRuntime::buildProgramRegistry(std::string* error_out) {
         analysis_db,
         std::move(battle_config));
 
+    savor::db::execution::programdb::battleend::BattleEndWorkflowPhaseRegistrationConfig battle_end_config{};
+    battle_end_config.authoring_db = authoring_db;
+    battle_end_config.working_dir_root = workspace_root / "battle-end-workflow";
+    savor::db::execution::programdb::battleend::RegisterBattleEndWorkflowPhaseDescriptors(
+        &program_registry_,
+        execution_db,
+        state_db,
+        analysis_db,
+        std::move(battle_end_config));
+
     if (!program_registry_.HasRequiredAdapters(static_cast<std::int32_t>(savor::PK_TasMovie))
         || !program_registry_.HasRequiredAdaptersForStepKind("tas_movie")
         || !program_registry_.HasRequiredAdaptersForStepKind("seed_probe_chain")
         || !program_registry_.HasRequiredAdaptersForStepKind("battle_chain")
         || !program_registry_.HasRequiredAdaptersForStepKind("battle.context_probe")
-        || !program_registry_.HasRequiredAdaptersForStepKind("battle.single_turn")) {
+        || !program_registry_.HasRequiredAdaptersForStepKind("battle.single_turn")
+        || !program_registry_.HasRequiredAdaptersForStepKind("battle.completion")
+        || !program_registry_.HasRequiredAdaptersForStepKind("battle.field_return_seed_probe")
+        || !program_registry_.HasRequiredAdaptersForStepKind("battle.field_return_seed_probe.grid")
+        || !program_registry_.HasRequiredAdaptersForStepKind("battle.field_return_seed_probe.unique")
+        || !program_registry_.HasRequiredAdaptersForStepKind("battle.field_return_seed_probe.materialize")
+        || !program_registry_.HasRequiredAdaptersForStepKind("battle.results_screen")) {
         if (error_out != nullptr) {
             *error_out = "Workflow program descriptor registration is incomplete";
         }

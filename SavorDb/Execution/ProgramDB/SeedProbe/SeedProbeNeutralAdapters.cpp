@@ -20,8 +20,16 @@ constexpr const char* kSavestateRefKind = "savestate";
 constexpr const char* kNeutralBootstrapProfile = "seedprobe.neutral.required_savestate";
 constexpr const char* kNeutralResultKind = "seedprobe.neutral_seed";
 
-std::string BuildNeutralFingerprint(std::int64_t probe_id, SeedProbeTimingConfig timing) {
-    return fingerprint_for(probe_id, savor::GCInputFrame{}.to_frame_hex(), timing.run_ms, timing.vi_stall_ms);
+std::string BuildNeutralFingerprint(
+    std::int64_t probe_id,
+    SeedProbeTimingConfig timing,
+    savor::seedprobe::SeedProbeTarget target) {
+    return fingerprint_for_target(
+        probe_id,
+        savor::GCInputFrame{}.to_frame_hex(),
+        timing.run_ms,
+        timing.vi_stall_ms,
+        target);
 }
 
 std::string ApplyTerminalJobStateFromResults(
@@ -60,10 +68,12 @@ std::string ApplyTerminalJobStateFromResults(
 NeutralProbeJobPersistenceAdapter::NeutralProbeJobPersistenceAdapter(
     savor::db::IExecutionDb* execution_db,
     savor::db::IAnalysisDb* analysis_db,
-    savor::db::IAuthoringDb* authoring_db)
+    savor::db::IAuthoringDb* authoring_db,
+    savor::seedprobe::SeedProbeTarget target)
     : execution_db_(execution_db)
     , analysis_db_(analysis_db)
-    , authoring_db_(authoring_db) {
+    , authoring_db_(authoring_db)
+    , target_(target) {
 }
 
 WorkflowStepScheduleResult NeutralProbeJobPersistenceAdapter::EncodeForQueueing(const WorkflowStepScheduleContext& context) const {
@@ -71,9 +81,11 @@ WorkflowStepScheduleResult NeutralProbeJobPersistenceAdapter::EncodeForQueueing(
     const std::int64_t domain_ref_id = context.domain_ref_id;
     auto& persisted = scheduled.persistence;
     persisted.program_ref_kind = kProgramRefKind;
-    persisted.program_version = kProgramVersion;
+    persisted.program_version = target_ == savor::seedprobe::SeedProbeTarget::PreBattle
+        ? kProgramVersion
+        : 2;
     const auto timing = resolve_timing_from_authoring_spec(analysis_db_, authoring_db_, domain_ref_id).value_or(SeedProbeTimingConfig{});
-    persisted.fingerprint = BuildNeutralFingerprint(domain_ref_id, timing);
+    persisted.fingerprint = BuildNeutralFingerprint(domain_ref_id, timing, target_);
     persisted.program_ref_id = domain_ref_id;
     std::int64_t probe_run_id = domain_ref_id;
 
@@ -185,9 +197,34 @@ ResultMapPayload NeutralSeedResultMapper::MapPrimaryResult(std::int64_t job_id, 
     }
 
     std::string error;
-    if (analysis_db_->SetSeedProbeRunNeutralSeed(probe_run->probe_run_id, parsed.rng_seed, &error)) {
-        payload.result_ref_id = probe_run->probe_run_id;
+    if (!analysis_db_->SetSeedProbeRunNeutralSeed(probe_run->probe_run_id, parsed.rng_seed, &error)) {
+        payload.event_lines.push_back("[seedprobe-neutral-row] ok=false stage=set_run error=" + error);
+        return payload;
     }
+    const auto probe_result_id = analysis_db_->LookupSeedProbeResultId(probe_run->probe_run_id);
+    bool inserted = false;
+    std::int64_t neutral_seed_id = 0;
+    if (!probe_result_id.has_value()
+        || !analysis_db_->EnsureSeedProbeNeutralSeed(
+            {
+                .probe_result_id = probe_result_id.value_or(0),
+                .neutral_seed_value = parsed.rng_seed,
+                .source_kind = "CALCULATED",
+                .recorded_at_utc = savor::db::types::UtcNow(),
+                .correlation_id = "seedprobe-run-" + std::to_string(probe_run->probe_run_id),
+                .causation_id = "job-" + std::to_string(job_id),
+            },
+            &inserted,
+            &neutral_seed_id,
+            &error)
+        || neutral_seed_id <= 0) {
+        payload.event_lines.push_back("[seedprobe-neutral-row] ok=false stage=ensure error=" + error);
+        return payload;
+    }
+    payload.result_ref_id = probe_run->probe_run_id;
+    payload.event_lines.push_back(
+        "[seedprobe-neutral-row] ok=true neutral_seed_id=" + std::to_string(neutral_seed_id)
+        + " inserted=" + (inserted ? "true" : "false"));
     return payload;
 }
 

@@ -37,6 +37,9 @@
     <Filter Include="Programs\BattleContext">
       <UniqueIdentifier>{69766586-b762-48aa-82f2-d7c1d55f19d8}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Programs\BattleEndResults">
+      <UniqueIdentifier>{2c3a9a29-094d-443c-b11b-24f377f866aa}</UniqueIdentifier>
+    </Filter>
     <Filter Include="Events">
       <UniqueIdentifier>{eaea1d7f-82da-49fe-bf80-63b3b74e5ba4}</UniqueIdentifier>
     </Filter>
@@ -226,6 +229,12 @@
     <ClInclude Include="Execution\ProgramDB\BattleContext\BattleContextProbePhaseRegistration.h">
       <Filter>Programs\BattleContext</Filter>
     </ClInclude>
+    <ClInclude Include="Execution\ProgramDB\BattleEndResults\BattleEndResultsAdapters.h">
+      <Filter>Programs\BattleEndResults</Filter>
+    </ClInclude>
+    <ClInclude Include="Execution\ProgramDB\BattleEndResults\BattleEndResultsPhaseRegistration.h">
+      <Filter>Programs\BattleEndResults</Filter>
+    </ClInclude>
     <ClInclude Include="UIRead\Projectors\AttachedUiReadProjectionService.h">
       <Filter>UiRead</Filter>
     </ClInclude>
@@ -390,6 +399,15 @@
     <ClCompile Include="Execution\ProgramDB\BattleContext\BattleContextProbePhaseRegistration.cpp">
       <Filter>Programs\BattleContext</Filter>
     </ClCompile>
+    <ClCompile Include="Execution\ProgramDB\BattleEndResults\BattleEndResultsAdapters.cpp">
+      <Filter>Programs\BattleEndResults</Filter>
+    </ClCompile>
+    <ClCompile Include="Execution\ProgramDB\BattleEndResults\BattleEndWorkflowAdapters.cpp">
+      <Filter>Programs\BattleEndResults</Filter>
+    </ClCompile>
+    <ClCompile Include="Execution\ProgramDB\BattleEndResults\BattleEndResultsPhaseRegistration.cpp">
+      <Filter>Programs\BattleEndResults</Filter>
+    </ClCompile>
     <ClCompile Include="UIRead\Projectors\AttachedUiReadProjectionService.cpp">
       <Filter>UiRead</Filter>
     </ClCompile>
@@ -435,7 +453,13 @@
     <None Include="migration\AnalysisBattle\202606171500_analysisbattle_turn_job_replication_facts.sql">
       <Filter>Migrations\Analysis</Filter>
     </None>
+    <None Include="migration\AnalysisBattle\202607211200_analysisbattle_battle_end_workflow.sql">
+      <Filter>Migrations\Analysis</Filter>
+    </None>
     <None Include="migration\AnalysisSeedProbe\202604051000_analysisseedprobe_stage2_schema.sql">
+      <Filter>Migrations\Analysis</Filter>
+    </None>
+    <None Include="migration\AnalysisSeedProbe\202607211100_analysisseedprobe_field_return_flavor.sql">
       <Filter>Migrations\Analysis</Filter>
     </None>
     <None Include="migration\AnalysisSpine\202604051000_analysisspine_stage2_schema.sql">
@@ -454,6 +478,9 @@
       <Filter>Migrations\Archive</Filter>
     </None>
     <None Include="migration\Archive\202606201100_archive_package_name_notes.sql">
+      <Filter>Migrations\Archive</Filter>
+    </None>
+    <None Include="migration\Archive\202607211300_archive_battle_end_workflow_kinds.sql">
       <Filter>Migrations\Archive</Filter>
     </None>
     <None Include="migration\Authoring\202604051000_authoring_stage2_schema.sql">

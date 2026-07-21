@@ -29,7 +29,7 @@ struct EventDispatchBinding {
     PayloadResolverContract contract = PayloadResolverContract::Unknown;
 };
 
-inline constexpr std::array<EventDispatchBinding, 48> kPayloadDispatchBindingsV1{ {
+inline constexpr std::array<EventDispatchBinding, 54> kPayloadDispatchBindingsV1{ {
     { { "Execution.JobSetCreated.v1", 1 }, PayloadResolverContract::ExecutionWorkflowJobV1 },
     { { "Execution.JobQueued.v1", 1 }, PayloadResolverContract::ExecutionWorkflowJobV1 },
     { { "Execution.JobClaimed.v1", 1 }, PayloadResolverContract::ExecutionWorkflowJobV1 },
@@ -66,6 +66,12 @@ inline constexpr std::array<EventDispatchBinding, 48> kPayloadDispatchBindingsV1
     { { "AnalysisBattle.BattleAdvancementPoolCreated.v1", 1 }, PayloadResolverContract::AnalysisBattleV1 },
     { { "AnalysisBattle.BattleAdvancementDecisionRecorded.v1", 1 }, PayloadResolverContract::AnalysisBattleV1 },
     { { "AnalysisBattle.ManualFollowupUpdated.v1", 1 }, PayloadResolverContract::AnalysisBattleV1 },
+    { { "AnalysisBattle.BattleCompletionCreated.v1", 1 }, PayloadResolverContract::AnalysisBattleV1 },
+    { { "AnalysisBattle.BattleCompletionCompleted.v1", 1 }, PayloadResolverContract::AnalysisBattleV1 },
+    { { "AnalysisBattle.BattleCompletionFailed.v1", 1 }, PayloadResolverContract::AnalysisBattleV1 },
+    { { "AnalysisBattle.BattleResultsCreated.v1", 1 }, PayloadResolverContract::AnalysisBattleV1 },
+    { { "AnalysisBattle.BattleResultsCompleted.v1", 1 }, PayloadResolverContract::AnalysisBattleV1 },
+    { { "AnalysisBattle.BattleResultsFailed.v1", 1 }, PayloadResolverContract::AnalysisBattleV1 },
     { { "Authoring.SeedProbeSpecSaved.v1", 1 }, PayloadResolverContract::AuthoringV1 },
     { { "Authoring.TasSpecSaved.v1", 1 }, PayloadResolverContract::AuthoringV1 },
     { { "Authoring.BattleRunSpecSaved.v1", 1 }, PayloadResolverContract::AuthoringV1 },

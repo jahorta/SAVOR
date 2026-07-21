@@ -862,6 +862,271 @@ TEST_F(SqliteDbFixture, BattleContextProbeEnqueueUsesWorkflowStepPriority) {
         42);
 }
 
+TEST_F(SqliteDbFixture, BattleContextProbeTransitionSpawnsDirectWaveFromSuccessfulOutputProbe) {
+    using namespace savor::db;
+    using namespace savor::db::execution::programdb;
+    using namespace savor::db::execution::programdb::battlecontext;
+
+    auto* analysis_db = db_service_->AnalysisDb();
+    ASSERT_NE(analysis_db, nullptr);
+
+    const auto now = types::UtcTimePoint(std::chrono::milliseconds(1781000000150));
+    std::string err;
+
+    std::int64_t battle_set_id = 0;
+    ASSERT_TRUE(analysis_db->CreateBattleSet(
+        {
+            .name = "direct-context-transition-set",
+            .entry_savestate_id = 101,
+            .battle_run_spec_id = 202,
+            .explorer_settings_id = 303,
+            .status = BattleSetStatus::Active,
+            .created_at_utc = now,
+            .correlation_id = "direct-context-transition",
+            .causation_id = "test",
+        },
+        &battle_set_id,
+        &err)) << err;
+
+    std::int64_t seed_candidate_id = 0;
+    ASSERT_TRUE(analysis_db->AddBattleSeedCandidate(
+        {
+            .battle_set_id = battle_set_id,
+            .seed_value = 12345,
+            .source_kind = BattleSeedCandidateSourceKind::Synthetic,
+            .candidate_status = BattleSeedCandidateStatus::Ready,
+            .created_at_utc = now,
+            .correlation_id = "direct-context-transition",
+            .causation_id = "test",
+        },
+        &seed_candidate_id,
+        &err)) << err;
+
+    std::int64_t wave_id = 0;
+    ASSERT_TRUE(analysis_db->CreateBattleTurnWave(
+        {
+            .battle_set_id = battle_set_id,
+            .turn_index = 1,
+            .seed_candidate_id = seed_candidate_id,
+            .status = BattleTurnWaveStatus::Ready,
+            .created_at_utc = now,
+            .correlation_id = "direct-context-transition",
+            .causation_id = "test",
+        },
+        &wave_id,
+        &err)) << err;
+
+    std::int64_t context_probe_id = 0;
+    ASSERT_TRUE(analysis_db->CreateBattleContextProbe(
+        {
+            .wave_id = wave_id,
+            .source_savestate_id = 101,
+            .probe_status = BattleContextProbeStatus::Queued,
+            .created_at_utc = now,
+            .correlation_id = "direct-context-transition",
+            .causation_id = "test",
+        },
+        &context_probe_id,
+        &err)) << err;
+    ASSERT_TRUE(analysis_db->SetBattleContextProbeExecJobId(context_probe_id, 9301, &err)) << err;
+    ASSERT_TRUE(analysis_db->CompleteBattleContextProbe(
+        {
+            .exec_job_id = 9301,
+            .probe_status = BattleContextProbeStatus::Succeeded,
+            .context_blob = std::string("context"),
+            .context_version = 1,
+            .recorded_at_utc = now,
+        },
+        &err)) << err;
+
+    ASSERT_TRUE(analysis_db->ListBattleTurnWavesForContextProbe(context_probe_id).empty());
+    const auto stored_wave = analysis_db->GetBattleTurnWave(wave_id);
+    ASSERT_TRUE(stored_wave.has_value());
+    EXPECT_FALSE(stored_wave->context_probe_id.has_value());
+
+    const auto descriptor = BuildBattleContextProbeDescriptor(nullptr, analysis_db, {});
+    ASSERT_NE(descriptor.workflow_transition, nullptr);
+    const auto decision = descriptor.workflow_transition->EvaluateTransition(
+        WorkflowTransitionContext{
+            .workflow_kind = "workflow_graph",
+            .step_key = "battle_context_1",
+            .input_ref_kind = std::string("analysis_battle.turn_wave"),
+            .input_ref_id = wave_id,
+            .output_ref_kind = std::string("analysisbattle.context_probe"),
+            .output_ref_id = context_probe_id,
+        });
+
+    ASSERT_TRUE(decision.should_advance);
+    EXPECT_FALSE(decision.blocked_reason.has_value());
+    ASSERT_EQ(decision.spawn_steps.size(), 1);
+    EXPECT_EQ(decision.spawn_steps[0].step_key, "BattleTurn/t1/w" + std::to_string(wave_id));
+    EXPECT_EQ(decision.spawn_steps[0].step_kind, "battle.single_turn");
+    EXPECT_EQ(decision.spawn_steps[0].input_ref_kind.value_or(""), "analysis_battle.turn_wave");
+    EXPECT_EQ(decision.spawn_steps[0].input_ref_id.value_or(0), wave_id);
+
+    const auto mismatch = descriptor.workflow_transition->EvaluateTransition(
+        WorkflowTransitionContext{
+            .workflow_kind = "workflow_graph",
+            .step_key = "battle_context_1",
+            .input_ref_kind = std::string("analysis_battle.turn_wave"),
+            .input_ref_id = wave_id + 1,
+            .output_ref_kind = std::string("analysisbattle.context_probe"),
+            .output_ref_id = context_probe_id,
+        });
+    EXPECT_FALSE(mismatch.should_advance);
+    EXPECT_EQ(mismatch.blocked_reason.value_or(""), "context_probe_wave_mismatch");
+    EXPECT_TRUE(mismatch.spawn_steps.empty());
+}
+
+TEST_F(SqliteDbFixture, BattleContextProbeTransitionPreservesBootstrapWaveFanout) {
+    using namespace savor::db;
+    using namespace savor::db::execution::programdb;
+    using namespace savor::db::execution::programdb::battlecontext;
+
+    auto* analysis_db = db_service_->AnalysisDb();
+    ASSERT_NE(analysis_db, nullptr);
+
+    const auto now = types::UtcTimePoint(std::chrono::milliseconds(1781000000160));
+    std::string err;
+
+    std::int64_t context_probe_id = 0;
+    ASSERT_TRUE(analysis_db->CreateBattleContextProbe(
+        {
+            .wave_id = 0,
+            .source_savestate_id = 101,
+            .probe_status = BattleContextProbeStatus::Queued,
+            .created_at_utc = now,
+            .correlation_id = "bootstrap-context-transition",
+            .causation_id = "test",
+        },
+        &context_probe_id,
+        &err)) << err;
+    ASSERT_TRUE(analysis_db->SetBattleContextProbeExecJobId(context_probe_id, 9302, &err)) << err;
+    ASSERT_TRUE(analysis_db->CompleteBattleContextProbe(
+        {
+            .exec_job_id = 9302,
+            .probe_status = BattleContextProbeStatus::Succeeded,
+            .context_blob = std::string("context"),
+            .context_version = 1,
+            .recorded_at_utc = now,
+        },
+        &err)) << err;
+
+    std::int64_t battle_set_id = 0;
+    ASSERT_TRUE(analysis_db->CreateBattleSet(
+        {
+            .name = "bootstrap-context-transition-set",
+            .entry_savestate_id = 101,
+            .battle_run_spec_id = 202,
+            .explorer_settings_id = 303,
+            .status = BattleSetStatus::Active,
+            .created_at_utc = now,
+            .correlation_id = "bootstrap-context-transition",
+            .causation_id = "test",
+        },
+        &battle_set_id,
+        &err)) << err;
+
+    std::int64_t seed_candidate_id = 0;
+    ASSERT_TRUE(analysis_db->AddBattleSeedCandidate(
+        {
+            .battle_set_id = battle_set_id,
+            .seed_value = 12345,
+            .source_kind = BattleSeedCandidateSourceKind::Synthetic,
+            .candidate_status = BattleSeedCandidateStatus::Ready,
+            .created_at_utc = now,
+            .correlation_id = "bootstrap-context-transition",
+            .causation_id = "test",
+        },
+        &seed_candidate_id,
+        &err)) << err;
+
+    std::int64_t first_wave_id = 0;
+    std::int64_t second_wave_id = 0;
+    for (auto* wave_id : { &first_wave_id, &second_wave_id }) {
+        ASSERT_TRUE(analysis_db->CreateBattleTurnWave(
+            {
+                .battle_set_id = battle_set_id,
+                .turn_index = 1,
+                .context_probe_id = context_probe_id,
+                .seed_candidate_id = seed_candidate_id,
+                .status = BattleTurnWaveStatus::Ready,
+                .created_at_utc = now,
+                .correlation_id = "bootstrap-context-transition",
+                .causation_id = "test",
+            },
+            wave_id,
+            &err)) << err;
+    }
+
+    const auto descriptor = BuildBattleContextProbeDescriptor(nullptr, analysis_db, {});
+    ASSERT_NE(descriptor.workflow_transition, nullptr);
+    const auto decision = descriptor.workflow_transition->EvaluateTransition(
+        WorkflowTransitionContext{
+            .workflow_kind = "workflow_graph",
+            .step_key = "battle_context_1",
+            .output_ref_kind = std::string("analysisbattle.context_probe"),
+            .output_ref_id = context_probe_id,
+        });
+
+    ASSERT_TRUE(decision.should_advance);
+    EXPECT_FALSE(decision.blocked_reason.has_value());
+    ASSERT_EQ(decision.spawn_steps.size(), 2);
+    EXPECT_EQ(decision.spawn_steps[0].input_ref_id.value_or(0), first_wave_id);
+    EXPECT_EQ(decision.spawn_steps[1].input_ref_id.value_or(0), second_wave_id);
+    EXPECT_EQ(decision.spawn_steps[0].step_kind, "battle.single_turn");
+    EXPECT_EQ(decision.spawn_steps[1].step_kind, "battle.single_turn");
+}
+
+TEST_F(SqliteDbFixture, BattleContextProbeTransitionBlocksWithoutAnyWaveRelationship) {
+    using namespace savor::db;
+    using namespace savor::db::execution::programdb;
+    using namespace savor::db::execution::programdb::battlecontext;
+
+    auto* analysis_db = db_service_->AnalysisDb();
+    ASSERT_NE(analysis_db, nullptr);
+
+    const auto now = types::UtcTimePoint(std::chrono::milliseconds(1781000000170));
+    std::string err;
+
+    std::int64_t context_probe_id = 0;
+    ASSERT_TRUE(analysis_db->CreateBattleContextProbe(
+        {
+            .wave_id = 0,
+            .source_savestate_id = 101,
+            .probe_status = BattleContextProbeStatus::Queued,
+            .created_at_utc = now,
+            .correlation_id = "missing-context-transition",
+            .causation_id = "test",
+        },
+        &context_probe_id,
+        &err)) << err;
+    ASSERT_TRUE(analysis_db->SetBattleContextProbeExecJobId(context_probe_id, 9303, &err)) << err;
+    ASSERT_TRUE(analysis_db->CompleteBattleContextProbe(
+        {
+            .exec_job_id = 9303,
+            .probe_status = BattleContextProbeStatus::Succeeded,
+            .context_blob = std::string("context"),
+            .context_version = 1,
+            .recorded_at_utc = now,
+        },
+        &err)) << err;
+
+    const auto descriptor = BuildBattleContextProbeDescriptor(nullptr, analysis_db, {});
+    ASSERT_NE(descriptor.workflow_transition, nullptr);
+    const auto decision = descriptor.workflow_transition->EvaluateTransition(
+        WorkflowTransitionContext{
+            .workflow_kind = "workflow_graph",
+            .step_key = "battle_context_1",
+            .output_ref_kind = std::string("analysisbattle.context_probe"),
+            .output_ref_id = context_probe_id,
+        });
+
+    EXPECT_FALSE(decision.should_advance);
+    EXPECT_EQ(decision.blocked_reason.value_or(""), "context_probe_waves_missing");
+    EXPECT_TRUE(decision.spawn_steps.empty());
+}
+
 TEST_F(SqliteDbFixture, BattleSingleTurnEnqueueUsesWorkflowStepPriority) {
     using namespace savor::db;
     using namespace savor::db::execution::programdb;
@@ -3049,6 +3314,7 @@ VALUES(1830, 1829, 'Neutral', 'seedprobe.neutral', 'MATERIALIZED', 1831, 8, 0, 2
 
     const auto record = execution_db.GetJob(job_id);
     ASSERT_TRUE(record.has_value());
+    EXPECT_EQ(record->program_kind, 7);
     EXPECT_EQ(record->state, "QUEUED");
 
     std::string claim_error;
@@ -6781,6 +7047,211 @@ VALUES(9102,'SEED_PROBE','COMPLETED','COMPLETED','job_set','test',1000,2000,0);
     std::filesystem::remove_all(temp_root);
 }
 
+TEST_F(SqliteDbFixture, Stage4WorkflowArchiveRehydrateRestoresBattleEndAggregatesSeedAncestryAndDerivations) {
+    using namespace savor::db;
+    using namespace savor::db::archive;
+    using namespace savor::db::migrations;
+
+    const MigrationSourceOptions embedded_options{ .source_kind = MigrationSourceKind::Embedded };
+    std::string err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Execution, embedded_options, &err)) << err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::State, embedded_options, &err)) << err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::AnalysisSeedProbe, embedded_options, &err)) << err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::AnalysisBattle, embedded_options, &err)) << err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::UIRead, embedded_options, &err)) << err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Archive, embedded_options, &err)) << err;
+
+    const auto temp_root = std::filesystem::temp_directory_path()
+        / ("savor-battle-end-roundtrip-"
+            + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    ASSERT_TRUE(std::filesystem::create_directories(temp_root));
+    const auto sav_path = temp_root / "battle-end-shared.sav";
+    {
+        std::ofstream out(sav_path, std::ios::binary | std::ios::trunc);
+        out << "battle-end-roundtrip-savestate";
+        ASSERT_TRUE(out.good());
+    }
+    const auto sav_sha = hash::sha256_of_file(sav_path.string());
+    const auto sav_size = static_cast<std::int64_t>(std::filesystem::file_size(sav_path));
+    const auto state_sql = std::string(
+        "INSERT INTO state_artifact(artifact_id,sha256,size_bytes,compression_kind,filename,file_ext,artifact_kind,created_at_utc) "
+        "VALUES(70,'") + sav_sha + "'," + std::to_string(sav_size) + ",0,'"
+        + sav_path.generic_string() + "','.sav','SAV',1000);"
+        "INSERT INTO state_savestate(savestate_id,artifact_id,savestate_type,note,is_complete,created_at_utc) VALUES"
+        "(701,70,'BATTLE','victory',1,1000),"
+        "(702,70,'BATTLE_COMPLETION','completion',1,1100),"
+        "(703,70,'FIELD_RETURN_SEEDED','seeded',1,1200),"
+        "(704,70,'FIELD','results complete',1,1300);";
+    ASSERT_TRUE(ExecSql(db_, state_sql.c_str()));
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+INSERT INTO exec_workflow_instance(workflow_instance_id,workflow_kind,state,root_scope_kind,created_by,created_at_utc,completed_at_utc)
+VALUES(9200,'BATTLE_END','COMPLETED','manual','test',1000,2000);
+INSERT INTO exec_workflow_step(workflow_step_id,workflow_instance_id,step_key,graph_node_key,step_kind,state,priority,attempts,max_attempts,input_ref_kind,input_ref_id,output_ref_kind,output_ref_id,created_at_utc,completed_at_utc)
+VALUES(9201,9200,'completion','completion','battle.completion','COMPLETED',0,1,1,'state.savestate',701,'analysis_battle.battle_completion',9300,1000,1100),
+      (9202,9200,'seed','seed','battle.field_return_seed_probe','COMPLETED',0,1,1,'sp_probe_run',9010,'state.savestate',703,1100,1200),
+      (9203,9200,'results','results','battle.results_screen','COMPLETED',0,1,1,'analysis_battle.battle_completion',9300,'analysis_battle.battle_results',9400,1200,1300);
+INSERT INTO ui_workflow_instance(workflow_instance_id,workflow_kind,state,display_state,root_scope_kind,created_by,created_at_utc,completed_at_utc,battle_final_victory_count)
+VALUES(9200,'BATTLE_END','COMPLETED','COMPLETED','manual','test',1000,2000,1);
+
+INSERT INTO sp_probe_set(probe_set_id,name,probe_flavor,breakpoint_policy_name,segment_source_kind,created_at_utc)
+VALUES(9000,'field-return-roundtrip','FIELD_RETURN','battle-end-results','workflow',1000);
+INSERT INTO an_input_set(input_set_id,content_hash,source_ref_kind,source_ref_id,created_at_utc)
+VALUES(9001,'field-return-roundtrip-input','sp_probe_run',9010,1000);
+INSERT INTO sp_probe_run(probe_run_id,probe_set_id,entry_savestate_id,seed_probe_spec_id,codec_version,status,unique_input_set_id,requested_at_utc,completed_at_utc,launch_samples_per_axis)
+VALUES(9010,9000,702,1,2,'COMPLETED',9001,1100,1200,1);
+INSERT INTO sp_probe_result(probe_result_id,probe_run_id,neutral_seed_value,grid_count,unique_count,result_status,recorded_at_utc)
+VALUES(9020,9010,333,0,0,'COMPLETED',1200);
+INSERT INTO sp_neutral_seed(neutral_seed_id,probe_result_id,neutral_seed_value,source_kind,recorded_at_utc)
+VALUES(9030,9020,333,'CALCULATED',1200);
+
+INSERT INTO ab_battle_completion(
+    battle_completion_id,workflow_instance_id,workflow_step_id,entry_savestate_id,completion_savestate_id,
+    entry_rng_seed,completion_rng_seed,manifest_version,manifest_blob,mismatch_count,invariant_failure_count,
+    status,created_at_utc,completed_at_utc)
+VALUES(9300,9200,9201,701,702,111,222,1,X'42434D4200FF',0,0,'COMPLETED',1000,1100);
+INSERT INTO ab_battle_results(
+    battle_results_id,battle_completion_id,workflow_instance_id,workflow_step_id,selected_seed_ref_kind,
+    selected_seed_ref_id,entry_savestate_id,final_savestate_id,selected_seed_value,entry_rng_seed,final_rng_seed,
+    rng_effect_kind,fixed_draw_count,mismatch_count,invariant_failure_count,status,created_at_utc,completed_at_utc)
+VALUES(9400,9300,9200,9203,'analysisseedprobe.neutral_seed',9030,703,704,333,333,333,
+       'PRESERVE',0,0,0,'COMPLETED',1200,1300);
+
+INSERT INTO state_savestate_derivation(
+    derivation_id,from_savestate_id,to_savestate_id,method_kind,source_context_kind,source_context_id,created_at_utc)
+VALUES(9501,701,702,'battle_completion','analysis_battle.battle_completion',9300,1100),
+      (9502,702,703,'field_return_seed_materialization','analysisseedprobe.neutral_seed',9030,1200),
+      (9503,703,704,'battle_results','analysis_battle.battle_results',9400,1300);
+)SQL"));
+
+    execution::workflow::SqliteExecutionDb execution_db(db_);
+    SqliteUiReadDb ui_read_db(db_);
+    SqliteArchiveDb archive_db(db_);
+    SqliteArchivePackageService package_service(
+        db_,
+        &execution_db,
+        &ui_read_db,
+        &archive_db,
+        DbConfigPaths{ .archive_store_root = temp_root },
+        db_,
+        db_,
+        db_);
+    const auto now = types::UtcTimePoint(std::chrono::milliseconds(1712304000000));
+    const auto package = package_service.CreateWorkflowPackage({
+        .selection = { .workflow_instance_ids = {9200} },
+        .created_at_utc = now,
+        .correlation_id = "battle-end-roundtrip",
+        .causation_id = "battle-end-roundtrip",
+    });
+    ASSERT_TRUE(package.success) << package.error.value_or("unknown error");
+    EXPECT_EQ(ReadInt64(db_, ("SELECT item_count FROM ar_archive_item WHERE archive_package_id="
+        + std::to_string(package.archive_package_id)
+        + " AND item_kind='analysis_battle_completions';").c_str()), 1);
+    EXPECT_EQ(ReadInt64(db_, ("SELECT item_count FROM ar_archive_item WHERE archive_package_id="
+        + std::to_string(package.archive_package_id)
+        + " AND item_kind='analysis_battle_results';").c_str()), 1);
+    EXPECT_EQ(ReadInt64(db_, ("SELECT item_count FROM ar_archive_item WHERE archive_package_id="
+        + std::to_string(package.archive_package_id)
+        + " AND item_kind='analysis_seed_probe_runs';").c_str()), 1);
+    EXPECT_EQ(ReadInt64(db_, ("SELECT item_count FROM ar_archive_item WHERE archive_package_id="
+        + std::to_string(package.archive_package_id)
+        + " AND item_kind='state_savestate_derivations';").c_str()), 3);
+
+    std::int64_t request_id = 0;
+    ASSERT_TRUE(archive_db.RequestRehydrate(
+        {
+            .archive_package_id = package.archive_package_id,
+            .status = "REQUESTED",
+            .requested_at_utc = now,
+            .target_namespace = "battle-end-roundtrip",
+            .correlation_id = "battle-end-roundtrip",
+            .causation_id = "battle-end-roundtrip",
+        },
+        &request_id,
+        &err)) << err;
+    SqliteRehydrateExecutor rehydrate_executor(db_, db_, &archive_db, temp_root, db_, db_);
+    const auto rehydrated = rehydrate_executor.Execute({
+        .rehydrate_request_id = request_id,
+        .now_utc = now,
+        .correlation_id = "battle-end-roundtrip",
+        .causation_id = "battle-end-roundtrip",
+    });
+    ASSERT_TRUE(rehydrated.success) << rehydrated.error.value_or("unknown error");
+
+    const auto mapped = [&](const std::string& kind, std::int64_t old_id) {
+        return ReadInt64(db_, ("SELECT CAST(new_id AS INTEGER) FROM ar_rehydrate_map WHERE entity_kind='"
+            + kind + "' AND old_id='" + std::to_string(old_id)
+            + "' ORDER BY rehydrate_map_id DESC LIMIT 1;").c_str());
+    };
+    const auto new_workflow = mapped("workflow_instance", 9200);
+    const auto new_completion_step = mapped("workflow_step", 9201);
+    const auto new_results_step = mapped("workflow_step", 9203);
+    const auto new_probe_run = mapped("analysis_seed_probe_run", 9010);
+    const auto new_neutral_seed = mapped("analysis_seed_probe_neutral_seed", 9030);
+    const auto new_completion = mapped("analysis_battle_completion", 9300);
+    const auto new_results = mapped("analysis_battle_results", 9400);
+    const auto new_entry_state = mapped("state_savestate", 701);
+    const auto new_completion_state = mapped("state_savestate", 702);
+    const auto new_seeded_state = mapped("state_savestate", 703);
+    const auto new_final_state = mapped("state_savestate", 704);
+    for (const auto id : {new_workflow, new_completion_step, new_results_step, new_probe_run,
+             new_neutral_seed, new_completion, new_results, new_entry_state, new_completion_state,
+             new_seeded_state, new_final_state}) {
+        ASSERT_GT(id, 0);
+    }
+
+    EXPECT_EQ(ReadInt64(db_, ("SELECT workflow_instance_id FROM ab_battle_completion WHERE battle_completion_id="
+        + std::to_string(new_completion) + ";").c_str()), new_workflow);
+    EXPECT_EQ(ReadInt64(db_, ("SELECT workflow_step_id FROM ab_battle_completion WHERE battle_completion_id="
+        + std::to_string(new_completion) + ";").c_str()), new_completion_step);
+    EXPECT_EQ(ReadInt64(db_, ("SELECT completion_savestate_id FROM ab_battle_completion WHERE battle_completion_id="
+        + std::to_string(new_completion) + ";").c_str()), new_completion_state);
+    EXPECT_EQ(ReadText(db_, ("SELECT hex(manifest_blob) FROM ab_battle_completion WHERE battle_completion_id="
+        + std::to_string(new_completion) + ";").c_str()), "42434D4200FF");
+
+    EXPECT_EQ(ReadInt64(db_, ("SELECT battle_completion_id FROM ab_battle_results WHERE battle_results_id="
+        + std::to_string(new_results) + ";").c_str()), new_completion);
+    EXPECT_EQ(ReadInt64(db_, ("SELECT workflow_instance_id FROM ab_battle_results WHERE battle_results_id="
+        + std::to_string(new_results) + ";").c_str()), new_workflow);
+    EXPECT_EQ(ReadInt64(db_, ("SELECT workflow_step_id FROM ab_battle_results WHERE battle_results_id="
+        + std::to_string(new_results) + ";").c_str()), new_results_step);
+    EXPECT_EQ(ReadInt64(db_, ("SELECT selected_seed_ref_id FROM ab_battle_results WHERE battle_results_id="
+        + std::to_string(new_results) + ";").c_str()), new_neutral_seed);
+    EXPECT_EQ(ReadInt64(db_, ("SELECT entry_savestate_id FROM ab_battle_results WHERE battle_results_id="
+        + std::to_string(new_results) + ";").c_str()), new_seeded_state);
+    EXPECT_EQ(ReadInt64(db_, ("SELECT final_savestate_id FROM ab_battle_results WHERE battle_results_id="
+        + std::to_string(new_results) + ";").c_str()), new_final_state);
+    EXPECT_EQ(ReadText(db_, ("SELECT selected_seed_ref_kind FROM ab_battle_results WHERE battle_results_id="
+        + std::to_string(new_results) + ";").c_str()), "analysisseedprobe.neutral_seed");
+
+    EXPECT_EQ(ReadInt64(db_, ("SELECT entry_savestate_id FROM sp_probe_run WHERE probe_run_id="
+        + std::to_string(new_probe_run) + ";").c_str()), new_completion_state);
+    EXPECT_EQ(ReadText(db_, ("SELECT ps.probe_flavor FROM sp_probe_run pr JOIN sp_probe_set ps "
+        "ON ps.probe_set_id=pr.probe_set_id WHERE pr.probe_run_id="
+        + std::to_string(new_probe_run) + ";").c_str()), "FIELD_RETURN");
+    EXPECT_EQ(ReadInt64(db_, ("SELECT COUNT(1) FROM sp_neutral_seed n JOIN sp_probe_result r "
+        "ON r.probe_result_id=n.probe_result_id WHERE n.neutral_seed_id="
+        + std::to_string(new_neutral_seed) + " AND r.probe_run_id="
+        + std::to_string(new_probe_run) + ";").c_str()), 1);
+
+    EXPECT_EQ(ReadInt64(db_, ("SELECT COUNT(1) FROM state_savestate_derivation WHERE from_savestate_id="
+        + std::to_string(new_entry_state) + " AND to_savestate_id="
+        + std::to_string(new_completion_state)
+        + " AND source_context_kind='analysis_battle.battle_completion' AND source_context_id="
+        + std::to_string(new_completion) + ";").c_str()), 1);
+    EXPECT_EQ(ReadInt64(db_, ("SELECT COUNT(1) FROM state_savestate_derivation WHERE from_savestate_id="
+        + std::to_string(new_completion_state) + " AND to_savestate_id="
+        + std::to_string(new_seeded_state)
+        + " AND source_context_kind='analysisseedprobe.neutral_seed' AND source_context_id="
+        + std::to_string(new_neutral_seed) + ";").c_str()), 1);
+    EXPECT_EQ(ReadInt64(db_, ("SELECT COUNT(1) FROM state_savestate_derivation WHERE from_savestate_id="
+        + std::to_string(new_seeded_state) + " AND to_savestate_id="
+        + std::to_string(new_final_state)
+        + " AND source_context_kind='analysis_battle.battle_results' AND source_context_id="
+        + std::to_string(new_results) + ";").c_str()), 1);
+
+    std::filesystem::remove_all(temp_root);
+}
+
 TEST_F(SqliteDbFixture, Stage4WorkflowArchiveRehydrateRejectsCorruptSavestateZipBytes) {
     using namespace savor::db;
     using namespace savor::db::archive;
@@ -7390,6 +7861,81 @@ VALUES(4010,'BATTLE_RUN','COMPLETED','COMPLETED','manual','test',1000,2000,0),
     std::filesystem::remove_all(temp_root);
 }
 
+TEST_F(SqliteDbFixture, Stage4WorkflowArchivePurgeBlocksExternalBattleEndAggregateReference) {
+    using namespace savor::db;
+    using namespace savor::db::migrations;
+
+    const MigrationSourceOptions embedded_options{ .source_kind = MigrationSourceKind::Embedded };
+    std::string err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Execution, embedded_options, &err)) << err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::AnalysisBattle, embedded_options, &err)) << err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::State, embedded_options, &err)) << err;
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+INSERT INTO exec_workflow_instance(workflow_instance_id,workflow_kind,state,root_scope_kind,created_by,created_at_utc,completed_at_utc)
+VALUES(4510,'BATTLE_END','COMPLETED','manual','test',1000,2000),
+      (4520,'FOLLOWUP','COMPLETED','manual','test',1000,2000);
+INSERT INTO exec_workflow_step(workflow_step_id,workflow_instance_id,step_key,step_kind,state,priority,attempts,max_attempts,output_ref_kind,output_ref_id,created_at_utc,completed_at_utc)
+VALUES(4511,4510,'completion','battle.completion','COMPLETED',0,0,1,'analysis_battle.battle_completion',7001,1000,2000);
+INSERT INTO exec_workflow_step(workflow_step_id,workflow_instance_id,step_key,step_kind,state,priority,attempts,max_attempts,input_ref_kind,input_ref_id,created_at_utc,completed_at_utc)
+VALUES(4521,4520,'consumer','future.phase','COMPLETED',0,0,1,'analysis_battle.battle_completion',7001,1000,2000);
+INSERT INTO ab_battle_completion(battle_completion_id,workflow_instance_id,workflow_step_id,entry_savestate_id,status,created_at_utc)
+VALUES(7001,4510,4511,9001,'QUEUED',1000);
+)SQL"));
+
+    execution::workflow::SqliteExecutionDb execution_db(db_);
+    archive::SqliteArchivePackageService package_service(
+        db_, &execution_db, nullptr, nullptr, DbConfigPaths{}, db_, db_, nullptr);
+    const auto purge = package_service.PurgeWorkflowArchiveSource(
+        {.workflow_instance_ids = {4510}, .explicit_exclusions = {4520}}, 1, &err);
+    EXPECT_FALSE(purge.success);
+    ASSERT_FALSE(purge.blockers.empty());
+    EXPECT_NE(purge.blockers.front().find("unselected workflow"), std::string::npos);
+    EXPECT_EQ(ReadInt64(db_, "SELECT COUNT(1) FROM ab_battle_completion WHERE battle_completion_id=7001;"), 1);
+    EXPECT_EQ(ReadInt64(db_, "SELECT COUNT(1) FROM exec_workflow_instance WHERE workflow_instance_id=4510;"), 1);
+    EXPECT_EQ(ReadInt64(db_, "SELECT COUNT(1) FROM exec_workflow_step WHERE workflow_step_id=4521;"), 1);
+}
+
+TEST_F(SqliteDbFixture, Stage4WorkflowArchivePurgeRetainsSeedProbeAncestrySharedByUnselectedWorkflow) {
+    using namespace savor::db;
+    using namespace savor::db::migrations;
+
+    const MigrationSourceOptions embedded_options{ .source_kind = MigrationSourceKind::Embedded };
+    std::string err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Execution, embedded_options, &err)) << err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::AnalysisSeedProbe, embedded_options, &err)) << err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::State, embedded_options, &err)) << err;
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+INSERT INTO exec_workflow_instance(workflow_instance_id,workflow_kind,state,root_scope_kind,created_by,created_at_utc,completed_at_utc)
+VALUES(4610,'BATTLE_END','COMPLETED','manual','test',1000,2000),
+      (4620,'FOLLOWUP','COMPLETED','manual','test',1000,2000);
+INSERT INTO exec_workflow_step(workflow_step_id,workflow_instance_id,step_key,step_kind,state,priority,attempts,max_attempts,input_ref_kind,input_ref_id,created_at_utc,completed_at_utc)
+VALUES(4611,4610,'seed','battle.field_return_seed_probe','COMPLETED',0,0,1,'sp_probe_run',8101,1000,2000),
+      (4621,4620,'seed-consumer','future.seed.consumer','COMPLETED',0,0,1,'sp_probe_run',8101,1000,2000);
+INSERT INTO sp_probe_set(probe_set_id,name,probe_flavor,breakpoint_policy_name,segment_source_kind,created_at_utc)
+VALUES(8001,'shared-field-return','FIELD_RETURN','test','test',1000);
+INSERT INTO an_input_set(input_set_id,source_ref_kind,source_ref_id,created_at_utc)
+VALUES(8051,'sp_probe_run',8101,1000);
+INSERT INTO sp_probe_run(probe_run_id,probe_set_id,entry_savestate_id,seed_probe_spec_id,codec_version,status,unique_input_set_id,requested_at_utc,completed_at_utc)
+VALUES(8101,8001,9001,1,2,'COMPLETED',8051,1000,2000);
+INSERT INTO sp_probe_result(probe_result_id,probe_run_id,neutral_seed_value,grid_count,unique_count,result_status,recorded_at_utc)
+VALUES(8201,8101,12345,0,0,'COMPLETED',2000);
+INSERT INTO sp_neutral_seed(neutral_seed_id,probe_result_id,neutral_seed_value,source_kind,recorded_at_utc)
+VALUES(8301,8201,12345,'CALCULATED',2000);
+)SQL"));
+
+    execution::workflow::SqliteExecutionDb execution_db(db_);
+    archive::SqliteArchivePackageService package_service(
+        db_, &execution_db, nullptr, nullptr, DbConfigPaths{}, db_, db_, nullptr);
+    const auto purge = package_service.PurgeWorkflowArchiveSource(
+        {.workflow_instance_ids = {4610}, .explicit_exclusions = {4620}}, 1, &err);
+    ASSERT_TRUE(purge.success) << purge.error.value_or(err);
+    EXPECT_EQ(ReadInt64(db_, "SELECT COUNT(1) FROM exec_workflow_instance WHERE workflow_instance_id=4610;"), 0);
+    EXPECT_EQ(ReadInt64(db_, "SELECT COUNT(1) FROM exec_workflow_instance WHERE workflow_instance_id=4620;"), 1);
+    EXPECT_EQ(ReadInt64(db_, "SELECT COUNT(1) FROM sp_probe_run WHERE probe_run_id=8101;"), 1);
+    EXPECT_EQ(ReadInt64(db_, "SELECT COUNT(1) FROM sp_probe_result WHERE probe_result_id=8201;"), 1);
+    EXPECT_EQ(ReadInt64(db_, "SELECT COUNT(1) FROM sp_neutral_seed WHERE neutral_seed_id=8301;"), 1);
+}
+
 TEST_F(SqliteDbFixture, Stage3Phase1DbContracts_TimeoutRetryOnceThenFailedTerminalState) {
     using namespace savor::db::execution::workflow;
 
@@ -7670,6 +8216,107 @@ TEST_F(SqliteDbFixture, Stage3cSeedProbeAdaptersUseAuthoringSpecTimingInFingerpr
     sqlite3_finalize(child_st);
     EXPECT_GT(child_count, 0);
     EXPECT_LE(max_child_expected, 1);
+}
+
+TEST_F(SqliteDbFixture, Stage3cSeedProbeNeutralResultMapperPersistsCalculatedNeutralSeedIdempotently) {
+    using namespace savor::db;
+    using namespace savor::db::execution::programdb::seedprobe;
+
+    auto* analysis_db = db_service_->AnalysisDb();
+    auto* execution_db = db_service_->ExecutionDb();
+    ASSERT_NE(analysis_db, nullptr);
+    ASSERT_NE(execution_db, nullptr);
+
+    std::string err;
+    std::int64_t probe_set_id = 0;
+    ASSERT_TRUE(analysis_db->CreateSeedProbeSet(
+        {
+            .name = "neutral mapper field-return probe set",
+            .probe_flavor = "FIELD_RETURN",
+            .breakpoint_policy_name = "field_return",
+            .segment_source_kind = "workflow_graph",
+            .created_at_utc = savor::db::types::UtcNow(),
+            .correlation_id = "test.seedprobe.neutral_mapper",
+            .causation_id = "test",
+        },
+        &probe_set_id,
+        &err))
+        << err;
+
+    std::int64_t probe_run_id = 0;
+    ASSERT_TRUE(analysis_db->RequestSeedProbeRun(
+        {
+            .probe_set_id = probe_set_id,
+            .entry_savestate_id = 77,
+            .seed_probe_spec_id = 1,
+            .codec_version = 2,
+            .status = "queued",
+            .requested_at_utc = savor::db::types::UtcNow(),
+            .correlation_id = "test.seedprobe.neutral_mapper",
+            .causation_id = "test",
+        },
+        &probe_run_id,
+        &err))
+        << err;
+
+    std::int64_t job_set_id = 0;
+    ASSERT_TRUE(execution_db->CreateJobSet(
+        {
+            .program_kind = 1,
+            .purpose = "Field Return SeedProbe Neutral",
+            .created_by = std::string("test"),
+            .expected_total = 1,
+            .domain_ref_kind = std::string("sp_probe_run"),
+            .domain_ref_id = probe_run_id,
+            .meta_note = std::string("phase=Neutral"),
+        },
+        &job_set_id,
+        &err))
+        << err;
+
+    std::int64_t job_id = 0;
+    ASSERT_TRUE(execution_db->EnqueueJob(
+        {
+            .job_set_id = job_set_id,
+            .program_kind = 1,
+            .program_version = 2,
+            .program_ref_kind = "sp_probe_run",
+            .program_ref_id = probe_run_id,
+            .fingerprint = "PK=1;PV=2;probe_run_id=" + std::to_string(probe_run_id),
+            .priority = 0,
+            .max_attempts = 1,
+        },
+        &job_id,
+        &err))
+        << err;
+
+    NeutralSeedResultMapper mapper(execution_db, analysis_db);
+    const std::string result_ini =
+        "[SeedProbe.Results]\n"
+        "w_err=0\n"
+        "dw_err=0\n"
+        "rng_seed=12345\n"
+        "vi_start=1\n"
+        "vi_end=2\n";
+    const auto payload = mapper.MapPrimaryResult(job_id, result_ini);
+    EXPECT_EQ(payload.result_kind, "seedprobe.neutral_seed");
+    EXPECT_EQ(payload.result_ref_id, probe_run_id);
+    ASSERT_FALSE(payload.event_lines.empty());
+    EXPECT_NE(payload.event_lines.back().find("[seedprobe-neutral-row] ok=true"), std::string::npos)
+        << payload.event_lines.back();
+
+    std::optional<SeedProbeNeutralSeedRow> neutral_row;
+    ASSERT_TRUE(analysis_db->TryGetSeedProbeNeutralSeedForRun(probe_run_id, &neutral_row, &err)) << err;
+    ASSERT_TRUE(neutral_row.has_value());
+    EXPECT_EQ(neutral_row->neutral_seed_value, 12345);
+    EXPECT_EQ(neutral_row->source_kind, "CALCULATED");
+
+    const auto replay = mapper.MapPrimaryResult(job_id, result_ini);
+    EXPECT_EQ(replay.result_ref_id, probe_run_id);
+    std::optional<SeedProbeNeutralSeedRow> replay_row;
+    ASSERT_TRUE(analysis_db->TryGetSeedProbeNeutralSeedForRun(probe_run_id, &replay_row, &err)) << err;
+    ASSERT_TRUE(replay_row.has_value());
+    EXPECT_EQ(replay_row->neutral_seed_id, neutral_row->neutral_seed_id);
 }
 
 TEST_F(SqliteDbFixture, Stage3cSeedProbeGridResultMapperPersistsGridSeedFromJobFingerprintWithoutInjectedContext) {

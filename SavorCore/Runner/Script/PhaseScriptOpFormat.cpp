@@ -25,7 +25,7 @@ constexpr bool IsValidCatalogue()
     return true;
 }
 
-static_assert(kOpcodeCatalogue.size() == 48);
+static_assert(kOpcodeCatalogue.size() == 50);
 static_assert(IsValidCatalogue());
 
 std::string CompareName(PSCmp cmp)

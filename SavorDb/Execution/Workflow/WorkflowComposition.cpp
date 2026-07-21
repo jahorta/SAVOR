@@ -244,6 +244,75 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
 
     (void)registry.RegisterUnit(
         WorkflowUnitDefinition{
+            .unit_kind = "battle_completion",
+            .display_name = "Battle Completion",
+            .description = "Consumes a BattleSingleTurn Victory state, applies rewards, and freezes the battle-completion manifest.",
+            .hidden = true,
+            .unit_variant = "battle",
+            .breakpoint_profile_key = "battle.completion",
+            .default_activation_params_json = "{}",
+            .required_inputs = {
+                Port("entry_savestate", "state.savestate_id", "Battle Victory savestate"),
+            },
+            .possible_outputs = {
+                Port("completion", "analysis_battle.battle_completion_id", "Battle completion"),
+            },
+            .internal_step_kinds = { "battle.completion" },
+            .step_templates = SingleStep("battle.completion"),
+        },
+        &ignored);
+
+    (void)registry.RegisterUnit(
+        WorkflowUnitDefinition{
+            .unit_kind = "field_return_seed_probe",
+            .display_name = "Field Return Seed Probe",
+            .description = "Selects and materializes one deterministic field-return reseed from a completed battle.",
+            .hidden = true,
+            .unit_variant = "field_return",
+            .breakpoint_profile_key = "seedprobe.field_return",
+            .default_activation_params_json = "{}",
+            .authored_refs = {
+                { .ref_kind = "seed_probe_spec", .display_name = "Seed probe spec" },
+            },
+            .required_inputs = {
+                Port("completion", "analysis_battle.battle_completion_id", "Battle completion"),
+            },
+            .possible_outputs = {
+                Port("seeded_savestate", "state.savestate_id", "Field-return seeded savestate"),
+            },
+            .internal_step_kinds = {
+                "battle.field_return_seed_probe",
+                "battle.field_return_seed_probe.grid",
+                "battle.field_return_seed_probe.unique",
+                "battle.field_return_seed_probe.materialize",
+            },
+            .step_templates = SingleStep("battle.field_return_seed_probe"),
+        },
+        &ignored);
+
+    (void)registry.RegisterUnit(
+        WorkflowUnitDefinition{
+            .unit_kind = "battle_results_screen",
+            .display_name = "Battle Results Screen",
+            .description = "Validates the completion manifest and accelerates the deterministic results presentation to BATTLE_END.",
+            .hidden = true,
+            .unit_variant = "battle",
+            .breakpoint_profile_key = "battle.results_screen",
+            .default_activation_params_json = "{}",
+            .required_inputs = {
+                Port("completion", "analysis_battle.battle_completion_id", "Battle completion"),
+                Port("seeded_savestate", "state.savestate_id", "Field-return seeded savestate"),
+            },
+            .possible_outputs = {
+                Port("terminal_savestate", "state.savestate_id", "Battle-end terminal savestate"),
+            },
+            .internal_step_kinds = { "battle.results_screen" },
+            .step_templates = SingleStep("battle.results_screen"),
+        },
+        &ignored);
+
+    (void)registry.RegisterUnit(
+        WorkflowUnitDefinition{
             .unit_kind = "overworld_explorer",
             .display_name = "Overworld Explorer",
             .description = "Placeholder contract for future overworld traversal from a terminal savestate.",

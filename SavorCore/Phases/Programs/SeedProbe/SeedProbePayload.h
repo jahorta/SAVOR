@@ -2,10 +2,24 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include <optional>
 
 #include "../../../Runner/Script/PhaseScriptProgram.h"   // PSContext
 
 namespace savor::seedprobe {
+
+    inline constexpr std::uint16_t LegacyPayloadVersion = 1;
+    inline constexpr std::uint16_t PayloadVersion = 2;
+
+    enum class SeedProbeTarget : std::uint32_t {
+        PreBattle = 0,
+        FieldReturn = 1,
+    };
+
+    enum class SeedProbeMode : std::uint32_t {
+        Observe = 0,
+        Materialize = 1,
+    };
 
 	// Program-local inputs that remain specific to SeedProbe
 
@@ -23,6 +37,10 @@ namespace savor::seedprobe {
 		GCInputFrame frame{};
 		uint32_t     run_ms{ 0 };        // 0 => derive from VM/script defaults
 		uint32_t     vi_stall_ms{ 0 };   // 0 => disabled
+		SeedProbeTarget target{SeedProbeTarget::PreBattle};
+		SeedProbeMode mode{SeedProbeMode::Observe};
+		std::optional<std::uint32_t> expected_seed;
+		std::string output_savestate_path;
 	};
 
 	// Parent-side: build payload bytes (first byte = PK_SeedProbe).

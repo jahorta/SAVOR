@@ -9,7 +9,7 @@
 
 namespace {
 
-constexpr std::array<std::string_view, 48> kStableIdentifiers{
+constexpr std::array<std::string_view, 50> kStableIdentifiers{
     "ARM_PHASE_BPS_ONCE",
     "LOAD_SNAPSHOT",
     "CAPTURE_SNAPSHOT",
@@ -58,6 +58,8 @@ constexpr std::array<std::string_view, 48> kStableIdentifiers{
     "ARM_CAPTURE_MEMORY_WATCHPOINTS",
     "RUN_UNTIL_DEBUG_STOP",
     "CAPTURE_SEED_OVERRIDE",
+    "MATERIALIZE_BATTLE_RESULTS_SCREEN_MACRO_STEPS",
+    "MATERIALIZE_BATTLE_COMPLETION_MACRO_STEPS",
 };
 
 } // namespace
@@ -108,7 +110,7 @@ TEST(PhaseScriptOpcodes, UnsupportedAndInvalidValuesFailClosed)
     EXPECT_EQ(unsupported_count, 1u);
 
     for (const auto invalid : {
-             static_cast<savor::PSOpCode>(48),
+             static_cast<savor::PSOpCode>(50),
              static_cast<savor::PSOpCode>(255),
          }) {
         EXPECT_EQ(savor::get_psop_metadata(invalid), nullptr);
@@ -124,6 +126,16 @@ TEST(PhaseScriptOpcodes, BuildersUseCorrectedAndDecoupledContracts)
 {
     EXPECT_EQ(static_cast<uint8_t>(savor::PSOpCode::START_DETERMINISTIC_RUN), 11);
     EXPECT_EQ(savor::OpStartDeterministicRun().code, savor::PSOpCode::START_DETERMINISTIC_RUN);
+    EXPECT_EQ(static_cast<uint8_t>(savor::PSOpCode::MATERIALIZE_BATTLE_END_RESULTS_MACRO_STEPS), 48);
+    EXPECT_EQ(static_cast<uint8_t>(savor::PSOpCode::MATERIALIZE_BATTLE_RESULTS_SCREEN_MACRO_STEPS), 48);
+    EXPECT_EQ(static_cast<uint8_t>(savor::PSOpCode::MATERIALIZE_BATTLE_COMPLETION_MACRO_STEPS), 49);
+    EXPECT_EQ(savor::OpMaterializeBattleEndResultsMacroSteps().code,
+        savor::PSOpCode::MATERIALIZE_BATTLE_END_RESULTS_MACRO_STEPS);
+    EXPECT_EQ(savor::OpMaterializeBattleResultsScreenMacroSteps().code,
+        savor::PSOpCode::MATERIALIZE_BATTLE_RESULTS_SCREEN_MACRO_STEPS);
+    EXPECT_EQ(savor::OpMaterializeBattleCompletionMacroSteps().code,
+        savor::PSOpCode::MATERIALIZE_BATTLE_COMPLETION_MACRO_STEPS);
+    EXPECT_EQ(savor::OpExecuteInputMacroStep().code, savor::PSOpCode::EXECUTE_BATTLE_MACRO_STEP);
 
     EXPECT_EQ(static_cast<uint32_t>(savor::PSMemoryWatchpointAccess::Read), 1u);
     EXPECT_EQ(static_cast<uint32_t>(savor::PSMemoryWatchpointAccess::Write), 2u);

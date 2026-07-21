@@ -19,7 +19,10 @@
 #include "PSContext.h"
 #include "PhaseScriptProgram.h"
 #include "../InputMacro/IInputMacroHost.h"
+#include "../InputMacro/IInputMacroPlanDriver.h"
 #include "../InputMacro/Providers/BattleCommandInputMacroProvider.h"
+#include "../InputMacro/Providers/BattleCompletionInputMacroProvider.h"
+#include "../InputMacro/Providers/BattleResultsScreenInputMacroProvider.h"
 
 namespace savor {
 	namespace inputmacro {
@@ -31,6 +34,7 @@ namespace savor {
 	// ----- VM -----
 	class PhaseScriptVM :
 		private inputmacro::IInputMacroHost,
+		private inputmacro::IInputMacroDriverHost,
 		private inputmacro::IBattleCommandInputMacroProviderHost {
 	public:
 		PhaseScriptVM(savor::DolphinWrapper& host, const BreakpointMap& bpmap);
@@ -83,6 +87,7 @@ namespace savor {
 			bool watch_movie{ true };
 			bool include_gated_hit_lookup{ false };
 			bool update_derived{ true };
+			bool track_input_poll{ false };
 			uint32_t poll_ms_override{ 0 };
 		};
 
@@ -91,11 +96,24 @@ namespace savor {
 			RunToBpOutcome outcome{ RunToBpOutcome::Unknown };
 			uint32_t hit_bp_key{ 0 };
 			bool expected_match{ false };
+			uint64_t input_epoch{ 0 };
+			GCInputFrame requested_input{};
+			uint32_t input_poll_count{ 0 };
+			bool input_acknowledged{ false };
 			uint32_t elapsed_ms{ 0 };
 		};
 
 		std::unique_ptr<inputmacro::InputMacroRuntime> input_macro_runtime_;
+		std::unique_ptr<inputmacro::IInputMacroPlanDriver> input_macro_plan_driver_;
+		enum class InputMacroContextSink : std::uint8_t {
+			None,
+			BattleCompletion,
+			BattleResultsScreen,
+		};
+		InputMacroContextSink input_macro_context_sink_{InputMacroContextSink::None};
 		PSContext* active_input_macro_context_{ nullptr };
+		uint64_t input_macro_stop_sequence_{ 0 };
+		inputmacro::InputMacroStopInfo current_input_macro_stop_{};
 
 		// helpers
 		void arm_bps_once();
@@ -132,6 +150,8 @@ namespace savor {
 		void op_build_turn_inputplan_from_battle_path(PSContext& ctx) const;
 		void op_materialize_battle_macro_steps(PSContext& ctx);
 		void op_materialize_battle_turn_macro_steps(PSContext& ctx);
+		void op_materialize_battle_results_screen_macro_steps(PSContext& ctx);
+		void op_materialize_battle_completion_macro_steps(PSContext& ctx);
 		void op_execute_battle_macro_step(PSContext& ctx);
 		void start_prepared_battle_macro(
 			inputmacro::BattleCommandInputMacroProvider::PrepareResult prepared,
@@ -140,6 +160,9 @@ namespace savor {
 		void apply_input_macro_step_result(
 			const inputmacro::InputMacroStepResult& step_result,
 			PSContext& ctx);
+		void sync_input_macro_driver_context(PSContext& ctx) const;
+		void sync_battle_results_screen_context(PSContext& ctx) const;
+		void sync_battle_completion_context(PSContext& ctx) const;
 		void op_apply_battle_inputplan_frames(PSContext& ctx);
 		void op_step_frames(const PSOp& op);
 		void op_step_opcode(const PSOp& op);
@@ -188,6 +211,13 @@ namespace savor {
 		void set_neutral_input() override;
 		void clear_macro_memory_watchpoints() override;
 		void restore_breakpoint_state() override;
+
+		// IInputMacroDriverHost
+		inputmacro::InputMacroStopInfo current_stop() const override;
+		bool read_guest_memory(
+			uint32_t address,
+			std::span<std::byte> output) const override;
+		std::uint64_t current_vi() const override;
 
 		// IBattleCommandInputMacroProviderHost
 		BPKey current_breakpoint_key() const override;

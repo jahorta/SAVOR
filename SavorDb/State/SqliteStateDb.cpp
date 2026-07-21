@@ -546,6 +546,46 @@ bool SqliteStateDb::DeriveSavestate(
         return false;
     }
 
+    Statement existing_derivation;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT derivation_id FROM state_savestate_derivation "
+            "WHERE from_savestate_id=?1 AND to_savestate_id=?2 AND method_kind=?3 "
+            "AND source_context_kind=?4 AND source_context_id=?5 "
+            "ORDER BY derivation_id ASC LIMIT 2;",
+            -1,
+            &existing_derivation.st,
+            nullptr) != SQLITE_OK) {
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    sqlite3_bind_int64(existing_derivation.st, 1, command.from_savestate_id);
+    sqlite3_bind_int64(existing_derivation.st, 2, command.to_savestate_id);
+    sqlite3_bind_text(existing_derivation.st, 3, command.method_kind.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(existing_derivation.st, 4, command.source_context_kind.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(existing_derivation.st, 5, command.source_context_id);
+    const auto existing_rc = sqlite3_step(existing_derivation.st);
+    if (existing_rc == SQLITE_ROW) {
+        const auto existing_id = sqlite3_column_int64(existing_derivation.st, 0);
+        if (sqlite3_step(existing_derivation.st) == SQLITE_ROW) {
+            (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+            if (error_out) *error_out = "multiple identical savestate derivations already exist";
+            return false;
+        }
+        if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+            if (error_out) *error_out = sqlite3_errmsg(db_);
+            return false;
+        }
+        if (derivation_id_out) *derivation_id_out = existing_id;
+        return true;
+    }
+    if (existing_rc != SQLITE_DONE) {
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+
     Statement insert_derivation;
     if (sqlite3_prepare_v2(
             db_,
@@ -604,6 +644,76 @@ bool SqliteStateDb::DeriveSavestate(
         *derivation_id_out = derivation_id;
     }
     return true;
+}
+
+std::optional<SavestateRecord> SqliteStateDb::GetSavestate(
+    std::int64_t savestate_id) const {
+    if (db_ == nullptr || savestate_id <= 0) {
+        return std::nullopt;
+    }
+    Statement st;
+    constexpr const char* kSql =
+        "SELECT s.savestate_id,s.artifact_id,s.savestate_type,s.note,s.is_complete,s.created_at_utc,"
+        "a.sha256,a.size_bytes,a.filename,a.file_ext,a.artifact_kind "
+        "FROM state_savestate s "
+        "JOIN state_artifact a ON a.artifact_id=s.artifact_id "
+        "WHERE s.savestate_id=?1;";
+    if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK) {
+        return std::nullopt;
+    }
+    sqlite3_bind_int64(st.st, 1, savestate_id);
+    if (sqlite3_step(st.st) != SQLITE_ROW) {
+        return std::nullopt;
+    }
+    SavestateRecord row{};
+    row.savestate_id = sqlite3_column_int64(st.st, 0);
+    row.artifact_id = sqlite3_column_int64(st.st, 1);
+    const auto* type = sqlite3_column_text(st.st, 2);
+    const auto* note = sqlite3_column_text(st.st, 3);
+    row.savestate_type = type == nullptr ? "" : reinterpret_cast<const char*>(type);
+    row.note = note == nullptr ? "" : reinterpret_cast<const char*>(note);
+    row.is_complete = sqlite3_column_int(st.st, 4) != 0;
+    row.created_at_utc = types::UtcTimePoint(std::chrono::milliseconds(sqlite3_column_int64(st.st, 5)));
+    const auto* sha256 = sqlite3_column_text(st.st, 6);
+    row.artifact_sha256 = sha256 == nullptr ? "" : reinterpret_cast<const char*>(sha256);
+    row.artifact_size_bytes = sqlite3_column_int64(st.st, 7);
+    const auto* filename = sqlite3_column_text(st.st, 8);
+    const auto* extension = sqlite3_column_text(st.st, 9);
+    row.artifact_filename = filename == nullptr ? "" : reinterpret_cast<const char*>(filename);
+    row.artifact_file_ext = extension == nullptr ? "" : reinterpret_cast<const char*>(extension);
+    const auto* artifact_kind = sqlite3_column_text(st.st, 10);
+    row.artifact_kind = artifact_kind == nullptr ? "" : reinterpret_cast<const char*>(artifact_kind);
+    return row;
+}
+
+std::vector<SavestateDerivationRecord> SqliteStateDb::ListIncomingSavestateDerivations(
+    std::int64_t to_savestate_id) const {
+    std::vector<SavestateDerivationRecord> rows;
+    if (db_ == nullptr || to_savestate_id <= 0) {
+        return rows;
+    }
+    Statement st;
+    constexpr const char* kSql =
+        "SELECT derivation_id,from_savestate_id,to_savestate_id,method_kind,source_context_kind,source_context_id,created_at_utc "
+        "FROM state_savestate_derivation WHERE to_savestate_id=?1 ORDER BY derivation_id ASC;";
+    if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK) {
+        return rows;
+    }
+    sqlite3_bind_int64(st.st, 1, to_savestate_id);
+    while (sqlite3_step(st.st) == SQLITE_ROW) {
+        SavestateDerivationRecord row{};
+        row.derivation_id = sqlite3_column_int64(st.st, 0);
+        row.from_savestate_id = sqlite3_column_int64(st.st, 1);
+        row.to_savestate_id = sqlite3_column_int64(st.st, 2);
+        const auto* method = sqlite3_column_text(st.st, 3);
+        const auto* context = sqlite3_column_text(st.st, 4);
+        row.method_kind = method == nullptr ? "" : reinterpret_cast<const char*>(method);
+        row.source_context_kind = context == nullptr ? "" : reinterpret_cast<const char*>(context);
+        row.source_context_id = sqlite3_column_int64(st.st, 5);
+        row.created_at_utc = types::UtcTimePoint(std::chrono::milliseconds(sqlite3_column_int64(st.st, 6)));
+        rows.push_back(std::move(row));
+    }
+    return rows;
 }
 
 bool SqliteStateDb::CreateTasVariant(

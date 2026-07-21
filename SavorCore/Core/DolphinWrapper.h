@@ -83,6 +83,18 @@ namespace savor {
         void setInputPlan(const InputPlan& p) { m_plan = p; m_cursor = 0; }
         void applyNextInputFrame();
         void setInput(const GCInputFrame& f);
+        struct InputPollReceipt {
+            uint64_t epoch{0};
+            uint32_t callback_count{0};
+            GCInputFrame frame{};
+
+            bool acknowledged() const noexcept
+            {
+                return epoch != 0 && callback_count != 0;
+            }
+        };
+        uint64_t publishInputEpoch(const GCInputFrame& f);
+        InputPollReceipt getInputPollReceipt() const;
         size_t remainingInputs() const { return (m_cursor < m_plan.size()) ? (m_plan.size() - m_cursor) : 0; }
 
         struct InputTapePlaybackOptions {

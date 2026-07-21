@@ -5,7 +5,7 @@
 
 namespace savor::db::events {
 
-inline constexpr std::array<std::string_view, 71> kEventCatalogV1{ {
+inline constexpr std::array<std::string_view, 77> kEventCatalogV1{ {
     "Execution.JobSetCreated.v1",
     "Execution.JobQueued.v1",
     "Execution.JobClaimed.v1",
@@ -60,6 +60,12 @@ inline constexpr std::array<std::string_view, 71> kEventCatalogV1{ {
     "AnalysisBattle.BattleAdvancementPoolCreated.v1",
     "AnalysisBattle.BattleAdvancementDecisionRecorded.v1",
     "AnalysisBattle.ManualFollowupUpdated.v1",
+    "AnalysisBattle.BattleCompletionCreated.v1",
+    "AnalysisBattle.BattleCompletionCompleted.v1",
+    "AnalysisBattle.BattleCompletionFailed.v1",
+    "AnalysisBattle.BattleResultsCreated.v1",
+    "AnalysisBattle.BattleResultsCompleted.v1",
+    "AnalysisBattle.BattleResultsFailed.v1",
     "Authoring.SeedProbeSpecSaved.v1",
     "Authoring.TasSpecSaved.v1",
     "Authoring.BattleRunSpecSaved.v1",

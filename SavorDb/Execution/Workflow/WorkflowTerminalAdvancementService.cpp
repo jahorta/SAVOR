@@ -176,6 +176,8 @@ bool WorkflowTerminalAdvancementService::AdvanceSnapshot(
     }
 
     if (terminal.gate.terminal_fail) {
+        const auto failure_message = terminal.gate.blocked_reason.value_or(
+            "workflow step completed with failed jobs");
         if (!command_service_->AppendLifecycleEvent(
             {
                 .workflow_instance_id = snapshot.workflow_instance_id,
@@ -193,8 +195,11 @@ bool WorkflowTerminalAdvancementService::AdvanceSnapshot(
         if (!command_service_->TerminalFailWorkflowInstance(
             {
                 .workflow_instance_id = snapshot.workflow_instance_id,
-                .failure_code = "STEP_FAILED",
-                .failure_message = "workflow step completed with failed jobs",
+                .failure_code = terminal.transition.has_value()
+                        && terminal.transition->terminal_failure
+                    ? "TRANSITION_REJECTED"
+                    : "STEP_FAILED",
+                .failure_message = failure_message,
                 .requested_by = "workflow_terminal_advancement",
             },
             &command_error)) {

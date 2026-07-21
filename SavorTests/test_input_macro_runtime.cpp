@@ -165,6 +165,38 @@ TEST(InputMacroRuntime, ExecutesSequentialAndAlternativeBreakpointGates)
     ExpectCleanupSuffix(host);
 }
 
+TEST(InputMacroRuntime, PropagatesBreakpointInputPollReceipt)
+{
+    FakeInputMacroHost host;
+    GCInputFrame input{};
+    input.buttons = GC_A;
+    host.breakpoint_results.push_back(BreakpointWaitResult{
+        .status = InputMacroHostStatus::Succeeded,
+        .hit = true,
+        .hit_key = kGateA,
+        .hit_pc = 0x8007cfd8u,
+        .stop_sequence = 7,
+        .input_epoch = 42,
+        .requested_input = input,
+        .input_poll_count = 11,
+        .input_acknowledged = true,
+        .elapsed_ms = 5,
+    });
+
+    InputMacroRuntime runtime(host);
+    const std::vector<BPKey> declared{kGateA};
+    ASSERT_EQ(runtime.Start(InputMacroPlan{{GateStep("gate", {kGateA}, false, GC_A)}}, declared).failure,
+        InputMacroFailure::None);
+
+    const auto result = runtime.ExecuteNext();
+    EXPECT_EQ(result.stop_sequence, 7u);
+    EXPECT_EQ(result.input_epoch, 42u);
+    EXPECT_EQ(result.requested_input, input);
+    EXPECT_EQ(result.input_poll_count, 11u);
+    EXPECT_TRUE(result.input_acknowledged);
+    EXPECT_EQ(result.terminal_status, InputMacroTerminalStatus::Completed);
+}
+
 TEST(InputMacroRuntime, RejectsUnexpectedBreakpointFromAlternativeGate)
 {
     FakeInputMacroHost host;

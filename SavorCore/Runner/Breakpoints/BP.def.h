@@ -50,6 +50,37 @@
   X(battle, BattleMacroItemDetailReady,       237, 0x80079d04u, "BattleMacroItemDetailReady",       Internal, InputMacro) \
   X(battle, BattleMacroEnemyTargetReady,      238, 0x800796f0u, "BattleMacroEnemyTargetReady",      Internal, InputMacro) \
   X(battle, BattleMacroAllyTargetReady,       239, 0x80078fd8u, "BattleMacroAllyTargetReady",       Internal, InputMacro) \
+  X(battle, BattleEndVictoryCountdownComplete, 242, 0x8006f554u, "BattleEndVictoryCountdownComplete", Internal, InputMacro) \
+  X(battle, BattleEndVictorySlotsComplete,     243, 0x8006f590u, "BattleEndVictorySlotsComplete",     Internal, InputMacro) \
+  X(battle, BattleEndResultDispatch,            244, 0x800e4660u, "BattleEndResultDispatch",            Internal, InputMacro) \
+  X(battle, BattleEndResultIntroReady,          245, 0x800e46bcu, "BattleEndResultIntroReady",          Internal, InputMacro) \
+  X(battle, BattleEndResultIntroAccepted,       246, 0x800e46ccu, "BattleEndResultIntroAccepted",       Internal, InputMacro) \
+  X(battle, BattleEndResultGoldReady,           247, 0x800e4898u, "BattleEndResultGoldReady",           Internal, InputMacro) \
+  X(battle, BattleEndResultGoldAccepted,        248, 0x800e48a8u, "BattleEndResultGoldAccepted",        Internal, InputMacro) \
+  X(battle, BattleEndResultNormalExpReady,      249, 0x800e4d40u, "BattleEndResultNormalExpReady",      Internal, InputMacro) \
+  X(battle, BattleEndResultNormalExpAccepted,   250, 0x800e4d50u, "BattleEndResultNormalExpAccepted",   Internal, InputMacro) \
+  X(battle, BattleEndResultStatWaveReady,       251, 0x800e4f2cu, "BattleEndResultStatWaveReady",       Internal, InputMacro) \
+  X(battle, BattleEndResultStatWaveAccepted,    252, 0x800e4f3cu, "BattleEndResultStatWaveAccepted",    Internal, InputMacro) \
+  X(battle, BattleEndResultMagicEntryReady,     253, 0x800e52d8u, "BattleEndResultMagicEntryReady",     Internal, InputMacro) \
+  X(battle, BattleEndResultMagicEntryAccepted,  254, 0x800e52e8u, "BattleEndResultMagicEntryAccepted",  Internal, InputMacro) \
+  X(battle, BattleEndResultMagicExpReady,       255, 0x800e5460u, "BattleEndResultMagicExpReady",       Internal, InputMacro) \
+  X(battle, BattleEndResultMagicExpAccepted,    256, 0x800e5470u, "BattleEndResultMagicExpAccepted",    Internal, InputMacro) \
+  X(battle, BattleEndResultLearnedWaveReady,    257, 0x800e5c3cu, "BattleEndResultLearnedWaveReady",    Internal, InputMacro) \
+  X(battle, BattleEndResultLearnedWaveAccepted, 258, 0x800e5c4cu, "BattleEndResultLearnedWaveAccepted", Internal, InputMacro) \
+  X(battle, BattleEndResultItemPopupReady,      259, 0x800e5f80u, "BattleEndResultItemPopupReady",      Internal, InputMacro) \
+  X(battle, BattleEndResultItemPopupAccepted,   260, 0x800e5f90u, "BattleEndResultItemPopupAccepted",   Internal, InputMacro) \
+  X(battle, BattleEndResultConfirmReady,        261, 0x800e6128u, "BattleEndResultConfirmReady",        Internal, InputMacro) \
+  X(battle, BattleEndResultConfirmAccepted,     262, 0x800e6138u, "BattleEndResultConfirmAccepted",     Internal, InputMacro) \
+  X(battle, BattleEndResultFadeReady,           263, 0x800e6470u, "BattleEndResultFadeReady",           Internal, InputMacro) \
+  X(battle, BattleEndResultFadeAccepted,        264, 0x800e6480u, "BattleEndResultFadeAccepted",        Internal, InputMacro) \
+  X(battle, BattleEndResultLifecycleExit,        265, 0x800e64a0u, "BattleEndResultLifecycleExit",        Internal, InputMacro) \
+  X(battle, BattleEndResultCleanupComplete,      266, 0x800e3694u, "BattleEndResultCleanupComplete",      Internal, InputMacro) \
+  X(battle, BattleEndRewardCommitComplete,       267, 0x8006fd58u, "BattleEndRewardCommitComplete",       Internal, InputMacro) \
+  X(battle, BattleEndController0NeutralCopied,   268, 0x801c7948u, "BattleEndController0NeutralCopied",   Internal, InputMacro) \
+  X(battle, BattleEndRewardEntry,                 269, 0x8006f598u, "BattleEndRewardEntry",                 Internal, InputMacro) \
+  X(battle, BattleEndResultGoldArmed,             270, 0x800e488cu, "BattleEndResultGoldArmed",             Internal, InputMacro) \
+  X(battle, BattleEndFieldReturnReseedComplete,   271, 0x801012b4u, "BattleEndFieldReturnReseedComplete",   Internal, SeedProbe) \
+  X(battle, BattleEndResultDescriptorReady,       272, 0x800e35f0u, "BattleEndResultDescriptorReady",       Internal, InputMacro) \
 
 #define BP_TABLE_ALL(X) \
   BP_TABLE_OVERWORLD(X) \

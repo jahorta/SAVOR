@@ -289,6 +289,24 @@ inline bool ValidateAnalysisBattlePayloadV1(const EventEnvelope& envelope, std::
         }
         return true;
     }
+    if (envelope.event_type == "AnalysisBattle.BattleCompletionCreated.v1"
+        || envelope.event_type == "AnalysisBattle.BattleCompletionCompleted.v1"
+        || envelope.event_type == "AnalysisBattle.BattleCompletionFailed.v1") {
+        if (envelope.payload_ref_kind != "battle_completion") {
+            if (error_out) *error_out = "payload_ref_kind must be battle_completion for battle completion events";
+            return false;
+        }
+        return true;
+    }
+    if (envelope.event_type == "AnalysisBattle.BattleResultsCreated.v1"
+        || envelope.event_type == "AnalysisBattle.BattleResultsCompleted.v1"
+        || envelope.event_type == "AnalysisBattle.BattleResultsFailed.v1") {
+        if (envelope.payload_ref_kind != "battle_results") {
+            if (error_out) *error_out = "payload_ref_kind must be battle_results for battle results events";
+            return false;
+        }
+        return true;
+    }
 
     if (error_out) *error_out = "unsupported AnalysisBattle event_type";
     return false;
