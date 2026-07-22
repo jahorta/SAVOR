@@ -104,6 +104,7 @@
     <ClCompile Include="test_savordb_phase3_nonfixture.cpp" />
     <ClCompile Include="test_runtime_symbols.cpp" />
     <ClCompile Include="test_phase_script_opcodes.cpp" />
+    <ClCompile Include="test_navigation_context_framework.cpp" />
     <ClCompile Include="test_input_macro_runtime.cpp" />
     <ClCompile Include="test_battle_command_input_macro_provider.cpp" />
     <ClCompile Include="test_savor_predict_battle_job_runner.cpp" />

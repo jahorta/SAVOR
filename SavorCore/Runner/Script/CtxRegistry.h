@@ -11,6 +11,7 @@
 #include "ContextKeys/BattleRunnerKeys.reg.h"
 #include "ContextKeys/BattleEndResultsKeys.reg.h"
 #include "ContextKeys/BattleCompletionKeys.reg.h"
+#include "ContextKeys/NavigationContextKeys.reg.h"
 
 namespace savor::context::key {
 

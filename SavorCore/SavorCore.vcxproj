@@ -203,6 +203,7 @@
     <ClInclude Include="framework.h" />
     <ClInclude Include="Phases\Programs\BattleContext\BattleContextPayload.h" />
     <ClInclude Include="Phases\Programs\BattleContext\BattleContextScript.h" />
+    <ClInclude Include="Phases\Programs\NavigationContext\NavigationContextScript.h" />
     <ClInclude Include="Phases\Programs\BattleMacroProbe\BattleMacroProbePayload.h" />
     <ClInclude Include="Phases\Programs\BattleMacroProbe\BattleMacroProbeScript.h" />
     <ClInclude Include="Phases\Programs\BattleCompletion\BattleCompletionManifest.h" />
@@ -244,6 +245,7 @@
     <ClInclude Include="Runner\Script\ContextKeys\BattleCompletionKeys.reg.h" />
     <ClInclude Include="Runner\Script\ContextKeys\BattleEndResultsKeys.reg.h" />
     <ClInclude Include="Runner\Script\ContextKeys\KeyIds.h" />
+    <ClInclude Include="Runner\Script\ContextKeys\NavigationContextKeys.reg.h" />
     <ClInclude Include="Runner\Script\CtxRegistry.h" />
     <ClInclude Include="Runner\Script\ContextKeys\SeedProbeKeys.reg.h" />
     <ClInclude Include="Runner\Script\ContextKeys\TasMovieKeys.reg.h" />

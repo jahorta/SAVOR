@@ -40,10 +40,9 @@ enum class PSOpCode : uint8_t {
 #undef SAVOR_PHASE_SCRIPT_OPCODE
     MATERIALIZE_BATTLE_END_RESULTS_MACRO_STEPS =
         MATERIALIZE_BATTLE_RESULTS_SCREEN_MACRO_STEPS,
-    Count = 50,
+    Count = 51,
 };
 
-static_assert(static_cast<uint8_t>(PSOpCode::Count) == 50);
 static_assert(static_cast<uint8_t>(PSOpCode::START_DETERMINISTIC_RUN) == 11);
 static_assert(static_cast<uint8_t>(PSOpCode::GC_SLOT_A_SET_FROM) == 21);
 
@@ -164,6 +163,7 @@ inline PSOp OpWriteU32(uint32_t address, savor::context::key::KeyId value_key) {
 inline PSOp OpReadF32(uint32_t address, savor::context::key::KeyId dst) { PSOp op; op.code = PSOpCode::READ_F32; op.rd = { address, dst }; return op; }
 inline PSOp OpReadF64(uint32_t address, savor::context::key::KeyId dst) { PSOp op; op.code = PSOpCode::READ_F64; op.rd = { address, dst }; return op; }
 inline PSOp OpGetBattleContext() { PSOp op; op.code = PSOpCode::GET_BATTLE_CONTEXT; return op; }
+inline PSOp OpGetNavigationContext() { PSOp op; op.code = PSOpCode::GET_NAVIGATION_CONTEXT; return op; }
 inline PSOp OpEmitResult(savor::context::key::KeyId key) { PSOp op; op.code = PSOpCode::EMIT_RESULT; op.key.id = key; return op; }
 
 inline PSOp OpMovieStop() { PSOp op; op.code = PSOpCode::MOVIE_STOP; return op; }

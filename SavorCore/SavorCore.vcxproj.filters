@@ -76,6 +76,9 @@
     <Filter Include="Phases\BattleContext">
       <UniqueIdentifier>{8b0fb7f2-30e4-415d-aa1e-d7151ae137a9}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Phases\NavigationContext">
+      <UniqueIdentifier>{f1c645aa-8d54-4fc9-b968-3e30378554ee}</UniqueIdentifier>
+    </Filter>
     <Filter Include="Phases\BattleRunner">
       <UniqueIdentifier>{52936252-3c3f-4a39-88b3-6228fe8151e7}</UniqueIdentifier>
     </Filter>
@@ -249,6 +252,9 @@
     <ClInclude Include="Phases\Programs\BattleContext\BattleContextScript.h">
       <Filter>Phases\BattleContext</Filter>
     </ClInclude>
+    <ClInclude Include="Phases\Programs\NavigationContext\NavigationContextScript.h">
+      <Filter>Phases\NavigationContext</Filter>
+    </ClInclude>
     <ClInclude Include="Core\Memory\MemView.h">
       <Filter>Core\Memory</Filter>
     </ClInclude>
@@ -265,6 +271,9 @@
       <Filter>Runner\VM\ContextKeys</Filter>
     </ClInclude>
     <ClInclude Include="Runner\Script\ContextKeys\KeyIds.h">
+      <Filter>Runner\VM\ContextKeys</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Script\ContextKeys\NavigationContextKeys.reg.h">
       <Filter>Runner\VM\ContextKeys</Filter>
     </ClInclude>
     <ClInclude Include="Runner\Script\ContextKeys\SeedProbeKeys.reg.h">

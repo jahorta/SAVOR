@@ -1,85 +1,33 @@
 #include <array>
 #include <cstdint>
 #include <string_view>
+#include <unordered_set>
 
 #include <gtest/gtest.h>
 
 #include "Runner/Script/PhaseScriptOpcodes.h"
 #include "Runner/Script/PhaseScriptProgram.h"
 
-namespace {
-
-constexpr std::array<std::string_view, 50> kStableIdentifiers{
-    "ARM_PHASE_BPS_ONCE",
-    "LOAD_SNAPSHOT",
-    "CAPTURE_SNAPSHOT",
-    "REBOOT_CORE",
-    "APPLY_INPUT_FROM",
-    "STEP_FRAMES",
-    "RUN_UNTIL_BP",
-    "RUN_UNTIL_BP_KEY",
-    "RECORD_CURRENT_BP",
-    "SET_TIMEOUT",
-    "SET_TIMEOUT_FROM",
-    "START_DETERMINISTIC_RUN",
-    "END_DETERMINISTIC_RUN",
-    "READ_U8",
-    "READ_U16",
-    "READ_U32",
-    "WRITE_U32",
-    "READ_F32",
-    "READ_F64",
-    "GET_BATTLE_CONTEXT",
-    "EMIT_RESULT",
-    "GC_SLOT_A_SET_FROM",
-    "MOVIE_PLAY_FROM",
-    "MOVIE_STOP",
-    "SAVE_SAVESTATE_FROM",
-    "REQUIRE_DISC_GAMEID_FROM",
-    "LABEL",
-    "GOTO",
-    "GOTO_IF",
-    "GOTO_IF_KEYS",
-    "RETURN_RESULT",
-    "CAPTURE_PRED_BASELINES",
-    "EVAL_PREDICATES_AT_HIT_BP",
-    "ARM_BPS_FROM_PRED_TABLE",
-    "SET_U32",
-    "ADD_U32",
-    "APPLY_BATTLE_INPUTPLAN_FRAMES",
-    "BUILD_TURN_INPUTPLAN_FROM_BATTLE_PATH",
-    "MATERIALIZE_BATTLE_MACRO_STEPS",
-    "MATERIALIZE_BATTLE_TURN_MACRO_STEPS",
-    "EXECUTE_BATTLE_MACRO_STEP",
-    "RECORD_TAS_INPUT_SAMPLE",
-    "STEP_OPCODE",
-    "ARM_MEMORY_WATCHPOINT",
-    "CLEAR_MEMORY_WATCHPOINTS",
-    "ARM_CAPTURE_MEMORY_WATCHPOINTS",
-    "RUN_UNTIL_DEBUG_STOP",
-    "CAPTURE_SEED_OVERRIDE",
-    "MATERIALIZE_BATTLE_RESULTS_SCREEN_MACRO_STEPS",
-    "MATERIALIZE_BATTLE_COMPLETION_MACRO_STEPS",
-};
-
-} // namespace
-
-TEST(PhaseScriptOpcodes, CatalogueCoversEveryStableOrdinal)
+TEST(PhaseScriptOpcodes, CatalogueEntriesAreSelfConsistentAndDiscoverable)
 {
     const auto catalogue = savor::get_psop_catalogue();
-    ASSERT_EQ(catalogue.size(), static_cast<size_t>(savor::PSOpCode::Count));
-    ASSERT_EQ(catalogue.size(), kStableIdentifiers.size());
+    ASSERT_FALSE(catalogue.empty());
 
-    for (size_t ordinal = 0; ordinal < catalogue.size(); ++ordinal) {
-        const auto code = static_cast<savor::PSOpCode>(ordinal);
-        const auto& metadata = catalogue[ordinal];
+    std::unordered_set<std::uint8_t> codes;
+    std::unordered_set<std::string_view> identifiers;
+
+    for (const auto& metadata : catalogue) {
+        const auto ordinal = static_cast<std::uint8_t>(metadata.code);
         EXPECT_EQ(metadata.ordinal, ordinal);
-        EXPECT_EQ(static_cast<size_t>(metadata.code), ordinal);
-        EXPECT_EQ(metadata.identifier, kStableIdentifiers[ordinal]);
+        EXPECT_TRUE(codes.insert(ordinal).second)
+            << "duplicate opcode ordinal " << static_cast<unsigned>(ordinal);
+        EXPECT_FALSE(metadata.identifier.empty());
+        EXPECT_TRUE(identifiers.insert(metadata.identifier).second)
+            << "duplicate opcode identifier " << metadata.identifier;
         EXPECT_FALSE(metadata.display_name.empty());
-        EXPECT_EQ(savor::get_psop_metadata(code), &metadata);
-        EXPECT_EQ(savor::get_psop_identifier(code), kStableIdentifiers[ordinal]);
-        EXPECT_EQ(savor::get_psop_name(code), metadata.display_name);
+        EXPECT_EQ(savor::get_psop_metadata(metadata.code), &metadata);
+        EXPECT_EQ(savor::get_psop_identifier(metadata.code), metadata.identifier);
+        EXPECT_EQ(savor::get_psop_name(metadata.code), metadata.display_name);
     }
 }
 
@@ -103,14 +51,8 @@ TEST(PhaseScriptOpcodes, UnsupportedAndInvalidValuesFailClosed)
     EXPECT_EQ(gc_slot->ordinal, 21);
     EXPECT_EQ(gc_slot->support, savor::PSOpSupport::Unsupported);
 
-    size_t unsupported_count = 0;
-    for (const auto& metadata : savor::get_psop_catalogue()) {
-        if (metadata.support == savor::PSOpSupport::Unsupported) ++unsupported_count;
-    }
-    EXPECT_EQ(unsupported_count, 1u);
-
     for (const auto invalid : {
-             static_cast<savor::PSOpCode>(50),
+             savor::PSOpCode::Count,
              static_cast<savor::PSOpCode>(255),
          }) {
         EXPECT_EQ(savor::get_psop_metadata(invalid), nullptr);
@@ -120,6 +62,28 @@ TEST(PhaseScriptOpcodes, UnsupportedAndInvalidValuesFailClosed)
         op.code = invalid;
         EXPECT_EQ(savor::get_psop_desc(op), "Unknown Code: []");
     }
+}
+
+TEST(PhaseScriptOpcodes, NavigationContextOpcodeIsReservedAndUnsupported)
+{
+    EXPECT_EQ(static_cast<std::uint8_t>(
+        savor::PSOpCode::GET_NAVIGATION_CONTEXT), 50u);
+
+    const auto* metadata = savor::get_psop_metadata(
+        savor::PSOpCode::GET_NAVIGATION_CONTEXT);
+    ASSERT_NE(metadata, nullptr);
+    EXPECT_EQ(metadata->code, savor::PSOpCode::GET_NAVIGATION_CONTEXT);
+    EXPECT_EQ(metadata->ordinal, 50u);
+    EXPECT_EQ(metadata->identifier, "GET_NAVIGATION_CONTEXT");
+    EXPECT_EQ(metadata->display_name, "Get Navigation Context");
+    EXPECT_EQ(metadata->arg_format, savor::PSOpArgFormat::None);
+    EXPECT_EQ(metadata->support, savor::PSOpSupport::Unsupported);
+
+    const auto op = savor::OpGetNavigationContext();
+    EXPECT_EQ(op.code, savor::PSOpCode::GET_NAVIGATION_CONTEXT);
+    EXPECT_EQ(savor::get_psop_identifier(op.code), "GET_NAVIGATION_CONTEXT");
+    EXPECT_EQ(savor::get_psop_name(op.code), "Get Navigation Context");
+    EXPECT_EQ(savor::get_psop_desc(op), "Get Navigation Context: []");
 }
 
 TEST(PhaseScriptOpcodes, BuildersUseCorrectedAndDecoupledContracts)

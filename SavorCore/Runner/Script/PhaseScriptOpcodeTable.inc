@@ -53,3 +53,4 @@ SAVOR_PHASE_SCRIPT_OPCODE(46, RUN_UNTIL_DEBUG_STOP,                 "RUN_UNTIL_D
 SAVOR_PHASE_SCRIPT_OPCODE(47, CAPTURE_SEED_OVERRIDE,                "CAPTURE_SEED_OVERRIDE",                "Capture Seed Override",                      None,                  Supported)
 SAVOR_PHASE_SCRIPT_OPCODE(48, MATERIALIZE_BATTLE_RESULTS_SCREEN_MACRO_STEPS, "MATERIALIZE_BATTLE_RESULTS_SCREEN_MACRO_STEPS", "Materialize Battle Results Screen Macro Steps", None,              Supported)
 SAVOR_PHASE_SCRIPT_OPCODE(49, MATERIALIZE_BATTLE_COMPLETION_MACRO_STEPS,     "MATERIALIZE_BATTLE_COMPLETION_MACRO_STEPS",     "Materialize Battle Completion Macro Steps",     None,              Supported)
+SAVOR_PHASE_SCRIPT_OPCODE(50, GET_NAVIGATION_CONTEXT,                        "GET_NAVIGATION_CONTEXT",                        "Get Navigation Context",                        None,              Unsupported)

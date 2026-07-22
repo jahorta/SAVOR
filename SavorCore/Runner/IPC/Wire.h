@@ -74,7 +74,15 @@ namespace savor {
         // results-screen phase; monolithic v1 payloads are not accepted.
         PK_BattleEndResultsRunner = PK_BattleResultsScreenRunner,
         PK_BattleCompletionRunner = 9,
+        // Reserved for the future navigation-context capture phase. The
+        // program remains intentionally unregistered until that phase exists.
+        PK_NavigationContextRunner = 10,
     };
+
+    static_assert(PK_BattleCompletionRunner == 9,
+        "Battle-completion program kind is wire-stable");
+    static_assert(PK_NavigationContextRunner == 10,
+        "Navigation-context program kind is wire-stable");
 
     // Payload used for TAS jobs (paths are NUL-terminated, Windows MAX_PATH safe)
     struct TasJobPayload {
