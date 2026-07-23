@@ -73,6 +73,7 @@
     <ClCompile Include="Analysis\NavigationStartCatalogBuilder.cpp" />
     <ClCompile Include="Graph\NavigationTraversalGraph.cpp" />
     <ClCompile Include="Loading\NavigationAreaLoader.cpp" />
+    <ClCompile Include="Loading\NavigationGroundFallbackNormalizer.cpp" />
     <ClCompile Include="Loading\NavigationScenarioLoader.cpp" />
     <ClCompile Include="Loading\NavigationScriptLoader.cpp" />
     <ClCompile Include="Model\NavigationAreaIdentity.cpp" />
@@ -84,6 +85,7 @@
     <ClInclude Include="Coordinate\NavigationCoordinatePolicy.h" />
     <ClInclude Include="Graph\NavigationTraversalGraph.h" />
     <ClInclude Include="Loading\NavigationAreaLoader.h" />
+    <ClInclude Include="Loading\NavigationGroundFallbackNormalizer.h" />
     <ClInclude Include="Loading\NavigationScenarioLoader.h" />
     <ClInclude Include="Loading\NavigationScriptLoader.h" />
     <ClInclude Include="Model\NavigationAreaIdentity.h" />

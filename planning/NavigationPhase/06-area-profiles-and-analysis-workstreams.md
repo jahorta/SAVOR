@@ -60,8 +60,10 @@ Classification, parser status, and traversability evidence are independent:
 | Walls, triggers, and MovingObjects | Yes |  |  |
 | Opcode-77 starts and manual endpoints | Yes |  |  |
 | Triangle graph, A*, spline, and control solver | Yes |  |  |
+| Navmesh Survey anchors and refinement | Yes |  |  |
 | Collision validation | Yes |  |  |
-| Movement-anomaly discovery | Yes |  |  |
+| Movement-response and collision-oddity discovery | Yes |  |  |
+| Dynamic trigger control and activation survey | Planned |  |  |
 | Event/cutscene interruption handling | Yes |  |  |
 | SpiceEct and encounter-table regions |  | Yes |  |
 | Encounter suppression during ordinary probes |  | Yes | Unnecessary |
@@ -81,8 +83,11 @@ The implemented `NavigationScenarioModel`, `NavigationAreaModel`, `NavigationScr
 SAVOR-owned additions are optional analysis data associated with the scenario:
 
 - profile and companion-set provenance;
+- Navmesh Survey anchors with separate local-validity and clean-entry-reachability evidence;
 - collision-validation observations keyed to source geometry and runtime probe position;
-- movement-anomaly candidates with approach, input/camera context, speed delta, and reproducibility;
+- movement-response/oddity candidates with approach, input/camera context, sticky-jump or ramp-speed
+  measurements, speed/displacement delta, and reproducibility;
+- automatic/interactable trigger activation evidence and state-qualified pre/post door transitions;
 - for Dungeon only, encounter source/table profiles, per-triangle selectors, explicit encounter start
   state, selected-route exposure, and diagnostics.
 - for a later selected predictor result, a separate Qt-neutral compatibility/projection attachment that
@@ -93,6 +98,50 @@ SAVOR-owned additions are optional analysis data associated with the scenario:
 Encounter geography is keyed by the existing `NavigationTriangleKey`. It is not a
 `NavigationRegion`, a trigger volume, or a `NavigationSurface::tblId`. Ground-entry `tblId` identifies
 collision resources; it is not an encounter-table ID.
+
+## Shared Ground Handoff Contract
+
+Dungeon and Safe Navigation use the same data- and disassembly-backed ground-selection contract. An MLD
+entry's `ground_links` are ordered target EntryIDs, not unordered adjacency hints:
+
+1. Preserve every raw linked EntryID in authored order, including EntryID `0` and duplicates. Resolve a
+   target through indexed lookup followed by the first linear EntryID match. A missing EntryID truncates
+   the effective runtime chain; retain later values as suppressed provenance. A resolved target lacking
+   usable geometry is diagnosed without erasing later authored evidence.
+2. Treat all GRND and ground-role GOBJ surfaces owned by one entry as its collision bundle. Resource kind
+   selects a collision backend in the game; it does not create a special navigation rule or make a GOBJ
+   inherently moving.
+3. For a candidate source-boundary interval, query the rest of the current entry bundle first. Continued
+   coverage creates a same-entry handoff and suppresses linked-target evaluation.
+4. Only when the whole current bundle misses, query linked bundles in authored order. The first accepting
+   bundle owns the directed interval and shadows later targets. A first hit whose height is discontinuous
+   remains unresolved rather than falling through to a later target.
+5. Determine coverage against target triangle footprints, so the transition may land inside a larger mesh;
+   coincident external boundaries are not required. Select the height-nearest result, resolve coincident
+   duplicates with stable triangle keys, and leave effectively tied stacked heights ambiguous.
+6. Reverse traversal is not synthesized. It exists only when independently derived from the reverse
+   source's current-bundle coverage and ordered fallback evidence.
+
+Exact normalized `ground` entries without nonzero motion resources are statically traversable. A
+motion-bearing or non-`ground` entry is `RequiresRuntimeState`: retain its transformed bind-pose geometry
+and muted-orange conditional handoff evidence for inspection, but omit it from active A*. Static handoffs
+render yellow. Both retain source/target EntryIDs, triangle keys, same-entry versus authored-fallback kind,
+authored ordinal when present, and availability.
+
+Initial converted-scene tolerances are a 0.001 vertex weld, 0.001 planar containment tolerance, 0.01
+outward probe capped at one quarter of its interval, 0.01 height-continuity tolerance, 0.001 distinct-height
+tie tolerance, 0.001 minimum portal length, and 0.0001 minimum absolute up-normal component for height
+solving. They are centralized graph-build configuration and remain subject to runtime calibration.
+
+This contract supplies static candidate topology, not complete collision proof. Projected wall blocking,
+decoded triangle-flag filtering, player step-up behavior, animation/script-driven surface state, and exact
+runtime collision-selector modes remain deferred. Collision-validation work must refine confidence without
+silently rewriting source geometry or authored fallback provenance.
+
+The planned **Navmesh Survey** is the shared runtime workstream that supplies verified survey anchors,
+passability refinement, directional movement response, collision oddities, and trigger activation evidence.
+The workstreams below remain separate evidence products even though one dependency-driven worker survey
+schedules them together.
 
 ## Workstream 1 - Collision Validation
 
@@ -111,6 +160,10 @@ must remain separate from parser completeness:
 active ground/resource and player/collision state through `SavorCore` and `SavorWorker`. Probe fan-out may
 partition by boundary or region, start pose, approach direction, and input/camera context.
 
+The survey bootstraps from the exact output savestate of a ready `NavigationContextResult`. It expands
+disposable anchors outward before releasing nearby work, including intentional door/script transitions
+when required. Local anchor placement validity and reachability from the clean entry remain separate.
+
 ## Workstream 2 - Movement-Anomaly Discovery
 
 Movement-anomaly discovery searches collision corners, seams, slopes, and boundary interactions for
@@ -122,6 +175,8 @@ Each candidate records:
 - world and source-geometry identity;
 - approach pose, facing, camera, and input sequence;
 - baseline and observed displacement or speed;
+- sticky held interval and any later positional discontinuity, or ordinary versus wall-contact ramp/stair
+  ascent response when applicable;
 - VI-frame cost and resulting route position;
 - repeat count, reproducibility, and variance;
 - whether the outcome is beneficial, neutral, harmful, or unresolved.
@@ -130,7 +185,22 @@ Candidates are generated from validated or explicitly low-confidence collision r
 fan out by site, approach, input/timing, and camera variant. Only measured, reproducible positive results
 may later become route-planning actions or edge-cost adjustments.
 
-## Workstream 3 - Dungeon Encounter Analysis
+## Workstream 3 - Trigger Activation Survey
+
+Trigger research must establish identities, safe control points, and completion boundaries before this
+workstream runs. Its required outputs are nevertheless defined:
+
+- automatic-trigger positional boundaries from every available/reachable approach side;
+- interactable-trigger position, distance, facing, input, occlusion, and state activation envelopes; and
+- state-qualified pre/post survey anchors for doors, forced movement, collision-resource changes, and
+  other trigger-driven transitions.
+
+Ordinary collision jobs should prevent unrelated trigger effects once a safe mechanism is proven, while
+anchor expansion may need to permit a required door activation and then resume isolation in the same job.
+The exact modes, allowlist or identity scheme, runtime hook, and causal-session boundary remain unresolved.
+Trigger evidence never substitutes for blocked-collision evidence.
+
+## Workstream 4 - Dungeon Encounter Analysis
 
 ### Static encounter field
 
@@ -263,17 +333,18 @@ The existing hidden `dungeon_explorer` workflow unit is the future Dungeon entry
 `safe_explorer` sibling reuses shared execution contracts without dungeon encounter work. The existing
 `overworld_explorer` placeholder remains independent.
 
-Static classification, world building, route planning, and analytic encounter exposure are CPU/domain
+Static classification, world building, route planning, deterministic survey reduction, and analytic encounter exposure are CPU/domain
 operations. The present worker protocol executes fixed `PhaseScriptVM` programs, so those CPU operations
 must not be disguised as simulator jobs until SAVOR has a local CPU-executor lane. Simulator programs are
-reserved for collision validation, movement-anomaly probes, control solving, and encounter-enabled runtime
-validation. Modeled seeded path/schedule search belongs to the future `SavorPredict` boundary; the
-Navigation widget only renders its selected result.
+reserved for Navmesh Survey anchor expansion, collision/oddity/trigger probes, reproduction attempts,
+control solving, and encounter-enabled runtime validation. Modeled seeded path/schedule search belongs to
+the future `SavorPredict` boundary; the Navigation widget only renders its selected result.
 
-Encounter suppression and selective trigger suppression are separate named exploration patch profiles.
-Trigger suppression remains research-gated. Their savestates and observations are patched evidence only:
-they may refine local/sub-triangle passability but never become `NavigationContextResult` inputs or clean
-validation states.
+Encounter suppression is independent from trigger control. Trigger suppression/permission may change
+dynamically during one survey job, especially around required doors, but the mechanism and modes remain
+research-gated. Every derived anchor, savestate, control change, and observation is patched survey evidence
+only: it may refine local/sub-triangle passability or stateful transitions but never becomes a
+`NavigationContextResult` input or clean validation state.
 
 ## Failure Semantics
 

@@ -6,6 +6,7 @@
 #include <array>
 #include <compare>
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <vector>
 
@@ -27,14 +28,38 @@ struct NavigationPortalSegment {
 
 enum class NavigationGraphEdgeKind {
     IntraSurface,
-    GroundLink,
+    CollisionHandoff,
+};
+
+enum class NavigationCollisionHandoffKind {
+    SameEntryBundle,
+    AuthoredFallback,
+};
+
+enum class NavigationCollisionHandoffAvailability {
+    ActiveStatic,
+    RequiresRuntimeState,
+};
+
+struct NavigationCollisionHandoff {
+    NavigationTriangleKey sourceTriangle{};
+    NavigationTriangleKey targetTriangle{};
+    NavigationPortalSegment portal{};
+    NavigationCollisionHandoffKind kind = NavigationCollisionHandoffKind::SameEntryBundle;
+    NavigationCollisionHandoffAvailability availability =
+        NavigationCollisionHandoffAvailability::ActiveStatic;
+    std::uint32_t sourceEntryId = 0;
+    std::uint32_t targetEntryId = 0;
+    std::optional<std::size_t> authoredFallbackChainIndex{};
+    std::optional<std::size_t> authoredFallbackTargetIndex{};
+    std::optional<std::size_t> authoredOrdinal{};
 };
 
 struct NavigationGraphEdge {
     std::size_t targetNodeIndex = 0;
     NavigationPortalSegment portal{};
     NavigationGraphEdgeKind kind = NavigationGraphEdgeKind::IntraSurface;
-    std::optional<std::size_t> groundLinkIndex{};
+    std::optional<std::size_t> collisionHandoffIndex{};
 };
 
 struct NavigationGraphNode {
@@ -54,12 +79,20 @@ struct NavigationTraversalGraphStatistics {
     std::size_t skippedNonManifoldTriangleCount = 0;
     std::size_t nonManifoldEdgeCount = 0;
     std::size_t intraSurfaceConnectionCount = 0;
-    std::size_t groundLinkPortalCount = 0;
-    std::size_t unresolvedGroundLinkCount = 0;
+    std::size_t authoredFallbackChainCount = 0;
+    std::size_t authoredFallbackTargetCount = 0;
+    std::size_t sameEntryHandoffCount = 0;
+    std::size_t authoredFallbackHandoffCount = 0;
+    std::size_t conditionalHandoffCount = 0;
+    std::size_t unresolvedHandoffCount = 0;
+    std::size_t runtimeDependentSurfaceCount = 0;
+    std::size_t runtimeStateBlockedIntervalCount = 0;
+    std::size_t priorityShadowedCandidateCount = 0;
 };
 
 struct NavigationTraversalGraph {
     std::vector<NavigationGraphNode> nodes{};
+    std::vector<NavigationCollisionHandoff> collisionHandoffs{};
     std::vector<NavigationDiagnostic> diagnostics{};
     NavigationTraversalGraphStatistics statistics{};
     bool hasCompleteGroundGeometry = false;
@@ -75,12 +108,19 @@ struct NavigationGraphBuildOptions {
     float vertexWeldTolerance = 1.0e-3F;
     // Minimum magnitude of a triangle cross product (twice its area).
     float degenerateTriangleEpsilon = 1.0e-6F;
-    // Maximum separation between otherwise collinear cross-surface boundaries.
-    float portalSeparationTolerance = 1.0e-2F;
-    // Minimum retained overlap length for a cross-surface portal.
+    // Planar point-in-triangle tolerance used by collision coverage queries.
+    float planarContainmentTolerance = 1.0e-3F;
+    // Distance to probe beyond a source triangle boundary, capped to one
+    // quarter of the candidate interval length.
+    float outwardProbeDistance = 1.0e-2F;
+    // Maximum source/target height difference at both ends of a handoff.
+    float heightContinuityTolerance = 1.0e-2F;
+    // Height separation that distinguishes tied stacked collision hits.
+    float distinctHeightTieTolerance = 1.0e-3F;
+    // Minimum retained interval length for a collision handoff.
     float minimumPortalLength = 1.0e-3F;
-    // Maximum 1-|dot(directionA,directionB)| for parallel boundaries.
-    float parallelDirectionTolerance = 1.0e-3F;
+    // Minimum absolute triangle-plane/up-axis dot product for height solving.
+    float minimumUpNormalComponent = 1.0e-4F;
 };
 
 class NavigationGraphBuilder final {

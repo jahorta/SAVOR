@@ -26,6 +26,8 @@ The SAVOR-owned result contains these logical groups.
 - immutable context result ID and schema version;
 - `navigation_epoch_id`;
 - source clean savestate ID and content hash;
+- exact ready output savestate ID and content hash. This is the authoritative clean bootstrap for a later
+  Navmesh Survey and may equal the source only when capture produced no derived clean state;
 - producing workflow/step/job and worker/runtime build identity;
 - `DiscImageIdentity` and area key/profile references;
 - field script/context identity and active MLD/SCT/ECT identities when observable;
@@ -61,6 +63,10 @@ The SAVOR-owned result contains these logical groups.
 The field set is versioned by a `navigation_context_capture_contract_version`. A model may require a
 strict superset; the predictor rejects an insufficient context rather than synthesizing values.
 
+Every `Ready` result has one explicit output savestate reference satisfying the same measured readiness
+evidence. A missing or ambiguous output savestate makes the result incomplete for Navmesh Survey
+bootstrap; downstream survey jobs never choose an implicit latest savestate.
+
 ### Readiness and completeness
 
 - overall status;
@@ -88,7 +94,7 @@ predictor plans in world/navigation space, and the later solver discovers how to
 
 | Status | Meaning | Planning consequence |
 |---|---|---|
-| `Ready` | Reset-qualified, stable, and complete for the requested model | Prediction may reference this result |
+| `Ready` | Reset-qualified, stable, and complete for the requested model | Navmesh Survey and prediction may reference this result |
 | `NonResetContinuation` | Control returned without a qualifying reset, such as a same-script cutscene | Continue the existing epoch; never start a fresh one |
 | `VelocityNonZero` | Actor placement may be visible, but measured velocity is not zero | Wait within a bounded stabilization policy or reject |
 | `ControlNotStable` | Control, placement, input, or pending-event state is not settled | Do not plan from the capture |
@@ -147,7 +153,8 @@ The logical capture sequence is:
 5. Anchor the spatial point when compatible world geometry is available, or record an unanchored position
    for later resolution.
 6. Evaluate the versioned readiness contract.
-7. Persist an immutable result and raw/audit evidence.
+7. At the accepted `Ready` frame, persist the exact clean output savestate and content hash.
+8. Persist an immutable result and raw/audit evidence that reference that output explicitly.
 
 The workflow may retry observation before producing a final result, but it never mutates a failed result
 into `Ready`.

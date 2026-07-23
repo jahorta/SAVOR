@@ -190,6 +190,28 @@ void appendBoxSegment(std::vector<PackedVertex>& vertices,
     }
 }
 
+[[nodiscard]] QString handoffKindLabel(
+    const savor::navigation::NavigationCollisionHandoffKind kind) {
+    switch (kind) {
+    case savor::navigation::NavigationCollisionHandoffKind::AuthoredFallback:
+        return QStringLiteral("authored-fallback");
+    case savor::navigation::NavigationCollisionHandoffKind::SameEntryBundle:
+    default:
+        return QStringLiteral("same-entry");
+    }
+}
+
+[[nodiscard]] QString handoffAvailabilityLabel(
+    const savor::navigation::NavigationCollisionHandoffAvailability availability) {
+    switch (availability) {
+    case savor::navigation::NavigationCollisionHandoffAvailability::RequiresRuntimeState:
+        return QStringLiteral("runtime-dependent");
+    case savor::navigation::NavigationCollisionHandoffAvailability::ActiveStatic:
+    default:
+        return QStringLiteral("active-static");
+    }
+}
+
 } // namespace
 
 RuntimeSceneData RuntimeSceneConverter::convert(const savor::navigation::NavigationAreaModel& model) const {
@@ -210,6 +232,12 @@ RuntimeSceneData RuntimeSceneConverter::convert(const savor::navigation::Navigat
     std::size_t movingObjectMeshCount = 0;
     std::size_t movingObjectVertexCount = 0;
     std::size_t movingObjectTriangleCount = 0;
+    std::size_t runtimeDependentSurfaceCount = 0;
+    std::size_t authoredFallbackTargetCount = 0;
+    std::size_t resolvedFallbackTargetCount = 0;
+    std::size_t missingEntryFallbackTargetCount = 0;
+    std::size_t missingGeometryFallbackTargetCount = 0;
+    std::size_t suppressedFallbackTargetCount = 0;
 
     for (std::size_t surfaceIndex = 0; surfaceIndex < model.surfaces.size(); ++surfaceIndex) {
         const auto& surface = model.surfaces[surfaceIndex];
@@ -228,6 +256,31 @@ RuntimeSceneData RuntimeSceneConverter::convert(const savor::navigation::Navigat
         gobjCount += surface.sourceKind == savor::navigation::NavigationSurfaceSourceKind::Gobj ? 1U : 0U;
         vertexCount += surface.mesh.vertices.size();
         triangleCount += surface.mesh.indices.size() / 3U;
+        runtimeDependentSurfaceCount +=
+            surface.traversalAvailability ==
+                savor::navigation::NavigationSurfaceTraversalAvailability::RequiresRuntimeState
+            ? 1U
+            : 0U;
+    }
+
+    for (const auto& chain : model.authoredGroundFallbackChains) {
+        authoredFallbackTargetCount += chain.targets.size();
+        for (const auto& target : chain.targets) {
+            switch (target.status) {
+            case savor::navigation::NavigationAuthoredGroundFallbackTargetStatus::Resolved:
+                ++resolvedFallbackTargetCount;
+                break;
+            case savor::navigation::NavigationAuthoredGroundFallbackTargetStatus::MissingEntry:
+                ++missingEntryFallbackTargetCount;
+                break;
+            case savor::navigation::NavigationAuthoredGroundFallbackTargetStatus::MissingGeometry:
+                ++missingGeometryFallbackTargetCount;
+                break;
+            case savor::navigation::NavigationAuthoredGroundFallbackTargetStatus::SuppressedAfterMissingEntry:
+                ++suppressedFallbackTargetCount;
+                break;
+            }
+        }
     }
 
     for (std::size_t regionIndex = 0; regionIndex < model.regions.size(); ++regionIndex) {
@@ -367,7 +420,13 @@ RuntimeSceneData RuntimeSceneConverter::convert(const savor::navigation::Navigat
             << ", movingObjectVertices=" << movingObjectVertexCount
             << ", movingObjectTriangles=" << movingObjectTriangleCount
             << ", failedMovingObjectRegions=" << model.failedMovingObjectRegionCount
-            << ", provisionalLinks=" << model.groundLinks.size()
+            << ", runtimeDependentSurfaces=" << runtimeDependentSurfaceCount
+            << ", authoredFallbackChains=" << model.authoredGroundFallbackChains.size()
+            << ", authoredFallbackTargets=" << authoredFallbackTargetCount
+            << ", resolvedFallbackTargets=" << resolvedFallbackTargetCount
+            << ", missingEntryFallbackTargets=" << missingEntryFallbackTargetCount
+            << ", missingGeometryFallbackTargets=" << missingGeometryFallbackTargetCount
+            << ", suppressedFallbackTargets=" << suppressedFallbackTargetCount
             << ", groundGeometryComplete=" << (model.hasCompleteGroundGeometry ? "yes" : "no")
             << ", wallGeometryComplete=" << (model.hasCompleteWallGeometry ? "yes" : "no")
             << ", triggerGeometryComplete=" << (model.hasCompleteTriggerGeometry ? "yes" : "no")
@@ -381,33 +440,45 @@ RuntimeSceneData RuntimeSceneConverter::convert(
     RuntimeSceneData out = convert(model.area);
 
     std::size_t directedEdgeCount = 0;
-    std::size_t renderedPortalCount = 0;
-    for (std::size_t nodeIndex = 0; nodeIndex < model.traversalGraph.nodes.size(); ++nodeIndex) {
-        const auto& node = model.traversalGraph.nodes[nodeIndex];
+    for (const auto& node : model.traversalGraph.nodes) {
         directedEdgeCount += node.edges.size();
-        for (const auto& edge : node.edges) {
-            if (edge.kind != savor::navigation::NavigationGraphEdgeKind::GroundLink) {
-                continue;
-            }
+    }
 
-            const std::vector<PackedVertex> vertices{
-                makeVertex(edge.portal.first.x, edge.portal.first.y, edge.portal.first.z),
-                makeVertex(edge.portal.second.x, edge.portal.second.y, edge.portal.second.z),
-            };
-            auto geometry = createLineGeometry(vertices, { 0U, 1U });
-            QVariantMap item{};
-            item.insert("geometry", QVariant::fromValue(static_cast<QObject*>(geometry.get())));
-            item.insert("color", QColor(QStringLiteral("#FFD966")));
-            item.insert("label", QStringLiteral("Portal surface=%1 triangle=%2 -> node=%3 link=%4")
-                .arg(static_cast<qulonglong>(node.key.surfaceIndex))
-                .arg(static_cast<qulonglong>(node.key.triangleIndex))
-                .arg(static_cast<qulonglong>(edge.targetNodeIndex))
-                .arg(edge.groundLinkIndex.has_value()
-                    ? QString::number(static_cast<qulonglong>(*edge.groundLinkIndex))
-                    : QStringLiteral("n/a")));
-            out.links.push_back(item);
-            out.geometries.push_back(std::move(geometry));
-            ++renderedPortalCount;
+    std::size_t renderedActiveHandoffCount = 0;
+    std::size_t renderedConditionalHandoffCount = 0;
+    for (const auto& handoff : model.traversalGraph.collisionHandoffs) {
+        const std::vector<PackedVertex> vertices{
+            makeVertex(handoff.portal.first.x, handoff.portal.first.y, handoff.portal.first.z),
+            makeVertex(handoff.portal.second.x, handoff.portal.second.y, handoff.portal.second.z),
+        };
+        auto geometry = createLineGeometry(vertices, { 0U, 1U });
+        QVariantMap item{};
+        item.insert("geometry", QVariant::fromValue(static_cast<QObject*>(geometry.get())));
+        const bool runtimeDependent =
+            handoff.availability ==
+            savor::navigation::NavigationCollisionHandoffAvailability::RequiresRuntimeState;
+        item.insert("color", runtimeDependent
+            ? QColor(QStringLiteral("#C58C55"))
+            : QColor(QStringLiteral("#FFD966")));
+        item.insert("label",
+            QStringLiteral("Handoff entry=%1 surface=%2 triangle=%3 -> entry=%4 surface=%5 triangle=%6; kind=%7; ordinal=%8; availability=%9")
+                .arg(handoff.sourceEntryId)
+                .arg(static_cast<qulonglong>(handoff.sourceTriangle.surfaceIndex))
+                .arg(static_cast<qulonglong>(handoff.sourceTriangle.triangleIndex))
+                .arg(handoff.targetEntryId)
+                .arg(static_cast<qulonglong>(handoff.targetTriangle.surfaceIndex))
+                .arg(static_cast<qulonglong>(handoff.targetTriangle.triangleIndex))
+                .arg(handoffKindLabel(handoff.kind))
+                .arg(handoff.authoredOrdinal.has_value()
+                    ? QString::number(static_cast<qulonglong>(*handoff.authoredOrdinal))
+                    : QStringLiteral("n/a"))
+                .arg(handoffAvailabilityLabel(handoff.availability)));
+        out.links.push_back(item);
+        out.geometries.push_back(std::move(geometry));
+        if (runtimeDependent) {
+            ++renderedConditionalHandoffCount;
+        } else {
+            ++renderedActiveHandoffCount;
         }
     }
 
@@ -420,9 +491,17 @@ RuntimeSceneData RuntimeSceneConverter::convert(
     summary << "Traversal graph summary: nodes=" << model.traversalGraph.nodes.size()
             << ", directedEdges=" << directedEdgeCount
             << ", intraSurfaceConnections=" << statistics.intraSurfaceConnectionCount
-            << ", groundLinkPortals=" << statistics.groundLinkPortalCount
-            << ", renderedPortals=" << renderedPortalCount
-            << ", unresolvedGroundLinks=" << statistics.unresolvedGroundLinkCount
+            << ", authoredFallbackChains=" << statistics.authoredFallbackChainCount
+            << ", authoredFallbackTargets=" << statistics.authoredFallbackTargetCount
+            << ", sameEntryHandoffs=" << statistics.sameEntryHandoffCount
+            << ", authoredFallbackHandoffs=" << statistics.authoredFallbackHandoffCount
+            << ", conditionalHandoffs=" << statistics.conditionalHandoffCount
+            << ", renderedActiveHandoffs=" << renderedActiveHandoffCount
+            << ", renderedConditionalHandoffs=" << renderedConditionalHandoffCount
+            << ", unresolvedHandoffs=" << statistics.unresolvedHandoffCount
+            << ", runtimeDependentSurfaces=" << statistics.runtimeDependentSurfaceCount
+            << ", runtimeStateBlockedIntervals=" << statistics.runtimeStateBlockedIntervalCount
+            << ", priorityShadowedCandidates=" << statistics.priorityShadowedCandidateCount
             << ", skippedInvalidTriangles=" << statistics.skippedInvalidTriangleCount
             << ", skippedDegenerateTriangles=" << statistics.skippedDegenerateTriangleCount
             << ", skippedDuplicateTriangles=" << statistics.skippedDuplicateTriangleCount

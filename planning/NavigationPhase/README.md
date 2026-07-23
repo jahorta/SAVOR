@@ -83,6 +83,9 @@ design before being admitted to planning or workflow jobs.
 - Discover and parse the MLD's strictly matched SCT through SpiceSCT, retain it in memory, and expose
   statically resolvable opcode-77 placements as optional route starts with their condition provenance.
 - Plan objective-to-objective movement with a frame-time cost function.
+- Run a Navmesh Survey from a ready Navigation Context output savestate to establish state-qualified
+  passability, verified survey anchors, directional movement response, collision oddities, and trigger
+  activation evidence for later planning.
 - Account for interruptions without inventing reset boundaries: a same-script cutscene remains inside one
   navigation epoch, while entering battle terminates the epoch and a reset-qualified field return starts a
   new context.
@@ -117,10 +120,12 @@ The interactive prototype will:
 6. Retain normalized SCT source/status/section summaries and a SAVOR-owned opcode-77 start catalog in
    `NavigationScriptModel`, with the full parse result behind an internal opaque boundary. Preserve branch,
    switch, nested-condition, and resolved-call provenance without exposing SpiceSCT types.
-7. Derive the walkable triangle/portal graph, keep manual point selection as the default, optionally resolve
-   a catalogued opcode-77 placement to the graph start, let the user pick a ground or projected-trigger
-   goal, run deterministic A*, and render link and route overlays in the reusable Navigation widget hosted
-   by `SavorQt3D`.
+7. Derive the walkable triangle/portal graph. Preserve each source entry's ordered linked-EntryID fallback
+   chain, test its complete GRND/GOBJ collision bundle first, and create a directed handoff only where the
+   current bundle stops accepting movement and the first accepting linked bundle continues it. Keep manual
+   point selection as the default, optionally resolve a catalogued opcode-77 placement to the graph start,
+   let the user pick a ground or projected-trigger goal, run deterministic A*, and render handoff and route
+   overlays in the reusable Navigation widget hosted by `SavorQt3D`.
 
 ## Implemented prototype slices (2026-07-18 through 2026-07-19)
 
@@ -161,9 +166,16 @@ The interactive prototype will:
   resolvable catalog option anchors it to the uniquely nearest triangle on the selected ground `tblId`.
   Ambiguous, missing-ground, or otherwise unresolvable options never replace a valid current start. Manual
   start facing is settable; a catalogued option's opcode-77 yaw supplies its scripted facing when known.
-- The traversal graph has one stable node per valid walkable triangle, bidirectional shared-edge adjacency,
-  and directed cross-surface portals only where provisional MLD link evidence agrees with boundary geometry;
-  ambiguous links are diagnosed instead of guessed.
+- The traversal graph has one stable node per valid walkable triangle and bidirectional shared-edge
+  adjacency. Cross-resource traversal follows the runtime-backed MLD contract: treat all GRND/GOBJ
+  surfaces owned by one entry as a collision bundle, preserve linked EntryIDs including `0` and their
+  authored order, query the current bundle first, and only on a miss accept the first linked bundle whose
+  geometry continues the motion. The derived handoff need not join coincident external mesh boundaries;
+  this allows a GRND edge to continue onto an interior landing of a ground-role GOBJ staircase.
+- Exact normalized `ground` entries without motion resources participate in static A*. Motion-bearing and
+  non-`ground` entries retain visible bind-pose geometry and conditional handoff diagnostics but are
+  excluded from traversal until animation/script state is modeled. The Links layer distinguishes active
+  static handoffs from muted-orange runtime-dependent candidates.
 - Manual starts and ordinary goals can be picked on ground. Goals can also select real projected trigger
   meshes; warning-backed trigger fallback cubes are never selectable. Trigger selection deterministically
   chooses the largest projected mesh by its world-space bounds, resolves it to walkable graph geometry, and
@@ -171,7 +183,9 @@ The interactive prototype will:
 - Start and ground-goal markers use the same compact fixed-size scale as the `man` fallback marker. Start
   facing is rendered as a short ray. Opcode 156 remains excluded because its transform comes from unresolved
   runtime restore state; trigger activation semantics, automatic condition evaluation, funnel smoothing,
-  alternative routes, and other SCT-derived endpoints remain later work.
+  alternative routes, and other SCT-derived endpoints remain later work. Wall blocking, decoded triangle
+  flags, player step-up rules, moving-ground state, and exact runtime collision-selector calibration are
+  also deferred; the static handoff graph is candidate topology rather than complete runtime proof.
 
 ## Planned Navigation Context workflow
 
@@ -181,6 +195,21 @@ explicitly referenced ready `NavigationContextResult`, invokes `SavorPredict`, m
 and lets the user select one result for display. There is no implicit "latest context." Initial Dungeon
 objectives include reaching as far as possible without an encounter and obtaining a particular encounter.
 The widget does not simulate, enumerate, or rank movement schedules.
+
+Before prediction, the Navmesh Survey spans `nav.explore_geometry` and `nav.build_refinement`. It consumes
+the exact output savestate of a ready `NavigationContextResult` as an immutable bootstrap, expands
+disposable verified anchors outward—including required door/script transitions—and releases ordinary
+collision, targeted collision-oddity, later trigger-characterization, and independent reproduction jobs as
+their dependencies become available. Sticky-corner positional jumps and wall-contact ramp-speed are
+measured as movement-response evidence; the survey does not decide whether an optimizer should use them.
+
+Encounter suppression is independent from trigger control. Survey jobs may need to suppress and permit
+triggers dynamically while traversing doors and resuming isolated probes, but trigger identities, safe
+control points, causal completion boundaries, and concrete gate modes remain research-gated. The normative
+direction in
+[`NavigationContextWorkflow/04-suppressed-exploration-and-world-refinement.md`](NavigationContextWorkflow/04-suppressed-exploration-and-world-refinement.md)
+supersedes older fixed job-wide trigger-suppression or collision/anomaly-only Navmesh Survey sketches in
+the active Navigation documents.
 
 A `NavigationEpoch` starts only after a reset-qualified field script/context switch or battle return has
 restored stable player control. Readiness is measured from a clean, unpatched source state: placement and
@@ -236,8 +265,8 @@ widget.
   - Normative profile precedence, shared component boundaries, and collision, anomaly, and encounter
     workstreams.
 - `NavigationContextWorkflow/`
-  - Normative reset-qualified entry lifecycle, disc/content identity, context-result, suppressed
-    exploration, prediction/control/validation, phase/job, artifact-lineage, and open-research contracts.
+  - Normative reset-qualified entry lifecycle, disc/content identity, context-result, Navmesh Survey,
+    prediction/control/validation, phase/job, artifact-lineage, and open-research contracts.
 
 ## Iteration approach
 

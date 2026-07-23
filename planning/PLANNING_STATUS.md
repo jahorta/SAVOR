@@ -27,7 +27,13 @@ the source of truth when a plan conflicts with implementation.
   opcode-77 start catalog with condition/call provenance, a triangle/portal traversal graph, manual or
   catalogued start selection with facing, manual ground or projected-trigger goal selection, deterministic
   A*, and route/link/endpoint overlays. Trigger goals resolve to walkable graph geometry and display their
-  projected bounds.
+  projected bounds. Ground handoffs now preserve each MLD entry's ordered EntryID fallback chain. Static
+  graph construction tests the complete current-entry GRND/GOBJ collision bundle first; only a current
+  bundle miss may transfer to the first linked bundle that accepts the continuation. This replaces the
+  earlier coincident-external-boundary heuristic and permits natural GRND-to-GOBJ staircase transitions.
+  EntryID `0`, authored order, missing-entry truncation, and same-entry multi-resource continuity remain
+  explicit SAVOR-owned evidence. Motion-bearing or non-`ground` entries are rendered as runtime-dependent
+  bind-pose candidates but are excluded from A* until their runtime state is modeled.
 
   The approved future `NavigationAreaProfile` classification is ordered:
 
@@ -50,6 +56,8 @@ the source of truth when a plan conflicts with implementation.
   into the current prototype, and no SpiceEct type will cross into Qt. Automatic profile enforcement,
   game-state evaluation, opcode-156 runtime restoration, transition semantics, moving-object/door
   semantics, trigger activation semantics, workflow jobs, and persistence remain future work.
+  Runtime-perfect wall blocking, triangle-flag filtering, step-up limits, animation/script-driven ground
+  state, and calibration against the game's active collision-selector modes also remain future work.
 
   A later predictor-backed slice adds a separate outcome-planning module in `SavorQt`. That module will
   consume an explicitly referenced, reset-qualified `NavigationContextResult` and invoke the existing
@@ -64,11 +72,18 @@ the source of truth when a plan conflicts with implementation.
 
   `planning/NavigationPhase/NavigationContextWorkflow/` is the normative future-work package for clean
   disc identity/content materialization, reset-qualified navigation epochs, measured context readiness,
-  encounter- and trigger-suppressed exploration, runtime-refined passability, predictor planning,
-  controller realization, clean validation, workflow steps, and immutable artifact lineage. A same-script
+  the Navmesh Survey, runtime-refined passability, predictor planning, controller realization, clean
+  validation, workflow steps, and immutable artifact lineage. The survey consumes the exact ready-context
+  output savestate as an immutable bootstrap, expands disposable anchors through required doors/script
+  transitions, and releases ordinary collision, sticky-jump/ramp-speed oddity, later trigger, and
+  reproduction jobs by dependency. Encounter suppression is independent from trigger control; trigger
+  activations may need to be suppressed and permitted dynamically within one job, but the mechanism and
+  modes remain research-gated. This direction supersedes fixed job-wide trigger-suppression and
+  collision/anomaly-only Navmesh Survey sketches elsewhere in active Navigation planning. A same-script
   cutscene remains in its current epoch and never justifies a fresh-entry reset; battle entry terminates
-  the epoch and a validated battle return may begin another. `planning/NavigationPhase/06-area-profiles-and-analysis-workstreams.md`
-  remains normative for profile precedence and evidence levels.
+  the epoch and a validated battle return may begin another.
+  `planning/NavigationPhase/06-area-profiles-and-analysis-workstreams.md` remains normative for profile
+  precedence and evidence levels.
 - `planning/DBMigrateQueues/09-Phase-4-Implementation-Plan.md` - future hardening/tuning work, including
   stress-load analysis for current queued database facades.
 

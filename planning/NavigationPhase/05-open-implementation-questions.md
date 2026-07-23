@@ -124,23 +124,33 @@ Workflow-specific decisions and research questions are normative in
 7. Loading alone does not evaluate current game state, select an incoming transition, handle opcode-156
    restoration, or apply SCT/controller activation semantics.
 
-### H. Initial traversal graph and route (2026-07-19)
+### H. Traversal graph, ordered fallback chains, and route (updated 2026-07-21)
 
 1. Create one stable node per valid walkable triangle; omit and diagnose degenerate, malformed, and
    non-manifold geometry.
-2. Add bidirectional shared/tolerance-welded intramesh adjacency. Add a directed cross-surface portal only
-   when provisional `NavigationGroundLink` evidence and overlapping boundary geometry agree.
-3. Evaluate all candidate surface pairs for an ambiguous link and warn instead of guessing if no geometry
-   validates a portal. Stacked X/Z overlaps remain disconnected without an explicit validated portal.
-4. Manual Set Start picks use ground; Set Goal accepts ground or a real projected trigger mesh. Both resolve
+2. Add bidirectional shared/tolerance-welded intramesh adjacency. For cross-resource traversal, preserve
+   each source entry's ordered linked-EntryID fallback chain, including EntryID `0`, instead of flattening
+   it into unordered source/target surface pairs.
+3. Treat every GRND/GOBJ surface owned by the current entry as one collision bundle. At each source
+   boundary interval, continue within that bundle when possible; only a complete miss enables the first
+   linked bundle in authored order whose triangles provide height-continuous coverage.
+4. Resolve linked EntryIDs with indexed lookup followed by the first linear EntryID match. A missing entry
+   truncates the effective chain; a resolved entry with missing geometry remains diagnostic and does not
+   erase later authored targets.
+5. Test coverage against target triangle footprints rather than requiring coincident external boundaries.
+   Choose a unique height-nearest target, keep tied stacked heights unresolved, and derive reverse traversal
+   only from independently valid reverse evidence.
+6. Manual Set Start picks use ground; Set Goal accepts ground or a real projected trigger mesh. Both resolve
    to `NavigationGraphAnchor`s with exact/snapped positions and snap distance. A selected resolvable
    opcode-77 catalog entry may instead set the start.
-5. Run one deterministic A* route with stable tie-breaking, 3D Euclidean heuristic, and geometric
+7. Run one deterministic A* route with stable tie-breaking, 3D Euclidean heuristic, and geometric
    centroid/portal cost plus a nonnegative coarse slope multiplier. Return start, portal midpoints, and
    goal; defer funnel smoothing, top-K alternatives, splines, and frame-time ranking.
-6. Render derived portals in Links and the path plus green start/magenta goal markers in a Route layer.
-   Preserve short-click versus drag-to-orbit behavior and report graph, anchor, route, and unreachable
-   diagnostics.
+8. Render active static handoffs in yellow and runtime-dependent bind-pose candidates in muted orange in
+   Links, plus the path and green start/magenta goal markers in Route. Exact normalized `ground` entries
+   without motion resources are static; motion-bearing or non-`ground` entries are excluded from A*.
+9. Preserve short-click versus drag-to-orbit behavior and report graph, handoff, anchor, route, and
+   unreachable diagnostics.
 
 ### I. Selectable opcode-77 starts (2026-07-20)
 
@@ -187,8 +197,10 @@ Workflow-specific decisions and research questions are normative in
    later observed-versus-predicted simulator discrepancies.
 4. Static diagnostics or simulator discrepancies do not silently mutate A*. A correction reaches the
    routing model only through an explicit, validated refinement rule with retained provenance.
-5. Sampling resolution, adaptive refinement, probe priority, refinement promotion thresholds, and durable
-   anomaly schemas remain open. Their absence does not block the existing triangle graph or route UI.
+5. The broad Navmesh Survey order is resolved: context-output bootstrap, verified anchor expansion,
+   ordinary collision, targeted oddities, later trigger characterization, and independent reproduction.
+   Exact within-wave sampling, adaptive refinement, promotion thresholds, and durable schemas remain open.
+   Their absence does not block the existing triangle graph or route UI.
 
 ### L. Dungeon-only encounter analysis (2026-07-21)
 
@@ -246,9 +258,10 @@ Workflow-specific decisions and research questions are normative in
    `nav.validate_route` are `SavorCore` contracts executed by `SavorWorker` from savestates/input tapes.
    `SavorDb` owns authored workflow specifications, lifecycle state, durable references, and publication
    through `nav.publish_result`.
-4. Only simulator work fans out for control attempts or empirical validation. CPU analysis may use normal
-   CPU parallelism but does not require PhaseScript or a Dolphin worker to build the world, run A*, or
-   calculate assumption-labeled marginal dungeon encounter results.
+4. Only simulator work fans out for Navmesh Survey anchor expansion, collision/oddity/trigger probes,
+   reproduction attempts, control attempts, or empirical validation. CPU analysis may use normal CPU
+   parallelism but does not require PhaseScript or a Dolphin worker to build the world, run A*, reduce a
+   refinement, or calculate assumption-labeled marginal dungeon encounter results.
 
 ### N. Area profiles and evidence boundaries (2026-07-21)
 
@@ -308,10 +321,11 @@ Workflow-specific decisions and research questions are normative in
 3. Context readiness requires a clean/unpatched source state, settled placement/ground, measured zero
    velocity, neutral authored input, no pending forced action, and consistent reset-state capture. Camera/
    control orientation is excluded from `NavigationContextResult` and predictor input.
-4. Static world, patched exploration observations/refinement, prediction, control realization, and clean
-   validation are separate immutable evidence layers. Encounter suppression and selective trigger
-   suppression are separately named patch profiles, and patched states never become prediction contexts or
-   clean validation inputs.
+4. Static world, patched survey observations/refinement, prediction, control realization, and clean
+   validation are separate immutable evidence layers. Encounter suppression is independent from trigger
+   control. A survey job may need to suppress and permit triggers dynamically while crossing a door and
+   resuming probes, but no concrete trigger-gate modes, allowlist, or hook are resolved. Patched states
+   never become prediction contexts or clean validation inputs.
 5. Disc identity is a streaming SHA-256 plus size, Game ID, region, and revision. Internal-file hashes and
    parser/model/schema/coordinate-policy versions key content bundles; a machine path is only a locator.
 6. Every downstream prediction explicitly references a context-result ID. There is no implicit latest
@@ -319,6 +333,31 @@ Workflow-specific decisions and research questions are normative in
    schedule; the control solver owns stick/camera realization and clean validation owns runtime comparison.
 7. The normative details and remaining workflow research questions live in
    [`NavigationContextWorkflow/`](NavigationContextWorkflow/README.md).
+
+### Q. Navmesh Survey direction (2026-07-23)
+
+1. The Navmesh Survey spans Dolphin-backed `nav.explore_geometry` plus deterministic
+   `nav.build_refinement`; collision validation and movement-oddity discovery remain separate outputs
+   within that broader survey.
+2. It bootstraps from the exact output savestate of an explicitly referenced ready
+   `NavigationContextResult`. Every repositioned, post-door, or otherwise derived survey anchor remains a
+   disposable exploration artifact.
+3. Survey-anchor local placement validity and verified reachability from the clean field-entry context are
+   separate facts. Anchor expansion may require intentional door/script transitions and creates
+   state-qualified pre/post checkpoints.
+4. Worker work is dependency-driven rather than five mandatory whole-field barriers: anchor expansion,
+   ordinary collision, targeted collision oddities, later trigger characterization, and independent
+   reproduction may release as soon as their prerequisites are verified.
+5. Collision-oddity output includes sticky-corner held intervals and possible positional jumps,
+   wall-contact ramp-speed versus ordinary ascent, slides, snags, and other directional movement response
+   needed by later optimization. The survey does not choose techniques or optimize movement.
+6. Automatic triggers will eventually expose reachable approach boundaries; interactable triggers will
+   expose position/distance/facing/input and applicable occlusion/state envelopes. Door or forced-movement
+   activations produce state-qualified transitions between survey anchors.
+7. Trigger activation must be dynamically controllable and audited within a survey job, but this decision
+   deliberately does not select modes or a runtime implementation. The normative supersession and research
+   gates live in
+   [`NavigationContextWorkflow/04-suppressed-exploration-and-world-refinement.md`](NavigationContextWorkflow/04-suppressed-exploration-and-world-refinement.md).
 
 ## Remaining Open Questions
 
@@ -349,6 +388,13 @@ Workflow-specific decisions and research questions are normative in
    not a provisional substitute.
 11. Final named-objective/start interaction model after the opcode-77/manual point-to-point prototype is
     usable.
+12. Runtime calibration for wall blocking, triangle-flag filtering, player step-up limits, animation/
+    script-driven ground state, and collision-selector modes. The static collision-handoff graph deliberately
+    does not guess these rules.
+13. Trigger identity and lifecycle, safe suppression/permission points, required initialization and
+    environmental-controller preservation, automatic versus interactable behavior, causal door/
+    forced-movement completion, reposition/settle semantics, and the concrete audited within-job trigger
+    control contract.
 
 The workflow-specific research list is maintained normatively in
 [`NavigationContextWorkflow/07-open-research-questions.md`](NavigationContextWorkflow/07-open-research-questions.md);
@@ -377,7 +423,8 @@ this list retains only cross-cutting Navigation questions.
    anchor, route, and future-SCT-coordinate boundary; calibration remains an explicit follow-up.
 2. Strict sibling SCT discovery/matching and retention provide recoverable diagnostics and expose
    a condition-preserving catalog of opcode-77 authored arrivals and scripted repositions.
-3. Traversable adjacency is derived from mesh boundaries plus provisional MLD links; the host accepts a
+3. Traversable adjacency preserves ordered EntryID fallback chains and derives current-bundle-first
+   collision handoffs from source-boundary continuation into target triangle coverage. The host accepts a
    manual or resolvable opcode-77 start and a manual ground or projected-trigger goal, and renders the first
    deterministic A* path overlay with start facing and endpoint-specific markers.
 4. After this boundary is stable, add automatic condition/state evaluation, investigate opcode-156 runtime

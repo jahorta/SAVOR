@@ -159,6 +159,11 @@ enum class NavigationPathStatus {
 struct NavigationPathResult {
     NavigationPathStatus status = NavigationPathStatus::Unreachable;
     std::vector<NavigationTriangleKey> trianglePath{};
+    // Edge index into the corresponding source node in trianglePath. A
+    // successful multi-triangle route has edgePath.size() ==
+    // trianglePath.size() - 1, preserving the exact A* provenance even when
+    // parallel collision handoffs join the same triangle pair.
+    std::vector<std::size_t> edgePath{};
     std::vector<NavigationVec3> polyline{};
     float routeLength = 0.0F;
     float totalCost = 0.0F;

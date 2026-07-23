@@ -91,8 +91,9 @@ Dungeon extension are SAVOR-owned:
 - `NavigationAreaModel`
   - Owns all data needed by the viewer and route planner.
   - Preserves surface source kind (`GRND` or ground-role `GOBJ`), entry/block/node identity, transformed
-    meshes, provisional entry links, collision/trigger/MovingObject regions, bounds, source identity, and
-    normalized diagnostics. Exact wall, trigger, and `motscpt` MovingObject regions own SAVOR
+    meshes, per-surface traversal availability, ordered authored ground-fallback chains,
+    collision/trigger/MovingObject regions, bounds, source identity, and normalized diagnostics. Exact
+    wall, trigger, and `motscpt` MovingObject regions own SAVOR
     `NavigationRegionMesh` instances with
     object/chunk/node/attach provenance.
   - Exposes `hasCompleteGroundGeometry` and `hasCompleteWallGeometry`; pathfinding must not run when either
@@ -100,6 +101,17 @@ Dungeon extension are SAVOR-owned:
     diagnostics plus equivalent MovingObject completeness fields; trigger or MovingObject incompleteness
     does not make an otherwise usable model partial.
   - Contains no Qt, SpiceMLD, or SpiceSCT types.
+- `NavigationAuthoredGroundFallbackChain` and `NavigationAuthoredGroundFallbackTarget`
+  - Preserve one source entry's complete GRND/GOBJ surface bundle and every linked EntryID in authored
+    order, including EntryID `0` and duplicate values.
+  - Resolve a target through the game's indexed-entry lookup followed by its first linear EntryID match.
+    Record `Resolved`, `MissingEntry`, `MissingGeometry`, or `SuppressedAfterMissingEntry`; an unresolved
+    EntryID truncates the effective fallback chain, while a resolved entry lacking usable geometry does
+    not erase later authored evidence.
+- `NavigationSurfaceTraversalAvailability`
+  - Marks exact normalized `ground` entries without nonzero motion resources as `Static`.
+  - Marks motion-bearing or non-`ground` entries as `RequiresRuntimeState`. Their transformed bind-pose
+    meshes remain visible, but their graph nodes and handoffs do not participate in active A*.
 - `NavigationScriptModel`
   - Owns the matched SCT's source identity, association/load status, normalized diagnostics, section
     summaries, total instruction count, exact case-normalized `loop` section count, and
@@ -115,8 +127,11 @@ Dungeon extension are SAVOR-owned:
   - Opcode 156 and every non-77 opcode are excluded from the catalog.
 - `NavigationTraversalGraph`
   - Owns one stable node per valid walkable triangle, triangle centroid/normal data, and directed portal
-    edges. Intramesh shared-boundary adjacency is bidirectional; cross-surface traversal is directed when
-    matching `NavigationGroundLink` evidence and overlapping boundary geometry agree.
+    edges plus SAVOR-owned `NavigationCollisionHandoff` records. Intramesh shared-boundary adjacency is
+    bidirectional. Cross-resource traversal follows current-entry-first collision coverage and the ordered
+    authored fallback chain rather than requiring coincident external mesh boundaries.
+  - A handoff retains source/target triangle keys, portal span, same-entry or authored-fallback provenance,
+    authored target ordinal when applicable, and static versus runtime-dependent availability.
 - `NavigationScenarioModel`
   - Owns the loaded `NavigationAreaModel`, optional matched `NavigationScriptModel`, traversal graph, and
     combined diagnostics for one in-memory prototype scenario.
@@ -137,6 +152,13 @@ Dungeon extension are SAVOR-owned:
   - Choose the largest projected mesh deterministically by world-space AABB squared diagonal, then stable
     triangle-count/index tie breaks. Resolve its nearest unambiguous point onto walkable graph geometry and
     retain the selected bounds for display.
+- `NavigationSurveyAnchor` (planned, shared)
+  - References the ready `NavigationContextResult` output savestate or another verified survey anchor,
+    plus its disposable savestate, world/state signature, position/facing, active ground/resource,
+    runtime-modification history, and settle evidence.
+  - Keeps local placement validity separate from proven reachability from the clean field-entry context.
+    Door/script transitions may create state-qualified successor anchors without promoting any survey state
+    to a new clean context.
 - `NavigationCollisionValidationModel` (planned, shared)
   - Stores probe observations keyed to source geometry and runtime probe position, including expected and
     observed contact/response, active ground/resource identity, approach, input/camera context, and
@@ -147,12 +169,18 @@ Dungeon extension are SAVOR-owned:
   - Stores candidates at corners, seams, slopes, and boundaries with approach pose/facing, camera/input
     sequence, baseline and observed displacement or speed, VI-frame cost, resulting route position,
     repetition, variance, and a beneficial/neutral/harmful/unresolved classification.
+  - Represents sticky-corner held intervals and possible player-position jumps, wall-contact ramp-speed
+    against ordinary ascent baselines, slides, snags, step-up effects, and other directional movement
+    response needed by a later optimizer.
   - A candidate is analysis evidence, not a route action or edge-cost change until a positive result is
     measured and reproducible.
 - `NavigationExplorationObservationSet` and `NavigationWorldRefinement` (planned, shared)
-  - Keep encounter-suppressed and selectively trigger-suppressed exploration runs separate from their
-    clean source context and static world. Each named patch profile, runtime observation, state signature,
-    coverage fact, and provenance record is immutable.
+  - Keep the exact ready-context bootstrap, disposable survey-anchor lineage, encounter suppression,
+    ordered trigger-control changes, runtime observations, state signatures, coverage facts, and
+    provenance immutable and separate from the clean source context and static world.
+  - Encounter suppression and trigger control are independent. Trigger permission may need to change
+    dynamically during one job to cross a door and resume probing, but no fixed trigger-gate modes or
+    implementation mechanism are resolved.
   - Represent locally blocked/passable sub-triangle regions, effective boundaries, and confidence because
     projected walls may intersect a walkable triangle. A refinement never rewrites source geometry and a
     patched exploration savestate never becomes a predictor context or clean validation input.
@@ -203,9 +231,12 @@ conversion, graph/search construction, and coordinate policy belong to `SavorNav
 6. `SavorNavigation` analyzes all opcode-77 occurrences in the parsed SCT, classifies initialization-path
    placements as authored arrivals and other occurrences as scripted repositions, and attaches their
    condition/call provenance to `NavigationScriptModel`. Opcode 156 is ignored.
-7. `NavigationGraphBuilder` converts complete walkable geometry and provisional links into stable triangle
-   nodes plus validated portals. It diagnoses degenerate/malformed/non-manifold geometry, unresolved
-   ambiguous links, and links with no geometric portal rather than inventing connectivity.
+7. `NavigationGraphBuilder` converts complete walkable geometry and ordered authored fallback chains into
+   stable triangle nodes plus collision handoffs. At each source boundary interval it probes just beyond
+   the source triangle, tests the remainder of the current entry bundle first, then considers linked entry
+   bundles in authored order. It accepts the first height-continuous hit and records any unresolved stacked
+   ambiguity rather than inventing connectivity. Degenerate, malformed, and non-manifold geometry remains
+   diagnosed and omitted.
 8. The UI thread receives only the SAVOR scenario and diagnostics. A complete area model is
    pathfinding-ready even if SCT association or parsing failed; a partial area may be rendered for
    diagnosis but is explicitly not pathfinding-ready.
@@ -271,10 +302,18 @@ conversion must be centralized in `SavorNavigation`; Qt rendering code must not 
 - Preserve mesh vertex normals when present, generate missing normals, and retain available triangle
   metadata. The initial coordinate policy is identity pending visual calibration.
 - Create bidirectional intramesh edges only for shared or tolerance-welded triangle boundaries. Keep
-  stacked X/Z-overlapping surfaces disconnected unless an explicit MLD link and overlapping boundary
-  geometry validate a directed cross-surface portal.
-- For provisional links with multiple candidate surfaces, evaluate every geometrically possible pairing;
-  if none yields a portal, emit a warning and leave the surfaces disconnected.
+  stacked X/Z-overlapping surfaces disconnected unless a unique height-continuous collision handoff
+  resolves them.
+- Treat all walkable surfaces under the current entry as one collision bundle, regardless of GRND versus
+  GOBJ. A source-boundary continuation onto another surface in that bundle creates a same-entry handoff.
+- Only after the whole current bundle misses may ordered linked EntryIDs contribute a directed fallback.
+  The first accepting linked bundle shadows later targets. A first hit that fails height continuity is
+  unresolved and does not fall through to a later target.
+- Derive coverage against target triangle footprints, not only target external boundaries, so a GRND can
+  hand off to a landing or ramp inside a larger GOBJ mesh. Preserve reverse traversal only when independently
+  derived from the reverse source entry's own geometry and fallback chain.
+- Keep `RequiresRuntimeState` bind-pose surfaces and conditional handoff candidates available for
+  visualization and diagnostics but outside the active A* graph.
 
 ## 2) Collision Model
 
@@ -315,6 +354,14 @@ conversion must be centralized in `SavorNavigation`; Qt rendering code must not 
   - activation predicate
   - required flags
   - resulting state transitions
+  - automatic-trigger approach boundaries
+  - interactable position/distance/facing/input and occlusion envelopes
+  - pre/post survey anchors for doors, forced movement, and collision-state changes
+
+The Navmesh Survey requires trigger activation to be suppressible or permitted dynamically within a
+worker job, but the trigger identities, safe interception point, causal-script boundary, and concrete
+control modes remain research questions. Suppression must not be assumed safe for field initialization,
+doors, MovingObjects, platforms, or collision-resource controllers.
 
 ## 4) Provisional Moving-Object Model
 
@@ -354,10 +401,13 @@ conversion must be centralized in `SavorNavigation`; Qt rendering code must not 
 
 ## 7) Shared Runtime-Evidence Model
 
-Collision validation and movement-anomaly discovery are shared by Dungeon and future Safe Navigation.
-They operate on the same SAVOR-owned geometry and stable identities but do not change its parse or
-conversion status.
+Navmesh Survey anchors, collision validation, movement-response/oddity discovery, and trigger-activation
+evidence are shared by Dungeon and future Safe Navigation. They operate on the same SAVOR-owned geometry
+and stable identities but do not change its parse or conversion status.
 
+- The Navmesh Survey consumes the exact output savestate of a ready `NavigationContextResult`, expands
+  disposable verified anchors, then schedules ordinary collision, oddity, trigger, and reproduction work
+  as dependencies become available rather than as mandatory whole-field barriers.
 - Collision observations retain the expected contact, observed contact/response, world position,
   ground/resource identity, source provenance, approach direction, and input/camera context.
 - Validation coverage is granular by tested surface, wall boundary, and approach. Untested geometry is
@@ -368,8 +418,11 @@ conversion status.
 - Movement-anomaly candidates are generated around validated or explicitly low-confidence corners, seams,
   slopes, and boundaries. Each candidate records approach pose/facing, camera and input sequence, baseline
   and observed motion, VI-frame cost, route position, repeat count, variance, and outcome classification.
-- Sticky, unusual, or divergent collision behavior is not assumed beneficial. Only reproducible measured
-  speedups may later become planner actions or edge-cost adjustments.
+- Sticky-corner positional jumps, wall-contact ramp-speed, and other unusual or divergent collision
+  behavior are not assumed beneficial. Only reproducible measured behaviors may later become planner
+  actions or edge-cost adjustments.
+- Trigger observations retain automatic crossing boundaries or interactable activation envelopes and any
+  state-qualified pre/post-anchor transition. A trigger hit never becomes blocked-collision evidence.
 - `SavorNavigation` owns candidate generation and result interpretation. Dolphin-backed probes use
   `SavorCore` for memory/input/checkpoint telemetry and `SavorWorker` for isolated execution; worker
   failure yields no empirical claim.
@@ -483,7 +536,7 @@ Each transition stores:
 - `NavigationAreaModel` (in memory for the interactive prototype):
   - source identity and bounds
   - transformed GRND and ground-role GOBJ meshes with stable entry/block/node source keys
-  - surface links/adjacency
+  - per-surface static/runtime-dependent availability and ordered authored EntryID fallback chains
   - collision, trigger, and provisional MovingObject geometry plus available source metadata
   - SAVOR-owned wall, trigger, and MovingObject mesh instances with separate geometry-completeness diagnostics
   - normalized parse/conversion diagnostics
@@ -493,13 +546,16 @@ Each transition stores:
   - SAVOR-owned opcode-77 start options, variants, conditions, and provenance
   - opaque private retention of the full SpiceSCT parse result
 - `NavigationScenarioModel` (in memory for the interactive prototype):
-  - area model, optional matched script, traversal graph, and combined diagnostics
+  - area model, optional matched script, traversal graph, derived collision handoffs, and combined diagnostics
 - Planned profile and companion evidence (in memory):
   - ordered `NavigationAreaProfile`, complete-set provenance, expected/present companion identities, and
     association status kept separately from each parser's load/parse status
-- Planned `NavigationCollisionValidationModel` and `NavigationMovementAnomalyModel` (shared, optional):
-  - source-keyed runtime observations, coverage/confidence, discrepancies, reproducibility, and diagnostic
-    evidence without mutating geometry-completeness flags
+- Planned Navmesh Survey artifacts (shared, optional):
+  - `NavigationSurveyAnchor` records with separate local-validity and entry-reachability evidence
+  - source-keyed collision observations, movement-response/oddity evidence, trigger activation/transition
+    observations, coverage/confidence, discrepancies, and reproducibility without mutating
+    geometry-completeness flags
+  - immutable `NavigationExplorationObservationSet` and state-qualified `NavigationWorldRefinement`
 - Planned `NavigationDungeonEncounterModel` (Dungeon only, optional):
   - SAVOR-owned ECT tables/rates/rows plus selector records keyed by `NavigationTriangleKey`
   - explicit unknown/unsupported/ambiguous states and structural or assumed/marginal evidence level
@@ -516,7 +572,8 @@ Each transition stores:
   - `NavigationControlSolveResult` with controller/camera realization, and
     `NavigationValidationResult` from an unpatched clean runtime
 - `NavigationPathResult` (in memory for the interactive prototype):
-  - anchored endpoints, route status, deterministic portal path/polyline, cost/length, and diagnostics
+  - anchored endpoints, route status, deterministic triangle and exact graph-edge provenance,
+    portal path/polyline, cost/length, and diagnostics
 - Endpoint visualization state (in memory in `SavorQt3D`):
   - compact fixed-size start and ground-goal markers at the `man` fallback scale
   - manual or opcode-77 start facing rendered as a short ray
@@ -566,6 +623,8 @@ Each transition stores:
   failure, malformed/partial/unsupported content, table-resolution gaps, and parse warnings
 - missing triangle metadata, unsupported encounter selectors, unresolved/out-of-range tables, and
   ambiguous overlapping collision resources
+- unresolved authored ground EntryIDs, missing linked geometry, truncated fallback chains, stacked-height
+  ambiguity, discontinuous first-hit coverage, and runtime-dependent handoff candidates excluded from A*
 - incomplete opcode-77 placements and start-resolution failures such as a missing ground `tblId`, tied
   matching surfaces, or an unusable traversal graph
 - projected-trigger goal failures such as missing real mesh geometry, incomplete graph geometry, tied
@@ -586,6 +645,11 @@ geometry as a goal does not imply its runtime activation rule. SCT absence or fa
 also advisory: the user may still choose manual route endpoints. Incomplete catalog entries remain
 inspectable but unavailable, and failed resolution preserves the current valid start. A manual SCT mismatch
 never replaces an already valid association.
+
+Static collision handoffs establish candidate topology only. Wall blocking, decoded triangle-flag
+filtering, player step-up limits, animation/script-driven ground state, and exact calibration against the
+game's collision-selector modes remain separate runtime-confidence work; the loader and graph must retain
+enough provenance for those later refinements without claiming they are already modeled.
 
 A matched ECT's presence classifies a non-099 scenario as Dungeon even when ECT loading or parsing fails;
 the failure disables table-backed encounter analysis but does not disable ordinary pathfinding. Missing

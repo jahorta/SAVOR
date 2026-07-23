@@ -102,8 +102,14 @@ probes and a concern of the downstream control solver.
    - Load and convert the selected file off the UI thread, then apply the completed model on the UI thread.
 
 5. **First interactive path**
-   - Build a true-3D traversal graph from valid walkable triangles, shared boundaries, provisional MLD
-     links, and geometrically validated cross-surface portals.
+   - Build a true-3D traversal graph from valid walkable triangles, shared boundaries, and collision-
+     coverage handoffs derived from ordered MLD linked-EntryID fallback chains.
+   - Treat all GRND/GOBJ surfaces owned by one entry as its current collision bundle. Continue within that
+     bundle wherever it still accepts the movement; only a complete current-bundle miss may transfer to
+     the first accepting linked bundle in authored order. Preserve EntryID `0` and missing-entry chain
+     truncation instead of treating the link list as an unordered surface-pair set.
+   - Allow a handoff where a source boundary continues onto a target triangle footprint even when the
+     target's external mesh boundary does not coincide with it. Keep tied stacked heights unresolved.
    - Keep manual ground picking as the default for the start. Let the goal select either ground or a real
      projected trigger mesh, then resolve both endpoints to stable graph triangles and render one
      deterministic A* route plus its derived portals.
@@ -178,18 +184,30 @@ Overworld/Area 99 is deferred.
 6. **UI-first workflow**
    - Navigation phase is UI-driven (no CLI workflow for objective specification in MVP).
 
-7. **Shared collision validation**
+7. **Shared Navmesh Survey and collision validation**
+   - Bootstrap from the output savestate of an explicitly referenced ready `NavigationContextResult`;
+     every repositioned or post-transition survey anchor remains disposable exploration lineage.
+   - Expand verified anchors outward, including door/script transitions required to reach later regions.
+     Keep local anchor validity separate from proven reachability from the field-entry context.
    - Compare extracted GRND/GOBJ and wall geometry with runtime contact and response evidence without
      silently rebaking or rewriting source geometry.
    - Track geometry-conversion completeness separately from runtime validation coverage and confidence.
+   - Fan out ordinary collision probes, targeted oddity probes, trigger probes, and independent
+     reproduction attempts as dependency-driven worker waves.
+   - Require dynamically controllable trigger activation during survey jobs, while leaving the exact
+     suppression/permission mechanism and modes research-gated.
    - Reuse the same observation and confidence model for the later Safe Navigation phase.
 
-8. **Shared movement-anomaly discovery**
+8. **Shared movement-response and collision-oddity discovery**
    - Probe collision corners, seams, slopes, and boundary interactions for reproducible movement changes.
    - Record the approach pose, facing, camera/input context, observed speed or displacement change,
      VI-frame cost, repetition, variance, and whether the result is beneficial, neutral, harmful, or
      unresolved.
+   - Detect sticky-corner holds followed by possible positional jumps and wall-contact ramp-speed behavior,
+     including the staircase case where angled wall contact may outperform ordinary ascent.
    - Do not assume that every unusual or sticky collision response is a useful speedup.
+   - Supply measured movement-response and reproducibility data to later optimization without choosing or
+     ranking movement techniques in the survey itself.
 
 9. **Dungeon encounter analysis**
    - Parse a matched ECT privately through SpiceEct and convert it to SAVOR-owned encounter data.
@@ -303,6 +321,11 @@ Overworld/Area 99 is deferred.
 
 10. **Initial pathfinding**
    - Complete ground/wall geometry produces a stable triangle/portal traversal graph.
+   - Ground handoffs preserve ordered EntryID fallback provenance and implement current-bundle-first,
+     first-accepting-target collision coverage. The `a101b` lower GRND, ground-role GOBJ staircase, and
+     upper GRND are connected without requiring coincident external mesh boundaries.
+   - Static A* excludes motion-bearing or non-`ground` entries. Their bind-pose geometry and conditional
+     handoff candidates remain inspectable as runtime-dependent evidence.
    - A manual or resolved opcode-77 start and a manually picked ground or projected-trigger goal can be
      connected by a deterministic A* route, or produce a visible and specific invalid/unreachable
      diagnostic.
@@ -318,15 +341,21 @@ Overworld/Area 99 is deferred.
      visibly marked candidate/unverified.
 
 12. **Collision-validation evidence**
+   - The survey starts from the exact Navigation Context output savestate and records every disposable
+     anchor, reposition/settle check, door transition, runtime modification, and trigger-control change.
    - Runtime observations can be traced to the tested source surface or wall boundary, probe position,
      approach, and input/camera context.
    - Validation coverage and discrepancies are visible independently of
      `hasCompleteGroundGeometry`/`hasCompleteWallGeometry`; geometry completeness never masquerades as
      runtime collision confidence.
+   - Automatic-trigger approach boundaries and interactable-trigger position/distance/facing/input
+     envelopes can be represented without assuming concrete trigger-gate modes.
 
 13. **Movement-anomaly evidence**
    - Candidate anomalies retain enough input, camera, timing, baseline, and repeated-run evidence to
      reproduce and classify their effect.
+   - Sticky-corner candidates preserve the held interval and any later positional discontinuity; ramp-speed
+     candidates preserve ordinary and wall-contact ascent baselines, vertical gain, and net progress.
    - Only measured, reproducible positive results may later become route actions or edge-cost changes;
      neutral, harmful, unresolved, or divergent results remain diagnostic evidence.
 
@@ -376,8 +405,8 @@ Overworld/Area 99 is deferred.
 - Pinned SPICE submodule integration and a `SavorNavigation` adapter contract for navigation-relevant
   world data, a selectable opcode-77 SCT start catalog, and planned private ECT conversion.
 - Reusable Navigation widget running in the standalone `SavorQt3D` host.
-- SAVOR-owned area-profile/companion evidence, shared collision-validation observations, and
-  movement-anomaly candidate models.
+- SAVOR-owned area-profile/companion evidence plus Navmesh Survey anchor, collision-validation,
+  movement-response/oddity, trigger-activation, coverage, and immutable refinement models.
 - Optional Dungeon encounter model keyed by `NavigationTriangleKey`, with structural and assumed/marginal
   evidence; separate predictor-result and simulator-validation artifacts keep predicted/seeded and
   observed/validated evidence distinct.
@@ -396,6 +425,10 @@ Overworld/Area 99 is deferred.
 - Benchmark A: simple straight traversal with 0 cutscenes.
 - Benchmark B: traversal requiring 1 mandatory interaction cutscene.
 - Benchmark C: traversal with overlapping walk mesh elevation and tight collision corners.
+- Benchmark D: `a101b` survey bootstrap from a Navigation Context output savestate, state-qualified anchor
+  expansion through the required door chain to the staircase area, ordinary staircase collision
+  measurement, and targeted wall-contact ramp-speed reproduction. Detailed trigger-boundary acceptance
+  remains gated on the trigger-control research contract.
 
 ## Risks
 
@@ -408,10 +441,16 @@ Overworld/Area 99 is deferred.
 - Attached trigger meshes may be selected as route goals, but their bounds remain geometry visualization;
   trigger/script coupling, player interaction radius, and SCT/controller activation predicates are not yet
   represented.
+- Navmesh Survey geometry jobs need unwanted trigger effects suppressible while anchor expansion may need
+  selected door/transition activations inside the same job. The runtime hook, activation identity, causal
+  session boundary, and safe dynamic control modes require evidence before implementation.
 - Opcode-77 classification distinguishes likely authored arrivals from lower-confidence scripted
   repositions, but does not establish which option current runtime state selects; automatic evaluation
   remains an explicit later slice.
 - Moving platform/controller rules requiring a second modeling pass.
+- The first collision-coverage graph does not yet reproduce wall blocking, decoded triangle flags,
+  player step-up limits, animation/script-driven surface state, or every runtime collision-selector mode.
+  Derived handoffs remain static candidate topology until those rules and simulator evidence refine them.
 - `motscpt` may include doors, but entry meaning and motion/activation behavior require controller/SCT
   evidence before becoming navigation semantics.
 - ECT presence classifies Dungeon content, but parser success does not validate selector semantics,

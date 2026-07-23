@@ -77,6 +77,11 @@ enum class NavigationSurfaceSourceKind {
     Gobj,
 };
 
+enum class NavigationSurfaceTraversalAvailability {
+    Static,
+    RequiresRuntimeState,
+};
+
 struct NavigationSurfaceSourceKey {
     std::uint32_t sourceEntryId = 0;
     std::uint32_t sourceBlockOffset = 0;
@@ -88,25 +93,35 @@ struct NavigationSurfaceSourceKey {
 struct NavigationSurface {
     NavigationSurfaceSourceKey sourceKey{};
     NavigationSurfaceSourceKind sourceKind = NavigationSurfaceSourceKind::Grnd;
+    NavigationSurfaceTraversalAvailability traversalAvailability =
+        NavigationSurfaceTraversalAvailability::Static;
     std::size_t sourceTableIndex = 0;
     std::int32_t tblId = 0;
     std::string fxnName{};
     NavigationMesh mesh{};
-    std::vector<std::uint32_t> linkedEntryIds{};
 };
 
-enum class NavigationGroundLinkResolution {
+enum class NavigationAuthoredGroundFallbackTargetStatus {
     Resolved,
-    Ambiguous,
-    Missing,
+    MissingEntry,
+    MissingGeometry,
+    SuppressedAfterMissingEntry,
 };
 
-struct NavigationGroundLink {
-    std::uint32_t sourceEntryId = 0;
+struct NavigationAuthoredGroundFallbackTarget {
     std::uint32_t targetEntryId = 0;
-    NavigationGroundLinkResolution resolution = NavigationGroundLinkResolution::Missing;
-    std::vector<NavigationSurfaceSourceKey> sourceSurfaces{};
+    std::size_t authoredOrdinal = 0;
+    std::optional<std::size_t> targetTableIndex{};
+    NavigationAuthoredGroundFallbackTargetStatus status =
+        NavigationAuthoredGroundFallbackTargetStatus::MissingEntry;
     std::vector<NavigationSurfaceSourceKey> targetSurfaces{};
+};
+
+struct NavigationAuthoredGroundFallbackChain {
+    std::size_t sourceTableIndex = 0;
+    std::uint32_t sourceEntryId = 0;
+    std::vector<NavigationSurfaceSourceKey> sourceSurfaces{};
+    std::vector<NavigationAuthoredGroundFallbackTarget> targets{};
 };
 
 enum class NavigationRegionKind {
@@ -135,7 +150,7 @@ struct NavigationAreaSourceIdentity {
 struct NavigationAreaModel {
     NavigationAreaSourceIdentity source{};
     std::vector<NavigationSurface> surfaces{};
-    std::vector<NavigationGroundLink> groundLinks{};
+    std::vector<NavigationAuthoredGroundFallbackChain> authoredGroundFallbackChains{};
     std::vector<NavigationRegion> regions{};
     NavigationBounds bounds{};
     std::vector<NavigationDiagnostic> diagnostics{};

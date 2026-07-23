@@ -5,12 +5,13 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
-#include <set>
+#include <optional>
 #include <string>
 #include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
+#include <vector>
 
 namespace savor::navigation {
 namespace {
@@ -69,6 +70,63 @@ void appendDiagnostic(
         .severity = severity,
         .message = std::move(message),
     });
+}
+
+struct PlanarPoint {
+    float x = 0.0F;
+    float y = 0.0F;
+};
+
+[[nodiscard]] PlanarPoint add(const PlanarPoint lhs, const PlanarPoint rhs) noexcept {
+    return PlanarPoint{ lhs.x + rhs.x, lhs.y + rhs.y };
+}
+
+[[nodiscard]] PlanarPoint subtract(const PlanarPoint lhs, const PlanarPoint rhs) noexcept {
+    return PlanarPoint{ lhs.x - rhs.x, lhs.y - rhs.y };
+}
+
+[[nodiscard]] PlanarPoint multiply(const PlanarPoint value, const float scalar) noexcept {
+    return PlanarPoint{ value.x * scalar, value.y * scalar };
+}
+
+[[nodiscard]] float cross2(const PlanarPoint lhs, const PlanarPoint rhs) noexcept {
+    return (lhs.x * rhs.y) - (lhs.y * rhs.x);
+}
+
+[[nodiscard]] float length(const PlanarPoint value) noexcept {
+    return std::sqrt((value.x * value.x) + (value.y * value.y));
+}
+
+struct PlanarBasis {
+    NavigationVec3 horizontal{};
+    NavigationVec3 vertical{};
+    NavigationVec3 up{};
+
+    [[nodiscard]] PlanarPoint project(const NavigationVec3& value) const noexcept {
+        return PlanarPoint{ dot(value, horizontal), dot(value, vertical) };
+    }
+
+    [[nodiscard]] NavigationVec3 lift(const PlanarPoint value, const float height) const noexcept {
+        return add(
+            add(multiply(horizontal, value.x), multiply(vertical, value.y)),
+            multiply(up, height));
+    }
+};
+
+[[nodiscard]] PlanarBasis makePlanarBasis(const NavigationVec3& requestedUp) noexcept {
+    NavigationVec3 up = normalized(requestedUp);
+    if (lengthSquared(up) <= kComparisonEpsilon) {
+        up = NavigationVec3{ 0.0F, 1.0F, 0.0F };
+    }
+    const NavigationVec3 reference = std::abs(up.y) < 0.9F
+        ? NavigationVec3{ 0.0F, 1.0F, 0.0F }
+        : NavigationVec3{ 1.0F, 0.0F, 0.0F };
+    const NavigationVec3 horizontal = normalized(cross(reference, up));
+    return PlanarBasis{
+        .horizontal = horizontal,
+        .vertical = normalized(cross(up, horizontal)),
+        .up = up,
+    };
 }
 
 struct QuantizedCell {
@@ -175,26 +233,40 @@ struct CanonicalTriangleHash {
     }
 };
 
+struct TriangleRecord {
+    NavigationTriangleKey key{};
+    std::array<NavigationVec3, 3> vertices{};
+    NavigationVec3 planeNormal{};
+    NavigationVec3 unitNormal{};
+    std::optional<std::size_t> nodeIndex{};
+    bool retained = true;
+};
+
 struct EdgeOccurrence {
-    std::size_t nodeIndex = 0;
+    std::size_t triangleRecordIndex = 0;
     NavigationVec3 first{};
     NavigationVec3 second{};
+    NavigationVec3 opposite{};
 };
 
 struct BoundarySegment {
-    std::size_t nodeIndex = 0;
+    std::size_t triangleRecordIndex = 0;
     NavigationVec3 first{};
     NavigationVec3 second{};
+    NavigationVec3 opposite{};
 };
 
-[[nodiscard]] bool nearlyEqual(const NavigationVec3& lhs, const NavigationVec3& rhs) noexcept {
-    return lengthSquared(subtract(lhs, rhs)) <= (kComparisonEpsilon * kComparisonEpsilon);
+[[nodiscard]] bool nearlyEqual(
+    const NavigationVec3& lhs,
+    const NavigationVec3& rhs,
+    const float tolerance = kComparisonEpsilon) noexcept {
+    return lengthSquared(subtract(lhs, rhs)) <= (tolerance * tolerance);
 }
 
 [[nodiscard]] bool addEdgeIfUnique(NavigationGraphNode& node, NavigationGraphEdge edge) {
     const auto duplicate = std::find_if(node.edges.begin(), node.edges.end(), [&](const NavigationGraphEdge& existing) {
         if (existing.targetNodeIndex != edge.targetNodeIndex || existing.kind != edge.kind ||
-            existing.groundLinkIndex != edge.groundLinkIndex) {
+            existing.collisionHandoffIndex != edge.collisionHandoffIndex) {
             return false;
         }
         const bool sameOrder = nearlyEqual(existing.portal.first, edge.portal.first) &&
@@ -210,74 +282,542 @@ struct BoundarySegment {
     return true;
 }
 
-[[nodiscard]] std::optional<NavigationPortalSegment> overlappingPortal(
-    const BoundarySegment& source,
-    const BoundarySegment& target,
-    const NavigationGraphBuildOptions& options) noexcept {
-    const NavigationVec3 sourceVector = subtract(source.second, source.first);
-    const NavigationVec3 targetVector = subtract(target.second, target.first);
-    const float sourceLength = length(sourceVector);
-    const float targetLength = length(targetVector);
-    if (sourceLength <= options.minimumPortalLength || targetLength <= options.minimumPortalLength) {
-        return std::nullopt;
+[[nodiscard]] bool pointInTriangle(
+    const PlanarPoint point,
+    const std::array<PlanarPoint, 3>& triangle,
+    const float tolerance) noexcept {
+    const float orientation = cross2(
+        subtract(triangle[1], triangle[0]),
+        subtract(triangle[2], triangle[0]));
+    if (std::abs(orientation) <= kComparisonEpsilon) {
+        return false;
     }
-
-    const NavigationVec3 sourceDirection = multiply(sourceVector, 1.0F / sourceLength);
-    const NavigationVec3 targetDirection = multiply(targetVector, 1.0F / targetLength);
-    const float alignment = std::abs(dot(sourceDirection, targetDirection));
-    if ((1.0F - alignment) > options.parallelDirectionTolerance) {
-        return std::nullopt;
+    const float orientationSign = orientation > 0.0F ? 1.0F : -1.0F;
+    for (std::size_t edge = 0; edge < 3U; ++edge) {
+        const PlanarPoint first = triangle[edge];
+        const PlanarPoint second = triangle[(edge + 1U) % 3U];
+        const PlanarPoint edgeVector = subtract(second, first);
+        const float edgeLength = length(edgeVector);
+        if ((orientationSign * cross2(edgeVector, subtract(point, first))) < -(tolerance * edgeLength)) {
+            return false;
+        }
     }
-
-    const float targetFirstSeparation = length(cross(subtract(target.first, source.first), sourceDirection));
-    const float targetSecondSeparation = length(cross(subtract(target.second, source.first), sourceDirection));
-    if (targetFirstSeparation > options.portalSeparationTolerance ||
-        targetSecondSeparation > options.portalSeparationTolerance) {
-        return std::nullopt;
-    }
-
-    const float targetFirstOnSource = dot(subtract(target.first, source.first), sourceDirection) / sourceLength;
-    const float targetSecondOnSource = dot(subtract(target.second, source.first), sourceDirection) / sourceLength;
-    const float overlapFirst = std::max(0.0F, std::min(targetFirstOnSource, targetSecondOnSource));
-    const float overlapSecond = std::min(1.0F, std::max(targetFirstOnSource, targetSecondOnSource));
-    if (((overlapSecond - overlapFirst) * sourceLength) < options.minimumPortalLength) {
-        return std::nullopt;
-    }
-
-    const auto averageWithTarget = [&](const NavigationVec3& sourcePoint) {
-        const float targetParameter = std::clamp(
-            dot(subtract(sourcePoint, target.first), targetVector) / lengthSquared(targetVector),
-            0.0F,
-            1.0F);
-        const NavigationVec3 targetPoint = add(target.first, multiply(targetVector, targetParameter));
-        return multiply(add(sourcePoint, targetPoint), 0.5F);
-    };
-
-    const NavigationVec3 sourceFirst = add(source.first, multiply(sourceVector, overlapFirst));
-    const NavigationVec3 sourceSecond = add(source.first, multiply(sourceVector, overlapSecond));
-    return NavigationPortalSegment{
-        .first = averageWithTarget(sourceFirst),
-        .second = averageWithTarget(sourceSecond),
-    };
+    return true;
 }
 
-[[nodiscard]] std::vector<std::size_t> findSurfaceIndices(
+[[nodiscard]] std::optional<float> triangleHeightAt(
+    const TriangleRecord& triangle,
+    const PlanarPoint point,
+    const PlanarBasis& basis,
+    const NavigationGraphBuildOptions& options,
+    const bool requireContainment = true) noexcept {
+    const std::array<PlanarPoint, 3> projected{
+        basis.project(triangle.vertices[0]),
+        basis.project(triangle.vertices[1]),
+        basis.project(triangle.vertices[2]),
+    };
+    if (requireContainment && !pointInTriangle(point, projected, options.planarContainmentTolerance)) {
+        return std::nullopt;
+    }
+
+    if (std::abs(dot(triangle.unitNormal, basis.up)) < options.minimumUpNormalComponent) {
+        return std::nullopt;
+    }
+    const float upComponent = dot(triangle.planeNormal, basis.up);
+    const NavigationVec3 planarPoint = basis.lift(point, 0.0F);
+    const float height = dot(triangle.planeNormal, subtract(triangle.vertices[0], planarPoint)) / upComponent;
+    if (!std::isfinite(height)) {
+        return std::nullopt;
+    }
+    return height;
+}
+
+enum class CollisionQueryStatus {
+    NoHit,
+    Hit,
+    Ambiguous,
+};
+
+struct CollisionQueryResult {
+    CollisionQueryStatus status = CollisionQueryStatus::NoHit;
+    std::optional<std::size_t> triangleRecordIndex{};
+    float height = 0.0F;
+};
+
+[[nodiscard]] CollisionQueryResult queryTriangles(
+    const std::vector<std::size_t>& candidates,
+    const std::vector<TriangleRecord>& triangles,
+    const PlanarPoint point,
+    const float expectedHeight,
+    const PlanarBasis& basis,
+    const NavigationGraphBuildOptions& options,
+    const std::optional<std::size_t> excludedTriangleRecord = std::nullopt) noexcept {
+    CollisionQueryResult result{};
+    float bestDistance = std::numeric_limits<float>::infinity();
+    for (const std::size_t candidateIndex : candidates) {
+        const TriangleRecord& candidate = triangles[candidateIndex];
+        if (!candidate.retained ||
+            (excludedTriangleRecord.has_value() && candidateIndex == *excludedTriangleRecord)) {
+            continue;
+        }
+        const auto height = triangleHeightAt(candidate, point, basis, options);
+        if (!height.has_value()) {
+            continue;
+        }
+
+        const float distance = std::abs(*height - expectedHeight);
+        if (distance < (bestDistance - options.distinctHeightTieTolerance)) {
+            result.status = CollisionQueryStatus::Hit;
+            result.triangleRecordIndex = candidateIndex;
+            result.height = *height;
+            bestDistance = distance;
+            continue;
+        }
+        if (std::abs(distance - bestDistance) > options.distinctHeightTieTolerance) {
+            continue;
+        }
+
+        if (std::abs(*height - result.height) > options.distinctHeightTieTolerance) {
+            result.status = CollisionQueryStatus::Ambiguous;
+            continue;
+        }
+        if (result.triangleRecordIndex.has_value() &&
+            candidate.key < triangles[*result.triangleRecordIndex].key) {
+            result.triangleRecordIndex = candidateIndex;
+            result.height = *height;
+        }
+    }
+    return result;
+}
+
+void addSegmentIntersectionParameters(
+    std::vector<float>& parameters,
+    const PlanarPoint sourceFirst,
+    const PlanarPoint sourceSecond,
+    const PlanarPoint targetFirst,
+    const PlanarPoint targetSecond) {
+    const PlanarPoint sourceVector = subtract(sourceSecond, sourceFirst);
+    const PlanarPoint targetVector = subtract(targetSecond, targetFirst);
+    const float denominator = cross2(sourceVector, targetVector);
+    const PlanarPoint displacement = subtract(targetFirst, sourceFirst);
+    if (std::abs(denominator) > kComparisonEpsilon) {
+        const float sourceParameter = cross2(displacement, targetVector) / denominator;
+        const float targetParameter = cross2(displacement, sourceVector) / denominator;
+        if (sourceParameter >= -kComparisonEpsilon && sourceParameter <= (1.0F + kComparisonEpsilon) &&
+            targetParameter >= -kComparisonEpsilon && targetParameter <= (1.0F + kComparisonEpsilon)) {
+            parameters.push_back(std::clamp(sourceParameter, 0.0F, 1.0F));
+        }
+        return;
+    }
+
+    if (std::abs(cross2(displacement, sourceVector)) > kComparisonEpsilon) {
+        return;
+    }
+    const float sourceLengthSquared =
+        (sourceVector.x * sourceVector.x) + (sourceVector.y * sourceVector.y);
+    if (sourceLengthSquared <= kComparisonEpsilon) {
+        return;
+    }
+    const auto parameterFor = [&](const PlanarPoint point) {
+        const PlanarPoint relative = subtract(point, sourceFirst);
+        return ((relative.x * sourceVector.x) + (relative.y * sourceVector.y)) / sourceLengthSquared;
+    };
+    const float firstParameter = parameterFor(targetFirst);
+    const float secondParameter = parameterFor(targetSecond);
+    if (firstParameter >= -kComparisonEpsilon && firstParameter <= (1.0F + kComparisonEpsilon)) {
+        parameters.push_back(std::clamp(firstParameter, 0.0F, 1.0F));
+    }
+    if (secondParameter >= -kComparisonEpsilon && secondParameter <= (1.0F + kComparisonEpsilon)) {
+        parameters.push_back(std::clamp(secondParameter, 0.0F, 1.0F));
+    }
+}
+
+void appendTrianglePartitionParameters(
+    std::vector<float>& parameters,
+    const PlanarPoint segmentFirst,
+    const PlanarPoint segmentSecond,
+    const TriangleRecord& triangle,
+    const PlanarBasis& basis) {
+    const std::array<PlanarPoint, 3> projected{
+        basis.project(triangle.vertices[0]),
+        basis.project(triangle.vertices[1]),
+        basis.project(triangle.vertices[2]),
+    };
+    for (std::size_t edge = 0; edge < 3U; ++edge) {
+        addSegmentIntersectionParameters(
+            parameters,
+            segmentFirst,
+            segmentSecond,
+            projected[edge],
+            projected[(edge + 1U) % 3U]);
+    }
+}
+
+[[nodiscard]] std::vector<float> partitionBoundary(
+    const BoundarySegment& boundary,
+    const std::vector<std::size_t>& candidates,
+    const std::vector<TriangleRecord>& triangles,
+    const PlanarBasis& basis,
+    const PlanarPoint outward,
+    const NavigationGraphBuildOptions& options) {
+    const PlanarPoint first = basis.project(boundary.first);
+    const PlanarPoint second = basis.project(boundary.second);
+    const PlanarPoint fullyProbedFirst = add(first, multiply(outward, options.outwardProbeDistance));
+    const PlanarPoint fullyProbedSecond = add(second, multiply(outward, options.outwardProbeDistance));
+    std::vector<float> parameters{ 0.0F, 1.0F };
+    for (const std::size_t candidate : candidates) {
+        if (!triangles[candidate].retained) {
+            continue;
+        }
+        appendTrianglePartitionParameters(parameters, first, second, triangles[candidate], basis);
+        appendTrianglePartitionParameters(
+            parameters,
+            fullyProbedFirst,
+            fullyProbedSecond,
+            triangles[candidate],
+            basis);
+    }
+    std::sort(parameters.begin(), parameters.end());
+    std::erase_if(parameters, [](const float value) {
+        return !std::isfinite(value);
+    });
+    const auto newEnd = std::unique(parameters.begin(), parameters.end(), [](const float lhs, const float rhs) {
+        return std::abs(lhs - rhs) <= kComparisonEpsilon;
+    });
+    parameters.erase(newEnd, parameters.end());
+    return parameters;
+}
+
+[[nodiscard]] std::vector<float> partitionBoundaryIntervalAtProbeDistance(
+    const BoundarySegment& boundary,
+    const float firstParameter,
+    const float secondParameter,
+    const std::vector<std::size_t>& candidates,
+    const std::vector<TriangleRecord>& triangles,
+    const PlanarBasis& basis,
+    const PlanarPoint outward,
+    const float probeDistance) {
+    const PlanarPoint boundaryFirst = basis.project(boundary.first);
+    const PlanarPoint boundarySecond = basis.project(boundary.second);
+    const PlanarPoint probedFirst = add(boundaryFirst, multiply(outward, probeDistance));
+    const PlanarPoint probedSecond = add(boundarySecond, multiply(outward, probeDistance));
+
+    std::vector<float> parameters{ firstParameter, secondParameter };
+    std::vector<float> probeIntersections{};
+    for (const std::size_t candidate : candidates) {
+        if (!triangles[candidate].retained) {
+            continue;
+        }
+        appendTrianglePartitionParameters(
+            probeIntersections,
+            probedFirst,
+            probedSecond,
+            triangles[candidate],
+            basis);
+    }
+    for (const float parameter : probeIntersections) {
+        if (std::isfinite(parameter) &&
+            parameter > (firstParameter + kComparisonEpsilon) &&
+            parameter < (secondParameter - kComparisonEpsilon)) {
+            parameters.push_back(parameter);
+        }
+    }
+    std::sort(parameters.begin(), parameters.end());
+    const auto newEnd = std::unique(parameters.begin(), parameters.end(), [](const float lhs, const float rhs) {
+        return std::abs(lhs - rhs) <= kComparisonEpsilon;
+    });
+    parameters.erase(newEnd, parameters.end());
+    return parameters;
+}
+
+struct BoundaryProbeInterval {
+    float firstParameter = 0.0F;
+    float secondParameter = 0.0F;
+    float probeDistance = 0.0F;
+};
+
+constexpr std::size_t kMaximumProbeRefinementDepth = 64U;
+
+void appendRefinedBoundaryProbeIntervals(
+    std::vector<BoundaryProbeInterval>& out,
+    std::size_t& refinementExhaustionCount,
+    const BoundarySegment& boundary,
+    const float firstParameter,
+    const float secondParameter,
+    const float planarLength,
+    const std::vector<std::size_t>& candidates,
+    const std::vector<TriangleRecord>& triangles,
+    const PlanarBasis& basis,
+    const PlanarPoint outward,
+    const NavigationGraphBuildOptions& options,
+    const std::size_t depth = 0U) {
+    const float intervalLength = (secondParameter - firstParameter) * planarLength;
+    if (intervalLength < options.minimumPortalLength) {
+        return;
+    }
+    const float probeDistance = std::min(
+        options.outwardProbeDistance,
+        intervalLength * 0.25F);
+    const std::vector<float> partitions = partitionBoundaryIntervalAtProbeDistance(
+        boundary,
+        firstParameter,
+        secondParameter,
+        candidates,
+        triangles,
+        basis,
+        outward,
+        probeDistance);
+    if (partitions.size() <= 2U) {
+        out.push_back(BoundaryProbeInterval{
+            .firstParameter = firstParameter,
+            .secondParameter = secondParameter,
+            .probeDistance = probeDistance,
+        });
+        return;
+    }
+    if (depth >= kMaximumProbeRefinementDepth) {
+        ++refinementExhaustionCount;
+        return;
+    }
+    for (std::size_t partition = 1U; partition < partitions.size(); ++partition) {
+        appendRefinedBoundaryProbeIntervals(
+            out,
+            refinementExhaustionCount,
+            boundary,
+            partitions[partition - 1U],
+            partitions[partition],
+            planarLength,
+            candidates,
+            triangles,
+            basis,
+            outward,
+            options,
+            depth + 1U);
+    }
+}
+
+[[nodiscard]] bool handoffIsContinuous(
+    const BoundarySegment& boundary,
+    const TriangleRecord& target,
+    const PlanarPoint outward,
+    const float firstParameter,
+    const float secondParameter,
+    const float probeDistance,
+    const PlanarBasis& basis,
+    const NavigationGraphBuildOptions& options) noexcept {
+    const NavigationVec3 sourceVector = subtract(boundary.second, boundary.first);
+    const PlanarPoint planarFirst = basis.project(boundary.first);
+    const PlanarPoint planarVector = subtract(basis.project(boundary.second), planarFirst);
+    for (const float parameter : { firstParameter, secondParameter }) {
+        const NavigationVec3 sourcePoint = add(boundary.first, multiply(sourceVector, parameter));
+        const float sourceHeight = dot(sourcePoint, basis.up);
+        const PlanarPoint probePoint = add(
+            add(planarFirst, multiply(planarVector, parameter)),
+            multiply(outward, probeDistance));
+        const auto targetHeight = triangleHeightAt(target, probePoint, basis, options);
+        if (!targetHeight.has_value() ||
+            std::abs(*targetHeight - sourceHeight) > options.heightContinuityTolerance) {
+            return false;
+        }
+    }
+    return true;
+}
+
+[[nodiscard]] std::vector<std::size_t> surfaceIndicesForKeys(
     const NavigationAreaModel& area,
-    const NavigationSurfaceSourceKey& key) {
+    const std::vector<NavigationSurfaceSourceKey>& keys) {
     std::vector<std::size_t> result{};
     for (std::size_t surfaceIndex = 0; surfaceIndex < area.surfaces.size(); ++surfaceIndex) {
-        if (area.surfaces[surfaceIndex].sourceKey == key) {
+        const NavigationSurfaceSourceKey& surfaceKey = area.surfaces[surfaceIndex].sourceKey;
+        if (std::find(keys.begin(), keys.end(), surfaceKey) != keys.end()) {
             result.push_back(surfaceIndex);
         }
     }
     return result;
 }
 
+[[nodiscard]] std::vector<std::size_t> triangleIndicesForSurfaces(
+    const std::vector<std::size_t>& surfaces,
+    const std::vector<std::vector<std::size_t>>& trianglesBySurface) {
+    std::vector<std::size_t> result{};
+    for (const std::size_t surface : surfaces) {
+        if (surface >= trianglesBySurface.size()) {
+            continue;
+        }
+        result.insert(result.end(), trianglesBySurface[surface].begin(), trianglesBySurface[surface].end());
+    }
+    std::sort(result.begin(), result.end());
+    result.erase(std::unique(result.begin(), result.end()), result.end());
+    return result;
+}
+
+[[nodiscard]] bool targetRequiresRuntimeState(
+    const NavigationAreaModel& area,
+    const TriangleRecord& source,
+    const TriangleRecord& target) noexcept {
+    return area.surfaces[source.key.surfaceIndex].traversalAvailability ==
+            NavigationSurfaceTraversalAvailability::RequiresRuntimeState ||
+        area.surfaces[target.key.surfaceIndex].traversalAvailability ==
+            NavigationSurfaceTraversalAvailability::RequiresRuntimeState;
+}
+
+[[nodiscard]] bool anySurfaceRequiresRuntimeState(
+    const NavigationAreaModel& area,
+    const std::vector<std::size_t>& surfaceIndices,
+    const std::optional<std::size_t> excludedSurface = std::nullopt) noexcept {
+    return std::any_of(surfaceIndices.begin(), surfaceIndices.end(), [&](const std::size_t surfaceIndex) {
+        return (!excludedSurface.has_value() || surfaceIndex != *excludedSurface) &&
+            area.surfaces[surfaceIndex].traversalAvailability ==
+                NavigationSurfaceTraversalAvailability::RequiresRuntimeState;
+    });
+}
+
+[[nodiscard]] bool samePortal(
+    const NavigationPortalSegment& lhs,
+    const NavigationPortalSegment& rhs,
+    const float tolerance) noexcept {
+    return (nearlyEqual(lhs.first, rhs.first, tolerance) && nearlyEqual(lhs.second, rhs.second, tolerance)) ||
+        (nearlyEqual(lhs.first, rhs.second, tolerance) && nearlyEqual(lhs.second, rhs.first, tolerance));
+}
+
+[[nodiscard]] std::size_t appendHandoffIfUnique(
+    NavigationTraversalGraph& graph,
+    NavigationCollisionHandoff handoff,
+    const float tolerance) {
+    if (handoff.kind == NavigationCollisionHandoffKind::SameEntryBundle &&
+        handoff.targetTriangle < handoff.sourceTriangle) {
+        std::swap(handoff.sourceTriangle, handoff.targetTriangle);
+        std::swap(handoff.sourceEntryId, handoff.targetEntryId);
+    }
+
+    const auto found = std::find_if(
+        graph.collisionHandoffs.begin(),
+        graph.collisionHandoffs.end(),
+        [&](const NavigationCollisionHandoff& existing) {
+            return existing.sourceTriangle == handoff.sourceTriangle &&
+                existing.targetTriangle == handoff.targetTriangle &&
+                existing.kind == handoff.kind &&
+                existing.availability == handoff.availability &&
+                existing.authoredFallbackChainIndex == handoff.authoredFallbackChainIndex &&
+                existing.authoredFallbackTargetIndex == handoff.authoredFallbackTargetIndex &&
+                samePortal(existing.portal, handoff.portal, tolerance);
+        });
+    if (found != graph.collisionHandoffs.end()) {
+        return static_cast<std::size_t>(std::distance(graph.collisionHandoffs.begin(), found));
+    }
+
+    const std::size_t result = graph.collisionHandoffs.size();
+    if (handoff.kind == NavigationCollisionHandoffKind::SameEntryBundle) {
+        ++graph.statistics.sameEntryHandoffCount;
+    } else {
+        ++graph.statistics.authoredFallbackHandoffCount;
+    }
+    if (handoff.availability == NavigationCollisionHandoffAvailability::RequiresRuntimeState) {
+        ++graph.statistics.conditionalHandoffCount;
+    }
+    graph.collisionHandoffs.push_back(std::move(handoff));
+    return result;
+}
+
+struct PendingHandoff {
+    std::size_t sourceTriangleRecordIndex = 0;
+    std::size_t targetTriangleRecordIndex = 0;
+    float firstParameter = 0.0F;
+    float secondParameter = 0.0F;
+    NavigationCollisionHandoffKind kind = NavigationCollisionHandoffKind::SameEntryBundle;
+    NavigationCollisionHandoffAvailability availability =
+        NavigationCollisionHandoffAvailability::ActiveStatic;
+    std::uint32_t sourceEntryId = 0;
+    std::uint32_t targetEntryId = 0;
+    std::optional<std::size_t> chainIndex{};
+    std::optional<std::size_t> targetIndex{};
+    std::optional<std::size_t> authoredOrdinal{};
+};
+
+[[nodiscard]] bool canMerge(const PendingHandoff& lhs, const PendingHandoff& rhs) noexcept {
+    return lhs.sourceTriangleRecordIndex == rhs.sourceTriangleRecordIndex &&
+        lhs.targetTriangleRecordIndex == rhs.targetTriangleRecordIndex &&
+        lhs.kind == rhs.kind &&
+        lhs.availability == rhs.availability &&
+        lhs.chainIndex == rhs.chainIndex &&
+        lhs.targetIndex == rhs.targetIndex &&
+        std::abs(lhs.secondParameter - rhs.firstParameter) <= kComparisonEpsilon;
+}
+
+void commitPendingHandoffs(
+    NavigationTraversalGraph& graph,
+    const BoundarySegment& boundary,
+    std::vector<PendingHandoff>& pending,
+    const std::vector<TriangleRecord>& triangles,
+    const NavigationGraphBuildOptions& options) {
+    if (pending.empty()) {
+        return;
+    }
+    std::vector<PendingHandoff> merged{};
+    merged.reserve(pending.size());
+    for (const PendingHandoff& candidate : pending) {
+        if (!merged.empty() && canMerge(merged.back(), candidate)) {
+            merged.back().secondParameter = candidate.secondParameter;
+        } else {
+            merged.push_back(candidate);
+        }
+    }
+
+    const NavigationVec3 boundaryVector = subtract(boundary.second, boundary.first);
+    for (const PendingHandoff& candidate : merged) {
+        const NavigationPortalSegment portal{
+            .first = add(boundary.first, multiply(boundaryVector, candidate.firstParameter)),
+            .second = add(boundary.first, multiply(boundaryVector, candidate.secondParameter)),
+        };
+        if (length(subtract(portal.second, portal.first)) < options.minimumPortalLength) {
+            continue;
+        }
+
+        NavigationCollisionHandoff handoff{
+            .sourceTriangle = triangles[candidate.sourceTriangleRecordIndex].key,
+            .targetTriangle = triangles[candidate.targetTriangleRecordIndex].key,
+            .portal = portal,
+            .kind = candidate.kind,
+            .availability = candidate.availability,
+            .sourceEntryId = candidate.sourceEntryId,
+            .targetEntryId = candidate.targetEntryId,
+            .authoredFallbackChainIndex = candidate.chainIndex,
+            .authoredFallbackTargetIndex = candidate.targetIndex,
+            .authoredOrdinal = candidate.authoredOrdinal,
+        };
+        const std::size_t handoffIndex = appendHandoffIfUnique(
+            graph,
+            std::move(handoff),
+            options.planarContainmentTolerance);
+        const NavigationCollisionHandoff& stored = graph.collisionHandoffs[handoffIndex];
+        if (stored.availability != NavigationCollisionHandoffAvailability::ActiveStatic) {
+            continue;
+        }
+        const auto sourceNode = graph.findNodeIndex(stored.sourceTriangle);
+        const auto targetNode = graph.findNodeIndex(stored.targetTriangle);
+        if (!sourceNode.has_value() || !targetNode.has_value()) {
+            continue;
+        }
+        const auto addDirectedEdge = [&](const std::size_t source, const std::size_t target) {
+            static_cast<void>(addEdgeIfUnique(graph.nodes[source], NavigationGraphEdge{
+                .targetNodeIndex = target,
+                .portal = stored.portal,
+                .kind = NavigationGraphEdgeKind::CollisionHandoff,
+                .collisionHandoffIndex = handoffIndex,
+            }));
+        };
+        addDirectedEdge(*sourceNode, *targetNode);
+        if (stored.kind == NavigationCollisionHandoffKind::SameEntryBundle) {
+            addDirectedEdge(*targetNode, *sourceNode);
+        }
+    }
+}
+
 [[nodiscard]] auto edgeSortKey(const NavigationGraphEdge& edge) noexcept {
     return std::tuple{
         edge.targetNodeIndex,
         static_cast<int>(edge.kind),
-        edge.groundLinkIndex.value_or(std::numeric_limits<std::size_t>::max()),
+        edge.collisionHandoffIndex.value_or(std::numeric_limits<std::size_t>::max()),
         edge.portal.first.x,
         edge.portal.first.y,
         edge.portal.first.z,
@@ -315,6 +855,7 @@ NavigationTraversalGraph NavigationGraphBuilder::build(
     const NavigationGraphBuildOptions& options) const {
     NavigationTraversalGraph graph{};
     graph.statistics.sourceSurfaceCount = area.surfaces.size();
+    graph.statistics.authoredFallbackChainCount = area.authoredGroundFallbackChains.size();
     graph.hasCompleteGroundGeometry = area.hasCompleteGroundGeometry;
     graph.hasCompleteWallGeometry = area.hasCompleteWallGeometry;
 
@@ -326,16 +867,29 @@ NavigationTraversalGraph NavigationGraphBuilder::build(
     }
     effectiveOptions.degenerateTriangleEpsilon =
         std::max(effectiveOptions.degenerateTriangleEpsilon, kComparisonEpsilon);
-    effectiveOptions.portalSeparationTolerance =
-        std::max(effectiveOptions.portalSeparationTolerance, 0.0F);
+    effectiveOptions.planarContainmentTolerance =
+        std::max(effectiveOptions.planarContainmentTolerance, 0.0F);
+    effectiveOptions.outwardProbeDistance =
+        std::max(effectiveOptions.outwardProbeDistance, 0.0F);
+    effectiveOptions.heightContinuityTolerance =
+        std::max(effectiveOptions.heightContinuityTolerance, 0.0F);
+    effectiveOptions.distinctHeightTieTolerance =
+        std::max(effectiveOptions.distinctHeightTieTolerance, kComparisonEpsilon);
     effectiveOptions.minimumPortalLength =
         std::max(effectiveOptions.minimumPortalLength, kComparisonEpsilon);
-    effectiveOptions.parallelDirectionTolerance =
-        std::clamp(effectiveOptions.parallelDirectionTolerance, 0.0F, 1.0F);
+    effectiveOptions.minimumUpNormalComponent =
+        std::max(effectiveOptions.minimumUpNormalComponent, kComparisonEpsilon);
 
+    const PlanarBasis basis = makePlanarBasis(coordinatePolicy.upAxis());
+    std::vector<TriangleRecord> triangleRecords{};
+    std::vector<std::vector<std::size_t>> trianglesBySurface(area.surfaces.size());
     std::vector<std::vector<BoundarySegment>> boundariesBySurface(area.surfaces.size());
+
     for (std::size_t surfaceIndex = 0; surfaceIndex < area.surfaces.size(); ++surfaceIndex) {
         const NavigationSurface& surface = area.surfaces[surfaceIndex];
+        if (surface.traversalAvailability == NavigationSurfaceTraversalAvailability::RequiresRuntimeState) {
+            ++graph.statistics.runtimeDependentSurfaceCount;
+        }
         const NavigationMesh& mesh = surface.mesh;
         const std::size_t triangleCount = mesh.indices.size() / 3U;
         graph.statistics.sourceTriangleCount += triangleCount;
@@ -360,7 +914,6 @@ NavigationTraversalGraph NavigationGraphBuilder::build(
 
         std::unordered_map<CanonicalEdge, std::vector<EdgeOccurrence>, CanonicalEdgeHash> edgeOccurrences{};
         std::unordered_set<CanonicalTriangle, CanonicalTriangleHash> canonicalTriangles{};
-        const std::size_t surfaceNodeStart = graph.nodes.size();
         for (std::size_t triangleIndex = 0; triangleIndex < triangleCount; ++triangleIndex) {
             const std::array<std::uint32_t, 3> indices{
                 mesh.indices[(triangleIndex * 3U) + 0U],
@@ -415,16 +968,18 @@ NavigationTraversalGraph NavigationGraphBuilder::build(
                 continue;
             }
 
-            const std::size_t nodeIndex = graph.nodes.size();
-            graph.nodes.push_back(NavigationGraphNode{
+            const std::size_t recordIndex = triangleRecords.size();
+            triangleRecords.push_back(TriangleRecord{
                 .key = NavigationTriangleKey{ surfaceIndex, triangleIndex },
                 .vertices = triangle,
-                .centroid = multiply(add(add(triangle[0], triangle[1]), triangle[2]), 1.0F / 3.0F),
-                .normal = normalized(coordinatePolicy.convertDirection(triangleCross)),
+                .planeNormal = triangleCross,
+                .unitNormal = normalized(triangleCross),
             });
+            trianglesBySurface[surfaceIndex].push_back(recordIndex);
 
             for (std::size_t edgeIndex = 0; edgeIndex < 3U; ++edgeIndex) {
                 const std::size_t nextEdgeIndex = (edgeIndex + 1U) % 3U;
+                const std::size_t oppositeIndex = (edgeIndex + 2U) % 3U;
                 const std::size_t firstCanonical = canonicalVertices[indices[edgeIndex]];
                 const std::size_t secondCanonical = canonicalVertices[indices[nextEdgeIndex]];
                 const bool canonicalOrder = firstCanonical < secondCanonical;
@@ -433,14 +988,15 @@ NavigationTraversalGraph NavigationGraphBuilder::build(
                     .second = std::max(firstCanonical, secondCanonical),
                 };
                 edgeOccurrences[edge].push_back(EdgeOccurrence{
-                    .nodeIndex = nodeIndex,
+                    .triangleRecordIndex = recordIndex,
                     .first = canonicalOrder ? triangle[edgeIndex] : triangle[nextEdgeIndex],
                     .second = canonicalOrder ? triangle[nextEdgeIndex] : triangle[edgeIndex],
+                    .opposite = triangle[oppositeIndex],
                 });
             }
         }
 
-        std::unordered_set<std::size_t> nonManifoldNodes{};
+        std::unordered_set<std::size_t> nonManifoldTriangles{};
         for (const auto& [edge, occurrences] : edgeOccurrences) {
             static_cast<void>(edge);
             if (occurrences.size() <= 2U) {
@@ -448,42 +1004,39 @@ NavigationTraversalGraph NavigationGraphBuilder::build(
             }
             ++graph.statistics.nonManifoldEdgeCount;
             for (const EdgeOccurrence& occurrence : occurrences) {
-                nonManifoldNodes.emplace(occurrence.nodeIndex);
+                nonManifoldTriangles.emplace(occurrence.triangleRecordIndex);
             }
             appendDiagnostic(graph, NavigationDiagnosticSeverity::Warning,
                 "Surface " + std::to_string(surfaceIndex) +
                 " contains a non-manifold edge shared by " + std::to_string(occurrences.size()) +
                 " triangles; the incident triangles were omitted.");
         }
-        if (!nonManifoldNodes.empty()) {
-            const std::size_t originalSurfaceNodeCount = graph.nodes.size() - surfaceNodeStart;
-            std::vector<std::size_t> remappedNodeIndices(
-                originalSurfaceNodeCount,
-                std::numeric_limits<std::size_t>::max());
-            std::vector<NavigationGraphNode> retainedNodes{};
-            retainedNodes.reserve(originalSurfaceNodeCount - nonManifoldNodes.size());
-            for (std::size_t oldNodeIndex = surfaceNodeStart; oldNodeIndex < graph.nodes.size(); ++oldNodeIndex) {
-                if (nonManifoldNodes.contains(oldNodeIndex)) {
+        for (const std::size_t recordIndex : nonManifoldTriangles) {
+            triangleRecords[recordIndex].retained = false;
+        }
+        graph.statistics.skippedNonManifoldTriangleCount += nonManifoldTriangles.size();
+        for (auto& [edge, occurrences] : edgeOccurrences) {
+            static_cast<void>(edge);
+            std::erase_if(occurrences, [&](const EdgeOccurrence& occurrence) {
+                return !triangleRecords[occurrence.triangleRecordIndex].retained;
+            });
+        }
+
+        const bool activeSurface =
+            surface.traversalAvailability == NavigationSurfaceTraversalAvailability::Static;
+        if (activeSurface) {
+            for (const std::size_t recordIndex : trianglesBySurface[surfaceIndex]) {
+                TriangleRecord& record = triangleRecords[recordIndex];
+                if (!record.retained) {
                     continue;
                 }
-                const std::size_t newNodeIndex = surfaceNodeStart + retainedNodes.size();
-                remappedNodeIndices[oldNodeIndex - surfaceNodeStart] = newNodeIndex;
-                retainedNodes.push_back(std::move(graph.nodes[oldNodeIndex]));
-            }
-            graph.nodes.resize(surfaceNodeStart);
-            for (NavigationGraphNode& node : retainedNodes) {
-                graph.nodes.push_back(std::move(node));
-            }
-            graph.statistics.skippedNonManifoldTriangleCount += nonManifoldNodes.size();
-
-            for (auto& [edge, occurrences] : edgeOccurrences) {
-                static_cast<void>(edge);
-                std::erase_if(occurrences, [&](EdgeOccurrence& occurrence) {
-                    if (nonManifoldNodes.contains(occurrence.nodeIndex)) {
-                        return true;
-                    }
-                    occurrence.nodeIndex = remappedNodeIndices[occurrence.nodeIndex - surfaceNodeStart];
-                    return false;
+                record.nodeIndex = graph.nodes.size();
+                graph.nodes.push_back(NavigationGraphNode{
+                    .key = record.key,
+                    .vertices = record.vertices,
+                    .centroid = multiply(add(add(record.vertices[0], record.vertices[1]), record.vertices[2]),
+                        1.0F / 3.0F),
+                    .normal = normalized(coordinatePolicy.convertDirection(record.planeNormal)),
                 });
             }
         }
@@ -495,29 +1048,33 @@ NavigationTraversalGraph NavigationGraphBuilder::build(
             }
             if (occurrences.size() == 1U) {
                 boundariesBySurface[surfaceIndex].push_back(BoundarySegment{
-                    .nodeIndex = occurrences[0].nodeIndex,
+                    .triangleRecordIndex = occurrences[0].triangleRecordIndex,
                     .first = occurrences[0].first,
                     .second = occurrences[0].second,
+                    .opposite = occurrences[0].opposite,
                 });
                 continue;
             }
-            if (occurrences.size() > 2U) {
-                // All incident triangles are removed above. Retain this guard so
-                // malformed future topology adapters cannot create adjacency.
+            if (occurrences.size() > 2U || !activeSurface) {
                 continue;
             }
 
+            const TriangleRecord& firstTriangle = triangleRecords[occurrences[0].triangleRecordIndex];
+            const TriangleRecord& secondTriangle = triangleRecords[occurrences[1].triangleRecordIndex];
+            if (!firstTriangle.nodeIndex.has_value() || !secondTriangle.nodeIndex.has_value()) {
+                continue;
+            }
             const NavigationPortalSegment portal{
                 .first = multiply(add(occurrences[0].first, occurrences[1].first), 0.5F),
                 .second = multiply(add(occurrences[0].second, occurrences[1].second), 0.5F),
             };
-            const bool forwardAdded = addEdgeIfUnique(graph.nodes[occurrences[0].nodeIndex], NavigationGraphEdge{
-                .targetNodeIndex = occurrences[1].nodeIndex,
+            const bool forwardAdded = addEdgeIfUnique(graph.nodes[*firstTriangle.nodeIndex], NavigationGraphEdge{
+                .targetNodeIndex = *secondTriangle.nodeIndex,
                 .portal = portal,
                 .kind = NavigationGraphEdgeKind::IntraSurface,
             });
-            const bool reverseAdded = addEdgeIfUnique(graph.nodes[occurrences[1].nodeIndex], NavigationGraphEdge{
-                .targetNodeIndex = occurrences[0].nodeIndex,
+            const bool reverseAdded = addEdgeIfUnique(graph.nodes[*secondTriangle.nodeIndex], NavigationGraphEdge{
+                .targetNodeIndex = *firstTriangle.nodeIndex,
                 .portal = portal,
                 .kind = NavigationGraphEdgeKind::IntraSurface,
             });
@@ -527,60 +1084,278 @@ NavigationTraversalGraph NavigationGraphBuilder::build(
         }
     }
 
-    for (std::size_t linkIndex = 0; linkIndex < area.groundLinks.size(); ++linkIndex) {
-        const NavigationGroundLink& link = area.groundLinks[linkIndex];
-        std::set<std::pair<std::size_t, std::size_t>> candidateSurfacePairs{};
-        for (const NavigationSurfaceSourceKey& sourceKey : link.sourceSurfaces) {
-            const auto sourceIndices = findSurfaceIndices(area, sourceKey);
-            for (const NavigationSurfaceSourceKey& targetKey : link.targetSurfaces) {
-                const auto targetIndices = findSurfaceIndices(area, targetKey);
-                for (const std::size_t sourceIndex : sourceIndices) {
-                    for (const std::size_t targetIndex : targetIndices) {
-                        if (sourceIndex != targetIndex) {
-                            candidateSurfacePairs.emplace(sourceIndex, targetIndex);
-                        }
-                    }
-                }
+    std::unordered_map<std::size_t, std::vector<std::size_t>> surfacesByTableIndex{};
+    for (std::size_t surfaceIndex = 0; surfaceIndex < area.surfaces.size(); ++surfaceIndex) {
+        surfacesByTableIndex[area.surfaces[surfaceIndex].sourceTableIndex].push_back(surfaceIndex);
+    }
+    std::unordered_map<std::size_t, std::size_t> chainBySourceTableIndex{};
+    for (std::size_t chainIndex = 0; chainIndex < area.authoredGroundFallbackChains.size(); ++chainIndex) {
+        const NavigationAuthoredGroundFallbackChain& chain = area.authoredGroundFallbackChains[chainIndex];
+        chainBySourceTableIndex.emplace(chain.sourceTableIndex, chainIndex);
+        graph.statistics.authoredFallbackTargetCount += chain.targets.size();
+    }
+
+    std::size_t probeRefinementExhaustionCount = 0U;
+    for (std::size_t sourceSurfaceIndex = 0; sourceSurfaceIndex < area.surfaces.size(); ++sourceSurfaceIndex) {
+        const NavigationSurface& sourceSurface = area.surfaces[sourceSurfaceIndex];
+        const auto bundleFound = surfacesByTableIndex.find(sourceSurface.sourceTableIndex);
+        if (bundleFound == surfacesByTableIndex.end()) {
+            continue;
+        }
+        const std::vector<std::size_t> currentBundleTriangles =
+            triangleIndicesForSurfaces(bundleFound->second, trianglesBySurface);
+        const bool currentBundleHasRuntimeUncertainty = anySurfaceRequiresRuntimeState(
+            area,
+            bundleFound->second,
+            sourceSurfaceIndex);
+
+        const NavigationAuthoredGroundFallbackChain* chain = nullptr;
+        std::optional<std::size_t> chainIndex{};
+        const auto chainFound = chainBySourceTableIndex.find(sourceSurface.sourceTableIndex);
+        if (chainFound != chainBySourceTableIndex.end()) {
+            chainIndex = chainFound->second;
+            chain = &area.authoredGroundFallbackChains[*chainIndex];
+        }
+
+        std::vector<std::vector<std::size_t>> targetTriangles{};
+        std::vector<bool> targetHasRuntimeUncertainty{};
+        if (chain != nullptr) {
+            targetTriangles.reserve(chain->targets.size());
+            targetHasRuntimeUncertainty.reserve(chain->targets.size());
+            for (const NavigationAuthoredGroundFallbackTarget& target : chain->targets) {
+                std::vector<std::size_t> surfaces = surfaceIndicesForKeys(area, target.targetSurfaces);
+                targetTriangles.push_back(triangleIndicesForSurfaces(surfaces, trianglesBySurface));
+                targetHasRuntimeUncertainty.push_back(anySurfaceRequiresRuntimeState(area, surfaces));
             }
         }
 
-        std::set<std::pair<std::size_t, std::size_t>> matchedSurfacePairs{};
-        std::size_t addedPortalCount = 0;
-        for (const auto& [sourceSurfaceIndex, targetSurfaceIndex] : candidateSurfacePairs) {
-            for (const BoundarySegment& sourceBoundary : boundariesBySurface[sourceSurfaceIndex]) {
-                for (const BoundarySegment& targetBoundary : boundariesBySurface[targetSurfaceIndex]) {
-                    const auto portal = overlappingPortal(sourceBoundary, targetBoundary, effectiveOptions);
-                    if (!portal.has_value()) {
+        for (const BoundarySegment& boundary : boundariesBySurface[sourceSurfaceIndex]) {
+            const TriangleRecord& sourceTriangle = triangleRecords[boundary.triangleRecordIndex];
+            const PlanarPoint planarFirst = basis.project(boundary.first);
+            const PlanarPoint planarSecond = basis.project(boundary.second);
+            const PlanarPoint planarVector = subtract(planarSecond, planarFirst);
+            const float planarLength = length(planarVector);
+            if (planarLength < effectiveOptions.minimumPortalLength) {
+                continue;
+            }
+            const PlanarPoint opposite = basis.project(boundary.opposite);
+            const float interiorSide = cross2(planarVector, subtract(opposite, planarFirst));
+            if (std::abs(interiorSide) <= kComparisonEpsilon) {
+                continue;
+            }
+            const PlanarPoint rightNormal{ planarVector.y / planarLength, -planarVector.x / planarLength };
+            const PlanarPoint outward = interiorSide > 0.0F
+                ? rightNormal
+                : multiply(rightNormal, -1.0F);
+
+            std::vector<std::size_t> partitionCandidates = currentBundleTriangles;
+            for (const auto& targetSet : targetTriangles) {
+                partitionCandidates.insert(partitionCandidates.end(), targetSet.begin(), targetSet.end());
+            }
+            std::sort(partitionCandidates.begin(), partitionCandidates.end());
+            partitionCandidates.erase(
+                std::unique(partitionCandidates.begin(), partitionCandidates.end()),
+                partitionCandidates.end());
+            const std::vector<float> baseParameters = partitionBoundary(
+                boundary,
+                partitionCandidates,
+                triangleRecords,
+                basis,
+                outward,
+                effectiveOptions);
+
+            std::vector<PendingHandoff> pending{};
+            for (std::size_t baseInterval = 1; baseInterval < baseParameters.size(); ++baseInterval) {
+                const float baseFirstParameter = baseParameters[baseInterval - 1U];
+                const float baseSecondParameter = baseParameters[baseInterval];
+                std::vector<BoundaryProbeInterval> probeIntervals{};
+                appendRefinedBoundaryProbeIntervals(
+                    probeIntervals,
+                    probeRefinementExhaustionCount,
+                    boundary,
+                    baseFirstParameter,
+                    baseSecondParameter,
+                    planarLength,
+                    partitionCandidates,
+                    triangleRecords,
+                    basis,
+                    outward,
+                    effectiveOptions);
+
+                for (const BoundaryProbeInterval& probeInterval : probeIntervals) {
+                    const float firstParameter = probeInterval.firstParameter;
+                    const float secondParameter = probeInterval.secondParameter;
+                    const float intervalLength = (secondParameter - firstParameter) * planarLength;
+                    if (intervalLength < effectiveOptions.minimumPortalLength) {
                         continue;
                     }
-                    if (addEdgeIfUnique(graph.nodes[sourceBoundary.nodeIndex], NavigationGraphEdge{
-                        .targetNodeIndex = targetBoundary.nodeIndex,
-                        .portal = *portal,
-                        .kind = NavigationGraphEdgeKind::GroundLink,
-                        .groundLinkIndex = linkIndex,
-                    })) {
-                        ++graph.statistics.groundLinkPortalCount;
-                        ++addedPortalCount;
-                        matchedSurfacePairs.emplace(sourceSurfaceIndex, targetSurfaceIndex);
+                    const float probeDistance = probeInterval.probeDistance;
+                    const float midpointParameter = (firstParameter + secondParameter) * 0.5F;
+                    const NavigationVec3 sourcePoint = add(
+                        boundary.first,
+                        multiply(subtract(boundary.second, boundary.first), midpointParameter));
+                    const float sourceHeight = dot(sourcePoint, basis.up);
+                    const PlanarPoint probePoint = add(
+                        add(planarFirst, multiply(planarVector, midpointParameter)),
+                        multiply(outward, probeDistance));
+
+                    const CollisionQueryResult currentHit = queryTriangles(
+                        currentBundleTriangles,
+                        triangleRecords,
+                        probePoint,
+                        sourceHeight,
+                        basis,
+                        effectiveOptions,
+                        boundary.triangleRecordIndex);
+                    if (currentHit.status != CollisionQueryStatus::NoHit) {
+                        if (currentHit.status == CollisionQueryStatus::Ambiguous ||
+                            !currentHit.triangleRecordIndex.has_value() ||
+                            !handoffIsContinuous(
+                                boundary,
+                                triangleRecords[*currentHit.triangleRecordIndex],
+                                outward,
+                                firstParameter,
+                                secondParameter,
+                                probeDistance,
+                                basis,
+                                effectiveOptions)) {
+                            ++graph.statistics.unresolvedHandoffCount;
+                            continue;
+                        }
+                        const TriangleRecord& targetTriangle = triangleRecords[*currentHit.triangleRecordIndex];
+                        pending.push_back(PendingHandoff{
+                            .sourceTriangleRecordIndex = boundary.triangleRecordIndex,
+                            .targetTriangleRecordIndex = *currentHit.triangleRecordIndex,
+                            .firstParameter = firstParameter,
+                            .secondParameter = secondParameter,
+                            .kind = NavigationCollisionHandoffKind::SameEntryBundle,
+                            .availability = (currentBundleHasRuntimeUncertainty ||
+                                targetRequiresRuntimeState(area, sourceTriangle, targetTriangle))
+                                ? NavigationCollisionHandoffAvailability::RequiresRuntimeState
+                                : NavigationCollisionHandoffAvailability::ActiveStatic,
+                            .sourceEntryId = sourceSurface.sourceKey.sourceEntryId,
+                            .targetEntryId = area.surfaces[targetTriangle.key.surfaceIndex].sourceKey.sourceEntryId,
+                        });
+                        continue;
+                    }
+
+                    if (chain == nullptr) {
+                        continue;
+                    }
+                    if (currentBundleHasRuntimeUncertainty) {
+                        ++graph.statistics.runtimeStateBlockedIntervalCount;
+                        continue;
+                    }
+                    for (std::size_t targetIndex = 0; targetIndex < chain->targets.size(); ++targetIndex) {
+                        const NavigationAuthoredGroundFallbackTarget& target = chain->targets[targetIndex];
+                        if (target.status == NavigationAuthoredGroundFallbackTargetStatus::MissingEntry ||
+                            target.status ==
+                                NavigationAuthoredGroundFallbackTargetStatus::SuppressedAfterMissingEntry) {
+                            break;
+                        }
+                        if (target.status == NavigationAuthoredGroundFallbackTargetStatus::MissingGeometry) {
+                            continue;
+                        }
+                        const CollisionQueryResult targetHit = queryTriangles(
+                            targetTriangles[targetIndex],
+                            triangleRecords,
+                            probePoint,
+                            sourceHeight,
+                            basis,
+                            effectiveOptions);
+                        if (targetHit.status == CollisionQueryStatus::NoHit) {
+                            if (targetHasRuntimeUncertainty[targetIndex]) {
+                                ++graph.statistics.runtimeStateBlockedIntervalCount;
+                                break;
+                            }
+                            continue;
+                        }
+
+                        for (std::size_t laterTarget = targetIndex + 1U;
+                             laterTarget < chain->targets.size();
+                             ++laterTarget) {
+                            if (chain->targets[laterTarget].status !=
+                                NavigationAuthoredGroundFallbackTargetStatus::Resolved) {
+                                continue;
+                            }
+                            if (queryTriangles(
+                                    targetTriangles[laterTarget],
+                                    triangleRecords,
+                                    probePoint,
+                                    sourceHeight,
+                                    basis,
+                                    effectiveOptions).status != CollisionQueryStatus::NoHit) {
+                                ++graph.statistics.priorityShadowedCandidateCount;
+                            }
+                        }
+
+                        if (targetHit.status == CollisionQueryStatus::Ambiguous ||
+                            !targetHit.triangleRecordIndex.has_value() ||
+                            !handoffIsContinuous(
+                                boundary,
+                                triangleRecords[*targetHit.triangleRecordIndex],
+                                outward,
+                                firstParameter,
+                                secondParameter,
+                                probeDistance,
+                                basis,
+                                effectiveOptions)) {
+                            ++graph.statistics.unresolvedHandoffCount;
+                            break;
+                        }
+                        const TriangleRecord& targetTriangle = triangleRecords[*targetHit.triangleRecordIndex];
+                        pending.push_back(PendingHandoff{
+                            .sourceTriangleRecordIndex = boundary.triangleRecordIndex,
+                            .targetTriangleRecordIndex = *targetHit.triangleRecordIndex,
+                            .firstParameter = firstParameter,
+                            .secondParameter = secondParameter,
+                            .kind = NavigationCollisionHandoffKind::AuthoredFallback,
+                            .availability = (targetHasRuntimeUncertainty[targetIndex] ||
+                                targetRequiresRuntimeState(area, sourceTriangle, targetTriangle))
+                                ? NavigationCollisionHandoffAvailability::RequiresRuntimeState
+                                : NavigationCollisionHandoffAvailability::ActiveStatic,
+                            .sourceEntryId = chain->sourceEntryId,
+                            .targetEntryId = target.targetEntryId,
+                            .chainIndex = chainIndex,
+                            .targetIndex = targetIndex,
+                            .authoredOrdinal = target.authoredOrdinal,
+                        });
+                        break;
                     }
                 }
             }
+            commitPendingHandoffs(
+                graph,
+                boundary,
+                pending,
+                triangleRecords,
+                effectiveOptions);
         }
+    }
 
-        if (addedPortalCount == 0U) {
-            ++graph.statistics.unresolvedGroundLinkCount;
-            appendDiagnostic(graph, NavigationDiagnosticSeverity::Warning,
-                "Ground link entry=" + std::to_string(link.sourceEntryId) + " -> " +
-                std::to_string(link.targetEntryId) +
-                " has no geometrically overlapping boundary and was not connected.");
-        } else if (link.resolution == NavigationGroundLinkResolution::Ambiguous &&
-            matchedSurfacePairs.size() > 1U) {
-            appendDiagnostic(graph, NavigationDiagnosticSeverity::Warning,
-                "Ambiguous ground link entry=" + std::to_string(link.sourceEntryId) + " -> " +
-                std::to_string(link.targetEntryId) + " matched " +
-                std::to_string(matchedSurfacePairs.size()) +
-                " surface pairs; all geometrically validated portals were retained.");
-        }
+    if (graph.statistics.runtimeDependentSurfaceCount > 0U) {
+        appendDiagnostic(graph, NavigationDiagnosticSeverity::Info,
+            std::to_string(graph.statistics.runtimeDependentSurfaceCount) +
+            " runtime-dependent ground surface(s) were retained for conditional collision evidence "
+            "but excluded from pathfinding nodes.");
+    }
+    if (graph.statistics.unresolvedHandoffCount > 0U) {
+        appendDiagnostic(graph, NavigationDiagnosticSeverity::Warning,
+            std::to_string(graph.statistics.unresolvedHandoffCount) +
+            " collision handoff interval(s) were left unresolved because the first collision "
+            "candidate was ambiguous or height-discontinuous.");
+    }
+    if (graph.statistics.runtimeStateBlockedIntervalCount > 0U) {
+        appendDiagnostic(graph, NavigationDiagnosticSeverity::Info,
+            std::to_string(graph.statistics.runtimeStateBlockedIntervalCount) +
+            " collision handoff interval(s) could not be evaluated past an earlier "
+            "runtime-dependent collision provider; no later static fallback was activated.");
+    }
+    if (probeRefinementExhaustionCount > 0U) {
+        appendDiagnostic(graph, NavigationDiagnosticSeverity::Warning,
+            std::to_string(probeRefinementExhaustionCount) +
+            " collision handoff interval(s) exceeded the adaptive probe-refinement limit and "
+            "were omitted rather than accepting an uncertain portal.");
     }
 
     for (NavigationGraphNode& node : graph.nodes) {

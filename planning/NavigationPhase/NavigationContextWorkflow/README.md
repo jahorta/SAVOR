@@ -3,14 +3,14 @@
 ## Status
 
 Future plan. This package is the normative workflow specification for producing a reset-qualified
-navigation context, materializing its game content, refining its static world with runtime evidence,
-searching predicted outcomes, realizing a selected plan as controller input, and validating it in an
-unmodified runtime.
+navigation context, materializing its game content, running the **Navmesh Survey**, refining its static
+world with runtime evidence, searching predicted outcomes, realizing a selected plan as controller input,
+and validating it in an unmodified runtime.
 
 The existing `SavorNavigation` and `SavorQt3D` work supplies an in-memory scenario, geometry, graph,
 manual/scripted endpoints, A*, and visualization prototype. It does not yet implement the context
-capture, disc extraction, suppressed exploration, navigation-prediction service, workflow jobs, or
-durable artifacts described here.
+capture, disc extraction, Navmesh Survey, navigation-prediction service, workflow jobs, or durable
+artifacts described here.
 
 ## Normative Workflow
 
@@ -32,7 +32,8 @@ The workflow has five non-interchangeable evidence layers:
 
 1. **Static content and world** derived from an identified disc image and versioned parsers.
 2. **Clean navigation context** captured at a reset-qualified field entry.
-3. **Patched exploration observations and refinement** produced only for geometry discovery.
+3. **Patched Navmesh Survey observations and refinement** produced for passability, movement-response,
+   collision-oddity, survey-anchor, and trigger-activation discovery.
 4. **Predicted plan** derived from an explicitly referenced context, content bundle, world refinement,
    objective, search bounds, and model bundle.
 5. **Clean runtime validation** performed from the original unpatched context lineage.
@@ -57,7 +58,9 @@ contexts or clean-validation inputs, and downstream work never resolves an impli
   movement/no-movement/interruption schedule, not raw stick input.
 - `NavigationControlSolveResult` owns camera/controller realization, and `NavigationValidationResult`
   owns comparison against an unmodified runtime.
-- Encounter suppression and selective script-trigger suppression are separate named patch profiles.
+- Encounter suppression is a named runtime modification independent of trigger control. Navmesh Survey
+  jobs may need to suppress and permit trigger activations dynamically while establishing anchors through
+  doors, but the trigger-control mechanism and modes remain research-gated and unresolved.
 - Unfinished field-RNG research, including Moonfish behavior, is an unresolved versioned
   model-completeness dependency. This package makes no behavioral claim from that work.
 
@@ -70,7 +73,7 @@ contexts or clean-validation inputs, and downstream work never resolves an impli
 | Navigation context capture | Not implemented | `SavorCore`, `SavorWorker`, `SavorDb` |
 | ISO identity and content extraction | Not implemented for Navigation | Dolphin DiscIO, SPICE/ALX, `SavorNavigation` |
 | Runtime patch/write facility | Not implemented | `SavorCore` research and implementation |
-| Suppressed geometry exploration/refinement | Not implemented | `SavorNavigation`, `SavorCore`, `SavorWorker` |
+| Navmesh Survey and refinement | Not implemented | `SavorNavigation`, `SavorCore`, `SavorWorker` |
 | Navigation prediction service | `SavorPredict` is currently battle-focused/exploratory | `SavorPredict` future navigation boundary |
 | Local CPU workflow lane | Not implemented | `SavorWorkflow` future executor |
 | Durable navigation workflow/artifacts | Not implemented | `SavorDb`, object store, `SavorWorkflow` |
@@ -89,8 +92,9 @@ bindings. It is a naming and product-integration anchor, not proof that the inte
     invalidation.
 - [03 - Navigation Context Contract](03-navigation-context-contract.md)
   - Defines `NavigationContextResult`, readiness evidence, reset-state capture, statuses, and exclusions.
-- [04 - Suppressed Exploration and World Refinement](04-suppressed-exploration-and-world-refinement.md)
-  - Separates clean and patched execution and specifies geometry observations, coverage, and refinements.
+- [04 - Navmesh Survey and World Refinement](04-suppressed-exploration-and-world-refinement.md)
+  - Specifies survey anchors, parallel probe waves, passability and movement-response observations,
+    trigger-survey direction, coverage, and refinements while separating clean and patched execution.
 - [05 - Prediction, Control, and Validation](05-prediction-control-and-validation.md)
   - Defines the planning-level predictor boundary, control realization, validation, and interruption
     handling.
@@ -107,6 +111,8 @@ separation, and workflow lineage. The parent [Navigation planning overview](../R
 top-level status and roadmap. [Area Profiles and Analysis Workstreams](../06-area-profiles-and-analysis-workstreams.md)
 remains normative for Dungeon, Safe, Overworld, and Unknown/View-only classification and for encounter
 geography. Where an older workflow sketch conflicts with this package, this package takes precedence.
+In particular, the Navmesh Survey direction in document 04 supersedes fixed job-wide selective-trigger
+profiles and collision/anomaly-only survey sketches elsewhere in Navigation planning.
 
 The current target is non-099 Dungeon Navigation. Safe Navigation may later reuse the same 2.5D context,
 exploration, control, and validation contracts without encounter work. Area 99/Overworld remains a

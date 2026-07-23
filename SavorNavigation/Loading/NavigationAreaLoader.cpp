@@ -1,4 +1,5 @@
 #include "NavigationAreaLoader.h"
+#include "NavigationGroundFallbackNormalizer.h"
 
 #include "../Projection/RegionMeshProjector.h"
 
@@ -11,12 +12,12 @@
 #include <cstdint>
 #include <fstream>
 #include <functional>
+#include <iterator>
 #include <limits>
 #include <set>
 #include <span>
 #include <sstream>
 #include <string>
-#include <unordered_map>
 #include <utility>
 
 namespace savor::navigation {
@@ -229,6 +230,20 @@ void appendDiagnosticOnce(std::vector<NavigationDiagnostic>& diagnostics,
         return value != 0U;
     });
     return out;
+}
+
+[[nodiscard]] bool hasNonZeroValue(
+    const std::shared_ptr<spice::mld::model::U32List>& source) {
+    return source && std::any_of(source->values.begin(), source->values.end(), [](const auto value) {
+        return value != 0U;
+    });
+}
+
+[[nodiscard]] NavigationSurfaceTraversalAvailability traversalAvailabilityFor(
+    const spice::mld::model::IndexEntry& entry) {
+    return normalizeFxn(entry.fxnName) == "ground" && !hasNonZeroValue(entry.motionAddresses)
+        ? NavigationSurfaceTraversalAvailability::Static
+        : NavigationSurfaceTraversalAvailability::RequiresRuntimeState;
 }
 
 [[nodiscard]] NavigationMesh convertMesh(const SpiceMesh& source,
@@ -469,7 +484,7 @@ NavigationAreaLoadResult NavigationAreaLoader::loadFile(const std::filesystem::p
             }
         }
 
-        std::set<std::pair<std::uint32_t, std::uint32_t>> processedGroundResources{};
+        std::set<std::pair<std::size_t, std::uint32_t>> processedGroundResources{};
         std::size_t expectedGroundResources = 0;
         std::size_t representedGroundResources = 0;
         std::size_t grndSurfaceCount = 0;
@@ -477,9 +492,8 @@ NavigationAreaLoadResult NavigationAreaLoader::loadFile(const std::filesystem::p
 
         for (const auto& record : file.entries) {
             const auto& entry = record.entry;
-            const auto linkedEntryIds = nonZeroValues(entry.groundLinks);
             for (const auto groundAddress : nonZeroValues(entry.groundAddresses)) {
-                if (!processedGroundResources.emplace(entry.entryId, groundAddress).second) {
+                if (!processedGroundResources.emplace(entry.tableIndex, groundAddress).second) {
                     continue;
                 }
                 ++expectedGroundResources;
@@ -501,10 +515,10 @@ NavigationAreaLoadResult NavigationAreaLoader::loadFile(const std::filesystem::p
                             .sourceNodeOffset = node.sourceNodeOffset,
                         };
                         surface.sourceKind = NavigationSurfaceSourceKind::Gobj;
+                        surface.traversalAvailability = traversalAvailabilityFor(entry);
                         surface.sourceTableIndex = entry.tableIndex;
                         surface.tblId = entry.tblId;
                         surface.fxnName = entry.fxnName;
-                        surface.linkedEntryIds = linkedEntryIds;
                         surface.mesh = convertMesh(node.streamMesh,
                             multiply(entryMatrix, nodeMatrices[nodeIndex]), model.diagnostics,
                             "GOBJ ground block " + std::to_string(groundAddress));
@@ -526,10 +540,10 @@ NavigationAreaLoadResult NavigationAreaLoader::loadFile(const std::filesystem::p
                         .sourceNodeOffset = 0U,
                     };
                     surface.sourceKind = NavigationSurfaceSourceKind::Grnd;
+                    surface.traversalAvailability = traversalAvailabilityFor(entry);
                     surface.sourceTableIndex = entry.tableIndex;
                     surface.tblId = entry.tblId;
                     surface.fxnName = entry.fxnName;
-                    surface.linkedEntryIds = linkedEntryIds;
                     surface.mesh = convertMesh(resourceIt->second.grnd->mesh, transformMatrix(entry.transform),
                         model.diagnostics, "GRND block " + std::to_string(groundAddress));
                     if (!surface.mesh.vertices.empty() && !surface.mesh.indices.empty()) {
@@ -701,36 +715,26 @@ NavigationAreaLoadResult NavigationAreaLoader::loadFile(const std::filesystem::p
         model.hasCompleteTriggerGeometry = model.failedTriggerRegionCount == 0U;
         model.hasCompleteMovingObjectGeometry = model.failedMovingObjectRegionCount == 0U;
 
-        std::unordered_map<std::uint32_t, std::vector<NavigationSurfaceSourceKey>> surfacesByEntry{};
-        for (const auto& surface : model.surfaces) {
-            surfacesByEntry[surface.sourceKey.sourceEntryId].push_back(surface.sourceKey);
-        }
-        std::set<std::pair<std::uint32_t, std::uint32_t>> linkDedup{};
+        std::vector<detail::NavigationGroundFallbackEntryEvidence> fallbackEvidence{};
+        fallbackEvidence.reserve(file.entries.size());
         for (const auto& record : file.entries) {
             const auto& entry = record.entry;
-            for (const auto targetEntryId : nonZeroValues(entry.groundLinks)) {
-                if (!linkDedup.emplace(entry.entryId, targetEntryId).second) {
-                    continue;
-                }
-                NavigationGroundLink link{};
-                link.sourceEntryId = entry.entryId;
-                link.targetEntryId = targetEntryId;
-                if (const auto found = surfacesByEntry.find(entry.entryId); found != surfacesByEntry.end()) {
-                    link.sourceSurfaces = found->second;
-                }
-                if (const auto found = surfacesByEntry.find(targetEntryId); found != surfacesByEntry.end()) {
-                    link.targetSurfaces = found->second;
-                }
-                if (link.sourceSurfaces.empty() || link.targetSurfaces.empty()) {
-                    link.resolution = NavigationGroundLinkResolution::Missing;
-                } else if (link.sourceSurfaces.size() == 1U && link.targetSurfaces.size() == 1U) {
-                    link.resolution = NavigationGroundLinkResolution::Resolved;
-                } else {
-                    link.resolution = NavigationGroundLinkResolution::Ambiguous;
-                }
-                model.groundLinks.push_back(std::move(link));
+            detail::NavigationGroundFallbackEntryEvidence evidence{
+                .tableIndex = entry.tableIndex,
+                .entryId = entry.entryId,
+            };
+            if (entry.groundLinks) {
+                evidence.targetEntryIds = entry.groundLinks->values;
             }
+            fallbackEvidence.push_back(std::move(evidence));
         }
+        detail::NavigationGroundFallbackNormalizationResult normalizedFallbacks =
+            detail::NavigationGroundFallbackNormalizer{}.normalize(fallbackEvidence, model.surfaces);
+        model.authoredGroundFallbackChains = std::move(normalizedFallbacks.chains);
+        model.diagnostics.insert(
+            model.diagnostics.end(),
+            std::make_move_iterator(normalizedFallbacks.diagnostics.begin()),
+            std::make_move_iterator(normalizedFallbacks.diagnostics.end()));
 
         model.failedGroundResourceCount = expectedGroundResources - representedGroundResources;
         model.hasCompleteGroundGeometry = expectedGroundResources > 0U && model.failedGroundResourceCount == 0U;
@@ -741,13 +745,36 @@ NavigationAreaLoadResult NavigationAreaLoader::loadFile(const std::filesystem::p
             collisionCount += region.kind == NavigationRegionKind::Collision ? 1U : 0U;
             triggerCount += region.kind == NavigationRegionKind::Trigger ? 1U : 0U;
         }
-        std::size_t resolvedLinks = 0;
-        std::size_t ambiguousLinks = 0;
-        std::size_t missingLinks = 0;
-        for (const auto& link : model.groundLinks) {
-            resolvedLinks += link.resolution == NavigationGroundLinkResolution::Resolved ? 1U : 0U;
-            ambiguousLinks += link.resolution == NavigationGroundLinkResolution::Ambiguous ? 1U : 0U;
-            missingLinks += link.resolution == NavigationGroundLinkResolution::Missing ? 1U : 0U;
+        std::size_t staticSurfaceCount = 0;
+        std::size_t runtimeDependentSurfaceCount = 0;
+        for (const auto& surface : model.surfaces) {
+            staticSurfaceCount += surface.traversalAvailability == NavigationSurfaceTraversalAvailability::Static
+                ? 1U
+                : 0U;
+            runtimeDependentSurfaceCount +=
+                surface.traversalAvailability == NavigationSurfaceTraversalAvailability::RequiresRuntimeState
+                ? 1U
+                : 0U;
+        }
+        std::size_t fallbackTargetCount = 0;
+        std::size_t resolvedFallbackTargetCount = 0;
+        std::size_t missingEntryTargetCount = 0;
+        std::size_t missingGeometryTargetCount = 0;
+        std::size_t suppressedTargetCount = 0;
+        for (const auto& chain : model.authoredGroundFallbackChains) {
+            fallbackTargetCount += chain.targets.size();
+            for (const auto& target : chain.targets) {
+                resolvedFallbackTargetCount +=
+                    target.status == NavigationAuthoredGroundFallbackTargetStatus::Resolved ? 1U : 0U;
+                missingEntryTargetCount +=
+                    target.status == NavigationAuthoredGroundFallbackTargetStatus::MissingEntry ? 1U : 0U;
+                missingGeometryTargetCount +=
+                    target.status == NavigationAuthoredGroundFallbackTargetStatus::MissingGeometry ? 1U : 0U;
+                suppressedTargetCount +=
+                    target.status == NavigationAuthoredGroundFallbackTargetStatus::SuppressedAfterMissingEntry
+                    ? 1U
+                    : 0U;
+            }
         }
 
         std::ostringstream summary{};
@@ -755,6 +782,8 @@ NavigationAreaLoadResult NavigationAreaLoader::loadFile(const std::filesystem::p
                 << ", representedGroundResources=" << representedGroundResources
                 << ", GRND surfaces=" << grndSurfaceCount
                 << ", ground-role GOBJ surfaces=" << gobjSurfaceCount
+                << ", static surfaces=" << staticSurfaceCount
+                << ", runtime-dependent surfaces=" << runtimeDependentSurfaceCount
                 << ", collisions=" << collisionCount
                 << ", wallRegions=" << wallRegionCount
                 << ", wallMeshes=" << wallMeshInstanceCount
@@ -776,10 +805,13 @@ NavigationAreaLoadResult NavigationAreaLoader::loadFile(const std::filesystem::p
                 << ", skippedObjectRoleGobj=" << model.skippedObjectRoleGobjCount << '.';
         appendDiagnostic(model.diagnostics, NavigationDiagnosticSeverity::Info, summary.str());
         appendDiagnostic(model.diagnostics, NavigationDiagnosticSeverity::Info,
-            "Provisional ground links: resolved=" + std::to_string(resolvedLinks) +
-            ", ambiguous=" + std::to_string(ambiguousLinks) +
-            ", missing=" + std::to_string(missingLinks) +
-            ". Link evidence is not pathfinding adjacency in this slice.");
+            "Authored ground fallback chains=" + std::to_string(model.authoredGroundFallbackChains.size()) +
+            ", targets=" + std::to_string(fallbackTargetCount) +
+            ", resolved=" + std::to_string(resolvedFallbackTargetCount) +
+            ", missingEntry=" + std::to_string(missingEntryTargetCount) +
+            ", missingGeometry=" + std::to_string(missingGeometryTargetCount) +
+            ", suppressedAfterMissingEntry=" + std::to_string(suppressedTargetCount) +
+            ". Collision handoffs are derived separately from ordered fallback evidence and coverage.");
         appendDiagnostic(model.diagnostics, NavigationDiagnosticSeverity::Info,
             "Spice search-world evidence: surfaces=" + std::to_string(parse.searchWorld.surfaces.size()) +
             ", regions=" + std::to_string(parse.searchWorld.regions.size()) + '.');

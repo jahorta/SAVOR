@@ -19,7 +19,13 @@ The following are closed at the architectural level:
 - Disc and content identity is hash-based; machine paths are locators only.
 - Static world, patched exploration, prediction, control solving, and clean validation are separate
   immutable evidence layers.
-- Encounter suppression and trigger suppression are separate patch profiles.
+- The Navmesh Survey bootstraps from the explicitly referenced output savestate of a ready
+  `NavigationContextResult`; every survey anchor and successor remains disposable exploration lineage.
+- Encounter suppression is independent of trigger control. A survey job may need to suppress and permit
+  trigger activations dynamically while establishing anchors through doors, but no concrete gate modes,
+  allowlist, or runtime hook are resolved.
+- Parallel workers emit verified anchor records and immutable observations; deterministic domain reduction
+  produces the refinement.
 - Prediction emits world-space planning and a movement/no-movement/interruption schedule; a later solver
   emits controller input.
 - Downstream work references an explicit context result ID; there is no implicit latest context.
@@ -51,15 +57,33 @@ are captured across representative areas.
 
 1. What safe SavorCore memory-write/patch API should enforce expected-original-value checks and restoration?
 2. Which patch point suppresses random encounter entry without changing movement/collision timing?
-3. Can individual script triggers be suppressed without disabling doors, MovingObjects, collision-resource
-   changes, or required initialization?
-4. How are trigger allowlists identified across SCT revisions and runtime addresses?
-5. Which state-signature dimensions are required for doors, platforms, switches, and collision selectors?
-6. What probe density and approach coverage are sufficient to classify a sub-triangle boundary?
-7. How should contradictory passability evidence be reproduced and adjudicated?
-8. Which anomaly measurements distinguish sticky/slow interactions from reproducible speedups?
+3. Where in the runtime are automatic and interactable triggers detected, selected, dispatched, and
+   completed, and what identities remain stable across SCT/runtime revisions?
+4. Can one survey job suppress and later permit trigger activations without disabling required field
+   initialization, doors, MovingObjects, platforms, collision-resource changes, or other environmental
+   controllers?
+5. When one door/trigger is permitted, what causal script, forced-movement, and control-return boundary
+   must run as one attributable activation session, and how are unrelated activations excluded?
+6. Which complete placement operation may establish a nearby survey anchor, and which position, ground,
+   selector, velocity, collision-cache, settle, and control checks prove that anchor locally valid?
+7. How is anchor reachability from the clean field-entry context proven independently of local placement
+   validity?
+8. Which state-signature dimensions are required for doors, platforms, switches, MovingObjects, and
+   collision selectors?
+9. What probe density, approach coverage, and adaptive tolerance are sufficient to classify a
+   sub-triangle boundary?
+10. How should contradictory passability evidence be reproduced and adjudicated?
+11. Which telemetry and parameter sweeps distinguish ordinary slow/sticky behavior from a reproducible
+    sticky-corner positional jump or wall-contact ramp-speed effect?
+12. For automatic triggers, what spatial/state evidence defines every available approach boundary? For
+    interactable triggers, which position, distance, facing, input, occlusion, and state dimensions define
+    the activation envelope?
+13. When a trigger changes geometry or collision state, which affected regions require a new
+    state-qualified local survey?
 
-No selective trigger-suppression job should ship before questions 1 through 4 have evidence-backed answers.
+No dynamic trigger-control or trigger-survey job should ship before questions 1 and 3 through 5 have
+evidence-backed answers. Encounter-suppression question 2 remains independent. These questions
+intentionally do not preselect trigger-gate modes.
 
 ## Predictor and Field-Model Research
 
@@ -97,7 +121,8 @@ or movement/no-movement effect from that source.
 4. Which fields are relational columns, which are projection data, and which remain object-store blobs?
 5. How should explicit candidate selection and replacement be represented in workflow lifecycle state?
 6. What retry/idempotency keys are necessary for large fan-out exploration and predictor searches?
-7. How are patch-profile approvals and runtime-build compatibility stored and surfaced?
+7. How are runtime-modification and trigger-control approvals and runtime-build compatibility stored and
+   surfaced?
 8. What retention policy applies to large per-frame telemetry, failed probes, and historical model versions?
 
 ## Validation and Acceptance Research
@@ -125,7 +150,7 @@ Closing an item should record:
 - source research, Ghidra/runtime evidence, and reproducible fixture;
 - confidence and known counterexamples;
 - accepted semantic rule;
-- schema/model/patch-profile version changes;
+- schema/model/runtime-modification/trigger-control version changes;
 - regression tests or validation procedure; and
 - migration/staleness behavior for historical artifacts.
 

@@ -80,8 +80,10 @@ implemented MLD/SCT/graph/A* prototype.
    remain excluded from walkable surfaces.
 9. **Implemented:** `SavorNavigation` creates `NavigationScriptModel` summaries and a SAVOR-owned opcode-77
    start catalog while retaining the full SCT parse result privately, then builds the stable triangle/portal
-   `NavigationTraversalGraph`. It combines these with the area as an in-memory `NavigationScenarioModel`
-   containing no public SPICE or Qt types.
+   `NavigationTraversalGraph`. Ground traversal preserves ordered linked-EntryID fallback chains and derives
+   current-bundle-first collision handoffs rather than matching only coincident external boundaries. It
+   combines these with the area as an in-memory `NavigationScenarioModel` containing no public SPICE or Qt
+   types.
 10. **Planned shared-analysis extension:** A shared layer-preserving 2.5D analysis field retains X/Z
     sampling plus resolved Y, source surface/triangle identity, GRND/GOBJ provenance, collision evidence,
     and raw triangle metadata. Static collision, anomaly, and dungeon encounter workstreams consume this
@@ -131,8 +133,8 @@ remain in memory.
   cube marker
 - conversion into `NavigationAreaModel` failed
 - renderer rejected otherwise valid navigation geometry
-- malformed/degenerate/non-manifold walk triangles, unresolved ambiguous link candidates, or link evidence
-  that has no geometrically valid portal
+- malformed/degenerate/non-manifold walk triangles, missing/truncated authored fallback targets,
+  discontinuous or stacked-ambiguous collision coverage, or a fallback chain with no usable handoff
 - invalid endpoint picks, incomplete or ambiguous opcode-77 start resolution, projected-trigger goal
   resolution failures, or an unreachable start/goal pair
 
@@ -148,8 +150,8 @@ model with pathfinding disabled.
   unknown, visibility, and diagnostic layers. Exact `motscpt` entries render as orange meshes in a separate
   `MovingObjects` layer. Exact wall entries never fall back to cube markers; triggers and MovingObjects with
   missing projected geometry retain approximate cubes.
-- Preserve the source entry/block/node identity and report provisional link evidence without presenting
-  it as navigable adjacency.
+- Preserve source entry/block/node identity plus ordered EntryID fallback evidence, including EntryID `0`,
+  without confusing a raw authored target with derived navigable adjacency.
 - Validate `a101b.mld` as 12 surfaces (6 GRND and 6 ground-role GOBJ), 504 vertices, 401 triangles,
   59 collisions including 51 wall regions and 517 wall meshes (6,795 vertices, 8,347 triangles),
   16 fully projected triggers with 38 meshes (320 vertices, 384 triangles), 11 fully projected `motscpt`
@@ -185,7 +187,11 @@ model with pathfinding disabled.
   on its matching ground `tblId`, while ambiguous or failed resolution preserves the previous start. Manual
   facing is settable, and known opcode-77 yaw supplies scripted facing.
 - The traversal graph uses one stable node per valid walkable triangle, bidirectional shared-boundary
-  adjacency, and directed cross-surface portals requiring both MLD link evidence and boundary overlap.
+  adjacency, and directed collision handoffs. It tests every current-entry GRND/GOBJ surface before applying
+  linked EntryIDs in authored order, chooses the first accepting bundle, and may join a source boundary to
+  a target triangle footprint without requiring coincident target external boundaries.
+- Motion-bearing or non-`ground` entries retain muted-orange bind-pose handoff candidates in Links but do
+  not contribute active A* nodes or edges until their runtime state is modeled.
 - Short ground clicks set manual starts or ground goals without replacing drag-to-orbit behavior. Real
   projected trigger meshes are goal-selectable; fallback cubes are not. Trigger goals choose the largest
   projected mesh deterministically by world-space bounds, resolve to walkable graph geometry, and render a
@@ -195,14 +201,25 @@ model with pathfinding disabled.
 - Incomplete ground/wall geometry blocks search. Missing SCT, trigger geometry, or MovingObject geometry
   remains advisory under its existing diagnostic/fallback policy. Trigger goal selection does not define
   runtime activation semantics.
+- The active slice does not claim runtime-perfect wall blocking, triangle-flag filtering, step-up limits,
+  animated/scripted surface state, or collision-selector calibration. Those remain explicit later
+  validation/refinement work.
 
 ### Planned shared-analysis slice acceptance
 
 - Construct one layer-preserving 2.5D analysis field from the same SAVOR-owned surfaces and triangle keys
   used by the true-3D graph. Stacked surfaces remain distinct and no raster/sample becomes a replacement
   navigation mesh.
+- Run the Navmesh Survey from the exact output savestate of a ready `NavigationContextResult`. Expand
+  disposable survey anchors outward, distinguish local validity from entry reachability, and release
+  ordinary collision, oddity, trigger, and reproduction jobs as their dependencies become available.
 - Expose separate collision and anomaly outputs. Static uncertainty or a simulator mismatch is diagnostic
   until an explicit validated refinement promotes it into the routing model.
+- Preserve sticky-corner positional-jump and wall-contact ramp-speed measurements as reproducible
+  movement-response evidence without optimizing their use inside the survey.
+- Represent automatic-trigger approach boundaries, interactable activation envelopes, and state-qualified
+  pre/post door transitions. Dynamic trigger suppression/permission within a job is required direction,
+  while the concrete hook and gate modes remain research-gated.
 - For the Dungeon profile, parse the strictly matched sibling `aNNNC.ect` whose presence established that
   profile through SpiceEct, apply the evidence-qualified direct-table selector hypothesis to both GRND and
   ground-role GOBJ triangles, and keep selector zero,
@@ -229,10 +246,14 @@ After the model and widget boundary are validated:
   and never creates a fresh-entry assumption.
 - Interpret the already loaded SCT plus related package/controller content for target, arrival, and
   transition discovery, automatic start-condition evaluation, and opcode-156 runtime restoration.
-- Run encounter-suppressed geometry exploration and separately named, research-gated trigger-suppression
-  probes. Persist their observations and sub-triangle passability refinements separately from the static
-  world and from clean prediction/validation states. `SavorCore` has no general runtime patch/write API
-  today, so both patch profiles require explicit research and implementation before these probes exist.
+- Run the Navmesh Survey from the immutable Navigation Context output savestate. Create short-lived
+  verified anchors near work, including state-qualified successor anchors reached through required
+  doors/script transitions, then fan out ordinary collision, oddity, later trigger-characterization, and
+  reproduction probes. Encounter suppression is independent from research-gated trigger control, which may
+  need to suppress and permit activations dynamically within one job. Persist all control history,
+  observations, and sub-triangle refinements separately from the static world and clean
+  prediction/validation states. `SavorCore` has no general runtime patch/write API today, and no trigger
+  hook or gate modes have been selected.
 - Define and persist SAVOR-owned context, content, world, 2.5D analysis, exploration/refinement,
   collision/anomaly, optional encounter, prediction, control, and validation schemas.
 - Move the reusable Navigation widget into `SavorQt` while retaining `SavorQt3D` as a focused development
@@ -302,6 +323,21 @@ inputs. Detailed inputs, outputs, failure states, and project ownership are norm
 CPU/domain construction of the static SAVOR-owned world, graph, profile, optional encounter model, and
 diagnostics from a versioned content bundle. It does not consume a runtime savestate.
 
+### `nav.explore_geometry`
+
+This Dolphin-backed step is the parallel portion of the Navmesh Survey. It consumes the explicitly
+referenced ready context output savestate as an immutable bootstrap, establishes verified disposable
+anchors, and releases candidate batches by dependency rather than waiting for five global barriers.
+Anchor expansion may intentionally traverse a door/script trigger and checkpoint its attributable stable
+successor before ordinary probing resumes. Workers emit anchor records and observations only; they never
+mutate the shared graph or refinement.
+
+### `nav.build_refinement`
+
+This deterministic CPU/domain step reduces selected survey observations into state-qualified passability,
+directional movement-response/oddity evidence, trigger activation/transition evidence, coverage, and a new
+immutable `NavigationWorldRefinement`.
+
 ### `nav.analyze_collisions`
 
 Historical draft name. Static candidate analysis is folded into world/refinement construction; empirical
@@ -360,6 +396,9 @@ Navigation Context workflow package rather than duplicated here.
 - The implemented pathfinding slice supplies manual start selection with facing, manual ground or
   projected-trigger goals, the grouped opcode-77 Start selector, and path/portal/endpoint overlays.
 - The shared-analysis slice adds separately toggleable collision/anomaly and dungeon encounter layers.
+  Navmesh Survey layers also expose survey anchors, tested/untested coverage, state-qualified boundaries,
+  sticky-jump/ramp-speed candidates, and automatic/interactable trigger evidence without changing A*
+  implicitly.
   Encounter UI distinguishes static selector/table data, explicit context-qualified marginal results, modeled
   predicted/seeded results, and simulator-observed/validated evidence. Static/marginal layers do not change
   the displayed A* route.
@@ -377,20 +416,25 @@ Navigation Context workflow package rather than duplicated here.
 
 ## Remaining Integration Questions
 
-1. Simulator-worker fanout for control solving/validation by route candidate, segment, or hybrid.
+1. Simulator-worker batch sizing and retry/reproduction policy for dependency-driven Navmesh Survey anchor,
+   collision, oddity, and trigger work, plus control solving/validation by route candidate, segment, or
+   hybrid.
 2. Durable world, 2.5D analysis, script-index, collision/anomaly, and optional encounter schemas.
 3. Automatic mapping from game/area identity to the full required package set beyond the strict sibling
    MLD/SCT/ECT filename associations.
 4. Coordinate-policy calibration and validation fixtures.
 5. 2.5D sampling/refinement policy and the evidence threshold for promoting an anomaly into the route
    model.
-6. Exact runtime capture/calibration for reset-state fields, dungeon encounter-check cadence, and state
+6. Trigger identities and categories, safe interception/control points, preservation of initialization and
+   environmental controllers, door/forced-movement completion boundaries, and the audited dynamic
+   suppression/permission contract. No gate modes are normative yet.
+7. Exact runtime capture/calibration for reset-state fields, dungeon encounter-check cadence, and state
    signatures beyond the current `stepCount` working contract.
-7. Future `SavorPredict` navigation boundary: process versus library shape, asynchronous invocation,
+8. Future `SavorPredict` navigation boundary: process versus library shape, asynchronous invocation,
    cancellation/progress, search fanout, and model-bundle versioning.
-8. Immutable prediction-result/trace/witness/reachability schemas, compatibility fingerprints, frontier
+9. Immutable prediction-result/trace/witness/reachability schemas, compatibility fingerprints, frontier
    completeness semantics, and the metric under which a multi-path result has a single furthest point.
-9. Area-99-specific profile design for `overworld_explorer`; the dungeon direct-table analyzer remains
+10. Area-99-specific profile design for `overworld_explorer`; the dungeon direct-table analyzer remains
    prohibited there.
 
 Workflow-specific open research is maintained in

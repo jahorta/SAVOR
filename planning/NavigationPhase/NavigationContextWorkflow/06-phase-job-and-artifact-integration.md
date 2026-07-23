@@ -17,7 +17,7 @@ lane yet.
 | 1 | `nav.capture_context` | Dolphin/PhaseScript worker | `NavigationContextResult` and clean source lineage |
 | 2 | `nav.materialize_content` | CPU/domain and DiscIO/parser services | `DiscImageIdentity`, manifest, `NavigationContentBundle` |
 | 3 | `nav.build_world` | CPU/domain | Static `NavigationWorldModel` and traversal graph |
-| 4 | `nav.explore_geometry` | Dolphin workers with named patches | `NavigationGeometryObservation` set |
+| 4 | `nav.explore_geometry` (Navmesh Survey worker portion) | Parallel Dolphin workers with recorded runtime modifications | Survey anchors and `NavigationGeometryObservation` set |
 | 5 | `nav.build_refinement` | CPU/domain | Immutable `NavigationWorldRefinement` |
 | 6 | `nav.search_predicted_outcomes` | `SavorPredict` future service/process | Candidate `NavigationPredictionResult` set |
 | 7 | Explicit user/result selection | `SavorQt`/workflow command | Selected prediction result reference |
@@ -43,11 +43,12 @@ Outputs:
 
 - immutable `NavigationContextResult`;
 - raw capture telemetry artifact;
-- clean source/derived savestate references when needed; and
+- exact ready output savestate ID/content hash used as the later Navmesh Survey clean bootstrap, plus its
+  clean source/derivation lineage; and
 - explicit readiness status.
 
-Only `Ready` advances to prediction-capable workflow state. A `NonResetContinuation` is routed back into
-the existing epoch, not transformed into a new context.
+Only `Ready` advances to survey- or prediction-capable workflow state. A `NonResetContinuation` is routed
+back into the existing epoch, not transformed into a new context.
 
 ### `nav.materialize_content`
 
@@ -66,14 +67,31 @@ builder, and schema versions.
 
 ### `nav.explore_geometry`
 
-Fans out disposable Dolphin-backed probes by region, boundary, state signature, and approach. Inputs name
-the exact static world, clean source lineage, patch profiles, telemetry schema, and budgets. Outputs are
-immutable observations. Patched successor savestates remain exploration-only artifacts.
+Consumes the exact output savestate of a ready `NavigationContextResult` as its clean bootstrap and fans
+out disposable Dolphin-backed work by survey anchor, candidate region/boundary, state signature, and
+approach. The clean context state is never modified.
+
+The logical Navmesh Survey work is dependency-driven:
+
+1. establish locally valid and separately entry-reachable survey anchors, including required door
+   transitions;
+2. fan out ordinary collision/passability batches near those anchors;
+3. target sticky-corner positional jumps, ramp-speed, and other movement oddities discovered in telemetry;
+4. later measure automatic and interactable trigger activation after the trigger-control contract is
+   research-backed; and
+5. reproduce important or contradictory observations independently.
+
+One worker job may need to suppress and permit trigger activations at different times while traversing a
+door or establishing a successor anchor. The exact control modes and runtime mechanism are unresolved.
+Every runtime modification, trigger-control change, reposition/settle result, activation, and pre/post
+checkpoint is part of immutable job provenance. Outputs are survey-anchor records and observations;
+patched successor savestates remain exploration-only artifacts.
 
 ### `nav.build_refinement`
 
-Deterministically reduces selected observation IDs into a state-qualified, sub-triangle world refinement.
-Contradictory evidence remains represented. New evidence creates a new refinement version.
+Deterministically reduces selected observation IDs into a state-qualified, sub-triangle world refinement,
+directional movement-response evidence, collision-oddity catalog, trigger-activation evidence, and survey
+coverage. Contradictory evidence remains represented. New evidence creates a new refinement version.
 
 ### `nav.search_predicted_outcomes`
 
@@ -90,7 +108,8 @@ automatic policy, if later supported, is itself versioned authoring data. There 
 ### `nav.solve_controls`
 
 Consumes the selected world-space plan and uses Dolphin-backed trials to produce a controller tape and
-camera realization. Encounter and trigger suppression policy is explicit per solver mode; a tape intended
+camera realization. Runtime modifications and trigger behavior are explicit per solver mode; this does not
+inherit or resolve the Navmesh Survey's research-gated dynamic trigger-control contract. A tape intended
 for clean execution must retain trials and provenance separately.
 
 ### `nav.validate_route`
@@ -111,8 +130,8 @@ prediction, control, and validation into one mutable status blob.
 | SPICE | AKLZ and MLD/SCT/ECT parsing and parser diagnostics |
 | Dolphin DiscIO | Exact internal-file discovery/extraction from selected image |
 | ALX parser/tooling | Assigned game-data file parsing |
-| `SavorNavigation` | Content normalization, profiles, world/graph, probe generation, refinement, static analysis, compatibility, and spatial result projection |
-| `SavorCore` | Runtime reads/breakpoints, future patch writes, inputs, savestates, telemetry, capture and probe PhaseScripts |
+| `SavorNavigation` | Content normalization, profiles, world/graph, survey-anchor/candidate generation, observation interpretation, refinement, static analysis, compatibility, and spatial result projection |
+| `SavorCore` | Runtime reads/breakpoints, future patch and dynamic trigger control, inputs, reposition/settle checks, savestates, telemetry, capture and probe PhaseScripts |
 | `SavorWorker` | Isolated Dolphin execution for capture, exploration, control solving, and validation |
 | `SavorPredict` | Future planning-level temporal/outcome search and candidate production |
 | `SavorWorkflow` | Claiming, dispatch, fan-out, selection waits, transitions, retries, and terminal advancement |
@@ -136,8 +155,9 @@ encoded as fake simulator jobs.
 ### Dolphin worker work
 
 - context capture;
-- patched collision/passability exploration;
+- Navmesh Survey anchor expansion and patched collision/passability exploration;
 - movement-anomaly probes;
+- automatic/interactable trigger probes after the trigger-control contract is research-backed;
 - controller solving; and
 - clean runtime validation.
 
@@ -172,9 +192,10 @@ Store queryable identity, status, and lineage:
 Store large or replayable payloads:
 
 - clean and patched savestates, with distinct roles;
+- disposable survey-anchor checkpoints and their verification evidence;
 - extracted internal files and normalized content blobs;
 - static world/graph and refinement payloads;
-- raw capture and per-frame probe telemetry;
+- raw capture, trigger-control history, and per-frame probe telemetry;
 - prediction traces/frontier sets;
 - controller tapes; and
 - clean validation traces.
@@ -195,6 +216,8 @@ DiscImageIdentity
 
 clean savestate + reset transition
   -> NavigationContextResult
+  -> disposable NavigationSurveyAnchor lineage
+  -> NavigationGeometryObservation set
 
 context + content + world/refinement + objective/model/bounds
   -> NavigationPredictionResult
@@ -203,8 +226,10 @@ context + content + world/refinement + objective/model/bounds
   -> NavigationValidationResult
 ```
 
-`NavigationGeometryObservation` references static world, patch profile, and disposable probe lineage; it
-feeds a refinement but never becomes an ancestor of the clean context.
+`NavigationGeometryObservation` references the static world, exact context-output bootstrap, runtime
+modifications, trigger-control history, and disposable anchor/probe lineage. It feeds a refinement but
+never becomes an ancestor of the clean context. Local anchor validity and entry reachability are separate
+facts.
 
 ## Workflow Profiles
 
@@ -221,6 +246,9 @@ feeds a refinement but never becomes an ancestor of the clean context.
   identical.
 - Failed or partial results remain immutable and queryable.
 - A patch cleanup/precondition failure quarantines the worker outcome.
+- A failed reposition/settle check produces no survey anchor.
+- A trigger-controlled door transition that cannot establish a stable attributable successor produces no
+  post-door anchor; an earlier verified checkpoint remains usable.
 - A predictor `ModelIncomplete` result is a valid analyzed failure, not an infrastructure retry.
 - A worker crash/lease timeout may retry from the same clean input; it may not reuse an unknown live state.
 - New content, model, refinement, objective, or search bounds create a new request/result lineage.
@@ -232,10 +260,14 @@ feeds a refinement but never becomes an ancestor of the clean context.
 2. Implement reset-boundary detection and a Battle-Context-like `nav.capture_context` vertical slice.
 3. Implement disc identity/manifest/extraction and bundle materialization.
 4. Persist the current static world/graph with exact content lineage.
-5. Research and implement named patch profiles plus a narrow geometry-probe slice.
-6. Add sub-triangle refinement and coverage reporting.
-7. Define and implement the asynchronous `SavorPredict` navigation boundary.
-8. Add explicit selection, control solving, clean validation, and product UI projections.
+5. Implement a narrow Navmesh Survey slice from a Navigation Context output savestate: one verified anchor,
+   ordinary collision probes, immutable observations, and visualization.
+6. Research safe reposition/settle behavior, encounter suppression, and dynamic trigger
+   suppression/activation without selecting concrete trigger-gate modes prematurely.
+7. Add dependency-driven parallel anchor, normal-collision, oddity, trigger, and reproduction jobs plus
+   sub-triangle refinement and coverage reporting.
+8. Define and implement the asynchronous `SavorPredict` navigation boundary.
+9. Add explicit selection, control solving, clean validation, and product UI projections.
 
 Each slice must preserve the evidence layers even if later steps are still manual.
 
@@ -244,6 +276,12 @@ Each slice must preserve the evidence layers even if later steps are still manua
 - Every step has typed immutable inputs and outputs with explicit IDs.
 - Static CPU work is not masqueraded as a Dolphin job before a CPU lane exists.
 - Patched and clean savestate roles cannot be confused in workflow bindings.
+- The Navmesh Survey consumes an explicitly referenced ready context output savestate and keeps every
+  anchor/successor in disposable exploration lineage.
+- Parallel workers emit observations and verified anchor records; only deterministic CPU/domain reduction
+  emits a refinement.
+- Trigger control may change during a survey job, but no concrete modes or allowlist are assumed until
+  trigger research closes that contract.
 - Prediction, control, and validation remain separate results.
 - The selected candidate is explicit.
 - No workflow step resolves an implicit latest context, world, refinement, or model.

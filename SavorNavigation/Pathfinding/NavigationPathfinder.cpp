@@ -851,6 +851,11 @@ NavigationPathResult NavigationPathfinder::findPath(
     for (const std::size_t nodeIndex : reverseNodes) {
         result.trianglePath.push_back(graph.nodes[nodeIndex].key);
     }
+    result.edgePath.reserve(reverseEdges.size());
+    for (const auto& [predecessor, edgeIndex] : reverseEdges) {
+        static_cast<void>(predecessor);
+        result.edgePath.push_back(edgeIndex);
+    }
 
     appendPolylinePoint(result.polyline, query.start.snappedPoint);
     for (const auto& [predecessor, edgeIndex] : reverseEdges) {
