@@ -33,21 +33,26 @@ bool IsInputMacroOpcode(savor::PSOpCode code)
 
 } // namespace
 
-TEST(NavigationContextFramework, RegistersContextBlobKey)
+TEST(NavigationContextFramework, RegistersContextKeys)
 {
     using namespace savor::context::key;
 
     EXPECT_EQ(NAVIGATION_CONTEXT_MIN, static_cast<KeyId>(0x0700));
     EXPECT_EQ(NAVIGATION_CONTEXT_MAX, static_cast<KeyId>(0x07ff));
     EXPECT_EQ(navigation::CTX_BLOB, static_cast<KeyId>(0x0700));
+    EXPECT_EQ(navigation::OUTPUT_SAVESTATE_PATH, static_cast<KeyId>(0x0701));
 
     std::string registry_error;
     ASSERT_TRUE(validate_registry(&registry_error)) << registry_error;
     EXPECT_EQ(name_for_id(navigation::CTX_BLOB), "navigation.CTX_BLOB");
+    EXPECT_EQ(name_for_id(navigation::OUTPUT_SAVESTATE_PATH),
+        "navigation.output_savestate_path");
 
     KeyId resolved = 0;
     ASSERT_TRUE(id_for_name("navigation.CTX_BLOB", resolved));
     EXPECT_EQ(resolved, navigation::CTX_BLOB);
+    ASSERT_TRUE(id_for_name("navigation.output_savestate_path", resolved));
+    EXPECT_EQ(resolved, navigation::OUTPUT_SAVESTATE_PATH);
 }
 
 TEST(NavigationContextFramework, ProgramHasExactMinimalCaptureShape)
@@ -58,7 +63,7 @@ TEST(NavigationContextFramework, ProgramHasExactMinimalCaptureShape)
     ASSERT_EQ(script.canonical_bp_keys,
         (std::vector<BPKey>{kCaptureBreakpoint}));
     EXPECT_TRUE(script.gated_bp_keys.empty());
-    ASSERT_EQ(script.ops.size(), 8u);
+    ASSERT_EQ(script.ops.size(), 9u);
 
     EXPECT_EQ(script.ops[0].code, savor::PSOpCode::ARM_PHASE_BPS_ONCE);
     EXPECT_EQ(script.ops[1].code, savor::PSOpCode::LOAD_SNAPSHOT);
@@ -67,9 +72,12 @@ TEST(NavigationContextFramework, ProgramHasExactMinimalCaptureShape)
     EXPECT_EQ(script.ops[4].code, savor::PSOpCode::RUN_UNTIL_BP);
     EXPECT_EQ(script.ops[5].code, savor::PSOpCode::LABEL);
     EXPECT_EQ(script.ops[6].code, savor::PSOpCode::GET_NAVIGATION_CONTEXT);
-    EXPECT_EQ(script.ops[7].code, savor::PSOpCode::EMIT_RESULT);
+    EXPECT_EQ(script.ops[7].code, savor::PSOpCode::SAVE_SAVESTATE_FROM);
+    EXPECT_EQ(script.ops[8].code, savor::PSOpCode::EMIT_RESULT);
 
     EXPECT_EQ(script.ops[7].key.id,
+        savor::context::key::navigation::OUTPUT_SAVESTATE_PATH);
+    EXPECT_EQ(script.ops[8].key.id,
         savor::context::key::navigation::CTX_BLOB);
 
     EXPECT_EQ(std::count_if(script.ops.begin(), script.ops.end(),
@@ -79,7 +87,7 @@ TEST(NavigationContextFramework, ProgramHasExactMinimalCaptureShape)
     EXPECT_EQ(std::count_if(script.ops.begin(), script.ops.end(),
         [](const savor::PSOp& op) {
             return op.code == savor::PSOpCode::SAVE_SAVESTATE_FROM;
-        }), 0);
+        }), 1);
     EXPECT_EQ(std::count_if(script.ops.begin(), script.ops.end(),
         [](const savor::PSOp& op) { return IsInputMacroOpcode(op.code); }), 0);
 }
@@ -88,7 +96,7 @@ TEST(NavigationContextFramework, ShortCircuitsRunWhenAlreadyAtCaptureBreakpoint)
 {
     const auto script =
         phase::navigation::ctx::MakeNavigationContextProgram(kCaptureBreakpoint);
-    ASSERT_EQ(script.ops.size(), 8u);
+    ASSERT_EQ(script.ops.size(), 9u);
 
     const auto& branch = script.ops[3];
     const auto& run = script.ops[4];

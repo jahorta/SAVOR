@@ -7,7 +7,8 @@
 namespace savor::context::key::navigation {
 
 #define NAVIGATION_CONTEXT_KEYS(X) \
-    X(CTX_BLOB, 0x0700, "navigation.CTX_BLOB")
+    X(CTX_BLOB,               0x0700, "navigation.CTX_BLOB") \
+    X(OUTPUT_SAVESTATE_PATH,  0x0701, "navigation.output_savestate_path")
 
 #define DECL_KEY(NAME, ID, STR) \
     inline constexpr savor::context::key::KeyId NAME = static_cast<savor::context::key::KeyId>(ID); \

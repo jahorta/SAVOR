@@ -22,6 +22,8 @@ inline savor::PhaseScript MakeNavigationContextProgram(BPKey capture_bp)
     script.ops.push_back(savor::OpRunUntilBp());
     script.ops.push_back(savor::OpLabel(LabelCaptureContext));
     script.ops.push_back(savor::OpGetNavigationContext());
+    script.ops.push_back(savor::OpSaveSavestateFrom(
+        savor::context::key::navigation::OUTPUT_SAVESTATE_PATH));
     script.ops.push_back(savor::OpEmitResult(
         savor::context::key::navigation::CTX_BLOB));
     return script;
