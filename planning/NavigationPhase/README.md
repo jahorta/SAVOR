@@ -74,6 +74,11 @@ Area 99/Overworld navigation is explicitly deferred. Its free-flight movement, a
 and special encounter lookup are not extensions of the current dungeon rules and must receive a separate
 design before being admitted to planning or workflow jobs.
 
+The authoritative SavorPredict model design for reusable field navigation, encounter-aware search,
+predicted navigation trajectories, and live worker trajectory testing is maintained separately in
+`planning/SavorPredict_NavigationModels/`. This folder remains responsible for the broader phase,
+workflow, content-integration, UI, and persistence direction.
+
 ## Goals
 
 - Establish the shared surface-constrained 2.5D model/search foundation, with Dungeon as the current

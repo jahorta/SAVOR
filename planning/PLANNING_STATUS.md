@@ -15,10 +15,15 @@ the source of truth when a plan conflicts with implementation.
 
 ## Future Plans
 
+- `planning/SavorPredict_NavigationModels/` - future SavorPredict field-navigation model direction,
+  including reusable pathfinding, encounter-aware joint search, predicted navigation trajectories, and
+  worker-driven live trajectory testing.
 - `planning/NavigationPhase/` - future dungeon-navigation phase built on a shared, surface-constrained
   2.5D foundation. The foundation preserves full XYZ geometry, vertically stacked walkable surfaces, and
   explicit 3D links/portals; "2.5D" means movement is constrained to authored surfaces, not that geometry
-  is flattened to X/Z. A pinned SPICE submodule feeds the non-Qt `SavorNavigation` library, which converts
+  is flattened to X/Z. SAVOR owns navigation orchestration, planning, solver execution, UI, and persistence;
+  SPICE owns MLD/SCT and other SoA filetype parsing plus area-content generation. A pinned SPICE submodule
+  feeds the non-Qt `SavorNavigation` library, which converts
   canonical MLD data, native GRND and ground-role GOBJ meshes, and transiently projected `fxn=wall`
   collision meshes, SPICE-classified trigger object meshes, and provisionally classified `motscpt`
   MovingObjects into a SAVOR-owned model. `SavorQt3D` loads manually selected AKLZ-compressed MLD files
