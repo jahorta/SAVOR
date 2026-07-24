@@ -200,6 +200,10 @@ namespace savor {
         case PSOpCode::RECORD_CURRENT_BP:
             op_record_current_bp(ctx);
             return DispatchResult::Continue;
+        case PSOpCode::RECORD_CURRENT_PC_TO:
+            return op_record_current_pc_to(op, result, ctx)
+                ? DispatchResult::Continue
+                : DispatchResult::Failed;
         case PSOpCode::SET_TIMEOUT:
             op_set_timeout(op, ctx);
             return DispatchResult::Continue;
@@ -313,12 +317,9 @@ namespace savor {
             op_materialize_battle_completion_macro_steps(ctx);
             return DispatchResult::Continue;
         case PSOpCode::GET_NAVIGATION_CONTEXT:
-            SCLOGE("[VM] unsupported opcode: GET_NAVIGATION_CONTEXT");
-            ctx.erase(savor::context::key::navigation::CTX_BLOB);
-            ctx[savor::context::key::core::WORKER_ERROR] = static_cast<uint32_t>(WERR_UnknownError);
-            result.ctx = ctx;
-            result.ok = false;
-            return DispatchResult::Failed;
+            return op_get_navigation_context(result, ctx)
+                ? DispatchResult::Continue
+                : DispatchResult::Failed;
         case PSOpCode::Count:
             break;
         }

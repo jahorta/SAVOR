@@ -412,4 +412,21 @@ namespace savor {
         ctx[savor::context::key::core::VI_LAST] = static_cast<uint32_t>(host_.getViFieldCountApprox() & 0xFFFFFFFFull);
         if (derived_ && hit_bp_key != 0) derived_->update_on_bp(hit_bp_key, ctx, host_);
     }
+    bool PhaseScriptVM::op_record_current_pc_to(
+        const PSOp& op,
+        PSResult& result,
+        PSContext& ctx) const {
+        if (savor::context::key::name_for_id(op.key.id).empty()) {
+            SCLOGE(
+                "[VM] RECORD_CURRENT_PC_TO rejected unknown context key=%u",
+                static_cast<unsigned>(op.key.id));
+            ctx[savor::context::key::core::WORKER_ERROR] =
+                static_cast<uint32_t>(WERR_UnknownError);
+            result.ctx = ctx;
+            result.ok = false;
+            return false;
+        }
+        ctx[op.key.id] = host_.getPC();
+        return true;
+    }
 } // namespace savor

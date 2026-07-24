@@ -716,6 +716,49 @@ std::vector<SavestateDerivationRecord> SqliteStateDb::ListIncomingSavestateDeriv
     return rows;
 }
 
+std::vector<SavestateDerivationRecord> SqliteStateDb::ListSavestateDerivationsBySourceContext(
+    std::string_view source_context_kind,
+    std::int64_t source_context_id) const {
+    std::vector<SavestateDerivationRecord> rows;
+    if (db_ == nullptr || source_context_kind.empty() || source_context_id <= 0) {
+        return rows;
+    }
+
+    Statement st;
+    constexpr const char* kSql =
+        "SELECT derivation_id,from_savestate_id,to_savestate_id,method_kind,"
+        "source_context_kind,source_context_id,created_at_utc "
+        "FROM state_savestate_derivation "
+        "WHERE source_context_kind=?1 AND source_context_id=?2 "
+        "ORDER BY derivation_id ASC;";
+    if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK) {
+        return rows;
+    }
+
+    sqlite3_bind_text(
+        st.st,
+        1,
+        source_context_kind.data(),
+        static_cast<int>(source_context_kind.size()),
+        SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st.st, 2, source_context_id);
+    while (sqlite3_step(st.st) == SQLITE_ROW) {
+        SavestateDerivationRecord row{};
+        row.derivation_id = sqlite3_column_int64(st.st, 0);
+        row.from_savestate_id = sqlite3_column_int64(st.st, 1);
+        row.to_savestate_id = sqlite3_column_int64(st.st, 2);
+        const auto* method = sqlite3_column_text(st.st, 3);
+        const auto* context = sqlite3_column_text(st.st, 4);
+        row.method_kind = method == nullptr ? "" : reinterpret_cast<const char*>(method);
+        row.source_context_kind = context == nullptr ? "" : reinterpret_cast<const char*>(context);
+        row.source_context_id = sqlite3_column_int64(st.st, 5);
+        row.created_at_utc =
+            types::UtcTimePoint(std::chrono::milliseconds(sqlite3_column_int64(st.st, 6)));
+        rows.push_back(std::move(row));
+    }
+    return rows;
+}
+
 bool SqliteStateDb::CreateTasVariant(
     const CreateTasVariantCommand& command,
     std::int64_t* tas_variant_id_out,

@@ -64,7 +64,7 @@ TEST(PhaseScriptOpcodes, UnsupportedAndInvalidValuesFailClosed)
     }
 }
 
-TEST(PhaseScriptOpcodes, NavigationContextOpcodeIsReservedAndUnsupported)
+TEST(PhaseScriptOpcodes, NavigationContextOpcodesAreSupportedAndStable)
 {
     EXPECT_EQ(static_cast<std::uint8_t>(
         savor::PSOpCode::GET_NAVIGATION_CONTEXT), 50u);
@@ -77,13 +77,33 @@ TEST(PhaseScriptOpcodes, NavigationContextOpcodeIsReservedAndUnsupported)
     EXPECT_EQ(metadata->identifier, "GET_NAVIGATION_CONTEXT");
     EXPECT_EQ(metadata->display_name, "Get Navigation Context");
     EXPECT_EQ(metadata->arg_format, savor::PSOpArgFormat::None);
-    EXPECT_EQ(metadata->support, savor::PSOpSupport::Unsupported);
+    EXPECT_EQ(metadata->support, savor::PSOpSupport::Supported);
 
     const auto op = savor::OpGetNavigationContext();
     EXPECT_EQ(op.code, savor::PSOpCode::GET_NAVIGATION_CONTEXT);
     EXPECT_EQ(savor::get_psop_identifier(op.code), "GET_NAVIGATION_CONTEXT");
     EXPECT_EQ(savor::get_psop_name(op.code), "Get Navigation Context");
     EXPECT_EQ(savor::get_psop_desc(op), "Get Navigation Context: []");
+
+    EXPECT_EQ(static_cast<std::uint8_t>(
+        savor::PSOpCode::RECORD_CURRENT_PC_TO), 51u);
+    const auto* record_pc = savor::get_psop_metadata(
+        savor::PSOpCode::RECORD_CURRENT_PC_TO);
+    ASSERT_NE(record_pc, nullptr);
+    EXPECT_EQ(record_pc->ordinal, 51u);
+    EXPECT_EQ(record_pc->identifier, "RECORD_CURRENT_PC_TO");
+    EXPECT_EQ(record_pc->display_name, "Record Current PC to Context");
+    EXPECT_EQ(record_pc->arg_format, savor::PSOpArgFormat::Key);
+    EXPECT_EQ(record_pc->support, savor::PSOpSupport::Supported);
+
+    constexpr auto entry_pc =
+        savor::context::key::navigation::ENTRY_PC;
+    const auto record_op = savor::OpRecordCurrentPcTo(entry_pc);
+    EXPECT_EQ(record_op.code, savor::PSOpCode::RECORD_CURRENT_PC_TO);
+    EXPECT_EQ(record_op.key.id, entry_pc);
+    EXPECT_EQ(
+        savor::get_psop_desc(record_op),
+        "Record Current PC to Context: [key=navigation.entry_pc]");
 }
 
 TEST(PhaseScriptOpcodes, BuildersUseCorrectedAndDecoupledContracts)

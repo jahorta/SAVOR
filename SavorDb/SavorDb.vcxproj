@@ -186,6 +186,8 @@
     <ClInclude Include="Execution\ProgramDB\BattleContext\BattleContextProbePhaseRegistration.h" />
     <ClInclude Include="Execution\ProgramDB\BattleEndResults\BattleEndResultsAdapters.h" />
     <ClInclude Include="Execution\ProgramDB\BattleEndResults\BattleEndResultsPhaseRegistration.h" />
+    <ClInclude Include="Execution\ProgramDB\NavigationContext\NavigationContextAdapters.h" />
+    <ClInclude Include="Execution\ProgramDB\NavigationContext\NavigationContextPhaseRegistration.h" />
     <ClInclude Include="Execution\ProgramDB\BattleSingleTurn\BattleSingleTurnAdapters.h" />
     <ClInclude Include="Execution\ProgramDB\BattleSingleTurn\BattleSingleTurnPhaseRegistration.h" />
     <ClInclude Include="Execution\ProgramDB\ProgramKindDescriptor.h" />
@@ -252,6 +254,8 @@
     <ClCompile Include="Execution\ProgramDB\BattleEndResults\BattleEndResultsAdapters.cpp" />
     <ClCompile Include="Execution\ProgramDB\BattleEndResults\BattleEndWorkflowAdapters.cpp" />
     <ClCompile Include="Execution\ProgramDB\BattleEndResults\BattleEndResultsPhaseRegistration.cpp" />
+    <ClCompile Include="Execution\ProgramDB\NavigationContext\NavigationContextAdapters.cpp" />
+    <ClCompile Include="Execution\ProgramDB\NavigationContext\NavigationContextPhaseRegistration.cpp" />
     <ClCompile Include="Execution\ProgramDB\BattleSingleTurn\BattleSingleTurnAdapters.cpp" />
     <ClCompile Include="Execution\ProgramDB\BattleSingleTurn\BattleSingleTurnPhaseRegistration.cpp" />
     <ClCompile Include="Execution\ProgramDB\SeedProbe\SeedProbeGridAdapters.cpp" />
@@ -316,6 +320,7 @@
     <None Include="migration\Execution\202606181100_execution_job_event_projection_index.sql" />
     <None Include="migration\Execution\202606181200_execution_active_workflow_materialization_index.sql" />
     <None Include="migration\State\202604051000_state_stage2_schema.sql" />
+    <None Include="migration\State\202607231800_state_derivation_source_context_index.sql" />
     <None Include="migration\UIRead\202604051000_uiread_stage2_schema.sql" />
     <None Include="migration\UIRead\202604051200_uiread_stage3b_workflow.sql" />
     <None Include="migration\UIRead\202604051300_uiread_stage3c_projection_checkpoint_compat.sql" />

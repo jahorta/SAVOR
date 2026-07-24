@@ -39,6 +39,9 @@ public:
         std::int64_t savestate_id) const override;
     std::vector<SavestateDerivationRecord> ListIncomingSavestateDerivations(
         std::int64_t to_savestate_id) const override;
+    std::vector<SavestateDerivationRecord> ListSavestateDerivationsBySourceContext(
+        std::string_view source_context_kind,
+        std::int64_t source_context_id) const override;
 
     std::optional<TasVariantRecord> GetTasVariant(
         std::int64_t tas_variant_id) const override;

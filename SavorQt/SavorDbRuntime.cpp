@@ -10,6 +10,7 @@
 #include "Execution/ProgramDB/BattleContext/BattleContextProbePhaseRegistration.h"
 #include "Execution/ProgramDB/BattleSingleTurn/BattleSingleTurnPhaseRegistration.h"
 #include "Execution/ProgramDB/BattleEndResults/BattleEndResultsPhaseRegistration.h"
+#include "Execution/ProgramDB/NavigationContext/NavigationContextPhaseRegistration.h"
 #include "Execution/ProgramDB/SeedProbe/SeedProbePhaseRegistration.h"
 #include "Execution/ProgramDB/TasMovie/TasMoviePhaseRegistration.h"
 #include "Runner/IPC/Wire.h"
@@ -310,6 +311,17 @@ bool SavorDbRuntime::buildProgramRegistry(std::string* error_out) {
         analysis_db,
         std::move(battle_end_config));
 
+    savor::db::execution::programdb::navigationcontext::
+        NavigationContextPhaseRegistrationConfig navigation_context_config{};
+    navigation_context_config.working_dir_root =
+        workspace_root / "navigation-context";
+    savor::db::execution::programdb::navigationcontext::
+        RegisterNavigationContextProbePhaseDescriptor(
+            &program_registry_,
+            execution_db,
+            state_db,
+            std::move(navigation_context_config));
+
     if (!program_registry_.HasRequiredAdapters(static_cast<std::int32_t>(savor::PK_TasMovie))
         || !program_registry_.HasRequiredAdaptersForStepKind("tas_movie")
         || !program_registry_.HasRequiredAdaptersForStepKind("seed_probe_chain")
@@ -321,7 +333,8 @@ bool SavorDbRuntime::buildProgramRegistry(std::string* error_out) {
         || !program_registry_.HasRequiredAdaptersForStepKind("battle.field_return_seed_probe.grid")
         || !program_registry_.HasRequiredAdaptersForStepKind("battle.field_return_seed_probe.unique")
         || !program_registry_.HasRequiredAdaptersForStepKind("battle.field_return_seed_probe.materialize")
-        || !program_registry_.HasRequiredAdaptersForStepKind("battle.results_screen")) {
+        || !program_registry_.HasRequiredAdaptersForStepKind("battle.results_screen")
+        || !program_registry_.HasRequiredAdaptersForStepKind("navigation.context_probe")) {
         if (error_out != nullptr) {
             *error_out = "Workflow program descriptor registration is incomplete";
         }

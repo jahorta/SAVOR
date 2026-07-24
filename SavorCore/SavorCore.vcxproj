@@ -190,6 +190,8 @@
     <ClInclude Include="Core\Memory\Soa\Battle\BattleContextCodec.h" />
     <ClInclude Include="Core\Memory\Soa\Battle\DerivedBattleBuffer.h" />
     <ClInclude Include="Core\Memory\Soa\Battle\DerivedBattleBuffer.addr.h" />
+    <ClInclude Include="Core\Memory\Soa\Navigation\NavigationContext.h" />
+    <ClInclude Include="Core\Memory\Soa\Navigation\NavigationContextCodec.h" />
     <ClInclude Include="Core\Memory\Soa\SoaAddr.def.h" />
     <ClInclude Include="Core\Memory\Soa\SoaAddrCatalog.h" />
     <ClInclude Include="Core\Memory\Soa\SoaAddrProgram.h" />
@@ -204,6 +206,8 @@
     <ClInclude Include="Phases\Programs\BattleContext\BattleContextPayload.h" />
     <ClInclude Include="Phases\Programs\BattleContext\BattleContextScript.h" />
     <ClInclude Include="Phases\Programs\NavigationContext\NavigationContextScript.h" />
+    <ClInclude Include="Phases\Programs\NavigationContext\NavigationContextPayload.h" />
+    <ClInclude Include="Phases\Programs\NavigationContext\NavigationContextResult.h" />
     <ClInclude Include="Phases\Programs\BattleMacroProbe\BattleMacroProbePayload.h" />
     <ClInclude Include="Phases\Programs\BattleMacroProbe\BattleMacroProbeScript.h" />
     <ClInclude Include="Phases\Programs\BattleCompletion\BattleCompletionManifest.h" />
@@ -290,6 +294,7 @@
     <ClCompile Include="Core\Input\SoaBattle\BattleCommandCodec.cpp" />
     <ClCompile Include="Core\Input\SoaBattle\PlanWriter.cpp" />
     <ClCompile Include="Core\Memory\Soa\Battle\BattleContextCodec.cpp" />
+    <ClCompile Include="Core\Memory\Soa\Navigation\NavigationContextCodec.cpp" />
     <ClCompile Include="Core\Memory\Soa\SoaAddrCatalog.cpp" />
     <ClCompile Include="Core\Memory\Soa\SoaAddrProgram.cpp" />
     <ClCompile Include="Core\Memory\Soa\SoaAddrProgramBuilder.cpp" />
@@ -301,6 +306,7 @@
     <ClCompile Include="Phases\Programs\BattleCompletion\BattleCompletionPayload.cpp" />
     <ClCompile Include="Phases\Programs\BattleEndResults\BattleEndResultsPayload.cpp" />
     <ClCompile Include="Phases\Programs\BattleEndResults\BattleEndResultsReport.cpp" />
+    <ClCompile Include="Phases\Programs\NavigationContext\NavigationContextPayload.cpp" />
     <ClCompile Include="Phases\Programs\BattleRunner\BattleRunnerPayload.cpp" />
     <ClCompile Include="Phases\Programs\BattleTurnRunner\BattleTurnRunnerPayload.cpp" />
     <ClCompile Include="Phases\Programs\PlayTasMovie\TasMoviePayload.cpp" />
@@ -322,6 +328,7 @@
     <ClCompile Include="Runner\Script\PhaseScriptVMControl.cpp" />
     <ClCompile Include="Runner\Script\PhaseScriptVMInput.cpp" />
     <ClCompile Include="Runner\Script\PhaseScriptVMMacro.cpp" />
+    <ClCompile Include="Runner\Script\PhaseScriptVMNavigation.cpp" />
     <ClCompile Include="Runner\Script\PhaseScriptVMMemory.cpp" />
     <ClCompile Include="Runner\Script\PhaseScriptVMPredicates.cpp" />
     <ClCompile Include="Runner\Script\PSContextCodec.cpp" />

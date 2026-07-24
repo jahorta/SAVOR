@@ -175,6 +175,10 @@ namespace savor {
 		void op_clear_memory_watchpoints() const;
 		bool op_arm_capture_memory_watchpoints(PSResult& result, PSContext& ctx);
 		void op_record_current_bp(PSContext& ctx);
+		bool op_record_current_pc_to(
+			const PSOp& op,
+			PSResult& result,
+			PSContext& ctx) const;
 		void op_record_tas_input_sample(PSContext& ctx);
 		bool op_read_u8(const PSOp& op, PSResult& result, PSContext& ctx);
 		bool op_read_u16(const PSOp& op, PSResult& result, PSContext& ctx);
@@ -184,6 +188,7 @@ namespace savor {
 		bool op_read_f64(const PSOp& op, PSResult& result, PSContext& ctx);
 		bool op_capture_seed_override(PSResult& result, PSContext& ctx);
 		void op_get_battle_context(PSResult& result, PSContext& ctx) const;
+		bool op_get_navigation_context(PSResult& result, PSContext& ctx) const;
 		void op_emit_result(const PSOp& op, PSResult& result, PSContext& ctx) const;
 		bool op_return_result(const PSOp& op, PSResult& result, PSContext& ctx) const;
 		bool op_apply_input_from(const PSOp& op, PSResult& result, PSContext& ctx);

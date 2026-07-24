@@ -17,6 +17,8 @@
 #include "BattleEndResults/BattleEndResultsScript.h"
 #include "BattleCompletion/BattleCompletionPayload.h"
 #include "BattleCompletion/BattleCompletionScript.h"
+#include "NavigationContext/NavigationContextPayload.h"
+#include "NavigationContext/NavigationContextScript.h"
 #include "../../Runner/IPC/Wire.h"
 
 namespace savor::programs {
@@ -33,6 +35,10 @@ namespace savor::programs {
         constexpr const char* kBattleContextBlueprintSection = "BattleContext.Blueprint";
         constexpr const char* kBattleContextResultsSection = "BattleContext.Results";
         constexpr const char* kBattleSingleTurnResultsSection = "BattleSingleTurn.Results";
+        constexpr const char* kNavigationContextBlueprintSection =
+            "NavigationContext.Blueprint";
+        constexpr const char* kNavigationContextResultsSection =
+            "NavigationContext.Results";
     }
 
     PhaseScript build_main_program(uint8_t program_kind)
@@ -58,6 +64,8 @@ namespace savor::programs {
             return phase::battle::endresults::MakeBattleResultsScreenProgram();
         case PK_BattleCompletionRunner:
             return phase::battle::completion::MakeBattleCompletionProgram();
+        case PK_NavigationContextRunner:
+            return phase::navigation::ctx::MakeNavigationContextProgram();
         default:
             return PhaseScript{};
         }
@@ -93,6 +101,8 @@ namespace savor::programs {
             return phase::battle::endresults::decode_payload(payload, out_ctx);
         case PK_BattleCompletionRunner:
             return phase::battle::completion::decode_payload(payload, out_ctx);
+        case PK_NavigationContextRunner:
+            return phase::navigation::ctx::decode_payload(payload, out_ctx);
         default:
             return false;
         }
@@ -124,6 +134,10 @@ namespace savor::programs {
             kBattleRunBlueprintSection,
             kBattleSingleTurnResultsSection
         };
+        static const RetryTuningInfo navigation_context_info{
+            kNavigationContextBlueprintSection,
+            kNavigationContextResultsSection
+        };
 
         switch (program_kind) {
         case PK_SeedProbe: return &seedprobe_info;
@@ -132,6 +146,7 @@ namespace savor::programs {
         case PK_BattleTurnRunner: return &battleturn_info;
         case PK_BattleContextProbe: return &battlecontext_info;
         case PK_BattleSingleTurnRunner: return &battlest_info;
+        case PK_NavigationContextRunner: return &navigation_context_info;
         default: return nullptr;
         }
     }

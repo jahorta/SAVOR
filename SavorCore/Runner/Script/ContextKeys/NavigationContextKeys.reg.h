@@ -8,7 +8,13 @@ namespace savor::context::key::navigation {
 
 #define NAVIGATION_CONTEXT_KEYS(X) \
     X(CTX_BLOB,               0x0700, "navigation.CTX_BLOB") \
-    X(OUTPUT_SAVESTATE_PATH,  0x0701, "navigation.output_savestate_path")
+    X(OUTPUT_SAVESTATE_PATH,  0x0701, "navigation.output_savestate_path") \
+    X(NEUTRAL_INPUT,          0x0702, "navigation.neutral_input") \
+    X(ENTRY_PC,               0x0703, "navigation.entry_pc") \
+    X(OUTCOME,                0x0704, "navigation.outcome") \
+    X(FAILURE,                0x0705, "navigation.failure") \
+    X(DIAGNOSTIC,             0x0706, "navigation.diagnostic") \
+    X(RUN_TIMEOUT_MS,         0x0707, "navigation.run_timeout_ms")
 
 #define DECL_KEY(NAME, ID, STR) \
     inline constexpr savor::context::key::KeyId NAME = static_cast<savor::context::key::KeyId>(ID); \

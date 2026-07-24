@@ -40,6 +40,9 @@
     <Filter Include="Programs\BattleEndResults">
       <UniqueIdentifier>{2c3a9a29-094d-443c-b11b-24f377f866aa}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Programs\NavigationContext">
+      <UniqueIdentifier>{17136C34-BFE1-49BD-ACF5-C9C463E57DDF}</UniqueIdentifier>
+    </Filter>
     <Filter Include="Events">
       <UniqueIdentifier>{eaea1d7f-82da-49fe-bf80-63b3b74e5ba4}</UniqueIdentifier>
     </Filter>
@@ -235,6 +238,12 @@
     <ClInclude Include="Execution\ProgramDB\BattleEndResults\BattleEndResultsPhaseRegistration.h">
       <Filter>Programs\BattleEndResults</Filter>
     </ClInclude>
+    <ClInclude Include="Execution\ProgramDB\NavigationContext\NavigationContextAdapters.h">
+      <Filter>Programs\NavigationContext</Filter>
+    </ClInclude>
+    <ClInclude Include="Execution\ProgramDB\NavigationContext\NavigationContextPhaseRegistration.h">
+      <Filter>Programs\NavigationContext</Filter>
+    </ClInclude>
     <ClInclude Include="UIRead\Projectors\AttachedUiReadProjectionService.h">
       <Filter>UiRead</Filter>
     </ClInclude>
@@ -408,6 +417,12 @@
     <ClCompile Include="Execution\ProgramDB\BattleEndResults\BattleEndResultsPhaseRegistration.cpp">
       <Filter>Programs\BattleEndResults</Filter>
     </ClCompile>
+    <ClCompile Include="Execution\ProgramDB\NavigationContext\NavigationContextAdapters.cpp">
+      <Filter>Programs\NavigationContext</Filter>
+    </ClCompile>
+    <ClCompile Include="Execution\ProgramDB\NavigationContext\NavigationContextPhaseRegistration.cpp">
+      <Filter>Programs\NavigationContext</Filter>
+    </ClCompile>
     <ClCompile Include="UIRead\Projectors\AttachedUiReadProjectionService.cpp">
       <Filter>UiRead</Filter>
     </ClCompile>
@@ -541,6 +556,9 @@
       <Filter>Migrations\Execution</Filter>
     </None>
     <None Include="migration\State\202604051000_state_stage2_schema.sql">
+      <Filter>Migrations\State</Filter>
+    </None>
+    <None Include="migration\State\202607231800_state_derivation_source_context_index.sql">
       <Filter>Migrations\State</Filter>
     </None>
     <None Include="migration\UIRead\202604051000_uiread_stage2_schema.sql">

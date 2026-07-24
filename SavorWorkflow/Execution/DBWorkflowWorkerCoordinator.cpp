@@ -18,6 +18,7 @@
 #include <Windows.h>
 
 #include "Execution/Jobs/JobEventOrchestration.h"
+#include "Execution/Workflow/WorkflowComposition.h"
 #include "Utils/Hash.h"
 #include "Utils/ModulePath.h"
 
@@ -114,11 +115,73 @@ WorkflowSchedulerAdapter::ScheduleFn ResolveWorkflowScheduleFn(
             context.step_key = step.step_key;
             context.step_kind = step.step_kind;
             context.step_priority = step.priority;
+            const auto graph_step = std::find_if(
+                graph->steps.begin(),
+                graph->steps.end(),
+                [&](const auto& candidate) {
+                    return candidate.workflow_step_id
+                        == step.workflow_step_id;
+                });
+            if (graph_step != graph->steps.end()
+                && graph_step->workflow_unit_activation_id.has_value()) {
+                context.workflow_unit_activation_id =
+                    graph_step->workflow_unit_activation_id;
+            }
+
+            const savor::db::execution::workflow::
+                WorkflowUnitActivationRecord* owning_activation = nullptr;
+            if (context.workflow_unit_activation_id.has_value()) {
+                const auto activation = std::find_if(
+                    graph->unit_activations.begin(),
+                    graph->unit_activations.end(),
+                    [&](const auto& candidate) {
+                        return candidate.workflow_unit_activation_id
+                            == *context.workflow_unit_activation_id;
+                    });
+                if (activation != graph->unit_activations.end()) {
+                    owning_activation = &*activation;
+                }
+            }
+            if (owning_activation == nullptr) {
+                const auto activation = std::find_if(
+                    graph->unit_activations.begin(),
+                    graph->unit_activations.end(),
+                    [&](const auto& candidate) {
+                        return candidate.graph_node_key == step.step_key
+                            || candidate.activation_key == step.step_key;
+                    });
+                if (activation != graph->unit_activations.end()) {
+                    owning_activation = &*activation;
+                    context.workflow_unit_activation_id =
+                        activation->workflow_unit_activation_id;
+                }
+            }
+            if (owning_activation != nullptr) {
+                context.activation_key = owning_activation->activation_key;
+                context.activation_graph_node_key =
+                    owning_activation->graph_node_key;
+                context.unit_kind = owning_activation->unit_kind;
+                context.activation_params_json =
+                    owning_activation->activation_params_json;
+                const auto units =
+                    savor::db::execution::workflow::
+                        BuildDefaultWorkflowUnitRegistry();
+                const auto* unit = units.Find(owning_activation->unit_kind);
+                if (unit != nullptr) {
+                    context.unit_variant = unit->unit_variant;
+                    context.breakpoint_profile_key =
+                        unit->breakpoint_profile_key;
+                }
+            }
+            const auto expected_node_key =
+                context.activation_graph_node_key.empty()
+                ? step.step_key
+                : context.activation_graph_node_key;
             if (step.input_ref_id.has_value() && *step.input_ref_id > 0) {
                 if (step.step_kind == "seed_probe_chain" && step.input_ref_kind == "state.savestate") {
                     context.input_bindings.push_back(
                         savor::db::execution::programdb::WorkflowGraphInputBinding{
-                            .node_key = step.step_key,
+                            .node_key = expected_node_key,
                             .input_key = "entry_savestate",
                             .data_kind = "state.savestate_id",
                             .ref_kind = *step.input_ref_kind,
@@ -128,7 +191,7 @@ WorkflowSchedulerAdapter::ScheduleFn ResolveWorkflowScheduleFn(
                 } else if (step.step_kind == "battle_chain" && step.input_ref_kind == "sp_probe_run") {
                     context.input_bindings.push_back(
                         savor::db::execution::programdb::WorkflowGraphInputBinding{
-                            .node_key = step.step_key,
+                            .node_key = expected_node_key,
                             .input_key = "initial_input_frames",
                             .data_kind = "analysis.input_frame_set_id",
                             .ref_kind = *step.input_ref_kind,
@@ -138,7 +201,7 @@ WorkflowSchedulerAdapter::ScheduleFn ResolveWorkflowScheduleFn(
                 }
             }
             for (const auto& binding : graph->input_bindings) {
-                if (binding.node_key != step.step_key) {
+                if (binding.node_key != expected_node_key) {
                     continue;
                 }
                 context.input_bindings.push_back(
@@ -152,7 +215,8 @@ WorkflowSchedulerAdapter::ScheduleFn ResolveWorkflowScheduleFn(
                     });
             }
             for (const auto& argument : graph->arguments) {
-                if (!argument.node_key.empty() && argument.node_key != step.step_key) {
+                if (!argument.node_key.empty()
+                    && argument.node_key != expected_node_key) {
                     continue;
                 }
                 context.arguments.push_back(

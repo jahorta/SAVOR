@@ -49,7 +49,11 @@ savor::db::DbConfigPaths BuildDbPaths(const CliOptions& options) {
         || std::find(
             options.scenarios.begin(),
             options.scenarios.end(),
-            "battle_end_results") != options.scenarios.end();
+            "battle_end_results") != options.scenarios.end()
+        || std::find(
+            options.scenarios.begin(),
+            options.scenarios.end(),
+            "navigation_context") != options.scenarios.end();
 
     std::error_code ec;
     if (!reuse_existing_database && std::filesystem::exists(root)) {

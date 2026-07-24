@@ -47,7 +47,8 @@ ScenarioRequirement GetScenarioRequirement(const std::string_view scenario) {
     if (scenario == "battle_macro_probe") {
         return {.requires_savestate_file = true};
     }
-    if (scenario == "battle_end" || scenario == "battle_end_results") {
+    if (scenario == "battle_end" || scenario == "battle_end_results"
+        || scenario == "navigation_context") {
         return {.requires_source_savestate_id = true};
     }
     if (scenario == "tasmovie_seedprobe") {
@@ -71,7 +72,8 @@ ScenarioRequirement GetScenarioRequirement(const std::string_view scenario) {
 }
 
 bool IsSupportedScenario(const std::string_view scenario) {
-    if (scenario == "all" || scenario == "battle_end" || scenario == "battle_end_results") {
+    if (scenario == "all" || scenario == "battle_end" || scenario == "battle_end_results"
+        || scenario == "navigation_context") {
         return true;
     }
     for (const auto& supported : kAllScenarioOrder) {
@@ -300,7 +302,7 @@ void PrintUsage() {
               << " [--battle-end-seed-selector neutral|seed_value|seed_delta]"
               << " [--battle-end-seed-value <signed delta or u32 seed>]"
               << " [--dtm-file <path>]"
-              << " [--scenario seedprobe|seedprobe_battle|battle|battle_end|battle_end_results|all]"
+              << " [--scenario seedprobe|seedprobe_battle|battle|battle_end|battle_end_results|navigation_context|all]"
               << " [--timeout-ms <100..800000000 - default 30000>]"
               << " [--poll-ms <100..5000 - default 100>]"
               << " [--worker-count <1..30 - default 1>]"
@@ -340,9 +342,10 @@ void PrintUsage() {
     std::cout << "Visual worker locks worker count to 1. battle_macro_probe opens an interactive prompt unless --battle-plan or --battle-macro is supplied.\n";
     std::cout << "Battle macro CLI: use --battle-plan block,attack:5 for a multi-character plan, --battle-fake-attacks N for experimental RNG fake attacks, --battle-fake-attack-sweep to measure fake-attack timing, or --battle-macro attack --battle-macro-target-slot 5 for one command.\n";
     std::cout << "battle_end (battle_end_results alias) reuses the selected workspace databases and requires --source-savestate-id from a successful BattleSingleTurn victory. Seed selection defaults to neutral.\n";
+    std::cout << "navigation_context reuses the selected workspace databases and requires --source-savestate-id for any complete StateDB savestate.\n";
     std::cout << "Categories: result,failure,warning,workflow,materialization,claim,dispatch,supersede,worker,adapter,db,debug\n\n";
     std::cout << "Scenarios: all, seedprobe, tasmovie, seedprobe_battle, battle, "
-              << "battle_macro_probe, battle_end, battle_end_results, "
+              << "battle_macro_probe, battle_end, battle_end_results, navigation_context, "
               << "tasmovie_seedprobe, tasmovie_seedprobe_battle, "
               << "tasmovie_seedprobe_battle_override, tasmovie_battle\n";
     std::cout << "You may pass --scenario multiple times and they will run in order.\n\n";
@@ -625,6 +628,7 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
     bool needs_source_savestate_id = false;
     bool needs_dtm = false;
     std::vector<std::string> savestate_required_scenarios;
+    std::vector<std::string> source_savestate_required_scenarios;
     std::vector<std::string> dtm_required_scenarios;
     std::vector<std::string> placeholder_savestate_required_scenarios;
 
@@ -649,6 +653,9 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
 
         if (req.requires_savestate_file) {
             savestate_required_scenarios.push_back(scenario);
+        }
+        if (req.requires_source_savestate_id) {
+            source_savestate_required_scenarios.push_back(scenario);
         }
         if (req.requires_dtm_file) {
             dtm_required_scenarios.push_back(scenario);
@@ -697,7 +704,10 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
     }
     if (needs_source_savestate_id
         && (!options.source_savestate_id.has_value() || *options.source_savestate_id <= 0)) {
-        if (error_out) *error_out = "--source-savestate-id with a positive BattleSingleTurn victory savestate id is required for battle_end";
+        if (error_out) {
+            *error_out = "--source-savestate-id with a positive StateDB savestate id is required for: "
+                + join(source_savestate_required_scenarios);
+        }
         return false;
     }
     if (options.battle_end_seed_selector != "neutral"

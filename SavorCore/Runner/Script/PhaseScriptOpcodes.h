@@ -40,11 +40,13 @@ enum class PSOpCode : uint8_t {
 #undef SAVOR_PHASE_SCRIPT_OPCODE
     MATERIALIZE_BATTLE_END_RESULTS_MACRO_STEPS =
         MATERIALIZE_BATTLE_RESULTS_SCREEN_MACRO_STEPS,
-    Count = 51,
+    Count = 52,
 };
 
 static_assert(static_cast<uint8_t>(PSOpCode::START_DETERMINISTIC_RUN) == 11);
 static_assert(static_cast<uint8_t>(PSOpCode::GC_SLOT_A_SET_FROM) == 21);
+static_assert(static_cast<uint8_t>(PSOpCode::GET_NAVIGATION_CONTEXT) == 50);
+static_assert(static_cast<uint8_t>(PSOpCode::RECORD_CURRENT_PC_TO) == 51);
 
 struct PSOpMetadata {
     PSOpCode code{};
@@ -175,6 +177,7 @@ inline PSOp OpRunUntilBpKey(BPKey key) { PSOp op; op.code = PSOpCode::RUN_UNTIL_
 inline PSOp OpRunUntilDebugStop() { PSOp op; op.code = PSOpCode::RUN_UNTIL_DEBUG_STOP; return op; }
 inline PSOp OpCaptureSeedOverride() { PSOp op; op.code = PSOpCode::CAPTURE_SEED_OVERRIDE; return op; }
 inline PSOp OpRecordCurrentBp() { PSOp op; op.code = PSOpCode::RECORD_CURRENT_BP; return op; }
+inline PSOp OpRecordCurrentPcTo(savor::context::key::KeyId key) { PSOp op; op.code = PSOpCode::RECORD_CURRENT_PC_TO; op.key.id = key; return op; }
 inline PSOp OpStartDeterministicRun() { PSOp op; op.code = PSOpCode::START_DETERMINISTIC_RUN; return op; }
 inline PSOp OpEndDeterministicRun() { PSOp op; op.code = PSOpCode::END_DETERMINISTIC_RUN; return op; }
 inline PSOp OpRebootCore() { PSOp op; op.code = PSOpCode::REBOOT_CORE; return op; }

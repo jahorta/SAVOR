@@ -126,6 +126,21 @@ std::vector<SavestateDerivationRecord> QueuedStateDb::ListIncomingSavestateDeriv
         {});
 }
 
+std::vector<SavestateDerivationRecord> QueuedStateDb::ListSavestateDerivationsBySourceContext(
+    std::string_view source_context_kind,
+    std::int64_t source_context_id) const {
+    const auto source_context_kind_copy = std::string(source_context_kind);
+    return ExecuteRead<std::vector<SavestateDerivationRecord>>(
+        [this, source_context_kind_copy, source_context_id]() {
+            return inner_ != nullptr
+                ? inner_->ListSavestateDerivationsBySourceContext(
+                    source_context_kind_copy,
+                    source_context_id)
+                : std::vector<SavestateDerivationRecord>{};
+        },
+        {});
+}
+
 bool QueuedStateDb::CreateTasVariant(
     const CreateTasVariantCommand& command,
     std::int64_t* tas_variant_id_out,

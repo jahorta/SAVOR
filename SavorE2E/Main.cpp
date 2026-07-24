@@ -15,6 +15,7 @@
 #include "Common/DbService.h"
 #include "Common/Performance/DbPerfReport.h"
 #include "DbSetup.h"
+#include "NavigationContextScenario.h"
 #include "SeedProbeRealWorkerScenario.h"
 #include "TasMovieRealWorkerScenario.h"
 #include "WorkerCoordinatorPerf.h"
@@ -71,6 +72,7 @@ int main(int argc, char** argv) {
         { "battle_macro_probe", &RunBattleMacroProbeScenario },
         { "battle_end", &RunBattleEndResultsScenario },
         { "battle_end_results", &RunBattleEndResultsScenario },
+        { "navigation_context", &RunNavigationContextScenario },
         { "tasmovie_seedprobe_battle", &RunTasMovieSeedProbeBattleWorkflowGraphRealWorkerScenario },
         { "tasmovie_seedprobe_battle_override", &RunTasMovieSeedProbeBattleOverrideWorkflowGraphRealWorkerScenario },
         { "tasmovie_battle", &RunTasMovieBattleWorkflowGraphRealWorkerScenario },

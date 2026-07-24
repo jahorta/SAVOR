@@ -10,6 +10,10 @@
   X(overworld, RandomEncounter,    503, 0x00000000u, "RandomEncounter",   PlayerVisible, Shared) \
   X(overworld, ReachedGoal,        504, 0x00000000u, "ReachedGoal",       PlayerVisible, Shared)
 
+// Navigation-context capture breakpoints
+#define BP_TABLE_NAVIGATION(X) \
+  X(navigation, NavigationContextInitialPlayerInputReady, 1001, 0x80111770u, "NavigationContextInitialPlayerInputReady", Internal, NavigationContext)
+
 // Pre-battle / RNG probe breakpoints
 #define BP_TABLE_PREBATTLE(X) \
   X(prebattle, BeforeRandSeedSet,  101, 0x80101e48u, "BeforeRandSeedSet", PlayerVisible, Shared) \
@@ -85,4 +89,5 @@
 #define BP_TABLE_ALL(X) \
   BP_TABLE_OVERWORLD(X) \
   BP_TABLE_PREBATTLE(X) \
-  BP_TABLE_BATTLE(X)
+  BP_TABLE_BATTLE(X) \
+  BP_TABLE_NAVIGATION(X)

@@ -82,13 +82,22 @@ TEST(BreakpointRegistry, InternalInputMacroBreakpointsAreConsumerScoped)
     const auto all = bp::BpRegistry::AllRuntime();
     const auto predicate_bps = bp::BpRegistry::ForConsumer(BreakpointConsumer::Predicate);
     const auto macro_bps = bp::BpRegistry::ForConsumer(BreakpointConsumer::InputMacroControl);
+    std::size_t internal_count = 0;
     std::size_t input_macro_count = 0;
+    std::size_t seed_probe_count = 0;
+    std::size_t navigation_count = 0;
     std::size_t battle_end_count = 0;
 
     for (const auto& record : all) {
         const bool internal = record.visibility == BreakpointVisibility::Internal;
         if (internal) {
-            ++input_macro_count;
+            ++internal_count;
+            switch (record.owner) {
+            case BreakpointOwner::InputMacro: ++input_macro_count; break;
+            case BreakpointOwner::SeedProbe: ++seed_probe_count; break;
+            case BreakpointOwner::NavigationContext: ++navigation_count; break;
+            case BreakpointOwner::Shared: FAIL() << "internal breakpoint must have a private owner"; break;
+            }
             if (std::string_view(record.name).rfind("BattleEnd", 0) == 0) {
                 ++battle_end_count;
             }
@@ -110,7 +119,10 @@ TEST(BreakpointRegistry, InternalInputMacroBreakpointsAreConsumerScoped)
         }
     }
 
-    EXPECT_EQ(input_macro_count, 53u);
+    EXPECT_EQ(internal_count, 54u);
+    EXPECT_EQ(input_macro_count, 52u);
+    EXPECT_EQ(seed_probe_count, 1u);
+    EXPECT_EQ(navigation_count, 1u);
     EXPECT_EQ(battle_end_count, 31u);
     EXPECT_EQ(std::count_if(predicate_bps.begin(), predicate_bps.end(), [](const BPAddr& record) {
         return record.visibility == BreakpointVisibility::Internal;
@@ -118,6 +130,24 @@ TEST(BreakpointRegistry, InternalInputMacroBreakpointsAreConsumerScoped)
     EXPECT_EQ(std::count_if(macro_bps.begin(), macro_bps.end(), [](const BPAddr& record) {
         return record.visibility == BreakpointVisibility::Internal;
     }), 52);
+}
+
+TEST(BreakpointRegistry, NavigationContextCaptureBreakpointIsInternalAndPhaseControlOnly)
+{
+    EXPECT_EQ(bp::navigation::NavigationContextInitialPlayerInputReady,
+        static_cast<BPKey>(1001));
+    const auto* record = bp::BpRegistry::FindRuntime(
+        bp::navigation::NavigationContextInitialPlayerInputReady);
+    ASSERT_NE(record, nullptr);
+    EXPECT_EQ(record->pc, 0x80111770u);
+    EXPECT_STREQ(record->name, "NavigationContextInitialPlayerInputReady");
+    EXPECT_EQ(record->visibility, BreakpointVisibility::Internal);
+    EXPECT_EQ(record->owner, BreakpointOwner::NavigationContext);
+    EXPECT_TRUE(bp::BpRegistry::IsAllowed(record->key, BreakpointConsumer::PhaseControl));
+    EXPECT_FALSE(bp::BpRegistry::IsAllowed(record->key, BreakpointConsumer::Predicate));
+    EXPECT_FALSE(bp::BpRegistry::IsAllowed(record->key, BreakpointConsumer::CaptureProfile));
+    EXPECT_FALSE(bp::BpRegistry::IsAllowed(record->key, BreakpointConsumer::UserScript));
+    EXPECT_FALSE(bp::BpRegistry::IsAllowed(record->key, BreakpointConsumer::InputMacroControl));
 }
 
 TEST(BreakpointRegistry, InternalAndPlayerVisibleBreakpointsDoNotSharePcs)

@@ -21,6 +21,7 @@ enum class BreakpointOwner : uint8_t {
     Shared,
     InputMacro,
     SeedProbe,
+    NavigationContext,
 };
 
 enum class BreakpointConsumer : uint8_t {
@@ -60,13 +61,20 @@ struct BreakpointMap
 // Central, X-macro driven dataset
 namespace bp {
 
-    enum class BPDomain : uint8_t { PreBattle = 0, Battle = 1, Overworld = 2, Unknown = 255 };
+    enum class BPDomain : uint8_t {
+        PreBattle = 0,
+        Battle = 1,
+        Overworld = 2,
+        Navigation = 3,
+        Unknown = 255,
+    };
 
     // If you rely on numeric ranges, keep this; otherwise you can drop it later.
     inline constexpr BPDomain domain_of(BPKey k) {
         if (k < 200) return BPDomain::PreBattle;
         if (k < 500) return BPDomain::Battle;
         if (k >= 500 && k < 1000) return BPDomain::Overworld;
+        if (k >= 1000 && k < 1100) return BPDomain::Navigation;
         return BPDomain::Unknown;
     }
 
@@ -106,5 +114,11 @@ namespace bp::battle {
 namespace bp::overworld {
 #define ALIAS_ROW(ns, NAME, ID, PC, STR, VISIBILITY, OWNER) inline constexpr BPKey NAME = static_cast<BPKey>(ID);
     BP_TABLE_OVERWORLD(ALIAS_ROW)
+#undef ALIAS_ROW
+}
+
+namespace bp::navigation {
+#define ALIAS_ROW(ns, NAME, ID, PC, STR, VISIBILITY, OWNER) inline constexpr BPKey NAME = static_cast<BPKey>(ID);
+    BP_TABLE_NAVIGATION(ALIAS_ROW)
 #undef ALIAS_ROW
 }

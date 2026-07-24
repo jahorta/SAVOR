@@ -313,6 +313,29 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
 
     (void)registry.RegisterUnit(
         WorkflowUnitDefinition{
+            .unit_kind = "navigation.context_probe",
+            .display_name = "Navigation Context Probe",
+            .description = "Captures the initial on-foot navigation context and a matching savestate.",
+            .hidden = true,
+            .unit_variant = "navigation",
+            .breakpoint_profile_key = "navigation.context_probe",
+            .default_activation_params_json = "{}",
+            .required_inputs = {
+                Port("entry_savestate", "state.savestate_id", "Entry savestate"),
+            },
+            .possible_outputs = {
+                Port(
+                    "navigation_context",
+                    "state_artifact.navigation_context_id",
+                    "Navigation context"),
+            },
+            .internal_step_kinds = { "navigation.context_probe" },
+            .step_templates = SingleStep("navigation.context_probe"),
+        },
+        &ignored);
+
+    (void)registry.RegisterUnit(
+        WorkflowUnitDefinition{
             .unit_kind = "overworld_explorer",
             .display_name = "Overworld Explorer",
             .description = "Placeholder contract for future overworld traversal from a terminal savestate.",

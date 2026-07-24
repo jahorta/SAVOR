@@ -133,6 +133,10 @@ struct IStateDb {
     virtual std::vector<SavestateDerivationRecord> ListIncomingSavestateDerivations(
         std::int64_t to_savestate_id) const = 0;
 
+    virtual std::vector<SavestateDerivationRecord> ListSavestateDerivationsBySourceContext(
+        std::string_view source_context_kind,
+        std::int64_t source_context_id) const = 0;
+
     virtual bool CreateTasVariant(
         const CreateTasVariantCommand& command,
         std::int64_t* tas_variant_id_out = nullptr,
