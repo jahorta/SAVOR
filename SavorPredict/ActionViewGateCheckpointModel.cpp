@@ -258,13 +258,6 @@ std::optional<unsigned int> parse_first_field_u32(
     return std::nullopt;
 }
 
-bool instruction_flags_bit6_set(std::optional<unsigned int> flags) {
-    if (!flags.has_value()) {
-        return false;
-    }
-    return (*flags & 0x02000000u) != 0;
-}
-
 std::string aux_row_field_name(int row, const char* suffix) {
     std::ostringstream out;
     out << "aux_row" << std::setw(2) << std::setfill('0') << row << "_" << suffix;
@@ -354,7 +347,10 @@ std::optional<ActionViewSelectorInput> selector_input_from_gate_event(
     input.current_secondary_slot = static_cast<std::int16_t>(event.target_slot.value_or(-1));
     input.previous_actor_slot_0x2 = static_cast<std::int16_t>(
         event.gate_active_slot_0x02.value_or(input.current_actor_slot));
-    input.instruction_flags_bit6_set = instruction_flags_bit6_set(event.instruction_flags_0xf0);
+    input.actor_instruction_flags_0xf0 = event.instruction_flags_0xf0;
+    if (input.previous_actor_slot_0x2 == input.current_actor_slot) {
+        input.actor_lookup_8001d41c_nonzero = false;
+    }
     return input;
 }
 

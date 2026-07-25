@@ -858,6 +858,7 @@ TEST(SavorPredictBattleMovementInvocationRuntime, ResolutionOverrideClearsMaskBe
     ASSERT_TRUE(runtime.has_value());
     const auto scheduled = schedule_fallback_action(*runtime, 0, 4);
     ASSERT_TRUE(scheduled.scheduled);
+    runtime->visual.action_view_role.valid = false;
     std::uint32_t rng = 0x66778899u;
     ASSERT_TRUE(run_first_turn_until_idle(*runtime, rng, 64).ok);
     ASSERT_TRUE(runtime->active_action.has_value());

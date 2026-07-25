@@ -65,6 +65,11 @@ enum class ActionMotionInvocationRowSource {
     LookedUpActionRow,
 };
 
+enum class ActionMotionAuxiliaryChildKind {
+    None,
+    ActionViewRoleFlag_80019B70,
+};
+
 struct ActionMotionRowResolverRequest {
     std::int16_t requested_mode = -1;
     std::optional<std::int16_t> secondary_key;
@@ -126,6 +131,8 @@ struct ActionMotionInvocationResult {
     int state8_delay_remaining = -1;
     bool auxiliary_publication_requested = false;
     bool entered_state10_via_fallthrough = false;
+    ActionMotionAuxiliaryChildKind auxiliary_child =
+        ActionMotionAuxiliaryChildKind::None;
     std::string resolver_callsite;
     std::string operation_callsite;
     std::string provenance;

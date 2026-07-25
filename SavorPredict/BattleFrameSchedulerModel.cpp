@@ -2,6 +2,7 @@
 
 #include "ActionMotionTargetModel.h"
 #include "ActionViewPathingTailModel.h"
+#include "ActionViewSelectorModel.h"
 #include "CombatantInstructionModeModel.h"
 #include "EffectRngModel.h"
 #include "RngCore.h"
@@ -17,6 +18,9 @@
 
 namespace savor::predict {
 namespace {
+
+constexpr std::uint32_t kActionViewMode11InstructionGate = 0x02000000u;
+constexpr std::uint32_t kActionViewRoleReversalFlag = 0x00000004u;
 
 bool has_active_thread_for_slot(
     const BattleFrameRuntime& runtime,
@@ -188,6 +192,38 @@ BattleFrameEventStatus frame_event_status(BattleCollisionModelStatus status) {
         return BattleFrameEventStatus::Unsupported;
     }
     return BattleFrameEventStatus::Unsupported;
+}
+
+BattleFrameEventStatus frame_event_status(ActionViewMode11Status status) {
+    switch (status) {
+    case ActionViewMode11Status::Matched:
+        return BattleFrameEventStatus::Matched;
+    case ActionViewMode11Status::Provisional:
+        return BattleFrameEventStatus::Provisional;
+    }
+    return BattleFrameEventStatus::Provisional;
+}
+
+BattleFrameEventStatus frame_event_status(ActionViewRoleStatus status) {
+    switch (status) {
+    case ActionViewRoleStatus::Matched:
+        return BattleFrameEventStatus::Matched;
+    case ActionViewRoleStatus::Provisional:
+        return BattleFrameEventStatus::Provisional;
+    case ActionViewRoleStatus::MissingInput:
+        return BattleFrameEventStatus::MissingInput;
+    }
+    return BattleFrameEventStatus::MissingInput;
+}
+
+BattleFrameEventStatus frame_event_status(ActionViewSelectorStatus status) {
+    switch (status) {
+    case ActionViewSelectorStatus::Matched:
+        return BattleFrameEventStatus::Matched;
+    case ActionViewSelectorStatus::MissingInput:
+        return BattleFrameEventStatus::MissingInput;
+    }
+    return BattleFrameEventStatus::MissingInput;
 }
 
 CombatantInstructionActionKind instruction_action_kind(
@@ -1700,6 +1736,9 @@ bool has_active_combatant_instruction(const BattleFrameRuntime& runtime) {
 bool is_visual_step_kind(BattleFrameWorkerStepKind kind) {
     switch (kind) {
     case BattleFrameWorkerStepKind::VisualControllerVisit:
+    case BattleFrameWorkerStepKind::ActionViewRoleResolve:
+    case BattleFrameWorkerStepKind::ActionViewRoleFlagSpawn:
+    case BattleFrameWorkerStepKind::ActionViewRoleFlagVisit:
     case BattleFrameWorkerStepKind::VisualInstructionDecision:
     case BattleFrameWorkerStepKind::VisualInstructionStatePublish:
     case BattleFrameWorkerStepKind::TargetReactionPublish:
@@ -1725,6 +1764,11 @@ bool is_visual_step_kind(BattleFrameWorkerStepKind kind) {
     case BattleFrameWorkerStepKind::VisualMode0Rewrite:
     case BattleFrameWorkerStepKind::VisualMode0eCamera:
     case BattleFrameWorkerStepKind::VisualMode1Pathing:
+    case BattleFrameWorkerStepKind::VisualMode11Setup:
+    case BattleFrameWorkerStepKind::VisualMode11Advance:
+    case BattleFrameWorkerStepKind::VisualInstructionGate:
+    case BattleFrameWorkerStepKind::VisualActiveRecordReplace:
+    case BattleFrameWorkerStepKind::VisualReplacementState:
     case BattleFrameWorkerStepKind::VisualUnsupportedWait:
         return true;
     default:
@@ -2177,12 +2221,45 @@ int enqueue_synthetic_action_view_child(
     task.publication_visit_cursor = runtime.visual.current_visit_cursor;
     task.participates_in_action_barrier = false;
     task.synthetic = true;
-    task.maximum_visits = 2;
+    task.maximum_visits = mode == 0x11 ? 256 : 2;
     task.payload_mode = mode;
     task.effective_mode = mode;
     task.status = CombatantVisualModelStatus::Provisional;
     task.provenance = std::move(provenance);
     const int sequence = task.sequence;
+    if (!runtime.persistent_action_view_controller_node_id.has_value()) {
+        task.complete = true;
+        runtime.warnings.push_back(
+            "synthetic action-view publication has no persistent controller thread");
+    } else {
+        const auto created = create_battle_frame_thread(
+            runtime.thread_list,
+            BattleFrameThreadCreateRequest{
+                .kind = BattleFrameThreadNodeKind::AuxiliaryVisualChild,
+                .owner_slot = origin_slot,
+                .semantic_instance_id =
+                    static_cast<std::uint64_t>(sequence),
+                .callback =
+                    BattleFrameThreadCallbackIdentity::VisualSystemCamera,
+                .active = true,
+                .insertion =
+                    BattleFrameThreadInsertionKind::AfterCurrentCursor,
+                .parent_node_id =
+                    runtime.persistent_action_view_controller_node_id,
+                .semantic_source_id =
+                    "battle.action_view.synthetic_record",
+                .provenance = task.provenance,
+                .frame_index = runtime.state.frame_index,
+            });
+        if (created.status == BattleFrameThreadMutationStatus::Applied) {
+            task.thread_node_id = created.node_id;
+        } else {
+            task.complete = true;
+            runtime.warnings.push_back(
+                "synthetic action-view child thread creation failed: "
+                + created.detail);
+        }
+    }
     runtime.visual.child_tasks.push_back(std::move(task));
     return sequence;
 }
@@ -2191,7 +2268,18 @@ bool has_active_visual_task(const BattleFrameRuntime& runtime) {
     const bool active_child = std::any_of(
         runtime.visual.child_tasks.begin(),
         runtime.visual.child_tasks.end(),
-        [](const BattleFrameVisualChildTask& task) { return !task.complete; });
+        [](const BattleFrameVisualChildTask& task) {
+            if (task.complete) {
+                return false;
+            }
+            const bool dormant_mode11 =
+                task.kind == BattleFrameVisualChildKind::ActionViewRecord
+                && task.payload_mode == 0x11
+                && task.mode11_gate_cleared
+                && !task.active_record_replacement_pending
+                && !task.active_record_state_fa;
+            return !dormant_mode11;
+        });
     if (active_child) {
         return true;
     }
@@ -2263,35 +2351,125 @@ void flush_pending_visual_events(
     runtime.visual.pending_events.clear();
 }
 
+BattleFrameVisualChildTask* find_visual_child_task(
+    BattleFrameRuntime& runtime,
+    int sequence);
+
 void visit_persistent_action_view_controller(
     BattleFrameRuntime& runtime,
     BattleFrameRunResult& result,
     std::uint32_t& rng_state) {
-    if (!runtime.active_action.has_value()) {
+    auto& role_runtime = runtime.visual.action_view_role;
+    if (!role_runtime.valid) {
         return;
     }
-    const auto& action = *runtime.active_action;
-    if (action.phase == BattleFrameActionPhase::Complete) {
-        return;
-    }
-    if (action.actor_slot < 0
-        || action.actor_slot >= static_cast<int>(runtime.visual.timelines.size())) {
-        return;
-    }
-    const auto* resource = visual_resource_for(runtime, action.actor_slot);
+
     auto& controller = runtime.visual.controller;
+    const auto* queued_target = find_frame_combatant(
+        runtime.state, role_runtime.queued_target_slot);
+    const auto roles = resolve_action_view_roles_8001d41c({
+        .acting_actor_slot = role_runtime.acting_actor_slot,
+        .queued_target_slot = role_runtime.queued_target_slot,
+        .target_instruction_flags_0xf0 =
+            queued_target != nullptr
+                ? std::optional<std::uint32_t>{
+                    queued_target->instruction_flags_0xf0}
+                : std::nullopt,
+        .target_present =
+            queued_target != nullptr
+                ? std::optional<bool>{queued_target->present}
+                : std::nullopt,
+    });
+    role_runtime.status = roles.status;
+    role_runtime.provenance = roles.provenance;
+
+    auto role_event = make_visual_event(
+        runtime,
+        nullptr,
+        BattleFrameWorkerStepKind::ActionViewRoleResolve,
+        "FUN_8001D41C",
+        frame_event_status(roles.status),
+        "acting_actor=" + std::to_string(role_runtime.acting_actor_slot)
+            + "; queued_target="
+            + std::to_string(role_runtime.queued_target_slot)
+            + "; target_f0="
+            + (queued_target != nullptr
+                ? std::to_string(queued_target->instruction_flags_0xf0)
+                : std::string("missing"))
+            + "; role_mask=0x00000004; reversed="
+            + std::to_string(roles.reversed ? 1 : 0)
+            + "; role_revision=" + std::to_string(role_runtime.revision)
+            + "; provenance=" + roles.provenance);
+    role_event.action_ordinal = role_runtime.action_ordinal;
+    role_event.slot = roles.actor_slot;
+    role_event.target_slot = roles.secondary_slot;
+    append_recorded_event(runtime, result, std::move(role_event));
+    if (roles.status == ActionViewRoleStatus::MissingInput) {
+        return;
+    }
+
+    const int actor_slot = roles.actor_slot;
+    const int secondary_slot = roles.secondary_slot;
+    auto* actor = find_frame_combatant(runtime.state, actor_slot);
+    const bool initial_instruction_visit_pending =
+        actor != nullptr
+        && actor->present
+        && actor->visual_instruction_knowledge
+            == CombatantVisualInstructionKnowledge::Unknown
+        && actor_slot >= 0
+        && actor_slot < static_cast<int>(
+            runtime.visual.persistent_instruction_callbacks.size())
+        && runtime.visual.persistent_instruction_callbacks[
+                static_cast<std::size_t>(actor_slot)]
+                .thread_state_0x19 == 0
+        && std::any_of(
+            runtime.thread_list.nodes.begin(),
+            runtime.thread_list.nodes.end(),
+            [actor_slot](const BattleFrameThreadNode& node) {
+                return node.active
+                    && node.kind
+                        == BattleFrameThreadNodeKind::CombatantInstruction
+                    && node.owner_slot == actor_slot;
+            });
+    if (actor == nullptr || !actor->present
+        || actor->visual_instruction_knowledge
+            == CombatantVisualInstructionKnowledge::Unknown) {
+        auto event = make_visual_event(
+            runtime,
+            nullptr,
+            BattleFrameWorkerStepKind::VisualControllerVisit,
+            "FUN_80012F58",
+            initial_instruction_visit_pending
+                ? BattleFrameEventStatus::Skipped
+                : BattleFrameEventStatus::MissingInput,
+            initial_instruction_visit_pending
+                ? "persistent action-view selector deferred because the "
+                  "actor's state-0 combatant-instruction producer has not "
+                  "reached its first thread visit"
+                : "persistent action-view selector requires the current actor "
+                  "worksheet mode, subtype, and F0; visual resource is not "
+                  "required until category dispatch");
+        event.action_ordinal = role_runtime.action_ordinal;
+        event.slot = actor_slot;
+        event.target_slot = secondary_slot;
+        append_recorded_event(runtime, result, std::move(event));
+        return;
+    }
+
+    const auto* resource = visual_resource_for(runtime, actor_slot);
     if (resource != nullptr
         && std::find(
             controller.direct_view_action_ordinals.begin(),
             controller.direct_view_action_ordinals.end(),
-            action.action_ordinal) == controller.direct_view_action_ordinals.end()) {
+            role_runtime.action_ordinal)
+            == controller.direct_view_action_ordinals.end()) {
         BattleFrameWorker placement = make_worker(
             runtime.state,
-            action.actor_slot,
-            action.target_slot,
+            actor_slot,
+            secondary_slot,
             BattleFrameWorkerKind::ActionView,
             MovementSelectedWorker::None);
-        placement.queue_sequence = action.action_ordinal;
+        placement.queue_sequence = role_runtime.action_ordinal;
         placement.view_placement_publisher_source_id =
             ViewPlacementCacheSemanticSource::DirectViewPublication;
         placement.view_placement_provenance =
@@ -2303,60 +2481,168 @@ void visit_persistent_action_view_controller(
             "FUN_800136DC/FUN_80014474",
             BattleFrameEventStatus::Provisional,
             "controller-owned direct-view placement request; action_ordinal="
-                + std::to_string(action.action_ordinal));
-        placement_event.action_ordinal = action.action_ordinal;
-        placement_event.slot = action.actor_slot;
-        placement_event.target_slot = action.target_slot;
+                + std::to_string(role_runtime.action_ordinal));
+        placement_event.action_ordinal = role_runtime.action_ordinal;
+        placement_event.slot = actor_slot;
+        placement_event.target_slot = secondary_slot;
         apply_view_placement_worker(runtime, placement_event, placement, rng_state);
         append_recorded_event(runtime, result, std::move(placement_event));
-        controller.direct_view_action_ordinals.push_back(action.action_ordinal);
-    }
-    const auto& timeline = runtime.visual.timelines[static_cast<std::size_t>(action.actor_slot)];
-    if (!timeline.installed || resource == nullptr || resource->records.empty()) {
-        return;
-    }
-    const auto& persistent_callback =
-        runtime.visual.persistent_instruction_callbacks[
-            static_cast<std::size_t>(action.actor_slot)];
-    if (persistent_callback.installed
-        && persistent_callback.callback_family
-            == ActionMotionPersistentCallbackFamily::
-                ActionMotionBasic_8001B1B0) {
-        // This callback's action-view children are owned by
-        // FUN_8001B1B0 state 10. Running the provisional selector publisher
-        // here would create a second child before the authoritative boundary.
-        return;
+        controller.direct_view_action_ordinals.push_back(
+            role_runtime.action_ordinal);
     }
 
-    const auto key = resolve_combatant_visual_action_key(timeline.instruction);
-    if (!key.action_key.has_value()) {
-        return;
-    }
     ActionViewSelectorInput input;
-    input.instruction_field6_0x6 = *key.action_key;
-    input.instruction_field8_0x8 = timeline.instruction.subtype.value_or(-1);
+    input.instruction_field6_0x6 = actor->visual_instruction_mode_0x6;
+    input.instruction_field8_0x8 = actor->visual_instruction_subtype_0x8;
     input.previous_effective_mode_0x2f = controller.effective_mode_0x2f;
     input.previous_selector_state_0x30 = controller.selector_state_0x30;
     input.previous_actor_slot_0x2 = controller.actor_slot_0x2;
-    input.current_actor_slot = static_cast<std::int16_t>(action.actor_slot);
-    input.current_secondary_slot = static_cast<std::int16_t>(action.target_slot);
-    input.instruction_flags_bit6_set =
-        timeline.instruction.instruction_flags.value_or(0) & 0x40U;
-    input.selected_aux_table = combatant_visual_selector_table(*resource);
+    input.current_actor_slot = static_cast<std::int16_t>(actor_slot);
+    input.current_secondary_slot = static_cast<std::int16_t>(secondary_slot);
+    input.actor_lookup_8001d41c_nonzero = roles.reversed;
+    input.actor_instruction_flags_0xf0 = actor->instruction_flags_0xf0;
+    if (resource != nullptr && !resource->records.empty()) {
+        input.selected_aux_table =
+            combatant_visual_selector_table(*resource);
+    }
 
     const auto selected = select_action_view_mode(input);
     controller.initialized = true;
-    controller.effective_mode_0x2f = selected.dispatch_effective_mode_0x2f;
+    ++controller.visit_revision;
+    int latest_task_sequence = -1;
+    for (const auto& operation : selected.operations) {
+        switch (operation.kind) {
+        case ActionViewSelectorOperationKind::WriteRole:
+            controller.actor_slot_0x2 = operation.actor_slot;
+            controller.target_slot_0x4 = operation.secondary_slot;
+            break;
+        case ActionViewSelectorOperationKind::WriteEffectiveMode:
+            if (operation.effective_mode.has_value()) {
+                controller.effective_mode_0x2f =
+                    *operation.effective_mode;
+            }
+            break;
+        case ActionViewSelectorOperationKind::PublishSyntheticRecord: {
+            if (!operation.record_mode.has_value()) {
+                break;
+            }
+            const auto publication_revision =
+                ++controller.publication_revision;
+            latest_task_sequence = enqueue_synthetic_action_view_child(
+                runtime,
+                role_runtime.action_ordinal,
+                operation.actor_slot,
+                operation.secondary_slot,
+                publication_revision,
+                *operation.record_mode,
+                "SpawnSyntheticActionViewRecord_80053F38; "
+                "controller_publication_revision="
+                    + std::to_string(publication_revision)
+                    + "; selector_visit_revision="
+                    + std::to_string(controller.visit_revision)
+                    + "; operation=" + operation.role);
+            auto* task = find_visual_child_task(
+                runtime, latest_task_sequence);
+            if (task == nullptr) {
+                break;
+            }
+            auto publication_event = make_visual_event(
+                runtime,
+                task,
+                BattleFrameWorkerStepKind::VisualCommandPublish,
+                "SpawnSyntheticActionViewRecord_80053F38",
+                frame_event_status(selected.status),
+                "synthetic action-view record publication; "
+                "controller_publication_revision="
+                    + std::to_string(publication_revision)
+                    + "; selector_visit_revision="
+                    + std::to_string(controller.visit_revision)
+                    + "; publication_cursor="
+                    + std::to_string(runtime.visual.current_visit_cursor)
+                    + "; thread_node_id="
+                    + std::to_string(task->thread_node_id)
+                    + "; inserted_after_persistent_controller=1"
+                    + "; same_frame_child_eligible=1");
+            publication_event.action_ordinal =
+                role_runtime.action_ordinal;
+            publication_event.slot = operation.actor_slot;
+            publication_event.target_slot = operation.secondary_slot;
+            publication_event.visual_epoch = publication_revision;
+            append_recorded_event(
+                runtime, result, std::move(publication_event));
+            break;
+        }
+        case ActionViewSelectorOperationKind::SetMode11Gate: {
+            auto* task = find_visual_child_task(
+                runtime, latest_task_sequence);
+            if (task == nullptr || task->payload_mode != 0x11) {
+                runtime.warnings.push_back(
+                    "ordered selector could not associate the mode-11 gate "
+                    "write with its immediately preceding publication");
+                break;
+            }
+            const auto flags_before = actor->instruction_flags_0xf0;
+            actor->instruction_flags_0xf0 |=
+                kActionViewMode11InstructionGate;
+            task->mode11_gate_owned = true;
+            auto gate_event = make_visual_event(
+                runtime,
+                task,
+                BattleFrameWorkerStepKind::VisualInstructionGate,
+                "SpawnSyntheticActionViewRecord_80053F38",
+                BattleFrameEventStatus::Matched,
+                "mode-0x11 publication synchronously set IW+0xF0 gate "
+                "0x02000000 before the same selector invocation reloaded it");
+            gate_event.action_ordinal = role_runtime.action_ordinal;
+            gate_event.slot = actor_slot;
+            gate_event.target_slot = secondary_slot;
+            std::ostringstream gate_detail;
+            gate_detail << gate_event.detail
+                        << "; flags_before=0x" << std::hex
+                        << std::setw(8) << std::setfill('0')
+                        << flags_before
+                        << "; flags_after=0x" << std::setw(8)
+                        << actor->instruction_flags_0xf0
+                        << std::dec
+                        << "; controller_publication_revision="
+                        << controller.publication_revision;
+            gate_event.detail = gate_detail.str();
+            append_recorded_event(
+                runtime, result, std::move(gate_event));
+            break;
+        }
+        case ActionViewSelectorOperationKind::GateRecheck:
+            break;
+        case ActionViewSelectorOperationKind::WriteSelectorState:
+            controller.selector_state_0x30 =
+                operation.selector_state_after;
+            break;
+        case ActionViewSelectorOperationKind::DispatchHelper:
+            break;
+        }
+    }
+    controller.effective_mode_0x2f =
+        selected.dispatch_effective_mode_0x2f;
     controller.selector_state_0x30 = selected.selector_state_0x30;
-    controller.actor_slot_0x2 = static_cast<std::int16_t>(action.actor_slot);
-    controller.target_slot_0x4 = static_cast<std::int16_t>(action.target_slot);
+    controller.actor_slot_0x2 = static_cast<std::int16_t>(actor_slot);
+    controller.target_slot_0x4 =
+        static_cast<std::int16_t>(secondary_slot);
 
     std::ostringstream detail;
     detail << "persistent_selector=FUN_80012F58"
            << "; requested_mode=" << static_cast<int>(selected.requested_mode)
            << "; effective_mode=" << static_cast<int>(selected.dispatch_effective_mode_0x2f)
            << "; selector_state=" << selected.selector_state_0x30
-           << "; instruction_epoch=" << timeline.epoch
+           << "; actor_f0=0x" << std::hex << std::setw(8)
+           << std::setfill('0') << actor->instruction_flags_0xf0
+           << std::dec
+           << "; instruction_revision="
+           << actor->visual_instruction_revision
+           << "; selector_visit_revision="
+           << controller.visit_revision
+           << "; publication_revision="
+           << controller.publication_revision
+           << "; ordered_operations=" << selected.operations.size()
            << "; direct_view_requests_not_duplicated=1";
     if (selected.mode0e_count.has_value()) {
         detail << "; mode0e_count=" << selected.mode0e_count->count;
@@ -2366,62 +2652,216 @@ void visit_persistent_action_view_controller(
         nullptr,
         BattleFrameWorkerStepKind::VisualControllerVisit,
         "FUN_800136DC/FUN_80012F58",
-        selected.unsupported_without_aux_table
-            ? BattleFrameEventStatus::MissingInput
-            : BattleFrameEventStatus::Provisional,
+        frame_event_status(selected.status),
         detail.str());
-    event.action_ordinal = action.action_ordinal;
-    event.slot = action.actor_slot;
-    event.target_slot = action.target_slot;
-    event.visual_resource = resource->binding.resource_stem;
-    event.visual_epoch = timeline.epoch;
+    event.action_ordinal = role_runtime.action_ordinal;
+    event.slot = actor_slot;
+    event.target_slot = secondary_slot;
+    if (resource != nullptr) {
+        event.visual_resource = resource->binding.resource_stem;
+    }
+    event.visual_epoch = controller.publication_revision;
+    append_recorded_event(runtime, result, std::move(event));
+}
+
+BattleFrameActionViewRoleFlagChildRuntime* find_role_flag_child(
+    BattleFrameRuntime& runtime,
+    int thread_node_id) {
+    const auto found = std::find_if(
+        runtime.visual.role_flag_children.begin(),
+        runtime.visual.role_flag_children.end(),
+        [thread_node_id](
+            const BattleFrameActionViewRoleFlagChildRuntime& child) {
+            return child.thread_node_id == thread_node_id;
+        });
+    return found == runtime.visual.role_flag_children.end()
+        ? nullptr
+        : &*found;
+}
+
+bool spawn_action_view_role_flag_child(
+    BattleFrameRuntime& runtime,
+    BattleFrameRunResult& result,
+    int action_ordinal,
+    int slot) {
+    const bool already_active = std::any_of(
+        runtime.visual.role_flag_children.begin(),
+        runtime.visual.role_flag_children.end(),
+        [action_ordinal, slot](
+            const BattleFrameActionViewRoleFlagChildRuntime& child) {
+            return !child.complete
+                && child.action_ordinal == action_ordinal
+                && child.slot == slot;
+        });
+    if (already_active) {
+        return true;
+    }
+    if (!runtime.thread_list.current_node_id.has_value()) {
+        return false;
+    }
+
+    BattleFrameActionViewRoleFlagChildRuntime child;
+    child.sequence = runtime.visual.next_role_flag_child_sequence++;
+    child.parent_thread_node_id =
+        *runtime.thread_list.current_node_id;
+    child.action_ordinal = action_ordinal;
+    child.slot = slot;
+    child.status = ActionViewRoleStatus::Matched;
+    child.provenance =
+        "FUN_80019D7C state 0 created FUN_80019B70 with the fixed "
+        "comparison-mode payload 0x0B -> 5";
+    const auto created = create_battle_frame_thread(
+        runtime.thread_list,
+        BattleFrameThreadCreateRequest{
+            .kind =
+                BattleFrameThreadNodeKind::InstructionAuxiliaryChild,
+            .owner_slot = slot,
+            .semantic_instance_id =
+                static_cast<std::uint64_t>(child.sequence),
+            .callback =
+                BattleFrameThreadCallbackIdentity::ActionViewRoleFlag,
+            .active = true,
+            .insertion =
+                BattleFrameThreadInsertionKind::AfterCurrentCursor,
+            .parent_node_id = child.parent_thread_node_id,
+            .semantic_source_id =
+                "battle.action_view.role_flag_child",
+            .provenance = child.provenance,
+            .frame_index = runtime.state.frame_index,
+        });
+    if (created.status != BattleFrameThreadMutationStatus::Applied) {
+        runtime.warnings.push_back(
+            "FUN_80019B70 role-flag child creation failed: "
+            + created.detail);
+        return false;
+    }
+    child.thread_node_id = created.node_id;
+    runtime.visual.role_flag_children.push_back(child);
+
+    auto event = make_visual_event(
+        runtime,
+        nullptr,
+        BattleFrameWorkerStepKind::ActionViewRoleFlagSpawn,
+        "FUN_80019D7C/mkChildMenu_802268E8",
+        BattleFrameEventStatus::Matched,
+        child.provenance
+            + "; child_sequence=" + std::to_string(child.sequence)
+            + "; thread_node_id=" + std::to_string(child.thread_node_id)
+            + "; parent_thread_node_id="
+            + std::to_string(child.parent_thread_node_id)
+            + "; insertion=after_current_cursor; draws=0");
+    event.action_ordinal = action_ordinal;
+    event.slot = slot;
+    append_recorded_event(runtime, result, std::move(event));
+    return true;
+}
+
+void advance_action_view_role_flag_child(
+    BattleFrameRuntime& runtime,
+    BattleFrameRunResult& result,
+    int thread_node_id) {
+    auto* child = find_role_flag_child(runtime, thread_node_id);
+    if (child == nullptr || child->complete) {
+        return;
+    }
+    auto* combatant = find_frame_combatant(runtime.state, child->slot);
+    if (combatant == nullptr || !combatant->present) {
+        child->complete = true;
+        child->state.role_flag_owned = false;
+        child->state.phase = ActionViewRoleFlagProducerPhase::Complete;
+        child->status = ActionViewRoleStatus::Matched;
+        child->provenance =
+            "combatant removal terminated the role-flag child";
+    } else {
+        std::optional<std::uint8_t> turn_phase;
+        if (runtime.active_action.has_value()
+            && runtime.active_action->action_ordinal
+                == child->action_ordinal) {
+            turn_phase =
+                runtime.active_action->completion_turn_phase;
+        } else if (runtime.active_action.has_value()
+            && runtime.active_action->action_ordinal
+                > child->action_ordinal) {
+            turn_phase = 5;
+        }
+        const auto visited =
+            visit_action_view_role_flag_producer_80019b70({
+                .state = child->state,
+                .instruction_mode_0x6 =
+                    combatant->visual_instruction_knowledge
+                            != CombatantVisualInstructionKnowledge::Unknown
+                        ? std::optional<std::int16_t>{
+                            combatant->visual_instruction_mode_0x6}
+                        : std::nullopt,
+                .turn_phase = turn_phase,
+                .override_view_thread_present = std::nullopt,
+            });
+        bool transition_applied = true;
+        if (visited.requested_instruction_mode.has_value()) {
+            transition_applied =
+                stage_battle_frame_validated_instruction_transition(
+                    runtime,
+                    child->action_ordinal,
+                    child->slot,
+                    combatant->instruction_target_slot_0x4,
+                    *visited.requested_instruction_mode,
+                    visited.provenance,
+                    -1);
+        }
+        if (transition_applied) {
+            child->state = visited.state;
+            child->status = visited.status;
+            child->complete = visited.complete;
+            child->provenance = visited.provenance;
+            if (visited.set_role_flag) {
+                combatant->instruction_flags_0xf0 |=
+                    kActionViewRoleReversalFlag;
+            }
+            if (visited.clear_role_flag) {
+                combatant->instruction_flags_0xf0 &=
+                    ~kActionViewRoleReversalFlag;
+            }
+        } else {
+            child->status = ActionViewRoleStatus::MissingInput;
+            child->provenance =
+                visited.provenance
+                + "; requested instruction transition could not be staged";
+        }
+    }
+    ++child->visits;
+
+    auto event = make_visual_event(
+        runtime,
+        nullptr,
+        BattleFrameWorkerStepKind::ActionViewRoleFlagVisit,
+        "FUN_80019B70",
+        frame_event_status(child->status),
+        "phase="
+            + std::string(action_view_role_flag_producer_phase_name(
+                child->state.phase))
+            + "; role_flag_owned="
+            + std::to_string(child->state.role_flag_owned ? 1 : 0)
+            + "; visits=" + std::to_string(child->visits)
+            + "; thread_node_id=" + std::to_string(child->thread_node_id)
+            + "; draws=0; provenance=" + child->provenance);
+    event.action_ordinal = child->action_ordinal;
+    event.slot = child->slot;
     append_recorded_event(runtime, result, std::move(event));
 
-    if (!selected.spawned_action_view_record_mode_if_known.has_value()) {
+    if (!child->complete) {
         return;
     }
-    const int mode = *selected.spawned_action_view_record_mode_if_known;
-    const auto signature = std::to_string(action.action_ordinal)
-        + ":" + std::to_string(action.actor_slot)
-        + ":" + std::to_string(timeline.epoch)
-        + ":" + std::to_string(mode)
-        + ":" + std::to_string(selected.selector_state_0x30);
-    if (std::find(
-            controller.published_signatures.begin(),
-            controller.published_signatures.end(),
-            signature) != controller.published_signatures.end()) {
-        return;
-    }
-    controller.published_signatures.push_back(signature);
-    const int task_sequence = enqueue_synthetic_action_view_child(
-        runtime,
-        action.action_ordinal,
-        action.actor_slot,
-        action.target_slot,
-        timeline.epoch,
-        mode,
-        "SpawnSyntheticActionViewRecord_80053F38; selector_signature=" + signature);
-    const auto task = std::find_if(
-        runtime.visual.child_tasks.begin(),
-        runtime.visual.child_tasks.end(),
-        [task_sequence](const BattleFrameVisualChildTask& candidate) {
-            return candidate.sequence == task_sequence;
-        });
-    if (task != runtime.visual.child_tasks.end()) {
-        append_recorded_event(
-            runtime,
-            result,
-            make_visual_event(
-                runtime,
-                &*task,
-                BattleFrameWorkerStepKind::VisualCommandPublish,
-                "SpawnSyntheticActionViewRecord_80053F38",
-                BattleFrameEventStatus::Provisional,
-                "synthetic action-view record publication; selector_signature="
-                    + signature
-                    + "; publication_cursor="
-                    + std::to_string(runtime.visual.current_visit_cursor)
-                    + "; same_frame_child_eligible=1"));
+    const auto removed = remove_battle_frame_thread(
+        runtime.thread_list,
+        child->thread_node_id,
+        "battle.action_view.role_flag_child.complete",
+        child->provenance,
+        runtime.state.frame_index,
+        static_cast<std::uint64_t>(child->sequence));
+    if (removed.status != BattleFrameThreadMutationStatus::Applied) {
+        runtime.warnings.push_back(
+            "completed FUN_80019B70 role-flag child could not be removed: "
+            + removed.detail);
     }
 }
 
@@ -2869,6 +3309,22 @@ bool visit_persistent_instruction_callback_for_slot(
         decision.resolver.resolved_motion_id.value_or(-1);
     append_recorded_event(runtime, result, std::move(decision_event));
 
+    if (decision.auxiliary_child
+        == ActionMotionAuxiliaryChildKind::
+            ActionViewRoleFlag_80019B70) {
+        if (!spawn_action_view_role_flag_child(
+                runtime,
+                result,
+                invocation.action_ordinal,
+                slot)) {
+            invocation.status =
+                ActionMotionInvocationStatus::MissingInput;
+            runtime.warnings.push_back(
+                "FUN_80019D7C requested its role-flag child, but the "
+                "current instruction-thread insertion point was unavailable");
+        }
+    }
+
     if (decision.auxiliary_publication_requested) {
         (void)publish_state10_auxiliary_for_slot(
             runtime,
@@ -3123,11 +3579,194 @@ void visit_std_row_producer_for_slot(
     append_recorded_event(runtime, result, std::move(install_event));
 }
 
+BattleFrameVisualChildTask* find_visual_child_task(
+    BattleFrameRuntime& runtime,
+    int sequence) {
+    const auto found = std::find_if(
+        runtime.visual.child_tasks.begin(),
+        runtime.visual.child_tasks.end(),
+        [sequence](const BattleFrameVisualChildTask& task) {
+            return task.sequence == sequence;
+        });
+    return found == runtime.visual.child_tasks.end() ? nullptr : &*found;
+}
+
+void clear_mode11_instruction_gate(
+    BattleFrameRuntime& runtime,
+    BattleFrameRunResult& result,
+    BattleFrameVisualChildTask& task,
+    BattleFrameEventStatus status,
+    std::string reason) {
+    if (!task.mode11_gate_owned || task.mode11_gate_cleared) {
+        return;
+    }
+    auto* combatant = find_frame_combatant(runtime.state, task.origin_slot);
+    const bool another_gate_owner = std::any_of(
+        runtime.visual.child_tasks.begin(),
+        runtime.visual.child_tasks.end(),
+        [&task](const BattleFrameVisualChildTask& candidate) {
+            return candidate.sequence != task.sequence
+                && candidate.origin_slot == task.origin_slot
+                && !candidate.complete
+                && candidate.mode11_gate_owned
+                && !candidate.mode11_gate_cleared;
+        });
+    std::uint32_t flags_before = 0;
+    std::uint32_t flags_after = 0;
+    if (combatant != nullptr) {
+        flags_before = combatant->instruction_flags_0xf0;
+        if (!another_gate_owner) {
+            combatant->instruction_flags_0xf0 &=
+                ~kActionViewMode11InstructionGate;
+        }
+        flags_after = combatant->instruction_flags_0xf0;
+    } else {
+        status = BattleFrameEventStatus::MissingInput;
+        reason += "; actor worksheet is unavailable";
+    }
+    task.mode11_gate_cleared = true;
+    task.phase = BattleFrameVisualChildPhase::CompletionWait;
+
+    std::ostringstream detail;
+    detail << reason
+           << "; branch="
+           << action_view_mode11_branch_name(task.mode11_branch)
+           << "; counter=" << task.mode11_counter
+           << "; retained_for_another_owner="
+           << (another_gate_owner ? 1 : 0)
+           << "; flags_before=0x" << std::hex << std::setw(8)
+           << std::setfill('0') << flags_before
+           << "; flags_after=0x" << std::setw(8) << flags_after;
+    append_recorded_event(
+        runtime,
+        result,
+        make_visual_event(
+            runtime,
+            &task,
+            BattleFrameWorkerStepKind::VisualInstructionGate,
+            "FUN_800521C4_gate_clear",
+            status,
+            detail.str()));
+}
+
+bool install_active_action_view_record(
+    BattleFrameRuntime& runtime,
+    BattleFrameRunResult& result,
+    BattleFrameVisualChildTask& task) {
+    if (task.active_record_installed) {
+        return true;
+    }
+
+    auto& active = runtime.visual.active_record;
+    const auto previous_sequence = active.task_sequence;
+    if (previous_sequence.has_value()
+        && *previous_sequence != task.sequence) {
+        if (auto* previous =
+                find_visual_child_task(runtime, *previous_sequence);
+            previous != nullptr && !previous->complete) {
+            if (previous->mode11_gate_owned
+                && !previous->mode11_gate_cleared) {
+                append_recorded_event(
+                    runtime,
+                    result,
+                    make_visual_event(
+                        runtime,
+                        &task,
+                        BattleFrameWorkerStepKind::VisualActiveRecordReplace,
+                        "SetActiveRecord_80014AB8",
+                        BattleFrameEventStatus::Provisional,
+                        "active-record replacement deferred because the prior "
+                        "mode-0x11 child still owns IW+0xF0 bit 0x02000000; "
+                        "prior_task="
+                            + std::to_string(previous->sequence)));
+                return false;
+            }
+            previous->active_record_replacement_pending = true;
+            previous->active_record_replacement_frame =
+                runtime.state.frame_index;
+            append_recorded_event(
+                runtime,
+                result,
+                make_visual_event(
+                    runtime,
+                    previous,
+                    BattleFrameWorkerStepKind::VisualActiveRecordReplace,
+                    "SetActiveRecord_80014AB8",
+                    BattleFrameEventStatus::Matched,
+                    "selector-1 publication marked the prior action-view "
+                    "record with replacement bit 0x20000000; replacement_task="
+                        + std::to_string(task.sequence)
+                        + "; replacement_thread_node="
+                        + std::to_string(task.thread_node_id)));
+        }
+    }
+
+    active.task_sequence = task.sequence;
+    ++active.revision;
+    active.publication_frame = runtime.state.frame_index;
+    active.publication_visit_cursor = runtime.visual.current_visit_cursor;
+    active.provenance =
+        "SetActiveRecord_80014AB8 selector-1 publication";
+    task.active_record_installed = true;
+
+    append_recorded_event(
+        runtime,
+        result,
+        make_visual_event(
+            runtime,
+            &task,
+            BattleFrameWorkerStepKind::VisualActiveRecordReplace,
+            "SetActiveRecord_80014AB8",
+            frame_event_status(task.status),
+            "selector-1 action-view record became active; previous_task="
+                + (previous_sequence.has_value()
+                    ? std::to_string(*previous_sequence)
+                    : std::string("-1"))
+                + "; active_record_revision="
+                + std::to_string(active.revision)));
+    return true;
+}
+
 void append_visual_cleanup(
     BattleFrameRuntime& runtime,
     BattleFrameRunResult& result,
     BattleFrameVisualChildTask& task,
     std::string reason) {
+    if (task.mode11_gate_owned && !task.mode11_gate_cleared) {
+        const auto* combatant = find_frame_combatant(
+            runtime.state, task.origin_slot);
+        if (combatant == nullptr || !combatant->present) {
+            clear_mode11_instruction_gate(
+                runtime,
+                result,
+                task,
+                BattleFrameEventStatus::Matched,
+                "combatant removal released the owned mode-0x11 instruction gate");
+        } else {
+            append_recorded_event(
+                runtime,
+                result,
+                make_visual_event(
+                    runtime,
+                    &task,
+                    BattleFrameWorkerStepKind::VisualChildCleanup,
+                    "UpdateActionViewRecord_80051264_cleanup_deferred",
+                    BattleFrameEventStatus::Provisional,
+                    "cleanup deferred while the unfinished mode-0x11 child "
+                    "owns IW+0xF0 bit 0x02000000; reason=" + reason));
+            return;
+        }
+    }
+    if (runtime.visual.active_record.task_sequence == task.sequence) {
+        runtime.visual.active_record.task_sequence.reset();
+        ++runtime.visual.active_record.revision;
+        runtime.visual.active_record.publication_frame =
+            runtime.state.frame_index;
+        runtime.visual.active_record.publication_visit_cursor =
+            runtime.visual.current_visit_cursor;
+        runtime.visual.active_record.provenance =
+            "active action-view record completed and released selector 1";
+    }
     task.complete = true;
     task.phase = BattleFrameVisualChildPhase::Complete;
     task.thread_state_0x19 = 3;
@@ -3714,11 +4353,121 @@ void consume_mode1_pathing(
     task.mode1_pathing_consumed = true;
 }
 
+void advance_mode11_action_view_child(
+    BattleFrameRuntime& runtime,
+    BattleFrameRunResult& result,
+    BattleFrameVisualChildTask& task) {
+    if (!task.mode11_initialized) {
+        std::optional<ActionViewMode11CameraOperands> operands;
+        if (task.origin_slot >= 0
+            && task.origin_slot < static_cast<int>(
+                runtime.visual.mode11_camera_operands.size())) {
+            operands = runtime.visual.mode11_camera_operands[
+                static_cast<std::size_t>(task.origin_slot)];
+        }
+        const auto setup = select_action_view_mode11_branch(operands);
+        task.mode11_initialized = true;
+        task.mode11_status = setup.status;
+        task.mode11_branch = setup.branch;
+        task.mode11_substate = setup.substate;
+        task.mode11_counter = setup.counter;
+        task.mode11_setup_frame = runtime.state.frame_index;
+        task.status = setup.status == ActionViewMode11Status::Matched
+            ? CombatantVisualModelStatus::Matched
+            : CombatantVisualModelStatus::Provisional;
+
+        append_recorded_event(
+            runtime,
+            result,
+            make_visual_event(
+                runtime,
+                &task,
+                BattleFrameWorkerStepKind::VisualMode11Setup,
+                "FUN_800521C4_state0",
+                frame_event_status(setup.status),
+                "mode-0x11 setup selected branch="
+                    + std::string(action_view_mode11_branch_name(setup.branch))
+                    + "; substate=" + std::to_string(setup.substate)
+                    + "; counter=" + std::to_string(setup.counter)
+                    + "; advance_on_setup="
+                    + std::to_string(setup.advance_on_setup_visit ? 1 : 0)
+                    + "; " + setup.provenance));
+        if (!setup.advance_on_setup_visit) {
+            return;
+        }
+    }
+
+    if (task.mode11_gate_cleared) {
+        return;
+    }
+
+    const auto counter =
+        advance_action_view_mode11_counter(task.mode11_counter);
+    task.mode11_counter = counter.counter_after;
+    if (counter.clear_gate) {
+        clear_mode11_instruction_gate(
+            runtime,
+            result,
+            task,
+            frame_event_status(task.mode11_status),
+            task.mode11_branch == ActionViewMode11Branch::Equal
+                ? "FUN_800521C4 equal-position substate cleared the gate"
+                : "FUN_800521C4 interpolation substate cleared the gate");
+        return;
+    }
+
+    append_recorded_event(
+        runtime,
+        result,
+        make_visual_event(
+            runtime,
+            &task,
+            BattleFrameWorkerStepKind::VisualMode11Advance,
+            task.mode11_branch == ActionViewMode11Branch::Equal
+                ? "FUN_800521C4_equal_wait"
+                : "FUN_800521C4_interpolation",
+            frame_event_status(task.mode11_status),
+            "mode-0x11 counter advanced "
+                + std::to_string(counter.counter_before)
+                + "->" + std::to_string(counter.counter_after)
+                + "; gate remains set"));
+}
+
 void advance_action_view_child(
     BattleFrameRuntime& runtime,
     BattleFrameRunResult& result,
     BattleFrameVisualChildTask& task,
     std::uint32_t& rng_state) {
+    if (task.active_record_state_fa) {
+        append_visual_cleanup(
+            runtime,
+            result,
+            task,
+            "UpdateActionViewRecord_80051264 state 0xFA completed "
+            "replacement cleanup on the following thread visit");
+        return;
+    }
+    if (task.active_record_replacement_pending) {
+        task.active_record_replacement_pending = false;
+        task.active_record_state_fa = true;
+        task.thread_state_0x19 = 0xFA;
+        append_recorded_event(
+            runtime,
+            result,
+            make_visual_event(
+                runtime,
+                &task,
+                BattleFrameWorkerStepKind::VisualReplacementState,
+                "UpdateActionViewRecord_80051264_stateFA",
+                BattleFrameEventStatus::Matched,
+                "the old action-view record observed replacement on its "
+                "ordinary thread visit; replacement_frame="
+                    + std::to_string(task.active_record_replacement_frame)
+                    + "; observation_frame="
+                    + std::to_string(runtime.state.frame_index)));
+        return;
+    }
+
     if (task.phase == BattleFrameVisualChildPhase::Published) {
         task.phase = BattleFrameVisualChildPhase::Active;
         task.thread_state_0x19 = 2;
@@ -3734,6 +4483,19 @@ void advance_action_view_child(
                 "record state-0 setup; payload_mode=" + std::to_string(task.payload_mode)
                     + "; publication_frame=" + std::to_string(task.publication_frame)
                     + "; provenance=" + task.provenance));
+        if (!install_active_action_view_record(runtime, result, task)) {
+            task.phase = BattleFrameVisualChildPhase::Published;
+            task.thread_state_0x19 = 0;
+            if (task.visits > 0) {
+                --task.visits;
+            }
+            return;
+        }
+
+        if (task.payload_mode == 0x11) {
+            advance_mode11_action_view_child(runtime, result, task);
+            return;
+        }
 
         auto rng_plan = combatant_visual_action_view_rng_plan(
             static_cast<std::int16_t>(task.payload_mode),
@@ -3782,6 +4544,9 @@ void advance_action_view_child(
         if (rng_plan.mode1_pathing_callback) {
             consume_mode1_pathing(runtime, result, task, rng_state);
         }
+    } else if (task.payload_mode == 0x11) {
+        advance_mode11_action_view_child(runtime, result, task);
+        return;
     } else if (combatant_visual_action_view_rng_plan(
                    static_cast<std::int16_t>(task.payload_mode),
                    static_cast<std::int16_t>(task.effective_mode))
@@ -3790,7 +4555,9 @@ void advance_action_view_child(
         consume_mode1_pathing(runtime, result, task, rng_state);
     }
 
-    if (task.synthetic && task.visits >= task.maximum_visits) {
+    if (task.synthetic
+        && task.payload_mode != 0x11
+        && task.visits >= task.maximum_visits) {
         append_visual_cleanup(
             runtime,
             result,
@@ -3829,7 +4596,10 @@ void advance_visual_child_task(
     std::uint32_t& rng_state,
     BattleFrameVisualChildTask& task) {
     ++task.visits;
-    if (task.visits > task.maximum_visits + 2) {
+    const bool persistent_mode11 =
+        task.kind == BattleFrameVisualChildKind::ActionViewRecord
+        && task.payload_mode == 0x11;
+    if (!persistent_mode11 && task.visits > task.maximum_visits + 2) {
         append_visual_cleanup(
             runtime,
             result,
@@ -5670,6 +6440,20 @@ bool action_lifecycle_has_runnable_work(const BattleFrameRuntime& runtime) {
     if (!runtime.visual.pending_instruction_control_resets.empty()) {
         return true;
     }
+    const auto& action_view_role = runtime.visual.action_view_role;
+    if (action_view_role.valid
+        && battle_frame_action_visual_publication_pending(
+            runtime, action_view_role.action_ordinal)) {
+        return true;
+    }
+    if (std::any_of(
+            runtime.visual.role_flag_children.begin(),
+            runtime.visual.role_flag_children.end(),
+            [](const BattleFrameActionViewRoleFlagChildRuntime& child) {
+                return !child.complete;
+            })) {
+        return true;
+    }
     if (has_active_visual_task(runtime)) {
         return true;
     }
@@ -6476,6 +7260,33 @@ std::optional<BattleFrameRuntime> initialize_first_battle_frame_runtime(
     runtime.visual.timeline_action_ordinals.fill(-1);
     runtime.movement_controller_states.fill(
         BattleMovementControllerState::Unknown);
+    const auto view_controller = create_battle_frame_thread(
+        runtime.thread_list,
+        BattleFrameThreadCreateRequest{
+            .kind =
+                BattleFrameThreadNodeKind::PersistentActionViewController,
+            .owner_slot = -1,
+            .callback =
+                BattleFrameThreadCallbackIdentity::
+                    PersistentActionViewController,
+            .active = true,
+            .insertion =
+                BattleFrameThreadInsertionKind::AfterCurrentCursor,
+            .semantic_source_id =
+                "battle.setup.persistent_action_view_controller",
+            .provenance =
+                "FUN_80014784 created FUN_800136DC before "
+                "setupGridAndCombatants",
+            .frame_index = 0,
+        });
+    if (view_controller.status == BattleFrameThreadMutationStatus::Applied) {
+        runtime.persistent_action_view_controller_node_id =
+            view_controller.node_id;
+    } else {
+        runtime.warnings.push_back(
+            "persistent action-view controller creation failed: "
+            + view_controller.detail);
+    }
     for (const auto& combatant : runtime.state.combatants) {
         if (combatant.slot >= 0
             && combatant.slot < static_cast<int>(runtime.movement_controller_states.size())
@@ -6857,6 +7668,16 @@ bool stage_battle_frame_visual_instruction_state(
             *instruction.validated_transition_mode;
     } else if (key.action_key.has_value()) {
         combatant->visual_instruction_mode_0x6 = *key.action_key;
+    }
+    auto& action_view_role = runtime.visual.action_view_role;
+    if (action_view_role.valid
+        && action_view_role.action_ordinal == action_ordinal
+        && action_view_role.acting_actor_slot == instruction.slot
+        && instruction.target_slot.has_value()) {
+        action_view_role.queued_target_slot = *instruction.target_slot;
+        ++action_view_role.revision;
+        action_view_role.provenance =
+            "queued target updated from current modeled instruction state";
     }
 
     const auto& callback_runtime =
@@ -7353,6 +8174,35 @@ bool battle_frame_action_visual_publication_pending(
         && runtime.active_action->queued_state_transition_pending) {
         return true;
     }
+    const auto& role = runtime.visual.action_view_role;
+    if (role.valid && role.action_ordinal == action_ordinal) {
+        const auto* queued_target = find_frame_combatant(
+            runtime.state, role.queued_target_slot);
+        const bool reversed = queued_target != nullptr
+            && queued_target->present
+            && (queued_target->instruction_flags_0xf0 & 0x00000004u) != 0;
+        const int current_actor_slot = reversed
+            ? role.queued_target_slot
+            : role.acting_actor_slot;
+        const auto* current_actor = find_frame_combatant(
+            runtime.state, current_actor_slot);
+        const auto& controller = runtime.visual.controller;
+        if (current_actor != nullptr
+            && current_actor->present
+            && current_actor->visual_instruction_knowledge
+                != CombatantVisualInstructionKnowledge::Unknown) {
+            const auto requested_mode =
+                action_view_requested_mode_from_field6(
+                    current_actor->visual_instruction_mode_0x6,
+                    current_actor->visual_instruction_subtype_0x8,
+                    false);
+            if (controller.actor_slot_0x2 != current_actor_slot
+                || controller.effective_mode_0x2f != requested_mode
+                || controller.selector_state_0x30 <= 2) {
+                return true;
+            }
+        }
+    }
     if (std::any_of(
             runtime.visual.pending_instruction_control_resets.begin(),
             runtime.visual.pending_instruction_control_resets.end(),
@@ -7533,6 +8383,18 @@ BattleFrameActionScheduleResult schedule_first_turn_actor_action(
         .setup_publication_events_pending = true,
         .status = decision.status,
         .provenance = decision.provenance,
+    };
+    runtime.visual.action_view_role = BattleFrameActionViewRoleRuntime{
+        .valid = input.actor_slot >= 0 && input.target_slot >= 0,
+        .action_ordinal = action_ordinal,
+        .acting_actor_slot = input.actor_slot,
+        .queued_target_slot = input.target_slot,
+        .revision = runtime.visual.action_view_role.revision + 1,
+        .status = input.actor_slot >= 0 && input.target_slot >= 0
+            ? ActionViewRoleStatus::Matched
+            : ActionViewRoleStatus::MissingInput,
+        .provenance =
+            "action setup published persistent action-view actor and queued-target roles",
     };
     runtime.passive_participants = {};
     auto& action = *runtime.active_action;
@@ -7865,7 +8727,6 @@ BattleFrameRunResult run_first_turn_frame(
     }
     runtime.visual.current_visit_cursor = 0;
     flush_pending_visual_events(runtime, result);
-    visit_persistent_action_view_controller(runtime, result, rng_state);
     advance_visual_children_at_cursor(runtime, result, rng_state, 0);
     append_frame_start_position_sync_events(runtime, result);
     maybe_publish_completion_override(runtime, result);
@@ -7893,6 +8754,29 @@ BattleFrameRunResult run_first_turn_frame(
                 result,
                 rng_state,
                 thread.node_id);
+            continue;
+        }
+        if (thread.kind
+            == BattleFrameThreadNodeKind::InstructionAuxiliaryChild) {
+            advance_action_view_role_flag_child(
+                runtime, result, thread.node_id);
+            advance_visual_children_at_cursor(
+                runtime,
+                result,
+                rng_state,
+                runtime.visual.current_visit_cursor);
+            continue;
+        }
+        if (thread.kind
+            == BattleFrameThreadNodeKind::
+                PersistentActionViewController) {
+            visit_persistent_action_view_controller(
+                runtime, result, rng_state);
+            advance_visual_children_at_cursor(
+                runtime,
+                result,
+                rng_state,
+                runtime.visual.current_visit_cursor);
             continue;
         }
         if (thread.kind == BattleFrameThreadNodeKind::CombatantInstruction) {
@@ -8349,6 +9233,12 @@ const char* battle_frame_worker_step_kind_name(BattleFrameWorkerStepKind kind) {
         return "ActionComplete";
     case BattleFrameWorkerStepKind::VisualControllerVisit:
         return "VisualControllerVisit";
+    case BattleFrameWorkerStepKind::ActionViewRoleResolve:
+        return "ActionViewRoleResolve";
+    case BattleFrameWorkerStepKind::ActionViewRoleFlagSpawn:
+        return "ActionViewRoleFlagSpawn";
+    case BattleFrameWorkerStepKind::ActionViewRoleFlagVisit:
+        return "ActionViewRoleFlagVisit";
     case BattleFrameWorkerStepKind::VisualInstructionDecision:
         return "VisualInstructionDecision";
     case BattleFrameWorkerStepKind::VisualInstructionStatePublish:
@@ -8399,6 +9289,16 @@ const char* battle_frame_worker_step_kind_name(BattleFrameWorkerStepKind kind) {
         return "VisualMode0eCamera";
     case BattleFrameWorkerStepKind::VisualMode1Pathing:
         return "VisualMode1Pathing";
+    case BattleFrameWorkerStepKind::VisualMode11Setup:
+        return "VisualMode11Setup";
+    case BattleFrameWorkerStepKind::VisualMode11Advance:
+        return "VisualMode11Advance";
+    case BattleFrameWorkerStepKind::VisualInstructionGate:
+        return "VisualInstructionGate";
+    case BattleFrameWorkerStepKind::VisualActiveRecordReplace:
+        return "VisualActiveRecordReplace";
+    case BattleFrameWorkerStepKind::VisualReplacementState:
+        return "VisualReplacementState";
     case BattleFrameWorkerStepKind::VisualUnsupportedWait:
         return "VisualUnsupportedWait";
     case BattleFrameWorkerStepKind::CallbackEntry:

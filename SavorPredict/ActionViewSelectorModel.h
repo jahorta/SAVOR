@@ -47,10 +47,40 @@ struct ActionViewSelectorInput {
     std::int16_t previous_actor_slot_0x2 = -1;
     std::int16_t current_actor_slot = -1;
     std::int16_t current_secondary_slot = -1;
-    bool instruction_flags_bit6_set = false;
+    std::optional<std::uint32_t> actor_instruction_flags_0xf0;
     bool helper_800153e0_result = false;
     std::optional<bool> actor_lookup_8001d41c_nonzero;
     std::optional<Std0Table> selected_aux_table;
+};
+
+enum class ActionViewSelectorStatus {
+    Matched,
+    MissingInput,
+};
+
+enum class ActionViewSelectorOperationKind {
+    WriteRole,
+    WriteEffectiveMode,
+    PublishSyntheticRecord,
+    SetMode11Gate,
+    GateRecheck,
+    WriteSelectorState,
+    DispatchHelper,
+};
+
+struct ActionViewSelectorOperation {
+    ActionViewSelectorOperationKind kind =
+        ActionViewSelectorOperationKind::WriteRole;
+    std::uint32_t call_site_pc = 0;
+    std::int16_t actor_slot = -1;
+    std::int16_t secondary_slot = -1;
+    std::optional<std::int16_t> record_mode;
+    std::optional<std::int8_t> effective_mode;
+    std::optional<std::uint32_t> flags_before;
+    std::optional<std::uint32_t> flags_after;
+    std::int16_t selector_state_before = -1;
+    std::int16_t selector_state_after = -1;
+    std::string role;
 };
 
 struct ActionViewSelectorHelperCall {
@@ -62,12 +92,15 @@ struct ActionViewSelectorHelperCall {
 };
 
 struct ActionViewSelectorResult {
+    ActionViewSelectorStatus status = ActionViewSelectorStatus::Matched;
     std::int8_t requested_mode = 1;
     std::int8_t dispatch_effective_mode_0x2f = 0;
     std::int16_t selector_state_0x30 = 0;
+    std::optional<std::uint32_t> actor_instruction_flags_0xf0_after;
     std::optional<std::int16_t> selector_actor_slot_0x2_written;
     std::optional<std::int16_t> selector_secondary_slot_0x4_written;
     std::optional<std::int16_t> spawned_action_view_record_mode_if_known;
+    std::vector<std::int16_t> spawned_action_view_record_modes;
     std::optional<Std0CountResult> mode0e_count;
     std::optional<Std0CountResult> mode3_count;
     std::optional<Std0CountResult> mode5_count;
@@ -81,6 +114,7 @@ struct ActionViewSelectorResult {
     bool call_80032bbc_selected = false;
     bool helper_family_selected = false;
     bool unsupported_without_aux_table = false;
+    std::vector<ActionViewSelectorOperation> operations;
     std::vector<ActionViewSelectorHelperCall> helper_calls;
     std::vector<std::string> branch_path;
 };

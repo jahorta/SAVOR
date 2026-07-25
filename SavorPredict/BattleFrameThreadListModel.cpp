@@ -533,12 +533,16 @@ std::vector<const BattleFrameThreadNode*> active_battle_frame_threads(
 
 const char* battle_frame_thread_node_kind_name(BattleFrameThreadNodeKind kind) {
     switch (kind) {
+    case BattleFrameThreadNodeKind::PersistentActionViewController:
+        return "persistent_action_view_controller";
     case BattleFrameThreadNodeKind::MovementController:
         return "movement_controller";
     case BattleFrameThreadNodeKind::CombatantInstruction:
         return "combatant_instruction";
     case BattleFrameThreadNodeKind::ResourceWorker:
         return "resource_worker";
+    case BattleFrameThreadNodeKind::InstructionAuxiliaryChild:
+        return "instruction_auxiliary_child";
     case BattleFrameThreadNodeKind::AuxiliaryVisualChild:
         return "auxiliary_visual_child";
     case BattleFrameThreadNodeKind::Unknown:
@@ -550,12 +554,16 @@ const char* battle_frame_thread_node_kind_name(BattleFrameThreadNodeKind kind) {
 const char* battle_frame_thread_callback_identity_name(
     BattleFrameThreadCallbackIdentity callback) {
     switch (callback) {
+    case BattleFrameThreadCallbackIdentity::PersistentActionViewController:
+        return "battle.persistent_action_view_controller";
     case BattleFrameThreadCallbackIdentity::MovementController:
         return "battle.movement_controller";
     case BattleFrameThreadCallbackIdentity::CombatantInstruction:
         return "battle.combatant_instruction";
     case BattleFrameThreadCallbackIdentity::ResourceQueue:
         return "battle.resource_queue";
+    case BattleFrameThreadCallbackIdentity::ActionViewRoleFlag:
+        return "action_view.role_flag_80019b70";
     case BattleFrameThreadCallbackIdentity::VisualSetCommand:
         return "visual.set_command";
     case BattleFrameThreadCallbackIdentity::VisualMoveModel:

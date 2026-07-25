@@ -367,6 +367,30 @@ int count_step(
         [kind](const BattleFrameStepEvent& event) { return event.step_kind == kind; }));
 }
 
+int count_step_for_command(
+    const std::vector<BattleFrameStepEvent>& events,
+    BattleFrameWorkerStepKind kind,
+    CombatantVisualCommandKind command_kind) {
+    return static_cast<int>(std::count_if(
+        events.begin(), events.end(),
+        [kind, command_kind](const BattleFrameStepEvent& event) {
+            return event.step_kind == kind
+                && event.visual_command_kind == command_kind;
+        }));
+}
+
+int count_non_synthetic_publications(
+    const std::vector<BattleFrameStepEvent>& events) {
+    return static_cast<int>(std::count_if(
+        events.begin(), events.end(),
+        [](const BattleFrameStepEvent& event) {
+            return event.step_kind
+                    == BattleFrameWorkerStepKind::VisualCommandPublish
+                && event.visual_command_kind
+                    != CombatantVisualCommandKind::SyntheticActionView;
+        }));
+}
+
 int count_rng_label(
     const std::vector<BattleFrameStepEvent>& events,
     const std::string& label) {
@@ -549,7 +573,7 @@ std::vector<BattleFrameStepEvent> run_until_visual_publication(
     for (int frame = 0; frame < max_frames; ++frame) {
         const auto step = run_first_turn_frame(runtime, rng);
         events.insert(events.end(), step.events.begin(), step.events.end());
-        if (count_step(events, BattleFrameWorkerStepKind::VisualCommandPublish) > 0) {
+        if (count_non_synthetic_publications(events) > 0) {
             break;
         }
     }
@@ -1333,14 +1357,30 @@ TEST(SavorPredictCombatantVisualRuntime, PublishesAndRunsChildrenAfterOwnerInSam
     EXPECT_EQ(count_step(events, BattleFrameWorkerStepKind::VisualInstructionInstall), 1);
     EXPECT_EQ(count_step(
         events, BattleFrameWorkerStepKind::VisualAuxiliaryPublication), 1);
-    EXPECT_EQ(count_step(events, BattleFrameWorkerStepKind::VisualCommandPublish), 2);
-    EXPECT_EQ(count_step(events, BattleFrameWorkerStepKind::VisualChildState0), 2);
-    ASSERT_EQ(runtime->visual.child_tasks.size(), 2u);
-    EXPECT_GE(runtime->visual.child_tasks[0].thread_node_id, 0);
-    EXPECT_GE(runtime->visual.child_tasks[1].thread_node_id, 0);
+    EXPECT_EQ(count_non_synthetic_publications(events), 2);
+    EXPECT_EQ(
+        count_step_for_command(
+            events,
+            BattleFrameWorkerStepKind::VisualChildState0,
+            CombatantVisualCommandKind::SetCommand)
+            + count_step_for_command(
+                events,
+                BattleFrameWorkerStepKind::VisualChildState0,
+                CombatantVisualCommandKind::SystemCamera),
+        2);
+    std::vector<const BattleFrameVisualChildTask*> published_tasks;
+    for (const auto& task : runtime->visual.child_tasks) {
+        if (task.command_kind
+            != CombatantVisualCommandKind::SyntheticActionView) {
+            published_tasks.push_back(&task);
+        }
+    }
+    ASSERT_EQ(published_tasks.size(), 2u);
+    EXPECT_GE(published_tasks[0]->thread_node_id, 0);
+    EXPECT_GE(published_tasks[1]->thread_node_id, 0);
     EXPECT_LT(
-        runtime->visual.child_tasks[0].thread_node_id,
-        runtime->visual.child_tasks[1].thread_node_id);
+        published_tasks[0]->thread_node_id,
+        published_tasks[1]->thread_node_id);
     EXPECT_EQ(
         std::count_if(
             runtime->thread_list.history.begin(),
@@ -1354,12 +1394,18 @@ TEST(SavorPredictCombatantVisualRuntime, PublishesAndRunsChildrenAfterOwnerInSam
     const auto publication = std::find_if(
         events.begin(), events.end(),
         [](const BattleFrameStepEvent& event) {
-            return event.step_kind == BattleFrameWorkerStepKind::VisualCommandPublish;
+            return event.step_kind
+                    == BattleFrameWorkerStepKind::VisualCommandPublish
+                && event.visual_command_kind
+                    != CombatantVisualCommandKind::SyntheticActionView;
         });
     const auto child = std::find_if(
         events.begin(), events.end(),
         [](const BattleFrameStepEvent& event) {
-            return event.step_kind == BattleFrameWorkerStepKind::VisualChildState0;
+            return event.step_kind
+                    == BattleFrameWorkerStepKind::VisualChildState0
+                && event.visual_command_kind
+                    != CombatantVisualCommandKind::SyntheticActionView;
         });
     ASSERT_NE(publication, events.end());
     ASSERT_NE(child, events.end());
@@ -1630,12 +1676,78 @@ TEST(SavorPredictCombatantVisualRuntime, CollisionBoxUsesGeometryAndSharedSelect
         events, BattleFrameWorkerStepKind::InstructionCallbackControlResetConsume), 0);
 }
 
+TEST(SavorPredictCombatantVisualRuntime, RoleCallbackPublishesAndClearsLowF0BitFromChildThread) {
+    auto runtime = initialize_frame_runtime();
+    ASSERT_TRUE(runtime.has_value());
+    auto resource = decoded_resource(0, false, 0, 2, 5);
+    for (auto& row : resource.action_rows) {
+        if (row.action_id == 5 || row.action_id == 0x0b) {
+            row.callback_index = 12;
+            row.callback_ordinal = 0;
+        }
+    }
+    ASSERT_TRUE(configure_battle_frame_visual_resource(
+        *runtime, std::move(resource)));
+    ASSERT_TRUE(schedule_action(*runtime, false).scheduled);
+    runtime->visual.action_view_role.valid = false;
+
+    auto* combatant = find_frame_combatant(runtime->state, 0);
+    ASSERT_NE(combatant, nullptr);
+    combatant->selected_action_row_index = 4;
+    combatant->selected_action_row_action_id = 5;
+    combatant->selected_action_row_callback_index = 12;
+    combatant->selected_action_row_callback_ordinal = 0;
+    combatant->selected_action_row_duration_bits = 0x40a00000u;
+    combatant->selected_action_row_duration_known = true;
+    runtime->visual.std_row_producers[0].thread_state_0x19 = 1;
+    ASSERT_TRUE(publish_fixture_visual_instruction_state(
+        *runtime, 0, 0, 5, true));
+
+    std::uint32_t rng = 0x12345678u;
+    std::vector<BattleFrameStepEvent> events;
+    for (int frame = 0; frame < 10
+        && (combatant->instruction_flags_0xf0 & 0x00000004u) == 0;
+         ++frame) {
+        const auto step = run_first_turn_frame(*runtime, rng);
+        ASSERT_TRUE(step.ok);
+        events.insert(
+            events.end(), step.events.begin(), step.events.end());
+    }
+    EXPECT_NE(combatant->instruction_flags_0xf0 & 0x00000004u, 0u);
+    EXPECT_EQ(
+        count_step(
+            events,
+            BattleFrameWorkerStepKind::ActionViewRoleFlagSpawn),
+        1);
+    EXPECT_GT(
+        count_step(
+            events,
+            BattleFrameWorkerStepKind::ActionViewRoleFlagVisit),
+        0);
+    ASSERT_TRUE(runtime->active_action.has_value());
+    runtime->active_action->completion_turn_phase = 5;
+    const auto release = run_first_turn_frame(*runtime, rng);
+    EXPECT_EQ(combatant->instruction_flags_0xf0 & 0x00000004u, 0u);
+    EXPECT_GT(
+        count_step(
+            release.events,
+            BattleFrameWorkerStepKind::ActionViewRoleFlagVisit),
+        0);
+    EXPECT_TRUE(std::all_of(
+        runtime->visual.role_flag_children.begin(),
+        runtime->visual.role_flag_children.end(),
+        [](const BattleFrameActionViewRoleFlagChildRuntime& child) {
+            return child.complete;
+        }));
+}
+
 TEST(SavorPredictCombatantVisualRuntime, Mode8PublicationWaitsForCapturedState6Playback) {
     auto runtime = initialize_frame_runtime();
     ASSERT_TRUE(runtime.has_value());
     ASSERT_TRUE(configure_battle_frame_visual_resource(
         *runtime, decoded_resource(0, false, 0, 2, 8)));
     ASSERT_TRUE(schedule_action(*runtime, false).scheduled);
+    runtime->visual.action_view_role.valid = false;
 
     auto* combatant = find_frame_combatant(runtime->state, 0);
     ASSERT_NE(combatant, nullptr);
@@ -1655,7 +1767,7 @@ TEST(SavorPredictCombatantVisualRuntime, Mode8PublicationWaitsForCapturedState6P
         const auto step = run_first_turn_frame(*runtime, rng);
         ASSERT_TRUE(step.ok);
         events.insert(events.end(), step.events.begin(), step.events.end());
-        if (count_step(events, BattleFrameWorkerStepKind::VisualCommandPublish) > 0) {
+        if (count_non_synthetic_publications(events) > 0) {
             break;
         }
     }
@@ -1675,12 +1787,18 @@ TEST(SavorPredictCombatantVisualRuntime, Mode8PublicationWaitsForCapturedState6P
     const auto publication = std::find_if(
         events.begin(), events.end(),
         [](const BattleFrameStepEvent& event) {
-            return event.step_kind == BattleFrameWorkerStepKind::VisualCommandPublish;
+            return event.step_kind
+                    == BattleFrameWorkerStepKind::VisualCommandPublish
+                && event.visual_command_kind
+                    != CombatantVisualCommandKind::SyntheticActionView;
         });
     const auto first_child = std::find_if(
         events.begin(), events.end(),
         [](const BattleFrameStepEvent& event) {
-            return event.step_kind == BattleFrameWorkerStepKind::VisualChildState0;
+            return event.step_kind
+                    == BattleFrameWorkerStepKind::VisualChildState0
+                && event.visual_command_kind
+                    != CombatantVisualCommandKind::SyntheticActionView;
         });
     ASSERT_NE(true_gate, events.end());
     ASSERT_NE(release, events.end());
@@ -1721,6 +1839,7 @@ TEST(SavorPredictCombatantVisualRuntime, DescriptorBackedState9DelayKeepsPublica
     ASSERT_TRUE(configure_battle_frame_visual_resource(
         *runtime, decoded_resource(0, false, 0, 2, 5, true)));
     ASSERT_TRUE(schedule_action(*runtime, false).scheduled);
+    runtime->visual.action_view_role.valid = false;
 
     auto* combatant = find_frame_combatant(runtime->state, 0);
     ASSERT_NE(combatant, nullptr);
@@ -1737,7 +1856,7 @@ TEST(SavorPredictCombatantVisualRuntime, DescriptorBackedState9DelayKeepsPublica
         const auto step = run_first_turn_frame(*runtime, rng);
         ASSERT_TRUE(step.ok);
         events.insert(events.end(), step.events.begin(), step.events.end());
-        if (count_step(events, BattleFrameWorkerStepKind::VisualCommandPublish) > 0) {
+        if (count_non_synthetic_publications(events) > 0) {
             break;
         }
     }
@@ -1764,7 +1883,10 @@ TEST(SavorPredictCombatantVisualRuntime, DescriptorBackedState9DelayKeepsPublica
     const auto publication = std::find_if(
         events.begin(), events.end(),
         [](const BattleFrameStepEvent& event) {
-            return event.step_kind == BattleFrameWorkerStepKind::VisualCommandPublish;
+            return event.step_kind
+                    == BattleFrameWorkerStepKind::VisualCommandPublish
+                && event.visual_command_kind
+                    != CombatantVisualCommandKind::SyntheticActionView;
         });
     ASSERT_NE(true_gate, events.end());
     ASSERT_NE(first_delay, events.end());
@@ -1865,19 +1987,29 @@ TEST(SavorPredictCombatantVisualRuntime, ServiceDelayHasNDecrementsAndZeroVisitC
         const auto step = run_first_turn_frame(*runtime, rng);
         events.insert(events.end(), step.events.begin(), step.events.end());
         if (!action_released
-            && count_step(
-                events,
-                BattleFrameWorkerStepKind::VisualCommandPublish) > 0) {
+            && count_non_synthetic_publications(events) > 0) {
             runtime->active_action.reset();
             action_released = true;
         }
     }
 
     EXPECT_EQ(rng, placement.next_state);
-    EXPECT_EQ(count_step(events, BattleFrameWorkerStepKind::VisualChildState0), 1);
-    EXPECT_EQ(count_step(events, BattleFrameWorkerStepKind::VisualChildDelay), 2);
-    EXPECT_EQ(count_step(events, BattleFrameWorkerStepKind::VisualChildNested), 1);
-    EXPECT_EQ(count_step(events, BattleFrameWorkerStepKind::VisualChildCleanup), 1);
+    EXPECT_EQ(count_step_for_command(
+        events,
+        BattleFrameWorkerStepKind::VisualChildState0,
+        CombatantVisualCommandKind::SetCommand), 1);
+    EXPECT_EQ(count_step_for_command(
+        events,
+        BattleFrameWorkerStepKind::VisualChildDelay,
+        CombatantVisualCommandKind::SetCommand), 2);
+    EXPECT_EQ(count_step_for_command(
+        events,
+        BattleFrameWorkerStepKind::VisualChildNested,
+        CombatantVisualCommandKind::SetCommand), 1);
+    EXPECT_EQ(count_step_for_command(
+        events,
+        BattleFrameWorkerStepKind::VisualChildCleanup,
+        CombatantVisualCommandKind::SetCommand), 1);
 }
 
 TEST(SavorPredictCombatantVisualRuntime, FlaggedActionServiceIsTheEb4cRngOwner) {
@@ -1900,7 +2032,10 @@ TEST(SavorPredictCombatantVisualRuntime, FlaggedActionServiceIsTheEb4cRngOwner) 
     std::uint32_t rng = 0x13572468U;
     ASSERT_TRUE(publish_fixture_visual_instruction_state(*runtime));
     const auto state0 = run_until_visual_publication(*runtime, rng);
-    EXPECT_EQ(count_step(state0, BattleFrameWorkerStepKind::VisualChildState0), 1);
+    EXPECT_EQ(count_step_for_command(
+        state0,
+        BattleFrameWorkerStepKind::VisualChildState0,
+        CombatantVisualCommandKind::SetCommand), 1);
     runtime->active_action.reset();
     const auto expected = draw_rand15(rng);
     const auto nested = run_first_turn_frame(*runtime, rng);
@@ -1927,14 +2062,24 @@ TEST(SavorPredictCombatantVisualRuntime, SerializedChildHoldsActionBarrierUntilC
     resource.selector_table = combatant_visual_selector_table(resource);
     ASSERT_TRUE(configure_battle_frame_visual_resource(*runtime, std::move(resource)));
     ASSERT_TRUE(schedule_action(*runtime, false).scheduled);
+    runtime->visual.action_view_role.valid = false;
 
     std::uint32_t rng = 0x10203040U;
     ASSERT_TRUE(publish_fixture_visual_instruction_state(*runtime));
     const auto published = run_until_visual_publication(*runtime, rng);
-    ASSERT_EQ(count_step(
+    ASSERT_EQ(count_step_for_command(
         published,
-        BattleFrameWorkerStepKind::VisualCommandPublish), 1);
-    ASSERT_EQ(runtime->visual.child_tasks.size(), 1u);
+        BattleFrameWorkerStepKind::VisualCommandPublish,
+        CombatantVisualCommandKind::SystemCamera), 1);
+    const auto camera_task = std::find_if(
+        runtime->visual.child_tasks.begin(),
+        runtime->visual.child_tasks.end(),
+        [](const BattleFrameVisualChildTask& task) {
+            return task.command_kind
+                == CombatantVisualCommandKind::SystemCamera;
+        });
+    ASSERT_NE(camera_task, runtime->visual.child_tasks.end());
+    const int camera_sequence = camera_task->sequence;
     for (auto& worker : runtime->workers) {
         worker.complete = true;
     }
@@ -1947,12 +2092,22 @@ TEST(SavorPredictCombatantVisualRuntime, SerializedChildHoldsActionBarrierUntilC
     const auto blocked = run_first_turn_frame(*runtime, rng);
     EXPECT_EQ(runtime->active_action->phase, BattleFrameActionPhase::Draining);
     EXPECT_EQ(count_step(blocked.events, BattleFrameWorkerStepKind::ActionComplete), 0);
-    EXPECT_FALSE(runtime->visual.child_tasks[0].complete);
+    const auto find_camera = [&]() -> BattleFrameVisualChildTask* {
+        const auto found = std::find_if(
+            runtime->visual.child_tasks.begin(),
+            runtime->visual.child_tasks.end(),
+            [camera_sequence](const BattleFrameVisualChildTask& task) {
+                return task.sequence == camera_sequence;
+            });
+        return found == runtime->visual.child_tasks.end() ? nullptr : &*found;
+    };
+    ASSERT_NE(find_camera(), nullptr);
+    EXPECT_FALSE(find_camera()->complete);
 
-    runtime->visual.child_tasks[0].maximum_visits =
-        runtime->visual.child_tasks[0].visits + 1;
+    find_camera()->maximum_visits = find_camera()->visits + 1;
     const auto released = run_first_turn_frame(*runtime, rng);
-    EXPECT_TRUE(runtime->visual.child_tasks[0].complete);
+    ASSERT_NE(find_camera(), nullptr);
+    EXPECT_TRUE(find_camera()->complete);
     EXPECT_EQ(runtime->active_action->phase, BattleFrameActionPhase::Complete);
     EXPECT_EQ(count_step(released.events, BattleFrameWorkerStepKind::ActionComplete), 1);
 }
@@ -1966,6 +2121,7 @@ TEST(SavorPredictCombatantVisualRuntime, Mode0RewriteAndMode0eDrawHaveSeparateOw
     resource.selector_table = combatant_visual_selector_table(resource);
     ASSERT_TRUE(configure_battle_frame_visual_resource(*runtime, std::move(resource)));
     ASSERT_TRUE(schedule_action(*runtime, false).scheduled);
+    runtime->visual.action_view_role.valid = false;
 
     std::uint32_t rng = 1;
     while ((draw_rand15(draw_rand15(rng).next_state).value % 2U) != 0U) {
@@ -1973,13 +2129,12 @@ TEST(SavorPredictCombatantVisualRuntime, Mode0RewriteAndMode0eDrawHaveSeparateOw
     }
     const auto placement = draw_rand15(rng);
     const auto first = draw_rand15(placement.next_state);
-    const auto second = draw_rand15(first.next_state);
     ASSERT_TRUE(publish_fixture_visual_instruction_state(*runtime));
     const auto frame = run_until_visual_publication(*runtime, rng);
 
     EXPECT_EQ(count_step(frame, BattleFrameWorkerStepKind::VisualMode0Rewrite), 1);
     EXPECT_EQ(count_step(frame, BattleFrameWorkerStepKind::VisualMode0eCamera), 1);
-    EXPECT_EQ(rng, second.next_state);
+    EXPECT_EQ(rng, first.next_state);
 }
 
 TEST(SavorPredictCombatantVisualRuntime, MissingResourceDoesNotInventRng) {
@@ -2003,7 +2158,12 @@ TEST(SavorPredictCombatantVisualRuntime, MissingResourceDoesNotInventRng) {
     }
     EXPECT_EQ(rng, placement.next_state);
     EXPECT_GE(count_step(frame, BattleFrameWorkerStepKind::ViewPlacementResolve), 1);
-    EXPECT_EQ(count_step(frame, BattleFrameWorkerStepKind::VisualCommandPublish), 0);
+    EXPECT_EQ(
+        count_step_for_command(
+            frame,
+            BattleFrameWorkerStepKind::VisualCommandPublish,
+            CombatantVisualCommandKind::SyntheticActionView),
+        1);
     EXPECT_EQ(count_step(frame, BattleFrameWorkerStepKind::VisualMode0Rewrite), 0);
     EXPECT_EQ(count_step(frame, BattleFrameWorkerStepKind::VisualMode0eCamera), 0);
 }
@@ -2045,20 +2205,30 @@ TEST(SavorPredictCombatantVisualRuntime, ReplaysAcceptedFourteenServiceVisitCont
             const auto step = run_first_turn_frame(*runtime, rng);
             events.insert(events.end(), step.events.begin(), step.events.end());
             if (!action_released
-                && count_step(
-                    events,
-                    BattleFrameWorkerStepKind::VisualCommandPublish) > 0) {
+                && count_non_synthetic_publications(events) > 0) {
                 runtime->active_action.reset();
                 action_released = true;
             }
         }
 
-        EXPECT_EQ(count_step(events, BattleFrameWorkerStepKind::VisualChildState0), 1);
+        EXPECT_EQ(count_step_for_command(
+            events,
+            BattleFrameWorkerStepKind::VisualChildState0,
+            CombatantVisualCommandKind::SetCommand), 1);
         EXPECT_EQ(
-            count_step(events, BattleFrameWorkerStepKind::VisualChildDelay),
+            count_step_for_command(
+                events,
+                BattleFrameWorkerStepKind::VisualChildDelay,
+                CombatantVisualCommandKind::SetCommand),
             captured.delay);
-        EXPECT_EQ(count_step(events, BattleFrameWorkerStepKind::VisualChildNested), 1);
-        EXPECT_EQ(count_step(events, BattleFrameWorkerStepKind::VisualChildCleanup), 1);
+        EXPECT_EQ(count_step_for_command(
+            events,
+            BattleFrameWorkerStepKind::VisualChildNested,
+            CombatantVisualCommandKind::SetCommand), 1);
+        EXPECT_EQ(count_step_for_command(
+            events,
+            BattleFrameWorkerStepKind::VisualChildCleanup,
+            CombatantVisualCommandKind::SetCommand), 1);
         EXPECT_EQ(
             count_rng_label(events, "fun_8002eb4c_action_service"),
             captured.eb4c_gate ? 1 : 0);

@@ -128,6 +128,16 @@ ActionMotionInvocationResult resolve_basic_callback(
     ActionMotionInvocationResult result;
     switch (effective.callback_state) {
     case 3: {
+        if ((effective.instruction_flags_0xf0 & 0x02000000u) != 0) {
+            result.status = ActionMotionInvocationStatus::Matched;
+            result.decision = ActionMotionInvocationDecisionKind::Wait;
+            result.callback_state_before = 3;
+            result.callback_state_after = 3;
+            result.provenance =
+                "FUN_8001B1B0 state 3 retained control while the synthetic "
+                "action-view record owned IW+0xF0 bit 0x02000000";
+            break;
+        }
         const bool mode3_route = effective.basic_uses_mode_3_route.value_or(false);
         result = invoke_resolver(
             rows,
@@ -686,6 +696,28 @@ ActionMotionInvocationResult resolve_action_motion_invocation(
     }
     case ActionMotionPersistentCallbackFamily::ActionMotionSpecial_8001A4F0:
         return resolve_special_callback(rows, request);
+    case ActionMotionPersistentCallbackFamily::ActionMotion_80019D7C: {
+        ActionMotionInvocationResult result;
+        result.status = ActionMotionInvocationStatus::Matched;
+        result.decision = ActionMotionInvocationDecisionKind::Wait;
+        result.callback_state_before = request.callback_state;
+        result.callback_state_after = request.callback_state;
+        if (request.callback_state == 0) {
+            result.callback_state_after = 1;
+            result.auxiliary_child =
+                ActionMotionAuxiliaryChildKind::
+                    ActionViewRoleFlag_80019B70;
+            result.operation_callsite = "FUN_80019D7C.state0";
+            result.provenance =
+                "FUN_80019D7C state 0 created the fixed 0x0B -> 5 "
+                "FUN_80019B70 child and wrote IW+0x12=1";
+        } else {
+            result.provenance =
+                "FUN_80019D7C retained its installed callback after the "
+                "role-flag child publication";
+        }
+        return result;
+    }
     case ActionMotionPersistentCallbackFamily::ActionMotionRanged_80019F0C:
         return resolve_ranged_callback(rows, request);
     default: {

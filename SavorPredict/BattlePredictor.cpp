@@ -2658,7 +2658,9 @@ void append_attack_resolution(
                 .actor_slot = action.actor_slot,
                 .target_slot = action.target_slot,
                 .action_ordinal = action.frame_action_ordinal,
-                .detail = "queued transition, action-motion playback, STD-row publication, or mode-1 pathing remained pending after "
+                .detail = "queued transition, ordered action-view selector, "
+                    "mode-11 gate, action-motion playback, STD-row publication, "
+                    "or mode-1 pathing remained pending after "
                     + std::to_string(kVisualPublicationVisitCap)
                     + " owning-thread visits; no effect RNG was scheduled past the unresolved boundary",
             });

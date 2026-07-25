@@ -2,6 +2,8 @@
 
 #include "ActionMotionInvocationModel.h"
 #include "ActionMotionPlaybackModel.h"
+#include "ActionViewMode11Model.h"
+#include "ActionViewRoleModel.h"
 #include "BattleCollisionBoxModel.h"
 #include "BattleFrameStateModel.h"
 #include "BattleFrameThreadListModel.h"
@@ -107,6 +109,9 @@ enum class BattleFrameWorkerStepKind {
     PassiveDeathClear,
     ActionComplete,
     VisualControllerVisit,
+    ActionViewRoleResolve,
+    ActionViewRoleFlagSpawn,
+    ActionViewRoleFlagVisit,
     VisualInstructionDecision,
     VisualInstructionStatePublish,
     TargetReactionPublish,
@@ -132,6 +137,11 @@ enum class BattleFrameWorkerStepKind {
     VisualMode0Rewrite,
     VisualMode0eCamera,
     VisualMode1Pathing,
+    VisualMode11Setup,
+    VisualMode11Advance,
+    VisualInstructionGate,
+    VisualActiveRecordReplace,
+    VisualReplacementState,
     VisualUnsupportedWait,
     CallbackEntry,
     PathBuild,
@@ -604,8 +614,40 @@ struct BattleFrameActionViewControllerRuntime {
     std::int16_t selector_state_0x30 = 0;
     std::int16_t actor_slot_0x2 = -1;
     std::int16_t target_slot_0x4 = -1;
-    std::vector<std::string> published_signatures;
+    std::uint64_t visit_revision = 0;
+    std::uint64_t publication_revision = 0;
     std::vector<int> direct_view_action_ordinals;
+};
+
+struct BattleFrameActionViewRoleRuntime {
+    bool valid = false;
+    int action_ordinal = -1;
+    int acting_actor_slot = -1;
+    int queued_target_slot = -1;
+    std::uint64_t revision = 0;
+    ActionViewRoleStatus status = ActionViewRoleStatus::MissingInput;
+    std::string provenance;
+};
+
+struct BattleFrameActionViewRoleFlagChildRuntime {
+    int sequence = -1;
+    int thread_node_id = -1;
+    int parent_thread_node_id = -1;
+    int action_ordinal = -1;
+    int slot = -1;
+    int visits = 0;
+    ActionViewRoleFlagProducerState state{};
+    ActionViewRoleStatus status = ActionViewRoleStatus::MissingInput;
+    bool complete = false;
+    std::string provenance;
+};
+
+struct BattleFrameActionViewActiveRecordRuntime {
+    std::optional<int> task_sequence;
+    std::uint64_t revision = 0;
+    int publication_frame = -1;
+    int publication_visit_cursor = -1;
+    std::string provenance;
 };
 
 struct BattleFrameVisualChildTask {
@@ -639,6 +681,20 @@ struct BattleFrameVisualChildTask {
     bool mode0_draw_consumed = false;
     bool mode0e_draw_consumed = false;
     bool mode1_pathing_consumed = false;
+    bool mode11_initialized = false;
+    ActionViewMode11Status mode11_status =
+        ActionViewMode11Status::Provisional;
+    ActionViewMode11Branch mode11_branch =
+        ActionViewMode11Branch::ProvisionalInterpolation;
+    int mode11_substate = 0;
+    int mode11_counter = 0;
+    int mode11_setup_frame = -1;
+    bool mode11_gate_owned = false;
+    bool mode11_gate_cleared = false;
+    bool active_record_installed = false;
+    bool active_record_replacement_pending = false;
+    bool active_record_state_fa = false;
+    int active_record_replacement_frame = -1;
     bool nested_call_complete = false;
     CombatantVisualModelStatus status = CombatantVisualModelStatus::Provisional;
     std::optional<CombatantVisualSetCommandPayload> set_command;
@@ -737,6 +793,11 @@ struct BattleFrameInstructionControlResetHistoryEvent {
 
 struct BattleFrameVisualRuntime {
     BattleFrameActionViewControllerRuntime controller{};
+    BattleFrameActionViewRoleRuntime action_view_role{};
+    BattleFrameActionViewActiveRecordRuntime active_record{};
+    std::array<std::optional<ActionViewMode11CameraOperands>,
+               kBattleFrameCombatantSlotCapacity>
+        mode11_camera_operands{};
     std::array<std::optional<CombatantVisualResource>, kBattleFrameCombatantSlotCapacity>
         resources{};
     std::array<CombatantVisualTimelineState, kBattleFrameCombatantSlotCapacity>
@@ -755,10 +816,13 @@ struct BattleFrameVisualRuntime {
     std::vector<BattleFrameInstructionControlResetHistoryEvent>
         instruction_control_reset_history;
     std::vector<BattleFrameVisualChildTask> child_tasks;
+    std::vector<BattleFrameActionViewRoleFlagChildRuntime>
+        role_flag_children;
     std::vector<BattleFrameStepEvent> history;
     std::vector<BattleFrameStepEvent> pending_events;
     std::string pathing_profile_name;
     int next_child_sequence = 0;
+    int next_role_flag_child_sequence = 0;
     int next_instruction_control_reset_sequence = 0;
     int current_visit_cursor = -1;
 };
@@ -770,6 +834,7 @@ struct BattleFrameRuntime {
     std::array<BattleFrameTargetReactionRuntime,
                kBattleFrameCombatantSlotCapacity>
         target_reactions{};
+    std::optional<int> persistent_action_view_controller_node_id;
     std::optional<int> std_resource_worker_node_id;
     ViewPlacementCacheRuntime view_placement_cache{};
     BattleFrameVisualRuntime visual{};

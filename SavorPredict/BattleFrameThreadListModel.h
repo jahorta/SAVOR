@@ -10,17 +10,21 @@
 namespace savor::predict {
 
 enum class BattleFrameThreadNodeKind {
+    PersistentActionViewController,
     MovementController,
     CombatantInstruction,
     ResourceWorker,
+    InstructionAuxiliaryChild,
     AuxiliaryVisualChild,
     Unknown,
 };
 
 enum class BattleFrameThreadCallbackIdentity {
+    PersistentActionViewController,
     MovementController,
     CombatantInstruction,
     ResourceQueue,
+    ActionViewRoleFlag,
     VisualSetCommand,
     VisualMoveModel,
     VisualPutModel,

@@ -251,6 +251,32 @@ TEST(SavorPredictActionMotionInvocation, InitialSyncCallbackDoesNotInstallPlayba
     EXPECT_EQ(result.callback_state_after, 0);
 }
 
+TEST(SavorPredictActionMotionInvocation, RoleCallbackCreatesOneTypedChildAtStateZero) {
+    const auto created = resolve_action_motion_invocation(
+        action_rows(),
+        exact_invocation(
+            ActionMotionPersistentCallbackFamily::ActionMotion_80019D7C,
+            0,
+            5));
+    EXPECT_EQ(created.status, ActionMotionInvocationStatus::Matched);
+    EXPECT_EQ(created.decision, ActionMotionInvocationDecisionKind::Wait);
+    EXPECT_EQ(created.callback_state_after, 1);
+    EXPECT_EQ(
+        created.auxiliary_child,
+        ActionMotionAuxiliaryChildKind::ActionViewRoleFlag_80019B70);
+
+    const auto retained = resolve_action_motion_invocation(
+        action_rows(),
+        exact_invocation(
+            ActionMotionPersistentCallbackFamily::ActionMotion_80019D7C,
+            1,
+            5));
+    EXPECT_EQ(
+        retained.auxiliary_child,
+        ActionMotionAuxiliaryChildKind::None);
+    EXPECT_EQ(retained.callback_state_after, 1);
+}
+
 TEST(SavorPredictActionMotionInvocation, SpecialState9AndBasicState15Install) {
     const auto special = resolve_action_motion_invocation(
         action_rows(),
@@ -281,6 +307,9 @@ TEST(SavorPredictActionMotionInvocation, CallbackIndexMappingUsesExecutableTable
     EXPECT_EQ(
         action_motion_callback_family_for_index(13),
         ActionMotionPersistentCallbackFamily::ActionMotionRanged_80019F0C);
+    EXPECT_EQ(
+        action_motion_callback_family_for_index(12),
+        ActionMotionPersistentCallbackFamily::ActionMotion_80019D7C);
     EXPECT_EQ(
         action_motion_callback_family_for_index(99),
         ActionMotionPersistentCallbackFamily::Unknown);

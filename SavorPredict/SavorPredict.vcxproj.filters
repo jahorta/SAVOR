@@ -23,6 +23,12 @@
     <ClCompile Include="ActionViewGateCheckpointModel.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="ActionViewMode11Model.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="ActionViewRoleModel.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="ActionViewResourceCheckpointModel.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -243,6 +249,12 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="ActionViewGateCheckpointModel.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="ActionViewMode11Model.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="ActionViewRoleModel.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="ActionViewResourceCheckpointModel.h">

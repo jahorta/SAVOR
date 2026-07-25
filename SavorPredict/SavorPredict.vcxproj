@@ -112,6 +112,8 @@
     <ClCompile Include="ActionSetupCheckpointModel.cpp" />
     <ClCompile Include="ActionSourceCheckpointModel.cpp" />
     <ClCompile Include="ActionViewGateCheckpointModel.cpp" />
+    <ClCompile Include="ActionViewMode11Model.cpp" />
+    <ClCompile Include="ActionViewRoleModel.cpp" />
     <ClCompile Include="ActionViewResourceCheckpointModel.cpp" />
     <ClCompile Include="ActionViewPathingTailModel.cpp" />
     <ClCompile Include="ActionViewSelectorModel.cpp" />
@@ -192,6 +194,8 @@
     <ClInclude Include="ActionSetupCheckpointModel.h" />
     <ClInclude Include="ActionSourceCheckpointModel.h" />
     <ClInclude Include="ActionViewGateCheckpointModel.h" />
+    <ClInclude Include="ActionViewMode11Model.h" />
+    <ClInclude Include="ActionViewRoleModel.h" />
     <ClInclude Include="ActionViewResourceCheckpointModel.h" />
     <ClInclude Include="ActionViewPathingTailModel.h" />
     <ClInclude Include="ActionViewSelectorModel.h" />

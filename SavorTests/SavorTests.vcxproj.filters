@@ -8,6 +8,8 @@
     <ClCompile Include="..\SavorPredict\ActionSetupCheckpointModel.cpp" />
     <ClCompile Include="..\SavorPredict\ActionSourceCheckpointModel.cpp" />
     <ClCompile Include="..\SavorPredict\ActionViewGateCheckpointModel.cpp" />
+    <ClCompile Include="..\SavorPredict\ActionViewMode11Model.cpp" />
+    <ClCompile Include="..\SavorPredict\ActionViewRoleModel.cpp" />
     <ClCompile Include="..\SavorPredict\ActionViewResourceCheckpointModel.cpp" />
     <ClCompile Include="..\SavorPredict\ActionViewSelectorModel.cpp" />
     <ClCompile Include="..\SavorPredict\ActionViewPathingTailModel.cpp" />
@@ -96,6 +98,7 @@
     <ClCompile Include="test_battle_target_reaction_and_collision.cpp" />
     <ClCompile Include="test_battle_source_model.cpp" />
     <ClCompile Include="test_combatant_visual_dispatcher.cpp" />
+    <ClCompile Include="test_action_view_mode11.cpp" />
     <ClCompile Include="test_pad_poll_isolated_user.cpp" />
     <ClCompile Include="test_queued_instruction_param.cpp" />
     <ClCompile Include="test_savordb_utils_minimal_copy.cpp" />

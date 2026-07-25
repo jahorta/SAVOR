@@ -991,13 +991,14 @@ TEST(SavorPredictRngModel, ActionViewSelectorDrivesCameraOwner) {
         .previous_selector_state_0x30 = 3,
         .previous_actor_slot_0x2 = 1,
         .current_actor_slot = 0,
-        .instruction_flags_bit6_set = false,
+        .actor_instruction_flags_0xf0 = 0,
+        .actor_lookup_8001d41c_nonzero = false,
         .selected_aux_table = suppressing_table,
     });
     ASSERT_TRUE(actor_changed_fallback_selector.spawned_action_view_record_mode_if_known.has_value());
     EXPECT_EQ(*actor_changed_fallback_selector.spawned_action_view_record_mode_if_known, 0x11);
-    ASSERT_TRUE(actor_changed_fallback_selector.mode0e_count.has_value());
-    EXPECT_EQ(actor_changed_fallback_selector.mode0e_count->count, 1);
+    EXPECT_FALSE(actor_changed_fallback_selector.mode0e_count.has_value());
+    EXPECT_EQ(actor_changed_fallback_selector.selector_state_0x30, 1);
     const auto actor_changed_fallback_camera = model_first_battle_basic_attack_visual_rng({
         .actor_slot = 0,
         .target_slot = 4,
@@ -1005,10 +1006,7 @@ TEST(SavorPredictRngModel, ActionViewSelectorDrivesCameraOwner) {
         .include_effect_bursts = false,
         .action_view_selector = actor_changed_fallback_selector,
     });
-    ASSERT_EQ(actor_changed_fallback_camera.steps.size(), 1u);
-    EXPECT_EQ(actor_changed_fallback_camera.total_draws, 1);
-    EXPECT_EQ(actor_changed_fallback_camera.steps[0].label, "mode0_action_view_camera_fallback");
-    EXPECT_EQ(actor_changed_fallback_camera.steps[0].status, BattleVisualRngStepStatus::Provisional);
+    EXPECT_EQ(actor_changed_fallback_camera.total_draws, 0);
 
     const auto missing_selector = select_action_view_mode({
         .instruction_field6_0x6 = 4,
@@ -1641,7 +1639,7 @@ TEST(SavorPredictRngModel, ActionViewSelectorKeepsOnlyDisassemblySpecialField6St
         .previous_selector_state_0x30 = 3,
         .previous_actor_slot_0x2 = 1,
         .current_actor_slot = 1,
-        .instruction_flags_bit6_set = false,
+        .actor_instruction_flags_0xf0 = 0,
     });
     EXPECT_EQ(field6_0c_reset.requested_mode, 4);
     EXPECT_EQ(field6_0c_reset.dispatch_effective_mode_0x2f, 4);
@@ -1743,6 +1741,8 @@ TEST(SavorPredictRngModel, ActionViewSelectorReportsMissingAuxTableOnlyWhenGateI
         .instruction_field6_0x6 = 14,
         .previous_effective_mode_0x2f = 1,
         .previous_selector_state_0x30 = 2,
+        .previous_actor_slot_0x2 = 0,
+        .current_actor_slot = 0,
     });
     EXPECT_FALSE(skipped.mode0e_query_reached);
     EXPECT_FALSE(skipped.unsupported_without_aux_table);
@@ -1751,6 +1751,8 @@ TEST(SavorPredictRngModel, ActionViewSelectorReportsMissingAuxTableOnlyWhenGateI
         .instruction_field6_0x6 = 4,
         .previous_effective_mode_0x2f = 2,
         .previous_selector_state_0x30 = 2,
+        .previous_actor_slot_0x2 = 0,
+        .current_actor_slot = 0,
     });
     EXPECT_TRUE(missing.mode0e_query_reached);
     EXPECT_TRUE(missing.unsupported_without_aux_table);
@@ -1768,7 +1770,7 @@ TEST(SavorPredictRngModel, ActionViewSelectorRunsState0TransitionAfterModeChange
         .previous_selector_state_0x30 = 3,
         .previous_actor_slot_0x2 = 0,
         .current_actor_slot = 0,
-        .instruction_flags_bit6_set = false,
+        .actor_instruction_flags_0xf0 = 0,
         .selected_aux_table = empty_table,
     });
 
@@ -1791,7 +1793,8 @@ TEST(SavorPredictRngModel, ActionViewSelectorRunsState0TransitionAfterModeChange
         .previous_selector_state_0x30 = 3,
         .previous_actor_slot_0x2 = 1,
         .current_actor_slot = 0,
-        .instruction_flags_bit6_set = true,
+        .actor_instruction_flags_0xf0 = 0,
+        .actor_lookup_8001d41c_nonzero = false,
         .selected_aux_table = empty_table,
     });
     const auto* state0_spawn = find_selector_helper_call(
@@ -1813,7 +1816,7 @@ TEST(SavorPredictRngModel, ActionViewSelectorRunsState0TransitionAfterModeChange
         .previous_selector_state_0x30 = 3,
         .previous_actor_slot_0x2 = 0,
         .current_actor_slot = 0,
-        .instruction_flags_bit6_set = true,
+        .actor_instruction_flags_0xf0 = 0x02000000u,
         .selected_aux_table = empty_table,
     });
 
@@ -1834,16 +1837,20 @@ TEST(SavorPredictRngModel, ActionViewSelectorModelsEntryActorChangeLookupStateWr
         .previous_actor_slot_0x2 = 1,
         .current_actor_slot = 5,
         .current_secondary_slot = 0,
-        .instruction_flags_bit6_set = false,
+        .actor_instruction_flags_0xf0 = 0,
         .actor_lookup_8001d41c_nonzero = false,
         .selected_aux_table = empty_table,
     });
 
     EXPECT_EQ(lookup_zero.dispatch_effective_mode_0x2f, 2);
-    EXPECT_TRUE(lookup_zero.mode0e_query_reached);
-    EXPECT_TRUE(lookup_zero.mode0e_synthetic_call_selected);
+    EXPECT_FALSE(lookup_zero.mode0e_query_reached);
+    EXPECT_FALSE(lookup_zero.mode0e_synthetic_call_selected);
+    EXPECT_EQ(lookup_zero.selector_state_0x30, 1);
     EXPECT_EQ(lookup_zero.selector_actor_slot_0x2_written, 5);
     EXPECT_EQ(lookup_zero.selector_secondary_slot_0x4_written, 0);
+    EXPECT_EQ(
+        lookup_zero.spawned_action_view_record_modes,
+        (std::vector<std::int16_t>{0x11}));
     EXPECT_NE(
         std::find(
             lookup_zero.branch_path.begin(),
@@ -1854,8 +1861,28 @@ TEST(SavorPredictRngModel, ActionViewSelectorModelsEntryActorChangeLookupStateWr
         std::find(
             lookup_zero.branch_path.begin(),
             lookup_zero.branch_path.end(),
-            "state0_transition_result=2"),
+            "state0_transition_result=1"),
         lookup_zero.branch_path.end());
+
+    const auto lookup_zero_after_clear = select_action_view_mode({
+        .instruction_field6_0x6 = 4,
+        .previous_effective_mode_0x2f =
+            lookup_zero.dispatch_effective_mode_0x2f,
+        .previous_selector_state_0x30 =
+            lookup_zero.selector_state_0x30,
+        .previous_actor_slot_0x2 = 5,
+        .current_actor_slot = 5,
+        .current_secondary_slot = 0,
+        .actor_instruction_flags_0xf0 = 0,
+        .actor_lookup_8001d41c_nonzero = false,
+        .selected_aux_table = empty_table,
+    });
+    EXPECT_TRUE(lookup_zero_after_clear.mode0e_query_reached);
+    EXPECT_TRUE(lookup_zero_after_clear.mode0e_synthetic_call_selected);
+    EXPECT_EQ(lookup_zero_after_clear.selector_state_0x30, 3);
+    EXPECT_EQ(
+        lookup_zero_after_clear.spawned_action_view_record_modes,
+        (std::vector<std::int16_t>{0x0e}));
 
     const auto lookup_nonzero = select_action_view_mode({
         .instruction_field6_0x6 = 4,
@@ -1864,19 +1891,126 @@ TEST(SavorPredictRngModel, ActionViewSelectorModelsEntryActorChangeLookupStateWr
         .previous_actor_slot_0x2 = 1,
         .current_actor_slot = 5,
         .current_secondary_slot = 0,
-        .instruction_flags_bit6_set = true,
+        .actor_instruction_flags_0xf0 = 0,
         .actor_lookup_8001d41c_nonzero = true,
         .selected_aux_table = empty_table,
     });
 
     EXPECT_EQ(lookup_nonzero.dispatch_effective_mode_0x2f, 2);
     EXPECT_TRUE(lookup_nonzero.mode0e_query_reached);
+    EXPECT_EQ(
+        lookup_nonzero.spawned_action_view_record_modes,
+        (std::vector<std::int16_t>{0x0e}));
     EXPECT_NE(
         std::find(
             lookup_nonzero.branch_path.begin(),
             lookup_nonzero.branch_path.end(),
             "entry_actor_changed_lookup_nonzero_state2"),
         lookup_nonzero.branch_path.end());
+}
+
+TEST(SavorPredictRngModel, ActionViewSelectorOrdersGateAndUsesLatestGatedMode) {
+    Std0Table empty_table;
+    empty_table.includes_sentinel = true;
+    empty_table.entries = {{.location_code = -1}};
+
+    const auto actor_change = select_action_view_mode({
+        .instruction_field6_0x6 = 5,
+        .previous_effective_mode_0x2f = 1,
+        .previous_selector_state_0x30 = 3,
+        .previous_actor_slot_0x2 = 4,
+        .current_actor_slot = 0,
+        .current_secondary_slot = 4,
+        .actor_instruction_flags_0xf0 = 0,
+        .actor_lookup_8001d41c_nonzero = false,
+        .selected_aux_table = empty_table,
+    });
+    ASSERT_EQ(actor_change.selector_state_0x30, 1);
+    ASSERT_EQ(
+        actor_change.spawned_action_view_record_modes,
+        (std::vector<std::int16_t>{0x11}));
+
+    const auto operation_index = [&actor_change](
+        ActionViewSelectorOperationKind kind) {
+        const auto found = std::find_if(
+            actor_change.operations.begin(),
+            actor_change.operations.end(),
+            [kind](const ActionViewSelectorOperation& operation) {
+                return operation.kind == kind;
+            });
+        return std::distance(actor_change.operations.begin(), found);
+    };
+    EXPECT_LT(
+        operation_index(
+            ActionViewSelectorOperationKind::PublishSyntheticRecord),
+        operation_index(ActionViewSelectorOperationKind::SetMode11Gate));
+    EXPECT_LT(
+        operation_index(ActionViewSelectorOperationKind::SetMode11Gate),
+        operation_index(ActionViewSelectorOperationKind::GateRecheck));
+    EXPECT_LT(
+        operation_index(ActionViewSelectorOperationKind::GateRecheck),
+        operation_index(ActionViewSelectorOperationKind::WriteSelectorState));
+
+    const auto changed_while_gated = select_action_view_mode({
+        .instruction_field6_0x6 = 4,
+        .previous_effective_mode_0x2f =
+            actor_change.dispatch_effective_mode_0x2f,
+        .previous_selector_state_0x30 =
+            actor_change.selector_state_0x30,
+        .previous_actor_slot_0x2 = 0,
+        .current_actor_slot = 0,
+        .current_secondary_slot = 4,
+        .actor_instruction_flags_0xf0 = 0x02000000u,
+        .actor_lookup_8001d41c_nonzero = false,
+        .selected_aux_table = empty_table,
+    });
+    EXPECT_EQ(changed_while_gated.selector_state_0x30, 1);
+    EXPECT_EQ(changed_while_gated.dispatch_effective_mode_0x2f, 2);
+    EXPECT_TRUE(
+        changed_while_gated.spawned_action_view_record_modes.empty());
+    EXPECT_FALSE(changed_while_gated.mode0e_query_reached);
+
+    const auto gate_clear = select_action_view_mode({
+        .instruction_field6_0x6 = 4,
+        .previous_effective_mode_0x2f =
+            changed_while_gated.dispatch_effective_mode_0x2f,
+        .previous_selector_state_0x30 =
+            changed_while_gated.selector_state_0x30,
+        .previous_actor_slot_0x2 = 0,
+        .current_actor_slot = 0,
+        .current_secondary_slot = 4,
+        .actor_instruction_flags_0xf0 = 0,
+        .actor_lookup_8001d41c_nonzero = false,
+        .selected_aux_table = empty_table,
+    });
+    EXPECT_EQ(gate_clear.selector_state_0x30, 3);
+    EXPECT_TRUE(gate_clear.mode0e_query_reached);
+    EXPECT_EQ(
+        gate_clear.spawned_action_view_record_modes,
+        (std::vector<std::int16_t>{0x0e}));
+}
+
+TEST(SavorPredictRngModel, ActionViewSelectorGateIsActorSpecific) {
+    Std0Table empty_table;
+    empty_table.includes_sentinel = true;
+    empty_table.entries = {{.location_code = -1}};
+
+    const auto reversed_actor = select_action_view_mode({
+        .instruction_field6_0x6 = 4,
+        .previous_effective_mode_0x2f = 3,
+        .previous_selector_state_0x30 = 1,
+        .previous_actor_slot_0x2 = 0,
+        .current_actor_slot = 4,
+        .current_secondary_slot = 0,
+        .actor_instruction_flags_0xf0 = 0,
+        .actor_lookup_8001d41c_nonzero = true,
+        .selected_aux_table = empty_table,
+    });
+    EXPECT_EQ(reversed_actor.selector_state_0x30, 3);
+    EXPECT_TRUE(reversed_actor.mode0e_query_reached);
+    EXPECT_EQ(
+        reversed_actor.spawned_action_view_record_modes,
+        (std::vector<std::int16_t>{0x0e}));
 }
 
 TEST(SavorPredictRngModel, ActionViewSelectorModelsSiblingAuxQueryPaths) {
@@ -1902,6 +2036,8 @@ TEST(SavorPredictRngModel, ActionViewSelectorModelsSiblingAuxQueryPaths) {
         .instruction_field6_0x6 = 5,
         .previous_effective_mode_0x2f = 3,
         .previous_selector_state_0x30 = 2,
+        .previous_actor_slot_0x2 = 0,
+        .current_actor_slot = 0,
         .selected_aux_table = table,
     });
     EXPECT_EQ(mode3.dispatch_effective_mode_0x2f, 3);
@@ -1916,6 +2052,8 @@ TEST(SavorPredictRngModel, ActionViewSelectorModelsSiblingAuxQueryPaths) {
         .instruction_field6_0x6 = 5,
         .previous_effective_mode_0x2f = 3,
         .previous_selector_state_0x30 = 2,
+        .previous_actor_slot_0x2 = 0,
+        .current_actor_slot = 0,
         .selected_aux_table = Std0Table{ .entries = { { .location_code = -1 } }, .includes_sentinel = true },
     });
     ASSERT_TRUE(mode3_zero.mode3_count.has_value());
@@ -1937,6 +2075,8 @@ TEST(SavorPredictRngModel, ActionViewSelectorModelsSiblingAuxQueryPaths) {
         .instruction_field8_0x8 = 0x34,
         .previous_effective_mode_0x2f = 5,
         .previous_selector_state_0x30 = 2,
+        .previous_actor_slot_0x2 = 0,
+        .current_actor_slot = 0,
         .helper_800153e0_result = false,
         .selected_aux_table = table,
     });
@@ -1953,6 +2093,8 @@ TEST(SavorPredictRngModel, ActionViewSelectorModelsSiblingAuxQueryPaths) {
         .instruction_field8_0x8 = 0x77,
         .previous_effective_mode_0x2f = 5,
         .previous_selector_state_0x30 = 2,
+        .previous_actor_slot_0x2 = 0,
+        .current_actor_slot = 0,
         .helper_800153e0_result = false,
         .selected_aux_table = table,
     });
@@ -1977,6 +2119,7 @@ TEST(SavorPredictRngModel, ActionViewSelectorModelsMode1State2HelperPath) {
         .instruction_field6_0x6 = 13,
         .previous_effective_mode_0x2f = 1,
         .previous_selector_state_0x30 = 2,
+        .previous_actor_slot_0x2 = 1,
         .current_actor_slot = 1,
         .current_secondary_slot = 4,
     });
@@ -2005,6 +2148,8 @@ TEST(SavorPredictRngModel, ActionViewEffectiveMode4FallsThroughToMode0Dispatch) 
         .instruction_field6_0x6 = 2,
         .previous_effective_mode_0x2f = 4,
         .previous_selector_state_0x30 = 2,
+        .previous_actor_slot_0x2 = 0,
+        .current_actor_slot = 0,
     });
     EXPECT_EQ(mode4.dispatch_effective_mode_0x2f, 4);
     EXPECT_FALSE(mode4.mode5_query_reached);
@@ -2713,6 +2858,18 @@ TEST(SavorPredictBattleFrameSchedulerModel, InitializesProducerDerivedMovementTh
     EXPECT_TRUE(active_battle_frame_threads(
         runtime->thread_list,
         BattleFrameThreadNodeKind::CombatantInstruction).empty());
+    const auto view_controllers = active_battle_frame_threads(
+        runtime->thread_list,
+        BattleFrameThreadNodeKind::PersistentActionViewController);
+    ASSERT_EQ(view_controllers.size(), 1u);
+    ASSERT_FALSE(runtime->thread_list.nodes.empty());
+    EXPECT_EQ(
+        runtime->thread_list.nodes.front().node_id,
+        view_controllers.front()->node_id);
+    EXPECT_EQ(
+        view_controllers.front()->callback,
+        BattleFrameThreadCallbackIdentity::
+            PersistentActionViewController);
 
     const auto* aika = find_frame_combatant(runtime->state, 1);
     ASSERT_NE(aika, nullptr);
