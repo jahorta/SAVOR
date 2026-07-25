@@ -4,17 +4,18 @@
 
 Future plan. `SavorPredict` currently has an exploratory/battle-focused executable and CLI shape. A
 reusable navigation search boundary, asynchronous invocation contract, navigation model bundle, and
-durable result schemas must be designed before this workflow can execute.
+durable result schemas must be designed before this workflow can execute. Its future prediction-start
+contract is separate from the implemented Navigation Context `.nctx` used to bootstrap the Navmesh Survey.
 
 ## Three Separate Responsibilities
 
 Navigation planning is divided into three stages:
 
 1. **Prediction** decides what world-space route and movement/no-movement/interruption schedule can meet
-   an objective from a clean context.
+   an objective from a clean `NavigationPredictionStart`.
 2. **Control solving** determines the camera-relative controller inputs that realize the selected
    planning result.
-3. **Clean validation** executes those inputs from the original unmodified lineage and compares observed
+3. **Clean validation** executes those inputs from the original unmodified prediction-start lineage and compares observed
    state and outcome with the prediction.
 
 No stage silently absorbs another. The predictor is not a controller emulator, and the Navigation widget
@@ -24,7 +25,7 @@ is not a prediction search engine.
 
 The request explicitly references:
 
-- one ready `navigation_context_result_id`;
+- one explicit future `navigation_prediction_start_id`;
 - one `NavigationContentBundle`;
 - one static world/graph and optional `NavigationWorldRefinement`;
 - start anchor and one spatial/objective target;
@@ -34,7 +35,7 @@ The request explicitly references:
 - admissible route and movement/no-movement actions; and
 - requested output/trace detail.
 
-The request contains no "latest context," machine path, raw camera orientation, or precomputed controller
+The request contains no "latest prediction start," machine path, raw camera orientation, or precomputed controller
 tape. Compatibility is checked before search begins.
 
 ## Model Bundle and Completeness
@@ -43,7 +44,7 @@ The model bundle identifies every temporal/runtime rule used by the search, incl
 encounter, RNG, script interruption, and movement abstractions. It records:
 
 - component names, versions, code/data hashes, and evidence state;
-- required `NavigationContextResult` capabilities;
+- required `NavigationPredictionStart` capabilities;
 - supported area/profile/runtime revisions;
 - supported interruption types; and
 - known omissions.
@@ -55,7 +56,7 @@ versioned model exists. If a selected objective depends on an unsupported source
 
 ## One Epoch Across Same-Script Interruptions
 
-Prediction begins at the one clean context for the `NavigationEpoch`. If a same-script cutscene or event
+Prediction begins at the one `NavigationPredictionStart` for the `NavigationEpoch`. If a same-script cutscene or event
 interrupts movement and returns control, the model evolves through that event and continues from the
 resulting state. It does not reset `stepCount`, RNG, or other state unless the model has explicit evidence
 for an observed change.
@@ -152,20 +153,20 @@ with no exploration-suppression patch. It records:
 Validation never overwrites the prediction. Agreement, disagreement, and unvalidated portions remain
 separate evidence.
 
-## Continuations and New Contexts
+## Continuations and New Prediction Starts
 
-- A completed objective inside the same script may end the workflow without creating a new context.
+- A completed objective inside the same script may end the workflow without creating a new prediction start.
 - A modeled same-script cutscene remains within the same epoch and state trace.
 - A field script/context switch ends the current epoch; subsequent planning waits for
-  `nav.capture_context` at the new stable boundary.
+  `nav.capture_prediction_start` at the new stable boundary.
 - Battle entry ends the current epoch; battle handling is a different workflow, and battle return must be
-  captured as a new navigation context.
+  captured as a new `NavigationPredictionStart`.
 
 A terminal validation savestate is useful lineage, but it is not automatically a ready next context.
 
 ## Failure and Retry Rules
 
-- Incompatible context/content/world/model identities fail before search.
+- Incompatible prediction-start/content/world/model identities fail before search.
 - Missing required runtime fields yields `ModelIncomplete` or an invalid input result, never guessed state.
 - Predictor retry uses the same immutable request unless a new request version is authored.
 - Control divergence may cause another solver attempt against the same selected prediction.
@@ -175,7 +176,8 @@ A terminal validation savestate is useful lineage, but it is not automatically a
 
 ## Acceptance Rules
 
-- Predictor inputs name one ready context and all versioned content/world/model dependencies.
+- Predictor inputs name one ready `NavigationPredictionStart` and all versioned content/world/model
+  dependencies.
 - Predictor output is world-space planning plus a movement/no-movement/interruption schedule, not a raw
   controller tape.
 - Same-script cutscenes never create a clean-entry reset assumption.

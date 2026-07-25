@@ -15,20 +15,26 @@ The following are closed at the architectural level:
 - A same-script cutscene that returns control remains in one epoch and does not authorize a fresh-entry
   reset assumption.
 - The predictor starts with measured zero velocity and neutral authored input.
-- Camera/control orientation is excluded from `NavigationContextResult` and planning inputs.
+- Camera/control orientation is excluded from the future `NavigationPredictionStart` and planning inputs.
 - Disc and content identity is hash-based; machine paths are locators only.
 - Static world, patched exploration, prediction, control solving, and clean validation are separate
   immutable evidence layers.
-- The Navmesh Survey bootstraps from the explicitly referenced output savestate of a ready
-  `NavigationContextResult`; every survey anchor and successor remains disposable exploration lineage.
-- Encounter suppression is independent of trigger control. A survey job may need to suppress and permit
-  trigger activations dynamically while establishing anchors through doors, but no concrete gate modes,
-  allowlist, or runtime hook are resolved.
+- The first Navmesh Survey slice uses the explicitly named `navigation-context-41.sav` and adjacent
+  `navigation-context-41.nctx` as one common per-area bootstrap.
+- Published Survey anchors are positional records. Later workers reload the common bootstrap, teleport,
+  allow the game to reconstruct ground/collision state, and accept an anchor only after a usable settle.
+- Encounter suppression writes one zero byte to `0x8030b7ad`. Trigger commit is normally suppressed at
+  `0x80117e8c` with `0x48000018`; a door job temporarily restores `0x480F86C5` for the intended
+  interaction and immediately suppresses again. `eventhook` is outside the first slice.
+- Door success requires expected-TBLID identity plus physical crossing and far-side settle. A known lock
+  BitVar may be changed only in the isolated job, with original/override values and `initially_locked`
+  retained on the portal.
 - Parallel workers emit verified anchor records and immutable observations; deterministic domain reduction
   produces the refinement.
 - Prediction emits world-space planning and a movement/no-movement/interruption schedule; a later solver
   emits controller input.
-- Downstream work references an explicit context result ID; there is no implicit latest context.
+- Prediction work references an explicit `NavigationPredictionStart` ID; it does not reuse the
+  Survey-bootstrap `.nctx` or resolve an implicit latest result.
 
 ## Runtime Entry and Reset Research
 
@@ -56,34 +62,35 @@ are captured across representative areas.
 ## Runtime Patch and Exploration Research
 
 1. What safe SavorCore memory-write/patch API should enforce expected-original-value checks and restoration?
-2. Which patch point suppresses random encounter entry without changing movement/collision timing?
-3. Where in the runtime are automatic and interactable triggers detected, selected, dispatched, and
-   completed, and what identities remain stable across SCT/runtime revisions?
-4. Can one survey job suppress and later permit trigger activations without disabling required field
-   initialization, doors, MovingObjects, platforms, collision-resource changes, or other environmental
-   controllers?
-5. When one door/trigger is permitted, what causal script, forced-movement, and control-return boundary
-   must run as one attributable activation session, and how are unrelated activations excluded?
-6. Which complete placement operation may establish a nearby survey anchor, and which position, ground,
-   selector, velocity, collision-cache, settle, and control checks prove that anchor locally valid?
-7. How is anchor reachability from the clean field-entry context proven independently of local placement
-   validity?
-8. Which state-signature dimensions are required for doors, platforms, switches, MovingObjects, and
-   collision selectors?
-9. What probe density, approach coverage, and adaptive tolerance are sufficient to classify a
+2. The first-slice encounter-suppression write is byte value `0` at `0x8030b7ad`. What expected-original-value,
+   application/restoration boundary and cross-runtime validation are required before treating it as a
+   reusable profile?
+3. What paused executable-patch surface performs required instruction-cache handling and proves
+   expected-original, written, restored, and read-back words at `0x80117e8c`?
+4. What teleport implementation and positional tolerance define a usable settled anchor without
+   serializing ground-selector state?
+5. What runner safeguard ends a teleport attempt that never settles, while keeping that execution control
+   out of persistent navmesh evidence?
+6. What probe density, approach coverage, and adaptive tolerance are sufficient to classify a
    sub-triangle boundary?
-10. How should contradictory passability evidence be reproduced and adjudicated?
-11. Which telemetry and parameter sweeps distinguish ordinary slow/sticky behavior from a reproducible
-    sticky-corner positional jump or wall-contact ramp-speed effect?
-12. For automatic triggers, what spatial/state evidence defines every available approach boundary? For
-    interactable triggers, which position, distance, facing, input, occlusion, and state dimensions define
-    the activation envelope?
-13. When a trigger changes geometry or collision state, which affected regions require a new
-    state-qualified local survey?
+7. How should contradictory passability evidence be reproduced and adjudicated?
+8. What durable schema best represents positional anchors, portal lock constraints, spatial observations,
+   and tested/untested coverage?
 
-No dynamic trigger-control or trigger-survey job should ship before questions 1 and 3 through 5 have
-evidence-backed answers. Encounter-suppression question 2 remains independent. These questions
-intentionally do not preselect trigger-gate modes.
+The following broader questions are deferred beyond the door-only first slice:
+
+1. Where are all automatic and interactable trigger classes detected, dispatched, and completed across
+   `eventhook`, field initialization, MovingObjects, platforms, and collision-resource controllers?
+2. What generalized trigger-control or allowlist contract can exclude unrelated activations?
+3. For automatic triggers, what spatial/state evidence defines every available approach boundary? For
+   interactable triggers, which position, distance, facing, input, occlusion, and state dimensions define
+   the activation envelope?
+4. Which separate telemetry and parameter sweeps characterize timing-dependent movement anomalies such
+   as sticky-corner jumps or wall-contact ramp-speed effects?
+
+These deferred questions do not block the exact first-slice door toggle, expected-TBLID verification,
+BitVar override, physical crossing, or common-baseline teleport-and-settle flow. They do block a
+general-purpose trigger-characterization job.
 
 ## Predictor and Field-Model Research
 
@@ -123,7 +130,8 @@ or movement/no-movement effect from that source.
 6. What retry/idempotency keys are necessary for large fan-out exploration and predictor searches?
 7. How are runtime-modification and trigger-control approvals and runtime-build compatibility stored and
    surfaced?
-8. What retention policy applies to large per-frame telemetry, failed probes, and historical model versions?
+8. What retention policy applies to ordered spatial Survey telemetry, failed probes, later temporal-model
+   telemetry, and historical model versions?
 
 ## Validation and Acceptance Research
 

@@ -1,5 +1,21 @@
 # User-Defined Script and Payload System Plan
 
+## Status and authority
+
+**Historical reference.** The authoritative future worker-program architecture is now
+[Execution Runtime Refactor Guidance](../ExecutionRuntime/README.md).
+
+This document remains useful for its separation of script revision, payload schema, workflow-side
+handler/planner, and worker execution package. The new guidance supersedes this document's proposals to:
+
+- serialize the current `PhaseScript` as the permanent executable ABI;
+- use flat `PSContext` as the permanent input, local-state, and result contract;
+- introduce `PK_UserScript` or separate built-in/script activation paths; and
+- retain the current `PhaseScriptVM` with only loader and verifier additions.
+
+Do not implement those superseded portions from this document. Built-in and future authored programs
+instead compile to one immutable typed `ProgramModule` and execute through one `ProgramRuntime`.
+
 ## Purpose
 
 SAVOR currently runs a small set of compiled phase programs. Each program has a fixed `PhaseScript`, a program-specific binary payload format, and a C++ adapter path that materializes jobs from DB rows. This document captures a path toward arbitrary user-defined scripts that can be stored in the DB, recalled by workflow handlers, sent to workers with the required payload data, reconstructed worker-side, and executed through the existing VM model.

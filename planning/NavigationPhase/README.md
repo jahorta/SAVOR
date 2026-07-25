@@ -2,12 +2,13 @@
 
 ## Status
 
-Future plan.
+Mixed current/future plan.
 
 SAVOR is the project owner for navigation semantics, route planning, eventual control solving and
 simulator execution, UI selection, workflow orchestration, and result persistence. The current
-implementation covers the in-memory `SavorNavigation` model/search boundary and the `SavorQt3D`
-prototype; workflow jobs, durable persistence, and installation in `SavorQt` remain planned work. SPICE
+implementation covers the in-memory `SavorNavigation` model/search boundary, the `SavorQt3D` prototype,
+and a draft Navigation Context capture phase with an exported `a101b` `.sav`/`.nctx`. The Navmesh Survey,
+broader workflow jobs, durable persistence, and installation in `SavorQt` remain planned work. SPICE
 (Skies Package Interchange and Content Encoder) owns Skies of Arcadia filetype parsing and content
 inspection. SAVOR vendors SPICE as a pinned git submodule at `third-party/SPICE`; the pin advances only
 after required parser changes are regression-tested upstream. The implemented pathfinding slice uses
@@ -19,7 +20,7 @@ The dependency boundary is:
 
 The later predictor-backed flow is separate from that loading/widget dependency chain:
 
-`reset-qualified field entry -> NavigationContextResult -> SavorPredict planning search -> NavigationControlSolveResult -> NavigationValidationResult`
+`Navigation Context export -> per-area Navmesh Survey/refinement -> nav.capture_prediction_start -> SavorPredict planning search -> NavigationControlSolveResult -> NavigationValidationResult`
 
 `SavorPredict` is the existing predictor subsystem name. Its current exploratory executable/CLI shape is
 not yet a SavorQt integration API; the navigation prediction surface and asynchronous invocation boundary
@@ -88,9 +89,9 @@ workflow, content-integration, UI, and persistence direction.
 - Discover and parse the MLD's strictly matched SCT through SpiceSCT, retain it in memory, and expose
   statically resolvable opcode-77 placements as optional route starts with their condition provenance.
 - Plan objective-to-objective movement with a frame-time cost function.
-- Run a Navmesh Survey from a ready Navigation Context output savestate to establish state-qualified
-  passability, verified survey anchors, directional movement response, collision oddities, and trigger
-  activation evidence for later planning.
+- Run a per-area Navmesh Survey from one explicitly named Navigation Context `.sav`/`.nctx` bootstrap to
+  establish spatial passability, replay-verified positional anchors, collision boundaries, door portals,
+  and initial lock constraints.
 - Account for interruptions without inventing reset boundaries: a same-script cutscene remains inside one
   navigation epoch, while entering battle terminates the epoch and a reset-qualified field return starts a
   new context.
@@ -192,31 +193,31 @@ The interactive prototype will:
   flags, player step-up rules, moving-ground state, and exact runtime collision-selector calibration are
   also deferred; the static handoff graph is candidate topology rather than complete runtime proof.
 
-## Planned Navigation Context workflow
+## Planned Navigation workflow
 
 The eventual `SavorQt` product integration will contain a planning module separate from the reusable
-Navigation map. The planning module authors an objective and search bounds, selects a compatible world and
-explicitly referenced ready `NavigationContextResult`, invokes `SavorPredict`, monitors candidate results,
-and lets the user select one result for display. There is no implicit "latest context." Initial Dungeon
-objectives include reaching as far as possible without an encounter and obtaining a particular encounter.
-The widget does not simulate, enumerate, or rank movement schedules.
+Navigation map. The planning module authors an objective and search bounds, selects a compatible per-area
+world/refinement and an explicitly defined prediction-start state, invokes `SavorPredict`, monitors
+candidate results, and lets the user select one result for display. Initial Dungeon objectives include
+reaching as far as possible without an encounter and obtaining a particular encounter. The widget does
+not simulate, enumerate, or rank movement schedules.
 
-Before prediction, the Navmesh Survey spans `nav.explore_geometry` and `nav.build_refinement`. It consumes
-the exact output savestate of a ready `NavigationContextResult` as an immutable bootstrap, expands
-disposable verified anchors outward—including required door/script transitions—and releases ordinary
-collision, targeted collision-oddity, later trigger-characterization, and independent reproduction jobs as
-their dependencies become available. Sticky-corner positional jumps and wall-contact ramp-speed are
-measured as movement-response evidence; the survey does not decide whether an optimizer should use them.
+The Navmesh Survey spans `nav.explore_geometry` and `nav.build_refinement`. Its first wave starts from one
+common Navigation Context `.sav`/`.nctx`, crosses required in-area doors, and publishes positional anchors
+only after replaying each position from the common baseline and observing a usable settle. Its second wave
+reloads that same baseline, teleports parallel workers to those anchors, and records spatial
+passability/collision observations for deterministic reduction.
 
-Encounter suppression is independent from trigger control. Survey jobs may need to suppress and permit
-triggers dynamically while traversing doors and resuming isolated probes, but trigger identities, safe
-control points, causal completion boundaries, and concrete gate modes remain research-gated. The normative
+Encounter suppression writes one zero byte to `0x8030b7ad`. Trigger commit is normally bypassed at `0x80117e8c`;
+a door worker briefly restores the original instruction for the intended interaction, immediately
+reinstalls suppression, verifies the expected TBLID, and proves physical crossing. A known lock BitVar may
+be overridden inside the disposable job when the portal retains its initial lock constraint. The normative
 direction in
 [`NavigationContextWorkflow/04-suppressed-exploration-and-world-refinement.md`](NavigationContextWorkflow/04-suppressed-exploration-and-world-refinement.md)
-supersedes older fixed job-wide trigger-suppression or collision/anomaly-only Navmesh Survey sketches in
-the active Navigation documents.
+supersedes older fixed job-wide trigger-suppression, per-anchor-savestate, timing-based Survey, and
+collision/anomaly-only sketches in the active Navigation documents.
 
-A `NavigationEpoch` starts only after a reset-qualified field script/context switch or battle return has
+A later prediction-only `NavigationEpoch` starts only after a reset-qualified field script/context switch or battle return has
 restored stable player control. Readiness is measured from a clean, unpatched source state: placement and
 ground are settled, velocity is zero, authored input is neutral, no forced action is pending, and required
 reset-state capture matches the current contract. Entering battle ends the epoch. A same-script cutscene
@@ -225,7 +226,7 @@ same prediction; an unsupported interruption returns `ModelIncomplete` instead o
 entry assumption. Save load qualifies only when runtime evidence confirms a reset-producing script switch.
 
 The selected immutable prediction result carries the complete provenance needed to interpret its spatial
-projection: `NavigationContextResult` identity, disc/content/world/graph and coordinate-policy identity,
+projection: `NavigationPredictionStart` identity, disc/content/world/graph and coordinate-policy identity,
 predictor/model versions, objective and search bounds, witness path and planning-level
 movement/no-movement/interruption schedule, predicted trace, terminal reason, and search completeness.
 `SavorPredict` does not choose raw stick or camera inputs. `NavigationControlSolveResult` owns controller
@@ -270,8 +271,8 @@ widget.
   - Normative profile precedence, shared component boundaries, and collision, anomaly, and encounter
     workstreams.
 - `NavigationContextWorkflow/`
-  - Normative reset-qualified entry lifecycle, disc/content identity, context-result, Navmesh Survey,
-    prediction/control/validation, phase/job, artifact-lineage, and open-research contracts.
+  - Implemented Navigation Context bootstrap contract, planned per-area Navmesh Survey, and separate
+    future prediction lifecycle, control/validation, phase/job, artifact-lineage, and research contracts.
 
 ## Iteration approach
 
@@ -298,13 +299,14 @@ and model boundary are stable, the widget will be installed into `SavorQt`.
   than a schedule-search surface.
 - `SavorPredict` is the intended non-Qt owner of modeled field-update/RNG evolution, path and
   movement/no-movement/interruption schedule search, requested-outcome evaluation, witness selection, and reachability
-  frontier computation at the planning level. It consumes a ready, explicitly referenced
-  `NavigationContextResult`; it does not own raw controller/camera realization. Its existing exploratory
+  frontier computation at the planning level. It will consume an explicitly defined prediction-start
+  state separate from the Survey-bootstrap `.nctx`; it does not own raw controller/camera realization. Its existing exploratory
   executable/CLI must gain a deliberate navigation prediction and asynchronous integration boundary; no
   such SavorQt-facing API is implemented here.
-- `SavorCore` already owns runtime memory, breakpoints, inputs, savestate checkpoints, telemetry, and the
-  PhaseScript VM boundary; Navigation-specific PhaseScripts remain future. `SavorWorker` already provides
-  Dolphin-backed execution and will later run Navigation probes.
+- `SavorCore` already owns runtime memory, breakpoints, inputs, savestates, telemetry, the PhaseScript VM
+  boundary, and the draft Navigation Context PhaseScript. Navmesh Survey patch, teleport/settle, and probe
+  operations remain future. `SavorWorker` already provides Dolphin-backed execution and will later run
+  Navigation probes.
 - `SavorWorkflow` already coordinates generic claiming, dispatch, fan-out, and transition invocation
   through `SavorDb` services; Navigation integration remains future. A local CPU execution lane does not
   exist yet, so deterministic navigation analysis remains in-process domain work until that lane is

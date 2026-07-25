@@ -1,10 +1,11 @@
-# 01 - Entry Boundaries and Lifecycle
+# 01 - Future Prediction Entry Boundaries and Lifecycle
 
 ## Status
 
 Future plan. This document defines when a prediction-safe navigation lifetime starts and ends. It is a
 contract for workflow gating, not an assertion that the required runtime breakpoints and fields are
-already implemented.
+already implemented. It is separate from the implemented Navigation Context `.nctx` export and does not
+gate the Navmesh Survey.
 
 ## Navigation Epoch
 
@@ -12,8 +13,8 @@ A `NavigationEpoch` is one continuous period of navigable field execution govern
 reset-state contract. It begins after a qualifying transition has completed and remains active until a
 terminal boundary occurs.
 
-An epoch is identified by an immutable `navigation_epoch_id` and references exactly one
-`NavigationContextResult`. Re-entering the same area does not reuse the previous epoch merely because the
+An epoch is identified by an immutable `navigation_epoch_id` and references exactly one future
+`NavigationPredictionStart`. Re-entering the same area does not reuse the previous epoch merely because the
 MLD/SCT/ECT content hashes match.
 
 ## Reset-Qualified Entry
@@ -60,7 +61,7 @@ returns to the same field script is an interruption inside the existing `Navigat
 
 Its required behavior is:
 
-- preserve the epoch and original `NavigationContextResult` reference;
+- preserve the epoch and original `NavigationPredictionStart` reference;
 - preserve elapsed movement and encounter-state evolution;
 - represent the interruption in the predicted schedule and trace when the model supports it;
 - resume prediction from the evolved state, never from a fabricated fresh-entry state; and
@@ -89,7 +90,7 @@ causes a field/context switch or otherwise invalidates the model.
 |---|---|---|
 | `AwaitingQualifiedEntry` | No reset-qualified field boundary has been observed | Continue runtime observation |
 | `Stabilizing` | A candidate boundary occurred, but control/placement/velocity is not ready | Poll bounded readiness evidence |
-| `ContextReady` | Capture passed all reset and stability checks | Materialize content and plan |
+| `PredictionStartReady` | Capture passed all reset and stability checks | Plan from the explicit prediction start |
 | `Active` | Prediction, control solving, or clean execution is using the epoch | Continue within the same state lineage |
 | `Interrupted` | Control is temporarily unavailable inside the same script | Model interruption or return `ModelIncomplete` |
 | `Terminal` | Battle, context switch, invalidation, or cancellation ended the epoch | Capture a distinct next context when eligible |
@@ -115,7 +116,7 @@ This evidence prevents a spatially plausible start from being mistaken for a pre
 Save load is not globally declared a reset boundary. The workflow must identify the actual save-load path
 and verify that it performs the same reset-producing script/context switch and readiness sequence used by
 ordinary field entry. Until that evidence exists, save-load capture returns `ResetStateMismatch` or
-`IncompleteCapture`, not a ready context.
+`IncompleteCapture`, not a ready prediction start.
 
 ## Producing the Next Context
 
@@ -123,11 +124,12 @@ Control solving and clean validation may terminate at:
 
 - a same-script objective, which remains inside the current epoch;
 - a same-script interruption, which remains part of the current epoch if modeled;
-- a field transition, which requires a new `nav.capture_context`; or
+- a field transition, which requires a new future `nav.capture_prediction_start`; or
 - battle entry, which terminates the epoch and requires capture after battle return.
 
 A validation result may reference the observed terminal transition and the candidate next savestate, but
-it never manufactures the next `NavigationContextResult`. Only the capture step can establish that result.
+it never manufactures the next `NavigationPredictionStart`. Only `nav.capture_prediction_start` can
+establish that result.
 
 ## Acceptance Rules
 

@@ -6,6 +6,8 @@ Future plan. File parsing questions are SPICE-owned. This document tracks resolv
 decisions and the remaining navigation-model, pathfinding, workflow, and UI questions.
 Workflow-specific decisions and research questions are normative in
 [`NavigationContextWorkflow/`](NavigationContextWorkflow/README.md); this file is the cross-cutting index.
+The draft Navigation Context capture exists. Navmesh Survey decisions below are resolved planning, not an
+implemented worker phase.
 
 ## Resolved Decisions
 
@@ -197,10 +199,11 @@ Workflow-specific decisions and research questions are normative in
    later observed-versus-predicted simulator discrepancies.
 4. Static diagnostics or simulator discrepancies do not silently mutate A*. A correction reaches the
    routing model only through an explicit, validated refinement rule with retained provenance.
-5. The broad Navmesh Survey order is resolved: context-output bootstrap, verified anchor expansion,
-   ordinary collision, targeted oddities, later trigger characterization, and independent reproduction.
-   Exact within-wave sampling, adaptive refinement, promotion thresholds, and durable schemas remain open.
-   Their absence does not block the existing triangle graph or route UI.
+5. The Navmesh Survey order is resolved: one common Navigation Context bootstrap, a finite in-area
+   door-anchor establishment wave, clean-baseline teleport-and-settle verification, a parallel spatial
+   probe wave, independent reproduction, and deterministic refinement. Timing-dependent oddities and
+   broad trigger characterization are separate later work. Exact sampling, adaptive refinement,
+   promotion thresholds, and durable schemas remain open.
 
 ### L. Dungeon-only encounter analysis (2026-07-21)
 
@@ -225,7 +228,7 @@ Workflow-specific decisions and research questions are normative in
    segments only the current deterministic route and reports active/no-encounter geometric distance and
    table transitions. A destination is not assigned a unique cumulative risk without an explicit route
    policy.
-7. Marginal or seeded analysis requires an explicitly referenced ready `NavigationContextResult` captured
+7. Marginal or seeded analysis requires an explicitly referenced ready `NavigationPredictionStart` captured
    from a reset-qualified transition. It preserves measured `stepCount`, zero-velocity readiness, and
    independently captured encounter fields. A manual or opcode-77 spatial start does not prove this state.
 8. A per-active-check probability can be exact under known S/W/M inputs. A cumulative survival product is
@@ -249,7 +252,7 @@ Workflow-specific decisions and research questions are normative in
    applicable; do not create a parallel generic `navigation_phase` workflow unit.
 2. The normative integrated sequence is `nav.capture_context`, `nav.materialize_content`,
    `nav.build_world`, `nav.explore_geometry`, `nav.build_refinement`,
-   `nav.search_predicted_outcomes`, explicit result selection, `nav.solve_controls`,
+   `nav.capture_prediction_start`, `nav.search_predicted_outcomes`, explicit result selection, `nav.solve_controls`,
    `nav.validate_route`, and `nav.publish_result`. The existing static A* operation remains a CPU-domain
    route planner, not a Dolphin program.
 3. CPU-domain steps use `SavorNavigation` logic and are not Dolphin jobs. Until `SavorWorkflow` has a
@@ -258,8 +261,9 @@ Workflow-specific decisions and research questions are normative in
    `nav.validate_route` are `SavorCore` contracts executed by `SavorWorker` from savestates/input tapes.
    `SavorDb` owns authored workflow specifications, lifecycle state, durable references, and publication
    through `nav.publish_result`.
-4. Only simulator work fans out for Navmesh Survey anchor expansion, collision/oddity/trigger probes,
-   reproduction attempts, control attempts, or empirical validation. CPU analysis may use normal CPU
+4. Only simulator work fans out for Navmesh Survey anchor establishment, spatial collision probes,
+   reproduction attempts, control attempts, or empirical validation. Later oddity and generalized trigger
+   work may also use workers but is not part of the Survey contract. CPU analysis may use normal CPU
    parallelism but does not require PhaseScript or a Dolphin worker to build the world, run A*, reduce a
    refinement, or calculate assumption-labeled marginal dungeon encounter results.
 
@@ -275,7 +279,7 @@ Workflow-specific decisions and research questions are normative in
    event-continuation pipeline with encounter state explicitly not applicable.
 4. Dungeon encounter exposure is analysis-only in the first slice and cannot alter A*, route ranking,
    triggers, control solving, or ordinary pathfinding readiness.
-5. Marginal exposure requires an explicitly selected ready `NavigationContextResult`. A manual or
+5. Marginal exposure requires an explicitly selected ready `NavigationPredictionStart`. A manual or
    opcode-77 spatial start never implies runtime encounter state or a reset boundary.
 6. Parse status, geometry completeness, known traversability, and runtime collision confidence are
    independent evidence dimensions. A complete mesh conversion is not proof of runtime behavior.
@@ -284,7 +288,7 @@ Workflow-specific decisions and research questions are normative in
 
 1. Predictor-backed encounter-outcome search belongs to a separate future planning module in `SavorQt`,
    not to the reusable Navigation widget or `SavorQt3D`. The planning module authors the objective and
-   bounds, selects a compatible world and explicit ready context-result ID, invokes the existing
+   bounds, selects a compatible world and explicit ready prediction-start ID, invokes the existing
    `SavorPredict` predictor subsystem through a future asynchronous boundary, compares results, and chooses
    one for display.
 2. `SavorPredict` owns planning-level modeled field/RNG/movement-state evolution, path and
@@ -297,7 +301,7 @@ Workflow-specific decisions and research questions are normative in
    already-computed route prefix/cutoff or layer-preserving `NavigationTriangleKey`-keyed reachable set and
    frontier. It never enumerates, extends, or ranks movement schedules.
 4. The static selector/table overlay remains independent from Prediction Reachability. A predictor frontier
-   is qualified by objective, explicit context result, navigation-world/model fingerprints, and search bounds. It
+   is qualified by objective, explicit prediction start, navigation-world/model fingerprints, and search bounds. It
    is not a probability heatmap or universal safety guarantee, and sampled-schedule frequency is not natural
    encounter probability.
 5. A fixed-path result uses a route prefix and terminal cutoff. A branching search may use multiple 2.5D
@@ -311,7 +315,10 @@ Workflow-specific decisions and research questions are normative in
    separate. A selected predictor witness may show a path different from ordinary A*, but does not mutate
    A* costs or replace the static route result.
 
-### P. Navigation Context workflow lifecycle and evidence layers (2026-07-21)
+### P. Future prediction lifecycle and evidence layers (revised 2026-07-24)
+
+The implemented Navigation Context `.nctx` plus savestate exists only to bootstrap the Navmesh Survey.
+The reset/readiness decisions below describe a separate future `NavigationPredictionStart`.
 
 1. A `NavigationEpoch` starts only after a completed field script/context switch or battle return restores
    stable control and passes measured readiness. Entering battle terminates it. Save load qualifies only
@@ -320,43 +327,48 @@ Workflow-specific decisions and research questions are normative in
    interruption or returns `ModelIncomplete`; it never creates a clean-entry context at cutscene return.
 3. Context readiness requires a clean/unpatched source state, settled placement/ground, measured zero
    velocity, neutral authored input, no pending forced action, and consistent reset-state capture. Camera/
-   control orientation is excluded from `NavigationContextResult` and predictor input.
+   control orientation is excluded from `NavigationPredictionStart` and predictor input.
 4. Static world, patched survey observations/refinement, prediction, control realization, and clean
    validation are separate immutable evidence layers. Encounter suppression is independent from trigger
-   control. A survey job may need to suppress and permit triggers dynamically while crossing a door and
-   resuming probes, but no concrete trigger-gate modes, allowlist, or hook are resolved. Patched states
-   never become prediction contexts or clean validation inputs.
+   control. The first Survey slice uses the exact reversible callsite toggle documented below for door
+   interaction; broader trigger allowlists and `eventhook` remain future work. Modified live state or a
+   modified savestate is never promoted. A position discovered there becomes an anchor only after the
+   common-baseline teleport/settle replay succeeds.
 5. Disc identity is a streaming SHA-256 plus size, Game ID, region, and revision. Internal-file hashes and
    parser/model/schema/coordinate-policy versions key content bundles; a machine path is only a locator.
-6. Every downstream prediction explicitly references a context-result ID. There is no implicit latest
-   context. `SavorPredict` emits a world-space planning route and movement/no-movement/interruption
+6. Every downstream prediction explicitly references a prediction-start ID. `SavorPredict` emits a
+   world-space planning route and movement/no-movement/interruption
    schedule; the control solver owns stick/camera realization and clean validation owns runtime comparison.
 7. The normative details and remaining workflow research questions live in
    [`NavigationContextWorkflow/`](NavigationContextWorkflow/README.md).
 
-### Q. Navmesh Survey direction (2026-07-23)
+### Q. Navmesh Survey direction (revised 2026-07-24)
 
 1. The Navmesh Survey spans Dolphin-backed `nav.explore_geometry` plus deterministic
-   `nav.build_refinement`; collision validation and movement-oddity discovery remain separate outputs
-   within that broader survey.
-2. It bootstraps from the exact output savestate of an explicitly referenced ready
-   `NavigationContextResult`. Every repositioned, post-door, or otherwise derived survey anchor remains a
-   disposable exploration artifact.
-3. Survey-anchor local placement validity and verified reachability from the clean field-entry context are
-   separate facts. Anchor expansion may require intentional door/script transitions and creates
-   state-qualified pre/post checkpoints.
-4. Worker work is dependency-driven rather than five mandatory whole-field barriers: anchor expansion,
-   ordinary collision, targeted collision oddities, later trigger characterization, and independent
-   reproduction may release as soon as their prerequisites are verified.
-5. Collision-oddity output includes sticky-corner held intervals and possible positional jumps,
-   wall-contact ramp-speed versus ordinary ascent, slides, snags, and other directional movement response
-   needed by later optimization. The survey does not choose techniques or optimize movement.
-6. Automatic triggers will eventually expose reachable approach boundaries; interactable triggers will
-   expose position/distance/facing/input and applicable occlusion/state envelopes. Door or forced-movement
-   activations produce state-qualified transitions between survey anchors.
-7. Trigger activation must be dynamically controllable and audited within a survey job, but this decision
-   deliberately does not select modes or a runtime implementation. The normative supersession and research
-   gates live in
+   `nav.build_refinement`. It produces one runtime-refined spatial navmesh per loaded area; area loads are
+   separate files.
+2. The current `a101b` bootstrap is the explicitly named `navigation-context-41.sav` and adjacent
+   `navigation-context-41.nctx`. Every worker reloads that same baseline.
+3. Encounter suppression writes one zero byte to `0x8030b7ad`. Trigger commit is normally suppressed by writing
+   `0x48000018` at `0x80117e8c`; a door worker briefly restores original word `0x480F86C5`, performs the
+   intended interaction, and immediately suppresses again. The first slice uses no breakpoint, code cave,
+   permanent hook, or `eventhook`.
+4. A door activation must match the expected TBLID—currently witnessed through `0x8034744c` and
+   `[object + 8]`—and must physically cross and settle on the far side. Generic trigger activity is not
+   sufficient.
+5. A disposable anchor-establishment job may read-modify-write a known lock BitVar. It records the
+   original/override values and `initially_locked` on the portal. For `a101b` door `4101`, BitVar `2556`
+   controls the lock at word `0x80310c78`, mask `0x10000000`; BitVar `1555` is the opening-completion
+   witness at word `0x80310bfc`, mask `0x00080000`.
+6. Wave 1 publishes positional anchors only after reloading the common baseline, teleporting to the
+   proposed position, letting normal game updates reconstruct ground/collision state, and observing a
+   usable settle. Anchors do not own savestates, full ground-selector records, or live pointers.
+7. Wave 2 reloads the common baseline, teleports parallel workers to verified anchors, and records
+   requested/resulting/settled positions plus pass/block/fall/correction and connectivity evidence.
+8. Persistent Survey evidence is spatial. Runner safeguards do not become probe clocks, frame costs, or
+   movement-optimization evidence. Timing-dependent anomalies and broad trigger-envelope characterization
+   are separate later analyses.
+9. The normative detailed contract lives in
    [`NavigationContextWorkflow/04-suppressed-exploration-and-world-refinement.md`](NavigationContextWorkflow/04-suppressed-exploration-and-world-refinement.md).
 
 ## Remaining Open Questions
@@ -370,11 +382,12 @@ Workflow-specific decisions and research questions are normative in
    sibling MLD/SCT/ECT profile-classification contract.
 4. Runtime state needed to evaluate opcode-77 condition paths automatically and select the correct arrival,
    plus the source/lifetime of the transform restored by opcode 156.
-5. Simulator-worker fanout strategy for context capture, exploration, control solving, and validation;
+5. Simulator-worker batch sizing and retry strategy for the resolved two-wave Survey, plus context
+   capture, control solving, and validation;
    plus the separate future `SavorPredict` process/library boundary, asynchronous invocation,
    cancellation/progress, CPU search fanout, and model-bundle versioning.
-6. 2.5D sampling/refinement policy, collision-probe priority, and evidence threshold for promoting an
-   anomaly into the route model.
+6. 2.5D sampling/refinement policy, collision-probe priority, settle tolerance, and evidence threshold for
+   promoting a spatial correction into the route model.
 7. Exact reset-state field inventory, capture breakpoints, save-load qualification, state-signature policy,
    dungeon check cadence, and the completed/versioned field-RNG model required for evidence-qualified
    `SavorPredict` results. The unfinished Moonfish/field analysis remains excluded until accepted.
@@ -391,10 +404,9 @@ Workflow-specific decisions and research questions are normative in
 12. Runtime calibration for wall blocking, triangle-flag filtering, player step-up limits, animation/
     script-driven ground state, and collision-selector modes. The static collision-handoff graph deliberately
     does not guess these rules.
-13. Trigger identity and lifecycle, safe suppression/permission points, required initialization and
-    environmental-controller preservation, automatic versus interactable behavior, causal door/
-    forced-movement completion, reposition/settle semantics, and the concrete audited within-job trigger
-    control contract.
+13. Generalized trigger identity and lifecycle beyond the resolved first-slice door toggle, including
+    `eventhook`, initialization/environmental-controller preservation, automatic versus interactable
+    behavior, and broad activation-envelope characterization.
 
 The workflow-specific research list is maintained normatively in
 [`NavigationContextWorkflow/07-open-research-questions.md`](NavigationContextWorkflow/07-open-research-questions.md);

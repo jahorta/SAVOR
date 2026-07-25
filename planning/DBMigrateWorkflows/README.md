@@ -4,6 +4,12 @@
 
 Current plan with historical phase notes.
 
+This folder remains authoritative for persisted hybrid workflow orchestration. Its worker-program
+execution assumptions are subordinate to the future
+[Execution Runtime Refactor Guidance](../ExecutionRuntime/README.md). In particular, the new package
+supersedes treating today's `PhaseScriptVM`, flat `PSContext`, `ProgramKind` dispatch, or separate
+built-in/user-script activation paths as the permanent runtime architecture.
+
 This folder contains design docs for migrating SavorDb workflow execution toward the **Hybrid orchestration model**:
 
 - Central workflow control/orchestration path for step progression.
@@ -18,7 +24,9 @@ SavorDb already has:
 - Outbox event contracts and relay/subscription infrastructure.
 - A coordinator loop that polls ready steps and materializes work.
 
-These docs define how to evolve from current state to a robust hybrid architecture without a full rewrite.
+These docs define how to evolve persisted workflow orchestration from current state without requiring a
+full database/workflow rewrite. That constraint does not apply to the breaking worker execution-runtime
+refactor.
 
 ## Validation implementation note
 
@@ -59,6 +67,10 @@ These docs define how to evolve from current state to a robust hybrid architectu
    - Detailed add/modify/remove plan for Phase 4.
 11. `11-phase-4-runbook-and-oncall-checklist.md`
    - Incident/runbook execution checklist and phase-4 exit criteria reference for on-call operations.
+12. `12-user-defined-script-payload-system-plan.md`
+   - Historical user-script design context. Its separation of revision, schema, handler, and worker
+     package remains useful; its target worker VM and payload ABI are superseded by
+     `planning/ExecutionRuntime/`.
 
 ## Iteration workflow
 

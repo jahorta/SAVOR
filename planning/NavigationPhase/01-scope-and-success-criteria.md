@@ -6,6 +6,7 @@ Future plan. SPICE owns MLD/SCT/ECT and other Skies of Arcadia filetype parsing.
 prototype foundation currently links the vendored SpiceMLD and SpiceSCT libraries privately from
 `SavorNavigation`, converts their output into SAVOR-owned navigation models, and owns route-planning
 semantics. `SavorQt3D` is the first standalone host for the reusable Navigation widget.
+The draft Navigation Context capture and `a101b` export also exist; the Navmesh Survey remains planned.
 
 The current implementation target is **Dungeon Navigation**. Its planned encounter layer will add a
 private SpiceEct dependency without changing the public SPICE boundary. A later **Safe Navigation** phase
@@ -45,9 +46,10 @@ The existing viewer, start selection, traversal graph, and A* behavior remain th
 foundation. Area-profile classification, ECT-backed dungeon encounter analysis, collision validation, and
 movement-anomaly discovery described below are planned additions unless explicitly identified otherwise.
 
-## Navigation Epoch and Context Scope
+## Future Prediction Epoch and Start Scope
 
-The integrated workflow begins predictions only from a ready `NavigationContextResult` captured after a
+This later contract is separate from the implemented Navigation Context `.nctx` that only bootstraps the
+Navmesh Survey. Prediction begins from a future ready `NavigationPredictionStart` captured after a
 reset-qualified field entry. A qualifying entry is a completed field script/context switch with control
 restored, or a battle return with field control restored. Readiness is measured from a clean, unpatched
 source savestate: ground and placement settled, player velocity zero, authored input neutral, no forced
@@ -59,7 +61,7 @@ Entering battle terminates the current `NavigationEpoch`; a validated field retu
 A cutscene that runs in the same field script and returns control stays inside the current epoch and does
 not reset `stepCount`. The predictor must model that interruption in the same search or return
 `ModelIncomplete`; it must never restart from a clean-entry assumption. Camera/control orientation is not
-part of `NavigationContextResult` or predictor input. It remains execution telemetry for collision/anomaly
+part of `NavigationPredictionStart` or predictor input. It remains execution telemetry for later anomaly
 probes and a concern of the downstream control solver.
 
 ## First Interactive Prototype
@@ -185,20 +187,22 @@ Overworld/Area 99 is deferred.
    - Navigation phase is UI-driven (no CLI workflow for objective specification in MVP).
 
 7. **Shared Navmesh Survey and collision validation**
-   - Bootstrap from the output savestate of an explicitly referenced ready `NavigationContextResult`;
-     every repositioned or post-transition survey anchor remains disposable exploration lineage.
-   - Expand verified anchors outward, including door/script transitions required to reach later regions.
-     Keep local anchor validity separate from proven reachability from the field-entry context.
+   - Bootstrap every worker from the same explicitly named Navigation Context `.sav`/`.nctx`.
+   - In a first wave, use disposable jobs to cross required in-area doors and publish durable positional
+     anchors only after clean-baseline teleport-and-settle replay succeeds.
+   - In a second wave, reload the common baseline, teleport parallel workers to verified anchors, and
+     collect spatial passability observations.
    - Compare extracted GRND/GOBJ and wall geometry with runtime contact and response evidence without
      silently rebaking or rewriting source geometry.
    - Track geometry-conversion completeness separately from runtime validation coverage and confidence.
-   - Fan out ordinary collision probes, targeted oddity probes, trigger probes, and independent
-     reproduction attempts as dependency-driven worker waves.
-   - Require dynamically controllable trigger activation during survey jobs, while leaving the exact
-     suppression/permission mechanism and modes research-gated.
+   - Normally suppress trigger commit, briefly restore it only for an intended door interaction, verify
+     the expected TBLID and physical crossing, and immediately suppress it again.
+   - Permit an isolated job to override a known door-lock BitVar while recording the original value,
+     required value, and `initially_locked` portal metadata.
    - Reuse the same observation and confidence model for the later Safe Navigation phase.
 
-8. **Shared movement-response and collision-oddity discovery**
+8. **Later shared movement-response and collision-oddity discovery**
+   - Keep this timing-dependent analysis separate from the spatial Navmesh Survey.
    - Probe collision corners, seams, slopes, and boundary interactions for reproducible movement changes.
    - Record the approach pose, facing, camera/input context, observed speed or displacement change,
      VI-frame cost, repetition, variance, and whether the result is beneficial, neutral, harmful, or
@@ -222,7 +226,7 @@ Overworld/Area 99 is deferred.
     - Add a planning module outside the Navigation widget that invokes the `SavorPredict` predictor
       subsystem through a future asynchronous boundary.
     - Search paths and movement/no-movement/interruption schedules for an authored objective such as no
-      encounter or a specific encounter, using an explicit `NavigationContextResult`, content/world,
+      encounter or a specific encounter, using an explicit `NavigationPredictionStart`, content/world,
       model, and search-bound provenance.
     - Return an immutable selected-result contract containing a witness path/schedule plus either a
       route-prefix cutoff or a `NavigationTriangleKey`-keyed 2.5D reachable set and frontier.
@@ -341,17 +345,17 @@ Overworld/Area 99 is deferred.
      visibly marked candidate/unverified.
 
 12. **Collision-validation evidence**
-   - The survey starts from the exact Navigation Context output savestate and records every disposable
-     anchor, reposition/settle check, door transition, runtime modification, and trigger-control change.
+   - The survey starts every job from the same named Navigation Context bootstrap and records every
+     positional anchor, teleport/settle check, door crossing, runtime modification, and BitVar override.
    - Runtime observations can be traced to the tested source surface or wall boundary, probe position,
-     approach, and input/camera context.
+     approach, requested position, resulting position, and settled position.
    - Validation coverage and discrepancies are visible independently of
      `hasCompleteGroundGeometry`/`hasCompleteWallGeometry`; geometry completeness never masquerades as
      runtime collision confidence.
-   - Automatic-trigger approach boundaries and interactable-trigger position/distance/facing/input
-     envelopes can be represented without assuming concrete trigger-gate modes.
+   - Door evidence retains the expected TBLID, physical crossing, far-side anchor, and initial-lock
+     constraint. Broader trigger-envelope characterization is a separate later workstream.
 
-13. **Movement-anomaly evidence**
+13. **Later movement-anomaly evidence**
    - Candidate anomalies retain enough input, camera, timing, baseline, and repeated-run evidence to
      reproduce and classify their effect.
    - Sticky-corner candidates preserve the held interval and any later positional discontinuity; ramp-speed
@@ -376,8 +380,8 @@ Overworld/Area 99 is deferred.
      encounter claim and never overwrites lower-level structural evidence.
 
 16. **Reset-qualified prediction input**
-   - Every prediction explicitly references one ready `NavigationContextResult`; no implicit latest-context
-     lookup or manual spatial-start substitution is allowed.
+   - Every prediction explicitly references one future ready `NavigationPredictionStart`; it does not
+     reinterpret the Survey-bootstrap `.nctx` as predictor state.
    - Readiness proves measured zero velocity, stable control/ground placement, neutral queued input, and a
      qualifying transition boundary. `NonResetContinuation`, `VelocityNonZero`, `ControlNotStable`,
      `ResetStateMismatch`, and `IncompleteCapture` remain explicit unavailable outcomes.
@@ -405,15 +409,16 @@ Overworld/Area 99 is deferred.
 - Pinned SPICE submodule integration and a `SavorNavigation` adapter contract for navigation-relevant
   world data, a selectable opcode-77 SCT start catalog, and planned private ECT conversion.
 - Reusable Navigation widget running in the standalone `SavorQt3D` host.
-- SAVOR-owned area-profile/companion evidence plus Navmesh Survey anchor, collision-validation,
-  movement-response/oddity, trigger-activation, coverage, and immutable refinement models.
+- SAVOR-owned area-profile/companion evidence plus Navmesh Survey positional-anchor, spatial
+  collision-validation, door/access-constraint, coverage, and immutable refinement models.
+- Separate later movement-response/oddity and generalized trigger-activation models.
 - Optional Dungeon encounter model keyed by `NavigationTriangleKey`, with structural and assumed/marginal
   evidence; separate predictor-result and simulator-validation artifacts keep predicted/seeded and
   observed/validated evidence distinct.
 - Future predictor-result contract and map projection for objective-qualified route prefixes or 2.5D
   reachability frontiers, with immutable context/content/world/model/search provenance and witness
   references.
-- Reset-qualified `NavigationContextResult`, disc/content bundle, patched exploration/refinement,
+- Future `NavigationPredictionStart`, disc/content bundle, patched exploration/refinement,
   planning result, control-solve result, and clean-validation contracts with explicit artifact lineage.
 - Planner/refiner artifact format for routes and candidate telemetry.
 - Phase integration contract (job payload/result schema and step kinds).
@@ -425,10 +430,10 @@ Overworld/Area 99 is deferred.
 - Benchmark A: simple straight traversal with 0 cutscenes.
 - Benchmark B: traversal requiring 1 mandatory interaction cutscene.
 - Benchmark C: traversal with overlapping walk mesh elevation and tight collision corners.
-- Benchmark D: `a101b` survey bootstrap from a Navigation Context output savestate, state-qualified anchor
-  expansion through the required door chain to the staircase area, ordinary staircase collision
-  measurement, and targeted wall-contact ramp-speed reproduction. Detailed trigger-boundary acceptance
-  remains gated on the trigger-control research contract.
+- Benchmark D: load the concrete `a101b` Navigation Context bootstrap, apply encounter and trigger
+  suppression, briefly enable door `4101`, record and override its initial BitVar lock when required,
+  prove opening and physical crossing, replay the far-side positional anchor from the common baseline,
+  and run parallel spatial probes from both sides.
 
 ## Risks
 
@@ -441,9 +446,9 @@ Overworld/Area 99 is deferred.
 - Attached trigger meshes may be selected as route goals, but their bounds remain geometry visualization;
   trigger/script coupling, player interaction radius, and SCT/controller activation predicates are not yet
   represented.
-- Navmesh Survey geometry jobs need unwanted trigger effects suppressible while anchor expansion may need
-  selected door/transition activations inside the same job. The runtime hook, activation identity, causal
-  session boundary, and safe dynamic control modes require evidence before implementation.
+- The brief first-slice trigger-enable window is global rather than intrinsically TBLID-selective. Every
+  door job must verify the selected object and reject a wrong-target activation before publishing an
+  anchor.
 - Opcode-77 classification distinguishes likely authored arrivals from lower-confidence scripted
   repositions, but does not establish which option current runtime state selects; automatic evaluation
   remains an explicit later slice.

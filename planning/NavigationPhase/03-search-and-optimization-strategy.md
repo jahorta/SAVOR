@@ -3,7 +3,8 @@
 ## Status
 
 Mixed status. The in-memory graph, endpoints, opcode-77 starts, and deterministic A* are implemented;
-the shared analysis workstreams, spline/control solver, and workflow integration remain future. This
+the draft Navigation Context capture also exists. The Navmesh Survey, shared analysis workstreams,
+spline/control solver, and workflow integration remain future. This
 document assumes `SavorNavigation` has converted canonical SpiceMLD data, projected
 world/search evidence, and transiently flattened wall, trigger, and provisional MovingObject geometry into
 an in-memory `NavigationAreaModel`. A filename-matched SCT may also be parsed and retained in the enclosing
@@ -19,17 +20,17 @@ current graph/search work and profile analyses participate in it.
 
 Use a shared analysis and execution pipeline:
 
-1. **Reset-qualified context capture** from a clean field entry, with measured readiness and an explicit
-   immutable `NavigationContextResult`.
+1. **Navigation Context capture** producing the explicit `.nctx` plus matching savestate used as the
+   Navmesh Survey's initial position and common baseline.
 2. **Layer-preserving 2.5D analysis** over versioned content, walkable surfaces, collision evidence, and
    triangle metadata.
-3. **Navmesh Survey and world refinement** using the ready Navigation Context output savestate,
-   disposable survey anchors, dependency-driven parallel probe waves, and separate immutable
-   patched-evidence layers.
+3. **Navmesh Survey and world refinement** using one named Navigation Context `.sav`/`.nctx`, a finite
+   door-anchor establishment wave, clean-baseline teleport-and-settle fan-out, and immutable spatial
+   evidence.
 4. **Route planner** over the authoritative 3D graph/navmesh abstractions.
 5. **Dungeon-encounter analysis** as a separate profile-specific overlay over the shared 2.5D products.
-6. **Later predictor-backed outcome search** in a separate `SavorQt` planning module, using `SavorPredict`
-   to search paths and movement/no-movement/interruption schedules for a requested result.
+6. **Later prediction-start capture and outcome search** using a future `NavigationPredictionStart` and a
+   separate `SavorQt`/`SavorPredict` boundary.
 7. **Control solver** that follows route splines and finds executable player+camera inputs in simulator
    workers, followed by validation from an unpatched clean runtime.
 
@@ -157,30 +158,27 @@ slice and does not alter A* edge costs or the selected route.
   geometry. SAVOR does not evaluate current game state to choose a variant automatically.
 - Ignore opcode 156 entirely until the runtime source and lifetime of its saved transform are modeled.
 
-## Navmesh Survey, collision, and oddity workstreams
+## Navmesh Survey and collision workstream
 
-The Navmesh Survey supplies the runtime-refined field and measured movement response that later planning
-may consume without performing movement optimization itself. Its broad scheduling order is resolved:
+The Navmesh Survey supplies one runtime-refined navmesh per loaded area. Its persistent evidence is
+spatial and does not perform movement optimization or infer timing:
 
-1. Bootstrap from the exact output savestate of a ready `NavigationContextResult`.
-2. Expand disposable, verified survey anchors outward, including required door/script transitions.
-3. Fan out ordinary collision probes around walls, edges, ramps, stairs, handoffs, and uncertain portals.
-4. Target collision oddities discovered in telemetry, including sticky-corner positional jumps and
-   wall-contact ramp-speed behavior.
-5. After trigger research establishes safe control, measure automatic-trigger boundaries and interactable
-   position/distance/facing/input envelopes.
-6. Reproduce important or contradictory evidence independently and build an immutable refinement.
+1. Load the explicitly named Navigation Context `.sav`/`.nctx` as the common bootstrap.
+2. Run an anchor-establishment wave from that position. Normally suppress triggers; briefly restore the
+   exact callsite instruction for an intended door interaction, immediately suppress again, and verify
+   expected TBLID, opening, crossing, and far-side settle.
+3. When a door is BitVar-locked, change only that bit in the disposable job and retain the original value,
+   override, and `initially_locked` constraint on the portal.
+4. Reload the common bootstrap, teleport to each proposed position, let normal game updates reconstruct
+   ground/collision state, and publish only anchors that settle usefully.
+5. Run a second parallel wave from the verified anchors to probe walls, edges, ramps, stairs, handoffs,
+   uncertain portals, and coverage gaps.
+6. Reproduce important or contradictory spatial evidence and deterministically build an immutable
+   refinement.
 
-These are dependency priorities rather than whole-field barriers: a verified anchor or candidate may
-release its dependent jobs immediately. Collision validation, movement-response/oddity evidence, and
-trigger activation remain separately reported products over the same field. Static diagnostics do not
-silently rewrite the graph. A correction may affect routing only after a specific rule or validated
-simulator-backed refinement promotes it into the SAVOR-owned world model.
-
-Encounter suppression is independent from trigger control. Survey jobs may need to suppress and permit
-triggers dynamically to cross doors and resume probing, but the mechanism and gate modes remain unresolved
-pending trigger research. Exact within-wave sampling, adaptive tolerances, promotion thresholds, and
-durable schemas remain later decisions.
+Area loads are separate survey files. Static diagnostics do not silently rewrite the graph; a correction
+affects routing only through a specific, evidence-backed refinement. Timing-dependent collision-oddity
+studies and generalized trigger-envelope characterization remain separate later workstreams.
 
 ## Dungeon encounter analysis workstream
 
@@ -200,7 +198,7 @@ The first encounter slice is deliberately dungeon-only and analysis-only:
   segment that current deterministic route by encounter state and report active/no-encounter geometric
   distance plus table transitions. Do not invent a whole-map cumulative-risk value for destinations that
   can be reached by different paths.
-- Marginal or seeded analysis requires an explicitly selected ready `NavigationContextResult`. It records
+- Marginal or seeded analysis requires an explicitly selected future `NavigationPredictionStart`. It records
   a reset-qualified entry, measured `stepCount` and zero velocity, stable control/ground placement, and
   independently captured encounter fields. A manual or opcode-77 spatial start does not prove any of
   those values, and the workflow never fabricates them to create a fresh-entry assumption.
@@ -224,7 +222,7 @@ altitude, scenario page, `fldEfcontrol` data, encounter-zone resolution, and run
 
 The static selector/table overlay and marginal route exposure do not search movement schedules. A separate
 future planning module in `SavorQt` authors an objective, selects a compatible navigation world and
-explicit ready `NavigationContextResult`, invokes the existing `SavorPredict` subsystem through a future asynchronous boundary, compares
+explicit ready `NavigationPredictionStart`, invokes the existing `SavorPredict` subsystem through a future asynchronous boundary, compares
 candidate results, and chooses one for display. The current exploratory `SavorPredict` executable/CLI must
 gain an explicit navigation prediction surface; the Navigation widget must not link to its internals or run
 the search itself.
@@ -326,7 +324,7 @@ Assume deterministic replay from savestate + identical inputs.
 - final outcome code
 - spline deviation metrics
 - collision/anomaly sample identity and observed-versus-predicted outcome
-- encounter table segment and explicit `NavigationContextResult` provenance
+- encounter table segment and explicit `NavigationPredictionStart` provenance
 - selected prediction-result identity, objective, context/content/world/model compatibility, search bounds and
   completeness, frontier terminal reason, and witness route/schedule references
 - for simulator-backed encounter probes: eligible-check frame, step state, table/rate/modifier, RNG state,

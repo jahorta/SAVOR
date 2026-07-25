@@ -11,6 +11,8 @@ lifecycle, authored specifications, artifacts, analysis results, transition serv
 programs. The existing `SavorPredict` subsystem is currently an exploratory executable/CLI; a later
 navigation-prediction surface will own modeled temporal outcome search behind an asynchronous boundary
 invoked by a separate `SavorQt` planning module.
+The draft Navigation Context PhaseScript and concrete `a101b` export exist; the Navmesh Survey jobs
+described here do not.
 
 The normative future workflow, execution-domain, payload-lineage, and artifact contracts are in
 [`NavigationContextWorkflow/`](NavigationContextWorkflow/README.md). This document preserves the
@@ -92,7 +94,7 @@ implemented MLD/SCT/graph/A* prototype.
 11. **Planned Dungeon encounter extension:** For the Dungeon profile, apply the current evidence-qualified
     direct-table selector hypothesis to GRND and ground-role GOBJ metadata and attach normalized flat ECT
     tables. Static encounter and current-route exposure outputs remain analysis-only and do not alter A*.
-    Marginal or seeded results require an explicit ready `NavigationContextResult`; a spatial start alone
+    Marginal or seeded results require an explicit ready `NavigationPredictionStart`; a spatial start alone
     never supplies encounter state.
 12. **Implemented area/SCT behavior; planned ECT behavior:** The UI thread replaces the displayed model
     after a complete or usable partial MLD load. Partial area models are visibly diagnosed and never
@@ -210,16 +212,14 @@ model with pathfinding disabled.
 - Construct one layer-preserving 2.5D analysis field from the same SAVOR-owned surfaces and triangle keys
   used by the true-3D graph. Stacked surfaces remain distinct and no raster/sample becomes a replacement
   navigation mesh.
-- Run the Navmesh Survey from the exact output savestate of a ready `NavigationContextResult`. Expand
-  disposable survey anchors outward, distinguish local validity from entry reachability, and release
-  ordinary collision, oddity, trigger, and reproduction jobs as their dependencies become available.
-- Expose separate collision and anomaly outputs. Static uncertainty or a simulator mismatch is diagnostic
+- Run the Navmesh Survey from one named Navigation Context `.sav`/`.nctx`. A first wave establishes
+  in-area door access and replay-verified positional anchors; a second wave reloads the common baseline,
+  teleports parallel workers to those anchors, and records spatial probes.
+- Expose the spatial collision/refinement output separately from later timing-dependent anomaly analysis.
+  Static uncertainty or a simulator mismatch is diagnostic
   until an explicit validated refinement promotes it into the routing model.
-- Preserve sticky-corner positional-jump and wall-contact ramp-speed measurements as reproducible
-  movement-response evidence without optimizing their use inside the survey.
-- Represent automatic-trigger approach boundaries, interactable activation envelopes, and state-qualified
-  pre/post door transitions. Dynamic trigger suppression/permission within a job is required direction,
-  while the concrete hook and gate modes remain research-gated.
+- Represent door portals with expected-TBLID crossing evidence and initial lock/BitVar constraints.
+  Generalized automatic/interactable trigger characterization remains separate later work.
 - For the Dungeon profile, parse the strictly matched sibling `aNNNC.ect` whose presence established that
   profile through SpiceEct, apply the evidence-qualified direct-table selector hypothesis to both GRND and
   ground-role GOBJ triangles, and keep selector zero,
@@ -227,7 +227,7 @@ model with pathfinding disabled.
 - Display a whole-area static selector/table overlay and segment only the current deterministic route for
   active/no-encounter distance and table transitions. Encounter analysis does not change A*, route
   ranking, trigger semantics, or the current control-solver contract.
-- Reference the exact ready `NavigationContextResult` for marginal values. Distinguish an exact
+- Reference the exact ready `NavigationPredictionStart` for marginal values. Distinguish an exact
   per-active-check grid result from a cumulative marginal/independence approximation, future
   predicted/seeded model output, and simulator-observed/validated evidence.
 - Reuse the same field, graph, collision/anomaly, route, and control pipeline for safe/no-encounter areas
@@ -241,25 +241,25 @@ After the model and widget boundary are validated:
 - Hash the selected disc by streaming SHA-256, materialize versioned internal-file manifests through
   Dolphin DiscIO extraction, and normalize SPICE/ALX results into a content bundle rather than relying on
   a machine path or manual file picker.
-- Capture a ready `NavigationContextResult` only after a reset-qualified field script/context switch or
-  battle return. Entering battle terminates the epoch; a same-script cutscene remains in the existing epoch
-  and never creates a fresh-entry assumption.
+- Retain the implemented Navigation Context `.nctx` plus savestate as the Survey bootstrap. Define a
+  separate future `NavigationPredictionStart` for reset-qualified predictor state; a same-script cutscene
+  never creates a fresh-entry assumption.
 - Interpret the already loaded SCT plus related package/controller content for target, arrival, and
   transition discovery, automatic start-condition evaluation, and opcode-156 runtime restoration.
-- Run the Navmesh Survey from the immutable Navigation Context output savestate. Create short-lived
-  verified anchors near work, including state-qualified successor anchors reached through required
-  doors/script transitions, then fan out ordinary collision, oddity, later trigger-characterization, and
-  reproduction probes. Encounter suppression is independent from research-gated trigger control, which may
-  need to suppress and permit activations dynamically within one job. Persist all control history,
-  observations, and sub-triangle refinements separately from the static world and clean
-  prediction/validation states. `SavorCore` has no general runtime patch/write API today, and no trigger
-  hook or gate modes have been selected.
+- Run the Navmesh Survey from one immutable Navigation Context `.sav`/`.nctx`. The anchor wave normally
+  suppresses trigger commit, briefly restores the original callsite instruction for an intended door,
+  immediately suppresses again, verifies the TBLID and crossing, and records any temporary lock-BitVar
+  override. It publishes replay-verified positional anchors rather than successor savestates. The second
+  wave reloads the common baseline, teleports workers to those anchors, and records spatial probes.
+  Persist modifications, observations, and refinements separately from the static world and later
+  prediction/validation states. The required safe executable-patch and teleport operations remain to be
+  implemented in `SavorCore`.
 - Define and persist SAVOR-owned context, content, world, 2.5D analysis, exploration/refinement,
   collision/anomaly, optional encounter, prediction, control, and validation schemas.
 - Move the reusable Navigation widget into `SavorQt` while retaining `SavorQt3D` as a focused development
   harness if it remains useful.
 - Add a separate `SavorQt` outcome-planning module that authors a no-encounter or specific-encounter
-  objective, selects a compatible world and explicit context-result ID, invokes `SavorPredict`, monitors
+  objective, selects a compatible world and explicit prediction-start ID, invokes `SavorPredict`, monitors
   and compares candidate results, and selects one result for the Navigation widget. The widget does not run
   or rank movement-schedule searches.
 - Define a future asynchronous navigation boundary for the current exploratory `SavorPredict`
@@ -304,16 +304,18 @@ The normative logical sequence is:
 3. `nav.build_world`
 4. `nav.explore_geometry`
 5. `nav.build_refinement`
-6. `nav.search_predicted_outcomes`
-7. explicit user/result selection
-8. `nav.solve_controls`
-9. `nav.validate_route`
-10. `nav.publish_result`
+6. `nav.capture_prediction_start`
+7. `nav.search_predicted_outcomes`
+8. explicit user/result selection
+9. `nav.solve_controls`
+10. `nav.validate_route`
+11. `nav.publish_result`
 
 CPU/domain work includes content normalization, world construction, static profile/encounter analysis,
 graph search, and refinement construction. It remains in-process until a local CPU workflow lane exists.
-Dolphin workers are reserved for context capture, patched exploration, control solving, and clean runtime
-validation. `SavorPredict` owns bounded planning-level outcome search. `SavorDb` owns immutable artifact
+Dolphin workers are reserved for Survey-bootstrap capture, patched exploration, future prediction-start
+capture, control solving, and clean runtime validation. `SavorPredict` owns bounded planning-level outcome
+search. `SavorDb` owns immutable artifact
 references and lineage; patched exploration states never become predictor contexts or clean validation
 inputs. Detailed inputs, outputs, failure states, and project ownership are normative in
 [`NavigationContextWorkflow/06-phase-job-and-artifact-integration.md`](NavigationContextWorkflow/06-phase-job-and-artifact-integration.md).
@@ -326,17 +328,17 @@ diagnostics from a versioned content bundle. It does not consume a runtime saves
 ### `nav.explore_geometry`
 
 This Dolphin-backed step is the parallel portion of the Navmesh Survey. It consumes the explicitly
-referenced ready context output savestate as an immutable bootstrap, establishes verified disposable
-anchors, and releases candidate batches by dependency rather than waiting for five global barriers.
-Anchor expansion may intentionally traverse a door/script trigger and checkpoint its attributable stable
-successor before ordinary probing resumes. Workers emit anchor records and observations only; they never
-mutate the shared graph or refinement.
+referenced Navigation Context `.sav`/`.nctx` as a common bootstrap. Its first subwave establishes and
+replay-validates positional anchors through required in-area doors. Its second subwave reloads the same
+baseline and teleports parallel workers to those anchors for spatial probing. Workers emit anchor records
+and observations only; they never mutate the shared graph or refinement and never create per-anchor
+savestates.
 
 ### `nav.build_refinement`
 
-This deterministic CPU/domain step reduces selected survey observations into state-qualified passability,
-directional movement-response/oddity evidence, trigger activation/transition evidence, coverage, and a new
-immutable `NavigationWorldRefinement`.
+This deterministic CPU/domain step reduces selected survey observations into per-area passability,
+collision boundaries, refined connectivity, door/lock constraints, coverage, and a new immutable
+`NavigationWorldRefinement`.
 
 ### `nav.analyze_collisions`
 
@@ -346,12 +348,18 @@ coverage now enters through `nav.explore_geometry`. No observation silently muta
 ### `nav.analyze_dungeon_encounters`
 
 Static Dungeon encounter structure remains CPU/domain analysis attached to `nav.build_world` or a derived
-analysis artifact. Any marginal/seeded exposure explicitly references a ready `NavigationContextResult`.
+analysis artifact. Any marginal/seeded exposure explicitly references a ready `NavigationPredictionStart`.
 Safe does not run this analysis, and Overworld never substitutes the Dungeon decoder.
+
+### `nav.capture_prediction_start`
+
+Future prediction-only capture from an explicitly selected unmodified runtime/savestate. It is distinct
+from the implemented `nav.capture_context` Survey bootstrap and produces the reset/readiness/temporal
+state required by `SavorPredict`.
 
 ### `nav.search_predicted_outcomes`
 
-Consumes one explicit ready context, versioned content/world/refinement and model bundle, objective, and
+Consumes one explicit ready `NavigationPredictionStart`, versioned content/world/refinement and model bundle, objective, and
 bounds. It emits world-space witness routes plus planning-level movement/no-movement/interruption schedules,
 coverage/frontier data, completeness, and diagnostics. It emits no raw stick/camera tape. A same-script
 cutscene remains within the epoch or yields `ModelIncomplete`; battle entry terminates it.
@@ -375,13 +383,13 @@ and returns `NavigationValidationResult`. Patched exploration savestates are pro
 
 ### `nav.publish_result`
 
-Publishes immutable context/content/world/refinement/prediction/control/validation lineage, canonical
+Publishes immutable Survey-bootstrap/content/world/refinement/prediction-start/prediction/control/validation lineage, canonical
 selected results, metrics, diagnostics, and optional replay references without collapsing evidence layers.
 
 ## Artifact and Payload Direction
 
-Workflow payloads carry durable artifact IDs, schema/version identifiers, explicit context-result IDs, and
-compatibility hashes rather than machine-local paths or a mutable latest-context reference. Relational
+Workflow payloads carry durable artifact IDs, schema/version identifiers, explicit prediction-start IDs,
+and compatibility hashes rather than machine-local paths or a mutable latest-result reference. Relational
 records own lifecycle, selection, status, and lineage; large savestates, content bundles, worlds,
 observations, traces, reachability fields, and controller tapes remain object-store artifacts. Static
 world, patched exploration observations/refinement, prediction, control solving, and clean validation are
@@ -395,11 +403,10 @@ Navigation Context workflow package rather than duplicated here.
   path overlays.
 - The implemented pathfinding slice supplies manual start selection with facing, manual ground or
   projected-trigger goals, the grouped opcode-77 Start selector, and path/portal/endpoint overlays.
-- The shared-analysis slice adds separately toggleable collision/anomaly and dungeon encounter layers.
-  Navmesh Survey layers also expose survey anchors, tested/untested coverage, state-qualified boundaries,
-  sticky-jump/ramp-speed candidates, and automatic/interactable trigger evidence without changing A*
-  implicitly.
-  Encounter UI distinguishes static selector/table data, explicit context-qualified marginal results, modeled
+- The shared-analysis slice adds separately toggleable collision, later anomaly, and dungeon encounter
+  layers. Navmesh Survey layers expose positional anchors, tested/untested coverage, refined boundaries,
+  door portals, and initial lock constraints without changing A* implicitly.
+  Encounter UI distinguishes static selector/table data, explicit prediction-start-qualified marginal results, modeled
   predicted/seeded results, and simulator-observed/validated evidence. Static/marginal layers do not change
   the displayed A* route.
 - The later `SavorQt` outcome-planning module launches/monitors `SavorPredict` searches and selects one
@@ -407,7 +414,7 @@ Navigation Context workflow package rather than duplicated here.
   prefix/cutoff or triangle-keyed 2.5D reachable set/frontier. A selected predictor witness may differ from
   the ordinary A* route; this is an explicit separate overlay, not an implicit route mutation.
 - Keep static encounter coloring and Prediction Reachability separate. A predictor frontier is qualified by
-  objective, context result, world/model fingerprints, and search bounds; it is not a probability heatmap or
+  objective, prediction start, world/model fingerprints, and search bounds; it is not a probability heatmap or
   universal safety boundary.
 - `SavorQt3D` may exercise result rendering with fixtures but does not own predictor execution or
   movement-schedule search.
@@ -416,18 +423,17 @@ Navigation Context workflow package rather than duplicated here.
 
 ## Remaining Integration Questions
 
-1. Simulator-worker batch sizing and retry/reproduction policy for dependency-driven Navmesh Survey anchor,
-   collision, oddity, and trigger work, plus control solving/validation by route candidate, segment, or
-   hybrid.
+1. Simulator-worker batch sizing, teleport-settle tolerance, and retry/reproduction policy for the
+   two-wave Navmesh Survey, plus control solving/validation by route candidate, segment, or hybrid.
 2. Durable world, 2.5D analysis, script-index, collision/anomaly, and optional encounter schemas.
 3. Automatic mapping from game/area identity to the full required package set beyond the strict sibling
    MLD/SCT/ECT filename associations.
 4. Coordinate-policy calibration and validation fixtures.
 5. 2.5D sampling/refinement policy and the evidence threshold for promoting an anomaly into the route
    model.
-6. Trigger identities and categories, safe interception/control points, preservation of initialization and
-   environmental controllers, door/forced-movement completion boundaries, and the audited dynamic
-   suppression/permission contract. No gate modes are normative yet.
+6. Generalized trigger identities and categories beyond the resolved first-slice door toggle, including
+   `eventhook`, initialization/environmental controllers, automatic boundaries, and interactable
+   activation envelopes.
 7. Exact runtime capture/calibration for reset-state fields, dungeon encounter-check cadence, and state
    signatures beyond the current `stepCount` working contract.
 8. Future `SavorPredict` navigation boundary: process versus library shape, asynchronous invocation,

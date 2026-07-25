@@ -15,6 +15,13 @@ the source of truth when a plan conflicts with implementation.
 
 ## Future Plans
 
+- `planning/ExecutionRuntime/` - authoritative clean-slate execution-runtime refactor direction. It defines
+  one typed `ProgramRuntime`/`ProgramExecutor`, explicit emulation-session services, scoped native actions
+  and effects, immutable invocation/result/artifact contracts, current-phase migration, and the boundary
+  between bounded worker programs and durable workflow/frontier orchestration. It supersedes target-runtime
+  assumptions that serialize the current `PhaseScriptVM`, preserve `PSContext` as the public ABI, add
+  controller-per-phase factories, or retain separate built-in and authored-program execution paths.
+  Current code remains authoritative for implemented behavior.
 - `planning/SavorPredict_NavigationModels/` - future SavorPredict field-navigation model direction,
   including reusable pathfinding, encounter-aware joint search, predicted navigation trajectories, and
   worker-driven live trajectory testing.
@@ -65,8 +72,8 @@ the source of truth when a plan conflicts with implementation.
   state, and calibration against the game's active collision-selector modes also remain future work.
 
   A later predictor-backed slice adds a separate outcome-planning module in `SavorQt`. That module will
-  consume an explicitly referenced, reset-qualified `NavigationContextResult` and invoke the existing
-  `SavorPredict` predictor subsystem through a future asynchronous boundary to search paths and
+  consume the surveyed per-area world/refinement plus an explicitly defined prediction-start state and
+  invoke the existing `SavorPredict` predictor subsystem through a future asynchronous boundary to search paths and
   movement/no-movement/interruption schedules for objectives such as no encounter or a specific encounter.
   The reusable Navigation widget will not run or rank those searches. It will validate and render a
   selected immutable prediction result as either a route prefix/cutoff or a `NavigationTriangleKey`-keyed
@@ -75,18 +82,18 @@ the source of truth when a plan conflicts with implementation.
   probability heatmap or universal safety guarantee. `SavorPredict` is currently an exploratory
   application/CLI, so its navigation API, process boundary, and artifact schema remain planned work.
 
-  `planning/NavigationPhase/NavigationContextWorkflow/` is the normative future-work package for clean
-  disc identity/content materialization, reset-qualified navigation epochs, measured context readiness,
-  the Navmesh Survey, runtime-refined passability, predictor planning, controller realization, clean
-  validation, workflow steps, and immutable artifact lineage. The survey consumes the exact ready-context
-  output savestate as an immutable bootstrap, expands disposable anchors through required doors/script
-  transitions, and releases ordinary collision, sticky-jump/ramp-speed oddity, later trigger, and
-  reproduction jobs by dependency. Encounter suppression is independent from trigger control; trigger
-  activations may need to be suppressed and permitted dynamically within one job, but the mechanism and
-  modes remain research-gated. This direction supersedes fixed job-wide trigger-suppression and
-  collision/anomaly-only Navmesh Survey sketches elsewhere in active Navigation planning. A same-script
-  cutscene remains in its current epoch and never justifies a fresh-entry reset; battle entry terminates
-  the epoch and a validated battle return may begin another.
+  `planning/NavigationPhase/NavigationContextWorkflow/` is the normative package for the draft
+  Navigation Context capture, the planned Navmesh Survey, later predictor/control/validation work,
+  workflow steps, and immutable artifact lineage. The first Survey slice uses the concrete
+  `navigation-context-41.sav` and adjacent `.nctx` as one common per-area bootstrap. A finite first wave
+  establishes in-area door anchors, briefly restores trigger commit only for an intended interaction,
+  verifies TBLID/opening/crossing, and records any temporary BitVar unlock plus `initially_locked`
+  constraint. Each anchor is replayed from the common baseline by teleport and settle. A second wave
+  reloads that baseline and fans parallel spatial probes out from the verified positions. Area loads are
+  separate files; anchors do not own savestates or serialized ground-selector state; persistent Survey
+  evidence contains no probe timing. This direction supersedes fixed job-wide trigger-suppression,
+  per-anchor-checkpoint, timing-based, and collision/anomaly-only Navmesh Survey sketches elsewhere in
+  active Navigation planning.
   `planning/NavigationPhase/06-area-profiles-and-analysis-workstreams.md` remains normative for profile
   precedence and evidence levels.
 - `planning/DBMigrateQueues/09-Phase-4-Implementation-Plan.md` - future hardening/tuning work, including

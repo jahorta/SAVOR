@@ -1,0 +1,527 @@
+# 10 - Verification and Acceptance
+
+## Status and authority
+
+**Status:** Authoritative verification strategy and release gates; tests are not yet implemented.
+
+This document defines the evidence required to accept the Execution Runtime refactor, migrate each
+current phase, delete the legacy runtime, and admit the first new phases. A stage in document 09 is not
+complete merely because it compiles; its applicable gates here must pass.
+
+Current tests remain authoritative for current behavior. Some encode current ownership or API shape and
+will be replaced rather than carried forward as target architecture requirements.
+
+## Purpose and non-goals
+
+Verification must prove:
+
+- ownership invariants, not only happy-path outputs;
+- deterministic program control flow under a deterministic backend event trace;
+- complete cleanup under return, failure, cancellation, timeout, and injected restoration faults;
+- exact module/action/type/state/artifact provenance;
+- parity for every supported current phase;
+- workflow/frontier idempotency and restart recovery;
+- safe phase switching through one executor; and
+- the concrete `a101b` Navmesh Survey first slice.
+
+This document does not define performance targets, game-specific search quality, final database layout,
+or the exact authored-program source syntax.
+
+## Current code evidence
+
+The repository has reusable test coverage, but it is divided along current implementation boundaries:
+
+- `SavorTests/test_phase_script_opcodes.cpp` checks the current opcode catalog and builder contracts.
+- `SavorTests/test_input_macro_runtime.cpp` checks adaptive macro gates, memory waits, failure mapping,
+  authorization, and cleanup.
+- `SavorTests/test_navigation_context_framework.cpp` checks capture qualification, execution, registry
+  construction, failures, and output ordering.
+- `SavorTests/test_navigation_context_codec.cpp` checks portable `.nctx` encoding and malformed input.
+- `SavorTests/test_savordb_fixture_sqlite.cpp` checks workflow schema, idempotent dynamic steps, terminal
+  advancement, graph routing, BattleSingleTurn next-wave creation, archive/rehydration, and savestate
+  persistence.
+- `SavorTests/test_savordb_phase3_nonfixture.cpp` checks coordinator materialization, terminal scans,
+  restart/replay behavior, concurrency, and workflow unit activation.
+- `SavorTests/test_worker_runtime_materialization.cpp` checks worker runtime snapshots and materialization
+  reuse.
+- Existing phase tests and live captures supply current-output parity evidence.
+
+The target keeps valuable behavior tests but replaces assertions that depend on direct VM breakpoint
+replacement, global `PSContext` keys, peer macro execution, or numeric program-kind dispatch.
+
+## Locked target decisions
+
+### Test architecture
+
+The implementation shall provide five test surfaces:
+
+1. **Pure contract tests**
+   - schemas, canonical encoding/hash, verifier rules, IR semantics, reducers, fingerprints, dedupe, and
+     deterministic ordering;
+   - no Dolphin or database required.
+2. **Deterministic fake session**
+   - a `FakeDolphinBackend` supplies scripted boot, PC stop, memory stop/change, input poll, frame
+     boundary, movie end, state load/save, capture, and backend-fault events;
+   - the real router, engine, arbiter, state/mutation services, action registry, and program executor run
+     over it.
+3. **Persistence/workflow integration**
+   - real SQLite services with deterministic artifact storage and fake worker completions;
+   - tests transactionality, outbox/replay, leases, retry, typed routing, frontier ordering, and restart.
+4. **Legacy differential harness**
+   - the frozen old reference and new runtime receive equivalent source state, inputs, and scripted/live
+     observations;
+   - compares domain results, persistent artifacts, requested actions, branch trace, input trace, and
+     cleanup behavior;
+   - exists only through the bounded migration window.
+5. **Focused live SavorE2E**
+   - uses the production worker, modules, actions, services, and workflow materialization;
+   - validates Dolphin integration and game-specific witnesses that a fake backend cannot prove.
+
+A test fixture cannot implement phase behavior on behalf of production code. A custom SavorE2E scenario
+is an invocation and assertion harness, not a substitute `NavmeshSurveyRunner`.
+
+### Canonical deterministic trace
+
+Every fake-session and replayable live test records a normalized trace:
+
+- source commit and build identity;
+- invocation, module revision/hash, entrypoint, and dependency closure;
+- sequence number and `StateEpoch`;
+- program block/instruction or source-map location;
+- requested action ID/version and canonical typed inputs;
+- resource acquire/release and scope identity;
+- execution request and routed stop/interceptor outcome;
+- completed action output;
+- branch/call/return/fail decision;
+- emitted record/artifact identity;
+- cancellation/deadline event; and
+- final infrastructure, domain, and cleanup/session status.
+
+Host timestamps, OS thread IDs, storage locators, and other declared nondeterministic fields are
+normalized out. Given the same verified module, typed invocation, dependency closure, and backend event
+trace, the requested-action and branch trace must be byte-for-byte canonical and equal.
+
+An action descriptor must declare any nondeterministic output fields. A program may branch on one only
+when the completed observation records it; replay then supplies that recorded value.
+
+### Architecture and dependency tests
+
+Static or link-time architecture checks shall fail when:
+
+- any component other than `ExecutionEngine`/backend implementation calls a Dolphin run or step
+  primitive;
+- any component other than `PhysicalStopPointManager` manipulates physical breakpoints or memchecks;
+- any component other than `InputArbiter` publishes pad state;
+- a program, action, reducer, or capability pack imports worker protocol, workflow persistence, or raw
+  Dolphin interfaces;
+- a program or action creates a private thread/event loop for execution;
+- a domain opcode is added to core IR;
+- a second interpreter/controller is registered;
+- production activation depends on `ProgramKind` or `PK_UserScript`; or
+- the legacy interpreter is linked into a post-cutover worker.
+
+Runtime assertions supplement, but do not replace, dependency enforcement.
+
+### Program module and verifier tests
+
+Cover at minimum:
+
+- valid module with every core instruction and structured unwind;
+- unknown IR version, action, type, capability pack, entrypoint, or import;
+- action signature/version mismatch;
+- input/output/emitted-record schema mismatch;
+- invalid CFG target, unreachable invalid block, fallthrough, call arity, return type, local type, and
+  uninitialized local;
+- inconsistent stack/scope shape at a merge;
+- action-await resume type mismatch and duplicate/late completion;
+- undeclared effect/capability/resource use;
+- invalid budget and statically provable unbounded loop;
+- canonical hash stability under canonical serialization;
+- hash change after any semantic module/dependency change;
+- source-map validation without making source maps execution-authoritative; and
+- rejection before boot, state load, input, capture, or guest mutation.
+
+### ProgramExecutor tests
+
+Cover:
+
+- values, records, lists, arithmetic, comparisons, branch/switch, calls, return, emit, fail, and defer;
+- nested subprograms and typed locals;
+- one and many sequential action awaits;
+- cancellation before execution, during an await, after completion delivery, and during unwind;
+- deadline and instruction/effect/emission/artifact budget exhaustion;
+- late, duplicated, mismatched, and stale-epoch action completions;
+- deterministic trace reproduction;
+- zero, one, and many emitted records/artifacts;
+- independent infrastructure, domain, and cleanup status;
+- pure native reducer transitions and requested effects;
+- rejection of a reducer that attempts service/Dolphin ownership; and
+- result construction when domain success is followed by cleanup failure.
+
+### StopPointRouter and PhysicalStopPointManager tests
+
+Cover:
+
+- physical union and reference counting across multiple logical consumers;
+- observe plus wake plus intercept on one PC;
+- priority, consume/pass/replace behavior, and stable ordering;
+- source-scoped removal without affecting another source;
+- subscription lifetime on normal return, failure, timeout, and cancellation;
+- state restore and epoch reconciliation;
+- interpreter and JIT matching parity;
+- bounded CPU-thread ingress with no blocking/allocation violation;
+- visual observer coexistence with a running program; and
+- no ordinary execution path that globally clears another consumer's sites.
+
+### ExecutionEngine tests
+
+Cover:
+
+- continue-to-condition, step instruction, step frame, input sequence, pause, and interactive resume;
+- every operation routed through interceptors;
+- caller wait interrupted by a modal child operation and then resumed;
+- remaining deadline/budget accounting across suspension;
+- requested completion versus unrelated stop;
+- timeout, VI stall, movie end, backend fault, and cancellation;
+- child-operation failure propagation;
+- visual commands serialized with program execution; and
+- exactly one transition into running state at a time.
+
+### InputArbiter tests
+
+Cover:
+
+- lease acquisition, priority, rejection, suspension, resumption, and release;
+- suspendable versus unsuspendable owners;
+- neutral restoration acknowledged by the guest;
+- cancellation and owner destruction;
+- input-poll receipt propagation;
+- modal dialog borrowing;
+- deterministic movie incompatibility as an explicit policy failure; and
+- no input publication without an active lease.
+
+The behavior currently checked by `test_input_macro_runtime.cpp` must migrate to these common service,
+action, reducer, and program tests. It must not remain proof of a peer macro runtime.
+
+### StateService and StateEpoch tests
+
+Cover:
+
+- boot, load artifact, restore baseline, continue-session guards, and save artifact;
+- epoch change on boot/reboot/restore and no change on ordinary reads;
+- stale memory pointer, selected-object, worksheet, ground, router, and action handle rejection;
+- exact runtime/disc/state compatibility;
+- multiple named state handles rather than one hidden VM snapshot;
+- immutable state artifact hash, parent, edge, and producer lineage;
+- save/load failure and incomplete artifact rejection; and
+- no implicit latest or ambient state selection.
+
+### GuestMutationService tests
+
+Cover:
+
+- checked `u8`, `u16`, `u32`, and masked writes;
+- expected-original mismatch before mutation;
+- written-value readback mismatch;
+- masked write proves that no undeclared bit changed;
+- nested scopes and reverse-order restoration;
+- executable patch pause requirement, alignment, expected word, cache/JIT invalidation, and readback;
+- cancellation during an executable enable window;
+- restoration failure and session taint;
+- state-epoch change while a receipt is live; and
+- audit receipt completeness.
+
+The concrete Survey fixture must cover:
+
+- `u8` value `0` at `0x8030b7ad`;
+- enabled word `0x480F86C5` and suppressed word `0x48000018` at `0x80117e8c`;
+- a wrong expected word and wrong readback;
+- nested door-window unwind back to suppressed state, then outer Survey-scope unwind to the worker's
+  recorded original state; and
+- cancellation/fault injection at each pause, write, cache/JIT, readback, resume, and restore boundary.
+
+### Action and resource-scope contract tests
+
+Every registered action receives a generated conformance suite from `ActionDescriptor`:
+
+- schema and capability validation;
+- bounded completion or deadline;
+- cancellation acknowledgement;
+- declared determinism/replay behavior;
+- permitted `StateEpoch` transition and handle rules;
+- exact resources acquired;
+- success, domain-negative, infrastructure-failure, and cleanup-failure outcomes;
+- no undeclared emissions or side effects; and
+- complete trace/receipt production.
+
+Property and fault-injection tests acquire every resource type in varied nested orders, then terminate at
+every suspension point by return, fail, cancel, deadline, backend failure, and restore. Expected result:
+
+- every scope receives exactly one unwind attempt;
+- unwind occurs in reverse acquisition order;
+- independent cleanup failures are all reported;
+- mandatory failure yields `Tainted`; and
+- a tainted session rejects the next invocation.
+
+### Invocation, protocol, catalog, and replay tests
+
+Cover:
+
+- exact module/revision/hash/entrypoint resolution;
+- exact imported action/type/capability closure;
+- worker capability negotiation and cached-module hash verification;
+- `Boot`, `LoadArtifact`, `RestoreBaseline`, and guarded `ContinueSession`;
+- malformed, oversized, unknown-version, missing-schema, and mismatched-runtime requests;
+- cancellation and progress correlation by invocation/attempt;
+- zero-to-many records and artifacts in one result;
+- infrastructure/domain/cleanup status encoding without collapse;
+- retry as a new attempt under one semantic invocation;
+- immutable artifact publication before reference commit;
+- same complete invocation identity plus trace reproduces the same action/branch behavior; and
+- any module, action, input, route, state, or policy version change produces distinct provenance.
+
+### Current-phase differential matrix
+
+Every row must pass frozen unit/fake traces and focused live parity before the legacy source is removed:
+
+| Target module/entrypoint | Required parity evidence |
+|---|---|
+| `soa.seed_probe/probe` | Starting state, input behavior, seed/result records, savestate/artifact output, failure mapping |
+| `soa.tas_movie/play_and_checkpoint` | Movie identity, playback stops, checkpoint state/artifact, movie-end and failure behavior |
+| `soa.tas_frame_detector/detect` | Detector observations, branch/terminal classification, result fields |
+| `soa.battle.legacy_path/run` | Retained legacy behavior and explicit terminal outcomes |
+| `soa.battle.context/capture` | Qualification, captured context, state lineage, failure ordering |
+| `soa.battle.single_turn/execute` | RNG mutation receipt, adaptive input trace, outcome, context, capture, output savestate |
+| `soa.battle.macro_probe/probe` | Macro synchronization, alternative gates, memory waits, capture, error mapping |
+| `soa.battle.completion/complete` | Completion detection, emitted state/artifacts, terminal classification |
+| `soa.battle.results_screen/advance` | Input/dialog progression, results capture, terminal state |
+| `soa.navigation.context/capture` | Qualification before `.nctx` and savestate publication, exact codec, neutral input, failure atomicity |
+
+Parity compares domain semantics and durable evidence, not old internal breakpoint-set mutation or
+`PSContext` layout. Any intentional behavior change requires an explicit versioned decision and new
+golden evidence; it cannot be hidden as refactor drift.
+
+### Workflow and frontier tests
+
+Use real workflow persistence and restart boundaries to cover:
+
+- typed producer/consumer schema validation before materialization;
+- exact state policy on every phase edge;
+- deterministic idempotency keys and duplicate completion replay;
+- output artifact stored before binding;
+- dynamic fan-out, finite barrier, deterministic fan-in, and reduction ordering;
+- retry after worker crash, lease expiry, and coordinator restart;
+- stale attempt completion rejection;
+- cancellation with active claims;
+- partial-result policy fail-closed by default;
+- DFS, BFS, and best-first canonical order;
+- multiple incoming edges to one deduplicated node;
+- goal, dead-end, pruned, duplicate, exhausted, budget-exhausted, failed, and canceled terminal states;
+- arbitrary wave count without recursive worker execution;
+- exact frontier restoration after process restart; and
+- BattleSingleTurn survivor selection/next-wave parity.
+
+Randomize worker completion order in repeated runs. Accepted node/edge order and deterministic reduction
+must remain identical for the same frontier policy.
+
+### Phase-switch isolation scenario
+
+A fake and live-capable `A -> B -> A` scenario shall:
+
+1. have A acquire input, router observation, capture, data-mutation, and epoch-bound handle scopes;
+2. end A cleanly and bind its typed output/state explicitly to B;
+3. have B use a different capability pack and state policy;
+4. end B cleanly and invoke the exact original A module revision again; and
+5. snapshot the session resource ledger before and after each invocation.
+
+The second A must see:
+
+- no subscriptions or physical sites attributable to the first A or B;
+- no previous input lease and confirmed neutral input;
+- no capture/movie handles;
+- no remaining guest data/code patch;
+- no pending continuation;
+- no stale epoch-bound handle; and
+- no session taint.
+
+Repeat with cancellation at each A/B await and with one injected cleanup failure. The failure case must
+force fresh-session recovery before the next phase.
+
+### Navmesh Survey `a101b` SavorE2E scenario
+
+Add a custom scenario with logical ID `execution_runtime.navmesh_survey.a101b.first_slice`. It invokes
+the production `soa.navigation.survey` module and workflow using:
+
+- `C:\savor\navigation_context_a201a_a101b_20260723_2100\navigation-context-verification\navigation-context-41.sav`
+- `C:\savor\navigation_context_a201a_a101b_20260723_2100\navigation-context-verification\navigation-context-41.nctx`
+
+The scenario must prove:
+
+1. every worker reloads the same untouched bootstrap;
+2. encounter suppression writes and verifies `0` at `0x8030b7ad`;
+3. trigger suppression installs/verifies `0x48000018` at `0x80117e8c`;
+4. the door window restores `0x480F86C5`, performs only the bounded interaction, and immediately
+   reinstalls `0x48000018`;
+5. the selected object through `0x8034744c` is readable and `[object + 8]` identifies TBLID `4101`;
+6. the initial lock is observed and only BitVar `2556` at `0x80310c78`, mask `0x10000000`, is cleared;
+7. the portal records `initially_locked`, polarity, original value, and override;
+8. BitVar `1555` at `0x80310bfc`, mask `0x00080000`, witnesses open/collision-motion completion;
+9. the player crosses and settles on the far side;
+10. the proposed far-side anchor is replayed from the untouched common bootstrap by teleport and settle;
+11. Wave 1 reaches its durable barrier before Wave 2 fan-out;
+12. Wave 2 runs from both initial and far-side anchors and emits immutable spatial observations;
+13. deterministic reduction alone publishes one per-area refinement; and
+14. cleanup receipts prove restoration or explicitly taint/quarantine the worker.
+
+Schema and artifact assertions must prove that:
+
+- no anchor owns a savestate;
+- no ground-selector record, worksheet pointer, ground pointer, or other live handle is persisted;
+- no inferred probe clock, VI-frame cost, or movement schedule appears in Survey evidence;
+- runtime deadlines remain diagnostics only;
+- no permanent hook, code cave, breakpoint-based suppression, generalized trigger allowlist, or
+  `eventhook` dependency exists;
+- the first-slice trigger path is limited to `motscpt`, `wallmot`, and `goscript`; and
+- an area load is a separate area artifact/boundary, not an anchor continuation.
+
+Negative variants cover wrong patch precondition, wrong selected TBLID, locked/no-open result, undeclared
+BitVar change, missing BitVar `1555`, failure to cross, fall, wrong-side correction, settle failure,
+cancellation during the enable window, and cleanup failure. None may publish a positive successor anchor.
+
+### Future-design acceptance matrix
+
+| Design | Core proof | Recovery/fault proof | Durable evidence |
+|---|---|---|---|
+| `soa.navigation.survey` (`establish_anchors`, `probe_geometry`) | Two bounded entrypoints, exact scoped patches, two workflow waves | Cancel/restore/door/settle failures; worker restart | Anchors, portals, spatial observations, refinement; no timing or anchor states |
+| `soa.navigation.replay/replay_route` | Exact route/control and module identity yields expected checkpoints | Interruption and divergence are typed; retry from exact source | Replay witnesses, deviations, terminal state when requested |
+| `soa.navigation.collision_search/probe_candidates` | One bounded candidate batch | Restart preserves frontier and dedupe | Expected/oddity observations and coverage |
+| `A -> B -> A` | Same executor and typed state binding | Cleanup failure forces fresh session | Resource ledgers and exact phase lineage |
+| `soa.cutscene.fast_forward/run_slice` | One bounded strategy slice under router/arbiter | Unsupported/budget/cancel results allow workflow fallback | Slice result, handled events, trace, optional state |
+| `soa.overworld.expand/expand_node` | One node expansion emits zero-to-many state children | Arbitrary-wave restart, stale lease, duplicate states | State/edge lineage, visited fingerprints, terminal/goal result |
+
+Before domain rules exist, collision, cutscene, and overworld tests may use synthetic capability fixtures.
+Their live game acceptance becomes an additional phase gate when those implementations begin.
+
+### Build and gate policy
+
+Any compiled-language implementation slice must:
+
+- build the affected SAVOR solution targets with the repository's required MSVC v145 toolchain;
+- run the focused unit/integration suites for the changed boundary;
+- run all architecture/invariant tests;
+- run all previously migrated current-phase parity suites; and
+- record durable test evidence before its stage exit review.
+
+Pre-cutover qualification additionally runs:
+
+- the full SavorTests suite;
+- every current-phase differential/live fixture;
+- repeated randomized-order workflow/frontier recovery;
+- fault injection for every resource class;
+- protocol/catalog mixed-version rejection; and
+- a clean-release worker/coordinator smoke workflow.
+
+Post-cutover qualification repeats those tests without the legacy interpreter linked. Survey becomes a
+required regression only after Stage 10.
+
+### Durable test evidence
+
+Each stage exit records:
+
+- source commit, build configuration, compiler/runtime/Dolphin/disc identities;
+- test binary and scenario version;
+- module/action/type catalog hashes;
+- invocation and state/artifact identities with secrets/locators redacted as appropriate;
+- normalized traces or their content hashes;
+- result and cleanup/session statuses;
+- retry/restart/fault-injection seed;
+- expected versus actual comparison; and
+- pass/fail plus linked diagnostics.
+
+One-off console output is not sufficient evidence for a cutover gate.
+
+## Interfaces and ownership affected
+
+Verification requires explicit seams for:
+
+- fake `DolphinBackend`;
+- inspectable router physical/logical state;
+- `ExecutionEngine` event injection and trace capture;
+- `InputArbiter` lease/resource ledger;
+- `StateService` epoch and state-artifact inspection;
+- mutation fault injection and restoration receipts;
+- deterministic action registry completions;
+- program trace/source-map events;
+- workflow clock, lease, outbox, and restart control; and
+- artifact store failure/replay injection.
+
+These are observability/test seams around production boundaries, not alternate execution paths.
+
+## Failure and cleanup behavior
+
+- Tests fail closed on missing evidence, schema mismatch, incomplete cleanup ledger, or unrecognized
+  nondeterminism.
+- Flaky timing-based assertions are prohibited where a typed event or state transition can be observed.
+- A live timeout may fail the scenario as infrastructure protection; it cannot become Survey timing
+  evidence.
+- Fault injection must occur before and after each mutating/suspending boundary, including during unwind.
+- A domain-negative outcome is accepted only when infrastructure completion and cleanup are clean.
+- A tainted result is never reused to make a later test pass; the next invocation must prove fresh-session
+  recovery.
+- Differential mismatches block legacy deletion until explained and versioned.
+
+## Dependencies and migration implications
+
+- Stage 0 creates the frozen corpus and fake trace model before ownership extraction begins.
+- Router, engine, input, state, and mutation tests must exist before their current direct paths are
+  removed.
+- Program verifier/executor tests must exist before translating a current phase.
+- Each migrated phase adds permanent new-runtime regression coverage; legacy comparison disappears only
+  after its deletion gate.
+- Workflow/frontier tests must precede Navmesh Survey and overworld work.
+- The live Survey scenario depends on production Survey implementation and exact bootstrap artifacts, but
+  the fake patch/door/state tests can be built earlier.
+
+## Acceptance criteria
+
+- Every invariant in the package README has at least one positive and one failure-path test.
+- Every current phase passes its differential matrix and focused live evidence.
+- Same module/invocation/dependency/backend trace yields the same canonical action/branch trace.
+- Cancellation and fault injection cover every suspension point and resource type.
+- A mandatory cleanup failure always yields a tainted, non-reusable session.
+- Workflow/frontier results remain canonical across randomized completion order and process restart.
+- Exact protocol/catalog mismatches reject work before guest-state mutation.
+- `A -> B -> A` proves zero leaked resources.
+- The `a101b` scenario proves all fourteen first-slice requirements and all prohibited Survey artifacts.
+- Post-cutover tests run with no production legacy interpreter or second controller linked.
+- Test evidence is durable and sufficient to reproduce every stage-exit decision.
+
+## Deferred work
+
+- Numeric performance, throughput, memory, and artifact-retention targets.
+- Long-duration soak duration and production telemetry alert thresholds.
+- Real collision-oddity objectives and live golden corpus.
+- Real cutscene tactic corpus and fastest-safe comparison metric.
+- Overworld rules, state fingerprint, goal corpus, and live DFS branching fixtures.
+- Final CI job partitioning and hardware matrix.
+- Authoring UI/compiler conformance tests, to be defined with the authored frontend.
+
+## Source references
+
+- `planning/ExecutionRuntime/README.md`
+- `planning/ExecutionRuntime/02-target-execution-architecture.md`
+- `planning/ExecutionRuntime/03-program-modules-ir-and-types.md`
+- `planning/ExecutionRuntime/04-actions-effects-and-session-services.md`
+- `planning/ExecutionRuntime/05-invocation-result-versioning-and-artifacts.md`
+- `planning/ExecutionRuntime/06-workflows-frontiers-and-phase-composition.md`
+- `planning/ExecutionRuntime/07-current-phase-migration-matrix.md`
+- `planning/ExecutionRuntime/08-future-phase-reference-designs.md`
+- `planning/ExecutionRuntime/09-breaking-change-cutover-plan.md`
+- `SavorTests/test_phase_script_opcodes.cpp`
+- `SavorTests/test_input_macro_runtime.cpp`
+- `SavorTests/test_navigation_context_framework.cpp`
+- `SavorTests/test_navigation_context_codec.cpp`
+- `SavorTests/test_worker_runtime_materialization.cpp`
+- `SavorTests/test_savordb_fixture_sqlite.cpp`
+- `SavorTests/test_savordb_phase3_nonfixture.cpp`
+- `planning/NavigationPhase/NavigationContextWorkflow/04-suppressed-exploration-and-world-refinement.md`

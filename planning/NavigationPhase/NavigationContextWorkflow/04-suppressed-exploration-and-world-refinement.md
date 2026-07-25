@@ -2,297 +2,303 @@
 
 ## Status
 
-Future plan. The **Navmesh Survey** establishes state-qualified effective passability, movement response,
-collision oddities, and trigger-activation evidence over the static SAVOR-owned world. Static MLD geometry
-is necessary but insufficient because projected walls may intersect ground triangles, runtime collision
-selection may differ from extraction assumptions, and authored events may both obstruct surveying and
-provide required transitions such as doors.
+Future implementation. The **Navmesh Survey** consumes one concrete Navigation Context export and its
+matching savestate as the starting point for a runtime survey of one loaded area. Its goal is a complete,
+runtime-verified per-area navmesh: stable places where the player can stand, passable connections,
+collision boundaries, door portals, and the access conditions attached to those portals.
 
-The Navmesh Survey spans the Dolphin-backed `nav.explore_geometry` work and deterministic
-`nav.build_refinement` reduction. It consumes the output savestate of a ready `NavigationContextResult` as
-its clean bootstrap, creates only disposable exploration descendants, and never contaminates prediction or
-clean-validation evidence.
+The Survey refines the static SAVOR-owned world rather than replacing its source geometry. Parsed MLD
+ground, wall, trigger, and MovingObject data supplies candidate topology; isolated Dolphin workers test
+that topology against the game. A deterministic reduction combines immutable spatial observations into a
+new `NavigationWorldRefinement`.
 
-SAVOR has no general VM runtime patch/write API for this work today. Patch addresses, application timing,
-restoration, and safety gates require implementation and research before these jobs can run.
+Survey evidence is spatial. It records requested positions, resulting and settled positions, facing where
+relevant, pass/block/fall/correction outcomes, collision boundaries, connectivity, and door metadata. It
+does not infer a probe clock, VI-frame cost, movement schedule, or optimization model. Bounded execution
+and retry limits are worker safeguards, not navmesh observations.
 
-This direction supersedes earlier planning that prescribed one fixed, job-wide
-`TriggerSuppressedSelective` profile. Survey jobs need research-gated trigger control that may suppress or
-permit activations dynamically while the job runs, especially while establishing anchors through doors.
-The concrete trigger-control mechanism and modes are deliberately unresolved.
+The draft Navigation Context phase and the concrete `a101b` export described below exist. The Navmesh
+Survey itself is not implemented.
+
+## Current First-Slice Inputs (`a101b`)
+
+The common survey bootstrap is:
+
+- savestate:
+  `C:\savor\navigation_context_a201a_a101b_20260723_2100\navigation-context-verification\navigation-context-41.sav`
+- adjacent Navigation Context export:
+  `C:\savor\navigation_context_a201a_a101b_20260723_2100\navigation-context-verification\navigation-context-41.nctx`
+
+Every first-slice worker reloads this same baseline. A survey anchor is not another savestate.
+
+The established first-slice runtime controls are:
+
+- encounter suppression writes one byte (`u8`) with value `0` at `0x8030b7ad`;
+- trigger selection/commit is controlled at `0x80117e8c`;
+- the original/enabled instruction is `0x480F86C5` (`bl 0x80210550`);
+- the suppressed instruction is `0x48000018` (`b 0x80117ea4`); and
+- `eventhook` is outside the first slice. Initial door-related scope is the path used by `motscpt`,
+  `wallmot`, and `goscript`.
+
+The executable-word toggle must use a paused, reversible patch path that verifies the expected original
+word, performs required instruction-cache handling, reads the result back, and can restore the recorded
+word. The first slice does not require a breakpoint, code cave, permanent hook, or generalized trigger
+allowlist.
+
+## Per-Area Boundary
+
+Each loaded area is surveyed into its own file and refinement. An area-load transition is recorded as a
+boundary or destination reference; it is not represented as a stateful positional anchor in the source
+area. Positional anchors only need to replay inside the area whose common bootstrap is named by the
+request.
 
 ## Evidence-Layer Separation
 
-The workflow keeps four relevant state classes distinct:
+The workflow keeps four relevant classes distinct:
 
-| State class | Runtime modifications | Permitted use |
+| Evidence class | Runtime modifications | Permitted use |
 |---|---|---|
-| Clean context state | None | Navmesh Survey bootstrap, prediction start, and clean validation lineage |
-| Static content/world | None; parsed from disc content | Candidate geometry, graph, authored metadata |
-| Patched survey state | Named runtime modifications and recorded trigger-control history | Navmesh Survey evidence only |
-| Clean validation state | None; restored from clean lineage | Validate selected controls and outcomes |
+| Common survey bootstrap | None beyond the state already captured in the named `.sav` | Reload source for every anchor and survey job |
+| Static content/world | None; parsed from disc content | Candidate geometry and authored metadata |
+| Isolated live survey job | Encounter suppression, reversible trigger toggle, and recorded job-local BitVar overrides | Establish anchors and collect spatial observations |
+| Survey output | Immutable anchor, portal, observation, coverage, and refinement artifacts | Per-area navmesh and later planning input |
 
-A patched savestate, RAM snapshot, or successor state is never promoted to `NavigationContextResult`,
-never supplied to `SavorPredict` as a clean start, and never used for clean validation.
+No modified live state is promoted to a Navigation Context, prediction start, or clean validation input.
+The common bootstrap is never overwritten. A failed or completed worker is disposable even though its
+accepted observations are durable.
 
-## Runtime Modification and Trigger-Control Direction
+## Runtime Modification Rules
 
-Encounter suppression and trigger control are independent capabilities.
+Encounter suppression and trigger suppression are independent operations.
 
-### `EncounterSuppressed`
+### Encounter suppression
 
-Prevents random battle entry during ordinary geometry probes while preserving movement and collision
-behavior as closely as research supports. The profile records every address/instruction/value changed,
-activation and restoration points, runtime build compatibility, and validation evidence.
+Each survey worker writes byte value `0` at `0x8030b7ad` before exploration and verifies the write. The runtime
+modification record includes the address, original value, written value, runtime/disc compatibility,
+application result, and cleanup result.
 
-### Dynamic trigger control (research-gated)
+### Normal trigger suppression
 
-Initial collision probes need a way to prevent unknown trigger volumes from interrupting ordinary
-measurement. Anchor expansion may simultaneously require the same job to activate a door or another
-scripted transition, observe its forced movement or collision-resource change, establish a stable successor
-anchor, and then resume isolated probing.
+Ordinary anchor movement, teleport settling, and navmesh probes run with `0x48000018` installed at
+`0x80117e8c`. This bypasses the trigger-selection commit call while leaving the rest of the worker under
+normal game execution.
 
-The workflow therefore requires auditable dynamic trigger activation/deactivation control within a job:
-the job must be able to change whether a detected trigger effect may execute. It does **not** yet prescribe
-a global disable, allowlist format, dispatcher hook, fixed set of gate modes, or causal-script boundary.
-Research must determine how to preserve required field initialization, doors, platforms, MovingObjects,
-and collision-resource changes while preventing unrelated activations.
+### Door activation window
 
-Changing trigger permission does not undo an in-game state change. Branching back to a pre-trigger state
-requires restoration of an earlier disposable checkpoint. Trigger control is never implied by
-`EncounterSuppressed`.
+To interact with an intended door, the worker:
 
-### Combined runtime modifications
+1. approaches and faces the door while triggers are suppressed;
+2. pauses and restores `0x480F86C5` at `0x80117e8c`;
+3. issues the intended interaction during a bounded runner-controlled execution window;
+4. pauses and immediately reinstalls `0x48000018`;
+5. verifies the patched-word readback; and
+6. continues the door script with ordinary triggers suppressed.
 
-A job may combine encounter suppression with a versioned trigger-control policy. Its evidence records the
-full runtime-modification identity plus every trigger-control change, activation window, observed trigger,
-and restoration boundary. The shorthand "suppressed exploration" is not an artifact identity.
+The enable window is not intrinsically TBLID-selective. The worker therefore verifies the selected object
+after the window and rejects a mismatched activation.
 
-## Patch Provenance and Safety
+### BitVar-locked doors
 
-Every runtime modification or trigger-control contract records:
+The Survey distinguishes physical navmesh completeness from the initial gameplay availability of a door.
+When an intended door is locked by a known BitVar, an isolated anchor-establishment job may change only
+that bit to its unlocked value using read-modify-write, retry the door, and then discard the modified live
+state.
 
-- modification/control ID, schema, and digest;
-- exact game executable/disc/runtime build compatibility;
-- each target address or symbolic locator and expected original bytes/value;
-- written bytes/value and application frame;
-- each dynamic trigger-control change, reason, target evidence, and effective frame range;
-- verification that the original state matched before writing;
-- restoration procedure and post-restoration verification;
-- worker/process identity; and
-- diagnostics for partial application or cleanup failure.
+The portal record retains:
 
-If any expected original value does not match, the worker rejects the patch rather than applying a nearby
-or guessed edit. Worker process isolation remains the final containment boundary.
+- the door TBLID;
+- `initially_locked`;
+- the controlling BitVar and locked/unlocked polarity;
+- the original value and temporary survey override; and
+- the successful activation, crossing, and successor-anchor evidence.
 
-## Exploration Inputs
+The final navmesh contains the physical connection, while later gameplay-aware planning can respect its
+recorded access condition.
 
-`NavigationExplorationRequest` references:
+## Survey Waves
 
-- one static `NavigationWorldModel`/graph identity;
-- one ready `NavigationContextResult` and its output savestate as clean bootstrap lineage;
-- exact runtime-modification and trigger-control policy identities;
-- the survey wave, candidate partition, and any verified survey-anchor identities;
-- probe partition and search bounds;
-- surface/boundary candidates;
-- allowed trigger/door/platform state signature dimensions;
-- telemetry contract and versions; and
-- runtime, time, and retry budgets.
+The first implementation uses two explicit worker waves.
 
-The request does not mutate the clean context. Any probe savestate derived for convenience remains a
-patched exploration artifact.
+### Wave 1 - establish survey anchors
 
-## Survey Waves and Anchors
+Anchor-establishment workers begin at the Navigation Context position in the common bootstrap and expand
+through the loaded area. When a door separates regions, the worker uses the door activation window,
+applies a recorded BitVar override when necessary, crosses the doorway, and proposes a position on stable
+ground on the far side.
 
-The waves express dependencies and scheduling priority, not mandatory whole-field barriers. A verified
-result may release its dependent jobs immediately.
+A door interaction succeeds only when:
 
-1. **Bootstrap** consumes the output savestate of `nav.capture_context`. It does not repeat or weaken the
-   Navigation Context readiness contract.
-2. **Survey-anchor expansion** moves outward from the bootstrap or an already verified anchor and creates
-   shorter-lived starting states near candidate clusters. A validated reposition procedure may place the
-   actor closer to a target only when all required placement, ground/resource, velocity, collision-state,
-   and settle checks succeed.
-3. **Ordinary collision survey** probes passability, walls, external edges, corners, ramps, stairs,
-   GRND/GOBJ handoffs, and uncertain portals in parallel.
-4. **Collision-oddity survey** follows up on telemetry candidates such as sticky-corner positional jumps,
-   wall-contact ramp-speed behavior, slides, snags, and unexpected displacement.
-5. **Trigger survey** measures automatic-trigger boundaries and interactable-trigger activation envelopes
-   after trigger identity and control behavior are understood well enough to run safely.
+1. the selected interaction object is the intended door;
+2. any door-specific completion evidence indicates the open branch completed; and
+3. the player physically crosses to the far side and settles at a usable position.
 
-A survey anchor records its parent lineage, world/state signature, position and facing, active
-ground/resource, settle evidence, runtime modifications, and disposable savestate. Local placement
-validity and proven reachability from the clean field-entry context are separate facts. A worker may
-establish a post-door anchor inside one job, but downstream fan-out uses the checkpointed anchor rather
-than depending on one long-lived worker process.
+For the current runtime, mode-1 interaction selection leaves the selected object pointer at `0x8034744c`.
+The worker validates that it is non-null/readable before using `[object + 8]` as the selected TBLID.
+Generic activity at `0x80347408` is not sufficient identity evidence.
+
+For `a101b` door TBLID `4101`:
+
+- BitVar `2556` is the lock condition and must be cleared with a read-modify-write of word `0x80310c78`,
+  mask `0x10000000`;
+- BitVar `1555` is word `0x80310bfc`, mask `0x00080000`; it is set after the open/collision motion
+  completes and is a door-specific completion witness; and
+- physical crossing and far-side settling remain the final navmesh evidence.
+
+Wrong TBLID, a locked/no-open result, or failure to cross produces no successor anchor.
+
+### Anchor replay validation
+
+Before publishing a proposed anchor, a worker validates the same operation later workers will use:
+
+1. reload the common bootstrap;
+2. reinstall the survey runtime controls;
+3. teleport the player to the proposed position and optionally restore facing;
+4. resume ordinary game updates so the game reconstructs ground and collision state; and
+5. accept the anchor only if the resulting position settles near the request and remains usable.
+
+The first slice deliberately does not serialize a full ground-selector record, persist worksheet or ground
+pointers, or create a per-anchor savestate. A small correction may be canonicalized to the resulting
+position only when it remains within settle tolerance and on the intended side of the door. A drop,
+wrong-side correction, or snap-away rejects the candidate.
+
+### Wave 2 - parallel spatial survey
+
+Subsequent workers each:
+
+1. load the same common bootstrap;
+2. apply encounter and trigger suppression;
+3. teleport to one verified positional anchor;
+4. pass the same settle/usable-position check; and
+5. probe an assigned position, surface, boundary, portal, or candidate cluster.
+
+Workers do not share mutable game state or mutate a shared navmesh. They emit immutable observations for
+deterministic reduction.
+
+## Survey Anchor
+
+A `NavigationSurveyAnchor` records:
+
+- stable anchor identity and parent/reachability lineage;
+- common bootstrap `.sav` and `.nctx` identities;
+- area identity;
+- requested and settled position;
+- optional facing;
+- teleport-and-settle validation evidence;
+- door/portal reference when a door established reachability; the portal owns initial-lock and temporary
+  BitVar-override metadata; and
+- worker, runtime, disc, and runtime-modification identities.
+
+Local teleport validity and proven reachability from the initial Navigation Context position remain
+separate facts. Wave 1 supplies reachability; replay validation proves that later workers can reuse the
+position.
 
 ## Probe Generation
 
-`SavorNavigation` generates candidates from:
+`SavorNavigation` generates spatial candidates from:
 
 - ground-triangle interiors and edges;
 - projected wall intersections and near-boundary offsets;
 - GRND/GOBJ overlaps and stacked surfaces;
-- derived portals and uncertain links;
-- trigger, MovingObject, door, and collision-resource boundaries;
-- ordinary slopes and wall-adjacent ramp/stair approaches;
-- parser or topology diagnostics; and
-- coverage gaps from earlier observations.
+- derived portals and uncertain graph links;
+- doors and MovingObject boundaries;
+- ramps, stairs, corners, and handoffs; and
+- coverage gaps or contradictions from earlier observations.
 
-Candidate ordering may prioritize route-relevant regions, but a local route sample does not prove global
-passability. Ordinary probes capture movement-response and prospective trigger-hit telemetry so later
-oddity and trigger waves can target evidence rather than rescan the field blindly.
+Candidate generation may partition work by anchor, geometry region, surface, boundary, or approach
+direction. It does not attach a survey clock or convert spatial samples into frame costs.
 
-## NavigationGeometryObservation
+## Navigation Geometry Observation
 
-Each immutable runtime observation records:
+Each immutable observation records:
 
-- world/graph and source geometry identity;
-- exact runtime-modification and trigger-control-history identity;
-- probe start state and derivation lineage;
-- survey-anchor identity, positioning method, and settle verification;
-- state signature for relevant collision/script/object modes;
-- ordered trigger-control changes and trigger activations observed during the probe;
-- requested path/approach and executed input/camera telemetry;
-- per-frame position, velocity, facing, active ground/collision resource, and contact evidence;
-- trigger/event/battle/control transitions;
-- observed pass, block, slide, fall, warp, interruption, or divergence outcome;
-- end state and coverage contribution; and
-- runtime build, worker, attempts, confidence, and diagnostics.
+- static world/graph and source-geometry identity;
+- common bootstrap and survey-anchor identity;
+- exact runtime-modification and job-local BitVar-override history;
+- requested start, approach, and target positions;
+- ordered resulting positions and facing where spatially relevant;
+- observed contact or position correction when available;
+- active area and attributable surface/resource identity when available from the live game;
+- observed pass, block, fall, slide, warp, interruption, wrong-target, or settle-failure outcome;
+- end position and coverage contribution; and
+- runtime, worker, attempt, confidence, and diagnostics.
 
-Camera and controller orientation belong here because they are empirical execution evidence. They are not
-added to `NavigationContextResult` or made a prerequisite for planning-level route search.
+Ordered positions preserve spatial causality without turning the Survey into a timing model. Controller
+realization, VI-frame costs, and temporal movement-response experiments belong to later work.
 
-## State Signatures
+## Door and Portal Representation
 
-Geometry may vary with door state, platform state, switches, script branches, or collision-resource
-selection. A refinement is therefore keyed by an explicit state signature rather than treated as one
-universal map.
+A door that is initially locked does not produce a separate locked navmesh and unlocked navmesh merely
+because its access flag differs. The Survey records the physical portal once and attaches the known access
+constraint. The portal links its pre-door and far-side anchors and retains the evidence that proved the
+connection.
 
-The first implementation may support a deliberately small signature vocabulary. Unknown state
-dimensions lower confidence or produce separate `UnknownState` observations. Merging two signatures is
-allowed only when an explicit equivalence rule is validated.
+General automatic-trigger boundary characterization, interactable activation-envelope measurement, and
+`eventhook` behavior are deferred. The first slice controls triggers only as required to establish door
+anchors safely.
 
-## Sub-Triangle Refinement
-
-Runtime passability cannot be stored only as one boolean per `NavigationTriangleKey`. A projected wall
-may cut across the middle of a walkable triangle, and only part of a triangle may be reachable under one
-state signature.
-
-`NavigationWorldRefinement` therefore supports:
-
-- validated passable and blocked local polygons/segments within a source triangle;
-- boundary contact intervals and approach direction;
-- refined adjacency and portal spans;
-- state-qualified transition edges;
-- uncertainty/untested regions; and
-- links back to every supporting or contradicting observation.
-
-The representation may later choose a constrained subdivision, overlay mesh, or sampled field. The
-semantic requirement is stable local coordinates plus source-triangle provenance; it must not silently
-replace the authored triangle with an untraceable mesh.
-
-## Coverage and Confidence
-
-Coverage is measured separately for:
-
-- triangle interiors;
-- wall/edge approaches and directions;
-- cross-resource portals;
-- relevant state signatures;
-- trigger/interruption boundaries;
-- collision-oddity approach, contact, timing, and release variants; and
-- route-specific corridors.
-
-Evidence levels are:
-
-1. `StaticOnly` - parser/projector evidence with no runtime probe.
-2. `Observed` - at least one runtime observation under exact runtime-modification,
-   trigger-control-history, and state-signature identities.
-3. `Reproduced` - compatible independent attempts agree.
-4. `Contradictory` - observations disagree or conflict with static geometry.
-
-When used, encounter suppression or any trigger-control modification makes the evidence suitable for
-survey discovery, not for claiming natural event/encounter behavior.
-
-## Building a Refinement
+## Building the Refinement
 
 `nav.build_refinement` is deterministic over:
 
 - static world identity;
-- ordered observation artifact identities;
-- runtime-modification, trigger-control-history, and state-signature schemas;
+- ordered anchor and observation artifact identities;
+- runtime-modification and BitVar-override histories;
 - refinement algorithm and parameters; and
 - coordinate-policy version.
 
-It emits a new immutable refinement. New observations produce a descendant refinement; they do not edit
-the old artifact in place. Contradictions remain visible and lower confidence instead of being resolved by
-last-write-wins.
+It emits a new immutable per-area refinement containing:
 
-## Movement Response and Collision Oddities
+- validated passable and blocked local regions;
+- refined adjacency and portal spans;
+- door portals with initial-lock/access metadata;
+- source-triangle provenance;
+- tested, untested, contradictory, and unresolved coverage; and
+- links to every supporting or contradicting observation.
 
-The Navmesh Survey records the directional movement response needed by later optimization without
-performing that optimization. Normal probes establish baseline displacement, velocity, vertical gain,
-surface/resource changes, and collision response. Targeted oddity probes vary approach angle and speed,
-contact point and duration, input direction, and release timing.
-
-The first named oddity families include:
-
-- sticky corners that hold or redirect motion and may later produce a discontinuous player-position jump;
-- ramp-speed behavior where wall contact while ascending a ramp or staircase produces a different ascent
-  rate from ordinary travel;
-- slides, snags, step-up behavior, speed loss/retention, and other unexpected displacement.
-
-Each observation retains the exact entry and release conditions, frame-by-frame position/velocity,
-contact and active-resource evidence, net progress, VI-frame cost, repetition, and variance. Oddity
-evidence remains separate from ordinary passability. Only a reproducible measured behavior may later be
-offered to a planner as an available movement primitive; the survey does not decide whether to use it.
-
-## Trigger Survey Direction
-
-Trigger research must precede a concrete gate contract, but the survey output requirement is established:
-
-- Automatic script triggers are tested from every available/reachable approach side to refine their
-  positional crossing boundaries and state conditions.
-- Interactable triggers are tested for the position, distance, facing, input, and any occlusion/state
-  envelope that still activates them; distance alone is not assumed sufficient.
-- A door or trigger that changes collision, forces movement, or transfers the actor creates a
-  state-qualified transition between pre- and post-activation survey anchors.
-- If research establishes a suppression point that still exposes trigger detection, hits recorded before
-  their effects are suppressed seed later targeted work. They are not blocked collision evidence.
-
-If an activation changes door, platform, MovingObject, switch, or collision-resource state, the affected
-geometry belongs to a new state signature and may require a localized resurvey.
+New evidence creates a descendant refinement rather than editing an older result in place. No worker
+silently rewrites extracted geometry.
 
 ## Failure Semantics
 
-- Patch precondition mismatch fails the probe before execution.
-- Partial patch application quarantines the worker/process result and produces no geometry claim.
-- Encounter interruption under an encounter-suppressed profile is a profile failure, not a passability
-  observation.
-- A suppressed or unexpected trigger hit is a trigger observation or interruption, not proof of blocked
-  collision.
-- Trigger control that invalidates required initialization or world state marks the observation unusable
-  for that state.
-- A repositioned anchor that does not settle on the expected ground/resource produces no anchor or
-  passability claim.
-- An allowed door/trigger transition that does not reach a stable, attributable successor state produces
-  no post-transition anchor.
-- Timeout/divergence preserves telemetry but contributes no positive passability claim beyond the last
-  confirmed observation.
+- Patch precondition or readback mismatch fails the job before it contributes geometry evidence.
+- Partial patch application or cleanup failure quarantines the worker result.
+- Encounter interruption under encounter suppression is a profile failure, not a passability result.
+- Unexpected or wrong-TBLID trigger activation is an interruption and produces no door successor anchor.
+- A BitVar override that changes more than its recorded bit invalidates the job.
+- A teleport that does not settle near a usable position produces no anchor or passability claim.
+- A door interaction that does not prove the intended TBLID, opening, crossing, and far-side settle
+  produces no successor anchor.
+- A worker failure preserves diagnostics but contributes no positive geometry claim beyond its last
+  accepted observation.
+
+## First-Slice Acceptance (`a101b`)
+
+The first slice is successful when it can:
+
+1. load `navigation-context-41.sav` and the adjacent `.nctx` as the common bootstrap;
+2. apply encounter suppression and the reversible trigger-suppression instruction;
+3. activate door `4101` only during a short enable window and verify its TBLID;
+4. detect its initially locked condition, clear only BitVar `2556` in the disposable job, and record that
+   override;
+5. observe BitVar `1555`, cross the doorway, and settle on the far side;
+6. replay the far-side position from the untouched common bootstrap by teleport and settle;
+7. start parallel workers from the initial and far-side anchors; and
+8. reduce their spatial observations into a per-area refinement without storing anchor savestates,
+   serialized ground-selector records, or timing evidence.
+
+These capabilities must be implemented in the Survey phase and worker path. A custom `SavorE2E` scenario
+may exercise the slice end to end, but it is a validation harness rather than the only place the behavior
+exists.
 
 ## Acceptance Rules
 
-- Clean, patched, and validation lineages are queryably distinct.
-- The Navmesh Survey bootstraps from the exact ready context output savestate without mutating it.
-- Runtime modifications and trigger-control histories are named, versioned, and content-addressed.
-- Encounter suppression never implies a trigger-control decision.
-- No fixed trigger-gate modes are treated as resolved before the trigger research contract is accepted.
-- Survey-anchor local validity and entry reachability remain distinct.
-- Refinement can represent a wall cutting through one source triangle.
-- Collision-oddity output can represent sticky-corner positional jumps and wall-contact ramp-speed
-  conditions without making an optimization decision.
-- Trigger output can represent automatic crossing boundaries, interactable activation envelopes, and
-  stateful pre/post-anchor transitions.
-- Every refined fact links to static geometry and runtime evidence.
-- No patched state is accepted as a prediction context or clean validation start.
+- The Survey begins from one explicitly named `.sav`/`.nctx` pair and never mutates that baseline.
+- Every worker is isolated and every runtime write or executable patch is verified and auditable.
+- The first-slice trigger toggle uses the exact recorded instruction words at `0x80117e8c`; generalized
+  trigger-control research does not block door-anchor implementation.
+- Anchor fan-out uses common-baseline teleport and settle validation, not per-anchor savestates.
+- Area loads remain separate survey files.
+- Initially locked doors remain present as physical portals with their BitVar access constraints.
+- Persistent Survey evidence is spatial and contains no inferred probe timing.
+- Parallel workers emit anchors and observations; deterministic reduction alone emits a refinement.
+- Every refined fact links back to static geometry and runtime evidence.
