@@ -365,11 +365,26 @@ std::optional<std::vector<std::uint8_t>> decode_payload_hex(std::string_view hex
 }
 
 CombatantVisualCommandKind visual_command_kind(std::uint32_t combined_type) {
+    if (combined_type == 0x00030003U) {
+        return CombatantVisualCommandKind::PutModel;
+    }
     if (combined_type == 0x00030004U) {
         return CombatantVisualCommandKind::SetCommand;
     }
+    if (combined_type == 0x0003000AU) {
+        return CombatantVisualCommandKind::MotionPause;
+    }
     if (combined_type == 0x0003000BU) {
         return CombatantVisualCommandKind::CollisionBox;
+    }
+    if (combined_type == 0x0003000CU) {
+        return CombatantVisualCommandKind::MoveModel;
+    }
+    if (combined_type == 0x0003000DU) {
+        return CombatantVisualCommandKind::HitWeapon;
+    }
+    if (combined_type == 0x0003001DU) {
+        return CombatantVisualCommandKind::PointLight;
     }
     if (combined_type == 0x0003002AU) {
         return CombatantVisualCommandKind::SystemCamera;

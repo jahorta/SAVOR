@@ -13,6 +13,7 @@ enum class BattleFrameThreadNodeKind {
     MovementController,
     CombatantInstruction,
     ResourceWorker,
+    AuxiliaryVisualChild,
     Unknown,
 };
 
@@ -20,6 +21,14 @@ enum class BattleFrameThreadCallbackIdentity {
     MovementController,
     CombatantInstruction,
     ResourceQueue,
+    VisualSetCommand,
+    VisualMoveModel,
+    VisualPutModel,
+    VisualHitWeapon,
+    VisualCollisionBox,
+    VisualMotionPause,
+    VisualPointLight,
+    VisualSystemCamera,
     Unknown,
 };
 
@@ -68,6 +77,7 @@ struct BattleFrameThreadNode {
     std::uint64_t creation_sequence = 0;
     BattleFrameThreadNodeKind kind = BattleFrameThreadNodeKind::Unknown;
     int owner_slot = -1;
+    std::optional<std::uint64_t> semantic_instance_id;
     BattleFrameThreadCallbackIdentity callback =
         BattleFrameThreadCallbackIdentity::Unknown;
     bool active = false;
@@ -85,6 +95,7 @@ struct BattleFrameThreadMutationEvent {
         BattleFrameThreadMutationStatus::MissingInput;
     int node_id = -1;
     int owner_slot = -1;
+    std::optional<std::uint64_t> semantic_instance_id;
     BattleFrameThreadCallbackIdentity callback_before =
         BattleFrameThreadCallbackIdentity::Unknown;
     BattleFrameThreadCallbackIdentity callback_after =
@@ -96,6 +107,7 @@ struct BattleFrameThreadMutationEvent {
 struct BattleFrameThreadCreateRequest {
     BattleFrameThreadNodeKind kind = BattleFrameThreadNodeKind::Unknown;
     int owner_slot = -1;
+    std::optional<std::uint64_t> semantic_instance_id;
     BattleFrameThreadCallbackIdentity callback =
         BattleFrameThreadCallbackIdentity::Unknown;
     bool active = true;

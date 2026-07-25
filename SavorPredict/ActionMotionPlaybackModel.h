@@ -77,6 +77,12 @@ struct ActionMotionInstructionGateInput {
     std::optional<std::int16_t> alternate_b_secondary_key;
 };
 
+enum class ActionMotionInstructionGateResult {
+    Matched,
+    NoMatch,
+    MissingInput,
+};
+
 struct ActionMotionDelayLookupResult {
     ActionMotionDelayStatus status = ActionMotionDelayStatus::MissingInput;
     int descriptor_record_index = -1;
@@ -169,6 +175,12 @@ ActionMotionPlaybackVisitResult visit_action_motion_playback(
 
 ActionMotionDelayLookupResult resolve_action_motion_post_state6_delay(
     const ActionMotionDelayTable& table,
+    const ActionMotionInstructionGateInput& input);
+
+ActionMotionInstructionGateResult evaluate_action_motion_instruction_gate(
+    std::int16_t payload_primary,
+    std::int16_t payload_selector,
+    std::int16_t payload_secondary,
     const ActionMotionInstructionGateInput& input);
 
 bool action_motion_playback_blocks_publication(

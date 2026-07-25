@@ -141,6 +141,7 @@
     <ClCompile Include="BattleVisualRngModel.cpp" />
     <ClCompile Include="CombatantInstructionModeModel.cpp" />
     <ClCompile Include="CombatantVisualDispatcherModel.cpp" />
+    <ClCompile Include="CombatantAuxiliaryPublicationModel.cpp" />
     <ClCompile Include="DirectInstructionTransitionSelectorModel.cpp" />
     <ClCompile Include="BattleJobBatchRunManifest.cpp" />
     <ClCompile Include="BattleJobBatchRunOptions.cpp" />
@@ -221,6 +222,7 @@
     <ClInclude Include="BattleVisualRngModel.h" />
     <ClInclude Include="CombatantInstructionModeModel.h" />
     <ClInclude Include="CombatantVisualDispatcherModel.h" />
+    <ClInclude Include="CombatantAuxiliaryPublicationModel.h" />
     <ClInclude Include="DirectInstructionTransitionSelectorModel.h" />
     <ClInclude Include="BattleJobBatchRunManifest.h" />
     <ClInclude Include="BattleJobBatchRunOptions.h" />

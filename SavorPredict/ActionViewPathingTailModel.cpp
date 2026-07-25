@@ -369,16 +369,6 @@ ActionViewPathingTailResult model_first_battle_action_view_pathing_tail(
         });
         return result;
     }
-    if (input.attack_landed.has_value() && !*input.attack_landed) {
-        append_step(result, {
-            .label = "skipped_unlanded_attack",
-            .status = ActionViewPathingTailStatus::Skipped,
-            .actor_slot = input.actor_slot,
-            .target_slot = input.target_slot,
-            .detail = "v1 only models landed-hit action-view pathing tail draws",
-        });
-        return result;
-    }
     const BattleFrameState* frame_state = input.frame_state;
     if (frame_state == nullptr) {
         append_step(result, {

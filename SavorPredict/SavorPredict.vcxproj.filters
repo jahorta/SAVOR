@@ -92,6 +92,9 @@
     <ClCompile Include="CombatantVisualDispatcherModel.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="CombatantAuxiliaryPublicationModel.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="ActionMotionPlaybackModel.cpp" />
     <ClCompile Include="ActionMotionInvocationModel.cpp" />
     <ClCompile Include="ActionMotionTargetModel.cpp" />
@@ -309,6 +312,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="CombatantVisualDispatcherModel.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="CombatantAuxiliaryPublicationModel.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="ActionMotionPlaybackModel.h" />

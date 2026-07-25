@@ -291,4 +291,66 @@ TEST(SavorPredictBattleFrameThreadList, TraversalTracksPreviousCurrentAndVisited
     EXPECT_FALSE(runtime.traversal_active);
 }
 
+TEST(SavorPredictBattleFrameThreadList, RepeatableAuxiliaryChildrenPreserveCursorOrder) {
+    BattleFrameThreadListRuntime runtime;
+    const auto owner = create_battle_frame_thread(runtime, {
+        .kind = BattleFrameThreadNodeKind::CombatantInstruction,
+        .owner_slot = 1,
+        .callback = BattleFrameThreadCallbackIdentity::CombatantInstruction,
+        .semantic_source_id = "test.instruction.owner",
+        .provenance = "state-10 owner",
+    });
+    ASSERT_EQ(owner.status, BattleFrameThreadMutationStatus::Applied);
+
+    begin_battle_frame_thread_traversal(runtime, 33);
+    ASSERT_EQ(set_battle_frame_thread_cursor(
+        runtime,
+        owner.node_id,
+        "test.instruction.visit",
+        "state-10 publication visit",
+        33).status, BattleFrameThreadMutationStatus::Applied);
+
+    const auto first = create_battle_frame_thread(runtime, {
+        .kind = BattleFrameThreadNodeKind::AuxiliaryVisualChild,
+        .owner_slot = 1,
+        .semantic_instance_id = 100u,
+        .callback = BattleFrameThreadCallbackIdentity::VisualMoveModel,
+        .insertion = BattleFrameThreadInsertionKind::AfterCurrentCursor,
+        .parent_node_id = owner.node_id,
+        .semantic_source_id = "test.visual.child",
+        .provenance = "first repeated child",
+    });
+    const auto second = create_battle_frame_thread(runtime, {
+        .kind = BattleFrameThreadNodeKind::AuxiliaryVisualChild,
+        .owner_slot = 1,
+        .semantic_instance_id = 101u,
+        .callback = BattleFrameThreadCallbackIdentity::VisualMoveModel,
+        .insertion = BattleFrameThreadInsertionKind::AfterCurrentCursor,
+        .parent_node_id = owner.node_id,
+        .semantic_source_id = "test.visual.child",
+        .provenance = "second repeated child",
+    });
+    ASSERT_EQ(first.status, BattleFrameThreadMutationStatus::Applied);
+    ASSERT_EQ(second.status, BattleFrameThreadMutationStatus::Applied);
+    ASSERT_EQ(runtime.nodes.size(), 3u);
+    EXPECT_EQ(runtime.nodes[0].node_id, owner.node_id);
+    EXPECT_EQ(runtime.nodes[1].node_id, first.node_id);
+    EXPECT_EQ(runtime.nodes[2].node_id, second.node_id);
+    EXPECT_EQ(runtime.nodes[1].parent_node_id, owner.node_id);
+    EXPECT_EQ(runtime.nodes[2].parent_node_id, owner.node_id);
+
+    const auto duplicate = create_battle_frame_thread(runtime, {
+        .kind = BattleFrameThreadNodeKind::AuxiliaryVisualChild,
+        .owner_slot = 1,
+        .semantic_instance_id = 101u,
+        .callback = BattleFrameThreadCallbackIdentity::VisualMoveModel,
+        .insertion = BattleFrameThreadInsertionKind::AfterCurrentCursor,
+        .parent_node_id = owner.node_id,
+        .semantic_source_id = "test.visual.child",
+        .provenance = "duplicate instance",
+    });
+    EXPECT_EQ(duplicate.status, BattleFrameThreadMutationStatus::Duplicate);
+    end_battle_frame_thread_traversal(runtime);
+}
+
 } // namespace

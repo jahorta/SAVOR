@@ -1,6 +1,7 @@
 #include "../SavorPredict/ActionViewStdJsonLoader.h"
 #include "../SavorPredict/BattleFrameSchedulerModel.h"
 #include "../SavorPredict/BattleSourceModel.h"
+#include "../SavorPredict/CombatantAuxiliaryPublicationModel.h"
 #include "../SavorPredict/RngCore.h"
 
 #include <gtest/gtest.h>
@@ -330,8 +331,11 @@ bool publish_fixture_visual_instruction_state(
         callback_runtime.current_motion_resource_present = true;
         callback_runtime.current_motion_id =
             combatant->selected_action_row_callback_ordinal;
+        callback_runtime.callback_state = 9;
+        callback_runtime.state8_delay_remaining = 1;
+        callback_runtime.auxiliary_publication_pending = true;
         callback_runtime.provenance +=
-            "; fixture starts with the selected motion already loaded";
+            "; fixture starts one state-9 visit before the audited state-10 boundary so the source epoch is produced independently";
     }
     return published;
 }
@@ -579,6 +583,168 @@ TEST(SavorPredictCombatantVisualLoader, DecodesCompleteSetAndSystemCameraPayload
     EXPECT_EQ(camera.system_camera->scalar_bits, 0x3f800000U);
     EXPECT_EQ(camera.system_camera->end_frame, 0x0460U);
     EXPECT_EQ(camera.system_camera->mode, 0x0e);
+}
+
+TEST(SavorPredictCombatantAuxiliaryPublication, PreservesCurrentResourceChildOrder) {
+    CombatantVisualResource resource;
+    resource.binding.resource_stem = "MA001";
+    resource.records = {
+        {
+            .index = 3,
+            .location_code = 0x0d,
+            .opcode = 3,
+            .combined_type = 0x0003000du,
+            .payload_in_bounds = true,
+            .gate_fields_known = true,
+            .gate_fields = {
+                .primary_action_key = 5,
+                .generic_secondary_key = 0,
+                .direct_gate_secondary_key = -1,
+            },
+            .kind = CombatantVisualCommandKind::HitWeapon,
+        },
+        {
+            .index = 4,
+            .location_code = 0x0a,
+            .opcode = 3,
+            .combined_type = 0x0003000au,
+            .payload_in_bounds = true,
+            .gate_fields_known = true,
+            .gate_fields = {
+                .primary_action_key = 5,
+                .generic_secondary_key = 0,
+                .direct_gate_secondary_key = -1,
+            },
+            .kind = CombatantVisualCommandKind::MotionPause,
+        },
+        {
+            .index = 8,
+            .location_code = 0x2a,
+            .opcode = 3,
+            .combined_type = 0x0003002au,
+            .payload_in_bounds = true,
+            .gate_fields_known = true,
+            .gate_fields = {
+                .primary_action_key = 5,
+                .generic_secondary_key = 0,
+                .direct_gate_secondary_key = -1,
+            },
+            .kind = CombatantVisualCommandKind::SystemCamera,
+        },
+        {.index = 9, .location_code = -1},
+    };
+    const auto result = publish_combatant_auxiliary_commands({
+        .action_ordinal = 2,
+        .slot = 1,
+        .target_slot = 4,
+        .instruction_revision = 7,
+        .publication_epoch = 3,
+        .instruction_mode = 5,
+        .instruction_subtype = -1,
+        .instruction_flags_0xec = 0u,
+        .instruction_flags_0xf0 = 0u,
+        .gate_input = {
+            .current_action_key = 5,
+            .current_secondary_key = -1,
+            .instruction_flags_0xec = 0u,
+        },
+        .current_resource = &resource,
+        .readiness_uses_static_resource = false,
+        .current_range_policy = CombatantAuxiliaryRangePolicy::FullTable,
+        .selector_state = 0,
+    });
+
+    EXPECT_EQ(result.status, CombatantAuxiliaryPublicationStatus::Provisional);
+    ASSERT_EQ(result.publications.size(), 3u);
+    EXPECT_EQ(result.publications[0].kind, CombatantVisualCommandKind::HitWeapon);
+    EXPECT_EQ(result.publications[1].kind, CombatantVisualCommandKind::MotionPause);
+    EXPECT_EQ(result.publications[2].kind, CombatantVisualCommandKind::SystemCamera);
+    EXPECT_TRUE(result.static_lane_missing);
+}
+
+TEST(SavorPredictCombatantAuxiliaryPublication, AppliesHardSkipsAndVisualSuppression) {
+    CombatantVisualResource resource;
+    resource.binding.resource_stem = "MA000";
+    resource.records = {
+        {
+            .index = 0,
+            .location_code = 4,
+            .opcode = 3,
+            .combined_type = 0x00030004u,
+            .payload_in_bounds = true,
+            .gate_fields_known = true,
+            .gate_fields = {
+                .primary_action_key = 5,
+                .generic_secondary_key = 0,
+                .direct_gate_secondary_key = -1,
+            },
+            .kind = CombatantVisualCommandKind::SetCommand,
+        },
+        {
+            .index = 1,
+            .location_code = 0x2a,
+            .opcode = 3,
+            .combined_type = 0x0003002au,
+            .payload_in_bounds = true,
+            .gate_fields_known = true,
+            .gate_fields = {
+                .primary_action_key = 5,
+                .generic_secondary_key = 0,
+                .direct_gate_secondary_key = -1,
+            },
+            .kind = CombatantVisualCommandKind::SystemCamera,
+        },
+        {.index = 2, .location_code = -1},
+    };
+    const auto mode2 = publish_combatant_auxiliary_commands({
+        .slot = 0,
+        .instruction_mode = 2,
+        .instruction_subtype = -1,
+        .instruction_flags_0x50 = 0x08000000u,
+        .instruction_flags_0xec = 0u,
+        .instruction_flags_0xf0 = 0u,
+        .gate_input = {
+            .current_action_key = 2,
+            .current_secondary_key = -1,
+            .instruction_flags_0xec = 0u,
+        },
+        .current_resource = &resource,
+        .current_range_policy = CombatantAuxiliaryRangePolicy::FullTable,
+    });
+    EXPECT_EQ(mode2.status, CombatantAuxiliaryPublicationStatus::Skipped);
+    EXPECT_TRUE(mode2.hard_skipped);
+    EXPECT_TRUE(mode2.cleared_mode2_flag);
+    EXPECT_TRUE(mode2.publications.empty());
+
+    const auto suppressed = publish_combatant_auxiliary_commands({
+        .slot = 0,
+        .instruction_mode = 5,
+        .instruction_subtype = -1,
+        .instruction_flags_0xec = 0u,
+        .instruction_flags_0xf0 = 0x00008000u,
+        .gate_input = {
+            .current_action_key = 5,
+            .current_secondary_key = -1,
+            .instruction_flags_0xec = 0u,
+        },
+        .current_resource = &resource,
+        .readiness_uses_static_resource = false,
+        .current_range_policy = CombatantAuxiliaryRangePolicy::FullTable,
+        .selector_state = 0,
+    });
+    ASSERT_EQ(suppressed.publications.size(), 1u);
+    EXPECT_EQ(
+        suppressed.publications.front().kind,
+        CombatantVisualCommandKind::SetCommand);
+    EXPECT_TRUE(std::any_of(
+        suppressed.decisions.begin(),
+        suppressed.decisions.end(),
+        [](const CombatantAuxiliaryCommandDecision& decision) {
+            return decision.command_kind
+                    == CombatantVisualCommandKind::SystemCamera
+                && decision.decision
+                    == CombatantAuxiliaryCommandDecisionKind::Suppressed;
+        }));
 }
 
 TEST(SavorPredictCombatantVisualLoader, DecodesCollisionBoxPayload) {
@@ -1165,8 +1331,26 @@ TEST(SavorPredictCombatantVisualRuntime, PublishesAndRunsChildrenAfterOwnerInSam
 
     EXPECT_EQ(rng, placement.next_state);
     EXPECT_EQ(count_step(events, BattleFrameWorkerStepKind::VisualInstructionInstall), 1);
+    EXPECT_EQ(count_step(
+        events, BattleFrameWorkerStepKind::VisualAuxiliaryPublication), 1);
     EXPECT_EQ(count_step(events, BattleFrameWorkerStepKind::VisualCommandPublish), 2);
     EXPECT_EQ(count_step(events, BattleFrameWorkerStepKind::VisualChildState0), 2);
+    ASSERT_EQ(runtime->visual.child_tasks.size(), 2u);
+    EXPECT_GE(runtime->visual.child_tasks[0].thread_node_id, 0);
+    EXPECT_GE(runtime->visual.child_tasks[1].thread_node_id, 0);
+    EXPECT_LT(
+        runtime->visual.child_tasks[0].thread_node_id,
+        runtime->visual.child_tasks[1].thread_node_id);
+    EXPECT_EQ(
+        std::count_if(
+            runtime->thread_list.history.begin(),
+            runtime->thread_list.history.end(),
+            [](const BattleFrameThreadMutationEvent& event) {
+                return event.kind == BattleFrameThreadMutationKind::Create
+                    && event.semantic_source_id
+                        == "combatant.auxiliary_visual.child";
+            }),
+        2);
     const auto publication = std::find_if(
         events.begin(), events.end(),
         [](const BattleFrameStepEvent& event) {
@@ -1676,11 +1860,16 @@ TEST(SavorPredictCombatantVisualRuntime, ServiceDelayHasNDecrementsAndZeroVisitC
     const auto placement = draw_rand15(rng);
     std::vector<BattleFrameStepEvent> events;
     ASSERT_TRUE(publish_fixture_visual_instruction_state(*runtime));
+    bool action_released = false;
     for (int frame = 0; frame < 6; ++frame) {
         const auto step = run_first_turn_frame(*runtime, rng);
         events.insert(events.end(), step.events.begin(), step.events.end());
-        if (frame == 0) {
+        if (!action_released
+            && count_step(
+                events,
+                BattleFrameWorkerStepKind::VisualCommandPublish) > 0) {
             runtime->active_action.reset();
+            action_released = true;
         }
     }
 
@@ -1851,11 +2040,16 @@ TEST(SavorPredictCombatantVisualRuntime, ReplaysAcceptedFourteenServiceVisitCont
         std::uint32_t rng = 0x31415926U;
         std::vector<BattleFrameStepEvent> events;
         ASSERT_TRUE(publish_fixture_visual_instruction_state(*runtime));
+        bool action_released = false;
         for (int frame = 0; frame < captured.delay + 5; ++frame) {
             const auto step = run_first_turn_frame(*runtime, rng);
             events.insert(events.end(), step.events.begin(), step.events.end());
-            if (frame == 0) {
+            if (!action_released
+                && count_step(
+                    events,
+                    BattleFrameWorkerStepKind::VisualCommandPublish) > 0) {
                 runtime->active_action.reset();
+                action_released = true;
             }
         }
 

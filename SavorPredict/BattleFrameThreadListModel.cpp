@@ -21,6 +21,7 @@ void append_event(
         .status = status,
         .node_id = node_id,
         .owner_slot = request.owner_slot,
+        .semantic_instance_id = request.semantic_instance_id,
         .callback_before = before,
         .callback_after = after,
         .semantic_source_id = request.semantic_source_id,
@@ -41,6 +42,8 @@ BattleFrameThreadMutationResult mutate_existing(
     auto* node = find_battle_frame_thread(runtime, node_id);
     BattleFrameThreadCreateRequest event_request{
         .owner_slot = node != nullptr ? node->owner_slot : -1,
+        .semantic_instance_id =
+            node != nullptr ? node->semantic_instance_id : std::nullopt,
         .semantic_source_id = std::move(semantic_source_id),
         .provenance = std::move(provenance),
         .frame_index = frame_index,
@@ -187,7 +190,10 @@ BattleFrameThreadMutationResult create_battle_frame_thread(
         runtime.nodes.end(),
         [&](const BattleFrameThreadNode& node) {
             return node.active && node.kind == request.kind
-                && node.owner_slot == request.owner_slot;
+                && node.owner_slot == request.owner_slot
+                && (!request.semantic_instance_id.has_value()
+                    || node.semantic_instance_id
+                        == request.semantic_instance_id);
         });
     if (duplicate != runtime.nodes.end()) {
         append_event(
@@ -317,6 +323,7 @@ BattleFrameThreadMutationResult create_battle_frame_thread(
         .creation_sequence = runtime.next_creation_sequence++,
         .kind = request.kind,
         .owner_slot = request.owner_slot,
+        .semantic_instance_id = request.semantic_instance_id,
         .callback = request.callback,
         .active = request.active,
         .parent_node_id = request.parent_node_id,
@@ -395,6 +402,8 @@ BattleFrameThreadMutationResult set_battle_frame_thread_cursor(
     auto* node = find_battle_frame_thread(runtime, node_id);
     BattleFrameThreadCreateRequest event_request{
         .owner_slot = node != nullptr ? node->owner_slot : -1,
+        .semantic_instance_id =
+            node != nullptr ? node->semantic_instance_id : std::nullopt,
         .semantic_source_id = std::move(semantic_source_id),
         .provenance = std::move(provenance),
         .frame_index = frame_index,
@@ -530,6 +539,8 @@ const char* battle_frame_thread_node_kind_name(BattleFrameThreadNodeKind kind) {
         return "combatant_instruction";
     case BattleFrameThreadNodeKind::ResourceWorker:
         return "resource_worker";
+    case BattleFrameThreadNodeKind::AuxiliaryVisualChild:
+        return "auxiliary_visual_child";
     case BattleFrameThreadNodeKind::Unknown:
     default:
         return "unknown";
@@ -545,6 +556,22 @@ const char* battle_frame_thread_callback_identity_name(
         return "battle.combatant_instruction";
     case BattleFrameThreadCallbackIdentity::ResourceQueue:
         return "battle.resource_queue";
+    case BattleFrameThreadCallbackIdentity::VisualSetCommand:
+        return "visual.set_command";
+    case BattleFrameThreadCallbackIdentity::VisualMoveModel:
+        return "visual.move_model";
+    case BattleFrameThreadCallbackIdentity::VisualPutModel:
+        return "visual.put_model";
+    case BattleFrameThreadCallbackIdentity::VisualHitWeapon:
+        return "visual.hit_weapon";
+    case BattleFrameThreadCallbackIdentity::VisualCollisionBox:
+        return "visual.collision_box";
+    case BattleFrameThreadCallbackIdentity::VisualMotionPause:
+        return "visual.motion_pause";
+    case BattleFrameThreadCallbackIdentity::VisualPointLight:
+        return "visual.point_light";
+    case BattleFrameThreadCallbackIdentity::VisualSystemCamera:
+        return "visual.system_camera";
     case BattleFrameThreadCallbackIdentity::Unknown:
     default:
         return "unknown";

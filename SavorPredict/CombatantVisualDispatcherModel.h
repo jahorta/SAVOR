@@ -12,7 +12,12 @@ namespace savor::predict {
 enum class CombatantVisualCommandKind {
     Unknown,
     SetCommand,
+    MoveModel,
+    PutModel,
+    HitWeapon,
     CollisionBox,
+    MotionPause,
+    PointLight,
     SystemCamera,
     SyntheticActionView,
 };

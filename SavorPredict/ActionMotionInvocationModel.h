@@ -124,6 +124,8 @@ struct ActionMotionInvocationResult {
     ActionMotionPlaybackContinuation playback_continuation =
         ActionMotionPlaybackContinuation::State6PostDelayTo11;
     int state8_delay_remaining = -1;
+    bool auxiliary_publication_requested = false;
+    bool entered_state10_via_fallthrough = false;
     std::string resolver_callsite;
     std::string operation_callsite;
     std::string provenance;

@@ -493,7 +493,12 @@ const char* combatant_visual_command_kind_name(CombatantVisualCommandKind kind) 
     switch (kind) {
     case CombatantVisualCommandKind::Unknown: return "Unknown";
     case CombatantVisualCommandKind::SetCommand: return "SetCommand";
+    case CombatantVisualCommandKind::MoveModel: return "MoveModel";
+    case CombatantVisualCommandKind::PutModel: return "Putmodel";
+    case CombatantVisualCommandKind::HitWeapon: return "HitWeapon";
     case CombatantVisualCommandKind::CollisionBox: return "CollisionBox";
+    case CombatantVisualCommandKind::MotionPause: return "MotionPause";
+    case CombatantVisualCommandKind::PointLight: return "PointLight";
     case CombatantVisualCommandKind::SystemCamera: return "SystemCamera";
     case CombatantVisualCommandKind::SyntheticActionView: return "SyntheticActionView";
     }

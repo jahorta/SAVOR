@@ -60,12 +60,6 @@ std::optional<std::int16_t> payload_s16(
     return static_cast<std::int16_t>(raw);
 }
 
-enum class DelayGateResult {
-    Matched,
-    NoMatch,
-    MissingInput,
-};
-
 std::optional<bool> match_payload_key(
     std::int16_t payload_primary,
     std::int16_t payload_secondary,
@@ -85,23 +79,25 @@ std::optional<bool> match_payload_key(
         secondary_key.value_or(-1));
 }
 
-DelayGateResult evaluate_delay_gate(
+} // namespace
+
+ActionMotionInstructionGateResult evaluate_action_motion_instruction_gate(
     std::int16_t payload_primary,
     std::int16_t payload_selector,
     std::int16_t payload_secondary,
     const ActionMotionInstructionGateInput& input) {
     if (!input.current_action_key.has_value()) {
-        return DelayGateResult::MissingInput;
+        return ActionMotionInstructionGateResult::MissingInput;
     }
 
     std::optional<bool> result = false;
     const auto current_action = *input.current_action_key;
     if (current_action == kSpecialMode0b || current_action == kSpecialMode20) {
         if (payload_selector != kSpecialSelector) {
-            return DelayGateResult::NoMatch;
+            return ActionMotionInstructionGateResult::NoMatch;
         }
         if (!input.instruction_flags_0xec.has_value()) {
-            return DelayGateResult::MissingInput;
+            return ActionMotionInstructionGateResult::MissingInput;
         }
         if ((*input.instruction_flags_0xec & kInstructionFlagSpecialPrimary20) != 0) {
             result = payload_primary == 0x20;
@@ -115,7 +111,7 @@ DelayGateResult evaluate_delay_gate(
     }
 
     if (!input.instruction_flags_0xec.has_value()) {
-        return DelayGateResult::MissingInput;
+        return ActionMotionInstructionGateResult::MissingInput;
     }
     const auto flags = *input.instruction_flags_0xec;
     if ((flags & kInstructionFlagSuppressCurrent) == 0) {
@@ -138,20 +134,20 @@ DelayGateResult evaluate_delay_gate(
             input.alternate_b_action_key,
             input.alternate_b_secondary_key);
         if (!alternate_match.has_value()) {
-            return DelayGateResult::MissingInput;
+            return ActionMotionInstructionGateResult::MissingInput;
         }
         return *alternate_match
-            ? DelayGateResult::Matched
-            : DelayGateResult::NoMatch;
+            ? ActionMotionInstructionGateResult::Matched
+            : ActionMotionInstructionGateResult::NoMatch;
     }
 
     if (!result.has_value()) {
-        return DelayGateResult::MissingInput;
+        return ActionMotionInstructionGateResult::MissingInput;
     }
-    return *result ? DelayGateResult::Matched : DelayGateResult::NoMatch;
+    return *result
+        ? ActionMotionInstructionGateResult::Matched
+        : ActionMotionInstructionGateResult::NoMatch;
 }
-
-} // namespace
 
 ActionMotionDelayLookupResult resolve_action_motion_post_state6_delay(
     const ActionMotionDelayTable& table,
@@ -201,8 +197,9 @@ ActionMotionDelayLookupResult resolve_action_motion_post_state6_delay(
             return result;
         }
 
-        switch (evaluate_delay_gate(*primary, *selector, *secondary, input)) {
-        case DelayGateResult::Matched:
+        switch (evaluate_action_motion_instruction_gate(
+            *primary, *selector, *secondary, input)) {
+        case ActionMotionInstructionGateResult::Matched:
             if (*delay < 0) {
                 result.status = ActionMotionDelayStatus::Unsupported;
                 result.provenance =
@@ -215,10 +212,10 @@ ActionMotionDelayLookupResult resolve_action_motion_post_state6_delay(
             result.provenance =
                 "FUN_8001DDE0 selected the first matching 0x00030032 descriptor";
             return result;
-        case DelayGateResult::NoMatch:
+        case ActionMotionInstructionGateResult::NoMatch:
             result.gate_result = false;
             break;
-        case DelayGateResult::MissingInput:
+        case ActionMotionInstructionGateResult::MissingInput:
             result.status = ActionMotionDelayStatus::MissingInput;
             result.provenance =
                 "FUN_8003DCF4 requires an unavailable instruction key or alternate-key pair";

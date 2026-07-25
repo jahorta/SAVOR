@@ -30,6 +30,7 @@
     <ClCompile Include="..\SavorPredict\BattlePredictorCli.cpp" />
     <ClCompile Include="..\SavorPredict\CombatantInstructionModeModel.cpp" />
     <ClCompile Include="..\SavorPredict\CombatantVisualDispatcherModel.cpp" />
+    <ClCompile Include="..\SavorPredict\CombatantAuxiliaryPublicationModel.cpp" />
     <ClCompile Include="..\SavorPredict\ActionMotionPlaybackModel.cpp" />
     <ClCompile Include="..\SavorPredict\ActionMotionInvocationModel.cpp" />
     <ClCompile Include="..\SavorPredict\ActionMotionTargetModel.cpp" />
@@ -154,6 +155,7 @@
     <ClInclude Include="..\SavorPredict\BattleMovementInvocationModel.h" />
     <ClInclude Include="..\SavorPredict\BattleMovementPathModel.h" />
     <ClInclude Include="..\SavorPredict\CombatantVisualDispatcherModel.h" />
+    <ClInclude Include="..\SavorPredict\CombatantAuxiliaryPublicationModel.h" />
   </ItemGroup>
   <ItemGroup>
     <Filter Include="common">

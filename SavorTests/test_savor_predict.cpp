@@ -3985,6 +3985,26 @@ TEST(SavorPredictActionViewPathingTailModel, Captured153108RunsTwelveActorTarget
     ASSERT_TRUE(tail.steps[1].target_side_fallback_draws.has_value());
     EXPECT_EQ(*tail.steps[1].actor_side_fallback_draws, 4);
     EXPECT_EQ(*tail.steps[1].target_side_fallback_draws, 11);
+
+    const auto missed_attack_tail = model_first_battle_action_view_pathing_tail({
+        .profile_name = "first-battle",
+        .actor_slot = 0,
+        .target_slot = 4,
+        .combatant_action_mode = 5,
+        .combatant_command_parameter = 1,
+        .attack_landed = false,
+        .rng_seed_before = 0xBC4AE332u,
+        .frame_state = &*frame_state,
+    });
+
+    ASSERT_EQ(missed_attack_tail.steps.size(), tail.steps.size());
+    EXPECT_EQ(missed_attack_tail.total_draws, tail.total_draws);
+    for (std::size_t index = 0; index < tail.steps.size(); ++index) {
+        EXPECT_EQ(missed_attack_tail.steps[index].label, tail.steps[index].label);
+        EXPECT_EQ(
+            missed_attack_tail.steps[index].draws_consumed,
+            tail.steps[index].draws_consumed);
+    }
 }
 
 TEST(SavorPredictActionViewPathingTailModel, Captured149113UsesLiveMode1DistanceAndFallbackCount) {

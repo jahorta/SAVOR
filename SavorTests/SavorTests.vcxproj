@@ -167,6 +167,7 @@
     <ClCompile Include="..\SavorPredict\BattleVisualRngModel.cpp" />
     <ClCompile Include="..\SavorPredict\CombatantInstructionModeModel.cpp" />
     <ClCompile Include="..\SavorPredict\CombatantVisualDispatcherModel.cpp" />
+    <ClCompile Include="..\SavorPredict\CombatantAuxiliaryPublicationModel.cpp" />
     <ClCompile Include="..\SavorPredict\DirectInstructionTransitionSelectorModel.cpp" />
     <ClCompile Include="..\SavorPredict\BattleJobBatchRunManifest.cpp" />
     <ClCompile Include="..\SavorPredict\BattleJobBatchRunOptions.cpp" />
@@ -288,6 +289,7 @@
     <ClInclude Include="..\SavorPredict\BattleFrameThreadListModel.h" />
     <ClInclude Include="..\SavorPredict\BattleSourceModel.h" />
     <ClInclude Include="..\SavorPredict\CombatantVisualDispatcherModel.h" />
+    <ClInclude Include="..\SavorPredict\CombatantAuxiliaryPublicationModel.h" />
     <ClInclude Include="common\RecordingWorkflowCommandService.h" />
     <ClInclude Include="common\savordb_helpers.h" />
     <ClInclude Include="common\SqliteDbFixture.h" />

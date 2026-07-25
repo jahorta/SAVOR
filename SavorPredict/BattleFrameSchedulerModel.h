@@ -7,6 +7,7 @@
 #include "BattleFrameThreadListModel.h"
 #include "BattleMovementInvocationModel.h"
 #include "BattleMovementPathModel.h"
+#include "CombatantAuxiliaryPublicationModel.h"
 #include "CombatantVisualDispatcherModel.h"
 #include "DirectInstructionTransitionSelectorModel.h"
 #include "MovementModel.h"
@@ -50,6 +51,7 @@ enum class BattleFrameWorkerKind {
     VisualActionService,
     VisualCollisionBox,
     VisualActionViewRecord,
+    VisualUnsupportedCommand,
     CombatantInstruction,
     CleanupStanding,
     FrameStartPositionSync,
@@ -121,6 +123,7 @@ enum class BattleFrameWorkerStepKind {
     ActionMotionPublicationRelease,
     VisualStdRowProducerVisit,
     VisualInstructionInstall,
+    VisualAuxiliaryPublication,
     VisualCommandPublish,
     VisualChildState0,
     VisualChildDelay,
@@ -583,6 +586,7 @@ enum class BattleFrameVisualChildKind {
     ActionService,
     CollisionBox,
     ActionViewRecord,
+    UnsupportedCommand,
 };
 
 enum class BattleFrameVisualChildPhase {
@@ -606,6 +610,7 @@ struct BattleFrameActionViewControllerRuntime {
 
 struct BattleFrameVisualChildTask {
     int sequence = -1;
+    int thread_node_id = -1;
     int action_ordinal = -1;
     int origin_slot = -1;
     int target_slot = -1;
@@ -677,6 +682,9 @@ struct BattleFramePersistentInstructionCallbackRuntime {
     int installs = 0;
     int loads = 0;
     int state8_delay_remaining = -1;
+    bool auxiliary_publication_pending = false;
+    std::uint64_t auxiliary_publication_revision = 0;
+    std::uint64_t last_auxiliary_instruction_revision = 0;
     ActionMotionInvocationStatus status =
         ActionMotionInvocationStatus::MissingInput;
     std::string provenance;

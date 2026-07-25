@@ -212,6 +212,17 @@ TEST(SavorPredictActionMotionInvocation, BasicState8DelayReachesState11InPpcOrde
     result = resolve_action_motion_invocation(action_rows(), state9);
     EXPECT_EQ(result.callback_state_after, 11);
     EXPECT_EQ(result.state8_delay_remaining, 0);
+    EXPECT_TRUE(result.auxiliary_publication_requested);
+    EXPECT_TRUE(result.entered_state10_via_fallthrough);
+
+    auto direct_state10 = state8;
+    direct_state10.callback_state = 10;
+    direct_state10.state8_descriptor_delay.reset();
+    result = resolve_action_motion_invocation(
+        action_rows(), direct_state10);
+    EXPECT_EQ(result.callback_state_after, 11);
+    EXPECT_TRUE(result.auxiliary_publication_requested);
+    EXPECT_FALSE(result.entered_state10_via_fallthrough);
 }
 
 TEST(SavorPredictActionMotionInvocation, SpecialState1ResultTwoLoadsWithoutInstalling) {

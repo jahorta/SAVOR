@@ -256,6 +256,7 @@ std::int16_t action_mode_for_worker(const BattleFrameWorker& worker) {
     case BattleFrameWorkerKind::VisualActionService:
     case BattleFrameWorkerKind::VisualCollisionBox:
     case BattleFrameWorkerKind::VisualActionViewRecord:
+    case BattleFrameWorkerKind::VisualUnsupportedCommand:
     case BattleFrameWorkerKind::CombatantInstruction:
         return BattleFrameActionMode::Standing;
     case BattleFrameWorkerKind::Cleanup:
@@ -1715,6 +1716,7 @@ bool is_visual_step_kind(BattleFrameWorkerStepKind kind) {
     case BattleFrameWorkerStepKind::ActionMotionPublicationRelease:
     case BattleFrameWorkerStepKind::VisualStdRowProducerVisit:
     case BattleFrameWorkerStepKind::VisualInstructionInstall:
+    case BattleFrameWorkerStepKind::VisualAuxiliaryPublication:
     case BattleFrameWorkerStepKind::VisualCommandPublish:
     case BattleFrameWorkerStepKind::VisualChildState0:
     case BattleFrameWorkerStepKind::VisualChildDelay:
@@ -1751,6 +1753,23 @@ BattleFrameEventStatus frame_event_status(CombatantVisualModelStatus status) {
     case CombatantVisualModelStatus::MissingInput:
         return BattleFrameEventStatus::MissingInput;
     case CombatantVisualModelStatus::Unsupported:
+        return BattleFrameEventStatus::Unsupported;
+    }
+    return BattleFrameEventStatus::Unsupported;
+}
+
+BattleFrameEventStatus frame_event_status(
+    CombatantAuxiliaryPublicationStatus status) {
+    switch (status) {
+    case CombatantAuxiliaryPublicationStatus::Matched:
+        return BattleFrameEventStatus::Matched;
+    case CombatantAuxiliaryPublicationStatus::Provisional:
+        return BattleFrameEventStatus::Provisional;
+    case CombatantAuxiliaryPublicationStatus::Skipped:
+        return BattleFrameEventStatus::Skipped;
+    case CombatantAuxiliaryPublicationStatus::MissingInput:
+        return BattleFrameEventStatus::MissingInput;
+    case CombatantAuxiliaryPublicationStatus::Unsupported:
         return BattleFrameEventStatus::Unsupported;
     }
     return BattleFrameEventStatus::Unsupported;
@@ -1946,6 +1965,9 @@ BattleFrameStepEvent make_visual_event(
         case BattleFrameVisualChildKind::ActionViewRecord:
             event.worker_kind = BattleFrameWorkerKind::VisualActionViewRecord;
             break;
+        case BattleFrameVisualChildKind::UnsupportedCommand:
+            event.worker_kind = BattleFrameWorkerKind::VisualUnsupportedCommand;
+            break;
         }
         event.visual_command_kind = task->command_kind;
         event.visual_resource = task->resource_stem;
@@ -1969,9 +1991,61 @@ BattleFrameStepEvent make_visual_event(
     return event;
 }
 
+BattleFrameThreadCallbackIdentity visual_child_callback_identity(
+    CombatantVisualCommandKind kind) {
+    switch (kind) {
+    case CombatantVisualCommandKind::SetCommand:
+        return BattleFrameThreadCallbackIdentity::VisualSetCommand;
+    case CombatantVisualCommandKind::MoveModel:
+        return BattleFrameThreadCallbackIdentity::VisualMoveModel;
+    case CombatantVisualCommandKind::PutModel:
+        return BattleFrameThreadCallbackIdentity::VisualPutModel;
+    case CombatantVisualCommandKind::HitWeapon:
+        return BattleFrameThreadCallbackIdentity::VisualHitWeapon;
+    case CombatantVisualCommandKind::CollisionBox:
+        return BattleFrameThreadCallbackIdentity::VisualCollisionBox;
+    case CombatantVisualCommandKind::MotionPause:
+        return BattleFrameThreadCallbackIdentity::VisualMotionPause;
+    case CombatantVisualCommandKind::PointLight:
+        return BattleFrameThreadCallbackIdentity::VisualPointLight;
+    case CombatantVisualCommandKind::SystemCamera:
+    case CombatantVisualCommandKind::SyntheticActionView:
+        return BattleFrameThreadCallbackIdentity::VisualSystemCamera;
+    case CombatantVisualCommandKind::Unknown:
+        return BattleFrameThreadCallbackIdentity::Unknown;
+    }
+    return BattleFrameThreadCallbackIdentity::Unknown;
+}
+
+const char* visual_child_handler_name(CombatantVisualCommandKind kind) {
+    switch (kind) {
+    case CombatantVisualCommandKind::SetCommand:
+        return "SetCommandHandler_8004281C";
+    case CombatantVisualCommandKind::MoveModel:
+        return "MoveModelHandler_80044B24";
+    case CombatantVisualCommandKind::PutModel:
+        return "PutmodelHandler_80045CD8";
+    case CombatantVisualCommandKind::HitWeapon:
+        return "HitWeaponHandler_8004A40C";
+    case CombatantVisualCommandKind::CollisionBox:
+        return "CollisionBoxHandler_8004B7C4";
+    case CombatantVisualCommandKind::MotionPause:
+        return "MotionPauseHandler_8004C070";
+    case CombatantVisualCommandKind::PointLight:
+        return "PointLightHandler_8004F868";
+    case CombatantVisualCommandKind::SystemCamera:
+    case CombatantVisualCommandKind::SyntheticActionView:
+        return "SystemCameraHandler_80051264";
+    case CombatantVisualCommandKind::Unknown:
+        return "DispatchVisualCommand_800367E8_unsupported";
+    }
+    return "DispatchVisualCommand_800367E8_unsupported";
+}
+
 int enqueue_visual_child(
     BattleFrameRuntime& runtime,
-    const CombatantVisualPublication& publication) {
+    const CombatantVisualPublication& publication,
+    std::optional<int> origin_parent_node_id = std::nullopt) {
     if (publication.record == nullptr) {
         return -1;
     }
@@ -2033,7 +2107,7 @@ int enqueue_visual_child(
             task.status = CombatantVisualModelStatus::MissingInput;
             task.maximum_visits = 4;
         }
-    } else {
+    } else if (publication.kind == CombatantVisualCommandKind::SystemCamera) {
         task.kind = BattleFrameVisualChildKind::ActionViewRecord;
         task.system_camera = publication.record->system_camera;
         if (task.system_camera.has_value()) {
@@ -2041,8 +2115,41 @@ int enqueue_visual_child(
             task.effective_mode = task.payload_mode;
             task.maximum_visits = normalized_camera_duration(*task.system_camera) + 2;
         }
+    } else {
+        task.kind = BattleFrameVisualChildKind::UnsupportedCommand;
+        task.maximum_visits = 1;
+        task.status = CombatantVisualModelStatus::Provisional;
     }
     const int sequence = task.sequence;
+    if (origin_parent_node_id.has_value()) {
+        const auto callback = visual_child_callback_identity(publication.kind);
+        const auto created = create_battle_frame_thread(
+            runtime.thread_list,
+            BattleFrameThreadCreateRequest{
+                .kind = BattleFrameThreadNodeKind::AuxiliaryVisualChild,
+                .owner_slot = publication.slot,
+                .semantic_instance_id =
+                    static_cast<std::uint64_t>(sequence),
+                .callback = callback,
+                .active = true,
+                .insertion =
+                    BattleFrameThreadInsertionKind::AfterCurrentCursor,
+                .parent_node_id = origin_parent_node_id,
+                .semantic_source_id =
+                    "combatant.auxiliary_visual.child",
+                .provenance = publication.provenance,
+                .frame_index = runtime.state.frame_index,
+            });
+        if (created.status == BattleFrameThreadMutationStatus::Applied) {
+            task.thread_node_id = created.node_id;
+        } else {
+            task.complete = true;
+            runtime.warnings.push_back(
+                "auxiliary visual child thread creation failed for record "
+                + std::to_string(publication.record_index) + ": "
+                + created.detail);
+        }
+    }
     runtime.visual.child_tasks.push_back(std::move(task));
     return sequence;
 }
@@ -2120,13 +2227,10 @@ bool has_action_visual_barrier(
     if (active_child) {
         return true;
     }
-    for (std::size_t slot = 0; slot < runtime.visual.timelines.size(); ++slot) {
-        if (runtime.visual.timeline_action_ordinals[slot] != action_ordinal) {
-            continue;
-        }
-        if (combatant_visual_timeline_has_pending_publications(
-                runtime.visual.timelines[slot],
-                visual_resource_for(runtime, static_cast<int>(slot)))) {
+    for (const auto& callback :
+         runtime.visual.persistent_instruction_callbacks) {
+        if (callback.action_ordinal == action_ordinal
+            && callback.auxiliary_publication_pending) {
             return true;
         }
     }
@@ -2209,6 +2313,18 @@ void visit_persistent_action_view_controller(
     }
     const auto& timeline = runtime.visual.timelines[static_cast<std::size_t>(action.actor_slot)];
     if (!timeline.installed || resource == nullptr || resource->records.empty()) {
+        return;
+    }
+    const auto& persistent_callback =
+        runtime.visual.persistent_instruction_callbacks[
+            static_cast<std::size_t>(action.actor_slot)];
+    if (persistent_callback.installed
+        && persistent_callback.callback_family
+            == ActionMotionPersistentCallbackFamily::
+                ActionMotionBasic_8001B1B0) {
+        // This callback's action-view children are owned by
+        // FUN_8001B1B0 state 10. Running the provisional selector publisher
+        // here would create a second child before the authoritative boundary.
         return;
     }
 
@@ -2309,59 +2425,151 @@ void visit_persistent_action_view_controller(
     }
 }
 
-void advance_visual_timeline_for_slot(
+bool publish_state10_auxiliary_for_slot(
     BattleFrameRuntime& runtime,
     int slot,
-    BattleFrameRunResult& result) {
-    if (slot < 0 || slot >= static_cast<int>(runtime.visual.timelines.size())) {
-        return;
+    BattleFrameRunResult& result,
+    std::string boundary_provenance) {
+    if (slot < 0
+        || slot >= static_cast<int>(
+            runtime.visual.persistent_instruction_callbacks.size())) {
+        return false;
     }
-    auto& timeline = runtime.visual.timelines[static_cast<std::size_t>(slot)];
-    if (!timeline.installed) {
-        return;
-    }
-    const auto advanced = advance_combatant_visual_timeline(
-        timeline,
-        visual_resource_for(runtime, slot));
-    for (const auto& publication : advanced.publications) {
-        const int task_sequence = enqueue_visual_child(runtime, publication);
-        std::ostringstream detail;
-        detail << "visual_command="
-               << combatant_visual_command_kind_name(publication.kind)
-               << "; action_key=" << publication.action_key
-               << "; epoch=" << publication.epoch
-               << "; owning_thread_visit=" << publication.owning_thread_visit
-               << "; publication_cursor=" << runtime.visual.current_visit_cursor
-               << "; same_frame_child_eligible=1"
-               << "; provenance=" << publication.provenance;
-        BattleFrameVisualChildTask diagnostic_task;
-        diagnostic_task.action_ordinal = runtime.visual.timeline_action_ordinals[
-            static_cast<std::size_t>(slot)];
-        diagnostic_task.origin_slot = slot;
-        diagnostic_task.target_slot = publication.target_slot;
-        diagnostic_task.resource_stem = visual_resource_for(runtime, slot)->binding.resource_stem;
-        diagnostic_task.record_index = publication.record_index;
-        diagnostic_task.sequence = task_sequence;
-        diagnostic_task.publication_epoch = publication.epoch;
-        diagnostic_task.command_kind = publication.kind;
-        diagnostic_task.kind = publication.kind == CombatantVisualCommandKind::SetCommand
-            ? BattleFrameVisualChildKind::ActionService
-            : (publication.kind == CombatantVisualCommandKind::CollisionBox
-                ? BattleFrameVisualChildKind::CollisionBox
-                : BattleFrameVisualChildKind::ActionViewRecord);
+    auto* combatant = find_frame_combatant(runtime.state, slot);
+    const auto* resource = visual_resource_for(runtime, slot);
+    auto& callback = runtime.visual.persistent_instruction_callbacks[
+        static_cast<std::size_t>(slot)];
+    auto& timeline =
+        runtime.visual.timelines[static_cast<std::size_t>(slot)];
+
+    if (combatant == nullptr || resource == nullptr || !timeline.installed) {
+        callback.auxiliary_publication_pending = false;
         auto event = make_visual_event(
             runtime,
-            &diagnostic_task,
-            BattleFrameWorkerStepKind::VisualCommandPublish,
-            publication.kind == CombatantVisualCommandKind::SetCommand
-                ? "SetCommandHandler_8003B1D8"
-                : (publication.kind == CombatantVisualCommandKind::CollisionBox
-                    ? "CollisionBoxHandler_8003C9E0"
-                    : "SystemCameraHandler_8003C690"),
-            frame_event_status(publication.status),
-            detail.str());
-        append_recorded_event(runtime, result, std::move(event));
+            nullptr,
+            BattleFrameWorkerStepKind::VisualAuxiliaryPublication,
+            "FUN_8001B1B0_state10_FUN_8001CAA8",
+            BattleFrameEventStatus::MissingInput,
+            "state-10 publication has no combatant, parsed resource, or installed instruction epoch; draws=0; provenance="
+                + boundary_provenance);
+        event.action_ordinal = callback.action_ordinal;
+        event.slot = slot;
+        runtime.visual.pending_events.push_back(std::move(event));
+        return false;
     }
+
+    const auto flags_before = combatant->instruction_flags_0xf0;
+    combatant->instruction_flags_0xf0 |= 0x10000000u;
+    callback.callback_state = 11;
+    callback.auxiliary_publication_pending = false;
+    ++callback.auxiliary_publication_revision;
+    callback.last_auxiliary_instruction_revision =
+        callback.instruction_state_revision;
+
+    const auto parent_node_id = runtime.thread_list.current_node_id;
+    const auto published = publish_combatant_auxiliary_commands(
+        CombatantAuxiliaryPublicationRequest{
+            .action_ordinal = callback.action_ordinal,
+            .slot = slot,
+            .target_slot = combatant->instruction_target_slot_0x4,
+            .instruction_revision = callback.instruction_state_revision,
+            .publication_epoch = timeline.epoch,
+            .owning_thread_visit = timeline.owning_thread_visits,
+            .instruction_mode = combatant->visual_instruction_mode_0x6,
+            .instruction_subtype =
+                combatant->visual_instruction_subtype_0x8,
+            .instruction_flags_0xec = combatant->instruction_flags_0xec,
+            .instruction_flags_0xf0 = combatant->instruction_flags_0xf0,
+            .gate_input = action_motion_delay_gate_input_for(combatant),
+            .current_resource = resource,
+            .readiness_uses_static_resource = false,
+            .current_range_policy =
+                CombatantAuxiliaryRangePolicy::FullTable,
+            .selector_state = std::nullopt,
+            .already_dispatched_record_indices =
+                timeline.published_record_indices,
+            .provenance =
+                "current-resource full-table dispatch is provisional until "
+                "FUN_8001C1F0, IW+0x298 ranges, and DAT_8030A1FC are modeled; "
+                + boundary_provenance,
+        });
+    ++timeline.owning_thread_visits;
+
+    std::ostringstream boundary_detail;
+    boundary_detail
+        << "callback_state=10->11"
+        << "; flags_0xf0=0x" << std::hex << std::setw(8)
+        << std::setfill('0') << flags_before
+        << "->0x" << std::setw(8) << combatant->instruction_flags_0xf0
+        << std::dec
+        << "; publication_status="
+        << combatant_auxiliary_publication_status_name(published.status)
+        << "; command_decisions=" << published.decisions.size()
+        << "; child_creations=" << published.publications.size()
+        << "; auxiliary_revision="
+        << callback.auxiliary_publication_revision
+        << "; draws=0; provenance=" << published.provenance;
+    auto boundary_event = make_visual_event(
+        runtime,
+        nullptr,
+        BattleFrameWorkerStepKind::VisualAuxiliaryPublication,
+        "FUN_8001B1B0_state10_FUN_8001CAA8",
+        frame_event_status(published.status),
+        boundary_detail.str());
+    boundary_event.action_ordinal = callback.action_ordinal;
+    boundary_event.slot = slot;
+    boundary_event.target_slot = combatant->instruction_target_slot_0x4;
+    boundary_event.action_motion_callback_family = callback.callback_family;
+    boundary_event.action_motion_callback_state_before = 10;
+    boundary_event.action_motion_callback_state_after = 11;
+    boundary_event.visual_epoch = timeline.epoch;
+    boundary_event.visual_resource = resource->binding.resource_stem;
+    append_recorded_event(runtime, result, std::move(boundary_event));
+
+    for (const auto& publication : published.publications) {
+        const int task_sequence =
+            enqueue_visual_child(runtime, publication, parent_node_id);
+        if (task_sequence < 0) {
+            continue;
+        }
+        timeline.published_record_indices.push_back(
+            publication.record_index);
+        const auto task = std::find_if(
+            runtime.visual.child_tasks.begin(),
+            runtime.visual.child_tasks.end(),
+            [task_sequence](const BattleFrameVisualChildTask& candidate) {
+                return candidate.sequence == task_sequence;
+            });
+        if (task == runtime.visual.child_tasks.end()) {
+            continue;
+        }
+        std::ostringstream detail;
+        detail
+            << "visual_command="
+            << combatant_visual_command_kind_name(publication.kind)
+            << "; action_key=" << publication.action_key
+            << "; epoch=" << publication.epoch
+            << "; owning_thread_visit="
+            << publication.owning_thread_visit
+            << "; parent_node_id="
+            << parent_node_id.value_or(-1)
+            << "; child_node_id=" << task->thread_node_id
+            << "; same_frame_child_eligible="
+            << (task->thread_node_id >= 0 ? 1 : 0)
+            << "; draws=0; provenance=" << publication.provenance;
+        append_recorded_event(
+            runtime,
+            result,
+            make_visual_event(
+                runtime,
+                &*task,
+                BattleFrameWorkerStepKind::VisualCommandPublish,
+                visual_child_handler_name(publication.kind),
+                frame_event_status(publication.status),
+                detail.str()));
+    }
+    return published.status !=
+        CombatantAuxiliaryPublicationStatus::MissingInput;
 }
 
 bool visit_action_motion_playback_for_slot(
@@ -2388,6 +2596,7 @@ bool visit_action_motion_playback_for_slot(
     }
     const auto visited = visit_action_motion_playback(playback, visit_input);
     playback = visited.runtime;
+    bool release_auxiliary_publication = false;
     if (combatant != nullptr) {
         combatant->instruction_flags_0xec = visited.flags_after;
     }
@@ -2405,6 +2614,10 @@ bool visit_action_motion_playback_for_slot(
                 break;
             case ActionMotionPlaybackContinuation::State6PostDelayTo11:
                 callback_runtime.callback_state = 11;
+                release_auxiliary_publication =
+                    callback_runtime.callback_family
+                    == ActionMotionPersistentCallbackFamily::
+                        ActionMotionBasic_8001B1B0;
                 break;
             case ActionMotionPlaybackContinuation::State7LoadLookedUpTo14:
                 callback_runtime.callback_state = 14;
@@ -2510,6 +2723,14 @@ bool visit_action_motion_playback_for_slot(
     event.action_motion_delay_before = visited.post_state6_delay_before;
     event.action_motion_delay_after = visited.post_state6_delay_after;
     append_recorded_event(runtime, result, std::move(event));
+    if (release_auxiliary_publication) {
+        (void)publish_state10_auxiliary_for_slot(
+            runtime,
+            slot,
+            result,
+            "ActionMotionPlaybackModel completed the captured state-6/post-delay "
+            "path and entered FUN_8001B1B0 state 10 in the same instruction visit");
+    }
     return !action_motion_playback_blocks_publication(playback);
 }
 
@@ -2584,6 +2805,14 @@ bool visit_persistent_instruction_callback_for_slot(
     invocation.status = decision.status;
     invocation.callback_state = decision.callback_state_after;
     invocation.state8_delay_remaining = decision.state8_delay_remaining;
+    if (invocation.callback_family
+        == ActionMotionPersistentCallbackFamily::
+            ActionMotionBasic_8001B1B0) {
+        invocation.auxiliary_publication_pending =
+            !decision.auxiliary_publication_requested
+            && decision.callback_state_after >= 5
+            && decision.callback_state_after <= 10;
+    }
 
     std::ostringstream detail;
     detail << "persistent_callback="
@@ -2610,6 +2839,10 @@ bool visit_persistent_instruction_callback_for_slot(
                : -1)
            << "; state8_delay_remaining="
            << decision.state8_delay_remaining
+           << "; auxiliary_publication="
+           << (decision.auxiliary_publication_requested ? 1 : 0)
+           << "; state10_fallthrough="
+           << (decision.entered_state10_via_fallthrough ? 1 : 0)
            << "; visits=" << invocation.visits
            << "; draws=0; provenance=" << decision.provenance;
 
@@ -2635,6 +2868,18 @@ bool visit_persistent_instruction_callback_for_slot(
     decision_event.action_motion_resolved_motion_id =
         decision.resolver.resolved_motion_id.value_or(-1);
     append_recorded_event(runtime, result, std::move(decision_event));
+
+    if (decision.auxiliary_publication_requested) {
+        (void)publish_state10_auxiliary_for_slot(
+            runtime,
+            slot,
+            result,
+            decision.entered_state10_via_fallthrough
+                ? "FUN_8001B1B0 state 8/9 reached zero delay and fell through "
+                  "state 10 in the same persistent callback visit"
+                : "FUN_8001B1B0 entered state 10 directly in the persistent "
+                  "callback visit");
+    }
 
     switch (decision.decision) {
     case ActionMotionInvocationDecisionKind::InstallPlayback: {
@@ -2863,9 +3108,9 @@ void visit_std_row_producer_for_slot(
             + "; epoch=" + std::to_string(timeline.epoch)
             + "; instruction_state_revision="
             + std::to_string(combatant->visual_instruction_revision)
-            + "; producer_chain=FUN_80022850_state1_IW+0xE0_to_"
-              "FUN_800085EC_to_FUN_800086BC_to_FUN_8000832C_to_FUN_800367E8"
-            + "; outer_callback_family=provisional; provenance="
+            + "; source_context_only=1"
+            + "; publication_owner=FUN_8001B1B0_state10_FUN_8001CAA8"
+            + "; provenance="
             + produced.provenance);
     install_event.action_ordinal = combatant->visual_instruction_action_ordinal;
     install_event.slot = slot;
@@ -2893,13 +3138,24 @@ void append_visual_cleanup(
             runtime,
             &task,
             BattleFrameWorkerStepKind::VisualChildCleanup,
-            task.kind == BattleFrameVisualChildKind::ActionService
-                ? "FUN_8004281C_cleanup"
-                : (task.kind == BattleFrameVisualChildKind::CollisionBox
-                    ? "FUN_8004B7C4_cleanup"
-                    : "UpdateActionViewRecord_80051264_cleanup"),
+            std::string(visual_child_handler_name(task.command_kind))
+                + "_cleanup",
             BattleFrameEventStatus::Provisional,
             std::move(reason)));
+    if (task.thread_node_id >= 0) {
+        const auto removed = remove_battle_frame_thread(
+            runtime.thread_list,
+            task.thread_node_id,
+            "combatant.auxiliary_visual.child.complete",
+            "visual child reached its callback-specific completion boundary",
+            runtime.state.frame_index,
+            static_cast<std::uint64_t>(task.sequence));
+        if (removed.status != BattleFrameThreadMutationStatus::Applied) {
+            runtime.warnings.push_back(
+                "completed auxiliary visual child thread could not be removed: "
+                + removed.detail);
+        }
+    }
 }
 
 std::vector<std::int16_t> target_action_ids_for_selector(
@@ -3567,6 +3823,46 @@ void advance_action_view_child(
     }
 }
 
+void advance_visual_child_task(
+    BattleFrameRuntime& runtime,
+    BattleFrameRunResult& result,
+    std::uint32_t& rng_state,
+    BattleFrameVisualChildTask& task) {
+    ++task.visits;
+    if (task.visits > task.maximum_visits + 2) {
+        append_visual_cleanup(
+            runtime,
+            result,
+            task,
+            "bounded diagnostic completion prevented a visual child deadlock");
+        return;
+    }
+    if (task.kind == BattleFrameVisualChildKind::ActionService) {
+        advance_action_service_child(runtime, result, task, rng_state);
+    } else if (task.kind == BattleFrameVisualChildKind::CollisionBox) {
+        advance_collision_box_child(runtime, result, task, rng_state);
+    } else if (task.kind == BattleFrameVisualChildKind::ActionViewRecord) {
+        advance_action_view_child(runtime, result, task, rng_state);
+    } else {
+        append_recorded_event(
+            runtime,
+            result,
+            make_visual_event(
+                runtime,
+                &task,
+                BattleFrameWorkerStepKind::VisualUnsupportedWait,
+                visual_child_handler_name(task.command_kind),
+                BattleFrameEventStatus::Provisional,
+                "child creation and list position are evidence-backed; callback lifetime is provisional and consumes zero RNG"));
+        append_visual_cleanup(
+            runtime,
+            result,
+            task,
+            "unsupported auxiliary child completed after one typed zero-draw visit");
+    }
+    flush_pending_visual_events(runtime, result);
+}
+
 void advance_visual_children_at_cursor(
     BattleFrameRuntime& runtime,
     BattleFrameRunResult& result,
@@ -3575,29 +3871,35 @@ void advance_visual_children_at_cursor(
     const auto task_count = runtime.visual.child_tasks.size();
     for (std::size_t index = 0; index < task_count; ++index) {
         auto& task = runtime.visual.child_tasks[index];
-        if (task.complete
+        if (task.thread_node_id >= 0
+            || task.complete
             || runtime.state.frame_index < task.first_eligible_frame
             || task.publication_visit_cursor != visit_cursor) {
             continue;
         }
-        ++task.visits;
-        if (task.visits > task.maximum_visits + 2) {
-            append_visual_cleanup(
-                runtime,
-                result,
-                task,
-                "bounded diagnostic completion prevented a visual child deadlock");
-            continue;
-        }
-        if (task.kind == BattleFrameVisualChildKind::ActionService) {
-            advance_action_service_child(runtime, result, task, rng_state);
-        } else if (task.kind == BattleFrameVisualChildKind::CollisionBox) {
-            advance_collision_box_child(runtime, result, task, rng_state);
-        } else {
-            advance_action_view_child(runtime, result, task, rng_state);
-        }
-        flush_pending_visual_events(runtime, result);
+        advance_visual_child_task(runtime, result, rng_state, task);
     }
+}
+
+bool advance_visual_child_thread(
+    BattleFrameRuntime& runtime,
+    BattleFrameRunResult& result,
+    std::uint32_t& rng_state,
+    int thread_node_id) {
+    const auto found = std::find_if(
+        runtime.visual.child_tasks.begin(),
+        runtime.visual.child_tasks.end(),
+        [thread_node_id](const BattleFrameVisualChildTask& task) {
+            return task.thread_node_id == thread_node_id;
+        });
+    if (found == runtime.visual.child_tasks.end() || found->complete) {
+        return false;
+    }
+    if (runtime.state.frame_index < found->first_eligible_frame) {
+        return true;
+    }
+    advance_visual_child_task(runtime, result, rng_state, *found);
+    return true;
 }
 
 BattleFramePendingMovementInvocation* find_pending_invocation(
@@ -6933,6 +7235,9 @@ bool publish_battle_frame_persistent_instruction_callback(
     }
 
     const bool was_installed = callback_runtime.installed;
+    const int action_ordinal_before = callback_runtime.action_ordinal;
+    const auto instruction_state_revision_before =
+        callback_runtime.instruction_state_revision;
     const auto callback_before = callback_runtime.callback_index;
     const bool callback_changed = !was_installed
         || callback_before != selected_row->callback_index;
@@ -6952,6 +7257,17 @@ bool publish_battle_frame_persistent_instruction_callback(
     callback_runtime.callback_index = selected_row->callback_index;
     callback_runtime.callback_family = action_motion_callback_family_for_index(
         selected_row->callback_index);
+    const bool new_auxiliary_context = !was_installed
+        || callback_changed
+        || action_ordinal_before != callback_runtime.action_ordinal
+        || instruction_state_revision_before
+            != callback_runtime.instruction_state_revision;
+    if (new_auxiliary_context
+        || callback_runtime.callback_family
+            != ActionMotionPersistentCallbackFamily::
+                ActionMotionBasic_8001B1B0) {
+        callback_runtime.auxiliary_publication_pending = false;
+    }
     ++callback_runtime.publication_revision;
     ++callback_runtime.publications;
     if (same_value) {
@@ -7052,6 +7368,17 @@ bool battle_frame_action_visual_publication_pending(
             [action_ordinal](const ActionMotionPlaybackRuntime& playback) {
                 return playback.action_ordinal == action_ordinal
                     && action_motion_playback_blocks_publication(playback);
+            })) {
+        return true;
+    }
+    if (std::any_of(
+            runtime.visual.persistent_instruction_callbacks.begin(),
+            runtime.visual.persistent_instruction_callbacks.end(),
+            [action_ordinal](
+                const BattleFramePersistentInstructionCallbackRuntime&
+                    callback) {
+                return callback.action_ordinal == action_ordinal
+                    && callback.auxiliary_publication_pending;
             })) {
         return true;
     }
@@ -7545,7 +7872,10 @@ BattleFrameRunResult run_first_turn_frame(
     clear_unvisitable_passive_participants(runtime, result);
     skip_unvisitable_pending_invocations(runtime, result);
     int packed_visit_cursor = 1;
-    for (const auto& thread : runtime.thread_list.nodes) {
+    for (std::size_t thread_index = 0;
+         thread_index < runtime.thread_list.nodes.size();
+         ++thread_index) {
+        const auto thread = runtime.thread_list.nodes[thread_index];
         if (!thread.active) {
             continue;
         }
@@ -7556,6 +7886,15 @@ BattleFrameRunResult run_first_turn_frame(
             "case-5 traversal published the currently visited thread",
             runtime.state.frame_index);
         runtime.visual.current_visit_cursor = packed_visit_cursor++;
+        if (thread.kind
+            == BattleFrameThreadNodeKind::AuxiliaryVisualChild) {
+            (void)advance_visual_child_thread(
+                runtime,
+                result,
+                rng_state,
+                thread.node_id);
+            continue;
+        }
         if (thread.kind == BattleFrameThreadNodeKind::CombatantInstruction) {
             if (thread.owner_slot < 0
                 || thread.owner_slot >= static_cast<int>(
@@ -7617,12 +7956,8 @@ BattleFrameRunResult run_first_turn_frame(
                 publication_allowed = visit_persistent_instruction_callback_for_slot(
                     runtime, thread.owner_slot, result);
             }
-            if (publication_allowed) {
-                visit_std_row_producer_for_slot(
-                    runtime, thread.owner_slot, result);
-                advance_visual_timeline_for_slot(
-                    runtime, thread.owner_slot, result);
-            }
+            visit_std_row_producer_for_slot(
+                runtime, thread.owner_slot, result);
             if (auto event = advance_combatant_instruction(
                     runtime, thread.owner_slot)) {
                 append_recorded_event(runtime, result, std::move(*event));
@@ -7937,6 +8272,8 @@ const char* battle_frame_worker_kind_name(BattleFrameWorkerKind kind) {
         return "VisualCollisionBox";
     case BattleFrameWorkerKind::VisualActionViewRecord:
         return "VisualActionViewRecord";
+    case BattleFrameWorkerKind::VisualUnsupportedCommand:
+        return "VisualUnsupportedCommand";
     case BattleFrameWorkerKind::CombatantInstruction:
         return "CombatantInstruction";
     case BattleFrameWorkerKind::CleanupStanding:
@@ -8044,6 +8381,8 @@ const char* battle_frame_worker_step_kind_name(BattleFrameWorkerStepKind kind) {
         return "VisualStdRowProducerVisit";
     case BattleFrameWorkerStepKind::VisualInstructionInstall:
         return "VisualInstructionInstall";
+    case BattleFrameWorkerStepKind::VisualAuxiliaryPublication:
+        return "VisualAuxiliaryPublication";
     case BattleFrameWorkerStepKind::VisualCommandPublish:
         return "VisualCommandPublish";
     case BattleFrameWorkerStepKind::VisualChildState0:
@@ -8177,6 +8516,8 @@ const char* battle_frame_visual_child_kind_name(BattleFrameVisualChildKind kind)
     case BattleFrameVisualChildKind::ActionService: return "ActionService";
     case BattleFrameVisualChildKind::CollisionBox: return "CollisionBox";
     case BattleFrameVisualChildKind::ActionViewRecord: return "ActionViewRecord";
+    case BattleFrameVisualChildKind::UnsupportedCommand:
+        return "UnsupportedCommand";
     }
     return "ActionViewRecord";
 }

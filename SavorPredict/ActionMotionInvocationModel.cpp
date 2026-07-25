@@ -249,6 +249,8 @@ ActionMotionInvocationResult resolve_basic_callback(
         result.state8_delay_remaining = *effective.state8_descriptor_delay;
         if (result.state8_delay_remaining == 0) {
             result.callback_state_after = 11;
+            result.auxiliary_publication_requested = true;
+            result.entered_state10_via_fallthrough = true;
         } else {
             --result.state8_delay_remaining;
             result.callback_state_after = 9;
@@ -270,6 +272,8 @@ ActionMotionInvocationResult resolve_basic_callback(
         result.state8_delay_remaining = effective.state8_delay_remaining;
         if (result.state8_delay_remaining == 0) {
             result.callback_state_after = 11;
+            result.auxiliary_publication_requested = true;
+            result.entered_state10_via_fallthrough = true;
         } else {
             --result.state8_delay_remaining;
             result.callback_state_after = 9;
@@ -282,8 +286,9 @@ ActionMotionInvocationResult resolve_basic_callback(
         result.decision = ActionMotionInvocationDecisionKind::Wait;
         result.callback_state_before = 10;
         result.callback_state_after = 11;
+        result.auxiliary_publication_requested = true;
         result.provenance =
-            "FUN_8001B1B0 state 10 published the state-11 transition";
+            "FUN_8001B1B0 state 10 set IW+0xF0 bit 0x10000000, published auxiliary commands, and entered state 11";
         break;
     case 11: {
         const int motion_result = effective.post_motion_result.value_or(2);
