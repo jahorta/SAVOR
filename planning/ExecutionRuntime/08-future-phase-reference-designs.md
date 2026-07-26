@@ -1,20 +1,19 @@
 # 08 - Future Phase Reference Designs
 
-## Status and authority
+## Scope
 
-**Status:** Target reference designs; none of the future programs in this document is implemented.
+This document collects six non-gating reference designs; none of these future programs is implemented.
+They are examples and architectural stress tests, not deliverables or completion criteria for the current
+Execution Runtime refactor. Their useful constraint is the division between bounded programs, actions,
+and session services. Workflow descriptions illustrate that ownership boundary only and do not schedule
+changes to SavorDb storage, interfaces, queues, claims, or orchestration.
 
-This document proves the Execution Runtime architecture against six materially different workloads. It is
-authoritative for their division between bounded programs, actions, and session services. Workflow
-descriptions show the ownership boundary only; they do not schedule or authorize changes to SavorDb
-storage, interfaces, queues, claims, or orchestration. This is not a replacement for domain planning.
-
-For Navmesh Survey, the normative domain specification is
+If Navmesh Survey is implemented, its domain specification comes from
 `planning/NavigationPhase/NavigationContextWorkflow/04-suppressed-exploration-and-world-refinement.md`.
-If a Survey detail conflicts, that document wins until both are deliberately revised together. The
-current repository code remains authoritative for implemented behavior.
+If a Survey detail conflicts, follow that domain document. The current repository code defines
+implemented behavior.
 
-The stable semantic IDs used here are:
+The example semantic IDs used here are:
 
 | Design | Program module | Entrypoint |
 |---|---|---|
@@ -25,7 +24,8 @@ The stable semantic IDs used here are:
 | Cutscene fast-forward | `soa.cutscene.fast_forward` | `run_slice` |
 | Overworld exploration | `soa.overworld.expand` | `expand_node` |
 
-These IDs identify programs, not controllers. All execute through the same `ProgramExecutor`.
+In these examples, IDs identify programs, not controllers, and each program would execute through the
+same `ProgramExecutor`.
 
 ## Purpose and non-goals
 
@@ -35,6 +35,14 @@ The reference designs have two purposes:
    worker controller or domain opcode; and
 2. make the program/workflow boundary concrete enough that the runtime refactor does not accidentally
    optimize only for current battle phases.
+
+They may inspire later domain work, but implementing or validating any one design is not required to
+complete the current refactor.
+
+Every design may reuse the same predicate composition library for checkpoints, progress observations,
+qualification, fail-fast requirements, and accumulated evidence. Reuse means lowering pure conditions
+and explicit check policies into ordinary IR, actions, scoped router subscriptions, and emissions; none
+of these designs receives a predicate controller or runtime.
 
 The designs do not finalize:
 
@@ -69,9 +77,9 @@ phase-sized execution path.
 - Current workflow code can append dynamic steps and already uses persisted successor savestates in
   BattleSingleTurn. This is useful precedent for overworld frontier orchestration, but not a complete
   frontier implementation. Any generalized frontier implementation is a separate SavorDb/workflow
-  project, not part of this refactor.
+  follow-on effort, not part of this refactor.
 
-## Locked target decisions
+## Reference design details
 
 ### Reference design 1: Navmesh Survey
 
@@ -357,8 +365,8 @@ workflow model is separate future work.
 ### Reference design 6: overworld arbitrary-wave savestate DFS
 
 This section is a runtime-side bounded-expansion reference only. Its durable DFS stack, visited set,
-node/edge lineage, and restart behavior require separately approved workflow/frontier persistence work.
-They are not dependencies, deliverables, or acceptance gates of the Execution Runtime refactor.
+node/edge lineage, and restart behavior would require follow-on workflow/frontier persistence work. They
+are not dependencies, deliverables, or completion checks of the Execution Runtime refactor.
 
 `soa.overworld.expand/expand_node` expands one overworld frontier node. Overworld uses
 `soa.overworld` capabilities and rules; it does not fall through to the Dungeon/field Survey model.
@@ -374,12 +382,12 @@ Inputs:
 Outputs:
 
 - zero-to-many child `StateArtifact` and `OverworldTransitionEdge` pairs;
-- state fingerprints and typed observations available to a separately approved workflow's canonical
-  fingerprint policy;
+- state fingerprints and typed observations available to a follow-on workflow's canonical fingerprint
+  policy;
 - local goal, terminal, invalid, or dead-end evidence; and
 - complete reproduction provenance.
 
-A separately approved durable-workflow project would own:
+A follow-on durable-workflow effort would own:
 
 - the arbitrary-depth DFS stack;
 - visited fingerprints and duplicate edges;
@@ -404,6 +412,7 @@ savestates.
 | Teleport and settle | `soa.navigation` actions through `ExecutionEngine` | Survey, collision search |
 | Bounded interaction and input | `InputArbiter` plus game actions | Doors, replay, cutscenes, overworld |
 | Typed runtime observations | Game capability packs and capture/telemetry services | All designs |
+| Predicate/check composition | Module-building library lowering to IR, observation actions, scoped router qualifications, and `ConditionObservation` emissions | Survey, replay, collision search, cutscenes, and overworld |
 | Savestate load/save and epochs | `StateService` | Replay, cutscenes, overworld; Survey baseline reload only |
 | Route/control playback | Navigation subprograms/actions | Replay and validation |
 | Frontier scheduling | Separate future workflow/frontier project | Collision search and overworld DFS |
@@ -426,33 +435,43 @@ representation and interfaces unchanged.
 - Wrong door TBLID, missing open witness, failure to cross, or failed settle yields no successor anchor.
 - Replay divergence is a typed domain outcome; transport/emulator failure is an infrastructure outcome.
 - A collision probe with no anomaly is a successful negative observation.
+- Predicate policy decides whether `Unsatisfied` records progress, changes a domain outcome, branches, or
+  accumulates evidence; observation failure is not rewritten as false.
 - An unsupported cutscene tactic is a typed result that allows workflow fallback; it is not permission to
   bypass session ownership.
 - A bounded overworld expansion cannot own or corrupt a durable DFS stack. Durable retry behavior belongs
   to the separate orchestration project.
 - Cleanup failure always prohibits `ContinueSession`, even when the domain outcome otherwise succeeded.
 
-## Dependencies and migration implications
+## Architectural implications illustrated
 
-- All designs depend on the universal module/IR, action ABI, invocation/result, and resource-scope
-  contracts in documents 02 through 06, plus the fixed SavorDb boundary in document 06.
-- Survey additionally requires checked `u8`/masked writes, reversible executable patching with readback
+Cross-domain predicate reuse adds no executor, opcode, session service, or persistence contract. Its
+lowered behavior is visible through the same module hash, dependency closure, router scopes, branch
+trace, and emission schemas as equivalent hand-composed IR.
+
+- If implemented, each design would use the universal module/IR, action ABI, invocation/result, and
+  resource-scope contracts in documents 02 through 06, plus the fixed SavorDb boundary in document 06.
+- Survey would additionally require checked `u8`/masked writes, reversible executable patching with readback
   and cache/JIT handling, teleport/settle actions, selected-object/TBLID observation, and spatial artifact
   schemas.
-- Navigation replay can migrate only after input sequences and interruption handling are ordinary
+- Navigation replay would require input sequences and interruption handling to be ordinary
   `ExecutionEngine` operations.
-- Cutscene fast-forward depends on reusable dialog/interruption capabilities; it must not revive a
+- Cutscene fast-forward would depend on reusable dialog/interruption capabilities; it must not revive a
   separate input-macro runtime.
-- End-to-end Overworld DFS depends on separately approved workflow/frontier persistence work. It is not a
+- End-to-end Overworld DFS would depend on follow-on workflow/frontier persistence work. It is not a
   dependency of the Execution Runtime refactor.
 - None of these designs adds a worker controller, `ProgramKind` switch arm, or core domain opcode.
 
-Navmesh Survey is the first new program built directly against the new architecture. It must not be
-implemented on the legacy interpreter and later "ported."
+Navmesh Survey is the intended first new program after the migration, but it is not a completion condition
+for this refactor. If implemented, it should target the new architecture directly rather than the legacy
+interpreter.
 
-## Acceptance criteria
+## Example validation scenarios
 
-### Navmesh Survey first slice
+These checks illustrate how each design could be validated when implemented. They do not gate completion
+of the current backend refactor.
+
+### Navmesh Survey example first slice
 
 - Load the exact `navigation-context-41.sav` and adjacent `.nctx` without modifying them.
 - Apply checked encounter suppression at `0x8030b7ad`.
@@ -469,7 +488,7 @@ implemented on the legacy interpreter and later "ported."
   records, timing evidence, or `eventhook`; durable publication uses an existing representation or is
   separate follow-on work.
 
-### Cross-design runtime acceptance
+### Cross-design architecture checks
 
 - Navigation replay reproduces the same action and branch trace from the same complete invocation
   identity and reports checkpoint deviation explicitly.
@@ -479,11 +498,11 @@ implemented on the legacy interpreter and later "ported."
 - Cutscene fast-forward can continue across bounded slices and be inserted or removed from a workflow
   without worker-runtime changes.
 - Overworld expansion executes one bounded node without owning a DFS stack or visited set.
-- Each runtime-side design is implemented by program modules, runtime type schemas, reusable actions
+- If implemented, each runtime-side design uses program modules, runtime type schemas, reusable actions
   where genuinely needed, and program-kind integration through existing SavorDb contracts.
 
-Restart-safe collision/frontier/DFS orchestration is future-phase acceptance for a separate workflow
-project, not a gate for this backend refactor.
+Restart-safe collision/frontier/DFS orchestration belongs to follow-on workflow work and is not a check
+for this backend refactor.
 
 ## Deferred work
 

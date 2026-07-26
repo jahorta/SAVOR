@@ -1,20 +1,16 @@
 # 07 - Current Phase Migration Matrix
 
-## Status and authority
+## Scope
 
-**Status:** Authoritative migration guidance for the current phase-program corpus.
-
-**Code snapshot:** SAVOR commit
-`b584920ffad8dbe770f343e532d7f7386c82fadf`, inspected 2026-07-25.
-
-Current code remains authoritative for legacy behavior. This document is authoritative for how that
-behavior reaches the target runtime. The target module IDs and entrypoint names below are semantic
-identities; they are not claims about current C++ symbols.
+This matrix is implementation guidance for moving the current fixed phase-program corpus to the target
+runtime. Recheck the current repository code for legacy behavior before changing a program family. The
+target module IDs and entrypoint names below are semantic identities; they are not claims about current
+C++ symbols.
 
 ## Purpose and non-goals
 
 This document assigns every current fixed worker program a target module, typed contract, reusable
-capability composition, parity obligation, and legacy deletion gate. It prevents an implementer from
+capability composition, parity checks, and conditions for legacy deletion. It prevents an implementer from
 deciding ad hoc that a difficult phase needs a separate native controller or permanent compatibility
 runtime.
 
@@ -29,20 +25,21 @@ It does not:
 - move durable workflow decisions into a worker program; or
 - require final C++ declarations or binary worker-wire layouts.
 
-Navmesh Survey begins only after the migrated Navigation Context module and common runtime pass the
-handoff gate at the end of this document.
+If Navmesh Survey is taken up after this migration, it begins only after the migrated Navigation Context
+module and common runtime meet the prerequisites at the end of this document. Survey itself is not a
+completion condition for the current-phase migration.
 
-## Current code evidence
+## Current implementation references
 
-Document 01 and document 12 own the complete evidence inventory. The migration rows below are grounded in
-the fixed programs returned by `SavorCore/Phases/Programs/ProgramRegistry.cpp:44-70`, their current
-program-specific decoders at `ProgramRegistry.cpp:74-109`, the `PK_*` catalog in
+The migration rows below were prepared from the fixed programs returned by
+`SavorCore/Phases/Programs/ProgramRegistry.cpp:44-70`, their current program-specific decoders at
+`ProgramRegistry.cpp:74-109`, the `PK_*` catalog in
 `SavorCore/Runner/IPC/Wire.h:63-83`, and the phase builders under
 `SavorCore/Phases/Programs/`. Current DB support is established separately through
 `SavorDb/Execution/ProgramDB`; a worker program's presence does not imply that a current DB descriptor or
 workflow step exists for it.
 
-## Locked target decisions
+## Migration constraints
 
 ### Migration rules
 
@@ -85,7 +82,7 @@ Every current phase follows the same rules:
 | SeedProbe | `soa.seed_probe` | `probe` | Supported |
 | TAS playback | `soa.tas_movie` | `play_and_checkpoint` | Supported |
 | TAS input-stream detector | `soa.tas_frame_detector` | `detect` | Supported diagnostic program |
-| Legacy multi-turn battle path | `soa.battle.legacy_path` | `run` | Migration-only, deprecated after caller audit |
+| Legacy multi-turn battle path | `soa.battle.legacy_path` | `run` | Migration-only, deprecated after consumer checks |
 | Battle Context | `soa.battle.context` | `capture` | Supported |
 | Battle Single Turn | `soa.battle.single_turn` | `execute` | Supported |
 | Battle Macro Probe | `soa.battle.macro_probe` | `probe` | Supported diagnostic program |
@@ -119,22 +116,132 @@ Document 04 owns the descriptors and signatures. The migration uses these exact 
 macro base IDs are reusable IR subprograms. Their `.reduce` imports are pure transitions over typed state
 and a completed effect. None is a whole-phase action or a peer engine.
 
+### Reusable semantic-observation composition
+
+Current stop keys, breakpoint alternatives, direct reads, address programs, baselines, and context
+queries migrate through one reusable semantic-observation composition library:
+
+- capability packs own `SemanticPointDefinition` identities and map them to physical PC, memory, or
+  synthetic evidence;
+- a `SemanticAwaitDefinition` declares exact point alternatives, bounded hit-time qualification or
+  sampling, current-point acceptance, deadlines, and execution policy;
+- a successful await returns a `SemanticPointReceipt` containing the logical point, physical evidence,
+  stop sequence, `StateEpoch`, and declared hit-time samples;
+- `AddressExpression<T>` and `ObservationDefinition<T>` describe bounded typed reads, checked
+  dereferences/offsets, receipt fields, or registered coherent domain queries; and
+- an `ObservationUse<T>` binds an observation to a point receipt, acquisition mode, required/optional
+  behavior, baseline policy, and authoritative-emission or telemetry policy at the use site.
+
+The library lowers before verification into exact capability/type/action imports, scoped router
+subscriptions, `runtime.execution.continue_until`, ordinary guest-read or game-query actions, branches,
+locals, and emissions. `HitTimeSample` is restricted to bounded router-side sampling before program
+handling. `PausedAtPoint` performs ordinary reads while execution is paused. Observing after an
+instruction requires an explicit step followed by another observation; it is not a hidden acquisition
+mode.
+
+Ordered observations stay ordered, and a coherent multi-field value uses one registered query rather
+than claiming separate scalar reads are atomic. Optional unavailability remains distinct from false or
+zero. Required missing evidence is a structured action or infrastructure failure. Named baselines are
+ordinary IR values with explicit `First` or `Latest` policy, and no receipt, baseline, or guest-derived
+handle may cross a `StateEpoch` replacement.
+
+### Reusable interaction composition
+
+Current input-macro plans migrate through one reusable interaction-composition library rather than a
+shared controller-like input-segment action. An `InteractionDefinition<State, Output>` has stable
+identity/revision, typed state and output, pure initialization and advancement reducers, a finite
+verifier-known segment set, hard budgets, and declared emissions. Each
+`InteractionSegmentDefinition` declares its semantic gates, requested input and acknowledgement policy,
+source-stop step-off behavior, reached-instruction policy, attached observations/checks,
+timeout/stall/movie/cancel policy, and typed completion mapping. `InteractionSegmentResult` preserves the
+exact stop receipt, request and release receipts, ordered observations/checks, elapsed evidence, epoch,
+and distinct terminal status.
+
+Before verification, the composer lowers static sequences and adaptive reducers into ordinary
+subprogram CFG, action awaits, semantic-observation composition, branches, and emissions. A reducer may
+select only a declared segment ID; it cannot construct effects or access a runtime service. There is no
+`InteractionRuntime`, segment scheduler, macro opcode family, or action that hides a whole macro.
+
+The migration preserves the current temporal behavior:
+
+- publish the segment input and obtain its epoch before stepping off a current semantic stop;
+- execute exactly one source instruction with the new input before waiting;
+- match completion by logical point, PC, stop sequence, and epoch;
+- preserve whether the reached instruction remains paused or executes under the held request;
+- read the request receipt after any held-through-hit execution and before publishing neutral;
+- where release matters, prove guest-observed release with a separately named witness using a fresh
+  neutral epoch rather than treating neutral publication as proof;
+- capture memory baselines before advancement and retain one neutral frame between translated
+  memory-change polls; and
+- hold one input lease across the interaction while segment subscriptions and observations use nested
+  scopes.
+
+Common unwind neutralizes input, proves release when required, releases nested subscriptions and the
+lease, and taints the session if mandatory cleanup fails. Timeout, unexpected point, unacknowledged input,
+unsatisfied check, infrastructure failure, cancellation, and cleanup failure remain distinguishable.
+
+### Reusable predicate composition
+
+Predicates migrate as one reusable module-composition library, not as battle opcodes or a predicate
+runtime. A `PredicateDefinition` is a pure typed condition over semantic-observation results. A `Check`
+binds that definition to:
+
+- a semantic evaluation point;
+- an ordered typed semantic-observation plan;
+- required or optional evidence;
+- a use policy such as branch, clean domain rejection, explicit fail, record, or accumulate; and
+- an optional declared `ConditionObservation` emission.
+
+Before activation, the library lowers each check into canonical IR, exact action/type/capability imports,
+scoped router-subscription operations acquired through awaited actions, ordinary branches or returns,
+and typed emissions. After lowering, `ProgramExecutor` sees no predicate opcode, service, private loop,
+or separate executor. A predicate definition cannot read Dolphin, advance emulation, acquire resources,
+write persistence, or determine workflow topology.
+
+Current `AbortOnFail` data translates into a require/reject policy at the check use site; it is not part
+of the reusable pure predicate definition. An unsatisfied required predicate is a typed domain
+rejection. Failure to obtain required evidence is an action or infrastructure failure, and cleanup
+status remains independent. Record-only predicates may evaluate false and still represent successful
+program progress.
+
+Current stored battle predicate definitions and result fields remain unchanged. Program-kind adapters
+translate them into composition inputs in memory and project typed observations, passed/total counts,
+and predicate-rejection outcomes through existing result operations. Current battle baseline behavior
+translates as `Latest`, with the new value installed before evaluation at the same routed hit.
+
+### Existing capture-profile compatibility
+
+Existing `savor.capture.profile/1` artifacts remain unchanged and are handed through
+`runtime.capture.attach` to `CaptureService`. The refactor does not translate profiles into program IR or
+invent a replacement capture language. `CaptureService` preserves profile parsing, filters and
+predicate bytecode, address programs, activation/dynamic watchpoints, PC and post-write sampling,
+sampling order and policies, one-shot/max-hit behavior, windows, flight recorders, trace buffers,
+retention, queue/drop/coalescing behavior, progress, event ordering, and artifact finalization.
+
+Capture remains passive. `StopPointRouter` and `ExecutionEngine` own wake/control authority, while
+`CaptureService` observes the same routed matched event so profile `control` subscriptions,
+control-triggered windows/recorders, flags, metrics, and synthetic control events retain their existing
+meaning. One routed hit keeps one sequence/snapshot/epoch identity across control, capture, and progress
+views. Modules may attach, mark, or finalize an existing profile through ordinary capture actions, but
+cannot reinterpret its internals.
+
 ## Common legacy-to-target translation
 
 | Current construct | Target treatment |
 |---|---|
-| `ARM_PHASE_BPS_ONCE`, canonical/gated vectors | Module imports semantic stop-point identities; awaited execution actions acquire scoped router subscriptions |
+| `ARM_PHASE_BPS_ONCE`, canonical/gated vectors | `SemanticPointDefinition` and `SemanticAwaitDefinition` lower exact alternatives and current-point policy into scoped router subscriptions plus `runtime.execution.continue_until` |
 | `LOAD_SNAPSHOT` and init-time savestate path | Invocation `StatePolicy`; `runtime.state.restore_baseline` is used only for a declared local retry |
 | Timeout keys and `SET_TIMEOUT*` | Invocation deadline/budget plus action-specific bounded deadline |
 | `RUN_UNTIL_BP*`, frame/opcode stepping | `runtime.execution.continue_until`, `runtime.execution.step_frames`, or `runtime.execution.step_instructions` under the sole `ExecutionEngine` |
-| `APPLY_INPUT_FROM`, raw tape application | Scoped `runtime.input.*` actions with poll acknowledgement and mandatory neutral release |
-| `READ_*` | Checked `runtime.guest.read_*` actions or typed game observations |
+| `APPLY_INPUT_FROM`, raw tape application | Interaction composition lowers requested input, semantic gates, poll acknowledgements, and neutral-release witnesses into scoped `runtime.input.*` and execution actions |
+| `READ_*`, address programs, direct query helpers | `AddressExpression<T>`, `ObservationDefinition<T>`, and `ObservationUse<T>` lower to checked `runtime.guest.read_*` actions or registered coherent game queries |
 | `WRITE_U32` and future patches | `runtime.guest.write_checked` or `runtime.guest.patch_executable` with receipt and declared restoration policy |
 | Movie start/stop and recording | Scoped `runtime.movie.*` actions; stop is guaranteed by unwind |
 | Save savestate from a guest path string | `runtime.state.save_artifact` publishes an immutable artifact under an invocation-declared role |
 | `GET_BATTLE_CONTEXT`, `GET_NAVIGATION_CONTEXT` | `soa.battle.capture_context` and `soa.navigation.capture_context` |
-| Predicate arm/capture/evaluate | Verified predicate definition plus router qualifications and typed observation result |
-| `MATERIALIZE_*` and `EXECUTE_*_MACRO_STEP` | `soa.battle.materialize_turn_input` or the named macro subprogram/reducer plus the shared action-await continuation model |
+| Predicate arm/capture/evaluate | Shared predicate composition consumes semantic-observation results, lowers comparison and reaction to ordinary IR, and optionally emits declared `ConditionObservation` progress |
+| Input-macro `Start`/`Advance`, plans, and `EXECUTE_*_MACRO_STEP` | Interaction composition lowers initialization/advancement reducers and verifier-known segment definitions into ordinary subprogram CFG, semantic awaits/observations, input actions, and emissions |
+| Existing capture profile | `runtime.capture.attach` passes the unchanged `savor.capture.profile/1` artifact to passive `CaptureService`; profile internals are not lowered or redesigned |
 | `EMIT_RESULT` and `RETURN_RESULT` | Typed record/artifact emission and typed domain return |
 | `PSContext` keys | Entrypoint input, local, output, emission, diagnostic, and artifact schemas |
 | Program-specific payload codec | Program-kind runtime adapter decodes existing persisted job/domain data and constructs typed `ProgramInvocation` input |
@@ -175,8 +282,8 @@ through the existing SeedProbe result and transition operations.
 **Required composition**
 
 - scoped input lease and guest-observed release;
-- semantic stop wait for the selected checkpoint;
-- checked RNG `u32` query;
+- semantic await for the selected checkpoint and exact point receipt;
+- checked RNG `u32` observation;
 - optional immutable state save; and
 - no SeedProbe-specific core opcode.
 
@@ -188,7 +295,7 @@ through the existing SeedProbe result and transition operations.
 - program-specific payload decoding; and
 - use of `DW_RUN_OUTCOME_CODE` as both infrastructure and domain result.
 
-**Parity evidence**
+**Parity checks**
 
 - legacy payload v1/v2 codec and field-return tests;
 - existing SeedProbe DB adapter and dynamic grid/unique transition tests;
@@ -196,7 +303,7 @@ through the existing SeedProbe result and transition operations.
 - exact observed seed and materialized state semantics for PreBattle and FieldReturn;
 - cancellation while waiting leaves neutral input and no router resources.
 
-**Deletion gate**
+**Legacy removal condition**
 
 All SeedProbe workflow step kinds construct `soa.seed_probe::probe` at the runtime boundary; the result
 handler consumes typed output and writes through the existing SeedProbe persistence contract; the E2E
@@ -228,7 +335,7 @@ backend and cleanup succeeded; movie-service/backend failures are infrastructure
 
 - disc query;
 - scoped movie playback;
-- semantic stop wait with movie-ended observation;
+- semantic await with movie-ended observation;
 - immutable state save; and
 - routed one-frame advancement only if still required by a verified state-publication invariant.
 
@@ -238,7 +345,7 @@ Movie stop becomes scope unwind rather than a branch-sensitive opcode. DTM and o
 artifact references. Timeout derivation occurs before activation and is recorded in invocation
 provenance.
 
-**Parity evidence**
+**Parity checks**
 
 - current TAS payload derivation tests and DB workflow adapter tests;
 - `SavorE2E/TasMovieRealWorkerScenario.cpp`;
@@ -246,7 +353,7 @@ provenance.
 - exact terminal state artifact is usable by the next invocation; and
 - wrong disc rejects before movie playback.
 
-**Deletion gate**
+**Legacy removal condition**
 
 `tasmovie.play` uses the typed module, the worker has no TAS payload switch, and no caller sends
 `PK_TasMovie`. `TasMoviePayload` may remain behind the SavorDb program-kind handler or a read-only
@@ -280,7 +387,7 @@ ever-growing program-local record returned inline.
 
 The loop remains ordinary IR control flow. `RECORD_TAS_INPUT_SAMPLE` does not become a core opcode.
 
-**Parity evidence**
+**Parity checks**
 
 - current payload/codec behavior;
 - first sample occurs before the first step;
@@ -289,7 +396,7 @@ The loop remains ordinary IR control flow. `RECORD_TAS_INPUT_SAMPLE` does not be
 - cancellation finalizes or aborts the artifact according to its declared publication policy and always
   stops playback.
 
-**Deletion gate**
+**Legacy removal condition**
 
 Direct diagnostic callers, if any, invoke the target module; `PK_TasInputStreamDetector`, its decoder,
 context keys, and `RECORD_TAS_INPUT_SAMPLE` handler are removed. Migration does not create a DB workflow
@@ -306,22 +413,22 @@ turns-exhausted, predicate failure, materialization failure, or execution failur
 
 **Typed input**
 
-`LegacyBattlePathRequest` contains initial input, typed `BattlePath`, predicate definitions, maximum turn
-count, and execution bounds. State is an explicit invocation artifact/policy.
+`LegacyBattlePathRequest` contains initial input, typed `BattlePath`, predicate-composition inputs,
+maximum turn count, and execution bounds. State is an explicit invocation artifact/policy.
 
 **Typed output and emissions**
 
-`LegacyBattlePathResult` contains typed battle outcome, terminal turn index, terminal stop, predicate
-observations, and optional final battle context. It emits per-turn observations only when declared by
-the module schema.
+`LegacyBattlePathResult` contains typed battle outcome, terminal turn index, terminal stop, typed
+condition observations and predicate compatibility summary, and optional final battle context. It emits
+per-turn observations only when declared by the module schema.
 
 **Required composition**
 
 - battle-context query;
 - legacy path-to-input pure compiler;
-- input segment execution;
-- semantic battle stop waits; and
-- predicate evaluation.
+- interaction-composed input execution;
+- semantic battle awaits and typed observations; and
+- shared predicate composition and typed condition observations.
 
 **Disposition**
 
@@ -330,17 +437,17 @@ external/direct caller that still depends on kind `3`, but new workflows use Bat
 Single Turn. It may import the same reusable battle actions; it receives no legacy executor or special
 opcode privileges.
 
-**Parity evidence**
+**Parity checks**
 
 - current payload version and `BattlePath` codec;
 - all existing outcome branches;
-- predicate abort semantics;
+- predicate qualification, baseline, comparison, progress, passed/total, and abort semantics;
 - initial-input and turn-limit behavior; and
 - exact action/stop trace comparison against the legacy VM.
 
-**Deletion gate**
+**Legacy removal condition**
 
-After repository and known external caller audit shows no production consumer, remove the deprecated
+After repository references and known external consumers show no production use, remove the deprecated
 module, `PK_BattleTurnRunner`, `BattleRunnerScript`, and its context
 surface. If a real consumer remains, retain the module—not the old VM—until that consumer migrates.
 
@@ -367,9 +474,9 @@ contract is the typed schema.
 
 **Required composition**
 
-- query current semantic stop;
-- wait for `TurnInputs` if necessary; and
-- typed `soa.battle` context capture.
+- acquire an explicit current-point receipt;
+- await `TurnInputs` if necessary; and
+- acquire typed `soa.battle` context through a registered coherent observation.
 
 **Workflow boundary**
 
@@ -378,7 +485,7 @@ output and creates or resolves waves through current SavorDb commands and record
 Turn program-kind adapter constructs `soa.battle.single_turn::execute` only when the existing child job
 is activated.
 
-**Parity evidence**
+**Parity checks**
 
 - immediate-capture and run-to-capture paths;
 - exact current `BattleContext` codec output;
@@ -386,7 +493,7 @@ is activated.
 - existing DB tests for direct-wave and bootstrap-wave fan-out; and
 - restart/idempotency around transition publication.
 
-**Deletion gate**
+**Legacy removal condition**
 
 Both `battle.context_probe` and `battle_chain` bootstrap construct the target invocation at the runtime
 boundary; their existing transition handlers consume adapter-projected output; and
@@ -423,24 +530,26 @@ memory-gate observation is emitted with stable sequence identity.
 
 - pure command-plan compiler;
 - pure adaptive reducer derived from provider `Start/Advance`;
-- shared input-segment action with router wake subscriptions, memory baselines/change waits, and input
-  poll acknowledgement;
-- battle-context query; and
+- shared interaction composition with semantic gate alternatives, request/release acknowledgements,
+  memory baseline/change observations, and explicit reached-instruction policy;
+- battle-context observation/query; and
 - routed observation-tail execution.
 
 No single “run battle macro probe” native action is allowed. The program owns visible branching in IR;
 the reducer decides only the next bounded segment from typed state and the preceding completion.
 
-**Parity evidence**
+**Parity checks**
 
 - all compiler/planning-context tests in `test_battle_macro_probe.cpp`;
 - provider permission and unexpected-stop behavior;
-- fake-attack pattern and memory-gate ordering;
+- fake-attack pattern, baseline-before-advance, one-neutral-frame polling, and memory-gate ordering;
+- input-before-step, exact point/PC/sequence/epoch matching, held-through-hit, request-receipt-before-neutral,
+  and fresh-neutral release-witness behavior;
 - `InputMacroRuntime` cleanup-once cases;
 - direct-worker SavorE2E scenarios; and
 - cancellation at every segment boundary leaves neutral acknowledged input and no subscriptions.
 
-**Deletion gate**
+**Legacy removal condition**
 
 Direct SavorE2E activation uses `ProgramInvocation`; all provider behavior is reachable through the common
 reducer/action path; `PK_BattleMacroProbe`, `MATERIALIZE_BATTLE_MACRO_STEPS`,
@@ -472,7 +581,7 @@ Battle Single Turn is the most demanding current migration. It:
 - current turn index and maximum turn;
 - optional initial input;
 - typed `TurnPlan`;
-- verified predicate set;
+- existing predicate set translated into reusable predicate-composition inputs;
 - fake-attack budget/accounting;
 - optional starting RNG override;
 - bounded same-attempt retry policy, fixed to at most one retry for parity;
@@ -491,7 +600,7 @@ program inputs.
 - starting/original/requested/applied/ending RNG values where applicable;
 - turn input/output indices and retry count;
 - terminal semantic stop;
-- predicate and macro outcomes;
+- typed condition observations, aggregate predicate compatibility outcome, and macro outcomes;
 - optional terminal `BattleContext`;
 - optional successor `StateArtifact`; and
 - action, input-receipt, mutation, capture, and branch trace references.
@@ -500,8 +609,11 @@ program inputs.
 
 - semantic battle waits and routed stepping;
 - checked RNG read and checked scoped write with readback receipt;
-- the same command compiler/reducer/input-segment composition used by Macro Probe;
-- predicate qualification and evaluation;
+- the same command compiler/reducer/interaction composition used by Macro Probe;
+- shared semantic observation for exact stop receipts, ordered witness acquisition, baselines, and context
+  queries;
+- shared predicate composition over those observation results, including pure evaluation,
+  and declared fail-fast/progress policy;
 - scoped capture attachment;
 - immutable state save; and
 - explicit baseline restore for the one bounded local retry, which advances `StateEpoch`.
@@ -517,20 +629,22 @@ another turn. Existing deterministic reduction selects best candidates, creates 
 records, and appends the current dynamic steps. The program-kind adapter constructs the exact runtime
 invocation when each existing job is activated.
 
-**Parity evidence**
+**Parity checks**
 
 - Battle Turn payload and program-shape tests;
 - RNG override original/requested/applied evidence;
 - first-turn and later-turn prelude behavior;
 - macro retry and retry-exhaustion paths;
 - next-turn, victory, defeat, turn-limit, predicate, materialization, and execution outcomes;
+- predicate trigger, baseline, comparison, unavailable-evidence, abort, passed/total, and progress
+  behavior;
 - capture memory-watchpoint behavior;
 - `SavorE2E/BattleSingleTurnScenario.cpp`;
 - DB survivor selection and multi-wave dynamic-step tests; and
 - differential action/branch traces for the existing three first-turn checkpoint corpus where
   applicable.
 
-**Deletion gate**
+**Legacy removal condition**
 
 All `battle.single_turn` jobs use the target module and typed runtime result; the result handler projects
 that result into the existing wave operations; durable wave spawning remains idempotent after restart;
@@ -560,12 +674,12 @@ may remain an artifact codec; it is not the program's internal result type.
 **Required composition**
 
 - pure completion provider/reducer;
-- shared input-segment action;
+- shared interaction composition;
 - typed battle reward/context queries;
 - immutable manifest publication; and
 - immutable state save.
 
-**Parity evidence**
+**Parity checks**
 
 - BCMB round trip and expected-view derivation;
 - pre/post capture and reward-phase validation;
@@ -574,7 +688,7 @@ may remain an artifact codec; it is not the program's internal result type.
 - current DB aggregate/result identity checks; and
 - cleanup/cancellation between every provider segment.
 
-**Deletion gate**
+**Legacy removal condition**
 
 The `battle.completion` program-kind adapter translates existing inputs to the typed runtime contract and
 projects its manifest/state outputs into the current downstream representation. Kind `9`, completion
@@ -604,12 +718,12 @@ action traces, mismatch and invariant flags, diagnostic, terminal stop, report a
 **Required composition**
 
 - pure results-screen provider/reducer;
-- shared input-segment action;
+- shared interaction composition;
 - battle results/lifecycle queries;
 - immutable report publication; and
 - immutable state save.
 
-**Parity evidence**
+**Parity checks**
 
 - BERB round trip and payload policy tests;
 - source/manifest qualification;
@@ -620,7 +734,7 @@ action traces, mismatch and invariant flags, diagnostic, terminal stop, report a
 - `SavorE2E/BattleEndResultsScenario.cpp`; and
 - DB end-workflow idempotency and artifact-lineage tests.
 
-**Deletion gate**
+**Legacy removal condition**
 
 The split `battle.results_screen` program-kind adapter uses the target module and translates typed
 report/state artifacts into the existing downstream representation. Kind `8`, its compatibility alias,
@@ -659,12 +773,12 @@ program-kind adapter projects it into the existing workflow and artifact represe
 **Required composition**
 
 - scoped neutral input with observed release;
-- current-stop query and semantic navigation stop wait;
-- typed `soa.navigation` context capture;
+- current-point receipt and semantic navigation await;
+- typed registered `soa.navigation` context observation;
 - NCTX artifact writer; and
 - immutable state save.
 
-**Parity evidence**
+**Parity checks**
 
 - capture extractor and NCTX codec tests;
 - payload validation and neutral-input tests;
@@ -679,7 +793,7 @@ The observed pair
 module must reproduce a semantically equivalent typed context and matching-state relationship; the exact
 existing files remain immutable inputs/evidence and are not overwritten.
 
-**Deletion gate**
+**Legacy removal condition**
 
 The `navigation.context_probe` handler constructs the target module invocation, projects its result into
 the existing `.nctx` and state-artifact representation, and keeps current consumers compatible. No
@@ -687,7 +801,7 @@ worker-side caller uses kind `10`, Navigation Context context keys, `GET_NAVIGAT
 `ProgramRegistry` branches; the persisted payload codec may remain behind the handler, and the Survey
 handoff below passes.
 
-## Input macro consolidation
+## Input macro migration through interaction composition
 
 The current providers must migrate once, not independently inside each battle phase:
 
@@ -695,36 +809,40 @@ The current providers must migrate once, not independently inside each battle ph
 2. Translate `Start` into the reducer's initial transition and `Advance` into a transition over one
    completed segment result.
 3. Represent a provider decision as one of:
-   - request one bounded input/execution/memory effect;
+   - select one verifier-known `InteractionSegmentDefinition`;
    - return completed;
    - return typed domain failure.
 4. Store the pending continuation in `ProgramInstance`.
-5. Execute provider plans through the same registered action handlers and `ExecutionEngine` used by
-   ordinary program operations.
-6. Acquire input, router, watchpoint, and capture resources through the invocation scope stack.
-7. Preserve the cleanup-once behavioral tests, but make the common scope unwinder the mechanism.
-8. Remove `IInputMacroHost`, `IInputMacroDriverHost` physical-service access, VM private inheritance,
+5. Lower each segment through the shared interaction and semantic-observation composers into the same
+   registered action handlers and `ExecutionEngine` used by ordinary program operations.
+6. Preserve input publication/epoch before source-stop step-off, exact completion identity,
+   held-through-hit behavior, request and release receipts, baseline/change ordering, and separately
+   witnessed neutral release.
+7. Acquire one interaction-wide input lease and nested router, observation, watchpoint, and capture
+   resources through the invocation scope stack.
+8. Preserve the cleanup-once behavioral tests, but make the common scope unwinder the mechanism.
+9. Remove `IInputMacroHost`, `IInputMacroDriverHost` physical-service access, VM private inheritance,
    local exclusive-session state, and `InputMacroRuntime` as a scheduler.
 
 The reusable battle command, completion, and results reducers may remain native C++ because they perform
 complex game-specific decisions. They remain pure: typed state plus typed completion in; next requested
 effect/events/completion out.
 
-## Ordered migration and dependency gates
+## Migration dependencies
 
-| Order | Family | Gate proved before moving on |
+| Default order | Family | Prerequisites |
 |---|---|---|
 | 1 | SeedProbe | Core IR, typed invocation/result, stop wait, input scope, memory read, state save, existing SavorDb handler parity |
 | 2 | Navigation Context | Navigation capability pack, qualified capture, immutable NCTX/state pair, and artifact lineage needed by Survey |
 | 3 | TAS playback and detector | Movie scope, routed step, streamed/bounded artifacts, Boot policy |
 | 4 | Battle Context | Typed capability-pack query and existing workflow fan-out after handler projection |
-| 5 | Battle Macro Probe | Common adaptive reducer/action continuation and input acknowledgement |
-| 6 | Battle Single Turn | Mutation receipt, capture, local restore/epoch, predicates, complex result, and parity with existing durable turn waves |
+| 5 | Battle Macro Probe | Shared semantic-observation and interaction composition, adaptive reducer transitions, exact temporal ordering, and request/release acknowledgement |
+| 6 | Battle Single Turn | Mutation receipt, unchanged capture-profile semantics, local restore/epoch, shared predicate and observation composition, complex result, and parity with existing durable turn waves |
 | 7 | Battle Completion and Results Screen | Multiple typed artifacts, manifest/report invariants, shared reducer infrastructure |
-| 8 | Legacy battle path | Final caller audit and deprecated-module parity before old interpreter deletion |
+| 8 | Legacy battle path | Repository reference check, known external consumer check, and deprecated-module parity before old interpreter deletion |
 
-The cutover plan may overlap implementation work where dependencies permit, but it may not reverse a
-gate. No net-new phase behavior lands on the legacy VM once the translator exists.
+Use this as the default dependency order. Work may overlap or move earlier when its listed prerequisites
+are satisfied. No net-new phase behavior lands on the legacy VM once the translator exists.
 
 ## Interfaces and ownership affected
 
@@ -734,8 +852,13 @@ Migration changes:
 - program selection from `ProgramRegistry` switches to `ProgramDefinitionStore`;
 - worker input from decoded existing job/domain data to typed runtime values;
 - fixed builders from runtime definitions to compiler inputs or direct module builders;
+- current stop/address/query/baseline constructs to shared semantic-observation composition before module
+  verification;
+- current predicate records to shared in-memory predicate composition before module verification;
 - VM host calls to registered actions over session services;
-- input macro providers to pure reducers;
+- input macro providers to pure reducers plus verifier-known interaction segments;
+- existing `savor.capture.profile/1` artifacts to passive `CaptureService` without representation or
+  semantic conversion;
 - program-kind result handlers project `ProgramResult` through existing result/domain operations; and
 - exact module/dependency/state/runtime validation occurs at worker activation without changing current
   SavorDb affinity, queue, or claim representations.
@@ -753,6 +876,18 @@ Every parity test must classify legacy terminal behavior into:
   no-progress, unexpected qualified stop, or invalid capture; and
 - **cleanup/session status:** whether all acquired resources were released/restored and the session is
   reusable.
+
+For predicates, `Unsatisfied` follows the check's explicit record/branch/domain/fail/accumulate policy.
+Failure to obtain or evaluate required evidence is not rewritten as false. A record-only false predicate
+is successful program progress; a required false predicate may return a clean predicate-rejection domain
+outcome.
+
+For observations, optional `Unavailable` is not false or zero, required missing evidence is a structured
+failure, and a stale receipt/baseline is rejected after `StateEpoch` replacement. For interactions,
+timeout, unexpected point, unacknowledged request or release, unsatisfied check, infrastructure failure,
+cancellation, and cleanup failure remain distinct. Normal and abnormal unwind attempt neutralization,
+any required release witness, subscription release, and input-lease release exactly once; mandatory
+cleanup failure taints the session.
 
 Legacy code sometimes derives `PSResult::ok` solely from `DW_RUN_OUTCOME_CODE`. The migration must not
 preserve that collapse. A domain failure may return a clean successful execution envelope, while failed
@@ -779,10 +914,12 @@ into `ProgramInstance`.
 
 Portable domain codecs such as NCTX, BCMB, and BERB may remain because they are artifact formats.
 Program-specific job payload codecs and `PSContext` are not retained as the permanent runtime ABI.
+Existing persisted macro, predicate, address-program, and capture-profile representations remain
+unchanged; adapters translate or consume them in memory.
 
-## Acceptance criteria
+## Completion checks
 
-### Global acceptance and deletion criteria
+### Current-phase migration
 
 The current-phase migration is complete only when:
 
@@ -793,15 +930,27 @@ The current-phase migration is complete only when:
 - current workflow restart, idempotency, fan-out, survivor selection, and artifact lineage still pass;
 - no SavorDb schema migration, stored-representation change, database-service/queue/claim/workflow
   interface change, or artifact-storage-interface change is introduced;
+- current predicate records and result fields remain compatible through in-memory composition and
+  existing result projection;
+- current stop/address/query/baseline behavior lowers through semantic-observation composition with
+  equivalent point, ordering, availability, and epoch semantics;
+- current input macros lower through interaction composition with equivalent input-before-step,
+  held-through-hit, acknowledgement, memory-wait, and cleanup behavior;
+- existing `savor.capture.profile/1` parsing, sampling, control-observation, window/recorder, progress, and
+  artifact behavior remains compatible behind passive `CaptureService`;
 - cancellation/fault injection proves complete unwind for every resource type;
 - `SavorWorker` has no `ProgramKind` program-selection or payload-decoder switch;
 - `PhaseScriptVM`, `PSContext` worker execution, domain opcodes, and `InputMacroRuntime` scheduler are
   deleted after the bounded differential window;
+- no predicate opcode, executor, runtime service, direct guest access, or predicate-specific persistence
+  remains after lowering;
+- no observation or interaction executor, scheduler, query VM, opcode family, direct Dolphin access, or
+  hidden controller remains after lowering;
 - no production dual activation path or `PK_UserScript` exists; and
 - adding the next phase from existing capabilities changes only a module definition, runtime type
   schemas, and program-kind/runtime integration implementation through existing SavorDb contracts.
 
-### Navmesh Survey handoff
+### Navmesh Survey prerequisites
 
 Navmesh Survey may start as the first net-new program only after:
 
@@ -810,7 +959,7 @@ Navmesh Survey may start as the first net-new program only after:
 3. checked `u8`, masked data write, executable patch, teleport/settle, input, and state actions exist with
    scoped receipts;
 4. any two-wave workflow fan-out and deterministic reduction use existing SavorDb orchestration
-   contracts, or are planned as separate workflow work if those contracts are insufficient; and
+   contracts; if those contracts are insufficient, that continuation remains outside this refactor; and
 5. no Survey code is added to the legacy opcode table, `ProgramRegistry`, or a native runner.
 
 ## Deferred work
@@ -820,8 +969,9 @@ The migration does not decide:
 - future authored-program syntax or UI;
 - final worker-wire encoding;
 - additional legacy external callers not visible in the repository;
-- whether the deprecated legacy battle-path module is retained after that caller audit;
+- whether the deprecated legacy battle-path module is retained after the consumer check;
 - new game behavior beyond current parity;
+- any generalized capture-plan authoring language or replacement for `savor.capture.profile/1`;
 - generalized trigger/eventhook handling;
 - collision anomaly scoring;
 - overworld traversal rules; or
@@ -862,5 +1012,3 @@ The migration does not decide:
 - `SavorTests/test_navigation_context_framework.cpp`
 - `SavorTests/test_navigation_context_db.cpp`
 - `SavorTests/test_savordb_fixture_sqlite.cpp`
-
-Claim-level evidence and conflict disposition are indexed in `12-source-evidence-map.md`.

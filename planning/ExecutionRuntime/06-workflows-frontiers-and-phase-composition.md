@@ -1,13 +1,11 @@
 # 06 - Workflow Boundary and Phase Composition
 
-## Status and authority
+## Scope
 
-**Status:** Authoritative ownership and integration boundary for the Execution Runtime refactor.
-
-This document explains how bounded worker programs meet the existing SavorDb workflow system. It does
-not define, schedule, or authorize a SavorDb redesign. Current repository code defines the persisted
-workflow, queue, claim, artifact, and domain-storage contracts this refactor must preserve. Separate DB
-migration planning sets are orientation for their own projects, not requirements for this refactor.
+This document records how bounded worker programs meet the existing SavorDb workflow system. It does not
+define or schedule a SavorDb redesign. Current repository code defines the persisted workflow, queue,
+claim, artifact, and domain-storage contracts this refactor must preserve. Separate DB migration
+planning sets describe other work and are not requirements for this refactor.
 
 ## Purpose and non-goals
 
@@ -70,7 +68,7 @@ Completed, Failed, and Canceled records remain in the shared database. This is a
 a coordinator filter or persistence change. `battle_macro_probe` remains direct-worker-only and is not
 part of the production DB descriptor catalog.
 
-## Locked target decisions
+## Core integration constraints
 
 ### Fixed persistence boundary
 
@@ -111,14 +109,37 @@ This is an implementation change inside the existing integration seam. It does n
 `ProgramKindDescriptor` or changing its persistence, workflow, database-service, queue, or claim
 interfaces.
 
+Existing battle predicate records and payload fields remain compatibility inputs. The program-kind
+handler translates them in memory into predicate-composition inputs; the shared library lowers each
+`Check` before module verification, and the resulting module hash covers the generated IR and exact
+dependencies. Completion adapters map typed condition summaries into the existing battle result
+representation.
+
+Predicate composition is worker-program composition, not workflow composition. SavorDb does not store
+lowered predicate IR, router subscriptions, `ProgramInstance`, or `ConditionObservation` records as part
+of this refactor.
+
+Existing macro plans/providers and address-program-bearing payloads are also compatibility inputs. The
+program-kind adapter translates them in memory into interaction and semantic-observation composition
+inputs; those libraries lower finite segments, pure reducers, awaits, typed observations, checks, and
+emissions before module verification. SavorDb does not store the lowered IR, semantic-point receipts,
+observation baselines, interaction state, input receipts, or composition definitions.
+
+Existing `savor.capture.profile/1` documents remain unchanged opaque inputs. Program-kind adapters pass
+the current profile/configuration or artifact reference into runtime activation as they do today;
+`CaptureService` preserves the profile's parser and behavior rather than translating its internals into
+program IR. It observes routed hits passively, while `StopPointRouter` and `ExecutionEngine` own
+wake/control authority. No profile field, storage representation, or artifact interface is added or
+migrated.
+
 ### Runtime identity is not stored identity
 
 Every worker activation uses exact runtime module identity, entrypoint, dependency closure, runtime
 profile, state policy, and typed input. Those values are constructed at dispatch from existing records
 plus compiled or packaged runtime configuration. This refactor does not add them as SavorDb fields.
 
-Existing workflow/job identity, idempotency, attempt, affinity, and lineage representations remain
-authoritative for durable behavior.
+Existing workflow/job identity, idempotency, attempt, affinity, and lineage representations continue to
+define durable behavior.
 
 ### Bounded invocation
 
@@ -151,9 +172,10 @@ Arbitrary-depth DFS/BFS/best-first frontier storage, node/edge/lease records, pe
 typed workflow policies, new barrier models, and new workflow transaction shapes are not part of the
 Execution Runtime refactor.
 
-Future navigation, collision, cutscene, or overworld work may require a separately planned and approved
-SavorDb project. The Execution Runtime requirement is only that each worker invocation remain bounded and
-not own durable topology. A future orchestration project must not require another worker executor.
+Future navigation, collision, cutscene, or overworld work may require SavorDb changes, but those changes
+remain outside this refactor. The Execution Runtime requirement is only that each worker invocation
+remain bounded and not own durable topology. Follow-on orchestration work must not require another worker
+executor.
 
 ### Phase switching
 
@@ -167,6 +189,11 @@ binding representation is introduced here.
 | Surface | Refactor treatment |
 |---|---|
 | SavorDb program-kind handler implementations | May translate existing records to `ProgramInvocation` and `ProgramResult` back to existing writes |
+| Predicate composition library | Pure module-building facility with no SavorDb, workflow, Dolphin, or session-service access |
+| Existing battle predicate storage and codecs | Unchanged; translated in memory at the program-kind boundary |
+| Semantic-observation and interaction composition libraries | Pure module-building facilities with no SavorDb, workflow, Dolphin, filesystem, or session-service access |
+| Existing macro and address-program representations | Unchanged; translated in memory at the program-kind boundary |
+| Existing `savor.capture.profile/1` inputs | Unchanged and consumed opaquely by passive `CaptureService`; no replacement capture language |
 | Adjacent worker integration code | May carry the new worker-facing protocol and runtime types |
 | `ProgramRuntime` | Verifies and executes one invocation; has no SavorDb or workflow mutation access |
 | SavorDb database-service interfaces | Unchanged |
@@ -181,7 +208,7 @@ binding representation is introduced here.
 - Cleanup/session status is used immediately to retire or rebuild a dirty worker session; it does not
   require a new SavorDb column.
 - Existing SavorDb retry, idempotency, terminal advancement, outbox, and recovery behavior remains
-  authoritative.
+  unchanged.
 - A failed worker never commits workflow state directly. Only existing SavorDb handlers and commands can
   advance durable work.
 - Existing queued jobs remain consumable through the compatibility translation in program-kind handlers;
@@ -198,15 +225,22 @@ Migration must:
 3. preserve all current workflow lifecycle, outbox, recovery, fan-out, and transition tests;
 4. keep current persisted payload/result codecs where handlers need them to read or write the existing
    representation, without linking those codecs to the legacy worker interpreter;
-5. avoid storing `ProgramInstance`, canonical runtime IR, dependency closures, or new runtime-only status
-   fields in SavorDb; and
-6. treat any generalized workflow/frontier work as a separate project.
+5. translate current predicate records through the shared in-memory composition path without changing
+   their storage or interfaces;
+6. translate current macro and address-program inputs through interaction and semantic-observation
+   composition without changing their storage or interfaces;
+7. pass existing capture profiles to passive `CaptureService` unchanged and preserve their current
+   profile-visible behavior;
+8. avoid storing `ProgramInstance`, canonical runtime IR, lowered predicate/observation/interaction
+   definitions, receipts, baselines, dependency closures, or new runtime-only status fields in SavorDb;
+   and
+9. keep generalized workflow/frontier work outside this refactor.
 
 Navmesh Survey may use current workflow and dynamic-step facilities where they are sufficient. If its
 desired topology requires new persistence or workflow interfaces, that integration is not delivered by
-this refactor and must be planned separately.
+this refactor.
 
-## Acceptance criteria
+## Boundary checks
 
 - No SavorDb migration or database-schema change is added.
 - No SavorDb database-service, queue, claim, affinity, workflow-persistence, transaction, or
@@ -219,12 +253,19 @@ this refactor and must be planned separately.
 - Current workflow restart, retry, idempotency, outbox, dynamic-step, fan-out, survivor-selection, and
   transition tests continue to pass.
 - `ProgramRuntime`, actions, reducers, and capability packs cannot access workflow persistence.
+- Adding predicates to another program changes its module composition, runtime schemas, and existing
+  adapter translation only; it adds no predicate-specific persistence, bindings, queues, or claims.
+- Adding semantic observations or interactions changes only module composition, exact runtime
+  dependencies, and existing adapter translation; it adds no point, observation, baseline, interaction,
+  input-receipt, binding, queue, or claim persistence.
+- Existing capture profiles retain their identity and representation behind passive `CaptureService`;
+  the refactor adds no capture-profile migration or replacement capture-plan storage.
 - Adding a phase that uses existing runtime capabilities changes only its runtime module/type definitions
   and program-kind integration implementation; it does not change SavorDb storage or interfaces.
 
-## Separate future work
+## Out-of-scope future work
 
-The following are explicitly outside this refactor and require separate planning and approval:
+The following are outside this refactor and do not gate its completion:
 
 - generalized persisted frontier specifications, nodes, edges, leases, strategies, and deduplication;
 - new typed workflow-binding or phase-edge persistence;

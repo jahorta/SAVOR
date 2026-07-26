@@ -1,19 +1,17 @@
 # Invocation, Result, Versioning, and Artifacts
 
-## Status and authority
+## Scope
 
-**Status:** Authoritative logical contract for the target Execution Runtime.
-
-This document fixes the meanings and required fields of invocation, result, version, and artifact
-contracts. Implementation slices may choose concrete C++ types and worker transport encoding, but may
-not remove or conflate these concepts. SavorDb storage and normalization are fixed inputs, not
-implementation choices in this refactor.
+This document defines the logical invocation, result, version, and artifact contracts used by the target
+Execution Runtime. Implementation slices may choose concrete C++ types and worker transport encoding,
+but must preserve these concepts and their separate meanings. SavorDb storage and normalization are
+fixed inputs, not implementation choices in this refactor.
 
 ## Purpose and non-goals
 
 The contract must support built-in programs, future authored programs, exact replay, phase switching,
-multi-artifact results, bounded expansions that a separately approved state-based frontier could
-orchestrate, and worker caching without using `ProgramKind` as execution identity.
+multi-artifact results, bounded expansions that a future state-based frontier could orchestrate, and
+worker caching without using `ProgramKind` as execution identity.
 
 This document does not define:
 
@@ -41,7 +39,7 @@ The current transport and worker path are narrower than the target:
 
 These are current facts, not contracts to preserve.
 
-## Locked target decisions
+## Core runtime contracts
 
 ### ProgramModule identity
 
@@ -63,6 +61,10 @@ An executable module is immutable. Its identity contains:
 
 The canonical hash excludes deployment location and cache metadata. Two modules with the same hash must
 have the same executable definition and declared dependency set.
+
+When predicate composition generates module content, the lowered IR, imports, schemas, and emissions are
+ordinary hashed module content. Source maps should retain the predicate definition and `Check` use site
+for diagnostics, but those source identities do not create a second runtime dependency mechanism.
 
 ### ProgramInvocation
 
@@ -143,6 +145,23 @@ Likewise, a desirable domain outcome cannot make a tainted session reusable.
 Partial records and artifacts are marked incomplete. A downstream binding may consume them only if its
 declared input schema explicitly accepts incomplete material.
 
+### Condition observations
+
+Reusable predicates are authored through the composition library in document 03 and lower before
+activation into canonical IR, exact action imports, scoped router operations, and declared emissions.
+They do not add another result-status dimension or a predicate-specific runtime channel.
+
+`ConditionObservation` is an ordinary typed emitted record. Its declared schema identifies the predicate
+and evaluation sequence, records the current `StateEpoch`, carries the typed witness values needed by
+that condition, and reports `Satisfied`, `Unsatisfied`, `NotApplicable`, or `Unavailable`.
+`Unavailable` is not equivalent to `Unsatisfied`: failure to acquire required evidence follows the
+action/infrastructure-failure contract unless the check explicitly defines absence as a domain
+condition.
+
+Emission and reaction are use-site policies. The same pure predicate may be used to branch, return a
+clean domain rejection, explicitly fail, record progress, or accumulate a domain result. The predicate
+definition itself performs no effects and does not decide the program outcome.
+
 ### ArtifactRef and immutable artifacts
 
 Every artifact reference contains:
@@ -209,6 +228,10 @@ Matching these inputs permits comparison of action and branch traces. It does no
 wall-clock durations. Any tolerated backend nondeterminism must be declared by the affected actions and
 reported in provenance.
 
+The canonical lowered module is the replay authority for predicate composition. Stable predicate/check
+identities remain in source maps, traces, and declared condition observations so a replay can explain
+which evidence and decision produced a branch or emission.
+
 ## Interfaces and ownership affected
 
 ### Worker protocol
@@ -241,6 +264,12 @@ adjacent adapter may construct `ProgramInvocation` from existing job/domain data
 require splitting or changing SavorDb descriptor, workflow, database-service, queue, claim, or
 persistence interfaces. Workflow code does not decode worker-private program locals.
 
+Existing persisted battle predicate definitions are decoded through current SavorDb interfaces and
+supplied to in-memory predicate composition before module verification. Completion adapters project
+condition summaries, passed/total compatibility fields, and predicate-rejection outcomes through
+existing result operations. Neither `ConditionObservation` nor the composition source requires a new
+stored representation.
+
 ## Failure and cleanup behavior
 
 - Verification failure produces `Rejected`; the entrypoint never runs.
@@ -266,23 +295,27 @@ result-publication, and recovery mechanisms remain unchanged.
   typed runtime inputs and project typed runtime results back through existing operations.
 - Current builders may compile through a temporary legacy translator, but the resulting module receives
   the same identity and verification treatment as every other module.
+- Predicate definitions supplied by existing adapters lower through the same module builder and are
+  covered by the resulting canonical module identity; their persisted representation remains unchanged.
 - Worker-side result mapping migrates from a single `PSContext` blob to declared outputs, emissions,
   artifacts, and provenance; the program-kind adapter then writes the existing SavorDb representation.
 - State paths or references are adapted in memory into explicit runtime state policy without changing
   their persisted representation.
-- Persisting DB-authored modules is a separate future project. Any later frontend must use the identical
+- Persisting DB-authored modules is outside this refactor. Any later frontend must use the identical
   activation/invocation path.
 
-## Acceptance criteria
+## Runtime contract checks
 
 - A worker rejects a module with one mismatched imported action signature without being affected by an
   unrelated registry addition.
 - Exact module hash, entrypoint, inputs, state artifact, dependency closure, and runtime profile are
-  available in the runtime result envelope; this criterion does not require new SavorDb fields.
+  available in the runtime result envelope; this check does not require new SavorDb fields.
 - A result can represent infrastructure completion, a locked-domain outcome, and clean cleanup
   simultaneously.
 - A cleanup failure produces a tainted session even when the domain objective was achieved.
 - One invocation can emit many observations and artifacts without placing them in one opaque context blob.
+- Condition observations are deterministic typed emissions, and unavailable required evidence cannot
+  silently become an unsatisfied predicate.
 - Restoring state invalidates an epoch-bound handle and the executor prevents its later use.
 - Built-in and authored programs have one module verification and invocation path.
 - `ProgramKind` is absent from executor dispatch and exact replay identity.

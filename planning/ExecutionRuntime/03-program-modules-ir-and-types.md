@@ -1,16 +1,11 @@
 # Program Modules, IR, and Types
 
-## Status and authority
+## Scope
 
-**Status:** Authoritative logical program-model contract for the target Execution Runtime.
-
-This document fixes the meanings of `ProgramModule`, entrypoint, function, `ProgramInstance`, canonical
-IR, type/schema dependency, verification, and compilation frontend. It was drafted against SAVOR commit
-`b584920ffad8dbe770f343e532d7f7386c82fadf` on 2026-07-25.
-
-Current `PhaseScript` code remains authoritative for current behavior. This document is authoritative
-for its replacement. Concrete C++ declarations and serialized module bytes are intentionally not
-frozen.
+This document describes the target meanings of `ProgramModule`, entrypoint, function,
+`ProgramInstance`, canonical IR, type/schema dependency, verification, and compilation frontend.
+Concrete C++ declarations and serialized module bytes may adapt during implementation; one verified
+typed model and one executor remain the required architecture.
 
 ## Purpose and non-goals
 
@@ -27,6 +22,8 @@ This document does not:
 - define the authoring syntax or editor;
 - change SavorDb SQL/schema, migrations, stored representations, database-service interfaces, queues,
   claims, workflow persistence, transaction boundaries, or artifact-storage interfaces;
+- create separate observation, interaction, predicate, or capture-language projects during this
+  refactor; the composition libraries use the existing typed module-builder surface;
 - define bytecode packing, canonical hash algorithm, or wire framing;
 - permit a program to schedule workers or own a durable search frontier;
 - define action service implementations, which are governed by document 04; or
@@ -57,7 +54,7 @@ The current system has several useful seeds but does not provide a general modul
 The existing program builders prove that declarative control flow is useful. The current opcode and
 context shapes are migration inputs, not the target ABI.
 
-## Locked target decisions
+## Core runtime model
 
 ### One executable definition
 
@@ -202,6 +199,158 @@ The following are not core instructions:
 
 Those behaviors are compositions of generic IR, imported actions, pure reducers, and reusable
 subprograms. Adding one cannot require a new `ProgramExecutor` switch case.
+
+### Reusable semantic-observation composition
+
+The semantic-observation composition library is a typed module-builder/frontend library for saying
+"wait for this logical game point and acquire this evidence there." It lowers completely before module
+verification. It is not an `ObservationRuntime`, query VM, action family, persistence system, or second
+execution mechanism.
+
+The reusable authoring model contains:
+
+- `SemanticPointDefinition`: an exact capability-pack-owned logical point mapped by the pack to a PC,
+  memory, or synthetic source. Programs import the logical identity and never manipulate its physical
+  breakpoint/watchpoint representation.
+- `SemanticAwaitDefinition`: one or more exact point alternatives, optional bounded hit-time
+  qualification/sample requirements, explicit current-point acceptance, deadline/stall/movie/cancel
+  policies, and rearm/current-instruction-suppression policy. It lowers to a scoped logical router
+  subscription and `runtime.execution.continue_until`.
+- `SemanticPointReceipt`: the matched logical point, physical hit evidence, stop sequence,
+  `StateEpoch`, and any declared hit-time samples. A receipt identifies one routed event; it does not
+  grant control authority.
+- `AddressExpression<T>`: a pure, bounded, typed address derivation from registered symbols,
+  compatibility-pinned addresses, checked dereferences/offsets, or receipt fields. Current address
+  expressions used by program/predicate logic may be translated through this boundary without making
+  their present syntax or encoding the new canonical IR. Address programs embedded in
+  `savor.capture.profile/1` remain opaque to `CaptureService` and are not translated here.
+- `ObservationDefinition<T>`: an exact typed query/read recipe, result schema, required capabilities,
+  consistency requirement, and permitted acquisition modes. A coherent multi-field domain observation
+  is one registered query rather than a collection of scalar reads falsely treated as atomic.
+- `ObservationUse<T>`: a use-site binding to a receipt or current paused point, required/optional
+  policy, one selected permitted acquisition mode, optional named-baseline behavior, and authoritative
+  emission versus telemetry policy.
+
+There are exactly two observation acquisition modes:
+
+1. `HitTimeSample` is a bounded, allocation-free sample executed synchronously by the router before
+   ordinary program handling. Only the router's restricted registered sample subset may be used.
+2. `PausedAtPoint` uses ordinary registered guest-read or game-query actions after the router/execution
+   result proves the requested pause and before the program explicitly advances again.
+
+Observing after a reached instruction is not a hidden third mode. The composing program explicitly
+awaits `runtime.execution.step_instructions` or `runtime.execution.step_frames` and then performs a new
+paused observation. Ordered observation uses lower in their declared order. Required missing evidence
+is a structured action/runtime failure; optional missing evidence is `Unavailable`, distinct from
+`false`, zero, or an ordinary domain-negative result.
+
+Named baselines are ordinary typed IR values. Each use declares `First` or `Latest` update policy and
+the exact comparison point. Translation of current battle predicates uses `Latest`: acquire and update
+the baseline before evaluating the predicate at that same hit. Receipts, observations, baselines,
+derived addresses, and guest-derived handles carry their originating `StateEpoch` and cannot be reused
+after state replacement.
+
+Lowering generates only exact imports, ordinary scoped subscriptions, execution and read/query action
+awaits, typed values, branches, and declared emissions. Its normalized IR, source mapping, schemas, and
+dependency closure participate in the module hash. The composition library cannot access Dolphin,
+session services, the filesystem, SavorDb, or mutable global state.
+
+### Reusable interaction composition
+
+The interaction composition library is a typed module-builder/frontend library for bounded static or
+adaptive input sequences. It uses semantic awaits and observations and lowers to ordinary IR
+subprograms. It does not introduce an `InteractionRuntime`, `InputMacroEngine`, input controller, whole
+macro action, scheduler, or new opcode family.
+
+An `InteractionDefinition<State, Output>` declares:
+
+- a stable source/diagnostic identity and immutable revision;
+- typed reducer state and completion output;
+- pure initialization and advancement reducers;
+- a finite verifier-known set of segment definitions;
+- hard instruction/action/emission/elapsed budgets; and
+- the typed records/artifacts it may emit.
+
+Each `InteractionSegmentDefinition` declares one bounded unit:
+
+- exact semantic-gate alternatives;
+- the requested held, pulse, neutral, or sequence input;
+- request and release guest-poll acknowledgement requirements;
+- source-stop step-off and reached-instruction execution policies;
+- ordered observations and checks at the permitted acquisition moments;
+- deadline, stall, movie-ended, cancellation, and current-instruction-suppression policies; and
+- the typed completion mapping returned to the reducer/statechart.
+
+`InteractionSegmentResult` contains the exact semantic-point receipt, requested-input and neutral-release
+receipts when applicable, ordered observations/check results, elapsed evidence, originating
+`StateEpoch`, and a distinct terminal status. Timeout, unexpected point, unacknowledged input,
+unsatisfied check, infrastructure failure, cancellation, and cleanup failure cannot collapse into one
+boolean.
+
+Static interactions lower to ordinary subprogram CFG. Adaptive interactions lower to a reusable IR
+statechart whose pure reducer consumes only typed state and the prior segment result. The reducer may
+select only a segment ID in the definition's verifier-known finite set, return completion, and request
+declared emissions; it cannot construct effects or subscriptions dynamically. The lowered program owns
+one lexical input lease for the complete interaction, nests segment subscriptions/observations beneath
+it, and uses the universal runtime cancellation and unwind path.
+
+The lowering must preserve the temporal contract in document 04, including input publication before
+stepping off a current stop, exact stop/sequence/epoch matching, the reached-instruction policy,
+request-receipt capture before neutralization, independently witnessed neutral release where required,
+and baseline-before-advance behavior. Existing `Start`/`Advance` drivers translate to pure
+initialize/transition reducers; their `Cancel` and private cleanup paths are replaced by ordinary
+runtime cancellation and structured unwind.
+
+### Reusable predicate composition
+
+The shared predicate composition library is a typed module-builder/frontend library. It is not a runtime
+service, executor, action family, durable catalog, or persistence system.
+
+A reusable `PredicateDefinition` contains:
+
+- a stable diagnostic/source identity;
+- typed witness inputs; and
+- a pure condition over those values.
+
+The definition contains no abort, progress, scoring, retry, waiting, resource, or persistence policy. It
+cannot access session services, Dolphin, the filesystem, SavorDb, the clock, or mutable global state. Its
+evaluation lowers to ordinary arithmetic, logic, comparisons, and control flow, an exact reusable IR
+subprogram, or an imported pure reducer.
+
+A `Check` is one use of a predicate definition. Each check separately declares:
+
+- its semantic evaluation point;
+- the exact `ObservationDefinition`/`ObservationUse` values and optional named baseline needed to
+  supply the witnesses;
+- whether each witness is required or optional;
+- a use policy such as branch, return a typed domain rejection, explicitly fail, emit an evaluation
+  record, or accumulate a result for later scoring; and
+- whether a declared typed `ConditionObservation` is emitted.
+
+Predicate lowering may produce only ordinary canonical constructs:
+
+- the canonical constructs produced by semantic-await/observation lowering;
+- pure IR or reducer calls for evaluation;
+- ordinary conditional branches, returns, or structured failures; and
+- declared typed emissions, with optional telemetry for live presentation.
+
+Each evaluation produces one of `Satisfied`, `Unsatisfied`, `NotApplicable`, or `Unavailable`.
+`Unsatisfied` is an ordinary typed result and becomes terminal only because the check's use policy says
+so. Failure to obtain required evidence is an action/runtime failure and must not silently become
+`Unsatisfied` or be ignored. Epoch-bound baselines and witness values cannot be reused after
+`StateEpoch` changes.
+
+The library lowers predicates before module verification. The verifier receives only canonical IR,
+normal imports, schemas, scopes, and emissions; it accepts no separate module-level predicate bytecode.
+This restriction does not reinterpret the opaque capture-profile filter/predicate bytecode owned by
+`CaptureService`. The executor has no predicate-specific instruction, registry, or dispatch path.
+Equivalent predicate-composed and hand-composed behavior should normalize to equivalent executable IR
+and dependencies.
+
+Predicates do not independently define timing, address resolution, baseline lifetime, or guest reads.
+They consume the typed results of the semantic-observation composition library. This keeps one
+authoritative acquisition contract for predicate checks, interaction progress, and ordinary module
+branching.
 
 ### Calls, loops, reducers, and boundedness
 
@@ -357,6 +506,19 @@ modules, revisions, and runtime type schemas come from compiled or packaged runt
 Persisting module source or canonical modules in SavorDb is separate future work and is not part of this
 refactor.
 
+The semantic-observation, interaction, and predicate composition libraries are shared by these
+frontends. Static definitions may lower during the ordinary build. Existing macro, non-capture
+address-expression, and battle-predicate records may be translated in memory by the runtime-facing
+program-kind adapter/module builder and lowered before the resulting module is verified. Normalized IR,
+exact dependencies, schemas, and source mapping participate in the module hash; the current SavorDb
+representations remain unchanged. Persisting composition-library source, normalized definitions, or
+reusable catalogs is outside this refactor.
+
+Existing `savor.capture.profile/1` inputs are not another compilation frontend. They remain opaque
+versioned capture configuration passed through `runtime.capture.attach` to `CaptureService`. Neither
+semantic-observation nor interaction composition interprets or lowers profile internals. A generalized
+capture-plan language is deferred.
+
 The legacy adapter may translate current `PhaseScript`, payload decoding, and result mapping into
 canonical modules for differential testing. It shall:
 
@@ -382,7 +544,10 @@ The target replaces these current public assumptions:
 | `PSContext` is inputs, locals, observations, and outputs | Each boundary has an explicit schema; frame values are typed |
 | `ProgramKind` selects builder and decoder | Exact module identity plus entrypoint selects behavior |
 | Domain operation adds an opcode | Domain operation adds/reuses a registered action or subprogram |
-| Macro provider owns a second adaptive runtime | Adaptive behavior is IR statechart plus pure reducer and ordinary actions |
+| Physical breakpoint/address operations define module intent | Capability-pack semantic points and typed observations lower to scoped router, execution, and query actions |
+| Macro provider owns a second adaptive runtime | Shared interaction composition lowers to an IR statechart, pure reducer, semantic observations, and ordinary actions |
+| VM predicate tables combine observation, evaluation, progress, scoring, and `AbortOnFail` | Shared predicate composition consumes typed observations and lowers pure conditions plus separate use policies into ordinary IR, branches, and emissions |
+| Capture-profile internals become candidate program syntax | `savor.capture.profile/1` remains opaque configuration owned by `CaptureService` |
 
 The exact logical invocation/result/artifact fields are defined in document 05. Existing SavorDb
 program-kind handlers perform workflow integration through existing contracts; document 06 describes
@@ -400,6 +565,8 @@ Program failures are classified before result assembly:
   allowed by its descriptor; otherwise the invocation fails and unwinds.
 - **Domain terminal:** an entrypoint returns a valid domain outcome such as locked, no successor, or no
   anomaly. This can be a clean completed invocation.
+- **Predicate evaluation:** `Unsatisfied` follows the check's explicit branch/domain/fail/record policy;
+  `Unavailable` remains distinct and follows the required-observation or action-failure contract.
 - **Cancellation/timeout:** ordinary flow does not resume; the pending action is cancelled and all
   scopes unwind.
 - **Cleanup failure:** diagnostics accumulate, remaining cleanup continues, and the result marks the
@@ -427,7 +594,7 @@ Migration should first compile representative existing modules such as `soa.seed
 current phases. Navmesh Survey is the first net-new module after current behavior has a stable universal
 execution path.
 
-## Acceptance criteria
+## Runtime model checks
 
 - One verifier accepts modules from current C++ builders, the temporary legacy adapter, and a synthetic
   authored frontend, producing the same normalized module for equivalent input.
@@ -442,6 +609,20 @@ execution path.
 - Cancellation at every instruction/action suspension point takes the same verified unwind path.
 - Current macro `Start`/`Advance` behavior can be represented as a typed reducer/statechart without a
   peer executor.
+- Equivalent semantic-await/observation composition and hand-authored canonical IR normalize to the
+  same imports, scopes, source-map meaning, and executable behavior.
+- Hit-time and paused observations remain distinct; post-instruction observation requires an explicit
+  step; required-unavailable evidence and an ordinary false/domain-negative value remain distinct.
+- Named `First` and `Latest` baselines update at their declared point and every receipt, observation,
+  address, and baseline is rejected after its originating `StateEpoch`.
+- Static and adaptive interactions lower to verifier-known subprogram CFG and reducer transitions
+  without a new opcode, action family, runtime, or dynamically constructed effect.
+- Interaction tests distinguish input request from guest-observed release and preserve input-before-step,
+  reached-instruction, exact point/sequence/epoch, baseline-before-advance, and common-unwind behavior.
+- One predicate definition can be used as record-only and fail-fast at different check sites without
+  changing its pure condition.
+- Required predicate evidence failure is distinguishable from an unsatisfied condition, and predicate
+  lowering introduces no opcode, executor, service, or runtime registry.
 - The current phase module IDs and entrypoints in document 07 compile without changes to the executor.
 - Future `soa.navigation.survey` exposes `establish_anchors` and `probe_geometry` through the same module
   model.
@@ -454,6 +635,8 @@ execution path.
 - Exact textual/binary IR syntax, canonical encoding, and hash algorithm.
 - Concrete C++ builder API and generated type wrappers.
 - Authored source language, parser, editor, debugger UI, publication workflow, and access control.
+- A generalized capture-plan authoring language or translation of `savor.capture.profile/1` into
+  program IR. Existing profile behavior remains behind `CaptureService` during this refactor.
 - Optimizer, constant folding, dead-code elimination, or JIT compilation; the initial executor may
   interpret verified IR.
 - Source-level hot reload. Active invocations always retain exact immutable module identity.

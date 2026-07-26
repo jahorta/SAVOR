@@ -1,19 +1,18 @@
 # 10 - Verification and Acceptance
 
-## Status and authority
+## Scope
 
-**Status:** Authoritative verification strategy and release gates; tests are not yet implemented.
+This document is a toolbox of checks for implementing the Execution Runtime refactor, migrating current
+phases, and deleting the legacy runtime. Use the checks that help develop or diagnose the seam being
+changed. Final functional acceptance is the full Release solution build plus production-worker
+SavorE2E, not completion of every possible test category listed here.
 
-This document defines the evidence required to accept the Execution Runtime refactor, migrate each
-current phase, delete the legacy runtime, and admit the first new phases. A stage in document 09 is not
-complete merely because it compiles; its applicable gates here must pass.
-
-Current tests remain authoritative for current behavior. Some encode current ownership or API shape and
+Current tests describe current behavior. Some encode current ownership or API shape and
 will be replaced rather than carried forward as target architecture requirements.
 
 ## Purpose and non-goals
 
-Verification must prove:
+Verification should establish, where relevant to the implementation slice:
 
 - ownership invariants, not only happy-path outputs;
 - deterministic program control flow under a deterministic backend event trace;
@@ -22,7 +21,7 @@ Verification must prove:
 - parity for every supported current phase;
 - unchanged SavorDb workflow, queue, persistence, idempotency, and restart behavior;
 - safe phase switching through one executor; and
-- the concrete `a101b` Navmesh Survey first slice.
+- for future Survey work, the concrete `a101b` bounded-runtime behavior.
 
 This document does not define performance targets, game-specific search quality, or the exact
 authored-program source syntax. It does not change SavorDb database layout, stored representations,
@@ -51,7 +50,7 @@ The repository has reusable test coverage, but it is divided along current imple
 The target keeps valuable behavior tests but replaces assertions that depend on direct VM breakpoint
 replacement, global `PSContext` keys, peer macro execution, or numeric program-kind dispatch.
 
-## Locked target decisions
+## Current target decisions
 
 ### Test architecture
 
@@ -104,15 +103,18 @@ validation is scheduled.
 
 ### Canonical deterministic trace
 
-Every fake-session and replayable live test records a normalized trace:
+Fake-session and replay tests that exercise control-flow determinism produce a normalized trace with the
+semantic fields needed for comparison:
 
-- source commit and build identity;
 - invocation, module revision/hash, entrypoint, and dependency closure;
 - sequence number and `StateEpoch`;
 - program block/instruction or source-map location;
 - requested action ID/version and canonical typed inputs;
 - resource acquire/release and scope identity;
-- execution request and routed stop/interceptor outcome;
+- execution request and routed stop/interceptor outcome, including logical point, physical evidence, stop
+  sequence, and shared routed-hit identity;
+- ordered observation acquisition, availability, baseline update, and interaction request/release
+  receipts;
 - completed action output;
 - branch/call/return/fail decision;
 - emitted record/artifact identity;
@@ -139,6 +141,9 @@ Static or link-time architecture checks shall fail when:
 - a program or action creates a private thread/event loop for execution;
 - a domain opcode is added to core IR;
 - a second interpreter/controller is registered;
+- an observation or interaction composer survives lowering as a runtime, scheduler, query VM, opcode
+  family, or hidden whole-sequence action;
+- `CaptureService` or a capture profile acquires wake/control authority or advances emulation;
 - production activation depends on `ProgramKind` or `PK_UserScript`; or
 - the legacy interpreter is linked into a post-cutover worker.
 
@@ -160,8 +165,84 @@ Cover at minimum:
 - invalid budget and statically provable unbounded loop;
 - canonical hash stability under canonical serialization;
 - hash change after any semantic module/dependency change;
+- canonical semantic-observation and interaction lowering, including exact imports and source maps;
+- hash change after any semantic point, observation, interaction segment, reducer, policy, or emission
+  change;
 - source-map validation without making source maps execution-authoritative; and
 - rejection before boot, state load, input, capture, or guest mutation.
+
+### Semantic-observation composition tests
+
+The reusable semantic-observation library receives focused pure-contract and fake-session coverage:
+
+- capability-pack point identities lower to exact router subscriptions and
+  `runtime.execution.continue_until` requests;
+- exact alternatives, current-point acceptance, deadlines, rearm/current-instruction suppression, and
+  unrelated-stop behavior are preserved;
+- `SemanticPointReceipt` records logical identity, PC/memory/synthetic evidence, stop sequence,
+  `StateEpoch`, and only the declared bounded hit-time samples;
+- `HitTimeSample` executes before program handling within the router's bounded CPU-thread restrictions;
+- `PausedAtPoint` reads execute while paused, and post-instruction acquisition occurs only after an
+  explicit step and subsequent observation;
+- ordered observations stay ordered, while coherent multi-field values use one registered query rather
+  than separate reads presented as atomic;
+- compatibility-pinned addresses, checked offsets/dereferences, receipt fields, and registered symbols
+  resolve through declared `AddressExpression<T>` imports;
+- optional unavailability remains distinct from false and zero, while required missing evidence is a
+  structured failure;
+- named `First` and `Latest` baselines have distinct update behavior, and current battle predicate
+  translation updates its `Latest` baseline before evaluation at the same hit;
+- receipts, baselines, and guest-derived handles reject stale `StateEpoch` use;
+- canonical lowering has stable source maps and exact action/type/capability/emission imports; and
+- no `ObservationRuntime`, query VM, observation opcode, direct Dolphin access, filesystem access, or
+  database access is introduced.
+
+### Interaction composition tests
+
+The reusable interaction library receives focused pure-contract, fake-session, and migration-parity
+coverage:
+
+- static sequences and adaptive initialization/advancement reducers lower to ordinary subprogram CFG,
+  verifier-known segment calls, actions, branches, observations, and emissions;
+- a reducer may select only a declared segment ID and cannot construct an effect or access services;
+- the requested input is published and its epoch obtained before exactly one source instruction is
+  executed;
+- completion matches logical point, PC, stop sequence, and epoch, while unrelated or stale stops do not
+  complete the segment;
+- both reached-instruction policies are preserved: leave paused or execute under the held request;
+- after held-through-hit execution, the request receipt is read before neutral publication;
+- neutral publication alone does not satisfy release: segments that require release use a separately
+  named witness with a fresh neutral epoch and guest-poll acknowledgement;
+- baseline capture precedes advancement and translated memory-change polling retains one neutral frame
+  between polls;
+- one input lease spans the full interaction while segment subscriptions and observations use nested
+  scopes;
+- timeout, VI stall/movie end, unexpected point, unacknowledged request/release, unsatisfied check,
+  infrastructure failure, cancellation, and cleanup failure remain distinct;
+- normal return and every injected failure/cancellation point unwind once, neutralize input, prove
+  release when required, release subscriptions/lease, and taint on mandatory cleanup failure; and
+- no `InteractionRuntime`, segment scheduler, macro opcode family, direct Dolphin access, or whole-macro
+  action is introduced.
+
+### Predicate composition tests
+
+The reusable predicate library receives focused pure-contract and fake-session coverage:
+
+- one definition is reused at multiple check sites, including a synthetic non-battle module, without a
+  runtime change;
+- each check consumes typed semantic-observation results and lowers only into canonical IR, declared
+  action/type/capability imports, ordinary branches, and declared emissions;
+- branch, clean domain rejection, explicit fail, record-only progress, and result accumulation remain
+  independent use-site policies;
+- `Unsatisfied`, `NotApplicable`, and `Unavailable` remain distinct;
+- required observation failure cannot silently become false or be skipped;
+- baselines and guest-derived witness state use semantic-observation rules and obey `StateEpoch`;
+- type, import, capability, subscription, and emission mismatches reject the module before effects begin;
+- normal return, rejection, failure, cancellation, and timeout unwind predicate-related resources through
+  the ordinary resource stack;
+- deterministic traces expose the observation, evaluation, branch or rejection, and emission; and
+- no predicate-specific opcode, executor, runtime service, direct Dolphin access, or physical-breakpoint
+  manipulation is introduced.
 
 ### ProgramExecutor tests
 
@@ -223,7 +304,33 @@ Cover:
 - no input publication without an active lease.
 
 The behavior currently checked by `test_input_macro_runtime.cpp` must migrate to these common service,
-action, reducer, and program tests. It must not remain proof of a peer macro runtime.
+semantic-observation, interaction, action, reducer, and program tests. It must not remain proof of a peer
+macro runtime.
+
+### CaptureService compatibility tests
+
+Characterize every retained `savor.capture.profile/1` behavior before moving it behind
+`CaptureService`, then run the same corpus through the extracted service:
+
+- valid and invalid profile parsing, subscription identity, filters/predicate bytecode, address programs,
+  activation, and dynamic watchpoints;
+- PC-hit and post-write memory sampling with unchanged sample ordering, type conversion, changed-only,
+  one-shot, maximum-hit, and other existing sampling policies;
+- window open/close/trigger behavior, flight recorders, trace buffers, retention, and artifact
+  finalization;
+- recorder queues, drops/coalescing, progress formatting/publication, and observable event ordering;
+- control flags/metrics, control-triggered windows/recorders, and synthetic control events;
+- active-wake-only control publication: an observed routed hit without an active wake/control match does
+  not acquire control semantics merely because a capture profile names `control`;
+- one routed match carries the same sequence/snapshot/epoch identity through control, capture, progress,
+  and emitted artifacts;
+- cancellation, deadline, restore, profile detach, normal finalization, backend failure, and cleanup
+  fault behavior; and
+- profile attach remains passive and cannot manipulate physical stop points, create a foreground wait,
+  advance emulation, or grant control authority.
+
+The compatibility oracle is the existing profile behavior and artifacts, not a new `CapturePlan` or
+profile-to-IR compiler.
 
 ### StateService and StateEpoch tests
 
@@ -253,7 +360,7 @@ Cover:
 - state-epoch change while a receipt is live; and
 - audit receipt completeness.
 
-The concrete Survey fixture must cover:
+For future Survey work, the concrete fixture should cover:
 
 - `u8` value `0` at `0x8030b7ad`;
 - enabled word `0x480F86C5` and suppressed word `0x48000018` at `0x80117e8c`;
@@ -313,10 +420,10 @@ Every row must pass frozen unit/fake traces and focused live parity before the l
 | `soa.tas_frame_detector/detect` | Detector observations, branch/terminal classification, result fields |
 | `soa.battle.legacy_path/run` | Retained legacy behavior and explicit terminal outcomes |
 | `soa.battle.context/capture` | Qualification, captured context, state lineage, failure ordering |
-| `soa.battle.single_turn/execute` | RNG mutation receipt, adaptive input trace, outcome, context, capture, output savestate |
-| `soa.battle.macro_probe/probe` | Macro synchronization, alternative gates, memory waits, capture, error mapping |
-| `soa.battle.completion/complete` | Completion detection, emitted state/artifacts, terminal classification |
-| `soa.battle.results_screen/advance` | Input/dialog progression, results capture, terminal state |
+| `soa.battle.single_turn/execute` | RNG mutation receipt, semantic point/observation ordering, adaptive interaction trace, request/release acknowledgements, predicate trigger/baseline/comparison, abort/result mapping, passed/total accounting, progress emissions, unchanged capture-profile behavior, outcome, context, output savestate |
+| `soa.battle.macro_probe/probe` | Input-before-step synchronization, alternative semantic gates, held-through-hit variants, exact receipt matching, baseline/change waits, release witness, unchanged capture profile, error mapping |
+| `soa.battle.completion/complete` | Adaptive interaction timing, completion observations, request/release receipts, emitted state/artifacts, terminal classification |
+| `soa.battle.results_screen/advance` | Adaptive interaction timing, input/dialog observations, release witnesses, results capture, terminal state |
 | `soa.navigation.context/capture` | Qualification before `.nctx` and savestate publication, exact codec, neutral input, failure atomicity |
 
 Parity compares domain semantics and durable evidence, not old internal breakpoint-set mutation or
@@ -331,6 +438,10 @@ Use the current workflow persistence and restart fixtures to prove:
 - existing persisted jobs feed the correct `ProgramInvocation` through program-kind handlers;
 - `ProgramResult` projects through existing result, artifact, and transition operations;
 - current payload/result codecs remain usable where stored records require them;
+- existing predicate records load and translate through current interfaces/storage, and their result
+  projection and survivor-selection behavior remain compatible without migration or conversion;
+- existing macro, address-program, and capture-profile representations are translated or consumed in
+  memory without migration, conversion, or new storage contracts;
 - current queue, claim, affinity, lease, retry, cancellation, outbox, and restart behavior is unchanged;
 - current dynamic fan-out, output routing, BattleSingleTurn survivor selection, and next-wave behavior
   remains unchanged;
@@ -363,16 +474,17 @@ The second A must see:
 Repeat with cancellation at each A/B await and with one injected cleanup failure. The failure case must
 force fresh-session recovery before the next phase.
 
-### Navmesh Survey `a101b` SavorE2E scenario
+### Future Navmesh Survey `a101b` scenario
 
-Add a custom scenario with logical ID `execution_runtime.navmesh_survey.a101b.first_slice`. It invokes
-the production `soa.navigation.survey` bounded entrypoints through program-kind adapters and existing
-SavorDb operations where available, using:
+This is a non-gating example for future Survey work. When that work begins, add a custom scenario with
+logical ID `execution_runtime.navmesh_survey.a101b.first_slice`. It invokes the production
+`soa.navigation.survey` bounded entrypoints through program-kind adapters and existing SavorDb operations
+where available, using:
 
 - `C:\savor\navigation_context_a201a_a101b_20260723_2100\navigation-context-verification\navigation-context-41.sav`
 - `C:\savor\navigation_context_a201a_a101b_20260723_2100\navigation-context-verification\navigation-context-41.nctx`
 
-The scenario must prove:
+The scenario should prove:
 
 1. every worker reloads the same untouched bootstrap;
 2. encounter suppression writes and verifies `0` at `0x8030b7ad`;
@@ -413,7 +525,7 @@ Negative variants cover wrong patch precondition, wrong selected TBLID, locked/n
 BitVar change, missing BitVar `1555`, failure to cross, fall, wrong-side correction, settle failure,
 cancellation during the enable window, and cleanup failure. None may publish a positive successor anchor.
 
-### Future-design acceptance matrix
+### Future-design example matrix
 
 | Design | Runtime proof | Runtime fault proof | Published evidence |
 |---|---|---|---|
@@ -425,48 +537,39 @@ cancellation during the enable window, and cleanup failure. None may publish a p
 | `soa.overworld.expand/expand_node` | One node expansion emits zero-to-many state children | Cancellation/failure leaves no worker-owned DFS state | Proposed state/edge artifacts and terminal/goal result |
 
 Before domain rules exist, collision, cutscene, and overworld tests may use synthetic capability fixtures.
-Their live game acceptance becomes an additional phase gate when those implementations begin.
+Their live game acceptance becomes additional validation when those implementations begin.
 Restart-safe collision/frontier/DFS orchestration is acceptance for a separate SavorDb/workflow project,
 not for the Execution Runtime refactor.
 
-### Build and gate policy
+### Build and validation policy
 
-Any compiled-language implementation slice must:
+During implementation:
 
 - build the affected SAVOR solution targets with the repository's required MSVC v145 toolchain;
-- run the focused unit/integration suites for the changed boundary;
-- run all architecture/invariant tests;
-- run all previously migrated current-phase parity suites; and
-- record durable test evidence before its stage exit review.
+- run focused unit/integration tests for changed ownership, cleanup, concurrency, protocol, verifier, or
+  persistence-adapter seams;
+- run architecture/invariant checks when a dependency or ownership boundary changes; and
+- run parity tests for each affected current phase as it migrates.
 
-Pre-cutover qualification additionally runs:
+Final functional acceptance is the Release solution build and production-worker SavorE2E outcome
+summarized below, plus confirmation that no production path selects the retired legacy executor.
 
-- the full SavorTests suite;
-- every current-phase differential/live fixture;
-- the existing SavorDb workflow, queue, persistence, dynamic-step, and recovery regression suites;
-- adapter coverage for every supported existing payload/result version;
-- fault injection for every resource class;
-- protocol/catalog mixed-version rejection; and
-- a clean-release worker/coordinator smoke workflow.
+Focused SavorTests, differential fixtures, SavorDb regressions, fault injection, and protocol checks are
+used when they help implement or diagnose the changed boundary. They are development guards, not an
+additional final-acceptance ceremony. Survey joins the E2E corpus only after it is implemented.
 
-Post-cutover qualification repeats those tests without the legacy interpreter linked. Survey becomes a
-required regression only after Stage 9.
+### Useful durable artifacts
 
-### Durable test evidence
+Repeatable unit-test and build output does not require a separate evidence packet. Preserve durable logs,
+normalized traces, reduced comparisons, or fault seeds when they are needed to reproduce:
 
-Each stage exit records:
+- a live result that is expensive or environment-dependent;
+- a differential mismatch;
+- a retry, restart, cancellation, or cleanup fault; or
+- a release-cutover failure.
 
-- source commit, build configuration, compiler/runtime/Dolphin/disc identities;
-- test binary and scenario version;
-- module/action/type catalog hashes;
-- invocation and state/artifact identities with secrets/locators redacted as appropriate;
-- normalized traces or their content hashes;
-- result and cleanup/session statuses;
-- retry/restart/fault-injection seed;
-- expected versus actual comparison; and
-- pass/fail plus linked diagnostics.
-
-One-off console output is not sufficient evidence for a cutover gate.
+Record only the semantic identities and environment details needed to reproduce that result. Ordinary
+development does not require a stage review or metadata inventory.
 
 ## Interfaces and ownership affected
 
@@ -476,6 +579,8 @@ Verification requires explicit seams for:
 - inspectable router physical/logical state;
 - `ExecutionEngine` event injection and trace capture;
 - `InputArbiter` lease/resource ledger;
+- semantic-observation and interaction lowering/source-map inspection;
+- `CaptureService` profile-event injection and recorder/artifact inspection;
 - `StateService` epoch and state-artifact inspection;
 - mutation fault injection and restoration receipts;
 - deterministic action registry completions;
@@ -489,48 +594,53 @@ interface.
 
 ## Failure and cleanup behavior
 
-- Tests fail closed on missing evidence, schema mismatch, incomplete cleanup ledger, or unrecognized
-  nondeterminism.
+- Tests fail closed on missing required typed state, schema mismatch, incomplete cleanup state, or
+  unrecognized nondeterminism.
 - Flaky timing-based assertions are prohibited where a typed event or state transition can be observed.
 - A live timeout may fail the scenario as infrastructure protection; it cannot become Survey timing
   evidence.
-- Fault injection must occur before and after each mutating/suspending boundary, including during unwind.
+- Use targeted fault injection around mutating, suspending, and unwind boundaries where cleanup or
+  ownership behavior is otherwise difficult to establish.
 - A domain-negative outcome is accepted only when infrastructure completion and cleanup are clean.
+- Optional observation unavailability is not silently rewritten as false or zero; required missing
+  evidence and stale-epoch evidence fail with their structured classifications.
+- Interaction tests keep unexpected point, unacknowledged request/release, unsatisfied check,
+  infrastructure failure, cancellation, and cleanup failure distinguishable.
 - A tainted result is never reused to make a later test pass; the next invocation must prove fresh-session
   recovery.
 - Differential mismatches block legacy deletion until explained and versioned.
 
 ## Dependencies and migration implications
 
-- Stage 0 creates the frozen corpus and fake trace model before ownership extraction begins.
-- Router, engine, input, state, and mutation tests must exist before their current direct paths are
-  removed.
-- Program verifier/executor tests must exist before translating a current phase.
+- Characterization, contract tests, and fake trace events are added just in time for the affected seam
+  before its current direct path is removed.
+- Add router, engine, input, state, mutation, capture-compatibility, composition, verifier, and executor
+  tests just in time for the direct paths being replaced.
 - Each migrated phase adds permanent new-runtime regression coverage; legacy comparison disappears only
-  after its deletion gate.
-- SavorDb boundary regressions must pass before handler-adapter cutover. Any new workflow/frontier tests
-  belong to their separate future project.
+  after equivalent behavior is established.
+- Use existing SavorDb boundary regressions when changing handler adapters. Any new workflow/frontier
+  tests belong to their separate future work.
 - The live Survey scenario depends on production Survey implementation and exact bootstrap artifacts, but
   the fake patch/door/state tests can be built earlier.
 
-## Acceptance criteria
+## Functional acceptance
 
-- Every invariant in the package README has at least one positive and one failure-path test.
-- Every current phase passes its differential matrix and focused live evidence.
-- Same module/invocation/dependency/backend trace yields the same canonical action/branch trace.
-- Cancellation and fault injection cover every suspension point and resource type.
-- A mandatory cleanup failure always yields a tainted, non-reusable session.
-- Existing SavorDb workflow, queue, result, idempotency, and restart behavior remains unchanged.
-- Existing persisted jobs/results/artifacts remain compatible through program-kind adapters without data
-  conversion.
+- The final Release `SAVOR.sln` build passes.
+- The production-worker SavorE2E matrix passes with shared-DB quiescence at every participating boundary.
+- Current supported behavior remains available through the new runtime.
+- No production path links or selects the legacy interpreter or a second controller.
+- Semantic observations and interactions lower completely into verified ordinary IR, actions, router
+  subscriptions, pure reducers, and emissions; no peer runtime, scheduler, query VM, or opcode family
+  remains.
+- Existing `savor.capture.profile/1` behavior remains compatible behind passive `CaptureService`, with
+  wake/control authority retained by `StopPointRouter` and `ExecutionEngine`.
+- Existing SavorDb jobs, results, artifacts, workflows, queues, retries, and restart behavior remain
+  compatible without data conversion.
 - The refactor adds no SavorDb migration and changes no database-service, queue, claim,
   workflow-persistence, transaction, or artifact-storage interface.
-- Exact protocol/catalog mismatches reject work before guest-state mutation.
-- `A -> B -> A` proves zero leaked resources.
-- The bounded-runtime `a101b` scenario proves all fourteen first-slice requirements and all prohibited
-  Survey artifacts through a harness or unchanged existing SavorDb contracts.
-- Post-cutover tests run with no production legacy interpreter or second controller linked.
-- Test evidence is durable and sufficient to reproduce every stage-exit decision.
+
+The detailed test sections above are implementation aids for reaching these outcomes. They are not a
+requirement to produce a formal evidence packet or run every possible matrix after each slice.
 
 ## Deferred work
 
@@ -541,6 +651,7 @@ interface.
 - Overworld bounded-expansion rules, state fingerprint, goal corpus, and live node-expansion fixtures.
 - Final CI job partitioning and hardware matrix.
 - Authoring UI/compiler conformance tests, to be defined with the authored frontend.
+- A generalized capture-plan language or replacement for `savor.capture.profile/1`.
 
 Artifact-retention policy and end-to-end durable DFS orchestration tests belong to separate projects;
 they are not deferred gates for this refactor.

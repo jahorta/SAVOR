@@ -1,24 +1,9 @@
 # 01 - Current System and Pressure Points
 
-## Status and authority
-
-**Status:** Current-state evidence and target-design input.
-
-**Inspected snapshot:** SAVOR commit
-`b584920ffad8dbe770f343e532d7f7386c82fadf` (`2026-07-25T14:22:17-05:00`,
-`Model combatant auxiliary visual publication`), inspected on 2026-07-25.
-
-Current code is authoritative for everything described as implemented in this document. The rest of the
-Execution Runtime package is authoritative for the breaking-change target. Historical planning and the
-breakpoint-router analysis are discovery aids; neither can establish that a current capability exists.
-
-The worktree contained unrelated user changes when this snapshot was inspected. The inventory below was
-derived from the named source files and symbols and does not treat those unrelated edits as part of this
-refactor.
-
 ## Purpose and non-goals
 
-This document establishes the execution system that actually exists before replacement work begins. It:
+This document is an orientation map of the execution system inspected before replacement work began.
+Current code and executable behavior win if this inventory drifts. It:
 
 - follows a job from workflow scheduling through worker execution and result mapping;
 - inventories the worker, registry, VM, context, macro, wire, descriptor, state, and workflow seams;
@@ -131,6 +116,42 @@ The opcode catalog contains 52 ordinals, `0` through `51`. The central dispatch 
 This is the central ownership pressure. Adding a more expressive program format without first removing
 these responsibilities would preserve the same god object behind a new serializer.
 
+### Current predicate subsystem
+
+The current battle predicate path is reusable in intent but not in ownership. `Predicate::Spec` combines
+the evaluation point, breakpoint requirements, guest-address or address-program operands, optional delta
+baselines, comparison, display identity, and `AbortOnFail`. `PhaseScriptVM` then:
+
+- arms the predicate breakpoint set;
+- captures baselines and reads guest values;
+- performs the comparison;
+- emits predicate progress text;
+- updates passed/total counters; and
+- sets VM-global abort state that the battle script converts into a predicate-failure outcome.
+
+Battle Single Turn's result adapter projects the counters and abort outcome through the existing battle
+result representation, and its current survivor selection uses passed counts as one ranking input. The
+useful idea to preserve is a named condition that can observe, reject early, or contribute progress. The
+coupling to physical breakpoints, Dolphin reads, VM-global state, reporting, and battle-only policy is not
+the reusable boundary.
+
+### Current observation and capture surfaces
+
+The ingredients for semantic observation exist, but are split across subsystem-specific contracts.
+Breakpoint keys name some logical program points, predicate records combine those points with direct or
+address-program guest reads, input macros return stop/input receipts and keep local memory baselines, and
+game adapters expose coherent domain queries. None of these currently provides one reusable definition
+for "await this logical point, then acquire this typed evidence" with explicit hit-time, paused, ordering,
+availability, baseline, and state-epoch semantics.
+
+`SavorProbe/ProbeProfile.*`, `AddressProgramEvaluator.h`, and `ProbeRuntime.*` separately implement the
+existing `savor.capture.profile/1` capture language: PC and memory probes, filters and address programs,
+sampling policies, windows, flight recorders, queues, progress delivery, control-facing flags, and
+artifact production. Those profile semantics are valuable compatibility behavior, but the current probe
+runtime also contains trusted control-wait authority. The target preserves the profile language behind a
+passive `CaptureService`; router/execution ownership replaces its control authority without turning
+capture profiles into the semantic-observation language.
+
 ### State bootstrap and reset behavior
 
 `PhaseScriptVM::init` optionally loads one disk savestate, installs the new program's breakpoint sets, and
@@ -172,7 +193,8 @@ The subsystem has valuable behavior:
 - provider-declared breakpoint permissions;
 - explicit terminal/failure states;
 - an adaptive continuation boundary;
-- input-poll receipts; and
+- stop-sequence, input-epoch, requested-input, input-poll, and acknowledgement receipts;
+- explicit held-through-hit behavior; and
 - cleanup-once semantics that neutralize input, clear macro watchpoints, release the local exclusive
   session, and restore breakpoint state.
 
@@ -275,9 +297,12 @@ The clean-slate replacement must preserve these proven ideas:
    Navigation Context codecs, and state artifact records provide useful reusable evidence.
 6. **Adaptive macro continuation.** Provider `Start/Advance` and cleanup-once behavior establish a viable
    model for interruptible effect composition.
-7. **Dynamic workflow fan-out.** Current battle and seed workflows prove that the coordinator can append
+7. **Capture-profile behavior.** Existing profile parsing, address programs, filters, sampling, windows,
+   flight recorders, progress, queue behavior, and artifact production are established semantics rather
+   than a new authoring problem for this refactor.
+8. **Dynamic workflow fan-out.** Current battle and seed workflows prove that the coordinator can append
    durable successor work after reduction.
-8. **Warm-worker optimization.** Affinity-aware reuse is valuable as long as it is not confused with
+9. **Warm-worker optimization.** Affinity-aware reuse is valuable as long as it is not confused with
    state reset, correctness, or exact program identity.
 
 ## Pressure points that force replacement
@@ -291,13 +316,16 @@ The clean-slate replacement must preserve these proven ideas:
 | Result is `bool + error + context` | Domain failure and cleanup failure can be collapsed into transport success/failure | Separate infrastructure, domain, and cleanup/session status |
 | Baseline restore is implicit and duplicated | Init, `run`, script ops, and retries all participate in reset semantics | Declarative invocation state policy and explicit epoch changes |
 | Macro execution is a subordinate runtime | Adaptive control has a second scheduler and private physical ownership | Common action-await continuation model under `ProgramExecutor` |
+| Logical points, guest-address derivation, reads, baselines, and receipts are subsystem-specific | Predicates, macros, and future phases would reconstruct subtly different observation timing | Shared semantic-observation composition that lowers exact awaits, typed reads/queries, baselines, and emissions into ordinary runtime facilities |
+| Predicate definition mixes trigger, observation, comparison, progress, scoring, and abort policy | Reuse outside battle would copy VM/Dolphin coupling or create another mini-runtime | Shared predicate composition library that separates pure conditions from use policy and lowers to ordinary IR, actions, scoped router subscriptions, and emissions |
+| Capture profiles and trusted control waits share one probe runtime | Preserving capture could retain a second source of execution authority | Preserve `savor.capture.profile/1` behind passive `CaptureService`; route all wake/control through the router and execution engine |
 | Breakpoint state is replaced globally | Independent observers/interceptors cannot remain composed | Logical subscriptions and one physical stop-point owner |
 | Worker visual thread calls runtime directly | External controls can bypass command serialization | All commands routed through `WorkerRuntime` |
 | Descriptor mixes execution with workflow integration | A new phase appears to require another descriptor/controller combination | Keep existing SavorDb contracts; adapt only runtime-facing handler behavior to construct/consume typed runtime contracts |
 | Affinity uses kind/bootstrap strings | Cache locality can be mistaken for exact revision or clean state | Verify exact runtime module/state/session identity after current materialization without changing stored affinity or claim data |
 | No general mutation ledger | Data writes and future code patches lack one restoration/taint contract | Checked scoped `GuestMutationService` receipts and mandatory unwind |
 
-## Locked target decisions
+## Target direction
 
 The current evidence locks these conclusions:
 
@@ -307,7 +335,15 @@ The current evidence locks these conclusions:
 - Current domain operations migrate into actions, reducers, queries, or reusable subprograms; they do not
   receive corresponding core IR opcodes.
 - `IInputMacroPlanDriver::Start/Advance` is generalized into program continuations and awaited actions.
+  Shared interaction composition lowers its finite segments, pure reducer transitions, input scopes,
+  semantic awaits, observations, checks, and emissions into the ordinary program runtime;
   `InputMacroRuntime` is not retained as a peer program executor.
+- Semantic points, awaits, address expressions, observations, and their use policies are reusable
+  composition inputs. They lower before verification and do not introduce an observation runtime, query
+  VM, or new opcode family.
+- Existing capture profiles remain opaque inputs to passive `CaptureService`. Their sampling, window,
+  recorder, progress, queue, control-event, and artifact semantics are preserved while
+  `StopPointRouter`/`ExecutionEngine` own control authority.
 - Worker-session services absorb every direct `DolphinWrapper` operation currently performed by the VM
   or visual-control thread.
 - Workflow transition and dynamic-step capabilities are retained through their current persistence and
@@ -327,14 +363,18 @@ The replacement crosses these current seams:
 - `PhaseScript`, `PSInit`, `PSJob`, `PSResult`, `PSContext`, and `PSContextCodec`;
 - the 52-opcode dispatch and all split `PhaseScriptVM*` host implementations;
 - `InputMacroRuntime`, `IInputMacroPlanDriver`, and providers;
+- predicate, breakpoint/address, and SavorProbe profile/runtime seams as they are translated into shared
+  semantic-observation, passive-capture, and interaction composition;
 - `WireSetProgram`, worker-protocol job/result envelopes, and worker-side `ProgramKind` dispatch;
 - program-kind handler implementations and adjacent runtime-init/result adapters;
 - job materialization only as needed to construct `ProgramInvocation` from existing persisted data; and
 - existing transition and successor-step publication behavior as an unchanged integration contract.
 
 The migration changes no SavorDb database-service interface, queue/claim contract, stored representation,
-workflow persistence, artifact-storage interface, or transaction boundary. It must not push workflow
-persistence into the worker or move emulator ownership into DB adapters.
+workflow persistence, artifact-storage interface, or transaction boundary. Existing macro, predicate,
+address-program, and capture-profile representations are translated or consumed in memory rather than
+migrated. The refactor must not push workflow persistence into the worker or move emulator ownership into
+DB adapters.
 
 ## Failure and cleanup behavior
 
@@ -379,17 +419,11 @@ dependency order is:
 The current dynamic battle-wave implementation is a migration asset: it provides executable examples for
 separating bounded worker expansion from durable orchestration.
 
-## Acceptance criteria
+## Using this inventory
 
-This current-state document remains valid only while:
-
-- every implemented phase in `ProgramRegistry::build_main_program` appears in the taxonomy;
-- each DB exposure claim matches actual registration code;
-- Navigation Context and Navmesh Survey are not conflated;
-- no current-state claim is justified solely by a planning document;
-- the central opcode count, context variant, worker lifecycle, and warm-reuse behavior match inspected
-  code; and
-- new implementation evidence is added to `12-source-evidence-map.md` and reconciled here.
+Before relying on a current-state claim for an implementation slice, check the named source or symbol
+and run focused checks for the seam being changed. This inventory does not need to be synchronized after
+every implementation edit. Navigation Context and the unimplemented Navmesh Survey must remain distinct.
 
 The future refactor has addressed these pressure points when adding a phase from existing capabilities
 requires no change to `SavorWorker`, `ProgramRuntime`, `ProgramExecutor`, `ExecutionEngine`, the
@@ -434,7 +468,12 @@ Primary implemented-code evidence:
 - `SavorCore/Runner/Script/PSContext.h`
 - `SavorCore/Runner/Script/PSContextCodec.cpp`
 - `SavorCore/Runner/InputMacro/IInputMacroPlanDriver.h`
+- `SavorCore/Runner/InputMacro/IInputMacroHost.h`
+- `SavorCore/Runner/InputMacro/InputMacroPlan.h`
 - `SavorCore/Runner/InputMacro/InputMacroRuntime.cpp`
+- `SavorProbe/ProbeProfile.*`
+- `SavorProbe/ProbeRuntime.*`
+- `SavorProbe/AddressProgramEvaluator.h`
 - `SavorCore/Runner/IPC/Wire.h`
 - `SavorDb/Execution/ProgramDB/ProgramKindDescriptor.h`
 - `SavorDb/Execution/ProgramDB/ProgramKindRegistry.h`
@@ -452,5 +491,3 @@ Research and domain-planning evidence:
 - `planning/NavigationPhase/NavigationContextWorkflow/README.md`
 - `planning/NavigationPhase/NavigationContextWorkflow/04-suppressed-exploration-and-world-refinement.md`
 - `planning/DBMigrateWorkflows/12-user-defined-script-payload-system-plan.md`
-
-See `12-source-evidence-map.md` for claim-level classification and conflict resolution.

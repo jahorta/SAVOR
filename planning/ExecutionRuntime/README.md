@@ -1,15 +1,15 @@
 # Execution Runtime Refactor Guidance
 
-## Status and authority
+## How to use this guidance
 
-**Status:** Authoritative future architecture, drafted against SAVOR commit
-`b584920ffad8dbe770f343e532d7f7386c82fadf` on 2026-07-25.
+This package is working target guidance for the breaking Execution Runtime refactor. It was prepared
+from the repository state around SAVOR commit `b584920ffad8dbe770f343e532d7f7386c82fadf`.
+Current code and executable behavior are the source of truth for what exists. If implementation evidence
+conflicts with these plans, adapt the plan and implementation together rather than preserving stale
+wording or inventing a compatibility layer for it.
 
-Current code is the source of truth for behavior that exists today. This package is the source of truth
-for the breaking-change target architecture described here. A statement in this package does not mean
-that the corresponding implementation exists.
-
-This package governs:
+The component names and concrete API shapes may evolve during implementation. The ownership and safety
+boundaries below are the constraints to preserve:
 
 - worker-side program execution and session ownership;
 - the universal typed program model;
@@ -26,7 +26,7 @@ It supersedes the target-runtime portions of:
 Those sources remain useful current-state and research evidence. Current SavorDb code defines the
 existing persisted workflow, queue, claim, artifact, and domain-storage contracts this refactor must
 preserve. Separate DB migration/workflow plans are orientation for their own projects; they are not
-requirements or authorization for this refactor. This package changes only the runtime-facing behavior
+requirements for this refactor. This package changes only the runtime-facing behavior
 of program-kind handlers or adjacent integration adapters: they may construct `ProgramInvocation` from
 existing persisted job/domain data and project `ProgramResult` through existing persistence operations.
 It does not change the SavorDb SQL schema or migrations, stored representations, database-service
@@ -34,7 +34,7 @@ interfaces, queue/claim contracts, durable workflow persistence, transaction bou
 artifact-storage interfaces. In this package, an unqualified **schema** is a runtime program/type schema,
 not a database schema.
 
-The Navigation Context workflow package remains authoritative for Navmesh Survey domain behavior; this
+The Navigation Context workflow package describes the intended Navmesh Survey domain behavior; this
 package supplies its execution foundation.
 
 ## Purpose and non-goals
@@ -68,7 +68,7 @@ and `WorkflowTransitionDecision::spawn_steps` for dynamic workflow expansion.
 Those facts establish both a useful single-VM precedent and the coupling this refactor must remove.
 Navmesh Survey is not present in the registry or worker runtime and remains unimplemented.
 
-## Locked target decisions
+## Core architectural constraints
 
 ### Target architecture
 
@@ -106,6 +106,21 @@ The names have precise meanings:
 - **Action** is a bounded registered capability transaction. It may suspend and later complete.
 - **Reducer** is a pure native state transition that requests effects through the executor. It owns no
   Dolphin, input, stop points, threads, or event loops.
+- **Predicate composition library** is a reusable builder/frontend facility. A pure typed predicate and
+  each explicit use of it lower before verification into ordinary IR, registered actions, scoped router
+  subscriptions, branches or returns, and declared emissions. The use site decides whether false records
+  progress, contributes to a result, branches, or returns a clean domain rejection.
+- **Semantic-observation composition** is a reusable builder/frontend facility for naming logical game
+  points, awaiting them, and acquiring typed evidence there. Semantic points, awaits, address
+  expressions, observations, and use policies lower before verification into ordinary IR, exact imports,
+  router subscriptions, registered read/query actions, and emissions.
+- **Interaction composition** is a reusable builder/frontend facility for static or adaptive input
+  sequences. Typed interaction reducers select only verifier-known segments, which lower into ordinary
+  subprogram control flow, input scopes, semantic awaits, observations, checks, and emissions.
+- **Capture profile** means the existing opaque `savor.capture.profile/1` configuration interpreted by
+  `CaptureService`. Its current parser, sampling, window, recorder, queue, progress, and artifact
+  semantics remain intact initially; it is not replaced by another composition language in this
+  refactor.
 - **Workflow orchestration** remains the existing durable owner for jobs, waves, phase changes, retries,
   and recovery. Generalized frontier persistence is a separate project, not part of this refactor.
 
@@ -136,6 +151,18 @@ The names have precise meanings:
     evidence is spatial and contains no inferred probe timing.
 15. SavorDb storage and orchestration contracts are fixed inputs. Runtime integration must adapt to them;
     this refactor does not migrate or redesign them.
+16. Predicate composition introduces no predicate executor, runtime service, domain opcode, hidden effect
+    channel, or persistence model. Failure to obtain required evidence remains distinct from a predicate
+    evaluating false, and all generated effects and emissions remain visible to verification and tracing.
+17. Semantic-observation and interaction composition introduce no peer runtime, controller, scheduler,
+    query VM, domain opcode family, hidden effect channel, filesystem access, database access, or
+    persistence model. Their complete lowering is visible to verification, hashing, tracing, and unwind.
+18. A semantic-point receipt, observation, derived guest handle, or baseline is bound to one
+    `StateEpoch`. Hit-time sampling is a bounded router concern; ordinary typed reads occur while paused,
+    and post-instruction observation requires an explicit execution step.
+19. `CaptureService` remains passive. `StopPointRouter` and `ExecutionEngine` own wake and control
+    authority, while capture observes the same routed hit identity and preserves existing profile-visible
+    control, window, recorder, progress, and artifact behavior.
 
 ## Interfaces and ownership affected
 
@@ -158,27 +185,17 @@ remain unchanged.
 9. [Breaking-Change Cutover Plan](09-breaking-change-cutover-plan.md)
 10. [Verification and Acceptance](10-verification-and-acceptance.md)
 11. [Decisions, Risks, and Deferred Work](11-decisions-risks-and-deferred-work.md)
-12. [Source Evidence Map](12-source-evidence-map.md)
+12. [Source Orientation](12-source-evidence-map.md)
 
-## Document conventions
+## Working conventions
 
-Each document separates:
+Use **must** and **shall** for the ownership and safety invariants that implementation must preserve.
+Use **may** for implementation choices inside those boundaries. A deferred item should remain outside
+the current slice unless code or test evidence shows that it must be decided.
 
-- implemented code evidence;
-- observed runtime evidence;
-- locked target decisions; and
-- unresolved or explicitly deferred research.
-
-Current-state claims must cite current code, preferably by file, symbol, and inspected line. Planning
-documents are guides and discovery aids, not proof that code exists. New evidence that contradicts this
-package must be recorded in document 12 and resolved by updating the affected target decision rather than
-quietly allowing two definitions.
-
-Normative language is intentional:
-
-- **must** and **shall** are target invariants;
-- **may** identifies an allowed implementation choice inside a fixed boundary; and
-- **deferred** means the implementation slice must not invent an answer.
+Source references are navigation aids, not a documentation ledger. Check the current implementation
+before relying on a current-state claim, and update the relevant guidance when a decision materially
+changes.
 
 ## Failure and cleanup behavior
 
@@ -194,33 +211,29 @@ typed program IR and verifier, and replacing direct VM/Dolphin coupling with reg
 temporary translator from current `PhaseScript` builders is permitted for parity testing. It is not a
 second permanent runtime and is removed with the legacy interpreter.
 
-Navmesh Survey is the first net-new acceptance client after current phases migrate. Its bounded
-entrypoints and reusable navigation actions are the runtime acceptance target. They may be exercised by
-a harness or through unchanged existing SavorDb contracts. End-to-end durable two-wave orchestration is
-not a refactor gate unless the current contracts already support it; workflow or persistence
-generalization is separate work.
+Navmesh Survey is a useful first net-new client after current phases migrate, but it is not required to
+complete this refactor. If implemented, its bounded entrypoints and reusable navigation actions exercise
+the new runtime through a harness or unchanged existing SavorDb contracts. End-to-end durable two-wave
+orchestration remains separate work unless the current contracts already support it.
 
-## Acceptance criteria
+## Validation while implementing
 
-This guidance set is complete when an implementation team can derive work packages without deciding:
+Apply the dependency order in this package incrementally. Each slice should run focused checks for the
+ownership, cleanup, protocol, and phase behavior it touches; the plans do not require a separate
+architecture sign-off or evidence-update ceremony for every change.
 
-- which component owns commands, emulator advancement, or program flow;
-- whether a phase should receive another native controller;
-- what identifies a runtime module, invocation, action, state artifact, or result;
-- how cancellation, restoration, epochs, and tainted sessions behave;
-- why waves, phase switching, or arbitrary-depth search cannot live in a worker invocation; or
-- how current phases reach the new runtime and when the old path is deleted.
-
-The architecture itself is accepted only when every reference design's bounded worker program fits
-without a second executor or domain opcode and the runtime verification matrix in document 10 passes.
-Workflow-persistence portions of future designs remain outside acceptance unless current contracts
-already suffice.
+Before removing the legacy execution path or treating the refactor as complete, run a full Release
+`SAVOR.sln` build and the production-worker SavorE2E matrix for the supported phase corpus. Focused tests
+remain development tools for risky seams; they are not a separate approval process. Future-design and
+workflow-persistence examples do not gate completion.
 
 ## Deferred work
 
 The exact C++ API spelling, worker wire encoding, authored source language, authoring UI, and
 game-specific algorithms listed in document 11 remain deferred. SavorDb SQL/storage/interfaces are fixed
-inputs, not deferred design choices in this refactor.
+inputs, not deferred design choices in this refactor. A generalized replacement for
+`savor.capture.profile/1` is also deferred; the existing profile remains an opaque `CaptureService`
+contract during the initial architecture cutover.
 
 ## Source references
 
@@ -228,6 +241,11 @@ inputs, not deferred design choices in this refactor.
 - `SavorCore/Phases/Programs/ProgramRegistry.cpp`
 - `SavorCore/Runner/Script/PhaseScriptVM.h`
 - `SavorCore/Runner/Script/PhaseScriptOpcodeTable.inc`
+- `SavorCore/Runner/InputMacro`
+- `SavorCore/Runner/Breakpoints/Predicate.*`
+- `SavorProbe/ProbeProfile.*`
+- `SavorProbe/ProbeRuntime.*`
+- `SavorProbe/AddressProgramEvaluator.h`
 - `SavorCore/Runner/IPC/Wire.h`
 - `SavorDb/Execution/ProgramDB/ProgramKindDescriptor.h`
 - `planning/NavigationPhase/NavigationContextWorkflow/README.md`

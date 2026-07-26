@@ -1,18 +1,13 @@
 # Actions, Effects, and Session Services
 
-## Status and authority
+## Scope
 
-**Status:** Authoritative logical capability and resource contract for the target Execution Runtime.
-
-This document fixes how programs request effects, how native extensions are bounded, which session
+This document describes how programs request effects, how native extensions are bounded, which session
 service owns each emulator facility, how resources are scoped, and how cancellation/restoration affect
-session reuse. It was drafted against SAVOR commit
-`b584920ffad8dbe770f343e532d7f7386c82fadf` on 2026-07-25.
-
-Current code is authoritative for current behavior. This target replaces direct VM/action access to
-`DolphinWrapper`. Concrete C++ signatures and worker transport encoding are not frozen. SavorDb
-SQL/schema, stored representations, database-service interfaces, queues, claims, workflow persistence,
-transaction boundaries, and artifact-storage interfaces are fixed inputs and remain unchanged.
+session reuse. Concrete C++ signatures and worker transport encoding may adapt during implementation.
+The package-wide SavorDb boundary applies: its schema, stored representations, service interfaces,
+queues, claims, workflow persistence, transaction boundaries, and artifact-storage interfaces remain
+unchanged.
 
 ## Purpose and non-goals
 
@@ -24,6 +19,7 @@ This document defines:
 
 - `ActionDescriptor`, request, completion, and handler constraints;
 - the pure native reducer boundary;
+- the service-side lowering and temporal contracts for semantic observations and interactions;
 - action granularity and forbidden hidden-controller behavior;
 - root/nested resource scopes, receipts, compensation, cancellation, and taint;
 - the ownership of execution, stop points, input, state, guest memory/mutation, movies, capture,
@@ -36,7 +32,9 @@ This document does not:
 - make action handlers a second scheduler;
 - permit programs to call Dolphin or workflow storage;
 - define phase-specific algorithms or final domain schemas; or
-- freeze individual guest addresses, routing priorities, input tolerances, or capture formats.
+- freeze individual guest addresses, routing priorities, or input tolerances; or
+- design a replacement capture-profile language. Existing `savor.capture.profile/1` behavior is a
+  compatibility input preserved behind `CaptureService`.
 
 ## Current code evidence
 
@@ -67,6 +65,12 @@ Current facilities are capable but their ownership overlaps:
   load and in-memory restore, demonstrating the need for epoch-aware observations.
 - `DolphinWrapper.cpp:1666-1826` implements physical PC breakpoint and watchpoint mutation through the
   broad facade.
+- `SavorProbe/ProbeProfile.h:21-225` and `SavorProbe/ProbeProfile.cpp:611-1142` define and validate the
+  existing `savor.capture.profile/1` subscriptions, sampling, windows, flight recorders, and
+  control-derived behaviors.
+- `SavorProbe/ProbeRuntime.cpp:199-339` validates and starts that profile, while
+  `ProbeRuntime.cpp:1083-1266` publishes ordinary and synthetic control-tagged capture events. Those
+  profile semantics must survive even though control-wait authority moves to the router/engine.
 
 The router analysis at
 `D:\SoAInvestigate\Analyses\20260723_2107_savor_worker_breakpoint_router\20260723_2107_savor_worker_breakpoint_router_architecture_summary.txt`
@@ -78,7 +82,7 @@ provides the research basis for the target services:
 - lines 633-729 map current facilities and state the target invariants; and
 - lines 812-840 describe a suitable fake-backend test architecture.
 
-## Locked target decisions
+## Core service and resource constraints
 
 ### Effect flow
 
@@ -228,6 +232,103 @@ Reducer rules:
 The adaptive pattern now represented by `IInputMacroPlanDriver::Start/Advance` becomes a reusable IR
 statechart calling a reducer after each completed action. There is no peer `InputMacroEngine`.
 
+### Semantic-observation lowering and service boundaries
+
+The semantic-observation composition library defined in document 03 has no runtime or session-service
+capabilities. It lowers before verification to exact capability-pack imports and ordinary actions:
+
+- a `SemanticAwaitDefinition` creates one scoped router subscription group and awaits
+  `runtime.execution.continue_until`;
+- a successful wait returns one `SemanticPointReceipt` containing the logical point, physical hit
+  evidence, stop sequence, `StateEpoch`, and declared hit-time samples;
+- `HitTimeSample` requirements compile only to the router's bounded, allocation-free registered sample
+  subset;
+- `PausedAtPoint` observations compile to registered `runtime.guest.read_*` or coherent game-query
+  actions while `ExecutionEngine` keeps the core paused; and
+- an observation after an instruction/frame step requires that explicit execution action followed by a
+  new paused observation.
+
+The await use explicitly says whether an already-paused matching current point is acceptable. Otherwise
+current-instruction suppression and rearm policy prevent the source stop from spuriously completing the
+new wait. Unrelated stops may be observed or handled by their owners but cannot complete the await.
+Timeout, stall, movie-ended, cancellation, guard/interceptor failure, and backend failure remain
+distinct completion statuses.
+
+`GuestMemory` evaluates checked `AddressExpression<T>` definitions and registered coherent query
+recipes. It distinguishes required evidence loss from optional `Unavailable` and from a successfully
+observed false, zero, or domain-negative value. Ordered observation uses execute in declaration order;
+coherent multi-field state is returned by one registered query. Every receipt, sample, baseline,
+derived address, and guest-derived handle is epoch-bound and rejected after state replacement.
+
+No service evaluates module branches, check policy, scoring, or authoritative progress. No
+`ObservationRuntime`, query VM, observation opcode, dynamic action ID, filesystem access, or database
+access is introduced.
+
+### Interaction lowering and temporal contract
+
+The interaction composition library defined in document 03 lowers each static or adaptive interaction
+to an ordinary IR subprogram, one pure reducer/statechart where needed, semantic awaits/observations,
+and existing execution/input actions. There is no whole-interaction action, private execution loop,
+driver callback, or second cancellation path.
+
+One interaction holds an `InputArbiter` lease in an outer lexical scope. Each segment uses a nested scope
+for its semantic subscription and observation resources. Its required temporal order is:
+
+1. Arm the exact semantic-gate alternatives and establish the segment's starting
+   `SemanticPointReceipt`/epoch.
+2. Publish the requested input and obtain its input epoch before stepping off a currently matched source
+   stop.
+3. When stepping off that source stop, execute exactly one source instruction with the new input before
+   beginning the ordinary wait.
+4. Complete only on the declared logical point and matching PC/physical evidence, stop sequence, input
+   epoch, and `StateEpoch`; an unrelated or stale hit cannot complete the segment.
+5. Apply the declared reached-instruction policy: either leave the reached instruction paused or
+   execute it under the held request.
+6. Capture the request's guest-poll receipt after any held-through-hit execution and before publishing
+   neutral input.
+7. Acquire the segment's ordered observations/checks at their declared hit-time or paused moments.
+   Paused-at-point reads occur before any release witness advances the guest again.
+8. Where release is required, publish neutral with a fresh input epoch and independently prove the
+   guest observed that epoch through `runtime.input.await_guest_poll`. Publishing neutral or dropping a
+   lease is not release proof. The interaction names the release-witness point or segment separately
+   from the request segment.
+9. Return one typed `InteractionSegmentResult` to the statechart/reducer.
+
+Translated memory-change waits acquire/update their named baseline before advancement and execute one
+neutral frame between polls. A `Latest` baseline is updated before the check at that same hit. The
+reducer consumes only typed state plus the completed segment result and may select only a finite
+verifier-declared next segment, emit declared records, or complete.
+
+Timeout, unexpected point, unacknowledged requested input, unproven neutral release, unsatisfied check,
+infrastructure failure, cancellation, and cleanup failure remain distinct. On every terminal path,
+common unwind cancels outstanding execution, neutralizes through the still-valid lease, proves release
+when the interaction requires it, removes only the interaction's subscription scopes, and releases the
+lease. Cleanup continues after a failure; an unproven mandatory release or restoration taints the
+session. The target preserves these semantic dependencies, not the incidental order of current
+`IInputMacroHost` cleanup calls.
+
+### Predicate lowering and service boundaries
+
+The predicate composition library defined in document 03 has no runtime or session-service
+capabilities. It consumes `ObservationDefinition`/`ObservationUse` results from the shared composition
+boundary above. It does not independently define addresses, observation timing, baselines, guest reads,
+or waits. Action handlers and session services return typed observations; they do not decide whether a
+check should abort, branch, emit progress, or affect scoring.
+
+A router subscription's optional compiled predicate/sample requirement is only a bounded hit-time
+filter or sampling qualification. It is not a module-level predicate executor and cannot advance program
+control flow, select a domain result, or emit authoritative program output. Router `Guard` delivery
+remains a session-safety mechanism; an unsatisfied program predicate does not become a router guard
+unless a separate safety contract explicitly requires it.
+
+Predicate baselines, sampled addresses, and guest-derived witness handles inherit the observation
+contract's epoch binding. Lowered code must reacquire them after state replacement rather than retaining
+them across `StateEpoch`.
+
+Live predicate messages may use `TelemetryBus`, but progress or evidence needed by program results,
+scoring, or adapters must also be a declared typed program emission. No `runtime.predicate.*` capability
+family or whole-predicate action is introduced.
+
 ### Determinism and replay classes
 
 Each descriptor declares one class:
@@ -334,6 +435,9 @@ implementation slices without changing their responsibility.
 | Pure game conversion | reducer/callable `soa.battle.materialize_turn_input` |
 | Adaptive battle subprograms | `soa.battle.command_macro`, `soa.battle.completion_macro`, `soa.battle.results_screen_macro`, with pure reducers using the corresponding `.reduce` identity |
 
+Semantic-observation and interaction composition introduce no additional action family. They lower to
+the exact IDs above plus capability-pack-owned point/query definitions and ordinary IR.
+
 `runtime.execution.continue_until` accepts logical completion conditions. The owning handler creates
 temporary wake subscriptions through the router; programs never manipulate physical PCs.
 
@@ -369,6 +473,12 @@ Programs/actions acquire logical subscription-group resources. A subscription de
 
 Routing order is deterministic: synchronous hit-time samples, passive observe/progress delivery, guards,
 interceptors by priority, then the foreground wake condition.
+
+For one physical hit, the router creates one immutable routed-event identity containing sequence,
+snapshot/sample identity, and `StateEpoch`. Control/wake, capture, progress, and semantic-point receipts
+project that same identity rather than independently resampling or resequencing the event. The router
+also determines whether a foreground wake/control condition was active for that hit; passive consumers
+may observe that fact but cannot create or upgrade it.
 
 `PhysicalStopPointManager` alone derives and reconciles the union of physical Dolphin PC breakpoints and
 memchecks. It reference-counts logical needs and publishes an immutable CPU-thread dispatch snapshot.
@@ -460,6 +570,24 @@ sampling windows, trace buffers, and capture artifact finalization. Attaching ca
 control authority. A job may attach a profile resource, but the service lifetime belongs to
 `EmulationSession`.
 
+For the initial refactor, `runtime.capture.attach` passes the existing versioned
+`savor.capture.profile/1` artifact/configuration opaquely to `CaptureService`. The service preserves its
+current parser, validation, subscriptions, filters/predicate bytecode, probe/sample/address-program
+behavior, activation and dynamic watchpoints, PC and post-write memory sampling, sampling order and
+policies, one-shot/max-hit behavior, changed-only and related retention rules, windows, flight
+recorders, trace buffers, queues, drops/coalescing, progress formatting/publication, event order, and
+artifact finalization. Observation/interaction composition may attach, mark, screenshot, or finalize
+such a profile through ordinary actions, but does not reinterpret or lower profile internals into
+program IR.
+
+Profile `control` subscriptions and control-triggered windows, recorders, flags, metrics, and synthetic
+events retain their observable meaning without retaining `ProbeRuntime` control authority.
+`StopPointRouter`/`ExecutionEngine` owns the foreground wake and reports the already-determined active
+control fact on the shared routed event. `CaptureService` passively consumes that same event and
+publishes a control-tagged or synthetic profile event only when the routed hit had an active foreground
+wake/control condition. A capture profile alone cannot pause, resume, arm a foreground wait, step the
+core, or turn an observe-only hit into control.
+
 `TelemetryBus` accepts typed, bounded progress and diagnostics and feeds one serialized worker
 publisher. Telemetry is not authoritative program output unless the program also emits a declared
 record/artifact. Background callbacks never write worker protocol frames directly.
@@ -496,7 +624,10 @@ The target decomposes present authority as follows:
 | VM-owned probe/capture job | Session-owned `CaptureService` attachment resource |
 | VM movie start/stop | `MovieService` resource |
 | `PSContext` domain extraction opcodes | Typed actions from the relevant `soa.*` capability pack |
-| `InputMacroRuntime` and providers as control engine | IR subprograms plus pure reducers and ordinary actions |
+| VM breakpoint/address/baseline observation machinery | Shared semantic-observation composition lowers to scoped router, execution, and registered read/query actions |
+| `InputMacroRuntime` and providers as control engine | Shared interaction composition lowers to IR subprograms, pure reducers, semantic observations, and ordinary actions |
+| VM predicate arming, baseline capture, evaluation, progress, and `AbortOnFail` | Shared compile-time predicate composition consumes semantic observations; pure IR evaluates them and the composing module owns branch/fail/emission policy |
+| Probe profile control waits and profile capture behavior | Router/engine owns wake authority; `CaptureService` passively preserves opaque `savor.capture.profile/1` semantics from the same routed event |
 
 Action handlers are constructed with declared narrow service capabilities. Service implementations may
 use `DolphinBackend`; action code cannot acquire it through downcast, global singleton, or transitive
@@ -565,15 +696,24 @@ Migration implications:
 6. Move savestate/baseline ownership to `StateService` and introduce explicit epoch-tagged handles.
 7. Move raw writes to checked `GuestMutationService`; add executable patch verification and cache/JIT
    invalidation before Navmesh Survey trigger suppression.
-8. Move capture/movie/progress lifetimes out of VM runs and into scoped session services.
-9. Express battle macros through the canonical subprogram/reducer IDs rather than preserving
-   `InputMacroEngine`.
-10. Register game observations in modular packs and delete their domain opcodes after phase parity.
+8. Move movie/progress lifetimes out of VM runs and into scoped session services.
+9. Move capture lifetime behind `CaptureService`, passing existing `savor.capture.profile/1`
+   configurations through unchanged and adapting their control observations to router-owned routed
+   events.
+10. Define semantic points, checked address expressions, registered coherent queries, baselines, and
+    observation uses in capability packs; translate current program/predicate address expressions in
+    memory while leaving capture-profile address programs opaque.
+11. Express battle macros through shared interaction composition and the canonical
+    subprogram/reducer IDs rather than preserving `InputMacroEngine`.
+12. Register game observations in modular packs and delete their domain opcodes after phase parity.
+13. Translate current battle predicate arming, baseline capture, evaluation, and reporting through the
+    shared composition libraries; preserve existing stored records through in-memory adapter translation
+    and remove the VM-specific evaluator after parity.
 
 The temporary legacy adapter may call these actions while translating old programs. It cannot expose
 the old broad host interfaces to new modules.
 
-## Acceptance criteria
+## Service and cleanup checks
 
 - An action cannot be registered without exact types, capabilities/effects, epoch, deadline,
   cancellation, replay, resource, cleanup, and idempotency declarations.
@@ -583,6 +723,15 @@ the old broad host interfaces to new modules.
   random, global mutable state, and session services.
 - A descriptor review fixture rejects whole-phase or unbounded actions and demonstrates the replacement
   as IR plus bounded actions/reducer.
+- Semantic-observation lowering tests cover canonical imports/source maps/hash sensitivity, hit-time
+  versus paused acquisition, explicit post-step behavior, ordered/coherent reads, current-point
+  acceptance, unavailable evidence, baseline policies, and epoch invalidation.
+- Interaction lowering tests cover static/adaptive definitions, exact verifier-known segment choices,
+  input-before-step ordering, both reached-instruction policies, point/sequence/input-epoch matching,
+  request versus neutral-release receipts, neutral witnesses, baseline-before-advance, cancellation,
+  and unwind fault injection.
+- Predicate composition tests prove that all observation effects, subscriptions, branches, and emissions
+  are ordinary verified dependencies and that false remains distinct from unavailable evidence.
 - Every advancement action is observed passing through one `ExecutionEngine`, including stepping and
   input sequences.
 - Multiple logical consumers share one physical PC/memory site; releasing one subscription group leaves
@@ -596,6 +745,9 @@ the old broad host interfaces to new modules.
   invalidation, readback, symmetric restoration, and taint on failure.
 - Capture can observe a site shared with a wake/interceptor without gaining control or owning a
   physical breakpoint.
+- Existing `savor.capture.profile/1` compatibility tests cover every retained parser, sampling,
+  retention, window, flight-recorder, queue/drop/coalescing, progress, ordering, and artifact behavior;
+  control publication remains active-wake-only and shares the router event identity.
 - Cancellation and fault injection at every action phase return all receipts, unwind every scope, and
   taint only when cleanup cannot be proven.
 - Current battle/context/navigation behavior can use the canonical IDs above without a new opcode or
@@ -615,7 +767,9 @@ the old broad host interfaces to new modules.
 - Generalized `eventhook` trigger characterization and allowlisting.
 - Cutscene interception strategy, overworld-specific movement rules, collision-search objectives, and
   navigation settle tolerances.
-- Capture file formats, telemetry retention, and UI presentation.
+- A generalized capture-plan language, alternate capture formats, telemetry retention, and UI
+  presentation. Existing `savor.capture.profile/1` parsing and behavior remain compatibility
+  requirements during this refactor.
 - Additional controllers/ports beyond the initial standard pad, which must still use arbitration.
 
 ## Source references
@@ -637,6 +791,10 @@ the old broad host interfaces to new modules.
 - `SavorCore/Runner/InputMacro/InputMacroRuntime.cpp:84-105`
 - `SavorCore/Runner/InputMacro/InputMacroRuntime.cpp:401-427`
 - `SavorCore/Runner/Breakpoints/BPRegistry.h:15-93`
+- `SavorProbe/ProbeProfile.h:21-225`
+- `SavorProbe/ProbeProfile.cpp:611-1142`
+- `SavorProbe/ProbeRuntime.cpp:199-339`
+- `SavorProbe/ProbeRuntime.cpp:1083-1266`
 - `D:\SoAInvestigate\Analyses\20260723_2107_savor_worker_breakpoint_router\20260723_2107_savor_worker_breakpoint_router_architecture_summary.txt:267-471`
 - `D:\SoAInvestigate\Analyses\20260723_2107_savor_worker_breakpoint_router\20260723_2107_savor_worker_breakpoint_router_architecture_summary.txt:633-729`
 - `D:\SoAInvestigate\Analyses\20260723_2107_savor_worker_breakpoint_router\20260723_2107_savor_worker_breakpoint_router_architecture_summary.txt:812-840`

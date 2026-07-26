@@ -1,15 +1,10 @@
 # Target Execution Architecture
 
-## Status and authority
+## Scope
 
-**Status:** Authoritative target architecture for the breaking Execution Runtime refactor.
-
-This document fixes component responsibilities, authority boundaries, control-flow ownership, and
-worker/session lifecycle. It was drafted against SAVOR commit
-`b584920ffad8dbe770f343e532d7f7386c82fadf` on 2026-07-25.
-
-Current code remains authoritative for behavior that exists today. This document is authoritative for
-the replacement architecture; naming a component here does not mean it has been implemented.
+This document describes the target component responsibilities, authority boundaries, control-flow
+ownership, and worker/session lifecycle. Concrete names and API shapes may adapt as implementation
+evidence develops; the single-owner boundaries and cleanup rules are the constraints to preserve.
 
 This document incorporates the session, execution-engine, router, input-arbitration, state-service, and
 thread-ownership conclusions from the read-only worker breakpoint-router analysis. It supersedes that
@@ -91,7 +86,7 @@ The router analysis records the resulting conflicts in
 These observations are static-analysis evidence. They do not prove that the target components already
 exist.
 
-## Locked target decisions
+## Core architectural constraints
 
 ### Top-level composition
 
@@ -146,6 +141,65 @@ There is one path for program execution:
 No alternate native-controller, input-macro-controller, user-script, or phase-specific execution path
 is permitted.
 
+### Predicate composition boundary
+
+Reusable predicate composition is a module-authoring facility, not another component in the live
+execution graph. The shared library accepts pure typed predicate definitions plus explicit `Check` use
+policies and lowers them into a `ProgramModule`'s ordinary IR, exact imports, scoped resource operations,
+and declared emissions before verification.
+
+At runtime there is no `PredicateRuntime`, predicate scheduler, predicate VM, or predicate-specific
+dispatch path. `ProgramExecutor` executes the lowered control flow, registered actions acquire typed
+observations, and existing session services own emulator advancement and stop subscriptions. A predicate
+definition owns none of those facilities.
+
+### Semantic-observation composition boundary
+
+Semantic observation is also a module-authoring facility rather than a live runtime component.
+Capability packs define logical `SemanticPointDefinition`s and typed address/query definitions; module
+builders bind them through `SemanticAwaitDefinition` and `ObservationUse` policies. Before verification,
+the composer lowers each use into exact imports, scoped router subscriptions, ordinary
+`continue_until`/step/read/query actions, typed values, branches, and declared emissions.
+
+The router may acquire only a bounded `HitTimeSample` needed to qualify or describe a matched hit.
+Ordinary guest reads and coherent domain queries execute while paused through registered actions. A
+post-instruction observation is represented by an explicit execution step followed by another
+observation, not by a hidden acquisition mode. Every point receipt, observation, guest-derived handle,
+and baseline is bound to the current `StateEpoch`; unavailable evidence remains distinct from a false or
+zero value.
+
+There is no `ObservationRuntime`, query VM, observation opcode family, filesystem access, database
+access, or persistence catalog. Predicate composition consumes these typed observations rather than
+reconstructing its own breakpoint/read mechanism.
+
+### Interaction composition boundary
+
+Interaction composition turns a finite set of typed input segments plus pure initialization/advancement
+reducers into ordinary subprogram control flow. A segment binds input acquisition and acknowledgement,
+semantic gates, exact stop receipts, optional held-through-hit behavior, observations/checks, budgets,
+and completion mapping. Reducers may select only segment identities already visible to module
+verification; they cannot dynamically construct effects.
+
+The lowered program holds one input lease across the interaction and uses nested router/observation
+scopes. Input publication, source-stop step-off, exact point matching, request acknowledgement, neutral
+release acknowledgement, and unwind remain explicit action/receipt dependencies. No
+`InteractionRuntime`, `InputMacroEngine`, native phase controller, private cancellation path, or
+whole-macro action is permitted.
+
+### Capture compatibility boundary
+
+The existing `savor.capture.profile/1` document remains an opaque configuration interpreted by
+`CaptureService`. Initially the service preserves its parser, filters, predicate bytecode, address
+programs, dynamic watchpoints, PC/post-write sampling, sampling order and retention policies, windows,
+flight recorders, queues/drop/coalescing behavior, progress/event ordering, and artifact finalization.
+This refactor does not replace that language with a generalized capture plan.
+
+`CaptureService` is passive. `StopPointRouter` and `ExecutionEngine` own wake/control authority, while
+capture observes the same matched routed event so existing profile control subscriptions, flags,
+metrics, control-triggered windows/recorders, and synthetic control events retain their meaning. One
+routed hit carries the same sequence, snapshot, and epoch identity through control, capture, and
+progress views.
+
 ### Component responsibilities
 
 | Component | Sole responsibilities | Explicitly forbidden responsibilities |
@@ -174,7 +228,9 @@ The following are architectural constraints, not conventions:
 5. `InputArbiter` is the only component that may publish controller state to Dolphin.
 6. `StateService` is the only component that may boot, reboot, load, restore, or save emulation state.
 7. `GuestMutationService` is the only program-facing path for guest data writes or executable patches.
-8. `MovieService` owns movie start/stop state; `CaptureService` owns capture attachment and publication.
+8. `MovieService` owns movie start/stop state; passive `CaptureService` owns existing-profile
+   interpretation, capture attachment, observation, publication, and artifact finalization, but cannot
+   create a foreground control wait or advance/pause emulation.
 9. Programs, action handlers, reducers, capability packs, visual readers, transport callbacks, and
    background workers cannot call `DolphinBackend` directly.
 10. Every emulator-advancing operation remains under `StopPointRouter` supervision, including instruction
@@ -267,13 +323,19 @@ A new phase that can be expressed with existing actions and schemas shall requir
 
 - a new or revised `ProgramModule`;
 - its typed input/output/emission schemas; and
+- reusable predicate definitions or `Check` uses composed through the shared frontend library where
+  useful;
+- reusable semantic points, awaits, observations, and interaction definitions/uses composed through the
+  shared frontend libraries where useful; and
 - program-kind handler or adjacent integration-adapter mappings through existing SavorDb interfaces and
   stored representations.
 
 It shall not require a change to `WorkerRuntime`, `ProgramRuntime`, `ProgramExecutor`,
 `ExecutionEngine`, `StopPointRouter`, worker transport core, or a central opcode table. A genuinely new
 machine/game capability may add a bounded action and capability-pack implementation, but does not add an
-executor or controller.
+executor or controller. Adding or reusing a predicate changes only the composing module and its exact
+action, reducer, type, and capability dependencies. The same is true for semantic observations and
+interaction segments.
 
 ## Interfaces and ownership affected
 
@@ -291,7 +353,7 @@ executor or controller.
 | `InputArbiter` | Through input actions | Leases, pad publication, poll acknowledgement, neutral release |
 | `StateService` | Through state actions and invocation state policy | Boot/load/save/snapshot handles and `StateEpoch` |
 | `MovieService` | Through movie actions | Playback/recording session state |
-| `CaptureService` | Through capture actions | Profiles, observations, recorder lifecycle, artifact finalization |
+| `CaptureService` | Through capture actions | Opaque existing profile semantics, passive routed-hit observation, recorder lifecycle, publication, artifact finalization |
 | `TelemetryBus` | Through bounded emit actions | Ordered progress/diagnostic events, serialized publication |
 | `GameRuntime` | Through named capability packs | Skies-specific address catalogs, queries, actions, and schemas |
 
@@ -406,7 +468,7 @@ legacy programs for a bounded migration window, and remove the legacy interprete
 No new phase, including Navmesh Survey, should be implemented on a temporary controller path while this
 cutover is underway.
 
-## Acceptance criteria
+## Architecture checks
 
 - Static dependency checks make it impossible for programs, reducers, action handlers, capability packs,
   visual readers, or protocol callbacks to call `DolphinBackend` directly.
@@ -425,6 +487,14 @@ cutover is underway.
   patch, movie, capture, router, or epoch-bound resources.
 - Current phase parity can be measured through the new path without running a second permanent executor.
 - Adding a phase that uses existing capabilities changes no central runtime component or opcode switch.
+- A predicate-composed module normalizes to the same verified IR/action path as an equivalent
+  hand-composed module and leaves no predicate-specific runtime dispatch.
+- Semantic-observation and interaction compositions normalize to the same verified IR/action path as
+  equivalent hand-composed modules and leave no observation- or interaction-specific runtime dispatch.
+- Router hit-time samples are bounded; paused reads and coherent queries use registered actions, and
+  state replacement invalidates every outstanding receipt, observation, derived handle, and baseline.
+- Existing capture profiles retain profile-visible sampling, window, recorder, progress, control-event,
+  queue, and artifact behavior without giving `CaptureService` execution authority.
 
 ## Deferred work
 
