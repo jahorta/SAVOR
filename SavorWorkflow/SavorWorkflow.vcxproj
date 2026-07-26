@@ -138,6 +138,7 @@
     <ClInclude Include="Execution\WorkflowSchedulerAdapter.h" />
     <ClInclude Include="Worker\ProcessWorker.h" />
     <ClInclude Include="Worker\TSQueue.h" />
+    <ClInclude Include="Worker\WorkerCapabilityPreflight.h" />
     <ClInclude Include="Worker\WorkerStatusRegistry.h" />
     <ClInclude Include="Worker\WorkerTelemetry.h" />
   </ItemGroup>
@@ -151,6 +152,7 @@
     <ClCompile Include="Execution\WorkflowDispatchCoordinator.cpp" />
     <ClCompile Include="Execution\WorkflowSchedulerAdapter.cpp" />
     <ClCompile Include="Worker\ProcessWorker.cpp" />
+    <ClCompile Include="Worker\WorkerCapabilityPreflight.cpp" />
     <ClCompile Include="Worker\WorkerStatusRegistry.cpp" />
   </ItemGroup>
   <ItemGroup>

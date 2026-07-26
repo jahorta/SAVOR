@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <optional>
@@ -39,6 +40,57 @@ struct ProgressDedupState {
     std::size_t duplicate_count = 0;
     bool warning_written = false;
 };
+
+struct CapabilityPreflightEvaluation {
+    bool ready = false;
+    bool non_retryable = false;
+    bool invocation_missing = false;
+    bool interactive_visual_debug_missing = false;
+    std::string error;
+};
+
+CapabilityPreflightEvaluation EvaluateCapabilityPreflight(
+    const CoordinatorWorkerCapabilityPreflightResult& preflight,
+    bool require_interactive_visual_debug) {
+    CapabilityPreflightEvaluation evaluation;
+    if (!preflight.process_ready) {
+        evaluation.error = preflight.error.empty()
+            ? "worker was not process-ready"
+            : preflight.error;
+        return evaluation;
+    }
+
+    if (!savor::runtime::HasCapability(
+            preflight.capabilities,
+            savor::runtime::WorkerCapability::ProgramInvocation)) {
+        evaluation.non_retryable = true;
+        evaluation.invocation_missing = true;
+        evaluation.error = preflight.error.empty()
+            ? "worker does not advertise ProgramInvocation"
+            : preflight.error;
+        return evaluation;
+    }
+
+    if (require_interactive_visual_debug
+        && !savor::runtime::HasCapability(
+            preflight.capabilities,
+            savor::runtime::WorkerCapability::InteractiveVisualDebug)) {
+        evaluation.non_retryable = true;
+        evaluation.interactive_visual_debug_missing = true;
+        evaluation.error = preflight.error.empty()
+            ? "interactive visual debugging is unavailable until Dependency Slice 3"
+            : preflight.error;
+        return evaluation;
+    }
+
+    if (!preflight.error.empty()) {
+        evaluation.error = preflight.error;
+        return evaluation;
+    }
+
+    evaluation.ready = true;
+    return evaluation;
+}
 
 std::string FormatWorkerStopSnapshot(const savor::ProcessWorkerStopSnapshot& snapshot) {
     std::ostringstream detail;
@@ -880,11 +932,24 @@ bool DBWorkflowWorkerCoordinator::PrepareRuntimeSlotForWorker(
     return true;
 }
 
-void DBWorkflowWorkerCoordinator::Start() {
+CoordinatorStartResult DBWorkflowWorkerCoordinator::Start() {
+    std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mtx_);
+    std::lock_guard<std::mutex> start_lock(start_mtx_);
+    if (start_attempted_) {
+        return last_start_result_;
+    }
+    start_attempted_ = true;
+
     if (worker_job_thread_.joinable() || worker_lifecycle_thread_.joinable()) {
-        return;
+        last_start_result_ = CoordinatorStartResult{
+            .status = CoordinatorStartStatus::Started,
+            .ready_invocation_capable_workers = ReadyInvocationCapableWorkerCount(),
+            .non_retryable = false,
+        };
+        return last_start_result_;
     }
 
+    data_plane_enabled_.store(false, std::memory_order_release);
     {
         std::lock_guard<std::mutex> lock(runtime_preparation_mtx_);
         prepared_runtime_worker_exe_.reset();
@@ -929,17 +994,259 @@ void DBWorkflowWorkerCoordinator::Start() {
         RegisterWorkerSlotTelemetry(*slot);
     }
 
+    size_t ready_invocation_capable_workers = 0;
+    bool any_process_ready = false;
+    bool saw_invocation_capability_mismatch = false;
+    bool saw_interactive_visual_debug_capability_mismatch = false;
+    std::vector<std::string> preflight_errors;
+    std::vector<std::shared_ptr<savor::ProcessWorker>>
+        rejected_preflight_workers;
+    preflight_errors.reserve(initial_slots.size());
+    rejected_preflight_workers.reserve(initial_slots.size());
+    const auto max_start_attempts =
+        std::max<std::uint32_t>(1u, worker_cfg_.max_worker_start_attempts);
+    for (const auto& slot : initial_slots) {
+        const auto preflight = RunWorkerCapabilityPreflightForSlot(slot);
+        const auto evaluation = EvaluateCapabilityPreflight(
+            preflight,
+            worker_cfg_.visual_debug_workers);
+
+        {
+            std::lock_guard<std::mutex> slot_lock(slot->mtx);
+            slot->capabilities = preflight.capabilities;
+            slot->ready.store(evaluation.ready, std::memory_order_release);
+            if (evaluation.ready) {
+                slot->last_start_error.clear();
+            } else {
+                slot->last_start_error = evaluation.error;
+                slot->start_attempted = true;
+                slot->start_attempts = evaluation.non_retryable
+                    ? max_start_attempts
+                    : 1u;
+                slot->next_start_after = std::chrono::steady_clock::now()
+                    + std::chrono::milliseconds(
+                        worker_cfg_.worker_start_retry_backoff_ms);
+                if (slot->worker) {
+                    rejected_preflight_workers.push_back(
+                        std::move(slot->worker));
+                }
+                slot->worker = std::make_shared<savor::ProcessWorker>();
+                slot->worker->set_progress_queue(&progress_q_);
+            }
+            RegisterWorkerSlotTelemetry(*slot);
+        }
+
+        if (preflight.process_ready) {
+            any_process_ready = true;
+        }
+        saw_invocation_capability_mismatch |= evaluation.invocation_missing;
+        saw_interactive_visual_debug_capability_mismatch |=
+            evaluation.interactive_visual_debug_missing;
+        if (evaluation.ready) {
+            ++ready_invocation_capable_workers;
+        } else {
+            std::ostringstream error;
+            error << "worker " << slot->id << ": " << evaluation.error;
+            preflight_errors.push_back(error.str());
+        }
+    }
+    for (const auto& worker : rejected_preflight_workers) {
+        if (worker) {
+            worker->stop();
+        }
+    }
+
+    if (ready_invocation_capable_workers == 0) {
+        std::ostringstream error;
+        if (saw_interactive_visual_debug_capability_mismatch
+            && !saw_invocation_capability_mismatch) {
+            error
+                << "no ready worker advertises InteractiveVisualDebug";
+        } else {
+            error << "no ready worker advertises ProgramInvocation";
+        }
+        for (const auto& preflight_error : preflight_errors) {
+            error << "; " << preflight_error;
+        }
+        const auto status = saw_invocation_capability_mismatch
+            ? CoordinatorStartStatus::ProgramInvocationUnavailable
+            : saw_interactive_visual_debug_capability_mismatch
+                ? CoordinatorStartStatus::InteractiveVisualDebugUnavailable
+                : CoordinatorStartStatus::CapabilityPreflightFailed;
+        return FailStart(
+            any_process_ready
+                ? status
+                : CoordinatorStartStatus::CapabilityPreflightFailed,
+            error.str(),
+            std::move(initial_slots));
+    }
+
+    data_plane_enabled_.store(true, std::memory_order_release);
     progress_drainer_thread_ = std::thread([this]() { DrainProgressLoop(); });
     results_drainer_thread_ = std::thread([this]() { DrainResultsLoop(); });
     job_materializer_thread_ = std::thread([this]() { job_materialization_service_.MaterializeClaimedJobPayloadLoop(stop_); });
     worker_lifecycle_thread_ = std::thread([this]() { WorkerLifecycleCoordinatorLoop(); });
     worker_job_thread_ = std::thread([this]() { WorkerJobCoordinatorLoop(); });
+
+    last_start_result_ = CoordinatorStartResult{
+        .status = CoordinatorStartStatus::Started,
+        .ready_invocation_capable_workers = ready_invocation_capable_workers,
+        .non_retryable = false,
+    };
+    return last_start_result_;
+}
+
+CoordinatorWorkerCapabilityPreflightResult
+DBWorkflowWorkerCoordinator::RunWorkerCapabilityPreflightForSlot(
+    const WorkerSlotPtr& slot) {
+    CoordinatorWorkerCapabilityPreflightResult preflight{};
+    std::size_t worker_id = 0;
+    std::shared_ptr<savor::ProcessWorker> worker;
+    if (slot) {
+        std::lock_guard<std::mutex> slot_lock(slot->mtx);
+        worker_id = slot->id;
+        worker = slot->worker;
+    }
+    try {
+        preflight = worker_cfg_.worker_capability_preflight
+            ? worker_cfg_.worker_capability_preflight(
+                worker_id,
+                worker_cfg_,
+                worker)
+            : PreflightWorkerSlot(slot);
+    } catch (const std::exception& ex) {
+        preflight.error = std::string("preflight threw: ") + ex.what();
+    } catch (...) {
+        preflight.error = "preflight threw an unknown exception";
+    }
+    return preflight;
+}
+
+CoordinatorWorkerCapabilityPreflightResult
+DBWorkflowWorkerCoordinator::PreflightWorkerSlot(const WorkerSlotPtr& slot) {
+    std::size_t worker_id = 0;
+    std::shared_ptr<savor::ProcessWorker> worker;
+    if (slot) {
+        std::lock_guard<std::mutex> slot_lock(slot->mtx);
+        worker_id = slot->id;
+        worker = slot->worker;
+    }
+    if (!slot || !worker) {
+        return {
+            .process_ready = false,
+            .error = "worker slot is unavailable for capability preflight",
+        };
+    }
+
+    std::filesystem::path runtime_worker_exe;
+    std::string error;
+    if (!PrepareRuntimeSlotForWorker(
+            worker_id,
+            &runtime_worker_exe,
+            &error)) {
+        return {
+            .process_ready = false,
+            .error = "worker runtime setup failed: " + error,
+        };
+    }
+
+    const auto worker_root =
+        std::filesystem::path(worker_cfg_.worker_dir_root)
+        / ("workflow-worker-" + std::to_string(worker_id));
+    if (!worker->launch_and_negotiate(
+            savor::ProcessLaunchOptions{
+                .worker_id = worker_id,
+                .exe_path = runtime_worker_exe.string(),
+                .log_directory = worker_root.string(),
+                .hello_timeout_ms = worker_cfg_.worker_start_timeout_ms,
+            },
+            &error)) {
+        return {
+            .process_ready = false,
+            .error = error.empty()
+                ? "worker launch or WRMS negotiation failed"
+                : error,
+        };
+    }
+
+    const auto capabilities = worker->process_capabilities();
+    if (!savor::runtime::HasCapability(
+            capabilities,
+            savor::runtime::WorkerCapability::ProgramInvocation)) {
+        return {
+            .process_ready = true,
+            .capabilities = capabilities,
+            .error =
+                "RuntimeUnavailable: canonical ProgramRuntime capability "
+                "is not implemented",
+        };
+    }
+    if (worker_cfg_.visual_debug_workers
+        && !savor::runtime::HasCapability(
+            capabilities,
+            savor::runtime::WorkerCapability::InteractiveVisualDebug)) {
+        return {
+            .process_ready = true,
+            .capabilities = capabilities,
+            .error =
+                "interactive visual debugging is deferred to Dependency Slice 3",
+        };
+    }
+
+    const auto user_directory = worker_root / "User";
+    std::error_code ec;
+    std::filesystem::create_directories(user_directory, ec);
+    if (ec) {
+        return {
+            .process_ready = false,
+            .capabilities = capabilities,
+            .error = "create worker user directory failed: " + ec.message(),
+        };
+    }
+
+    std::uint64_t render_widget_handle = 0;
+    {
+        std::lock_guard<std::mutex> slot_lock(slot->mtx);
+        render_widget_handle = slot->visual_render_widget_handle;
+    }
+    savor::wrms::OpenSessionResultPayload open_result;
+    if (!worker->open_session(
+            savor::ProcessOpenSessionOptions{
+                .runtime_root = runtime_worker_exe.parent_path().string(),
+                .user_directory = user_directory.string(),
+                .iso_path = worker_cfg_.iso_path,
+                .visual = worker_cfg_.visual_workers,
+                .render_widget_handle = render_widget_handle,
+                .screenshot_directory =
+                    worker_cfg_.visual_screenshot_dir,
+                .screenshot_timeout_ms = 5000,
+                .screenshot_on_terminal =
+                    !worker_cfg_.visual_screenshot_dir.empty(),
+            },
+            &open_result,
+            &error,
+            worker_cfg_.worker_start_timeout_ms)) {
+        return {
+            .process_ready = false,
+            .capabilities = capabilities,
+            .error = error.empty()
+                ? "worker OpenSession failed"
+                : error,
+        };
+    }
+
+    return {
+        .process_ready = true,
+        .capabilities = open_result.capability_mask,
+    };
 }
 
 void DBWorkflowWorkerCoordinator::Stop() {
+    std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mtx_);
     if (stop_started_.exchange(true)) {
         return;
     }
+    data_plane_enabled_.store(false, std::memory_order_release);
     EmitShutdownPhase("stop_requested");
     stop_.store(true);
     queue_cv_.notify_all();
@@ -1021,6 +1328,76 @@ void DBWorkflowWorkerCoordinator::Stop() {
         dispatched_job_context_by_id_.clear();
     }
     EmitShutdownPhase("stop_complete");
+    {
+        std::lock_guard<std::mutex> start_lock(start_mtx_);
+        start_attempted_ = false;
+    }
+}
+
+CoordinatorStartResult DBWorkflowWorkerCoordinator::SnapshotStartResult() const {
+    std::lock_guard<std::mutex> start_lock(start_mtx_);
+    return last_start_result_;
+}
+
+bool DBWorkflowWorkerCoordinator::IsDataPlaneEnabled() const noexcept {
+    return data_plane_enabled_.load(std::memory_order_acquire);
+}
+
+size_t DBWorkflowWorkerCoordinator::ReadyInvocationCapableWorkerCount() const {
+    size_t count = 0;
+    const auto slots = CopyWorkerSlots();
+    for (const auto& slot : slots) {
+        if (!slot) {
+            continue;
+        }
+        std::lock_guard<std::mutex> slot_lock(slot->mtx);
+        if (slot->ready.load(std::memory_order_acquire)
+            && savor::runtime::HasCapability(
+                slot->capabilities,
+                savor::runtime::WorkerCapability::ProgramInvocation)) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+CoordinatorStartResult DBWorkflowWorkerCoordinator::FailStart(
+    CoordinatorStartStatus status,
+    std::string error,
+    std::vector<WorkerSlotPtr> slots_to_stop) {
+    data_plane_enabled_.store(false, std::memory_order_release);
+    stop_.store(true, std::memory_order_release);
+    for (const auto& slot : slots_to_stop) {
+        if (!slot) {
+            continue;
+        }
+        std::shared_ptr<savor::ProcessWorker> worker;
+        {
+            std::lock_guard<std::mutex> slot_lock(slot->mtx);
+            slot->ready.store(false, std::memory_order_release);
+            slot->capabilities = 0;
+            worker = std::move(slot->worker);
+            worker_status_.UpdateState(static_cast<std::int64_t>(slot->id), WorkerStateKind::Dead);
+            worker_status_.UnregisterWorker(static_cast<std::int64_t>(slot->id));
+        }
+        if (worker) {
+            worker->stop();
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lock(workers_mtx_);
+        workers_.clear();
+        worker_slot_count_.store(0, std::memory_order_relaxed);
+    }
+    last_start_result_ = CoordinatorStartResult{
+        .status = status,
+        .ready_invocation_capable_workers = 0,
+        .non_retryable = status == CoordinatorStartStatus::CapabilityPreflightUnavailable
+            || status == CoordinatorStartStatus::ProgramInvocationUnavailable
+            || status == CoordinatorStartStatus::InteractiveVisualDebugUnavailable,
+        .error = std::move(error),
+    };
+    return last_start_result_;
 }
 
 void DBWorkflowWorkerCoordinator::SetPaused(bool paused) {
@@ -1056,7 +1433,7 @@ void DBWorkflowWorkerCoordinator::SetWorkflowCreatedCallback(WorkflowCoordinator
 }
 
 bool DBWorkflowWorkerCoordinator::PublishTerminalJobSet(const TerminalJobSetSignal& signal) {
-    if (!integration_cfg_.workflow_enabled) {
+    if (!IsDataPlaneEnabled() || !integration_cfg_.workflow_enabled) {
         return false;
     }
 
@@ -1069,7 +1446,7 @@ bool DBWorkflowWorkerCoordinator::PublishTerminalJobSet(const TerminalJobSetSign
 }
 
 bool DBWorkflowWorkerCoordinator::PublishWorkflowCreated(const WorkflowCreatedSignal& signal) {
-    if (!integration_cfg_.workflow_enabled) {
+    if (!IsDataPlaneEnabled() || !integration_cfg_.workflow_enabled) {
         return false;
     }
 
@@ -1082,6 +1459,9 @@ bool DBWorkflowWorkerCoordinator::PublishWorkflowCreated(const WorkflowCreatedSi
 }
 
 void DBWorkflowWorkerCoordinator::EnqueueReadyStep(const WorkflowReadyStep& step) {
+    if (!IsDataPlaneEnabled()) {
+        return;
+    }
     std::lock_guard<std::mutex> lock(queue_mtx_);
     const auto key = ReadyDedupKey(step.workflow_step_id);
     if (!seen_ready_step_ids_.emplace(key).second) {
@@ -1092,7 +1472,7 @@ void DBWorkflowWorkerCoordinator::EnqueueReadyStep(const WorkflowReadyStep& step
 }
 
 std::optional<ScheduledJobSet> DBWorkflowWorkerCoordinator::MaterializeWorkflowStep(const WorkflowReadyStep& step) {
-    if (!integration_cfg_.workflow_enabled) {
+    if (!IsDataPlaneEnabled() || !integration_cfg_.workflow_enabled) {
         return std::nullopt;
     }
 
@@ -1108,7 +1488,7 @@ std::optional<ScheduledJobSet> DBWorkflowWorkerCoordinator::MaterializeWorkflowS
 }
 
 std::optional<ScheduledJobSet> DBWorkflowWorkerCoordinator::MaterializeWorkflowStepInternal(const WorkflowReadyStep& step) {
-    if (!schedule_ready_step_fn_) {
+    if (!IsDataPlaneEnabled() || !schedule_ready_step_fn_) {
         return std::nullopt;
     }
 
@@ -1186,6 +1566,9 @@ bool DBWorkflowWorkerCoordinator::SendJobToWorker(
     size_t worker_idx,
     uint64_t job_id,
     const savor::PSJob& job) {
+    if (!IsDataPlaneEnabled()) {
+        return false;
+    }
     const auto slot_handle = GetWorkerSlot(worker_idx);
     if (!slot_handle) {
         return false;
@@ -1214,6 +1597,9 @@ bool DBWorkflowWorkerCoordinator::SendJobToWorker(
 }
 
 bool DBWorkflowWorkerCoordinator::DispatchClaimedJobToWorker(size_t worker_idx, const ClaimedJobRecord& claimed_job) {
+    if (!IsDataPlaneEnabled()) {
+        return false;
+    }
     const auto job_id = claimed_job.job_id;
     if (adapter_chain_orchestrator_) {
         savor::db::execution::workflow::AdapterChainTrace trace{};
@@ -1272,6 +1658,9 @@ bool DBWorkflowWorkerCoordinator::DispatchNextEligibleForWorker(
     size_t worker_idx,
     const MaterializedJobSelectionAffinity& worker_affinity,
     std::chrono::steady_clock::time_point now) {
+    if (!IsDataPlaneEnabled()) {
+        return false;
+    }
     ClaimedJobRecord candidate{};
     if (!job_materialization_service_.TrySelectMaterializedJobForWorker(worker_affinity, &candidate)) {
         return false;
@@ -1326,6 +1715,9 @@ bool DBWorkflowWorkerCoordinator::DispatchNextEligibleForWorker(
 }
 
 void DBWorkflowWorkerCoordinator::HandlePayloadMaterializationFailures() {
+    if (!IsDataPlaneEnabled()) {
+        return;
+    }
     for (const auto& failed_payload : job_materialization_service_.ListByState(ClaimedJobLifecycleState::MaterializationFailed)) {
         ++payload_materialization_failure_count_;
         std::ostringstream message;
@@ -1353,6 +1745,9 @@ void DBWorkflowWorkerCoordinator::HandlePayloadMaterializationFailures() {
 }
 
 void DBWorkflowWorkerCoordinator::MaintainMaterializerClaims(std::chrono::steady_clock::time_point now) {
+    if (!IsDataPlaneEnabled()) {
+        return;
+    }
     constexpr auto kLeaseMaintenanceCadence = std::chrono::seconds(10);
     constexpr auto kLeaseDuration = std::chrono::seconds(30);
 
@@ -1395,6 +1790,9 @@ void DBWorkflowWorkerCoordinator::MaintainMaterializerClaims(std::chrono::steady
 }
 
 bool DBWorkflowWorkerCoordinator::EnsureWorkerProgramForJob(size_t worker_idx, const ClaimedJobRecord& claimed_job) {
+    if (!IsDataPlaneEnabled()) {
+        return false;
+    }
     if (claimed_job.program_kind <= 0) {
         return false;
     }
@@ -1450,20 +1848,6 @@ bool DBWorkflowWorkerCoordinator::EnsureWorkerProgramForJob(size_t worker_idx, c
         MarkWorkerError(slot, "ctl_activate_main failed");
         return false;
     }
-    if (worker_cfg_.visual_debug_workers && worker_cfg_.auto_resume_visual_workers) {
-        bool resumed = false;
-        for (int attempt = 0; attempt < 20 && !resumed; ++attempt) {
-            resumed = slot.worker->visual_resume_emulation();
-            if (!resumed) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            }
-        }
-        if (!resumed) {
-            MarkWorkerError(slot, "visual resume failed");
-            return false;
-        }
-    }
-
     if (switches_program_kind) {
         ++slot.program_kind_switch_count;
     }
@@ -1538,10 +1922,16 @@ void DBWorkflowWorkerCoordinator::SetResultMapEventCallback(ResultMapEventCallba
 }
 
 void DBWorkflowWorkerCoordinator::EnqueueProgressForTest(const savor::PRProgress& progress) {
+    if (!IsDataPlaneEnabled()) {
+        return;
+    }
     progress_q_.push(progress);
 }
 
 void DBWorkflowWorkerCoordinator::EnqueueResultForTest(const savor::PRResult& result) {
+    if (!IsDataPlaneEnabled()) {
+        return;
+    }
     results_q_.push(result);
 }
 
@@ -1557,12 +1947,12 @@ PRStatus DBWorkflowWorkerCoordinator::SnapshotStatus() const {
     PRStatus status{};
     status.epoch = epoch_.load();
     status.workers = ActiveWorkerCount();
+    status.ready_workers = ReadyInvocationCapableWorkerCount();
 
     std::lock_guard<std::mutex> lock(queue_mtx_);
     status.queued_jobs = ready_queue_.size();
     status.running_workers = materialized_count_;
     status.pending_start_workers = terminal_published_count_;
-    status.ready_workers = status.workers;
     return status;
 }
 
@@ -1651,135 +2041,44 @@ bool DBWorkflowWorkerCoordinator::SetWorkerVisualSurface(
 }
 
 bool DBWorkflowWorkerCoordinator::StartVisualDebugReplay(
-    std::int64_t job_id,
-    uint64_t render_widget_handle,
-    std::string host_events_pipe_name,
+    std::int64_t,
+    uint64_t,
+    std::string,
     std::string* error_out) {
-    if (job_id <= 0) {
-        if (error_out) *error_out = "job id must be positive";
-        return false;
+    if (error_out) {
+        *error_out =
+            "interactive visual debugging is unavailable until "
+            "Dependency Slice 3";
     }
-    if (render_widget_handle == 0) {
-        if (error_out) *error_out = "render widget handle is required";
-        return false;
-    }
-    if (worker_cfg_.worker_exe_path.empty() || worker_cfg_.iso_path.empty() || worker_cfg_.worker_dir_root.empty()) {
-        if (error_out) *error_out = "worker configuration is incomplete";
-        return false;
-    }
-
-    StopVisualDebugReplay();
-
-    std::lock_guard<std::mutex> lock(visual_debug_mtx_);
-    const auto session_id = next_visual_debug_session_id_++;
-    auto session = std::make_unique<VisualDebugSession>();
-    session->session_id = session_id;
-    session->job_id = job_id;
-    session->worker_id = static_cast<size_t>(1000000 + session_id);
-    session->render_widget_handle = render_widget_handle;
-    session->host_events_pipe_name = std::move(host_events_pipe_name);
-    session->worker = std::make_unique<savor::ProcessWorker>();
-    SetVisualDebugState(*session, VisualReplayRuntimeState::QueuedStartup, "visual debug replay queued");
-    visual_debug_results_q_.reset();
-    visual_debug_session_ = std::move(session);
-    visual_debug_session_->thread = std::thread([this, session_id]() {
-        VisualDebugReplayThread(session_id);
-    });
-
-    if (error_out) error_out->clear();
-    return true;
+    return false;
 }
 
 bool DBWorkflowWorkerCoordinator::StopVisualDebugReplay() {
-    std::thread thread_to_join;
-    bool had_session = false;
-    {
-        std::lock_guard<std::mutex> lock(visual_debug_mtx_);
-        if (!visual_debug_session_) {
-            visual_debug_results_q_.reset();
-            return false;
-        }
-        had_session = true;
-        visual_debug_session_->stop_requested = true;
-        SetVisualDebugState(*visual_debug_session_, VisualReplayRuntimeState::Stopping, "visual debug replay stopped");
-        if (visual_debug_session_->worker) {
-            visual_debug_session_->worker->stop();
-        }
-        visual_debug_results_q_.close();
-        if (visual_debug_session_->thread.joinable()
-            && visual_debug_session_->thread.get_id() != std::this_thread::get_id()) {
-            thread_to_join = std::move(visual_debug_session_->thread);
-        }
-    }
-
-    if (thread_to_join.joinable()) {
-        thread_to_join.join();
-    }
-
-    {
-        std::lock_guard<std::mutex> lock(visual_debug_mtx_);
-        if (visual_debug_session_ && visual_debug_session_->thread.joinable()
-            && visual_debug_session_->thread.get_id() == std::this_thread::get_id()) {
-            visual_debug_session_->thread.detach();
-        }
-        visual_debug_session_.reset();
-        visual_debug_results_q_.reset();
-    }
-    return had_session;
+    return false;
 }
 
 bool DBWorkflowWorkerCoordinator::PauseVisualDebugReplayEmulation() {
-    std::lock_guard<std::mutex> lock(visual_debug_mtx_);
-    if (!visual_debug_session_ || !visual_debug_session_->worker) {
-        return false;
-    }
-    return visual_debug_session_->worker->visual_pause_emulation();
+    return false;
 }
 
 bool DBWorkflowWorkerCoordinator::ResumeVisualDebugReplayEmulation() {
-    std::lock_guard<std::mutex> lock(visual_debug_mtx_);
-    if (!visual_debug_session_ || !visual_debug_session_->worker) {
-        return false;
-    }
-    return visual_debug_session_->worker->visual_resume_emulation();
+    return false;
 }
 
 bool DBWorkflowWorkerCoordinator::StepVisualDebugReplayVm() {
-    std::lock_guard<std::mutex> lock(visual_debug_mtx_);
-    if (!visual_debug_session_ || !visual_debug_session_->worker) {
-        return false;
-    }
-    return visual_debug_session_->worker->visual_step_vm();
+    return false;
 }
 
 VisualDebugReplaySnapshot DBWorkflowWorkerCoordinator::SnapshotVisualDebugReplay() const {
-    std::lock_guard<std::mutex> lock(visual_debug_mtx_);
-    if (!visual_debug_session_) {
-        return {};
-    }
-    return VisualDebugReplaySnapshot{
-        .active = true,
-        .session_id = visual_debug_session_->session_id,
-        .job_id = visual_debug_session_->job_id,
-        .worker_id = static_cast<std::int64_t>(visual_debug_session_->worker_id),
-        .state = visual_debug_session_->state,
-        .detail = visual_debug_session_->detail,
-        .controls_enabled = visual_debug_session_->controls_enabled,
-    };
+    return {};
 }
 
 std::vector<std::string> DBWorkflowWorkerCoordinator::TakeVisualDebugLogLines() {
-    std::lock_guard<std::mutex> lock(visual_debug_mtx_);
-    if (!visual_debug_session_) {
-        return {};
-    }
-    std::vector<std::string> lines;
-    lines.swap(visual_debug_session_->pending_log_lines);
-    return lines;
+    return {};
 }
 
 void DBWorkflowWorkerCoordinator::WorkerJobCoordinatorLoop() {
-    while (!stop_.load()) {
+    while (!stop_.load() && IsDataPlaneEnabled()) {
         if (paused_.load()) {
             std::unique_lock<std::mutex> lock(queue_mtx_);
             queue_cv_.wait_for(lock, std::chrono::milliseconds(50));
@@ -1789,7 +2088,7 @@ void DBWorkflowWorkerCoordinator::WorkerJobCoordinatorLoop() {
         const auto now = std::chrono::steady_clock::now();
         RecoverDeadInFlightWorkers();
         MaintainMaterializerClaims(now);
-        const auto worker_target = ActiveWorkerCount();
+        const auto worker_target = ReadyInvocationCapableWorkerCount();
         const auto buffered = job_materialization_service_.CountBufferedJobs();
         const auto materialized_before_claim = job_materialization_service_.CountMaterializedJobs();
         if (buffered >= worker_target || materialized_before_claim > 0) {
@@ -1872,6 +2171,9 @@ void DBWorkflowWorkerCoordinator::WorkerJobCoordinatorLoop() {
 }
 
 void DBWorkflowWorkerCoordinator::RecoverDeadInFlightWorkers() {
+    if (!IsDataPlaneEnabled()) {
+        return;
+    }
     struct LostJob {
         size_t worker_idx = 0;
         std::uint64_t job_id = 0;
@@ -1992,7 +2294,7 @@ void DBWorkflowWorkerCoordinator::RecoverDeadInFlightWorkers() {
 }
 
 void DBWorkflowWorkerCoordinator::WorkerLifecycleCoordinatorLoop() {
-    while (!stop_.load()) {
+    while (!stop_.load() && IsDataPlaneEnabled()) {
         ReconcileWorkerPool();
 
         std::unique_lock<std::mutex> lock(queue_mtx_);
@@ -2002,7 +2304,7 @@ void DBWorkflowWorkerCoordinator::WorkerLifecycleCoordinatorLoop() {
 }
 
 void DBWorkflowWorkerCoordinator::ProcessReadyWorkflowStep(const WorkflowReadyStep& step) {
-    if (!integration_cfg_.workflow_enabled) {
+    if (!IsDataPlaneEnabled() || !integration_cfg_.workflow_enabled) {
         return;
     }
 
@@ -2065,7 +2367,9 @@ void DBWorkflowWorkerCoordinator::ProcessReadyWorkflowStep(const WorkflowReadySt
 }
 
 bool DBWorkflowWorkerCoordinator::CompleteNoWorkWorkflowStep(const WorkflowReadyStep& step) const {
-    if (execution_db_ == nullptr || execution_db_->WorkflowCommandService() == nullptr) {
+    if (!IsDataPlaneEnabled()
+        || execution_db_ == nullptr
+        || execution_db_->WorkflowCommandService() == nullptr) {
         return false;
     }
 
@@ -2146,6 +2450,9 @@ bool DBWorkflowWorkerCoordinator::CompleteNoWorkWorkflowStep(const WorkflowReady
 }
 
 void DBWorkflowWorkerCoordinator::DrainProgressLoop() {
+    if (!IsDataPlaneEnabled()) {
+        return;
+    }
     constexpr std::size_t kMaxBatchSize = 64;
     std::unordered_map<std::size_t, ProgressDedupState> progress_dedup_by_worker;
 
@@ -2197,6 +2504,9 @@ void DBWorkflowWorkerCoordinator::DrainProgressLoop() {
 
     savor::PRProgress progress;
     while (progress_q_.pop_wait(progress)) {
+        if (!IsDataPlaneEnabled()) {
+            continue;
+        }
         std::vector<savor::PRProgress> batch;
         batch.reserve(kMaxBatchSize);
         batch.push_back(progress);
@@ -2272,8 +2582,14 @@ void DBWorkflowWorkerCoordinator::DrainProgressLoop() {
 }
 
 void DBWorkflowWorkerCoordinator::DrainResultsLoop() {
+    if (!IsDataPlaneEnabled()) {
+        return;
+    }
     savor::PRResult result;
     while (results_q_.pop_wait(result)) {
+        if (!IsDataPlaneEnabled()) {
+            continue;
+        }
         ++results_received_count_;
         std::optional<DispatchedJobContext> context;
         bool worker_known = false;
@@ -2412,6 +2728,9 @@ void DBWorkflowWorkerCoordinator::DrainResultsLoop() {
 }
 
 void DBWorkflowWorkerCoordinator::ReconcileWorkerPool() {
+    if (!IsDataPlaneEnabled()) {
+        return;
+    }
     std::vector<WorkerSlotPtr> slots;
     std::vector<WorkerSlotPtr> new_slots;
     std::vector<WorkerSlotPtr> slots_to_stop;
@@ -2423,6 +2742,9 @@ void DBWorkflowWorkerCoordinator::ReconcileWorkerPool() {
 
     {
         std::lock_guard<std::mutex> lock(workers_mtx_);
+        if (stop_.load(std::memory_order_acquire)) {
+            return;
+        }
         while (workers_.size() < desired_workers) {
             const auto worker_idx = workers_.size();
             auto slot = MakeWorkerSlot(worker_idx);
@@ -2569,8 +2891,6 @@ bool DBWorkflowWorkerCoordinator::StartWorkerSlot(WorkerSlotPtr slot_handle) {
 
     size_t worker_idx = 0;
     uint32_t attempt = 0;
-    uint64_t render_widget_handle = 0;
-    std::string host_events_pipe_name;
     {
         std::lock_guard<std::mutex> slot_lock(slot_handle->mtx);
         auto& slot = *slot_handle;
@@ -2581,132 +2901,77 @@ bool DBWorkflowWorkerCoordinator::StartWorkerSlot(WorkerSlotPtr slot_handle) {
         slot.start_attempted = true;
         slot.startup_in_progress = true;
         slot.ready.store(false);
+        slot.capabilities = 0;
         slot.start_retry_exhausted_logged = false;
         attempt = slot.start_attempts + 1;
         slot.start_attempts = attempt;
-        render_widget_handle = slot.visual_render_widget_handle;
-        host_events_pipe_name = slot.visual_host_events_pipe_name;
-    }
-
-    const auto schedule_retry = [&](const std::string& error) {
-        std::shared_ptr<savor::ProcessWorker> worker_to_stop;
-        {
-            std::lock_guard<std::mutex> slot_lock(slot_handle->mtx);
-            auto& slot = *slot_handle;
-            slot.ready.store(false);
-            slot.startup_in_progress = false;
-            slot.last_start_error = error;
-            slot.next_start_after = std::chrono::steady_clock::now()
-                + std::chrono::milliseconds(worker_cfg_.worker_start_retry_backoff_ms);
-            slot.loaded_program_kind.reset();
-            slot.loaded_program_runtime_affinity_key.reset();
-            slot.loaded_savestate_affinity_key.reset();
-            worker_to_stop = slot.worker;
-            std::ostringstream line;
-            line << "[workflow-worker-start-failed]"
-                 << " worker=" << worker_idx
-                 << " attempt=" << attempt
-                 << " max_attempts=" << std::max<std::uint32_t>(1u, worker_cfg_.max_worker_start_attempts)
-                 << " error=" << error;
-            EmitDurableEventLine(line.str());
-            MarkWorkerError(slot, error);
-        }
-        if (worker_to_stop) {
-            worker_to_stop->stop();
-        }
-        return false;
-    };
-
-    std::filesystem::path runtime_worker_exe;
-    std::string runtime_error;
-    if (!PrepareRuntimeSlotForWorker(worker_idx, &runtime_worker_exe, &runtime_error)) {
-        return schedule_retry("worker runtime setup failed: " + runtime_error);
-    }
-
-    savor::ProcStartParams ps{};
-    ps.worker_id = worker_idx;
-    ps.exe_path = runtime_worker_exe.string();
-    ps.iso_path = worker_cfg_.iso_path;
-    ps.dolphin_base_dir.clear();
-    ps.visual = worker_cfg_.visual_workers || worker_cfg_.visual_debug_workers;
-    ps.visual_debug = worker_cfg_.visual_debug_workers;
-    if (ps.visual) {
-        ps.render_widget_handle = render_widget_handle;
-        ps.visual_host_events_pipe_name = host_events_pipe_name;
-    }
-    ps.visual_screenshot_dir = worker_cfg_.visual_screenshot_dir;
-
-    std::ostringstream user_dir;
-    user_dir << worker_cfg_.worker_dir_root << "\\workflow-worker-" << worker_idx << "\\User";
-    ps.user_dir = user_dir.str();
-    ps.vm_control = true;
-
-    namespace fs = std::filesystem;
-    std::error_code user_ec;
-    fs::remove_all(ps.user_dir, user_ec);
-    if (user_ec) {
-        return schedule_retry("clear worker user dir failed: " + user_ec.message());
-    }
-    fs::create_directories(ps.user_dir, user_ec);
-    if (user_ec) {
-        return schedule_retry("create worker user dir failed: " + user_ec.message());
     }
 
     if (stop_.load()) {
-        return schedule_retry("startup canceled");
+        CompleteWorkerSlotStartup(
+            worker_idx,
+            attempt,
+            false,
+            0,
+            "startup canceled",
+            true);
+        return false;
     }
 
-    std::shared_ptr<savor::ProcessWorker> worker;
-    {
-        std::lock_guard<std::mutex> slot_lock(slot_handle->mtx);
-        auto& slot = *slot_handle;
-        if (slot.start_attempts != attempt || !slot.startup_in_progress) {
-            return false;
-        }
-        worker = slot.worker;
-        worker_status_.UpdateState(static_cast<std::int64_t>(slot.id), WorkerStateKind::Spawning);
-        worker_status_.RecordHeartbeat(static_cast<std::int64_t>(slot.id));
-        slot.startup_thread = std::thread([this, worker_idx, attempt, worker, ps = std::move(ps)]() mutable {
+    std::lock_guard<std::mutex> slot_lock(slot_handle->mtx);
+    auto& slot = *slot_handle;
+    if (slot.start_attempts != attempt || !slot.startup_in_progress) {
+        return false;
+    }
+    if (stop_.load(std::memory_order_acquire)) {
+        slot.startup_in_progress = false;
+        slot.last_start_error = "startup canceled";
+        slot.capabilities = 0;
+        slot.ready.store(false, std::memory_order_release);
+        return false;
+    }
+    worker_status_.UpdateState(
+        static_cast<std::int64_t>(slot.id),
+        WorkerStateKind::Spawning);
+    worker_status_.RecordHeartbeat(static_cast<std::int64_t>(slot.id));
+    slot.startup_thread = std::thread(
+        [this, slot_handle, worker_idx, attempt]() {
             if (stop_.load()) {
-                CompleteWorkerSlotStartup(worker_idx, attempt, false, "startup canceled");
+                CompleteWorkerSlotStartup(
+                    worker_idx,
+                    attempt,
+                    false,
+                    0,
+                    "startup canceled",
+                    true);
                 return;
             }
 
-            if (worker == nullptr || !worker->start(ps, &results_q_)) {
-                CompleteWorkerSlotStartup(worker_idx, attempt, false, "ProcessWorker.start failed");
-                return;
-            }
-
-            const auto timeout = std::chrono::milliseconds(worker_cfg_.worker_start_timeout_ms
-                ? worker_cfg_.worker_start_timeout_ms
-                : 10000);
-            const auto deadline = std::chrono::steady_clock::now() + timeout;
-            bool ready = false;
-            while (!stop_.load() && std::chrono::steady_clock::now() < deadline) {
-                if (worker->wait_ready(50)) {
-                    ready = true;
-                    break;
+            const auto preflight =
+                RunWorkerCapabilityPreflightForSlot(slot_handle);
+            const auto evaluation = EvaluateCapabilityPreflight(
+                preflight,
+                worker_cfg_.visual_debug_workers);
+            if (!evaluation.ready) {
+                std::shared_ptr<savor::ProcessWorker> worker;
+                {
+                    std::lock_guard<std::mutex> failed_slot_lock(
+                        slot_handle->mtx);
+                    worker = slot_handle->worker;
                 }
-                if (worker->is_failed()) {
-                    break;
+                if (worker) {
+                    worker->stop();
                 }
             }
 
-            if (ready) {
-                CompleteWorkerSlotStartup(worker_idx, attempt, true, {});
-                return;
-            }
-
-            std::ostringstream error;
-            if (stop_.load()) {
-                error << "startup canceled";
-            } else {
-                error << "wait_ready failed err=" << worker->ready_error();
-            }
-            worker->stop();
-            CompleteWorkerSlotStartup(worker_idx, attempt, false, error.str());
+            CompleteWorkerSlotStartup(
+                worker_idx,
+                attempt,
+                evaluation.ready,
+                preflight.capabilities,
+                evaluation.error,
+                !evaluation.non_retryable);
         });
-    }
     return true;
 }
 
@@ -2714,7 +2979,9 @@ void DBWorkflowWorkerCoordinator::CompleteWorkerSlotStartup(
     size_t worker_idx,
     uint32_t attempt,
     bool ready,
-    const std::string& error) {
+    savor::runtime::WorkerCapabilityMask capabilities,
+    const std::string& error,
+    bool retryable) {
     const auto slot_handle = GetWorkerSlot(worker_idx);
     if (!slot_handle) {
         return;
@@ -2728,6 +2995,7 @@ void DBWorkflowWorkerCoordinator::CompleteWorkerSlotStartup(
 
     slot.startup_in_progress = false;
     slot.ready.store(ready);
+    slot.capabilities = ready ? capabilities : 0;
     RegisterWorkerSlotTelemetry(slot);
     if (ready) {
         slot.start_attempts = 0;
@@ -2739,8 +3007,16 @@ void DBWorkflowWorkerCoordinator::CompleteWorkerSlotStartup(
     }
 
     slot.last_start_error = error;
-    slot.next_start_after = std::chrono::steady_clock::now()
-        + std::chrono::milliseconds(worker_cfg_.worker_start_retry_backoff_ms);
+    if (retryable) {
+        slot.next_start_after = std::chrono::steady_clock::now()
+            + std::chrono::milliseconds(
+                worker_cfg_.worker_start_retry_backoff_ms);
+    } else {
+        slot.start_attempts = std::max<std::uint32_t>(
+            1u,
+            worker_cfg_.max_worker_start_attempts);
+        slot.next_start_after = {};
+    }
     slot.loaded_program_kind.reset();
     slot.loaded_program_runtime_affinity_key.reset();
     slot.loaded_savestate_affinity_key.reset();
@@ -2759,6 +3035,7 @@ void DBWorkflowWorkerCoordinator::CompleteWorkerSlotStartup(
 std::shared_ptr<savor::ProcessWorker> DBWorkflowWorkerCoordinator::ResetWorkerSlotRuntime(WorkerSlot& slot) {
     auto worker_to_stop = std::move(slot.worker);
     slot.ready.store(false);
+    slot.capabilities = 0;
     slot.start_attempted = false;
     slot.startup_in_progress = false;
     slot.in_flight_job_id.reset();
@@ -2789,6 +3066,7 @@ void DBWorkflowWorkerCoordinator::StopWorkerSlot(WorkerSlotPtr slot_handle) {
         worker_status_.UpdateState(worker_id, WorkerStateKind::Stopping);
         worker_status_.SetCurrentJob(worker_id, std::nullopt, std::nullopt);
         slot.ready.store(false);
+        slot.capabilities = 0;
         slot.start_attempted = false;
         slot.startup_in_progress = false;
         slot.in_flight_job_id.reset();
@@ -2847,280 +3125,10 @@ void DBWorkflowWorkerCoordinator::RecordWorkerContactLocked(
     worker_status_.RecordHeartbeat(static_cast<std::int64_t>(slot.id));
 }
 
-void DBWorkflowWorkerCoordinator::VisualDebugReplayThread(std::uint64_t session_id) {
-    auto update_state = [this, session_id](VisualReplayRuntimeState state, const std::string& detail) {
-        std::lock_guard<std::mutex> lock(visual_debug_mtx_);
-        if (visual_debug_session_ && visual_debug_session_->session_id == session_id) {
-            SetVisualDebugState(*visual_debug_session_, state, detail);
-        }
-    };
-    auto fail = [&](const std::string& detail) {
-        update_state(VisualReplayRuntimeState::Failed, detail);
-        std::lock_guard<std::mutex> lock(visual_debug_mtx_);
-        if (visual_debug_session_ && visual_debug_session_->session_id == session_id) {
-            visual_debug_session_->controls_enabled = false;
-        }
-    };
-
-    std::int64_t job_id = 0;
-    size_t worker_id = 0;
-    uint64_t render_widget_handle = 0;
-    std::string host_events_pipe_name;
-    savor::ProcessWorker* worker = nullptr;
-    {
-        std::lock_guard<std::mutex> lock(visual_debug_mtx_);
-        if (!visual_debug_session_ || visual_debug_session_->session_id != session_id) {
-            return;
-        }
-        job_id = visual_debug_session_->job_id;
-        worker_id = visual_debug_session_->worker_id;
-        render_widget_handle = visual_debug_session_->render_widget_handle;
-        host_events_pipe_name = visual_debug_session_->host_events_pipe_name;
-        worker = visual_debug_session_->worker.get();
-        SetVisualDebugState(*visual_debug_session_, VisualReplayRuntimeState::LaunchingWorker, "materializing visual debug job");
-    }
-
-    ClaimedJobRecord claimed_job{};
-    std::string materialize_error;
-    if (!job_materialization_service_.MaterializeJobForDebugReplay(job_id, &claimed_job, &materialize_error)) {
-        fail("materialize visual debug job failed: " + materialize_error);
-        return;
-    }
-
-    std::filesystem::path runtime_worker_exe;
-    std::string runtime_error;
-    if (!PrepareRuntimeSlotForWorker(worker_id, &runtime_worker_exe, &runtime_error)) {
-        fail("worker runtime setup failed: " + runtime_error);
-        return;
-    }
-
-    savor::ProcStartParams ps{};
-    ps.worker_id = worker_id;
-    ps.exe_path = runtime_worker_exe.string();
-    ps.iso_path = worker_cfg_.iso_path;
-    ps.dolphin_base_dir.clear();
-    ps.visual = true;
-    ps.visual_debug = true;
-    ps.render_widget_handle = render_widget_handle;
-    ps.visual_host_events_pipe_name = host_events_pipe_name;
-    ps.visual_screenshot_dir = worker_cfg_.visual_screenshot_dir;
-    ps.vm_control = true;
-    ps.user_dir = (std::filesystem::path(worker_cfg_.worker_dir_root)
-        / ("visual-debug-" + std::to_string(session_id))
-        / "User").string();
-
-    std::error_code user_ec;
-    std::filesystem::remove_all(ps.user_dir, user_ec);
-    if (user_ec) {
-        fail("clear visual debug user dir failed: " + user_ec.message());
-        return;
-    }
-    std::filesystem::create_directories(ps.user_dir, user_ec);
-    if (user_ec) {
-        fail("create visual debug user dir failed: " + user_ec.message());
-        return;
-    }
-
-    update_state(VisualReplayRuntimeState::LaunchingWorker, "starting visual debug worker");
-    if (worker == nullptr || !worker->start(ps, &visual_debug_results_q_)) {
-        fail("ProcessWorker.start failed");
-        return;
-    }
-
-    const auto timeout = std::chrono::milliseconds(worker_cfg_.worker_start_timeout_ms
-        ? worker_cfg_.worker_start_timeout_ms
-        : 10000);
-    const auto deadline = std::chrono::steady_clock::now() + timeout;
-    bool ready = false;
-    while (std::chrono::steady_clock::now() < deadline) {
-        {
-            std::lock_guard<std::mutex> lock(visual_debug_mtx_);
-            if (!visual_debug_session_ || visual_debug_session_->session_id != session_id || visual_debug_session_->stop_requested) {
-                return;
-            }
-        }
-        if (worker->wait_ready(50)) {
-            ready = true;
-            break;
-        }
-        if (worker->is_failed()) {
-            break;
-        }
-    }
-    if (!ready) {
-        std::ostringstream error;
-        error << "wait_ready failed err=" << worker->ready_error();
-        fail(error.str());
-        worker->stop();
-        return;
-    }
-
-    {
-        std::lock_guard<std::mutex> lock(visual_debug_mtx_);
-        if (!visual_debug_session_ || visual_debug_session_->session_id != session_id) {
-            return;
-        }
-        SetVisualDebugState(*visual_debug_session_, VisualReplayRuntimeState::AttachReady, "visual debug worker ready");
-        visual_debug_session_->controls_enabled = true;
-    }
-
-    VisualDebugSession* session = nullptr;
-    {
-        std::lock_guard<std::mutex> lock(visual_debug_mtx_);
-        if (!visual_debug_session_ || visual_debug_session_->session_id != session_id) {
-            return;
-        }
-        session = visual_debug_session_.get();
-    }
-    std::string configure_error;
-    if (!ConfigureVisualDebugWorkerForJob(*session, claimed_job, &configure_error)) {
-        fail("configure visual debug worker failed: " + configure_error);
-        worker->stop();
-        return;
-    }
-
-    for (int attempt = 0; attempt < 20; ++attempt) {
-        if (worker->visual_resume_emulation()) {
-            break;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    }
-
-    {
-        std::lock_guard<std::mutex> lock(visual_debug_mtx_);
-        if (!visual_debug_session_ || visual_debug_session_->session_id != session_id) {
-            return;
-        }
-        SetVisualDebugState(*visual_debug_session_, VisualReplayRuntimeState::Active, "visual debug replay active");
-        visual_debug_session_->controls_enabled = true;
-    }
-
-    if (!worker->try_acquire_slot()) {
-        fail("visual debug worker slot is busy");
-        worker->stop();
-        return;
-    }
-    if (!claimed_job.payload.has_value()
-        || !worker->send_job(static_cast<std::uint64_t>(job_id), epoch_.load(), *claimed_job.payload)) {
-        worker->release_slot();
-        fail("send visual debug job failed");
-        worker->stop();
-        return;
-    }
-
-    savor::PRResult result{};
-    if (!visual_debug_results_q_.pop_wait(result)) {
-        worker->release_slot();
-        return;
-    }
-    worker->release_slot();
-    worker->stop();
-
-    {
-        std::lock_guard<std::mutex> lock(visual_debug_mtx_);
-        if (!visual_debug_session_ || visual_debug_session_->session_id != session_id) {
-            return;
-        }
-        std::ostringstream detail;
-        detail << "visual debug replay finished"
-               << " job=" << result.job_id
-               << " accepted=" << (result.accepted ? "true" : "false");
-        SetVisualDebugState(*visual_debug_session_, VisualReplayRuntimeState::Finished, detail.str());
-        visual_debug_session_->controls_enabled = false;
-    }
-}
-
-bool DBWorkflowWorkerCoordinator::ConfigureVisualDebugWorkerForJob(
-    VisualDebugSession& session,
-    const ClaimedJobRecord& claimed_job,
-    std::string* error_out) {
-    if (session.worker == nullptr) {
-        if (error_out) *error_out = "worker is unavailable";
-        return false;
-    }
-    if (claimed_job.program_kind <= 0) {
-        if (error_out) *error_out = "program kind is invalid";
-        return false;
-    }
-
-    savor::PSInit init{};
-    init.default_timeout_ms = claimed_job.runtime_init.default_timeout_ms > 0
-        ? static_cast<uint32_t>(claimed_job.runtime_init.default_timeout_ms)
-        : 10000;
-    init.derived_buffer_type = claimed_job.runtime_init.derived_buffer_type;
-    if (claimed_job.runtime_init.savestate_ref_id > 0) {
-        const auto savestate_path = PrepareVisualDebugSavestatePathForJob(session, claimed_job);
-        if (!savestate_path.has_value()) {
-            if (error_out) *error_out = "savestate materialization failed";
-            return false;
-        }
-        init.savestate_path = *savestate_path;
-    }
-    if (!session.worker->ctl_set_program(
-        static_cast<uint8_t>(claimed_job.program_kind),
-        static_cast<uint8_t>(claimed_job.program_kind),
-        init)) {
-        if (error_out) *error_out = "ctl_set_program failed";
-        return false;
-    }
-    if (!session.worker->ctl_run_init_once()) {
-        if (error_out) *error_out = "ctl_run_init_once failed";
-        return false;
-    }
-    if (!session.worker->ctl_activate_main()) {
-        if (error_out) *error_out = "ctl_activate_main failed";
-        return false;
-    }
-    if (error_out) error_out->clear();
-    return true;
-}
-
-std::optional<std::string> DBWorkflowWorkerCoordinator::PrepareVisualDebugSavestatePathForJob(
-    const VisualDebugSession& session,
-    const ClaimedJobRecord& claimed_job) {
-    if (claimed_job.runtime_init.savestate_ref_id <= 0) {
-        return std::string{};
-    }
-    if (state_db_ == nullptr) {
-        return std::nullopt;
-    }
-
-    const auto savestate_dir = std::filesystem::path(worker_cfg_.worker_dir_root)
-        / ("visual-debug-" + std::to_string(session.session_id))
-        / "savestate";
-    const auto savestate_path = savestate_dir / "current.sav";
-
-    std::error_code ec;
-    std::filesystem::remove_all(savestate_dir, ec);
-    if (ec) {
-        return std::nullopt;
-    }
-    std::filesystem::create_directories(savestate_dir, ec);
-    if (ec) {
-        return std::nullopt;
-    }
-
-    std::string error;
-    const auto materialized = state_db_->MaterializeSavestateToPath(
-        claimed_job.runtime_init.savestate_ref_id,
-        savestate_path.string(),
-        &error);
-    if (!materialized.has_value() || materialized->empty()) {
-        return std::nullopt;
-    }
-    return materialized;
-}
-
-void DBWorkflowWorkerCoordinator::SetVisualDebugState(
-    VisualDebugSession& session,
-    VisualReplayRuntimeState state,
-    std::string detail) {
-    session.state = state;
-    session.detail = std::move(detail);
-    session.pending_log_lines.push_back(session.detail);
-}
-
 std::vector<DBWorkflowWorkerCoordinator::DispatchableWorkerInfo> DBWorkflowWorkerCoordinator::CollectDispatchableWorkers() {
+    if (!IsDataPlaneEnabled()) {
+        return {};
+    }
     std::vector<DispatchableWorkerInfo> dispatchable;
     std::vector<WorkerSlotPtr> slots;
     size_t rr_cursor = 0;
@@ -3141,7 +3149,10 @@ std::vector<DBWorkflowWorkerCoordinator::DispatchableWorkerInfo> DBWorkflowWorke
         }
         std::lock_guard<std::mutex> slot_lock(slot_handle->mtx);
         auto& slot = *slot_handle;
-        if (!slot.ready.load()) {
+        if (!slot.ready.load()
+            || !savor::runtime::HasCapability(
+                slot.capabilities,
+                savor::runtime::WorkerCapability::ProgramInvocation)) {
             continue;
         }
         if (slot.in_flight_job_id.has_value()) {
@@ -3317,7 +3328,9 @@ void DBWorkflowWorkerCoordinator::RecordCoordinatorWarning(
 
 void DBWorkflowWorkerCoordinator::PollReadyStepsFromDb() {
     const auto t0 = std::chrono::steady_clock::now();
-    if (execution_db_ == nullptr || execution_db_->WorkflowQueryService() == nullptr) {
+    if (!IsDataPlaneEnabled()
+        || execution_db_ == nullptr
+        || execution_db_->WorkflowQueryService() == nullptr) {
         const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
         last_ready_scan_latency_ms_.store(static_cast<std::int64_t>(elapsed));
         ++ready_scan_count_;

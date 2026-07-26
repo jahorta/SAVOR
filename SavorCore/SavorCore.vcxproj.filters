@@ -46,6 +46,9 @@
     <Filter Include="Runner\Breakpoints">
       <UniqueIdentifier>{eb90977c-bb6f-467c-9b6a-46f72e40aa63}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Runner\Runtime">
+      <UniqueIdentifier>{8C8AD43C-1F75-4F2B-B4A4-9073D1F36E12}</UniqueIdentifier>
+    </Filter>
     <Filter Include="Runner\Capture">
       <UniqueIdentifier>{2f795460-2d6d-4e37-9f4f-0c39b18f8c15}</UniqueIdentifier>
     </Filter>
@@ -309,8 +312,29 @@
     <ClInclude Include="Runner\IPC\Wire.h">
       <Filter>Runner</Filter>
     </ClInclude>
+    <ClInclude Include="Runner\IPC\WrmsProtocol.h">
+      <Filter>Runner</Filter>
+    </ClInclude>
     <ClInclude Include="Runner\Parallel\PRTypes.h">
       <Filter>Runner</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\DolphinWrapperBackend.h">
+      <Filter>Runner\Runtime</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\EmulationSession.h">
+      <Filter>Runner\Runtime</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\IDolphinBackend.h">
+      <Filter>Runner\Runtime</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\IProgramRuntimePort.h">
+      <Filter>Runner\Runtime</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\RuntimeTypes.h">
+      <Filter>Runner\Runtime</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\WorkerRuntime.h">
+      <Filter>Runner\Runtime</Filter>
     </ClInclude>
     <ClInclude Include="Core\Input\InputPlanFmt.h">
       <Filter>Core\Input</Filter>
@@ -535,6 +559,18 @@
     </ClCompile>
     <ClCompile Include="Runner\IPC\WorkerWireWriter.cpp">
       <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\IPC\WrmsProtocol.cpp">
+      <Filter>Runner</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Runtime\DolphinWrapperBackend.cpp">
+      <Filter>Runner\Runtime</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Runtime\EmulationSession.cpp">
+      <Filter>Runner\Runtime</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Runtime\WorkerRuntime.cpp">
+      <Filter>Runner\Runtime</Filter>
     </ClCompile>
     <ClCompile Include="Runner\Script\PSContextCodec.cpp">
       <Filter>Runner\VM</Filter>

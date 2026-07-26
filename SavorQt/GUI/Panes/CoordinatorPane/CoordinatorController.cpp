@@ -151,7 +151,14 @@ void CoordinatorController::startCoordinator()
                     it->second.hostEventsPipeName.toStdString());
             }
         }
-        coordinator->Start();
+        const auto startResult = coordinator->Start();
+        if (!startResult) {
+            validationMessage_ = QStringLiteral("Coordinator startup failed: %1")
+                .arg(QString::fromStdString(startResult.error));
+            coordinator->Stop();
+            emit stateChanged();
+            return;
+        }
         coordinator->SetPaused(startPaused_);
         paused_ = startPaused_;
         coordinator_ = std::move(coordinator);

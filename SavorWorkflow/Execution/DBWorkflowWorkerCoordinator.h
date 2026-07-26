@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "Runner/Parallel/PRTypes.h"
+#include "Runner/Runtime/RuntimeTypes.h"
 #include "../Worker/ProcessWorker.h"
 #include "../Worker/TSQueue.h"
 #include "../Worker/WorkerStatusRegistry.h"
@@ -33,12 +34,23 @@
 
 namespace savor::runner::parallel::savordb {
 
+struct CoordinatorWorkerCapabilityPreflightResult {
+    // The hook owns any launch/session negotiation needed to make this true.
+    bool process_ready = false;
+    savor::runtime::WorkerCapabilityMask capabilities = 0;
+    std::string error;
+};
+
 struct DBWorkflowWorkerCoordinatorConfig {
     using RuntimeSlotPreparer = std::function<bool(
         size_t,
         const DBWorkflowWorkerCoordinatorConfig&,
         std::filesystem::path*,
         std::string*)>;
+    using WorkerCapabilityPreflight = std::function<CoordinatorWorkerCapabilityPreflightResult(
+        size_t,
+        const DBWorkflowWorkerCoordinatorConfig&,
+        const std::shared_ptr<savor::ProcessWorker>&)>;
 
     size_t desired_workers = 1;
     uint32_t controller_sleep_ms = 5;
@@ -57,6 +69,33 @@ struct DBWorkflowWorkerCoordinatorConfig {
     bool auto_resume_visual_workers = false;
     std::string visual_screenshot_dir;
     RuntimeSlotPreparer runtime_slot_preparer;
+    // Required for Start(). The coordinator does not touch DB-facing work until at least one
+    // process-ready result advertises WorkerCapability::ProgramInvocation.
+    WorkerCapabilityPreflight worker_capability_preflight;
+};
+
+enum class CoordinatorStartStatus {
+    NotStarted = 0,
+    Started,
+    CapabilityPreflightUnavailable,
+    CapabilityPreflightFailed,
+    ProgramInvocationUnavailable,
+    InteractiveVisualDebugUnavailable,
+};
+
+struct CoordinatorStartResult {
+    CoordinatorStartStatus status = CoordinatorStartStatus::NotStarted;
+    size_t ready_invocation_capable_workers = 0;
+    bool non_retryable = false;
+    std::string error;
+
+    [[nodiscard]] bool started() const noexcept {
+        return status == CoordinatorStartStatus::Started;
+    }
+
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return started();
+    }
 };
 
 struct WorkflowCoordinatorTelemetry {
@@ -154,8 +193,11 @@ public:
 
     ~DBWorkflowWorkerCoordinator();
 
-    void Start();
+    CoordinatorStartResult Start();
     void Stop();
+    [[nodiscard]] CoordinatorStartResult SnapshotStartResult() const;
+    [[nodiscard]] bool IsDataPlaneEnabled() const noexcept;
+    [[nodiscard]] size_t ReadyInvocationCapableWorkerCount() const;
 
     void SetPaused(bool paused);
     bool IsPaused() const;
@@ -214,6 +256,7 @@ private:
         size_t id = 0;
         std::shared_ptr<savor::ProcessWorker> worker;
         std::atomic<bool> ready{ false };
+        savor::runtime::WorkerCapabilityMask capabilities = 0;
         bool start_attempted = false;
         bool startup_in_progress = false;
         uint32_t start_attempts = 0;
@@ -237,20 +280,6 @@ private:
         uint64_t render_widget_handle = 0;
         std::string host_events_pipe_name;
     };
-    struct VisualDebugSession {
-        std::uint64_t session_id = 0;
-        std::int64_t job_id = 0;
-        size_t worker_id = 0;
-        uint64_t render_widget_handle = 0;
-        std::string host_events_pipe_name;
-        std::unique_ptr<savor::ProcessWorker> worker;
-        std::thread thread;
-        VisualReplayRuntimeState state = VisualReplayRuntimeState::Idle;
-        std::string detail;
-        bool controls_enabled = false;
-        bool stop_requested = false;
-        std::vector<std::string> pending_log_lines;
-    };
     struct DispatchableWorkerInfo {
         size_t worker_idx = 0;
         std::optional<std::int32_t> loaded_program_kind;
@@ -264,13 +293,23 @@ private:
 
     void WorkerJobCoordinatorLoop();
     void WorkerLifecycleCoordinatorLoop();
+    CoordinatorWorkerCapabilityPreflightResult RunWorkerCapabilityPreflightForSlot(
+        const WorkerSlotPtr& slot);
+    CoordinatorWorkerCapabilityPreflightResult PreflightWorkerSlot(
+        const WorkerSlotPtr& slot);
     void DrainProgressLoop();
     void DrainResultsLoop();
     void RecoverDeadInFlightWorkers();
     void ProcessReadyWorkflowStep(const WorkflowReadyStep& step);
     void ReconcileWorkerPool();
     bool StartWorkerSlot(WorkerSlotPtr slot);
-    void CompleteWorkerSlotStartup(size_t worker_idx, uint32_t attempt, bool ready, const std::string& error);
+    void CompleteWorkerSlotStartup(
+        size_t worker_idx,
+        uint32_t attempt,
+        bool ready,
+        savor::runtime::WorkerCapabilityMask capabilities,
+        const std::string& error,
+        bool retryable);
     std::shared_ptr<savor::ProcessWorker> ResetWorkerSlotRuntime(WorkerSlot& slot);
     void StopWorkerSlot(WorkerSlotPtr slot);
     void EmitShutdownPhase(const std::string& phase, const std::string& detail = {}) const;
@@ -280,18 +319,6 @@ private:
     std::vector<WorkerSlotPtr> CopyWorkerSlots() const;
     bool TryRecordWorkerContactFromProgress(std::size_t worker_id, std::uint64_t job_id, std::chrono::steady_clock::time_point observed_at);
     bool PrepareRuntimeSlotForWorker(size_t worker_idx, std::filesystem::path* runtime_worker_exe_out, std::string* error_out);
-    void VisualDebugReplayThread(std::uint64_t session_id);
-    bool ConfigureVisualDebugWorkerForJob(
-        VisualDebugSession& session,
-        const ClaimedJobRecord& claimed_job,
-        std::string* error_out);
-    std::optional<std::string> PrepareVisualDebugSavestatePathForJob(
-        const VisualDebugSession& session,
-        const ClaimedJobRecord& claimed_job);
-    void SetVisualDebugState(
-        VisualDebugSession& session,
-        VisualReplayRuntimeState state,
-        std::string detail);
     std::vector<DispatchableWorkerInfo> CollectDispatchableWorkers();
     void ReleaseWorkerByResult(const savor::PRResult& result);
     void PollReadyStepsFromDb();
@@ -325,6 +352,10 @@ private:
         const std::string& reason) const;
     void EmitDurableEventLine(const std::string& line) const;
     void MaybeTerminalFailStepInStrictSmokeMode(const WorkflowReadyStep& step, const std::string& requested_by) const;
+    CoordinatorStartResult FailStart(
+        CoordinatorStartStatus status,
+        std::string error,
+        std::vector<WorkerSlotPtr> slots_to_stop);
 
     void RegisterWorkerSlotTelemetry(const WorkerSlot& slot);
     void MarkWorkerError(const WorkerSlot& slot, const std::string& error);
@@ -360,6 +391,7 @@ private:
     std::atomic<bool> stop_{ false };
     std::atomic<bool> stop_started_{ false };
     std::atomic<bool> paused_{ false };
+    std::atomic<bool> data_plane_enabled_{ false };
     std::atomic<uint64_t> epoch_{ 1 };
     std::thread worker_job_thread_;
     std::thread worker_lifecycle_thread_;
@@ -382,10 +414,6 @@ private:
     size_t rr_worker_cursor_ = 0;
     TSQueue<savor::PRProgress> progress_q_;
     TSQueue<savor::PRResult> results_q_;
-    TSQueue<savor::PRResult> visual_debug_results_q_;
-    mutable std::mutex visual_debug_mtx_;
-    std::unique_ptr<VisualDebugSession> visual_debug_session_;
-    std::uint64_t next_visual_debug_session_id_ = 1;
     size_t materialized_count_ = 0;
     size_t terminal_published_count_ = 0;
     std::atomic<std::int64_t> ready_scan_count_{ 0 };
@@ -422,6 +450,10 @@ private:
     std::deque<CoordinatorWarningSnapshot> coordinator_warnings_;
     std::uint64_t next_coordinator_warning_sequence_ = 1;
     WorkerStatusRegistry worker_status_;
+    mutable std::mutex lifecycle_mtx_;
+    mutable std::mutex start_mtx_;
+    bool start_attempted_ = false;
+    CoordinatorStartResult last_start_result_{};
 };
 
 } // namespace savor::runner::parallel::savordb

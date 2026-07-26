@@ -1,522 +1,981 @@
-// SavorWorker.cpp : This file contains the 'main' function. Program execution begins and ends there.
-//
-
-// SavorWorker/WorkerMain.cpp
-#include <string>
-#include <iostream>
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
-#include <cstdint>
-#include <cstring>
-#include <atomic>
-#include <thread>
+#include <deque>
 #include <filesystem>
+#include <future>
+#include <iostream>
+#include <limits>
 #include <mutex>
-
-#include "Utils/Log.h"
-#include "Common/Config/Config.h"
-#include "Boot/Boot.h"
-#include "Core/Config/MainSettings.h"
-#include "Core/DolphinWrapper.h"
-#include "Core/HostStubs.h"
-#include "Core/PowerPC/PowerPC.h"
-#include "Runner/Breakpoints/BpRegistry.h"
-#include "Runner/Script/PhaseScriptVM.h"
-#include "Runner/Script/PSContextCodec.h"
-#include "Runner/Script/CtxRegistry.h"
-#include "Phases/Programs/ProgramRegistry.h"
-#include "Runner/Parallel/WorkerBootPlan.h"
-#include "Runner/IPC/Wire.h"
-#include "Runner/IPC/WorkerWireWriter.h"
+#include <span>
+#include <string>
+#include <thread>
+#include <unordered_map>
+#include <utility>
+#include <vector>
 
 #include <windows.h>
-#include <Utils/ThreadName.h>
 
-using namespace savor;
+#include "Core/HostStubs.h"
+#include "Runner/IPC/WrmsProtocol.h"
+#include "Runner/Runtime/WorkerRuntime.h"
+#include "Utils/Log.h"
+#include "Utils/ThreadName.h"
 
-static std::wstring exe_dir_w() {
-    wchar_t buf[MAX_PATH]; GetModuleFileNameW(nullptr, buf, MAX_PATH);
-    std::wstring p(buf); size_t pos = p.find_last_of(L"\\/");
-    return (pos == std::wstring::npos) ? L"." : p.substr(0, pos);
-}
+namespace {
 
-static uint32_t parse_hex_u32(const char* s) {
-    return s ? static_cast<uint32_t>(std::strtoul(s, nullptr, 16)) : 0u;
-}
-static uint32_t parse_u32(const char* s) {
-    return s ? static_cast<uint32_t>(std::strtoul(s, nullptr, 10)) : 0u;
-}
-static uint64_t parse_u64(const char* s) {
-    return s ? static_cast<uint64_t>(std::strtoull(s, nullptr, 10)) : 0ull;
-}
-static const char* argv_next(int& i, int argc, char** argv) { return (i + 1 < argc) ? argv[++i] : ""; }
+using savor::runtime::WorkerCommandResult;
+using savor::runtime::WorkerEvent;
+using savor::wrms::MessageKind;
 
-static bool configure_probe_cpu_core()
-{
-    const char* value = std::getenv("SAVOR_PROBE_CPU_CORE");
-    if (value == nullptr || *value == '\0')
-        return true;
-    if (std::strcmp(value, "jit") == 0) {
-        Config::SetCurrent(Config::MAIN_CPU_CORE, PowerPC::CPUCore::JIT64);
-        SCLOGI("[probe] CPU core override=jit");
-        return true;
-    }
-    if (std::strcmp(value, "interpreter") == 0) {
-        Config::SetCurrent(Config::MAIN_CPU_CORE, PowerPC::CPUCore::Interpreter);
-        SCLOGI("[probe] CPU core override=interpreter");
-        return true;
-    }
-    SCLOGE("[probe] invalid SAVOR_PROBE_CPU_CORE=%s", value);
-    return false;
-}
-
-enum WorkerExitCode : uint8_t {
-    INVALID_HANDLES = 100,
-    SEND_READY_FAILED
+enum class WorkerExitCode : int {
+    Success = 0,
+    InvalidHandles = 100,
+    ProtocolFailure = 101,
+    PublisherFailure = 102,
 };
 
-static bool write_all(HANDLE h, const void* p, size_t n) {
-    const BYTE* b = static_cast<const BYTE*>(p);
-    DWORD w = 0;
-    while (n) {
-        if (!WriteFile(h, b, (DWORD)std::min(n, (size_t)0x7FFFFFFF), &w, NULL)) 
-        {
-            SCLOGE("[write] Failed to write");
+template <class... Ts>
+struct Overloaded : Ts... {
+    using Ts::operator()...;
+};
+template <class... Ts>
+Overloaded(Ts...) -> Overloaded<Ts...>;
+
+bool WriteAll(HANDLE handle, const void* data, std::size_t size) {
+    const auto* next = static_cast<const std::uint8_t*>(data);
+    while (size != 0) {
+        DWORD written = 0;
+        const auto chunk = static_cast<DWORD>(std::min<std::size_t>(
+            size,
+            static_cast<std::size_t>(std::numeric_limits<DWORD>::max())));
+        if (!WriteFile(handle, next, chunk, &written, nullptr) || written == 0)
             return false;
-        }
-        if (w == 0) 
-        {
-            SCLOGE("[write] Zero bytes written");
-            return false;
-        }
-        b += w; n -= w;
+        next += written;
+        size -= written;
     }
     return true;
 }
 
-static bool read_all(HANDLE h, void* p, size_t n) {
-    BYTE* b = static_cast<BYTE*>(p);
-    DWORD r = 0;
-    while (n) {
-        if (!ReadFile(h, b, (DWORD)std::min(n, (size_t)0x7FFFFFFF), &r, NULL)) 
-        {
-            SCLOGE("[read] Failed to read");
-            return false;
-        }
-        if (r == 0) 
-        {
-            SCLOGE("[read] Zero bytes read");
-            return false;
-        }
-        b += r; n -= r;
-    }
-    return true;
+std::uint64_t ParseU64(const char* text) {
+    return text
+        ? static_cast<std::uint64_t>(std::strtoull(text, nullptr, 10))
+        : 0;
 }
 
-static bool read_tag(HANDLE h, uint32_t& tag) {
-    return read_all(h, &tag, sizeof(tag));
+const char* NextArg(int& index, int argc, char** argv) {
+    return index + 1 < argc ? argv[++index] : "";
 }
 
-static bool read_exact(HANDLE h, void* p, size_t n) { return read_all(h, p, n); }
+std::filesystem::path ExecutableDirectory() {
+    std::array<wchar_t, 32768> buffer{};
+    const DWORD length = GetModuleFileNameW(
+        nullptr,
+        buffer.data(),
+        static_cast<DWORD>(buffer.size()));
+    if (length == 0 || length == buffer.size())
+        return std::filesystem::current_path();
+    return std::filesystem::path(
+        std::wstring_view(buffer.data(), length)).parent_path();
+}
 
-int main(int argc, char** argv)
-{
-    // args:
-    // --id N --iso <path> --savestate <path> [--qtbase <dir>] --userdir <dir> [--log <file>]
-    size_t worker_id = 0;
-    std::string iso, sav, qtbase, userdir, logfile; 
-    uint32_t timeout_ms = 10000;
-    bool visual = false;
-    bool visual_debug = false;
-    uint64_t render_hwnd = 0;
-    std::string visual_control_pipe;
-    std::string visual_host_events_pipe;
-    std::string visual_screenshot_dir;
+std::string ErrorCodeString(savor::runtime::WorkerRejectionCode code) {
+    return std::to_string(static_cast<unsigned>(code));
+}
 
-    for (int i = 1; i < argc; i++) {
-        std::string k = argv[i];
-        if (k == "--id") worker_id = parse_u32(argv_next(i, argc, argv));
-        else if (k == "--iso") iso = argv_next(i, argc, argv);
-        else if (k == "--qtbase") qtbase = argv_next(i, argc, argv);
-        else if (k == "--userdir") userdir = argv_next(i, argc, argv);
-        else if (k == "--visual") visual = true;
-        else if (k == "--visual-debug") visual_debug = true;
-        else if (k == "--render-hwnd") render_hwnd = parse_u64(argv_next(i, argc, argv));
-        else if (k == "--visual-control-pipe") visual_control_pipe = argv_next(i, argc, argv);
-        else if (k == "--visual-host-events-pipe") visual_host_events_pipe = argv_next(i, argc, argv);
-        else if (k == "--visual-screenshot-dir") visual_screenshot_dir = argv_next(i, argc, argv);
+savor::wrms::WorkerStateCode MapWorkerState(
+    savor::runtime::WorkerState state) {
+    using RuntimeState = savor::runtime::WorkerState;
+    using WireState = savor::wrms::WorkerStateCode;
+    switch (state) {
+    case RuntimeState::Starting:
+        return WireState::Starting;
+    case RuntimeState::AwaitingSession:
+        return WireState::AwaitingSession;
+    case RuntimeState::Ready:
+        return WireState::Ready;
+    case RuntimeState::Running:
+        return WireState::Running;
+    case RuntimeState::Cancelling:
+        return WireState::Cancelling;
+    case RuntimeState::Tainted:
+        return WireState::Tainted;
+    case RuntimeState::Stopping:
+        return WireState::Stopping;
+    case RuntimeState::Stopped:
+        return WireState::Stopped;
     }
-    if (visual_debug) {
-        visual = true;
+    return WireState::Tainted;
+}
+
+savor::wrms::SessionDispositionCode MapSessionDisposition(
+    savor::runtime::SessionDisposition disposition) {
+    using RuntimeDisposition = savor::runtime::SessionDisposition;
+    using WireDisposition = savor::wrms::SessionDispositionCode;
+    switch (disposition) {
+    case RuntimeDisposition::Closed:
+        return WireDisposition::Closed;
+    case RuntimeDisposition::Clean:
+        return WireDisposition::Clean;
+    case RuntimeDisposition::CleanWithDiagnostics:
+        return WireDisposition::CleanWithDiagnostics;
+    case RuntimeDisposition::Tainted:
+        return WireDisposition::Tainted;
+    }
+    return WireDisposition::Tainted;
+}
+
+savor::wrms::RejectionCode MapRejectionCode(
+    savor::runtime::WorkerRejectionCode code) {
+    using RuntimeCode = savor::runtime::WorkerRejectionCode;
+    using WireCode = savor::wrms::RejectionCode;
+    switch (code) {
+    case RuntimeCode::None:
+        return WireCode::None;
+    case RuntimeCode::Unsupported:
+        return WireCode::Unsupported;
+    case RuntimeCode::InvalidState:
+        return WireCode::InvalidState;
+    case RuntimeCode::InvalidArgument:
+        return WireCode::InvalidArgument;
+    case RuntimeCode::SessionUnavailable:
+        return WireCode::SessionUnavailable;
+    case RuntimeCode::SessionMismatch:
+        return WireCode::SessionMismatch;
+    case RuntimeCode::SessionTainted:
+        return WireCode::SessionTainted;
+    case RuntimeCode::ProgramRuntimeUnavailable:
+        return WireCode::ProgramRuntimeUnavailable;
+    case RuntimeCode::InvocationAlreadyActive:
+        return WireCode::InvocationAlreadyActive;
+    case RuntimeCode::InvocationNotActive:
+        return WireCode::InvocationNotActive;
+    case RuntimeCode::InvocationMismatch:
+        return WireCode::InvocationMismatch;
+    case RuntimeCode::DuplicateCancellation:
+        return WireCode::DuplicateCancellation;
+    case RuntimeCode::StateEpochMismatch:
+        return WireCode::StateEpochMismatch;
+    case RuntimeCode::BackendFailure:
+        return WireCode::BackendFailure;
+    case RuntimeCode::RuntimeStopping:
+        return WireCode::RuntimeStopping;
+    case RuntimeCode::InternalFailure:
+        return WireCode::InternalFailure;
+    }
+    return WireCode::InternalFailure;
+}
+
+savor::wrms::CommandStatus MapCommandStatus(const WorkerCommandResult& result) {
+    if (result.outcome != savor::runtime::WorkerCommandOutcome::Rejected)
+        return savor::wrms::CommandStatus::Succeeded;
+    if (result.error.code == savor::runtime::WorkerRejectionCode::Unsupported ||
+        result.error.code ==
+            savor::runtime::WorkerRejectionCode::ProgramRuntimeUnavailable) {
+        return savor::wrms::CommandStatus::Unsupported;
+    }
+    return savor::wrms::CommandStatus::Rejected;
+}
+
+MessageKind MapCommandKind(savor::runtime::WorkerCommandKind kind) {
+    switch (kind) {
+    case savor::runtime::WorkerCommandKind::OpenSession:
+        return MessageKind::OpenSession;
+    case savor::runtime::WorkerCommandKind::PrepareModule:
+        return MessageKind::PrepareModule;
+    case savor::runtime::WorkerCommandKind::InvokeProgram:
+        return MessageKind::SubmitInvocation;
+    case savor::runtime::WorkerCommandKind::CancelInvocation:
+        return MessageKind::CancelInvocation;
+    case savor::runtime::WorkerCommandKind::CaptureScreenshot:
+        return MessageKind::CaptureScreenshot;
+    case savor::runtime::WorkerCommandKind::Shutdown:
+        return MessageKind::Shutdown;
+    }
+    return MessageKind::Shutdown;
+}
+
+savor::wrms::InvocationTerminalStatus MapTerminalStatus(
+    savor::runtime::InvocationTerminalStatus status) {
+    switch (status) {
+    case savor::runtime::InvocationTerminalStatus::Completed:
+        return savor::wrms::InvocationTerminalStatus::Succeeded;
+    case savor::runtime::InvocationTerminalStatus::Cancelled:
+        return savor::wrms::InvocationTerminalStatus::Cancelled;
+    case savor::runtime::InvocationTerminalStatus::TimedOut:
+        return savor::wrms::InvocationTerminalStatus::TimedOut;
+    case savor::runtime::InvocationTerminalStatus::CleanupFailure:
+        return savor::wrms::InvocationTerminalStatus::CleanupFailure;
+    case savor::runtime::InvocationTerminalStatus::InfrastructureFailure:
+        return savor::wrms::InvocationTerminalStatus::InfrastructureFailure;
+    default:
+        return savor::wrms::InvocationTerminalStatus::Failed;
+    }
+}
+
+class OutboundPublisher {
+public:
+    explicit OutboundPublisher(HANDLE output)
+        : output_(output) {
+        (void)DuplicateHandle(
+            GetCurrentProcess(),
+            GetCurrentThread(),
+            GetCurrentProcess(),
+            &reader_thread_,
+            0,
+            FALSE,
+            DUPLICATE_SAME_ACCESS);
+        thread_ = std::thread([this]() { Run(); });
     }
 
-    set_this_thread_name_utf8((std::string("WorkerMain-") + std::to_string(worker_id)).c_str());
-
-    // Ensure the userdir exists and open a per-worker log file
-    std::filesystem::path log_path = std::filesystem::path(userdir) /
-        ("worker-" + std::to_string(worker_id) + ".log");
-    std::error_code ec;
-    std::filesystem::create_directories(log_path.parent_path(), ec);
-
-    auto& L = savor::logger::Logger::get();
-    // File sink: lowest threshold so everything is captured; console is muted
-    L.open_file(log_path.string().c_str(), /*append=*/false);
-    L.set_levels(savor::logger::Level::Off, savor::logger::Level::Debug);
-
-    SCLOGIX(SC_TAGS("worker", "replay", "startup"), "[Worker %zu] Initializing", worker_id);
-
-    const std::filesystem::path worker_base_dir = qtbase.empty()
-        ? std::filesystem::path(exe_dir_w())
-        : std::filesystem::path(qtbase);
-
-    SCLOGD("[Worker %zu] args iso=%s sav=%s qtbase=%s resolved_base=%s userdir=%s timeout=%u visual=%d visual_debug=%d render_hwnd=%llu",
-        worker_id, iso.c_str(), sav.c_str(), qtbase.c_str(), worker_base_dir.string().c_str(), userdir.c_str(),
-        timeout_ms, visual ? 1 : 0, visual_debug ? 1 : 0, static_cast<unsigned long long>(render_hwnd));
-
-    // Use inherited anonymous pipes as binary channels
-    HANDLE hIn = GetStdHandle(STD_INPUT_HANDLE);
-    HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
-    if (hIn == NULL || hIn == INVALID_HANDLE_VALUE || hOut == NULL || hOut == INVALID_HANDLE_VALUE) {
-        SCLOGE("[Worker %zu] invalid std handles", worker_id);
-        return WorkerExitCode::INVALID_HANDLES;
-    }
-    WorkerWireWriter wire_writer([hOut](const void* data, std::size_t size) {
-        return write_all(hOut, data, size);
-    });
-
-    auto sys_dsp = std::filesystem::path(exe_dir_w()) / "Sys" / "GC" / "dsp_coef.bin";
-    if (!std::filesystem::exists(sys_dsp)) {
-        WireReady wr{}; wr.tag = MSG_READY; wr.ok = 0; wr.error = WERR_SysMissing;
-        (void)wire_writer.write_object(wr);
-        SCLOGE("[Worker %zu] Missing Sys beside exe (%ws). Ensure coordinator materialized the worker runtime.", worker_id, sys_dsp.c_str());
-        return WERR_SysMissing;
+    ~OutboundPublisher() {
+        StopAndDrain();
+        if (reader_thread_) {
+            CloseHandle(reader_thread_);
+            reader_thread_ = nullptr;
+        }
     }
 
-    BootPlan boot{};
-    boot.boot.user_dir = userdir;
-    boot.boot.dolphin_qt_base = worker_base_dir;
-    boot.boot.force_resync_from_base = true;
-    boot.boot.visual = visual;
-    boot.boot.render_widget_handle = reinterpret_cast<void*>(render_hwnd);
-    boot.boot.save_config_on_success = false;
-    boot.iso_path = iso;
+    OutboundPublisher(const OutboundPublisher&) = delete;
+    OutboundPublisher& operator=(const OutboundPublisher&) = delete;
 
-    DolphinWrapper host;
-    std::thread visual_control_thread;
-    std::atomic<bool> visual_control_stop{ false };
-    std::mutex visual_cmd_mtx;
-    std::string visual_last_pipe_cmd;
-
-    SCLOGDX(SC_TAGS("worker", "replay", "boot"), "[Worker %zu] BootDolphinWrapper begin (user_dir=%s qtbase=%s)",
-        worker_id, boot.boot.user_dir.c_str(), boot.boot.dolphin_qt_base.c_str());
-    std::string err;
-    if (!simboot::BootDolphinWrapper(host, boot.boot, &err)) {
-        WireReady wr{}; wr.tag = MSG_READY; wr.ok = 0; wr.error = WERR_BootFail;
-        (void)wire_writer.write_object(wr);
-        SCLOGEX(SC_TAGS("worker", "replay", "boot", "error"), "[Worker %zu] Boot failed: %s", worker_id, err.c_str());
-        return WERR_BootFail;
-    }
-    SCLOGDX(SC_TAGS("worker", "replay", "boot"), "[Worker %zu] BootDolphinWrapper ok", worker_id);
-
-    if (!configure_probe_cpu_core()) {
-        WireReady wr{}; wr.tag = MSG_READY; wr.ok = 0; wr.error = WERR_BootFail;
-        (void)wire_writer.write_object(wr);
-        return WERR_BootFail;
+    template <typename Payload>
+    bool Publish(
+        MessageKind kind,
+        std::uint64_t request_id,
+        const Payload& payload) {
+        std::vector<std::uint8_t> encoded_payload;
+        if (!savor::wrms::EncodePayload(payload, encoded_payload)) {
+            MarkUnhealthy();
+            return false;
+        }
+        return PublishRaw(kind, request_id, std::move(encoded_payload));
     }
 
-    SCLOGD("[Worker %zu] loadGame(%s) begin", worker_id, boot.iso_path.c_str());
-    if (!host.loadGame(boot.iso_path)) {
-        WireReady wr{}; wr.tag = MSG_READY; wr.ok = 0; wr.error = WERR_LoadGame;
-        (void)wire_writer.write_object(wr);
-        SCLOGE("[Worker %zu] loadGame failed: %s", worker_id, boot.iso_path.c_str());
-        return WERR_LoadGame;
-    }
-    SCLOGD("[Worker %zu] loadGame ok", worker_id);
-
-    host.ConfigurePortsStandardPadP1();
-
-    // ----- New control-mode only -----
-    BreakpointMap bpmap = bp::BpRegistry::BuildRuntimeMap();
-    PhaseScriptVM vm(host, bpmap);
-
-    if (visual) {
-        savor::hoststubs::SetHostEventSink([visual_host_events_pipe](const savor::hoststubs::HostEvent& event) {
-            SCLOGDX(SC_TAGS("host", "event"), "[HOST_EVT] %s %s", event.name.c_str(), event.args_json.c_str());
-            if (visual_host_events_pipe.empty()) {
-                return;
-            }
-
-            const HANDLE hPipe = CreateFileA(
-                visual_host_events_pipe.c_str(),
-                GENERIC_WRITE,
+    bool PublishInvocationTerminal(
+        const savor::wrms::InvocationTerminalPayload& terminal) {
+        std::vector<std::uint8_t> encoded_payload;
+        if (savor::wrms::EncodePayload(terminal, encoded_payload)) {
+            return PublishRaw(
+                MessageKind::InvocationTerminal,
                 0,
-                nullptr,
-                OPEN_EXISTING,
-                FILE_ATTRIBUTE_NORMAL,
-                nullptr);
-            if (hPipe == INVALID_HANDLE_VALUE) {
-                return;
-            }
-
-            std::string payload = "{\"event\":\"" + event.name + "\",\"args\":" + (event.args_json.empty() ? "{}" : event.args_json) + "}\n";
-            DWORD bytes_written = 0;
-            (void)WriteFile(hPipe, payload.data(), static_cast<DWORD>(payload.size()), &bytes_written, nullptr);
-            CloseHandle(hPipe);
-            });
-        if (visual_debug) {
-            vm.SetVisualDebugMode(true);
-            vm.SetVisualDebugPaused(true);
+                std::move(encoded_payload));
         }
+
+        savor::wrms::InvocationTerminalPayload fallback{
+            .invocation_id = terminal.invocation_id,
+            .attempt_id = terminal.attempt_id,
+            .status =
+                savor::wrms::InvocationTerminalStatus::InfrastructureFailure,
+            .session_disposition = terminal.session_disposition,
+            .state_epoch = terminal.state_epoch,
+            .rejection_code = savor::wrms::RejectionCode::InternalFailure,
+            .error_code = "TerminalEncodingFailed",
+            .message =
+                "Invocation terminal payload could not be encoded within WRMS bounds",
+        };
+        encoded_payload.clear();
+        if (!savor::wrms::EncodePayload(fallback, encoded_payload) ||
+            !PublishRaw(
+                MessageKind::InvocationTerminal,
+                0,
+                std::move(encoded_payload))) {
+            MarkUnhealthy();
+            return false;
+        }
+        return true;
     }
 
-    if (visual_debug) {
-        visual_control_thread = std::thread([&host, &vm, &visual_control_stop, &visual_cmd_mtx, &visual_last_pipe_cmd,
-            visual_control_pipe]() {
-            HANDLE hPipe = INVALID_HANDLE_VALUE;
-            if (!visual_control_pipe.empty()) {
-                hPipe = CreateNamedPipeA(
-                    visual_control_pipe.c_str(),
-                    PIPE_ACCESS_INBOUND,
-                    PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
-                    1,
-                    0,
-                    512,
-                    0,
-                    nullptr);
-                if (hPipe != INVALID_HANDLE_VALUE) {
-                    (void)ConnectNamedPipe(hPipe, nullptr);
-                }
+    bool PublishRaw(
+        MessageKind kind,
+        std::uint64_t request_id,
+        std::vector<std::uint8_t> payload) {
+        if (!savor::wrms::IsKnownMessageKind(kind) ||
+            payload.size() > savor::wrms::MaximumPayloadSize) {
+            MarkUnhealthy();
+            return false;
+        }
+        bool enqueue_failed = false;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (stopping_)
+                return false;
+            try {
+                queue_.push_back(Record{
+                    .kind = kind,
+                    .request_id = request_id,
+                    .payload = std::move(payload),
+                });
+            } catch (...) {
+                healthy_.store(false, std::memory_order_release);
+                stopping_ = true;
+                enqueue_failed = true;
             }
-            std::string last_cmd;
-            while (!visual_control_stop.load()) {
-                if (hPipe != INVALID_HANDLE_VALUE) {
-                    char buffer[256]{};
-                    DWORD bytes_read = 0;
-                    if (ReadFile(hPipe, buffer, sizeof(buffer) - 1, &bytes_read, nullptr) && bytes_read > 0) {
-                        std::string cmd(buffer, buffer + bytes_read);
-                        const auto newline = cmd.find_first_of("\r\n");
-                        if (newline != std::string::npos) {
-                            cmd.resize(newline);
-                        }
-                        if (!cmd.empty()) {
-                            std::lock_guard<std::mutex> lock(visual_cmd_mtx);
-                            visual_last_pipe_cmd = cmd;
-                        }
-                    }
-                }
-
-                std::string cmd;
-                {
-                    std::lock_guard<std::mutex> lock(visual_cmd_mtx);
-                    cmd = visual_last_pipe_cmd;
-                }
-                if (!cmd.empty()) {
-                    if (cmd != last_cmd) {
-                        if (cmd == "PAUSE") {
-                            vm.SetVisualDebugPaused(true);
-                            (void)host.pauseEmulationBlocking(1500);
-                        }
-                        else if (cmd == "RESUME") {
-                            vm.SetVisualDebugPaused(false);
-                            (void)host.resumeEmulation();
-                        }
-                        last_cmd = cmd;
-                    }
-                    if (cmd == "VM_STEP") {
-                        if (vm.IsRunUntilBpActive()) {
-                            (void)host.stepOneFrameBlocking(1500);
-                        }
-                        else {
-                            vm.StepVisualDebugVmOnce();
-                        }
-                    }
-                    cmd.clear();
-                }
-              
-                Sleep(50);
-            }
-            if (hPipe != INVALID_HANDLE_VALUE) {
-                DisconnectNamedPipe(hPipe);
-                CloseHandle(hPipe);
-            }
-            });
+        }
+        if (enqueue_failed) {
+            CancelReader();
+            available_.notify_one();
+            return false;
+        }
+        available_.notify_one();
+        return true;
     }
 
-    // Advertise "NoProgram" at startup
-    {
-        WireReady wrdy{}; wrdy.tag = MSG_READY; wrdy.ok = 1; wrdy.state = WSTATE_NoProgram; wrdy.error = WERR_None;
-        if (!wire_writer.write_object(wrdy)) {
-            SCLOGE("[Worker %zu] failed to write READY(NoProgram)", worker_id);
-            return SEND_READY_FAILED;
+    void StopAndDrain() {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            stopping_ = true;
         }
-        SCLOGD("[Worker %zu] READY(NoProgram) sent", worker_id);
+        available_.notify_one();
+        if (thread_.joinable())
+            thread_.join();
     }
 
-    PhaseScript init_prog{};
-    PhaseScript main_prog{};
-    PSInit psinit{};            // savestate_path may be empty now
-    psinit.default_timeout_ms = timeout_ms;
-    bool main_active = false;
-    uint8_t active_pk;
+    bool healthy() const noexcept {
+        return healthy_.load(std::memory_order_acquire);
+    }
 
-    for (;;) {
-        uint32_t tag = 0;
-        if (!read_tag(hIn, tag)) break;
+private:
+    struct Record {
+        MessageKind kind{ MessageKind::ProcessHello };
+        std::uint64_t request_id{ 0 };
+        std::vector<std::uint8_t> payload;
+    };
 
-        if (tag == MSG_SET_PROGRAM) {
-            WireSetProgram sp{}; sp.tag = tag;
-            if (!read_all(hIn, reinterpret_cast<uint8_t*>(&sp) + sizeof(sp.tag),
-                sizeof(sp) - sizeof(sp.tag))) break;
-
-            psinit.default_timeout_ms = sp.timeout_ms;
-            psinit.savestate_path = sp.savestate_path;
-            psinit.derived_buffer_type = (savor::DBuf)sp.buff_kind;
-
-            active_pk = sp.main_kind;
-
-            main_prog = savor::programs::build_main_program(active_pk);
-            main_active = false;
-
-            WireAck ack{}; ack.tag = MSG_ACK; ack.ok = 1; ack.code = 'S';
-            (void)wire_writer.write_object(ack);
-            SCLOGD("[Worker %zu] SET_PROGRAM ok (init=%u main=%u, sav='%s', to=%u)",
-                worker_id, sp.init_kind, sp.main_kind, psinit.savestate_path.c_str(), psinit.default_timeout_ms);
+    void MarkUnhealthy() noexcept {
+        healthy_.store(false, std::memory_order_release);
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            stopping_ = true;
         }
-        else if (tag == MSG_RUN_INIT_ONCE) {
-            if (!init_prog.ops.empty()) {
-                if (!vm.init(psinit, init_prog)) {
-                    WireAck ack{}; ack.tag = MSG_ACK; ack.ok = 0; ack.code = 'I';
-                    (void)wire_writer.write_object(ack);
-                    SCLOGE("[Worker %zu] VM init failed for INIT", worker_id);
+        CancelReader();
+        available_.notify_one();
+    }
+
+    void CancelReader() noexcept {
+        if (reader_thread_)
+            (void)CancelSynchronousIo(reader_thread_);
+    }
+
+    void Run() {
+        set_this_thread_name_utf8("WorkerOutboundV1");
+        for (;;) {
+            Record record;
+            {
+                std::unique_lock<std::mutex> lock(mutex_);
+                available_.wait(lock, [&]() {
+                    return stopping_ || !queue_.empty();
+                });
+                if (queue_.empty()) {
+                    if (stopping_)
+                        break;
                     continue;
                 }
-                (void)vm.run(PSJob{}); // single-shot
-            }
-            WireAck ack{}; ack.tag = MSG_ACK; ack.ok = 1; ack.code = 'I';
-            (void)wire_writer.write_object(ack);
-            SCLOGD("[Worker %zu] RUN_INIT_ONCE ok", worker_id);
-        }
-        else if (tag == MSG_ACTIVATE_MAIN) {
-            if (!vm.init(psinit, main_prog)) {
-                WireAck ack{}; ack.tag = MSG_ACK; ack.ok = 0; ack.code = 'A';
-                (void)wire_writer.write_object(ack);
-                SCLOGE("[Worker %zu] VM init failed for MAIN", worker_id);
-                continue;
-            }
-            main_active = true;
-            if (visual_debug) {
-                (void)host.pauseEmulationBlocking(1500);
-                vm.SetVisualDebugPaused(true);
-            }
-            WireAck ack{}; ack.tag = MSG_ACK; ack.ok = 1; ack.code = 'A';
-            (void)wire_writer.write_object(ack);
-            SCLOGD("[Worker %zu] ACTIVATE_MAIN ok", worker_id);
-        }
-        else if (tag == MSG_JOB) {
-            // Read header
-            WireJobHeader jh{};
-            if (!read_exact(hIn, &jh, sizeof(jh))) break;
-
-            if (jh.tag != tag) break;
-
-            // Read payload bytes
-            std::vector<uint8_t> payload(jh.payload_len);
-            if (jh.payload_len) {
-                if (!read_all(hIn, payload.data(), payload.size())) break;
+                record = std::move(queue_.front());
+                queue_.pop_front();
             }
 
-            WireResult wr{}; wr.tag = MSG_RESULT; wr.job_id = jh.job_id; wr.epoch = jh.epoch; wr.err = WERR_None;
-
-            if (!main_active) {
-                wr.ok = 0;
-                wr.err = WERR_NoProgramLoaded;
-                (void)wire_writer.write_object(wr);
-                SCLOGD("[Worker %zu] JOB before ACTIVATE_MAIN -> NoProgram", worker_id);
-                continue;
-            }
-
-            // Decode by active program via registry (worker stays ignorant of tag semantics)
-            PSJob pj{};
-            pj.payload = std::move(payload);
-            bool decode_ok = savor::programs::decode_payload_for(/*active program kind*/ active_pk, pj.payload, pj.ctx);
-            if (!decode_ok) {
-                wr.ok = 0;
-                wr.err = WERR_DecodePayloadFail;
-                (void)wire_writer.write_object(wr);
-                SCLOGE("[Worker %zu] payload decode failed for active program", worker_id);
-                continue;
-            }
-
-            pj.ctx[savor::context::key::core::GAME_ISO_PATH] = boot.iso_path;
-
-            auto progress_sink = [&wire_writer, jh](const char* text, bool record = true)
+            const auto frame = savor::wrms::EncodeFrame(
+                record.kind,
+                record.request_id,
+                record.payload);
+            if (!frame ||
+                !WriteAll(output_, frame.bytes.data(), frame.bytes.size())) {
+                healthy_.store(false, std::memory_order_release);
                 {
-                    WireProgress wp{};
-                    wp.tag = MSG_PROGRESS;
-                    wp.job_id = jh.job_id;
-                    wp.record_progress = record;
-                    std::memset(wp.text, 0, sizeof(wp.text));
-                    if (text && *text)
-                        std::strncpy(wp.text, text, sizeof(wp.text) - 1);
-
-                    (void)wire_writer.write_object(wp);
-                };
-
-            uint32_t progress_flags;
-            pj.ctx.get(savor::context::key::core::PROGRESS_CORE_FLAGS, progress_flags);
-
-            if (progress_flags != 0)
-                host.setProgressSink(progress_sink);
-
-            // Run
-            auto R = vm.run(pj);
-
-            if (visual && !visual_screenshot_dir.empty()) {
-                const auto screenshot_path = std::filesystem::path(visual_screenshot_dir)
-                    / ("worker-" + std::to_string(worker_id)
-                        + "-job-" + std::to_string(jh.job_id)
-                        + "-epoch-" + std::to_string(jh.epoch)
-                        + ".png");
-                const bool screenshot_ok = host.saveScreenshotBlocking(screenshot_path.string(), 5000);
-                SCLOGI("[Worker %zu] visual screenshot ok=%d path=%s",
-                    worker_id,
-                    screenshot_ok ? 1 : 0,
-                    screenshot_path.string().c_str());
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    stopping_ = true;
+                    queue_.clear();
+                }
+                CancelReader();
+                break;
             }
-
-            // --- clear sink after job ---
-            if (progress_flags != 0)
-                host.setProgressSink(nullptr);
-
-            // Encode numeric context
-            std::vector<uint8_t> blob;
-            bool enc_ok = savor::psctx::encode_numeric(R.ctx, blob);
-
-            // Transport envelope
-            wr.ok = (R.ok && enc_ok) ? 1 : 0;
-            if (!enc_ok) wr.err = WERR_EncodePayloadFail;
-
-            wr.ctx_len = static_cast<uint32_t>(blob.size());
-
-            // Send tag, then send full header, then blob (if any)
-            (void)wire_writer.write_parts({
-                WorkerWirePart{ &wr, sizeof(wr) },
-                WorkerWirePart{ blob.data(), blob.size() },
-            });
         }
-        else {
-            SCLOGD("[Worker %zu] unknown tag=%u (closing)", worker_id, tag);
+    }
+
+    HANDLE output_{ nullptr };
+    HANDLE reader_thread_{ nullptr };
+    mutable std::mutex mutex_;
+    std::condition_variable available_;
+    std::deque<Record> queue_;
+    bool stopping_{ false };
+    std::atomic<bool> healthy_{ true };
+    std::thread thread_;
+};
+
+class RequestMetadata {
+public:
+    void RememberScreenshot(
+        std::uint64_t request_id,
+        std::string output_path) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        screenshot_paths_[request_id] = std::move(output_path);
+    }
+
+    std::string TakeScreenshot(std::uint64_t request_id) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto found = screenshot_paths_.find(request_id);
+        if (found == screenshot_paths_.end())
+            return {};
+        std::string value = std::move(found->second);
+        screenshot_paths_.erase(found);
+        return value;
+    }
+
+private:
+    std::mutex mutex_;
+    std::unordered_map<std::uint64_t, std::string> screenshot_paths_;
+};
+
+void PublishCommandCompletion(
+    OutboundPublisher& publisher,
+    RequestMetadata& metadata,
+    const WorkerCommandResult& result) {
+    const auto& snapshot = result.snapshot;
+    const auto& session = snapshot.session;
+    const bool succeeded =
+        result.outcome != savor::runtime::WorkerCommandOutcome::Rejected;
+
+    switch (result.command_kind) {
+    case savor::runtime::WorkerCommandKind::OpenSession: {
+        savor::wrms::OpenSessionResultPayload payload{
+            .success = succeeded,
+            .session_id = session.session_id.value(),
+            .state_epoch = session.state_epoch.value(),
+            .capability_mask = snapshot.capabilities,
+            .worker_state = MapWorkerState(snapshot.state),
+            .session_disposition =
+                MapSessionDisposition(session.disposition),
+            .rejection_code = MapRejectionCode(result.error.code),
+            .error_code = ErrorCodeString(result.error.code),
+            .message = result.error.message,
+        };
+        publisher.Publish(
+            MessageKind::OpenSessionResult,
+            result.request_id.value(),
+            payload);
+        return;
+    }
+    case savor::runtime::WorkerCommandKind::CaptureScreenshot: {
+        savor::wrms::ScreenshotResultPayload payload{
+            .status = succeeded
+                ? savor::wrms::ScreenshotStatus::Captured
+                : savor::wrms::ScreenshotStatus::Failed,
+            .session_id = session.session_id.value(),
+            .state_epoch = session.state_epoch.value(),
+            .output_path =
+                metadata.TakeScreenshot(result.request_id.value()),
+            .rejection_code = MapRejectionCode(result.error.code),
+            .error_code = ErrorCodeString(result.error.code),
+            .message = result.error.message,
+        };
+        publisher.Publish(
+            MessageKind::ScreenshotResult,
+            result.request_id.value(),
+            payload);
+        return;
+    }
+    case savor::runtime::WorkerCommandKind::Shutdown: {
+        savor::wrms::ShutdownResultPayload payload{
+            .status = succeeded
+                ? savor::wrms::ShutdownStatus::Graceful
+                : savor::wrms::ShutdownStatus::CleanupFailed,
+            .final_disposition =
+                MapSessionDisposition(session.disposition),
+            .rejection_code = MapRejectionCode(result.error.code),
+            .error_code = ErrorCodeString(result.error.code),
+            .message = result.error.message,
+        };
+        publisher.Publish(
+            MessageKind::ShutdownResult,
+            result.request_id.value(),
+            payload);
+        return;
+    }
+    default: {
+        savor::wrms::CommandResultPayload payload{
+            .command_sequence = result.command_sequence.value(),
+            .command_kind = MapCommandKind(result.command_kind),
+            .status = MapCommandStatus(result),
+            .rejection_code = MapRejectionCode(result.error.code),
+            .error_code = ErrorCodeString(result.error.code),
+            .message = result.error.message,
+        };
+        publisher.Publish(
+            MessageKind::CommandResult,
+            result.request_id.value(),
+            payload);
+        return;
+    }
+    }
+}
+
+void PublishWorkerEvent(
+    OutboundPublisher& publisher,
+    RequestMetadata& metadata,
+    const WorkerEvent& event) {
+    std::visit(
+        Overloaded{
+            [&](const savor::runtime::WorkerStateChangedEvent& state) {
+                const auto& session = state.current.session;
+                publisher.Publish(
+                    MessageKind::SessionEvent,
+                    0,
+                    savor::wrms::SessionEventPayload{
+                        .event_type =
+                            savor::wrms::SessionEventType::StateChanged,
+                        .session_id = session.session_id.value(),
+                        .state_epoch = session.state_epoch.value(),
+                        .capability_mask = state.current.capabilities,
+                        .worker_state = MapWorkerState(state.current.state),
+                        .session_disposition =
+                            MapSessionDisposition(session.disposition),
+                    });
+            },
+            [&](const savor::runtime::WorkerCommandCompletedEvent& completed) {
+                PublishCommandCompletion(
+                    publisher,
+                    metadata,
+                    completed.result);
+            },
+            [&](const savor::runtime::ModulePreparationEvent& prepared) {
+                if (prepared.error) {
+                    publisher.Publish(
+                        MessageKind::RuntimeDiagnostic,
+                        0,
+                        savor::wrms::RuntimeDiagnosticPayload{
+                            .rejection_code =
+                                MapRejectionCode(prepared.error.code),
+                            .command_sequence =
+                                prepared.command_sequence.value(),
+                            .message = prepared.error.message,
+                        });
+                }
+            },
+            [&](const savor::runtime::ProgramInvocationProgressEvent& progress) {
+                std::vector<std::uint8_t> encoded(
+                    progress.text.begin(),
+                    progress.text.end());
+                publisher.Publish(
+                    MessageKind::InvocationProgress,
+                    0,
+                    savor::wrms::InvocationProgressPayload{
+                        .invocation_id = progress.invocation_id.value(),
+                        .attempt_id = progress.attempt_id.value(),
+                        .ordinal = progress.progress_sequence,
+                        .progress = std::move(encoded),
+                    });
+            },
+            [&](const savor::runtime::ProgramInvocationTerminalEvent& terminal) {
+                publisher.PublishInvocationTerminal(
+                    savor::wrms::InvocationTerminalPayload{
+                        .invocation_id = terminal.invocation_id.value(),
+                        .attempt_id = terminal.attempt_id.value(),
+                        .status = MapTerminalStatus(terminal.status),
+                        .session_disposition =
+                            MapSessionDisposition(
+                                terminal.session_disposition),
+                        .state_epoch = terminal.origin_state_epoch.value(),
+                        .rejection_code =
+                            MapRejectionCode(terminal.error.code),
+                        .error_code = ErrorCodeString(terminal.error.code),
+                        .message = terminal.error.message,
+                        .result = terminal.output_payload,
+                    });
+            },
+            [&](const savor::runtime::HostRuntimeEvent& host) {
+                publisher.Publish(
+                    MessageKind::HostEvent,
+                    0,
+                    savor::wrms::HostEventPayload{
+                        .session_id = host.session_id.value(),
+                        .state_epoch = host.state_epoch.value(),
+                        .sequence = host.event_sequence.value(),
+                        .name = host.name,
+                        .event_data = host.encoded_payload,
+                    });
+            },
+            [&](const savor::runtime::WorkerRuntimeDiagnosticEvent& diagnostic) {
+                publisher.Publish(
+                    MessageKind::RuntimeDiagnostic,
+                    0,
+                    savor::wrms::RuntimeDiagnosticPayload{
+                        .rejection_code =
+                            MapRejectionCode(diagnostic.code),
+                        .invocation_id = diagnostic.invocation_id
+                            ? diagnostic.invocation_id->value()
+                            : 0,
+                        .message = diagnostic.message,
+                    });
+            }},
+        event);
+}
+
+void PublishMalformedCommand(
+    OutboundPublisher& publisher,
+    MessageKind kind,
+    std::uint64_t request_id,
+    const std::string& message) {
+    if (kind == MessageKind::OpenSession) {
+        publisher.Publish(
+            MessageKind::OpenSessionResult,
+            request_id,
+            savor::wrms::OpenSessionResultPayload{
+                .success = false,
+                .rejection_code = savor::wrms::RejectionCode::InvalidArgument,
+                .error_code = "MalformedPayload",
+                .message = message,
+            });
+    } else if (kind == MessageKind::CaptureScreenshot) {
+        publisher.Publish(
+            MessageKind::ScreenshotResult,
+            request_id,
+            savor::wrms::ScreenshotResultPayload{
+                .status = savor::wrms::ScreenshotStatus::Failed,
+                .rejection_code = savor::wrms::RejectionCode::InvalidArgument,
+                .error_code = "MalformedPayload",
+                .message = message,
+            });
+    } else if (kind == MessageKind::Shutdown) {
+        publisher.Publish(
+            MessageKind::ShutdownResult,
+            request_id,
+            savor::wrms::ShutdownResultPayload{
+                .status = savor::wrms::ShutdownStatus::CleanupFailed,
+                .rejection_code = savor::wrms::RejectionCode::InvalidArgument,
+                .error_code = "MalformedPayload",
+                .message = message,
+            });
+    } else {
+        publisher.Publish(
+            MessageKind::CommandResult,
+            request_id,
+            savor::wrms::CommandResultPayload{
+                .command_kind = kind,
+                .status = savor::wrms::CommandStatus::Rejected,
+                .rejection_code = savor::wrms::RejectionCode::InvalidArgument,
+                .error_code = "MalformedPayload",
+                .message = message,
+            });
+    }
+}
+
+bool SubmitFrame(
+    savor::runtime::WorkerRuntime& runtime,
+    OutboundPublisher& publisher,
+    RequestMetadata& metadata,
+    const savor::wrms::FrameView& frame,
+    std::future<WorkerCommandResult>* shutdown_future) {
+    if (frame.header.request_id == 0) {
+        PublishMalformedCommand(
+            publisher,
+            frame.header.kind,
+            frame.header.request_id,
+            "parent commands require a nonzero request ID");
+        return true;
+    }
+
+    using namespace savor::runtime;
+    switch (frame.header.kind) {
+    case MessageKind::OpenSession: {
+        savor::wrms::OpenSessionPayload payload;
+        if (!savor::wrms::DecodePayload(frame.payload, payload)) {
+            PublishMalformedCommand(
+                publisher,
+                frame.header.kind,
+                frame.header.request_id,
+                "invalid OpenSession payload");
+            return true;
+        }
+        SessionOpenOptions options;
+        options.backend.runtime_root = payload.runtime_root;
+        options.backend.user_directory = payload.user_directory;
+        options.backend.dolphin_base_directory = payload.runtime_root;
+        options.backend.iso_path = payload.iso_path;
+        options.backend.force_resync_from_base = true;
+        options.backend.visual = payload.visual_requested;
+        options.backend.render_window_handle =
+            static_cast<std::uintptr_t>(payload.render_window_handle);
+        options.screenshot_directory = payload.screenshot_directory;
+        options.screenshot_timeout = std::chrono::milliseconds{
+            payload.screenshot_timeout_ms
+                ? payload.screenshot_timeout_ms
+                : 3000};
+        options.screenshot_on_terminal =
+            payload.screenshot_on_terminal;
+        (void)runtime.Submit(
+            WireRequestId{frame.header.request_id},
+            OpenSessionCommand{std::move(options)});
+        return true;
+    }
+    case MessageKind::PrepareModule: {
+        savor::wrms::PrepareModulePayload payload;
+        if (!savor::wrms::DecodePayload(frame.payload, payload)) {
+            PublishMalformedCommand(
+                publisher,
+                frame.header.kind,
+                frame.header.request_id,
+                "invalid PrepareModule payload");
+            return true;
+        }
+        EncodedModuleEnvelope module;
+        module.identity.canonical_id = std::move(payload.canonical_id);
+        module.identity.revision = payload.revision;
+        module.identity.canonical_hash =
+            std::move(payload.canonical_hash);
+        module.format_version = payload.format_version;
+        module.payload = std::move(payload.encoded_module);
+        (void)runtime.Submit(
+            WireRequestId{frame.header.request_id},
+            PrepareModuleCommand{std::move(module)});
+        return true;
+    }
+    case MessageKind::SubmitInvocation: {
+        savor::wrms::SubmitInvocationPayload payload;
+        if (!savor::wrms::DecodePayload(frame.payload, payload)) {
+            PublishMalformedCommand(
+                publisher,
+                frame.header.kind,
+                frame.header.request_id,
+                "invalid SubmitInvocation payload");
+            return true;
+        }
+        EncodedInvocationEnvelope invocation;
+        invocation.invocation_id = InvocationId{payload.invocation_id};
+        invocation.attempt_id = AttemptId{payload.attempt_id};
+        invocation.module.canonical_id =
+            std::move(payload.module_canonical_id);
+        invocation.module.revision = payload.module_revision;
+        invocation.module.canonical_hash =
+            std::move(payload.module_canonical_hash);
+        invocation.entrypoint = std::move(payload.entrypoint);
+        invocation.expected_state_epoch =
+            StateEpoch{payload.expected_state_epoch};
+        invocation.input_payload = std::move(payload.encoded_invocation);
+        (void)runtime.Submit(
+            WireRequestId{frame.header.request_id},
+            InvokeProgramCommand{std::move(invocation)});
+        return true;
+    }
+    case MessageKind::CancelInvocation: {
+        savor::wrms::CancelInvocationPayload payload;
+        if (!savor::wrms::DecodePayload(frame.payload, payload)) {
+            PublishMalformedCommand(
+                publisher,
+                frame.header.kind,
+                frame.header.request_id,
+                "invalid CancelInvocation payload");
+            return true;
+        }
+        (void)runtime.Submit(
+            WireRequestId{frame.header.request_id},
+            CancelInvocationCommand{InvocationId{payload.invocation_id}});
+        return true;
+    }
+    case MessageKind::CaptureScreenshot: {
+        savor::wrms::CaptureScreenshotPayload payload;
+        if (!savor::wrms::DecodePayload(frame.payload, payload)) {
+            PublishMalformedCommand(
+                publisher,
+                frame.header.kind,
+                frame.header.request_id,
+                "invalid CaptureScreenshot payload");
+            return true;
+        }
+        metadata.RememberScreenshot(
+            frame.header.request_id,
+            payload.output_path);
+        (void)runtime.Submit(
+            WireRequestId{frame.header.request_id},
+            CaptureScreenshotCommand{
+                .session_id = SessionId{payload.session_id},
+                .output_path = std::move(payload.output_path),
+                .timeout = std::chrono::milliseconds{
+                    payload.timeout_ms ? payload.timeout_ms : 3000},
+            });
+        return true;
+    }
+    case MessageKind::Shutdown: {
+        savor::wrms::ShutdownPayload payload;
+        if (!savor::wrms::DecodePayload(frame.payload, payload)) {
+            PublishMalformedCommand(
+                publisher,
+                frame.header.kind,
+                frame.header.request_id,
+                "invalid Shutdown payload");
+            return true;
+        }
+        *shutdown_future = runtime.Submit(
+            WireRequestId{frame.header.request_id},
+            ShutdownCommand{});
+        return false;
+    }
+    default:
+        return false;
+    }
+}
+
+} // namespace
+
+int main(int argc, char** argv) {
+    std::uint64_t worker_id = 0;
+    std::filesystem::path log_directory;
+    for (int index = 1; index < argc; ++index) {
+        const std::string argument = argv[index];
+        if (argument == "--id")
+            worker_id = ParseU64(NextArg(index, argc, argv));
+        else if (argument == "--log-dir")
+            log_directory = NextArg(index, argc, argv);
+    }
+
+    set_this_thread_name_utf8(
+        ("WorkerMainV1-" + std::to_string(worker_id)).c_str());
+
+    if (log_directory.empty()) {
+        std::error_code temp_error;
+        log_directory = std::filesystem::temp_directory_path(temp_error);
+        if (temp_error)
+            log_directory = ExecutableDirectory();
+        log_directory /= "SavorWorker";
+    }
+    std::error_code directory_error;
+    std::filesystem::create_directories(log_directory, directory_error);
+    const auto log_path =
+        log_directory /
+        ("worker-" + std::to_string(worker_id) + ".log");
+    auto& logger = savor::logger::Logger::get();
+    logger.open_file(log_path.string().c_str(), false);
+    logger.set_levels(
+        savor::logger::Level::Off,
+        savor::logger::Level::Debug);
+
+    HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
+    HANDLE output = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (!input || input == INVALID_HANDLE_VALUE ||
+        !output || output == INVALID_HANDLE_VALUE) {
+        return static_cast<int>(WorkerExitCode::InvalidHandles);
+    }
+
+    OutboundPublisher publisher(output);
+    RequestMetadata request_metadata;
+    std::unique_ptr<savor::runtime::WorkerRuntime> runtime;
+    runtime = savor::runtime::MakeProductionWorkerRuntime(
+        savor::runtime::SessionId{},
+        [&](const WorkerEvent& event) {
+            PublishWorkerEvent(
+                publisher,
+                request_metadata,
+                event);
+        });
+
+    savor::hoststubs::SetHostEventSink(
+        [&](const savor::hoststubs::HostEvent& event) {
+            std::vector<std::uint8_t> encoded(
+                event.args_json.begin(),
+                event.args_json.end());
+            (void)runtime->EnqueueHostEvent(
+                event.name,
+                std::move(encoded));
+        });
+
+    publisher.Publish(
+        MessageKind::ProcessHello,
+        0,
+        savor::wrms::ProcessHelloPayload{
+            .worker_id = worker_id,
+            .process_id = GetCurrentProcessId(),
+            .capability_mask = runtime->capabilities(),
+            .build_identity = "SavorWorker WRMS/1 hard-cutover",
+        });
+
+    std::vector<std::uint8_t> buffered;
+    buffered.reserve(64 * 1024);
+    std::array<std::uint8_t, 64 * 1024> chunk{};
+    std::future<WorkerCommandResult> shutdown_future;
+    bool shutdown_requested = false;
+    bool protocol_ok = true;
+
+    while (!shutdown_requested && publisher.healthy()) {
+        DWORD read = 0;
+        if (!ReadFile(
+                input,
+                chunk.data(),
+                static_cast<DWORD>(chunk.size()),
+                &read,
+                nullptr) ||
+            read == 0) {
+            protocol_ok = buffered.empty();
             break;
         }
+        buffered.insert(
+            buffered.end(),
+            chunk.begin(),
+            chunk.begin() + read);
+
+        for (;;) {
+            const auto decoded =
+                savor::wrms::DecodeFrame(buffered, false);
+            if (decoded.status ==
+                savor::wrms::FrameDecodeStatus::NeedMoreData) {
+                break;
+            }
+            if (decoded.status ==
+                savor::wrms::FrameDecodeStatus::Error) {
+                protocol_ok = false;
+                shutdown_requested = true;
+                break;
+            }
+            if (savor::wrms::DirectionOf(decoded.frame.header.kind) !=
+                savor::wrms::MessageDirection::ParentToWorker) {
+                protocol_ok = false;
+                shutdown_requested = true;
+                break;
+            }
+
+            const bool keep_reading = SubmitFrame(
+                *runtime,
+                publisher,
+                request_metadata,
+                decoded.frame,
+                &shutdown_future);
+            buffered.erase(
+                buffered.begin(),
+                buffered.begin() + decoded.consumed_size);
+            if (!keep_reading) {
+                shutdown_requested = true;
+                break;
+            }
+        }
     }
 
-    visual_control_stop.store(true);
-    vm.SetVisualDebugMode(false);
-    if (!visual_host_events_pipe.empty()) {
-        savor::hoststubs::ClearHostEventSink();
+    if (!buffered.empty() && !shutdown_requested) {
+        const auto final_decode =
+            savor::wrms::DecodeFrame(buffered, true);
+        if (final_decode.status ==
+            savor::wrms::FrameDecodeStatus::Error) {
+            protocol_ok = false;
+        }
     }
-    if (visual_control_thread.joinable()) {
-        visual_control_thread.join();
+
+    if (!shutdown_future.valid()) {
+        shutdown_future = runtime->Submit(
+            savor::runtime::WireRequestId{},
+            savor::runtime::ShutdownCommand{});
     }
-    return WERR_None;
+    (void)shutdown_future.get();
+    runtime->WaitStopped();
+    savor::hoststubs::ClearHostEventSink();
+    publisher.StopAndDrain();
+    runtime.reset();
+
+    if (!publisher.healthy())
+        return static_cast<int>(WorkerExitCode::PublisherFailure);
+    return protocol_ok
+        ? static_cast<int>(WorkerExitCode::Success)
+        : static_cast<int>(WorkerExitCode::ProtocolFailure);
 }

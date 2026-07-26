@@ -27,6 +27,7 @@
 #include "Runner/Parallel/PRTypes.h"
 #include "Worker/ProcessWorker.h"
 #include "Worker/TSQueue.h"
+#include "Worker/WorkerCapabilityPreflight.h"
 
 namespace savor::e2e {
 namespace {
@@ -978,6 +979,24 @@ bool RunBattleMacroProbeScenario(
             *error_out =
                 "SavorWorker.exe was not found next to SavorE2E: "
                 + source_worker_exe.string();
+        }
+        return false;
+    }
+
+    const auto preflight = savor::RunWorkerCapabilityPreflight(
+        savor::WorkerCapabilityPreflightRequest{
+            .worker_exe_path = source_worker_exe.string(),
+            .timeout_ms = static_cast<std::uint32_t>(
+                std::clamp<std::int64_t>(
+                    options.timeout_ms,
+                    1,
+                    std::numeric_limits<std::uint32_t>::max())),
+            .required_capabilities = savor::runtime::CapabilityMask(
+                savor::runtime::WorkerCapability::ProgramInvocation),
+        });
+    if (!preflight) {
+        if (error_out) {
+            *error_out = preflight.message;
         }
         return false;
     }

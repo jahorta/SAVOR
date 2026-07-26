@@ -267,6 +267,10 @@
     <ClCompile Include="test_tsqueue.cpp" />
     <ClCompile Include="test_TASPad.cpp" />
     <ClCompile Include="test_worker_runtime_materialization.cpp" />
+    <ClCompile Include="test_worker_protocol_v1.cpp" />
+    <ClCompile Include="test_process_worker_v1.cpp" />
+    <ClCompile Include="test_worker_capability_gate.cpp" />
+    <ClCompile Include="test_execution_worker_runtime.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\SavorCaptureFormat\SavorCaptureFormat.vcxproj">

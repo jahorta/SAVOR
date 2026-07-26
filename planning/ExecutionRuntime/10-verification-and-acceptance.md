@@ -5,7 +5,8 @@
 This document is a toolbox of checks for implementing the Execution Runtime refactor, migrating current
 phases, and deleting the legacy runtime. Use the checks that help develop or diagnose the seam being
 changed. Final functional acceptance is the full Release solution build plus production-worker
-SavorE2E, not completion of every possible test category listed here.
+SavorE2E after `ProgramRuntime`, current-program migration, and handler adapters restore the complete
+production path, not completion of every possible test category listed here.
 
 Current tests describe current behavior. Some encode current ownership or API shape and
 will be replaced rather than carried forward as target architecture requirements.
@@ -79,7 +80,9 @@ The implementation shall provide five test surfaces:
    - exists only through the bounded migration window.
 5. **Focused live SavorE2E**
    - uses the production worker, modules, actions, services, and workflow materialization;
-   - validates Dolphin integration and game-specific witnesses that a fake backend cannot prove.
+   - validates Dolphin integration and game-specific witnesses that a fake backend cannot prove;
+   - is intentionally unavailable during the intermediate hard-cutover slices in which production
+     `ProgramInvocation` is not advertised.
 
 A test fixture cannot implement phase behavior on behalf of production code. A custom SavorE2E scenario
 is an invocation and assertion harness, not a substitute `NavmeshSurveyRunner`.
@@ -100,6 +103,24 @@ cancel or delete work to pass the gate. `battle_macro_probe` remains a direct-wo
 scenario and does not participate in this DB boundary. Battle End and Navigation Context compile
 through the shared factory when selected directly but remain outside the `all` matrix until their live
 validation is scheduled.
+
+### Dependency-slice acceptance and hard-cutover interval
+
+Each incomplete dependency slice is accepted by solution compilation and the focused guards that make
+its changed ownership, concurrency, cleanup, protocol, or translation boundary executable. This is not a
+claim of restored worker functionality.
+
+Slice 1 deliberately disconnects `PhaseScriptVM` from production without installing a compatibility
+executor. Its production worker exposes session lifecycle, screenshot, host-event,
+cancellation-protocol, and shutdown capabilities, but not `ProgramInvocation` or interactive visual
+debugging. Worker-backed callers fail capability preflight before DB-facing work or scenario record
+creation. If a worker scenario is requested during this interval, it reports `RuntimeUnavailable`; it is
+not recorded as skipped or passed.
+
+Production-worker SavorE2E resumes only after `ProgramRuntime`, current-program migration, and
+handler-adapter cutover provide the complete production path. The final Release solution build and that
+E2E result remain the functional acceptance; the temporary availability gap does not permit any SavorDb
+schema, storage, interface, queue, claim, workflow, or transaction change.
 
 ### Canonical deterministic trace
 
@@ -260,6 +281,28 @@ Cover:
 - pure native reducer transitions and requested effects;
 - rejection of a reducer that attempts service/Dolphin ownership; and
 - result construction when domain success is followed by cleanup failure.
+
+### Slice 1 WorkerRuntime, EmulationSession, and protocol tests
+
+Before `ProgramRuntime` exists, focused fake-port and fake-backend guards cover:
+
+- deterministic actor ordering for concurrent producers and exactly one completion or rejection per
+  command;
+- one owned session, one active invocation, exact-invocation cancellation, duplicate/stale cancellation,
+  cancel/completion races, clean reuse, and tainted rejection;
+- boot success/failure, idempotent shutdown, typed screenshot/state-replacement receipts, and
+  `StateEpoch` advancement only after successful boot, reboot, file load, or buffer restore;
+- protocol-version-1 golden framing with four-byte `WRMS` magic, 16-bit version and kind, 32-bit payload
+  length, 64-bit request ID, and the 64 MiB pre-allocation payload limit;
+- fragmented input plus truncated, oversized, wrong-magic, wrong-version, unknown-kind, and disconnected
+  legacy-frame rejection without session mutation;
+- request-correlated process shutdown, graceful close, forced-termination reporting, and idempotent stop;
+  and
+- capability mismatch starting no DB-facing thread or DB work, plus explicit unavailable results for
+  worker-backed E2E, SavorPredict, SavorQt, and direct macro entry points.
+
+Interactive pause, resume, and step tests belong to the `ExecutionEngine` slice. Slice 1 verifies that
+those requests are rejected as unsupported rather than reaching Dolphin or the disconnected VM.
 
 ### StopPointRouter and PhysicalStopPointManager tests
 
@@ -545,11 +588,16 @@ not for the Execution Runtime refactor.
 
 During implementation:
 
-- build the affected SAVOR solution targets with the repository's required MSVC v145 toolchain;
+- build the complete SAVOR solution for a compiled dependency slice with the repository's required MSVC
+  v145 toolchain;
 - run focused unit/integration tests for changed ownership, cleanup, concurrency, protocol, verifier, or
   persistence-adapter seams;
 - run architecture/invariant checks when a dependency or ownership boundary changes; and
 - run parity tests for each affected current phase as it migrates.
+
+Do not use production-worker SavorE2E as an intermediate Slice 1 acceptance signal: the hard cutover
+intentionally advertises no production `ProgramInvocation`. Run it only after `ProgramRuntime`, current
+program migration, and handler adapters restore the complete production path.
 
 Final functional acceptance is the Release solution build and production-worker SavorE2E outcome
 summarized below, plus confirmation that no production path selects the retired legacy executor.

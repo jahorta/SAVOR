@@ -1,8 +1,10 @@
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <sstream>
 #include <string>
@@ -18,6 +20,7 @@
 #include "NavigationContextScenario.h"
 #include "SeedProbeRealWorkerScenario.h"
 #include "TasMovieRealWorkerScenario.h"
+#include "Worker/WorkerCapabilityPreflight.h"
 #include "WorkerCoordinatorPerf.h"
 
 namespace {
@@ -77,6 +80,26 @@ int main(int argc, char** argv) {
         { "tasmovie_seedprobe_battle_override", &RunTasMovieSeedProbeBattleOverrideWorkflowGraphRealWorkerScenario },
         { "tasmovie_battle", &RunTasMovieBattleWorkflowGraphRealWorkerScenario },
     };
+
+    const auto worker_preflight = savor::RunWorkerCapabilityPreflight(
+        savor::WorkerCapabilityPreflightRequest{
+            .worker_exe_path = ResolveWorkerExePath(argv[0]).string(),
+            .log_directory = options.worker_dir_root
+                ? (*options.worker_dir_root / "capability-preflight").string()
+                : std::string{},
+            .worker_id = 0,
+            .timeout_ms = static_cast<std::uint32_t>(
+                std::clamp<std::int64_t>(
+                    options.timeout_ms,
+                    1,
+                    std::numeric_limits<std::uint32_t>::max())),
+            .required_capabilities = savor::runtime::CapabilityMask(
+                savor::runtime::WorkerCapability::ProgramInvocation),
+        });
+    if (!worker_preflight) {
+        std::cerr << "[FAIL] " << worker_preflight.message << "\n";
+        return 1;
+    }
 
     const auto migration_root = ResolveMigrationRoot(options.migration_root);
     const auto db_paths = BuildDbPaths(options);

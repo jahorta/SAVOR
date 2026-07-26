@@ -39,6 +39,9 @@
     <ClInclude Include="Worker\ProcessWorker.h">
       <Filter>Worker</Filter>
     </ClInclude>
+    <ClInclude Include="Worker\WorkerCapabilityPreflight.h">
+      <Filter>Worker</Filter>
+    </ClInclude>
     <ClInclude Include="Worker\TSQueue.h">
       <Filter>Worker</Filter>
     </ClInclude>
@@ -75,6 +78,9 @@
       <Filter>Execution</Filter>
     </ClCompile>
     <ClCompile Include="Worker\ProcessWorker.cpp">
+      <Filter>Worker</Filter>
+    </ClCompile>
+    <ClCompile Include="Worker\WorkerCapabilityPreflight.cpp">
       <Filter>Worker</Filter>
     </ClCompile>
     <ClCompile Include="Worker\WorkerStatusRegistry.cpp">

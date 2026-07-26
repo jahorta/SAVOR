@@ -141,18 +141,42 @@ first `WorkerRuntime` change.
 
 - separate process/transport concerns from one serialized `WorkerRuntime` command actor;
 - make `WorkerRuntime` own exactly one explicit `EmulationSession`;
-- route visual control, cancellation, screenshots, and job commands through that actor;
+- replace production worker traffic with little-endian protocol-version-1 frames whose header is the
+  four-byte `WRMS` magic, 16-bit protocol version, 16-bit message kind, 32-bit payload length, and 64-bit
+  request ID, with payloads rejected above 64 MiB before allocation;
+- use one reader to decode frames into typed actor commands and one outbound publisher for command
+  results, progress, host events, and terminal events; callbacks only enqueue events;
+- route cancellation, screenshots, session lifecycle, and encoded module/invocation envelopes through
+  that actor;
 - narrow `DolphinBackend` to backend capabilities rather than policy; and
 - introduce typed command/result, cancellation-token, session-disposition, and `StateEpoch` primitives.
 
-Program execution may temporarily call the old VM behind this seam, but the old VM may not receive
-external commands directly.
+Slice 1 is a hard production disconnect. `SavorWorker` no longer constructs, includes, or calls
+`PhaseScriptVM`, and the old VM is not placed behind the new seam as a compatibility executor. Its source
+and focused behavior tests may remain as translation evidence for later slices, but no production worker
+command reaches it. The old worker tags remain disconnected and fail locally rather than emitting legacy
+frames.
+
+The Slice 1 worker advertises session lifecycle, screenshot, host-event, cancellation-protocol, and
+shutdown capabilities, but not `ProgramInvocation` or interactive visual debugging. Pause, resume, and
+step requests fail as unsupported until `ExecutionEngine` owns them in slice 3. Ordinary visual rendering
+and host-event publication may continue through the standard session and protocol paths.
+
+Until `ProgramRuntime`, current programs, and handler adapters complete their later slices, worker-backed
+execution is intentionally unavailable. Callers must fail capability preflight before starting DB-facing
+work or creating scenario records; an unavailable worker scenario is neither skipped nor passed. This
+temporary hard-cutover interval changes no SavorDb schema, storage, interface, queue, claim, workflow, or
+transaction contract.
 
 **Completion checks:**
 
 - no pipe-reader, visual-control, telemetry, or background thread directly mutates Dolphin or VM state;
+- malformed, truncated, oversized, wrong-magic, wrong-version, and unknown-kind `WRMS` frames fail without
+  session mutation;
 - command serialization and cancellation races pass deterministic concurrency tests;
-- boot, shutdown, error, and cancellation leave a known session disposition.
+- boot, shutdown, error, and cancellation leave a known session disposition; and
+- the full solution compiles and focused ownership, session, protocol, process, and capability-gate guards
+  pass even though production-worker SavorE2E is not yet runnable.
 
 ### Dependency slice 2: single physical stop-point ownership and routing
 
@@ -188,7 +212,9 @@ external commands directly.
 - represent timeout, VI stall, movie end, cancellation, requested completion, and intercepted stops as
   structured results;
 - support suspended child/interceptor operations with explicit remaining budgets; and
-- move current run-until, frame, opcode, tape, and macro advancement beneath the engine.
+- move current run-until, frame, opcode, tape, and macro advancement beneath the engine; and
+- restore interactive visual pause, resume, and step by routing them through the same serialized engine
+  control path.
 
 **Completion checks:**
 
@@ -329,11 +355,11 @@ the differential window closes.
   artifact behavior behind passive `CaptureService`; and
 - no new production job requires legacy VM execution.
 
-### Dependency slice 7: invocation/result protocol and handler-adapter cutover
+### Dependency slice 7: invocation/result and handler-adapter cutover
 
 **Implement:**
 
-- replace worker activation with exact `ProgramInvocation`;
+- activate the Slice 1 encoded module/invocation protocol envelopes with exact `ProgramInvocation`;
 - replace flat/global-context result mapping with typed `ProgramResult` and immutable artifact references;
 - update program-kind handlers or adjacent integration adapters to construct `ProgramInvocation` from
   existing persisted job/domain data;
@@ -477,13 +503,13 @@ The slices follow this dependency direction:
 
 ```text
 existing E2E baseline + just-in-time characterization
-  -> serialized worker/session ownership
+  -> serialized worker/session ownership + WRMS process/session protocol
   -> physical stop ownership/router
   -> execution ownership
   -> scoped services
   -> universal program runtime
   -> current-phase migration
-  -> invocation/protocol handler-adapter cutover
+  -> invocation/result handler-adapter cutover
   -> legacy deletion
 ```
 
@@ -534,10 +560,16 @@ Focused unit, concurrency, fault-injection, architecture, and differential tests
 for risky seams and migration mismatches. They inform implementation but are not a separate release
 approval process.
 
+Intermediate hard-cutover slices are accepted by solution compilation plus focused guards for the seam
+being changed. Production-worker SavorE2E is intentionally unavailable after slice 1 and is run for final
+functional acceptance only after `ProgramRuntime`, current-program migration, and handler adapters restore
+the complete production path.
+
 ## Deferred work
 
 - Exact commit/PR grouping and deployment calendar.
-- Final C++ namespaces, file layout, and worker frame encoding.
+- Final C++ namespaces, file layout, and encoded module/invocation payload schemas beyond the fixed Slice
+  1 `WRMS` frame header.
 - Duration of the differential window, subject to phase parity rather than a calendar alone.
 - Performance tuning and worker-pool sizing after correctness cutover.
 - Any generalized capture-plan authoring language or replacement for `savor.capture.profile/1`.

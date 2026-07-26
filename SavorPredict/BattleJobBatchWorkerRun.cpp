@@ -18,6 +18,7 @@
 #include "Execution/ProgramDB/ProgramKindRegistry.h"
 #include "Execution/Workflow/SqliteExecutionDb.h"
 #include "Utils/Hash.h"
+#include "Worker/WorkerCapabilityPreflight.h"
 
 #include <algorithm>
 #include <chrono>
@@ -385,6 +386,18 @@ int run_battle_jobs(
     summary.resource_inputs = options.resource_inputs;
     summary.timeout_ms = resolved_battle_job_batch_timeout_ms(options);
     const auto run_requests = resolved_battle_job_batch_requests(options);
+
+    const auto worker_preflight = savor::RunWorkerCapabilityPreflight(
+        savor::WorkerCapabilityPreflightRequest{
+            .worker_exe_path = options.worker_exe_path.string(),
+            .timeout_ms = 10000,
+            .required_capabilities = savor::runtime::CapabilityMask(
+                savor::runtime::WorkerCapability::ProgramInvocation),
+        });
+    if (!worker_preflight) {
+        err << worker_preflight.message << "\n";
+        return 1;
+    }
 
     if (const int rc = prepare_battle_job_batch_sandbox(options, &summary.sandbox, out, err); rc != 0) {
         append_error(summary, "failed preparing battle job sandbox");

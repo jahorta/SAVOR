@@ -233,6 +233,7 @@
     <ClInclude Include="Runner\Breakpoints\BpRegistry.h" />
     <ClInclude Include="Runner\Breakpoints\Predicate.h" />
     <ClInclude Include="Runner\IPC\Wire.h" />
+    <ClInclude Include="Runner\IPC\WrmsProtocol.h" />
     <ClInclude Include="Runner\IPC\WorkerWireWriter.h" />
     <ClInclude Include="Runner\InputMacro\IInputMacroHost.h" />
     <ClInclude Include="Runner\InputMacro\IInputMacroPlanDriver.h" />
@@ -245,6 +246,12 @@
     <ClInclude Include="Runner\Parallel\ParallelPhaseScriptRunnerApi.h" />
     <ClInclude Include="Runner\Parallel\WorkerBootPlan.h" />
     <ClInclude Include="Runner\Parallel\PRTypes.h" />
+    <ClInclude Include="Runner\Runtime\DolphinWrapperBackend.h" />
+    <ClInclude Include="Runner\Runtime\EmulationSession.h" />
+    <ClInclude Include="Runner\Runtime\IDolphinBackend.h" />
+    <ClInclude Include="Runner\Runtime\IProgramRuntimePort.h" />
+    <ClInclude Include="Runner\Runtime\RuntimeTypes.h" />
+    <ClInclude Include="Runner\Runtime\WorkerRuntime.h" />
     <ClInclude Include="Runner\Script\ContextKeys\BattleRunnerKeys.reg.h" />
     <ClInclude Include="Runner\Script\ContextKeys\BattleCompletionKeys.reg.h" />
     <ClInclude Include="Runner\Script\ContextKeys\BattleEndResultsKeys.reg.h" />
@@ -317,7 +324,11 @@
     <ClCompile Include="Runner\Breakpoints\BpRegistry.cpp" />
     <ClCompile Include="Runner\Breakpoints\Predicate.cpp" />
     <ClCompile Include="Runner\Script\CtxRegistry.cpp" />
+    <ClCompile Include="Runner\IPC\WrmsProtocol.cpp" />
     <ClCompile Include="Runner\IPC\WorkerWireWriter.cpp" />
+    <ClCompile Include="Runner\Runtime\DolphinWrapperBackend.cpp" />
+    <ClCompile Include="Runner\Runtime\EmulationSession.cpp" />
+    <ClCompile Include="Runner\Runtime\WorkerRuntime.cpp" />
     <ClCompile Include="Runner\InputMacro\InputMacroRuntime.cpp" />
     <ClCompile Include="Runner\InputMacro\Providers\BattleCommandInputMacroProvider.cpp" />
     <ClCompile Include="Runner\InputMacro\Providers\BattleCompletionInputMacroProvider.cpp" />
