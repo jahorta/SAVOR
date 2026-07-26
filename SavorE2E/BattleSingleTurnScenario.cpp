@@ -23,11 +23,8 @@
 #include "CoordinatorProgress.h"
 #include "DbSetup.h"
 #include "DurableLogFile.h"
-#include "Execution/ProgramDB/BattleContext/BattleContextProbePhaseRegistration.h"
-#include "Execution/ProgramDB/BattleSingleTurn/BattleSingleTurnPhaseRegistration.h"
 #include "Execution/ProgramDB/ProgramKindRegistry.h"
-#include "Execution/ProgramDB/SeedProbe/SeedProbePhaseRegistration.h"
-#include "Execution/ProgramDB/TasMovie/TasMoviePhaseRegistration.h"
+#include "Execution/ProgramDB/ProductionProgramKindRegistry.h"
 #include "Execution/Workflow/WorkflowOrchestration.h"
 #include "Execution/Workflow/WorkflowUnitActivationFactory.h"
 #include "Phases/Programs/PlayTasMovie/TasMoviePayload.h"
@@ -206,17 +203,30 @@ bool RunSeedProbePrelude(
         return false;
     }
 
+    const auto scenario_workspace_root = options.workspace_root.value_or(
+        std::filesystem::temp_directory_path() / "savor-e2e-default");
+    auto registry_config =
+        savor::db::execution::programdb::MakeProductionProgramKindRegistryConfig(
+            scenario_workspace_root / "workflow-runtime");
     savor::db::execution::programdb::ProgramKindRegistry registry;
-    savor::db::execution::programdb::seedprobe::SeedProbePhaseRegistrationConfig seed_config{};
-    seed_config.authoring_db = db_service->AuthoringDb();
-    savor::db::execution::programdb::seedprobe::RegisterSeedProbePhaseDescriptors(
-        &registry,
-        db_service->ExecutionDb(),
-        db_service->AnalysisDb(),
-        std::move(seed_config));
+    if (!savor::db::execution::programdb::BuildProductionProgramKindRegistry(
+            savor::db::execution::programdb::ProductionProgramKindRegistryDependencies{
+                .execution_db = db_service->ExecutionDb(),
+                .state_db = db_service->StateDb(),
+                .analysis_db = db_service->AnalysisDb(),
+                .authoring_db = db_service->AuthoringDb(),
+            },
+            std::move(registry_config),
+            &registry,
+            &err)) {
+        if (error_out) *error_out = "failed building production program registry: " + err;
+        return false;
+    }
 
     const auto battle_worker_dir_root = options.worker_dir_root.value_or(
-        options.workspace_root.value_or(std::filesystem::temp_directory_path() / "savor-e2e-default") / ".workers");
+        options.workspace_root.value_or(
+            std::filesystem::temp_directory_path() / "savor-e2e-default")
+            / ".workers");
 
     auto coordinator = savor::runner::parallel::savordb::BuildDbBackedWorkflowCoordinator(
         db_service->ExecutionDb(),
@@ -1368,27 +1378,29 @@ bool RunSeedProbeBattleRealWorkerScenario(
         ? ComputeBattleScenarioTimeoutMs(*run_spec, options)
         : std::max<std::int64_t>(options.timeout_ms, 120000);
 
+    const auto scenario_workspace_root = options.workspace_root.value_or(
+        std::filesystem::temp_directory_path() / "savor-e2e-default");
+    auto registry_config =
+        savor::db::execution::programdb::MakeProductionProgramKindRegistryConfig(
+            scenario_workspace_root / "workflow-runtime");
+    registry_config.battle_context.working_dir_root =
+        scenario_workspace_root / "battle-context";
+    registry_config.battle_single_turn.working_dir_root =
+        scenario_workspace_root / "battle-single-turn";
     savor::db::execution::programdb::ProgramKindRegistry registry;
-    savor::db::execution::programdb::battlecontext::BattleContextProbePhaseRegistrationConfig context_config{};
-    context_config.authoring_db = db_service->AuthoringDb();
-    context_config.working_dir_root = options.workspace_root.value_or(
-        std::filesystem::temp_directory_path() / "savor-e2e-default") / "battle-context";
-    savor::db::execution::programdb::battlecontext::RegisterBattleContextProbePhaseDescriptor(
-        &registry,
-        db_service->ExecutionDb(),
-        db_service->AnalysisDb(),
-        std::move(context_config));
-
-    savor::db::execution::programdb::battle::BattleSingleTurnPhaseRegistrationConfig config{};
-    config.authoring_db = db_service->AuthoringDb();
-    config.working_dir_root = options.workspace_root.value_or(
-        std::filesystem::temp_directory_path() / "savor-e2e-default") / "battle-single-turn";
-    savor::db::execution::programdb::battle::RegisterBattleSingleTurnPhaseDescriptor(
-        &registry,
-        db_service->ExecutionDb(),
-        db_service->StateDb(),
-        db_service->AnalysisDb(),
-        std::move(config));
+    if (!savor::db::execution::programdb::BuildProductionProgramKindRegistry(
+            savor::db::execution::programdb::ProductionProgramKindRegistryDependencies{
+                .execution_db = db_service->ExecutionDb(),
+                .state_db = db_service->StateDb(),
+                .analysis_db = db_service->AnalysisDb(),
+                .authoring_db = db_service->AuthoringDb(),
+            },
+            std::move(registry_config),
+            &registry,
+            &err)) {
+        if (error_out) *error_out = "failed building production program registry: " + err;
+        return false;
+    }
 
     if (!registry.HasRequiredAdapters(static_cast<std::int32_t>(savor::PK_BattleContextProbe))
         || !registry.HasRequiredAdaptersForStepKind("battle.context_probe")
@@ -1707,27 +1719,29 @@ bool RunBattleWorkflowGraphRealWorkerScenario(
         return false;
     }
 
+    const auto scenario_workspace_root = options.workspace_root.value_or(
+        std::filesystem::temp_directory_path() / "savor-e2e-default");
+    auto registry_config =
+        savor::db::execution::programdb::MakeProductionProgramKindRegistryConfig(
+            scenario_workspace_root / "workflow-runtime");
+    registry_config.battle_context.working_dir_root =
+        scenario_workspace_root / "battle-context";
+    registry_config.battle_single_turn.working_dir_root =
+        scenario_workspace_root / "battle-single-turn";
     savor::db::execution::programdb::ProgramKindRegistry registry;
-    savor::db::execution::programdb::battlecontext::BattleContextProbePhaseRegistrationConfig context_config{};
-    context_config.authoring_db = db_service->AuthoringDb();
-    context_config.working_dir_root = options.workspace_root.value_or(
-        std::filesystem::temp_directory_path() / "savor-e2e-default") / "battle-context";
-    savor::db::execution::programdb::battlecontext::RegisterBattleContextProbePhaseDescriptor(
-        &registry,
-        db_service->ExecutionDb(),
-        db_service->AnalysisDb(),
-        std::move(context_config));
-
-    savor::db::execution::programdb::battle::BattleSingleTurnPhaseRegistrationConfig battle_config{};
-    battle_config.authoring_db = db_service->AuthoringDb();
-    battle_config.working_dir_root = options.workspace_root.value_or(
-        std::filesystem::temp_directory_path() / "savor-e2e-default") / "battle-single-turn";
-    savor::db::execution::programdb::battle::RegisterBattleSingleTurnPhaseDescriptor(
-        &registry,
-        db_service->ExecutionDb(),
-        db_service->StateDb(),
-        db_service->AnalysisDb(),
-        std::move(battle_config));
+    if (!savor::db::execution::programdb::BuildProductionProgramKindRegistry(
+            savor::db::execution::programdb::ProductionProgramKindRegistryDependencies{
+                .execution_db = db_service->ExecutionDb(),
+                .state_db = db_service->StateDb(),
+                .analysis_db = db_service->AnalysisDb(),
+                .authoring_db = db_service->AuthoringDb(),
+            },
+            std::move(registry_config),
+            &registry,
+            &err)) {
+        if (error_out) *error_out = "failed building production program registry: " + err;
+        return false;
+    }
 
     if (!registry.HasRequiredAdaptersForStepKind("battle_chain")
         || !registry.HasRequiredAdaptersForStepKind("battle.context_probe")
@@ -2133,53 +2147,40 @@ bool RunTasMovieSeedProbeBattleWorkflowGraphRealWorkerScenario(
         return false;
     }
 
-    savor::db::execution::programdb::ProgramKindRegistry registry;
-    savor::db::execution::programdb::tasmovie::TasMoviePhaseRegistrationConfig tas_config{};
-    tas_config.authoring_db = db_service->AuthoringDb();
+    const auto scenario_workspace_root = options.workspace_root.value_or(
+        std::filesystem::temp_directory_path() / "savor-e2e-default");
+    auto registry_config =
+        savor::db::execution::programdb::MakeProductionProgramKindRegistryConfig(
+            scenario_workspace_root / "workflow-runtime");
+    auto& tas_config = registry_config.tas_movie;
     tas_config.blueprint.base_dtm_artifact_id = dtm_artifact_id;
     tas_config.blueprint.rtc_low = 0;
     tas_config.blueprint.rtc_high = 0;
     tas_config.blueprint.run_ms = 0;
     tas_config.blueprint.vi_stall_ms = 2000;
     tas_config.blueprint.progress_enable = true;
-    tas_config.blueprint.headroom_x10 = static_cast<std::uint8_t>(options.tasmovie_headroom_x10.value_or(50));
-    tas_config.working_dir_root = options.workspace_root.value_or(
-        std::filesystem::temp_directory_path() / "savor-e2e-default") / "tasmovie";
-    savor::db::execution::programdb::tasmovie::RegisterTasMoviePhaseDescriptor(
-        &registry,
-        db_service->ExecutionDb(),
-        db_service->StateDb(),
-        db_service->AnalysisDb(),
-        std::move(tas_config));
-
-    savor::db::execution::programdb::seedprobe::SeedProbePhaseRegistrationConfig seed_config{};
-    seed_config.authoring_db = db_service->AuthoringDb();
-    savor::db::execution::programdb::seedprobe::RegisterSeedProbePhaseDescriptors(
-        &registry,
-        db_service->ExecutionDb(),
-        db_service->AnalysisDb(),
-        std::move(seed_config));
-
-    savor::db::execution::programdb::battlecontext::BattleContextProbePhaseRegistrationConfig context_config{};
-    context_config.authoring_db = db_service->AuthoringDb();
-    context_config.working_dir_root = options.workspace_root.value_or(
-        std::filesystem::temp_directory_path() / "savor-e2e-default") / "battle-context";
-    savor::db::execution::programdb::battlecontext::RegisterBattleContextProbePhaseDescriptor(
-        &registry,
-        db_service->ExecutionDb(),
-        db_service->AnalysisDb(),
-        std::move(context_config));
-
-    savor::db::execution::programdb::battle::BattleSingleTurnPhaseRegistrationConfig battle_config{};
-    battle_config.authoring_db = db_service->AuthoringDb();
-    battle_config.working_dir_root = options.workspace_root.value_or(
-        std::filesystem::temp_directory_path() / "savor-e2e-default") / "battle-single-turn";
-    savor::db::execution::programdb::battle::RegisterBattleSingleTurnPhaseDescriptor(
-        &registry,
-        db_service->ExecutionDb(),
-        db_service->StateDb(),
-        db_service->AnalysisDb(),
-        std::move(battle_config));
+    const auto tas_headroom_x10 =
+        static_cast<std::uint8_t>(options.tasmovie_headroom_x10.value_or(50));
+    tas_config.blueprint.headroom_x10 = tas_headroom_x10;
+    tas_config.working_dir_root = scenario_workspace_root / "tasmovie";
+    registry_config.battle_context.working_dir_root =
+        scenario_workspace_root / "battle-context";
+    registry_config.battle_single_turn.working_dir_root =
+        scenario_workspace_root / "battle-single-turn";
+    savor::db::execution::programdb::ProgramKindRegistry registry;
+    if (!savor::db::execution::programdb::BuildProductionProgramKindRegistry(
+            savor::db::execution::programdb::ProductionProgramKindRegistryDependencies{
+                .execution_db = db_service->ExecutionDb(),
+                .state_db = db_service->StateDb(),
+                .analysis_db = db_service->AnalysisDb(),
+                .authoring_db = db_service->AuthoringDb(),
+            },
+            std::move(registry_config),
+            &registry,
+            &err)) {
+        if (error_out) *error_out = "failed building production program registry: " + err;
+        return false;
+    }
 
     if (!registry.HasRequiredAdapters(static_cast<std::int32_t>(savor::PK_TasMovie))
         || !registry.HasRequiredAdaptersForStepKind("tas_movie")
@@ -2192,7 +2193,9 @@ bool RunTasMovieSeedProbeBattleWorkflowGraphRealWorkerScenario(
     }
 
     const auto run_spec = db_service->AuthoringDb()->GetBattleRunSpec(battle_run_spec_id);
-    const auto tas_budget_ms = ComputeTasMovieRunMs(options.dtm_file, tas_config.blueprint.headroom_x10, options.timeout_ms * 2) + options.timeout_ms;
+    const auto tas_budget_ms =
+        ComputeTasMovieRunMs(options.dtm_file, tas_headroom_x10, options.timeout_ms * 2)
+        + options.timeout_ms;
     const auto seedprobe_budget_ms = options.timeout_ms
         * (1
             + (static_cast<std::int64_t>(options.seedprobe_samples_per_axis.value_or(kSeedProbeSamplesPerAxis))

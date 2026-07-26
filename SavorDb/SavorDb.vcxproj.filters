@@ -199,6 +199,9 @@
     <ClInclude Include="Execution\ProgramDB\ProgramKindDescriptor.h">
       <Filter>Programs</Filter>
     </ClInclude>
+    <ClInclude Include="Execution\ProgramDB\ProductionProgramKindRegistry.h">
+      <Filter>Programs</Filter>
+    </ClInclude>
     <ClInclude Include="Execution\ProgramDB\SeedProbe\SeedProbeUniqueAdapters.h">
       <Filter>Programs\SeedProbe</Filter>
     </ClInclude>
@@ -377,6 +380,9 @@
     </ClCompile>
     <ClCompile Include="Execution\QueuedExecutionDb.cpp">
       <Filter>Execution</Filter>
+    </ClCompile>
+    <ClCompile Include="Execution\ProgramDB\ProductionProgramKindRegistry.cpp">
+      <Filter>Programs</Filter>
     </ClCompile>
     <ClCompile Include="Execution\ProgramDB\SeedProbe\SeedProbeUniqueAdapters.cpp">
       <Filter>Programs\SeedProbe</Filter>

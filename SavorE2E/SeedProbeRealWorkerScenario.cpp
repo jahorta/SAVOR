@@ -17,8 +17,8 @@
 #include <vector>
 
 #include "Execution/ProgramDB/ProgramKindRegistry.h"
+#include "Execution/ProgramDB/ProductionProgramKindRegistry.h"
 #include "Execution/ProgramDB/SeedProbe/SeedProbeContracts.h"
-#include "Execution/ProgramDB/SeedProbe/SeedProbePhaseRegistration.h"
 #include "Execution/DBWorkflowCoordinatorFactory.h"
 #include "Execution/DBWorkflowWorkerCoordinator.h"
 #include "UIRead/IUiReadDb.h"
@@ -703,14 +703,25 @@ bool RunSeedProbeRealWorkerSmokeImpl(
         return false;
     }
 
+    const auto scenario_workspace_root = options.workspace_root.value_or(
+        std::filesystem::temp_directory_path() / "savor-e2e-default");
+    auto registry_config =
+        savor::db::execution::programdb::MakeProductionProgramKindRegistryConfig(
+            scenario_workspace_root / "workflow-runtime");
     savor::db::execution::programdb::ProgramKindRegistry program_kind_registry;
-    savor::db::execution::programdb::seedprobe::SeedProbePhaseRegistrationConfig phase_config{};
-    phase_config.authoring_db = db_service->AuthoringDb();
-    savor::db::execution::programdb::seedprobe::RegisterSeedProbePhaseDescriptors(
-        &program_kind_registry,
-        execution_db,
-        db_service->AnalysisDb(),
-        std::move(phase_config));
+    if (!savor::db::execution::programdb::BuildProductionProgramKindRegistry(
+            savor::db::execution::programdb::ProductionProgramKindRegistryDependencies{
+                .execution_db = execution_db,
+                .state_db = db_service->StateDb(),
+                .analysis_db = db_service->AnalysisDb(),
+                .authoring_db = db_service->AuthoringDb(),
+            },
+            std::move(registry_config),
+            &program_kind_registry,
+            &err)) {
+        if (error_out) *error_out = "failed building production program registry: " + err;
+        return false;
+    }
 
     DBWorkflowWorkerCoordinator coordinator = BuildDbBackedWorkflowCoordinator(
         execution_db,

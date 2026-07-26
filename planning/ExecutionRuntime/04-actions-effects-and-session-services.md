@@ -10,7 +10,9 @@ session reuse. It was drafted against SAVOR commit
 `b584920ffad8dbe770f343e532d7f7386c82fadf` on 2026-07-25.
 
 Current code is authoritative for current behavior. This target replaces direct VM/action access to
-`DolphinWrapper`. Concrete C++ signatures, transport encoding, and SQL layouts are not frozen.
+`DolphinWrapper`. Concrete C++ signatures and worker transport encoding are not frozen. SavorDb
+SQL/schema, stored representations, database-service interfaces, queues, claims, workflow persistence,
+transaction boundaries, and artifact-storage interfaces are fixed inputs and remain unchanged.
 
 ## Purpose and non-goals
 
@@ -129,6 +131,9 @@ An action completion logically includes:
 - structured diagnostics and causal error chain; and
 - trace information sufficient to compare re-execution.
 
+Action idempotency keys and commit receipts belong to runtime results or existing external
+artifact/telemetry mechanisms. They do not create SavorDb columns, tables, interfaces, or queue records.
+
 There is one outstanding program-level action per `ProgramInstance`. A handler may use structured child
 operations inside its owning session service, but returns one completion to the program. A handler
 cannot resume the executor itself.
@@ -190,7 +195,8 @@ An action may not:
 
 If behavior branches across multiple observations/effects, it belongs in IR. If its transition logic is
 complex but pure, it belongs in a reducer called by IR. If it must survive worker loss or create more
-jobs, it belongs in the workflow/frontier layer.
+jobs, existing program-kind transition handlers and workflow persistence own it. Generalized frontier
+infrastructure is outside this refactor.
 
 ### Pure native reducers
 
@@ -427,7 +433,8 @@ It replaces the VM's one implicit snapshot with explicit handles:
 - a baseline handle may be captured and restored repeatedly within its declared lifetime;
 - arbitrary state handles may coexist within budget;
 - immutable state artifacts may be loaded by invocation policy or explicit action; and
-- saving an artifact records parent/edge lineage and runtime/disc compatibility.
+- saving an artifact records parent/edge lineage and runtime/disc compatibility in runtime artifact
+  metadata or its receipt; any SavorDb projection uses the existing artifact/domain representation.
 
 A restore transaction:
 
@@ -447,7 +454,8 @@ Loading state is never an unannounced helper side effect of VM initialization or
 `MovieService` owns playback/recording lifecycle and returns scoped receipts. Movie-related execution
 termination remains an `ExecutionEngine` policy, not a string guessed by a caller.
 
-`CaptureService` owns profile validation, passive router subscriptions, recorder queues/threads,
+`CaptureService` owns profile validation, passive router subscriptions, service-internal recorder
+queues/threads,
 sampling windows, trace buffers, and capture artifact finalization. Attaching capture cannot grant
 control authority. A job may attach a profile resource, but the service lifetime belongs to
 `EmulationSession`.
@@ -602,7 +610,8 @@ the old broad host interfaces to new modules.
 - Concrete router priority values, subscription serialization, and CPU sampling bytecode.
 - Backend-specific JIT/instruction-cache invalidation calls, provided the locked patch transaction
   semantics are preserved.
-- Final state-handle storage limits, compression, and artifact backend.
+- Worker-local state-handle memory limits/compression and external artifact-backend details. These do not
+  alter SavorDb storage or interfaces.
 - Generalized `eventhook` trigger characterization and allowlisting.
 - Cutscene interception strategy, overworld-specific movement rules, collision-search objectives, and
   navigation settle tolerances.

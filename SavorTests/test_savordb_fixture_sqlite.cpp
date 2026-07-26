@@ -42,6 +42,7 @@
 #include "Execution/Workflow/WorkflowTerminalOutboxSubscriber.h"
 #include "Execution/ProgramDB/BattleSingleTurn/BattleSingleTurnAdapters.h"
 #include "Execution/ProgramDB/BattleContext/BattleContextProbePhaseRegistration.h"
+#include "Execution/ProgramDB/ProductionProgramKindRegistry.h"
 #include "Execution/ProgramDB/SeedProbe/SeedProbePhaseRegistration.h"
 #include "Execution/ProgramDB/SeedProbe/SeedProbeNeutralAdapters.h"
 #include "Execution/ProgramDB/SeedProbe/SeedProbeGridAdapters.h"
@@ -191,6 +192,201 @@ TEST_F(SqliteDbFixture, EmbeddedMigrationsApplyOncePerContextAndTrackVersion) {
         // Second apply should be a no-op and still succeed.
         EXPECT_TRUE(ApplyContextMigrations(db_, context, embedded_options, &err)) << err;
     }
+}
+
+TEST_F(SqliteDbFixture, ProductionProgramKindRegistryBuildsCompleteCatalogAtomicallyWithoutSideEffects) {
+    using namespace savor::db::execution::programdb;
+
+    const ProductionProgramKindRegistryDependencies dependencies{
+        .execution_db = db_service_->ExecutionDb(),
+        .state_db = db_service_->StateDb(),
+        .analysis_db = db_service_->AnalysisDb(),
+        .authoring_db = db_service_->AuthoringDb(),
+    };
+    ASSERT_NE(dependencies.execution_db, nullptr);
+    ASSERT_NE(dependencies.state_db, nullptr);
+    ASSERT_NE(dependencies.analysis_db, nullptr);
+    ASSERT_NE(dependencies.authoring_db, nullptr);
+
+    const auto runtime_root_a = temp_root_ / "composition-runtime-a";
+    const auto runtime_root_b = temp_root_ / "composition-runtime-b";
+    ASSERT_FALSE(std::filesystem::exists(runtime_root_a));
+    ASSERT_FALSE(std::filesystem::exists(runtime_root_b));
+
+    const auto data_version_before = ReadInt64(db_, "PRAGMA data_version;");
+    const auto schema_rows_before = ReadInt64(
+        db_,
+        "SELECT COUNT(*) FROM sqlite_schema;");
+    const auto migration_rows_before = ReadInt64(
+        db_,
+        "SELECT COUNT(*) FROM migration_history;");
+
+    constexpr std::int32_t kSentinelProgramKind = 31337;
+    ProgramKindDescriptor sentinel{};
+    sentinel.program_kind = kSentinelProgramKind;
+    sentinel.program_name = "atomic-output-sentinel";
+
+    ProgramKindRegistry output;
+    ASSERT_TRUE(output.Register(sentinel));
+    ASSERT_TRUE(output.RegisterForStepKind("atomic-output-sentinel", sentinel));
+
+    const auto expect_atomic_failure =
+        [&](ProductionProgramKindRegistryDependencies invalid_dependencies) {
+            std::string error;
+            EXPECT_FALSE(BuildProductionProgramKindRegistry(
+                invalid_dependencies,
+                MakeProductionProgramKindRegistryConfig(runtime_root_a),
+                &output,
+                &error));
+            EXPECT_FALSE(error.empty());
+            const auto* numeric_sentinel = output.Find(kSentinelProgramKind);
+            ASSERT_NE(numeric_sentinel, nullptr);
+            EXPECT_EQ(numeric_sentinel->program_name, "atomic-output-sentinel");
+            const auto* step_sentinel =
+                output.FindForStepKind("atomic-output-sentinel");
+            ASSERT_NE(step_sentinel, nullptr);
+            EXPECT_EQ(step_sentinel->program_name, "atomic-output-sentinel");
+            EXPECT_EQ(
+                output.Find(static_cast<std::int32_t>(savor::PK_TasMovie)),
+                nullptr);
+        };
+
+    auto invalid_dependencies = dependencies;
+    invalid_dependencies.execution_db = nullptr;
+    expect_atomic_failure(invalid_dependencies);
+    invalid_dependencies = dependencies;
+    invalid_dependencies.state_db = nullptr;
+    expect_atomic_failure(invalid_dependencies);
+    invalid_dependencies = dependencies;
+    invalid_dependencies.analysis_db = nullptr;
+    expect_atomic_failure(invalid_dependencies);
+    invalid_dependencies = dependencies;
+    invalid_dependencies.authoring_db = nullptr;
+    expect_atomic_failure(invalid_dependencies);
+
+    std::string error = "must be cleared on success";
+    ASSERT_TRUE(BuildProductionProgramKindRegistry(
+        dependencies,
+        MakeProductionProgramKindRegistryConfig(runtime_root_a),
+        &output,
+        &error)) << error;
+    EXPECT_TRUE(error.empty());
+    EXPECT_EQ(output.Find(kSentinelProgramKind), nullptr);
+    EXPECT_EQ(output.FindForStepKind("atomic-output-sentinel"), nullptr);
+
+    struct ExpectedDescriptor {
+        std::int32_t program_kind;
+        const char* program_name;
+    };
+    constexpr std::array<ExpectedDescriptor, 7> canonical_descriptors{{
+        {static_cast<std::int32_t>(savor::PK_TasMovie), "TasMovie"},
+        {static_cast<std::int32_t>(savor::PK_SeedProbe), "SeedProbe"},
+        {static_cast<std::int32_t>(savor::PK_BattleContextProbe), "BattleContextProbe"},
+        {static_cast<std::int32_t>(savor::PK_BattleSingleTurnRunner), "BattleSingleTurnRunner"},
+        {static_cast<std::int32_t>(savor::PK_BattleCompletionRunner), "BattleCompletionRunner"},
+        {static_cast<std::int32_t>(savor::PK_BattleResultsScreenRunner), "BattleResultsScreenRunner"},
+        {static_cast<std::int32_t>(savor::PK_NavigationContextRunner), "NavigationContextRunner"},
+    }};
+    struct ExpectedStepDescriptor {
+        const char* step_kind;
+        std::int32_t program_kind;
+        const char* program_name;
+    };
+    constexpr std::array<ExpectedStepDescriptor, 16> step_descriptors{{
+        {"tas_movie", static_cast<std::int32_t>(savor::PK_TasMovie), "TasMovie"},
+        {"tasmovie.play", static_cast<std::int32_t>(savor::PK_TasMovie), "TasMovie"},
+        {"seed_probe_chain", static_cast<std::int32_t>(savor::PK_SeedProbe), "SeedProbeChain"},
+        {"seedprobe.neutral", static_cast<std::int32_t>(savor::PK_SeedProbe), "SeedProbe"},
+        {"seedprobe.grid", static_cast<std::int32_t>(savor::PK_SeedProbe), "SeedProbe"},
+        {"seedprobe.unique", static_cast<std::int32_t>(savor::PK_SeedProbe), "SeedProbe"},
+        {"battle_chain", static_cast<std::int32_t>(savor::PK_BattleContextProbe), "BattleContextProbe"},
+        {"battle.context_probe", static_cast<std::int32_t>(savor::PK_BattleContextProbe), "BattleContextProbe"},
+        {"battle.single_turn", static_cast<std::int32_t>(savor::PK_BattleSingleTurnRunner), "BattleSingleTurnRunner"},
+        {"battle.completion", static_cast<std::int32_t>(savor::PK_BattleCompletionRunner), "BattleCompletionRunner"},
+        {"battle.field_return_seed_probe", static_cast<std::int32_t>(savor::PK_SeedProbe), "FieldReturnSeedProbe"},
+        {"battle.field_return_seed_probe.grid", static_cast<std::int32_t>(savor::PK_SeedProbe), "SeedProbe"},
+        {"battle.field_return_seed_probe.unique", static_cast<std::int32_t>(savor::PK_SeedProbe), "SeedProbe"},
+        {"battle.field_return_seed_probe.materialize", static_cast<std::int32_t>(savor::PK_SeedProbe), "FieldReturnSeedMaterialize"},
+        {"battle.results_screen", static_cast<std::int32_t>(savor::PK_BattleResultsScreenRunner), "BattleResultsScreenRunner"},
+        {"navigation.context_probe", static_cast<std::int32_t>(savor::PK_NavigationContextRunner), "NavigationContextRunner"},
+    }};
+
+    const auto expect_complete_descriptor =
+        [](const ProgramKindDescriptor* descriptor,
+           std::int32_t expected_program_kind,
+           const char* expected_program_name) {
+            ASSERT_NE(descriptor, nullptr);
+            EXPECT_EQ(descriptor->program_kind, expected_program_kind);
+            EXPECT_EQ(descriptor->program_name, expected_program_name);
+            EXPECT_TRUE(
+                descriptor->job_persistence != nullptr
+                || descriptor->graph_job_persistence != nullptr);
+            EXPECT_NE(descriptor->runtime_init, nullptr);
+            EXPECT_NE(descriptor->result_mapper, nullptr);
+            EXPECT_NE(descriptor->workflow_transition, nullptr);
+            EXPECT_TRUE(descriptor->supports_workflow_orchestration);
+        };
+
+    for (const auto& expected : canonical_descriptors) {
+        expect_complete_descriptor(
+            output.Find(expected.program_kind),
+            expected.program_kind,
+            expected.program_name);
+    }
+    for (const auto& expected : step_descriptors) {
+        expect_complete_descriptor(
+            output.FindForStepKind(expected.step_kind),
+            expected.program_kind,
+            expected.program_name);
+    }
+
+    // Battle End also attempts a PK_SeedProbe numeric registration. The
+    // production order must preserve ordinary SeedProbe as the first winner.
+    const auto* seed_probe =
+        output.Find(static_cast<std::int32_t>(savor::PK_SeedProbe));
+    ASSERT_NE(seed_probe, nullptr);
+    EXPECT_EQ(seed_probe->program_name, "SeedProbe");
+    const auto* field_return_seed_probe =
+        output.FindForStepKind("battle.field_return_seed_probe");
+    ASSERT_NE(field_return_seed_probe, nullptr);
+    EXPECT_EQ(field_return_seed_probe->program_name, "FieldReturnSeedProbe");
+
+    ProgramKindRegistry second_registry;
+    ASSERT_TRUE(BuildProductionProgramKindRegistry(
+        dependencies,
+        MakeProductionProgramKindRegistryConfig(runtime_root_b),
+        &second_registry,
+        &error)) << error;
+    for (const auto& expected : canonical_descriptors) {
+        expect_complete_descriptor(
+            second_registry.Find(expected.program_kind),
+            expected.program_kind,
+            expected.program_name);
+    }
+    for (const auto& expected : step_descriptors) {
+        expect_complete_descriptor(
+            second_registry.FindForStepKind(expected.step_kind),
+            expected.program_kind,
+            expected.program_name);
+    }
+
+    EXPECT_FALSE(std::filesystem::exists(runtime_root_a));
+    EXPECT_FALSE(std::filesystem::exists(runtime_root_b));
+    EXPECT_EQ(ReadInt64(db_, "PRAGMA data_version;"), data_version_before);
+    EXPECT_EQ(
+        ReadInt64(db_, "SELECT COUNT(*) FROM sqlite_schema;"),
+        schema_rows_before);
+    EXPECT_EQ(
+        ReadInt64(db_, "SELECT COUNT(*) FROM migration_history;"),
+        migration_rows_before);
+
+    error.clear();
+    EXPECT_FALSE(BuildProductionProgramKindRegistry(
+        dependencies,
+        MakeProductionProgramKindRegistryConfig(runtime_root_a),
+        nullptr,
+        &error));
+    EXPECT_FALSE(error.empty());
 }
 
 TEST_F(SqliteDbFixture, DBOwnedEventIdsAllowRepeatedStateWritesAndTasVariantEnsure) {

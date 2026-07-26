@@ -24,7 +24,9 @@ ever-growing central opcode switch.
 
 This document does not:
 
-- define the authoring syntax, editor, or database schema;
+- define the authoring syntax or editor;
+- change SavorDb SQL/schema, migrations, stored representations, database-service interfaces, queues,
+  claims, workflow persistence, transaction boundaries, or artifact-storage interfaces;
 - define bytecode packing, canonical hash algorithm, or wire framing;
 - permit a program to schedule workers or own a durable search frontier;
 - define action service implementations, which are governed by document 04; or
@@ -141,8 +143,9 @@ Rules:
    program failures.
 4. Strings and byte arrays carry verified maximum sizes. Lists carry verified maximum element counts.
 5. `optional<T>` is inspected before extraction; an unchecked missing value cannot reach an action.
-6. Artifact references may cross invocation and workflow boundaries. Resource and opaque handles may
-   not.
+6. Artifact references may leave the runtime in `ProgramResult`. A program-kind result adapter maps them
+   to the existing SavorDb artifact/domain representation; this refactor does not persist
+   `artifact_ref<TSchema>` directly. Resource and opaque handles may not cross the runtime boundary.
 7. Guest-derived opaque handles are tagged with the `StateEpoch` in which they were produced. Using one
    after state replacement is an infrastructure contract failure.
 8. Host pointers, object addresses, service references, callbacks, threads, and arbitrary C++ objects
@@ -226,7 +229,8 @@ Loops and recursion are permitted only under finite budgets:
 - a recursive call-graph component is accepted only when a finite call-depth limit is declared.
 
 Arbitrary-depth durable search is not implemented as a long-running program loop. One invocation emits
-bounded successors; the workflow/frontier layer schedules later waves.
+bounded successors; existing SavorDb transition mechanisms schedule later waves through unchanged
+workflow persistence. Generalized frontier storage is outside this refactor.
 
 ### Action-await semantics
 
@@ -263,6 +267,9 @@ Every entrypoint starts with one root resource scope. IR may nest lexical scopes
 - An artifact created by finalizing a resource is immutable durable output; it is not the resource
   handle itself.
 
+Any workflow-facing artifact representation is projected through the existing program-kind adapter and
+persistence contract.
+
 Program code cannot catch or ignore a mandatory cleanup failure. The runtime records it and applies
 session-taint policy.
 
@@ -291,8 +298,9 @@ It does not contain:
 - a `DolphinBackend`, `EmulationSession`, or broad service reference; or
 - live state that can be serialized and resumed on another worker.
 
-A worker crash retries the immutable invocation from its declared state policy. It does not persist and
-resume an arbitrary live `ProgramInstance`.
+After a worker crash, the existing coordinator and program-kind handler rematerialize the immutable
+runtime invocation from existing persisted job/domain records and state artifacts. Neither
+`ProgramInstance` nor a new invocation record is stored.
 
 ### ProgramRuntime subsystem
 
@@ -307,6 +315,9 @@ The worker has one `ProgramRuntime` composed of:
 These are services inside one subsystem, not alternate executors. `ProgramDefinitionStore` is not the
 DB workflow phase-adapter registry. `ActionRegistry` stores capability implementations, not arbitrary
 phase factories.
+
+For this refactor, `ProgramDefinitionStore` is a worker/runtime catalog and cache backed by compiled or
+packaged definitions. It is not SavorDb persistence.
 
 ### Verification
 
@@ -341,9 +352,10 @@ Future authored DSL/JSON -----/
 Generated research program --/
 ```
 
-The typed module builder is an authoring convenience, not another executor. Future database storage
-stores source and/or canonical modules, revisions, and schemas; it does not introduce a special runtime
-kind.
+The typed module builder is an authoring convenience, not another executor. During this refactor,
+modules, revisions, and runtime type schemas come from compiled or packaged runtime definitions.
+Persisting module source or canonical modules in SavorDb is separate future work and is not part of this
+refactor.
 
 The legacy adapter may translate current `PhaseScript`, payload decoding, and result mapping into
 canonical modules for differential testing. It shall:
@@ -372,8 +384,9 @@ The target replaces these current public assumptions:
 | Domain operation adds an opcode | Domain operation adds/reuses a registered action or subprogram |
 | Macro provider owns a second adaptive runtime | Adaptive behavior is IR statechart plus pure reducer and ordinary actions |
 
-The exact logical invocation/result/artifact fields are defined in document 05. Workflow binding and
-frontier ownership are defined in document 06.
+The exact logical invocation/result/artifact fields are defined in document 05. Existing SavorDb
+program-kind handlers perform workflow integration through existing contracts; document 06 describes
+that ownership boundary without changing workflow/frontier persistence.
 
 ## Failure and cleanup behavior
 
@@ -403,11 +416,11 @@ This contract depends on:
 - the `WorkerRuntime`/`EmulationSession` ownership model in document 02;
 - the action, reducer, service, scope, and epoch contracts in document 04;
 - invocation, version, result, and artifact identity in document 05; and
-- workflow ownership of durable composition in document 06.
+- the unchanged SavorDb ownership boundary for durable composition in document 06.
 
 Implementation must define the canonical IR and verifier before serializing user scripts as a permanent
-format. Persisting today's opcode/context layout first would fossilize the coupling this refactor is
-intended to remove.
+runtime format. Adopting today's opcode/context serialization as the permanent module format would
+fossilize the coupling this refactor is intended to remove.
 
 Migration should first compile representative existing modules such as `soa.seed_probe/probe`,
 `soa.battle.single_turn/execute`, and `soa.navigation.context/capture`, then migrate all remaining
@@ -444,7 +457,8 @@ execution path.
 - Optimizer, constant folding, dead-code elimination, or JIT compilation; the initial executor may
   interpret verified IR.
 - Source-level hot reload. Active invocations always retain exact immutable module identity.
-- Persistence layout for module source, normalized IR, verification cache, and source maps.
+- Any durable catalog or persistence for module source, normalized IR, verification cache, or source maps
+  is a separate project. This refactor adds no SavorDb storage for those objects.
 - Optional future generic sum/variant types beyond enum-plus-record/optional schemas.
 - Performance-driven batching instructions; any addition must remain generic, typed, and non-domain
   specific.

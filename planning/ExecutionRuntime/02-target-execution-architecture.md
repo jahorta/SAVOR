@@ -37,10 +37,13 @@ This document defines:
 This document does not define:
 
 - concrete C++ class declarations, ownership pointer types, or coroutine libraries;
-- SQL tables or byte-level worker messages;
+- changes to SavorDb SQL/schema, migrations, stored representations, database-service interfaces,
+  queues, claims, workflow persistence, transaction boundaries, or artifact-storage interfaces;
+- byte-level worker messages;
 - the typed program IR, which is fixed in document 03;
 - individual action schemas, which are fixed in document 04;
-- workflow persistence and frontier policy, which are fixed in document 06; or
+- workflow/frontier persistence redesign, which is outside this refactor and treated as an unchanged
+  external boundary in document 06; or
 - the game algorithm for any particular phase.
 
 ## Current code evidence
@@ -264,7 +267,8 @@ A new phase that can be expressed with existing actions and schemas shall requir
 
 - a new or revised `ProgramModule`;
 - its typed input/output/emission schemas; and
-- workflow bindings and policy.
+- program-kind handler or adjacent integration-adapter mappings through existing SavorDb interfaces and
+  stored representations.
 
 It shall not require a change to `WorkerRuntime`, `ProgramRuntime`, `ProgramExecutor`,
 `ExecutionEngine`, `StopPointRouter`, worker transport core, or a central opcode table. A genuinely new
@@ -329,8 +333,10 @@ Packs register types, bounded actions, pure reducers, semantic stop points, and 
 depend on generic session services, but not on workflow storage, `WorkerRuntime`, or another executor.
 Adding a pack does not change existing module hashes unless a module imports that pack's definitions.
 
-`ProgramKind` may remain as semantic/UI/workflow-family metadata during and after migration. It cannot
-select an executor, controller class, payload decoder, worker runtime, or primary worker affinity.
+`ProgramKind` may remain as SavorDb job/handler/queue/affinity, semantic, UI, or workflow-family metadata
+during and after migration. Existing persisted affinity and claim data remain unchanged. Once the
+program-kind integration adapter constructs an exact runtime invocation, `ProgramKind` cannot select an
+executor, controller class, worker-side payload decoder, or worker runtime.
 
 ## Failure and cleanup behavior
 
@@ -422,13 +428,14 @@ cutover is underway.
 
 ## Deferred work
 
-- Exact C++ class, interface, queue, coroutine, and smart-pointer spellings.
+- Exact C++ class, interface, worker-internal command-queue, coroutine, and smart-pointer spellings.
 - Concrete worker-message framing and capability-negotiation encoding.
 - Whether the logical worker control actor uses a dedicated OS thread or an equivalent serialized
   executor.
 - Multi-console sessions inside one process; the target assumes exactly one `EmulationSession` per
   worker.
-- Distributed worker scheduling and durable retry policy, which remain workflow/coordinator concerns.
+- Distributed worker scheduling, claiming, and durable retry remain unchanged workflow/coordinator
+  concerns and are not modified by this refactor.
 - Visual debugger UI behavior beyond the locked command and ownership boundary.
 - Performance targets and batching optimizations that do not weaken event ordering or authority.
 

@@ -5,8 +5,9 @@
 **Status:** Target reference designs; none of the future programs in this document is implemented.
 
 This document proves the Execution Runtime architecture against six materially different workloads. It is
-authoritative for their division between programs, actions, session services, and workflows. It is not a
-replacement for domain planning.
+authoritative for their division between bounded programs, actions, and session services. Workflow
+descriptions show the ownership boundary only; they do not schedule or authorize changes to SavorDb
+storage, interfaces, queues, claims, or orchestration. This is not a replacement for domain planning.
 
 For Navmesh Survey, the normative domain specification is
 `planning/NavigationPhase/NavigationContextWorkflow/04-suppressed-exploration-and-world-refinement.md`.
@@ -43,7 +44,11 @@ The designs do not finalize:
 - complete overworld mechanics;
 - generalized trigger handling;
 - authored program syntax or UI; or
-- SQL and binary wire representations.
+- any change to SavorDb SQL/schema, migrations, stored representations, database-service interfaces,
+  queues, claims, workflow persistence, transaction boundaries, or artifact-storage interfaces.
+
+Worker wire representation remains an implementation detail of the runtime refactor. In this document,
+**schema** means a runtime program/type schema unless explicitly qualified as a database schema.
 
 Native C++ may implement bounded actions or a pure reducer for these designs. It may not implement a
 `NavmeshSurveyRunner`, `CutsceneController`, `OverworldController`, private emulator loop, or another
@@ -63,7 +68,8 @@ phase-sized execution path.
   refinement, prediction, control solving, and validation are not implemented.
 - Current workflow code can append dynamic steps and already uses persisted successor savestates in
   BattleSingleTurn. This is useful precedent for overworld frontier orchestration, but not a complete
-  frontier implementation.
+  frontier implementation. Any generalized frontier implementation is a separate SavorDb/workflow
+  project, not part of this refactor.
 
 ## Locked target decisions
 
@@ -109,8 +115,10 @@ It emits zero-to-many immutable:
 - rejected-candidate diagnostics; and
 - exact spatial evidence used to reach, cross, and settle.
 
-The workflow validates, deduplicates, and accepts anchors. It schedules additional bounded anchor tasks
-only when an accepted source anchor makes an untested in-area door candidate reachable.
+The existing workflow integration validates, deduplicates, and accepts anchors using current SavorDb
+operations. It may schedule additional bounded anchor tasks only through existing dynamic-step
+interfaces and representations. If those are insufficient, extending them is a separate workflow
+project rather than part of this runtime refactor.
 
 `probe_geometry` consumes a bounded `NavigationProbeBatch`:
 
@@ -175,7 +183,8 @@ gameplay-aware routing can still enforce the recorded initial access condition.
 
 #### Wave 1: establish anchors
 
-Wave 1 is a workflow-owned, finite anchor-establishment stage:
+Wave 1 is a workflow-owned, finite anchor-establishment stage. Its integration must use existing SavorDb
+workflow/storage contracts:
 
 1. seed the initial positional anchor from the common Navigation Context bootstrap;
 2. schedule bounded `establish_anchors` tasks for reachable, untested in-area door candidates;
@@ -191,9 +200,9 @@ Wave 1 is a workflow-owned, finite anchor-establishment stage:
    teleporting to the proposed position, and requiring another usable settle.
 
 A wrong TBLID, no-open path, settle correction to the wrong side, fall, snap-away, or failed physical
-crossing produces no successor anchor. The workflow barrier closes only after every known reachable
+crossing produces no successor anchor. The domain barrier closes only after every known reachable
 in-area portal candidate is accepted, rejected with evidence, or terminally unresolved under the
-declared first-slice policy.
+declared first-slice policy. Implementing a new persisted barrier model is outside this refactor.
 
 Anchor replay relies on the game to rebuild ground/collision selection during ordinary updates. It does
 not serialize a ground-selector record, worksheet pointer, ground pointer, or any other live handle.
@@ -209,13 +218,16 @@ After the Wave 1 barrier:
 5. execute only its bounded spatial probe batch; and
 6. emit immutable observations and cleanup receipts.
 
-The workflow performs deterministic fan-in. Only a deterministic reducer over exact ordered anchor,
-observation, static-world, runtime-modification, algorithm, and coordinate-policy identities publishes a
-new `NavigationWorldRefinement`.
+The existing workflow integration performs deterministic fan-in where current contracts support it. A
+deterministic reducer over exact ordered anchor, observation, static-world, runtime-modification,
+algorithm, and coordinate-policy identities emits one `NavigationWorldRefinement` artifact. A
+program-kind adapter may publish it only through an existing artifact/domain representation; otherwise
+durable publication, or any new persisted barrier, binding, or reduction model, is separate workflow
+work.
 
-#### Survey evidence rule
+#### Survey artifact-content rule
 
-Persistent Survey evidence is spatial:
+Published Survey artifact content is spatial:
 
 - requested, resulting, and settled positions;
 - facing when relevant;
@@ -252,9 +264,9 @@ Outputs:
 - exact module, action, route, runtime, and input provenance.
 
 The program performs one bounded replay. It does not choose a newer route, repair the route, retry itself,
-or schedule a return navigation. A workflow composes outbound and return replays as separate invocations,
-binds the outbound terminal state explicitly into the return invocation, and decides whether deviations
-authorize another solve/replay cycle.
+or schedule a return navigation. Existing workflow operations may compose outbound and return jobs; the
+program-kind handlers translate current stored inputs/results to and from the runtime contracts. No new
+stored binding representation is required by this design.
 
 Reproduction requires the same module revision/hash, action versions, route artifact hash, source state,
 runtime profile, and policies. A semantically equivalent but differently versioned module is a new run.
@@ -281,9 +293,10 @@ Outputs:
 - coverage and diagnostics; and
 - reproduction provenance.
 
-The program never performs an unbounded neighborhood search. A workflow or frontier policy ranks
-unresolved boundaries, generates follow-up batches, deduplicates equivalent candidates, and determines
-when coverage or an anomaly objective is complete.
+The program never performs an unbounded neighborhood search. Ranking unresolved boundaries, generating
+follow-up batches, deduplicating equivalent candidates, and determining completion belong outside the
+worker. Any new durable frontier policy for that work is a separate orchestration project and is not an
+Execution Runtime deliverable.
 
 Collision-oddity evidence remains separate from the first Navmesh Survey contract. A later versioned
 policy may promote validated observations into a descendant refinement, but the first Survey does not
@@ -292,16 +305,18 @@ become a timing- or anomaly-only search.
 ### Reference design 4: workflow phase switching
 
 Phase switching is demonstrated with any three modules `A -> B -> A`; there is no phase-switch program.
-The workflow binds typed outputs and uses an explicit state policy at every edge.
+Existing workflow records and operations select the jobs, while program-kind handlers translate
+inputs/results and construct explicit runtime state policy in memory.
 
 Required sequence:
 
 1. A runs and returns with all invocation resources unwound.
-2. The workflow commits A's immutable outputs and chooses B's exact invocation.
+2. The existing result/transition handler projects A's outputs and the B handler constructs its exact
+   runtime invocation from current persisted data.
 3. B starts through the same `ProgramRuntime`, either from a named state artifact or an explicitly
    authorized clean `ContinueSession`.
 4. B returns and fully unwinds.
-5. The workflow invokes the exact original A module revision and entrypoint again.
+5. The A handler invokes the exact original A module revision and entrypoint again.
 6. The runtime proves that the second A owns only its newly acquired resource scopes.
 
 The proof checks stop-point subscriptions, physical sites, input leases and neutral state, capture/movie
@@ -335,11 +350,15 @@ Reusable router interceptors and `InputArbiter` actions may dismiss known dialog
 Only `ExecutionEngine` advances Dolphin. A native fast-forward reducer may choose the next bounded action
 from completed observations but cannot run a private loop.
 
-If a cutscene exceeds one slice, the workflow schedules the next slice from the emitted state artifact.
-This keeps cancellation, retry, and crash recovery durable while allowing future workflows to insert,
-replace, or omit the phase easily.
+If a cutscene exceeds one slice, current dynamic-step facilities may schedule the next slice from the
+projected state artifact. If current workflow contracts cannot represent that continuation, adding a new
+workflow model is separate future work.
 
 ### Reference design 6: overworld arbitrary-wave savestate DFS
+
+This section is a runtime-side bounded-expansion reference only. Its durable DFS stack, visited set,
+node/edge lineage, and restart behavior require separately approved workflow/frontier persistence work.
+They are not dependencies, deliverables, or acceptance gates of the Execution Runtime refactor.
 
 `soa.overworld.expand/expand_node` expands one overworld frontier node. Overworld uses
 `soa.overworld` capabilities and rules; it does not fall through to the Dungeon/field Survey model.
@@ -355,11 +374,12 @@ Inputs:
 Outputs:
 
 - zero-to-many child `StateArtifact` and `OverworldTransitionEdge` pairs;
-- state fingerprints and typed observations used by the workflow's canonical fingerprint policy;
+- state fingerprints and typed observations available to a separately approved workflow's canonical
+  fingerprint policy;
 - local goal, terminal, invalid, or dead-end evidence; and
 - complete reproduction provenance.
 
-The workflow owns:
+A separately approved durable-workflow project would own:
 
 - the arbitrary-depth DFS stack;
 - visited fingerprints and duplicate edges;
@@ -386,15 +406,16 @@ savestates.
 | Typed runtime observations | Game capability packs and capture/telemetry services | All designs |
 | Savestate load/save and epochs | `StateService` | Replay, cutscenes, overworld; Survey baseline reload only |
 | Route/control playback | Navigation subprograms/actions | Replay and validation |
-| Frontier scheduling | Workflow frontier service | Collision search and overworld DFS |
-| Deterministic reduction | Workflow-selected versioned reducer | Survey and collision refinement |
+| Frontier scheduling | Separate future workflow/frontier project | Collision search and overworld DFS |
+| Deterministic reduction | Existing workflow integration where supported; otherwise a separate future workflow project | Survey and collision refinement |
 
 All action requests pass through `ProgramRuntime`; all emulator progress passes through
-`ExecutionEngine`; all durable topology passes through workflows.
+`ExecutionEngine`; all durable topology remains outside workers. This refactor leaves its SavorDb
+representation and interfaces unchanged.
 
 ## Failure and cleanup behavior
 
-- Every program has a deadline and operation budget, but Survey persists no timing inference.
+- Every program has a deadline and operation budget, but Survey publishes no timing inference.
 - Every exit path unwinds input, router, capture, movie, state-handle, data-write, and executable-patch
   scopes in reverse acquisition order.
 - A failed executable-patch precondition, readback, cache/JIT operation, or restoration taints the session
@@ -407,14 +428,14 @@ All action requests pass through `ProgramRuntime`; all emulator progress passes 
 - A collision probe with no anomaly is a successful negative observation.
 - An unsupported cutscene tactic is a typed result that allows workflow fallback; it is not permission to
   bypass session ownership.
-- An overworld node failure cannot corrupt the durable DFS stack. Retry begins from its immutable source
-  state, never the unknown failed worker state.
+- A bounded overworld expansion cannot own or corrupt a durable DFS stack. Durable retry behavior belongs
+  to the separate orchestration project.
 - Cleanup failure always prohibits `ContinueSession`, even when the domain outcome otherwise succeeded.
 
 ## Dependencies and migration implications
 
-- All designs depend on the universal module/IR, action ABI, invocation/result, resource-scope, and
-  workflow/frontier contracts in documents 02 through 06.
+- All designs depend on the universal module/IR, action ABI, invocation/result, and resource-scope
+  contracts in documents 02 through 06, plus the fixed SavorDb boundary in document 06.
 - Survey additionally requires checked `u8`/masked writes, reversible executable patching with readback
   and cache/JIT handling, teleport/settle actions, selected-object/TBLID observation, and spatial artifact
   schemas.
@@ -422,7 +443,8 @@ All action requests pass through `ProgramRuntime`; all emulator progress passes 
   `ExecutionEngine` operations.
 - Cutscene fast-forward depends on reusable dialog/interruption capabilities; it must not revive a
   separate input-macro runtime.
-- Overworld DFS depends on first-class frontier persistence and content-addressed savestate artifacts.
+- End-to-end Overworld DFS depends on separately approved workflow/frontier persistence work. It is not a
+  dependency of the Execution Runtime refactor.
 - None of these designs adds a worker controller, `ProgramKind` switch arm, or core domain opcode.
 
 Navmesh Survey is the first new program built directly against the new architecture. It must not be
@@ -441,23 +463,27 @@ implemented on the legacy interpreter and later "ported."
   `initially_locked` plus original/override evidence.
 - Observe BitVar `1555` at `0x80310bfc` mask `0x00080000`, cross, and settle on the far side.
 - Replay the far-side anchor from the untouched common bootstrap by position teleport and settle.
-- Run Wave 2 workers from the initial and far-side anchors.
-- Publish one deterministic per-area refinement without per-anchor savestates, ground-selector records,
-  timing evidence, or `eventhook`.
+- Demonstrate bounded Wave 2 probe invocations from the initial and far-side anchors; end-to-end
+  workflow fan-out uses current SavorDb contracts or is separate follow-on work.
+- Emit one deterministic per-area refinement artifact without per-anchor savestates, ground-selector
+  records, timing evidence, or `eventhook`; durable publication uses an existing representation or is
+  separate follow-on work.
 
-### Cross-design
+### Cross-design runtime acceptance
 
 - Navigation replay reproduces the same action and branch trace from the same complete invocation
   identity and reports checkpoint deviation explicitly.
 - Outbound and return navigation compose through exact state/route artifacts without a special runner.
-- Collision search resumes after coordinator/worker restart with no lost or duplicated candidates.
+- Collision search executes one bounded candidate batch without owning restart/deduplication topology.
 - `A -> B -> A` leaves zero resources from either earlier invocation.
 - Cutscene fast-forward can continue across bounded slices and be inserted or removed from a workflow
   without worker-runtime changes.
-- Overworld DFS explores an arbitrary number of savestate waves, preserves deterministic stack/visited
-  state across restart, and never makes a worker invocation unbounded.
-- Each design is implemented by program modules, schemas, reusable actions where genuinely needed, and
-  workflow binding only.
+- Overworld expansion executes one bounded node without owning a DFS stack or visited set.
+- Each runtime-side design is implemented by program modules, runtime type schemas, reusable actions
+  where genuinely needed, and program-kind integration through existing SavorDb contracts.
+
+Restart-safe collision/frontier/DFS orchestration is future-phase acceptance for a separate workflow
+project, not a gate for this backend refactor.
 
 ## Deferred work
 

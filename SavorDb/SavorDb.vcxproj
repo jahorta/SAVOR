@@ -192,6 +192,7 @@
     <ClInclude Include="Execution\ProgramDB\BattleSingleTurn\BattleSingleTurnPhaseRegistration.h" />
     <ClInclude Include="Execution\ProgramDB\ProgramKindDescriptor.h" />
     <ClInclude Include="Execution\ProgramDB\ProgramKindRegistry.h" />
+    <ClInclude Include="Execution\ProgramDB\ProductionProgramKindRegistry.h" />
     <ClInclude Include="Execution\ProgramDB\SeedProbe\SeedProbeContracts.h" />
     <ClInclude Include="Execution\ProgramDB\SeedProbe\SeedProbeGridAdapters.h" />
     <ClInclude Include="Execution\ProgramDB\SeedProbe\SeedProbeNeutralAdapters.h" />
@@ -258,6 +259,7 @@
     <ClCompile Include="Execution\ProgramDB\NavigationContext\NavigationContextPhaseRegistration.cpp" />
     <ClCompile Include="Execution\ProgramDB\BattleSingleTurn\BattleSingleTurnAdapters.cpp" />
     <ClCompile Include="Execution\ProgramDB\BattleSingleTurn\BattleSingleTurnPhaseRegistration.cpp" />
+    <ClCompile Include="Execution\ProgramDB\ProductionProgramKindRegistry.cpp" />
     <ClCompile Include="Execution\ProgramDB\SeedProbe\SeedProbeGridAdapters.cpp" />
     <ClCompile Include="Execution\ProgramDB\SeedProbe\SeedProbeNeutralAdapters.cpp" />
     <ClCompile Include="Execution\ProgramDB\SeedProbe\SeedProbePhaseRegistration.cpp" />

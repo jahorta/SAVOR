@@ -5,19 +5,21 @@
 **Status:** Authoritative logical contract for the target Execution Runtime.
 
 This document fixes the meanings and required fields of invocation, result, version, and artifact
-contracts. Implementation slices may choose concrete C++ types, database normalization, and transport
-encoding, but may not remove or conflate these concepts.
+contracts. Implementation slices may choose concrete C++ types and worker transport encoding, but may
+not remove or conflate these concepts. SavorDb storage and normalization are fixed inputs, not
+implementation choices in this refactor.
 
 ## Purpose and non-goals
 
 The contract must support built-in programs, future authored programs, exact replay, phase switching,
-multi-artifact results, state-based frontiers, and worker caching without using `ProgramKind` as execution
-identity.
+multi-artifact results, bounded expansions that a separately approved state-based frontier could
+orchestrate, and worker caching without using `ProgramKind` as execution identity.
 
 This document does not define:
 
 - a packed wire struct;
-- SQL tables or foreign-key layout;
+- changes to SavorDb SQL/schema, migrations, stored representations, database-service interfaces,
+  queues, claims, workflow persistence, transaction boundaries, or artifact-storage interfaces;
 - the authored program source format;
 - an object-store implementation; or
 - domain-specific output schemas.
@@ -77,6 +79,10 @@ Every attempt receives one immutable logical invocation:
 | Inputs | One typed record conforming exactly to the entrypoint input schema |
 | Limits | Deadline and instruction/effect/emission/artifact budgets |
 | Provenance | Requesting workflow or tool, source artifacts, route/model revisions, and caller correlation IDs |
+
+These fields belong to the worker-facing runtime envelope. A program-kind adapter derives them from
+existing SavorDb records and fixed runtime/module configuration; they are not new persisted SavorDb
+fields.
 
 State policies have fixed semantics:
 
@@ -153,6 +159,10 @@ Every artifact reference contains:
 Artifacts are immutable after publication. Correction creates another artifact with explicit derivation
 lineage; it never replaces an earlier object in place.
 
+This is a runtime artifact contract. It neither prescribes nor changes SavorDb artifact tables,
+references, storage locators, or domain representations; program-kind adapters project it through the
+existing artifact and result operations.
+
 ### StateArtifact and StateEpoch
 
 A `StateArtifact` is an immutable artifact with additional state semantics:
@@ -219,21 +229,17 @@ execution modes.
 
 ### Worker affinity
 
-Primary affinity is derived from runtime profile, backend/disc compatibility, required state lineage,
-movie/execution policy, and useful module-cache locality. `ProgramKind` is not primary affinity and cannot
-authorize reuse of a session whose state or resources do not satisfy the invocation.
+Runtime compatibility, session reuse, and module-cache locality are resolved without changing existing
+SavorDb affinity, claim, or queue contracts. `ProgramKind` may remain current SavorDb routing or affinity
+metadata; it cannot by itself authorize worker-session reuse or select a worker interpreter/controller.
 
 ### Workflow adapters
 
-The current `ProgramKindDescriptor` responsibilities split logically into:
-
-- workflow step handler and transition policy;
-- generic `ProgramInvocation` materializer;
-- typed result/artifact projector; and
-- runtime-profile/affinity resolver.
-
-Workflow code binds typed outputs and artifact references to later invocation inputs. It does not decode
-worker-private program locals.
+The existing SavorDb program-kind handler remains the integration boundary. Its implementation or an
+adjacent adapter may construct `ProgramInvocation` from existing job/domain data and project
+`ProgramResult` through existing result writers and transition operations. This refactor does not
+require splitting or changing SavorDb descriptor, workflow, database-service, queue, claim, or
+persistence interfaces. Workflow code does not decode worker-private program locals.
 
 ## Failure and cleanup behavior
 
@@ -246,26 +252,33 @@ worker-private program locals.
 - A tainted session is retired or rebuilt before accepting another invocation.
 - Artifacts emitted before terminal failure remain incomplete unless their schema declares an independently
   atomic publication transaction.
-- Transport loss does not create a second “unknown” program success. Durable attempt identity and
-  idempotent result publication permit workflow recovery.
+- Transport loss does not create a second “unknown” program success. Existing SavorDb durable-attempt
+  and idempotent-publication mechanisms continue to provide workflow recovery; runtime correlation stays
+  in the worker envelope.
+
+Artifact publication in the rules above is runtime-side. Existing SavorDb attempt, idempotency,
+result-publication, and recovery mechanisms remain unchanged.
 
 ## Dependencies and migration implications
 
-- Current `WireSetProgram`, `WireResult`, and program-specific payloads are replaced rather than extended
-  into the permanent contract.
+- Only worker-facing activation and result protocols change. Existing persisted job payloads and
+  domain/result representations remain unchanged. Program-kind adapters decode existing records into
+  typed runtime inputs and project typed runtime results back through existing operations.
 - Current builders may compile through a temporary legacy translator, but the resulting module receives
   the same identity and verification treatment as every other module.
-- Result mapping migrates from a single `PSContext` blob to declared outputs, emissions, artifacts, and
-  provenance.
-- State paths embedded in initialization become immutable artifact references plus explicit state policy.
-- DB-authored modules are a later frontend and use the identical activation/invocation path.
+- Worker-side result mapping migrates from a single `PSContext` blob to declared outputs, emissions,
+  artifacts, and provenance; the program-kind adapter then writes the existing SavorDb representation.
+- State paths or references are adapted in memory into explicit runtime state policy without changing
+  their persisted representation.
+- Persisting DB-authored modules is a separate future project. Any later frontend must use the identical
+  activation/invocation path.
 
 ## Acceptance criteria
 
 - A worker rejects a module with one mismatched imported action signature without being affected by an
   unrelated registry addition.
-- Exact module hash, entrypoint, inputs, state artifact, dependency closure, and runtime profile can be
-  reconstructed from a result.
+- Exact module hash, entrypoint, inputs, state artifact, dependency closure, and runtime profile are
+  available in the runtime result envelope; this criterion does not require new SavorDb fields.
 - A result can represent infrastructure completion, a locked-domain outcome, and clean cleanup
   simultaneously.
 - A cleanup failure produces a tainted session even when the domain objective was achieved.
@@ -278,7 +291,7 @@ worker-private program locals.
 
 - Concrete C++ structs and ownership types.
 - Transport framing, compression, and streaming thresholds.
-- SQL normalization and artifact-store implementation.
+- Any SavorDb normalization or artifact-store-interface change is outside this refactor.
 - Canonical binary encoding and hash algorithm.
 - User-facing module/version selection UI.
 

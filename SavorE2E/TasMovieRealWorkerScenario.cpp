@@ -8,8 +8,7 @@
 #include <thread>
 
 #include "Execution/ProgramDB/ProgramKindRegistry.h"
-#include "Execution/ProgramDB/SeedProbe/SeedProbePhaseRegistration.h"
-#include "Execution/ProgramDB/TasMovie/TasMoviePhaseRegistration.h"
+#include "Execution/ProgramDB/ProductionProgramKindRegistry.h"
 #include "Phases/Programs/PlayTasMovie/TasMoviePayload.h"
 #include "Execution/DBWorkflowCoordinatorFactory.h"
 #include "Execution/DBWorkflowWorkerCoordinator.h"
@@ -249,10 +248,13 @@ bool RunTasMovieScenario(
         return false;
     }
 
-    savor::db::execution::programdb::ProgramKindRegistry registry;
-    savor::db::execution::programdb::tasmovie::TasMoviePhaseRegistrationConfig tas_config{};
+    const auto scenario_workspace_root = options.workspace_root.value_or(
+        std::filesystem::temp_directory_path() / "savor-e2e-default");
+    auto registry_config =
+        savor::db::execution::programdb::MakeProductionProgramKindRegistryConfig(
+            scenario_workspace_root / "workflow-runtime");
+    auto& tas_config = registry_config.tas_movie;
     const auto rtc_range = ResolveTasMovieRtcRange(options, 0);
-    tas_config.authoring_db = db_service->AuthoringDb();
     tas_config.blueprint.base_dtm_artifact_id = dtm_artifact_id;
     tas_config.blueprint.rtc_low = static_cast<std::uint8_t>(rtc_range.low);
     tas_config.blueprint.rtc_high = static_cast<std::uint8_t>(rtc_range.high);
@@ -264,22 +266,21 @@ bool RunTasMovieScenario(
         options,
         chain_seedprobe,
         tas_config.blueprint.headroom_x10);
-    tas_config.working_dir_root = options.workspace_root.value_or(std::filesystem::temp_directory_path() / "savor-e2e-default") / "tasmovie";
+    tas_config.working_dir_root = scenario_workspace_root / "tasmovie";
     tas_config.next_step_key = chain_seedprobe ? "Neutral" : "Done";
-    savor::db::execution::programdb::tasmovie::RegisterTasMoviePhaseDescriptor(
-        &registry,
-        db_service->ExecutionDb(),
-        db_service->StateDb(),
-        db_service->AnalysisDb(),
-        std::move(tas_config));
-    if (chain_seedprobe) {
-        savor::db::execution::programdb::seedprobe::SeedProbePhaseRegistrationConfig seed_config{};
-        seed_config.authoring_db = db_service->AuthoringDb();
-        savor::db::execution::programdb::seedprobe::RegisterSeedProbePhaseDescriptors(
+    savor::db::execution::programdb::ProgramKindRegistry registry;
+    if (!savor::db::execution::programdb::BuildProductionProgramKindRegistry(
+            savor::db::execution::programdb::ProductionProgramKindRegistryDependencies{
+                .execution_db = db_service->ExecutionDb(),
+                .state_db = db_service->StateDb(),
+                .analysis_db = db_service->AnalysisDb(),
+                .authoring_db = db_service->AuthoringDb(),
+            },
+            std::move(registry_config),
             &registry,
-            db_service->ExecutionDb(),
-            db_service->AnalysisDb(),
-            std::move(seed_config));
+            &err)) {
+        if (error_out) *error_out = "failed building production program registry: " + err;
+        return false;
     }
 
     auto coordinator = savor::runner::parallel::savordb::BuildDbBackedWorkflowCoordinator(

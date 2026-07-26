@@ -19,9 +19,13 @@ domain behavior.
 
 This plan does not:
 
-- require backward-compatible C++ APIs, worker messages, payload bytes, or database materializers;
+- require backward-compatible worker-internal C++ APIs or worker messages;
+- change SavorDb SQL/schema, migrations, stored representations, database-service interfaces, queues,
+  claims, workflow persistence, transaction boundaries, or artifact-storage interfaces;
+- reinterpret or rewrite existing persisted payload/result bytes; program-kind handlers continue to
+  support them through the current storage contracts;
 - migrate a live `PhaseScriptVM` instruction pointer or live Dolphin session;
-- preserve queued jobs whose payload is meaningful only to the old interpreter;
+- discard or re-author existing queued jobs;
 - define exact pull-request boundaries or dates; or
 - implement Navmesh Survey before the common foundation and current-phase parity exist.
 
@@ -63,12 +67,35 @@ plan replaces both with `ProgramRuntime` and one `ProgramExecutor`.
 4. New features, including Navmesh Survey, are prohibited on the legacy path.
 5. An active `ProgramInstance`, resource scope, `StateEpoch`, Dolphin session, or in-flight worker command
    is never migrated across runtime versions.
-6. Historical legacy payloads and results may remain read-only for provenance. They are not silently
-   reinterpreted as `ProgramModule` or `ProgramInvocation`.
-7. Coordinator, worker protocol, module catalog, action/type registries, and database materialization
-   deploy as one compatibility-checked release set.
-8. Rollback means stopping the release and restoring a matched application build plus database snapshot
-   or forward-compatible schema state. It never means enabling an old interpreter inside the new worker.
+6. Existing persisted payloads and results remain in their current representation. Program-kind handlers
+   translate them at the runtime boundary; they are not rewritten as stored `ProgramModule` or
+   `ProgramInvocation` records.
+7. Coordinator, worker protocol, module catalog, action/type registries, and runtime-facing program-kind
+   adapters deploy as one compatibility-checked application release set.
+8. Rollback means stopping the release and restoring the matched application build. No database rollback
+   or schema state is part of this refactor, and rollback never enables an old interpreter inside the new
+   worker.
+9. SavorDb storage, database-service interfaces, queue/claim contracts, workflow persistence, and
+   transaction boundaries remain unchanged throughout the cutover.
+
+### Completed prelude: shared production program composition
+
+Before Stage 0, the current DB-facing program catalog was centralized in
+`SavorDb/Execution/ProgramDB/ProductionProgramKindRegistry.*`. This prelude is complete and establishes:
+
+- one fixed full-catalog registration order: TAS Movie, SeedProbe, Battle Context, Battle Single Turn,
+  Battle End, then Navigation Context;
+- atomic construction plus validation of canonical numeric winners, all sixteen production step kinds,
+  and required workflow descriptor capabilities;
+- the same complete catalog in SavorQt and every DB-backed SavorE2E scenario, with scenario behavior
+  retained through config overrides;
+- one shared SavorE2E `DBService` guarded by quiescent workflow boundaries before and after each
+  DB-backed scenario and repeat; and
+- no SavorDb descriptor or workflow step kind for the direct-worker `battle_macro_probe` scenario.
+
+The prelude adds no schema migration, stored-representation change, database interface, queue/claim
+change, coordinator filter, or new project. Focused partial registries remain valid only for
+development tests and specialized tools such as SavorPredict.
 
 ### Stage 0: evidence freeze and executable contract skeleton
 
@@ -76,8 +103,8 @@ plan replaces both with `ProgramRuntime` and one `ProgramExecutor`.
 
 - record the source commit and current phase/program corpus;
 - freeze golden payload/result/artifact samples and focused live fixtures;
-- define logical module, IR, action, invocation, result, resource, artifact, epoch, and workflow/frontier
-  contracts from documents 03 through 06;
+- define logical module, IR, action, invocation, result, resource, artifact, and epoch contracts plus the
+  unchanged workflow-integration boundary from documents 03 through 06;
 - define stable semantic module IDs and entrypoints;
 - define protocol compatibility and dependency-verification error categories; and
 - create the deterministic fake backend/event-trace vocabulary used throughout migration.
@@ -243,57 +270,56 @@ the differential window closes.
 - current input macros execute through the common action/continuation path;
 - no new production job requires legacy VM execution.
 
-### Stage 7: invocation/result protocol and persistence cutover
+### Stage 7: invocation/result protocol and handler-adapter cutover
 
 **Build:**
 
 - replace worker activation with exact `ProgramInvocation`;
 - replace flat/global-context result mapping with typed `ProgramResult` and immutable artifact references;
-- add module revision/hash, entrypoint, dependency, schema, attempt, state-policy, cleanup, and provenance
-  persistence;
-- split workflow adaptation from worker execution selection;
-- route typed producer outputs into typed consumer inputs; and
-- negotiate protocol/runtime/module compatibility before a worker claims work.
+- update program-kind handlers or adjacent integration adapters to construct `ProgramInvocation` from
+  existing persisted job/domain data;
+- update those handlers/adapters to project `ProgramResult` through existing result writers, artifact
+  operations, and transition handlers;
+- keep current persisted `ProgramKind`, payload/result codecs, job identity, affinity, queue, claim, and
+  workflow representations while removing `ProgramKind` from worker execution selection; and
+- negotiate protocol/runtime/module compatibility after existing claim/materialization and before worker
+  activation or guest-state mutation.
 
 **Cutover preparation:**
 
 1. publish the final module/action/type catalog for the release;
-2. compile and verify every workflow definition intended to survive cutover;
-3. stop materializing new legacy jobs;
-4. drain running and claimed legacy jobs;
-5. explicitly complete, cancel, or re-author any remaining queued legacy work;
-6. take a database and artifact-index backup/snapshot;
-7. verify that no active workflow depends on an untranslatable legacy payload; and
-8. deploy coordinator and workers as one matched set.
+2. verify adapter coverage for every currently stored and queued program-kind payload/result version;
+3. verify every existing workflow definition continues to use its current persistence representation;
+4. stop new worker activations and drain running or claimed executions for the application deployment;
+5. prove that existing queued jobs rematerialize the correct target runtime invocation without rewriting
+   their rows;
+6. prove that typed runtime results write the same existing domain/result representation; and
+7. deploy coordinator and workers as one matched application set.
 
-Legacy job payload/result bytes remain read-only historical evidence. A queued legacy job is never
-implicitly decoded into a new invocation after cutover.
+Existing job payload/result bytes remain valid production data. Program-kind handlers may retain their
+codecs solely to translate that representation into/out of runtime types; those codecs do not execute or
+select the legacy interpreter.
 
 **Exit gate:**
 
 - workers reject protocol, module, dependency, and runtime-profile mismatches before state mutation;
-- restart and replay preserve exact invocation/attempt/artifact lineage;
-- no `ProgramKind` value selects worker execution behavior.
+- existing jobs, queues, workflows, results, artifacts, retries, and restart behavior remain compatible
+  without a database migration or record conversion;
+- program-kind handlers project through existing SavorDb interfaces and transaction boundaries; and
+- no `ProgramKind` value selects worker execution behavior after materialization.
 
-### Stage 8: workflow/frontier generalization
+### Separate follow-on: workflow/frontier generalization
 
-**Build:**
+Generalized typed workflow policies, persisted frontier nodes/edges/leases, new barrier models,
+DFS/BFS/best-first scheduling, persisted deduplication, and new workflow transaction shapes are not a
+stage or prerequisite of this refactor. They require separate planning and approval under the SavorDb
+migration/workflow planning surfaces.
 
-- move topology decisions out of program-kind adapters and into typed workflow policies;
-- add schema-aware bindings and explicit state policy at every phase edge;
-- add first-class frontier spec/node/edge/lease/expansion persistence;
-- implement deterministic DFS, BFS, and best-first ready ordering and dedupe;
-- migrate BattleSingleTurn survivor waves as the first existing frontier-style proof; and
-- test finite barriers, phase switching, retry, cancellation, and coordinator restart.
+This refactor establishes only the negative worker boundary: a bounded program cannot mutate durable
+topology or keep an unbounded search frontier in worker memory. Existing SavorDb workflow and dynamic-step
+behavior remains unchanged.
 
-**Exit gate:**
-
-- a bounded expansion program cannot mutate durable topology;
-- an arbitrary-wave frontier survives restart with deterministic accepted order;
-- `A -> B -> A` proves clean session/resource boundaries;
-- existing workflow lifecycle and outbox/recovery guarantees remain intact.
-
-### Stage 9: remove the legacy execution path
+### Stage 8: remove the legacy execution path
 
 **Delete or retire from production:**
 
@@ -307,24 +333,28 @@ implicitly decoded into a new invocation after cutover.
 - the temporary compatibility compiler after all native typed builders and archival readers no longer
   need it.
 
-Read-only codecs may remain under an explicitly named legacy/archive boundary when required to inspect
-historical records. They cannot be linked into production activation.
+Existing payload/result codecs may remain behind SavorDb program-kind handlers to translate current
+persisted records during production materialization and result writing. They cannot select or invoke the
+legacy worker interpreter.
 
 **Exit gate:**
 
 - repository architecture tests fail if a second executor/controller or forbidden dependency is added;
 - no executable production path can instantiate the old interpreter;
-- all supported workflows use exact modules and typed invocation/result contracts.
+- all supported program-kind handlers construct exact runtime invocations and consume typed runtime
+  results through existing SavorDb contracts.
 
-### Stage 10: Navmesh Survey as the first net-new client
+### Stage 9: Navmesh Survey as the first net-new client
 
 **Build:**
 
 - implement `soa.navigation.survey/establish_anchors`;
 - implement `soa.navigation.survey/probe_geometry`;
 - add only genuinely reusable `soa.navigation` actions and generic mutation capabilities;
-- implement the workflow-owned two-wave barrier/fan-out and deterministic refinement; and
-- validate the exact `a101b` slice defined in document 08.
+- integrate through existing SavorDb workflow/dynamic-step operations where they are sufficient, without
+  changing storage or interfaces; and
+- validate the bounded runtime portions of the exact `a101b` slice defined in documents 08 and 10, using
+  a harness or unchanged existing SavorDb contracts.
 
 Survey must not cause changes to `WorkerRuntime`, `ProgramRuntime`, `ProgramExecutor`,
 `ExecutionEngine`, core IR, router ownership, or a program-kind switch. A need for such a change is an
@@ -333,21 +363,25 @@ guidance set is revised before implementation.
 
 **Exit gate:**
 
-- the full `a101b` acceptance scenario passes;
+- the bounded-runtime `a101b` acceptance scenario passes;
 - Survey evidence remains spatial;
 - no per-anchor savestates, serialized ground-selector state, permanent hook, or `eventhook` dependency
-  exists.
+  exists; and
+- end-to-end durable two-wave orchestration is not a Stage 9 gate unless current SavorDb contracts already
+  support it.
 
-### Stage 11: authored-program frontend
+### Separate follow-on: authored-program frontend
 
-After the universal runtime, migrated phases, legacy deletion, and Survey acceptance:
+After the universal runtime, migrated phases, legacy deletion, and Survey acceptance, a separately
+approved project may:
 
 - define authored source syntax and publication workflow;
 - compile it to the same `ProgramModule`;
-- persist source/revision ownership separately from canonical module artifacts; and
 - add authoring validation/debugging without a `PK_UserScript` executor.
 
-This stage must not reopen the runtime ABI around the shape of the current `PhaseScript` or `PSContext`.
+Any persistence for authored source, revisions, canonical modules, or publication state is outside this
+refactor. That project must not reopen the runtime ABI around the shape of the current `PhaseScript` or
+`PSContext`.
 
 ## Interfaces and ownership affected
 
@@ -357,25 +391,23 @@ This stage must not reopen the runtime ABI around the shape of the current `Phas
 | `ProgramRegistry` switch | Replaced by definition store, verifier, and dependency registries |
 | `PhaseScriptVM` | Replaced by `ProgramExecutor` plus session actions |
 | Opcode table | Legacy translation input temporarily; domain opcodes deleted |
-| `PSContext` | Internal legacy translation concern only; replaced by typed inputs/locals/outputs |
+| `PSContext` | Removed as the worker runtime ABI; a codec may remain behind SavorDb handlers where existing stored records require it |
 | `InputMacroRuntime` peer engine | Folded into common continuations/actions/subprograms |
-| `ProgramKindDescriptor` worker adapters | Split into workflow materialization/result policy and module contracts |
-| Workflow lifecycle/outbox/recovery | Preserved and extended with typed bindings/frontiers |
-| Historical legacy jobs/artifacts | Retained read-only with explicit legacy schema identity |
+| SavorDb program-kind handler implementations | Adapt existing records to/from runtime contracts without changing their interfaces or storage |
+| Workflow lifecycle/outbox/recovery | Preserved unchanged; no typed-binding or frontier persistence is added |
+| Existing and historical jobs/artifacts | Stored representation remains unchanged; no conversion |
 
 ## Failure and cleanup behavior
 
 - A stage cannot advance with a failing exit gate; partial architecture is not declared complete.
 - During development, a failed new-runtime differential test falls back to investigation, not per-job
   production selection of the old VM.
-- A protocol/catalog mismatch rejects a claim before boot/load/mutation.
-- A cutover discovered to have active legacy jobs is aborted before deployment.
+- A protocol/catalog mismatch rejects worker activation after the current claim/materialization flow and
+  before boot/load/mutation.
+- Running legacy worker executions are drained before deployment; persisted and queued jobs remain in
+  place and are translated by the updated program-kind handlers.
 - A worker that fails mandatory cleanup is tainted and retired; retry starts in a fresh/known session.
-- Database or artifact migration failure restores the matched pre-cutover snapshot before workers resume.
-- A post-cutover rollback restores the matched old application/database pair. New-runtime job rows are
-  not offered to old workers.
-- Historical data conversion is append-only: original payload/result bytes and provenance are retained
-  until the explicit archival retention policy permits deletion.
+- No database or artifact migration occurs. Application rollback leaves existing records untouched.
 
 ## Dependencies and migration implications
 
@@ -389,11 +421,9 @@ contracts
   -> scoped services
   -> universal program runtime
   -> current-phase migration
-  -> invocation/protocol persistence cutover
-  -> workflow/frontier generalization
+  -> invocation/protocol handler-adapter cutover
   -> legacy deletion
   -> first new phase
-  -> authored frontend
 ```
 
 Stages may be developed in parallel only where their interfaces are already frozen, but their exit gates
@@ -401,9 +431,9 @@ must pass in this order. In particular:
 
 - ProgramRuntime cannot compensate for unresolved emulator ownership.
 - Current phase migration cannot retain direct Dolphin escape hatches.
-- Frontier work cannot permit an expansion program to schedule its own children.
+- A bounded expansion program cannot schedule its own durable children; any generalized frontier work is
+  a separate project.
 - Survey cannot become the justification for a phase-specific controller.
-- Authored-program persistence cannot freeze the legacy VM format before canonical IR exists.
 
 ## Acceptance criteria
 
@@ -414,21 +444,26 @@ must pass in this order. In particular:
 - Current workflows retain transactional transitions, retries, outbox delivery, restart recovery, and
   dynamic-wave behavior.
 - In-flight legacy executions are drained/canceled rather than migrated.
-- Exact invocation/result/module compatibility is enforced at worker claim.
+- Exact invocation/result/module compatibility is enforced after current claim/materialization and before
+  worker activation or guest-state mutation.
+- No SavorDb migration, stored-representation change, database-service/queue/claim/workflow-interface
+  change, transaction-boundary change, or artifact-storage-interface change is introduced.
 - The legacy interpreter, public `PSContext` ABI, peer macro engine, and program-kind execution switch are
-  absent from production after Stage 9.
+  absent from production after Stage 8.
 - Navmesh Survey is delivered only through the universal runtime and passes document 08.
-- Rollback instructions name a matched release and database/artifact snapshot and never enable dual
-  runtime dispatch.
+- Rollback changes only the matched application release, leaves existing data untouched, and never
+  enables dual runtime dispatch.
 
 ## Deferred work
 
 - Exact commit/PR grouping and deployment calendar.
-- Final C++ namespaces, file layout, SQL migration scripts, and worker frame encoding.
+- Final C++ namespaces, file layout, and worker frame encoding.
 - Duration of the differential window, subject to all phase gates rather than a calendar alone.
-- Historical payload retention period and archive UI.
-- Authored source language, editor, publication, and permissions.
-- Performance tuning, distributed frontier sharding, and worker-pool sizing after correctness cutover.
+- Performance tuning and worker-pool sizing after correctness cutover.
+
+Authored-source persistence/UI, historical retention policy, workflow/frontier generalization, and
+distributed frontier sharding are separate projects, not deferred implementation choices in this
+refactor.
 
 ## Source references
 

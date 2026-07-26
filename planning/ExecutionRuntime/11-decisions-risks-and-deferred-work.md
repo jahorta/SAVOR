@@ -50,17 +50,18 @@ current runtime capability.
 | D08 | Savestate restore creates a new `StateEpoch`. | Locked | Guest-derived opaque handles are invalid after restore and must be reacquired. |
 | D09 | Program identity is immutable module revision/hash plus entrypoint and exact dependency closure. | Locked | Today's compiled definition selected only by `ProgramKind` is insufficient. |
 | D10 | Built-in C++ builders and future authored sources compile to the same `ProgramModule`. | Locked | There is no special `PK_UserScript` runtime or dual activation ABI. |
-| D11 | `ProgramKind` may remain semantic metadata but not executor dispatch, payload decoding, controller selection, or primary affinity. | Locked | Existing switches are migration targets. |
-| D12 | Programs are bounded to one session; workflows own durable waves, phase selection, frontier policy, deduplication, and recovery. | Locked | An invocation may emit child state artifacts but cannot enqueue them. |
-| D13 | Results separate infrastructure, domain, and cleanup/session status and support zero-to-many emissions/artifacts. | Locked | A global `ok` or outcome key cannot represent the target contract. |
+| D11 | `ProgramKind` may remain SavorDb job/handler/transition/queue/affinity and semantic metadata, but not worker executor dispatch, worker-side payload decoding, or controller selection. | Locked | Existing SavorDb routing/storage remains; worker execution switches are migration targets. |
+| D12 | Programs are bounded to one session; existing SavorDb workflows retain durable waves, phase selection, deduplication, and recovery through unchanged contracts. | Locked | An invocation may emit candidate artifacts but cannot enqueue jobs or mutate durable workflow state. |
+| D13 | Runtime results separate infrastructure, domain, and cleanup/session status and support zero-to-many emissions/artifacts. | Locked | Program-kind adapters project them only through existing SavorDb persistence operations. |
 | D14 | Runtime compatibility is dependency-scoped, not one global registry hash. | Locked | Unrelated action additions do not invalidate modules. |
 | D15 | Guest data writes and executable patches use one generic checked `GuestMutationService`. | Locked | Survey trigger suppression and battle mutations share audit, restore, and epoch behavior. |
 | D16 | Game capabilities are modular packs: `soa.battle`, `soa.field`, `soa.navigation`, `soa.cutscene`, and `soa.overworld`. | Locked | The refactor does not create another monolithic game-runtime facade. |
 | D17 | The existing session/router analysis is retained as evidence but its “shrink VM” and arbitrary program-factory target is superseded. | Locked | Session services are absorbed beneath the universal executor. |
-| D18 | The user-script payload plan's authoring/revision separation is retained, while serialized current `PhaseScript`, flat `PSContext`, `PK_UserScript`, and dual paths are superseded. | Locked | Program IR is defined before persistence and authoring frontends. |
+| D18 | The user-script payload plan's authoring/revision separation is retained, while serialized current `PhaseScript`, flat `PSContext`, `PK_UserScript`, and dual worker paths are superseded. | Locked | Program IR is independent of any separately approved future persistence or authoring frontend; existing stored job/result formats remain. |
 | D19 | Breaking cutover deletes the legacy interpreter after a bounded differential window. | Locked | Production does not carry two controllers indefinitely. |
-| D20 | Navmesh Survey is a general architecture acceptance client with `establish_anchors` and `probe_geometry` entrypoints. | Locked | Two worker waves remain workflow topology; Survey does not own a worker scheduler. |
+| D20 | Navmesh Survey is a general architecture acceptance client with `establish_anchors` and `probe_geometry` entrypoints. | Locked | Its bounded programs use current workflow operations where sufficient; any new durable two-wave topology is separate workflow work. |
 | D21 | Survey evidence is spatial. | Locked | Safety deadlines are infrastructure metadata, not inferred probe timing or navigation evidence. |
+| D22 | SavorDb storage and orchestration contracts are fixed inputs to this refactor. Only runtime-facing program-kind handler implementations or adjacent adapters may change. | Locked | No SavorDb SQL/schema migration, stored-representation change, database-service/queue/claim/workflow-interface change, transaction-boundary change, or artifact-storage-interface change. |
 
 ## Rejected alternatives
 
@@ -90,7 +91,8 @@ Input leases and segment execution become actions beneath `ProgramExecutor`.
 ### Put arbitrary-depth search inside a worker program
 
 Rejected because worker loss would lose search topology and because one worker would become a scheduler.
-Durable frontier state, deduplication, retries, and arbitrary wave generation belong to workflows.
+Existing durable workflow behavior remains in SavorDb. Any generalized frontier state, deduplication,
+retry policy, or arbitrary-wave generation requires a separate workflow project.
 
 ### Freeze current `PSContext` and `ProgramKind` as public ABI
 
@@ -113,7 +115,6 @@ production paths would make ownership and cleanup guarantees unenforceable.
 | State restore leaves stale handles | Guest pointers or router assumptions are reused after restore | Epoch-tag every opaque handle and verify at action boundaries |
 | Version checks are globally fragile | Adding an unrelated registry entry rejects all cached modules | Verify exact imported dependency closure and signature hashes |
 | A legacy translator becomes permanent | Two semantic runtimes diverge | Publish removal gates before introducing the translator; block new features on the legacy path |
-| Workflow frontier grows without bound | Overworld or collision search exhausts DB/storage | Persist budgets, dedupe fingerprints, terminal reasons, pruning policy, and artifact retention |
 | Replay is overstated | Matching host timing is mistaken for deterministic game behavior | Compare exact inputs plus action/branch/observation traces; declare nondeterministic action fields |
 | `ContinueSession` is used implicitly | A phase consumes unknown patches, input, or guest state | Require expected session lineage, epoch, and clean resource ledger |
 | Domain packs become another monolith | Unrelated phase changes force one broad capability version | Namespace and version packs and action imports independently |
@@ -126,15 +127,15 @@ production paths would make ownership and cleanup guarantees unenforceable.
 - Exact C++ class and ownership declarations.
 - Canonical module binary format and hash algorithm.
 - Worker message framing, streaming, compression, and negotiation encoding.
-- SQL DDL, indexes, migration scripts, and artifact-store tables.
 
-These are deferred encodings, not permission to alter the logical fields or ownership model.
+These are deferred runtime encodings, not permission to alter the logical fields or ownership model.
+SavorDb SQL/schema, migrations, stored representations, interfaces, queues, claims, workflows, and
+artifact-store interfaces are out of scope and remain unchanged.
 
 ### Authoring experience
 
 - JSON, DSL, graphical, or other authored source syntax.
 - Source editor, validation UI, debugger UI, publication, ownership, and permission model.
-- Whether normalized source operations are queryable in the DB.
 
 Every frontend must compile to the same verified `ProgramModule`.
 
@@ -150,12 +151,16 @@ Every frontend must compile to the same verified `ProgramModule`.
 
 These items may add capability-pack actions, schemas, and programs. They may not create a new executor.
 
-### Product and operations
+### Separate future projects
 
 - User-facing workflow composer changes.
 - Module revision promotion and rollback UI.
 - Artifact retention policy and storage backend.
+- Persisted authored source/module catalogs or queryable normalized source operations.
+- Generalized workflow/frontier persistence, policies, and scheduling.
 - Operational dashboards and performance targets.
+
+These are not deferred implementation choices in the Execution Runtime refactor.
 
 ## Interfaces and ownership affected
 
@@ -166,10 +171,11 @@ The decisions require replacement or decomposition of:
 - `PhaseScriptVM` and its central opcode dispatch;
 - `PSContext` as a public invocation/result contract;
 - VM-owned macro, stop-point, savestate, input, and Dolphin services; and
-- `ProgramKindDescriptor` as a combined worker/workflow adapter.
+- runtime-facing program-kind handler implementation and adjacent worker integration.
 
-They retain the durable workflow concepts, current phase behavior, and useful `Start`/`Advance` adaptive
-pattern while changing their boundaries.
+They preserve the existing SavorDb descriptor, persistence, database-service, queue, claim, workflow,
+artifact, and transaction interfaces. They also retain current phase behavior and the useful
+`Start`/`Advance` adaptive pattern.
 
 ## Failure and cleanup behavior
 
@@ -180,7 +186,8 @@ No deferred implementation detail may weaken these rules:
 - a tainted session cannot run another invocation;
 - state restore invalidates epoch-bound handles;
 - a domain failure can be a clean infrastructure completion; and
-- workflow retries use immutable attempt and artifact lineage rather than ambiguous in-place mutation.
+- existing SavorDb retry, idempotency, and lineage behavior remains unchanged; runtime trace identity is
+  not a new persistence requirement.
 
 ## Dependencies and migration implications
 
@@ -195,6 +202,8 @@ update this architecture through evidence-based review before proceeding.
 - Every rejected alternative includes the reason it conflicts with ownership or extensibility goals.
 - Risks have mandatory mitigations that can be tested.
 - No deferred item is required to implement the universal executor or migrate current phases.
+- No SavorDb migration, stored-representation change, database-service/queue/claim/workflow-interface
+  change, transaction-boundary change, or artifact-storage-interface change is part of the refactor.
 
 ## Source references
 

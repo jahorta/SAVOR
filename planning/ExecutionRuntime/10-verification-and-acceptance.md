@@ -20,12 +20,14 @@ Verification must prove:
 - complete cleanup under return, failure, cancellation, timeout, and injected restoration faults;
 - exact module/action/type/state/artifact provenance;
 - parity for every supported current phase;
-- workflow/frontier idempotency and restart recovery;
+- unchanged SavorDb workflow, queue, persistence, idempotency, and restart behavior;
 - safe phase switching through one executor; and
 - the concrete `a101b` Navmesh Survey first slice.
 
-This document does not define performance targets, game-specific search quality, final database layout,
-or the exact authored-program source syntax.
+This document does not define performance targets, game-specific search quality, or the exact
+authored-program source syntax. It does not change SavorDb database layout, stored representations,
+database-service interfaces, queues, claims, workflow persistence, transaction boundaries, or
+artifact-storage interfaces.
 
 ## Current code evidence
 
@@ -56,17 +58,20 @@ replacement, global `PSContext` keys, peer macro execution, or numeric program-k
 The implementation shall provide five test surfaces:
 
 1. **Pure contract tests**
-   - schemas, canonical encoding/hash, verifier rules, IR semantics, reducers, fingerprints, dedupe, and
-     deterministic ordering;
+   - runtime type schemas, canonical encoding/hash, verifier rules, IR semantics, reducers, and
+     deterministic execution ordering;
    - no Dolphin or database required.
 2. **Deterministic fake session**
    - a `FakeDolphinBackend` supplies scripted boot, PC stop, memory stop/change, input poll, frame
      boundary, movie end, state load/save, capture, and backend-fault events;
    - the real router, engine, arbiter, state/mutation services, action registry, and program executor run
      over it.
-3. **Persistence/workflow integration**
-   - real SQLite services with deterministic artifact storage and fake worker completions;
-   - tests transactionality, outbox/replay, leases, retry, typed routing, frontier ordering, and restart.
+3. **SavorDb boundary regression**
+   - current SQLite schema, services, queues, workflow interfaces, and artifact operations with fake
+     worker completions;
+   - tests program-kind handler translation plus unchanged transactionality, outbox/replay, leases,
+     retry, dynamic-step behavior, result persistence, and restart;
+   - adds no migration or replacement persistence test model.
 4. **Legacy differential harness**
    - the frozen old reference and new runtime receive equivalent source state, inputs, and scripted/live
      observations;
@@ -79,6 +84,23 @@ The implementation shall provide five test surfaces:
 
 A test fixture cannot implement phase behavior on behalf of production code. A custom SavorE2E scenario
 is an invocation and assertion harness, not a substitute `NavmeshSurveyRunner`.
+
+### Implemented composition-prelude guards
+
+The production-composition prelude adds a focused SQLite-fixture test that constructs the complete
+registry, checks canonical numeric names and all sixteen step-kind mappings, preserves first-wins
+`PK_SeedProbe` behavior, rejects missing dependencies without changing the caller's registry, rebuilds
+against distinct runtime roots, and verifies that composition creates neither runtime directories nor
+database changes.
+
+DB-backed SavorE2E scenarios now use that full production composition while sharing one `DBService`.
+Before and after each scenario and repeat, the harness fails closed with workflow/step diagnostics if it
+finds Pending or Running workflows, Ready steps, active materialized work, or terminal steps awaiting
+reconciliation. A scenario must wait for its own workflow to become terminal; the harness may not
+cancel or delete work to pass the gate. `battle_macro_probe` remains a direct-worker macro-development
+scenario and does not participate in this DB boundary. Battle End and Navigation Context compile
+through the shared factory when selected directly but remain outside the `all` matrix until their live
+validation is scheduled.
 
 ### Canonical deterministic trace
 
@@ -301,28 +323,22 @@ Parity compares domain semantics and durable evidence, not old internal breakpoi
 `PSContext` layout. Any intentional behavior change requires an explicit versioned decision and new
 golden evidence; it cannot be hidden as refactor drift.
 
-### Workflow and frontier tests
+### SavorDb integration-boundary tests
 
-Use real workflow persistence and restart boundaries to cover:
+Use the current workflow persistence and restart fixtures to prove:
 
-- typed producer/consumer schema validation before materialization;
-- exact state policy on every phase edge;
-- deterministic idempotency keys and duplicate completion replay;
-- output artifact stored before binding;
-- dynamic fan-out, finite barrier, deterministic fan-in, and reduction ordering;
-- retry after worker crash, lease expiry, and coordinator restart;
-- stale attempt completion rejection;
-- cancellation with active claims;
-- partial-result policy fail-closed by default;
-- DFS, BFS, and best-first canonical order;
-- multiple incoming edges to one deduplicated node;
-- goal, dead-end, pruned, duplicate, exhausted, budget-exhausted, failed, and canceled terminal states;
-- arbitrary wave count without recursive worker execution;
-- exact frontier restoration after process restart; and
-- BattleSingleTurn survivor selection/next-wave parity.
+- no schema migration or stored-representation change is required;
+- existing persisted jobs feed the correct `ProgramInvocation` through program-kind handlers;
+- `ProgramResult` projects through existing result, artifact, and transition operations;
+- current payload/result codecs remain usable where stored records require them;
+- current queue, claim, affinity, lease, retry, cancellation, outbox, and restart behavior is unchanged;
+- current dynamic fan-out, output routing, BattleSingleTurn survivor selection, and next-wave behavior
+  remains unchanged;
+- current duplicate-completion and stale-attempt behavior remains unchanged; and
+- no new workflow/frontier record or transaction model is introduced.
 
-Randomize worker completion order in repeated runs. Accepted node/edge order and deterministic reduction
-must remain identical for the same frontier policy.
+Generalized DFS/BFS/best-first frontier persistence and new typed workflow-binding tests belong to a
+separate future SavorDb project.
 
 ### Phase-switch isolation scenario
 
@@ -350,7 +366,8 @@ force fresh-session recovery before the next phase.
 ### Navmesh Survey `a101b` SavorE2E scenario
 
 Add a custom scenario with logical ID `execution_runtime.navmesh_survey.a101b.first_slice`. It invokes
-the production `soa.navigation.survey` module and workflow using:
+the production `soa.navigation.survey` bounded entrypoints through program-kind adapters and existing
+SavorDb operations where available, using:
 
 - `C:\savor\navigation_context_a201a_a101b_20260723_2100\navigation-context-verification\navigation-context-41.sav`
 - `C:\savor\navigation_context_a201a_a101b_20260723_2100\navigation-context-verification\navigation-context-41.nctx`
@@ -368,10 +385,18 @@ The scenario must prove:
 8. BitVar `1555` at `0x80310bfc`, mask `0x00080000`, witnesses open/collision-motion completion;
 9. the player crosses and settles on the far side;
 10. the proposed far-side anchor is replayed from the untouched common bootstrap by teleport and settle;
-11. Wave 1 reaches its durable barrier before Wave 2 fan-out;
-12. Wave 2 runs from both initial and far-side anchors and emits immutable spatial observations;
-13. deterministic reduction alone publishes one per-area refinement; and
+11. bounded Wave 1 invocations produce the complete accepted/rejected anchor evidence needed before
+    Wave 2;
+12. bounded Wave 2 invocations run from both initial and far-side anchors and emit immutable spatial
+    observations without owning durable fan-out;
+13. the versioned deterministic reducer produces one canonical per-area refinement from those exact
+    ordered inputs; and
 14. cleanup receipts prove restoration or explicitly taint/quarantine the worker.
+
+The scenario may use current workflow/dynamic-step facilities when they already represent the two waves.
+It may otherwise drive the bounded invocations and reducer directly for runtime acceptance. A new
+persisted barrier, fan-out/fan-in model, binding representation, or workflow transaction is separate
+SavorDb/workflow work and is not required by this scenario.
 
 Schema and artifact assertions must prove that:
 
@@ -390,17 +415,19 @@ cancellation during the enable window, and cleanup failure. None may publish a p
 
 ### Future-design acceptance matrix
 
-| Design | Core proof | Recovery/fault proof | Durable evidence |
+| Design | Runtime proof | Runtime fault proof | Published evidence |
 |---|---|---|---|
-| `soa.navigation.survey` (`establish_anchors`, `probe_geometry`) | Two bounded entrypoints, exact scoped patches, two workflow waves | Cancel/restore/door/settle failures; worker restart | Anchors, portals, spatial observations, refinement; no timing or anchor states |
+| `soa.navigation.survey` (`establish_anchors`, `probe_geometry`) | Two bounded entrypoints, exact scoped patches, and handler integration through current SavorDb operations | Cancel/restore/door/settle failures; worker restart | Anchors, portals, spatial observations, refinement; no timing or anchor states |
 | `soa.navigation.replay/replay_route` | Exact route/control and module identity yields expected checkpoints | Interruption and divergence are typed; retry from exact source | Replay witnesses, deviations, terminal state when requested |
-| `soa.navigation.collision_search/probe_candidates` | One bounded candidate batch | Restart preserves frontier and dedupe | Expected/oddity observations and coverage |
-| `A -> B -> A` | Same executor and typed state binding | Cleanup failure forces fresh session | Resource ledgers and exact phase lineage |
+| `soa.navigation.collision_search/probe_candidates` | One bounded candidate batch | Cancellation/failure does not retain worker-owned topology | Expected/oddity observations and coverage |
+| `A -> B -> A` | Same executor and handler-projected state handoff through existing workflow records | Cleanup failure forces fresh session | Resource ledgers and exact phase lineage |
 | `soa.cutscene.fast_forward/run_slice` | One bounded strategy slice under router/arbiter | Unsupported/budget/cancel results allow workflow fallback | Slice result, handled events, trace, optional state |
-| `soa.overworld.expand/expand_node` | One node expansion emits zero-to-many state children | Arbitrary-wave restart, stale lease, duplicate states | State/edge lineage, visited fingerprints, terminal/goal result |
+| `soa.overworld.expand/expand_node` | One node expansion emits zero-to-many state children | Cancellation/failure leaves no worker-owned DFS state | Proposed state/edge artifacts and terminal/goal result |
 
 Before domain rules exist, collision, cutscene, and overworld tests may use synthetic capability fixtures.
 Their live game acceptance becomes an additional phase gate when those implementations begin.
+Restart-safe collision/frontier/DFS orchestration is acceptance for a separate SavorDb/workflow project,
+not for the Execution Runtime refactor.
 
 ### Build and gate policy
 
@@ -416,13 +443,14 @@ Pre-cutover qualification additionally runs:
 
 - the full SavorTests suite;
 - every current-phase differential/live fixture;
-- repeated randomized-order workflow/frontier recovery;
+- the existing SavorDb workflow, queue, persistence, dynamic-step, and recovery regression suites;
+- adapter coverage for every supported existing payload/result version;
 - fault injection for every resource class;
 - protocol/catalog mixed-version rejection; and
 - a clean-release worker/coordinator smoke workflow.
 
 Post-cutover qualification repeats those tests without the legacy interpreter linked. Survey becomes a
-required regression only after Stage 10.
+required regression only after Stage 9.
 
 ### Durable test evidence
 
@@ -451,11 +479,13 @@ Verification requires explicit seams for:
 - `StateService` epoch and state-artifact inspection;
 - mutation fault injection and restoration receipts;
 - deterministic action registry completions;
-- program trace/source-map events;
-- workflow clock, lease, outbox, and restart control; and
-- artifact store failure/replay injection.
+- program trace/source-map events; and
+- existing SavorDb test controls for program-kind materialization, result projection, workflow restart,
+  and artifact operations.
 
-These are observability/test seams around production boundaries, not alternate execution paths.
+These are observability/test seams around production boundaries, not alternate execution paths. This
+refactor requires no new SavorDb database-service, queue, claim, workflow, or artifact-store test
+interface.
 
 ## Failure and cleanup behavior
 
@@ -478,7 +508,8 @@ These are observability/test seams around production boundaries, not alternate e
 - Program verifier/executor tests must exist before translating a current phase.
 - Each migrated phase adds permanent new-runtime regression coverage; legacy comparison disappears only
   after its deletion gate.
-- Workflow/frontier tests must precede Navmesh Survey and overworld work.
+- SavorDb boundary regressions must pass before handler-adapter cutover. Any new workflow/frontier tests
+  belong to their separate future project.
 - The live Survey scenario depends on production Survey implementation and exact bootstrap artifacts, but
   the fake patch/door/state tests can be built earlier.
 
@@ -489,22 +520,30 @@ These are observability/test seams around production boundaries, not alternate e
 - Same module/invocation/dependency/backend trace yields the same canonical action/branch trace.
 - Cancellation and fault injection cover every suspension point and resource type.
 - A mandatory cleanup failure always yields a tainted, non-reusable session.
-- Workflow/frontier results remain canonical across randomized completion order and process restart.
+- Existing SavorDb workflow, queue, result, idempotency, and restart behavior remains unchanged.
+- Existing persisted jobs/results/artifacts remain compatible through program-kind adapters without data
+  conversion.
+- The refactor adds no SavorDb migration and changes no database-service, queue, claim,
+  workflow-persistence, transaction, or artifact-storage interface.
 - Exact protocol/catalog mismatches reject work before guest-state mutation.
 - `A -> B -> A` proves zero leaked resources.
-- The `a101b` scenario proves all fourteen first-slice requirements and all prohibited Survey artifacts.
+- The bounded-runtime `a101b` scenario proves all fourteen first-slice requirements and all prohibited
+  Survey artifacts through a harness or unchanged existing SavorDb contracts.
 - Post-cutover tests run with no production legacy interpreter or second controller linked.
 - Test evidence is durable and sufficient to reproduce every stage-exit decision.
 
 ## Deferred work
 
-- Numeric performance, throughput, memory, and artifact-retention targets.
+- Numeric runtime performance, throughput, and memory targets.
 - Long-duration soak duration and production telemetry alert thresholds.
 - Real collision-oddity objectives and live golden corpus.
 - Real cutscene tactic corpus and fastest-safe comparison metric.
-- Overworld rules, state fingerprint, goal corpus, and live DFS branching fixtures.
+- Overworld bounded-expansion rules, state fingerprint, goal corpus, and live node-expansion fixtures.
 - Final CI job partitioning and hardware matrix.
 - Authoring UI/compiler conformance tests, to be defined with the authored frontend.
+
+Artifact-retention policy and end-to-end durable DFS orchestration tests belong to separate projects;
+they are not deferred gates for this refactor.
 
 ## Source references
 

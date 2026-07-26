@@ -7,13 +7,7 @@
 #include <utility>
 #include <memory>
 
-#include "Execution/ProgramDB/BattleContext/BattleContextProbePhaseRegistration.h"
-#include "Execution/ProgramDB/BattleSingleTurn/BattleSingleTurnPhaseRegistration.h"
-#include "Execution/ProgramDB/BattleEndResults/BattleEndResultsPhaseRegistration.h"
-#include "Execution/ProgramDB/NavigationContext/NavigationContextPhaseRegistration.h"
-#include "Execution/ProgramDB/SeedProbe/SeedProbePhaseRegistration.h"
-#include "Execution/ProgramDB/TasMovie/TasMoviePhaseRegistration.h"
-#include "Runner/IPC/Wire.h"
+#include "Execution/ProgramDB/ProductionProgramKindRegistry.h"
 
 namespace savorqt {
 namespace {
@@ -248,100 +242,22 @@ bool SavorDbRuntime::workflowCoordinatorRunning() const {
 }
 
 bool SavorDbRuntime::buildProgramRegistry(std::string* error_out) {
-    auto* execution_db = executionDb();
-    auto* state_db = stateDb();
-    auto* analysis_db = analysisDb();
-    auto* authoring_db = authoringDb();
-
-    if (execution_db == nullptr || state_db == nullptr || analysis_db == nullptr || authoring_db == nullptr) {
-        if (error_out != nullptr) {
-            *error_out = "SavorDb services are incomplete";
-        }
-        return false;
-    }
-
-    program_registry_ = savor::db::execution::programdb::ProgramKindRegistry{};
     const auto app_dir = std::filesystem::path(QCoreApplication::applicationDirPath().toStdString());
     const auto workspace_root = app_dir / "workflow-runtime";
-
-    savor::db::execution::programdb::tasmovie::TasMoviePhaseRegistrationConfig tas_config{};
-    tas_config.authoring_db = authoring_db;
-    tas_config.working_dir_root = workspace_root / "tasmovie";
-    savor::db::execution::programdb::tasmovie::RegisterTasMoviePhaseDescriptor(
+    auto config =
+        savor::db::execution::programdb::MakeProductionProgramKindRegistryConfig(
+            workspace_root);
+    const savor::db::execution::programdb::ProductionProgramKindRegistryDependencies dependencies{
+        .execution_db = executionDb(),
+        .state_db = stateDb(),
+        .analysis_db = analysisDb(),
+        .authoring_db = authoringDb(),
+    };
+    return savor::db::execution::programdb::BuildProductionProgramKindRegistry(
+        dependencies,
+        std::move(config),
         &program_registry_,
-        execution_db,
-        state_db,
-        analysis_db,
-        std::move(tas_config));
-
-    savor::db::execution::programdb::seedprobe::SeedProbePhaseRegistrationConfig seed_config{};
-    seed_config.authoring_db = authoring_db;
-    savor::db::execution::programdb::seedprobe::RegisterSeedProbePhaseDescriptors(
-        &program_registry_,
-        execution_db,
-        analysis_db,
-        std::move(seed_config));
-
-    savor::db::execution::programdb::battlecontext::BattleContextProbePhaseRegistrationConfig context_config{};
-    context_config.authoring_db = authoring_db;
-    context_config.working_dir_root = workspace_root / "battle-context";
-    savor::db::execution::programdb::battlecontext::RegisterBattleContextProbePhaseDescriptor(
-        &program_registry_,
-        execution_db,
-        analysis_db,
-        std::move(context_config));
-
-    savor::db::execution::programdb::battle::BattleSingleTurnPhaseRegistrationConfig battle_config{};
-    battle_config.authoring_db = authoring_db;
-    battle_config.working_dir_root = workspace_root / "battle-single-turn";
-    savor::db::execution::programdb::battle::RegisterBattleSingleTurnPhaseDescriptor(
-        &program_registry_,
-        execution_db,
-        state_db,
-        analysis_db,
-        std::move(battle_config));
-
-    savor::db::execution::programdb::battleend::BattleEndWorkflowPhaseRegistrationConfig battle_end_config{};
-    battle_end_config.authoring_db = authoring_db;
-    battle_end_config.working_dir_root = workspace_root / "battle-end-workflow";
-    savor::db::execution::programdb::battleend::RegisterBattleEndWorkflowPhaseDescriptors(
-        &program_registry_,
-        execution_db,
-        state_db,
-        analysis_db,
-        std::move(battle_end_config));
-
-    savor::db::execution::programdb::navigationcontext::
-        NavigationContextPhaseRegistrationConfig navigation_context_config{};
-    navigation_context_config.working_dir_root =
-        workspace_root / "navigation-context";
-    savor::db::execution::programdb::navigationcontext::
-        RegisterNavigationContextProbePhaseDescriptor(
-            &program_registry_,
-            execution_db,
-            state_db,
-            std::move(navigation_context_config));
-
-    if (!program_registry_.HasRequiredAdapters(static_cast<std::int32_t>(savor::PK_TasMovie))
-        || !program_registry_.HasRequiredAdaptersForStepKind("tas_movie")
-        || !program_registry_.HasRequiredAdaptersForStepKind("seed_probe_chain")
-        || !program_registry_.HasRequiredAdaptersForStepKind("battle_chain")
-        || !program_registry_.HasRequiredAdaptersForStepKind("battle.context_probe")
-        || !program_registry_.HasRequiredAdaptersForStepKind("battle.single_turn")
-        || !program_registry_.HasRequiredAdaptersForStepKind("battle.completion")
-        || !program_registry_.HasRequiredAdaptersForStepKind("battle.field_return_seed_probe")
-        || !program_registry_.HasRequiredAdaptersForStepKind("battle.field_return_seed_probe.grid")
-        || !program_registry_.HasRequiredAdaptersForStepKind("battle.field_return_seed_probe.unique")
-        || !program_registry_.HasRequiredAdaptersForStepKind("battle.field_return_seed_probe.materialize")
-        || !program_registry_.HasRequiredAdaptersForStepKind("battle.results_screen")
-        || !program_registry_.HasRequiredAdaptersForStepKind("navigation.context_probe")) {
-        if (error_out != nullptr) {
-            *error_out = "Workflow program descriptor registration is incomplete";
-        }
-        return false;
-    }
-
-    return true;
+        error_out);
 }
 
 savor::db::execution::workflow::WorkflowCoordinatorConfig SavorDbRuntime::buildWorkflowConfig() {

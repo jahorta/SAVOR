@@ -210,15 +210,24 @@ multiple artifacts, or separate infrastructure/domain/cleanup statuses.
 adapter seam, but it currently makes worker execution identity and workflow/domain integration look like
 one concept.
 
+The production composition prelude now centralizes the complete current descriptor catalog in
+`SavorDb/Execution/ProgramDB/ProductionProgramKindRegistry.*`. The factory owns the fixed registration
+order, canonical numeric winners, all sixteen production step-kind mappings, descriptor-capability
+validation, and production working-directory defaults. SavorQt and every DB-backed SavorE2E scenario
+construct that same complete catalog. SavorE2E still owns one shared `DBService`, but admits only one
+scenario's coordinators at a time and checks workflow quiescence before and after each DB-backed
+scenario and repeat. `battle_macro_probe` remains a direct-worker development scenario and has no
+SavorDb descriptor or workflow step kind.
+
 Durable orchestration already supports dynamic fan-out. `WorkflowTransitionDecision::spawn_steps`
 describes children, and `WorkflowTerminalAdvancementService` persists them through
 `AppendDynamicSteps`. Battle Context emits initial Battle Single Turn steps; Battle Single Turn chooses
 survivors, creates subsequent waves, and emits another set of `battle.single_turn` steps. SeedProbe
 similarly expands its chain into grid and unique work.
 
-This is concrete evidence that waves and arbitrary successor scheduling belong above the worker. It does
-not yet provide a general persisted frontier record with node lineage, deduplication, strategy, and
-terminal policy.
+This is concrete evidence that waves and arbitrary successor scheduling belong above the worker. Current
+workflow persistence is a fixed integration boundary for this refactor. A generalized persisted frontier
+record or policy is a separate future project and is not required for execution-runtime migration.
 
 ## Implemented phase-program taxonomy
 
@@ -284,8 +293,8 @@ The clean-slate replacement must preserve these proven ideas:
 | Macro execution is a subordinate runtime | Adaptive control has a second scheduler and private physical ownership | Common action-await continuation model under `ProgramExecutor` |
 | Breakpoint state is replaced globally | Independent observers/interceptors cannot remain composed | Logical subscriptions and one physical stop-point owner |
 | Worker visual thread calls runtime directly | External controls can bypass command serialization | All commands routed through `WorkerRuntime` |
-| Descriptor mixes execution with workflow integration | A new phase appears to require another descriptor/controller combination | Separate program catalog/schema registry from workflow adapters and bindings |
-| Affinity uses kind/bootstrap strings | Cache locality can be mistaken for exact revision or clean state | Hash/dependency-aware locality plus explicit state/session policy |
+| Descriptor mixes execution with workflow integration | A new phase appears to require another descriptor/controller combination | Keep existing SavorDb contracts; adapt only runtime-facing handler behavior to construct/consume typed runtime contracts |
+| Affinity uses kind/bootstrap strings | Cache locality can be mistaken for exact revision or clean state | Verify exact runtime module/state/session identity after current materialization without changing stored affinity or claim data |
 | No general mutation ledger | Data writes and future code patches lack one restoration/taint contract | Checked scoped `GuestMutationService` receipts and mandatory unwind |
 
 ## Locked target decisions
@@ -301,9 +310,11 @@ The current evidence locks these conclusions:
   `InputMacroRuntime` is not retained as a peer program executor.
 - Worker-session services absorb every direct `DolphinWrapper` operation currently performed by the VM
   or visual-control thread.
-- Workflow transition and dynamic-step capabilities are retained and generalized into typed bindings and
-  first-class frontier orchestration.
-- `ProgramKind` may remain for UI/history/compatibility metadata but ceases to select worker execution.
+- Workflow transition and dynamic-step capabilities are retained through their current persistence and
+  transaction contracts. Program-kind handlers translate between those records and typed runtime
+  inputs/results. Generalized frontier orchestration is out of scope.
+- `ProgramKind` may remain SavorDb job/handler/queue/affinity and UI/history metadata but ceases to select
+  worker execution after runtime materialization.
 - Navigation Context migrates as an ordinary current phase. Navmesh Survey is the first net-new consumer
   after current behavior reaches the new runtime.
 
@@ -316,13 +327,14 @@ The replacement crosses these current seams:
 - `PhaseScript`, `PSInit`, `PSJob`, `PSResult`, `PSContext`, and `PSContextCodec`;
 - the 52-opcode dispatch and all split `PhaseScriptVM*` host implementations;
 - `InputMacroRuntime`, `IInputMacroPlanDriver`, and providers;
-- `WireSetProgram`, job/result envelopes, and `ProgramKind`;
-- `ProgramKindDescriptor`, `ProgramKindRegistry`, and runtime-init/result adapters;
-- worker affinity/materialization and `EnsureWorkerProgramForJob`; and
-- dynamic workflow transition and successor-step publication.
+- `WireSetProgram`, worker-protocol job/result envelopes, and worker-side `ProgramKind` dispatch;
+- program-kind handler implementations and adjacent runtime-init/result adapters;
+- job materialization only as needed to construct `ProgramInvocation` from existing persisted data; and
+- existing transition and successor-step publication behavior as an unchanged integration contract.
 
-The migration must not push workflow persistence into the worker or move emulator ownership into DB
-adapters. Those existing boundaries are retained and made more explicit.
+The migration changes no SavorDb database-service interface, queue/claim contract, stored representation,
+workflow persistence, artifact-storage interface, or transaction boundary. It must not push workflow
+persistence into the worker or move emulator ownership into DB adapters.
 
 ## Failure and cleanup behavior
 
@@ -358,7 +370,9 @@ dependency order is:
 3. expose current capabilities through registered actions and reusable subprograms;
 4. add a temporary compiler/translator for current builders;
 5. migrate and differentially verify every current phase family;
-6. move workflow activation and affinity to exact module identity;
+6. have existing program-kind handlers or adjacent adapters derive exact runtime module and entrypoint
+   identity during materialization without changing stored job identity, affinity fields, or queue/claim
+   contracts;
 7. remove current worker switches, domain opcodes, and the subordinate macro scheduler; and
 8. implement Navmesh Survey only on the new path.
 
@@ -386,7 +400,7 @@ stop-point router, transport core, or a central opcode switch.
 This document does not decide:
 
 - exact C++ interface spelling or source directory layout;
-- final transport bytes or SQL schema;
+- final worker transport bytes;
 - the authored script syntax/UI;
 - final module revision/hash algorithms;
 - Survey-specific action algorithms;
@@ -395,8 +409,9 @@ This document does not decide:
 - overworld game rules; or
 - cutscene acceleration policy.
 
-Those decisions are either defined elsewhere in this package at a logical-contract level or explicitly
-deferred in document 11.
+SavorDb SQL schema and stored representations are fixed inputs to this refactor, not deferred design
+work. The remaining decisions are either defined elsewhere in this package at a logical-contract level
+or explicitly deferred in document 11.
 
 ## Source references
 

@@ -23,26 +23,39 @@ It supersedes the target-runtime portions of:
 - `planning/DBMigrateWorkflows/12-user-defined-script-payload-system-plan.md`; and
 - `D:\SoAInvestigate\Analyses\20260723_2107_savor_worker_breakpoint_router`.
 
-Those sources remain useful current-state and research evidence. The DB workflow planning set remains
-authoritative for persisted hybrid workflow orchestration except where it assumes the current worker
-program model is permanent. The Navigation Context workflow package remains authoritative for Navmesh
-Survey domain behavior; this package supplies its execution foundation.
+Those sources remain useful current-state and research evidence. Current SavorDb code defines the
+existing persisted workflow, queue, claim, artifact, and domain-storage contracts this refactor must
+preserve. Separate DB migration/workflow plans are orientation for their own projects; they are not
+requirements or authorization for this refactor. This package changes only the runtime-facing behavior
+of program-kind handlers or adjacent integration adapters: they may construct `ProgramInvocation` from
+existing persisted job/domain data and project `ProgramResult` through existing persistence operations.
+It does not change the SavorDb SQL schema or migrations, stored representations, database-service
+interfaces, queue/claim contracts, durable workflow persistence, transaction boundaries, or
+artifact-storage interfaces. In this package, an unqualified **schema** is a runtime program/type schema,
+not a database schema.
+
+The Navigation Context workflow package remains authoritative for Navmesh Survey domain behavior; this
+package supplies its execution foundation.
 
 ## Purpose and non-goals
 
-The purpose is to make a new phase an ordinary composition of programs, actions, schemas, and workflow
-bindings. Navmesh Survey is the first demanding new reference design, not a special architecture.
-Navigation replay, collision-oddity search, cutscene fast-forward, phase switching, and arbitrary-depth
-overworld exploration must fit the same foundation.
+The purpose is to make a new phase an ordinary composition of programs, actions, runtime type schemas,
+and program-kind integration adapters over the existing workflow contracts. Navmesh Survey is the first
+demanding new reference design, not a special architecture. The bounded worker portions of navigation
+replay, collision-oddity search, cutscene fast-forward, phase switching, and overworld expansion must fit
+the same runtime foundation; generalized durable orchestration remains separate work.
 
 This package does not:
 
 - implement the refactor;
 - claim that Navmesh Survey or the other future phases exist;
-- freeze concrete C++ declarations, SQL DDL, or byte-level transport layouts;
+- change SavorDb SQL/schema, migrations, stored representations, database-service interfaces, queues,
+  claims, workflow persistence, transaction boundaries, or artifact-storage interfaces;
+- freeze concrete C++ declarations or byte-level worker transport layouts;
 - choose a user-authored source language or editor;
 - replace durable workflow orchestration with an in-worker scheduler; or
-- preserve compatibility merely to avoid breaking changes.
+- preserve legacy worker-runtime APIs or messages merely to avoid breaking worker-side changes. The
+  fixed SavorDb compatibility boundary above is not waived.
 
 ## Current code evidence
 
@@ -61,7 +74,7 @@ Navmesh Survey is not present in the registry or worker runtime and remains unim
 
 ```mermaid
 flowchart TD
-    WF["Workflow and Frontier Orchestrator"] --> INV["ProgramInvocation"]
+    WF["Existing Workflow Orchestrator"] --> INV["ProgramInvocation"]
     INV --> WR["WorkerRuntime<br/>sole command and session actor"]
     WR --> PR["ProgramRuntime"]
     PR --> DS["ProgramDefinitionStore"]
@@ -93,8 +106,8 @@ The names have precise meanings:
 - **Action** is a bounded registered capability transaction. It may suspend and later complete.
 - **Reducer** is a pure native state transition that requests effects through the executor. It owns no
   Dolphin, input, stop points, threads, or event loops.
-- **Workflow/frontier** is the durable orchestrator for jobs, waves, phase changes, search topology,
-  retries, deduplication, and recovery.
+- **Workflow orchestration** remains the existing durable owner for jobs, waves, phase changes, retries,
+  and recovery. Generalized frontier persistence is a separate project, not part of this refactor.
 
 ## Non-negotiable invariants
 
@@ -110,23 +123,27 @@ The names have precise meanings:
 7. A failed mandatory cleanup taints the session and prevents worker reuse.
 8. A savestate restore advances `StateEpoch`; stale epoch-bound handles cannot be used.
 9. A program invocation is bounded to one emulation session. It may emit successor artifacts but cannot
-   enqueue workers, mutate the durable frontier, or choose the next workflow phase.
+   enqueue workers, mutate durable workflow state, or choose the next workflow phase.
 10. Exact program identity includes module ID, immutable revision/hash, entrypoint, and dependency closure.
-11. `ProgramKind` may remain a semantic/UI family but does not select a worker controller, payload decoder,
-    interpreter, or primary affinity.
+11. `ProgramKind` may remain SavorDb job, handler, queue/affinity, semantic, or UI metadata. After the
+    program-kind integration adapter constructs the runtime invocation, it does not select a worker
+    controller, worker-side payload decoder, or interpreter.
 12. A phase that uses existing capabilities requires no change to `WorkerRuntime`, `ProgramRuntime`,
     `ProgramExecutor`, `ExecutionEngine`, the stop-point router, transport core, or a central opcode table.
 13. C++ builders and future authored formats compile to the same `ProgramModule`; there is no separate
     `PK_UserScript` execution path.
 14. Runtime deadlines may prevent hangs, but domain schemas decide whether time is evidence. Navmesh Survey
     evidence is spatial and contains no inferred probe timing.
+15. SavorDb storage and orchestration contracts are fixed inputs. Runtime integration must adapt to them;
+    this refactor does not migrate or redesign them.
 
 ## Interfaces and ownership affected
 
-The target replaces the worker activation/result contract, current program construction and payload
-switches, `PhaseScriptVM` ownership boundaries, `PSContext` as a public contract, the VM-owned input-macro
-mini-runtime, and the runtime-facing portion of `ProgramKindDescriptor`. It preserves current domain
-behavior and durable workflow orchestration while expressing both through the new contracts.
+The target replaces the worker activation/result contract, current program construction and worker-side
+payload switches, `PhaseScriptVM` ownership boundaries, `PSContext` as a public runtime contract, the
+VM-owned input-macro mini-runtime, and the runtime-facing behavior of program-kind handlers. Existing
+SavorDb handler registration, persistence, workflow, queue, claim, affinity, and transaction contracts
+remain unchanged.
 
 ## Reading order
 
@@ -135,7 +152,7 @@ behavior and durable workflow orchestration while expressing both through the ne
 3. [Program Modules, IR, and Types](03-program-modules-ir-and-types.md)
 4. [Actions, Effects, and Session Services](04-actions-effects-and-session-services.md)
 5. [Invocation, Result, Versioning, and Artifacts](05-invocation-result-versioning-and-artifacts.md)
-6. [Workflows, Frontiers, and Phase Composition](06-workflows-frontiers-and-phase-composition.md)
+6. [Workflow Boundary and Phase Composition](06-workflows-frontiers-and-phase-composition.md)
 7. [Current Phase Migration Matrix](07-current-phase-migration-matrix.md)
 8. [Future Phase Reference Designs](08-future-phase-reference-designs.md)
 9. [Breaking-Change Cutover Plan](09-breaking-change-cutover-plan.md)
@@ -177,9 +194,11 @@ typed program IR and verifier, and replacing direct VM/Dolphin coupling with reg
 temporary translator from current `PhaseScript` builders is permitted for parity testing. It is not a
 second permanent runtime and is removed with the legacy interpreter.
 
-Navmesh Survey is the first net-new acceptance client after current phases migrate. It must be expressed
-as bounded entrypoints and reusable navigation actions, with the durable two-wave topology owned by the
-workflow layer.
+Navmesh Survey is the first net-new acceptance client after current phases migrate. Its bounded
+entrypoints and reusable navigation actions are the runtime acceptance target. They may be exercised by
+a harness or through unchanged existing SavorDb contracts. End-to-end durable two-wave orchestration is
+not a refactor gate unless the current contracts already support it; workflow or persistence
+generalization is separate work.
 
 ## Acceptance criteria
 
@@ -187,19 +206,21 @@ This guidance set is complete when an implementation team can derive work packag
 
 - which component owns commands, emulator advancement, or program flow;
 - whether a phase should receive another native controller;
-- what identifies a module, invocation, action, state artifact, frontier node, or result;
+- what identifies a runtime module, invocation, action, state artifact, or result;
 - how cancellation, restoration, epochs, and tainted sessions behave;
-- where waves, phase switching, deduplication, and arbitrary-depth search live; or
+- why waves, phase switching, or arbitrary-depth search cannot live in a worker invocation; or
 - how current phases reach the new runtime and when the old path is deleted.
 
-The architecture itself is accepted only when every reference phase fits without a second executor or
-domain opcode and the verification matrix in document 10 passes.
+The architecture itself is accepted only when every reference design's bounded worker program fits
+without a second executor or domain opcode and the runtime verification matrix in document 10 passes.
+Workflow-persistence portions of future designs remain outside acceptance unless current contracts
+already suffice.
 
 ## Deferred work
 
-The exact C++ API spelling, SQL layout, wire encoding, authored source language, authoring UI, and
-game-specific algorithms listed in document 11 remain deferred. Their implementations must honor the
-logical contracts and ownership boundaries in this package.
+The exact C++ API spelling, worker wire encoding, authored source language, authoring UI, and
+game-specific algorithms listed in document 11 remain deferred. SavorDb SQL/storage/interfaces are fixed
+inputs, not deferred design choices in this refactor.
 
 ## Source references
 

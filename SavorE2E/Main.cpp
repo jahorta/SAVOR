@@ -134,6 +134,23 @@ int main(int argc, char** argv) {
                 break;
             }
 
+            const bool requires_workflow_boundary = scenario_name != "battle_macro_probe";
+            if (requires_workflow_boundary) {
+                std::string boundary_diagnostics;
+                if (!CheckWorkflowQuiescence(service.ExecutionDb(), &boundary_diagnostics)) {
+                    scenario_error =
+                        "pre-scenario workflow boundary failed for '" + scenario_name
+                        + "': " + boundary_diagnostics;
+                    failed += 1;
+                    std::cerr << "[FAIL] " << scenario_error << "\n";
+                    exit_code = 1;
+                    break;
+                }
+                std::cout
+                    << "[PASS] pre-scenario workflow boundary '" << scenario_name
+                    << "' repeat=" << (repeat_index + 1) << " is quiescent\n";
+            }
+
             options.scenario = scenario_name;
             submitted += 1;
             std::cout << "Running scenario '" << scenario_name << "' repeat=" << (repeat_index + 1)
@@ -141,9 +158,40 @@ int main(int argc, char** argv) {
                       << " timeout=" << options.timeout_ms
                       << "ms poll=" << options.poll_ms << "ms\n";
 
-            if (!it->second(options, argv[0], &service, &scenario_error)) {
-                failed += 1;
+            scenario_error.clear();
+            const bool scenario_passed =
+                it->second(options, argv[0], &service, &scenario_error);
+            if (!scenario_passed) {
                 std::cerr << "[FAIL] " << scenario_name << " - " << scenario_error << "\n";
+            }
+
+            bool post_boundary_passed = true;
+            std::string post_boundary_diagnostics;
+            if (requires_workflow_boundary) {
+                post_boundary_passed =
+                    CheckWorkflowQuiescence(service.ExecutionDb(), &post_boundary_diagnostics);
+                if (post_boundary_passed) {
+                    std::cout
+                        << "[PASS] post-scenario workflow boundary '" << scenario_name
+                        << "' repeat=" << (repeat_index + 1) << " is quiescent\n";
+                } else {
+                    std::cerr
+                        << "[FAIL] post-scenario workflow boundary for '" << scenario_name
+                        << "' repeat=" << (repeat_index + 1) << " - "
+                        << post_boundary_diagnostics << "\n";
+                }
+            }
+
+            if (!scenario_passed || !post_boundary_passed) {
+                failed += 1;
+                if (!post_boundary_passed) {
+                    if (!scenario_error.empty()) {
+                        scenario_error += "; ";
+                    }
+                    scenario_error +=
+                        "post-scenario workflow boundary failed: "
+                        + post_boundary_diagnostics;
+                }
                 exit_code = 1;
                 break;
             }

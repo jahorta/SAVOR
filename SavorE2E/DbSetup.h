@@ -20,6 +20,10 @@ namespace savor::e2e {
 
 savor::db::DbConfigPaths BuildDbPaths(const CliOptions& options);
 
+bool CheckWorkflowQuiescence(
+    savor::db::IExecutionDb* execution_db,
+    std::string* diagnostics_out);
+
 class ScopedWorkflowCoordinatorService {
 public:
     using EventLineCallback = savor::db::execution::workflow::WorkflowCoordinatorService::EventLineCallback;

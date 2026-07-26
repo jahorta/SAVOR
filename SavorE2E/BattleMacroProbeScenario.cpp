@@ -21,6 +21,7 @@
 
 #include "Common/DbService.h"
 #include "DurableLogFile.h"
+#include "Execution/DBWorkflowWorkerCoordinator.h"
 #include "Phases/Programs/BattleMacroProbe/BattleMacroProbePayload.h"
 #include "Runner/IPC/Wire.h"
 #include "Runner/Parallel/PRTypes.h"
@@ -971,14 +972,48 @@ bool RunBattleMacroProbeScenario(
     const char* argv0,
     savor::db::core::DBService*,
     std::string* error_out) {
-    const auto worker_exe = ResolveWorkerExePath(argv0);
-    if (!std::filesystem::exists(worker_exe)) {
-        if (error_out) *error_out = "SavorWorker.exe was not found next to SavorE2E: " + worker_exe.string();
+    const auto source_worker_exe = ResolveWorkerExePath(argv0);
+    if (!std::filesystem::exists(source_worker_exe)) {
+        if (error_out) {
+            *error_out =
+                "SavorWorker.exe was not found next to SavorE2E: "
+                + source_worker_exe.string();
+        }
+        return false;
+    }
+
+    std::filesystem::path worker_exe;
+    std::string runtime_error;
+    if (!savor::runner::parallel::savordb::DBWorkflowWorkerCoordinator::
+            MaterializeWorkerRuntimeForTest(
+                0,
+                savor::runner::parallel::savordb::DBWorkflowWorkerCoordinatorConfig{
+                    .worker_exe_path = source_worker_exe.string(),
+                    .iso_path = options.iso_path.string(),
+                    .dolphin_base_dir = options.dolphin_base_dir.string(),
+                },
+                &worker_exe,
+                &runtime_error)) {
+        if (error_out) {
+            *error_out =
+                "failed preparing direct battle macro worker runtime: "
+                + runtime_error;
+        }
         return false;
     }
 
     constexpr std::uint32_t kTransitionNeutralFrames = 3;
-    const bool interactive_loop = !options.battle_macro_args_supplied && !options.battle_macro_plan_spec.has_value();
+    auto scenario_options = options;
+    if (scenario_options.scenarios.size() > 1
+        && !scenario_options.battle_macro_args_supplied
+        && !scenario_options.battle_macro_plan_spec.has_value()) {
+        // Multi-scenario matrices must be unattended. A direct, single-scenario
+        // macro probe keeps its interactive command-development loop.
+        scenario_options.battle_macro_args_supplied = true;
+    }
+    const bool interactive_loop =
+        !scenario_options.battle_macro_args_supplied
+        && !scenario_options.battle_macro_plan_spec.has_value();
 
     DurableLogFile durable_log;
     if (!durable_log.Open(options, options.scenario, error_out)) {
@@ -1077,7 +1112,7 @@ bool RunBattleMacroProbeScenario(
         } else {
             run_savestate = current_savestate;
             std::string prompt_error;
-            if (!ResolveBattleMacroPlan(options, &commands, &prompt_error)) {
+            if (!ResolveBattleMacroPlan(scenario_options, &commands, &prompt_error)) {
                 stop_worker();
                 if (error_out) *error_out = prompt_error;
                 return false;

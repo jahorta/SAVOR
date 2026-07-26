@@ -22,8 +22,8 @@
 #include "DurableLogFile.h"
 #include "Execution/DBWorkflowCoordinatorFactory.h"
 #include "Execution/DBWorkflowWorkerCoordinator.h"
-#include "Execution/ProgramDB/BattleEndResults/BattleEndResultsPhaseRegistration.h"
 #include "Execution/ProgramDB/ProgramKindRegistry.h"
+#include "Execution/ProgramDB/ProductionProgramKindRegistry.h"
 #include "Execution/Workflow/WorkflowComposition.h"
 #include "Execution/Workflow/WorkflowOrchestration.h"
 #include "Execution/Workflow/WorkflowUnitActivationFactory.h"
@@ -530,16 +530,29 @@ bool RunBattleEndResultsScenario(
     }
     std::cout << "[durable-log] path=" << durable_log.path().string() << '\n';
 
+    const auto runtime_root = WorkspaceRoot(options) / "workflow-runtime";
+    auto registry_config =
+        savor::db::execution::programdb::MakeProductionProgramKindRegistryConfig(
+            runtime_root);
+    registry_config.battle_end.working_dir_root =
+        runtime_root / "battle-end-results";
+    std::string error;
     savor::db::execution::programdb::ProgramKindRegistry registry;
-    savor::db::execution::programdb::battleend::BattleEndWorkflowPhaseRegistrationConfig phase_config{};
-    phase_config.authoring_db = db_service->AuthoringDb();
-    phase_config.working_dir_root = WorkspaceRoot(options) / "workflow-runtime" / "battle-end-results";
-    savor::db::execution::programdb::battleend::RegisterBattleEndWorkflowPhaseDescriptors(
-        &registry,
-        db_service->ExecutionDb(),
-        db_service->StateDb(),
-        db_service->AnalysisDb(),
-        std::move(phase_config));
+    if (!savor::db::execution::programdb::BuildProductionProgramKindRegistry(
+            savor::db::execution::programdb::ProductionProgramKindRegistryDependencies{
+                .execution_db = db_service->ExecutionDb(),
+                .state_db = db_service->StateDb(),
+                .analysis_db = db_service->AnalysisDb(),
+                .authoring_db = db_service->AuthoringDb(),
+            },
+            std::move(registry_config),
+            &registry,
+            &error)) {
+        if (error_out != nullptr) {
+            *error_out = "failed building production program registry: " + error;
+        }
+        return false;
+    }
 
     const auto descriptor_is_coordinator_only = [&](const char* step_kind) {
         const auto* descriptor = registry.FindForStepKind(step_kind);
@@ -560,7 +573,6 @@ bool RunBattleEndResultsScenario(
         return false;
     }
 
-    std::string error;
     std::int64_t seed_probe_spec_id = 0;
     if (!SeedAuthoringSpec(
             db_service->AuthoringDb(),

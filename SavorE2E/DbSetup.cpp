@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <chrono>
+#include <limits>
+#include <sstream>
 #include <utility>
 
 #include "Common/Types/UtcTimestamp.h"
@@ -12,6 +14,40 @@
 namespace savor::e2e {
 
 using savor::db::types::UtcNow;
+
+namespace {
+
+constexpr std::size_t kWorkflowBoundaryDiagnosticLimit = 256;
+
+const char* WorkflowInstanceStateName(
+    savor::db::execution::workflow::WorkflowInstanceState state) {
+    using savor::db::execution::workflow::WorkflowInstanceState;
+    switch (state) {
+    case WorkflowInstanceState::Pending: return "PENDING";
+    case WorkflowInstanceState::Running: return "RUNNING";
+    case WorkflowInstanceState::Completed: return "COMPLETED";
+    case WorkflowInstanceState::Failed: return "FAILED";
+    case WorkflowInstanceState::Canceled: return "CANCELED";
+    }
+    return "UNKNOWN";
+}
+
+const char* WorkflowStepStateName(
+    savor::db::execution::workflow::WorkflowStepState state) {
+    using savor::db::execution::workflow::WorkflowStepState;
+    switch (state) {
+    case WorkflowStepState::Waiting: return "WAITING";
+    case WorkflowStepState::Ready: return "READY";
+    case WorkflowStepState::Materialized: return "MATERIALIZED";
+    case WorkflowStepState::Running: return "RUNNING";
+    case WorkflowStepState::Completed: return "COMPLETED";
+    case WorkflowStepState::Failed: return "FAILED";
+    case WorkflowStepState::Skipped: return "SKIPPED";
+    }
+    return "UNKNOWN";
+}
+
+} // namespace
 
 void AppendTasMovieRtcArgumentIfSingle(
     savor::db::execution::workflow::WorkflowCreateInstanceCommand* command,
@@ -86,6 +122,136 @@ savor::db::DbConfigPaths BuildDbPaths(const CliOptions& options) {
         .object_store_root = root / "object_store",
         .archive_store_root = root / "archive_store",
     };
+}
+
+bool CheckWorkflowQuiescence(
+    savor::db::IExecutionDb* execution_db,
+    std::string* diagnostics_out) {
+    if (diagnostics_out != nullptr) {
+        diagnostics_out->clear();
+    }
+    if (execution_db == nullptr) {
+        if (diagnostics_out != nullptr) {
+            *diagnostics_out = "execution DB is unavailable";
+        }
+        return false;
+    }
+
+    auto* queries = execution_db->WorkflowQueryService();
+    if (queries == nullptr) {
+        if (diagnostics_out != nullptr) {
+            *diagnostics_out = "workflow query service is unavailable";
+        }
+        return false;
+    }
+
+    using savor::db::execution::workflow::WorkflowInstanceState;
+    using savor::db::execution::workflow::WorkflowStepState;
+    const auto oldest_timestamp = std::numeric_limits<std::int64_t>::lowest();
+    const auto newest_timestamp = std::numeric_limits<std::int64_t>::max();
+    const auto pending_instances = queries->ListWorkflowInstances(
+        WorkflowInstanceState::Pending,
+        oldest_timestamp,
+        newest_timestamp);
+    const auto running_instances = queries->ListWorkflowInstances(
+        WorkflowInstanceState::Running,
+        oldest_timestamp,
+        newest_timestamp);
+    const auto ready_steps = queries->ListReadySteps(kWorkflowBoundaryDiagnosticLimit);
+    const auto active_materialized_workflows = queries->CountActiveMaterializedWorkflows();
+    const auto terminal_ready_steps =
+        queries->ListTerminalReadyStepSnapshots(kWorkflowBoundaryDiagnosticLimit);
+
+    if (pending_instances.empty()
+        && running_instances.empty()
+        && ready_steps.empty()
+        && active_materialized_workflows == 0
+        && terminal_ready_steps.empty()) {
+        return true;
+    }
+
+    std::ostringstream diagnostics;
+    diagnostics << "workflow DB is not quiescent";
+
+    const auto append_instances =
+        [&diagnostics](const auto& instances) {
+            for (const auto& instance : instances) {
+                diagnostics
+                    << "\n  workflow_instance_id=" << instance.workflow_instance_id
+                    << " state=" << WorkflowInstanceStateName(instance.state)
+                    << " workflow_kind='" << instance.workflow_kind << "'";
+            }
+        };
+    append_instances(pending_instances);
+    append_instances(running_instances);
+
+    for (const auto& step : ready_steps) {
+        diagnostics
+            << "\n  workflow_instance_id=" << step.workflow_instance_id
+            << " workflow_step_id=" << step.workflow_step_id
+            << " state=READY"
+            << " step_kind='" << step.step_kind << "'"
+            << " step_key='" << step.step_key << "'";
+    }
+    if (ready_steps.size() == kWorkflowBoundaryDiagnosticLimit) {
+        diagnostics << "\n  additional READY steps may exist";
+    }
+
+    if (active_materialized_workflows != 0) {
+        diagnostics
+            << "\n  active_materialized_workflow_count="
+            << active_materialized_workflows;
+
+        std::size_t detailed_step_count = 0;
+        const auto append_materialized_steps =
+            [&](const auto& instances) {
+                for (const auto& instance : instances) {
+                    const auto graph = queries->GetWorkflowGraph(instance.workflow_instance_id);
+                    if (!graph.has_value()) {
+                        continue;
+                    }
+                    for (const auto& step : graph->steps) {
+                        if (step.state != WorkflowStepState::Materialized
+                            && step.state != WorkflowStepState::Running) {
+                            continue;
+                        }
+                        if (detailed_step_count >= kWorkflowBoundaryDiagnosticLimit) {
+                            return;
+                        }
+                        diagnostics
+                            << "\n  workflow_instance_id=" << step.workflow_instance_id
+                            << " workflow_step_id=" << step.workflow_step_id
+                            << " state=" << WorkflowStepStateName(step.state)
+                            << " step_kind='" << step.step_kind << "'"
+                            << " step_key='" << step.step_key << "'";
+                        ++detailed_step_count;
+                    }
+                }
+            };
+        append_materialized_steps(pending_instances);
+        append_materialized_steps(running_instances);
+        if (detailed_step_count == kWorkflowBoundaryDiagnosticLimit) {
+            diagnostics << "\n  additional MATERIALIZED/RUNNING steps may exist";
+        }
+    }
+
+    for (const auto& snapshot : terminal_ready_steps) {
+        diagnostics
+            << "\n  workflow_instance_id=" << snapshot.workflow_instance_id
+            << " workflow_step_id=" << snapshot.workflow_step_id
+            << " state=TERMINAL_READY"
+            << " workflow_kind='" << snapshot.workflow_kind << "'"
+            << " step_kind='" << snapshot.step_kind << "'"
+            << " job_set_id=" << snapshot.job_set_id;
+    }
+    if (terminal_ready_steps.size() == kWorkflowBoundaryDiagnosticLimit) {
+        diagnostics << "\n  additional TERMINAL_READY steps may exist";
+    }
+
+    if (diagnostics_out != nullptr) {
+        *diagnostics_out = diagnostics.str();
+    }
+    return false;
 }
 
 ScopedWorkflowCoordinatorService::~ScopedWorkflowCoordinatorService() {

@@ -25,8 +25,8 @@
 #include "DurableLogFile.h"
 #include "Execution/DBWorkflowCoordinatorFactory.h"
 #include "Execution/DBWorkflowWorkerCoordinator.h"
-#include "Execution/ProgramDB/NavigationContext/NavigationContextPhaseRegistration.h"
 #include "Execution/ProgramDB/ProgramKindRegistry.h"
+#include "Execution/ProgramDB/ProductionProgramKindRegistry.h"
 #include "Execution/Workflow/WorkflowComposition.h"
 #include "Execution/Workflow/WorkflowOrchestration.h"
 #include "Execution/Workflow/WorkflowUnitActivationFactory.h"
@@ -451,22 +451,34 @@ bool RunNavigationContextScenario(
     }
     std::cout << "[durable-log] path=" << durable_log.path().string() << '\n';
 
-    savor::db::execution::programdb::ProgramKindRegistry registry;
-    savor::db::execution::programdb::navigationcontext::
-        NavigationContextPhaseRegistrationConfig phase_config{};
-    phase_config.working_dir_root =
-        WorkspaceRoot(options) / "workflow-runtime" / "navigation-context";
-    phase_config.run_timeout_ms = static_cast<std::uint32_t>(
+    const auto runtime_root = WorkspaceRoot(options) / "workflow-runtime";
+    auto registry_config =
+        savor::db::execution::programdb::MakeProductionProgramKindRegistryConfig(
+            runtime_root);
+    registry_config.navigation_context.working_dir_root =
+        runtime_root / "navigation-context";
+    registry_config.navigation_context.run_timeout_ms = static_cast<std::uint32_t>(
         std::clamp<std::int64_t>(
             options.timeout_ms,
             1,
             std::numeric_limits<std::uint32_t>::max()));
-    savor::db::execution::programdb::navigationcontext::
-        RegisterNavigationContextProbePhaseDescriptor(
+    std::string error;
+    savor::db::execution::programdb::ProgramKindRegistry registry;
+    if (!savor::db::execution::programdb::BuildProductionProgramKindRegistry(
+            savor::db::execution::programdb::ProductionProgramKindRegistryDependencies{
+                .execution_db = db_service->ExecutionDb(),
+                .state_db = db_service->StateDb(),
+                .analysis_db = db_service->AnalysisDb(),
+                .authoring_db = db_service->AuthoringDb(),
+            },
+            std::move(registry_config),
             &registry,
-            db_service->ExecutionDb(),
-            db_service->StateDb(),
-            std::move(phase_config));
+            &error)) {
+        if (error_out != nullptr) {
+            *error_out = "failed building production program registry: " + error;
+        }
+        return false;
+    }
     const auto* descriptor = registry.FindForStepKind(kStepKind);
     if (descriptor == nullptr
         || descriptor->job_persistence != nullptr
@@ -478,7 +490,6 @@ bool RunNavigationContextScenario(
         return false;
     }
 
-    std::string error;
     std::int64_t workflow_instance_id = 0;
     if (!CreateNavigationContextWorkflow(
             db_service->AuthoringDb(),

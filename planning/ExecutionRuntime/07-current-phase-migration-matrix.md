@@ -20,11 +20,14 @@ runtime.
 
 It does not:
 
-- implement a module, action, schema, or DB migration;
-- preserve current payload bytes as the target contract;
+- implement a module, action, or runtime type schema;
+- change SavorDb SQL/schema, migrations, stored representations, database-service interfaces, queues,
+  claims, workflow persistence, transaction boundaries, or artifact-storage interfaces;
+- make current persisted payload bytes the worker runtime contract; program-kind handlers may continue to
+  use existing codecs to preserve the stored representation;
 - make Navmesh Survey part of the current-phase migration corpus;
 - move durable workflow decisions into a worker program; or
-- require final SQL, C++ declarations, or binary wire layouts.
+- require final C++ declarations or binary worker-wire layouts.
 
 Navmesh Survey begins only after the migrated Navigation Context module and common runtime pass the
 handoff gate at the end of this document.
@@ -47,9 +50,10 @@ Every current phase follows the same rules:
 
 1. **One executor.** The target is a `ProgramModule` run by `ProgramExecutor`. No migration may introduce
    a phase runner, native controller, factory-selected executor, or second VM.
-2. **Exact semantic identity.** Workflow activation names module ID, immutable revision/hash, entrypoint,
-   dependency closure, state policy, and typed input. `ProgramKind` is retained only as historical/UI
-   metadata during migration.
+2. **Exact runtime identity.** A SavorDb program-kind handler derives module ID, immutable revision/hash,
+   entrypoint, dependency closure, state policy, and typed input from existing job/domain records and
+   runtime configuration. `ProgramKind` may remain SavorDb job, handler, transition, queue/affinity,
+   historical, and UI metadata; it no longer selects worker execution.
 3. **Lifecycle is invocation policy.** Boot/load/restore, capture attachment, movie policy, default
    deadline, and state artifact roles are not hidden in payload keys or duplicated as entrypoint prologue
    operations.
@@ -63,14 +67,16 @@ Every current phase follows the same rules:
    independent. Current `PSResult::ok` and context keys are translated only at the legacy edge.
 7. **One differential window.** A temporary compiler from current `PhaseScript` builders may produce the
    new IR for trace comparison. It is never a second production executor and accepts no new feature.
-8. **Workflow topology stays durable.** Seed grids, battle waves, battle-end chaining, phase switches,
-   fan-out, reduction, and retry across jobs remain coordinator responsibilities.
+8. **Workflow topology stays durable and unchanged.** Seed grids, battle waves, battle-end chaining,
+   phase switches, fan-out, reduction, and retry across jobs remain coordinator responsibilities through
+   existing SavorDb storage and interfaces.
 9. **Local retry must be bounded.** A program may restore its invocation baseline and retry a bounded
    effect when the domain contract requires immediate same-attempt recovery. It may not generate an
    unbounded search frontier.
-10. **Delete as each family clears its gate.** Old decoders, context keys, opcode handlers, and registry
-    switch cases are removed when their last migrated consumer clears parity; they are not retained for
-    speculative compatibility.
+10. **Delete as each family clears its gate.** Worker-side payload decoders, context keys, opcode handlers,
+    and registry switch cases are removed when their last migrated consumer clears parity. Existing
+    persisted-data codecs may remain behind SavorDb program-kind handlers; they cannot execute the legacy
+    VM.
 
 ## Canonical target module catalog
 
@@ -131,8 +137,8 @@ and a completed effect. None is a whole-phase action or a peer engine.
 | `MATERIALIZE_*` and `EXECUTE_*_MACRO_STEP` | `soa.battle.materialize_turn_input` or the named macro subprogram/reducer plus the shared action-await continuation model |
 | `EMIT_RESULT` and `RETURN_RESULT` | Typed record/artifact emission and typed domain return |
 | `PSContext` keys | Entrypoint input, local, output, emission, diagnostic, and artifact schemas |
-| Program-specific payload codec | Workflow-side typed invocation materializer |
-| Result INI/context mapper | Temporary compatibility adapter around `ProgramResult`, then typed persistence binding |
+| Program-specific payload codec | Program-kind runtime adapter decodes existing persisted job/domain data and constructs typed `ProgramInvocation` input |
+| Result INI/context mapper | Program-kind result adapter consumes `ProgramResult` and writes through existing result/domain persistence operations |
 
 ## Migration matrix
 
@@ -143,7 +149,8 @@ and a completed effect. None is a whole-phase action or a peer engine.
 `MakeSeedProbeProgram` restores the VM baseline, applies one input frame, selects a pre-battle gated stop
 or field-return canonical stop, reads the RNG seed, optionally compares an expected seed and saves a
 state, emits the seed, and returns a run outcome. One worker definition serves neutral, grid, unique, and
-field-return workflow variants; the durable adapters generate those variants and later steps.
+field-return workflow variants; the existing SavorDb handlers continue to generate those variants and
+later steps through current operations.
 
 **Typed input**
 
@@ -162,8 +169,8 @@ The source state is supplied by invocation `LoadArtifact` or `RestoreBaseline`; 
 
 `SeedProbeResult` contains target, mode, observed seed, optional expected seed, match status, stop
 observation, and typed domain outcome. Materialize success includes one immutable `StateArtifact`
-reference. The program emits one `SeedObservation` record; workflow variants persist or reduce it as
-appropriate.
+reference. The program emits one `SeedObservation` record; the program-kind result adapter projects it
+through the existing SeedProbe result and transition operations.
 
 **Required composition**
 
@@ -191,9 +198,11 @@ appropriate.
 
 **Deletion gate**
 
-All SeedProbe workflow step kinds materialize `soa.seed_probe::probe`; result persistence consumes typed
-outputs; the E2E scenario uses `ProgramInvocation`; no active caller uses `SeedProbePayload`,
-`SeedProbeKeys`, `PK_SeedProbe`, or the SeedProbe branches in `ProgramRegistry`.
+All SeedProbe workflow step kinds construct `soa.seed_probe::probe` at the runtime boundary; the result
+handler consumes typed output and writes through the existing SeedProbe persistence contract; the E2E
+scenario uses `ProgramInvocation`; and no worker-side caller uses `SeedProbeKeys`, `PK_SeedProbe`, or the
+SeedProbe branches in `ProgramRegistry`. `SeedProbePayload` may remain only where an existing SavorDb
+handler needs it to preserve stored data.
 
 ### `soa.tas_movie::play_and_checkpoint`
 
@@ -240,8 +249,8 @@ provenance.
 **Deletion gate**
 
 `tasmovie.play` uses the typed module, the worker has no TAS payload switch, and no caller sends
-`PK_TasMovie`. Any retained `TasMoviePayload` reader is offline import compatibility only and is outside
-worker execution.
+`PK_TasMovie`. `TasMoviePayload` may remain behind the SavorDb program-kind handler or a read-only
+historical boundary to preserve existing stored records; it is outside worker execution.
 
 ### `soa.tas_frame_detector::detect`
 
@@ -332,8 +341,10 @@ opcode privileges.
 **Deletion gate**
 
 After repository and known external caller audit shows no production consumer, remove the deprecated
-module as well as `PK_BattleTurnRunner`, `BattleRunnerPayload`, `BattleRunnerScript`, and its context
+module, `PK_BattleTurnRunner`, `BattleRunnerScript`, and its context
 surface. If a real consumer remains, retain the module—not the old VM—until that consumer migrates.
+
+Retain a read-only `BattleRunnerPayload` codec if existing stored records require it.
 
 ### `soa.battle.context::capture`
 
@@ -362,8 +373,10 @@ contract is the typed schema.
 
 **Workflow boundary**
 
-The module does not create waves. The workflow validates the captured output, creates or resolves waves,
-and publishes `soa.battle.single_turn::execute` invocations.
+The module does not create waves. The existing Battle Context transition handler validates the projected
+output and creates or resolves waves through current SavorDb commands and records. The Battle Single
+Turn program-kind adapter constructs `soa.battle.single_turn::execute` only when the existing child job
+is activated.
 
 **Parity evidence**
 
@@ -375,9 +388,10 @@ and publishes `soa.battle.single_turn::execute` invocations.
 
 **Deletion gate**
 
-Both `battle.context_probe` and `battle_chain` bootstrap materialize the target invocation; transitions
-consume its typed output; `PK_BattleContextProbe`, the payload codec, and `GET_BATTLE_CONTEXT` opcode path
-have no caller.
+Both `battle.context_probe` and `battle_chain` bootstrap construct the target invocation at the runtime
+boundary; their existing transition handlers consume adapter-projected output; and
+`PK_BattleContextProbe` plus the `GET_BATTLE_CONTEXT` worker opcode path have no worker-side caller. The
+payload codec may remain only behind the SavorDb handler to preserve stored data.
 
 ### `soa.battle.macro_probe::probe`
 
@@ -499,8 +513,9 @@ raw write.
 **Workflow boundary**
 
 The program returns one candidate. It never chooses survivors, creates a battle wave, or schedules
-another turn. Existing deterministic reduction selects best candidates, creates next-wave records, and
-appends the next set of exact module invocations.
+another turn. Existing deterministic reduction selects best candidates, creates the current next-wave
+records, and appends the current dynamic steps. The program-kind adapter constructs the exact runtime
+invocation when each existing job is activated.
 
 **Parity evidence**
 
@@ -517,9 +532,11 @@ appends the next set of exact module invocations.
 
 **Deletion gate**
 
-All `battle.single_turn` jobs use the target module and typed result; durable wave spawning remains
-idempotent after restart; no VM macro opcode or direct memory/write path is used; kind `5`, payload
-version `5`, and Battle Single Turn branches in `ProgramRegistry` are removed.
+All `battle.single_turn` jobs use the target module and typed runtime result; the result handler projects
+that result into the existing wave operations; durable wave spawning remains idempotent after restart;
+no VM macro opcode or direct memory/write path is used; and kind `5` plus the Battle Single Turn branches
+in `ProgramRegistry` are removed from worker execution. Existing persisted payload version `5` remains
+readable by the SavorDb handler.
 
 ### `soa.battle.completion::complete`
 
@@ -559,9 +576,10 @@ may remain an artifact codec; it is not the program's internal result type.
 
 **Deletion gate**
 
-`battle.completion` binds typed inputs/outputs, downstream steps consume the declared manifest/state
-artifacts, and kind `9`, completion payload/context keys, materialize opcode, and old result mapper path
-have no active caller.
+The `battle.completion` program-kind adapter translates existing inputs to the typed runtime contract and
+projects its manifest/state outputs into the current downstream representation. Kind `9`, completion
+context keys, materialize opcode, and the old worker result path have no active worker-side caller;
+stored payload/result codecs remain where existing SavorDb operations require them.
 
 ### `soa.battle.results_screen::advance`
 
@@ -604,9 +622,10 @@ action traces, mismatch and invariant flags, diagnostic, terminal stop, report a
 
 **Deletion gate**
 
-The split `battle.results_screen` workflow uses the target module, all report/state consumers use typed
-artifact bindings, and kind `8`, its compatibility alias, payload/context keys, materialize opcode, and
-old result mapper are removed.
+The split `battle.results_screen` program-kind adapter uses the target module and translates typed
+report/state artifacts into the existing downstream representation. Kind `8`, its compatibility alias,
+context keys, materialize opcode, and old worker result path are removed from worker execution; existing
+stored payload/result codecs and bindings remain unchanged.
 
 ### `soa.navigation.context::capture`
 
@@ -634,8 +653,8 @@ neutral controller is module behavior through a scoped input action, not a seria
 - portable NCTX artifact reference; and
 - matching immutable Survey-bootstrap `StateArtifact`.
 
-NCTX v1 remains a portable artifact codec. The target typed record, not an unscoped context blob, is the
-program/workflow contract.
+NCTX v1 remains a portable artifact codec. The target typed record is the worker/runtime contract; the
+program-kind adapter projects it into the existing workflow and artifact representation.
 
 **Required composition**
 
@@ -662,9 +681,11 @@ existing files remain immutable inputs/evidence and are not overwritten.
 
 **Deletion gate**
 
-`navigation.context_probe` uses the target module, current `.nctx` and state artifact consumers remain
-compatible, no caller uses kind `10`, Navigation Context payload/context keys, `GET_NAVIGATION_CONTEXT`,
-or its `ProgramRegistry` branches, and the Survey handoff below passes.
+The `navigation.context_probe` handler constructs the target module invocation, projects its result into
+the existing `.nctx` and state-artifact representation, and keeps current consumers compatible. No
+worker-side caller uses kind `10`, Navigation Context context keys, `GET_NAVIGATION_CONTEXT`, or its
+`ProgramRegistry` branches; the persisted payload codec may remain behind the handler, and the Survey
+handoff below passes.
 
 ## Input macro consolidation
 
@@ -693,12 +714,12 @@ effect/events/completion out.
 
 | Order | Family | Gate proved before moving on |
 |---|---|---|
-| 1 | SeedProbe | Core IR, typed invocation/result, stop wait, input scope, memory read, state save, basic workflow binding |
+| 1 | SeedProbe | Core IR, typed invocation/result, stop wait, input scope, memory read, state save, existing SavorDb handler parity |
 | 2 | Navigation Context | Navigation capability pack, qualified capture, immutable NCTX/state pair, and artifact lineage needed by Survey |
 | 3 | TAS playback and detector | Movie scope, routed step, streamed/bounded artifacts, Boot policy |
-| 4 | Battle Context | Typed capability-pack query and workflow fan-out from a typed result |
+| 4 | Battle Context | Typed capability-pack query and existing workflow fan-out after handler projection |
 | 5 | Battle Macro Probe | Common adaptive reducer/action continuation and input acknowledgement |
-| 6 | Battle Single Turn | Mutation receipt, capture, local restore/epoch, predicates, complex result, durable arbitrary turn waves |
+| 6 | Battle Single Turn | Mutation receipt, capture, local restore/epoch, predicates, complex result, and parity with existing durable turn waves |
 | 7 | Battle Completion and Results Screen | Multiple typed artifacts, manifest/report invariants, shared reducer infrastructure |
 | 8 | Legacy battle path | Final caller audit and deprecated-module parity before old interpreter deletion |
 
@@ -709,19 +730,19 @@ gate. No net-new phase behavior lands on the legacy VM once the translator exist
 
 Migration changes:
 
-- worker activation from `ProgramKind` to exact `ProgramInvocation`;
+- program-kind handlers construct exact `ProgramInvocation` from existing persisted records;
 - program selection from `ProgramRegistry` switches to `ProgramDefinitionStore`;
-- payload materialization from byte codecs to typed schema binding;
+- worker input from decoded existing job/domain data to typed runtime values;
 - fixed builders from runtime definitions to compiler inputs or direct module builders;
 - VM host calls to registered actions over session services;
 - input macro providers to pure reducers;
-- result mappers from `PSContext`/INI extraction to typed result/artifact binding;
-- affinity from kind/bootstrap strings to exact module/dependency/state/runtime locality; and
-- workflow step registrations from descriptors that select worker code to adapters that bind exact
-  modules and typed domain persistence.
+- program-kind result handlers project `ProgramResult` through existing result/domain operations; and
+- exact module/dependency/state/runtime validation occurs at worker activation without changing current
+  SavorDb affinity, queue, or claim representations.
 
-Workflow transition handlers may remain domain-specific during migration. They must consume typed
-outputs and may not become worker controllers.
+Existing workflow transition handlers remain domain-specific and use their current interfaces and
+storage. An adapter may supply values derived from typed runtime output; the handler may not become a
+worker controller.
 
 ## Failure and cleanup behavior
 
@@ -748,11 +769,13 @@ This matrix depends on documents 02 through 06:
 - verified module/IR/type contracts;
 - action descriptors and resource scopes;
 - invocation/result/artifact identity; and
-- workflow/frontier transaction boundaries.
+- the fixed SavorDb integration boundary in document 06.
 
-DB migrations can be staged behind typed compatibility adapters, but a worker-side legacy/new
-controller split is forbidden. In-flight legacy jobs are drained or terminated at the release boundary;
-live `PhaseScriptVM` state is never serialized into `ProgramInstance`.
+No DB migration is part of this refactor. Compatibility translation belongs in program-kind handlers or
+adjacent runtime adapters. In-flight incompatible worker activations may be drained at the release
+boundary; persisted job, workflow, result, artifact, queue, and affinity records are not migrated. A
+worker-side legacy/new controller split is forbidden, and live `PhaseScriptVM` state is never serialized
+into `ProgramInstance`.
 
 Portable domain codecs such as NCTX, BCMB, and BERB may remain because they are artifact formats.
 Program-specific job payload codecs and `PSContext` are not retained as the permanent runtime ABI.
@@ -768,13 +791,15 @@ The current-phase migration is complete only when:
 - the same immutable state and typed inputs produce equivalent domain outputs and action/branch traces,
   allowing only explicitly declared nondeterministic fields;
 - current workflow restart, idempotency, fan-out, survivor selection, and artifact lineage still pass;
+- no SavorDb schema migration, stored-representation change, database-service/queue/claim/workflow
+  interface change, or artifact-storage-interface change is introduced;
 - cancellation/fault injection proves complete unwind for every resource type;
 - `SavorWorker` has no `ProgramKind` program-selection or payload-decoder switch;
 - `PhaseScriptVM`, `PSContext` worker execution, domain opcodes, and `InputMacroRuntime` scheduler are
   deleted after the bounded differential window;
 - no production dual activation path or `PK_UserScript` exists; and
-- adding the next phase from existing capabilities changes only a module definition, schemas, and
-  workflow bindings.
+- adding the next phase from existing capabilities changes only a module definition, runtime type
+  schemas, and program-kind/runtime integration implementation through existing SavorDb contracts.
 
 ### Navmesh Survey handoff
 
@@ -784,7 +809,8 @@ Navmesh Survey may start as the first net-new program only after:
 2. baseline restore and `StateEpoch` behavior are proven on fresh and warm workers;
 3. checked `u8`, masked data write, executable patch, teleport/settle, input, and state actions exist with
    scoped receipts;
-4. two-wave workflow fan-out and deterministic reduction use the common orchestration contracts; and
+4. any two-wave workflow fan-out and deterministic reduction use existing SavorDb orchestration
+   contracts, or are planned as separate workflow work if those contracts are insufficient; and
 5. no Survey code is added to the legacy opcode table, `ProgramRegistry`, or a native runner.
 
 ## Deferred work
@@ -792,7 +818,7 @@ Navmesh Survey may start as the first net-new program only after:
 The migration does not decide:
 
 - future authored-program syntax or UI;
-- final SQL/wire encoding;
+- final worker-wire encoding;
 - additional legacy external callers not visible in the repository;
 - whether the deprecated legacy battle-path module is retained after that caller audit;
 - new game behavior beyond current parity;
