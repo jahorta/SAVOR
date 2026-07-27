@@ -8,8 +8,10 @@ Current code and executable behavior are the source of truth for what exists. If
 conflicts with these plans, adapt the plan and implementation together rather than preserving stale
 wording or inventing a compatibility layer for it.
 
-The component names and concrete API shapes may evolve during implementation. The ownership and safety
-boundaries below are the constraints to preserve:
+Dependency slices 1 through 4 now exist as hard-cutover implementation checkpoints. Production program
+invocation is still unavailable, so the remaining documents guide the typed runtime and program
+migration that restore behavior. Component names and concrete API shapes may continue to evolve. The
+ownership and safety boundaries below are the constraints to preserve:
 
 - worker-side program execution and session ownership;
 - the universal typed program model;
@@ -88,9 +90,10 @@ flowchart TD
     ES --> EE["ExecutionEngine<br/>sole Dolphin advancement owner"]
     ES --> SR["StopPointRouter"]
     ES --> IA["InputArbiter"]
-    ES --> SS["StateService"]
-    ES --> GM["GuestMutationService"]
-    ES --> MC["Movie, Capture, Telemetry"]
+    ES --> SS["StateService<br/>sole StateEpoch authority"]
+    ES --> GM["GuestMemory / GuestMutationService"]
+    ES --> MC["Movie, Capture, Screenshot, Telemetry"]
+    ES --> RL["SessionResourceLedger"]
     ES --> GR["GameRuntime capability packs"]
     EE --> D["Dolphin"]
 ```
@@ -125,6 +128,14 @@ The names have precise meanings:
   `CaptureService`. Its current parser, sampling, window, recorder, queue, progress, and artifact
   semantics remain intact initially; it is not replaced by another composition language in this
   refactor.
+- **SessionResourceLedger** is the actor-owned, service-neutral ledger for session and future invocation
+  scopes. It records typed receipts, reverse-order unwind, state-epoch policy, promotion, rebind, cleanup
+  continuations, and whether cleanup remains clean, clean with diagnostics, or requires taint.
+- **State artifact** is a caller-named immutable state file paired with its SHA-256, compatibility token,
+  lineage, and, for read-only playback, exact embedded/hash-verified DTM history plus continuation
+  counters. Importing an external state is explicit; the runtime never guesses ambient or latest
+  state/movie data. In-progress recording checkpoints are same-session memory handles, not file
+  artifacts.
 - **Workflow orchestration** remains the existing durable owner for jobs, waves, phase changes, retries,
   and recovery. Generalized frontier persistence is a separate project, not part of this refactor.
 
@@ -140,7 +151,9 @@ The names have precise meanings:
 6. Every effectful resource is scoped. Return, failure, cancellation, timeout, and guard abort unwind the
    same resource stack.
 7. A failed mandatory cleanup taints the session and prevents worker reuse.
-8. A savestate restore advances `StateEpoch`; stale epoch-bound handles cannot be used.
+8. `StateService` is the sole authority that establishes and advances `StateEpoch`. Every successful
+   boot, reboot, or restore advances it exactly once; a recoverable replacement failure does not.
+   Stale epoch-bound handles cannot be used.
 9. A program invocation is bounded to one emulation session. It may emit successor artifacts but cannot
    enqueue workers, mutate durable workflow state, or choose the next workflow phase.
 10. Exact program identity includes module ID, immutable revision/hash, entrypoint, and dependency closure.
@@ -167,14 +180,35 @@ The names have precise meanings:
 19. `CaptureService` remains passive. `StopPointRouter` and `ExecutionEngine` own wake and control
     authority, while capture observes the same routed hit identity and preserves existing profile-visible
     control, window, recorder, progress, and artifact behavior.
+20. State and movie continuation are one exact transaction. Caller-declared immutable state artifacts
+    carry compatibility, SHA-256, lineage, and exact embedded/hash-verified read-only DTM history.
+    Restore materializes that history before state mutation and requires any already-active DTM identity
+    to match. External movie imports must declare `NoMovie` or `ReadOnlyPlayback`; recording
+    file-artifact capture/import/restore is unsupported, while same-session recording rewind may use a
+    process-local memory handle. A cold external read-only state/DTM pair does not require a
+    caller-supplied frame/input cursor: Dolphin restores that cursor from the savestate and
+    `MovieService` records the authoritative observed position. Exact cursor equality is required only
+    for an internally captured checkpoint that already carries a known cursor.
+21. `InputArbiter` alone publishes pad state. Its leases, publications, poll acknowledgements, neutral
+    release, interruption borrowing, typed arbiter-issued one-use neutral borrow witnesses, and
+    movie-exclusive reservations are epoch-bound resources.
+22. Guest data mutations are reversible by default and may survive only through an explicit commit.
+    Executable patches are always reversible and require symmetric JIT/cache invalidation and readback.
+23. One session may have at most one opaque capture attachment. It is rebound across a successful state
+    replacement and remains passive throughout. Mandatory finalization failure taints the session,
+    blocks another attachment, and prevents reuse until a full rebuild.
+24. `ScreenshotService` currently owns one synchronous actor-thread bounded call; active in-flight
+    cancellation is deferred until nonblocking backend/actor ingress. `TelemetryBus` preserves
+    monotonic sequence order when coalescing places a replacement at its fresh chronological position.
 
 ## Interfaces and ownership affected
 
-The target replaces the worker activation/result contract, current program construction and worker-side
-payload switches, `PhaseScriptVM` ownership boundaries, `PSContext` as a public runtime contract, the
-VM-owned input-macro mini-runtime, and the runtime-facing behavior of program-kind handlers. Existing
-SavorDb handler registration, persistence, workflow, queue, claim, affinity, and transaction contracts
-remain unchanged.
+The implemented session seam already replaces direct VM ownership of state replacement, pad
+publication, guest mutation, capture attachment, movies, screenshots, telemetry, and scoped cleanup.
+The remaining target replaces worker activation/result, program construction and worker-side payload
+switches, `PSContext` as a public runtime contract, the VM-owned input-macro mini-runtime, and the
+runtime-facing behavior of program-kind handlers. Existing SavorDb handler registration, persistence,
+workflow, queue, claim, affinity, and transaction contracts remain unchanged.
 
 ## Reading order
 
@@ -210,10 +244,11 @@ cannot be proven clean is tainted and retired or rebuilt before another invocati
 
 ## Dependencies and migration implications
 
-The target depends on extracting an explicit `EmulationSession` service boundary, implementing a small
-typed program IR and verifier, and replacing direct VM/Dolphin coupling with registered effects. A
-temporary translator from current `PhaseScript` builders is permitted for parity testing. It is not a
-second permanent runtime and is removed with the legacy interpreter.
+The explicit `EmulationSession` boundary and its scoped generic services are established. The remaining
+target depends on implementing the small typed program IR, verifier, action surface, and capability
+packs, then replacing disconnected VM behavior with registered effects. A temporary translator from
+current `PhaseScript` builders is permitted for parity testing. It is not a second permanent runtime and
+is removed with the legacy interpreter.
 
 Navmesh Survey is a useful first net-new client after current phases migrate, but it is not required to
 complete this refactor. If implemented, its bounded entrypoints and reusable navigation actions exercise
@@ -226,6 +261,12 @@ Apply the dependency order in this package incrementally. Each slice should run 
 ownership, cleanup, protocol, and phase behavior it touches; the plans do not require a separate
 architecture sign-off or evidence-update ceremony for every change.
 
+Dependency Slice 4 remains inside the deliberate hard-cutover interval: `ProgramInvocation` is not
+advertised and production-worker SavorE2E is not an intermediate acceptance signal. Its development
+guards are full solution compilation plus focused, unattended, headless service/ownership tests; live
+movie continuation, post-write capture, and rendered behavior remain deferred until deterministic
+program execution exists.
+
 Before removing the legacy execution path or treating the refactor as complete, run a full Release
 `SAVOR.sln` build and the production-worker SavorE2E matrix for the supported phase corpus. Focused tests
 remain development tools for risky seams; they are not a separate approval process. Future-design and
@@ -237,7 +278,9 @@ The exact C++ API spelling, worker wire encoding, authored source language, auth
 game-specific algorithms listed in document 11 remain deferred. SavorDb SQL/storage/interfaces are fixed
 inputs, not deferred design choices in this refactor. A generalized replacement for
 `savor.capture.profile/1` is also deferred; the existing profile remains an opaque `CaptureService`
-contract during the initial architecture cutover.
+contract during the initial architecture cutover. Skies-specific capability packs and their registered
+actions are Dependency Slice 5 work; Slice 4 establishes only the generic session services they will
+consume.
 
 ## Source references
 

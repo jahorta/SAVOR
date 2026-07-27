@@ -148,22 +148,18 @@ bool PhaseScriptVM::acquire_exclusive_session(std::span<const BPKey> provider_ke
 
     input_macro_provider_keys_.assign(provider_keys.begin(), provider_keys.end());
     input_macro_enabled_bp_keys_.clear();
-    host_.setEnabledPcBreakpointsOnly({});
-    input_macro_session_active_ = true;
-    host_.emitProbeMarker("macro.begin");
-    SCLOGI("[input-macro] exclusive session acquired keys=%zu", provider_keys.size());
-    return true;
+    SCLOGE(
+        "[input-macro] legacy exclusive session is disconnected; use interaction composition");
+    return false;
 }
 
 void PhaseScriptVM::release_exclusive_session()
 {
     if (!input_macro_session_active_) return;
-    host_.setEnabledPcBreakpointsOnly({});
     input_macro_enabled_bp_keys_.clear();
     input_macro_provider_keys_.clear();
     input_macro_session_active_ = false;
-    host_.emitProbeMarker("macro.end");
-    SCLOGI("[input-macro] exclusive session released");
+    SCLOGI("[input-macro] legacy exclusive session state released locally");
 }
 
 inputmacro::BreakpointWaitResult PhaseScriptVM::run_to_breakpoints(
@@ -190,10 +186,6 @@ inputmacro::BreakpointWaitResult PhaseScriptVM::run_to_breakpoints(
     }
 
     input_macro_enabled_bp_keys_ = action.expected_keys;
-    host_.setEnabledPcBreakpointsOnly(enabled_pcs);
-    host_.emitProbeMarker(
-        "macro.step.begin",
-        static_cast<std::uint32_t>(input_macro_runtime_->current_index()));
 
     const auto run = run_until_bp_core(*active_input_macro_context_, RunUntilBpSpec{
         .expected_bp_keys = action.expected_keys,
@@ -209,11 +201,7 @@ inputmacro::BreakpointWaitResult PhaseScriptVM::run_to_breakpoints(
         .track_input_poll = true,
     });
 
-    host_.setEnabledPcBreakpointsOnly({});
     input_macro_enabled_bp_keys_.clear();
-    host_.emitProbeMarker(
-        "macro.step.end",
-        static_cast<std::uint32_t>(input_macro_runtime_->current_index()));
 
     result.hit = run.run.hit;
     result.hit_key = static_cast<BPKey>(run.hit_bp_key);
@@ -272,10 +260,6 @@ inputmacro::InputMacroHostStatus PhaseScriptVM::step_neutral_frames(
 
 bool PhaseScriptVM::read_u32(std::uint32_t address, std::uint32_t& value)
 {
-    // Baseline capture must not inherit an unrelated probe watchpoint from a
-    // previous VM operation. This preserves the old battle-macro capture
-    // invariant while keeping the generic runtime host-neutral.
-    host_.clearMemoryWatchpoints();
     return host_.readU32(address, value);
 }
 
@@ -302,12 +286,14 @@ void PhaseScriptVM::set_neutral_input()
 
 void PhaseScriptVM::clear_macro_memory_watchpoints()
 {
-    host_.clearMemoryWatchpoints();
+    SCLOGE(
+        "[input-macro] memory-watchpoint cleanup is disconnected; use scoped router resources");
 }
 
 void PhaseScriptVM::restore_breakpoint_state()
 {
-    restore_canonical_breakpoint_scope();
+    SCLOGE(
+        "[input-macro] breakpoint restoration is disconnected; use scoped router resources");
 }
 
 inputmacro::InputMacroStopInfo PhaseScriptVM::current_stop() const

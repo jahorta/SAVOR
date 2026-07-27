@@ -74,6 +74,14 @@ current runtime capability.
 | D28 | Execution budgets count active time and freeze during structured suspension. | Handler parents and nested children retain explicit remaining wall-clock and VI-stall budgets instead of expiring while another operation owns execution. |
 | D29 | Requested interruption handlers use trusted descriptors, a maximum stack depth of eight, and only `ResumeParent` or `AbortParent` policy outcomes. | They cannot become a second runtime, dynamically invent effects, or directly complete a program invocation. |
 | D30 | Slice 3's visual-intent seam is a Ready-session execution substate and is validated without rendering. | WRMS controls serialize through the actor, while DB-backed visual replay, GUI validation, and invocation-owned interactive policy remain deferred. |
+| D31 | `StateService` is the sole authority for boot/reboot/restore and guest `StateEpoch`. | Other services participate in its transaction and mirror the committed epoch; a recoverable replacement failure does not advance it, while failed post-replacement integrity keeps the new epoch and taints the session. |
+| D32 | State artifacts use caller-declared new paths and immutable SHA-256, compatibility, and lineage receipts. Read-only movie continuation is paired with exact embedded, hash-verified DTM history. | There is no ambient/latest artifact selection. Restore materializes the embedded history, requires any active read-only DTM identity to match, and verifies the prepared identity/mode plus any known cursor. External read-only import supplies no invented cursor: Dolphin restores it from the savestate and `MovieService` records the observed position. Recording file-artifact capture/import/restore is unsupported; recording rewind is limited to a same-session memory handle. |
+| D33 | `InputArbiter` owns every pad publication through epoch-bound leases and supports both explicit interruption-borrow policies. | The engine sees only opaque input bindings. A neutral-required borrow consumes a fresh typed witness issued by the arbiter for the exact parent lease/publication/epoch; neutral publication and guest-observed release remain distinct, and movie playback holds an unsuspendable exclusive reservation. |
+| D34 | Guest data mutations restore unless explicitly committed; executable patches are always reversible. | Data commit is an explicit lifetime decision. Code cannot be committed and always requires symmetric JIT/cache invalidation and readback on apply and restore. |
+| D35 | One `EmulationSession` owns at most one opaque capture attachment, and that attachment rebinds across state restore. | Capture retains existing profile semantics and one routed identity without becoming a physical-site or wake owner. Mandatory finalization failure taints the service/session, blocks a new attachment and reuse, and requires a full rebuild. |
+| D36 | Scoped cleanup uses a standalone actor-owned `SessionResourceLedger`, not an executor-private ledger. | Slice 4 can enforce session cleanup before programs exist; Slice 5 maps invocation/action scopes onto the same typed receipts, epoch policies, unwind continuations, and taint disposition. |
+| D37 | Screenshot and telemetry are narrow session services. | Screenshot requests are synchronous actor-owned, epoch-correlated, bounded, and non-advancing; active in-flight cancellation is deferred until nonblocking backend/actor ingress. Telemetry is bounded/coalescing, coalesced replacements retain their fresh chronological sequence position, and required-event overflow fails closed through the serialized publisher. |
+| D38 | Game capability packs are deferred from Slice 4 to Slice 5. | Generic services remain game-neutral; typed actions, semantic points, coherent queries, and `soa.*` registrations arrive with `ProgramRuntime`, not as a broad interim facade. |
 
 ## Rejected alternatives
 
@@ -174,6 +182,10 @@ production paths would make ownership and cleanup guarantees unenforceable.
 | Interaction composition becomes a hidden macro engine | A segment action or reducer owns service calls, loops, dynamic effects, or private cleanup | Restrict reducers to pure selection of verifier-known segments and lower every effect/cancellation/unwind edge into ordinary visible IR |
 | Predicate composition hides effects or conflates false with unavailable | A reusable check silently owns stop points, fails open on unreadable state, or changes failure classification | Require typed observations, explicit use-site policy, exact imports, scoped subscriptions, declared emissions, and trace-visible evaluation outcomes |
 | Capture extraction changes profile semantics or steals control | Sampling/window/artifact behavior drifts, or a profile creates a foreground wake path | Run profile compatibility characterization, keep one routed-hit identity, and enforce passive observation with router/engine as control owners |
+| State and movie continuation drift apart | A savestate restores with the wrong DTM, frame/input position, disc, runtime, or recording generation | Pair exact embedded/hash-verified DTM history with immutable read-only state evidence; require any active DTM identity to match; for cold external read-only import, stage the DTM and reconcile the cursor observed after restore; for an internally captured checkpoint, require its known cursor to match; reject implicit external movie mode and all recording file-artifact restore |
+| Input borrowing corrupts held or neutral state | A handler overwrites an unsuspendable owner or resumes a parent before the guest observed release | Make borrow policy explicit, preserve held input until borrower publication or require a fresh typed arbiter-issued witness bound to the exact parent lease/publication/epoch, and correlate every publication/acknowledgement |
+| A data commit or code patch escapes its scope accidentally | A later operation inherits an unintended write or executable patch | Require explicit data commit, forbid code-patch commit, record original/replacement/readback, and use ledger-driven reverse restoration with taint on uncertainty |
+| Resource cleanup has two authorities | Executor-local and session-local stacks disagree about order, epoch, or taint | Use the standalone session ledger as the one receipt/disposition source and project future invocation scopes onto it |
 | Visual verification becomes a manual dependency | A slice cannot be completed without a window, desktop automation, screenshot judgement, or user attendance | Use fake visual-intent sessions, protocol/state telemetry, and headless Dolphin guards; defer rendered acceptance |
 | Planning drifts from code | Current-state statements become obsolete | Re-read the affected current symbols and revise guidance when implementation evidence changes an architectural conclusion |
 
@@ -181,7 +193,8 @@ production paths would make ownership and cleanup guarantees unenforceable.
 
 ### Contract encodings
 
-- Exact C++ class and ownership declarations.
+- Exact Slice 5 `ProgramRuntime`, action, module, and capability-pack declarations. Slice 4 service and
+  resource-ledger ownership is implemented and no longer an open encoding choice.
 - Canonical module binary format and hash algorithm.
 - Worker message framing, streaming, compression, and negotiation encoding.
 
@@ -208,6 +221,8 @@ inputs consumed by `CaptureService` rather than a frontend that compiles into mo
 - Navigation replay verification tolerances.
 - Survey spatial probe spacing, settle tolerances, and reduction algorithms beyond the defined first-slice
   semantics.
+- Live state-plus-DTM continuation and live post-write capture witnesses once deterministic program
+  execution/input can drive them headlessly.
 
 These items may add capability-pack actions, schemas, and programs. They may not create a new executor.
 
@@ -237,7 +252,10 @@ They preserve the existing SavorDb descriptor, persistence, database-service, qu
 artifact, and transaction interfaces. They also retain current phase behavior and the useful
 `Start`/`Advance` adaptive pattern. Existing stop/address/query/baseline and input-macro inputs are
 translated into semantic-observation and interaction composition in memory. Existing
-`savor.capture.profile/1` artifacts remain unchanged behind `CaptureService`.
+`savor.capture.profile/1` artifacts remain unchanged behind the one session-owned `CaptureService`.
+Slice 4 has already moved state/epoch, input, guest mutation, movie, screenshot, telemetry, and resource
+cleanup behind their narrow session-owned services; Slice 5 adds the program/action/packs surface over
+them.
 
 ## Failure and cleanup behavior
 
@@ -255,7 +273,12 @@ No deferred implementation detail may weaken these rules:
 - timeout, unexpected point, unacknowledged input/release, unsatisfied check, infrastructure failure,
   cancellation, and cleanup failure remain distinguishable;
 - capture finalization preserves existing profile behavior, but a capture profile never owns wake or
-  advancement;
+  advancement; mandatory finalization failure taints and blocks another attachment/session reuse;
+- state and movie continuation restore together from exact embedded/hash-verified evidence; active DTM
+  identity must match, external mode is never inferred, recording file-artifact restore is rejected,
+  and recording rewind is limited to a same-session memory handle;
+- data mutation restores unless explicitly committed, executable patches always restore, and any
+  unproven patch cleanup taints the session;
 - a domain failure can be a clean infrastructure completion; and
 - an unsatisfied predicate follows its explicit check policy, while inability to obtain required evidence
   remains a distinct action or infrastructure failure;
@@ -280,6 +303,11 @@ before broadening the design.
   leave no peer runtime, scheduler, query VM, opcode family, or hidden controller.
 - Existing `savor.capture.profile/1` semantics remain behind passive `CaptureService`; a generalized
   replacement language remains deferred.
+- `StateService` remains the sole epoch authority; immutable state/movie evidence, explicit external
+  import policy, same-session recording rewind, input borrowing, mutation lifetime, and standalone
+  ledger disposition cannot be reimplemented in capability packs.
+- Slice 5 capability packs consume narrow Slice 4 services and do not reopen a broad Dolphin/game
+  facade.
 
 ## Source references
 

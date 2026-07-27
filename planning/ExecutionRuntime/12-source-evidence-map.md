@@ -14,9 +14,9 @@ work or when implementation evidence changes an architectural conclusion.
 ### Worker activation and transport
 
 - `SavorWorker/SavorWorker.cpp`
-  - constructs the Dolphin host and current `PhaseScriptVM`;
-  - receives activation, initialization, job, and visual-control commands; and
-  - currently permits visual control to reach VM/host operations outside one serialized command actor.
+  - constructs the current `WorkerRuntime`/`EmulationSession` process composition;
+  - receives versioned process/session commands through the serialized actor; and
+  - keeps production `ProgramInvocation` unavailable during the hard-cutover interval.
 - `SavorCore/Runner/IPC/Wire.h`
   - defines the current numeric `ProgramKind` catalog and worker messages.
 - `SavorWorkflow/Worker/ProcessWorker.cpp`
@@ -35,8 +35,9 @@ work or when implementation evidence changes an architectural conclusion.
 - `SavorCore/Runner/Script/PhaseScriptOpcodeTable.inc`
   - mixes generic control operations with phase- and game-specific operations.
 - `SavorCore/Runner/Script/PhaseScriptVM*.cpp`
-  - implements the current interpreter and directly owns broad Dolphin, input, breakpoint, state,
-    capture, movie, memory, and game-context behavior.
+  - retains the legacy interpreter corpus as translation/characterization evidence;
+  - its advancement, input, physical-stop, state, capture, movie, and mutation escape hatches are
+    hard-disconnected from production and fail locally.
 - `SavorCore/Runner/Script/PSContext.h` and `PSContextCodec.cpp`
   - define the current flat shared context and its wire codec.
 - `SavorCore/Runner/InputMacro/InputMacroPlan.h`, `IInputMacroPlanDriver.h`, `IInputMacroHost.h`, and
@@ -164,6 +165,61 @@ The Slice 3 contract consequently reports exact guest-instruction step as unsupp
 JIT64 backend. It neither changes CPU mode nor calls a JIT-block step an instruction. This conclusion is
 source-derived and requires no DolphinQt launch, rendered window, desktop control, or user inspection.
 
+## Implemented Slice 4 service boundary
+
+Current generic session-service code is under `SavorCore/Runner/Runtime/Services`:
+
+- `State/StateTypes.h`, `StateService.*`, and `SessionStateBackendAdapter.*`
+  - make `StateService` the sole `StateEpoch` authority;
+  - own bounded immutable memory handles and caller-declared immutable state artifacts with SHA-256,
+    compatibility, lineage, and exact embedded/hash-verified read-only DTM history; and
+  - require explicit external no-movie/read-only import, verify the active DTM identity during restore,
+    let Dolphin restore the cursor for a cold read-only state/DTM pair, require exact cursor matching
+    only for internally captured checkpoints, reject recording file-artifact capture/import/restore,
+    and permit only same-session memory-handle recording rewind.
+- `Movie/MovieService.*` and `InputMovieReservationAdapter.*`
+  - materialize and hash-validate exact embedded DTM history before an initial single boot, post-open
+    reboot, or restore; carry a DTM starting savestate into the state transaction; reject a mismatched
+    already-active DTM identity; reconcile the resulting mode/cursor; hold one unsuspendable
+    movie-exclusive input reservation; and publish typed finalized recording artifacts.
+- `Input/InputArbiter.*`
+  - owns epoch-bound leases, sole pad publication, fresh publication/poll receipts, two-phase neutral
+    release, typed one-use neutral borrow witnesses issued for the exact parent
+    lease/publication/epoch, both interruption-borrow policies, and the `IInputAdvancePort`
+    collaboration.
+- `Memory/GuestMemory.*` and `GuestMutationService.*`
+  - own paused epoch-checked reads and checked data/code mutations;
+  - data restores unless explicitly committed, while executable patches are always reversible and use
+    symmetric JIT/cache invalidation and readback.
+- `Capture/CaptureService.*`
+  - owns one opaque passive profile attachment, actor-side group reconciliation, state-restore rebind,
+    and exactly-once detach/finalization while preserving the existing `ProbeRouterAdapter` semantics;
+    mandatory finalization failure taints, blocks another attachment, and prevents session reuse.
+- `Screenshot/ScreenshotService.*` and `Telemetry/TelemetryBus.*`
+  - own one synchronous actor-thread bounded non-advancing screenshot call and bounded/coalescing
+    diagnostics whose fresh replacement sequence preserves chronological drain order, with
+    authoritative-overflow reporting. Active in-flight screenshot cancellation remains deferred until
+    nonblocking backend/actor ingress.
+- `Resources/SessionResourceLedger.*`
+  - owns the actor-sequenced session/synthetic scope tree, typed resource receipts, promotion,
+    reverse-order unwind, cleanup continuations, state epoch policies/rebind, and final cleanup
+    disposition independently of the future `ProgramRuntime`.
+- `EmulationSession.*`, `IDolphinBackend.h`, and `DolphinWrapperBackend.*`
+  - compose those services behind narrow private backend facets and drive state replacement as one
+    participant transaction.
+
+Focused guards live in:
+
+- `SavorTests/test_state_service.cpp`;
+- `SavorTests/test_movie_service.cpp`;
+- `SavorTests/test_session_services.cpp`;
+- `SavorTests/test_capture_service.cpp`; and
+- `SavorTests/test_session_resource_ledger.cpp`.
+
+These are development guards for the generic boundary. Capability packs and production actions are
+Slice 5 work. Live state-plus-DTM continuation and live post-write capture remain deferred until
+deterministic program execution/input can reach authoritative headless witnesses.
+
 ## Useful tests and live references
 
 Focused current tests include:
@@ -176,6 +232,11 @@ Focused current tests include:
 - `SavorTests/test_capture_profile_json.cpp`;
 - `SavorTests/test_probe_progress_and_wire.cpp`;
 - `SavorTests/test_probe_watchpoint_registry.cpp`;
+- `SavorTests/test_state_service.cpp`;
+- `SavorTests/test_movie_service.cpp`;
+- `SavorTests/test_session_services.cpp`;
+- `SavorTests/test_capture_service.cpp`;
+- `SavorTests/test_session_resource_ledger.cpp`;
 - `SavorTests/test_battle_end_results.cpp`;
 - `SavorTests/test_battle_end_results_db.cpp`;
 - `SavorTests/test_navigation_context_codec.cpp`;
@@ -224,6 +285,10 @@ or required refactor phase.
   `StopPointRouter` and `ExecutionEngine` own wake/control authority; capture observes the same routed
   sequence/snapshot/epoch identity so profile-visible control, window, recorder, progress, queue, and
   artifact behavior remains compatible.
+- `StateService` is the only guest-epoch authority. State/movie continuation is exact verified evidence,
+  not an ambient Dolphin query, and external import cannot infer movie mode.
+- Slice 4 generic services are not capability packs. `soa.*` semantic points, queries, actions, and
+  reducers arrive with Slice 5's typed runtime surface.
 
 ## Deferred boundaries
 

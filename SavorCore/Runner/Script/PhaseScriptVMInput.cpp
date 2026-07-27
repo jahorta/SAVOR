@@ -25,16 +25,24 @@ namespace savor {
         SCLOGE(
             "[VM] instruction stepping is disconnected; use the canonical ExecutionEngine");
     }
-    void PhaseScriptVM::op_start_deterministic_run() const
+    bool PhaseScriptVM::op_start_deterministic_run(
+        PSResult& result,
+        PSContext& ctx) const
     {
-        SCLOGE(
-            "[VM] movie recording is disconnected; use the future MovieService");
+        return fail_legacy_service(
+            result,
+            ctx,
+            "[VM] movie recording is disconnected; use MovieService");
     }
 
-    void PhaseScriptVM::op_end_deterministic_run() const
+    bool PhaseScriptVM::op_end_deterministic_run(
+        PSResult& result,
+        PSContext& ctx) const
     {
-        SCLOGE(
-            "[VM] movie recording is disconnected; use the future MovieService");
+        return fail_legacy_service(
+            result,
+            ctx,
+            "[VM] movie recording is disconnected; use MovieService");
     }
 
     bool PhaseScriptVM::op_apply_input_from(
@@ -43,10 +51,10 @@ namespace savor {
         PSContext& ctx)
     {
         (void)op;
-        result.ctx = ctx;
-        SCLOGE(
-            "[VM] direct input publication is disconnected; use the future InputArbiter");
-        return false;
+        return fail_legacy_service(
+            result,
+            ctx,
+            "[VM] direct input publication is disconnected; use InputArbiter");
     }
 
     bool PhaseScriptVM::op_movie_play_from(
@@ -55,10 +63,10 @@ namespace savor {
         PSContext& ctx)
     {
         (void)op;
-        result.ctx = ctx;
-        SCLOGE(
-            "[VM] movie playback is disconnected; use the future MovieService");
-        return false;
+        return fail_legacy_service(
+            result,
+            ctx,
+            "[VM] movie playback is disconnected; use MovieService");
     }
 
     bool PhaseScriptVM::op_save_savestate_from(
@@ -67,18 +75,22 @@ namespace savor {
         PSContext& ctx)
     {
         (void)op;
-        result.ctx = ctx;
-        SCLOGE(
-            "[VM] savestate persistence is disconnected; use the canonical session service");
-        return false;
+        return fail_legacy_service(
+            result,
+            ctx,
+            "[VM] savestate persistence is disconnected; use StateService");
     }
 
     bool PhaseScriptVM::op_require_disc_gameid_from(const PSOp& op, PSResult&, PSContext& ctx) { std::string tmp; ctx.get<std::string>(op.key.id, tmp); if (tmp.size() < 6) return false; auto di = host_.getDiscInfo(); return di.has_value() && di->game_id.size() >= 6 && std::memcmp(di->game_id.data(), tmp.c_str(), 6) == 0; }
 
-    void PhaseScriptVM::op_movie_stop()
+    bool PhaseScriptVM::op_movie_stop(
+        PSResult& result,
+        PSContext& ctx)
     {
-        SCLOGE(
-            "[VM] movie playback is disconnected; use the future MovieService");
+        return fail_legacy_service(
+            result,
+            ctx,
+            "[VM] movie playback is disconnected; use MovieService");
     }
 
     void PhaseScriptVM::op_build_turn_inputplan_from_battle_path(PSContext& ctx) const {

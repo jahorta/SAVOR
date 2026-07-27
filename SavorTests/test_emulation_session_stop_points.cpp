@@ -8,6 +8,8 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <string>
 #include <utility>
@@ -95,6 +97,55 @@ public:
     std::unique_ptr<EmulationSession> session;
 };
 
+class TemporarySessionDirectory final
+{
+public:
+    TemporarySessionDirectory()
+    {
+        const auto stamp = std::chrono::steady_clock::now()
+            .time_since_epoch().count();
+        path_ = std::filesystem::temp_directory_path() /
+            ("savor-session-services-" + std::to_string(stamp));
+        std::filesystem::create_directories(path_);
+    }
+
+    ~TemporarySessionDirectory()
+    {
+        std::error_code ignored;
+        std::filesystem::remove_all(path_, ignored);
+    }
+
+    [[nodiscard]] const std::filesystem::path& path() const noexcept
+    {
+        return path_;
+    }
+
+private:
+    std::filesystem::path path_;
+};
+
+void WriteTestDtm(const std::filesystem::path& path)
+{
+    std::vector<std::uint8_t> bytes(256, 0);
+    bytes[0] = 'D';
+    bytes[1] = 'T';
+    bytes[2] = 'M';
+    bytes[3] = 0x1a;
+    bytes[4] = 'T';
+    bytes[5] = 'E';
+    bytes[6] = 'S';
+    bytes[7] = 'T';
+    bytes[8] = '0';
+    bytes[9] = '0';
+    bytes[11] = 1;
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    ASSERT_TRUE(output);
+    output.write(
+        reinterpret_cast<const char*>(bytes.data()),
+        static_cast<std::streamsize>(bytes.size()));
+    ASSERT_TRUE(output.good());
+}
+
 TEST(
     EmulationSessionStopPoints,
     OpenTransactionBindsSinkAndEstablishesExactPlanOrRollsBack)
@@ -153,8 +204,8 @@ TEST(
         });
     const SessionOperationReceipt failed_open = rollback.Open();
     EXPECT_FALSE(failed_open.ok);
-    EXPECT_EQ(failed_open.resulting_epoch, StateEpoch{});
-    EXPECT_EQ(failed_open.disposition, SessionDisposition::Closed);
+    EXPECT_EQ(failed_open.resulting_epoch, StateEpoch(1));
+    EXPECT_EQ(failed_open.disposition, SessionDisposition::Tainted);
     EXPECT_EQ(rollback.session->stop_points(), nullptr);
     EXPECT_EQ(rollback.physical_control->BoundSink(), nullptr);
     EXPECT_TRUE(rollback.physical_control->ActualPlan().pcs.empty());
@@ -184,12 +235,51 @@ TEST(
         BackendCoreState::Stopped);
     const SessionOperationReceipt stopped_open = stopped.Open();
     EXPECT_FALSE(stopped_open.ok);
-    EXPECT_EQ(stopped_open.resulting_epoch, StateEpoch{});
+    EXPECT_EQ(stopped_open.resulting_epoch, StateEpoch(1));
+    EXPECT_EQ(stopped_open.disposition, SessionDisposition::Tainted);
     EXPECT_EQ(stopped.session->stop_points(), nullptr);
     EXPECT_EQ(stopped.physical_control->BoundSink(), nullptr);
     EXPECT_TRUE(stopped.physical_control->ActualPlan().pcs.empty());
     EXPECT_TRUE(stopped.physical_control->ActualPlan().memory.empty());
     EXPECT_EQ(stopped.session_control->CloseCount(), 1);
+}
+
+TEST(
+    EmulationSessionStopPoints,
+    ReadOnlyMovieOpenStagesPlaybackBeforeTheSingleBackendBoot)
+{
+    TemporarySessionDirectory temp;
+    const std::filesystem::path dtm = temp.path() / "movie.dtm";
+    WriteTestDtm(dtm);
+
+    SessionStopPointHarness harness(1009);
+    harness.session_control->movie_available = true;
+    SessionOpenOptions options;
+    options.read_only_movie_path = dtm;
+    const SessionOperationReceipt open =
+        harness.session->Open(options);
+
+    ASSERT_TRUE(open.ok) << open.backend.message;
+    EXPECT_EQ(harness.session_control->OpenCount(), 1);
+    EXPECT_EQ(harness.session_control->reboot_count, 0);
+    ASSERT_NE(harness.session->movie_service(), nullptr);
+    EXPECT_EQ(
+        harness.session->movie_service()->activity(),
+        MovieActivity::ReadOnlyPlayback);
+    const std::vector<std::string> calls =
+        harness.session_control->Calls();
+    const auto prepared = std::find(
+        calls.begin(),
+        calls.end(),
+        "movie.prepare-playback");
+    const auto booted = std::find(
+        calls.begin(),
+        calls.end(),
+        "open");
+    ASSERT_NE(prepared, calls.end());
+    ASSERT_NE(booted, calls.end());
+    EXPECT_LT(prepared, booted);
+    EXPECT_TRUE(harness.session->Shutdown().ok);
 }
 
 TEST(
@@ -248,11 +338,14 @@ TEST(
 
 TEST(
     EmulationSessionStopPoints,
-    RebootFileAndBufferReplacementAdvanceOnlyOnSuccess)
+    RebootAndStateHandleReplacementAdvanceOnlyOnSuccess)
 {
     SessionStopPointHarness harness(1003);
     ASSERT_TRUE(harness.Open().ok);
     ASSERT_NE(harness.session->stop_points(), nullptr);
+    const StateHandleReceipt first =
+        harness.session->CaptureStateHandle();
+    ASSERT_TRUE(first.result.ok) << first.result.message;
 
     const auto expect_epoch = [&](std::uint64_t expected) {
         EXPECT_EQ(
@@ -266,11 +359,12 @@ TEST(
 
     EXPECT_TRUE(harness.session->Reboot().ok);
     expect_epoch(2);
-    EXPECT_TRUE(
-        harness.session->RestoreStateFile("successful.state").ok);
+    EXPECT_TRUE(harness.session->RestoreStateHandle(first.handle).result.ok);
     expect_epoch(3);
-    EXPECT_TRUE(
-        harness.session->RestoreStateBuffer({0x01, 0x02}).ok);
+    const StateHandleReceipt second =
+        harness.session->CaptureStateHandle();
+    ASSERT_TRUE(second.result.ok) << second.result.message;
+    EXPECT_TRUE(harness.session->RestoreStateHandle(second.handle).result.ok);
     expect_epoch(4);
 
     harness.session_control->SetRebootResult(
@@ -288,38 +382,37 @@ TEST(
     harness.session_control->SetRebootResult(
         BackendResult::Success());
 
-    harness.session_control->SetRestoreFileResult(
-        BackendResult::Failure(
-            BackendErrorCode::OperationFailed,
-            "preserved file restore failure",
-            BackendIntegrity::Preserved));
-    const SessionOperationReceipt failed_file =
-        harness.session->RestoreStateFile("failed.state");
-    EXPECT_FALSE(failed_file.ok);
-    EXPECT_EQ(failed_file.origin_epoch, StateEpoch(4));
-    EXPECT_EQ(failed_file.resulting_epoch, StateEpoch(4));
-    EXPECT_EQ(failed_file.disposition, SessionDisposition::Clean);
-    expect_epoch(4);
-    harness.session_control->SetRestoreFileResult(
-        BackendResult::Success());
-
     harness.session_control->SetRestoreBufferResult(
         BackendResult::Failure(
             BackendErrorCode::OperationFailed,
-            "preserved buffer restore failure",
+            "preserved handle restore failure",
             BackendIntegrity::Preserved));
-    const SessionOperationReceipt failed_buffer =
+    const StateOperationReceipt failed_handle =
+        harness.session->RestoreStateHandle(first.handle);
+    EXPECT_FALSE(failed_handle.result.ok);
+    EXPECT_EQ(failed_handle.origin_epoch, StateEpoch(4));
+    EXPECT_EQ(failed_handle.resulting_epoch, StateEpoch(4));
+    EXPECT_EQ(
+        failed_handle.result.integrity,
+        StateIntegrity::Preserved);
+    expect_epoch(4);
+    harness.session_control->SetRestoreBufferResult(
+        BackendResult::Success());
+
+    const SessionOperationReceipt disconnected_buffer =
         harness.session->RestoreStateBuffer({0x03, 0x04});
-    EXPECT_FALSE(failed_buffer.ok);
-    EXPECT_EQ(failed_buffer.origin_epoch, StateEpoch(4));
-    EXPECT_EQ(failed_buffer.resulting_epoch, StateEpoch(4));
-    EXPECT_EQ(failed_buffer.disposition, SessionDisposition::Clean);
+    EXPECT_FALSE(disconnected_buffer.ok);
+    EXPECT_EQ(disconnected_buffer.origin_epoch, StateEpoch(4));
+    EXPECT_EQ(disconnected_buffer.resulting_epoch, StateEpoch(4));
+    EXPECT_EQ(
+        disconnected_buffer.disposition,
+        SessionDisposition::Clean);
     expect_epoch(4);
 
     const auto calls = harness.physical_control->Calls();
     EXPECT_EQ(
         CountPhysicalCalls(calls, FakePhysicalStopOperation::Apply),
-        7u);
+        6u);
     EXPECT_TRUE(harness.session->Shutdown().ok);
 }
 
@@ -354,9 +447,12 @@ TEST(
             {0x80002000u},
         }));
 
-    const SessionOperationReceipt restored =
-        harness.session->RestoreStateFile("next-epoch.state");
-    ASSERT_TRUE(restored.ok) << restored.backend.message;
+    const StateHandleReceipt state =
+        harness.session->CaptureStateHandle();
+    ASSERT_TRUE(state.result.ok) << state.result.message;
+    const StateOperationReceipt restored =
+        harness.session->RestoreStateHandle(state.handle);
+    ASSERT_TRUE(restored.result.ok) << restored.result.message;
     EXPECT_EQ(restored.origin_epoch, StateEpoch(1));
     EXPECT_EQ(restored.resulting_epoch, StateEpoch(2));
     EXPECT_EQ(router->state_epoch(), StateEpoch(2));
@@ -402,6 +498,9 @@ TEST(
         router->RegisterGroup(PcGroup(1, 0x80001000u, consumer));
     ASSERT_TRUE(registration.receipt.ok)
         << registration.receipt.error.message;
+    const StateHandleReceipt state =
+        harness.session->CaptureStateHandle();
+    ASSERT_TRUE(state.result.ok) << state.result.message;
 
     harness.physical_control->SetApplyOutcome(
         FakePhysicalStopOutcome{
@@ -409,22 +508,24 @@ TEST(
             .integrity = PhysicalStopIntegrity::Unknown,
             .message = "injected post-restore reconcile failure",
         });
-    const SessionOperationReceipt restored =
-        harness.session->RestoreStateBuffer({0x01});
-    EXPECT_FALSE(restored.ok);
+    const StateOperationReceipt restored =
+        harness.session->RestoreStateHandle(state.handle);
+    EXPECT_FALSE(restored.result.ok);
     EXPECT_EQ(restored.origin_epoch, StateEpoch(1));
     EXPECT_EQ(restored.resulting_epoch, StateEpoch(2));
-    EXPECT_EQ(restored.disposition, SessionDisposition::Tainted);
     EXPECT_EQ(
-        restored.backend.integrity,
-        BackendIntegrity::Unknown);
+        restored.result.integrity,
+        StateIntegrity::Unknown);
+    EXPECT_EQ(
+        harness.session->snapshot().disposition,
+        SessionDisposition::Tainted);
 
     const SessionSnapshot snapshot = harness.session->snapshot();
     EXPECT_FALSE(snapshot.open);
     EXPECT_EQ(snapshot.core_state, BackendCoreState::Closed);
     EXPECT_EQ(snapshot.state_epoch, StateEpoch(2));
     EXPECT_EQ(snapshot.disposition, SessionDisposition::Tainted);
-    EXPECT_FALSE(router->ingress_enabled());
+    EXPECT_EQ(harness.session->stop_points(), nullptr);
     EXPECT_EQ(harness.physical_control->BoundSink(), nullptr);
     EXPECT_TRUE(harness.physical_control->ActualPlan().pcs.empty());
     EXPECT_EQ(harness.session_control->CloseCount(), 1);
@@ -544,6 +645,27 @@ TEST(
         1u);
     EXPECT_TRUE(harness.session->Shutdown().ok);
     EXPECT_EQ(harness.session_control->DestructionCount(), 1);
+}
+
+TEST(
+    EmulationSessionStopPoints,
+    ShutdownReceiptPreservesCleanWithDiagnosticsDisposition)
+{
+    SessionStopPointHarness harness(1008);
+    ASSERT_TRUE(harness.Open().ok);
+    harness.session->MarkCleanWithDiagnostics(
+        "optional resource cleanup diagnostic");
+
+    const SessionOperationReceipt shutdown =
+        harness.session->Shutdown();
+
+    ASSERT_TRUE(shutdown.ok) << shutdown.backend.message;
+    EXPECT_EQ(
+        shutdown.disposition,
+        SessionDisposition::CleanWithDiagnostics);
+    EXPECT_EQ(
+        harness.session->taint_diagnostic(),
+        "optional resource cleanup diagnostic");
 }
 
 } // namespace

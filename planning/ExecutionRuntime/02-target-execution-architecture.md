@@ -83,8 +83,10 @@ The router analysis records the resulting conflicts in
 - lines 717-729 state the single-owner invariants; and
 - lines 735-787 stage the session, physical-stop, router, execution, and input-arbitration extractions.
 
-These observations are static-analysis evidence. They do not prove that the target components already
-exist.
+Those observations describe the legacy path that motivated the cutover. Slices 1 through 4 now
+establish the worker actor, session, physical-stop router, execution owner, and generic scoped services
+in current code. The legacy VM remains production-disconnected. `ProgramRuntime`, registered
+game-capability packs, current-program migration, and production `ProgramInvocation` do not yet exist.
 
 ## Core architectural constraints
 
@@ -110,9 +112,10 @@ flowchart TD
     ES --> SR["StopPointRouter"]
     ES --> PM["PhysicalStopPointManager"]
     ES --> IA["InputArbiter"]
-    ES --> ST["StateService"]
+    ES --> ST["StateService<br/>sole StateEpoch authority"]
     ES --> GM["GuestMemory / GuestMutationService"]
-    ES --> MC["Movie / Capture / Telemetry"]
+    ES --> MC["Movie / Capture / Screenshot / Telemetry"]
+    ES --> RL["SessionResourceLedger"]
     ES --> GR["GameRuntime capability packs"]
     EE --> DB["DolphinBackend"]
     PM --> DB
@@ -210,6 +213,8 @@ progress views.
 | `EmulationSession` | Own the live backend and all session-scoped services; expose capability interfaces to registered actions | Workflow scheduling, module selection, phase-specific control loops |
 | `DolphinBackend` | Narrow adapter for primitive boot/run/step, physical debug objects, raw memory/register access, pad publication, state/movie/screenshot primitives, and CPU-thread callback ingress | `ProgramKind`, IR, action IDs, game policy, router priority, workflow identity |
 | `ExecutionEngine` | Own one actor-driven foreground emulator operation, routed-stop consumption, active-time budgets, pause confirmation, and primitive movie/VI/throttle policy | Threads, nested event loops, program control flow, pad publication, movie lifecycle, or physical stop-point ownership |
+| `StateService` | Own every boot/reboot/restore transaction, compatibility and immutable state evidence, state/movie checkpoint pairing, and the authoritative monotonic `StateEpoch` | Ambient/latest artifact selection, workflow persistence, cold restoration of in-progress recording |
+| `SessionResourceLedger` | Own actor-sequenced resource receipts, synthetic/session scopes, promotion, reverse-order unwind, epoch transition/rebind requests, cleanup continuations, and cleanup disposition | Calling Dolphin, interpreting program flow, or embedding service-specific cleanup policy |
 | `ProgramRuntime` | Own definition storage, verification, executor, action/type registries, instance lifecycle, effect dispatch, resource unwind, and result assembly | Advancing Dolphin directly, scheduling durable workflow work |
 | `ProgramExecutor` | Interpret the canonical IR and exclusively advance program control flow | Calling Dolphin/session services directly, running native phase controllers |
 | `ProgramInstance` | Hold mutable state for one invocation: instruction location, call frames, typed values, pending continuation, scope stack, epoch, emissions, and diagnostics | Threads, virtual controller behavior, worker commands, Dolphin handles |
@@ -227,7 +232,8 @@ The following are architectural constraints, not conventions:
 4. `PhysicalStopPointManager` is the only component that may install, remove, enable, or disable a
    physical Dolphin PC breakpoint or memcheck.
 5. `InputArbiter` is the only component that may publish controller state to Dolphin.
-6. `StateService` is the only component that may boot, reboot, load, restore, or save emulation state.
+6. `StateService` is the only component that may boot, reboot, load, restore, or save emulation state and
+   the only component that establishes or advances guest `StateEpoch`.
 7. `GuestMutationService` is the only program-facing path for guest data writes or executable patches.
 8. `MovieService` owns movie start/stop state; passive `CaptureService` owns existing-profile
    interpretation, capture attachment, observation, publication, and artifact finalization, but cannot
@@ -237,6 +243,9 @@ The following are architectural constraints, not conventions:
 10. Every emulator-advancing operation remains under `StopPointRouter` supervision, including instruction
     stepping, frame stepping, input-sequence playback, and requested interruption-handler child
     operations.
+11. `SessionResourceLedger` is the authoritative cleanup record for session and future invocation
+    resources. Services execute their own typed release operations; the ledger determines ordering,
+    retry/continuation, epoch disposition, and whether cleanup requires session taint.
 
 These invariants must be enforceable through dependencies: forbidden callers shall not receive a
 backend reference or a capability broad enough to reconstruct one.
@@ -313,10 +322,12 @@ The logical worker command surface includes:
 
 This is a logical surface, not a frozen wire protocol.
 
-Cancellation and shutdown are always accepted. Screenshot and telemetry requests may execute while a
-program is active only if they do not advance or mutate the core. Pause, resume, or step commands during
-an invocation are accepted only when the invocation's execution policy allows interactive debugging.
-Otherwise they receive a typed rejection. The visual pipe never calls Dolphin or VM methods directly.
+Invocation cancellation and shutdown are always accepted. Screenshot and telemetry requests may execute
+while a program is active only if they do not advance or mutate the core. The current screenshot request
+is one synchronous actor-owned backend call; cancellation cannot preempt it after dispatch until
+nonblocking backend/actor ingress is added. Pause, resume, or step commands during an invocation are
+accepted only when the invocation's execution policy allows interactive debugging. Otherwise they
+receive a typed rejection. The visual pipe never calls Dolphin or VM methods directly.
 
 Slice 3 adds the serialized command/protocol seam for a session opened with visual intent, but does not
 restore DB-backed visual replay or production `ProgramInvocation`. Headless sessions reject these
@@ -370,11 +381,13 @@ interaction segments.
 | `PhysicalStopPointManager` | No | Physical PC breakpoints, memchecks, immutable CPU dispatch snapshot |
 | `GuestMemory` | Through checked read/query actions | Paused-safe typed reads and symbolic resolution |
 | `GuestMutationService` | Through declared mutation actions | Checked writes, patches, receipts, restoration |
-| `InputArbiter` | Through input actions | Leases, pad publication, poll acknowledgement, neutral release |
-| `StateService` | Through state actions and invocation state policy | Boot/load/save/snapshot handles and `StateEpoch` |
-| `MovieService` | Through movie actions | Playback/recording session state |
-| `CaptureService` | Through capture actions | Opaque existing profile semantics, passive routed-hit observation, recorder lifecycle, publication, artifact finalization |
-| `TelemetryBus` | Through bounded emit actions | Ordered progress/diagnostic events, serialized publication |
+| `InputArbiter` | Through input actions | Epoch-bound leases, pad publication, poll acknowledgement, neutral release, typed arbiter-issued neutral borrow witnesses, declared interruption borrowing, movie-exclusive reservations, and `IInputAdvancePort` |
+| `StateService` | Through state actions and invocation state policy | Sole `StateEpoch` authority; boot/reboot/restore transactions; bounded memory handles; caller-declared immutable artifacts, SHA-256, compatibility, lineage, optional exact embedded read-only DTM history, and same-session-only recording handles |
+| `MovieService` | Through movie actions | Read-only playback/recording lifecycle, unsuspendable input reservation, hash-verified DTM history, active-DTM identity, and restoration policy |
+| `CaptureService` | Through capture actions | At most one opaque existing-profile attachment, passive routed-hit observation, restore rebind, recorder lifecycle, mandatory publication/finalization, and taint that blocks reuse |
+| `ScreenshotService` | Through screenshot actions | One correlated synchronous actor-thread bounded screenshot call and typed terminal receipt; active cancellation deferred pending nonblocking ingress |
+| `TelemetryBus` | Through bounded emit actions | Monotonic ordered progress/diagnostic events, order-preserving coalescing, serialized publication |
+| `SessionResourceLedger` | Indirectly through runtime scope operations | Typed receipts, reverse-order release, state-epoch disposition/rebind, cleanup continuations, and taint disposition |
 | `GameRuntime` | Through named capability packs | Skies-specific address catalogs, queries, actions, and schemas |
 
 Actions receive only the specific service capabilities declared by their descriptor. They do not receive
@@ -410,13 +423,14 @@ clock.
 The private execution-backend facet exposes only pause, resume, frame-step, exact-instruction-step,
 core/PC/VI/movie/throttle observation, and throttle apply/restore primitives. Slice 3 keeps exact
 instruction stepping unsupported in the concrete JIT64 backend: it neither changes temporarily to
-Interpreter nor labels execution of a JIT block as one guest instruction. Input-synchronized advancement
-is likewise a contract-only seam until Slice 4's `InputArbiter`; production reports it unsupported rather
-than publishing controller state from the engine.
+Interpreter nor labels execution of a JIT block as one guest instruction. Slice 4 implements the
+input-synchronized collaboration through `InputArbiter`: the engine validates an opaque lease binding,
+prepares each publication before advancement, and observes its acknowledgement afterward. The engine
+still never publishes controller state itself.
 
 ### Game capability packs
 
-Skies-specific capability registration is split into independently versioned packs:
+Dependency Slice 5 introduces Skies-specific capability registration as independently versioned packs:
 
 - `soa.battle`;
 - `soa.field`;
@@ -427,6 +441,7 @@ Skies-specific capability registration is split into independently versioned pac
 Packs register types, bounded actions, pure reducers, semantic stop points, and query schemas. They may
 depend on generic session services, but not on workflow storage, `WorkerRuntime`, or another executor.
 Adding a pack does not change existing module hashes unless a module imports that pack's definitions.
+Slice 4 deliberately does not create placeholder game packs or a monolithic game facade.
 
 `ProgramKind` may remain as SavorDb job/handler/queue/affinity, semantic, UI, or workflow-family metadata
 during and after migration. Existing persisted affinity and claim data remain unchanged. Once the
@@ -489,9 +504,11 @@ The implementation order is constrained by ownership:
 4. Add `StopPointRouter` and translate current VM/capture/macro requirements into logical
    subscriptions.
 5. Add `ExecutionEngine` and move every run, step, and tape path beneath it.
-6. Add `InputArbiter`, `StateService`, mutation, movie, capture, and telemetry scopes.
-7. Introduce the universal `ProgramRuntime` and migrate phase definitions into the canonical IR.
-8. Delete direct `PhaseScriptVM`/`DolphinWrapper` coupling and the peer macro runtime after differential
+6. Add `InputArbiter`, `StateService`, mutation, movie, capture, screenshot, telemetry, and the
+   standalone resource ledger. This ownership seam is established by Slice 4.
+7. Introduce the universal `ProgramRuntime`, generic action surface, and modular capability packs, then
+   migrate phase definitions into the canonical IR.
+8. Delete the remaining compiled `PhaseScriptVM` translation evidence and peer macro runtime after differential
    parity gates pass.
 
 The breakpoint-router analysis stages 1 through 5 remain useful guidance. Its stage 6 is replaced:
@@ -508,8 +525,8 @@ cutover is underway.
   visual readers, or protocol callbacks to call `DolphinBackend` directly.
 - A deterministic fake backend proves that all continue, instruction-step, frame-step, input-sequence,
   and requested interruption-handler advancement contracts pass through one `ExecutionEngine`. The
-  production JIT64 backend rejects exact instruction stepping, and production input-synchronized
-  advancement remains unavailable until `InputArbiter` supplies its opaque port.
+  production JIT64 backend rejects exact instruction stepping, while `InputArbiter` supplies the opaque
+  production input-advance port without giving the engine pad-publication authority.
 - Concurrent pipe and visual commands are serialized into one reproducible worker command order.
 - A visual step cannot bypass an active router interceptor or mutate a non-debuggable invocation.
 - Two logical stop-point consumers can share one PC without either replacing the other's subscription.
@@ -533,6 +550,18 @@ cutover is underway.
   state replacement invalidates every outstanding receipt, observation, derived handle, and baseline.
 - Existing capture profiles retain profile-visible sampling, window, recorder, progress, control-event,
   queue, and artifact behavior without giving `CaptureService` execution authority.
+- State/movie tests prove exact SHA-256 and compatibility checks, caller-declared immutable paths,
+  explicit external `NoMovie` versus `ReadOnlyPlayback` import, embedded/hash-verified DTM history,
+  active-DTM identity checks, same-session memory-handle recording rewind, and rejection of recording
+  file-artifact capture/import/restore. External read-only import lets Dolphin restore the movie cursor
+  from the savestate and records the observed position; exact cursor matching applies only to internally
+  captured checkpoints that already carry one.
+- Capture finalization failure taints and blocks another attachment/session reuse; screenshot guards
+  prove synchronous actor ownership without claiming active in-flight cancellation; telemetry
+  coalescing preserves fresh sequence order.
+- Resource tests prove actor-only mutation, atomic receipt acquisition, reverse-order unwind, optional
+  diagnostics versus mandatory taint, resumable cleanup, and epoch end/rebind policy independently of
+  `ProgramRuntime`.
 
 ## Deferred work
 
@@ -545,6 +574,9 @@ cutover is underway.
 - Distributed worker scheduling, claiming, and durable retry remain unchanged workflow/coordinator
   concerns and are not modified by this refactor.
 - Visual debugger UI behavior beyond the locked command and ownership boundary.
+- Nonblocking screenshot backend/actor ingress and active in-flight screenshot cancellation.
+- Live state-plus-DTM playback continuation, live post-write capture, and rendered interaction checks
+  until deterministic program execution/input and unattended authoritative witnesses exist.
 - Performance targets and batching optimizations that do not weaken event ordering or authority.
 
 ## Source references

@@ -230,14 +230,14 @@ cannot reinterpret its internals.
 | Current construct | Target treatment |
 |---|---|
 | `ARM_PHASE_BPS_ONCE`, canonical/gated vectors | `SemanticPointDefinition` and `SemanticAwaitDefinition` lower exact alternatives and current-point policy into scoped router subscriptions plus `runtime.execution.continue_until` |
-| `LOAD_SNAPSHOT` and init-time savestate path | Invocation `StatePolicy`; `runtime.state.restore_baseline` is used only for a declared local retry |
+| `LOAD_SNAPSHOT` and init-time savestate path | Invocation `StatePolicy` over a typed state handle or caller-declared immutable artifact; `StateService` alone advances `StateEpoch`, and `runtime.state.restore_baseline` is used only for a declared local retry |
 | Timeout keys and `SET_TIMEOUT*` | Invocation deadline/budget plus action-specific bounded deadline |
 | `RUN_UNTIL_BP*`, frame/opcode stepping | `runtime.execution.continue_until`, `runtime.execution.step_frames`, or `runtime.execution.step_instructions` under the sole `ExecutionEngine` |
 | `APPLY_INPUT_FROM`, raw tape application | Interaction composition lowers requested input, semantic gates, poll acknowledgements, and neutral-release witnesses into scoped `runtime.input.*` and execution actions |
 | `READ_*`, address programs, direct query helpers | `AddressExpression<T>`, `ObservationDefinition<T>`, and `ObservationUse<T>` lower to checked `runtime.guest.read_*` actions or registered coherent game queries |
-| `WRITE_U32` and future patches | `runtime.guest.write_checked` or `runtime.guest.patch_executable` with receipt and declared restoration policy |
-| Movie start/stop and recording | Scoped `runtime.movie.*` actions; stop is guaranteed by unwind |
-| Save savestate from a guest path string | `runtime.state.save_artifact` publishes an immutable artifact under an invocation-declared role |
+| `WRITE_U32` and future patches | `runtime.guest.write_checked` or `runtime.guest.patch_executable`; data restores unless explicitly committed, executable patches are always reversible, and both return checked receipts |
+| Movie start/stop and recording | Scoped `runtime.movie.*` actions holding a movie-exclusive input reservation; read-only DTM preparation occurs before boot and exact movie continuation participates in state restore |
+| Save savestate from a guest path string | `runtime.state.save_artifact` publishes at a new caller-declared path with SHA-256, compatibility, lineage, and any exact DTM companion under an invocation-declared role |
 | `GET_BATTLE_CONTEXT`, `GET_NAVIGATION_CONTEXT` | `soa.battle.capture_context` and `soa.navigation.capture_context` |
 | Predicate arm/capture/evaluate | Shared predicate composition consumes semantic-observation results, lowers comparison and reaction to ordinary IR, and optionally emits declared `ConditionObservation` progress |
 | Input-macro `Start`/`Advance`, plans, and `EXECUTE_*_MACRO_STEP` | Interaction composition lowers initialization/advancement reducers and verifier-known segment definitions into ordinary subprogram CFG, semantic awaits/observations, input actions, and emissions |
@@ -334,23 +334,37 @@ backend and cleanup succeeded; movie-service/backend failures are infrastructure
 **Required composition**
 
 - disc query;
-- scoped movie playback;
+- scoped movie playback that, when supplied on initial `SessionOpenOptions`, validates and stages the
+  DTM so `Movie::PlayInput` occurs before the session's single backend boot; starting playback on an
+  already-open session uses the corresponding `StateService` reboot path;
+- one unsuspendable movie-exclusive `InputArbiter` reservation held through playback;
 - semantic await with movie-ended observation;
-- immutable state save; and
+- immutable state save at a caller-declared path with SHA-256, compatibility, lineage, and the exact DTM
+  bytes/hash plus current input/frame continuation; and
 - routed one-frame advancement only if still required by a verified state-publication invariant.
 
 **Lifecycle duplication removed**
 
-Movie stop becomes scope unwind rather than a branch-sensitive opcode. DTM and output paths become
-artifact references. Timeout derivation occurs before activation and is recorded in invocation
-provenance.
+Movie stop and input-reservation release become scope unwind rather than branch-sensitive opcodes. DTM
+and output paths become artifact references. A later restore re-establishes the exact read-only
+state-plus-DTM continuation; it does not ask `StateService` to infer whether a movie is active or which
+DTM to use from Dolphin or an ambient path. A cold external read-only import carries no required
+caller-supplied frame/input cursor: after the exact DTM is staged and state is restored, `MovieService`
+records Dolphin's authoritative observed cursor. An internally captured checkpoint already carries a
+known cursor and must match it exactly. External imports explicitly declare `NoMovie` or
+`ReadOnlyPlayback`. Recording file-artifact capture/import/restore is unsupported, while same-session
+recording rewind uses an in-memory handle. Timeout derivation occurs before activation and is recorded
+in invocation provenance.
 
 **Parity checks**
 
 - current TAS payload derivation tests and DB workflow adapter tests;
 - `SavorE2E/TasMovieRealWorkerScenario.cpp`;
 - successful and failed playback both stop the movie;
-- exact terminal state artifact is usable by the next invocation; and
+- exact terminal state/DTM artifact pair is usable by the next invocation with its internally captured
+  frame/input cursor matched and a new `StateEpoch`;
+- cold external state/DTM import succeeds without invented cursor metadata and records Dolphin's
+  post-restore observed frame/input position;
 - wrong disc rejects before movie playback.
 
 **Legacy removal condition**
@@ -619,8 +633,10 @@ program inputs.
 - explicit baseline restore for the one bounded local retry, which advances `StateEpoch`.
 
 The RNG mutation's lifetime is declared. It may persist in the disposable emulated branch until restore
-or state publication, but its receipt and readback remain part of provenance. It cannot be an untracked
-raw write.
+or state publication, but its receipt and readback remain part of provenance. If it is intended to
+remain in the current guest state after its scope, that is an explicit data-mutation commit; otherwise it
+restores. It cannot be an untracked raw write, and this commit option never applies to executable
+patches.
 
 **Workflow boundary**
 
@@ -830,6 +846,10 @@ effect/events/completion out.
 
 ## Migration dependencies
 
+The generic Slice 4 services and standalone resource ledger are established, but this table remains a
+program-migration order rather than a claim that their action descriptors or game queries exist.
+Capability packs, typed action registration, and `ProgramRuntime` arrive in Slice 5.
+
 | Default order | Family | Prerequisites |
 |---|---|---|
 | 1 | SeedProbe | Core IR, typed invocation/result, stop wait, input scope, memory read, state save, existing SavorDb handler parity |
@@ -893,6 +913,8 @@ Legacy code sometimes derives `PSResult::ok` solely from `DW_RUN_OUTCOME_CODE`. 
 preserve that collapse. A domain failure may return a clean successful execution envelope, while failed
 input neutralization, movie stop, breakpoint release, capture finalization, state handling, data-write
 restoration, or patch restoration taints the session even if the domain result was otherwise successful.
+A mandatory capture finalization failure also leaves capture unable to accept another attachment and
+blocks session/worker reuse until a full rebuild.
 
 Cancellation and timeout injection is mandatory at every action-await boundary for each migrated family.
 

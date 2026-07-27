@@ -38,25 +38,6 @@ namespace {
         return false;
     }
 
-    static void append_record_baseline_bps(const std::string& table_blob, const savor::pred::PredicateRecord& record, std::vector<uint32_t>& bp_keys) {
-        if (record.baseline_bps_offset == 0) {
-            return;
-        }
-        const auto offset = static_cast<size_t>(record.baseline_bps_offset);
-        if (offset + sizeof(uint16_t) > table_blob.size()) {
-            return;
-        }
-        const char* ptr = table_blob.data() + offset;
-        const uint16_t count = read_u16_le(ptr);
-        ptr += sizeof(uint16_t);
-        if (offset + sizeof(uint16_t) + static_cast<size_t>(count) * sizeof(uint16_t) > table_blob.size()) {
-            return;
-        }
-        for (uint16_t i = 0; i < count; ++i) {
-            bp_keys.push_back(read_u16_le(ptr + i * sizeof(uint16_t)));
-        }
-    }
-
     inline bool read_via_addrprog(savor::DolphinWrapper& host,
         const savor::IDerivedBuffer* derived,
         const std::string& table_and_blob,
@@ -74,46 +55,12 @@ namespace {
 
 namespace savor {
     bool PhaseScriptVM::op_arm_bps_from_pred_table(PSResult& result, PSContext& ctx) {
-        auto itN = ctx.find(savor::context::key::core::PRED_COUNT);
-        auto itT = ctx.find(savor::context::key::core::PRED_TABLE);
-        if (itN == ctx.end() || itT == ctx.end()) return true;
-        const uint32_t n = std::get<uint32_t>(itN->second);
-        const auto* tbl = std::get_if<std::string>(&itT->second);
-        if (!n || !tbl) return true;
-        const auto* rec = reinterpret_cast<const pred::PredicateRecord*>(tbl->data());
-        std::vector<uint32_t> bp_keys; bp_keys.reserve(n);
-        for (uint32_t i = 0; i < n; ++i) {
-            if (rec[i].required_bp != 0) {
-                bp_keys.push_back(rec[i].required_bp);
-            }
-            append_record_baseline_bps(*tbl, rec[i], bp_keys);
-        }
-        std::sort(bp_keys.begin(), bp_keys.end());
-        bp_keys.erase(std::unique(bp_keys.begin(), bp_keys.end()), bp_keys.end());
-
-        for (const auto bp_key : bp_keys) {
-            const auto* entry = bpmap_.find(static_cast<BPKey>(bp_key));
-            if (entry == nullptr || entry->visibility != BreakpointVisibility::PlayerVisible) {
-                SCLOGE("[VM] predicate table references an unavailable breakpoint");
-                ctx[savor::context::key::core::WORKER_ERROR] = static_cast<uint32_t>(WERR_UnknownError);
-                ctx[savor::context::key::core::PRED_ABORT_RUN] = uint32_t{ 1 };
-                result.ctx = ctx;
-                return false;
-            }
-        }
-
-        std::vector<uint32_t> pcs; pcs.reserve(bp_keys.size());
-        for (const auto bp_key : bp_keys) {
-            const BPAddr* e = bpmap_.find(static_cast<BPKey>(bp_key));
-            if (!e || !e->pc) {
-                ctx[savor::context::key::core::WORKER_ERROR] = static_cast<uint32_t>(WERR_UnknownError);
-                result.ctx = ctx;
-                return false;
-            }
-            pcs.push_back(e->pc); predicate_bp_keys_.push_back(e->key);
-        }
-        if (!pcs.empty()) host_.armPcBreakpoints(pcs);
-        return true;
+        predicate_bp_keys_.clear();
+        ctx[savor::context::key::core::PRED_ABORT_RUN] = uint32_t{1};
+        return fail_legacy_service(
+            result,
+            ctx,
+            "[VM] predicate breakpoint registration is disconnected; lower predicates through StopPointRouter");
     }
     void PhaseScriptVM::op_capture_pred_baselines(PSContext& ctx, KeyHostRouter& router) {
         auto itN = ctx.find(savor::context::key::core::PRED_COUNT);

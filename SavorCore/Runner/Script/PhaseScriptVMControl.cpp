@@ -54,53 +54,17 @@ namespace {
 }
 
 namespace savor {
-    bool PhaseScriptVM::save_snapshot() {
-        return host_.saveStateToBuffer(snapshot_);
-    }
-
-    bool PhaseScriptVM::load_snapshot() {
-        return host_.loadStateFromBuffer(snapshot_);
-    }
-
     void PhaseScriptVM::arm_bps_once() {
-        if (armed_) return;
-        std::vector<uint32_t> pcs;
-        pcs.reserve(canonical_bp_keys_.size() + gated_bp_keys_.size());
-        const auto append_unique_pc = [&](BPKey k) {
-            if (const auto* e = bpmap_.find(k)) {
-                if (std::find(pcs.begin(), pcs.end(), e->pc) == pcs.end()) {
-                    pcs.push_back(e->pc);
-                }
-            }
-        };
-        for (const auto& k : canonical_bp_keys_) append_unique_pc(k);
-        for (const auto& k : gated_bp_keys_) append_unique_pc(k);
-        if (!pcs.empty()) {
-            host_.armPcBreakpoints(pcs);
-            armed_pcs_ = pcs;
-            restore_canonical_breakpoint_scope();
-        }
-        armed_ = true;
+        armed_pcs_.clear();
+        armed_ = false;
+        SCLOGE(
+            "[VM] legacy breakpoint ownership is disconnected; use StopPointRouter");
     }
 
 
     void PhaseScriptVM::restore_canonical_breakpoint_scope() {
-        std::vector<uint32_t> enabled_pcs;
-        enabled_pcs.reserve(canonical_bp_keys_.size() + predicate_bp_keys_.size());
-        const auto append_pc = [&](BPKey key) {
-            if (const auto* e = bpmap_.find(key)) {
-                if (std::find(enabled_pcs.begin(), enabled_pcs.end(), e->pc) == enabled_pcs.end()) {
-                    enabled_pcs.push_back(e->pc);
-                }
-            }
-        };
-        for (const auto& k : canonical_bp_keys_) {
-            append_pc(k);
-        }
-        for (const auto& k : predicate_bp_keys_) {
-            append_pc(k);
-        }
-        host_.setEnabledPcBreakpointsOnly(enabled_pcs);
+        armed_pcs_.clear();
+        armed_ = false;
     }
 
     bool PhaseScriptVM::compare_u32(uint32_t lhs, PSCmp cmp, uint32_t rhs) const {
@@ -123,25 +87,36 @@ namespace savor {
         }
     }
 
-    bool PhaseScriptVM::op_arm_phase_bps_once() { arm_bps_once(); return true; }
-    bool PhaseScriptVM::op_load_snapshot(PSContext& ctx) { if (!load_snapshot()) return false; ctx[savor::context::key::core::VI_FIRST] = (uint32_t)(host_.getViFieldCountApprox() & 0xFFFFFFFFull); return true; }
-    bool PhaseScriptVM::op_capture_snapshot() { return save_snapshot(); }
-    bool PhaseScriptVM::op_reboot_core(PSResult& result, PSContext& ctx) {
-        std::string iso_path{};
-        if (!ctx.get(savor::context::key::core::GAME_ISO_PATH, iso_path)) {
-            ctx[savor::context::key::core::WORKER_ERROR] = (uint32_t)32;
-            result.ctx = ctx;
-            return false;
-        }
-        host_.clearMemoryWatchpoints();
-        host_.clearAllPcBreakpoints();
-        host_.loadGame(iso_path);
-        host_.ConfigurePortsStandardPadP1();
-        armed_ = false;
-        armed_pcs_.clear();
+    bool PhaseScriptVM::op_arm_phase_bps_once()
+    {
         arm_bps_once();
-        host_.emitProbeMarker("reboot.complete");
-        return true;
+        return false;
+    }
+    bool PhaseScriptVM::op_load_snapshot(
+        PSResult& result,
+        PSContext& ctx)
+    {
+        return fail_legacy_service(
+            result,
+            ctx,
+            "[VM] state-buffer restoration is disconnected; use StateService");
+    }
+
+    bool PhaseScriptVM::op_capture_snapshot(
+        PSResult& result,
+        PSContext& ctx)
+    {
+        return fail_legacy_service(
+            result,
+            ctx,
+            "[VM] state-buffer capture is disconnected; use StateService");
+    }
+
+    bool PhaseScriptVM::op_reboot_core(PSResult& result, PSContext& ctx) {
+        return fail_legacy_service(
+            result,
+            ctx,
+            "[VM] core reboot is disconnected; use StateService");
     }
     void PhaseScriptVM::op_label() const {}
     void PhaseScriptVM::op_goto(const PSOp& op, const std::unordered_map<std::string, size_t>& label_vm_pc_map, size_t& vm_pc, std::string& section) const { jump_to_label_if_exists(op.jmp.name, label_vm_pc_map, vm_pc, section); }

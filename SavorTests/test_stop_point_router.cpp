@@ -724,6 +724,104 @@ TEST_F(StopPointRouterFixture, IgnoresNativeCallsOutsidePhysicalUnionBeforeSeque
     EXPECT_EQ(receipts[0].identity.sequence, RoutedStopSequence(1));
 }
 
+TEST_F(
+    StopPointRouterFixture,
+    AcceptsMoreThanPerHitCapacityWhenLogicalSitesAreDispersed)
+{
+    constexpr std::size_t kSubscriptionCount =
+        kMaxStopDeliveriesPerHit + 9;
+    constexpr std::uint32_t kFirstPc = 0x80100000u;
+
+    RecordingStopConsumer consumer;
+    std::vector<StopSubscriptionDefinition> subscriptions;
+    subscriptions.reserve(kSubscriptionCount);
+    for (std::size_t i = 0; i < kSubscriptionCount; ++i)
+    {
+        subscriptions.push_back(PcSubscription(
+            1000 + i,
+            kFirstPc + static_cast<std::uint32_t>(i * 4),
+            consumer));
+    }
+
+    auto registration =
+        router.RegisterGroup(Group(100, std::move(subscriptions)));
+    ASSERT_TRUE(registration.receipt.ok)
+        << registration.receipt.error.message;
+    ASSERT_EQ(
+        router.DesiredPhysicalPlan().pcs.size(),
+        kSubscriptionCount);
+
+    const std::uint32_t last_pc =
+        kFirstPc +
+        static_cast<std::uint32_t>((kSubscriptionCount - 1) * 4);
+    EXPECT_FALSE(backend.InjectJitPcStop(last_pc).request_break);
+    const auto receipts = router.DrainIngress();
+    ASSERT_EQ(receipts.size(), 1u);
+    ASSERT_EQ(receipts[0].deliveries.size(), 1u);
+    EXPECT_EQ(
+        std::get<PcStopPointSpec>(
+            receipts[0].deliveries[0].event.evidence.point).pc,
+        last_pc);
+    EXPECT_EQ(consumer.deliveries.size(), 1u);
+}
+
+TEST_F(
+    StopPointRouterFixture,
+    RejectsCandidateWhoseSingleHitExceedsDeliveryCapacityAtomically)
+{
+    constexpr std::size_t kSubscriptionCount =
+        kMaxStopDeliveriesPerHit + 1;
+    constexpr std::uint32_t kSharedPc = 0x80110000u;
+    constexpr std::uint32_t kExistingPc = 0x80120000u;
+
+    RecordingStopConsumer consumer;
+    auto existing = router.RegisterGroup(
+        Group(
+            100,
+            {PcSubscription(100, kExistingPc, consumer)}));
+    ASSERT_TRUE(existing.receipt.ok)
+        << existing.receipt.error.message;
+    const StopDispatchGeneration generation_before =
+        router.dispatch_generation();
+    const PhysicalStopPointPlan plan_before =
+        router.DesiredPhysicalPlan();
+    const std::size_t applies_before = CountCalls(
+        control->Calls(),
+        FakePhysicalStopOperation::Apply);
+
+    std::vector<StopSubscriptionDefinition> subscriptions;
+    subscriptions.reserve(kSubscriptionCount);
+    for (std::size_t i = 0; i < kSubscriptionCount; ++i)
+    {
+        subscriptions.push_back(PcSubscription(
+            1000 + i,
+            kSharedPc,
+            consumer));
+    }
+
+    auto rejected =
+        router.RegisterGroup(Group(200, std::move(subscriptions)));
+    EXPECT_FALSE(rejected.receipt.ok);
+    EXPECT_EQ(
+        rejected.receipt.error.code,
+        StopPointErrorCode::InvalidArgument);
+    EXPECT_NE(
+        rejected.receipt.error.message.find(
+            "delivery capacity"),
+        std::string::npos);
+    EXPECT_EQ(router.dispatch_generation(), generation_before);
+    EXPECT_EQ(router.DesiredPhysicalPlan(), plan_before);
+    EXPECT_EQ(
+        CountCalls(
+            control->Calls(),
+            FakePhysicalStopOperation::Apply),
+        applies_before);
+
+    EXPECT_FALSE(backend.InjectJitPcStop(kSharedPc).request_break);
+    EXPECT_TRUE(router.DrainIngress().empty());
+    EXPECT_TRUE(consumer.deliveries.empty());
+}
+
 TEST(StopPointRouter, InvokesTrustedCpuObserverOnceAfterFinalWakeSelection)
 {
     auto control = std::make_shared<FakePhysicalStopBackendControl>();

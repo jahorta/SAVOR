@@ -298,10 +298,10 @@ ProbeRouterAdapter::BuildCurrentGroupDefinition()
 
     const std::size_t subscription_count =
         unique_pcs.size() + merged_memory.size();
-    if (subscription_count > kMaxStopDeliveriesPerHit)
+    if (subscription_count > kMaxLogicalStopSubscriptions)
     {
         result.error =
-            "capture profile exceeds the router subscription capacity";
+            "capture profile exceeds the router logical subscription capacity";
         return result;
     }
     const std::uint64_t first_id =

@@ -52,6 +52,33 @@
     <Filter Include="Runner\Runtime\Execution">
       <UniqueIdentifier>{6D37E415-DCB1-4519-87D5-B847CB9CE2C6}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Runner\Runtime\Services">
+      <UniqueIdentifier>{A4EE6B27-5711-4AC6-90BC-EEC80E19B549}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Runner\Runtime\Services\Capture">
+      <UniqueIdentifier>{F109C3DD-A529-42C4-B151-6F23B5C584B0}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Runner\Runtime\Services\Input">
+      <UniqueIdentifier>{3C8D5EA8-E450-4317-8301-E253A5C09ECA}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Runner\Runtime\Services\Memory">
+      <UniqueIdentifier>{0CCED849-3478-4E7D-A379-8FB05501A0A4}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Runner\Runtime\Services\Movie">
+      <UniqueIdentifier>{22C8F2CA-00CA-43D8-9E47-EAD83A77FF35}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Runner\Runtime\Services\Resources">
+      <UniqueIdentifier>{807B4EE5-5C21-45B9-BBFD-0137C04B20FB}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Runner\Runtime\Services\Screenshot">
+      <UniqueIdentifier>{6A1A5678-F0C4-4FA9-A2DA-181E0ED60399}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Runner\Runtime\Services\State">
+      <UniqueIdentifier>{B1C111B7-BD6B-4558-A1DB-C74AD273789F}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Runner\Runtime\Services\Telemetry">
+      <UniqueIdentifier>{24A7C81C-F46B-4EFB-ACCD-C3C22D205C33}</UniqueIdentifier>
+    </Filter>
     <Filter Include="Runner\Runtime\StopPoints">
       <UniqueIdentifier>{2B78AB19-B4E2-4D89-8587-F64F760198B9}</UniqueIdentifier>
     </Filter>
@@ -354,6 +381,63 @@
     <ClInclude Include="Runner\Runtime\RuntimeTypes.h">
       <Filter>Runner\Runtime</Filter>
     </ClInclude>
+    <ClInclude Include="Runner\Runtime\Services\Capture\CaptureService.h">
+      <Filter>Runner\Runtime\Services\Capture</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\Services\Capture\ICaptureBackendPort.h">
+      <Filter>Runner\Runtime\Services\Capture</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\Services\Input\IInputBackendPort.h">
+      <Filter>Runner\Runtime\Services\Input</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\Services\Input\InputArbiter.h">
+      <Filter>Runner\Runtime\Services\Input</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\Services\Memory\GuestMemory.h">
+      <Filter>Runner\Runtime\Services\Memory</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\Services\Memory\GuestMutationService.h">
+      <Filter>Runner\Runtime\Services\Memory</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\Services\Memory\IGuestMemoryBackendPort.h">
+      <Filter>Runner\Runtime\Services\Memory</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\Services\Movie\IMovieBackendPort.h">
+      <Filter>Runner\Runtime\Services\Movie</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\Services\Movie\InputMovieReservationAdapter.h">
+      <Filter>Runner\Runtime\Services\Movie</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\Services\Movie\MovieService.h">
+      <Filter>Runner\Runtime\Services\Movie</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\Services\Movie\MovieTypes.h">
+      <Filter>Runner\Runtime\Services\Movie</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\Services\Resources\SessionResourceLedger.h">
+      <Filter>Runner\Runtime\Services\Resources</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\Services\Screenshot\IScreenshotBackendPort.h">
+      <Filter>Runner\Runtime\Services\Screenshot</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\Services\Screenshot\ScreenshotService.h">
+      <Filter>Runner\Runtime\Services\Screenshot</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\Services\State\IStateBackendPort.h">
+      <Filter>Runner\Runtime\Services\State</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\Services\State\SessionStateBackendAdapter.h">
+      <Filter>Runner\Runtime\Services\State</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\Services\State\StateService.h">
+      <Filter>Runner\Runtime\Services\State</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\Services\State\StateTypes.h">
+      <Filter>Runner\Runtime\Services\State</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\Services\Telemetry\TelemetryBus.h">
+      <Filter>Runner\Runtime\Services\Telemetry</Filter>
+    </ClInclude>
     <ClInclude Include="Runner\Runtime\StopPoints\IPhysicalStopPointBackendPort.h">
       <Filter>Runner\Runtime\StopPoints</Filter>
     </ClInclude>
@@ -607,6 +691,42 @@
     </ClCompile>
     <ClCompile Include="Runner\Runtime\Execution\ExecutionEngine.cpp">
       <Filter>Runner\Runtime\Execution</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Runtime\Services\Capture\CaptureService.cpp">
+      <Filter>Runner\Runtime\Services\Capture</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Runtime\Services\Capture\ICaptureBackendPort.cpp">
+      <Filter>Runner\Runtime\Services\Capture</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Runtime\Services\Input\InputArbiter.cpp">
+      <Filter>Runner\Runtime\Services\Input</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Runtime\Services\Memory\GuestMemory.cpp">
+      <Filter>Runner\Runtime\Services\Memory</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Runtime\Services\Memory\GuestMutationService.cpp">
+      <Filter>Runner\Runtime\Services\Memory</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Runtime\Services\Movie\InputMovieReservationAdapter.cpp">
+      <Filter>Runner\Runtime\Services\Movie</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Runtime\Services\Movie\MovieService.cpp">
+      <Filter>Runner\Runtime\Services\Movie</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Runtime\Services\Resources\SessionResourceLedger.cpp">
+      <Filter>Runner\Runtime\Services\Resources</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Runtime\Services\Screenshot\ScreenshotService.cpp">
+      <Filter>Runner\Runtime\Services\Screenshot</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Runtime\Services\State\SessionStateBackendAdapter.cpp">
+      <Filter>Runner\Runtime\Services\State</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Runtime\Services\State\StateService.cpp">
+      <Filter>Runner\Runtime\Services\State</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Runtime\Services\Telemetry\TelemetryBus.cpp">
+      <Filter>Runner\Runtime\Services\Telemetry</Filter>
     </ClCompile>
     <ClCompile Include="Runner\Runtime\StopPoints\Capture\ProbeRouterAdapter.cpp">
       <Filter>Runner\Runtime\StopPoints\Capture</Filter>

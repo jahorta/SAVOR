@@ -84,42 +84,27 @@ namespace savor {
         }
     }
 
-    bool PhaseScriptVM::configure_capture_from_context(const PSContext& ctx, PSResult& result) {
-        std::string profile_path;
-        std::string output_path;
-        const bool has_profile = ctx.get<std::string>(savor::context::key::core::CAPTURE_PROFILE_PATH, profile_path);
-        const bool has_output = ctx.get<std::string>(savor::context::key::core::CAPTURE_OUTPUT_PATH, output_path);
-        uint32_t progress_flags = 0;
-        ctx.get<uint32_t>(savor::context::key::core::PROGRESS_CORE_FLAGS, progress_flags);
+    bool PhaseScriptVM::fail_legacy_service(
+        PSResult& result,
+        PSContext& ctx,
+        const char* diagnostic) const
+    {
+        ctx[savor::context::key::core::WORKER_ERROR] =
+            static_cast<std::uint32_t>(WERR_UnknownError);
+        result.ctx = ctx;
+        result.ok = false;
+        SCLOGE("%s", diagnostic);
+        return false;
+    }
 
-        std::vector<uint32_t> denied_profile_pcs;
-        denied_profile_pcs.reserve(bpmap_.addrs.size());
-        for (const auto& entry : bpmap_.addrs) {
-            if (entry.visibility != BreakpointVisibility::Internal || entry.pc == 0)
-                continue;
-            if (std::find(denied_profile_pcs.begin(), denied_profile_pcs.end(), entry.pc)
-                == denied_profile_pcs.end()) {
-                denied_profile_pcs.push_back(entry.pc);
-            }
-        }
-
-        std::string error;
-        if (!host_.startProbeJob(
-            has_profile ? std::filesystem::path(profile_path) : std::filesystem::path{},
-            has_output ? std::filesystem::path(output_path) : std::filesystem::path{},
-            progress_flags,
-            std::move(denied_profile_pcs),
-            &error)) {
-            result.ctx = ctx;
-            SCLOGW("[probe] start failed profile=%s output=%s error=%s",
-                profile_path.c_str(), output_path.c_str(), error.c_str());
-            return false;
-        }
-        SCLOGI("[probe] active profile=%s output=%s battle_progress=%u",
-            profile_path.c_str(),
-            output_path.c_str(),
-            (progress_flags & static_cast<uint32_t>(CoreProgressFlags::BattleProgress)) != 0 ? 1u : 0u);
-        return true;
+    bool PhaseScriptVM::configure_capture_from_context(
+        PSContext& ctx,
+        PSResult& result)
+    {
+        return fail_legacy_service(
+            result,
+            ctx,
+            "[VM] capture attachment is disconnected; use the session-owned CaptureService");
     }
 
     bool PhaseScriptVM::init(const PSInit& init, const PhaseScript& program)
@@ -127,7 +112,6 @@ namespace savor {
         cancel_input_macro();
         init_ = init;
         prog_ = program;
-        host_.clearMemoryWatchpoints();
 
         switch (init_.derived_buffer_type) {
         case DK_Battle: derived_ = std::make_unique<savor::DerivedBattleBuffer>(); break;
@@ -135,36 +119,20 @@ namespace savor {
         default: derived_.reset(); break;
         }
 
-        SCLOGDX(SC_TAGS("vm", "init"), "[VM] init begin sav=%s timeout=%u", init.savestate_path.c_str(), init.default_timeout_ms);
+        SCLOGDX(
+            SC_TAGS("vm", "init"),
+            "[VM] legacy init rejected sav=%s timeout=%u",
+            init.savestate_path.c_str(),
+            init.default_timeout_ms);
 
-        // Disarm any previously armed set (enables program swapping)
-        if (armed_ && !armed_pcs_.empty()) {
-            host_.disarmPcBreakpoints(armed_pcs_);
-            armed_pcs_.clear();
-        }
+        armed_pcs_.clear();
         armed_ = false;
-
-        // Optional savestate (allow empty path for boot-based phases)
-        if (!init_.savestate_path.empty()) {
-            if (!host_.loadSavestate(init_.savestate_path.c_str()))
-                return false;
-        }
-
-        // Update BP keys and arm once. Gated keys stay disabled unless a specialized op enables them.
         canonical_bp_keys_ = prog_.canonical_bp_keys;
         gated_bp_keys_ = prog_.gated_bp_keys;
-
-        SCLOGDX(
-            SC_TAGS("vm", "breakpoint"),
-            "[VM] attach bp count=%zu gated=%zu",
-            program.canonical_bp_keys.size(),
-            program.gated_bp_keys.size());
-        arm_bps_once();
-
-        // Capture a snapshot to use as the per-job baseline
-        const bool snapshot_ok = save_snapshot();
-        if (snapshot_ok) SCLOGDX(SC_TAGS("vm", "init"), "[VM] init ok");
-        return snapshot_ok;
+        predicate_bp_keys_.clear();
+        SCLOGE(
+            "[VM] PhaseScriptVM initialization is disconnected; use ProgramRuntime and session services");
+        return false;
     }
 
     PhaseScriptVM::DispatchResult PhaseScriptVM::dispatch_op(
@@ -182,9 +150,9 @@ namespace savor {
         case PSOpCode::ARM_PHASE_BPS_ONCE:
             return op_arm_phase_bps_once() ? DispatchResult::Continue : DispatchResult::Failed;
         case PSOpCode::LOAD_SNAPSHOT:
-            return op_load_snapshot(ctx) ? DispatchResult::Continue : DispatchResult::Failed;
+            return op_load_snapshot(result, ctx) ? DispatchResult::Continue : DispatchResult::Failed;
         case PSOpCode::CAPTURE_SNAPSHOT:
-            return op_capture_snapshot() ? DispatchResult::Continue : DispatchResult::Failed;
+            return op_capture_snapshot(result, ctx) ? DispatchResult::Continue : DispatchResult::Failed;
         case PSOpCode::REBOOT_CORE:
             return op_reboot_core(result, ctx) ? DispatchResult::Continue : DispatchResult::Failed;
         case PSOpCode::APPLY_INPUT_FROM:
@@ -211,11 +179,13 @@ namespace savor {
             op_set_timeout_from(op, ctx);
             return DispatchResult::Continue;
         case PSOpCode::START_DETERMINISTIC_RUN:
-            op_start_deterministic_run();
-            return DispatchResult::Continue;
+            return op_start_deterministic_run(result, ctx)
+                ? DispatchResult::Continue
+                : DispatchResult::Failed;
         case PSOpCode::END_DETERMINISTIC_RUN:
-            op_end_deterministic_run();
-            return DispatchResult::Continue;
+            return op_end_deterministic_run(result, ctx)
+                ? DispatchResult::Continue
+                : DispatchResult::Failed;
         case PSOpCode::READ_U8:
             return op_read_u8(op, result, ctx) ? DispatchResult::Continue : DispatchResult::Failed;
         case PSOpCode::READ_U16:
@@ -243,8 +213,9 @@ namespace savor {
         case PSOpCode::MOVIE_PLAY_FROM:
             return op_movie_play_from(op, result, ctx) ? DispatchResult::Continue : DispatchResult::Failed;
         case PSOpCode::MOVIE_STOP:
-            op_movie_stop();
-            return DispatchResult::Continue;
+            return op_movie_stop(result, ctx)
+                ? DispatchResult::Continue
+                : DispatchResult::Failed;
         case PSOpCode::SAVE_SAVESTATE_FROM:
             return op_save_savestate_from(op, result, ctx) ? DispatchResult::Continue : DispatchResult::Failed;
         case PSOpCode::REQUIRE_DISC_GAMEID_FROM:
@@ -301,8 +272,9 @@ namespace savor {
         case PSOpCode::ARM_MEMORY_WATCHPOINT:
             return op_arm_memory_watchpoint(op, result, ctx) ? DispatchResult::Continue : DispatchResult::Failed;
         case PSOpCode::CLEAR_MEMORY_WATCHPOINTS:
-            op_clear_memory_watchpoints();
-            return DispatchResult::Continue;
+            return op_clear_memory_watchpoints(result, ctx)
+                ? DispatchResult::Continue
+                : DispatchResult::Failed;
         case PSOpCode::ARM_CAPTURE_MEMORY_WATCHPOINTS:
             return op_arm_capture_memory_watchpoints(result, ctx) ? DispatchResult::Continue : DispatchResult::Failed;
         case PSOpCode::RUN_UNTIL_DEBUG_STOP:
@@ -345,24 +317,16 @@ namespace savor {
         const auto input_macro_run_scope = std::shared_ptr<void>(
             nullptr,
             [this](void*) { cancel_input_macro(); });
-        struct MemoryWatchpointRunScope {
-            DolphinWrapper& host;
-            ~MemoryWatchpointRunScope() { host.clearMemoryWatchpoints(); }
-        } memory_watchpoint_scope{ host_ };
-        host_.clearMemoryWatchpoints();
         predicate_bp_keys_.clear();
         std::string _section = "Entry Point";
 
         if (!configure_capture_from_context(ctx, R)) {
             return R;
         }
-        struct ProbeJobRunScope {
-            DolphinWrapper& host;
-            ~ProbeJobRunScope() { host.stopProbeJob(); }
-        } probe_job_scope{ host_ };
-
-        // Restore the job baseline while the probe layer is active so the epoch marker is durable.
-        if (!load_snapshot()) return R;
+        // A correctly initialized legacy VM cannot reach this point after the
+        // hard cutover. Keep the interpreter source compiled for translation
+        // evidence, but reject state restoration before touching Dolphin.
+        if (!op_load_snapshot(R, ctx)) return R;
 
         ctx[savor::context::key::core::VI_FIRST] = (uint32_t)(host_.getViFieldCountApprox() & 0xFFFFFFFFull);
 

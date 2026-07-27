@@ -48,7 +48,8 @@ namespace savor {
 
         bool loadGame(
             const std::string& iso_path,
-            bool boot_to_pause = false);
+            bool boot_to_pause = false,
+            std::optional<std::string> startup_savestate = std::nullopt);
         bool loadSavestate(const std::string& state_path);
         bool saveSavestateBlocking(const std::string& state_path);
         bool saveScreenshotBlocking(const std::string& image_path, uint32_t timeout_ms = 3000);
@@ -97,6 +98,10 @@ namespace savor {
         };
         uint64_t publishInputEpoch(const GCInputFrame& f);
         InputPollReceipt getInputPollReceipt() const;
+        [[nodiscard]] bool isInputReady() const noexcept
+        {
+            return m_system_pad_is_inited;
+        }
         size_t remainingInputs() const { return (m_cursor < m_plan.size()) ? (m_plan.size() - m_cursor) : 0; }
 
         struct InputTapePlaybackOptions {

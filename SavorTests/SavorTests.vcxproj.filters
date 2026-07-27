@@ -104,6 +104,7 @@
     <ClCompile Include="test_capture_profile_json.cpp" />
     <ClCompile Include="test_probe_profile.cpp" />
     <ClCompile Include="test_probe_router_adapter.cpp" />
+    <ClCompile Include="test_capture_service.cpp" />
     <ClCompile Include="test_probe_progress_and_wire.cpp" />
     <ClCompile Include="test_native_stop_hooks.cpp" />
     <ClCompile Include="test_battle_coordinator_initialization.cpp" />
@@ -145,6 +146,10 @@
     <ClCompile Include="test_worker_capability_gate.cpp" />
     <ClCompile Include="test_execution_engine.cpp" />
     <ClCompile Include="test_execution_worker_runtime.cpp" />
+    <ClCompile Include="test_session_services.cpp" />
+    <ClCompile Include="test_movie_service.cpp" />
+    <ClCompile Include="test_session_resource_ledger.cpp" />
+    <ClCompile Include="test_state_service.cpp" />
     <ClCompile Include="test_emulation_session_stop_points.cpp" />
     <ClCompile Include="test_dolphin_stop_point_integration.cpp" />
     <ClCompile Include="test_legacy_stop_point_translation.cpp" />

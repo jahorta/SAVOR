@@ -572,30 +572,35 @@ TEST(EmulationSession, EpochAdvancesOnlyForSuccessfulStateReplacement)
     EXPECT_EQ(
         frame_terminal->status,
         ExecutionTerminalStatus::StepsCompleted);
-    EXPECT_TRUE(session.SaveStateFile("saved.state").ok);
-    const SessionBufferReceipt saved = session.SaveStateBuffer();
-    EXPECT_TRUE(saved.operation.ok);
-    EXPECT_EQ(saved.bytes, (std::vector<std::uint8_t>{0x10, 0x20, 0x30}));
+    const StateHandleReceipt first_state =
+        session.CaptureStateHandle();
+    ASSERT_TRUE(first_state.result.ok) << first_state.result.message;
+    EXPECT_EQ(first_state.size_bytes, 3);
     EXPECT_TRUE(session.CaptureScreenshot("shot.png", 100ms).ok);
     EXPECT_EQ(session.snapshot().state_epoch, StateEpoch{1});
 
     EXPECT_TRUE(session.Reboot().ok);
     EXPECT_EQ(session.snapshot().state_epoch, StateEpoch{2});
-    EXPECT_TRUE(session.RestoreStateFile("input.state").ok);
+    EXPECT_TRUE(
+        session.RestoreStateHandle(first_state.handle).result.ok);
     EXPECT_EQ(session.snapshot().state_epoch, StateEpoch{3});
-    EXPECT_TRUE(session.RestoreStateBuffer({0x01, 0x02}).ok);
+    const StateHandleReceipt second_state =
+        session.CaptureStateHandle();
+    ASSERT_TRUE(second_state.result.ok) << second_state.result.message;
+    EXPECT_TRUE(
+        session.RestoreStateHandle(second_state.handle).result.ok);
     EXPECT_EQ(session.snapshot().state_epoch, StateEpoch{4});
 
-    control->SetRestoreFileResult(BackendResult::Failure(
+    control->SetRestoreBufferResult(BackendResult::Failure(
         BackendErrorCode::OperationFailed,
         "preserved failure",
         BackendIntegrity::Preserved));
-    const SessionOperationReceipt failed =
-        session.RestoreStateFile("failed.state");
-    EXPECT_FALSE(failed.ok);
+    const StateOperationReceipt failed =
+        session.RestoreStateHandle(first_state.handle);
+    EXPECT_FALSE(failed.result.ok);
     EXPECT_EQ(failed.origin_epoch, StateEpoch{4});
     EXPECT_EQ(failed.resulting_epoch, StateEpoch{4});
-    EXPECT_EQ(failed.disposition, SessionDisposition::Clean);
+    EXPECT_EQ(session.snapshot().disposition, SessionDisposition::Clean);
 
     EXPECT_TRUE(session.Shutdown().ok);
     EXPECT_EQ(control->CloseCount(), 1);
@@ -614,7 +619,7 @@ TEST(EmulationSession, UnknownIntegrityAndStoppedCoreTaintWithoutAdvancingEpoch)
 
         const SessionOperationReceipt open = session.Open({});
         EXPECT_FALSE(open.ok);
-        EXPECT_EQ(open.resulting_epoch, StateEpoch{});
+        EXPECT_EQ(open.resulting_epoch, StateEpoch{1});
         EXPECT_EQ(open.disposition, SessionDisposition::Tainted);
         EXPECT_TRUE(session.Shutdown().ok);
     }

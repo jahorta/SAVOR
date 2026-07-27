@@ -18,6 +18,7 @@ namespace savor::runtime {
 inline constexpr std::size_t kStopPointNativeIngressCapacity = 256;
 inline constexpr std::size_t kStopPointRoutingHistoryCapacity = 256;
 inline constexpr std::size_t kMaxStopDeliveriesPerHit = 128;
+inline constexpr std::size_t kMaxLogicalStopSubscriptions = 4096;
 inline constexpr std::size_t kMaxCpuObserversPerHit = 32;
 
 struct StopPointCpuContext
@@ -214,6 +215,11 @@ public:
     [[nodiscard]] StopDispatchGeneration dispatch_generation() const noexcept
     {
         return dispatch_generation_;
+    }
+
+    [[nodiscard]] PhysicalPlanGeneration physical_generation() const noexcept
+    {
+        return physical_manager_.generation();
     }
 
     [[nodiscard]] bool ingress_enabled() const noexcept

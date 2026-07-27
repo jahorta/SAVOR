@@ -245,7 +245,9 @@ queue, claim, workflow, transaction, or artifact-storage contract.
 `InteractiveResume` is the sole intentionally unbounded engine operation. The concrete JIT64 backend
 reports exact guest-instruction stepping unsupported before mutation. It does not switch temporarily to
 Interpreter and does not call a JIT block an instruction. Production `ProgramInvocation`, DB-backed
-visual replay, SavorQt wiring, and production input advancement remain unavailable.
+visual replay, and SavorQt wiring remain unavailable. Production input advancement was deliberately
+unsupported at the Slice 3 checkpoint and is supplied by Slice 4's `InputArbiter` without moving pad
+publication into the engine.
 
 **Completion checks:**
 
@@ -261,45 +263,70 @@ Do not run production-worker SavorE2E for this slice. `ProgramInvocation` remain
 unadvertised until the later runtime, program-migration, and adapter slices restore it.
 
 The completed checkpoint centralizes post-open advancement in the session-owned engine, adds the
-capability-gated Ready-session WRMS control seam, keeps exact JIT64 guest-instruction stepping and
-production input advancement unsupported, and leaves `ProgramInvocation` unavailable. Full Debug and
+capability-gated Ready-session WRMS control seam, keeps exact JIT64 guest-instruction stepping
+unsupported, and leaves `ProgramInvocation` unavailable. Full Debug and
 Release x64 solution builds, focused and retained guards, and the headless recurring-`0x801DC288` JIT64
 integration guard passed without creating or controlling a GUI.
 
-### Dependency slice 4: input, state, mutation, capture, and scoped-resource services
+### Dependency slice 4: scoped session services (implemented)
 
-**Implement:**
+Slice 4 establishes generic session services and hard-disconnects the corresponding legacy VM escape
+hatches. It does not restore `ProgramInvocation`.
 
-- implement `InputArbiter` leases, priority, suspension, neutral restoration, and guest-observed
-  acknowledgement;
-- implement `StateService` with explicit baseline/state handles, immutable state artifacts, and monotonic
-  epoch invalidation;
-- implement checked `GuestMutationService` data writes, masked writes, reversible executable patches,
-  preconditions, readback, cache/JIT handling, restoration receipts, and taint;
-- extract movie, screenshot, and telemetry services;
-- place the existing `savor.capture.profile/1` parser and all current profile execution semantics behind
-  passive `CaptureService`, without translating profiles into program IR or inventing a replacement
-  capture language;
-- introduce the shared structured scope/defer stack used by all effects; and
-- introduce modular game capability packs rather than one growing game facade.
+- `StateService` is the sole authority for boot/reboot/restore and worker-local `StateEpoch`. It owns
+  bounded immutable memory handles and caller-declared immutable file artifacts with SHA-256,
+  runtime/disc compatibility, parent/edge/producer lineage, and optional exact movie continuation.
+  Successful replacement advances the epoch exactly once; recoverable failure rolls back without
+  advancing, while unproven post-replacement integrity keeps the new epoch and taints the session.
+- A read-only checkpoint embeds the exact DTM history and verified SHA-256, game identity,
+  starts-from-savestate fact, and any known input/frame continuation. External import is explicit:
+  `NoMovie` and `ReadOnlyPlayback` are supported, while `Unspecified` and `Recording` are rejected. On
+  restore, the backend materializes and hash-validates the embedded DTM before state mutation; an
+  already-active read-only movie must have the same tracked DTM identity, and commit verifies the
+  prepared identity, resulting mode, and any known cursor. Dolphin restores an unknown cursor from the
+  savestate, and `MovieService` records the authoritative observed position. No file artifact captures
+  or restores an in-progress recording; only a same-session in-memory handle may rewind one.
+- `MovieService` validates and stages `Movie::PlayInput` before the single backend boot when initial
+  playback is supplied through `SessionOpenOptions`. The same request on an already-open session
+  legitimately uses a `StateService` reboot. Both paths propagate a DTM starting savestate, verify the
+  resulting mode, and hold an unsuspendable movie-exclusive input reservation. Recording finalization
+  publishes a new caller-declared DTM and any `<dtm>.sav` companion.
+- `InputArbiter` owns epoch-bound leases and the sole pad-publication path. It supports priority,
+  suspension, fresh publication tokens, poll acknowledgement, two-phase neutral release,
+  movie-exclusive reservation, bounded `IInputAdvancePort` retries, and both interruption-borrow
+  policies: preserve held input until borrower publication, or consume a fresh typed neutral witness
+  issued by the arbiter for the exact parent lease/publication/epoch.
+- `GuestMemory` supplies paused, epoch-checked generic reads. `GuestMutationService` supplies checked
+  `u8`/`u16`/`u32` and masked data writes plus aligned executable patches. Data mutations restore unless
+  explicitly committed; executable patches are always reversible and require symmetric JIT/cache
+  invalidation and readback.
+- One session-owned `CaptureService` accepts at most one opaque `savor.capture.profile/1` attachment.
+  It preserves the existing profile parser and behavior behind passive router observation, performs
+  actor-side dynamic reconciliation, survives restore by rebinding at the new epoch, and finalizes once
+  on detach/shutdown. Mandatory finalization failure taints the session, blocks another attachment and
+  session reuse, and requires a full rebuild. Capture cannot create a wake or advance Dolphin.
+- `ScreenshotService` owns one synchronous actor-thread bounded screenshot request. Active in-flight
+  cancellation remains deferred until nonblocking backend/actor ingress exists. `TelemetryBus` owns
+  bounded/coalescing diagnostics, preserves monotonic sequence order when a coalesced replacement takes
+  its fresh chronological position, and fails closed on required-event overflow.
+- A standalone actor-owned `SessionResourceLedger` owns session/synthetic scopes, atomic typed receipt
+  registration, promotion, reverse-order unwind, cleanup continuations, state-epoch end/rebind policy,
+  and clean/diagnostic/taint disposition. Slice 5 maps invocation scopes onto this same ledger.
 
-`CaptureService` preserves current subscriptions, filters/predicate bytecode, address programs,
-activation/dynamic watchpoints, PC and post-write sampling, sampling policies and ordering,
-one-shot/max-hit behavior, windows, flight recorders, trace buffers, queue/drop/coalescing behavior,
-progress, event ordering, and artifact finalization. `StopPointRouter` and `ExecutionEngine` own all
-wake/control authority. Capture observes their matched routed event so legacy profile `control`
-subscriptions, control flags/metrics, control-triggered windows/recorders, and synthetic control events
-keep their existing meaning under one sequence/snapshot/epoch identity.
+Game capability packs are not part of Slice 4. They arrive with the typed action/module surface in Slice
+5 and consume these narrow generic services. No broad game facade or placeholder pack is introduced.
 
-**Completion checks:**
+Focused validation covers the service contracts with deterministic backends, actor/thread checks,
+fault injection, and headless ownership guards. A JIT64 executable-patch guard at recurring
+`0x801DC288` is the narrow live target: validate expected instruction, apply NOP, invalidate/read back,
+restore/invalidate, and never advance while patched. Live state-plus-DTM continuation and live
+post-write capture remain deferred until deterministic program execution/input can reach authoritative
+witnesses without a GUI or user observation.
 
-- input, router subscriptions, captures, movies, state handles, data writes, and code patches all unwind
-  on return, failure, timeout, and cancellation;
-- injected restoration failures taint and retire the session;
-- stale epoch-bound handles fail closed;
-- BattleSingleTurn's RNG override is expressed through the generic mutation service; and
-- compatibility tests cover every retained capture-profile policy, while no profile grants control or
-  creates a foreground wait.
+This slice adds no WRMS message or worker capability, no project or project reference, and no SavorDb
+schema, migration, persistence, database-service, queue, claim, workflow, transaction, or artifact-store
+change. Production `ProgramInvocation`, capability packs, DB work, and production-worker SavorE2E remain
+unavailable.
 
 ### Dependency slice 5: canonical typed ProgramRuntime
 
@@ -307,6 +334,8 @@ keep their existing meaning under one sequence/snapshot/epoch identity.
 
 - implement `ProgramDefinitionStore`, `ProgramVerifier`, `ProgramExecutor`, `ActionRegistry`, and
   `TypeSchemaRegistry` under `ProgramRuntime`;
+- register the first modular `soa.battle`, `soa.field`, `soa.navigation`, `soa.cutscene`, and
+  `soa.overworld` capability packs over Slice 4's narrow generic services, without a broad game facade;
 - implement immutable `ProgramModule`, typed CFG/basic-block IR, functions/subprograms, core instructions,
   structured unwind, and one action-await boundary;
 - implement `ProgramInstance` as data containing control stack, locals, pending continuation, scopes,
@@ -550,8 +579,8 @@ existing E2E baseline + just-in-time characterization
   -> serialized worker/session ownership + WRMS process/session protocol
   -> physical stop ownership/router
   -> execution ownership
-  -> scoped services
-  -> universal program runtime
+  -> scoped generic services
+  -> universal program runtime + modular capability packs
   -> current-phase migration
   -> invocation/result handler-adapter cutover
   -> legacy deletion

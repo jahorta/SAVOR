@@ -9,6 +9,7 @@
 #include <set>
 #include <stdexcept>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 
 namespace savor::runtime {
@@ -441,11 +442,11 @@ namespace {
         return Error(StopPointErrorCode::InvalidArgument, "Stop source stable name is required");
     if (definition.subscriptions.empty())
         return Error(StopPointErrorCode::InvalidArgument, "A subscription group cannot be empty");
-    if (definition.subscriptions.size() > kMaxStopDeliveriesPerHit)
+    if (definition.subscriptions.size() > kMaxLogicalStopSubscriptions)
     {
         return Error(
             StopPointErrorCode::InvalidArgument,
-            "A subscription group exceeds the fixed per-hit delivery capacity");
+            "A subscription group exceeds the bounded logical capacity");
     }
 
     std::set<std::uint64_t> subscription_ids;
@@ -751,6 +752,88 @@ namespace {
         return lhs.subscription_ordinal < rhs.subscription_ordinal;
     });
     return snapshot;
+}
+
+[[nodiscard]] StopPointError ValidateSnapshotMatchCapacity(
+    const DispatchSnapshot& snapshot)
+{
+    const auto validate_context = [&](const StopPointCpuContext& context) {
+        std::size_t matches = 0;
+        std::set<std::uint32_t> samples;
+        std::set<std::uint32_t> observers;
+        for (const DispatchEntry& entry : snapshot.entries)
+        {
+            if (!PointMatches(entry.point, context))
+                continue;
+            ++matches;
+            samples.insert(
+                entry.sample_descriptor_ids.begin(),
+                entry.sample_descriptor_ids.end());
+            if (entry.cpu_observer_descriptor_id != 0)
+                observers.insert(entry.cpu_observer_descriptor_id);
+        }
+        if (matches > kMaxStopDeliveriesPerHit)
+        {
+            return Error(
+                StopPointErrorCode::InvalidArgument,
+                "A physical hit can exceed the fixed delivery capacity");
+        }
+        if (samples.size() > kMaxRoutedHitSamples)
+        {
+            return Error(
+                StopPointErrorCode::InvalidArgument,
+                "A physical hit can exceed the fixed sample capacity");
+        }
+        if (observers.size() > kMaxCpuObserversPerHit)
+        {
+            return Error(
+                StopPointErrorCode::InvalidArgument,
+                "A physical hit can exceed the trusted observer capacity");
+        }
+        return StopPointError{};
+    };
+
+    for (const DispatchEntry& entry : snapshot.entries)
+    {
+        StopPointError error;
+        std::visit(
+            [&](const auto& point) {
+                using Point = std::decay_t<decltype(point)>;
+                if constexpr (std::is_same_v<Point, PcStopPointSpec>)
+                {
+                    StopPointCpuContext context;
+                    context.path = NativeStopPath::Jit;
+                    context.pc = point.pc;
+                    error = validate_context(context);
+                }
+                else if constexpr (std::is_same_v<Point, MemoryStopPointSpec>)
+                {
+                    const auto check_access = [&](bool write) {
+                        StopPointCpuContext context;
+                        context.path = NativeStopPath::Memcheck;
+                        context.address = point.address;
+                        context.size = 1;
+                        context.write = write;
+                        return validate_context(context);
+                    };
+                    if (point.access != StopMemoryAccess::Write)
+                        error = check_access(false);
+                    if (!error && point.access != StopMemoryAccess::Read)
+                        error = check_access(true);
+                }
+                else
+                {
+                    StopPointCpuContext context;
+                    context.path = NativeStopPath::Synthetic;
+                    context.synthetic_identity = point.identity;
+                    error = validate_context(context);
+                }
+            },
+            entry.point);
+        if (error)
+            return error;
+    }
+    return {};
 }
 
 [[nodiscard]] StopRouteReceipt FailureRoute(
@@ -1126,8 +1209,6 @@ namespace {
 {
     std::optional<std::uint64_t> wake_group;
     std::set<std::uint64_t> subscription_ids;
-    std::set<std::uint32_t> all_sample_ids;
-    std::set<std::uint32_t> all_observer_ids;
     std::size_t entry_count = 0;
     for (const auto& [group_id, group] : groups)
     {
@@ -1149,33 +1230,14 @@ namespace {
                     StopPointErrorCode::InvalidArgument,
                     "Subscription IDs must be unique across active groups");
             }
-            for (const std::uint32_t id : subscription.definition.sample_descriptor_ids)
-                all_sample_ids.insert(id);
-            if (subscription.definition.cpu_observer_descriptor_id != 0)
-            {
-                all_observer_ids.insert(
-                    subscription.definition.cpu_observer_descriptor_id);
-            }
             ++entry_count;
         }
     }
-    if (entry_count > kMaxStopDeliveriesPerHit)
+    if (entry_count > kMaxLogicalStopSubscriptions)
     {
         return Error(
             StopPointErrorCode::InvalidArgument,
-            "Active subscriptions exceed the fixed per-hit delivery capacity");
-    }
-    if (all_sample_ids.size() > kMaxRoutedHitSamples)
-    {
-        return Error(
-            StopPointErrorCode::InvalidArgument,
-            "Active subscriptions exceed the unique hit-time sample capacity");
-    }
-    if (all_observer_ids.size() > kMaxCpuObserversPerHit)
-    {
-        return Error(
-            StopPointErrorCode::InvalidArgument,
-            "Active subscriptions exceed the trusted CPU observer capacity");
+            "Active subscriptions exceed the bounded logical capacity");
     }
     return {};
 }
@@ -1233,6 +1295,16 @@ struct CandidateApplyReceipt
     try
     {
         snapshot = BuildSnapshot(candidate, epoch, next, {});
+        if (StopPointError capacity =
+                ValidateSnapshotMatchCapacity(*snapshot))
+        {
+            return {
+                false,
+                current_generation,
+                physical_manager.generation(),
+                PhysicalStopIntegrity::Preserved,
+                std::move(capacity)};
+        }
         const bool unchanged_physical =
             !force_physical_reconcile &&
             physical_manager.has_exact_plan() &&
@@ -2327,8 +2399,7 @@ namespace {
     std::array<std::uint16_t, kMaxStopDeliveriesPerHit> candidates{};
     std::size_t candidate_count = 0;
     for (std::size_t i = 0;
-        i < packet.snapshot->entries.size() &&
-        candidate_count < candidates.size();
+        i < packet.snapshot->entries.size();
         ++i)
     {
         const DispatchEntry& entry = packet.snapshot->entries[i];
@@ -2344,6 +2415,13 @@ namespace {
                 !evaluator->Qualify(entry.qualification_id, context)))
         {
             continue;
+        }
+        if (candidate_count >= candidates.size())
+        {
+            packet.terminal = StopRouteTerminal::Overflow;
+            packet.request_break = true;
+            packet.event.authoritative = true;
+            return packet;
         }
         if (entry.cpu_observer_descriptor_id != 0)
         {

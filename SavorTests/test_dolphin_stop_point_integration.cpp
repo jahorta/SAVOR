@@ -3,6 +3,7 @@
 #include "Runner/Runtime/DolphinWrapperBackend.h"
 #include "Runner/Runtime/EmulationSession.h"
 #include "../SavorProbe/NativeStopHooks.h"
+#include "../SavorProbe/ProbeProfile.h"
 #include "serial_guard.h"
 
 #include <algorithm>
@@ -17,6 +18,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -175,6 +177,24 @@ private:
     };
 }
 
+[[nodiscard]] std::string MakeLiveCaptureProfile()
+{
+    savor::probe::Profile profile;
+    profile.name = "slice4-live-recurring-pc";
+    profile.revision = 1;
+    profile.expected_module_sha256 =
+        savor::probe::current_module_sha256();
+    profile.probes = {
+        savor::probe::ProbeDefinition{
+            .id = "game_mode_controller",
+            .kind = savor::probe::ProbeKind::Pc,
+            .subscriptions = savor::probe::Subscription::Capture,
+            .address = kGameModeControllerPc,
+        },
+    };
+    return savor::probe::serialize_profile_json(profile);
+}
+
 [[nodiscard]] std::optional<ExecutionTerminalResult> DriveUntilTerminal(
     EmulationSession& session,
     std::atomic<std::uint64_t>& notification_counter,
@@ -278,6 +298,57 @@ TEST(
 
     ASSERT_EQ(session.snapshot().core_state, BackendCoreState::Paused);
 
+    // Exercise the production mutation seam while the guest is paused. The
+    // executable patch must be checked, invalidated, read back, restored, and
+    // invalidated again without advancing Dolphin while patched.
+    GuestMemory* const memory = session.guest_memory();
+    GuestMutationService* const mutations = session.guest_mutations();
+    ASSERT_NE(memory, nullptr);
+    ASSERT_NE(mutations, nullptr);
+    const GuestReadReceipt original_instruction = memory->ReadScalar(
+        kGameModeControllerPc,
+        GuestScalarWidth::U32,
+        StateEpoch(1));
+    ASSERT_TRUE(original_instruction.ok)
+        << original_instruction.message;
+    ASSERT_EQ(original_instruction.value, 0x9421fff0u);
+    const ExecutionSnapshot before_patch =
+        session.execution_snapshot();
+    const GuestMutationReceipt patch = mutations->Apply({
+        .owner = MutationOwnerId(0x7101u),
+        .scope = MutationScopeId(0x7101u),
+        .epoch = StateEpoch(1),
+        .address = kGameModeControllerPc,
+        .expected = original_instruction.value,
+        .replacement = 0x60000000u,
+        .mask = 0xffffffffu,
+        .kind = GuestMutationKind::ExecutablePatch,
+    });
+    ASSERT_TRUE(patch.ok) << patch.message;
+    const GuestReadReceipt patched_instruction = memory->ReadScalar(
+        kGameModeControllerPc,
+        GuestScalarWidth::U32,
+        StateEpoch(1));
+    ASSERT_TRUE(patched_instruction.ok);
+    EXPECT_EQ(patched_instruction.value, 0x60000000u);
+    EXPECT_EQ(
+        session.execution_snapshot().evidence.vi_count,
+        before_patch.evidence.vi_count);
+    const GuestMutationReceipt restored_patch =
+        mutations->Restore(patch.mutation, StateEpoch(1));
+    ASSERT_TRUE(restored_patch.ok) << restored_patch.message;
+    const GuestReadReceipt restored_instruction = memory->ReadScalar(
+        kGameModeControllerPc,
+        GuestScalarWidth::U32,
+        StateEpoch(1));
+    ASSERT_TRUE(restored_instruction.ok);
+    EXPECT_EQ(
+        restored_instruction.value,
+        original_instruction.value);
+    EXPECT_EQ(
+        session.execution_snapshot().evidence.vi_count,
+        before_patch.evidence.vi_count);
+
     // The concrete JIT64 backend must reject exact guest-instruction
     // stepping before it mutates Dolphin or any stop-point state.
     const ExecutionSnapshot before_instruction_rejection =
@@ -341,6 +412,20 @@ TEST(
         initial_step_terminal->evidence.vi_count,
         initial_evidence.vi_count);
 
+    CaptureService* const capture = session.capture_service();
+    ASSERT_NE(capture, nullptr);
+    savor::probe::SessionOptions capture_options;
+    capture_options.capture_path =
+        temporary.path() / "recurring-pc.scap";
+    const CaptureServiceReceipt capture_attached =
+        capture->Attach({
+            .profile_json = MakeLiveCaptureProfile(),
+            .options = std::move(capture_options),
+            .expected_epoch = StateEpoch(1),
+        });
+    ASSERT_TRUE(capture_attached.ok)
+        << capture_attached.error.message;
+
     RecordingStopConsumer observe_consumer;
     auto observe_registration = router->RegisterGroup(MakePcGroup(
         kObserveGroup,
@@ -394,19 +479,16 @@ TEST(
     EXPECT_FALSE(router->authoritative_overflowed());
     EXPECT_EQ(router->passive_drop_count(), 0u);
 
-    ASSERT_EQ(first_wake.deliveries.size(), 2u);
-    EXPECT_EQ(
-        first_wake.deliveries[0].delivery,
-        StopDeliveryMode::Observe);
-    EXPECT_EQ(
-        first_wake.deliveries[1].delivery,
-        StopDeliveryMode::Wake);
-    ExpectSameIdentity(
-        first_wake.deliveries[0].event.identity,
-        first_wake.deliveries[1].event.identity);
-    ExpectSameIdentity(
-        event.identity,
-        first_wake.deliveries[0].event.identity);
+    ASSERT_GE(first_wake.deliveries.size(), 3u);
+    const auto wake_delivery = std::find_if(
+        first_wake.deliveries.begin(),
+        first_wake.deliveries.end(),
+        [](const StopDelivery& delivery) {
+            return delivery.delivery == StopDeliveryMode::Wake;
+        });
+    ASSERT_NE(wake_delivery, first_wake.deliveries.end());
+    for (const StopDelivery& delivery : first_wake.deliveries)
+        ExpectSameIdentity(event.identity, delivery.event.identity);
 
     ASSERT_EQ(observe_consumer.deliveries.size(), 1u);
     EXPECT_EQ(session.snapshot().core_state, BackendCoreState::Paused);
@@ -491,6 +573,13 @@ TEST(
         before_final_step);
 
     EXPECT_TRUE(observe_registration.handle.Release().ok);
+    const CaptureServiceReceipt capture_detached =
+        capture->Detach(capture_attached.attachment);
+    ASSERT_TRUE(capture_detached.ok)
+        << capture_detached.error.message;
+    EXPECT_TRUE(capture_detached.artifacts_finalized);
+    EXPECT_TRUE(std::filesystem::is_regular_file(
+        temporary.path() / "recurring-pc.scap"));
     EXPECT_TRUE(router->DesiredPhysicalPlan().pcs.empty());
     EXPECT_TRUE(router->DesiredPhysicalPlan().memory.empty());
 

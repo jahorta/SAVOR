@@ -422,6 +422,20 @@ persistence contract.
 Program code cannot catch or ignore a mandatory cleanup failure. The runtime records it and applies
 session-taint policy.
 
+The implemented `SessionResourceLedger` is a standalone actor-owned facility beneath the future
+`ProgramRuntime`, not a data structure hidden inside `ProgramExecutor`. Slice 4 initializes one session
+root and permits synthetic nested scopes so every generic service can use the cleanup boundary before
+program execution exists. Slice 5 maps invocation root, lexical, action, and defer scopes onto that same
+ledger without changing its contracts.
+
+The ledger assigns monotonic receipt/acquisition identities and records owner, service, scope,
+acquisition epoch, release descriptor, promotion policy, cleanup requirement, and one of
+`EpochAgnostic`, `EndOnEpochChange`, `RebindAfterRestore`, or `ReplacesState`. Batch acquisition is
+atomic. Scope unwind is reverse acquisition order, continues after independent failures, and may suspend
+only for a typed cleanup-execution continuation. Optional release failure yields clean-with-diagnostics;
+unproven mandatory cleanup yields taint. A successful state transaction closes or requests rebind for
+old-epoch resources before accepting the new epoch.
+
 ### ProgramInstance
 
 `ProgramInstance` is mutable execution data for exactly one invocation. It contains:
@@ -463,7 +477,8 @@ The worker has one `ProgramRuntime` composed of:
 
 These are services inside one subsystem, not alternate executors. `ProgramDefinitionStore` is not the
 DB workflow phase-adapter registry. `ActionRegistry` stores capability implementations, not arbitrary
-phase factories.
+phase factories. `ProgramRuntime` drives the session-owned resource ledger for invocation scopes and
+receipts; it does not implement a second cleanup ledger.
 
 For this refactor, `ProgramDefinitionStore` is a worker/runtime catalog and cache backed by compiled or
 packaged definitions. It is not SavorDb persistence.
@@ -538,7 +553,7 @@ The target replaces these current public assumptions:
 | Current assumption | Target boundary |
 |---|---|
 | `PhaseScript` is a flat op vector plus breakpoint sets | `ProgramModule` is an immutable typed CFG plus exact imports |
-| `PSInit` implicitly loads one savestate and captures one baseline | `ProgramInvocation` declares state policy; `StateService` performs it |
+| `PSInit` implicitly loads one savestate and captures one baseline | `ProgramInvocation` declares state policy; `StateService` performs it as the sole epoch authority using explicit handles or caller-declared immutable artifacts with hash, compatibility, lineage, and any exact DTM continuation |
 | `PSJob` combines raw payload and ambient context | Entrypoint receives one verified typed input record |
 | `PSResult` is `ok`, error byte, and context | `ProgramResult` separates infrastructure, domain, and cleanup status with typed outputs/emissions |
 | `PSContext` is inputs, locals, observations, and outputs | Each boundary has an explicit schema; frame values are typed |
@@ -607,6 +622,8 @@ execution path.
   pointer.
 - Duplicate or stale action completions cannot resume an instance.
 - Cancellation at every instruction/action suspension point takes the same verified unwind path.
+- Invocation scopes project onto the standalone session ledger, and no executor-local receipt or cleanup
+  stack can disagree with the session's reverse-order unwind, epoch transition, or taint disposition.
 - Current macro `Start`/`Advance` behavior can be represented as a typed reducer/statechart without a
   peer executor.
 - Equivalent semantic-await/observation composition and hand-authored canonical IR normalize to the

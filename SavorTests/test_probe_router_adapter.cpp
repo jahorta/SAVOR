@@ -14,6 +14,7 @@
 #include <mutex>
 #include <optional>
 #include <ranges>
+#include <string>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -271,6 +272,51 @@ TEST(CaptureRouterAdapter, LowersOnlySourceScopedPassiveRequirements)
             config.cpu_observer_descriptor_id);
         EXPECT_EQ(subscription.consumer, &adapter);
     }
+}
+
+TEST(
+    CaptureRouterAdapter,
+    LowersDispersedProfileBeyondPerHitDeliveryCapacity)
+{
+    Profile profile = BaseProfile();
+    ASSERT_FALSE(profile.expected_module_sha256.empty());
+    constexpr std::size_t kProbeCount =
+        kMaxStopDeliveriesPerHit + 9;
+    profile.probes.reserve(kProbeCount);
+    for (std::size_t i = 0; i < kProbeCount; ++i)
+    {
+        profile.probes.push_back(ProbeDefinition{
+            .id = "dispersed-" + std::to_string(i),
+            .kind = ProbeKind::Pc,
+            .subscriptions = Subscription::Capture,
+            .address =
+                kCapturePc +
+                static_cast<std::uint32_t>(i * 4),
+        });
+    }
+
+    const auto config = AdapterConfig();
+    ProbeRouterAdapter adapter(
+        Core::System::GetInstance(),
+        config);
+    std::string error;
+    ASSERT_TRUE(adapter.Start(profile, {}, &error)) << error;
+
+    auto built = adapter.BuildCurrentGroupDefinition();
+    ASSERT_TRUE(built.ok) << built.error;
+    ASSERT_EQ(
+        built.definition.subscriptions.size(),
+        kProbeCount);
+    EXPECT_EQ(
+        std::get<PcStopPointSpec>(
+            built.definition.subscriptions.front().point).pc,
+        kCapturePc);
+    EXPECT_EQ(
+        std::get<PcStopPointSpec>(
+            built.definition.subscriptions.back().point).pc,
+        kCapturePc +
+            static_cast<std::uint32_t>(
+                (kProbeCount - 1) * 4));
 }
 
 TEST(

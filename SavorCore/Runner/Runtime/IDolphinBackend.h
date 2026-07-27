@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Services/State/StateTypes.h"
+
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -11,6 +13,11 @@ namespace savor::runtime {
 
 class IPhysicalStopPointBackendPort;
 class IExecutionBackendPort;
+class IInputBackendPort;
+class IGuestMemoryBackendPort;
+class IScreenshotBackendPort;
+class IMovieBackendPort;
+class ICaptureBackendPort;
 
 enum class BackendErrorCode : std::uint16_t
 {
@@ -98,6 +105,8 @@ public:
 
     [[nodiscard]] virtual BackendCoreState QueryCoreState() const noexcept = 0;
     [[nodiscard]] virtual BackendHealthReport CheckHealth() const = 0;
+    [[nodiscard]] virtual StateCompatibilityToken
+    StateCompatibility() const = 0;
 
     virtual BackendResult RestoreStateFile(const std::filesystem::path& path) = 0;
     virtual BackendResult SaveStateFile(const std::filesystem::path& path) = 0;
@@ -115,6 +124,13 @@ public:
     // The session gives this facet only to its ExecutionEngine. Session
     // callers and program layers never receive primitive advancement access.
     [[nodiscard]] virtual IExecutionBackendPort* Execution() noexcept = 0;
+    // The session gives these facets only to their corresponding Slice 4
+    // services. Program and worker layers never receive them directly.
+    [[nodiscard]] virtual IInputBackendPort* Input() noexcept = 0;
+    [[nodiscard]] virtual IGuestMemoryBackendPort* GuestMemory() noexcept = 0;
+    [[nodiscard]] virtual IScreenshotBackendPort* Screenshots() noexcept = 0;
+    [[nodiscard]] virtual IMovieBackendPort* Movies() noexcept = 0;
+    [[nodiscard]] virtual ICaptureBackendPort* Captures() noexcept = 0;
 
 protected:
     IDolphinBackend() = default;

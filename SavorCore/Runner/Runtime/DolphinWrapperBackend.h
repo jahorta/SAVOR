@@ -2,6 +2,11 @@
 
 #include "IDolphinBackend.h"
 #include "Execution/IExecutionBackendPort.h"
+#include "Services/Input/IInputBackendPort.h"
+#include "Services/Memory/IGuestMemoryBackendPort.h"
+#include "Services/Movie/IMovieBackendPort.h"
+#include "Services/Screenshot/IScreenshotBackendPort.h"
+#include "Services/Capture/ICaptureBackendPort.h"
 #include "StopPoints/IPhysicalStopPointBackendPort.h"
 
 #include <memory>
@@ -17,7 +22,12 @@ enum class DolphinBackendCpuCore : std::uint8_t
 class DolphinWrapperBackend final
     : public IDolphinBackend,
       private IExecutionBackendPort,
-      private IPhysicalStopPointBackendPort
+      private IPhysicalStopPointBackendPort,
+      private IInputBackendPort,
+      private IGuestMemoryBackendPort,
+      private IScreenshotBackendPort,
+      private IMovieBackendPort,
+      private ICaptureBackendPort
 {
 public:
     explicit DolphinWrapperBackend(
@@ -33,6 +43,8 @@ public:
 
     [[nodiscard]] BackendCoreState QueryCoreState() const noexcept override;
     [[nodiscard]] BackendHealthReport CheckHealth() const override;
+    [[nodiscard]] StateCompatibilityToken
+    StateCompatibility() const override;
 
     BackendResult RestoreStateFile(const std::filesystem::path& path) override;
     BackendResult SaveStateFile(const std::filesystem::path& path) override;
@@ -45,6 +57,11 @@ public:
 
     [[nodiscard]] IPhysicalStopPointBackendPort* PhysicalStopPoints() noexcept override;
     [[nodiscard]] IExecutionBackendPort* Execution() noexcept override;
+    [[nodiscard]] IInputBackendPort* Input() noexcept override;
+    [[nodiscard]] IGuestMemoryBackendPort* GuestMemory() noexcept override;
+    [[nodiscard]] IScreenshotBackendPort* Screenshots() noexcept override;
+    [[nodiscard]] IMovieBackendPort* Movies() noexcept override;
+    [[nodiscard]] ICaptureBackendPort* Captures() noexcept override;
 
 private:
     [[nodiscard]] BackendExecutionCapabilityMask
@@ -56,6 +73,49 @@ private:
     BackendResult BeginFrameStep() override;
     BackendResult BeginExactInstructionStep() override;
     BackendResult SetThrottleDisabled(bool disabled) override;
+
+    [[nodiscard]] bool IsAvailable(std::uint8_t port) const noexcept override;
+    [[nodiscard]] BackendInputPublication Publish(
+        std::uint8_t port,
+        const savor::GCInputFrame& frame) override;
+    [[nodiscard]] BackendInputPoll QueryPoll(
+        std::uint8_t port) const override;
+
+    [[nodiscard]] bool IsPaused() const noexcept override;
+    [[nodiscard]] GuestBytesResult Read(
+        std::uint32_t address,
+        std::size_t size) const override;
+    BackendResult Write(
+        std::uint32_t address,
+        const std::vector<std::uint8_t>& bytes) override;
+    BackendResult InvalidateExecutableRange(
+        std::uint32_t address,
+        std::size_t size) override;
+
+    BackendResult Capture(
+        const std::filesystem::path& path,
+        std::chrono::milliseconds timeout) override;
+
+    MoviePlaybackPrepareResult PrepareReadOnlyPlaybackBeforeBoot(
+        const std::filesystem::path& dtm_path) override;
+    MovieBackendResult StopMovie() noexcept override;
+    MovieBackendResult BeginRecording() override;
+    MovieRecordingFinalizeResult FinalizeRecording(
+        const std::filesystem::path& dtm_path) override;
+    MovieBackendResult CancelRecording() noexcept override;
+    [[nodiscard]] MovieSnapshot Snapshot() const override;
+    MovieCheckpointBackendResult CaptureRecordingCheckpoint() override;
+    MovieBackendResult PrepareStateReplacement(
+        const StateReplacementContext& context) override;
+    MovieBackendResult CommitStateReplacement(
+        const StateReplacementContext& context) override;
+    MovieBackendResult RollbackStateReplacement(
+        const StateReplacementContext& context) noexcept override;
+
+    [[nodiscard]] std::unique_ptr<ICaptureProfileAdapter>
+    CreateCaptureProfileAdapter(
+        const ProbeRouterAdapterConfig& config,
+        std::string* error_out) override;
 
     PhysicalStopBackendReceipt BindNativeStopSink(
         savor::probe::INativeStopSink& sink) override;

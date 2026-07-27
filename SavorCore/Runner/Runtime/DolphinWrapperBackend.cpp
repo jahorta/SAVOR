@@ -2,12 +2,16 @@
 
 #include "../../Boot/Boot.h"
 #include "../../Core/DolphinWrapper.h"
+#include "../../Tas/DtmFile.h"
+#include "../../Utils/Hash.h"
 
 #include "Common/Buffer.h"
 #include "Common/Config/Config.h"
 #include "Core/Config/MainSettings.h"
 #include "Core/Core.h"
 #include "Core/HW/CPU.h"
+#include "Core/HW/Memmap.h"
+#include "Core/Movie.h"
 #include "Core/PowerPC/BreakPoints.h"
 
 #include "Core/PowerPC/PowerPC.h"
@@ -18,6 +22,7 @@
 #include <condition_variable>
 #include <cstring>
 #include <exception>
+#include <fstream>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -44,6 +49,138 @@ namespace {
 {
     std::error_code error;
     return std::filesystem::is_regular_file(path, error) && !error;
+}
+
+[[nodiscard]] MovieBackendResult MovieFailure(
+    std::string message,
+    StateIntegrity integrity = StateIntegrity::Preserved)
+{
+    return MovieBackendResult::Failure(
+        std::move(message),
+        integrity);
+}
+
+[[nodiscard]] bool ReadBinaryFile(
+    const std::filesystem::path& path,
+    std::vector<std::uint8_t>& bytes)
+{
+    std::ifstream input(path, std::ios::binary | std::ios::ate);
+    if (!input)
+        return false;
+    const std::streamsize size = input.tellg();
+    if (size < 0)
+        return false;
+    bytes.resize(static_cast<std::size_t>(size));
+    input.seekg(0, std::ios::beg);
+    return size == 0 ||
+        static_cast<bool>(input.read(
+            reinterpret_cast<char*>(bytes.data()),
+            size));
+}
+
+[[nodiscard]] MovieBackendResult MaterializeExactMovieHistory(
+    const MovieCheckpointMetadata& movie,
+    const std::filesystem::path& runtime_root,
+    std::filesystem::path& output)
+{
+    if (runtime_root.empty() || movie.dtm_bytes.empty() ||
+        movie.dtm_sha256.size() != 64)
+    {
+        return MovieFailure(
+            "Movie restore requires exact embedded DTM bytes, hash, and runtime root");
+    }
+    const std::string embedded_hash = hash::sha256(
+        movie.dtm_bytes.data(),
+        movie.dtm_bytes.size());
+    if (embedded_hash != movie.dtm_sha256)
+    {
+        return MovieFailure(
+            "Movie restore DTM bytes do not match the recorded SHA-256");
+    }
+
+    std::error_code error;
+    const std::filesystem::path directory =
+        runtime_root / "movie-restore";
+    std::filesystem::create_directories(directory, error);
+    if (error)
+    {
+        return MovieFailure(
+            "Movie restore staging directory could not be created: " +
+            error.message());
+    }
+    output = directory /
+        ("checkpoint-" + movie.dtm_sha256 + ".dtm");
+    if (IsRegularFile(output))
+    {
+        try
+        {
+            if (hash::sha256_of_file(output.string()) ==
+                movie.dtm_sha256)
+            {
+                return MovieBackendResult::Success();
+            }
+        }
+        catch (...)
+        {
+        }
+        std::filesystem::remove(output, error);
+        error.clear();
+    }
+
+    const std::filesystem::path staging =
+        std::filesystem::path(output.string() + ".stage");
+    std::filesystem::remove(staging, error);
+    error.clear();
+    {
+        std::ofstream stream(
+            staging,
+            std::ios::binary | std::ios::trunc);
+        if (!stream)
+            return MovieFailure("Movie restore DTM staging file could not be created");
+        stream.write(
+            reinterpret_cast<const char*>(movie.dtm_bytes.data()),
+            static_cast<std::streamsize>(movie.dtm_bytes.size()));
+        stream.flush();
+        if (!stream.good())
+        {
+            stream.close();
+            std::filesystem::remove(staging, error);
+            return MovieFailure("Movie restore DTM staging write failed");
+        }
+    }
+    try
+    {
+        if (hash::sha256_of_file(staging.string()) !=
+            movie.dtm_sha256)
+        {
+            std::filesystem::remove(staging, error);
+            return MovieFailure("Movie restore staged DTM failed hash verification");
+        }
+    }
+    catch (const std::exception& ex)
+    {
+        std::filesystem::remove(staging, error);
+        return MovieFailure(ex.what());
+    }
+    std::filesystem::rename(staging, output, error);
+    if (error)
+    {
+        std::filesystem::remove(staging, error);
+        return MovieFailure(
+            "Movie restore DTM could not be published: " +
+            error.message());
+    }
+
+    savor::tas::DtmFile dtm;
+    if (!dtm.load(output.string()) ||
+        dtm.validate().has_error() ||
+        dtm.compute_sha256() != movie.dtm_sha256)
+    {
+        std::filesystem::remove(output, error);
+        return MovieFailure(
+            "Movie restore staged DTM did not validate");
+    }
+    return MovieBackendResult::Success();
 }
 
 [[nodiscard]] PhysicalStopPointPlan ReadPhysicalPlan(Core::System& system)
@@ -397,6 +534,16 @@ struct DolphinWrapperBackend::Impl
     PauseSynchronizer pause_synchronizer;
     mutable std::uint32_t last_confirmed_pc = 0;
     int state_callback_handle = -1;
+    std::optional<std::filesystem::path> prepared_movie_path;
+    std::optional<std::filesystem::path> prepared_movie_savestate;
+    std::optional<std::string> prepared_movie_sha256;
+    std::optional<std::string> active_movie_sha256;
+    std::optional<StateReplacementContext> prepared_movie_replacement;
+    std::optional<std::string> prepared_movie_replacement_sha256;
+    bool prepared_movie_started_for_replacement = false;
+    std::vector<std::filesystem::path> owned_movie_restore_paths;
+    StateCompatibilityToken compatibility;
+    std::uint64_t movie_checkpoint_sequence = 1;
 
     void DetachStateCallback() noexcept
     {
@@ -516,8 +663,43 @@ BackendResult DolphinWrapperBackend::Open(const BackendOpenOptions& options)
     if (impl_->cpu_core == DolphinBackendCpuCore::Jit64)
         Config::SetCurrent(Config::MAIN_CPU_CORE, PowerPC::CPUCore::JIT64);
 
-    if (!wrapper->loadGame(options.iso_path.string(), true))
+    std::optional<std::string> startup_savestate;
+    if (impl_->prepared_movie_path.has_value())
     {
+        auto& movie = wrapper->system()->GetMovie();
+        movie.SetReadOnly(true);
+        std::optional<std::string> dolphin_savestate;
+        if (!movie.PlayInput(
+                impl_->prepared_movie_path->string(),
+                &dolphin_savestate))
+        {
+            wrapper.reset();
+            return BackendResult::Failure(
+                BackendErrorCode::GameLoadFailed,
+                "Dolphin failed to stage the prepared movie");
+        }
+        if (impl_->prepared_movie_savestate.has_value() !=
+                dolphin_savestate.has_value() ||
+            (dolphin_savestate.has_value() &&
+             *dolphin_savestate !=
+                 impl_->prepared_movie_savestate->string()))
+        {
+            movie.EndPlayInput(false);
+            wrapper.reset();
+            return BackendResult::Failure(
+                BackendErrorCode::GameLoadFailed,
+                "Dolphin movie startup-state discovery disagreed with the prepared DTM");
+        }
+        startup_savestate = std::move(dolphin_savestate);
+    }
+
+    if (!wrapper->loadGame(
+            options.iso_path.string(),
+            true,
+            std::move(startup_savestate)))
+    {
+        if (wrapper->system()->GetMovie().IsMovieActive())
+            wrapper->system()->GetMovie().EndPlayInput(false);
         wrapper.reset();
         return BackendResult::Failure(
             BackendErrorCode::GameLoadFailed,
@@ -591,6 +773,31 @@ BackendResult DolphinWrapperBackend::Open(const BackendOpenOptions& options)
     impl_->has_open_options = true;
     impl_->open = true;
     impl_->observed_movie_playing = false;
+    impl_->active_movie_sha256 =
+        impl_->prepared_movie_sha256;
+    impl_->prepared_movie_path.reset();
+    impl_->prepared_movie_savestate.reset();
+    impl_->prepared_movie_sha256.reset();
+    try
+    {
+        const auto disc = impl_->wrapper->getDiscInfo();
+        impl_->compatibility = {
+            .game_id = disc ? disc->game_id : std::string{},
+            .iso_sha256 =
+                hash::sha256_of_file(options.iso_path.string()),
+            .emulator_build = "dolphin-2506a",
+            .runtime_revision = "worker-runtime-slice4",
+        };
+    }
+    catch (const std::exception& ex)
+    {
+        (void)Close();
+        return BackendResult::Failure(
+            BackendErrorCode::OperationFailed,
+            std::string("Failed to establish state compatibility: ") +
+                ex.what(),
+            BackendIntegrity::Unknown);
+    }
     return BackendResult::Success();
 }
 
@@ -646,6 +853,7 @@ BackendResult DolphinWrapperBackend::Reboot()
     impl_->wrapper.reset();
     impl_->open = false;
     impl_->observed_movie_playing = false;
+    impl_->active_movie_sha256.reset();
     impl_->owned_physical_plan = {};
     BackendResult result = Open(options);
     if (!result.ok)
@@ -669,6 +877,22 @@ BackendResult DolphinWrapperBackend::Close()
         impl_->physical_generation = {};
         impl_->open = false;
         impl_->observed_movie_playing = false;
+        impl_->active_movie_sha256.reset();
+        impl_->prepared_movie_path.reset();
+        impl_->prepared_movie_savestate.reset();
+        impl_->prepared_movie_sha256.reset();
+        impl_->prepared_movie_replacement.reset();
+        impl_->prepared_movie_replacement_sha256.reset();
+        impl_->prepared_movie_started_for_replacement = false;
+        for (const auto& path : impl_->owned_movie_restore_paths)
+        {
+            std::error_code ignored;
+            std::filesystem::remove(path, ignored);
+            std::filesystem::remove(
+                std::filesystem::path(path.string() + ".stage"),
+                ignored);
+        }
+        impl_->owned_movie_restore_paths.clear();
         impl_->ResetPauseConfirmation(false);
         return BackendResult::Success();
     }
@@ -694,6 +918,22 @@ BackendResult DolphinWrapperBackend::Close()
         impl_->wrapper.reset();
         impl_->open = false;
         impl_->observed_movie_playing = false;
+        impl_->active_movie_sha256.reset();
+        impl_->prepared_movie_path.reset();
+        impl_->prepared_movie_savestate.reset();
+        impl_->prepared_movie_sha256.reset();
+        impl_->prepared_movie_replacement.reset();
+        impl_->prepared_movie_replacement_sha256.reset();
+        impl_->prepared_movie_started_for_replacement = false;
+        for (const auto& path : impl_->owned_movie_restore_paths)
+        {
+            std::error_code ignored;
+            std::filesystem::remove(path, ignored);
+            std::filesystem::remove(
+                std::filesystem::path(path.string() + ".stage"),
+                ignored);
+        }
+        impl_->owned_movie_restore_paths.clear();
         impl_->ResetPauseConfirmation(false);
         impl_->owned_physical_plan = {};
         impl_->physical_generation = {};
@@ -747,6 +987,12 @@ BackendHealthReport DolphinWrapperBackend::CheckHealth() const
     if (state == BackendCoreState::Stopped)
         return {false, state, "Dolphin core is stopped"};
     return {true, state, {}};
+}
+
+StateCompatibilityToken
+DolphinWrapperBackend::StateCompatibility() const
+{
+    return impl_->compatibility;
 }
 
 BackendExecutionCapabilityMask
@@ -1005,6 +1251,631 @@ IPhysicalStopPointBackendPort* DolphinWrapperBackend::PhysicalStopPoints() noexc
 IExecutionBackendPort* DolphinWrapperBackend::Execution() noexcept
 {
     return this;
+}
+
+IInputBackendPort* DolphinWrapperBackend::Input() noexcept
+{
+    return this;
+}
+
+IGuestMemoryBackendPort* DolphinWrapperBackend::GuestMemory() noexcept
+{
+    return this;
+}
+
+IScreenshotBackendPort* DolphinWrapperBackend::Screenshots() noexcept
+{
+    return this;
+}
+
+IMovieBackendPort* DolphinWrapperBackend::Movies() noexcept
+{
+    return this;
+}
+
+ICaptureBackendPort* DolphinWrapperBackend::Captures() noexcept
+{
+    return this;
+}
+
+MoviePlaybackPrepareResult
+DolphinWrapperBackend::PrepareReadOnlyPlaybackBeforeBoot(
+    const std::filesystem::path& dtm_path)
+{
+    if (dtm_path.empty() || !IsRegularFile(dtm_path))
+    {
+        return {
+            MovieFailure("A readable DTM path is required"),
+            std::nullopt};
+    }
+    if (impl_->prepared_movie_path.has_value())
+    {
+        return {
+            MovieFailure("Another movie is already prepared"),
+            std::nullopt};
+    }
+
+    savor::tas::DtmFile dtm;
+    if (!dtm.load(dtm_path.string()) ||
+        dtm.validate().has_error())
+    {
+        return {
+            MovieFailure("The DTM could not be validated"),
+            std::nullopt};
+    }
+    const bool starts_from_state =
+        dtm.info().starts_from_savestate;
+    std::optional<std::filesystem::path> state;
+    if (starts_from_state)
+    {
+        state = std::filesystem::path(dtm_path.string() + ".sav");
+        if (!IsRegularFile(*state))
+        {
+            return {
+                MovieFailure(
+                    "The DTM requires a readable <dtm>.sav companion"),
+                std::nullopt};
+        }
+    }
+    impl_->prepared_movie_path = dtm_path;
+    impl_->prepared_movie_savestate = state;
+    impl_->prepared_movie_sha256 = dtm.compute_sha256();
+    return {MovieBackendResult::Success(), std::move(state)};
+}
+
+MovieBackendResult DolphinWrapperBackend::StopMovie() noexcept
+{
+    try
+    {
+        impl_->prepared_movie_path.reset();
+        impl_->prepared_movie_savestate.reset();
+        impl_->prepared_movie_sha256.reset();
+        impl_->active_movie_sha256.reset();
+        if (!impl_->wrapper)
+            return MovieBackendResult::Success();
+        auto& movie = impl_->wrapper->system()->GetMovie();
+        if (movie.IsMovieActive())
+            movie.EndPlayInput(false);
+        movie.SetReadOnly(true);
+        return MovieBackendResult::Success();
+    }
+    catch (const std::exception& ex)
+    {
+        return MovieFailure(ex.what(), StateIntegrity::Unknown);
+    }
+    catch (...)
+    {
+        return MovieFailure(
+            "Dolphin movie shutdown threw",
+            StateIntegrity::Unknown);
+    }
+}
+
+MovieBackendResult DolphinWrapperBackend::BeginRecording()
+{
+    if (BackendResult open = impl_->RequireOpen(); !open.ok)
+        return MovieFailure(std::move(open.message));
+    auto& movie = impl_->wrapper->system()->GetMovie();
+    if (movie.IsMovieActive())
+        return MovieFailure("A Dolphin movie is already active");
+    Movie::ControllerTypeArray controllers{};
+    controllers[0] = Movie::ControllerType::GC;
+    Movie::WiimoteEnabledArray wiimotes{};
+    movie.SetReadOnly(false);
+    if (!movie.BeginRecordingInput(controllers, wiimotes))
+    {
+        movie.SetReadOnly(true);
+        return MovieFailure("Dolphin rejected movie recording");
+    }
+    impl_->active_movie_sha256.reset();
+    return MovieBackendResult::Success();
+}
+
+MovieRecordingFinalizeResult
+DolphinWrapperBackend::FinalizeRecording(
+    const std::filesystem::path& dtm_path)
+{
+    if (BackendResult open = impl_->RequireOpen(); !open.ok)
+        return {MovieFailure(std::move(open.message)), std::nullopt};
+    auto& movie = impl_->wrapper->system()->GetMovie();
+    if (!movie.IsRecordingInput())
+    {
+        return {
+            MovieFailure("No Dolphin recording is active"),
+            std::nullopt};
+    }
+    try
+    {
+        movie.SaveRecording(dtm_path.string());
+        if (!IsRegularFile(dtm_path))
+        {
+            return {
+                MovieFailure("Dolphin did not publish the recording"),
+                std::nullopt};
+        }
+        const std::filesystem::path state(
+            dtm_path.string() + ".sav");
+        std::optional<std::filesystem::path> starting_state;
+        if (IsRegularFile(state))
+            starting_state = state;
+        movie.EndPlayInput(false);
+        movie.SetReadOnly(true);
+        impl_->active_movie_sha256.reset();
+        return {
+            MovieBackendResult::Success(),
+            std::move(starting_state)};
+    }
+    catch (const std::exception& ex)
+    {
+        return {
+            MovieFailure(ex.what(), StateIntegrity::Unknown),
+            std::nullopt};
+    }
+    catch (...)
+    {
+        return {
+            MovieFailure(
+                "Dolphin recording finalization threw",
+                StateIntegrity::Unknown),
+            std::nullopt};
+    }
+}
+
+MovieBackendResult DolphinWrapperBackend::CancelRecording() noexcept
+{
+    return StopMovie();
+}
+
+MovieSnapshot DolphinWrapperBackend::Snapshot() const
+{
+    if (!impl_->wrapper)
+        return {};
+    const auto& movie = impl_->wrapper->system()->GetMovie();
+    MovieActivity activity = MovieActivity::Inactive;
+    if (movie.IsPlayingInput())
+        activity = MovieActivity::ReadOnlyPlayback;
+    else if (movie.IsRecordingInput())
+        activity = MovieActivity::Recording;
+    return {
+        .activity = activity,
+        .read_only = movie.IsReadOnly(),
+        .ended = activity == MovieActivity::Inactive &&
+            impl_->observed_movie_playing,
+        .current_frame = movie.GetCurrentFrame(),
+        .current_input_count = movie.GetCurrentInputCount(),
+    };
+}
+
+MovieCheckpointBackendResult
+DolphinWrapperBackend::CaptureRecordingCheckpoint()
+{
+    if (BackendResult open = impl_->RequireOpen(); !open.ok)
+        return {MovieFailure(std::move(open.message)), {}};
+    auto& movie = impl_->wrapper->system()->GetMovie();
+    if (!movie.IsRecordingInput())
+    {
+        return {
+            MovieFailure("No Dolphin recording is active"),
+            {}};
+    }
+
+    try
+    {
+        const auto directory =
+            impl_->last_open_options.runtime_root /
+            "movie-checkpoints";
+        std::error_code error;
+        std::filesystem::create_directories(directory, error);
+        if (error)
+        {
+            return {
+                MovieFailure(
+                    "Movie checkpoint directory could not be created"),
+                {}};
+        }
+        const auto path = directory /
+            ("recording-" +
+             std::to_string(impl_->movie_checkpoint_sequence++) +
+             ".dtm");
+        movie.SaveRecording(path.string());
+
+        savor::tas::DtmFile dtm;
+        if (!dtm.load(path.string()) ||
+            dtm.validate().has_error())
+        {
+            std::filesystem::remove(path, error);
+            return {
+                MovieFailure(
+                    "Dolphin recording checkpoint could not be validated"),
+                {}};
+        }
+        MovieCheckpointMetadata checkpoint;
+        checkpoint.mode = MovieCheckpointMode::Recording;
+        checkpoint.dtm_sha256 = dtm.compute_sha256();
+        const auto info = dtm.info();
+        checkpoint.game_id.assign(
+            info.game_id.data(),
+            info.game_id.size());
+        checkpoint.dtm_bytes = dtm.bytes();
+        checkpoint.current_frame = movie.GetCurrentFrame();
+        checkpoint.current_input_count =
+            movie.GetCurrentInputCount();
+        checkpoint.starts_from_savestate =
+            info.starts_from_savestate;
+        std::filesystem::remove(path, error);
+        std::filesystem::remove(
+            std::filesystem::path(path.string() + ".sav"),
+            error);
+        return {
+            MovieBackendResult::Success(),
+            std::move(checkpoint)};
+    }
+    catch (const std::exception& ex)
+    {
+        return {
+            MovieFailure(ex.what(), StateIntegrity::Unknown),
+            {}};
+    }
+    catch (...)
+    {
+        return {
+            MovieFailure(
+                "Dolphin recording checkpoint capture threw",
+                StateIntegrity::Unknown),
+            {}};
+    }
+}
+
+MovieBackendResult DolphinWrapperBackend::PrepareStateReplacement(
+    const StateReplacementContext& context)
+{
+    if (impl_->prepared_movie_replacement.has_value())
+        return MovieFailure("A movie state replacement is already prepared");
+    impl_->prepared_movie_replacement = context;
+    impl_->prepared_movie_started_for_replacement = false;
+    impl_->prepared_movie_replacement_sha256.reset();
+
+    if (context.kind == StateReplacementKind::Boot ||
+        context.kind == StateReplacementKind::Reboot ||
+        !context.movie.has_value() ||
+        !impl_->wrapper)
+    {
+        return MovieBackendResult::Success();
+    }
+
+    const MovieSnapshot current = Snapshot();
+    if (context.movie->mode ==
+        MovieCheckpointMode::ReadOnlyPlayback)
+    {
+        std::filesystem::path exact_dtm;
+        MovieBackendResult materialized =
+            MaterializeExactMovieHistory(
+                *context.movie,
+                impl_->last_open_options.runtime_root,
+                exact_dtm);
+        if (!materialized.ok)
+        {
+            impl_->prepared_movie_replacement.reset();
+            return materialized;
+        }
+        if (std::ranges::find(
+                impl_->owned_movie_restore_paths,
+                exact_dtm) ==
+            impl_->owned_movie_restore_paths.end())
+        {
+            impl_->owned_movie_restore_paths.push_back(exact_dtm);
+        }
+
+        if (current.activity == MovieActivity::ReadOnlyPlayback)
+        {
+            if (!impl_->active_movie_sha256.has_value() ||
+                *impl_->active_movie_sha256 !=
+                    context.movie->dtm_sha256)
+            {
+                impl_->prepared_movie_replacement.reset();
+                return MovieFailure(
+                    "Active Dolphin movie identity does not match the state checkpoint");
+            }
+            impl_->prepared_movie_replacement_sha256 =
+                context.movie->dtm_sha256;
+            return MovieBackendResult::Success();
+        }
+        if (current.activity != MovieActivity::Inactive)
+        {
+            impl_->prepared_movie_replacement.reset();
+            return MovieFailure(
+                "Read-only movie state cannot replace a different active movie mode");
+        }
+        std::optional<std::string> ignored;
+        auto& movie = impl_->wrapper->system()->GetMovie();
+        movie.SetReadOnly(true);
+        if (!movie.PlayInput(
+                exact_dtm.string(),
+                &ignored))
+        {
+            impl_->prepared_movie_replacement.reset();
+            return MovieFailure(
+                "Dolphin could not stage movie history for restore");
+        }
+        impl_->prepared_movie_started_for_replacement = true;
+        impl_->prepared_movie_replacement_sha256 =
+            context.movie->dtm_sha256;
+    }
+    else if (
+        context.movie->mode == MovieCheckpointMode::Recording &&
+        current.activity != MovieActivity::Recording)
+    {
+        impl_->prepared_movie_replacement.reset();
+        return MovieFailure(
+            "Recording checkpoint restore requires the active same-session recording");
+    }
+    return MovieBackendResult::Success();
+}
+
+MovieBackendResult DolphinWrapperBackend::CommitStateReplacement(
+    const StateReplacementContext& context)
+{
+    if (!impl_->prepared_movie_replacement.has_value())
+        return MovieFailure("Movie replacement was not prepared");
+    const MovieSnapshot observed = Snapshot();
+    if (!context.movie.has_value())
+    {
+        if (observed.activity != MovieActivity::Inactive)
+            return MovieFailure(
+                "Dolphin restored unexpected movie state",
+                StateIntegrity::Unknown);
+        impl_->active_movie_sha256.reset();
+        impl_->prepared_movie_replacement.reset();
+        impl_->prepared_movie_replacement_sha256.reset();
+        impl_->prepared_movie_started_for_replacement = false;
+        return MovieBackendResult::Success();
+    }
+    const MovieActivity expected =
+        context.movie->mode == MovieCheckpointMode::Recording
+        ? MovieActivity::Recording
+        : MovieActivity::ReadOnlyPlayback;
+    if (observed.activity != expected ||
+        (expected == MovieActivity::ReadOnlyPlayback &&
+         (!impl_->prepared_movie_replacement_sha256.has_value() ||
+          *impl_->prepared_movie_replacement_sha256 !=
+              context.movie->dtm_sha256)) ||
+        (context.movie->cursor_known &&
+         (observed.current_frame != context.movie->current_frame ||
+          observed.current_input_count !=
+              context.movie->current_input_count)))
+    {
+        return MovieFailure(
+            "Dolphin movie cursor did not reconcile with the restored state",
+            StateIntegrity::Unknown);
+    }
+    if (expected == MovieActivity::ReadOnlyPlayback)
+    {
+        impl_->active_movie_sha256 =
+            context.movie->dtm_sha256;
+    }
+    else
+    {
+        impl_->active_movie_sha256.reset();
+    }
+    impl_->prepared_movie_replacement.reset();
+    impl_->prepared_movie_replacement_sha256.reset();
+    impl_->prepared_movie_started_for_replacement = false;
+    return MovieBackendResult::Success();
+}
+
+MovieBackendResult DolphinWrapperBackend::RollbackStateReplacement(
+    const StateReplacementContext&) noexcept
+{
+    try
+    {
+        if (impl_->prepared_movie_started_for_replacement &&
+            impl_->wrapper)
+        {
+            auto& movie = impl_->wrapper->system()->GetMovie();
+            if (movie.IsMovieActive())
+                movie.EndPlayInput(false);
+            movie.SetReadOnly(true);
+            impl_->active_movie_sha256.reset();
+        }
+        impl_->prepared_movie_replacement.reset();
+        impl_->prepared_movie_replacement_sha256.reset();
+        impl_->prepared_movie_started_for_replacement = false;
+        return MovieBackendResult::Success();
+    }
+    catch (...)
+    {
+        return MovieFailure(
+            "Movie replacement rollback was not proven",
+            StateIntegrity::Unknown);
+    }
+}
+
+std::unique_ptr<ICaptureProfileAdapter>
+DolphinWrapperBackend::CreateCaptureProfileAdapter(
+    const ProbeRouterAdapterConfig& config,
+    std::string* error_out)
+{
+    if (!impl_->open || !impl_->wrapper)
+    {
+        if (error_out)
+            *error_out = "Dolphin backend is not open";
+        return {};
+    }
+    try
+    {
+        return std::make_unique<ProbeCaptureProfileAdapter>(
+            *impl_->wrapper->system(),
+            config);
+    }
+    catch (const std::exception& ex)
+    {
+        if (error_out)
+            *error_out = ex.what();
+        return {};
+    }
+}
+
+bool DolphinWrapperBackend::IsAvailable(std::uint8_t port) const noexcept
+{
+    return port == 0 && impl_->open && impl_->wrapper &&
+        impl_->wrapper->isInputReady();
+}
+
+BackendInputPublication DolphinWrapperBackend::Publish(
+    std::uint8_t port,
+    const savor::GCInputFrame& frame)
+{
+    if (!IsAvailable(port))
+    {
+        return {
+            BackendResult::Failure(
+                BackendErrorCode::Unavailable,
+                "standard controller port is unavailable"),
+            0};
+    }
+    const std::uint64_t sequence =
+        impl_->wrapper->publishInputEpoch(frame);
+    if (sequence == 0)
+    {
+        return {
+            BackendResult::Failure(
+                BackendErrorCode::OperationFailed,
+                "Dolphin did not accept the input publication"),
+            0};
+    }
+    return {BackendResult::Success(), sequence};
+}
+
+BackendInputPoll DolphinWrapperBackend::QueryPoll(
+    std::uint8_t port) const
+{
+    if (!IsAvailable(port))
+    {
+        return {
+            BackendResult::Failure(
+                BackendErrorCode::Unavailable,
+                "standard controller port is unavailable")};
+    }
+    const auto receipt = impl_->wrapper->getInputPollReceipt();
+    return {
+        BackendResult::Success(),
+        receipt.epoch,
+        receipt.callback_count,
+        receipt.frame};
+}
+
+bool DolphinWrapperBackend::IsPaused() const noexcept
+{
+    return QueryCoreState() == BackendCoreState::Paused;
+}
+
+GuestBytesResult DolphinWrapperBackend::Read(
+    std::uint32_t address,
+    std::size_t size) const
+{
+    if (!IsPaused())
+    {
+        return {
+            BackendResult::Failure(
+                BackendErrorCode::InvalidState,
+                "guest-memory access requires a paused core"),
+            {}};
+    }
+    if (size == 0 || size > 1024 * 1024)
+    {
+        return {
+            BackendResult::Failure(
+                BackendErrorCode::InvalidArgument,
+                "guest-memory read size is invalid"),
+            {}};
+    }
+    std::vector<std::uint8_t> bytes(size);
+    for (std::size_t index = 0; index < size; ++index)
+    {
+        if (!impl_->wrapper->readU8(
+                address + static_cast<std::uint32_t>(index),
+                bytes[index]))
+        {
+            return {
+                BackendResult::Failure(
+                    BackendErrorCode::OperationFailed,
+                    "Dolphin guest-memory read failed"),
+                {}};
+        }
+    }
+    return {BackendResult::Success(), std::move(bytes)};
+}
+
+BackendResult DolphinWrapperBackend::Write(
+    std::uint32_t address,
+    const std::vector<std::uint8_t>& bytes)
+{
+    if (!IsPaused())
+    {
+        return BackendResult::Failure(
+            BackendErrorCode::InvalidState,
+            "guest-memory mutation requires a paused core");
+    }
+    if (bytes.empty() || bytes.size() > 1024 * 1024)
+    {
+        return BackendResult::Failure(
+            BackendErrorCode::InvalidArgument,
+            "guest-memory write size is invalid");
+    }
+    Core::System* system = impl_->wrapper->system();
+    if (!system)
+    {
+        return BackendResult::Failure(
+            BackendErrorCode::InvalidState,
+            "Dolphin system is unavailable");
+    }
+    auto& memory = system->GetMemory();
+    for (std::size_t index = 0; index < bytes.size(); ++index)
+    {
+        memory.Write_U8(
+            bytes[index],
+            address + static_cast<std::uint32_t>(index));
+    }
+    return BackendResult::Success();
+}
+
+BackendResult DolphinWrapperBackend::InvalidateExecutableRange(
+    std::uint32_t address,
+    std::size_t size)
+{
+    if (!IsPaused())
+    {
+        return BackendResult::Failure(
+            BackendErrorCode::InvalidState,
+            "executable invalidation requires a paused core");
+    }
+    if (size == 0)
+    {
+        return BackendResult::Failure(
+            BackendErrorCode::InvalidArgument,
+            "executable invalidation range is empty");
+    }
+    Core::System* system = impl_->wrapper->system();
+    if (!system)
+    {
+        return BackendResult::Failure(
+            BackendErrorCode::InvalidState,
+            "Dolphin system is unavailable");
+    }
+    auto& power_pc = system->GetPowerPC();
+    for (std::size_t offset = 0; offset < size; offset += 4)
+    {
+        power_pc.ScheduleInvalidateCacheThreadSafe(
+            address + static_cast<std::uint32_t>(offset));
+    }
+    return BackendResult::Success();
+}
+
+BackendResult DolphinWrapperBackend::Capture(
+    const std::filesystem::path& path,
+    std::chrono::milliseconds timeout)
+{
+    return CaptureScreenshot(path, timeout);
 }
 
 PhysicalStopBackendReceipt DolphinWrapperBackend::BindNativeStopSink(

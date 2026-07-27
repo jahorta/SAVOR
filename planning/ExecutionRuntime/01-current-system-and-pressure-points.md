@@ -164,6 +164,21 @@ an optimization hint, not an assertion that the guest or host runtime is clean. 
 `StateEpoch`, no collection of immutable state handles, and no general invalidation rule for pointers or
 subscriptions after restore.
 
+That paragraph describes the legacy execution corpus, which remains compiled only as translation
+evidence during the hard cutover. Dependency Slice 4 now gives `EmulationSession` one `StateService` as
+the sole `StateEpoch` authority. It owns bounded immutable memory handles and caller-declared immutable
+read-only file artifacts with SHA-256, runtime/disc compatibility, lineage, embedded/hash-verified DTM
+history, and active-DTM identity checks on restore. Recording checkpoints are limited to same-session
+memory handles. State replacement is a prepare/backend/commit transaction across execution, router,
+capture, input, movie, mutation, and resource-ledger participants. A successful boot, reboot, or restore
+advances the epoch exactly once; a recoverable backend failure rolls back without advancing it, while an
+unprovable post-replacement state taints the session.
+
+The same checkpoint adds session-owned `InputArbiter`, `GuestMemory`, `GuestMutationService`,
+`MovieService`, `CaptureService`, `ScreenshotService`, `TelemetryBus`, and a standalone
+`SessionResourceLedger`. These are generic runtime facilities, not restored program execution.
+`ProgramInvocation` and game capability packs remain unavailable until later slices.
+
 ### `PSContext`, keys, and codec
 
 `PSContext` is an unordered map from a global 16-bit `KeyId` to a closed C++ variant:
@@ -304,6 +319,9 @@ The clean-slate replacement must preserve these proven ideas:
    durable successor work after reduction.
 9. **Warm-worker optimization.** Affinity-aware reuse is valuable as long as it is not confused with
    state reset, correctness, or exact program identity.
+10. **Exact state/movie continuation.** Dolphin's state/movie relationship is preserved as a single
+    typed checkpoint: immutable state evidence plus the exact DTM identity/bytes and continuation
+    counters, rather than an inferred ambient movie.
 
 ## Pressure points that force replacement
 
@@ -315,6 +333,7 @@ The clean-slate replacement must preserve these proven ideas:
 | `PSContext` is one global map | Inputs, locals, output, errors, and domain records share one closed variant and key registry | Entry-point schemas and scoped typed values/records/lists/artifact references |
 | Result is `bool + error + context` | Domain failure and cleanup failure can be collapsed into transport success/failure | Separate infrastructure, domain, and cleanup/session status |
 | Baseline restore is implicit and duplicated | Init, `run`, script ops, and retries all participate in reset semantics | Declarative invocation state policy and explicit epoch changes |
+| State files and movies are selected from ambient paths | A state can be restored without proving compatibility, lineage, or exact DTM continuation | Caller-declared immutable artifacts with SHA-256, compatibility, lineage, and explicit external movie-import policy |
 | Macro execution is a subordinate runtime | Adaptive control has a second scheduler and private physical ownership | Common action-await continuation model under `ProgramExecutor` |
 | Logical points, guest-address derivation, reads, baselines, and receipts are subsystem-specific | Predicates, macros, and future phases would reconstruct subtly different observation timing | Shared semantic-observation composition that lowers exact awaits, typed reads/queries, baselines, and emissions into ordinary runtime facilities |
 | Predicate definition mixes trigger, observation, comparison, progress, scoring, and abort policy | Reuse outside battle would copy VM/Dolphin coupling or create another mini-runtime | Shared predicate composition library that separates pure conditions from use policy and lowers to ordinary IR, actions, scoped router subscriptions, and emissions |
@@ -324,6 +343,7 @@ The clean-slate replacement must preserve these proven ideas:
 | Descriptor mixes execution with workflow integration | A new phase appears to require another descriptor/controller combination | Keep existing SavorDb contracts; adapt only runtime-facing handler behavior to construct/consume typed runtime contracts |
 | Affinity uses kind/bootstrap strings | Cache locality can be mistaken for exact revision or clean state | Verify exact runtime module/state/session identity after current materialization without changing stored affinity or claim data |
 | No general mutation ledger | Data writes and future code patches lack one restoration/taint contract | Checked scoped `GuestMutationService` receipts and mandatory unwind |
+| Resource cleanup is distributed across subsystem guards | Cleanup order, state-replacement disposition, and retry after partial release are inconsistent | One actor-owned `SessionResourceLedger` with typed receipts, reverse-order unwind, epoch policy, and taint disposition |
 
 ## Target direction
 
@@ -344,8 +364,16 @@ The current evidence locks these conclusions:
 - Existing capture profiles remain opaque inputs to passive `CaptureService`. Their sampling, window,
   recorder, progress, queue, control-event, and artifact semantics are preserved while
   `StopPointRouter`/`ExecutionEngine` own control authority.
-- Worker-session services absorb every direct `DolphinWrapper` operation currently performed by the VM
-  or visual-control thread.
+- Generic worker-session services now own state replacement/epoch, input publication, guest reads and
+  mutations, movie lifecycle, one passive capture attachment, screenshots, telemetry, and resource
+  cleanup. State file paths are caller-declared, data mutations restore unless explicitly committed,
+  executable patches cannot be committed, read-only state restore uses exact embedded/hash-verified DTM
+  history and active-DTM identity, recording rewind is same-session memory-only, mandatory capture
+  finalization failure blocks reuse, telemetry coalescing preserves sequence order, and screenshot
+  ownership is synchronously actor-bound pending future nonblocking ingress/cancellation.
+- The remaining direct `DolphinWrapper` operations in the disconnected VM fail locally and are retained
+  only as migration evidence. Capability packs and program actions arrive with the typed runtime rather
+  than being improvised in Slice 4.
 - Workflow transition and dynamic-step capabilities are retained through their current persistence and
   transaction contracts. Program-kind handlers translate between those records and typed runtime
   inputs/results. Generalized frontier orchestration is out of scope.
@@ -405,16 +433,17 @@ The target must:
 The current programs cannot be migrated safely by serializing today's `PhaseScript` first. The
 dependency order is:
 
-1. establish session-service ownership and typed execution results;
+1. preserve the established worker, stop-point, execution, and scoped session-service ownership seams;
 2. define and verify the small core IR and typed module/invocation/result contracts;
-3. expose current capabilities through registered actions and reusable subprograms;
-4. add a temporary compiler/translator for current builders;
-5. migrate and differentially verify every current phase family;
-6. have existing program-kind handlers or adjacent adapters derive exact runtime module and entrypoint
+3. register generic service actions and modular game capability packs;
+4. expose current capabilities through registered actions and reusable subprograms;
+5. add a temporary compiler/translator for current builders;
+6. migrate and differentially verify every current phase family;
+7. have existing program-kind handlers or adjacent adapters derive exact runtime module and entrypoint
    identity during materialization without changing stored job identity, affinity fields, or queue/claim
    contracts;
-7. remove current worker switches, domain opcodes, and the subordinate macro scheduler; and
-8. implement Navmesh Survey only on the new path.
+8. remove current worker switches, domain opcodes, and the subordinate macro scheduler; and
+9. implement Navmesh Survey only on the new path.
 
 The current dynamic battle-wave implementation is a migration asset: it provides executable examples for
 separating bounded worker expansion from durable orchestration.

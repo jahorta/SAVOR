@@ -82,6 +82,13 @@ provides the research basis for the target services:
 - lines 633-729 map current facilities and state the target invariants; and
 - lines 812-840 describe a suitable fake-backend test architecture.
 
+Slices 1 through 4 now implement the generic ownership seam described below. In particular,
+`EmulationSession` composes the engine/router with `InputArbiter`, `StateService`, `GuestMemory`,
+`GuestMutationService`, `MovieService`, one passive `CaptureService`, `ScreenshotService`,
+`TelemetryBus`, and the standalone `SessionResourceLedger`. The legacy VM calls that formerly owned
+these facilities are hard-disconnected. These services are not yet exposed through production actions
+because `ProgramRuntime` and capability packs remain Slice 5 work.
+
 ## Core service and resource constraints
 
 ### Effect flow
@@ -361,7 +368,9 @@ Cancellation never calls arbitrary program code from a service thread.
 
 ### Resource scopes and receipts
 
-The runtime owns a hierarchical resource ledger:
+`EmulationSession` owns one actor-thread-only `SessionResourceLedger` independent of
+`ProgramRuntime`. Slice 4 initializes the session root and supports synthetic scopes; Slice 5 maps the
+future invocation hierarchy onto it:
 
 ```text
 Invocation root scope
@@ -387,20 +396,28 @@ finalization status, and diagnostics.
 
 Rules:
 
-1. Registration in the current scope is atomic with action completion. A partially successful handler
-   returns all acquired receipts even when its primary operation fails.
+1. Batch registration is atomic and ledger identities/acquisition sequences are actor-assigned. A
+   partially successful service transaction returns every receipt it created before the ledger records
+   the batch.
 2. Scope exit releases resources in reverse acquisition order.
-3. Cleanup continues after a release failure to collect the complete resource disposition.
+3. Cleanup continues after a release failure to collect the complete resource disposition. A release
+   that requires emulator work returns one typed cleanup continuation and resumes the same unwind later.
 4. A cleanup-safe compensation action must be idempotent and operate only on its typed receipt.
 5. Resource promotion to an enclosing scope is explicit and descriptor-authorized.
 6. Live resource/opaque handles cannot be emitted as records or artifacts.
 7. Return, explicit fail, action failure, cancellation, timeout, budget exhaustion, guard abort, and
    worker-requested shutdown use the same unwind machinery.
-8. Mandatory cleanup without a verified receipt marks the session tainted.
+8. Optional cleanup failure records `CleanWithDiagnostics`; mandatory cleanup without a verified receipt
+   records `TaintRequired` and blocks later acquisition.
+9. State replacement is a ledger transaction: epoch-agnostic resources survive, end-on-change resources
+   close as superseded, stable rebindable resources produce typed rebind requests, and state-replacing
+   resources cannot be treated as ordinary handles.
 
 ### StateEpoch interaction
 
-Every guest-state replacement creates a new monotonically increasing worker-local `StateEpoch`.
+`StateService` is the sole authority that creates the monotonically increasing worker-local
+`StateEpoch`. No router, capture, movie, input, mutation, session helper, or backend callback may advance
+its own epoch.
 
 Resource descriptors declare one epoch policy:
 
@@ -414,7 +431,11 @@ Resource descriptors declare one epoch policy:
 Before state replacement, services are notified and active execution is safely paused. Old-epoch
 mutations are closed as superseded by replacement rather than written into the newly loaded state.
 Input poll receipts, predicate baselines, dynamic guest addresses, current-instruction suppression, and
-opaque pointers are invalidated. Any later use of an old handle is rejected before service execution.
+opaque pointers are invalidated. A successful boot, reboot, in-memory restore, or file-artifact restore
+advances the epoch exactly once. A recoverable backend failure rolls every prepared participant back and
+does not advance it. If backend replacement succeeded but participant commit or integrity proof fails,
+the new epoch remains authoritative and the session is tainted. Any later use of an old handle is
+rejected before service execution.
 
 ### Canonical logical capability IDs
 
@@ -513,9 +534,10 @@ No program/action can clear another source's subscription or enabled state.
 
 ### GuestMemory and GuestMutationService
 
-`GuestMemory` owns paused-safe typed reads, register reads, symbolic address resolution, and coherent
-game-query input. Program access occurs through declared read/query actions. CPU-hit-time samples use a
-separate bounded sampling path configured by the router.
+The Slice 4 `GuestMemory` owns paused-safe epoch-checked scalar and byte reads through a private backend
+facet. Symbolic address resolution, register access, and coherent game queries remain capability-pack
+work in Slice 5; they compose over this generic read seam rather than broadening it. CPU-hit-time samples
+continue to use the separate bounded sampling path configured by the router.
 
 `GuestMutationService` owns all program-requested writes:
 
@@ -525,8 +547,12 @@ separate bounded sampling path configured by the router.
 - named mutation profiles and nested scopes; and
 - restoration receipts.
 
-A data mutation transaction declares the target, width, expected original value or masked precondition,
-new value, scope, and readback requirement. It fails closed when the precondition or readback differs.
+A data mutation transaction declares the owner, scope, epoch, target, width, expected original value or
+masked precondition, new value, and readback requirement. It fails closed when the precondition or
+readback differs. Overlapping unrelated mutations are rejected; an explicitly parented nested mutation
+from the same owner restores in reverse order. A data mutation is reversible by default and may become
+part of the current guest state only through explicit `Commit`. State replacement supersedes active
+old-epoch mutations without writing their old bytes into the new state.
 
 An executable patch additionally requires:
 
@@ -538,8 +564,9 @@ An executable patch additionally requires:
 - a receipt containing original and replacement values; and
 - symmetric restoration/invalidation on scope exit.
 
-Mutation profiles are generic. Navmesh encounter suppression and trigger patching use the same service
-as battle RNG or future collision probes; there is no Survey-only binary editor.
+Executable patches can never use `Commit`; they are always reversible. Mutation profiles are generic.
+Navmesh encounter suppression and trigger patching use the same service as battle RNG or future
+collision probes; there is no Survey-only binary editor.
 
 ### InputArbiter
 
@@ -549,18 +576,25 @@ as battle RNG or future collision probes; there is no Survey-only binary editor.
 - priority;
 - whether it is suspendable;
 - whether an interruption handler requested by a router interceptor may borrow it;
-- restoration/neutralization policy; and
-- whether guest-poll acknowledgement is required.
+- restoration/neutralization policy;
+- whether guest-poll acknowledgement is required;
+- whether the lease is an unsuspendable movie-exclusive reservation; and
+- one explicit interruption-borrow policy: preserve the parent's held state until the borrower first
+  publishes, or require a fresh typed `InputNeutralWitnessId` issued by `InputArbiter` after it proves
+  guest acknowledgement of the exact current neutral publication.
 
-Held state, pulses, sequences, and neutral release are operations on a valid lease. Each publication
-creates an input epoch and poll receipt. Release completion is a first-class observation; dropping a C++
-object without neutralizing the guest is not sufficient cleanup.
+Held state, pulses, sequences, and neutral release are operations on a valid epoch-bound lease. Each
+publication creates a fresh token; guest-poll observation creates a distinct acknowledgement receipt.
+Release is two-phase when required: publish neutral, then prove that exact publication was observed
+before completing release and resuming a suspended parent. Dropping a C++ object or merely publishing
+neutral is not sufficient cleanup. A neutral borrow witness is bound to the parent lease, publication,
+and `StateEpoch`; missing, fabricated, wrong-lease, stale, non-neutral, or superseded witnesses reject,
+and a successful borrow consumes the witness.
 
-Slice 3 defines only the opaque `IInputAdvancePort` collaboration required by `ExecutionEngine`: validate
-the relationship, prepare a publication before advancement, return its token, observe acknowledgement
-afterward, and request a bounded retry or completion. Deterministic engine tests use a fake port.
-Production reports input-synchronized advancement unsupported until this service implements the port in
-Slice 4. The engine never publishes pad state itself.
+Slice 4 implements the opaque `IInputAdvancePort` collaboration required by `ExecutionEngine`: validate
+the lease binding, prepare a fresh publication before advancement, return its token, observe
+acknowledgement afterward, and request a bounded retry or completion. The engine never publishes pad
+state itself.
 
 Emergency neutralization may preempt ordinary owners only under cancellation/guard/shutdown policy and
 must record what was preempted. An unsuspendable movie/input owner cannot be silently overwritten by a
@@ -569,39 +603,68 @@ dialog or visual command.
 ### StateService
 
 `StateService` owns boot/reboot, disk state artifacts, multiple in-memory state handles, restore, save,
-compatibility validation, state lineage, and `StateEpoch`.
+compatibility validation, state lineage, movie checkpoint association, and `StateEpoch`. It is the sole
+epoch authority; `EmulationSession` mirrors its receipts rather than independently incrementing an
+epoch.
 
 It replaces the VM's one implicit snapshot with explicit handles:
 
 - a baseline handle may be captured and restored repeatedly within its declared lifetime;
 - arbitrary state handles may coexist within budget;
-- immutable state artifacts may be loaded by invocation policy or explicit action; and
-- saving an artifact records parent/edge lineage and runtime/disc compatibility in runtime artifact
-  metadata or its receipt; any SavorDb projection uses the existing artifact/domain representation.
+- immutable state artifacts use new caller-declared paths and may be loaded by invocation policy or
+  explicit action;
+- every handle/artifact records exact state SHA-256, compatibility (`game_id`, ISO SHA-256, emulator
+  build, and optional runtime revision), captured epoch, and parent/edge/producer lineage; and
+- a read-only-playback checkpoint embeds the exact DTM history bytes and verified SHA-256, game ID,
+  frame/input counters, and starts-from-savestate fact. A read-only file artifact publishes that exact
+  DTM companion with the state rather than relying on ambient Dolphin movie state; and
+- an in-progress recording checkpoint is never a file artifact. It may be rewound only from a
+  same-session in-memory handle carrying the process-local recording generation and exact embedded DTM
+  history.
 
 A restore transaction:
 
 1. reaches a safe pause and blocks new execution operations;
-2. notifies router, input, capture, mutation, movie, and game services;
+2. prepares the registered session, router, input, capture, mutation, movie, and resource-ledger
+   participants;
 3. loads/reboots the backend;
 4. increments `StateEpoch`;
 5. invalidates or rebinds resources according to descriptor policy;
 6. reconciles physical stop points;
-7. emits a state-restored observation; and
+7. returns a typed replacement receipt that later actions/telemetry may project; and
 8. returns only after the new epoch is internally consistent.
 
 Loading state is never an unannounced helper side effect of VM initialization or a normal opcode.
 
-### MovieService, CaptureService, and TelemetryBus
+External state import is explicit and hash-checked before backend mutation. The caller must declare
+`NoMovie` or `ReadOnlyPlayback`; `Unspecified` and `Recording` are rejected. A read-only import names and
+hashes the exact DTM companion, but it does not require a caller-supplied frame/input cursor. Every
+read-only restore materializes the embedded DTM history, verifies its SHA-256 and DTM structure, and
+stages it before backend restore. If read-only playback is already active, the backend's tracked active
+DTM SHA-256 must match the checkpoint; commit then verifies the expected movie mode, prepared DTM
+identity, and any known cursor before accepting the new epoch. Dolphin restores an unknown cursor from
+the savestate, and `MovieService` records the authoritative observed frame/input position afterward.
+File-artifact capture/import/restore never represents an in-progress recording; recording rewind is
+available only through a same-session in-memory handle carrying the process-local recording generation.
 
-`MovieService` owns playback/recording lifecycle and returns scoped receipts. Movie-related execution
-termination remains an `ExecutionEngine` policy, not a string guessed by a caller.
+### MovieService, CaptureService, ScreenshotService, and TelemetryBus
 
-`CaptureService` owns profile validation, passive router subscriptions, service-internal recorder
-queues/threads,
-sampling windows, trace buffers, and capture artifact finalization. Attaching capture cannot grant
-control authority. A job may attach a profile resource, but the service lifetime belongs to
-`EmulationSession`.
+`MovieService` owns playback/recording lifecycle and an unsuspendable movie-exclusive input reservation.
+Initial read-only playback may be supplied in `SessionOpenOptions`; that path validates and stages the
+DTM so the backend calls `Movie::PlayInput` before the session's single boot. Starting playback after the
+session is already open performs the same preparation and legitimately uses a `StateService` reboot.
+Both paths propagate any DTM starting savestate into the state transaction, verify the resulting movie
+mode, and hold the reservation until stop/unwind. Recording finalization publishes a caller-declared new
+DTM and, when applicable, its `<dtm>.sav` starting-state companion. Movie-related execution termination
+remains an `ExecutionEngine` policy, not a string guessed by a caller.
+
+`CaptureService` owns at most one opaque profile attachment, passive router subscriptions,
+service-internal recorder queues/threads, sampling windows, trace buffers, and capture artifact
+finalization. Attaching capture cannot grant control authority. The attachment belongs to
+`EmulationSession`, prepares before state replacement, rebinds its stable group at the new epoch, and
+survives a successful restore; detach/shutdown releases the group and finalizes artifacts exactly once.
+Artifact finalization is mandatory cleanup: any finalization failure requires session taint, leaves the
+capture service unable to accept a new attachment, and blocks session/worker reuse until a full rebuild.
 
 For the initial refactor, `runtime.capture.attach` passes the existing versioned
 `savor.capture.profile/1` artifact/configuration opaquely to `CaptureService`. The service preserves its
@@ -623,11 +686,21 @@ core, or turn an observe-only hit into control.
 
 `TelemetryBus` accepts typed, bounded progress and diagnostics and feeds one serialized worker
 publisher. Telemetry is not authoritative program output unless the program also emits a declared
-record/artifact. Background callbacks never write worker protocol frames directly.
+record/artifact. Lossy events may coalesce or drop under the declared policy; required-event overflow is
+an authoritative failure. Every accepted event receives a monotonic sequence. When coalescing replaces
+an older queued event, the replacement keeps its fresh sequence and moves to that chronological
+position rather than retaining the older slot, so drain order remains sequence order. Background
+callbacks never write worker protocol frames directly.
+
+`ScreenshotService` owns one correlated, actor-thread, synchronous bounded screenshot call, validates
+the expected `StateEpoch`, and preserves backend integrity/failure in its terminal receipt. The positive
+timeout is passed to the backend, and screenshot capture does not advance Dolphin. Because the current
+backend call occupies the actor until it returns, cancellation cannot preempt an active request after
+dispatch. Nonblocking backend/actor ingress and active in-flight cancellation are explicitly deferred.
 
 ### Modular GameRuntime packs
 
-Game packs register exact:
+Game packs are deliberately deferred to Dependency Slice 5. When added, they register exact:
 
 - types/schemas;
 - semantic stop-point and symbolic address definitions;
@@ -640,7 +713,8 @@ The initial namespaces are `soa.battle`, `soa.field`, `soa.navigation`, `soa.cut
 
 A pack receives only the narrow generic services needed by each registered handler. It cannot depend on
 `WorkerRuntime`, `ProgramExecutor`, workflow persistence, or a raw `DolphinBackend`. Packs are
-independently versioned so adding overworld behavior does not invalidate battle-only modules.
+independently versioned so adding overworld behavior does not invalidate battle-only modules. Slice 4
+does not create placeholder packs or move battle-specific behavior into the generic services.
 
 ## Interfaces and ownership affected
 
@@ -652,10 +726,11 @@ The target decomposes present authority as follows:
 | `armPcBreakpoints`, `setEnabledPcBreakpointsOnly`, watchpoint clear/arm | `PhysicalStopPointManager`, derived from router subscriptions |
 | VM canonical/gated/predicate/macro sets | Scoped `StopPointRouter` subscription groups |
 | `DolphinWrapper::setInput`, playback epochs, VM macro exclusivity | `InputArbiter` leases and operations |
-| VM `snapshot_`, `loadSavestate`, buffer load/save, reboot | `StateService` handles/artifacts and state policy |
-| VM `writeU32` and future executable patches | `GuestMutationService` checked transactions |
-| VM-owned probe/capture job | Session-owned `CaptureService` attachment resource |
-| VM movie start/stop | `MovieService` resource |
+| VM `snapshot_`, `loadSavestate`, raw buffer load/save, reboot | `StateService` typed handles and caller-declared immutable artifacts; read-only restores carry exact DTM history, recording rewind is memory-handle-only, and raw buffer/file escape hatches are disconnected |
+| VM `writeU32` and future executable patches | `GuestMutationService` reversible checked transactions; only data writes may be explicitly committed |
+| VM-owned probe/capture job | One session-owned `CaptureService` attachment that passively rebinds across restore |
+| VM movie start/stop | `MovieService` resource paired with `InputArbiter`'s unsuspendable movie reservation, hash-verified DTM history, and active-DTM identity |
+| VM screenshot/progress helpers | Synchronous actor-owned `ScreenshotService` and sequence-ordered bounded `TelemetryBus` receipts |
 | `PSContext` domain extraction opcodes | Typed actions from the relevant `soa.*` capability pack |
 | VM breakpoint/address/baseline observation machinery | Shared semantic-observation composition lowers to scoped router, execution, and registered read/query actions |
 | `InputMacroRuntime` and providers as control engine | Shared interaction composition lowers to IR subprograms, pure reducers, semantic observations, and ordinary actions |
@@ -694,7 +769,7 @@ Service-specific releases include:
 - publish cleanup diagnostics.
 
 If a state replacement has already superseded an old-epoch mutation, its receipt closes as
-`SupersededByStateReplace`; the service must not write old bytes into the new state. If restoration
+`SupersededByStateReplacement`; the service must not write old bytes into the new state. If restoration
 cannot be proven and no state replacement safely supersedes it, cleanup is failed.
 
 Any failed mandatory cleanup produces `Tainted` session disposition. Remaining cleanup is still
@@ -710,7 +785,8 @@ rebuild succeeds.
 - Failure to reconcile physical stop points after an epoch change taints the session.
 - Failure to observe neutral input release taints or fails according to the lease's mandatory cleanup
   policy; it is never silently ignored.
-- State restore failure leaves the session tainted because the loaded guest state is unproven.
+- A recoverable state replacement failure rolls participants back and does not advance `StateEpoch`.
+  Failure after backend replacement, failed rollback, or any other unproven integrity taints the session.
 - Executable patch verification or restoration failure is always session-tainting.
 
 ## Dependencies and migration implications
@@ -727,21 +803,22 @@ Migration implications:
 4. Bring direct continue, pause, frame-step, and supported instruction-step behavior under
    `ExecutionEngine`; hard-disconnect legacy tape/macro advancement rather than creating a compatibility
    executor.
-5. Implement `InputArbiter`, connect its opaque input-advance port to `ExecutionEngine`, and then convert
-   current input/macro ownership to leases and guest-observed release.
-6. Move savestate/baseline ownership to `StateService` and introduce explicit epoch-tagged handles.
-7. Move raw writes to checked `GuestMutationService`; add executable patch verification and cache/JIT
-   invalidation before Navmesh Survey trigger suppression.
-8. Move movie/progress lifetimes out of VM runs and into scoped session services.
-9. Move capture lifetime behind `CaptureService`, passing existing `savor.capture.profile/1`
-   configurations through unchanged and adapting their control observations to router-owned routed
-   events.
+5. Keep the implemented `InputArbiter` opaque input-advance port beneath `ExecutionEngine`; translate
+   current input/macro ownership to its epoch-bound leases, borrow policy, and guest-observed release.
+6. Use the implemented `StateService` as the sole epoch authority and translate raw savestate/buffer
+   operations to explicit handles or caller-declared immutable artifacts with exact movie continuation.
+7. Translate raw writes to the implemented `GuestMutationService`; data is reversible unless explicitly
+   committed and executable patches are always reversible with symmetric cache/JIT invalidation.
+8. Use the implemented `MovieService`, one passive `CaptureService`, `ScreenshotService`, and
+   `TelemetryBus` rather than VM-owned lifetimes.
+9. Attach future invocation/action scopes to the implemented standalone `SessionResourceLedger`.
 10. Define semantic points, checked address expressions, registered coherent queries, baselines, and
-    observation uses in capability packs; translate current program/predicate address expressions in
-    memory while leaving capture-profile address programs opaque.
+    observation uses in Slice 5 capability packs; translate current program/predicate address
+    expressions in memory while leaving capture-profile address programs opaque.
 11. Express battle macros through shared interaction composition and the canonical
     subprogram/reducer IDs rather than preserving `InputMacroEngine`.
-12. Register game observations in modular packs and delete their domain opcodes after phase parity.
+12. Register game observations in modular packs during Slice 5 and delete their domain opcodes after
+    phase parity.
 13. Translate current battle predicate arming, baseline capture, evaluation, and reporting through the
     shared composition libraries; preserve existing stored records through in-memory adapter translation
     and remove the VM-specific evaluator after parity.
@@ -769,42 +846,61 @@ the old broad host interfaces to new modules.
 - Predicate composition tests prove that all observation effects, subscriptions, branches, and emissions
   are ordinary verified dependencies and that false remains distinct from unavailable evidence.
 - Every supported production advancement action is observed passing through one `ExecutionEngine`.
-  Fake-port tests cover exact instruction and input-synchronized contracts while the JIT64 and
-  pre-`InputArbiter` production paths reject them without mutation.
+  Fake-port tests cover exact instruction contracts while JIT64 rejects them without mutation;
+  `InputArbiter` supplies the production input-synchronized port without giving the engine publication
+  authority.
 - Interruption tests cover frozen parent/child active-time budgets, declared nesting and recursion, the
   eight-level hard cap, and `ResumeParent`/`AbortParent` as the only policy outcomes.
 - Visual-intent command tests use fake sessions and protocol fixtures without a window, GUI automation,
   screenshot comparison, desktop control, or manual observation.
 - Multiple logical consumers share one physical PC/memory site; releasing one subscription group leaves
   the others intact.
-- Input lease priority, suspendability, interruption-handler borrowing, poll acknowledgement, and neutral
-  cleanup pass deterministic tests.
-- Multiple state handles can coexist; each restore increments `StateEpoch`; every old opaque handle is
-  rejected; declared semantic subscriptions rebind safely.
-- Checked data writes fail on precondition/readback mismatch and restore their exact original value.
+- Input lease priority, suspendability, both interruption-borrow policies, fresh publication tokens,
+  movie exclusivity, poll acknowledgement, typed arbiter-issued one-use neutral borrow witnesses, and
+  input-advance retries pass deterministic tests.
+- Multiple state handles can coexist within budgets; each successful replacement increments the sole
+  `StateEpoch`; recoverable failure does not; stale handles reject; exact SHA/compatibility/lineage and
+  state-plus-DTM continuation are checked.
+- External state imports require explicit no-movie/read-only mode; recording file-artifact
+  capture/import/restore rejects before backend mutation, while same-session memory-handle recording
+  rewind is accepted.
+- Checked data writes fail on precondition/readback mismatch, restore their exact original value unless
+  explicitly committed, and reject unrelated overlap.
 - Executable patch tests prove expected-instruction validation, paused application, required cache/JIT
-  invalidation, readback, symmetric restoration, and taint on failure.
+  invalidation, readback, symmetric restoration, inability to commit, and taint on failure.
 - Capture can observe a site shared with a wake/interceptor without gaining control or owning a
   physical breakpoint.
 - Existing `savor.capture.profile/1` compatibility tests cover every retained parser, sampling,
   retention, window, flight-recorder, queue/drop/coalescing, progress, ordering, and artifact behavior;
   control publication remains active-wake-only and shares the router event identity.
+- Capture service tests prove one opaque attachment, stable actor-side reconciliation, restore rebind,
+  rollback, exactly-once finalization, taint plus attachment/reuse blocking on mandatory finalization
+  failure, and taint on unproven resume without a second router or controller.
+- The standalone ledger tests atomic acquisition, actor ownership, promotion, reverse unwind,
+  cleanup-execution continuation, optional diagnostics, mandatory taint, and epoch end/rebind.
+- Screenshot and telemetry tests cover synchronous actor ownership, request correlation, stale epoch,
+  preserved backend failure, monotonic sequence order through coalescing, bounded loss, and
+  authoritative overflow. They do not claim active screenshot cancellation before nonblocking backend
+  and actor ingress exist.
 - Cancellation and fault injection at every action phase return all receipts, unwind every scope, and
   taint only when cleanup cannot be proven.
 - Current battle/context/navigation behavior can use the canonical IDs above without a new opcode or
   peer macro executor.
-- Navmesh suppression can be built from generic checked mutation actions without a Survey-specific
-  controller or binary editor.
+- A headless JIT64 executable-patch guard at recurring `0x801DC288` is the eventual live proof for
+  expected-word validation, NOP/readback/invalidation, symmetric restore, and no advancement while
+  patched. Live state-plus-DTM continuation and post-write capture remain deferred until deterministic
+  execution/input reaches authoritative witnesses.
+- Navmesh suppression can be built from generic checked mutation actions after capability packs exist,
+  without a Survey-specific controller or binary editor.
 
 ## Deferred work
 
-- Exact C++ descriptor/request/completion/receipt types and registration API.
+- Exact Slice 5 action descriptor/request/completion registration API over the implemented services.
 - Exact action signature schemas, version numbers, and capability negotiation encoding.
 - Concrete router priority values, subscription serialization, and CPU sampling bytecode.
-- Backend-specific JIT/instruction-cache invalidation calls, provided the locked patch transaction
-  semantics are preserved.
-- Worker-local state-handle memory limits/compression and external artifact-backend details. These do not
-  alter SavorDb storage or interfaces.
+- Performance tuning for worker-local state-handle memory limits/compression and future artifact-backend
+  adapters. Caller-declared paths and immutable/hash/compatibility/lineage semantics are already fixed;
+  none alters SavorDb storage or interfaces.
 - Generalized `eventhook` trigger characterization and allowlisting.
 - Cutscene interception strategy, overworld-specific movement rules, collision-search objectives, and
   navigation settle tolerances.

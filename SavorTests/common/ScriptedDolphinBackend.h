@@ -2,6 +2,10 @@
 
 #include "Runner/Runtime/IDolphinBackend.h"
 #include "Runner/Runtime/Execution/IExecutionBackendPort.h"
+#include "Runner/Runtime/Services/Input/IInputBackendPort.h"
+#include "Runner/Runtime/Services/Memory/IGuestMemoryBackendPort.h"
+#include "Runner/Runtime/Services/Movie/IMovieBackendPort.h"
+#include "Runner/Runtime/Services/Screenshot/IScreenshotBackendPort.h"
 #include "Runner/Runtime/StopPoints/IPhysicalStopPointBackendPort.h"
 
 #include <chrono>
@@ -10,6 +14,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -39,6 +44,8 @@ struct ScriptedDolphinBackendControl
     runtime::BackendResult save_file_result = runtime::BackendResult::Success();
     runtime::BackendResult save_buffer_result = runtime::BackendResult::Success();
     runtime::BackendResult screenshot_result = runtime::BackendResult::Success();
+    runtime::MovieBackendResult movie_result =
+        runtime::MovieBackendResult::Success();
     runtime::BackendCoreState core_state = runtime::BackendCoreState::Closed;
     runtime::BackendCoreState open_core_state = runtime::BackendCoreState::Paused;
     std::uint32_t pc = 0x80000000u;
@@ -46,7 +53,16 @@ struct ScriptedDolphinBackendControl
     runtime::BackendMovieState movie_state = runtime::BackendMovieState::Inactive;
     std::uint64_t movie_input_count = 0;
     bool throttle_disabled = false;
+    std::uint64_t input_sequence = 0;
+    std::uint32_t input_callback_count = 0;
+    savor::GCInputFrame input_frame{};
+    std::map<std::uint32_t, std::uint8_t> guest_memory;
+    std::vector<std::pair<std::uint32_t, std::size_t>> invalidations;
     std::vector<std::uint8_t> save_buffer_bytes{0x10, 0x20, 0x30};
+    runtime::MovieSnapshot movie_snapshot;
+    std::optional<std::filesystem::path> movie_startup_savestate;
+    std::filesystem::path prepared_movie_path;
+    bool movie_available = false;
 
     int open_count = 0;
     int reboot_count = 0;
@@ -93,7 +109,11 @@ struct ScriptedDolphinBackendControl
 
 class ScriptedDolphinBackend final
     : public runtime::IDolphinBackend,
-      private runtime::IExecutionBackendPort
+      private runtime::IExecutionBackendPort,
+      private runtime::IInputBackendPort,
+      private runtime::IGuestMemoryBackendPort,
+      private runtime::IScreenshotBackendPort,
+      private runtime::IMovieBackendPort
 {
 public:
     explicit ScriptedDolphinBackend(
@@ -109,6 +129,8 @@ public:
 
     [[nodiscard]] runtime::BackendCoreState QueryCoreState() const noexcept override;
     [[nodiscard]] runtime::BackendHealthReport CheckHealth() const override;
+    [[nodiscard]] runtime::StateCompatibilityToken
+    StateCompatibility() const override;
 
     runtime::BackendResult Pause(std::chrono::milliseconds timeout);
     runtime::BackendResult Resume() override;
@@ -130,6 +152,11 @@ public:
     [[nodiscard]] runtime::IPhysicalStopPointBackendPort*
     PhysicalStopPoints() noexcept override;
     [[nodiscard]] runtime::IExecutionBackendPort* Execution() noexcept override;
+    [[nodiscard]] runtime::IInputBackendPort* Input() noexcept override;
+    [[nodiscard]] runtime::IGuestMemoryBackendPort* GuestMemory() noexcept override;
+    [[nodiscard]] runtime::IScreenshotBackendPort* Screenshots() noexcept override;
+    [[nodiscard]] runtime::IMovieBackendPort* Movies() noexcept override;
+    [[nodiscard]] runtime::ICaptureBackendPort* Captures() noexcept override;
 
 private:
     [[nodiscard]] runtime::BackendExecutionCapabilityMask
@@ -140,6 +167,46 @@ private:
     runtime::BackendResult BeginFrameStep() override;
     runtime::BackendResult BeginExactInstructionStep() override;
     runtime::BackendResult SetThrottleDisabled(bool disabled) override;
+
+    [[nodiscard]] bool IsAvailable(std::uint8_t port) const noexcept override;
+    [[nodiscard]] runtime::BackendInputPublication Publish(
+        std::uint8_t port,
+        const savor::GCInputFrame& frame) override;
+    [[nodiscard]] runtime::BackendInputPoll QueryPoll(
+        std::uint8_t port) const override;
+
+    [[nodiscard]] bool IsPaused() const noexcept override;
+    [[nodiscard]] runtime::GuestBytesResult Read(
+        std::uint32_t address,
+        std::size_t size) const override;
+    runtime::BackendResult Write(
+        std::uint32_t address,
+        const std::vector<std::uint8_t>& bytes) override;
+    runtime::BackendResult InvalidateExecutableRange(
+        std::uint32_t address,
+        std::size_t size) override;
+
+    runtime::BackendResult Capture(
+        const std::filesystem::path& path,
+        std::chrono::milliseconds timeout) override;
+
+    runtime::MoviePlaybackPrepareResult
+    PrepareReadOnlyPlaybackBeforeBoot(
+        const std::filesystem::path& dtm_path) override;
+    runtime::MovieBackendResult StopMovie() noexcept override;
+    runtime::MovieBackendResult BeginRecording() override;
+    runtime::MovieRecordingFinalizeResult FinalizeRecording(
+        const std::filesystem::path& dtm_path) override;
+    runtime::MovieBackendResult CancelRecording() noexcept override;
+    [[nodiscard]] runtime::MovieSnapshot Snapshot() const override;
+    runtime::MovieCheckpointBackendResult
+    CaptureRecordingCheckpoint() override;
+    runtime::MovieBackendResult PrepareStateReplacement(
+        const runtime::StateReplacementContext& context) override;
+    runtime::MovieBackendResult CommitStateReplacement(
+        const runtime::StateReplacementContext& context) override;
+    runtime::MovieBackendResult RollbackStateReplacement(
+        const runtime::StateReplacementContext& context) noexcept override;
 
     std::shared_ptr<ScriptedDolphinBackendControl> control_;
     std::unique_ptr<runtime::IPhysicalStopPointBackendPort>

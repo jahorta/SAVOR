@@ -190,19 +190,6 @@ namespace savor {
         return true;
     }
 
-    // --- Turn off Movie helper --------------------------------------------------
-
-    static void DisarmAnyActiveMovie(Core::System& system)
-    {
-        using namespace Movie;
-
-        Movie::MovieManager& movie = system.GetMovie();
-
-        if (movie.IsPlayingInput())
-            movie.EndPlayInput(false);
-        movie.SetReadOnly(true);
-    }
-
     // --- class impl -------------------------------------------------------------
 
     DolphinWrapper::DolphinWrapper()
@@ -303,7 +290,8 @@ namespace savor {
 
     bool DolphinWrapper::loadGame(
         const std::string& iso_path,
-        bool boot_to_pause)
+        bool boot_to_pause,
+        std::optional<std::string> startup_savestate)
     {
         if (!m_imported_from_qt) {
             SCLOGE("Must import sys folder from DolphinQT before loading a game. (Best to use Dolphin ver. 2506a");
@@ -346,6 +334,12 @@ namespace savor {
         m_disc_info = DiscInfo{ volume->GetGameID(), RegionToString(volume->GetRegion()) };
 
         auto boot = BootParameters::GenerateFromFile(iso_path);
+        if (startup_savestate.has_value())
+        {
+            boot->boot_session_data.SetSavestateData(
+                std::move(startup_savestate),
+                DeleteSavestateAfterBoot::No);
+        }
         if (!BootManager::BootCore(*m_system, std::move(boot), wsi))
             return false;
 
@@ -678,13 +672,11 @@ namespace savor {
             return false;
         }
 
-        DisarmAnyActiveMovie(*m_system);
-
         // Right before the final return
         const uint32_t pc_after = getPC();
         const uint64_t tbr_after = getTBR();
 
-        SCLOGD("[DW] loadSavestate end state=%d pc:%08X->%08X tbr:%016llX->%016llX movie_disarmed",
+        SCLOGD("[DW] loadSavestate end state=%d pc:%08X->%08X tbr:%016llX->%016llX movie_state_restored",
             (int)Core::GetState(*m_system), pc_before, pc_after,
             (unsigned long long)tbr_before, (unsigned long long)tbr_after);
 

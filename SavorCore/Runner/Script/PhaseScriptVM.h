@@ -14,7 +14,6 @@
 #include "../../Core/Input/SoaBattle/Actiontypes.h"
 #include "../../Core/Memory/DerivedBase.h"
 #include "../../Core/Memory/KeyHostRouter.h"
-#include "Core/Common/Buffer.h"
 #include "CtxRegistry.h"
 #include "PSContext.h"
 #include "PhaseScriptProgram.h"
@@ -40,7 +39,8 @@ namespace savor {
 		PhaseScriptVM(savor::DolphinWrapper& host, const BreakpointMap& bpmap);
 		~PhaseScriptVM();
 
-		// Load state, build phase, arm bps, capture "prebattle" snapshot
+		// Retained only as a hard-cut legacy entry point while existing
+		// PhaseScript builders remain translation evidence.
 		bool init(const PSInit& init, const PhaseScript& program);
 
 		// Run the program once for a given job
@@ -74,8 +74,6 @@ namespace savor {
 		std::vector<BPKey> input_macro_enabled_bp_keys_;
 		std::vector<BPKey> input_macro_provider_keys_;
 		bool armed_{ false };
-		Common::UniqueBuffer<u8> snapshot_;
-
 		struct RunUntilBpSpec {
 			std::vector<BPKey> expected_bp_keys;
 			GCInputFrame input{};
@@ -118,10 +116,12 @@ namespace savor {
 		// helpers
 		void arm_bps_once();
 		void restore_canonical_breakpoint_scope();
-		bool configure_capture_from_context(const PSContext& ctx, PSResult& result);
+		bool configure_capture_from_context(PSContext& ctx, PSResult& result);
 		void cancel_input_macro();
-		bool save_snapshot();
-		bool load_snapshot();
+		bool fail_legacy_service(
+			PSResult& result,
+			PSContext& ctx,
+			const char* diagnostic) const;
 
 
 		bool compare_u32(uint32_t lhs, PSCmp cmp, uint32_t rhs) const;
@@ -138,8 +138,8 @@ namespace savor {
 			std::string& section);
 
 		bool op_arm_phase_bps_once();
-		bool op_load_snapshot(PSContext& ctx);
-		bool op_capture_snapshot();
+		bool op_load_snapshot(PSResult& result, PSContext& ctx);
+		bool op_capture_snapshot(PSResult& result, PSContext& ctx);
 		bool op_reboot_core(PSResult& result, PSContext& ctx);
 		void op_label() const;
 		void op_goto(const PSOp& op, const std::unordered_map<std::string, size_t>& label_vm_pc_map, size_t& vm_pc, std::string& section) const;
@@ -166,13 +166,13 @@ namespace savor {
 		void op_apply_battle_inputplan_frames(PSContext& ctx);
 		void op_step_frames(const PSOp& op);
 		void op_step_opcode(const PSOp& op);
-		void op_start_deterministic_run() const;
-		void op_end_deterministic_run() const;
+		bool op_start_deterministic_run(PSResult& result, PSContext& ctx) const;
+		bool op_end_deterministic_run(PSResult& result, PSContext& ctx) const;
 		void op_run_until_bp(PSContext& ctx);
 		bool op_run_until_bp_key(const PSOp& op, PSResult& result, PSContext& ctx);
 		void op_run_until_debug_stop(PSContext& ctx);
 		bool op_arm_memory_watchpoint(const PSOp& op, PSResult& result, PSContext& ctx);
-		void op_clear_memory_watchpoints() const;
+		bool op_clear_memory_watchpoints(PSResult& result, PSContext& ctx) const;
 		bool op_arm_capture_memory_watchpoints(PSResult& result, PSContext& ctx);
 		void op_record_current_bp(PSContext& ctx);
 		bool op_record_current_pc_to(
@@ -195,7 +195,7 @@ namespace savor {
 		void op_set_timeout(const PSOp& op, PSContext& ctx) const;
 		void op_set_timeout_from(const PSOp& op, PSContext& ctx) const;
 		bool op_movie_play_from(const PSOp& op, PSResult& result, PSContext& ctx);
-		void op_movie_stop();
+		bool op_movie_stop(PSResult& result, PSContext& ctx);
 		bool op_save_savestate_from(const PSOp& op, PSResult& result, PSContext& ctx);
 		bool op_require_disc_gameid_from(const PSOp& op, PSResult& result, PSContext& ctx);
 		bool op_arm_bps_from_pred_table(PSResult& result, PSContext& ctx);

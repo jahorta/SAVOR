@@ -123,6 +123,12 @@ adapter, capture-profile processing remains passive behind the router, and unman
 breakpoints or memchecks are rejected rather than adopted or cleared. `RequestInterruptionHandler` is
 verified as a typed routing result; executing the requested interruption handler remains Slice 3 work.
 
+Slice 3 completes actor-driven emulator advancement. Slice 4 then composes the generic scoped session
+services and standalone resource ledger: `StateService` owns `StateEpoch`, exact state/movie evidence,
+and replacement transactions; `InputArbiter` supplies the opaque input-advance port; mutation, movie,
+capture, screenshot, and telemetry have single owners. This still does not advertise
+`ProgramInvocation`, add game capability packs, or begin DB work.
+
 Production-worker SavorE2E resumes only after `ProgramRuntime`, current-program migration, and
 handler-adapter cutover provide the complete production path. The final Release solution build and that
 E2E result remain the functional acceptance; the temporary availability gap does not permit any SavorDb
@@ -376,17 +382,29 @@ probe/profile/runtime-symbol guards in each configuration. The serialized Releas
 passed at recurring `0x801DC288`. No validation launched or controlled a GUI, and production-worker
 SavorE2E was not run because `ProgramInvocation` remains intentionally unavailable.
 
+### Implemented Slice 4 service and resource guards
+
+Slice 4 verification is unattended and headless. Focused fake-backend/service fixtures establish the
+generic contracts below; retained router/engine/profile guards ensure the new composition does not
+reopen an ownership path. Capability-pack actions and migrated phase parity remain later work.
+
 ### InputArbiter tests
 
 Cover:
 
-- lease acquisition, priority, rejection, suspension, resumption, and release;
+- epoch-bound lease acquisition, priority, rejection, suspension, resumption, and release;
 - suspendable versus unsuspendable owners;
-- neutral restoration acknowledged by the guest;
+- fresh publication tokens and distinct poll acknowledgement receipts;
+- two-phase neutral restoration proven against the exact neutral publication;
 - cancellation and owner destruction;
-- input-poll receipt propagation;
-- modal dialog borrowing;
-- deterministic movie incompatibility as an explicit policy failure; and
+- both interruption-borrow policies: preserve the parent's held state until borrower publication, and
+  require a fresh typed arbiter-issued neutral witness bound to the exact parent
+  lease/publication/epoch before borrowing;
+- rejection of missing, fabricated, wrong-lease, stale, non-neutral, superseded, and already-consumed
+  borrow witnesses;
+- unsuspendable movie-exclusive reservation and deterministic incompatibility;
+- `IInputAdvancePort` validation, publication-before-step, acknowledgement-after-step, fresh bounded
+  retries, and cancellation; and
 - no input publication without an active lease.
 
 The behavior currently checked by `test_input_macro_runtime.cpp` must migrate to these common service,
@@ -415,6 +433,15 @@ Characterize every retained `savor.capture.profile/1` behavior before moving it 
 - profile attach remains passive and cannot manipulate physical stop points, create a foreground wait,
   advance emulation, or grant control authority.
 
+The service-level guards additionally require:
+
+- at most one opaque attachment;
+- all dynamic-watchpoint/profile changes to reconcile on the actor through `ReplaceGroup`;
+- preparation before state replacement and rebind of the same logical attachment at the new epoch;
+- rollback at the preserved epoch when replacement fails;
+- exactly-once group release and artifact finalization on detach/shutdown; and
+- session taint when restore rebind or mandatory finalization cannot be proven.
+
 The compatibility oracle is the existing profile behavior and artifacts, not a new `CapturePlan` or
 profile-to-IR compiler.
 
@@ -422,14 +449,51 @@ profile-to-IR compiler.
 
 Cover:
 
-- boot, load artifact, restore baseline, continue-session guards, and save artifact;
-- epoch change on boot/reboot/restore and no change on ordinary reads;
+- sole-authority boot, reboot, load artifact, restore handle, and shutdown transactions;
+- epoch change exactly once on successful boot/reboot/restore, no change on ordinary reads or
+  recoverable replacement failure, and taint with the new epoch retained after post-replacement commit
+  failure;
+- participant prepare/commit/rollback ordering across engine, router, capture, input, movie, mutation,
+  and resource-ledger state;
 - stale memory pointer, selected-object, worksheet, ground, router, and action handle rejection;
-- exact runtime/disc/state compatibility;
-- multiple named state handles rather than one hidden VM snapshot;
-- immutable state artifact hash, parent, edge, and producer lineage;
-- save/load failure and incomplete artifact rejection; and
-- no implicit latest or ambient state selection.
+- exact game/ISO/emulator/runtime compatibility;
+- multiple bounded immutable memory handles rather than one hidden VM snapshot;
+- caller-declared new immutable file path, state SHA-256, parent/edge/producer lineage, overwrite
+  rejection, and changed-file rejection before restore;
+- exact embedded read-only DTM history, companion/hash verification, game identity,
+  starts-from-savestate, and read-only restoration;
+- materialization and validation of the embedded DTM before restore, rejection when an already-active
+  read-only movie has a different tracked DTM identity, and commit verification of the prepared
+  identity and resulting movie mode;
+- cold external read-only import without caller-supplied cursor metadata, followed by reconciliation and
+  recording of Dolphin's authoritative post-restore frame/input position;
+- exact cursor matching and mismatch rejection for internally captured checkpoints that already carry
+  a known frame/input continuation;
+- external import rejection for unspecified movie state, support for explicit `NoMovie` and
+  `ReadOnlyPlayback`, and rejection of cold in-progress recording restore before backend mutation;
+- rejection of recording file-artifact capture/import/restore, same-session in-memory recording rewind,
+  and rejection after session-generation change; and
+- no implicit latest or ambient state/movie selection.
+
+### MovieService, ScreenshotService, and TelemetryBus tests
+
+Cover:
+
+- initial read-only playback through `SessionOpenOptions`, with DTM validation and
+  `Movie::PlayInput` preparation before the single backend boot;
+- post-open playback using the same DTM preparation followed by a `StateService` reboot;
+- propagation of a DTM starting savestate, verification of the resulting playback mode, and reservation
+  cleanup after boot failure;
+- one unsuspendable movie-exclusive input reservation held until stop/unwind;
+- recording start, same-session checkpoint/rewind, cancel, and finalization to a new caller-declared DTM
+  plus any `<dtm>.sav` companion;
+- file-artifact recording-continuation rejection before backend restore;
+- screenshot request/epoch correlation, actor-thread ownership, one synchronous bounded backend call,
+  and preservation of backend integrity in failure receipts. Active in-flight cancellation is not an
+  implemented acceptance claim and remains deferred until nonblocking backend/actor ingress; and
+- telemetry monotonic sequence ordering, including a coalesced replacement taking its fresh
+  chronological position, lossy coalescing/drop accounting, bounded payloads, and fail-closed
+  required-event overflow.
 
 ### GuestMutationService tests
 
@@ -440,11 +504,25 @@ Cover:
 - written-value readback mismatch;
 - masked write proves that no undeclared bit changed;
 - nested scopes and reverse-order restoration;
+- rejection of unrelated overlapping mutations and explicit same-owner parentage for nesting;
+- data mutation reversible by default and retained only through an explicit commit;
 - executable patch pause requirement, alignment, expected word, cache/JIT invalidation, and readback;
+- executable patch commit rejection and symmetric invalidation/readback on restore;
 - cancellation during an executable enable window;
 - restoration failure and session taint;
 - state-epoch change while a receipt is live; and
 - audit receipt completeness.
+
+The narrow live Slice 4 target is a serialized headless Release JIT64 guard at recurring
+`0x801DC288`: while paused, verify the expected instruction, apply a NOP, invalidate the affected JIT
+range, read it back, prove no emulator advancement occurs while the patch is active, restore the exact
+word, invalidate again, and read back the restoration. It uses no render window, GUI automation,
+desktop control, screenshot judgement, or user observation.
+
+Live state-plus-DTM continuation, live post-write memcheck/capture sampling, and current-phase movie
+parity are deferred until deterministic `ProgramRuntime` execution and input can drive authoritative
+witnesses. Focused state/movie/capture contract tests do not claim those live behaviors have already
+been proven.
 
 For future Survey work, the concrete fixture should cover:
 
@@ -456,6 +534,19 @@ For future Survey work, the concrete fixture should cover:
 - cancellation/fault injection at each pause, write, cache/JIT, readback, resume, and restore boundary.
 
 ### Action and resource-scope contract tests
+
+Before `ProgramRuntime` exists, test `SessionResourceLedger` directly:
+
+- actor-thread-only mutation and session-root initialization;
+- atomic batch acquisition with monotonic actor-assigned receipt/acquisition identities;
+- synthetic nested scopes and reverse acquisition-order unwind;
+- descriptor-authorized promotion only to an allowed ancestor;
+- optional release failure producing clean-with-diagnostics while mandatory unproven cleanup requires
+  taint and blocks later acquisition;
+- a typed cleanup-execution continuation that suspends and resumes the same unwind;
+- state-transition rollback, end-on-change supersession, epoch-agnostic survival, and stable rebind
+  requests/completion; and
+- idempotent shutdown that preserves the final cleanup disposition.
 
 Every registered action receives a generated conformance suite from `ActionDescriptor`:
 
@@ -638,10 +729,11 @@ During implementation:
 - run architecture/invariant checks when a dependency or ownership boundary changes; and
 - run parity tests for each affected current phase as it migrates.
 
-Do not use production-worker SavorE2E as an intermediate Slice 1, Slice 2, or Slice 3 acceptance signal:
-the hard cutover still advertises no production `ProgramInvocation`. Slice 3 adds only the
-capability-gated Ready-session execution-control seam. Run SavorE2E only after `ProgramRuntime`, current
-program migration, and handler adapters restore the complete production path.
+Do not use production-worker SavorE2E as an intermediate Slice 1, Slice 2, Slice 3, or Slice 4 acceptance
+signal: the hard cutover still advertises no production `ProgramInvocation`. Slice 3 adds the
+capability-gated Ready-session execution-control seam; Slice 4 adds only generic scoped session
+services. Run SavorE2E only after `ProgramRuntime`, current program migration, and handler adapters
+restore the complete production path.
 
 Final functional acceptance is the Release solution build and production-worker SavorE2E outcome
 summarized below, plus confirmation that no production path selects the retired legacy executor.
@@ -670,11 +762,14 @@ Verification requires explicit seams for:
 - fake `DolphinBackend`;
 - inspectable router physical/logical state;
 - `ExecutionEngine` event injection and trace capture;
-- `InputArbiter` lease/resource ledger;
+- `InputArbiter` lease/publication/poll state;
+- standalone `SessionResourceLedger` scope, receipt, transition, unwind, and cleanup disposition;
 - semantic-observation and interaction lowering/source-map inspection;
 - `CaptureService` profile-event injection and recorder/artifact inspection;
 - `StateService` epoch and state-artifact inspection;
+- `MovieService` checkpoint/reservation and explicit state-plus-DTM continuation inspection;
 - mutation fault injection and restoration receipts;
+- screenshot correlation and telemetry overflow inspection;
 - deterministic action registry completions;
 - program trace/source-map events; and
 - existing SavorDb test controls for program-kind materialization, result projection, workflow restart,
