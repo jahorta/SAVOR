@@ -180,6 +180,7 @@ struct ActionMotionInvocationResult {
         ActionMotionPlaybackContinuation::State6PostDelayTo11;
     int state8_delay_remaining = -1;
     bool auxiliary_publication_requested = false;
+    bool special_mode11_publication_requested = false;
     bool entered_state10_via_fallthrough = false;
     std::optional<std::uint32_t> instruction_flags_0xec_after;
     std::optional<std::uint32_t> instruction_flags_0xf0_after;

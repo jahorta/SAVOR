@@ -14,6 +14,7 @@
 #include "CombatantAuxiliaryPublicationModel.h"
 #include "CombatantVisualDispatcherModel.h"
 #include "DirectInstructionTransitionSelectorModel.h"
+#include "EffectRngModel.h"
 #include "MovementModel.h"
 #include "BattleTargetReactionStateModel.h"
 #include "ViewPlacementCacheModel.h"
@@ -55,6 +56,7 @@ enum class BattleFrameWorkerKind {
     VisualActionService,
     VisualCollisionBox,
     VisualActionViewRecord,
+    VisualSparcEffect,
     VisualUnsupportedCommand,
     CombatantInstruction,
     CleanupStanding,
@@ -139,6 +141,7 @@ enum class BattleFrameWorkerStepKind {
     VisualChildState0,
     VisualChildDelay,
     VisualChildNested,
+    VisualEffectRng,
     VisualChildCleanup,
     VisualMode0Rewrite,
     VisualMode0eCamera,
@@ -150,6 +153,7 @@ enum class BattleFrameWorkerStepKind {
     VisualInstructionGate,
     VisualActiveRecordReplace,
     VisualReplacementState,
+    VisualCallbackCleanup,
     VisualUnsupportedWait,
     CallbackEntry,
     PathBuild,
@@ -728,6 +732,7 @@ enum class BattleFrameVisualChildKind {
     ActionService,
     CollisionBox,
     ActionViewRecord,
+    SparcEffect,
     UnsupportedCommand,
 };
 
@@ -790,6 +795,7 @@ struct BattleFrameVisualChildTask {
     int target_slot = -1;
     std::string resource_stem;
     int record_index = -1;
+    std::uint64_t instruction_revision = 0;
     std::uint64_t publication_epoch = 0;
     CombatantVisualCommandKind command_kind =
         CombatantVisualCommandKind::Unknown;
@@ -832,6 +838,11 @@ struct BattleFrameVisualChildTask {
     std::optional<CombatantVisualSetCommandPayload> set_command;
     std::optional<CombatantVisualCollisionBoxPayload> collision_box;
     std::optional<CombatantVisualSystemCameraPayload> system_camera;
+    std::optional<CombatantVisualSparcPayload> sparc;
+    std::optional<CombatEffectBurstInput> effect_burst_input;
+    int effect_source_key = -1;
+    int effect_burst_occurrence = -1;
+    int effect_draws = 0;
     int collision_state = 0;
     int collision_counter = 0;
     BattleCollisionVec3 collision_current{};
@@ -876,8 +887,32 @@ struct BattleFramePersistentInstructionCallbackRuntime {
     bool auxiliary_publication_pending = false;
     std::uint64_t auxiliary_publication_revision = 0;
     std::uint64_t last_auxiliary_instruction_revision = 0;
+    bool completion_pending = false;
+    std::uint64_t completion_revision = 0;
+    std::uint64_t completion_instruction_revision = 0;
+    int completion_source_slot = -1;
+    bool completion_queue_acknowledged = false;
     ActionMotionInvocationStatus status =
         ActionMotionInvocationStatus::MissingInput;
+    std::string provenance;
+};
+
+enum class BattleFrameInstructionResourceKnowledge {
+    Missing,
+    Present,
+    Indeterminate,
+};
+
+struct BattleFrameInstructionResourceRuntime {
+    BattleFrameInstructionResourceKnowledge knowledge =
+        BattleFrameInstructionResourceKnowledge::Missing;
+    int slot = -1;
+    int instruction_thread_node_id = -1;
+    std::uint64_t instruction_thread_creation_sequence = 0;
+    std::uint64_t instruction_thread_semantic_instance = 0;
+    std::string resource_semantic_id;
+    std::uint64_t publication_revision = 0;
+    int publication_frame = -1;
     std::string provenance;
 };
 
@@ -935,6 +970,10 @@ struct BattleFrameVisualRuntime {
         mode11_camera_operands{};
     std::array<std::optional<CombatantVisualResource>, kBattleFrameCombatantSlotCapacity>
         resources{};
+    std::optional<CombatantVisualResource> target_reaction_effect_resource;
+    std::array<BattleFrameInstructionResourceRuntime,
+               kBattleFrameCombatantSlotCapacity>
+        instruction_resources{};
     std::array<CombatantVisualTimelineState, kBattleFrameCombatantSlotCapacity>
         timelines{};
     std::array<int, kBattleFrameCombatantSlotCapacity> timeline_action_ordinals{};
@@ -943,6 +982,9 @@ struct BattleFrameVisualRuntime {
         std_row_producers{};
     std::array<ActionMotionPlaybackRuntime, kBattleFrameCombatantSlotCapacity>
         action_motion_playbacks{};
+    std::array<SelectedActionMotionRendererRuntime,
+               kBattleFrameCombatantSlotCapacity>
+        selected_action_motion_renderers{};
     std::array<BattleFramePersistentInstructionCallbackRuntime,
                kBattleFrameCombatantSlotCapacity>
         persistent_instruction_callbacks{};
@@ -960,6 +1002,7 @@ struct BattleFrameVisualRuntime {
     int next_child_sequence = 0;
     int next_role_flag_child_sequence = 0;
     int next_instruction_control_reset_sequence = 0;
+    std::uint64_t next_instruction_resource_publication_revision = 1;
     int current_visit_cursor = -1;
 };
 

@@ -38,7 +38,15 @@ enum class ActionMotionPlaybackContinuation {
     State5LoadLookedUpTo4,
     State6PostDelayTo11,
     State7LoadLookedUpTo14,
+    SpecialState10LoadLookedUpTo2,
     GenericRelease,
+};
+
+enum class SelectedActionMotionRendererStatus {
+    Inactive,
+    Matched,
+    MissingInput,
+    Unsupported,
 };
 
 enum class ActionMotionDelayStatus {
@@ -166,12 +174,74 @@ struct ActionMotionPlaybackVisitResult {
     std::string detail;
 };
 
+// FUN_8001A4F0's initial selected-row motion shares the renderer primitive
+// with action-motion playback, but it does not suspend the persistent
+// callback. Keep it as a separate instruction-revision-owned lifetime.
+struct SelectedActionMotionRendererInstallRequest {
+    int action_ordinal = -1;
+    int slot = -1;
+    std::uint64_t instruction_state_revision = 0;
+    int selected_action_row_index = -1;
+    std::int16_t motion_id = -1;
+    std::optional<std::uint32_t> motion_frame_count;
+    std::uint32_t row_flags = 0;
+    std::uint32_t motion_progress_step_bits = 0;
+    std::string provenance;
+};
+
+struct SelectedActionMotionRendererRuntime {
+    bool active = false;
+    int action_ordinal = -1;
+    int slot = -1;
+    std::uint64_t instruction_state_revision = 0;
+    int selected_action_row_index = -1;
+    std::int16_t motion_id = -1;
+    SelectedActionMotionRendererStatus status =
+        SelectedActionMotionRendererStatus::Inactive;
+    std::uint32_t motion_frame_count = 0;
+    std::uint32_t row_flags = 0;
+    std::uint32_t progress_bits_0x68 = 0;
+    std::uint32_t increment_bits_0x6c = 0;
+    int renderer_visits = 0;
+    bool motion_complete_0x70 = false;
+    std::string provenance;
+};
+
+struct SelectedActionMotionRendererInstallResult {
+    SelectedActionMotionRendererRuntime runtime{};
+    bool installed = false;
+    std::string detail;
+};
+
+struct SelectedActionMotionRendererVisitInput {
+    std::uint32_t instruction_flags_0xec = 0;
+    std::uint32_t instruction_flags_0xf0 = 0;
+};
+
+struct SelectedActionMotionRendererVisitResult {
+    SelectedActionMotionRendererRuntime runtime{};
+    bool renderer_advanced = false;
+    bool completed_this_visit = false;
+    std::uint32_t progress_before = 0;
+    std::uint32_t progress_after = 0;
+    std::string detail;
+};
+
 ActionMotionPlaybackInstallResult install_action_motion_playback(
     const ActionMotionPlaybackInstallRequest& request);
 
 ActionMotionPlaybackVisitResult visit_action_motion_playback(
     const ActionMotionPlaybackRuntime& runtime,
     const ActionMotionPlaybackVisitInput& input = {});
+
+SelectedActionMotionRendererInstallResult
+install_selected_action_motion_renderer(
+    const SelectedActionMotionRendererInstallRequest& request);
+
+SelectedActionMotionRendererVisitResult
+visit_selected_action_motion_renderer(
+    const SelectedActionMotionRendererRuntime& runtime,
+    const SelectedActionMotionRendererVisitInput& input = {});
 
 ActionMotionDelayLookupResult resolve_action_motion_post_state6_delay(
     const ActionMotionDelayTable& table,
@@ -191,6 +261,8 @@ const char* action_motion_playback_phase_name(ActionMotionPlaybackPhase phase);
 const char* action_motion_playback_visit_kind_name(ActionMotionPlaybackVisitKind kind);
 const char* action_motion_playback_continuation_name(
     ActionMotionPlaybackContinuation continuation);
+const char* selected_action_motion_renderer_status_name(
+    SelectedActionMotionRendererStatus status);
 const char* action_motion_delay_status_name(ActionMotionDelayStatus status);
 
 } // namespace savor::predict

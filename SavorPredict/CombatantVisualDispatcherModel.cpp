@@ -492,6 +492,7 @@ Std0Table combatant_visual_selector_table(const CombatantVisualResource& resourc
 const char* combatant_visual_command_kind_name(CombatantVisualCommandKind kind) {
     switch (kind) {
     case CombatantVisualCommandKind::Unknown: return "Unknown";
+    case CombatantVisualCommandKind::Sparc: return "SPARC";
     case CombatantVisualCommandKind::SetCommand: return "SetCommand";
     case CombatantVisualCommandKind::MoveModel: return "MoveModel";
     case CombatantVisualCommandKind::PutModel: return "Putmodel";

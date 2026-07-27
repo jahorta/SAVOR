@@ -11,6 +11,7 @@ namespace savor::predict {
 
 enum class CombatantVisualCommandKind {
     Unknown,
+    Sparc,
     SetCommand,
     MoveModel,
     PutModel,
@@ -40,6 +41,11 @@ enum class CombatantVisualKeySource {
     RuntimeInstruction,
     ValidatedTransition,
     SelectedStdAction,
+};
+
+struct CombatantVisualSparcPayload {
+    std::int16_t source_key = -1;
+    std::int16_t secondary_field = -1;
 };
 
 struct CombatantVisualSetCommandPayload {
@@ -87,6 +93,7 @@ struct CombatantVisualCommandRecord {
     std::int16_t synchronization_gate = 0;
     CombatantVisualCommandKind kind = CombatantVisualCommandKind::Unknown;
     std::vector<std::uint8_t> payload_bytes;
+    std::optional<CombatantVisualSparcPayload> sparc;
     std::optional<CombatantVisualSetCommandPayload> set_command;
     std::optional<CombatantVisualCollisionBoxPayload> collision_box;
     std::optional<CombatantVisualSystemCameraPayload> system_camera;
@@ -96,6 +103,12 @@ struct CombatantVisualResourceBinding {
     int slot = -1;
     std::string resource_stem;
     std::optional<bool> mode0_rewrite_gate;
+};
+
+struct CombatantVisualMotionFrameCount {
+    std::int16_t motion_id = -1;
+    std::uint32_t frame_count = 0;
+    std::string provenance;
 };
 
 struct CombatantStdActionRow {
@@ -159,6 +172,7 @@ struct CombatantVisualResource {
     CombatantVisualResourceBinding binding{};
     std::vector<CombatantVisualCommandRecord> records;
     std::vector<CombatantStdActionRow> action_rows;
+    std::vector<CombatantVisualMotionFrameCount> motion_frame_counts;
     Std0Table selector_table;
     bool includes_sentinel = false;
     std::string provenance;
@@ -195,6 +209,7 @@ struct CombatantVisualTimelineState {
 struct CombatantVisualPublication {
     int slot = -1;
     int target_slot = -1;
+    std::uint64_t instruction_revision = 0;
     std::uint64_t epoch = 0;
     std::uint32_t owning_thread_visit = 0;
     int record_index = -1;

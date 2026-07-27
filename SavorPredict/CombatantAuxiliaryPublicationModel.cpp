@@ -23,6 +23,7 @@ constexpr std::array<std::uint32_t, 7> kSuppressedCommandIds{
 
 bool child_producing_command(CombatantVisualCommandKind kind) {
     switch (kind) {
+    case CombatantVisualCommandKind::Sparc:
     case CombatantVisualCommandKind::SetCommand:
     case CombatantVisualCommandKind::MoveModel:
     case CombatantVisualCommandKind::PutModel:
@@ -179,6 +180,7 @@ void dispatch_resource(
         CombatantVisualPublication publication;
         publication.slot = request.slot;
         publication.target_slot = request.target_slot;
+        publication.instruction_revision = request.instruction_revision;
         publication.epoch = request.publication_epoch;
         publication.owning_thread_visit = request.owning_thread_visit;
         publication.record_index = record.index;
@@ -187,9 +189,14 @@ void dispatch_resource(
         publication.key_source = CombatantVisualKeySource::RuntimeInstruction;
         publication.action_key = request.instruction_mode;
         publication.record = &record;
-        publication.provenance =
-            "FUN_8001B1B0 state 10 -> FUN_8001CAA8 -> FUN_800085EC -> "
-            "FUN_800086BC -> FUN_8000832C -> DispatchVisualCommand_800367E8; "
+        publication.provenance = request.source
+                == CombatantAuxiliaryPublicationSource::
+                    SpecialMode11_8001C474
+            ? "FUN_8001A4F0 state 0 -> FUN_8001C474 -> FUN_80008530 -> "
+              "FUN_8000832C -> DispatchVisualCommand_800367E8; "
+            : "FUN_8001B1B0 state 10 -> FUN_8001CAA8 -> FUN_800085EC -> "
+              "FUN_800086BC -> FUN_8000832C -> DispatchVisualCommand_800367E8; ";
+        publication.provenance +=
             "lane=" + std::string(combatant_auxiliary_dispatch_lane_name(lane))
             + "; resource=" + resource.binding.resource_stem
             + "; record_index=" + std::to_string(record.index);
@@ -305,7 +312,12 @@ CombatantAuxiliaryPublicationResult publish_combatant_auxiliary_commands(
     result.status = dispatch_status;
     std::ostringstream provenance;
     provenance
-        << "FUN_8001B1B0 state-10 auxiliary publication; mode="
+        << (request.source
+                == CombatantAuxiliaryPublicationSource::
+                    SpecialMode11_8001C474
+            ? "FUN_8001A4F0 state-0 FUN_8001C474 auxiliary publication"
+            : "FUN_8001B1B0 state-10 FUN_8001CAA8 auxiliary publication")
+        << "; mode="
         << request.instruction_mode
         << "; subtype=" << *request.instruction_subtype
         << "; current_lane=" << (result.current_lane_dispatched ? 1 : 0)

@@ -16,6 +16,13 @@ constexpr std::uint32_t kActionMotionDelayDescriptorType = 0x00030032u;
 constexpr std::uint32_t kInstructionFlagSuppressCurrent = 0x00000800u;
 constexpr std::uint32_t kInstructionFlagSpecialPrimary20 = 0x00001000u;
 constexpr std::uint32_t kInstructionFlagUseAlternateB = 0x00004000u;
+constexpr std::uint32_t kInstructionMotionAdvanceSuppressed = 0x00000800u;
+constexpr std::uint32_t kInstructionMotionAdvancePaused = 0x00002000u;
+constexpr std::uint32_t kInstructionMotionReverse = 0x20000000u;
+constexpr std::uint32_t kInstructionMotionReverseEnabled = 0x08000000u;
+constexpr std::uint32_t kInstructionMotionAdvanceOverride = 0x10000000u;
+constexpr std::uint32_t kSelectedMotionClampAtEnd = 0x08000000u;
+constexpr std::uint32_t kSelectedMotionImmediateComplete = 0x00800000u;
 constexpr std::int16_t kSpecialMode0b = 0x0b;
 constexpr std::int16_t kSpecialMode20 = 0x20;
 constexpr std::int16_t kSpecialSelector = 2;
@@ -80,6 +87,140 @@ std::optional<bool> match_payload_key(
 }
 
 } // namespace
+
+SelectedActionMotionRendererInstallResult
+install_selected_action_motion_renderer(
+    const SelectedActionMotionRendererInstallRequest& request) {
+    SelectedActionMotionRendererInstallResult result;
+    auto& runtime = result.runtime;
+    runtime.action_ordinal = request.action_ordinal;
+    runtime.slot = request.slot;
+    runtime.instruction_state_revision =
+        request.instruction_state_revision;
+    runtime.selected_action_row_index =
+        request.selected_action_row_index;
+    runtime.motion_id = request.motion_id;
+    runtime.row_flags = request.row_flags;
+    runtime.increment_bits_0x6c =
+        request.motion_progress_step_bits;
+    runtime.provenance = request.provenance;
+
+    if (!request.motion_frame_count.has_value()) {
+        runtime.status = SelectedActionMotionRendererStatus::MissingInput;
+        result.detail =
+            "selected-row motion frame count is unavailable; the "
+            "nonblocking FUN_80018CBC lifetime was not invented";
+        return result;
+    }
+    runtime.motion_frame_count = *request.motion_frame_count;
+    if (runtime.motion_frame_count == 0
+        || request.motion_id < 0
+        || !std::isfinite(value(runtime.increment_bits_0x6c))
+        || value(runtime.increment_bits_0x6c) <= 0.0f) {
+        runtime.status = SelectedActionMotionRendererStatus::Unsupported;
+        result.detail =
+            "selected-row motion metadata is malformed or outside the "
+            "forward-renderer contract";
+        return result;
+    }
+
+    runtime.status = SelectedActionMotionRendererStatus::Matched;
+    runtime.active = true;
+    runtime.progress_bits_0x68 = kZeroBits;
+    runtime.motion_complete_0x70 = false;
+    result.installed = true;
+
+    std::ostringstream detail;
+    detail << "selected_row=" << runtime.selected_action_row_index
+           << "; motion_id=" << runtime.motion_id
+           << "; frame_count=" << runtime.motion_frame_count
+           << "; progress_bits_0x68=0x" << std::hex
+           << runtime.progress_bits_0x68
+           << "; increment_bits_0x6c=0x"
+           << runtime.increment_bits_0x6c
+           << "; callback_blocked=0";
+    result.detail = detail.str();
+    return result;
+}
+
+SelectedActionMotionRendererVisitResult
+visit_selected_action_motion_renderer(
+    const SelectedActionMotionRendererRuntime& runtime,
+    const SelectedActionMotionRendererVisitInput& input) {
+    SelectedActionMotionRendererVisitResult result;
+    result.runtime = runtime;
+    result.progress_before = runtime.progress_bits_0x68;
+    result.progress_after = runtime.progress_bits_0x68;
+    if (!runtime.active
+        || runtime.status != SelectedActionMotionRendererStatus::Matched) {
+        result.detail =
+            "selected-row motion renderer is inactive or lacks exact input";
+        return result;
+    }
+
+    auto& next = result.runtime;
+    ++next.renderer_visits;
+    float progress = value(next.progress_bits_0x68);
+    const float increment = value(next.increment_bits_0x6c);
+    const bool advance_forward =
+        ((((input.instruction_flags_0xec
+                    & kInstructionMotionReverse) == 0)
+                && ((input.instruction_flags_0xf0
+                    & kInstructionMotionAdvanceSuppressed) == 0))
+            || ((input.instruction_flags_0xec
+                & kInstructionMotionAdvanceOverride) != 0))
+        && ((input.instruction_flags_0xf0
+            & kInstructionMotionAdvancePaused) == 0);
+    if (advance_forward) {
+        progress = ppc_add_single(progress, increment);
+        result.renderer_advanced = true;
+    }
+    if ((input.instruction_flags_0xec & kInstructionMotionReverse) != 0
+        && (input.instruction_flags_0xec
+            & kInstructionMotionReverseEnabled) != 0
+        && increment <= progress) {
+        volatile float reversed = progress - increment;
+        progress = reversed;
+        result.renderer_advanced = true;
+    }
+
+    const float last_frame =
+        static_cast<float>(next.motion_frame_count) - 1.0f;
+    bool complete = false;
+    if (last_frame < progress) {
+        progress = (next.row_flags & kSelectedMotionClampAtEnd) != 0
+            ? last_frame
+            : 0.0f;
+        complete = true;
+    }
+    if ((next.row_flags & kSelectedMotionImmediateComplete) != 0
+        || (input.instruction_flags_0xf0
+            & kInstructionMotionAdvanceSuppressed) != 0) {
+        complete = true;
+    }
+
+    next.progress_bits_0x68 = bits(progress);
+    next.motion_complete_0x70 = complete;
+    if (complete) {
+        next.active = false;
+        result.completed_this_visit = true;
+    }
+    result.progress_after = next.progress_bits_0x68;
+
+    std::ostringstream detail;
+    detail << "selected_row=" << next.selected_action_row_index
+           << "; motion_id=" << next.motion_id
+           << "; frame_count=" << next.motion_frame_count
+           << "; renderer_visit=" << next.renderer_visits
+           << "; progress_before_bits=0x" << std::hex
+           << result.progress_before
+           << "; progress_after_bits=0x" << result.progress_after
+           << "; complete_0x70=" << std::dec
+           << (next.motion_complete_0x70 ? 1 : 0)
+           << "; callback_blocked=0";
+    result.detail = detail.str();
+    return result;
+}
 
 ActionMotionInstructionGateResult evaluate_action_motion_instruction_gate(
     std::int16_t payload_primary,
@@ -313,6 +454,9 @@ ActionMotionPlaybackInstallResult install_action_motion_playback(
     case ActionMotionPlaybackContinuation::State7LoadLookedUpTo14:
         result.runtime.callback_control_state = 7;
         break;
+    case ActionMotionPlaybackContinuation::SpecialState10LoadLookedUpTo2:
+        result.runtime.callback_control_state = 10;
+        break;
     case ActionMotionPlaybackContinuation::GenericRelease:
         result.runtime.callback_control_state = 0;
         break;
@@ -389,6 +533,10 @@ ActionMotionPlaybackVisitResult visit_action_motion_playback(
                     break;
                 case ActionMotionPlaybackContinuation::State7LoadLookedUpTo14:
                     result.runtime.callback_control_state = 14;
+                    break;
+                case ActionMotionPlaybackContinuation::
+                        SpecialState10LoadLookedUpTo2:
+                    result.runtime.callback_control_state = 2;
                     break;
                 case ActionMotionPlaybackContinuation::GenericRelease:
                     result.runtime.callback_control_state = 0;
@@ -591,10 +739,27 @@ const char* action_motion_playback_continuation_name(
         return "State6PostDelayTo11";
     case ActionMotionPlaybackContinuation::State7LoadLookedUpTo14:
         return "State7LoadLookedUpTo14";
+    case ActionMotionPlaybackContinuation::SpecialState10LoadLookedUpTo2:
+        return "SpecialState10LoadLookedUpTo2";
     case ActionMotionPlaybackContinuation::GenericRelease:
         return "GenericRelease";
     }
     return "State6PostDelayTo11";
+}
+
+const char* selected_action_motion_renderer_status_name(
+    SelectedActionMotionRendererStatus status) {
+    switch (status) {
+    case SelectedActionMotionRendererStatus::Inactive:
+        return "Inactive";
+    case SelectedActionMotionRendererStatus::Matched:
+        return "Matched";
+    case SelectedActionMotionRendererStatus::MissingInput:
+        return "MissingInput";
+    case SelectedActionMotionRendererStatus::Unsupported:
+        return "Unsupported";
+    }
+    return "Unknown";
 }
 
 const char* action_motion_delay_status_name(ActionMotionDelayStatus status) {

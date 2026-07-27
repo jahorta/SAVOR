@@ -580,6 +580,8 @@ const char* battle_frame_thread_callback_identity_name(
         return "visual.point_light";
     case BattleFrameThreadCallbackIdentity::VisualSystemCamera:
         return "visual.system_camera";
+    case BattleFrameThreadCallbackIdentity::VisualSparcEffect:
+        return "visual.sparc_effect_80042b10";
     case BattleFrameThreadCallbackIdentity::Unknown:
     default:
         return "unknown";

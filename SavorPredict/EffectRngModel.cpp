@@ -59,30 +59,43 @@ std::vector<CombatEffectBurstInput> first_battle_landed_basic_attack_effect_burs
     return first_battle_effect_burst_sequence_for_source_key(4);
 }
 
-std::vector<CombatEffectBurstInput> first_battle_effect_burst_sequence_for_source_key(int source_key) {
+std::optional<CombatEffectBurstInput>
+first_battle_effect_burst_for_source_key_occurrence(
+    int source_key,
+    std::size_t occurrence) {
+    if (occurrence > 1U) {
+        return std::nullopt;
+    }
+
     int second_loop_count = 0;
     if (source_key == 4 || source_key == 5) {
         second_loop_count = 6;
     } else if (source_key == 8) {
         second_loop_count = 4;
     } else {
-        return {};
+        return std::nullopt;
     }
 
-    return {
-        {
-            .loop_count = 16,
-            .position_selector = CombatEffectPositionSelector::Binary,
-            .variant_index_draw = true,
-            .axis_assignment_draw = false,
-        },
-        {
-            .loop_count = second_loop_count,
-            .position_selector = CombatEffectPositionSelector::Binary,
-            .variant_index_draw = true,
-            .axis_assignment_draw = false,
-        },
+    return CombatEffectBurstInput{
+        .loop_count = occurrence == 0U ? 16 : second_loop_count,
+        .position_selector = CombatEffectPositionSelector::Binary,
+        .variant_index_draw = true,
+        .axis_assignment_draw = false,
     };
+}
+
+std::vector<CombatEffectBurstInput> first_battle_effect_burst_sequence_for_source_key(int source_key) {
+    std::vector<CombatEffectBurstInput> sequence;
+    sequence.reserve(2);
+    for (std::size_t occurrence = 0; occurrence < 2U; ++occurrence) {
+        const auto burst =
+            first_battle_effect_burst_for_source_key_occurrence(source_key, occurrence);
+        if (!burst.has_value()) {
+            return {};
+        }
+        sequence.push_back(*burst);
+    }
+    return sequence;
 }
 
 const char* combat_effect_burst_rule_detail() {

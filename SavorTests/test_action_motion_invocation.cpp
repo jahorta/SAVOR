@@ -374,6 +374,34 @@ TEST(SavorPredictActionMotionInvocation, SpecialState1ResultTwoLoadsWithoutInsta
     EXPECT_EQ(result.callback_state_after, 4);
 }
 
+TEST(SavorPredictActionMotionInvocation, SpecialState0RequestsMode11PublicationExactlyOnce) {
+    const auto state0 = resolve_action_motion_invocation(
+        action_rows(),
+        exact_invocation(
+            ActionMotionPersistentCallbackFamily::ActionMotionSpecial_8001A4F0,
+            0,
+            11));
+
+    EXPECT_EQ(state0.status, ActionMotionInvocationStatus::Provisional);
+    EXPECT_EQ(state0.decision, ActionMotionInvocationDecisionKind::Wait);
+    EXPECT_EQ(state0.callback_state_before, 0);
+    EXPECT_EQ(state0.callback_state_after, 1);
+    EXPECT_TRUE(state0.special_mode11_publication_requested);
+
+    const auto state1 = resolve_action_motion_invocation(
+        action_rows(),
+        exact_invocation(
+            ActionMotionPersistentCallbackFamily::ActionMotionSpecial_8001A4F0,
+            state0.callback_state_after,
+            11));
+
+    EXPECT_EQ(state1.status, ActionMotionInvocationStatus::Provisional);
+    EXPECT_EQ(state1.decision, ActionMotionInvocationDecisionKind::Wait);
+    EXPECT_EQ(state1.callback_state_before, 1);
+    EXPECT_EQ(state1.callback_state_after, 1);
+    EXPECT_FALSE(state1.special_mode11_publication_requested);
+}
+
 TEST(SavorPredictActionMotionInvocation, InitialSyncCallbackDoesNotInstallPlayback) {
     const auto result = resolve_action_motion_invocation(
         action_rows(),
@@ -423,6 +451,9 @@ TEST(SavorPredictActionMotionInvocation, SpecialState9AndBasicState15Install) {
             11));
     EXPECT_EQ(special.decision, ActionMotionInvocationDecisionKind::InstallPlayback);
     EXPECT_EQ(special.callback_state_after, 10);
+    EXPECT_EQ(
+        special.playback_continuation,
+        ActionMotionPlaybackContinuation::SpecialState10LoadLookedUpTo2);
 
     const auto basic = resolve_action_motion_invocation(
         action_rows(),

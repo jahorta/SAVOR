@@ -99,6 +99,117 @@ std::vector<std::uint8_t> collision_box_payload(
     return payload;
 }
 
+std::vector<std::uint8_t> sparc_payload(
+    std::int16_t source_key = 5,
+    std::int16_t secondary_field = 2) {
+    std::vector<std::uint8_t> payload(0x164, 0);
+    write_u16_be(payload, 0x00, static_cast<std::uint16_t>(source_key));
+    write_u16_be(payload, 0x02, static_cast<std::uint16_t>(secondary_field));
+    return payload;
+}
+
+std::string sparc_visual_json(const std::vector<std::uint8_t>& payload) {
+    std::ostringstream json;
+    json << "{\"schema\": \"spice_std_ir_v1\","
+         << "\"layoutKind\": \"entry_table\",\"parseOk\": true,"
+         << "\"entryTable\": {\"records\": ["
+         << "{\"index\":0,\"locationCode\":2,\"opcode\":3,"
+         << "\"payloadSize\":" << payload.size()
+         << ",\"payloadInBounds\":true,\"payloadBytesHex\":\""
+         << bytes_hex(payload) << "\"},"
+         << "{\"index\":1,\"locationCode\":-1,\"opcode\":0,"
+         << "\"payloadSize\":0,\"payloadInBounds\":true,"
+         << "\"payloadBytesHex\":\"\"}]}}";
+    return json.str();
+}
+
+CombatantVisualResource damage_mode11_sparc_resource() {
+    CombatantVisualResource resource;
+    resource.binding = {
+        .slot = -1,
+        .resource_stem = "damage",
+    };
+    resource.records = {
+        {
+            .index = 6,
+            .location_code = 0x53,
+            .opcode = 3,
+            .combined_type = 0x00030053u,
+            .payload_size = 6,
+            .payload_in_bounds = true,
+            .gate_fields_known = true,
+            .gate_fields = {
+                .primary_action_key = 5,
+                .generic_secondary_key = 2,
+                .direct_gate_secondary_key = 0,
+            },
+            .kind = CombatantVisualCommandKind::Unknown,
+        },
+        {
+            .index = 7,
+            .location_code = 2,
+            .opcode = 3,
+            .combined_type = 0x00030002u,
+            .payload_size = 0x164,
+            .payload_in_bounds = true,
+            .gate_fields_known = true,
+            .gate_fields = {
+                .primary_action_key = 5,
+                .generic_secondary_key = 2,
+                .direct_gate_secondary_key = 0,
+            },
+            .kind = CombatantVisualCommandKind::Sparc,
+            .sparc = CombatantVisualSparcPayload{
+                .source_key = 5,
+                .secondary_field = 2,
+            },
+        },
+        {
+            .index = 8,
+            .location_code = 2,
+            .opcode = 3,
+            .combined_type = 0x00030002u,
+            .payload_size = 0x164,
+            .payload_in_bounds = true,
+            .gate_fields_known = true,
+            .gate_fields = {
+                .primary_action_key = 5,
+                .generic_secondary_key = 2,
+                .direct_gate_secondary_key = 0,
+            },
+            .kind = CombatantVisualCommandKind::Sparc,
+            .sparc = CombatantVisualSparcPayload{
+                .source_key = 5,
+                .secondary_field = 2,
+            },
+        },
+        {
+            .index = 9,
+            .location_code = 0x53,
+            .opcode = 3,
+            .combined_type = 0x00030053u,
+            .payload_size = 6,
+            .payload_in_bounds = true,
+            .gate_fields_known = true,
+            .gate_fields = {
+                .primary_action_key = 5,
+                .generic_secondary_key = 2,
+                .direct_gate_secondary_key = 0,
+            },
+            .kind = CombatantVisualCommandKind::Unknown,
+        },
+        {
+            .index = 10,
+            .location_code = -1,
+        },
+    };
+    resource.includes_sentinel = true;
+    resource.provenance =
+        "damage.std key-5 rows: adjacent unknown commands bracket two "
+        "SPARC child publications";
+    return resource;
+}
+
 std::string collision_visual_json(const std::vector<std::uint8_t>& payload) {
     std::ostringstream json;
     json << "{\"schema\": \"spice_std_ir_v1\","
@@ -607,6 +718,83 @@ TEST(SavorPredictCombatantVisualLoader, DecodesCompleteSetAndSystemCameraPayload
     EXPECT_EQ(camera.system_camera->scalar_bits, 0x3f800000U);
     EXPECT_EQ(camera.system_camera->end_frame, 0x0460U);
     EXPECT_EQ(camera.system_camera->mode, 0x0e);
+}
+
+TEST(SavorPredictCombatantVisualLoader, DecodesSparcSourceKeyAndSecondaryField) {
+    const auto loaded = load_spice_std_visual_resource_from_json_text(
+        sparc_visual_json(sparc_payload()));
+
+    ASSERT_TRUE(loaded.ok);
+    EXPECT_EQ(loaded.visual_records_decoded, 1);
+    ASSERT_EQ(loaded.resource.records.size(), 2u);
+
+    const auto& sparc = loaded.resource.records[0];
+    EXPECT_EQ(sparc.combined_type, 0x00030002U);
+    EXPECT_EQ(sparc.kind, CombatantVisualCommandKind::Sparc);
+    EXPECT_EQ(
+        combatant_visual_command_kind_name(sparc.kind),
+        std::string("SPARC"));
+    ASSERT_TRUE(sparc.sparc.has_value());
+    EXPECT_EQ(sparc.sparc->source_key, 5);
+    EXPECT_EQ(sparc.sparc->secondary_field, 2);
+    EXPECT_TRUE(sparc.gate_fields_known);
+    EXPECT_EQ(sparc.gate_fields.primary_action_key, 5);
+    EXPECT_EQ(sparc.gate_fields.generic_secondary_key, 2);
+    EXPECT_EQ(sparc.gate_fields.direct_gate_secondary_key, 0);
+}
+
+TEST(SavorPredictCombatantAuxiliaryPublication, PublishesSparcAsChildProducing) {
+    CombatantVisualResource resource;
+    resource.binding.resource_stem = "damage";
+    resource.records = {
+        {
+            .index = 7,
+            .location_code = 2,
+            .opcode = 3,
+            .combined_type = 0x00030002u,
+            .payload_in_bounds = true,
+            .gate_fields_known = true,
+            .gate_fields = {
+                .primary_action_key = 5,
+                .generic_secondary_key = 2,
+                .direct_gate_secondary_key = 0,
+            },
+            .kind = CombatantVisualCommandKind::Sparc,
+            .sparc = CombatantVisualSparcPayload{
+                .source_key = 5,
+                .secondary_field = 2,
+            },
+        },
+        {.index = 8, .location_code = -1},
+    };
+    const auto result = publish_combatant_auxiliary_commands({
+        .action_ordinal = 2,
+        .slot = 4,
+        .target_slot = 4,
+        .instruction_revision = 7,
+        .publication_epoch = 3,
+        .instruction_mode = 11,
+        .instruction_subtype = -1,
+        .instruction_flags_0xec = 0x00100000u,
+        .instruction_flags_0xf0 = 0u,
+        .gate_input = {
+            .current_action_key = 5,
+            .current_secondary_key = -1,
+            .instruction_flags_0xec = 0x00100000u,
+        },
+        .current_resource = &resource,
+        .readiness_uses_static_resource = false,
+        .current_range_policy = CombatantAuxiliaryRangePolicy::FullTable,
+        .selector_state = 0,
+    });
+
+    EXPECT_EQ(result.status, CombatantAuxiliaryPublicationStatus::Matched);
+    ASSERT_EQ(result.publications.size(), 1u);
+    EXPECT_EQ(result.publications[0].kind, CombatantVisualCommandKind::Sparc);
+    ASSERT_EQ(result.decisions.size(), 1u);
+    EXPECT_EQ(
+        result.decisions[0].decision,
+        CombatantAuxiliaryCommandDecisionKind::CreatedChild);
 }
 
 TEST(SavorPredictCombatantAuxiliaryPublication, PreservesCurrentResourceChildOrder) {
@@ -1411,6 +1599,276 @@ TEST(SavorPredictCombatantVisualRuntime, PublishesAndRunsChildrenAfterOwnerInSam
     ASSERT_NE(child, events.end());
     EXPECT_LT(std::distance(events.begin(), publication),
               std::distance(events.begin(), child));
+}
+
+TEST(SavorPredictCombatantVisualRuntime, Mode11SparcChildrenAndCleanupUseSeparateLifetimes) {
+    auto runtime = initialize_first_battle_frame_runtime(
+        0,
+        frame_slots(),
+        first_battle_source_snapshot().terrain_source_9x9);
+    ASSERT_TRUE(runtime.has_value());
+
+    auto source_resource = decoded_resource(0, false, 2);
+    auto target_resource = decoded_resource(4, false, 2);
+    const auto mode11_row = std::find_if(
+        target_resource.action_rows.begin(),
+        target_resource.action_rows.end(),
+        [](const CombatantStdActionRow& row) {
+            return row.action_id == 11;
+        });
+    ASSERT_NE(mode11_row, target_resource.action_rows.end());
+    mode11_row->callback_ordinal = 5;
+    mode11_row->callback_aux_param = 2;
+    mode11_row->motion_progress_step_bits = 0x3f800000u;
+    target_resource.motion_frame_counts.push_back({
+        .motion_id = 5,
+        .frame_count = 3,
+        .provenance =
+            "three-frame MLD motion fixture for the nonblocking renderer",
+    });
+
+    ASSERT_EQ(
+        publish_battle_frame_std_resource(
+            *runtime,
+            std::move(source_resource),
+            "mode-11 fixture source STD publication").status,
+        BattleFrameThreadMutationStatus::Applied);
+    ASSERT_EQ(
+        publish_battle_frame_std_resource(
+            *runtime,
+            std::move(target_resource),
+            "mode-11 fixture target STD publication").status,
+        BattleFrameThreadMutationStatus::Applied);
+    runtime->visual.target_reaction_effect_resource =
+        damage_mode11_sparc_resource();
+
+    auto* target = find_frame_combatant(runtime->state, 4);
+    ASSERT_NE(target, nullptr);
+    target->instruction_target_slot_0x4 = 0;
+    ASSERT_TRUE(publish_battle_frame_persistent_instruction_callback(
+        *runtime,
+        4,
+        BattleFrameInstructionCallbackPublicationSource::
+            State0Initialization,
+        "mode-11 fixture installs the target state-0 callback"));
+
+    BattleFrameActionRuntime action;
+    action.active = true;
+    action.action_ordinal = 7;
+    action.actor_slot = 0;
+    action.target_slot = 4;
+    action.action_kind = BattleMovementActionKind::BasicAttack;
+    action.relation_scope = BattleMovementRelationScope::SingleTarget;
+    action.turn_type = BattleMovementTurnType::Normal;
+    action.phase = BattleFrameActionPhase::Draining;
+    action.active_controller_phase =
+        BattleFrameActiveControllerPhase::Complete;
+    action.passive_completion_mask = 0;
+    action.action_resolution_available = true;
+    action.attack_result = 1;
+    action.attack_landed = true;
+    action.target_dead = false;
+    action.completion_gate_open = true;
+    runtime->active_action = action;
+
+    ASSERT_TRUE(stage_battle_frame_validated_instruction_transition(
+        *runtime,
+        7,
+        4,
+        0,
+        11,
+        "mode-11 fixture publishes the ordinary landed target reaction"));
+
+    std::uint32_t rng = 0x13572468u;
+    const std::uint32_t seed_before = rng;
+    const auto creation_frame = run_first_turn_frame(*runtime, rng);
+    ASSERT_TRUE(creation_frame.ok);
+    EXPECT_EQ(rng, seed_before);
+    EXPECT_EQ(
+        count_step_for_command(
+            creation_frame.events,
+            BattleFrameWorkerStepKind::VisualChildState0,
+            CombatantVisualCommandKind::Sparc),
+        2);
+    EXPECT_EQ(
+        count_step(
+            creation_frame.events,
+            BattleFrameWorkerStepKind::VisualEffectRng),
+        0);
+    auto& mode11_callback =
+        runtime->visual.persistent_instruction_callbacks[4];
+    EXPECT_EQ(mode11_callback.callback_state, 1);
+
+    std::vector<const BattleFrameVisualChildTask*> sparc_tasks;
+    for (const auto& task : runtime->visual.child_tasks) {
+        if (task.kind == BattleFrameVisualChildKind::SparcEffect) {
+            sparc_tasks.push_back(&task);
+        }
+    }
+    ASSERT_EQ(sparc_tasks.size(), 2u);
+    EXPECT_EQ(sparc_tasks[0]->action_ordinal, 7);
+    EXPECT_EQ(sparc_tasks[1]->action_ordinal, 7);
+    EXPECT_EQ(sparc_tasks[0]->record_index, 7);
+    EXPECT_EQ(sparc_tasks[1]->record_index, 8);
+    EXPECT_EQ(sparc_tasks[0]->effect_burst_occurrence, 0);
+    EXPECT_EQ(sparc_tasks[1]->effect_burst_occurrence, 1);
+    EXPECT_EQ(sparc_tasks[0]->effect_draws, 80);
+    EXPECT_EQ(sparc_tasks[1]->effect_draws, 30);
+    for (const auto* task : sparc_tasks) {
+        const auto* thread = find_battle_frame_thread(
+            runtime->thread_list, task->thread_node_id);
+        ASSERT_NE(thread, nullptr);
+        EXPECT_EQ(
+            thread->callback,
+            BattleFrameThreadCallbackIdentity::VisualSparcEffect);
+    }
+
+    EXPECT_FALSE(mode11_callback.auxiliary_publication_pending);
+    EXPECT_TRUE(mode11_callback.completion_pending);
+    EXPECT_FALSE(
+        battle_frame_action_visual_publication_pending(*runtime, 7));
+
+    std::uint32_t expected_rng = seed_before;
+    for (int draw = 0; draw < 110; ++draw) {
+        expected_rng = draw_rand15(expected_rng).next_state;
+    }
+    const auto rng_frame = run_first_turn_frame(*runtime, rng);
+    ASSERT_TRUE(rng_frame.ok);
+    std::vector<int> effect_draws;
+    for (const auto& event : rng_frame.events) {
+        if (event.step_kind
+            == BattleFrameWorkerStepKind::VisualEffectRng) {
+            effect_draws.push_back(event.draws_consumed);
+        }
+    }
+    EXPECT_EQ(effect_draws, (std::vector<int>{80, 30}));
+    EXPECT_EQ(rng, expected_rng);
+    EXPECT_EQ(mode11_callback.callback_state, 1);
+    EXPECT_EQ(
+        std::count_if(
+            rng_frame.events.begin(),
+            rng_frame.events.end(),
+            [](const BattleFrameStepEvent& event) {
+                return event.step_kind
+                        == BattleFrameWorkerStepKind::
+                            ActionMotionInvocationDecision
+                    && event.action_motion_callback_family
+                        == ActionMotionPersistentCallbackFamily::
+                            ActionMotionSpecial_8001A4F0
+                    && event.action_motion_callback_state_before == 1
+                    && event.action_motion_callback_state_after == 9;
+            }),
+        0);
+
+    const auto child_cleanup_frame =
+        run_first_turn_frame(*runtime, rng);
+    ASSERT_TRUE(child_cleanup_frame.ok);
+    EXPECT_EQ(
+        count_step_for_command(
+            child_cleanup_frame.events,
+            BattleFrameWorkerStepKind::VisualChildCleanup,
+            CombatantVisualCommandKind::Sparc),
+        2);
+    EXPECT_EQ(mode11_callback.callback_state, 1);
+    EXPECT_TRUE(
+        runtime->visual.selected_action_motion_renderers[4]
+            .motion_complete_0x70);
+    EXPECT_FALSE(
+        runtime->visual.selected_action_motion_renderers[4].active);
+
+    const auto motion_transition_frame =
+        run_first_turn_frame(*runtime, rng);
+    ASSERT_TRUE(motion_transition_frame.ok);
+    EXPECT_EQ(mode11_callback.callback_state, 9);
+    EXPECT_EQ(
+        std::count_if(
+            motion_transition_frame.events.begin(),
+            motion_transition_frame.events.end(),
+            [](const BattleFrameStepEvent& event) {
+                return event.step_kind
+                        == BattleFrameWorkerStepKind::
+                            ActionMotionInvocationDecision
+                    && event.action_motion_callback_family
+                        == ActionMotionPersistentCallbackFamily::
+                            ActionMotionSpecial_8001A4F0
+                    && event.action_motion_callback_state_before == 1
+                    && event.action_motion_callback_state_after == 9;
+            }),
+        1);
+
+    const auto playback_install_frame =
+        run_first_turn_frame(*runtime, rng);
+    ASSERT_TRUE(playback_install_frame.ok);
+    EXPECT_EQ(mode11_callback.callback_state, 10);
+    EXPECT_EQ(
+        runtime->visual.action_motion_playbacks[4].continuation,
+        ActionMotionPlaybackContinuation::
+            SpecialState10LoadLookedUpTo2);
+    EXPECT_TRUE(action_motion_playback_blocks_publication(
+        runtime->visual.action_motion_playbacks[4]));
+    EXPECT_EQ(
+        runtime->active_action->phase,
+        BattleFrameActionPhase::Draining);
+
+    auto* source = find_frame_combatant(runtime->state, 0);
+    ASSERT_NE(source, nullptr);
+    source->instruction_runtime_word_0x134 = 0;
+
+    std::vector<BattleFrameStepEvent> playback_events;
+    for (int frame = 0;
+         frame < 16 && mode11_callback.callback_state != 2;
+         ++frame) {
+        const auto playback_frame = run_first_turn_frame(*runtime, rng);
+        ASSERT_TRUE(playback_frame.ok);
+        playback_events.insert(
+            playback_events.end(),
+            playback_frame.events.begin(),
+            playback_frame.events.end());
+    }
+    ASSERT_EQ(mode11_callback.callback_state, 2);
+    EXPECT_EQ(
+        std::count_if(
+            playback_events.begin(),
+            playback_events.end(),
+            [](const BattleFrameStepEvent& event) {
+                return event.action_motion_control_before == 10
+                    && event.action_motion_control_after == 2;
+            }),
+        1);
+    EXPECT_TRUE(mode11_callback.completion_pending);
+    EXPECT_FALSE(mode11_callback.completion_queue_acknowledged);
+    EXPECT_EQ(
+        std::count_if(
+            playback_events.begin(),
+            playback_events.end(),
+            [](const BattleFrameStepEvent& event) {
+                return event.callback
+                    == "FUN_80014EC4_to_FUN_8001DCA0";
+            }),
+        0);
+    EXPECT_EQ(
+        runtime->active_action->phase,
+        BattleFrameActionPhase::Draining);
+
+    source->instruction_runtime_word_0x134 = 1;
+    const auto released_cleanup = run_first_turn_frame(*runtime, rng);
+    ASSERT_TRUE(released_cleanup.ok);
+    EXPECT_EQ(
+        std::count_if(
+            released_cleanup.events.begin(),
+            released_cleanup.events.end(),
+            [](const BattleFrameStepEvent& event) {
+                return event.callback
+                    == "FUN_80014EC4_to_FUN_8001DCA0";
+            }),
+        1);
+    EXPECT_FALSE(mode11_callback.completion_pending);
+    EXPECT_TRUE(mode11_callback.completion_queue_acknowledged);
+    EXPECT_EQ(mode11_callback.callback_state, 6);
+    EXPECT_EQ(target->instruction_runtime_word_0x134, 1u);
+    EXPECT_EQ(
+        runtime->active_action->phase,
+        BattleFrameActionPhase::Complete);
 }
 
 TEST(SavorPredictCombatantVisualRuntime, MovementStageWaitsForState1PublisherAndStdRowProducer) {

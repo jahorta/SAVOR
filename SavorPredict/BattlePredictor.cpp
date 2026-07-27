@@ -2940,17 +2940,84 @@ void append_attack_resolution(
     }
 
     if (attack.attack_result != 0) {
-        append_post_attack_effect_chunks_frame(
-            result,
-            state,
-            action,
-            true,
-            attack.attack_result == 2,
-            false,
-            instruction_mode.instruction_mode_0x6,
-            frame_runtime);
-        if (result.has_missing_input_events) {
+        bool typed_mode11_boundary = false;
+        int typed_mode11_sparc_children = 0;
+        std::uint64_t typed_mode11_instruction_revision = 0;
+        if (!target_dead
+            && attack.attack_result != 2
+            && frame_runtime != nullptr
+            && frame_runtime->initialized
+            && action.frame_action_ordinal.has_value()
+            && action.target_slot >= 0
+            && action.target_slot < static_cast<int>(
+                frame_runtime->visual
+                    .persistent_instruction_callbacks.size())) {
+            const auto& callback =
+                frame_runtime->visual.persistent_instruction_callbacks[
+                    static_cast<std::size_t>(action.target_slot)];
+            const auto* target_combatant = find_frame_combatant(
+                frame_runtime->state, action.target_slot);
+            typed_mode11_boundary =
+                target_combatant != nullptr
+                && target_combatant->visual_instruction_mode_0x6 == 11
+                && callback.action_ordinal
+                    == *action.frame_action_ordinal
+                && callback.callback_family
+                    == ActionMotionPersistentCallbackFamily::
+                        ActionMotionSpecial_8001A4F0
+                && callback.last_auxiliary_instruction_revision
+                    == callback.instruction_state_revision;
+            if (typed_mode11_boundary) {
+                typed_mode11_instruction_revision =
+                    callback.instruction_state_revision;
+                typed_mode11_sparc_children =
+                    static_cast<int>(std::count_if(
+                        frame_runtime->visual.child_tasks.begin(),
+                        frame_runtime->visual.child_tasks.end(),
+                        [&](const BattleFrameVisualChildTask& task) {
+                            return task.action_ordinal
+                                    == *action.frame_action_ordinal
+                                && task.origin_slot == action.target_slot
+                                && task.kind
+                                    == BattleFrameVisualChildKind::
+                                        SparcEffect
+                                && task.instruction_revision
+                                    == typed_mode11_instruction_revision
+                                && task.thread_node_id >= 0;
+                        }));
+            }
+        }
+
+        if (typed_mode11_boundary
+            && typed_mode11_sparc_children == 0) {
+            append_event(result, {
+                .phase = "frame_scheduler",
+                .label = "mode11_target_reaction_sparc_missing",
+                .status = BattlePredictionEventStatus::MissingInput,
+                .actor_slot = action.actor_slot,
+                .target_slot = action.target_slot,
+                .instruction_mode_0x6 = 11,
+                .action_ordinal = action.frame_action_ordinal,
+                .detail = "the typed FUN_8001C474 mode-11 boundary ran but "
+                    "successfully enqueued no instruction-owned SPARC child; "
+                    "the predictor will not fall back to aggregate "
+                    "post-attack effect chunks",
+            });
             return;
+        }
+        if (!typed_mode11_boundary) {
+            append_post_attack_effect_chunks_frame(
+                result,
+                state,
+                action,
+                true,
+                attack.attack_result == 2,
+                false,
+                instruction_mode.instruction_mode_0x6,
+                frame_runtime);
+            if (result.has_missing_input_events) {
+                return;
+            }
         }
     }
 
@@ -3085,6 +3152,27 @@ void append_action_execution(
     }
 }
 
+void add_validated_first_battle_motion_metadata(
+    CombatantVisualResource& resource) {
+    const auto& stem = resource.binding.resource_stem;
+    std::optional<std::uint32_t> mode11_motion5_frame_count;
+    if (stem == "ma000" || stem == "MA000" || stem == "MA001") {
+        mode11_motion5_frame_count = 30;
+    } else if (stem == "MB000") {
+        mode11_motion5_frame_count = 31;
+    }
+    if (!mode11_motion5_frame_count.has_value()) {
+        return;
+    }
+    resource.motion_frame_counts.push_back({
+        .motion_id = 5,
+        .frame_count = *mode11_motion5_frame_count,
+        .provenance =
+            "first-battle full-hook FUN_80018CBC progress/completion "
+            "sequence cross-checked against the owning MLD motion header",
+    });
+}
+
 void configure_visual_dispatcher_resources(
     BattlePredictionResult& result,
     BattleFrameRuntime& runtime,
@@ -3159,7 +3247,10 @@ void configure_visual_dispatcher_resources(
         if (action_rows.ok) {
             resource.action_rows = std::move(action_rows.rows);
         }
+        add_validated_first_battle_motion_metadata(resource);
         detail << "; action_rows=" << resource.action_rows.size();
+        detail << "; motion_frame_counts="
+               << resource.motion_frame_counts.size();
         if (!action_rows.ok) {
             for (const auto& error : action_rows.errors) {
                 detail << "; action_row_error=" << error;
@@ -3183,6 +3274,55 @@ void configure_visual_dispatcher_resources(
             .detail = detail.str(),
         });
     }
+
+    const auto target_reaction_effect_path =
+        options.action_view_std_json_dir / "damage.std.json";
+    SpiceStdVisualJsonLoadResult target_reaction_effect;
+    if (!options.action_view_std_json_dir.empty()) {
+        target_reaction_effect =
+            load_spice_std_visual_resource_from_json_file(
+                target_reaction_effect_path);
+    } else {
+        target_reaction_effect.errors.push_back(
+            "action-view STD JSON directory is unavailable");
+    }
+    std::ostringstream target_reaction_detail;
+    target_reaction_detail
+        << "resource_stem=damage"
+        << "; std_json="
+        << target_reaction_effect_path.generic_string();
+    if (target_reaction_effect.ok) {
+        target_reaction_effect.resource.binding = {
+            .slot = -1,
+            .resource_stem = "damage",
+        };
+        target_reaction_detail
+            << "; records="
+            << target_reaction_effect.resource.records.size()
+            << "; visual_records="
+            << target_reaction_effect.visual_records_decoded
+            << "; complete_payload_bytes=1";
+        runtime.visual.target_reaction_effect_resource =
+            std::move(target_reaction_effect.resource);
+    } else {
+        target_reaction_detail
+            << "; resource_unavailable=1; deferred_until_mode11_use=1"
+            << "; draws=0";
+        for (const auto& error : target_reaction_effect.errors) {
+            target_reaction_detail << "; error=" << error;
+        }
+    }
+    append_event(result, {
+        .phase = "frame_scheduler",
+        .label = target_reaction_effect.ok
+            ? "target_reaction_effect_resource_loaded"
+            : "target_reaction_effect_resource_unavailable",
+        .status = target_reaction_effect.ok
+            ? BattlePredictionEventStatus::Exact
+            : BattlePredictionEventStatus::Provisional,
+        .visual_resource = "damage",
+        .detail = target_reaction_detail.str(),
+    });
 
     const auto publication = publish_configured_battle_frame_std_resources(
         runtime,

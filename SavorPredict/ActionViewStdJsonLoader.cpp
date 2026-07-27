@@ -365,6 +365,9 @@ std::optional<std::vector<std::uint8_t>> decode_payload_hex(std::string_view hex
 }
 
 CombatantVisualCommandKind visual_command_kind(std::uint32_t combined_type) {
+    if (combined_type == 0x00030002U) {
+        return CombatantVisualCommandKind::Sparc;
+    }
     if (combined_type == 0x00030003U) {
         return CombatantVisualCommandKind::PutModel;
     }
@@ -442,7 +445,13 @@ std::optional<CombatantVisualCommandRecord> import_visual_record(
     record.gate_fields.direct_gate_secondary_key = *direct_secondary;
     record.synchronization_gate = payload_s16_be(record.payload_bytes, 6).value_or(0);
 
-    if (record.kind == CombatantVisualCommandKind::SetCommand) {
+    if (record.kind == CombatantVisualCommandKind::Sparc) {
+        record.sparc = CombatantVisualSparcPayload{
+            .source_key = *primary,
+            .secondary_field = *generic_secondary,
+        };
+        ++result.visual_records_decoded;
+    } else if (record.kind == CombatantVisualCommandKind::SetCommand) {
         const auto service_flags = payload_u32_be(record.payload_bytes, 0x10);
         const auto delay = payload_s16_be(record.payload_bytes, 0x14);
         const auto forced_mode = payload_s16_be(record.payload_bytes, 0x16);

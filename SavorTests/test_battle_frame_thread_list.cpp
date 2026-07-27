@@ -4,6 +4,7 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <cstdint>
 #include <vector>
 
 namespace {
@@ -103,6 +104,104 @@ TEST(SavorPredictBattleFrameThreadList, StdPublicationDeterminesInstructionOrder
             runtime->thread_list,
             BattleFrameThreadNodeKind::CombatantInstruction),
         (std::vector<int>{4, 5, 1, 0}));
+}
+
+TEST(SavorPredictBattleFrameThreadList, StdResourcePublicationTracksLiveInstructionThreadIdentity) {
+    std::array<std::uint8_t, 81> terrain{};
+    auto runtime = initialize_first_battle_frame_runtime(
+        0,
+        thread_test_slots(),
+        terrain);
+    ASSERT_TRUE(runtime.has_value());
+
+    constexpr int slot = 0;
+    const auto first_publication = publish_battle_frame_std_resource(
+        *runtime,
+        test_resource(slot),
+        "first semantic resource publication");
+    ASSERT_EQ(
+        first_publication.status,
+        BattleFrameThreadMutationStatus::Applied)
+        << first_publication.detail;
+
+    const auto* first_thread = find_battle_frame_thread(
+        runtime->thread_list,
+        first_publication.node_id);
+    ASSERT_NE(first_thread, nullptr);
+    ASSERT_TRUE(first_thread->active);
+    ASSERT_TRUE(first_thread->semantic_instance_id.has_value());
+
+    const auto& first_resource =
+        runtime->visual.instruction_resources[static_cast<std::size_t>(slot)];
+    EXPECT_EQ(
+        first_resource.knowledge,
+        BattleFrameInstructionResourceKnowledge::Present);
+    EXPECT_EQ(first_resource.slot, slot);
+    EXPECT_EQ(
+        first_resource.instruction_thread_node_id,
+        first_thread->node_id);
+    EXPECT_EQ(
+        first_resource.instruction_thread_creation_sequence,
+        first_thread->creation_sequence);
+    EXPECT_EQ(
+        first_resource.instruction_thread_semantic_instance,
+        *first_thread->semantic_instance_id);
+    EXPECT_FALSE(first_resource.resource_semantic_id.empty());
+    EXPECT_GT(first_resource.publication_revision, 0u);
+    EXPECT_EQ(first_resource.publication_frame, runtime->state.frame_index);
+
+    const auto first_revision = first_resource.publication_revision;
+    const auto first_creation_sequence = first_thread->creation_sequence;
+    const auto first_semantic_instance = *first_thread->semantic_instance_id;
+    ASSERT_EQ(
+        remove_battle_frame_thread(
+            runtime->thread_list,
+            first_thread->node_id,
+            "test.std_resource.remove",
+            "remove the owning instruction thread",
+            runtime->state.frame_index).status,
+        BattleFrameThreadMutationStatus::Applied);
+
+    std::uint32_t rng = 0x12345678u;
+    const auto refresh = run_first_turn_frame(*runtime, rng);
+    ASSERT_TRUE(refresh.ok);
+    EXPECT_EQ(
+        runtime->visual.instruction_resources[
+            static_cast<std::size_t>(slot)].knowledge,
+        BattleFrameInstructionResourceKnowledge::Missing);
+
+    const auto second_publication = publish_battle_frame_std_resource(
+        *runtime,
+        test_resource(slot),
+        "replacement semantic resource publication");
+    ASSERT_EQ(
+        second_publication.status,
+        BattleFrameThreadMutationStatus::Applied)
+        << second_publication.detail;
+    const auto* second_thread = find_battle_frame_thread(
+        runtime->thread_list,
+        second_publication.node_id);
+    ASSERT_NE(second_thread, nullptr);
+    ASSERT_TRUE(second_thread->active);
+    ASSERT_TRUE(second_thread->semantic_instance_id.has_value());
+
+    const auto& second_resource =
+        runtime->visual.instruction_resources[static_cast<std::size_t>(slot)];
+    EXPECT_EQ(
+        second_resource.knowledge,
+        BattleFrameInstructionResourceKnowledge::Present);
+    EXPECT_EQ(
+        second_resource.instruction_thread_node_id,
+        second_thread->node_id);
+    EXPECT_EQ(
+        second_resource.instruction_thread_creation_sequence,
+        second_thread->creation_sequence);
+    EXPECT_EQ(
+        second_resource.instruction_thread_semantic_instance,
+        *second_thread->semantic_instance_id);
+    EXPECT_NE(second_thread->creation_sequence, first_creation_sequence);
+    EXPECT_NE(*second_thread->semantic_instance_id, first_semantic_instance);
+    EXPECT_GT(second_resource.publication_revision, first_revision);
 }
 
 TEST(SavorPredictBattleFrameThreadList, CurrentCursorControlsMkChildInsertion) {

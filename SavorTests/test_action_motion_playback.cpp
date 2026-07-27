@@ -179,6 +179,82 @@ TEST(SavorPredictActionMotionPlayback, State7ContinuationReleasesToState14Withou
     EXPECT_FALSE(action_motion_playback_blocks_publication(completed.runtime));
 }
 
+TEST(SavorPredictActionMotionPlayback, SpecialState10ContinuationReleasesToState2WithoutDelay) {
+    auto runtime = install_duration(
+        0x3dccc954u,
+        0,
+        ActionMotionPlaybackContinuation::SpecialState10LoadLookedUpTo2);
+    EXPECT_EQ(runtime.callback_control_state, 10);
+
+    runtime = visit_action_motion_playback(runtime).runtime;
+    const auto completed = visit_action_motion_playback(runtime);
+    EXPECT_EQ(completed.kind, ActionMotionPlaybackVisitKind::State6Satisfied);
+    EXPECT_TRUE(completed.publication_released_this_visit);
+    EXPECT_EQ(completed.control_state_before, 10);
+    EXPECT_EQ(completed.control_state_after, 2);
+    EXPECT_FALSE(action_motion_playback_blocks_publication(completed.runtime));
+}
+
+TEST(SavorPredictActionMotionPlayback, SelectedMotionCompletesOnlyAfterCrossingLastMldFrame) {
+    const auto installed = install_selected_action_motion_renderer({
+        .action_ordinal = 4,
+        .slot = 4,
+        .instruction_state_revision = 9,
+        .selected_action_row_index = 8,
+        .motion_id = 5,
+        .motion_frame_count = 3,
+        .row_flags = 0x88000000u,
+        .motion_progress_step_bits = 0x3f800000u,
+        .provenance = "three-frame selected-motion fixture",
+    });
+    ASSERT_TRUE(installed.installed);
+    auto runtime = installed.runtime;
+
+    auto visit = visit_selected_action_motion_renderer(runtime);
+    runtime = visit.runtime;
+    EXPECT_TRUE(visit.renderer_advanced);
+    EXPECT_FALSE(visit.completed_this_visit);
+    EXPECT_EQ(visit.progress_after, 0x3f800000u);
+
+    visit = visit_selected_action_motion_renderer(runtime);
+    runtime = visit.runtime;
+    EXPECT_FALSE(visit.completed_this_visit);
+    EXPECT_EQ(visit.progress_after, 0x40000000u);
+
+    visit = visit_selected_action_motion_renderer(runtime);
+    runtime = visit.runtime;
+    EXPECT_TRUE(visit.completed_this_visit);
+    EXPECT_TRUE(runtime.motion_complete_0x70);
+    EXPECT_FALSE(runtime.active);
+    EXPECT_EQ(visit.progress_after, 0x40000000u);
+    EXPECT_EQ(runtime.renderer_visits, 3);
+}
+
+TEST(SavorPredictActionMotionPlayback, SelectedMotionWithoutFrameCountNeverInventsCompletion) {
+    const auto installed = install_selected_action_motion_renderer({
+        .action_ordinal = 4,
+        .slot = 4,
+        .instruction_state_revision = 9,
+        .selected_action_row_index = 8,
+        .motion_id = 5,
+        .motion_frame_count = std::nullopt,
+        .row_flags = 0x88000000u,
+        .motion_progress_step_bits = 0x3f800000u,
+        .provenance = "missing MLD metadata fixture",
+    });
+    EXPECT_FALSE(installed.installed);
+    EXPECT_EQ(
+        installed.runtime.status,
+        SelectedActionMotionRendererStatus::MissingInput);
+    EXPECT_FALSE(installed.runtime.active);
+
+    const auto visit =
+        visit_selected_action_motion_renderer(installed.runtime);
+    EXPECT_FALSE(visit.renderer_advanced);
+    EXPECT_FALSE(visit.completed_this_visit);
+    EXPECT_FALSE(visit.runtime.motion_complete_0x70);
+}
+
 TEST(SavorPredictActionMotionPlayback, DescriptorDelayMatchesModeFiveAndCountsState9Visits) {
     const auto lookup = resolve_action_motion_post_state6_delay(
         mode5_delay_table(), mode5_gate_input());

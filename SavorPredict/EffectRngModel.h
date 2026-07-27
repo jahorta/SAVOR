@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstddef>
+#include <optional>
 #include <vector>
 
 namespace savor::predict {
@@ -67,6 +69,10 @@ EffectEmitterSpawnModel model_effect_emitter_spawn_draws(const EffectEmitterSpaw
 EffectParticleTickModel model_effect_particle_tick_draws(const EffectParticleTickInput& input);
 
 std::vector<CombatEffectBurstInput> first_battle_landed_basic_attack_effect_burst_sequence();
+std::optional<CombatEffectBurstInput>
+first_battle_effect_burst_for_source_key_occurrence(
+    int source_key,
+    std::size_t occurrence);
 std::vector<CombatEffectBurstInput> first_battle_effect_burst_sequence_for_source_key(int source_key);
 const char* combat_effect_burst_rule_detail();
 const char* effect_emitter_spawn_rule_detail();

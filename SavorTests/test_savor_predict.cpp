@@ -686,6 +686,33 @@ TEST(SavorPredictRngModel, EffectRngModelComputesFirstBattleSourceKey8CritBurst)
     EXPECT_TRUE(first_battle_effect_burst_sequence_for_source_key(99).empty());
 }
 
+TEST(SavorPredictRngModel, EffectRngModelReturnsOneBurstPerSourceKeyOccurrence) {
+    const auto first =
+        first_battle_effect_burst_for_source_key_occurrence(5, 0);
+    const auto second =
+        first_battle_effect_burst_for_source_key_occurrence(5, 1);
+    const auto crit_second =
+        first_battle_effect_burst_for_source_key_occurrence(8, 1);
+
+    ASSERT_TRUE(first.has_value());
+    EXPECT_EQ(first->loop_count, 16);
+    EXPECT_EQ(
+        first->position_selector,
+        CombatEffectPositionSelector::Binary);
+    EXPECT_TRUE(first->variant_index_draw);
+    EXPECT_FALSE(first->axis_assignment_draw);
+
+    ASSERT_TRUE(second.has_value());
+    EXPECT_EQ(second->loop_count, 6);
+    ASSERT_TRUE(crit_second.has_value());
+    EXPECT_EQ(crit_second->loop_count, 4);
+
+    EXPECT_FALSE(
+        first_battle_effect_burst_for_source_key_occurrence(5, 2).has_value());
+    EXPECT_FALSE(
+        first_battle_effect_burst_for_source_key_occurrence(99, 0).has_value());
+}
+
 TEST(SavorPredictRngModel, ForcedCounterFollowUpConsumesDamageDrawsOnly) {
     const BasicAttackInputs inputs{
         .attacker_attack = 43,
@@ -4658,7 +4685,7 @@ TEST(SavorPredictBattlePredictor, MarksQSortPriorityTiesProvisionalInPrediction)
     EXPECT_NE(turn_order_validation->detail.find("priority-tie"), std::string::npos);
 }
 
-TEST(SavorPredictBattlePredictor, PursuitState17DoesNotPublishField9BeforeCleanupPrerequisite) {
+TEST(SavorPredictBattlePredictor, PursuitState17PublishesField9OnlyAfterInstructionResourceCleanupVisit) {
     BattlePredictionInput input;
     input.profile = first_battle_prediction_profile();
     input.starting_rng_seed = 0;
@@ -4682,7 +4709,11 @@ TEST(SavorPredictBattlePredictor, PursuitState17DoesNotPublishField9BeforeCleanu
         [state17](const BattlePredictionEvent& event) {
             return event.actor_slot == state17->actor_slot
                 && event.movement_worker
-                    == "FUN_8004281C/FUN_80020B8C/FUN_8002E5D0";
+                    == "FUN_80022850_persistent_callback_visit"
+                && (event.detail.find("callback_state=12->")
+                        != std::string::npos
+                    || event.detail.find("callback_state=17->")
+                        != std::string::npos);
         });
     ASSERT_NE(cleanup_prerequisite, result.events.end());
 
@@ -4694,6 +4725,19 @@ TEST(SavorPredictBattlePredictor, PursuitState17DoesNotPublishField9BeforeCleanu
                 && event.movement_worker == "FUN_8001DCA0_8001DCE8";
         });
     EXPECT_EQ(early_field9, cleanup_prerequisite);
+
+    const auto field9_publication = std::find_if(
+        std::next(cleanup_prerequisite),
+        result.events.end(),
+        [state17](const BattlePredictionEvent& event) {
+            return event.actor_slot == state17->actor_slot
+                && event.movement_worker == "FUN_8001DCA0_8001DCE8";
+        });
+    ASSERT_NE(field9_publication, result.events.end());
+    EXPECT_NE(
+        field9_publication->detail.find(
+            "prerequisite=IW+0x1DC_nonzero"),
+        std::string::npos);
 }
 
 TEST(SavorPredictBattlePredictor, FrameSchedulerOrdersLethalDropBeforeEffectChunks) {
@@ -4784,6 +4828,170 @@ TEST(SavorPredictBattlePredictor, FrameSchedulerOrdersLethalDropBeforeEffectChun
     const auto* drop_validation = find_prediction_validation(result, "drop");
     ASSERT_NE(drop_validation, nullptr);
     EXPECT_NE(drop_validation->detail.find("before the following combat-effect RNG burst"), std::string::npos);
+}
+
+TEST(SavorPredictBattlePredictor, TypedMode11SparcSuppressesLegacyAggregateEffectChunks) {
+    std::optional<BattlePredictionResult> matched;
+    for (std::uint32_t seed = 0; seed < 256 && !matched.has_value(); ++seed) {
+        BattlePredictionInput input;
+        input.profile = first_battle_prediction_profile();
+        input.starting_rng_seed = seed;
+        input.context = make_predictor_first_battle_context(1000);
+        configure_test_passive_routes_without_pursuit(input.context);
+        auto& target = input.context.slots_[4].instance;
+        target.counter_chance = 0;
+        target.base_counter_chance = 0;
+        target.current_counter_chance = 0;
+        input.turn_plan = make_two_pc_attack_turn_plan(0);
+        configure_frame_prediction_sources(input);
+
+        auto result = predict_battle(input);
+        const auto hit = std::find_if(
+            result.events.begin(),
+            result.events.end(),
+            [](const BattlePredictionEvent& event) {
+                return event.phase == "attack_resolution"
+                    && event.label == "attack_hit"
+                    && (event.actor_slot == 0 || event.actor_slot == 1)
+                    && event.target_slot == 4;
+            });
+        if (hit == result.events.end()) {
+            continue;
+        }
+        const auto cleanup = std::find_if(
+            std::next(hit),
+            result.events.end(),
+            [](const BattlePredictionEvent& event) {
+                return event.phase == "frame_scheduler"
+                    && event.action_ordinal == 0
+                    && event.movement_worker
+                        == "FUN_80014EC4_to_FUN_8001DCA0";
+            });
+        const auto action_complete = std::find_if(
+            cleanup == result.events.end()
+                ? result.events.end()
+                : std::next(cleanup),
+            result.events.end(),
+            [](const BattlePredictionEvent& event) {
+                return event.phase == "frame_scheduler"
+                    && event.label == "action_complete"
+                    && event.action_ordinal == 0;
+            });
+        if (cleanup == result.events.end()
+            || action_complete == result.events.end()) {
+            continue;
+        }
+
+        int typed_draws = 0;
+        int typed_events = 0;
+        int aggregate_events = 0;
+        for (auto event = std::next(hit);
+             event != action_complete;
+             ++event) {
+            if (event->phase != "frame_scheduler"
+                || event->label != "combat_effect_chunk") {
+                continue;
+            }
+            if (event->visual_child_kind == "SparcEffect"
+                && event->action_ordinal == 0) {
+                typed_draws += event->draws_consumed;
+                ++typed_events;
+            }
+            if (event->detail.find("worker_kind=EffectChunk")
+                != std::string::npos) {
+                ++aggregate_events;
+            }
+        }
+        if (typed_events == 2
+            && typed_draws == 110
+            && aggregate_events == 0) {
+            matched = std::move(result);
+        }
+    }
+
+    ASSERT_TRUE(matched.has_value());
+    const auto& result = *matched;
+    const auto hit = std::find_if(
+        result.events.begin(),
+        result.events.end(),
+        [](const BattlePredictionEvent& event) {
+            return event.phase == "attack_resolution"
+                && event.label == "attack_hit"
+                && (event.actor_slot == 0 || event.actor_slot == 1)
+                && event.target_slot == 4;
+        });
+    ASSERT_NE(hit, result.events.end());
+    ASSERT_TRUE(hit->hp_after.has_value());
+    EXPECT_GT(*hit->hp_after, 0);
+
+    const auto cleanup = std::find_if(
+        std::next(hit),
+        result.events.end(),
+        [](const BattlePredictionEvent& event) {
+            return event.phase == "frame_scheduler"
+                && event.action_ordinal == 0
+                && event.movement_worker
+                    == "FUN_80014EC4_to_FUN_8001DCA0";
+        });
+    ASSERT_NE(cleanup, result.events.end());
+    EXPECT_NE(
+        cleanup->detail.find("mode-11 target callback"),
+        std::string::npos);
+    const auto action_complete = std::find_if(
+        std::next(cleanup),
+        result.events.end(),
+        [](const BattlePredictionEvent& event) {
+            return event.phase == "frame_scheduler"
+                && event.label == "action_complete"
+                && event.action_ordinal == 0;
+        });
+    ASSERT_NE(action_complete, result.events.end());
+
+    const auto early_completion = std::find_if(
+        std::next(hit),
+        cleanup,
+        [](const BattlePredictionEvent& event) {
+            return event.phase == "frame_scheduler"
+                && event.label == "action_complete"
+                && event.action_ordinal == 0;
+        });
+    EXPECT_EQ(early_completion, cleanup);
+    EXPECT_LT(cleanup->sequence, action_complete->sequence);
+
+    const auto counter = std::find_if(
+        std::next(hit),
+        action_complete,
+        [](const BattlePredictionEvent& event) {
+            return event.phase == "counter"
+                && event.label == "counter_queued";
+        });
+    EXPECT_EQ(counter, action_complete);
+
+    std::vector<int> typed_draws;
+    int typed_draw_total = 0;
+    int aggregate_events = 0;
+    for (auto event = std::next(hit);
+         event != action_complete;
+         ++event) {
+        if (event->phase != "frame_scheduler"
+            || event->label != "combat_effect_chunk") {
+            continue;
+        }
+        if (event->visual_child_kind == "SparcEffect"
+            && event->action_ordinal == 0) {
+            typed_draws.push_back(event->draws_consumed);
+            typed_draw_total += event->draws_consumed;
+            ASSERT_TRUE(event->effect_source_key.has_value());
+            EXPECT_NE(*event->effect_source_key, 8);
+        }
+        if (event->detail.find("worker_kind=EffectChunk")
+            != std::string::npos) {
+            ++aggregate_events;
+        }
+    }
+    EXPECT_EQ(typed_draws, (std::vector<int>{80, 30}));
+    EXPECT_EQ(typed_draw_total, 110);
+    EXPECT_EQ(aggregate_events, 0);
 }
 
 TEST(SavorPredictBattlePredictor, FrameSchedulerDrainsEffectChunksBeforeNextAction) {

@@ -592,6 +592,7 @@ ActionMotionInvocationResult resolve_special_callback(
     const std::vector<CombatantStdActionRow>& rows,
     const ActionMotionInvocationRequest& request) {
     ActionMotionInvocationRequest effective = request;
+    const bool entered_from_state0 = effective.callback_state == 0;
     if (effective.callback_state == 0) {
         effective.callback_state = 1;
     }
@@ -602,8 +603,14 @@ ActionMotionInvocationResult resolve_special_callback(
             waiting.decision = ActionMotionInvocationDecisionKind::Wait;
             waiting.callback_state_before = request.callback_state;
             waiting.callback_state_after = 1;
+            waiting.special_mode11_publication_requested =
+                entered_from_state0 && request.instruction_mode == 11;
             waiting.provenance =
-                "FUN_8001A4F0 state 1 requires the action-motion result before choosing its load or state-9 install path";
+                entered_from_state0 && request.instruction_mode == 11
+                ? "FUN_8001A4F0 state 0 requested the FUN_8001C474 mode-11 "
+                  "auxiliary-row publication before entering state 1"
+                : "FUN_8001A4F0 state 1 requires the action-motion result "
+                  "before choosing its load or state-9 install path";
             return waiting;
         }
         if (*effective.post_motion_result == 2) {
@@ -620,6 +627,8 @@ ActionMotionInvocationResult resolve_special_callback(
                 4,
                 "STD.LoadLookedUpActionRowMotion");
             result.callback_state_before = request.callback_state;
+            result.special_mode11_publication_requested =
+                entered_from_state0 && request.instruction_mode == 11;
             return result;
         }
         ActionMotionInvocationResult result;
@@ -627,6 +636,8 @@ ActionMotionInvocationResult resolve_special_callback(
         result.decision = ActionMotionInvocationDecisionKind::Wait;
         result.callback_state_before = request.callback_state;
         result.callback_state_after = *effective.post_motion_result == 1 ? 9 : 1;
+        result.special_mode11_publication_requested =
+            entered_from_state0 && request.instruction_mode == 11;
         result.provenance =
             "FUN_8001A4F0 state 1 consumed the modeled action-motion result";
         return result;
@@ -642,7 +653,8 @@ ActionMotionInvocationResult resolve_special_callback(
             set_install(
                 result,
                 10,
-                ActionMotionPlaybackContinuation::GenericRelease,
+                ActionMotionPlaybackContinuation::
+                    SpecialState10LoadLookedUpTo2,
                 "FUN_8001A4F0.state9.install_mode2");
         } else {
             result.decision = ActionMotionInvocationDecisionKind::Wait;

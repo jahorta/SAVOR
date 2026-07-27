@@ -38,6 +38,11 @@ enum class CombatantAuxiliaryCommandDecisionKind {
     Unsupported,
 };
 
+enum class CombatantAuxiliaryPublicationSource {
+    State10_8001CAA8,
+    SpecialMode11_8001C474,
+};
+
 struct CombatantAuxiliaryRowRange {
     int first_record_index = 0;
     int terminal_record_index = 0;
@@ -64,6 +69,8 @@ struct CombatantAuxiliaryPublicationRequest {
     std::vector<CombatantAuxiliaryRowRange> current_ranges;
     std::optional<std::int16_t> selector_state;
     std::vector<int> already_dispatched_record_indices;
+    CombatantAuxiliaryPublicationSource source =
+        CombatantAuxiliaryPublicationSource::State10_8001CAA8;
     std::string provenance;
 };
 
