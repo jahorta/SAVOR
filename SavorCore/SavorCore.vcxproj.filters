@@ -49,6 +49,12 @@
     <Filter Include="Runner\Runtime">
       <UniqueIdentifier>{8C8AD43C-1F75-4F2B-B4A4-9073D1F36E12}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Runner\Runtime\StopPoints">
+      <UniqueIdentifier>{2B78AB19-B4E2-4D89-8587-F64F760198B9}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Runner\Runtime\StopPoints\Capture">
+      <UniqueIdentifier>{A4D38479-BAB6-4626-9FA8-10959979EC53}</UniqueIdentifier>
+    </Filter>
     <Filter Include="Runner\Capture">
       <UniqueIdentifier>{2f795460-2d6d-4e37-9f4f-0c39b18f8c15}</UniqueIdentifier>
     </Filter>
@@ -333,6 +339,21 @@
     <ClInclude Include="Runner\Runtime\RuntimeTypes.h">
       <Filter>Runner\Runtime</Filter>
     </ClInclude>
+    <ClInclude Include="Runner\Runtime\StopPoints\IPhysicalStopPointBackendPort.h">
+      <Filter>Runner\Runtime\StopPoints</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\StopPoints\PhysicalStopPointManager.h">
+      <Filter>Runner\Runtime\StopPoints</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\StopPoints\Capture\ProbeRouterAdapter.h">
+      <Filter>Runner\Runtime\StopPoints\Capture</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\StopPoints\StopPointRouter.h">
+      <Filter>Runner\Runtime\StopPoints</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\StopPoints\StopPointTypes.h">
+      <Filter>Runner\Runtime\StopPoints</Filter>
+    </ClInclude>
     <ClInclude Include="Runner\Runtime\WorkerRuntime.h">
       <Filter>Runner\Runtime</Filter>
     </ClInclude>
@@ -568,6 +589,15 @@
     </ClCompile>
     <ClCompile Include="Runner\Runtime\EmulationSession.cpp">
       <Filter>Runner\Runtime</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Runtime\StopPoints\Capture\ProbeRouterAdapter.cpp">
+      <Filter>Runner\Runtime\StopPoints\Capture</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Runtime\StopPoints\PhysicalStopPointManager.cpp">
+      <Filter>Runner\Runtime\StopPoints</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Runtime\StopPoints\StopPointRouter.cpp">
+      <Filter>Runner\Runtime\StopPoints</Filter>
     </ClCompile>
     <ClCompile Include="Runner\Runtime\WorkerRuntime.cpp">
       <Filter>Runner\Runtime</Filter>

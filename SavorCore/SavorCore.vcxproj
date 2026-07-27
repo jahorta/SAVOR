@@ -251,6 +251,11 @@
     <ClInclude Include="Runner\Runtime\IDolphinBackend.h" />
     <ClInclude Include="Runner\Runtime\IProgramRuntimePort.h" />
     <ClInclude Include="Runner\Runtime\RuntimeTypes.h" />
+    <ClInclude Include="Runner\Runtime\StopPoints\IPhysicalStopPointBackendPort.h" />
+    <ClInclude Include="Runner\Runtime\StopPoints\PhysicalStopPointManager.h" />
+    <ClInclude Include="Runner\Runtime\StopPoints\Capture\ProbeRouterAdapter.h" />
+    <ClInclude Include="Runner\Runtime\StopPoints\StopPointRouter.h" />
+    <ClInclude Include="Runner\Runtime\StopPoints\StopPointTypes.h" />
     <ClInclude Include="Runner\Runtime\WorkerRuntime.h" />
     <ClInclude Include="Runner\Script\ContextKeys\BattleRunnerKeys.reg.h" />
     <ClInclude Include="Runner\Script\ContextKeys\BattleCompletionKeys.reg.h" />
@@ -328,6 +333,9 @@
     <ClCompile Include="Runner\IPC\WorkerWireWriter.cpp" />
     <ClCompile Include="Runner\Runtime\DolphinWrapperBackend.cpp" />
     <ClCompile Include="Runner\Runtime\EmulationSession.cpp" />
+    <ClCompile Include="Runner\Runtime\StopPoints\Capture\ProbeRouterAdapter.cpp" />
+    <ClCompile Include="Runner\Runtime\StopPoints\PhysicalStopPointManager.cpp" />
+    <ClCompile Include="Runner\Runtime\StopPoints\StopPointRouter.cpp" />
     <ClCompile Include="Runner\Runtime\WorkerRuntime.cpp" />
     <ClCompile Include="Runner\InputMacro\InputMacroRuntime.cpp" />
     <ClCompile Include="Runner\InputMacro\Providers\BattleCommandInputMacroProvider.cpp" />

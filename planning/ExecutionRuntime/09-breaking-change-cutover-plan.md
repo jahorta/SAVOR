@@ -178,29 +178,46 @@ transaction contract.
 - the full solution compiles and focused ownership, session, protocol, process, and capability-gate guards
   pass even though production-worker SavorE2E is not yet runnable.
 
-### Dependency slice 2: single physical stop-point ownership and routing
+### Dependency slice 2: single physical stop-point ownership and routing (completed)
 
-**Implement:**
+Slice 2 is complete as an architectural checkpoint. The current C++ names may still evolve with later
+slices, but the ownership and control boundaries established here remain the guide:
 
-- introduce `PhysicalStopPointManager` as the sole Dolphin PC breakpoint/memcheck owner;
-- introduce `StopPointRouter` with logical subscription groups, source identity, delivery mode, priority,
-  lifetime, guards, routing history, and epoch behavior;
-- translate current VM waits, capture observers, native probe hooks, and visual/debug observers into
-  subscriptions; and
-- reconcile physical sites after boot, restore, JIT changes, or subscription changes.
+- each open `EmulationSession` owns exactly one `PhysicalStopPointManager` and one `StopPointRouter`;
+- `PhysicalStopPointManager` is the sole owner of regular Dolphin PC breakpoints and memchecks, and its
+  physical plan is the union of the router's logical subscription groups;
+- logical subscriptions carry source identity, delivery mode, priority, lifetime, routing policy,
+  bounded hit-time behavior, and `StateEpoch` policy without allowing one source to clear another;
+- MinHook remains an implementation detail in SavorProbe, but its JIT and post-write memcheck detours
+  publish only through the dependency-neutral `INativeStopSink` boundary rather than a
+  `ProbeRuntime` singleton;
+- retained capture-profile processing is passive behind a router adapter: it may observe the shared hit
+  identity, sample, record, and request physical reconciliation, but it does not own Dolphin sites or
+  pause, resume, step, or schedule execution; and
+- boot, state replacement, restore rollback, and JIT revalidation preserve one session-owned routing
+  boundary and reject stale-epoch delivery.
 
-**Remove during this slice:**
+`RequestInterruptionHandler` is intentionally present as a typed routing outcome and
+`StopInterruptionHandlerRequest`, not as a second controller. The router identifies a verifier-known
+handler but does not execute it. Suspending the foreground operation, executing the bounded handler, and
+resuming or terminating the parent belongs to the Slice 3 `ExecutionEngine`. This is session-local
+handling for events such as known short cutscenes or text boxes; durable phase and workflow transitions
+remain above the worker.
+Likewise, the production Dolphin adapter fails closed when unmanaged regular breakpoints or memchecks are
+present; it does not adopt, overwrite, or globally clear them.
 
-- `armed_singleton` and flat globally enabled-PC ownership;
-- routine `clearAllPcBreakpoints`/`clearMemoryWatchpoints` scope cleanup; and
-- any program's ability to replace another consumer's physical set.
+Focused fake-backend/router guards cover physical-plan ownership, deterministic delivery, source-scoped
+cleanup, ingress overflow, restore reconciliation, and sink lifetime. Deterministic hook-seam guards retain
+exactly-once forwarding and decision-combination coverage. The focused live-Dolphin guard boots without
+TAS input, executes a frame before registration, and then verifies passive Observe plus foreground Wake
+delivery through the physical manager, JIT hook, and router at the recurring game-mode-controller entry
+`0x801DC288`. Exact `prebattle.BeforeRandSeedSet` and live post-write memcheck validation are deferred
+until deterministic execution and input can drive the game to those witnesses.
 
-**Completion checks:**
-
-- the physical set equals the union of logical subscriptions;
-- observe, wake, intercept, and guard consumers coexist at one PC;
-- interpreter/JIT paths report equivalent routed events;
-- restore advances the epoch and reconciles sites without stale delivery.
+This slice does not restore production `ProgramInvocation`, interactive visual debugging, or
+production-worker SavorE2E. Those remain unavailable until their later slices. It also changes neither
+the Slice 1 `WRMS` protocol nor any SavorDb schema, storage representation, database-service interface,
+queue, claim, workflow, transaction, or artifact-storage contract.
 
 ### Dependency slice 3: ExecutionEngine as sole emulator-advancement owner
 
@@ -209,9 +226,10 @@ transaction contract.
 - introduce typed continue, instruction-step, frame-step, input-sequence, pause, and interactive-resume
   operations;
 - route every operation through the same control-thread event loop and router;
-- represent timeout, VI stall, movie end, cancellation, requested completion, and intercepted stops as
-  structured results;
-- support suspended child/interceptor operations with explicit remaining budgets; and
+- represent timeout, VI stall, movie end, cancellation, requested completion, intercepted stops, and
+  interruption-handler requests as structured results;
+- support requested interruption handlers as suspended bounded child operations with explicit remaining
+  budgets; and
 - move current run-until, frame, opcode, tape, and macro advancement beneath the engine; and
 - restore interactive visual pause, resume, and step by routing them through the same serialized engine
   control path.
@@ -220,7 +238,7 @@ transaction contract.
 
 - repository search finds no Dolphin run/step call outside `ExecutionEngine`/backend implementation;
 - every advancement mode remains interceptor-aware;
-- cancellation and modal interruption tests pass at every suspension boundary.
+- cancellation and interruption-handler tests pass at every suspension boundary.
 
 ### Dependency slice 4: input, state, mutation, capture, and scoped-resource services
 

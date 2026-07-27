@@ -50,3 +50,5 @@
 /Analyses/
 /SavorPredict/planning/
 /SavorPredict/tools/
+/.slice2-*
+/.main-repo-e2e/

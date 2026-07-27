@@ -3,6 +3,7 @@
 #include "Runner/Runtime/EmulationSession.h"
 #include "Runner/Runtime/IProgramRuntimePort.h"
 #include "Runner/Runtime/WorkerRuntime.h"
+#include "common/ScriptedDolphinBackend.h"
 
 #include <algorithm>
 #include <barrier>
@@ -25,284 +26,14 @@ namespace {
 
 using namespace std::chrono_literals;
 using namespace savor::runtime;
+using savor::test_support::ScriptedDolphinBackend;
+using savor::test_support::ScriptedDolphinBackendControl;
 
 static_assert(!std::is_same_v<StateEpoch, WorkerCommandSequence>);
 static_assert(!std::is_convertible_v<StateEpoch, WorkerCommandSequence>);
 static_assert(!std::is_convertible_v<WorkerCommandSequence, StateEpoch>);
 static_assert(!std::is_convertible_v<StateEpoch, std::uint64_t>);
 static_assert(!std::is_convertible_v<std::uint64_t, StateEpoch>);
-
-struct FakeBackendControl
-{
-    mutable std::mutex mutex;
-    std::condition_variable changed;
-    std::optional<std::thread::id> owner_thread;
-    bool owner_thread_violation = false;
-    std::vector<std::string> calls;
-    std::vector<std::filesystem::path> screenshots;
-
-    BackendResult open_result = BackendResult::Success();
-    BackendResult reboot_result = BackendResult::Success();
-    BackendResult close_result = BackendResult::Success();
-    BackendResult pause_result = BackendResult::Success();
-    BackendResult resume_result = BackendResult::Success();
-    BackendResult step_instruction_result = BackendResult::Success();
-    BackendResult step_frame_result = BackendResult::Success();
-    BackendResult restore_file_result = BackendResult::Success();
-    BackendResult restore_buffer_result = BackendResult::Success();
-    BackendResult save_file_result = BackendResult::Success();
-    BackendResult save_buffer_result = BackendResult::Success();
-    BackendResult screenshot_result = BackendResult::Success();
-    BackendCoreState core_state = BackendCoreState::Closed;
-    BackendCoreState open_core_state = BackendCoreState::Running;
-
-    int open_count = 0;
-    int reboot_count = 0;
-    int close_count = 0;
-    int screenshot_count = 0;
-    int restore_file_count = 0;
-    int restore_buffer_count = 0;
-
-    void RecordLocked(const char* call)
-    {
-        const std::thread::id current = std::this_thread::get_id();
-        if (!owner_thread)
-            owner_thread = current;
-        else if (*owner_thread != current)
-            owner_thread_violation = true;
-        calls.emplace_back(call);
-    }
-
-    void SetOpenResult(BackendResult result, BackendCoreState state)
-    {
-        std::lock_guard lock(mutex);
-        open_result = std::move(result);
-        open_core_state = state;
-    }
-
-    void SetRebootResult(BackendResult result)
-    {
-        std::lock_guard lock(mutex);
-        reboot_result = std::move(result);
-    }
-
-    void SetRestoreFileResult(BackendResult result)
-    {
-        std::lock_guard lock(mutex);
-        restore_file_result = std::move(result);
-    }
-
-    void SetRestoreBufferResult(BackendResult result)
-    {
-        std::lock_guard lock(mutex);
-        restore_buffer_result = std::move(result);
-    }
-
-    void SetStepInstructionResult(BackendResult result)
-    {
-        std::lock_guard lock(mutex);
-        step_instruction_result = std::move(result);
-    }
-
-    void SetScreenshotResult(BackendResult result)
-    {
-        std::lock_guard lock(mutex);
-        screenshot_result = std::move(result);
-    }
-
-    [[nodiscard]] int CloseCount() const
-    {
-        std::lock_guard lock(mutex);
-        return close_count;
-    }
-
-    [[nodiscard]] int OpenCount() const
-    {
-        std::lock_guard lock(mutex);
-        return open_count;
-    }
-
-    [[nodiscard]] int ScreenshotCount() const
-    {
-        std::lock_guard lock(mutex);
-        return screenshot_count;
-    }
-
-    [[nodiscard]] std::vector<std::filesystem::path> ScreenshotPaths() const
-    {
-        std::lock_guard lock(mutex);
-        return screenshots;
-    }
-
-    [[nodiscard]] bool HasOwnerViolation() const
-    {
-        std::lock_guard lock(mutex);
-        return owner_thread_violation;
-    }
-
-    [[nodiscard]] std::optional<std::thread::id> OwnerThread() const
-    {
-        std::lock_guard lock(mutex);
-        return owner_thread;
-    }
-};
-
-class FakeDolphinBackend final : public IDolphinBackend
-{
-public:
-    explicit FakeDolphinBackend(std::shared_ptr<FakeBackendControl> control)
-        : control_(std::move(control))
-    {
-    }
-
-    BackendResult Open(const BackendOpenOptions&) override
-    {
-        std::lock_guard lock(control_->mutex);
-        control_->RecordLocked("open");
-        ++control_->open_count;
-        BackendResult result = control_->open_result;
-        if (result.ok)
-            control_->core_state = control_->open_core_state;
-        control_->changed.notify_all();
-        return result;
-    }
-
-    BackendResult Reboot() override
-    {
-        std::lock_guard lock(control_->mutex);
-        control_->RecordLocked("reboot");
-        ++control_->reboot_count;
-        BackendResult result = control_->reboot_result;
-        if (result.ok)
-            control_->core_state = BackendCoreState::Running;
-        else if (result.integrity == BackendIntegrity::Unknown)
-            control_->core_state = BackendCoreState::Unknown;
-        control_->changed.notify_all();
-        return result;
-    }
-
-    BackendResult Close() override
-    {
-        std::lock_guard lock(control_->mutex);
-        control_->RecordLocked("close");
-        ++control_->close_count;
-        BackendResult result = control_->close_result;
-        control_->core_state = result.ok
-            ? BackendCoreState::Closed
-            : BackendCoreState::Unknown;
-        control_->changed.notify_all();
-        return result;
-    }
-
-    BackendCoreState QueryCoreState() const noexcept override
-    {
-        std::lock_guard lock(control_->mutex);
-        control_->RecordLocked("query_core_state");
-        return control_->core_state;
-    }
-
-    BackendHealthReport CheckHealth() const override
-    {
-        std::lock_guard lock(control_->mutex);
-        control_->RecordLocked("check_health");
-        const bool healthy =
-            control_->core_state == BackendCoreState::Running ||
-            control_->core_state == BackendCoreState::Paused;
-        return {
-            healthy,
-            control_->core_state,
-            healthy ? std::string{} : std::string{"fake backend is unhealthy"}};
-    }
-
-    BackendResult Pause(std::chrono::milliseconds) override
-    {
-        std::lock_guard lock(control_->mutex);
-        control_->RecordLocked("pause");
-        BackendResult result = control_->pause_result;
-        if (result.ok)
-            control_->core_state = BackendCoreState::Paused;
-        return result;
-    }
-
-    BackendResult Resume() override
-    {
-        std::lock_guard lock(control_->mutex);
-        control_->RecordLocked("resume");
-        BackendResult result = control_->resume_result;
-        if (result.ok)
-            control_->core_state = BackendCoreState::Running;
-        return result;
-    }
-
-    BackendResult StepInstruction(std::chrono::milliseconds) override
-    {
-        std::lock_guard lock(control_->mutex);
-        control_->RecordLocked("step_instruction");
-        return control_->step_instruction_result;
-    }
-
-    BackendResult StepFrame(std::chrono::milliseconds) override
-    {
-        std::lock_guard lock(control_->mutex);
-        control_->RecordLocked("step_frame");
-        return control_->step_frame_result;
-    }
-
-    BackendResult RestoreStateFile(const std::filesystem::path&) override
-    {
-        std::lock_guard lock(control_->mutex);
-        control_->RecordLocked("restore_file");
-        ++control_->restore_file_count;
-        BackendResult result = control_->restore_file_result;
-        if (!result.ok && result.integrity == BackendIntegrity::Unknown)
-            control_->core_state = BackendCoreState::Unknown;
-        return result;
-    }
-
-    BackendResult SaveStateFile(const std::filesystem::path&) override
-    {
-        std::lock_guard lock(control_->mutex);
-        control_->RecordLocked("save_file");
-        return control_->save_file_result;
-    }
-
-    BackendBufferResult SaveStateBuffer() override
-    {
-        std::lock_guard lock(control_->mutex);
-        control_->RecordLocked("save_buffer");
-        return {control_->save_buffer_result, {0x10, 0x20, 0x30}};
-    }
-
-    BackendResult RestoreStateBuffer(
-        const std::vector<std::uint8_t>&) override
-    {
-        std::lock_guard lock(control_->mutex);
-        control_->RecordLocked("restore_buffer");
-        ++control_->restore_buffer_count;
-        BackendResult result = control_->restore_buffer_result;
-        if (!result.ok && result.integrity == BackendIntegrity::Unknown)
-            control_->core_state = BackendCoreState::Unknown;
-        return result;
-    }
-
-    BackendResult CaptureScreenshot(
-        const std::filesystem::path& path,
-        std::chrono::milliseconds) override
-    {
-        std::lock_guard lock(control_->mutex);
-        control_->RecordLocked("screenshot");
-        ++control_->screenshot_count;
-        control_->screenshots.push_back(path);
-        BackendResult result = control_->screenshot_result;
-        if (!result.ok && result.integrity == BackendIntegrity::Unknown)
-            control_->core_state = BackendCoreState::Unknown;
-        control_->changed.notify_all();
-        return result;
-    }
-
-private:
-    std::shared_ptr<FakeBackendControl> control_;
-};
 
 struct FakeProgramRuntimeControl
 {
@@ -615,8 +346,8 @@ private:
 struct RuntimeHarness
 {
     SessionId session_id{77};
-    std::shared_ptr<FakeBackendControl> backend =
-        std::make_shared<FakeBackendControl>();
+    std::shared_ptr<ScriptedDolphinBackendControl> backend =
+        std::make_shared<ScriptedDolphinBackendControl>();
     std::shared_ptr<FakeProgramRuntimeControl> program =
         std::make_shared<FakeProgramRuntimeControl>();
     WorkerEventLog events;
@@ -628,7 +359,7 @@ struct RuntimeHarness
         runtime = std::make_unique<WorkerRuntime>(
             std::make_unique<EmulationSession>(
                 session_id,
-                std::make_unique<FakeDolphinBackend>(backend)),
+                std::make_unique<ScriptedDolphinBackend>(backend)),
             std::make_unique<FakeProgramRuntimePort>(program),
             [this](const WorkerEvent& event) { events.Record(event); });
     }
@@ -694,7 +425,7 @@ struct RuntimeHarness
 
 TEST(EmulationSession, BootFailureDoesNotAdvanceEpochAndShutdownIsIdempotent)
 {
-    auto control = std::make_shared<FakeBackendControl>();
+    auto control = std::make_shared<ScriptedDolphinBackendControl>();
     control->SetOpenResult(
         BackendResult::Failure(
             BackendErrorCode::BootFailed,
@@ -702,7 +433,7 @@ TEST(EmulationSession, BootFailureDoesNotAdvanceEpochAndShutdownIsIdempotent)
         BackendCoreState::Closed);
     EmulationSession session(
         SessionId(1),
-        std::make_unique<FakeDolphinBackend>(control));
+        std::make_unique<ScriptedDolphinBackend>(control));
 
     SessionOpenOptions options;
     const SessionOperationReceipt open = session.Open(options);
@@ -722,10 +453,10 @@ TEST(EmulationSession, BootFailureDoesNotAdvanceEpochAndShutdownIsIdempotent)
 
 TEST(EmulationSession, EpochAdvancesOnlyForSuccessfulStateReplacement)
 {
-    auto control = std::make_shared<FakeBackendControl>();
+    auto control = std::make_shared<ScriptedDolphinBackendControl>();
     EmulationSession session(
         SessionId(2),
-        std::make_unique<FakeDolphinBackend>(control));
+        std::make_unique<ScriptedDolphinBackend>(control));
 
     const SessionOperationReceipt open = session.Open({});
     ASSERT_TRUE(open.ok);
@@ -769,13 +500,13 @@ TEST(EmulationSession, EpochAdvancesOnlyForSuccessfulStateReplacement)
 TEST(EmulationSession, UnknownIntegrityAndStoppedCoreTaintWithoutAdvancingEpoch)
 {
     {
-        auto control = std::make_shared<FakeBackendControl>();
+        auto control = std::make_shared<ScriptedDolphinBackendControl>();
         control->SetOpenResult(
             BackendResult::Success(),
             BackendCoreState::Stopped);
         EmulationSession session(
             SessionId(3),
-            std::make_unique<FakeDolphinBackend>(control));
+            std::make_unique<ScriptedDolphinBackend>(control));
 
         const SessionOperationReceipt open = session.Open({});
         EXPECT_FALSE(open.ok);
@@ -784,10 +515,10 @@ TEST(EmulationSession, UnknownIntegrityAndStoppedCoreTaintWithoutAdvancingEpoch)
         EXPECT_TRUE(session.Shutdown().ok);
     }
 
-    auto control = std::make_shared<FakeBackendControl>();
+    auto control = std::make_shared<ScriptedDolphinBackendControl>();
     EmulationSession session(
         SessionId(4),
-        std::make_unique<FakeDolphinBackend>(control));
+        std::make_unique<ScriptedDolphinBackend>(control));
     ASSERT_TRUE(session.Open({}).ok);
 
     control->SetStepInstructionResult(BackendResult::Failure(
@@ -805,10 +536,10 @@ TEST(EmulationSession, UnknownIntegrityAndStoppedCoreTaintWithoutAdvancingEpoch)
 
 TEST(EmulationSession, RejectsOffOwnerCallsBeforeBackendMutation)
 {
-    auto control = std::make_shared<FakeBackendControl>();
+    auto control = std::make_shared<ScriptedDolphinBackendControl>();
     EmulationSession session(
         SessionId(5),
-        std::make_unique<FakeDolphinBackend>(control));
+        std::make_unique<ScriptedDolphinBackend>(control));
     ASSERT_TRUE(session.Open({}).ok);
 
     std::promise<SessionOperationReceipt> attempted;

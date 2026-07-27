@@ -2,6 +2,7 @@
 
 #include <exception>
 #include <limits>
+#include <sstream>
 #include <utility>
 
 namespace savor::runtime {
@@ -59,6 +60,34 @@ BackendBufferResult CallBackendBuffer(
     }
 }
 
+[[nodiscard]] BackendResult FromStopPointLifecycle(
+    const char* operation,
+    const StopPointLifecycleReceipt& receipt)
+{
+    if (receipt.ok)
+        return BackendResult::Success();
+    std::string message = operation;
+    message += " failed";
+    if (!receipt.error.message.empty())
+    {
+        message += ": ";
+        message += receipt.error.message;
+    }
+    return BackendResult::Failure(
+        BackendErrorCode::OperationFailed,
+        std::move(message),
+        receipt.physical_integrity == PhysicalStopIntegrity::Unknown
+            ? BackendIntegrity::Unknown
+            : BackendIntegrity::Preserved);
+}
+
+[[nodiscard]] std::optional<StateEpoch> NextEpoch(StateEpoch current) noexcept
+{
+    if (current.value() == std::numeric_limits<std::uint64_t>::max())
+        return std::nullopt;
+    return StateEpoch(current.value() + 1);
+}
+
 } // namespace
 
 EmulationSession::EmulationSession(
@@ -76,6 +105,10 @@ EmulationSession::~EmulationSession()
 
     try
     {
+        if (!owner_bound_ || owner_thread_ == std::this_thread::get_id())
+            (void)CleanupStopPoints();
+        stop_router_.reset();
+        physical_stop_manager_.reset();
         (void)backend_->Close();
     }
     catch (...)
@@ -92,6 +125,21 @@ SessionSnapshot EmulationSession::snapshot() const noexcept
         state_epoch_,
         core_state_,
         opened_};
+}
+
+bool EmulationSession::ConfigureStopPointIngressNotification(
+    std::atomic<std::uint64_t>* counter,
+    void* notifier_context,
+    StopPointIngressNotifier notifier) noexcept
+{
+    if (stop_router_ || opened_ || owner_bound_)
+        return false;
+    if ((notifier_context == nullptr) != (notifier == nullptr))
+        return false;
+    stop_ingress_notification_counter_ = counter;
+    stop_ingress_notifier_context_ = notifier_context;
+    stop_ingress_notifier_ = notifier;
+    return true;
 }
 
 SessionOperationReceipt EmulationSession::Open(const SessionOpenOptions& options)
@@ -122,12 +170,56 @@ SessionOperationReceipt EmulationSession::Open(const SessionOpenOptions& options
     BackendResult result = CallBackend(
         "Dolphin backend open",
         [&] { return backend_->Open(options.backend); });
+    if (result.ok)
+    {
+        const auto first_epoch = NextEpoch(state_epoch_);
+        if (!first_epoch)
+        {
+            result = BackendResult::Failure(
+                BackendErrorCode::OperationFailed,
+                "StateEpoch exhausted before stop-point initialization",
+                BackendIntegrity::Unknown);
+        }
+        else
+        {
+            result = InitializeStopPoints(*first_epoch);
+            if (result.ok)
+            {
+                RefreshCoreState();
+                if (!HasReusableCoreState())
+                {
+                    result = BackendResult::Failure(
+                        BackendErrorCode::OperationFailed,
+                        "Dolphin boot completed without a reusable core state",
+                        BackendIntegrity::Unknown);
+                    const BackendResult cleanup = CleanupStopPoints();
+                    stop_router_.reset();
+                    physical_stop_manager_.reset();
+                    if (!cleanup.ok)
+                    {
+                        result.integrity = BackendIntegrity::Unknown;
+                        result.message += "; ";
+                        result.message += cleanup.message.empty()
+                            ? "stop-point cleanup could not be proven"
+                            : cleanup.message;
+                    }
+                }
+            }
+        }
+        if (!result.ok)
+        {
+            const BackendResult close = CallBackend(
+                "Dolphin backend open rollback",
+                [&] { return backend_->Close(); });
+            if (!close.ok || close.integrity == BackendIntegrity::Unknown)
+                result.integrity = BackendIntegrity::Unknown;
+        }
+    }
     return Complete(SessionOperation::Open, origin, std::move(result), true);
 }
 
 SessionOperationReceipt EmulationSession::Reboot()
 {
-    const StateEpoch origin = state_epoch_;
     if (!BindOrCheckOwner())
     {
         return Reject(
@@ -143,10 +235,13 @@ SessionOperationReceipt EmulationSession::Reboot()
             "EmulationSession is not in a reusable state");
     }
 
-    BackendResult result = CallBackend(
-        "Dolphin backend reboot",
-        [&] { return backend_->Reboot(); });
-    return Complete(SessionOperation::Reboot, origin, std::move(result), true);
+    return PerformStateReplacement(
+        SessionOperation::Reboot,
+        [&] {
+            return CallBackend(
+                "Dolphin backend reboot",
+                [&] { return backend_->Reboot(); });
+        });
 }
 
 SessionOperationReceipt EmulationSession::Pause(std::chrono::milliseconds timeout)
@@ -178,12 +273,24 @@ SessionOperationReceipt EmulationSession::Resume()
             BackendErrorCode::InvalidState,
             "EmulationSession cannot resume in its current state");
     }
+    BackendResult result = CallBackend(
+        "Dolphin backend resume",
+        [&] { return backend_->Resume(); });
+    if (result.ok && stop_router_)
+    {
+        if (StopPointError error = stop_router_->DepartCurrentPoint())
+        {
+            result = BackendResult::Failure(
+                BackendErrorCode::OperationFailed,
+                "failed departing retained stop point after resume: " +
+                    error.message,
+                BackendIntegrity::Unknown);
+        }
+    }
     return Complete(
         SessionOperation::Resume,
         origin,
-        CallBackend(
-            "Dolphin backend resume",
-            [&] { return backend_->Resume(); }),
+        std::move(result),
         false);
 }
 
@@ -197,12 +304,24 @@ SessionOperationReceipt EmulationSession::StepInstruction(std::chrono::milliseco
             BackendErrorCode::InvalidState,
             "EmulationSession cannot step in its current state");
     }
+    BackendResult result = CallBackend(
+        "Dolphin backend instruction step",
+        [&] { return backend_->StepInstruction(timeout); });
+    if (result.ok && stop_router_)
+    {
+        if (StopPointError error = stop_router_->DepartCurrentPoint())
+        {
+            result = BackendResult::Failure(
+                BackendErrorCode::OperationFailed,
+                "failed departing retained stop point after instruction step: " +
+                    error.message,
+                BackendIntegrity::Unknown);
+        }
+    }
     return Complete(
         SessionOperation::StepInstruction,
         origin,
-        CallBackend(
-            "Dolphin backend instruction step",
-            [&] { return backend_->StepInstruction(timeout); }),
+        std::move(result),
         false);
 }
 
@@ -216,19 +335,30 @@ SessionOperationReceipt EmulationSession::StepFrame(std::chrono::milliseconds ti
             BackendErrorCode::InvalidState,
             "EmulationSession cannot step in its current state");
     }
+    BackendResult result = CallBackend(
+        "Dolphin backend frame step",
+        [&] { return backend_->StepFrame(timeout); });
+    if (result.ok && stop_router_)
+    {
+        if (StopPointError error = stop_router_->DepartCurrentPoint())
+        {
+            result = BackendResult::Failure(
+                BackendErrorCode::OperationFailed,
+                "failed departing retained stop point after frame step: " +
+                    error.message,
+                BackendIntegrity::Unknown);
+        }
+    }
     return Complete(
         SessionOperation::StepFrame,
         origin,
-        CallBackend(
-            "Dolphin backend frame step",
-            [&] { return backend_->StepFrame(timeout); }),
+        std::move(result),
         false);
 }
 
 SessionOperationReceipt EmulationSession::RestoreStateFile(
     const std::filesystem::path& path)
 {
-    const StateEpoch origin = state_epoch_;
     if (!BindOrCheckOwner() || !CanOperate())
     {
         return Reject(
@@ -236,19 +366,18 @@ SessionOperationReceipt EmulationSession::RestoreStateFile(
             BackendErrorCode::InvalidState,
             "EmulationSession cannot restore state in its current state");
     }
-    return Complete(
+    return PerformStateReplacement(
         SessionOperation::RestoreStateFile,
-        origin,
-        CallBackend(
-            "Dolphin backend file-state restore",
-            [&] { return backend_->RestoreStateFile(path); }),
-        true);
+        [&] {
+            return CallBackend(
+                "Dolphin backend file-state restore",
+                [&] { return backend_->RestoreStateFile(path); });
+        });
 }
 
 SessionOperationReceipt EmulationSession::RestoreStateBuffer(
     const std::vector<std::uint8_t>& bytes)
 {
-    const StateEpoch origin = state_epoch_;
     if (!BindOrCheckOwner() || !CanOperate())
     {
         return Reject(
@@ -256,13 +385,13 @@ SessionOperationReceipt EmulationSession::RestoreStateBuffer(
             BackendErrorCode::InvalidState,
             "EmulationSession cannot restore state in its current state");
     }
-    return Complete(
+    return PerformStateReplacement(
         SessionOperation::RestoreStateBuffer,
-        origin,
-        CallBackend(
-            "Dolphin backend buffer-state restore",
-            [&] { return backend_->RestoreStateBuffer(bytes); }),
-        true);
+        [&] {
+            return CallBackend(
+                "Dolphin backend buffer-state restore",
+                [&] { return backend_->RestoreStateBuffer(bytes); });
+        });
 }
 
 SessionOperationReceipt EmulationSession::SaveStateFile(
@@ -328,6 +457,83 @@ SessionOperationReceipt EmulationSession::CaptureScreenshot(
             "Dolphin backend screenshot",
             [&] { return backend_->CaptureScreenshot(path, timeout); }),
         false);
+}
+
+SessionOperationReceipt EmulationSession::RevalidateStopPointsAfterJit()
+{
+    const StateEpoch origin = state_epoch_;
+    if (!BindOrCheckOwner() || !CanOperate())
+    {
+        return Reject(
+            SessionOperation::JitRevalidation,
+            BackendErrorCode::InvalidState,
+            "EmulationSession cannot revalidate stop points in its current state");
+    }
+    if (!stop_router_)
+    {
+        return {
+            SessionOperation::JitRevalidation,
+            true,
+            origin,
+            state_epoch_,
+            disposition_,
+            BackendResult::Success()};
+    }
+
+    BackendResult result = FromStopPointLifecycle(
+        "stop-point JIT revalidation",
+        stop_router_->RevalidateAfterJit());
+    if (!result.ok)
+        result = TaintAndCloseAfterStopPointFailure(std::move(result));
+    return {
+        SessionOperation::JitRevalidation,
+        result.ok,
+        origin,
+        state_epoch_,
+        disposition_,
+        std::move(result)};
+}
+
+SessionOperationReceipt EmulationSession::ValidateBreakpointChangeNotification()
+{
+    const StateEpoch origin = state_epoch_;
+    if (!BindOrCheckOwner() || !CanOperate())
+    {
+        return Reject(
+            SessionOperation::BreakpointReconciliation,
+            BackendErrorCode::InvalidState,
+            "EmulationSession cannot validate breakpoint changes in its current state");
+    }
+    if (!stop_router_)
+    {
+        return {
+            SessionOperation::BreakpointReconciliation,
+            true,
+            origin,
+            state_epoch_,
+            disposition_,
+            BackendResult::Success()};
+    }
+
+    BackendResult result = FromStopPointLifecycle(
+        "breakpoint-change reconciliation",
+        stop_router_->ValidateBreakpointChangeNotification());
+    if (!result.ok)
+        result = TaintAndCloseAfterStopPointFailure(std::move(result));
+    return {
+        SessionOperation::BreakpointReconciliation,
+        result.ok,
+        origin,
+        state_epoch_,
+        disposition_,
+        std::move(result)};
+}
+
+std::vector<StopRouteReceipt> EmulationSession::DrainStopPointEvents()
+{
+    if (!BindOrCheckOwner() || !stop_router_)
+        return {};
+    return stop_router_->DrainIngress();
 }
 
 SessionOperationReceipt EmulationSession::CheckHealth()
@@ -415,10 +621,15 @@ SessionOperationReceipt EmulationSession::Shutdown()
         return *shutdown_receipt_;
 
     shutdown_ = true;
-    BackendResult result;
+    BackendResult result = CleanupStopPoints();
+    stop_router_.reset();
+    physical_stop_manager_.reset();
     try
     {
-        result = backend_ ? backend_->Close() : BackendResult::Success();
+        BackendResult close =
+            backend_ ? backend_->Close() : BackendResult::Success();
+        if (!close.ok)
+            result = std::move(close);
     }
     catch (const std::exception& ex)
     {
@@ -513,6 +724,112 @@ SessionOperationReceipt EmulationSession::Reject(
         BackendResult::Failure(code, std::move(message))};
 }
 
+SessionOperationReceipt EmulationSession::PerformStateReplacement(
+    SessionOperation operation,
+    const std::function<BackendResult()>& replace)
+{
+    const StateEpoch origin = state_epoch_;
+    BackendResult preparation = PrepareStopPointStateReplacement();
+    if (!preparation.ok)
+    {
+        if (preparation.integrity == BackendIntegrity::Unknown)
+        {
+            preparation =
+                TaintAndCloseAfterStopPointFailure(std::move(preparation));
+        }
+        else
+        {
+            ApplyBackendFailure(preparation);
+        }
+        return {
+            operation,
+            false,
+            origin,
+            state_epoch_,
+            disposition_,
+            std::move(preparation)};
+    }
+
+    BackendResult result = replace();
+    if (!result.ok)
+    {
+        if (result.integrity == BackendIntegrity::Preserved)
+        {
+            BackendResult rollback = RollbackStopPointStateReplacement();
+            if (!rollback.ok)
+            {
+                result.message += result.message.empty() ? "" : "; ";
+                result.message += rollback.message;
+                result.integrity = BackendIntegrity::Unknown;
+            }
+        }
+        else
+        {
+            (void)CleanupStopPoints();
+        }
+        if (result.integrity == BackendIntegrity::Unknown)
+        {
+            result = TaintAndCloseAfterStopPointFailure(std::move(result));
+            return {
+                operation,
+                false,
+                origin,
+                state_epoch_,
+                disposition_,
+                std::move(result)};
+        }
+        return Complete(operation, origin, std::move(result), false);
+    }
+
+    const auto next_epoch = NextEpoch(state_epoch_);
+    if (!next_epoch)
+    {
+        result = BackendResult::Failure(
+            BackendErrorCode::OperationFailed,
+            "StateEpoch exhausted after Dolphin state replacement",
+            BackendIntegrity::Unknown);
+        MarkTainted(result.message);
+        (void)CleanupStopPoints();
+        (void)CallBackend(
+            "Dolphin backend shutdown after epoch exhaustion",
+            [&] { return backend_->Close(); });
+        opened_ = false;
+        core_state_ = BackendCoreState::Closed;
+        return {
+            operation,
+            false,
+            origin,
+            state_epoch_,
+            disposition_,
+            std::move(result)};
+    }
+
+    state_epoch_ = *next_epoch;
+    BackendResult committed = CommitStopPointStateReplacement(state_epoch_);
+    if (!committed.ok)
+    {
+        committed.integrity = BackendIntegrity::Unknown;
+        MarkTainted(committed.message.empty()
+            ? "stop-point reconciliation failed after state replacement"
+            : committed.message);
+        (void)CleanupStopPoints();
+        (void)CallBackend(
+            "Dolphin backend shutdown after stop-point reconciliation failure",
+            [&] { return backend_->Close(); });
+        opened_ = false;
+        core_state_ = BackendCoreState::Closed;
+        return {
+            operation,
+            false,
+            origin,
+            state_epoch_,
+            disposition_,
+            std::move(committed)};
+    }
+
+    return Complete(operation, origin, std::move(result), false);
+}
+
 SessionOperationReceipt EmulationSession::Complete(
     SessionOperation operation,
     StateEpoch origin,
@@ -590,6 +907,151 @@ SessionOperationReceipt EmulationSession::Complete(
         state_epoch_,
         disposition_,
         std::move(result)};
+}
+
+BackendResult EmulationSession::InitializeStopPoints(StateEpoch first_epoch)
+{
+    IPhysicalStopPointBackendPort* port =
+        backend_ ? backend_->PhysicalStopPoints() : nullptr;
+    if (!port)
+    {
+        return BackendResult::Failure(
+            BackendErrorCode::Unavailable,
+            "Dolphin backend does not provide the required physical "
+            "stop-point ownership facet");
+    }
+
+    try
+    {
+        physical_stop_manager_ =
+            std::make_unique<PhysicalStopPointManager>(*port);
+        stop_router_ =
+            std::make_unique<StopPointRouter>(*physical_stop_manager_);
+    }
+    catch (const std::exception& ex)
+    {
+        stop_router_.reset();
+        physical_stop_manager_.reset();
+        return BackendResult::Failure(
+            BackendErrorCode::OperationFailed,
+            std::string("failed constructing session stop-point ownership: ") +
+                ex.what());
+    }
+    catch (...)
+    {
+        stop_router_.reset();
+        physical_stop_manager_.reset();
+        return BackendResult::Failure(
+            BackendErrorCode::OperationFailed,
+            "failed constructing session stop-point ownership");
+    }
+
+    if (StopPointError error =
+            stop_router_->SetIngressNotificationCounter(
+                stop_ingress_notification_counter_))
+    {
+        stop_router_.reset();
+        physical_stop_manager_.reset();
+        return BackendResult::Failure(
+            BackendErrorCode::OperationFailed,
+            "failed configuring stop-point ingress notification: " +
+                error.message);
+    }
+    if (StopPointError error =
+            stop_router_->SetIngressNotifier(
+                stop_ingress_notifier_context_,
+                stop_ingress_notifier_))
+    {
+        stop_router_.reset();
+        physical_stop_manager_.reset();
+        return BackendResult::Failure(
+            BackendErrorCode::OperationFailed,
+            "failed configuring stop-point ingress notifier: " +
+                error.message);
+    }
+
+    const StopPointLifecycleReceipt initialized =
+        stop_router_->Initialize(first_epoch);
+    if (!initialized.ok)
+    {
+        BackendResult failure =
+            FromStopPointLifecycle("stop-point initialization", initialized);
+        stop_router_.reset();
+        physical_stop_manager_.reset();
+        return failure;
+    }
+    return BackendResult::Success();
+}
+
+BackendResult EmulationSession::PrepareStopPointStateReplacement()
+{
+    if (!stop_router_)
+        return BackendResult::Success();
+    return FromStopPointLifecycle(
+        "stop-point state-replacement preparation",
+        stop_router_->PrepareStateReplacement(state_epoch_));
+}
+
+BackendResult EmulationSession::CommitStopPointStateReplacement(
+    StateEpoch new_epoch)
+{
+    if (!stop_router_)
+        return BackendResult::Success();
+    return FromStopPointLifecycle(
+        "stop-point state-replacement commit",
+        stop_router_->CommitStateReplacement(new_epoch));
+}
+
+BackendResult EmulationSession::RollbackStopPointStateReplacement()
+{
+    if (!stop_router_)
+        return BackendResult::Success();
+    return FromStopPointLifecycle(
+        "stop-point state-replacement rollback",
+        stop_router_->RollbackStateReplacement(state_epoch_));
+}
+
+BackendResult EmulationSession::CleanupStopPoints()
+{
+    if (!stop_router_)
+        return BackendResult::Success();
+    return FromStopPointLifecycle(
+        "stop-point cleanup",
+        stop_router_->StopIngressDrainAndCleanup());
+}
+
+BackendResult EmulationSession::TaintAndCloseAfterStopPointFailure(
+    BackendResult failure)
+{
+    failure.integrity = BackendIntegrity::Unknown;
+    if (failure.message.empty())
+        failure.message = "Stop-point integrity could not be proven";
+    MarkTainted(failure.message);
+
+    const BackendResult cleanup = CleanupStopPoints();
+    if (!cleanup.ok)
+    {
+        failure.message += "; ";
+        failure.message += cleanup.message.empty()
+            ? "stop-point cleanup could not be proven"
+            : cleanup.message;
+    }
+
+    const BackendResult close = backend_
+        ? CallBackend(
+              "Dolphin backend shutdown after stop-point failure",
+              [&] { return backend_->Close(); })
+        : BackendResult::Success();
+    if (!close.ok)
+    {
+        failure.message += "; ";
+        failure.message += close.message.empty()
+            ? "Dolphin backend shutdown could not be proven"
+            : close.message;
+    }
+    opened_ = false;
+    core_state_ = BackendCoreState::Closed;
+    return failure;
 }
 
 bool EmulationSession::AdvanceEpoch() noexcept

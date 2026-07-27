@@ -35,6 +35,7 @@
     <ClInclude Include="AddressProgramEvaluator.h" />
     <ClInclude Include="CaptureRetention.h" />
     <ClInclude Include="NativeHookSemantics.h" />
+    <ClInclude Include="NativeStopHooks.h" />
     <ClInclude Include="ProbeEvent.h" />
     <ClInclude Include="ProbeDispatchPolicy.h" />
     <ClInclude Include="ProbeProfile.h" />

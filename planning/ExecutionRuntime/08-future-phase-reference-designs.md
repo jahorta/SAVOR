@@ -354,9 +354,9 @@ Outputs:
 - exact input and execution trace; and
 - diagnostics/provenance.
 
-Reusable router interceptors and `InputArbiter` actions may dismiss known dialogs or satisfy input polls.
-Only `ExecutionEngine` advances Dolphin. A native fast-forward reducer may choose the next bounded action
-from completed observations but cannot run a private loop.
+Reusable interruption handlers requested by router interceptors and `InputArbiter` actions may dismiss
+known dialogs or satisfy input polls. Only `ExecutionEngine` advances Dolphin. A native fast-forward
+reducer may choose the next bounded action from completed observations but cannot run a private loop.
 
 If a cutscene exceeds one slice, current dynamic-step facilities may schedule the next slice from the
 projected state artifact. If current workflow contracts cannot represent that continuation, adding a new

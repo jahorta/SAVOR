@@ -23,22 +23,37 @@
 #include <xxhash.h>
 
 #include "Core/Core.h"
-#include "Core/HW/CPU.h"
 #include "Core/HW/Memmap.h"
-#include "Core/PowerPC/BreakPoints.h"
-#include "Core/PowerPC/MMU.h"
 #include "Core/PowerPC/PowerPC.h"
 #include "Core/System.h"
 
 #pragma comment(lib, "bcrypt.lib")
 
 namespace savor::probe {
+
 namespace {
 
 std::uint64_t monotonic_now_ns()
 {
     return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
+std::uint64_t routed_or_local_sequence(
+    std::atomic<std::uint64_t>& next_sequence,
+    std::uint64_t routed_sequence)
+{
+    if (routed_sequence == 0)
+        return next_sequence.fetch_add(1, std::memory_order_relaxed);
+
+    auto next = next_sequence.load(std::memory_order_relaxed);
+    while (next <= routed_sequence
+        && !next_sequence.compare_exchange_weak(
+            next,
+            routed_sequence + 1,
+            std::memory_order_relaxed)) {
+    }
+    return routed_sequence;
 }
 
 bool ranges_overlap(
@@ -119,55 +134,11 @@ struct ProbeRuntime::ProbeState {
     std::unique_ptr<LatestRawProbeEvent> coalesced_progress;
 };
 
-struct ProbeRuntime::ForeignBreakpoint {
-    std::uint32_t address = 0;
-    bool installed_by_probe = false;
-};
-
-ControlLease::~ControlLease()
-{
-    reset();
-}
-
-ControlLease::ControlLease(ControlLease&& other) noexcept
-    : runtime_(other.runtime_), generation_(other.generation_)
-{
-    other.runtime_ = nullptr;
-    other.generation_ = 0;
-}
-
-ControlLease& ControlLease::operator=(ControlLease&& other) noexcept
-{
-    if (this != &other) {
-        reset();
-        runtime_ = other.runtime_;
-        generation_ = other.generation_;
-        other.runtime_ = nullptr;
-        other.generation_ = 0;
-    }
-    return *this;
-}
-
-void ControlLease::reset()
-{
-    if (runtime_)
-        runtime_->end_control_wait(generation_);
-    runtime_ = nullptr;
-    generation_ = 0;
-}
-
-ProbeRuntime& ProbeRuntime::instance()
-{
-    static ProbeRuntime runtime;
-    return runtime;
-}
-
 ProbeRuntime::ProbeRuntime() = default;
 
 ProbeRuntime::~ProbeRuntime()
 {
     stop();
-    uninstall_native_hooks();
 }
 
 bool ValidateProfilePcAccess(
@@ -233,8 +204,6 @@ bool ProbeRuntime::start(
         return false;
     if (!ValidateProfilePcAccess(profile, options.denied_profile_pcs, error_out))
         return false;
-    if (!install_native_hooks(error_out))
-        return false;
     std::string hash_error;
     const auto current_hash = current_module_sha256(&hash_error);
     if (current_hash.empty() || current_hash != profile.expected_module_sha256) {
@@ -263,7 +232,7 @@ bool ProbeRuntime::start(
     options_.metadata.dolphin_source_commit = std::string(kSupportedDolphinSourceCommit);
     probe_states_ = std::make_unique<ProbeState[]>(profile_.probes.size());
     window_states_ = std::make_unique<ProbeWindowState[]>(profile_.windows.size());
-    watchpoint_registry_.reserve(profile_.probes.size() + control_memory_sites_.size());
+    watchpoint_registry_.reserve(profile_.probes.size());
     for (std::size_t i = 0; i < profile_.probes.size(); ++i) {
         probe_states_[i].active = !profile_.probes[i].activate_on_pc.has_value();
         probe_states_[i].effective_address = profile_.probes[i].address;
@@ -291,12 +260,6 @@ bool ProbeRuntime::start(
         return probe.kind == ProbeKind::Pc && probe.frame_clock;
     }), std::memory_order_relaxed);
     guest_state_epoch_.store(0, std::memory_order_relaxed);
-    control_count_.store(0, std::memory_order_relaxed);
-    control_memory_count_.store(0, std::memory_order_relaxed);
-    control_wait_active_.store(false, std::memory_order_relaxed);
-    control_hit_published_.store(false, std::memory_order_relaxed);
-    suppress_once_pc_.store(0, std::memory_order_relaxed);
-    control_cancelled_.store(false, std::memory_order_relaxed);
     flight_triggered_.store(false, std::memory_order_relaxed);
     flight_post_remaining_.store(0, std::memory_order_relaxed);
     capture_gap_first_sequence_.store(0, std::memory_order_relaxed);
@@ -306,8 +269,6 @@ bool ProbeRuntime::start(
     incomplete_reason_.fill('\0');
     capture_complete_.store(true, std::memory_order_relaxed);
     capture_enabled_.store(!options_.capture_path.empty(), std::memory_order_relaxed);
-    control_owned_breakpoints_.clear();
-    control_owned_breakpoints_.reserve(control_pcs_.size());
 
     if (!options_.capture_path.empty()
         && !writer_.open(options_.capture_path, options_.metadata, options_.writer_options, error_out)) {
@@ -332,14 +293,6 @@ void ProbeRuntime::stop()
 {
     if (!active_.exchange(false, std::memory_order_acq_rel) && !recorder_thread_.joinable())
         return;
-    end_control_wait(control_generation_.load(std::memory_order_acquire));
-    control_count_.store(0, std::memory_order_release);
-    control_wait_active_.store(false, std::memory_order_release);
-    control_cancelled_.store(true, std::memory_order_release);
-    control_hit_.kind = ControlHitKind::Shutdown;
-    const auto generation = control_generation_.fetch_add(1, std::memory_order_acq_rel) + 1;
-    control_hit_.generation = generation;
-    WakeByAddressAll(&control_generation_);
     restore_foreign_sites();
     recorder_stop_.store(true, std::memory_order_release);
     wake_recorder();
@@ -358,8 +311,6 @@ void ProbeRuntime::stop()
     pc_probe_indices_.clear();
     memory_probe_indices_.clear();
     activation_probe_indices_.clear();
-    foreign_breakpoints_.clear();
-    control_owned_breakpoints_.clear();
 }
 
 void ProbeRuntime::rebuild_dispatch_indices()
@@ -385,38 +336,6 @@ bool ProbeRuntime::arm_profile_sites(std::string* error_out)
 {
     if (!system_)
         return false;
-    {
-        Core::CPUThreadGuard guard(*system_);
-        auto& breakpoints = system_->GetPowerPC().GetBreakPoints();
-        std::unordered_set<std::uint32_t> pc_addresses;
-        for (const auto& probe : profile_.probes) {
-            if (probe.kind == ProbeKind::Pc)
-                pc_addresses.insert(probe.address);
-            if (probe.activate_on_pc.has_value())
-                pc_addresses.insert(*probe.activate_on_pc);
-        }
-        for (const auto address : pc_addresses) {
-            const auto* existing = breakpoints.GetRegularBreakpoint(address);
-            if (existing) {
-                if (!existing->is_enabled) {
-                    if (error_out) {
-                        *error_out = "probe PC collides with a disabled foreign breakpoint at 0x"
-                            + [&] { std::ostringstream out; out << std::hex << address; return out.str(); }();
-                    }
-                    return false;
-                }
-                foreign_breakpoints_.push_back(ForeignBreakpoint{ address, false });
-                continue;
-            }
-            foreign_breakpoints_.push_back(ForeignBreakpoint{ address, true });
-            TBreakPoint combined;
-            combined.address = address;
-            combined.is_enabled = true;
-            combined.log_on_hit = false;
-            combined.break_on_hit = false;
-            breakpoints.Add(std::move(combined));
-        }
-    }
 
     watchpoint_registry_.clear_requests();
     for (std::uint32_t i = 0; i < profile_.probes.size(); ++i) {
@@ -445,17 +364,7 @@ bool ProbeRuntime::arm_profile_sites(std::string* error_out)
 
 void ProbeRuntime::restore_foreign_sites()
 {
-    if (!system_)
-        return;
-    {
-        Core::CPUThreadGuard guard(*system_);
-        auto& power_pc = system_->GetPowerPC();
-        for (const auto& saved : foreign_breakpoints_) {
-            if (saved.installed_by_probe)
-                power_pc.GetBreakPoints().Remove(saved.address);
-        }
-    }
-    watchpoint_registry_.release_all(*system_);
+    watchpoint_registry_.release_all();
     watchpoints_dirty_.store(false, std::memory_order_release);
     watchpoint_reconcile_pending_.store(false, std::memory_order_release);
 }
@@ -464,7 +373,7 @@ bool ProbeRuntime::reconcile_watchpoints(std::string* error_out)
 {
     if (!system_)
         return false;
-    const bool ok = watchpoint_registry_.reconcile(*system_, error_out);
+    const bool ok = watchpoint_registry_.reconcile({}, error_out);
     for (const auto& failure : watchpoint_registry_.failures()) {
         if (failure.owner.kind == WatchpointOwnerKind::Profile
             && failure.owner.index < profile_.probes.size()) {
@@ -542,6 +451,7 @@ bool ProbeRuntime::set_group_enabled(std::string_view group, bool enabled)
         std::string error;
         if (!reconcile_watchpoints(&error))
             mark_capture_incomplete("watchpoint group rebind failed");
+        watchpoint_reconcile_pending_.store(true, std::memory_order_release);
     }
     return found;
 }
@@ -559,10 +469,6 @@ bool ProbeRuntime::replace_profile(
     }
     if (Core::GetState(*system_) != Core::State::Paused) {
         if (error_out) *error_out = "capture profile reload requires a paused CPU";
-        return false;
-    }
-    if (control_wait_active_.load(std::memory_order_acquire)) {
-        if (error_out) *error_out = "capture profile reload cannot overlap a control wait";
         return false;
     }
     if (profile.revision <= profile_.revision) {
@@ -614,7 +520,6 @@ bool ProbeRuntime::replace_profile(
     emit_marker("profile.reload.begin", profile.revision);
     active_.store(false, std::memory_order_release);
     restore_foreign_sites();
-    foreign_breakpoints_.clear();
     recorder_stop_.store(true, std::memory_order_release);
     wake_recorder();
     if (recorder_thread_.joinable())
@@ -622,7 +527,7 @@ bool ProbeRuntime::replace_profile(
 
     profile_ = std::move(profile);
     rebuild_dispatch_indices();
-    watchpoint_registry_.reserve(profile_.probes.size() + control_memory_sites_.size());
+    watchpoint_registry_.reserve(profile_.probes.size());
     options_.metadata.profile_json = std::move(profile_json);
     probe_states_ = std::move(new_probe_states);
     window_states_ = std::move(new_window_states);
@@ -639,6 +544,7 @@ bool ProbeRuntime::replace_profile(
         system_ = nullptr;
         return false;
     }
+    watchpoint_reconcile_pending_.store(true, std::memory_order_release);
 
     if (writer_.is_open()) {
         capture_format::Event event;
@@ -678,9 +584,7 @@ bool ProbeRuntime::prepare_for_core_shutdown(std::string*)
 {
     if (!active())
         return true;
-    cancel_control_wait();
     restore_foreign_sites();
-    foreign_breakpoints_.clear();
     for (std::size_t i = 0; i < profile_.probes.size(); ++i) {
         auto& state = probe_states_[i];
         state.active = !profile_.probes[i].activate_on_pc.has_value();
@@ -697,12 +601,70 @@ bool ProbeRuntime::resume_after_core_boot(std::string* error_out)
 {
     if (!active())
         return true;
-    return arm_profile_sites(error_out);
+    const bool armed = arm_profile_sites(error_out);
+    if (armed)
+        watchpoint_reconcile_pending_.store(true, std::memory_order_release);
+    return armed;
 }
 
 void ProbeRuntime::set_guest_state_epoch(std::uint64_t epoch)
 {
     guest_state_epoch_.store(epoch, std::memory_order_release);
+}
+
+std::vector<ProfileStopRequirement>
+ProbeRuntime::profile_stop_requirements() const
+{
+    std::vector<ProfileStopRequirement> requirements;
+    if (!probe_states_)
+        return requirements;
+
+    requirements.reserve(
+        profile_.probes.size() + activation_probe_indices_.size());
+    for (std::uint32_t i = 0; i < profile_.probes.size(); ++i) {
+        const auto& probe = profile_.probes[i];
+        const auto& state = probe_states_[i];
+        if (probe.activate_on_pc.has_value()) {
+            requirements.push_back(ProfileStopRequirement{
+                .probe_index = i,
+                .kind = ProfileStopRequirementKind::ActivationPc,
+                .address = *probe.activate_on_pc,
+                .memory_access = probe.memory_access,
+                .subscriptions = probe.subscriptions,
+                .active = true,
+                .exhausted = false,
+                .group_enabled = state.group_enabled,
+                .address_resolved = true,
+            });
+        }
+        if (probe.kind == ProbeKind::Pc) {
+            requirements.push_back(ProfileStopRequirement{
+                .probe_index = i,
+                .kind = ProfileStopRequirementKind::Pc,
+                .address = probe.address,
+                .memory_access = probe.memory_access,
+                .subscriptions = probe.subscriptions,
+                .active = state.active,
+                .exhausted = state.exhausted,
+                .group_enabled = state.group_enabled,
+                .address_resolved = true,
+            });
+        } else if (probe.kind == ProbeKind::Memory) {
+            requirements.push_back(ProfileStopRequirement{
+                .probe_index = i,
+                .kind = ProfileStopRequirementKind::Memory,
+                .address = state.effective_address,
+                .size = probe.size,
+                .memory_access = probe.memory_access,
+                .subscriptions = probe.subscriptions,
+                .active = state.active,
+                .exhausted = state.exhausted,
+                .group_enabled = state.group_enabled,
+                .address_resolved = state.address_resolved,
+            });
+        }
+    }
+    return requirements;
 }
 
 void ProbeRuntime::set_frame_index(std::uint64_t frame)
@@ -750,153 +712,30 @@ bool ProbeRuntime::trigger_flight_recorder(std::uint32_t post_events)
     return active();
 }
 
-ControlLease ProbeRuntime::begin_control_wait(
-    const std::vector<std::uint32_t>& pcs,
-    const std::vector<ControlMemorySite>& memory_sites,
-    std::optional<std::uint32_t> suppress_once_pc,
-    std::string* error_out)
-{
-    if (!active()) {
-        if (error_out) *error_out = "probe runtime is not active";
-        return {};
-    }
-    if ((pcs.empty() && memory_sites.empty()) || pcs.size() > control_pcs_.size()
-        || memory_sites.size() > control_memory_sites_.size()) {
-        if (error_out) *error_out = "control wait requires at least one site and stays within fixed capacity";
-        return {};
-    }
-    if (control_wait_active_.exchange(true, std::memory_order_acq_rel)) {
-        if (error_out) *error_out = "another control wait is already active";
-        return {};
-    }
-    control_hit_published_.store(false, std::memory_order_release);
-    control_owned_breakpoints_.clear();
-    watchpoint_registry_.release_kind(WatchpointOwnerKind::Control);
-    const auto fail = [&](std::string message) -> ControlLease {
-        if (error_out) *error_out = std::move(message);
-        end_control_wait(control_generation_.load(std::memory_order_acquire));
-        return {};
-    };
-    control_count_.store(0, std::memory_order_release);
-    for (std::size_t i = 0; i < pcs.size(); ++i)
-        control_pcs_[i] = pcs[i];
-    control_memory_count_.store(0, std::memory_order_release);
-    for (std::size_t i = 0; i < memory_sites.size(); ++i)
-        control_memory_sites_[i] = memory_sites[i];
-    control_count_.store(static_cast<std::uint32_t>(pcs.size()), std::memory_order_release);
-    control_memory_count_.store(
-        static_cast<std::uint32_t>(memory_sites.size()), std::memory_order_release);
-
-    std::string setup_error;
-    {
-        Core::CPUThreadGuard guard(*system_);
-        auto& breakpoints = system_->GetPowerPC().GetBreakPoints();
-        for (const auto pc : pcs) {
-            const auto* existing = breakpoints.GetRegularBreakpoint(pc);
-            if (existing && !existing->is_enabled) {
-                setup_error = "control PC collides with a disabled foreign breakpoint";
-                break;
-            }
-        }
-        if (setup_error.empty()) {
-            for (const auto pc : pcs) {
-                const auto* existing = breakpoints.GetRegularBreakpoint(pc);
-                if (existing)
-                    continue;
-                TBreakPoint combined;
-                combined.address = pc;
-                combined.is_enabled = true;
-                combined.log_on_hit = false;
-                combined.break_on_hit = false;
-                breakpoints.Add(std::move(combined));
-                control_owned_breakpoints_.push_back(pc);
-            }
-        }
-    }
-    if (!setup_error.empty())
-        return fail(std::move(setup_error));
-    for (std::uint32_t i = 0; i < memory_sites.size(); ++i) {
-        const auto& site = memory_sites[i];
-        if (!watchpoint_registry_.upsert(WatchpointRequest{
-                WatchpointOwner{ WatchpointOwnerKind::Control, i },
-                site.address,
-                site.size,
-                site.access,
-                WatchpointBindingSource::Control,
-            })) {
-            return fail("control memory site has an invalid watchpoint range");
-        }
-    }
-    if (!reconcile_watchpoints(&setup_error))
-        return fail(std::move(setup_error));
-    suppress_once_pc_.store(suppress_once_pc.value_or(0), std::memory_order_release);
-    control_cancelled_.store(false, std::memory_order_release);
-    return ControlLease(this, control_generation_.load(std::memory_order_acquire));
-}
-
-ControlWaitResult ProbeRuntime::wait_for_control(
-    std::uint64_t observed_generation,
-    std::chrono::milliseconds timeout) const
-{
-    const auto deadline = std::chrono::steady_clock::now() + timeout;
-    for (;;) {
-        const auto current = control_generation_.load(std::memory_order_acquire);
-        if (current != observed_generation) {
-            if (!active())
-                return { ControlWaitStatus::Shutdown, control_hit_ };
-            if (control_cancelled_.load(std::memory_order_acquire))
-                return { ControlWaitStatus::Cancelled, control_hit_ };
-            return { ControlWaitStatus::Hit, control_hit_ };
-        }
-        const auto now = std::chrono::steady_clock::now();
-        if (now >= deadline)
-            return { ControlWaitStatus::Timeout, {} };
-        const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
-        const auto wait_ms = static_cast<DWORD>(std::clamp<std::int64_t>(
-            remaining.count(), 1, static_cast<std::int64_t>(INFINITE - 1)));
-        auto compare = observed_generation;
-        WaitOnAddress(
-            const_cast<std::atomic<std::uint64_t>*>(&control_generation_),
-            &compare,
-            sizeof(compare),
-            wait_ms);
-    }
-}
-
-void ProbeRuntime::cancel_control_wait()
-{
-    control_cancelled_.store(true, std::memory_order_release);
-    control_generation_.fetch_add(1, std::memory_order_acq_rel);
-    WakeByAddressAll(&control_generation_);
-}
-
-void ProbeRuntime::end_control_wait(std::uint64_t)
-{
-    if (!control_wait_active_.exchange(false, std::memory_order_acq_rel))
-        return;
-    control_count_.store(0, std::memory_order_release);
-    control_memory_count_.store(0, std::memory_order_release);
-    suppress_once_pc_.store(0, std::memory_order_release);
-    watchpoint_registry_.release_kind(WatchpointOwnerKind::Control);
-    if (system_ && Core::IsRunning(*system_) && !control_owned_breakpoints_.empty()) {
-        Core::CPUThreadGuard guard(*system_);
-        auto& breakpoints = system_->GetPowerPC().GetBreakPoints();
-        for (const auto address : control_owned_breakpoints_)
-            breakpoints.Remove(address);
-    }
-    if (system_)
-        reconcile_watchpoints(nullptr);
-    control_owned_breakpoints_.clear();
-}
-
-bool ProbeRuntime::dispatch_pc(PowerPC::PowerPCManager& power_pc)
+void ProbeRuntime::process_routed_pc(
+    PowerPC::PowerPCManager& power_pc,
+    std::uint32_t hit_pc,
+    const ProbeRoutedHitContext& context)
 {
     if (!active_.load(std::memory_order_acquire))
-        return false;
+        return;
+    guest_state_epoch_.store(
+        context.guest_state_epoch,
+        std::memory_order_release);
     if (watchpoints_dirty_.load(std::memory_order_acquire))
         watchpoint_reconcile_pending_.store(true, std::memory_order_release);
-    const auto pc = power_pc.GetPPCState().pc;
-    const auto snapshot_id = next_snapshot_id_.fetch_add(1, std::memory_order_relaxed);
+    const auto pc = hit_pc;
+    const auto capture_sequence = routed_or_local_sequence(
+        next_capture_sequence_,
+        context.routed_sequence);
+    const auto snapshot_id = routed_or_local_sequence(
+        next_snapshot_id_,
+        context.sample_snapshot_id);
+    const auto stamp_routed_identity = [&](RawProbeEvent& event) {
+        event.capture_sequence = capture_sequence;
+        event.snapshot_id = snapshot_id;
+        event.guest_state_epoch = context.guest_state_epoch;
+    };
     bool frame_clock_hit = false;
     for (const auto i : pc_probe_indices_) {
         const auto& probe = profile_.probes[i];
@@ -912,10 +751,10 @@ bool ProbeRuntime::dispatch_pc(PowerPC::PowerPCManager& power_pc)
         set_frame_index(frame);
         if (capture_enabled_.load(std::memory_order_relaxed)) {
             RawProbeEvent marker{};
-            marker.capture_sequence = next_capture_sequence_.fetch_add(1, std::memory_order_relaxed);
+            marker.capture_sequence = capture_sequence;
             marker.monotonic_ns = monotonic_now_ns();
             marker.frame_index = frame;
-            marker.guest_state_epoch = guest_state_epoch_.load(std::memory_order_relaxed);
+            marker.guest_state_epoch = context.guest_state_epoch;
             marker.profile_revision = profile_.revision;
             marker.snapshot_id = snapshot_id;
             marker.probe_index = kSyntheticMarkerProbeIndex;
@@ -931,24 +770,8 @@ bool ProbeRuntime::dispatch_pc(PowerPC::PowerPCManager& power_pc)
     }
     bool requested_control = false;
     RawProbeEvent control_event{};
-    bool lease_match = false;
-    if (control_wait_active_.load(std::memory_order_acquire)) {
-        const auto control_count = control_count_.load(std::memory_order_acquire);
-        for (std::uint32_t i = 0; i < control_count; ++i) {
-            if (control_pcs_[i] == pc) {
-                lease_match = true;
-                break;
-            }
-        }
-        if (lease_match) {
-            auto suppressed = suppress_once_pc_.load(std::memory_order_acquire);
-            if (suppressed == pc) {
-                suppress_once_pc_.compare_exchange_strong(
-                    suppressed, 0, std::memory_order_acq_rel);
-                lease_match = false;
-            }
-        }
-    }
+    const bool active_foreground_wake =
+        context.active_foreground_wake;
 
     bool watchpoint_binding_changed = false;
     for (const auto i : activation_probe_indices_) {
@@ -969,10 +792,10 @@ bool ProbeRuntime::dispatch_pc(PowerPC::PowerPCManager& power_pc)
                     || (probe.address_trace == AddressTracePolicy::OnFailure && !trace.success);
                 if (state.root_trace_available) {
                     RawProbeEvent resolution{};
-                    resolution.capture_sequence = next_capture_sequence_.fetch_add(1, std::memory_order_relaxed);
+                    resolution.capture_sequence = capture_sequence;
                     resolution.monotonic_ns = monotonic_now_ns();
                     resolution.frame_index = frame_index_.load(std::memory_order_relaxed);
-                    resolution.guest_state_epoch = guest_state_epoch_.load(std::memory_order_relaxed);
+                    resolution.guest_state_epoch = context.guest_state_epoch;
                     resolution.profile_revision = profile_.revision;
                     resolution.snapshot_id = snapshot_id;
                     resolution.probe_index = i;
@@ -1046,7 +869,14 @@ bool ProbeRuntime::dispatch_pc(PowerPC::PowerPCManager& power_pc)
         const auto hit_count = state.hits.fetch_add(1, std::memory_order_relaxed) + 1;
         if (probe.max_hits.has_value() && hit_count > *probe.max_hits) {
             state.exhausted = true;
+            watchpoints_dirty_.store(true, std::memory_order_release);
+            watchpoint_reconcile_pending_.store(true, std::memory_order_release);
             continue;
+        }
+        if (probe.max_hits.has_value() && hit_count == *probe.max_hits) {
+            state.exhausted = true;
+            watchpoints_dirty_.store(true, std::memory_order_release);
+            watchpoint_reconcile_pending_.store(true, std::memory_order_release);
         }
         update_windows_before_probe(probe);
         RawProbeEvent event{};
@@ -1056,7 +886,7 @@ bool ProbeRuntime::dispatch_pc(PowerPC::PowerPCManager& power_pc)
             continue;
         }
         event.probe_index = static_cast<std::uint32_t>(i);
-        event.snapshot_id = snapshot_id;
+        stamp_routed_identity(event);
         event.hit_count = hit_count;
         if (!evaluate_predicate(probe, event, power_pc)) {
             state.predicate_rejections.fetch_add(1, std::memory_order_relaxed);
@@ -1077,7 +907,7 @@ bool ProbeRuntime::dispatch_pc(PowerPC::PowerPCManager& power_pc)
         const bool profile_control = subscriber_dispatch_decision(
             probe.subscriptions,
             capture_enabled_.load(std::memory_order_relaxed),
-            lease_match,
+            active_foreground_wake,
             requested_control).control;
         if (profile_control)
             event.flags |= kRawEventControlPublished;
@@ -1087,14 +917,19 @@ bool ProbeRuntime::dispatch_pc(PowerPC::PowerPCManager& power_pc)
             control_event = event;
         }
         update_windows_after_probe(probe, true);
+        if (probe.one_shot) {
+            state.exhausted = true;
+            watchpoints_dirty_.store(true, std::memory_order_release);
+            watchpoint_reconcile_pending_.store(true, std::memory_order_release);
+        }
     }
-    if (lease_match) {
+    if (active_foreground_wake) {
         if (!requested_control) {
             requested_control = true;
-            control_event.capture_sequence = next_capture_sequence_.fetch_add(1, std::memory_order_relaxed);
+            control_event.capture_sequence = capture_sequence;
             control_event.monotonic_ns = monotonic_now_ns();
             control_event.frame_index = frame_index_.load(std::memory_order_relaxed);
-            control_event.guest_state_epoch = guest_state_epoch_.load(std::memory_order_relaxed);
+            control_event.guest_state_epoch = context.guest_state_epoch;
             control_event.profile_revision = profile_.revision;
             control_event.snapshot_id = snapshot_id;
             control_event.probe_index = kSyntheticControlProbeIndex;
@@ -1104,77 +939,43 @@ bool ProbeRuntime::dispatch_pc(PowerPC::PowerPCManager& power_pc)
         }
     }
     if (requested_control)
-        publish_control(control_event, false);
-    return requested_control;
+        observe_routed_control(control_event, false);
 }
 
-void ProbeRuntime::complete_pc_dispatch(bool control_will_stop)
-{
-    if (!watchpoint_reconcile_pending_.exchange(false, std::memory_order_acq_rel)
-        || !active_.load(std::memory_order_acquire) || !system_) {
-        return;
-    }
-
-    auto* const system = system_;
-    system->GetCPU().AddCPUThreadJob([this, system, control_will_stop] {
-        if (!active_.load(std::memory_order_acquire) || system_ != system)
-            return;
-        std::string error;
-        if (!reconcile_watchpoints(&error)) {
-            for (const auto& failure : watchpoint_registry_.failures()) {
-                if (failure.owner.kind != WatchpointOwnerKind::Profile
-                    || failure.owner.index >= profile_.probes.size()) {
-                    continue;
-                }
-                auto& state = probe_states_[failure.owner.index];
-                state.active = false;
-                state.address_resolved = false;
-                state.binding_failures.fetch_add(1, std::memory_order_relaxed);
-                watchpoint_registry_.release(failure.owner);
-            }
-            reconcile_watchpoints(nullptr);
-            mark_capture_incomplete("dynamic watchpoint binding failed");
-        }
-        if (!control_will_stop && active_.load(std::memory_order_acquire)
-            && system_ == system) {
-            system->GetCPU().Continue();
-        }
-    });
-
-    if (!control_will_stop)
-        system->GetCPU().Break();
-}
-
-bool ProbeRuntime::dispatch_memory(
+void ProbeRuntime::process_routed_memory(
     Core::System& system,
     std::uint32_t pc,
     std::uint32_t address,
     std::uint32_t size,
     std::uint64_t value,
     bool write,
-    bool post_write)
+    bool post_write,
+    const ProbeRoutedHitContext& context)
 {
     if (!active_.load(std::memory_order_acquire) || (write && !post_write))
-        return false;
+        return;
+    guest_state_epoch_.store(
+        context.guest_state_epoch,
+        std::memory_order_release);
     if (memory_probe_indices_.empty()
-        && control_memory_count_.load(std::memory_order_acquire) == 0) {
-        return false;
+        && !context.active_foreground_wake) {
+        return;
     }
-    const auto snapshot_id = next_snapshot_id_.fetch_add(1, std::memory_order_relaxed);
+    const auto capture_sequence = routed_or_local_sequence(
+        next_capture_sequence_,
+        context.routed_sequence);
+    const auto snapshot_id = routed_or_local_sequence(
+        next_snapshot_id_,
+        context.sample_snapshot_id);
+    const auto stamp_routed_identity = [&](RawProbeEvent& event) {
+        event.capture_sequence = capture_sequence;
+        event.snapshot_id = snapshot_id;
+        event.guest_state_epoch = context.guest_state_epoch;
+    };
     bool requested_control = false;
     RawProbeEvent control_event{};
-    std::optional<ControlMemorySite> lease_site;
-    if (control_wait_active_.load(std::memory_order_acquire)) {
-        const auto count = control_memory_count_.load(std::memory_order_acquire);
-        for (std::uint32_t i = 0; i < count; ++i) {
-            const auto& site = control_memory_sites_[i];
-            if (memory_access_matches(site.access, write)
-                && ranges_overlap(site.address, site.size, address, size)) {
-                lease_site = site;
-                break;
-            }
-        }
-    }
+    const bool active_foreground_wake =
+        context.active_foreground_wake;
     const auto& power_pc = system.GetPowerPC();
     for (const auto i : memory_probe_indices_) {
         const auto& probe = profile_.probes[i];
@@ -1194,6 +995,7 @@ bool ProbeRuntime::dispatch_memory(
             watchpoint_registry_.release(
                 WatchpointOwner{ WatchpointOwnerKind::Profile, i });
             watchpoints_dirty_.store(true, std::memory_order_release);
+            watchpoint_reconcile_pending_.store(true, std::memory_order_release);
             continue;
         }
         if (probe.max_hits.has_value() && lease_hit_count == *probe.max_hits) {
@@ -1201,6 +1003,7 @@ bool ProbeRuntime::dispatch_memory(
             watchpoint_registry_.release(
                 WatchpointOwner{ WatchpointOwnerKind::Profile, i });
             watchpoints_dirty_.store(true, std::memory_order_release);
+            watchpoint_reconcile_pending_.store(true, std::memory_order_release);
         }
         update_windows_before_probe(probe);
         RawProbeEvent event{};
@@ -1210,7 +1013,7 @@ bool ProbeRuntime::dispatch_memory(
             continue;
         }
         event.probe_index = static_cast<std::uint32_t>(i);
-        event.snapshot_id = snapshot_id;
+        stamp_routed_identity(event);
         event.hit_count = hit_count;
         if (!evaluate_predicate(probe, event, power_pc)) {
             state.predicate_rejections.fetch_add(1, std::memory_order_relaxed);
@@ -1231,7 +1034,7 @@ bool ProbeRuntime::dispatch_memory(
         const bool profile_control = subscriber_dispatch_decision(
             probe.subscriptions,
             capture_enabled_.load(std::memory_order_relaxed),
-            lease_site.has_value(),
+            active_foreground_wake,
             requested_control).control;
         if (profile_control)
             event.flags |= kRawEventControlPublished;
@@ -1246,14 +1049,15 @@ bool ProbeRuntime::dispatch_memory(
             watchpoint_registry_.release(
                 WatchpointOwner{ WatchpointOwnerKind::Profile, i });
             watchpoints_dirty_.store(true, std::memory_order_release);
+            watchpoint_reconcile_pending_.store(true, std::memory_order_release);
         }
     }
-    if (lease_site.has_value() && !requested_control) {
+    if (active_foreground_wake && !requested_control) {
             requested_control = true;
-            control_event.capture_sequence = next_capture_sequence_.fetch_add(1, std::memory_order_relaxed);
+            control_event.capture_sequence = capture_sequence;
             control_event.monotonic_ns = monotonic_now_ns();
             control_event.frame_index = frame_index_.load(std::memory_order_relaxed);
-            control_event.guest_state_epoch = guest_state_epoch_.load(std::memory_order_relaxed);
+            control_event.guest_state_epoch = context.guest_state_epoch;
             control_event.profile_revision = profile_.revision;
             control_event.snapshot_id = snapshot_id;
             control_event.probe_index = kSyntheticControlProbeIndex;
@@ -1262,17 +1066,10 @@ bool ProbeRuntime::dispatch_memory(
             control_event.size = size;
             control_event.value = value;
             control_event.kind = static_cast<std::uint8_t>(ProbeKind::Memory);
-            control_event.hit_count = lease_site->id;
             control_event.flags |= kRawEventControlPublished;
     }
     if (requested_control)
-        publish_control(control_event, write);
-    return requested_control;
-}
-
-void ProbeRuntime::observe_cpu_break(CPU::CPUManager&)
-{
-    // The central breakpoint and memory hooks publish control before Dolphin transitions state.
+        observe_routed_control(control_event, write);
 }
 
 bool ProbeRuntime::sample_probe(
@@ -1696,43 +1493,27 @@ bool ProbeRuntime::enqueue_event(const ProbeDefinition& probe, const RawProbeEve
     return queued;
 }
 
-void ProbeRuntime::publish_control(const RawProbeEvent& event, bool write)
+void ProbeRuntime::observe_routed_control(
+    const RawProbeEvent& event,
+    bool)
 {
-    if (!control_wait_active_.load(std::memory_order_acquire))
-        return;
-    bool expected = false;
-    if (!control_hit_published_.compare_exchange_strong(
-            expected, true, std::memory_order_acq_rel)) {
-        return;
-    }
     for (std::size_t i = 0; i < profile_.windows.size(); ++i) {
         const auto& definition = profile_.windows[i];
         window_states_[i].on_control(definition, event.frame_index);
     }
-    control_hit_.kind = event.kind == static_cast<std::uint8_t>(ProbeKind::Memory)
-        ? ControlHitKind::Memory
-        : ControlHitKind::Pc;
-    control_hit_.capture_sequence = event.capture_sequence;
-    control_hit_.pc = event.pc;
-    control_hit_.address = event.address;
-    control_hit_.size = event.size;
-    control_hit_.value = event.value;
-    control_hit_.control_id = event.probe_index == kSyntheticControlProbeIndex
-        ? static_cast<std::uint32_t>(event.hit_count)
-        : 0;
-    control_hit_.write = write;
     if (event.probe_index < profile_.probes.size())
-        probe_states_[event.probe_index].control_publications.fetch_add(1, std::memory_order_relaxed);
+        probe_states_[event.probe_index].control_publications.fetch_add(
+            1,
+            std::memory_order_relaxed);
     if (event.probe_index == kSyntheticControlProbeIndex
         && capture_enabled_.load(std::memory_order_relaxed)) {
         if (!capture_queue_.try_push(event))
-            mark_capture_incomplete("capture queue overflow", event.capture_sequence);
+            mark_capture_incomplete(
+                "capture queue overflow",
+                event.capture_sequence);
         else
             wake_recorder();
     }
-    const auto generation = control_generation_.fetch_add(1, std::memory_order_acq_rel) + 1;
-    control_hit_.generation = generation;
-    WakeByAddressAll(&control_generation_);
 }
 
 void ProbeRuntime::wake_recorder()

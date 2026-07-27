@@ -13,7 +13,7 @@ struct SubscriberDispatchDecision {
 constexpr SubscriberDispatchDecision subscriber_dispatch_decision(
     Subscription subscriptions,
     bool capture_enabled,
-    bool active_control_lease_match,
+    bool active_foreground_wake,
     bool control_already_published = false)
 {
     return {
@@ -21,7 +21,7 @@ constexpr SubscriberDispatchDecision subscriber_dispatch_decision(
             && (has_subscription(subscriptions, Subscription::Capture)
                 || has_subscription(subscriptions, Subscription::Progress)),
         .progress = has_subscription(subscriptions, Subscription::Progress),
-        .control = active_control_lease_match && !control_already_published
+        .control = active_foreground_wake && !control_already_published
             && has_subscription(subscriptions, Subscription::Control),
     };
 }

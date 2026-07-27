@@ -2,6 +2,12 @@
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
     <ClCompile Include="common\DbPreparer.cpp" />
+    <ClCompile Include="common\FakePhysicalStopBackend.cpp">
+      <Filter>common</Filter>
+    </ClCompile>
+    <ClCompile Include="common\ScriptedDolphinBackend.cpp">
+      <Filter>common</Filter>
+    </ClCompile>
     <ClCompile Include="..\SavorDbDebugTool\BackfillAnalysisBattle.cpp" />
     <ClCompile Include="..\SavorDbDebugTool\ReprojectUiRead.cpp" />
     <ClCompile Include="..\SavorPredict\ActionViewCameraModel.cpp" />
@@ -94,7 +100,9 @@
     <ClCompile Include="test_capture_format.cpp" />
     <ClCompile Include="test_capture_profile_json.cpp" />
     <ClCompile Include="test_probe_profile.cpp" />
+    <ClCompile Include="test_probe_router_adapter.cpp" />
     <ClCompile Include="test_probe_progress_and_wire.cpp" />
+    <ClCompile Include="test_native_stop_hooks.cpp" />
     <ClCompile Include="test_battle_coordinator_initialization.cpp" />
     <ClCompile Include="test_battle_end_results_db.cpp" />
     <ClCompile Include="test_battle_end_results.cpp" />
@@ -133,6 +141,11 @@
     <ClCompile Include="test_process_worker_v1.cpp" />
     <ClCompile Include="test_worker_capability_gate.cpp" />
     <ClCompile Include="test_execution_worker_runtime.cpp" />
+    <ClCompile Include="test_emulation_session_stop_points.cpp" />
+    <ClCompile Include="test_dolphin_stop_point_integration.cpp" />
+    <ClCompile Include="test_legacy_stop_point_translation.cpp" />
+    <ClCompile Include="test_stop_point_test_support.cpp" />
+    <ClCompile Include="test_stop_point_router.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="scoped_wrapper.h" />
@@ -150,6 +163,9 @@
     <ClInclude Include="common\RecordingExecutionDb.h">
       <Filter>common</Filter>
     </ClInclude>
+    <ClInclude Include="common\ScriptedDolphinBackend.h">
+      <Filter>common</Filter>
+    </ClInclude>
     <ClInclude Include="common\RecordingWorkflowCommandService.h">
       <Filter>common</Filter>
     </ClInclude>
@@ -157,6 +173,9 @@
       <Filter>common</Filter>
     </ClInclude>
     <ClInclude Include="common\AlwaysAdvanceTransitionHandler.h">
+      <Filter>common</Filter>
+    </ClInclude>
+    <ClInclude Include="common\FakePhysicalStopBackend.h">
       <Filter>common</Filter>
     </ClInclude>
     <ClInclude Include="..\SavorDbDebugTool\BackfillAnalysisBattle.h" />

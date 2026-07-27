@@ -117,6 +117,10 @@ The names have precise meanings:
 - **Interaction composition** is a reusable builder/frontend facility for static or adaptive input
   sequences. Typed interaction reducers select only verifier-known segments, which lower into ordinary
   subprogram control flow, input scopes, semantic awaits, observations, checks, and emissions.
+- **Interruption handler** is a verifier-known bounded handler requested by an `Intercept` subscription
+  using `RequestInterruptionHandler`. The router emits a typed request but never executes it;
+  `ExecutionEngine` suspends the foreground operation while the handler runs. This supports session-local
+  events such as known short cutscenes and text boxes, not durable workflow transitions.
 - **Capture profile** means the existing opaque `savor.capture.profile/1` configuration interpreted by
   `CaptureService`. Its current parser, sampling, window, recorder, queue, progress, and artifact
   semantics remain intact initially; it is not replaced by another composition language in this

@@ -3,7 +3,6 @@
 #include "DolphinWrapperBackend.h"
 
 #include <atomic>
-#include <condition_variable>
 #include <cstdint>
 #include <deque>
 #include <exception>
@@ -96,14 +95,20 @@ struct WorkerRuntime::Impl
     struct Mailbox
     {
         std::mutex mutex;
-        std::condition_variable available;
         std::deque<MailboxItem> items;
+        std::atomic<std::uint64_t> wake_generation{0};
         std::uint64_t next_command_sequence = 1;
         std::uint64_t next_host_event_sequence = 1;
         bool accept_commands = true;
         bool accept_program_events = true;
         bool accept_host_events = true;
     };
+
+    static void SignalMailbox(Mailbox& mailbox) noexcept
+    {
+        mailbox.wake_generation.fetch_add(1, std::memory_order_release);
+        mailbox.wake_generation.notify_one();
+    }
 
     class ProgramEventIngress final : public IProgramRuntimeEventSink
     {
@@ -128,7 +133,7 @@ struct WorkerRuntime::Impl
                 item.program_event.emplace(std::move(event));
                 mailbox->items.push_back(std::move(item));
             }
-            mailbox->available.notify_one();
+            SignalMailbox(*mailbox);
         }
 
     private:
@@ -178,7 +183,13 @@ struct WorkerRuntime::Impl
         current_snapshot.state = WorkerState::Starting;
         current_snapshot.capabilities = capabilities_value;
         if (this->session)
+        {
+            (void)this->session->ConfigureStopPointIngressNotification(
+                &mailbox->wake_generation,
+                nullptr,
+                nullptr);
             current_snapshot.session = this->session->snapshot();
+        }
 
         actor = std::thread([this] { ActorMain(); });
     }
@@ -196,7 +207,7 @@ struct WorkerRuntime::Impl
                 item.kind = MailboxItemKind::ForceStop;
                 mailbox->items.push_front(std::move(item));
             }
-            mailbox->available.notify_one();
+            SignalMailbox(*mailbox);
         }
         WaitStopped();
     }
@@ -226,7 +237,7 @@ struct WorkerRuntime::Impl
 
         if (accepted)
         {
-            mailbox->available.notify_one();
+            SignalMailbox(*mailbox);
             return future;
         }
 
@@ -290,7 +301,7 @@ struct WorkerRuntime::Impl
                 std::move(encoded_payload)});
             mailbox->items.push_back(std::move(item));
         }
-        mailbox->available.notify_one();
+        SignalMailbox(*mailbox);
         return true;
     }
 
@@ -316,16 +327,38 @@ struct WorkerRuntime::Impl
             ChangeState(WorkerState::AwaitingSession);
         }
 
+        std::uint64_t observed_wake_generation =
+            mailbox->wake_generation.load(std::memory_order_acquire);
         for (;;)
         {
             MailboxItem item;
+            bool has_item = false;
             {
-                std::unique_lock lock(mailbox->mutex);
-                mailbox->available.wait(lock, [this] {
-                    return !mailbox->items.empty();
-                });
-                item = std::move(mailbox->items.front());
-                mailbox->items.pop_front();
+                std::lock_guard lock(mailbox->mutex);
+                if (!mailbox->items.empty())
+                {
+                    item = std::move(mailbox->items.front());
+                    mailbox->items.pop_front();
+                    has_item = true;
+                }
+            }
+
+            DrainStopPointIngress();
+            if (!has_item)
+            {
+                const std::uint64_t current_generation =
+                    mailbox->wake_generation.load(
+                        std::memory_order_acquire);
+                if (current_generation == observed_wake_generation)
+                {
+                    mailbox->wake_generation.wait(
+                        observed_wake_generation,
+                        std::memory_order_acquire);
+                }
+                observed_wake_generation =
+                    mailbox->wake_generation.load(
+                        std::memory_order_acquire);
+                continue;
             }
 
             if (item.kind == MailboxItemKind::ForceStop)
@@ -389,6 +422,8 @@ struct WorkerRuntime::Impl
                         "Worker command handling threw");
                 }
             }
+
+            DrainStopPointIngress();
 
             if (Snapshot().state == WorkerState::Stopped)
                 break;
@@ -868,12 +903,57 @@ struct WorkerRuntime::Impl
 
     void HandleHostEvent(PendingHostEvent event)
     {
+        if (event.name == "Host_JitCacheInvalidation" && session &&
+            session->snapshot().open)
+        {
+            const SessionOperationReceipt receipt =
+                session->RevalidateStopPointsAfterJit();
+            if (!receipt.ok)
+            {
+                EnterTainted(
+                    receipt.backend.message.empty()
+                        ? "Stop-point JIT revalidation failed"
+                        : receipt.backend.message);
+            }
+        }
+        else if (event.name == "Host_PPCBreakpointsChanged" && session &&
+                 session->snapshot().open)
+        {
+            const SessionOperationReceipt receipt =
+                session->ValidateBreakpointChangeNotification();
+            if (!receipt.ok)
+            {
+                EnterTainted(
+                    receipt.backend.message.empty()
+                        ? "Unmanaged Dolphin breakpoint change detected"
+                        : receipt.backend.message);
+            }
+        }
         Publish(HostRuntimeEvent{
             event.sequence,
             event.observed_session_id,
             event.observed_state_epoch,
             std::move(event.name),
             std::move(event.encoded_payload)});
+    }
+
+    void DrainStopPointIngress()
+    {
+        if (!session)
+            return;
+        for (StopRouteReceipt& receipt : session->DrainStopPointEvents())
+        {
+            if (receipt.terminal != StopRouteTerminal::Failed &&
+                receipt.terminal != StopRouteTerminal::Overflow)
+            {
+                continue;
+            }
+            const std::string diagnostic = receipt.error.message.empty()
+                ? "Authoritative stop-point routing failed"
+                : receipt.error.message;
+            EnterTainted(diagnostic);
+            break;
+        }
     }
 
     void HandleInvocationTerminal(ProgramInvocationTerminalEvent terminal)

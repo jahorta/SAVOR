@@ -1,15 +1,25 @@
 #pragma once
 
 #include "IDolphinBackend.h"
+#include "StopPoints/IPhysicalStopPointBackendPort.h"
 
 #include <memory>
 
 namespace savor::runtime {
 
-class DolphinWrapperBackend final : public IDolphinBackend
+enum class DolphinBackendCpuCore : std::uint8_t
+{
+    ProductionDefault,
+    Jit64,
+};
+
+class DolphinWrapperBackend final
+    : public IDolphinBackend,
+      private IPhysicalStopPointBackendPort
 {
 public:
-    DolphinWrapperBackend();
+    explicit DolphinWrapperBackend(
+        DolphinBackendCpuCore cpu_core = DolphinBackendCpuCore::ProductionDefault);
     ~DolphinWrapperBackend() override;
 
     DolphinWrapperBackend(const DolphinWrapperBackend&) = delete;
@@ -36,7 +46,30 @@ public:
         const std::filesystem::path& path,
         std::chrono::milliseconds timeout) override;
 
+    [[nodiscard]] IPhysicalStopPointBackendPort* PhysicalStopPoints() noexcept override;
+
 private:
+    PhysicalStopBackendReceipt BindNativeStopSink(
+        savor::probe::INativeStopSink& sink) override;
+    PhysicalStopBackendReceipt UnbindNativeStopSink(
+        savor::probe::INativeStopSink& sink) override;
+    PhysicalStopBackendReceipt QueryPhysicalStopPoints() const override;
+    PhysicalStopBackendReceipt ApplyExactPhysicalStopPlan(
+        const PhysicalStopPointPlan& plan,
+        PhysicalPlanGeneration generation,
+        const std::function<void()>& commit_while_cpu_excluded) override;
+    PhysicalStopBackendReceipt PublishExactPhysicalStopPlanUnchanged(
+        const PhysicalStopPointPlan& expected_plan,
+        PhysicalPlanGeneration generation,
+        const std::function<void()>& commit_while_cpu_excluded) override;
+    PhysicalStopBackendReceipt RevalidatePhysicalStopPlan(
+        const PhysicalStopPointPlan& plan,
+        PhysicalPlanGeneration generation,
+        const std::function<void()>& commit_while_cpu_excluded) override;
+    PhysicalStopBackendReceipt ClearOwnedPhysicalStopPoints(
+        PhysicalPlanGeneration generation,
+        const std::function<void()>& commit_while_cpu_excluded) override;
+
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

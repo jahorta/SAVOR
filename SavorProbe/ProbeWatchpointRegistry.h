@@ -9,10 +9,6 @@
 #include <string_view>
 #include <vector>
 
-namespace Core {
-class System;
-}
-
 namespace savor::probe {
 
 enum class WatchpointOwnerKind : std::uint8_t {
@@ -102,8 +98,10 @@ public:
     bool release_kind(WatchpointOwnerKind kind);
     void clear_requests();
 
-    bool reconcile(Core::System& system, std::string* error_out = nullptr);
-    void release_all(Core::System& system);
+    bool reconcile(
+        std::span<const WatchpointForeignRange> unmanaged_ranges = {},
+        std::string* error_out = nullptr);
+    void release_all();
 
     std::optional<WatchpointBinding> binding_for(WatchpointOwner owner) const;
     std::optional<WatchpointBindingFailure> failure_for(WatchpointOwner owner) const;

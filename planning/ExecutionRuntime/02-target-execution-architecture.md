@@ -15,8 +15,8 @@ program factory, or "shrunken VM." The target has one `ProgramRuntime` subsystem
 ## Purpose and non-goals
 
 The target must make every bounded phase program use the same execution machinery while allowing
-orthogonal game capabilities, passive observers, modal interceptors, visual debugging, and workflow
-composition to coexist safely.
+orthogonal game capabilities, passive observers, router-requested interruption handlers, visual
+debugging, and workflow composition to coexist safely.
 
 This document defines:
 
@@ -234,7 +234,8 @@ The following are architectural constraints, not conventions:
 9. Programs, action handlers, reducers, capability packs, visual readers, transport callbacks, and
    background workers cannot call `DolphinBackend` directly.
 10. Every emulator-advancing operation remains under `StopPointRouter` supervision, including instruction
-    stepping, frame stepping, input-sequence playback, and interceptor child operations.
+    stepping, frame stepping, input-sequence playback, and requested interruption-handler child
+    operations.
 
 These invariants must be enforceable through dependencies: forbidden callers shall not receive a
 backend reference or a capability broad enough to reconstruct one.
@@ -249,9 +250,10 @@ instead of one OS thread.
 - Exactly one foreground invocation may be active in a worker.
 - Exactly one foreground `ExecutionEngine` operation may advance the core at a time.
 - A program waiting for an action is suspended data, not a blocked private event loop.
-- A router interceptor may suspend the foreground execution operation and request bounded child
-  operations through the same engine. The parent operation retains its deadline, completion condition,
-  input relationship, stall baseline, and suppression state.
+- A router interceptor may request a verifier-known interruption handler. `ExecutionEngine` suspends the
+  foreground execution operation and runs that handler as a bounded child operation through the same
+  engine. The parent operation retains its deadline, completion condition, input relationship, stall
+  baseline, and suppression state.
 - CPU-thread hooks may only perform bounded, allocation-free matching/sampling against immutable
   dispatch state and enqueue raw events. They cannot call program logic, publish input, or wait for the
   worker control actor.
@@ -309,13 +311,13 @@ Two suspension kinds exist and shall not be conflated:
 
 - **Program suspension:** `ProgramExecutor` reaches `await action`, stores a typed continuation in the
   `ProgramInstance`, and returns control to `ProgramRuntime`.
-- **Execution suspension:** `ExecutionEngine` pauses a foreground emulator operation so the router can
-  process a guard or modal interceptor through structured child operations.
+- **Execution suspension:** `ExecutionEngine` pauses a foreground emulator operation so it can process a
+  guard or execute a requested interruption handler through a structured child operation.
 
 An action completion identifies the invocation, action request, continuation, and originating
 `StateEpoch`. Stale, duplicate, or mismatched completions are rejected and cannot advance program flow.
-An execution child operation cannot directly resume the program; it completes back into the parent
-action, which returns one typed action completion to `ProgramRuntime`.
+An interruption-handler child operation cannot directly resume the program; it completes back into the
+parent action, which returns one typed action completion to `ProgramRuntime`.
 
 ### Extension rule
 
@@ -424,7 +426,8 @@ Cancellation is monotonic:
 
 1. `WorkerRuntime` marks the invocation cancelling and rejects new program effects.
 2. `ProgramRuntime` requests cancellation of the outstanding action.
-3. The owning service asks `ExecutionEngine` to safely pause/cancel any foreground or child operation.
+3. The owning service asks `ExecutionEngine` to safely pause/cancel any foreground or
+   interruption-handler child operation.
 4. `InputArbiter` drives required neutral release and records whether the guest observed it.
 5. `ProgramRuntime` resumes no ordinary program branch; it unwinds nested scopes in reverse acquisition
    order.
@@ -473,12 +476,12 @@ cutover is underway.
 - Static dependency checks make it impossible for programs, reducers, action handlers, capability packs,
   visual readers, or protocol callbacks to call `DolphinBackend` directly.
 - A deterministic fake backend proves that all continue, instruction-step, frame-step, input-sequence,
-  and interceptor-child advancement passes through one `ExecutionEngine`.
+  and requested interruption-handler advancement passes through one `ExecutionEngine`.
 - Concurrent pipe and visual commands are serialized into one reproducible worker command order.
 - A visual step cannot bypass an active router interceptor or mutate a non-debuggable invocation.
 - Two logical stop-point consumers can share one PC without either replacing the other's subscription.
-- An interceptor can suspend and resume a foreground operation while preserving its remaining deadline
-  and input lease relationship.
+- A requested interruption handler can suspend and resume a foreground operation while preserving its
+  remaining deadline and input lease relationship.
 - Cancellation from every program suspension point reaches `Unwinding`, releases every scope, and emits
   one terminal result.
 - An injected cleanup failure marks the session tainted, rejects a subsequent invocation, and requires a

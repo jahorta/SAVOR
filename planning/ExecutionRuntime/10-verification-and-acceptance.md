@@ -117,10 +117,17 @@ debugging. Worker-backed callers fail capability preflight before DB-facing work
 creation. If a worker scenario is requested during this interval, it reports `RuntimeUnavailable`; it is
 not recorded as skipped or passed.
 
+Slice 2 completes the session-owned `PhysicalStopPointManager` and `StopPointRouter` boundary without
+ending that hard-cutover interval. SavorProbe retains MinHook only as a dependency-neutral native-event
+adapter, capture-profile processing remains passive behind the router, and unmanaged regular Dolphin
+breakpoints or memchecks are rejected rather than adopted or cleared. `RequestInterruptionHandler` is
+verified as a typed routing result; executing the requested interruption handler remains Slice 3 work.
+
 Production-worker SavorE2E resumes only after `ProgramRuntime`, current-program migration, and
 handler-adapter cutover provide the complete production path. The final Release solution build and that
 E2E result remain the functional acceptance; the temporary availability gap does not permit any SavorDb
-schema, storage, interface, queue, claim, workflow, or transaction change.
+schema, storage, interface, queue, claim, workflow, or transaction change. Slice 2 also makes no worker
+protocol change: protocol version 1 and its Slice 1 capability gates remain authoritative.
 
 ### Canonical deterministic trace
 
@@ -132,8 +139,8 @@ semantic fields needed for comparison:
 - program block/instruction or source-map location;
 - requested action ID/version and canonical typed inputs;
 - resource acquire/release and scope identity;
-- execution request and routed stop/interceptor outcome, including logical point, physical evidence, stop
-  sequence, and shared routed-hit identity;
+- execution request and routed stop/interceptor outcome, including any requested interruption-handler
+  identity, logical point, physical evidence, stop sequence, and shared routed-hit identity;
 - ordered observation acquisition, availability, baseline update, and interaction request/release
   receipts;
 - completed action output;
@@ -304,20 +311,30 @@ Before `ProgramRuntime` exists, focused fake-port and fake-backend guards cover:
 Interactive pause, resume, and step tests belong to the `ExecutionEngine` slice. Slice 1 verifies that
 those requests are rejected as unsupported rather than reaching Dolphin or the disconnected VM.
 
-### StopPointRouter and PhysicalStopPointManager tests
+### Implemented Slice 2 StopPointRouter and PhysicalStopPointManager guards
 
-Cover:
+The completed Slice 2 boundary is guarded by focused tests for:
 
+- exactly one session-owned router/manager pair over the backend's optional physical-stop facet;
 - physical union and reference counting across multiple logical consumers;
-- observe plus wake plus intercept on one PC;
-- priority, consume/pass/replace behavior, and stable ordering;
-- source-scoped removal without affecting another source;
-- subscription lifetime on normal return, failure, timeout, and cancellation;
-- state restore and epoch reconciliation;
-- interpreter and JIT matching parity;
-- bounded CPU-thread ingress with no blocking/allocation violation;
-- visual observer coexistence with a running program; and
-- no ordinary execution path that globally clears another consumer's sites.
+- observe, progress, guard, intercept, and wake ordering at one point, including source-scoped removal
+  without disturbing another source;
+- stable `Pass`/`Consume`/`Fail` behavior and `RequestInterruptionHandler` as a typed handler request whose
+  execution is deliberately deferred to Slice 3;
+- subscription lifetime, epoch policy, restore preparation/commit/rollback, JIT revalidation, and stale
+  event rejection;
+- bounded native ingress, overflow safe-stop behavior, exact sink binding and quiescent unbinding;
+- deterministic tests of the dependency-neutral SavorProbe hook seam preserving exactly-once forwarding
+  and OR-combining Dolphin control with typed sink stop decisions;
+- passive capture-profile adaptation without physical ownership or execution control;
+- fail-closed rejection of unmanaged regular Dolphin breakpoints and memchecks; and
+- a focused live-Dolphin JIT/router guard at the recurring game-mode-controller entry `0x801DC288`,
+  registered after an initial frame so the physical-manager path must update already-running JIT code.
+  Exact `prebattle.BeforeRandSeedSet` and live post-write memcheck coverage are deferred until
+  deterministic execution and input can drive the game to those witnesses.
+
+Later slices may extend these fixtures as execution, visual, observation, and capture consumers attach.
+They do not need a parallel router or a separate interruption-handler ownership model.
 
 ### ExecutionEngine tests
 
@@ -325,11 +342,11 @@ Cover:
 
 - continue-to-condition, step instruction, step frame, input sequence, pause, and interactive resume;
 - every operation routed through interceptors;
-- caller wait interrupted by a modal child operation and then resumed;
+- caller wait suspended by a requested interruption-handler child operation and then resumed;
 - remaining deadline/budget accounting across suspension;
 - requested completion versus unrelated stop;
 - timeout, VI stall, movie end, backend fault, and cancellation;
-- child-operation failure propagation;
+- interruption-handler failure propagation;
 - visual commands serialized with program execution; and
 - exactly one transition into running state at a time.
 
@@ -595,9 +612,10 @@ During implementation:
 - run architecture/invariant checks when a dependency or ownership boundary changes; and
 - run parity tests for each affected current phase as it migrates.
 
-Do not use production-worker SavorE2E as an intermediate Slice 1 acceptance signal: the hard cutover
-intentionally advertises no production `ProgramInvocation`. Run it only after `ProgramRuntime`, current
-program migration, and handler adapters restore the complete production path.
+Do not use production-worker SavorE2E as an intermediate Slice 1 or Slice 2 acceptance signal: the hard
+cutover still advertises no production `ProgramInvocation` or interactive visual-debugging capability.
+Run it only after `ProgramRuntime`, current program migration, and handler adapters restore the complete
+production path.
 
 Final functional acceptance is the Release solution build and production-worker SavorE2E outcome
 summarized below, plus confirmation that no production path selects the retired legacy executor.

@@ -9,6 +9,8 @@
 
 namespace savor::runtime {
 
+class IPhysicalStopPointBackendPort;
+
 enum class BackendErrorCode : std::uint16_t
 {
     None,
@@ -109,6 +111,11 @@ public:
     virtual BackendResult CaptureScreenshot(
         const std::filesystem::path& path,
         std::chrono::milliseconds timeout) = 0;
+
+    // The session gives this facet only to its PhysicalStopPointManager. Other
+    // runtime layers never receive Dolphin's physical debugging surface.
+    [[nodiscard]] virtual IPhysicalStopPointBackendPort*
+    PhysicalStopPoints() noexcept = 0;
 
 protected:
     IDolphinBackend() = default;

@@ -8,7 +8,6 @@
 
 #include <array>
 #include <atomic>
-#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -23,15 +22,8 @@ namespace Core {
 class System;
 }
 
-struct TMemCheck;
-
 namespace PowerPC {
-class MMU;
 class PowerPCManager;
-}
-
-namespace CPU {
-class CPUManager;
 }
 
 namespace savor::probe {
@@ -46,7 +38,7 @@ struct SessionOptions {
     std::function<void(const capture_format::Event&, bool record_progress)> progress_callback;
     std::function<std::optional<std::uint32_t>(std::uint16_t)> base_key_resolver;
     // Runtime-owned PCs that capture profiles may not observe or use as
-    // activation gates. Trusted control waits are intentionally independent.
+    // activation gates. StopPointRouter owns all wake/control authority.
     std::vector<std::uint32_t> denied_profile_pcs;
 };
 
@@ -82,74 +74,53 @@ struct ProbeMetrics {
     std::string binding_source;
 };
 
-enum class ControlHitKind : std::uint8_t {
-    None = 0,
-    Pc = 1,
-    Memory = 2,
-    Shutdown = 3,
-};
+inline constexpr std::size_t kMaxProbeRoutedHitSamples = 32;
 
-struct ControlHit {
-    ControlHitKind kind = ControlHitKind::None;
-    std::uint64_t generation = 0;
-    std::uint64_t capture_sequence = 0;
-    std::uint32_t pc = 0;
-    std::uint32_t address = 0;
-    std::uint32_t size = 0;
+struct ProbeRoutedHitSample {
+    std::uint32_t descriptor_id = 0;
     std::uint64_t value = 0;
-    std::uint32_t control_id = 0;
-    bool write = false;
+    bool available = false;
 };
 
-struct ControlMemorySite {
-    std::uint32_t id = 0;
+// Identity and bounded hit-time evidence supplied by the session-owned stop
+// router. ProbeRuntime consumes this context passively; it never converts the
+// context into a request to pause or otherwise control the guest.
+struct ProbeRoutedHitContext {
+    std::uint64_t routed_sequence = 0;
+    std::uint64_t sample_snapshot_id = 0;
+    std::uint64_t guest_state_epoch = 0;
+    std::array<ProbeRoutedHitSample, kMaxProbeRoutedHitSamples> samples{};
+    std::uint8_t sample_count = 0;
+    bool active_foreground_wake = false;
+};
+
+enum class ProfileStopRequirementKind : std::uint8_t {
+    Pc,
+    ActivationPc,
+    Memory,
+};
+
+// A passive snapshot of the logical profile sites currently needed by
+// ProbeRuntime. The stop router remains the only owner of physical sites.
+struct ProfileStopRequirement {
+    std::uint32_t probe_index = 0;
+    ProfileStopRequirementKind kind = ProfileStopRequirementKind::Pc;
     std::uint32_t address = 0;
     std::uint32_t size = 0;
-    MemoryAccess access = MemoryAccess::Write;
-};
-
-enum class ControlWaitStatus : std::uint8_t {
-    Hit,
-    Timeout,
-    Cancelled,
-    Shutdown,
-};
-
-struct ControlWaitResult {
-    ControlWaitStatus status = ControlWaitStatus::Timeout;
-    ControlHit hit;
-};
-
-class ProbeRuntime;
-
-class ControlLease {
-public:
-    ControlLease() = default;
-    ~ControlLease();
-    ControlLease(const ControlLease&) = delete;
-    ControlLease& operator=(const ControlLease&) = delete;
-    ControlLease(ControlLease&& other) noexcept;
-    ControlLease& operator=(ControlLease&& other) noexcept;
-
-    bool active() const { return runtime_ != nullptr; }
-    std::uint64_t generation() const { return generation_; }
-    void reset();
-
-private:
-    friend class ProbeRuntime;
-    ControlLease(ProbeRuntime* runtime, std::uint64_t generation)
-        : runtime_(runtime), generation_(generation) {}
-    ProbeRuntime* runtime_ = nullptr;
-    std::uint64_t generation_ = 0;
+    MemoryAccess memory_access = MemoryAccess::Write;
+    Subscription subscriptions = Subscription::None;
+    bool active = false;
+    bool exhausted = false;
+    bool group_enabled = true;
+    bool address_resolved = false;
 };
 
 class ProbeRuntime {
 public:
-    static ProbeRuntime& instance();
-
-    bool install_native_hooks(std::string* error_out = nullptr);
-    void uninstall_native_hooks();
-    bool native_hooks_installed() const;
+    ProbeRuntime();
+    ~ProbeRuntime();
+    ProbeRuntime(const ProbeRuntime&) = delete;
+    ProbeRuntime& operator=(const ProbeRuntime&) = delete;
 
     bool start(
         Core::System& system,
@@ -171,16 +142,18 @@ public:
     bool uses_frame_clock() const { return frame_clock_active_.load(std::memory_order_acquire); }
     bool emit_marker(std::string_view id, std::uint64_t value = 0);
     bool trigger_flight_recorder(std::uint32_t post_events = 0);
-
-    ControlLease begin_control_wait(
-        const std::vector<std::uint32_t>& pcs,
-        const std::vector<ControlMemorySite>& memory_sites = {},
-        std::optional<std::uint32_t> suppress_once_pc = std::nullopt,
-        std::string* error_out = nullptr);
-    ControlWaitResult wait_for_control(
-        std::uint64_t observed_generation,
-        std::chrono::milliseconds timeout) const;
-    void cancel_control_wait();
+    [[nodiscard]] bool requires_physical_reconcile_before_resume() const noexcept
+    {
+        return watchpoint_reconcile_pending_.load(std::memory_order_acquire);
+    }
+    [[nodiscard]] bool consume_physical_reconcile_request() noexcept
+    {
+        return watchpoint_reconcile_pending_.exchange(false, std::memory_order_acq_rel);
+    }
+    [[nodiscard]] const Profile& profile() const noexcept
+    {
+        return profile_;
+    }
 
     std::vector<ProbeMetrics> metrics() const;
     bool capture_complete() const { return capture_complete_.load(std::memory_order_acquire); }
@@ -188,31 +161,27 @@ public:
     std::uint64_t capture_drop_count() const { return capture_drops_.load(std::memory_order_acquire); }
     std::uint64_t progress_drop_count() const { return progress_drops_.load(std::memory_order_acquire); }
 
-    // Native-hook entry points. These execute on Dolphin's CPU thread.
-    bool dispatch_pc(PowerPC::PowerPCManager& power_pc);
-    void complete_pc_dispatch(bool control_will_stop);
-    bool dispatch_memory(
+    // Passive routed profile processing. The supplied identity is retained by
+    // capture/progress/control-visible events, and active_foreground_wake only
+    // qualifies legacy profile `control` behavior; it grants no wake authority.
+    void process_routed_pc(
+        PowerPC::PowerPCManager& power_pc,
+        std::uint32_t hit_pc,
+        const ProbeRoutedHitContext& context);
+    void process_routed_memory(
         Core::System& system,
         std::uint32_t pc,
         std::uint32_t address,
         std::uint32_t size,
         std::uint64_t value,
         bool write,
-        bool post_write);
-    void observe_cpu_break(CPU::CPUManager& cpu);
-
-    // Called by ControlLease.
-    void end_control_wait(std::uint64_t lease_generation);
+        bool post_write,
+        const ProbeRoutedHitContext& context);
+    [[nodiscard]] std::vector<ProfileStopRequirement>
+    profile_stop_requirements() const;
 
 private:
-    ProbeRuntime();
-    ~ProbeRuntime();
-    ProbeRuntime(const ProbeRuntime&) = delete;
-    ProbeRuntime& operator=(const ProbeRuntime&) = delete;
-
     struct ProbeState;
-    struct ForeignBreakpoint;
-
     bool validate_profile(const Profile& profile, std::string* error_out) const;
     void rebuild_dispatch_indices();
     bool arm_profile_sites(std::string* error_out);
@@ -241,7 +210,9 @@ private:
     void update_windows_before_probe(const ProbeDefinition& probe);
     void update_windows_after_probe(const ProbeDefinition& probe, bool accepted);
     bool enqueue_event(const ProbeDefinition& probe, const RawProbeEvent& event);
-    void publish_control(const RawProbeEvent& event, bool write);
+    void observe_routed_control(
+        const RawProbeEvent& event,
+        bool write);
     void recorder_main();
     capture_format::Event decode_event(const RawProbeEvent& raw) const;
     std::optional<std::uint32_t> evaluate_address_program(
@@ -274,12 +245,6 @@ private:
     std::atomic<bool> frame_clock_active_{ false };
     std::atomic<std::uint64_t> guest_state_epoch_{ 0 };
     std::atomic<std::uint64_t> recorder_generation_{ 0 };
-    std::atomic<std::uint64_t> control_generation_{ 0 };
-    std::atomic<bool> control_wait_active_{ false };
-    std::atomic<bool> control_hit_published_{ false };
-    std::atomic<std::uint32_t> control_count_{ 0 };
-    std::atomic<std::uint32_t> suppress_once_pc_{ 0 };
-    std::atomic<bool> control_cancelled_{ false };
     std::atomic<bool> flight_triggered_{ false };
     std::atomic<std::uint32_t> flight_post_remaining_{ 0 };
     std::atomic<std::uint64_t> capture_gap_first_sequence_{ 0 };
@@ -299,13 +264,7 @@ private:
     BoundedEventQueue progress_queue_;
     std::thread recorder_thread_;
     capture_format::Writer writer_;
-    std::array<std::uint32_t, 512> control_pcs_{};
-    std::array<ControlMemorySite, 64> control_memory_sites_{};
-    std::atomic<std::uint32_t> control_memory_count_{ 0 };
-    ControlHit control_hit_;
     std::array<char, 160> incomplete_reason_{};
-    std::vector<ForeignBreakpoint> foreign_breakpoints_;
-    std::vector<std::uint32_t> control_owned_breakpoints_;
     ProbeWatchpointRegistry watchpoint_registry_;
 };
 

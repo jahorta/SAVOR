@@ -5,11 +5,6 @@
 #include <ranges>
 #include <sstream>
 
-#include "Core/Core.h"
-#include "Core/PowerPC/BreakPoints.h"
-#include "Core/PowerPC/PowerPC.h"
-#include "Core/System.h"
-
 namespace savor::probe {
 namespace {
 
@@ -45,18 +40,6 @@ void add_access(WatchpointPhysicalRange& range, MemoryAccess access)
 {
     range.read = range.read || access == MemoryAccess::Read || access == MemoryAccess::Access;
     range.write = range.write || access == MemoryAccess::Write || access == MemoryAccess::Access;
-}
-
-bool physical_check_matches(const TMemCheck& check, const WatchpointPhysicalRange& expected)
-{
-    return check.start_address == expected.start
-        && check.end_address == expected.end
-        && check.is_enabled
-        && check.is_ranged == (expected.start != expected.end)
-        && check.is_break_on_read == expected.read
-        && check.is_break_on_write == expected.write
-        && !check.log_on_hit
-        && !check.break_on_hit;
 }
 
 std::string format_failure(const WatchpointBindingFailure& failure)
@@ -242,79 +225,30 @@ void ProbeWatchpointRegistry::clear_requests()
     requests_.clear();
 }
 
-bool ProbeWatchpointRegistry::reconcile(Core::System& system, std::string* error_out)
+bool ProbeWatchpointRegistry::reconcile(
+    std::span<const WatchpointForeignRange> unmanaged_ranges,
+    std::string* error_out)
 {
-    Core::CPUThreadGuard guard(system);
-    auto& memchecks = system.GetPowerPC().GetMemChecks();
-
-    std::vector<WatchpointForeignRange> foreign;
-    foreign.reserve(memchecks.GetMemChecks().size());
-    bool owned_layout_intact = true;
-    for (const auto& check : memchecks.GetMemChecks()) {
-        const auto expected = std::ranges::find(
-            owned_physical_, check.start_address, &WatchpointPhysicalRange::start);
-        if (expected != owned_physical_.end() && physical_check_matches(check, *expected))
-            continue;
-        if (expected != owned_physical_.end())
-            owned_layout_intact = false;
-        foreign.push_back(WatchpointForeignRange{ check.start_address, check.end_address });
-    }
-
-    auto plan = plan_watchpoint_bindings(requests_, foreign);
-    const bool same_layout = owned_layout_intact && plan.physical_ranges == owned_physical_;
-    if (!same_layout) {
-        bool changed = false;
-        for (const auto& owned : owned_physical_) {
-            const auto existing = std::ranges::find(
-                memchecks.GetMemChecks(), owned.start, &TMemCheck::start_address);
-            if (existing != memchecks.GetMemChecks().end()
-                && physical_check_matches(*existing, owned)) {
-                changed = memchecks.Remove(owned.start, false) || changed;
-            }
-        }
-        for (const auto& physical : plan.physical_ranges) {
-            TMemCheck check;
-            check.start_address = physical.start;
-            check.end_address = physical.end;
-            check.is_enabled = true;
-            check.is_ranged = physical.start != physical.end;
-            check.is_break_on_read = physical.read;
-            check.is_break_on_write = physical.write;
-            check.log_on_hit = false;
-            check.break_on_hit = false;
-            memchecks.Add(std::move(check), false);
-            changed = true;
-        }
-        if (changed)
-            memchecks.Update();
-    }
-
-    owned_physical_ = std::move(plan.physical_ranges);
-    bindings_ = std::move(plan.bindings);
-    failures_ = std::move(plan.failures);
-    if (!failures_.empty()) {
+    if (!unmanaged_ranges.empty()) {
         if (error_out)
-            *error_out = format_failure(failures_.front());
+            *error_out = "unmanaged Dolphin memchecks are not adopted";
         return false;
     }
+
+    auto plan = plan_watchpoint_bindings(requests_, {});
+    if (!plan.failures.empty()) {
+        if (error_out)
+            *error_out = format_failure(plan.failures.front());
+        return false;
+    }
+    owned_physical_ = std::move(plan.physical_ranges);
+    bindings_ = std::move(plan.bindings);
+    failures_.clear();
     return true;
 }
 
-void ProbeWatchpointRegistry::release_all(Core::System& system)
+void ProbeWatchpointRegistry::release_all()
 {
-    Core::CPUThreadGuard guard(system);
-    auto& memchecks = system.GetPowerPC().GetMemChecks();
-    bool changed = false;
-    for (const auto& owned : owned_physical_) {
-        const auto existing = std::ranges::find(
-            memchecks.GetMemChecks(), owned.start, &TMemCheck::start_address);
-        if (existing != memchecks.GetMemChecks().end()
-            && physical_check_matches(*existing, owned)) {
-            changed = memchecks.Remove(owned.start, false) || changed;
-        }
-    }
-    if (changed)
-        memchecks.Update();
     requests_.clear();
     owned_physical_.clear();
     bindings_.clear();

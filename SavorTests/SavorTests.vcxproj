@@ -130,6 +130,8 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="common\DbPreparer.cpp" />
+    <ClCompile Include="common\FakePhysicalStopBackend.cpp" />
+    <ClCompile Include="common\ScriptedDolphinBackend.cpp" />
     <ClCompile Include="..\SavorDbDebugTool\BackfillAnalysisBattle.cpp" />
     <ClCompile Include="..\SavorDbDebugTool\ReprojectUiRead.cpp" />
     <ClCompile Include="..\SavorPredict\ActionViewCameraModel.cpp" />
@@ -241,8 +243,10 @@
     <ClCompile Include="test_capture_format.cpp" />
     <ClCompile Include="test_capture_profile_json.cpp" />
     <ClCompile Include="test_probe_profile.cpp" />
+    <ClCompile Include="test_probe_router_adapter.cpp" />
     <ClCompile Include="test_probe_progress_and_wire.cpp" />
     <ClCompile Include="test_probe_watchpoint_registry.cpp" />
+    <ClCompile Include="test_native_stop_hooks.cpp" />
     <ClCompile Include="test_pad_poll_isolated_user.cpp" />
     <ClCompile Include="test_queued_instruction_param.cpp" />
     <ClCompile Include="test_savordb_utils_minimal_copy.cpp" />
@@ -271,6 +275,11 @@
     <ClCompile Include="test_process_worker_v1.cpp" />
     <ClCompile Include="test_worker_capability_gate.cpp" />
     <ClCompile Include="test_execution_worker_runtime.cpp" />
+    <ClCompile Include="test_emulation_session_stop_points.cpp" />
+    <ClCompile Include="test_dolphin_stop_point_integration.cpp" />
+    <ClCompile Include="test_legacy_stop_point_translation.cpp" />
+    <ClCompile Include="test_stop_point_test_support.cpp" />
+    <ClCompile Include="test_stop_point_router.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\SavorCaptureFormat\SavorCaptureFormat.vcxproj">
@@ -300,9 +309,11 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="common\AlwaysAdvanceTransitionHandler.h" />
+    <ClInclude Include="common\FakePhysicalStopBackend.h" />
     <ClInclude Include="common\NullJobEventCommandService.h" />
     <ClInclude Include="common\NullWorkflowQueryService.h" />
     <ClInclude Include="common\RecordingExecutionDb.h" />
+    <ClInclude Include="common\ScriptedDolphinBackend.h" />
     <ClInclude Include="..\SavorPredict\ViewPlacementCacheModel.h" />
     <ClInclude Include="..\SavorPredict\ViewPlacementGeometryModel.h" />
     <ClInclude Include="..\SavorPredict\ActionMotionPlaybackModel.h" />

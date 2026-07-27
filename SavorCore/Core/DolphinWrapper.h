@@ -206,6 +206,11 @@ namespace savor {
             DebugStopKind stop_kind = DebugStopKind::None;
             std::optional<MemoryWatchpointHit> memory_watchpoint;
         };
+
+        // Deprecated hard-cutover facades retained only so the disconnected
+        // PhaseScriptVM remains buildable as translation evidence. Every
+        // method below fails locally and cannot mutate Dolphin stop points,
+        // start capture, or execute a legacy run-until loop.
         bool armPcBreakpoints(const std::vector<uint32_t>& pcs);
         bool disarmPcBreakpoints(const std::vector<uint32_t>& pcs);
         void clearAllPcBreakpoints();
@@ -294,12 +299,8 @@ namespace savor {
         void* m_render_window_handle = nullptr;
         bool createRenderSurfaceWindow();
         void destroyRenderSurfaceWindow();
-        bool mutatePcBreakpoints(const char* label, const std::function<void()>& fn) const;
-
         ProgressSink m_progress_sink{};
         mutable std::mutex m_progress_sink_mutex;
-        std::vector<MemoryWatchpointSpec> m_memory_watchpoints;
-        std::uint64_t m_probe_epoch = 0;
     };
 
 } // namespace savor

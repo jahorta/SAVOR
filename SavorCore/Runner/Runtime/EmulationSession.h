@@ -2,9 +2,12 @@
 
 #include "IDolphinBackend.h"
 #include "RuntimeTypes.h"
+#include "StopPoints/StopPointRouter.h"
 
 #include <chrono>
+#include <atomic>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <thread>
@@ -25,6 +28,8 @@ enum class SessionOperation : std::uint8_t
     SaveStateFile,
     SaveStateBuffer,
     Screenshot,
+    JitRevalidation,
+    BreakpointReconciliation,
     HealthCheck,
     Shutdown,
 };
@@ -72,6 +77,10 @@ public:
     EmulationSession& operator=(const EmulationSession&) = delete;
 
     [[nodiscard]] SessionSnapshot snapshot() const noexcept;
+    [[nodiscard]] bool ConfigureStopPointIngressNotification(
+        std::atomic<std::uint64_t>* counter,
+        void* notifier_context,
+        StopPointIngressNotifier notifier) noexcept;
 
     SessionOperationReceipt Open(const SessionOpenOptions& options);
     SessionOperationReceipt Reboot();
@@ -89,6 +98,9 @@ public:
     SessionOperationReceipt CaptureScreenshot(
         const std::filesystem::path& path,
         std::chrono::milliseconds timeout);
+    SessionOperationReceipt RevalidateStopPointsAfterJit();
+    SessionOperationReceipt ValidateBreakpointChangeNotification();
+    [[nodiscard]] std::vector<StopRouteReceipt> DrainStopPointEvents();
     SessionOperationReceipt CheckHealth();
     SessionOperationReceipt Shutdown();
 
@@ -98,6 +110,16 @@ public:
     [[nodiscard]] const std::string& taint_diagnostic() const noexcept
     {
         return taint_diagnostic_;
+    }
+
+    [[nodiscard]] StopPointRouter* stop_points() noexcept
+    {
+        return stop_router_.get();
+    }
+
+    [[nodiscard]] const StopPointRouter* stop_points() const noexcept
+    {
+        return stop_router_.get();
     }
 
 private:
@@ -113,12 +135,25 @@ private:
         StateEpoch origin,
         BackendResult result,
         bool advances_epoch);
+    [[nodiscard]] SessionOperationReceipt PerformStateReplacement(
+        SessionOperation operation,
+        const std::function<BackendResult()>& replace);
     [[nodiscard]] bool AdvanceEpoch() noexcept;
     void ApplyBackendFailure(const BackendResult& result);
     void RefreshCoreState() noexcept;
+    [[nodiscard]] BackendResult InitializeStopPoints(StateEpoch first_epoch);
+    [[nodiscard]] BackendResult PrepareStopPointStateReplacement();
+    [[nodiscard]] BackendResult CommitStopPointStateReplacement(
+        StateEpoch new_epoch);
+    [[nodiscard]] BackendResult RollbackStopPointStateReplacement();
+    [[nodiscard]] BackendResult CleanupStopPoints();
+    [[nodiscard]] BackendResult TaintAndCloseAfterStopPointFailure(
+        BackendResult failure);
 
     SessionId session_id_;
     std::unique_ptr<IDolphinBackend> backend_;
+    std::unique_ptr<PhysicalStopPointManager> physical_stop_manager_;
+    std::unique_ptr<StopPointRouter> stop_router_;
     SessionDisposition disposition_ = SessionDisposition::Closed;
     StateEpoch state_epoch_;
     BackendCoreState core_state_ = BackendCoreState::Closed;
@@ -128,6 +163,9 @@ private:
     bool shutdown_ = false;
     std::optional<SessionOperationReceipt> shutdown_receipt_;
     std::string taint_diagnostic_;
+    std::atomic<std::uint64_t>* stop_ingress_notification_counter_ = nullptr;
+    void* stop_ingress_notifier_context_ = nullptr;
+    StopPointIngressNotifier stop_ingress_notifier_ = nullptr;
 };
 
 } // namespace savor::runtime

@@ -1,4 +1,4 @@
-#include "ProbeRuntime.h"
+#include "NativeStopHooks.h"
 #include "NativeHookSemantics.h"
 
 #include <array>
@@ -6,8 +6,8 @@
 #include <cstring>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <type_traits>
-#include <vector>
 
 #include <MinHook.h>
 
@@ -19,20 +19,21 @@
 namespace savor::probe {
 namespace {
 
-using CheckBreakpointsFn = bool(__fastcall*)(PowerPC::PowerPCManager*);
-using CheckBreakpointsFromJitFn = void(__fastcall*)(PowerPC::PowerPCManager*);
+using CheckBreakpointsFromJitFn =
+    decltype(&PowerPC::CheckAndHandleBreakPointsFromJIT);
 using MemcheckActionFn = bool(__fastcall*)(
     TMemCheck*, Core::System&, std::uint64_t, std::uint32_t, bool, std::size_t, std::uint32_t);
-using CpuBreakFn = void(__fastcall*)(CPU::CPUManager*);
 
-CheckBreakpointsFn s_check_breakpoints = nullptr;
 CheckBreakpointsFromJitFn s_check_breakpoints_from_jit = nullptr;
 MemcheckActionFn s_memcheck_action = nullptr;
-CpuBreakFn s_cpu_break = nullptr;
 
 std::mutex s_hook_mutex;
 std::atomic<bool> s_hooks_installed{ false };
-thread_local bool s_in_probe_hook = false;
+std::atomic<INativeStopSink*> s_stop_sink{ nullptr };
+std::atomic<std::uint32_t> s_active_sink_dispatches{ 0 };
+std::atomic_flag s_sink_binding_lock = ATOMIC_FLAG_INIT;
+thread_local bool s_in_native_stop_hook = false;
+thread_local std::uint32_t s_sink_callback_depth = 0;
 
 template <typename Function, typename Member>
 Function member_function_address(Member member)
@@ -58,16 +59,16 @@ void* hook_address(Function function)
 
 class HookDispatchScope {
 public:
-    HookDispatchScope() : outermost_(!s_in_probe_hook)
+    HookDispatchScope() : outermost_(!s_in_native_stop_hook)
     {
         if (outermost_)
-            s_in_probe_hook = true;
+            s_in_native_stop_hook = true;
     }
 
     ~HookDispatchScope()
     {
         if (outermost_)
-            s_in_probe_hook = false;
+            s_in_native_stop_hook = false;
     }
 
     bool outermost() const { return outermost_; }
@@ -76,29 +77,71 @@ private:
     bool outermost_ = false;
 };
 
-bool __fastcall check_breakpoints_hook(PowerPC::PowerPCManager* power_pc)
-{
-    HookDispatchScope scope;
-    const bool probe_control = scope.outermost()
-        && ProbeRuntime::instance().dispatch_pc(*power_pc);
-    const bool dolphin_control = s_check_breakpoints(power_pc);
-    if (scope.outermost())
-        ProbeRuntime::instance().complete_pc_dispatch(probe_control || dolphin_control);
-    if (probe_control && !dolphin_control)
-        Core::System::GetInstance().GetCPU().Break();
-    return probe_control || dolphin_control;
-}
+class SinkBindingLock {
+public:
+    SinkBindingLock() noexcept
+    {
+        while (s_sink_binding_lock.test_and_set(std::memory_order_acquire))
+            std::this_thread::yield();
+    }
 
-void __fastcall check_breakpoints_from_jit_hook(PowerPC::PowerPCManager* power_pc)
+    ~SinkBindingLock()
+    {
+        s_sink_binding_lock.clear(std::memory_order_release);
+    }
+
+    SinkBindingLock(const SinkBindingLock&) = delete;
+    SinkBindingLock& operator=(const SinkBindingLock&) = delete;
+};
+
+class ActiveSinkDispatch {
+public:
+    ActiveSinkDispatch() noexcept
+    {
+        s_active_sink_dispatches.fetch_add(1, std::memory_order_seq_cst);
+    }
+
+    ~ActiveSinkDispatch()
+    {
+        s_active_sink_dispatches.fetch_sub(1, std::memory_order_seq_cst);
+    }
+
+    ActiveSinkDispatch(const ActiveSinkDispatch&) = delete;
+    ActiveSinkDispatch& operator=(const ActiveSinkDispatch&) = delete;
+};
+
+class SinkCallbackScope {
+public:
+    SinkCallbackScope() noexcept
+    {
+        ++s_sink_callback_depth;
+    }
+
+    ~SinkCallbackScope()
+    {
+        --s_sink_callback_depth;
+    }
+
+    SinkCallbackScope(const SinkCallbackScope&) = delete;
+    SinkCallbackScope& operator=(const SinkCallbackScope&) = delete;
+};
+
+void check_breakpoints_from_jit_hook(PowerPC::PowerPCManager& power_pc)
 {
     HookDispatchScope scope;
-    const bool probe_control = scope.outermost()
-        && ProbeRuntime::instance().dispatch_pc(*power_pc);
+    NativeStopDecision sink_decision;
+    if (scope.outermost()) {
+        sink_decision = DispatchBoundNativePcStop(NativePcStop{
+            NativeStopOrigin::Jit,
+            power_pc.GetPPCState().pc,
+            &power_pc,
+        });
+    }
+    const bool sink_control = NativeStopRequiresBreak(sink_decision);
     s_check_breakpoints_from_jit(power_pc);
     auto& cpu = Core::System::GetInstance().GetCPU();
-    if (scope.outermost())
-        ProbeRuntime::instance().complete_pc_dispatch(probe_control || cpu.IsStepping());
-    if (probe_control && !cpu.IsStepping())
+    const bool dolphin_control = cpu.IsStepping();
+    if (sink_control && !dolphin_control)
         cpu.Break();
 }
 
@@ -128,23 +171,17 @@ bool __fastcall memcheck_action_hook(
         [&](const NativeMemcheckEvent& current) {
             if (!scope.outermost())
                 return false;
-            return ProbeRuntime::instance().dispatch_memory(
-                system,
+            return NativeStopRequiresBreak(DispatchBoundNativeMemoryStop(NativeMemoryStop{
+                NativeStopOrigin::Memcheck,
                 current.pc,
                 current.address,
                 static_cast<std::uint32_t>(current.size),
                 current.value,
                 current.write,
-                true);
+                true,
+                &system,
+            }));
         });
-}
-
-void __fastcall cpu_break_hook(CPU::CPUManager* cpu)
-{
-    HookDispatchScope scope;
-    if (scope.outermost())
-        ProbeRuntime::instance().observe_cpu_break(*cpu);
-    s_cpu_break(cpu);
 }
 
 struct HookSpec {
@@ -154,13 +191,9 @@ struct HookSpec {
     const char* name = nullptr;
 };
 
-std::array<HookSpec, 4> hook_specs()
+std::array<HookSpec, 2> hook_specs()
 {
-    return { {
-        { hook_address(member_function_address<CheckBreakpointsFn>(
-              &PowerPC::PowerPCManager::CheckAndHandleBreakPoints)),
-            hook_address(&check_breakpoints_hook), reinterpret_cast<void**>(&s_check_breakpoints),
-            "PowerPCManager::CheckAndHandleBreakPoints" },
+    return {{
         { hook_address(&PowerPC::CheckAndHandleBreakPointsFromJIT),
             hook_address(&check_breakpoints_from_jit_hook),
             reinterpret_cast<void**>(&s_check_breakpoints_from_jit),
@@ -168,26 +201,31 @@ std::array<HookSpec, 4> hook_specs()
         { hook_address(member_function_address<MemcheckActionFn>(&TMemCheck::Action)),
             hook_address(&memcheck_action_hook), reinterpret_cast<void**>(&s_memcheck_action),
             "TMemCheck::Action" },
-        { hook_address(member_function_address<CpuBreakFn>(&CPU::CPUManager::Break)),
-            hook_address(&cpu_break_hook), reinterpret_cast<void**>(&s_cpu_break), "CPUManager::Break" },
-    } };
+    }};
 }
 
-std::vector<HookSpec> unique_hook_specs()
+struct HookSpecSet
+{
+    std::array<HookSpec, 2> hooks{};
+    std::size_t count = 0;
+};
+
+HookSpecSet unique_hook_specs()
 {
     const auto candidates = hook_specs();
-    std::vector<HookSpec> unique;
-    unique.reserve(candidates.size());
+    HookSpecSet unique;
     for (const auto& candidate : candidates) {
         bool already_present = false;
-        for (const auto& installed : unique) {
-            if (installed.target == candidate.target) {
+        for (std::size_t index = 0; index < unique.count; ++index) {
+            if (unique.hooks[index].target == candidate.target) {
                 already_present = true;
                 break;
             }
         }
-        if (!already_present)
-            unique.push_back(candidate);
+        if (!already_present) {
+            unique.hooks[unique.count] = candidate;
+            ++unique.count;
+        }
     }
     return unique;
 }
@@ -204,9 +242,19 @@ std::string minhook_error(const char* action, const HookSpec* hook, MH_STATUS st
     return message;
 }
 
+void set_error_noexcept(std::string* error_out, const char* message) noexcept
+{
+    if (!error_out)
+        return;
+    try {
+        *error_out = message;
+    } catch (...) {
+    }
+}
+
 } // namespace
 
-bool ProbeRuntime::install_native_hooks(std::string* error_out)
+bool InstallNativeStopHooks(std::string* error_out)
 {
     std::scoped_lock lock(s_hook_mutex);
     if (s_hooks_installed.load(std::memory_order_acquire))
@@ -220,14 +268,15 @@ bool ProbeRuntime::install_native_hooks(std::string* error_out)
 
     const auto hooks = unique_hook_specs();
     std::size_t created = 0;
-    for (; created < hooks.size(); ++created) {
-        const auto& hook = hooks[created];
+    for (; created < hooks.count; ++created) {
+        const auto& hook = hooks.hooks[created];
         status = MH_CreateHook(hook.target, hook.detour, hook.original);
         if (status != MH_OK)
             break;
     }
     if (status == MH_OK) {
-        for (const auto& hook : hooks) {
+        for (std::size_t index = 0; index < hooks.count; ++index) {
+            const auto& hook = hooks.hooks[index];
             status = MH_QueueEnableHook(hook.target);
             if (status != MH_OK)
                 break;
@@ -238,13 +287,15 @@ bool ProbeRuntime::install_native_hooks(std::string* error_out)
 
     if (status != MH_OK) {
         if (error_out) {
-            const HookSpec* failed = created < hooks.size() ? &hooks[created] : nullptr;
+            const HookSpec* failed =
+                created < hooks.count ? &hooks.hooks[created] : nullptr;
             *error_out = minhook_error("failed installing native hook", failed, status);
         }
-        MH_QueueDisableHook(MH_ALL_HOOKS);
+        for (std::size_t index = 0; index < created; ++index)
+            MH_QueueDisableHook(hooks.hooks[index].target);
         MH_ApplyQueued();
         for (std::size_t i = 0; i < created; ++i)
-            MH_RemoveHook(hooks[i].target);
+            MH_RemoveHook(hooks.hooks[i].target);
         return false;
     }
 
@@ -252,22 +303,89 @@ bool ProbeRuntime::install_native_hooks(std::string* error_out)
     return true;
 }
 
-void ProbeRuntime::uninstall_native_hooks()
+void UninstallNativeStopHooks() noexcept
 {
     std::scoped_lock lock(s_hook_mutex);
     if (!s_hooks_installed.exchange(false, std::memory_order_acq_rel))
         return;
     const auto hooks = unique_hook_specs();
-    MH_QueueDisableHook(MH_ALL_HOOKS);
+    for (std::size_t index = 0; index < hooks.count; ++index)
+        MH_QueueDisableHook(hooks.hooks[index].target);
     MH_ApplyQueued();
-    for (const auto& hook : hooks)
-        MH_RemoveHook(hook.target);
+    for (std::size_t index = 0; index < hooks.count; ++index)
+        MH_RemoveHook(hooks.hooks[index].target);
     MH_Uninitialize();
 }
 
-bool ProbeRuntime::native_hooks_installed() const
+bool NativeStopHooksInstalled() noexcept
 {
     return s_hooks_installed.load(std::memory_order_acquire);
+}
+
+bool BindNativeStopSink(INativeStopSink& sink, std::string* error_out) noexcept
+{
+    if (s_sink_callback_depth != 0) {
+        set_error_noexcept(error_out, "native stop sink binding is not allowed from a sink callback");
+        return false;
+    }
+
+    SinkBindingLock lock;
+    auto* const current = s_stop_sink.load(std::memory_order_seq_cst);
+    if (current == &sink)
+        return true;
+    if (current != nullptr) {
+        set_error_noexcept(error_out, "a native stop sink is already bound");
+        return false;
+    }
+    s_stop_sink.store(&sink, std::memory_order_seq_cst);
+    return true;
+}
+
+bool UnbindNativeStopSink(INativeStopSink& sink) noexcept
+{
+    if (s_sink_callback_depth != 0)
+        return false;
+
+    SinkBindingLock lock;
+    auto* expected = &sink;
+    if (!s_stop_sink.compare_exchange_strong(
+            expected,
+            nullptr,
+            std::memory_order_seq_cst,
+            std::memory_order_seq_cst)) {
+        return false;
+    }
+
+    while (s_active_sink_dispatches.load(std::memory_order_seq_cst) != 0)
+        std::this_thread::yield();
+    return true;
+}
+
+INativeStopSink* BoundNativeStopSink() noexcept
+{
+    return s_stop_sink.load(std::memory_order_seq_cst);
+}
+
+NativeStopDecision DispatchBoundNativePcStop(const NativePcStop& stop) noexcept
+{
+    ActiveSinkDispatch dispatch;
+    auto* const sink = s_stop_sink.load(std::memory_order_seq_cst);
+    if (!sink)
+        return {};
+
+    SinkCallbackScope callback;
+    return sink->OnPcStop(stop);
+}
+
+NativeStopDecision DispatchBoundNativeMemoryStop(const NativeMemoryStop& stop) noexcept
+{
+    ActiveSinkDispatch dispatch;
+    auto* const sink = s_stop_sink.load(std::memory_order_seq_cst);
+    if (!sink)
+        return {};
+
+    SinkCallbackScope callback;
+    return sink->OnMemoryStop(stop);
 }
 
 } // namespace savor::probe

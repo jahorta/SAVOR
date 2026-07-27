@@ -450,14 +450,14 @@ temporary wake subscriptions through the router; programs never manipulate physi
 - step a bounded number of frames;
 - advance while an input sequence is owned by an `InputArbiter` lease;
 - reach a safe pause; and
-- execute bounded child operations for router interceptors.
+- execute verifier-known bounded interruption handlers requested by router interceptors.
 
 It owns operation IDs, deadlines, remaining-time accounting, VI-stall policy, movie-ended policy,
 throttle mode, cancellation, current-instruction suppression, pause confirmation, and resumption after
 routing. Every operation carries `StateEpoch` and remains interceptor-aware.
 
-Only one foreground operation advances the core. Interceptor child operations structurally suspend the
-parent and return to it; they do not start a nested runtime.
+Only one foreground operation advances the core. Interruption-handler child operations structurally
+suspend the parent and return to it; they do not start a nested runtime.
 
 ### StopPointRouter and PhysicalStopPointManager
 
@@ -466,13 +466,20 @@ Programs/actions acquire logical subscription-group resources. A subscription de
 - source identity and diagnostics label;
 - semantic PC/memory/synthetic stop-point specification;
 - `Observe`, `Progress`, `Wake`, `Intercept`, or `Guard` delivery;
-- priority and consume/pass/replace/fail policy;
+- priority and `Pass`, `Consume`, `RequestInterruptionHandler`, or `Fail` routing policy;
 - lifetime/scope and epoch policy;
 - optional compiled predicate/sample requirements; and
 - rearm/current-instruction suppression behavior.
 
 Routing order is deterministic: synchronous hit-time samples, passive observe/progress delivery, guards,
 interceptors by priority, then the foreground wake condition.
+
+`RequestInterruptionHandler` keeps the core stopped, suppresses lower-priority interceptors and the
+foreground wake, and emits a typed `StopInterruptionHandlerRequest` containing the source, group,
+subscription, and verifier-known interruption-handler key. The routed-stop identity remains on the
+enclosing receipt. The router does not execute the handler. `ExecutionEngine` consumes the request in
+Slice 3, suspends the foreground operation, and either resumes or terminates it according to the bounded
+handler result.
 
 For one physical hit, the router creates one immutable routed-event identity containing sequence,
 snapshot/sample identity, and `StateEpoch`. Control/wake, capture, progress, and semantic-point receipts
@@ -521,7 +528,7 @@ as battle RNG or future collision probes; there is no Survey-only binary editor.
 - owner identity and scope;
 - priority;
 - whether it is suspendable;
-- whether a modal interceptor may borrow it;
+- whether an interruption handler requested by a router interceptor may borrow it;
 - restoration/neutralization policy; and
 - whether guest-poll acknowledgement is required.
 
@@ -736,8 +743,8 @@ the old broad host interfaces to new modules.
   input sequences.
 - Multiple logical consumers share one physical PC/memory site; releasing one subscription group leaves
   the others intact.
-- Input lease priority, suspendability, modal borrowing, poll acknowledgement, and neutral cleanup pass
-  deterministic tests.
+- Input lease priority, suspendability, interruption-handler borrowing, poll acknowledgement, and neutral
+  cleanup pass deterministic tests.
 - Multiple state handles can coexist; each restore increments `StateEpoch`; every old opaque handle is
   rejected; declared semantic subscriptions rebind safely.
 - Checked data writes fail on precondition/readback mismatch and restore their exact original value.
