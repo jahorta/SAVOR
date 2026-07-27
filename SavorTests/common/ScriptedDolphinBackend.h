@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Runner/Runtime/IDolphinBackend.h"
+#include "Runner/Runtime/Execution/IExecutionBackendPort.h"
 #include "Runner/Runtime/StopPoints/IPhysicalStopPointBackendPort.h"
 
 #include <chrono>
@@ -39,7 +40,12 @@ struct ScriptedDolphinBackendControl
     runtime::BackendResult save_buffer_result = runtime::BackendResult::Success();
     runtime::BackendResult screenshot_result = runtime::BackendResult::Success();
     runtime::BackendCoreState core_state = runtime::BackendCoreState::Closed;
-    runtime::BackendCoreState open_core_state = runtime::BackendCoreState::Running;
+    runtime::BackendCoreState open_core_state = runtime::BackendCoreState::Paused;
+    std::uint32_t pc = 0x80000000u;
+    std::uint64_t vi_count = 0;
+    runtime::BackendMovieState movie_state = runtime::BackendMovieState::Inactive;
+    std::uint64_t movie_input_count = 0;
+    bool throttle_disabled = false;
     std::vector<std::uint8_t> save_buffer_bytes{0x10, 0x20, 0x30};
 
     int open_count = 0;
@@ -55,7 +61,7 @@ struct ScriptedDolphinBackendControl
 
     void SetOpenResult(
         runtime::BackendResult result,
-        runtime::BackendCoreState state = runtime::BackendCoreState::Running);
+        runtime::BackendCoreState state = runtime::BackendCoreState::Paused);
     void SetRebootResult(runtime::BackendResult result);
     void SetCloseResult(runtime::BackendResult result);
     void SetPauseResult(runtime::BackendResult result);
@@ -85,7 +91,9 @@ struct ScriptedDolphinBackendControl
         std::chrono::milliseconds timeout = std::chrono::seconds(5));
 };
 
-class ScriptedDolphinBackend final : public runtime::IDolphinBackend
+class ScriptedDolphinBackend final
+    : public runtime::IDolphinBackend,
+      private runtime::IExecutionBackendPort
 {
 public:
     explicit ScriptedDolphinBackend(
@@ -102,11 +110,11 @@ public:
     [[nodiscard]] runtime::BackendCoreState QueryCoreState() const noexcept override;
     [[nodiscard]] runtime::BackendHealthReport CheckHealth() const override;
 
-    runtime::BackendResult Pause(std::chrono::milliseconds timeout) override;
+    runtime::BackendResult Pause(std::chrono::milliseconds timeout);
     runtime::BackendResult Resume() override;
     runtime::BackendResult StepInstruction(
-        std::chrono::milliseconds timeout) override;
-    runtime::BackendResult StepFrame(std::chrono::milliseconds timeout) override;
+        std::chrono::milliseconds timeout);
+    runtime::BackendResult StepFrame(std::chrono::milliseconds timeout);
 
     runtime::BackendResult RestoreStateFile(
         const std::filesystem::path& path) override;
@@ -121,8 +129,18 @@ public:
         std::chrono::milliseconds timeout) override;
     [[nodiscard]] runtime::IPhysicalStopPointBackendPort*
     PhysicalStopPoints() noexcept override;
+    [[nodiscard]] runtime::IExecutionBackendPort* Execution() noexcept override;
 
 private:
+    [[nodiscard]] runtime::BackendExecutionCapabilityMask
+    Capabilities() const noexcept override;
+    [[nodiscard]] runtime::BackendExecutionSnapshot
+    QueryExecutionSnapshot() const override;
+    runtime::BackendResult RequestPause() override;
+    runtime::BackendResult BeginFrameStep() override;
+    runtime::BackendResult BeginExactInstructionStep() override;
+    runtime::BackendResult SetThrottleDisabled(bool disabled) override;
+
     std::shared_ptr<ScriptedDolphinBackendControl> control_;
     std::unique_ptr<runtime::IPhysicalStopPointBackendPort>
         physical_stop_points_;

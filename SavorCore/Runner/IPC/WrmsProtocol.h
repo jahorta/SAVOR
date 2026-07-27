@@ -23,6 +23,7 @@ enum class MessageKind : std::uint16_t {
     CancelInvocation = 0x0013,
     CaptureScreenshot = 0x0014,
     Shutdown = 0x0015,
+    ControlExecution = 0x0016,
 
     CommandResult = 0x0100,
     OpenSessionResult = 0x0101,
@@ -33,6 +34,8 @@ enum class MessageKind : std::uint16_t {
     InvocationTerminal = 0x0106,
     HostEvent = 0x0107,
     RuntimeDiagnostic = 0x0108,
+    ExecutionResult = 0x0109,
+    ExecutionState = 0x010a,
 };
 
 [[nodiscard]] bool IsKnownMessageKind(MessageKind kind) noexcept;
@@ -153,6 +156,41 @@ enum class WorkerStateCode : std::uint8_t {
     Stopped = 7,
 };
 
+enum class ExecutionControlKind : std::uint8_t {
+    Pause = 0,
+    Resume = 1,
+    StepInstruction = 2,
+    StepFrame = 3,
+};
+
+enum class ExecutionActivityCode : std::uint8_t {
+    IdlePaused = 0,
+    InteractiveRunning = 1,
+    HandlingInterruption = 2,
+    Failed = 3,
+};
+
+enum class ExecutionTerminalStatusCode : std::uint8_t {
+    RequestedCompletion = 0,
+    StepsCompleted = 1,
+    Paused = 2,
+    Cancelled = 3,
+    TimedOut = 4,
+    ViStalled = 5,
+    MovieEnded = 6,
+    ConsumedStop = 7,
+    UnexpectedStop = 8,
+    GuardFailed = 9,
+    InterruptionUnavailable = 10,
+    InterruptionAborted = 11,
+    InterruptionDepthExceeded = 12,
+    InterruptionFailed = 13,
+    StateEpochMismatch = 14,
+    Unsupported = 15,
+    BackendFailure = 16,
+    CleanupFailure = 17,
+};
+
 enum class SessionDispositionCode : std::uint8_t {
     Closed = 0,
     Clean = 1,
@@ -243,6 +281,18 @@ struct ShutdownPayload {
     std::uint32_t grace_period_ms = 0;
 
     friend bool operator==(const ShutdownPayload&, const ShutdownPayload&) = default;
+};
+
+struct ControlExecutionPayload {
+    ExecutionControlKind control = ExecutionControlKind::Pause;
+    std::uint64_t session_id = 0;
+    std::uint64_t expected_state_epoch = 0;
+    std::uint32_t count = 0;
+    std::uint32_t timeout_ms = 0;
+
+    friend bool operator==(
+        const ControlExecutionPayload&,
+        const ControlExecutionPayload&) = default;
 };
 
 struct CommandResultPayload {
@@ -351,6 +401,46 @@ struct RuntimeDiagnosticPayload {
         const RuntimeDiagnosticPayload&) = default;
 };
 
+struct ExecutionResultPayload {
+    std::uint64_t command_sequence = 0;
+    ExecutionControlKind control = ExecutionControlKind::Pause;
+    CommandStatus status = CommandStatus::Succeeded;
+    std::uint64_t session_id = 0;
+    std::uint64_t state_epoch = 0;
+    std::uint64_t operation_id = 0;
+    ExecutionActivityCode activity = ExecutionActivityCode::IdlePaused;
+    bool has_terminal_status = false;
+    ExecutionTerminalStatusCode terminal_status =
+        ExecutionTerminalStatusCode::RequestedCompletion;
+    std::uint64_t completed_count = 0;
+    std::uint32_t program_counter = 0;
+    RejectionCode rejection_code = RejectionCode::None;
+    std::string error_code;
+    std::string message;
+
+    friend bool operator==(
+        const ExecutionResultPayload&,
+        const ExecutionResultPayload&) = default;
+};
+
+struct ExecutionStatePayload {
+    std::uint64_t session_id = 0;
+    std::uint64_t state_epoch = 0;
+    std::uint64_t operation_id = 0;
+    ExecutionActivityCode activity = ExecutionActivityCode::IdlePaused;
+    bool has_active_control = false;
+    ExecutionControlKind active_control = ExecutionControlKind::Pause;
+    std::uint64_t completed_count = 0;
+    std::uint32_t program_counter = 0;
+    RejectionCode rejection_code = RejectionCode::None;
+    std::string code;
+    std::string message;
+
+    friend bool operator==(
+        const ExecutionStatePayload&,
+        const ExecutionStatePayload&) = default;
+};
+
 enum class PayloadError : std::uint8_t {
     None,
     Truncated,
@@ -385,6 +475,7 @@ SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(SubmitInvocationPayload);
 SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(CancelInvocationPayload);
 SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(CaptureScreenshotPayload);
 SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(ShutdownPayload);
+SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(ControlExecutionPayload);
 SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(CommandResultPayload);
 SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(OpenSessionResultPayload);
 SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(ScreenshotResultPayload);
@@ -394,6 +485,8 @@ SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(InvocationProgressPayload);
 SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(InvocationTerminalPayload);
 SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(HostEventPayload);
 SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(RuntimeDiagnosticPayload);
+SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(ExecutionResultPayload);
+SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(ExecutionStatePayload);
 
 #undef SAVOR_WRMS_DECLARE_PAYLOAD_CODEC
 

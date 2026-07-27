@@ -114,6 +114,56 @@ The shared production-composition prelude is current code:
 The focused SQLite composition test is in `SavorTests/test_savordb_fixture_sqlite.cpp`. Real-worker
 coverage is under `SavorE2E`.
 
+## Slice 3 DolphinQt instruction-step evidence
+
+The Slice 3 source review used the exact Dolphin checkout from which the vendored build was produced:
+
+`C:\Users\jahor\source\repos\jahorta\dolphin-2506a`
+
+- `Source/Core/DolphinQt/Debugger/CodeWidget.cpp:497-517`
+  - `CodeWidget::Step` first requires the CPU to be in stepping state;
+  - saves the current `PowerPC::CoreMode`, switches to `Interpreter`, submits `CPUManager::StepOpcode`,
+    waits up to 20 ms on its completion event, and restores the saved mode;
+  - does not inspect the timed-wait result before restoring that mode; and
+  - therefore does not establish exact instruction stepping while the active core remains JIT64.
+- `Source/Core/Core/HW/CPU.cpp:161-210` and `275-293`
+  - `StepOpcode` queues one step request and optional synchronization event while the CPU remains in
+    `State::Stepping`;
+  - the CPU thread calls the currently selected core's `SingleStep`, then flushes the event after that
+    call returns; and
+  - this event is the debugger's completion witness, while the stepping state remains the pause
+    condition.
+- `Source/Core/Core/Core.cpp:680-724` and `Source/Core/Core/HW/CPU.cpp:306-321`
+  - pausing requests `CPUManager::SetStepping(true)`;
+  - that call waits for the CPU thread to become inactive before returning; and
+  - the public core state projects `Running + CPU stepping` as `Paused`, so safe-pause confirmation must
+    use the synchronized CPU primitive rather than only observing the projected state.
+- `Source/Core/Core/HW/CPU.cpp:123-159`, `330-345`, and `417-421`
+  - pending CPU-thread jobs are executed only after control reaches the CPU loop's job-drain points;
+  - `AddCPUThreadJob` queues work but does not notify a CPU already inside the JIT run loop;
+  - `Break` requests stepping without waiting for the CPU thread to become inactive; and
+  - the concrete execution backend therefore performs synchronized `Core::SetState(Paused)` on a
+    backend-owned joinable helper, acknowledges pause only after that call completes, and joins the helper
+    before callbacks detach or the backend is destroyed. The actor and `ExecutionEngine` remain
+    nonblocking and threadless.
+- `Source/Core/Core/PowerPC/PowerPC.cpp:313-349`
+  - `SetMode` swaps the active core pointer between the already initialized Interpreter and JIT;
+  - switching back does not explicitly clear or invalidate the JIT cache; and
+  - the source says the cache will refill as needed, so the GUI step provides no independent JIT-cache
+    invalidation guarantee.
+- `Source/Core/Core/PowerPC/Jit64/Jit.cpp:712-720` and `768-789`, plus
+  `Source/Core/Core/PowerPC/Jit64/JitAsm.cpp:98-106` and `230-246`
+  - `Jit64::SingleStep` enters the compiled-code dispatcher;
+  - when debugging, non-profiling, and currently stepping, compilation limits a newly compiled block to
+    one instruction and disables block linking/merging for that compilation;
+  - the dispatcher exits after the executed block while the CPU state is not Running; but
+  - DolphinQt does not rely on that path for exact stepping and instead performs the Interpreter
+    transition above.
+
+The Slice 3 contract consequently reports exact guest-instruction step as unsupported on the concrete
+JIT64 backend. It neither changes CPU mode nor calls a JIT-block step an instruction. This conclusion is
+source-derived and requires no DolphinQt launch, rendered window, desktop control, or user inspection.
+
 ## Useful tests and live references
 
 Focused current tests include:

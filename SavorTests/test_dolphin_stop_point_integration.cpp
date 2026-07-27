@@ -5,6 +5,7 @@
 #include "../SavorProbe/NativeStopHooks.h"
 #include "serial_guard.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -12,6 +13,7 @@
 #include <filesystem>
 #include <iterator>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -142,59 +144,72 @@ private:
     };
 }
 
-[[nodiscard]] const StopRouteReceipt* FindWake(
-    const std::vector<StopRouteReceipt>& receipts,
-    StateEpoch expected_epoch)
+[[nodiscard]] ExecutionRequestPolicy MakeExecutionPolicy(
+    StateEpoch epoch,
+    std::chrono::milliseconds timeout)
 {
-    for (const StopRouteReceipt& receipt : receipts)
-    {
-        if (receipt.terminal != StopRouteTerminal::WokeForeground ||
-            receipt.identity.state_epoch != expected_epoch ||
-            !receipt.event)
-        {
-            continue;
-        }
-        const auto* routed_pc =
-            std::get_if<PcStopPointSpec>(&receipt.event->evidence.point);
-        if (routed_pc && routed_pc->pc == kGameModeControllerPc)
-            return &receipt;
-    }
-    return nullptr;
+    ExecutionRequestPolicy policy;
+    policy.expected_epoch = epoch;
+    policy.active_timeout = timeout;
+    return policy;
 }
 
-template <typename Predicate>
-[[nodiscard]] bool DrainUntil(
+[[nodiscard]] StopSubscriptionGroupDefinition MakeEngineWakeGroup()
+{
+    return {
+        .id = kWakeGroup,
+        .source = {
+            .id = kWakeSource,
+            .stable_name = "integration.game_mode_controller.engine_wake",
+            .diagnostic_label = "headless JIT ExecutionEngine wake guard",
+        },
+        .epoch_policy = StopEpochPolicy::RebindAfterRestore,
+        .subscriptions = {{
+            .id = kWakeSubscription,
+            .point = PcStopPointSpec{kGameModeControllerPc},
+            .delivery = StopDeliveryMode::Wake,
+            .policy = StopRoutingPolicy::Pass,
+            .lossless = true,
+            .suppress_immediate_reentry = true,
+        }},
+    };
+}
+
+[[nodiscard]] std::optional<ExecutionTerminalResult> DriveUntilTerminal(
     EmulationSession& session,
     std::atomic<std::uint64_t>& notification_counter,
     IngressSignal& signal,
-    std::vector<StopRouteReceipt>& receipts,
-    Predicate&& complete,
     std::chrono::steady_clock::duration timeout)
 {
     const auto deadline = std::chrono::steady_clock::now() + timeout;
     for (;;)
     {
+        auto drained = session.DrainStopPointEvents();
+        for (StopRouteReceipt& receipt : drained)
+            session.HandleStopPointReceipt(std::move(receipt));
+        session.PumpExecution();
+        for (ExecutionEvent& event : session.DrainExecutionEvents())
+        {
+            if (event.kind == ExecutionEventKind::Terminal &&
+                event.terminal)
+            {
+                return std::move(event.terminal);
+            }
+        }
+
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= deadline)
+            return std::nullopt;
+
         const std::uint64_t observed =
             notification_counter.load(std::memory_order_acquire);
-        auto drained = session.DrainStopPointEvents();
-        receipts.insert(
-            receipts.end(),
-            std::make_move_iterator(drained.begin()),
-            std::make_move_iterator(drained.end()));
-        if (complete(receipts))
-            return true;
-
-        if (notification_counter.load(std::memory_order_acquire) != observed)
-            continue;
-
-        if (std::chrono::steady_clock::now() >= deadline ||
-            !signal.WaitForChange(
-                notification_counter,
-                observed,
-                deadline))
-        {
-            return false;
-        }
+        const auto maintenance =
+            session.next_execution_wake().value_or(deadline);
+        const auto wake = std::min(deadline, maintenance);
+        (void)signal.WaitForChange(
+            notification_counter,
+            observed,
+            wake);
     }
 }
 
@@ -261,19 +276,70 @@ TEST(
     ASSERT_TRUE(router->DesiredPhysicalPlan().pcs.empty());
     ASSERT_TRUE(router->DesiredPhysicalPlan().memory.empty());
 
-    if (session.snapshot().core_state == BackendCoreState::Running)
-    {
-        const SessionOperationReceipt paused = session.Pause(5s);
-        ASSERT_TRUE(paused.ok) << paused.backend.message;
-    }
     ASSERT_EQ(session.snapshot().core_state, BackendCoreState::Paused);
+
+    // The concrete JIT64 backend must reject exact guest-instruction
+    // stepping before it mutates Dolphin or any stop-point state.
+    const ExecutionSnapshot before_instruction_rejection =
+        session.execution_snapshot();
+    const PhysicalStopPointPlan before_instruction_plan =
+        router->DesiredPhysicalPlan();
+    const ExecutionSubmissionReceipt unsupported_instruction_step =
+        session.SubmitExecution(StepInstructionsRequest{
+            .policy = MakeExecutionPolicy(StateEpoch(1), 10s),
+            .count = 1,
+        });
+    EXPECT_FALSE(unsupported_instruction_step.accepted);
+    EXPECT_EQ(
+        unsupported_instruction_step.error.code,
+        ExecutionErrorCode::Unsupported);
+    const ExecutionSnapshot after_instruction_rejection =
+        session.execution_snapshot();
+    EXPECT_EQ(
+        after_instruction_rejection.activity,
+        ExecutionActivity::IdlePaused);
+    EXPECT_EQ(
+        after_instruction_rejection.state_epoch,
+        before_instruction_rejection.state_epoch);
+    EXPECT_EQ(
+        after_instruction_rejection.evidence.core_state,
+        BackendCoreState::Paused);
+    EXPECT_EQ(
+        after_instruction_rejection.evidence.pc,
+        before_instruction_rejection.evidence.pc);
+    EXPECT_EQ(
+        after_instruction_rejection.evidence.vi_count,
+        before_instruction_rejection.evidence.vi_count);
+    EXPECT_EQ(
+        router->DesiredPhysicalPlan(),
+        before_instruction_plan);
 
     // Compile and execute the recurring game loop before installing the
     // physical PC. A later hit therefore exercises Dolphin's ordinary
     // address-specific JIT invalidation path.
-    const SessionOperationReceipt stepped = session.StepFrame(10s);
-    ASSERT_TRUE(stepped.ok) << stepped.backend.message;
-    ASSERT_EQ(session.snapshot().core_state, BackendCoreState::Paused);
+    const ExecutionEnvironmentEvidence initial_evidence =
+        session.execution_snapshot().evidence;
+    const ExecutionSubmissionReceipt initial_step =
+        session.SubmitExecution(StepFramesRequest{
+            .policy = MakeExecutionPolicy(StateEpoch(1), 10s),
+            .count = 1,
+        });
+    ASSERT_TRUE(initial_step.accepted) << initial_step.error.message;
+    const auto initial_step_terminal = DriveUntilTerminal(
+        session,
+        notification_counter,
+        ingress_signal,
+        10s);
+    ASSERT_TRUE(initial_step_terminal.has_value());
+    ASSERT_EQ(
+        initial_step_terminal->status,
+        ExecutionTerminalStatus::StepsCompleted);
+    ASSERT_EQ(
+        initial_step_terminal->evidence.core_state,
+        BackendCoreState::Paused);
+    ASSERT_GT(
+        initial_step_terminal->evidence.vi_count,
+        initial_evidence.vi_count);
 
     RecordingStopConsumer observe_consumer;
     auto observe_registration = router->RegisterGroup(MakePcGroup(
@@ -286,16 +352,12 @@ TEST(
     ASSERT_TRUE(observe_registration.receipt.ok)
         << observe_registration.receipt.error.message;
 
-    RecordingStopConsumer wake_consumer;
-    auto wake_registration = router->RegisterGroup(MakePcGroup(
-        kWakeGroup,
-        kWakeSource,
-        kWakeSubscription,
-        StopDeliveryMode::Wake,
-        true,
-        wake_consumer));
-    ASSERT_TRUE(wake_registration.receipt.ok)
-        << wake_registration.receipt.error.message;
+    const ExecutionSubmissionReceipt first_wait =
+        session.SubmitExecution(ContinueUntilRequest{
+            .policy = MakeExecutionPolicy(StateEpoch(1), 30s),
+            .wake_group = MakeEngineWakeGroup(),
+        });
+    ASSERT_TRUE(first_wait.accepted) << first_wait.error.message;
 
     const PhysicalStopPointPlan armed_plan =
         router->DesiredPhysicalPlan();
@@ -303,29 +365,23 @@ TEST(
     EXPECT_EQ(armed_plan.pcs.front().pc, kGameModeControllerPc);
     EXPECT_TRUE(armed_plan.memory.empty());
 
-    const SessionOperationReceipt resumed = session.Resume();
-    ASSERT_TRUE(resumed.ok) << resumed.backend.message;
-
-    std::vector<StopRouteReceipt> routed;
-    const bool reached_target = DrainUntil(
+    const auto first_terminal = DriveUntilTerminal(
         session,
         notification_counter,
         ingress_signal,
-        routed,
-        [](const std::vector<StopRouteReceipt>& receipts) {
-            return FindWake(receipts, StateEpoch(1)) != nullptr;
-        },
         kLiveStopDeadline);
-    ASSERT_TRUE(reached_target)
+    ASSERT_TRUE(first_terminal.has_value())
         << "Timed out after 30 seconds waiting for the recurring JIT/router "
-           "guard at 0x801DC288; routed_receipts="
-        << routed.size();
-
-    const StopRouteReceipt* const wake =
-        FindWake(routed, StateEpoch(1));
-    ASSERT_NE(wake, nullptr);
-    ASSERT_TRUE(wake->event.has_value());
-    const RoutedStopEvent& event = *wake->event;
+           "guard at 0x801DC288";
+    ASSERT_EQ(
+        first_terminal->status,
+        ExecutionTerminalStatus::RequestedCompletion)
+        << first_terminal->error.message;
+    ASSERT_TRUE(first_terminal->stop.has_value());
+    const StopRouteReceipt& first_wake = *first_terminal->stop;
+    ASSERT_EQ(first_wake.terminal, StopRouteTerminal::WokeForeground);
+    ASSERT_TRUE(first_wake.event.has_value());
+    const RoutedStopEvent& event = *first_wake.event;
     const auto* const routed_pc =
         std::get_if<PcStopPointSpec>(&event.evidence.point);
     ASSERT_NE(routed_pc, nullptr);
@@ -338,38 +394,103 @@ TEST(
     EXPECT_FALSE(router->authoritative_overflowed());
     EXPECT_EQ(router->passive_drop_count(), 0u);
 
-    ASSERT_EQ(wake->deliveries.size(), 2u);
+    ASSERT_EQ(first_wake.deliveries.size(), 2u);
     EXPECT_EQ(
-        wake->deliveries[0].delivery,
+        first_wake.deliveries[0].delivery,
         StopDeliveryMode::Observe);
     EXPECT_EQ(
-        wake->deliveries[1].delivery,
+        first_wake.deliveries[1].delivery,
         StopDeliveryMode::Wake);
     ExpectSameIdentity(
-        wake->deliveries[0].event.identity,
-        wake->deliveries[1].event.identity);
+        first_wake.deliveries[0].event.identity,
+        first_wake.deliveries[1].event.identity);
     ExpectSameIdentity(
         event.identity,
-        wake->deliveries[0].event.identity);
+        first_wake.deliveries[0].event.identity);
 
     ASSERT_EQ(observe_consumer.deliveries.size(), 1u);
-    ASSERT_EQ(wake_consumer.deliveries.size(), 1u);
-    ExpectSameIdentity(
-        observe_consumer.deliveries.front().event.identity,
-        wake_consumer.deliveries.front().event.identity);
-
-    const SessionOperationReceipt paused = session.Pause(5s);
-    ASSERT_TRUE(paused.ok) << paused.backend.message;
     EXPECT_EQ(session.snapshot().core_state, BackendCoreState::Paused);
 
-    EXPECT_TRUE(observe_registration.handle.Release().ok);
-    const PhysicalStopPointPlan wake_only_plan =
+    // Requesting the same future-only wait while paused at the retained
+    // receipt must arm exact source suppression. The shared physical site
+    // remains installed because the passive Observe subscription still owns
+    // it, and the next completion must carry a fresh routed sequence.
+    const ExecutionSubmissionReceipt second_wait =
+        session.SubmitExecution(ContinueUntilRequest{
+            .policy = MakeExecutionPolicy(StateEpoch(1), 30s),
+            .wake_group = MakeEngineWakeGroup(),
+        });
+    ASSERT_TRUE(second_wait.accepted) << second_wait.error.message;
+    const PhysicalStopPointPlan second_armed_plan =
         router->DesiredPhysicalPlan();
-    ASSERT_EQ(wake_only_plan.pcs.size(), 1u);
-    EXPECT_EQ(wake_only_plan.pcs.front().pc, kGameModeControllerPc);
-    EXPECT_TRUE(wake_only_plan.memory.empty());
+    EXPECT_EQ(second_armed_plan, armed_plan);
 
-    EXPECT_TRUE(wake_registration.handle.Release().ok);
+    const auto second_terminal = DriveUntilTerminal(
+        session,
+        notification_counter,
+        ingress_signal,
+        kLiveStopDeadline);
+    ASSERT_TRUE(second_terminal.has_value())
+        << "Timed out waiting for the future-only second JIT/router hit";
+    ASSERT_EQ(
+        second_terminal->status,
+        ExecutionTerminalStatus::RequestedCompletion)
+        << second_terminal->error.message;
+    ASSERT_TRUE(second_terminal->stop.has_value());
+    ASSERT_TRUE(second_terminal->stop->event.has_value());
+    EXPECT_NE(
+        second_terminal->stop->identity.sequence,
+        first_wake.identity.sequence);
+    EXPECT_GT(
+        second_terminal->stop->identity.dispatch_generation,
+        first_wake.identity.dispatch_generation);
+    EXPECT_EQ(
+        second_terminal->stop->identity.physical_generation,
+        first_wake.identity.physical_generation);
+    EXPECT_EQ(
+        second_terminal->stop->identity.state_epoch,
+        StateEpoch(1));
+    EXPECT_EQ(
+        second_terminal->stop->event->evidence.path,
+        NativeStopPath::Jit);
+    // Suppression belongs only to the future-only Wake subscription. The
+    // passive Observe subscription still sees the exact source re-entry,
+    // followed by the later hit that satisfies the Wake.
+    ASSERT_EQ(observe_consumer.deliveries.size(), 3u);
+    EXPECT_FALSE(
+        observe_consumer.deliveries[1].event.active_foreground_wake);
+    EXPECT_LT(
+        observe_consumer.deliveries[1].event.identity.sequence,
+        second_terminal->stop->identity.sequence);
+    ExpectSameIdentity(
+        observe_consumer.deliveries[2].event.identity,
+        second_terminal->stop->identity);
+
+    const auto before_final_step =
+        session.execution_snapshot().evidence.vi_count;
+    const ExecutionSubmissionReceipt final_step =
+        session.SubmitExecution(StepFramesRequest{
+            .policy = MakeExecutionPolicy(StateEpoch(1), 10s),
+            .count = 1,
+        });
+    ASSERT_TRUE(final_step.accepted) << final_step.error.message;
+    const auto final_step_terminal = DriveUntilTerminal(
+        session,
+        notification_counter,
+        ingress_signal,
+        10s);
+    ASSERT_TRUE(final_step_terminal.has_value());
+    ASSERT_EQ(
+        final_step_terminal->status,
+        ExecutionTerminalStatus::StepsCompleted);
+    EXPECT_EQ(
+        final_step_terminal->evidence.core_state,
+        BackendCoreState::Paused);
+    EXPECT_GT(
+        final_step_terminal->evidence.vi_count,
+        before_final_step);
+
+    EXPECT_TRUE(observe_registration.handle.Release().ok);
     EXPECT_TRUE(router->DesiredPhysicalPlan().pcs.empty());
     EXPECT_TRUE(router->DesiredPhysicalPlan().memory.empty());
 

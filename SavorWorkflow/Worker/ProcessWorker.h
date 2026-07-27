@@ -131,11 +131,18 @@ struct ProcessWorkerSnapshot {
     bool hello_received{ false };
     runtime::WorkerCapabilityMask process_capabilities{ 0 };
     bool session_open{ false };
+    bool session_visual_intent{ false };
     runtime::SessionId session_id;
     runtime::StateEpoch state_epoch;
     runtime::WorkerCapabilityMask session_capabilities{ 0 };
     runtime::WorkerState worker_state{ runtime::WorkerState::Starting };
     runtime::SessionDisposition session_disposition{ runtime::SessionDisposition::Closed };
+    wrms::ExecutionActivityCode execution_activity{
+        wrms::ExecutionActivityCode::IdlePaused};
+    std::uint64_t execution_operation_id{ 0 };
+    std::optional<wrms::ExecutionControlKind> active_execution_control;
+    std::uint64_t execution_completed_count{ 0 };
+    std::uint32_t execution_program_counter{ 0 };
     runtime::WorkerRejectionCode last_rejection_code{
         runtime::WorkerRejectionCode::None};
     bool shutdown_graceful{ false };
@@ -150,6 +157,8 @@ public:
         std::function<void(const wrms::InvocationTerminalPayload&)>;
     using HostEventCallback =
         std::function<void(const wrms::HostEventPayload&)>;
+    using ExecutionStateCallback =
+        std::function<void(const wrms::ExecutionStatePayload&)>;
 
     ProcessWorker() = default;
     explicit ProcessWorker(
@@ -190,6 +199,31 @@ public:
         std::uint32_t capture_timeout_ms,
         wrms::ScreenshotResultPayload* result_out = nullptr,
         std::uint32_t command_timeout_ms = 10000);
+    bool pause_guest_execution(
+        runtime::SessionId session_id,
+        runtime::StateEpoch expected_state_epoch,
+        wrms::ExecutionResultPayload* result_out = nullptr,
+        std::uint32_t operation_timeout_ms = 3000,
+        std::uint32_t command_timeout_ms = 10000);
+    bool resume_guest_execution(
+        runtime::SessionId session_id,
+        runtime::StateEpoch expected_state_epoch,
+        wrms::ExecutionResultPayload* result_out = nullptr,
+        std::uint32_t command_timeout_ms = 10000);
+    bool step_guest_frames(
+        runtime::SessionId session_id,
+        runtime::StateEpoch expected_state_epoch,
+        std::uint32_t count = 1,
+        wrms::ExecutionResultPayload* result_out = nullptr,
+        std::uint32_t operation_timeout_ms = 3000,
+        std::uint32_t command_timeout_ms = 10000);
+    bool step_guest_instructions(
+        runtime::SessionId session_id,
+        runtime::StateEpoch expected_state_epoch,
+        std::uint32_t count = 1,
+        wrms::ExecutionResultPayload* result_out = nullptr,
+        std::uint32_t operation_timeout_ms = 3000,
+        std::uint32_t command_timeout_ms = 10000);
 
     runtime::WorkerCapabilityMask process_capabilities() const;
     runtime::WorkerCapabilityMask session_capabilities() const;
@@ -201,6 +235,7 @@ public:
     void set_invocation_progress_callback(InvocationProgressCallback callback);
     void set_invocation_terminal_callback(InvocationTerminalCallback callback);
     void set_host_event_callback(HostEventCallback callback);
+    void set_execution_state_callback(ExecutionStateCallback callback);
 
     // Transitional convenience: launch the v1 process and explicitly open its
     // one session. This does not restore any legacy program execution path.
@@ -283,6 +318,27 @@ private:
         std::uint32_t timeout_ms,
         ProcessCommandCompletion* completion_out,
         bool allow_during_stop = false);
+    bool request_execution_control(
+        wrms::ExecutionControlKind control,
+        runtime::SessionId session_id,
+        runtime::StateEpoch expected_state_epoch,
+        std::uint32_t count,
+        std::uint32_t operation_timeout_ms,
+        wrms::ExecutionResultPayload* result_out,
+        std::uint32_t command_timeout_ms);
+    [[nodiscard]] static std::uint32_t effective_execution_command_timeout(
+        std::uint32_t operation_timeout_ms,
+        std::uint32_t command_timeout_ms) noexcept;
+    [[nodiscard]] static bool validate_execution_result(
+        wrms::ExecutionControlKind control,
+        runtime::SessionId session_id,
+        runtime::StateEpoch expected_state_epoch,
+        std::uint32_t requested_count,
+        const wrms::ExecutionResultPayload& result,
+        std::string* error_out);
+    [[nodiscard]] static bool classify_shutdown_response(
+        std::span<const std::uint8_t> payload,
+        bool* graceful_out);
     void complete_pending(
         std::uint64_t request_id,
         wrms::MessageKind kind,
@@ -334,6 +390,7 @@ private:
     InvocationProgressCallback invocation_progress_callback_;
     InvocationTerminalCallback invocation_terminal_callback_;
     HostEventCallback host_event_callback_;
+    ExecutionStateCallback execution_state_callback_;
 
     mutable std::mutex progress_mutex_;
     PRProgress last_progress_{};

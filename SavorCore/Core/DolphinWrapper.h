@@ -46,7 +46,9 @@ namespace savor {
         void stop();
         Core::System* system() const noexcept { return m_system; }
 
-        bool loadGame(const std::string& iso_path);
+        bool loadGame(
+            const std::string& iso_path,
+            bool boot_to_pause = false);
         bool loadSavestate(const std::string& state_path);
         bool saveSavestateBlocking(const std::string& state_path);
         bool saveScreenshotBlocking(const std::string& image_path, uint32_t timeout_ms = 3000);
@@ -257,6 +259,8 @@ namespace savor {
         bool isMoviePlaying() const;
         bool isMoviePlaybackEnded() const;
         uint64_t getCurrentMovieInputCount() const;
+        // Hard-cutover facades retained only so legacy builders compile.
+        // MovieService will own production playback and recording lifecycle.
         bool startMoviePlayback(const std::string& dtm_path);
         bool endMoviePlaybackBlocking(uint32_t timeout_ms = 4000);
         bool setGCMemoryCardA(const std::string& raw_path);
@@ -265,7 +269,8 @@ namespace savor {
         bool isEmulationPaused() const;
 
         bool startMovieRecording();
-        void endMovieRecording(std::optional<std::string> movie_save_path = std::nullopt);
+        void endMovieRecording(
+            std::optional<std::string> movie_save_path = std::nullopt);
 
 
     private:
@@ -289,6 +294,9 @@ namespace savor {
         uint64_t m_input_playback_sequence = 0;
 
         bool waitForPausedCoreState(uint32_t timeout_ms, uint32_t poll_rate = 10);
+        // State-load bootstrap only. This is not a guest execution command
+        // and is never exposed through IExecutionBackendPort.
+        bool stepBootCoreForStateLoadBlocking(int timeout_ms);
 
         std::filesystem::path m_user_dir;
         std::filesystem::path m_qt_base_dir;

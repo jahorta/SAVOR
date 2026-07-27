@@ -340,15 +340,41 @@ They do not need a parallel router or a separate interruption-handler ownership 
 
 Cover:
 
-- continue-to-condition, step instruction, step frame, input sequence, pause, and interactive resume;
+- one active operation, monotonic operation IDs, actor-thread-only backend mutation, and exactly one
+  terminal result;
+- continue-to-condition, current-point acceptance, future-only suppression, step frame, safe pause, and
+  unbounded Ready-session interactive resume;
+- exact instruction-step and input-synchronized-advance contracts through deterministic fake ports,
+  paired with no-mutation `Unsupported` results from the concrete JIT64 and pre-`InputArbiter`
+  production paths;
 - every operation routed through interceptors;
-- caller wait suspended by a requested interruption-handler child operation and then resumed;
-- remaining deadline/budget accounting across suspension;
+- caller wait suspended by a requested interruption-handler child operation and then resumed or aborted;
+- frozen parent and nested-child wall-clock/VI budgets, child-budget expiry, declared nesting/recursion,
+  and the absolute depth cap of eight;
 - requested completion versus unrelated stop;
-- timeout, VI stall, movie end, backend fault, and cancellation;
+- timeout, explicit VI warmup/stall, inactive versus ended movie, throttle restoration, backend fault,
+  stale epoch, and cancellation;
 - interruption-handler failure propagation;
-- visual commands serialized with program execution; and
+- `ResumeParent` and `AbortParent` as the only handler policy outcomes;
+- visual-intent commands serialized with execution through fake sessions and WRMS/process fixtures; and
 - exactly one transition into running state at a time.
+
+Slice 3 validation is unattended and non-visual. Tests shall not create an HWND or rendered worker,
+automate SavorQt or DolphinQt, compare screenshots, control the desktop, or require a user to inspect or
+close anything. Rendered interactive-debug validation is deferred until authoritative non-visual
+telemetry can prove it or a later validation explicitly permits human participation.
+
+The serialized Release live-Dolphin guard remains headless and JIT64-only. It opens paused, performs one
+engine-owned frame step before registering the recurring `0x801DC288` Observe/Wake pair, continues
+through the engine to two separately sequenced Wake receipts using exact source suppression, and verifies
+paused completion and VI advancement after another engine-owned frame step. It uses no DTM, TAS endpoint,
+Interpreter matrix, prebattle breakpoint, live memcheck witness, screenshot, or visual comparison.
+
+The completed Slice 3 checkpoint passed full Debug and Release x64 solution builds, 119 focused runtime,
+session, router, protocol, process, and legacy-trace guards in each configuration, and 77 retained
+probe/profile/runtime-symbol guards in each configuration. The serialized Release live-Dolphin guard also
+passed at recurring `0x801DC288`. No validation launched or controlled a GUI, and production-worker
+SavorE2E was not run because `ProgramInvocation` remains intentionally unavailable.
 
 ### InputArbiter tests
 
@@ -612,10 +638,10 @@ During implementation:
 - run architecture/invariant checks when a dependency or ownership boundary changes; and
 - run parity tests for each affected current phase as it migrates.
 
-Do not use production-worker SavorE2E as an intermediate Slice 1 or Slice 2 acceptance signal: the hard
-cutover still advertises no production `ProgramInvocation` or interactive visual-debugging capability.
-Run it only after `ProgramRuntime`, current program migration, and handler adapters restore the complete
-production path.
+Do not use production-worker SavorE2E as an intermediate Slice 1, Slice 2, or Slice 3 acceptance signal:
+the hard cutover still advertises no production `ProgramInvocation`. Slice 3 adds only the
+capability-gated Ready-session execution-control seam. Run SavorE2E only after `ProgramRuntime`, current
+program migration, and handler adapters restore the complete production path.
 
 Final functional acceptance is the Release solution build and production-worker SavorE2E outcome
 summarized below, plus confirmation that no production path selects the retired legacy executor.

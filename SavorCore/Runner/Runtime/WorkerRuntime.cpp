@@ -3,6 +3,7 @@
 #include "DolphinWrapperBackend.h"
 
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <deque>
 #include <exception>
@@ -10,6 +11,7 @@
 #include <mutex>
 #include <thread>
 #include <type_traits>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -33,6 +35,7 @@ Overloaded(Ts...) -> Overloaded<Ts...>;
             [](const InvokeProgramCommand&) { return WorkerCommandKind::InvokeProgram; },
             [](const CancelInvocationCommand&) { return WorkerCommandKind::CancelInvocation; },
             [](const CaptureScreenshotCommand&) { return WorkerCommandKind::CaptureScreenshot; },
+            [](const ControlExecutionCommand&) { return WorkerCommandKind::ControlExecution; },
             [](const ShutdownCommand&) { return WorkerCommandKind::Shutdown; }},
         command);
 }
@@ -50,6 +53,55 @@ Overloaded(Ts...) -> Overloaded<Ts...>;
     default:
         return WorkerRejectionCode::BackendFailure;
     }
+}
+
+[[nodiscard]] WorkerRejectionCode MapExecutionError(
+    ExecutionErrorCode code) noexcept
+{
+    switch (code)
+    {
+    case ExecutionErrorCode::None:
+        return WorkerRejectionCode::None;
+    case ExecutionErrorCode::InvalidArgument:
+        return WorkerRejectionCode::InvalidArgument;
+    case ExecutionErrorCode::InvalidState:
+    case ExecutionErrorCode::Busy:
+        return WorkerRejectionCode::InvalidState;
+    case ExecutionErrorCode::StateEpochMismatch:
+        return WorkerRejectionCode::StateEpochMismatch;
+    case ExecutionErrorCode::Unsupported:
+    case ExecutionErrorCode::InputUnavailable:
+        return WorkerRejectionCode::Unsupported;
+    case ExecutionErrorCode::RuntimeStopping:
+        return WorkerRejectionCode::RuntimeStopping;
+    case ExecutionErrorCode::WrongThread:
+        return WorkerRejectionCode::InternalFailure;
+    case ExecutionErrorCode::StopPointFailure:
+    case ExecutionErrorCode::BackendFailure:
+        return WorkerRejectionCode::BackendFailure;
+    case ExecutionErrorCode::InterruptionUnavailable:
+    case ExecutionErrorCode::InterruptionPolicyViolation:
+    case ExecutionErrorCode::InterruptionDepthExceeded:
+        return WorkerRejectionCode::InvalidState;
+    }
+    return WorkerRejectionCode::InternalFailure;
+}
+
+[[nodiscard]] bool IsSuccessfulExecutionTerminal(
+    WorkerExecutionControlKind control,
+    ExecutionTerminalStatus status) noexcept
+{
+    switch (control)
+    {
+    case WorkerExecutionControlKind::Pause:
+        return status == ExecutionTerminalStatus::Paused;
+    case WorkerExecutionControlKind::StepInstruction:
+    case WorkerExecutionControlKind::StepFrame:
+        return status == ExecutionTerminalStatus::StepsCompleted;
+    case WorkerExecutionControlKind::Resume:
+        return false;
+    }
+    return false;
 }
 
 std::atomic<std::uint64_t> g_next_production_session_id{1};
@@ -95,8 +147,10 @@ struct WorkerRuntime::Impl
     struct Mailbox
     {
         std::mutex mutex;
+        std::condition_variable available;
         std::deque<MailboxItem> items;
         std::atomic<std::uint64_t> wake_generation{0};
+        std::atomic<std::uint64_t> ingress_generation{0};
         std::uint64_t next_command_sequence = 1;
         std::uint64_t next_host_event_sequence = 1;
         bool accept_commands = true;
@@ -107,7 +161,13 @@ struct WorkerRuntime::Impl
     static void SignalMailbox(Mailbox& mailbox) noexcept
     {
         mailbox.wake_generation.fetch_add(1, std::memory_order_release);
-        mailbox.wake_generation.notify_one();
+        mailbox.available.notify_one();
+    }
+
+    static void NotifyStopPointIngress(void* context) noexcept
+    {
+        if (context)
+            static_cast<Mailbox*>(context)->available.notify_one();
     }
 
     class ProgramEventIngress final : public IProgramRuntimeEventSink
@@ -159,17 +219,45 @@ struct WorkerRuntime::Impl
         }
     };
 
+    struct PendingExecutionCommand
+    {
+        std::shared_ptr<QueuedCommand> command;
+        WorkerExecutionControlKind control =
+            WorkerExecutionControlKind::Pause;
+    };
+
     Impl(
         std::unique_ptr<EmulationSession> session,
         std::unique_ptr<IProgramRuntimePort> program_runtime,
-        WorkerEventSink event_sink)
+        WorkerEventSink event_sink,
+        std::shared_ptr<const WorkerRuntimeTestHooks> test_hooks)
         : mailbox(std::make_shared<Mailbox>()),
           program_event_ingress(std::make_shared<ProgramEventIngress>(mailbox)),
           session(std::move(session)),
           program_runtime(std::move(program_runtime)),
-          event_sink(std::move(event_sink))
+          event_sink(std::move(event_sink)),
+          test_hooks(std::move(test_hooks))
     {
         capabilities_value = kSlice1ProductionCapabilities;
+        if (this->session)
+        {
+            const BackendExecutionCapabilityMask execution_capabilities =
+                this->session->execution_capabilities();
+            if (HasExecutionCapability(
+                    execution_capabilities,
+                    BackendExecutionCapability::Pause) &&
+                HasExecutionCapability(
+                    execution_capabilities,
+                    BackendExecutionCapability::Resume) &&
+                HasExecutionCapability(
+                    execution_capabilities,
+                    BackendExecutionCapability::FrameStep))
+            {
+                capabilities_value = AddCapability(
+                    capabilities_value,
+                    WorkerCapability::InteractiveVisualDebug);
+            }
+        }
         if (this->program_runtime &&
             HasCapability(
                 this->program_runtime->capabilities(),
@@ -185,10 +273,12 @@ struct WorkerRuntime::Impl
         if (this->session)
         {
             (void)this->session->ConfigureStopPointIngressNotification(
-                &mailbox->wake_generation,
-                nullptr,
-                nullptr);
+                &mailbox->ingress_generation,
+                mailbox.get(),
+                &NotifyStopPointIngress);
             current_snapshot.session = this->session->snapshot();
+            current_snapshot.execution =
+                this->session->execution_snapshot();
         }
 
         actor = std::thread([this] { ActorMain(); });
@@ -327,8 +417,6 @@ struct WorkerRuntime::Impl
             ChangeState(WorkerState::AwaitingSession);
         }
 
-        std::uint64_t observed_wake_generation =
-            mailbox->wake_generation.load(std::memory_order_acquire);
         for (;;)
         {
             MailboxItem item;
@@ -343,21 +431,38 @@ struct WorkerRuntime::Impl
                 }
             }
 
-            DrainStopPointIngress();
+            const std::uint64_t stable_ingress_generation =
+                DrainAuthoritativeIngressToStable(has_item);
             if (!has_item)
             {
-                const std::uint64_t current_generation =
+                PumpExecutionEvents();
+                const std::uint64_t observed_generation =
                     mailbox->wake_generation.load(
                         std::memory_order_acquire);
-                if (current_generation == observed_wake_generation)
+                const auto next_execution_wake = session
+                    ? session->next_execution_wake()
+                    : std::nullopt;
+                std::unique_lock lock(mailbox->mutex);
+                const auto ready = [&]() {
+                    return !mailbox->items.empty() ||
+                        mailbox->wake_generation.load(
+                            std::memory_order_acquire) !=
+                            observed_generation ||
+                        mailbox->ingress_generation.load(
+                            std::memory_order_acquire) !=
+                            stable_ingress_generation;
+                };
+                if (next_execution_wake)
                 {
-                    mailbox->wake_generation.wait(
-                        observed_wake_generation,
-                        std::memory_order_acquire);
+                    (void)mailbox->available.wait_until(
+                        lock,
+                        *next_execution_wake,
+                        ready);
                 }
-                observed_wake_generation =
-                    mailbox->wake_generation.load(
-                        std::memory_order_acquire);
+                else
+                {
+                    mailbox->available.wait(lock, ready);
+                }
                 continue;
             }
 
@@ -423,7 +528,8 @@ struct WorkerRuntime::Impl
                 }
             }
 
-            DrainStopPointIngress();
+            (void)DrainAuthoritativeIngressToStable(false);
+            PumpExecutionEvents();
 
             if (Snapshot().state == WorkerState::Stopped)
                 break;
@@ -454,6 +560,9 @@ struct WorkerRuntime::Impl
                 [this, &queued](const CaptureScreenshotCommand& command) {
                     HandleScreenshot(queued, command);
                 },
+                [this, &queued](const ControlExecutionCommand& command) {
+                    HandleExecutionControl(queued, command);
+                },
                 [this, &queued](const ShutdownCommand&) {
                     HandleShutdown(queued);
                 }},
@@ -474,9 +583,9 @@ struct WorkerRuntime::Impl
         }
 
         SessionOperationReceipt receipt = session->Open(command.options);
-        RefreshSnapshot();
         if (!receipt.ok)
         {
+            RefreshSnapshot();
             if (receipt.disposition == SessionDisposition::Tainted)
                 EnterTainted(receipt.backend.message);
             Reject(
@@ -486,8 +595,12 @@ struct WorkerRuntime::Impl
                 receipt);
             return;
         }
+        if (test_hooks && test_hooks->session_opened)
+            test_hooks->session_opened(*session);
+        RefreshSnapshot();
 
         ChangeState(WorkerState::Ready);
+        session_visual_intent = command.options.backend.visual;
         terminal_screenshot_directory = command.options.screenshot_directory;
         terminal_screenshot_timeout = command.options.screenshot_timeout;
         screenshot_on_terminal = command.options.screenshot_on_terminal;
@@ -766,6 +879,158 @@ struct WorkerRuntime::Impl
             std::move(receipt));
     }
 
+    void HandleExecutionControl(
+        const std::shared_ptr<QueuedCommand>& queued,
+        const ControlExecutionCommand& command)
+    {
+        const WorkerSnapshot worker = Snapshot();
+        if (worker.state != WorkerState::Ready)
+        {
+            Reject(
+                queued,
+                worker.state == WorkerState::Tainted
+                    ? WorkerRejectionCode::SessionTainted
+                    : WorkerRejectionCode::InvalidState,
+                "Execution control requires a ready worker");
+            return;
+        }
+        if (active_invocation)
+        {
+            Reject(
+                queued,
+                WorkerRejectionCode::InvocationAlreadyActive,
+                "Ready-session execution control is unavailable during an invocation");
+            return;
+        }
+        if (!session_visual_intent)
+        {
+            Reject(
+                queued,
+                WorkerRejectionCode::Unsupported,
+                "Execution control requires a session opened with visual intent");
+            return;
+        }
+        if (!HasCapability(
+                capabilities_value,
+                WorkerCapability::InteractiveVisualDebug))
+        {
+            Reject(
+                queued,
+                WorkerRejectionCode::Unsupported,
+                "Interactive visual-debug execution control is unavailable");
+            return;
+        }
+
+        const SessionSnapshot session_snapshot = session->snapshot();
+        if (!command.session_id ||
+            command.session_id != session_snapshot.session_id)
+        {
+            Reject(
+                queued,
+                WorkerRejectionCode::SessionMismatch,
+                "Execution control does not identify the owned session");
+            return;
+        }
+        if (!command.expected_state_epoch ||
+            command.expected_state_epoch != session_snapshot.state_epoch)
+        {
+            Reject(
+                queued,
+                WorkerRejectionCode::StateEpochMismatch,
+                "Execution control StateEpoch does not match the owned session");
+            return;
+        }
+
+        const bool is_step =
+            command.control == WorkerExecutionControlKind::StepFrame ||
+            command.control == WorkerExecutionControlKind::StepInstruction;
+        if ((is_step && command.count == 0) ||
+            (!is_step && command.count != 0))
+        {
+            Reject(
+                queued,
+                WorkerRejectionCode::InvalidArgument,
+                "Only step execution controls accept a nonzero count");
+            return;
+        }
+        if (command.control != WorkerExecutionControlKind::Resume &&
+            command.timeout <= std::chrono::milliseconds::zero())
+        {
+            Reject(
+                queued,
+                WorkerRejectionCode::InvalidArgument,
+                "Pause and step execution controls require a bounded timeout");
+            return;
+        }
+
+        ExecutionRequest request;
+        if (command.control == WorkerExecutionControlKind::Resume)
+        {
+            InteractiveResumeRequest resume;
+            resume.expected_epoch = command.expected_state_epoch;
+            request = std::move(resume);
+        }
+        else
+        {
+            ExecutionRequestPolicy policy;
+            policy.expected_epoch = command.expected_state_epoch;
+            policy.active_timeout = command.timeout;
+            policy.interruptions = ExecutionInterruptionPolicy::Reject;
+            switch (command.control)
+            {
+            case WorkerExecutionControlKind::Pause:
+                request = SafePauseRequest{std::move(policy)};
+                break;
+            case WorkerExecutionControlKind::StepInstruction:
+                request = StepInstructionsRequest{
+                    std::move(policy),
+                    command.count};
+                break;
+            case WorkerExecutionControlKind::StepFrame:
+                request = StepFramesRequest{
+                    std::move(policy),
+                    command.count};
+                break;
+            case WorkerExecutionControlKind::Resume:
+                break;
+            }
+        }
+
+        ExecutionSubmissionReceipt submission =
+            session->SubmitExecution(std::move(request));
+        RefreshSnapshot();
+        if (!submission.accepted)
+        {
+            if (submission.error.integrity != BackendIntegrity::Preserved)
+                EnterTainted(submission.error.message);
+            Reject(
+                queued,
+                MapExecutionError(submission.error.code),
+                submission.error.message.empty()
+                    ? "ExecutionEngine rejected execution control"
+                    : submission.error.message);
+            return;
+        }
+
+        if (command.control == WorkerExecutionControlKind::Resume)
+        {
+            Complete(
+                queued,
+                WorkerCommandOutcome::Accepted,
+                {},
+                {},
+                {},
+                submission.operation_id);
+            PumpExecutionEvents();
+            return;
+        }
+
+        pending_execution_commands.emplace(
+            submission.operation_id.value(),
+            PendingExecutionCommand{queued, command.control});
+        PumpExecutionEvents();
+    }
+
     void HandleShutdown(const std::shared_ptr<QueuedCommand>& queued)
     {
         const WorkerState state = Snapshot().state;
@@ -782,6 +1047,24 @@ struct WorkerRuntime::Impl
 
         pending_shutdown_commands.push_back(queued);
         ChangeState(WorkerState::Stopping);
+
+        if (session &&
+            session->execution_snapshot().activity !=
+                ExecutionActivity::IdlePaused &&
+            session->execution_snapshot().activity !=
+                ExecutionActivity::Closed)
+        {
+            (void)session->CancelExecution(CancellationReason::Shutdown);
+            PumpExecutionEvents();
+            if (session &&
+                session->execution_snapshot().activity !=
+                    ExecutionActivity::IdlePaused &&
+                session->execution_snapshot().activity !=
+                    ExecutionActivity::Closed)
+            {
+                return;
+            }
+        }
 
         if (active_invocation)
         {
@@ -831,6 +1114,14 @@ struct WorkerRuntime::Impl
                     ? WorkerRejectionCode::SessionTainted
                     : WorkerRejectionCode::InvalidState,
                 "Program command requires a ready worker");
+            return false;
+        }
+        if (Snapshot().execution.activity != ExecutionActivity::IdlePaused)
+        {
+            Reject(
+                queued,
+                WorkerRejectionCode::InvalidState,
+                "Program command requires an idle paused execution session");
             return false;
         }
         if (!program_runtime ||
@@ -943,16 +1234,166 @@ struct WorkerRuntime::Impl
             return;
         for (StopRouteReceipt& receipt : session->DrainStopPointEvents())
         {
-            if (receipt.terminal != StopRouteTerminal::Failed &&
-                receipt.terminal != StopRouteTerminal::Overflow)
+            const StopRouteTerminal terminal = receipt.terminal;
+            const std::string diagnostic = receipt.error.message;
+            session->HandleStopPointReceipt(std::move(receipt));
+            if (terminal == StopRouteTerminal::Failed ||
+                terminal == StopRouteTerminal::Overflow)
             {
-                continue;
+                // Preserve the engine's typed terminal before shutdown tears
+                // down its event queue. Pending control commands therefore
+                // complete from the authoritative routed failure exactly once.
+                DrainExecutionEvents();
+                if (Snapshot().state != WorkerState::Tainted)
+                {
+                    EnterTainted(
+                        diagnostic.empty()
+                            ? "Authoritative stop-point routing failed"
+                            : diagnostic);
+                }
+                break;
             }
-            const std::string diagnostic = receipt.error.message.empty()
-                ? "Authoritative stop-point routing failed"
-                : receipt.error.message;
-            EnterTainted(diagnostic);
-            break;
+        }
+    }
+
+    [[nodiscard]] std::uint64_t DrainAuthoritativeIngressToStable(
+        bool expose_test_window)
+    {
+        for (;;)
+        {
+            const std::uint64_t observed_generation =
+                mailbox->ingress_generation.load(std::memory_order_acquire);
+            DrainStopPointIngress();
+            DrainExecutionEvents();
+
+            if (expose_test_window && test_hooks &&
+                test_hooks->before_ingress_stability_check)
+            {
+                test_hooks->before_ingress_stability_check();
+            }
+
+            // This acquire is the command linearization point. A native stop
+            // published before it either appeared in the completed drain or
+            // changed the generation and forces another drain. A stop
+            // published afterward belongs to the next actor turn.
+            if (mailbox->ingress_generation.load(
+                    std::memory_order_acquire) == observed_generation)
+            {
+                return observed_generation;
+            }
+        }
+    }
+
+    void PumpExecutionEvents()
+    {
+        if (!session)
+            return;
+
+        session->PumpExecution();
+        DrainExecutionEvents();
+    }
+
+    void DrainExecutionEvents()
+    {
+        if (!session)
+            return;
+
+        std::vector<ExecutionEvent> events =
+            session->DrainExecutionEvents();
+        for (ExecutionEvent& event : events)
+        {
+            RefreshSnapshot();
+            bool taint_after_publish = false;
+            std::string taint_diagnostic;
+            if (event.terminal)
+            {
+                const ExecutionTerminalResult& terminal = *event.terminal;
+                const auto pending = pending_execution_commands.find(
+                    terminal.operation_id.value());
+                if (pending != pending_execution_commands.end())
+                {
+                    const PendingExecutionCommand command = pending->second;
+                    pending_execution_commands.erase(pending);
+                    if (IsSuccessfulExecutionTerminal(
+                            command.control,
+                            terminal.status))
+                    {
+                        Complete(
+                            command.command,
+                            WorkerCommandOutcome::Completed,
+                            {},
+                            {},
+                            {},
+                            terminal.operation_id,
+                            terminal);
+                    }
+                    else
+                    {
+                        WorkerRejectionCode code =
+                            MapExecutionError(terminal.error.code);
+                        if (code == WorkerRejectionCode::None)
+                        {
+                            switch (terminal.status)
+                            {
+                            case ExecutionTerminalStatus::Unsupported:
+                                code = WorkerRejectionCode::Unsupported;
+                                break;
+                            case ExecutionTerminalStatus::StateEpochMismatch:
+                                code = WorkerRejectionCode::StateEpochMismatch;
+                                break;
+                            case ExecutionTerminalStatus::BackendFailure:
+                            case ExecutionTerminalStatus::CleanupFailure:
+                                code = WorkerRejectionCode::BackendFailure;
+                                break;
+                            default:
+                                code = WorkerRejectionCode::InvalidState;
+                                break;
+                            }
+                        }
+                        Complete(
+                            command.command,
+                            WorkerCommandOutcome::Rejected,
+                            {},
+                            RuntimeError{
+                                code,
+                                terminal.error.message.empty()
+                                    ? "Execution control did not complete successfully"
+                                    : terminal.error.message},
+                            {},
+                            terminal.operation_id,
+                            terminal);
+                    }
+                }
+
+                if (terminal.integrity != BackendIntegrity::Preserved ||
+                    terminal.status ==
+                        ExecutionTerminalStatus::CleanupFailure)
+                {
+                    taint_after_publish = true;
+                    taint_diagnostic = terminal.error.message.empty()
+                        ? "Execution control cleanup did not preserve session integrity"
+                        : terminal.error.message;
+                }
+            }
+
+            Publish(WorkerExecutionEvent{
+                session->snapshot().session_id,
+                std::move(event)});
+            if (taint_after_publish)
+            {
+                EnterTainted(std::move(taint_diagnostic));
+                break;
+            }
+        }
+        if (!finishing_shutdown &&
+            !pending_shutdown_commands.empty() &&
+            !active_invocation && session &&
+            (session->execution_snapshot().activity ==
+                    ExecutionActivity::IdlePaused ||
+                session->execution_snapshot().activity ==
+                    ExecutionActivity::Closed))
+        {
+            FinishShutdown(false);
         }
     }
 
@@ -1116,6 +1557,15 @@ struct WorkerRuntime::Impl
 
         ShutdownProgramRuntimeOnce();
 
+        for (auto& [_, pending] : pending_execution_commands)
+        {
+            Reject(
+                pending.command,
+                WorkerRejectionCode::SessionTainted,
+                diagnostic);
+        }
+        pending_execution_commands.clear();
+
         if (session)
         {
             session->MarkTainted(diagnostic);
@@ -1150,6 +1600,9 @@ struct WorkerRuntime::Impl
 
     void FinishShutdown(bool forced)
     {
+        if (finishing_shutdown)
+            return;
+        finishing_shutdown = true;
         ShutdownProgramRuntimeOnce();
 
         SessionOperationReceipt shutdown_receipt;
@@ -1157,6 +1610,23 @@ struct WorkerRuntime::Impl
             shutdown_receipt = session->Shutdown();
         else
             shutdown_receipt = {};
+        if (session)
+            DrainExecutionEvents();
+        if (session &&
+            session->snapshot().disposition ==
+                SessionDisposition::Tainted &&
+            shutdown_receipt.ok)
+        {
+            shutdown_receipt.ok = false;
+            shutdown_receipt.disposition =
+                SessionDisposition::Tainted;
+            shutdown_receipt.backend = BackendResult::Failure(
+                BackendErrorCode::OperationFailed,
+                session->taint_diagnostic().empty()
+                    ? "Execution shutdown tainted the session"
+                    : session->taint_diagnostic(),
+                BackendIntegrity::Unknown);
+        }
 
         active_invocation.reset();
         RefreshSnapshot();
@@ -1184,7 +1654,8 @@ struct WorkerRuntime::Impl
             {
                 Reject(
                     command,
-                    shutdown_receipt.ok
+                    shutdown_receipt.disposition ==
+                            SessionDisposition::Tainted
                         ? WorkerRejectionCode::SessionTainted
                         : WorkerRejectionCode::BackendFailure,
                     shutdown_receipt.backend.message.empty()
@@ -1203,6 +1674,17 @@ struct WorkerRuntime::Impl
             }
         }
         pending_shutdown_commands.clear();
+
+        for (auto& [_, pending] : pending_execution_commands)
+        {
+            Reject(
+                pending.command,
+                WorkerRejectionCode::RuntimeStopping,
+                forced
+                    ? "WorkerRuntime was force-stopped during execution control"
+                    : "WorkerRuntime stopped before execution control completed");
+        }
+        pending_execution_commands.clear();
 
         DrainQueuedCommands(forced);
     }
@@ -1265,7 +1747,11 @@ struct WorkerRuntime::Impl
             previous = current_snapshot.state;
             current_snapshot.state = next;
             if (session)
+            {
                 current_snapshot.session = session->snapshot();
+                current_snapshot.execution =
+                    session->execution_snapshot();
+            }
             current_snapshot.active_invocation = active_invocation
                 ? std::optional<InvocationId>(active_invocation->invocation_id)
                 : std::nullopt;
@@ -1279,7 +1765,10 @@ struct WorkerRuntime::Impl
     {
         std::lock_guard lock(snapshot_mutex);
         if (session)
+        {
             current_snapshot.session = session->snapshot();
+            current_snapshot.execution = session->execution_snapshot();
+        }
         current_snapshot.active_invocation = active_invocation
             ? std::optional<InvocationId>(active_invocation->invocation_id)
             : std::nullopt;
@@ -1290,7 +1779,9 @@ struct WorkerRuntime::Impl
         WorkerCommandOutcome outcome,
         std::optional<InvocationId> invocation_id = {},
         RuntimeError error = {},
-        std::optional<SessionOperationReceipt> session_receipt = {})
+        std::optional<SessionOperationReceipt> session_receipt = {},
+        std::optional<ExecutionOperationId> execution_operation_id = {},
+        std::optional<ExecutionTerminalResult> execution_terminal = {})
     {
         if (queued->completed)
             return;
@@ -1303,6 +1794,13 @@ struct WorkerRuntime::Impl
         result.snapshot = Snapshot();
         result.invocation_id = invocation_id;
         result.session_receipt = std::move(session_receipt);
+        if (const auto* execution =
+                std::get_if<ControlExecutionCommand>(&queued->command))
+        {
+            result.execution_control = execution->control;
+        }
+        result.execution_operation_id = execution_operation_id;
+        result.execution_terminal = std::move(execution_terminal);
         result.error = std::move(error);
 
         queued->completed = true;
@@ -1344,16 +1842,21 @@ struct WorkerRuntime::Impl
     std::unique_ptr<EmulationSession> session;
     std::unique_ptr<IProgramRuntimePort> program_runtime;
     WorkerEventSink event_sink;
+    std::shared_ptr<const WorkerRuntimeTestHooks> test_hooks;
     WorkerCapabilityMask capabilities_value = 0;
     bool program_runtime_shutdown = false;
     std::filesystem::path terminal_screenshot_directory;
     std::chrono::milliseconds terminal_screenshot_timeout{3000};
     bool screenshot_on_terminal = false;
+    bool session_visual_intent = false;
 
     mutable std::mutex snapshot_mutex;
     WorkerSnapshot current_snapshot;
     std::optional<ActiveInvocation> active_invocation;
+    std::unordered_map<std::uint64_t, PendingExecutionCommand>
+        pending_execution_commands;
     std::vector<std::shared_ptr<QueuedCommand>> pending_shutdown_commands;
+    bool finishing_shutdown = false;
     std::thread actor;
     std::mutex join_mutex;
 };
@@ -1361,11 +1864,13 @@ struct WorkerRuntime::Impl
 WorkerRuntime::WorkerRuntime(
     std::unique_ptr<EmulationSession> session,
     std::unique_ptr<IProgramRuntimePort> program_runtime,
-    WorkerEventSink event_sink)
+    WorkerEventSink event_sink,
+    std::shared_ptr<const WorkerRuntimeTestHooks> test_hooks)
     : impl_(std::make_unique<Impl>(
           std::move(session),
           std::move(program_runtime),
-          std::move(event_sink)))
+          std::move(event_sink),
+          std::move(test_hooks)))
 {
 }
 

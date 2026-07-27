@@ -301,7 +301,9 @@ namespace savor {
             Core::Stop(*m_system);
     }
 
-    bool DolphinWrapper::loadGame(const std::string& iso_path)
+    bool DolphinWrapper::loadGame(
+        const std::string& iso_path,
+        bool boot_to_pause)
     {
         if (!m_imported_from_qt) {
             SCLOGE("Must import sys folder from DolphinQT before loading a game. (Best to use Dolphin ver. 2506a");
@@ -333,6 +335,10 @@ namespace savor {
         sterilizeConfigs();
 
         m_system_pad_is_inited = loadDolphinGUISettings(wsi, !m_visual_mode);
+        // Production sessions begin at an authoritative CPU-idle boundary.
+        // Dolphin consumes this on the CPU thread before entering its first
+        // guest run loop.
+        SConfig::GetInstance().bBootToPause = boot_to_pause;
 
         auto volume = DiscIO::CreateVolume(iso_path);
         if (!volume)
@@ -346,10 +352,19 @@ namespace savor {
         m_last_game_iso_path = iso_path;
 
         auto deadline = std::chrono::steady_clock::now() + 20s;
-        while (!Core::IsRunning(*m_system) && std::chrono::steady_clock::now() < deadline)
+        while (std::chrono::steady_clock::now() < deadline) {
+            Core::HostDispatchJobs(*m_system);
+            if (Core::IsRunning(*m_system) &&
+                (!boot_to_pause ||
+                    Core::GetState(*m_system) == Core::State::Paused)) {
+                break;
+            }
             std::this_thread::sleep_until(steady_clock::now() + milliseconds(1));
+        }
 
-        return Core::IsRunning(*m_system);
+        return Core::IsRunning(*m_system) &&
+            (!boot_to_pause ||
+                Core::GetState(*m_system) == Core::State::Paused);
     }
 
     bool DolphinWrapper::runOnCpuThread(const std::function<void()>& fn, const bool waitForCompletion) const
@@ -602,7 +617,7 @@ namespace savor {
         uint64_t tbr_before = getTBR();
 
         if (restore_paused && tbr_before == 0 &&
-            !stepOneOpcodeBlocking(5000))
+            !stepBootCoreForStateLoadBlocking(5000))
         {
             SCLOGW(
                 "[DW] loadSavestate could not step the paused boot core "
@@ -797,63 +812,20 @@ namespace savor {
 
     bool DolphinWrapper::startMoviePlayback(const std::string& dtm_path)
     {
-        SCLOGI("[Movie] PLAY %s", dtm_path.c_str());
-        if (Core::GetState(*m_system) == Core::State::Paused)
-            Core::SetState(*m_system, Core::State::Running);
-
-        while (Core::GetState(*m_system) != Core::State::Running)
-            std::this_thread::sleep_until(steady_clock::now() + milliseconds(10));
-
-        Core::Stop(*m_system);
-        while (!Core::IsUninitialized(*m_system))
-            std::this_thread::sleep_until(steady_clock::now() + milliseconds(10));
-
-        auto& movie = m_system->GetMovie();
-        if (!movie.IsReadOnly()) 
-            movie.SetReadOnly(true);
-        
-        if (movie.IsMovieActive())
-            movie.EndPlayInput(false);
-        
-        if (!movie.PlayInput(dtm_path, new std::optional<std::string>{}))
-            return false;
-        
-        Config::SetCurrent(Config::MAIN_ENABLE_DEBUGGING, true);
-        
-        auto boot = BootParameters::GenerateFromFile(m_last_game_iso_path);
-        if (!BootManager::BootCore(*m_system, std::move(boot), m_wsi))
-            return false;
-
-        while (!Core::IsRunning(*m_system))
-            std::this_thread::sleep_until(steady_clock::now() + milliseconds(10));
-
-        return true;
+        (void)dtm_path;
+        SCLOGE(
+            "[Movie] hard cutover: playback lifecycle is disconnected; "
+            "use the future MovieService");
+        return false;
     }
 
     bool DolphinWrapper::endMoviePlaybackBlocking(uint32_t timeout_ms)
     {
-        
-        SCLOGI("[Movie] STOP (request)");
-        auto& movie = m_system->GetMovie();
-        
-        if (Core::GetState(*m_system) == Core::State::Paused) {
-            movie.EndPlayInput(false);
-            movie.SetReadOnly(false);
-        }
-        else {
-            runOnCpuThread([&] {
-                movie.EndPlayInput(false);
-                movie.SetReadOnly(false);
-                }, true);
-        }
-
-        const auto deadline = steady_clock::now() + milliseconds(timeout_ms);
-        while (movie.IsPlayingInput() && steady_clock::now() < deadline)
-            std::this_thread::sleep_until(steady_clock::now() + milliseconds(10));
-
-        const bool stopped = !movie.IsPlayingInput();
-        SCLOGI("[Movie] STOP %s", stopped ? "ok" : "timeout");
-        return stopped;
+        (void)timeout_ms;
+        SCLOGE(
+            "[Movie] hard cutover: playback lifecycle is disconnected; "
+            "use the future MovieService");
+        return false;
     }
 
     bool DolphinWrapper::setGCMemoryCardA(const std::string& raw_path)
@@ -908,33 +880,18 @@ namespace savor {
 
     bool DolphinWrapper::startMovieRecording()
     {
-        Movie::ControllerTypeArray controllers{ Movie::ControllerType::GC, Movie::ControllerType::None, Movie::ControllerType::None, Movie::ControllerType::None };
-        Movie::WiimoteEnabledArray wiimotes{ false, false, false, false };
-        
-        auto& movie = m_system->GetMovie();
-        if (isMoviePlaying())
-            movie.EndPlayInput(false);
-        
-        if (movie.IsReadOnly())
-            movie.SetReadOnly(false);
-        
-        return m_system->GetMovie().BeginRecordingInput(controllers, wiimotes);
+        SCLOGE(
+            "[Movie] hard cutover: recording lifecycle is disconnected; "
+            "use the future MovieService");
+        return false;
     }
 
     void DolphinWrapper::endMovieRecording(std::optional<std::string> movie_save_path)
     {
-        auto& movie = m_system->GetMovie();
-        if (movie.IsRecordingInput() && movie_save_path.has_value())
-        {
-            if (Core::GetState(*m_system) == Core::State::Running)
-                Core::SetState(*m_system, Core::State::Paused);
-            while (Core::GetState(*m_system) == Core::State::Running)
-                std::this_thread::sleep_for(milliseconds(10));
-            movie.SaveRecording(movie_save_path.value());
-        }
-            
-
-
+        (void)movie_save_path;
+        SCLOGE(
+            "[Movie] hard cutover: recording lifecycle is disconnected; "
+            "use the future MovieService");
     }
 
     void DolphinWrapper::applyNextInputFrame() {
@@ -989,6 +946,13 @@ namespace savor {
         const InputPlan& plan,
         const InputTapePlaybackOptions& options)
     {
+        (void)plan;
+        (void)options;
+        SCLOGE(
+            "[input-tape] hard cutover: direct tape execution is disconnected; "
+            "use InputArbiter and ExecutionEngine");
+        return {};
+#if 0
         InputTapePlaybackResult result{};
         if (!m_system_pad_is_inited) {
             result.failed_index = 0;
@@ -1114,57 +1078,60 @@ namespace savor {
             result.attempted_frames.size(),
             result.unacked_count);
         return result;
+#endif
     }
 
     // -- Frame Advancing --------------------------------
 
     bool DolphinWrapper::stepOneOpcodeBlocking(int timeout_ms)
     {
+        (void)timeout_ms;
+        SCLOGE(
+            "[DW/run] hard cutover: direct instruction stepping is "
+            "disconnected; use ExecutionEngine");
+        return false;
+    }
+
+    bool DolphinWrapper::stepBootCoreForStateLoadBlocking(int timeout_ms)
+    {
         if (!m_system || !Core::IsRunning(*m_system))
             return false;
 
-        SCLOGD("[DW/run] step-op begin state=%d pc=%08X", (int)Core::GetState(*m_system), getPC());
         Common::Event sync_event;
         auto& power_pc = m_system->GetPowerPC();
         const PowerPC::CoreMode old_mode = power_pc.GetMode();
         power_pc.SetMode(PowerPC::CoreMode::Interpreter);
         m_system->GetCPU().StepOpcode(&sync_event);
-        sync_event.WaitFor(std::chrono::milliseconds(timeout_ms > 0 ? timeout_ms : 20));
+        sync_event.WaitFor(
+            std::chrono::milliseconds(timeout_ms > 0 ? timeout_ms : 20));
         power_pc.SetMode(old_mode);
-        SCLOGD("[DW/run] step-op end state=%d pc=%08X", (int)Core::GetState(*m_system), getPC());
         return true;
     }
 
     bool DolphinWrapper::stepOneFrameBlocking(int timeout_ms)
     {
-        if (!Core::IsRunning(*m_system))
-            return false;
-
-        SCLOGD("[DW/run] step begin state=%d", (int)Core::GetState(*m_system));
-        Core::DoFrameStep(*m_system);   // schedules a single frame and re-pauses
-
-        const bool ok = waitForPausedCoreState(timeout_ms);
-        SCLOGD("[DW/run] step end   ok=%d state=%d pc=%08X", ok ? 1 : 0, (int)Core::GetState(*m_system), getPC());
-        return ok;
+        (void)timeout_ms;
+        SCLOGE(
+            "[DW/run] hard cutover: direct frame stepping is disconnected; "
+            "use ExecutionEngine");
+        return false;
     }
 
     bool DolphinWrapper::pauseEmulationBlocking(uint32_t timeout_ms)
     {
-        if (!m_system || !Core::IsRunning(*m_system))
-            return false;
-        Core::SetState(*m_system, Core::State::Paused);
-        return waitForPausedCoreState(timeout_ms ? timeout_ms : 1000);
+        (void)timeout_ms;
+        SCLOGE(
+            "[DW/run] hard cutover: direct pause is disconnected; "
+            "use ExecutionEngine");
+        return false;
     }
 
     bool DolphinWrapper::resumeEmulation()
     {
-        if (!m_system || !Core::IsRunning(*m_system))
-            return false;
-        Core::SetState(*m_system, Core::State::Running);
-        // An owned stop point may synchronously return the core to Paused
-        // before this host thread observes Running. The accepted resume
-        // request is still successful; the router carries the stop receipt.
-        return Core::IsRunning(*m_system);
+        SCLOGE(
+            "[DW/run] hard cutover: direct resume is disconnected; "
+            "use ExecutionEngine");
+        return false;
     }
 
     bool DolphinWrapper::isEmulationPaused() const
@@ -1714,12 +1681,16 @@ namespace savor {
 
     void DolphinWrapper::disableThrottle()
     {
-        Core::SetIsThrottlerTempDisabled(true);
+        SCLOGE(
+            "[DW/run] hard cutover: direct throttle control is disconnected; "
+            "use ExecutionEngine");
     }
 
     void DolphinWrapper::enableThrottle()
     {
-        Core::SetIsThrottlerTempDisabled(false);
+        SCLOGE(
+            "[DW/run] hard cutover: direct throttle control is disconnected; "
+            "use ExecutionEngine");
     }
 
     bool DolphinWrapper::isMoviePlaying() const

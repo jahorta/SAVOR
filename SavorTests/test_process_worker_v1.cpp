@@ -6,12 +6,14 @@
 #include <filesystem>
 #include <future>
 #include <latch>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <set>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "Runner/Runtime/RuntimeTypes.h"
@@ -52,6 +54,131 @@ public:
             wrms::MessageKind::OpenSessionResult,
             result,
             991);
+    }
+
+    static std::uint32_t EffectiveExecutionCommandTimeout(
+        std::uint32_t operation_timeout_ms,
+        std::uint32_t command_timeout_ms)
+    {
+        return ProcessWorker::effective_execution_command_timeout(
+            operation_timeout_ms,
+            command_timeout_ms);
+    }
+
+    static bool ValidateExecutionResult(
+        wrms::ExecutionControlKind control,
+        runtime::SessionId session_id,
+        runtime::StateEpoch expected_state_epoch,
+        std::uint32_t requested_count,
+        const wrms::ExecutionResultPayload& result,
+        std::string* error_out = nullptr)
+    {
+        return ProcessWorker::validate_execution_result(
+            control,
+            session_id,
+            expected_state_epoch,
+            requested_count,
+            result,
+            error_out);
+    }
+
+    static bool StartNegotiatedVisualTransport(
+        ProcessWorker& worker,
+        runtime::SessionId session_id,
+        runtime::StateEpoch state_epoch)
+    {
+        if (worker.writer_.joinable() || worker.child_stdin_write_)
+            return false;
+
+        HANDLE sink = CreateFileW(
+            L"NUL",
+            GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            nullptr,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            nullptr);
+        if (sink == INVALID_HANDLE_VALUE)
+            return false;
+
+        {
+            std::lock_guard<std::mutex> lock(worker.writer_mutex_);
+            worker.writer_queue_.clear();
+            worker.writer_exit_requested_ = false;
+            worker.writer_active_ = false;
+            worker.writer_cancel_requested_.store(
+                false,
+                std::memory_order_release);
+        }
+        worker.child_stdin_write_ = sink;
+        worker.running_.store(true, std::memory_order_release);
+        worker.accepting_writes_.store(true, std::memory_order_release);
+
+        const auto capabilities = runtime::AddCapability(
+            runtime::kSlice1ProductionCapabilities,
+            runtime::WorkerCapability::InteractiveVisualDebug);
+        {
+            std::lock_guard<std::mutex> lock(worker.snapshot_mutex_);
+            worker.snapshot_.running = true;
+            worker.snapshot_.hello_received = true;
+            worker.snapshot_.process_capabilities = capabilities;
+            worker.snapshot_.session_open = true;
+            worker.snapshot_.session_visual_intent = true;
+            worker.snapshot_.session_id = session_id;
+            worker.snapshot_.state_epoch = state_epoch;
+            worker.snapshot_.session_capabilities = capabilities;
+            worker.snapshot_.worker_state = runtime::WorkerState::Ready;
+            worker.snapshot_.session_disposition =
+                runtime::SessionDisposition::Clean;
+            worker.snapshot_.execution_activity =
+                wrms::ExecutionActivityCode::IdlePaused;
+        }
+        worker.writer_ =
+            std::thread([&worker]() { worker.writer_thread(); });
+        return true;
+    }
+
+    static void StopNegotiatedVisualTransport(ProcessWorker& worker)
+    {
+        {
+            std::lock_guard<std::mutex> lock(worker.writer_mutex_);
+            worker.accepting_writes_.store(false, std::memory_order_release);
+            worker.writer_exit_requested_ = true;
+        }
+        worker.writer_cv_.notify_all();
+        if (worker.writer_.joinable())
+            worker.writer_.join();
+        if (worker.child_stdin_write_)
+        {
+            CloseHandle(worker.child_stdin_write_);
+            worker.child_stdin_write_ = nullptr;
+        }
+        worker.running_.store(false, std::memory_order_release);
+        std::lock_guard<std::mutex> lock(worker.snapshot_mutex_);
+        worker.snapshot_.running = false;
+    }
+
+    static std::pair<bool, bool> ClassifyShutdownResponse(
+        const wrms::ShutdownResultPayload& result)
+    {
+        std::vector<std::uint8_t> payload;
+        if (!wrms::EncodePayload(result, payload))
+            return {false, false};
+        bool graceful = false;
+        const bool valid =
+            ProcessWorker::classify_shutdown_response(payload, &graceful);
+        return {valid, graceful};
+    }
+
+    static std::pair<bool, bool> ClassifyMalformedShutdownResponse()
+    {
+        const std::array<std::uint8_t, 1> malformed{0xff};
+        bool graceful = true;
+        const bool valid =
+            ProcessWorker::classify_shutdown_response(
+                malformed,
+                &graceful);
+        return {valid, graceful};
     }
 };
 
@@ -111,16 +238,16 @@ TEST(ProcessWorkerV1, RetainedLegacyApisFailLocallyWithHardCutoverDiagnostics)
     ExpectErrorContains(worker, savor::kDisconnectedWorkerApiDiagnostic);
 
     EXPECT_FALSE(worker.visual_pause_emulation());
-    ExpectErrorContains(worker, "interactive pause");
-    ExpectErrorContains(worker, "Dependency Slice 3");
+    ExpectErrorContains(worker, "legacy visual pause");
+    ExpectErrorContains(worker, "pause_guest_execution");
 
     EXPECT_FALSE(worker.visual_resume_emulation());
-    ExpectErrorContains(worker, "interactive resume");
-    ExpectErrorContains(worker, "Dependency Slice 3");
+    ExpectErrorContains(worker, "legacy visual resume");
+    ExpectErrorContains(worker, "resume_guest_execution");
 
     EXPECT_FALSE(worker.visual_step_vm());
-    ExpectErrorContains(worker, "interactive stepping");
-    ExpectErrorContains(worker, "Dependency Slice 3");
+    ExpectErrorContains(worker, "program/VM stepping");
+    ExpectErrorContains(worker, "ProgramRuntime");
 
     EXPECT_FALSE(worker.is_running());
     EXPECT_EQ(worker.GetPid(), 0);
@@ -149,6 +276,313 @@ TEST(ProcessWorkerV1, StopIsIdempotentWithoutAStartedProcess)
     EXPECT_FALSE(second.was_running);
     EXPECT_FALSE(second.forced);
     EXPECT_FALSE(worker.is_running());
+}
+
+TEST(ProcessWorkerV1, ExecutionControlsFailLocallyWithoutNegotiatedCapability)
+{
+    savor::ProcessWorker worker;
+    const auto session = savor::runtime::SessionId{91};
+    const auto epoch = savor::runtime::StateEpoch{4};
+
+    EXPECT_FALSE(worker.pause_guest_execution(session, epoch));
+    ExpectErrorContains(worker, "does not advertise");
+    EXPECT_FALSE(worker.resume_guest_execution(session, epoch));
+    ExpectErrorContains(worker, "does not advertise");
+    EXPECT_FALSE(worker.step_guest_frames(session, epoch, 1));
+    ExpectErrorContains(worker, "does not advertise");
+    EXPECT_FALSE(worker.step_guest_instructions(session, epoch, 1));
+    ExpectErrorContains(worker, "does not advertise");
+}
+
+TEST(
+    ProcessWorkerV1,
+    CorrelatesConcurrentExecutionControlsOverNegotiatedFakeTransport)
+{
+    struct ObservedRequest
+    {
+        std::uint64_t request_id = 0;
+        savor::wrms::ControlExecutionPayload payload;
+    };
+
+    constexpr auto session = savor::runtime::SessionId{91};
+    constexpr auto epoch = savor::runtime::StateEpoch{4};
+    std::mutex observed_mutex;
+    std::vector<ObservedRequest> observed;
+    std::atomic<bool> decoded_all{true};
+    savor::ProcessWorker* worker_ptr = nullptr;
+
+    auto hooks = std::make_shared<savor::ProcessWorkerTestHooks>();
+    hooks->observe_writer_frame =
+        [&](savor::wrms::MessageKind kind,
+            std::span<const std::uint8_t> bytes) {
+            if (kind != savor::wrms::MessageKind::ControlExecution)
+                return;
+
+            const auto frame = savor::wrms::DecodeFrame(bytes, true);
+            savor::wrms::ControlExecutionPayload request;
+            if (frame.status != savor::wrms::FrameDecodeStatus::Complete ||
+                frame.frame.header.kind !=
+                    savor::wrms::MessageKind::ControlExecution ||
+                !savor::wrms::DecodePayload(frame.frame.payload, request))
+            {
+                decoded_all.store(false, std::memory_order_release);
+                return;
+            }
+
+            std::vector<ObservedRequest> responses;
+            {
+                std::lock_guard<std::mutex> lock(observed_mutex);
+                observed.push_back({
+                    frame.frame.header.request_id,
+                    request,
+                });
+                if (observed.size() == 2)
+                    responses = observed;
+            }
+
+            // Resolve the second request first. Each waiting caller must still
+            // receive the result carrying its own WRMS request ID.
+            for (auto it = responses.rbegin(); it != responses.rend(); ++it)
+            {
+                const auto delivered =
+                    savor::ProcessWorkerTestPeer::DeliverPayload(
+                        *worker_ptr,
+                        savor::wrms::MessageKind::ExecutionResult,
+                        savor::wrms::ExecutionResultPayload{
+                            .command_sequence = 2000 + it->request_id,
+                            .control = it->payload.control,
+                            .status =
+                                savor::wrms::CommandStatus::Succeeded,
+                            .session_id = it->payload.session_id,
+                            .state_epoch =
+                                it->payload.expected_state_epoch,
+                            .operation_id = 1000 + it->request_id,
+                            .activity =
+                                savor::wrms::ExecutionActivityCode::
+                                    IdlePaused,
+                            .has_terminal_status = true,
+                            .terminal_status =
+                                savor::wrms::ExecutionTerminalStatusCode::
+                                    StepsCompleted,
+                            .completed_count = it->payload.count,
+                            .program_counter = 0x801dc288u,
+                        },
+                        it->request_id);
+                if (!delivered)
+                    decoded_all.store(false, std::memory_order_release);
+            }
+        };
+
+    savor::ProcessWorker worker{hooks};
+    worker_ptr = &worker;
+    ASSERT_TRUE(
+        savor::ProcessWorkerTestPeer::StartNegotiatedVisualTransport(
+            worker,
+            session,
+            epoch));
+
+    std::latch ready{2};
+    std::latch go{1};
+    const auto submit = [&](std::uint32_t count) {
+        ready.count_down();
+        go.wait();
+        savor::wrms::ExecutionResultPayload result;
+        const bool succeeded = worker.step_guest_frames(
+            session,
+            epoch,
+            count,
+            &result,
+            1000,
+            5000);
+        return std::pair{succeeded, result};
+    };
+    auto first = std::async(std::launch::async, submit, 2u);
+    auto second = std::async(std::launch::async, submit, 3u);
+    ready.wait();
+    go.count_down();
+
+    const auto first_result = first.get();
+    const auto second_result = second.get();
+    savor::ProcessWorkerTestPeer::StopNegotiatedVisualTransport(worker);
+
+    ASSERT_TRUE(decoded_all.load(std::memory_order_acquire));
+    ASSERT_TRUE(first_result.first);
+    ASSERT_TRUE(second_result.first);
+    EXPECT_EQ(first_result.second.completed_count, 2u);
+    EXPECT_EQ(second_result.second.completed_count, 3u);
+    EXPECT_NE(
+        first_result.second.operation_id,
+        second_result.second.operation_id);
+    EXPECT_NE(
+        first_result.second.command_sequence,
+        second_result.second.command_sequence);
+
+    std::lock_guard<std::mutex> lock(observed_mutex);
+    ASSERT_EQ(observed.size(), 2u);
+    EXPECT_NE(observed[0].request_id, observed[1].request_id);
+    for (const ObservedRequest& request : observed)
+    {
+        EXPECT_EQ(
+            request.payload.control,
+            savor::wrms::ExecutionControlKind::StepFrame);
+        EXPECT_EQ(request.payload.session_id, session.value());
+        EXPECT_EQ(
+            request.payload.expected_state_epoch,
+            epoch.value());
+        EXPECT_TRUE(
+            request.payload.count == 2 ||
+            request.payload.count == 3);
+        const auto& result = request.payload.count == 2
+            ? first_result.second
+            : second_result.second;
+        EXPECT_EQ(result.operation_id, 1000 + request.request_id);
+        EXPECT_EQ(
+            result.command_sequence,
+            2000 + request.request_id);
+    }
+}
+
+TEST(ProcessWorkerV1, ExecutionControlWaitOutlivesBoundedOperation)
+{
+    EXPECT_EQ(
+        savor::ProcessWorkerTestPeer::EffectiveExecutionCommandTimeout(
+            3000,
+            10000),
+        10000u);
+    EXPECT_EQ(
+        savor::ProcessWorkerTestPeer::EffectiveExecutionCommandTimeout(
+            15000,
+            10000),
+        16000u);
+    EXPECT_EQ(
+        savor::ProcessWorkerTestPeer::EffectiveExecutionCommandTimeout(
+            (std::numeric_limits<std::uint32_t>::max)(),
+            1),
+        (std::numeric_limits<std::uint32_t>::max)());
+    EXPECT_EQ(
+        savor::ProcessWorkerTestPeer::EffectiveExecutionCommandTimeout(
+            0,
+            0),
+        10000u);
+}
+
+TEST(ProcessWorkerV1, SuccessfulExecutionResultsMustMatchControlSemantics)
+{
+    using savor::wrms::CommandStatus;
+    using savor::wrms::ExecutionActivityCode;
+    using savor::wrms::ExecutionControlKind;
+    using savor::wrms::ExecutionResultPayload;
+    using savor::wrms::ExecutionTerminalStatusCode;
+
+    const auto session = savor::runtime::SessionId{91};
+    const auto epoch = savor::runtime::StateEpoch{4};
+    const ExecutionResultPayload valid_step{
+        .control = ExecutionControlKind::StepFrame,
+        .status = CommandStatus::Succeeded,
+        .session_id = session.value(),
+        .state_epoch = epoch.value(),
+        .operation_id = 17,
+        .activity = ExecutionActivityCode::IdlePaused,
+        .has_terminal_status = true,
+        .terminal_status = ExecutionTerminalStatusCode::StepsCompleted,
+        .completed_count = 2,
+    };
+    EXPECT_TRUE(savor::ProcessWorkerTestPeer::ValidateExecutionResult(
+        ExecutionControlKind::StepFrame,
+        session,
+        epoch,
+        2,
+        valid_step));
+
+    auto incomplete_step = valid_step;
+    incomplete_step.has_terminal_status = false;
+    std::string error;
+    EXPECT_FALSE(savor::ProcessWorkerTestPeer::ValidateExecutionResult(
+        ExecutionControlKind::StepFrame,
+        session,
+        epoch,
+        2,
+        incomplete_step,
+        &error));
+    EXPECT_NE(error.find("step"), std::string::npos);
+
+    auto short_step = valid_step;
+    short_step.completed_count = 1;
+    EXPECT_FALSE(savor::ProcessWorkerTestPeer::ValidateExecutionResult(
+        ExecutionControlKind::StepFrame,
+        session,
+        epoch,
+        2,
+        short_step));
+
+    const ExecutionResultPayload valid_resume{
+        .control = ExecutionControlKind::Resume,
+        .status = CommandStatus::Succeeded,
+        .session_id = session.value(),
+        .state_epoch = epoch.value(),
+        .operation_id = 18,
+        .activity = ExecutionActivityCode::InteractiveRunning,
+    };
+    EXPECT_TRUE(savor::ProcessWorkerTestPeer::ValidateExecutionResult(
+        ExecutionControlKind::Resume,
+        session,
+        epoch,
+        0,
+        valid_resume));
+
+    auto terminal_resume = valid_resume;
+    terminal_resume.has_terminal_status = true;
+    terminal_resume.terminal_status =
+        ExecutionTerminalStatusCode::Paused;
+    EXPECT_FALSE(savor::ProcessWorkerTestPeer::ValidateExecutionResult(
+        ExecutionControlKind::Resume,
+        session,
+        epoch,
+        0,
+        terminal_resume));
+
+    const ExecutionResultPayload valid_pause{
+        .control = ExecutionControlKind::Pause,
+        .status = CommandStatus::Succeeded,
+        .session_id = session.value(),
+        .state_epoch = epoch.value(),
+        .operation_id = 19,
+        .activity = ExecutionActivityCode::IdlePaused,
+        .has_terminal_status = true,
+        .terminal_status = ExecutionTerminalStatusCode::Paused,
+    };
+    EXPECT_TRUE(savor::ProcessWorkerTestPeer::ValidateExecutionResult(
+        ExecutionControlKind::Pause,
+        session,
+        epoch,
+        0,
+        valid_pause));
+}
+
+TEST(ProcessWorkerV1, CleanupFailedOrMalformedShutdownIsNotGraceful)
+{
+    const auto graceful =
+        savor::ProcessWorkerTestPeer::ClassifyShutdownResponse(
+            savor::wrms::ShutdownResultPayload{
+                .status = savor::wrms::ShutdownStatus::Graceful,
+            });
+    EXPECT_TRUE(graceful.first);
+    EXPECT_TRUE(graceful.second);
+
+    const auto cleanup_failed =
+        savor::ProcessWorkerTestPeer::ClassifyShutdownResponse(
+            savor::wrms::ShutdownResultPayload{
+                .status = savor::wrms::ShutdownStatus::CleanupFailed,
+                .final_disposition =
+                    savor::wrms::SessionDispositionCode::Tainted,
+            });
+    EXPECT_TRUE(cleanup_failed.first);
+    EXPECT_FALSE(cleanup_failed.second);
+
+    const auto malformed =
+        savor::ProcessWorkerTestPeer::ClassifyMalformedShutdownResponse();
+    EXPECT_FALSE(malformed.first);
+    EXPECT_FALSE(malformed.second);
 }
 
 TEST(ProcessWorkerV1, RejectedDuplicateOpenPreservesExistingSessionSnapshot)
@@ -282,6 +716,46 @@ TEST(ProcessWorkerV1, RuntimeDiagnosticPreservesSessionAndCallbacksCarryAttemptI
     EXPECT_EQ(observed_terminal->attempt_id, 801u);
 }
 
+TEST(ProcessWorkerV1, ExecutionStateUpdatesSnapshotAndUsesDedicatedCallback)
+{
+    savor::ProcessWorker worker;
+    std::optional<savor::wrms::ExecutionStatePayload> observed;
+    worker.set_execution_state_callback(
+        [&](const auto& state) { observed = state; });
+
+    const savor::wrms::ExecutionStatePayload running{
+        .session_id = 81,
+        .state_epoch = 12,
+        .operation_id = 501,
+        .activity =
+            savor::wrms::ExecutionActivityCode::InteractiveRunning,
+        .has_active_control = true,
+        .active_control = savor::wrms::ExecutionControlKind::Resume,
+        .completed_count = 3,
+        .program_counter = 0x801dc288,
+    };
+    ASSERT_TRUE(savor::ProcessWorkerTestPeer::DeliverPayload(
+        worker,
+        savor::wrms::MessageKind::ExecutionState,
+        running));
+
+    ASSERT_TRUE(observed.has_value());
+    EXPECT_EQ(*observed, running);
+    const auto snapshot = worker.latest_snapshot();
+    EXPECT_EQ(snapshot.session_id, savor::runtime::SessionId{81});
+    EXPECT_EQ(snapshot.state_epoch, savor::runtime::StateEpoch{12});
+    EXPECT_EQ(
+        snapshot.execution_activity,
+        savor::wrms::ExecutionActivityCode::InteractiveRunning);
+    EXPECT_EQ(snapshot.execution_operation_id, 501u);
+    ASSERT_TRUE(snapshot.active_execution_control.has_value());
+    EXPECT_EQ(
+        *snapshot.active_execution_control,
+        savor::wrms::ExecutionControlKind::Resume);
+    EXPECT_EQ(snapshot.execution_completed_count, 3u);
+    EXPECT_EQ(snapshot.execution_program_counter, 0x801dc288u);
+}
+
 TEST(ProcessWorkerV1, BlockedWriteIsCancelledAndJoinedBeforeStdinCloseAndForce)
 {
     const auto worker_path = FindBuiltWorker();
@@ -403,7 +877,7 @@ TEST(ProcessWorkerV1, BlockedWriteIsCancelledAndJoinedBeforeStdinCloseAndForce)
     EXPECT_TRUE(second.writer_joined);
 }
 
-TEST(ProcessWorkerV1, NegotiatesSliceOneCapabilitiesCorrelatesConcurrentRequestsAndStopsGracefully)
+TEST(ProcessWorkerV1, NegotiatesSliceThreeCapabilitiesCorrelatesConcurrentRequestsAndStopsGracefully)
 {
     const auto worker_path = FindBuiltWorker();
     if (worker_path.empty())
@@ -488,7 +962,7 @@ TEST(ProcessWorkerV1, NegotiatesSliceOneCapabilitiesCorrelatesConcurrentRequests
     EXPECT_FALSE(savor::runtime::HasCapability(
         capabilities,
         savor::runtime::WorkerCapability::ProgramInvocation));
-    EXPECT_FALSE(savor::runtime::HasCapability(
+    EXPECT_TRUE(savor::runtime::HasCapability(
         capabilities,
         savor::runtime::WorkerCapability::InteractiveVisualDebug));
 

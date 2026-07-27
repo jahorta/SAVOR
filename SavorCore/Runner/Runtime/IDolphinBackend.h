@@ -10,6 +10,7 @@
 namespace savor::runtime {
 
 class IPhysicalStopPointBackendPort;
+class IExecutionBackendPort;
 
 enum class BackendErrorCode : std::uint16_t
 {
@@ -98,11 +99,6 @@ public:
     [[nodiscard]] virtual BackendCoreState QueryCoreState() const noexcept = 0;
     [[nodiscard]] virtual BackendHealthReport CheckHealth() const = 0;
 
-    virtual BackendResult Pause(std::chrono::milliseconds timeout) = 0;
-    virtual BackendResult Resume() = 0;
-    virtual BackendResult StepInstruction(std::chrono::milliseconds timeout) = 0;
-    virtual BackendResult StepFrame(std::chrono::milliseconds timeout) = 0;
-
     virtual BackendResult RestoreStateFile(const std::filesystem::path& path) = 0;
     virtual BackendResult SaveStateFile(const std::filesystem::path& path) = 0;
     virtual BackendBufferResult SaveStateBuffer() = 0;
@@ -116,6 +112,9 @@ public:
     // runtime layers never receive Dolphin's physical debugging surface.
     [[nodiscard]] virtual IPhysicalStopPointBackendPort*
     PhysicalStopPoints() noexcept = 0;
+    // The session gives this facet only to its ExecutionEngine. Session
+    // callers and program layers never receive primitive advancement access.
+    [[nodiscard]] virtual IExecutionBackendPort* Execution() noexcept = 0;
 
 protected:
     IDolphinBackend() = default;

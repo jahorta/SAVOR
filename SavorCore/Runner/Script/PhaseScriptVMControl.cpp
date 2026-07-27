@@ -159,211 +159,34 @@ namespace savor {
     bool PhaseScriptVM::op_return_result(const PSOp& op, PSResult& result, PSContext& ctx) const { ctx[savor::context::key::core::VI_LAST] = (uint32_t)(host_.getViFieldCountApprox() & 0xFFFFFFFFull); result.ctx = ctx; result.ctx[op.keyimm.key] = op.keyimm.imm; uint32_t dw_outcome = 0; ctx.get(savor::context::key::core::DW_RUN_OUTCOME_CODE, dw_outcome); result.ok = dw_outcome == 0; return true; }
     void PhaseScriptVM::op_set_timeout(const PSOp& op, PSContext& ctx) const { ctx[savor::context::key::core::RUN_MS] = op.imm.v; }
     void PhaseScriptVM::op_set_timeout_from(const PSOp& op, PSContext& ctx) const { uint32_t timeout_ms; ctx.get<uint32_t>(op.key.id, timeout_ms); ctx[savor::context::key::core::RUN_MS] = timeout_ms; }
-    PhaseScriptVM::RunUntilBpCoreResult PhaseScriptVM::run_until_bp_core(PSContext& ctx, const RunUntilBpSpec& spec) {
-        using savor::RunToBpOutcome;
-
-        uint32_t timeout_ms = init_.default_timeout_ms;
-        uint32_t vi_stall_ms = 0;
-        uint32_t progress_flags = 0;
-        ctx.get<uint32_t>(savor::context::key::core::RUN_MS, timeout_ms);
-        ctx.get<uint32_t>(savor::context::key::core::VI_STALL_MS, vi_stall_ms);
-        ctx.get<uint32_t>(savor::context::key::core::PROGRESS_CORE_FLAGS, progress_flags);
-
-        uint32_t poll_ms = spec.poll_ms_override;
-        if (poll_ms == 0) {
-            ctx.get<uint32_t>(savor::context::key::core::RUN_POLL_MS, poll_ms);
-        }
-        if (poll_ms == 0) {
-            poll_ms = host_.pickPollIntervalMs(timeout_ms);
-        }
-
-        const auto collect_expected_pcs = [&]() {
-            std::vector<uint32_t> pcs;
-            pcs.reserve(spec.expected_bp_keys.size());
-            for (const auto expected_bp : spec.expected_bp_keys) {
-                if (const auto* e = bpmap_.find(expected_bp)) {
-                    if (std::find(pcs.begin(), pcs.end(), e->pc) == pcs.end()) {
-                        pcs.push_back(e->pc);
-                    }
-                }
-            }
-            return pcs;
-        };
-
-        uint64_t input_epoch = 0;
-        if (spec.apply_input) {
-            if (spec.track_input_poll) {
-                input_epoch = host_.publishInputEpoch(spec.input);
-            } else {
-                host_.setInput(spec.input);
-            }
-        }
-
-        if (spec.step_off_current_bp) {
-            const uint32_t entry_pc = host_.getPC();
-            if (const BPAddr* entry_bp = find_hit_bp(
-                bpmap_,
-                canonical_bp_keys_,
-                gated_bp_keys_,
-                predicate_bp_keys_,
-                entry_pc)) {
-                SCLOGI("[VM] run_until_bp stepoff pc=%08X bp=%u input_btn=%04X",
-                    entry_pc,
-                    static_cast<uint32_t>(entry_bp->key),
-                    spec.input.buttons);
-                host_.setEnabledPcBreakpointsOnly({});
-                (void)host_.stepOneOpcodeBlocking(static_cast<int>(timeout_ms));
-                if (spec.expected_only_scope) {
-                    restore_canonical_breakpoint_scope();
-                } else {
-                    host_.setEnabledPcBreakpointsOnly(collect_expected_pcs());
-                }
-            }
-        }
-
-        if (spec.expected_only_scope) {
-            host_.setEnabledPcBreakpointsOnly(collect_expected_pcs());
-        }
-
-        const auto t0 = std::chrono::steady_clock::now();
-        DolphinWrapper::RunUntilHitResult rr{};
-
-        run_until_bp_active_.store(true, std::memory_order_release);
-        host_.disableThrottle();
-        rr = host_.runUntilBreakpointFlexible(
-            timeout_ms,
-            vi_stall_ms,
-            spec.watch_movie,
-            poll_ms,
-            progress_flags);
-        const auto t1 = std::chrono::steady_clock::now();
-        host_.enableThrottle();
+    PhaseScriptVM::RunUntilBpCoreResult PhaseScriptVM::run_until_bp_core(
+        PSContext& ctx,
+        const RunUntilBpSpec& spec)
+    {
+        // PhaseScriptVM is retained only as translation evidence during the
+        // hard cutover. It must not become a compatibility executor around
+        // the canonical ExecutionEngine.
         run_until_bp_active_.store(false, std::memory_order_release);
-
-        if (rr.hit && spec.hold_input_through_hit_opcode) {
-            SCLOGI("[VM] run_until_bp hold-through-hit pc=%08X input_btn=%04X",
-                static_cast<uint32_t>(rr.pc),
-                spec.input.buttons);
-            host_.setEnabledPcBreakpointsOnly({});
-            (void)host_.stepOneOpcodeBlocking(static_cast<int>(timeout_ms));
-            if (spec.expected_only_scope) {
-                restore_canonical_breakpoint_scope();
-            }
-        }
-
-        uint32_t input_poll_count = 0;
-        bool input_acknowledged = false;
-        if (spec.track_input_poll && input_epoch != 0) {
-            const auto receipt = host_.getInputPollReceipt();
-            if (receipt.epoch == input_epoch) {
-                input_poll_count = receipt.callback_count;
-                input_acknowledged = receipt.acknowledged();
-            }
-        }
-
-        if (spec.release_input) {
-            GCInputFrame released_input = spec.input;
-            released_input.buttons = static_cast<uint16_t>(released_input.buttons & ~spec.input.buttons);
-            host_.setInput(released_input);
-        }
-
-        if (spec.expected_only_scope) {
-            restore_canonical_breakpoint_scope();
-        }
-
-        RunToBpOutcome outcome = RunToBpOutcome::Unknown;
-        if (rr.hit) outcome = RunToBpOutcome::Hit;
-        else if (rr.reason) {
-            if (std::strcmp(rr.reason, "timeout") == 0) outcome = RunToBpOutcome::Timeout;
-            else if (std::strcmp(rr.reason, "vi_stalled") == 0) outcome = RunToBpOutcome::ViStalled;
-            else if (std::strcmp(rr.reason, "movie_ended") == 0) outcome = RunToBpOutcome::MovieEnded;
-            else if (std::strcmp(rr.reason, "cancelled") == 0
-                || std::strcmp(rr.reason, "shutdown") == 0
-                || std::strcmp(rr.reason, "control_unavailable") == 0
-                || std::strcmp(rr.reason, "control_pause_failed") == 0) {
-                outcome = RunToBpOutcome::Aborted;
-            }
-        }
-
-        const BPAddr* hit_bp = nullptr;
-        uint32_t hit_bp_key = 0;
-        bool expected_match = false;
-        if (rr.hit) {
-            if (!spec.expected_bp_keys.empty()) {
-                hit_bp = find_hit_bp_in_keys(bpmap_, spec.expected_bp_keys, static_cast<uint32_t>(rr.pc));
-                if (hit_bp != nullptr) {
-                    hit_bp_key = static_cast<uint32_t>(hit_bp->key);
-                    expected_match = true;
-                }
-            }
-            if (hit_bp == nullptr) {
-                hit_bp = spec.include_gated_hit_lookup
-                    ? find_hit_bp(bpmap_, canonical_bp_keys_, gated_bp_keys_, predicate_bp_keys_, static_cast<uint32_t>(rr.pc))
-                    : find_hit_bp(bpmap_, canonical_bp_keys_, predicate_bp_keys_, static_cast<uint32_t>(rr.pc));
-                if (hit_bp != nullptr) {
-                    hit_bp_key = static_cast<uint32_t>(hit_bp->key);
-                }
-            }
-            if (spec.expected_bp_keys.empty()) {
-                expected_match = true;
-            }
-        }
-
-        const uint32_t elapsed_ms = static_cast<uint32_t>(
-            std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count());
-        ctx[savor::context::key::core::DW_RUN_OUTCOME_CODE] = static_cast<uint32_t>(outcome);
-        ctx[savor::context::key::core::ELAPSED_MS] = elapsed_ms;
-        ctx[savor::context::key::core::RUN_HIT_PC] = rr.hit ? static_cast<uint32_t>(rr.pc) : 0u;
-        ctx[savor::context::key::core::RUN_HIT_BP_KEY] = hit_bp_key;
-        ctx[savor::context::key::core::RUN_EXPECTED_MATCH] = expected_match ? 1u : 0u;
-        ctx[savor::context::key::core::RUN_STOP_KIND] = static_cast<uint32_t>(rr.stop_kind);
-        if (rr.memory_watchpoint.has_value()) {
-            const auto& hit = *rr.memory_watchpoint;
-            ctx[savor::context::key::core::RUN_MEMWATCH_ID] = hit.id;
-            ctx[savor::context::key::core::RUN_MEMWATCH_ADDR] = hit.address;
-            ctx[savor::context::key::core::RUN_MEMWATCH_SIZE] = hit.size;
-            ctx[savor::context::key::core::RUN_MEMWATCH_ACCESS] = static_cast<uint32_t>(hit.access);
-            ctx[savor::context::key::core::RUN_MEMWATCH_HITS_BEFORE] = hit.num_hits_before;
-            ctx[savor::context::key::core::RUN_MEMWATCH_HITS_AFTER] = hit.num_hits_after;
-        } else {
-            ctx[savor::context::key::core::RUN_MEMWATCH_ID] = 0u;
-            ctx[savor::context::key::core::RUN_MEMWATCH_ADDR] = 0u;
-            ctx[savor::context::key::core::RUN_MEMWATCH_SIZE] = 0u;
-            ctx[savor::context::key::core::RUN_MEMWATCH_ACCESS] = 0u;
-            ctx[savor::context::key::core::RUN_MEMWATCH_HITS_BEFORE] = 0u;
-            ctx[savor::context::key::core::RUN_MEMWATCH_HITS_AFTER] = 0u;
-        }
-        ctx[savor::context::key::core::VI_DELTA] = static_cast<uint32_t>(host_.getViFieldCountApproxFromBaseline() & 0xFFFFFFFFull);
-        ctx[savor::context::key::core::POLL_MS] = poll_ms;
-        ctx[savor::context::key::core::VI_LAST] = static_cast<uint32_t>(host_.getViFieldCountApprox() & 0xFFFFFFFFull);
-        ctx[savor::context::key::battle::MACRO_CAPTURE_ONLY_PC_HITS] = 0u;
-        ctx[savor::context::key::battle::MACRO_CAPTURE_ONLY_MEMWATCH_HITS] = 0u;
-        ctx[savor::context::key::battle::MACRO_CAPTURE_ONLY_UNATTRIBUTED_DELTAS] = 0u;
-        ctx[savor::context::key::battle::MACRO_CAPTURE_ONLY_LAST_PC] = 0u;
-
-        SCLOGDX(
-            SC_TAGS("vm", "breakpoint"),
-            "[VM] run_until_bp outcome=%u pc=%08X bp_key=%u bp_symbol=%s expected_match=%u",
-            static_cast<uint32_t>(outcome),
-            rr.hit ? static_cast<uint32_t>(rr.pc) : 0u,
-            hit_bp_key,
-            stable_bp_id_or_empty(hit_bp),
-            expected_match ? 1u : 0u);
-
-        if (spec.update_derived && derived_) {
-            derived_->update_on_bp(hit_bp_key, ctx, host_);
-        }
+        ctx[savor::context::key::core::DW_RUN_OUTCOME_CODE] =
+            static_cast<uint32_t>(RunToBpOutcome::Aborted);
+        ctx[savor::context::key::core::ELAPSED_MS] = 0u;
+        ctx[savor::context::key::core::RUN_HIT_PC] = 0u;
+        ctx[savor::context::key::core::RUN_HIT_BP_KEY] = 0u;
+        ctx[savor::context::key::core::RUN_EXPECTED_MATCH] = 0u;
+        ctx[savor::context::key::core::RUN_STOP_KIND] = 0u;
+        ctx[savor::context::key::core::RUN_MEMWATCH_ID] = 0u;
+        ctx[savor::context::key::core::RUN_MEMWATCH_ADDR] = 0u;
+        ctx[savor::context::key::core::RUN_MEMWATCH_SIZE] = 0u;
+        ctx[savor::context::key::core::RUN_MEMWATCH_ACCESS] = 0u;
+        ctx[savor::context::key::core::RUN_MEMWATCH_HITS_BEFORE] = 0u;
+        ctx[savor::context::key::core::RUN_MEMWATCH_HITS_AFTER] = 0u;
+        SCLOGE(
+            "[VM] run-until is disconnected; use the canonical ExecutionEngine");
 
         return RunUntilBpCoreResult{
-            .run = rr,
-            .outcome = outcome,
-            .hit_bp_key = hit_bp_key,
-            .expected_match = expected_match,
-            .input_epoch = input_epoch,
+            .run = {},
+            .outcome = RunToBpOutcome::Aborted,
             .requested_input = spec.input,
-            .input_poll_count = input_poll_count,
-            .input_acknowledged = input_acknowledged,
-            .elapsed_ms = elapsed_ms,
         };
     }
 

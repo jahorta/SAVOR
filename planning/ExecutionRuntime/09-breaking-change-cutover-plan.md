@@ -219,26 +219,52 @@ production-worker SavorE2E. Those remain unavailable until their later slices. I
 the Slice 1 `WRMS` protocol nor any SavorDb schema, storage representation, database-service interface,
 queue, claim, workflow, transaction, or artifact-storage contract.
 
-### Dependency slice 3: ExecutionEngine as sole emulator-advancement owner
+### Dependency slice 3: ExecutionEngine as sole emulator-advancement owner (completed)
 
 **Implement:**
 
-- introduce typed continue, instruction-step, frame-step, input-sequence, pause, and interactive-resume
-  operations;
-- route every operation through the same control-thread event loop and router;
+- introduce one session-owned, actor-driven engine with typed continue, instruction-step, frame-step,
+  input-synchronized-advance, safe-pause, and interactive-resume operations;
+- route every operation and every accepted stop receipt through the same control-thread event loop and
+  router, with no engine thread or nested blocking loop;
 - represent timeout, VI stall, movie end, cancellation, requested completion, intercepted stops, and
   interruption-handler requests as structured results;
-- support requested interruption handlers as suspended bounded child operations with explicit remaining
-  budgets; and
-- move current run-until, frame, opcode, tape, and macro advancement beneath the engine; and
-- restore interactive visual pause, resume, and step by routing them through the same serialized engine
-  control path.
+- support requested interruption handlers as a bounded stack whose suspended parent/child active-time
+  budgets freeze, whose trusted descriptors declare allowed nesting/recursion, whose absolute depth is at
+  most eight, and whose only policy outcomes are `ResumeParent` or `AbortParent`;
+- expose primitive movie/VI/throttle observations through the private execution-backend facet without
+  moving movie lifecycle into the engine;
+- define the fake-tested opaque input-advance collaboration, while leaving production input publication
+  unsupported until Slice 4's `InputArbiter`;
+- hard-disconnect current VM run-until, frame, opcode, tape, and macro advancement rather than bridging
+  the production-disconnected interpreter into the engine; and
+- extend WRMS v1 additively with capability-gated execution control/result/state messages. A session
+  opened with visual intent may use serialized pause, resume, and frame-step controls while remaining
+  `Ready`; a separate execution snapshot reports whether it is idle-paused or interactively running.
+
+`InteractiveResume` is the sole intentionally unbounded engine operation. The concrete JIT64 backend
+reports exact guest-instruction stepping unsupported before mutation. It does not switch temporarily to
+Interpreter and does not call a JIT block an instruction. Production `ProgramInvocation`, DB-backed
+visual replay, SavorQt wiring, and production input advancement remain unavailable.
 
 **Completion checks:**
 
 - repository search finds no Dolphin run/step call outside `ExecutionEngine`/backend implementation;
 - every advancement mode remains interceptor-aware;
-- cancellation and interruption-handler tests pass at every suspension boundary.
+- cancellation and interruption-handler tests pass at every suspension boundary;
+- focused fake-backend and protocol tests cover visual-intent controls without creating a render window;
+- the live JIT64 guard is headless and exercises engine-owned frame advancement and routed continue at
+  recurring `0x801DC288`; and
+- no acceptance step launches or controls a GUI, compares rendered output, or requires user observation.
+
+Do not run production-worker SavorE2E for this slice. `ProgramInvocation` remains intentionally
+unadvertised until the later runtime, program-migration, and adapter slices restore it.
+
+The completed checkpoint centralizes post-open advancement in the session-owned engine, adds the
+capability-gated Ready-session WRMS control seam, keeps exact JIT64 guest-instruction stepping and
+production input advancement unsupported, and leaves `ProgramInvocation` unavailable. Full Debug and
+Release x64 solution builds, focused and retained guards, and the headless recurring-`0x801DC288` JIT64
+integration guard passed without creating or controlling a GUI.
 
 ### Dependency slice 4: input, state, mutation, capture, and scoped-resource services
 

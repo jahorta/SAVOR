@@ -12,6 +12,7 @@
 #include <iostream>
 #include <limits>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <string>
 #include <thread>
@@ -194,10 +195,148 @@ MessageKind MapCommandKind(savor::runtime::WorkerCommandKind kind) {
         return MessageKind::CancelInvocation;
     case savor::runtime::WorkerCommandKind::CaptureScreenshot:
         return MessageKind::CaptureScreenshot;
+    case savor::runtime::WorkerCommandKind::ControlExecution:
+        return MessageKind::ControlExecution;
     case savor::runtime::WorkerCommandKind::Shutdown:
         return MessageKind::Shutdown;
     }
     return MessageKind::Shutdown;
+}
+
+savor::wrms::ExecutionControlKind MapExecutionControl(
+    savor::runtime::WorkerExecutionControlKind control) {
+    using Runtime = savor::runtime::WorkerExecutionControlKind;
+    using Wire = savor::wrms::ExecutionControlKind;
+    switch (control) {
+    case Runtime::Pause:
+        return Wire::Pause;
+    case Runtime::Resume:
+        return Wire::Resume;
+    case Runtime::StepInstruction:
+        return Wire::StepInstruction;
+    case Runtime::StepFrame:
+        return Wire::StepFrame;
+    }
+    return Wire::Pause;
+}
+
+savor::wrms::ExecutionActivityCode MapExecutionActivity(
+    savor::runtime::ExecutionActivity activity) {
+    using Runtime = savor::runtime::ExecutionActivity;
+    using Wire = savor::wrms::ExecutionActivityCode;
+    switch (activity) {
+    case Runtime::IdlePaused:
+        return Wire::IdlePaused;
+    case Runtime::HandlingInterruption:
+        return Wire::HandlingInterruption;
+    case Runtime::Failed:
+    case Runtime::Closed:
+        return Wire::Failed;
+    case Runtime::Continuing:
+    case Runtime::SteppingInstruction:
+    case Runtime::SteppingFrame:
+    case Runtime::AdvancingInput:
+    case Runtime::Pausing:
+    case Runtime::InteractiveRunning:
+        return Wire::InteractiveRunning;
+    }
+    return Wire::Failed;
+}
+
+std::optional<savor::wrms::ExecutionControlKind> MapExecutionOperation(
+    savor::runtime::ExecutionOperationKind kind) {
+    using Runtime = savor::runtime::ExecutionOperationKind;
+    using Wire = savor::wrms::ExecutionControlKind;
+    switch (kind) {
+    case Runtime::SafePause:
+        return Wire::Pause;
+    case Runtime::InteractiveResume:
+        return Wire::Resume;
+    case Runtime::StepInstructions:
+        return Wire::StepInstruction;
+    case Runtime::StepFrames:
+        return Wire::StepFrame;
+    case Runtime::ContinueUntil:
+    case Runtime::InputSynchronizedAdvance:
+        return std::nullopt;
+    }
+    return std::nullopt;
+}
+
+savor::runtime::WorkerRejectionCode MapExecutionError(
+    savor::runtime::ExecutionErrorCode code) {
+    using Error = savor::runtime::ExecutionErrorCode;
+    using Rejection = savor::runtime::WorkerRejectionCode;
+    switch (code) {
+    case Error::None:
+        return Rejection::None;
+    case Error::InvalidArgument:
+        return Rejection::InvalidArgument;
+    case Error::InvalidState:
+    case Error::Busy:
+    case Error::InterruptionUnavailable:
+    case Error::InterruptionPolicyViolation:
+    case Error::InterruptionDepthExceeded:
+        return Rejection::InvalidState;
+    case Error::StateEpochMismatch:
+        return Rejection::StateEpochMismatch;
+    case Error::Unsupported:
+    case Error::InputUnavailable:
+        return Rejection::Unsupported;
+    case Error::RuntimeStopping:
+        return Rejection::RuntimeStopping;
+    case Error::StopPointFailure:
+    case Error::BackendFailure:
+        return Rejection::BackendFailure;
+    case Error::WrongThread:
+        return Rejection::InternalFailure;
+    }
+    return Rejection::InternalFailure;
+}
+
+savor::wrms::ExecutionTerminalStatusCode MapExecutionTerminalStatus(
+    savor::runtime::ExecutionTerminalStatus status) {
+    using Runtime = savor::runtime::ExecutionTerminalStatus;
+    using Wire = savor::wrms::ExecutionTerminalStatusCode;
+    switch (status) {
+    case Runtime::RequestedCompletion:
+        return Wire::RequestedCompletion;
+    case Runtime::StepsCompleted:
+        return Wire::StepsCompleted;
+    case Runtime::Paused:
+        return Wire::Paused;
+    case Runtime::Cancelled:
+        return Wire::Cancelled;
+    case Runtime::TimedOut:
+        return Wire::TimedOut;
+    case Runtime::ViStalled:
+        return Wire::ViStalled;
+    case Runtime::MovieEnded:
+        return Wire::MovieEnded;
+    case Runtime::ConsumedStop:
+        return Wire::ConsumedStop;
+    case Runtime::UnexpectedStop:
+        return Wire::UnexpectedStop;
+    case Runtime::GuardFailed:
+        return Wire::GuardFailed;
+    case Runtime::InterruptionUnavailable:
+        return Wire::InterruptionUnavailable;
+    case Runtime::InterruptionAborted:
+        return Wire::InterruptionAborted;
+    case Runtime::InterruptionDepthExceeded:
+        return Wire::InterruptionDepthExceeded;
+    case Runtime::InterruptionFailed:
+        return Wire::InterruptionFailed;
+    case Runtime::StateEpochMismatch:
+        return Wire::StateEpochMismatch;
+    case Runtime::Unsupported:
+        return Wire::Unsupported;
+    case Runtime::BackendFailure:
+        return Wire::BackendFailure;
+    case Runtime::CleanupFailure:
+        return Wire::CleanupFailure;
+    }
+    return Wire::BackendFailure;
 }
 
 savor::wrms::InvocationTerminalStatus MapTerminalStatus(
@@ -480,6 +619,45 @@ void PublishCommandCompletion(
             payload);
         return;
     }
+    case savor::runtime::WorkerCommandKind::ControlExecution: {
+        const auto& execution = snapshot.execution;
+        const auto control = result.execution_control.value_or(
+            savor::runtime::WorkerExecutionControlKind::Pause);
+        const auto operation_id = result.execution_operation_id
+            ? result.execution_operation_id->value()
+            : execution.active_operation
+                ? execution.active_operation->value()
+                : 0;
+        publisher.Publish(
+            MessageKind::ExecutionResult,
+            result.request_id.value(),
+            savor::wrms::ExecutionResultPayload{
+                .command_sequence = result.command_sequence.value(),
+                .control = MapExecutionControl(control),
+                .status = MapCommandStatus(result),
+                .session_id = session.session_id.value(),
+                .state_epoch = session.state_epoch.value(),
+                .operation_id = operation_id,
+                .activity = MapExecutionActivity(execution.activity),
+                .has_terminal_status =
+                    result.execution_terminal.has_value(),
+                .terminal_status = result.execution_terminal
+                    ? MapExecutionTerminalStatus(
+                          result.execution_terminal->status)
+                    : savor::wrms::ExecutionTerminalStatusCode::
+                          RequestedCompletion,
+                .completed_count = result.execution_terminal
+                    ? result.execution_terminal->completed_count
+                    : 0,
+                .program_counter = result.execution_terminal
+                    ? result.execution_terminal->evidence.pc
+                    : execution.evidence.pc,
+                .rejection_code = MapRejectionCode(result.error.code),
+                .error_code = ErrorCodeString(result.error.code),
+                .message = result.error.message,
+            });
+        return;
+    }
     case savor::runtime::WorkerCommandKind::Shutdown: {
         savor::wrms::ShutdownResultPayload payload{
             .status = succeeded
@@ -588,6 +766,48 @@ void PublishWorkerEvent(
                         .result = terminal.output_payload,
                     });
             },
+            [&](const savor::runtime::WorkerExecutionEvent& execution_event) {
+                const auto& event = execution_event.event;
+                const auto& snapshot = event.snapshot;
+                const auto active_control =
+                    MapExecutionOperation(snapshot.active_kind);
+                const auto operation_id = event.terminal
+                    ? event.terminal->operation_id.value()
+                    : event.progress
+                        ? event.progress->operation_id.value()
+                    : snapshot.active_operation
+                        ? snapshot.active_operation->value()
+                        : 0;
+                const auto error = event.terminal
+                    ? event.terminal->error
+                    : savor::runtime::ExecutionError{};
+                publisher.Publish(
+                    MessageKind::ExecutionState,
+                    0,
+                    savor::wrms::ExecutionStatePayload{
+                        .session_id = execution_event.session_id.value(),
+                        .state_epoch = snapshot.state_epoch.value(),
+                        .operation_id = operation_id,
+                        .activity =
+                            MapExecutionActivity(snapshot.activity),
+                        .has_active_control =
+                            snapshot.active_operation.has_value() &&
+                            active_control.has_value(),
+                        .active_control = active_control.value_or(
+                            savor::wrms::ExecutionControlKind::Pause),
+                        .completed_count = event.terminal
+                            ? event.terminal->completed_count
+                            : event.progress
+                                ? event.progress->completed_count
+                                : 0,
+                        .program_counter = snapshot.evidence.pc,
+                        .rejection_code = MapRejectionCode(
+                            MapExecutionError(error.code)),
+                        .code = ErrorCodeString(
+                            MapExecutionError(error.code)),
+                        .message = error.message,
+                    });
+            },
             [&](const savor::runtime::HostRuntimeEvent& host) {
                 publisher.Publish(
                     MessageKind::HostEvent,
@@ -648,6 +868,19 @@ void PublishMalformedCommand(
             savor::wrms::ShutdownResultPayload{
                 .status = savor::wrms::ShutdownStatus::CleanupFailed,
                 .rejection_code = savor::wrms::RejectionCode::InvalidArgument,
+                .error_code = "MalformedPayload",
+                .message = message,
+            });
+    } else if (kind == MessageKind::ControlExecution) {
+        publisher.Publish(
+            MessageKind::ExecutionResult,
+            request_id,
+            savor::wrms::ExecutionResultPayload{
+                .status = savor::wrms::CommandStatus::Rejected,
+                .activity =
+                    savor::wrms::ExecutionActivityCode::Failed,
+                .rejection_code =
+                    savor::wrms::RejectionCode::InvalidArgument,
                 .error_code = "MalformedPayload",
                 .message = message,
             });
@@ -797,6 +1030,45 @@ bool SubmitFrame(
                 .output_path = std::move(payload.output_path),
                 .timeout = std::chrono::milliseconds{
                     payload.timeout_ms ? payload.timeout_ms : 3000},
+            });
+        return true;
+    }
+    case MessageKind::ControlExecution: {
+        savor::wrms::ControlExecutionPayload payload;
+        if (!savor::wrms::DecodePayload(frame.payload, payload)) {
+            PublishMalformedCommand(
+                publisher,
+                frame.header.kind,
+                frame.header.request_id,
+                "invalid ControlExecution payload");
+            return true;
+        }
+        WorkerExecutionControlKind control =
+            WorkerExecutionControlKind::Pause;
+        switch (payload.control) {
+        case savor::wrms::ExecutionControlKind::Pause:
+            control = WorkerExecutionControlKind::Pause;
+            break;
+        case savor::wrms::ExecutionControlKind::Resume:
+            control = WorkerExecutionControlKind::Resume;
+            break;
+        case savor::wrms::ExecutionControlKind::StepInstruction:
+            control = WorkerExecutionControlKind::StepInstruction;
+            break;
+        case savor::wrms::ExecutionControlKind::StepFrame:
+            control = WorkerExecutionControlKind::StepFrame;
+            break;
+        }
+        (void)runtime.Submit(
+            WireRequestId{frame.header.request_id},
+            ControlExecutionCommand{
+                .control = control,
+                .session_id = SessionId{payload.session_id},
+                .expected_state_epoch =
+                    StateEpoch{payload.expected_state_epoch},
+                .count = payload.count,
+                .timeout = std::chrono::milliseconds{
+                    payload.timeout_ms},
             });
         return true;
     }

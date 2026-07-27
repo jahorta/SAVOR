@@ -2,6 +2,7 @@
 
 #include "IDolphinBackend.h"
 #include "RuntimeTypes.h"
+#include "Execution/ExecutionEngine.h"
 #include "StopPoints/StopPointRouter.h"
 
 #include <chrono>
@@ -19,10 +20,6 @@ enum class SessionOperation : std::uint8_t
 {
     Open,
     Reboot,
-    Pause,
-    Resume,
-    StepInstruction,
-    StepFrame,
     RestoreStateFile,
     RestoreStateBuffer,
     SaveStateFile,
@@ -85,11 +82,6 @@ public:
     SessionOperationReceipt Open(const SessionOpenOptions& options);
     SessionOperationReceipt Reboot();
 
-    SessionOperationReceipt Pause(std::chrono::milliseconds timeout);
-    SessionOperationReceipt Resume();
-    SessionOperationReceipt StepInstruction(std::chrono::milliseconds timeout);
-    SessionOperationReceipt StepFrame(std::chrono::milliseconds timeout);
-
     SessionOperationReceipt RestoreStateFile(const std::filesystem::path& path);
     SessionOperationReceipt RestoreStateBuffer(const std::vector<std::uint8_t>& bytes);
     SessionOperationReceipt SaveStateFile(const std::filesystem::path& path);
@@ -101,6 +93,24 @@ public:
     SessionOperationReceipt RevalidateStopPointsAfterJit();
     SessionOperationReceipt ValidateBreakpointChangeNotification();
     [[nodiscard]] std::vector<StopRouteReceipt> DrainStopPointEvents();
+    ExecutionSubmissionReceipt SubmitExecution(ExecutionRequest request);
+    ExecutionSubmissionReceipt SubmitInterruptionChild(
+        InterruptionFrameId frame_id,
+        ExecutionRequest request);
+    ExecutionControlReceipt CancelExecution(
+        CancellationReason reason = CancellationReason::ExternalRequest);
+    ExecutionControlReceipt CompleteInterruptionHandler(
+        InterruptionFrameId frame_id,
+        InterruptionHandlerOutcome outcome,
+        std::string diagnostic = {});
+    void HandleStopPointReceipt(StopRouteReceipt receipt);
+    void PumpExecution();
+    [[nodiscard]] std::vector<ExecutionEvent> DrainExecutionEvents();
+    [[nodiscard]] ExecutionSnapshot execution_snapshot() const;
+    [[nodiscard]] std::optional<std::chrono::steady_clock::time_point>
+    next_execution_wake() const;
+    [[nodiscard]] BackendExecutionCapabilityMask
+    execution_capabilities() const noexcept;
     SessionOperationReceipt CheckHealth();
     SessionOperationReceipt Shutdown();
 
@@ -142,6 +152,7 @@ private:
     void ApplyBackendFailure(const BackendResult& result);
     void RefreshCoreState() noexcept;
     [[nodiscard]] BackendResult InitializeStopPoints(StateEpoch first_epoch);
+    [[nodiscard]] BackendResult InitializeExecution(StateEpoch first_epoch);
     [[nodiscard]] BackendResult PrepareStopPointStateReplacement();
     [[nodiscard]] BackendResult CommitStopPointStateReplacement(
         StateEpoch new_epoch);
@@ -154,6 +165,8 @@ private:
     std::unique_ptr<IDolphinBackend> backend_;
     std::unique_ptr<PhysicalStopPointManager> physical_stop_manager_;
     std::unique_ptr<StopPointRouter> stop_router_;
+    std::unique_ptr<ExecutionEngine> execution_engine_;
+    std::vector<ExecutionEvent> retained_execution_events_;
     SessionDisposition disposition_ = SessionDisposition::Closed;
     StateEpoch state_epoch_;
     BackendCoreState core_state_ = BackendCoreState::Closed;

@@ -608,7 +608,9 @@ namespace {
         subscription.ordinal = i;
         if (subscription.definition.lifetime == StopSubscriptionLifetime::OneShot)
             subscription.one_shot = std::make_shared<OneShotGate>();
-        if (subscription.definition.suppress_immediate_reentry)
+        if (subscription.definition.suppress_immediate_reentry ||
+            subscription.definition.policy ==
+                StopRoutingPolicy::RequestInterruptionHandler)
         {
             subscription.suppression = std::make_shared<SuppressionGate>();
             if (current_point &&
@@ -2012,6 +2014,68 @@ StopPointError StopPointRouter::DepartCurrentPoint()
         return error;
     }
     impl_->current_point.reset();
+    return {};
+}
+
+StopPointError StopPointRouter::ArmInterruptionSuppression(
+    const StopRouteReceipt& receipt,
+    const StopInterruptionHandlerRequest& request)
+{
+    if (StopPointError error =
+            CheckControlThread(*this, owner_thread_, initialized_, stopping_))
+    {
+        return error;
+    }
+    if (receipt.terminal !=
+            StopRouteTerminal::InterruptionHandlerRequested ||
+        !receipt.interruption_handler_request ||
+        receipt.interruption_handler_request->source_id != request.source_id ||
+        receipt.interruption_handler_request->group_id != request.group_id ||
+        receipt.interruption_handler_request->subscription_id !=
+            request.subscription_id ||
+        receipt.interruption_handler_request->interruption_handler_key !=
+            request.interruption_handler_key)
+    {
+        return Error(
+            StopPointErrorCode::InvalidArgument,
+            "interruption suppression request does not match its route receipt");
+    }
+    if (!impl_->current_point ||
+        impl_->current_point->identity != receipt.identity ||
+        receipt.identity.state_epoch != state_epoch_ ||
+        !receipt.event ||
+        receipt.event->identity != impl_->current_point->identity ||
+        receipt.event->evidence != impl_->current_point->evidence)
+    {
+        return Error(
+            StopPointErrorCode::CurrentPointUnavailable,
+            "interruption suppression requires the exact retained receipt");
+    }
+    const auto group = impl_->groups.find(request.group_id.value());
+    if (group == impl_->groups.end() ||
+        group->second.source.id != request.source_id)
+    {
+        return Error(
+            StopPointErrorCode::SourceMismatch,
+            "interruption suppression source does not own the routed group");
+    }
+    const auto subscription = std::ranges::find_if(
+        group->second.subscriptions,
+        [&](const SubscriptionRecord& candidate) {
+            return candidate.definition.id == request.subscription_id;
+        });
+    if (subscription == group->second.subscriptions.end() ||
+        subscription->definition.policy !=
+            StopRoutingPolicy::RequestInterruptionHandler ||
+        subscription->definition.interruption_handler_key !=
+            request.interruption_handler_key ||
+        !subscription->suppression)
+    {
+        return Error(
+            StopPointErrorCode::SourceMismatch,
+            "interruption suppression subscription does not match the routed request");
+    }
+    subscription->suppression->armed.store(true, std::memory_order_release);
     return {};
 }
 

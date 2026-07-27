@@ -146,6 +146,7 @@ enum class WorkerCommandKind : std::uint8_t
     InvokeProgram,
     CancelInvocation,
     CaptureScreenshot,
+    ControlExecution,
     Shutdown,
 };
 

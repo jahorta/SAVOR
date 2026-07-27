@@ -248,6 +248,10 @@
     <ClInclude Include="Runner\Parallel\PRTypes.h" />
     <ClInclude Include="Runner\Runtime\DolphinWrapperBackend.h" />
     <ClInclude Include="Runner\Runtime\EmulationSession.h" />
+    <ClInclude Include="Runner\Runtime\Execution\ExecutionEngine.h" />
+    <ClInclude Include="Runner\Runtime\Execution\ExecutionTypes.h" />
+    <ClInclude Include="Runner\Runtime\Execution\IExecutionBackendPort.h" />
+    <ClInclude Include="Runner\Runtime\Execution\IInputAdvancePort.h" />
     <ClInclude Include="Runner\Runtime\IDolphinBackend.h" />
     <ClInclude Include="Runner\Runtime\IProgramRuntimePort.h" />
     <ClInclude Include="Runner\Runtime\RuntimeTypes.h" />
@@ -333,6 +337,7 @@
     <ClCompile Include="Runner\IPC\WorkerWireWriter.cpp" />
     <ClCompile Include="Runner\Runtime\DolphinWrapperBackend.cpp" />
     <ClCompile Include="Runner\Runtime\EmulationSession.cpp" />
+    <ClCompile Include="Runner\Runtime\Execution\ExecutionEngine.cpp" />
     <ClCompile Include="Runner\Runtime\StopPoints\Capture\ProbeRouterAdapter.cpp" />
     <ClCompile Include="Runner\Runtime\StopPoints\PhysicalStopPointManager.cpp" />
     <ClCompile Include="Runner\Runtime\StopPoints\StopPointRouter.cpp" />

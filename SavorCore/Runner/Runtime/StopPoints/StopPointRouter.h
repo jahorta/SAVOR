@@ -195,6 +195,9 @@ public:
         StopSubscriptionGroupLease& lease);
     [[nodiscard]] StopRouteReceipt AcceptCurrentPoint(
         const StopSubscriptionGroupLease& lease);
+    [[nodiscard]] StopPointError ArmInterruptionSuppression(
+        const StopRouteReceipt& receipt,
+        const StopInterruptionHandlerRequest& request);
     [[nodiscard]] StopPointError DepartCurrentPoint();
 
     [[nodiscard]] std::vector<StopRouteReceipt> DrainIngress();

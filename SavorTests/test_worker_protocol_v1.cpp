@@ -74,6 +74,129 @@ TEST(WorkerProtocolV1, EncodesExactWrmsLittleEndianGoldenFrame)
         std::vector<std::uint8_t>(payload.begin(), payload.end()));
 }
 
+TEST(WorkerProtocolV1, EncodesExactAdditiveExecutionGoldenFrames)
+{
+    {
+        std::vector<std::uint8_t> payload;
+        ASSERT_TRUE(EncodePayload(
+            ControlExecutionPayload{
+                .control = ExecutionControlKind::StepFrame,
+                .session_id = 0x0102030405060708ull,
+                .expected_state_epoch = 0x1112131415161718ull,
+                .count = 2,
+                .timeout_ms = 5000,
+            },
+            payload));
+        const auto encoded = EncodeFrame(
+            MessageKind::ControlExecution,
+            0x2122232425262728ull,
+            payload);
+        ASSERT_EQ(encoded.error, FrameError::None);
+        const std::vector<std::uint8_t> expected{
+            0x57, 0x52, 0x4d, 0x53, // WRMS
+            0x01, 0x00,             // protocol version 1
+            0x16, 0x00,             // ControlExecution
+            0x19, 0x00, 0x00, 0x00, // payload length
+            0x28, 0x27, 0x26, 0x25, 0x24, 0x23, 0x22, 0x21,
+            0x03, // StepFrame
+            0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01,
+            0x18, 0x17, 0x16, 0x15, 0x14, 0x13, 0x12, 0x11,
+            0x02, 0x00, 0x00, 0x00,
+            0x88, 0x13, 0x00, 0x00,
+        };
+        EXPECT_EQ(encoded.bytes, expected);
+    }
+
+    {
+        std::vector<std::uint8_t> payload;
+        ASSERT_TRUE(EncodePayload(
+            ExecutionResultPayload{
+                .command_sequence = 0x0102030405060708ull,
+                .control = ExecutionControlKind::StepFrame,
+                .status = CommandStatus::Succeeded,
+                .session_id = 0x1112131415161718ull,
+                .state_epoch = 0x2122232425262728ull,
+                .operation_id = 0x3132333435363738ull,
+                .activity = ExecutionActivityCode::IdlePaused,
+                .has_terminal_status = true,
+                .terminal_status =
+                    ExecutionTerminalStatusCode::StepsCompleted,
+                .completed_count = 2,
+                .program_counter = 0x801dc288u,
+                .rejection_code = RejectionCode::None,
+            },
+            payload));
+        const auto encoded = EncodeFrame(
+            MessageKind::ExecutionResult,
+            0x4142434445464748ull,
+            payload);
+        ASSERT_EQ(encoded.error, FrameError::None);
+        const std::vector<std::uint8_t> expected{
+            0x57, 0x52, 0x4d, 0x53, // WRMS
+            0x01, 0x00,             // protocol version 1
+            0x09, 0x01,             // ExecutionResult
+            0x3b, 0x00, 0x00, 0x00, // payload length
+            0x48, 0x47, 0x46, 0x45, 0x44, 0x43, 0x42, 0x41,
+            0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01,
+            0x03, // StepFrame
+            0x00, // Succeeded
+            0x18, 0x17, 0x16, 0x15, 0x14, 0x13, 0x12, 0x11,
+            0x28, 0x27, 0x26, 0x25, 0x24, 0x23, 0x22, 0x21,
+            0x38, 0x37, 0x36, 0x35, 0x34, 0x33, 0x32, 0x31,
+            0x00, // IdlePaused
+            0x01, // has terminal status
+            0x01, // StepsCompleted
+            0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x88, 0xc2, 0x1d, 0x80,
+            0x00, 0x00, // no rejection
+            0x00, 0x00, 0x00, 0x00, // empty error code
+            0x00, 0x00, 0x00, 0x00, // empty message
+        };
+        EXPECT_EQ(encoded.bytes, expected);
+    }
+
+    {
+        std::vector<std::uint8_t> payload;
+        ASSERT_TRUE(EncodePayload(
+            ExecutionStatePayload{
+                .session_id = 0x1112131415161718ull,
+                .state_epoch = 0x2122232425262728ull,
+                .operation_id = 0x3132333435363738ull,
+                .activity = ExecutionActivityCode::InteractiveRunning,
+                .has_active_control = true,
+                .active_control = ExecutionControlKind::Resume,
+                .completed_count = 0,
+                .program_counter = 0x801dc288u,
+                .rejection_code = RejectionCode::None,
+            },
+            payload));
+        const auto encoded = EncodeFrame(
+            MessageKind::ExecutionState,
+            0x5152535455565758ull,
+            payload);
+        ASSERT_EQ(encoded.error, FrameError::None);
+        const std::vector<std::uint8_t> expected{
+            0x57, 0x52, 0x4d, 0x53, // WRMS
+            0x01, 0x00,             // protocol version 1
+            0x0a, 0x01,             // ExecutionState
+            0x31, 0x00, 0x00, 0x00, // payload length
+            0x58, 0x57, 0x56, 0x55, 0x54, 0x53, 0x52, 0x51,
+            0x18, 0x17, 0x16, 0x15, 0x14, 0x13, 0x12, 0x11,
+            0x28, 0x27, 0x26, 0x25, 0x24, 0x23, 0x22, 0x21,
+            0x38, 0x37, 0x36, 0x35, 0x34, 0x33, 0x32, 0x31,
+            0x01, // InteractiveRunning
+            0x01, // has active control
+            0x01, // Resume
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x88, 0xc2, 0x1d, 0x80,
+            0x00, 0x00, // no rejection
+            0x00, 0x00, 0x00, 0x00, // empty code
+            0x00, 0x00, 0x00, 0x00, // empty message
+        };
+        EXPECT_EQ(encoded.bytes, expected);
+    }
+}
+
 TEST(WorkerProtocolV1, RoundTripsEveryTypedPayload)
 {
     ExpectPayloadRoundTrip(ProcessHelloPayload{
@@ -125,6 +248,14 @@ TEST(WorkerProtocolV1, RoundTripsEveryTypedPayload)
     });
 
     ExpectPayloadRoundTrip(ShutdownPayload{ 5000 });
+
+    ExpectPayloadRoundTrip(ControlExecutionPayload{
+        .control = ExecutionControlKind::StepFrame,
+        .session_id = 55,
+        .expected_state_epoch = 3,
+        .count = 2,
+        .timeout_ms = 5000,
+    });
 
     ExpectPayloadRoundTrip(CommandResultPayload{
         .command_sequence = 44,
@@ -211,6 +342,81 @@ TEST(WorkerProtocolV1, RoundTripsEveryTypedPayload)
         .invocation_id = 101,
         .message = "ignored stale callback",
     });
+
+    ExpectPayloadRoundTrip(ExecutionResultPayload{
+        .command_sequence = 45,
+        .control = ExecutionControlKind::StepFrame,
+        .status = CommandStatus::Succeeded,
+        .session_id = 55,
+        .state_epoch = 3,
+        .operation_id = 901,
+        .activity = ExecutionActivityCode::IdlePaused,
+        .has_terminal_status = true,
+        .terminal_status = ExecutionTerminalStatusCode::StepsCompleted,
+        .completed_count = 2,
+        .program_counter = 0x801dc288,
+        .rejection_code = RejectionCode::None,
+        .error_code = {},
+        .message = "frame step completed",
+    });
+
+    ExpectPayloadRoundTrip(ExecutionStatePayload{
+        .session_id = 55,
+        .state_epoch = 3,
+        .operation_id = 902,
+        .activity = ExecutionActivityCode::InteractiveRunning,
+        .has_active_control = true,
+        .active_control = ExecutionControlKind::Resume,
+        .completed_count = 0,
+        .program_counter = 0x801dc288,
+        .rejection_code = RejectionCode::None,
+        .code = {},
+        .message = "interactive execution is running",
+    });
+}
+
+TEST(WorkerProtocolV1, KeepsExecutionControlAdditiveAndDirectional)
+{
+    EXPECT_EQ(ProtocolVersion, 1u);
+    EXPECT_TRUE(IsKnownMessageKind(MessageKind::ControlExecution));
+    EXPECT_TRUE(IsKnownMessageKind(MessageKind::ExecutionResult));
+    EXPECT_TRUE(IsKnownMessageKind(MessageKind::ExecutionState));
+    EXPECT_EQ(
+        DirectionOf(MessageKind::ControlExecution),
+        MessageDirection::ParentToWorker);
+    EXPECT_EQ(
+        DirectionOf(MessageKind::ExecutionResult),
+        MessageDirection::WorkerToParent);
+    EXPECT_EQ(
+        DirectionOf(MessageKind::ExecutionState),
+        MessageDirection::WorkerToParent);
+}
+
+TEST(WorkerProtocolV1, RejectsInvalidExecutionControlWithoutPublishingOutput)
+{
+    const ControlExecutionPayload valid{
+        .control = ExecutionControlKind::Pause,
+        .session_id = 7,
+        .expected_state_epoch = 9,
+        .timeout_ms = 1000,
+    };
+    std::vector<std::uint8_t> encoded;
+    ASSERT_TRUE(EncodePayload(valid, encoded));
+    ASSERT_FALSE(encoded.empty());
+
+    encoded[0] = 0xff;
+    ControlExecutionPayload unchanged;
+    unchanged.session_id = 777;
+    const auto decoded = DecodePayload(encoded, unchanged);
+    EXPECT_EQ(decoded.error, PayloadError::InvalidEnumValue);
+    EXPECT_EQ(unchanged.session_id, 777u);
+
+    auto invalid = valid;
+    invalid.control = static_cast<ExecutionControlKind>(0xff);
+    std::vector<std::uint8_t> unchanged_output{0x5a};
+    const auto encoded_invalid = EncodePayload(invalid, unchanged_output);
+    EXPECT_EQ(encoded_invalid.error, PayloadError::InvalidEnumValue);
+    EXPECT_EQ(unchanged_output, (std::vector<std::uint8_t>{0x5a}));
 }
 
 TEST(WorkerProtocolV1, PreservesCompleteEncodedEnvelopeMetadata)

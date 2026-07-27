@@ -448,8 +448,9 @@ temporary wake subscriptions through the router; programs never manipulate physi
 - continue until logical completion conditions;
 - step a bounded number of instructions;
 - step a bounded number of frames;
-- advance while an input sequence is owned by an `InputArbiter` lease;
-- reach a safe pause; and
+- advance through an opaque input relationship supplied by `InputArbiter`;
+- reach a safe pause;
+- interactively resume a Ready visual-intent session; and
 - execute verifier-known bounded interruption handlers requested by router interceptors.
 
 It owns operation IDs, deadlines, remaining-time accounting, VI-stall policy, movie-ended policy,
@@ -458,6 +459,25 @@ routing. Every operation carries `StateEpoch` and remains interceptor-aware.
 
 Only one foreground operation advances the core. Interruption-handler child operations structurally
 suspend the parent and return to it; they do not start a nested runtime.
+
+The engine is an actor-owned state machine, not a thread. Bounded requests carry remaining active
+wall-clock time rather than a deadline that expires while structurally suspended. Parent wall-clock and
+VI-stall budgets freeze while a handler child is active; a child freezes while a declared nested child is
+active. Ready-session `InteractiveResume` is the sole unbounded operation and terminates at a safe pause,
+routed terminal, shutdown, or failure.
+
+An immutable trusted handler descriptor declares its allowed child operation kinds, child budget,
+permitted nested keys, recursion policy, and maximum depth. The engine additionally enforces an absolute
+depth cap of eight. A child may return only `ResumeParent` or `AbortParent`; unknown handlers,
+undeclared nesting, forbidden recursion, depth overflow, and infrastructure failure remain distinct
+typed failures. The parent retains its exact completion condition, active budget, stall baseline,
+temporary wake group, input relationship, suppression state, and `StateEpoch`.
+
+The private backend facet available to the engine contains only primitive pause/resume, frame-step,
+exact-instruction-step, core/PC/VI/movie/throttle observation, and throttle apply/restore operations.
+Movie observation here does not own playback or recording lifecycle. The concrete JIT64 adapter rejects
+exact guest-instruction stepping before mutation; it does not switch to Interpreter or represent one JIT
+block as one instruction.
 
 ### StopPointRouter and PhysicalStopPointManager
 
@@ -535,6 +555,12 @@ as battle RNG or future collision probes; there is no Survey-only binary editor.
 Held state, pulses, sequences, and neutral release are operations on a valid lease. Each publication
 creates an input epoch and poll receipt. Release completion is a first-class observation; dropping a C++
 object without neutralizing the guest is not sufficient cleanup.
+
+Slice 3 defines only the opaque `IInputAdvancePort` collaboration required by `ExecutionEngine`: validate
+the relationship, prepare a publication before advancement, return its token, observe acknowledgement
+afterward, and request a bounded retry or completion. Deterministic engine tests use a fake port.
+Production reports input-synchronized advancement unsupported until this service implements the port in
+Slice 4. The engine never publishes pad state itself.
 
 Emergency neutralization may preempt ordinary owners only under cancellation/guard/shutdown policy and
 must record what was preempted. An unsuspendable movie/input owner cannot be silently overwritten by a
@@ -698,8 +724,11 @@ Migration implications:
 2. Move physical breakpoint/watchpoint mutation to `PhysicalStopPointManager`.
 3. Convert current VM waits and macro waits to temporary router subscriptions plus
    `runtime.execution.continue_until`.
-4. Bring direct stepping and input-tape playback under `ExecutionEngine`.
-5. Convert current input/macro ownership to `InputArbiter` leases and guest-observed release.
+4. Bring direct continue, pause, frame-step, and supported instruction-step behavior under
+   `ExecutionEngine`; hard-disconnect legacy tape/macro advancement rather than creating a compatibility
+   executor.
+5. Implement `InputArbiter`, connect its opaque input-advance port to `ExecutionEngine`, and then convert
+   current input/macro ownership to leases and guest-observed release.
 6. Move savestate/baseline ownership to `StateService` and introduce explicit epoch-tagged handles.
 7. Move raw writes to checked `GuestMutationService`; add executable patch verification and cache/JIT
    invalidation before Navmesh Survey trigger suppression.
@@ -739,8 +768,13 @@ the old broad host interfaces to new modules.
   and unwind fault injection.
 - Predicate composition tests prove that all observation effects, subscriptions, branches, and emissions
   are ordinary verified dependencies and that false remains distinct from unavailable evidence.
-- Every advancement action is observed passing through one `ExecutionEngine`, including stepping and
-  input sequences.
+- Every supported production advancement action is observed passing through one `ExecutionEngine`.
+  Fake-port tests cover exact instruction and input-synchronized contracts while the JIT64 and
+  pre-`InputArbiter` production paths reject them without mutation.
+- Interruption tests cover frozen parent/child active-time budgets, declared nesting and recursion, the
+  eight-level hard cap, and `ResumeParent`/`AbortParent` as the only policy outcomes.
+- Visual-intent command tests use fake sessions and protocol fixtures without a window, GUI automation,
+  screenshot comparison, desktop control, or manual observation.
 - Multiple logical consumers share one physical PC/memory site; releasing one subscription group leaves
   the others intact.
 - Input lease priority, suspendability, interruption-handler borrowing, poll acknowledgement, and neutral

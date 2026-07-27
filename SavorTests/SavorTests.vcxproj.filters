@@ -2,6 +2,9 @@
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
     <ClCompile Include="common\DbPreparer.cpp" />
+    <ClCompile Include="common\FakeExecutionBackend.cpp">
+      <Filter>common</Filter>
+    </ClCompile>
     <ClCompile Include="common\FakePhysicalStopBackend.cpp">
       <Filter>common</Filter>
     </ClCompile>
@@ -140,6 +143,7 @@
     <ClCompile Include="test_worker_protocol_v1.cpp" />
     <ClCompile Include="test_process_worker_v1.cpp" />
     <ClCompile Include="test_worker_capability_gate.cpp" />
+    <ClCompile Include="test_execution_engine.cpp" />
     <ClCompile Include="test_execution_worker_runtime.cpp" />
     <ClCompile Include="test_emulation_session_stop_points.cpp" />
     <ClCompile Include="test_dolphin_stop_point_integration.cpp" />
@@ -173,6 +177,9 @@
       <Filter>common</Filter>
     </ClInclude>
     <ClInclude Include="common\AlwaysAdvanceTransitionHandler.h">
+      <Filter>common</Filter>
+    </ClInclude>
+    <ClInclude Include="common\FakeExecutionBackend.h">
       <Filter>common</Filter>
     </ClInclude>
     <ClInclude Include="common\FakePhysicalStopBackend.h">

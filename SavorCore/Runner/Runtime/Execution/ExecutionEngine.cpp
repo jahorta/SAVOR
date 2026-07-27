@@ -1,0 +1,2789 @@
+#include "ExecutionEngine.h"
+
+#include <algorithm>
+#include <limits>
+#include <map>
+#include <thread>
+#include <type_traits>
+#include <utility>
+
+namespace savor::runtime {
+namespace {
+
+using Clock = std::chrono::steady_clock;
+
+[[nodiscard]] ExecutionOperationKind KindOf(const ExecutionRequest& request)
+{
+    return std::visit(
+        [](const auto& value) {
+            using Request = std::decay_t<decltype(value)>;
+            if constexpr (std::is_same_v<Request, ContinueUntilRequest>)
+                return ExecutionOperationKind::ContinueUntil;
+            if constexpr (std::is_same_v<Request, StepInstructionsRequest>)
+                return ExecutionOperationKind::StepInstructions;
+            if constexpr (std::is_same_v<Request, StepFramesRequest>)
+                return ExecutionOperationKind::StepFrames;
+            if constexpr (std::is_same_v<Request, InputSynchronizedAdvanceRequest>)
+                return ExecutionOperationKind::InputSynchronizedAdvance;
+            if constexpr (std::is_same_v<Request, SafePauseRequest>)
+                return ExecutionOperationKind::SafePause;
+            return ExecutionOperationKind::InteractiveResume;
+        },
+        request);
+}
+
+[[nodiscard]] const ExecutionRequestPolicy* PolicyOf(
+    const ExecutionRequest& request)
+{
+    return std::visit(
+        [](const auto& value) -> const ExecutionRequestPolicy* {
+            using Request = std::decay_t<decltype(value)>;
+            if constexpr (std::is_same_v<Request, InteractiveResumeRequest>)
+                return nullptr;
+            else
+                return &value.policy;
+        },
+        request);
+}
+
+[[nodiscard]] StateEpoch EpochOf(const ExecutionRequest& request)
+{
+    return std::visit(
+        [](const auto& value) {
+            using Request = std::decay_t<decltype(value)>;
+            if constexpr (std::is_same_v<Request, InteractiveResumeRequest>)
+                return value.expected_epoch;
+            else
+                return value.policy.expected_epoch;
+        },
+        request);
+}
+
+[[nodiscard]] ExecutionThrottlePolicy ThrottleOf(
+    const ExecutionRequest& request)
+{
+    return std::visit(
+        [](const auto& value) {
+            using Request = std::decay_t<decltype(value)>;
+            if constexpr (std::is_same_v<Request, InteractiveResumeRequest>)
+                return value.throttle;
+            else
+                return value.policy.throttle;
+        },
+        request);
+}
+
+[[nodiscard]] ExecutionInterruptionPolicy InterruptionPolicyOf(
+    const ExecutionRequest& request)
+{
+    return std::visit(
+        [](const auto& value) {
+            using Request = std::decay_t<decltype(value)>;
+            if constexpr (std::is_same_v<Request, InteractiveResumeRequest>)
+                return value.interruptions;
+            else
+                return value.policy.interruptions;
+        },
+        request);
+}
+
+[[nodiscard]] CancellationToken CancellationOf(const ExecutionRequest& request)
+{
+    return std::visit(
+        [](const auto& value) {
+            using Request = std::decay_t<decltype(value)>;
+            if constexpr (std::is_same_v<Request, InteractiveResumeRequest>)
+                return value.cancellation;
+            else
+                return value.policy.cancellation;
+        },
+        request);
+}
+
+[[nodiscard]] std::optional<InputAdvanceBindingId> InputRelationshipOf(
+    const ExecutionRequest& request)
+{
+    return std::visit(
+        [](const auto& value) {
+            using Request = std::decay_t<decltype(value)>;
+            if constexpr (std::is_same_v<Request, InteractiveResumeRequest>)
+                return value.input_relationship;
+            else if constexpr (
+                std::is_same_v<Request, InputSynchronizedAdvanceRequest>)
+                return value.policy.input_relationship
+                    ? value.policy.input_relationship
+                    : value.binding
+                        ? std::optional(value.binding)
+                        : std::nullopt;
+            else
+                return value.policy.input_relationship;
+        },
+        request);
+}
+
+[[nodiscard]] ExecutionMovieState ConvertMovieState(
+    BackendMovieState state) noexcept
+{
+    switch (state)
+    {
+    case BackendMovieState::Inactive:
+        return ExecutionMovieState::Inactive;
+    case BackendMovieState::Playing:
+        return ExecutionMovieState::Playing;
+    case BackendMovieState::Ended:
+        return ExecutionMovieState::Ended;
+    case BackendMovieState::Unknown:
+        return ExecutionMovieState::Unknown;
+    }
+    return ExecutionMovieState::Unknown;
+}
+
+[[nodiscard]] ExecutionEnvironmentEvidence ConvertEvidence(
+    const BackendExecutionSnapshot& snapshot)
+{
+    return {
+        snapshot.core_state,
+        snapshot.pause_confirmed,
+        snapshot.pc,
+        snapshot.vi_count,
+        ConvertMovieState(snapshot.movie_state),
+        snapshot.movie_input_count,
+        snapshot.throttle_disabled,
+    };
+}
+
+[[nodiscard]] ExecutionError Error(
+    ExecutionErrorCode code,
+    std::string message,
+    BackendIntegrity integrity = BackendIntegrity::Preserved)
+{
+    return {code, std::move(message), integrity};
+}
+
+[[nodiscard]] ExecutionError BackendError(
+    std::string prefix,
+    const BackendResult& backend)
+{
+    if (!backend.message.empty())
+    {
+        prefix += ": ";
+        prefix += backend.message;
+    }
+    return Error(
+        backend.code == BackendErrorCode::Unavailable
+            ? ExecutionErrorCode::Unsupported
+            : ExecutionErrorCode::BackendFailure,
+        std::move(prefix),
+        backend.integrity);
+}
+
+[[nodiscard]] bool ContainsKind(
+    const std::vector<ExecutionOperationKind>& kinds,
+    ExecutionOperationKind kind)
+{
+    return std::find(kinds.begin(), kinds.end(), kind) != kinds.end();
+}
+
+} // namespace
+
+struct ExecutionEngine::Impl
+{
+    struct ActiveOperation
+    {
+        ExecutionOperationId id;
+        ExecutionRequest request;
+        ExecutionOperationKind kind = ExecutionOperationKind::SafePause;
+        Clock::time_point started;
+        Clock::time_point deadline;
+        Clock::time_point last_vi_change;
+        std::optional<Clock::time_point> suspended_at;
+        std::chrono::milliseconds remaining_budget{};
+        std::uint64_t last_vi = 0;
+        std::uint64_t advance_baseline_vi = 0;
+        std::uint32_t advance_baseline_pc = 0;
+        std::uint32_t completed_count = 0;
+        bool bounded = false;
+        bool observed_running = false;
+        bool awaiting_advance = false;
+        bool throttle_changed = false;
+        bool original_throttle_disabled = false;
+        bool input_validated = false;
+        std::optional<InputPublicationToken> input_publication;
+        std::optional<InputPublicationToken> last_input_publication;
+        std::optional<StopSubscriptionGroupHandle> wake_group;
+        std::optional<ExecutionTerminalStatus> pending_terminal;
+        std::optional<ExecutionError> pending_error;
+        std::optional<StopRouteReceipt> pending_stop;
+        std::optional<InterruptionFrameId> handler_owner;
+        std::optional<ExecutionOperationId> pause_control_id;
+        std::optional<Clock::time_point> pause_control_deadline;
+        bool borrowed_wake_group = false;
+        bool wake_group_parked = false;
+    };
+
+    struct SuspendedFrame
+    {
+        InterruptionFrameId id;
+        InterruptionHandlerDescriptor descriptor;
+        ActiveOperation parent;
+        Clock::time_point decision_deadline;
+        std::chrono::milliseconds remaining_decision_budget{};
+        std::optional<Clock::time_point> decision_suspended_at;
+    };
+
+    struct PendingParentTerminal
+    {
+        ActiveOperation operation;
+        ExecutionTerminalStatus status =
+            ExecutionTerminalStatus::Cancelled;
+        ExecutionError error;
+    };
+
+    IExecutionBackendPort& backend;
+    StopPointRouter& stop_points;
+    ExecutionEngineConfig config;
+    std::function<Clock::time_point()> now;
+    std::thread::id owner_thread;
+    StateEpoch epoch;
+    ExecutionSnapshot snapshot;
+    std::optional<ActiveOperation> active;
+    std::vector<SuspendedFrame> handlers;
+    std::vector<PendingParentTerminal> pending_parent_terminals;
+    std::map<std::string, InterruptionHandlerDescriptor, std::less<>>
+        handler_registry;
+    std::vector<ExecutionEvent> events;
+    std::uint64_t next_operation = 1;
+    std::uint64_t next_frame = 1;
+    bool initialized = false;
+    bool replacing_state = false;
+    bool stopping = false;
+
+    Impl(
+        IExecutionBackendPort& backend_value,
+        StopPointRouter& stop_points_value,
+        ExecutionEngineConfig config_value)
+        : backend(backend_value),
+          stop_points(stop_points_value),
+          config(std::move(config_value)),
+          now(config.now
+                  ? config.now
+                  : [] { return Clock::now(); }),
+          owner_thread(std::this_thread::get_id())
+    {
+        if (config.maintenance_interval <= std::chrono::milliseconds::zero())
+            config.maintenance_interval = std::chrono::milliseconds(10);
+        if (config.pause_confirmation_timeout <=
+            std::chrono::milliseconds::zero())
+        {
+            config.pause_confirmation_timeout = std::chrono::seconds(5);
+        }
+        for (InterruptionHandlerDescriptor& descriptor :
+            config.interruption_handlers)
+        {
+            if (!descriptor.key.empty() &&
+                descriptor.child_active_budget >
+                    std::chrono::milliseconds::zero() &&
+                descriptor.maximum_depth > 0 &&
+                descriptor.maximum_depth <= 8)
+            {
+                handler_registry.emplace(descriptor.key, std::move(descriptor));
+            }
+        }
+        snapshot.activity = ExecutionActivity::Closed;
+    }
+
+    [[nodiscard]] bool OnOwnerThread() const noexcept
+    {
+        return owner_thread == std::this_thread::get_id();
+    }
+
+    [[nodiscard]] ExecutionOperationId NextOperationId()
+    {
+        if (next_operation == 0)
+            return {};
+        const ExecutionOperationId id(next_operation);
+        if (next_operation == std::numeric_limits<std::uint64_t>::max())
+            next_operation = 0;
+        else
+            ++next_operation;
+        return id;
+    }
+
+    [[nodiscard]] InterruptionFrameId NextFrameId()
+    {
+        if (next_frame == 0)
+            return {};
+        const InterruptionFrameId id(next_frame);
+        if (next_frame == std::numeric_limits<std::uint64_t>::max())
+            next_frame = 0;
+        else
+            ++next_frame;
+        return id;
+    }
+
+    void RefreshSnapshot(const BackendExecutionSnapshot* backend_snapshot = nullptr)
+    {
+        snapshot.state_epoch = epoch;
+        snapshot.active_operation =
+            active ? std::optional(active->id) : std::nullopt;
+        if (active)
+            snapshot.active_kind = active->kind;
+        snapshot.interruption_depth =
+            static_cast<std::uint8_t>(std::min<std::size_t>(
+                handlers.size(),
+                std::numeric_limits<std::uint8_t>::max()));
+        snapshot.active_interruption_frame = handlers.empty()
+            ? std::nullopt
+            : std::optional(handlers.back().id);
+        snapshot.input_bound =
+            active && InputRelationshipOf(active->request).has_value();
+        if (backend_snapshot)
+            snapshot.evidence = ConvertEvidence(*backend_snapshot);
+
+        if (stopping)
+            snapshot.activity = ExecutionActivity::Closed;
+        else if (!active)
+            snapshot.activity = handlers.empty()
+                ? ExecutionActivity::IdlePaused
+                : ExecutionActivity::HandlingInterruption;
+        else
+        {
+            switch (active->kind)
+            {
+            case ExecutionOperationKind::ContinueUntil:
+                snapshot.activity = ExecutionActivity::Continuing;
+                break;
+            case ExecutionOperationKind::StepInstructions:
+                snapshot.activity = ExecutionActivity::SteppingInstruction;
+                break;
+            case ExecutionOperationKind::StepFrames:
+                snapshot.activity = ExecutionActivity::SteppingFrame;
+                break;
+            case ExecutionOperationKind::InputSynchronizedAdvance:
+                snapshot.activity = ExecutionActivity::AdvancingInput;
+                break;
+            case ExecutionOperationKind::SafePause:
+                snapshot.activity = ExecutionActivity::Pausing;
+                break;
+            case ExecutionOperationKind::InteractiveResume:
+                snapshot.activity = ExecutionActivity::InteractiveRunning;
+                break;
+            }
+        }
+    }
+
+    void PublishState(const BackendExecutionSnapshot* backend_snapshot = nullptr)
+    {
+        RefreshSnapshot(backend_snapshot);
+        events.push_back({
+            ExecutionEventKind::StateChanged,
+            snapshot,
+            std::nullopt,
+            std::nullopt});
+    }
+
+    void PublishProgress(
+        const ActiveOperation& operation,
+        const BackendExecutionSnapshot& observed)
+    {
+        RefreshSnapshot(&observed);
+        ExecutionProgress progress;
+        progress.operation_id = operation.id;
+        progress.kind = operation.kind;
+        progress.completed_count = operation.completed_count;
+        progress.evidence = ConvertEvidence(observed);
+        events.push_back({
+            ExecutionEventKind::Progress,
+            snapshot,
+            std::nullopt,
+            std::move(progress)});
+    }
+
+    [[nodiscard]] BackendExecutionSnapshot Query()
+    {
+        try
+        {
+            return backend.QueryExecutionSnapshot();
+        }
+        catch (const std::exception& ex)
+        {
+            BackendExecutionSnapshot snapshot_result;
+            snapshot_result.result = BackendResult::Failure(
+                BackendErrorCode::OperationFailed,
+                std::string("execution snapshot query threw: ") + ex.what(),
+                BackendIntegrity::Unknown);
+            return snapshot_result;
+        }
+        catch (...)
+        {
+            BackendExecutionSnapshot snapshot_result;
+            snapshot_result.result = BackendResult::Failure(
+                BackendErrorCode::OperationFailed,
+                "execution snapshot query threw",
+                BackendIntegrity::Unknown);
+            return snapshot_result;
+        }
+    }
+
+    [[nodiscard]] BackendResult CallBackend(
+        const char* name,
+        const std::function<BackendResult()>& call)
+    {
+        try
+        {
+            return call();
+        }
+        catch (const std::exception& ex)
+        {
+            return BackendResult::Failure(
+                BackendErrorCode::OperationFailed,
+                std::string(name) + " threw: " + ex.what(),
+                BackendIntegrity::Unknown);
+        }
+        catch (...)
+        {
+            return BackendResult::Failure(
+                BackendErrorCode::OperationFailed,
+                std::string(name) + " threw",
+                BackendIntegrity::Unknown);
+        }
+    }
+
+    [[nodiscard]] std::chrono::milliseconds Remaining(
+        const ActiveOperation& operation,
+        Clock::time_point current) const
+    {
+        if (!operation.bounded)
+            return {};
+        if (operation.suspended_at)
+            return operation.remaining_budget;
+        if (current >= operation.deadline)
+            return {};
+        return std::chrono::duration_cast<std::chrono::milliseconds>(
+            operation.deadline - current);
+    }
+
+    [[nodiscard]] BackendResult RestoreThrottle(ActiveOperation& operation)
+    {
+        if (!operation.throttle_changed)
+            return BackendResult::Success();
+        BackendResult result = CallBackend(
+            "throttle restoration",
+            [&] {
+                return backend.SetThrottleDisabled(
+                    operation.original_throttle_disabled);
+            });
+        if (result.ok)
+            operation.throttle_changed = false;
+        return result;
+    }
+
+    void FreezeHandlerDecision(
+        SuspendedFrame& frame,
+        Clock::time_point current)
+    {
+        if (frame.decision_suspended_at)
+            return;
+        frame.remaining_decision_budget =
+            current >= frame.decision_deadline
+            ? std::chrono::milliseconds::zero()
+            : std::chrono::duration_cast<std::chrono::milliseconds>(
+                  frame.decision_deadline - current);
+        frame.decision_suspended_at = current;
+    }
+
+    void ResumeHandlerDecision(
+        SuspendedFrame& frame,
+        Clock::time_point current)
+    {
+        if (!frame.decision_suspended_at)
+            return;
+        frame.decision_deadline =
+            current + frame.remaining_decision_budget;
+        frame.decision_suspended_at.reset();
+    }
+
+    [[nodiscard]] ExecutionError ParkWakeGroup(
+        ActiveOperation& operation)
+    {
+        if (operation.kind != ExecutionOperationKind::ContinueUntil ||
+            !operation.wake_group || operation.wake_group_parked)
+        {
+            return {};
+        }
+        StopSubscriptionGroupDefinition parked =
+            std::get<ContinueUntilRequest>(operation.request).wake_group;
+        parked.id = operation.wake_group->lease().group_id;
+        parked.source.id = operation.wake_group->lease().source_id;
+        for (StopSubscriptionDefinition& subscription :
+            parked.subscriptions)
+        {
+            subscription.delivery = StopDeliveryMode::Observe;
+            subscription.policy = StopRoutingPolicy::Pass;
+            subscription.consumer = owner;
+            subscription.lifetime =
+                StopSubscriptionLifetime::Scoped;
+            subscription.lossless = false;
+            subscription.suppress_immediate_reentry = false;
+        }
+        const StopGroupReceipt replaced =
+            operation.wake_group->Replace(std::move(parked));
+        if (!replaced.ok)
+        {
+            return Error(
+                ExecutionErrorCode::StopPointFailure,
+                replaced.error.message.empty()
+                    ? "failed parking suspended foreground Wake group"
+                    : replaced.error.message,
+                replaced.error.code ==
+                        StopPointErrorCode::PhysicalIntegrityUnknown
+                    ? BackendIntegrity::Unknown
+                    : BackendIntegrity::Preserved);
+        }
+        operation.wake_group_parked = true;
+        return {};
+    }
+
+    [[nodiscard]] ExecutionError UnparkWakeGroup(
+        ActiveOperation& operation)
+    {
+        if (!operation.wake_group_parked)
+            return {};
+        if (ExecutionError restored = PrepareWakeGroup(operation, true))
+            return restored;
+        operation.wake_group_parked = false;
+        return {};
+    }
+
+    [[nodiscard]] ExecutionError RestoreBorrowedWake(
+        ActiveOperation& operation)
+    {
+        if (!operation.borrowed_wake_group)
+            return {};
+        if (!operation.wake_group || !operation.handler_owner ||
+            handlers.empty() ||
+            handlers.back().id != *operation.handler_owner ||
+            handlers.back().parent.kind !=
+                ExecutionOperationKind::ContinueUntil)
+        {
+            return Error(
+                ExecutionErrorCode::StopPointFailure,
+                "borrowed foreground Wake ownership could not be restored",
+                BackendIntegrity::Unknown);
+        }
+
+        ActiveOperation& parent = handlers.back().parent;
+        parent.wake_group.emplace(std::move(*operation.wake_group));
+        operation.wake_group.reset();
+        parent.wake_group_parked = false;
+        if (ExecutionError restored = PrepareWakeGroup(parent, true))
+            return restored;
+        if (ExecutionError parked = ParkWakeGroup(parent))
+            return parked;
+        operation.borrowed_wake_group = false;
+        return {};
+    }
+
+    void EmitTerminal(
+        ActiveOperation operation,
+        ExecutionTerminalStatus status,
+        ExecutionError error = {},
+        std::optional<StopRouteReceipt> stop = std::nullopt,
+        const BackendExecutionSnapshot* known_snapshot = nullptr)
+    {
+        BackendExecutionSnapshot observed =
+            known_snapshot ? *known_snapshot : Query();
+        if (!observed.result.ok && !error)
+            error = BackendError("execution terminal snapshot failed", observed.result);
+
+        if (ExecutionError restored = RestoreBorrowedWake(operation))
+        {
+            status = ExecutionTerminalStatus::CleanupFailure;
+            error = std::move(restored);
+        }
+        BackendResult throttle = RestoreThrottle(operation);
+        if (!throttle.ok)
+        {
+            status = ExecutionTerminalStatus::CleanupFailure;
+            error = BackendError("execution throttle cleanup failed", throttle);
+        }
+        if (operation.wake_group)
+        {
+            StopReleaseReceipt released = operation.wake_group->Release();
+            operation.wake_group.reset();
+            if (!released.ok)
+            {
+                status = ExecutionTerminalStatus::CleanupFailure;
+                error = Error(
+                    ExecutionErrorCode::StopPointFailure,
+                    released.error.message.empty()
+                        ? "execution Wake group cleanup failed"
+                        : released.error.message,
+                    released.error.code == StopPointErrorCode::PhysicalIntegrityUnknown
+                        ? BackendIntegrity::Unknown
+                        : BackendIntegrity::Preserved);
+            }
+        }
+        if (const auto input_relationship =
+                InputRelationshipOf(operation.request);
+            input_relationship && config.input_advance)
+        {
+            const bool borrowed_from_parent =
+                operation.handler_owner && !handlers.empty() &&
+                handlers.back().id == *operation.handler_owner &&
+                InputRelationshipOf(handlers.back().parent.request) ==
+                    input_relationship;
+            const InputAdvanceReceipt cancelled = borrowed_from_parent
+                ? InputAdvanceReceipt{
+                      true,
+                      InputAdvanceDecision::Complete,
+                      {},
+                      {}}
+                : config.input_advance->Cancel(
+                      *input_relationship,
+                      epoch);
+            if (!cancelled.ok)
+            {
+                status = ExecutionTerminalStatus::CleanupFailure;
+                error = Error(
+                    ExecutionErrorCode::InputUnavailable,
+                    cancelled.message.empty()
+                        ? "input-advance cleanup failed"
+                        : cancelled.message);
+            }
+        }
+        if (operation.handler_owner && !handlers.empty() &&
+            handlers.back().id == *operation.handler_owner)
+        {
+            ResumeHandlerDecision(handlers.back(), now());
+        }
+
+        ExecutionTerminalResult terminal;
+        terminal.operation_id = operation.id;
+        terminal.kind = operation.kind;
+        terminal.status = status;
+        terminal.state_epoch = epoch;
+        terminal.completed_count = operation.completed_count;
+        terminal.remaining_active_budget =
+            Remaining(operation, now());
+        terminal.evidence = ConvertEvidence(observed);
+        terminal.stop = std::move(stop);
+        terminal.error = std::move(error);
+        terminal.integrity = terminal.error
+            ? terminal.error.integrity
+            : observed.result.integrity;
+
+        const std::optional<ExecutionOperationId> pause_control_id =
+            operation.pause_control_id;
+        active.reset();
+        RefreshSnapshot(&observed);
+        const BackendIntegrity terminal_integrity = terminal.integrity;
+        events.push_back({
+            ExecutionEventKind::Terminal,
+            snapshot,
+            std::move(terminal)});
+        if (pause_control_id)
+        {
+            ExecutionTerminalResult pause_terminal;
+            pause_terminal.operation_id = *pause_control_id;
+            pause_terminal.kind = ExecutionOperationKind::SafePause;
+            pause_terminal.status =
+                status == ExecutionTerminalStatus::Paused
+                ? ExecutionTerminalStatus::Paused
+                : ExecutionTerminalStatus::CleanupFailure;
+            pause_terminal.state_epoch = epoch;
+            pause_terminal.evidence = ConvertEvidence(observed);
+            pause_terminal.error =
+                pause_terminal.status == ExecutionTerminalStatus::Paused
+                ? ExecutionError{}
+                : Error(
+                      ExecutionErrorCode::BackendFailure,
+                      "interactive pause could not be confirmed",
+                      terminal_integrity);
+            pause_terminal.integrity = terminal_integrity;
+            events.push_back({
+                ExecutionEventKind::Terminal,
+                snapshot,
+                std::move(pause_terminal)});
+        }
+        PublishState(&observed);
+
+        if (!pending_parent_terminals.empty())
+        {
+            std::vector<PendingParentTerminal> parents;
+            parents.swap(pending_parent_terminals);
+            for (PendingParentTerminal& parent : parents)
+            {
+                EmitTerminal(
+                    std::move(parent.operation),
+                    parent.status,
+                    std::move(parent.error),
+                    std::nullopt,
+                    &observed);
+            }
+        }
+    }
+
+    void BeginFinish(
+        ExecutionTerminalStatus status,
+        ExecutionError error = {},
+        std::optional<StopRouteReceipt> stop = std::nullopt)
+    {
+        if (!active || active->pending_terminal)
+            return;
+        BackendExecutionSnapshot observed = Query();
+        if (!observed.result.ok)
+        {
+            ActiveOperation finished = std::move(*active);
+            active.reset();
+            (void)CallBackend(
+                "execution emergency pause after snapshot failure",
+                [&] { return backend.RequestPause(); });
+            EmitTerminal(
+                std::move(finished),
+                ExecutionTerminalStatus::CleanupFailure,
+                BackendError(
+                    "execution state query failed",
+                    observed.result),
+                std::move(stop),
+                &observed);
+            return;
+        }
+        active->pending_terminal = status;
+        active->pending_error = std::move(error);
+        active->pending_stop = std::move(stop);
+        if (observed.core_state == BackendCoreState::Paused &&
+            observed.pause_confirmed)
+        {
+            ActiveOperation finished = std::move(*active);
+            const auto final_status = *finished.pending_terminal;
+            ExecutionError final_error =
+                finished.pending_error.value_or(ExecutionError{});
+            std::optional<StopRouteReceipt> final_stop =
+                std::move(finished.pending_stop);
+            EmitTerminal(
+                std::move(finished),
+                final_status,
+                std::move(final_error),
+                std::move(final_stop),
+                &observed);
+            return;
+        }
+
+        if (!active->pause_control_deadline)
+        {
+            active->pause_control_deadline =
+                now() + config.pause_confirmation_timeout;
+        }
+        BackendResult pause = CallBackend(
+            "execution terminal pause",
+            [&] { return backend.RequestPause(); });
+        if (!pause.ok)
+        {
+            ActiveOperation finished = std::move(*active);
+            std::optional<StopRouteReceipt> final_stop =
+                std::move(finished.pending_stop);
+            EmitTerminal(
+                std::move(finished),
+                ExecutionTerminalStatus::CleanupFailure,
+                BackendError("failed pausing at execution terminal", pause),
+                std::move(final_stop),
+                &observed);
+        }
+    }
+
+    [[nodiscard]] ExecutionError ValidateCommon(
+        const ExecutionRequest& request) const
+    {
+        if (!initialized || stopping)
+        {
+            return Error(
+                ExecutionErrorCode::RuntimeStopping,
+                "ExecutionEngine is not available");
+        }
+        if (replacing_state)
+        {
+            return Error(
+                ExecutionErrorCode::InvalidState,
+                "ExecutionEngine is replacing session state");
+        }
+        if (!EpochOf(request) || EpochOf(request) != epoch)
+        {
+            return Error(
+                ExecutionErrorCode::StateEpochMismatch,
+                "Execution request StateEpoch does not match the session");
+        }
+        if (ThrottleOf(request) != ExecutionThrottlePolicy::Preserve &&
+            !HasExecutionCapability(
+                backend.Capabilities(),
+                BackendExecutionCapability::ThrottleControl))
+        {
+            return Error(
+                ExecutionErrorCode::Unsupported,
+                "Execution backend does not support throttle control");
+        }
+        if (const auto relationship = InputRelationshipOf(request))
+        {
+            if (!config.input_advance)
+            {
+                return Error(
+                    ExecutionErrorCode::Unsupported,
+                    "execution input relationship requires InputArbiter");
+            }
+            try
+            {
+                const InputAdvanceReceipt validation =
+                    config.input_advance->Validate(*relationship, epoch);
+                if (!validation.ok)
+                {
+                    return Error(
+                        ExecutionErrorCode::InputUnavailable,
+                        validation.message.empty()
+                            ? "execution input relationship is invalid"
+                            : validation.message);
+                }
+            }
+            catch (const std::exception& ex)
+            {
+                return Error(
+                    ExecutionErrorCode::InputUnavailable,
+                    std::string("input relationship validation threw: ") +
+                        ex.what(),
+                    BackendIntegrity::Unknown);
+            }
+            catch (...)
+            {
+                return Error(
+                    ExecutionErrorCode::InputUnavailable,
+                    "input relationship validation threw",
+                    BackendIntegrity::Unknown);
+            }
+        }
+        if (const ExecutionRequestPolicy* policy = PolicyOf(request))
+        {
+            if (policy->active_timeout <= std::chrono::milliseconds::zero())
+            {
+                return Error(
+                    ExecutionErrorCode::InvalidArgument,
+                    "Bounded execution requires a positive active timeout");
+            }
+            if (policy->vi_stall.enabled &&
+                policy->vi_stall.maximum_stall <=
+                    std::chrono::milliseconds::zero())
+            {
+                return Error(
+                    ExecutionErrorCode::InvalidArgument,
+                    "VI-stall policy requires a positive maximum stall");
+            }
+            if (policy->vi_stall.enabled &&
+                !HasExecutionCapability(
+                    backend.Capabilities(),
+                    BackendExecutionCapability::ViObservation))
+            {
+                return Error(
+                    ExecutionErrorCode::Unsupported,
+                    "Execution backend does not support VI observation");
+            }
+            if (policy->movie_ended != MovieEndedPolicy::Ignore &&
+                !HasExecutionCapability(
+                    backend.Capabilities(),
+                    BackendExecutionCapability::MovieObservation))
+            {
+                return Error(
+                    ExecutionErrorCode::Unsupported,
+                    "Execution backend does not support movie observation");
+            }
+        }
+
+        switch (KindOf(request))
+        {
+        case ExecutionOperationKind::ContinueUntil:
+        {
+            const auto& value = std::get<ContinueUntilRequest>(request);
+            if (value.wake_group.subscriptions.empty())
+            {
+                return Error(
+                    ExecutionErrorCode::InvalidArgument,
+                    "ContinueUntil requires at least one Wake alternative");
+            }
+            if (std::any_of(
+                    value.wake_group.subscriptions.begin(),
+                    value.wake_group.subscriptions.end(),
+                    [](const StopSubscriptionDefinition& subscription) {
+                        return subscription.delivery != StopDeliveryMode::Wake;
+                    }))
+            {
+                return Error(
+                    ExecutionErrorCode::InvalidArgument,
+                    "ContinueUntil group may contain only Wake alternatives");
+            }
+            break;
+        }
+        case ExecutionOperationKind::StepInstructions:
+            if (std::get<StepInstructionsRequest>(request).count == 0)
+                return Error(ExecutionErrorCode::InvalidArgument, "Instruction-step count must be nonzero");
+            if (!HasExecutionCapability(
+                    backend.Capabilities(),
+                    BackendExecutionCapability::ExactInstructionStep))
+            {
+                return Error(
+                    ExecutionErrorCode::Unsupported,
+                    "Exact guest-instruction stepping is unavailable");
+            }
+            break;
+        case ExecutionOperationKind::StepFrames:
+            if (std::get<StepFramesRequest>(request).count == 0)
+                return Error(ExecutionErrorCode::InvalidArgument, "Frame-step count must be nonzero");
+            if (!HasExecutionCapability(
+                    backend.Capabilities(),
+                    BackendExecutionCapability::FrameStep))
+            {
+                return Error(
+                    ExecutionErrorCode::Unsupported,
+                    "Guest-frame stepping is unavailable");
+            }
+            break;
+        case ExecutionOperationKind::InputSynchronizedAdvance:
+        {
+            const auto& value =
+                std::get<InputSynchronizedAdvanceRequest>(request);
+            if (!value.binding || value.maximum_advances == 0)
+                return Error(ExecutionErrorCode::InvalidArgument, "Input advancement requires a binding and positive bound");
+            if (value.policy.input_relationship &&
+                *value.policy.input_relationship != value.binding)
+            {
+                return Error(
+                    ExecutionErrorCode::InvalidArgument,
+                    "input relationship does not match the advancement binding");
+            }
+            if (!HasExecutionCapability(
+                    backend.Capabilities(),
+                    BackendExecutionCapability::FrameStep))
+            {
+                return Error(
+                    ExecutionErrorCode::Unsupported,
+                    "Guest-frame stepping is unavailable");
+            }
+            if (!config.input_advance)
+            {
+                return Error(
+                    ExecutionErrorCode::Unsupported,
+                    "InputSynchronizedAdvance requires InputArbiter");
+            }
+            break;
+        }
+        case ExecutionOperationKind::SafePause:
+        case ExecutionOperationKind::InteractiveResume:
+            break;
+        }
+        return {};
+    }
+
+    [[nodiscard]] ExecutionError ApplyThrottle(
+        ActiveOperation& operation,
+        const BackendExecutionSnapshot& observed)
+    {
+        const ExecutionThrottlePolicy policy = ThrottleOf(operation.request);
+        if (policy == ExecutionThrottlePolicy::Preserve)
+            return {};
+        if (!HasExecutionCapability(
+                backend.Capabilities(),
+                BackendExecutionCapability::ThrottleControl))
+        {
+            return Error(
+                ExecutionErrorCode::Unsupported,
+                "Execution backend does not support throttle control");
+        }
+        const bool target =
+            policy == ExecutionThrottlePolicy::RequireDisabled;
+        operation.original_throttle_disabled = observed.throttle_disabled;
+        if (target == observed.throttle_disabled)
+            return {};
+        BackendResult changed = CallBackend(
+            "execution throttle override",
+            [&] { return backend.SetThrottleDisabled(target); });
+        if (!changed.ok)
+            return BackendError("execution throttle override failed", changed);
+        operation.throttle_changed = true;
+        return {};
+    }
+
+    [[nodiscard]] ExecutionError PrepareWakeGroup(
+        ActiveOperation& operation,
+        bool restoring = false)
+    {
+        auto& request = std::get<ContinueUntilRequest>(operation.request);
+        for (StopSubscriptionDefinition& subscription :
+            request.wake_group.subscriptions)
+        {
+            subscription.consumer = owner;
+            subscription.suppress_immediate_reentry =
+                request.policy.current_point == ExecutionCurrentPointPolicy::Ignore ||
+                restoring;
+        }
+        if (operation.wake_group)
+        {
+            request.wake_group.id =
+                operation.wake_group->lease().group_id;
+            request.wake_group.source.id =
+                operation.wake_group->lease().source_id;
+            StopGroupReceipt replaced =
+                operation.wake_group->Replace(request.wake_group);
+            if (!replaced.ok)
+            {
+                return Error(
+                    ExecutionErrorCode::StopPointFailure,
+                    replaced.error.message.empty()
+                        ? "ContinueUntil Wake replacement failed"
+                        : replaced.error.message,
+                    replaced.error.code ==
+                            StopPointErrorCode::PhysicalIntegrityUnknown
+                        ? BackendIntegrity::Unknown
+                        : BackendIntegrity::Preserved);
+            }
+            return {};
+        }
+        StopGroupRegistrationOptions options;
+        switch (request.policy.current_point)
+        {
+        case ExecutionCurrentPointPolicy::Ignore:
+            options.current_point = StopCurrentPointPolicy::Ignore;
+            break;
+        case ExecutionCurrentPointPolicy::AcceptIfAvailable:
+            options.current_point = StopCurrentPointPolicy::AcceptIfAvailable;
+            break;
+        case ExecutionCurrentPointPolicy::Require:
+            options.current_point = StopCurrentPointPolicy::Require;
+            break;
+        }
+        if (restoring)
+            options.current_point = StopCurrentPointPolicy::Ignore;
+
+        StopGroupRegistrationResult registration =
+            stop_points.RegisterGroup(request.wake_group, options);
+        if (!registration.receipt.ok)
+        {
+            return Error(
+                ExecutionErrorCode::StopPointFailure,
+                registration.receipt.error.message.empty()
+                    ? "ContinueUntil Wake registration failed"
+                    : registration.receipt.error.message,
+                registration.receipt.error.code ==
+                        StopPointErrorCode::PhysicalIntegrityUnknown
+                    ? BackendIntegrity::Unknown
+                    : BackendIntegrity::Preserved);
+        }
+        operation.wake_group.emplace(std::move(registration.handle));
+        if (registration.current_point)
+        {
+            if (registration.current_point->terminal ==
+                StopRouteTerminal::WokeForeground)
+            {
+                operation.pending_terminal =
+                    ExecutionTerminalStatus::RequestedCompletion;
+                operation.pending_stop =
+                    std::move(*registration.current_point);
+            }
+            else if (request.policy.current_point ==
+                ExecutionCurrentPointPolicy::Require)
+            {
+                return Error(
+                    ExecutionErrorCode::StopPointFailure,
+                    "Required current point did not satisfy ContinueUntil");
+            }
+        }
+        return {};
+    }
+
+    [[nodiscard]] ExecutionError DepartRetainedPoint()
+    {
+        if (StopPointError error = stop_points.DepartCurrentPoint())
+        {
+            return Error(
+                ExecutionErrorCode::StopPointFailure,
+                error.message.empty()
+                    ? "failed departing the retained stop point"
+                    : error.message,
+                BackendIntegrity::Unknown);
+        }
+        return {};
+    }
+
+    [[nodiscard]] ExecutionError ResumeBackend()
+    {
+        if (ExecutionError departed = DepartRetainedPoint())
+            return departed;
+        BackendResult resumed = CallBackend(
+            "execution resume",
+            [&] { return backend.Resume(); });
+        if (!resumed.ok)
+            return BackendError("execution resume failed", resumed);
+        return {};
+    }
+
+    [[nodiscard]] ExecutionError BeginAdvance(ActiveOperation& operation)
+    {
+        BackendExecutionSnapshot observed = Query();
+        if (!observed.result.ok)
+            return BackendError("execution advance snapshot failed", observed.result);
+        if (observed.core_state != BackendCoreState::Paused ||
+            !observed.pause_confirmed)
+        {
+            return Error(
+                ExecutionErrorCode::InvalidState,
+                "bounded advancement requires an authoritatively paused core");
+        }
+        if (ExecutionError departed = DepartRetainedPoint())
+            return departed;
+
+        BackendResult started;
+        switch (operation.kind)
+        {
+        case ExecutionOperationKind::StepInstructions:
+            if (!HasExecutionCapability(
+                    backend.Capabilities(),
+                    BackendExecutionCapability::ExactInstructionStep))
+            {
+                return Error(
+                    ExecutionErrorCode::Unsupported,
+                    "Exact guest-instruction stepping is unavailable");
+            }
+            started = CallBackend(
+                "exact instruction step",
+                [&] { return backend.BeginExactInstructionStep(); });
+            break;
+        case ExecutionOperationKind::StepFrames:
+        case ExecutionOperationKind::InputSynchronizedAdvance:
+            if (!HasExecutionCapability(
+                    backend.Capabilities(),
+                    BackendExecutionCapability::FrameStep))
+            {
+                return Error(
+                    ExecutionErrorCode::Unsupported,
+                    "Guest-frame stepping is unavailable");
+            }
+            started = CallBackend(
+                "frame step",
+                [&] { return backend.BeginFrameStep(); });
+            break;
+        default:
+            return Error(
+                ExecutionErrorCode::InvalidState,
+                "operation is not a bounded advancement");
+        }
+        if (!started.ok)
+            return BackendError("failed starting bounded advancement", started);
+        operation.advance_baseline_vi = observed.vi_count;
+        operation.advance_baseline_pc = observed.pc;
+        operation.awaiting_advance = true;
+        operation.observed_running = false;
+        return {};
+    }
+
+    [[nodiscard]] ExecutionError PrepareInput(ActiveOperation& operation)
+    {
+        if (!config.input_advance)
+        {
+            return Error(
+                ExecutionErrorCode::Unsupported,
+                "InputSynchronizedAdvance requires InputArbiter");
+        }
+        auto& request =
+            std::get<InputSynchronizedAdvanceRequest>(operation.request);
+        try
+        {
+            if (!operation.input_validated)
+            {
+                InputAdvanceReceipt validation =
+                    config.input_advance->Validate(request.binding, epoch);
+                if (!validation.ok)
+                {
+                    return Error(
+                        ExecutionErrorCode::InputUnavailable,
+                        validation.message.empty()
+                            ? "input-advance binding validation failed"
+                            : validation.message);
+                }
+                operation.input_validated = true;
+            }
+            InputAdvanceReceipt prepared = config.input_advance->PrepareNext(
+                request.binding,
+                epoch,
+                operation.completed_count);
+            if (!prepared.ok || !prepared.publication)
+            {
+                return Error(
+                    ExecutionErrorCode::InputUnavailable,
+                    prepared.message.empty()
+                        ? "input publication could not be prepared"
+                        : prepared.message);
+            }
+            if (operation.last_input_publication &&
+                *operation.last_input_publication == prepared.publication)
+            {
+                return Error(
+                    ExecutionErrorCode::InputUnavailable,
+                    "input retry reused a prior publication token");
+            }
+            operation.last_input_publication = prepared.publication;
+            operation.input_publication = prepared.publication;
+        }
+        catch (const std::exception& ex)
+        {
+            return Error(
+                ExecutionErrorCode::InputUnavailable,
+                std::string("input-advance preparation threw: ") + ex.what(),
+                BackendIntegrity::Unknown);
+        }
+        catch (...)
+        {
+            return Error(
+                ExecutionErrorCode::InputUnavailable,
+                "input-advance preparation threw",
+                BackendIntegrity::Unknown);
+        }
+        return BeginAdvance(operation);
+    }
+
+    [[nodiscard]] ExecutionError StartOperation(ActiveOperation& operation)
+    {
+        if (operation.kind == ExecutionOperationKind::StepInstructions &&
+            !HasExecutionCapability(
+                backend.Capabilities(),
+                BackendExecutionCapability::ExactInstructionStep))
+        {
+            return Error(
+                ExecutionErrorCode::Unsupported,
+                "Exact guest-instruction stepping is unavailable");
+        }
+        if ((operation.kind == ExecutionOperationKind::StepFrames ||
+                operation.kind ==
+                    ExecutionOperationKind::InputSynchronizedAdvance) &&
+            !HasExecutionCapability(
+                backend.Capabilities(),
+                BackendExecutionCapability::FrameStep))
+        {
+            return Error(
+                ExecutionErrorCode::Unsupported,
+                "Guest-frame stepping is unavailable");
+        }
+        if (operation.kind ==
+                ExecutionOperationKind::InputSynchronizedAdvance &&
+            !config.input_advance)
+        {
+            return Error(
+                ExecutionErrorCode::Unsupported,
+                "InputSynchronizedAdvance requires InputArbiter");
+        }
+        BackendExecutionSnapshot observed = Query();
+        if (!observed.result.ok)
+            return BackendError("execution start snapshot failed", observed.result);
+        if (operation.kind != ExecutionOperationKind::SafePause &&
+            (observed.core_state != BackendCoreState::Paused ||
+                !observed.pause_confirmed))
+        {
+            return Error(
+                ExecutionErrorCode::InvalidState,
+                "execution operation requires an authoritatively paused core");
+        }
+        if (ExecutionError throttle = ApplyThrottle(operation, observed))
+            return throttle;
+
+        switch (operation.kind)
+        {
+        case ExecutionOperationKind::ContinueUntil:
+        {
+            if (ExecutionError registration = PrepareWakeGroup(operation))
+                return registration;
+            if (operation.pending_terminal)
+                return {};
+            return ResumeBackend();
+        }
+        case ExecutionOperationKind::StepInstructions:
+        case ExecutionOperationKind::StepFrames:
+            return BeginAdvance(operation);
+        case ExecutionOperationKind::InputSynchronizedAdvance:
+            return PrepareInput(operation);
+        case ExecutionOperationKind::SafePause:
+            if (observed.core_state == BackendCoreState::Paused &&
+                observed.pause_confirmed)
+            {
+                operation.pending_terminal = ExecutionTerminalStatus::Paused;
+                return {};
+            }
+            if (BackendResult pause = CallBackend(
+                    "safe pause",
+                    [&] { return backend.RequestPause(); });
+                !pause.ok)
+            {
+                return BackendError("safe pause request failed", pause);
+            }
+            return {};
+        case ExecutionOperationKind::InteractiveResume:
+            return ResumeBackend();
+        }
+        return Error(
+            ExecutionErrorCode::InvalidArgument,
+            "unknown execution operation");
+    }
+
+    [[nodiscard]] bool AdvanceCompleted(
+        ActiveOperation& operation,
+        const BackendExecutionSnapshot& observed) const
+    {
+        if (!operation.awaiting_advance ||
+            observed.core_state != BackendCoreState::Paused ||
+            !observed.pause_confirmed)
+        {
+            return false;
+        }
+        if (operation.kind == ExecutionOperationKind::StepInstructions)
+            return observed.pc != operation.advance_baseline_pc;
+        return observed.vi_count != operation.advance_baseline_vi;
+    }
+
+    [[nodiscard]] std::uint32_t TargetCount(
+        const ActiveOperation& operation) const
+    {
+        switch (operation.kind)
+        {
+        case ExecutionOperationKind::StepInstructions:
+            return std::get<StepInstructionsRequest>(operation.request).count;
+        case ExecutionOperationKind::StepFrames:
+            return std::get<StepFramesRequest>(operation.request).count;
+        case ExecutionOperationKind::InputSynchronizedAdvance:
+            return std::get<InputSynchronizedAdvanceRequest>(
+                operation.request).maximum_advances;
+        default:
+            return 0;
+        }
+    }
+
+    void CompleteAdvance(const BackendExecutionSnapshot& observed)
+    {
+        if (!active)
+            return;
+        ActiveOperation& operation = *active;
+        operation.awaiting_advance = false;
+        ++operation.completed_count;
+
+        if (operation.kind == ExecutionOperationKind::InputSynchronizedAdvance)
+        {
+            auto& request =
+                std::get<InputSynchronizedAdvanceRequest>(operation.request);
+            InputAdvanceReceipt acknowledgement;
+            try
+            {
+                acknowledgement =
+                    config.input_advance->ObserveAcknowledgement(
+                        request.binding,
+                        *operation.input_publication,
+                        epoch);
+            }
+            catch (const std::exception& ex)
+            {
+                BeginFinish(
+                    ExecutionTerminalStatus::BackendFailure,
+                    Error(
+                        ExecutionErrorCode::InputUnavailable,
+                        std::string("input acknowledgement threw: ") +
+                            ex.what(),
+                        BackendIntegrity::Unknown));
+                return;
+            }
+            catch (...)
+            {
+                BeginFinish(
+                    ExecutionTerminalStatus::BackendFailure,
+                    Error(
+                        ExecutionErrorCode::InputUnavailable,
+                        "input acknowledgement threw",
+                        BackendIntegrity::Unknown));
+                return;
+            }
+            operation.input_publication.reset();
+            if (!acknowledgement.ok ||
+                acknowledgement.decision == InputAdvanceDecision::Failed)
+            {
+                BeginFinish(
+                    ExecutionTerminalStatus::BackendFailure,
+                    Error(
+                        ExecutionErrorCode::InputUnavailable,
+                        acknowledgement.message.empty()
+                            ? "input acknowledgement failed"
+                            : acknowledgement.message));
+                return;
+            }
+            PublishProgress(operation, observed);
+            if (acknowledgement.decision == InputAdvanceDecision::Cancelled)
+            {
+                BeginFinish(ExecutionTerminalStatus::Cancelled);
+                return;
+            }
+            if (acknowledgement.decision == InputAdvanceDecision::Complete)
+            {
+                BeginFinish(ExecutionTerminalStatus::StepsCompleted);
+                return;
+            }
+            if (operation.completed_count >= TargetCount(operation))
+            {
+                BeginFinish(
+                    ExecutionTerminalStatus::TimedOut,
+                    Error(
+                        ExecutionErrorCode::InputUnavailable,
+                        "input advancement exhausted its declared bound"));
+                return;
+            }
+            if (ExecutionError next = PrepareInput(operation))
+            {
+                BeginFinish(
+                    next.code == ExecutionErrorCode::Unsupported
+                        ? ExecutionTerminalStatus::Unsupported
+                        : ExecutionTerminalStatus::BackendFailure,
+                    std::move(next));
+            }
+            return;
+        }
+
+        PublishProgress(operation, observed);
+        if (operation.completed_count >= TargetCount(operation))
+        {
+            BeginFinish(
+                ExecutionTerminalStatus::StepsCompleted,
+                {},
+                std::nullopt);
+            return;
+        }
+        if (ExecutionError next = BeginAdvance(operation))
+        {
+            BeginFinish(
+                next.code == ExecutionErrorCode::Unsupported
+                    ? ExecutionTerminalStatus::Unsupported
+                    : ExecutionTerminalStatus::BackendFailure,
+                std::move(next));
+        }
+    }
+
+    ExecutionEngine* owner = nullptr;
+};
+
+ExecutionEngine::ExecutionEngine(
+    IExecutionBackendPort& backend,
+    StopPointRouter& stop_points,
+    ExecutionEngineConfig config)
+    : impl_(std::make_unique<Impl>(
+          backend,
+          stop_points,
+          std::move(config)))
+{
+    impl_->owner = this;
+}
+
+ExecutionEngine::~ExecutionEngine()
+{
+    if (impl_ && impl_->initialized &&
+        impl_->owner_thread == std::this_thread::get_id())
+    {
+        (void)Shutdown();
+    }
+}
+
+BackendResult ExecutionEngine::Initialize(StateEpoch epoch)
+{
+    if (!impl_->OnOwnerThread())
+    {
+        return BackendResult::Failure(
+            BackendErrorCode::InvalidState,
+            "ExecutionEngine initialized outside its owner thread");
+    }
+    if (impl_->initialized || impl_->stopping || !epoch)
+    {
+        return BackendResult::Failure(
+            BackendErrorCode::InvalidState,
+            "ExecutionEngine initialization state is invalid");
+    }
+    const BackendExecutionCapabilityMask capabilities =
+        impl_->backend.Capabilities();
+    if (!HasExecutionCapability(
+            capabilities,
+            BackendExecutionCapability::Pause) ||
+        !HasExecutionCapability(
+            capabilities,
+            BackendExecutionCapability::Resume))
+    {
+        return BackendResult::Failure(
+            BackendErrorCode::Unavailable,
+            "Execution backend lacks required pause/resume capabilities");
+    }
+
+    BackendExecutionSnapshot observed = impl_->Query();
+    if (!observed.result.ok)
+        return observed.result;
+    if (observed.core_state != BackendCoreState::Paused ||
+        !observed.pause_confirmed)
+    {
+        return BackendResult::Failure(
+            BackendErrorCode::OperationFailed,
+            "Execution backend did not open at an authoritatively paused CPU boundary",
+            BackendIntegrity::Unknown);
+    }
+    impl_->epoch = epoch;
+    impl_->initialized = true;
+    impl_->snapshot.activity = ExecutionActivity::IdlePaused;
+    impl_->PublishState(&observed);
+    return BackendResult::Success();
+}
+
+ExecutionSubmissionReceipt ExecutionEngine::Submit(ExecutionRequest request)
+{
+    ExecutionSubmissionReceipt receipt;
+    if (!impl_->OnOwnerThread())
+    {
+        receipt.error = Error(
+            ExecutionErrorCode::WrongThread,
+            "ExecutionEngine submitted outside its owner thread");
+        return receipt;
+    }
+    if (ExecutionError validation = impl_->ValidateCommon(request))
+    {
+        receipt.error = std::move(validation);
+        return receipt;
+    }
+
+    const ExecutionOperationKind kind = KindOf(request);
+    if (impl_->active)
+    {
+        if (kind != ExecutionOperationKind::SafePause ||
+            impl_->active->kind != ExecutionOperationKind::InteractiveResume ||
+            impl_->active->pending_terminal)
+        {
+            receipt.error = Error(
+                ExecutionErrorCode::Busy,
+                "ExecutionEngine already owns a foreground operation");
+            return receipt;
+        }
+
+        const ExecutionOperationId pause_id = impl_->NextOperationId();
+        if (!pause_id)
+        {
+            receipt.error = Error(
+                ExecutionErrorCode::InvalidState,
+                "Execution operation IDs are exhausted",
+                BackendIntegrity::Unknown);
+            return receipt;
+        }
+        impl_->active->pause_control_id = pause_id;
+        const auto& pause_request = std::get<SafePauseRequest>(request);
+        impl_->active->pause_control_deadline =
+            impl_->now() + pause_request.policy.active_timeout;
+        receipt.accepted = true;
+        receipt.operation_id = pause_id;
+        impl_->BeginFinish(ExecutionTerminalStatus::Paused);
+        return receipt;
+    }
+    if (!impl_->handlers.empty())
+    {
+        receipt.error = Error(
+            ExecutionErrorCode::Busy,
+            "An interruption handler must submit or finish its child operation");
+        return receipt;
+    }
+
+    const ExecutionOperationId operation_id = impl_->NextOperationId();
+    if (!operation_id)
+    {
+        receipt.error = Error(
+            ExecutionErrorCode::InvalidState,
+            "Execution operation IDs are exhausted",
+            BackendIntegrity::Unknown);
+        return receipt;
+    }
+
+    Impl::ActiveOperation operation;
+    operation.id = operation_id;
+    operation.kind = kind;
+    operation.request = std::move(request);
+    operation.input_validated =
+        kind == ExecutionOperationKind::InputSynchronizedAdvance;
+    operation.started = impl_->now();
+    operation.last_vi_change = operation.started;
+    if (const ExecutionRequestPolicy* policy = PolicyOf(operation.request))
+    {
+        operation.bounded = true;
+        operation.remaining_budget = policy->active_timeout;
+        operation.deadline = operation.started + policy->active_timeout;
+    }
+    const BackendExecutionSnapshot observed = impl_->Query();
+    if (!observed.result.ok)
+    {
+        receipt.error =
+            BackendError("execution start snapshot failed", observed.result);
+        return receipt;
+    }
+    operation.last_vi = observed.vi_count;
+    impl_->active.emplace(std::move(operation));
+    receipt.accepted = true;
+    receipt.operation_id = operation_id;
+
+    if (ExecutionError start = impl_->StartOperation(*impl_->active))
+    {
+        const ExecutionTerminalStatus status =
+            start.code == ExecutionErrorCode::Unsupported
+            ? ExecutionTerminalStatus::Unsupported
+            : ExecutionTerminalStatus::BackendFailure;
+        impl_->BeginFinish(status, std::move(start));
+    }
+    else if (impl_->active && impl_->active->pending_terminal)
+    {
+        const ExecutionTerminalStatus status =
+            *impl_->active->pending_terminal;
+        std::optional<StopRouteReceipt> stop =
+            std::move(impl_->active->pending_stop);
+        impl_->active->pending_terminal.reset();
+        impl_->BeginFinish(status, {}, std::move(stop));
+    }
+    else
+    {
+        const BackendExecutionSnapshot started = impl_->Query();
+        if (!started.result.ok)
+        {
+            impl_->BeginFinish(
+                ExecutionTerminalStatus::BackendFailure,
+                BackendError(
+                    "post-start execution snapshot failed",
+                    started.result));
+        }
+        else
+        {
+            impl_->PublishState(&started);
+        }
+    }
+    return receipt;
+}
+
+ExecutionSubmissionReceipt ExecutionEngine::SubmitInterruptionChild(
+    InterruptionFrameId frame_id,
+    ExecutionRequest request)
+{
+    ExecutionSubmissionReceipt receipt;
+    if (!impl_->OnOwnerThread())
+    {
+        receipt.error = Error(
+            ExecutionErrorCode::WrongThread,
+            "interruption child submitted outside the engine owner thread");
+        return receipt;
+    }
+    if (impl_->handlers.empty() ||
+        impl_->handlers.back().id != frame_id ||
+        impl_->active)
+    {
+        receipt.error = Error(
+            ExecutionErrorCode::InvalidState,
+            "interruption frame is not awaiting a child operation");
+        return receipt;
+    }
+    Impl::SuspendedFrame& frame = impl_->handlers.back();
+    auto current = impl_->now();
+    if (current >= frame.decision_deadline)
+    {
+        receipt.error = Error(
+            ExecutionErrorCode::InterruptionPolicyViolation,
+            "interruption handler decision budget has expired");
+        return receipt;
+    }
+    if (CancellationOf(frame.parent.request)
+            .is_cancellation_requested())
+    {
+        receipt.error = Error(
+            ExecutionErrorCode::InvalidState,
+            "interruption parent is already cancelled");
+        return receipt;
+    }
+    const ExecutionOperationKind kind = KindOf(request);
+    if (!ContainsKind(frame.descriptor.allowed_child_operations, kind))
+    {
+        receipt.error = Error(
+            ExecutionErrorCode::InterruptionPolicyViolation,
+            "interruption descriptor does not permit this child operation");
+        return receipt;
+    }
+    if (ExecutionError validation = impl_->ValidateCommon(request))
+    {
+        receipt.error = std::move(validation);
+        return receipt;
+    }
+    current = impl_->now();
+    if (current >= frame.decision_deadline)
+    {
+        receipt.error = Error(
+            ExecutionErrorCode::InterruptionPolicyViolation,
+            "interruption handler decision budget expired during validation");
+        return receipt;
+    }
+
+    if (ExecutionRequestPolicy* policy = std::visit(
+            [](auto& value) -> ExecutionRequestPolicy* {
+                using Request = std::decay_t<decltype(value)>;
+                if constexpr (std::is_same_v<Request, InteractiveResumeRequest>)
+                    return nullptr;
+                else
+                    return &value.policy;
+            },
+            request))
+    {
+        const auto handler_remaining =
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                frame.decision_deadline - current);
+        const auto child_bound = std::min(
+            frame.descriptor.child_active_budget,
+            handler_remaining);
+        if (child_bound <= std::chrono::milliseconds::zero())
+        {
+            receipt.error = Error(
+                ExecutionErrorCode::InterruptionPolicyViolation,
+                "interruption child has no remaining active budget");
+            return receipt;
+        }
+        if (policy->active_timeout > child_bound)
+        {
+            policy->active_timeout = child_bound;
+        }
+    }
+    else
+    {
+        receipt.error = Error(
+            ExecutionErrorCode::InterruptionPolicyViolation,
+            "interruption children must be bounded");
+        return receipt;
+    }
+
+    const ExecutionOperationId operation_id = impl_->NextOperationId();
+    if (!operation_id)
+    {
+        receipt.error = Error(
+            ExecutionErrorCode::InvalidState,
+            "Execution operation IDs are exhausted",
+            BackendIntegrity::Unknown);
+        return receipt;
+    }
+    Impl::ActiveOperation child;
+    child.id = operation_id;
+    child.kind = kind;
+    child.request = std::move(request);
+    child.input_validated =
+        kind == ExecutionOperationKind::InputSynchronizedAdvance;
+    child.handler_owner = frame_id;
+    child.started = impl_->now();
+    child.last_vi_change = child.started;
+    const ExecutionRequestPolicy* policy = PolicyOf(child.request);
+    child.bounded = true;
+    child.remaining_budget = policy->active_timeout;
+    child.deadline = child.started + policy->active_timeout;
+    const BackendExecutionSnapshot observed = impl_->Query();
+    if (!observed.result.ok)
+    {
+        receipt.error = BackendError(
+            "interruption child snapshot failed",
+            observed.result);
+        return receipt;
+    }
+    if (observed.core_state != BackendCoreState::Paused ||
+        !observed.pause_confirmed)
+    {
+        receipt.error = Error(
+            ExecutionErrorCode::InvalidState,
+            "interruption child requires an authoritatively paused core");
+        return receipt;
+    }
+    if (kind == ExecutionOperationKind::ContinueUntil &&
+        frame.parent.wake_group)
+    {
+        child.wake_group.emplace(
+            std::move(*frame.parent.wake_group));
+        frame.parent.wake_group.reset();
+        frame.parent.wake_group_parked = false;
+        child.borrowed_wake_group = true;
+    }
+    child.last_vi = observed.vi_count;
+    impl_->FreezeHandlerDecision(frame, current);
+    impl_->active.emplace(std::move(child));
+    receipt.accepted = true;
+    receipt.operation_id = operation_id;
+    if (ExecutionError start = impl_->StartOperation(*impl_->active))
+    {
+        impl_->BeginFinish(
+            start.code == ExecutionErrorCode::Unsupported
+                ? ExecutionTerminalStatus::Unsupported
+                : ExecutionTerminalStatus::BackendFailure,
+            std::move(start));
+    }
+    else
+    {
+        const BackendExecutionSnapshot started = impl_->Query();
+        if (!started.result.ok)
+        {
+            impl_->BeginFinish(
+                ExecutionTerminalStatus::BackendFailure,
+                BackendError(
+                    "post-start interruption child snapshot failed",
+                    started.result));
+        }
+        else
+        {
+            impl_->PublishState(&started);
+        }
+    }
+    return receipt;
+}
+
+ExecutionControlReceipt ExecutionEngine::Cancel(CancellationReason reason)
+{
+    ExecutionControlReceipt receipt;
+    if (!impl_->OnOwnerThread())
+    {
+        receipt.error = Error(
+            ExecutionErrorCode::WrongThread,
+            "ExecutionEngine cancelled outside its owner thread");
+        return receipt;
+    }
+    if (!impl_->active && impl_->handlers.empty())
+    {
+        receipt.error = Error(
+            ExecutionErrorCode::InvalidState,
+            "ExecutionEngine has no active operation");
+        return receipt;
+    }
+    receipt.accepted = true;
+    receipt.operation_id = impl_->active
+        ? impl_->active->id
+        : impl_->handlers.back().parent.id;
+    (void)reason;
+    if (impl_->active && impl_->active->borrowed_wake_group &&
+        impl_->active->wake_group && !impl_->handlers.empty() &&
+        impl_->active->handler_owner == impl_->handlers.back().id)
+    {
+        impl_->handlers.back().parent.wake_group.emplace(
+            std::move(*impl_->active->wake_group));
+        impl_->active->wake_group.reset();
+        impl_->active->borrowed_wake_group = false;
+    }
+    while (!impl_->handlers.empty())
+    {
+        impl_->pending_parent_terminals.push_back({
+            std::move(impl_->handlers.back().parent),
+            ExecutionTerminalStatus::Cancelled,
+            {}});
+        impl_->handlers.pop_back();
+    }
+    if (impl_->active)
+    {
+        impl_->BeginFinish(ExecutionTerminalStatus::Cancelled);
+    }
+    else
+    {
+        const BackendExecutionSnapshot observed = impl_->Query();
+        std::vector<Impl::PendingParentTerminal> parents;
+        parents.swap(impl_->pending_parent_terminals);
+        for (Impl::PendingParentTerminal& parent : parents)
+        {
+            impl_->EmitTerminal(
+                std::move(parent.operation),
+                parent.status,
+                std::move(parent.error),
+                std::nullopt,
+                &observed);
+        }
+    }
+    return receipt;
+}
+
+ExecutionControlReceipt ExecutionEngine::CompleteInterruptionHandler(
+    InterruptionFrameId frame_id,
+    InterruptionHandlerOutcome outcome,
+    std::string diagnostic)
+{
+    ExecutionControlReceipt receipt;
+    if (!impl_->OnOwnerThread())
+    {
+        receipt.error = Error(
+            ExecutionErrorCode::WrongThread,
+            "interruption handler completed outside the engine owner thread");
+        return receipt;
+    }
+    if (impl_->handlers.empty() ||
+        impl_->handlers.back().id != frame_id ||
+        impl_->active)
+    {
+        receipt.error = Error(
+            ExecutionErrorCode::InvalidState,
+            "interruption frame is not awaiting completion");
+        return receipt;
+    }
+
+    Impl::SuspendedFrame frame =
+        std::move(impl_->handlers.back());
+    impl_->handlers.pop_back();
+    receipt.accepted = true;
+    receipt.operation_id = frame.parent.id;
+    const auto current = impl_->now();
+    if (current >= frame.decision_deadline)
+    {
+        impl_->active.emplace(std::move(frame.parent));
+        impl_->BeginFinish(
+            ExecutionTerminalStatus::InterruptionFailed,
+            Error(
+                ExecutionErrorCode::InterruptionPolicyViolation,
+                "interruption handler exceeded its bounded decision budget"));
+        return receipt;
+    }
+    if (outcome != InterruptionHandlerOutcome::ResumeParent)
+    {
+        impl_->active.emplace(std::move(frame.parent));
+        impl_->BeginFinish(
+            outcome == InterruptionHandlerOutcome::AbortParent
+                ? ExecutionTerminalStatus::InterruptionAborted
+                : ExecutionTerminalStatus::InterruptionFailed,
+            Error(
+                outcome == InterruptionHandlerOutcome::AbortParent
+                    ? ExecutionErrorCode::InterruptionPolicyViolation
+                    : ExecutionErrorCode::BackendFailure,
+                diagnostic.empty()
+                    ? (outcome == InterruptionHandlerOutcome::AbortParent
+                          ? "interruption handler aborted its parent"
+                          : "interruption handler infrastructure failed")
+                    : std::move(diagnostic),
+                outcome == InterruptionHandlerOutcome::InfrastructureFailure
+                    ? BackendIntegrity::Unknown
+                    : BackendIntegrity::Preserved));
+        return receipt;
+    }
+
+    if (CancellationOf(frame.parent.request)
+            .is_cancellation_requested())
+    {
+        impl_->active.emplace(std::move(frame.parent));
+        impl_->BeginFinish(ExecutionTerminalStatus::Cancelled);
+        return receipt;
+    }
+    if (frame.parent.bounded &&
+        frame.parent.remaining_budget <=
+            std::chrono::milliseconds::zero())
+    {
+        impl_->active.emplace(std::move(frame.parent));
+        impl_->BeginFinish(ExecutionTerminalStatus::TimedOut);
+        return receipt;
+    }
+    if (frame.parent.suspended_at)
+    {
+        const auto suspended_duration =
+            current - *frame.parent.suspended_at;
+        frame.parent.started += suspended_duration;
+        frame.parent.last_vi_change += suspended_duration;
+        frame.parent.suspended_at.reset();
+    }
+    if (frame.parent.bounded)
+        frame.parent.deadline = current + frame.parent.remaining_budget;
+    impl_->active.emplace(std::move(frame.parent));
+
+    ExecutionError resumed =
+        impl_->UnparkWakeGroup(*impl_->active);
+    if (!resumed)
+    {
+        if (const auto relationship =
+                InputRelationshipOf(impl_->active->request))
+        {
+            try
+            {
+                const InputAdvanceReceipt validation =
+                    impl_->config.input_advance->Validate(
+                        *relationship,
+                        impl_->epoch);
+                if (!validation.ok)
+                {
+                    resumed = Error(
+                        ExecutionErrorCode::InputUnavailable,
+                        validation.message.empty()
+                            ? "resumed input relationship is invalid"
+                            : validation.message);
+                }
+            }
+            catch (const std::exception& ex)
+            {
+                resumed = Error(
+                    ExecutionErrorCode::InputUnavailable,
+                    std::string("resumed input validation threw: ") +
+                        ex.what(),
+                    BackendIntegrity::Unknown);
+            }
+            catch (...)
+            {
+                resumed = Error(
+                    ExecutionErrorCode::InputUnavailable,
+                    "resumed input validation threw",
+                    BackendIntegrity::Unknown);
+            }
+        }
+    }
+    if (!resumed)
+    {
+        switch (impl_->active->kind)
+        {
+        case ExecutionOperationKind::ContinueUntil:
+        case ExecutionOperationKind::InteractiveResume:
+            resumed = impl_->ResumeBackend();
+            break;
+        case ExecutionOperationKind::StepInstructions:
+        case ExecutionOperationKind::StepFrames:
+        case ExecutionOperationKind::InputSynchronizedAdvance:
+            impl_->active->awaiting_advance = false;
+            impl_->active->observed_running = false;
+            resumed = impl_->BeginAdvance(*impl_->active);
+            break;
+        case ExecutionOperationKind::SafePause:
+        {
+            const BackendResult pause = impl_->CallBackend(
+                "resumed safe pause",
+                [&] { return impl_->backend.RequestPause(); });
+            if (!pause.ok)
+                resumed = BackendError("resumed safe pause failed", pause);
+            break;
+        }
+        }
+    }
+    if (resumed)
+    {
+        impl_->BeginFinish(
+            resumed.code == ExecutionErrorCode::Unsupported
+                ? ExecutionTerminalStatus::Unsupported
+                : ExecutionTerminalStatus::BackendFailure,
+            std::move(resumed));
+    }
+    else
+    {
+        const BackendExecutionSnapshot observed = impl_->Query();
+        if (!observed.result.ok)
+        {
+            impl_->BeginFinish(
+                ExecutionTerminalStatus::BackendFailure,
+                BackendError(
+                    "resumed parent snapshot failed",
+                    observed.result));
+        }
+        else
+        {
+            impl_->PublishState(&observed);
+        }
+    }
+    return receipt;
+}
+
+void ExecutionEngine::HandleStopPointReceipt(StopRouteReceipt receipt)
+{
+    if (!impl_->OnOwnerThread() || !impl_->active ||
+        impl_->active->pending_terminal)
+    {
+        return;
+    }
+    if (receipt.identity.state_epoch &&
+        receipt.identity.state_epoch != impl_->epoch)
+    {
+        if (receipt.event && receipt.event->authoritative)
+        {
+            impl_->BeginFinish(
+                ExecutionTerminalStatus::StateEpochMismatch,
+                Error(
+                    ExecutionErrorCode::StateEpochMismatch,
+                    "authoritative stop receipt belongs to another StateEpoch"),
+                std::move(receipt));
+        }
+        return;
+    }
+
+    switch (receipt.terminal)
+    {
+    case StopRouteTerminal::None:
+    case StopRouteTerminal::Stale:
+        return;
+    case StopRouteTerminal::WokeForeground:
+        impl_->BeginFinish(
+            ExecutionTerminalStatus::RequestedCompletion,
+            {},
+            std::move(receipt));
+        return;
+    case StopRouteTerminal::Consumed:
+        impl_->BeginFinish(
+            ExecutionTerminalStatus::ConsumedStop,
+            {},
+            std::move(receipt));
+        return;
+    case StopRouteTerminal::Unclaimed:
+        if (receipt.core_must_remain_stopped ||
+            (receipt.event && receipt.event->authoritative))
+        {
+            impl_->BeginFinish(
+                ExecutionTerminalStatus::UnexpectedStop,
+                Error(
+                    ExecutionErrorCode::StopPointFailure,
+                    receipt.error.message.empty()
+                        ? "an authoritative physical stop was unclaimed"
+                        : receipt.error.message),
+                std::move(receipt));
+        }
+        return;
+    case StopRouteTerminal::Failed:
+        impl_->BeginFinish(
+            ExecutionTerminalStatus::GuardFailed,
+            Error(
+                ExecutionErrorCode::StopPointFailure,
+                receipt.error.message.empty()
+                    ? "stop-point guard or interceptor failed"
+                    : receipt.error.message),
+            std::move(receipt));
+        return;
+    case StopRouteTerminal::Overflow:
+        impl_->BeginFinish(
+            ExecutionTerminalStatus::BackendFailure,
+            Error(
+                ExecutionErrorCode::StopPointFailure,
+                receipt.error.message.empty()
+                    ? "authoritative stop-point ingress overflowed"
+                    : receipt.error.message,
+                BackendIntegrity::Unknown),
+            std::move(receipt));
+        return;
+    case StopRouteTerminal::InterruptionHandlerRequested:
+        break;
+    }
+
+    if (!receipt.interruption_handler_request)
+    {
+        impl_->BeginFinish(
+            ExecutionTerminalStatus::InterruptionFailed,
+            Error(
+                ExecutionErrorCode::StopPointFailure,
+                "router requested an interruption without a typed request"),
+            std::move(receipt));
+        return;
+    }
+    if (InterruptionPolicyOf(impl_->active->request) !=
+        ExecutionInterruptionPolicy::AllowKnown)
+    {
+        impl_->BeginFinish(
+            ExecutionTerminalStatus::InterruptionUnavailable,
+            Error(
+                ExecutionErrorCode::InterruptionPolicyViolation,
+                "active execution operation rejects interruption handlers"),
+            std::move(receipt));
+        return;
+    }
+
+    const std::string& key =
+        receipt.interruption_handler_request->interruption_handler_key;
+    const auto descriptor = impl_->handler_registry.find(key);
+    if (descriptor == impl_->handler_registry.end())
+    {
+        impl_->BeginFinish(
+            ExecutionTerminalStatus::InterruptionUnavailable,
+            Error(
+                ExecutionErrorCode::InterruptionUnavailable,
+                "no trusted interruption handler is registered for key " + key),
+            std::move(receipt));
+        return;
+    }
+    if (impl_->handlers.size() >= 8 ||
+        impl_->handlers.size() >= descriptor->second.maximum_depth)
+    {
+        impl_->BeginFinish(
+            ExecutionTerminalStatus::InterruptionDepthExceeded,
+            Error(
+                ExecutionErrorCode::InterruptionDepthExceeded,
+                "interruption-handler depth limit was reached"),
+            std::move(receipt));
+        return;
+    }
+    if (!impl_->handlers.empty())
+    {
+        const InterruptionHandlerDescriptor& parent =
+            impl_->handlers.back().descriptor;
+        const bool self = parent.key == key;
+        const bool declared =
+            std::find(
+                parent.permitted_nested_keys.begin(),
+                parent.permitted_nested_keys.end(),
+                key) != parent.permitted_nested_keys.end();
+        if ((self && !parent.allow_self_recursion) || (!self && !declared))
+        {
+            impl_->BeginFinish(
+                ExecutionTerminalStatus::InterruptionUnavailable,
+                Error(
+                    ExecutionErrorCode::InterruptionPolicyViolation,
+                    "nested interruption is not declared by its parent"),
+                std::move(receipt));
+            return;
+        }
+    }
+
+    if (StopPointError suppression =
+            impl_->stop_points.ArmInterruptionSuppression(
+                receipt,
+                *receipt.interruption_handler_request))
+    {
+        impl_->BeginFinish(
+            ExecutionTerminalStatus::InterruptionFailed,
+            Error(
+                ExecutionErrorCode::StopPointFailure,
+                suppression.message.empty()
+                    ? "failed arming exact interruption re-entry suppression"
+                    : suppression.message,
+                BackendIntegrity::Unknown),
+            std::move(receipt));
+        return;
+    }
+    if (ExecutionError parked =
+            impl_->ParkWakeGroup(*impl_->active))
+    {
+        impl_->BeginFinish(
+            ExecutionTerminalStatus::InterruptionFailed,
+            std::move(parked),
+            std::move(receipt));
+        return;
+    }
+
+    const InterruptionFrameId frame_id = impl_->NextFrameId();
+    if (!frame_id)
+    {
+        impl_->BeginFinish(
+            ExecutionTerminalStatus::InterruptionFailed,
+            Error(
+                ExecutionErrorCode::InvalidState,
+                "interruption frame IDs are exhausted",
+                BackendIntegrity::Unknown),
+            std::move(receipt));
+        return;
+    }
+    const auto suspended_at = impl_->now();
+    Impl::ActiveOperation parent = std::move(*impl_->active);
+    if (parent.bounded)
+        parent.remaining_budget =
+            impl_->Remaining(parent, suspended_at);
+    parent.suspended_at = suspended_at;
+    impl_->active.reset();
+    impl_->handlers.push_back({
+        frame_id,
+        descriptor->second,
+        std::move(parent),
+        suspended_at + descriptor->second.child_active_budget,
+        descriptor->second.child_active_budget,
+        {}});
+    BackendExecutionSnapshot observed = impl_->Query();
+    if (observed.result.ok &&
+        (observed.core_state != BackendCoreState::Paused ||
+            !observed.pause_confirmed))
+    {
+        const BackendResult pause = impl_->CallBackend(
+            "interruption pause confirmation",
+            [&] { return impl_->backend.RequestPause(); });
+        if (!pause.ok)
+        {
+            Impl::SuspendedFrame failed =
+                std::move(impl_->handlers.back());
+            impl_->handlers.pop_back();
+            impl_->active.emplace(std::move(failed.parent));
+            impl_->BeginFinish(
+                ExecutionTerminalStatus::InterruptionFailed,
+                BackendError(
+                    "interruption pause request failed",
+                    pause),
+                std::move(receipt));
+            return;
+        }
+        observed = impl_->Query();
+    }
+    impl_->PublishState(&observed);
+}
+
+void ExecutionEngine::Pump()
+{
+    if (!impl_->OnOwnerThread() || !impl_->initialized ||
+        impl_->stopping)
+    {
+        return;
+    }
+    const auto current = impl_->now();
+
+    const bool suspended_parent_cancelled = std::any_of(
+        impl_->handlers.begin(),
+        impl_->handlers.end(),
+        [](const Impl::SuspendedFrame& frame) {
+            return CancellationOf(frame.parent.request)
+                .is_cancellation_requested();
+        });
+    if (suspended_parent_cancelled)
+    {
+        (void)Cancel(CancellationReason::ExternalRequest);
+        return;
+    }
+
+    if (!impl_->handlers.empty() &&
+        !impl_->handlers.back().decision_suspended_at &&
+        current >= impl_->handlers.back().decision_deadline)
+    {
+        Impl::SuspendedFrame expired =
+            std::move(impl_->handlers.back());
+        impl_->handlers.pop_back();
+        ExecutionError timeout = Error(
+            ExecutionErrorCode::InterruptionPolicyViolation,
+            "interruption handler exceeded its bounded decision budget");
+        if (impl_->active)
+        {
+            if (impl_->active->borrowed_wake_group &&
+                impl_->active->wake_group &&
+                impl_->active->handler_owner == expired.id)
+            {
+                expired.parent.wake_group.emplace(
+                    std::move(*impl_->active->wake_group));
+                impl_->active->wake_group.reset();
+                impl_->active->borrowed_wake_group = false;
+            }
+            impl_->pending_parent_terminals.push_back({
+                std::move(expired.parent),
+                ExecutionTerminalStatus::InterruptionFailed,
+                std::move(timeout)});
+            impl_->BeginFinish(ExecutionTerminalStatus::Cancelled);
+        }
+        else
+        {
+            impl_->active.emplace(std::move(expired.parent));
+            impl_->BeginFinish(
+                ExecutionTerminalStatus::InterruptionFailed,
+                std::move(timeout));
+        }
+        return;
+    }
+
+    if (!impl_->active)
+    {
+        const BackendExecutionSnapshot observed = impl_->Query();
+        if (!observed.result.ok)
+        {
+            Impl::SuspendedFrame failed =
+                std::move(impl_->handlers.back());
+            impl_->handlers.pop_back();
+            impl_->active.emplace(std::move(failed.parent));
+            impl_->BeginFinish(
+                ExecutionTerminalStatus::CleanupFailure,
+                BackendError(
+                    "interruption maintenance snapshot failed",
+                    observed.result));
+            return;
+        }
+        const ExecutionEnvironmentEvidence evidence =
+            ConvertEvidence(observed);
+        if (impl_->snapshot.evidence.core_state != evidence.core_state ||
+            impl_->snapshot.evidence.pause_confirmed !=
+                evidence.pause_confirmed ||
+            impl_->snapshot.evidence.vi_count != evidence.vi_count ||
+            impl_->snapshot.evidence.movie_state !=
+                evidence.movie_state ||
+            impl_->snapshot.evidence.throttle_disabled !=
+                evidence.throttle_disabled)
+        {
+            impl_->PublishState(&observed);
+        }
+        return;
+    }
+
+    BackendExecutionSnapshot observed = impl_->Query();
+    if (!observed.result.ok)
+    {
+        Impl::ActiveOperation failed = std::move(*impl_->active);
+        impl_->active.reset();
+        (void)impl_->CallBackend(
+            "execution emergency pause after maintenance snapshot failure",
+            [&] { return impl_->backend.RequestPause(); });
+        impl_->EmitTerminal(
+            std::move(failed),
+            ExecutionTerminalStatus::CleanupFailure,
+            BackendError(
+                "execution maintenance snapshot failed",
+                observed.result),
+            std::nullopt,
+            &observed);
+        return;
+    }
+    Impl::ActiveOperation& operation = *impl_->active;
+
+    if (operation.pending_terminal)
+    {
+        if (observed.core_state == BackendCoreState::Paused &&
+            observed.pause_confirmed)
+        {
+            Impl::ActiveOperation finished = std::move(operation);
+            const ExecutionTerminalStatus status =
+                *finished.pending_terminal;
+            ExecutionError error =
+                finished.pending_error.value_or(ExecutionError{});
+            std::optional<StopRouteReceipt> stop =
+                std::move(finished.pending_stop);
+            impl_->EmitTerminal(
+                std::move(finished),
+                status,
+                std::move(error),
+                std::move(stop),
+                &observed);
+        }
+        else if (operation.pause_control_deadline &&
+            current >= *operation.pause_control_deadline)
+        {
+            Impl::ActiveOperation failed = std::move(operation);
+            const std::optional<StopRouteReceipt> stop =
+                std::move(failed.pending_stop);
+            impl_->EmitTerminal(
+                std::move(failed),
+                ExecutionTerminalStatus::CleanupFailure,
+                Error(
+                    ExecutionErrorCode::BackendFailure,
+                    "Dolphin pause confirmation exceeded its cleanup bound",
+                    BackendIntegrity::Unknown),
+                stop,
+                &observed);
+        }
+        return;
+    }
+
+    const CancellationToken cancellation =
+        CancellationOf(operation.request);
+    if (cancellation.is_cancellation_requested())
+    {
+        impl_->BeginFinish(ExecutionTerminalStatus::Cancelled);
+        return;
+    }
+
+    if (operation.bounded && current >= operation.deadline)
+    {
+        impl_->BeginFinish(ExecutionTerminalStatus::TimedOut);
+        return;
+    }
+
+    if (const ExecutionRequestPolicy* policy =
+            PolicyOf(operation.request))
+    {
+        if (policy->movie_ended != MovieEndedPolicy::Ignore &&
+            observed.movie_state == BackendMovieState::Ended)
+        {
+            impl_->BeginFinish(
+                ExecutionTerminalStatus::MovieEnded,
+                policy->movie_ended == MovieEndedPolicy::Fail
+                    ? Error(
+                          ExecutionErrorCode::InvalidState,
+                          "movie ended before the requested completion")
+                    : ExecutionError{});
+            return;
+        }
+        if (policy->vi_stall.enabled)
+        {
+            if (observed.vi_count != operation.last_vi)
+            {
+                operation.last_vi = observed.vi_count;
+                operation.last_vi_change = current;
+            }
+            const auto warmup_end =
+                operation.started + policy->vi_stall.warmup;
+            const auto stall_baseline =
+                std::max(operation.last_vi_change, warmup_end);
+            if (current >= warmup_end &&
+                current - stall_baseline >=
+                    policy->vi_stall.maximum_stall)
+            {
+                impl_->BeginFinish(ExecutionTerminalStatus::ViStalled);
+                return;
+            }
+        }
+    }
+
+    if (observed.core_state == BackendCoreState::Running)
+        operation.observed_running = true;
+
+    switch (operation.kind)
+    {
+    case ExecutionOperationKind::SafePause:
+        if (observed.core_state == BackendCoreState::Paused &&
+            observed.pause_confirmed)
+            impl_->BeginFinish(ExecutionTerminalStatus::Paused);
+        break;
+    case ExecutionOperationKind::StepInstructions:
+    case ExecutionOperationKind::StepFrames:
+    case ExecutionOperationKind::InputSynchronizedAdvance:
+        if (impl_->AdvanceCompleted(operation, observed))
+            impl_->CompleteAdvance(observed);
+        break;
+    case ExecutionOperationKind::ContinueUntil:
+    case ExecutionOperationKind::InteractiveResume:
+        if (observed.core_state == BackendCoreState::Paused &&
+            observed.pause_confirmed)
+        {
+            impl_->BeginFinish(
+                ExecutionTerminalStatus::UnexpectedStop,
+                Error(
+                    ExecutionErrorCode::BackendFailure,
+                    "Dolphin paused without a routed completion"));
+        }
+        break;
+    }
+}
+
+std::vector<ExecutionEvent> ExecutionEngine::DrainEvents()
+{
+    if (!impl_->OnOwnerThread())
+        return {};
+    std::vector<ExecutionEvent> events;
+    events.swap(impl_->events);
+    return events;
+}
+
+ExecutionSnapshot ExecutionEngine::snapshot() const
+{
+    return impl_->snapshot;
+}
+
+bool ExecutionEngine::has_active_operation() const noexcept
+{
+    return impl_->active.has_value() || !impl_->handlers.empty();
+}
+
+std::optional<Clock::time_point> ExecutionEngine::next_wake() const
+{
+    if (impl_->stopping ||
+        (!impl_->active && impl_->handlers.empty()))
+        return std::nullopt;
+    const Clock::time_point maintenance =
+        impl_->now() + impl_->config.maintenance_interval;
+    Clock::time_point wake = maintenance;
+    if (impl_->active && impl_->active->bounded)
+        wake = std::min(wake, impl_->active->deadline);
+    if (impl_->active && impl_->active->pause_control_deadline)
+    {
+        wake = std::min(
+            wake,
+            *impl_->active->pause_control_deadline);
+    }
+    if (!impl_->handlers.empty() &&
+        !impl_->handlers.back().decision_suspended_at)
+        wake = std::min(wake, impl_->handlers.back().decision_deadline);
+    return wake;
+}
+
+BackendResult ExecutionEngine::PrepareStateReplacement()
+{
+    if (!impl_->OnOwnerThread())
+    {
+        return BackendResult::Failure(
+            BackendErrorCode::InvalidState,
+            "ExecutionEngine state replacement called outside its owner thread");
+    }
+    if (!impl_->initialized || impl_->stopping ||
+        impl_->active || !impl_->handlers.empty())
+    {
+        return BackendResult::Failure(
+            BackendErrorCode::InvalidState,
+            "ExecutionEngine must be idle before state replacement");
+    }
+    const BackendExecutionSnapshot observed = impl_->Query();
+    if (!observed.result.ok)
+        return observed.result;
+    if (observed.core_state != BackendCoreState::Paused ||
+        !observed.pause_confirmed)
+    {
+        return BackendResult::Failure(
+            BackendErrorCode::InvalidState,
+            "ExecutionEngine state replacement requires a paused core");
+    }
+    impl_->replacing_state = true;
+    return BackendResult::Success();
+}
+
+BackendResult ExecutionEngine::CommitStateEpoch(StateEpoch epoch)
+{
+    if (!impl_->OnOwnerThread() || !impl_->replacing_state || !epoch)
+    {
+        return BackendResult::Failure(
+            BackendErrorCode::InvalidState,
+            "ExecutionEngine state-replacement commit is invalid");
+    }
+    BackendExecutionSnapshot observed = impl_->Query();
+    if (!observed.result.ok)
+        return observed.result;
+    if (observed.core_state != BackendCoreState::Paused ||
+        !observed.pause_confirmed)
+    {
+        BackendResult pause = impl_->CallBackend(
+            "post-replacement execution pause",
+            [&] { return impl_->backend.RequestPause(); });
+        if (!pause.ok)
+            return pause;
+        observed = impl_->Query();
+    }
+    if (!observed.result.ok)
+        return observed.result;
+    if (observed.core_state != BackendCoreState::Paused ||
+        !observed.pause_confirmed)
+    {
+        return BackendResult::Failure(
+            BackendErrorCode::OperationFailed,
+            "state replacement did not return to a confirmed paused core",
+            BackendIntegrity::Unknown);
+    }
+    impl_->epoch = epoch;
+    impl_->replacing_state = false;
+    impl_->PublishState(&observed);
+    return BackendResult::Success();
+}
+
+BackendResult ExecutionEngine::RollbackStateReplacement(StateEpoch epoch)
+{
+    if (!impl_->OnOwnerThread() || !impl_->replacing_state)
+    {
+        return BackendResult::Failure(
+            BackendErrorCode::InvalidState,
+            "ExecutionEngine state-replacement rollback is invalid");
+    }
+    impl_->epoch = epoch;
+    impl_->replacing_state = false;
+    const BackendExecutionSnapshot observed = impl_->Query();
+    if (!observed.result.ok)
+        return observed.result;
+    if (observed.core_state != BackendCoreState::Paused ||
+        !observed.pause_confirmed)
+    {
+        return BackendResult::Failure(
+            BackendErrorCode::OperationFailed,
+            "state-replacement rollback did not preserve a paused core",
+            BackendIntegrity::Unknown);
+    }
+    impl_->PublishState(&observed);
+    return BackendResult::Success();
+}
+
+BackendResult ExecutionEngine::Shutdown()
+{
+    if (!impl_->OnOwnerThread())
+    {
+        return BackendResult::Failure(
+            BackendErrorCode::InvalidState,
+            "ExecutionEngine shutdown called outside its owner thread");
+    }
+    if (impl_->stopping)
+        return BackendResult::Success();
+
+    BackendResult result = BackendResult::Success();
+    if (impl_->active || !impl_->handlers.empty())
+    {
+        (void)Cancel(CancellationReason::Shutdown);
+    }
+
+    BackendExecutionSnapshot observed = impl_->Query();
+    if (!observed.result.ok ||
+        observed.core_state != BackendCoreState::Paused ||
+        !observed.pause_confirmed)
+    {
+        const BackendResult pause = impl_->CallBackend(
+            "execution shutdown pause",
+            [&] { return impl_->backend.RequestPause(); });
+        if (!pause.ok)
+            result = pause;
+        observed = impl_->Query();
+    }
+
+    if (impl_->active)
+    {
+        Impl::ActiveOperation operation = std::move(*impl_->active);
+        impl_->active.reset();
+        const bool confirmed = observed.result.ok &&
+            observed.core_state == BackendCoreState::Paused &&
+            observed.pause_confirmed;
+        if (!confirmed)
+        {
+            for (Impl::PendingParentTerminal& parent :
+                impl_->pending_parent_terminals)
+            {
+                parent.status = ExecutionTerminalStatus::CleanupFailure;
+                parent.error = Error(
+                    ExecutionErrorCode::BackendFailure,
+                    "shutdown could not confirm Dolphin paused",
+                    BackendIntegrity::Unknown);
+            }
+        }
+        impl_->EmitTerminal(
+            std::move(operation),
+            confirmed
+                ? ExecutionTerminalStatus::Cancelled
+                : ExecutionTerminalStatus::CleanupFailure,
+            confirmed
+                ? ExecutionError{}
+                : Error(
+                      ExecutionErrorCode::BackendFailure,
+                      "shutdown could not confirm Dolphin paused",
+                      BackendIntegrity::Unknown),
+            std::nullopt,
+            &observed);
+        if (!confirmed)
+        {
+            result = BackendResult::Failure(
+                BackendErrorCode::OperationFailed,
+                "shutdown could not confirm Dolphin paused",
+                BackendIntegrity::Unknown);
+        }
+    }
+
+    while (!impl_->handlers.empty())
+    {
+        Impl::ActiveOperation parent =
+            std::move(impl_->handlers.back().parent);
+        impl_->handlers.pop_back();
+        impl_->EmitTerminal(
+            std::move(parent),
+            ExecutionTerminalStatus::CleanupFailure,
+            Error(
+                ExecutionErrorCode::BackendFailure,
+                "shutdown found an unterminated interruption parent",
+                BackendIntegrity::Unknown),
+            std::nullopt,
+            &observed);
+        result = BackendResult::Failure(
+            BackendErrorCode::OperationFailed,
+            "shutdown found an unterminated interruption parent",
+            BackendIntegrity::Unknown);
+    }
+
+    if (!observed.result.ok ||
+        observed.core_state != BackendCoreState::Paused ||
+        !observed.pause_confirmed)
+    {
+        result = BackendResult::Failure(
+            BackendErrorCode::OperationFailed,
+            observed.result.message.empty()
+                ? "ExecutionEngine shutdown did not reach a confirmed pause"
+                : observed.result.message,
+            BackendIntegrity::Unknown);
+    }
+
+    impl_->stopping = true;
+    impl_->initialized = false;
+    impl_->snapshot.activity = ExecutionActivity::Closed;
+    impl_->snapshot.active_operation.reset();
+    impl_->snapshot.active_interruption_frame.reset();
+    impl_->events.push_back({
+        ExecutionEventKind::StateChanged,
+        impl_->snapshot,
+        std::nullopt});
+    return result;
+}
+
+void ExecutionEngine::OnStopPoint(const StopDelivery&)
+{
+    // StopPointRouter invokes consumers on the actor while constructing the
+    // authoritative route receipt. ExecutionEngine consumes that complete
+    // receipt through HandleStopPointReceipt so policy is evaluated once.
+}
+
+} // namespace savor::runtime

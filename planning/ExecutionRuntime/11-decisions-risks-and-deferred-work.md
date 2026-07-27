@@ -70,6 +70,10 @@ current runtime capability.
 | D24 | Semantic observations are a reusable composition library. Capability packs define logical points, typed address/query observations, acquisition modes, baselines, and use policy; the composer lowers them before verification into ordinary IR, actions, router subscriptions, values, branches, and emissions. | There is no observation runtime, query VM, observation opcode family, direct emulator ownership, filesystem/database access, or hidden post-step timing. |
 | D25 | Static and adaptive guest interactions are a reusable composition library. Versioned typed definitions, pure initialization/advancement reducers, and a finite verifier-known segment set lower before verification into subprogram CFG, semantic observations, input/execution actions, branches, and emissions. | There is no interaction runtime, peer macro scheduler, controller-like segment action, dynamically constructed effect, or second cancellation/cleanup model. |
 | D26 | Existing `savor.capture.profile/1` representation and semantics remain intact behind passive `CaptureService` during this refactor. `StopPointRouter` and `ExecutionEngine` retain wake/control authority, while capture observes the same routed event and identity. | Capture profiles are neither lowered into program IR nor replaced. Existing control flags/metrics and control-triggered windows/recorders remain observable without granting a profile execution control. |
+| D27 | Slice 3 keeps exact guest-instruction stepping unsupported on the concrete JIT64 backend. | DolphinQt implements its debugger Step by temporarily selecting Interpreter. Savor does not change CPU mode or mislabel one JIT block as one instruction; fake ports still verify the engine contract. |
+| D28 | Execution budgets count active time and freeze during structured suspension. | Handler parents and nested children retain explicit remaining wall-clock and VI-stall budgets instead of expiring while another operation owns execution. |
+| D29 | Requested interruption handlers use trusted descriptors, a maximum stack depth of eight, and only `ResumeParent` or `AbortParent` policy outcomes. | They cannot become a second runtime, dynamically invent effects, or directly complete a program invocation. |
+| D30 | Slice 3's visual-intent seam is a Ready-session execution substate and is validated without rendering. | WRMS controls serialize through the actor, while DB-backed visual replay, GUI validation, and invocation-owned interactive policy remain deferred. |
 
 ## Rejected alternatives
 
@@ -126,6 +130,14 @@ language would combine an architecture cutover with a behavior and artifact-form
 profile parsing and semantics move intact behind passive `CaptureService`. Capture observes routed
 control events but does not acquire wake/control authority.
 
+### Switch temporarily to Interpreter inside production JIT stepping
+
+Rejected. DolphinQt's debugger implements its instruction Step by selecting Interpreter and then restoring
+the previous core. The Slice 3 runtime is JIT64-only and shall not hide a CPU-mode transition behind a
+purported JIT operation. Direct `Jit64::SingleStep` enters compiled code, and the one-instruction compile
+restriction applies only to newly compiled blocks under specific debugging/stepping conditions; it is
+not the production contract Savor needs.
+
 ### Put arbitrary-depth search inside a worker program
 
 Rejected because worker loss would lose search topology and because one worker would become a scheduler.
@@ -162,6 +174,7 @@ production paths would make ownership and cleanup guarantees unenforceable.
 | Interaction composition becomes a hidden macro engine | A segment action or reducer owns service calls, loops, dynamic effects, or private cleanup | Restrict reducers to pure selection of verifier-known segments and lower every effect/cancellation/unwind edge into ordinary visible IR |
 | Predicate composition hides effects or conflates false with unavailable | A reusable check silently owns stop points, fails open on unreadable state, or changes failure classification | Require typed observations, explicit use-site policy, exact imports, scoped subscriptions, declared emissions, and trace-visible evaluation outcomes |
 | Capture extraction changes profile semantics or steals control | Sampling/window/artifact behavior drifts, or a profile creates a foreground wake path | Run profile compatibility characterization, keep one routed-hit identity, and enforce passive observation with router/engine as control owners |
+| Visual verification becomes a manual dependency | A slice cannot be completed without a window, desktop automation, screenshot judgement, or user attendance | Use fake visual-intent sessions, protocol/state telemetry, and headless Dolphin guards; defer rendered acceptance |
 | Planning drifts from code | Current-state statements become obsolete | Re-read the affected current symbols and revise guidance when implementation evidence changes an architectural conclusion |
 
 ## Deferred work

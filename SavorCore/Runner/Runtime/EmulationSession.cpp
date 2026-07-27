@@ -1,6 +1,7 @@
 #include "EmulationSession.h"
 
 #include <exception>
+#include <iterator>
 #include <limits>
 #include <sstream>
 #include <utility>
@@ -88,6 +89,13 @@ BackendBufferResult CallBackendBuffer(
     return StateEpoch(current.value() + 1);
 }
 
+[[nodiscard]] ExecutionError ExecutionFailure(
+    ExecutionErrorCode code,
+    std::string message)
+{
+    return {code, std::move(message), BackendIntegrity::Preserved};
+}
+
 } // namespace
 
 EmulationSession::EmulationSession(
@@ -105,6 +113,12 @@ EmulationSession::~EmulationSession()
 
     try
     {
+        if ((!owner_bound_ || owner_thread_ == std::this_thread::get_id()) &&
+            execution_engine_)
+        {
+            (void)execution_engine_->Shutdown();
+        }
+        execution_engine_.reset();
         if (!owner_bound_ || owner_thread_ == std::this_thread::get_id())
             (void)CleanupStopPoints();
         stop_router_.reset();
@@ -185,6 +199,10 @@ SessionOperationReceipt EmulationSession::Open(const SessionOpenOptions& options
             result = InitializeStopPoints(*first_epoch);
             if (result.ok)
             {
+                result = InitializeExecution(*first_epoch);
+            }
+            if (result.ok)
+            {
                 RefreshCoreState();
                 if (!HasReusableCoreState())
                 {
@@ -192,6 +210,9 @@ SessionOperationReceipt EmulationSession::Open(const SessionOpenOptions& options
                         BackendErrorCode::OperationFailed,
                         "Dolphin boot completed without a reusable core state",
                         BackendIntegrity::Unknown);
+                    if (execution_engine_)
+                        (void)execution_engine_->Shutdown();
+                    execution_engine_.reset();
                     const BackendResult cleanup = CleanupStopPoints();
                     stop_router_.reset();
                     physical_stop_manager_.reset();
@@ -208,6 +229,20 @@ SessionOperationReceipt EmulationSession::Open(const SessionOpenOptions& options
         }
         if (!result.ok)
         {
+            if (execution_engine_)
+                (void)execution_engine_->Shutdown();
+            execution_engine_.reset();
+            const BackendResult cleanup = CleanupStopPoints();
+            stop_router_.reset();
+            physical_stop_manager_.reset();
+            if (!cleanup.ok)
+            {
+                result.integrity = BackendIntegrity::Unknown;
+                result.message += result.message.empty() ? "" : "; ";
+                result.message += cleanup.message.empty()
+                    ? "stop-point cleanup could not be proven"
+                    : cleanup.message;
+            }
             const BackendResult close = CallBackend(
                 "Dolphin backend open rollback",
                 [&] { return backend_->Close(); });
@@ -242,118 +277,6 @@ SessionOperationReceipt EmulationSession::Reboot()
                 "Dolphin backend reboot",
                 [&] { return backend_->Reboot(); });
         });
-}
-
-SessionOperationReceipt EmulationSession::Pause(std::chrono::milliseconds timeout)
-{
-    const StateEpoch origin = state_epoch_;
-    if (!BindOrCheckOwner() || !CanOperate())
-    {
-        return Reject(
-            SessionOperation::Pause,
-            BackendErrorCode::InvalidState,
-            "EmulationSession cannot pause in its current state");
-    }
-    return Complete(
-        SessionOperation::Pause,
-        origin,
-        CallBackend(
-            "Dolphin backend pause",
-            [&] { return backend_->Pause(timeout); }),
-        false);
-}
-
-SessionOperationReceipt EmulationSession::Resume()
-{
-    const StateEpoch origin = state_epoch_;
-    if (!BindOrCheckOwner() || !CanOperate())
-    {
-        return Reject(
-            SessionOperation::Resume,
-            BackendErrorCode::InvalidState,
-            "EmulationSession cannot resume in its current state");
-    }
-    BackendResult result = CallBackend(
-        "Dolphin backend resume",
-        [&] { return backend_->Resume(); });
-    if (result.ok && stop_router_)
-    {
-        if (StopPointError error = stop_router_->DepartCurrentPoint())
-        {
-            result = BackendResult::Failure(
-                BackendErrorCode::OperationFailed,
-                "failed departing retained stop point after resume: " +
-                    error.message,
-                BackendIntegrity::Unknown);
-        }
-    }
-    return Complete(
-        SessionOperation::Resume,
-        origin,
-        std::move(result),
-        false);
-}
-
-SessionOperationReceipt EmulationSession::StepInstruction(std::chrono::milliseconds timeout)
-{
-    const StateEpoch origin = state_epoch_;
-    if (!BindOrCheckOwner() || !CanOperate())
-    {
-        return Reject(
-            SessionOperation::StepInstruction,
-            BackendErrorCode::InvalidState,
-            "EmulationSession cannot step in its current state");
-    }
-    BackendResult result = CallBackend(
-        "Dolphin backend instruction step",
-        [&] { return backend_->StepInstruction(timeout); });
-    if (result.ok && stop_router_)
-    {
-        if (StopPointError error = stop_router_->DepartCurrentPoint())
-        {
-            result = BackendResult::Failure(
-                BackendErrorCode::OperationFailed,
-                "failed departing retained stop point after instruction step: " +
-                    error.message,
-                BackendIntegrity::Unknown);
-        }
-    }
-    return Complete(
-        SessionOperation::StepInstruction,
-        origin,
-        std::move(result),
-        false);
-}
-
-SessionOperationReceipt EmulationSession::StepFrame(std::chrono::milliseconds timeout)
-{
-    const StateEpoch origin = state_epoch_;
-    if (!BindOrCheckOwner() || !CanOperate())
-    {
-        return Reject(
-            SessionOperation::StepFrame,
-            BackendErrorCode::InvalidState,
-            "EmulationSession cannot step in its current state");
-    }
-    BackendResult result = CallBackend(
-        "Dolphin backend frame step",
-        [&] { return backend_->StepFrame(timeout); });
-    if (result.ok && stop_router_)
-    {
-        if (StopPointError error = stop_router_->DepartCurrentPoint())
-        {
-            result = BackendResult::Failure(
-                BackendErrorCode::OperationFailed,
-                "failed departing retained stop point after frame step: " +
-                    error.message,
-                BackendIntegrity::Unknown);
-        }
-    }
-    return Complete(
-        SessionOperation::StepFrame,
-        origin,
-        std::move(result),
-        false);
 }
 
 SessionOperationReceipt EmulationSession::RestoreStateFile(
@@ -405,6 +328,17 @@ SessionOperationReceipt EmulationSession::SaveStateFile(
             BackendErrorCode::InvalidState,
             "EmulationSession cannot save state in its current state");
     }
+    if (!execution_engine_ ||
+        execution_engine_->has_active_operation() ||
+        execution_engine_->snapshot().activity !=
+            ExecutionActivity::IdlePaused ||
+        !execution_engine_->snapshot().evidence.pause_confirmed)
+    {
+        return Reject(
+            SessionOperation::SaveStateFile,
+            BackendErrorCode::InvalidState,
+            "EmulationSession can save state only while execution is idle-paused");
+    }
     return Complete(
         SessionOperation::SaveStateFile,
         origin,
@@ -424,6 +358,19 @@ SessionBufferReceipt EmulationSession::SaveStateBuffer()
                 SessionOperation::SaveStateBuffer,
                 BackendErrorCode::InvalidState,
                 "EmulationSession cannot save state in its current state"),
+            {}};
+    }
+    if (!execution_engine_ ||
+        execution_engine_->has_active_operation() ||
+        execution_engine_->snapshot().activity !=
+            ExecutionActivity::IdlePaused ||
+        !execution_engine_->snapshot().evidence.pause_confirmed)
+    {
+        return {
+            Reject(
+                SessionOperation::SaveStateBuffer,
+                BackendErrorCode::InvalidState,
+                "EmulationSession can save state only while execution is idle-paused"),
             {}};
     }
 
@@ -536,6 +483,164 @@ std::vector<StopRouteReceipt> EmulationSession::DrainStopPointEvents()
     return stop_router_->DrainIngress();
 }
 
+ExecutionSubmissionReceipt EmulationSession::SubmitExecution(
+    ExecutionRequest request)
+{
+    if (!BindOrCheckOwner() || !CanOperate() || !execution_engine_)
+    {
+        return {
+            false,
+            {},
+            ExecutionFailure(
+                ExecutionErrorCode::InvalidState,
+                "EmulationSession execution engine is unavailable")};
+    }
+    ExecutionSubmissionReceipt receipt =
+        execution_engine_->Submit(std::move(request));
+    if (!receipt.accepted &&
+        receipt.error.integrity == BackendIntegrity::Unknown)
+    {
+        MarkTainted(
+            receipt.error.message.empty()
+                ? "execution submission could not preserve session integrity"
+                : receipt.error.message);
+    }
+    return receipt;
+}
+
+ExecutionSubmissionReceipt EmulationSession::SubmitInterruptionChild(
+    InterruptionFrameId frame_id,
+    ExecutionRequest request)
+{
+    if (!BindOrCheckOwner() || !CanOperate() || !execution_engine_)
+    {
+        return {
+            false,
+            {},
+            ExecutionFailure(
+                ExecutionErrorCode::InvalidState,
+                "EmulationSession execution engine is unavailable")};
+    }
+    ExecutionSubmissionReceipt receipt =
+        execution_engine_->SubmitInterruptionChild(
+        frame_id,
+        std::move(request));
+    if (!receipt.accepted &&
+        receipt.error.integrity == BackendIntegrity::Unknown)
+    {
+        MarkTainted(
+            receipt.error.message.empty()
+                ? "interruption child submission could not preserve session integrity"
+                : receipt.error.message);
+    }
+    return receipt;
+}
+
+ExecutionControlReceipt EmulationSession::CancelExecution(
+    CancellationReason reason)
+{
+    if (!BindOrCheckOwner() || !CanOperate() || !execution_engine_)
+    {
+        return {
+            false,
+            {},
+            ExecutionFailure(
+                ExecutionErrorCode::InvalidState,
+                "EmulationSession execution engine is unavailable")};
+    }
+    return execution_engine_->Cancel(reason);
+}
+
+ExecutionControlReceipt EmulationSession::CompleteInterruptionHandler(
+    InterruptionFrameId frame_id,
+    InterruptionHandlerOutcome outcome,
+    std::string diagnostic)
+{
+    if (!BindOrCheckOwner() || !CanOperate() || !execution_engine_)
+    {
+        return {
+            false,
+            {},
+            ExecutionFailure(
+                ExecutionErrorCode::InvalidState,
+                "EmulationSession execution engine is unavailable")};
+    }
+    return execution_engine_->CompleteInterruptionHandler(
+        frame_id,
+        outcome,
+        std::move(diagnostic));
+}
+
+void EmulationSession::HandleStopPointReceipt(StopRouteReceipt receipt)
+{
+    if (!BindOrCheckOwner() || !execution_engine_)
+        return;
+    execution_engine_->HandleStopPointReceipt(std::move(receipt));
+}
+
+void EmulationSession::PumpExecution()
+{
+    if (!BindOrCheckOwner() || !execution_engine_)
+        return;
+    execution_engine_->Pump();
+    RefreshCoreState();
+}
+
+std::vector<ExecutionEvent> EmulationSession::DrainExecutionEvents()
+{
+    if (!BindOrCheckOwner())
+        return {};
+    std::vector<ExecutionEvent> events;
+    events.swap(retained_execution_events_);
+    if (execution_engine_)
+    {
+        std::vector<ExecutionEvent> current =
+            execution_engine_->DrainEvents();
+        events.insert(
+            events.end(),
+            std::make_move_iterator(current.begin()),
+            std::make_move_iterator(current.end()));
+    }
+    for (const ExecutionEvent& event : events)
+    {
+        if (!event.terminal)
+            continue;
+        if (event.terminal->integrity == BackendIntegrity::Unknown ||
+            event.terminal->status ==
+                ExecutionTerminalStatus::CleanupFailure)
+        {
+            MarkTainted(event.terminal->error.message.empty()
+                ? "ExecutionEngine could not prove session integrity"
+                : event.terminal->error.message);
+            break;
+        }
+    }
+    return events;
+}
+
+ExecutionSnapshot EmulationSession::execution_snapshot() const
+{
+    if (!execution_engine_)
+        return {};
+    return execution_engine_->snapshot();
+}
+
+std::optional<std::chrono::steady_clock::time_point>
+EmulationSession::next_execution_wake() const
+{
+    if (!execution_engine_)
+        return std::nullopt;
+    return execution_engine_->next_wake();
+}
+
+BackendExecutionCapabilityMask
+EmulationSession::execution_capabilities() const noexcept
+{
+    IExecutionBackendPort* port =
+        backend_ ? backend_->Execution() : nullptr;
+    return port ? port->Capabilities() : 0;
+}
+
 SessionOperationReceipt EmulationSession::CheckHealth()
 {
     const StateEpoch origin = state_epoch_;
@@ -621,7 +726,22 @@ SessionOperationReceipt EmulationSession::Shutdown()
         return *shutdown_receipt_;
 
     shutdown_ = true;
-    BackendResult result = CleanupStopPoints();
+    BackendResult result = execution_engine_
+        ? execution_engine_->Shutdown()
+        : BackendResult::Success();
+    if (execution_engine_)
+    {
+        std::vector<ExecutionEvent> final_events =
+            execution_engine_->DrainEvents();
+        retained_execution_events_.insert(
+            retained_execution_events_.end(),
+            std::make_move_iterator(final_events.begin()),
+            std::make_move_iterator(final_events.end()));
+    }
+    execution_engine_.reset();
+    BackendResult stop_cleanup = CleanupStopPoints();
+    if (!stop_cleanup.ok)
+        result = std::move(stop_cleanup);
     stop_router_.reset();
     physical_stop_manager_.reset();
     try
@@ -729,9 +849,37 @@ SessionOperationReceipt EmulationSession::PerformStateReplacement(
     const std::function<BackendResult()>& replace)
 {
     const StateEpoch origin = state_epoch_;
+    BackendResult execution_preparation = execution_engine_
+        ? execution_engine_->PrepareStateReplacement()
+        : BackendResult::Failure(
+              BackendErrorCode::Unavailable,
+              "ExecutionEngine is unavailable for state replacement");
+    if (!execution_preparation.ok)
+    {
+        ApplyBackendFailure(execution_preparation);
+        return {
+            operation,
+            false,
+            origin,
+            state_epoch_,
+            disposition_,
+            std::move(execution_preparation)};
+    }
+
     BackendResult preparation = PrepareStopPointStateReplacement();
     if (!preparation.ok)
     {
+        if (execution_engine_)
+        {
+            const BackendResult execution_rollback =
+                execution_engine_->RollbackStateReplacement(state_epoch_);
+            if (!execution_rollback.ok)
+            {
+                preparation.integrity = BackendIntegrity::Unknown;
+                preparation.message += preparation.message.empty() ? "" : "; ";
+                preparation.message += execution_rollback.message;
+            }
+        }
         if (preparation.integrity == BackendIntegrity::Unknown)
         {
             preparation =
@@ -756,15 +904,30 @@ SessionOperationReceipt EmulationSession::PerformStateReplacement(
         if (result.integrity == BackendIntegrity::Preserved)
         {
             BackendResult rollback = RollbackStopPointStateReplacement();
+            BackendResult execution_rollback = execution_engine_
+                ? execution_engine_->RollbackStateReplacement(state_epoch_)
+                : BackendResult::Failure(
+                      BackendErrorCode::Unavailable,
+                      "ExecutionEngine disappeared during state rollback",
+                      BackendIntegrity::Unknown);
             if (!rollback.ok)
             {
                 result.message += result.message.empty() ? "" : "; ";
                 result.message += rollback.message;
                 result.integrity = BackendIntegrity::Unknown;
             }
+            if (!execution_rollback.ok)
+            {
+                result.message += result.message.empty() ? "" : "; ";
+                result.message += execution_rollback.message;
+                result.integrity = BackendIntegrity::Unknown;
+            }
         }
         else
         {
+            if (execution_engine_)
+                (void)execution_engine_->Shutdown();
+            execution_engine_.reset();
             (void)CleanupStopPoints();
         }
         if (result.integrity == BackendIntegrity::Unknown)
@@ -789,6 +952,9 @@ SessionOperationReceipt EmulationSession::PerformStateReplacement(
             "StateEpoch exhausted after Dolphin state replacement",
             BackendIntegrity::Unknown);
         MarkTainted(result.message);
+        if (execution_engine_)
+            (void)execution_engine_->Shutdown();
+        execution_engine_.reset();
         (void)CleanupStopPoints();
         (void)CallBackend(
             "Dolphin backend shutdown after epoch exhaustion",
@@ -805,13 +971,23 @@ SessionOperationReceipt EmulationSession::PerformStateReplacement(
     }
 
     state_epoch_ = *next_epoch;
-    BackendResult committed = CommitStopPointStateReplacement(state_epoch_);
+    BackendResult committed = execution_engine_
+        ? execution_engine_->CommitStateEpoch(state_epoch_)
+        : BackendResult::Failure(
+              BackendErrorCode::Unavailable,
+              "ExecutionEngine disappeared during state-replacement commit",
+              BackendIntegrity::Unknown);
+    if (committed.ok)
+        committed = CommitStopPointStateReplacement(state_epoch_);
     if (!committed.ok)
     {
         committed.integrity = BackendIntegrity::Unknown;
         MarkTainted(committed.message.empty()
-            ? "stop-point reconciliation failed after state replacement"
+            ? "runtime reconciliation failed after state replacement"
             : committed.message);
+        if (execution_engine_)
+            (void)execution_engine_->Shutdown();
+        execution_engine_.reset();
         (void)CleanupStopPoints();
         (void)CallBackend(
             "Dolphin backend shutdown after stop-point reconciliation failure",
@@ -983,6 +1159,40 @@ BackendResult EmulationSession::InitializeStopPoints(StateEpoch first_epoch)
     return BackendResult::Success();
 }
 
+BackendResult EmulationSession::InitializeExecution(StateEpoch first_epoch)
+{
+    IExecutionBackendPort* port =
+        backend_ ? backend_->Execution() : nullptr;
+    if (!port || !stop_router_)
+    {
+        return BackendResult::Failure(
+            BackendErrorCode::Unavailable,
+            "Dolphin backend does not provide the required execution facet");
+    }
+    try
+    {
+        execution_engine_ =
+            std::make_unique<ExecutionEngine>(*port, *stop_router_);
+    }
+    catch (const std::exception& ex)
+    {
+        return BackendResult::Failure(
+            BackendErrorCode::OperationFailed,
+            std::string("failed constructing session ExecutionEngine: ") +
+                ex.what());
+    }
+    catch (...)
+    {
+        return BackendResult::Failure(
+            BackendErrorCode::OperationFailed,
+            "failed constructing session ExecutionEngine");
+    }
+    BackendResult initialized = execution_engine_->Initialize(first_epoch);
+    if (!initialized.ok)
+        execution_engine_.reset();
+    return initialized;
+}
+
 BackendResult EmulationSession::PrepareStopPointStateReplacement()
 {
     if (!stop_router_)
@@ -1028,6 +1238,9 @@ BackendResult EmulationSession::TaintAndCloseAfterStopPointFailure(
         failure.message = "Stop-point integrity could not be proven";
     MarkTainted(failure.message);
 
+    if (execution_engine_)
+        (void)execution_engine_->Shutdown();
+    execution_engine_.reset();
     const BackendResult cleanup = CleanupStopPoints();
     if (!cleanup.ok)
     {

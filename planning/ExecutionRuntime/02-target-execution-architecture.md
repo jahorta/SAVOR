@@ -209,6 +209,7 @@ progress views.
 | `WorkerRuntime` | Serialize external commands, own exactly one session, start/cancel invocations, enforce session disposition, coordinate visual control and shutdown | Interpreting IR, implementing phase logic, physically manipulating stop points |
 | `EmulationSession` | Own the live backend and all session-scoped services; expose capability interfaces to registered actions | Workflow scheduling, module selection, phase-specific control loops |
 | `DolphinBackend` | Narrow adapter for primitive boot/run/step, physical debug objects, raw memory/register access, pad publication, state/movie/screenshot primitives, and CPU-thread callback ingress | `ProgramKind`, IR, action IDs, game policy, router priority, workflow identity |
+| `ExecutionEngine` | Own one actor-driven foreground emulator operation, routed-stop consumption, active-time budgets, pause confirmation, and primitive movie/VI/throttle policy | Threads, nested event loops, program control flow, pad publication, movie lifecycle, or physical stop-point ownership |
 | `ProgramRuntime` | Own definition storage, verification, executor, action/type registries, instance lifecycle, effect dispatch, resource unwind, and result assembly | Advancing Dolphin directly, scheduling durable workflow work |
 | `ProgramExecutor` | Interpret the canonical IR and exclusively advance program control flow | Calling Dolphin/session services directly, running native phase controllers |
 | `ProgramInstance` | Hold mutable state for one invocation: instruction location, call frames, typed values, pending continuation, scope stack, epoch, emissions, and diagnostics | Threads, virtual controller behavior, worker commands, Dolphin handles |
@@ -254,6 +255,12 @@ instead of one OS thread.
   foreground execution operation and runs that handler as a bounded child operation through the same
   engine. The parent operation retains its deadline, completion condition, input relationship, stall
   baseline, and suppression state.
+- Wall-clock and VI-stall budgets are active-time budgets. A parent budget freezes while an interruption
+  child is active, a child budget freezes during a declared nested child, and a future invocation-owned
+  operation freezes while explicitly interactively paused. Each active child retains its own bound.
+- Interruption descriptors form a trusted immutable registry. They declare allowed child-operation
+  kinds, allowed nested keys, recursion policy, and a maximum depth no greater than eight. A child returns
+  only `ResumeParent` or `AbortParent`; it cannot directly complete a parent condition or invocation.
 - CPU-thread hooks may only perform bounded, allocation-free matching/sampling against immutable
   dispatch state and enqueue raw events. They cannot call program logic, publish input, or wait for the
   worker control actor.
@@ -286,6 +293,12 @@ An invocation has its own lifecycle:
 `Rejected` is terminal before state preparation. `Cancelled`, `TimedOut`, `Failed`, and `Completed` all
 pass through `Unwinding`. No terminal outcome skips cleanup.
 
+During the Slice 3 hard-cutover interval, a Ready visual-intent session may also have an execution
+substate of `IdlePaused`, `InteractiveRunning`, `HandlingInterruption`, or `Failed`. This does not create
+another worker lifecycle or an invocation. An invocation may begin only from `Ready + IdlePaused`.
+`InteractiveResume` is the sole intentionally unbounded engine operation and ends at a subsequent safe
+pause, routed terminal, shutdown, or failure.
+
 ### External and visual commands
 
 The logical worker command surface includes:
@@ -304,6 +317,11 @@ Cancellation and shutdown are always accepted. Screenshot and telemetry requests
 program is active only if they do not advance or mutate the core. Pause, resume, or step commands during
 an invocation are accepted only when the invocation's execution policy allows interactive debugging.
 Otherwise they receive a typed rejection. The visual pipe never calls Dolphin or VM methods directly.
+
+Slice 3 adds the serialized command/protocol seam for a session opened with visual intent, but does not
+restore DB-backed visual replay or production `ProgramInvocation`. Headless sessions reject these
+controls. Focused verification uses a fake visual-intent session and protocol fixtures; it does not create
+a render window, automate a GUI, compare screenshots, or require manual observation.
 
 ### Program-level and execution-level suspension
 
@@ -371,10 +389,10 @@ PC set. Removing a scope removes only that scope's subscriptions.
 Every `ExecutionEngine` request declares:
 
 - completion conditions;
-- deadline and stall policy;
+- remaining active wall-clock budget and explicit VI-stall policy, including any warmup;
 - movie-ended behavior;
 - cancellation token;
-- optional input lease relationship;
+- optional opaque input-advance relationship;
 - throttle policy;
 - interruption policy; and
 - the current `StateEpoch`.
@@ -382,6 +400,19 @@ Every `ExecutionEngine` request declares:
 Stop delivery is ordered as passive observations/progress, guards, interceptors, then the foreground
 wake condition. An unclaimed physical stop is a typed debugger/policy event, not a string reason guessed
 by the VM.
+
+The engine is actor-driven and owns no thread or nested blocking loop. `WorkerRuntime` drains accepted
+stop receipts into it before accepting the next external command, then pumps backend confirmations,
+environment observations, and expired budgets. A deadline-aware actor wait uses a short maintenance
+cadence only while confirmation or movie/VI observation is required; deterministic tests inject the
+clock.
+
+The private execution-backend facet exposes only pause, resume, frame-step, exact-instruction-step,
+core/PC/VI/movie/throttle observation, and throttle apply/restore primitives. Slice 3 keeps exact
+instruction stepping unsupported in the concrete JIT64 backend: it neither changes temporarily to
+Interpreter nor labels execution of a JIT block as one guest instruction. Input-synchronized advancement
+is likewise a contract-only seam until Slice 4's `InputArbiter`; production reports it unsupported rather
+than publishing controller state from the engine.
 
 ### Game capability packs
 
@@ -476,12 +507,16 @@ cutover is underway.
 - Static dependency checks make it impossible for programs, reducers, action handlers, capability packs,
   visual readers, or protocol callbacks to call `DolphinBackend` directly.
 - A deterministic fake backend proves that all continue, instruction-step, frame-step, input-sequence,
-  and requested interruption-handler advancement passes through one `ExecutionEngine`.
+  and requested interruption-handler advancement contracts pass through one `ExecutionEngine`. The
+  production JIT64 backend rejects exact instruction stepping, and production input-synchronized
+  advancement remains unavailable until `InputArbiter` supplies its opaque port.
 - Concurrent pipe and visual commands are serialized into one reproducible worker command order.
 - A visual step cannot bypass an active router interceptor or mutate a non-debuggable invocation.
 - Two logical stop-point consumers can share one PC without either replacing the other's subscription.
 - A requested interruption handler can suspend and resume a foreground operation while preserving its
-  remaining deadline and input lease relationship.
+  remaining active budget and opaque input relationship.
+- Slice 3 verification is unattended and non-visual: no rendered worker, GUI automation, screenshot
+  comparison, desktop control, or user observation is an acceptance dependency.
 - Cancellation from every program suspension point reaches `Unwinding`, releases every scope, and emits
   one terminal result.
 - An injected cleanup failure marks the session tainted, rejects a subsequent invocation, and requires a

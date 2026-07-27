@@ -43,6 +43,23 @@ struct CaptureScreenshotCommand
     std::chrono::milliseconds timeout{3000};
 };
 
+enum class WorkerExecutionControlKind : std::uint8_t
+{
+    Pause,
+    Resume,
+    StepInstruction,
+    StepFrame,
+};
+
+struct ControlExecutionCommand
+{
+    WorkerExecutionControlKind control = WorkerExecutionControlKind::Pause;
+    SessionId session_id;
+    StateEpoch expected_state_epoch;
+    std::uint32_t count = 0;
+    std::chrono::milliseconds timeout{};
+};
+
 struct ShutdownCommand
 {
 };
@@ -53,6 +70,7 @@ using WorkerCommand = std::variant<
     InvokeProgramCommand,
     CancelInvocationCommand,
     CaptureScreenshotCommand,
+    ControlExecutionCommand,
     ShutdownCommand>;
 
 struct WorkerSnapshot
@@ -60,6 +78,7 @@ struct WorkerSnapshot
     WorkerState state = WorkerState::Starting;
     WorkerCapabilityMask capabilities = 0;
     SessionSnapshot session;
+    ExecutionSnapshot execution;
     std::optional<InvocationId> active_invocation;
     WorkerCommandSequence last_command_sequence;
 };
@@ -73,6 +92,9 @@ struct WorkerCommandResult
     WorkerSnapshot snapshot;
     std::optional<InvocationId> invocation_id;
     std::optional<SessionOperationReceipt> session_receipt;
+    std::optional<WorkerExecutionControlKind> execution_control;
+    std::optional<ExecutionOperationId> execution_operation_id;
+    std::optional<ExecutionTerminalResult> execution_terminal;
     RuntimeError error;
 };
 
@@ -103,16 +125,31 @@ struct HostRuntimeEvent
     std::vector<std::uint8_t> encoded_payload;
 };
 
+struct WorkerExecutionEvent
+{
+    SessionId session_id;
+    ExecutionEvent event;
+};
+
 using WorkerEvent = std::variant<
     WorkerStateChangedEvent,
     WorkerCommandCompletedEvent,
     ModulePreparationEvent,
     ProgramInvocationProgressEvent,
     ProgramInvocationTerminalEvent,
+    WorkerExecutionEvent,
     HostRuntimeEvent,
     WorkerRuntimeDiagnosticEvent>;
 
 using WorkerEventSink = std::function<void(const WorkerEvent&)>;
+
+struct WorkerRuntimeTestHooks
+{
+    // Test-only actor checkpoints used to make ingress/command races
+    // deterministic without timing sleeps.
+    std::function<void(EmulationSession&)> session_opened;
+    std::function<void()> before_ingress_stability_check;
+};
 
 class WorkerRuntime final
 {
@@ -120,7 +157,8 @@ public:
     WorkerRuntime(
         std::unique_ptr<EmulationSession> session,
         std::unique_ptr<IProgramRuntimePort> program_runtime = {},
-        WorkerEventSink event_sink = {});
+        WorkerEventSink event_sink = {},
+        std::shared_ptr<const WorkerRuntimeTestHooks> test_hooks = {});
     ~WorkerRuntime();
 
     WorkerRuntime(const WorkerRuntime&) = delete;

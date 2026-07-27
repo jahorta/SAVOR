@@ -209,7 +209,6 @@ inputmacro::BreakpointWaitResult PhaseScriptVM::run_to_breakpoints(
         .track_input_poll = true,
     });
 
-    host_.setInput(GCInputFrame{});
     host_.setEnabledPcBreakpointsOnly({});
     input_macro_enabled_bp_keys_.clear();
     host_.emitProbeMarker(
@@ -265,18 +264,10 @@ inputmacro::BreakpointWaitResult PhaseScriptVM::run_to_breakpoints(
 inputmacro::InputMacroHostStatus PhaseScriptVM::step_neutral_frames(
     std::uint32_t frame_count)
 {
-    if (!input_macro_session_active_ || active_input_macro_context_ == nullptr)
-        return inputmacro::InputMacroHostStatus::Failed;
-
-    host_.clearMemoryWatchpoints();
-    host_.setInput(GCInputFrame{});
-    host_.setEnabledPcBreakpointsOnly({});
-    for (std::uint32_t frame = 0; frame < frame_count; ++frame) {
-        if (!host_.stepOneFrameBlocking())
-            return inputmacro::InputMacroHostStatus::Failed;
-    }
-    if (derived_) derived_->update_on_bp(0u, *active_input_macro_context_, host_);
-    return inputmacro::InputMacroHostStatus::Succeeded;
+    (void)frame_count;
+    SCLOGE(
+        "[input-macro] frame advancement is disconnected; use interaction composition");
+    return inputmacro::InputMacroHostStatus::Failed;
 }
 
 bool PhaseScriptVM::read_u32(std::uint32_t address, std::uint32_t& value)
@@ -293,44 +284,20 @@ inputmacro::MemoryChangeResult PhaseScriptVM::wait_for_u32_change(
     std::uint32_t baseline,
     std::uint32_t timeout_ms)
 {
-    inputmacro::MemoryChangeResult result{.latest_value = baseline};
-    if (!input_macro_session_active_ || active_input_macro_context_ == nullptr)
-        return result;
-
-    host_.clearMemoryWatchpoints();
-    host_.setInput(GCInputFrame{});
-    host_.setEnabledPcBreakpointsOnly({});
-    const auto start = std::chrono::steady_clock::now();
-    for (;;) {
-        if (!host_.readU32(address, result.latest_value)) {
-            result.status = inputmacro::InputMacroHostStatus::ReadFailed;
-            break;
-        }
-        if (result.latest_value != baseline) {
-            result.status = inputmacro::InputMacroHostStatus::Succeeded;
-            break;
-        }
-        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now() - start).count();
-        if (elapsed >= timeout_ms) {
-            result.status = inputmacro::InputMacroHostStatus::TimedOut;
-            break;
-        }
-        if (!host_.stepOneFrameBlocking()) {
-            result.status = inputmacro::InputMacroHostStatus::Failed;
-            break;
-        }
-        ++result.poll_count;
-    }
-    result.elapsed_ms = static_cast<std::uint32_t>(
-        std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now() - start).count());
-    return result;
+    (void)address;
+    (void)timeout_ms;
+    SCLOGE(
+        "[input-macro] memory-change advancement is disconnected; use observation and interaction composition");
+    return inputmacro::MemoryChangeResult{
+        .status = inputmacro::InputMacroHostStatus::Failed,
+        .latest_value = baseline,
+    };
 }
 
 void PhaseScriptVM::set_neutral_input()
 {
-    host_.setInput(GCInputFrame{});
+    SCLOGE(
+        "[input-macro] direct input publication is disconnected; use interaction composition");
 }
 
 void PhaseScriptVM::clear_macro_memory_watchpoints()
@@ -412,7 +379,6 @@ inputmacro::BattleCommandProviderWaitResult PhaseScriptVM::wait_for_breakpoints(
         .include_gated_hit_lookup = true,
         .update_derived = false,
     });
-    host_.setInput(GCInputFrame{});
     result.hit = run.run.hit;
     result.hit_key = static_cast<BPKey>(run.hit_bp_key);
     result.hit_pc = run.run.hit ? static_cast<std::uint32_t>(run.run.pc) : 0u;

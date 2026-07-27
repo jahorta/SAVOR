@@ -376,6 +376,85 @@ ScriptedDolphinBackend::PhysicalStopPoints() noexcept
     return physical_stop_points_.get();
 }
 
+runtime::IExecutionBackendPort*
+ScriptedDolphinBackend::Execution() noexcept
+{
+    return this;
+}
+
+runtime::BackendExecutionCapabilityMask
+ScriptedDolphinBackend::Capabilities() const noexcept
+{
+    return runtime::BackendExecutionCapability::Pause |
+        runtime::BackendExecutionCapability::Resume |
+        runtime::BackendExecutionCapability::FrameStep |
+        runtime::BackendExecutionCapability::ExactInstructionStep |
+        runtime::BackendExecutionCapability::ViObservation |
+        runtime::BackendExecutionCapability::MovieObservation |
+        runtime::BackendExecutionCapability::ThrottleControl;
+}
+
+runtime::BackendExecutionSnapshot
+ScriptedDolphinBackend::QueryExecutionSnapshot() const
+{
+    std::lock_guard lock(control_->mutex);
+    control_->RecordLocked("query_execution");
+    control_->changed.notify_all();
+    return {
+        runtime::BackendResult::Success(),
+        control_->core_state,
+        control_->core_state == runtime::BackendCoreState::Paused,
+        control_->pc,
+        control_->vi_count,
+        control_->movie_state,
+        control_->movie_input_count,
+        control_->throttle_disabled};
+}
+
+runtime::BackendResult ScriptedDolphinBackend::RequestPause()
+{
+    return Pause(std::chrono::milliseconds(0));
+}
+
+runtime::BackendResult ScriptedDolphinBackend::BeginFrameStep()
+{
+    std::lock_guard lock(control_->mutex);
+    control_->RecordLocked("begin_frame_step");
+    runtime::BackendResult result = control_->step_frame_result;
+    if (result.ok)
+    {
+        ++control_->vi_count;
+        control_->core_state = runtime::BackendCoreState::Paused;
+    }
+    control_->changed.notify_all();
+    return result;
+}
+
+runtime::BackendResult ScriptedDolphinBackend::BeginExactInstructionStep()
+{
+    std::lock_guard lock(control_->mutex);
+    control_->RecordLocked("begin_instruction_step");
+    runtime::BackendResult result = control_->step_instruction_result;
+    if (result.ok)
+    {
+        control_->pc += 4;
+        control_->core_state = runtime::BackendCoreState::Paused;
+    }
+    control_->changed.notify_all();
+    return result;
+}
+
+runtime::BackendResult ScriptedDolphinBackend::SetThrottleDisabled(
+    bool disabled)
+{
+    std::lock_guard lock(control_->mutex);
+    control_->RecordLocked(
+        disabled ? "disable_throttle" : "enable_throttle");
+    control_->throttle_disabled = disabled;
+    control_->changed.notify_all();
+    return runtime::BackendResult::Success();
+}
+
 std::unique_ptr<runtime::IDolphinBackend> MakeScriptedDolphinBackend(
     std::shared_ptr<ScriptedDolphinBackendControl> control,
     std::unique_ptr<runtime::IPhysicalStopPointBackendPort>

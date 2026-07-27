@@ -7,33 +7,28 @@
 #include "Common/Config/Config.h"
 #include "Core/Config/MainSettings.h"
 #include "Core/Core.h"
+#include "Core/HW/CPU.h"
 #include "Core/PowerPC/BreakPoints.h"
 
 #include "Core/PowerPC/PowerPC.h"
 #include "Core/System.h"
 
 #include <algorithm>
+#include <atomic>
+#include <condition_variable>
 #include <cstring>
 #include <exception>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <ranges>
 #include <sstream>
 #include <stdexcept>
+#include <thread>
 #include <utility>
 
 namespace savor::runtime {
 namespace {
-
-[[nodiscard]] int ClampTimeout(std::chrono::milliseconds timeout) noexcept
-{
-    const auto count = timeout.count();
-    if (count <= 0)
-        return 1;
-    return static_cast<int>(std::min<std::int64_t>(
-        count,
-        std::numeric_limits<int>::max()));
-}
 
 [[nodiscard]] std::uint32_t ClampUnsignedTimeout(std::chrono::milliseconds timeout) noexcept
 {
@@ -189,6 +184,204 @@ void ReplacePhysicalPlan(
 
 struct DolphinWrapperBackend::Impl
 {
+    struct PauseConfirmation
+    {
+        std::atomic<std::uint64_t> requested{0};
+        std::atomic<std::uint64_t> acknowledged{0};
+    };
+
+    // Core::SetState(Paused) is Dolphin's host-side synchronization primitive:
+    // it waits until the CPU has left RunLoop. It cannot run on WorkerRuntime's
+    // actor because that would turn RequestPause into a blocking operation.
+    // Keep one backend-owned helper alive for the open session instead. The
+    // helper is always joined before its Core::System is destroyed.
+    struct PauseSynchronizer
+    {
+        ~PauseSynchronizer()
+        {
+            StopAndJoin();
+        }
+
+        PauseSynchronizer() = default;
+        PauseSynchronizer(const PauseSynchronizer&) = delete;
+        PauseSynchronizer& operator=(const PauseSynchronizer&) = delete;
+
+        [[nodiscard]] bool Start(
+            Core::System& next_system,
+            std::shared_ptr<PauseConfirmation> next_confirmation,
+            std::string* error)
+        {
+            StopAndJoin();
+            {
+                std::lock_guard lock(mutex);
+                system = &next_system;
+                confirmation = std::move(next_confirmation);
+                pending_generation = 0;
+                stopping = false;
+                failed = false;
+                failure.clear();
+            }
+            try
+            {
+                worker = std::thread([this] { Run(); });
+                return true;
+            }
+            catch (const std::exception& ex)
+            {
+                std::lock_guard lock(mutex);
+                system = nullptr;
+                confirmation.reset();
+                stopping = true;
+                if (error)
+                    *error = ex.what();
+                return false;
+            }
+            catch (...)
+            {
+                std::lock_guard lock(mutex);
+                system = nullptr;
+                confirmation.reset();
+                stopping = true;
+                if (error)
+                    *error = "unknown pause-helper startup failure";
+                return false;
+            }
+        }
+
+        [[nodiscard]] bool Request(std::uint64_t generation) noexcept
+        {
+            {
+                std::lock_guard lock(mutex);
+                if (!worker.joinable() || stopping || !system ||
+                    !confirmation || failed)
+                {
+                    return false;
+                }
+                pending_generation =
+                    std::max(pending_generation, generation);
+            }
+            wake.notify_one();
+            return true;
+        }
+
+        [[nodiscard]] bool Failure(std::string* diagnostic) const
+        {
+            std::lock_guard lock(mutex);
+            if (diagnostic)
+                *diagnostic = failure;
+            return failed;
+        }
+
+        void StopAndJoin() noexcept
+        {
+            {
+                std::lock_guard lock(mutex);
+                stopping = true;
+            }
+            wake.notify_one();
+            if (worker.joinable())
+                worker.join();
+            std::lock_guard lock(mutex);
+            system = nullptr;
+            confirmation.reset();
+            pending_generation = 0;
+        }
+
+    private:
+        static void Acknowledge(
+            const std::shared_ptr<PauseConfirmation>& target,
+            std::uint64_t generation) noexcept
+        {
+            std::uint64_t acknowledged =
+                target->acknowledged.load(std::memory_order_acquire);
+            while (acknowledged < generation &&
+                !target->acknowledged.compare_exchange_weak(
+                    acknowledged,
+                    generation,
+                    std::memory_order_release,
+                    std::memory_order_acquire))
+            {
+            }
+        }
+
+        void Run() noexcept
+        {
+            for (;;)
+            {
+                Core::System* target_system = nullptr;
+                std::shared_ptr<PauseConfirmation> target_confirmation;
+                std::uint64_t generation = 0;
+                {
+                    std::unique_lock lock(mutex);
+                    wake.wait(lock, [this] {
+                        return stopping || pending_generation != 0;
+                    });
+                    // Finish a pause already accepted by Request(), even when
+                    // shutdown has begun, before releasing the Core::System.
+                    if (pending_generation == 0 && stopping)
+                        return;
+                    target_system = system;
+                    target_confirmation = confirmation;
+                    generation = std::exchange(pending_generation, 0);
+                }
+
+                try
+                {
+                    Core::SetState(
+                        *target_system,
+                        Core::State::Paused);
+                    if (Core::GetState(*target_system) !=
+                        Core::State::Paused)
+                    {
+                        std::lock_guard lock(mutex);
+                        failed = true;
+                        failure =
+                            "Dolphin did not enter Paused state after synchronized pause";
+                    }
+                    else
+                    {
+                        // SetState(Paused) returns only after CPUManager has
+                        // observed m_state_cpu_thread_active == false.
+                        Acknowledge(target_confirmation, generation);
+                    }
+                }
+                catch (const std::exception& ex)
+                {
+                    std::lock_guard lock(mutex);
+                    failed = true;
+                    failure =
+                        std::string("Dolphin synchronized pause threw: ") +
+                        ex.what();
+                }
+                catch (...)
+                {
+                    std::lock_guard lock(mutex);
+                    failed = true;
+                    failure = "Dolphin synchronized pause threw";
+                }
+
+                std::lock_guard lock(mutex);
+                if (failed)
+                {
+                    pending_generation = 0;
+                    return;
+                }
+                if (stopping && pending_generation == 0)
+                    return;
+            }
+        }
+
+        mutable std::mutex mutex;
+        std::condition_variable wake;
+        std::thread worker;
+        Core::System* system = nullptr;
+        std::shared_ptr<PauseConfirmation> confirmation;
+        std::uint64_t pending_generation = 0;
+        bool stopping = true;
+        bool failed = false;
+        std::string failure;
+    };
+
     std::unique_ptr<DolphinWrapper> wrapper;
     BackendOpenOptions last_open_options;
     bool has_open_options = false;
@@ -198,6 +391,54 @@ struct DolphinWrapperBackend::Impl
     PhysicalPlanGeneration physical_generation;
     DolphinBackendCpuCore cpu_core =
         DolphinBackendCpuCore::ProductionDefault;
+    mutable bool observed_movie_playing = false;
+    std::shared_ptr<PauseConfirmation> pause_confirmation =
+        std::make_shared<PauseConfirmation>();
+    PauseSynchronizer pause_synchronizer;
+    mutable std::uint32_t last_confirmed_pc = 0;
+    int state_callback_handle = -1;
+
+    void DetachStateCallback() noexcept
+    {
+        if (state_callback_handle >= 0)
+            (void)Core::RemoveOnStateChangedCallback(
+                &state_callback_handle);
+    }
+
+    void ResetPauseConfirmation(bool confirmed)
+    {
+        pause_confirmation = std::make_shared<PauseConfirmation>();
+        if (!confirmed)
+            pause_confirmation->requested.store(1);
+        last_confirmed_pc = 0;
+    }
+
+    void InvalidatePauseConfirmation()
+    {
+        const std::uint64_t generation =
+            pause_confirmation->requested.fetch_add(
+                1,
+                std::memory_order_acq_rel) +
+            1;
+        if (generation == 0)
+            pause_confirmation->requested.store(1, std::memory_order_release);
+    }
+
+    [[nodiscard]] bool PauseConfirmed() const noexcept
+    {
+        return pause_confirmation->acknowledged.load(
+                   std::memory_order_acquire) >=
+            pause_confirmation->requested.load(
+                std::memory_order_acquire);
+    }
+
+    void ConfirmPause() noexcept
+    {
+        pause_confirmation->acknowledged.store(
+            pause_confirmation->requested.load(
+                std::memory_order_acquire),
+            std::memory_order_release);
+    }
 
     [[nodiscard]] BackendResult RequireOpen() const
     {
@@ -218,7 +459,14 @@ DolphinWrapperBackend::DolphinWrapperBackend(
     impl_->cpu_core = cpu_core;
 }
 
-DolphinWrapperBackend::~DolphinWrapperBackend() = default;
+DolphinWrapperBackend::~DolphinWrapperBackend()
+{
+    if (impl_)
+    {
+        impl_->pause_synchronizer.StopAndJoin();
+        impl_->DetachStateCallback();
+    }
+}
 
 BackendResult DolphinWrapperBackend::Open(const BackendOpenOptions& options)
 {
@@ -268,7 +516,7 @@ BackendResult DolphinWrapperBackend::Open(const BackendOpenOptions& options)
     if (impl_->cpu_core == DolphinBackendCpuCore::Jit64)
         Config::SetCurrent(Config::MAIN_CPU_CORE, PowerPC::CPUCore::JIT64);
 
-    if (!wrapper->loadGame(options.iso_path.string()))
+    if (!wrapper->loadGame(options.iso_path.string(), true))
     {
         wrapper.reset();
         return BackendResult::Failure(
@@ -279,10 +527,70 @@ BackendResult DolphinWrapperBackend::Open(const BackendOpenOptions& options)
 
     wrapper->ConfigurePortsStandardPadP1();
 
+    impl_->ResetPauseConfirmation(true);
+    const auto pause_confirmation = impl_->pause_confirmation;
+    Core::System* const system = wrapper->system();
+    impl_->state_callback_handle =
+        Core::AddOnStateChangedCallback(
+            [pause_confirmation, system](Core::State state) {
+                if (state != Core::State::Paused)
+                    return;
+                auto acknowledge = [pause_confirmation] {
+                    const std::uint64_t generation =
+                        pause_confirmation->requested.load(
+                            std::memory_order_acquire);
+                    std::uint64_t acknowledged =
+                        pause_confirmation->acknowledged.load(
+                            std::memory_order_acquire);
+                    while (acknowledged < generation &&
+                        !pause_confirmation->acknowledged
+                             .compare_exchange_weak(
+                                 acknowledged,
+                                 generation,
+                                 std::memory_order_release,
+                                 std::memory_order_acquire))
+                    {
+                    }
+                };
+                if (Core::IsCPUThread())
+                {
+                    // The callback runs before the CPU leaves RunLoop.
+                    // The queued job executes on the next stepping-loop turn,
+                    // after m_state_cpu_thread_active has become false.
+                    system->GetCPU().AddCPUThreadJob(
+                        std::move(acknowledge));
+                }
+                else
+                {
+                    // Host-side Paused notification follows SetStepping(true),
+                    // which already synchronizes with CPU idleness.
+                    acknowledge();
+                }
+            });
+
+    std::string pause_helper_error;
+    if (!impl_->pause_synchronizer.Start(
+            *system,
+            pause_confirmation,
+            &pause_helper_error))
+    {
+        impl_->DetachStateCallback();
+        wrapper.reset();
+        impl_->ResetPauseConfirmation(false);
+        return BackendResult::Failure(
+            BackendErrorCode::OperationFailed,
+            pause_helper_error.empty()
+                ? "Failed to start Dolphin pause synchronizer"
+                : std::string("Failed to start Dolphin pause synchronizer: ") +
+                    pause_helper_error,
+            BackendIntegrity::Unknown);
+    }
+
     impl_->wrapper = std::move(wrapper);
     impl_->last_open_options = options;
     impl_->has_open_options = true;
     impl_->open = true;
+    impl_->observed_movie_playing = false;
     return BackendResult::Success();
 }
 
@@ -333,8 +641,11 @@ BackendResult DolphinWrapperBackend::Reboot()
         }
     }
 
+    impl_->pause_synchronizer.StopAndJoin();
+    impl_->DetachStateCallback();
     impl_->wrapper.reset();
     impl_->open = false;
+    impl_->observed_movie_playing = false;
     impl_->owned_physical_plan = {};
     BackendResult result = Open(options);
     if (!result.ok)
@@ -344,8 +655,10 @@ BackendResult DolphinWrapperBackend::Reboot()
 
 BackendResult DolphinWrapperBackend::Close()
 {
+    impl_->pause_synchronizer.StopAndJoin();
     if (!impl_->wrapper)
     {
+        impl_->DetachStateCallback();
         if (impl_->native_sink)
         {
             (void)savor::probe::UnbindNativeStopSink(*impl_->native_sink);
@@ -355,6 +668,8 @@ BackendResult DolphinWrapperBackend::Close()
         impl_->owned_physical_plan = {};
         impl_->physical_generation = {};
         impl_->open = false;
+        impl_->observed_movie_playing = false;
+        impl_->ResetPauseConfirmation(false);
         return BackendResult::Success();
     }
 
@@ -375,8 +690,11 @@ BackendResult DolphinWrapperBackend::Close()
             impl_->native_sink = nullptr;
         }
         savor::probe::UninstallNativeStopHooks();
+        impl_->DetachStateCallback();
         impl_->wrapper.reset();
         impl_->open = false;
+        impl_->observed_movie_playing = false;
+        impl_->ResetPauseConfirmation(false);
         impl_->owned_physical_plan = {};
         impl_->physical_generation = {};
         if (!cleanup_ok)
@@ -431,50 +749,139 @@ BackendHealthReport DolphinWrapperBackend::CheckHealth() const
     return {true, state, {}};
 }
 
-BackendResult DolphinWrapperBackend::Pause(std::chrono::milliseconds timeout)
+BackendExecutionCapabilityMask
+DolphinWrapperBackend::Capabilities() const noexcept
+{
+    return BackendExecutionCapability::Pause |
+        BackendExecutionCapability::Resume |
+        BackendExecutionCapability::FrameStep |
+        BackendExecutionCapability::ViObservation |
+        BackendExecutionCapability::MovieObservation |
+        BackendExecutionCapability::ThrottleControl;
+}
+
+BackendExecutionSnapshot
+DolphinWrapperBackend::QueryExecutionSnapshot() const
+{
+    BackendExecutionSnapshot snapshot;
+    if (BackendResult open = impl_->RequireOpen(); !open.ok)
+    {
+        snapshot.result = std::move(open);
+        return snapshot;
+    }
+    std::string pause_failure;
+    if (impl_->pause_synchronizer.Failure(&pause_failure))
+    {
+        snapshot.result = BackendResult::Failure(
+            BackendErrorCode::OperationFailed,
+            pause_failure.empty()
+                ? "Dolphin pause synchronizer failed"
+                : std::move(pause_failure),
+            BackendIntegrity::Unknown);
+        return snapshot;
+    }
+    snapshot.result = BackendResult::Success();
+    snapshot.core_state = QueryCoreState();
+    snapshot.vi_count = impl_->wrapper->getViFieldCountApprox();
+    snapshot.pause_confirmed =
+        snapshot.core_state == BackendCoreState::Paused &&
+        impl_->PauseConfirmed();
+    if (snapshot.pause_confirmed)
+    {
+        impl_->last_confirmed_pc = impl_->wrapper->getPC();
+    }
+    snapshot.pc = impl_->last_confirmed_pc;
+    snapshot.movie_input_count =
+        impl_->wrapper->getCurrentMovieInputCount();
+    const bool movie_playing = impl_->wrapper->isMoviePlaying();
+    if (movie_playing)
+    {
+        impl_->observed_movie_playing = true;
+        snapshot.movie_state = BackendMovieState::Playing;
+    }
+    else if (impl_->observed_movie_playing)
+    {
+        snapshot.movie_state = BackendMovieState::Ended;
+    }
+    else
+    {
+        snapshot.movie_state = BackendMovieState::Inactive;
+    }
+    snapshot.throttle_disabled =
+        Core::GetIsThrottlerTempDisabled();
+    return snapshot;
+}
+
+BackendResult DolphinWrapperBackend::RequestPause()
 {
     if (BackendResult open = impl_->RequireOpen(); !open.ok)
         return open;
-    if (impl_->wrapper->pauseEmulationBlocking(ClampUnsignedTimeout(timeout)))
+    if (QueryCoreState() == BackendCoreState::Paused &&
+        impl_->PauseConfirmed())
+    {
         return BackendResult::Success();
-    return BackendResult::Failure(
-        BackendErrorCode::Timeout,
-        "Timed out while pausing Dolphin");
+    }
+
+    const auto confirmation = impl_->pause_confirmation;
+    const std::uint64_t generation =
+        confirmation->requested.fetch_add(
+            1,
+            std::memory_order_acq_rel) +
+        1;
+    if (!impl_->pause_synchronizer.Request(generation))
+    {
+        return BackendResult::Failure(
+            BackendErrorCode::OperationFailed,
+            "Dolphin pause synchronizer is unavailable",
+            BackendIntegrity::Unknown);
+    }
+    return BackendResult::Success();
 }
 
 BackendResult DolphinWrapperBackend::Resume()
 {
     if (BackendResult open = impl_->RequireOpen(); !open.ok)
         return open;
-    if (impl_->wrapper->resumeEmulation())
-        return BackendResult::Success();
-    return BackendResult::Failure(
-        BackendErrorCode::OperationFailed,
-        "Dolphin failed to resume emulation");
+    impl_->InvalidatePauseConfirmation();
+    Core::SetState(*impl_->wrapper->system(), Core::State::Running);
+    return Core::IsRunning(*impl_->wrapper->system())
+        ? BackendResult::Success()
+        : BackendResult::Failure(
+              BackendErrorCode::OperationFailed,
+              "Dolphin failed to resume emulation");
 }
 
-BackendResult DolphinWrapperBackend::StepInstruction(std::chrono::milliseconds timeout)
+BackendResult DolphinWrapperBackend::BeginFrameStep()
 {
     if (BackendResult open = impl_->RequireOpen(); !open.ok)
         return open;
-    if (impl_->wrapper->stepOneOpcodeBlocking(ClampTimeout(timeout)))
-        return BackendResult::Success();
-    return BackendResult::Failure(
-        BackendErrorCode::Timeout,
-        "Timed out while stepping one guest instruction",
-        BackendIntegrity::Unknown);
+    if (QueryCoreState() != BackendCoreState::Paused ||
+        !impl_->PauseConfirmed())
+    {
+        return BackendResult::Failure(
+            BackendErrorCode::InvalidState,
+            "Dolphin must be authoritatively paused before beginning a frame step");
+    }
+    impl_->InvalidatePauseConfirmation();
+    Core::DoFrameStep(*impl_->wrapper->system());
+    return BackendResult::Success();
 }
 
-BackendResult DolphinWrapperBackend::StepFrame(std::chrono::milliseconds timeout)
+BackendResult DolphinWrapperBackend::BeginExactInstructionStep()
 {
     if (BackendResult open = impl_->RequireOpen(); !open.ok)
         return open;
-    if (impl_->wrapper->stepOneFrameBlocking(ClampTimeout(timeout)))
-        return BackendResult::Success();
     return BackendResult::Failure(
-        BackendErrorCode::Timeout,
-        "Timed out while stepping one guest frame",
-        BackendIntegrity::Unknown);
+        BackendErrorCode::Unavailable,
+        "Exact guest-instruction stepping is unavailable in JIT64");
+}
+
+BackendResult DolphinWrapperBackend::SetThrottleDisabled(bool disabled)
+{
+    if (BackendResult open = impl_->RequireOpen(); !open.ok)
+        return open;
+    Core::SetIsThrottlerTempDisabled(disabled);
+    return BackendResult::Success();
 }
 
 BackendResult DolphinWrapperBackend::RestoreStateFile(const std::filesystem::path& path)
@@ -488,7 +895,13 @@ BackendResult DolphinWrapperBackend::RestoreStateFile(const std::filesystem::pat
             "A readable savestate path is required");
     }
     if (impl_->wrapper->loadSavestate(path.string()))
+    {
+        if (QueryCoreState() == BackendCoreState::Paused)
+            impl_->ConfirmPause();
+        else
+            impl_->InvalidatePauseConfirmation();
         return BackendResult::Success();
+    }
     return BackendResult::Failure(
         BackendErrorCode::OperationFailed,
         "Dolphin failed to restore the savestate",
@@ -548,7 +961,13 @@ BackendResult DolphinWrapperBackend::RestoreStateBuffer(
     Common::UniqueBuffer<u8> buffer(bytes.size());
     std::memcpy(buffer.data(), bytes.data(), bytes.size());
     if (impl_->wrapper->loadStateFromBuffer(buffer))
+    {
+        if (QueryCoreState() == BackendCoreState::Paused)
+            impl_->ConfirmPause();
+        else
+            impl_->InvalidatePauseConfirmation();
         return BackendResult::Success();
+    }
     return BackendResult::Failure(
         BackendErrorCode::OperationFailed,
         "Dolphin failed to restore state from a buffer",
@@ -579,6 +998,11 @@ BackendResult DolphinWrapperBackend::CaptureScreenshot(
 }
 
 IPhysicalStopPointBackendPort* DolphinWrapperBackend::PhysicalStopPoints() noexcept
+{
+    return this;
+}
+
+IExecutionBackendPort* DolphinWrapperBackend::Execution() noexcept
 {
     return this;
 }

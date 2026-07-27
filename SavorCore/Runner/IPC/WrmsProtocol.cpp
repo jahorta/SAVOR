@@ -51,6 +51,24 @@ constexpr bool IsKnownWorkerState(std::uint8_t value) noexcept
     return value <= static_cast<std::uint8_t>(WorkerStateCode::Stopped);
 }
 
+constexpr bool IsKnownExecutionControl(std::uint8_t value) noexcept
+{
+    return value <= static_cast<std::uint8_t>(
+        ExecutionControlKind::StepFrame);
+}
+
+constexpr bool IsKnownExecutionActivity(std::uint8_t value) noexcept
+{
+    return value <= static_cast<std::uint8_t>(
+        ExecutionActivityCode::Failed);
+}
+
+constexpr bool IsKnownExecutionTerminalStatus(std::uint8_t value) noexcept
+{
+    return value <= static_cast<std::uint8_t>(
+        ExecutionTerminalStatusCode::CleanupFailure);
+}
+
 constexpr bool IsKnownSessionDisposition(std::uint8_t value) noexcept
 {
     return value <= static_cast<std::uint8_t>(SessionDispositionCode::Tainted);
@@ -348,6 +366,7 @@ bool IsKnownMessageKind(MessageKind kind) noexcept
     case MessageKind::CancelInvocation:
     case MessageKind::CaptureScreenshot:
     case MessageKind::Shutdown:
+    case MessageKind::ControlExecution:
     case MessageKind::CommandResult:
     case MessageKind::OpenSessionResult:
     case MessageKind::ScreenshotResult:
@@ -357,6 +376,8 @@ bool IsKnownMessageKind(MessageKind kind) noexcept
     case MessageKind::InvocationTerminal:
     case MessageKind::HostEvent:
     case MessageKind::RuntimeDiagnostic:
+    case MessageKind::ExecutionResult:
+    case MessageKind::ExecutionState:
         return true;
     }
     return false;
@@ -371,6 +392,7 @@ MessageDirection DirectionOf(MessageKind kind) noexcept
     case MessageKind::CancelInvocation:
     case MessageKind::CaptureScreenshot:
     case MessageKind::Shutdown:
+    case MessageKind::ControlExecution:
         return MessageDirection::ParentToWorker;
     default:
         return MessageDirection::WorkerToParent;
@@ -1078,6 +1100,197 @@ PayloadCodecResult DecodePayload(
         }
         reader.u64(payload.command_sequence);
         reader.u64(payload.invocation_id);
+        reader.string(payload.message);
+    });
+}
+
+PayloadCodecResult EncodePayload(
+    const ControlExecutionPayload& value,
+    std::vector<std::uint8_t>& output)
+{
+    return EncodePayloadImpl(value, output, [](PayloadWriter& writer, const auto& payload) {
+        if (!IsKnownExecutionControl(
+                static_cast<std::uint8_t>(payload.control))) {
+            writer.fail(PayloadError::InvalidEnumValue);
+        }
+        writer.u8(static_cast<std::uint8_t>(payload.control));
+        writer.u64(payload.session_id);
+        writer.u64(payload.expected_state_epoch);
+        writer.u32(payload.count);
+        writer.u32(payload.timeout_ms);
+    });
+}
+
+PayloadCodecResult DecodePayload(
+    std::span<const std::uint8_t> input,
+    ControlExecutionPayload& output)
+{
+    return DecodePayloadImpl(input, output, [](PayloadReader& reader, auto& payload) {
+        std::uint8_t control = 0;
+        if (reader.u8(control)) {
+            payload.control = static_cast<ExecutionControlKind>(control);
+            if (!IsKnownExecutionControl(control))
+                reader.fail(PayloadError::InvalidEnumValue);
+        }
+        reader.u64(payload.session_id);
+        reader.u64(payload.expected_state_epoch);
+        reader.u32(payload.count);
+        reader.u32(payload.timeout_ms);
+    });
+}
+
+PayloadCodecResult EncodePayload(
+    const ExecutionResultPayload& value,
+    std::vector<std::uint8_t>& output)
+{
+    return EncodePayloadImpl(value, output, [](PayloadWriter& writer, const auto& payload) {
+        writer.u64(payload.command_sequence);
+        if (!IsKnownExecutionControl(
+                static_cast<std::uint8_t>(payload.control))) {
+            writer.fail(PayloadError::InvalidEnumValue);
+        }
+        writer.u8(static_cast<std::uint8_t>(payload.control));
+        if (!IsKnownCommandStatus(static_cast<std::uint8_t>(payload.status)))
+            writer.fail(PayloadError::InvalidEnumValue);
+        writer.u8(static_cast<std::uint8_t>(payload.status));
+        writer.u64(payload.session_id);
+        writer.u64(payload.state_epoch);
+        writer.u64(payload.operation_id);
+        if (!IsKnownExecutionActivity(
+                static_cast<std::uint8_t>(payload.activity))) {
+            writer.fail(PayloadError::InvalidEnumValue);
+        }
+        writer.u8(static_cast<std::uint8_t>(payload.activity));
+        writer.boolean(payload.has_terminal_status);
+        if (!IsKnownExecutionTerminalStatus(
+                static_cast<std::uint8_t>(payload.terminal_status))) {
+            writer.fail(PayloadError::InvalidEnumValue);
+        }
+        writer.u8(static_cast<std::uint8_t>(payload.terminal_status));
+        writer.u64(payload.completed_count);
+        writer.u32(payload.program_counter);
+        if (!IsKnownRejectionCode(
+                static_cast<std::uint16_t>(payload.rejection_code))) {
+            writer.fail(PayloadError::InvalidEnumValue);
+        }
+        writer.u16(static_cast<std::uint16_t>(payload.rejection_code));
+        writer.string(payload.error_code);
+        writer.string(payload.message);
+    });
+}
+
+PayloadCodecResult DecodePayload(
+    std::span<const std::uint8_t> input,
+    ExecutionResultPayload& output)
+{
+    return DecodePayloadImpl(input, output, [](PayloadReader& reader, auto& payload) {
+        std::uint8_t control = 0;
+        std::uint8_t status = 0;
+        std::uint8_t activity = 0;
+        std::uint8_t terminal_status = 0;
+        std::uint16_t rejection_code = 0;
+        reader.u64(payload.command_sequence);
+        if (reader.u8(control)) {
+            payload.control = static_cast<ExecutionControlKind>(control);
+            if (!IsKnownExecutionControl(control))
+                reader.fail(PayloadError::InvalidEnumValue);
+        }
+        if (reader.u8(status)) {
+            payload.status = static_cast<CommandStatus>(status);
+            if (!IsKnownCommandStatus(status))
+                reader.fail(PayloadError::InvalidEnumValue);
+        }
+        reader.u64(payload.session_id);
+        reader.u64(payload.state_epoch);
+        reader.u64(payload.operation_id);
+        if (reader.u8(activity)) {
+            payload.activity = static_cast<ExecutionActivityCode>(activity);
+            if (!IsKnownExecutionActivity(activity))
+                reader.fail(PayloadError::InvalidEnumValue);
+        }
+        reader.boolean(payload.has_terminal_status);
+        if (reader.u8(terminal_status)) {
+            payload.terminal_status =
+                static_cast<ExecutionTerminalStatusCode>(terminal_status);
+            if (!IsKnownExecutionTerminalStatus(terminal_status))
+                reader.fail(PayloadError::InvalidEnumValue);
+        }
+        reader.u64(payload.completed_count);
+        reader.u32(payload.program_counter);
+        if (reader.u16(rejection_code)) {
+            payload.rejection_code =
+                static_cast<RejectionCode>(rejection_code);
+            if (!IsKnownRejectionCode(rejection_code))
+                reader.fail(PayloadError::InvalidEnumValue);
+        }
+        reader.string(payload.error_code);
+        reader.string(payload.message);
+    });
+}
+
+PayloadCodecResult EncodePayload(
+    const ExecutionStatePayload& value,
+    std::vector<std::uint8_t>& output)
+{
+    return EncodePayloadImpl(value, output, [](PayloadWriter& writer, const auto& payload) {
+        writer.u64(payload.session_id);
+        writer.u64(payload.state_epoch);
+        writer.u64(payload.operation_id);
+        if (!IsKnownExecutionActivity(
+                static_cast<std::uint8_t>(payload.activity))) {
+            writer.fail(PayloadError::InvalidEnumValue);
+        }
+        writer.u8(static_cast<std::uint8_t>(payload.activity));
+        writer.boolean(payload.has_active_control);
+        if (!IsKnownExecutionControl(
+                static_cast<std::uint8_t>(payload.active_control))) {
+            writer.fail(PayloadError::InvalidEnumValue);
+        }
+        writer.u8(static_cast<std::uint8_t>(payload.active_control));
+        writer.u64(payload.completed_count);
+        writer.u32(payload.program_counter);
+        if (!IsKnownRejectionCode(
+                static_cast<std::uint16_t>(payload.rejection_code))) {
+            writer.fail(PayloadError::InvalidEnumValue);
+        }
+        writer.u16(static_cast<std::uint16_t>(payload.rejection_code));
+        writer.string(payload.code);
+        writer.string(payload.message);
+    });
+}
+
+PayloadCodecResult DecodePayload(
+    std::span<const std::uint8_t> input,
+    ExecutionStatePayload& output)
+{
+    return DecodePayloadImpl(input, output, [](PayloadReader& reader, auto& payload) {
+        std::uint8_t activity = 0;
+        std::uint8_t active_control = 0;
+        std::uint16_t rejection_code = 0;
+        reader.u64(payload.session_id);
+        reader.u64(payload.state_epoch);
+        reader.u64(payload.operation_id);
+        if (reader.u8(activity)) {
+            payload.activity = static_cast<ExecutionActivityCode>(activity);
+            if (!IsKnownExecutionActivity(activity))
+                reader.fail(PayloadError::InvalidEnumValue);
+        }
+        reader.boolean(payload.has_active_control);
+        if (reader.u8(active_control)) {
+            payload.active_control =
+                static_cast<ExecutionControlKind>(active_control);
+            if (!IsKnownExecutionControl(active_control))
+                reader.fail(PayloadError::InvalidEnumValue);
+        }
+        reader.u64(payload.completed_count);
+        reader.u32(payload.program_counter);
+        if (reader.u16(rejection_code)) {
+            payload.rejection_code =
+                static_cast<RejectionCode>(rejection_code);
+            if (!IsKnownRejectionCode(rejection_code))
+                reader.fail(PayloadError::InvalidEnumValue);
+        }
+        reader.string(payload.code);
         reader.string(payload.message);
     });
 }

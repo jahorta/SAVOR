@@ -116,6 +116,10 @@ struct RoutedStopIdentity
     StateEpoch state_epoch;
     StopDispatchGeneration dispatch_generation;
     PhysicalPlanGeneration physical_generation;
+
+    friend bool operator==(
+        const RoutedStopIdentity&,
+        const RoutedStopIdentity&) = default;
 };
 
 struct RoutedStopEvidence
@@ -125,6 +129,10 @@ struct RoutedStopEvidence
     std::uint32_t hit_pc = 0;
     std::uint64_t value = 0;
     bool post_write = false;
+
+    friend bool operator==(
+        const RoutedStopEvidence&,
+        const RoutedStopEvidence&) = default;
 };
 
 inline constexpr std::size_t kMaxRoutedHitSamples = 32;

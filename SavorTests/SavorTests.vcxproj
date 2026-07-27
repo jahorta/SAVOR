@@ -130,6 +130,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="common\DbPreparer.cpp" />
+    <ClCompile Include="common\FakeExecutionBackend.cpp" />
     <ClCompile Include="common\FakePhysicalStopBackend.cpp" />
     <ClCompile Include="common\ScriptedDolphinBackend.cpp" />
     <ClCompile Include="..\SavorDbDebugTool\BackfillAnalysisBattle.cpp" />
@@ -274,6 +275,7 @@
     <ClCompile Include="test_worker_protocol_v1.cpp" />
     <ClCompile Include="test_process_worker_v1.cpp" />
     <ClCompile Include="test_worker_capability_gate.cpp" />
+    <ClCompile Include="test_execution_engine.cpp" />
     <ClCompile Include="test_execution_worker_runtime.cpp" />
     <ClCompile Include="test_emulation_session_stop_points.cpp" />
     <ClCompile Include="test_dolphin_stop_point_integration.cpp" />
@@ -309,6 +311,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="common\AlwaysAdvanceTransitionHandler.h" />
+    <ClInclude Include="common\FakeExecutionBackend.h" />
     <ClInclude Include="common\FakePhysicalStopBackend.h" />
     <ClInclude Include="common\NullJobEventCommandService.h" />
     <ClInclude Include="common\NullWorkflowQueryService.h" />

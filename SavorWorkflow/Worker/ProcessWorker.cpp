@@ -14,6 +14,7 @@ namespace savor {
 namespace {
 
 constexpr std::uint32_t kDefaultRequestTimeoutMs = 10000;
+constexpr std::uint32_t kExecutionTransportAllowanceMs = 1000;
 
 bool WriteAll(
     HANDLE handle,
@@ -429,6 +430,10 @@ bool ProcessWorker::open_session(
             *error_out = error;
         return false;
     }
+    {
+        std::lock_guard<std::mutex> lock(snapshot_mutex_);
+        snapshot_.session_visual_intent = options.visual;
+    }
 
     if (error_out)
         error_out->clear();
@@ -592,6 +597,295 @@ bool ProcessWorker::request_screenshot(
     return result.status == wrms::ScreenshotStatus::Captured;
 }
 
+std::uint32_t ProcessWorker::effective_execution_command_timeout(
+    std::uint32_t operation_timeout_ms,
+    std::uint32_t command_timeout_ms) noexcept
+{
+    std::uint64_t effective = command_timeout_ms
+        ? command_timeout_ms
+        : kDefaultRequestTimeoutMs;
+    if (operation_timeout_ms != 0)
+    {
+        const std::uint64_t operation_with_transport =
+            static_cast<std::uint64_t>(operation_timeout_ms) +
+            kExecutionTransportAllowanceMs;
+        effective = std::max(effective, operation_with_transport);
+    }
+    return static_cast<std::uint32_t>(std::min<std::uint64_t>(
+        effective,
+        std::numeric_limits<std::uint32_t>::max()));
+}
+
+bool ProcessWorker::validate_execution_result(
+    wrms::ExecutionControlKind control,
+    runtime::SessionId session_id,
+    runtime::StateEpoch expected_state_epoch,
+    std::uint32_t requested_count,
+    const wrms::ExecutionResultPayload& result,
+    std::string* error_out)
+{
+    const auto fail = [&](const char* message) {
+        if (error_out)
+            *error_out = message;
+        return false;
+    };
+
+    if (result.control != control ||
+        result.session_id != session_id.value())
+    {
+        return fail("worker returned a mismatched execution-control result");
+    }
+    if (result.status != wrms::CommandStatus::Succeeded)
+        return true;
+    if (result.state_epoch != expected_state_epoch.value() ||
+        result.operation_id == 0)
+    {
+        return fail(
+            "worker returned an invalid successful execution-control result");
+    }
+
+    switch (control)
+    {
+    case wrms::ExecutionControlKind::Resume:
+        if (result.has_terminal_status ||
+            result.activity !=
+                wrms::ExecutionActivityCode::InteractiveRunning)
+        {
+            return fail(
+                "worker returned an inconsistent successful resume result");
+        }
+        break;
+    case wrms::ExecutionControlKind::Pause:
+        if (!result.has_terminal_status ||
+            result.terminal_status !=
+                wrms::ExecutionTerminalStatusCode::Paused ||
+            result.activity != wrms::ExecutionActivityCode::IdlePaused)
+        {
+            return fail(
+                "worker returned an inconsistent successful pause result");
+        }
+        break;
+    case wrms::ExecutionControlKind::StepInstruction:
+    case wrms::ExecutionControlKind::StepFrame:
+        if (!result.has_terminal_status ||
+            result.terminal_status !=
+                wrms::ExecutionTerminalStatusCode::StepsCompleted ||
+            result.activity != wrms::ExecutionActivityCode::IdlePaused ||
+            result.completed_count != requested_count)
+        {
+            return fail(
+                "worker returned an inconsistent successful step result");
+        }
+        break;
+    }
+
+    if (error_out)
+        error_out->clear();
+    return true;
+}
+
+bool ProcessWorker::classify_shutdown_response(
+    std::span<const std::uint8_t> payload,
+    bool* graceful_out)
+{
+    wrms::ShutdownResultPayload result;
+    if (!wrms::DecodePayload(payload, result))
+    {
+        if (graceful_out)
+            *graceful_out = false;
+        return false;
+    }
+    if (graceful_out)
+    {
+        *graceful_out =
+            result.status == wrms::ShutdownStatus::Graceful;
+    }
+    return true;
+}
+
+bool ProcessWorker::request_execution_control(
+    wrms::ExecutionControlKind control,
+    runtime::SessionId session_id,
+    runtime::StateEpoch expected_state_epoch,
+    std::uint32_t count,
+    std::uint32_t operation_timeout_ms,
+    wrms::ExecutionResultPayload* result_out,
+    std::uint32_t command_timeout_ms)
+{
+    const ProcessWorkerSnapshot observed = latest_snapshot();
+    if (!runtime::HasCapability(
+            observed.process_capabilities,
+            runtime::WorkerCapability::InteractiveVisualDebug) ||
+        !runtime::HasCapability(
+            observed.session_capabilities,
+            runtime::WorkerCapability::InteractiveVisualDebug))
+    {
+        set_last_error(
+            "worker does not advertise interactive visual-debug control");
+        return false;
+    }
+    if (!observed.session_open ||
+        !observed.session_visual_intent ||
+        !session_id ||
+        observed.session_id != session_id)
+    {
+        set_last_error("execution control requires the open worker session");
+        return false;
+    }
+    if (!expected_state_epoch ||
+        observed.state_epoch != expected_state_epoch)
+    {
+        set_last_error(
+            "execution control StateEpoch does not match the worker session");
+        return false;
+    }
+
+    const bool is_step =
+        control == wrms::ExecutionControlKind::StepFrame ||
+        control == wrms::ExecutionControlKind::StepInstruction;
+    if ((is_step && count == 0) || (!is_step && count != 0))
+    {
+        set_last_error(
+            "execution control count is valid only for a nonzero step request");
+        return false;
+    }
+    if (control != wrms::ExecutionControlKind::Resume &&
+        operation_timeout_ms == 0)
+    {
+        set_last_error(
+            "pause and step execution controls require a bounded timeout");
+        return false;
+    }
+
+    wrms::ControlExecutionPayload request{
+        .control = control,
+        .session_id = session_id.value(),
+        .expected_state_epoch = expected_state_epoch.value(),
+        .count = count,
+        .timeout_ms = operation_timeout_ms,
+    };
+    std::vector<std::uint8_t> payload;
+    if (!EncodeTypedPayload(request, &payload))
+    {
+        set_last_error("failed encoding ControlExecution payload");
+        return false;
+    }
+
+    ProcessCommandCompletion completion;
+    const std::uint32_t effective_command_timeout =
+        effective_execution_command_timeout(
+            operation_timeout_ms,
+            command_timeout_ms);
+    if (!request_response(
+            wrms::MessageKind::ControlExecution,
+            payload,
+            wrms::MessageKind::ExecutionResult,
+            effective_command_timeout,
+            &completion))
+    {
+        return false;
+    }
+
+    wrms::ExecutionResultPayload result;
+    if (!wrms::DecodePayload(completion.payload, result))
+    {
+        set_last_error("invalid ExecutionResult payload");
+        return false;
+    }
+    std::string validation_error;
+    if (!validate_execution_result(
+            control,
+            session_id,
+            expected_state_epoch,
+            count,
+            result,
+            &validation_error))
+    {
+        set_last_error(std::move(validation_error));
+        return false;
+    }
+    if (result_out)
+        *result_out = result;
+    if (result.status != wrms::CommandStatus::Succeeded)
+    {
+        set_last_error(
+            result.message.empty()
+                ? "worker rejected execution control"
+                : result.message);
+        return false;
+    }
+    return true;
+}
+
+bool ProcessWorker::pause_guest_execution(
+    runtime::SessionId session_id,
+    runtime::StateEpoch expected_state_epoch,
+    wrms::ExecutionResultPayload* result_out,
+    std::uint32_t operation_timeout_ms,
+    std::uint32_t command_timeout_ms)
+{
+    return request_execution_control(
+        wrms::ExecutionControlKind::Pause,
+        session_id,
+        expected_state_epoch,
+        0,
+        operation_timeout_ms,
+        result_out,
+        command_timeout_ms);
+}
+
+bool ProcessWorker::resume_guest_execution(
+    runtime::SessionId session_id,
+    runtime::StateEpoch expected_state_epoch,
+    wrms::ExecutionResultPayload* result_out,
+    std::uint32_t command_timeout_ms)
+{
+    return request_execution_control(
+        wrms::ExecutionControlKind::Resume,
+        session_id,
+        expected_state_epoch,
+        0,
+        0,
+        result_out,
+        command_timeout_ms);
+}
+
+bool ProcessWorker::step_guest_frames(
+    runtime::SessionId session_id,
+    runtime::StateEpoch expected_state_epoch,
+    std::uint32_t count,
+    wrms::ExecutionResultPayload* result_out,
+    std::uint32_t operation_timeout_ms,
+    std::uint32_t command_timeout_ms)
+{
+    return request_execution_control(
+        wrms::ExecutionControlKind::StepFrame,
+        session_id,
+        expected_state_epoch,
+        count,
+        operation_timeout_ms,
+        result_out,
+        command_timeout_ms);
+}
+
+bool ProcessWorker::step_guest_instructions(
+    runtime::SessionId session_id,
+    runtime::StateEpoch expected_state_epoch,
+    std::uint32_t count,
+    wrms::ExecutionResultPayload* result_out,
+    std::uint32_t operation_timeout_ms,
+    std::uint32_t command_timeout_ms)
+{
+    return request_execution_control(
+        wrms::ExecutionControlKind::StepInstruction,
+        session_id,
+        expected_state_epoch,
+        count,
+        operation_timeout_ms,
+        result_out,
+        command_timeout_ms);
+}
+
 runtime::WorkerCapabilityMask ProcessWorker::process_capabilities() const
 {
     std::lock_guard<std::mutex> lock(snapshot_mutex_);
@@ -648,13 +942,22 @@ void ProcessWorker::set_host_event_callback(HostEventCallback callback)
     host_event_callback_ = std::move(callback);
 }
 
+void ProcessWorker::set_execution_state_callback(
+    ExecutionStateCallback callback)
+{
+    std::lock_guard<std::mutex> lock(callback_mutex_);
+    execution_state_callback_ = std::move(callback);
+}
+
 bool ProcessWorker::start(ProcStartParams& params, TSQueue<PRResult>* out_queue)
 {
     legacy_result_out_ = out_queue;
     if (params.visual_debug)
     {
         set_last_error(
-            "interactive visual debugging is unavailable until Dependency Slice 3");
+            "legacy visual-debug startup remains disconnected; use "
+            "launch_and_negotiate(), open_session(), and typed guest "
+            "execution controls");
         ready_received_.store(true, std::memory_order_release);
         ready_ok_.store(false, std::memory_order_release);
         ready_error_.store(1, std::memory_order_release);
@@ -726,21 +1029,21 @@ bool ProcessWorker::ctl_activate_main()
 bool ProcessWorker::visual_pause_emulation()
 {
     set_last_error(
-        "interactive pause is unavailable until Dependency Slice 3");
+        "legacy visual pause is disconnected; use pause_guest_execution()");
     return false;
 }
 
 bool ProcessWorker::visual_resume_emulation()
 {
     set_last_error(
-        "interactive resume is unavailable until Dependency Slice 3");
+        "legacy visual resume is disconnected; use resume_guest_execution()");
     return false;
 }
 
 bool ProcessWorker::visual_step_vm()
 {
     set_last_error(
-        "interactive stepping is unavailable until Dependency Slice 3");
+        "program/VM stepping remains disconnected until canonical ProgramRuntime");
     return false;
 }
 
@@ -1192,6 +1495,12 @@ void ProcessWorker::handle_frame(const wrms::FrameView& frame)
                 snapshot_.worker_state = MapWorkerState(result.worker_state);
                 snapshot_.session_disposition =
                     MapSessionDisposition(result.session_disposition);
+                snapshot_.execution_activity =
+                    wrms::ExecutionActivityCode::IdlePaused;
+                snapshot_.execution_operation_id = 0;
+                snapshot_.active_execution_control.reset();
+                snapshot_.execution_completed_count = 0;
+                snapshot_.execution_program_counter = 0;
             }
             else if (!snapshot_.session_open)
             {
@@ -1240,6 +1549,13 @@ void ProcessWorker::handle_frame(const wrms::FrameView& frame)
             snapshot_.shutdown_graceful =
                 result.status == wrms::ShutdownStatus::Graceful;
             snapshot_.session_open = false;
+            snapshot_.session_visual_intent = false;
+            snapshot_.execution_activity =
+                wrms::ExecutionActivityCode::IdlePaused;
+            snapshot_.execution_operation_id = 0;
+            snapshot_.active_execution_control.reset();
+            snapshot_.execution_completed_count = 0;
+            snapshot_.execution_program_counter = 0;
             snapshot_.session_disposition =
                 MapSessionDisposition(result.final_disposition);
             snapshot_.worker_state = runtime::WorkerState::Stopped;
@@ -1269,6 +1585,16 @@ void ProcessWorker::handle_frame(const wrms::FrameView& frame)
         snapshot_.session_open =
             event.session_disposition !=
             wrms::SessionDispositionCode::Closed;
+        if (!snapshot_.session_open)
+        {
+            snapshot_.session_visual_intent = false;
+            snapshot_.execution_activity =
+                wrms::ExecutionActivityCode::IdlePaused;
+            snapshot_.execution_operation_id = 0;
+            snapshot_.active_execution_control.reset();
+            snapshot_.execution_completed_count = 0;
+            snapshot_.execution_program_counter = 0;
+        }
         snapshot_.last_rejection_code =
             MapRejectionCode(event.rejection_code);
         if (!event.message.empty())
@@ -1342,6 +1668,67 @@ void ProcessWorker::handle_frame(const wrms::FrameView& frame)
         snapshot_.last_rejection_code =
             MapRejectionCode(diagnostic.rejection_code);
         snapshot_.last_error = diagnostic.message;
+        return;
+    }
+    case wrms::MessageKind::ExecutionResult:
+    {
+        wrms::ExecutionResultPayload result;
+        if (wrms::DecodePayload(frame.payload, result))
+        {
+            std::lock_guard<std::mutex> lock(snapshot_mutex_);
+            snapshot_.session_id = runtime::SessionId{result.session_id};
+            snapshot_.state_epoch = runtime::StateEpoch{result.state_epoch};
+            snapshot_.execution_activity = result.activity;
+            snapshot_.execution_operation_id = result.operation_id;
+            snapshot_.execution_completed_count = result.completed_count;
+            snapshot_.execution_program_counter = result.program_counter;
+            snapshot_.active_execution_control =
+                result.activity == wrms::ExecutionActivityCode::IdlePaused ||
+                    result.activity == wrms::ExecutionActivityCode::Failed
+                ? std::nullopt
+                : std::optional{result.control};
+            snapshot_.last_rejection_code =
+                MapRejectionCode(result.rejection_code);
+            if (result.status != wrms::CommandStatus::Succeeded &&
+                !result.message.empty())
+            {
+                snapshot_.last_error = result.message;
+            }
+        }
+        complete_pending(
+            frame.header.request_id,
+            frame.header.kind,
+            frame.payload);
+        return;
+    }
+    case wrms::MessageKind::ExecutionState:
+    {
+        wrms::ExecutionStatePayload state;
+        if (!wrms::DecodePayload(frame.payload, state))
+            return;
+        {
+            std::lock_guard<std::mutex> lock(snapshot_mutex_);
+            snapshot_.session_id = runtime::SessionId{state.session_id};
+            snapshot_.state_epoch = runtime::StateEpoch{state.state_epoch};
+            snapshot_.execution_activity = state.activity;
+            snapshot_.execution_operation_id = state.operation_id;
+            snapshot_.active_execution_control = state.has_active_control
+                ? std::optional{state.active_control}
+                : std::nullopt;
+            snapshot_.execution_completed_count = state.completed_count;
+            snapshot_.execution_program_counter = state.program_counter;
+            snapshot_.last_rejection_code =
+                MapRejectionCode(state.rejection_code);
+            if (!state.message.empty())
+                snapshot_.last_error = state.message;
+        }
+        ExecutionStateCallback callback;
+        {
+            std::lock_guard<std::mutex> lock(callback_mutex_);
+            callback = execution_state_callback_;
+        }
+        if (callback)
+            callback(state);
         return;
     }
     default:
@@ -1430,6 +1817,7 @@ void ProcessWorker::stop()
         grace;
     std::shared_ptr<PendingResponse> shutdown_pending;
     std::shared_ptr<OutboundWrite> shutdown_write;
+    bool shutdown_reported_graceful = false;
 
     if (snapshot.was_running && child_stdin_write_)
     {
@@ -1488,11 +1876,16 @@ void ProcessWorker::stop()
         {
             snapshot.deadline_expired = true;
         }
-        snapshot.shutdown_result_received =
+        const bool response_arrived =
             shutdown_pending->completed &&
             shutdown_pending->transport_ok &&
             shutdown_pending->response_kind ==
                 wrms::MessageKind::ShutdownResult;
+        snapshot.shutdown_result_received =
+            response_arrived &&
+            classify_shutdown_response(
+                shutdown_pending->payload,
+                &shutdown_reported_graceful);
     }
     if (snapshot.shutdown_request_id != 0)
     {
@@ -1606,6 +1999,7 @@ void ProcessWorker::stop()
     snapshot.graceful =
         !snapshot.forced &&
         snapshot.shutdown_result_received &&
+        shutdown_reported_graceful &&
         snapshot.process_wait_result == WAIT_OBJECT_0;
 
     close_process_handles(&snapshot);

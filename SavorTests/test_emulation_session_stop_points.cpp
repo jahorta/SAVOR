@@ -194,7 +194,7 @@ TEST(
 
 TEST(
     EmulationSessionStopPoints,
-    PreconfiguredIngressNotificationSurvivesOpenAndResumeDepartsCurrentPoint)
+    PreconfiguredIngressNotificationSurvivesOpenAndEngineResumeDepartsCurrentPoint)
 {
     SessionStopPointHarness harness(1010);
     std::atomic<std::uint64_t> notification{0};
@@ -204,7 +204,9 @@ TEST(
             nullptr,
             nullptr));
     ASSERT_TRUE(harness.Open().ok);
-    ASSERT_TRUE(harness.session->Pause(std::chrono::milliseconds(100)).ok);
+    ASSERT_EQ(
+        harness.session->snapshot().core_state,
+        BackendCoreState::Paused);
 
     RecordingStopConsumer wake_consumer;
     StopPointRouter* const router = harness.session->stop_points();
@@ -220,7 +222,11 @@ TEST(
             .request_break);
     EXPECT_EQ(notification.load(std::memory_order_acquire), 1u);
     ASSERT_EQ(harness.session->DrainStopPointEvents().size(), 1u);
-    ASSERT_TRUE(harness.session->Resume().ok);
+    const ExecutionSubmissionReceipt resumed =
+        harness.session->SubmitExecution(InteractiveResumeRequest{
+            .expected_epoch = StateEpoch(1),
+        });
+    ASSERT_TRUE(resumed.accepted) << resumed.error.message;
 
     RecordingStopConsumer observer;
     auto current = router->RegisterGroup(
@@ -230,6 +236,13 @@ TEST(
     EXPECT_EQ(
         current.receipt.error.code,
         StopPointErrorCode::CurrentPointUnavailable);
+    ASSERT_TRUE(
+        harness.session
+            ->CancelExecution(CancellationReason::ExternalRequest)
+            .accepted);
+    harness.session->PumpExecution();
+    EXPECT_FALSE(
+        harness.session->DrainExecutionEvents().empty());
     EXPECT_TRUE(harness.session->Shutdown().ok);
 }
 

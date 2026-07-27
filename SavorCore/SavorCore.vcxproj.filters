@@ -49,6 +49,9 @@
     <Filter Include="Runner\Runtime">
       <UniqueIdentifier>{8C8AD43C-1F75-4F2B-B4A4-9073D1F36E12}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Runner\Runtime\Execution">
+      <UniqueIdentifier>{6D37E415-DCB1-4519-87D5-B847CB9CE2C6}</UniqueIdentifier>
+    </Filter>
     <Filter Include="Runner\Runtime\StopPoints">
       <UniqueIdentifier>{2B78AB19-B4E2-4D89-8587-F64F760198B9}</UniqueIdentifier>
     </Filter>
@@ -330,6 +333,18 @@
     <ClInclude Include="Runner\Runtime\EmulationSession.h">
       <Filter>Runner\Runtime</Filter>
     </ClInclude>
+    <ClInclude Include="Runner\Runtime\Execution\ExecutionEngine.h">
+      <Filter>Runner\Runtime\Execution</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\Execution\ExecutionTypes.h">
+      <Filter>Runner\Runtime\Execution</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\Execution\IExecutionBackendPort.h">
+      <Filter>Runner\Runtime\Execution</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\Execution\IInputAdvancePort.h">
+      <Filter>Runner\Runtime\Execution</Filter>
+    </ClInclude>
     <ClInclude Include="Runner\Runtime\IDolphinBackend.h">
       <Filter>Runner\Runtime</Filter>
     </ClInclude>
@@ -589,6 +604,9 @@
     </ClCompile>
     <ClCompile Include="Runner\Runtime\EmulationSession.cpp">
       <Filter>Runner\Runtime</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Runtime\Execution\ExecutionEngine.cpp">
+      <Filter>Runner\Runtime\Execution</Filter>
     </ClCompile>
     <ClCompile Include="Runner\Runtime\StopPoints\Capture\ProbeRouterAdapter.cpp">
       <Filter>Runner\Runtime\StopPoints\Capture</Filter>

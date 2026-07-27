@@ -1,6 +1,7 @@
 #pragma once
 
 #include "IDolphinBackend.h"
+#include "Execution/IExecutionBackendPort.h"
 #include "StopPoints/IPhysicalStopPointBackendPort.h"
 
 #include <memory>
@@ -15,6 +16,7 @@ enum class DolphinBackendCpuCore : std::uint8_t
 
 class DolphinWrapperBackend final
     : public IDolphinBackend,
+      private IExecutionBackendPort,
       private IPhysicalStopPointBackendPort
 {
 public:
@@ -32,11 +34,6 @@ public:
     [[nodiscard]] BackendCoreState QueryCoreState() const noexcept override;
     [[nodiscard]] BackendHealthReport CheckHealth() const override;
 
-    BackendResult Pause(std::chrono::milliseconds timeout) override;
-    BackendResult Resume() override;
-    BackendResult StepInstruction(std::chrono::milliseconds timeout) override;
-    BackendResult StepFrame(std::chrono::milliseconds timeout) override;
-
     BackendResult RestoreStateFile(const std::filesystem::path& path) override;
     BackendResult SaveStateFile(const std::filesystem::path& path) override;
     BackendBufferResult SaveStateBuffer() override;
@@ -47,8 +44,19 @@ public:
         std::chrono::milliseconds timeout) override;
 
     [[nodiscard]] IPhysicalStopPointBackendPort* PhysicalStopPoints() noexcept override;
+    [[nodiscard]] IExecutionBackendPort* Execution() noexcept override;
 
 private:
+    [[nodiscard]] BackendExecutionCapabilityMask
+    Capabilities() const noexcept override;
+    [[nodiscard]] BackendExecutionSnapshot
+    QueryExecutionSnapshot() const override;
+    BackendResult RequestPause() override;
+    BackendResult Resume() override;
+    BackendResult BeginFrameStep() override;
+    BackendResult BeginExactInstructionStep() override;
+    BackendResult SetThrottleDisabled(bool disabled) override;
+
     PhysicalStopBackendReceipt BindNativeStopSink(
         savor::probe::INativeStopSink& sink) override;
     PhysicalStopBackendReceipt UnbindNativeStopSink(
