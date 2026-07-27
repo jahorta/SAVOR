@@ -99,6 +99,127 @@ void set_load(
     result.operation_callsite = std::move(callsite);
 }
 
+bool cleanup_mode_retains_mode_2_motion(std::int16_t instruction_mode) {
+    switch (instruction_mode) {
+    case 4:
+    case 5:
+    case 8:
+    case 0x0f:
+    case 0x18:
+        return true;
+    default:
+        return false;
+    }
+}
+
+std::optional<bool> cleanup_phase_returns_five(
+    const ActionMotionInvocationRequest& request) {
+    if (!request.turn_phase.has_value()) {
+        return std::nullopt;
+    }
+    if (*request.turn_phase != 7) {
+        return false;
+    }
+    if (!request.turn_phase_mapping_blocked.has_value()) {
+        return std::nullopt;
+    }
+    return !*request.turn_phase_mapping_blocked;
+}
+
+ActionMotionInvocationResult resolve_cleanup_state(
+    const std::vector<CombatantStdActionRow>& rows,
+    const ActionMotionInvocationRequest& request) {
+    ActionMotionInvocationResult result;
+    result.callback_state_before = request.callback_state;
+    if (!request.instruction_flags_0xec.has_value()) {
+        result.status = ActionMotionInvocationStatus::MissingInput;
+        result.decision = ActionMotionInvocationDecisionKind::Wait;
+        result.callback_state_after = request.callback_state;
+        result.provenance =
+            "FUN_8001B1B0 state 12/17 cleanup requires live IW+0xEC";
+        return result;
+    }
+
+    std::uint32_t flags_0xec = *request.instruction_flags_0xec;
+    if ((flags_0xec & 0x00080000u) != 0) {
+        flags_0xec &= ~0x00080000u;
+    }
+    result.instruction_flags_0xec_after = flags_0xec;
+
+    if ((flags_0xec & 0x00040000u) == 0) {
+        result.instruction_flags_0xf0_after =
+            request.instruction_flags_0xf0 | 0x00000010u;
+        const auto phase_returns_five =
+            cleanup_phase_returns_five(request);
+        if (phase_returns_five.value_or(false)
+            || !cleanup_mode_retains_mode_2_motion(
+                request.instruction_mode)) {
+            result.status = ActionMotionInvocationStatus::Matched;
+            result.decision = ActionMotionInvocationDecisionKind::Release;
+            result.callback_state_after = 13;
+            result.provenance = phase_returns_five.value_or(false)
+                ? "FUN_8001B1B0 state 12/17 cleanup observed "
+                  "FUN_80012160 result 5 and entered terminal state 13"
+                : "FUN_8001B1B0 state 12/17 cleanup observed an "
+                  "instruction mode outside FUN_8001EB6C's "
+                  "{4,5,8,15,24} set and entered terminal state 13";
+            return result;
+        }
+        if (!phase_returns_five.has_value()) {
+            result.status = ActionMotionInvocationStatus::MissingInput;
+            result.decision = ActionMotionInvocationDecisionKind::Wait;
+            result.callback_state_after = request.callback_state;
+            result.provenance =
+                "FUN_8001B1B0 state 12/17 cleanup requires the modeled "
+                "FUN_80012160 result when turn phase 7 is active";
+            return result;
+        }
+
+        result.cleanup_runtime_word_0x134_set = true;
+        if (request.callback_state == 12) {
+            result.status = ActionMotionInvocationStatus::Matched;
+            result.decision = ActionMotionInvocationDecisionKind::Release;
+            result.callback_state_after = 14;
+            result.provenance =
+                "FUN_8001B1B0 state 12 cleanup retained a mode-2 motion "
+                "and entered terminal state 14";
+            return result;
+        }
+    } else {
+        result.instruction_flags_0xec_after = flags_0xec | 0x00000010u;
+    }
+
+    result = invoke_resolver(
+        rows,
+        request,
+        2,
+        std::nullopt,
+        "FUN_8001B1B0.state12_or_17.same_visit_state15.mode2");
+    result.instruction_flags_0xec_after =
+        (flags_0xec & 0x00040000u) != 0
+        ? std::optional<std::uint32_t>{flags_0xec | 0x00000010u}
+        : std::optional<std::uint32_t>{flags_0xec};
+    if ((flags_0xec & 0x00040000u) == 0) {
+        result.instruction_flags_0xf0_after =
+            request.instruction_flags_0xf0 | 0x00000010u;
+        result.cleanup_runtime_word_0x134_set = true;
+    }
+    if (result.resolver.code != ActionMotionResolverCode::NoChange) {
+        set_install(
+            result,
+            7,
+            ActionMotionPlaybackContinuation::State7LoadLookedUpTo14,
+            "FUN_8001B1B0.state12_or_17.same_visit_state15.install_mode2");
+    } else {
+        result.decision = ActionMotionInvocationDecisionKind::Release;
+        result.callback_state_after = 14;
+    }
+    result.provenance +=
+        "FUN_8001B1B0 state 12/17 cleanup entered state 15 and executed "
+        "its mode-2 resolver in the same callback visit; ";
+    return result;
+}
+
 ActionMotionInvocationResult resolve_basic_callback(
     const std::vector<CombatantStdActionRow>& rows,
     const ActionMotionInvocationRequest& request) {
@@ -106,22 +227,79 @@ ActionMotionInvocationResult resolve_basic_callback(
     ActionMotionInvocationStatus entry_status = ActionMotionInvocationStatus::Matched;
     std::string entry_provenance;
 
-    if (effective.callback_state <= 2) {
+    if (effective.callback_state <= 1) {
+        ActionMotionInvocationResult initial;
+        initial.callback_state_before = request.callback_state;
+        if (effective.callback_state == 0) {
+            if (!effective.instruction_flags_0xec.has_value()) {
+                initial.status = ActionMotionInvocationStatus::MissingInput;
+                initial.decision = ActionMotionInvocationDecisionKind::Wait;
+                initial.callback_state_after = 0;
+                initial.provenance =
+                    "FUN_8001B1B0 state 0 requires live IW+0xEC for "
+                    "its reset writes";
+                return initial;
+            }
+            const auto flags_0xec = *effective.instruction_flags_0xec;
+            initial.instruction_flags_0xec_after =
+                flags_0xec & ~0x00000010u;
+            initial.instruction_flags_0xf0_after =
+                (effective.instruction_flags_0xf0 & 0xefffffbfu)
+                & ~0x00000010u;
+        }
+        if (effective.callback_ready.has_value() && !*effective.callback_ready) {
+            initial.status = ActionMotionInvocationStatus::Matched;
+            initial.decision = ActionMotionInvocationDecisionKind::Wait;
+            initial.callback_state_after = 1;
+            initial.provenance =
+                "FUN_8001B1B0 state 0/1 readiness predicates retained "
+                "callback state 1";
+            return initial;
+        }
+
+        const bool can_fall_through_state_2 =
+            effective.instruction_mode == 2
+            || effective.instruction_mode == 7
+            || effective.turn_phase_mapping_blocked.value_or(false);
+        if (!can_fall_through_state_2) {
+            initial.status =
+                effective.turn_phase_mapping_blocked.has_value()
+                ? ActionMotionInvocationStatus::Matched
+                : ActionMotionInvocationStatus::Provisional;
+            initial.decision = ActionMotionInvocationDecisionKind::Wait;
+            initial.callback_state_after = 2;
+            initial.provenance =
+                "FUN_8001B1B0 state 0/1 published state 2 and stopped "
+                "before the state-3 resolver on the captured normal "
+                "instruction-mode path";
+            return initial;
+        }
+
+        effective.callback_state = 2;
+        if (!effective.callback_ready.has_value()) {
+            entry_status = ActionMotionInvocationStatus::Provisional;
+            entry_provenance =
+                "state-1 readiness predicates are not yet modeled; "
+                "the mode-2/7 state-2 fallthrough was used provisionally; ";
+        }
+    }
+    if (effective.callback_state == 2) {
         if (effective.callback_ready.has_value() && !*effective.callback_ready) {
             ActionMotionInvocationResult waiting;
             waiting.status = ActionMotionInvocationStatus::Matched;
             waiting.decision = ActionMotionInvocationDecisionKind::Wait;
             waiting.callback_state_before = request.callback_state;
-            waiting.callback_state_after = request.callback_state;
+            waiting.callback_state_after = 2;
             waiting.provenance =
-                "FUN_8001B1B0 readiness predicates retained the pre-dispatch callback state";
+                "FUN_8001B1B0 state 2 readiness predicate retained state 2";
             return waiting;
         }
         effective.callback_state = 3;
         if (!effective.callback_ready.has_value()) {
             entry_status = ActionMotionInvocationStatus::Provisional;
             entry_provenance =
-                "initial readiness predicates are not yet modeled; the validated state-3 resolver boundary was used provisionally; ";
+                "state-2 readiness is not yet modeled; the validated "
+                "state-3 resolver boundary was used provisionally; ";
         }
     }
 
@@ -138,7 +316,30 @@ ActionMotionInvocationResult resolve_basic_callback(
                 "action-view record owned IW+0xF0 bit 0x02000000";
             break;
         }
-        const bool mode3_route = effective.basic_uses_mode_3_route.value_or(false);
+        if (!effective.basic_setup_route.has_value()
+            || *effective.basic_setup_route == ActionMotionSetupRoute::Unknown) {
+            result.status = ActionMotionInvocationStatus::MissingInput;
+            result.decision = ActionMotionInvocationDecisionKind::Wait;
+            result.callback_state_before = 3;
+            result.callback_state_after = 3;
+            result.provenance =
+                "FUN_8001B1B0 state 3 requires the typed FUN_8001FABC setup "
+                "route; missing input cannot select a concrete resolver branch";
+            break;
+        }
+        if (*effective.basic_setup_route
+            == ActionMotionSetupRoute::State8Bypass) {
+            result.status = ActionMotionInvocationStatus::Matched;
+            result.decision = ActionMotionInvocationDecisionKind::Wait;
+            result.callback_state_before = 3;
+            result.callback_state_after = 8;
+            result.provenance =
+                "FUN_8001B1B0 state 3 readiness/status predicate bypassed "
+                "FUN_8001FABC and entered callback state 8";
+            break;
+        }
+        const bool mode3_route = *effective.basic_setup_route
+            == ActionMotionSetupRoute::Mode3Resolver;
         result = invoke_resolver(
             rows,
             effective,
@@ -147,11 +348,6 @@ ActionMotionInvocationResult resolve_basic_callback(
                         : effective.instruction_subtype,
             mode3_route ? "FUN_8001B1B0.state3.mode3"
                         : "FUN_8001B1B0.state3.current_mode");
-        if (!effective.basic_uses_mode_3_route.has_value()) {
-            lower_status(ActionMotionInvocationStatus::Provisional, result.status);
-            result.provenance +=
-                "FUN_8001FABC route result is unavailable; current-mode route selected provisionally; ";
-        }
         if (result.resolver.code == ActionMotionResolverCode::InstallPlayback) {
             set_install(
                 result,
@@ -301,12 +497,17 @@ ActionMotionInvocationResult resolve_basic_callback(
             "FUN_8001B1B0 state 10 set IW+0xF0 bit 0x10000000, published auxiliary commands, and entered state 11";
         break;
     case 11: {
-        const int motion_result = effective.post_motion_result.value_or(2);
         if (!effective.post_motion_result.has_value()) {
-            entry_status = ActionMotionInvocationStatus::Provisional;
-            entry_provenance +=
-                "post-motion result is not yet produced by the frame runtime and result 2 was used provisionally; ";
+            result.status = ActionMotionInvocationStatus::MissingInput;
+            result.decision = ActionMotionInvocationDecisionKind::Wait;
+            result.callback_state_before = 11;
+            result.callback_state_after = 11;
+            result.provenance =
+                "FUN_8001B1B0 state 11 requires the ordered FUN_8001E910 "
+                "result from the same persistent callback visit";
+            return result;
         }
+        const int motion_result = *effective.post_motion_result;
         if (motion_result != 2) {
             result.status = entry_status;
             result.decision = motion_result == 1
@@ -341,12 +542,7 @@ ActionMotionInvocationResult resolve_basic_callback(
     }
     case 12:
     case 17:
-        result.status = ActionMotionInvocationStatus::Provisional;
-        result.decision = ActionMotionInvocationDecisionKind::Restore;
-        result.callback_state_before = effective.callback_state;
-        result.callback_state_after = 15;
-        result.provenance =
-            "FUN_8001B1B0 cleanup prerequisites are not fully modeled; the observed final mode-2 resolver state was staged provisionally";
+        result = resolve_cleanup_state(rows, effective);
         break;
     case 15:
         result = invoke_resolver(
@@ -733,6 +929,139 @@ ActionMotionInvocationResult resolve_action_motion_invocation(
     }
 }
 
+ActionMotionSelectorResult resolve_action_motion_selector_8001e910(
+    const ActionMotionSelectorRequest& request) {
+    constexpr std::uint32_t kInstructionComplete = 0x00010000u;
+    constexpr std::uint32_t kRowImmediateResult = 0x08000000u;
+    constexpr std::uint32_t kRowResultTwo = 0x02000000u;
+    constexpr std::uint32_t kRowMovementEnabled = 0x01000000u;
+    constexpr std::uint32_t kInstructionMovementEnabled = 0x20000000u;
+
+    ActionMotionSelectorResult result;
+    result.status = ActionMotionInvocationStatus::Matched;
+
+    if (request.instruction_mode == 0x15
+        || request.instruction_mode == 0x16) {
+        result.branch = ActionMotionSelectorBranch::TimedMode;
+        if (!request.timed_mode_counter_0x1f8.has_value()) {
+            result.status = ActionMotionInvocationStatus::MissingInput;
+            result.provenance =
+                "FUN_8001E910 modes 0x15/0x16 require the live IW+0x1F8 "
+                "countdown";
+            return result;
+        }
+        const auto counter = *request.timed_mode_counter_0x1f8;
+        if (counter == 0) {
+            result.next_timed_mode_counter_0x1f8 = 100;
+            result.result = 0;
+        } else {
+            const auto next = static_cast<std::int16_t>(counter - 1);
+            result.next_timed_mode_counter_0x1f8 = next;
+            result.result = next == 0 ? 1 : 0;
+        }
+        result.provenance =
+            "FUN_8001E910 applied the exact modes 0x15/0x16 IW+0x1F8 "
+            "countdown branch";
+        return result;
+    }
+
+    if (request.instruction_mode == 0x10
+        || request.instruction_mode == 0x17) {
+        result.branch = ActionMotionSelectorBranch::ReadinessMode;
+        if (!request.readiness_result.has_value()) {
+            result.status = ActionMotionInvocationStatus::MissingInput;
+            result.provenance =
+                "FUN_8001E910 modes 0x10/0x17 require the current "
+                "FUN_8006D1C4 readiness result";
+            return result;
+        }
+        result.result =
+            *request.readiness_result && request.motion_complete_0x70 != 0
+            ? 1
+            : 0;
+        result.provenance =
+            "FUN_8001E910 applied the exact readiness and IW+0x70 branch";
+        return result;
+    }
+
+    result.step = request.instruction_mode == 0x13
+        ? ActionMotionSelectorStepKind::HalfRate
+        : ActionMotionSelectorStepKind::FullRate;
+
+    if ((request.instruction_flags_0x50 & kInstructionComplete) != 0) {
+        result.branch =
+            ActionMotionSelectorBranch::InstructionFlagComplete;
+        result.step = ActionMotionSelectorStepKind::None;
+        result.result = 1;
+        result.provenance =
+            "FUN_8001E910 returned 1 from IW+0x50 bit 0x00010000";
+        return result;
+    }
+    if (!request.selected_action_row_flags.has_value()) {
+        result.status = ActionMotionInvocationStatus::MissingInput;
+        result.branch = ActionMotionSelectorBranch::Unknown;
+        result.step = ActionMotionSelectorStepKind::None;
+        result.provenance =
+            "FUN_8001E910 requires the selected action-row flags";
+        return result;
+    }
+
+    const auto row_flags = *request.selected_action_row_flags;
+    if (request.motion_complete_0x70 != 0) {
+        if ((row_flags & kRowImmediateResult) != 0) {
+            result.branch =
+                ActionMotionSelectorBranch::RowImmediateResult;
+            result.step = ActionMotionSelectorStepKind::None;
+            result.result =
+                (row_flags & kRowResultTwo) != 0 ? 2 : 1;
+            result.provenance =
+                "FUN_8001E910 returned the row-bit-derived result while "
+                "IW+0x70 was nonzero";
+            return result;
+        }
+        if ((row_flags & kRowMovementEnabled) == 0
+            && (request.instruction_flags_0xf0
+                & kInstructionMovementEnabled) == 0) {
+            result.branch =
+                ActionMotionSelectorBranch::PrimaryMovementSkipped;
+            result.step = ActionMotionSelectorStepKind::None;
+            result.result = 1;
+            result.provenance =
+                "FUN_8001E910 returned 1 because the primary movement "
+                "branch was disabled by row and IW+0xF0 flags";
+            return result;
+        }
+        result.branch = ActionMotionSelectorBranch::PrimaryMovement;
+    } else {
+        if ((row_flags & kRowMovementEnabled) == 0) {
+            result.branch =
+                ActionMotionSelectorBranch::SecondaryMovementSkipped;
+            result.step = ActionMotionSelectorStepKind::None;
+            result.result = 0;
+            result.provenance =
+                "FUN_8001E910 returned 0 because IW+0x70 and the secondary "
+                "movement row bit were both clear";
+            return result;
+        }
+        result.branch = ActionMotionSelectorBranch::SecondaryMovement;
+    }
+
+    if (!request.movement_reached_target.has_value()) {
+        result.status = ActionMotionInvocationStatus::MissingInput;
+        result.provenance =
+            "FUN_8001E910 selected the movement primitive but its ordered "
+            "completion result is unavailable";
+        return result;
+    }
+    result.result = *request.movement_reached_target
+        ? ((row_flags & kRowResultTwo) != 0 ? 2 : 1)
+        : 0;
+    result.provenance =
+        "FUN_8001E910 mapped the ordered moveCombatantIncrement_80061340 "
+        "result through the selected row result bit";
+    return result;
+}
+
 const char* action_motion_invocation_status_name(ActionMotionInvocationStatus status) {
     switch (status) {
     case ActionMotionInvocationStatus::Matched: return "Matched";
@@ -750,6 +1079,51 @@ const char* action_motion_resolver_code_name(ActionMotionResolverCode code) {
     case ActionMotionResolverCode::InstallPlayback: return "InstallPlayback";
     }
     return "NoChange";
+}
+
+const char* action_motion_setup_route_name(ActionMotionSetupRoute route) {
+    switch (route) {
+    case ActionMotionSetupRoute::Unknown: return "Unknown";
+    case ActionMotionSetupRoute::State8Bypass: return "State8Bypass";
+    case ActionMotionSetupRoute::CurrentModeResolver:
+        return "CurrentModeResolver";
+    case ActionMotionSetupRoute::Mode3Resolver: return "Mode3Resolver";
+    }
+    return "Unknown";
+}
+
+const char* action_motion_selector_branch_name(
+    ActionMotionSelectorBranch branch) {
+    switch (branch) {
+    case ActionMotionSelectorBranch::Unknown: return "Unknown";
+    case ActionMotionSelectorBranch::TimedMode: return "TimedMode";
+    case ActionMotionSelectorBranch::ReadinessMode: return "ReadinessMode";
+    case ActionMotionSelectorBranch::InstructionFlagComplete:
+        return "InstructionFlagComplete";
+    case ActionMotionSelectorBranch::MotionIncompleteSkip:
+        return "MotionIncompleteSkip";
+    case ActionMotionSelectorBranch::RowImmediateResult:
+        return "RowImmediateResult";
+    case ActionMotionSelectorBranch::PrimaryMovementSkipped:
+        return "PrimaryMovementSkipped";
+    case ActionMotionSelectorBranch::PrimaryMovement:
+        return "PrimaryMovement";
+    case ActionMotionSelectorBranch::SecondaryMovementSkipped:
+        return "SecondaryMovementSkipped";
+    case ActionMotionSelectorBranch::SecondaryMovement:
+        return "SecondaryMovement";
+    }
+    return "Unknown";
+}
+
+const char* action_motion_selector_step_name(
+    ActionMotionSelectorStepKind step) {
+    switch (step) {
+    case ActionMotionSelectorStepKind::None: return "None";
+    case ActionMotionSelectorStepKind::FullRate: return "FullRate";
+    case ActionMotionSelectorStepKind::HalfRate: return "HalfRate";
+    }
+    return "None";
 }
 
 const char* action_motion_callback_family_name(

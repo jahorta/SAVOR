@@ -35,10 +35,13 @@
     <ClCompile Include="..\SavorPredict\CombatantAuxiliaryPublicationModel.cpp" />
     <ClCompile Include="..\SavorPredict\ActionMotionPlaybackModel.cpp" />
     <ClCompile Include="..\SavorPredict\ActionMotionInvocationModel.cpp" />
+    <ClCompile Include="..\SavorPredict\ActionMotionSetupDecisionModel.cpp" />
     <ClCompile Include="..\SavorPredict\ActionMotionTargetModel.cpp" />
     <ClCompile Include="test_action_motion_playback.cpp" />
     <ClCompile Include="test_action_motion_invocation.cpp" />
+    <ClCompile Include="test_action_motion_setup_decision.cpp" />
     <ClCompile Include="..\SavorPredict\BattleMovementPathModel.cpp" />
+    <ClCompile Include="..\SavorPredict\BattlePursuitCoordinationModel.cpp" />
     <ClCompile Include="..\SavorPredict\BattleCollisionBoxModel.cpp" />
     <ClCompile Include="..\SavorPredict\BattleTargetReactionStateModel.cpp" />
     <ClCompile Include="..\SavorPredict\DirectInstructionTransitionSelectorModel.cpp" />
@@ -95,6 +98,7 @@
     <ClCompile Include="test_battle_frame_thread_list.cpp" />
     <ClCompile Include="test_battle_movement_path.cpp" />
     <ClCompile Include="test_battle_movement_invocation.cpp" />
+    <ClCompile Include="test_battle_pursuit_coordination.cpp" />
     <ClCompile Include="test_battle_target_reaction_and_collision.cpp" />
     <ClCompile Include="test_battle_source_model.cpp" />
     <ClCompile Include="test_combatant_visual_dispatcher.cpp" />
@@ -157,6 +161,7 @@
     <ClInclude Include="..\SavorPredict\QueuedInstructionParamModel.h" />
     <ClInclude Include="..\SavorPredict\BattleMovementInvocationModel.h" />
     <ClInclude Include="..\SavorPredict\BattleMovementPathModel.h" />
+    <ClInclude Include="..\SavorPredict\BattlePursuitCoordinationModel.h" />
     <ClInclude Include="..\SavorPredict\CombatantVisualDispatcherModel.h" />
     <ClInclude Include="..\SavorPredict\CombatantAuxiliaryPublicationModel.h" />
   </ItemGroup>

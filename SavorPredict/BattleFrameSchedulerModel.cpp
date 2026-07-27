@@ -22,6 +22,31 @@ namespace {
 constexpr std::uint32_t kActionViewMode11InstructionGate = 0x02000000u;
 constexpr std::uint32_t kActionViewRoleReversalFlag = 0x00000004u;
 
+struct BattleFrameCombatantInstructionVisitResult {
+    std::vector<BattleFrameStepEvent> events;
+    bool motion_selector_invoked = false;
+    std::optional<int> post_motion_result;
+};
+
+BattleFrameCombatantInstructionVisitResult advance_combatant_instruction(
+    BattleFrameRuntime& runtime,
+    int slot,
+    bool motion_selector_invoked);
+
+void append_recorded_event(
+    BattleFrameRuntime& runtime,
+    BattleFrameRunResult& result,
+    BattleFrameStepEvent event);
+
+void append_combatant_instruction_visit(
+    BattleFrameRuntime& runtime,
+    BattleFrameRunResult& result,
+    BattleFrameCombatantInstructionVisitResult visit) {
+    for (auto& event : visit.events) {
+        append_recorded_event(runtime, result, std::move(event));
+    }
+}
+
 bool has_active_thread_for_slot(
     const BattleFrameRuntime& runtime,
     BattleFrameThreadNodeKind kind,
@@ -149,6 +174,20 @@ BattleFrameEventStatus frame_event_status(ActionMotionInvocationStatus status) {
     return BattleFrameEventStatus::Unsupported;
 }
 
+BattleFrameEventStatus frame_event_status(ActionMotionSetupStatus status) {
+    switch (status) {
+    case ActionMotionSetupStatus::Matched:
+        return BattleFrameEventStatus::Matched;
+    case ActionMotionSetupStatus::Provisional:
+        return BattleFrameEventStatus::Provisional;
+    case ActionMotionSetupStatus::MissingInput:
+        return BattleFrameEventStatus::MissingInput;
+    case ActionMotionSetupStatus::Unsupported:
+        return BattleFrameEventStatus::Unsupported;
+    }
+    return BattleFrameEventStatus::Unsupported;
+}
+
 BattleFrameEventStatus frame_event_status(BattleTargetReactionStatus status) {
     switch (status) {
     case BattleTargetReactionStatus::Matched:
@@ -189,6 +228,21 @@ BattleFrameEventStatus frame_event_status(BattleCollisionModelStatus status) {
     case BattleCollisionModelStatus::MissingInput:
         return BattleFrameEventStatus::MissingInput;
     case BattleCollisionModelStatus::Unsupported:
+        return BattleFrameEventStatus::Unsupported;
+    }
+    return BattleFrameEventStatus::Unsupported;
+}
+
+BattleFrameEventStatus frame_event_status(
+    BattlePursuitCoordinationStatus status) {
+    switch (status) {
+    case BattlePursuitCoordinationStatus::Matched:
+        return BattleFrameEventStatus::Matched;
+    case BattlePursuitCoordinationStatus::Provisional:
+        return BattleFrameEventStatus::Provisional;
+    case BattlePursuitCoordinationStatus::MissingInput:
+        return BattleFrameEventStatus::MissingInput;
+    case BattlePursuitCoordinationStatus::Unsupported:
         return BattleFrameEventStatus::Unsupported;
     }
     return BattleFrameEventStatus::Unsupported;
@@ -495,6 +549,29 @@ void add_passive_cleanup_step(BattleFrameWorker& worker) {
         0,
         "passive_cleanup_80080438",
         "helper_pc=0x80080438; clears participant bit and stages cleanup");
+}
+
+void add_pursuit_coordination_steps(BattleFrameWorker& worker) {
+    add_step(
+        worker,
+        BattleFrameWorkerStepKind::PursuitCoordinationState2,
+        0x8008D7A8u,
+        0x80081168u,
+        std::nullopt,
+        BattleFrameActionMode::Standing,
+        2,
+        "pursuit_coordination_state2_8008d6b4",
+        "FUN_8008D6B4 state 2 compares participant +0x50/+0x51 fields and may publish queued state 0x11");
+    add_step(
+        worker,
+        BattleFrameWorkerStepKind::PursuitInstructionState3Poll,
+        0x8008D8E8u,
+        0x8007FFE8u,
+        std::nullopt,
+        BattleFrameActionMode::Standing,
+        3,
+        "pursuit_instruction_state3_poll_8007ffe8",
+        "FUN_8008D6B4 state 3 polls queued +0x09 and the current instruction mode once per owner movement-thread visit");
 }
 
 void add_no_commit_step(BattleFrameWorker& worker, std::string detail) {
@@ -1111,6 +1188,7 @@ void build_static_worker_program(BattleFrameWorker& worker) {
             add_combatant_instruction_steps(worker);
             add_grid_refresh_step(worker);
             add_next_leg_decision_step(worker);
+            add_pursuit_coordination_steps(worker);
             add_passive_cleanup_step(worker);
         } else if (worker.controller_family == BattleMovementControllerFamily::AmbientFormation) {
             worker.path_selection_policy =
@@ -1285,6 +1363,77 @@ std::optional<std::size_t> passive_cleanup_step_index(
     }
     return static_cast<std::size_t>(
         std::distance(worker.program_steps.begin(), cleanup));
+}
+
+std::optional<std::size_t> pursuit_coordination_step_index(
+    const BattleFrameWorker& worker) {
+    const auto step = std::find_if(
+        worker.program_steps.begin(),
+        worker.program_steps.end(),
+        [](const BattleFrameWorkerProgramStep& candidate) {
+            return candidate.kind
+                == BattleFrameWorkerStepKind::PursuitCoordinationState2;
+        });
+    if (step == worker.program_steps.end()) {
+        return std::nullopt;
+    }
+    return static_cast<std::size_t>(
+        std::distance(worker.program_steps.begin(), step));
+}
+
+BattleFramePursuitLifecycleRuntime* pursuit_lifecycle_for_owner(
+    BattleFrameRuntime& runtime,
+    int owner_slot) {
+    if (owner_slot < 0
+        || owner_slot >= static_cast<int>(runtime.pursuit_lifecycles.size())) {
+        return nullptr;
+    }
+    auto& lifecycle =
+        runtime.pursuit_lifecycles[static_cast<std::size_t>(owner_slot)];
+    return lifecycle.active ? &lifecycle : nullptr;
+}
+
+const BattleFramePursuitLifecycleRuntime* pursuit_lifecycle_for_owner(
+    const BattleFrameRuntime& runtime,
+    int owner_slot) {
+    if (owner_slot < 0
+        || owner_slot >= static_cast<int>(runtime.pursuit_lifecycles.size())) {
+        return nullptr;
+    }
+    const auto& lifecycle =
+        runtime.pursuit_lifecycles[static_cast<std::size_t>(owner_slot)];
+    return lifecycle.active ? &lifecycle : nullptr;
+}
+
+bool slot_has_active_pursuit_worker(
+    const BattleFrameRuntime& runtime,
+    int slot,
+    int excluded_queue_sequence) {
+    return std::any_of(
+        runtime.workers.begin(),
+        runtime.workers.end(),
+        [slot, excluded_queue_sequence](const BattleFrameWorker& candidate) {
+            return candidate.slot == slot
+                && candidate.queue_sequence != excluded_queue_sequence
+                && !candidate.complete
+                && candidate.controller_family
+                    == BattleMovementControllerFamily::AmbientPursuit;
+        });
+}
+
+int movement_thread_node_id_for_slot(
+    const BattleFrameRuntime& runtime,
+    int slot) {
+    const auto threads = active_battle_frame_threads(
+        runtime.thread_list,
+        BattleFrameThreadNodeKind::MovementController);
+    const auto found = std::find_if(
+        threads.begin(),
+        threads.end(),
+        [slot](const BattleFrameThreadNode* node) {
+            return node != nullptr && node->owner_slot == slot;
+        });
+    return found == threads.end() ? -1 : (*found)->node_id;
 }
 
 float xz_distance(const BattleFrameVec3& a, const BattleFrameVec3& b) {
@@ -2286,8 +2435,16 @@ bool has_active_visual_task(const BattleFrameRuntime& runtime) {
     return std::any_of(
         runtime.visual.action_motion_playbacks.begin(),
         runtime.visual.action_motion_playbacks.end(),
-        [](const ActionMotionPlaybackRuntime& playback) {
-            return action_motion_playback_blocks_publication(playback);
+        [&runtime](const ActionMotionPlaybackRuntime& playback) {
+            if (!action_motion_playback_blocks_publication(playback)) {
+                return false;
+            }
+            const auto* combatant =
+                find_frame_combatant(runtime.state, playback.slot);
+            return combatant == nullptr
+                || combatant->visual_instruction_revision == 0
+                || combatant->visual_instruction_revision
+                    == playback.instruction_state_revision;
         });
 }
 
@@ -2297,9 +2454,16 @@ bool has_action_visual_barrier(
     const bool active_playback = std::any_of(
         runtime.visual.action_motion_playbacks.begin(),
         runtime.visual.action_motion_playbacks.end(),
-        [action_ordinal](const ActionMotionPlaybackRuntime& playback) {
+        [&runtime, action_ordinal](
+            const ActionMotionPlaybackRuntime& playback) {
+            const auto* combatant =
+                find_frame_combatant(runtime.state, playback.slot);
             return playback.action_ordinal == action_ordinal
-                && action_motion_playback_blocks_publication(playback);
+                && action_motion_playback_blocks_publication(playback)
+                && (combatant == nullptr
+                    || combatant->visual_instruction_revision == 0
+                    || combatant->visual_instruction_revision
+                        == playback.instruction_state_revision);
         });
     if (active_playback) {
         return true;
@@ -3026,8 +3190,40 @@ bool visit_action_motion_playback_for_slot(
         return true;
     }
 
-    const auto phase_before = playback.phase;
     auto* combatant = find_frame_combatant(runtime.state, slot);
+    if (combatant != nullptr
+        && combatant->visual_instruction_revision != 0
+        && combatant->visual_instruction_revision
+            != playback.instruction_state_revision) {
+        const auto retired = playback;
+        playback = {};
+        auto event = make_visual_event(
+            runtime,
+            nullptr,
+            BattleFrameWorkerStepKind::ActionMotionPublicationRelease,
+            "InstructionRevisionReplacement",
+            BattleFrameEventStatus::Matched,
+            "playback_owner_revision="
+                + std::to_string(retired.instruction_state_revision)
+                + "; current_instruction_revision="
+                + std::to_string(combatant->visual_instruction_revision)
+                + "; selected_action_row="
+                + std::to_string(retired.selected_action_row_index)
+                + "; playback_retired=revision_superseded"
+                + "; callback_continuation_applied=0; draws=0"
+                + "; provenance=action-motion playback cannot block or "
+                  "advance a later combatant-instruction revision");
+        event.action_ordinal = retired.action_ordinal;
+        event.slot = slot;
+        event.target_slot = combatant->instruction_target_slot_0x4;
+        event.action_motion_playback_phase_before = retired.phase;
+        event.action_motion_playback_phase_after =
+            ActionMotionPlaybackPhase::Inactive;
+        append_recorded_event(runtime, result, std::move(event));
+        return true;
+    }
+
+    const auto phase_before = playback.phase;
     ActionMotionPlaybackVisitInput visit_input;
     if (phase_before == ActionMotionPlaybackPhase::State6Satisfied) {
         visit_input.post_state6_delay = resolve_action_motion_post_state6_delay(
@@ -3039,6 +3235,10 @@ bool visit_action_motion_playback_for_slot(
     bool release_auxiliary_publication = false;
     if (combatant != nullptr) {
         combatant->instruction_flags_0xec = visited.flags_after;
+        if (visited.renderer_advanced
+            && visited.progress_after == 0x3f800000u) {
+            combatant->instruction_motion_complete_0x70 = 1;
+        }
     }
     if (visited.publication_released_this_visit
         && slot < static_cast<int>(
@@ -3047,7 +3247,9 @@ bool visit_action_motion_playback_for_slot(
             runtime.visual.persistent_instruction_callbacks[
             static_cast<std::size_t>(slot)];
         if (callback_runtime.installed
-            && callback_runtime.action_ordinal == playback.action_ordinal) {
+            && callback_runtime.action_ordinal == playback.action_ordinal
+            && callback_runtime.instruction_state_revision
+                == playback.instruction_state_revision) {
             switch (playback.continuation) {
             case ActionMotionPlaybackContinuation::State5LoadLookedUpTo4:
                 callback_runtime.callback_state = 4;
@@ -3174,35 +3376,321 @@ bool visit_action_motion_playback_for_slot(
     return !action_motion_playback_blocks_publication(playback);
 }
 
-bool visit_persistent_instruction_callback_for_slot(
+std::optional<CombatantStdActionRow> selected_action_row_for_setup(
+    const BattleFrameCombatantState& combatant,
+    const BattleFramePersistentInstructionCallbackRuntime& invocation) {
+    if (invocation.current_instruction_row.has_value()) {
+        return invocation.current_instruction_row;
+    }
+    if (!combatant.selected_action_row_known) {
+        return std::nullopt;
+    }
+    return CombatantStdActionRow{
+        .index = combatant.selected_action_row_index,
+        .action_id = combatant.selected_action_row_action_id,
+        .callback_index = combatant.selected_action_row_callback_index,
+        .callback_ordinal = combatant.selected_action_row_callback_ordinal,
+        .flags = combatant.selected_action_row_flags,
+        .transition_gate_divisor_bits =
+            combatant.selected_action_row_duration_bits,
+    };
+}
+
+ActionMotionSetupResult model_action_motion_setup_for_runtime(
+    const BattleFrameRuntime& runtime,
+    const BattleFrameCombatantState& combatant,
+    const BattleFramePersistentInstructionCallbackRuntime& invocation) {
+    const auto* target = find_frame_combatant(
+        runtime.state, combatant.instruction_target_slot_0x4);
+    const auto* secondary_target = find_frame_combatant(
+        runtime.state, combatant.instruction_secondary_target_slot_0x48);
+    const auto* slot_zero = find_frame_combatant(runtime.state, 0);
+    std::optional<std::uint8_t> turn_phase;
+    if (runtime.active_action.has_value()
+        && runtime.active_action->action_ordinal == invocation.action_ordinal) {
+        turn_phase = runtime.active_action->completion_turn_phase;
+    }
+    return model_action_motion_setup_8001fabc(ActionMotionSetupInput{
+        .actor_slot = combatant.slot,
+        .target_slot = combatant.instruction_target_slot_0x4,
+        .instruction_mode = combatant.visual_instruction_mode_0x6,
+        .turn_phase = turn_phase,
+        .selected_row = selected_action_row_for_setup(combatant, invocation),
+        .instruction_flags_0xec = combatant.instruction_flags_0xec,
+        .instruction_flags_0xf0 = combatant.instruction_flags_0xf0,
+        .combatant_status_flag_0x400_set =
+            (combatant.status_flags & 0x00000400u) != 0,
+        .current_position = combatant.combatant_cur_pos_0x1c,
+        .own_pos_holder = combatant.pos_holder,
+        .target_current_position =
+            target != nullptr && target->present
+            ? std::optional<BattleFrameVec3>{
+                target->combatant_cur_pos_0x1c}
+            : std::nullopt,
+        .secondary_target_current_position =
+            secondary_target != nullptr && secondary_target->present
+            ? std::optional<BattleFrameVec3>{
+                secondary_target->combatant_cur_pos_0x1c}
+            : std::nullopt,
+        .slot_zero_current_position =
+            slot_zero != nullptr && slot_zero->present
+            ? std::optional<BattleFrameVec3>{
+                slot_zero->combatant_cur_pos_0x1c}
+            : std::nullopt,
+        .current_facing_angle = combatant.combatant_facing_angle_0x2c,
+        .turn_speed_degrees = combatant.turn_speed_known
+            ? std::optional<float>{combatant.turn_speed_degrees_0x128}
+            : std::nullopt,
+        .motion_base_speed = combatant.motion_speeds_known
+            ? std::optional<float>{combatant.motion_base_speed_0x12c}
+            : std::nullopt,
+        .motion_alt_speed = combatant.motion_speeds_known
+            ? std::optional<float>{combatant.motion_alt_speed_0x130}
+            : std::nullopt,
+    });
+}
+
+void apply_action_motion_setup_operations(
+    BattleFrameCombatantState& combatant,
+    const ActionMotionSetupResult& setup,
+    ActionMotionSetupOperationStage stage) {
+    for (const auto& operation : setup.operations) {
+        if (operation.stage != stage) {
+            continue;
+        }
+        switch (operation.kind) {
+        case ActionMotionSetupOperationKind::PublishTarget:
+            combatant.pos_to_move_to_0x110 = operation.vector;
+            break;
+        case ActionMotionSetupOperationKind::PublishMoveIncrement:
+            combatant.move_increment_0x104 = operation.vector;
+            combatant.selected_motion_speed =
+                setup.selected_motion_speed.value_or(
+                    combatant.selected_motion_speed);
+            break;
+        case ActionMotionSetupOperationKind::PublishFacingAngle:
+            combatant.combatant_facing_angle_0x2c =
+                operation.facing_angle & 0xffffu;
+            combatant.last_written_facing_angle_0x2c =
+                combatant.combatant_facing_angle_0x2c;
+            break;
+        case ActionMotionSetupOperationKind::PublishTurnState:
+            combatant.turn_current_degrees_0x11c =
+                operation.turn_current_degrees;
+            combatant.turn_target_degrees_0x120 =
+                operation.turn_target_degrees;
+            combatant.turn_step_degrees_0x124 =
+                operation.turn_step_degrees;
+            combatant.turn_state_known = combatant.turn_speed_known;
+            break;
+        case ActionMotionSetupOperationKind::SetInstructionFlagsF0:
+            combatant.instruction_flags_0xf0 |= operation.flags_mask;
+            break;
+        case ActionMotionSetupOperationKind::ClearInstructionFlagsF0:
+            combatant.instruction_flags_0xf0 &= ~operation.flags_mask;
+            break;
+        }
+    }
+}
+
+std::string action_motion_setup_operations_detail(
+    const ActionMotionSetupResult& setup) {
+    std::ostringstream detail;
+    for (std::size_t i = 0; i < setup.operations.size(); ++i) {
+        if (i != 0) {
+            detail << ",";
+        }
+        detail
+            << action_motion_setup_operation_stage_name(
+                setup.operations[i].stage)
+            << ":"
+            << action_motion_setup_operation_kind_name(
+                setup.operations[i].kind);
+    }
+    return detail.str();
+}
+
+void record_action_motion_setup_result(
+    BattleFrameRuntime& runtime,
+    BattleFrameRunResult& result,
+    const BattleFramePersistentInstructionCallbackRuntime& invocation,
+    const BattleFrameCombatantState& combatant,
+    const ActionMotionSetupResult& setup,
+    std::uint32_t flags_before,
+    std::uint32_t facing_before) {
+    std::ostringstream detail;
+    detail << "setup_status="
+           << action_motion_setup_status_name(setup.status)
+           << "; setup_branch="
+           << action_motion_setup_branch_name(setup.branch)
+           << "; setup_route="
+           << action_motion_setup_route_name(setup.route)
+           << "; target_status="
+           << action_motion_target_status_name(setup.target.status)
+           << "; target_source="
+           << action_motion_target_source_name(setup.target.source)
+           << "; operation_order="
+           << action_motion_setup_operations_detail(setup)
+           << "; flags_f0=0x" << std::hex << flags_before
+           << "->0x" << combatant.instruction_flags_0xf0
+           << "; facing=0x" << facing_before
+           << "->0x" << combatant.combatant_facing_angle_0x2c
+           << std::dec
+           << "; draws=0; confidence=" << setup.confidence
+           << "; provenance=" << setup.provenance;
+    auto event = make_visual_event(
+        runtime,
+        nullptr,
+        BattleFrameWorkerStepKind::ActionMotionSetup_8001fabc,
+        "FUN_8001EE24_FUN_8001FABC",
+        frame_event_status(setup.status),
+        detail.str());
+    event.action_ordinal = invocation.action_ordinal;
+    event.slot = combatant.slot;
+    event.target_slot = combatant.instruction_target_slot_0x4;
+    event.action_motion_setup_event = true;
+    event.action_motion_setup_status = setup.status;
+    event.action_motion_setup_branch = setup.branch;
+    event.action_motion_setup_route = setup.route;
+    event.pos_to_move_to_0x110 = combatant.pos_to_move_to_0x110;
+    event.move_increment_0x104 = combatant.move_increment_0x104;
+    event.selected_motion_speed = combatant.selected_motion_speed;
+    event.old_combatant_facing_angle_0x2c = facing_before;
+    event.new_combatant_facing_angle_0x2c =
+        combatant.combatant_facing_angle_0x2c;
+    event.combatant_facing_angle_changed =
+        event.old_combatant_facing_angle_0x2c
+        != event.new_combatant_facing_angle_0x2c;
+    event.turn_current_degrees_0x11c =
+        combatant.turn_current_degrees_0x11c;
+    event.turn_target_degrees_0x120 =
+        combatant.turn_target_degrees_0x120;
+    event.turn_step_degrees_0x124 =
+        combatant.turn_step_degrees_0x124;
+    event.turn_speed_degrees_0x128 =
+        combatant.turn_speed_degrees_0x128;
+    event.turn_speed_bits_0x128 = combatant.turn_speed_bits_0x128;
+    append_recorded_event(runtime, result, std::move(event));
+}
+
+struct BattleFramePersistentInstructionVisitOutcome {
+    bool publication_allowed = true;
+    bool instruction_advanced = false;
+    bool motion_selector_invoked = false;
+    std::optional<int> post_motion_result;
+    std::optional<ActionMotionSelectorResult> motion_selector;
+};
+
+BattleFramePersistentInstructionVisitOutcome
+visit_persistent_instruction_callback_for_slot(
     BattleFrameRuntime& runtime,
     int slot,
     BattleFrameRunResult& result) {
     if (slot < 0
         || slot >= static_cast<int>(
             runtime.visual.persistent_instruction_callbacks.size())) {
-        return true;
+        return {};
     }
     auto& invocation = runtime.visual.persistent_instruction_callbacks[
         static_cast<std::size_t>(slot)];
     if (!invocation.installed || invocation.thread_state_0x19 != 1) {
-        return true;
+        return {};
     }
     auto* combatant = find_frame_combatant(runtime.state, slot);
     const auto* resource = visual_resource_for(runtime, slot);
     if (combatant == nullptr || resource == nullptr) {
         invocation.status = ActionMotionInvocationStatus::MissingInput;
-        return true;
+        return {};
     }
     if (invocation.instruction_state_revision
         != combatant->visual_instruction_revision) {
         invocation.status = ActionMotionInvocationStatus::Unsupported;
-        return true;
+        return {};
     }
 
+    BattleFramePersistentInstructionVisitOutcome outcome;
     const int callback_state_before = invocation.callback_state;
+    std::optional<ActionMotionSetupResult> setup_decision;
+    const std::uint32_t setup_flags_before = combatant->instruction_flags_0xf0;
+    const std::uint32_t setup_facing_before =
+        combatant->combatant_facing_angle_0x2c;
+    if (invocation.callback_family
+            == ActionMotionPersistentCallbackFamily::ActionMotionBasic_8001B1B0
+        && invocation.callback_state <= 3
+        && (combatant->instruction_flags_0xf0
+            & kActionViewMode11InstructionGate) == 0) {
+        setup_decision = model_action_motion_setup_for_runtime(
+            runtime, *combatant, invocation);
+        apply_action_motion_setup_operations(
+            *combatant,
+            *setup_decision,
+            ActionMotionSetupOperationStage::Setup);
+        apply_action_motion_setup_operations(
+            *combatant,
+            *setup_decision,
+            ActionMotionSetupOperationStage::BeforeResolver);
+        if (slot >= 0
+            && slot < static_cast<int>(
+                runtime.combatant_instructions.size())) {
+            auto& instruction = runtime.combatant_instructions[
+                static_cast<std::size_t>(slot)];
+            if (instruction.active
+                && instruction.action_ordinal == invocation.action_ordinal
+                && invocation.instruction_state_revision
+                    == combatant->visual_instruction_revision) {
+                instruction.action_motion_setup_evaluated = true;
+                instruction.action_motion_setup_instruction_state_revision =
+                    invocation.instruction_state_revision;
+                instruction.action_motion_setup_status =
+                    setup_decision->status;
+                instruction.action_motion_setup_branch =
+                    setup_decision->branch;
+                instruction.action_motion_setup_route =
+                    setup_decision->route;
+                instruction.action_motion_setup_applied =
+                    setup_decision->route != ActionMotionSetupRoute::Unknown
+                    && (setup_decision->status
+                            == ActionMotionSetupStatus::Matched
+                        || setup_decision->status
+                            == ActionMotionSetupStatus::Provisional);
+            }
+        }
+    }
     std::optional<bool> rotation_complete;
-    if (combatant->turn_state_known) {
+    if (invocation.callback_family
+            == ActionMotionPersistentCallbackFamily::ActionMotionBasic_8001B1B0
+        && invocation.callback_state == 4) {
+        auto rotation_event = make_visual_event(
+            runtime,
+            nullptr,
+            BattleFrameWorkerStepKind::
+                ActionMotionRotateStep_8001b630_80061114,
+            "FUN_8001B1B0_state4_FUN_80061114",
+            BattleFrameEventStatus::Matched,
+            "persistent callback state 4 executed its ordered rotation step");
+        rotation_event.action_ordinal = invocation.action_ordinal;
+        rotation_event.slot = slot;
+        rotation_event.target_slot =
+            combatant->instruction_target_slot_0x4;
+        rotation_event.step_pc = 0x8001b630u;
+        rotation_event.helper_pc = 0x80061114u;
+        rotation_event.combatant_state_available = true;
+        rotation_event.old_combatant_facing_angle_0x2c =
+            combatant->combatant_facing_angle_0x2c;
+        rotation_complete =
+            apply_rotation_8001b630(*combatant, rotation_event);
+        rotation_event.new_combatant_facing_angle_0x2c =
+            combatant->combatant_facing_angle_0x2c;
+        rotation_event.combatant_facing_angle_changed =
+            rotation_event.old_combatant_facing_angle_0x2c
+            != rotation_event.new_combatant_facing_angle_0x2c;
+        invocation.last_rotation_step_traversal_generation =
+            runtime.thread_list.traversal_generation;
+        invocation.last_rotation_step_valid = true;
+        invocation.last_rotation_reached_target = *rotation_complete;
+        append_recorded_event(
+            runtime, result, std::move(rotation_event));
+    } else if (combatant->turn_state_known) {
         rotation_complete =
             combatant->turn_current_degrees_0x11c
             == combatant->turn_target_degrees_0x120;
@@ -3220,18 +3708,115 @@ bool visit_persistent_instruction_callback_for_slot(
             state8_descriptor_delay = *delay.delay;
         }
     }
-    const auto decision = resolve_action_motion_invocation(
+
+    int callback_state_for_decision = invocation.callback_state;
+    bool auxiliary_publication_already_applied = false;
+    bool entered_state10_via_fallthrough = false;
+    if (invocation.callback_family
+        == ActionMotionPersistentCallbackFamily::ActionMotionBasic_8001B1B0) {
+        const bool state8_falls_through =
+            invocation.callback_state == 8
+            && state8_descriptor_delay.has_value()
+            && *state8_descriptor_delay == 0;
+        const bool state9_falls_through =
+            invocation.callback_state == 9
+            && invocation.state8_delay_remaining == 0;
+        const bool state10_entry = invocation.callback_state == 10;
+        if (state8_falls_through || state9_falls_through || state10_entry) {
+            entered_state10_via_fallthrough =
+                state8_falls_through || state9_falls_through;
+            auxiliary_publication_already_applied =
+                publish_state10_auxiliary_for_slot(
+                    runtime,
+                    slot,
+                    result,
+                    entered_state10_via_fallthrough
+                        ? "FUN_8001B1B0 state 8/9 reached zero delay and "
+                          "fell through state 10 in the same persistent "
+                          "callback visit"
+                        : "FUN_8001B1B0 entered state 10 directly in the "
+                          "persistent callback visit");
+            if (!auxiliary_publication_already_applied) {
+                invocation.status = ActionMotionInvocationStatus::MissingInput;
+                ++invocation.visits;
+                return outcome;
+            }
+            callback_state_for_decision = 11;
+        }
+    }
+
+    if (invocation.callback_family
+            == ActionMotionPersistentCallbackFamily::ActionMotionBasic_8001B1B0
+        && callback_state_for_decision == 11) {
+        auto instruction_visit =
+            advance_combatant_instruction(runtime, slot, true);
+        outcome.instruction_advanced = !instruction_visit.events.empty();
+        outcome.motion_selector_invoked = true;
+        std::optional<std::uint32_t> selected_row_flags;
+        if (invocation.current_instruction_row.has_value()) {
+            selected_row_flags =
+                invocation.current_instruction_row->flags;
+        } else if (combatant->selected_action_row_known) {
+            selected_row_flags = combatant->selected_action_row_flags;
+        }
+        outcome.motion_selector = resolve_action_motion_selector_8001e910(
+            ActionMotionSelectorRequest{
+                .instruction_mode =
+                    combatant->visual_instruction_mode_0x6,
+                .instruction_flags_0x50 =
+                    combatant->instruction_flags_0x50,
+                .motion_complete_0x70 =
+                    combatant->instruction_motion_complete_0x70,
+                .selected_action_row_flags = selected_row_flags,
+                .instruction_flags_0xf0 =
+                    combatant->instruction_flags_0xf0,
+                .timed_mode_counter_0x1f8 =
+                    combatant->instruction_motion_timer_0x1f8,
+                .readiness_result = std::nullopt,
+                .movement_reached_target =
+                    instruction_visit.post_motion_result.has_value()
+                    ? std::optional<bool>{
+                        *instruction_visit.post_motion_result != 0}
+                    : std::nullopt,
+            });
+        if (outcome.motion_selector->next_timed_mode_counter_0x1f8
+                .has_value()) {
+            combatant->instruction_motion_timer_0x1f8 =
+                outcome.motion_selector->next_timed_mode_counter_0x1f8;
+        }
+        outcome.post_motion_result = outcome.motion_selector->result;
+        append_combatant_instruction_visit(
+            runtime, result, std::move(instruction_visit));
+    }
+
+    std::optional<std::uint8_t> action_turn_phase;
+    if (runtime.active_action.has_value()
+        && runtime.active_action->action_ordinal
+            == invocation.action_ordinal) {
+        action_turn_phase =
+            runtime.active_action->completion_turn_phase;
+    }
+    auto decision = resolve_action_motion_invocation(
         resource->action_rows,
         ActionMotionInvocationRequest{
             .callback_family = invocation.callback_family,
-            .callback_state = invocation.callback_state,
+            .callback_state = callback_state_for_decision,
             .instruction_mode = combatant->visual_instruction_mode_0x6,
             .instruction_subtype = combatant->visual_instruction_subtype_0x8 >= 0
                 ? std::optional<std::int16_t>{
                     combatant->visual_instruction_subtype_0x8}
                 : std::nullopt,
             .instruction_flags_0xf0 = combatant->instruction_flags_0xf0,
+            .instruction_flags_0xec = combatant->instruction_flags_0xec,
+            .turn_phase = action_turn_phase,
+            .basic_setup_route = setup_decision.has_value()
+                    && setup_decision->route
+                        != ActionMotionSetupRoute::Unknown
+                ? std::optional<ActionMotionSetupRoute>{
+                    setup_decision->route}
+                : std::nullopt,
             .rotation_complete = rotation_complete,
+            .post_motion_result = outcome.post_motion_result,
             .state8_descriptor_delay = state8_descriptor_delay,
             .state8_delay_remaining = invocation.state8_delay_remaining,
             .ranged_flag_0x2_set =
@@ -3241,10 +3826,37 @@ bool visit_persistent_instruction_callback_for_slot(
             .current_motion_id = invocation.current_motion_id,
             .selected_instruction_row = invocation.current_instruction_row,
         });
+    if (auxiliary_publication_already_applied) {
+        decision.auxiliary_publication_requested = true;
+        decision.entered_state10_via_fallthrough =
+            entered_state10_via_fallthrough;
+    }
+    if (setup_decision.has_value()) {
+        apply_action_motion_setup_operations(
+            *combatant,
+            *setup_decision,
+            ActionMotionSetupOperationStage::AfterResolver);
+        record_action_motion_setup_result(
+            runtime,
+            result,
+            invocation,
+            *combatant,
+            *setup_decision,
+            setup_flags_before,
+            setup_facing_before);
+    }
     ++invocation.visits;
     invocation.status = decision.status;
     invocation.callback_state = decision.callback_state_after;
     invocation.state8_delay_remaining = decision.state8_delay_remaining;
+    if (decision.instruction_flags_0xec_after.has_value()) {
+        combatant->instruction_flags_0xec =
+            *decision.instruction_flags_0xec_after;
+    }
+    if (decision.instruction_flags_0xf0_after.has_value()) {
+        combatant->instruction_flags_0xf0 =
+            *decision.instruction_flags_0xf0_after;
+    }
     if (invocation.callback_family
         == ActionMotionPersistentCallbackFamily::
             ActionMotionBasic_8001B1B0) {
@@ -3263,6 +3875,10 @@ bool visit_persistent_instruction_callback_for_slot(
            << "; decision="
            << action_motion_invocation_decision_name(decision.decision)
            << "; resolver_called=" << (decision.resolver_called ? 1 : 0)
+           << "; setup_route="
+           << (setup_decision.has_value()
+               ? action_motion_setup_route_name(setup_decision->route)
+               : "not_evaluated")
            << "; resolver_result="
            << action_motion_resolver_code_name(decision.resolver.code)
            << "; resolver_callsite=" << decision.resolver_callsite
@@ -3283,8 +3899,43 @@ bool visit_persistent_instruction_callback_for_slot(
            << (decision.auxiliary_publication_requested ? 1 : 0)
            << "; state10_fallthrough="
            << (decision.entered_state10_via_fallthrough ? 1 : 0)
+           << "; cleanup_flags_0xec_after="
+           << (decision.instruction_flags_0xec_after.has_value()
+               ? std::to_string(*decision.instruction_flags_0xec_after)
+               : std::string("unchanged"))
+           << "; cleanup_flags_0xf0_after="
+           << (decision.instruction_flags_0xf0_after.has_value()
+               ? std::to_string(*decision.instruction_flags_0xf0_after)
+               : std::string("unchanged"))
+           << "; cleanup_runtime_word_0x134_set="
+           << (decision.cleanup_runtime_word_0x134_set ? 1 : 0)
+           << "; motion_selector_invoked="
+           << (outcome.motion_selector_invoked ? 1 : 0)
+           << "; post_motion_result="
+           << (outcome.post_motion_result.has_value()
+               ? *outcome.post_motion_result
+               : -1)
+           << "; motion_selector_status="
+           << (outcome.motion_selector.has_value()
+               ? action_motion_invocation_status_name(
+                   outcome.motion_selector->status)
+               : "not_invoked")
+           << "; motion_selector_branch="
+           << (outcome.motion_selector.has_value()
+               ? action_motion_selector_branch_name(
+                   outcome.motion_selector->branch)
+               : "not_invoked")
+           << "; motion_selector_step="
+           << (outcome.motion_selector.has_value()
+               ? action_motion_selector_step_name(
+                   outcome.motion_selector->step)
+               : "not_invoked")
            << "; visits=" << invocation.visits
            << "; draws=0; provenance=" << decision.provenance;
+    if (outcome.motion_selector.has_value()) {
+        detail << "; motion_selector_provenance="
+               << outcome.motion_selector->provenance;
+    }
 
     auto decision_event = make_visual_event(
         runtime,
@@ -3303,11 +3954,45 @@ bool visit_persistent_instruction_callback_for_slot(
     decision_event.action_motion_callback_state_before = callback_state_before;
     decision_event.action_motion_callback_state_after =
         decision.callback_state_after;
+    decision_event.action_motion_post_result = outcome.post_motion_result;
     decision_event.action_motion_resolver_row =
         decision.operation_row.has_value() ? decision.operation_row->index : -1;
     decision_event.action_motion_resolved_motion_id =
         decision.resolver.resolved_motion_id.value_or(-1);
     append_recorded_event(runtime, result, std::move(decision_event));
+
+    if (callback_state_before == 12 || callback_state_before == 17) {
+        if (auto* lifecycle = pursuit_lifecycle_for_owner(runtime, slot);
+            lifecycle != nullptr
+            && lifecycle->phase
+                == BattleFramePursuitLifecyclePhase::InstructionState3
+            && lifecycle->instruction_cleanup_prerequisite_observed) {
+            auto& participant = runtime.pursuit_participants[
+                static_cast<std::size_t>(slot)];
+            if (participant.queued_field9 == 0) {
+                participant.queued_field9 = 1;
+                auto cleanup_event = make_visual_event(
+                    runtime,
+                    nullptr,
+                    BattleFrameWorkerStepKind::PursuitQueuedField9Publish,
+                    "FUN_8001DCA0_8001DCE8",
+                    BattleFrameEventStatus::Provisional,
+                    "queued_field9=0->1; producer=instruction_cleanup"
+                    "; callback_state="
+                        + std::to_string(callback_state_before)
+                        + "; prerequisite=IW+0x1DC_nonzero_provisional"
+                        "; draws=0; provenance=FUN_8001B1B0 callsite "
+                        "0x8001B8BC entered FUN_8001DCA0, called "
+                        "FUN_8001DD00, and published queued +0x09");
+                cleanup_event.action_ordinal = lifecycle->action_ordinal;
+                cleanup_event.slot = slot;
+                cleanup_event.target_slot = lifecycle->peer_slot;
+                cleanup_event.pursuit_queued_field9 = 1;
+                append_recorded_event(
+                    runtime, result, std::move(cleanup_event));
+            }
+        }
+    }
 
     if (decision.auxiliary_child
         == ActionMotionAuxiliaryChildKind::
@@ -3325,7 +4010,8 @@ bool visit_persistent_instruction_callback_for_slot(
         }
     }
 
-    if (decision.auxiliary_publication_requested) {
+    if (decision.auxiliary_publication_requested
+        && !auxiliary_publication_already_applied) {
         (void)publish_state10_auxiliary_for_slot(
             runtime,
             slot,
@@ -3363,6 +4049,7 @@ bool visit_persistent_instruction_callback_for_slot(
             static_cast<std::size_t>(slot)] = playback_install.runtime;
         if (playback_install.installed) {
             combatant->instruction_flags_0xec = playback_install.flags_after;
+            combatant->instruction_motion_complete_0x70 = 0;
             invocation.current_motion_resource_present = true;
             invocation.current_motion_id =
                 decision.resolver.resolved_motion_id;
@@ -3426,7 +4113,8 @@ bool visit_persistent_instruction_callback_for_slot(
         playback_event.action_motion_control_after =
             playback_install.runtime.callback_control_state;
         append_recorded_event(runtime, result, std::move(playback_event));
-        return !playback_install.blocks_publication;
+        outcome.publication_allowed = !playback_install.blocks_publication;
+        return outcome;
     }
     case ActionMotionInvocationDecisionKind::LoadSelected:
     case ActionMotionInvocationDecisionKind::LoadLookedUp:
@@ -3438,10 +4126,9 @@ bool visit_persistent_instruction_callback_for_slot(
         }
         break;
     case ActionMotionInvocationDecisionKind::Restore:
-        if (decision.callback_state_after == 15) {
-            invocation.current_motion_resource_present = false;
-            invocation.current_motion_id.reset();
-        }
+        // The observed state-12/17 restore retains the loaded motion identity.
+        // State 15 must therefore be able to resolve that same identity to
+        // NoChange without inventing another playback installation.
         break;
     case ActionMotionInvocationDecisionKind::Release:
         // Playback and callback-local action completion do not uninstall IW+0xE0.
@@ -3452,7 +4139,7 @@ bool visit_persistent_instruction_callback_for_slot(
     case ActionMotionInvocationDecisionKind::Wait:
         break;
     }
-    return true;
+    return outcome;
 }
 
 void visit_std_row_producer_for_slot(
@@ -3901,6 +4588,17 @@ DirectInstructionTransitionResult run_direct_transition_selector(
                 "; selected target row could not be published through the validated direct-reset boundary";
         }
     }
+    if (producer == DirectInstructionTransitionProducer::ActionService) {
+        if (auto* lifecycle =
+                pursuit_lifecycle_for_owner(runtime, task.origin_slot);
+            lifecycle != nullptr
+            && lifecycle->action_ordinal == task.action_ordinal
+            && selected.should_reset) {
+            lifecycle->instruction_cleanup_prerequisite_observed = true;
+            lifecycle->provenance +=
+                "; action-service transition is the provisional observable prerequisite for the unresolved IW+0x1DC cleanup predicate";
+        }
+    }
     append_recorded_event(runtime, result, std::move(event));
     return selected;
 }
@@ -3911,6 +4609,49 @@ void advance_action_service_child(
     BattleFrameVisualChildTask& task,
     std::uint32_t& rng_state) {
     auto* origin = find_frame_combatant(runtime.state, task.origin_slot);
+    if (task.phase == BattleFrameVisualChildPhase::CompletionWait
+        && task.thread_state_0x19 == 3) {
+        append_visual_cleanup(
+            runtime,
+            result,
+            task,
+            "FUN_8004281C state 3 survived the transition visit and released "
+            "the child on its next packed-thread visit");
+        task.thread_state_0x19 = 4;
+        return;
+    }
+    if (task.origin_slot >= 0
+        && task.origin_slot
+            < static_cast<int>(runtime.pursuit_participants.size())
+        && task.phase != BattleFrameVisualChildPhase::Published
+        && (runtime.pursuit_participants[
+                static_cast<std::size_t>(task.origin_slot)]
+                    .instruction_flags_0x50
+            & 0x00200000u) != 0) {
+        task.thread_state_0x19 = 4;
+        task.phase = BattleFrameVisualChildPhase::CompletionWait;
+        auto event = make_visual_event(
+            runtime,
+            &task,
+            BattleFrameWorkerStepKind::PursuitServiceCancellation,
+            "FUN_8004281C_80042880",
+            BattleFrameEventStatus::Matched,
+            "completion_bit_0x00200000=1; forced_state=4"
+            "; delay_remaining="
+                + std::to_string(task.delay_remaining)
+                + "; direct_transition_selector=skipped; draws=0"
+                "; provenance=phase-completion cancellation is consumed on "
+                "the service child's own later packed-thread visit");
+        event.pursuit_queued_field9 = runtime.pursuit_participants[
+            static_cast<std::size_t>(task.origin_slot)].queued_field9;
+        append_recorded_event(runtime, result, std::move(event));
+        append_visual_cleanup(
+            runtime,
+            result,
+            task,
+            "phase-completion cancellation forced FUN_8004281C state 4");
+        return;
+    }
     if (task.phase == BattleFrameVisualChildPhase::Published) {
         task.phase = BattleFrameVisualChildPhase::Delay;
         task.thread_state_0x19 = 1;
@@ -3977,11 +4718,11 @@ void advance_action_service_child(
         "FUN_8004281C/FUN_80020B8C/FUN_8002E5D0",
         "fun_8002eb4c_action_service",
         rng_state);
-    append_visual_cleanup(
-        runtime,
-        result,
-        task,
-        "normal action-service cleanup; nested return and child-count decrement share the zero-delay visit");
+    task.phase = BattleFrameVisualChildPhase::CompletionWait;
+    task.thread_state_0x19 = 3;
+    task.provenance +=
+        "; FUN_8004281C common tail retained state 3 until the child's next "
+        "packed-thread visit";
 }
 
 BattleCollisionVec3 collision_vec(const BattleFrameVec3& value) {
@@ -4324,6 +5065,8 @@ void consume_mode1_pathing(
         .counter_follow_up = false,
         .rng_seed_before = rng_state,
         .frame_state = &runtime.state,
+        .emit_causal_diagnostics =
+            runtime.visual.emit_pathing_causal_diagnostics,
     });
     for (const auto& step : tail.steps) {
         auto event = make_visual_event(
@@ -4347,6 +5090,108 @@ void consume_mode1_pathing(
             event.rng_seed_before = rng_state;
             advance_without_rand_values(rng_state, step.draws_consumed);
             event.rng_seed_after = rng_state;
+        }
+        append_recorded_event(runtime, result, std::move(event));
+    }
+    const auto set_common_diagnostic_fields = [](
+        BattleFrameStepEvent& event,
+        int yaw_iteration,
+        float yaw_degrees,
+        const std::string& side,
+        int excluded_slot,
+        const BattleFrameVec3& input_reference,
+        const BattleFrameVec3& path_base) {
+        event.pathing_yaw_iteration = yaw_iteration;
+        event.pathing_yaw_degrees = yaw_degrees;
+        event.pathing_side = side;
+        event.pathing_excluded_slot = excluded_slot;
+        event.pathing_input_x_bits =
+            std::bit_cast<std::uint32_t>(input_reference.x);
+        event.pathing_input_y_bits =
+            std::bit_cast<std::uint32_t>(input_reference.y);
+        event.pathing_input_z_bits =
+            std::bit_cast<std::uint32_t>(input_reference.z);
+        event.pathing_base_x_bits =
+            std::bit_cast<std::uint32_t>(path_base.x);
+        event.pathing_base_y_bits =
+            std::bit_cast<std::uint32_t>(path_base.y);
+        event.pathing_base_z_bits =
+            std::bit_cast<std::uint32_t>(path_base.z);
+    };
+    for (const auto& diagnostic : tail.scan_diagnostics) {
+        auto event = make_visual_event(
+            runtime,
+            &task,
+            BattleFrameWorkerStepKind::VisualMode1PathingScanDiagnostic,
+            "FUN_8005174C/pathing_scan_diagnostic",
+            frame_event_status(diagnostic.status),
+            "analysis-only modeled scan operands and decision");
+        event.pathing_diagnostic_kind = "scan";
+        set_common_diagnostic_fields(
+            event,
+            diagnostic.yaw_iteration,
+            diagnostic.yaw_degrees,
+            diagnostic.side,
+            diagnostic.excluded_slot,
+            diagnostic.input_reference,
+            diagnostic.path_base);
+        event.pathing_accepted_candidates =
+            diagnostic.accepted_candidates;
+        event.pathing_selected_slot = diagnostic.selected_slot;
+        event.pathing_fallback_rng_draw =
+            diagnostic.fallback_rng_draw;
+        event.pathing_aggregate_score_bits =
+            std::bit_cast<std::uint32_t>(diagnostic.aggregate_score);
+        append_recorded_event(runtime, result, std::move(event));
+    }
+    for (const auto& diagnostic : tail.candidate_diagnostics) {
+        auto event = make_visual_event(
+            runtime,
+            &task,
+            BattleFrameWorkerStepKind::VisualMode1PathingCandidateDiagnostic,
+            "FUN_80011694/pathing_candidate_diagnostic",
+            BattleFrameEventStatus::Matched,
+            "analysis-only modeled candidate operands and decision");
+        event.pathing_diagnostic_kind = "candidate";
+        set_common_diagnostic_fields(
+            event,
+            diagnostic.yaw_iteration,
+            diagnostic.yaw_degrees,
+            diagnostic.side,
+            diagnostic.excluded_slot,
+            diagnostic.input_reference,
+            diagnostic.path_base);
+        event.pathing_candidate_slot = diagnostic.candidate_slot;
+        event.pathing_candidate_x_bits =
+            std::bit_cast<std::uint32_t>(diagnostic.candidate_position.x);
+        event.pathing_candidate_y_bits =
+            std::bit_cast<std::uint32_t>(diagnostic.candidate_position.y);
+        event.pathing_candidate_z_bits =
+            std::bit_cast<std::uint32_t>(diagnostic.candidate_position.z);
+        event.pathing_flags_0xec = diagnostic.instruction_flags_0xec;
+        event.pathing_flags_0xf0 = diagnostic.instruction_flags_0xf0;
+        event.pathing_instruction_compare_known =
+            diagnostic.instruction_compare_known;
+        event.pathing_instruction_compare_0x15c =
+            diagnostic.instruction_compare_0x15c;
+        event.pathing_candidate_skipped = diagnostic.skipped;
+        event.pathing_candidate_accepted = diagnostic.accepted;
+        event.pathing_candidate_score_bits =
+            std::bit_cast<std::uint32_t>(diagnostic.score);
+        event.pathing_reason = diagnostic.reason;
+        if (diagnostic.geometry.has_value()) {
+            event.pathing_perpendicular_distance_bits =
+                std::bit_cast<std::uint32_t>(
+                    diagnostic.geometry->perpendicular_distance);
+            event.pathing_base_candidate_distance_bits =
+                std::bit_cast<std::uint32_t>(
+                    diagnostic.geometry->distance_base_to_candidate);
+            event.pathing_base_input_distance_bits =
+                std::bit_cast<std::uint32_t>(
+                    diagnostic.geometry->distance_base_to_input);
+            event.pathing_raw_angle_delta_bits =
+                std::bit_cast<std::uint32_t>(
+                    diagnostic.geometry->raw_angle_diff_degrees);
         }
         append_recorded_event(runtime, result, std::move(event));
     }
@@ -4812,6 +5657,21 @@ void activate_pending_invocation(
             combatant != nullptr) {
             combatant->queued_controller_state = 0;
         }
+        if (worker.controller_family
+                == BattleMovementControllerFamily::AmbientPursuit
+            && worker.slot >= 0
+            && worker.slot
+                < static_cast<int>(runtime.pursuit_participants.size())) {
+            auto& pursuit = runtime.pursuit_participants[
+                static_cast<std::size_t>(worker.slot)];
+            pursuit.initialized = true;
+            pursuit.coordination_state_0x50 = 2;
+            pursuit.coordination_countdown_0x51 = 0;
+            pursuit.queued_field9 = 0;
+            pursuit.claimed_by_owner_slot = -1;
+            pursuit.provenance =
+                "ambient-pursuit family activation produced the state-2 coordination participant";
+        }
     }
     const auto old_state = runtime.movement_controller_states[slot_index];
     runtime.movement_controller_states[slot_index] =
@@ -4867,6 +5727,11 @@ void activate_pending_invocation(
 
     pending->lifecycle = BattleFrameMovementInvocationLifecycle::Activated;
     worker.activation_pending = false;
+    if (runtime.active_action.has_value()
+        && runtime.active_action->active_worker_index == worker_index) {
+        runtime.active_action->active_controller_phase =
+            BattleFrameActiveControllerPhase::WorkerActive;
+    }
 }
 
 void skip_unvisitable_pending_invocations(
@@ -5337,18 +6202,20 @@ bool combatant_instruction_completed_for_worker(
     return false;
 }
 
-std::optional<BattleFrameStepEvent> advance_combatant_instruction(
+BattleFrameCombatantInstructionVisitResult advance_combatant_instruction(
     BattleFrameRuntime& runtime,
-    int slot) {
+    int slot,
+    bool motion_selector_invoked) {
+    BattleFrameCombatantInstructionVisitResult visit;
     if (slot < 0 || slot >= static_cast<int>(runtime.combatant_instructions.size())) {
-        return std::nullopt;
+        return visit;
     }
     auto& instruction = runtime.combatant_instructions[static_cast<std::size_t>(slot)];
     if (!instruction.active
         || instruction.phase == BattleFrameCombatantInstructionPhase::Complete
         || instruction.phase == BattleFrameCombatantInstructionPhase::Removed
         || instruction.phase == BattleFrameCombatantInstructionPhase::Unsupported) {
-        return std::nullopt;
+        return visit;
     }
 
     BattleFrameStepEvent event;
@@ -5387,7 +6254,8 @@ std::optional<BattleFrameStepEvent> advance_combatant_instruction(
         event.step_kind = BattleFrameWorkerStepKind::CombatantInstructionWait;
         event.instruction_phase_after = instruction.phase;
         event.detail = "persistent combatant thread was removed before instruction completion";
-        return event;
+        visit.events.push_back(std::move(event));
+        return visit;
     }
 
     event.old_action_mode = combatant->combatant_action_mode;
@@ -5407,25 +6275,201 @@ std::optional<BattleFrameStepEvent> advance_combatant_instruction(
         event.step_kind = BattleFrameWorkerStepKind::ActionMotionSetup_8001fabc;
         event.step_pc = 0x8001fabcu;
         event.helper_pc = 0x8001fabcu;
-        seed_action_motion_8001fabc(
-            *combatant, instruction.provisional_fallback_target, event);
-        instruction.phase = BattleFrameCombatantInstructionPhase::Rotating;
+        if (instruction.action_motion_setup_evaluated
+            && instruction.action_motion_setup_instruction_state_revision
+                == combatant->visual_instruction_revision
+            && instruction.action_motion_setup_applied) {
+            event.action_motion_setup_event = true;
+            event.action_motion_setup_status =
+                instruction.action_motion_setup_status;
+            event.action_motion_setup_branch =
+                instruction.action_motion_setup_branch;
+            event.action_motion_setup_route =
+                instruction.action_motion_setup_route;
+            event.pos_to_move_to_0x110 = combatant->pos_to_move_to_0x110;
+            event.move_increment_0x104 = combatant->move_increment_0x104;
+            event.selected_motion_speed = combatant->selected_motion_speed;
+            event.turn_current_degrees_0x11c =
+                combatant->turn_current_degrees_0x11c;
+            event.turn_target_degrees_0x120 =
+                combatant->turn_target_degrees_0x120;
+            event.turn_step_degrees_0x124 =
+                combatant->turn_step_degrees_0x124;
+            event.turn_speed_degrees_0x128 =
+                combatant->turn_speed_degrees_0x128;
+            event.turn_speed_bits_0x128 = combatant->turn_speed_bits_0x128;
+            event.detail += "; reused ordered FUN_8001FABC result; setup_branch="
+                + std::string(action_motion_setup_branch_name(
+                    instruction.action_motion_setup_branch))
+                + "; setup_route="
+                + action_motion_setup_route_name(
+                    instruction.action_motion_setup_route);
+            switch (instruction.action_motion_setup_route) {
+            case ActionMotionSetupRoute::Mode3Resolver:
+                instruction.phase =
+                    BattleFrameCombatantInstructionPhase::Rotating;
+                break;
+            case ActionMotionSetupRoute::CurrentModeResolver:
+                instruction.phase =
+                    BattleFrameCombatantInstructionPhase::Moving;
+                break;
+            case ActionMotionSetupRoute::State8Bypass:
+                instruction.phase =
+                    BattleFrameCombatantInstructionPhase::Complete;
+                break;
+            case ActionMotionSetupRoute::Unknown:
+                instruction.phase =
+                    BattleFrameCombatantInstructionPhase::Unsupported;
+                event.status = BattleFrameEventStatus::MissingInput;
+                break;
+            }
+        } else if (instruction.action_motion_setup_evaluated
+            && instruction.action_motion_setup_instruction_state_revision
+                == combatant->visual_instruction_revision) {
+            event.action_motion_setup_event = true;
+            event.action_motion_setup_status =
+                instruction.action_motion_setup_status;
+            event.action_motion_setup_branch =
+                instruction.action_motion_setup_branch;
+            event.action_motion_setup_route =
+                instruction.action_motion_setup_route;
+            event.status = frame_event_status(
+                instruction.action_motion_setup_status);
+            instruction.phase =
+                BattleFrameCombatantInstructionPhase::Unsupported;
+            event.detail +=
+                "; ordered FUN_8001FABC setup was evaluated for instruction_state_revision="
+                + std::to_string(
+                    instruction.action_motion_setup_instruction_state_revision)
+                + " but did not produce a supported route";
+        } else {
+            const auto& persistent_callback =
+                runtime.visual.persistent_instruction_callbacks[
+                    static_cast<std::size_t>(slot)];
+            if (persistent_callback.installed) {
+                if ((combatant->instruction_flags_0xf0
+                        & kActionViewMode11InstructionGate) != 0) {
+                    event.step_kind =
+                        BattleFrameWorkerStepKind::CombatantInstructionWait;
+                    event.status = BattleFrameEventStatus::Provisional;
+                    event.detail +=
+                        "; ordered FUN_8001FABC setup waits behind the "
+                        "actor-specific mode-11 gate";
+                } else if (persistent_callback.instruction_state_revision
+                        != combatant->visual_instruction_revision) {
+                    event.step_kind =
+                        BattleFrameWorkerStepKind::CombatantInstructionWait;
+                    event.status = BattleFrameEventStatus::Provisional;
+                    event.detail +=
+                        "; ordered FUN_8001FABC setup waits for callback publication at instruction_state_revision="
+                        + std::to_string(
+                            combatant->visual_instruction_revision);
+                } else if (persistent_callback.callback_family
+                        == ActionMotionPersistentCallbackFamily::
+                            ActionMotionBasic_8001B1B0) {
+                    event.step_kind =
+                        BattleFrameWorkerStepKind::CombatantInstructionWait;
+                    event.status = BattleFrameEventStatus::Provisional;
+                    event.detail +=
+                        "; ordered FUN_8001FABC setup waits for the matching "
+                        "persistent callback visit at instruction_state_revision="
+                        + std::to_string(
+                            combatant->visual_instruction_revision);
+                } else {
+                    event.status = frame_event_status(
+                        instruction.action_motion_setup_status);
+                    instruction.phase =
+                        BattleFrameCombatantInstructionPhase::Unsupported;
+                    event.detail +=
+                        "; persistent callback did not produce a typed "
+                        "FUN_8001FABC route; no current-mode branch was guessed";
+                }
+            } else {
+                seed_action_motion_8001fabc(
+                    *combatant,
+                    instruction.provisional_fallback_target,
+                    event);
+                if (event.status == BattleFrameEventStatus::Matched) {
+                    event.status = BattleFrameEventStatus::Provisional;
+                }
+                event.detail +=
+                    "; low-level scheduler fixture has no persistent "
+                    "instruction callback; retained legacy setup projection "
+                    "outside production prediction entry points";
+                instruction.phase =
+                    BattleFrameCombatantInstructionPhase::Rotating;
+            }
+        }
         break;
     case BattleFrameCombatantInstructionPhase::Rotating:
         event.step_kind =
             BattleFrameWorkerStepKind::ActionMotionRotateStep_8001b630_80061114;
         event.step_pc = 0x8001b630u;
         event.helper_pc = 0x80061114u;
-        if (apply_rotation_8001b630(*combatant, event)) {
-            instruction.phase = BattleFrameCombatantInstructionPhase::Moving;
+        {
+            const auto& persistent_callback =
+                runtime.visual.persistent_instruction_callbacks[
+                    static_cast<std::size_t>(slot)];
+            if (persistent_callback.installed
+                && persistent_callback.instruction_state_revision
+                    == combatant->visual_instruction_revision) {
+                if (persistent_callback.last_rotation_step_valid
+                    && persistent_callback
+                            .last_rotation_step_traversal_generation
+                        == runtime.thread_list.traversal_generation) {
+                    event.step_kind =
+                        BattleFrameWorkerStepKind::CombatantInstructionWait;
+                    event.rotation_reached_target =
+                        persistent_callback.last_rotation_reached_target;
+                    event.turn_current_degrees_0x11c =
+                        combatant->turn_current_degrees_0x11c;
+                    event.turn_target_degrees_0x120 =
+                        combatant->turn_target_degrees_0x120;
+                    event.turn_step_degrees_0x124 =
+                        combatant->turn_step_degrees_0x124;
+                    event.detail +=
+                        "; persistent FUN_8001B1B0 state-4 callback already "
+                        "owned this traversal's FUN_80061114 step";
+                    if (persistent_callback.last_rotation_reached_target) {
+                        instruction.phase =
+                            BattleFrameCombatantInstructionPhase::Moving;
+                    }
+                } else {
+                    event.step_kind =
+                        BattleFrameWorkerStepKind::CombatantInstructionWait;
+                    event.detail +=
+                        "; persistent callback has not reached state 4 in "
+                        "this traversal; rotation remains ordered behind "
+                        "its playback continuation";
+                }
+            } else if (apply_rotation_8001b630(*combatant, event)) {
+                instruction.phase =
+                    BattleFrameCombatantInstructionPhase::Moving;
+            }
         }
         break;
     case BattleFrameCombatantInstructionPhase::Moving:
+        if (!motion_selector_invoked) {
+            event.step_kind =
+                BattleFrameWorkerStepKind::CombatantInstructionWait;
+            event.status = BattleFrameEventStatus::Provisional;
+            event.detail +=
+                "; persistent callback did not reach FUN_8001E910 during "
+                "this packed-thread visit; movement remains blocked";
+            break;
+        }
+        visit.motion_selector_invoked = true;
         event.step_kind = BattleFrameWorkerStepKind::MoveIncrementApply_80061340;
         event.step_pc = 0x8001e910u;
         event.helper_pc = 0x80061340u;
-        if (apply_move_increment_8001e910(*combatant, event)) {
-            instruction.phase = BattleFrameCombatantInstructionPhase::StopPending;
+        visit.post_motion_result =
+            apply_move_increment_8001e910(*combatant, event) ? 1 : 0;
+        event.action_motion_post_result = visit.post_motion_result;
+        if (*visit.post_motion_result == 1) {
+            instruction.phase = BattleFrameCombatantInstructionPhase::Complete;
+            event.detail +=
+                "; FUN_8001E910 returned 1 and reached its terminal branch "
+                "during the same persistent callback visit";
         }
         break;
     case BattleFrameCombatantInstructionPhase::StopPending:
@@ -5442,7 +6486,7 @@ std::optional<BattleFrameStepEvent> advance_combatant_instruction(
     case BattleFrameCombatantInstructionPhase::Complete:
     case BattleFrameCombatantInstructionPhase::Removed:
     case BattleFrameCombatantInstructionPhase::Unsupported:
-        return std::nullopt;
+        return visit;
     }
 
     event.instruction_phase_after = instruction.phase;
@@ -5480,7 +6524,33 @@ std::optional<BattleFrameStepEvent> advance_combatant_instruction(
             + "; destination_source="
             + movement_commit_destination_source_name(instruction.destination_source);
     }
-    return event;
+    const bool terminal_motion =
+        visit.motion_selector_invoked
+        && visit.post_motion_result == std::optional<int>{1};
+    visit.events.push_back(event);
+    if (terminal_motion) {
+        auto stop_event = event;
+        stop_event.step_kind =
+            BattleFrameWorkerStepKind::MotionStopResult_8001eb54;
+        stop_event.step_pc = 0x8001eb54u;
+        stop_event.helper_pc = 0x80061340u;
+        stop_event.move_increment_apply_event = false;
+        stop_event.old_combatant_cur_pos_0x1c =
+            event.new_combatant_cur_pos_0x1c;
+        stop_event.combatant_cur_pos_changed = false;
+        stop_event.detail =
+            "FUN_8001E910 returned 1 at 0x8001EB54 in the same persistent "
+            "callback visit; final_position="
+            + frame_vec_detail(combatant->combatant_cur_pos_0x1c)
+            + "; target="
+            + frame_vec_detail(combatant->pos_to_move_to_0x110)
+            + "; instruction_revision="
+            + std::to_string(instruction.revision)
+            + "; phase=Moving->Complete; "
+            + instruction.provenance;
+        visit.events.push_back(std::move(stop_event));
+    }
+    return visit;
 }
 
 BattleFrameStepEvent execute_worker_frame(
@@ -5610,6 +6680,8 @@ BattleFrameStepEvent execute_worker_frame(
                 + "; " + path_detail;
             event.destination_source = worker.destination_source;
             if (!selected) {
+                const auto coordination =
+                    pursuit_coordination_step_index(worker);
                 if (worker.controller_family
                     == BattleMovementControllerFamily::AmbientPursuit) {
                     runtime.movement_controller_states[
@@ -5620,19 +6692,12 @@ BattleFrameStepEvent execute_worker_frame(
                     event.detail +=
                         "; pursuit_handoff=8008D6B4_or_8008C124_or_8008BFDC; typed_provisional=1";
                 }
-                const auto completion = std::find_if(
-                    worker.program_steps.begin(),
-                    worker.program_steps.end(),
-                    [](const BattleFrameWorkerProgramStep& candidate) {
-                        return candidate.kind == BattleFrameWorkerStepKind::PassiveCleanup
-                            || candidate.kind == BattleFrameWorkerStepKind::ModeHelper;
-                    });
                 if (worker.movement_path.zero_distance_target
-                    && completion != worker.program_steps.end()) {
-                    worker.program_index = static_cast<std::size_t>(
-                        std::distance(worker.program_steps.begin(), completion));
+                    && coordination.has_value()) {
+                    worker.program_index = *coordination;
                     advance_program = false;
-                    event.detail += "; already adjacent; advancing to controller cleanup";
+                    event.detail +=
+                        "; already adjacent; advancing to FUN_8008D6B4 state-2 coordination";
                 } else {
                     worker.complete = true;
                     advance_program = false;
@@ -5684,23 +6749,17 @@ BattleFrameStepEvent execute_worker_frame(
                         BattleMovementControllerState::PursuitCoordination;
                     event.new_controller_state =
                         BattleMovementControllerState::PursuitCoordination;
-                    const auto completion = std::find_if(
-                        worker.program_steps.begin(),
-                        worker.program_steps.end(),
-                        [](const BattleFrameWorkerProgramStep& candidate) {
-                            return candidate.kind
-                                == BattleFrameWorkerStepKind::PassiveCleanup;
-                        });
-                    if (completion != worker.program_steps.end()) {
-                        worker.program_index = static_cast<std::size_t>(
-                            std::distance(worker.program_steps.begin(), completion));
+                    const auto coordination =
+                        pursuit_coordination_step_index(worker);
+                    if (coordination.has_value()) {
+                        worker.program_index = *coordination;
                     } else {
                         worker.complete = true;
                     }
                     advance_program = false;
                     event.detail +=
                         "; stale pursuit route invalidated after target moved adjacent"
-                        "; pursuit_handoff=8008D6B4_or_8008C124_or_8008BFDC"
+                        "; pursuit_handoff=FUN_8008D6B4_state2"
                         "; grid_refresh=FUN_80081648_route_restore_and_footprint_publish";
                     break;
                 }
@@ -5729,6 +6788,8 @@ BattleFrameStepEvent execute_worker_frame(
         case BattleFrameWorkerStepKind::NextLegOrRebuildDecision:
             ++worker.completed_movement_legs;
             if (worker.kind == BattleFrameWorkerKind::PassiveController
+                && worker.controller_family
+                    != BattleMovementControllerFamily::AmbientPursuit
                 && runtime.active_action.has_value()
                 && runtime.active_action->action_ordinal == worker.action_ordinal
                 && fun_80080438_allows_completion(*runtime.active_action)) {
@@ -5783,7 +6844,6 @@ BattleFrameStepEvent execute_worker_frame(
                 if (worker.completed_movement_legs >= worker.maximum_movement_legs) {
                     event.status = BattleFrameEventStatus::Provisional;
                     worker.event_status = BattleFrameEventStatus::Provisional;
-                    worker.complete = true;
                     if (worker.controller_family
                         == BattleMovementControllerFamily::AmbientPursuit) {
                         runtime.movement_controller_states[
@@ -5791,8 +6851,17 @@ BattleFrameStepEvent execute_worker_frame(
                             BattleMovementControllerState::PursuitCoordination;
                         event.new_controller_state =
                             BattleMovementControllerState::PursuitCoordination;
+                        if (const auto coordination =
+                                pursuit_coordination_step_index(worker);
+                            coordination.has_value()) {
+                            worker.program_index = *coordination;
+                        } else {
+                            worker.complete = true;
+                        }
                         event.detail +=
                             "; pursuit_handoff=8008D6B4_or_8008C124_or_8008BFDC";
+                    } else {
+                        worker.complete = true;
                     }
                     advance_program = false;
                     event.detail += "; provisional movement leg cap reached";
@@ -5816,6 +6885,288 @@ BattleFrameStepEvent execute_worker_frame(
                 event.detail += "; movement controller completes after one leg";
             }
             break;
+        case BattleFrameWorkerStepKind::PursuitCoordinationState2: {
+            if (worker.slot < 0
+                || worker.slot
+                    >= static_cast<int>(runtime.pursuit_participants.size())
+                || worker.target_slot < 0
+                || worker.target_slot
+                    >= static_cast<int>(runtime.pursuit_participants.size())) {
+                event.status = BattleFrameEventStatus::MissingInput;
+                worker.event_status = BattleFrameEventStatus::MissingInput;
+                advance_program = false;
+                event.detail +=
+                    "; paired pursuit requires valid owner and peer slots";
+                break;
+            }
+
+            auto& owner = runtime.pursuit_participants[
+                static_cast<std::size_t>(worker.slot)];
+            auto& peer = runtime.pursuit_participants[
+                static_cast<std::size_t>(worker.target_slot)];
+            if (owner.claimed_by_owner_slot >= 0
+                && owner.claimed_by_owner_slot
+                    < static_cast<int>(runtime.pursuit_lifecycles.size())) {
+                const auto& claiming_lifecycle =
+                    runtime.pursuit_lifecycles[static_cast<std::size_t>(
+                        owner.claimed_by_owner_slot)];
+                worker.worksheet_state_0x19 = 0x14;
+                event.pursuit_coordination_branch =
+                    BattlePursuitCoordinationBranch::PeerStateWait;
+                event.pursuit_owner_state_0x50 =
+                    owner.coordination_state_0x50;
+                event.pursuit_owner_countdown_0x51 =
+                    owner.coordination_countdown_0x51;
+                if (claiming_lifecycle.phase
+                    != BattleFramePursuitLifecyclePhase::Terminal) {
+                    event.status = BattleFrameEventStatus::Provisional;
+                    advance_program = false;
+                    event.detail +=
+                        "; paired_role=peer_state_0x14"
+                        "; claimed_by_owner_slot="
+                        + std::to_string(owner.claimed_by_owner_slot)
+                        + "; owner_lifecycle_phase=InstructionState3"
+                        "; no_second_state17_publication=1";
+                    break;
+                }
+
+                owner.queued_special_state = 2;
+                owner.claimed_by_owner_slot = -1;
+                const auto cleanup = passive_cleanup_step_index(worker);
+                if (cleanup.has_value()) {
+                    worker.program_index = *cleanup;
+                } else {
+                    worker.complete = true;
+                }
+                advance_program = false;
+                event.status = BattleFrameEventStatus::Provisional;
+                event.detail +=
+                    "; paired_role=peer_state_0x14"
+                    "; claiming_owner_terminal=1"
+                    "; peer_poll_lifetime=provisional"
+                    "; queued_movement_state=2"
+                    "; successor=existing_passive_cleanup";
+                break;
+            }
+            if (!owner.initialized) {
+                owner.initialized = true;
+                owner.coordination_state_0x50 = 2;
+                owner.coordination_countdown_0x51 = 0;
+                owner.provenance =
+                    "FUN_8008D6B4 owner entered state 2 from the ambient-pursuit handoff";
+            }
+            if (!peer.initialized) {
+                peer.initialized = true;
+                peer.coordination_state_0x50 = slot_has_active_pursuit_worker(
+                    runtime,
+                    worker.target_slot,
+                    worker.queue_sequence)
+                    ? 2
+                    : 1;
+                peer.coordination_countdown_0x51 = 0;
+                peer.provenance =
+                    peer.coordination_state_0x50 == 2
+                    ? "peer has an active ambient-pursuit worker and participates in coordinated state 2"
+                    : "peer has no active ambient-pursuit worker and is ready in state 1";
+            }
+
+            auto& lifecycle = runtime.pursuit_lifecycles[
+                static_cast<std::size_t>(worker.slot)];
+            if (!lifecycle.active
+                || lifecycle.owner_worker_queue_sequence
+                    != worker.queue_sequence) {
+                lifecycle = BattleFramePursuitLifecycleRuntime{
+                    .active = true,
+                    .action_ordinal = worker.action_ordinal,
+                    .owner_slot = worker.slot,
+                    .peer_slot = worker.target_slot,
+                    .owner_worker_queue_sequence = worker.queue_sequence,
+                    .owner_thread_node_id =
+                        movement_thread_node_id_for_slot(runtime, worker.slot),
+                    .phase =
+                        BattleFramePursuitLifecyclePhase::CoordinationState2,
+                    .provenance =
+                        "runtime-local paired-pursuit lifecycle entered FUN_8008D6B4 state 2",
+                };
+            }
+
+            const auto coordinated = model_battle_pursuit_coordination({
+                .owner_state_0x50 = owner.coordination_state_0x50,
+                .peer_state_0x50 = peer.coordination_state_0x50,
+                .owner_countdown_0x51 =
+                    owner.coordination_countdown_0x51,
+                .peer_countdown_0x51 =
+                    peer.coordination_countdown_0x51,
+            });
+            event.status = frame_event_status(coordinated.status);
+            event.pursuit_coordination_branch = coordinated.branch;
+            event.pursuit_owner_state_0x50 =
+                coordinated.owner_state_after_0x50;
+            event.pursuit_peer_state_0x50 =
+                coordinated.peer_state_after_0x50;
+            event.pursuit_owner_countdown_0x51 =
+                coordinated.owner_countdown_after_0x51;
+            event.pursuit_peer_countdown_0x51 =
+                coordinated.peer_countdown_after_0x51;
+            owner.coordination_state_0x50 =
+                coordinated.owner_state_after_0x50;
+            peer.coordination_state_0x50 =
+                coordinated.peer_state_after_0x50;
+            owner.coordination_countdown_0x51 =
+                coordinated.owner_countdown_after_0x51;
+            peer.coordination_countdown_0x51 =
+                coordinated.peer_countdown_after_0x51;
+            event.detail +=
+                "; branch="
+                + std::string(battle_pursuit_coordination_branch_name(
+                    coordinated.branch))
+                + "; owner_state_0x50="
+                + std::to_string(event.pursuit_owner_state_0x50)
+                + "; peer_state_0x50="
+                + std::to_string(event.pursuit_peer_state_0x50)
+                + "; owner_countdown_0x51="
+                + std::to_string(event.pursuit_owner_countdown_0x51)
+                + "; peer_countdown_0x51="
+                + std::to_string(event.pursuit_peer_countdown_0x51)
+                + "; confidence=" + coordinated.confidence
+                + "; provenance=" + coordinated.provenance;
+            if (!coordinated.publish_state17) {
+                advance_program = false;
+                break;
+            }
+
+            owner.queued_special_state = 0x11;
+            owner.queued_field9 = 0;
+            owner.queued_peer_field_0xd =
+                static_cast<std::uint8_t>(worker.target_slot);
+            peer.queued_special_state = 0x12;
+            peer.queued_field9 = 0;
+            peer.claimed_by_owner_slot = worker.slot;
+            auto& peer_lifecycle = runtime.pursuit_lifecycles[
+                static_cast<std::size_t>(worker.target_slot)];
+            if (peer_lifecycle.active
+                && peer_lifecycle.phase
+                    == BattleFramePursuitLifecyclePhase::CoordinationState2) {
+                peer_lifecycle.active = false;
+                peer_lifecycle.provenance +=
+                    "; superseded when this slot became the paired state-0x14 peer";
+            }
+            lifecycle.phase =
+                BattleFramePursuitLifecyclePhase::InstructionState3;
+            lifecycle.publication_frame = runtime.state.frame_index;
+            lifecycle.publication_traversal_generation =
+                runtime.thread_list.traversal_generation;
+            lifecycle.provenance = coordinated.provenance;
+            worker.worksheet_state_0x19 = 3;
+            runtime.movement_controller_states[
+                static_cast<std::size_t>(worker.slot)] =
+                BattleMovementControllerState::PursuitCoordination;
+            event.new_controller_state =
+                BattleMovementControllerState::PursuitCoordination;
+            lifecycle.instruction_transition_staged =
+                stage_battle_frame_validated_instruction_transition(
+                    runtime,
+                    worker.action_ordinal,
+                    worker.slot,
+                    worker.target_slot,
+                    4,
+                    coordinated.provenance
+                        + "; SetQueuedSpecialActionState_80081168 published state 0x11 and MapQueuedStateToStdActionId_800217D0 mapped it to mode 4 in the same movement-thread visit",
+                    -1);
+            if (!lifecycle.instruction_transition_staged) {
+                event.status = BattleFrameEventStatus::MissingInput;
+                event.detail +=
+                    "; state17_mapper=missing required instruction resource or callback publisher";
+            } else {
+                event.detail +=
+                    "; queued_state=17; mapped_instruction_mode=4"
+                    "; state17_mapper=same_visit";
+            }
+            break;
+        }
+        case BattleFrameWorkerStepKind::PursuitInstructionState3Poll: {
+            auto* lifecycle =
+                pursuit_lifecycle_for_owner(runtime, worker.slot);
+            if (lifecycle == nullptr
+                || worker.slot < 0
+                || worker.slot
+                    >= static_cast<int>(runtime.pursuit_participants.size())) {
+                event.status = BattleFrameEventStatus::MissingInput;
+                worker.event_status = BattleFrameEventStatus::MissingInput;
+                advance_program = false;
+                event.detail +=
+                    "; FUN_8008D6B4 state 3 has no active owner lifecycle";
+                break;
+            }
+            auto& owner = runtime.pursuit_participants[
+                static_cast<std::size_t>(worker.slot)];
+            std::optional<std::uint8_t> turn_phase;
+            if (runtime.active_action.has_value()
+                && runtime.active_action->action_ordinal
+                    == lifecycle->action_ordinal) {
+                turn_phase =
+                    runtime.active_action->completion_turn_phase;
+            }
+            const auto polled = model_battle_pursuit_instruction_poll({
+                .queued_field9 = owner.queued_field9,
+                .instruction_mode =
+                    combatant->visual_instruction_knowledge
+                            != CombatantVisualInstructionKnowledge::Unknown
+                        ? std::optional<std::int16_t>{
+                            combatant->visual_instruction_mode_0x6}
+                        : std::nullopt,
+                .readiness = lifecycle->readiness,
+                .turn_phase = turn_phase,
+                .fallback_counter = lifecycle->fallback_counter,
+            });
+            lifecycle->fallback_counter =
+                polled.fallback_counter_after;
+            owner.queued_field9 = polled.queued_field9_after;
+            event.status = frame_event_status(polled.status);
+            event.pursuit_poll_reason = polled.reason;
+            event.pursuit_queued_field9 = owner.queued_field9;
+            event.pursuit_terminal_result = polled.terminal_result;
+            event.detail +=
+                "; poll_reason="
+                + std::string(battle_pursuit_instruction_poll_reason_name(
+                    polled.reason))
+                + "; queued_field9="
+                + std::to_string(owner.queued_field9)
+                + "; instruction_mode="
+                + std::to_string(combatant->visual_instruction_mode_0x6)
+                + "; readiness="
+                + (lifecycle->readiness.has_value()
+                    ? (*lifecycle->readiness ? "true" : "false")
+                    : "unknown")
+                + "; turn_phase="
+                + (turn_phase.has_value()
+                    ? std::to_string(*turn_phase)
+                    : std::string("missing"))
+                + "; fallback_counter="
+                + std::to_string(lifecycle->fallback_counter)
+                + "; terminal_result="
+                + (polled.terminal_result.has_value()
+                    ? std::to_string(*polled.terminal_result)
+                    : std::string("0"))
+                + "; confidence=" + polled.confidence
+                + "; provenance=" + polled.provenance;
+            if (!polled.terminal_result.has_value()) {
+                advance_program = false;
+                break;
+            }
+            lifecycle->terminal_result = polled.terminal_result;
+            lifecycle->phase =
+                BattleFramePursuitLifecyclePhase::Terminal;
+            owner.queued_special_state = 2;
+            worker.worksheet_state_0x19 = 1;
+            event.detail +=
+                "; terminal_result="
+                + std::to_string(*polled.terminal_result)
+                + "; queued_movement_state=2"
+                "; state2_publication=same_visit"
+                "; successor=existing_passive_cleanup_and_callback_handoff";
+            break;
+        }
         case BattleFrameWorkerStepKind::ActionMotionPositionSync:
             sync_action_motion_position_8001ab60(
                 runtime.state,
@@ -5919,6 +7270,8 @@ BattleFrameStepEvent execute_worker_frame(
         case BattleFrameWorkerStepKind::PassiveCompletionClear:
         case BattleFrameWorkerStepKind::PassiveDeathClear:
         case BattleFrameWorkerStepKind::ActionComplete:
+        case BattleFrameWorkerStepKind::PursuitQueuedField9Publish:
+        case BattleFrameWorkerStepKind::PursuitServiceCancellation:
         case BattleFrameWorkerStepKind::CallbackEntry:
         case BattleFrameWorkerStepKind::ModeHelper:
         case BattleFrameWorkerStepKind::PassiveCleanup:
@@ -6370,6 +7723,60 @@ std::uint16_t participant_bit(int slot) {
         : 0;
 }
 
+BattleFrameMovementControllerRuntime* movement_controller_for(
+    BattleFrameRuntime& runtime,
+    int slot) {
+    if (slot < 0
+        || slot >= static_cast<int>(runtime.movement_controllers.size())) {
+        return nullptr;
+    }
+    auto& controller =
+        runtime.movement_controllers[static_cast<std::size_t>(slot)];
+    return controller.initialized ? &controller : nullptr;
+}
+
+const BattleFrameMovementControllerRuntime* movement_controller_for(
+    const BattleFrameRuntime& runtime,
+    int slot) {
+    if (slot < 0
+        || slot >= static_cast<int>(runtime.movement_controllers.size())) {
+        return nullptr;
+    }
+    const auto& controller =
+        runtime.movement_controllers[static_cast<std::size_t>(slot)];
+    return controller.initialized ? &controller : nullptr;
+}
+
+void revise_movement_controller(
+    BattleFrameMovementControllerRuntime& controller,
+    int action_ordinal,
+    BattleMovementControllerFamily family,
+    std::string provenance) {
+    controller.action_ordinal = action_ordinal;
+    controller.controller_family = family;
+    ++controller.revision;
+    controller.provenance = std::move(provenance);
+}
+
+void return_movement_controller_to_relay(
+    BattleFrameRuntime& runtime,
+    int slot,
+    int action_ordinal,
+    std::string provenance) {
+    auto* controller = movement_controller_for(runtime, slot);
+    if (controller == nullptr) {
+        return;
+    }
+    controller->actual_callback_pc = 0x800804B8u;
+    controller->deferred_callback_pc = 0;
+    controller->thread_state_0x19 = 0;
+    revise_movement_controller(
+        *controller,
+        action_ordinal,
+        BattleMovementControllerFamily::PassiveRelay,
+        std::move(provenance));
+}
+
 BattleFrameStepEvent make_action_lifecycle_event(
     const BattleFrameRuntime& runtime,
     const BattleFramePassiveParticipantRuntime* participant,
@@ -6404,12 +7811,16 @@ BattleFrameStepEvent make_action_lifecycle_event(
         event.target_slot = participant->semantic_target_slot.value_or(event.target_slot);
         event.controller_family = participant->controller_family;
         event.relation_route = participant->relation_route;
-        event.deferred_callback_pc = participant->deferred_callback_pc;
         event.invocation_confidence = participant->confidence;
         event.invocation_provenance = participant->provenance;
         event.old_controller_state = runtime.movement_controller_states[
             static_cast<std::size_t>(participant->slot)];
         event.new_controller_state = event.old_controller_state;
+        if (const auto* controller =
+                movement_controller_for(runtime, participant->slot);
+            controller != nullptr) {
+            event.deferred_callback_pc = controller->deferred_callback_pc;
+        }
     }
     std::ostringstream detail;
     detail << "action_phase=" << battle_frame_action_phase_name(event.action_phase)
@@ -6426,14 +7837,316 @@ BattleFrameStepEvent make_action_lifecycle_event(
            << "; completion_override=" << (event.completion_override ? 1 : 0)
            << "; completion_reason=" << reason;
     if (participant != nullptr) {
-        detail << "; thread_state="
-               << static_cast<int>(participant->thread_state_0x19)
+        const auto* controller =
+            movement_controller_for(runtime, participant->slot);
+        detail << "; actual_callback_pc="
+               << hex_pc(controller != nullptr
+                       ? controller->actual_callback_pc
+                       : 0)
+               << "; thread_state="
+               << static_cast<int>(controller != nullptr
+                       ? controller->thread_state_0x19
+                       : 0)
+               << "; controller_revision="
+               << (controller != nullptr ? controller->revision : 0)
                << "; participant_phase="
                << battle_frame_passive_participant_phase_name(participant->phase)
                << "; provenance=" << participant->provenance;
     }
     event.detail = detail.str();
     return event;
+}
+
+bool active_controller_uses_enemy_selector(
+    const BattleFrameActionRuntime& action) {
+    return action.active_invocation.controller_family
+            == BattleMovementControllerFamily::EnemyDirect
+        || action.active_invocation.controller_family
+            == BattleMovementControllerFamily::EnemyFallback;
+}
+
+void append_active_controller_event(
+    BattleFrameRuntime& runtime,
+    BattleFrameRunResult& result,
+    BattleFrameWorkerStepKind step_kind,
+    const char* callback,
+    std::uint32_t callback_pc,
+    BattleMovementControllerState old_state,
+    BattleMovementControllerState new_state,
+    std::string reason) {
+    if (!runtime.active_action.has_value()) {
+        return;
+    }
+    const auto& action = *runtime.active_action;
+    auto event = make_action_lifecycle_event(
+        runtime,
+        nullptr,
+        step_kind,
+        callback,
+        callback_pc,
+        action.passive_completion_mask,
+        action.passive_completion_mask,
+        reason);
+    event.slot = action.actor_slot;
+    event.controller_family = action.active_invocation.controller_family;
+    event.activation_timing = action.active_invocation.activation_timing;
+    event.thread_order_index = action.active_invocation.thread_order_index;
+    const auto* controller =
+        movement_controller_for(runtime, action.actor_slot);
+    event.deferred_callback_pc = controller != nullptr
+        ? controller->deferred_callback_pc
+        : 0;
+    event.old_controller_state = old_state;
+    event.new_controller_state = new_state;
+    event.invocation_confidence = action.active_invocation.confidence;
+    event.invocation_provenance = action.active_invocation.provenance;
+    event.detail += "; active_callback_pc="
+        + hex_pc(controller != nullptr ? controller->actual_callback_pc : 0)
+        + "; active_deferred_callback_pc="
+        + hex_pc(controller != nullptr ? controller->deferred_callback_pc : 0)
+        + "; active_thread_state="
+        + std::to_string(controller != nullptr
+                ? controller->thread_state_0x19
+                : 0)
+        + "; active_controller_revision="
+        + std::to_string(controller != nullptr ? controller->revision : 0)
+        + "; active_controller_phase="
+        + std::to_string(static_cast<int>(action.active_controller_phase));
+    append_recorded_event(runtime, result, std::move(event));
+}
+
+bool advance_active_action_controller(
+    BattleFrameRuntime& runtime,
+    int slot,
+    BattleFrameRunResult& result) {
+    if (!runtime.active_action.has_value()) {
+        return false;
+    }
+    auto& action = *runtime.active_action;
+    if (!action.active || action.actor_slot != slot) {
+        return false;
+    }
+    const auto slot_index = static_cast<std::size_t>(slot);
+    auto* controller = movement_controller_for(runtime, slot);
+    if (controller == nullptr || !controller->present) {
+        action.status = BattleMovementInvocationStatus::MissingInput;
+        runtime.warnings.push_back(
+            "active action has no persistent movement-controller runtime");
+        return true;
+    }
+
+    if (action.active_controller_phase
+        == BattleFrameActiveControllerPhase::InitialRelayPending) {
+        const auto old_state = runtime.movement_controller_states[slot_index];
+        if (controller->actual_callback_pc == 0x800804B8u) {
+            controller->actual_callback_pc = 0x800801A8u;
+            controller->thread_state_0x19 = 0;
+            revise_movement_controller(
+                *controller,
+                action.action_ordinal,
+                BattleMovementControllerFamily::PassiveRelay,
+                "legacy actor relay consumed its persistent deferred callback");
+            runtime.movement_controller_states[slot_index] =
+                BattleMovementControllerState::Relay801A8;
+            append_active_controller_event(
+                runtime,
+                result,
+                BattleFrameWorkerStepKind::ActiveRelayPublish,
+                "FUN_800804B8_to_800801A8",
+                0x800804B8u,
+                old_state,
+                BattleMovementControllerState::Relay801A8,
+                "actor relay entered FUN_800801A8 state 0");
+        } else if (controller->thread_state_0x19 == 0) {
+            controller->thread_state_0x19 = 1;
+            revise_movement_controller(
+                *controller,
+                action.action_ordinal,
+                BattleMovementControllerFamily::PassiveRelay,
+                "legacy actor relay advanced FUN_800801A8 state 0 to 1");
+            append_active_controller_event(
+                runtime,
+                result,
+                BattleFrameWorkerStepKind::ActiveRelayAdvance,
+                "FUN_800801A8_state_0_to_1",
+                0x800801A8u,
+                old_state,
+                old_state,
+                "actor relay advanced one packed-thread visit");
+        } else {
+            controller->actual_callback_pc = controller->deferred_callback_pc;
+            controller->deferred_callback_pc = 0;
+            controller->thread_state_0x19 = 0;
+            action.active_controller_phase =
+                BattleFrameActiveControllerPhase::SelectorPending;
+            const auto selector_state = active_controller_uses_enemy_selector(action)
+                ? BattleMovementControllerState::EnemyHandler
+                : BattleMovementControllerState::ActivePcHandler;
+            revise_movement_controller(
+                *controller,
+                action.action_ordinal,
+                action.active_invocation.controller_family,
+                "legacy actor relay published the active command selector");
+            runtime.movement_controller_states[slot_index] = selector_state;
+            append_active_controller_event(
+                runtime,
+                result,
+                BattleFrameWorkerStepKind::ActiveRelayAdvance,
+                "FUN_800801A8_publish_active_handler",
+                0x800801A8u,
+                old_state,
+                selector_state,
+                "actor relay published the deferred active command handler");
+        }
+        return true;
+    }
+
+    if (action.active_controller_phase
+        == BattleFrameActiveControllerPhase::SelectorPending) {
+        const bool enemy_selector = active_controller_uses_enemy_selector(action);
+        const auto old_state = runtime.movement_controller_states[slot_index];
+        if (!enemy_selector && controller->thread_state_0x19 == 0) {
+            controller->thread_state_0x19 = 3;
+            revise_movement_controller(
+                *controller,
+                action.action_ordinal,
+                action.active_invocation.controller_family,
+                "Battle::HandlePCInst_80086C68 advanced persistent state 0 to 3");
+            append_active_controller_event(
+                runtime,
+                result,
+                BattleFrameWorkerStepKind::ActiveSelectorAdvance,
+                "Battle::HandlePCInst_80086C68_state_0_to_3",
+                0x80086C68u,
+                old_state,
+                old_state,
+                "normal PC command handler advanced to its route-selection state");
+            return true;
+        }
+
+        action.active_invocation.prior_controller_state = old_state;
+        const int worker_index = action.active_worker_index;
+        auto* pending = find_pending_invocation(runtime, worker_index);
+        if (worker_index < 0
+            || worker_index >= static_cast<int>(runtime.workers.size())
+            || pending == nullptr) {
+            action.status = BattleMovementInvocationStatus::MissingInput;
+            runtime.warnings.push_back(
+                "active selector could not publish its selected movement worker");
+            return true;
+        }
+        pending->decision.prior_controller_state = old_state;
+
+        controller->actual_callback_pc = action.active_invocation.callback_pc;
+        controller->deferred_callback_pc = 0;
+        controller->thread_state_0x19 = 0;
+        revise_movement_controller(
+            *controller,
+            action.action_ordinal,
+            action.active_invocation.controller_family,
+            enemy_selector
+                ? "Battle::HandleECInst_8008B9E0 selected the active worker"
+                : "Battle::HandlePCInst_80086C68 selected the active worker");
+        action.active_controller_phase =
+            BattleFrameActiveControllerPhase::SelectedWorkerPending;
+        action.phase = BattleFrameActionPhase::HandoffPending;
+        if (auto* combatant = find_frame_combatant(runtime.state, slot);
+            combatant != nullptr) {
+            combatant->movement_flags = static_cast<std::uint16_t>(
+                combatant->movement_flags | 0x1u);
+        }
+        append_active_controller_event(
+            runtime,
+            result,
+            BattleFrameWorkerStepKind::ActiveWorkerPublish,
+            enemy_selector
+                ? "Battle::HandleECInst_8008B9E0_select_worker"
+                : "Battle::HandlePCInst_80086C68_select_worker",
+            enemy_selector ? 0x8008B9E0u : 0x80086C68u,
+            old_state,
+            old_state,
+            "active handler selected the typed attack worker and set the setupAction handoff flag");
+        return action.active_invocation.activation_timing
+            == BattleMovementActivationTiming::NextThreadVisit;
+    }
+
+    return action.active_controller_phase
+        != BattleFrameActiveControllerPhase::SelectedWorkerPending
+        && action.active_controller_phase
+            != BattleFrameActiveControllerPhase::WorkerActive
+        && action.active_controller_phase
+            != BattleFrameActiveControllerPhase::Complete;
+}
+
+void publish_passive_dispatch(
+    BattleFrameRuntime& runtime,
+    BattleFrameRunResult& result) {
+    if (!runtime.active_action.has_value()
+        || runtime.active_action->phase
+            != BattleFrameActionPhase::HandoffPending) {
+        return;
+    }
+    auto& action = *runtime.active_action;
+    const auto before = action.passive_completion_mask;
+    for (auto& participant : runtime.passive_participants) {
+        if (!participant.active
+            || participant.action_ordinal != action.action_ordinal) {
+            continue;
+        }
+        const auto* combatant = find_frame_combatant(
+            runtime.state, participant.slot);
+        const bool has_thread = has_active_thread_for_slot(
+            runtime,
+            BattleFrameThreadNodeKind::MovementController,
+            participant.slot);
+        if (combatant == nullptr || !combatant->present || !combatant->alive
+            || !has_thread) {
+            participant.phase = BattleFramePassiveParticipantPhase::Removed;
+            participant.active = false;
+            runtime.movement_controller_states[
+                static_cast<std::size_t>(participant.slot)] =
+                BattleMovementControllerState::Removed;
+            continue;
+        }
+
+        auto* controller = movement_controller_for(runtime, participant.slot);
+        if (controller == nullptr) {
+            participant.status = BattleMovementInvocationStatus::MissingInput;
+            participant.phase =
+                BattleFramePassiveParticipantPhase::CompletionDeferred;
+            runtime.warnings.push_back(
+                "FUN_8008E338 could not find the persistent movement controller for slot "
+                + std::to_string(participant.slot));
+            continue;
+        }
+        participant.dispatch_requested = true;
+        controller->deferred_callback_pc = 0x8008DEECu;
+        revise_movement_controller(
+            *controller,
+            action.action_ordinal,
+            BattleMovementControllerFamily::PassiveRelay,
+            "FUN_8008E338 replaced only MovementWorksheet+0x10 with FUN_8008DEEC");
+        participant.completion_bit_set = true;
+        action.passive_completion_mask = static_cast<std::uint16_t>(
+            action.passive_completion_mask | participant_bit(participant.slot));
+        participant.phase =
+            BattleFramePassiveParticipantPhase::DispatchRelayPending;
+    }
+    action.phase = action.action_resolution_available
+        ? BattleFrameActionPhase::Resolving
+        : BattleFrameActionPhase::PassiveDispatched;
+    append_recorded_event(
+        runtime,
+        result,
+        make_action_lifecycle_event(
+            runtime,
+            nullptr,
+            BattleFrameWorkerStepKind::PassiveDispatchPublish,
+            "FUN_8008E338_dispatch_relay",
+            0x8008E338u,
+            before,
+            action.passive_completion_mask,
+            "active handler handoff was observed in the prior frame; deferred 0x8008DEEC callbacks and completion bits were published at the next battle-controller boundary"));
 }
 
 bool action_lifecycle_has_runnable_work(const BattleFrameRuntime& runtime) {
@@ -6461,7 +8174,10 @@ bool action_lifecycle_has_runnable_work(const BattleFrameRuntime& runtime) {
         || runtime.active_action->phase == BattleFrameActionPhase::Complete) {
         return false;
     }
-    if (runtime.active_action->phase == BattleFrameActionPhase::HandoffPending) {
+    if (runtime.active_action->phase == BattleFrameActionPhase::Scheduled
+        || runtime.active_action->phase == BattleFrameActionPhase::Active
+        || runtime.active_action->phase
+            == BattleFrameActionPhase::HandoffPending) {
         return true;
     }
     if (runtime.active_action->completion_gate_open
@@ -6607,6 +8323,18 @@ bool clear_passive_participant_completion(
     participant.active = false;
     runtime.movement_controller_states[static_cast<std::size_t>(participant.slot)] =
         BattleMovementControllerState::Idle;
+    return_movement_controller_to_relay(
+        runtime,
+        participant.slot,
+        participant.action_ordinal,
+        "the modeled passive terminal branch returned the persistent controller "
+        "to FUN_800804B8 after FUN_80080438 cleared its action-local bit");
+    if (auto* lifecycle =
+            pursuit_lifecycle_for_owner(runtime, participant.slot);
+        lifecycle != nullptr
+        && lifecycle->phase == BattleFramePursuitLifecyclePhase::Terminal) {
+        lifecycle->active = false;
+    }
     append_recorded_event(
         runtime,
         result,
@@ -6648,6 +8376,7 @@ bool advance_passive_participant(
     };
 
     const auto* combatant = find_frame_combatant(runtime.state, participant.slot);
+    auto* controller = movement_controller_for(runtime, participant.slot);
     const bool has_thread = has_active_thread_for_slot(
         runtime,
         BattleFrameThreadNodeKind::MovementController,
@@ -6678,6 +8407,22 @@ bool advance_passive_participant(
         }
         runtime.movement_controller_states[static_cast<std::size_t>(participant.slot)] =
             BattleMovementControllerState::Removed;
+        if (controller != nullptr) {
+            controller->present = false;
+            controller->actual_callback_pc = 0;
+            controller->deferred_callback_pc = 0;
+            controller->thread_state_0x19 = 0;
+            revise_movement_controller(
+                *controller,
+                participant.action_ordinal,
+                BattleMovementControllerFamily::Unsupported,
+                "combatant removal retired the persistent movement controller");
+        }
+        if (auto* lifecycle =
+                pursuit_lifecycle_for_owner(runtime, participant.slot);
+            lifecycle != nullptr) {
+            lifecycle->active = false;
+        }
         append_recorded_event(
             runtime,
             result,
@@ -6692,48 +8437,130 @@ bool advance_passive_participant(
                 "combatant removal cleared the action-local completion bit"));
         return true;
     }
+    if (removed) {
+        participant.phase = BattleFramePassiveParticipantPhase::Removed;
+        participant.active = false;
+        runtime.movement_controller_states[
+            static_cast<std::size_t>(participant.slot)] =
+            BattleMovementControllerState::Removed;
+        if (controller != nullptr) {
+            controller->present = false;
+            controller->actual_callback_pc = 0;
+            controller->deferred_callback_pc = 0;
+            controller->thread_state_0x19 = 0;
+            revise_movement_controller(
+                *controller,
+                participant.action_ordinal,
+                BattleMovementControllerFamily::Unsupported,
+                "combatant removal retired the persistent movement controller "
+                "before FUN_8008E338");
+        }
+        emit(
+            BattleFrameWorkerStepKind::PassiveDeathClear,
+            "initial_relay_combatant_removed",
+            0,
+            "combatant was removed before FUN_8008E338 published a completion bit");
+        return true;
+    }
+
+    if (controller == nullptr || !controller->present) {
+        participant.status = BattleMovementInvocationStatus::MissingInput;
+        participant.phase =
+            BattleFramePassiveParticipantPhase::CompletionDeferred;
+        emit(
+            BattleFrameWorkerStepKind::PassiveCompletionDeferred,
+            "movement_controller_missing",
+            0,
+            "action participant has no persistent movement-controller runtime");
+        return true;
+    }
 
     if (participant.phase == BattleFramePassiveParticipantPhase::InitialRelayPending
         || participant.phase == BattleFramePassiveParticipantPhase::DispatchRelayPending) {
-        const bool dispatch_relay = participant.phase
-            == BattleFramePassiveParticipantPhase::DispatchRelayPending;
-        if (participant.actual_callback_pc == 0x800804B8u) {
-            participant.actual_callback_pc = 0x800801A8u;
-            participant.thread_state_0x19 = 0;
+        if (controller->actual_callback_pc == 0x8008DEECu) {
+            participant.phase = BattleFramePassiveParticipantPhase::Dispatching;
+        } else if (controller->actual_callback_pc == 0x800804B8u) {
+            if (controller->deferred_callback_pc == 0) {
+                participant.phase = participant.dispatch_requested
+                    ? BattleFramePassiveParticipantPhase::DispatchRelayPending
+                    : BattleFramePassiveParticipantPhase::WaitingForDispatch;
+                return true;
+            }
+            controller->actual_callback_pc = 0x800801A8u;
+            controller->thread_state_0x19 = 0;
+            revise_movement_controller(
+                *controller,
+                participant.action_ordinal,
+                BattleMovementControllerFamily::PassiveRelay,
+                "FUN_800804B8 consumed the current deferred publication and "
+                "installed FUN_800801A8 state 0");
             runtime.movement_controller_states[static_cast<std::size_t>(participant.slot)] =
                 BattleMovementControllerState::Relay801A8;
             emit(
-                dispatch_relay ? BattleFrameWorkerStepKind::PassiveRelayAdvance
-                               : BattleFrameWorkerStepKind::PassiveRelayPublish,
+                participant.dispatch_requested
+                    ? BattleFrameWorkerStepKind::PassiveRelayAdvance
+                    : BattleFrameWorkerStepKind::PassiveRelayPublish,
                 "FUN_800804B8_to_800801A8",
                 0x800804B8u,
-                dispatch_relay ? "dispatch relay entered state 0"
-                               : "initial nonactor relay entered state 0");
-        } else if (participant.thread_state_0x19 == 0) {
-            participant.thread_state_0x19 = 1;
+                "persistent relay entered FUN_800801A8 state 0 without "
+                "clearing or snapshotting the deferred callback");
+        } else if (controller->actual_callback_pc == 0x800801A8u
+            && controller->thread_state_0x19 == 0) {
+            controller->thread_state_0x19 = 1;
+            revise_movement_controller(
+                *controller,
+                participant.action_ordinal,
+                BattleMovementControllerFamily::PassiveRelay,
+                "FUN_800801A8 readiness visit advanced state 0 to 1");
             emit(
                 BattleFrameWorkerStepKind::PassiveRelayAdvance,
                 "FUN_800801A8_state_0_to_1",
                 0x800801A8u,
                 "relay advanced one packed-thread visit");
-        } else {
-            participant.actual_callback_pc = dispatch_relay
-                ? participant.deferred_callback_pc
-                : 0x800804B8u;
-            participant.thread_state_0x19 = 0;
-            participant.phase = dispatch_relay
+        } else if (controller->actual_callback_pc == 0x800801A8u
+            && controller->thread_state_0x19 == 1
+            && controller->deferred_callback_pc != 0) {
+            const auto published_callback = controller->deferred_callback_pc;
+            controller->actual_callback_pc = published_callback;
+            controller->deferred_callback_pc = 0;
+            controller->thread_state_0x19 = 0;
+            participant.phase = published_callback == 0x8008DEECu
                 ? BattleFramePassiveParticipantPhase::Dispatching
                 : BattleFramePassiveParticipantPhase::WaitingForDispatch;
+            revise_movement_controller(
+                *controller,
+                participant.action_ordinal,
+                published_callback == 0x8008DEECu
+                    ? BattleMovementControllerFamily::PassiveRelay
+                    : BattleMovementControllerFamily::PassiveRelay,
+                "FUN_800801A8 state 1 copied the then-current deferred "
+                "callback to the actual callback and cleared only the deferred field");
             runtime.movement_controller_states[static_cast<std::size_t>(participant.slot)] =
-                dispatch_relay
+                published_callback == 0x8008DEECu
                     ? BattleMovementControllerState::Dispatch8DEEC
                     : BattleMovementControllerState::Relay804B8;
             emit(
                 BattleFrameWorkerStepKind::PassiveRelayAdvance,
                 "FUN_800801A8_publish_deferred",
                 0x800801A8u,
-                dispatch_relay ? "relay published deferred FUN_8008DEEC"
-                               : "initial relay returned to staged callback");
+                published_callback == 0x8008DEECu
+                    ? "relay published the latest deferred FUN_8008DEEC"
+                    : "relay published the latest deferred callback");
+        } else if (controller->actual_callback_pc == 0x800801A8u) {
+            participant.phase = participant.dispatch_requested
+                ? BattleFramePassiveParticipantPhase::DispatchRelayPending
+                : BattleFramePassiveParticipantPhase::WaitingForDispatch;
+            emit(
+                BattleFrameWorkerStepKind::PassiveRelayAdvance,
+                "FUN_800801A8_wait_for_deferred",
+                0x800801A8u,
+                "state-1 relay retained the persistent controller because "
+                "no deferred callback was available");
+        } else {
+            participant.phase = controller->actual_callback_pc == 0x8008DEECu
+                ? BattleFramePassiveParticipantPhase::Dispatching
+                : BattleFramePassiveParticipantPhase::FamilyActive;
+            return false;
         }
         return true;
     }
@@ -6755,7 +8582,19 @@ bool advance_passive_participant(
                 "missing family decision entered provisional completion wait");
             return true;
         }
-        participant.actual_callback_pc = decision->callback_pc;
+        participant.relation_route = decision->relation_route;
+        participant.controller_family = decision->controller_family;
+        participant.semantic_target_slot = decision->semantic_target_slot;
+        participant.status = decision->status;
+        participant.confidence = decision->confidence;
+        participant.provenance = decision->provenance;
+        controller->actual_callback_pc = decision->callback_pc;
+        controller->thread_state_0x19 = 0;
+        revise_movement_controller(
+            *controller,
+            participant.action_ordinal,
+            decision->controller_family,
+            "FUN_8008DEEC selected the evidence-backed passive callback family");
         runtime.movement_controller_states[static_cast<std::size_t>(participant.slot)] =
             decision->activation_controller_state;
         if (decision->controller_family
@@ -6766,6 +8605,19 @@ bool advance_passive_participant(
                 battle_movement_controller_family_name(decision->controller_family),
                 0x8008DEECu,
                 "FUN_8008D3B0 selected; affected target waits for action result");
+            return true;
+        }
+        if (decision->controller_family
+            == BattleMovementControllerFamily::AmbientIdle) {
+            participant.worker_index = -1;
+            participant.phase = BattleFramePassiveParticipantPhase::FamilyPending;
+            emit(
+                BattleFrameWorkerStepKind::PassiveFamilySelect,
+                battle_movement_controller_family_name(
+                    decision->controller_family),
+                0x8008DEECu,
+                "FUN_8008DEEC selected FUN_8008C98C; the nonmoving idle "
+                "callback starts on the next packed-thread visit");
             return true;
         }
         participant.worker_index = static_cast<int>(runtime.workers.size());
@@ -6780,15 +8632,87 @@ bool advance_passive_participant(
     }
 
     if (participant.phase == BattleFramePassiveParticipantPhase::FamilyPending) {
+        if (participant.controller_family
+            == BattleMovementControllerFamily::AmbientIdle
+            && controller->actual_callback_pc == 0x8008C98Cu) {
+            if (controller->thread_state_0x19 == 0) {
+                controller->deferred_callback_pc = 0x8008C6BCu;
+                controller->thread_state_0x19 = 1;
+                revise_movement_controller(
+                    *controller,
+                    participant.action_ordinal,
+                    BattleMovementControllerFamily::AmbientIdle,
+                    "FUN_8008C98C state 0 published deferred FUN_8008C6BC "
+                    "at 0x8008C9DC and advanced to state 1");
+                emit(
+                    BattleFrameWorkerStepKind::PassiveRelayPublish,
+                    "FUN_8008C98C_state0_publish_8008C6BC",
+                    0x8008C9DCu,
+                    "ambient idle published its nonmoving special relay");
+                return true;
+            }
+            if (controller->thread_state_0x19 == 1
+                && controller->deferred_callback_pc == 0x8008C6BCu) {
+                controller->actual_callback_pc =
+                    controller->deferred_callback_pc;
+                controller->deferred_callback_pc = 0;
+                controller->thread_state_0x19 = 0;
+                participant.phase =
+                    BattleFramePassiveParticipantPhase::FamilyActive;
+                revise_movement_controller(
+                    *controller,
+                    participant.action_ordinal,
+                    BattleMovementControllerFamily::AmbientIdle,
+                    "FUN_8008C98C state 1 accepted its poll and installed "
+                    "the deferred FUN_8008C6BC callback");
+                emit(
+                    BattleFrameWorkerStepKind::PassiveRelayAdvance,
+                    "FUN_8008C98C_state1_to_8008C6BC",
+                    0x8008C98Cu,
+                    "ambient idle advanced to the nonmoving special relay");
+                return true;
+            }
+        }
         participant.phase = BattleFramePassiveParticipantPhase::FamilyActive;
         return false;
     }
 
     if (participant.phase == BattleFramePassiveParticipantPhase::FamilyActive
         && participant.controller_family
+            == BattleMovementControllerFamily::AmbientIdle
+        && controller->actual_callback_pc == 0x8008C6BCu
+        && controller->thread_state_0x19 == 0) {
+        controller->thread_state_0x19 = 2;
+        participant.phase =
+            BattleFramePassiveParticipantPhase::CompletionDeferred;
+        runtime.movement_controller_states[
+            static_cast<std::size_t>(participant.slot)] =
+            BattleMovementControllerState::CompletionDeferred;
+        revise_movement_controller(
+            *controller,
+            participant.action_ordinal,
+            BattleMovementControllerFamily::AmbientIdle,
+            "FUN_8008C6BC state 0 entered state 2 without constructing "
+            "a path or moving the combatant");
+        emit(
+            BattleFrameWorkerStepKind::PassiveCompletionDeferred,
+            "FUN_8008C6BC_state0_to_state2",
+            0x8008C6BCu,
+            "nonmoving idle relay entered its completion wait");
+        return true;
+    }
+
+    if (participant.phase == BattleFramePassiveParticipantPhase::FamilyActive
+        && participant.controller_family
             == BattleMovementControllerFamily::AffectedTargetReaction
         && action.action_resolution_available) {
-        participant.actual_callback_pc = 0x8008CDA8u;
+        controller->actual_callback_pc = 0x8008CDA8u;
+        controller->thread_state_0x19 = 0;
+        revise_movement_controller(
+            *controller,
+            participant.action_ordinal,
+            BattleMovementControllerFamily::AffectedTargetReaction,
+            "FUN_8008D3B0 observed the action result and installed FUN_8008CDA8");
         participant.phase = BattleFramePassiveParticipantPhase::CompletionDeferred;
         runtime.movement_controller_states[static_cast<std::size_t>(participant.slot)] =
             BattleMovementControllerState::CompletionDeferred;
@@ -6884,9 +8808,14 @@ void complete_action_if_drained(
         return;
     }
     auto& action = *runtime.active_action;
-    const bool active_worker_complete = action.active_worker_index < 0
-        || action.active_worker_index >= static_cast<int>(runtime.workers.size())
-        || runtime.workers[static_cast<std::size_t>(action.active_worker_index)].complete;
+    const bool active_worker_complete =
+        action.active_controller_phase
+            == BattleFrameActiveControllerPhase::Complete
+        || (action.active_worker_index >= 0
+            && action.active_worker_index
+                < static_cast<int>(runtime.workers.size())
+            && runtime.workers[
+                static_cast<std::size_t>(action.active_worker_index)].complete);
     if (!action.completion_gate_open || action.passive_completion_mask != 0
         || action.phase == BattleFrameActionPhase::Complete
         || !active_worker_complete
@@ -7075,6 +9004,7 @@ bool apply_queued_instruction_control_reset(
     const int before = callback.callback_state;
     callback.callback_state = reset.reset_value;
     callback.state8_delay_remaining = -1;
+    callback.last_rotation_step_valid = false;
     record_instruction_control_reset(
         runtime,
         reset,
@@ -7147,6 +9077,7 @@ bool apply_direct_instruction_control_reset(
     const int before = callback.callback_state;
     callback.callback_state = reset.reset_value;
     callback.state8_delay_remaining = -1;
+    callback.last_rotation_step_valid = false;
     const bool schedulable = target != nullptr
         && (delivery.status == BattleFrameThreadDeliveryStatus::SameTraversal
             || delivery.status == BattleFrameThreadDeliveryStatus::NextTraversal);
@@ -7294,6 +9225,22 @@ std::optional<BattleFrameRuntime> initialize_first_battle_frame_runtime(
             const auto slot_index = static_cast<std::size_t>(combatant.slot);
             runtime.movement_controller_states[slot_index] =
                 BattleMovementControllerState::Idle;
+            runtime.movement_controllers[slot_index] =
+                BattleFrameMovementControllerRuntime{
+                    .initialized = true,
+                    .present = true,
+                    .slot = combatant.slot,
+                    .actual_callback_pc = 0x800804B8u,
+                    .deferred_callback_pc = 0,
+                    .thread_state_0x19 = 0,
+                    .controller_family =
+                        BattleMovementControllerFamily::PassiveRelay,
+                    .action_ordinal = -1,
+                    .revision = 1,
+                    .provenance =
+                        "movement-controller creation installed the persistent "
+                        "FUN_800804B8 relay for this live slot",
+                };
             auto& worksheet = runtime.movement_worksheets[slot_index];
             worksheet.initialized = true;
             worksheet.raw_path_entries.fill(MovementGridPosition{
@@ -7618,8 +9565,11 @@ publish_configured_battle_frame_std_resources(
 
 void configure_battle_frame_visual_pathing_profile(
     BattleFrameRuntime& runtime,
-    std::string profile_name) {
+    std::string profile_name,
+    bool emit_causal_diagnostics) {
     runtime.visual.pathing_profile_name = std::move(profile_name);
+    runtime.visual.emit_pathing_causal_diagnostics =
+        emit_causal_diagnostics;
 }
 
 bool stage_battle_frame_visual_instruction_state(
@@ -7653,6 +9603,8 @@ bool stage_battle_frame_visual_instruction_state(
         instruction.instruction_flags = combatant->instruction_flags_0xec;
     }
 
+    const auto prior_instruction_mode =
+        combatant->visual_instruction_mode_0x6;
     const auto key = resolve_combatant_visual_action_key(instruction);
     combatant->instruction_target_slot_0x4 = instruction.target_slot.value_or(-1);
     combatant->visual_instruction_subtype_0x8 = instruction.subtype.value_or(-1);
@@ -7668,6 +9620,40 @@ bool stage_battle_frame_visual_instruction_state(
             *instruction.validated_transition_mode;
     } else if (key.action_key.has_value()) {
         combatant->visual_instruction_mode_0x6 = *key.action_key;
+    }
+    if (prior_instruction_mode == 4
+        && combatant->visual_instruction_mode_0x6 == 2) {
+        if (auto* lifecycle =
+                pursuit_lifecycle_for_owner(runtime, instruction.slot);
+            lifecycle != nullptr
+            && lifecycle->action_ordinal == action_ordinal
+            && lifecycle->phase
+                == BattleFramePursuitLifecyclePhase::InstructionState3) {
+            auto& participant = runtime.pursuit_participants[
+                static_cast<std::size_t>(instruction.slot)];
+            if (participant.queued_field9 == 0) {
+                participant.queued_field9 = 1;
+                participant.instruction_flags_0x50 |= 0x00200000u;
+                lifecycle->cancellation_published = true;
+                lifecycle->provenance +=
+                    "; FUN_8001BE2C-equivalent mode-4 to mode-2 reinstall published cancellation";
+                auto cancellation_event = make_visual_event(
+                    runtime,
+                    nullptr,
+                    BattleFrameWorkerStepKind::PursuitServiceCancellation,
+                    "FUN_8001BE2C_8001BF14_8001C0E4",
+                    BattleFrameEventStatus::Matched,
+                    "queued_field9=0->1; instruction_mode=4->2"
+                    "; instruction_flags_0x50|=0x00200000"
+                    "; producer=phase_completion_reinstall; draws=0");
+                cancellation_event.action_ordinal = action_ordinal;
+                cancellation_event.slot = instruction.slot;
+                cancellation_event.target_slot = lifecycle->peer_slot;
+                cancellation_event.pursuit_queued_field9 = 1;
+                runtime.visual.pending_events.push_back(
+                    std::move(cancellation_event));
+            }
+        }
     }
     auto& action_view_role = runtime.visual.action_view_role;
     if (action_view_role.valid
@@ -7762,7 +9748,9 @@ bool stage_battle_frame_validated_instruction_transition(
 
     CombatantVisualInstructionSnapshot instruction;
     instruction.slot = slot;
-    instruction.target_slot = target_slot;
+    instruction.target_slot = combatant->instruction_target_slot_0x4 >= 0
+        ? std::optional<int>{combatant->instruction_target_slot_0x4}
+        : std::nullopt;
     instruction.validated_transition_mode = instruction_mode;
     instruction.selected_std_action_key = selected_row.selected_action_id;
     instruction.subtype = combatant->visual_instruction_subtype_0x8 >= 0
@@ -7777,6 +9765,7 @@ bool stage_battle_frame_validated_instruction_transition(
         + std::to_string(selected_row.row->index)
         + " and executed the direct param4=0 publisher";
     instruction.provenance = transition_provenance;
+    combatant->instruction_secondary_target_slot_0x48 = target_slot;
     const bool staged = stage_battle_frame_visual_instruction_state(
         runtime,
         action_ordinal,
@@ -8215,9 +10204,16 @@ bool battle_frame_action_visual_publication_pending(
     if (std::any_of(
             runtime.visual.action_motion_playbacks.begin(),
             runtime.visual.action_motion_playbacks.end(),
-            [action_ordinal](const ActionMotionPlaybackRuntime& playback) {
+            [&runtime, action_ordinal](
+                const ActionMotionPlaybackRuntime& playback) {
+                const auto* combatant =
+                    find_frame_combatant(runtime.state, playback.slot);
                 return playback.action_ordinal == action_ordinal
-                    && action_motion_playback_blocks_publication(playback);
+                    && action_motion_playback_blocks_publication(playback)
+                    && (combatant == nullptr
+                        || combatant->visual_instruction_revision == 0
+                        || combatant->visual_instruction_revision
+                            == playback.instruction_state_revision);
             })) {
         return true;
     }
@@ -8366,6 +10362,10 @@ BattleFrameActionScheduleResult schedule_first_turn_actor_action(
         return result;
     }
 
+    const bool enemy_selector =
+        decision.controller_family == BattleMovementControllerFamily::EnemyDirect
+        || decision.controller_family
+            == BattleMovementControllerFamily::EnemyFallback;
     const int active_worker_index = static_cast<int>(runtime.workers.size());
     runtime.active_action = BattleFrameActionRuntime{
         .active = true,
@@ -8379,6 +10379,9 @@ BattleFrameActionScheduleResult schedule_first_turn_actor_action(
         .final_instruction_parameter = final_parameter,
         .execution_route = execution_route,
         .phase = BattleFrameActionPhase::Scheduled,
+        .active_controller_phase =
+            BattleFrameActiveControllerPhase::SelectorPending,
+        .active_invocation = decision,
         .active_worker_index = active_worker_index,
         .setup_publication_events_pending = true,
         .status = decision.status,
@@ -8398,43 +10401,85 @@ BattleFrameActionScheduleResult schedule_first_turn_actor_action(
     };
     runtime.passive_participants = {};
     auto& action = *runtime.active_action;
-    const auto dispatch = model_passive_movement_dispatch(
-        make_passive_dispatch_input(runtime, action));
-    action.status = dispatch.status;
     action.completion_turn_phase = 4;
-    for (const auto& passive_decision : dispatch.decisions) {
-        if (!passive_decision.should_invoke
-            || passive_decision.slot < 0
-            || passive_decision.slot
-                >= static_cast<int>(runtime.passive_participants.size())) {
-            append_noninvoked_decision_history(runtime, passive_decision);
+    for (const auto& combatant : runtime.state.combatants) {
+        if (!combatant.present || !combatant.alive
+            || combatant.slot == action.actor_slot
+            || combatant.slot < 0
+            || combatant.slot
+                >= static_cast<int>(runtime.passive_participants.size())
+            || !has_active_thread_for_slot(
+                runtime,
+                BattleFrameThreadNodeKind::MovementController,
+                combatant.slot)) {
             continue;
         }
         auto& participant = runtime.passive_participants[
-            static_cast<std::size_t>(passive_decision.slot)];
+            static_cast<std::size_t>(combatant.slot)];
         participant.active = true;
         participant.action_ordinal = action_ordinal;
-        participant.slot = passive_decision.slot;
-        participant.phase = BattleFramePassiveParticipantPhase::DispatchRelayPending;
-        participant.actual_callback_pc = 0x800804B8u;
-        participant.deferred_callback_pc = 0x8008DEECu;
-        participant.thread_state_0x19 = 0;
-        participant.relation_route = passive_decision.relation_route;
-        participant.controller_family = passive_decision.controller_family;
-        participant.semantic_target_slot = passive_decision.semantic_target_slot;
-        participant.completion_bit_set = true;
-        participant.status = passive_decision.status;
-        participant.confidence = passive_decision.confidence;
+        participant.slot = combatant.slot;
+        participant.phase = BattleFramePassiveParticipantPhase::InitialRelayPending;
+        participant.dispatch_requested = false;
+        participant.relation_route = BattleMovementRelationRoute::Unknown;
+        participant.controller_family =
+            BattleMovementControllerFamily::PassiveRelay;
+        participant.semantic_target_slot.reset();
+        participant.completion_bit_set = false;
+        participant.status = BattleMovementInvocationStatus::Provisional;
+        participant.confidence =
+            "initial nonactor relay is statically validated";
         participant.provenance =
-            "FUN_8008E2B0 initial relay completed before active selection; FUN_8008E338 then staged deferred 0x8008DEEC and the action-local completion bit";
-        action.passive_completion_mask = static_cast<std::uint16_t>(
-            action.passive_completion_mask | participant_bit(passive_decision.slot));
+            "FUN_8008E2B0 staged deferred FUN_800804B8 before active "
+            "command selection without replacing actual callback or state";
+        auto* controller = movement_controller_for(runtime, combatant.slot);
+        if (controller == nullptr) {
+            participant.status = BattleMovementInvocationStatus::MissingInput;
+            participant.phase =
+                BattleFramePassiveParticipantPhase::CompletionDeferred;
+            runtime.warnings.push_back(
+                "FUN_8008E2B0 could not find persistent controller for slot "
+                + std::to_string(combatant.slot));
+            continue;
+        }
+        controller->deferred_callback_pc = 0x800804B8u;
+        revise_movement_controller(
+            *controller,
+            action_ordinal,
+            BattleMovementControllerFamily::PassiveRelay,
+            "FUN_8008E2B0 wrote only MovementWorksheet+0x10 for this "
+            "live nonactor");
         runtime.movement_controller_states[
-            static_cast<std::size_t>(passive_decision.slot)] =
+            static_cast<std::size_t>(combatant.slot)] =
             BattleMovementControllerState::Relay804B8;
     }
+    auto* actor_controller = movement_controller_for(runtime, action.actor_slot);
+    if (actor_controller == nullptr || !actor_controller->present) {
+        runtime.active_action.reset();
+        result.action_ordinal = action_ordinal;
+        result.status = BattleMovementInvocationStatus::MissingInput;
+        result.detail =
+            "active actor has no persistent movement-controller runtime";
+        runtime.warnings.push_back(result.detail);
+        return result;
+    }
+    actor_controller->actual_callback_pc =
+        enemy_selector ? 0x8008B9E0u : 0x80086C68u;
+    actor_controller->deferred_callback_pc = 0;
+    actor_controller->thread_state_0x19 = 0;
+    revise_movement_controller(
+        *actor_controller,
+        action_ordinal,
+        decision.controller_family,
+        enemy_selector
+            ? "accepted enemy command installed Battle::HandleECInst_8008B9E0"
+            : "accepted PC command installed Battle::HandlePCInst_80086C68");
+    runtime.movement_controller_states[
+        static_cast<std::size_t>(action.actor_slot)] =
+        enemy_selector
+        ? BattleMovementControllerState::EnemyHandler
+        : BattleMovementControllerState::ActivePcHandler;
     enqueue_pending_movement_invocation(runtime, decision);
-    runtime.active_action->phase = BattleFrameActionPhase::PassiveDispatched;
     result.scheduled = true;
     result.action_ordinal = action_ordinal;
     result.status = decision.status;
@@ -8698,7 +10743,6 @@ BattleFrameRunResult run_first_turn_frame(
     resolve_unvisitable_instruction_control_resets(runtime, result);
     if (runtime.active_action.has_value()
         && runtime.active_action->setup_publication_events_pending) {
-        const auto mask = runtime.active_action->passive_completion_mask;
         append_recorded_event(
             runtime,
             result,
@@ -8710,21 +10754,12 @@ BattleFrameRunResult run_first_turn_frame(
                 0x8008E2B0u,
                 0,
                 0,
-                "initial 0x800804B8 relay completed before active worker selection"));
-        append_recorded_event(
-            runtime,
-            result,
-            make_action_lifecycle_event(
-                runtime,
-                nullptr,
-                BattleFrameWorkerStepKind::PassiveDispatchPublish,
-                "FUN_8008E338_dispatch_relay",
-                0x8008E338u,
-                0,
-                mask,
-                "deferred 0x8008DEEC callbacks and action-local completion mask were published before the active worker's first visit"));
+                "FUN_8008E2B0 wrote deferred 0x800804B8 for each live "
+                "nonactor; the acting slot kept its accepted command selector"));
         runtime.active_action->setup_publication_events_pending = false;
+        runtime.active_action->phase = BattleFrameActionPhase::Active;
     }
+    publish_passive_dispatch(runtime, result);
     runtime.visual.current_visit_cursor = 0;
     flush_pending_visual_events(runtime, result);
     advance_visual_children_at_cursor(runtime, result, rng_state, 0);
@@ -8820,31 +10855,54 @@ BattleFrameRunResult run_first_turn_frame(
                     runtime.active_action->action_ordinal);
             }
             if (!direct_reset_consumed && !queued_transition_committed) {
-                (void)publish_battle_frame_persistent_instruction_callback(
+                auto& callback =
+                    runtime.visual.persistent_instruction_callbacks[
+                        static_cast<std::size_t>(thread.owner_slot)];
+                const auto instruction_revision_before =
+                    callback.instruction_state_revision;
+                const bool published =
+                    publish_battle_frame_persistent_instruction_callback(
                     runtime,
                     thread.owner_slot,
                     BattleFrameInstructionCallbackPublicationSource::
                         State1CurrentInstruction,
                     "state-1 instruction-thread visit executed the exact param4=0 callback publisher before invoking IW+0xE0");
+                if (published
+                    && callback.instruction_state_revision
+                        != instruction_revision_before) {
+                    (void)apply_queued_instruction_control_reset(
+                        runtime,
+                        callback.action_ordinal,
+                        thread.owner_slot,
+                        "ResolveQueuedStdActionTransition_800221FC accepted the newly staged instruction revision and committed IW+0x12=0 at 0x800227AC after callback publication");
+                }
             }
             flush_pending_visual_events(runtime, result);
-            const bool playback_was_blocking = thread.owner_slot >= 0
-                && thread.owner_slot < static_cast<int>(
-                    runtime.visual.action_motion_playbacks.size())
-                && action_motion_playback_blocks_publication(
-                    runtime.visual.action_motion_playbacks[
-                        static_cast<std::size_t>(thread.owner_slot)]);
-            bool publication_allowed = visit_action_motion_playback_for_slot(
+            const bool publication_allowed =
+                visit_action_motion_playback_for_slot(
                 runtime, thread.owner_slot, result);
-            if (publication_allowed && !playback_was_blocking) {
-                publication_allowed = visit_persistent_instruction_callback_for_slot(
+            BattleFramePersistentInstructionVisitOutcome persistent_visit;
+            if (publication_allowed) {
+                persistent_visit =
+                    visit_persistent_instruction_callback_for_slot(
                     runtime, thread.owner_slot, result);
             }
             visit_std_row_producer_for_slot(
                 runtime, thread.owner_slot, result);
-            if (auto event = advance_combatant_instruction(
-                    runtime, thread.owner_slot)) {
-                append_recorded_event(runtime, result, std::move(*event));
+            if (!persistent_visit.instruction_advanced) {
+                const bool fixture_without_persistent_callback =
+                    thread.owner_slot < 0
+                    || thread.owner_slot >= static_cast<int>(
+                        runtime.visual.persistent_instruction_callbacks.size())
+                    || !runtime.visual.persistent_instruction_callbacks[
+                        static_cast<std::size_t>(thread.owner_slot)].installed;
+                append_combatant_instruction_visit(
+                    runtime,
+                    result,
+                    advance_combatant_instruction(
+                        runtime,
+                        thread.owner_slot,
+                        fixture_without_persistent_callback));
             }
             (void)refresh_collision_occupancy_for_slot(
                 runtime, thread.owner_slot, &result);
@@ -8855,6 +10913,15 @@ BattleFrameRunResult run_first_turn_frame(
         if (thread.kind != BattleFrameThreadNodeKind::MovementController) {
             advance_visual_children_at_cursor(
                 runtime, result, rng_state, runtime.visual.current_visit_cursor);
+            continue;
+        }
+        if (advance_active_action_controller(
+                runtime, thread.owner_slot, result)) {
+            advance_visual_children_at_cursor(
+                runtime,
+                result,
+                rng_state,
+                runtime.visual.current_visit_cursor);
             continue;
         }
         bool participant_consumed_visit = false;
@@ -8932,6 +10999,14 @@ BattleFrameRunResult run_first_turn_frame(
                 runtime.movement_controller_states[
                     static_cast<std::size_t>(worker.slot)] =
                     BattleMovementControllerState::Idle;
+                return_movement_controller_to_relay(
+                    runtime,
+                    worker.slot,
+                    worker.action_ordinal,
+                    "the active worker terminal branch returned the persistent "
+                    "movement controller to FUN_800804B8");
+                runtime.active_action->active_controller_phase =
+                    BattleFrameActiveControllerPhase::Complete;
             } else if (worker.kind == BattleFrameWorkerKind::PassiveController) {
                 mark_passive_worker_complete(runtime, worker, result);
             } else if (worker.slot >= 0
@@ -8939,6 +11014,12 @@ BattleFrameRunResult run_first_turn_frame(
                 && is_movement_worker(worker.kind)) {
                 runtime.movement_controller_states[static_cast<std::size_t>(worker.slot)] =
                     BattleMovementControllerState::Idle;
+                return_movement_controller_to_relay(
+                    runtime,
+                    worker.slot,
+                    worker.action_ordinal,
+                    "movement worker completion returned the persistent "
+                    "controller to FUN_800804B8");
             }
         }
         advance_visual_children_at_cursor(
@@ -9065,10 +11146,11 @@ BattleFrameRunResult run_scheduled_frame_workers(
                 "scheduled frame traversal published the currently visited thread",
                 runtime.state.frame_index);
             if (thread.kind == BattleFrameThreadNodeKind::CombatantInstruction) {
-                if (auto event = advance_combatant_instruction(
-                        runtime, thread.owner_slot)) {
-                    append_recorded_event(runtime, result, std::move(*event));
-                }
+                append_combatant_instruction_visit(
+                    runtime,
+                    result,
+                    advance_combatant_instruction(
+                        runtime, thread.owner_slot, true));
                 continue;
             }
             if (thread.kind != BattleFrameThreadNodeKind::MovementController) {
@@ -9094,6 +11176,12 @@ BattleFrameRunResult run_scheduled_frame_workers(
                 && is_movement_worker(worker.kind)) {
                 runtime.movement_controller_states[static_cast<std::size_t>(worker.slot)] =
                     BattleMovementControllerState::Idle;
+                return_movement_controller_to_relay(
+                    runtime,
+                    worker.slot,
+                    worker.action_ordinal,
+                    "scheduled movement worker completion returned the "
+                    "persistent controller to FUN_800804B8");
             }
         }
     }
@@ -9215,6 +11303,14 @@ const char* battle_frame_worker_step_kind_name(BattleFrameWorkerStepKind kind) {
         return "MovementInvocationSkipped";
     case BattleFrameWorkerStepKind::ActionPhaseTransition:
         return "ActionPhaseTransition";
+    case BattleFrameWorkerStepKind::ActiveRelayPublish:
+        return "ActiveRelayPublish";
+    case BattleFrameWorkerStepKind::ActiveRelayAdvance:
+        return "ActiveRelayAdvance";
+    case BattleFrameWorkerStepKind::ActiveSelectorAdvance:
+        return "ActiveSelectorAdvance";
+    case BattleFrameWorkerStepKind::ActiveWorkerPublish:
+        return "ActiveWorkerPublish";
     case BattleFrameWorkerStepKind::PassiveRelayPublish:
         return "PassiveRelayPublish";
     case BattleFrameWorkerStepKind::PassiveRelayAdvance:
@@ -9289,6 +11385,10 @@ const char* battle_frame_worker_step_kind_name(BattleFrameWorkerStepKind kind) {
         return "VisualMode0eCamera";
     case BattleFrameWorkerStepKind::VisualMode1Pathing:
         return "VisualMode1Pathing";
+    case BattleFrameWorkerStepKind::VisualMode1PathingScanDiagnostic:
+        return "VisualMode1PathingScanDiagnostic";
+    case BattleFrameWorkerStepKind::VisualMode1PathingCandidateDiagnostic:
+        return "VisualMode1PathingCandidateDiagnostic";
     case BattleFrameWorkerStepKind::VisualMode11Setup:
         return "VisualMode11Setup";
     case BattleFrameWorkerStepKind::VisualMode11Advance:
@@ -9337,6 +11437,14 @@ const char* battle_frame_worker_step_kind_name(BattleFrameWorkerStepKind kind) {
         return "MotionStopResult_8001eb54";
     case BattleFrameWorkerStepKind::NextLegOrRebuildDecision:
         return "NextLegOrRebuildDecision";
+    case BattleFrameWorkerStepKind::PursuitCoordinationState2:
+        return "PursuitCoordinationState2";
+    case BattleFrameWorkerStepKind::PursuitInstructionState3Poll:
+        return "PursuitInstructionState3Poll";
+    case BattleFrameWorkerStepKind::PursuitQueuedField9Publish:
+        return "PursuitQueuedField9Publish";
+    case BattleFrameWorkerStepKind::PursuitServiceCancellation:
+        return "PursuitServiceCancellation";
     case BattleFrameWorkerStepKind::Rng:
         return "Rng";
     case BattleFrameWorkerStepKind::ViewPlacementResolve:

@@ -64,6 +64,7 @@ enum class BattleMovementControllerFamily {
 
 enum class BattleMovementActivationTiming {
     NextThreadVisit,
+    SameThreadVisitAfterSelection,
     SameThreadVisitAfterHandoff,
 };
 
@@ -87,6 +88,7 @@ enum class BattleMovementControllerState {
     Idle,
     ActivePcDirect,
     ActivePcFallback,
+    ActivePcHandler,
     EnemyHandler,
     EnemyDirect,
     EnemyFallback,

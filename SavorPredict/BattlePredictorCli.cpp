@@ -254,6 +254,8 @@ bool build_input_from_context_file(
     input.source_validation.expected_encounter = options.expected_encounter;
     input.options.action_view_std_json_dir = options.action_view_std_json_dir;
     input.options.allow_profile_overrides = options.allow_profile_overrides;
+    input.options.emit_causal_diagnostics =
+        options.emit_causal_diagnostics;
     input.turn_plan.fake_attack_count = static_cast<std::uint32_t>(*options.fake_attacks);
     input.turn_plan.commands = *commands;
     return true;
@@ -384,6 +386,8 @@ BattlePredictorCliParseResult parse_predict_battle_tokens(const std::vector<std:
             result.options.allow_seed_candidate_fallback = true;
         } else if (arg == "--allow-profile-overrides") {
             result.options.allow_profile_overrides = true;
+        } else if (arg == "--emit-causal-diagnostics") {
+            result.options.emit_causal_diagnostics = true;
         } else if (arg == "--help" || arg == "-h") {
             result.help_requested = true;
         } else {
@@ -532,6 +536,8 @@ int run_predict_battle(const BattlePredictorCliOptions& options, std::ostream& o
     db_options.action_view_std_json_dir = resolved_options.action_view_std_json_dir;
     db_options.allow_seed_candidate_fallback = resolved_options.allow_seed_candidate_fallback;
     db_options.allow_profile_overrides = resolved_options.allow_profile_overrides;
+    db_options.emit_causal_diagnostics =
+        resolved_options.emit_causal_diagnostics;
 
     if (!resolved_options.start_seed_list.empty()) {
         std::vector<std::uint32_t> start_seeds;

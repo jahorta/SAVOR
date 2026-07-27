@@ -25,6 +25,7 @@ struct BattleFrameCombatantState {
     bool alive = false;
     bool is_player = false;
     std::uint32_t status_flags = 0;
+    std::uint64_t status_revision = 0;
     std::uint16_t movement_flags = 0;
     int width = 1;
     int depth = 1;
@@ -58,6 +59,9 @@ struct BattleFrameCombatantState {
     std::uint32_t selected_action_row_duration_bits = 0;
     bool selected_action_row_duration_known = false;
     bool pending_frame_start_position_sync = false;
+    std::uint32_t instruction_flags_0x50 = 0;
+    std::uint32_t instruction_motion_complete_0x70 = 0;
+    std::optional<std::int16_t> instruction_motion_timer_0x1f8;
     std::uint32_t instruction_flags_0xec = 0;
     std::uint32_t instruction_flags_0xf0 = 0;
     std::uint32_t instruction_flags_0xf4 = 0;
@@ -66,6 +70,7 @@ struct BattleFrameCombatantState {
     bool collision_xz_rotation_known = false;
     std::optional<bool> collision_mld_slot_valid;
     int instruction_target_slot_0x4 = -1;
+    int instruction_secondary_target_slot_0x48 = -1;
     std::int16_t visual_instruction_mode_0x6 = 0;
     std::int16_t visual_instruction_subtype_0x8 = -1;
     // These are only populated by an evidence-backed producer. The delay gate

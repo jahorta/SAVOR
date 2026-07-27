@@ -17,14 +17,22 @@ enum class ActionMotionTargetStatus {
 
 enum class ActionMotionTargetSource {
     OwnPosHolder,
+    TargetCombatantCurrentPosition,
+    SecondaryTargetCombatantCurrentPosition,
+    SlotZeroCurrentPositionFallback,
     ProvisionalFallback,
     Unknown,
 };
 
 struct ActionMotionTargetInput {
     int actor_slot = -1;
+    int target_slot = -1;
     std::int16_t action_mode = 0;
+    std::optional<std::uint8_t> turn_phase;
     std::optional<BattleFrameVec3> own_pos_holder;
+    std::optional<BattleFrameVec3> target_current_position;
+    std::optional<BattleFrameVec3> secondary_target_current_position;
+    std::optional<BattleFrameVec3> slot_zero_current_position;
     std::optional<BattleFrameVec3> provisional_fallback;
 };
 

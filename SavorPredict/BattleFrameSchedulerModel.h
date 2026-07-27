@@ -2,6 +2,7 @@
 
 #include "ActionMotionInvocationModel.h"
 #include "ActionMotionPlaybackModel.h"
+#include "ActionMotionSetupDecisionModel.h"
 #include "ActionViewMode11Model.h"
 #include "ActionViewRoleModel.h"
 #include "BattleCollisionBoxModel.h"
@@ -9,6 +10,7 @@
 #include "BattleFrameThreadListModel.h"
 #include "BattleMovementInvocationModel.h"
 #include "BattleMovementPathModel.h"
+#include "BattlePursuitCoordinationModel.h"
 #include "CombatantAuxiliaryPublicationModel.h"
 #include "CombatantVisualDispatcherModel.h"
 #include "DirectInstructionTransitionSelectorModel.h"
@@ -100,6 +102,10 @@ enum class BattleFrameWorkerStepKind {
     MovementControllerHandoff,
     MovementInvocationSkipped,
     ActionPhaseTransition,
+    ActiveRelayPublish,
+    ActiveRelayAdvance,
+    ActiveSelectorAdvance,
+    ActiveWorkerPublish,
     PassiveRelayPublish,
     PassiveRelayAdvance,
     PassiveDispatchPublish,
@@ -137,6 +143,8 @@ enum class BattleFrameWorkerStepKind {
     VisualMode0Rewrite,
     VisualMode0eCamera,
     VisualMode1Pathing,
+    VisualMode1PathingScanDiagnostic,
+    VisualMode1PathingCandidateDiagnostic,
     VisualMode11Setup,
     VisualMode11Advance,
     VisualInstructionGate,
@@ -161,6 +169,10 @@ enum class BattleFrameWorkerStepKind {
     MoveIncrementApply_80061340,
     MotionStopResult_8001eb54,
     NextLegOrRebuildDecision,
+    PursuitCoordinationState2,
+    PursuitInstructionState3Poll,
+    PursuitQueuedField9Publish,
+    PursuitServiceCancellation,
     ViewPlacementResolve,
     Rng,
     Marker,
@@ -198,6 +210,15 @@ enum class BattleFramePassiveParticipantPhase {
     CompletionDeferred,
     Cleared,
     Removed,
+};
+
+enum class BattleFrameActiveControllerPhase {
+    Inactive,
+    InitialRelayPending,
+    SelectorPending,
+    SelectedWorkerPending,
+    WorkerActive,
+    Complete,
 };
 
 enum class BattleFrameCombatantInstructionPhase {
@@ -254,6 +275,15 @@ struct BattleFrameCombatantInstructionRuntime {
     BattleFrameEventStatus status = BattleFrameEventStatus::Provisional;
     BattleFrameCombatantInstructionPhase phase =
         BattleFrameCombatantInstructionPhase::Idle;
+    bool action_motion_setup_evaluated = false;
+    std::uint64_t action_motion_setup_instruction_state_revision = 0;
+    bool action_motion_setup_applied = false;
+    ActionMotionSetupStatus action_motion_setup_status =
+        ActionMotionSetupStatus::MissingInput;
+    ActionMotionSetupBranch action_motion_setup_branch =
+        ActionMotionSetupBranch::Unknown;
+    ActionMotionSetupRoute action_motion_setup_route =
+        ActionMotionSetupRoute::Unknown;
     std::string provenance;
 };
 
@@ -379,6 +409,12 @@ struct BattleFrameStepEvent {
     float turn_speed_degrees_0x128 = 0.0f;
     std::uint32_t turn_speed_bits_0x128 = 0;
     bool action_motion_setup_event = false;
+    ActionMotionSetupStatus action_motion_setup_status =
+        ActionMotionSetupStatus::MissingInput;
+    ActionMotionSetupBranch action_motion_setup_branch =
+        ActionMotionSetupBranch::Unknown;
+    ActionMotionSetupRoute action_motion_setup_route =
+        ActionMotionSetupRoute::Unknown;
     bool rotation_apply_event = false;
     bool rotation_reached_target = false;
     bool combatant_facing_angle_changed = false;
@@ -434,6 +470,7 @@ struct BattleFrameStepEvent {
         ActionMotionResolverCode::NoChange;
     int action_motion_callback_state_before = 0;
     int action_motion_callback_state_after = 0;
+    std::optional<int> action_motion_post_result;
     int action_motion_resolver_row = -1;
     int action_motion_resolved_motion_id = -1;
     bool rng_event = false;
@@ -453,6 +490,37 @@ struct BattleFrameStepEvent {
     int visual_payload_mode = -1;
     int visual_effective_mode = -1;
     std::string visual_child_kind;
+    std::string pathing_diagnostic_kind;
+    std::string pathing_side;
+    std::string pathing_reason;
+    int pathing_yaw_iteration = -1;
+    float pathing_yaw_degrees = 0.0f;
+    int pathing_excluded_slot = -1;
+    int pathing_candidate_slot = -1;
+    int pathing_selected_slot = -1;
+    int pathing_accepted_candidates = -1;
+    bool pathing_candidate_skipped = false;
+    bool pathing_candidate_accepted = false;
+    bool pathing_fallback_rng_draw = false;
+    std::uint32_t pathing_input_x_bits = 0;
+    std::uint32_t pathing_input_y_bits = 0;
+    std::uint32_t pathing_input_z_bits = 0;
+    std::uint32_t pathing_base_x_bits = 0;
+    std::uint32_t pathing_base_y_bits = 0;
+    std::uint32_t pathing_base_z_bits = 0;
+    std::uint32_t pathing_candidate_x_bits = 0;
+    std::uint32_t pathing_candidate_y_bits = 0;
+    std::uint32_t pathing_candidate_z_bits = 0;
+    std::uint32_t pathing_flags_0xec = 0;
+    std::uint32_t pathing_flags_0xf0 = 0;
+    bool pathing_instruction_compare_known = false;
+    int pathing_instruction_compare_0x15c = 0;
+    std::uint32_t pathing_aggregate_score_bits = 0;
+    std::uint32_t pathing_candidate_score_bits = 0;
+    std::optional<std::uint32_t> pathing_perpendicular_distance_bits;
+    std::optional<std::uint32_t> pathing_base_candidate_distance_bits;
+    std::optional<std::uint32_t> pathing_base_input_distance_bits;
+    std::optional<std::uint32_t> pathing_raw_angle_delta_bits;
     BattleMovementControllerFamily controller_family =
         BattleMovementControllerFamily::Unknown;
     BattleMovementRelationRoute relation_route =
@@ -471,6 +539,16 @@ struct BattleFrameStepEvent {
     std::uint16_t passive_completion_mask_after = 0;
     std::uint8_t completion_turn_phase = 0;
     bool completion_override = false;
+    BattlePursuitCoordinationBranch pursuit_coordination_branch =
+        BattlePursuitCoordinationBranch::MissingInput;
+    BattlePursuitInstructionPollReason pursuit_poll_reason =
+        BattlePursuitInstructionPollReason::MissingInput;
+    std::uint8_t pursuit_owner_state_0x50 = 0;
+    std::uint8_t pursuit_peer_state_0x50 = 0;
+    std::int8_t pursuit_owner_countdown_0x51 = 0;
+    std::int8_t pursuit_peer_countdown_0x51 = 0;
+    std::uint8_t pursuit_queued_field9 = 0;
+    std::optional<int> pursuit_terminal_result;
     std::uint32_t deferred_callback_pc = 0;
     std::string completion_reason;
     std::string detail;
@@ -519,9 +597,7 @@ struct BattleFramePassiveParticipantRuntime {
     int slot = -1;
     BattleFramePassiveParticipantPhase phase =
         BattleFramePassiveParticipantPhase::Inactive;
-    std::uint32_t actual_callback_pc = 0x800804B8u;
-    std::uint32_t deferred_callback_pc = 0;
-    std::uint8_t thread_state_0x19 = 0;
+    bool dispatch_requested = false;
     BattleMovementRelationRoute relation_route =
         BattleMovementRelationRoute::Unknown;
     BattleMovementControllerFamily controller_family =
@@ -532,6 +608,59 @@ struct BattleFramePassiveParticipantRuntime {
     BattleMovementInvocationStatus status =
         BattleMovementInvocationStatus::Provisional;
     std::string confidence;
+    std::string provenance;
+};
+
+struct BattleFrameMovementControllerRuntime {
+    bool initialized = false;
+    bool present = false;
+    int slot = -1;
+    std::uint32_t actual_callback_pc = 0x800804B8u;
+    std::uint32_t deferred_callback_pc = 0;
+    std::uint8_t thread_state_0x19 = 0;
+    BattleMovementControllerFamily controller_family =
+        BattleMovementControllerFamily::PassiveRelay;
+    int action_ordinal = -1;
+    std::uint64_t revision = 0;
+    std::string provenance;
+};
+
+enum class BattleFramePursuitLifecyclePhase {
+    Inactive,
+    CoordinationState2,
+    InstructionState3,
+    Terminal,
+};
+
+struct BattleFramePursuitParticipantRuntime {
+    bool initialized = false;
+    std::uint8_t coordination_state_0x50 = 0;
+    std::int8_t coordination_countdown_0x51 = 0;
+    std::uint8_t queued_special_state = 0;
+    std::uint8_t queued_field9 = 0;
+    std::uint8_t queued_peer_field_0xd = 0;
+    std::uint32_t instruction_flags_0x50 = 0;
+    int claimed_by_owner_slot = -1;
+    std::string provenance;
+};
+
+struct BattleFramePursuitLifecycleRuntime {
+    bool active = false;
+    int action_ordinal = -1;
+    int owner_slot = -1;
+    int peer_slot = -1;
+    int owner_worker_queue_sequence = -1;
+    int owner_thread_node_id = -1;
+    BattleFramePursuitLifecyclePhase phase =
+        BattleFramePursuitLifecyclePhase::Inactive;
+    int publication_frame = -1;
+    std::uint64_t publication_traversal_generation = 0;
+    int fallback_counter = 0;
+    std::optional<bool> readiness;
+    bool instruction_transition_staged = false;
+    bool instruction_cleanup_prerequisite_observed = false;
+    bool cancellation_published = false;
+    std::optional<int> terminal_result;
     std::string provenance;
 };
 
@@ -547,6 +676,9 @@ struct BattleFrameActionRuntime {
     std::optional<std::int16_t> final_instruction_parameter;
     BasicAttackExecutionRoute execution_route = BasicAttackExecutionRoute::Unknown;
     BattleFrameActionPhase phase = BattleFrameActionPhase::None;
+    BattleFrameActiveControllerPhase active_controller_phase =
+        BattleFrameActiveControllerPhase::Inactive;
+    BattleMovementInvocationDecision active_invocation{};
     int active_worker_index = -1;
     std::uint16_t passive_completion_mask = 0;
     bool action_resolution_available = false;
@@ -738,6 +870,9 @@ struct BattleFramePersistentInstructionCallbackRuntime {
     int installs = 0;
     int loads = 0;
     int state8_delay_remaining = -1;
+    std::uint64_t last_rotation_step_traversal_generation = 0;
+    bool last_rotation_step_valid = false;
+    bool last_rotation_reached_target = false;
     bool auxiliary_publication_pending = false;
     std::uint64_t auxiliary_publication_revision = 0;
     std::uint64_t last_auxiliary_instruction_revision = 0;
@@ -821,6 +956,7 @@ struct BattleFrameVisualRuntime {
     std::vector<BattleFrameStepEvent> history;
     std::vector<BattleFrameStepEvent> pending_events;
     std::string pathing_profile_name;
+    bool emit_pathing_causal_diagnostics = false;
     int next_child_sequence = 0;
     int next_role_flag_child_sequence = 0;
     int next_instruction_control_reset_sequence = 0;
@@ -844,6 +980,9 @@ struct BattleFrameRuntime {
     std::vector<BattleFramePendingMovementInvocation> pending_movement_invocations;
     std::array<BattleMovementControllerState, kBattleFrameCombatantSlotCapacity>
         movement_controller_states{};
+    std::array<BattleFrameMovementControllerRuntime,
+               kBattleFrameCombatantSlotCapacity>
+        movement_controllers{};
     std::array<BattleFrameMovementWorksheetRuntime, kBattleFrameCombatantSlotCapacity>
         movement_worksheets{};
     std::array<BattleFrameCombatantInstructionRuntime,
@@ -853,6 +992,12 @@ struct BattleFrameRuntime {
     std::optional<BattleFrameActionRuntime> active_action;
     std::array<BattleFramePassiveParticipantRuntime, kBattleFrameCombatantSlotCapacity>
         passive_participants{};
+    std::array<BattleFramePursuitParticipantRuntime,
+               kBattleFrameCombatantSlotCapacity>
+        pursuit_participants{};
+    std::array<BattleFramePursuitLifecycleRuntime,
+               kBattleFrameCombatantSlotCapacity>
+        pursuit_lifecycles{};
     int next_worker_sequence = 0;
     int next_action_ordinal = 0;
     std::vector<BattleFrameStepEvent> last_step_events;
@@ -943,7 +1088,8 @@ publish_configured_battle_frame_std_resources(
 
 void configure_battle_frame_visual_pathing_profile(
     BattleFrameRuntime& runtime,
-    std::string profile_name);
+    std::string profile_name,
+    bool emit_causal_diagnostics = false);
 
 bool stage_battle_frame_visual_instruction_state(
     BattleFrameRuntime& runtime,

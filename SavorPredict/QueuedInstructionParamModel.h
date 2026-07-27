@@ -90,6 +90,22 @@ struct QueuedInstructionEvidenceResult {
     std::string provenance;
 };
 
+struct SetupTurnStatusTransitionInput {
+    std::optional<std::int16_t> queued_instruction;
+    std::uint32_t current_status_flags = 0;
+};
+
+struct SetupTurnStatusTransitionResult {
+    QueuedInstructionParamStatus status =
+        QueuedInstructionParamStatus::MissingInput;
+    std::uint32_t status_flags_before = 0;
+    std::uint32_t status_flags_after = 0;
+    std::uint32_t applied_mask = 0;
+    bool write_performed = false;
+    std::string confidence;
+    std::string provenance;
+};
+
 struct BasicAttackQueuedStateInput {
     BasicAttackExecutionRoute route = BasicAttackExecutionRoute::Unknown;
     std::optional<int> attack_result;
@@ -109,6 +125,9 @@ QueuedInstructionCommandResult model_queued_instruction_command(
 
 QueuedInstructionEvidenceResult reconcile_queued_instruction_macro_evidence(
     const QueuedInstructionEvidenceInput& input);
+
+SetupTurnStatusTransitionResult model_setup_turn_status_transition(
+    const SetupTurnStatusTransitionInput& input);
 
 BasicAttackExecutionRoute basic_attack_route_from_final_parameter(
     std::optional<std::int16_t> final_parameter);

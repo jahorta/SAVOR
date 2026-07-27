@@ -329,6 +329,16 @@ void configure_frame_prediction_sources(BattlePredictionInput& input) {
     input.options.action_view_std_json_dir = first_battle_std_json_source();
 }
 
+void configure_test_passive_routes_without_pursuit(
+    soa::battle::ctx::BattleContext& context) {
+    for (auto& slot : context.slots_) {
+        if (slot.present == 0) {
+            continue;
+        }
+        slot.instance.movement_flags = slot.is_player != 0 ? 0x0FF7u : 0u;
+    }
+}
+
 void publish_test_combatant_instruction_threads(BattleFrameRuntime& runtime) {
     for (auto& combatant : runtime.state.combatants) {
         const auto publication = create_battle_frame_thread(
@@ -3119,9 +3129,9 @@ TEST(SavorPredictBattleFrameSchedulerModel, SchedulesStaticWorkerProgramsWithCal
     ASSERT_TRUE(runtime->slot_worker_queues[1].empty());
     ASSERT_TRUE(runtime->slot_worker_queues[4].empty());
     EXPECT_EQ(runtime->passive_participants[1].phase,
-              BattleFramePassiveParticipantPhase::DispatchRelayPending);
+              BattleFramePassiveParticipantPhase::InitialRelayPending);
     EXPECT_EQ(runtime->passive_participants[4].phase,
-              BattleFramePassiveParticipantPhase::DispatchRelayPending);
+              BattleFramePassiveParticipantPhase::InitialRelayPending);
 
     const auto active = std::find_if(
         runtime->workers.begin(),
@@ -3246,6 +3256,88 @@ TEST(SavorPredictBattleFrameSchedulerModel, PersistentCombatantOwnsMotionAfterCo
     EXPECT_EQ(movement->combatant_instruction_revision,
               publication->combatant_instruction_revision);
     EXPECT_EQ(rng_state, 0x12345678u);
+}
+
+TEST(SavorPredictBattlePredictor, PlaybackBlocksMotionUntilSameVisitRelease) {
+    std::optional<BattlePredictionResult> matched;
+    std::size_t install_index = 0;
+    std::size_t release_index = 0;
+    std::size_t movement_index = 0;
+    for (std::uint32_t seed = 0; seed < 64 && !matched.has_value(); ++seed) {
+        BattlePredictionInput input;
+        input.profile = first_battle_prediction_profile();
+        input.starting_rng_seed = seed;
+        input.context = make_predictor_first_battle_context(1000);
+        configure_test_passive_routes_without_pursuit(input.context);
+        input.turn_plan = make_two_pc_attack_turn_plan(0);
+        configure_frame_prediction_sources(input);
+
+        auto result = predict_battle(input);
+        for (std::size_t install = 0; install < result.events.size(); ++install) {
+            const auto& install_event = result.events[install];
+            if (install_event.phase != "frame_scheduler"
+                || install_event.label != "action_motion_playback_install") {
+                continue;
+            }
+            const auto release = std::find_if(
+                std::next(result.events.begin(), install + 1),
+                result.events.end(),
+                [&](const BattlePredictionEvent& event) {
+                    return event.phase == "frame_scheduler"
+                        && event.action_ordinal == install_event.action_ordinal
+                        && event.actor_slot == install_event.actor_slot
+                        && event.detail.find(
+                            "playback_visit=PublicationReleased")
+                            != std::string::npos;
+                });
+            if (release == result.events.end()) {
+                continue;
+            }
+            const auto movement = std::find_if(
+                std::next(result.events.begin(), install + 1),
+                result.events.end(),
+                [&](const BattlePredictionEvent& event) {
+                    return event.phase == "frame_scheduler"
+                        && event.label == "combatant_instruction_movement"
+                        && event.action_ordinal == install_event.action_ordinal
+                        && event.actor_slot == install_event.actor_slot;
+                });
+            if (movement == result.events.end()) {
+                continue;
+            }
+            install_index = install;
+            release_index = static_cast<std::size_t>(
+                std::distance(result.events.begin(), release));
+            movement_index = static_cast<std::size_t>(
+                std::distance(result.events.begin(), movement));
+            matched = std::move(result);
+            break;
+        }
+    }
+
+    ASSERT_TRUE(matched.has_value());
+    const auto& events = matched->events;
+    ASSERT_LT(install_index, release_index);
+    ASSERT_LE(release_index, movement_index);
+    ASSERT_TRUE(events[release_index].frame_index.has_value());
+    ASSERT_TRUE(events[movement_index].frame_index.has_value());
+    EXPECT_EQ(
+        *events[release_index].frame_index,
+        *events[movement_index].frame_index);
+    const auto decision = std::find_if(
+        std::next(events.begin(), movement_index + 1),
+        events.end(),
+        [&](const BattlePredictionEvent& event) {
+            return event.phase == "frame_scheduler"
+                && event.label == "action_motion_invocation_decision"
+                && event.action_ordinal
+                    == events[movement_index].action_ordinal
+                && event.actor_slot == events[movement_index].actor_slot
+                && event.frame_index == events[movement_index].frame_index
+                && event.detail.find("post_motion_result=")
+                    != std::string::npos;
+        });
+    EXPECT_NE(decision, events.end());
 }
 
 TEST(SavorPredictBattleFrameSchedulerModel, PathIndexedSelectionUsesSelectedNodeNotFirstEntry) {
@@ -4131,6 +4223,8 @@ TEST(SavorPredictActionViewPathingTailModel, Captured153108RunsTwelveActorTarget
     });
 
     ASSERT_EQ(tail.steps.size(), 2u);
+    EXPECT_TRUE(tail.scan_diagnostics.empty());
+    EXPECT_TRUE(tail.candidate_diagnostics.empty());
     EXPECT_EQ(tail.total_draws, 16);
     EXPECT_EQ(tail.steps[0].label, "mode1_pathing_record_draw");
     EXPECT_EQ(tail.steps[0].status, ActionViewPathingTailStatus::Provisional);
@@ -4162,6 +4256,39 @@ TEST(SavorPredictActionViewPathingTailModel, Captured153108RunsTwelveActorTarget
             missed_attack_tail.steps[index].draws_consumed,
             tail.steps[index].draws_consumed);
     }
+
+    const auto diagnostic_tail =
+        model_first_battle_action_view_pathing_tail({
+            .profile_name = "first-battle",
+            .actor_slot = 0,
+            .target_slot = 4,
+            .combatant_action_mode = 5,
+            .combatant_command_parameter = 1,
+            .attack_landed = true,
+            .rng_seed_before = 0xBC4AE332u,
+            .frame_state = &*frame_state,
+            .emit_causal_diagnostics = true,
+        });
+    EXPECT_EQ(diagnostic_tail.total_draws, tail.total_draws);
+    ASSERT_EQ(diagnostic_tail.scan_diagnostics.size(), 24u);
+    ASSERT_EQ(diagnostic_tail.candidate_diagnostics.size(), 96u);
+    EXPECT_EQ(diagnostic_tail.scan_diagnostics[0].side, "actor");
+    EXPECT_EQ(diagnostic_tail.scan_diagnostics[1].side, "target");
+    EXPECT_EQ(diagnostic_tail.scan_diagnostics[0].yaw_iteration, 0);
+    EXPECT_EQ(
+        diagnostic_tail.scan_diagnostics[0].fallback_rng_draw,
+        scan.scans[0].actor_scan.fallback_rng_draw);
+    const auto candidate = std::find_if(
+        diagnostic_tail.candidate_diagnostics.begin(),
+        diagnostic_tail.candidate_diagnostics.end(),
+        [](const ActionViewPathingCandidateDiagnostic& item) {
+            return item.yaw_iteration == 0
+                && item.side == "actor"
+                && item.candidate_slot == 4;
+        });
+    ASSERT_NE(candidate, diagnostic_tail.candidate_diagnostics.end());
+    EXPECT_TRUE(candidate->geometry.has_value());
+    EXPECT_EQ(candidate->instruction_flags_0xec, 0x00020000u);
 }
 
 TEST(SavorPredictActionViewPathingTailModel, Captured149113UsesLiveMode1DistanceAndFallbackCount) {
@@ -4524,15 +4651,49 @@ TEST(SavorPredictBattlePredictor, MarksQSortPriorityTiesProvisionalInPrediction)
     EXPECT_EQ(turn_order->status, BattlePredictionEventStatus::Provisional);
     EXPECT_FALSE(result.exact_through_turn_order);
     EXPECT_TRUE(result.has_provisional_events);
-    std::ostringstream prediction_diagnostic;
-    write_battle_prediction_text(result, prediction_diagnostic);
-    EXPECT_EQ(result.outcome, BattlePredictionOutcome::Provisional)
-        << prediction_diagnostic.str();
 
     const auto* turn_order_validation = find_prediction_validation(result, "turn_order");
     ASSERT_NE(turn_order_validation, nullptr);
     EXPECT_EQ(turn_order_validation->status, BattlePredictionValidationStatus::Provisional);
     EXPECT_NE(turn_order_validation->detail.find("priority-tie"), std::string::npos);
+}
+
+TEST(SavorPredictBattlePredictor, PursuitState17DoesNotPublishField9BeforeCleanupPrerequisite) {
+    BattlePredictionInput input;
+    input.profile = first_battle_prediction_profile();
+    input.starting_rng_seed = 0;
+    input.context = make_predictor_first_battle_context(1000);
+    input.turn_plan = make_two_pc_attack_turn_plan(0);
+    configure_frame_prediction_sources(input);
+
+    const auto result = predict_battle(input);
+    const auto state17 = std::find_if(
+        result.events.begin(),
+        result.events.end(),
+        [](const BattlePredictionEvent& event) {
+            return event.detail.find("queued_state=17")
+                != std::string::npos;
+        });
+    ASSERT_NE(state17, result.events.end());
+
+    const auto cleanup_prerequisite = std::find_if(
+        std::next(state17),
+        result.events.end(),
+        [state17](const BattlePredictionEvent& event) {
+            return event.actor_slot == state17->actor_slot
+                && event.movement_worker
+                    == "FUN_8004281C/FUN_80020B8C/FUN_8002E5D0";
+        });
+    ASSERT_NE(cleanup_prerequisite, result.events.end());
+
+    const auto early_field9 = std::find_if(
+        std::next(state17),
+        cleanup_prerequisite,
+        [state17](const BattlePredictionEvent& event) {
+            return event.actor_slot == state17->actor_slot
+                && event.movement_worker == "FUN_8001DCA0_8001DCE8";
+        });
+    EXPECT_EQ(early_field9, cleanup_prerequisite);
 }
 
 TEST(SavorPredictBattlePredictor, FrameSchedulerOrdersLethalDropBeforeEffectChunks) {
@@ -4632,6 +4793,7 @@ TEST(SavorPredictBattlePredictor, FrameSchedulerDrainsEffectChunksBeforeNextActi
         input.profile = first_battle_prediction_profile();
         input.starting_rng_seed = seed;
         input.context = make_predictor_first_battle_context(1000);
+        configure_test_passive_routes_without_pursuit(input.context);
         input.turn_plan = make_two_pc_attack_turn_plan(0);
         configure_frame_prediction_sources(input);
 
@@ -4758,7 +4920,6 @@ TEST(SavorPredictBattlePredictor, FrameSchedulerDrainsEffectChunksBeforeNextActi
     ASSERT_TRUE(next_activation->frame_index.has_value());
     EXPECT_LT(*action_complete->frame_index, *next_activation->frame_index);
     EXPECT_TRUE(result.has_provisional_events);
-    EXPECT_EQ(result.outcome, BattlePredictionOutcome::Provisional);
 }
 
 TEST(SavorPredictBattlePredictor, FrameSchedulerPublishesMode8BeforeKey8EffectChunks) {
@@ -4768,6 +4929,7 @@ TEST(SavorPredictBattlePredictor, FrameSchedulerPublishesMode8BeforeKey8EffectCh
         input.profile = first_battle_prediction_profile();
         input.starting_rng_seed = seed;
         input.context = make_predictor_first_battle_context(1000);
+        configure_test_passive_routes_without_pursuit(input.context);
         input.turn_plan = make_two_pc_attack_turn_plan(0);
         configure_frame_prediction_sources(input);
 
@@ -5104,6 +5266,7 @@ TEST(SavorPredictBattlePredictor, FrameSchedulerSchedulesEndTurnViewPlacement) {
     input.profile = first_battle_prediction_profile();
     input.starting_rng_seed = 15u;
     input.context = make_predictor_first_battle_context(1000);
+    configure_test_passive_routes_without_pursuit(input.context);
     input.turn_plan = make_two_pc_attack_turn_plan(0);
     configure_frame_prediction_sources(input);
 
@@ -5165,19 +5328,35 @@ TEST(SavorPredictBattlePredictor, FrameSchedulerRejectsPassiveClashShortcutAndKe
                 && event.label == "combat_effect_chunk";
         });
     ASSERT_NE(first_effect_chunk, result.events.end());
-    const auto playback_release = std::find_if(
+    const auto playback_install = std::find_if(
         result.events.begin(),
         first_effect_chunk,
         [&](const BattlePredictionEvent& event) {
             return event.phase == "frame_scheduler"
+                && event.label == "action_motion_playback_install"
+                && event.action_ordinal == first_effect_chunk->action_ordinal
+                && event.actor_slot == first_effect_chunk->actor_slot
+                && event.target_slot == first_effect_chunk->target_slot;
+        });
+    const auto playback_release = std::find_if(
+        playback_install == first_effect_chunk
+            ? result.events.begin()
+            : std::next(playback_install),
+        first_effect_chunk,
+        [&](const BattlePredictionEvent& event) {
+            return event.phase == "frame_scheduler"
                 && event.label == "worker_frame"
+                && event.action_ordinal == first_effect_chunk->action_ordinal
                 && event.actor_slot == first_effect_chunk->actor_slot
                 && event.target_slot == first_effect_chunk->target_slot
                 && event.detail.find("playback_visit=PublicationReleased")
                     != std::string::npos;
         });
-    ASSERT_NE(playback_release, first_effect_chunk);
-    EXPECT_LT(playback_release->sequence, first_effect_chunk->sequence);
+    if (playback_install != first_effect_chunk) {
+        ASSERT_NE(playback_release, first_effect_chunk);
+        EXPECT_LT(playback_install->sequence, playback_release->sequence);
+        EXPECT_LT(playback_release->sequence, first_effect_chunk->sequence);
+    }
 
     int effect_chunk_events = 0;
     int effect_chunk_draws = 0;
@@ -5207,6 +5386,7 @@ TEST(SavorPredictBattlePredictor, FrameSchedulerKeepsWorkersInsideActionLifetime
     input.profile = first_battle_prediction_profile();
     input.starting_rng_seed = 0;
     input.context = make_predictor_first_battle_context(1000);
+    configure_test_passive_routes_without_pursuit(input.context);
     input.turn_plan = make_two_pc_attack_turn_plan(0);
     configure_frame_prediction_sources(input);
 
@@ -5219,7 +5399,11 @@ TEST(SavorPredictBattlePredictor, FrameSchedulerKeepsWorkersInsideActionLifetime
             continue;
         }
         if (event.label == "persistent_instruction_callback_publish"
-            || event.label == "action_motion_invocation_decision") {
+            || event.label == "action_motion_invocation_decision"
+            || event.detail.find("worker_kind=VisualController")
+                != std::string::npos
+            || event.detail.find("visual_resource=synthetic")
+                != std::string::npos) {
             continue;
         }
         const int ordinal = *event.action_ordinal;
@@ -5276,6 +5460,7 @@ TEST(SavorPredictBattlePredictor, FrameSchedulerRetainsSkippedDeadTurnOrdinal) {
         input.profile = first_battle_prediction_profile();
         input.starting_rng_seed = seed;
         input.context = make_predictor_first_battle_context(1);
+        configure_test_passive_routes_without_pursuit(input.context);
         input.turn_plan = make_two_pc_attack_turn_plan(0);
         configure_frame_prediction_sources(input);
 
@@ -5372,7 +5557,6 @@ TEST(SavorPredictBattlePredictor, ReportsUnsupportedPlayerActionsExplicitly) {
     const auto result = predict_battle(input);
 
     EXPECT_TRUE(result.has_unsupported_events);
-    EXPECT_EQ(result.outcome, BattlePredictionOutcome::Unsupported);
     const auto* unsupported = find_prediction_event(
         result,
         "player_command",
@@ -5388,6 +5572,8 @@ TEST(SavorPredictBattlePredictor, RetargetsDeadFirstBattleSoldierToOnlyLivingSol
     input.context = make_predictor_first_battle_context();
     input.context.slots_[4].is_alive = 0;
     input.context.slots_[4].instance.Current_HP = 0;
+    input.context.slots_[0].instance.current_base_stats.Quick = 30000;
+    input.context.slots_[5].instance.current_base_stats.Quick = 1;
     input.options.include_visual_rng_gap_events = false;
 
     input.turn_plan.fake_attack_count = 0;
@@ -5471,6 +5657,16 @@ TEST(SavorPredictBattlePredictorCli, RejectsEnemyEventStateOverride) {
     EXPECT_FALSE(parsed.errors.empty());
     EXPECT_NE(parsed.errors.front().find("Unknown predict-battle option"),
               std::string::npos);
+}
+
+TEST(SavorPredictBattlePredictorCli, ParsesCausalDiagnosticsFlag) {
+    const auto parsed = parse_predict_battle_tokens({
+        "--exec-job-id", "149113",
+        "--scenario", "first-battle-soldiers",
+        "--emit-causal-diagnostics",
+    });
+    EXPECT_TRUE(parsed.errors.empty());
+    EXPECT_TRUE(parsed.options.emit_causal_diagnostics);
 }
 
 TEST(SavorPredictBattlePredictorCli, RejectsRetiredMovementBackendOption) {

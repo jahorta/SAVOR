@@ -294,6 +294,86 @@ TEST(SavorPredictBattleMovementInvocationModel, Route0TruthTableSelectsStaticFam
     }
 }
 
+TEST(SavorPredictBattleMovementInvocationRuntime, AmbientIdleRelaysWithoutMovementWorker) {
+    auto slots = frame_slots();
+    auto idle_slot = std::find_if(
+        slots.begin(),
+        slots.end(),
+        [](const MovementSlotState& slot) { return slot.slot == 5; });
+    ASSERT_NE(idle_slot, slots.end());
+    idle_slot->status_flags = 0x00000001u;
+
+    auto runtime = initialize_frame_runtime(slots);
+    ASSERT_TRUE(runtime.has_value());
+    const auto* before = find_frame_combatant(runtime->state, 5);
+    ASSERT_NE(before, nullptr);
+    const auto grid_before = before->grid_position;
+    const auto holder_before = before->pos_holder;
+    const auto current_before = before->combatant_cur_pos_0x1c;
+    ASSERT_TRUE(schedule_fallback_action(*runtime, 0, 4, 7).scheduled);
+
+    std::uint32_t rng = 0x13572468u;
+    std::vector<std::string> callbacks;
+    for (int frame = 0; frame < 32; ++frame) {
+        const auto step = run_first_turn_frame(*runtime, rng);
+        ASSERT_TRUE(step.ok);
+        for (const auto& event : step.events) {
+            if (event.slot == 5
+                && (event.callback.find("8008C98C") != std::string::npos
+                    || event.callback.find("8008C6BC") != std::string::npos)) {
+                callbacks.push_back(event.callback);
+            }
+        }
+        if (runtime->passive_participants[5].phase
+                == BattleFramePassiveParticipantPhase::CompletionDeferred
+            && runtime->movement_controllers[5].actual_callback_pc
+                == 0x8008C6BCu
+            && runtime->movement_controllers[5].thread_state_0x19 == 2) {
+            break;
+        }
+    }
+
+    ASSERT_EQ(
+        runtime->passive_participants[5].phase,
+        BattleFramePassiveParticipantPhase::CompletionDeferred);
+    EXPECT_EQ(runtime->passive_participants[5].worker_index, -1);
+    EXPECT_EQ(runtime->movement_controllers[5].actual_callback_pc, 0x8008C6BCu);
+    EXPECT_EQ(runtime->movement_controllers[5].deferred_callback_pc, 0u);
+    EXPECT_EQ(runtime->movement_controllers[5].thread_state_0x19, 2);
+    EXPECT_TRUE(std::none_of(
+        runtime->workers.begin(),
+        runtime->workers.end(),
+        [](const BattleFrameWorker& worker) {
+            return worker.slot == 5
+                && worker.controller_family
+                    == BattleMovementControllerFamily::AmbientIdle;
+        }));
+    EXPECT_NE(std::find(
+        callbacks.begin(),
+        callbacks.end(),
+        "FUN_8008C98C_state0_publish_8008C6BC"), callbacks.end());
+    EXPECT_NE(std::find(
+        callbacks.begin(),
+        callbacks.end(),
+        "FUN_8008C98C_state1_to_8008C6BC"), callbacks.end());
+    EXPECT_NE(std::find(
+        callbacks.begin(),
+        callbacks.end(),
+        "FUN_8008C6BC_state0_to_state2"), callbacks.end());
+
+    const auto* after = find_frame_combatant(runtime->state, 5);
+    ASSERT_NE(after, nullptr);
+    EXPECT_EQ(after->grid_position.grid_x, grid_before.grid_x);
+    EXPECT_EQ(after->grid_position.grid_z, grid_before.grid_z);
+    EXPECT_FLOAT_EQ(after->pos_holder.x, holder_before.x);
+    EXPECT_FLOAT_EQ(after->pos_holder.y, holder_before.y);
+    EXPECT_FLOAT_EQ(after->pos_holder.z, holder_before.z);
+    EXPECT_FLOAT_EQ(after->combatant_cur_pos_0x1c.x, current_before.x);
+    EXPECT_FLOAT_EQ(after->combatant_cur_pos_0x1c.y, current_before.y);
+    EXPECT_FLOAT_EQ(after->combatant_cur_pos_0x1c.z, current_before.z);
+    EXPECT_EQ(rng, 0x13572468u);
+}
+
 TEST(SavorPredictBattleMovementInvocationModel, UnsupportedScopeRemainsDrainable) {
     auto input = passive_input(0, 4);
     input.relation_scope = BattleMovementRelationScope::Unsupported;
@@ -309,30 +389,111 @@ TEST(SavorPredictBattleMovementInvocationModel, UnsupportedScopeRemainsDrainable
     }
 }
 
-TEST(SavorPredictBattleMovementInvocationRuntime, StagesSetupDispatchRelayAndMask) {
+TEST(SavorPredictBattleMovementInvocationRuntime, PreservesPersistentRelayAndPublishesLatestDeferredDispatch) {
     auto runtime = initialize_frame_runtime(frame_slots());
     ASSERT_TRUE(runtime.has_value());
     const auto scheduled = schedule_fallback_action(*runtime, 0, 4, 7);
     ASSERT_TRUE(scheduled.scheduled);
     ASSERT_TRUE(runtime->active_action.has_value());
+    EXPECT_EQ(runtime->active_action->passive_completion_mask, 0);
+    EXPECT_EQ(runtime->active_action->phase,
+              BattleFrameActionPhase::Scheduled);
+    EXPECT_EQ(runtime->active_action->active_controller_phase,
+              BattleFrameActiveControllerPhase::SelectorPending);
+    ASSERT_EQ(runtime->workers.size(), 1u);
+    EXPECT_TRUE(runtime->workers.front().activation_pending);
+    EXPECT_EQ(runtime->passive_participants[1].phase,
+              BattleFramePassiveParticipantPhase::InitialRelayPending);
+    EXPECT_EQ(runtime->movement_controllers[1].actual_callback_pc,
+              0x800804B8u);
+    EXPECT_EQ(runtime->movement_controllers[1].deferred_callback_pc,
+              0x800804B8u);
+    EXPECT_EQ(runtime->movement_controllers[1].thread_state_0x19, 0);
+    EXPECT_EQ(runtime->movement_controllers[0].actual_callback_pc,
+              0x80086C68u);
+    EXPECT_FALSE(runtime->passive_participants[1].completion_bit_set);
+
+    std::uint32_t rng = 0x12345678u;
+    const auto relay0 = run_first_turn_frame(*runtime, rng);
+    EXPECT_EQ(runtime->active_action->phase, BattleFrameActionPhase::Active);
+    EXPECT_EQ(runtime->movement_controllers[0].actual_callback_pc, 0x80086C68u);
+    EXPECT_EQ(runtime->movement_controllers[0].thread_state_0x19, 3);
+    EXPECT_EQ(runtime->movement_controllers[1].actual_callback_pc, 0x800801A8u);
+    EXPECT_EQ(runtime->movement_controllers[1].thread_state_0x19, 0);
+    EXPECT_EQ(runtime->active_action->passive_completion_mask, 0);
+    EXPECT_NE(std::find_if(relay0.events.begin(), relay0.events.end(),
+        [](const BattleFrameStepEvent& event) {
+            return event.step_kind == BattleFrameWorkerStepKind::PassiveRelayPublish
+                && event.callback == "FUN_8008E2B0_setup_relay";
+        }), relay0.events.end());
+
+    const auto selected = run_first_turn_frame(*runtime, rng);
+    EXPECT_EQ(runtime->movement_controllers[1].thread_state_0x19, 1);
+    EXPECT_EQ(runtime->active_action->passive_completion_mask, 0);
+    EXPECT_EQ(runtime->active_action->phase,
+              BattleFrameActionPhase::HandoffPending);
+    EXPECT_EQ(runtime->active_action->active_controller_phase,
+              BattleFrameActiveControllerPhase::SelectedWorkerPending);
+    EXPECT_EQ(runtime->active_action->passive_completion_mask, 0);
+    ASSERT_EQ(runtime->workers.size(), 1u);
+    EXPECT_TRUE(runtime->workers.front().activation_pending);
+    EXPECT_NE(std::find_if(selected.events.begin(), selected.events.end(),
+        [](const BattleFrameStepEvent& event) {
+            return event.step_kind == BattleFrameWorkerStepKind::ActiveWorkerPublish;
+        }), selected.events.end());
+
+    const auto dispatched = run_first_turn_frame(*runtime, rng);
+    EXPECT_EQ(rng, 0x12345678u);
     EXPECT_EQ(runtime->active_action->passive_completion_mask, 0x32);
     EXPECT_EQ(runtime->active_action->phase,
               BattleFrameActionPhase::PassiveDispatched);
-    EXPECT_EQ(runtime->workers.size(), 1u);
-    EXPECT_EQ(runtime->passive_participants[1].phase,
-              BattleFramePassiveParticipantPhase::DispatchRelayPending);
-    EXPECT_EQ(runtime->passive_participants[1].deferred_callback_pc,
-              0x8008DEECu);
     EXPECT_TRUE(runtime->passive_participants[1].completion_bit_set);
+    EXPECT_EQ(runtime->movement_controllers[1].actual_callback_pc, 0x8008DEECu);
+    EXPECT_EQ(runtime->movement_controllers[1].deferred_callback_pc, 0u);
+    EXPECT_EQ(runtime->movement_controllers[1].thread_state_0x19, 0);
+    EXPECT_EQ(runtime->passive_participants[1].phase,
+              BattleFramePassiveParticipantPhase::Dispatching);
+    EXPECT_NE(std::find_if(dispatched.events.begin(), dispatched.events.end(),
+        [](const BattleFrameStepEvent& event) {
+            return event.step_kind
+                    == BattleFrameWorkerStepKind::PassiveDispatchPublish
+                && event.callback == "FUN_8008E338_dispatch_relay"
+                && event.passive_completion_mask_before == 0
+                && event.passive_completion_mask_after == 0x32;
+        }), dispatched.events.end());
+}
+
+TEST(SavorPredictBattleMovementInvocationRuntime, RelayPublishersPreservePersistentActualCallbackAndState) {
+    auto runtime = initialize_frame_runtime(frame_slots());
+    ASSERT_TRUE(runtime.has_value());
+    auto& controller = runtime->movement_controllers[1];
+    controller.actual_callback_pc = 0x8008C7B0u;
+    controller.deferred_callback_pc = 0x8008D960u;
+    controller.thread_state_0x19 = 1;
+    const auto revision_before = controller.revision;
+
+    const auto scheduled = schedule_fallback_action(*runtime, 0, 4, 7);
+    ASSERT_TRUE(scheduled.scheduled);
+    EXPECT_EQ(controller.actual_callback_pc, 0x8008C7B0u);
+    EXPECT_EQ(controller.deferred_callback_pc, 0x800804B8u);
+    EXPECT_EQ(controller.thread_state_0x19, 1);
+    EXPECT_GT(controller.revision, revision_before);
+    const auto setup_revision = controller.revision;
 
     std::uint32_t rng = 0x12345678u;
-    const auto frame = run_first_turn_frame(*runtime, rng);
+    for (int frame = 0;
+         frame < 8
+            && runtime->active_action->passive_completion_mask == 0;
+         ++frame) {
+        ASSERT_TRUE(run_first_turn_frame(*runtime, rng).ok);
+    }
+
+    EXPECT_NE(runtime->active_action->passive_completion_mask, 0);
+    EXPECT_EQ(controller.actual_callback_pc, 0x8008C7B0u);
+    EXPECT_EQ(controller.deferred_callback_pc, 0x8008DEECu);
+    EXPECT_EQ(controller.thread_state_0x19, 1);
+    EXPECT_GT(controller.revision, setup_revision);
     EXPECT_EQ(rng, 0x12345678u);
-    EXPECT_EQ(runtime->active_action->passive_completion_mask, 0x32);
-    EXPECT_NE(std::find_if(frame.events.begin(), frame.events.end(),
-        [](const BattleFrameStepEvent& event) {
-            return event.step_kind == BattleFrameWorkerStepKind::PassiveRelayAdvance;
-        }), frame.events.end());
 }
 
 TEST(SavorPredictBattleMovementInvocationRuntime, PublishesObservedMasksDuringActionSetup) {
@@ -348,6 +509,14 @@ TEST(SavorPredictBattleMovementInvocationRuntime, PublishesObservedMasksDuringAc
         ASSERT_TRUE(runtime.has_value());
         ASSERT_TRUE(schedule_fallback_action(*runtime, vector.actor, vector.target).scheduled);
         ASSERT_TRUE(runtime->active_action.has_value());
+        EXPECT_EQ(runtime->active_action->passive_completion_mask, 0);
+        std::uint32_t rng = 0x10203040u;
+        for (int frame = 0;
+             frame < 8
+                && runtime->active_action->passive_completion_mask == 0;
+             ++frame) {
+            ASSERT_TRUE(run_first_turn_frame(*runtime, rng).ok);
+        }
         EXPECT_EQ(runtime->active_action->passive_completion_mask, vector.mask);
         EXPECT_EQ(runtime->active_action->completion_turn_phase, 4);
         EXPECT_EQ(runtime->active_action->phase,
@@ -489,6 +658,93 @@ TEST(SavorPredictBattleMovementInvocationRuntime, QueuedStdActionTransitionSepar
 
     EXPECT_EQ(runtime->active_action->passive_completion_mask, 0x32);
     EXPECT_EQ(runtime->active_action->completion_turn_phase, 4);
+}
+
+TEST(SavorPredictBattleMovementInvocationRuntime, NewInstructionRevisionRetiresPriorPlaybackBeforeCallbackVisit) {
+    auto runtime = initialize_frame_runtime(frame_slots());
+    ASSERT_TRUE(runtime.has_value());
+    ASSERT_TRUE(schedule_fallback_action(*runtime, 1, 4, 7).scheduled);
+    auto* combatant = find_frame_combatant(runtime->state, 0);
+    ASSERT_NE(combatant, nullptr);
+    combatant->visual_instruction_revision = 1;
+    combatant->visual_instruction_mode_0x6 = 2;
+    ASSERT_TRUE(install_low_level_invocation_callback(*runtime, 0));
+
+    auto& callback =
+        runtime->visual.persistent_instruction_callbacks[0];
+    callback.action_ordinal = 7;
+    callback.instruction_state_revision = 1;
+    callback.current_motion_resource_present = true;
+    callback.current_motion_id = 10;
+    runtime->visual.resources[0] = CombatantVisualResource{
+        .binding = {.slot = 0, .resource_stem = "test"},
+        .action_rows = {
+            CombatantStdActionRow{
+                .index = 0,
+                .action_id = 2,
+                .row_type = 1,
+                .callback_index = 8,
+                .callback_ordinal = 10,
+                .transition_gate_divisor_bits = 0x40A00000u,
+            },
+            CombatantStdActionRow{
+                .index = 1,
+                .action_id = -1,
+                .row_type = 3,
+            },
+        },
+        .includes_sentinel = true,
+        .provenance = "revision-ownership fixture",
+    };
+    const auto installed = install_action_motion_playback({
+        .action_ordinal = 7,
+        .slot = 0,
+        .instruction_state_revision = 1,
+        .selected_action_row_index = 0,
+        .selected_action_row_duration_bits = 0x40A00000u,
+        .continuation =
+            ActionMotionPlaybackContinuation::State7LoadLookedUpTo14,
+        .provenance = "prior revision playback",
+    });
+    ASSERT_TRUE(installed.installed);
+    runtime->visual.action_motion_playbacks[0] = installed.runtime;
+
+    ASSERT_TRUE(stage_battle_frame_visual_instruction_state(
+        *runtime,
+        7,
+        CombatantVisualInstructionSnapshot{
+            .slot = 0,
+            .runtime_instruction_mode = 2,
+            .selected_std_action_key = 2,
+            .subtype = 0,
+            .target_slot = 4,
+            .knowledge = CombatantVisualInstructionKnowledge::Known,
+            .provenance = "new instruction revision",
+        }));
+    ASSERT_EQ(combatant->visual_instruction_revision, 2u);
+
+    std::uint32_t rng = 0x89ABCDEFu;
+    const auto frame = run_first_turn_frame(*runtime, rng);
+    ASSERT_TRUE(frame.ok);
+
+    EXPECT_EQ(
+        runtime->visual.action_motion_playbacks[0].phase,
+        ActionMotionPlaybackPhase::Inactive);
+    EXPECT_EQ(callback.instruction_state_revision, 2u);
+    EXPECT_EQ(callback.callback_state, 3);
+    EXPECT_NE(std::find_if(
+        frame.events.begin(),
+        frame.events.end(),
+        [](const BattleFrameStepEvent& event) {
+            return event.step_kind
+                    == BattleFrameWorkerStepKind::ActionMotionPublicationRelease
+                && event.callback == "InstructionRevisionReplacement"
+                && event.detail.find("playback_owner_revision=1")
+                    != std::string::npos
+                && event.detail.find("current_instruction_revision=2")
+                    != std::string::npos;
+        }), frame.events.end());
+    EXPECT_EQ(rng, 0x89ABCDEFu);
 }
 
 TEST(SavorPredictBattleMovementInvocationRuntime, QueuedStdActionTransitionPublishesCriticalAndFallbackModes) {
@@ -785,6 +1041,85 @@ TEST(SavorPredictBattleMovementInvocationRuntime, PursuitRebuildObservesTargetMo
               before.grid_z);
 }
 
+TEST(SavorPredictBattleMovementInvocationRuntime, AdjacentPursuitEntersState17LifecycleInsteadOfCompleting) {
+    auto runtime = initialize_frame_runtime(frame_slots());
+    ASSERT_TRUE(runtime.has_value());
+    ASSERT_TRUE(commit_movement_grid_8008178c(
+        runtime->state, 0, {.grid_x = 4, .grid_z = 5}));
+    ASSERT_TRUE(commit_movement_grid_8008178c(
+        runtime->state, 5, {.grid_x = 5, .grid_z = 5}));
+    const auto scheduled = schedule_fallback_action(*runtime, 1, 4);
+    ASSERT_TRUE(scheduled.scheduled);
+
+    std::uint32_t rng = 0x778899aau;
+    const BattleFrameStepEvent* publication = nullptr;
+    BattleFrameRunResult observed;
+    for (int frame = 0; frame < 96 && publication == nullptr; ++frame) {
+        observed = run_first_turn_frame(*runtime, rng);
+        ASSERT_TRUE(observed.ok);
+        const auto found = std::find_if(
+            observed.events.begin(),
+            observed.events.end(),
+            [](const BattleFrameStepEvent& event) {
+                return event.slot == 0
+                    && event.step_kind
+                        == BattleFrameWorkerStepKind::PursuitCoordinationState2
+                    && (event.pursuit_coordination_branch
+                            == BattlePursuitCoordinationBranch::
+                                PeerReadyPublication
+                        || event.pursuit_coordination_branch
+                            == BattlePursuitCoordinationBranch::
+                                CoordinatedPublication);
+            });
+        if (found != observed.events.end()) {
+            publication = &*found;
+        }
+    }
+
+    ASSERT_NE(publication, nullptr);
+    EXPECT_EQ(publication->pursuit_owner_state_0x50, 0x22);
+    EXPECT_TRUE(
+        publication->pursuit_peer_state_0x50 == 0x11
+        || publication->pursuit_peer_state_0x50 == 0x12);
+    EXPECT_EQ(publication->pursuit_owner_countdown_0x51, 8);
+    EXPECT_EQ(runtime->pursuit_participants[0].queued_special_state, 0x11);
+    EXPECT_EQ(runtime->pursuit_participants[0].queued_field9, 0);
+    EXPECT_TRUE(runtime->pursuit_lifecycles[0].active);
+    EXPECT_EQ(
+        runtime->pursuit_lifecycles[0].phase,
+        BattleFramePursuitLifecyclePhase::InstructionState3);
+    EXPECT_EQ(rng, 0x778899aau);
+
+    auto* owner = find_frame_combatant(runtime->state, 0);
+    ASSERT_NE(owner, nullptr);
+    owner->visual_instruction_mode_0x6 = 4;
+    owner->visual_instruction_knowledge =
+        CombatantVisualInstructionKnowledge::Known;
+    runtime->pursuit_participants[0].queued_field9 = 1;
+
+    bool saw_terminal = false;
+    for (int frame = 0; frame < 8 && !saw_terminal; ++frame) {
+        const auto step = run_first_turn_frame(*runtime, rng);
+        ASSERT_TRUE(step.ok);
+        for (const auto& event : step.events) {
+            if (event.slot != 0) {
+                continue;
+            }
+            if (event.step_kind
+                    == BattleFrameWorkerStepKind::PursuitInstructionState3Poll
+                && event.pursuit_terminal_result == 1) {
+                saw_terminal = true;
+                EXPECT_NE(
+                    event.detail.find("state2_publication=same_visit"),
+                    std::string::npos);
+            }
+        }
+    }
+    EXPECT_TRUE(saw_terminal);
+    EXPECT_EQ(runtime->pursuit_participants[0].queued_field9, 1);
+    EXPECT_EQ(rng, 0x778899aau);
+}
+
 TEST(SavorPredictBattleMovementInvocationRuntime, PursuitLegsDoNotWaitForOpposingWorkerStop) {
     auto runtime = initialize_frame_runtime(frame_slots());
     ASSERT_TRUE(runtime.has_value());
@@ -891,7 +1226,7 @@ TEST(SavorPredictBattleMovementInvocationRuntime, ResolutionOverrideClearsMaskBe
     EXPECT_EQ(rng, 0x66778899u);
 }
 
-TEST(SavorPredictBattleMovementInvocationRuntime, AutomaticOverrideWaitsForPassiveMovementBoundary) {
+TEST(SavorPredictBattleMovementInvocationRuntime, AutomaticOverrideDoesNotBypassMissingState17InstructionBoundary) {
     auto runtime = initialize_frame_runtime(frame_slots());
     ASSERT_TRUE(runtime.has_value());
     const auto scheduled = schedule_fallback_action(*runtime, 1, 4);
@@ -913,7 +1248,8 @@ TEST(SavorPredictBattleMovementInvocationRuntime, AutomaticOverrideWaitsForPassi
 
     const auto drain = run_first_turn_action_until_complete(
         *runtime, rng, scheduled.action_ordinal, 1024);
-    ASSERT_TRUE(drain.ok);
+    EXPECT_FALSE(drain.ok);
+    EXPECT_TRUE(drain.ambiguous);
     const auto slot0_commits = std::count_if(
         drain.events.begin(), drain.events.end(),
         [](const BattleFrameStepEvent& event) {
@@ -923,17 +1259,25 @@ TEST(SavorPredictBattleMovementInvocationRuntime, AutomaticOverrideWaitsForPassi
                 && event.step_kind == BattleFrameWorkerStepKind::MovementCommit;
         });
     EXPECT_GE(slot0_commits, 1);
-    const auto publisher = std::find_if(
-        drain.events.begin(), drain.events.end(),
+    const auto state17 = std::find_if(
+        drain.events.begin(),
+        drain.events.end(),
         [](const BattleFrameStepEvent& event) {
-            return event.callback == "movement_completion_override_publish";
+            return event.step_kind
+                == BattleFrameWorkerStepKind::PursuitCoordinationState2;
         });
-    ASSERT_NE(publisher, drain.events.end());
-    EXPECT_EQ(publisher->callback_pc, 0x80085F34u);
-    EXPECT_TRUE(publisher->completion_override);
-    EXPECT_EQ(publisher->draws_consumed, 0);
-    EXPECT_EQ(runtime->active_action->phase, BattleFrameActionPhase::Complete);
-    EXPECT_EQ(runtime->active_action->completion_turn_phase, 5);
+    ASSERT_NE(state17, drain.events.end());
+    EXPECT_EQ(state17->draws_consumed, 0);
+    EXPECT_NE(runtime->active_action->phase, BattleFrameActionPhase::Complete);
+    EXPECT_TRUE(std::any_of(
+        runtime->pursuit_lifecycles.begin(),
+        runtime->pursuit_lifecycles.end(),
+        [](const BattleFramePursuitLifecycleRuntime& lifecycle) {
+            return lifecycle.active
+                && lifecycle.phase
+                    == BattleFramePursuitLifecyclePhase::InstructionState3
+                && !lifecycle.instruction_transition_staged;
+        }));
 }
 
 TEST(SavorPredictBattleMovementInvocationRuntime, DeadAffectedTargetClearsThroughRemoval) {
@@ -982,19 +1326,37 @@ TEST(SavorPredictBattleMovementInvocationRuntime, EnemyDirectHandoffRunsSameVisi
         });
     ASSERT_TRUE(scheduled.scheduled);
     std::uint32_t rng = 0x10203040u;
-    const auto frame = run_first_turn_frame(*runtime, rng);
-    const auto handoff = std::find_if(frame.events.begin(), frame.events.end(),
-        [](const BattleFrameStepEvent& event) {
-            return event.step_kind == BattleFrameWorkerStepKind::MovementControllerHandoff;
-        });
-    const auto callback = std::find_if(frame.events.begin(), frame.events.end(),
-        [](const BattleFrameStepEvent& event) {
-            return event.step_kind == BattleFrameWorkerStepKind::CallbackEntry
-                && event.worker_kind == BattleFrameWorkerKind::EnemyDirectAttack;
-        });
-    ASSERT_NE(handoff, frame.events.end());
-    ASSERT_NE(callback, frame.events.end());
-    EXPECT_EQ(handoff->frame_index, callback->frame_index);
+    std::optional<int> handoff_frame;
+    std::optional<int> callback_frame;
+    for (int frame_index = 0;
+         frame_index < 8
+            && (!handoff_frame.has_value() || !callback_frame.has_value());
+         ++frame_index) {
+        const auto frame = run_first_turn_frame(*runtime, rng);
+        ASSERT_TRUE(frame.ok);
+        const auto handoff = std::find_if(
+            frame.events.begin(), frame.events.end(),
+            [](const BattleFrameStepEvent& event) {
+                return event.step_kind
+                    == BattleFrameWorkerStepKind::MovementControllerHandoff;
+            });
+        if (handoff != frame.events.end()) {
+            handoff_frame = handoff->frame_index;
+        }
+        const auto callback = std::find_if(
+            frame.events.begin(), frame.events.end(),
+            [](const BattleFrameStepEvent& event) {
+                return event.step_kind == BattleFrameWorkerStepKind::CallbackEntry
+                    && event.worker_kind
+                        == BattleFrameWorkerKind::EnemyDirectAttack;
+            });
+        if (callback != frame.events.end()) {
+            callback_frame = callback->frame_index;
+        }
+    }
+    ASSERT_TRUE(handoff_frame.has_value());
+    ASSERT_TRUE(callback_frame.has_value());
+    EXPECT_EQ(*handoff_frame, *callback_frame);
     EXPECT_EQ(rng, 0x10203040u);
 }
 

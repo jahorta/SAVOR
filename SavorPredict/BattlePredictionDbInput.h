@@ -50,6 +50,7 @@ struct BattlePredictionDbInputOptions {
     std::filesystem::path action_view_std_json_dir;
     bool allow_seed_candidate_fallback = false;
     bool allow_profile_overrides = false;
+    bool emit_causal_diagnostics = false;
 };
 
 struct BattlePredictionDbInputMetadata {

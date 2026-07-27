@@ -29,6 +29,7 @@ struct BattlePredictorCliOptions {
     bool json = false;
     bool allow_seed_candidate_fallback = false;
     bool allow_profile_overrides = false;
+    bool emit_causal_diagnostics = false;
     bool profile_explicit = false;
 };
 

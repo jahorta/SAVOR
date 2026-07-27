@@ -57,6 +57,8 @@ std::string build_first_battle_direct_reset_thread_position_profile_ini(
     std::uint32_t thread_list_max_nodes = 128);
 std::string build_first_battle_direct_transition_producer_profile_ini(
     std::uint32_t thread_list_max_nodes = 128);
+std::string build_first_battle_state17_lifecycle_profile_ini(
+    std::uint32_t thread_list_max_nodes = 128);
 std::string build_first_battle_direct_transition_input_audit_profile_ini(
     std::uint32_t thread_list_max_nodes = 128);
 int write_first_battle_capture_profile(
@@ -187,6 +189,11 @@ int write_first_battle_direct_reset_thread_position_profile(
     std::ostream& err,
     std::uint32_t thread_list_max_nodes = 128);
 int write_first_battle_direct_transition_producer_profile(
+    const std::filesystem::path& output_path,
+    std::ostream& out,
+    std::ostream& err,
+    std::uint32_t thread_list_max_nodes = 128);
+int write_first_battle_state17_lifecycle_profile(
     const std::filesystem::path& output_path,
     std::ostream& out,
     std::ostream& err,

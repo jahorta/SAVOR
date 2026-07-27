@@ -74,6 +74,42 @@ TEST(SavorPredictQueuedInstructionParam, CommandIdsKeepTheirSemanticKinds) {
     EXPECT_EQ(focus.parameter.raw_value, std::optional<std::int16_t>{-1});
 }
 
+TEST(SavorPredictQueuedInstructionParam, SetupTurnGuardOrsStatusBitZero) {
+    const auto transition = model_setup_turn_status_transition({
+        .queued_instruction = 4,
+        .current_status_flags = 0x00000100u,
+    });
+
+    EXPECT_EQ(transition.status, QueuedInstructionParamStatus::Validated);
+    EXPECT_TRUE(transition.write_performed);
+    EXPECT_EQ(transition.applied_mask, 0x00000001u);
+    EXPECT_EQ(transition.status_flags_before, 0x00000100u);
+    EXPECT_EQ(transition.status_flags_after, 0x00000101u);
+}
+
+TEST(SavorPredictQueuedInstructionParam, SetupTurnNonGuardLeavesStatusUnchanged) {
+    const auto transition = model_setup_turn_status_transition({
+        .queued_instruction = 3,
+        .current_status_flags = 0x00000100u,
+    });
+
+    EXPECT_EQ(transition.status, QueuedInstructionParamStatus::Validated);
+    EXPECT_FALSE(transition.write_performed);
+    EXPECT_EQ(transition.applied_mask, 0u);
+    EXPECT_EQ(transition.status_flags_after, 0x00000100u);
+}
+
+TEST(SavorPredictQueuedInstructionParam, SetupTurnMissingCommandDoesNotGuessGuard) {
+    const auto transition = model_setup_turn_status_transition({
+        .queued_instruction = std::nullopt,
+        .current_status_flags = 0x00000100u,
+    });
+
+    EXPECT_EQ(transition.status, QueuedInstructionParamStatus::MissingInput);
+    EXPECT_FALSE(transition.write_performed);
+    EXPECT_EQ(transition.status_flags_after, 0x00000100u);
+}
+
 TEST(SavorPredictQueuedInstructionParam, ReliablePostMacroSnapshotAlwaysWins) {
     const auto missing_macro = reconcile_queued_instruction_macro_evidence({
         .reliable_pre_macro_value = -1,

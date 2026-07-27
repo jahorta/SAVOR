@@ -122,6 +122,7 @@
     <ClCompile Include="ActionViewStdResourceResolver.cpp" />
     <ClCompile Include="ActionMotionPlaybackModel.cpp" />
     <ClCompile Include="ActionMotionInvocationModel.cpp" />
+    <ClCompile Include="ActionMotionSetupDecisionModel.cpp" />
     <ClCompile Include="ActionMotionTargetModel.cpp" />
     <ClCompile Include="AttackDamageValueCheckpointModel.cpp" />
     <ClCompile Include="AttackResolutionCheckpointModel.cpp" />
@@ -133,6 +134,7 @@
     <ClCompile Include="BattlePredictionScenario.cpp" />
     <ClCompile Include="BattleMovementInvocationModel.cpp" />
     <ClCompile Include="BattleMovementPathModel.cpp" />
+    <ClCompile Include="BattlePursuitCoordinationModel.cpp" />
     <ClCompile Include="BattleTargetReactionStateModel.cpp" />
     <ClCompile Include="BattleFrameSchedulerModel.cpp" />
     <ClCompile Include="BattleFrameStateModel.cpp" />
@@ -204,6 +206,7 @@
     <ClInclude Include="ActionViewStdResourceResolver.h" />
     <ClInclude Include="ActionMotionPlaybackModel.h" />
     <ClInclude Include="ActionMotionInvocationModel.h" />
+    <ClInclude Include="ActionMotionSetupDecisionModel.h" />
     <ClInclude Include="ActionMotionTargetModel.h" />
     <ClInclude Include="AttackDamageValueCheckpointModel.h" />
     <ClInclude Include="AttackResolutionCheckpointModel.h" />
@@ -216,6 +219,7 @@
     <ClInclude Include="BattlePredictionScenario.h" />
     <ClInclude Include="BattleMovementInvocationModel.h" />
     <ClInclude Include="BattleMovementPathModel.h" />
+    <ClInclude Include="BattlePursuitCoordinationModel.h" />
     <ClInclude Include="BattleTargetReactionStateModel.h" />
     <ClInclude Include="BattleFrameSchedulerModel.h" />
     <ClInclude Include="BattleFrameStateModel.h" />

@@ -1,3 +1,8 @@
+## Approved scope
+
+- Do not go beyond the scope explicitly approved by the user. This applies to implementation, refactoring, static analysis, live capture, validation runs, and creation of durable research artifacts.
+- When approved work exposes a separate downstream issue or possible next boundary, report it and stop. Do not investigate or implement that boundary until the user explicitly approves it.
+
 ## SavorE2E arguments
 
 When running SavorE2E.exe, use these arguments for the required artifacts:

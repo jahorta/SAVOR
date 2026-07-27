@@ -404,7 +404,7 @@ JsonObject checkpoint_probe(const BuilderSection& section, const BuilderSection&
         probe["activate_on_pc"] = json_u64(parse_unsigned(value));
     if (const auto value = optional(section, "max_hits"); !value.empty())
         probe["max_hits"] = json_u64(parse_unsigned(value));
-    if (pc == 0x8000A2FCu)
+    if (pc == 0x8000A388u)
         probe["frame_clock"] = picojson::value(true);
     JsonObject symbol;
     for (const auto key : { "name", "function", "checkpoint" })

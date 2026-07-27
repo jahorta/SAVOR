@@ -268,6 +268,7 @@ std::string pc_worker_thread_list_snapshot_sample(std::uint32_t max_nodes)
 {
     return "thread_list:head_ptr=0x80311A84,next=0x04,max=" + std::to_string(max_nodes) + ","
         "fields=callback@0x00:u32|next@0x04:u32|parent@0x08:u32|"
+        "callback_data@0x10:u32|root_number@0x14:u32|"
         "flags@0x18:u8|state@0x19:u8|depth@0x1b:u8|"
         "order_bits@0x20:u32|payload_word@0x24:u32";
 }
@@ -4493,9 +4494,9 @@ std::string build_first_battle_view_placement_frame_thread_profile_ini(
 
     write_checkpoint(
         out,
-        "battle_case5_after_threads_8000A2FC",
-        "8000A2FC",
-        "battle_case5_after_threads",
+        "battle_controller_return_threads_8000A388",
+        "8000A388",
+        "battle_controller_return_threads",
         "Battle::_battleController_8000a118",
         "case5_after_runBattleThreads",
         false,
@@ -4812,9 +4813,9 @@ static std::string build_first_battle_view_placement_profile_ini(
 
     write_checkpoint(
         out,
-        "battle_case5_after_threads_8000A2FC",
-        "8000A2FC",
-        "battle_case5_after_threads",
+        "battle_controller_return_threads_8000A388",
+        "8000A388",
+        "battle_controller_return_threads",
         "Battle::_battleController_8000a118",
         "case5_after_runBattleThreads",
         false,
@@ -5342,9 +5343,9 @@ std::string build_first_battle_movement_destination_stop_profile_ini(
 
     write_checkpoint(
         out,
-        "battle_case5_after_threads_8000A2FC",
-        "8000A2FC",
-        "battle_case5_after_threads",
+        "battle_controller_return_threads_8000A388",
+        "8000A388",
+        "battle_controller_return_threads",
         "Battle::_battleController_8000a118",
         "movement_destination_stop_frame",
         false,
@@ -5791,9 +5792,9 @@ std::string build_first_battle_action_view_service_lifecycle_profile_ini(
         16);
     write_checkpoint(
         out,
-        "battle_case5_after_threads_8000A2FC",
-        "8000A2FC",
-        "battle_case5_after_threads",
+        "battle_controller_return_threads_8000A388",
+        "8000A388",
+        "battle_controller_return_threads",
         "Battle::_battleController_8000a118",
         "frame_thread_order",
         false,
@@ -6488,9 +6489,9 @@ std::string build_first_battle_visual_publication_order_profile_ini(
         16);
     write_checkpoint(
         out,
-        "battle_case5_after_threads_8000A2FC",
-        "8000A2FC",
-        "battle_case5_after_threads",
+        "battle_controller_return_threads_8000A388",
+        "8000A388",
+        "battle_controller_return_threads",
         "Battle::_battleController_8000a118",
         "frame_thread_order",
         false,
@@ -7063,9 +7064,9 @@ std::string build_first_battle_pc_worker_selector_lifetime_profile_ini(
         {"actor_slot:3", "target_slot:4"}, 32, true);
     write_checkpoint(
         out,
-        "battle_case5_after_threads_8000A2FC",
-        "8000A2FC",
-        "battle_case5_after_threads",
+        "battle_controller_return_threads_8000A388",
+        "8000A388",
+        "battle_controller_return_threads",
         "Battle::_battleController_8000a118",
         "case5_after_runBattleThreads",
         false,
@@ -8151,9 +8152,9 @@ std::string build_first_battle_mode1_state6_progress_profile_ini(
 
     write_checkpoint(
         out,
-        "battle_case5_after_threads_8000A2FC",
-        "8000A2FC",
-        "battle_case5_after_threads",
+        "battle_controller_return_threads_8000A388",
+        "8000A388",
+        "battle_controller_return_threads",
         "Battle::_battleController_8000A118",
         "frame_end_after_thread_traversal",
         false,
@@ -8721,6 +8722,11 @@ std::string build_first_battle_action_view_pathing_loop_profile_ini()
 std::string build_first_battle_thread_pathing_timing_profile_ini(
     std::uint32_t thread_list_max_nodes)
 {
+    if (thread_list_max_nodes != 128 && thread_list_max_nodes != 256) {
+        throw std::invalid_argument(
+            "first-battle thread/pathing timing profile list max must be 128 or 256");
+    }
+
     const auto memory_samples = thread_pathing_timing_memory_samples();
     const auto memory_views = as_string_views(memory_samples);
     const auto state_samples = thread_pathing_timing_state_addrprog_samples();
@@ -8791,21 +8797,22 @@ std::string build_first_battle_thread_pathing_timing_profile_ini(
         thread_list_views,
         32);
 
+    // This is the common return boundary for every battle-controller case.
+    // It is intentionally active from job start so the input macro is covered.
     write_checkpoint(
         out,
-        "battle_case5_after_threads_8000A2FC",
-        "8000A2FC",
-        "battle_case5_after_threads",
+        "battle_controller_return_threads_8000A388",
+        "8000A388",
+        "battle_controller_return_threads",
         "Battle::_battleController_8000a118",
-        "case5_after_runBattleThreads",
+        "function_return_after_all_cases",
         false,
         memory_views,
         {},
         {},
         state_views,
         thread_list_views,
-        2400,
-        0x80082134u);
+        131072);
 
     write_checkpoint(
         out,
@@ -8883,11 +8890,108 @@ std::string build_first_battle_thread_pathing_timing_profile_ini(
 
     write_checkpoint(
         out,
+        "pathing_candidate_geometry_call_80011724",
+        "80011724",
+        "pathing_candidate_geometry_call",
+        "FUN_80011694",
+        "candidate_geometry_call",
+        false,
+        memory_views,
+        {
+            "input_reference:3",
+            "candidate_position:4",
+            "score_stack:5",
+            "path_vector:6",
+            "candidate_instruction:25",
+            "candidate_index:26",
+            "excluded_slot:27",
+            "thread_cursor:28",
+            "saved_input_reference:29",
+            "saved_path_vector:30",
+            "output_slot:31",
+        },
+        {
+            "scan_input_x:r3:0x00:u32",
+            "scan_input_y:r3:0x04:u32",
+            "scan_input_z:r3:0x08:u32",
+            "candidate_position_x:r4:0x00:u32",
+            "candidate_position_y:r4:0x04:u32",
+            "candidate_position_z:r4:0x08:u32",
+            "scan_score_before:r1:0x08:u32",
+            "scan_path_x:r6:0x00:u32",
+            "scan_path_y:r6:0x04:u32",
+            "scan_path_z:r6:0x08:u32",
+            "candidate_slot_0x00:r25:0x00:u8",
+            "candidate_flags_0xec:r25:0xec:u32",
+            "candidate_flags_0xf0:r25:0xf0:u32",
+            "candidate_extent_0x15c:r25:0x15c:u32",
+        },
+        {},
+        {},
+        8192,
+        0x80082134u);
+
+    write_checkpoint(
+        out,
+        "pathing_candidate_geometry_return_80011728",
+        "80011728",
+        "pathing_candidate_geometry_return",
+        "FUN_80011694",
+        "candidate_geometry_return",
+        false,
+        memory_views,
+        {
+            "accepted_return:3",
+            "candidate_instruction:25",
+            "candidate_index:26",
+            "excluded_slot:27",
+            "thread_cursor:28",
+            "saved_input_reference:29",
+            "saved_path_vector:30",
+            "output_slot:31",
+        },
+        {
+            "scan_score_after:r1:0x08:u32",
+            "candidate_slot_0x00:r25:0x00:u8",
+            "candidate_flags_0xec:r25:0xec:u32",
+            "candidate_flags_0xf0:r25:0xf0:u32",
+            "candidate_extent_0x15c:r25:0x15c:u32",
+        },
+        {},
+        {},
+        8192,
+        0x80082134u);
+
+    write_checkpoint(
+        out,
         "pathing_scan_zero_score_fallback_80011794",
         "80011794",
         "pathing_scan_zero_score_fallback",
         "FUN_80011694",
         "zero_score_fallback_rng_call",
+        false,
+        memory_views,
+        {
+            "candidate_index_after_scan:26",
+            "excluded_slot:27",
+            "thread_cursor:28",
+            "saved_input_reference:29",
+            "saved_path_vector:30",
+            "output_slot:31",
+        },
+        {},
+        {},
+        {},
+        2048,
+        0x80082134u);
+
+    write_checkpoint(
+        out,
+        "pathing_scan_nonzero_return_800117C4",
+        "800117C4",
+        "pathing_scan_nonzero_return",
+        "FUN_80011694",
+        "nonzero_deterministic_return",
         false,
         memory_views,
         {
@@ -9100,8 +9204,8 @@ std::string build_battle_thread_producer_profile_ini(
         };
 
     write_producer_checkpoint(
-        "battle_case5_after_threads_8000A2FC", "8000A2FC",
-        "battle_case5_after_threads", "Battle::_battleController_8000a118",
+        "battle_controller_return_threads_8000A388", "8000A388",
+        "battle_controller_return_threads", "Battle::_battleController_8000a118",
         "thread_frame_boundary", {}, 2400);
 
     write_producer_checkpoint(
@@ -9476,9 +9580,9 @@ std::string build_first_battle_pre_handler_frame_pathing_profile_ini()
 
     write_checkpoint(
         out,
-        "battle_case5_after_threads_8000A2FC",
-        "8000A2FC",
-        "battle_case5_after_threads",
+        "battle_controller_return_threads_8000A388",
+        "8000A388",
+        "battle_controller_return_threads",
         "Battle::_battleController_8000a118",
         "case5_after_runBattleThreads",
         false,
@@ -9761,9 +9865,9 @@ std::string build_first_battle_float_motion_profile_ini()
 
     write_checkpoint(
         out,
-        "battle_case5_after_threads_8000A2FC",
-        "8000A2FC",
-        "battle_case5_after_threads",
+        "battle_controller_return_threads_8000A388",
+        "8000A388",
+        "battle_controller_return_threads",
         "Battle::_battleController_8000a118",
         "case5_after_runBattleThreads",
         false,
@@ -10116,9 +10220,9 @@ std::string build_first_battle_move_increment_read_watch_profile_ini()
 
     write_checkpoint(
         out,
-        "battle_case5_after_threads_8000A2FC",
-        "8000A2FC",
-        "battle_case5_after_threads",
+        "battle_controller_return_threads_8000A388",
+        "8000A388",
+        "battle_controller_return_threads",
         "Battle::_battleController_8000a118",
         "case5_after_runBattleThreads",
         false,
@@ -10231,10 +10335,10 @@ std::string build_first_battle_probe_layer_validation_profile_ini()
     };
     Array probes;
     probes.emplace_back(Object{
-        { "id", picojson::value("battle_case5_after_threads_8000A2FC") },
+        { "id", picojson::value("battle_controller_return_threads_8000A388") },
         { "group", picojson::value("probe_layer_validation") },
         { "kind", picojson::value("pc") },
-        { "address", number(0x8000A2FCu) },
+        { "address", number(0x8000A388u) },
         { "subscriptions", picojson::value(Array{ picojson::value("capture") }) },
         { "frame_clock", picojson::value(true) },
         { "max_hits", number(2400) },
@@ -10248,9 +10352,9 @@ std::string build_first_battle_probe_layer_validation_profile_ini()
             { "fields", picojson::value(std::move(thread_fields)) },
         }) }) },
         { "symbol", picojson::value(Object{
-            { "name", picojson::value("battle_case5_after_threads") },
+            { "name", picojson::value("battle_controller_return_threads") },
             { "function", picojson::value("Battle::_battleController_8000a118") },
-            { "checkpoint", picojson::value("case5_complete") },
+            { "checkpoint", picojson::value("function_return_after_all_cases") },
         }) },
     });
     probes.emplace_back(Object{
@@ -10312,7 +10416,7 @@ std::string build_first_battle_probe_layer_validation_profile_ini()
         { "flight_recorders", picojson::value(Array{ picojson::value(Object{
             { "id", picojson::value("turn_input_context") },
             { "member_probes", picojson::value(Array{
-                picojson::value("battle_case5_after_threads_8000A2FC"),
+                picojson::value("battle_controller_return_threads_8000A388"),
             }) },
             { "pre_events", number(2) },
             { "post_events", number(4) },
@@ -10805,41 +10909,41 @@ std::string build_first_battle_action_motion_invocation_profile_ini(
         for (const auto root_index : live_root_indices)
             append_root_state(samples, root_index);
         Object frame{
-            { "id", picojson::value("battle_case5_frame_clock_8000A2FC") },
+            { "id", picojson::value("battle_controller_return_frame_clock_8000A388") },
             { "group", picojson::value("action_motion_invocation") },
             { "kind", picojson::value("pc") },
-            { "address", number(0x8000A2FCu) },
+            { "address", number(0x8000A388u) },
             { "subscriptions", picojson::value(Array{ picojson::value("capture") }) },
             { "frame_clock", picojson::value(true) },
             { "max_hits", number(2400) },
             { "window", picojson::value("instruction_lifetime") },
             { "samples", picojson::value(std::move(samples)) },
-            { "symbol", symbol("battle_case5_frame_clock", "Battle::_battleController_8000A118", "case5_complete") },
+            { "symbol", symbol("battle_controller_return_frame_clock", "Battle::_battleController_8000A118", "function_return_after_all_cases") },
         };
         probes.emplace_back(std::move(frame));
     }
     probes.emplace_back(Object{
-        { "id", picojson::value("battle_case5_thread_list_changed_8000A2FC") },
+        { "id", picojson::value("battle_controller_return_thread_list_changed_8000A388") },
         { "group", picojson::value("action_motion_invocation") },
         { "kind", picojson::value("pc") },
-        { "address", number(0x8000A2FCu) },
+        { "address", number(0x8000A388u) },
         { "subscriptions", picojson::value(Array{ picojson::value("capture") }) },
         { "max_hits", number(2400) },
         { "window", picojson::value("instruction_lifetime") },
         { "sampling", picojson::value(Object{ { "mode", picojson::value("changed_only") } }) },
         { "samples", picojson::value(Array{ thread_list_sample() }) },
-        { "symbol", symbol("battle_case5_thread_list_changed", "Battle::_battleController_8000A118", "changed_thread_list") },
+        { "symbol", symbol("battle_controller_return_thread_list_changed", "Battle::_battleController_8000A118", "changed_thread_list") },
     });
     probes.emplace_back(Object{
-        { "id", picojson::value("battle_case5_thread_list_flight_8000A2FC") },
+        { "id", picojson::value("battle_controller_return_thread_list_flight_8000A388") },
         { "group", picojson::value("action_motion_invocation") },
         { "kind", picojson::value("pc") },
-        { "address", number(0x8000A2FCu) },
+        { "address", number(0x8000A388u) },
         { "subscriptions", picojson::value(Array{ picojson::value("capture") }) },
         { "max_hits", number(2400) },
         { "window", picojson::value("instruction_lifetime") },
         { "samples", picojson::value(Array{ thread_list_sample() }) },
-        { "symbol", symbol("battle_case5_thread_list_flight", "Battle::_battleController_8000A118", "flight_thread_list") },
+        { "symbol", symbol("battle_controller_return_thread_list_flight", "Battle::_battleController_8000A118", "flight_thread_list") },
     });
 
     Array trigger_values;
@@ -10866,7 +10970,7 @@ std::string build_first_battle_action_motion_invocation_profile_ini(
         { "flight_recorders", picojson::value(Array{ picojson::value(Object{
             { "id", picojson::value("action_motion_thread_window") },
             { "member_probes", picojson::value(Array{
-                picojson::value("battle_case5_thread_list_flight_8000A2FC") }) },
+                picojson::value("battle_controller_return_thread_list_flight_8000A388") }) },
             { "pre_events", number(3) },
             { "post_events", number(4) },
             { "trigger_probes", picojson::value(std::move(trigger_values)) },
@@ -11199,25 +11303,26 @@ std::string build_first_battle_direct_reset_thread_position_profile_ini(
         Array samples;
         append_frame_context(samples);
         Object frame{
-            { "id", picojson::value("battle_case5_frame_clock_8000A2FC") },
+            { "id", picojson::value("battle_controller_return_frame_clock_8000A388") },
             { "group", picojson::value("direct_reset_thread_position") },
             { "kind", picojson::value("pc") },
-            { "address", number(0x8000A2FCu) },
+            { "address", number(0x8000A388u) },
             { "subscriptions", picojson::value(Array{ picojson::value("capture") }) },
             { "frame_clock", picojson::value(true) },
             { "max_hits", number(2400) },
             { "window", picojson::value("instruction_lifetime") },
             { "samples", picojson::value(std::move(samples)) },
-            { "symbol", symbol("battle_case5_frame_clock",
-                "Battle::_battleController_8000A118", "case5_complete") },
+            { "symbol", symbol("battle_controller_return_frame_clock",
+                "Battle::_battleController_8000A118",
+                "function_return_after_all_cases") },
         };
         probes.emplace_back(std::move(frame));
     }
     probes.emplace_back(Object{
-        { "id", picojson::value("battle_case5_thread_list_changed_8000A2FC") },
+        { "id", picojson::value("battle_controller_return_thread_list_changed_8000A388") },
         { "group", picojson::value("direct_reset_thread_position") },
         { "kind", picojson::value("pc") },
-        { "address", number(0x8000A2FCu) },
+        { "address", number(0x8000A388u) },
         { "subscriptions", picojson::value(Array{ picojson::value("capture") }) },
         { "max_hits", number(2400) },
         { "window", picojson::value("instruction_lifetime") },
@@ -11225,19 +11330,19 @@ std::string build_first_battle_direct_reset_thread_position_profile_ini(
             { "mode", picojson::value("changed_only") },
         }) },
         { "samples", picojson::value(Array{ thread_list_sample() }) },
-        { "symbol", symbol("battle_case5_thread_list_changed",
+        { "symbol", symbol("battle_controller_return_thread_list_changed",
             "Battle::_battleController_8000A118", "changed_thread_list") },
     });
     probes.emplace_back(Object{
-        { "id", picojson::value("battle_case5_thread_list_flight_8000A2FC") },
+        { "id", picojson::value("battle_controller_return_thread_list_flight_8000A388") },
         { "group", picojson::value("direct_reset_thread_position") },
         { "kind", picojson::value("pc") },
-        { "address", number(0x8000A2FCu) },
+        { "address", number(0x8000A388u) },
         { "subscriptions", picojson::value(Array{ picojson::value("capture") }) },
         { "max_hits", number(2400) },
         { "window", picojson::value("instruction_lifetime") },
         { "samples", picojson::value(Array{ thread_list_sample() }) },
-        { "symbol", symbol("battle_case5_thread_list_flight",
+        { "symbol", symbol("battle_controller_return_thread_list_flight",
             "Battle::_battleController_8000A118", "flight_thread_list") },
     });
 
@@ -11261,7 +11366,7 @@ std::string build_first_battle_direct_reset_thread_position_profile_ini(
         { "flight_recorders", picojson::value(Array{ picojson::value(Object{
             { "id", picojson::value("direct_reset_thread_window") },
             { "member_probes", picojson::value(Array{
-                picojson::value("battle_case5_thread_list_flight_8000A2FC") }) },
+                picojson::value("battle_controller_return_thread_list_flight_8000A388") }) },
             { "pre_events", number(3) },
             { "post_events", number(4) },
             { "trigger_probes", picojson::value(Array{
@@ -11710,6 +11815,493 @@ std::string build_first_battle_direct_transition_producer_profile_ini(
              "temporary_service_transition_call_80020CE4",
              "temporary_service_transition_call_80020D28",
              "queued_state17_flag_post_8002186C" }) {
+        triggers.emplace_back(picojson::value(trigger));
+    }
+
+    return root_value.serialize(true);
+}
+
+std::string build_first_battle_state17_lifecycle_profile_ini(
+    std::uint32_t thread_list_max_nodes)
+{
+    using Array = picojson::value::array;
+    using Object = picojson::value::object;
+
+    if (thread_list_max_nodes != 128 && thread_list_max_nodes != 256) {
+        throw std::invalid_argument(
+            "state-0x11 lifecycle thread-list max must be 128 or 256");
+    }
+
+    const auto base = build_first_battle_direct_transition_producer_profile_ini(
+        thread_list_max_nodes);
+    picojson::value root_value;
+    auto position = base.begin();
+    const auto parse_error = picojson::parse(root_value, position, base.end());
+    if (!parse_error.empty() || !root_value.is<Object>()) {
+        throw std::runtime_error(
+            "failed to extend direct-transition producer profile: " + parse_error);
+    }
+
+    const auto number = [](std::uint64_t value) {
+        return picojson::value(static_cast<double>(value));
+    };
+    const auto append_u32 = [&](Array& bytes, std::uint32_t value) {
+        bytes.emplace_back(number(value & 0xffu));
+        bytes.emplace_back(number((value >> 8) & 0xffu));
+        bytes.emplace_back(number((value >> 16) & 0xffu));
+        bytes.emplace_back(number((value >> 24) & 0xffu));
+    };
+    const auto append_add = [&](Array& bytes, std::int32_t offset) {
+        bytes.emplace_back(number(0x03));
+        append_u32(bytes, static_cast<std::uint32_t>(offset));
+    };
+    const auto indexed_static_program = [&](std::uint32_t base_address,
+                                             std::uint32_t index_register,
+                                             std::uint32_t stride,
+                                             std::int32_t offset) {
+        Array bytes{ number(0x07) };
+        append_u32(bytes, base_address);
+        bytes.emplace_back(number(0x08));
+        bytes.emplace_back(number(index_register));
+        append_u32(bytes, stride);
+        append_add(bytes, offset);
+        bytes.emplace_back(number(0x00));
+        return bytes;
+    };
+    const auto indexed_pointer_program = [&](
+            std::uint32_t base_address,
+            std::uint32_t index_register,
+            std::uint32_t stride,
+            std::initializer_list<std::int32_t> link_offsets,
+            std::int32_t field_offset) {
+        Array bytes{ number(0x07) };
+        append_u32(bytes, base_address);
+        bytes.emplace_back(number(0x08));
+        bytes.emplace_back(number(index_register));
+        append_u32(bytes, stride);
+        bytes.emplace_back(number(0x02));
+        for (const auto offset : link_offsets) {
+            append_add(bytes, offset);
+            bytes.emplace_back(number(0x02));
+        }
+        append_add(bytes, field_offset);
+        bytes.emplace_back(number(0x00));
+        return bytes;
+    };
+    const auto register_pointer_program = [&](
+            std::uint32_t pointer_register,
+            std::initializer_list<std::int32_t> link_offsets,
+            std::int32_t field_offset) {
+        Array bytes{ number(0x06), number(pointer_register) };
+        for (const auto offset : link_offsets) {
+            append_add(bytes, offset);
+            bytes.emplace_back(number(0x02));
+        }
+        append_add(bytes, field_offset);
+        bytes.emplace_back(number(0x00));
+        return bytes;
+    };
+    const auto gpr_sample = [&](std::string name, std::uint32_t reg,
+                                std::uint32_t width = 4) {
+        return picojson::value(Object{
+            { "name", picojson::value(std::move(name)) },
+            { "type", picojson::value("gpr") },
+            { "register", number(reg) },
+            { "width", number(width) },
+        });
+    };
+    const auto memory_sample = [&](std::string name, std::uint32_t address,
+                                   std::uint32_t width) {
+        return picojson::value(Object{
+            { "name", picojson::value(std::move(name)) },
+            { "type", picojson::value("memory") },
+            { "address", number(address) },
+            { "width", number(width) },
+        });
+    };
+    const auto register_memory_sample = [&](std::string name, std::uint32_t reg,
+                                            std::int32_t offset,
+                                            std::uint32_t width) {
+        return picojson::value(Object{
+            { "name", picojson::value(std::move(name)) },
+            { "type", picojson::value("register_memory") },
+            { "register", number(reg) },
+            { "offset", picojson::value(static_cast<double>(offset)) },
+            { "width", number(width) },
+        });
+    };
+    const auto program_sample = [&](std::string name, Array program,
+                                    std::uint32_t width) {
+        return picojson::value(Object{
+            { "name", picojson::value(std::move(name)) },
+            { "type", picojson::value("address_program") },
+            { "program", picojson::value(std::move(program)) },
+            { "trace", picojson::value("on_failure") },
+            { "width", number(width) },
+        });
+    };
+    const auto stack_sample = [&] {
+        return picojson::value(Object{
+            { "name", picojson::value("call_stack") },
+            { "type", picojson::value("stack_trace") },
+            { "max_frames", number(8) },
+        });
+    };
+    const auto symbol = [&](std::string name, std::string function,
+                            std::string checkpoint) {
+        return picojson::value(Object{
+            { "name", picojson::value(std::move(name)) },
+            { "function", picojson::value(std::move(function)) },
+            { "checkpoint", picojson::value(std::move(checkpoint)) },
+        });
+    };
+    const auto gpr_equals = [&](std::uint32_t reg, std::uint32_t value) {
+        return Array{
+            picojson::value(Object{
+                { "op", picojson::value("gpr") },
+                { "register", number(reg) },
+            }),
+            picojson::value(Object{
+                { "op", picojson::value("constant") },
+                { "value", number(value) },
+            }),
+            picojson::value(Object{ { "op", picojson::value("eq") } }),
+        };
+    };
+    const auto append_frame_context = [&](Array& samples) {
+        samples.emplace_back(memory_sample("turn_phase", 0x8034733cu, 4));
+        samples.emplace_back(memory_sample("input_state", 0x80347338u, 4));
+        samples.emplace_back(memory_sample("active_actor", 0x80347334u, 1));
+        samples.emplace_back(memory_sample("action_sequence", 0x80347335u, 1));
+        samples.emplace_back(memory_sample("completion_mask", 0x80347374u, 2));
+    };
+    const auto append_queue_row = [&](Array& samples, std::string_view prefix,
+                                      std::uint32_t slot_register) {
+        samples.emplace_back(program_sample(std::string(prefix) + "_state",
+            indexed_static_program(
+                0x80309730u, slot_register, 0x10u, 0x00), 4));
+        samples.emplace_back(program_sample(std::string(prefix) + "_target",
+            indexed_static_program(
+                0x80309730u, slot_register, 0x10u, 0x04), 1));
+        samples.emplace_back(program_sample(std::string(prefix) + "_field9",
+            indexed_static_program(
+                0x80309730u, slot_register, 0x10u, 0x09), 1));
+        samples.emplace_back(program_sample(std::string(prefix) + "_peer_slot",
+            indexed_static_program(
+                0x80309730u, slot_register, 0x10u, 0x0d), 1));
+    };
+    const auto append_all_instruction_roots = [&](Array& samples) {
+        for (int root_index = 0; root_index < 4; ++root_index) {
+            const auto root_address =
+                0x80309E24u + static_cast<std::uint32_t>(root_index) * 4u;
+            for (const auto& [name, offset, width] :
+                 std::array<std::tuple<const char*, std::int32_t, std::uint32_t>, 4>{ {
+                     { "slot", 0x00, 1 },
+                     { "mode", 0x06, 2 },
+                     { "flags_ec", 0xec, 4 },
+                     { "flags_50", 0x50, 4 },
+                 } }) {
+                Array program{ number(0x07) };
+                append_u32(program, root_address);
+                program.emplace_back(number(0x02));
+                append_add(program, 0x24);
+                program.emplace_back(number(0x02));
+                append_add(program, 0x4c);
+                program.emplace_back(number(0x02));
+                append_add(program, offset);
+                program.emplace_back(number(0x00));
+                samples.emplace_back(program_sample(
+                    "root" + std::to_string(root_index) + "_" + name,
+                    std::move(program), width));
+            }
+        }
+    };
+
+    auto& root = root_value.get<Object>();
+    root["name"] = picojson::value("first_battle_state17_lifecycle");
+    auto& probes = root["probes"].get<Array>();
+    for (auto& probe_value : probes) {
+        probe_value.get<Object>()["group"] =
+            picojson::value("state17_lifecycle");
+    }
+
+    const auto add_pc_probe = [&](std::string id, std::uint32_t address,
+                                  std::string function, std::string checkpoint,
+                                  Array samples, Array predicate = {},
+                                  std::uint64_t max_hits = 8192) {
+        Object probe{
+            { "id", picojson::value(id) },
+            { "group", picojson::value("state17_lifecycle") },
+            { "kind", picojson::value("pc") },
+            { "address", number(address) },
+            { "subscriptions", picojson::value(Array{ picojson::value("capture") }) },
+            { "max_hits", number(max_hits) },
+            { "window", picojson::value("instruction_lifetime") },
+            { "samples", picojson::value(std::move(samples)) },
+            { "symbol", symbol(id, std::move(function), std::move(checkpoint)) },
+        };
+        if (!predicate.empty())
+            probe["predicate"] = picojson::value(std::move(predicate));
+        probes.emplace_back(std::move(probe));
+    };
+    const auto d6b4_samples = [&] {
+        Array samples;
+        append_frame_context(samples);
+        for (const auto reg :
+             { 3u, 4u, 24u, 25u, 26u, 27u, 28u, 29u, 30u, 31u }) {
+            samples.emplace_back(gpr_sample("r" + std::to_string(reg), reg));
+        }
+        samples.emplace_back(register_memory_sample(
+            "owner_thread_flags", 24, 0x18, 1));
+        samples.emplace_back(register_memory_sample(
+            "owner_thread_state", 24, 0x19, 1));
+        samples.emplace_back(register_memory_sample(
+            "owner_thread_payload", 24, 0x24, 4));
+        for (const auto& [name, offset, width] :
+             std::array<std::tuple<const char*, std::int32_t, std::uint32_t>, 4>{ {
+                 { "slot", 0x00, 2 },
+                 { "flags_04", 0x04, 4 },
+                 { "coord_state_50", 0x50, 1 },
+                 { "coord_countdown_51", 0x51, 1 },
+             } }) {
+            samples.emplace_back(register_memory_sample(
+                std::string("owner_movement_") + name, 28, offset, width));
+            samples.emplace_back(register_memory_sample(
+                std::string("peer_movement_") + name, 27, offset, width));
+        }
+        samples.emplace_back(program_sample("peer_thread_state",
+            indexed_pointer_program(0x80309700u, 25, 4u, {}, 0x19), 1));
+        append_queue_row(samples, "owner_queue", 26);
+        append_queue_row(samples, "peer_queue", 25);
+        samples.emplace_back(program_sample("owner_poll_counter",
+            indexed_static_program(0x80302BF0u, 26, 2u, 0), 2));
+        samples.emplace_back(stack_sample());
+        return samples;
+    };
+    const auto poll_samples = [&](std::uint32_t slot_register) {
+        Array samples;
+        append_frame_context(samples);
+        for (const auto reg : { 3u, 4u, 28u, 29u, 30u, 31u })
+            samples.emplace_back(gpr_sample("r" + std::to_string(reg), reg));
+        append_queue_row(samples, "poll_queue", slot_register);
+        samples.emplace_back(program_sample("poll_fallback_counter",
+            indexed_static_program(
+                0x80302BF0u, slot_register, 2u, 0), 2));
+        samples.emplace_back(stack_sample());
+        return samples;
+    };
+    const auto service_samples = [&] {
+        Array samples;
+        append_frame_context(samples);
+        for (const auto reg : { 3u, 29u, 30u, 31u })
+            samples.emplace_back(gpr_sample("r" + std::to_string(reg), reg));
+        samples.emplace_back(register_memory_sample(
+            "service_thread_flags", 29, 0x18, 1));
+        samples.emplace_back(register_memory_sample(
+            "service_thread_state", 29, 0x19, 1));
+        samples.emplace_back(register_memory_sample(
+            "service_thread_payload", 29, 0x24, 4));
+        for (const auto& [name, offset, width] :
+             std::array<std::tuple<const char*, std::int32_t, std::uint32_t>, 6>{ {
+                 { "target_slot", 0x02, 2 },
+                 { "secondary_slot", 0x04, 2 },
+                 { "origin_slot", 0x06, 2 },
+                 { "origin_thread", 0x08, 4 },
+                 { "flags_20", 0x20, 4 },
+                 { "delay_24", 0x24, 2 },
+             } }) {
+            samples.emplace_back(register_memory_sample(
+                std::string("service_workspace_") + name, 31, offset, width));
+        }
+        samples.emplace_back(register_memory_sample(
+            "service_origin_mode", 30, 0x06, 2));
+        samples.emplace_back(register_memory_sample(
+            "service_origin_flags_50", 30, 0x50, 4));
+        samples.emplace_back(register_memory_sample(
+            "service_origin_flags_ec", 30, 0xec, 4));
+        samples.emplace_back(stack_sample());
+        return samples;
+    };
+    const auto phase_samples = [&] {
+        Array samples;
+        append_frame_context(samples);
+        for (const auto reg : { 3u, 4u, 5u, 29u, 30u, 31u })
+            samples.emplace_back(gpr_sample("r" + std::to_string(reg), reg));
+        append_all_instruction_roots(samples);
+        samples.emplace_back(stack_sample());
+        return samples;
+    };
+
+    for (int slot = 0; slot < 12; ++slot) {
+        const auto base_address =
+            0x80309730u + static_cast<std::uint32_t>(slot) * 0x10u;
+        for (const auto& [suffix, offset] :
+             std::array<std::pair<const char*, std::uint32_t>, 2>{ {
+                 { "field9", 0x09u },
+                 { "peer_slot_d", 0x0du },
+             } }) {
+            const auto id = "queued_special_slot" + std::to_string(slot)
+                + "_" + suffix + "_write";
+            Array samples;
+            append_frame_context(samples);
+            samples.emplace_back(memory_sample(
+                "queued_field_post_write", base_address + offset, 1));
+            samples.emplace_back(stack_sample());
+            probes.emplace_back(Object{
+                { "id", picojson::value(id) },
+                { "group", picojson::value("state17_lifecycle") },
+                { "kind", picojson::value("memory") },
+                { "address", number(base_address + offset) },
+                { "size", number(1) },
+                { "access", picojson::value("write") },
+                { "subscriptions", picojson::value(
+                    Array{ picojson::value("capture") }) },
+                { "max_hits", number(8192) },
+                { "samples", picojson::value(std::move(samples)) },
+                { "symbol", symbol(id, "QueuedStdActionState",
+                    "authoritative_post_write") },
+            });
+        }
+    }
+
+    for (const auto& [id, address, checkpoint] :
+         std::array<std::tuple<const char*, std::uint32_t, const char*>, 10>{ {
+             { "state17_pair_state2_entry_8008D7A8", 0x8008D7A8u,
+                 "state2_branch_entry" },
+             { "state17_pair_peer_ready_publish_8008D7EC", 0x8008D7ECu,
+                 "peer_ready_publish" },
+             { "state17_pair_coordinated_entry_8008D834", 0x8008D834u,
+                 "coordinated_branch_entry" },
+             { "state17_pair_countdown_compare_8008D84C", 0x8008D84Cu,
+                 "countdown_compare" },
+             { "state17_pair_countdown_gate_8008D858", 0x8008D858u,
+                 "countdown_terminal_gate" },
+             { "state17_pair_coordinated_publish_8008D884", 0x8008D884u,
+                 "coordinated_publish" },
+             { "state17_pair_countdown_decrement_8008D8CC", 0x8008D8CCu,
+                 "countdown_decrement" },
+             { "state17_pair_state3_poll_call_8008D8E8", 0x8008D8E8u,
+                 "before_state17_poll" },
+             { "state17_pair_state3_poll_return_8008D8EC", 0x8008D8ECu,
+                 "after_state17_poll" },
+             { "state17_pair_terminal_state2_8008D90C", 0x8008D90Cu,
+                 "publish_terminal_state2" },
+         } }) {
+        add_pc_probe(id, address, "FUN_8008D6B4", checkpoint, d6b4_samples());
+    }
+
+    add_pc_probe("state17_poll_entry_8007FFE8", 0x8007FFE8u,
+        "PollCombatantInstructionState_8007FFE8", "state17_entry",
+        poll_samples(3), gpr_equals(4, 0x11), 16384);
+    for (const auto& [id, address, checkpoint] :
+         std::array<std::tuple<const char*, std::uint32_t, const char*>, 8>{ {
+             { "state17_poll_gate_80080120", 0x80080120u,
+                 "after_mode_and_field9_gate" },
+             { "state17_poll_readiness_call_80080128", 0x80080128u,
+                 "before_readiness" },
+             { "state17_poll_readiness_return_8008012C", 0x8008012Cu,
+                 "after_readiness" },
+             { "state17_poll_phase_gate_80080134", 0x80080134u,
+                 "before_turn_phase_gate" },
+             { "state17_poll_counter_increment_80080158", 0x80080158u,
+                 "fallback_counter_increment" },
+             { "state17_poll_forced_ready_80080178", 0x80080178u,
+                 "fallback_forced_ready" },
+             { "state17_poll_result_stage_80080184", 0x80080184u,
+                 "stage_nonfallback_result" },
+             { "state17_poll_return_80080188", 0x80080188u,
+                 "return_result" },
+         } }) {
+        add_pc_probe(id, address, "PollCombatantInstructionState_8007FFE8",
+            checkpoint, poll_samples(28), gpr_equals(29, 0x11), 16384);
+    }
+
+    for (const auto& [id, address, checkpoint] :
+         std::array<std::tuple<const char*, std::uint32_t, const char*>, 6>{ {
+             { "state17_service_cancel_gate_80042850", 0x80042850u,
+                 "origin_completion_bit_gate" },
+             { "state17_service_force_state4_80042880", 0x80042880u,
+                 "force_state4" },
+             { "state17_service_state0_800428D4", 0x800428D4u,
+                 "state0_initialize" },
+             { "state17_service_state0_complete_80042934", 0x80042934u,
+                 "state0_complete" },
+             { "state17_service_delay_80042938", 0x80042938u,
+                 "state1_delay" },
+             { "state17_service_delay_complete_80042950", 0x80042950u,
+                 "state1_delay_complete" },
+         } }) {
+        add_pc_probe(id, address, "FUN_8004281C", checkpoint, service_samples());
+    }
+
+    for (const auto& [id, address, function, checkpoint] :
+         std::array<std::tuple<const char*, std::uint32_t, const char*, const char*>, 9>{ {
+             { "state17_phase_scan_entry_80015580", 0x80015580u,
+                 "FUN_80015580", "entry" },
+             { "state17_phase_readiness_return_80015598", 0x80015598u,
+                 "FUN_80015580", "readiness_return" },
+             { "state17_phase_child_create_80015604", 0x80015604u,
+                 "FUN_80015580", "before_child_create" },
+             { "state17_phase_child_publish_80015608", 0x80015608u,
+                 "FUN_80015580", "after_child_create" },
+             { "state17_phase_child_entry_80015640", 0x80015640u,
+                 "FUN_80015640", "entry" },
+             { "state17_phase_child_state1_80015690", 0x80015690u,
+                 "FUN_80015640", "state1_scan_begin" },
+             { "state17_phase_gate_clear_800156D0", 0x800156D0u,
+                 "FUN_80015640", "first_gate_clear_store" },
+             { "state17_phase_reinstall_call_800156E0", 0x800156E0u,
+                 "FUN_80015640", "before_reinstall" },
+             { "state17_phase_child_complete_80015700", 0x80015700u,
+                 "FUN_80015640", "state2_complete" },
+         } }) {
+        add_pc_probe(id, address, function, checkpoint, phase_samples(), {}, 2048);
+    }
+
+    {
+        auto samples = phase_samples();
+        samples.emplace_back(program_sample("reinstall_iw_slot",
+            register_pointer_program(3, { 0x24, 0x4c }, 0x00), 1));
+        samples.emplace_back(program_sample("reinstall_iw_mode",
+            register_pointer_program(3, { 0x24, 0x4c }, 0x06), 2));
+        samples.emplace_back(program_sample("reinstall_iw_flags_50",
+            register_pointer_program(3, { 0x24, 0x4c }, 0x50), 4));
+        samples.emplace_back(program_sample("reinstall_iw_flags_ec",
+            register_pointer_program(3, { 0x24, 0x4c }, 0xec), 4));
+        add_pc_probe("state17_phase_reinstall_entry_8001BE2C", 0x8001BE2Cu,
+            "FUN_8001BE2C", "entry", std::move(samples), {}, 2048);
+    }
+    for (const auto& [id, address, checkpoint] :
+         std::array<std::tuple<const char*, std::uint32_t, const char*>, 2>{ {
+             { "state17_phase_completion_bit_write_8001C0E4", 0x8001C0E4u,
+                 "before_completion_bit_store" },
+             { "state17_phase_completion_bit_post_8001C0E8", 0x8001C0E8u,
+                 "after_completion_bit_store" },
+         } }) {
+        auto samples = phase_samples();
+        samples.emplace_back(register_memory_sample(
+            "reinstall_iw_slot", 30, 0x00, 1));
+        samples.emplace_back(register_memory_sample(
+            "reinstall_iw_mode", 30, 0x06, 2));
+        samples.emplace_back(register_memory_sample(
+            "reinstall_iw_flags_50", 30, 0x50, 4));
+        samples.emplace_back(register_memory_sample(
+            "reinstall_iw_flags_ec", 30, 0xec, 4));
+        add_pc_probe(id, address, "FUN_8001BE2C", checkpoint,
+            std::move(samples), {}, 2048);
+    }
+
+    auto& flight = root["flight_recorders"].get<Array>().front().get<Object>();
+    flight["id"] = picojson::value("state17_lifecycle_thread_window");
+    auto& triggers = flight["trigger_probes"].get<Array>();
+    for (const auto trigger : {
+             "state17_pair_peer_ready_publish_8008D7EC",
+             "state17_pair_coordinated_publish_8008D884",
+             "state17_pair_state3_poll_return_8008D8EC",
+             "state17_pair_terminal_state2_8008D90C",
+             "state17_service_force_state4_80042880",
+             "state17_phase_gate_clear_800156D0",
+             "state17_phase_completion_bit_post_8001C0E8" }) {
         triggers.emplace_back(picojson::value(trigger));
     }
 
@@ -12312,6 +12904,48 @@ int write_first_battle_direct_transition_producer_profile(
         return 1;
     }
     out << "Wrote first-battle direct-transition producer profile: "
+        << output_path.string() << "\n";
+    return 0;
+}
+
+int write_first_battle_state17_lifecycle_profile(
+    const std::filesystem::path& output_path,
+    std::ostream& out,
+    std::ostream& err,
+    std::uint32_t thread_list_max_nodes)
+{
+    if (output_path.empty()) {
+        err << "write-first-battle-state17-lifecycle-profile requires --output PATH.\n";
+        return 2;
+    }
+    if (const auto parent = output_path.parent_path(); !parent.empty()) {
+        std::error_code ec;
+        std::filesystem::create_directories(parent, ec);
+        if (ec) {
+            err << "Failed to create output directory: " << ec.message() << "\n";
+            return 1;
+        }
+    }
+    std::ofstream file(output_path, std::ios::binary | std::ios::trunc);
+    if (!file.is_open()) {
+        err << "Failed to open output profile: " << output_path.string() << "\n";
+        return 1;
+    }
+    std::string text;
+    try {
+        text = build_first_battle_state17_lifecycle_profile_ini(
+            thread_list_max_nodes);
+    } catch (const std::exception& ex) {
+        err << "Failed to build state-0x11 lifecycle profile: "
+            << ex.what() << "\n";
+        return 1;
+    }
+    file.write(text.data(), static_cast<std::streamsize>(text.size()));
+    if (!file.good()) {
+        err << "Failed to write output profile: " << output_path.string() << "\n";
+        return 1;
+    }
+    out << "Wrote first-battle state-0x11 lifecycle profile: "
         << output_path.string() << "\n";
     return 0;
 }

@@ -12,6 +12,7 @@
 #include "RngCore.h"
 
 #include <algorithm>
+#include <bit>
 #include <iomanip>
 #include <ostream>
 #include <sstream>
@@ -1319,6 +1320,80 @@ void append_enemy_ai(
     }
 }
 
+void apply_setup_turn_status_transitions(
+    BattlePredictionResult& result,
+    std::vector<BattlePredictionSlotState>& slots,
+    BattleFrameRuntime* frame_runtime,
+    const std::vector<QueuedPredictionAction>& actions) {
+    for (const auto& action : actions) {
+        auto* slot = find_slot(slots, action.actor_slot);
+        auto* combatant = frame_runtime != nullptr
+                && frame_runtime->initialized
+            ? find_frame_combatant(
+                frame_runtime->state, action.actor_slot)
+            : nullptr;
+        if (slot == nullptr || !slot->present) {
+            append_event(result, {
+                .phase = "setup_turn",
+                .label = "queued_status_transition",
+                .status = BattlePredictionEventStatus::MissingInput,
+                .actor_slot = action.actor_slot,
+                .detail =
+                    "accepted queued command has no mutable combatant state",
+            });
+            continue;
+        }
+
+        const std::optional<std::int16_t> queued_instruction =
+            action.attack
+            ? std::optional<std::int16_t>{3}
+            : action.guard
+                ? std::optional<std::int16_t>{4}
+                : std::nullopt;
+        const auto transition = model_setup_turn_status_transition({
+            .queued_instruction = queued_instruction,
+            .current_status_flags = combatant != nullptr
+                ? combatant->status_flags
+                : slot->status_flags,
+        });
+        if (transition.status == QueuedInstructionParamStatus::Validated) {
+            slot->status_flags = transition.status_flags_after;
+            if (combatant != nullptr) {
+                combatant->status_flags = transition.status_flags_after;
+                if (transition.write_performed) {
+                    ++combatant->status_revision;
+                }
+            }
+        }
+
+        std::ostringstream detail;
+        detail << "queued_instruction="
+               << (queued_instruction.has_value()
+                   ? std::to_string(*queued_instruction)
+                   : "missing")
+               << "; status_before=0x" << std::hex
+               << transition.status_flags_before
+               << "; status_after=0x" << transition.status_flags_after
+               << "; applied_mask=0x" << transition.applied_mask
+               << std::dec
+               << "; write_performed="
+               << (transition.write_performed ? 1 : 0)
+               << "; status_revision="
+               << (combatant != nullptr ? combatant->status_revision : 0)
+               << "; draws=0; provenance=" << transition.provenance;
+        append_event(result, {
+            .phase = "setup_turn",
+            .label = "queued_status_transition",
+            .status =
+                transition.status == QueuedInstructionParamStatus::Validated
+                ? BattlePredictionEventStatus::Exact
+                : BattlePredictionEventStatus::MissingInput,
+            .actor_slot = action.actor_slot,
+            .detail = detail.str(),
+        });
+    }
+}
+
 std::vector<TurnOrderEntryInput> turn_order_entries_for_actions(
     const std::vector<BattlePredictionSlotState>& slots,
     const std::vector<QueuedPredictionAction>& actions,
@@ -1921,6 +1996,12 @@ void append_frame_scheduler_events(
             == BattleFrameWorkerStepKind::VisualMode1Pathing) {
             event_label = "visual_mode1_pathing";
         } else if (frame_event.step_kind
+            == BattleFrameWorkerStepKind::VisualMode1PathingScanDiagnostic) {
+            event_label = "pathing_scan_diagnostic";
+        } else if (frame_event.step_kind
+            == BattleFrameWorkerStepKind::VisualMode1PathingCandidateDiagnostic) {
+            event_label = "pathing_candidate_diagnostic";
+        } else if (frame_event.step_kind
             == BattleFrameWorkerStepKind::VisualUnsupportedWait) {
             event_label = "visual_unsupported_wait";
         }
@@ -1942,6 +2023,17 @@ void append_frame_scheduler_events(
             .facing_angle_0x2c = frame_event.combatant_state_available
                 ? std::optional<std::uint32_t>{
                       frame_event.new_combatant_facing_angle_0x2c}
+                : std::nullopt,
+            .pathing_accepted_candidates =
+                frame_event.pathing_accepted_candidates >= 0
+                ? std::optional<int>{
+                    frame_event.pathing_accepted_candidates}
+                : std::nullopt,
+            .pathing_aggregate_score =
+                frame_event.pathing_diagnostic_kind == "scan"
+                ? std::optional<double>{
+                    std::bit_cast<float>(
+                        frame_event.pathing_aggregate_score_bits)}
                 : std::nullopt,
             .movement_worker = frame_event.callback,
             .movement_controller_family = frame_event.action_ordinal >= 0
@@ -1972,6 +2064,57 @@ void append_frame_scheduler_events(
                 ? std::optional<std::uint16_t>{frame_event.passive_completion_mask_after}
                 : std::nullopt,
             .passive_completion_reason = frame_event.completion_reason,
+            .pursuit_coordination_branch =
+                frame_event.step_kind
+                        == BattleFrameWorkerStepKind::PursuitCoordinationState2
+                    ? battle_pursuit_coordination_branch_name(
+                        frame_event.pursuit_coordination_branch)
+                    : "",
+            .pursuit_poll_reason =
+                frame_event.step_kind
+                        == BattleFrameWorkerStepKind::PursuitInstructionState3Poll
+                    ? battle_pursuit_instruction_poll_reason_name(
+                        frame_event.pursuit_poll_reason)
+                    : "",
+            .pursuit_owner_state_0x50 =
+                frame_event.step_kind
+                        == BattleFrameWorkerStepKind::PursuitCoordinationState2
+                    ? std::optional<int>{
+                        frame_event.pursuit_owner_state_0x50}
+                    : std::nullopt,
+            .pursuit_peer_state_0x50 =
+                frame_event.step_kind
+                        == BattleFrameWorkerStepKind::PursuitCoordinationState2
+                    ? std::optional<int>{
+                        frame_event.pursuit_peer_state_0x50}
+                    : std::nullopt,
+            .pursuit_owner_countdown_0x51 =
+                frame_event.step_kind
+                        == BattleFrameWorkerStepKind::PursuitCoordinationState2
+                    ? std::optional<int>{
+                        frame_event.pursuit_owner_countdown_0x51}
+                    : std::nullopt,
+            .pursuit_peer_countdown_0x51 =
+                frame_event.step_kind
+                        == BattleFrameWorkerStepKind::PursuitCoordinationState2
+                    ? std::optional<int>{
+                        frame_event.pursuit_peer_countdown_0x51}
+                    : std::nullopt,
+            .pursuit_queued_field9 =
+                frame_event.step_kind
+                            == BattleFrameWorkerStepKind::
+                                PursuitInstructionState3Poll
+                        || frame_event.step_kind
+                            == BattleFrameWorkerStepKind::
+                                PursuitQueuedField9Publish
+                        || frame_event.step_kind
+                            == BattleFrameWorkerStepKind::
+                                PursuitServiceCancellation
+                    ? std::optional<int>{
+                        frame_event.pursuit_queued_field9}
+                    : std::nullopt,
+            .pursuit_terminal_result =
+                frame_event.pursuit_terminal_result,
             .visual_command_kind = frame_event.visual_command_kind
                     != CombatantVisualCommandKind::Unknown
                 ? combatant_visual_command_kind_name(frame_event.visual_command_kind)
@@ -1993,6 +2136,128 @@ void append_frame_scheduler_events(
                 ? std::optional<int>{frame_event.visual_effective_mode}
                 : std::nullopt,
             .visual_child_kind = frame_event.visual_child_kind,
+            .pathing_diagnostic_kind =
+                frame_event.pathing_diagnostic_kind,
+            .pathing_side = frame_event.pathing_side,
+            .pathing_reason = frame_event.pathing_reason,
+            .pathing_yaw_iteration =
+                frame_event.pathing_yaw_iteration >= 0
+                ? std::optional<int>{frame_event.pathing_yaw_iteration}
+                : std::nullopt,
+            .pathing_yaw_degrees =
+                !frame_event.pathing_diagnostic_kind.empty()
+                ? std::optional<double>{frame_event.pathing_yaw_degrees}
+                : std::nullopt,
+            .pathing_excluded_slot =
+                frame_event.pathing_excluded_slot >= 0
+                ? std::optional<int>{frame_event.pathing_excluded_slot}
+                : std::nullopt,
+            .pathing_candidate_slot =
+                frame_event.pathing_candidate_slot >= 0
+                ? std::optional<int>{frame_event.pathing_candidate_slot}
+                : std::nullopt,
+            .pathing_selected_slot =
+                frame_event.pathing_selected_slot >= 0
+                ? std::optional<int>{frame_event.pathing_selected_slot}
+                : std::nullopt,
+            .pathing_candidate_skipped =
+                frame_event.pathing_diagnostic_kind == "candidate"
+                ? std::optional<bool>{
+                    frame_event.pathing_candidate_skipped}
+                : std::nullopt,
+            .pathing_candidate_accepted =
+                frame_event.pathing_diagnostic_kind == "candidate"
+                ? std::optional<bool>{
+                    frame_event.pathing_candidate_accepted}
+                : std::nullopt,
+            .pathing_fallback_rng_draw =
+                frame_event.pathing_diagnostic_kind == "scan"
+                ? std::optional<bool>{
+                    frame_event.pathing_fallback_rng_draw}
+                : std::nullopt,
+            .pathing_input_x_bits =
+                !frame_event.pathing_diagnostic_kind.empty()
+                ? std::optional<std::uint32_t>{
+                    frame_event.pathing_input_x_bits}
+                : std::nullopt,
+            .pathing_input_y_bits =
+                !frame_event.pathing_diagnostic_kind.empty()
+                ? std::optional<std::uint32_t>{
+                    frame_event.pathing_input_y_bits}
+                : std::nullopt,
+            .pathing_input_z_bits =
+                !frame_event.pathing_diagnostic_kind.empty()
+                ? std::optional<std::uint32_t>{
+                    frame_event.pathing_input_z_bits}
+                : std::nullopt,
+            .pathing_base_x_bits =
+                !frame_event.pathing_diagnostic_kind.empty()
+                ? std::optional<std::uint32_t>{
+                    frame_event.pathing_base_x_bits}
+                : std::nullopt,
+            .pathing_base_y_bits =
+                !frame_event.pathing_diagnostic_kind.empty()
+                ? std::optional<std::uint32_t>{
+                    frame_event.pathing_base_y_bits}
+                : std::nullopt,
+            .pathing_base_z_bits =
+                !frame_event.pathing_diagnostic_kind.empty()
+                ? std::optional<std::uint32_t>{
+                    frame_event.pathing_base_z_bits}
+                : std::nullopt,
+            .pathing_candidate_x_bits =
+                frame_event.pathing_diagnostic_kind == "candidate"
+                ? std::optional<std::uint32_t>{
+                    frame_event.pathing_candidate_x_bits}
+                : std::nullopt,
+            .pathing_candidate_y_bits =
+                frame_event.pathing_diagnostic_kind == "candidate"
+                ? std::optional<std::uint32_t>{
+                    frame_event.pathing_candidate_y_bits}
+                : std::nullopt,
+            .pathing_candidate_z_bits =
+                frame_event.pathing_diagnostic_kind == "candidate"
+                ? std::optional<std::uint32_t>{
+                    frame_event.pathing_candidate_z_bits}
+                : std::nullopt,
+            .pathing_flags_0xec =
+                frame_event.pathing_diagnostic_kind == "candidate"
+                ? std::optional<std::uint32_t>{
+                    frame_event.pathing_flags_0xec}
+                : std::nullopt,
+            .pathing_flags_0xf0 =
+                frame_event.pathing_diagnostic_kind == "candidate"
+                ? std::optional<std::uint32_t>{
+                    frame_event.pathing_flags_0xf0}
+                : std::nullopt,
+            .pathing_instruction_compare_known =
+                frame_event.pathing_diagnostic_kind == "candidate"
+                ? std::optional<bool>{
+                    frame_event.pathing_instruction_compare_known}
+                : std::nullopt,
+            .pathing_instruction_compare_0x15c =
+                frame_event.pathing_diagnostic_kind == "candidate"
+                ? std::optional<int>{
+                    frame_event.pathing_instruction_compare_0x15c}
+                : std::nullopt,
+            .pathing_aggregate_score_bits =
+                frame_event.pathing_diagnostic_kind == "scan"
+                ? std::optional<std::uint32_t>{
+                    frame_event.pathing_aggregate_score_bits}
+                : std::nullopt,
+            .pathing_candidate_score_bits =
+                frame_event.pathing_diagnostic_kind == "candidate"
+                ? std::optional<std::uint32_t>{
+                    frame_event.pathing_candidate_score_bits}
+                : std::nullopt,
+            .pathing_perpendicular_distance_bits =
+                frame_event.pathing_perpendicular_distance_bits,
+            .pathing_base_candidate_distance_bits =
+                frame_event.pathing_base_candidate_distance_bits,
+            .pathing_base_input_distance_bits =
+                frame_event.pathing_base_input_distance_bits,
+            .pathing_raw_angle_delta_bits =
+                frame_event.pathing_raw_angle_delta_bits,
             .detail = detail.str(),
         });
     }
@@ -2826,7 +3091,10 @@ void configure_visual_dispatcher_resources(
     const BattlePredictionScenario& scenario,
     const soa::battle::ctx::BattleContext& context,
     const BattlePredictionOptions& options) {
-    configure_battle_frame_visual_pathing_profile(runtime, scenario.profile_name);
+    configure_battle_frame_visual_pathing_profile(
+        runtime,
+        scenario.profile_name,
+        options.emit_causal_diagnostics);
     for (int slot = 0; slot < soa::battle::ctx::SLOT_COUNT; ++slot) {
         const auto& combatant = context.slots_[slot];
         if (combatant.present == 0) {
@@ -3375,6 +3643,14 @@ BattlePredictionResult predict_battle(const BattlePredictionInput& input) {
     if (result.has_missing_input_events) {
         return finalize();
     }
+    apply_setup_turn_status_transitions(
+        result,
+        slots,
+        frame_runtime.has_value() ? &*frame_runtime : nullptr,
+        actions);
+    if (result.has_missing_input_events) {
+        return finalize();
+    }
 
     std::vector<int> execution_slots;
     append_turn_order(result, state, slots, actions, execution_slots);
@@ -3675,6 +3951,27 @@ void write_battle_prediction_text(const BattlePredictionResult& result, std::ost
         if (event.pathing_aggregate_score.has_value()) {
             out << " pathing_aggregate_score=" << *event.pathing_aggregate_score;
         }
+        if (!event.pathing_diagnostic_kind.empty()) {
+            out << " pathing_diagnostic_kind="
+                << event.pathing_diagnostic_kind
+                << " pathing_side=" << event.pathing_side;
+            if (event.pathing_yaw_iteration.has_value()) {
+                out << " pathing_yaw_iteration="
+                    << *event.pathing_yaw_iteration;
+            }
+            if (event.pathing_candidate_slot.has_value()) {
+                out << " pathing_candidate_slot="
+                    << *event.pathing_candidate_slot
+                    << " pathing_candidate_accepted="
+                    << (event.pathing_candidate_accepted.value_or(false)
+                        ? 1 : 0)
+                    << " pathing_reason=" << event.pathing_reason;
+            }
+            if (event.pathing_fallback_rng_draw.has_value()) {
+                out << " pathing_fallback_rng_draw="
+                    << (*event.pathing_fallback_rng_draw ? 1 : 0);
+            }
+        }
         if (!event.instruction_mode_provenance.empty()) {
             out << " instruction_mode_provenance=" << event.instruction_mode_provenance;
         }
@@ -3922,6 +4219,38 @@ void write_battle_prediction_json(const BattlePredictionResult& result, std::ost
             out << ", \"passive_completion_reason\": \""
                 << json_escape(event.passive_completion_reason) << "\"";
         }
+        if (!event.pursuit_coordination_branch.empty()) {
+            out << ", \"pursuit_coordination_branch\": \""
+                << json_escape(event.pursuit_coordination_branch) << "\"";
+        }
+        if (!event.pursuit_poll_reason.empty()) {
+            out << ", \"pursuit_poll_reason\": \""
+                << json_escape(event.pursuit_poll_reason) << "\"";
+        }
+        if (event.pursuit_owner_state_0x50.has_value()) {
+            out << ", \"pursuit_owner_state_0x50\": "
+                << *event.pursuit_owner_state_0x50;
+        }
+        if (event.pursuit_peer_state_0x50.has_value()) {
+            out << ", \"pursuit_peer_state_0x50\": "
+                << *event.pursuit_peer_state_0x50;
+        }
+        if (event.pursuit_owner_countdown_0x51.has_value()) {
+            out << ", \"pursuit_owner_countdown_0x51\": "
+                << *event.pursuit_owner_countdown_0x51;
+        }
+        if (event.pursuit_peer_countdown_0x51.has_value()) {
+            out << ", \"pursuit_peer_countdown_0x51\": "
+                << *event.pursuit_peer_countdown_0x51;
+        }
+        if (event.pursuit_queued_field9.has_value()) {
+            out << ", \"pursuit_queued_field9\": "
+                << *event.pursuit_queued_field9;
+        }
+        if (event.pursuit_terminal_result.has_value()) {
+            out << ", \"pursuit_terminal_result\": "
+                << *event.pursuit_terminal_result;
+        }
         if (!event.visual_command_kind.empty()) {
             out << ", \"visual_command_kind\": \""
                 << json_escape(event.visual_command_kind) << "\"";
@@ -3955,6 +4284,106 @@ void write_battle_prediction_json(const BattlePredictionResult& result, std::ost
         if (event.pathing_aggregate_score.has_value()) {
             out << ", \"pathing_aggregate_score\": " << *event.pathing_aggregate_score;
         }
+        if (!event.pathing_diagnostic_kind.empty()) {
+            out << ", \"pathing_diagnostic_kind\": \""
+                << json_escape(event.pathing_diagnostic_kind) << "\"";
+        }
+        if (!event.pathing_side.empty()) {
+            out << ", \"pathing_side\": \""
+                << json_escape(event.pathing_side) << "\"";
+        }
+        if (!event.pathing_reason.empty()) {
+            out << ", \"pathing_reason\": \""
+                << json_escape(event.pathing_reason) << "\"";
+        }
+        if (event.pathing_yaw_iteration.has_value()) {
+            out << ", \"pathing_yaw_iteration\": "
+                << *event.pathing_yaw_iteration;
+        }
+        if (event.pathing_yaw_degrees.has_value()) {
+            out << ", \"pathing_yaw_degrees\": "
+                << *event.pathing_yaw_degrees;
+        }
+        if (event.pathing_excluded_slot.has_value()) {
+            out << ", \"pathing_excluded_slot\": "
+                << *event.pathing_excluded_slot;
+        }
+        if (event.pathing_candidate_slot.has_value()) {
+            out << ", \"pathing_candidate_slot\": "
+                << *event.pathing_candidate_slot;
+        }
+        if (event.pathing_selected_slot.has_value()) {
+            out << ", \"pathing_selected_slot\": "
+                << *event.pathing_selected_slot;
+        }
+        if (event.pathing_candidate_skipped.has_value()) {
+            out << ", \"pathing_candidate_skipped\": "
+                << (*event.pathing_candidate_skipped ? "true" : "false");
+        }
+        if (event.pathing_candidate_accepted.has_value()) {
+            out << ", \"pathing_candidate_accepted\": "
+                << (*event.pathing_candidate_accepted ? "true" : "false");
+        }
+        if (event.pathing_fallback_rng_draw.has_value()) {
+            out << ", \"pathing_fallback_rng_draw\": "
+                << (*event.pathing_fallback_rng_draw ? "true" : "false");
+        }
+        const auto write_optional_u32 =
+            [&out](std::string_view name,
+                   const std::optional<std::uint32_t>& value) {
+                if (value.has_value()) {
+                    out << ", \"" << name << "\": " << *value;
+                }
+            };
+        write_optional_u32(
+            "pathing_input_x_bits", event.pathing_input_x_bits);
+        write_optional_u32(
+            "pathing_input_y_bits", event.pathing_input_y_bits);
+        write_optional_u32(
+            "pathing_input_z_bits", event.pathing_input_z_bits);
+        write_optional_u32(
+            "pathing_base_x_bits", event.pathing_base_x_bits);
+        write_optional_u32(
+            "pathing_base_y_bits", event.pathing_base_y_bits);
+        write_optional_u32(
+            "pathing_base_z_bits", event.pathing_base_z_bits);
+        write_optional_u32(
+            "pathing_candidate_x_bits", event.pathing_candidate_x_bits);
+        write_optional_u32(
+            "pathing_candidate_y_bits", event.pathing_candidate_y_bits);
+        write_optional_u32(
+            "pathing_candidate_z_bits", event.pathing_candidate_z_bits);
+        write_optional_u32(
+            "pathing_flags_0xec", event.pathing_flags_0xec);
+        write_optional_u32(
+            "pathing_flags_0xf0", event.pathing_flags_0xf0);
+        if (event.pathing_instruction_compare_known.has_value()) {
+            out << ", \"pathing_instruction_compare_known\": "
+                << (*event.pathing_instruction_compare_known
+                    ? "true" : "false");
+        }
+        if (event.pathing_instruction_compare_0x15c.has_value()) {
+            out << ", \"pathing_instruction_compare_0x15c\": "
+                << *event.pathing_instruction_compare_0x15c;
+        }
+        write_optional_u32(
+            "pathing_aggregate_score_bits",
+            event.pathing_aggregate_score_bits);
+        write_optional_u32(
+            "pathing_candidate_score_bits",
+            event.pathing_candidate_score_bits);
+        write_optional_u32(
+            "pathing_perpendicular_distance_bits",
+            event.pathing_perpendicular_distance_bits);
+        write_optional_u32(
+            "pathing_base_candidate_distance_bits",
+            event.pathing_base_candidate_distance_bits);
+        write_optional_u32(
+            "pathing_base_input_distance_bits",
+            event.pathing_base_input_distance_bits);
+        write_optional_u32(
+            "pathing_raw_angle_delta_bits",
+            event.pathing_raw_angle_delta_bits);
         if (!event.instruction_mode_provenance.empty()) {
             out << ", \"instruction_mode_provenance\": \""
                 << json_escape(event.instruction_mode_provenance) << "\"";

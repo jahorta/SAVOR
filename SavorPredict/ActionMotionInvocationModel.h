@@ -23,6 +23,13 @@ enum class ActionMotionResolverCode {
     InstallPlayback = 2,
 };
 
+enum class ActionMotionSetupRoute {
+    Unknown,
+    State8Bypass,
+    CurrentModeResolver,
+    Mode3Resolver,
+};
+
 enum class ActionMotionPersistentCallbackFamily {
     Unknown,
     GenericStanding_80073D10,
@@ -70,6 +77,46 @@ enum class ActionMotionAuxiliaryChildKind {
     ActionViewRoleFlag_80019B70,
 };
 
+enum class ActionMotionSelectorBranch {
+    Unknown,
+    TimedMode,
+    ReadinessMode,
+    InstructionFlagComplete,
+    MotionIncompleteSkip,
+    RowImmediateResult,
+    PrimaryMovementSkipped,
+    PrimaryMovement,
+    SecondaryMovementSkipped,
+    SecondaryMovement,
+};
+
+enum class ActionMotionSelectorStepKind {
+    None,
+    FullRate,
+    HalfRate,
+};
+
+struct ActionMotionSelectorRequest {
+    std::int16_t instruction_mode = -1;
+    std::uint32_t instruction_flags_0x50 = 0;
+    std::uint32_t motion_complete_0x70 = 0;
+    std::optional<std::uint32_t> selected_action_row_flags;
+    std::uint32_t instruction_flags_0xf0 = 0;
+    std::optional<std::int16_t> timed_mode_counter_0x1f8;
+    std::optional<bool> readiness_result;
+    std::optional<bool> movement_reached_target;
+};
+
+struct ActionMotionSelectorResult {
+    ActionMotionInvocationStatus status =
+        ActionMotionInvocationStatus::MissingInput;
+    ActionMotionSelectorBranch branch = ActionMotionSelectorBranch::Unknown;
+    ActionMotionSelectorStepKind step = ActionMotionSelectorStepKind::None;
+    std::optional<int> result;
+    std::optional<std::int16_t> next_timed_mode_counter_0x1f8;
+    std::string provenance;
+};
+
 struct ActionMotionRowResolverRequest {
     std::int16_t requested_mode = -1;
     std::optional<std::int16_t> secondary_key;
@@ -100,8 +147,11 @@ struct ActionMotionInvocationRequest {
     std::int16_t instruction_mode = -1;
     std::optional<std::int16_t> instruction_subtype;
     std::uint32_t instruction_flags_0xf0 = 0;
+    std::optional<std::uint32_t> instruction_flags_0xec;
+    std::optional<std::uint8_t> turn_phase;
+    std::optional<bool> turn_phase_mapping_blocked;
     std::optional<bool> callback_ready;
-    std::optional<bool> basic_uses_mode_3_route;
+    std::optional<ActionMotionSetupRoute> basic_setup_route;
     std::optional<bool> rotation_complete;
     std::optional<int> post_motion_result;
     std::optional<int> state8_descriptor_delay;
@@ -131,6 +181,9 @@ struct ActionMotionInvocationResult {
     int state8_delay_remaining = -1;
     bool auxiliary_publication_requested = false;
     bool entered_state10_via_fallthrough = false;
+    std::optional<std::uint32_t> instruction_flags_0xec_after;
+    std::optional<std::uint32_t> instruction_flags_0xf0_after;
+    bool cleanup_runtime_word_0x134_set = false;
     ActionMotionAuxiliaryChildKind auxiliary_child =
         ActionMotionAuxiliaryChildKind::None;
     std::string resolver_callsite;
@@ -149,8 +202,14 @@ ActionMotionInvocationResult resolve_action_motion_invocation(
     const std::vector<CombatantStdActionRow>& rows,
     const ActionMotionInvocationRequest& request);
 
+ActionMotionSelectorResult resolve_action_motion_selector_8001e910(
+    const ActionMotionSelectorRequest& request);
+
 const char* action_motion_invocation_status_name(ActionMotionInvocationStatus status);
 const char* action_motion_resolver_code_name(ActionMotionResolverCode code);
+const char* action_motion_setup_route_name(ActionMotionSetupRoute route);
+const char* action_motion_selector_branch_name(ActionMotionSelectorBranch branch);
+const char* action_motion_selector_step_name(ActionMotionSelectorStepKind step);
 const char* action_motion_callback_family_name(
     ActionMotionPersistentCallbackFamily family);
 const char* action_motion_invocation_decision_name(

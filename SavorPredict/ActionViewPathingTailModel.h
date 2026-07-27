@@ -38,6 +38,12 @@ struct Fun80011694CandidateResult {
     bool skipped = false;
     bool accepted = false;
     float score = 0.0f;
+    BattleFrameVec3 candidate_position{};
+    std::uint32_t instruction_flags_0xec = 0;
+    std::uint32_t instruction_flags_0xf0 = 0;
+    bool instruction_compare_known = false;
+    int instruction_compare_0x15c = 0;
+    std::optional<GeometryScorer117ecResult> geometry;
     std::string reason;
 };
 
@@ -85,6 +91,41 @@ struct ActionViewPathingTailInput {
     std::optional<std::uint32_t> rng_seed_before;
     std::vector<MovementSlotState> slots;
     const BattleFrameState* frame_state = nullptr;
+    bool emit_causal_diagnostics = false;
+};
+
+struct ActionViewPathingScanDiagnostic {
+    int yaw_iteration = 0;
+    float yaw_degrees = 0.0f;
+    std::string side;
+    int excluded_slot = -1;
+    BattleFrameVec3 input_reference{};
+    BattleFrameVec3 path_base{};
+    int accepted_candidates = 0;
+    float aggregate_score = 0.0f;
+    int selected_slot = -1;
+    bool fallback_rng_draw = false;
+    ActionViewPathingTailStatus status = ActionViewPathingTailStatus::Exact;
+};
+
+struct ActionViewPathingCandidateDiagnostic {
+    int yaw_iteration = 0;
+    float yaw_degrees = 0.0f;
+    std::string side;
+    int excluded_slot = -1;
+    int candidate_slot = -1;
+    BattleFrameVec3 input_reference{};
+    BattleFrameVec3 path_base{};
+    BattleFrameVec3 candidate_position{};
+    std::uint32_t instruction_flags_0xec = 0;
+    std::uint32_t instruction_flags_0xf0 = 0;
+    bool instruction_compare_known = false;
+    int instruction_compare_0x15c = 0;
+    bool skipped = false;
+    bool accepted = false;
+    float score = 0.0f;
+    std::optional<GeometryScorer117ecResult> geometry;
+    std::string reason;
 };
 
 struct ActionViewPathingTailStep {
@@ -104,6 +145,8 @@ struct ActionViewPathingTailStep {
 
 struct ActionViewPathingTailResult {
     std::vector<ActionViewPathingTailStep> steps;
+    std::vector<ActionViewPathingScanDiagnostic> scan_diagnostics;
+    std::vector<ActionViewPathingCandidateDiagnostic> candidate_diagnostics;
     int total_draws = 0;
     bool has_missing_input_steps = false;
     bool has_ambiguous_steps = false;

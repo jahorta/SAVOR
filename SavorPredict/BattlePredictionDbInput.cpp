@@ -319,6 +319,8 @@ std::optional<BattlePredictionDbInput> build_battle_prediction_input_from_analys
     resolved.input.turn_index = wave->turn_index;
     resolved.input.options.action_view_std_json_dir = options.action_view_std_json_dir;
     resolved.input.options.allow_profile_overrides = options.allow_profile_overrides;
+    resolved.input.options.emit_causal_diagnostics =
+        options.emit_causal_diagnostics;
     auto& metadata = resolved.metadata;
     metadata.source_db_root = options.db_root;
     metadata.profile_name = profile->name;

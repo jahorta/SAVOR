@@ -253,6 +253,8 @@ BattleMovementInvocationDecision model_active_movement_invocation(
         decision.controller_family = BattleMovementControllerFamily::ActivePcDirect;
         decision.worker_kind = BattleMovementInvocationWorkerKind::ActivePcDirect;
         decision.leg_policy = BattleMovementInvocationLegPolicy::AdvanceExistingPath;
+        decision.activation_timing =
+            BattleMovementActivationTiming::SameThreadVisitAfterSelection;
         decision.activation_controller_state = BattleMovementControllerState::ActivePcDirect;
         decision.worker_controller_state = BattleMovementControllerState::ActivePcDirect;
         decision.callback_pc = 0x80086308u;
@@ -410,6 +412,8 @@ const char* battle_movement_activation_timing_name(
     BattleMovementActivationTiming timing) {
     switch (timing) {
     case BattleMovementActivationTiming::NextThreadVisit: return "NextThreadVisit";
+    case BattleMovementActivationTiming::SameThreadVisitAfterSelection:
+        return "SameThreadVisitAfterSelection";
     case BattleMovementActivationTiming::SameThreadVisitAfterHandoff:
         return "SameThreadVisitAfterHandoff";
     }
@@ -446,6 +450,7 @@ const char* battle_movement_controller_state_name(
     case BattleMovementControllerState::Idle: return "Idle";
     case BattleMovementControllerState::ActivePcDirect: return "ActivePcDirect";
     case BattleMovementControllerState::ActivePcFallback: return "ActivePcFallback";
+    case BattleMovementControllerState::ActivePcHandler: return "ActivePcHandler";
     case BattleMovementControllerState::EnemyHandler: return "EnemyHandler";
     case BattleMovementControllerState::EnemyDirect: return "EnemyDirect";
     case BattleMovementControllerState::EnemyFallback: return "EnemyFallback";

@@ -103,8 +103,10 @@
     </ClCompile>
     <ClCompile Include="ActionMotionPlaybackModel.cpp" />
     <ClCompile Include="ActionMotionInvocationModel.cpp" />
+    <ClCompile Include="ActionMotionSetupDecisionModel.cpp" />
     <ClCompile Include="ActionMotionTargetModel.cpp" />
     <ClCompile Include="BattleMovementPathModel.cpp" />
+    <ClCompile Include="BattlePursuitCoordinationModel.cpp" />
     <ClCompile Include="BattleCollisionBoxModel.cpp" />
     <ClCompile Include="BattleTargetReactionStateModel.cpp" />
     <ClCompile Include="DirectInstructionTransitionSelectorModel.cpp" />
@@ -331,9 +333,11 @@
     </ClInclude>
     <ClInclude Include="ActionMotionPlaybackModel.h" />
     <ClInclude Include="ActionMotionInvocationModel.h" />
+    <ClInclude Include="ActionMotionSetupDecisionModel.h" />
     <ClInclude Include="ActionMotionTargetModel.h" />
     <ClInclude Include="BattleMovementInvocationModel.h" />
     <ClInclude Include="BattleMovementPathModel.h" />
+    <ClInclude Include="BattlePursuitCoordinationModel.h" />
     <ClInclude Include="BattleCollisionBoxModel.h" />
     <ClInclude Include="BattleTargetReactionStateModel.h" />
     <ClInclude Include="DirectInstructionTransitionSelectorModel.h" />

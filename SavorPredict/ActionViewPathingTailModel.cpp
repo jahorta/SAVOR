@@ -196,6 +196,13 @@ Fun80011694Result run_fun_80011694(
         Fun80011694CandidateResult candidate;
         candidate.slot = combatant_state.slot;
         const auto* combatant = &combatant_state;
+        candidate.candidate_position = combatant->combatant_cur_pos_0x1c;
+        candidate.instruction_flags_0xec = combatant->instruction_flags_0xec;
+        candidate.instruction_flags_0xf0 = combatant->instruction_flags_0xf0;
+        candidate.instruction_compare_known =
+            combatant->instruction_compare_known;
+        candidate.instruction_compare_0x15c =
+            combatant->instruction_compare_0x15c;
         if (!combatant->present || !combatant->alive) {
             candidate.skipped = true;
             candidate.reason = "null_or_inactive";
@@ -220,6 +227,7 @@ Fun80011694Result run_fun_80011694(
             .candidate_position = combatant->combatant_cur_pos_0x1c,
             .path_base = path_base,
         });
+        candidate.geometry = geometry;
         if (!geometry.accepted) {
             candidate.reason = "geometry_rejected";
             result.candidates.push_back(candidate);
@@ -447,6 +455,68 @@ ActionViewPathingTailResult model_first_battle_action_view_pathing_tail(
         .target_side_fallback_draws = scan.target_fallback_draws,
         .detail = scan.detail,
     });
+
+    if (input.emit_causal_diagnostics) {
+        const auto append_side = [&result](
+            const Fun8005174cScanIteration& iteration,
+            std::string side,
+            int excluded_slot,
+            const BattleFrameVec3& input_reference,
+            const Fun80011694Result& side_scan) {
+            result.scan_diagnostics.push_back({
+                .yaw_iteration = iteration.yaw_iteration,
+                .yaw_degrees = iteration.yaw_degrees,
+                .side = side,
+                .excluded_slot = excluded_slot,
+                .input_reference = input_reference,
+                .path_base = iteration.path_base,
+                .accepted_candidates = side_scan.accepted_candidates,
+                .aggregate_score = side_scan.aggregate_score,
+                .selected_slot = side_scan.selected_slot,
+                .fallback_rng_draw = side_scan.fallback_rng_draw,
+                .status = side_scan.status,
+            });
+            for (const auto& candidate : side_scan.candidates) {
+                result.candidate_diagnostics.push_back({
+                    .yaw_iteration = iteration.yaw_iteration,
+                    .yaw_degrees = iteration.yaw_degrees,
+                    .side = side,
+                    .excluded_slot = excluded_slot,
+                    .candidate_slot = candidate.slot,
+                    .input_reference = input_reference,
+                    .path_base = iteration.path_base,
+                    .candidate_position = candidate.candidate_position,
+                    .instruction_flags_0xec =
+                        candidate.instruction_flags_0xec,
+                    .instruction_flags_0xf0 =
+                        candidate.instruction_flags_0xf0,
+                    .instruction_compare_known =
+                        candidate.instruction_compare_known,
+                    .instruction_compare_0x15c =
+                        candidate.instruction_compare_0x15c,
+                    .skipped = candidate.skipped,
+                    .accepted = candidate.accepted,
+                    .score = candidate.score,
+                    .geometry = candidate.geometry,
+                    .reason = candidate.reason,
+                });
+            }
+        };
+        for (const auto& iteration : scan.scans) {
+            append_side(
+                iteration,
+                "actor",
+                input.actor_slot,
+                actor->combatant_cur_pos_0x1c,
+                iteration.actor_scan);
+            append_side(
+                iteration,
+                "target",
+                input.target_slot,
+                target->combatant_cur_pos_0x1c,
+                iteration.target_scan);
+        }
+    }
 
     return result;
 }

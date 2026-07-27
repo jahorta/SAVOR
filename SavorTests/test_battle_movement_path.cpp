@@ -375,18 +375,55 @@ TEST(ActionMotionTargetModelTest, ModesSixAndThirteenSelectOwnPosHolder)
     }
 }
 
-TEST(ActionMotionTargetModelTest, UnsupportedModeUsesOnlyExplicitProvisionalFallback)
+TEST(ActionMotionTargetModelTest, ExactTargetModeDoesNotGuessMissingCombatant)
 {
     const auto missing = select_action_motion_target(ActionMotionTargetInput{
         .actor_slot = 0,
+        .target_slot = 4,
         .action_mode = 5,
     });
-    EXPECT_EQ(missing.status, ActionMotionTargetStatus::Unsupported);
+    EXPECT_EQ(missing.status, ActionMotionTargetStatus::MissingInput);
     EXPECT_FALSE(missing.target.has_value());
+}
 
+TEST(ActionMotionTargetModelTest, ReactionModesUseSecondaryInstructionTarget)
+{
+    const BattleFrameVec3 secondary_target{
+        .x = -30.0f,
+        .y = 0.0f,
+        .z = 45.0f,
+    };
+    for (const auto mode : {
+             std::int16_t{0x09},
+             std::int16_t{0x0a},
+             std::int16_t{0x0b},
+             std::int16_t{0x0d},
+             std::int16_t{0x20}}) {
+        const auto result = select_action_motion_target(
+            ActionMotionTargetInput{
+                .actor_slot = 4,
+                .target_slot = 5,
+                .action_mode = mode,
+                .target_current_position =
+                    BattleFrameVec3{.x = 1.0f, .y = 2.0f, .z = 3.0f},
+                .secondary_target_current_position = secondary_target,
+            });
+        ASSERT_EQ(result.status, ActionMotionTargetStatus::Exact);
+        ASSERT_TRUE(result.target.has_value());
+        EXPECT_FLOAT_EQ(result.target->x, secondary_target.x);
+        EXPECT_FLOAT_EQ(result.target->z, secondary_target.z);
+        EXPECT_EQ(
+            result.source,
+            ActionMotionTargetSource::
+                SecondaryTargetCombatantCurrentPosition);
+    }
+}
+
+TEST(ActionMotionTargetModelTest, UnsupportedModeUsesOnlyExplicitProvisionalFallback)
+{
     const auto fallback = select_action_motion_target(ActionMotionTargetInput{
         .actor_slot = 0,
-        .action_mode = 5,
+        .action_mode = 3,
         .provisional_fallback = BattleFrameVec3{.x = 3.0f, .y = 0.0f, .z = 4.0f},
     });
     EXPECT_EQ(fallback.status, ActionMotionTargetStatus::Provisional);

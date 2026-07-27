@@ -158,6 +158,38 @@ QueuedInstructionEvidenceResult reconcile_queued_instruction_macro_evidence(
     return result;
 }
 
+SetupTurnStatusTransitionResult model_setup_turn_status_transition(
+    const SetupTurnStatusTransitionInput& input) {
+    SetupTurnStatusTransitionResult result;
+    result.status_flags_before = input.current_status_flags;
+    result.status_flags_after = input.current_status_flags;
+    result.confidence = "high";
+
+    if (!input.queued_instruction.has_value()) {
+        result.status = QueuedInstructionParamStatus::MissingInput;
+        result.provenance =
+            "setupTurn_80070C18 requires the accepted queued instruction";
+        return result;
+    }
+
+    result.status = QueuedInstructionParamStatus::Validated;
+    if (*input.queued_instruction == 4) {
+        result.applied_mask = 0x00000001u;
+        result.status_flags_after =
+            result.status_flags_before | result.applied_mask;
+        result.write_performed = true;
+        result.provenance =
+            "setupTurn_80070C18 compared queued instruction 4 at "
+            "0x80071060, ORed combatant status with 0x00000001, and "
+            "stored the result at 0x8007106C";
+    } else {
+        result.provenance =
+            "setupTurn_80070C18 did not execute the validated queued "
+            "instruction 4 status producer";
+    }
+    return result;
+}
+
 BasicAttackExecutionRoute basic_attack_route_from_final_parameter(
     std::optional<std::int16_t> final_parameter) {
     if (!final_parameter.has_value()) {

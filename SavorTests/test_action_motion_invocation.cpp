@@ -65,8 +65,10 @@ ActionMotionInvocationRequest exact_invocation(
         .callback_state = state,
         .instruction_mode = mode,
         .instruction_flags_0xf0 = 0,
+        .instruction_flags_0xec = 0,
+        .turn_phase = 4,
         .callback_ready = true,
-        .basic_uses_mode_3_route = false,
+        .basic_setup_route = ActionMotionSetupRoute::CurrentModeResolver,
         .rotation_complete = true,
         .selection_blocked = false,
         .current_motion_resource_present = false,
@@ -163,18 +165,82 @@ TEST(SavorPredictActionMotionInvocation, BasicState3InstallsOnlyForResultTwo) {
     EXPECT_EQ(loaded.callback_state_after, 8);
 }
 
+TEST(SavorPredictActionMotionInvocation, BasicState0StopsAtState2BeforeResolver) {
+    const auto result = resolve_action_motion_invocation(
+        action_rows(),
+        exact_invocation(
+            ActionMotionPersistentCallbackFamily::ActionMotionBasic_8001B1B0,
+            0,
+            5));
+
+    EXPECT_EQ(result.status, ActionMotionInvocationStatus::Provisional);
+    EXPECT_EQ(result.decision, ActionMotionInvocationDecisionKind::Wait);
+    EXPECT_EQ(result.callback_state_before, 0);
+    EXPECT_EQ(result.callback_state_after, 2);
+    EXPECT_FALSE(result.resolver_called);
+    EXPECT_EQ(result.instruction_flags_0xec_after, 0u);
+    EXPECT_EQ(result.instruction_flags_0xf0_after, 0u);
+}
+
+TEST(SavorPredictActionMotionInvocation, BasicState2FallsThroughState3Resolver) {
+    const auto result = resolve_action_motion_invocation(
+        action_rows(),
+        exact_invocation(
+            ActionMotionPersistentCallbackFamily::ActionMotionBasic_8001B1B0,
+            2,
+            5));
+
+    EXPECT_EQ(result.status, ActionMotionInvocationStatus::Matched);
+    EXPECT_EQ(
+        result.decision,
+        ActionMotionInvocationDecisionKind::InstallPlayback);
+    EXPECT_EQ(result.callback_state_before, 2);
+    EXPECT_EQ(result.callback_state_after, 6);
+    EXPECT_TRUE(result.resolver_called);
+}
+
 TEST(SavorPredictActionMotionInvocation, BasicMode3RouteUsesState5Continuation) {
     auto request = exact_invocation(
         ActionMotionPersistentCallbackFamily::ActionMotionBasic_8001B1B0,
         3,
         5);
-    request.basic_uses_mode_3_route = true;
+    request.basic_setup_route = ActionMotionSetupRoute::Mode3Resolver;
     const auto result = resolve_action_motion_invocation(action_rows(), request);
     EXPECT_EQ(result.decision, ActionMotionInvocationDecisionKind::InstallPlayback);
     EXPECT_EQ(result.callback_state_after, 5);
     EXPECT_EQ(
         result.playback_continuation,
         ActionMotionPlaybackContinuation::State5LoadLookedUpTo4);
+}
+
+TEST(SavorPredictActionMotionInvocation, MissingSetupRouteDoesNotGuessCurrentMode) {
+    auto request = exact_invocation(
+        ActionMotionPersistentCallbackFamily::ActionMotionBasic_8001B1B0,
+        3,
+        5);
+    request.basic_setup_route.reset();
+
+    const auto result = resolve_action_motion_invocation(action_rows(), request);
+
+    EXPECT_EQ(result.status, ActionMotionInvocationStatus::MissingInput);
+    EXPECT_EQ(result.decision, ActionMotionInvocationDecisionKind::Wait);
+    EXPECT_EQ(result.callback_state_after, 3);
+    EXPECT_FALSE(result.resolver_called);
+}
+
+TEST(SavorPredictActionMotionInvocation, SetupReadinessBypassEntersState8) {
+    auto request = exact_invocation(
+        ActionMotionPersistentCallbackFamily::ActionMotionBasic_8001B1B0,
+        3,
+        5);
+    request.basic_setup_route = ActionMotionSetupRoute::State8Bypass;
+
+    const auto result = resolve_action_motion_invocation(action_rows(), request);
+
+    EXPECT_EQ(result.status, ActionMotionInvocationStatus::Matched);
+    EXPECT_EQ(result.decision, ActionMotionInvocationDecisionKind::Wait);
+    EXPECT_EQ(result.callback_state_after, 8);
+    EXPECT_FALSE(result.resolver_called);
 }
 
 TEST(SavorPredictActionMotionInvocation, BasicState11ResultTwoLoadsWithoutInstalling) {
@@ -187,6 +253,77 @@ TEST(SavorPredictActionMotionInvocation, BasicState11ResultTwoLoadsWithoutInstal
     EXPECT_EQ(result.resolver.code, ActionMotionResolverCode::InstallPlayback);
     EXPECT_EQ(result.decision, ActionMotionInvocationDecisionKind::LoadLookedUp);
     EXPECT_EQ(result.callback_state_after, 12);
+}
+
+TEST(SavorPredictActionMotionInvocation, BasicState11DoesNotGuessMissingMotionResult) {
+    auto request = exact_invocation(
+        ActionMotionPersistentCallbackFamily::ActionMotionBasic_8001B1B0,
+        11,
+        6);
+    request.post_motion_result.reset();
+
+    const auto result = resolve_action_motion_invocation(action_rows(), request);
+
+    EXPECT_EQ(result.status, ActionMotionInvocationStatus::MissingInput);
+    EXPECT_EQ(result.decision, ActionMotionInvocationDecisionKind::Wait);
+    EXPECT_EQ(result.callback_state_before, 11);
+    EXPECT_EQ(result.callback_state_after, 11);
+    EXPECT_FALSE(result.resolver_called);
+}
+
+TEST(SavorPredictActionMotionInvocation, MotionSelectorReturnsZeroForIncompleteNonmovingRow) {
+    const auto result = resolve_action_motion_selector_8001e910(
+        ActionMotionSelectorRequest{
+            .instruction_mode = 5,
+            .motion_complete_0x70 = 0,
+            .selected_action_row_flags = 0x0a000000u,
+        });
+
+    EXPECT_EQ(result.status, ActionMotionInvocationStatus::Matched);
+    ASSERT_TRUE(result.result.has_value());
+    EXPECT_EQ(*result.result, 0);
+    EXPECT_EQ(
+        result.branch,
+        ActionMotionSelectorBranch::SecondaryMovementSkipped);
+    EXPECT_EQ(result.step, ActionMotionSelectorStepKind::None);
+}
+
+TEST(SavorPredictActionMotionInvocation, MotionSelectorReturnsRowResultTwoAfterRendererCompletion) {
+    const auto result = resolve_action_motion_selector_8001e910(
+        ActionMotionSelectorRequest{
+            .instruction_mode = 5,
+            .motion_complete_0x70 = 1,
+            .selected_action_row_flags = 0x0a000000u,
+        });
+
+    EXPECT_EQ(result.status, ActionMotionInvocationStatus::Matched);
+    ASSERT_TRUE(result.result.has_value());
+    EXPECT_EQ(*result.result, 2);
+    EXPECT_EQ(
+        result.branch,
+        ActionMotionSelectorBranch::RowImmediateResult);
+    EXPECT_EQ(result.step, ActionMotionSelectorStepKind::None);
+}
+
+TEST(SavorPredictActionMotionInvocation, MotionSelectorRequiresOrderedMovementResult) {
+    auto request = ActionMotionSelectorRequest{
+        .instruction_mode = 0x13,
+        .motion_complete_0x70 = 0,
+        .selected_action_row_flags = 0x01000000u,
+    };
+    auto result = resolve_action_motion_selector_8001e910(request);
+    EXPECT_EQ(result.status, ActionMotionInvocationStatus::MissingInput);
+    EXPECT_FALSE(result.result.has_value());
+    EXPECT_EQ(
+        result.branch,
+        ActionMotionSelectorBranch::SecondaryMovement);
+    EXPECT_EQ(result.step, ActionMotionSelectorStepKind::HalfRate);
+
+    request.movement_reached_target = true;
+    result = resolve_action_motion_selector_8001e910(request);
+    EXPECT_EQ(result.status, ActionMotionInvocationStatus::Matched);
+    ASSERT_TRUE(result.result.has_value());
+    EXPECT_EQ(*result.result, 1);
 }
 
 TEST(SavorPredictActionMotionInvocation, BasicState8DelayReachesState11InPpcOrder) {
@@ -295,6 +432,104 @@ TEST(SavorPredictActionMotionInvocation, SpecialState9AndBasicState15Install) {
             5));
     EXPECT_EQ(basic.decision, ActionMotionInvocationDecisionKind::InstallPlayback);
     EXPECT_EQ(basic.callback_state_after, 7);
+}
+
+TEST(SavorPredictActionMotionInvocation, BasicState15ReleasesWhenMode2MotionIsCurrent) {
+    auto request = exact_invocation(
+        ActionMotionPersistentCallbackFamily::ActionMotionBasic_8001B1B0,
+        15,
+        5);
+    request.current_motion_resource_present = true;
+    request.current_motion_id = 10;
+
+    const auto result = resolve_action_motion_invocation(
+        action_rows(), request);
+
+    EXPECT_EQ(result.resolver.code, ActionMotionResolverCode::NoChange);
+    EXPECT_EQ(result.decision, ActionMotionInvocationDecisionKind::Release);
+    EXPECT_EQ(result.callback_state_after, 14);
+}
+
+TEST(SavorPredictActionMotionInvocation, BasicState17Mode6TerminatesAtState13) {
+    const auto result = resolve_action_motion_invocation(
+        action_rows(),
+        exact_invocation(
+            ActionMotionPersistentCallbackFamily::ActionMotionBasic_8001B1B0,
+            17,
+            6));
+
+    EXPECT_EQ(result.status, ActionMotionInvocationStatus::Matched);
+    EXPECT_EQ(result.decision, ActionMotionInvocationDecisionKind::Release);
+    EXPECT_EQ(result.callback_state_after, 13);
+    EXPECT_FALSE(result.resolver_called);
+    EXPECT_EQ(result.instruction_flags_0xec_after, 0u);
+    EXPECT_EQ(result.instruction_flags_0xf0_after, 0x10u);
+}
+
+TEST(SavorPredictActionMotionInvocation, BasicState12RetainedModeTerminatesAtState14) {
+    const auto result = resolve_action_motion_invocation(
+        action_rows(),
+        exact_invocation(
+            ActionMotionPersistentCallbackFamily::ActionMotionBasic_8001B1B0,
+            12,
+            5));
+
+    EXPECT_EQ(result.status, ActionMotionInvocationStatus::Matched);
+    EXPECT_EQ(result.decision, ActionMotionInvocationDecisionKind::Release);
+    EXPECT_EQ(result.callback_state_after, 14);
+    EXPECT_FALSE(result.resolver_called);
+    EXPECT_TRUE(result.cleanup_runtime_word_0x134_set);
+}
+
+TEST(SavorPredictActionMotionInvocation, BasicState17FallsThroughState15InSameVisit) {
+    const auto result = resolve_action_motion_invocation(
+        action_rows(),
+        exact_invocation(
+            ActionMotionPersistentCallbackFamily::ActionMotionBasic_8001B1B0,
+            17,
+            5));
+
+    EXPECT_EQ(result.status, ActionMotionInvocationStatus::Matched);
+    EXPECT_EQ(
+        result.decision,
+        ActionMotionInvocationDecisionKind::InstallPlayback);
+    EXPECT_EQ(result.callback_state_before, 17);
+    EXPECT_EQ(result.callback_state_after, 7);
+    EXPECT_TRUE(result.resolver_called);
+    EXPECT_EQ(result.resolver.requested_mode, 2);
+    EXPECT_TRUE(result.cleanup_runtime_word_0x134_set);
+}
+
+TEST(SavorPredictActionMotionInvocation, BasicCleanupTurnPhaseSevenTerminatesAtState13) {
+    auto request = exact_invocation(
+        ActionMotionPersistentCallbackFamily::ActionMotionBasic_8001B1B0,
+        17,
+        5);
+    request.turn_phase = 7;
+    request.turn_phase_mapping_blocked = false;
+
+    const auto result = resolve_action_motion_invocation(
+        action_rows(), request);
+
+    EXPECT_EQ(result.status, ActionMotionInvocationStatus::Matched);
+    EXPECT_EQ(result.decision, ActionMotionInvocationDecisionKind::Release);
+    EXPECT_EQ(result.callback_state_after, 13);
+    EXPECT_FALSE(result.resolver_called);
+}
+
+TEST(SavorPredictActionMotionInvocation, BasicCleanupRequiresFlags) {
+    auto request = exact_invocation(
+        ActionMotionPersistentCallbackFamily::ActionMotionBasic_8001B1B0,
+        17,
+        6);
+    request.instruction_flags_0xec.reset();
+
+    const auto result = resolve_action_motion_invocation(
+        action_rows(), request);
+
+    EXPECT_EQ(result.status, ActionMotionInvocationStatus::MissingInput);
+    EXPECT_EQ(result.decision, ActionMotionInvocationDecisionKind::Wait);
+    EXPECT_EQ(result.callback_state_after, 17);
 }
 
 TEST(SavorPredictActionMotionInvocation, CallbackIndexMappingUsesExecutableTable) {
