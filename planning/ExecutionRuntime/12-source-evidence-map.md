@@ -20,11 +20,61 @@ work or when implementation evidence changes an architectural conclusion.
 - `SavorCore/Runner/IPC/Wire.h`
   - defines the current numeric `ProgramKind` catalog and worker messages.
 - `SavorWorkflow/Worker/ProcessWorker.cpp`
-  - owns the parent-side process and wire operations.
+  - owns the parent-side process and wire operations;
+  - currently exposes one encoded-invocation submission at a time; and
+  - is the parent transport seam where the pre-6A `SubmitWorkset`, streamed per-item terminal, and
+    acknowledgement protocol replaces that unactivated scalar surface.
 - `SavorWorkflow/Execution/DBWorkflowWorkerCoordinator.cpp`
-  - configures workers, applies affinity/reuse decisions, and dispatches materialized jobs.
+  - configures workers, applies affinity/reuse decisions, and dispatches materialized jobs;
+  - `WorkerSlot::in_flight_job_id`, `CollectDispatchableWorkers`, and `ReleaseWorkerByResult` currently
+    model one in-flight job per worker; and
+  - `WorkerJobCoordinatorLoop` is the workset-specific scheduling seam for resident capacity, lease
+    renewal, per-item start/result acknowledgement, and independent recovery.
 - `SavorWorkflow/Execution/JobMaterializationService.cpp`
-  - resolves program-kind descriptors and prepares the current worker job/runtime request.
+  - resolves program-kind descriptors and prepares the current worker job/runtime request;
+  - already claims batches through the existing execution database operation; and
+  - `BetterMaterializedDispatchCandidate` already treats savestate, program kind, and runtime affinity as
+    scheduling preferences, which are evidence for locality but not sufficient proof of an exact
+    `WorkerWorksetExecutionKey`.
+- `SavorCore/Runner/Runtime/WorkerRuntime.*` and `IProgramRuntimePort.h`
+  - currently admit one encoded invocation and enforce one active invocation through
+    `RequireReadyProgramRuntime`;
+  - the pre-6A workset owner belongs in `WorkerRuntime`, outside `ProgramRuntime`; and
+  - pending workset items must remain invisible to the program port and executor.
+- `SavorCore/Runner/Runtime/ProgramRuntime/ProgramRuntime.*`
+  - `StartInvocation` remains the one-child execution boundary; a workset activates children
+    sequentially rather than adding batching or scheduling to `ProgramRuntime`.
+
+### WorkerWorkset integration boundary
+
+The current source already separates batch claiming from scalar worker activation. The target uses that
+evidence narrowly:
+
+- `SubmitWorkset` becomes the sole production program-dispatch path for 1..N immutable item templates;
+  one independently durable job is represented by a one-item workset;
+- only already claimed and independently materialized jobs with the same exact runtime-only
+  `WorkerWorksetExecutionKey` may share a multi-item envelope;
+- workset acceptance keeps unstarted items `CLAIMED`; immediately before effects the worker publishes
+  an ordered item-start event without waiting, and the coordinator appends the existing `JobStarted`
+  event before processing that child's later ordered terminal;
+- the coordinator renews every resident nonterminal claim lease and includes worker-resident,
+  coordinator-buffered, outbound, and active items in its bounded capacity calculation;
+- each child fully unwinds and publishes its ordinary result immediately; current result/artifact and
+  terminal-transition operations project it independently before the protocol acknowledgement is
+  returned;
+- `WorkerRuntime` owns the static order, exact prepared state, multi-item reusable workset baseline,
+  current child, bounded unacknowledged-result window, and drain state, while `ProgramRuntime` sees
+  only one child invocation; a one-item workset skips reusable-baseline capture;
+  and
+- worker loss, cancellation, transport failure, or taint recovers each nonterminal durable job through
+  the current per-job operations. Completed items are not rolled back and taint prevents a later child
+  from starting.
+
+This is a coordinator/worker locality optimization, not a persistent scheduler. There is no workset row,
+membership table, durable cursor, workset attempt/result, aggregate transition, or worker access to
+SavorDb. Any source change outside the worker transport, runtime actor, materialization, coordinator
+bookkeeping, and focused tests requires separate evidence; unrelated database, workflow, queue, claim,
+transaction, and artifact contracts remain fixed.
 
 ### Current program execution
 
@@ -35,7 +85,7 @@ work or when implementation evidence changes an architectural conclusion.
 - `SavorCore/Runner/Script/PhaseScriptOpcodeTable.inc`
   - mixes generic control operations with phase- and game-specific operations.
 - `SavorCore/Runner/Script/PhaseScriptVM*.cpp`
-  - retains the legacy interpreter corpus as translation/characterization evidence;
+  - retains the legacy interpreter corpus as source-characterization evidence only;
   - its advancement, input, physical-stop, state, capture, movie, and mutation escape hatches are
     hard-disconnected from production and fail locally.
 - `SavorCore/Runner/Script/PSContext.h` and `PSContextCodec.cpp`
@@ -43,8 +93,8 @@ work or when implementation evidence changes an architectural conclusion.
 - `SavorCore/Runner/InputMacro/InputMacroPlan.h`, `IInputMacroPlanDriver.h`, `IInputMacroHost.h`, and
   `InputMacroRuntime.cpp`
   - define the current finite segment vocabulary, adaptive `Start/Advance` boundary, stop/input receipts,
-    held-through-hit choice, local baselines, failure distinctions, and cleanup-once behavior that
-    interaction composition must preserve.
+    historical held-through-hit choice, local baselines, failure distinctions, and cleanup-once behavior
+    from which native interaction semantics are reconstructed.
 - `SavorCore/Runner/Breakpoints/Predicate.*`
   - defines the current compact battle predicate records and table construction.
 - `SavorCore/Runner/Script/PhaseScriptVMPredicates.cpp`
@@ -63,9 +113,23 @@ work or when implementation evidence changes an architectural conclusion.
   `SavorDb/Execution/ProgramDB/BattleSingleTurn/BattleSingleTurnAdapters.cpp`
   - consume current predicate state and project predicate rejection, passed/total counts, and
     survivor-selection behavior that migration must preserve.
+- `SavorCore/Runner/InputMacro/Providers/BattleCompletionInputMacroProvider.cpp` and
+  `BattleResultsScreenInputMacroProvider.cpp`
+  - provide source characterization for the two separate battle-end programs;
+  - Battle Completion's target contract replaces the old held-through-hit/guest-poll mechanism with
+    exact source-receipt suppression and the causal successors `0x8006F554 -> 0x8006F558` or
+    `0x8006F590 -> 0x8006F594`; and
+  - Results Screen begins from the field-return reseed/completion-manifest handoff rather than a
+    monolithic victory-to-results controller.
 
 ### SavorDb integration boundary
 
+- `SavorDb/Execution/IExecutionDb.h`
+  - `ClaimBatchReadyExecutionJobs` already reserves multiple independently durable jobs and remains the
+    unchanged claim operation used before workset grouping.
+- `SavorDb/Execution/Jobs/JobEventOrchestration.*`
+  - defines the existing `JobStarted` lifecycle event and remains the durable per-item transition from
+    `CLAIMED` to running.
 - `SavorDb/Execution/ProgramDB/ProgramKindDescriptor.h`
   - combines persistence, runtime initialization/materialization, result mapping, and transition hooks.
 - `SavorDb/Execution/ProgramDB/ProgramKindRegistry.h`
@@ -88,7 +152,6 @@ Current fixed programs are under `SavorCore/Phases/Programs`:
 - SeedProbe;
 - TAS Movie playback/checkpoint;
 - TAS frame detector;
-- legacy multi-turn battle path;
 - Battle Context;
 - Battle Single Turn;
 - Battle Macro Probe;
@@ -97,8 +160,9 @@ Current fixed programs are under `SavorCore/Phases/Programs`:
 - Navigation Context.
 
 `ProgramRegistry.cpp`, `Wire.h`, the phase builders/payloads, and the corresponding SavorDb adapters are
-the useful starting points for each migration slice. Document 07 gives the target module mapping and
-practical parity checks.
+the useful starting points for each migration slice. The deprecated multi-turn BattleRunner remains
+historical source evidence and does not become a target `soa.battle.legacy_path` module. Document 07
+gives the target module mapping and practical characterization checks.
 
 Navmesh Survey, collision search, cutscene fast-forward, and overworld expansion are not implemented
 current phases. Their descriptions in document 08 are non-gating future examples.
@@ -161,9 +225,35 @@ The Slice 3 source review used the exact Dolphin checkout from which the vendore
   - DolphinQt does not rely on that path for exact stepping and instead performs the Interpreter
     transition above.
 
-The Slice 3 contract consequently reports exact guest-instruction step as unsupported on the concrete
-JIT64 backend. It neither changes CPU mode nor calls a JIT-block step an instruction. This conclusion is
-source-derived and requires no DolphinQt launch, rendered window, desktop control, or user inspection.
+The DolphinQt review is historical evidence for rejecting a public guest-opcode step. Migrated modules
+do not import `runtime.execution.step_instructions`, and the forward verification plan does not require
+an exact guest-step contract. Any future ProgramRuntime IR/source-level stepping facility is a distinct
+deferred design, not an `ExecutionEngine` opcode advance.
+
+### Private state-load bootstrap exception
+
+The current repository has one intentionally private exception that is not a contradiction:
+
+- `SavorCore/Core/DolphinWrapper.cpp:610-620`
+  - `loadSavestate` invokes `stepBootCoreForStateLoadBlocking` only when a state load begins from a paused
+    boot core whose time-base register is still zero;
+  - the helper exists to let the state-load transaction proceed, after which the requested savestate
+    replaces the transient bootstrap state.
+- `SavorCore/Core/DolphinWrapper.cpp:1087-1100`
+  - the helper temporarily selects Interpreter, submits one `StepOpcode`, waits for its completion event,
+    and restores the prior core mode;
+  - the current implementation discards the boolean returned by `Common::Event::WaitFor` and then
+    returns `true`, so a completion timeout is not currently propagated to `loadSavestate`.
+- `SavorCore/Core/DolphinWrapper.h:301-304`
+  - the declaration labels this as state-load bootstrap only and explicitly excludes it from
+    `IExecutionBackendPort`.
+
+This helper remains private to state replacement. It is not exposed through WRMS, `ExecutionEngine`,
+`ProgramRuntime`, an action, a module import, or an interactive control, and verification treats only the
+typed state-load receipt as public behavior. Focused state-loading tests must cover the bounded-wait
+failure, and the backend must propagate it before production cutover. Correcting that private failure
+path does not create a guest-step contract; replacing the bootstrap mechanism remains outside the phase
+slices.
 
 ## Implemented Slice 4 service boundary
 
@@ -270,8 +360,8 @@ Focused guards live in:
 
 This source inventory does not claim a live production program. Production composition still constructs
 neither the runtime nor its implemented action host and advertises no `ProgramInvocation` capability.
-Current phases are not translated, no live program smoke or production-worker SavorE2E has been
-established for Slice 5, and no SavorDb contract changed.
+Current phases have not yet been implemented natively, no live program smoke or production-worker
+SavorE2E has been established for Slice 5, and no SavorDb contract changed.
 
 ## Useful tests and live references
 
@@ -312,6 +402,11 @@ Focused current tests include:
 Predicate-related fixtures in `test_savordb_fixture_sqlite.cpp` cover current stored predicate records
 that remain fixed migration inputs.
 
+Legacy VM, macro-provider, and phase tests above are source-characterization aids. They do not require a
+compatibility translator or executable legacy differential harness. Each migrated phase gains permanent
+native-module guards, while final functional acceptance remains the Release solution build plus the
+production-worker SavorE2E matrix.
+
 The established final functional validation surface is the Release `SAVOR.sln` build plus the
 production-worker SavorE2E matrix. Focused tests are development aids for the seam being changed.
 
@@ -328,8 +423,8 @@ or required refactor phase.
 - The external breakpoint-router analysis supplies useful current-state and ownership evidence, but its
   separate interpreter/macro-engine target is superseded by one `ProgramRuntime` and one
   `ProgramExecutor`.
-- “Shrink `PhaseScriptVM`” is superseded by replacing the legacy interpreter with the typed runtime.
-  A translator may exist temporarily for migration comparisons.
+- “Shrink `PhaseScriptVM`” is superseded by replacing the legacy interpreter with native typed modules.
+  No compatibility translator or executable legacy comparison path is introduced.
 - The earlier user-script plan's serialized current `PhaseScript`, `PSContext`, `PK_UserScript`, and
   second activation path are not the target architecture.
 - `ProgramKind` may remain SavorDb routing, handler, affinity, semantic, and UI metadata. It must not
@@ -346,6 +441,17 @@ or required refactor phase.
 - “Interaction composition” does not retain `InputMacroRuntime` or create an `InteractionRuntime`.
   Finite segments and pure reducers lower into ordinary subprogram control flow, input/resource scopes,
   semantic awaits, observations, checks, and emissions.
+- Interaction migration does not import public guest-opcode stepping. Exact current-receipt suppression
+  prevents duplicate re-entry, and a verifier-known semantic successor provides causal post-instruction
+  evidence when a phase needs it.
+- The private state-load bootstrap step remains inside `DolphinWrapper`'s state transaction; it is not a
+  precedent for an execution action or WRMS command. Future ProgramRuntime IR/source-level stepping is a
+  distinct deferred authoring/debugging concern.
+- The deprecated multi-turn BattleRunner has no target module, and Battle Completion plus Battle Results
+  Screen replace the old combined battle-end flow as two explicit programs.
+- Battle Completion publishes neutral while paused after restore and requires host publication success,
+  then observes `0x8006F554 -> 0x8006F558` or `0x8006F590 -> 0x8006F594`. It does not require a guest
+  neutral poll/release witness.
 - Existing `savor.capture.profile/1` semantics remain opaque behind passive `CaptureService`.
   `StopPointRouter` and `ExecutionEngine` own wake/control authority; capture observes the same routed
   sequence/snapshot/epoch identity so profile-visible control, window, recorder, progress, queue, and
@@ -368,8 +474,8 @@ These questions are intentionally left to later migration or future work that ne
 - collision-oddity objectives and refinement policy;
 - source-backed cutscene pack and strategy;
 - source-backed overworld pack, movement, goals, pruning, and durable frontier rules;
-- current-phase translation, live program smoke, and production-worker SavorE2E; and
-- external consumers of the legacy battle-path program that are not visible in this repository.
+- native current-phase implementation, live program smoke, and production-worker SavorE2E; and
+- any future ProgramRuntime IR/source-level stepping design.
 
 None of these permits a second executor, unscoped emulator mutation, direct program access to SavorDb,
 or a change to SavorDb storage/interfaces inside this refactor.

@@ -28,7 +28,9 @@ job, result, artifact, workflow, affinity, or domain representations; database-s
 workflow interfaces; transaction boundaries; or workflow/frontier persistence. Existing SavorDb
 program-kind handlers and adjacent runtime integration adapters may change only to derive
 `ProgramInvocation` from existing persisted data and project `ProgramResult` through existing
-persistence and workflow operations.
+persistence and workflow operations. Coordinator grouping, claim use, resident lease/capacity
+accounting, and runtime acknowledgements may also change only where the transient workset contract below
+requires them.
 
 In this document, **schema** means a runtime program/type schema unless explicitly qualified as a
 database schema.
@@ -77,7 +79,9 @@ no new database tables, columns, migrations, persisted runtime-invocation rows, 
 records, frontier records, queue records, or artifact-store interfaces.
 
 The runtime may have richer in-memory types than the current persisted representation. That difference
-is resolved at the program-kind integration boundary, not by migrating stored data.
+is resolved at the program-kind integration boundary, not by migrating stored data. Workset-specific
+coordinator runtime interfaces and bookkeeping may change, but no SavorDb database-service or durable
+queue/claim/workflow interface change is planned.
 
 ### Program-kind integration seam
 
@@ -96,7 +100,14 @@ For activation, the current program-kind handler or an adjacent adapter:
 1. reads the existing job/domain records through existing interfaces;
 2. derives the exact runtime module, entrypoint, runtime type input, and state policy in memory;
 3. constructs `ProgramInvocation`; and
-4. submits it through the new worker-facing protocol without changing the stored job.
+4. returns an immutable invocation template plus the exact runtime-only `WorkerWorksetExecutionKey` and
+   eligibility facts to the coordinator without changing the stored job.
+
+`SubmitWorkset` is the sole production program-dispatch path: one independent job is a one-item
+workset, and compatible independently claimed jobs may share a larger transient `WorkerWorkset` as
+described below. The old direct-invocation discriminator remains reserved and rejects before session
+mutation. Workset construction is adjacent worker integration behavior, not another responsibility of
+the program-kind descriptor or a new persisted program shape.
 
 For completion, the handler or adjacent adapter:
 
@@ -107,7 +118,8 @@ For completion, the handler or adjacent adapter:
 
 This is an implementation change inside the existing integration seam. It does not require splitting
 `ProgramKindDescriptor` or changing its persistence, workflow, database-service, queue, or claim
-interfaces.
+interfaces. Adjacent coordinator/worker runtime interfaces may change only as needed for transient
+workset admission, ordered events, resident accounting, and acknowledgements.
 
 Existing battle predicate records and payload fields remain compatibility inputs. The program-kind
 handler translates them in memory into predicate-composition inputs; the shared library lowers each
@@ -141,11 +153,81 @@ plus compiled or packaged runtime configuration. This refactor does not add them
 Existing workflow/job identity, idempotency, attempt, affinity, and lineage representations continue to
 define durable behavior.
 
+### Transient worker-resident worksets
+
+A `WorkerWorkset` is the finite, static, ordered, bounded, worker-resident, and non-durable production
+dispatch envelope over one or more independently durable jobs. It improves locality and amortizes
+parent/worker traffic without changing the unit of claim, attempt, result, retry, transition, or
+recovery. `ProgramRuntime` sees only the currently activated child and cannot inspect or schedule the
+pending items.
+
+Each item retains:
+
+- its existing job, job-set, workflow-step, claim, and attempt identities;
+- one immutable invocation template with its own typed input, limits, cancellation identity, and
+  provenance; the worker binds its authoritative session and current `StateEpoch` immediately before
+  activation;
+- one independent invocation root scope and complete unwind;
+- one ordinary `ProgramResult`; and
+- the current program-kind result mapper and workflow-transition behavior.
+
+The workset itself has only transient request identity, one exact in-memory
+`WorkerWorksetExecutionKey`, the
+fixed item order, bounded item-count/encoded-byte/aggregate-child-budget/resident-item limits, an
+immutable reusable baseline only when it has multiple items, a bounded
+unacknowledged-result window, and drain/cancellation state. The key covers exact module, entrypoint,
+dependency closure, runtime/session profile, source-state identity/hash/lineage or reusable-baseline
+identity, movie-continuation policy, and execution/input/capture/movie/mutation/relevant-service
+compatibility. The workset is never a SavorDb row, workflow step, queue record,
+claim token, attempt, result, artifact, or recovery object. The worker cannot add items, reorder them,
+select later durable work, or inspect SavorDb.
+
+Admission and accounting are fixed:
+
+1. The coordinator claims and reserves a finite compatible set through the existing claim operation,
+   preserving stable normal priority/claim order, and materializes each payload independently.
+2. A multi-item workset may contain only items whose adapters declare workset eligibility and whose
+   exact `WorkerWorksetExecutionKey` matches. Existing persisted affinity remains a scheduling hint; it
+   is not sufficient proof of exact compatibility. A one-item workset remains valid even when no
+   compatible peer is available.
+3. Acceptance by a worker reserves the items while they remain in their existing `CLAIMED` durable
+   state. Workset admission does not append `JobStarted` and does not make every resident item
+   `RUNNING`.
+4. The worker prepares the key's exact source state once. A multi-item workset captures one immutable
+   in-memory baseline; a one-item workset skips that unnecessary capture. The first child begins from
+   the prepared state; before each later child the worker restores the multi-item baseline, advances
+   `StateEpoch` through the existing `StateService` contract, and binds the child's invocation to the
+   resulting current epoch.
+5. Immediately before that child's first effect, the worker publishes an ordered item-start event and
+   activates exactly one `ProgramInvocation`/`ProgramInstance` without waiting for a coordinator
+   decision or acknowledgement. The single outbound ordering guarantees that the coordinator consumes
+   this event and appends the existing per-job `JobStarted` lifecycle event before it processes that
+   child's later terminal.
+6. The worker publishes that item's ordinary terminal result as soon as its unwind completes. The
+   coordinator immediately validates and projects it through the existing per-job result/artifact
+   operations, performs the existing terminal/transition handling, and returns a runtime-protocol item
+   acknowledgement. The worker may activate a later resident item without another scheduling decision
+   only while the bounded unacknowledged-result window has capacity; otherwise acknowledgement
+   backpressure stops admission.
+7. The coordinator renews the existing claim lease for every resident nonterminal item, including an
+   item accepted by a worker but not yet started.
+8. Active, coordinator-buffered, outbound, worker-resident nonterminal, and unacknowledged-terminal
+   items all count against bounded coordinator capacity. Claim capacity is derived from the available
+   resident capacity of ready workset-capable workers rather than configured slot count alone.
+   Unacknowledged terminals are additionally bounded by negotiated count and bytes and may not be
+   dropped.
+
+No successful item waits for the whole workset before result projection. A repeated terminal after
+transport loss is handled by the current per-job attempt/idempotent-publication rules and then
+acknowledged; the workset does not create another completion authority.
+
 ### Bounded invocation
 
-The runtime invocation ends before a worker lease, workflow restart, user-selection wait, or later job.
-`ProgramInstance` is never stored in SavorDb. After worker loss, the existing coordinator and
-program-kind handler rematerialize a fresh invocation from the same existing persisted records.
+Each runtime invocation ends and completes its unwind before a later workset item, workflow restart,
+user-selection wait, or later durable phase begins. A resident workset does not merge its items into
+one invocation and is not a continuation checkpoint. `ProgramInstance` and workset drain state are
+never stored in SavorDb. After worker loss, the existing coordinator and program-kind handler recover
+or rematerialize every nonterminal job independently from the same existing persisted records.
 
 ### Existing workflow composition
 
@@ -164,7 +246,12 @@ worker. It does not change how SavorDb stores savestate or artifact references. 
 the existing references into the runtime state-policy object in memory.
 
 Worker reuse remains an optimization. `ProgramResult` cleanup/session status governs whether the current
-worker session may be reused, without requiring a new persisted cleanup-status field.
+worker session may be reused, without requiring a new persisted cleanup-status field. Workset locality
+does not permit child-invocation-scoped input, router, capture, movie, mutation, pending-action, or
+epoch-bound resources to cross an item boundary. The immutable baseline belongs to the workset scope,
+not a child invocation; only existing clean session/module caches survive according to their
+established contracts. Every child still begins from the exact prepared or restored state declared by
+its matching key.
 
 ### Generalized frontiers are separate work
 
@@ -196,8 +283,9 @@ binding representation is introduced here.
 | Existing `savor.capture.profile/1` inputs | Unchanged and consumed opaquely by passive `CaptureService`; no replacement capture language |
 | Adjacent worker integration code | May carry the new worker-facing protocol and runtime types |
 | `ProgramRuntime` | Verifies and executes one invocation; has no SavorDb or workflow mutation access |
+| Coordinator workset scheduling | Uses one `SubmitWorkset` path for singleton or grouped claimed/materialized jobs, renews every resident item lease, and projects/acknowledges each item immediately |
 | SavorDb database-service interfaces | Unchanged |
-| Queue, claim, affinity, and coordinator persistence contracts | Unchanged |
+| Queue, claim, affinity, and coordinator persistence contracts | Durable contracts unchanged; only workset-specific grouping, claim use, resident lease/capacity accounting, and runtime acknowledgements change |
 | Workflow definitions, bindings, transition commands, outbox, and recovery | Unchanged |
 | Stored jobs, results, artifacts, domain records, and historical payloads | Unchanged; no conversion |
 
@@ -209,6 +297,14 @@ binding representation is introduced here.
   require a new SavorDb column.
 - Existing SavorDb retry, idempotency, terminal advancement, outbox, and recovery behavior remains
   unchanged.
+- Workset admission leaves every not-yet-started item `CLAIMED`. Immediately before effects, the worker
+  emits the ordered item-start event without waiting; the coordinator appends `JobStarted` before
+  processing that child's later terminal. Each terminal result is projected and acknowledged
+  immediately, while a negotiated non-lossy window provides bounded backpressure if acknowledgements
+  lag.
+- Workset rejection, cancellation, transport loss, worker loss, or session taint returns every
+  nonterminal item to the current per-job recovery/requeue path. A tainted worker starts no later
+  resident item.
 - A failed worker never commits workflow state directly. Only existing SavorDb handlers and commands can
   advance durable work.
 - Existing queued jobs remain consumable through the compatibility translation in program-kind handlers;
@@ -222,19 +318,24 @@ Migration must:
    workflow commands, transactions, and artifact interfaces;
 2. implement exact runtime invocation/result translation within program-kind handlers or adjacent
    adapters;
-3. preserve all current workflow lifecycle, outbox, recovery, fan-out, and transition tests;
-4. keep current persisted payload/result codecs where handlers need them to read or write the existing
+3. replace the unactivated scalar production submission with one bounded coordinator/worker
+   `SubmitWorkset` path for 1..N independently claimed/materialized jobs, with exact compatibility,
+   workset-baseline state flow, resident-capacity and existing-lease accounting, ordered per-item start
+   publication mapped to current `JobStarted`, immediate per-item projection/acknowledgement, and
+   current requeue/recovery behavior;
+4. preserve all current workflow lifecycle, outbox, recovery, fan-out, and transition tests;
+5. keep current persisted payload/result codecs where handlers need them to read or write the existing
    representation, without linking those codecs to the legacy worker interpreter;
-5. translate current predicate records through the shared in-memory composition path without changing
+6. translate current predicate records through the shared in-memory composition path without changing
    their storage or interfaces;
-6. translate current macro and address-program inputs through interaction and semantic-observation
+7. translate current macro and address-program inputs through interaction and semantic-observation
    composition without changing their storage or interfaces;
-7. pass existing capture profiles to passive `CaptureService` unchanged and preserve their current
+8. pass existing capture profiles to passive `CaptureService` unchanged and preserve their current
    profile-visible behavior;
-8. avoid storing `ProgramInstance`, canonical runtime IR, lowered predicate/observation/interaction
-   definitions, receipts, baselines, dependency closures, or new runtime-only status fields in SavorDb;
-   and
-9. keep generalized workflow/frontier work outside this refactor.
+9. avoid storing `WorkerWorkset`, workset drain/acknowledgement state, `ProgramInstance`, canonical
+   runtime IR, lowered predicate/observation/interaction definitions, receipts, baselines, dependency
+   closures, or new runtime-only status fields in SavorDb; and
+10. keep generalized workflow/frontier work outside this refactor.
 
 Navmesh Survey may use current workflow and dynamic-step facilities where they are sufficient. If its
 desired topology requires new persistence or workflow interfaces, that integration is not delivered by
@@ -243,11 +344,21 @@ this refactor.
 ## Boundary checks
 
 - No SavorDb migration or database-schema change is added.
-- No SavorDb database-service, queue, claim, affinity, workflow-persistence, transaction, or
-  artifact-storage interface changes.
+- No SavorDb database-service, durable queue/claim/affinity/workflow-persistence, transaction, or
+  artifact-storage interface changes; workset-specific coordinator/worker runtime interfaces and
+  bookkeeping may change.
 - Existing persisted jobs materialize the correct `ProgramInvocation` through program-kind handlers.
 - `ProgramResult` is projected through existing result/domain writers without changing stored
   representations.
+- A one-item workset and a multi-item workset produce the same per-job lifecycle, result, artifact,
+  transition, idempotency, and retry observations. Workset residency never appears as a new durable
+  state.
+- Claim budgeting counts coordinator-buffered and worker-resident items, and the existing claim lease is
+  renewed for every resident nonterminal item.
+- Workset admission does not mark queued resident items started. The worker's ordered item-start event
+  precedes effects without a coordinator round trip, and the coordinator appends `JobStarted` before
+  processing the ordered terminal. Each result is projected and acknowledged immediately, and the
+  negotiated result window bounds any temporary acknowledgement lag.
 - Existing queued jobs and historical payload/result records remain valid; no data conversion is
   required.
 - Current workflow restart, retry, idempotency, outbox, dynamic-step, fan-out, survivor-selection, and
@@ -271,6 +382,8 @@ The following are outside this refactor and do not gate its completion:
 - new typed workflow-binding or phase-edge persistence;
 - changes to workflow-authoring UI or workflow policy storage;
 - persisted module source, canonical IR, dependency catalogs, or verification caches;
+- persisted workset identities, membership, drain cursors, acknowledgements, or workset-level attempts
+  and results;
 - changes to artifact retention, storage backends, or SavorDb artifact interfaces; and
 - distributed frontier scheduling or sharding.
 

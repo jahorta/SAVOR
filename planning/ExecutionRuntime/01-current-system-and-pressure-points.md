@@ -39,7 +39,10 @@ The current DB-backed path is:
 
 This path already separates durable orchestration from the worker process. Its principal problem is not
 the absence of a VM; it is that identity, typing, lifecycle, domain capabilities, and physical emulator
-ownership are fused into the present VM and its surrounding switches.
+ownership are fused into the present VM and its surrounding switches. It also leaves every worker slot
+with one in-flight job: after each result, the coordinator must process that job and submit another before
+the worker can continue, even when several independent jobs have the same program, runtime, and source
+state.
 
 ## Current code evidence
 
@@ -164,8 +167,15 @@ an optimization hint, not an assertion that the guest or host runtime is clean. 
 `StateEpoch`, no collection of immutable state handles, and no general invalidation rule for pointers or
 subscriptions after restore.
 
-That paragraph describes the legacy execution corpus, which remains compiled only as translation
-evidence during the hard cutover. Dependency Slice 4 now gives `EmulationSession` one `StateService` as
+The target keeps the correctness boundary at one invocation while making locality explicit. A
+multi-item `WorkerWorkset` prepares one exact source state, retains one immutable in-memory baseline at
+workset scope, runs its first child from the prepared state, and restores that baseline before every later
+child. Each restore still advances `StateEpoch`; no item-local receipt or resource crosses that boundary.
+
+That paragraph describes the legacy execution corpus, which remains compiled only as production-
+disconnected, read-only orientation and deletion evidence during the hard cutover. It is never invoked
+as an executable reference or differential oracle. Dependency Slice 4 now gives
+`EmulationSession` one `StateService` as
 the sole `StateEpoch` authority. It owns bounded immutable memory handles and caller-declared immutable
 read-only file artifacts with SHA-256, runtime/disc compatibility, lineage, embedded/hash-verified DTM
 history, and active-DTM identity checks on restore. Recording checkpoints are limited to same-session
@@ -209,7 +219,8 @@ The subsystem has valuable behavior:
 - explicit terminal/failure states;
 - an adaptive continuation boundary;
 - stop-sequence, input-epoch, requested-input, input-poll, and acknowledgement receipts;
-- explicit held-through-hit behavior; and
+- the historical held-through-hit mechanism's semantic intent: same-publication continuation from a
+  suppressed source receipt to a declared successor; and
 - cleanup-once semantics that neutralize input, clear macro watchpoints, release the local exclusive
   session, and restore breakpoint state.
 
@@ -230,6 +241,11 @@ The current enum defines `PK_SeedProbe` through `PK_NavigationContextRunner` wit
 `PK_BattleEndResultsRunner` is only a source alias for the split Results Screen kind. The protocol cannot
 identify an immutable program revision/hash, named entrypoint, dependency closure, typed schemas,
 multiple artifacts, or separate infrastructure/domain/cleanup statuses.
+
+The implemented hard-cutover WRMS seam and typed runtime currently model one encoded invocation and one
+terminal result. Production invocation is still disabled, so the target replaces that unactivated scalar
+submission with `SubmitWorkset`: one bounded envelope containing one or more independent invocation
+templates and non-lossy per-item terminals.
 
 ### DB program descriptors and workflow spawning
 
@@ -263,20 +279,23 @@ survivors, creates subsequent waves, and emits another set of `battle.single_tur
 similarly expands its chain into grid and unique work.
 
 This is concrete evidence that waves and arbitrary successor scheduling belong above the worker. Current
-workflow persistence is a fixed integration boundary for this refactor. A generalized persisted frontier
-record or policy is a separate future project and is not required for execution-runtime migration.
+workflow persistence remains a fixed integration boundary for this refactor. Current claims already
+distinguish `CLAIMED` from `RUNNING` and can reserve several ready jobs. Workset support may change how
+the coordinator groups, accounts for, renews, starts, and drains those independently durable jobs, but it
+does not create a persisted workset or move successor decisions into the worker. A generalized persisted
+frontier record or policy is a separate future project.
 
-## Implemented phase-program taxonomy
+## Supported current-source inventory
 
-“Implemented” below means the fixed script builder and payload decoder are present in current source. A
-DB registration is called out separately because not every compiled worker program is available through
-the current workflow registry.
+“Implemented” below means the current source contains behavior that must be reconstructed by a direct
+native typed-module builder. A DB registration is called out separately because the two diagnostic
+programs are not available through the current workflow registry. Rows follow the current numeric worker
+identity for source orientation; the authoritative implementation order is Slices 6A-6I below.
 
 | Family | Current worker identity | Current shape and outputs | DB/workflow exposure |
 |---|---|---|---|
 | SeedProbe | `PK_SeedProbe` (`1`) | Restores baseline, applies one input, reaches the pre-battle or field-return RNG checkpoint, reads RNG, optionally verifies and materializes a savestate, emits the seed | Registered as `seed_probe_chain`, `seedprobe.neutral`, `seedprobe.grid`, and `seedprobe.unique`; transition handlers create later chain steps |
 | TAS playback | `PK_TasMovie` (`2`) | Validates disc identity, starts DTM playback, runs to the configured stop, stops the movie, saves a savestate, and returns movie failure status | Registered as `tas_movie` and `tasmovie.play` |
-| Legacy multi-turn battle path | `PK_BattleTurnRunner` (`3`) | Interprets a multi-turn `BattlePath`, materializes and applies input frames, evaluates predicates, and returns victory/defeat/turn-limit/failure outcome | Compiled worker program and payload exist; no active `SavorDb` descriptor registration was found in the inspected tree |
 | Battle Context | `PK_BattleContextProbe` (`4`) | Restores a battle entry state, reaches `TurnInputs`, captures and emits `BattleContext` | Registered as `battle.context_probe` and the bootstrap step kind `battle_chain`; successful transitions spawn `battle.single_turn` children |
 | Battle Single Turn | `PK_BattleSingleTurnRunner` (`5`) | Optionally overrides starting RNG, reaches turn input, materializes an adaptive command macro, confirms input acceptance, evaluates predicates/watchpoints, records ending RNG/context, and conditionally saves successor state | Registered as `battle.single_turn`; transition code chooses survivors and appends subsequent turn-wave steps |
 | TAS input-stream detection | `PK_TasInputStreamDetector` (`6`) | Plays a DTM, samples input once per stepped frame until movie end, then stops and returns status | Compiled worker program and payload exist; no active `SavorDb` descriptor registration was found |
@@ -284,7 +303,19 @@ the current workflow registry.
 | Battle Results Screen | `PK_BattleResultsScreenRunner` (`8`) | Validates a completion manifest through its provider, advances the results presentation adaptively, preserves required invariants, and saves the field-return state | Registered as `battle.results_screen`; the old `PK_BattleEndResultsRunner` name is only an alias |
 | Battle Completion | `PK_BattleCompletionRunner` (`9`) | Starting from victory, runs the adaptive completion provider, captures pre/post rewards and manifest data, and saves the completion state | Registered as `battle.completion`; participates in the hidden battle-end workflow sequence |
 | Navigation Context | `PK_NavigationContextRunner` (`10`) | Reaches or validates the fixed initial-player-input capture point, captures the navigation context, saves the matching savestate, and emits `.nctx` content with explicit failure codes | Registered as `navigation.context_probe`; this is the implemented bootstrap for later Survey work |
-| Navmesh Survey | None | No worker kind, fixed program, payload codec, action set, result type, DB descriptor, or executing workflow exists | Planning only. The hidden `dungeon_explorer`/overworld placeholders do not implement Survey behavior |
+
+The compiled `PK_BattleTurnRunner` (`3`) multi-turn `BattleRunner` has no active SavorDb descriptor in the
+inspected tree and is not in the supported migration catalog. Its builder, payload, outcomes, and tests
+remain only as orientation for deleting the disconnected legacy surface. They do not justify a
+`soa.battle.legacy_path` module.
+
+There is also no monolithic BattleEndResults migration target. `PK_BattleEndResultsRunner` is source
+compatibility naming for kind `8`, which is the split Battle Results Screen phase; Battle Completion is
+the independent kind `9` phase. Shared `BattleEndResults` directory, adapter, scenario, and test names
+remain source-navigation and compatibility evidence for those two supported phases.
+
+Navmesh Survey has no worker kind, fixed program, payload codec, action set, result type, DB descriptor,
+or executing workflow. It remains planning-only future work rather than part of current-phase migration.
 
 The implemented Navigation Context bootstrap has an observed output pair at:
 
@@ -302,8 +333,9 @@ The clean-slate replacement must preserve these proven ideas:
 
 1. **One ordinary worker path.** Fixed programs already share one worker and one interpreter rather than
    launching a process type per phase.
-2. **Bounded job execution.** Programs consume one job and return; durable continuation is already outside
-   the worker.
+2. **Bounded atomic execution.** Each program invocation consumes one job and returns one independently
+   authoritative result; durable continuation remains outside the worker even when several invocations
+   share a transient dispatch workset.
 3. **Declarative control-flow definitions.** Even complex phases expose much of their sequencing in
    builders rather than hard-coding a complete controller in `SavorWorker`.
 4. **Adapter-chain separation.** DB materialization, result persistence, and workflow transition logic
@@ -318,7 +350,8 @@ The clean-slate replacement must preserve these proven ideas:
 8. **Dynamic workflow fan-out.** Current battle and seed workflows prove that the coordinator can append
    durable successor work after reduction.
 9. **Warm-worker optimization.** Affinity-aware reuse is valuable as long as it is not confused with
-   state reset, correctness, or exact program identity.
+   state reset, correctness, or exact program identity. A bounded workset may guarantee compatible
+   locality without weakening per-item reset and result boundaries.
 10. **Exact state/movie continuation.** Dolphin's state/movie relationship is preserved as a single
     typed checkpoint: immutable state evidence plus the exact DTM identity/bytes and continuation
     counters, rather than an inferred ambient movie.
@@ -342,6 +375,7 @@ The clean-slate replacement must preserve these proven ideas:
 | Worker visual thread calls runtime directly | External controls can bypass command serialization | All commands routed through `WorkerRuntime` |
 | Descriptor mixes execution with workflow integration | A new phase appears to require another descriptor/controller combination | Keep existing SavorDb contracts; adapt only runtime-facing handler behavior to construct/consume typed runtime contracts |
 | Affinity uses kind/bootstrap strings | Cache locality can be mistaken for exact revision or clean state | Verify exact runtime module/state/session identity after current materialization without changing stored affinity or claim data |
+| One parent submission per worker result | Compatible jobs incur repeated dispatch decisions and can leave a warm worker idle between items | One finite static `WorkerWorkset` with exact compatibility, sequential child admission, and streamed per-item terminals |
 | No general mutation ledger | Data writes and future code patches lack one restoration/taint contract | Checked scoped `GuestMutationService` receipts and mandatory unwind |
 | Resource cleanup is distributed across subsystem guards | Cleanup order, state-replacement disposition, and retry after partial release are inconsistent | One actor-owned `SessionResourceLedger` with typed receipts, reverse-order unwind, epoch policy, and taint disposition |
 
@@ -349,9 +383,12 @@ The clean-slate replacement must preserve these proven ideas:
 
 The current evidence locks these conclusions:
 
-- The replacement remains one universal program runtime; it does not introduce a native phase runner.
+- The replacement remains one universal program runtime; direct native phase builders produce verified
+  modules but do not introduce native phase runners.
 - `ProgramInstance` is execution state, not a polymorphic controller.
-- `PhaseScript` builders are temporary compiler inputs for parity, not the permanent wire or authored ABI.
+- `PhaseScript` builders are read-only orientation and deletion evidence, not compiler inputs, a
+  permanent wire format, or an authored ABI. Each supported phase receives a direct native typed-module
+  builder.
 - Current domain operations migrate into actions, reducers, queries, or reusable subprograms; they do not
   receive corresponding core IR opcodes.
 - `IInputMacroPlanDriver::Start/Advance` is generalized into program continuations and awaited actions.
@@ -372,13 +409,25 @@ The current evidence locks these conclusions:
   finalization failure blocks reuse, telemetry coalescing preserves sequence order, and screenshot
   ownership is synchronously actor-bound pending future nonblocking ingress/cancellation.
 - The remaining direct `DolphinWrapper` operations in the disconnected VM fail locally and are retained
-  only as migration evidence. Capability packs and program actions arrive with the typed runtime rather
-  than being improvised in Slice 4.
+  only as orientation and deletion evidence. Capability packs and program actions arrive with the typed
+  runtime rather than being improvised in Slice 4.
+- Exact guest-opcode stepping is not a forward phase contract. Breakpoint departure uses router
+  suppression; behavior that must be observed after executing guest code uses a later semantic witness
+  or other routed continuation. Any future `ProgramRuntime` IR instruction-stepping debugger is a
+  separate deferred facility and does not step guest PowerPC opcodes.
 - Workflow transition and dynamic-step capabilities are retained through their current persistence and
   transaction contracts. Program-kind handlers translate between those records and typed runtime
   inputs/results. Generalized frontier orchestration is out of scope.
 - `ProgramKind` may remain SavorDb job/handler/queue/affinity and UI/history metadata but ceases to select
   worker execution after runtime materialization.
+- `WorkerWorkset` becomes the sole production dispatch envelope. It is a transient ordered collection of
+  independent item templates, not IR, durable workflow topology, a phase controller, or one aggregate
+  retry/result.
+- `WorkerRuntime` admits exactly one workset and one active child. It binds the current session and epoch
+  just before each child, streams that child's result immediately, and does not wait for a new scheduling
+  decision while its bounded unacknowledged-result window has capacity.
+- Workset-specific coordinator grouping, resident capacity, and lease maintenance may change while every
+  item retains its own claim, start, attempt, result mapping, retry, cancellation, and transition.
 - Navigation Context migrates as an ordinary current phase. Navmesh Survey is the first net-new consumer
   after current behavior reaches the new runtime.
 
@@ -391,18 +440,21 @@ The replacement crosses these current seams:
 - `PhaseScript`, `PSInit`, `PSJob`, `PSResult`, `PSContext`, and `PSContextCodec`;
 - the 52-opcode dispatch and all split `PhaseScriptVM*` host implementations;
 - `InputMacroRuntime`, `IInputMacroPlanDriver`, and providers;
-- predicate, breakpoint/address, and SavorProbe profile/runtime seams as they are translated into shared
-  semantic-observation, passive-capture, and interaction composition;
+- predicate, breakpoint/address, and SavorProbe profile/runtime seams as their behavior is reconstructed
+  through shared semantic-observation, passive-capture, and interaction composition;
 - `WireSetProgram`, worker-protocol job/result envelopes, and worker-side `ProgramKind` dispatch;
+- scalar production invocation submission, replaced by one `SubmitWorkset` path for 1..N children;
 - program-kind handler implementations and adjacent runtime-init/result adapters;
-- job materialization only as needed to construct `ProgramInvocation` from existing persisted data; and
+- job materialization and coordinator worker-slot bookkeeping needed to construct compatible worksets,
+  renew resident leases, publish per-item starts/results, and acknowledge committed terminals; and
 - existing transition and successor-step publication behavior as an unchanged integration contract.
 
-The migration changes no SavorDb database-service interface, queue/claim contract, stored representation,
-workflow persistence, artifact-storage interface, or transaction boundary. Existing macro, predicate,
-address-program, and capture-profile representations are translated or consumed in memory rather than
-migrated. The refactor must not push workflow persistence into the worker or move emulator ownership into
-DB adapters.
+The migration adds no SavorDb schema/migration, persistent workset record, aggregate durable job/result,
+or unrelated workflow, artifact, or transaction redesign. Workset-specific coordinator scheduling,
+claim use, lease maintenance, and capacity bookkeeping may change; an interface change is considered only
+if concrete implementation evidence requires it. Existing macro, predicate, address-program, and
+capture-profile representations are decoded, adapted, or consumed in memory rather than migrated. The
+refactor must not push workflow persistence into the worker or move emulator ownership into DB adapters.
 
 ## Failure and cleanup behavior
 
@@ -430,20 +482,25 @@ The target must:
 
 ## Dependencies and migration implications
 
-The current programs cannot be migrated safely by serializing today's `PhaseScript` first. The
-dependency order is:
+The current programs are not migrated by serializing or compiling today's `PhaseScript`. Direct native
+typed-module builders follow this dependency order:
 
 1. preserve the established worker, stop-point, execution, and scoped session-service ownership seams;
 2. define and verify the small core IR and typed module/invocation/result contracts;
 3. register generic service actions and modular game capability packs;
 4. expose current capabilities through registered actions and reusable subprograms;
-5. add a temporary compiler/translator for current builders;
-6. migrate and differentially verify every current phase family;
-7. have existing program-kind handlers or adjacent adapters derive exact runtime module and entrypoint
-   identity during materialization without changing stored job identity, affinity fields, or queue/claim
-   contracts;
-8. remove current worker switches, domain opcodes, and the subordinate macro scheduler; and
-9. implement Navmesh Survey only on the new path.
+5. add the pre-6A `WorkerWorkset` prelude: unified 1..N dispatch, exact compatibility validation,
+   multi-item baseline state flow, per-item result acknowledgement/backpressure, and coordinator
+   resident-job accounting;
+6. implement the supported phase builders incrementally as 6A SeedProbe, 6B Navigation Context, 6C TAS
+   Movie, 6D TAS Frame Detector, 6E Battle Context, 6F Battle Macro Probe, 6G Battle Single Turn, 6H
+   Battle Completion, and 6I Battle Results Screen;
+7. verify each builder against its current functional contract and focused source-derived
+   characterization without adding a temporary translator or parallel differential executor;
+8. have existing program-kind handlers or adjacent adapters derive exact runtime identity, typed inputs,
+   and workset compatibility during materialization without changing stored job identity or affinity;
+9. remove current worker switches, domain opcodes, and the subordinate macro scheduler; and
+10. implement Navmesh Survey only on the new path.
 
 The current dynamic battle-wave implementation is a migration asset: it provides executable examples for
 separating bounded worker expansion from durable orchestration.
@@ -463,7 +520,7 @@ stop-point router, transport core, or a central opcode switch.
 This document does not decide:
 
 - exact C++ interface spelling or source directory layout;
-- final worker transport bytes;
+- final numeric workset bounds, compression thresholds, and throughput tuning;
 - the authored script syntax/UI;
 - final module revision/hash algorithms;
 - Survey-specific action algorithms;
@@ -472,9 +529,10 @@ This document does not decide:
 - overworld game rules; or
 - cutscene acceleration policy.
 
-SavorDb SQL schema and stored representations are fixed inputs to this refactor, not deferred design
-work. The remaining decisions are either defined elsewhere in this package at a logical-contract level
-or explicitly deferred in document 11.
+The logical `WorkerWorkset` contract and unified dispatch direction are decided, not deferred. SavorDb
+SQL schema, stored representations, and unrelated interfaces remain fixed inputs. Any workset-specific
+coordinator interface change requires concrete evidence and a corresponding guidance update rather than
+an ambient reopening of SavorDb architecture.
 
 ## Source references
 

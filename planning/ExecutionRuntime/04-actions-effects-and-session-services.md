@@ -6,8 +6,9 @@ This document describes how programs request effects, how native extensions are 
 service owns each emulator facility, how resources are scoped, and how cancellation/restoration affect
 session reuse. Concrete C++ signatures and worker transport encoding may adapt during implementation.
 The package-wide SavorDb boundary applies: its schema, stored representations, service interfaces,
-queues, claims, workflow persistence, transaction boundaries, and artifact-storage interfaces remain
-unchanged.
+durable queue/claim contracts, workflow persistence, transaction boundaries, and artifact-storage
+interfaces remain unchanged. Narrow workset-specific coordinator behavior does not alter these service
+contracts.
 
 ## Purpose and non-goals
 
@@ -187,7 +188,7 @@ An action is one bounded reusable capability transaction. It may:
 - attach/finalize one capture or movie transaction; or
 - create/finalize one immutable artifact.
 
-An action may contain service-internal polling or stepping only when:
+An action may contain service-internal polling or emulator advancement only when:
 
 - it is part of one declared transaction;
 - the completion condition and hard deadline are declared;
@@ -255,8 +256,9 @@ capabilities. It lowers before verification to exact capability-pack imports and
   subset;
 - `PausedAtPoint` observations compile to registered `runtime.guest.read_*` or coherent game-query
   actions while `ExecutionEngine` keeps the core paused; and
-- an observation after an instruction/frame step requires that explicit execution action followed by a
-  new paused observation.
+- post-effect observation uses a declared later semantic point, or an explicit frame-step execution
+  action when frame granularity is the actual contract, followed by a new paused observation. Guest
+  PowerPC instruction stepping is not an observation mechanism.
 
 The await use explicitly says whether an already-paused matching current point is acceptable. Otherwise
 current-instruction suppression and rearm policy prevent the source stop from spuriously completing the
@@ -286,16 +288,21 @@ for its semantic subscription and observation resources. Its required temporal o
 
 1. Arm the exact semantic-gate alternatives and establish the segment's starting
    `SemanticPointReceipt`/epoch.
-2. Publish the requested input and obtain its input epoch before stepping off a currently matched source
+2. Publish the requested input and obtain its input epoch before departing a currently matched source
    stop.
-3. When stepping off that source stop, execute exactly one source instruction with the new input before
-   beginning the ordinary wait.
-4. Complete only on the declared logical point and matching PC/physical evidence, stop sequence, input
-   epoch, and `StateEpoch`; an unrelated or stale hit cannot complete the segment.
-5. Apply the declared reached-instruction policy: either leave the reached instruction paused or
-   execute it under the held request.
-6. Capture the request's guest-poll receipt after any held-through-hit execution and before publishing
-   neutral input.
+3. For a future-only departure, arm the ordinary wait with suppression for the exact retained
+   receipt/current instruction, then resume normally. The shared physical site remains enabled; normal
+   continuation executes the source instruction with the new input without an explicit guest
+   instruction-step action.
+4. Accept a matched gate only with the declared logical point and matching PC/physical evidence, stop
+   sequence, input epoch, and `StateEpoch`; an unrelated or stale hit cannot advance the segment.
+5. Apply the declared semantic completion policy. `StopAtGate` leaves the matched gate paused.
+   `ContinueWithRequestToDeclaredSuccessor` retains the request and input lease while continuing to one
+   separately declared semantic successor, then leaves that successor paused. A requirement phrased
+   only as "after exactly the next guest opcode," with no semantic successor or genuine frame boundary,
+   is unsupported and must be re-authored rather than approximated.
+6. Capture the request's guest-poll receipt after any declared successor continuation and before
+   publishing neutral input.
 7. Acquire the segment's ordered observations/checks at their declared hit-time or paused moments.
    Paused-at-point reads occur before any release witness advances the guest again.
 8. Where release is required, publish neutral with a fresh input epoch and independently prove the
@@ -376,11 +383,20 @@ Cancellation never calls arbitrary program code from a service thread.
 binding table and actor protocol that map future invocation resource identities onto it:
 
 ```text
-Invocation root scope
-  -> lexical program scope
-       -> action transaction scope
-            -> service-owned resources and receipts
+Session root scope
+  -> transient workset scope
+       -> one active invocation root scope
+            -> lexical program scope
+                 -> action transaction scope
+                      -> service-owned resources and receipts
 ```
+
+The workset scope owns the exact common-preparation receipts and, only for a multi-item workset, the
+immutable reusable baseline handle needed to admit its static ordered items. A one-item workset does
+not capture an unnecessary reusable baseline. The scope may not retain a live input lease, router wait,
+mutation, capture writer, action continuation, guest-derived pointer, or other mutable invocation
+effect between items. Only the multi-item immutable baseline and existing clean session/module caches
+under their established contracts may survive between children.
 
 Resources include:
 
@@ -415,6 +431,11 @@ Rules:
 9. State replacement is a ledger transaction: epoch-agnostic resources survive, end-on-change resources
    close as superseded, stable rebindable resources produce typed rebind requests, and state-replacing
    resources cannot be treated as ordinary handles.
+10. Every item fully unwinds its invocation root back to the workset scope before another item may
+    restore the baseline or enter `ProgramRuntime`.
+11. Workset cancellation or terminal completion releases the workset scope after the active invocation
+    has unwound. A failed mandatory workset-scope release taints the session and prevents later item
+    admission.
 
 ### StateEpoch interaction
 
@@ -440,6 +461,28 @@ does not advance it. If backend replacement succeeded but participant commit or 
 the new epoch remains authoritative and the session is tainted. Any later use of an old handle is
 rejected before service execution.
 
+Workset item templates deliberately omit the actor-owned exact session/epoch guard. After common state
+preparation, the first item is bound to that prepared epoch. Before each later item, `StateService`
+restores the workset baseline and advances `StateEpoch` exactly once; only after the restore commits does
+`WorkerRuntime` bind the item to the resulting exact `SessionId` and `StateEpoch` and submit the resolved
+`ProgramInvocation`. This just-in-time binding fills only actor-owned runtime identity. It cannot change
+the template's module, entrypoint, dependencies, inputs, policy, limits, or provenance.
+
+No receipt, observation, address, acknowledgement, mutation, suppression state, or guest-derived handle
+from one item can be supplied to another. The host-owned immutable baseline remains a valid restore
+source for its workset lifetime, but its captured epoch is provenance rather than permission to reuse
+guest-epoch-bound objects.
+
+The private `DolphinWrapper::stepBootCoreForStateLoadBlocking` helper is an isolated backend preflight
+exception used only inside a `StateService` boot/load transaction when Dolphin requires one bootstrap
+opcode before loading state. It is not exposed to `ExecutionEngine`, actions, program or visual
+debugging, semantic observation, or interaction composition, and it is never a general post-open
+advancement mechanism. The state-replacement receipt and new epoch are committed only after the entire
+transaction, including this preflight and the load, succeeds. The current helper ignores the boolean
+result of its bounded completion wait and returns success unconditionally; that is a known backend gap.
+Before production cutover, the private preflight must propagate timeout/failure into the typed
+state-replacement failure path without becoming a public execution operation.
+
 ### Canonical logical capability IDs
 
 These names are stable planning identities. Exact signatures and version numbers are defined by
@@ -448,7 +491,7 @@ implementation slices without changing their responsibility.
 | Capability | Logical action/reducer IDs |
 |---|---|
 | State | `runtime.state.capture_baseline`, `runtime.state.restore`, `runtime.state.restore_baseline`, `runtime.state.save_artifact` |
-| Execution | `runtime.execution.continue_until`, `runtime.execution.step_instructions`, `runtime.execution.step_frames` |
+| Execution | `runtime.execution.continue_until`, `runtime.execution.step_frames` |
 | Stop subscriptions | `runtime.stop.subscribe_group`, `runtime.stop.replace_group` |
 | Input | `runtime.input.acquire_lease`, `runtime.input.set_held`, `runtime.input.pulse`, `runtime.input.neutralize`, `runtime.input.play_sequence`, `runtime.input.await_guest_poll` |
 | Movie | `runtime.movie.play`, `runtime.movie.stop`, `runtime.movie.record_start`, `runtime.movie.record_stop` |
@@ -467,10 +510,11 @@ temporary wake subscriptions through the router; programs never manipulate physi
 
 ### ExecutionEngine
 
-`ExecutionEngine` is the sole emulator-advancement owner. It accepts typed operations corresponding to:
+`ExecutionEngine` is the sole owner of supported post-open program and interactive emulator advancement.
+The private state-load bootstrap above remains part of the backend-owned replacement preflight, not a
+second execution owner. The engine accepts typed operations corresponding to:
 
 - continue until logical completion conditions;
-- step a bounded number of instructions;
 - step a bounded number of frames;
 - advance through an opaque input relationship supplied by `InputArbiter`;
 - reach a safe pause;
@@ -498,10 +542,14 @@ typed failures. The parent retains its exact completion condition, active budget
 temporary wake group, input relationship, suppression state, and `StateEpoch`.
 
 The private backend facet available to the engine contains only primitive pause/resume, frame-step,
-exact-instruction-step, core/PC/VI/movie/throttle observation, and throttle apply/restore operations.
-Movie observation here does not own playback or recording lifecycle. The concrete JIT64 adapter rejects
-exact guest-instruction stepping before mutation; it does not switch to Interpreter or represent one JIT
-block as one instruction.
+core/PC/VI/movie/throttle observation, and throttle apply/restore operations. Movie observation here
+does not own playback or recording lifecycle. Neither the facet nor an action, worker control, or visual
+control exposes guest PowerPC instruction stepping.
+
+A future `StepProgramInstruction` belongs wholly to `ProgramRuntime`: it advances one verified IR
+instruction or terminator and treats an awaited action as one atomic request-to-completion debugger
+step. It is not a `runtime.execution.*` action, gives no service or backend capability, and cannot weaken
+cancellation or structured unwind. Its implementation, worker protocol, and UI are deferred.
 
 ### StopPointRouter and PhysicalStopPointManager
 
@@ -640,6 +688,20 @@ A restore transaction:
 
 Loading state is never an unannounced helper side effect of VM initialization or a normal opcode.
 
+For one accepted workset, common preparation is a bounded state transaction:
+
+1. validate the `WorkerWorksetExecutionKey` and prepare its declared boot/load/continue state;
+2. when the workset has more than one item, capture or import one immutable workset baseline after that
+   state is confirmed clean and paused; skip this reusable-baseline capture for a one-item workset;
+3. admit the first item against the already-prepared current epoch without a redundant restore;
+4. after that item fully unwinds, restore the same baseline before each later non-cancelled item, creating
+   one fresh epoch per successful restore; and
+5. release the baseline when no later item can be admitted.
+
+A recoverable restore failure does not advance the epoch, produces an infrastructure terminal for the
+affected item, and stops the workset because the next item's required starting state was not
+established. Any uncertain restore or cleanup taints the session and likewise stops all later admission.
+
 External state import is explicit and hash-checked before backend mutation. The caller must declare
 `NoMovie` or `ReadOnlyPlayback`; `Unspecified` and `Recording` are rejected. A read-only import names and
 hashes the exact DTM companion, but it does not require a caller-supplied frame/input cursor. Every
@@ -696,6 +758,13 @@ an older queued event, the replacement keeps its fresh sequence and moves to tha
 position rather than retaining the older slot, so drain order remains sequence order. Background
 callbacks never write worker protocol frames directly.
 
+Workset item terminals are not telemetry. Each complete `ProgramResult` goes directly to the serialized
+protocol publisher, is retained by `WorkerRuntime` within a bounded count-and-byte window, and remains
+available for retransmission until the parent acknowledges durable handling of that exact
+workset/item/invocation/attempt tuple. Telemetry drop/coalescing policy can never discard or replace one
+of these terminals. When the window is full, the actor keeps the core paused and does not restore or
+admit the next item.
+
 `ScreenshotService` owns one correlated, actor-thread, synchronous bounded screenshot call, validates
 the expected `StateEpoch`, and preserves backend integrity/failure in its terminal receipt. The positive
 timeout is passed to the backend, and screenshot capture does not advance Dolphin. Because the current
@@ -730,7 +799,7 @@ The target decomposes present authority as follows:
 
 | Current surface | Target owner |
 |---|---|
-| `DolphinWrapper::runUntilBreakpointFlexible`, instruction/frame stepping, tape stepping | `ExecutionEngine` via `runtime.execution.*` actions |
+| `DolphinWrapper::runUntilBreakpointFlexible`, frame stepping, tape stepping | `ExecutionEngine` via `runtime.execution.*` actions |
 | `armPcBreakpoints`, `setEnabledPcBreakpointsOnly`, watchpoint clear/arm | `PhysicalStopPointManager`, derived from router subscriptions |
 | VM canonical/gated/predicate/macro sets | Scoped `StopPointRouter` subscription groups |
 | `DolphinWrapper::setInput`, playback epochs, VM macro exclusivity | `InputArbiter` leases and operations |
@@ -784,6 +853,11 @@ Any failed mandatory cleanup produces `Tainted` session disposition. Remaining c
 attempted. No later invocation, especially `ContinueSession`, may run until a full backend/session
 rebuild succeeds.
 
+Within a workset, clean or clean-with-diagnostics item unwind returns ownership to the workset scope and
+permits the next baseline restore. Tainted, uncertain, or incomplete mandatory cleanup closes admission
+immediately; pending items remain unstarted, the workset baseline is released as far as safely possible,
+and coordinator retry/requeue behavior remains authoritative.
+
 ### Service failure isolation
 
 - Router/capture observation loss may be classified recoverable only when the action/module declares it
@@ -808,11 +882,10 @@ Migration implications:
 2. Move physical breakpoint/watchpoint mutation to `PhysicalStopPointManager`.
 3. Convert current VM waits and macro waits to temporary router subscriptions plus
    `runtime.execution.continue_until`.
-4. Bring direct continue, pause, frame-step, and supported instruction-step behavior under
-   `ExecutionEngine`; hard-disconnect legacy tape/macro advancement rather than creating a compatibility
-   executor.
-5. Keep the implemented `InputArbiter` opaque input-advance port beneath `ExecutionEngine`; translate
-   current input/macro ownership to its epoch-bound leases, borrow policy, and guest-observed release.
+4. Bring direct continue, pause, and frame-step behavior under `ExecutionEngine`; hard-disconnect legacy
+   guest-instruction-step and tape/macro advancement rather than creating a compatibility executor.
+5. Keep the implemented `InputArbiter` opaque input-advance port beneath `ExecutionEngine`; re-author
+   current input/macro behavior with its epoch-bound leases, borrow policy, and guest-observed release.
 6. Use the implemented `StateService` as the sole epoch authority and translate raw savestate/buffer
    operations to explicit handles or caller-declared immutable artifacts with exact movie continuation.
 7. Translate raw writes to the implemented `GuestMutationService`; data is reversible unless explicitly
@@ -823,19 +896,19 @@ Migration implications:
    invocation/action identities to the implemented standalone `SessionResourceLedger`; production
    runtime/host construction and capability activation remain part of invocation cutover.
 10. Use the implemented field/battle/navigation semantic points, checked address definitions, and
-    registered coherent queries as inputs to semantic-observation composition. Translation of current
-    program/predicate address expressions remains migration work, while capture-profile address programs
-    remain opaque.
+    registered coherent queries as inputs to semantic-observation composition. Direct re-authoring of
+    current program/predicate address expressions remains migration work, while capture-profile address
+    programs remain opaque.
 11. Express battle macros during migration through the implemented shared interaction composition and
     the canonical subprogram/reducer IDs rather than preserving `InputMacroEngine`.
 12. Add source-backed cutscene or overworld packs only when a concrete migrated client defines their
     inventories; delete old domain opcodes only after phase parity.
-13. Translate current battle predicate arming, baseline capture, evaluation, and reporting through the
-    implemented predicate and semantic-observation composers; preserve existing stored records through
-    in-memory adapter translation and remove the VM-specific evaluator after parity.
+13. Re-author current battle predicate arming, baseline capture, evaluation, and reporting through the
+    implemented predicate and semantic-observation composers; consume existing stored records in memory
+    through the production adapter and remove the VM-specific evaluator after parity.
 
-The temporary legacy adapter may call these actions while translating old programs. It cannot expose
-the old broad host interfaces to new modules.
+Current programs are re-authored through the canonical builders and composition frontends. The old broad
+host interfaces are not exposed to new modules.
 
 ## Service and cleanup checks
 
@@ -848,18 +921,18 @@ the old broad host interfaces to new modules.
 - A descriptor review fixture rejects whole-phase or unbounded actions and demonstrates the replacement
   as IR plus bounded actions/reducer.
 - Semantic-observation lowering tests cover canonical imports/source maps/hash sensitivity, hit-time
-  versus paused acquisition, explicit post-step behavior, ordered/coherent reads, current-point
-  acceptance, unavailable evidence, baseline policies, and epoch invalidation.
+  versus paused acquisition, later-semantic-point and explicit frame-step behavior, ordered/coherent
+  reads, current-point acceptance, unavailable evidence, baseline policies, and epoch invalidation.
 - Interaction lowering tests cover static/adaptive definitions, exact verifier-known segment choices,
-  input-before-step ordering, both reached-instruction policies, point/sequence/input-epoch matching,
-  request versus neutral-release receipts, neutral witnesses, baseline-before-advance, cancellation,
-  and unwind fault injection.
+  input-before-continuation ordering, exact current-receipt suppression, both semantic completion
+  policies, point/sequence/input-epoch matching, request versus neutral-release receipts, neutral
+  witnesses, baseline-before-advance, cancellation, and unwind fault injection.
 - Predicate composition tests prove that all observation effects, subscriptions, branches, and emissions
   are ordinary verified dependencies and that false remains distinct from unavailable evidence.
 - Every supported production advancement action is observed passing through one `ExecutionEngine`.
-  Fake-port tests cover exact instruction contracts while JIT64 rejects them without mutation;
-  `InputArbiter` supplies the production input-synchronized port without giving the engine publication
-  authority.
+  Tests prove that no guest PowerPC instruction-step action or backend facet exists and that exact
+  source-receipt suppression preserves ordinary continuation behavior; `InputArbiter` supplies the
+  production input-synchronized port without giving the engine publication authority.
 - Interruption tests cover frozen parent/child active-time budgets, declared nesting and recursion, the
   eight-level hard cap, and `ResumeParent`/`AbortParent` as the only policy outcomes.
 - Visual-intent command tests use fake sessions and protocol fixtures without a window, GUI automation,
@@ -907,7 +980,7 @@ the old broad host interfaces to new modules.
 ## Deferred work
 
 - Production worker construction of the implemented `ProgramRuntime` and `SessionProgramActionHost`,
-  plus `ProgramInvocation` capability advertisement.
+  plus unified `WorkerWorkset` execution capability and limit advertisement.
 - Migration-specific typed action payload schemas beyond the implemented canonical envelope and
   source-backed coherent query/reducer contracts.
 - Concrete router priority values, subscription serialization, and CPU sampling bytecode.
@@ -926,6 +999,9 @@ the old broad host interfaces to new modules.
 
 - `SavorCore/Core/DolphinWrapper.h:44-157`
 - `SavorCore/Core/DolphinWrapper.h:202-240`
+- `SavorCore/Core/DolphinWrapper.h:301-304`
+- `SavorCore/Core/DolphinWrapper.cpp:592-655`
+- `SavorCore/Core/DolphinWrapper.cpp:1087-1100`
 - `SavorCore/Core/DolphinWrapper.cpp:680-828`
 - `SavorCore/Core/DolphinWrapper.cpp:984-1020`
 - `SavorCore/Core/DolphinWrapper.cpp:1666-1826`

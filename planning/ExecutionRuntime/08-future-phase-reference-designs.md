@@ -53,7 +53,8 @@ The designs do not finalize:
 - generalized trigger handling;
 - authored program syntax or UI; or
 - any change to SavorDb SQL/schema, migrations, stored representations, database-service interfaces,
-  queues, claims, workflow persistence, transaction boundaries, or artifact-storage interfaces.
+  durable queue/claim contracts, workflow persistence, transaction boundaries, or artifact-storage
+  interfaces. Narrow workset-specific coordinator behavior remains governed by the main architecture.
 
 Worker wire representation remains an implementation detail of the runtime refactor. In this document,
 **schema** means a runtime program/type schema unless explicitly qualified as a database schema.
@@ -61,6 +62,20 @@ Worker wire representation remains an implementation detail of the runtime refac
 Native C++ may implement bounded actions or a pure reducer for these designs. It may not implement a
 `NavmeshSurveyRunner`, `CutsceneController`, `OverworldController`, private emulator loop, or another
 phase-sized execution path.
+
+### Domain candidate lists and WorkerWorksets
+
+Several reference entrypoints deliberately accept an ordered, bounded **domain candidate list**. That
+list belongs to one scalar invocation: the module interprets its elements, applies one domain policy and
+budget, and produces one invocation result containing its declared observations or child artifacts.
+
+A `WorkerWorkset` is different. It is the sole production dispatch envelope containing one or more
+independently identified scalar invocations whose exact `WorkerWorksetExecutionKey` matches; only multi-item
+co-dispatch is optional. The worker does not expose the workset to a module, flatten candidate lists
+across invocations, or let one invocation consume another's result. Every child keeps its own
+cancellation, failure, cleanup, artifact, and terminal-result boundary.
+Consequently, a future program may have a domain candidate list inside each scalar request while several
+such requests are independently co-dispatched in one workset.
 
 ## Current code evidence
 
@@ -109,7 +124,7 @@ it does not become a positional anchor that carries live state across files.
 - exact static world/refinement-candidate identity;
 - area identity;
 - source anchor position and optional facing;
-- one intended door/portal candidate or a bounded candidate batch;
+- one intended door/portal candidate or an ordered bounded domain candidate list;
 - expected selected TBLID and known door-specific witnesses;
 - known lock BitVar identity/polarity when applicable;
 - movement, interaction, settle, and runner-safeguard policies; and
@@ -219,11 +234,11 @@ not serialize a ground-selector record, worksheet pointer, ground pointer, or an
 
 After the Wave 1 barrier:
 
-1. deterministically partition spatial candidates by accepted anchor and bounded batch;
+1. deterministically partition spatial candidates by accepted anchor and bounded domain candidate list;
 2. fan out `probe_geometry` invocations;
 3. have every worker reload the same common baseline and apply the same Survey controls;
 4. teleport to its assigned anchor and require the same settle check;
-5. execute only its bounded spatial probe batch; and
+5. execute only its bounded spatial probe list; and
 6. emit immutable observations and cleanup receipts.
 
 The existing workflow integration performs deterministic fan-in where current contracts support it. A
@@ -281,14 +296,14 @@ runtime profile, and policies. A semantically equivalent but differently version
 
 ### Reference design 3: collision-oddity search
 
-`soa.navigation.collision_search/probe_candidates` evaluates one ordered, bounded batch of collision
-candidates from one exact anchor/state context.
+`soa.navigation.collision_search/probe_candidates` evaluates one ordered, bounded domain candidate list
+from one exact anchor/state context.
 
 Inputs:
 
 - static geometry/refinement identities;
 - exact source baseline/state and positional anchor;
-- candidate batch and candidate-generator version;
+- domain candidate list and candidate-generator version;
 - bounded probe strategy;
 - anomaly-observer schema; and
 - runtime modification and safeguard policies.
@@ -375,7 +390,7 @@ Inputs:
 
 - one exact source `StateArtifact`;
 - exact overworld context/world/model identities;
-- one bounded action/transition candidate batch;
+- one bounded action/transition domain candidate list;
 - expansion, observation, and terminal-policy versions; and
 - execution and artifact budgets.
 
@@ -402,6 +417,23 @@ Every invocation is bounded regardless of total search depth. Each accepted bran
 savestate because overworld search nodes represent branching game state. This does not change the
 Navmesh Survey rule: Survey anchors remain positions replayed from one common baseline and do not own
 savestates.
+
+### WorkerWorkset applicability
+
+The scalar entrypoints above remain unchanged whether dispatch uses a workset:
+
+| Reference design | Domain work inside one scalar invocation | Expected workset fit |
+|---|---|---|
+| Navmesh Survey anchor work | One portal or bounded portal candidate list | Strong when independent tasks share the exact untouched bootstrap and runtime/modification policy |
+| Navmesh Survey geometry probes | One ordered `NavigationProbeBatch` domain list | Strong when independently ready probe invocations share the exact bootstrap and Survey policy |
+| Navigation replay | One route replay | Typically singleton; dependent outbound/return replays are not one workset |
+| Collision-oddity search | One bounded collision candidate list | Possible for exact-key independent searches; the coordinator does not merge their candidate lists |
+| Cutscene fast-forward | One bounded continuation slice | Typically singleton; successive slices are causally dependent |
+| Overworld expansion | One frontier node with one bounded action candidate list | Typically singleton because distinct frontier nodes normally carry distinct state artifacts |
+
+Workset eligibility is determined only by the exact generic key, not by this expectation table or a
+domain-family allowlist. Durable Survey partitions, collision refinement, cutscene continuation, and DFS
+frontiers remain workflow concerns even when their already-ready scalar invocations use co-dispatch.
 
 ## Interfaces and ownership affected
 
@@ -493,7 +525,8 @@ of the current backend refactor.
 - Navigation replay reproduces the same action and branch trace from the same complete invocation
   identity and reports checkpoint deviation explicitly.
 - Outbound and return navigation compose through exact state/route artifacts without a special runner.
-- Collision search executes one bounded candidate batch without owning restart/deduplication topology.
+- Collision search executes one bounded domain candidate list without owning restart/deduplication
+  topology.
 - `A -> B -> A` leaves zero resources from either earlier invocation.
 - Cutscene fast-forward can continue across bounded slices and be inserted or removed from a workflow
   without worker-runtime changes.

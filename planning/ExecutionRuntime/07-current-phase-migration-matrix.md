@@ -9,16 +9,18 @@ C++ symbols.
 
 ## Purpose and non-goals
 
-This document assigns every current fixed worker program a target module, typed contract, reusable
-capability composition, parity checks, and conditions for legacy deletion. It prevents an implementer from
-deciding ad hoc that a difficult phase needs a separate native controller or permanent compatibility
-runtime.
+This document assigns each supported production or diagnostic phase a native typed module, reusable
+capability composition, focused behavior checks, and a vertical migration slice. It prevents an
+implementer from deciding ad hoc that a difficult phase needs a separate native controller or permanent
+compatibility runtime. The legacy multi-turn BattleRunner and monolithic BattleEndResults path remain
+current-source orientation and deletion targets; they receive no target module.
 
 It does not:
 
 - implement a module, action, or runtime type schema;
 - change SavorDb SQL/schema, migrations, stored representations, database-service interfaces, queues,
-  claims, workflow persistence, transaction boundaries, or artifact-storage interfaces;
+  claims, workflow persistence, transaction boundaries, or artifact-storage interfaces; the shared
+  workset prelude may make only its documented coordinator scheduling and bookkeeping changes;
 - make current persisted payload bytes the worker runtime contract; program-kind handlers may continue to
   use existing codecs to preserve the stored representation;
 - make Navmesh Survey part of the current-phase migration corpus;
@@ -61,9 +63,11 @@ Every current phase follows the same rules:
    continuation reducer plus bounded awaited actions. It cannot call Dolphin, own an event loop, or
    schedule workflow work.
 6. **Structured results.** Infrastructure status, domain outcome, and cleanup/session status are
-   independent. Current `PSResult::ok` and context keys are translated only at the legacy edge.
-7. **One differential window.** A temporary compiler from current `PhaseScript` builders may produce the
-   new IR for trace comparison. It is never a second production executor and accepts no new feature.
+   independent. Runtime-facing adapters project current payload/result representations into and out of
+   native typed contracts.
+7. **Native definitions only.** Each phase is authored directly as a typed module. Current
+   `PhaseScript` builders, providers, opcodes, tests, and artifacts are behavioral orientation; they are
+   neither compiler inputs nor an executable reference runtime.
 8. **Workflow topology stays durable and unchanged.** Seed grids, battle waves, battle-end chaining,
    phase switches, fan-out, reduction, and retry across jobs remain coordinator responsibilities through
    existing SavorDb storage and interfaces.
@@ -80,15 +84,14 @@ Every current phase follows the same rules:
 | Current family | Target module ID | Entrypoint | Long-term disposition |
 |---|---|---|---|
 | SeedProbe | `soa.seed_probe` | `probe` | Supported |
+| Navigation Context | `soa.navigation.context` | `capture` | Supported |
 | TAS playback | `soa.tas_movie` | `play_and_checkpoint` | Supported |
 | TAS input-stream detector | `soa.tas_frame_detector` | `detect` | Supported diagnostic program |
-| Legacy multi-turn battle path | `soa.battle.legacy_path` | `run` | Migration-only, deprecated after consumer checks |
 | Battle Context | `soa.battle.context` | `capture` | Supported |
-| Battle Single Turn | `soa.battle.single_turn` | `execute` | Supported |
 | Battle Macro Probe | `soa.battle.macro_probe` | `probe` | Supported diagnostic program |
+| Battle Single Turn | `soa.battle.single_turn` | `execute` | Supported |
 | Battle Completion | `soa.battle.completion` | `complete` | Supported |
 | Battle Results Screen | `soa.battle.results_screen` | `advance` | Supported |
-| Navigation Context | `soa.navigation.context` | `capture` | Supported |
 
 Module IDs do not imply one file per module. They are immutable semantic families in
 `ProgramDefinitionStore`. All revisions use the common IR, verifier, invocation, action, result, and
@@ -101,7 +104,7 @@ Document 04 owns the descriptors and signatures. The migration uses these exact 
 | Capability | Logical import |
 |---|---|
 | State lifecycle | `runtime.state.capture_baseline`, `runtime.state.restore`, `runtime.state.restore_baseline`, `runtime.state.save_artifact` |
-| Emulator advancement | `runtime.execution.continue_until`, `runtime.execution.step_instructions`, `runtime.execution.step_frames` |
+| Emulator advancement | `runtime.execution.continue_until`, `runtime.execution.step_frames` |
 | Input | `runtime.input.acquire_lease`, `runtime.input.set_held`, `runtime.input.pulse`, `runtime.input.neutralize`, `runtime.input.play_sequence`, `runtime.input.await_guest_poll` |
 | Movie | `runtime.movie.play`, `runtime.movie.stop`, `runtime.movie.record_start`, `runtime.movie.record_stop` |
 | Guest reads | `runtime.guest.read_u8`, `runtime.guest.read_u16`, `runtime.guest.read_u32`, `runtime.guest.read_u64`, `runtime.guest.read_f32`, `runtime.guest.read_f64` |
@@ -135,9 +138,10 @@ queries migrate through one reusable semantic-observation composition library:
 The library lowers before verification into exact capability/type/action imports, scoped router
 subscriptions, `runtime.execution.continue_until`, ordinary guest-read or game-query actions, branches,
 locals, and emissions. `HitTimeSample` is restricted to bounded router-side sampling before program
-handling. `PausedAtPoint` performs ordinary reads while execution is paused. Observing after an
-instruction requires an explicit step followed by another observation; it is not a hidden acquisition
-mode.
+handling. `PausedAtPoint` performs ordinary reads while execution is paused. Evidence after a particular
+instruction requires normal continuation to an explicitly declared later semantic point under exact
+receipt suppression, or a frame step when frame granularity is the actual contract. Guest-opcode
+stepping is not an observation mode or runtime action.
 
 Ordered observations stay ordered, and a coherent multi-field value uses one registered query rather
 than claiming separate scalar reads are atomic. Optional unavailability remains distinct from false or
@@ -152,7 +156,8 @@ shared controller-like input-segment action. An `InteractionDefinition<State, Ou
 identity/revision, typed state and output, pure initialization and advancement reducers, a finite
 verifier-known segment set, hard budgets, and declared emissions. Each
 `InteractionSegmentDefinition` declares its semantic gates, requested input and acknowledgement policy,
-source-stop step-off behavior, reached-instruction policy, attached observations/checks,
+source-stop departure behavior, an optional declared semantic successor held under the same
+publication, attached observations/checks,
 timeout/stall/movie/cancel policy, and typed completion mapping. `InteractionSegmentResult` preserves the
 exact stop receipt, request and release receipts, ordered observations/checks, elapsed evidence, epoch,
 and distinct terminal status.
@@ -164,11 +169,13 @@ select only a declared segment ID; it cannot construct effects or access a runti
 
 The migration preserves the current temporal behavior:
 
-- publish the segment input and obtain its epoch before stepping off a current semantic stop;
-- execute exactly one source instruction with the new input before waiting;
+- publish the segment input and obtain its epoch before departing a current semantic stop;
+- depart through exact current-receipt suppression and ordinary continuation without disabling the
+  shared physical point;
 - match completion by logical point, PC, stop sequence, and epoch;
-- preserve whether the reached instruction remains paused or executes under the held request;
-- read the request receipt after any held-through-hit execution and before publishing neutral;
+- leave the reached semantic gate paused unless the segment explicitly retains the same publication
+  through a declared successor point;
+- read any required request receipt after the declared successor and before publishing neutral;
 - where release matters, prove guest-observed release with a separately named witness using a fresh
   neutral epoch rather than treating neutral publication as proof;
 - capture memory baselines before advancement and retain one neutral frame between translated
@@ -225,14 +232,16 @@ meaning. One routed hit keeps one sequence/snapshot/epoch identity across contro
 views. Modules may attach, mark, or finalize an existing profile through ordinary capture actions, but
 cannot reinterpret its internals.
 
-## Common legacy-to-target translation
+## Common current-to-native reconstruction
 
 | Current construct | Target treatment |
 |---|---|
 | `ARM_PHASE_BPS_ONCE`, canonical/gated vectors | `SemanticPointDefinition` and `SemanticAwaitDefinition` lower exact alternatives and current-point policy into scoped router subscriptions plus `runtime.execution.continue_until` |
 | `LOAD_SNAPSHOT` and init-time savestate path | Invocation `StatePolicy` over a typed state handle or caller-declared immutable artifact; `StateService` alone advances `StateEpoch`, and `runtime.state.restore_baseline` is used only for a declared local retry |
 | Timeout keys and `SET_TIMEOUT*` | Invocation deadline/budget plus action-specific bounded deadline |
-| `RUN_UNTIL_BP*`, frame/opcode stepping | `runtime.execution.continue_until`, `runtime.execution.step_frames`, or `runtime.execution.step_instructions` under the sole `ExecutionEngine` |
+| `RUN_UNTIL_BP*` and source-stop departure | `runtime.execution.continue_until` plus exact retained-receipt suppression under the sole `ExecutionEngine`; old step-off opcodes are mechanics, not target behavior |
+| Frame stepping | `runtime.execution.step_frames` when the phase contract is genuinely frame-granular |
+| Guest opcode stepping | No target action. Reconstruct the intent with suppression and a declared semantic successor; reject a path whose behavior cannot be expressed semantically |
 | `APPLY_INPUT_FROM`, raw tape application | Interaction composition lowers requested input, semantic gates, poll acknowledgements, and neutral-release witnesses into scoped `runtime.input.*` and execution actions |
 | `READ_*`, address programs, direct query helpers | `AddressExpression<T>`, `ObservationDefinition<T>`, and `ObservationUse<T>` lower to checked `runtime.guest.read_*` actions or registered coherent game queries |
 | `WRITE_U32` and future patches | `runtime.guest.write_checked` or `runtime.guest.patch_executable`; data restores unless explicitly committed, executable patches are always reversible, and both return checked receipts |
@@ -247,9 +256,39 @@ cannot reinterpret its internals.
 | Program-specific payload codec | Program-kind runtime adapter decodes existing persisted job/domain data and constructs typed `ProgramInvocation` input |
 | Result INI/context mapper | Program-kind result adapter consumes `ProgramResult` and writes through existing result/domain persistence operations |
 
-## Migration matrix
+## WorkerWorkset dispatch boundary
 
-### `soa.seed_probe::probe`
+Every entrypoint below remains scalar: one typed `ProgramInvocation` consumes one phase input and
+produces one independently correlated terminal result. `WorkerWorkset` is the sole bounded production
+dispatch envelope around already-independent scalar invocations; using more than one item is optional.
+It is not a module
+entrypoint, IR instruction, phase-sized controller, domain result, persisted job-set replacement, or
+permission for a module to enumerate workflow work.
+
+Any independently ready invocations whose exact `WorkerWorksetExecutionKey` matches may use this path; phase
+identity alone neither permits nor forbids it. The key covers the exact module/entrypoint and dependency
+identity, runtime/session profile, source-state or reusable-baseline identity, and the execution/service
+policy that affects safe reuse. A one-item workset is valid and is the normal direct-tool boundary.
+Within one worker, children still execute one at a time. Each child retains its own job, invocation,
+attempt, deadline, cancellation, provenance, cleanup, artifact, and terminal-result identity, and every
+child begins through the exact state preparation or baseline restore declared for the key.
+
+The worker publishes each child result as it completes. Clean completion or a clean domain-negative
+result may permit the next child; session taint or unproven cleanup aborts the remaining dispatch. The
+coordinator bounds worksets by item count, encoded bytes, aggregate declared child budgets,
+resident-item capacity, and unacknowledged terminal count/bytes; it may split one compatible population
+across workers and leaves unstarted work independently cancelable or retryable through current
+operations.
+This is a locality/dispatch optimization only: existing SavorDb fan-out, leases, supersession, reduction,
+and transitions remain authoritative.
+
+A bounded list inside one scalar input is instead a **domain candidate list**. Its elements are one
+program's declared algorithmic work and share that invocation's result and failure boundary. It does not
+become a `WorkerWorkset`, and a workset never flattens or interprets such a list.
+
+## Native module specifications
+
+### Slice 6A - `soa.seed_probe::probe`
 
 **Current control flow**
 
@@ -295,6 +334,16 @@ through the existing SeedProbe result and transition operations.
 - program-specific payload decoding; and
 - use of `DW_RUN_OUTCOME_CODE` as both infrastructure and domain result.
 
+**WorkerWorkset fit**
+
+The scalar `SeedProbeRequest` does not change. Grid and Unique fan-outs are expected high-value workset
+populations because many independent requests share one exact source baseline and module revision.
+Grid may use bounded chunks directly. Unique uses small chunks, publishes each child result immediately,
+and accepts asynchronous cancellation of unstarted siblings after the authoritative winner/supersession
+path reacts; it must not hide a large committed candidate tail behind one worker. Neutral, prebattle, and
+field-return requests are typically singleton, but no phase allowlist prevents an exact-key match from
+using the generic path.
+
 **Parity checks**
 
 - legacy payload v1/v2 codec and field-return tests;
@@ -311,7 +360,73 @@ scenario uses `ProgramInvocation`; and no worker-side caller uses `SeedProbeKeys
 SeedProbe branches in `ProgramRegistry`. `SeedProbePayload` may remain only where an existing SavorDb
 handler needs it to preserve stored data.
 
-### `soa.tas_movie::play_and_checkpoint`
+### Slice 6B - `soa.navigation.context::capture`
+
+**Current control flow**
+
+The current Navigation Context script restores its baseline, publishes neutral input, records the entry
+PC/stop, waits for `NavigationContextInitialPlayerInputReady` when necessary, validates the exact capture
+key and PC, captures navigation state, saves a matching savestate, emits the `.nctx` blob, and maps
+timeout/stall/host/unexpected/capture/data/save failures.
+
+**Typed input**
+
+`NavigationContextCaptureRequest` contains the source state relationship, capture qualification revision,
+execution bound, and declared `navigation_context` plus `survey_bootstrap_state` artifact roles. The
+neutral controller is module behavior through a scoped input action, not a serialized input key.
+
+**Typed output and emissions**
+
+`NavigationContextCaptureResult` contains:
+
+- typed outcome and current failure taxonomy;
+- source and output state lineage;
+- exact capture stop/PC evidence;
+- structured `NavigationContext`;
+- portable NCTX artifact reference; and
+- matching immutable Survey-bootstrap `StateArtifact`.
+
+NCTX v1 remains a portable artifact codec. The target typed record is the worker/runtime contract; the
+program-kind adapter projects it into the existing workflow and artifact representation.
+
+**Required composition**
+
+- scoped neutral input with observed release;
+- current-point receipt and semantic navigation await;
+- typed registered `soa.navigation` context observation;
+- NCTX artifact writer; and
+- immutable state save.
+
+**WorkerWorkset fit**
+
+Navigation Context normally contributes one scalar capture for one source state and therefore usually
+uses a singleton workset. Exact-key independent captures may still use the generic dispatch path, but
+the module never turns multiple source states into one request or one NCTX/state result.
+
+**Parity checks**
+
+- capture extractor and NCTX codec tests;
+- payload validation and neutral-input tests;
+- immediate-capture and arbitrary-entry paths;
+- fixed key/PC qualification;
+- all current `FailureCode` cases;
+- DB source/output/artifact identity and idempotency tests; and
+- focused SavorE2E capture using the known `a101b` bootstrap path.
+
+The observed pair
+`navigation-context-41.sav` / `navigation-context-41.nctx` is the concrete first parity fixture. The
+module must reproduce a semantically equivalent typed context and matching-state relationship; the exact
+existing files remain immutable inputs/evidence and are not overwritten.
+
+**Legacy removal condition**
+
+The `navigation.context_probe` handler constructs the target module invocation, projects its result into
+the existing `.nctx` and state-artifact representation, and keeps current consumers compatible. No
+worker-side caller uses kind `10`, Navigation Context context keys, `GET_NAVIGATION_CONTEXT`, or its
+`ProgramRegistry` branches; the persisted payload codec may remain behind the handler, and the Survey
+handoff below passes.
+
+### Slice 6C - `soa.tas_movie::play_and_checkpoint`
 
 **Current control flow**
 
@@ -356,6 +471,13 @@ known cursor and must match it exactly. External imports explicitly declare `NoM
 recording rewind uses an in-memory handle. Timeout derivation occurs before activation and is recorded
 in invocation provenance.
 
+**WorkerWorkset fit**
+
+TAS Movie requests remain independently schedulable scalar movie lifecycles. They are expected to be
+singleton or small worksets because a long playback, boot/reboot policy, and per-request checkpoint
+dominate dispatch overhead. An exact-key match may use the generic path, but workset reuse never carries
+movie state, input position, or a prior request's checkpoint into the next child.
+
 **Parity checks**
 
 - current TAS payload derivation tests and DB workflow adapter tests;
@@ -373,7 +495,7 @@ in invocation provenance.
 `PK_TasMovie`. `TasMoviePayload` may remain behind the SavorDb program-kind handler or a read-only
 historical boundary to preserve existing stored records; it is outside worker execution.
 
-### `soa.tas_frame_detector::detect`
+### Slice 6D - `soa.tas_frame_detector::detect`
 
 **Current control flow**
 
@@ -401,6 +523,11 @@ ever-growing program-local record returned inline.
 
 The loop remains ordinary IR control flow. `RECORD_TAS_INPUT_SAMPLE` does not become a core opcode.
 
+**WorkerWorkset fit**
+
+This direct diagnostic enters the worker through a one-item workset. Its bounded sample sequence is
+domain work inside one scalar invocation, not a collection of worker jobs.
+
 **Parity checks**
 
 - current payload/codec behavior;
@@ -416,58 +543,12 @@ Direct diagnostic callers, if any, invoke the target module; `PK_TasInputStreamD
 context keys, and `RECORD_TAS_INPUT_SAMPLE` handler are removed. Migration does not create a DB workflow
 registration merely because none exists today.
 
-### `soa.battle.legacy_path::run`
+The legacy `PK_BattleTurnRunner` multi-turn path is not a migration target. It has no production
+descriptor in the current catalog, receives no typed module or runtime adapter, and is deleted with the
+legacy execution corpus. A payload codec may remain only if a supported persisted-data reader
+independently requires it; it cannot activate worker behavior.
 
-**Current control flow**
-
-The legacy `PK_BattleTurnRunner` is a multi-turn path runner, distinct from Battle Single Turn. It
-applies an initial frame, repeatedly captures battle context, materializes raw input frames from a
-`BattlePath`, runs among battle stop points, evaluates predicates, and returns victory, defeat,
-turns-exhausted, predicate failure, materialization failure, or execution failure.
-
-**Typed input**
-
-`LegacyBattlePathRequest` contains initial input, typed `BattlePath`, predicate-composition inputs,
-maximum turn count, and execution bounds. State is an explicit invocation artifact/policy.
-
-**Typed output and emissions**
-
-`LegacyBattlePathResult` contains typed battle outcome, terminal turn index, terminal stop, typed
-condition observations and predicate compatibility summary, and optional final battle context. It emits
-per-turn observations only when declared by the module schema.
-
-**Required composition**
-
-- battle-context query;
-- legacy path-to-input pure compiler;
-- interaction-composed input execution;
-- semantic battle awaits and typed observations; and
-- shared predicate composition and typed condition observations.
-
-**Disposition**
-
-This module is migration-only and marked deprecated at its first revision. It proves parity for any
-external/direct caller that still depends on kind `3`, but new workflows use Battle Context plus Battle
-Single Turn. It may import the same reusable battle actions; it receives no legacy executor or special
-opcode privileges.
-
-**Parity checks**
-
-- current payload version and `BattlePath` codec;
-- all existing outcome branches;
-- predicate qualification, baseline, comparison, progress, passed/total, and abort semantics;
-- initial-input and turn-limit behavior; and
-- exact action/stop trace comparison against the legacy VM.
-
-**Legacy removal condition**
-
-After repository references and known external consumers show no production use, remove the deprecated
-module, `PK_BattleTurnRunner`, `BattleRunnerScript`, and its context
-surface. If a real consumer remains, retain the module—not the old VM—until that consumer migrates.
-
-Retain a read-only `BattleRunnerPayload` codec if existing stored records require it.
-
-### `soa.battle.context::capture`
+### Slice 6E - `soa.battle.context::capture`
 
 **Current control flow**
 
@@ -499,6 +580,12 @@ output and creates or resolves waves through current SavorDb commands and record
 Turn program-kind adapter constructs `soa.battle.single_turn::execute` only when the existing child job
 is activated.
 
+**WorkerWorkset fit**
+
+Battle Context normally performs one coherent capture for one wave/source-state relationship and thus
+usually uses a singleton workset. Exact-key independent captures may use generic co-dispatch, but the
+module does not absorb downstream wave fan-out or combine contexts from distinct source states.
+
 **Parity checks**
 
 - immediate-capture and run-to-capture paths;
@@ -514,7 +601,7 @@ boundary; their existing transition handlers consume adapter-projected output; a
 `PK_BattleContextProbe` plus the `GET_BATTLE_CONTEXT` worker opcode path have no worker-side caller. The
 payload codec may remain only behind the SavorDb handler to preserve stored data.
 
-### `soa.battle.macro_probe::probe`
+### Slice 6F - `soa.battle.macro_probe::probe`
 
 **Current control flow**
 
@@ -545,22 +632,30 @@ memory-gate observation is emitted with stable sequence identity.
 - pure command-plan compiler;
 - pure adaptive reducer derived from provider `Start/Advance`;
 - shared interaction composition with semantic gate alternatives, request/release acknowledgements,
-  memory baseline/change observations, and explicit reached-instruction policy;
+  memory baseline/change observations, exact source suppression, and declared semantic successors where
+  a publication must span a later point;
 - battle-context observation/query; and
 - routed observation-tail execution.
 
 No single “run battle macro probe” native action is allowed. The program owns visible branching in IR;
 the reducer decides only the next bounded segment from typed state and the preceding completion.
 
+**WorkerWorkset fit**
+
+This direct diagnostic enters through a one-item workset. Its ordered commands, adaptive segments, and
+observation tail are domain control flow within that one scalar invocation; they are not workset
+children.
+
 **Parity checks**
 
 - all compiler/planning-context tests in `test_battle_macro_probe.cpp`;
 - provider permission and unexpected-stop behavior;
 - fake-attack pattern, baseline-before-advance, one-neutral-frame polling, and memory-gate ordering;
-- input-before-step, exact point/PC/sequence/epoch matching, held-through-hit, request-receipt-before-neutral,
-  and fresh-neutral release-witness behavior;
+- publication-before-departure, exact point/PC/sequence/epoch matching, successor causality,
+  request-receipt-before-neutral, and fresh-neutral release-witness behavior;
 - `InputMacroRuntime` cleanup-once cases;
-- direct-worker SavorE2E scenarios; and
+- native in-process/runtime characterization of the diagnostic module, with direct-worker SavorE2E
+  deferred until Slice 7 activates the complete catalog; and
 - cancellation at every segment boundary leaves neutral acknowledged input and no subscriptions.
 
 **Legacy removal condition**
@@ -570,7 +665,7 @@ reducer/action path; `PK_BattleMacroProbe`, `MATERIALIZE_BATTLE_MACRO_STEPS`,
 `EXECUTE_BATTLE_MACRO_STEP`, the VM macro-host inheritance, and the subordinate runtime scheduler are
 removed.
 
-### `soa.battle.single_turn::execute`
+### Slice 6G - `soa.battle.single_turn::execute`
 
 **Current control flow**
 
@@ -638,6 +733,15 @@ remain in the current guest state after its scope, that is an explicit data-muta
 restores. It cannot be an untracked raw write, and this commit option never applies to executable
 patches.
 
+**WorkerWorkset fit**
+
+Battle Single Turn is an expected high-value workset population: independently persisted candidates for
+one wave commonly share the exact source baseline, module revision, capture/predicate configuration, and
+execution policy. Each candidate nevertheless remains one scalar invocation, publishes its own terminal
+result and optional successor state, and restores the common baseline before it runs. Workset execution
+does not select survivors or create a next wave; existing durable reduction consumes the same
+per-candidate results as ungrouped execution.
+
 **Workflow boundary**
 
 The program returns one candidate. It never chooses survivors, creates a battle wave, or schedules
@@ -657,8 +761,7 @@ invocation when each existing job is activated.
 - capture memory-watchpoint behavior;
 - `SavorE2E/BattleSingleTurnScenario.cpp`;
 - DB survivor selection and multi-wave dynamic-step tests; and
-- differential action/branch traces for the existing three first-turn checkpoint corpus where
-  applicable.
+- native runtime behavior over the existing three first-turn checkpoint corpus where applicable.
 
 **Legacy removal condition**
 
@@ -668,7 +771,7 @@ no VM macro opcode or direct memory/write path is used; and kind `5` plus the Ba
 in `ProgramRegistry` are removed from worker execution. Existing persisted payload version `5` remains
 readable by the SavorDb handler.
 
-### `soa.battle.completion::complete`
+### Slice 6H - `soa.battle.completion::complete`
 
 **Current control flow**
 
@@ -689,18 +792,31 @@ may remain an artifact codec; it is not the program's internal result type.
 
 **Required composition**
 
-- pure completion provider/reducer;
-- shared interaction composition;
+- a phase-scoped input lease that publishes neutral for the new epoch while the restored core is paused,
+  before any resume;
+- causal semantic routes `0x8006F554 -> 0x8006F558` and
+  `0x8006F590 -> 0x8006F594`, retaining the first receipt until its exact successor;
+- paused verification that `battleInputState == 2` only after the matching successor;
+- pure completion reducer and ordinary semantic waits for reward entry and reward commit;
 - typed battle reward/context queries;
 - immutable manifest publication; and
 - immutable state save.
+
+**WorkerWorkset fit**
+
+Battle Completion normally has one scalar invocation per victory lineage and therefore usually uses a
+singleton workset. Exact-key independent completions may use generic co-dispatch, but distinct victory
+states never share a baseline merely because they belong to the same phase.
 
 **Parity checks**
 
 - BCMB round trip and expected-view derivation;
 - pre/post capture and reward-phase validation;
 - wrong-source and read-failure cases;
-- exactly acknowledged input/release behavior;
+- successful current-epoch neutral publication before resume, with no guest neutral-poll or release
+  witness requirement;
+- both causal store/successor routes and rejection of a successor without its matching first receipt;
+- absence of guest-instruction-step imports;
 - current DB aggregate/result identity checks; and
 - cleanup/cancellation between every provider segment.
 
@@ -711,13 +827,15 @@ projects its manifest/state outputs into the current downstream representation. 
 context keys, materialize opcode, and the old worker result path have no active worker-side caller;
 stored payload/result codecs remain where existing SavorDb operations require them.
 
-### `soa.battle.results_screen::advance`
+### Slice 6I - `soa.battle.results_screen::advance`
 
 **Current control flow**
 
-The split Results Screen phase consumes a completion manifest and field-return seeded state, validates
-the expected presentation, adaptively advances required/full results UI actions, reaches the
-field-return reseed boundary, saves the terminal state, and publishes a detailed BERB report.
+The split Results Screen phase consumes a completion manifest and state already paused at
+`BattleEndFieldReturnReseedComplete` (`0x801012B4`), validates the expected presentation, adaptively
+advances the remaining results lifecycle and cleanup, saves the terminal state, and publishes a detailed
+BERB report. It starts at that split results-screen boundary and does not reproduce the
+compatibility-only victory-to-results path.
 
 **Typed input**
 
@@ -739,6 +857,13 @@ action traces, mismatch and invariant flags, diagnostic, terminal stop, report a
 - immutable report publication; and
 - immutable state save.
 
+**WorkerWorkset fit**
+
+Battle Results Screen normally has one scalar invocation per completion-manifest/state lineage and
+therefore usually uses a singleton workset. Completion followed by Results Screen is a dependency chain,
+not a workset; ordinary worker affinity may preserve locality after the durable handoff, but the two
+entrypoints are never fused into one child or result.
+
 **Parity checks**
 
 - BERB round trip and payload policy tests;
@@ -747,6 +872,7 @@ action traces, mismatch and invariant flags, diagnostic, terminal stop, report a
 - RequiredOnly and FullAdaptive behavior;
 - fresh input-epoch and causal release requirements;
 - RNG/lifecycle/completion invariants;
+- no victory-store points, held-through guest instruction, or monolithic BattleEndResults module;
 - `SavorE2E/BattleEndResultsScenario.cpp`; and
 - DB end-workflow idempotency and artifact-lineage tests.
 
@@ -756,66 +882,6 @@ The split `battle.results_screen` program-kind adapter uses the target module an
 report/state artifacts into the existing downstream representation. Kind `8`, its compatibility alias,
 context keys, materialize opcode, and old worker result path are removed from worker execution; existing
 stored payload/result codecs and bindings remain unchanged.
-
-### `soa.navigation.context::capture`
-
-**Current control flow**
-
-The current Navigation Context script restores its baseline, publishes neutral input, records the entry
-PC/stop, waits for `NavigationContextInitialPlayerInputReady` when necessary, validates the exact capture
-key and PC, captures navigation state, saves a matching savestate, emits the `.nctx` blob, and maps
-timeout/stall/host/unexpected/capture/data/save failures.
-
-**Typed input**
-
-`NavigationContextCaptureRequest` contains the source state relationship, capture qualification revision,
-execution bound, and declared `navigation_context` plus `survey_bootstrap_state` artifact roles. The
-neutral controller is module behavior through a scoped input action, not a serialized input key.
-
-**Typed output and emissions**
-
-`NavigationContextCaptureResult` contains:
-
-- typed outcome and current failure taxonomy;
-- source and output state lineage;
-- exact capture stop/PC evidence;
-- structured `NavigationContext`;
-- portable NCTX artifact reference; and
-- matching immutable Survey-bootstrap `StateArtifact`.
-
-NCTX v1 remains a portable artifact codec. The target typed record is the worker/runtime contract; the
-program-kind adapter projects it into the existing workflow and artifact representation.
-
-**Required composition**
-
-- scoped neutral input with observed release;
-- current-point receipt and semantic navigation await;
-- typed registered `soa.navigation` context observation;
-- NCTX artifact writer; and
-- immutable state save.
-
-**Parity checks**
-
-- capture extractor and NCTX codec tests;
-- payload validation and neutral-input tests;
-- immediate-capture and arbitrary-entry paths;
-- fixed key/PC qualification;
-- all current `FailureCode` cases;
-- DB source/output/artifact identity and idempotency tests; and
-- focused SavorE2E capture using the known `a101b` bootstrap path.
-
-The observed pair
-`navigation-context-41.sav` / `navigation-context-41.nctx` is the concrete first parity fixture. The
-module must reproduce a semantically equivalent typed context and matching-state relationship; the exact
-existing files remain immutable inputs/evidence and are not overwritten.
-
-**Legacy removal condition**
-
-The `navigation.context_probe` handler constructs the target module invocation, projects its result into
-the existing `.nctx` and state-artifact representation, and keeps current consumers compatible. No
-worker-side caller uses kind `10`, Navigation Context context keys, `GET_NAVIGATION_CONTEXT`, or its
-`ProgramRegistry` branches; the persisted payload codec may remain behind the handler, and the Survey
-handoff below passes.
 
 ## Input macro migration through interaction composition
 
@@ -831,9 +897,9 @@ The current providers must migrate once, not independently inside each battle ph
 4. Store the pending continuation in `ProgramInstance`.
 5. Lower each segment through the shared interaction and semantic-observation composers into the same
    registered action handlers and `ExecutionEngine` used by ordinary program operations.
-6. Preserve input publication/epoch before source-stop step-off, exact completion identity,
-   held-through-hit behavior, request and release receipts, baseline/change ordering, and separately
-   witnessed neutral release.
+6. Preserve input publication/epoch before source-stop departure, exact completion identity, request
+   receipts, any declared successor under the same publication, baseline/change ordering, and separately
+   witnessed neutral release only where release matters.
 7. Acquire one interaction-wide input lease and nested router, observation, watchpoint, and capture
    resources through the invocation scope stack.
 8. Preserve the cleanup-once behavioral tests, but make the common scope unwinder the mechanism.
@@ -844,25 +910,28 @@ The reusable battle command, completion, and results reducers may remain native 
 complex game-specific decisions. They remain pure: typed state plus typed completion in; next requested
 effect/events/completion out.
 
-## Migration dependencies
+## Authoritative 6A-6I migration matrix
 
 The generic Slice 4 services and standalone resource ledger are established, but this table remains a
 program-migration order rather than a claim that their action descriptors or game queries exist.
 Capability packs, typed action registration, and `ProgramRuntime` arrive in Slice 5.
 
-| Default order | Family | Prerequisites |
-|---|---|---|
-| 1 | SeedProbe | Core IR, typed invocation/result, stop wait, input scope, memory read, state save, existing SavorDb handler parity |
-| 2 | Navigation Context | Navigation capability pack, qualified capture, immutable NCTX/state pair, and artifact lineage needed by Survey |
-| 3 | TAS playback and detector | Movie scope, routed step, streamed/bounded artifacts, Boot policy |
-| 4 | Battle Context | Typed capability-pack query and existing workflow fan-out after handler projection |
-| 5 | Battle Macro Probe | Shared semantic-observation and interaction composition, adaptive reducer transitions, exact temporal ordering, and request/release acknowledgement |
-| 6 | Battle Single Turn | Mutation receipt, unchanged capture-profile semantics, local restore/epoch, shared predicate and observation composition, complex result, and parity with existing durable turn waves |
-| 7 | Battle Completion and Results Screen | Multiple typed artifacts, manifest/report invariants, shared reducer infrastructure |
-| 8 | Legacy battle path | Repository reference check, known external consumer check, and deprecated-module parity before old interpreter deletion |
+| Slice | Family | Expected workset fit | Prerequisites |
+|---|---|---|---|
+| 6A | SeedProbe | Strong for Grid/Unique; other configurations typically singleton | Core IR, typed invocation/result, stop wait, input scope, memory read, state save, and existing SavorDb handler projection |
+| 6B | Navigation Context | Typically singleton | Navigation capability pack, qualified capture, immutable NCTX/state pair, and existing handler projection |
+| 6C | TAS Movie | Typically singleton or small | Movie scope, explicit boot policy, semantic stop, and checkpoint publication |
+| 6D | TAS Frame Detector | One-item direct | TAS Movie lifecycle plus bounded frame stepping and in-process diagnostic module validation |
+| 6E | Battle Context | Typically singleton | Typed capability-pack query and existing workflow fan-out after handler projection |
+| 6F | Battle Macro Probe | One-item direct | Shared semantic-observation and interaction composition, adaptive reducer transitions, suppression/successor timing, and in-process diagnostic module validation |
+| 6G | Battle Single Turn | Strong for exact-key wave candidates | Mutation receipt, unchanged capture-profile semantics, local restore/epoch, shared predicate/observation composition, complex result, and durable turn-wave projection |
+| 6H | Battle Completion | Typically singleton | Neutral pre-resume publication, causal post-store points, BCMB/state artifacts, and existing handler projection |
+| 6I | Battle Results Screen | Typically singleton | Completion-manifest lineage, real request/release witnesses, BERB/state artifacts, and existing handler projection |
 
-Use this as the default dependency order. Work may overlap or move earlier when its listed prerequisites
-are satisfied. No net-new phase behavior lands on the legacy VM once the translator exists.
+Each slice is vertical: it adds the native module, any reusable action/composition refinement, current
+program-kind adapter projection where applicable, and focused validation. Production
+`ProgramInvocation` remains unavailable until all nine modules are ready. There is no legacy 6J and no
+monolithic BattleEndResults slice.
 
 ## Interfaces and ownership affected
 
@@ -871,7 +940,7 @@ Migration changes:
 - program-kind handlers construct exact `ProgramInvocation` from existing persisted records;
 - program selection from `ProgramRegistry` switches to `ProgramDefinitionStore`;
 - worker input from decoded existing job/domain data to typed runtime values;
-- fixed builders from runtime definitions to compiler inputs or direct module builders;
+- fixed behavior from current source and tests to direct native module builders;
 - current stop/address/query/baseline constructs to shared semantic-observation composition before module
   verification;
 - current predicate records to shared in-memory predicate composition before module verification;
@@ -881,7 +950,10 @@ Migration changes:
   semantic conversion;
 - program-kind result handlers project `ProgramResult` through existing result/domain operations; and
 - exact module/dependency/state/runtime validation occurs at worker activation without changing current
-  SavorDb affinity, queue, or claim representations.
+  SavorDb affinity, queue, or claim representations;
+- Multi-item `WorkerWorkset` formation optionally co-dispatches exact-key scalar invocations while
+  preserving every existing job/attempt/result identity and remaining absent from persisted workflow
+  or domain contracts.
 
 Existing workflow transition handlers remain domain-specific and use their current interfaces and
 storage. An adapter may supply values derived from typed runtime output; the handler may not become a
@@ -889,7 +961,7 @@ worker controller.
 
 ## Failure and cleanup behavior
 
-Every parity test must classify legacy terminal behavior into:
+Every phase behavior test must classify terminal behavior into:
 
 - **infrastructure status:** verification, backend, transport, service, or action-contract failure;
 - **domain outcome:** expected game result such as seed mismatch, defeat, predicate rejection,
@@ -946,9 +1018,9 @@ unchanged; adapters translate or consume them in memory.
 The current-phase migration is complete only when:
 
 - every module in the catalog activates through the same verifier, executor, and action registry;
-- differential tests cover every legacy branch that has a current test or E2E scenario;
-- the same immutable state and typed inputs produce equivalent domain outputs and action/branch traces,
-  allowing only explicitly declared nondeterministic fields;
+- focused native tests cover every supported branch that has a current test or E2E scenario;
+- the same immutable state and typed inputs produce the required domain outputs, artifacts, and game
+  witnesses, allowing only explicitly declared nondeterministic fields;
 - current workflow restart, idempotency, fan-out, survivor selection, and artifact lineage still pass;
 - no SavorDb schema migration, stored-representation change, database-service/queue/claim/workflow
   interface change, or artifact-storage-interface change is introduced;
@@ -956,14 +1028,14 @@ The current-phase migration is complete only when:
   existing result projection;
 - current stop/address/query/baseline behavior lowers through semantic-observation composition with
   equivalent point, ordering, availability, and epoch semantics;
-- current input macros lower through interaction composition with equivalent input-before-step,
-  held-through-hit, acknowledgement, memory-wait, and cleanup behavior;
+- current input behavior lowers through interaction composition with equivalent
+  publication-before-departure, successor causality, acknowledgement, memory-wait, and cleanup behavior;
 - existing `savor.capture.profile/1` parsing, sampling, control-observation, window/recorder, progress, and
   artifact behavior remains compatible behind passive `CaptureService`;
 - cancellation/fault injection proves complete unwind for every resource type;
 - `SavorWorker` has no `ProgramKind` program-selection or payload-decoder switch;
 - `PhaseScriptVM`, `PSContext` worker execution, domain opcodes, and `InputMacroRuntime` scheduler are
-  deleted after the bounded differential window;
+  deleted after the native modules and production activation are complete;
 - no predicate opcode, executor, runtime service, direct guest access, or predicate-specific persistence
   remains after lowering;
 - no observation or interaction executor, scheduler, query VM, opcode family, direct Dolphin access, or
@@ -991,7 +1063,6 @@ The migration does not decide:
 - future authored-program syntax or UI;
 - final worker-wire encoding;
 - additional legacy external callers not visible in the repository;
-- whether the deprecated legacy battle-path module is retained after the consumer check;
 - new game behavior beyond current parity;
 - any generalized capture-plan authoring language or replacement for `savor.capture.profile/1`;
 - generalized trigger/eventhook handling;
@@ -1001,16 +1072,21 @@ The migration does not decide:
 
 ## Source references
 
+The BattleRunner source is deletion evidence only. The BattleEndResults-named source, SavorDb directory,
+scenario, and tests contain current split-phase compatibility and Results Screen evidence; those names do
+not define a monolithic target module.
+
 - `SavorCore/Phases/Programs/ProgramRegistry.cpp`
 - `SavorCore/Phases/Programs/SeedProbe/SeedProbeScript.h`
 - `SavorCore/Phases/Programs/PlayTasMovie/TasMovieScript.h`
 - `SavorCore/Phases/Programs/TasFrameDetector/TasFrameDetectorScript.h`
-- `SavorCore/Phases/Programs/BattleRunner/BattleRunnerScript.h`
+- `SavorCore/Phases/Programs/BattleRunner/BattleRunnerScript.h` (deletion evidence only)
 - `SavorCore/Phases/Programs/BattleContext/BattleContextScript.h`
 - `SavorCore/Phases/Programs/BattleTurnRunner/BattleTurnRunnerScript.h`
 - `SavorCore/Phases/Programs/BattleMacroProbe/BattleMacroProbeScript.h`
 - `SavorCore/Phases/Programs/BattleCompletion/BattleCompletionScript.h`
-- `SavorCore/Phases/Programs/BattleEndResults/BattleEndResultsScript.h`
+- `SavorCore/Phases/Programs/BattleEndResults/BattleEndResultsScript.h` (split-phase orientation and
+  monolithic-path deletion evidence)
 - `SavorCore/Phases/Programs/NavigationContext/NavigationContextScript.h`
 - `SavorCore/Runner/InputMacro/IInputMacroPlanDriver.h`
 - `SavorCore/Runner/InputMacro/InputMacroRuntime.cpp`

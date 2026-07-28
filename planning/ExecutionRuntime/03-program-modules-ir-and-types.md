@@ -22,7 +22,8 @@ This document does not:
 
 - define the authoring syntax or editor;
 - change SavorDb SQL/schema, migrations, stored representations, database-service interfaces, queues,
-  claims, workflow persistence, transaction boundaries, or artifact-storage interfaces;
+  claims, workflow persistence, transaction boundaries, or artifact-storage interfaces; the separate
+  workset coordinator seam may change only as documented without changing this program model;
 - create separate observation, interaction, predicate, or capture-language projects during this
   refactor; the composition libraries use the existing typed module-builder surface;
 - make canonical program envelopes a worker protocol or database persistence format;
@@ -139,6 +140,24 @@ Examples aligned with the migration matrix are:
 - future module `soa.navigation.survey`, entrypoints `establish_anchors` and `probe_geometry`.
 
 The name chooses behavior inside an exact module. It does not select a controller type.
+
+### Worksets are not program structure
+
+`SubmitWorkset` may carry one to many independent invocation templates so `WorkerRuntime` can amortize
+verified module, session, and baseline preparation. This does not add a workset, batch, map, or
+parallel-execution instruction to the IR. It does not change an entrypoint's input/output schemas and
+does not construct a larger `ProgramInstance`.
+
+Every workset item shares one `WorkerWorksetExecutionKey`: the same exact module/revision/hash,
+entrypoint, dependency closure, runtime profile, initial baseline, and session-shaping policy.
+`WorkerRuntime` binds one item to the exact current session and `StateEpoch` immediately before admitting
+it; `ProgramRuntime` then receives one ordinary immutable `ProgramInvocation` and creates one ordinary
+`ProgramInstance`. Only that instance can execute or own invocation resources.
+
+A bounded list remains a valid program type when the domain operation itself is atomically defined over
+that list. It must not be introduced merely to combine otherwise independent jobs for transport or
+worker throughput. Workset membership and order are neither typed program inputs nor observable program
+control flow.
 
 ### Type system
 
@@ -264,11 +283,12 @@ There are exactly two observation acquisition modes:
 2. `PausedAtPoint` uses ordinary registered guest-read or game-query actions after the router/execution
    result proves the requested pause and before the program explicitly advances again.
 
-Observing after a reached instruction is not a hidden third mode. The composing program explicitly
-awaits `runtime.execution.step_instructions` or `runtime.execution.step_frames` and then performs a new
-paused observation. Ordered observation uses lower in their declared order. Required missing evidence
-is a structured action/runtime failure; optional missing evidence is `Unavailable`, distinct from
-`false`, zero, or an ordinary domain-negative result.
+Post-effect observation is not a hidden third mode. The composing program awaits a declared later
+semantic point, or explicitly awaits `runtime.execution.step_frames` when frame granularity is the
+actual contract, and then performs a new paused observation. Guest PowerPC instruction stepping is not
+an action or backend capability. Ordered observation uses are lowered in their declared order. Required
+missing evidence is a structured action/runtime failure; optional missing evidence is `Unavailable`,
+distinct from `false`, zero, or an ordinary domain-negative result.
 
 Named baselines are ordinary typed IR values. Each use declares `First` or `Latest` update policy and
 the exact comparison point. Translation of current battle predicates uses `Latest`: acquire and update
@@ -302,7 +322,7 @@ Each `InteractionSegmentDefinition` declares one bounded unit:
 - exact semantic-gate alternatives;
 - the requested held, pulse, neutral, or sequence input;
 - request and release guest-poll acknowledgement requirements;
-- source-stop step-off and reached-instruction execution policies;
+- current-receipt suppression and declared semantic completion policies;
 - ordered observations and checks at the permitted acquisition moments;
 - deadline, stall, movie-ended, cancellation, and current-instruction-suppression policies; and
 - the typed completion mapping returned to the reducer/statechart.
@@ -321,11 +341,11 @@ one lexical input lease for the complete interaction, nests segment subscription
 it, and uses the universal runtime cancellation and unwind path.
 
 The lowering must preserve the temporal contract in document 04, including input publication before
-stepping off a current stop, exact stop/sequence/epoch matching, the reached-instruction policy,
-request-receipt capture before neutralization, independently witnessed neutral release where required,
-and baseline-before-advance behavior. Existing `Start`/`Advance` drivers translate to pure
-initialize/transition reducers; their `Cancel` and private cleanup paths are replaced by ordinary
-runtime cancellation and structured unwind.
+ordinary continuation from a suppressed current receipt, exact stop/sequence/epoch matching, the
+declared semantic gate-or-successor completion policy, request-receipt capture before neutralization,
+independently witnessed neutral release where required, and baseline-before-advance behavior. Existing
+`Start`/`Advance` drivers translate to pure initialize/transition reducers; their `Cancel` and private
+cleanup paths are replaced by ordinary runtime cancellation and structured unwind.
 
 ### Reusable predicate composition
 
@@ -407,6 +427,10 @@ Arbitrary-depth durable search is not implemented as a long-running program loop
 bounded successors; existing SavorDb transition mechanisms schedule later waves through unchanged
 workflow persistence. Generalized frontier storage is outside this refactor.
 
+Likewise, independent phase inputs are not expressed as an IR batching loop. A finite worker workset is
+outside `ProgramRuntime`; it admits each item as a separate invocation with independent budgets, result,
+cancellation, and unwind.
+
 ### Action-await semantics
 
 `await action` is the only effect boundary in the IR.
@@ -482,7 +506,8 @@ old-epoch resources before accepting the new epoch.
 It does not contain:
 
 - a phase-controller subtype or virtual behavior;
-- worker queues, workflow IDs used for scheduling, or frontier mutation methods;
+- worker queues, workset membership/ordering/acknowledgement state, workflow IDs used for scheduling, or
+  frontier mutation methods;
 - an OS thread, event loop, timer thread, or callback into the protocol;
 - a `DolphinBackend`, `EmulationSession`, or broad service reference; or
 - live state that can be serialized and resumed on another worker.
@@ -490,6 +515,20 @@ It does not contain:
 After a worker crash, the existing coordinator and program-kind handler rematerialize the immutable
 runtime invocation from existing persisted job/domain records and state artifacts. Neither
 `ProgramInstance` nor a new invocation record is stored.
+
+### Future program-instruction debugging
+
+A future `StepProgramInstruction` debugger operation advances exactly one verified IR instruction or
+terminator in the active `ProgramInstance`. It is deliberately unrelated to guest PowerPC instruction
+stepping and adds no execution action or backend capability.
+
+If the selected IR instruction is `await action`, the debugger treats the complete transition from
+request dispatch through matching completion as one atomic program step. It never exposes an effect
+that has been dispatched without its continuation state, or a continuation that advanced without the
+validated completion. The before/after snapshots preserve exact module, function, block, instruction,
+and source-map identity. Cancellation and structured unwind remain authoritative at every boundary:
+stepping cannot strand a resource scope, pending action continuation, or deferred compensation. The
+executor implementation, worker protocol, and debugger UI are deferred.
 
 ### ProgramRuntime subsystem
 
@@ -504,7 +543,8 @@ The worker has one `ProgramRuntime` composed of:
 These are services inside one subsystem, not alternate executors. `ProgramDefinitionStore` is not the
 DB workflow phase-adapter registry. `ActionRegistry` stores capability implementations, not arbitrary
 phase factories. `ProgramRuntime` drives the session-owned resource ledger for invocation scopes and
-receipts; it does not implement a second cleanup ledger.
+receipts; it does not implement a second cleanup ledger. It neither owns nor iterates the enclosing
+`WorkerWorkset`, and it never has more than one active `ProgramInstance`.
 
 For this refactor, `ProgramDefinitionStore` is a worker/runtime catalog and cache backed by compiled or
 packaged definitions. It is not SavorDb persistence.
@@ -540,10 +580,10 @@ before Dolphin state is changed.
 All frontends compile to the same canonical module:
 
 ```text
-Current C++ phase builders --\
-Legacy PhaseScript adapter ---+--> typed module builder --> verifier --> ProgramModule
-Future authored DSL/JSON -----/
-Generated research program --/
+Current C++ module builders ----\
+Composition frontends -----------+--> typed module builder --> verifier --> ProgramModule
+Future authored DSL/JSON --------/
+Generated research programs -----/
 ```
 
 The typed module builder is an authoring convenience, not another executor. During this refactor,
@@ -553,27 +593,18 @@ refactor.
 
 The semantic-observation, interaction, and predicate composition libraries are shared by these
 frontends. Static definitions may lower during the ordinary build. Existing macro, non-capture
-address-expression, and battle-predicate records may be translated in memory by the runtime-facing
-program-kind adapter/module builder and lowered before the resulting module is verified. Normalized IR,
-exact dependencies, schemas, and source mapping participate in the module hash; the current SavorDb
-representations remain unchanged. Persisting composition-library source, normalized definitions, or
-reusable catalogs is outside this refactor.
+address-expression, and battle-predicate records are consumed in memory by the runtime-facing
+program-kind adapter and composition builders, then lowered before the resulting module is verified.
+Normalized IR, exact dependencies, schemas, and source mapping participate in the module hash; the
+current SavorDb representations remain unchanged. Persisting composition-library source, normalized
+definitions, or reusable catalogs is outside this refactor.
 
 Existing `savor.capture.profile/1` inputs are not another compilation frontend. They remain opaque
 versioned capture configuration passed through `runtime.capture.attach` to `CaptureService`. Neither
 semantic-observation nor interaction composition interprets or lowers profile internals. A generalized
 capture-plan language is deferred.
 
-The legacy adapter may translate current `PhaseScript`, payload decoding, and result mapping into
-canonical modules for differential testing. It shall:
-
-- preserve current behavior only where explicitly mapped;
-- map current context keys to declared schemas;
-- translate generic control flow to core IR;
-- translate current machine/domain opcodes to imported actions or subprograms;
-- emit diagnostics for unsupported or ambiguous operations; and
-- be deleted after the migration gates in document 09.
-
+Current behavior is re-authored directly through the canonical builders and composition frontends.
 New capabilities and phases cannot be added only to the legacy representation.
 
 ## Interfaces and ownership affected
@@ -641,7 +672,7 @@ execution path.
 
 ## Runtime model checks
 
-- One verifier accepts modules from current C++ builders, the temporary legacy adapter, and a synthetic
+- One verifier accepts modules from current C++ builders, composition frontends, and a synthetic
   authored frontend, producing the same normalized module for equivalent input.
 - An exact module hash and dependency closure resolves identically on two workers.
 - Invalid CFG edges, types, schemas, action signatures, effects, policies, scopes, epochs, and budgets are
@@ -658,14 +689,16 @@ execution path.
   peer executor.
 - Equivalent semantic-await/observation composition and hand-authored canonical IR normalize to the
   same imports, scopes, source-map meaning, and executable behavior.
-- Hit-time and paused observations remain distinct; post-instruction observation requires an explicit
-  step; required-unavailable evidence and an ordinary false/domain-negative value remain distinct.
+- Hit-time and paused observations remain distinct; post-effect observation requires a declared later
+  semantic point or explicit frame step; required-unavailable evidence and an ordinary
+  false/domain-negative value remain distinct.
 - Named `First` and `Latest` baselines update at their declared point and every receipt, observation,
   address, and baseline is rejected after its originating `StateEpoch`.
 - Static and adaptive interactions lower to verifier-known subprogram CFG and reducer transitions
   without a new opcode, action family, runtime, or dynamically constructed effect.
-- Interaction tests distinguish input request from guest-observed release and preserve input-before-step,
-  reached-instruction, exact point/sequence/epoch, baseline-before-advance, and common-unwind behavior.
+- Interaction tests distinguish input request from guest-observed release and preserve
+  input-before-continuation, exact current-receipt suppression, declared gate-or-successor completion,
+  exact point/sequence/epoch, baseline-before-advance, and common-unwind behavior.
 - One predicate definition can be used as record-only and fail-fast at different check sites without
   changing its pure condition.
 - Required predicate evidence failure is distinguishable from an unsatisfied condition, and predicate
@@ -684,6 +717,8 @@ execution path.
 - A future version-2 encoding, only if an incompatible model change requires one; version 1 remains
   exact and must not be silently reinterpreted.
 - Authored source language, parser, editor, debugger UI, publication workflow, and access control.
+- `StepProgramInstruction` executor support, its worker protocol, and its debugger UI. It remains a
+  program-level verified-IR operation and never becomes guest PowerPC instruction stepping.
 - A generalized capture-plan authoring language or translation of `savor.capture.profile/1` into
   program IR. Existing profile behavior remains behind `CaptureService` during this refactor.
 - Optimizer, constant folding, dead-code elimination, or JIT compilation; the initial executor may
@@ -692,9 +727,9 @@ execution path.
 - Any durable catalog or persistence for module source, normalized IR, verification cache, or source maps
   is a separate project. This refactor adds no SavorDb storage for those objects.
 - Optional future generic sum/variant types beyond enum-plus-record/optional schemas.
-- Performance-driven batching instructions; any addition must remain generic, typed, and non-domain
-  specific.
-- Translation of current phases, production runtime/action-host construction and capability
+- Numeric tuning of the worker-owned finite workset limits and terminal-acknowledgement window. Worker
+  scheduling does not add a batching instruction or require list-valued phase schemas.
+- Direct re-authoring of current phases, production runtime/action-host construction and capability
   advertisement, a live game-program smoke, and production-worker SavorE2E.
 
 ## Source references
