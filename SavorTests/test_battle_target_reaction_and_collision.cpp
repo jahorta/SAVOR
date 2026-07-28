@@ -153,6 +153,25 @@ TEST(SavorPredictDirectTransition, MissingTargetRowDoesNotResetOrDraw) {
     EXPECT_EQ(selected.draws_consumed, 0);
 }
 
+TEST(SavorPredictDirectTransition, MissingDynamicReactionFlagsAreAmbiguousAndRngFree) {
+    auto request = selector_request();
+    request.target_flags_0xf0.reset();
+    request.target_flags_0xf4.reset();
+
+    const auto selected = select_direct_instruction_transition(request);
+
+    EXPECT_EQ(selected.status, DirectInstructionTransitionStatus::Ambiguous);
+    EXPECT_EQ(selected.branch, DirectInstructionTransitionBranch::None);
+    EXPECT_FALSE(selected.should_reset);
+    EXPECT_FALSE(selected.selected_mode.has_value());
+    EXPECT_EQ(selected.draws_consumed, 0);
+    EXPECT_FALSE(selected.rng_seed_after.has_value());
+    EXPECT_NE(
+        selected.provenance.find("staged target F0/F4 reaction flags"),
+        std::string::npos);
+    EXPECT_STREQ(direct_instruction_transition_status_name(selected.status), "Ambiguous");
+}
+
 TEST(SavorPredictCollision, CapturedSignedYRotationVectorIsBitExact) {
     struct CapturedVector {
         std::uint32_t local_y_bits;

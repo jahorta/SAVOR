@@ -11,14 +11,16 @@ namespace savor::predict {
 
 struct BattlePredictionBatchCliOptions {
     BattlePredictionBatchRunOptions batch;
-    std::filesystem::path std_disc_dump_root;
+    std::filesystem::path disc_dump_root;
     std::filesystem::path spice_file_parsing_exe;
+    BattlePredictorResourceBundlePtr resource_inputs;
 };
 
 struct BattlePredictionBatchCliParseResult {
     BattlePredictionBatchCliOptions options;
     bool help_requested = false;
     std::vector<std::string> errors;
+    std::vector<std::string> warnings;
 };
 
 BattlePredictionBatchCliParseResult parse_battle_prediction_batch_tokens(

@@ -86,6 +86,12 @@
     <ClCompile Include="BattlePredictor.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="BattlePredictorResourceBundle.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="SpiceBattleContentAdapter.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="BattlePredictorCli.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -314,6 +320,18 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="BattlePredictor.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="BattlePredictorResourceBundle.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="SpiceBattleContentAdapter.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="SpiceBattleContentAdapterTestSeam.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="CliResourceInputCompatibility.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="BattlePredictorCli.h">

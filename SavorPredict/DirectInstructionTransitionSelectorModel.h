@@ -20,6 +20,7 @@ enum class DirectInstructionTransitionStatus {
     Skipped,
     MissingInput,
     Unsupported,
+    Ambiguous,
 };
 
 enum class DirectInstructionTransitionBranch {

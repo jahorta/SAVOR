@@ -5,6 +5,7 @@
 #include "BattlePredictionBatchCli.h"
 #include "BattlePredictorCli.h"
 #include "CheckpointTrace.h"
+#include "CliResourceInputCompatibility.h"
 #include "DbCopy.h"
 #include "LiveCaptureProfile.h"
 #include "TraceJob.h"
@@ -55,20 +56,20 @@ void print_usage(std::ostream& out) {
         << "  SavorPredict write-first-battle-pre-handler-frame-pathing-profile --output PATH\n"
         << "  SavorPredict write-first-battle-float-motion-profile --output PATH\n"
         << "  SavorPredict write-first-battle-move-increment-read-watch-profile --output PATH\n"
-        << "  SavorPredict run-battle-job (--turn-job-id N | --exec-job-id N) --iso PATH --dolphin-base-dir PATH [--db-root PATH] [--run-root PATH] [--worker-exe PATH] [--probe-mode capture|progress-only|control-only] [--probe-cpu-core default|jit|interpreter] [--capture-profile PATH] [--sandbox-mode minimal|full-copy] [--timeout-ms N] [--battle-run-ms N] [--poll-ms N] [--override-start-rng-seed N] [--override-fake-attacks N] [--action-view-std-json-dir PATH] [--std-disc-dump-root PATH] [--spice-file-parsing-exe PATH]\n"
-        << "  SavorPredict run-battle-jobs --exec-job-id N [--exec-job-id N ...] [--exec-job-list PATH] [--exec-job-seed EXEC_ID:SEED[:FAKE_ATTACKS]] [--exec-job-seed-list PATH] [--exec-job-fake-attacks EXEC_ID:FAKE_ATTACKS] [--exec-job-fake-attacks-list PATH] --iso PATH --dolphin-base-dir PATH [--db-root PATH] [--run-root PATH] [--worker-exe PATH] [--probe-mode capture|progress-only|control-only] [--probe-cpu-core default|jit|interpreter] [--capture-profile PATH] [--sandbox-mode minimal|full-copy] [--max-workers N] [--wait-for-workers-ready] [--timeout-ms N] [--battle-run-ms N] [--poll-ms N] [--override-start-rng-seed N] [--override-fake-attacks N] [--action-view-std-json-dir PATH] [--std-disc-dump-root PATH] [--spice-file-parsing-exe PATH]\n"
-        << "  SavorPredict predict-battle (--context-file PATH --turn-plan-hex HEX --fake-attacks N --start-seed N | (--turn-job-id N | --exec-job-id N) [--start-seed N | --start-seed-list PATH]) [--db-root PATH] [--scenario first-battle-soldiers] [--encounter-event-id N] [--scripted-battle-script NAME --scripted-battle-section NAME --scripted-battle-payload-offset N] [--profile first-battle-soldiers] [--action-view-std-json-dir PATH] [--std-disc-dump-root PATH] [--spice-file-parsing-exe PATH] [--format text|json] [--allow-seed-candidate-fallback] [--allow-profile-overrides] [--emit-causal-diagnostics]\n"
+        << "  SavorPredict run-battle-job (--turn-job-id N | --exec-job-id N) --iso PATH --dolphin-base-dir PATH [--db-root PATH] [--run-root PATH] [--worker-exe PATH] [--probe-mode capture|progress-only|control-only] [--probe-cpu-core default|jit|interpreter] [--capture-profile PATH] [--sandbox-mode minimal|full-copy] [--timeout-ms N] [--battle-run-ms N] [--poll-ms N] [--override-start-rng-seed N] [--override-fake-attacks N] [--action-view-std-json-dir PATH] [--disc-dump-root PATH] [--std-disc-dump-root PATH (deprecated)] [--spice-file-parsing-exe PATH (deprecated, ignored)]\n"
+        << "  SavorPredict run-battle-jobs --exec-job-id N [--exec-job-id N ...] [--exec-job-list PATH] [--exec-job-seed EXEC_ID:SEED[:FAKE_ATTACKS]] [--exec-job-seed-list PATH] [--exec-job-fake-attacks EXEC_ID:FAKE_ATTACKS] [--exec-job-fake-attacks-list PATH] --iso PATH --dolphin-base-dir PATH [--db-root PATH] [--run-root PATH] [--worker-exe PATH] [--probe-mode capture|progress-only|control-only] [--probe-cpu-core default|jit|interpreter] [--capture-profile PATH] [--sandbox-mode minimal|full-copy] [--max-workers N] [--wait-for-workers-ready] [--timeout-ms N] [--battle-run-ms N] [--poll-ms N] [--override-start-rng-seed N] [--override-fake-attacks N] [--action-view-std-json-dir PATH] [--disc-dump-root PATH] [--std-disc-dump-root PATH (deprecated)] [--spice-file-parsing-exe PATH (deprecated, ignored)]\n"
+        << "  SavorPredict predict-battle (--context-file PATH --turn-plan-hex HEX --fake-attacks N --start-seed N | (--turn-job-id N | --exec-job-id N) [--start-seed N | --start-seed-list PATH]) [--db-root PATH] [--scenario first-battle-soldiers] [--encounter-event-id N] [--scripted-battle-script NAME --scripted-battle-section NAME --scripted-battle-payload-offset N] [--profile first-battle-soldiers] [--action-view-std-json-dir PATH] [--disc-dump-root PATH] [--std-disc-dump-root PATH (deprecated)] [--spice-file-parsing-exe PATH (deprecated, ignored)] [--format text|json] [--allow-seed-candidate-fallback] [--allow-profile-overrides] [--emit-causal-diagnostics]\n"
         << "    Custom --start-seed values begin at the battle coordinator; stored job seeds retain their captured-turn boundary.\n"
-        << "  SavorPredict predict-battle-jobs --exec-job-id N [--exec-job-id N ...] [--exec-job-list PATH] [--db-root PATH] [--run-root PATH] [--run-name NAME] [--scenario first-battle-soldiers] [--profile first-battle-soldiers] [--action-view-std-json-dir PATH] [--std-disc-dump-root PATH] [--spice-file-parsing-exe PATH] [--emit-causal-diagnostics] [--allow-seed-candidate-fallback] [--allow-profile-overrides] [--require-complete] [--preflight-only]\n"
+        << "  SavorPredict predict-battle-jobs --exec-job-id N [--exec-job-id N ...] [--exec-job-list PATH] [--db-root PATH] [--run-root PATH] [--run-name NAME] [--scenario first-battle-soldiers] [--profile first-battle-soldiers] [--action-view-std-json-dir PATH] [--disc-dump-root PATH] [--std-disc-dump-root PATH (deprecated)] [--spice-file-parsing-exe PATH (deprecated, ignored)] [--emit-causal-diagnostics] [--allow-seed-candidate-fallback] [--allow-profile-overrides] [--require-complete] [--preflight-only]\n"
         << "  SavorPredict trace-job (--turn-job-id N | --exec-job-id N) [--db-root PATH] [--format text|json] [--max-distance N]\n\n"
-        << "  SavorPredict trace-checkpoints --checkpoint-file PATH [--turn-job-id N | --exec-job-id N] [--db-root PATH] [--action-view-std-json-dir PATH] [--std-disc-dump-root PATH] [--spice-file-parsing-exe PATH] [--format text|json] [--expected-fake-attacks N] [--expected-enemy-setup-draws N] [--expected-mode0e-camera-draws N] [--expected-turn-order-draws N] [--expected-attack-events N] [--expected-crit-draws N] [--expected-counter-roll-ceiling N] [--expected-drop-rolls N] [--expected-end-turn-status-draws N] [--expected-level-up-stat-rolls N]\n\n"
+        << "  SavorPredict trace-checkpoints --checkpoint-file PATH [--turn-job-id N | --exec-job-id N] [--db-root PATH] [--action-view-std-json-dir PATH] [--disc-dump-root PATH] [--std-disc-dump-root PATH (deprecated)] [--spice-file-parsing-exe PATH (deprecated, ignored)] [--format text|json] [--expected-fake-attacks N] [--expected-enemy-setup-draws N] [--expected-mode0e-camera-draws N] [--expected-turn-order-draws N] [--expected-attack-events N] [--expected-crit-draws N] [--expected-counter-roll-ceiling N] [--expected-drop-rolls N] [--expected-end-turn-status-draws N] [--expected-level-up-stat-rolls N]\n\n"
         << "Defaults:\n"
         << "  prepare-db --source D:/SoaSimDBDebug --dest D:/SavorPredictDB\n"
         << "  predict-battle --exec-job-id 147896\n"
         << "  predict-battle --scenario first-battle-soldiers --exec-job-id 147896 --format text\n"
         << "  predict-battle-jobs --db-root D:/SavorPredictDB --scenario first-battle-soldiers --run-root .codex-runs/predict/<run-name>\n"
         << "  trace-job --db-root D:/SavorPredictDB --format text --max-distance 5000\n\n"
-        << "  action-view STD JSON cache: <db-root>/.std_json, generated from D:/SoAGC/2002-12-19-gc-us-final_Skies_of_Arcadia_Legends when available\n\n"
+        << "  resource inputs use direct SPICE parsing by default; --action-view-std-json-dir enables manifest-verified legacy JSON compatibility\n\n"
         << "Policy:\n"
         << "  D:/SoaSimDBDebug is only the mutable prepare-db source. Analysis commands must use D:/SavorPredictDB.\n";
 }
@@ -1166,6 +1167,9 @@ int run_battle_job_command(int argc, char** argv) {
         args.emplace_back(argv[i]);
     }
     const auto parsed = savor::predict::parse_battle_job_run_tokens(args, argv[0]);
+    for (const auto& warning : parsed.warnings) {
+        std::cerr << "Warning: " << warning << "\n";
+    }
     if (parsed.help_requested) {
         print_usage(std::cout);
         return parsed.errors.empty() ? 0 : 2;
@@ -1186,6 +1190,9 @@ int run_battle_jobs_command(int argc, char** argv) {
         args.emplace_back(argv[i]);
     }
     const auto parsed = savor::predict::parse_battle_job_batch_run_tokens(args, argv[0]);
+    for (const auto& warning : parsed.warnings) {
+        std::cerr << "Warning: " << warning << "\n";
+    }
     if (parsed.help_requested) {
         print_usage(std::cout);
         return parsed.errors.empty() ? 0 : 2;
@@ -1206,6 +1213,9 @@ int run_predict_battle_command(int argc, char** argv) {
         args.emplace_back(argv[i]);
     }
     const auto parsed = savor::predict::parse_predict_battle_tokens(args);
+    for (const auto& warning : parsed.warnings) {
+        std::cerr << "Warning: " << warning << "\n";
+    }
     if (parsed.help_requested) {
         print_usage(std::cout);
         return parsed.errors.empty() ? 0 : 2;
@@ -1227,6 +1237,9 @@ int run_predict_battle_jobs_command(int argc, char** argv) {
     }
     const auto parsed = savor::predict::parse_battle_prediction_batch_tokens(
         args, argv[0]);
+    for (const auto& warning : parsed.warnings) {
+        std::cerr << "Warning: " << warning << "\n";
+    }
     if (parsed.help_requested) {
         print_usage(std::cout);
         return parsed.errors.empty() ? 0 : 2;
@@ -1243,6 +1256,25 @@ int run_predict_battle_jobs_command(int argc, char** argv) {
 
 int run_trace_checkpoints_command(int argc, char** argv) {
     savor::predict::TraceCheckpointsOptions options;
+    std::vector<std::string> args;
+    args.reserve(static_cast<std::size_t>(std::max(0, argc - 2)));
+    for (int index = 2; index < argc; ++index) {
+        args.emplace_back(argv[index]);
+    }
+    const auto resource_input_options =
+        savor::predict::parse_trace_checkpoints_resource_input_tokens(args);
+    for (const auto& warning : resource_input_options.warnings) {
+        std::cerr << "Warning: " << warning << "\n";
+    }
+    if (!resource_input_options.errors.empty()) {
+        for (const auto& error : resource_input_options.errors) {
+            std::cerr << error << "\n";
+        }
+        return 2;
+    }
+    options.disc_dump_root = resource_input_options.disc_dump_root;
+    options.spice_file_parsing_exe =
+        resource_input_options.spice_file_parsing_exe;
     for (int i = 2; i < argc; ++i) {
         const std::string arg = argv[i];
         std::string value;
@@ -1280,16 +1312,11 @@ int run_trace_checkpoints_command(int argc, char** argv) {
                           << options.action_view_std_json_dir.string() << "\n";
                 return 2;
             }
-        } else if (arg == "--std-disc-dump-root") {
-            if (!require_value(argc, argv, i, arg, value, std::cerr)) {
-                return 2;
-            }
-            options.std_disc_dump_root = value;
+        } else if (arg == "--disc-dump-root"
+            || arg == "--std-disc-dump-root") {
+            ++i;
         } else if (arg == "--spice-file-parsing-exe") {
-            if (!require_value(argc, argv, i, arg, value, std::cerr)) {
-                return 2;
-            }
-            options.spice_file_parsing_exe = value;
+            ++i;
         } else if (arg == "--format") {
             if (!require_value(argc, argv, i, arg, value, std::cerr)) {
                 return 2;

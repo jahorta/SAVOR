@@ -27,8 +27,9 @@ struct BattleJobBatchRunOptions {
     std::filesystem::path worker_exe_path;
     std::filesystem::path capture_profile_path;
     std::filesystem::path action_view_std_json_dir;
-    std::filesystem::path std_disc_dump_root;
+    std::filesystem::path disc_dump_root;
     std::filesystem::path spice_file_parsing_exe;
+    BattlePredictorResourceBundlePtr resource_inputs;
     ProbeMode probe_mode = ProbeMode::Capture;
     ProbeCpuCore probe_cpu_core = ProbeCpuCore::Default;
     savor::dbutils::SandboxMode sandbox_mode = savor::dbutils::SandboxMode::MinimalBattleSingleTurn;
@@ -47,6 +48,7 @@ struct BattleJobBatchRunParseResult {
     BattleJobBatchRunOptions options;
     bool help_requested = false;
     std::vector<std::string> errors;
+    std::vector<std::string> warnings;
 };
 
 std::filesystem::path default_battle_job_batch_run_root();

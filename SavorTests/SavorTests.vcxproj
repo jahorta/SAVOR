@@ -81,7 +81,7 @@
       <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
       <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
       <WarningLevel>Level3</WarningLevel>
-      <AdditionalIncludeDirectories>$(SolutionDir)third-party\googletest-1.17.0\googlemock\include;$(SolutionDir)third-party\googletest-1.17.0\googletest\include;$(SolutionDir)third-party\googletest-1.17.0\googlemock;$(SolutionDir)third-party\googletest-1.17.0\googletest;$(SolutionDir)third-party\dolphin-2506a\include\Externals\picojson;$(SolutionDir)SavorCore;$(SolutionDir)SavorDb;$(SolutionDir)SavorDbUtils;$(SolutionDir)SavorWorkflow;$(SolutionDir)SavorE2E;$(SolutionDir)SavorDbDebugTool;$(SolutionDir)SavorPredict;$(SolutionDir)SavorProbe;$(SolutionDir)SavorCaptureFormat;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)third-party\googletest-1.17.0\googlemock\include;$(SolutionDir)third-party\googletest-1.17.0\googletest\include;$(SolutionDir)third-party\googletest-1.17.0\googlemock;$(SolutionDir)third-party\googletest-1.17.0\googletest;$(SolutionDir)third-party\SPICE;$(SolutionDir)third-party\SPICE\Sa3Dport;$(SolutionDir)third-party\dolphin-2506a\include\Externals\picojson;$(SolutionDir)SavorCore;$(SolutionDir)SavorDb;$(SolutionDir)SavorDbUtils;$(SolutionDir)SavorWorkflow;$(SolutionDir)SavorE2E;$(SolutionDir)SavorDbDebugTool;$(SolutionDir)SavorPredict;$(SolutionDir)SavorProbe;$(SolutionDir)SavorCaptureFormat;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpplatest</LanguageStandard>
       <AdditionalOptions>/FS %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
@@ -116,7 +116,7 @@
       <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
       <WarningLevel>Level3</WarningLevel>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
-      <AdditionalIncludeDirectories>$(SolutionDir)third-party\googletest-1.17.0\googlemock\include;$(SolutionDir)third-party\googletest-1.17.0\googletest\include;$(SolutionDir)third-party\googletest-1.17.0\googlemock;$(SolutionDir)third-party\googletest-1.17.0\googletest;$(SolutionDir)third-party\dolphin-2506a\include\Externals\picojson;$(SolutionDir)SavorCore;$(SolutionDir)SavorDb;$(SolutionDir)SavorDbUtils;$(SolutionDir)SavorWorkflow;$(SolutionDir)SavorE2E;$(SolutionDir)SavorDbDebugTool;$(SolutionDir)SavorPredict;$(SolutionDir)SavorProbe;$(SolutionDir)SavorCaptureFormat;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)third-party\googletest-1.17.0\googlemock\include;$(SolutionDir)third-party\googletest-1.17.0\googletest\include;$(SolutionDir)third-party\googletest-1.17.0\googlemock;$(SolutionDir)third-party\googletest-1.17.0\googletest;$(SolutionDir)third-party\SPICE;$(SolutionDir)third-party\SPICE\Sa3Dport;$(SolutionDir)third-party\dolphin-2506a\include\Externals\picojson;$(SolutionDir)SavorCore;$(SolutionDir)SavorDb;$(SolutionDir)SavorDbUtils;$(SolutionDir)SavorWorkflow;$(SolutionDir)SavorE2E;$(SolutionDir)SavorDbDebugTool;$(SolutionDir)SavorPredict;$(SolutionDir)SavorProbe;$(SolutionDir)SavorCaptureFormat;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpplatest</LanguageStandard>
       <AdditionalOptions>/FS %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
@@ -171,6 +171,8 @@
     <ClCompile Include="..\SavorPredict\BattleFrameThreadListModel.cpp" />
     <ClCompile Include="..\SavorPredict\BattleSourceModel.cpp" />
     <ClCompile Include="..\SavorPredict\BattlePredictor.cpp" />
+    <ClCompile Include="..\SavorPredict\BattlePredictorResourceBundle.cpp" />
+    <ClCompile Include="..\SavorPredict\SpiceBattleContentAdapter.cpp" />
     <ClCompile Include="..\SavorPredict\BattlePredictorCli.cpp" />
     <ClCompile Include="..\SavorPredict\BattleVisualRngModel.cpp" />
     <ClCompile Include="..\SavorPredict\CombatantInstructionModeModel.cpp" />
@@ -178,6 +180,7 @@
     <ClCompile Include="..\SavorPredict\CombatantAuxiliaryPublicationModel.cpp" />
     <ClCompile Include="..\SavorPredict\DirectInstructionTransitionSelectorModel.cpp" />
     <ClCompile Include="..\SavorPredict\BattleJobBatchRunManifest.cpp" />
+    <ClCompile Include="..\SavorPredict\BattleJobRunManifest.cpp" />
     <ClCompile Include="..\SavorPredict\BattleJobBatchRunOptions.cpp" />
     <ClCompile Include="..\SavorPredict\BattleJobClone.cpp" />
     <ClCompile Include="..\SavorPredict\BattleJobRunOptions.cpp" />
@@ -258,6 +261,7 @@
     <ClCompile Include="test_savor_predict_battle_job_runner.cpp" />
     <ClCompile Include="test_savordb_debug_tool.cpp" />
     <ClCompile Include="test_savor_predict.cpp" />
+    <ClCompile Include="test_spice_battle_content_adapter.cpp" />
     <ClCompile Include="test_view_placement_cache.cpp" />
     <ClCompile Include="test_view_placement_geometry.cpp" />
     <ClCompile Include="test_tsqueue.cpp" />
@@ -282,6 +286,12 @@
     </ProjectReference>
     <ProjectReference Include="..\SavorProbe\SavorProbe.vcxproj">
       <Project>{6EA1CA9D-0D84-4A69-BD65-29CDE443BF4A}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\third-party\SPICE\SpiceMLD\SpiceMLD.vcxproj">
+      <Project>{C44D37F8-61F5-4A1C-B983-16D79FBC9954}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\third-party\SPICE\SpiceStd\SpiceStd.vcxproj">
+      <Project>{6A8F71C8-5C78-4E31-B40F-A15D5186E2F3}</Project>
     </ProjectReference>
   </ItemGroup>
   <ItemGroup>

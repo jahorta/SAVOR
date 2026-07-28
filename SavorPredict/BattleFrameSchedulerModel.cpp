@@ -295,6 +295,8 @@ BattleFrameEventStatus frame_event_status(
         return BattleFrameEventStatus::MissingInput;
     case DirectInstructionTransitionStatus::Unsupported:
         return BattleFrameEventStatus::Unsupported;
+    case DirectInstructionTransitionStatus::Ambiguous:
+        return BattleFrameEventStatus::Ambiguous;
     }
     return BattleFrameEventStatus::Unsupported;
 }

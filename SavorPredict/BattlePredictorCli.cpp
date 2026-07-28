@@ -4,6 +4,7 @@
 #include "BattlePredictionDbInput.h"
 #include "BattlePredictionScenario.h"
 #include "BattleJobRunOptions.h"
+#include "CliResourceInputCompatibility.h"
 
 #include <Core/Input/SoaBattle/BattleCommandCodec.h>
 #include <Core/Memory/Soa/Battle/BattleContextCodec.h>
@@ -252,7 +253,6 @@ bool build_input_from_context_file(
     input.scenario_name = options.scenario_name;
     input.source_selection = options.source_selection;
     input.source_validation.expected_encounter = options.expected_encounter;
-    input.options.action_view_std_json_dir = options.action_view_std_json_dir;
     input.options.allow_profile_overrides = options.allow_profile_overrides;
     input.options.emit_causal_diagnostics =
         options.emit_causal_diagnostics;
@@ -265,6 +265,7 @@ bool build_input_from_context_file(
 
 BattlePredictorCliParseResult parse_predict_battle_tokens(const std::vector<std::string>& args) {
     BattlePredictorCliParseResult result;
+    cli_detail::DiscDumpRootOptions disc_dump_root_options;
 
     for (std::size_t i = 0; i < args.size(); ++i) {
         const auto& arg = args[i];
@@ -341,13 +342,16 @@ BattlePredictorCliParseResult parse_predict_battle_tokens(const std::vector<std:
             if (require_value(args, i, arg, value, result.errors)) {
                 result.options.action_view_std_json_dir = value;
             }
-        } else if (arg == "--std-disc-dump-root") {
+        } else if (arg == "--disc-dump-root"
+            || arg == "--std-disc-dump-root") {
             if (require_value(args, i, arg, value, result.errors)) {
-                result.options.std_disc_dump_root = value;
+                disc_dump_root_options.observe(arg, value, result.errors);
             }
         } else if (arg == "--spice-file-parsing-exe") {
             if (require_value(args, i, arg, value, result.errors)) {
                 result.options.spice_file_parsing_exe = value;
+                cli_detail::add_spice_file_parsing_exe_warning(
+                    result.warnings);
             }
         } else if (arg == "--turn-job-id") {
             long long parsed = 0;
@@ -395,6 +399,10 @@ BattlePredictorCliParseResult parse_predict_battle_tokens(const std::vector<std:
         }
     }
 
+    disc_dump_root_options.finalize(
+        result.options.disc_dump_root,
+        result.errors,
+        result.warnings);
     if (!result.help_requested) {
         apply_scenario_defaults(result.options, result.errors);
         const auto validation = validate_predict_battle_options(result.options);
@@ -488,24 +496,17 @@ int run_predict_battle(const BattlePredictorCliOptions& options, std::ostream& o
         return 2;
     }
 
-    const auto std_resolution = resolve_action_view_std_json_cache({
-        .db_root = resolved_options.db_root,
-        .explicit_std_json_dir = resolved_options.action_view_std_json_dir,
-        .std_disc_dump_root = resolved_options.std_disc_dump_root,
-        .spice_file_parsing_exe = resolved_options.spice_file_parsing_exe,
-    });
-    for (const auto& diagnostic : std_resolution.diagnostics) {
-        err << "STD JSON cache: " << diagnostic << "\n";
-    }
-    if (std_resolution.fatal_error) {
+    if (!cli_detail::ensure_first_battle_resource_inputs(
+            resolved_options.disc_dump_root,
+            resolved_options.action_view_std_json_dir,
+            resolved_options.resource_inputs,
+            err)) {
         return 1;
-    }
-    if (std_resolution.available) {
-        resolved_options.action_view_std_json_dir = std_resolution.resolved_std_json_dir;
     }
 
     BattlePredictionInput input;
     input.profile = *profile;
+    input.resource_inputs = resolved_options.resource_inputs;
 
     const bool from_context_file = !resolved_options.context_file.empty();
     if (from_context_file) {
@@ -533,7 +534,7 @@ int run_predict_battle(const BattlePredictorCliOptions& options, std::ostream& o
     db_options.source_selection = resolved_options.source_selection;
     db_options.expected_encounter = resolved_options.expected_encounter;
     db_options.fake_attacks_override = resolved_options.fake_attacks;
-    db_options.action_view_std_json_dir = resolved_options.action_view_std_json_dir;
+    db_options.resource_inputs = resolved_options.resource_inputs;
     db_options.allow_seed_candidate_fallback = resolved_options.allow_seed_candidate_fallback;
     db_options.allow_profile_overrides = resolved_options.allow_profile_overrides;
     db_options.emit_causal_diagnostics =

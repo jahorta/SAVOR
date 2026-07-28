@@ -255,6 +255,26 @@ TEST(SavorPredictActionMotionPlayback, SelectedMotionWithoutFrameCountNeverInven
     EXPECT_FALSE(visit.runtime.motion_complete_0x70);
 }
 
+TEST(SavorPredictActionMotionPlayback, DeclaredZeroFrameCountIsKnownButUnsupported) {
+    const auto installed = install_selected_action_motion_renderer({
+        .action_ordinal = 4,
+        .slot = 4,
+        .instruction_state_revision = 9,
+        .selected_action_row_index = 8,
+        .motion_id = 21,
+        .motion_frame_count = 0,
+        .row_flags = 0x88000000u,
+        .motion_progress_step_bits = 0x3f800000u,
+        .provenance =
+            "decoded MLD Motion::declared_frame_count zero fixture",
+    });
+    EXPECT_FALSE(installed.installed);
+    EXPECT_EQ(
+        installed.runtime.status,
+        SelectedActionMotionRendererStatus::Unsupported);
+    EXPECT_FALSE(installed.runtime.active);
+}
+
 TEST(SavorPredictActionMotionPlayback, DescriptorDelayMatchesModeFiveAndCountsState9Visits) {
     const auto lookup = resolve_action_motion_post_state6_delay(
         mode5_delay_table(), mode5_gate_input());

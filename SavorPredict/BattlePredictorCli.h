@@ -1,6 +1,7 @@
 #pragma once
 
 #include "BattlePredictor.h"
+#include "BattlePredictorResourceBundle.h"
 
 #include <filesystem>
 #include <iosfwd>
@@ -22,8 +23,9 @@ struct BattlePredictorCliOptions {
     std::optional<BattleEncounterIdentity> expected_encounter;
     std::optional<int> fake_attacks;
     std::filesystem::path action_view_std_json_dir;
-    std::filesystem::path std_disc_dump_root;
+    std::filesystem::path disc_dump_root;
     std::filesystem::path spice_file_parsing_exe;
+    BattlePredictorResourceBundlePtr resource_inputs;
     std::string turn_plan_hex;
     std::string profile_name = std::string(kFirstBattleSoldiersProfileName);
     bool json = false;
@@ -37,6 +39,7 @@ struct BattlePredictorCliParseResult {
     BattlePredictorCliOptions options;
     bool help_requested = false;
     std::vector<std::string> errors;
+    std::vector<std::string> warnings;
 };
 
 BattlePredictorCliParseResult parse_predict_battle_tokens(const std::vector<std::string>& args);

@@ -5,6 +5,7 @@
 #include "CaptureArtifact.h"
 #include "CaptureProfileJson.h"
 #include "CheckpointTrace.h"
+#include "CliResourceInputCompatibility.h"
 #include "LiveCaptureProfile.h"
 #include "ProbeCpuCoreEnvironment.h"
 
@@ -145,10 +146,11 @@ void write_manifest_outputs(BattleJobRunSummary& summary, std::ostream& err) {
 
 } // namespace
 
-int run_battle_job(const BattleJobRunOptions& options, std::ostream& out, std::ostream& err) {
-    BattleJobRunSummary summary{};
-    summary.options = options;
-
+int run_battle_job(
+    const BattleJobRunOptions& supplied,
+    std::ostream& out,
+    std::ostream& err) {
+    auto options = supplied;
     const auto validation_errors = validate_battle_job_run_options(options);
     if (!validation_errors.empty()) {
         for (const auto& error : validation_errors) {
@@ -159,6 +161,17 @@ int run_battle_job(const BattleJobRunOptions& options, std::ostream& out, std::o
     if (!check_runtime_paths(options, err)) {
         return 1;
     }
+    if (!cli_detail::ensure_first_battle_resource_inputs(
+            options.disc_dump_root,
+            options.action_view_std_json_dir,
+            options.resource_inputs,
+            err)) {
+        return 1;
+    }
+
+    BattleJobRunSummary summary{};
+    summary.options = options;
+    summary.resource_inputs = options.resource_inputs;
 
     if (const int rc = prepare_battle_job_sandbox(options, &summary.sandbox, out, err); rc != 0) {
         append_error(summary, "failed preparing battle job sandbox");
@@ -312,33 +325,19 @@ int run_battle_job(const BattleJobRunOptions& options, std::ostream& out, std::o
             summary.captured_applied_seed = capture.seed_override.applied_seed;
             summary.captured_seed_readback_matches = capture.seed_override.readback_matches;
             if (capture.verified) {
-            summary.std_json_cache = resolve_action_view_std_json_cache({
-                .db_root = summary.options.db_root,
-                .explicit_std_json_dir = summary.options.action_view_std_json_dir,
-                .std_disc_dump_root = summary.options.std_disc_dump_root,
-                .spice_file_parsing_exe = summary.options.spice_file_parsing_exe,
-            });
-            for (const auto& diagnostic : summary.std_json_cache.diagnostics) {
-                summary.events.push_back("STD JSON cache: " + diagnostic);
-            }
-            if (summary.std_json_cache.fatal_error) {
-                append_error(summary, "STD JSON cache resolution failed");
-            }
             std::ofstream trace(summary.trace_report_path, std::ios::binary | std::ios::trunc);
             if (!trace.is_open()) {
                 append_error(summary, "failed opening trace report");
             } else {
                 TraceCheckpointsOptions trace_options;
                 trace_options.db_root = summary.sandbox.db_root;
-                trace_options.std_json_cache_db_root = summary.options.db_root;
                 trace_options.checkpoint_file = summary.capture_export_path;
                 trace_options.exec_job_id = summary.clone.cloned_exec_job_id;
                 trace_options.action_view_std_json_dir =
-                    summary.std_json_cache.available
-                        ? summary.std_json_cache.resolved_std_json_dir
-                        : summary.options.action_view_std_json_dir;
-                trace_options.std_disc_dump_root = summary.options.std_disc_dump_root;
+                    summary.options.action_view_std_json_dir;
+                trace_options.disc_dump_root = summary.options.disc_dump_root;
                 trace_options.spice_file_parsing_exe = summary.options.spice_file_parsing_exe;
+                trace_options.resource_inputs = summary.options.resource_inputs;
                 summary.trace_exit_code = run_trace_checkpoints(trace_options, trace, err);
                 if (summary.trace_exit_code != 0) {
                     append_error(summary, "trace-checkpoints failed with exit code "

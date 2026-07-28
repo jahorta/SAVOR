@@ -61,6 +61,26 @@ std::string read_text_file(const std::filesystem::path& path) {
         std::istreambuf_iterator<char>()};
 }
 
+BattlePredictorResourceBundlePtr ready_resource_inputs(
+    BattlePredictorResourceProviderKind provider =
+        BattlePredictorResourceProviderKind::DirectSpice) {
+    auto bundle = std::make_shared<BattlePredictorResourceBundle>();
+    bundle->status = BattlePredictorResourceInputStatus::Ready;
+    bundle->provider_kind = provider;
+    bundle->adapter_version = "test-adapter-v1";
+    bundle->spice_revision = "test-spice-revision";
+    bundle->bundle_digest = "test-resource-digest";
+    bundle->sources.push_back({
+        .logical_role = "test.primary_std",
+        .normalized_relative_path = "bchara/test.std",
+        .size_bytes = 4,
+        .sha256 = "test-source-sha256",
+        .parser_identity = "test-parser",
+        .parser_status = "ready",
+    });
+    return bundle;
+}
+
 TEST(
     SavorPredictBattlePredictionBatchRun,
     OptionValidationReportsInvalidJobAndFrontDoorConfiguration) {
@@ -83,8 +103,6 @@ TEST(
     EXPECT_TRUE(contains_error(errors, "DB root is not an existing directory"));
     EXPECT_TRUE(
         contains_error(errors, "Unsupported prediction profile"));
-    EXPECT_TRUE(
-        contains_error(errors, "ActionView STD JSON directory is not available"));
     EXPECT_TRUE(contains_error(errors, "batch run name is required"));
 }
 
@@ -148,6 +166,48 @@ TEST(
 
 TEST(
     SavorPredictBattlePredictionBatchRun,
+    CliReconcilesDeprecatedDiscDumpRootAlias) {
+    const auto equivalent = parse_battle_prediction_batch_tokens(
+        {
+            "--exec-job-id", "101",
+            "--disc-dump-root", "D:/disc",
+            "--std-disc-dump-root", "D:/disc/.",
+            "--spice-file-parsing-exe", "D:/tools/SpiceFileParsing.exe",
+        },
+        "SavorPredict.exe");
+
+    EXPECT_TRUE(equivalent.errors.empty())
+        << (equivalent.errors.empty()
+            ? std::string{}
+            : equivalent.errors.front());
+    EXPECT_EQ(
+        equivalent.options.disc_dump_root,
+        std::filesystem::path("D:/disc"));
+    EXPECT_NE(
+        std::find_if(
+            equivalent.warnings.begin(),
+            equivalent.warnings.end(),
+            [](const std::string& warning) {
+                return warning.find("--spice-file-parsing-exe")
+                    != std::string::npos
+                    && warning.find("ignored") != std::string::npos;
+            }),
+        equivalent.warnings.end());
+
+    const auto conflicting = parse_battle_prediction_batch_tokens(
+        {
+            "--exec-job-id", "101",
+            "--disc-dump-root", "D:/disc",
+            "--std-disc-dump-root", "D:/other",
+        },
+        "SavorPredict.exe");
+    EXPECT_TRUE(contains_error(
+        conflicting.errors,
+        "must resolve to the same path"));
+}
+
+TEST(
+    SavorPredictBattlePredictionBatchRun,
     ScenarioResolvesItsDefaultProfileDuringValidation) {
     TempTree tree("savor_predict_batch_scenario_");
     const auto db_root = tree.path() / "db";
@@ -160,6 +220,7 @@ TEST(
     options.db_root = db_root;
     options.scenario_name = "first-battle-soldiers";
     options.action_view_std_json_dir = std_json_dir;
+    options.resource_inputs = ready_resource_inputs();
     options.run_root = tree.path() / "run";
     options.run_name = "scenario-default-profile";
 
@@ -197,6 +258,7 @@ TEST(
     options.db_root = db_root;
     options.profile_name = "first-battle-soldiers";
     options.action_view_std_json_dir = std_json_dir;
+    options.resource_inputs = ready_resource_inputs();
     options.run_root = run_root;
     options.run_name = "strict-preflight";
     options.require_complete = true;
@@ -237,12 +299,31 @@ TEST(
     EXPECT_TRUE(std::filesystem::is_regular_file(result.summary_text_path));
 
     const auto request = read_text_file(result.request_path);
+    EXPECT_NE(request.find("\"schema_version\": 2"), std::string::npos);
+    EXPECT_NE(request.find("\"resource_inputs\": {"), std::string::npos);
+    EXPECT_NE(
+        request.find("\"provider_kind\":\"direct_spice\""),
+        std::string::npos);
+    EXPECT_NE(
+        request.find("\"normalized_relative_path\""),
+        std::string::npos);
+    EXPECT_NE(request.find("\"source_path\""), std::string::npos);
+    EXPECT_NE(request.find("\"parser_identity\""), std::string::npos);
+    EXPECT_NE(request.find("\"diagnostic_count\""), std::string::npos);
+    EXPECT_EQ(
+        request.find("\"action_view_std_json_dir\""),
+        std::string::npos);
     EXPECT_NE(
         request.find("\"source_exec_job_ids\": [101, 202]"),
         std::string::npos);
     EXPECT_NE(request.find("\"require_complete\": true"), std::string::npos);
 
     const auto manifest = read_text_file(result.manifest_path);
+    EXPECT_NE(manifest.find("\"schema_version\": 2"), std::string::npos);
+    EXPECT_NE(manifest.find("\"resource_inputs\": {"), std::string::npos);
+    EXPECT_EQ(
+        manifest.find("\"action_view_std_json_dir\""),
+        std::string::npos);
     EXPECT_NE(
         manifest.find("\"preflight_succeeded\": false"),
         std::string::npos);
@@ -272,6 +353,61 @@ TEST(
         std::string::npos);
     EXPECT_NE(
         summary_text.find("job 101 invocation=not_run prediction=not_run"),
+        std::string::npos);
+}
+
+TEST(
+    SavorPredictBattlePredictionBatchRun,
+    LegacyProviderArtifactsRetainExplicitStdJsonDirectory) {
+    TempTree tree("savor_predict_batch_legacy_artifacts_");
+    const auto db_root = tree.path() / "db";
+    const auto std_json_dir = tree.path() / "std-json";
+    const auto run_root = tree.path() / "run";
+    ASSERT_TRUE(std::filesystem::create_directories(db_root));
+    ASSERT_TRUE(std::filesystem::create_directories(std_json_dir));
+    {
+        std::ofstream analysis(
+            db_root / "analysis.db",
+            std::ios::binary | std::ios::trunc);
+        std::ofstream state(
+            db_root / "state.db",
+            std::ios::binary | std::ios::trunc);
+        ASSERT_TRUE(analysis);
+        ASSERT_TRUE(state);
+        analysis << "deliberately-invalid-analysis";
+        state << "deliberately-invalid-state";
+    }
+
+    BattlePredictionBatchRunOptions options;
+    options.source_exec_job_ids = {101};
+    options.db_root = db_root;
+    options.profile_name = "first-battle-soldiers";
+    options.action_view_std_json_dir = std_json_dir;
+    options.resource_inputs = ready_resource_inputs(
+        BattlePredictorResourceProviderKind::LegacyStdJsonDirectMld);
+    options.run_root = run_root;
+    options.run_name = "legacy-artifacts";
+
+    std::ostringstream progress;
+    std::ostringstream err;
+    const auto result =
+        run_battle_prediction_batch(options, progress, err);
+
+    ASSERT_TRUE(std::filesystem::is_regular_file(result.request_path));
+    ASSERT_TRUE(std::filesystem::is_regular_file(result.manifest_path));
+    const auto request = read_text_file(result.request_path);
+    const auto manifest = read_text_file(result.manifest_path);
+    EXPECT_NE(
+        request.find("\"provider_kind\":\"legacy_std_json_direct_mld\""),
+        std::string::npos);
+    EXPECT_NE(
+        request.find("\"action_view_std_json_dir\""),
+        std::string::npos);
+    EXPECT_NE(
+        manifest.find("\"provider_kind\":\"legacy_std_json_direct_mld\""),
+        std::string::npos);
+    EXPECT_NE(
+        manifest.find("\"action_view_std_json_dir\""),
         std::string::npos);
 }
 

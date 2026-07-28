@@ -1,6 +1,5 @@
 #include "BattlePredictor.h"
 
-#include "ActionViewStdJsonLoader.h"
 #include "BattleFrameSchedulerModel.h"
 #include "BattlePredictionScenario.h"
 #include "BattleVisualRngModel.h"
@@ -618,6 +617,41 @@ void append_validation_statuses(BattlePredictionResult& result) {
             "profile_contract",
             BattlePredictionValidationStatus::NotExercised,
             "profile validation did not run");
+    }
+
+    if (has_event(
+            result,
+            "resource_inputs",
+            "resource_inputs_validated")) {
+        add_validation(
+            result,
+            "resource_inputs",
+            BattlePredictionValidationStatus::Exact,
+            "the immutable predictor content bundle passed eager preflight");
+    } else if (has_event(
+                   result,
+                   "resource_inputs",
+                   "resource_inputs_ambiguous")) {
+        add_validation(
+            result,
+            "resource_inputs",
+            BattlePredictionValidationStatus::Ambiguous,
+            "predictor content has conflicting eligible owners or identities");
+    } else if (has_event(
+                   result,
+                   "resource_inputs",
+                   "resource_inputs_missing")) {
+        add_validation(
+            result,
+            "resource_inputs",
+            BattlePredictionValidationStatus::MissingInput,
+            "required external predictor content is absent or incomplete");
+    } else {
+        add_validation(
+            result,
+            "resource_inputs",
+            BattlePredictionValidationStatus::NotExercised,
+            "resource-input preflight did not run");
     }
 
     if (has_event_status_in_phase(
@@ -1771,6 +1805,19 @@ std::string grid_detail(const MovementGridPosition& position) {
     std::ostringstream out;
     out << "(" << position.grid_x << "," << position.grid_z << ")";
     return out.str();
+}
+
+const char* resource_diagnostic_severity_name(
+    BattlePredictorResourceDiagnosticSeverity severity) {
+    switch (severity) {
+    case BattlePredictorResourceDiagnosticSeverity::Info:
+        return "info";
+    case BattlePredictorResourceDiagnosticSeverity::Warning:
+        return "warning";
+    case BattlePredictorResourceDiagnosticSeverity::Error:
+        return "error";
+    }
+    return "error";
 }
 
 std::string frame_vec_detail(const BattleFrameVec3& position) {
@@ -3152,37 +3199,17 @@ void append_action_execution(
     }
 }
 
-void add_validated_first_battle_motion_metadata(
-    CombatantVisualResource& resource) {
-    const auto& stem = resource.binding.resource_stem;
-    std::optional<std::uint32_t> mode11_motion5_frame_count;
-    if (stem == "ma000" || stem == "MA000" || stem == "MA001") {
-        mode11_motion5_frame_count = 30;
-    } else if (stem == "MB000") {
-        mode11_motion5_frame_count = 31;
-    }
-    if (!mode11_motion5_frame_count.has_value()) {
-        return;
-    }
-    resource.motion_frame_counts.push_back({
-        .motion_id = 5,
-        .frame_count = *mode11_motion5_frame_count,
-        .provenance =
-            "first-battle full-hook FUN_80018CBC progress/completion "
-            "sequence cross-checked against the owning MLD motion header",
-    });
-}
-
 void configure_visual_dispatcher_resources(
     BattlePredictionResult& result,
     BattleFrameRuntime& runtime,
     const BattlePredictionScenario& scenario,
     const soa::battle::ctx::BattleContext& context,
-    const BattlePredictionOptions& options) {
+    const BattlePredictorResourceBundle& resource_inputs,
+    bool emit_causal_diagnostics) {
     configure_battle_frame_visual_pathing_profile(
         runtime,
         scenario.profile_name,
-        options.emit_causal_diagnostics);
+        emit_causal_diagnostics);
     for (int slot = 0; slot < soa::battle::ctx::SLOT_COUNT; ++slot) {
         const auto& combatant = context.slots_[slot];
         if (combatant.present == 0) {
@@ -3208,118 +3235,87 @@ void configure_visual_dispatcher_resources(
             .slot = slot,
             .resource_stem = identity.stem,
         };
-        CombatantVisualResource resource;
-        resource.binding = binding;
-        const auto std_filename = action_view_std0_companion_filename_for_std_resource(
-            binding.resource_stem + ".std");
-        const auto json_path = options.action_view_std_json_dir / (std_filename + ".json");
-        const auto action_rows_path = options.action_view_std_json_dir
-            / (binding.resource_stem + ".std.json");
-
-        SpiceStdVisualJsonLoadResult loaded;
-        SpiceStdActionRowsLoadResult action_rows;
-        if (!options.action_view_std_json_dir.empty()) {
-            loaded = load_spice_std_visual_resource_from_json_file(json_path);
-            action_rows = load_spice_std_action_rows_from_json_file(action_rows_path);
-        } else {
-            loaded.errors.push_back("action-view STD JSON directory is unavailable");
-            action_rows.errors.push_back("primary STD JSON directory is unavailable");
-        }
-
         std::ostringstream detail;
         detail << "slot=" << binding.slot
                << "; resource_stem=" << binding.resource_stem
-               << "; std_json=" << json_path.generic_string();
-        if (loaded.ok) {
-            resource = std::move(loaded.resource);
-            resource.binding = binding;
-            detail << "; records=" << resource.records.size()
-                   << "; visual_records=" << loaded.visual_records_decoded
-                   << "; complete_payload_bytes=1";
-        } else {
-            resource.provenance = "resource unavailable; visual dispatcher remains zero-draw";
-            detail << "; resource_unavailable=1; draws=0";
-            for (const auto& error : loaded.errors) {
-                detail << "; error=" << error;
-            }
+               << "; provider="
+               << battle_predictor_resource_provider_kind_name(
+                      resource_inputs.provider_kind)
+               << "; bundle_digest=" << resource_inputs.bundle_digest;
+        const auto* resource_template =
+            resource_inputs.find_resource(binding.resource_stem);
+        CombatantVisualResource resource;
+        if (resource_template != nullptr) {
+            resource = resource_template->visual_resource;
         }
         resource.binding = binding;
-        if (action_rows.ok) {
-            resource.action_rows = std::move(action_rows.rows);
-        }
-        add_validated_first_battle_motion_metadata(resource);
+        detail << "; records=" << resource.records.size()
+               << "; complete_payload_bytes=1";
         detail << "; action_rows=" << resource.action_rows.size();
         detail << "; motion_frame_counts="
                << resource.motion_frame_counts.size();
-        if (!action_rows.ok) {
-            for (const auto& error : action_rows.errors) {
-                detail << "; action_row_error=" << error;
+        if (resource_template != nullptr) {
+            detail << "; mld_entries="
+                   << resource_template->mld_entries.size();
+            for (const auto& diagnostic : resource_template->diagnostics) {
+                detail << "; diagnostic=" << diagnostic.message;
             }
+        } else {
+            detail << "; resource_unavailable=1; draws=0";
         }
         const bool configured = configure_battle_frame_visual_resource(
             runtime,
             std::move(resource));
         append_event(result, {
             .phase = "frame_scheduler",
-            .label = loaded.ok
+            .label = resource_template != nullptr
                 ? "visual_resource_loaded"
                 : "visual_resource_unavailable",
-            .status = loaded.ok && action_rows.ok && configured
+            .status = resource_template != nullptr
+                    && resource_template->status
+                        == BattlePredictorResourceInputStatus::Ready
+                    && configured
                 ? BattlePredictionEventStatus::Exact
-                : (loaded.ok && configured
-                    ? BattlePredictionEventStatus::MissingInput
-                    : BattlePredictionEventStatus::Provisional),
+                : BattlePredictionEventStatus::MissingInput,
             .actor_slot = binding.slot,
             .visual_resource = binding.resource_stem,
             .detail = detail.str(),
         });
     }
 
-    const auto target_reaction_effect_path =
-        options.action_view_std_json_dir / "damage.std.json";
-    SpiceStdVisualJsonLoadResult target_reaction_effect;
-    if (!options.action_view_std_json_dir.empty()) {
-        target_reaction_effect =
-            load_spice_std_visual_resource_from_json_file(
-                target_reaction_effect_path);
-    } else {
-        target_reaction_effect.errors.push_back(
-            "action-view STD JSON directory is unavailable");
-    }
     std::ostringstream target_reaction_detail;
     target_reaction_detail
         << "resource_stem=damage"
-        << "; std_json="
-        << target_reaction_effect_path.generic_string();
-    if (target_reaction_effect.ok) {
-        target_reaction_effect.resource.binding = {
+        << "; provider="
+        << battle_predictor_resource_provider_kind_name(
+               resource_inputs.provider_kind)
+        << "; bundle_digest=" << resource_inputs.bundle_digest;
+    if (resource_inputs.target_reaction_effect_resource.has_value()) {
+        auto target_reaction_effect =
+            *resource_inputs.target_reaction_effect_resource;
+        target_reaction_effect.binding = {
             .slot = -1,
             .resource_stem = "damage",
         };
         target_reaction_detail
             << "; records="
-            << target_reaction_effect.resource.records.size()
-            << "; visual_records="
-            << target_reaction_effect.visual_records_decoded
+            << target_reaction_effect.records.size()
             << "; complete_payload_bytes=1";
         runtime.visual.target_reaction_effect_resource =
-            std::move(target_reaction_effect.resource);
+            std::move(target_reaction_effect);
     } else {
         target_reaction_detail
             << "; resource_unavailable=1; deferred_until_mode11_use=1"
             << "; draws=0";
-        for (const auto& error : target_reaction_effect.errors) {
-            target_reaction_detail << "; error=" << error;
-        }
     }
     append_event(result, {
         .phase = "frame_scheduler",
-        .label = target_reaction_effect.ok
+        .label = resource_inputs.target_reaction_effect_resource.has_value()
             ? "target_reaction_effect_resource_loaded"
             : "target_reaction_effect_resource_unavailable",
-        .status = target_reaction_effect.ok
+        .status = resource_inputs.target_reaction_effect_resource.has_value()
             ? BattlePredictionEventStatus::Exact
-            : BattlePredictionEventStatus::Provisional,
+            : BattlePredictionEventStatus::MissingInput,
         .visual_resource = "damage",
         .detail = target_reaction_detail.str(),
     });
@@ -3459,6 +3455,7 @@ BattlePredictionResult predict_battle(const BattlePredictionInput& input) {
     result.starting_rng_seed = input.starting_rng_seed;
     result.start_boundary = input.start_boundary;
     result.final_rng_seed = input.starting_rng_seed;
+    result.resource_inputs = input.resource_inputs;
 
     if (!resolved_profile.has_value()) {
         result.outcome = BattlePredictionOutcome::Unsupported;
@@ -3532,6 +3529,68 @@ BattlePredictionResult predict_battle(const BattlePredictionInput& input) {
         append_validation_statuses(result);
         return result;
     };
+
+    {
+        std::ostringstream detail;
+        BattlePredictionEventStatus status =
+            BattlePredictionEventStatus::MissingInput;
+        std::string label = "resource_inputs_missing";
+        if (input.resource_inputs == nullptr) {
+            detail
+                << "BattlePredictionInput.resource_inputs is required; "
+                << "filesystem paths are not part of the predictor semantic input contract";
+        } else {
+            const auto& resources = *input.resource_inputs;
+            detail
+                << "provider="
+                << battle_predictor_resource_provider_kind_name(
+                       resources.provider_kind)
+                << "; adapter_version=" << resources.adapter_version
+                << "; spice_revision=" << resources.spice_revision
+                << "; bundle_digest=" << resources.bundle_digest
+                << "; sources=" << resources.sources.size()
+                << "; resource_templates="
+                << resources.resource_templates.size();
+            for (const auto& diagnostic : resources.diagnostics) {
+                detail << "; diagnostic";
+                if (!diagnostic.logical_role.empty()) {
+                    detail << "[" << diagnostic.logical_role << "]";
+                }
+                detail << "=" << diagnostic.message;
+                if (diagnostic.severity
+                    == BattlePredictorResourceDiagnosticSeverity::Warning) {
+                    result.warnings.push_back(
+                        (diagnostic.logical_role.empty()
+                                ? std::string{}
+                                : diagnostic.logical_role + ": ")
+                        + diagnostic.message);
+                }
+            }
+            switch (resources.status) {
+            case BattlePredictorResourceInputStatus::Ready:
+                status = BattlePredictionEventStatus::Exact;
+                label = "resource_inputs_validated";
+                break;
+            case BattlePredictorResourceInputStatus::MissingInput:
+                status = BattlePredictionEventStatus::MissingInput;
+                label = "resource_inputs_missing";
+                break;
+            case BattlePredictorResourceInputStatus::Ambiguous:
+                status = BattlePredictionEventStatus::Ambiguous;
+                label = "resource_inputs_ambiguous";
+                break;
+            }
+        }
+        append_event(result, {
+            .phase = "resource_inputs",
+            .label = std::move(label),
+            .status = status,
+            .detail = detail.str(),
+        });
+        if (status != BattlePredictionEventStatus::Exact) {
+            return finalize();
+        }
+    }
 
     if (is_first_battle_soldiers_profile_name(profile.name)
         && input.turn_plan.fake_attack_count != 0) {
@@ -3727,7 +3786,8 @@ BattlePredictionResult predict_battle(const BattlePredictionInput& input) {
             *frame_runtime,
             *resolved_scenario,
             input.context,
-            input.options);
+            *input.resource_inputs,
+            input.options.emit_causal_diagnostics);
         append_event(result, {
             .phase = "frame_scheduler",
             .label = "runtime_initialized",
@@ -3871,6 +3931,21 @@ void write_battle_prediction_text(const BattlePredictionResult& result, std::ost
     out << "  outcome: " << battle_prediction_outcome_name(result.outcome) << "\n";
     out << "  start_seed: " << result.starting_rng_seed << " ("
         << hex_seed(result.starting_rng_seed) << ")\n";
+    if (result.resource_inputs != nullptr) {
+        out << "  resource_inputs: provider="
+            << battle_predictor_resource_provider_kind_name(
+                   result.resource_inputs->provider_kind)
+            << " status="
+            << battle_predictor_resource_input_status_name(
+                   result.resource_inputs->status)
+            << " bundle_digest=" << result.resource_inputs->bundle_digest
+            << " adapter_version=" << result.resource_inputs->adapter_version
+            << " spice_revision=" << result.resource_inputs->spice_revision
+            << " sources=" << result.resource_inputs->sources.size()
+            << "\n";
+    } else {
+        out << "  resource_inputs: unavailable\n";
+    }
     if (result.source_producer_kind.has_value()) {
         out << "  source_producer: "
             << battle_source_producer_kind_name(*result.source_producer_kind)
@@ -4127,6 +4202,7 @@ void write_battle_prediction_text(const BattlePredictionResult& result, std::ost
 
 void write_battle_prediction_json(const BattlePredictionResult& result, std::ostream& out) {
     out << "{\n";
+    out << "  \"schema_version\": 2,\n";
     out << "  \"profile\": \"" << json_escape(result.profile.name) << "\",\n";
     if (result.scenario_name.has_value()) {
         out << "  \"scenario\": \"" << json_escape(*result.scenario_name) << "\",\n";
@@ -4139,6 +4215,103 @@ void write_battle_prediction_json(const BattlePredictionResult& result, std::ost
     out << "  \"outcome\": \"" << battle_prediction_outcome_name(result.outcome) << "\",\n";
     out << "  \"starting_rng_seed\": " << result.starting_rng_seed << ",\n";
     out << "  \"starting_rng_seed_hex\": \"" << hex_seed(result.starting_rng_seed) << "\",\n";
+    out << "  \"resource_inputs\": ";
+    if (result.resource_inputs == nullptr) {
+        out << "null,\n";
+    } else {
+        const auto& resources = *result.resource_inputs;
+        out << "{\n";
+        out << "    \"provider_kind\": \""
+            << battle_predictor_resource_provider_kind_name(
+                   resources.provider_kind)
+            << "\",\n";
+        out << "    \"status\": \""
+            << battle_predictor_resource_input_status_name(resources.status)
+            << "\",\n";
+        out << "    \"adapter_version\": \""
+            << json_escape(resources.adapter_version) << "\",\n";
+        out << "    \"spice_revision\": \""
+            << json_escape(resources.spice_revision) << "\",\n";
+        out << "    \"bundle_digest\": \""
+            << json_escape(resources.bundle_digest) << "\",\n";
+        out << "    \"sources\": [\n";
+        for (std::size_t source_index = 0;
+             source_index < resources.sources.size();
+             ++source_index) {
+            const auto& source = resources.sources[source_index];
+            out << "      {"
+                << "\"logical_role\": \""
+                << json_escape(source.logical_role) << "\""
+                << ", \"relative_path\": \""
+                << json_escape(source.relative_path) << "\""
+                << ", \"normalized_relative_path\": \""
+                << json_escape(source.normalized_relative_path) << "\""
+                << ", \"source_path\": \""
+                << json_escape(source.source_path) << "\""
+                << ", \"size_bytes\": " << source.size_bytes
+                << ", \"sha256\": \"" << json_escape(source.sha256) << "\""
+                << ", \"parser_identity\": \""
+                << json_escape(source.parser_identity) << "\""
+                << ", \"parser_status\": \""
+                << json_escape(source.parser_status) << "\""
+                << ", \"diagnostics\": [";
+            for (std::size_t diagnostic_index = 0;
+                 diagnostic_index < source.diagnostics.size();
+                 ++diagnostic_index) {
+                if (diagnostic_index != 0) {
+                    out << ", ";
+                }
+                const auto& diagnostic =
+                    source.diagnostics[diagnostic_index];
+                out << "{"
+                    << "\"severity\": \""
+                    << resource_diagnostic_severity_name(
+                           diagnostic.severity)
+                    << "\", \"logical_role\": \""
+                    << json_escape(diagnostic.logical_role)
+                    << "\", \"message\": \""
+                    << json_escape(diagnostic.message) << "\"";
+                if (diagnostic.source_offset.has_value()) {
+                    out << ", \"source_offset\": "
+                        << *diagnostic.source_offset;
+                }
+                out << "}";
+            }
+            out << "]}";
+            if (source_index + 1 != resources.sources.size()) {
+                out << ",";
+            }
+            out << "\n";
+        }
+        out << "    ],\n";
+        out << "    \"diagnostic_count\": "
+            << resources.diagnostics.size() << ",\n";
+        out << "    \"diagnostics\": [";
+        for (std::size_t diagnostic_index = 0;
+             diagnostic_index < resources.diagnostics.size();
+             ++diagnostic_index) {
+            if (diagnostic_index != 0) {
+                out << ", ";
+            }
+            const auto& diagnostic =
+                resources.diagnostics[diagnostic_index];
+            out << "{"
+                << "\"severity\": \""
+                << resource_diagnostic_severity_name(
+                       diagnostic.severity)
+                << "\", \"logical_role\": \""
+                << json_escape(diagnostic.logical_role)
+                << "\", \"message\": \""
+                << json_escape(diagnostic.message) << "\"";
+            if (diagnostic.source_offset.has_value()) {
+                out << ", \"source_offset\": "
+                    << *diagnostic.source_offset;
+            }
+            out << "}";
+        }
+        out << "]\n";
+        out << "  },\n";
+    }
     if (result.source_producer_kind.has_value()) {
         out << "  \"source_producer\": \""
             << battle_source_producer_kind_name(*result.source_producer_kind)

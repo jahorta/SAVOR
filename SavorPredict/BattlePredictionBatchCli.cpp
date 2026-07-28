@@ -2,6 +2,7 @@
 
 #include "ActionViewStdJsonCache.h"
 #include "BattlePredictionProfileNames.h"
+#include "CliResourceInputCompatibility.h"
 
 #include <chrono>
 #include <cctype>
@@ -229,6 +230,7 @@ BattlePredictionBatchCliParseResult parse_battle_prediction_batch_tokens(
     const std::vector<std::string>& args,
     const std::filesystem::path& executable_path) {
     BattlePredictionBatchCliParseResult result;
+    cli_detail::DiscDumpRootOptions disc_dump_root_options;
     auto& batch = result.options.batch;
     batch.db_root = "D:/SavorPredictDB";
     batch.profile_name = std::string(kFirstBattleSoldiersProfileName);
@@ -295,15 +297,19 @@ BattlePredictionBatchCliParseResult parse_battle_prediction_batch_tokens(
                     args, &i, arg, &value, &result.errors)) {
                 batch.action_view_std_json_dir = value;
             }
-        } else if (arg == "--std-disc-dump-root") {
+        } else if (arg == "--disc-dump-root"
+            || arg == "--std-disc-dump-root") {
             if (require_value(
                     args, &i, arg, &value, &result.errors)) {
-                result.options.std_disc_dump_root = value;
+                disc_dump_root_options.observe(
+                    arg, value, result.errors);
             }
         } else if (arg == "--spice-file-parsing-exe") {
             if (require_value(
                     args, &i, arg, &value, &result.errors)) {
                 result.options.spice_file_parsing_exe = value;
+                cli_detail::add_spice_file_parsing_exe_warning(
+                    result.warnings);
             }
         } else if (arg == "--allow-seed-candidate-fallback") {
             batch.allow_seed_candidate_fallback = true;
@@ -322,6 +328,10 @@ BattlePredictionBatchCliParseResult parse_battle_prediction_batch_tokens(
                 "Unknown predict-battle-jobs option: " + arg);
         }
     }
+    disc_dump_root_options.finalize(
+        result.options.disc_dump_root,
+        result.errors,
+        result.warnings);
     if (!run_root_explicit) {
         batch.run_root = std::filesystem::path(".codex-runs")
             / "predict"
@@ -352,16 +362,21 @@ int run_battle_prediction_batch_cli(
     options.batch.action_view_std_json_dir =
         normalized_absolute_path(
             options.batch.action_view_std_json_dir);
-    options.std_disc_dump_root =
-        normalized_absolute_path(options.std_disc_dump_root);
+    options.disc_dump_root =
+        normalized_absolute_path(options.disc_dump_root);
     options.spice_file_parsing_exe =
         normalized_absolute_path(options.spice_file_parsing_exe);
 
-    auto preliminary = options.batch;
-    if (preliminary.action_view_std_json_dir.empty()) {
-        preliminary.action_view_std_json_dir =
-            std::filesystem::current_path();
+    if (!cli_detail::ensure_first_battle_resource_inputs(
+            options.disc_dump_root,
+            options.batch.action_view_std_json_dir,
+            options.resource_inputs,
+            err)) {
+        return 1;
     }
+    options.batch.resource_inputs = options.resource_inputs;
+
+    const auto& preliminary = options.batch;
     const auto preliminary_errors =
         validate_battle_prediction_batch_run_options(preliminary);
     if (!preliminary_errors.empty()) {
@@ -370,25 +385,6 @@ int run_battle_prediction_batch_cli(
         }
         return 2;
     }
-
-    const auto std_resolution = resolve_action_view_std_json_cache({
-        .db_root = options.batch.db_root,
-        .explicit_std_json_dir =
-            options.batch.action_view_std_json_dir,
-        .std_disc_dump_root = options.std_disc_dump_root,
-        .spice_file_parsing_exe = options.spice_file_parsing_exe,
-    });
-    for (const auto& diagnostic : std_resolution.diagnostics) {
-        err << "STD JSON cache: " << diagnostic << "\n";
-    }
-    if (std_resolution.fatal_error || !std_resolution.available) {
-        err << "ActionView STD JSON cache is unavailable; "
-               "prediction batch was not started.\n";
-        return 1;
-    }
-    options.batch.action_view_std_json_dir =
-        normalized_absolute_path(
-            std_resolution.resolved_std_json_dir);
 
     const auto result = run_battle_prediction_batch(
         options.batch, out, err);

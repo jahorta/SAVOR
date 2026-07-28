@@ -1,4 +1,5 @@
 #include "BattleJobRunOptions.h"
+#include "CliResourceInputCompatibility.h"
 
 #include <algorithm>
 #include <chrono>
@@ -207,6 +208,7 @@ BattleJobRunParseResult parse_battle_job_run_tokens(
     result.options.run_root = default_battle_job_run_root();
     result.options.worker_exe_path = default_battle_job_worker_exe(executable_path);
     bool timeout_ms_specified = false;
+    cli_detail::DiscDumpRootOptions disc_dump_root_options;
 
     for (std::size_t i = 0; i < args.size(); ++i) {
         const auto& arg = args[i];
@@ -271,13 +273,16 @@ BattleJobRunParseResult parse_battle_job_run_tokens(
             if (require_value(args, i, arg, value, result.errors)) {
                 result.options.action_view_std_json_dir = value;
             }
-        } else if (arg == "--std-disc-dump-root") {
+        } else if (arg == "--disc-dump-root"
+            || arg == "--std-disc-dump-root") {
             if (require_value(args, i, arg, value, result.errors)) {
-                result.options.std_disc_dump_root = value;
+                disc_dump_root_options.observe(arg, value, result.errors);
             }
         } else if (arg == "--spice-file-parsing-exe") {
             if (require_value(args, i, arg, value, result.errors)) {
                 result.options.spice_file_parsing_exe = value;
+                cli_detail::add_spice_file_parsing_exe_warning(
+                    result.warnings);
             }
         } else if (arg == "--sandbox-mode") {
             if (require_value(args, i, arg, value, result.errors)) {
@@ -330,6 +335,10 @@ BattleJobRunParseResult parse_battle_job_run_tokens(
         }
     }
 
+    disc_dump_root_options.finalize(
+        result.options.disc_dump_root,
+        result.errors,
+        result.warnings);
     if (result.options.battle_run_ms.has_value() && !timeout_ms_specified) {
         result.options.timeout_ms = std::max(
             result.options.timeout_ms,

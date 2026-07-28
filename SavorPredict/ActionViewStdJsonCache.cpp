@@ -5,12 +5,11 @@
 
 #include <algorithm>
 #include <cctype>
-#include <cstdlib>
 #include <filesystem>
 #include <sstream>
 #include <string>
 #include <string_view>
-#include <thread>
+#include <utility>
 #include <vector>
 
 #if defined(_WIN32)
@@ -160,148 +159,6 @@ void apply_manifest_verification(
         verification.diagnostics.end());
 }
 
-std::string quote_windows_arg(const std::filesystem::path& path) {
-    const auto value = path.string();
-    std::string out = "\"";
-    for (const char ch : value) {
-        if (ch == '"') {
-            out += "\\\"";
-        } else {
-            out.push_back(ch);
-        }
-    }
-    out += "\"";
-    return out;
-}
-
-std::vector<std::filesystem::path> split_path_env() {
-    std::vector<std::filesystem::path> paths;
-#if defined(_WIN32)
-    char* raw = nullptr;
-    std::size_t size = 0;
-    if (_dupenv_s(&raw, &size, "PATH") != 0 || raw == nullptr) {
-        return paths;
-    }
-    std::string owned(raw);
-    std::free(raw);
-    std::size_t start = 0;
-    while (start <= owned.size()) {
-        const auto semi = owned.find(';', start);
-        const auto part = owned.substr(start, semi == std::string::npos ? std::string::npos : semi - start);
-        if (!part.empty()) {
-            paths.emplace_back(part);
-        }
-        if (semi == std::string::npos) {
-            break;
-        }
-        start = semi + 1;
-    }
-#endif
-    return paths;
-}
-
-std::filesystem::path first_existing_file(const std::vector<std::filesystem::path>& candidates) {
-    for (const auto& candidate : candidates) {
-        std::error_code ec;
-        if (std::filesystem::is_regular_file(candidate, ec)) {
-            return candidate;
-        }
-    }
-    return {};
-}
-
-std::filesystem::path discover_spice_file_parsing_exe() {
-    std::vector<std::filesystem::path> candidates;
-    const auto cwd = std::filesystem::current_path();
-    candidates.push_back(cwd / ".." / "SPICE" / "bin" / "x64" / "Debug" / "SpiceFileParsing.exe");
-    candidates.push_back(cwd / ".." / ".." / ".." / ".." / "SPICE" / "bin" / "x64" / "Debug" / "SpiceFileParsing.exe");
-    for (const auto& path_dir : split_path_env()) {
-        candidates.push_back(path_dir / "SpiceFileParsing.exe");
-    }
-    return first_existing_file(candidates);
-}
-
-SpiceStdJsonExportResult run_spice_file_parsing_process(const SpiceStdJsonExportRequest& request) {
-    SpiceStdJsonExportResult result;
-#if defined(_WIN32)
-    SECURITY_ATTRIBUTES security{};
-    security.nLength = sizeof(security);
-    security.bInheritHandle = TRUE;
-
-    HANDLE read_pipe = nullptr;
-    HANDLE write_pipe = nullptr;
-    if (!CreatePipe(&read_pipe, &write_pipe, &security, 0)) {
-        result.error = "CreatePipe failed";
-        return result;
-    }
-    SetHandleInformation(read_pipe, HANDLE_FLAG_INHERIT, 0);
-
-    STARTUPINFOA startup{};
-    startup.cb = sizeof(startup);
-    startup.dwFlags = STARTF_USESTDHANDLES;
-    startup.hStdOutput = write_pipe;
-    startup.hStdError = write_pipe;
-    startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
-
-    PROCESS_INFORMATION process{};
-    std::string command =
-        quote_windows_arg(request.spice_file_parsing_exe)
-        + " "
-        + quote_windows_arg(request.bchara_dir)
-        + " "
-        + quote_windows_arg(request.output_dir)
-        + " --export-std-json";
-
-    std::vector<char> mutable_command(command.begin(), command.end());
-    mutable_command.push_back('\0');
-
-    const BOOL created = CreateProcessA(
-        nullptr,
-        mutable_command.data(),
-        nullptr,
-        nullptr,
-        TRUE,
-        CREATE_NO_WINDOW,
-        nullptr,
-        nullptr,
-        &startup,
-        &process);
-
-    CloseHandle(write_pipe);
-    write_pipe = nullptr;
-
-    if (!created) {
-        CloseHandle(read_pipe);
-        result.error = "CreateProcessA failed for " + request.spice_file_parsing_exe.string();
-        return result;
-    }
-
-    std::thread reader([&]() {
-        char buffer[4096];
-        DWORD bytes_read = 0;
-        while (ReadFile(read_pipe, buffer, sizeof(buffer), &bytes_read, nullptr) && bytes_read > 0) {
-            result.output.append(buffer, buffer + bytes_read);
-        }
-    });
-
-    WaitForSingleObject(process.hProcess, INFINITE);
-    DWORD exit_code = 0;
-    if (GetExitCodeProcess(process.hProcess, &exit_code)) {
-        result.exit_code = static_cast<int>(exit_code);
-    }
-
-    reader.join();
-    CloseHandle(process.hThread);
-    CloseHandle(process.hProcess);
-    CloseHandle(read_pipe);
-    return result;
-#else
-    (void)request;
-    result.error = "SPICE export process execution is only implemented on Windows";
-    return result;
-#endif
-}
-
 void add_diag(ActionViewStdJsonCacheResolution& result, std::string text) {
     result.diagnostics.push_back(std::move(text));
 }
@@ -409,134 +266,42 @@ std::filesystem::path default_action_view_std_disc_dump_root() {
     return "D:/SoAGC/2002-12-19-gc-us-final_Skies_of_Arcadia_Legends";
 }
 
-std::filesystem::path default_spice_file_parsing_exe() {
-    return discover_spice_file_parsing_exe();
-}
-
 ActionViewStdJsonCacheResolution resolve_action_view_std_json_cache(
-    const ActionViewStdJsonCacheOptions& options,
-    SpiceStdJsonExportRunner runner) {
+    const ActionViewStdJsonCacheOptions& options) {
     ActionViewStdJsonCacheResolution result;
-    result.cache_dir = default_action_view_std_json_cache_dir(options.db_root);
-    result.disc_dump_root = options.std_disc_dump_root.empty()
-        ? default_action_view_std_disc_dump_root()
-        : options.std_disc_dump_root;
-    result.spice_file_parsing_exe = options.spice_file_parsing_exe.empty()
-        ? default_spice_file_parsing_exe()
-        : options.spice_file_parsing_exe;
-
-    if (!options.explicit_std_json_dir.empty()) {
-        result.used_explicit_dir = true;
-        result.resolved_std_json_dir = options.explicit_std_json_dir;
-        result.manifest_path =
-            result.resolved_std_json_dir / action_view_std_json_manifest_filename();
-        result.missing_files_before = missing_required_files(result.resolved_std_json_dir);
-        if (!result.missing_files_before.empty()) {
-            result.fatal_error = true;
-            add_diag(result, "explicit --action-view-std-json-dir is missing required first-battle files");
-            return result;
-        }
-        apply_manifest_verification(result, verify_manifest(result.resolved_std_json_dir));
-        if (!result.manifest_verified) {
-            result.fatal_error = true;
-            add_diag(result, "explicit --action-view-std-json-dir failed content-manifest verification");
-            return result;
-        }
-        result.cache_complete_before = true;
-        result.available = true;
+    if (options.explicit_std_json_dir.empty()) {
+        add_diag(
+            result,
+            "implicit action-view STD JSON cache lookup and generation are disabled; "
+            "provide --action-view-std-json-dir for explicit legacy JSON compatibility");
         return result;
     }
 
-    result.manifest_path = result.cache_dir / action_view_std_json_manifest_filename();
-    result.missing_files_before = missing_required_files(result.cache_dir);
-    if (result.missing_files_before.empty()) {
-        apply_manifest_verification(result, verify_manifest(result.cache_dir));
-    }
-    result.cache_complete_before =
-        result.missing_files_before.empty() && result.manifest_verified;
-    if (result.cache_complete_before) {
-        result.available = true;
-        result.resolved_std_json_dir = result.cache_dir;
-        add_diag(result, "action-view STD JSON cache hit");
-        return result;
-    }
-
-    std::error_code ec;
-    if (!std::filesystem::is_directory(result.disc_dump_root, ec)) {
-        add_diag(result, "action-view STD JSON cache incomplete and disc dump root is unavailable: "
-            + result.disc_dump_root.string());
+    result.used_explicit_dir = true;
+    result.resolved_std_json_dir = options.explicit_std_json_dir;
+    result.manifest_path =
+        result.resolved_std_json_dir / action_view_std_json_manifest_filename();
+    result.missing_files_before = missing_required_files(result.resolved_std_json_dir);
+    if (!result.missing_files_before.empty()) {
         result.missing_files_after = result.missing_files_before;
-        return result;
-    }
-
-    const auto bchara_dir = result.disc_dump_root / "bchara";
-    if (!std::filesystem::is_directory(bchara_dir, ec)) {
         result.fatal_error = true;
-        add_diag(result, "disc dump root exists but does not contain bchara: " + bchara_dir.string());
-        result.missing_files_after = result.missing_files_before;
+        add_diag(
+            result,
+            "explicit --action-view-std-json-dir is missing required first-battle files");
         return result;
     }
 
-    if (result.spice_file_parsing_exe.empty()
-        || !std::filesystem::is_regular_file(result.spice_file_parsing_exe, ec)) {
-        add_diag(result, "action-view STD JSON cache incomplete and SpiceFileParsing.exe was not found");
-        result.missing_files_after = result.missing_files_before;
-        return result;
-    }
-
-    std::filesystem::create_directories(result.cache_dir, ec);
-    if (ec) {
-        add_diag(result, "action-view STD JSON cache incomplete and cache directory could not be created: " + ec.message());
-        result.missing_files_after = result.missing_files_before;
-        return result;
-    }
-
-    result.generation_attempted = true;
-    const SpiceStdJsonExportRequest request{
-        .spice_file_parsing_exe = result.spice_file_parsing_exe,
-        .bchara_dir = bchara_dir,
-        .output_dir = result.cache_dir,
-    };
-    const auto export_result = runner ? runner(request) : run_spice_file_parsing_process(request);
-    result.spice_exit_code = export_result.exit_code;
-    result.spice_output = export_result.output;
-    if (!export_result.error.empty()) {
-        add_diag(result, export_result.error);
-    }
-    if (export_result.exit_code != 0) {
-        result.fatal_error = true;
-        add_diag(result, "SpiceFileParsing --export-std-json failed with exit code "
-            + std::to_string(export_result.exit_code));
-        result.missing_files_after = missing_required_files(result.cache_dir);
-        return result;
-    }
-
-    result.missing_files_after = missing_required_files(result.cache_dir);
-    if (!result.missing_files_after.empty()) {
-        result.fatal_error = true;
-        add_diag(result, "SpiceFileParsing completed but required first-battle STD JSON files are still missing");
-        return result;
-    }
-
-    std::string manifest_error;
-    if (!write_action_view_std_json_manifest(result.cache_dir, &manifest_error)) {
-        result.fatal_error = true;
-        add_diag(result, "SpiceFileParsing completed but the content manifest could not be written: "
-            + manifest_error);
-        return result;
-    }
-    result.manifest_written = true;
-    apply_manifest_verification(result, verify_manifest(result.cache_dir));
+    apply_manifest_verification(result, verify_manifest(result.resolved_std_json_dir));
     if (!result.manifest_verified) {
         result.fatal_error = true;
-        add_diag(result, "generated action-view STD JSON cache failed content-manifest verification");
+        add_diag(
+            result,
+            "explicit --action-view-std-json-dir failed content-manifest verification");
         return result;
     }
 
-    result.generation_succeeded = true;
+    result.cache_complete_before = true;
     result.available = true;
-    result.resolved_std_json_dir = result.cache_dir;
-    add_diag(result, "action-view STD JSON cache generated from disc dump");
     return result;
 }
 

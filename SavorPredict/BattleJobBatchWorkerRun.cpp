@@ -5,6 +5,7 @@
 #include "CaptureArtifact.h"
 #include "CaptureProfileJson.h"
 #include "CheckpointTrace.h"
+#include "CliResourceInputCompatibility.h"
 #include "LiveCaptureProfile.h"
 #include "ProbeCpuCoreEnvironment.h"
 
@@ -281,19 +282,6 @@ void collect_capture_and_trace_artifacts(
         append_error(*summary, "failed creating traces directory: " + ec.message());
     }
 
-    summary->std_json_cache = resolve_action_view_std_json_cache({
-        .db_root = summary->options.db_root,
-        .explicit_std_json_dir = summary->options.action_view_std_json_dir,
-        .std_disc_dump_root = summary->options.std_disc_dump_root,
-        .spice_file_parsing_exe = summary->options.spice_file_parsing_exe,
-    });
-    for (const auto& diagnostic : summary->std_json_cache.diagnostics) {
-        summary->events.push_back("STD JSON cache: " + diagnostic);
-    }
-    if (summary->std_json_cache.fatal_error) {
-        append_error(*summary, "STD JSON cache resolution failed");
-    }
-
     for (auto& job : summary->jobs) {
         ec.clear();
         job.capture_found = std::filesystem::exists(job.expected_capture_path, ec);
@@ -339,15 +327,13 @@ void collect_capture_and_trace_artifacts(
 
         TraceCheckpointsOptions trace_options;
         trace_options.db_root = summary->sandbox.db_root;
-        trace_options.std_json_cache_db_root = summary->options.db_root;
         trace_options.checkpoint_file = job.capture_export_path;
         trace_options.exec_job_id = job.clone.cloned_exec_job_id;
         trace_options.action_view_std_json_dir =
-            summary->std_json_cache.available
-                ? summary->std_json_cache.resolved_std_json_dir
-                : summary->options.action_view_std_json_dir;
-        trace_options.std_disc_dump_root = summary->options.std_disc_dump_root;
+            summary->options.action_view_std_json_dir;
+        trace_options.disc_dump_root = summary->options.disc_dump_root;
         trace_options.spice_file_parsing_exe = summary->options.spice_file_parsing_exe;
+        trace_options.resource_inputs = summary->options.resource_inputs;
         job.trace_exit_code = run_trace_checkpoints(trace_options, trace, err);
         if (job.trace_exit_code != 0) {
             append_error(job, "trace-checkpoints failed with exit code " + std::to_string(job.trace_exit_code));
@@ -371,12 +357,11 @@ bool has_job_errors(const BattleJobBatchRunSummary& summary) {
 
 } // namespace
 
-int run_battle_jobs(const BattleJobBatchRunOptions& options, std::ostream& out, std::ostream& err) {
-    BattleJobBatchRunSummary summary{};
-    summary.options = options;
-    summary.timeout_ms = resolved_battle_job_batch_timeout_ms(options);
-    const auto run_requests = resolved_battle_job_batch_requests(options);
-
+int run_battle_jobs(
+    const BattleJobBatchRunOptions& supplied,
+    std::ostream& out,
+    std::ostream& err) {
+    auto options = supplied;
     const auto validation_errors = validate_battle_job_batch_run_options(options);
     if (!validation_errors.empty()) {
         for (const auto& error : validation_errors) {
@@ -387,6 +372,19 @@ int run_battle_jobs(const BattleJobBatchRunOptions& options, std::ostream& out, 
     if (!check_runtime_paths(options, err)) {
         return 1;
     }
+    if (!cli_detail::ensure_first_battle_resource_inputs(
+            options.disc_dump_root,
+            options.action_view_std_json_dir,
+            options.resource_inputs,
+            err)) {
+        return 1;
+    }
+
+    BattleJobBatchRunSummary summary{};
+    summary.options = options;
+    summary.resource_inputs = options.resource_inputs;
+    summary.timeout_ms = resolved_battle_job_batch_timeout_ms(options);
+    const auto run_requests = resolved_battle_job_batch_requests(options);
 
     if (const int rc = prepare_battle_job_batch_sandbox(options, &summary.sandbox, out, err); rc != 0) {
         append_error(summary, "failed preparing battle job sandbox");

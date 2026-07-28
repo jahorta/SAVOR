@@ -104,7 +104,7 @@ DirectInstructionTransitionResult select_direct_instruction_transition(
 
     if (!request.target_flags_0xf0.has_value()
         || !request.target_flags_0xf4.has_value()) {
-        result.status = DirectInstructionTransitionStatus::MissingInput;
+        result.status = DirectInstructionTransitionStatus::Ambiguous;
         result.provenance =
             "nonrandom FUN_8002E5D0 selection requires the staged target F0/F4 reaction flags";
         return result;
@@ -173,6 +173,7 @@ const char* direct_instruction_transition_status_name(
     case DirectInstructionTransitionStatus::Skipped: return "Skipped";
     case DirectInstructionTransitionStatus::MissingInput: return "MissingInput";
     case DirectInstructionTransitionStatus::Unsupported: return "Unsupported";
+    case DirectInstructionTransitionStatus::Ambiguous: return "Ambiguous";
     }
     return "Unsupported";
 }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "BattlePredictor.h"
+#include "BattlePredictorResourceBundle.h"
 
 #include <Analysis/IAnalysisDb.h>
 
@@ -47,7 +48,7 @@ struct BattlePredictionDbInputOptions {
     std::optional<BattleEncounterIdentity> expected_encounter;
     std::optional<std::uint32_t> start_seed_override;
     std::optional<int> fake_attacks_override;
-    std::filesystem::path action_view_std_json_dir;
+    BattlePredictorResourceBundlePtr resource_inputs;
     bool allow_seed_candidate_fallback = false;
     bool allow_profile_overrides = false;
     bool emit_causal_diagnostics = false;

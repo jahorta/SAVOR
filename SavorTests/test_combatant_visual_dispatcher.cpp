@@ -3151,6 +3151,12 @@ TEST(SavorPredictCombatantVisualRuntime, ServiceDelayRetainsState3UntilNextVisit
         });
     ASSERT_NE(nested, events.end());
     ASSERT_NE(cleanup, events.end());
+    EXPECT_EQ(nested->status, BattleFrameEventStatus::Ambiguous);
+    EXPECT_EQ(nested->draws_consumed, 0);
+    EXPECT_NE(nested->detail.find("selected_mode=missing"), std::string::npos);
+    EXPECT_NE(
+        nested->detail.find("staged target F0/F4 reaction flags"),
+        std::string::npos);
     EXPECT_GT(cleanup->frame_index, nested->frame_index);
 }
 
@@ -3189,6 +3195,7 @@ TEST(SavorPredictCombatantVisualRuntime, FlaggedActionServiceIsTheEb4cRngOwner) 
             return event.rng_label == "fun_8002eb4c_action_service";
         });
     ASSERT_NE(eb4c, nested.events.end());
+    EXPECT_EQ(eb4c->status, BattleFrameEventStatus::Matched);
     EXPECT_EQ(eb4c->draws_consumed, 1);
     EXPECT_EQ(eb4c->rand_value, expected.value);
     EXPECT_EQ(rng, expected.next_state);

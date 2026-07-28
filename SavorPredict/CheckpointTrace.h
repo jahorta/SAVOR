@@ -1,5 +1,7 @@
 #pragma once
 
+#include "BattlePredictorResourceBundle.h"
+
 #include <filesystem>
 #include <iosfwd>
 #include <map>
@@ -25,11 +27,22 @@ struct TraceCheckpointsOptions {
     std::optional<int> expected_end_turn_status_draws;
     std::optional<int> expected_level_up_stat_rolls;
     std::filesystem::path action_view_std_json_dir;
-    std::filesystem::path std_json_cache_db_root;
-    std::filesystem::path std_disc_dump_root;
+    std::filesystem::path disc_dump_root;
     std::filesystem::path spice_file_parsing_exe;
+    BattlePredictorResourceBundlePtr resource_inputs;
     bool json = false;
 };
+
+struct TraceCheckpointsResourceCliParseResult {
+    std::filesystem::path disc_dump_root;
+    std::filesystem::path spice_file_parsing_exe;
+    std::vector<std::string> errors;
+    std::vector<std::string> warnings;
+};
+
+TraceCheckpointsResourceCliParseResult
+parse_trace_checkpoints_resource_input_tokens(
+    const std::vector<std::string>& args);
 
 struct CheckpointEvent {
     int line_number = 0;

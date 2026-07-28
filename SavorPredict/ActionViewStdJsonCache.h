@@ -2,26 +2,10 @@
 
 #include <cstdint>
 #include <filesystem>
-#include <functional>
 #include <string>
 #include <vector>
 
 namespace savor::predict {
-
-struct SpiceStdJsonExportRequest {
-    std::filesystem::path spice_file_parsing_exe;
-    std::filesystem::path bchara_dir;
-    std::filesystem::path output_dir;
-};
-
-struct SpiceStdJsonExportResult {
-    int exit_code = -1;
-    std::string output;
-    std::string error;
-};
-
-using SpiceStdJsonExportRunner =
-    std::function<SpiceStdJsonExportResult(const SpiceStdJsonExportRequest&)>;
 
 struct ActionViewStdJsonCacheOptions {
     std::filesystem::path db_root = "D:/SavorPredictDB";
@@ -61,11 +45,9 @@ bool write_action_view_std_json_manifest(
     std::string* error = nullptr);
 std::filesystem::path default_action_view_std_json_cache_dir(const std::filesystem::path& db_root);
 std::filesystem::path default_action_view_std_disc_dump_root();
-std::filesystem::path default_spice_file_parsing_exe();
 
 ActionViewStdJsonCacheResolution resolve_action_view_std_json_cache(
-    const ActionViewStdJsonCacheOptions& options,
-    SpiceStdJsonExportRunner runner = {});
+    const ActionViewStdJsonCacheOptions& options);
 
 std::string summarize_action_view_std_json_cache_resolution(
     const ActionViewStdJsonCacheResolution& resolution);

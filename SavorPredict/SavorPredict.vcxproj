@@ -81,7 +81,7 @@
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
-      <AdditionalIncludeDirectories>$(SolutionDir)SavorCore;$(SolutionDir)SavorDb;$(SolutionDir)SavorDbUtils;$(SolutionDir)SavorWorkflow;$(SolutionDir)third-party\dolphin-2506a\include\Externals\picojson;$(IntDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)SavorCore;$(SolutionDir)SavorDb;$(SolutionDir)SavorDbUtils;$(SolutionDir)SavorWorkflow;$(SolutionDir)third-party\SPICE;$(SolutionDir)third-party\SPICE\Sa3Dport;$(SolutionDir)third-party\dolphin-2506a\include\Externals\picojson;$(IntDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
       <UseStandardPreprocessor>true</UseStandardPreprocessor>
     </ClCompile>
@@ -99,7 +99,7 @@
       <PreprocessorDefinitions>NDEBUG;_CONSOLE;NOMINMAX;WIN32;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(SolutionDir)SavorCore;$(SolutionDir)SavorDb;$(SolutionDir)SavorDbUtils;$(SolutionDir)SavorWorkflow;$(SolutionDir)third-party\dolphin-2506a\include\Externals\picojson;$(IntDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)SavorCore;$(SolutionDir)SavorDb;$(SolutionDir)SavorDbUtils;$(SolutionDir)SavorWorkflow;$(SolutionDir)third-party\SPICE;$(SolutionDir)third-party\SPICE\Sa3Dport;$(SolutionDir)third-party\dolphin-2506a\include\Externals\picojson;$(IntDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <UseStandardPreprocessor>true</UseStandardPreprocessor>
     </ClCompile>
     <Link>
@@ -143,6 +143,8 @@
     <ClCompile Include="BattleFrameThreadListModel.cpp" />
     <ClCompile Include="BattleSourceModel.cpp" />
     <ClCompile Include="BattlePredictor.cpp" />
+    <ClCompile Include="BattlePredictorResourceBundle.cpp" />
+    <ClCompile Include="SpiceBattleContentAdapter.cpp" />
     <ClCompile Include="BattlePredictorCli.cpp" />
     <ClCompile Include="BattleVisualRngModel.cpp" />
     <ClCompile Include="CombatantInstructionModeModel.cpp" />
@@ -230,7 +232,11 @@
     <ClInclude Include="BattleFrameThreadListModel.h" />
     <ClInclude Include="BattleSourceModel.h" />
     <ClInclude Include="BattlePredictor.h" />
+    <ClInclude Include="BattlePredictorResourceBundle.h" />
     <ClInclude Include="BattlePredictorCli.h" />
+    <ClInclude Include="SpiceBattleContentAdapter.h" />
+    <ClInclude Include="SpiceBattleContentAdapterTestSeam.h" />
+    <ClInclude Include="CliResourceInputCompatibility.h" />
     <ClInclude Include="BattleVisualRngModel.h" />
     <ClInclude Include="CombatantInstructionModeModel.h" />
     <ClInclude Include="CombatantVisualDispatcherModel.h" />
@@ -295,6 +301,12 @@
     </ProjectReference>
     <ProjectReference Include="..\SavorWorkflow\SavorWorkflow.vcxproj">
       <Project>{9F364C36-2F44-4B54-8A7B-58C18D0F6852}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\third-party\SPICE\SpiceMLD\SpiceMLD.vcxproj">
+      <Project>{C44D37F8-61F5-4A1C-B983-16D79FBC9954}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\third-party\SPICE\SpiceStd\SpiceStd.vcxproj">
+      <Project>{6A8F71C8-5C78-4E31-B40F-A15D5186E2F3}</Project>
     </ProjectReference>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

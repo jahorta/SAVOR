@@ -261,12 +261,64 @@ bool create_run_directories(
     return true;
 }
 
+bool uses_legacy_std_json(
+    const BattlePredictorResourceBundlePtr& resource_inputs) {
+    return resource_inputs != nullptr
+        && resource_inputs->provider_kind
+            == BattlePredictorResourceProviderKind::LegacyStdJsonDirectMld;
+}
+
+void write_resource_inputs_json(
+    std::ostream& out,
+    const BattlePredictorResourceBundlePtr& resource_inputs) {
+    if (resource_inputs == nullptr) {
+        out << "null";
+        return;
+    }
+    out << "{"
+        << "\"provider_kind\":\""
+        << battle_predictor_resource_provider_kind_name(
+            resource_inputs->provider_kind)
+        << "\",\"status\":\""
+        << battle_predictor_resource_input_status_name(
+            resource_inputs->status)
+        << "\",\"adapter_version\":\""
+        << json_escape(resource_inputs->adapter_version)
+        << "\",\"spice_revision\":\""
+        << json_escape(resource_inputs->spice_revision)
+        << "\",\"bundle_digest\":\""
+        << json_escape(resource_inputs->bundle_digest)
+        << "\",\"sources\":[";
+    for (std::size_t i = 0; i < resource_inputs->sources.size(); ++i) {
+        if (i != 0) {
+            out << ",";
+        }
+        const auto& source = resource_inputs->sources[i];
+        out << "{\"logical_role\":\""
+            << json_escape(source.logical_role)
+            << "\",\"relative_path\":\""
+            << json_escape(source.relative_path)
+            << "\",\"normalized_relative_path\":\""
+            << json_escape(source.normalized_relative_path)
+            << "\",\"source_path\":\""
+            << json_escape(source.source_path)
+            << "\",\"size_bytes\":" << source.size_bytes
+            << ",\"sha256\":\"" << json_escape(source.sha256)
+            << "\",\"parser_identity\":\""
+            << json_escape(source.parser_identity)
+            << "\",\"parser_status\":\""
+            << json_escape(source.parser_status) << "\"}";
+    }
+    out << "],\"diagnostic_count\":"
+        << resource_inputs->diagnostics.size() << "}";
+}
+
 std::string request_json(
     const BattlePredictionBatchRunOptions& options,
     std::string_view started_at_utc) {
     std::ostringstream out;
     out << "{\n";
-    out << "  \"schema_version\": 1,\n";
+    out << "  \"schema_version\": 2,\n";
     out << "  \"requested_at_utc\": \"" << json_escape(started_at_utc) << "\",\n";
     out << "  \"run_name\": \"" << json_escape(options.run_name) << "\",\n";
     out << "  \"run_root\": \""
@@ -277,9 +329,15 @@ std::string request_json(
     out << "  \"scenario\": ";
     write_optional_string(out, options.scenario_name);
     out << ",\n";
-    out << "  \"action_view_std_json_dir\": \""
-        << json_escape(options.action_view_std_json_dir.generic_string())
-        << "\",\n";
+    out << "  \"resource_inputs\": ";
+    write_resource_inputs_json(out, options.resource_inputs);
+    out << ",\n";
+    if (uses_legacy_std_json(options.resource_inputs)) {
+        out << "  \"action_view_std_json_dir\": \""
+            << json_escape(
+                options.action_view_std_json_dir.generic_string())
+            << "\",\n";
+    }
     out << "  \"allow_seed_candidate_fallback\": "
         << (options.allow_seed_candidate_fallback ? "true" : "false") << ",\n";
     out << "  \"allow_profile_overrides\": "
@@ -859,7 +917,7 @@ std::string manifest_json(
     bool projected_success) {
     std::ostringstream out;
     out << "{\n";
-    out << "  \"schema_version\": 1,\n";
+    out << "  \"schema_version\": 2,\n";
     out << "  \"run_name\": \"" << json_escape(result.options.run_name) << "\",\n";
     out << "  \"started_at_utc\": \""
         << json_escape(result.started_at_utc) << "\",\n";
@@ -925,10 +983,15 @@ std::string manifest_json(
     out << "  \"scenario\": ";
     write_optional_string(out, result.options.scenario_name);
     out << ",\n";
-    out << "  \"action_view_std_json_dir\": \""
-        << json_escape(
-            result.options.action_view_std_json_dir.generic_string())
-        << "\",\n";
+    out << "  \"resource_inputs\": ";
+    write_resource_inputs_json(out, result.options.resource_inputs);
+    out << ",\n";
+    if (uses_legacy_std_json(result.options.resource_inputs)) {
+        out << "  \"action_view_std_json_dir\": \""
+            << json_escape(
+                result.options.action_view_std_json_dir.generic_string())
+            << "\",\n";
+    }
     out << "  \"allow_seed_candidate_fallback\": "
         << (result.options.allow_seed_candidate_fallback ? "true" : "false")
         << ",\n";
@@ -1015,13 +1078,26 @@ std::vector<std::string> validate_battle_prediction_batch_run_options(
         errors.push_back(
             "Unsupported prediction profile: " + options.profile_name);
     }
-    if (options.action_view_std_json_dir.empty()) {
-        errors.push_back("An ActionView STD JSON directory is required.");
-    } else if (!std::filesystem::is_directory(
-            options.action_view_std_json_dir)) {
+    if (options.resource_inputs == nullptr) {
+        errors.push_back("A predictor resource-input bundle is required.");
+    } else if (options.resource_inputs->status
+        != BattlePredictorResourceInputStatus::Ready) {
         errors.push_back(
-            "ActionView STD JSON directory is not available: "
-            + options.action_view_std_json_dir.string());
+            "Predictor resource-input bundle is not ready: "
+            + std::string(battle_predictor_resource_input_status_name(
+                options.resource_inputs->status)));
+    }
+    if (uses_legacy_std_json(options.resource_inputs)) {
+        if (options.action_view_std_json_dir.empty()) {
+            errors.push_back(
+                "Explicit legacy resource inputs require an ActionView "
+                "STD JSON directory.");
+        } else if (!std::filesystem::is_directory(
+                options.action_view_std_json_dir)) {
+            errors.push_back(
+                "ActionView STD JSON directory is not available: "
+                + options.action_view_std_json_dir.string());
+        }
     }
     if (options.run_root.empty()) {
         errors.push_back("A batch run root is required.");
@@ -1120,8 +1196,7 @@ BattlePredictionBatchRunResult run_battle_prediction_batch(
         input_options.scenario_name = result.options.scenario_name;
         input_options.source_selection = result.options.source_selection;
         input_options.expected_encounter = result.options.expected_encounter;
-        input_options.action_view_std_json_dir =
-            result.options.action_view_std_json_dir;
+        input_options.resource_inputs = result.options.resource_inputs;
         input_options.allow_seed_candidate_fallback =
             result.options.allow_seed_candidate_fallback;
         input_options.allow_profile_overrides =

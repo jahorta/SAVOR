@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ActionViewSelectorModel.h"
+#include "BattlePredictorResourceBundle.h"
 
 #include <filesystem>
 #include <cstdint>
@@ -13,6 +14,7 @@ namespace savor::predict {
 
 enum class ActionViewStdMaterializationSource {
     Unknown,
+    ResourceBundle,
     Cache,
     TransientHandoff,
     FreshLoad,
@@ -27,6 +29,8 @@ struct ActionViewStdResourceResolution {
     std::string resource_stem;
     std::string std_filename;
     std::string std0_filename;
+    std::filesystem::path std_source_path;
+    std::filesystem::path std0_source_path;
     std::filesystem::path std_json_path;
     std::filesystem::path std0_json_path;
     ActionViewStdMaterializationSource materialization_source =
@@ -53,6 +57,12 @@ std::optional<int> first_battle_action_view_std0_cache_slot_for_slot(int actor_s
 std::string action_view_std0_companion_filename_for_std_resource(
     std::string_view std_resource_name);
 
+ActionViewStdResourceResolution resolve_first_battle_action_view_std0_table_for_slot(
+    int actor_slot,
+    const BattlePredictorResourceBundle& resource_inputs);
+
+// Explicit legacy compatibility loader. New predictor/checkpoint paths should
+// resolve the immutable BattlePredictorResourceBundle overload above.
 ActionViewStdResourceResolution resolve_first_battle_action_view_std0_table_for_slot(
     int actor_slot,
     const std::filesystem::path& spice_std_json_dir);

@@ -3,6 +3,7 @@
 #include "AttackResolutionModel.h"
 #include "BattleInitialTurnTypeModel.h"
 #include "BattlePredictionProfileNames.h"
+#include "BattlePredictorResourceBundle.h"
 #include "BattleSourceModel.h"
 #include "CounterModel.h"
 #include "EnemyEventDataModel.h"
@@ -73,7 +74,6 @@ struct BattlePredictionProfile {
 
 struct BattlePredictionOptions {
     bool include_visual_rng_gap_events = true;
-    std::filesystem::path action_view_std_json_dir;
     std::filesystem::path battle_source_manifest_root;
     bool allow_profile_overrides = false;
     bool emit_causal_diagnostics = false;
@@ -91,6 +91,7 @@ struct BattlePredictionInput {
     soa::battle::actions::TurnPlan turn_plan{};
     BattlePredictionProfile profile{};
     BattlePredictionOptions options{};
+    BattlePredictorResourceBundlePtr resource_inputs;
 };
 
 struct BattlePredictionSlotState {
@@ -247,6 +248,7 @@ struct BattlePredictionResult {
     std::optional<int> encounter_id;
     std::string source_manifest_key;
     std::string source_manifest_sha256;
+    BattlePredictorResourceBundlePtr resource_inputs;
     std::optional<soa::battle::TurnType> initial_turn_type;
     int total_draws_consumed = 0;
     int exact_draws_through_turn_order = 0;

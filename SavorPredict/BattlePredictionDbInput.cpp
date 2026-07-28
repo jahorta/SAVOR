@@ -408,7 +408,7 @@ build_battle_prediction_input_from_analysis_db_impl(
     }
     resolved.input.source_validation.expected_encounter = options.expected_encounter;
     resolved.input.turn_index = wave->turn_index;
-    resolved.input.options.action_view_std_json_dir = options.action_view_std_json_dir;
+    resolved.input.resource_inputs = options.resource_inputs;
     resolved.input.options.allow_profile_overrides = options.allow_profile_overrides;
     resolved.input.options.emit_causal_diagnostics =
         options.emit_causal_diagnostics;

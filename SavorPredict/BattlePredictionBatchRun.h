@@ -34,6 +34,7 @@ struct BattlePredictionBatchRunOptions {
     std::optional<BattleSourceSelection> source_selection;
     std::optional<BattleEncounterIdentity> expected_encounter;
     std::filesystem::path action_view_std_json_dir;
+    BattlePredictorResourceBundlePtr resource_inputs;
     std::filesystem::path run_root;
     std::string run_name;
 

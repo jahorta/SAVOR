@@ -24,7 +24,7 @@ enum class ActionViewGateCheckpointStatus {
 };
 
 struct ActionViewGateCheckpointOptions {
-    std::filesystem::path action_view_std_json_dir;
+    BattlePredictorResourceBundlePtr resource_inputs;
 };
 
 struct ActionViewGateCheckpointEvent {
@@ -61,6 +61,7 @@ struct ActionViewGateCheckpointEvent {
     std::optional<std::string> matched_resource_stem;
     std::optional<std::string> matched_std_filename;
     std::optional<std::string> matched_std0_filename;
+    std::optional<std::string> matched_std0_source_path;
     std::optional<std::string> matched_std0_json_path;
     std::optional<std::string> matched_std0_materialization_source;
     std::optional<int> matched_std0_sample_row_offset;

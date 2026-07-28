@@ -29,6 +29,27 @@ void add_error(ActionViewStdResourceResolution& result, std::string error) {
     result.errors.push_back(std::move(error));
 }
 
+const BattlePredictorResourceSourceIdentity* find_source_identity(
+    const BattlePredictorResourceBundle& resource_inputs,
+    std::string_view logical_role) {
+    const auto found = std::find_if(
+        resource_inputs.sources.begin(),
+        resource_inputs.sources.end(),
+        [logical_role](const BattlePredictorResourceSourceIdentity& source) {
+            return source.logical_role == logical_role;
+        });
+    return found == resource_inputs.sources.end() ? nullptr : &*found;
+}
+
+std::filesystem::path source_path_for_role(
+    const BattlePredictorResourceBundle& resource_inputs,
+    std::string_view logical_role) {
+    const auto* source = find_source_identity(resource_inputs, logical_role);
+    return source != nullptr
+        ? std::filesystem::path(source->source_path)
+        : std::filesystem::path{};
+}
+
 } // namespace
 
 const char* action_view_std_materialization_source_name(
@@ -36,6 +57,8 @@ const char* action_view_std_materialization_source_name(
     switch (source) {
     case ActionViewStdMaterializationSource::Unknown:
         return "unknown";
+    case ActionViewStdMaterializationSource::ResourceBundle:
+        return "resource_bundle";
     case ActionViewStdMaterializationSource::Cache:
         return "cache";
     case ActionViewStdMaterializationSource::TransientHandoff:
@@ -98,6 +121,86 @@ std::string action_view_std0_companion_filename_for_std_resource(
 
 ActionViewStdResourceResolution resolve_first_battle_action_view_std0_table_for_slot(
     int actor_slot,
+    const BattlePredictorResourceBundle& resource_inputs) {
+    ActionViewStdResourceResolution result;
+    result.actor_slot = actor_slot;
+    result.table_contents_source_data_equivalent = true;
+
+    const auto stem = first_battle_action_view_resource_stem_for_slot(actor_slot);
+    if (!stem.has_value()) {
+        add_error(
+            result,
+            "unsupported first-battle actor slot "
+                + std::to_string(actor_slot));
+        return result;
+    }
+
+    result.materialization_source =
+        ActionViewStdMaterializationSource::ResourceBundle;
+    result.first_battle_cache_key =
+        first_battle_action_view_std0_cache_key_for_slot(actor_slot);
+    result.first_battle_cache_slot =
+        first_battle_action_view_std0_cache_slot_for_slot(actor_slot);
+    result.runtime_loaded_resource_plus_0x30_is_aux_root = true;
+    result.resource_stem = *stem;
+    result.std_filename = result.resource_stem + ".std";
+    result.std0_filename =
+        action_view_std0_companion_filename_for_std_resource(
+            result.std_filename);
+
+    const auto* resource = resource_inputs.find_resource(*stem);
+    if (resource == nullptr) {
+        add_error(
+            result,
+            "resource bundle does not contain first-battle resource "
+                + *stem);
+        return result;
+    }
+    if (resource->companion_std0_table.entries.empty()) {
+        add_error(
+            result,
+            "resource bundle companion STD0 table is empty for " + *stem);
+        return result;
+    }
+    if (resource->runtime_aux_table.entries.empty()) {
+        add_error(
+            result,
+            "resource bundle runtime auxiliary table is empty for " + *stem);
+        return result;
+    }
+
+    const auto normalized_stem = lowercase_ascii(resource->resource_stem);
+    const bool legacy_provider =
+        resource_inputs.provider_kind
+        == BattlePredictorResourceProviderKind::LegacyStdJsonDirectMld;
+    const auto primary_role = normalized_stem
+        + (legacy_provider ? ".primary_std_json" : ".primary_std");
+    const auto companion_role = normalized_stem
+        + (legacy_provider ? ".companion_std_json" : ".companion_std");
+    result.std_source_path =
+        source_path_for_role(resource_inputs, primary_role);
+    result.std0_source_path =
+        source_path_for_role(resource_inputs, companion_role);
+    if (legacy_provider) {
+        result.std_json_path = result.std_source_path;
+        result.std0_json_path = result.std0_source_path;
+    }
+
+    result.companion_table = resource->companion_std0_table;
+    result.table = resource->runtime_aux_table;
+    result.runtime_aux_table_has_action_row_prefix =
+        resource->runtime_aux_table_has_action_row_prefix;
+    result.runtime_aux_table_prefix_rows =
+        resource->runtime_aux_table_prefix_rows;
+    result.mode0e_count = count_matching_std0_entries(
+        &result.table,
+        mode0e_action_view_count_query());
+    result.ok = true;
+    return result;
+}
+
+ActionViewStdResourceResolution resolve_first_battle_action_view_std0_table_for_slot(
+    int actor_slot,
     const std::filesystem::path& spice_std_json_dir) {
     ActionViewStdResourceResolution result;
     result.actor_slot = actor_slot;
@@ -121,6 +224,8 @@ ActionViewStdResourceResolution resolve_first_battle_action_view_std0_table_for_
     result.std0_filename = action_view_std0_companion_filename_for_std_resource(result.std_filename);
     result.std_json_path = spice_std_json_dir / (result.std_filename + ".json");
     result.std0_json_path = spice_std_json_dir / (result.std0_filename + ".json");
+    result.std_source_path = result.std_json_path;
+    result.std0_source_path = result.std0_json_path;
 
     const auto loaded = load_spice_std0_table_from_json_file(result.std0_json_path);
     if (!loaded.ok) {
@@ -160,9 +265,10 @@ ActionViewStdResourceResolution resolve_first_battle_action_view_std0_table_for_
 const char* action_view_std_resource_resolver_rule_detail() {
     return "First-battle action-view STD resolver maps actor slots 0, 1, 4, and 5 "
            "to ma000, MA001, and MB000 resource stems, derives the companion _0_STD "
-           "filename as lowercase(stem)+'0.std', imports the SPICE entry_table JSON, "
-           "and, when the primary action_rows JSON is present, prepends the first "
-           "action row as the runtime aux-table prefix observed before companion rows. "
+           "filename as lowercase(stem)+'0.std', and resolves the already parsed "
+           "companion and runtime auxiliary tables from the immutable predictor "
+           "resource bundle. The explicit legacy JSON overload remains available "
+           "only for compatibility. "
            "The first-battle runtime chain is validated as combatant payload +0x10 "
            "loaded resource, with loaded_resource+0x30 used as the selector aux root; "
            "live capture links those roots to the STD0 cache keys 0x00989680, "

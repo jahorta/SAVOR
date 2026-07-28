@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "BattlePredictionBatchRun.h"
+#include "BattlePredictorResourceBundle.h"
 #include "DbCopy.h"
 #include "DbRootCopy.h"
 
@@ -44,6 +45,27 @@ std::string BuildBattleInputIni(
     ini.set("BattleSingleTurn.Job", "concrete_turn_plan_hex", "");
     ini.set("BattleSingleTurn.Job", "target_variant_key", "seeded");
     return ini.to_string_sorted();
+}
+
+savor::predict::BattlePredictorResourceBundlePtr ReadyResourceInputs() {
+    auto bundle =
+        std::make_shared<savor::predict::BattlePredictorResourceBundle>();
+    bundle->status =
+        savor::predict::BattlePredictorResourceInputStatus::Ready;
+    bundle->provider_kind =
+        savor::predict::BattlePredictorResourceProviderKind::DirectSpice;
+    bundle->adapter_version = "test-adapter-v1";
+    bundle->spice_revision = "test-spice-revision";
+    bundle->bundle_digest = "test-resource-digest";
+    bundle->sources.push_back({
+        .logical_role = "test.primary_std",
+        .normalized_relative_path = "bchara/test.std",
+        .size_bytes = 4,
+        .sha256 = "test-source-sha256",
+        .parser_identity = "test-parser",
+        .parser_status = "ready",
+    });
+    return bundle;
 }
 
 std::optional<std::int64_t> QueryI64(const std::filesystem::path& db_path, const char* sql, std::int64_t arg = 0) {
@@ -551,8 +573,6 @@ TEST_F(SavorDbUtilsMinimalCopyFixture, PrepareDbSealsSnapshotAndWritesManifest)
         manifest.find(source_root.lexically_normal().generic_string()),
         std::string::npos);
 
-    const auto std_json_dir = root_ / "std-json";
-    ASSERT_TRUE(std::filesystem::create_directories(std_json_dir));
     const auto prediction_run_root = root_ / "prediction-run";
     std::ostringstream prediction_out;
     std::ostringstream prediction_err;
@@ -562,7 +582,7 @@ TEST_F(SavorDbUtilsMinimalCopyFixture, PrepareDbSealsSnapshotAndWritesManifest)
                 .source_exec_job_ids = {seeded.exec_job_id},
                 .db_root = target_root,
                 .profile_name = "first-battle-soldiers",
-                .action_view_std_json_dir = std_json_dir,
+                .resource_inputs = ReadyResourceInputs(),
                 .run_root = prediction_run_root,
                 .run_name = "prepared-snapshot-verification",
                 .preflight_only = true,

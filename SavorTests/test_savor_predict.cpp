@@ -19,6 +19,7 @@
 #include <RngModel.h>
 #include <SoaQSortModel.h>
 #include <SstActionCommandCheckpointModel.h>
+#include <SpiceBattleContentAdapter.h>
 
 #include <Core/Input/SoaBattle/BattleCommandCodec.h>
 #include <Core/Memory/Soa/Battle/BattleContextCodec.h>
@@ -38,6 +39,7 @@
 #include <fstream>
 #include <iomanip>
 #include <map>
+#include <memory>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
@@ -329,8 +331,101 @@ const std::filesystem::path& first_battle_std_json_source() {
     return path;
 }
 
+BattlePredictorResourceBundlePtr make_test_action_view_resource_bundle(
+    BattlePredictorResourceProviderKind provider_kind =
+        BattlePredictorResourceProviderKind::DirectSpice) {
+    auto bundle = std::make_shared<BattlePredictorResourceBundle>();
+    bundle->status = BattlePredictorResourceInputStatus::Ready;
+    bundle->provider_kind = provider_kind;
+
+    const bool legacy =
+        provider_kind
+        == BattlePredictorResourceProviderKind::LegacyStdJsonDirectMld;
+    const auto add_resource = [&](std::string stem, int action_key) {
+        const auto companion_filename = stem + "0.std";
+        const auto primary_filename = stem + ".std";
+        Std0Table companion;
+        companion.entries.push_back(Std0EntryRecord{
+            .location_code = 0x2a,
+            .opcode = 3,
+            .payload = Std0PayloadGateFields{
+                .primary_action_key =
+                    static_cast<std::int16_t>(action_key),
+            },
+            .has_payload = true,
+        });
+        companion.entries.push_back(Std0EntryRecord{
+            .location_code = -1,
+        });
+        companion.includes_sentinel = true;
+
+        Std0Table runtime;
+        runtime.entries.push_back(Std0EntryRecord{
+            .location_code = 0,
+            .opcode = 1,
+            .payload = Std0PayloadGateFields{
+                .primary_action_key = 2,
+                .generic_secondary_key = 1,
+                .direct_gate_secondary_key = 8,
+            },
+            .has_payload = true,
+        });
+        runtime.entries.insert(
+            runtime.entries.end(),
+            companion.entries.begin(),
+            companion.entries.end());
+        runtime.includes_sentinel = true;
+
+        BattlePredictorResourceTemplate resource;
+        resource.resource_stem = stem;
+        resource.status = BattlePredictorResourceInputStatus::Ready;
+        resource.companion_std0_table = companion;
+        resource.runtime_aux_table = runtime;
+        resource.runtime_aux_table_has_action_row_prefix = true;
+        resource.runtime_aux_table_prefix_rows = 1;
+        bundle->resource_templates.emplace(stem, std::move(resource));
+
+        const auto source_root = legacy
+            ? std::string("D:/fixture/std_json/")
+            : std::string("D:/fixture/bchara/");
+        bundle->sources.push_back(BattlePredictorResourceSourceIdentity{
+            .logical_role = stem
+                + (legacy ? ".primary_std_json" : ".primary_std"),
+            .source_path = source_root + primary_filename
+                + (legacy ? ".json" : ""),
+        });
+        bundle->sources.push_back(BattlePredictorResourceSourceIdentity{
+            .logical_role = stem
+                + (legacy ? ".companion_std_json" : ".companion_std"),
+            .source_path = source_root + companion_filename
+                + (legacy ? ".json" : ""),
+        });
+    };
+
+    add_resource("ma000", 4);
+    add_resource("ma001", 5);
+    add_resource("mb000", 8);
+    return bundle;
+}
+
+const BattlePredictorResourceBundlePtr& first_battle_resource_inputs() {
+    static const auto loaded = load_first_battle_spice_resource_bundle({
+        .disc_dump_root = default_action_view_std_disc_dump_root(),
+    });
+    if (!loaded.ok()) {
+        std::ostringstream detail;
+        detail << "canonical direct SPICE resource bundle is unavailable";
+        for (const auto& diagnostic : loaded.diagnostics) {
+            detail << "; " << diagnostic.logical_role << ": "
+                   << diagnostic.message;
+        }
+        throw std::runtime_error(detail.str());
+    }
+    return loaded.bundle;
+}
+
 void configure_frame_prediction_sources(BattlePredictionInput& input) {
-    input.options.action_view_std_json_dir = first_battle_std_json_source();
+    input.resource_inputs = first_battle_resource_inputs();
 }
 
 void configure_test_passive_routes_without_pursuit(
@@ -1510,6 +1605,52 @@ TEST(SavorPredictRngModel, FirstBattleActionViewStdResolverLoadsSelectedStd0Json
     EXPECT_FALSE(unsupported.runtime_loaded_resource_plus_0x30_is_aux_root);
 
     std::filesystem::remove_all(temp_dir);
+}
+
+TEST(SavorPredictRngModel, FirstBattleActionViewStdResolverUsesResourceBundle) {
+    const auto direct = make_test_action_view_resource_bundle();
+    ASSERT_NE(direct, nullptr);
+    const auto resolved =
+        resolve_first_battle_action_view_std0_table_for_slot(0, *direct);
+
+    ASSERT_TRUE(resolved.ok);
+    EXPECT_TRUE(resolved.errors.empty());
+    EXPECT_EQ(resolved.resource_stem, "ma000");
+    EXPECT_EQ(resolved.std_filename, "ma000.std");
+    EXPECT_EQ(resolved.std0_filename, "ma0000.std");
+    EXPECT_EQ(
+        resolved.std_source_path.generic_string(),
+        "D:/fixture/bchara/ma000.std");
+    EXPECT_EQ(
+        resolved.std0_source_path.generic_string(),
+        "D:/fixture/bchara/ma0000.std");
+    EXPECT_TRUE(resolved.std_json_path.empty());
+    EXPECT_TRUE(resolved.std0_json_path.empty());
+    EXPECT_EQ(
+        resolved.materialization_source,
+        ActionViewStdMaterializationSource::ResourceBundle);
+    EXPECT_TRUE(resolved.runtime_aux_table_has_action_row_prefix);
+    EXPECT_EQ(resolved.runtime_aux_table_prefix_rows, 1);
+    ASSERT_EQ(resolved.companion_table.entries.size(), 2u);
+    ASSERT_EQ(resolved.table.entries.size(), 3u);
+    ASSERT_TRUE(resolved.mode0e_count.has_value());
+    EXPECT_EQ(resolved.mode0e_count->count, 1);
+
+    const auto legacy = make_test_action_view_resource_bundle(
+        BattlePredictorResourceProviderKind::LegacyStdJsonDirectMld);
+    ASSERT_NE(legacy, nullptr);
+    const auto legacy_resolved =
+        resolve_first_battle_action_view_std0_table_for_slot(0, *legacy);
+    ASSERT_TRUE(legacy_resolved.ok);
+    EXPECT_EQ(
+        legacy_resolved.materialization_source,
+        ActionViewStdMaterializationSource::ResourceBundle);
+    EXPECT_EQ(
+        legacy_resolved.std0_source_path.generic_string(),
+        "D:/fixture/std_json/ma0000.std.json");
+    EXPECT_EQ(
+        legacy_resolved.std0_json_path,
+        legacy_resolved.std0_source_path);
 }
 
 TEST(SavorPredictRngModel, FirstBattleActionViewStdResolverMatchesKnownCountProfiles) {
@@ -4235,6 +4376,20 @@ TEST(SavorPredictActionViewPathingTailModel, Captured153108RunsTwelveActorTarget
     ASSERT_EQ(scan.scans.size(), 12u);
     EXPECT_EQ(scan.actor_fallback_draws, 4);
     EXPECT_EQ(scan.target_fallback_draws, 11);
+    EXPECT_TRUE(std::none_of(
+        scan.scans.begin(),
+        scan.scans.end(),
+        [](const Fun8005174cScanIteration& iteration) {
+            return iteration.actor_scan.status == ActionViewPathingTailStatus::MissingInput
+                || iteration.target_scan.status == ActionViewPathingTailStatus::MissingInput;
+        }));
+    EXPECT_TRUE(std::any_of(
+        scan.scans.begin(),
+        scan.scans.end(),
+        [](const Fun8005174cScanIteration& iteration) {
+            return iteration.actor_scan.status == ActionViewPathingTailStatus::Provisional
+                || iteration.target_scan.status == ActionViewPathingTailStatus::Provisional;
+        }));
     EXPECT_NEAR(scan.scans[0].path_base.x, -14.99993f, 0.001f);
     EXPECT_NEAR(scan.scans[0].path_base.z, -86.25f, 0.001f);
     for (int iteration = 0; iteration < 12; ++iteration) {
@@ -4303,6 +4458,18 @@ TEST(SavorPredictActionViewPathingTailModel, Captured153108RunsTwelveActorTarget
     EXPECT_EQ(diagnostic_tail.total_draws, tail.total_draws);
     ASSERT_EQ(diagnostic_tail.scan_diagnostics.size(), 24u);
     ASSERT_EQ(diagnostic_tail.candidate_diagnostics.size(), 96u);
+    EXPECT_TRUE(std::none_of(
+        diagnostic_tail.scan_diagnostics.begin(),
+        diagnostic_tail.scan_diagnostics.end(),
+        [](const ActionViewPathingScanDiagnostic& diagnostic) {
+            return diagnostic.status == ActionViewPathingTailStatus::MissingInput;
+        }));
+    EXPECT_TRUE(std::any_of(
+        diagnostic_tail.scan_diagnostics.begin(),
+        diagnostic_tail.scan_diagnostics.end(),
+        [](const ActionViewPathingScanDiagnostic& diagnostic) {
+            return diagnostic.status == ActionViewPathingTailStatus::Provisional;
+        }));
     EXPECT_EQ(diagnostic_tail.scan_diagnostics[0].side, "actor");
     EXPECT_EQ(diagnostic_tail.scan_diagnostics[1].side, "target");
     EXPECT_EQ(diagnostic_tail.scan_diagnostics[0].yaw_iteration, 0);
@@ -4320,6 +4487,8 @@ TEST(SavorPredictActionViewPathingTailModel, Captured153108RunsTwelveActorTarget
     ASSERT_NE(candidate, diagnostic_tail.candidate_diagnostics.end());
     EXPECT_TRUE(candidate->geometry.has_value());
     EXPECT_EQ(candidate->instruction_flags_0xec, 0x00020000u);
+    EXPECT_FALSE(candidate->instruction_compare_known);
+    EXPECT_EQ(candidate->reason, "accepted_but_instruction_compare_missing");
 }
 
 TEST(SavorPredictActionViewPathingTailModel, Captured149113UsesLiveMode1DistanceAndFallbackCount) {
@@ -4463,6 +4632,7 @@ TEST(SavorPredictBattlePredictor, FirstBattleSoldiersRejectsFakeAttacks) {
     input.starting_rng_seed = 15u;
     input.context = make_predictor_first_battle_context();
     input.turn_plan = make_two_pc_attack_turn_plan(1);
+    configure_frame_prediction_sources(input);
 
     const auto result = predict_battle(input);
 
@@ -4482,6 +4652,7 @@ TEST(SavorPredictBattlePredictor, MissingFootprintDoesNotBecomeOneByOne) {
     input.context = make_predictor_first_battle_context();
     input.context.slots_[0].instance.width = 0;
     input.turn_plan = make_two_pc_attack_turn_plan(0);
+    configure_frame_prediction_sources(input);
 
     const auto result = predict_battle(input);
 
@@ -4539,6 +4710,7 @@ TEST(SavorPredictBattlePredictor, CustomSeedStartsAtCoordinatorAndIgnoresContext
     input.context = make_predictor_first_battle_context();
     input.context.turn_type = soa::battle::TurnType::BackAttack;
     input.turn_plan = make_two_pc_attack_turn_plan(0);
+    configure_frame_prediction_sources(input);
 
     const auto result = predict_battle(input);
 
@@ -4602,6 +4774,7 @@ TEST(SavorPredictBattlePredictor, RejectsNonSoldierEncounterLayoutByDefault) {
     input.context = make_predictor_first_battle_context();
     fill_predictor_slot(input.context, 6, false, 50, 10, 10, 10, 10, 10, 10, 0, 0, 0);
     input.turn_plan = make_two_pc_attack_turn_plan(0);
+    configure_frame_prediction_sources(input);
 
     const auto result = predict_battle(input);
 
@@ -4627,6 +4800,7 @@ TEST(SavorPredictBattlePredictor, ReportsMissingSourceForUnknownScriptedRequest)
             .instruction_payload_offset = 9999,
         },
     };
+    configure_frame_prediction_sources(input);
 
     const auto result = predict_battle(input);
 
@@ -4649,6 +4823,7 @@ TEST(SavorPredictBattlePredictor, EventIdConstraintDoesNotSelectAStageBundle) {
         .source_kind = BattleEncounterSourceKind::EventDefinition,
         .encounter_id = 7,
     };
+    configure_frame_prediction_sources(input);
 
     const auto result = predict_battle(input);
 
@@ -4675,6 +4850,7 @@ TEST(SavorPredictBattlePredictor, DoesNotGateSourceOnUnknownSavestateFingerprint
     input.context = make_predictor_first_battle_context();
     input.turn_plan = make_two_pc_attack_turn_plan(0);
     input.source_validation.savestate_sha256 = std::string(64, '0');
+    configure_frame_prediction_sources(input);
 
     const auto result = predict_battle(input);
 
@@ -5367,28 +5543,7 @@ TEST(SavorPredictBattlePredictor, FrameSchedulerPublishesMode8BeforeKey8EffectCh
     EXPECT_EQ(aggregate_burst, result.events.end());
 }
 
-TEST(SavorPredictBattlePredictor, FrameSchedulerLoadsVisualResourcesFromActionViewStdJsonDir) {
-    const auto temp_dir =
-        std::filesystem::temp_directory_path() / "savor_predict_battle_predictor_std_json_test";
-    std::filesystem::remove_all(temp_dir);
-    std::filesystem::create_directories(temp_dir);
-
-    const auto source_dir = first_battle_std_json_source();
-    for (const auto* filename : {
-             "ma0000.std.json",
-             "ma0010.std.json",
-             "mb0000.std.json",
-             "mb0010.std.json",
-             "ma000.std.json",
-             "ma001.std.json",
-             "mb000.std.json",
-             "mb001.std.json"}) {
-        std::filesystem::copy_file(
-            source_dir / filename,
-            temp_dir / filename,
-            std::filesystem::copy_options::overwrite_existing);
-    }
-
+TEST(SavorPredictBattlePredictor, FrameSchedulerUsesImmutableResourceBundle) {
     BattlePredictionInput input;
     input.profile = first_battle_prediction_profile();
     input.starting_rng_seed = 15u;
@@ -5399,7 +5554,7 @@ TEST(SavorPredictBattlePredictor, FrameSchedulerLoadsVisualResourcesFromActionVi
         .macro = soa::battle::actions::BattleAction::Attack,
         .params = soa::battle::actions::ActionParameters{.target_slot = 4},
     });
-    input.options.action_view_std_json_dir = temp_dir;
+    input.resource_inputs = first_battle_resource_inputs();
     const auto result = predict_battle(input);
 
     const auto loaded = std::find_if(
@@ -5412,10 +5567,9 @@ TEST(SavorPredictBattlePredictor, FrameSchedulerLoadsVisualResourcesFromActionVi
     });
     ASSERT_NE(loaded, result.events.end());
     EXPECT_EQ(loaded->status, BattlePredictionEventStatus::Exact);
-    EXPECT_NE(loaded->detail.find("ma0000.std.json"), std::string::npos);
-    EXPECT_NE(loaded->detail.find("visual_records="), std::string::npos);
-
-    std::filesystem::remove_all(temp_dir);
+    EXPECT_NE(loaded->detail.find("provider=direct_spice"), std::string::npos);
+    EXPECT_NE(loaded->detail.find("bundle_digest="), std::string::npos);
+    EXPECT_NE(loaded->detail.find("motion_frame_counts=74"), std::string::npos);
 }
 
 TEST(SavorPredictBattlePredictor, UsesCanonicalSourceSnapshotPositions) {
@@ -5541,7 +5695,30 @@ TEST(SavorPredictBattlePredictor, FrameSchedulerSchedulesEndTurnViewPlacement) {
     input.turn_plan = make_two_pc_attack_turn_plan(0);
     configure_frame_prediction_sources(input);
 
+    const auto baseline = predict_battle(input);
+    input.options.emit_causal_diagnostics = true;
     const auto result = predict_battle(input);
+
+    const auto pathing_diagnostics = std::count_if(
+        result.events.begin(),
+        result.events.end(),
+        [](const BattlePredictionEvent& event) {
+            return event.label == "pathing_scan_diagnostic";
+        });
+    ASSERT_GT(pathing_diagnostics, 0);
+    EXPECT_TRUE(std::none_of(
+        result.events.begin(),
+        result.events.end(),
+        [](const BattlePredictionEvent& event) {
+            return event.label == "pathing_scan_diagnostic"
+                && event.status == BattlePredictionEventStatus::MissingInput;
+        }));
+    EXPECT_FALSE(baseline.has_missing_input_events);
+    EXPECT_FALSE(result.has_missing_input_events);
+    EXPECT_NE(result.outcome, BattlePredictionOutcome::MissingInput);
+    EXPECT_EQ(result.has_missing_input_events, baseline.has_missing_input_events);
+    EXPECT_EQ(result.total_draws_consumed, baseline.total_draws_consumed);
+    EXPECT_EQ(result.final_rng_seed, baseline.final_rng_seed);
 
     const auto* placement = find_prediction_event(
         result,
@@ -5791,6 +5968,7 @@ TEST(SavorPredictBattlePredictor, UsesBattleInstanceCounterChanceAsDamageIncreme
     input.context.slots_[4].instance.counter_chance = 7;
     input.context.slots_[4].instance.current_counter_chance = 3;
     input.turn_plan.fake_attack_count = 0;
+    configure_frame_prediction_sources(input);
 
     const auto result = predict_battle(input);
 
@@ -6093,19 +6271,65 @@ TEST(SavorPredictBattlePredictorCli, ParsesActionViewStdJsonDir) {
     std::filesystem::remove_all(temp_dir);
 }
 
-TEST(SavorPredictBattlePredictorCli, ParsesStdJsonCacheOptions) {
+TEST(SavorPredictBattlePredictorCli, ParsesResourceInputOptions) {
     const auto parsed = parse_predict_battle_tokens({
         "--exec-job-id",
         "147884",
-        "--std-disc-dump-root",
+        "--disc-dump-root",
         "D:/disc",
         "--spice-file-parsing-exe",
         "D:/tools/SpiceFileParsing.exe",
     });
 
     EXPECT_TRUE(parsed.errors.empty()) << (parsed.errors.empty() ? "" : parsed.errors.front());
-    EXPECT_EQ(parsed.options.std_disc_dump_root, std::filesystem::path("D:/disc"));
+    EXPECT_EQ(parsed.options.disc_dump_root, std::filesystem::path("D:/disc"));
     EXPECT_EQ(parsed.options.spice_file_parsing_exe, std::filesystem::path("D:/tools/SpiceFileParsing.exe"));
+    EXPECT_NE(
+        std::find_if(
+            parsed.warnings.begin(),
+            parsed.warnings.end(),
+            [](const std::string& warning) {
+                return warning.find("--spice-file-parsing-exe")
+                    != std::string::npos
+                    && warning.find("ignored") != std::string::npos;
+            }),
+        parsed.warnings.end());
+}
+
+TEST(SavorPredictBattlePredictorCli, ReconcilesDeprecatedDiscDumpRootAlias) {
+    const auto equivalent = parse_predict_battle_tokens({
+        "--exec-job-id",
+        "147884",
+        "--disc-dump-root",
+        "D:/disc",
+        "--std-disc-dump-root",
+        "D:/disc/.",
+    });
+
+    EXPECT_TRUE(equivalent.errors.empty())
+        << (equivalent.errors.empty() ? "" : equivalent.errors.front());
+    EXPECT_EQ(
+        equivalent.options.disc_dump_root,
+        std::filesystem::path("D:/disc"));
+    EXPECT_FALSE(equivalent.warnings.empty());
+
+    const auto conflicting = parse_predict_battle_tokens({
+        "--exec-job-id",
+        "147884",
+        "--disc-dump-root",
+        "D:/disc",
+        "--std-disc-dump-root",
+        "D:/other",
+    });
+    EXPECT_NE(
+        std::find_if(
+            conflicting.errors.begin(),
+            conflicting.errors.end(),
+            [](const std::string& error) {
+                return error.find("must resolve to the same path")
+                    != std::string::npos;
+            }),
+        conflicting.errors.end());
 }
 
 TEST(SavorPredictBattlePredictorCli, RejectsMissingActionViewStdJsonDir) {
@@ -6141,7 +6365,7 @@ TEST(SavorPredictStdJsonCache, ReportsDefaultPaths) {
         std::filesystem::path("D:/SoAGC/2002-12-19-gc-us-final_Skies_of_Arcadia_Legends"));
 }
 
-TEST(SavorPredictStdJsonCache, CompleteCacheReturnsWithoutInvokingSpice) {
+TEST(SavorPredictStdJsonCache, ImplicitDbRootCacheIsDisabled) {
     const auto root = std::filesystem::temp_directory_path()
         / ("savor_std_cache_hit_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     const auto cache = root / ".std_json";
@@ -6153,30 +6377,38 @@ TEST(SavorPredictStdJsonCache, CompleteCacheReturnsWithoutInvokingSpice) {
     ASSERT_TRUE(write_action_view_std_json_manifest(cache, &manifest_error))
         << manifest_error;
 
-    bool invoked = false;
-    const auto resolved = resolve_action_view_std_json_cache(
-        {
-            .db_root = root,
-            .std_disc_dump_root = root / "missing_disc",
-            .spice_file_parsing_exe = root / "missing.exe",
-        },
-        [&](const SpiceStdJsonExportRequest&) {
-            invoked = true;
-            return SpiceStdJsonExportResult{};
-        });
+    const auto resolved = resolve_action_view_std_json_cache({
+        .db_root = root,
+        .std_disc_dump_root = root / "missing_disc",
+        .spice_file_parsing_exe = root / "missing.exe",
+    });
 
-    EXPECT_TRUE(resolved.available);
-    EXPECT_TRUE(resolved.cache_complete_before);
-    EXPECT_TRUE(resolved.manifest_verified);
-    EXPECT_EQ(resolved.manifest_schema_version, 1u);
+    EXPECT_FALSE(resolved.available);
+    EXPECT_FALSE(resolved.cache_complete_before);
+    EXPECT_FALSE(resolved.manifest_present);
+    EXPECT_FALSE(resolved.manifest_verified);
     EXPECT_FALSE(resolved.generation_attempted);
-    EXPECT_FALSE(invoked);
-    EXPECT_EQ(resolved.resolved_std_json_dir, cache);
+    EXPECT_FALSE(resolved.generation_succeeded);
+    EXPECT_FALSE(resolved.fatal_error);
+    EXPECT_TRUE(resolved.resolved_std_json_dir.empty());
+    EXPECT_TRUE(resolved.cache_dir.empty());
+    EXPECT_TRUE(resolved.manifest_path.empty());
+    EXPECT_TRUE(resolved.disc_dump_root.empty());
+    EXPECT_TRUE(resolved.spice_file_parsing_exe.empty());
+    EXPECT_NE(
+        std::find_if(
+            resolved.diagnostics.begin(),
+            resolved.diagnostics.end(),
+            [](const std::string& diagnostic) {
+                return diagnostic.find("lookup and generation are disabled")
+                    != std::string::npos;
+            }),
+        resolved.diagnostics.end());
 
     std::filesystem::remove_all(root);
 }
 
-TEST(SavorPredictStdJsonCache, GeneratesMissingCacheFromDiscDump) {
+TEST(SavorPredictStdJsonCache, ImplicitGenerationFromDiscDumpIsDisabled) {
     const auto root = std::filesystem::temp_directory_path()
         / ("savor_std_cache_generate_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     const auto disc = root / "disc";
@@ -6185,37 +6417,25 @@ TEST(SavorPredictStdJsonCache, GeneratesMissingCacheFromDiscDump) {
     std::filesystem::create_directories(bchara);
     std::ofstream(fake_exe, std::ios::binary | std::ios::trunc) << "fake";
 
-    bool invoked = false;
-    const auto resolved = resolve_action_view_std_json_cache(
-        {
-            .db_root = root / "db",
-            .std_disc_dump_root = disc,
-            .spice_file_parsing_exe = fake_exe,
-        },
-        [&](const SpiceStdJsonExportRequest& request) {
-            invoked = true;
-            EXPECT_EQ(request.bchara_dir, bchara);
-            EXPECT_EQ(request.output_dir, root / "db" / ".std_json");
-            std::filesystem::create_directories(request.output_dir);
-            for (const auto& name : required_first_battle_action_view_std_json_files()) {
-                std::ofstream(request.output_dir / name, std::ios::binary | std::ios::trunc) << "{}";
-            }
-            return SpiceStdJsonExportResult{ .exit_code = 0, .output = "ok" };
-        });
+    const auto resolved = resolve_action_view_std_json_cache({
+        .db_root = root / "db",
+        .std_disc_dump_root = disc,
+        .spice_file_parsing_exe = fake_exe,
+    });
 
-    EXPECT_TRUE(invoked);
-    EXPECT_TRUE(resolved.available);
-    EXPECT_TRUE(resolved.generation_attempted);
-    EXPECT_TRUE(resolved.generation_succeeded);
-    EXPECT_TRUE(resolved.manifest_written);
-    EXPECT_TRUE(resolved.manifest_verified);
+    EXPECT_FALSE(resolved.available);
+    EXPECT_FALSE(resolved.generation_attempted);
+    EXPECT_FALSE(resolved.generation_succeeded);
+    EXPECT_FALSE(resolved.manifest_written);
+    EXPECT_FALSE(resolved.manifest_verified);
     EXPECT_FALSE(resolved.fatal_error);
-    EXPECT_EQ(resolved.resolved_std_json_dir, root / "db" / ".std_json");
+    EXPECT_FALSE(std::filesystem::exists(root / "db" / ".std_json"));
+    EXPECT_TRUE(resolved.resolved_std_json_dir.empty());
 
     std::filesystem::remove_all(root);
 }
 
-TEST(SavorPredictStdJsonCache, ExplicitDirOverridesCacheGeneration) {
+TEST(SavorPredictStdJsonCache, ExplicitDirVerifiesManifestWithoutGeneration) {
     const auto root = std::filesystem::temp_directory_path()
         / ("savor_std_cache_explicit_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     const auto explicit_dir = root / "explicit";
@@ -6227,25 +6447,26 @@ TEST(SavorPredictStdJsonCache, ExplicitDirOverridesCacheGeneration) {
     ASSERT_TRUE(write_action_view_std_json_manifest(explicit_dir, &manifest_error))
         << manifest_error;
 
-    bool invoked = false;
-    const auto resolved = resolve_action_view_std_json_cache(
-        {
-            .db_root = root / "db",
-            .explicit_std_json_dir = explicit_dir,
-            .std_disc_dump_root = root / "disc",
-            .spice_file_parsing_exe = root / "SpiceFileParsing.exe",
-        },
-        [&](const SpiceStdJsonExportRequest&) {
-            invoked = true;
-            return SpiceStdJsonExportResult{};
-        });
+    const auto resolved = resolve_action_view_std_json_cache({
+        .db_root = root / "db",
+        .explicit_std_json_dir = explicit_dir,
+        .std_disc_dump_root = root / "disc",
+        .spice_file_parsing_exe = root / "SpiceFileParsing.exe",
+    });
 
     EXPECT_TRUE(resolved.available);
     EXPECT_TRUE(resolved.used_explicit_dir);
     EXPECT_TRUE(resolved.manifest_verified);
+    EXPECT_EQ(resolved.manifest_schema_version, 1u);
     EXPECT_FALSE(resolved.generation_attempted);
-    EXPECT_FALSE(invoked);
+    EXPECT_FALSE(resolved.generation_succeeded);
     EXPECT_EQ(resolved.resolved_std_json_dir, explicit_dir);
+    EXPECT_EQ(
+        resolved.manifest_path,
+        explicit_dir / action_view_std_json_manifest_filename());
+    EXPECT_TRUE(resolved.cache_dir.empty());
+    EXPECT_TRUE(resolved.disc_dump_root.empty());
+    EXPECT_TRUE(resolved.spice_file_parsing_exe.empty());
 
     std::filesystem::remove_all(root);
 }
@@ -6302,29 +6523,27 @@ TEST(SavorPredictStdJsonCache, ExplicitDirRejectsHashMismatch) {
     std::filesystem::remove_all(root);
 }
 
-TEST(SavorPredictStdJsonCache, MissingFilesAfterExportIsFatal) {
+TEST(SavorPredictStdJsonCache, ExplicitDirWithMissingFilesIsFatal) {
     const auto root = std::filesystem::temp_directory_path()
         / ("savor_std_cache_missing_after_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
-    const auto disc = root / "disc";
-    const auto fake_exe = root / "SpiceFileParsing.exe";
-    std::filesystem::create_directories(disc / "bchara");
-    std::ofstream(fake_exe, std::ios::binary | std::ios::trunc) << "fake";
+    const auto explicit_dir = root / "explicit";
+    std::filesystem::create_directories(explicit_dir);
+    std::ofstream(
+        explicit_dir / required_first_battle_action_view_std_json_files().front(),
+        std::ios::binary | std::ios::trunc) << "{}";
 
-    const auto resolved = resolve_action_view_std_json_cache(
-        {
-            .db_root = root / "db",
-            .std_disc_dump_root = disc,
-            .spice_file_parsing_exe = fake_exe,
-        },
-        [](const SpiceStdJsonExportRequest&) {
-            return SpiceStdJsonExportResult{ .exit_code = 0, .output = "ok" };
-        });
+    const auto resolved = resolve_action_view_std_json_cache({
+        .explicit_std_json_dir = explicit_dir,
+    });
 
     EXPECT_FALSE(resolved.available);
-    EXPECT_TRUE(resolved.generation_attempted);
+    EXPECT_TRUE(resolved.used_explicit_dir);
+    EXPECT_FALSE(resolved.generation_attempted);
     EXPECT_FALSE(resolved.generation_succeeded);
     EXPECT_TRUE(resolved.fatal_error);
+    EXPECT_FALSE(resolved.missing_files_before.empty());
     EXPECT_FALSE(resolved.missing_files_after.empty());
+    EXPECT_EQ(resolved.missing_files_before, resolved.missing_files_after);
 
     std::filesystem::remove_all(root);
 }
@@ -6521,7 +6740,11 @@ TEST_F(SavorPredictDbInputFixture, UsesSeedProbeUniqueSeedForExecJob) {
 
     BattlePredictionDbInputOptions options;
     options.selector.exec_job_id = rows.turn_exec_job_id;
-    options.action_view_std_json_dir = "C:/savor/std-json-fixture";
+    auto resource_inputs =
+        std::make_shared<BattlePredictorResourceBundle>();
+    resource_inputs->status =
+        BattlePredictorResourceInputStatus::Ready;
+    options.resource_inputs = resource_inputs;
     std::ostringstream err;
 
     const auto resolved = build_battle_prediction_input_from_analysis_db(
@@ -6538,9 +6761,7 @@ TEST_F(SavorPredictDbInputFixture, UsesSeedProbeUniqueSeedForExecJob) {
     EXPECT_EQ(resolved->metadata.context_probe_id.value_or(0), rows.context_probe_id);
     EXPECT_EQ(resolved->metadata.fake_attack_source, BattlePredictionFakeAttackSource::TurnJob);
     EXPECT_EQ(resolved->input.turn_plan.fake_attack_count, 2u);
-    EXPECT_EQ(
-        resolved->input.options.action_view_std_json_dir,
-        std::filesystem::path("C:/savor/std-json-fixture"));
+    EXPECT_EQ(resolved->input.resource_inputs, resource_inputs);
     EXPECT_EQ(resolved->metadata.profile_name, "first-battle-soldiers");
     ASSERT_TRUE(resolved->input.turn_index.has_value());
     EXPECT_EQ(*resolved->input.turn_index, 1);
@@ -7542,6 +7763,72 @@ TEST(SavorPredictCheckpointTrace, ParsesKnownRngOwnersAndSeeds) {
     EXPECT_EQ(*parsed.events[1].rng_seed_after, 0xAABBCCDDu);
 }
 
+TEST(SavorPredictCheckpointTrace, ParsesResourceInputCliCompatibilityOptions) {
+    const auto canonical =
+        parse_trace_checkpoints_resource_input_tokens({
+            "--disc-dump-root", "D:/disc",
+            "--spice-file-parsing-exe",
+            "D:/tools/SpiceFileParsing.exe",
+        });
+    EXPECT_TRUE(canonical.errors.empty());
+    EXPECT_EQ(
+        canonical.disc_dump_root,
+        std::filesystem::path("D:/disc"));
+    EXPECT_NE(
+        std::find_if(
+            canonical.warnings.begin(),
+            canonical.warnings.end(),
+            [](const std::string& warning) {
+                return warning.find("--spice-file-parsing-exe")
+                    != std::string::npos
+                    && warning.find("ignored") != std::string::npos;
+            }),
+        canonical.warnings.end());
+
+    const auto same = parse_trace_checkpoints_resource_input_tokens({
+        "--disc-dump-root", "D:/disc",
+        "--std-disc-dump-root", "D:/disc/.",
+    });
+    EXPECT_TRUE(same.errors.empty());
+    EXPECT_EQ(
+        same.disc_dump_root,
+        std::filesystem::path("D:/disc"));
+    EXPECT_NE(
+        std::find_if(
+            same.warnings.begin(),
+            same.warnings.end(),
+            [](const std::string& warning) {
+                return warning.find("--std-disc-dump-root")
+                    != std::string::npos;
+            }),
+        same.warnings.end());
+
+    const auto alias_only =
+        parse_trace_checkpoints_resource_input_tokens({
+            "--std-disc-dump-root", "D:/legacy-disc",
+        });
+    EXPECT_TRUE(alias_only.errors.empty());
+    EXPECT_EQ(
+        alias_only.disc_dump_root,
+        std::filesystem::path("D:/legacy-disc"));
+    EXPECT_FALSE(alias_only.warnings.empty());
+
+    const auto conflicting =
+        parse_trace_checkpoints_resource_input_tokens({
+            "--disc-dump-root", "D:/disc",
+            "--std-disc-dump-root", "D:/other",
+        });
+    EXPECT_NE(
+        std::find_if(
+            conflicting.errors.begin(),
+            conflicting.errors.end(),
+            [](const std::string& error) {
+                return error.find("must resolve to the same path")
+                    != std::string::npos;
+            }),
+        conflicting.errors.end());
+}
+
 TEST(SavorPredictCheckpointTrace, SummarizesActionSourceCheckpoints) {
     const auto expectation = first_battle_action_source_checkpoint_expectation();
     ASSERT_TRUE(expectation.expected_handler_pc.has_value());
@@ -8239,47 +8526,8 @@ TEST(SavorPredictCheckpointTrace, SummarizesActionViewGateCheckpoints) {
     EXPECT_EQ(fallback.observed_mode0_fallback_draws, 1);
 }
 
-TEST(SavorPredictCheckpointTrace, IdentifiesSampledActionViewAuxTableFromStdJsonDirectory) {
-    const auto temp_dir =
-        std::filesystem::temp_directory_path() / "savor_predict_trace_std_identity_test";
-    std::filesystem::remove_all(temp_dir);
-    std::filesystem::create_directories(temp_dir);
-
-    const auto write_table = [&](std::string_view filename, int action_key) {
-        std::ofstream file(temp_dir / std::string(filename));
-        ASSERT_TRUE(file.good());
-        file << R"json({
-  "schema": "spice_std_ir_v1",
-  "layoutKind": "entry_table",
-  "parseOk": true,
-  "entryTable": {
-    "records": [
-      {
-        "index": 0,
-        "isSentinel": false,
-        "locationCode": 42,
-        "opcode": 3,
-        "payloadInBounds": true,
-        "payloadBytesHex": ")json"
-             << std::hex << std::setw(4) << std::setfill('0') << action_key
-             << R"json(00000000"
-      },
-      {
-        "index": 1,
-        "isSentinel": true,
-        "locationCode": -1,
-        "opcode": 0,
-        "payloadInBounds": false,
-        "payloadBytesHex": ""
-      }
-    ]
-  }
-})json";
-    };
-    write_table("ma0000.std.json", 4);
-    write_table("ma0010.std.json", 5);
-    write_table("mb0000.std.json", 8);
-
+TEST(SavorPredictCheckpointTrace, IdentifiesSampledActionViewAuxTableFromResourceBundle) {
+    const auto resource_inputs = make_test_action_view_resource_bundle();
     std::istringstream input(
         "pc=8001331c function=FUN_80012f58 checkpoint=action_view_query rng_draw_index_before=18 "
         "action_sequence_id=7 active_slot=0 target_slot=4 actor_field6_0x6=4 actor_subtype_0x8=0 "
@@ -8301,7 +8549,9 @@ TEST(SavorPredictCheckpointTrace, IdentifiesSampledActionViewAuxTableFromStdJson
     ASSERT_TRUE(parsed.errors.empty());
     const auto summary = summarize_action_view_gate_checkpoints(
         parsed.events,
-        ActionViewGateCheckpointOptions{.action_view_std_json_dir = temp_dir});
+        ActionViewGateCheckpointOptions{
+            .resource_inputs = resource_inputs,
+        });
 
     EXPECT_EQ(summary.status, ActionViewGateCheckpointStatus::MatchesExpected);
     EXPECT_EQ(summary.aux_table_fingerprint_matches_known_std0, 1);
@@ -8316,6 +8566,11 @@ TEST(SavorPredictCheckpointTrace, IdentifiesSampledActionViewAuxTableFromStdJson
     EXPECT_EQ(*summary.events[0].matched_std_filename, "ma000.std");
       ASSERT_TRUE(summary.events[0].matched_std0_filename.has_value());
       EXPECT_EQ(*summary.events[0].matched_std0_filename, "ma0000.std");
+      ASSERT_TRUE(summary.events[0].matched_std0_source_path.has_value());
+      EXPECT_EQ(
+          *summary.events[0].matched_std0_source_path,
+          "D:/fixture/bchara/ma0000.std");
+      EXPECT_FALSE(summary.events[0].matched_std0_json_path.has_value());
       ASSERT_TRUE(summary.events[0].matched_std0_sample_row_offset.has_value());
       EXPECT_EQ(*summary.events[0].matched_std0_sample_row_offset, 1);
       ASSERT_TRUE(summary.events[0].actor_slot_expected_std0_filename.has_value());
@@ -8325,7 +8580,111 @@ TEST(SavorPredictCheckpointTrace, IdentifiesSampledActionViewAuxTableFromStdJson
       ASSERT_TRUE(summary.events[0].actor_slot_expected_std0_sample_row_offset.has_value());
       EXPECT_EQ(*summary.events[0].actor_slot_expected_std0_sample_row_offset, 1);
 
-    std::filesystem::remove_all(temp_dir);
+    const auto legacy_summary = summarize_action_view_gate_checkpoints(
+        parsed.events,
+        ActionViewGateCheckpointOptions{
+            .resource_inputs = make_test_action_view_resource_bundle(
+                BattlePredictorResourceProviderKind::
+                    LegacyStdJsonDirectMld),
+        });
+    ASSERT_EQ(legacy_summary.events.size(), 2u);
+    ASSERT_TRUE(
+        legacy_summary.events[0].matched_std0_source_path.has_value());
+    EXPECT_EQ(
+        *legacy_summary.events[0].matched_std0_source_path,
+        "D:/fixture/std_json/ma0000.std.json");
+    ASSERT_TRUE(
+        legacy_summary.events[0].matched_std0_json_path.has_value());
+    EXPECT_EQ(
+        *legacy_summary.events[0].matched_std0_json_path,
+        *legacy_summary.events[0].matched_std0_source_path);
+}
+
+TEST(SavorPredictCheckpointTrace, SerializesGenericSourceAndLegacyJsonPathByProvider) {
+    const auto checkpoint_path =
+        std::filesystem::temp_directory_path()
+        / "savor_predict_trace_resource_bundle_source_path.txt";
+    {
+        std::ofstream checkpoint(checkpoint_path);
+        ASSERT_TRUE(checkpoint.good());
+        checkpoint
+            << "pc=8001331c function=FUN_80012f58 "
+               "checkpoint=action_view_query rng_draw_index_before=18 "
+               "active_slot=0 target_slot=4 actor_field6_0x6=4 "
+               "actor_subtype_0x8=0 gate_category_0x2f=2 "
+               "gate_state_0x30=2 gate_active_slot_0x02=0 "
+               "instruction_flags_0xf0=0 aux_list_root=0x80346bd8 "
+               "query_arg0=4 query_arg1=-1 query_arg2=0x2a query_arg3=3 "
+               "aux_row00_location_code=0 aux_row00_opcode=1 "
+               "aux_row00_payload_primary=2 aux_row00_payload_secondary=1 "
+               "aux_row00_payload_direct_secondary=8 "
+               "aux_row01_location_code=0x2a aux_row01_opcode=3 "
+               "aux_row01_payload_primary=4 aux_row01_payload_secondary=0 "
+               "aux_row01_payload_direct_secondary=0 "
+               "aux_row02_location_code=0xffff aux_row02_opcode=0\n";
+    }
+
+    TraceCheckpointsOptions direct_options;
+    direct_options.checkpoint_file = checkpoint_path;
+    direct_options.resource_inputs =
+        make_test_action_view_resource_bundle();
+    direct_options.json = true;
+    std::ostringstream direct_report;
+    std::ostringstream direct_error;
+    EXPECT_EQ(
+        run_trace_checkpoints(
+            direct_options,
+            direct_report,
+            direct_error),
+        0);
+    EXPECT_TRUE(direct_error.str().empty());
+    EXPECT_NE(
+        direct_report.str().find("\"provider_kind\":\"direct_spice\""),
+        std::string::npos);
+    EXPECT_NE(
+        direct_report.str().find("\"normalized_relative_path\""),
+        std::string::npos);
+    EXPECT_NE(
+        direct_report.str().find("\"parser_identity\""),
+        std::string::npos);
+    EXPECT_NE(
+        direct_report.str().find("\"diagnostic_count\""),
+        std::string::npos);
+    EXPECT_NE(
+        direct_report.str().find(
+            "\"matched_std0_source_path\": "
+            "\"D:/fixture/bchara/ma0000.std\""),
+        std::string::npos);
+    EXPECT_EQ(
+        direct_report.str().find("\"matched_std0_json_path\""),
+        std::string::npos);
+
+    auto legacy_options = direct_options;
+    legacy_options.resource_inputs =
+        make_test_action_view_resource_bundle(
+            BattlePredictorResourceProviderKind::
+                LegacyStdJsonDirectMld);
+    std::ostringstream legacy_report;
+    std::ostringstream legacy_error;
+    EXPECT_EQ(
+        run_trace_checkpoints(
+            legacy_options,
+            legacy_report,
+            legacy_error),
+        0);
+    EXPECT_TRUE(legacy_error.str().empty());
+    EXPECT_NE(
+        legacy_report.str().find(
+            "\"matched_std0_source_path\": "
+            "\"D:/fixture/std_json/ma0000.std.json\""),
+        std::string::npos);
+    EXPECT_NE(
+        legacy_report.str().find(
+            "\"matched_std0_json_path\": "
+            "\"D:/fixture/std_json/ma0000.std.json\""),
+        std::string::npos);
+
+    std::filesystem::remove(checkpoint_path);
 }
 
 TEST(SavorPredictCheckpointTrace, ComparesActionViewHelperCallAgainstSelectorPrediction) {

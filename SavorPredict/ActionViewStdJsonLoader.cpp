@@ -398,36 +398,20 @@ CombatantVisualCommandKind visual_command_kind(std::uint32_t combined_type) {
     return CombatantVisualCommandKind::Unknown;
 }
 
-std::optional<CombatantVisualCommandRecord> import_visual_record(
-    std::string_view object,
+std::optional<CombatantVisualCommandRecord> decode_visual_record(
+    const SpiceStdEntryProjection& projected,
     SpiceStdVisualJsonLoadResult& result,
     int fallback_index) {
-    const auto index = parse_json_int(object, "\"index\"").value_or(fallback_index);
-    const auto location_code = parse_json_int(object, "\"locationCode\"");
-    const auto opcode = parse_json_int(object, "\"opcode\"");
-    if (!location_code.has_value() || !opcode.has_value()) {
-        add_error(result, "record " + std::to_string(index) + " missing locationCode/opcode");
-        return std::nullopt;
-    }
-
+    const auto index = projected.index >= 0 ? projected.index : fallback_index;
     CombatantVisualCommandRecord record;
     record.index = index;
-    record.location_code = static_cast<std::int16_t>(*location_code);
-    record.opcode = static_cast<std::int16_t>(*opcode);
+    record.location_code = projected.location_code;
+    record.opcode = projected.opcode;
     record.combined_type = std0_combined_entry_id(record.location_code, record.opcode);
     record.kind = visual_command_kind(record.combined_type);
-    record.payload_size = parse_json_int(object, "\"payloadSize\"").value_or(0);
-    record.payload_in_bounds = parse_json_bool(object, "\"payloadInBounds\"").value_or(false);
-
-    const auto payload_hex = parse_json_string(object, "\"payloadBytesHex\"");
-    if (payload_hex.has_value()) {
-        const auto decoded = decode_payload_hex(*payload_hex);
-        if (!decoded.has_value()) {
-            add_error(result, "record " + std::to_string(index) + " has invalid payloadBytesHex");
-            return std::nullopt;
-        }
-        record.payload_bytes = *decoded;
-    }
+    record.payload_size = projected.payload_size;
+    record.payload_in_bounds = projected.payload_in_bounds;
+    record.payload_bytes = projected.payload_bytes;
 
     if (record.location_code < 0) {
         return record;
@@ -579,6 +563,38 @@ std::optional<CombatantVisualCommandRecord> import_visual_record(
     return record;
 }
 
+std::optional<CombatantVisualCommandRecord> import_visual_record(
+    std::string_view object,
+    SpiceStdVisualJsonLoadResult& result,
+    int fallback_index) {
+    const auto index = parse_json_int(object, "\"index\"").value_or(fallback_index);
+    const auto location_code = parse_json_int(object, "\"locationCode\"");
+    const auto opcode = parse_json_int(object, "\"opcode\"");
+    if (!location_code.has_value() || !opcode.has_value()) {
+        add_error(result, "record " + std::to_string(index) + " missing locationCode/opcode");
+        return std::nullopt;
+    }
+
+    SpiceStdEntryProjection projected{
+        .index = index,
+        .location_code = static_cast<std::int16_t>(*location_code),
+        .opcode = static_cast<std::int16_t>(*opcode),
+        .payload_size = parse_json_int(object, "\"payloadSize\"").value_or(0),
+        .payload_in_bounds =
+            parse_json_bool(object, "\"payloadInBounds\"").value_or(false),
+    };
+    const auto payload_hex = parse_json_string(object, "\"payloadBytesHex\"");
+    if (payload_hex.has_value()) {
+        const auto decoded = decode_payload_hex(*payload_hex);
+        if (!decoded.has_value()) {
+            add_error(result, "record " + std::to_string(index) + " has invalid payloadBytesHex");
+            return std::nullopt;
+        }
+        projected.payload_bytes = *decoded;
+    }
+    return decode_visual_record(projected, result, fallback_index);
+}
+
 std::optional<Std0EntryRecord> import_record(
     std::string_view object,
     SpiceStd0JsonLoadResult& result,
@@ -697,6 +713,73 @@ std::optional<CombatantStdActionRow> import_action_row(
 }
 
 } // namespace
+
+SpiceStd0JsonLoadResult project_spice_std0_table(
+    std::span<const SpiceStdEntryProjection> records) {
+    SpiceStd0JsonLoadResult result;
+    result.records_seen = static_cast<int>(records.size());
+    for (std::size_t index = 0; index < records.size(); ++index) {
+        const auto& projected = records[index];
+        Std0EntryRecord record{
+            .location_code = projected.location_code,
+            .opcode = projected.opcode,
+        };
+        if (record.location_code >= 0
+            && projected.payload_in_bounds
+            && projected.payload_bytes.size() >= 6U) {
+            const auto primary = payload_s16_be(projected.payload_bytes, 0);
+            const auto generic_secondary = payload_s16_be(projected.payload_bytes, 2);
+            const auto direct_secondary = payload_s16_be(projected.payload_bytes, 4);
+            if (!primary.has_value() || !generic_secondary.has_value()
+                || !direct_secondary.has_value()) {
+                add_error(result, "record " + std::to_string(projected.index)
+                    + " has invalid payload gate fields");
+                continue;
+            }
+            record.has_payload = true;
+            record.payload.primary_action_key = *primary;
+            record.payload.generic_secondary_key = *generic_secondary;
+            record.payload.direct_gate_secondary_key = *direct_secondary;
+        }
+        result.table.entries.push_back(record);
+        ++result.records_imported;
+        if (record.location_code < 0) {
+            result.table.includes_sentinel = true;
+            break;
+        }
+    }
+    if (result.table.entries.empty()) {
+        add_error(result, "STD entry records did not contain any importable records");
+    }
+    result.ok = result.errors.empty();
+    return result;
+}
+
+SpiceStdVisualJsonLoadResult project_spice_std_visual_resource(
+    std::span<const SpiceStdEntryProjection> records) {
+    SpiceStdVisualJsonLoadResult result;
+    result.records_seen = static_cast<int>(records.size());
+    for (std::size_t index = 0; index < records.size(); ++index) {
+        const auto decoded =
+            decode_visual_record(records[index], result, static_cast<int>(index));
+        if (!decoded.has_value()) {
+            continue;
+        }
+        result.resource.records.push_back(*decoded);
+        ++result.records_imported;
+        if (decoded->location_code < 0) {
+            result.resource.includes_sentinel = true;
+            break;
+        }
+    }
+    result.resource.selector_table =
+        combatant_visual_selector_table(result.resource);
+    if (result.resource.records.empty()) {
+        add_error(result, "STD entry records did not contain any importable records");
+    }
+    result.ok = result.errors.empty();
+    return result;
+}
 
 SpiceStd0JsonLoadResult load_spice_std0_table_from_json_text(std::string_view json_text) {
     SpiceStd0JsonLoadResult result;

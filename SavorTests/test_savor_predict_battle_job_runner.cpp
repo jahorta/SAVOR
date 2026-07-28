@@ -1,7 +1,9 @@
 #include <gtest/gtest.h>
 
 #include "BattleJobBatchRunOptions.h"
+#include "BattleJobBatchRunManifest.h"
 #include "BattleJobClone.h"
+#include "BattleJobRunManifest.h"
 #include "BattleJobRunOptions.h"
 #include "ProbeCpuCoreEnvironment.h"
 #include "common/SqliteDbFixture.h"
@@ -16,9 +18,11 @@
 
 #include <sqlite3.h>
 
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -27,6 +31,34 @@
 namespace {
 
 using namespace savor::predict;
+
+BattlePredictorResourceBundlePtr MakeManifestResourceInputs(
+    BattlePredictorResourceProviderKind provider) {
+    auto bundle = std::make_shared<BattlePredictorResourceBundle>();
+    bundle->status = BattlePredictorResourceInputStatus::Ready;
+    bundle->provider_kind = provider;
+    bundle->adapter_version = "manifest-test-adapter";
+    bundle->spice_revision = "manifest-test-spice";
+    bundle->bundle_digest = "manifest-test-digest";
+    bundle->sources.push_back({
+        .logical_role = "ma000.primary_std",
+        .relative_path = "bchara/MA000.std",
+        .normalized_relative_path = "bchara/ma000.std",
+        .source_path = "D:/fixture/bchara/MA000.std",
+        .size_bytes = 4,
+        .sha256 = "manifest-test-sha256",
+        .parser_identity = "manifest-test-parser",
+        .parser_status = "ready",
+    });
+    return bundle;
+}
+
+std::string ReadManifestText(const std::filesystem::path& path) {
+    std::ifstream input(path, std::ios::binary);
+    std::ostringstream contents;
+    contents << input.rdbuf();
+    return contents.str();
+}
 
 std::optional<std::string> QueryText(sqlite3* db, const char* sql, std::int64_t arg) {
     sqlite3_stmt* st = nullptr;
@@ -317,16 +349,46 @@ TEST(SavorPredictBattleJobRunOptions, ValidatesSelectorsAndRuntimePaths)
             "--exec-job-id", "34",
             "--iso", "D:/SoATAS/game.gcm",
             "--dolphin-base-dir", "D:/SoATAS/dolphin",
-            "--std-disc-dump-root", "D:/disc",
+            "--disc-dump-root", "D:/disc",
+            "--std-disc-dump-root", "D:/disc/.",
             "--spice-file-parsing-exe", "D:/tools/SpiceFileParsing.exe",
         },
         "SavorPredict.exe");
     EXPECT_TRUE(std_options.errors.empty())
         << (std_options.errors.empty() ? "" : std_options.errors.front());
-    EXPECT_EQ(std_options.options.std_disc_dump_root, std::filesystem::path("D:/disc"));
+    EXPECT_EQ(std_options.options.disc_dump_root, std::filesystem::path("D:/disc"));
+    EXPECT_NE(
+        std::find_if(
+            std_options.warnings.begin(),
+            std_options.warnings.end(),
+            [](const std::string& warning) {
+                return warning.find("--spice-file-parsing-exe")
+                    != std::string::npos
+                    && warning.find("ignored") != std::string::npos;
+            }),
+        std_options.warnings.end());
     EXPECT_EQ(
         std_options.options.spice_file_parsing_exe,
         std::filesystem::path("D:/tools/SpiceFileParsing.exe"));
+    const auto conflicting_resource_roots =
+        parse_battle_job_run_tokens(
+            {
+                "--exec-job-id", "34",
+                "--iso", "D:/SoATAS/game.gcm",
+                "--dolphin-base-dir", "D:/SoATAS/dolphin",
+                "--disc-dump-root", "D:/disc",
+                "--std-disc-dump-root", "D:/other",
+            },
+            "SavorPredict.exe");
+    EXPECT_NE(
+        std::find_if(
+            conflicting_resource_roots.errors.begin(),
+            conflicting_resource_roots.errors.end(),
+            [](const std::string& error) {
+                return error.find("must resolve to the same path")
+                    != std::string::npos;
+            }),
+        conflicting_resource_roots.errors.end());
 
     const auto both = parse_battle_job_run_tokens(
         {
@@ -547,16 +609,46 @@ TEST(SavorPredictBattleJobBatchRunOptions, ParsesRepeatedIdsListFileAndTimeoutDe
             "--exec-job-id", "101",
             "--iso", "D:/SoATAS/game.gcm",
             "--dolphin-base-dir", "D:/SoATAS/dolphin",
-            "--std-disc-dump-root", "D:/disc",
+            "--disc-dump-root", "D:/disc",
+            "--std-disc-dump-root", "D:/disc/.",
             "--spice-file-parsing-exe", "D:/tools/SpiceFileParsing.exe",
         },
         "SavorPredict.exe");
     EXPECT_TRUE(std_options.errors.empty())
         << (std_options.errors.empty() ? "" : std_options.errors.front());
-    EXPECT_EQ(std_options.options.std_disc_dump_root, std::filesystem::path("D:/disc"));
+    EXPECT_EQ(std_options.options.disc_dump_root, std::filesystem::path("D:/disc"));
+    EXPECT_NE(
+        std::find_if(
+            std_options.warnings.begin(),
+            std_options.warnings.end(),
+            [](const std::string& warning) {
+                return warning.find("--spice-file-parsing-exe")
+                    != std::string::npos
+                    && warning.find("ignored") != std::string::npos;
+            }),
+        std_options.warnings.end());
     EXPECT_EQ(
         std_options.options.spice_file_parsing_exe,
         std::filesystem::path("D:/tools/SpiceFileParsing.exe"));
+    const auto conflicting_resource_roots =
+        parse_battle_job_batch_run_tokens(
+            {
+                "--exec-job-id", "101",
+                "--iso", "D:/SoATAS/game.gcm",
+                "--dolphin-base-dir", "D:/SoATAS/dolphin",
+                "--disc-dump-root", "D:/disc",
+                "--std-disc-dump-root", "D:/other",
+            },
+            "SavorPredict.exe");
+    EXPECT_NE(
+        std::find_if(
+            conflicting_resource_roots.errors.begin(),
+            conflicting_resource_roots.errors.end(),
+            [](const std::string& error) {
+                return error.find("must resolve to the same path")
+                    != std::string::npos;
+            }),
+        conflicting_resource_roots.errors.end());
 
     const auto invalid_workers = parse_battle_job_batch_run_tokens(
         {
@@ -625,6 +717,118 @@ TEST(SavorPredictBattleJobBatchRunOptions, ParsesRepeatedIdsListFileAndTimeoutDe
         "SavorPredict.exe");
     EXPECT_TRUE(jit.errors.empty()) << (jit.errors.empty() ? "" : jit.errors.front());
     EXPECT_EQ(jit.options.probe_cpu_core, ProbeCpuCore::Jit);
+}
+
+TEST(
+    SavorPredictBattleJobManifests,
+    SerializeDirectAndLegacyResourceInputFieldsConditionally) {
+    const auto root = std::filesystem::temp_directory_path()
+        / ("savor_predict_resource_manifest_test_"
+            + std::to_string(
+                std::chrono::steady_clock::now()
+                    .time_since_epoch()
+                    .count()));
+    ASSERT_TRUE(std::filesystem::create_directories(root));
+
+    const auto direct_inputs = MakeManifestResourceInputs(
+        BattlePredictorResourceProviderKind::DirectSpice);
+    BattleJobRunSummary direct_single;
+    direct_single.resource_inputs = direct_inputs;
+    direct_single.options.resource_inputs = direct_inputs;
+    std::ostringstream error;
+    const auto direct_single_path = root / "direct-single.json";
+    ASSERT_TRUE(write_battle_job_run_manifest(
+        direct_single, direct_single_path, error))
+        << error.str();
+    const auto direct_single_json =
+        ReadManifestText(direct_single_path);
+    EXPECT_NE(
+        direct_single_json.find(
+            "\"schema\": \"savor_predict_battle_job_run_v2\""),
+        std::string::npos);
+    EXPECT_NE(
+        direct_single_json.find(
+            "\"provider_kind\":\"direct_spice\""),
+        std::string::npos);
+    EXPECT_NE(
+        direct_single_json.find("\"normalized_relative_path\""),
+        std::string::npos);
+    EXPECT_NE(
+        direct_single_json.find("\"source_path\""),
+        std::string::npos);
+    EXPECT_NE(
+        direct_single_json.find("\"parser_identity\""),
+        std::string::npos);
+    EXPECT_NE(
+        direct_single_json.find("\"diagnostic_count\""),
+        std::string::npos);
+    EXPECT_EQ(
+        direct_single_json.find("\"std_json_cache\""),
+        std::string::npos);
+
+    BattleJobBatchRunSummary direct_batch;
+    direct_batch.resource_inputs = direct_inputs;
+    direct_batch.options.resource_inputs = direct_inputs;
+    const auto direct_batch_path = root / "direct-batch.json";
+    ASSERT_TRUE(write_battle_job_batch_run_manifest(
+        direct_batch, direct_batch_path, error))
+        << error.str();
+    const auto direct_batch_json =
+        ReadManifestText(direct_batch_path);
+    EXPECT_NE(
+        direct_batch_json.find(
+            "\"schema\": \"savor_predict_battle_job_batch_run_v2\""),
+        std::string::npos);
+    EXPECT_NE(
+        direct_batch_json.find(
+            "\"provider_kind\":\"direct_spice\""),
+        std::string::npos);
+    EXPECT_EQ(
+        direct_batch_json.find("\"std_json_cache\""),
+        std::string::npos);
+
+    const auto legacy_inputs = MakeManifestResourceInputs(
+        BattlePredictorResourceProviderKind::LegacyStdJsonDirectMld);
+    BattleJobRunSummary legacy_single;
+    legacy_single.resource_inputs = legacy_inputs;
+    legacy_single.options.resource_inputs = legacy_inputs;
+    legacy_single.options.action_view_std_json_dir =
+        "D:/fixture/std_json";
+    const auto legacy_single_path = root / "legacy-single.json";
+    ASSERT_TRUE(write_battle_job_run_manifest(
+        legacy_single, legacy_single_path, error))
+        << error.str();
+    const auto legacy_single_json =
+        ReadManifestText(legacy_single_path);
+    EXPECT_NE(
+        legacy_single_json.find(
+            "\"provider_kind\":\"legacy_std_json_direct_mld\""),
+        std::string::npos);
+    EXPECT_NE(
+        legacy_single_json.find("\"std_json_cache\""),
+        std::string::npos);
+
+    BattleJobBatchRunSummary legacy_batch;
+    legacy_batch.resource_inputs = legacy_inputs;
+    legacy_batch.options.resource_inputs = legacy_inputs;
+    legacy_batch.options.action_view_std_json_dir =
+        "D:/fixture/std_json";
+    const auto legacy_batch_path = root / "legacy-batch.json";
+    ASSERT_TRUE(write_battle_job_batch_run_manifest(
+        legacy_batch, legacy_batch_path, error))
+        << error.str();
+    const auto legacy_batch_json =
+        ReadManifestText(legacy_batch_path);
+    EXPECT_NE(
+        legacy_batch_json.find(
+            "\"provider_kind\":\"legacy_std_json_direct_mld\""),
+        std::string::npos);
+    EXPECT_NE(
+        legacy_batch_json.find("\"std_json_cache\""),
+        std::string::npos);
+
+    std::error_code cleanup_error;
+    std::filesystem::remove_all(root, cleanup_error);
 }
 
 TEST(SavorPredictProbeCpuCoreEnvironment, SetsAndRestoresWorkerOverride)

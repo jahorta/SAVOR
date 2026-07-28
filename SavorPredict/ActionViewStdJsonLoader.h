@@ -4,6 +4,7 @@
 #include "CombatantVisualDispatcherModel.h"
 
 #include <filesystem>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -42,6 +43,24 @@ struct SpiceStdActionRowsLoadResult {
     int rows_imported = 0;
     std::vector<std::string> errors;
 };
+
+// SAVOR-owned projection of one SPICE STD entry-table record.  Direct SPICE
+// consumers use this boundary so SPICE model types do not escape the adapter,
+// while the JSON compatibility path shares the same payload decoder.
+struct SpiceStdEntryProjection {
+    int index = -1;
+    std::int16_t location_code = -1;
+    std::int16_t opcode = 0;
+    int payload_size = 0;
+    bool payload_in_bounds = false;
+    std::vector<std::uint8_t> payload_bytes;
+};
+
+SpiceStd0JsonLoadResult project_spice_std0_table(
+    std::span<const SpiceStdEntryProjection> records);
+
+SpiceStdVisualJsonLoadResult project_spice_std_visual_resource(
+    std::span<const SpiceStdEntryProjection> records);
 
 SpiceStd0JsonLoadResult load_spice_std0_table_from_json_text(std::string_view json_text);
 

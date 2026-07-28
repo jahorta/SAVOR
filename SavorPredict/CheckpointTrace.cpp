@@ -1,6 +1,5 @@
 #include "CheckpointTrace.h"
 
-#include "ActionViewStdJsonCache.h"
 #include "ActionViewCameraModel.h"
 #include "ActionSetupCheckpointModel.h"
 #include "ActionSourceCheckpointModel.h"
@@ -9,6 +8,7 @@
 #include "AttackDamageValueCheckpointModel.h"
 #include "AttackResolutionCheckpointModel.h"
 #include "BattlePredictionDbInput.h"
+#include "CliResourceInputCompatibility.h"
 #include "CritGateCheckpointModel.h"
 #include "CounterCheckpointModel.h"
 #include "DropCheckpointModel.h"
@@ -671,7 +671,7 @@ std::vector<PredictedAttackParamChain> build_predicted_attack_param_chains(
     input_options.db_root = options.db_root;
     input_options.selector.turn_job_id = options.turn_job_id;
     input_options.selector.exec_job_id = options.exec_job_id;
-    input_options.action_view_std_json_dir = options.action_view_std_json_dir;
+    input_options.resource_inputs = options.resource_inputs;
     input_options.allow_seed_candidate_fallback = true;
     if (const auto live_seed = first_live_rng_seed_before(events); live_seed.has_value()) {
         input_options.start_seed_override = *live_seed;
@@ -1012,6 +1012,24 @@ void write_text_report(
     std::ostream& out) {
     out << "SavorPredict trace-checkpoints\n";
     out << "  checkpoint_file: " << options.checkpoint_file.string() << "\n";
+    if (options.resource_inputs != nullptr) {
+        out << "  resource_inputs: provider="
+            << battle_predictor_resource_provider_kind_name(
+                   options.resource_inputs->provider_kind)
+            << " status="
+            << battle_predictor_resource_input_status_name(
+                   options.resource_inputs->status)
+            << " bundle_digest="
+            << options.resource_inputs->bundle_digest
+            << " adapter_version="
+            << options.resource_inputs->adapter_version
+            << " spice_revision="
+            << options.resource_inputs->spice_revision
+            << " sources=" << options.resource_inputs->sources.size()
+            << "\n";
+    } else {
+        out << "  resource_inputs: unavailable\n";
+    }
     if (options.turn_job_id.has_value()) {
         out << "  turn_job_id: " << *options.turn_job_id << "\n";
     }
@@ -1851,7 +1869,7 @@ void write_text_report(
     const auto action_view_gate = summarize_action_view_gate_checkpoints(
         result.events,
         ActionViewGateCheckpointOptions{
-            .action_view_std_json_dir = options.action_view_std_json_dir,
+            .resource_inputs = options.resource_inputs,
         });
     const auto action_view_resource = summarize_action_view_resource_checkpoints(
         result.events,
@@ -2186,6 +2204,12 @@ void write_text_report(
             write_optional_string(out, event.matched_std_filename);
             out << " matched_std0_filename=";
             write_optional_string(out, event.matched_std0_filename);
+            out << " matched_std0_source_path=";
+            write_optional_string(out, event.matched_std0_source_path);
+            if (event.matched_std0_json_path.has_value()) {
+                out << " matched_std0_json_path=";
+                write_optional_string(out, event.matched_std0_json_path);
+            }
             out << " matched_std0_materialization_source=";
             write_optional_string(out, event.matched_std0_materialization_source);
             out << " matched_std0_sample_row_offset=";
@@ -3184,7 +3208,53 @@ void write_json_report(
     }
 
     out << "{\n";
+    out << "  \"schema_version\": 2,\n";
     out << "  \"checkpoint_file\": \"" << json_escape(options.checkpoint_file.string()) << "\",\n";
+    out << "  \"resource_inputs\": ";
+    if (options.resource_inputs == nullptr) {
+        out << "null";
+    } else {
+        const auto& resources = *options.resource_inputs;
+        out << "{"
+            << "\"provider_kind\":\""
+            << battle_predictor_resource_provider_kind_name(
+                   resources.provider_kind)
+            << "\",\"status\":\""
+            << battle_predictor_resource_input_status_name(resources.status)
+            << "\",\"adapter_version\":\""
+            << json_escape(resources.adapter_version)
+            << "\",\"spice_revision\":\""
+            << json_escape(resources.spice_revision)
+            << "\",\"bundle_digest\":\""
+            << json_escape(resources.bundle_digest)
+            << "\",\"sources\":[";
+        for (std::size_t source_index = 0;
+             source_index < resources.sources.size();
+             ++source_index) {
+            if (source_index != 0) {
+                out << ',';
+            }
+            const auto& source = resources.sources[source_index];
+            out << "{\"logical_role\":\""
+                << json_escape(source.logical_role)
+                << "\",\"relative_path\":\""
+                << json_escape(source.relative_path)
+                << "\",\"normalized_relative_path\":\""
+                << json_escape(source.normalized_relative_path)
+                << "\",\"source_path\":\""
+                << json_escape(source.source_path)
+                << "\",\"size_bytes\":" << source.size_bytes
+                << ",\"sha256\":\""
+                << json_escape(source.sha256)
+                << "\",\"parser_identity\":\""
+                << json_escape(source.parser_identity)
+                << "\",\"parser_status\":\""
+                << json_escape(source.parser_status) << "\"}";
+        }
+        out << "],\"diagnostic_count\":"
+            << resources.diagnostics.size() << "}";
+    }
+    out << ",\n";
     out << "  \"turn_job_id\": ";
     if (options.turn_job_id.has_value()) {
         out << *options.turn_job_id;
@@ -4090,7 +4160,7 @@ void write_json_report(
     const auto action_view_gate = summarize_action_view_gate_checkpoints(
         result.events,
         ActionViewGateCheckpointOptions{
-            .action_view_std_json_dir = options.action_view_std_json_dir,
+            .resource_inputs = options.resource_inputs,
         });
     const auto action_view_resource = summarize_action_view_resource_checkpoints(
         result.events,
@@ -4436,8 +4506,12 @@ void write_json_report(
         write_json_optional_string(out, event.matched_std_filename);
         out << ", \"matched_std0_filename\": ";
         write_json_optional_string(out, event.matched_std0_filename);
-        out << ", \"matched_std0_json_path\": ";
-        write_json_optional_string(out, event.matched_std0_json_path);
+        out << ", \"matched_std0_source_path\": ";
+        write_json_optional_string(out, event.matched_std0_source_path);
+        if (event.matched_std0_json_path.has_value()) {
+            out << ", \"matched_std0_json_path\": ";
+            write_json_optional_string(out, event.matched_std0_json_path);
+        }
         out << ", \"matched_std0_materialization_source\": ";
         write_json_optional_string(out, event.matched_std0_materialization_source);
         out << ", \"matched_std0_sample_row_offset\": ";
@@ -5496,6 +5570,39 @@ void write_json_report(
 
 } // namespace
 
+TraceCheckpointsResourceCliParseResult
+parse_trace_checkpoints_resource_input_tokens(
+    const std::vector<std::string>& args) {
+    TraceCheckpointsResourceCliParseResult result;
+    cli_detail::DiscDumpRootOptions disc_dump_root_options;
+    for (std::size_t index = 0; index < args.size(); ++index) {
+        const auto& option = args[index];
+        if (option != "--disc-dump-root"
+            && option != "--std-disc-dump-root"
+            && option != "--spice-file-parsing-exe") {
+            continue;
+        }
+        if (index + 1 >= args.size()) {
+            result.errors.push_back(option + " requires a value.");
+            continue;
+        }
+        const auto& value = args[++index];
+        if (option == "--spice-file-parsing-exe") {
+            result.spice_file_parsing_exe = value;
+            cli_detail::add_spice_file_parsing_exe_warning(
+                result.warnings);
+        } else {
+            disc_dump_root_options.observe(
+                option, value, result.errors);
+        }
+    }
+    disc_dump_root_options.finalize(
+        result.disc_dump_root,
+        result.errors,
+        result.warnings);
+    return result;
+}
+
 const std::map<std::string, std::string>& known_rng_callsite_owners() {
     static const std::map<std::string, std::string> owners = {
         {"8001413C", "pre_ai_battle_start_camera"},
@@ -5585,22 +5692,12 @@ int run_trace_checkpoints(const TraceCheckpointsOptions& options, std::ostream& 
     }
 
     auto resolved_options = options;
-    const auto std_resolution = resolve_action_view_std_json_cache({
-        .db_root = options.std_json_cache_db_root.empty()
-            ? options.db_root
-            : options.std_json_cache_db_root,
-        .explicit_std_json_dir = options.action_view_std_json_dir,
-        .std_disc_dump_root = options.std_disc_dump_root,
-        .spice_file_parsing_exe = options.spice_file_parsing_exe,
-    });
-    for (const auto& diagnostic : std_resolution.diagnostics) {
-        err << "STD JSON cache: " << diagnostic << "\n";
-    }
-    if (std_resolution.fatal_error) {
+    if (!cli_detail::ensure_first_battle_resource_inputs(
+            resolved_options.disc_dump_root,
+            resolved_options.action_view_std_json_dir,
+            resolved_options.resource_inputs,
+            err)) {
         return 1;
-    }
-    if (std_resolution.available) {
-        resolved_options.action_view_std_json_dir = std_resolution.resolved_std_json_dir;
     }
 
     std::ifstream input(resolved_options.checkpoint_file);

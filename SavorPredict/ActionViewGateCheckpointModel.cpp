@@ -32,14 +32,16 @@ struct KnownStd0Candidate {
     std::string resource_stem;
     std::string std_filename;
     std::string std0_filename;
-    std::string std0_json_path;
+    std::string std0_source_path;
+    std::optional<std::string> std0_json_path;
     std::string materialization_source;
-    Std0Table table;
+    Std0Table companion_table;
+    Std0Table runtime_table;
 };
 
 std::optional<KnownStd0Candidate> expected_candidate_for_actor_slot(
     int actor_slot,
-    const std::filesystem::path& spice_std_json_dir);
+    const BattlePredictorResourceBundlePtr& resource_inputs);
 
 std::optional<int> parse_field_int(const CheckpointEvent& event, const char* field_name) {
     const auto found = event.fields.find(field_name);
@@ -357,14 +359,17 @@ std::optional<ActionViewSelectorInput> selector_input_from_gate_event(
 std::optional<Std0Table> expected_aux_table_for_event(
     const ActionViewGateCheckpointEvent& event,
     const ActionViewGateCheckpointOptions& options) {
-    if (!event.active_slot.has_value()) {
+    if (!event.active_slot.has_value()
+        || options.resource_inputs == nullptr) {
         return std::nullopt;
     }
-    const auto expected = expected_candidate_for_actor_slot(*event.active_slot, options.action_view_std_json_dir);
+    const auto expected = expected_candidate_for_actor_slot(
+        *event.active_slot,
+        options.resource_inputs);
     if (!expected.has_value()) {
         return std::nullopt;
     }
-    return expected->table;
+    return expected->runtime_table;
 }
 
 bool helper_call_matches_prediction(
@@ -545,9 +550,9 @@ std::optional<int> sampled_table_candidate_row_offset(
 }
 
 std::vector<KnownStd0Candidate> load_first_battle_std0_candidates(
-    const std::filesystem::path& spice_std_json_dir) {
+    const BattlePredictorResourceBundlePtr& resource_inputs) {
     std::vector<KnownStd0Candidate> candidates;
-    if (spice_std_json_dir.empty()) {
+    if (resource_inputs == nullptr) {
         return candidates;
     }
 
@@ -555,7 +560,7 @@ std::vector<KnownStd0Candidate> load_first_battle_std0_candidates(
     for (const int actor_slot : {0, 1, 4, 5}) {
         auto resolved = resolve_first_battle_action_view_std0_table_for_slot(
             actor_slot,
-            spice_std_json_dir);
+            *resource_inputs);
         if (!resolved.ok) {
             continue;
         }
@@ -569,10 +574,19 @@ std::vector<KnownStd0Candidate> load_first_battle_std0_candidates(
             .resource_stem = resolved.resource_stem,
             .std_filename = resolved.std_filename,
             .std0_filename = resolved.std0_filename,
-            .std0_json_path = resolved.std0_json_path.string(),
+            .std0_source_path = resolved.std0_source_path.string(),
+            .std0_json_path =
+                resource_inputs->provider_kind
+                        == BattlePredictorResourceProviderKind::
+                            LegacyStdJsonDirectMld
+                    && !resolved.std0_json_path.empty()
+                ? std::optional<std::string>{
+                    resolved.std0_json_path.string()}
+                : std::nullopt,
             .materialization_source =
                 action_view_std_materialization_source_name(resolved.materialization_source),
-            .table = resolved.table,
+            .companion_table = resolved.companion_table,
+            .runtime_table = resolved.table,
         });
     }
     return candidates;
@@ -580,13 +594,13 @@ std::vector<KnownStd0Candidate> load_first_battle_std0_candidates(
 
 std::optional<KnownStd0Candidate> expected_candidate_for_actor_slot(
     int actor_slot,
-    const std::filesystem::path& spice_std_json_dir) {
-    if (spice_std_json_dir.empty()) {
+    const BattlePredictorResourceBundlePtr& resource_inputs) {
+    if (resource_inputs == nullptr) {
         return std::nullopt;
     }
     auto resolved = resolve_first_battle_action_view_std0_table_for_slot(
         actor_slot,
-        spice_std_json_dir);
+        *resource_inputs);
     if (!resolved.ok) {
         return std::nullopt;
     }
@@ -595,10 +609,19 @@ std::optional<KnownStd0Candidate> expected_candidate_for_actor_slot(
         .resource_stem = resolved.resource_stem,
         .std_filename = resolved.std_filename,
         .std0_filename = resolved.std0_filename,
-        .std0_json_path = resolved.std0_json_path.string(),
+        .std0_source_path = resolved.std0_source_path.string(),
+        .std0_json_path =
+            resource_inputs->provider_kind
+                    == BattlePredictorResourceProviderKind::
+                        LegacyStdJsonDirectMld
+                && !resolved.std0_json_path.empty()
+            ? std::optional<std::string>{
+                resolved.std0_json_path.string()}
+            : std::nullopt,
         .materialization_source =
             action_view_std_materialization_source_name(resolved.materialization_source),
-        .table = resolved.table,
+        .companion_table = resolved.companion_table,
+        .runtime_table = resolved.table,
     };
 }
 
@@ -615,7 +638,9 @@ void attach_std0_identity(
     std::vector<const KnownStd0Candidate*> matches;
     std::optional<int> unique_match_offset;
     for (const auto& candidate : candidates) {
-        const auto offset = sampled_table_candidate_row_offset(sampled_aux_table, candidate.table);
+        const auto offset = sampled_table_candidate_row_offset(
+            sampled_aux_table,
+            candidate.companion_table);
         if (offset.has_value()) {
             matches.push_back(&candidate);
             unique_match_offset = offset;
@@ -630,7 +655,12 @@ void attach_std0_identity(
         observed.matched_resource_stem = matches.front()->resource_stem;
         observed.matched_std_filename = matches.front()->std_filename;
         observed.matched_std0_filename = matches.front()->std0_filename;
-        observed.matched_std0_json_path = matches.front()->std0_json_path;
+        if (!matches.front()->std0_source_path.empty()) {
+            observed.matched_std0_source_path =
+                matches.front()->std0_source_path;
+        }
+        observed.matched_std0_json_path =
+            matches.front()->std0_json_path;
         observed.matched_std0_materialization_source = matches.front()->materialization_source;
         observed.matched_std0_sample_row_offset = unique_match_offset;
     } else {
@@ -642,13 +672,15 @@ void attach_std0_identity(
     }
     const auto expected = expected_candidate_for_actor_slot(
         *observed.active_slot,
-        options.action_view_std_json_dir);
+        options.resource_inputs);
     if (!expected.has_value()) {
         return;
     }
     observed.actor_slot_expected_std0_filename = expected->std0_filename;
     observed.actor_slot_expected_std0_sample_row_offset =
-        sampled_table_candidate_row_offset(sampled_aux_table, expected->table);
+        sampled_table_candidate_row_offset(
+            sampled_aux_table,
+            expected->companion_table);
     observed.actor_slot_expected_std0_matches_sample =
         observed.actor_slot_expected_std0_sample_row_offset.has_value();
     if (*observed.actor_slot_expected_std0_matches_sample) {
@@ -683,7 +715,7 @@ ActionViewGateCheckpointSummary summarize_action_view_gate_checkpoints(
     std::map<int, int> mode0e_draw_by_sequence;
     std::map<int, int> attack_hit_draw_by_sequence;
     const auto known_std0_candidates =
-        load_first_battle_std0_candidates(options.action_view_std_json_dir);
+        load_first_battle_std0_candidates(options.resource_inputs);
 
     for (const auto& event : events) {
         if (owner_is(event, kMode0eOwner)) {

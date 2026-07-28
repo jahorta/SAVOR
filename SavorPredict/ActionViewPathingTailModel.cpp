@@ -244,8 +244,10 @@ Fun80011694Result run_fun_80011694(
 
         if (!combatant->instruction_compare_known) {
             candidate.reason = "accepted_but_instruction_compare_missing";
-            result.status = ActionViewPathingTailStatus::MissingInput;
-            result.detail = "FUN_80011694 accepted a candidate whose IW+0x15C producer is not modeled";
+            result.status = ActionViewPathingTailStatus::Provisional;
+            result.detail =
+                "FUN_80011694 accepted a candidate whose IW+0x15C producer is not modeled; "
+                "the modeled scan remains provisional";
             result.candidates.push_back(candidate);
             continue;
         }

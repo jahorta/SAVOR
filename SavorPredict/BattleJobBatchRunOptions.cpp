@@ -1,4 +1,5 @@
 #include "BattleJobBatchRunOptions.h"
+#include "CliResourceInputCompatibility.h"
 
 #include <algorithm>
 #include <chrono>
@@ -400,6 +401,7 @@ BattleJobBatchRunParseResult parse_battle_job_batch_run_tokens(
     BattleJobBatchRunParseResult result;
     result.options.run_root = default_battle_job_batch_run_root();
     result.options.worker_exe_path = default_battle_job_worker_exe(executable_path);
+    cli_detail::DiscDumpRootOptions disc_dump_root_options;
 
     for (std::size_t i = 0; i < args.size(); ++i) {
         const auto& arg = args[i];
@@ -489,13 +491,16 @@ BattleJobBatchRunParseResult parse_battle_job_batch_run_tokens(
             if (require_value(args, i, arg, value, result.errors)) {
                 result.options.action_view_std_json_dir = value;
             }
-        } else if (arg == "--std-disc-dump-root") {
+        } else if (arg == "--disc-dump-root"
+            || arg == "--std-disc-dump-root") {
             if (require_value(args, i, arg, value, result.errors)) {
-                result.options.std_disc_dump_root = value;
+                disc_dump_root_options.observe(arg, value, result.errors);
             }
         } else if (arg == "--spice-file-parsing-exe") {
             if (require_value(args, i, arg, value, result.errors)) {
                 result.options.spice_file_parsing_exe = value;
+                cli_detail::add_spice_file_parsing_exe_warning(
+                    result.warnings);
             }
         } else if (arg == "--sandbox-mode") {
             if (require_value(args, i, arg, value, result.errors)) {
@@ -556,6 +561,10 @@ BattleJobBatchRunParseResult parse_battle_job_batch_run_tokens(
         }
     }
 
+    disc_dump_root_options.finalize(
+        result.options.disc_dump_root,
+        result.errors,
+        result.warnings);
     if (!result.help_requested) {
         const auto validation_errors = validate_battle_job_batch_run_options(result.options);
         result.errors.insert(result.errors.end(), validation_errors.begin(), validation_errors.end());

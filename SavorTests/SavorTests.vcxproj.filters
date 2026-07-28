@@ -27,6 +27,8 @@
     <ClCompile Include="..\SavorPredict\BattleSourceModel.cpp" />
     <ClCompile Include="..\SavorPredict\BattleFrameStateModel.cpp" />
     <ClCompile Include="..\SavorPredict\BattlePredictor.cpp" />
+    <ClCompile Include="..\SavorPredict\BattlePredictorResourceBundle.cpp" />
+    <ClCompile Include="..\SavorPredict\SpiceBattleContentAdapter.cpp" />
     <ClCompile Include="..\SavorPredict\BattleInitialFacingModel.cpp" />
     <ClCompile Include="..\SavorPredict\BattleInitialTurnTypeModel.cpp" />
     <ClCompile Include="..\SavorPredict\BattlePredictorCli.cpp" />
@@ -46,6 +48,7 @@
     <ClCompile Include="..\SavorPredict\BattleTargetReactionStateModel.cpp" />
     <ClCompile Include="..\SavorPredict\DirectInstructionTransitionSelectorModel.cpp" />
     <ClCompile Include="..\SavorPredict\BattleJobBatchRunManifest.cpp" />
+    <ClCompile Include="..\SavorPredict\BattleJobRunManifest.cpp" />
     <ClCompile Include="..\SavorPredict\BattleJobBatchRunOptions.cpp" />
     <ClCompile Include="..\SavorPredict\BattleJobClone.cpp" />
     <ClCompile Include="..\SavorPredict\BattleJobRunOptions.cpp" />
@@ -120,6 +123,7 @@
     <ClCompile Include="test_savor_predict_battle_job_runner.cpp" />
     <ClCompile Include="test_savordb_debug_tool.cpp" />
     <ClCompile Include="test_savor_predict.cpp" />
+    <ClCompile Include="test_spice_battle_content_adapter.cpp" />
     <ClCompile Include="test_view_placement_cache.cpp" />
     <ClCompile Include="test_view_placement_geometry.cpp" />
     <ClCompile Include="test_tsqueue.cpp" />

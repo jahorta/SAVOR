@@ -102,20 +102,71 @@ void write_copied_artifacts(std::ostream& out, const std::vector<savor::dbutils:
     out << "],\n";
 }
 
-void write_std_json_cache(std::ostream& out, const ActionViewStdJsonCacheResolution& value) {
-    out << "  \"std_json_cache\": {"
-        << "\"resolved_std_json_dir\":\"" << json_escape(path_string(value.resolved_std_json_dir)) << "\","
-        << "\"cache_dir\":\"" << json_escape(path_string(value.cache_dir)) << "\","
-        << "\"disc_dump_root\":\"" << json_escape(path_string(value.disc_dump_root)) << "\","
-        << "\"spice_file_parsing_exe\":\"" << json_escape(path_string(value.spice_file_parsing_exe)) << "\","
-        << "\"used_explicit_dir\":" << (value.used_explicit_dir ? "true" : "false") << ","
-        << "\"cache_complete_before\":" << (value.cache_complete_before ? "true" : "false") << ","
-        << "\"generation_attempted\":" << (value.generation_attempted ? "true" : "false") << ","
-        << "\"generation_succeeded\":" << (value.generation_succeeded ? "true" : "false") << ","
-        << "\"available\":" << (value.available ? "true" : "false") << ","
-        << "\"fatal_error\":" << (value.fatal_error ? "true" : "false") << ","
-        << "\"spice_exit_code\":" << value.spice_exit_code
+void write_resource_inputs(
+    std::ostream& out,
+    const BattlePredictorResourceBundlePtr& value) {
+    out << "  \"resource_inputs\": ";
+    if (value == nullptr) {
+        out << "null,\n";
+        return;
+    }
+    out << "{"
+        << "\"provider_kind\":\""
+        << battle_predictor_resource_provider_kind_name(value->provider_kind)
+        << "\",\"status\":\""
+        << battle_predictor_resource_input_status_name(value->status)
+        << "\",\"adapter_version\":\""
+        << json_escape(value->adapter_version)
+        << "\",\"spice_revision\":\""
+        << json_escape(value->spice_revision)
+        << "\",\"bundle_digest\":\""
+        << json_escape(value->bundle_digest)
+        << "\",\"sources\":[";
+    for (std::size_t i = 0; i < value->sources.size(); ++i) {
+        if (i != 0) {
+            out << ",";
+        }
+        const auto& source = value->sources[i];
+        out << "{\"logical_role\":\""
+            << json_escape(source.logical_role)
+            << "\",\"relative_path\":\""
+            << json_escape(source.relative_path)
+            << "\",\"normalized_relative_path\":\""
+            << json_escape(source.normalized_relative_path)
+            << "\",\"source_path\":\""
+            << json_escape(source.source_path)
+            << "\",\"size_bytes\":" << source.size_bytes
+            << ",\"sha256\":\"" << json_escape(source.sha256)
+            << "\",\"parser_identity\":\""
+            << json_escape(source.parser_identity)
+            << "\",\"parser_status\":\""
+            << json_escape(source.parser_status) << "\"}";
+    }
+    out << "],\"diagnostic_count\":" << value->diagnostics.size()
         << "},\n";
+}
+
+void write_legacy_std_json_cache(
+    std::ostream& out,
+    const BattleJobBatchRunSummary& summary) {
+    if (summary.resource_inputs == nullptr
+        || summary.resource_inputs->provider_kind
+            != BattlePredictorResourceProviderKind::LegacyStdJsonDirectMld) {
+        return;
+    }
+    out << "  \"std_json_cache\": {"
+        << "\"resolved_std_json_dir\":\""
+        << json_escape(path_string(
+            summary.options.action_view_std_json_dir))
+        << "\",\"cache_dir\":\"\",\"disc_dump_root\":\""
+        << json_escape(path_string(summary.options.disc_dump_root))
+        << "\",\"spice_file_parsing_exe\":\"\","
+        << "\"used_explicit_dir\":true,"
+        << "\"cache_complete_before\":true,"
+        << "\"generation_attempted\":false,"
+        << "\"generation_succeeded\":false,"
+        << "\"available\":true,\"fatal_error\":false,"
+        << "\"spice_exit_code\":-1},\n";
 }
 
 void ensure_parent_dir(const std::filesystem::path& path, std::ostream& err, bool* ok) {
@@ -276,6 +327,7 @@ bool write_battle_job_batch_run_manifest(
     }
 
     file << "{\n";
+    file << "  \"schema\": \"savor_predict_battle_job_batch_run_v2\",\n";
     file << "  \"command\": \"run-battle-jobs\",\n";
     file << "  \"source_db_root\": \"" << json_escape(path_string(summary.options.db_root)) << "\",\n";
     file << "  \"run_root\": \"" << json_escape(path_string(summary.sandbox.run_root)) << "\",\n";
@@ -287,7 +339,8 @@ bool write_battle_job_batch_run_manifest(
     file << "  \"probe_mode\": \"" << probe_mode_name(summary.options.probe_mode) << "\",\n";
     file << "  \"probe_cpu_core\": \"" << probe_cpu_core_name(summary.options.probe_cpu_core) << "\",\n";
     file << "  \"capture_profile_path\": \"" << json_escape(path_string(summary.capture_profile_path)) << "\",\n";
-    write_std_json_cache(file, summary.std_json_cache);
+    write_resource_inputs(file, summary.resource_inputs);
+    write_legacy_std_json_cache(file, summary);
     file << "  \"worker_count\": " << summary.worker_count << ",\n";
     file << "  \"max_workers\": " << summary.options.max_workers << ",\n";
     file << "  \"wait_for_workers_ready\": "
@@ -389,8 +442,24 @@ bool write_battle_job_batch_run_text_summary(
     file << "battle_run_ms: " << optional_u32_for_text(summary.options.battle_run_ms) << "\n";
     file << "override_start_rng_seed: " << optional_hex_for_text(summary.options.override_start_rng_seed) << "\n";
     file << "override_fake_attacks_this_turn: " << optional_u32_for_text(summary.options.override_fake_attacks_this_turn) << "\n";
-    file << "std_json_cache: "
-        << summarize_action_view_std_json_cache_resolution(summary.std_json_cache) << "\n";
+    if (summary.resource_inputs == nullptr) {
+        file << "resource_inputs: unavailable\n";
+    } else {
+        file << "resource_inputs: provider="
+            << battle_predictor_resource_provider_kind_name(
+                summary.resource_inputs->provider_kind)
+            << " status="
+            << battle_predictor_resource_input_status_name(
+                summary.resource_inputs->status)
+            << " digest=" << summary.resource_inputs->bundle_digest
+            << "\n";
+    }
+    if (summary.resource_inputs != nullptr
+        && summary.resource_inputs->provider_kind
+            == BattlePredictorResourceProviderKind::LegacyStdJsonDirectMld) {
+        file << "std_json_cache: explicit legacy directory "
+            << summary.options.action_view_std_json_dir.string() << "\n";
+    }
     file << "timed_out: " << (summary.timed_out ? "true" : "false") << "\n";
     file << "jobs: " << summary.jobs.size() << "\n";
     for (const auto& job : summary.jobs) {
