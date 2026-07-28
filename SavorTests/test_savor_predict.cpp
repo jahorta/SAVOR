@@ -4398,6 +4398,62 @@ TEST(SavorPredictBattlePredictor, ValidatesDefaultFirstBattleSoldiersContract) {
     EXPECT_EQ(validation->status, BattlePredictionValidationStatus::Validated);
 }
 
+TEST(SavorPredictBattlePredictor, TurnOrderSummaryDoesNotDoubleCountLeafDraws) {
+    BattlePredictionInput input;
+    input.profile = first_battle_prediction_profile();
+    input.starting_rng_seed = 15u;
+    input.context = make_predictor_first_battle_context();
+    input.turn_plan = make_two_pc_attack_turn_plan(0);
+    configure_frame_prediction_sources(input);
+
+    const auto result = predict_battle(input);
+
+    const auto* turn_order = find_prediction_event(
+        result,
+        "turn_order",
+        "resolve_turn_order");
+    ASSERT_NE(turn_order, nullptr);
+    EXPECT_EQ(turn_order->draws_consumed, 0);
+    ASSERT_TRUE(turn_order->summarized_draws.has_value());
+    EXPECT_EQ(*turn_order->summarized_draws, 4);
+    ASSERT_TRUE(turn_order->rng_seed_before.has_value());
+    ASSERT_TRUE(turn_order->rng_seed_after.has_value());
+    EXPECT_NE(*turn_order->rng_seed_before, *turn_order->rng_seed_after);
+
+    int leaf_draws = 0;
+    int draws_through_turn_order = 0;
+    for (const auto& event : result.events) {
+        draws_through_turn_order += event.draws_consumed;
+        if (event.phase == "turn_order" && event.label == "entry") {
+            leaf_draws += event.draws_consumed;
+        }
+        if (&event == turn_order) {
+            break;
+        }
+    }
+    EXPECT_EQ(leaf_draws, 4);
+    EXPECT_EQ(draws_through_turn_order, 13);
+    EXPECT_EQ(result.exact_draws_through_turn_order, draws_through_turn_order);
+    auto seed_after_exact_draws = input.starting_rng_seed;
+    for (int i = 0; i < result.exact_draws_through_turn_order; ++i) {
+        seed_after_exact_draws = advance_once(seed_after_exact_draws);
+    }
+    EXPECT_EQ(seed_after_exact_draws, *turn_order->rng_seed_after);
+
+    std::ostringstream text_output;
+    write_battle_prediction_text(result, text_output);
+    EXPECT_NE(
+        text_output.str().find("draws=0 summarized_draws=4"),
+        std::string::npos);
+
+    std::ostringstream json_output;
+    write_battle_prediction_json(result, json_output);
+    EXPECT_NE(
+        json_output.str().find(
+            "\"draws_consumed\": 0, \"summarized_draws\": 4"),
+        std::string::npos);
+}
+
 TEST(SavorPredictBattlePredictor, FirstBattleSoldiersRejectsFakeAttacks) {
     BattlePredictionInput input;
     input.starting_rng_seed = 15u;
@@ -4676,6 +4732,9 @@ TEST(SavorPredictBattlePredictor, MarksQSortPriorityTiesProvisionalInPrediction)
     const auto* turn_order = find_prediction_event(result, "turn_order", "resolve_turn_order");
     ASSERT_NE(turn_order, nullptr);
     EXPECT_EQ(turn_order->status, BattlePredictionEventStatus::Provisional);
+    EXPECT_EQ(turn_order->draws_consumed, 0);
+    ASSERT_TRUE(turn_order->summarized_draws.has_value());
+    EXPECT_EQ(*turn_order->summarized_draws, 4);
     EXPECT_FALSE(result.exact_through_turn_order);
     EXPECT_TRUE(result.has_provisional_events);
 

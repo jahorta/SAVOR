@@ -501,6 +501,7 @@ const char* combatant_visual_command_kind_name(CombatantVisualCommandKind kind) 
     case CombatantVisualCommandKind::MotionPause: return "MotionPause";
     case CombatantVisualCommandKind::PointLight: return "PointLight";
     case CombatantVisualCommandKind::SystemCamera: return "SystemCamera";
+    case CombatantVisualCommandKind::SeRequest: return "SeRequest";
     case CombatantVisualCommandKind::SyntheticActionView: return "SyntheticActionView";
     }
     return "Unknown";

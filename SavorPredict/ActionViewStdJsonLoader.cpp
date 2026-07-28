@@ -392,6 +392,9 @@ CombatantVisualCommandKind visual_command_kind(std::uint32_t combined_type) {
     if (combined_type == 0x0003002AU) {
         return CombatantVisualCommandKind::SystemCamera;
     }
+    if (combined_type == 0x00030036U) {
+        return CombatantVisualCommandKind::SeRequest;
+    }
     return CombatantVisualCommandKind::Unknown;
 }
 
@@ -529,6 +532,47 @@ std::optional<CombatantVisualCommandRecord> import_visual_record(
             .hold_frames = *hold_frames,
             .step_frames = *step_frames,
             .mode = *mode,
+        };
+        ++result.visual_records_decoded;
+    } else if (record.kind == CombatantVisualCommandKind::SeRequest) {
+        const auto request_flags = payload_u32_be(record.payload_bytes, 0x10);
+        const auto reserved_14 = payload_s16_be(record.payload_bytes, 0x14);
+        const auto reserved_16 = payload_s16_be(record.payload_bytes, 0x16);
+        const auto subtype = payload_s16_be(record.payload_bytes, 0x18);
+        const auto trigger_frame = payload_s16_be(record.payload_bytes, 0x1a);
+        const auto end_frame = payload_s16_be(record.payload_bytes, 0x1c);
+        const auto channel = payload_s16_be(record.payload_bytes, 0x1e);
+        const auto candidate_a = payload_s16_be(record.payload_bytes, 0x20);
+        const auto cue = payload_s16_be(record.payload_bytes, 0x22);
+        const auto candidate_b = payload_s16_be(record.payload_bytes, 0x24);
+        const auto candidate_c = payload_s16_be(record.payload_bytes, 0x26);
+        const auto trailing_28 = payload_s16_be(record.payload_bytes, 0x28);
+        const auto trailing_2a = payload_s16_be(record.payload_bytes, 0x2a);
+        if (record.payload_bytes.size() < 0x2cU
+            || !request_flags.has_value() || !reserved_14.has_value()
+            || !reserved_16.has_value() || !subtype.has_value()
+            || !trigger_frame.has_value() || !end_frame.has_value()
+            || !channel.has_value() || !candidate_a.has_value()
+            || !cue.has_value() || !candidate_b.has_value()
+            || !candidate_c.has_value() || !trailing_28.has_value()
+            || !trailing_2a.has_value()) {
+            add_error(result, "SE REQUEST record " + std::to_string(index) + " has a short payload");
+            return std::nullopt;
+        }
+        record.se_request = CombatantVisualSeRequestPayload{
+            .request_flags = *request_flags,
+            .reserved_14 = *reserved_14,
+            .reserved_16 = *reserved_16,
+            .subtype = *subtype,
+            .trigger_frame = *trigger_frame,
+            .end_frame = *end_frame,
+            .channel = *channel,
+            .candidate_a = *candidate_a,
+            .cue = *cue,
+            .candidate_b = *candidate_b,
+            .candidate_c = *candidate_c,
+            .trailing_28 = *trailing_28,
+            .trailing_2a = *trailing_2a,
         };
         ++result.visual_records_decoded;
     }

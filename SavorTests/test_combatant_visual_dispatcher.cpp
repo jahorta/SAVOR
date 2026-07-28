@@ -123,6 +123,35 @@ std::string sparc_visual_json(const std::vector<std::uint8_t>& payload) {
     return json.str();
 }
 
+constexpr std::string_view kMa0000SeRequestRow17PayloadHex =
+    "000500000000000000000000000000000000000000000000"
+    "0006000000000003008200000000000000000000";
+constexpr std::string_view kMa0010SeRequestRow13PayloadHex =
+    "000500000000000000000000000000000000000000000000"
+    "0002000d03e60007004500000000000000000000";
+constexpr std::string_view kMa0010SeRequestRow14PayloadHex =
+    "000500000000000000000000000000000000000000000000"
+    "0000000000000003008c00000000000000000000";
+
+std::string se_request_visual_json(
+    int record_index,
+    std::string_view payload_hex) {
+    std::ostringstream json;
+    json << "{\"schema\": \"spice_std_ir_v1\","
+         << "\"layoutKind\": \"entry_table\",\"parseOk\": true,"
+         << "\"entryTable\": {\"records\": ["
+         << "{\"index\":" << record_index
+         << ",\"locationCode\":54,\"opcode\":3,"
+         << "\"payloadSize\":" << payload_hex.size() / 2U
+         << ",\"payloadInBounds\":true,\"payloadBytesHex\":\""
+         << payload_hex << "\"},"
+         << "{\"index\":" << record_index + 1
+         << ",\"locationCode\":-1,\"opcode\":0,"
+         << "\"payloadSize\":0,\"payloadInBounds\":true,"
+         << "\"payloadBytesHex\":\"\"}]}}";
+    return json.str();
+}
+
 CombatantVisualResource damage_mode11_sparc_resource() {
     CombatantVisualResource resource;
     resource.binding = {
@@ -691,6 +720,76 @@ std::vector<BattleFrameStepEvent> run_until_visual_publication(
     return events;
 }
 
+int add_se_request_child(
+    BattleFrameRuntime& runtime,
+    CombatantVisualSeRequestPayload payload) {
+    BattleFrameVisualChildTask task;
+    task.sequence = runtime.visual.next_child_sequence++;
+    task.action_ordinal = 0;
+    task.origin_slot = 0;
+    task.target_slot = 4;
+    task.resource_stem = "se_request_fixture";
+    task.record_index = 17;
+    task.command_kind = CombatantVisualCommandKind::SeRequest;
+    task.kind = BattleFrameVisualChildKind::SeRequest;
+    task.phase = BattleFrameVisualChildPhase::Published;
+    task.publication_frame = runtime.state.frame_index;
+    task.first_eligible_frame = runtime.state.frame_index + 1;
+    task.maximum_visits = std::max(
+        8,
+        static_cast<int>(payload.trigger_frame) + 4);
+    task.status = CombatantVisualModelStatus::Matched;
+    task.se_request = payload;
+    task.provenance = "focused SE REQUEST scheduler fixture";
+
+    const auto created = create_battle_frame_thread(
+        runtime.thread_list,
+        BattleFrameThreadCreateRequest{
+            .kind = BattleFrameThreadNodeKind::AuxiliaryVisualChild,
+            .owner_slot = task.origin_slot,
+            .semantic_instance_id =
+                static_cast<std::uint64_t>(task.sequence),
+            .callback =
+                BattleFrameThreadCallbackIdentity::VisualSeRequest,
+            .active = true,
+            .insertion = BattleFrameThreadInsertionKind::Append,
+            .semantic_source_id = "test.visual.se_request",
+            .provenance = task.provenance,
+            .frame_index = runtime.state.frame_index,
+        });
+    EXPECT_EQ(created.status, BattleFrameThreadMutationStatus::Applied);
+    task.thread_node_id = created.node_id;
+    const int sequence = task.sequence;
+    runtime.visual.child_tasks.push_back(std::move(task));
+    return sequence;
+}
+
+BattleFrameVisualChildTask* find_visual_child(
+    BattleFrameRuntime& runtime,
+    int sequence) {
+    const auto found = std::find_if(
+        runtime.visual.child_tasks.begin(),
+        runtime.visual.child_tasks.end(),
+        [sequence](const BattleFrameVisualChildTask& task) {
+            return task.sequence == sequence;
+        });
+    return found == runtime.visual.child_tasks.end() ? nullptr : &*found;
+}
+
+std::vector<BattleFrameStepEvent> run_visual_frames(
+    BattleFrameRuntime& runtime,
+    std::uint32_t& rng,
+    int frame_count) {
+    std::vector<BattleFrameStepEvent> events;
+    for (int frame = 0; frame < frame_count; ++frame) {
+        const auto result = run_first_turn_frame(runtime, rng);
+        EXPECT_TRUE(result.ok);
+        events.insert(
+            events.end(), result.events.begin(), result.events.end());
+    }
+    return events;
+}
+
 TEST(SavorPredictCombatantVisualLoader, DecodesCompleteSetAndSystemCameraPayloads) {
     const auto loaded = load_spice_std_visual_resource_from_json_text(
         visual_json(set_command_payload(), system_camera_payload()));
@@ -741,6 +840,86 @@ TEST(SavorPredictCombatantVisualLoader, DecodesSparcSourceKeyAndSecondaryField) 
     EXPECT_EQ(sparc.gate_fields.primary_action_key, 5);
     EXPECT_EQ(sparc.gate_fields.generic_secondary_key, 2);
     EXPECT_EQ(sparc.gate_fields.direct_gate_secondary_key, 0);
+}
+
+TEST(SavorPredictCombatantVisualLoader, DecodesExactSeRequestCaseAndControlPayloads) {
+    const auto positive = load_spice_std_visual_resource_from_json_text(
+        se_request_visual_json(17, kMa0000SeRequestRow17PayloadHex));
+
+    ASSERT_TRUE(positive.ok);
+    EXPECT_EQ(positive.visual_records_decoded, 1);
+    ASSERT_EQ(positive.resource.records.size(), 2u);
+    const auto& case_record = positive.resource.records[0];
+    EXPECT_EQ(case_record.index, 17);
+    EXPECT_EQ(case_record.combined_type, 0x00030036U);
+    EXPECT_EQ(case_record.kind, CombatantVisualCommandKind::SeRequest);
+    EXPECT_EQ(
+        combatant_visual_command_kind_name(case_record.kind),
+        std::string("SeRequest"));
+    EXPECT_EQ(case_record.payload_bytes.size(), 0x2cu);
+    ASSERT_TRUE(case_record.se_request.has_value());
+    EXPECT_EQ(case_record.se_request->request_flags, 0U);
+    EXPECT_EQ(case_record.se_request->reserved_14, 0);
+    EXPECT_EQ(case_record.se_request->reserved_16, 0);
+    EXPECT_EQ(case_record.se_request->subtype, 6);
+    EXPECT_EQ(case_record.se_request->trigger_frame, 0);
+    EXPECT_EQ(case_record.se_request->end_frame, 0);
+    EXPECT_EQ(case_record.se_request->channel, 3);
+    EXPECT_EQ(case_record.se_request->candidate_a, 130);
+    EXPECT_EQ(case_record.se_request->cue, 0);
+    EXPECT_EQ(case_record.se_request->candidate_b, 0);
+    EXPECT_EQ(case_record.se_request->candidate_c, 0);
+    EXPECT_EQ(case_record.se_request->trailing_28, 0);
+    EXPECT_EQ(case_record.se_request->trailing_2a, 0);
+
+    const auto subtype_two = load_spice_std_visual_resource_from_json_text(
+        se_request_visual_json(13, kMa0010SeRequestRow13PayloadHex));
+    ASSERT_TRUE(subtype_two.ok);
+    ASSERT_EQ(subtype_two.resource.records.size(), 2u);
+    ASSERT_TRUE(subtype_two.resource.records[0].se_request.has_value());
+    const auto& subtype_two_payload =
+        *subtype_two.resource.records[0].se_request;
+    EXPECT_EQ(subtype_two_payload.subtype, 2);
+    EXPECT_EQ(subtype_two_payload.trigger_frame, 13);
+    EXPECT_EQ(subtype_two_payload.end_frame, 998);
+    EXPECT_EQ(subtype_two_payload.channel, 7);
+    EXPECT_EQ(subtype_two_payload.candidate_a, 69);
+    EXPECT_EQ(subtype_two_payload.candidate_b, 0);
+    EXPECT_EQ(subtype_two_payload.candidate_c, 0);
+
+    const auto subtype_zero = load_spice_std_visual_resource_from_json_text(
+        se_request_visual_json(14, kMa0010SeRequestRow14PayloadHex));
+    ASSERT_TRUE(subtype_zero.ok);
+    ASSERT_EQ(subtype_zero.resource.records.size(), 2u);
+    ASSERT_TRUE(subtype_zero.resource.records[0].se_request.has_value());
+    const auto& subtype_zero_payload =
+        *subtype_zero.resource.records[0].se_request;
+    EXPECT_EQ(subtype_zero_payload.subtype, 0);
+    EXPECT_EQ(subtype_zero_payload.trigger_frame, 0);
+    EXPECT_EQ(subtype_zero_payload.end_frame, 0);
+    EXPECT_EQ(subtype_zero_payload.channel, 3);
+    EXPECT_EQ(subtype_zero_payload.candidate_a, 140);
+    EXPECT_EQ(subtype_zero_payload.candidate_b, 0);
+    EXPECT_EQ(subtype_zero_payload.candidate_c, 0);
+}
+
+TEST(SavorPredictCombatantVisualLoader, RejectsShortSeRequestPayload) {
+    const auto short_payload =
+        kMa0000SeRequestRow17PayloadHex.substr(0, 0x2aU * 2U);
+    const auto loaded = load_spice_std_visual_resource_from_json_text(
+        se_request_visual_json(17, short_payload));
+
+    EXPECT_FALSE(loaded.ok);
+    EXPECT_EQ(loaded.visual_records_decoded, 0);
+    ASSERT_EQ(loaded.resource.records.size(), 1u);
+    EXPECT_LT(loaded.resource.records[0].location_code, 0);
+    EXPECT_TRUE(std::any_of(
+        loaded.errors.begin(),
+        loaded.errors.end(),
+        [](const std::string& error) {
+            return error.find("SE REQUEST record 17 has a short payload")
+                != std::string::npos;
+        }));
 }
 
 TEST(SavorPredictCombatantAuxiliaryPublication, PublishesSparcAsChildProducing) {
@@ -795,6 +974,307 @@ TEST(SavorPredictCombatantAuxiliaryPublication, PublishesSparcAsChildProducing) 
     EXPECT_EQ(
         result.decisions[0].decision,
         CombatantAuxiliaryCommandDecisionKind::CreatedChild);
+}
+
+TEST(SavorPredictCombatantAuxiliaryPublication, PublishesSeRequestAsChildProducing) {
+    auto loaded = load_spice_std_visual_resource_from_json_text(
+        se_request_visual_json(17, kMa0000SeRequestRow17PayloadHex));
+    ASSERT_TRUE(loaded.ok);
+    loaded.resource.binding.resource_stem = "ma000";
+
+    const auto result = publish_combatant_auxiliary_commands({
+        .action_ordinal = 2,
+        .slot = 0,
+        .target_slot = 4,
+        .instruction_revision = 7,
+        .publication_epoch = 3,
+        .instruction_mode = 5,
+        .instruction_subtype = -1,
+        .instruction_flags_0xec = 0x00100000u,
+        .instruction_flags_0xf0 = 0u,
+        .gate_input = {
+            .current_action_key = 5,
+            .current_secondary_key = -1,
+            .instruction_flags_0xec = 0x00100000u,
+        },
+        .current_resource = &loaded.resource,
+        .readiness_uses_static_resource = false,
+        .current_range_policy = CombatantAuxiliaryRangePolicy::FullTable,
+        .selector_state = 0,
+    });
+
+    EXPECT_EQ(result.status, CombatantAuxiliaryPublicationStatus::Matched);
+    ASSERT_EQ(result.publications.size(), 1u);
+    EXPECT_EQ(
+        result.publications[0].kind,
+        CombatantVisualCommandKind::SeRequest);
+    ASSERT_NE(result.publications[0].record, nullptr);
+    ASSERT_TRUE(result.publications[0].record->se_request.has_value());
+    EXPECT_EQ(result.publications[0].record->se_request->subtype, 6);
+    EXPECT_EQ(result.publications[0].record->se_request->candidate_a, 130);
+    ASSERT_EQ(result.decisions.size(), 1u);
+    EXPECT_EQ(
+        result.decisions[0].decision,
+        CombatantAuxiliaryCommandDecisionKind::CreatedChild);
+}
+
+TEST(SavorPredictCombatantVisualRuntime, SeRequestSubtypeSixSingleCandidateConsumesOneSameVisitDraw) {
+    auto runtime = initialize_frame_runtime();
+    ASSERT_TRUE(runtime.has_value());
+    const int sequence = add_se_request_child(
+        *runtime,
+        CombatantVisualSeRequestPayload{
+            .subtype = 6,
+            .trigger_frame = 0,
+            .channel = 3,
+            .candidate_a = 130,
+        });
+
+    constexpr std::uint32_t seed_before = 551733474U;
+    std::uint32_t rng = seed_before;
+    const auto expected = draw_rand15(seed_before);
+    ASSERT_EQ(expected.value, 23184U);
+    ASSERT_EQ(expected.next_state, 3666908275U);
+
+    const auto frame = run_first_turn_frame(*runtime, rng);
+    ASSERT_TRUE(frame.ok);
+    const auto state0 = std::find_if(
+        frame.events.begin(),
+        frame.events.end(),
+        [](const BattleFrameStepEvent& event) {
+            return event.step_kind
+                    == BattleFrameWorkerStepKind::VisualChildState0
+                && event.visual_command_kind
+                    == CombatantVisualCommandKind::SeRequest;
+        });
+    const auto draw = std::find_if(
+        frame.events.begin(),
+        frame.events.end(),
+        [](const BattleFrameStepEvent& event) {
+            return event.step_kind
+                    == BattleFrameWorkerStepKind::VisualSeRequestRng
+                && event.rng_label == "se_request_variant";
+        });
+
+    ASSERT_NE(state0, frame.events.end());
+    ASSERT_NE(draw, frame.events.end());
+    EXPECT_LT(
+        std::distance(frame.events.begin(), state0),
+        std::distance(frame.events.begin(), draw));
+    EXPECT_EQ(state0->frame_index, draw->frame_index);
+    EXPECT_EQ(draw->worker_kind, BattleFrameWorkerKind::VisualSeRequest);
+    EXPECT_EQ(
+        draw->visual_command_kind,
+        CombatantVisualCommandKind::SeRequest);
+    EXPECT_EQ(draw->visual_child_kind, "SeRequest");
+    EXPECT_TRUE(draw->rng_event);
+    EXPECT_EQ(draw->draws_consumed, 1);
+    ASSERT_TRUE(draw->rng_seed_before.has_value());
+    ASSERT_TRUE(draw->rng_seed_after.has_value());
+    EXPECT_EQ(*draw->rng_seed_before, seed_before);
+    EXPECT_EQ(*draw->rng_seed_after, expected.next_state);
+    EXPECT_EQ(draw->rand_value, expected.value);
+    EXPECT_EQ(draw->visual_candidate_selected_index, 0);
+    EXPECT_NE(draw->detail.find("candidate_count=1"), std::string::npos);
+    EXPECT_NE(
+        draw->detail.find("selected_raw_candidate=130"),
+        std::string::npos);
+    EXPECT_EQ(rng, expected.next_state);
+
+    auto* task = find_visual_child(*runtime, sequence);
+    ASSERT_NE(task, nullptr);
+    EXPECT_EQ(task->thread_state_0x19, 2);
+    EXPECT_EQ(task->se_request_local_frame, 1);
+    EXPECT_EQ(task->phase, BattleFrameVisualChildPhase::CompletionWait);
+    const auto* thread = find_battle_frame_thread(
+        runtime->thread_list, task->thread_node_id);
+    ASSERT_NE(thread, nullptr);
+    EXPECT_EQ(
+        thread->callback,
+        BattleFrameThreadCallbackIdentity::VisualSeRequest);
+    EXPECT_EQ(
+        battle_frame_thread_callback_identity_name(thread->callback),
+        std::string("visual.se_request_80055a38"));
+    EXPECT_EQ(
+        battle_frame_worker_kind_name(draw->worker_kind),
+        std::string("VisualSeRequest"));
+    EXPECT_EQ(
+        battle_frame_worker_step_kind_name(draw->step_kind),
+        std::string("VisualSeRequestRng"));
+    EXPECT_EQ(
+        battle_frame_visual_child_kind_name(task->kind),
+        std::string("SeRequest"));
+}
+
+TEST(SavorPredictCombatantVisualRuntime, SeRequestSubtypeControlsReachTriggerWithoutRng) {
+    {
+        auto runtime = initialize_frame_runtime();
+        ASSERT_TRUE(runtime.has_value());
+        const int sequence = add_se_request_child(
+            *runtime,
+            CombatantVisualSeRequestPayload{
+                .subtype = 0,
+                .trigger_frame = 0,
+                .channel = 3,
+                .candidate_a = 140,
+            });
+        std::uint32_t rng = 0x10203040U;
+        const auto events = run_visual_frames(*runtime, rng, 1);
+
+        EXPECT_EQ(rng, 0x10203040U);
+        EXPECT_EQ(
+            count_step(
+                events,
+                BattleFrameWorkerStepKind::VisualSeRequestRng),
+            0);
+        EXPECT_EQ(count_rng_label(events, "se_request_variant"), 0);
+        auto* task = find_visual_child(*runtime, sequence);
+        ASSERT_NE(task, nullptr);
+        EXPECT_EQ(task->thread_state_0x19, 2);
+        EXPECT_EQ(task->se_request_local_frame, 1);
+        EXPECT_TRUE(std::any_of(
+            events.begin(),
+            events.end(),
+            [](const BattleFrameStepEvent& event) {
+                return event.visual_command_kind
+                        == CombatantVisualCommandKind::SeRequest
+                    && event.step_kind
+                        == BattleFrameWorkerStepKind::VisualChildNested
+                    && event.detail.find("subtype=0")
+                        != std::string::npos
+                    && event.detail.find("draws=0")
+                        != std::string::npos;
+            }));
+    }
+
+    {
+        auto runtime = initialize_frame_runtime();
+        ASSERT_TRUE(runtime.has_value());
+        const int sequence = add_se_request_child(
+            *runtime,
+            CombatantVisualSeRequestPayload{
+                .subtype = 2,
+                .trigger_frame = 13,
+                .end_frame = 998,
+                .channel = 7,
+                .candidate_a = 69,
+            });
+        std::uint32_t rng = 0x50607080U;
+        const auto events = run_visual_frames(*runtime, rng, 14);
+
+        EXPECT_EQ(rng, 0x50607080U);
+        EXPECT_EQ(
+            count_step(
+                events,
+                BattleFrameWorkerStepKind::VisualSeRequestRng),
+            0);
+        EXPECT_EQ(count_rng_label(events, "se_request_variant"), 0);
+        EXPECT_EQ(
+            count_step_for_command(
+                events,
+                BattleFrameWorkerStepKind::VisualChildDelay,
+                CombatantVisualCommandKind::SeRequest),
+            13);
+        auto* task = find_visual_child(*runtime, sequence);
+        ASSERT_NE(task, nullptr);
+        EXPECT_EQ(task->thread_state_0x19, 2);
+        EXPECT_EQ(task->se_request_local_frame, 14);
+        EXPECT_TRUE(std::any_of(
+            events.begin(),
+            events.end(),
+            [](const BattleFrameStepEvent& event) {
+                return event.visual_command_kind
+                        == CombatantVisualCommandKind::SeRequest
+                    && event.step_kind
+                        == BattleFrameWorkerStepKind::VisualChildNested
+                    && event.detail.find("local_frame=13")
+                        != std::string::npos
+                    && event.detail.find("subtype=2")
+                        != std::string::npos
+                    && event.detail.find("draws=0")
+                        != std::string::npos;
+            }));
+    }
+}
+
+TEST(SavorPredictCombatantVisualRuntime, SeRequestCompactsSparseCandidatesAndSkipsEmptySet) {
+    {
+        auto runtime = initialize_frame_runtime();
+        ASSERT_TRUE(runtime.has_value());
+        (void)add_se_request_child(
+            *runtime,
+            CombatantVisualSeRequestPayload{
+                .subtype = 6,
+                .trigger_frame = 0,
+                .candidate_a = 0,
+                .candidate_b = 69,
+                .candidate_c = 140,
+            });
+        std::uint32_t rng = 0x2468ACE0U;
+        const auto expected = draw_rand15(rng);
+        const int expected_index =
+            static_cast<int>(expected.value) % 2;
+        const int expected_candidate =
+            expected_index == 0 ? 69 : 140;
+        const auto events = run_visual_frames(*runtime, rng, 1);
+        const auto draw = std::find_if(
+            events.begin(),
+            events.end(),
+            [](const BattleFrameStepEvent& event) {
+                return event.step_kind
+                    == BattleFrameWorkerStepKind::VisualSeRequestRng;
+            });
+
+        ASSERT_NE(draw, events.end());
+        EXPECT_EQ(draw->draws_consumed, 1);
+        EXPECT_EQ(
+            draw->visual_candidate_selected_index,
+            expected_index);
+        EXPECT_NE(draw->detail.find("candidate_count=2"), std::string::npos);
+        EXPECT_NE(
+            draw->detail.find(
+                "selected_raw_candidate="
+                + std::to_string(expected_candidate)),
+            std::string::npos);
+        EXPECT_EQ(rng, expected.next_state);
+    }
+
+    {
+        auto runtime = initialize_frame_runtime();
+        ASSERT_TRUE(runtime.has_value());
+        const int sequence = add_se_request_child(
+            *runtime,
+            CombatantVisualSeRequestPayload{
+                .subtype = 6,
+                .trigger_frame = 0,
+            });
+        std::uint32_t rng = 0x13579BDFU;
+        const auto events = run_visual_frames(*runtime, rng, 1);
+
+        EXPECT_EQ(rng, 0x13579BDFU);
+        EXPECT_EQ(
+            count_step(
+                events,
+                BattleFrameWorkerStepKind::VisualSeRequestRng),
+            0);
+        EXPECT_EQ(count_rng_label(events, "se_request_variant"), 0);
+        auto* task = find_visual_child(*runtime, sequence);
+        ASSERT_NE(task, nullptr);
+        EXPECT_EQ(task->thread_state_0x19, 2);
+        EXPECT_TRUE(std::any_of(
+            events.begin(),
+            events.end(),
+            [](const BattleFrameStepEvent& event) {
+                return event.visual_command_kind
+                        == CombatantVisualCommandKind::SeRequest
+                    && event.step_kind
+                        == BattleFrameWorkerStepKind::VisualChildNested
+                    && event.detail.find("candidate_count=0")
+                        != std::string::npos
+                    && event.detail.find("draws=0")
+                        != std::string::npos;
+            }));
+    }
 }
 
 TEST(SavorPredictCombatantAuxiliaryPublication, PreservesCurrentResourceChildOrder) {

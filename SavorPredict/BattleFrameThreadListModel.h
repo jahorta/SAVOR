@@ -33,6 +33,7 @@ enum class BattleFrameThreadCallbackIdentity {
     VisualMotionPause,
     VisualPointLight,
     VisualSystemCamera,
+    VisualSeRequest,
     VisualSparcEffect,
     Unknown,
 };

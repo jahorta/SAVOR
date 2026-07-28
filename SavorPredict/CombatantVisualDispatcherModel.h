@@ -20,6 +20,7 @@ enum class CombatantVisualCommandKind {
     MotionPause,
     PointLight,
     SystemCamera,
+    SeRequest,
     SyntheticActionView,
 };
 
@@ -81,6 +82,22 @@ struct CombatantVisualCollisionBoxPayload {
     std::uint32_t trailing_flags = 0;
 };
 
+struct CombatantVisualSeRequestPayload {
+    std::uint32_t request_flags = 0;
+    std::int16_t reserved_14 = 0;
+    std::int16_t reserved_16 = 0;
+    std::int16_t subtype = 0;
+    std::int16_t trigger_frame = 0;
+    std::int16_t end_frame = 0;
+    std::int16_t channel = 0;
+    std::int16_t candidate_a = 0;
+    std::int16_t cue = 0;
+    std::int16_t candidate_b = 0;
+    std::int16_t candidate_c = 0;
+    std::int16_t trailing_28 = 0;
+    std::int16_t trailing_2a = 0;
+};
+
 struct CombatantVisualCommandRecord {
     int index = -1;
     std::int16_t location_code = -1;
@@ -97,6 +114,7 @@ struct CombatantVisualCommandRecord {
     std::optional<CombatantVisualSetCommandPayload> set_command;
     std::optional<CombatantVisualCollisionBoxPayload> collision_box;
     std::optional<CombatantVisualSystemCameraPayload> system_camera;
+    std::optional<CombatantVisualSeRequestPayload> se_request;
 };
 
 struct CombatantVisualResourceBinding {

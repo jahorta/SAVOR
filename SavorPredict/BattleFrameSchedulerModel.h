@@ -56,6 +56,7 @@ enum class BattleFrameWorkerKind {
     VisualActionService,
     VisualCollisionBox,
     VisualActionViewRecord,
+    VisualSeRequest,
     VisualSparcEffect,
     VisualUnsupportedCommand,
     CombatantInstruction,
@@ -141,6 +142,7 @@ enum class BattleFrameWorkerStepKind {
     VisualChildState0,
     VisualChildDelay,
     VisualChildNested,
+    VisualSeRequestRng,
     VisualEffectRng,
     VisualChildCleanup,
     VisualMode0Rewrite,
@@ -732,6 +734,7 @@ enum class BattleFrameVisualChildKind {
     ActionService,
     CollisionBox,
     ActionViewRecord,
+    SeRequest,
     SparcEffect,
     UnsupportedCommand,
 };
@@ -838,6 +841,7 @@ struct BattleFrameVisualChildTask {
     std::optional<CombatantVisualSetCommandPayload> set_command;
     std::optional<CombatantVisualCollisionBoxPayload> collision_box;
     std::optional<CombatantVisualSystemCameraPayload> system_camera;
+    std::optional<CombatantVisualSeRequestPayload> se_request;
     std::optional<CombatantVisualSparcPayload> sparc;
     std::optional<CombatEffectBurstInput> effect_burst_input;
     int effect_source_key = -1;
@@ -845,6 +849,7 @@ struct BattleFrameVisualChildTask {
     int effect_draws = 0;
     int collision_state = 0;
     int collision_counter = 0;
+    std::uint16_t se_request_local_frame = 0;
     BattleCollisionVec3 collision_current{};
     BattleCollisionVec3 collision_velocity{};
     std::array<bool, kBattleFrameCombatantSlotCapacity> collision_visited{};

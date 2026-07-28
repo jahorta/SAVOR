@@ -32,6 +32,7 @@ bool child_producing_command(CombatantVisualCommandKind kind) {
     case CombatantVisualCommandKind::MotionPause:
     case CombatantVisualCommandKind::PointLight:
     case CombatantVisualCommandKind::SystemCamera:
+    case CombatantVisualCommandKind::SeRequest:
         return true;
     case CombatantVisualCommandKind::Unknown:
     case CombatantVisualCommandKind::SyntheticActionView:

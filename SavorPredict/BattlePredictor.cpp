@@ -1535,7 +1535,7 @@ void append_turn_order(
         .status = resolve_status,
         .rng_seed_before = before,
         .rng_seed_after = state,
-        .draws_consumed = turn_order.draws_consumed,
+        .summarized_draws = turn_order.draws_consumed,
         .detail = detail.str(),
     });
 
@@ -3941,6 +3941,9 @@ void write_battle_prediction_text(const BattlePredictionResult& result, std::ost
             << event.phase << "." << event.label
             << " status=" << battle_prediction_event_status_name(event.status)
             << " draws=" << event.draws_consumed;
+        if (event.summarized_draws.has_value()) {
+            out << " summarized_draws=" << *event.summarized_draws;
+        }
         if (event.actor_slot >= 0) {
             out << " actor=" << event.actor_slot;
         }
@@ -4225,6 +4228,9 @@ void write_battle_prediction_json(const BattlePredictionResult& result, std::ost
         out << ", \"actor_slot\": " << event.actor_slot;
         out << ", \"target_slot\": " << event.target_slot;
         out << ", \"draws_consumed\": " << event.draws_consumed;
+        if (event.summarized_draws.has_value()) {
+            out << ", \"summarized_draws\": " << *event.summarized_draws;
+        }
         if (event.rng_seed_before.has_value()) {
             out << ", \"rng_seed_before\": " << *event.rng_seed_before;
             out << ", \"rng_seed_before_hex\": \"" << hex_seed(*event.rng_seed_before) << "\"";

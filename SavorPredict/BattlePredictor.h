@@ -134,6 +134,8 @@ struct BattlePredictionEvent {
     std::optional<std::uint32_t> rng_seed_before;
     std::optional<std::uint32_t> rng_seed_after;
     int draws_consumed = 0;
+    // Draws already owned by constituent events; never additional consumption.
+    std::optional<int> summarized_draws;
     std::optional<std::uint16_t> rand_value;
     std::optional<int> attack_result;
     std::optional<int> damage;

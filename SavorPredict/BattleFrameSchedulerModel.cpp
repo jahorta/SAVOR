@@ -426,6 +426,7 @@ std::int16_t action_mode_for_worker(const BattleFrameWorker& worker) {
     case BattleFrameWorkerKind::VisualActionService:
     case BattleFrameWorkerKind::VisualCollisionBox:
     case BattleFrameWorkerKind::VisualActionViewRecord:
+    case BattleFrameWorkerKind::VisualSeRequest:
     case BattleFrameWorkerKind::VisualSparcEffect:
     case BattleFrameWorkerKind::VisualUnsupportedCommand:
     case BattleFrameWorkerKind::CombatantInstruction:
@@ -1990,6 +1991,7 @@ bool is_visual_step_kind(BattleFrameWorkerStepKind kind) {
     case BattleFrameWorkerStepKind::VisualChildState0:
     case BattleFrameWorkerStepKind::VisualChildDelay:
     case BattleFrameWorkerStepKind::VisualChildNested:
+    case BattleFrameWorkerStepKind::VisualSeRequestRng:
     case BattleFrameWorkerStepKind::VisualEffectRng:
     case BattleFrameWorkerStepKind::VisualChildCleanup:
     case BattleFrameWorkerStepKind::VisualMode0Rewrite:
@@ -2265,6 +2267,9 @@ BattleFrameStepEvent make_visual_event(
         case BattleFrameVisualChildKind::ActionViewRecord:
             event.worker_kind = BattleFrameWorkerKind::VisualActionViewRecord;
             break;
+        case BattleFrameVisualChildKind::SeRequest:
+            event.worker_kind = BattleFrameWorkerKind::VisualSeRequest;
+            break;
         case BattleFrameVisualChildKind::SparcEffect:
             event.worker_kind = BattleFrameWorkerKind::VisualSparcEffect;
             break;
@@ -2316,6 +2321,8 @@ BattleFrameThreadCallbackIdentity visual_child_callback_identity(
     case CombatantVisualCommandKind::SystemCamera:
     case CombatantVisualCommandKind::SyntheticActionView:
         return BattleFrameThreadCallbackIdentity::VisualSystemCamera;
+    case CombatantVisualCommandKind::SeRequest:
+        return BattleFrameThreadCallbackIdentity::VisualSeRequest;
     case CombatantVisualCommandKind::Unknown:
         return BattleFrameThreadCallbackIdentity::Unknown;
     }
@@ -2343,6 +2350,8 @@ const char* visual_child_handler_name(CombatantVisualCommandKind kind) {
     case CombatantVisualCommandKind::SystemCamera:
     case CombatantVisualCommandKind::SyntheticActionView:
         return "SystemCameraHandler_80051264";
+    case CombatantVisualCommandKind::SeRequest:
+        return "SeRequestHandler_80039DE0/FUN_80055A38";
     case CombatantVisualCommandKind::Unknown:
         return "DispatchVisualCommand_800367E8_unsupported";
     }
@@ -2468,6 +2477,18 @@ int enqueue_visual_child(
             task.payload_mode = task.system_camera->mode;
             task.effective_mode = task.payload_mode;
             task.maximum_visits = normalized_camera_duration(*task.system_camera) + 2;
+        }
+    } else if (publication.kind == CombatantVisualCommandKind::SeRequest) {
+        task.kind = BattleFrameVisualChildKind::SeRequest;
+        task.se_request = publication.record->se_request;
+        if (task.se_request.has_value()) {
+            task.maximum_visits = std::clamp(
+                static_cast<int>(task.se_request->trigger_frame) + 64,
+                8,
+                256);
+        } else {
+            task.status = CombatantVisualModelStatus::MissingInput;
+            task.maximum_visits = 4;
         }
     } else {
         task.kind = BattleFrameVisualChildKind::UnsupportedCommand;
@@ -6162,6 +6183,252 @@ void advance_action_view_child(
     }
 }
 
+void advance_se_request_child(
+    BattleFrameRuntime& runtime,
+    BattleFrameRunResult& result,
+    BattleFrameVisualChildTask& task,
+    std::uint32_t& rng_state) {
+    if (!task.se_request.has_value()) {
+        append_recorded_event(
+            runtime,
+            result,
+            make_visual_event(
+                runtime,
+                &task,
+                BattleFrameWorkerStepKind::VisualUnsupportedWait,
+                "FUN_80055A38_missing_payload",
+                BattleFrameEventStatus::MissingInput,
+                "SE REQUEST record has no decoded 0x2c-byte payload; draws=0"));
+        append_visual_cleanup(
+            runtime,
+            result,
+            task,
+            "SE REQUEST child cannot run without its decoded payload");
+        return;
+    }
+
+    const auto& payload = *task.se_request;
+    if (task.phase == BattleFrameVisualChildPhase::Published) {
+        task.phase = BattleFrameVisualChildPhase::Active;
+        task.thread_state_0x19 = payload.subtype == 1 ? 0xFA : 1;
+        append_recorded_event(
+            runtime,
+            result,
+            make_visual_event(
+                runtime,
+                &task,
+                BattleFrameWorkerStepKind::VisualChildState0,
+                "FUN_80055A38_state0",
+                frame_event_status(task.status),
+                "state0 fell through to state1 unless subtype=1"
+                "; local_frame=0"
+                "; trigger_frame=" + std::to_string(payload.trigger_frame)
+                    + "; subtype=" + std::to_string(payload.subtype)
+                    + "; request_flags="
+                    + hex_pc(payload.request_flags)
+                    + "; provenance=" + task.provenance));
+        if (payload.subtype == 1) {
+            return;
+        }
+    }
+
+    if (task.thread_state_0x19 == 1) {
+        const int local_frame =
+            static_cast<int>(task.se_request_local_frame);
+        if (local_frame == static_cast<int>(payload.trigger_frame)) {
+            const std::array<std::int16_t, 3> raw_candidates{
+                payload.candidate_a,
+                payload.candidate_b,
+                payload.candidate_c,
+            };
+            std::array<std::int16_t, 3> compact_candidates{};
+            int candidate_count = 0;
+            for (const auto candidate : raw_candidates) {
+                if (candidate != 0) {
+                    compact_candidates[
+                        static_cast<std::size_t>(candidate_count++)] =
+                        candidate;
+                }
+            }
+
+            auto event = make_visual_event(
+                runtime,
+                &task,
+                payload.subtype == 6 && candidate_count > 0
+                    ? BattleFrameWorkerStepKind::VisualSeRequestRng
+                    : BattleFrameWorkerStepKind::VisualChildNested,
+                "FUN_80055A38_trigger_80055B10",
+                frame_event_status(task.status),
+                "local_frame=" + std::to_string(local_frame)
+                    + "; trigger_frame="
+                    + std::to_string(payload.trigger_frame)
+                    + "; subtype=" + std::to_string(payload.subtype)
+                    + "; candidate_count="
+                    + std::to_string(candidate_count)
+                    + "; channel=" + std::to_string(payload.channel)
+                    + "; cue=" + std::to_string(payload.cue)
+                    + "; raw_candidates=["
+                    + std::to_string(payload.candidate_a) + ","
+                    + std::to_string(payload.candidate_b) + ","
+                    + std::to_string(payload.candidate_c) + "]"
+                    + "; state_after=2");
+            if (payload.subtype == 6 && candidate_count > 0) {
+                const auto draw = draw_rand15(rng_state);
+                const int selected_index =
+                    static_cast<int>(draw.value)
+                    % candidate_count;
+                event.rng_event = true;
+                event.rng_label = "se_request_variant";
+                event.draws_consumed = 1;
+                event.rng_seed_before = rng_state;
+                event.rng_seed_after = draw.next_state;
+                event.rand_value = draw.value;
+                event.visual_candidate_selected_index = selected_index;
+                event.detail +=
+                    "; rng_callsite=0x80055B9C"
+                    "; selected_index=" + std::to_string(selected_index)
+                    + "; selected_raw_candidate="
+                    + std::to_string(
+                        compact_candidates[
+                            static_cast<std::size_t>(selected_index)])
+                    + "; candidate_transform=FUN_8003FF7C_audio_only";
+                rng_state = draw.next_state;
+            } else {
+                event.detail += "; draws=0";
+            }
+            append_recorded_event(runtime, result, std::move(event));
+            task.thread_state_0x19 = 2;
+            task.phase = BattleFrameVisualChildPhase::CompletionWait;
+        } else {
+            append_recorded_event(
+                runtime,
+                result,
+                make_visual_event(
+                    runtime,
+                    &task,
+                    BattleFrameWorkerStepKind::VisualChildDelay,
+                    "FUN_80055A38_state1_timing_wait",
+                    frame_event_status(task.status),
+                    "local_frame=" + std::to_string(local_frame)
+                        + "; trigger_frame="
+                        + std::to_string(payload.trigger_frame)
+                        + "; draws=0"));
+        }
+        ++task.se_request_local_frame;
+        return;
+    }
+
+    if (task.thread_state_0x19 == 2) {
+        auto* origin =
+            find_frame_combatant(runtime.state, task.origin_slot);
+        bool advance_to_cleanup = false;
+        bool exact_lifecycle = true;
+        std::string reason;
+        if (payload.subtype < 2 || payload.subtype >= 6) {
+            advance_to_cleanup = true;
+            reason = "subtype exits state2 unconditionally";
+        } else if (payload.subtype == 2) {
+            advance_to_cleanup =
+                origin != nullptr
+                && (origin->instruction_flags_0xec & 0x00020000U) != 0;
+            reason =
+                "subtype2 waits for instruction_flags_0xec bit 0x00020000";
+        } else if (payload.subtype == 3) {
+            advance_to_cleanup =
+                origin != nullptr
+                && (origin->instruction_flags_0xf0 & 0x00200000U) != 0;
+            if (advance_to_cleanup) {
+                origin->instruction_flags_0xf0 &= ~0x00200000U;
+            }
+            reason =
+                "subtype3 waits for and clears instruction_flags_0xf0 bit "
+                "0x00200000";
+        } else if (payload.subtype == 4) {
+            advance_to_cleanup =
+                static_cast<int>(task.se_request_local_frame)
+                >= static_cast<int>(payload.end_frame);
+            exact_lifecycle = false;
+            reason =
+                "subtype4 target-state early-exit is not modeled; end-frame "
+                "fallback is preserved";
+        } else {
+            advance_to_cleanup =
+                origin != nullptr
+                && (origin->instruction_flags_0xf0 & 0x00100000U) != 0;
+            if (advance_to_cleanup) {
+                origin->instruction_flags_0xf0 &= ~0x00100000U;
+            }
+            reason =
+                "subtype5 waits for and clears instruction_flags_0xf0 bit "
+                "0x00100000";
+        }
+
+        if (advance_to_cleanup) {
+            task.thread_state_0x19 = 0xFA;
+        }
+        append_recorded_event(
+            runtime,
+            result,
+            make_visual_event(
+                runtime,
+                &task,
+                exact_lifecycle
+                    ? BattleFrameWorkerStepKind::VisualChildNested
+                    : BattleFrameWorkerStepKind::VisualUnsupportedWait,
+                "FUN_80055A38_state2",
+                exact_lifecycle
+                    ? frame_event_status(task.status)
+                    : BattleFrameEventStatus::Provisional,
+                "subtype=" + std::to_string(payload.subtype)
+                    + "; local_frame="
+                    + std::to_string(task.se_request_local_frame)
+                    + "; state_after="
+                    + std::to_string(task.thread_state_0x19)
+                    + "; draws=0; " + reason));
+        ++task.se_request_local_frame;
+        return;
+    }
+
+    if (task.thread_state_0x19 == 3) {
+        task.thread_state_0x19 = 0xFA;
+        append_recorded_event(
+            runtime,
+            result,
+            make_visual_event(
+                runtime,
+                &task,
+                BattleFrameWorkerStepKind::VisualUnsupportedWait,
+                "FUN_80055A38_state3",
+                BattleFrameEventStatus::Provisional,
+                "audio-handle completion is outside the RNG model; "
+                "released the zero-draw wait"));
+        ++task.se_request_local_frame;
+        return;
+    }
+
+    if (task.thread_state_0x19 == 0xFA) {
+        append_visual_cleanup(
+            runtime,
+            result,
+            task,
+            "FUN_80055A38 state 0xFA released the SE REQUEST child");
+        return;
+    }
+
+    append_recorded_event(
+        runtime,
+        result,
+        make_visual_event(
+            runtime,
+            &task,
+            BattleFrameWorkerStepKind::VisualUnsupportedWait,
+            "FUN_80055A38_unknown_state",
+            BattleFrameEventStatus::Provisional,
+            "unmodeled SE REQUEST state="
+                + std::to_string(task.thread_state_0x19)
+                + "; draws=0"));
+}
+
 void advance_sparc_effect_child(
     BattleFrameRuntime& runtime,
     BattleFrameRunResult& result,
@@ -6256,6 +6523,8 @@ void advance_visual_child_task(
         advance_collision_box_child(runtime, result, task, rng_state);
     } else if (task.kind == BattleFrameVisualChildKind::ActionViewRecord) {
         advance_action_view_child(runtime, result, task, rng_state);
+    } else if (task.kind == BattleFrameVisualChildKind::SeRequest) {
+        advance_se_request_child(runtime, result, task, rng_state);
     } else if (task.kind == BattleFrameVisualChildKind::SparcEffect) {
         advance_sparc_effect_child(runtime, result, task, rng_state);
     } else {
@@ -12227,6 +12496,8 @@ const char* battle_frame_worker_kind_name(BattleFrameWorkerKind kind) {
         return "VisualCollisionBox";
     case BattleFrameWorkerKind::VisualActionViewRecord:
         return "VisualActionViewRecord";
+    case BattleFrameWorkerKind::VisualSeRequest:
+        return "VisualSeRequest";
     case BattleFrameWorkerKind::VisualSparcEffect:
         return "VisualSparcEffect";
     case BattleFrameWorkerKind::VisualUnsupportedCommand:
@@ -12362,6 +12633,8 @@ const char* battle_frame_worker_step_kind_name(BattleFrameWorkerStepKind kind) {
         return "VisualChildDelay";
     case BattleFrameWorkerStepKind::VisualChildNested:
         return "VisualChildNested";
+    case BattleFrameWorkerStepKind::VisualSeRequestRng:
+        return "VisualSeRequestRng";
     case BattleFrameWorkerStepKind::VisualEffectRng:
         return "VisualEffectRng";
     case BattleFrameWorkerStepKind::VisualChildCleanup:
@@ -12513,6 +12786,7 @@ const char* battle_frame_visual_child_kind_name(BattleFrameVisualChildKind kind)
     case BattleFrameVisualChildKind::ActionService: return "ActionService";
     case BattleFrameVisualChildKind::CollisionBox: return "CollisionBox";
     case BattleFrameVisualChildKind::ActionViewRecord: return "ActionViewRecord";
+    case BattleFrameVisualChildKind::SeRequest: return "SeRequest";
     case BattleFrameVisualChildKind::SparcEffect: return "SparcEffect";
     case BattleFrameVisualChildKind::UnsupportedCommand:
         return "UnsupportedCommand";
