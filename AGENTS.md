@@ -1,11 +1,11 @@
-## Approved scope
+## SavorPredict scope discipline
 
-- Do not go beyond the scope explicitly approved by the user. This applies to implementation, refactoring, static analysis, live capture, validation runs, and creation of durable research artifacts.
-- When approved work exposes a separate downstream issue or possible next boundary, report it and stop. Do not investigate or implement that boundary until the user explicitly approves it.
+- When working on SavorPredict, stay within the scope explicitly approved by the user. This includes predictor implementation, refactoring, static analysis, live capture, validation runs, and durable research artifacts.
+- If approved SavorPredict work reveals a separate downstream issue or possible next boundary, report it and stop at that boundary. Do not investigate or implement it unless the user explicitly expands the scope.
 
 ## Collaboration focus
 
-- When the user asks a direct question, answer it promptly and narrowly. Do not delay the answer for adjacent investigation or expand into unrelated analysis unless it is necessary for accuracy. If additional investigation may be useful, answer the question first and offer that work separately.
+- When the user asks a direct question, answer it promptly and narrowly. Investigate only what is necessary for an accurate answer. If adjacent work may be useful, answer the question first and offer that work separately.
 
 ## SavorE2E arguments
 
