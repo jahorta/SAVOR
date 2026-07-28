@@ -167,10 +167,14 @@ an optimization hint, not an assertion that the guest or host runtime is clean. 
 `StateEpoch`, no collection of immutable state handles, and no general invalidation rule for pointers or
 subscriptions after restore.
 
-The target keeps the correctness boundary at one invocation while making locality explicit. A
-multi-item `WorkerWorkset` prepares one exact source state, retains one immutable in-memory baseline at
-workset scope, runs its first child from the prepared state, and restores that baseline before every later
-child. Each restore still advances `StateEpoch`; no item-local receipt or resource crosses that boundary.
+The target keeps the correctness boundary at one invocation while making locality explicit. A bounded
+process/session-owned actor-LRU may retain immutable serialized state plus metadata across worksets under
+an exact `StateCacheKey`; a host-only staged successor may acquire a cache lease while another workset
+uses the session. Promotion then prepares the active workset's exact source state. A multi-item active
+`WorkerWorkset` retains one immutable in-memory baseline at workset scope, runs its first child from the
+prepared state, and restores that baseline before every later child. Each restore still advances
+`StateEpoch`; cache entries are not live guest state, and no item-local receipt or resource crosses that
+boundary.
 
 That paragraph describes the legacy execution corpus, which remains compiled only as production-
 disconnected, read-only orientation and deletion evidence during the hard cutover. It is never invoked
@@ -245,7 +249,10 @@ multiple artifacts, or separate infrastructure/domain/cleanup statuses.
 The implemented hard-cutover WRMS seam and typed runtime currently model one encoded invocation and one
 terminal result. Production invocation is still disabled, so the target replaces that unactivated scalar
 submission with `SubmitWorkset`: one bounded envelope containing one or more independent invocation
-templates and non-lossy per-item terminals.
+templates and non-lossy per-item terminals. The pipelined target permits one active session-mutating
+workset and one immutable host-only staged successor, while a separate worker-global completion/
+acknowledgement ledger retains completed execution records, promoted immutable output captures and
+pending finalizers, and authoritative terminals until exact durable acknowledgement.
 
 ### DB program descriptors and workflow spawning
 
@@ -284,6 +291,24 @@ distinguish `CLAIMED` from `RUNNING` and can reserve several ready jobs. Workset
 the coordinator groups, accounts for, renews, starts, and drains those independently durable jobs, but it
 does not create a persisted workset or move successor decisions into the worker. A generalized persisted
 frontier record or policy is a separate future project.
+
+The current worker coordinator also exposes process-order costs that the hard cutover does not need to
+preserve. Initial `Start()` preflights and opens every desired worker serially before any data-plane
+thread starts, even though later pool repair already has a bounded concurrent-start facility. Dispatch
+then performs savestate materialization and program setup only after an idle worker is selected, and the
+single result drainer retains that worker until result mapping and persistence finish. The pre-6A
+process seam therefore implements the eventual one-complete-compatible-worker gate and bounded
+progressive startup without opening DB work; Slice 7 applies the gate after complete catalog/dependency
+negotiation. The same target stages one immutable successor package while the active workset runs and
+moves terminal retention out of active workset/session ownership.
+
+The database/coordinator hot path is likewise only batch-shaped at its surface today:
+`ClaimBatchReadyExecutionJobs` loops scalar claim transactions, lease maintenance renews one job at a
+time, and materialized selection scans the candidate map with per-candidate job reads. The workflow
+coordinator uses timed polling and a fixed active-workflow-count throttle instead of actual
+coordinator/worker item residency. The target uses one ordered claim transaction, exact-set lease
+renewal, indexed deterministic workset assembly, targeted post-commit terminal wakeups with periodic
+repair scans, and item-capacity credits derived from the complete pipeline.
 
 ## Supported current-source inventory
 
@@ -350,8 +375,9 @@ The clean-slate replacement must preserve these proven ideas:
 8. **Dynamic workflow fan-out.** Current battle and seed workflows prove that the coordinator can append
    durable successor work after reduction.
 9. **Warm-worker optimization.** Affinity-aware reuse is valuable as long as it is not confused with
-   state reset, correctness, or exact program identity. A bounded workset may guarantee compatible
-   locality without weakening per-item reset and result boundaries.
+   state reset, correctness, or exact program identity. A bounded workset, one host-only staged
+   successor, and immutable state-cache leases may preserve compatible locality without weakening
+   per-item reset and result boundaries.
 10. **Exact state/movie continuation.** Dolphin's state/movie relationship is preserved as a single
     typed checkpoint: immutable state evidence plus the exact DTM identity/bytes and continuation
     counters, rather than an inferred ambient movie.
@@ -375,7 +401,10 @@ The clean-slate replacement must preserve these proven ideas:
 | Worker visual thread calls runtime directly | External controls can bypass command serialization | All commands routed through `WorkerRuntime` |
 | Descriptor mixes execution with workflow integration | A new phase appears to require another descriptor/controller combination | Keep existing SavorDb contracts; adapt only runtime-facing handler behavior to construct/consume typed runtime contracts |
 | Affinity uses kind/bootstrap strings | Cache locality can be mistaken for exact revision or clean state | Verify exact runtime module/state/session identity after current materialization without changing stored affinity or claim data |
-| One parent submission per worker result | Compatible jobs incur repeated dispatch decisions and can leave a warm worker idle between items | One finite static `WorkerWorkset` with exact compatibility, sequential child admission, and streamed per-item terminals |
+| Initial pool startup is serial and gates every data-plane thread | Dolphin boot cost grows with the complete desired pool before useful work can begin | Establish a one-complete-compatible-worker gate and bounded progressive startup before 6A; apply that gate to open the data plane only in Slice 7 after complete catalog/dependency negotiation |
+| State/program preparation begins only after a worker becomes idle | Immutable reads, hashing, decoding, and cache lookup create a cold handoff bubble | One host-only staged successor package and a bounded immutable state cache; session mutation remains serialized after promotion |
+| One parent submission per worker result | Compatible jobs incur repeated dispatch decisions and can leave a warm worker idle between items | One active finite static `WorkerWorkset`, one host-only staged successor, sequential child admission, and streamed per-item terminals |
+| Terminal retention is workset-scoped | A clean successor can remain blocked solely because an earlier terminal awaits durable acknowledgement | One bounded worker-global completion/acknowledgement ledger independent of the active workset/session scope |
 | No general mutation ledger | Data writes and future code patches lack one restoration/taint contract | Checked scoped `GuestMutationService` receipts and mandatory unwind |
 | Resource cleanup is distributed across subsystem guards | Cleanup order, state-replacement disposition, and retry after partial release are inconsistent | One actor-owned `SessionResourceLedger` with typed receipts, reverse-order unwind, epoch policy, and taint disposition |
 
@@ -423,11 +452,24 @@ The current evidence locks these conclusions:
 - `WorkerWorkset` becomes the sole production dispatch envelope. It is a transient ordered collection of
   independent item templates, not IR, durable workflow topology, a phase controller, or one aggregate
   retry/result.
-- `WorkerRuntime` admits exactly one workset and one active child. It binds the current session and epoch
-  just before each child, streams that child's result immediately, and does not wait for a new scheduling
-  decision while its bounded unacknowledged-result window has capacity.
-- Workset-specific coordinator grouping, resident capacity, and lease maintenance may change while every
-  item retains its own claim, start, attempt, result mapping, retry, cancellation, and transition.
+- `WorkerRuntime` owns exactly one active session-mutating workset, at most one immutable host-only
+  staged successor package, and one executing child. Staging may decode, verify, read/hash immutable
+  artifacts, and acquire module/state-cache leases, but it cannot bind an epoch, capture a baseline,
+  acquire session-effect resources, construct a `ProgramInstance`, or advance Dolphin.
+- Immediately before each active child, `WorkerRuntime` binds the current session and epoch. It streams
+  the child's completed execution record and any promoted immutable output capture into a bounded
+  worker-global completion/acknowledgement ledger. The ledger assembles the authoritative result only
+  after required host finalization; acknowledgement ownership never remains in the active workset.
+- Once every active-workset item has completed session work with required immutable capture promoted or
+  is classified unstarted, its complete invocation/workset resources and baseline lease are released,
+  and the session is proven clean, the staged successor may promote while older outputs finalize or
+  terminals remain unacknowledged if the global ledger still has capacity.
+- The pre-6A parent process seam implements and directly tests the eventual one-complete-compatible-worker
+  gate plus bounded progressive startup. It keeps coordinator data-plane work disabled; Slice 7 applies
+  the gate only after the complete production catalog and dependency manifest have been negotiated.
+- Workset-specific coordinator grouping, active/staged/global-ledger capacity, and lease maintenance may
+  change while every item retains its own claim, start, attempt, result mapping, retry, cancellation, and
+  transition.
 - Navigation Context migrates as an ordinary current phase. Navmesh Survey is the first net-new consumer
   after current behavior reaches the new runtime.
 
@@ -444,17 +486,24 @@ The replacement crosses these current seams:
   through shared semantic-observation, passive-capture, and interaction composition;
 - `WireSetProgram`, worker-protocol job/result envelopes, and worker-side `ProgramKind` dispatch;
 - scalar production invocation submission, replaced by one `SubmitWorkset` path for 1..N children;
+- the parent worker-process startup seam, changed from complete-pool serial preflight to an eventual
+  one-compatible-worker data-plane gate plus bounded progressive startup, with actual DB activation held
+  until Slice 7 verifies the complete catalog and dependency manifest;
 - program-kind handler implementations and adjacent runtime-init/result adapters;
 - job materialization and coordinator worker-slot bookkeeping needed to construct compatible worksets,
-  renew resident leases, publish per-item starts/results, and acknowledge committed terminals; and
+  account for active and staged items plus the worker-global terminal ledger, renew resident leases,
+  publish per-item starts/results, and acknowledge committed terminals;
+- worker host preparation and state caching needed to stage one immutable successor under exact
+  `StateCacheKey` leases without acquiring session authority; and
 - existing transition and successor-step publication behavior as an unchanged integration contract.
 
 The migration adds no SavorDb schema/migration, persistent workset record, aggregate durable job/result,
 or unrelated workflow, artifact, or transaction redesign. Workset-specific coordinator scheduling,
-claim use, lease maintenance, and capacity bookkeeping may change; an interface change is considered only
-if concrete implementation evidence requires it. Existing macro, predicate, address-program, and
-capture-profile representations are decoded, adapted, or consumed in memory rather than migrated. The
-refactor must not push workflow persistence into the worker or move emulator ownership into DB adapters.
+capacity bookkeeping, and startup may change. Database interfaces may change only for ordered batch
+claim, exact-set lease renewal, claim/start validation, and targeted terminal reconciliation over
+existing rows and per-item semantics. Existing macro, predicate, address-program, and capture-profile
+representations are decoded, adapted, or consumed in memory rather than migrated. The refactor must not
+push workflow persistence into the worker or move emulator ownership into DB adapters.
 
 ## Failure and cleanup behavior
 
@@ -489,18 +538,23 @@ typed-module builders follow this dependency order:
 2. define and verify the small core IR and typed module/invocation/result contracts;
 3. register generic service actions and modular game capability packs;
 4. expose current capabilities through registered actions and reusable subprograms;
-5. add the pre-6A `WorkerWorkset` prelude: unified 1..N dispatch, exact compatibility validation,
-   multi-item baseline state flow, per-item result acknowledgement/backpressure, and coordinator
-   resident-job accounting;
-6. implement the supported phase builders incrementally as 6A SeedProbe, 6B Navigation Context, 6C TAS
+5. add the pre-6A worker-process seam and direct one-item process tests: implement the eventual
+   one-complete-compatible-worker gate and bounded progressive startup while leaving coordinator
+   `data_plane_enabled` false until Slice 7 verifies the complete production catalog and dependency
+   manifest;
+6. add the pre-6A `WorkerWorkset` pipeline: unified 1..N dispatch, exact compatibility validation, one
+   active session-mutating workset, one host-only staged successor with exact `StateCacheKey` leases,
+   multi-item baseline state flow, a worker-global per-item result acknowledgement ledger, and
+   coordinator active/staged/completion-capacity accounting;
+7. implement the supported phase builders incrementally as 6A SeedProbe, 6B Navigation Context, 6C TAS
    Movie, 6D TAS Frame Detector, 6E Battle Context, 6F Battle Macro Probe, 6G Battle Single Turn, 6H
    Battle Completion, and 6I Battle Results Screen;
-7. verify each builder against its current functional contract and focused source-derived
+8. verify each builder against its current functional contract and focused source-derived
    characterization without adding a temporary translator or parallel differential executor;
-8. have existing program-kind handlers or adjacent adapters derive exact runtime identity, typed inputs,
+9. have existing program-kind handlers or adjacent adapters derive exact runtime identity, typed inputs,
    and workset compatibility during materialization without changing stored job identity or affinity;
-9. remove current worker switches, domain opcodes, and the subordinate macro scheduler; and
-10. implement Navmesh Survey only on the new path.
+10. remove current worker switches, domain opcodes, and the subordinate macro scheduler; and
+11. implement Navmesh Survey only on the new path.
 
 The current dynamic battle-wave implementation is a migration asset: it provides executable examples for
 separating bounded worker expansion from durable orchestration.
@@ -520,7 +574,8 @@ stop-point router, transport core, or a central opcode switch.
 This document does not decide:
 
 - exact C++ interface spelling or source directory layout;
-- final numeric workset bounds, compression thresholds, and throughput tuning;
+- final numeric workset, staging, immutable-cache, global-completion-ledger, compression, progressive-
+  startup-concurrency, and throughput tuning;
 - the authored script syntax/UI;
 - final module revision/hash algorithms;
 - Survey-specific action algorithms;
@@ -529,10 +584,11 @@ This document does not decide:
 - overworld game rules; or
 - cutscene acceleration policy.
 
-The logical `WorkerWorkset` contract and unified dispatch direction are decided, not deferred. SavorDb
-SQL schema, stored representations, and unrelated interfaces remain fixed inputs. Any workset-specific
-coordinator interface change requires concrete evidence and a corresponding guidance update rather than
-an ambient reopening of SavorDb architecture.
+The logical pipelined `WorkerWorkset` contract, one-compatible-worker startup gate, and unified dispatch
+direction are decided, not deferred. SavorDb SQL schema, stored representations, and unrelated
+interfaces remain fixed inputs. Any database-interface change beyond ordered batch claim, exact-set
+lease renewal, claim/start validation, and targeted terminal reconciliation requires concrete evidence
+and a corresponding guidance update rather than an ambient reopening of SavorDb architecture.
 
 ## Source references
 

@@ -21,9 +21,10 @@ ever-growing central opcode switch.
 This document does not:
 
 - define the authoring syntax or editor;
-- change SavorDb SQL/schema, migrations, stored representations, database-service interfaces, queues,
-  claims, workflow persistence, transaction boundaries, or artifact-storage interfaces; the separate
-  workset coordinator seam may change only as documented without changing this program model;
+- change SavorDb SQL/schema, migrations, stored representations, durable queue/claim lifecycle,
+  workflow persistence, result-projection transaction boundaries, or artifact-storage interfaces;
+  document 06's ordered batch claim, exact-set lease renewal, claim/start validation, and targeted
+  terminal reconciliation interfaces do not change this program model;
 - create separate observation, interaction, predicate, or capture-language projects during this
   refactor; the composition libraries use the existing typed module-builder surface;
 - make canonical program envelopes a worker protocol or database persistence format;
@@ -144,15 +145,37 @@ The name chooses behavior inside an exact module. It does not select a controlle
 ### Worksets are not program structure
 
 `SubmitWorkset` may carry one to many independent invocation templates so `WorkerRuntime` can amortize
-verified module, session, and baseline preparation. This does not add a workset, batch, map, or
-parallel-execution instruction to the IR. It does not change an entrypoint's input/output schemas and
-does not construct a larger `ProgramInstance`.
+verified module, session, and baseline preparation. One workset may actively own session mutation while
+at most one immutable successor package is staged host-only. This does not add a workset, batch, map,
+pipeline, or parallel-execution instruction to the IR. It does not change an entrypoint's input/output
+schemas and does not construct a larger `ProgramInstance`.
 
-Every workset item shares one `WorkerWorksetExecutionKey`: the same exact module/revision/hash,
-entrypoint, dependency closure, runtime profile, initial baseline, and session-shaping policy.
-`WorkerRuntime` binds one item to the exact current session and `StateEpoch` immediately before admitting
-it; `ProgramRuntime` then receives one ordinary immutable `ProgramInvocation` and creates one ordinary
-`ProgramInstance`. Only that instance can execute or own invocation resources.
+Every active or staged workset item shares one `WorkerWorksetExecutionKey`: the same exact
+module/revision/hash, entrypoint, dependency closure, runtime profile, initial baseline, and
+session-shaping policy. The staged successor contains only the complete static item templates,
+correlation, validated immutable metadata, and scoped cache leases. Staging may decode, resolve and
+verify cached modules, validate typed inputs, read and hash immutable artifacts, and acquire a lease on
+an immutable serialized-state cache entry identified by exact `StateCacheKey`. It cannot bind
+`SessionId` or `StateEpoch`, restore or capture state, acquire an invocation/session resource, dispatch
+an action, or construct a `ProgramInvocation` or `ProgramInstance`.
+
+Only after a workset is active does `WorkerRuntime` prepare its common source state and optional
+multi-item baseline. Immediately before each child admission, it binds that template to the exact
+current session and `StateEpoch`; `ProgramRuntime` then receives one ordinary immutable
+`ProgramInvocation` and creates one ordinary `ProgramInstance`. Exactly one invocation/instance may
+execute or own invocation resources across the active and staged worksets.
+
+After full invocation unwind, the typed execution outcome and any promoted immutable output capture
+leave `ProgramRuntime`. The bounded worker-global completion/acknowledgement ledger performs host-only
+finalization, assembles and retains the authoritative terminal, and carries exact
+workset/item/invocation/attempt correlation. It never contains a `ProgramInstance`, continuation,
+resource handle, or live program state. Its entries may outlive the session ownership of the originating
+workset and therefore do not turn finalization or acknowledgement waiting into program execution.
+
+`StateCacheKey` and its bounded actor-LRU cache are likewise outside the program type system. A cache
+entry is immutable serialized state plus validated compatibility/lineage metadata, not a program value,
+guest handle, baseline, or epoch-bound state. A scoped cache lease prevents eviction while active or
+staged host preparation references the entry; it grants no session authority.
 
 A bounded list remains a valid program type when the domain operation itself is atomically defined over
 that list. It must not be introduced merely to combine otherwise independent jobs for transport or
@@ -506,8 +529,9 @@ old-epoch resources before accepting the new epoch.
 It does not contain:
 
 - a phase-controller subtype or virtual behavior;
-- worker queues, workset membership/ordering/acknowledgement state, workflow IDs used for scheduling, or
-  frontier mutation methods;
+- worker queues, active/staged workset membership, ordering or promotion state, `StateCacheKey` entries
+  or leases, completion/acknowledgement-ledger state, workflow IDs used for scheduling, or frontier
+  mutation methods;
 - an OS thread, event loop, timer thread, or callback into the protocol;
 - a `DolphinBackend`, `EmulationSession`, or broad service reference; or
 - live state that can be serialized and resumed on another worker.
@@ -544,7 +568,11 @@ These are services inside one subsystem, not alternate executors. `ProgramDefini
 DB workflow phase-adapter registry. `ActionRegistry` stores capability implementations, not arbitrary
 phase factories. `ProgramRuntime` drives the session-owned resource ledger for invocation scopes and
 receipts; it does not implement a second cleanup ledger. It neither owns nor iterates the enclosing
-`WorkerWorkset`, and it never has more than one active `ProgramInstance`.
+active workset or host-only staged successor, does not own the immutable state cache or worker-global
+completion/acknowledgement ledger, and never has more than one active `ProgramInstance`. It returns one
+fully unwound execution outcome plus any promoted immutable-output receipt to `WorkerRuntime`; host-only
+finalization, authoritative terminal assembly, workset admission/promotion, retention, and
+acknowledgement remain outside the subsystem.
 
 For this refactor, `ProgramDefinitionStore` is a worker/runtime catalog and cache backed by compiled or
 packaged definitions. It is not SavorDb persistence.
@@ -681,6 +709,14 @@ execution path.
   zero-to-many records/artifacts, and return a typed result without a domain opcode.
 - A suspended `ProgramInstance` contains only typed continuation/state data and no Dolphin or service
   pointer.
+- One active workset plus one host-only staged successor still yields exactly one executing
+  `ProgramInvocation` and one `ProgramInstance`. Staging constructs neither and cannot acquire a
+  program/session resource or bind an epoch.
+- `StateCacheKey`, immutable serialized-state cache entries and leases, and the worker-global
+  completion/acknowledgement ledger remain outside modules, entrypoint schemas, IR values, invocations,
+  and instances.
+- A published terminal can remain unacknowledged after its workset releases the session without keeping
+  a continuation, instance, baseline, or resource scope alive.
 - Duplicate or stale action completions cannot resume an instance.
 - Cancellation at every instruction/action suspension point takes the same verified unwind path.
 - Invocation scopes project onto the standalone session ledger, and no executor-local receipt or cleanup
@@ -727,8 +763,9 @@ execution path.
 - Any durable catalog or persistence for module source, normalized IR, verification cache, or source maps
   is a separate project. This refactor adds no SavorDb storage for those objects.
 - Optional future generic sum/variant types beyond enum-plus-record/optional schemas.
-- Numeric tuning of the worker-owned finite workset limits and terminal-acknowledgement window. Worker
-  scheduling does not add a batching instruction or require list-valued phase schemas.
+- Numeric tuning of active/staged workset limits, immutable-state-cache count/byte bounds, the
+  worker-global completion/acknowledgement ledger, and progressive startup. Worker scheduling does not
+  add a batching/pipeline instruction or require list-valued phase schemas.
 - Direct re-authoring of current phases, production runtime/action-host construction and capability
   advertisement, a live game-program smoke, and production-worker SavorE2E.
 

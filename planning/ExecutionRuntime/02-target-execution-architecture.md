@@ -32,9 +32,10 @@ This document defines:
 This document does not define:
 
 - concrete C++ class declarations, ownership pointer types, or coroutine libraries;
-- changes to SavorDb SQL/schema, migrations, stored representations, database-service interfaces,
-  durable queue/claim contracts, workflow persistence, transaction boundaries, or artifact-storage
-  interfaces; the workset-specific coordinator behavior defined here is the narrow exception;
+- changes to SavorDb SQL/schema, migrations, stored representations, durable queue/claim lifecycle,
+  workflow persistence, result-projection transaction boundaries, or artifact-storage interfaces;
+  document 06 permits only ordered batch claim, exact-set lease renewal, claim/start validation, and
+  targeted terminal reconciliation interfaces over those same records and semantics;
 - byte-level worker messages;
 - the typed program IR, which is fixed in document 03;
 - individual action schemas, which are fixed in document 04;
@@ -98,12 +99,16 @@ activation do not yet exist.
 
 ```mermaid
 flowchart TD
-    CO["Coordinator / Workflow Runtime"] --> WP["WorkerProtocol"]
+    CO["Coordinator / Workflow Runtime"] --> PH["Parent worker-process seam<br/>progressive compatible startup"]
+    PH --> WP["WorkerProtocol"]
     VC["Visual control ingress"] --> WP
     WP --> WR["WorkerRuntime<br/>sole external command actor"]
 
-    WR --> WW["WorkerWorkset<br/>finite ordered item state"]
-    WW --> PR["ProgramRuntime"]
+    WR --> AW["Active WorkerWorkset<br/>one session-mutating workset"]
+    WR -. host-only .-> SW["Staged successor workset<br/>at most one immutable package"]
+    WR --> CL["Worker-global completion / acknowledgement ledger"]
+    WR --> SC["Immutable state cache<br/>bounded actor-LRU by StateCacheKey"]
+    AW --> PR["ProgramRuntime"]
     PR --> PDS["ProgramDefinitionStore"]
     PR --> PV["ProgramVerifier"]
     PR --> PE["ProgramExecutor<br/>sole program-flow scheduler"]
@@ -132,30 +137,47 @@ flowchart TD
 
 There is one path for program execution:
 
-1. `WorkerProtocol` translates external framing into one typed `SubmitWorkset` command containing one
+1. The pre-6A parent worker-process seam launches and completely negotiates one compatible worker,
+   supports direct one-item process tests, and then starts the rest of the desired pool progressively
+   under a bounded concurrency limit. It keeps the coordinator data plane disabled. Slice 7 applies the
+   same gate only after that first worker also proves the complete production catalog and dependency
+   manifest; only then may DB work open while the rest of the desired pool continues starting.
+2. `WorkerProtocol` translates external framing into one typed `SubmitWorkset` command containing one
    to the declared maximum number of items.
-2. `WorkerRuntime` serializes the command against the one owned `EmulationSession`, validates the
-   complete static item set and its shared `WorkerWorksetExecutionKey`, asks `ProgramRuntime` to preflight
-   every item without constructing an instance, and creates one transient workset scope.
-3. `StateService` prepares the workset's declared initial state once. A multi-item workset then captures
-   one immutable reusable baseline; a one-item workset does not. The first item uses the
-   already-prepared state, and every later admitted item restores the multi-item baseline and therefore
-   receives a fresh `StateEpoch`.
-4. Immediately before admitting an item, `WorkerRuntime` binds its immutable template to the exact
+3. If no workset owns the session, `WorkerRuntime` accepts the command as the active workset. While one
+   active workset exists, it may accept at most one additional command as an immutable host-only staged
+   successor package.
+4. Staging validates the complete static item set and shared `WorkerWorksetExecutionKey`, resolves
+   cached modules, validates typed inputs, reads and hashes immutable artifacts, and may acquire bounded
+   module/state-cache leases. It does not bind a session or epoch, restore state, capture a baseline,
+   acquire session-effect resources, construct a `ProgramInstance`, or advance Dolphin.
+5. On initial activation or clean staged-successor promotion, `StateService` prepares the workset's
+   declared source from its exact artifact or immutable cache entry. A multi-item active workset then
+   captures one reusable baseline; a one-item workset does not. The first item uses the prepared state,
+   and every later admitted item restores that active-workset baseline and receives a fresh
+   `StateEpoch`.
+6. Immediately before admitting an item, `WorkerRuntime` binds its immutable template to the exact
    current session and epoch. `ProgramRuntime` resolves and verifies the exact module/dependency closure
-   and constructs one `ProgramInstance`.
-5. `ProgramExecutor` advances that instance until it returns, fails, reaches a budget boundary, or
+   and constructs the worker's sole executing `ProgramInstance`.
+7. `ProgramExecutor` advances that instance until it returns, fails, reaches a budget boundary, or
    awaits one registered action.
-6. `ProgramRuntime` validates and dispatches the requested action through `ActionRegistry`.
-7. Session services perform the bounded effect. Any emulator advancement goes through
+8. `ProgramRuntime` validates and dispatches the requested action through `ActionRegistry`.
+9. Session services perform the bounded effect. Any emulator advancement goes through
    `ExecutionEngine`.
-8. The typed completion is delivered back to `ProgramRuntime`; `ProgramExecutor` resumes only the
-   matching continuation.
-9. On every terminal path, `ProgramRuntime` unwinds that item's invocation scope and returns one typed
-   `ProgramResult` to `WorkerRuntime`.
-10. `WorkerRuntime` publishes that item terminal through the non-lossy result path, retains it within the
-    bounded durable-acknowledgement window, and admits the next item only when the result window and
-    session disposition permit it.
+10. The typed completion is delivered back to `ProgramRuntime`; `ProgramExecutor` resumes only the
+    matching continuation.
+11. On every execution-terminal path, `ProgramRuntime` unwinds that item's invocation scope and returns
+    one typed execution outcome plus its declared output captures to `WorkerRuntime`.
+12. `WorkerRuntime` promotes any synchronously captured immutable output into the bounded worker-global
+    completion/acknowledgement ledger. The actor assembles and publishes the authoritative
+    `ProgramResult` only after every required host finalizer completes; another active item may begin
+    after clean unwind while that host-only work remains pending when ledger capacity permits.
+13. After every active item has either produced a completed execution record with required immutable
+    output captured or been classified unstarted, the complete invocation/workset session scopes and
+    baseline lease have released, and the session is proven clean, the staged successor may promote even
+    while older outputs finalize or terminals await acknowledgement if the global ledger has capacity.
+    A completed workset's bookkeeping summary waits for output finalization and exact acknowledgements
+    but does not continue owning the session.
 
 No alternate native-controller, input-macro-controller, user-script, or phase-specific execution path
 is permitted.
@@ -163,9 +185,9 @@ is permitted.
 ### Worker worksets
 
 A `WorkerWorkset` is one transient, finite, static, ordered set of independent invocation templates. The
-complete membership and order are validated at `SubmitWorkset`; an active workset cannot append,
-generate, reorder, or replace items. A one-item workset is the ordinary invocation path, so there is no
-second single-job command or executor.
+complete membership and order are validated at `SubmitWorkset`; an active or staged workset cannot
+append, generate, reorder, or replace items. A one-item workset is the ordinary invocation path, so
+there is no second single-job command or executor.
 
 Every item shares one exact `WorkerWorksetExecutionKey`:
 
@@ -179,13 +201,34 @@ Every item shares one exact `WorkerWorksetExecutionKey`:
 Per-item invocation/attempt/cancellation correlation, typed input value, declared child budget, and
 provenance may differ. Any
 incompatible item rejects the complete workset before state mutation. Workset bounds cover item count,
-encoded bytes, aggregate declared child budgets, resident-item capacity, and unacknowledged terminal
-count and bytes.
+encoded bytes, aggregate declared child budgets, active and staged resident-item capacity, and the
+worker-global unacknowledged-terminal count and bytes.
 
 The workset is an efficiency and transport construct owned by `WorkerRuntime`; it is not a
 `ProgramModule`, `ProgramInvocation`, `ProgramInstance`, IR instruction, phase controller, workflow, or
 durable scheduler. Item order cannot carry a dependency. If one item needs another item's output, that
 relationship remains ordinary program composition or durable workflow composition.
+
+One active workset alone may prepare or mutate the `EmulationSession`. At most one additional successor
+may exist as a host-only immutable staged package. Staging is intentionally useful work: bounded decode,
+complete-key and item-schema validation, module/dependency cache resolution, immutable artifact I/O and
+hash verification, and acquisition of scoped module/state-cache leases. It remains forbidden from
+restoring guest state, binding `SessionId`/`StateEpoch`, capturing a reusable baseline, acquiring any
+session-effect resource, constructing a `ProgramInstance`, or dispatching an action.
+
+The process/session-owned immutable state cache is bounded by count and bytes and reclaimed by an
+actor-owned LRU. Its `StateCacheKey` covers exact serialized-state hash and lineage, disc/runtime/backend
+compatibility, movie-continuation identity, and session generation. Entries contain only immutable
+serialized bytes plus validated metadata. A scoped cache lease prevents eviction while a staged or
+active workset references an entry; it does not authorize restore or represent a live epoch-bound state
+handle. The active workset's baseline remains a separate session resource and is released before a
+staged successor promotes.
+
+Completed execution records, promoted immutable outputs and pending finalizers, and published item
+terminals are owned by one bounded worker-global completion/acknowledgement ledger keyed by exact
+workset, item ordinal, invocation, attempt, and terminal identity/order. Ledger entries may outlive their
+originating active workset. Full negotiated count or byte capacity keeps Dolphin paused and blocks later
+item admission or staged promotion; it does not permit loss, overwrite, or aggregate acknowledgement.
 
 ### Predicate composition boundary
 
@@ -251,9 +294,10 @@ progress views.
 
 | Component | Sole responsibilities | Explicitly forbidden responsibilities |
 |---|---|---|
+| Parent worker-process seam | Launch/negotiate exactly one complete compatible worker for the eventual data-plane gate, progressively start the remaining desired pool with bounded concurrency, expose process capabilities/limits, and support direct one-item process tests before Slice 7 | Claiming or starting DB work before complete Slice 7 catalog/dependency negotiation, interpreting programs, mutating a worker session |
 | `WorkerProcess` | Process arguments, logging, pipe handles, process shutdown, and construction of the worker object graph | Dolphin policy, program interpretation, phase selection, direct execution control |
 | `WorkerProtocol` | Decode/validate transport frames into typed commands, including bounded worksets, and serialize worker events/results/acknowledgements | Mutating session state, selecting a controller, interpreting `ProgramKind` as an executor |
-| `WorkerRuntime` | Serialize external commands, own exactly one session and at most one transient workset, prepare/admit/cancel its ordered items, bind exact current session/epoch, retain non-lossy item terminals until durable acknowledgement, enforce session disposition, coordinate visual control and shutdown | Interpreting IR, implementing phase logic, dynamically creating workset items, physically manipulating stop points |
+| `WorkerRuntime` | Serialize external commands, own exactly one session, one active session-mutating workset, at most one host-only staged successor, the bounded immutable state-cache leases, and the worker-global completion/acknowledgement ledger; prepare/promote/admit/cancel ordered items, bind exact current session/epoch, enforce session disposition, coordinate visual control and shutdown | Interpreting IR, implementing phase logic, dynamically creating workset items, allowing staged work to acquire session authority, physically manipulating stop points |
 | `EmulationSession` | Own the live backend and all session-scoped services; expose capability interfaces to registered actions | Workflow scheduling, module selection, phase-specific control loops |
 | `DolphinBackend` | Narrow adapter for primitive boot/run/frame-step, physical debug objects, raw memory/register access, pad publication, state/movie/screenshot primitives, and CPU-thread callback ingress | `ProgramKind`, IR, action IDs, game policy, router priority, workflow identity |
 | `ExecutionEngine` | Own one actor-driven foreground emulator operation, routed-stop consumption, active-time budgets, pause confirmation, and primitive movie/VI/throttle policy | Threads, nested event loops, program control flow, pad publication, movie lifecycle, or physical stop-point ownership |
@@ -289,9 +333,12 @@ The following are architectural constraints, not conventions:
 11. `SessionResourceLedger` is the authoritative cleanup record for session and future invocation
     resources. Services execute their own typed release operations; the ledger determines ordering,
     retry/continuation, epoch disposition, and whether cleanup requires session taint.
-12. `WorkerRuntime` may retain one bounded workset, but it admits at most one `ProgramInvocation` and
-    owns at most one `ProgramInstance` at a time. Workset residency never grants parallel access to the
-    session.
+12. `WorkerRuntime` may retain one active workset and one immutable host-only staged successor, but it
+    admits at most one executing `ProgramInvocation` and owns at most one `ProgramInstance` at a time.
+    Staging and worker-global terminal retention never grant parallel access to the session.
+13. The active workset releases every invocation/workset session resource and baseline lease before a
+    staged successor promotes. Unacknowledged terminals survive only in the bounded worker-global
+    completion ledger and do not extend session ownership.
 
 These invariants must be enforceable through dependencies: forbidden callers shall not receive a
 backend reference or a capability broad enough to reconstruct one.
@@ -303,9 +350,14 @@ instead of one OS thread.
 
 - Pipe ingress, visual-control ingress, cancellation, and shutdown become typed commands in one queue.
 - Commands that can affect emulation are executed serially on the worker control actor.
-- Exactly one finite static workset may be resident, and exactly one of its invocations may be active.
+- Exactly one finite static workset may own session mutation, at most one immutable successor may be
+  staged host-only, and exactly one invocation/instance may execute.
+- Staging work completes through the actor as bounded immutable preparation. Artifact readers or cache
+  helpers may perform documented background I/O, but their completions can publish only immutable bytes,
+  metadata, and lease receipts; they cannot mutate session state or promote themselves.
 - Workset item order and actor-assigned admission order are deterministic. Item completion does not
-  permit another item to start until invocation unwind has returned the ledger to the workset scope.
+  permit another item to start until invocation unwind has released that item's scope and the session
+  disposition plus worker-global completion-ledger capacity permit admission.
 - Exactly one foreground `ExecutionEngine` operation may advance the core at a time.
 - A program waiting for an action is suspended data, not a blocked private event loop.
 - A router interceptor may request a verifier-known interruption handler. `ExecutionEngine` suspends the
@@ -323,11 +375,11 @@ instead of one OS thread.
   worker control actor.
 - Capture/artifact writer threads may perform passive buffering and I/O. They cannot mutate emulator
   run state, program state, input, physical stop points, or `StateEpoch`.
-- All outbound worker messages pass through one serialized publisher. Per-item terminal results use a
-  non-lossy bounded retention window and remain replayable until exact durable acknowledgement; when
-  that window is full, the actor keeps Dolphin paused and admits no new item. Progress and optional
-  diagnostics may use their declared coalescing/drop policies. Callback and recorder threads enqueue
-  telemetry rather than writing transport frames directly.
+- All outbound worker messages pass through one serialized publisher. Per-item terminal results transfer
+  into one worker-global non-lossy bounded ledger and remain replayable until exact durable
+  acknowledgement; when the ledger is full, the actor keeps Dolphin paused and admits or promotes no
+  new item/workset. Progress and optional diagnostics may use their declared coalescing/drop policies.
+  Callback and recorder threads enqueue telemetry rather than writing transport frames directly.
 - Private threads and nested event loops inside actions, reducers, or program definitions are forbidden.
   A service may own a documented background facility, but its effects return through the worker actor.
 
@@ -338,8 +390,8 @@ The logical worker states are:
 | State | Meaning | Accepted mutating commands |
 |---|---|---|
 | `Starting` | Backend/session construction is incomplete | `Shutdown` |
-| `Ready` | Session is clean and no workset or invocation is active | `SubmitWorkset`, allowed visual/session commands, `Shutdown` |
-| `Running` | One workset owns its scope; at most one admitted item owns an invocation root | exact item cancellation, workset cancellation; policy-allowed visual commands are queued |
+| `Ready` | Session is clean and no active workset or invocation owns it; a host-only staged successor and global terminal entries may still exist | `SubmitWorkset` when active/staged capacity permits, allowed visual/session commands, `Shutdown` |
+| `Running` | One active workset owns session scope; at most one admitted item owns an invocation root; at most one successor is staged host-only | exact item cancellation, active or staged workset cancellation; policy-allowed visual commands are queued |
 | `InteractivelyPaused` | The execution operation is safely suspended under an invocation that permits visual debugging | `ResumeInteractive`, allowed frame step, exact item cancellation, workset cancellation, `Shutdown` |
 | `Cancelling` | Cancellation is propagating and scopes are unwinding | `Shutdown`; later commands wait or are rejected |
 | `Recovering` | A clean, declared session recovery is in progress | `Shutdown` |
@@ -353,15 +405,28 @@ An invocation has its own lifecycle:
 `Rejected` is terminal before state preparation. `Cancelled`, `TimedOut`, `Failed`, and `Completed` all
 pass through `Unwinding`. No terminal outcome skips cleanup.
 
-A workset has a separate actor-owned lifecycle:
+The active workset's session-owning lifecycle is separate from result acknowledgement:
 
-`Accepted -> PreparingState -> RunningItems <-> AwaitingResultCapacity -> DrainingAcknowledgements -> Finished`.
+`Accepted -> PreparingState -> RunningItems <-> AwaitingCompletionCapacity -> ReleasingSession -> SessionReleased`.
 
-`PreparingState` establishes the common baseline. `RunningItems` contains at most one invocation
-lifecycle. `AwaitingResultCapacity` is paused host-side backpressure, not a suspended `ProgramInstance`.
-The workset becomes terminal only after every item has an authoritative terminal classification,
-every required durable result acknowledgement has been correlated, and its workset scope has released
-cleanly. Its terminal summary is bookkeeping only.
+`PreparingState` establishes the common source and, for a multi-item workset, its reusable baseline.
+`RunningItems` contains at most one invocation lifecycle. `AwaitingCompletionCapacity` is paused
+host-side backpressure caused by the worker-global completion ledger, not a suspended
+`ProgramInstance`. `ReleasingSession` synchronously captures and promotes any required immutable
+session output, releases the complete invocation/workset session scopes and baseline lease, and proves
+the session clean. Host-only hashing/publication/validation remains in the completion ledger. At
+`SessionReleased`, a staged successor may promote if the global ledger has capacity even though outputs
+from the prior workset are still finalizing or terminals remain unacknowledged.
+
+The staged successor remains an immutable host-only package while it waits. It may complete bounded
+decode, dependency/input validation, immutable artifact reads and hashing, and cache-lease acquisition,
+but has no session lifecycle until promotion.
+
+Completed execution records, pending finalizers, and published terminals independently progress through
+the bounded worker-global completion/acknowledgement ledger. A workset's bookkeeping-only terminal
+summary is emitted only after every child has an authoritative terminal or unstarted classification,
+output finalization is complete, and every required item acknowledgement has been correlated. Waiting
+for that summary does not retain the session, invocation resources, or baseline.
 
 During the Slice 3 hard-cutover interval, a Ready visual-intent session may also have an execution
 substate of `IdlePaused`, `InteractiveRunning`, `HandlingInterruption`, or `Failed`. This does not create
@@ -375,9 +440,9 @@ The logical worker command surface includes:
 
 - prepare/cache a module by exact identity;
 - submit one bounded workset containing one to many ordered item templates under one
-  `WorkerWorksetExecutionKey`;
-- cancel one exact pending or active workset item;
-- cancel one exact workset;
+  `WorkerWorksetExecutionKey`, either as the active workset or the one host-only staged successor;
+- cancel one exact pending, active, or staged workset item;
+- cancel one exact active or staged workset;
 - acknowledge durable handling of one exact item terminal;
 - request a safe interactive pause;
 - resume or perform an allowed debug frame step;
@@ -390,13 +455,14 @@ The former single-item `SubmitInvocation` discriminator remains reserved. Receiv
 request before session mutation; it is not renumbered or reused. One-item execution uses
 `SubmitWorkset`.
 
-Exact item cancellation, workset cancellation, and shutdown are always accepted. A pending item
-cancellation produces an authoritative not-started cancellation terminal without state mutation. An
-active item cancellation follows the ordinary invocation unwind; after clean unwind the workset may
-continue unless the whole workset was cancelled. Workset cancellation closes further admission,
-classifies every pending item as cancelled-before-start, and cancels the active item through that same
-path. Duplicate, stale, mismatched, or already-terminal cancellation is rejected without changing the
-session.
+Exact item cancellation, workset cancellation, and shutdown are always accepted. A pending or staged
+item cancellation produces an authoritative not-started cancellation terminal without state mutation.
+Cancelling the staged successor closes its admission, classifies its remaining items before start, and
+releases only host cache leases. An active item cancellation follows the ordinary invocation unwind;
+after clean unwind the workset may continue unless the whole active workset was cancelled. Active
+workset cancellation closes further admission, classifies every pending item as cancelled-before-start,
+and cancels the active item through that same path. Duplicate, stale, mismatched, or already-terminal
+cancellation is rejected without changing the session.
 
 Screenshot and telemetry requests may execute
 while a program is active only if they do not advance or mutate the core. The current screenshot request
@@ -549,14 +615,17 @@ executor, controller class, worker-side payload decoder, or worker runtime.
 | Failure source | Owning layer | Required outcome |
 |---|---|---|
 | Malformed transport or unknown command | `WorkerProtocol` | Reject without mutating the session |
-| Invalid, unbounded, empty, or mixed-execution-key workset | `WorkerProtocol` / `WorkerRuntime` | Reject the complete workset before common state preparation |
-| Module/dependency/schema/capability mismatch | `ProgramRuntime` verifier path | Reject before state preparation |
+| Invalid, unbounded, empty, or mixed-execution-key workset | `WorkerProtocol` / `WorkerRuntime` | Reject the complete active or staged candidate before session mutation |
+| Staged decode, immutable-artifact, hash, dependency, or input validation failure | `WorkerRuntime` host-preparation path | Reject only the staged successor, release its cache leases, and leave the active session/workset unchanged |
+| Module/dependency/schema/capability mismatch | staged host validation or `ProgramRuntime` verifier path | Reject before state preparation; admission still revalidates any session-dependent requirement |
 | IR fail or declared domain terminal | `ProgramExecutor` | Produce typed domain/program outcome, then unwind |
 | Action contract violation | `ProgramRuntime` / `ActionRegistry` | Fail invocation, cancel pending effect, then unwind |
 | Emulator operation timeout, stall, guard, or backend failure | Session service that owns the operation | Return typed completion/failure to the action; executor follows program policy or fails |
 | Exact item cancellation | `WorkerRuntime` | Classify a pending item without mutation or cancel the active action/execution and unwind that invocation |
 | Workset cancellation | `WorkerRuntime` | Stop later admission, classify pending items, cancel/unwind the active invocation, then release the workset scope |
 | Item-terminal backpressure | `WorkerRuntime` / `WorkerProtocol` | Retain and replay the result, keep the session paused, and admit no new item until exact durable acknowledgement creates capacity |
+| Promoted host-output finalization failure | completion ledger plus owning artifact service | Assemble one infrastructure-failed item terminal; do not taint an otherwise proven-clean session |
+| Immutable session-output capture or mandatory scope/baseline release failure | owning service plus `WorkerRuntime` | Do not promote the staged successor; taint when clean session disposition cannot be proven |
 | Resource restoration failure | Resource-owning service plus `ProgramRuntime` | Record cleanup failure and taint the session |
 | Worker process or backend crash | Process/coordinator boundary | Invocation attempt fails; durable workflow decides retry on a fresh worker |
 
@@ -580,8 +649,12 @@ Active-item cancellation is monotonic:
 8. If any mandatory restoration cannot be proven, the session becomes `Tainted` and cannot accept
    another invocation.
 
-Timeout and guard abort use the same sequence. Shutdown adds transport closure and backend destruction
-after the unwind attempt.
+Timeout and guard abort use the same sequence. Shutdown first closes new admission, classifies the
+host-only staged successor as unstarted, performs the active unwind, and drains the bounded pending
+artifact finalizers plus already assembled terminal publication for the cooperative shutdown interval.
+Promoted immutable output is never discarded merely because shutdown began. Transport closure and
+backend destruction follow that drain attempt; forced process termination leaves any unfinished or
+unacknowledged item to the existing per-attempt recovery/idempotency path.
 
 Cancelling one item does not erase or rewrite any other item. Cancelling the workset is monotonic and
 prevents every not-yet-admitted item from entering `ProgramRuntime`. The workset result summary is
@@ -595,8 +668,11 @@ passes clean-session validation. If rebuild is unavailable or fails, `WorkerRunt
 and exits so the coordinator can replace the worker. Loading an ordinary savestate over an unknown
 leaked host resource is not sufficient proof of recovery.
 
-Taint or unproven workset/invocation cleanup stops workset admission immediately. Pending items never
-touch the session; the coordinator retains their durable claim/retry responsibility.
+Taint or unproven workset/invocation cleanup stops workset admission immediately. Pending active items
+and every staged item remain unstarted and never touch the session; staged cache leases are released.
+Already published terminals remain in the worker-global completion ledger until acknowledgement or
+process loss transfers recovery to the existing per-item attempt rules. The coordinator retains durable
+claim/retry responsibility for every item.
 
 ## Dependencies and migration implications
 
@@ -612,11 +688,18 @@ The implementation order is constrained by ownership:
    standalone resource ledger. This ownership seam is established by Slice 4.
 7. Introduce the universal `ProgramRuntime`, canonical v1 model/codec, generic actor-queued action seam,
    and initial modular capability packs. This foundation is established by Slice 5.
-8. Migrate phase definitions into canonical IR, then activate production invocation and program-kind
-   adapters through unchanged SavorDb contracts.
-9. Re-author each current phase directly through canonical builders/composition frontends and remove its
-   `PhaseScriptVM` and peer macro-runtime execution path at cutover. Legacy source may remain as
-   historical behavior evidence, but it is not a translator or alternate executor.
+8. Before 6A, implement the parent worker-process seam and workset pipeline: direct one-item process
+   tests, the eventual one-complete-compatible-worker gate, bounded progressive pool startup, one active
+   session-mutating workset, one immutable host-only staged successor, exact `StateCacheKey` leases, and
+   the bounded worker-global completion ledger. Keep coordinator data-plane work disabled.
+9. Re-author each current phase directly through canonical builders/composition frontends as 6A through
+   6I. Legacy source may remain as historical behavior evidence, but it is not a translator or alternate
+   executor.
+10. In Slice 7, negotiate the complete production catalog/dependency manifest and workset limits on the
+    first compatible worker, apply the startup gate to activate production invocation and the coordinator
+    data plane, then progressively start the remaining pool. Program-kind adapters continue through the
+    existing SavorDb contracts.
+11. Remove each disconnected `PhaseScriptVM` and peer macro-runtime execution path at cutover.
 
 The breakpoint-router analysis stages 1 through 5 remain useful guidance. Its stage 6 is replaced:
 implementation shall not merely shrink the current VM while retaining `PhaseScriptInterpreter` and
@@ -637,6 +720,20 @@ cutover is underway.
   `InputArbiter` supplies the opaque production input-advance port without giving the engine
   pad-publication authority.
 - Concurrent pipe and visual commands are serialized into one reproducible worker command order.
+- A staged successor can complete only bounded host preparation and cache leasing. Tests prove that
+  staging cannot bind a session/epoch, restore or capture state, acquire a session resource, construct a
+  `ProgramInstance`, or advance Dolphin.
+- At most one active workset and one host-only staged successor exist, while exactly one
+  `ProgramInvocation`/`ProgramInstance` executes. Promotion requires every required immutable
+  session-output capture to be promoted, released invocation/workset scopes and baseline, a
+  proven-clean session, and worker-global completion-ledger capacity; background finalization may
+  remain pending.
+- Published terminals remain replayable in the worker-global ledger after their workset releases the
+  session. Old acknowledgements do not block clean promotion unless count/byte capacity is exhausted;
+  the prior workset's bookkeeping summary still waits for every exact acknowledgement.
+- The pre-6A process seam proves the one-worker gate and progressive-start behavior with direct one-item
+  tests while the coordinator data plane remains disabled. Slice 7 proves complete catalog/dependency
+  negotiation before applying the gate to DB work.
 - A visual frame step cannot bypass an active router interceptor or mutate a non-debuggable invocation.
 - Two logical stop-point consumers can share one PC without either replacing the other's subscription.
 - A requested interruption handler can suspend and resume a foreground operation while preserving its
@@ -696,9 +793,10 @@ cutover is underway.
 - Source-backed `soa.cutscene` and `soa.overworld` packs and their game-specific algorithms.
 - Live state-plus-DTM playback continuation, live post-write capture, and rendered interaction checks
   until deterministic program execution/input and unattended authoritative witnesses exist.
-- Numeric workset item/byte limits, durable-acknowledgement window sizing, and worker-pool tuning after
-  the finite static workset contract is proven. Workset ownership, one-active-item execution, exact
-  epoch binding, and non-lossy item terminals are not deferred.
+- Numeric workset/staged-item limits, immutable-state-cache count/byte bounds, worker-global
+  completion-ledger sizing, and progressive worker-start concurrency after the finite static workset
+  contract is proven. One active session-mutating workset, one host-only staged successor, one executing
+  item/instance, exact epoch binding, scoped cache leases, and non-lossy item terminals are not deferred.
 
 ## Source references
 

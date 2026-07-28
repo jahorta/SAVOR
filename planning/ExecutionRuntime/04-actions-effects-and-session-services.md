@@ -5,10 +5,12 @@
 This document describes how programs request effects, how native extensions are bounded, which session
 service owns each emulator facility, how resources are scoped, and how cancellation/restoration affect
 session reuse. Concrete C++ signatures and worker transport encoding may adapt during implementation.
-The package-wide SavorDb boundary applies: its schema, stored representations, service interfaces,
-durable queue/claim contracts, workflow persistence, transaction boundaries, and artifact-storage
-interfaces remain unchanged. Narrow workset-specific coordinator behavior does not alter these service
-contracts.
+The package-wide SavorDb boundary applies: its schema, stored representations, durable lifecycle
+semantics, workflow persistence, result-projection transaction boundaries, and artifact-storage
+interfaces remain unchanged. Document 06 permits only narrowly workset-specific execution-interface
+changes for ordered batch claim, exact-set lease renewal, claim/start validation, and targeted terminal
+reconciliation over those same records; the session services in this document neither depend on nor
+broaden that allowance.
 
 ## Purpose and non-goals
 
@@ -186,7 +188,8 @@ An action is one bounded reusable capability transaction. It may:
 - submit one typed execution operation and summarize its result;
 - perform one checked guest mutation transaction;
 - attach/finalize one capture or movie transaction; or
-- create/finalize one immutable artifact.
+- synchronously create/finalize one immutable artifact, or capture/promote one immutable state artifact
+  for the bounded completion-ledger finalization path below.
 
 An action may contain service-internal polling or emulator advancement only when:
 
@@ -383,8 +386,13 @@ Cancellation never calls arbitrary program code from a service thread.
 binding table and actor protocol that map future invocation resource identities onto it:
 
 ```text
+Worker-global completion/acknowledgement ledger
+  -> immutable promoted state captures, finalization state, and retained terminals
+
 Session root scope
+  -> bounded immutable state cache
   -> transient workset scope
+       -> scoped state-cache lease
        -> one active invocation root scope
             -> lexical program scope
                  -> action transaction scope
@@ -392,11 +400,21 @@ Session root scope
 ```
 
 The workset scope owns the exact common-preparation receipts and, only for a multi-item workset, the
-immutable reusable baseline handle needed to admit its static ordered items. A one-item workset does
-not capture an unnecessary reusable baseline. The scope may not retain a live input lease, router wait,
-mutation, capture writer, action continuation, guest-derived pointer, or other mutable invocation
-effect between items. Only the multi-item immutable baseline and existing clean session/module caches
-under their established contracts may survive between children.
+scoped cache lease for the immutable reusable baseline needed to admit its static ordered items. A
+one-item workset does not capture an unnecessary reusable baseline. The session-owned state cache may
+retain immutable serialized state bytes across worksets, but no workset obtains restore authority
+without its own lease. The scope may not retain a live input lease, router wait, mutation, capture
+writer, action continuation, guest-derived pointer, or other mutable invocation effect between items.
+Only immutable cache entries and compiled definitions survive according to their contracts; every
+mutable child resource is reacquired.
+
+The worker-global completion/acknowledgement ledger is host-only lifecycle state rather than another
+program or session scope. An invocation may promote a synchronously captured immutable state buffer and
+its exact movie metadata into that ledger during terminal preparation. Promotion transfers ownership
+out of the invocation before its root unwinds; it does not promote a backend handle, guest pointer,
+current epoch, or service authority. Background finalization and retained terminal results may
+therefore outlive the invocation and workset scopes that produced them without keeping a
+`ProgramInstance` active.
 
 Resources include:
 
@@ -436,6 +454,12 @@ Rules:
 11. Workset cancellation or terminal completion releases the workset scope after the active invocation
     has unwound. A failed mandatory workset-scope release taints the session and prevents later item
     admission.
+12. State-cache leases are ordinary scoped ledger resources. Eviction cannot remove a leased entry, and
+    release of the last lease never changes guest state or `StateEpoch`.
+13. Promotion into the completion/acknowledgement ledger is permitted only for immutable host-owned
+    bytes and metadata whose synchronous capture succeeded. Before promotion, ordinary unwind owns
+    abort/cleanup; after promotion, the global ledger owns finalization, terminal assembly, retryable
+    publication cleanup, and eventual release.
 
 ### StateEpoch interaction
 
@@ -674,6 +698,32 @@ It replaces the VM's one implicit snapshot with explicit handles:
   same-session in-memory handle carrying the process-local recording generation and exact embedded DTM
   history.
 
+`StateService` also owns one bounded session-local immutable state cache. `StateCacheKey` contains the
+state content hash, exact game/ISO/emulator/runtime compatibility, lineage and source-artifact identity,
+the complete no-movie or read-only movie-continuation identity needed to interpret the bytes, and any
+session-generation constraint required by the backend/runtime profile. Recording-generation handles are
+deliberately excluded. A cache entry contains immutable serialized state bytes plus the verified movie
+metadata/DTM bytes required by that key; it contains no live backend object, guest handle, router
+receipt, input acknowledgement, or `StateEpoch` permission.
+
+Cache use is always explicit through a scoped lease:
+
+- common workset preparation may acquire an existing entry after validating the exact
+  `StateCacheKey`, or populate one from a hash-validated artifact or newly captured baseline;
+- a completed output state may populate the cache only after asynchronous artifact publication has
+  established its final content hash and complete compatibility/lineage/movie key;
+- a multi-item workset holds its baseline lease until no later child can start;
+- a later workset or durable successor may acquire a fresh lease to the same immutable entry, but still
+  performs an ordinary `StateService` restore and receives a fresh `StateEpoch`;
+- eviction is bounded and deterministic with respect to active leases, but cache presence, eviction
+  order, compression, and storage tier are never correctness inputs; and
+- a miss falls back to the declared immutable artifact or normal boot/load path without changing
+  invocation semantics.
+
+An incompatible reboot, runtime/backend replacement, movie-generation change, or integrity uncertainty
+invalidates every affected entry before another lease may be acquired. A compatible replacement may
+retain only entries whose complete key and session-generation constraint remain valid.
+
 A restore transaction:
 
 1. reaches a safe pause and blocks new execution operations;
@@ -690,13 +740,17 @@ Loading state is never an unannounced helper side effect of VM initialization or
 
 For one accepted workset, common preparation is a bounded state transaction:
 
-1. validate the `WorkerWorksetExecutionKey` and prepare its declared boot/load/continue state;
-2. when the workset has more than one item, capture or import one immutable workset baseline after that
-   state is confirmed clean and paused; skip this reusable-baseline capture for a one-item workset;
+1. validate the `WorkerWorksetExecutionKey`, derive the exact `StateCacheKey` when state bytes are
+   reusable, and prepare its declared boot/load/continue state;
+2. when the workset has more than one item, acquire or create one immutable cache entry after that state
+   is confirmed clean and paused, then bind a workset-scoped lease to it; skip this reusable-baseline
+   capture and lease for a one-item workset unless its declared source is already satisfied by an
+   ordinary cache-assisted load;
 3. admit the first item against the already-prepared current epoch without a redundant restore;
-4. after that item fully unwinds, restore the same baseline before each later non-cancelled item, creating
-   one fresh epoch per successful restore; and
-5. release the baseline when no later item can be admitted.
+4. after that item fully unwinds, restore the exact bytes named by the same cache lease before each later
+   non-cancelled item, creating one fresh epoch per successful restore; and
+5. release the workset lease when no later item can be admitted. The underlying cache entry may remain
+   only as bounded immutable session cache state.
 
 A recoverable restore failure does not advance the epoch, produces an infrastructure terminal for the
 affected item, and stops the workset because the next item's required starting state was not
@@ -712,6 +766,47 @@ identity, and any known cursor before accepting the new epoch. Dolphin restores 
 the savestate, and `MovieService` records the authoritative observed frame/input position afterward.
 File-artifact capture/import/restore never represents an in-progress recording; recording rewind is
 available only through a same-session in-memory handle carrying the process-local recording generation.
+
+#### Asynchronous immutable state-artifact finalization
+
+State capture must remain synchronized with the paused guest, but compression, hashing, sidecar/file
+I/O, and validation do not need to occupy the session actor or keep a `ProgramInstance` alive. A state
+artifact therefore uses this fixed sequence:
+
+1. While safely paused on the actor, `StateService` captures immutable state bytes and the exact
+   no-movie or read-only movie metadata/DTM continuation required by the declared artifact role.
+2. The actor validates the synchronous capture receipt and promotes only those host-owned immutable
+   bytes and metadata into the worker-global completion/acknowledgement ledger. The promotion reserves
+   the already-admitted item's bounded count/byte credit. No `ArtifactRef` or authoritative item
+   terminal exists yet.
+3. A bounded background finalizer computes the content hash, writes the caller-declared new state and
+   required sidecar/DTM files through the existing artifact mechanism, and validates the published
+   bytes, hashes, compatibility, and lineage. It cannot access Dolphin, session services, router/input
+   state, `ProgramRuntime`, or workflow persistence.
+4. The finalizer enqueues one typed completion. On the actor, the global ledger correlates it to the
+   exact workset/item/invocation/attempt and actor-assigned terminal-order ordinal, constructs the final
+   `StateArtifact` reference or typed failure, and only then permits authoritative `ProgramResult`
+   assembly and publication.
+
+The state-save action returns a typed pending-publication receipt bound to a declared artifact role,
+not a fabricated final hash or durable `ArtifactRef`. Program control may record that the synchronous
+capture committed, but it cannot branch on publication success or consume the final artifact from the
+same invocation. Any phase whose subsequent behavior genuinely depends on the durable artifact keeps
+that dependency in terminal/result handling or a later durable workflow step.
+
+Once step 2 succeeds, the producing `ProgramInstance` may finish its ordinary unwind and a later child
+may become the sole active invocation if completion-ledger and item-capacity bounds allow it. Pending
+finalization is completion data, not a suspended action or second active program. Final state terminals
+are released in actor-assigned deterministic completion order even if background tasks finish in a
+different order.
+
+Cancellation before promotion follows ordinary action unwind. After promotion, the bounded finalizer
+continues draining the captured output to exactly one success or infrastructure-failure terminal;
+cancellation closes later admission but cannot discard or retract the promoted bytes. Publication
+failure is an infrastructure failure for that item; it taints the session only when session integrity or
+mandatory cleanup cannot be proven. A worker crash leaves no authoritative artifact without the
+existing final validation/publication evidence and recovers through the item's existing attempt and
+idempotency rules.
 
 ### MovieService, CaptureService, ScreenshotService, and TelemetryBus
 
@@ -758,12 +853,27 @@ an older queued event, the replacement keeps its fresh sequence and moves to tha
 position rather than retaining the older slot, so drain order remains sequence order. Background
 callbacks never write worker protocol frames directly.
 
-Workset item terminals are not telemetry. Each complete `ProgramResult` goes directly to the serialized
-protocol publisher, is retained by `WorkerRuntime` within a bounded count-and-byte window, and remains
-available for retransmission until the parent acknowledges durable handling of that exact
-workset/item/invocation/attempt tuple. Telemetry drop/coalescing policy can never discard or replace one
-of these terminals. When the window is full, the actor keeps the core paused and does not restore or
-admit the next item.
+Workset item terminals are not telemetry. The worker-global completion/acknowledgement ledger owns
+promoted immutable state captures, background-finalization correlation, terminal assembly, and
+non-lossy retention across workset boundaries. When an executed item completes synchronous session work
+or an unstarted item receives its final disposition, the actor assigns one monotonic terminal-order
+ordinal across worksets. This ordinal is distinct from the serialized publisher's outbound sequence.
+Background completions may arrive in another order, but the actor publishes authoritative terminals in
+terminal-order. A later item may start while an earlier state artifact finalizes, so its correlated
+start/progress events may appear before the earlier terminal; the publisher assigns those events their
+normal monotonic outbound sequence at publication, and they cannot change terminal order or completion
+authority.
+
+Each assembled `ProgramResult` receives the next outbound sequence through the one serialized protocol
+publisher and remains
+replayable until the parent acknowledges durable handling of that exact
+workset/item/invocation/attempt/terminal-order tuple. Telemetry drop/coalescing policy can never
+discard or replace a completion-ledger entry or terminal. Pending finalization, ready-but-order-blocked
+terminals, unacknowledged terminals, resident items, and the one immutable staged successor package all
+consume negotiated item/count/byte credits. When no credit remains, the actor keeps Dolphin paused and
+does not restore or admit another item. Once an executed workset has released its session resources, its
+completion entries may continue draining while the next workset is promoted; acknowledgement retention
+does not keep the old baseline or workset scope alive.
 
 `ScreenshotService` owns one correlated, actor-thread, synchronous bounded screenshot call, validates
 the expected `StateEpoch`, and preserves backend integrity/failure in its terminal receipt. The positive
@@ -803,7 +913,8 @@ The target decomposes present authority as follows:
 | `armPcBreakpoints`, `setEnabledPcBreakpointsOnly`, watchpoint clear/arm | `PhysicalStopPointManager`, derived from router subscriptions |
 | VM canonical/gated/predicate/macro sets | Scoped `StopPointRouter` subscription groups |
 | `DolphinWrapper::setInput`, playback epochs, VM macro exclusivity | `InputArbiter` leases and operations |
-| VM `snapshot_`, `loadSavestate`, raw buffer load/save, reboot | `StateService` typed handles and caller-declared immutable artifacts; read-only restores carry exact DTM history, recording rewind is memory-handle-only, and raw buffer/file escape hatches are disconnected |
+| VM `snapshot_`, `loadSavestate`, raw buffer load/save, reboot | `StateService` typed handles, scoped `StateCacheKey` leases, and caller-declared immutable artifacts; read-only restores carry exact DTM history, recording rewind is memory-handle-only, and raw buffer/file escape hatches are disconnected |
+| Synchronous state-file hashing/publication on the execution path | Synchronous paused immutable-byte/movie-metadata capture followed by worker-global completion-ledger ownership and bounded background finalization |
 | VM `writeU32` and future executable patches | `GuestMutationService` reversible checked transactions; only data writes may be explicitly committed |
 | VM-owned probe/capture job | One session-owned `CaptureService` attachment that passively rebinds across restore |
 | VM movie start/stop | `MovieService` resource paired with `InputArbiter`'s unsuspendable movie reservation, hash-verified DTM history, and active-DTM identity |
@@ -831,6 +942,11 @@ facade.
   completion message alone, remains authoritative.
 - A duplicate idempotent external request resolves from its commit receipt rather than repeating the
   side effect.
+- A state artifact cannot produce an authoritative successful terminal until its promoted immutable
+  capture has completed background publication/validation and the actor has assembled the exact
+  `ArtifactRef`.
+- Failure of a promoted background finalization produces one correlated item infrastructure result and
+  does not retroactively recreate or resume its released `ProgramInstance`.
 
 ### Unwind and taint
 
@@ -841,7 +957,8 @@ Service-specific releases include:
 - finish/cancel movie and capture sessions;
 - remove only the owning router subscription groups;
 - restore checked data/executable mutations and repeat cache/JIT invalidation when required;
-- finalize or abort artifact writers;
+- abort unpromoted artifact captures and transfer promoted immutable state captures to the
+  worker-global completion ledger without abandoning their finalization receipts;
 - invalidate state/guest handles; and
 - publish cleanup diagnostics.
 
@@ -857,6 +974,13 @@ Within a workset, clean or clean-with-diagnostics item unwind returns ownership 
 permits the next baseline restore. Tainted, uncertain, or incomplete mandatory cleanup closes admission
 immediately; pending items remain unstarted, the workset baseline is released as far as safely possible,
 and coordinator retry/requeue behavior remains authoritative.
+
+An item whose immutable state capture was promoted may finish execution unwind before its authoritative
+terminal exists. That promoted host-only work neither grants session reuse nor blocks it by itself:
+session reuse depends on the completed invocation cleanup receipt, cache/workset scope state, available
+completion credits, and session integrity. Failure to clean a temporary publication path is handled by
+the artifact idempotency/cleanup contract; it taints the session only if session-owned integrity is also
+uncertain.
 
 ### Service failure isolation
 
@@ -887,7 +1011,10 @@ Migration implications:
 5. Keep the implemented `InputArbiter` opaque input-advance port beneath `ExecutionEngine`; re-author
    current input/macro behavior with its epoch-bound leases, borrow policy, and guest-observed release.
 6. Use the implemented `StateService` as the sole epoch authority and translate raw savestate/buffer
-   operations to explicit handles or caller-declared immutable artifacts with exact movie continuation.
+   operations to explicit handles, `StateCacheKey`-validated scoped cache leases, or caller-declared
+   immutable artifacts with exact movie continuation. State-artifact publication uses synchronous
+   paused capture followed by bounded asynchronous finalization through the worker-global completion
+   ledger.
 7. Translate raw writes to the implemented `GuestMutationService`; data is reversible unless explicitly
    committed and executable patches are always reversible with symmetric cache/JIT invalidation.
 8. Use the implemented `MovieService`, one passive `CaptureService`, `ScreenshotService`, and
@@ -945,6 +1072,13 @@ host interfaces are not exposed to new modules.
 - Multiple state handles can coexist within budgets; each successful replacement increments the sole
   `StateEpoch`; recoverable failure does not; stale handles reject; exact SHA/compatibility/lineage and
   state-plus-DTM continuation are checked.
+- State-cache tests prove exact `StateCacheKey` matching, scoped leases, lease-safe eviction, cache-hit
+  versus artifact-load equivalence, fresh epoch on every restore, miss fallback, exclusion of recording
+  handles, and complete absence of guest/resource authority in cached entries.
+- State-artifact finalization tests prove actor-owned paused byte/movie capture, promotion before
+  invocation unwind, background-only hash/sidecar/file work, exact actor correlation, deterministic
+  terminal order despite out-of-order background completion, bounded credits, crash/idempotency
+  recovery, and no authoritative result before publication validation.
 - External state imports require explicit no-movie/read-only mode; recording file-artifact
   capture/import/restore rejects before backend mutation, while same-session memory-handle recording
   rewind is accepted.
@@ -984,9 +1118,10 @@ host interfaces are not exposed to new modules.
 - Migration-specific typed action payload schemas beyond the implemented canonical envelope and
   source-backed coherent query/reducer contracts.
 - Concrete router priority values, subscription serialization, and CPU sampling bytecode.
-- Performance tuning for worker-local state-handle memory limits/compression and future artifact-backend
-  adapters. Caller-declared paths and immutable/hash/compatibility/lineage semantics are already fixed;
-  none alters SavorDb storage or interfaces.
+- Numeric tuning for worker-local state-cache/finalization count and byte limits, compression, eviction,
+  and future artifact-backend adapters. Scoped `StateCacheKey` leases, caller-declared paths,
+  immutable/hash/compatibility/lineage semantics, and actor-side authoritative terminal assembly are
+  already fixed; none alters SavorDb storage or interfaces.
 - Generalized `eventhook` trigger characterization and allowlisting.
 - Source-backed `soa.cutscene` and `soa.overworld` packs, cutscene interception strategy,
   overworld-specific movement rules, collision-search objectives, and navigation settle tolerances.

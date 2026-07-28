@@ -18,9 +18,10 @@ current-source orientation and deletion targets; they receive no target module.
 It does not:
 
 - implement a module, action, or runtime type schema;
-- change SavorDb SQL/schema, migrations, stored representations, database-service interfaces, queues,
-  claims, workflow persistence, transaction boundaries, or artifact-storage interfaces; the shared
-  workset prelude may make only its documented coordinator scheduling and bookkeeping changes;
+- change SavorDb SQL/schema, migrations, stored representations, queue states, workflow persistence,
+  transaction semantics, or artifact-storage contracts; the shared workset prelude may add only the
+  narrow coordinator/DB interfaces documented in document 06 for ordered batch claim, exact-set lease
+  renewal, claim/start validation, and targeted terminal reconciliation;
 - make current persisted payload bytes the worker runtime contract; program-kind handlers may continue to
   use existing codecs to preserve the stored representation;
 - make Navmesh Survey part of the current-phase migration corpus;
@@ -261,26 +262,45 @@ cannot reinterpret its internals.
 Every entrypoint below remains scalar: one typed `ProgramInvocation` consumes one phase input and
 produces one independently correlated terminal result. `WorkerWorkset` is the sole bounded production
 dispatch envelope around already-independent scalar invocations; using more than one item is optional.
-It is not a module
-entrypoint, IR instruction, phase-sized controller, domain result, persisted job-set replacement, or
-permission for a module to enumerate workflow work.
+It is not a module entrypoint, IR instruction, phase-sized controller, domain result, persisted job-set
+replacement, or permission for a module to enumerate workflow work.
 
 Any independently ready invocations whose exact `WorkerWorksetExecutionKey` matches may use this path; phase
 identity alone neither permits nor forbids it. The key covers the exact module/entrypoint and dependency
 identity, runtime/session profile, source-state or reusable-baseline identity, and the execution/service
 policy that affects safe reuse. A one-item workset is valid and is the normal direct-tool boundary.
-Within one worker, children still execute one at a time. Each child retains its own job, invocation,
-attempt, deadline, cancellation, provenance, cleanup, artifact, and terminal-result identity, and every
-child begins through the exact state preparation or baseline restore declared for the key.
+Within one worker, children still execute one at a time. The worker may hold at most one active
+session-mutating workset and one immutable host-only staged successor, while a bounded worker-global
+completion/acknowledgement ledger retains older completed executions, pending artifact finalizers, and
+unacknowledged terminals. Staging may decode and validate envelopes, resolve cached definitions, and
+read/hash immutable artifacts; it cannot restore state, bind `StateEpoch`, capture a baseline, acquire
+session resources, or advance Dolphin. Neither staging nor output finalization creates a second
+`ProgramInstance` or executor.
 
-The worker publishes each child result as it completes. Clean completion or a clean domain-negative
-result may permit the next child; session taint or unproven cleanup aborts the remaining dispatch. The
-coordinator bounds worksets by item count, encoded bytes, aggregate declared child budgets,
-resident-item capacity, and unacknowledged terminal count/bytes; it may split one compatible population
-across workers and leaves unstarted work independently cancelable or retryable through current
-operations.
-This is a locality/dispatch optimization only: existing SavorDb fan-out, leases, supersession, reduction,
-and transitions remain authoritative.
+Each child retains its own job, invocation, attempt, deadline, cancellation, provenance, cleanup,
+artifact, and terminal-result identity. Every child begins through the exact state preparation or
+baseline restore declared for the key. An exact worker-local immutable-state cache may avoid repeated
+artifact reads, but every independent restore still passes through `StateService` and advances
+`StateEpoch`; no epoch-bound resource survives between children or worksets. After a dependent
+transition commits durably, ordinary same-worker affinity may attempt exact `ContinueSession`, with
+cached or file-backed restore as the correctness-equivalent fallback.
+
+The worker assigns one outbound sequence across worksets and streams each authoritative child terminal
+as soon as its required outputs are complete. Immutable state bytes may be captured synchronously while
+paused and finalized on a bounded host-output path, but a result containing that state is neither
+published nor acknowledged until hashing, sidecars, file publication, and validation succeed.
+Completion-ledger capacity may allow a clean successor workset to run while older acknowledgements
+drain; a full ledger pauses later admission without advancing Dolphin. An old workset's bookkeeping
+summary waits for all of its outputs and acknowledgements even though it no longer occupies the session.
+
+Clean completion or a clean domain-negative result may permit the next child; session taint or unproven
+cleanup aborts the remaining dispatch. The coordinator bounds active, staged, finalizing, and
+unacknowledged work by negotiated item, byte, and budget credits; it may split one compatible
+population across workers and leaves unstarted work independently cancelable or retryable through
+current operations. This is a locality/dispatch optimization only: existing SavorDb fan-out,
+supersession, reduction, and transitions remain authoritative, while documented workset-specific
+ordered batch claim, exact-set lease renewal, claim/start validation, and targeted terminal-
+reconciliation interfaces may be narrowed for the pipeline.
 
 A bounded list inside one scalar input is instead a **domain candidate list**. Its elements are one
 program's declared algorithmic work and share that invocation's result and failure boundary. It does not
@@ -929,9 +949,12 @@ Capability packs, typed action registration, and `ProgramRuntime` arrive in Slic
 | 6I | Battle Results Screen | Typically singleton | Completion-manifest lineage, real request/release witnesses, BERB/state artifacts, and existing handler projection |
 
 Each slice is vertical: it adds the native module, any reusable action/composition refinement, current
-program-kind adapter projection where applicable, and focused validation. Production
-`ProgramInvocation` remains unavailable until all nine modules are ready. There is no legacy 6J and no
-monolithic BattleEndResults slice.
+program-kind adapter projection where applicable, and focused validation. The pre-6A process seam makes
+the installed partial catalog available to unattended one-item `SubmitWorkset` guards as each slice
+lands; references above to in-process validation remain minimum focused coverage, and references to
+direct-worker SavorE2E waiting for Slice 7 mean DB-backed/full-catalog activation. Coordinator data-plane
+work and the complete-catalog production capability remain unavailable until all nine modules are ready
+in Slice 7. There is no legacy 6J and no monolithic BattleEndResults slice.
 
 ## Interfaces and ownership affected
 
@@ -1022,8 +1045,10 @@ The current-phase migration is complete only when:
 - the same immutable state and typed inputs produce the required domain outputs, artifacts, and game
   witnesses, allowing only explicitly declared nondeterministic fields;
 - current workflow restart, idempotency, fan-out, survivor selection, and artifact lineage still pass;
-- no SavorDb schema migration, stored-representation change, database-service/queue/claim/workflow
-  interface change, or artifact-storage-interface change is introduced;
+- no SavorDb schema migration, stored-representation change, durable queue/claim/workflow semantic
+  change, or artifact-storage-interface change is introduced; database interfaces change only for the
+  shared ordered batch claim, exact-set lease renewal, claim/start validation, and targeted terminal
+  reconciliation operations documented in 06;
 - current predicate records and result fields remain compatible through in-memory composition and
   existing result projection;
 - current stop/address/query/baseline behavior lowers through semantic-observation composition with

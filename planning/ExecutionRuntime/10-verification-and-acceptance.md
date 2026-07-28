@@ -21,16 +21,17 @@ Verification should establish, where relevant to the implementation slice:
 - exact module/action/type/state/artifact provenance;
 - parity for every supported current phase;
 - unchanged durable SavorDb workflow, persistence, idempotency, and restart semantics, with only the
-  documented workset-specific coordinator scheduling, claim-use, lease, capacity, and acknowledgement
-  additions;
+  documented workset-specific ordered-batch claim, exact-set lease, claim/start validation, targeted
+  reconciliation, scheduling, capacity, and acknowledgement additions;
 - safe phase switching through one executor; and
 - for future Survey work, the concrete `a101b` bounded-runtime behavior.
 
 This document does not define performance targets, game-specific search quality, or the exact
 authored-program source syntax. It does not change SavorDb database layout, stored representations,
-database-service interfaces, durable queue/claim contracts, workflow persistence, transaction
-boundaries, or artifact-storage interfaces. Workset-specific coordinator behavior is tested without
-introducing an unrelated queue or workflow redesign.
+durable job/queue states, workflow persistence, per-item lifecycle semantics, or artifact formats.
+Narrow workset-specific execution interfaces may implement ordered batch claim, exact-set lease renewal,
+claim/start validation, and targeted terminal reconciliation without introducing a persistent workset,
+replacement queue, or workflow redesign.
 
 ## Current code evidence
 
@@ -58,7 +59,7 @@ replacement, global `PSContext` keys, peer macro execution, or numeric program-k
 
 ### Test architecture
 
-The implementation shall provide five test surfaces:
+The implementation shall provide six test surfaces:
 
 1. **Pure contract tests**
    - runtime type schemas, canonical encoding/hash, verifier rules, IR semantics, reducers, and
@@ -81,11 +82,15 @@ The implementation shall provide five test surfaces:
    - each migrated phase adds focused new-runtime tests for its actions, branches, observations,
      emissions, artifacts, failure mapping, and cleanup;
    - no compatibility translator or second executable reference runtime is required.
-5. **Focused live SavorE2E**
+5. **Production-process phase guard**
+   - constructs the real `SavorWorker` `ProgramRuntime` and action host, negotiates the currently
+     installed partial catalog, and submits a one-item workset through the production transport;
+   - runs unattended for every 6A-6I phase or diagnostic module as it lands;
+   - never opens the DB coordinator data plane from an incomplete catalog.
+6. **Focused live SavorE2E**
    - uses the production worker, modules, actions, services, and workflow materialization;
    - validates Dolphin integration and game-specific witnesses that a fake backend cannot prove;
-   - is intentionally unavailable during the intermediate hard-cutover slices in which production
-     `ProgramInvocation` is not advertised.
+   - remains unavailable until Slice 7 promotes the complete catalog and enables DB-backed dispatch.
 
 A test fixture cannot implement phase behavior on behalf of production code. A custom SavorE2E scenario
 is an invocation and assertion harness, not a substitute `NavmeshSurveyRunner`.
@@ -134,11 +139,17 @@ development surface, action queue seam, concrete internal `SessionProgramActionH
 field/battle/navigation packs. Production composition constructs neither the runtime nor this host,
 does not advertise `ProgramInvocation`, and begins no DB work.
 
-Production-worker SavorE2E resumes only after current-program migration and handler-adapter cutover
-provide the complete production path. The final Release solution build and that E2E result remain the
-functional acceptance; the temporary availability gap does not permit any SavorDb schema, storage,
-interface, queue, claim, workflow, or transaction change. Slice 5 adds canonical program payload
-formats inside the existing encoded-module/invocation boundary; it does not change WRMS version 1.
+The pre-6A dependency prelude constructs that implemented runtime and host in production
+`SavorWorker`, replaces scalar submission with unified `SubmitWorkset`, and negotiates an explicit
+partial catalog plus staging/cache/finalizer/completion-ledger limits. Each 6A-6I slice can therefore run
+an unattended one-item production-process guard immediately. An incomplete catalog still fails the
+coordinator gate before DB work.
+
+Production-worker SavorE2E resumes only after Slice 7 promotes the complete catalog and handler-adapter
+cutover provides the complete DB-backed path. The final Release solution build and that E2E result
+remain the functional acceptance; the temporary availability gap permits only the narrow
+workset-specific execution interfaces described above, never a SQL/schema, stored-representation,
+queue-state, workflow-persistence, or artifact-format change.
 
 ### Canonical deterministic trace
 
@@ -620,7 +631,12 @@ Cover:
 
 - exact module/revision/hash/entrypoint resolution;
 - exact imported action/type/capability closure;
-- worker capability negotiation and cached-module hash verification;
+- worker capability negotiation, partial-versus-complete catalog state, exact dependency-manifest
+  comparison, and cached-module hash verification;
+- the old scalar `SubmitInvocation` discriminator remains reserved and fails before session mutation,
+  while one-item and multi-item requests share only `SubmitWorkset`;
+- a partial catalog accepts only installed direct-process entrypoints and can never satisfy the
+  coordinator's complete-catalog gate;
 - `Boot`, `LoadArtifact`, `RestoreBaseline`, and guarded `ContinueSession`;
 - malformed, oversized, unknown-version, missing-schema, and mismatched-runtime requests;
 - cancellation and progress correlation by invocation/attempt;
@@ -634,7 +650,8 @@ Cover:
 ### WorkerWorkset and coordinator tests
 
 Treat `WorkerWorkset` as the sole production dispatch envelope around unchanged scalar invocations;
-multi-item co-dispatch is the optional optimization. Focused tests shall prove:
+multi-item co-dispatch and cross-workset pipelining are optional optimizations. Focused tests shall
+prove:
 
 - the module receives exactly the same scalar input and produces exactly the same scalar result whether
   dispatched alone or as a workset child, and cannot inspect its workset position or siblings;
@@ -652,8 +669,9 @@ multi-item co-dispatch is the optional optimization. Focused tests shall prove:
   child's job, semantic invocation, attempt, lease, deadline, cancellation, provenance, artifact, and
   terminal-result identities;
 - a compatible population can be split across multiple available workers, with bounded item count,
-  encoded bytes, aggregate declared child budgets, resident-item capacity, and unacknowledged terminal
-  count/bytes, plus fairness that prevents one workset from monopolizing a worker;
+  encoded bytes, aggregate declared child budgets, active/staged/finalizing capacity, and worker-global
+  unacknowledged terminal count/bytes, plus fairness that prevents one workset from monopolizing a
+  worker;
 - each worker executes one child at a time in deterministic workset-local order while global progress and
   terminal events remain correlated correctly under cross-worker interleaving;
 - the first child establishes or loads the exact source baseline and every later child restores that
@@ -661,14 +679,32 @@ multi-item co-dispatch is the optional optimization. Focused tests shall prove:
   mutation, movie, or invocation-local state across children;
 - a one-item workset uses the freshly prepared state without capturing an unnecessary reusable
   baseline;
-- verified module preparation and immutable cache entries may be reused for an exact-key workset, but
-  never across a dependency, runtime, or policy mismatch;
-- each child's progress, artifacts, and terminal result are published as soon as that child completes
-  and its terminal is enqueued before any event for a later child;
-- terminal results remain non-lossy until exact acknowledgement after durable projection; a full
-  acknowledgement window pauses later admission without advancing Dolphin, and a terminal workset
-  summary appears only after every item disposition is acknowledged and the workset scope releases
-  cleanly;
+- verified module preparation and immutable state-cache entries may be reused for an exact-key workset,
+  but never across a dependency, runtime, state/movie, lineage, or policy mismatch; cache hit and miss
+  are semantically equivalent and every restore still advances `StateEpoch`;
+- after a durable dependent transition commits, exact same-worker `ContinueSession` is permitted only
+  with matching session/epoch/state/movie lineage and a clean `SessionResourceLedger`/cleanup receipt;
+  pending host-only finalizers or acknowledgements may coexist within global credit. Forced cache
+  eviction, worker replacement, or mismatch falls back to the immutable-artifact restore with
+  equivalent results;
+- at most one immutable successor package may be staged while another workset owns the session. Staging
+  may decode/verify envelopes, resolve definitions, read/hash immutable artifacts, and acquire cache
+  leases, but cannot restore state, bind an epoch, capture a baseline, acquire session-effect resources,
+  construct a `ProgramInstance`, or advance Dolphin;
+- each child's start event is actor-ordered before its first effect. At synchronous execution completion
+  or an unstarted disposition, the actor assigns a separate terminal-order ordinal; progress from a
+  later clean child may interleave while an earlier immutable output finalizes, but no later
+  authoritative terminal overtakes the earlier completion ordinal;
+- immutable state bytes are captured while paused, then may be promoted to a bounded host-only
+  finalizer; terminal publication waits for hash, sidecar/file publication, and validation, and
+  actor-assigned terminal order makes finalizer completion order irrelevant;
+- terminal results from every accepted workset remain non-lossy in one worker-global ledger until exact
+  acknowledgement after durable projection. A clean staged successor may promote after the active
+  workset releases even while older acknowledgements drain; a full ledger pauses later admission
+  without advancing Dolphin, and the older bookkeeping summary waits for all of its outputs and
+  acknowledgements;
+- one outbound sequence spans active, staged, finalizing, and completed worksets, so cross-workset
+  progress/terminal interleaving remains deterministic and exactly correlated;
 - a clean domain-negative or clean infrastructure result may permit the next child, while taint,
   unproven mandatory cleanup, or uncertain baseline integrity aborts the remaining workset and leaves
   every unstarted child eligible for the existing retry/requeue policy;
@@ -689,10 +725,59 @@ multi-item co-dispatch is the optional optimization. Focused tests shall prove:
   or inferred from, a workset.
 
 Acceptance of this optimization is correctness-only. Record comparative throughput, cold source loads,
-baseline restores, module preparations, transport overhead, actual workset sizes, cancellation waste,
+cache hits/misses, baseline restores, module preparations, staging overlap, artifact-finalization
+latency, acknowledgement backlog, transport overhead, actual workset sizes, cancellation waste,
 fairness, and tail latency as telemetry. No minimum speedup or utilization threshold gates phase
 migration or production cutover; if co-dispatch provides no benefit for a population, the coordinator
 may continue using one-item worksets.
+
+### Worker-process and coordinator infrastructure tests
+
+The pre-6A infrastructure receives focused deterministic guards independent of phase semantics:
+
+- production `SavorWorker` constructs one `ProgramRuntime` and one `SessionProgramActionHost`, publishes
+  the exact installed module/dependency manifest, and runs a one-item workset through the real process
+  protocol without any legacy execution path;
+- initial pool startup negotiates exactly one complete compatible worker as the eventual data-plane
+  gate, then starts remaining desired workers with a configurable bounded concurrency. Later failure or
+  slowness cannot inflate capacity or close an already-valid data plane. A controlled fixture may
+  request an all-workers-ready barrier; production startup never requires it;
+- an incomplete/partial catalog is accepted only by direct process tests; coordinator startup invokes no
+  claim, lease, materialization, result, workflow, or transition callback until the complete-catalog
+  gate succeeds;
+- negotiated item credit remains consumed exactly once from assignment through
+  staged/resident/active/finalizing/terminal retention and returns only after exact acknowledgement;
+  claim demand includes only unreserved worker credit plus a separately bounded coordinator buffer;
+- ordered batch claim uses one real database transaction rather than a scalar-call loop and returns
+  independent per-job claim/lease identities in the same stable priority order. Empty,
+  partial-capacity, injected rollback, and concurrent-claimer cases cannot create an ambiguous partial
+  host view;
+- exact-set lease renewal and claim/start validation cover active, staged, resident-pending, finalizing,
+  and unacknowledged items. The renewal receipt reports an independent disposition for every requested
+  item; partial authority loss prevents start or further publication and routes only that item through
+  existing recovery;
+- staged selection uses deterministic compatibility/priority indexes rather than rescanning every
+  materialized candidate for every worker or issuing a per-candidate job lookup. Property tests compare
+  indexed selection against the declared stable comparator across insertion, expiration, cancellation,
+  and affinity changes; the highest-priority, oldest eligible item remains the anchor, peer search stays
+  within that priority class and configured count/byte window, exact-key peers retain durable claim
+  order, warm-worker locality is preferred, and otherwise-equal choices resolve by queue time, job ID,
+  worker ID, then item ordinal;
+- item completion moves either its exact terminal or a reserved pending-output-finalization entry into
+  the worker-global completion ledger before the active workset/session is released. Durable projection
+  and acknowledgement may lag without losing or duplicating the eventual terminal or blocking a clean
+  staged successor within global credit;
+- output-finalizer completion, result persistence, acknowledgement, cancellation, lease loss, worker
+  exit, and successor promotion races preserve one authoritative per-item terminal, deterministic
+  terminal order, and a separately monotonic outbound sequence;
+- shutdown stops later admission and drains bounded promoted output finalizers before cooperative exit;
+  cancellation after promotion cannot discard the captured output, while forced process loss falls back
+  to the existing per-attempt recovery/idempotency path;
+- ordinary ready/materialized/result/acknowledgement transitions wake coordinator work directly.
+  Injected-clock tests prove the quiet path does not spin, while bounded reconciliation still discovers
+  externally created work, expired leases, missed notifications, and terminal repair; and
+- targeted terminal reconciliation handles only signaled or known-dirty identities in the fast path,
+  with bounded scans retained as a recovery safety net rather than the scheduling clock.
 
 ### Current-phase native characterization matrix
 
@@ -705,9 +790,9 @@ production path still performs the supported work; no legacy-path differential r
 | 6A | `soa.seed_probe/probe` | Starting state, input behavior, seed/result records, savestate/artifact output, failure mapping | Grid/Unique grouped-versus-ungrouped equivalence; small asynchronously cancelable Unique chunks and winner responsiveness; other configurations retain normal scalar/singleton behavior |
 | 6B | `soa.navigation.context/capture` | Qualification before `.nctx` and savestate publication, exact codec, neutral input, failure atomicity | Typical singleton isolation; generic exact-key co-dispatch remains legal without combining contexts or outputs |
 | 6C | `soa.tas_movie/play_and_checkpoint` | Movie identity, playback stops, checkpoint state/artifact, movie-end and failure behavior | Singleton or small exact-key worksets only where useful, with no movie, input, or checkpoint state leakage between children |
-| 6D | `soa.tas_frame_detector/detect` | Detector observations, branch/terminal classification, result fields, in-process ProgramRuntime activation with no SavorDb descriptor; process-level direct validation waits for Slice 7 | One-item direct workset; the detector's bounded frame observations remain domain work inside that scalar invocation |
+| 6D | `soa.tas_frame_detector/detect` | Detector observations, branch/terminal classification, result fields, and unattended one-item production-process activation through the partial catalog with no SavorDb descriptor | One-item direct workset; the detector's bounded frame observations remain domain work inside that scalar invocation |
 | 6E | `soa.battle.context/capture` | Qualification, captured context, state lineage, failure ordering | Typical singleton isolation; workset dispatch cannot absorb durable downstream fan-out |
-| 6F | `soa.battle.macro_probe/probe` | Input-before-departure publication, alternative semantic gates, exact source suppression, verifier-known successor witnesses, exact receipt matching, baseline/change waits, required release witnesses, unchanged capture profile, error mapping, in-process ProgramRuntime activation with no SavorDb descriptor, and no guest-step import; direct-worker activation waits for Slice 7 | One-item direct workset; macro commands and interaction segments remain one module's domain control flow |
+| 6F | `soa.battle.macro_probe/probe` | Input-before-departure publication, alternative semantic gates, exact source suppression, verifier-known successor witnesses, exact receipt matching, baseline/change waits, required release witnesses, unchanged capture profile, error mapping, unattended one-item production-process activation through the partial catalog with no SavorDb descriptor, and no guest-step import | One-item direct workset; macro commands and interaction segments remain one module's domain control flow |
 | 6G | `soa.battle.single_turn/execute` | RNG mutation receipt, semantic point/observation ordering, adaptive interaction trace, request/release acknowledgements, predicate trigger/baseline/comparison, abort/result mapping, passed/total accounting, progress emissions, unchanged capture-profile behavior, outcome, context, output savestate | Strong exact-wave/source/config fit; each candidate retains a scalar terminal and output state, while survivor reduction and next-wave creation remain durable external work |
 | 6H | `soa.battle.completion/complete` | Paused restore, successful neutral host publication without a guest-neutral poll/release witness, causal `0x8006F554 -> 0x8006F558` or `0x8006F590 -> 0x8006F594` successor receipt, completion observations, emitted state/reward/manifest artifacts, terminal classification, and no guest-step import | Typical singleton isolation; distinct victory-state lineages cannot be treated as one reusable baseline |
 | 6I | `soa.battle.results_screen/advance` | Split field-return reseed/completion-manifest input, ready/accepted/neutral interaction semantics, results capture, terminal state, and no monolithic victory-to-results module | Typical singleton isolation; the causal 6H-to-6I dependency is not fused into a workset, though ordinary worker affinity may still apply |
@@ -729,8 +814,9 @@ Use the current workflow persistence and restart fixtures to prove:
 - existing macro, address-program, and capture-profile representations are translated or consumed in
   memory without migration, conversion, or new storage contracts;
 - current durable job lifecycle, priority/claim order, affinity meaning, retry, cancellation, outbox,
-  and restart semantics remain unchanged, while workset-specific reservation, resident lease renewal,
-  capacity accounting, and acknowledgement bookkeeping follow the explicitly documented additions;
+  and restart semantics remain unchanged, while workset-specific ordered batch claim, exact-set lease
+  renewal, claim/start validation, targeted terminal reconciliation, active/staged/finalizing capacity,
+  and acknowledgement bookkeeping follow the explicitly documented additions;
 - every workset child remains an existing separately claimed, leased, attempted, canceled, completed,
   and projected job rather than a new persisted batch record;
 - child results completed before worker loss persist idempotently, while unfinished and unstarted
@@ -738,8 +824,9 @@ Use the current workflow persistence and restart fixtures to prove:
 - current dynamic fan-out, output routing, BattleSingleTurn survivor selection, and next-wave behavior
   remains unchanged;
 - current duplicate-completion and stale-attempt behavior remains unchanged; and
-- no workset schema, persistent workset record, unrelated DB interface or queue/claim change, workflow
-  record, frontier record, broad workflow redesign, or replacement transaction model is introduced.
+- no workset/cache/ledger schema, persistent workset record, unrelated DB interface or queue-state
+  change, workflow record, frontier record, broad workflow redesign, or replacement transaction model
+  is introduced.
 
 Generalized DFS/BFS/best-first frontier persistence and new typed workflow-binding tests belong to a
 separate future SavorDb project.
@@ -842,17 +929,17 @@ During implementation:
   the repository's required MSVC v145 toolchain;
 - run focused unit/integration tests for changed ownership, cleanup, concurrency, protocol, verifier, or
   persistence-adapter seams;
-- run architecture/invariant checks when a dependency or ownership boundary changes; and
+- run architecture/invariant checks when a dependency or ownership boundary changes;
 - run native characterization tests for each affected current phase as it migrates; and
-- gate unified `WorkerWorkset` capability activation on one-item equivalence, isolation, cancellation,
-  partial-result, cleanup/taint, and coordinator correctness, while recording throughput and utilization
-  measurements only as non-gating telemetry.
+- gate complete-catalog DB activation on one-item equivalence, isolation, cancellation, partial-result,
+  staging/cache/finalizer/ledger bounds, cleanup/taint, progressive startup, and coordinator correctness,
+  while recording throughput and utilization measurements only as non-gating telemetry.
 
-Do not use production-worker SavorE2E as an intermediate Slice 1 through Slice 6I acceptance signal: the
-hard cutover still advertises no production `ProgramInvocation`. Slice 5 supplies the canonical
-development runtime and internal action host, and Slices 6A-6I supply the native module catalog, but
-production worker composition remains disabled. Run SavorE2E only after Slice 7 activates the complete
-production path.
+Do not use DB-backed production-worker SavorE2E as an intermediate Slice 1 through Slice 6I acceptance
+signal. The pre-6A prelude installs the canonical runtime/action host and unified workset process seam,
+and each 6A-6I slice runs an unattended one-item process guard against its explicitly partial catalog.
+The coordinator data plane remains disabled until Slice 7 activates the complete catalog and dependency
+manifest.
 
 Final functional acceptance is the Release solution build and production-worker SavorE2E outcome
 summarized below, plus confirmation that no production path selects the retired legacy executor.
@@ -890,13 +977,16 @@ Verification requires explicit seams for:
 - mutation fault injection and restoration receipts;
 - screenshot correlation and telemetry overflow inspection;
 - deterministic action registry completions;
-- program trace/source-map events; and
+- program trace/source-map events;
+- partial/complete process-catalog negotiation, host-only staged successor state, immutable state-cache
+  leases, output-finalizer completions, and the worker-global completion/acknowledgement ledger; and
 - existing SavorDb test controls for program-kind materialization, result projection, workflow restart,
-  and artifact operations.
+  ordered batch claim, exact-set lease renewal, claim/start validation, targeted reconciliation, and
+  artifact operations.
 
-These are observability/test seams around production boundaries, not alternate execution paths. This
-refactor requires no new SavorDb database-service, queue, claim, workflow, or artifact-store test
-interface.
+These are observability/test seams around production boundaries, not alternate execution paths. The
+only new SavorDb-facing test seams are the narrow workset-specific execution operations above; they add
+no SQL/schema, durable queue state, workflow record, or artifact-format contract.
 
 ## Failure and cleanup behavior
 
@@ -932,6 +1022,9 @@ interface.
 ## Functional acceptance
 
 - The final Release `SAVOR.sln` build passes.
+- Coordinator data-plane startup requires one worker with the exact complete nine-module/dependency
+  manifest and negotiated workset pipeline limits; remaining desired workers join progressively with
+  bounded startup concurrency and contribute capacity only after the same gate.
 - The production-worker SavorE2E `all` matrix passes with shared-DB quiescence at every participating
   boundary, followed by separate passing `battle_end` and `navigation_context` scenarios; those two
   remain outside `all`.
@@ -948,15 +1041,18 @@ interface.
   wake/control authority retained by `StopPointRouter` and `ExecutionEngine`.
 - Existing SavorDb jobs, results, artifacts, workflows, queues, retries, and restart behavior remain
   compatible without data conversion.
-- The refactor adds no SavorDb migration and changes no database-service, queue, claim,
-  workflow-persistence, transaction, or artifact-storage interface.
+- The refactor adds no SavorDb migration, persisted workset/cache/ledger record, queue state,
+  workflow-persistence representation, or artifact format. Only the documented narrow
+  workset-specific batch-claim, exact-set lease, claim/start validation, and targeted-reconciliation
+  interfaces change.
 
 The detailed test sections above are implementation aids for reaching these outcomes. They are not a
 requirement to produce a formal evidence packet or run every possible matrix after each slice.
 
 ## Deferred work
 
-- Numeric runtime performance, throughput, and memory targets.
+- Numeric runtime performance, throughput, and memory targets, including workset depth, startup
+  concurrency, staging/cache/finalizer credit, and completion-ledger bounds.
 - Long-duration soak duration and production telemetry alert thresholds.
 - Real collision-oddity objectives and live golden corpus.
 - Real cutscene tactic corpus and fastest-safe comparison metric.
@@ -964,8 +1060,7 @@ requirement to produce a formal evidence packet or run every possible matrix aft
 - Final CI job partitioning and hardware matrix.
 - Authoring UI/compiler conformance tests, to be defined with the authored frontend.
 - A generalized capture-plan language or replacement for `savor.capture.profile/1`.
-- Source-backed cutscene/overworld packs, native current-phase implementation, production invocation
-  activation, live program smoke coverage, and any future ProgramRuntime IR/source-level stepping
+- Source-backed cutscene/overworld packs and any future ProgramRuntime IR/source-level stepping
   facility.
 
 Artifact-retention policy and end-to-end durable DFS orchestration tests belong to separate projects;
@@ -987,6 +1082,10 @@ they are not deferred gates for this refactor.
 - `SavorTests/test_navigation_context_framework.cpp`
 - `SavorTests/test_navigation_context_codec.cpp`
 - `SavorTests/test_worker_runtime_materialization.cpp`
+- `SavorWorkflow/Execution/DBWorkflowWorkerCoordinator.cpp`
+- `SavorWorkflow/Execution/JobMaterializationService.cpp`
+- `SavorDb/Execution/Workflow/SqliteExecutionDb.cpp`
+- `SavorDb/Execution/Workflow/WorkflowCoordinatorService.cpp`
 - `SavorTests/test_program_model.cpp`
 - `SavorTests/test_program_codec_v1.cpp`
 - `SavorTests/test_program_definition_store.cpp`

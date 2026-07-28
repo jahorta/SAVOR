@@ -10,9 +10,9 @@ wording or inventing a compatibility layer for it.
 
 Dependency slices 1 through 5 now exist as hard-cutover implementation checkpoints. Slice 5 establishes
 the canonical typed program model/runtime foundation, but production worker composition still does not
-advertise program execution. A pre-6A dependency prelude adds bounded `WorkerWorkset` dispatch before
-Dependency Slice 6 is divided into direct native-builder migrations for the nine supported current
-phases:
+advertise program execution. A pre-6A worker-process and dispatch prelude adds progressive compatible
+worker startup plus bounded pipelined `WorkerWorkset` dispatch before Dependency Slice 6 is divided into
+direct native-builder migrations for the nine supported current phases:
 
 - 6A SeedProbe;
 - 6B Navigation Context;
@@ -49,12 +49,16 @@ It supersedes the target-runtime portions of:
 Those sources remain useful current-state and research evidence. Current SavorDb code defines the
 persisted job, workflow, artifact, and domain-storage contracts this refactor must preserve. Separate DB
 migration/workflow plans are orientation for their own projects; they are not requirements for this
-refactor. Program-kind handlers or adjacent integration adapters construct per-item
-`ProgramInvocation`s from existing persisted job/domain data and project each `ProgramResult` through
-existing persistence operations. Workset support may change coordinator grouping, resident-capacity
-accounting, lease maintenance, and use of the current claim/start lifecycle. It does not add a SavorDb
-SQL migration, persistent workset record, aggregate job/result representation, unrelated database
-interface change, durable workflow redesign, transaction-boundary change, or artifact-storage interface.
+refactor. Program-kind handlers or adjacent integration adapters construct per-item invocation templates
+from existing persisted job/domain data; `WorkerRuntime` binds each template into a
+`ProgramInvocation` only at active admission, and existing adapters project each `ProgramResult`
+through existing persistence operations. Workset support may change coordinator grouping,
+staged/resident-capacity accounting, lease maintenance, completion acknowledgement, progressive worker
+startup, and use of the current claim/start lifecycle. It does not add a SavorDb SQL migration,
+persistent workset record, aggregate job/result representation, unrelated database interface change,
+durable workflow redesign, result-projection transaction change, per-item lifecycle change, or
+artifact-storage interface. The one documented transaction-granularity exception is claiming an ordered
+set in one transaction instead of looping scalar claim transactions.
 In this package, an unqualified **schema** is a runtime program/type schema, not a database schema.
 
 The Navigation Context workflow package describes the intended Navmesh Survey domain behavior; this
@@ -124,9 +128,12 @@ or artifact-store contract changed.
 
 ```mermaid
 flowchart TD
-    WF["Existing Workflow Orchestrator"] --> WS["WorkerWorkset<br/>1..N independent item templates"]
-    WS --> WR["WorkerRuntime<br/>sole command, workset, and session actor"]
-    WR --> INV["One active ProgramInvocation"]
+    WF["Existing Workflow Orchestrator"] --> PS["Parent worker-process seam<br/>eventual Slice 7 gate; rest start progressively"]
+    PS --> WR["WorkerRuntime<br/>sole command and session actor"]
+    WR --> AW["Active WorkerWorkset<br/>one session-mutating workset"]
+    WR -. host-only .-> SW["Staged successor workset<br/>at most one immutable package"]
+    WR --> CL["Worker-global completion / acknowledgement ledger"]
+    AW --> INV["One executing ProgramInvocation"]
     INV --> PR["ProgramRuntime"]
     PR --> DS["ProgramDefinitionStore"]
     PR --> VF["ProgramVerifier"]
@@ -151,7 +158,16 @@ The names have precise meanings:
 
 - **WorkerWorkset** is the one production dispatch envelope for one or more independent invocations. It
   is finite, static, ordered, bounded, worker-resident, and non-durable. A singleton job is a one-item
-  workset.
+  workset. One workset may own session mutation while at most one immutable successor package performs
+  host-only staging; staging grants no epoch, baseline, session-resource, or emulator authority.
+- **Worker-global completion/acknowledgement ledger** is the bounded non-lossy owner of completed
+  execution records, promoted immutable output captures and their host-only finalizers, assembled item
+  terminals, and acknowledgements across worksets. It permits a clean workset handoff while earlier
+  outputs finalize or terminals await durable acknowledgement, but full count/byte capacity stops later
+  admission.
+- **StateCacheKey** is the exact identity for a bounded process/session-owned cache of immutable
+  serialized state plus metadata. It covers state hash and lineage, disc/runtime/backend/movie
+  compatibility, and session generation; it never identifies live guest state or an epoch-bound handle.
 - **ProgramRuntime** is the worker subsystem containing definition storage, verification, execution,
   action registration, and type registration.
 - **ProgramExecutor** is the one interpreter and scheduler for program control flow.
@@ -261,14 +277,24 @@ The names have precise meanings:
     monotonic sequence order when coalescing places a replacement at its fresh chronological position.
 25. `SubmitWorkset` is the sole production program-dispatch path. It accepts one or more item templates;
     the old direct `SubmitInvocation` discriminator remains reserved and rejects before session mutation.
-26. One worker owns at most one resident workset and activates at most one child `ProgramInvocation` and
-    `ProgramInstance`. `ProgramRuntime` neither sees nor schedules the pending items.
+26. One worker owns at most one active session-mutating workset, at most one immutable host-only staged
+    successor package, and at most one executing child `ProgramInvocation`/`ProgramInstance`.
+    `ProgramRuntime` neither sees nor schedules pending or staged items.
 27. A multi-item workset has one exact module, entrypoint, dependency, runtime, state/movie, and service
     compatibility key. Each child retains an independent job, claim, lease, invocation, attempt, budget,
     cancellation, result, retry, and transition identity.
 28. Workset-specific coordinator grouping, resident-capacity accounting, and lease maintenance may
     change. Workset identity and membership are not persisted, and unrelated SavorDb storage, workflow,
     transaction, and artifact contracts remain fixed.
+29. Host-only staging may decode envelopes, resolve cached modules, validate typed inputs, read and hash
+    immutable artifacts, and acquire bounded cache leases. It may not restore state, bind `StateEpoch`,
+    capture a baseline, acquire session-effect resources, construct a `ProgramInstance`, or advance
+    Dolphin.
+30. Completed execution records and synchronously captured immutable outputs leave workset/session
+    ownership through the worker-global bounded completion ledger. After every child has completed
+    session work or is classified unstarted, all required immutable captures are promoted, invocation
+    and baseline scopes release, and the session is proven clean, the staged successor may promote while
+    prior outputs finalize or terminals remain unacknowledged if global ledger capacity remains.
 
 ## Interfaces and ownership affected
 
@@ -278,10 +304,14 @@ Slice 5 now supplies the canonical model, store, verifier, executor, registries,
 initial capability packs, and composition frontends. The remaining target replaces production worker
 activation/result, current program construction and worker-side payload switches, `PSContext` as a
 public runtime contract, the VM-owned input-macro mini-runtime, and the runtime-facing behavior of
-program-kind handlers. The pre-6A workset prelude replaces scalar production dispatch, teaches the
-coordinator to reserve and account for several independent jobs per worker, and preserves per-item
-durable handling. Existing SavorDb handler registration, stored representations, workflow definitions,
-transaction boundaries, and artifact contracts remain unchanged.
+program-kind handlers. The pre-6A process/workset prelude establishes the replacement for scalar
+production dispatch and supports direct one-item process tests. It implements the eventual
+one-compatible-worker startup gate, bounded progressive startup for the remaining desired pool,
+active/staged independent-job accounting, and per-item durable handling through the worker-global
+completion ledger. It does not open the coordinator data plane during the hard-cutover interval. Slice 7
+applies that gate only after the worker has negotiated the complete production catalog and dependency
+manifest. Existing SavorDb handler registration, stored representations, workflow definitions,
+result-projection and per-item transaction semantics, and artifact contracts remain unchanged.
 
 ## Reading order
 
@@ -315,16 +345,20 @@ Program success cannot hide failed restoration of input, stop-point subscription
 guest data writes, or executable patches. Cleanup is attempted on every terminal path. A session that
 cannot be proven clean is tainted and retired or rebuilt before another invocation. Within a workset,
 every child fully unwinds before the next begins; taint stops admission and leaves pending children
-unstarted.
+unstarted. A staged successor has not acquired session authority and therefore remains unstarted when
+the active session taints. Already promoted immutable outputs continue to one terminal, and published
+item terminals remain replayable from the worker-global completion ledger until acknowledged or process
+loss transfers recovery to their ordinary durable attempt rules.
 
 ## Dependencies and migration implications
 
 The explicit `EmulationSession` boundary and its scoped generic services are established. The canonical
 typed program IR, codec, verifier, executor, registry/action seam, initial packs, and composition
-frontends are also established. Before native phase migration, the workset prelude adds unified 1..N
-production dispatch, just-in-time child epoch binding, a multi-item-workset-owned immutable baseline
-(skipped for one-item worksets), non-lossy per-item terminals with bounded acknowledgement backpressure,
-and coordinator resident-job accounting.
+frontends are also established. Before native phase migration, the process/workset prelude adds
+progressive pool startup, unified 1..N production dispatch, one host-only staged successor, bounded
+cross-workset immutable state caching by `StateCacheKey`, just-in-time child epoch binding, a
+multi-item-active-workset-owned immutable baseline (skipped for one-item worksets), non-lossy per-item
+terminals in a worker-global acknowledgement ledger, and coordinator staged/resident-job accounting.
 The remaining target then reconstructs supported current behavior in direct native typed-module builders
 and actor-owned registered effects before final production activation. Existing payload and result
 representations are adapted in memory at that boundary; the disconnected `PhaseScript` corpus is
@@ -350,8 +384,12 @@ executor/action-seam, capability-pack, and composition tests. A live program smo
 continuation, post-write capture, and rendered behavior remain deferred until migrated deterministic
 program execution exists.
 
-Slice 7 requires the unified workset capability and negotiated limits before opening coordinator
-data-plane work. It runs a full Release `SAVOR.sln` build, the production-worker SavorE2E `all` matrix, separate
+The pre-6A process seam implements and directly tests the one-compatible-worker gate, bounded
+progressive startup, and unified one-item process path while keeping `data_plane_enabled` false. Slice 7
+requires one completely negotiated compatible worker, including the complete production catalog and
+dependency manifest plus pipelined-workset and staging/cache/ledger limits, before production data-plane
+activation. The remaining desired workers then start progressively with bounded concurrency. Slice 7
+runs a full Release `SAVOR.sln` build, the production-worker SavorE2E `all` matrix, separate
 `battle_end` and `navigation_context` scenarios, and focused direct diagnostics before Slice 8 deletes
 the already disconnected legacy sources. Slice 8 then receives the normal complete Debug and Release
 solution builds plus deletion/architecture guards; the full E2E matrix is repeated only if that
@@ -363,8 +401,9 @@ do not gate completion.
 
 Future C++ API evolution, production worker activation, authored source language, authoring UI, and
 game-specific algorithms listed in document 11 remain deferred. The `SPRM`/`SPRI`/`SPRR` version-1
-encoding, SHA-256 module identity, and logical `WorkerWorkset` behavior are no longer open design
-questions. Numeric workset sizing and throughput tuning remain measurement-driven. SavorDb SQL/storage
+encoding, SHA-256 module identity, and logical pipelined `WorkerWorkset` behavior are no longer open
+design questions. Numeric workset/staging/cache/ledger sizing and throughput tuning remain
+measurement-driven. SavorDb SQL/storage
 and unrelated interfaces remain fixed inputs, not deferred design choices in this refactor. A generalized
 replacement for `savor.capture.profile/1` is also deferred; the existing profile remains an opaque
 `CaptureService` contract during the initial architecture cutover. The initial field, battle, and

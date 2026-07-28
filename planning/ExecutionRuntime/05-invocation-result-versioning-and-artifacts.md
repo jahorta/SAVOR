@@ -16,9 +16,11 @@ worker caching without using `ProgramKind` as execution identity.
 This document does not define:
 
 - a packed wire struct;
-- changes to SavorDb SQL/schema, migrations, stored representations, database-service interfaces,
-  durable queue/claim contracts, workflow persistence, transaction boundaries, or artifact-storage
-  interfaces; workset-specific coordinator behavior may change only as defined below;
+- changes to SavorDb SQL/schema, migrations, stored representations, durable job/claim/lease/result
+  semantics, workflow persistence, result-projection transaction boundaries, or artifact-storage
+  interfaces; document 06 may narrowly adapt execution-facing interfaces for ordered batch claim,
+  exact-set lease renewal, claim/start validation, and targeted terminal reconciliation over the same
+  records and semantics;
 - the authored program source format;
 - an object-store implementation; or
 - domain-specific output schemas.
@@ -82,7 +84,8 @@ The normative conceptual type catalog is:
 | `WorkerWorksetExecutionKey` | Exact module/revision/hash/entrypoint and dependency closure; runtime profile, game/disc/backend compatibility, and capability packs; exact source-state identity/hash/lineage and movie-continuation policy; common execution/input/capture/movie/mutation and other relevant service policies |
 | `WorkerWorksetDefinition` | Immutable workset ID, execution key, limits, common preparation policy, and complete ordered item set |
 | `WorksetItemTemplate` | Immutable item ID/ordinal, invocation/attempt/cancellation correlation, one typed input record, per-item budget, and provenance awaiting actor-owned session/epoch binding |
-| `WorkerWorksetLimits` | Maximum item count, encoded bytes, aggregate declared child budgets, resident-item capacity, and unacknowledged terminal-result count and bytes |
+| `WorkerWorksetLimits` | Maximum item count, encoded bytes, aggregate declared child budgets, resident/staged item capacity, item-capacity credits, immutable-state/finalization bytes, and completion-ledger count and bytes |
+| Staged successor correlation | Exact immutable package/request identity tying one accepted but non-mutating successor package to its jobs, claim/lease authority, cancellation, and eventual promotion or rejection |
 | Typed state and receipts | Distinct workset/item state, exact item/workset cancellation, item-terminal acknowledgement, item terminal, workset terminal, and final drain receipts |
 
 `WorkerWorksetDefinition` therefore fixes request correlation, one `WorkerWorksetExecutionKey`, one
@@ -101,14 +104,29 @@ Such relationships remain ordinary module control flow or durable workflow compo
 transient worker/transport state, not a `ProgramModule`, `ProgramInvocation`, workflow, persisted batch,
 or durable retry record.
 
+One workset may own the session while at most one immutable successor package is staged. Staging may
+decode framing, validate the complete definition and item schemas, pin exact verified module/dependency
+objects, and acquire host-only immutable state-cache leases. It cannot boot, restore, capture a
+baseline, acquire an invocation/session effect, publish `JobStarted`, or create a `ProgramInstance`.
+Promotion occurs only after the active workset releases its session scope and the coordinator's exact
+claim/lease/cancellation authority is revalidated. This is bounded double buffering, not dynamic refill.
+
 Before common state preparation, `ProgramRuntime` preflights the shared module/dependency/capability
-closure and every item's input schema and static policy/budgets without constructing a
-`ProgramInstance`. A multi-item workset captures one immutable reusable baseline after common
-preparation; a one-item workset does not perform that unnecessary capture. Immediately before each
-item starts, `WorkerRuntime` binds its template to the exact current `SessionId` and `StateEpoch`. The
-first item uses the already-prepared state; every later item follows a successful restore of the
-multi-item baseline and therefore binds a fresh epoch. That binding fills only actor-owned
-session/epoch identity and cannot rewrite any immutable template field.
+closure once and validates every item's input schema and static policy/budgets without constructing a
+`ProgramInstance`. The resulting exact verified entrypoint/closure may be pinned by the active and
+staged packages; it is not re-resolved or re-verified for each child. A multi-item workset acquires or
+creates one immutable reusable baseline cache entry after common preparation; a one-item workset does
+not perform an unnecessary baseline capture. Immediately before each item starts, `WorkerRuntime`
+binds its template to the exact current `SessionId` and `StateEpoch`. The first item uses the
+already-prepared state; every later item follows a successful restore of the multi-item baseline and
+therefore binds a fresh epoch. That binding fills only actor-owned session/epoch identity and cannot
+rewrite any immutable template field.
+
+Every accepted item consumes one negotiated item-capacity credit until its exact terminal or unstarted
+disposition has been durably acknowledged and all completion-ledger storage is released. Resident
+pending, staged, active, asynchronously finalizing, ready-but-order-blocked, and unacknowledged-terminal
+states are phases of the same credit rather than additional capacity. An item cannot be admitted unless
+the worker has reserved the worst-case count/byte capacity declared by its limits.
 
 ### ProgramInvocation
 
@@ -190,6 +208,19 @@ The envelope also contains:
 - cleanup receipts and session disposition; and
 - provenance linking all outputs to source inputs and state lineage.
 
+Execution completion is not necessarily terminal-envelope completion. If an invocation captured a
+state artifact, its `ProgramInstance` may finish and unwind after the actor promotes the immutable
+state/movie capture into the worker-global completion/acknowledgement ledger. The ledger retains the
+item's typed output/emissions, cleanup/session disposition, exact correlations, reserved terminal
+order, and pending artifact roles while bounded background finalization runs. Only the actor may
+combine that state with finalization receipts to assemble the authoritative `ProgramResult`.
+
+This asynchronous completion state is not another active invocation, program continuation, workflow
+state, or partial terminal. `ProgramRuntime` still owns at most one `ProgramInstance`; a later child may
+become that one instance after the previous root unwinds and capacity permits. If finalization fails,
+the actor assembles one infrastructure-failed result with the ordinary independently recorded
+domain/cleanup dimensions rather than publishing and later revising a successful result.
+
 `Completed` does not imply a successful domain outcome. A locked door, no collision anomaly, or a
 search-node dead end can be a successfully executed program with a non-success domain classification.
 Likewise, a desirable domain outcome cannot make a tainted session reusable.
@@ -235,6 +266,13 @@ Every artifact reference contains:
 Artifacts are immutable after publication. Correction creates another artifact with explicit derivation
 lineage; it never replaces an earlier object in place.
 
+For a state artifact, publication follows document 04's split lifecycle: synchronous paused capture of
+immutable state bytes and exact movie metadata, promotion to the worker-global
+completion/acknowledgement ledger, bounded background hashing/sidecar/file publication and validation,
+then actor-side terminal assembly. Before the final validation receipt exists, the internal
+pending-publication receipt is neither an `ArtifactRef` nor a value that may enter a result, workflow
+binding, database write, or later invocation.
+
 This is a runtime artifact contract. It neither prescribes nor changes SavorDb artifact tables,
 references, storage locators, or domain representations; program-kind adapters project it through the
 existing artifact and result operations.
@@ -257,6 +295,26 @@ the epoch in which they were acquired. The executor rejects use after an epoch c
 
 An artifact ID is not an epoch, and an epoch is not a durable artifact ID.
 
+`StateCacheKey` is the transient worker identity for reusable immutable state bytes. It includes:
+
+- the exact state content hash and source artifact identity;
+- game ID, ISO hash, emulator build, and required runtime compatibility;
+- state lineage/fingerprint fields required by the declared policy; and
+- exact `NoMovie` or read-only DTM identity/hash, starts-from-savestate fact, and known continuation
+  evidence, plus any session-generation constraint required by that backend/runtime profile.
+
+The cache key is not persisted and is not a substitute for `StateArtifact`, `StateEpoch`, session
+identity, or a claim/affinity key. A scoped cache lease authorizes only access to those immutable bytes;
+restore still runs the complete `StateService` transaction and advances the epoch. Cache hit, miss,
+compression, storage tier, and eviction cannot change result semantics. In-progress recording handles,
+live guest handles, resource receipts, and unvalidated output captures are never cache entries. An
+asynchronously finalized output may enter the cache only after its final hash and compatibility
+validation establish its complete key.
+
+An incompatible reboot, runtime/backend replacement, movie-generation change, or integrity uncertainty
+invalidates affected entries. A compatible replacement may retain only entries whose complete key and
+session-generation constraint remain valid.
+
 Within a workset, the first item starts at the epoch established by common preparation. Each successful
 baseline restore before a later item advances the epoch exactly once. Future epochs are therefore never
 precomputed in submitted item templates. No receipt, observation, acknowledgement, suppression state,
@@ -273,7 +331,12 @@ Compatibility is dependency-scoped. Adding an unrelated action or schema to a wo
 an existing module. A single global registry hash is insufficient as the permanent compatibility model.
 
 Workers cache verified modules by canonical hash and cache resolved dependency closures by their combined
-identity. Cache hits never weaken invocation verification.
+identity. A workset pins one exact verified entrypoint/closure during atomic preflight and reuses it for
+each child; child admission repeats input, budget, policy, session, epoch, and cancellation validation,
+not canonical module verification. Adapter-generated composition variants and immutable parsed service
+definitions may likewise be cached only by their complete canonical content/dependency identity. Cache
+hits never weaken invocation verification or carry mutable capture, observation, input, or resource
+state.
 
 ### Exact replay identity
 
@@ -302,29 +365,43 @@ which evidence and decision produced a branch or emission.
 The target protocol needs logical operations for:
 
 1. capability and runtime-profile negotiation;
-2. module transfer or cache lookup by hash;
-3. module verification and activation acknowledgement;
-4. unified `SubmitWorkset` submission for one to many items;
-5. whole-workset acceptance or rejection before session mutation;
-6. ordered item-start, correlated progress, and workset-state events;
-7. exact pending/active item cancellation and exact workset cancellation;
-8. immediate authoritative per-item terminal `ProgramResult` delivery;
-9. exact durable acknowledgement of one item terminal;
-10. final bookkeeping-only workset terminal/drain summary; and
-11. explicit session disposition.
+2. negotiated item/count/byte capacity credits and later credit-state updates;
+3. module transfer or cache lookup by hash;
+4. module verification and activation acknowledgement;
+5. unified `SubmitWorkset` submission for one to many items, including exact active-or-staged package
+   correlation;
+6. whole-workset acceptance, staged acceptance, promotion, or rejection before session mutation;
+7. ordered item-start, correlated progress, asynchronous-finalization, and workset-state events;
+8. exact pending/active item cancellation and exact workset cancellation;
+9. authoritative per-item terminal `ProgramResult` delivery in actor-assigned completion order;
+10. exact durable acknowledgement of one item terminal and resulting credit release;
+11. final bookkeeping-only workset terminal/drain summary; and
+12. explicit session disposition and transient `StateCacheKey` availability hints.
 
 Per-item terminals are authoritative and non-lossy. The serialized publisher emits each result as soon
-as invocation unwind finishes and `WorkerRuntime` retains it by count and bytes until the parent confirms
-that exact workset ID, item ordinal, invocation ID, attempt ID, and terminal sequence was handled
-durably. Duplicate delivery is permitted until acknowledgement and must resolve through the existing
-idempotent result path; stale, mismatched, or duplicate acknowledgement cannot release another result.
-The publisher enqueues an item's terminal before any start, progress, or other event for a later item.
+as its synchronous execution/unwind plus every mandatory asynchronous artifact finalization is complete
+and the actor can release its terminal-order position. `WorkerRuntime` retains it in one
+worker-global completion/acknowledgement ledger until the parent confirms that exact workset ID, item
+ordinal, invocation ID, attempt ID, and terminal identity was handled durably. Duplicate delivery is
+permitted until acknowledgement and must resolve through the existing idempotent result path; stale,
+mismatched, or duplicate acknowledgement cannot release another result or capacity credit.
 
-The worker may continue while the retained window has capacity, but it keeps Dolphin paused and does not
-restore/admit the next item when the window is full. Progress and optional diagnostics may coalesce or
-drop under their declared policy; item terminals never may. The final workset summary is emitted only
-after every item is terminal or classified unstarted, every required durable acknowledgement has been
-correlated, and the workset scope has released cleanly.
+When synchronous item execution completes or an unstarted item receives its final disposition, the
+actor assigns one monotonic terminal-order ordinal across worksets. State finalizers may complete out
+of order, but authoritative terminals cannot overtake an earlier ordinal. This ordinal is separate from
+the serialized publisher's outbound sequence: because immutable finalization no longer owns the
+session, a later item's start/progress may be published while an earlier item is still finalizing, and
+each published event receives the next outbound sequence plus exact workset/item/invocation
+correlation. No later terminal can become authoritative first.
+
+The worker may continue while item and completion-ledger count/byte credits have been reserved. When
+they are exhausted, it keeps Dolphin paused and does not restore/admit the next item or promote the
+staged successor package. Progress and optional diagnostics may coalesce or drop under their declared
+policy; completion entries and item terminals never may. The executed workset releases its
+session/baseline scope as soon as all children are terminal-preparing or classified unstarted and the
+scope is clean; prior finalizations and acknowledgements can then drain globally while one staged
+successor is promoted. Its bookkeeping summary is emitted only after every item terminal/disposition is
+acknowledged, but that summary does not retain session ownership.
 
 `ProcessWorker` may expose a convenience API that accepts one invocation template, but it wraps that
 template into a one-item workset and uses this same operation, correlation, result, and acknowledgement
@@ -346,19 +423,32 @@ identify candidates, but the worker rejects a workset unless every exact key com
 reuse is therefore an optimization over one verified module/session/baseline, never evidence that
 ambient guest state from the prior item is acceptable.
 
+A worker may report transient exact `StateCacheKey` presence and available negotiated credits so the
+coordinator can prefer a compatible warm destination after honoring durable priority/fairness. That
+report is a hint only. Submission still names the authoritative immutable artifact/state policy, and
+the worker reacquires a scoped cache lease or falls back to normal preparation. A durable successor may
+use `ContinueSession` only after its predecessor's existing result/transition transaction commits and
+only when exact session, current epoch, state lineage/hash, and clean disposition still match; otherwise
+it uses the ordinary artifact restore path.
+
 ### Workflow adapters
 
 The existing SavorDb program-kind handler remains the integration boundary. Its implementation or an
 adjacent adapter may construct immutable workset item templates from existing job/domain data and
 project each resolved `ProgramResult` through existing result writers and transition operations. This
-refactor does not
-require splitting or changing SavorDb descriptor, workflow, database-service, queue, claim, or
-persistence interfaces. Workflow code does not decode worker-private program locals.
+refactor does not change descriptors, stored jobs/claims/leases/results, workflow topology, result
+projection, or persistence semantics. Document 06 may add or adapt only narrow execution-facing
+operations for real bounded batch claim/lease, item-capacity accounting, and targeted advancement of an
+exact terminal step using the existing records and commands. Workflow code does not decode
+worker-private program locals.
 
 Workset identity, membership, ordering, baseline handle, terminal-retention state, and acknowledgements
 are not persisted runtime records. Existing jobs remain individually claimed, leased, cancelled,
 retried, completed, and transitioned. The parent sends a terminal acknowledgement only after its
 existing result-projection/idempotency transaction has committed durable handling of that exact item.
+It then publishes the affected workflow-step identity and commit sequence to the targeted advancement
+path. Targeted advancement does not delay acknowledgement; the existing broad reconciliation scan
+remains the recovery guard if the in-process notification is missed.
 
 Existing persisted battle predicate definitions are decoded through current SavorDb interfaces and
 supplied to in-memory predicate composition before module verification. Completion adapters project
@@ -383,6 +473,12 @@ stored representation.
 - Failure to restore any mandatory resource produces cleanup status `Tainted`.
 - A tainted session is retired or rebuilt before accepting another invocation.
 - A tainted or uncertain item/workset cleanup stops the workset immediately; no pending item is admitted.
+- A promoted immutable state capture may finish finalizing after its producing invocation/workset scope
+  releases. Publication/validation failure assembles one infrastructure-failed terminal at its reserved
+  sequence; it cannot revise an earlier success because no authoritative terminal existed.
+- Loss of a staged package's claim/lease authority rejects or cancels that package before promotion and
+  session mutation. Loss discovered after an item starts follows the existing attempt/lease and
+  idempotent-terminal recovery rules.
 - Artifacts emitted before terminal failure remain incomplete unless their schema declares an independently
   atomic publication transaction.
 - Transport loss does not create a second “unknown” program success. Existing SavorDb durable-attempt
@@ -390,10 +486,11 @@ stored representation.
   in the worker envelope.
 
 An acknowledged child result remains durable after worker loss. An unacknowledged terminal may also
-have been persisted before transport loss, while a pending child may never have started. Recovery
-therefore retries or replays each affected durable job/attempt under the existing lease and idempotency
-rules; it never resumes the ephemeral workset as a durable batch and does not infer success from a
-missing acknowledgement.
+have been persisted before transport loss, a promoted artifact may not yet have published an
+authoritative terminal, and a pending or staged child may never have started. Recovery therefore retries
+or replays each affected durable job/attempt under the existing lease and idempotency rules; it never
+resumes the ephemeral workset/completion ledger as durable state and does not infer success from a
+missing acknowledgement or temporary file.
 
 Artifact publication in the rules above is runtime-side. Existing SavorDb attempt, idempotency,
 result-publication, and recovery mechanisms remain unchanged.
@@ -411,9 +508,16 @@ result-publication, and recovery mechanisms remain unchanged.
 - Worker-side result mapping migrates from a single `PSContext` blob to declared outputs, emissions,
   artifacts, and provenance; the program-kind adapter then writes the existing SavorDb representation.
 - State paths or references are adapted in memory into explicit runtime state policy without changing
-  their persisted representation.
+  their persisted representation. Exact `StateCacheKey` hints and scoped leases remain transient.
 - Compatible independently claimed jobs may be submitted through one finite workset, but every existing
   result, lease, cancellation, retry, transition, and idempotency operation remains per job/attempt.
+- State-artifact finalization may overlap a later sole active invocation only after immutable paused
+  capture is promoted into the bounded worker-global completion ledger. Result projection still begins
+  only from the one final authoritative `ProgramResult`.
+- Narrow workset-specific execution interfaces may expose ordered batch claim, exact-set lease renewal,
+  claim/start validation, and targeted terminal reconciliation as described in document 06. They
+  operate the same rows, lifecycle, idempotency, and per-item semantics and add no persisted runtime
+  record.
 - Persisting DB-authored modules is outside this refactor. Any later frontend must use the identical
   activation/invocation path.
 
@@ -429,8 +533,15 @@ result-publication, and recovery mechanisms remain unchanged.
   rejects before common state preparation.
 - The first item uses prepared state without a second restore; every later admitted item records one
   fresh epoch created by restoring the workset baseline.
-- A full terminal-retention window prevents another baseline restore/admission until an exact durable
-  acknowledgement creates capacity; progress loss cannot discard a terminal result.
+- Repeated worksets over the same exact state produce identical results from a cache hit or artifact
+  load; each restore still creates a fresh epoch and cache eviction is unobservable.
+- One immutable staged successor can be preflighted without session mutation and can be promoted only
+  after active-scope release plus exact lease/cancellation revalidation.
+- A full item/completion-credit window prevents another baseline restore/admission or staged promotion
+  until an exact durable acknowledgement creates capacity; progress loss cannot discard a completion
+  entry or terminal result.
+- Out-of-order state-finalizer completions publish authoritative terminals only in actor-assigned
+  completion order, while correlated later item progress cannot be mistaken for an earlier result.
 - Item cancellation, workset cancellation, duplicate terminal delivery, and stale acknowledgement each
   preserve exactly one authoritative item terminal.
 - A result can represent infrastructure completion, a locked-domain outcome, and clean cleanup
@@ -446,8 +557,9 @@ result-publication, and recovery mechanisms remain unchanged.
 ## Deferred work
 
 - Concrete C++ struct and ownership spellings.
-- Transport compression plus numeric workset/result-window thresholds; the non-lossy acknowledged
-  per-item terminal contract is not deferred. Numeric values are negotiated configuration informed by
+- Transport compression plus numeric workset, state-cache, staged-package, item-credit,
+  asynchronous-finalization, and completion-ledger thresholds; the non-lossy acknowledged per-item
+  terminal contract is not deferred. Numeric values are negotiated configuration informed by
   measurement, not frozen architectural constants.
 - Any SavorDb normalization or artifact-store-interface change is outside this refactor.
 - Canonical binary encoding and hash algorithm.

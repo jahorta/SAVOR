@@ -16,65 +16,111 @@ work or when implementation evidence changes an architectural conclusion.
 - `SavorWorker/SavorWorker.cpp`
   - constructs the current `WorkerRuntime`/`EmulationSession` process composition;
   - receives versioned process/session commands through the serialized actor; and
-  - keeps production `ProgramInvocation` unavailable during the hard-cutover interval.
+  - keeps production `ProgramInvocation` unavailable before the pre-6A process-composition cutover.
 - `SavorCore/Runner/IPC/Wire.h`
   - defines the current numeric `ProgramKind` catalog and worker messages.
 - `SavorWorkflow/Worker/ProcessWorker.cpp`
   - owns the parent-side process and wire operations;
   - currently exposes one encoded-invocation submission at a time; and
-  - is the parent transport seam where the pre-6A `SubmitWorkset`, streamed per-item terminal, and
-    acknowledgement protocol replaces that unactivated scalar surface.
+  - is the parent transport seam where pre-6A partial-catalog negotiation, unified `SubmitWorkset`,
+    streamed per-item terminals, and exact acknowledgements replace that unactivated scalar surface.
 - `SavorWorkflow/Execution/DBWorkflowWorkerCoordinator.cpp`
   - configures workers, applies affinity/reuse decisions, and dispatches materialized jobs;
-  - `WorkerSlot::in_flight_job_id`, `CollectDispatchableWorkers`, and `ReleaseWorkerByResult` currently
-    model one in-flight job per worker; and
-  - `WorkerJobCoordinatorLoop` is the workset-specific scheduling seam for resident capacity, lease
-    renewal, per-item start/result acknowledgement, and independent recovery.
+  - `Start` currently calls `RunWorkerCapabilityPreflightForSlot` for each initial slot in one serial
+    loop, even though later `ReconcileWorkerPool` already has bounded concurrent startup machinery;
+  - `WorkerSlot::in_flight_job_id`, `CollectDispatchableWorkers`, and `ReleaseWorkerByResult` model one
+    in-flight job per worker;
+  - `DrainResultsLoop` invokes adapter/result/output persistence before `ReleaseWorkerByResult`, directly
+    coupling worker availability to result projection; and
+  - `WorkerJobCoordinatorLoop` is the workset-specific scheduling seam for active/staged capacity,
+    event wakeups, exact-set lease authority, completion acknowledgement, and independent recovery.
 - `SavorWorkflow/Execution/JobMaterializationService.cpp`
   - resolves program-kind descriptors and prepares the current worker job/runtime request;
   - already claims batches through the existing execution database operation; and
-  - `BetterMaterializedDispatchCandidate` already treats savestate, program kind, and runtime affinity as
-    scheduling preferences, which are evidence for locality but not sufficient proof of an exact
-    `WorkerWorksetExecutionKey`.
+  - `TrySelectMaterializedJobForWorker` currently scans the full `materialized_jobs_` map for each
+    dispatching worker, calls `GetJob` while examining each candidate, and applies
+    `BetterMaterializedDispatchCandidate`; those preferences are useful locality evidence but are not
+    sufficient proof of an exact `WorkerWorksetExecutionKey`.
+- `SavorDb/Execution/Workflow/SqliteExecutionDb.cpp`
+  - `ClaimBatchReadyExecutionJobs` currently loops over `ClaimNextReadyExecutionJob`;
+  - each `ClaimNextReadyExecutionJob` opens and commits its own `BEGIN IMMEDIATE` transaction; and
+  - the pre-6A narrow batch-claim operation may coalesce that work into one ordered transaction while
+    retaining an independent claim event, lease, attempt, and recovery identity per job.
+- `SavorDb/Execution/Workflow/WorkflowCoordinatorService.cpp`
+  - `Loop` uses `wait_for(config_.poll_interval)`, then `AdvanceAvailableWork` scans both ready and
+    terminal work;
+  - `PollReadyStepsFromDb` calls `ListReadySteps`, and `ReconcileTerminalWorkflowSteps` calls
+    `ListTerminalReadyStepSnapshots`;
+  - the current default `max_active_materialized_workflows = 30` gate counts active workflows rather
+    than coordinator/worker-resident items or negotiated capacity; and
+  - these are evidence for event-driven fast-path wakeups plus bounded reconciliation, not for removing
+    recovery scans, and for replacing the fixed workflow-count throttle with item-capacity credits.
 - `SavorCore/Runner/Runtime/WorkerRuntime.*` and `IProgramRuntimePort.h`
   - currently admit one encoded invocation and enforce one active invocation through
     `RequireReadyProgramRuntime`;
-  - the pre-6A workset owner belongs in `WorkerRuntime`, outside `ProgramRuntime`; and
-  - pending workset items must remain invisible to the program port and executor.
+  - the pre-6A active/staged workset and worker-global completion-ledger ownership belongs in
+    `WorkerRuntime`, outside `ProgramRuntime`; and
+  - pending, staged, finalizing, and completed workset items must remain invisible to the program port
+    and executor.
 - `SavorCore/Runner/Runtime/ProgramRuntime/ProgramRuntime.*`
   - `StartInvocation` remains the one-child execution boundary; a workset activates children
     sequentially rather than adding batching or scheduling to `ProgramRuntime`.
 
-### WorkerWorkset integration boundary
+### Production process and WorkerWorkset integration boundary
 
-The current source already separates batch claiming from scalar worker activation. The target uses that
-evidence narrowly:
+The current source already separates batch claiming, materialization, worker activation, and result
+projection. The target uses that evidence narrowly:
 
 - `SubmitWorkset` becomes the sole production program-dispatch path for 1..N immutable item templates;
   one independently durable job is represented by a one-item workset;
+- the pre-6A process composition installs the one implemented production `ProgramRuntime` and
+  `SessionProgramActionHost`, reports the exact currently installed module/dependency manifest, and
+  accepts explicit partial catalogs for unattended direct one-item tests;
+- a partial catalog cannot open the coordinator data plane. Slice 7 requires the exact complete
+  nine-module catalog/dependency manifest and negotiated active/staged/cache/finalizer/ledger limits;
 - only already claimed and independently materialized jobs with the same exact runtime-only
   `WorkerWorksetExecutionKey` may share a multi-item envelope;
+- one workset may mutate the session while at most one immutable successor package performs host-only
+  staging. Staging may decode/verify, resolve definitions, read/hash artifacts, and acquire cache leases,
+  but may not restore state, bind an epoch, capture a baseline, acquire session effects, create a
+  `ProgramInstance`, or advance Dolphin;
 - workset acceptance keeps unstarted items `CLAIMED`; immediately before effects the worker publishes
   an ordered item-start event without waiting, and the coordinator appends the existing `JobStarted`
   event before processing that child's later ordered terminal;
-- the coordinator renews every resident nonterminal claim lease and includes worker-resident,
-  coordinator-buffered, outbound, and active items in its bounded capacity calculation;
-- each child fully unwinds and publishes its ordinary result immediately; current result/artifact and
-  terminal-transition operations project it independently before the protocol acknowledgement is
-  returned;
-- `WorkerRuntime` owns the static order, exact prepared state, multi-item reusable workset baseline,
-  current child, bounded unacknowledged-result window, and drain state, while `ProgramRuntime` sees
-  only one child invocation; a one-item workset skips reusable-baseline capture;
-  and
+- each ready worker publishes item-capacity credits consumed from assignment through exact
+  acknowledgement; claim demand uses unreserved credit plus a separately bounded coordinator buffer;
+- the coordinator uses one real ordered batch claim, exact-set lease renewal, claim/start validation,
+  stable indexed selection, and targeted terminal reconciliation while preserving each per-job
+  lifecycle. Highest durable priority/claim order anchors selection, locality breaks only equivalent
+  ties, and bounded lookahead/age prevents starvation;
+- the coordinator includes active, staged, buffered, outbound, finalizing, resident, and
+  unacknowledged work in negotiated capacity;
+- each child fully unwinds before another child executes. Immutable state output may finalize on a
+  bounded host-only path, but its terminal is not authoritative until hash/publication/validation
+  succeeds;
+- one worker-global completion/acknowledgement ledger retains exact terminals across worksets. Current
+  result/artifact operations project each independently before acknowledgement. After projection, an
+  in-process notification carries the affected workflow-step identity and commit sequence to targeted
+  advancement, which processes commit-sequence/stable-ID order while periodic scanning remains the
+  recovery authority. A clean staged successor may promote without waiting for older acknowledgements
+  if global credit remains;
+- `WorkerRuntime` owns active/staged order, exact prepared state, multi-item reusable baseline lease,
+  current child, global completion ledger, one outbound sequence, and drain state, while
+  `ProgramRuntime` sees only one child invocation; a one-item workset skips reusable-baseline capture;
+- after a dependent transition is durable, exact same-worker `ContinueSession` or state-cache locality
+  is only a preferred path; mismatch/eviction/worker loss uses the declared immutable-artifact restore
+  with equivalent semantics;
+- Slice 7 negotiates one complete compatible worker as the data-plane gate, then starts the remaining
+  desired pool with bounded concurrency; and
 - worker loss, cancellation, transport failure, or taint recovers each nonterminal durable job through
   the current per-job operations. Completed items are not rolled back and taint prevents a later child
   from starting.
 
-This is a coordinator/worker locality optimization, not a persistent scheduler. There is no workset row,
-membership table, durable cursor, workset attempt/result, aggregate transition, or worker access to
-SavorDb. Any source change outside the worker transport, runtime actor, materialization, coordinator
-bookkeeping, and focused tests requires separate evidence; unrelated database, workflow, queue, claim,
-transaction, and artifact contracts remain fixed.
+This is a coordinator/worker locality and pipeline optimization, not a persistent scheduler. There is no
+workset/cache/ledger row, membership table, durable cursor, workset attempt/result, aggregate transition,
+or worker access to SavorDb. Narrow ordered-batch claim, exact-set lease, claim/start validation, and
+targeted-reconciliation interfaces are permitted; unrelated database, workflow, durable queue-state,
+per-item transaction semantics, and artifact formats remain fixed.
 
 ### Current program execution
 
@@ -125,8 +171,10 @@ transaction, and artifact contracts remain fixed.
 ### SavorDb integration boundary
 
 - `SavorDb/Execution/IExecutionDb.h`
-  - `ClaimBatchReadyExecutionJobs` already reserves multiple independently durable jobs and remains the
-    unchanged claim operation used before workset grouping.
+  - `ClaimBatchReadyExecutionJobs` already exposes batch-shaped reservation of independently durable
+    jobs, but its SQLite implementation currently delegates to one transaction per item;
+  - the pre-6A boundary may narrow or extend execution interfaces for one ordered batch transaction,
+    exact-set lease renewal, claim/start authority validation, and targeted terminal reconciliation.
 - `SavorDb/Execution/Jobs/JobEventOrchestration.*`
   - defines the existing `JobStarted` lifecycle event and remains the durable per-item transition from
     `CLAIMED` to running.
@@ -141,9 +189,10 @@ transaction, and artifact contracts remain fixed.
 - Phase-specific adapters under `SavorDb/Execution/ProgramDB`
   - preserve the existing stored payload/result/domain representations and workflow behavior.
 
-The refactor may change runtime-facing handler implementations or adjacent adapters. It does not change
-SavorDb schema, stored representations, database-service interfaces, queues, claims, workflow
-persistence, transaction boundaries, or artifact-storage interfaces.
+The refactor may change runtime-facing handler implementations, adjacent adapters, and only the narrow
+workset-specific execution operations above. It does not change SavorDb schema, stored representations,
+durable queue states, per-job lifecycle/attempt/recovery semantics, workflow persistence, or artifact
+formats.
 
 ## Current phase corpus
 
@@ -263,6 +312,12 @@ Current generic session-service code is under `SavorCore/Runner/Runtime/Services
   - make `StateService` the sole `StateEpoch` authority;
   - own bounded immutable memory handles and caller-declared immutable state artifacts with SHA-256,
     compatibility, lineage, and exact embedded/hash-verified read-only DTM history; and
+  - `CaptureMemoryHandle` already obtains immutable host-owned state bytes, while
+    `CaptureFileArtifact` currently performs staging, hashing, sidecar/file publication, and validation
+    synchronously. The pre-6A pipeline preserves the paused capture boundary but may move the latter
+    host-only work into the bounded completion ledger/finalizer;
+  - these immutable bytes are the source seam for a keyed cache, not permission to cache live backend
+    state or an epoch-bound handle; and
   - require explicit external no-movie/read-only import, verify the active DTM identity during restore,
     let Dolphin restore the cursor for a cold read-only state/DTM pair, require exact cursor matching
     only for internally captured checkpoints, reject recording file-artifact capture/import/restore,

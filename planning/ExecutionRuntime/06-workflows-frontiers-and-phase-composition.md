@@ -24,13 +24,14 @@ jobs, write workflow state, keep durable topology only in worker memory, or deci
 must become another job.
 
 **SavorDb boundary:** this refactor does not change the SavorDb database schema or migrations; stored
-job, result, artifact, workflow, affinity, or domain representations; database-service, queue, claim, or
-workflow interfaces; transaction boundaries; or workflow/frontier persistence. Existing SavorDb
-program-kind handlers and adjacent runtime integration adapters may change only to derive
-`ProgramInvocation` from existing persisted data and project `ProgramResult` through existing
-persistence and workflow operations. Coordinator grouping, claim use, resident lease/capacity
-accounting, and runtime acknowledgements may also change only where the transient workset contract below
-requires them.
+job, claim, lease, result, artifact, workflow, affinity, or domain representations; durable lifecycle
+semantics; result-projection transaction boundaries; artifact interfaces; or workflow/frontier
+persistence. Existing program-kind handlers and adjacent adapters may derive runtime inputs/results in
+memory. Narrow execution-facing database-service interfaces may additionally be added or adapted only
+for real bounded batch claim/reservation, exact-set lease renewal, claim/start authority validation, and
+targeted advancement of an exact known terminal. Those operations use the same existing rows, commands,
+idempotency rules, and per-item semantics. They do not persist a workset, completion ledger, capacity
+credit, state-cache entry, staged package, or new lifecycle state.
 
 In this document, **schema** means a runtime program/type schema unless explicitly qualified as a
 database schema.
@@ -48,6 +49,11 @@ The current repository already establishes the integration surface this refactor
 - `WorkflowGraphRoutingService::RouteTerminalStep` applies the existing output and input-binding model.
 - `ProgramKindDescriptor` combines job persistence, runtime initialization, result mapping, result
   writing, and transition handling under the current program-kind integration seam.
+- `IExecutionDb::ClaimBatchReadyExecutionJobs` and `JobMaterializationService::ClaimJobsDetailed`
+  already provide a batch-shaped starting point, but the current SQLite implementation loops scalar
+  claims and transactions; current lease maintenance likewise calls `RenewExecutionJobLease` per item.
+- `WorkflowTerminalAdvancementService::AdvanceForTerminalJob` already provides exact known-job
+  advancement, while `WorkflowCoordinatorService` retains terminal snapshot scanning for reconciliation.
 - Battle Single Turn and SeedProbe already use current transition handlers to create later waves.
 - Existing tests cover dynamic insertion, terminal advancement, graph routing, retries, restart, and
   program-kind materialization.
@@ -74,14 +80,25 @@ part of the production DB descriptor catalog.
 
 ### Fixed persistence boundary
 
-SavorDb remains the durable owner and its contracts remain unchanged. The Execution Runtime introduces
+SavorDb remains the durable owner and its stored/durable contracts remain unchanged. The Execution Runtime introduces
 no new database tables, columns, migrations, persisted runtime-invocation rows, typed workflow-binding
 records, frontier records, queue records, or artifact-store interfaces.
 
 The runtime may have richer in-memory types than the current persisted representation. That difference
 is resolved at the program-kind integration boundary, not by migrating stored data. Workset-specific
-coordinator runtime interfaces and bookkeeping may change, but no SavorDb database-service or durable
-queue/claim/workflow interface change is planned.
+coordinator/runtime interfaces may change, and the narrow execution database interface may expose:
+
+- one bounded batch-claim/reservation operation over existing job rows and individual claim tokens;
+- one exact-set lease-renewal operation over those exact tokens with an independent disposition for
+  every requested item;
+- exact claim/start authority validation without re-querying every buffered candidate; and
+- exact targeted terminal advancement for a known workflow/step/job after its existing result
+  projection succeeds.
+
+These are hot-path access shapes over existing semantics, not new persistence contracts. Existing
+single-job/reconciliation operations remain valid for recovery, and every result projection, terminal
+transition, outbox write, retry, and workflow mutation retains its current transaction and idempotency
+boundary.
 
 ### Program-kind integration seam
 
@@ -114,12 +131,15 @@ For completion, the handler or adjacent adapter:
 1. consumes `ProgramResult`;
 2. performs runtime contract validation;
 3. projects the domain result and artifact references into the current SavorDb representation; and
-4. calls the existing result writers and transition operations.
+4. commits through the existing result writers. The coordinator then acknowledges that item and
+   publishes its known workflow/step/job plus commit sequence to the targeted terminal-advancement path.
 
-This is an implementation change inside the existing integration seam. It does not require splitting
-`ProgramKindDescriptor` or changing its persistence, workflow, database-service, queue, or claim
-interfaces. Adjacent coordinator/worker runtime interfaces may change only as needed for transient
-workset admission, ordered events, resident accounting, and acknowledgements.
+This remains an implementation change inside the existing integration seam. It does not require
+splitting `ProgramKindDescriptor` or changing persistence/workflow semantics. Adjacent coordinator and
+the narrowly scoped execution database interfaces may change only for ordered batch claim, exact-set
+lease renewal, claim/start validation, and targeted terminal advancement. Deterministic assembly,
+transient credits, staging, ordered completions, and acknowledgements remain coordinator/worker
+bookkeeping rather than database-interface responsibilities.
 
 Existing battle predicate records and payload fields remain compatibility inputs. The program-kind
 handler translates them in memory into predicate-composition inputs; the shared library lowers each
@@ -173,49 +193,87 @@ Each item retains:
 
 The workset itself has only transient request identity, one exact in-memory
 `WorkerWorksetExecutionKey`, the
-fixed item order, bounded item-count/encoded-byte/aggregate-child-budget/resident-item limits, an
-immutable reusable baseline only when it has multiple items, a bounded
-unacknowledged-result window, and drain/cancellation state. The key covers exact module, entrypoint,
-dependency closure, runtime/session profile, source-state identity/hash/lineage or reusable-baseline
-identity, movie-continuation policy, and execution/input/capture/movie/mutation/relevant-service
-compatibility. The workset is never a SavorDb row, workflow step, queue record,
-claim token, attempt, result, artifact, or recovery object. The worker cannot add items, reorder them,
-select later durable work, or inspect SavorDb.
+fixed item order, bounded item-count/encoded-byte/aggregate-child-budget/item-credit limits, a scoped
+`StateCacheKey` lease only when reusable state is needed, and execution/cancellation state. The key
+covers exact module, entrypoint, dependency closure, runtime/session profile, source-state
+identity/hash/lineage or reusable-baseline identity, movie-continuation policy, and
+execution/input/capture/movie/mutation/relevant-service compatibility. The workset is never a SavorDb
+row, workflow step, queue record, claim token, attempt, result, artifact, or recovery object. The worker
+cannot add items, reorder them, select later durable work, or inspect SavorDb.
+
+One workset owns the session at a time, but the worker may also hold one immutable staged successor
+package. Staging is limited to transport decoding, complete definition/input/dependency validation,
+verified-module pinning, and host-only immutable cache preparation. It cannot mutate the session, load
+state, capture a baseline, publish item start, or create a `ProgramInstance`. The worker-global
+completion/acknowledgement ledger is separate from both packages: it retains promoted immutable state
+captures, finalization state, authoritative terminals, and acknowledgements from executed items even
+after their workset session scope releases.
 
 Admission and accounting are fixed:
 
-1. The coordinator claims and reserves a finite compatible set through the existing claim operation,
-   preserving stable normal priority/claim order, and materializes each payload independently.
-2. A multi-item workset may contain only items whose adapters declare workset eligibility and whose
-   exact `WorkerWorksetExecutionKey` matches. Existing persisted affinity remains a scheduling hint; it
-   is not sufficient proof of exact compatibility. A one-item workset remains valid even when no
-   compatible peer is available.
-3. Acceptance by a worker reserves the items while they remain in their existing `CLAIMED` durable
-   state. Workset admission does not append `JobStarted` and does not make every resident item
-   `RUNNING`.
-4. The worker prepares the key's exact source state once. A multi-item workset captures one immutable
-   in-memory baseline; a one-item workset skips that unnecessary capture. The first child begins from
-   the prepared state; before each later child the worker restores the multi-item baseline, advances
-   `StateEpoch` through the existing `StateService` contract, and binds the child's invocation to the
-   resulting current epoch.
-5. Immediately before that child's first effect, the worker publishes an ordered item-start event and
-   activates exactly one `ProgramInvocation`/`ProgramInstance` without waiting for a coordinator
-   decision or acknowledgement. The single outbound ordering guarantees that the coordinator consumes
-   this event and appends the existing per-job `JobStarted` lifecycle event before it processes that
-   child's later terminal.
-6. The worker publishes that item's ordinary terminal result as soon as its unwind completes. The
-   coordinator immediately validates and projects it through the existing per-job result/artifact
-   operations, performs the existing terminal/transition handling, and returns a runtime-protocol item
-   acknowledgement. The worker may activate a later resident item without another scheduling decision
-   only while the bounded unacknowledged-result window has capacity; otherwise acknowledgement
-   backpressure stops admission.
-7. The coordinator renews the existing claim lease for every resident nonterminal item, including an
-   item accepted by a worker but not yet started.
-8. Active, coordinator-buffered, outbound, worker-resident nonterminal, and unacknowledged-terminal
-   items all count against bounded coordinator capacity. Claim capacity is derived from the available
-   resident capacity of ready workset-capable workers rather than configured slot count alone.
-   Unacknowledged terminals are additionally bounded by negotiated count and bytes and may not be
-   dropped.
+1. Each ready worker publishes negotiated item-capacity credits and count/byte limits. A credit covers
+   one item from assignment through staged/resident/active/asynchronously-finalizing/terminal retention
+   until exact durable acknowledgement. The coordinator derives claim demand from currently
+   unreserved credits rather than configured process slots.
+2. The coordinator performs one real bounded batch claim/reservation over existing jobs, preserving
+   each job's individual claim token, attempt, priority, and durable lifecycle. The claim limit is
+   bounded by available credits plus explicitly bounded coordinator-buffer capacity; it is not
+   implemented as a scalar claim loop disguised as a batch.
+3. The coordinator materializes the claimed items independently, derives each exact runtime-only key,
+   and assembles worksets deterministically. It chooses the highest-priority, oldest eligible anchor,
+   searches only that priority class within a configured count/byte window, and selects exact-key peers
+   in durable claim order. It prefers an already compatible warm worker, then resolves otherwise-equal
+   choices by queue time, job ID, worker ID, and item ordinal. The finite lookahead prevents affinity
+   clustering from starving an older incompatible job. Leftovers remain individually claimed, leased,
+   and capacity-accounted rather than being silently reordered.
+4. A multi-item workset contains only adapter-declared eligible items with one exact
+   `WorkerWorksetExecutionKey`. Persisted affinity is a hint, never compatibility proof. A singleton is
+   valid whenever no peer fits. The worker atomically revalidates the whole immutable package and its
+   credits before any session mutation.
+5. If no workset owns the session, the accepted package becomes active. Otherwise at most one package
+   may enter the immutable staged-successor slot under exact staged correlation. Acceptance keeps every
+   not-yet-started item in its existing `CLAIMED` state and does not append `JobStarted`.
+6. Active common preparation acquires or creates the exact `StateCacheKey` entry and scoped lease when
+   reusable state is declared. A multi-item workset uses that immutable baseline; a singleton does not
+   capture an unnecessary new baseline. The first child begins from prepared state; every later child
+   restores the leased bytes and receives a fresh `StateEpoch`.
+7. Immediately before a child's first effect, the worker publishes its ordered item-start event and
+   activates the sole `ProgramInvocation`/`ProgramInstance` without waiting for a coordinator decision.
+   The coordinator consumes that event and appends the existing per-job `JobStarted` event before
+   processing that child's later terminal.
+8. When execution ends, the invocation fully unwinds. If a state artifact was requested, paused
+   immutable-byte/movie-metadata capture is synchronously promoted into the worker-global completion
+   ledger and bounded background finalization begins. The next child may become the sole active
+   invocation after unwind when credits permit; the pending finalizer is not a program or session owner.
+9. At synchronous execution completion or an unstarted disposition, the actor assigns the item one
+   monotonic terminal-order ordinal across worksets. It assembles and publishes the authoritative
+   per-item result only after mandatory finalization completes, never allowing a later ordinal to
+   overtake it. Correlated later start/progress events may be visible while an earlier item finalizes;
+   each published event still receives the next global outbound sequence.
+10. On receipt of an authoritative terminal, the coordinator immediately validates and projects it
+    through the existing per-job result/artifact transaction and acknowledges the exact item after that
+    durable projection succeeds.
+11. After durable result projection, the coordinator publishes an in-process notification containing
+    the affected workflow-step identity and commit sequence. Targeted advancement processes notifications
+    in commit-sequence then stable-ID order. This hot path does not delay the item acknowledgement;
+    broad terminal scanning remains restart/reconciliation fallback if a notification is missed.
+12. The coordinator renews every resident/staged/active/finalizing nonterminal claim through the real
+    grouped lease operation and checks exact authority before staged promotion or item start. Loss of
+    authority cancels an unstarted item without session mutation; an already-started attempt follows
+    existing idempotent recovery.
+13. Acknowledgement releases the completion-ledger entry and returns that item's worker credit.
+    Coordinator-buffered claimed jobs remain separately bounded. Pending finalization,
+    ready-but-order-blocked terminals, unacknowledged terminals, active/resident items, and staged items
+    may not be dropped or double-counted.
+14. After every child has entered terminal preparation or is classified unstarted, the active workset
+    releases its baseline lease and session scope. Its finalizations/acknowledgements may continue in
+    the global ledger while the staged package is revalidated and promoted. The old bookkeeping summary
+    waits for its acknowledgements but does not keep the session idle.
+
+The fixed active-workflow-count throttle is removed from the production hot path. Item-capacity credits
+and the separately bounded coordinator buffer determine how far workflow materialization may run ahead;
+the periodic workflow scan remains the recovery authority rather than a second competing capacity
+model.
 
 No successful item waits for the whole workset before result projection. A repeated terminal after
 transport loss is handled by the current per-job attempt/idempotent-publication rules and then
@@ -248,10 +306,20 @@ the existing references into the runtime state-policy object in memory.
 Worker reuse remains an optimization. `ProgramResult` cleanup/session status governs whether the current
 worker session may be reused, without requiring a new persisted cleanup-status field. Workset locality
 does not permit child-invocation-scoped input, router, capture, movie, mutation, pending-action, or
-epoch-bound resources to cross an item boundary. The immutable baseline belongs to the workset scope,
-not a child invocation; only existing clean session/module caches survive according to their
-established contracts. Every child still begins from the exact prepared or restored state declared by
-its matching key.
+epoch-bound resources to cross an item boundary. An immutable baseline cache entry belongs to
+`StateService`; each workset holds only a scoped `StateCacheKey` lease. The bytes may remain in the
+bounded clean session cache after that lease releases, but every child still begins through the exact
+prepared/restore transaction declared by its matching key and receives a fresh epoch where required.
+
+After a durable phase transition commits, the coordinator may prefer the same clean worker for an exact
+successor. `ContinueSession` is permitted only when the worker still proves the exact current
+session/epoch, state hash/lineage, movie continuation, clean `SessionResourceLedger`/cleanup receipt, and
+successor policy. Older host-only finalizers or acknowledgements in the worker-global completion ledger
+do not invalidate the warm path when credit remains. Otherwise the same invocation falls back to a
+cache-assisted or ordinary immutable-artifact load. Durable correctness never depends on the warm path,
+and a workset still cannot contain a producer/consumer dependency. Affinity and `ContinueSession` never
+reserve or hold an otherwise idle worker; they are attempted only when the worker is available under
+ordinary capacity scheduling.
 
 ### Generalized frontiers are separate work
 
@@ -269,7 +337,22 @@ executor.
 An `A -> B -> A` composition continues to use existing workflow operations. Each program-kind handler
 constructs the corresponding exact runtime invocation when its existing job activates. Runtime
 verification proves that A and B fully unwind their session resources; no new persisted phase-edge or
-binding representation is introduced here.
+binding representation is introduced here. Exact warm-worker continuation or `StateCacheKey` locality
+may optimize the handoff only after the preceding result/transition is durable and is always backed by
+the ordinary immutable-artifact restore path.
+
+### Progressive worker startup
+
+Process launch, protocol negotiation, complete production catalog verification, session readiness, and
+capacity-credit publication occur independently for each configured worker. The coordinator may open
+its data-plane loops once at least one worker has passed every required production capability/catalog
+gate and published nonzero usable credits; it does not wait for every configured process to finish
+booting. Later compatible workers add their credits atomically when ready.
+
+A failed, mismatched, or still-starting worker contributes no claim capacity and cannot receive a
+staged package. There is no scalar or partial-catalog fallback, and startup is a structured failure when
+no required worker becomes ready. Progressive availability changes utilization only: deterministic
+claim priority, exact-key assembly, per-item attempts, and durable workflow behavior remain the same.
 
 ## Interfaces and ownership affected
 
@@ -283,9 +366,10 @@ binding representation is introduced here.
 | Existing `savor.capture.profile/1` inputs | Unchanged and consumed opaquely by passive `CaptureService`; no replacement capture language |
 | Adjacent worker integration code | May carry the new worker-facing protocol and runtime types |
 | `ProgramRuntime` | Verifies and executes one invocation; has no SavorDb or workflow mutation access |
-| Coordinator workset scheduling | Uses one `SubmitWorkset` path for singleton or grouped claimed/materialized jobs, renews every resident item lease, and projects/acknowledges each item immediately |
-| SavorDb database-service interfaces | Unchanged |
-| Queue, claim, affinity, and coordinator persistence contracts | Durable contracts unchanged; only workset-specific grouping, claim use, resident lease/capacity accounting, and runtime acknowledgements change |
+| Coordinator workset scheduling | Uses deterministic exact-key assembly, worker credits, one active plus one immutable staged package, grouped lease authority, exact cache hints, and one `SubmitWorkset` path |
+| Worker-global completion/acknowledgement ledger | Transiently owns promoted immutable state captures, ordered terminal assembly/retention, acknowledgements, and credit release; never writes SavorDb |
+| Narrow SavorDb execution interfaces | May support ordered batch claim/reservation, exact-set lease renewal, claim/start authority validation, and targeted known-terminal advancement over existing records |
+| Queue, claim, affinity, and coordinator persistence contracts | Durable semantics and records unchanged; execution access shapes and transient workset accounting may change narrowly |
 | Workflow definitions, bindings, transition commands, outbox, and recovery | Unchanged |
 | Stored jobs, results, artifacts, domain records, and historical payloads | Unchanged; no conversion |
 
@@ -299,12 +383,19 @@ binding representation is introduced here.
   unchanged.
 - Workset admission leaves every not-yet-started item `CLAIMED`. Immediately before effects, the worker
   emits the ordered item-start event without waiting; the coordinator appends `JobStarted` before
-  processing that child's later terminal. Each terminal result is projected and acknowledged
-  immediately, while a negotiated non-lossy window provides bounded backpressure if acknowledgements
-  lag.
+  processing that child's later terminal.
+- A state-producing item may unwind after promoting its immutable capture while background
+  finalization continues. No result is projected until the actor assembles its one authoritative
+  terminal in actor-assigned completion order. The coordinator then performs the unchanged per-job
+  result transaction and acknowledges the item; targeted terminal advancement follows the ordered
+  in-process notification and does not delay that acknowledgement.
+- Exhausted item/completion credits stop later restore/admission or staged promotion without advancing
+  Dolphin. Credits return only after the exact item terminal/disposition is durably acknowledged.
+- Staged-package rejection, cancellation, or lease loss occurs before session mutation. Active item
+  failures use ordinary unwind, and out-of-order background finalizer events cannot reorder terminals.
 - Workset rejection, cancellation, transport loss, worker loss, or session taint returns every
   nonterminal item to the current per-job recovery/requeue path. A tainted worker starts no later
-  resident item.
+  resident item and cannot promote its staged successor.
 - A failed worker never commits workflow state directly. Only existing SavorDb handlers and commands can
   advance durable work.
 - Existing queued jobs remain consumable through the compatibility translation in program-kind handlers;
@@ -314,28 +405,36 @@ binding representation is introduced here.
 
 Migration must:
 
-1. preserve the current SavorDb schema, migrations, stored representations, services, queues, claims,
-   workflow commands, transactions, and artifact interfaces;
+1. preserve the current SavorDb schema, migrations, stored representations, durable queue/claim/lease
+   lifecycle, workflow commands, result/transition transactions, and artifact interfaces;
 2. implement exact runtime invocation/result translation within program-kind handlers or adjacent
    adapters;
-3. replace the unactivated scalar production submission with one bounded coordinator/worker
-   `SubmitWorkset` path for 1..N independently claimed/materialized jobs, with exact compatibility,
-   workset-baseline state flow, resident-capacity and existing-lease accounting, ordered per-item start
-   publication mapped to current `JobStarted`, immediate per-item projection/acknowledgement, and
-   current requeue/recovery behavior;
-4. preserve all current workflow lifecycle, outbox, recovery, fan-out, and transition tests;
-5. keep current persisted payload/result codecs where handlers need them to read or write the existing
+3. implement the narrow execution-interface allowance as real bounded batch claim/reservation, exact-set
+   lease renewal, claim/start authority validation, and targeted terminal advancement over existing
+   records, rather than repeated scalar calls or a new persistent workset abstraction;
+4. replace the unactivated scalar production submission with one bounded coordinator/worker
+   `SubmitWorkset` path for 1..N independently claimed/materialized jobs, with deterministic exact-key
+   assembly, one immutable staged successor, item-capacity credits, scoped `StateCacheKey` baseline
+   leases, ordered per-item start, asynchronous immutable state-artifact finalization, globally ordered
+   terminals, per-item projection/acknowledgement, targeted post-commit advancement, and current
+   requeue/recovery behavior;
+5. start coordinator capacity progressively from workers that have completed the full
+   protocol/catalog/session/credit gate without admitting partial-capability workers;
+6. preserve all current workflow lifecycle, outbox, recovery, fan-out, result-projection transaction,
+   and transition tests;
+7. keep current persisted payload/result codecs where handlers need them to read or write the existing
    representation, without linking those codecs to the legacy worker interpreter;
-6. translate current predicate records through the shared in-memory composition path without changing
+8. translate current predicate records through the shared in-memory composition path without changing
    their storage or interfaces;
-7. translate current macro and address-program inputs through interaction and semantic-observation
+9. translate current macro and address-program inputs through interaction and semantic-observation
    composition without changing their storage or interfaces;
-8. pass existing capture profiles to passive `CaptureService` unchanged and preserve their current
+10. pass existing capture profiles to passive `CaptureService` unchanged and preserve their current
    profile-visible behavior;
-9. avoid storing `WorkerWorkset`, workset drain/acknowledgement state, `ProgramInstance`, canonical
-   runtime IR, lowered predicate/observation/interaction definitions, receipts, baselines, dependency
-   closures, or new runtime-only status fields in SavorDb; and
-10. keep generalized workflow/frontier work outside this refactor.
+11. avoid storing `WorkerWorkset`, staged correlation, completion/acknowledgement state, capacity
+   credits, `StateCacheKey`, `ProgramInstance`, canonical runtime IR, lowered
+   predicate/observation/interaction definitions, receipts, baselines, dependency closures, or new
+   runtime-only status fields in SavorDb; and
+12. keep generalized workflow/frontier work outside this refactor.
 
 Navmesh Survey may use current workflow and dynamic-step facilities where they are sufficient. If its
 desired topology requires new persistence or workflow interfaces, that integration is not delivered by
@@ -344,21 +443,34 @@ this refactor.
 ## Boundary checks
 
 - No SavorDb migration or database-schema change is added.
-- No SavorDb database-service, durable queue/claim/affinity/workflow-persistence, transaction, or
-  artifact-storage interface changes; workset-specific coordinator/worker runtime interfaces and
-  bookkeeping may change.
+- No durable queue/claim/lease/affinity/workflow-persistence, result-projection transaction, or
+  artifact-storage semantic change is added. Execution-facing interfaces may change only for the
+  bounded batch claim/lease, capacity, and targeted-terminal operations enumerated above.
 - Existing persisted jobs materialize the correct `ProgramInvocation` through program-kind handlers.
 - `ProgramResult` is projected through existing result/domain writers without changing stored
   representations.
 - A one-item workset and a multi-item workset produce the same per-job lifecycle, result, artifact,
   transition, idempotency, and retry observations. Workset residency never appears as a new durable
   state.
-- Claim budgeting counts coordinator-buffered and worker-resident items, and the existing claim lease is
-  renewed for every resident nonterminal item.
+- Claim budgeting starts from negotiated worker item-capacity credits, counts coordinator-buffered,
+  staged, resident, active, finalizing, order-blocked, and unacknowledged items exactly once, and renews
+  every nonterminal claim through the grouped lease operation.
+- Real batch claim preserves an individual claim token/lifecycle per row and deterministic exact-key
+  assembly preserves durable priority with bounded affinity lookahead and starvation protection.
 - Workset admission does not mark queued resident items started. The worker's ordered item-start event
   precedes effects without a coordinator round trip, and the coordinator appends `JobStarted` before
-  processing the ordered terminal. Each result is projected and acknowledged immediately, and the
-  negotiated result window bounds any temporary acknowledgement lag.
+  processing the ordered terminal.
+- Synchronous paused state capture may finalize in the background only after immutable promotion.
+  Actor-assigned completion order prevents terminal reordering; each final result is projected and
+  acknowledged through its existing durable transaction, then its exact known workflow step is
+  advanced through the ordered notification path.
+- One immutable staged successor performs no session mutation and promotes only after active-scope
+  release plus lease/cancellation revalidation. Prior acknowledgements may drain globally without
+  retaining the old session scope.
+- Cache-hit, cache-miss, warm `ContinueSession`, and artifact-load paths are semantically equivalent;
+  cache state is transient, scoped, exact-keyed, and never required for recovery.
+- Progressive startup contributes capacity only from fully compatible ready workers; it never activates
+  a partial catalog or changes claim priority.
 - Existing queued jobs and historical payload/result records remain valid; no data conversion is
   required.
 - Current workflow restart, retry, idempotency, outbox, dynamic-step, fan-out, survivor-selection, and
@@ -372,7 +484,8 @@ this refactor.
 - Existing capture profiles retain their identity and representation behind passive `CaptureService`;
   the refactor adds no capture-profile migration or replacement capture-plan storage.
 - Adding a phase that uses existing runtime capabilities changes only its runtime module/type definitions
-  and program-kind integration implementation; it does not change SavorDb storage or interfaces.
+  and program-kind integration implementation; it does not change SavorDb storage or require an
+  interface beyond the shared narrow execution operations above.
 
 ## Out-of-scope future work
 
@@ -384,11 +497,16 @@ The following are outside this refactor and do not gate its completion:
 - persisted module source, canonical IR, dependency catalogs, or verification caches;
 - persisted workset identities, membership, drain cursors, acknowledgements, or workset-level attempts
   and results;
+- persisted staged-package correlation, capacity credits, completion-ledger entries, `StateCacheKey`s,
+  cache inventories, or background-finalization state;
 - changes to artifact retention, storage backends, or SavorDb artifact interfaces; and
 - distributed frontier scheduling or sharding.
 
 ## Source references
 
+- `SavorDb/Execution/IExecutionDb.h`
+- `SavorWorkflow/Execution/JobMaterializationService.cpp`
+- `SavorWorkflow/Execution/DBWorkflowWorkerCoordinator.cpp`
 - `SavorDb/Execution/Workflow/WorkflowOrchestration.h`
 - `SavorDb/Execution/Workflow/SqliteWorkflowOrchestration.cpp`
 - `SavorDb/Execution/Workflow/WorkflowTerminalAdvancementService.cpp`
