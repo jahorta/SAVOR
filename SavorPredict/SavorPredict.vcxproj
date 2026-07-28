@@ -130,6 +130,8 @@
     <ClCompile Include="BattleInitialFacingModel.cpp" />
     <ClCompile Include="BattleInitialTurnTypeModel.cpp" />
     <ClCompile Include="BattleCollisionBoxModel.cpp" />
+    <ClCompile Include="BattlePredictionBatchCli.cpp" />
+    <ClCompile Include="BattlePredictionBatchRun.cpp" />
     <ClCompile Include="BattlePredictionDbInput.cpp" />
     <ClCompile Include="BattlePredictionScenario.cpp" />
     <ClCompile Include="BattleMovementInvocationModel.cpp" />
@@ -214,6 +216,8 @@
     <ClInclude Include="BattleInitialFacingModel.h" />
     <ClInclude Include="BattleInitialTurnTypeModel.h" />
     <ClInclude Include="BattleCollisionBoxModel.h" />
+    <ClInclude Include="BattlePredictionBatchCli.h" />
+    <ClInclude Include="BattlePredictionBatchRun.h" />
     <ClInclude Include="BattlePredictionDbInput.h" />
     <ClInclude Include="BattlePredictionProfileNames.h" />
     <ClInclude Include="BattlePredictionScenario.h" />

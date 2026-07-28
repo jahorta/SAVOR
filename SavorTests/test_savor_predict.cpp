@@ -23,7 +23,11 @@
 #include <Core/Input/SoaBattle/BattleCommandCodec.h>
 #include <Core/Memory/Soa/Battle/BattleContextCodec.h>
 
+#include <DbRootCopy.h>
+
 #include "common/SqliteDbFixture.h"
+
+#include <sqlite3.h>
 
 #include <algorithm>
 #include <array>
@@ -6375,6 +6379,141 @@ TEST(SavorPredictBattlePredictionDbInput, RejectsMutableDebugDbRootInResolver) {
 
     EXPECT_FALSE(resolved.has_value());
     EXPECT_NE(err.str().find("Refusing to use D:/SoaSimDBDebug"), std::string::npos);
+}
+
+TEST(SavorPredictBattlePredictionDbInput, ReportsSqliteJobQueryErrorsInsteadOfMissingRows) {
+    const auto root = std::filesystem::temp_directory_path()
+        / ("savor_predict_bad_analysis_schema_"
+            + std::to_string(
+                std::chrono::steady_clock::now().time_since_epoch().count()));
+    ASSERT_TRUE(std::filesystem::create_directories(root));
+    sqlite3* db = nullptr;
+    ASSERT_EQ(
+        sqlite3_open((root / "analysis.db").string().c_str(), &db),
+        SQLITE_OK);
+    ASSERT_NE(db, nullptr);
+    ASSERT_EQ(
+        sqlite3_exec(
+            db,
+            "CREATE TABLE deliberately_wrong_schema(id INTEGER PRIMARY KEY);",
+            nullptr,
+            nullptr,
+            nullptr),
+        SQLITE_OK);
+    sqlite3_close(db);
+
+    BattlePredictionDbInputOptions options;
+    options.db_root = root;
+    options.selector.exec_job_id = 10;
+    std::ostringstream err;
+
+    const auto resolved =
+        build_battle_prediction_input_from_db_root(options, err);
+
+    EXPECT_FALSE(resolved.has_value());
+    EXPECT_NE(
+        err.str().find("Querying ab_turn_job by exec_job_id 10 failed"),
+        std::string::npos);
+    EXPECT_NE(err.str().find("no such table: ab_turn_job"), std::string::npos);
+    EXPECT_EQ(err.str().find("No matching ab_turn_job"), std::string::npos);
+
+    std::error_code cleanup_error;
+    std::filesystem::remove_all(root, cleanup_error);
+}
+
+TEST(SavorPredictBattlePredictionDbInput, ReportsMissingJobWhenSqliteQuerySucceeds) {
+    const auto root = std::filesystem::temp_directory_path()
+        / ("savor_predict_missing_job_"
+            + std::to_string(
+                std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::ostringstream migration_err;
+    ASSERT_EQ(
+        savor::dbutils::CreateEmptyMigratedDbRoot(
+            {
+                .db_root = root,
+                .overwrite = false,
+            },
+            migration_err),
+        0) << migration_err.str();
+
+    BattlePredictionDbInputOptions options;
+    options.db_root = root;
+    options.selector.exec_job_id = 99999999;
+    std::ostringstream err;
+
+    const auto resolved =
+        build_battle_prediction_input_from_db_root(options, err);
+
+    EXPECT_FALSE(resolved.has_value());
+    EXPECT_NE(
+        err.str().find(
+            "No matching ab_turn_job found for exec_job_id 99999999"),
+        std::string::npos);
+    EXPECT_EQ(err.str().find("sqlite rc="), std::string::npos);
+
+    std::error_code cleanup_error;
+    std::filesystem::remove_all(root, cleanup_error);
+}
+
+TEST(SavorPredictBattlePredictionDbInput, ReportsSqliteErrorsAfterJobLookupSucceeds) {
+    const auto root = std::filesystem::temp_directory_path()
+        / ("savor_predict_bad_wave_schema_"
+            + std::to_string(
+                std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::ostringstream migration_err;
+    ASSERT_EQ(
+        savor::dbutils::CreateEmptyMigratedDbRoot(
+            {
+                .db_root = root,
+                .overwrite = false,
+            },
+            migration_err),
+        0) << migration_err.str();
+
+    sqlite3* db = nullptr;
+    ASSERT_EQ(
+        sqlite3_open((root / "analysis.db").string().c_str(), &db),
+        SQLITE_OK);
+    ASSERT_NE(db, nullptr);
+    char* sqlite_error = nullptr;
+    ASSERT_EQ(
+        sqlite3_exec(
+            db,
+            "PRAGMA foreign_keys=OFF;"
+            "INSERT INTO ab_turn_job("
+            "turn_job_id,wave_id,exec_job_id,plan_id,"
+            "fake_attacks_this_turn,fake_attacks_used_before,"
+            "job_state,has_results) "
+            "VALUES(1,77,42,1,0,0,'SUCCEEDED',0);"
+            "DROP TABLE ab_turn_wave;",
+            nullptr,
+            nullptr,
+            &sqlite_error),
+        SQLITE_OK) << (sqlite_error == nullptr ? "" : sqlite_error);
+    sqlite3_free(sqlite_error);
+    sqlite3_close(db);
+
+    BattlePredictionDbInputOptions options;
+    options.db_root = root;
+    options.selector.exec_job_id = 42;
+    std::ostringstream err;
+
+    const auto resolved =
+        build_battle_prediction_input_from_db_root(options, err);
+
+    EXPECT_FALSE(resolved.has_value());
+    EXPECT_NE(
+        err.str().find("Querying ab_turn_wave by wave_id 77 failed"),
+        std::string::npos);
+    EXPECT_NE(
+        err.str().find("no such table: ab_turn_wave"),
+        std::string::npos);
+    EXPECT_EQ(
+        err.str().find("references missing wave 77"),
+        std::string::npos);
+
+    std::error_code cleanup_error;
+    std::filesystem::remove_all(root, cleanup_error);
 }
 
 TEST_F(SavorPredictDbInputFixture, UsesSeedProbeUniqueSeedForExecJob) {

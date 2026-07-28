@@ -42,6 +42,7 @@ public:
             return false;
         }
         sqlite3_busy_timeout(db_, 5000);
+        sqlite3_extended_result_codes(db_, 1);
         return true;
     }
 
@@ -125,9 +126,26 @@ std::uint32_t checked_seed_from_i64(std::int64_t value) {
     return static_cast<std::uint32_t>(static_cast<std::uint64_t>(value) & 0xFFFFFFFFull);
 }
 
+bool report_sqlite_query_error(
+    sqlite3* sqlite_db,
+    std::string_view operation,
+    std::ostream& err) {
+    if (sqlite_db == nullptr) {
+        return false;
+    }
+    const int rc = sqlite3_extended_errcode(sqlite_db);
+    if (rc == SQLITE_OK || rc == SQLITE_ROW || rc == SQLITE_DONE) {
+        return false;
+    }
+    err << operation << " failed: " << sqlite3_errmsg(sqlite_db)
+        << " (sqlite rc=" << rc << ").\n";
+    return true;
+}
+
 std::optional<savor::db::BattleTurnJobSnapshot> resolve_turn_job(
     const savor::db::IAnalysisDb& analysis_db,
     const BattlePredictionJobSelector& selector,
+    sqlite3* sqlite_db,
     std::ostream& err) {
     if (selector.turn_job_id.has_value() == selector.exec_job_id.has_value()) {
         err << "Specify exactly one DB job selector.\n";
@@ -136,14 +154,28 @@ std::optional<savor::db::BattleTurnJobSnapshot> resolve_turn_job(
     if (selector.turn_job_id.has_value()) {
         auto row = analysis_db.GetBattleTurnJob(*selector.turn_job_id);
         if (!row.has_value()) {
-            err << "No matching ab_turn_job found for turn_job_id " << *selector.turn_job_id << ".\n";
+            if (!report_sqlite_query_error(
+                    sqlite_db,
+                    "Querying ab_turn_job by turn_job_id "
+                        + std::to_string(*selector.turn_job_id),
+                    err)) {
+                err << "No matching ab_turn_job found for turn_job_id "
+                    << *selector.turn_job_id << ".\n";
+            }
         }
         return row;
     }
 
     auto row = analysis_db.GetBattleTurnJobForExecJob(*selector.exec_job_id);
     if (!row.has_value()) {
-        err << "No matching ab_turn_job found for exec_job_id " << *selector.exec_job_id << ".\n";
+        if (!report_sqlite_query_error(
+                sqlite_db,
+                "Querying ab_turn_job by exec_job_id "
+                    + std::to_string(*selector.exec_job_id),
+                err)) {
+            err << "No matching ab_turn_job found for exec_job_id "
+                << *selector.exec_job_id << ".\n";
+        }
     }
     return row;
 }
@@ -151,9 +183,22 @@ std::optional<savor::db::BattleTurnJobSnapshot> resolve_turn_job(
 std::optional<savor::db::BattleContextProbeSnapshot> resolve_context_probe(
     const savor::db::IAnalysisDb& analysis_db,
     const savor::db::BattleTurnWaveSnapshot& wave,
-    BattlePredictionDbInputMetadata& metadata) {
+    BattlePredictionDbInputMetadata& metadata,
+    sqlite3* sqlite_db,
+    bool* query_failed,
+    std::ostream& err) {
+    *query_failed = false;
     if (wave.context_probe_id.has_value()) {
         auto probe = analysis_db.GetBattleContextProbe(*wave.context_probe_id);
+        if (!probe.has_value()
+            && report_sqlite_query_error(
+                sqlite_db,
+                "Querying ab_battle_context_probe by context_probe_id "
+                    + std::to_string(*wave.context_probe_id),
+                err)) {
+            *query_failed = true;
+            return std::nullopt;
+        }
         if (probe.has_value()
             && probe->probe_status == savor::db::BattleContextProbeStatus::Succeeded
             && probe->context_blob.has_value()
@@ -166,6 +211,15 @@ std::optional<savor::db::BattleContextProbeSnapshot> resolve_context_probe(
     }
 
     auto probe = analysis_db.GetLatestBattleContextForWave(wave.wave_id);
+    if (!probe.has_value()
+        && report_sqlite_query_error(
+            sqlite_db,
+            "Querying latest succeeded ab_battle_context_probe for wave "
+                + std::to_string(wave.wave_id),
+            err)) {
+        *query_failed = true;
+        return std::nullopt;
+    }
     if (probe.has_value()) {
         metadata.context_source = BattlePredictionContextSource::LatestWaveContextProbe;
     }
@@ -189,11 +243,19 @@ std::optional<std::string> lookup_savestate_sha256(
     }
     sqlite3_bind_int64(statement, 1, savestate_id);
     std::optional<std::string> result;
-    if (sqlite3_step(statement) == SQLITE_ROW) {
+    const int step_rc = sqlite3_step(statement);
+    if (step_rc == SQLITE_ROW) {
         const auto* value = sqlite3_column_text(statement, 0);
         if (value != nullptr) {
             result = reinterpret_cast<const char*>(value);
         }
+    } else if (step_rc != SQLITE_DONE) {
+        err << "Failed querying entry-savestate fingerprint: "
+            << sqlite3_errmsg(state_db)
+            << " (sqlite rc=" << sqlite3_extended_errcode(state_db)
+            << ").\n";
+        sqlite3_finalize(statement);
+        return std::nullopt;
     }
     sqlite3_finalize(statement);
     if (!result.has_value() || result->empty()) {
@@ -235,9 +297,11 @@ const char* battle_prediction_context_source_name(BattlePredictionContextSource 
     return "unknown";
 }
 
-std::optional<BattlePredictionDbInput> build_battle_prediction_input_from_analysis_db(
+static std::optional<BattlePredictionDbInput>
+build_battle_prediction_input_from_analysis_db_impl(
     const savor::db::IAnalysisDb& analysis_db,
     const BattlePredictionDbInputOptions& options,
+    sqlite3* sqlite_db,
     std::ostream& err) {
     const auto profile = battle_prediction_profile_by_name(options.profile_name);
     if (!profile.has_value()) {
@@ -274,13 +338,21 @@ std::optional<BattlePredictionDbInput> build_battle_prediction_input_from_analys
         }
     }
 
-    auto turn_job = resolve_turn_job(analysis_db, options.selector, err);
+    auto turn_job =
+        resolve_turn_job(analysis_db, options.selector, sqlite_db, err);
     if (!turn_job.has_value()) {
         return std::nullopt;
     }
 
     const auto wave = analysis_db.GetBattleTurnWave(turn_job->wave_id);
     if (!wave.has_value()) {
+        if (report_sqlite_query_error(
+                sqlite_db,
+                "Querying ab_turn_wave by wave_id "
+                    + std::to_string(turn_job->wave_id),
+                err)) {
+            return std::nullopt;
+        }
         err << "Selected turn job references missing wave " << turn_job->wave_id << ".\n";
         return std::nullopt;
     }
@@ -294,12 +366,31 @@ std::optional<BattlePredictionDbInput> build_battle_prediction_input_from_analys
     }
     const auto battle_set = analysis_db.GetBattleSet(wave->battle_set_id);
     if (!battle_set.has_value()) {
+        if (report_sqlite_query_error(
+                sqlite_db,
+                "Querying ab_battle_set by battle_set_id "
+                    + std::to_string(wave->battle_set_id),
+                err)) {
+            return std::nullopt;
+        }
         err << "Selected turn job references missing battle set " << wave->battle_set_id << ".\n";
         return std::nullopt;
     }
 
     const auto seed_candidate_id = turn_job->seed_candidate_id.value_or(wave->seed_candidate_id);
     const auto seed_candidate = analysis_db.GetBattleSeedCandidate(seed_candidate_id);
+    if (!seed_candidate.has_value()) {
+        if (report_sqlite_query_error(
+                sqlite_db,
+                "Querying ab_seed_candidate by seed_candidate_id "
+                    + std::to_string(seed_candidate_id),
+                err)) {
+            return std::nullopt;
+        }
+        err << "Selected turn job references seed candidate "
+            << seed_candidate_id << " could not be loaded.\n";
+        return std::nullopt;
+    }
 
     BattlePredictionDbInput resolved;
     resolved.input.profile = *profile;
@@ -354,18 +445,19 @@ std::optional<BattlePredictionDbInput> build_battle_prediction_input_from_analys
             metadata.warnings.push_back("start seed override ignored stored turn-job RNG seed");
         }
     } else {
-        if (!seed_candidate.has_value()) {
-            err << "Selected turn job references seed candidate "
-                << seed_candidate_id << " could not be loaded.\n";
-            return std::nullopt;
-        }
-
         if (seed_candidate->source_unique_seed_id.has_value()) {
             const auto unique_seed =
                 analysis_db.GetSeedProbeUniqueSeed(*seed_candidate->source_unique_seed_id);
             if (unique_seed.has_value()) {
                 resolved.input.starting_rng_seed = checked_seed_from_i64(unique_seed->seed_value);
                 metadata.seed_source = BattlePredictionSeedSource::SeedProbeUniqueSeed;
+            } else if (report_sqlite_query_error(
+                    sqlite_db,
+                    "Querying sp_unique_seed by unique_seed_id "
+                        + std::to_string(
+                            *seed_candidate->source_unique_seed_id),
+                    err)) {
+                return std::nullopt;
             } else if (options.allow_seed_candidate_fallback) {
                 resolved.input.starting_rng_seed = checked_seed_from_i64(seed_candidate->seed_value);
                 metadata.seed_source = BattlePredictionSeedSource::SeedCandidateFallback;
@@ -385,6 +477,15 @@ std::optional<BattlePredictionDbInput> build_battle_prediction_input_from_analys
             if (unique_seed.has_value()) {
                 resolved.input.starting_rng_seed = checked_seed_from_i64(unique_seed->seed_value);
                 metadata.seed_source = BattlePredictionSeedSource::SeedProbeUniqueSeed;
+            } else if (report_sqlite_query_error(
+                    sqlite_db,
+                    "Querying sp_unique_seed by entry savestate "
+                        + std::to_string(battle_set->entry_savestate_id)
+                        + " and input_frame_id "
+                        + std::to_string(
+                            *seed_candidate->source_input_frame_id),
+                    err)) {
+                return std::nullopt;
             } else if (options.allow_seed_candidate_fallback) {
                 resolved.input.starting_rng_seed = checked_seed_from_i64(seed_candidate->seed_value);
                 metadata.seed_source = BattlePredictionSeedSource::SeedCandidateFallback;
@@ -432,7 +533,17 @@ std::optional<BattlePredictionDbInput> build_battle_prediction_input_from_analys
     }
     resolved.input.turn_plan.commands = *commands;
 
-    const auto probe = resolve_context_probe(analysis_db, *wave, metadata);
+    bool context_query_failed = false;
+    const auto probe = resolve_context_probe(
+        analysis_db,
+        *wave,
+        metadata,
+        sqlite_db,
+        &context_query_failed,
+        err);
+    if (context_query_failed) {
+        return std::nullopt;
+    }
     if (!probe.has_value() || !probe->context_blob.has_value() || probe->context_blob->empty()) {
         err << "No completed battle context blob is available for wave " << wave->wave_id << ".\n";
         return std::nullopt;
@@ -449,6 +560,14 @@ std::optional<BattlePredictionDbInput> build_battle_prediction_input_from_analys
     return resolved;
 }
 
+std::optional<BattlePredictionDbInput> build_battle_prediction_input_from_analysis_db(
+    const savor::db::IAnalysisDb& analysis_db,
+    const BattlePredictionDbInputOptions& options,
+    std::ostream& err) {
+    return build_battle_prediction_input_from_analysis_db_impl(
+        analysis_db, options, nullptr, err);
+}
+
 std::optional<BattlePredictionDbInput> build_battle_prediction_input_from_db_root(
     const BattlePredictionDbInputOptions& options,
     std::ostream& err) {
@@ -463,8 +582,8 @@ std::optional<BattlePredictionDbInput> build_battle_prediction_input_from_db_roo
         return std::nullopt;
     }
     savor::db::analysis::SqliteAnalysisDb analysis_db(handle.get());
-    auto resolved = build_battle_prediction_input_from_analysis_db(
-        analysis_db, options, err);
+    auto resolved = build_battle_prediction_input_from_analysis_db_impl(
+        analysis_db, options, handle.get(), err);
     if (!resolved.has_value()) {
         return std::nullopt;
     }

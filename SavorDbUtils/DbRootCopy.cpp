@@ -645,6 +645,37 @@ std::optional<std::int64_t> unique_seed_input_frame(sqlite3* analysis_db, std::i
     return scalar_i64(analysis_db, "SELECT input_frame_id FROM sp_unique_seed WHERE unique_seed_id=?1;", unique_seed_id, err);
 }
 
+std::optional<std::int64_t> find_unique_seed_for_entry_savestate_input_frame(
+    sqlite3* analysis_db,
+    std::int64_t entry_savestate_id,
+    std::int64_t input_frame_id,
+    std::ostream& err) {
+    // Keep this selection aligned with
+    // SqliteAnalysisDb::FindSeedProbeUniqueSeedForEntrySavestateInputFrame.
+    Statement st;
+    constexpr const char* kSql =
+        "SELECT u.unique_seed_id "
+        "FROM sp_probe_run pr "
+        "JOIN sp_probe_result r ON r.probe_run_id=pr.probe_run_id "
+        "JOIN sp_unique_seed u ON u.probe_result_id=r.probe_result_id "
+        "WHERE pr.entry_savestate_id=?1 AND u.input_frame_id=?2 "
+        "ORDER BY pr.probe_run_id ASC, u.unique_seed_id ASC "
+        "LIMIT 1;";
+    if (!prepare(analysis_db, kSql, &st, err)) {
+        return std::nullopt;
+    }
+    sqlite3_bind_int64(st.st, 1, entry_savestate_id);
+    sqlite3_bind_int64(st.st, 2, input_frame_id);
+    const auto rc = sqlite3_step(st.st);
+    if (rc == SQLITE_ROW) {
+        return sqlite3_column_int64(st.st, 0);
+    }
+    if (rc != SQLITE_DONE) {
+        err << "Failed resolving seed probe unique seed: " << sqlite3_errmsg(analysis_db) << "\n";
+    }
+    return std::nullopt;
+}
+
 void collect_input_frame_axis_ids(sqlite3* analysis_db, const std::set<std::int64_t>& input_frame_ids, std::set<std::int64_t>* axis_ids, std::ostream& err) {
     if (axis_ids == nullptr) {
         return;
@@ -924,6 +955,16 @@ int hydrate_battle_single_turn_job_subset_into_existing(
         }
         if (seed_candidate->source_input_frame_id.has_value()) {
             input_frame_ids.insert(*seed_candidate->source_input_frame_id);
+            if (!seed_candidate->source_unique_seed_id.has_value()) {
+                if (const auto unique_seed_id = find_unique_seed_for_entry_savestate_input_frame(
+                        source_analysis.get(),
+                        battle_set->entry_savestate_id,
+                        *seed_candidate->source_input_frame_id,
+                        err);
+                    unique_seed_id.has_value()) {
+                    unique_seed_ids.insert(*unique_seed_id);
+                }
+            }
         }
     }
     for (const auto unique_seed_id : unique_seed_ids) {

@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 
+#include "BattlePredictionBatchRun.h"
+#include "DbCopy.h"
 #include "DbRootCopy.h"
 
 #include "Common/DbService.h"
@@ -10,9 +12,11 @@
 
 #include <sqlite3.h>
 
+#include <array>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <memory>
 #include <optional>
 #include <sstream>
@@ -65,7 +69,10 @@ std::optional<std::int64_t> QueryI64(const std::filesystem::path& db_path, const
     return out;
 }
 
-std::optional<std::string> QueryText(const std::filesystem::path& db_path, const char* sql, std::int64_t arg) {
+std::optional<std::string> QueryText(
+    const std::filesystem::path& db_path,
+    const char* sql,
+    std::int64_t arg = 0) {
     sqlite3* db = nullptr;
     if (sqlite3_open(db_path.string().c_str(), &db) != SQLITE_OK) {
         if (db != nullptr) sqlite3_close(db);
@@ -76,7 +83,9 @@ std::optional<std::string> QueryText(const std::filesystem::path& db_path, const
         sqlite3_close(db);
         return std::nullopt;
     }
-    sqlite3_bind_int64(st, 1, arg);
+    if (arg != 0) {
+        sqlite3_bind_int64(st, 1, arg);
+    }
     std::optional<std::string> out;
     if (sqlite3_step(st) == SQLITE_ROW) {
         const auto* text = sqlite3_column_text(st, 0);
@@ -114,6 +123,8 @@ struct SeededSourceBattle {
     std::int64_t savestate_id = 0;
     std::int64_t artifact_id = 0;
     std::int64_t battle_set_id = 0;
+    std::int64_t source_input_frame_id = 0;
+    std::int64_t source_unique_seed_id = 0;
     std::int64_t wave_id = 0;
     std::int64_t seed_candidate_id = 0;
     std::int64_t plan_id = 0;
@@ -139,7 +150,11 @@ protected:
         }
     }
 
-    SeededSourceBattle SeedSourceDb(const std::filesystem::path& source_root, int turn_index = 1, int unique_key = 0) {
+    SeededSourceBattle SeedSourceDb(
+        const std::filesystem::path& source_root,
+        int turn_index = 1,
+        int unique_key = 0,
+        bool seed_indirect_prediction_seed = false) {
         using namespace savor::db;
         const int key = unique_key == 0 ? turn_index : unique_key;
 
@@ -265,11 +280,73 @@ protected:
             },
             &seeded.battle_set_id,
             &err), err, "create battle set");
+
+        if (seed_indirect_prediction_seed) {
+            std::int64_t probe_set_id = 0;
+            RequireFixtureStep(db_service.AnalysisDb()->CreateSeedProbeSet(
+                {
+                    .name = "dbutils-seed-probe-" + std::to_string(key),
+                    .probe_flavor = "BATTLE_PRE",
+                    .breakpoint_policy_name = "fixture",
+                    .segment_source_kind = "fixture",
+                    .created_at_utc = now,
+                    .correlation_id = "dbutils-test",
+                    .causation_id = "seed-probe-set",
+                },
+                &probe_set_id,
+                &err), err, "create seed probe set");
+            std::int64_t probe_run_id = 0;
+            RequireFixtureStep(db_service.AnalysisDb()->RequestSeedProbeRun(
+                {
+                    .probe_set_id = probe_set_id,
+                    .entry_savestate_id = seeded.savestate_id,
+                    .seed_probe_spec_id = 1,
+                    .codec_version = 1,
+                    .status = "requested",
+                    .requested_at_utc = now,
+                    .correlation_id = "dbutils-test",
+                    .causation_id = "seed-probe-run",
+                },
+                &probe_run_id,
+                &err), err, "request seed probe run");
+            RequireFixtureStep(db_service.AnalysisDb()->EnsureSeedProbeInputFrame(
+                0x8080,
+                0x8080,
+                0x0000,
+                &seeded.source_input_frame_id,
+                &err), err, "create seed probe input frame");
+            RequireFixtureStep(db_service.AnalysisDb()->SetSeedProbeRunNeutralSeed(probe_run_id, 0, &err),
+                err,
+                "set seed probe neutral seed");
+            const auto probe_result_id = db_service.AnalysisDb()->LookupSeedProbeResultId(probe_run_id);
+            RequireFixtureStep(probe_result_id.has_value(), "probe result not found", "resolve seed probe result");
+            bool inserted = false;
+            RequireFixtureStep(db_service.AnalysisDb()->EnsureSeedProbeUniqueSeedDelta(
+                {
+                    .probe_result_id = *probe_result_id,
+                    .input_frame_id = seeded.source_input_frame_id,
+                    .seed_value = 0x44444444,
+                    .seed_delta = 0,
+                    .recorded_at_utc = now,
+                    .correlation_id = "dbutils-test",
+                    .causation_id = "seed-probe-unique",
+                },
+                &inserted,
+                &seeded.source_unique_seed_id,
+                &err), err, "record seed probe unique seed");
+        }
+
         RequireFixtureStep(db_service.AnalysisDb()->AddBattleSeedCandidate(
             {
                 .battle_set_id = seeded.battle_set_id,
+                .source_unique_seed_id = std::nullopt,
+                .source_input_frame_id = seed_indirect_prediction_seed
+                    ? std::optional<std::int64_t>(seeded.source_input_frame_id)
+                    : std::nullopt,
                 .seed_value = 12345,
-                .source_kind = BattleSeedCandidateSourceKind::Synthetic,
+                .source_kind = seed_indirect_prediction_seed
+                    ? BattleSeedCandidateSourceKind::SeedProbeUnique
+                    : BattleSeedCandidateSourceKind::Synthetic,
                 .candidate_status = BattleSeedCandidateStatus::Ready,
                 .created_at_utc = now,
                 .correlation_id = "dbutils-test",
@@ -403,6 +480,158 @@ TEST_F(SavorDbUtilsMinimalCopyFixture, FullCopyCopiesDbFilesAndStores)
     EXPECT_TRUE(std::filesystem::exists(target_root / "object_store" / "nested" / "blob.bin"));
 }
 
+TEST_F(SavorDbUtilsMinimalCopyFixture, PrepareDbSealsSnapshotAndWritesManifest)
+{
+    const auto source_root = root_ / "source";
+    const auto target_root = root_ / "target";
+    const auto seeded = SeedSourceDb(source_root);
+
+    std::ostringstream out;
+    std::ostringstream err;
+    ASSERT_EQ(savor::predict::run_prepare_db(
+        {
+            .source = source_root,
+            .dest = target_root,
+            .overwrite = false,
+        },
+        out,
+        err), 0) << err.str();
+
+    const auto target_paths = savor::dbutils::MakeDbConfigPaths(target_root);
+    const std::array database_paths{
+        target_paths.analysis_db_path,
+        target_paths.execution_db_path,
+        target_paths.state_db_path,
+        target_paths.ui_read_db_path,
+        target_paths.authoring_db_path,
+        target_paths.archive_db_path,
+    };
+    for (const auto& database_path : database_paths) {
+        EXPECT_EQ(
+            QueryText(database_path, "PRAGMA journal_mode;").value_or(""),
+            "delete");
+        EXPECT_EQ(
+            QueryText(database_path, "PRAGMA quick_check;").value_or(""),
+            "ok");
+        EXPECT_FALSE(std::filesystem::exists(
+            database_path.string() + "-wal"));
+        EXPECT_FALSE(std::filesystem::exists(
+            database_path.string() + "-shm"));
+    }
+
+    const auto manifest_path = target_root / "db_manifest.json";
+    ASSERT_TRUE(std::filesystem::exists(manifest_path));
+    std::ifstream manifest_file(manifest_path, std::ios::binary);
+    ASSERT_TRUE(manifest_file);
+    const std::string manifest{
+        std::istreambuf_iterator<char>(manifest_file),
+        std::istreambuf_iterator<char>()};
+    EXPECT_NE(
+        manifest.find("\"format\": \"savor-predict-db-manifest-v1\""),
+        std::string::npos);
+    EXPECT_NE(
+        manifest.find("\"kind\": \"prediction_snapshot\""),
+        std::string::npos);
+    EXPECT_NE(
+        manifest.find("\"sha256\":\""),
+        std::string::npos);
+    EXPECT_NE(
+        manifest.find("\"database_fingerprint\": \""),
+        std::string::npos);
+    EXPECT_NE(
+        manifest.find("\"journal_mode\":\"delete\""),
+        std::string::npos);
+    EXPECT_NE(
+        manifest.find("\"quick_check\":\"ok\""),
+        std::string::npos);
+    EXPECT_NE(
+        manifest.find("\"migration_contexts\":[{"),
+        std::string::npos);
+    EXPECT_NE(
+        manifest.find(source_root.lexically_normal().generic_string()),
+        std::string::npos);
+
+    const auto std_json_dir = root_ / "std-json";
+    ASSERT_TRUE(std::filesystem::create_directories(std_json_dir));
+    const auto prediction_run_root = root_ / "prediction-run";
+    std::ostringstream prediction_out;
+    std::ostringstream prediction_err;
+    const auto prediction_run =
+        savor::predict::run_battle_prediction_batch(
+            {
+                .source_exec_job_ids = {seeded.exec_job_id},
+                .db_root = target_root,
+                .profile_name = "first-battle-soldiers",
+                .action_view_std_json_dir = std_json_dir,
+                .run_root = prediction_run_root,
+                .run_name = "prepared-snapshot-verification",
+                .preflight_only = true,
+            },
+            prediction_out,
+            prediction_err);
+    EXPECT_TRUE(
+        prediction_run.database_identity.snapshot_manifest_present);
+    EXPECT_TRUE(
+        prediction_run.database_identity.snapshot_manifest_verified)
+        << prediction_err.str();
+    EXPECT_FALSE(
+        prediction_run.database_identity.used_database_fingerprint.empty());
+    EXPECT_FALSE(
+        prediction_run.database_identity.snapshot_database_fingerprint.empty());
+}
+
+TEST_F(SavorDbUtilsMinimalCopyFixture, PrepareDbFailureLeavesNoSnapshotManifest)
+{
+    const auto source_root = root_ / "source";
+    const auto target_root = root_ / "target";
+    SeedSourceDb(source_root);
+    ExecuteSqlOrThrow(
+        source_root / "analysis.db",
+        "DROP TABLE migration_schema_version;");
+
+    std::ostringstream out;
+    std::ostringstream err;
+    EXPECT_NE(savor::predict::run_prepare_db(
+        {
+            .source = source_root,
+            .dest = target_root,
+            .overwrite = false,
+        },
+        out,
+        err), 0);
+    EXPECT_TRUE(std::filesystem::exists(target_root / "analysis.db"));
+    EXPECT_FALSE(std::filesystem::exists(target_root / "db_manifest.json"));
+    EXPECT_NE(
+        err.str().find("migration provenance"),
+        std::string::npos);
+}
+
+TEST_F(SavorDbUtilsMinimalCopyFixture, PrepareDbRejectsIncompleteDatabaseSet)
+{
+    const auto source_root = root_ / "source";
+    const auto target_root = root_ / "target";
+    ASSERT_TRUE(std::filesystem::create_directories(source_root));
+    ExecuteSqlOrThrow(
+        source_root / "analysis.db",
+        "CREATE TABLE intentionally_incomplete(id INTEGER PRIMARY KEY);");
+
+    std::ostringstream out;
+    std::ostringstream err;
+    EXPECT_NE(savor::predict::run_prepare_db(
+        {
+            .source = source_root,
+            .dest = target_root,
+            .overwrite = false,
+        },
+        out,
+        err), 0);
+    EXPECT_FALSE(std::filesystem::exists(target_root / "db_manifest.json"));
+    EXPECT_NE(
+        err.str().find(
+            "Prepared DB root is incomplete; required database is missing"),
+        std::string::npos);
+}
+
 TEST_F(SavorDbUtilsMinimalCopyFixture, MinimalCopyPreservesSelectedClosureAndLocalizesSavestateArtifact)
 {
     const auto source_root = root_ / "source";
@@ -445,12 +674,65 @@ TEST_F(SavorDbUtilsMinimalCopyFixture, MinimalCopyPreservesSelectedClosureAndLoc
     EXPECT_NE(localized->find((root_ / "run" / "source-artifacts").string()), std::string::npos);
 }
 
+TEST_F(SavorDbUtilsMinimalCopyFixture, MinimalCopyPreservesIndirectPredictionSeedClosure)
+{
+    const auto source_root = root_ / "source";
+    const auto target_root = root_ / "target";
+    const auto seeded = SeedSourceDb(source_root, 1, 201, true);
+
+    ASSERT_GT(seeded.source_input_frame_id, 0);
+    ASSERT_GT(seeded.source_unique_seed_id, 0);
+    EXPECT_EQ(QueryI64(
+        source_root / "analysis.db",
+        "SELECT COUNT(*) FROM ab_seed_candidate "
+        "WHERE seed_candidate_id=?1 AND source_unique_seed_id IS NULL AND source_input_frame_id IS NOT NULL;",
+        seeded.seed_candidate_id).value_or(-1), 1);
+
+    savor::dbutils::BattleSingleTurnJobSubsetResult result;
+    std::ostringstream out;
+    std::ostringstream err;
+    ASSERT_EQ(savor::dbutils::HydrateBattleSingleTurnJobSubset(
+        {
+            .source_root = source_root,
+            .target_root = target_root,
+            .artifact_root = root_ / "run" / "source-artifacts",
+            .selector = { .exec_job_id = seeded.exec_job_id },
+        },
+        &result,
+        out,
+        err), 0) << err.str();
+
+    const auto target_analysis = savor::dbutils::MakeDbConfigPaths(target_root).analysis_db_path;
+    EXPECT_EQ(QueryI64(
+        target_analysis,
+        "SELECT COUNT(*) FROM sp_unique_seed WHERE unique_seed_id=?1;",
+        seeded.source_unique_seed_id).value_or(-1), 1);
+    EXPECT_EQ(QueryI64(
+        target_analysis,
+        "SELECT u.seed_value "
+        "FROM ab_seed_candidate c "
+        "JOIN ab_battle_set b ON b.battle_set_id=c.battle_set_id "
+        "JOIN sp_probe_run pr ON pr.entry_savestate_id=b.entry_savestate_id "
+        "JOIN sp_probe_result r ON r.probe_run_id=pr.probe_run_id "
+        "JOIN sp_unique_seed u ON u.probe_result_id=r.probe_result_id "
+        "JOIN sp_input_frame f ON f.input_frame_id=u.input_frame_id "
+        "JOIN sp_axis_xy m ON m.axis_xy_id=f.main_axis_xy_id "
+        "JOIN sp_axis_xy s ON s.axis_xy_id=f.cstick_axis_xy_id "
+        "JOIN sp_axis_xy t ON t.axis_xy_id=f.trigger_axis_xy_id "
+        "WHERE c.seed_candidate_id=?1 "
+        "AND c.source_unique_seed_id IS NULL "
+        "AND u.input_frame_id=c.source_input_frame_id "
+        "ORDER BY pr.probe_run_id ASC,u.unique_seed_id ASC "
+        "LIMIT 1;",
+        seeded.seed_candidate_id).value_or(-1), 0x44444444);
+}
+
 TEST_F(SavorDbUtilsMinimalCopyFixture, MinimalBatchCopyPreservesSelectedClosures)
 {
     const auto source_root = root_ / "source";
     const auto target_root = root_ / "target";
     const auto artifact_root = root_ / "run" / "source-artifacts";
-    const auto first = SeedSourceDb(source_root, 1, 101);
+    const auto first = SeedSourceDb(source_root, 1, 101, true);
     const auto second = SeedSourceDb(source_root, 1, 102);
 
     savor::dbutils::BattleSingleTurnJobSubsetsResult result;
@@ -483,6 +765,10 @@ TEST_F(SavorDbUtilsMinimalCopyFixture, MinimalBatchCopyPreservesSelectedClosures
     EXPECT_EQ(QueryI64(target_paths.execution_db_path, "SELECT COUNT(*) FROM exec_job WHERE job_id=?1;", first.unrelated_exec_job_id).value_or(-1), 0);
     EXPECT_EQ(QueryI64(target_paths.execution_db_path, "SELECT COUNT(*) FROM exec_job WHERE job_id=?1;", second.unrelated_exec_job_id).value_or(-1), 0);
     EXPECT_EQ(QueryI64(target_paths.analysis_db_path, "SELECT COUNT(*) FROM ab_turn_job;").value_or(-1), 2);
+    EXPECT_EQ(QueryI64(
+        target_paths.analysis_db_path,
+        "SELECT COUNT(*) FROM sp_unique_seed WHERE unique_seed_id=?1;",
+        first.source_unique_seed_id).value_or(-1), 1);
     EXPECT_TRUE(std::filesystem::exists(result.copied_artifacts[0].copied_path));
     EXPECT_TRUE(std::filesystem::exists(result.copied_artifacts[1].copied_path));
 }

@@ -158,6 +158,8 @@
     <ClCompile Include="..\SavorPredict\BattleInitialFacingModel.cpp" />
     <ClCompile Include="..\SavorPredict\BattleInitialTurnTypeModel.cpp" />
     <ClCompile Include="..\SavorPredict\BattleCollisionBoxModel.cpp" />
+    <ClCompile Include="..\SavorPredict\BattlePredictionBatchCli.cpp" />
+    <ClCompile Include="..\SavorPredict\BattlePredictionBatchRun.cpp" />
     <ClCompile Include="..\SavorPredict\BattlePredictionDbInput.cpp" />
     <ClCompile Include="..\SavorPredict\BattlePredictionScenario.cpp" />
     <ClCompile Include="..\SavorPredict\BattleMovementInvocationModel.cpp" />
@@ -184,6 +186,7 @@
     <ClCompile Include="..\SavorPredict\CounterCheckpointModel.cpp" />
     <ClCompile Include="..\SavorPredict\CounterModel.cpp" />
     <ClCompile Include="..\SavorPredict\DeathDropCheckpointModel.cpp" />
+    <ClCompile Include="..\SavorPredict\DbCopy.cpp" />
     <ClCompile Include="..\SavorPredict\DropCheckpointModel.cpp" />
     <ClCompile Include="..\SavorPredict\DropModel.cpp" />
     <ClCompile Include="..\SavorPredict\EffectCheckpointModel.cpp" />
@@ -251,6 +254,7 @@
     <ClCompile Include="test_navigation_context_db.cpp" />
     <ClCompile Include="test_input_macro_runtime.cpp" />
     <ClCompile Include="test_battle_command_input_macro_provider.cpp" />
+    <ClCompile Include="test_savor_predict_prediction_batch.cpp" />
     <ClCompile Include="test_savor_predict_battle_job_runner.cpp" />
     <ClCompile Include="test_savordb_debug_tool.cpp" />
     <ClCompile Include="test_savor_predict.cpp" />
