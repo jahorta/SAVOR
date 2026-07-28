@@ -15,6 +15,7 @@
 #include "Services/State/StateService.h"
 #include "Services/Telemetry/TelemetryBus.h"
 #include "StopPoints/StopPointRouter.h"
+#include "ProgramRuntime/Actions/SessionResourceBindingTable.h"
 
 #include <chrono>
 #include <atomic>
@@ -196,6 +197,12 @@ public:
         return resource_ledger_.get();
     }
 
+    [[nodiscard]] program::SessionResourceBindingTable*
+    resource_bindings() noexcept
+    {
+        return resource_bindings_.get();
+    }
+
 private:
     [[nodiscard]] bool BindOrCheckOwner() noexcept;
     [[nodiscard]] bool CanOperate() const noexcept;
@@ -257,8 +264,8 @@ private:
     std::unique_ptr<MovieService> movie_service_;
     std::unique_ptr<CaptureService> capture_service_;
     std::unique_ptr<SessionResourceLedger> resource_ledger_;
-    std::unique_ptr<IResourceReleaseDispatcher>
-        resource_release_dispatcher_;
+    std::unique_ptr<program::SessionResourceBindingTable>
+        resource_bindings_;
     std::unique_ptr<ExecutionEngine> execution_engine_;
     std::vector<ExecutionEvent> retained_execution_events_;
     SessionDisposition disposition_ = SessionDisposition::Closed;

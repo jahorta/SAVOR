@@ -86,8 +86,11 @@ Slices 1 through 4 now implement the generic ownership seam described below. In 
 `EmulationSession` composes the engine/router with `InputArbiter`, `StateService`, `GuestMemory`,
 `GuestMutationService`, `MovieService`, one passive `CaptureService`, `ScreenshotService`,
 `TelemetryBus`, and the standalone `SessionResourceLedger`. The legacy VM calls that formerly owned
-these facilities are hard-disconnected. These services are not yet exposed through production actions
-because `ProgramRuntime` and capability packs remain Slice 5 work.
+these facilities are hard-disconnected. Slice 5 now adds canonical action descriptors and an
+actor-marshalled request/completion seam, program-resource binding onto the Slice 4 ledger, and the
+concrete internal `SessionProgramActionHost` bindings from canonical requests to session-owned
+services. Production worker composition constructs neither the runtime nor this host and does not
+advertise worker `ProgramInvocation`.
 
 ## Core service and resource constraints
 
@@ -369,8 +372,8 @@ Cancellation never calls arbitrary program code from a service thread.
 ### Resource scopes and receipts
 
 `EmulationSession` owns one actor-thread-only `SessionResourceLedger` independent of
-`ProgramRuntime`. Slice 4 initializes the session root and supports synthetic scopes; Slice 5 maps the
-future invocation hierarchy onto it:
+`ProgramRuntime`. Slice 4 initializes the session root and supports synthetic scopes; Slice 5 adds the
+binding table and actor protocol that map future invocation resource identities onto it:
 
 ```text
 Invocation root scope
@@ -535,8 +538,9 @@ No program/action can clear another source's subscription or enabled state.
 ### GuestMemory and GuestMutationService
 
 The Slice 4 `GuestMemory` owns paused-safe epoch-checked scalar and byte reads through a private backend
-facet. Symbolic address resolution, register access, and coherent game queries remain capability-pack
-work in Slice 5; they compose over this generic read seam rather than broadening it. CPU-hit-time samples
+facet. Slice 5 adds source-backed field/battle/navigation address definitions and coherent
+battle/navigation query descriptors over this seam. Register access and later pack-specific queries
+remain future capability work rather than reasons to broaden `GuestMemory`. CPU-hit-time samples
 continue to use the separate bounded sampling path configured by the router.
 
 `GuestMutationService` owns all program-requested writes:
@@ -700,21 +704,25 @@ dispatch. Nonblocking backend/actor ingress and active in-flight cancellation ar
 
 ### Modular GameRuntime packs
 
-Game packs are deliberately deferred to Dependency Slice 5. When added, they register exact:
+Dependency Slice 5 now supplies `runtime.session` plus the first source-backed game packs:
+`soa.field`, `soa.battle`, and `soa.navigation`. They register exact:
 
 - types/schemas;
+- exact generic action descriptors through `runtime.session`;
 - semantic stop-point and symbolic address definitions;
-- bounded observation/mutation actions;
+- bounded coherent battle/navigation query descriptors;
 - pure reducers and reusable subprogram dependencies; and
 - compatibility requirements.
 
-The initial namespaces are `soa.battle`, `soa.field`, `soa.navigation`, `soa.cutscene`, and
-`soa.overworld`.
+The catalog is pinned to the supported USA game/executable/address-map identity. It includes the pure
+`soa.battle.materialize_turn_input` reducer backed by the current battle command materializer. It does
+not translate or execute a macro.
 
 A pack receives only the narrow generic services needed by each registered handler. It cannot depend on
 `WorkerRuntime`, `ProgramExecutor`, workflow persistence, or a raw `DolphinBackend`. Packs are
-independently versioned so adding overworld behavior does not invalidate battle-only modules. Slice 4
-does not create placeholder packs or move battle-specific behavior into the generic services.
+independently versioned so adding overworld behavior does not invalidate battle-only modules.
+`soa.cutscene` and `soa.overworld` remain deferred rather than appearing as placeholders, and
+battle-specific behavior did not move into the generic services.
 
 ## Interfaces and ownership affected
 
@@ -811,17 +819,20 @@ Migration implications:
    committed and executable patches are always reversible with symmetric cache/JIT invalidation.
 8. Use the implemented `MovieService`, one passive `CaptureService`, `ScreenshotService`, and
    `TelemetryBus` rather than VM-owned lifetimes.
-9. Attach future invocation/action scopes to the implemented standalone `SessionResourceLedger`.
-10. Define semantic points, checked address expressions, registered coherent queries, baselines, and
-    observation uses in Slice 5 capability packs; translate current program/predicate address
-    expressions in memory while leaving capture-profile address programs opaque.
-11. Express battle macros through shared interaction composition and the canonical
-    subprogram/reducer IDs rather than preserving `InputMacroEngine`.
-12. Register game observations in modular packs during Slice 5 and delete their domain opcodes after
-    phase parity.
+9. Use the Slice 5 actor action seam, `SessionProgramActionHost`, and binding table to attach future
+   invocation/action identities to the implemented standalone `SessionResourceLedger`; production
+   runtime/host construction and capability activation remain part of invocation cutover.
+10. Use the implemented field/battle/navigation semantic points, checked address definitions, and
+    registered coherent queries as inputs to semantic-observation composition. Translation of current
+    program/predicate address expressions remains migration work, while capture-profile address programs
+    remain opaque.
+11. Express battle macros during migration through the implemented shared interaction composition and
+    the canonical subprogram/reducer IDs rather than preserving `InputMacroEngine`.
+12. Add source-backed cutscene or overworld packs only when a concrete migrated client defines their
+    inventories; delete old domain opcodes only after phase parity.
 13. Translate current battle predicate arming, baseline capture, evaluation, and reporting through the
-    shared composition libraries; preserve existing stored records through in-memory adapter translation
-    and remove the VM-specific evaluator after parity.
+    implemented predicate and semantic-observation composers; preserve existing stored records through
+    in-memory adapter translation and remove the VM-specific evaluator after parity.
 
 The temporary legacy adapter may call these actions while translating old programs. It cannot expose
 the old broad host interfaces to new modules.
@@ -895,15 +906,17 @@ the old broad host interfaces to new modules.
 
 ## Deferred work
 
-- Exact Slice 5 action descriptor/request/completion registration API over the implemented services.
-- Exact action signature schemas, version numbers, and capability negotiation encoding.
+- Production worker construction of the implemented `ProgramRuntime` and `SessionProgramActionHost`,
+  plus `ProgramInvocation` capability advertisement.
+- Migration-specific typed action payload schemas beyond the implemented canonical envelope and
+  source-backed coherent query/reducer contracts.
 - Concrete router priority values, subscription serialization, and CPU sampling bytecode.
 - Performance tuning for worker-local state-handle memory limits/compression and future artifact-backend
   adapters. Caller-declared paths and immutable/hash/compatibility/lineage semantics are already fixed;
   none alters SavorDb storage or interfaces.
 - Generalized `eventhook` trigger characterization and allowlisting.
-- Cutscene interception strategy, overworld-specific movement rules, collision-search objectives, and
-  navigation settle tolerances.
+- Source-backed `soa.cutscene` and `soa.overworld` packs, cutscene interception strategy,
+  overworld-specific movement rules, collision-search objectives, and navigation settle tolerances.
 - A generalized capture-plan language, alternate capture formats, telemetry retention, and UI
   presentation. Existing `savor.capture.profile/1` parsing and behavior remain compatibility
   requirements during this refactor.
@@ -932,6 +945,11 @@ the old broad host interfaces to new modules.
 - `SavorProbe/ProbeProfile.cpp:611-1142`
 - `SavorProbe/ProbeRuntime.cpp:199-339`
 - `SavorProbe/ProbeRuntime.cpp:1083-1266`
+- `SavorCore/Runner/Runtime/ProgramRuntime/Actions/ProgramActionProtocol.h`
+- `SavorCore/Runner/Runtime/ProgramRuntime/Actions/SessionResourceBindingTable.*`
+- `SavorCore/Runner/Runtime/ProgramRuntime/Registry/CanonicalActionCatalog.*`
+- `SavorCore/Runner/Runtime/ProgramRuntime/Capabilities/SourceCapabilityPacks.*`
+- `SavorCore/Runner/Runtime/ProgramRuntime/Capabilities/SourceReducers.*`
 - `D:\SoAInvestigate\Analyses\20260723_2107_savor_worker_breakpoint_router\20260723_2107_savor_worker_breakpoint_router_architecture_summary.txt:267-471`
 - `D:\SoAInvestigate\Analyses\20260723_2107_savor_worker_breakpoint_router\20260723_2107_savor_worker_breakpoint_router_architecture_summary.txt:633-729`
 - `D:\SoAInvestigate\Analyses\20260723_2107_savor_worker_breakpoint_router\20260723_2107_savor_worker_breakpoint_router_architecture_summary.txt:812-840`

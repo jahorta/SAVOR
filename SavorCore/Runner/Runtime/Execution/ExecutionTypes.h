@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../../../Core/Input/InputPlan.h"
 #include "../IDolphinBackend.h"
 #include "../RuntimeTypes.h"
 #include "../StopPoints/StopPointTypes.h"
@@ -16,16 +17,27 @@ namespace savor::runtime {
 struct ExecutionOperationIdTag;
 struct InterruptionFrameIdTag;
 struct InputAdvanceBindingIdTag;
+struct InputLeaseIdTag;
 struct InputPublicationTokenTag;
 
 using ExecutionOperationId = StrongId<ExecutionOperationIdTag>;
 using InterruptionFrameId = StrongId<InterruptionFrameIdTag>;
 using InputAdvanceBindingId = StrongId<InputAdvanceBindingIdTag>;
+using InputLeaseId = StrongId<InputLeaseIdTag>;
 using InputPublicationToken = StrongId<InputPublicationTokenTag>;
 
 static_assert(!std::is_convertible_v<ExecutionOperationId, InvocationId>);
 static_assert(!std::is_convertible_v<InterruptionFrameId, ExecutionOperationId>);
 static_assert(!std::is_convertible_v<InputAdvanceBindingId, InputPublicationToken>);
+static_assert(!std::is_convertible_v<InputLeaseId, InputPublicationToken>);
+
+struct InputPublicationEvidence
+{
+    InputLeaseId lease;
+    InputPublicationToken publication;
+    StateEpoch epoch;
+    savor::GCInputFrame frame{};
+};
 
 enum class ExecutionOperationKind : std::uint8_t
 {
@@ -229,6 +241,7 @@ struct ExecutionTerminalResult
     std::chrono::milliseconds remaining_active_budget{};
     ExecutionEnvironmentEvidence evidence;
     std::optional<StopRouteReceipt> stop;
+    std::optional<InputPublicationEvidence> input_publication;
     ExecutionError error;
     BackendIntegrity integrity = BackendIntegrity::Preserved;
 };

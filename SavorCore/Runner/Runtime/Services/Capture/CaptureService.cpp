@@ -484,6 +484,46 @@ CaptureServiceReceipt CaptureService::ReplaceProfile(
     return ReconcileBeforeResume();
 }
 
+CaptureServiceReceipt CaptureService::Mark(
+    CaptureAttachmentId attachment,
+    std::string_view id,
+    std::uint64_t value)
+{
+    if (CaptureServiceError error = CheckActor())
+        return Failure(error.code, std::move(error.message));
+    if (!adapter_)
+    {
+        return Failure(
+            CaptureServiceErrorCode::NotAttached,
+            "No capture profile is attached");
+    }
+    if (!attachment || attachment != attachment_)
+    {
+        return Failure(
+            CaptureServiceErrorCode::StaleAttachment,
+            "Capture marker named a different attachment");
+    }
+    if (state_replacement_prepared_)
+    {
+        return Failure(
+            CaptureServiceErrorCode::StateReplacementActive,
+            "Capture markers are unavailable during state replacement");
+    }
+    if (id.empty())
+    {
+        return Failure(
+            CaptureServiceErrorCode::InvalidArgument,
+            "Capture marker identity is required");
+    }
+    if (!adapter_->EmitMarker(id, value))
+    {
+        return Failure(
+            CaptureServiceErrorCode::BackendUnavailable,
+            "Capture profile rejected the marker");
+    }
+    return Success(CaptureAttachmentStatus::Attached);
+}
+
 CaptureServiceReceipt CaptureService::PrepareStateReplacement(
     StateEpoch expected_epoch)
 {

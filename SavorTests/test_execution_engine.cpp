@@ -177,6 +177,13 @@ public:
             .ok = true,
             .decision = InputAdvanceDecision::Continue,
             .publication = publication,
+            .publication_evidence = InputPublicationEvidence{
+                InputLeaseId(77),
+                publication,
+                epoch,
+                savor::GCInputFrame{
+                    .buttons = static_cast<std::uint16_t>(
+                        advance_ordinal + 1)}},
         };
     }
 
@@ -198,6 +205,20 @@ public:
             .ok = true,
             .decision = decision,
             .publication = publication,
+        };
+    }
+
+    InputAdvanceReceipt Complete(
+        InputAdvanceBindingId binding,
+        StateEpoch epoch) noexcept override
+    {
+        calls.push_back("complete");
+        frame_steps_seen.push_back(FrameStepCount());
+        last_binding = binding;
+        last_epoch = epoch;
+        return {
+            .ok = true,
+            .decision = InputAdvanceDecision::Complete,
         };
     }
 
@@ -1411,7 +1432,7 @@ TEST_F(
             "validate",
             "prepare",
             "observe",
-            "cancel"}));
+            "complete"}));
     ASSERT_EQ(input.frame_steps_seen.size(), 4u);
     EXPECT_EQ(input.frame_steps_seen[0], 0u);
     EXPECT_EQ(input.frame_steps_seen[1], 0u);
@@ -1421,6 +1442,25 @@ TEST_F(
     EXPECT_EQ(input.last_epoch, kEpoch);
     EXPECT_EQ(input.last_ordinal, 0u);
     EXPECT_EQ(input.observed_publication, input.last_publication);
+    ASSERT_TRUE(terminal->input_publication);
+    EXPECT_EQ(
+        terminal->input_publication->lease,
+        InputLeaseId(77));
+    EXPECT_EQ(
+        terminal->input_publication->publication,
+        input.last_publication);
+    EXPECT_EQ(terminal->input_publication->epoch, kEpoch);
+    EXPECT_EQ(
+        terminal->input_publication->frame.buttons,
+        1u);
+    EXPECT_EQ(CountCall(input.calls, "validate"), 1u);
+    const auto validation =
+        std::ranges::find(input.calls, "validate");
+    const auto preparation =
+        std::ranges::find(input.calls, "prepare");
+    ASSERT_NE(validation, input.calls.end());
+    ASSERT_NE(preparation, input.calls.end());
+    EXPECT_LT(validation, preparation);
 }
 
 TEST_F(ExecutionEngineFixture, InputAdvanceRetryUsesAFreshPublication)
@@ -1449,11 +1489,19 @@ TEST_F(ExecutionEngineFixture, InputAdvanceRetryUsesAFreshPublication)
     EXPECT_EQ(CountCall(input.calls, "validate"), 1u);
     EXPECT_EQ(CountCall(input.calls, "prepare"), 2u);
     EXPECT_EQ(CountCall(input.calls, "observe"), 2u);
-    EXPECT_EQ(CountCall(input.calls, "cancel"), 1u);
+    EXPECT_EQ(CountCall(input.calls, "complete"), 1u);
+    EXPECT_EQ(CountCall(input.calls, "cancel"), 0u);
     ASSERT_EQ(input.prepared_publications.size(), 2u);
     EXPECT_NE(
         input.prepared_publications[0],
         input.prepared_publications[1]);
+    ASSERT_TRUE(terminal->input_publication);
+    EXPECT_EQ(
+        terminal->input_publication->publication,
+        input.prepared_publications.back());
+    EXPECT_EQ(
+        terminal->input_publication->frame.buttons,
+        2u);
     EXPECT_EQ(CountCall(execution_control->Calls(), "frame_step"), 2u);
 }
 

@@ -3,6 +3,7 @@
 #include "ExecutionTypes.h"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 
 namespace savor::runtime {
@@ -22,6 +23,7 @@ struct InputAdvanceReceipt
     InputAdvanceDecision decision = InputAdvanceDecision::Failed;
     InputPublicationToken publication;
     std::string message;
+    std::optional<InputPublicationEvidence> publication_evidence;
 };
 
 class IInputAdvancePort
@@ -43,6 +45,9 @@ public:
         InputAdvanceBindingId binding,
         InputPublicationToken publication,
         StateEpoch epoch) = 0;
+    [[nodiscard]] virtual InputAdvanceReceipt Complete(
+        InputAdvanceBindingId binding,
+        StateEpoch epoch) noexcept = 0;
     [[nodiscard]] virtual InputAdvanceReceipt Cancel(
         InputAdvanceBindingId binding,
         StateEpoch epoch) noexcept = 0;

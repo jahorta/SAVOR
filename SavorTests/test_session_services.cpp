@@ -498,6 +498,71 @@ TEST(InputArbiter, EpochReplacementClearsAllSupersededState)
     EXPECT_FALSE(arbiter.Publish(child.lease, {}, StateEpoch(12)).ok);
 }
 
+TEST(
+    InputArbiter,
+    PublicationRelationshipsRequireExactLeaseTokenEpochAndFrame)
+{
+    FakeInputBackend backend;
+    InputArbiter arbiter(backend);
+    ASSERT_TRUE(arbiter.CommitStateEpoch(kEpoch).ok);
+    InputLeaseReceipt lease = arbiter.Acquire(
+        {
+            .owner = InputOwnerId(1),
+            .priority = 10,
+            .suspendable = true},
+        kEpoch);
+    ASSERT_TRUE(lease.ok);
+    GCInputFrame frame;
+    frame.A();
+    const InputPublicationReceipt published =
+        arbiter.Publish(lease.lease, frame, kEpoch);
+    ASSERT_TRUE(published.ok);
+    const InputPublicationEvidence exact{
+        published.lease,
+        published.publication,
+        published.epoch,
+        published.frame};
+
+    EXPECT_TRUE(arbiter.ValidatePublication(exact).ok);
+    InputPublicationEvidence wrong_frame = exact;
+    wrong_frame.frame = {};
+    EXPECT_FALSE(
+        arbiter.ValidatePublication(wrong_frame).ok);
+    InputPublicationEvidence wrong_token = exact;
+    wrong_token.publication =
+        InputPublicationToken(
+            exact.publication.value() + 1);
+    EXPECT_FALSE(
+        arbiter.ValidatePublication(wrong_token).ok);
+    InputPublicationEvidence wrong_lease = exact;
+    wrong_lease.lease =
+        InputLeaseId(exact.lease.value() + 1);
+    EXPECT_FALSE(
+        arbiter.ValidatePublication(wrong_lease).ok);
+    InputPublicationEvidence wrong_epoch = exact;
+    wrong_epoch.epoch =
+        StateEpoch(exact.epoch.value() + 1);
+    EXPECT_FALSE(
+        arbiter.ValidatePublication(wrong_epoch).ok);
+
+    const InputAdvanceBindingReceipt relationship =
+        arbiter.CreatePublicationRelationship(exact);
+    ASSERT_TRUE(relationship.ok)
+        << relationship.message;
+    EXPECT_TRUE(
+        arbiter.Validate(
+            relationship.binding,
+            kEpoch).ok);
+    EXPECT_TRUE(
+        arbiter.Complete(
+            relationship.binding,
+            kEpoch).ok);
+    EXPECT_TRUE(arbiter.Observe(
+        exact.lease,
+        exact.publication,
+        exact.epoch).ok);
+}
+
 TEST(InputArbiter, RejectsEveryActorOwnedApiOffThreadWithoutMutation)
 {
     FakeInputBackend backend;
@@ -533,12 +598,15 @@ TEST(InputArbiter, RejectsEveryActorOwnedApiOffThreadWithoutMutation)
     InputReleaseReceipt began_release;
     InputReleaseReceipt completed_release;
     InputAdvanceBindingReceipt created_binding;
+    InputAdvanceBindingReceipt created_relationship;
+    InputArbiterOperationReceipt validated_publication;
     InputArbiterOperationReceipt removed_binding;
     InputArbiterOperationReceipt committed_epoch;
     InputArbiterOperationReceipt invalidated_epoch;
     InputAdvanceReceipt validated;
     InputAdvanceReceipt prepared;
     InputAdvanceReceipt acknowledged;
+    InputAdvanceReceipt completed;
     InputAdvanceReceipt cancelled;
     InputArbiterShutdownReceipt shutdown;
 
@@ -570,6 +638,18 @@ TEST(InputArbiter, RejectsEveryActorOwnedApiOffThreadWithoutMutation)
                 lease.lease,
                 std::vector<GCInputFrame>{neutral},
                 kEpoch);
+        validated_publication =
+            arbiter.ValidatePublication({
+                publication.lease,
+                publication.publication,
+                publication.epoch,
+                publication.frame});
+        created_relationship =
+            arbiter.CreatePublicationRelationship({
+                publication.lease,
+                publication.publication,
+                publication.epoch,
+                publication.frame});
         removed_binding =
             arbiter.RemoveAdvanceBinding(binding.binding);
         committed_epoch = arbiter.CommitStateEpoch(StateEpoch(12));
@@ -581,6 +661,8 @@ TEST(InputArbiter, RejectsEveryActorOwnedApiOffThreadWithoutMutation)
             binding.binding,
             publication.publication,
             kEpoch);
+        completed =
+            arbiter.Complete(binding.binding, kEpoch);
         cancelled = arbiter.Cancel(binding.binding, kEpoch);
         shutdown = arbiter.Shutdown();
     });
@@ -596,12 +678,19 @@ TEST(InputArbiter, RejectsEveryActorOwnedApiOffThreadWithoutMutation)
     EXPECT_EQ(began_release.error, InputArbiterErrorCode::WrongThread);
     EXPECT_EQ(completed_release.error, InputArbiterErrorCode::WrongThread);
     EXPECT_EQ(created_binding.error, InputArbiterErrorCode::WrongThread);
+    EXPECT_EQ(
+        validated_publication.error,
+        InputArbiterErrorCode::WrongThread);
+    EXPECT_EQ(
+        created_relationship.error,
+        InputArbiterErrorCode::WrongThread);
     EXPECT_EQ(removed_binding.error, InputArbiterErrorCode::WrongThread);
     EXPECT_EQ(committed_epoch.error, InputArbiterErrorCode::WrongThread);
     EXPECT_EQ(invalidated_epoch.error, InputArbiterErrorCode::WrongThread);
     EXPECT_FALSE(validated.ok);
     EXPECT_FALSE(prepared.ok);
     EXPECT_FALSE(acknowledged.ok);
+    EXPECT_FALSE(completed.ok);
     EXPECT_FALSE(cancelled.ok);
     EXPECT_EQ(shutdown.error, InputArbiterErrorCode::WrongThread);
 

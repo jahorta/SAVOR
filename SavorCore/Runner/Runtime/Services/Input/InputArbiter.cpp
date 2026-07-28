@@ -508,6 +508,58 @@ InputAdvanceBindingReceipt InputArbiter::CreateAdvanceBinding(
     return {true, id, epoch, {}};
 }
 
+InputArbiterOperationReceipt InputArbiter::ValidatePublication(
+    const InputPublicationEvidence& publication) const noexcept
+{
+    if (!OnOwnerThread())
+    {
+        return {
+            false,
+            InputArbiterErrorCode::WrongThread,
+            "InputArbiter access was attempted off its actor thread"};
+    }
+    if (IsStopped())
+    {
+        return {
+            false,
+            InputArbiterErrorCode::Stopped,
+            "InputArbiter is shut down"};
+    }
+    if (!MatchesPublication(publication))
+    {
+        return {
+            false,
+            InputArbiterErrorCode::None,
+            "input publication does not name the exact current lease publication"};
+    }
+    return {true, InputArbiterErrorCode::None, {}};
+}
+
+InputAdvanceBindingReceipt
+InputArbiter::CreatePublicationRelationship(
+    const InputPublicationEvidence& publication)
+{
+    const InputArbiterOperationReceipt validated =
+        ValidatePublication(publication);
+    if (!validated.ok)
+    {
+        return {
+            false,
+            {},
+            publication.epoch,
+            std::string(validated.message),
+            validated.error};
+    }
+    const InputAdvanceBindingId id(next_binding_++);
+    bindings_.emplace(
+        id.value(),
+        BindingState{
+            .lease = publication.lease,
+            .epoch = publication.epoch,
+            .publication_relationship = publication});
+    return {true, id, publication.epoch, {}};
+}
+
 InputArbiterOperationReceipt InputArbiter::RemoveAdvanceBinding(
     InputAdvanceBindingId binding) noexcept
 {
@@ -718,6 +770,13 @@ InputAdvanceReceipt InputArbiter::Validate(
     InputAdvanceBindingId binding,
     StateEpoch epoch)
 {
+    return ValidateBinding(binding, epoch);
+}
+
+InputAdvanceReceipt InputArbiter::ValidateBinding(
+    InputAdvanceBindingId binding,
+    StateEpoch epoch) const
+{
     if (!OnOwnerThread())
     {
         return BindingFailure(
@@ -733,6 +792,13 @@ InputAdvanceReceipt InputArbiter::Validate(
     const LeaseState* lease = FindLease(found->second.lease);
     if (!lease || !active_ || *active_ != lease->id)
         return BindingFailure("input advance lease is not active");
+    if (found->second.publication_relationship &&
+        !MatchesPublication(
+            *found->second.publication_relationship))
+    {
+        return BindingFailure(
+            "input publication relationship is no longer current");
+    }
     return {true, InputAdvanceDecision::Continue, {}, {}};
 }
 
@@ -741,11 +807,16 @@ InputAdvanceReceipt InputArbiter::PrepareNext(
     StateEpoch epoch,
     std::uint32_t advance_ordinal)
 {
-    InputAdvanceReceipt valid = Validate(binding, epoch);
+    InputAdvanceReceipt valid = ValidateBinding(binding, epoch);
     if (!valid.ok)
         return valid;
 
     BindingState& state = bindings_.at(binding.value());
+    if (state.publication_relationship || state.frames.empty())
+    {
+        return BindingFailure(
+            "input publication relationships cannot prepare an advance");
+    }
     const std::size_t index = std::min<std::size_t>(
         advance_ordinal,
         state.frames.size() - 1);
@@ -753,11 +824,19 @@ InputAdvanceReceipt InputArbiter::PrepareNext(
         Publish(state.lease, state.frames[index], epoch);
     if (!publication.ok)
         return BindingFailure(std::move(publication.message));
+    state.prepared_ordinal =
+        static_cast<std::uint32_t>(index);
+    state.prepared_publication =
+        publication.publication;
     return {
-        true,
-        InputAdvanceDecision::Continue,
-        publication.publication,
-        {}};
+        .ok = true,
+        .decision = InputAdvanceDecision::Continue,
+        .publication = publication.publication,
+        .publication_evidence = InputPublicationEvidence{
+            publication.lease,
+            publication.publication,
+            publication.epoch,
+            publication.frame}};
 }
 
 InputAdvanceReceipt InputArbiter::ObserveAcknowledgement(
@@ -765,10 +844,16 @@ InputAdvanceReceipt InputArbiter::ObserveAcknowledgement(
     InputPublicationToken publication,
     StateEpoch epoch)
 {
-    InputAdvanceReceipt valid = Validate(binding, epoch);
+    InputAdvanceReceipt valid = ValidateBinding(binding, epoch);
     if (!valid.ok)
         return valid;
     BindingState& state = bindings_.at(binding.value());
+    if (state.publication_relationship ||
+        state.prepared_publication != publication)
+    {
+        return BindingFailure(
+            "input acknowledgement does not match the prepared publication");
+    }
     InputAcknowledgementReceipt observed =
         Observe(state.lease, publication, epoch);
     if (!observed.ok)
@@ -776,11 +861,57 @@ InputAdvanceReceipt InputArbiter::ObserveAcknowledgement(
     if (observed.acknowledged)
     {
         state.retry_count = 0;
-        return {true, InputAdvanceDecision::Complete, publication, {}};
+        const bool sequence_complete =
+            state.prepared_ordinal &&
+            static_cast<std::size_t>(
+                *state.prepared_ordinal) + 1 >=
+                state.frames.size();
+        return {
+            true,
+            sequence_complete
+                ? InputAdvanceDecision::Complete
+                : InputAdvanceDecision::Continue,
+            publication,
+            {}};
     }
     if (state.retry_count++ < state.retry_limit)
         return {true, InputAdvanceDecision::Retry, publication, observed.message};
     return BindingFailure("input acknowledgement retry budget exhausted");
+}
+
+InputAdvanceReceipt InputArbiter::Complete(
+    InputAdvanceBindingId binding,
+    StateEpoch epoch) noexcept
+{
+    if (!OnOwnerThread())
+    {
+        return {
+            false,
+            InputAdvanceDecision::Failed,
+            {},
+            "InputArbiter mutation was attempted off its actor thread"};
+    }
+    if (IsStopped())
+    {
+        return {
+            false,
+            InputAdvanceDecision::Failed,
+            {},
+            "InputArbiter is shut down"};
+    }
+    const auto found = bindings_.find(binding.value());
+    if (found == bindings_.end())
+        return {true, InputAdvanceDecision::Complete, {}, {}};
+    if (found->second.epoch != epoch || !IsCurrent(epoch))
+    {
+        return {
+            false,
+            InputAdvanceDecision::Failed,
+            {},
+            "stale input advance binding"};
+    }
+    bindings_.erase(found);
+    return {true, InputAdvanceDecision::Complete, {}, {}};
 }
 
 InputAdvanceReceipt InputArbiter::Cancel(
@@ -808,8 +939,16 @@ InputAdvanceReceipt InputArbiter::Cancel(
         return {true, InputAdvanceDecision::Cancelled, {}, {}};
     if (found->second.epoch != epoch || !IsCurrent(epoch))
         return {false, InputAdvanceDecision::Failed, {}, "stale input advance binding"};
-    if (LeaseState* lease = FindLease(found->second.lease))
-        (void)backend_.Publish(lease->request.port, NeutralFrame());
+    if (!found->second.publication_relationship)
+    {
+        if (LeaseState* lease = FindLease(found->second.lease))
+        {
+            (void)backend_.Publish(
+                lease->request.port,
+                NeutralFrame());
+        }
+        ErasePublicationsForLease(found->second.lease);
+    }
     bindings_.erase(found);
     return {true, InputAdvanceDecision::Cancelled, {}, {}};
 }
@@ -901,6 +1040,30 @@ InputReleaseReceipt InputArbiter::FinishRelease(LeaseState& lease)
 InputAdvanceReceipt InputArbiter::BindingFailure(std::string message) const
 {
     return {false, InputAdvanceDecision::Failed, {}, std::move(message)};
+}
+
+bool InputArbiter::MatchesPublication(
+    const InputPublicationEvidence& publication) const noexcept
+{
+    if (!publication.lease || !publication.publication ||
+        !publication.epoch || !IsCurrent(publication.epoch) ||
+        !active_ || *active_ != publication.lease)
+    {
+        return false;
+    }
+    const LeaseState* lease = FindLease(publication.lease);
+    if (!lease || lease->status != InputLeaseStatus::Active ||
+        lease->epoch != publication.epoch ||
+        lease->latest_publication != publication.publication)
+    {
+        return false;
+    }
+    const auto found =
+        publications_.find(publication.publication.value());
+    return found != publications_.end() &&
+        found->second.lease == publication.lease &&
+        found->second.epoch == publication.epoch &&
+        found->second.frame == publication.frame;
 }
 
 bool InputArbiter::OnOwnerThread() const noexcept

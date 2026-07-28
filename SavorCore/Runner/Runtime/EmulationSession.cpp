@@ -81,32 +81,6 @@ ProductionCaptureAdapterConfig()
     };
 }
 
-class SessionResourceReleaseDispatcher final
-    : public IResourceReleaseDispatcher
-{
-public:
-    ResourceReleaseResult Release(
-        const ResourceReleaseRequest& request) noexcept override
-    {
-        if (request.reason ==
-                ResourceReleaseReason::StateEpochChanged &&
-            request.receipt.epoch_policy !=
-                ResourceEpochPolicy::EpochAgnostic)
-        {
-            return {
-                ResourceReleaseStatus::SupersededByStateReplacement,
-                {}};
-        }
-        // Service-owned resources are registered only after their concrete
-        // release paths are connected to this typed switch. Slice 4 creates
-        // the ledger and its session scope but does not publish invocation
-        // resources yet.
-        return {
-            ResourceReleaseStatus::Released,
-            {}};
-    }
-};
-
 } // namespace
 
 EmulationSession::EmulationSession(
@@ -1299,8 +1273,10 @@ BackendResult EmulationSession::InitializeServiceComposition(
                 *state_service_);
         }
 
-        resource_release_dispatcher_ =
-            std::make_unique<SessionResourceReleaseDispatcher>();
+        resource_bindings_ =
+            std::make_unique<
+                program::SessionResourceBindingTable>(
+                std::this_thread::get_id());
         resource_ledger_ =
             std::make_unique<SessionResourceLedger>(
                 std::this_thread::get_id());
@@ -1455,6 +1431,43 @@ BackendResult EmulationSession::CleanupServices() noexcept
             result.message += diagnostic;
         };
 
+    // Invocation/action resources must unwind while every owning service is
+    // still alive. The binding table is the concrete dispatcher for the
+    // ledger's otherwise opaque external identities.
+    if (resource_ledger_ && resource_bindings_)
+    {
+        const ResourceUnwindResult resources =
+            resource_ledger_->Shutdown(*resource_bindings_);
+        const ResourceLedgerSnapshot resource_snapshot =
+            resource_ledger_->snapshot();
+        const bool diagnostic_cleanup_failure =
+            resources.outcome ==
+                ResourceUnwindOutcome::CleanupFailed &&
+            resources.disposition ==
+                ResourceCleanupDisposition::CleanWithDiagnostics;
+        if ((resources.completed() || diagnostic_cleanup_failure) &&
+            resources.disposition ==
+                ResourceCleanupDisposition::CleanWithDiagnostics)
+        {
+            retain_diagnostic(resource_snapshot.diagnostic);
+        }
+        else if (!resources.completed() ||
+                 resources.disposition ==
+                     ResourceCleanupDisposition::TaintRequired)
+        {
+            retain_failure(BackendResult::Failure(
+                BackendErrorCode::OperationFailed,
+                resources.error.message.empty()
+                    ? "Session resource cleanup did not complete"
+                    : resources.error.message,
+                resources.disposition ==
+                        ResourceCleanupDisposition::TaintRequired
+                    ? BackendIntegrity::Unknown
+                    : BackendIntegrity::Preserved));
+        }
+    }
+    resource_ledger_.reset();
+
     if (capture_service_)
     {
         const CaptureServiceReceipt capture =
@@ -1515,41 +1528,7 @@ BackendResult EmulationSession::CleanupServices() noexcept
         }
     }
     movie_input_reservations_.reset();
-    if (resource_ledger_ && resource_release_dispatcher_)
-    {
-        const ResourceUnwindResult resources =
-            resource_ledger_->Shutdown(
-                *resource_release_dispatcher_);
-        const ResourceLedgerSnapshot resource_snapshot =
-            resource_ledger_->snapshot();
-        const bool diagnostic_cleanup_failure =
-            resources.outcome ==
-                ResourceUnwindOutcome::CleanupFailed &&
-            resources.disposition ==
-                ResourceCleanupDisposition::CleanWithDiagnostics;
-        if ((resources.completed() || diagnostic_cleanup_failure) &&
-            resources.disposition ==
-                ResourceCleanupDisposition::CleanWithDiagnostics)
-        {
-            retain_diagnostic(resource_snapshot.diagnostic);
-        }
-        else if (!resources.completed() ||
-                 resources.disposition ==
-                     ResourceCleanupDisposition::TaintRequired)
-        {
-            retain_failure(BackendResult::Failure(
-                BackendErrorCode::OperationFailed,
-                resources.error.message.empty()
-                    ? "Session resource cleanup did not complete"
-                    : resources.error.message,
-                resources.disposition ==
-                        ResourceCleanupDisposition::TaintRequired
-                    ? BackendIntegrity::Unknown
-                    : BackendIntegrity::Preserved));
-        }
-    }
-    resource_ledger_.reset();
-    resource_release_dispatcher_.reset();
+    resource_bindings_.reset();
     screenshot_service_.reset();
     if (guest_mutations_)
     {
@@ -1725,52 +1704,6 @@ StateServiceResult EmulationSession::CommitStateReplacement(
     const StateEpoch new_epoch = context.candidate_epoch;
     state_epoch_ = new_epoch;
 
-    if (state_prepare_ledger_ && resource_ledger_ &&
-        resource_release_dispatcher_)
-    {
-        ResourceUnwindResult ledger =
-            resource_ledger_->CommitStateTransition(
-                new_epoch,
-                *resource_release_dispatcher_);
-        const bool clean_with_diagnostics =
-            ledger.disposition ==
-            ResourceCleanupDisposition::CleanWithDiagnostics;
-        const bool diagnostic_cleanup_failure =
-            ledger.outcome ==
-                ResourceUnwindOutcome::CleanupFailed &&
-            clean_with_diagnostics;
-        if ((!ledger.completed() && !diagnostic_cleanup_failure) ||
-            ledger.disposition ==
-                ResourceCleanupDisposition::TaintRequired ||
-            !ledger.rebind_requests.empty())
-        {
-            if (!ledger.rebind_requests.empty())
-            {
-                (void)resource_ledger_->
-                    FailStateTransitionRebinds(
-                        "Slice 4 has no invocation-owned resource rebinds");
-            }
-            state_replacement_prepared_ = false;
-            return failure(BackendResult::Failure(
-                BackendErrorCode::OperationFailed,
-                ledger.error.message.empty()
-                    ? "Resource ledger state transition failed"
-                    : ledger.error.message,
-                BackendIntegrity::Unknown));
-        }
-        if (clean_with_diagnostics)
-        {
-            std::string diagnostic =
-                resource_ledger_->snapshot().diagnostic;
-            if (diagnostic.empty())
-            {
-                diagnostic =
-                    "State replacement resource cleanup completed with diagnostics";
-            }
-            MarkCleanWithDiagnostics(std::move(diagnostic));
-        }
-    }
-
     BackendResult result = BackendResult::Success();
     if (movie_input_reservations_)
     {
@@ -1841,6 +1774,146 @@ StateServiceResult EmulationSession::CommitStateReplacement(
                 BackendErrorCode::OperationFailed,
                 capture.error.message,
                 BackendIntegrity::Unknown);
+        }
+    }
+    // The service composition is authoritative for the new epoch before the
+    // ledger retires and rebinds invocation-owned receipts. A failed rebind
+    // cannot roll the guest back and therefore fails with unknown integrity.
+    if (result.ok && state_prepare_ledger_ &&
+        resource_ledger_ && resource_bindings_)
+    {
+        ResourceUnwindResult ledger =
+            resource_ledger_->CommitStateTransition(
+                new_epoch,
+                *resource_bindings_);
+        const bool clean_with_diagnostics =
+            ledger.disposition ==
+                ResourceCleanupDisposition::CleanWithDiagnostics;
+        const bool diagnostic_cleanup_failure =
+            ledger.outcome ==
+                ResourceUnwindOutcome::CleanupFailed &&
+            clean_with_diagnostics;
+        if ((!ledger.completed() && !diagnostic_cleanup_failure) ||
+            ledger.disposition ==
+                ResourceCleanupDisposition::TaintRequired)
+        {
+            result = BackendResult::Failure(
+                BackendErrorCode::OperationFailed,
+                ledger.error.message.empty()
+                    ? "Resource ledger state transition failed"
+                    : ledger.error.message,
+                BackendIntegrity::Unknown);
+        }
+        else if (!ledger.rebind_requests.empty())
+        {
+            std::vector<ResourceRebindCompletion> completions;
+            completions.reserve(ledger.rebind_requests.size());
+            const auto compensate_rebinds =
+                [this, new_epoch](
+                    const std::vector<ResourceRebindCompletion>&
+                        rebound) noexcept {
+                    bool clean = true;
+                    for (const ResourceRebindCompletion& completion :
+                        rebound)
+                    {
+                        ResourceReceipt receipt;
+                        receipt.id = completion.prior_receipt;
+                        receipt.owner =
+                            completion.replacement.owner;
+                        receipt.service =
+                            completion.replacement.service;
+                        receipt.release =
+                            completion.replacement.release;
+                        receipt.acquisition_epoch = new_epoch;
+                        receipt.epoch_policy =
+                            completion.replacement.epoch_policy;
+                        receipt.promotion =
+                            completion.replacement.promotion;
+                        receipt.cleanup =
+                            completion.replacement.cleanup;
+                        receipt.rebind_key =
+                            completion.replacement.rebind_key;
+                        receipt.diagnostic_label =
+                            completion.replacement.diagnostic_label;
+                        const ResourceReleaseResult released =
+                            resource_bindings_->Release({
+                                .receipt = std::move(receipt),
+                                .reason =
+                                    ResourceReleaseReason::Shutdown,
+                                .current_epoch = new_epoch,
+                                .cleanup_only = true,
+                            });
+                        clean = clean &&
+                            (released.status ==
+                                    ResourceReleaseStatus::Released ||
+                             released.status ==
+                                    ResourceReleaseStatus::
+                                        SupersededByStateReplacement);
+                    }
+                    return clean;
+                };
+            for (const ResourceRebindRequest& request :
+                ledger.rebind_requests)
+            {
+                program::SessionResourceRebindReceipt rebound =
+                    resource_bindings_->Rebind(request, new_epoch);
+                if (!rebound.success)
+                {
+                    (void)resource_ledger_->
+                        FailStateTransitionRebinds(
+                            rebound.diagnostic.empty()
+                                ? "Session resource rebind failed"
+                                : rebound.diagnostic);
+                    result = BackendResult::Failure(
+                        BackendErrorCode::OperationFailed,
+                        rebound.diagnostic.empty()
+                            ? "Session resource rebind failed"
+                            : rebound.diagnostic,
+                        BackendIntegrity::Unknown);
+                    if (!compensate_rebinds(completions))
+                    {
+                        result.message +=
+                            "; rebound resource compensation failed";
+                    }
+                    break;
+                }
+                completions.push_back(
+                    std::move(rebound.completion));
+            }
+            if (result.ok)
+            {
+                ResourceAcquisitionResult rebound =
+                    resource_ledger_->
+                        CompleteStateTransitionRebinds(
+                            completions);
+                if (!rebound.success)
+                {
+                    const bool compensated =
+                        compensate_rebinds(completions);
+                    result = BackendResult::Failure(
+                        BackendErrorCode::OperationFailed,
+                        rebound.error.message.empty()
+                            ? "Resource ledger rejected rebound resources"
+                            : rebound.error.message,
+                        BackendIntegrity::Unknown);
+                    if (!compensated)
+                    {
+                        result.message +=
+                            "; rebound resource compensation failed";
+                    }
+                }
+            }
+        }
+        if (result.ok && clean_with_diagnostics)
+        {
+            std::string diagnostic =
+                resource_ledger_->snapshot().diagnostic;
+            if (diagnostic.empty())
+            {
+                diagnostic =
+                    "State replacement resource cleanup completed with diagnostics";
+            }
+            MarkCleanWithDiagnostics(std::move(diagnostic));
         }
     }
 
@@ -1994,29 +2067,10 @@ BackendResult EmulationSession::CleanupRuntimeComposition() noexcept
     }
     execution_engine_.reset();
 
-    if (capture_service_)
-    {
-        CaptureServiceReceipt capture =
-            capture_service_->Shutdown();
-        if (!capture.ok && result.ok)
-        {
-            result = BackendResult::Failure(
-                BackendErrorCode::OperationFailed,
-                capture.error.message.empty()
-                    ? "CaptureService shutdown failed"
-                    : capture.error.message,
-                capture.requires_session_taint
-                    ? BackendIntegrity::Unknown
-                    : BackendIntegrity::Preserved);
-        }
-    }
-
-    const BackendResult stop_points = CleanupStopPoints();
-    if (!stop_points.ok && result.ok)
-        result = stop_points;
-    stop_router_.reset();
-    physical_stop_manager_.reset();
-
+    // Resource bindings release through their owning services. Unwind the
+    // ledger and shut those services down while the stop-point router is
+    // still alive; capture attachments in particular detach through both
+    // CaptureService and the router.
     const BackendResult services = CleanupServices();
     if (!services.ok && result.ok)
         result = services;
@@ -2026,6 +2080,12 @@ BackendResult EmulationSession::CleanupRuntimeComposition() noexcept
             result.message += "; ";
         result.message += services.message;
     }
+
+    const BackendResult stop_points = CleanupStopPoints();
+    if (!stop_points.ok && result.ok)
+        result = stop_points;
+    stop_router_.reset();
+    physical_stop_manager_.reset();
 
     if (state_service_)
     {

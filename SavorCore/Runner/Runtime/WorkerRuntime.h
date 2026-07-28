@@ -158,7 +158,8 @@ public:
         std::unique_ptr<EmulationSession> session,
         std::unique_ptr<IProgramRuntimePort> program_runtime = {},
         WorkerEventSink event_sink = {},
-        std::shared_ptr<const WorkerRuntimeTestHooks> test_hooks = {});
+        std::shared_ptr<const WorkerRuntimeTestHooks> test_hooks = {},
+        std::unique_ptr<program::IProgramActionHost> action_host = {});
     ~WorkerRuntime();
 
     WorkerRuntime(const WorkerRuntime&) = delete;

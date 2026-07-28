@@ -203,7 +203,7 @@ Current generic session-service code is under `SavorCore/Runner/Runtime/Services
 - `Resources/SessionResourceLedger.*`
   - owns the actor-sequenced session/synthetic scope tree, typed resource receipts, promotion,
     reverse-order unwind, cleanup continuations, state epoch policies/rebind, and final cleanup
-    disposition independently of the future `ProgramRuntime`.
+    disposition independently of `ProgramRuntime`.
 - `EmulationSession.*`, `IDolphinBackend.h`, and `DolphinWrapperBackend.*`
   - compose those services behind narrow private backend facets and drive state replacement as one
     participant transaction.
@@ -216,9 +216,62 @@ Focused guards live in:
 - `SavorTests/test_capture_service.cpp`; and
 - `SavorTests/test_session_resource_ledger.cpp`.
 
-These are development guards for the generic boundary. Capability packs and production actions are
-Slice 5 work. Live state-plus-DTM continuation and live post-write capture remain deferred until
-deterministic program execution/input can reach authoritative headless witnesses.
+These are development guards for the generic boundary. Slice 5 builds its typed runtime/action boundary
+over these owners. Live state-plus-DTM continuation and live post-write capture remain deferred until
+deterministic migrated program execution/input can reach authoritative headless witnesses.
+
+## Implemented Slice 5 typed runtime boundary
+
+Current Slice 5 code is under `SavorCore/Runner/Runtime/ProgramRuntime`:
+
+- `Model/*` and `Codec/ProgramCodecV1.*`
+  - define the typed module/IR/value graph, invocation, three-axis result, and bounded value arena;
+  - encode canonical little-endian `SPRM`, `SPRI`, and `SPRR` version-1 envelopes; and
+  - compute module SHA-256 over canonical `SPRM` bytes with the declared hash omitted.
+- `Store/ProgramDefinitionStore.*`, `Registry/*`, and `Verify/ProgramVerifier.*`
+  - own immutable module storage, exact type/action/reducer/capability identities and dependency closure,
+    compatibility checks, canonical publication, and deterministic rejection before execution.
+- `Execution/ProgramExecutor.*` and `ProgramRuntime.*`
+  - own the one typed control-flow executor and invocation continuation state; and
+  - communicate effects only through actor-queued `ProgramActionRequest`/`ProgramActionCompletion`.
+- `Actions/ProgramActionProtocol.h`, `SessionResourceBindingTable.*`,
+  `SessionProgramActionHost.*`, and WorkerRuntime ingress
+  - keep service dispatch and completions on the worker actor and bind program resource identities to the
+    existing Slice 4 ledger;
+  - provide the concrete internal bridge from canonical requests to session-owned services without
+    exposing `EmulationSession` or a backend to `ProgramRuntime`.
+- `Registry/CanonicalActionCatalog.*` and `Capabilities/SourceCapabilityPacks.*`
+  - register generic `runtime.session` plus source-backed `soa.field`, `soa.battle`, and
+    `soa.navigation` for the supported USA executable/address-map compatibility;
+  - pin that compatibility to game `GEAE8E`, executable `soal-usa.GEAE8E`, and address map
+    `savor.builtin-soal-usa-addresses/1`;
+  - expose exact field/battle/navigation semantic inventories and coherent battle/navigation query
+    descriptors; and
+  - intentionally register no cutscene or overworld placeholder.
+- `Capabilities/SourceReducers.*`
+  - adapts the current pure battle command materializer as
+    `soa.battle.materialize_turn_input`; it does not execute an input macro.
+- `Composition/*`
+  - implements semantic-observation, interaction, and predicate frontends that lower to ordinary IR,
+    exact imports, scopes, actions, reducers, branches, and emissions before verification.
+
+Focused guards live in:
+
+- `SavorTests/test_program_model.cpp`;
+- `SavorTests/test_program_codec_v1.cpp`;
+- `SavorTests/test_program_definition_store.cpp`;
+- `SavorTests/test_program_registries.cpp`;
+- `SavorTests/test_program_verifier.cpp`;
+- `SavorTests/test_program_executor.cpp`;
+- `SavorTests/test_program_runtime.cpp`;
+- `SavorTests/test_program_runtime_action_support.cpp`;
+- `SavorTests/test_program_capability_packs.cpp`; and
+- the three `test_*_composition.cpp` files.
+
+This source inventory does not claim a live production program. Production composition still constructs
+neither the runtime nor its implemented action host and advertises no `ProgramInvocation` capability.
+Current phases are not translated, no live program smoke or production-worker SavorE2E has been
+established for Slice 5, and no SavorDb contract changed.
 
 ## Useful tests and live references
 
@@ -237,6 +290,18 @@ Focused current tests include:
 - `SavorTests/test_session_services.cpp`;
 - `SavorTests/test_capture_service.cpp`;
 - `SavorTests/test_session_resource_ledger.cpp`;
+- `SavorTests/test_program_model.cpp`;
+- `SavorTests/test_program_codec_v1.cpp`;
+- `SavorTests/test_program_definition_store.cpp`;
+- `SavorTests/test_program_registries.cpp`;
+- `SavorTests/test_program_verifier.cpp`;
+- `SavorTests/test_program_executor.cpp`;
+- `SavorTests/test_program_runtime.cpp`;
+- `SavorTests/test_program_runtime_action_support.cpp`;
+- `SavorTests/test_program_capability_packs.cpp`;
+- `SavorTests/test_semantic_observation_composition.cpp`;
+- `SavorTests/test_interaction_composition.cpp`;
+- `SavorTests/test_predicate_composition.cpp`;
 - `SavorTests/test_battle_end_results.cpp`;
 - `SavorTests/test_battle_end_results_db.cpp`;
 - `SavorTests/test_navigation_context_codec.cpp`;
@@ -287,21 +352,23 @@ or required refactor phase.
   artifact behavior remains compatible.
 - `StateService` is the only guest-epoch authority. State/movie continuation is exact verified evidence,
   not an ambient Dolphin query, and external import cannot infer movie mode.
-- Slice 4 generic services are not capability packs. `soa.*` semantic points, queries, actions, and
-  reducers arrive with Slice 5's typed runtime surface.
+- Slice 4 generic services are not capability packs. Slice 5 layers `runtime.session` and the
+  source-backed field/battle/navigation inventories over them without reopening a broad game facade.
 
 ## Deferred boundaries
 
-These questions are intentionally left to the implementation slice or future work that needs them:
+These questions are intentionally left to later migration or future work that needs them:
 
-- concrete C++ signatures, module binary encoding, canonical hash algorithm, and worker wire bytes;
+- production runtime/action-host construction and capability advertisement;
+- any future incompatible canonical envelope version beyond implemented `SPRM`/`SPRI`/`SPRR` version 1;
 - authored source syntax, editor, publishing, and any future persisted module catalog;
 - any generalized replacement for the existing `savor.capture.profile/1` language;
 - detailed Survey trigger behavior beyond the first bounded path;
 - final teleport/settle implementation and tolerances;
 - collision-oddity objectives and refinement policy;
-- cutscene strategy;
-- overworld movement, goals, pruning, and durable frontier rules; and
+- source-backed cutscene pack and strategy;
+- source-backed overworld pack, movement, goals, pruning, and durable frontier rules;
+- current-phase translation, live program smoke, and production-worker SavorE2E; and
 - external consumers of the legacy battle-path program that are not visible in this repository.
 
 None of these permits a second executor, unscoped emulator mutation, direct program access to SavorDb,

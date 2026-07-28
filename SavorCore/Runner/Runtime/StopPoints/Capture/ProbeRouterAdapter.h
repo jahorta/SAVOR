@@ -96,6 +96,9 @@ public:
         savor::probe::Profile profile,
         std::string profile_json,
         std::string* error_out = nullptr);
+    [[nodiscard]] bool EmitMarker(
+        std::string_view id,
+        std::uint64_t value = 0);
 
     [[nodiscard]] StopCpuObservationResult ObserveRoutedHit(
         std::uint32_t descriptor_id,

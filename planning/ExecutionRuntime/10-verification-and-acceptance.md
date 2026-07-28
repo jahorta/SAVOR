@@ -126,14 +126,16 @@ verified as a typed routing result; executing the requested interruption handler
 Slice 3 completes actor-driven emulator advancement. Slice 4 then composes the generic scoped session
 services and standalone resource ledger: `StateService` owns `StateEpoch`, exact state/movie evidence,
 and replacement transactions; `InputArbiter` supplies the opaque input-advance port; mutation, movie,
-capture, screenshot, and telemetry have single owners. This still does not advertise
-`ProgramInvocation`, add game capability packs, or begin DB work.
+capture, screenshot, and telemetry have single owners. Slice 5 adds the canonical typed model/runtime
+development surface, action queue seam, concrete internal `SessionProgramActionHost`, and the initial
+field/battle/navigation packs. Production composition constructs neither the runtime nor this host,
+does not advertise `ProgramInvocation`, and begins no DB work.
 
-Production-worker SavorE2E resumes only after `ProgramRuntime`, current-program migration, and
-handler-adapter cutover provide the complete production path. The final Release solution build and that
-E2E result remain the functional acceptance; the temporary availability gap does not permit any SavorDb
-schema, storage, interface, queue, claim, workflow, or transaction change. Slice 2 also makes no worker
-protocol change: protocol version 1 and its Slice 1 capability gates remain authoritative.
+Production-worker SavorE2E resumes only after current-program migration and handler-adapter cutover
+provide the complete production path. The final Release solution build and that E2E result remain the
+functional acceptance; the temporary availability gap does not permit any SavorDb schema, storage,
+interface, queue, claim, workflow, or transaction change. Slice 5 adds canonical program payload
+formats inside the existing encoded-module/invocation boundary; it does not change WRMS version 1.
 
 ### Canonical deterministic trace
 
@@ -294,6 +296,30 @@ Cover:
 - pure native reducer transitions and requested effects;
 - rejection of a reducer that attempts service/Dolphin ownership; and
 - result construction when domain success is followed by cleanup failure.
+
+### Implemented Slice 5 typed-runtime development guards
+
+The Slice 5 source surface includes focused tests for:
+
+- bounded value graphs/arena and typed program-model equality;
+- canonical little-endian `SPRM`, `SPRI`, and `SPRR` version-1 golden/round-trip behavior, malformed
+  input rejection, canonical ordering, hash sensitivity, and SHA-256 module identity;
+- exact immutable definition-store lookup, registry batch atomicity and conflict handling, capability
+  closure, and verifier rejection before publication;
+- deterministic executor quanta, action suspension/correlation, cancellation/unwind, budgets, and
+  `ProgramRuntime` preparation/invocation/result flow through an injected actor sink;
+- the actor action request/completion protocol, concrete `SessionProgramActionHost` service bindings,
+  resource-identity binding onto the Slice 4 ledger, and bounded stop-point CPU qualification;
+- source-backed `runtime.session`, `soa.field`, `soa.battle`, and `soa.navigation` catalog inventories,
+  supported compatibility, coherent query descriptors, and deterministic pure battle turn
+  materialization; and
+- semantic-observation, interaction, and predicate lowering into ordinary IR, including atomic invalid
+  definition rejection and the difficult interaction/predicate ordering distinctions.
+
+These focused tests are development guards, not proof of a production game invocation. The complete
+eventual `ProgramExecutor` matrix above, production construction of the implemented runtime/action
+host, migrated phase parity, a live game-program smoke, production `ProgramInvocation` capability, and
+production-worker SavorE2E remain deferred.
 
 ### Slice 1 WorkerRuntime, EmulationSession, and protocol tests
 
@@ -535,7 +561,7 @@ For future Survey work, the concrete fixture should cover:
 
 ### Action and resource-scope contract tests
 
-Before `ProgramRuntime` exists, test `SessionResourceLedger` directly:
+The Slice 4 direct `SessionResourceLedger` tests remain authoritative beneath `ProgramRuntime`:
 
 - actor-thread-only mutation and session-root initialization;
 - atomic batch acquisition with monotonic actor-assigned receipt/acquisition identities;
@@ -729,11 +755,11 @@ During implementation:
 - run architecture/invariant checks when a dependency or ownership boundary changes; and
 - run parity tests for each affected current phase as it migrates.
 
-Do not use production-worker SavorE2E as an intermediate Slice 1, Slice 2, Slice 3, or Slice 4 acceptance
-signal: the hard cutover still advertises no production `ProgramInvocation`. Slice 3 adds the
-capability-gated Ready-session execution-control seam; Slice 4 adds only generic scoped session
-services. Run SavorE2E only after `ProgramRuntime`, current program migration, and handler adapters
-restore the complete production path.
+Do not use production-worker SavorE2E as an intermediate Slice 1 through Slice 5 acceptance signal: the
+hard cutover still advertises no production `ProgramInvocation`. Slice 5 supplies the canonical
+development runtime and internal action host but does not construct either in production worker
+composition. Run SavorE2E only after current-program migration and handler adapters restore the
+complete production path.
 
 Final functional acceptance is the Release solution build and production-worker SavorE2E outcome
 summarized below, plus confirmation that no production path selects the retired legacy executor.
@@ -839,6 +865,8 @@ requirement to produce a formal evidence packet or run every possible matrix aft
 - Final CI job partitioning and hardware matrix.
 - Authoring UI/compiler conformance tests, to be defined with the authored frontend.
 - A generalized capture-plan language or replacement for `savor.capture.profile/1`.
+- Source-backed cutscene/overworld packs, legacy phase migration, production invocation activation, and
+  live program smoke coverage.
 
 Artifact-retention policy and end-to-end durable DFS orchestration tests belong to separate projects;
 they are not deferred gates for this refactor.
@@ -859,6 +887,18 @@ they are not deferred gates for this refactor.
 - `SavorTests/test_navigation_context_framework.cpp`
 - `SavorTests/test_navigation_context_codec.cpp`
 - `SavorTests/test_worker_runtime_materialization.cpp`
+- `SavorTests/test_program_model.cpp`
+- `SavorTests/test_program_codec_v1.cpp`
+- `SavorTests/test_program_definition_store.cpp`
+- `SavorTests/test_program_registries.cpp`
+- `SavorTests/test_program_verifier.cpp`
+- `SavorTests/test_program_executor.cpp`
+- `SavorTests/test_program_runtime.cpp`
+- `SavorTests/test_program_runtime_action_support.cpp`
+- `SavorTests/test_program_capability_packs.cpp`
+- `SavorTests/test_semantic_observation_composition.cpp`
+- `SavorTests/test_interaction_composition.cpp`
+- `SavorTests/test_predicate_composition.cpp`
 - `SavorTests/test_savordb_fixture_sqlite.cpp`
 - `SavorTests/test_savordb_phase3_nonfixture.cpp`
 - `planning/NavigationPhase/NavigationContextWorkflow/04-suppressed-exploration-and-world-refinement.md`

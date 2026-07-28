@@ -1,7 +1,9 @@
 #pragma once
 
 #include "RuntimeTypes.h"
+#include "ProgramRuntime/Actions/ProgramActionProtocol.h"
 
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -85,18 +87,29 @@ using ProgramRuntimeEvent = std::variant<
 struct ProgramRuntimeSubmission
 {
     bool accepted = false;
+    // Cancellation uses this actor-arbitration result when the canonical
+    // terminal was already published but has not yet been consumed by
+    // WorkerRuntime. The exact cancellation loses without tainting or
+    // rewriting the terminal.
+    bool terminal_already_published = false;
     RuntimeError error;
 
     [[nodiscard]] static ProgramRuntimeSubmission Accepted()
     {
-        return {true, {}};
+        return {true, false, {}};
+    }
+
+    [[nodiscard]] static ProgramRuntimeSubmission
+        TerminalAlreadyPublished()
+    {
+        return {true, true, {}};
     }
 
     [[nodiscard]] static ProgramRuntimeSubmission Rejected(
         WorkerRejectionCode code,
         std::string message)
     {
-        return {false, {code, std::move(message)}};
+        return {false, false, {code, std::move(message)}};
     }
 };
 
@@ -132,6 +145,49 @@ public:
 
     virtual ProgramRuntimeSubmission RequestCancellation(
         InvocationId invocation_id) = 0;
+
+    // Program effects cross this actor-marshalled seam. A runtime may publish
+    // requests from StartInvocation/Pump, but it never receives a completion
+    // inline from that publication.
+    virtual void BindActionSink(
+        std::shared_ptr<program::IProgramActionRequestSink> sink)
+    {
+        (void)sink;
+    }
+
+    virtual ProgramRuntimeSubmission DeliverActionCompletion(
+        program::ProgramActionCompletion completion)
+    {
+        (void)completion;
+        return ProgramRuntimeSubmission::Rejected(
+            WorkerRejectionCode::Unsupported,
+            "ProgramRuntime does not accept actor action completions");
+    }
+
+    // A terminal remains correlated inside the runtime until the actor has
+    // consumed it. Ports that publish terminals synchronously but do not need
+    // retention may accept this acknowledgement as a no-op.
+    virtual ProgramRuntimeSubmission AcknowledgeTerminal(
+        InvocationId invocation_id,
+        AttemptId attempt_id)
+    {
+        (void)invocation_id;
+        (void)attempt_id;
+        return ProgramRuntimeSubmission::Accepted();
+    }
+
+    // Returns true when another fair actor quantum is immediately runnable.
+    [[nodiscard]] virtual bool Pump()
+    {
+        return false;
+    }
+
+    [[nodiscard]] virtual std::optional<
+        std::chrono::steady_clock::time_point>
+    next_wake() const
+    {
+        return std::nullopt;
+    }
 
     virtual void Shutdown() noexcept = 0;
 

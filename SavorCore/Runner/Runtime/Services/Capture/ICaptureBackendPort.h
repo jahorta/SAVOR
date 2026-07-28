@@ -48,6 +48,9 @@ public:
         savor::probe::Profile profile,
         std::string profile_json,
         std::string* error_out) = 0;
+    [[nodiscard]] virtual bool EmitMarker(
+        std::string_view id,
+        std::uint64_t value) = 0;
     [[nodiscard]] virtual bool PrepareForStateReplacement(
         std::string* error_out) = 0;
     [[nodiscard]] virtual bool ResumeAfterStateReplacement(
@@ -109,6 +112,9 @@ public:
         savor::probe::Profile profile,
         std::string profile_json,
         std::string* error_out) override;
+    [[nodiscard]] bool EmitMarker(
+        std::string_view id,
+        std::uint64_t value) override;
     [[nodiscard]] bool PrepareForStateReplacement(
         std::string* error_out) override;
     [[nodiscard]] bool ResumeAfterStateReplacement(

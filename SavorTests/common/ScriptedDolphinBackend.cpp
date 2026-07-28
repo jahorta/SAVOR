@@ -3,6 +3,7 @@
 #include "FakePhysicalStopBackend.h"
 #include "Runner/Runtime/StopPoints/IPhysicalStopPointBackendPort.h"
 
+#include <fstream>
 #include <utility>
 
 namespace savor::test_support {
@@ -337,10 +338,35 @@ runtime::BackendResult ScriptedDolphinBackend::RestoreStateFile(
 }
 
 runtime::BackendResult ScriptedDolphinBackend::SaveStateFile(
-    const std::filesystem::path&)
+    const std::filesystem::path& path)
 {
     std::lock_guard lock(control_->mutex);
     control_->RecordLocked("save_file");
+    if (control_->save_file_result.ok)
+    {
+        std::ofstream output(
+            path,
+            std::ios::binary | std::ios::trunc);
+        if (!output)
+        {
+            control_->changed.notify_all();
+            return runtime::BackendResult::Failure(
+                runtime::BackendErrorCode::OperationFailed,
+                "scripted state file could not be created");
+        }
+        output.write(
+            reinterpret_cast<const char*>(
+                control_->save_file_bytes.data()),
+            static_cast<std::streamsize>(
+                control_->save_file_bytes.size()));
+        if (!output.good())
+        {
+            control_->changed.notify_all();
+            return runtime::BackendResult::Failure(
+                runtime::BackendErrorCode::OperationFailed,
+                "scripted state file could not be written");
+        }
+    }
     control_->changed.notify_all();
     return control_->save_file_result;
 }

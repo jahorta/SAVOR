@@ -59,6 +59,7 @@ struct ScriptedDolphinBackendControl
     std::map<std::uint32_t, std::uint8_t> guest_memory;
     std::vector<std::pair<std::uint32_t, std::size_t>> invalidations;
     std::vector<std::uint8_t> save_buffer_bytes{0x10, 0x20, 0x30};
+    std::vector<std::uint8_t> save_file_bytes{0x10, 0x20, 0x30};
     runtime::MovieSnapshot movie_snapshot;
     std::optional<std::filesystem::path> movie_startup_savestate;
     std::filesystem::path prepared_movie_path;

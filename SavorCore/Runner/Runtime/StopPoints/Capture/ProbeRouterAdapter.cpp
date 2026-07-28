@@ -403,6 +403,15 @@ bool ProbeRouterAdapter::ReplaceProfile(
     return true;
 }
 
+bool ProbeRouterAdapter::EmitMarker(
+    std::string_view id,
+    std::uint64_t value)
+{
+    if (!runtime_->active() || id.empty())
+        return false;
+    return runtime_->emit_marker(id, value);
+}
+
 StopCpuObservationResult ProbeRouterAdapter::ObserveRoutedHit(
     std::uint32_t descriptor_id,
     const RoutedStopEvent& event) noexcept

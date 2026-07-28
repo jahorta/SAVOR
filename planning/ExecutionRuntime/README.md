@@ -8,9 +8,10 @@ Current code and executable behavior are the source of truth for what exists. If
 conflicts with these plans, adapt the plan and implementation together rather than preserving stale
 wording or inventing a compatibility layer for it.
 
-Dependency slices 1 through 4 now exist as hard-cutover implementation checkpoints. Production program
-invocation is still unavailable, so the remaining documents guide the typed runtime and program
-migration that restore behavior. Component names and concrete API shapes may continue to evolve. The
+Dependency slices 1 through 5 now exist as hard-cutover implementation checkpoints. Slice 5 establishes
+the canonical typed program model/runtime foundation, but production worker composition still does not
+advertise `ProgramInvocation`. The remaining documents guide current-program migration and adapter
+cutover that restore behavior. Component names and concrete API shapes may continue to evolve. The
 ownership and safety boundaries below are the constraints to preserve:
 
 - worker-side program execution and session ownership;
@@ -69,6 +70,32 @@ and `WorkflowTransitionDecision::spawn_steps` for dynamic workflow expansion.
 
 Those facts establish both a useful single-VM precedent and the coupling this refactor must remove.
 Navmesh Survey is not present in the registry or worker runtime and remains unimplemented.
+
+### Implemented Slice 5 checkpoint
+
+Current code now contains one canonical little-endian version-1 program boundary:
+
+- `SPRM` encodes an immutable `ProgramModule`, `SPRI` encodes `ProgramInvocation`, and `SPRR` encodes
+  `ProgramResult`;
+- the module identity is SHA-256 over canonical `SPRM` bytes with the declared hash omitted;
+- `ProgramDefinitionStore`, `ProgramVerifier`, `ProgramExecutor`, the type/action/capability registries,
+  the actor-queued program-action protocol, and the concrete internal `SessionProgramActionHost` form
+  the one typed `ProgramRuntime`/session-service foundation; and
+- invocation/action resource identities bind to the existing Slice 4 `SessionResourceLedger` rather
+  than creating an executor-private cleanup authority.
+
+The initial source-backed catalog registers generic `runtime.session` plus `soa.field`, `soa.battle`,
+and `soa.navigation` for the supported USA executable/address-map compatibility. It also supplies
+coherent battle/navigation queries, the pure `soa.battle.materialize_turn_input` reducer, and reusable
+semantic-observation, interaction, and predicate composition frontends that lower to ordinary IR before
+verification.
+
+This is a development checkpoint, not restored production behavior. The production worker constructs
+neither `ProgramRuntime` nor `SessionProgramActionHost` and does not advertise `ProgramInvocation`.
+`soa.cutscene` and `soa.overworld`, legacy phase translation/migration, production worker construction
+and capability activation, a live program smoke, and production-worker SavorE2E remain deferred. No
+SavorDb schema, persistence, interface, queue, claim, workflow, transaction, or artifact-store contract
+changed.
 
 ## Core architectural constraints
 
@@ -205,10 +232,12 @@ The names have precise meanings:
 
 The implemented session seam already replaces direct VM ownership of state replacement, pad
 publication, guest mutation, capture attachment, movies, screenshots, telemetry, and scoped cleanup.
-The remaining target replaces worker activation/result, program construction and worker-side payload
-switches, `PSContext` as a public runtime contract, the VM-owned input-macro mini-runtime, and the
-runtime-facing behavior of program-kind handlers. Existing SavorDb handler registration, persistence,
-workflow, queue, claim, affinity, and transaction contracts remain unchanged.
+Slice 5 now supplies the canonical model, store, verifier, executor, registries, action queue seam,
+initial capability packs, and composition frontends. The remaining target replaces production worker
+activation/result, current program construction and worker-side payload switches, `PSContext` as a
+public runtime contract, the VM-owned input-macro mini-runtime, and the runtime-facing behavior of
+program-kind handlers. Existing SavorDb handler registration, persistence, workflow, queue, claim,
+affinity, and transaction contracts remain unchanged.
 
 ## Reading order
 
@@ -244,11 +273,12 @@ cannot be proven clean is tainted and retired or rebuilt before another invocati
 
 ## Dependencies and migration implications
 
-The explicit `EmulationSession` boundary and its scoped generic services are established. The remaining
-target depends on implementing the small typed program IR, verifier, action surface, and capability
-packs, then replacing disconnected VM behavior with registered effects. A temporary translator from
-current `PhaseScript` builders is permitted for parity testing. It is not a second permanent runtime and
-is removed with the legacy interpreter.
+The explicit `EmulationSession` boundary and its scoped generic services are established. The canonical
+typed program IR, codec, verifier, executor, registry/action seam, initial packs, and composition
+frontends are also established. The remaining target is to translate disconnected VM behavior into
+verified modules and actor-owned registered effects, then activate the production invocation/adapters.
+A temporary translator from current `PhaseScript` builders is permitted for parity testing. It is not a
+second permanent runtime and is removed with the legacy interpreter.
 
 Navmesh Survey is a useful first net-new client after current phases migrate, but it is not required to
 complete this refactor. If implemented, its bounded entrypoints and reusable navigation actions exercise
@@ -261,10 +291,13 @@ Apply the dependency order in this package incrementally. Each slice should run 
 ownership, cleanup, protocol, and phase behavior it touches; the plans do not require a separate
 architecture sign-off or evidence-update ceremony for every change.
 
-Dependency Slice 4 remains inside the deliberate hard-cutover interval: `ProgramInvocation` is not
-advertised and production-worker SavorE2E is not an intermediate acceptance signal. Its development
-guards are full solution compilation plus focused, unattended, headless service/ownership tests; live
-movie continuation, post-write capture, and rendered behavior remain deferred until deterministic
+Dependency Slice 5 remains inside the deliberate hard-cutover interval: the typed runtime exists as a
+development surface with concrete internal session-service bindings, but the production worker
+constructs neither the runtime nor its action host and does not advertise `ProgramInvocation`.
+Production-worker SavorE2E is not an intermediate acceptance signal. Its
+development guards are full solution compilation plus focused model/codec/store/registry/verifier,
+executor/action-seam, capability-pack, and composition tests. A live program smoke, live movie
+continuation, post-write capture, and rendered behavior remain deferred until migrated deterministic
 program execution exists.
 
 Before removing the legacy execution path or treating the refactor as complete, run a full Release
@@ -274,13 +307,13 @@ workflow-persistence examples do not gate completion.
 
 ## Deferred work
 
-The exact C++ API spelling, worker wire encoding, authored source language, authoring UI, and
-game-specific algorithms listed in document 11 remain deferred. SavorDb SQL/storage/interfaces are fixed
-inputs, not deferred design choices in this refactor. A generalized replacement for
-`savor.capture.profile/1` is also deferred; the existing profile remains an opaque `CaptureService`
-contract during the initial architecture cutover. Skies-specific capability packs and their registered
-actions are Dependency Slice 5 work; Slice 4 establishes only the generic session services they will
-consume.
+Future C++ API evolution, production worker activation, authored source language, authoring UI, and
+game-specific algorithms listed in document 11 remain deferred. The `SPRM`/`SPRI`/`SPRR` version-1
+encoding and SHA-256 module identity are no longer open design questions. SavorDb
+SQL/storage/interfaces are fixed inputs, not deferred design choices in this refactor. A generalized
+replacement for `savor.capture.profile/1` is also deferred; the existing profile remains an opaque
+`CaptureService` contract during the initial architecture cutover. The initial field, battle, and
+navigation packs exist; cutscene and overworld packs wait for concrete migrated clients.
 
 ## Source references
 
@@ -290,6 +323,7 @@ consume.
 - `SavorCore/Runner/Script/PhaseScriptOpcodeTable.inc`
 - `SavorCore/Runner/InputMacro`
 - `SavorCore/Runner/Breakpoints/Predicate.*`
+- `SavorCore/Runner/Runtime/ProgramRuntime`
 - `SavorProbe/ProbeProfile.*`
 - `SavorProbe/ProbeRuntime.*`
 - `SavorProbe/AddressProgramEvaluator.h`

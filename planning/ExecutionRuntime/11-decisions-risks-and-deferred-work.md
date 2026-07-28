@@ -79,9 +79,12 @@ current runtime capability.
 | D33 | `InputArbiter` owns every pad publication through epoch-bound leases and supports both explicit interruption-borrow policies. | The engine sees only opaque input bindings. A neutral-required borrow consumes a fresh typed witness issued by the arbiter for the exact parent lease/publication/epoch; neutral publication and guest-observed release remain distinct, and movie playback holds an unsuspendable exclusive reservation. |
 | D34 | Guest data mutations restore unless explicitly committed; executable patches are always reversible. | Data commit is an explicit lifetime decision. Code cannot be committed and always requires symmetric JIT/cache invalidation and readback on apply and restore. |
 | D35 | One `EmulationSession` owns at most one opaque capture attachment, and that attachment rebinds across state restore. | Capture retains existing profile semantics and one routed identity without becoming a physical-site or wake owner. Mandatory finalization failure taints the service/session, blocks a new attachment and reuse, and requires a full rebuild. |
-| D36 | Scoped cleanup uses a standalone actor-owned `SessionResourceLedger`, not an executor-private ledger. | Slice 4 can enforce session cleanup before programs exist; Slice 5 maps invocation/action scopes onto the same typed receipts, epoch policies, unwind continuations, and taint disposition. |
+| D36 | Scoped cleanup uses a standalone actor-owned `SessionResourceLedger`, not an executor-private ledger. | Slice 4 enforces session cleanup before programs exist; Slice 5 binds program resource identities onto the same typed receipts, epoch policies, unwind continuations, and taint disposition. |
 | D37 | Screenshot and telemetry are narrow session services. | Screenshot requests are synchronous actor-owned, epoch-correlated, bounded, and non-advancing; active in-flight cancellation is deferred until nonblocking backend/actor ingress. Telemetry is bounded/coalescing, coalesced replacements retain their fresh chronological sequence position, and required-event overflow fails closed through the serialized publisher. |
-| D38 | Game capability packs are deferred from Slice 4 to Slice 5. | Generic services remain game-neutral; typed actions, semantic points, coherent queries, and `soa.*` registrations arrive with `ProgramRuntime`, not as a broad interim facade. |
+| D38 | Game capability packs layer on generic `runtime.session`; the initial source-backed set is `soa.field`, `soa.battle`, and `soa.navigation`. | Generic services remain game-neutral. `soa.cutscene` and `soa.overworld` wait for concrete migrated clients rather than appearing as placeholders or a broad interim facade. |
+| D39 | Canonical program bytes are versioned little-endian `SPRM`, `SPRI`, and `SPRR` version 1; module identity is SHA-256 over canonical `SPRM` bytes with the declared hash omitted. | Canonical encoding and hashing are no longer deferred or ambient. A future incompatible model requires an explicit new version. |
+| D40 | Program actions cross an actor-queued request/completion seam and bind resources to the existing session ledger. | The concrete internal `SessionProgramActionHost` owns service binding while `ProgramRuntime` obtains no `EmulationSession`, backend, service thread, or inline completion path; production runtime/host construction remains a separate cutover step. |
+| D41 | Semantic-observation, interaction, and predicate frontends plus `soa.battle.materialize_turn_input` are compile-time/pure composition facilities. | They lower or compute through ordinary typed runtime contracts and do not restore macros, domain opcodes, peer runtimes, or persistence. |
 
 ## Rejected alternatives
 
@@ -193,14 +196,25 @@ production paths would make ownership and cleanup guarantees unenforceable.
 
 ### Contract encodings
 
-- Exact Slice 5 `ProgramRuntime`, action, module, and capability-pack declarations. Slice 4 service and
-  resource-ledger ownership is implemented and no longer an open encoding choice.
-- Canonical module binary format and hash algorithm.
-- Worker message framing, streaming, compression, and negotiation encoding.
+- Production worker construction of the implemented `ProgramRuntime` and `SessionProgramActionHost`,
+  plus `ProgramInvocation` capability advertisement.
+- Any future incompatible canonical envelope version beyond implemented `SPRM`/`SPRI`/`SPRR` version 1.
+- Worker message streaming, compression, and future negotiation changes beyond the current WRMS
+  boundary.
 
 These are deferred runtime encodings, not permission to alter the logical fields or ownership model.
 SavorDb SQL/schema, migrations, stored representations, interfaces, queues, claims, workflows, and
 artifact-store interfaces are out of scope and remain unchanged.
+
+### Cutover and live validation
+
+- Translation and migration of the current legacy phases.
+- Production `ProgramRuntime` installation and `ProgramInvocation` capability advertisement.
+- A headless live game-program smoke after production runtime/action-host construction.
+- Production-worker SavorE2E after migrated programs and handler adapters restore the complete path.
+
+These remain downstream cutover work. Their absence does not permit a temporary compatibility executor
+or any SavorDb contract change.
 
 ### Authoring experience
 
@@ -254,8 +268,9 @@ artifact, and transaction interfaces. They also retain current phase behavior an
 translated into semantic-observation and interaction composition in memory. Existing
 `savor.capture.profile/1` artifacts remain unchanged behind the one session-owned `CaptureService`.
 Slice 4 has already moved state/epoch, input, guest mutation, movie, screenshot, telemetry, and resource
-cleanup behind their narrow session-owned services; Slice 5 adds the program/action/packs surface over
-them.
+cleanup behind their narrow session-owned services; Slice 5 now adds the canonical program/action
+surface, resource-binding seam, initial packs, and composition frontends over them. Legacy translation,
+production activation, and program-kind adapters remain later cutover work.
 
 ## Failure and cleanup behavior
 
@@ -306,8 +321,8 @@ before broadening the design.
 - `StateService` remains the sole epoch authority; immutable state/movie evidence, explicit external
   import policy, same-session recording rewind, input borrowing, mutation lifetime, and standalone
   ledger disposition cannot be reimplemented in capability packs.
-- Slice 5 capability packs consume narrow Slice 4 services and do not reopen a broad Dolphin/game
-  facade.
+- Slice 5 capability packs consume the generic runtime catalog and do not reopen a broad Dolphin/game
+  facade; deferred cutscene/overworld packs must preserve that boundary.
 
 ## Source references
 
@@ -322,6 +337,11 @@ before broadening the design.
 - `SavorProbe/ProbeProfile.cpp`
 - `SavorProbe/ProbeRuntime.h`
 - `SavorProbe/ProbeRuntime.cpp`
+- `SavorCore/Runner/Runtime/ProgramRuntime/Codec/ProgramCodecV1.*`
+- `SavorCore/Runner/Runtime/ProgramRuntime/ProgramRuntime.*`
+- `SavorCore/Runner/Runtime/ProgramRuntime/Actions`
+- `SavorCore/Runner/Runtime/ProgramRuntime/Capabilities`
+- `SavorCore/Runner/Runtime/ProgramRuntime/Composition`
 - `SavorDb/Execution/ProgramDB/ProgramKindDescriptor.h:121-185`
 - `planning/DBMigrateWorkflows/12-user-defined-script-payload-system-plan.md`
 - `planning/NavigationPhase/NavigationContextWorkflow/04-suppressed-exploration-and-world-refinement.md`

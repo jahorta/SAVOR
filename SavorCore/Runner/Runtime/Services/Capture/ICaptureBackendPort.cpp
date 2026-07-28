@@ -63,6 +63,13 @@ bool ProbeCaptureProfileAdapter::ReplaceProfile(
         error_out);
 }
 
+bool ProbeCaptureProfileAdapter::EmitMarker(
+    std::string_view id,
+    std::uint64_t value)
+{
+    return adapter_.EmitMarker(id, value);
+}
+
 bool ProbeCaptureProfileAdapter::PrepareForStateReplacement(
     std::string* error_out)
 {

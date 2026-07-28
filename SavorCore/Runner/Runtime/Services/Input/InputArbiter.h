@@ -14,12 +14,10 @@
 
 namespace savor::runtime {
 
-struct InputLeaseIdTag;
 struct InputOwnerIdTag;
 struct InputPollReceiptIdTag;
 struct InputNeutralWitnessIdTag;
 
-using InputLeaseId = StrongId<InputLeaseIdTag>;
 using InputOwnerId = StrongId<InputOwnerIdTag>;
 using InputPollReceiptId = StrongId<InputPollReceiptIdTag>;
 using InputNeutralWitnessId = StrongId<InputNeutralWitnessIdTag>;
@@ -196,6 +194,11 @@ public:
         std::vector<savor::GCInputFrame> frames,
         StateEpoch epoch,
         std::uint32_t retry_limit = 1);
+    [[nodiscard]] InputArbiterOperationReceipt ValidatePublication(
+        const InputPublicationEvidence& publication) const noexcept;
+    [[nodiscard]] InputAdvanceBindingReceipt
+    CreatePublicationRelationship(
+        const InputPublicationEvidence& publication);
     InputArbiterOperationReceipt RemoveAdvanceBinding(
         InputAdvanceBindingId binding) noexcept;
 
@@ -217,6 +220,9 @@ public:
         InputAdvanceBindingId binding,
         InputPublicationToken publication,
         StateEpoch epoch) override;
+    [[nodiscard]] InputAdvanceReceipt Complete(
+        InputAdvanceBindingId binding,
+        StateEpoch epoch) noexcept override;
     [[nodiscard]] InputAdvanceReceipt Cancel(
         InputAdvanceBindingId binding,
         StateEpoch epoch) noexcept override;
@@ -247,6 +253,10 @@ private:
         std::vector<savor::GCInputFrame> frames;
         std::uint32_t retry_limit = 1;
         std::uint32_t retry_count = 0;
+        std::optional<std::uint32_t> prepared_ordinal;
+        std::optional<InputPublicationToken> prepared_publication;
+        std::optional<InputPublicationEvidence>
+            publication_relationship;
     };
 
     struct NeutralWitnessState
@@ -264,6 +274,11 @@ private:
         LeaseState& lease,
         const savor::GCInputFrame& frame);
     [[nodiscard]] InputReleaseReceipt FinishRelease(LeaseState& lease);
+    [[nodiscard]] InputAdvanceReceipt ValidateBinding(
+        InputAdvanceBindingId binding,
+        StateEpoch epoch) const;
+    [[nodiscard]] bool MatchesPublication(
+        const InputPublicationEvidence& publication) const noexcept;
     [[nodiscard]] InputAdvanceReceipt BindingFailure(std::string message) const;
     [[nodiscard]] bool OnOwnerThread() const noexcept;
     [[nodiscard]] bool IsStopped() const noexcept;

@@ -2,11 +2,13 @@
 
 #include "DolphinWrapperBackend.h"
 
+#include <algorithm>
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
 #include <exception>
+#include <iterator>
 #include <limits>
 #include <mutex>
 #include <thread>
@@ -123,6 +125,9 @@ struct WorkerRuntime::Impl
     {
         Command,
         ProgramEvent,
+        ProgramActionRequest,
+        ProgramActionCompletion,
+        ProgramPump,
         HostEvent,
         ForceStop,
     };
@@ -141,6 +146,10 @@ struct WorkerRuntime::Impl
         MailboxItemKind kind = MailboxItemKind::ForceStop;
         std::shared_ptr<QueuedCommand> command;
         std::optional<ProgramRuntimeEvent> program_event;
+        std::optional<program::ProgramActionRequest>
+            program_action_request;
+        std::optional<program::ProgramActionCompletion>
+            program_action_completion;
         std::optional<PendingHostEvent> host_event;
     };
 
@@ -155,7 +164,9 @@ struct WorkerRuntime::Impl
         std::uint64_t next_host_event_sequence = 1;
         bool accept_commands = true;
         bool accept_program_events = true;
+        bool accept_program_actions = true;
         bool accept_host_events = true;
+        bool program_pump_queued = false;
     };
 
     static void SignalMailbox(Mailbox& mailbox) noexcept
@@ -200,6 +211,37 @@ struct WorkerRuntime::Impl
         std::weak_ptr<Mailbox> mailbox_;
     };
 
+    class ProgramActionIngress final
+        : public program::IProgramActionRequestSink
+    {
+    public:
+        explicit ProgramActionIngress(std::weak_ptr<Mailbox> mailbox)
+            : mailbox_(std::move(mailbox))
+        {
+        }
+
+        void Publish(program::ProgramActionRequest request) override
+        {
+            const std::shared_ptr<Mailbox> mailbox = mailbox_.lock();
+            if (!mailbox)
+                return;
+
+            {
+                std::lock_guard lock(mailbox->mutex);
+                if (!mailbox->accept_program_actions)
+                    return;
+                MailboxItem item;
+                item.kind = MailboxItemKind::ProgramActionRequest;
+                item.program_action_request.emplace(std::move(request));
+                mailbox->items.push_back(std::move(item));
+            }
+            SignalMailbox(*mailbox);
+        }
+
+    private:
+        std::weak_ptr<Mailbox> mailbox_;
+    };
+
     struct ActiveInvocation
     {
         InvocationId invocation_id;
@@ -230,11 +272,15 @@ struct WorkerRuntime::Impl
         std::unique_ptr<EmulationSession> session,
         std::unique_ptr<IProgramRuntimePort> program_runtime,
         WorkerEventSink event_sink,
-        std::shared_ptr<const WorkerRuntimeTestHooks> test_hooks)
+        std::shared_ptr<const WorkerRuntimeTestHooks> test_hooks,
+        std::unique_ptr<program::IProgramActionHost> action_host)
         : mailbox(std::make_shared<Mailbox>()),
           program_event_ingress(std::make_shared<ProgramEventIngress>(mailbox)),
+          program_action_ingress(
+              std::make_shared<ProgramActionIngress>(mailbox)),
           session(std::move(session)),
           program_runtime(std::move(program_runtime)),
+          program_action_host(std::move(action_host)),
           event_sink(std::move(event_sink)),
           test_hooks(std::move(test_hooks))
     {
@@ -258,7 +304,7 @@ struct WorkerRuntime::Impl
                     WorkerCapability::InteractiveVisualDebug);
             }
         }
-        if (this->program_runtime &&
+        if (this->program_runtime && this->program_action_host &&
             HasCapability(
                 this->program_runtime->capabilities(),
                 WorkerCapability::ProgramInvocation))
@@ -266,6 +312,11 @@ struct WorkerRuntime::Impl
             capabilities_value = AddCapability(
                 capabilities_value,
                 WorkerCapability::ProgramInvocation);
+        }
+        if (this->program_runtime)
+        {
+            this->program_runtime->BindActionSink(
+                program_action_ingress);
         }
 
         current_snapshot.state = WorkerState::Starting;
@@ -292,6 +343,7 @@ struct WorkerRuntime::Impl
                 std::lock_guard lock(mailbox->mutex);
                 mailbox->accept_commands = false;
                 mailbox->accept_program_events = false;
+                mailbox->accept_program_actions = false;
                 mailbox->accept_host_events = false;
                 MailboxItem item;
                 item.kind = MailboxItemKind::ForceStop;
@@ -419,6 +471,18 @@ struct WorkerRuntime::Impl
 
         for (;;)
         {
+            bool item_waiting_before_ingress = false;
+            {
+                std::lock_guard lock(mailbox->mutex);
+                item_waiting_before_ingress =
+                    !mailbox->items.empty();
+            }
+
+            const std::uint64_t stable_ingress_generation =
+                DrainAuthoritativeIngressToStable(
+                    item_waiting_before_ingress);
+            PumpProgramActionHost();
+
             MailboxItem item;
             bool has_item = false;
             {
@@ -427,21 +491,33 @@ struct WorkerRuntime::Impl
                 {
                     item = std::move(mailbox->items.front());
                     mailbox->items.pop_front();
+                    if (item.kind == MailboxItemKind::ProgramPump)
+                        mailbox->program_pump_queued = false;
                     has_item = true;
                 }
             }
-
-            const std::uint64_t stable_ingress_generation =
-                DrainAuthoritativeIngressToStable(has_item);
             if (!has_item)
             {
                 PumpExecutionEvents();
+                PumpProgramActionHost();
+                PumpProgramRuntime();
                 const std::uint64_t observed_generation =
                     mailbox->wake_generation.load(
                         std::memory_order_acquire);
                 const auto next_execution_wake = session
                     ? session->next_execution_wake()
                     : std::nullopt;
+                const auto next_program_wake = program_runtime
+                    ? program_runtime->next_wake()
+                    : std::nullopt;
+                std::optional<std::chrono::steady_clock::time_point>
+                    next_wake = next_execution_wake;
+                if (next_program_wake &&
+                    (!next_wake ||
+                     *next_program_wake < *next_wake))
+                {
+                    next_wake = next_program_wake;
+                }
                 std::unique_lock lock(mailbox->mutex);
                 const auto ready = [&]() {
                     return !mailbox->items.empty() ||
@@ -452,11 +528,11 @@ struct WorkerRuntime::Impl
                             std::memory_order_acquire) !=
                             stable_ingress_generation;
                 };
-                if (next_execution_wake)
+                if (next_wake)
                 {
                     (void)mailbox->available.wait_until(
                         lock,
-                        *next_execution_wake,
+                        *next_wake,
                         ready);
                 }
                 else
@@ -499,6 +575,28 @@ struct WorkerRuntime::Impl
                     }
                 }
             }
+            else if (item.kind ==
+                     MailboxItemKind::ProgramActionRequest)
+            {
+                if (item.program_action_request)
+                {
+                    HandleProgramActionRequest(
+                        std::move(*item.program_action_request));
+                }
+            }
+            else if (item.kind ==
+                     MailboxItemKind::ProgramActionCompletion)
+            {
+                if (item.program_action_completion)
+                {
+                    HandleProgramActionCompletion(
+                        std::move(*item.program_action_completion));
+                }
+            }
+            else if (item.kind == MailboxItemKind::ProgramPump)
+            {
+                PumpProgramRuntime();
+            }
             else if (item.kind == MailboxItemKind::HostEvent)
             {
                 if (item.host_event)
@@ -530,6 +628,7 @@ struct WorkerRuntime::Impl
 
             (void)DrainAuthoritativeIngressToStable(false);
             PumpExecutionEvents();
+            PumpProgramActionHost();
 
             if (Snapshot().state == WorkerState::Stopped)
                 break;
@@ -765,6 +864,7 @@ struct WorkerRuntime::Impl
             queued,
             WorkerCommandOutcome::Accepted,
             invocation.invocation_id);
+        QueueProgramPump();
     }
 
     void HandleCancel(
@@ -796,10 +896,6 @@ struct WorkerRuntime::Impl
             return;
         }
 
-        (void)active_invocation->cancellation.request_cancellation(
-            CancellationReason::ExternalRequest);
-        ChangeState(WorkerState::Cancelling);
-
         ProgramRuntimeSubmission submission =
             RequestProgramCancellation(command.invocation_id);
         if (!submission.accepted)
@@ -819,6 +915,39 @@ struct WorkerRuntime::Impl
                 false);
             Reject(queued, code, message);
             return;
+        }
+        if (submission.terminal_already_published)
+        {
+            // ProgramRuntime has already selected and published the exact
+            // invocation terminal, but that mailbox event has not reached
+            // this actor yet. Cancellation loses this ordering race without
+            // mutating the token, notifying the host, or tainting the
+            // session.
+            Reject(
+                queued,
+                WorkerRejectionCode::InvocationNotActive,
+                "Invocation is already terminal");
+            return;
+        }
+
+        if (!active_invocation->cancellation.request_cancellation(
+                CancellationReason::ExternalRequest))
+        {
+            EnterTainted(
+                "Cancellation was accepted by ProgramRuntime but could "
+                "not be recorded by WorkerRuntime");
+            Reject(
+                queued,
+                WorkerRejectionCode::InternalFailure,
+                "Cancellation state could not be recorded");
+            return;
+        }
+        ChangeState(WorkerState::Cancelling);
+        if (program_action_host)
+        {
+            program_action_host->RequestCancellation(
+                command.invocation_id,
+                CancellationReason::ExternalRequest);
         }
 
         Complete(
@@ -1068,8 +1197,6 @@ struct WorkerRuntime::Impl
 
         if (active_invocation)
         {
-            (void)active_invocation->cancellation.request_cancellation(
-                CancellationReason::Shutdown);
             if (program_runtime)
             {
                 const ProgramRuntimeSubmission submission =
@@ -1086,7 +1213,25 @@ struct WorkerRuntime::Impl
                         true,
                         false);
                     FinishShutdown(false);
+                    return;
                 }
+                if (submission.terminal_already_published)
+                    return;
+            }
+            if (!active_invocation->cancellation.request_cancellation(
+                    CancellationReason::Shutdown))
+            {
+                EnterTainted(
+                    "Shutdown cancellation could not be recorded by "
+                    "WorkerRuntime");
+                FinishShutdown(false);
+                return;
+            }
+            if (program_action_host)
+            {
+                program_action_host->RequestCancellation(
+                    active_invocation->invocation_id,
+                    CancellationReason::Shutdown);
             }
             return;
         }
@@ -1161,6 +1306,293 @@ struct WorkerRuntime::Impl
             return ProgramRuntimeSubmission::Rejected(
                 WorkerRejectionCode::InternalFailure,
                 "ProgramRuntime cancellation threw");
+        }
+    }
+
+    void QueueProgramPump()
+    {
+        if (!program_runtime)
+            return;
+        bool queued = false;
+        {
+            std::lock_guard lock(mailbox->mutex);
+            if (mailbox->accept_program_events &&
+                !mailbox->program_pump_queued)
+            {
+                MailboxItem item;
+                item.kind = MailboxItemKind::ProgramPump;
+                mailbox->items.push_back(std::move(item));
+                mailbox->program_pump_queued = true;
+                queued = true;
+            }
+        }
+        if (queued)
+            SignalMailbox(*mailbox);
+    }
+
+    void QueueProgramActionCompletion(
+        program::ProgramActionCompletion completion)
+    {
+        bool queued = false;
+        {
+            std::lock_guard lock(mailbox->mutex);
+            if (mailbox->accept_program_actions)
+            {
+                MailboxItem item;
+                item.kind =
+                    MailboxItemKind::ProgramActionCompletion;
+                item.program_action_completion.emplace(
+                    std::move(completion));
+                mailbox->items.push_back(std::move(item));
+                queued = true;
+            }
+        }
+        if (queued)
+            SignalMailbox(*mailbox);
+    }
+
+    [[nodiscard]] program::ProgramActionCompletion
+    RejectProgramAction(
+        const program::ProgramActionRequest& request,
+        program::ProgramActionCompletionStatus status,
+        std::string code,
+        std::string message) const
+    {
+        const StateEpoch current_epoch =
+            session ? session->snapshot().state_epoch : StateEpoch{};
+        return {
+            .request_id = request.request_id,
+            .invocation_id = request.invocation_id,
+            .attempt_id = request.attempt_id,
+            .operation = request.operation,
+            .status = status,
+            .origin_epoch = request.expected_epoch,
+            .resulting_epoch = current_epoch,
+            .cleanup =
+                status ==
+                    program::ProgramActionCompletionStatus::CleanupFailed
+                ? program::ProgramCleanupStatus::Tainted
+                : program::ProgramCleanupStatus::Clean,
+            .session_disposition = session
+                ? session->snapshot().disposition
+                : SessionDisposition::Closed,
+            .code = std::move(code),
+            .message = std::move(message),
+        };
+    }
+
+    void HandleProgramActionRequest(
+        program::ProgramActionRequest request)
+    {
+        if (!active_invocation ||
+            request.invocation_id !=
+                active_invocation->invocation_id ||
+            request.attempt_id != active_invocation->attempt_id)
+        {
+            QueueProgramActionCompletion(RejectProgramAction(
+                request,
+                program::ProgramActionCompletionStatus::Rejected,
+                "invocation_mismatch",
+                "Program action does not identify the active invocation"));
+            return;
+        }
+        if (!request.request_id)
+        {
+            QueueProgramActionCompletion(RejectProgramAction(
+                request,
+                program::ProgramActionCompletionStatus::Rejected,
+                "invalid_request",
+                "Program action request identity is zero"));
+            return;
+        }
+        const SessionSnapshot current = session->snapshot();
+        if (!request.expected_epoch ||
+            request.expected_epoch != current.state_epoch)
+        {
+            QueueProgramActionCompletion(RejectProgramAction(
+                request,
+                program::ProgramActionCompletionStatus::StaleEpoch,
+                "stale_epoch",
+                "Program action expected a stale StateEpoch"));
+            return;
+        }
+        if (!program_action_host)
+        {
+            QueueProgramActionCompletion(RejectProgramAction(
+                request,
+                program::ProgramActionCompletionStatus::Unsupported,
+                "action_host_unavailable",
+                "Worker has no actor-owned program action host"));
+            return;
+        }
+
+        program::ProgramActionDispatchResult dispatched;
+        try
+        {
+            dispatched = program_action_host->Dispatch(request);
+        }
+        catch (const std::exception& ex)
+        {
+            EnterTainted(
+                std::string("Program action host dispatch threw: ") +
+                ex.what());
+            return;
+        }
+        catch (...)
+        {
+            EnterTainted("Program action host dispatch threw");
+            return;
+        }
+        if (!dispatched.accepted)
+        {
+            QueueProgramActionCompletion(
+                dispatched.immediate_completion
+                    ? std::move(*dispatched.immediate_completion)
+                    : RejectProgramAction(
+                        request,
+                        program::ProgramActionCompletionStatus::Rejected,
+                        "action_rejected",
+                        dispatched.diagnostic.empty()
+                            ? "Program action host rejected the request"
+                            : std::move(dispatched.diagnostic)));
+            return;
+        }
+        // Even an immediate service result crosses the mailbox before it can
+        // resume ProgramRuntime.
+        if (dispatched.immediate_completion)
+        {
+            QueueProgramActionCompletion(
+                std::move(*dispatched.immediate_completion));
+        }
+    }
+
+    void HandleProgramActionCompletion(
+        program::ProgramActionCompletion completion)
+    {
+        if (!program_runtime)
+            return;
+        if (!active_invocation)
+        {
+            Publish(WorkerRuntimeDiagnosticEvent{
+                WorkerRejectionCode::InvocationNotActive,
+                "Ignored a late program action completion after invocation termination",
+                completion.invocation_id});
+            return;
+        }
+        ProgramRuntimeSubmission delivered;
+        try
+        {
+            delivered = program_runtime->DeliverActionCompletion(
+                std::move(completion));
+        }
+        catch (const std::exception& ex)
+        {
+            EnterTainted(
+                std::string(
+                    "ProgramRuntime action completion threw: ") +
+                ex.what());
+            return;
+        }
+        catch (...)
+        {
+            EnterTainted("ProgramRuntime action completion threw");
+            return;
+        }
+        if (!delivered.accepted)
+        {
+            EnterTainted(
+                delivered.error.message.empty()
+                    ? "ProgramRuntime rejected its currently awaited actor action completion"
+                    : delivered.error.message);
+            return;
+        }
+        QueueProgramPump();
+    }
+
+    void PumpProgramRuntime()
+    {
+        if (!program_runtime || !active_invocation)
+            return;
+        try
+        {
+            if (program_runtime->Pump())
+                QueueProgramPump();
+        }
+        catch (const std::exception& ex)
+        {
+            EnterTainted(
+                std::string("ProgramRuntime pump threw: ") + ex.what());
+        }
+        catch (...)
+        {
+            EnterTainted("ProgramRuntime pump threw");
+        }
+    }
+
+    void PumpProgramActionHost()
+    {
+        if (!program_action_host)
+            return;
+        try
+        {
+            program_action_host->Pump();
+            std::vector<program::ProgramActionCompletion> completions =
+                program_action_host->DrainCompletions();
+            if (completions.empty())
+                return;
+
+            bool queued = false;
+            {
+                std::lock_guard lock(mailbox->mutex);
+                if (mailbox->accept_program_actions)
+                {
+                    // These completions are consequences of internal events
+                    // already accepted before the current command
+                    // linearization point. Place them ahead of external
+                    // commands without handling them inline, preserving both
+                    // actor ownership and authoritative-stop precedence.
+                    std::vector<MailboxItem> prioritized;
+                    prioritized.reserve(completions.size());
+                    for (program::ProgramActionCompletion& completion :
+                         completions)
+                    {
+                        MailboxItem item;
+                        item.kind =
+                            MailboxItemKind::ProgramActionCompletion;
+                        item.program_action_completion.emplace(
+                            std::move(completion));
+                        prioritized.push_back(std::move(item));
+                    }
+                    const auto insertion = std::find_if(
+                        mailbox->items.begin(),
+                        mailbox->items.end(),
+                        [](const MailboxItem& item) {
+                            return item.kind ==
+                                    MailboxItemKind::Command ||
+                                item.kind ==
+                                    MailboxItemKind::HostEvent;
+                        });
+                    mailbox->items.insert(
+                        insertion,
+                        std::make_move_iterator(
+                            prioritized.begin()),
+                        std::make_move_iterator(
+                            prioritized.end()));
+                    queued = true;
+                }
+            }
+            if (queued)
+                SignalMailbox(*mailbox);
+        }
+        catch (const std::exception& ex)
+        {
+            EnterTainted(
+                std::string("Program action host pump threw: ") +
+                ex.what());
+        }
+        catch (...)
+        {
+            EnterTainted("Program action host pump threw");
         }
     }
 
@@ -1303,6 +1735,27 @@ struct WorkerRuntime::Impl
         for (ExecutionEvent& event : events)
         {
             RefreshSnapshot();
+            if (program_action_host)
+            {
+                try
+                {
+                    program_action_host->HandleExecutionEvent(event);
+                }
+                catch (const std::exception& ex)
+                {
+                    EnterTainted(
+                        std::string(
+                            "Program action host execution ingress threw: ") +
+                        ex.what());
+                    return;
+                }
+                catch (...)
+                {
+                    EnterTainted(
+                        "Program action host execution ingress threw");
+                    return;
+                }
+            }
             bool taint_after_publish = false;
             std::string taint_diagnostic;
             if (event.terminal)
@@ -1385,6 +1838,7 @@ struct WorkerRuntime::Impl
                 break;
             }
         }
+        PumpProgramActionHost();
         if (!finishing_shutdown &&
             !pending_shutdown_commands.empty() &&
             !active_invocation && session &&
@@ -1410,6 +1864,33 @@ struct WorkerRuntime::Impl
             return;
         }
 
+        ProgramRuntimeSubmission acknowledged;
+        try
+        {
+            acknowledged = program_runtime
+                ? program_runtime->AcknowledgeTerminal(
+                      terminal.invocation_id,
+                      terminal.attempt_id)
+                : ProgramRuntimeSubmission::Rejected(
+                      WorkerRejectionCode::ProgramRuntimeUnavailable,
+                      "ProgramRuntime is unavailable for terminal "
+                      "acknowledgement");
+        }
+        catch (const std::exception& ex)
+        {
+            acknowledged = ProgramRuntimeSubmission::Rejected(
+                WorkerRejectionCode::InternalFailure,
+                std::string(
+                    "ProgramRuntime terminal acknowledgement threw: ") +
+                    ex.what());
+        }
+        catch (...)
+        {
+            acknowledged = ProgramRuntimeSubmission::Rejected(
+                WorkerRejectionCode::InternalFailure,
+                "ProgramRuntime terminal acknowledgement threw");
+        }
+
         // The actor queue is the cancellation/completion arbitration point. Once
         // an exact cancellation command has been accepted, a later successful
         // terminal cannot resurrect the invocation as completed.
@@ -1421,7 +1902,23 @@ struct WorkerRuntime::Impl
         }
 
         std::string taint_reason;
-        if (terminal.origin_state_epoch != active_invocation->origin_epoch)
+        if (!acknowledged.accepted)
+        {
+            taint_reason = acknowledged.error.message.empty()
+                ? "ProgramRuntime could not acknowledge its terminal"
+                : acknowledged.error.message;
+            terminal.status =
+                InvocationTerminalStatus::InfrastructureFailure;
+            terminal.cleanup = CleanupStatus::Failed;
+            terminal.error = {
+                acknowledged.error.code ==
+                        WorkerRejectionCode::None
+                    ? WorkerRejectionCode::InternalFailure
+                    : acknowledged.error.code,
+                taint_reason};
+        }
+        else if (terminal.origin_state_epoch !=
+                 active_invocation->origin_epoch)
         {
             taint_reason =
                 "ProgramRuntime returned an invocation completion for a stale StateEpoch";
@@ -1548,6 +2045,12 @@ struct WorkerRuntime::Impl
         {
             (void)active_invocation->cancellation.request_cancellation(
                 CancellationReason::RuntimeFailure);
+            if (program_action_host)
+            {
+                program_action_host->RequestCancellation(
+                    active_invocation->invocation_id,
+                    CancellationReason::RuntimeFailure);
+            }
             if (notify_program_runtime)
             {
                 (void)RequestProgramCancellation(
@@ -1556,6 +2059,7 @@ struct WorkerRuntime::Impl
         }
 
         ShutdownProgramRuntimeOnce();
+        ShutdownProgramActionHostOnce();
 
         for (auto& [_, pending] : pending_execution_commands)
         {
@@ -1589,6 +2093,7 @@ struct WorkerRuntime::Impl
             std::lock_guard lock(mailbox->mutex);
             mailbox->accept_commands = false;
             mailbox->accept_program_events = false;
+            mailbox->accept_program_actions = false;
             mailbox->accept_host_events = false;
         }
 
@@ -1604,6 +2109,7 @@ struct WorkerRuntime::Impl
             return;
         finishing_shutdown = true;
         ShutdownProgramRuntimeOnce();
+        ShutdownProgramActionHostOnce();
 
         SessionOperationReceipt shutdown_receipt;
         if (session)
@@ -1636,6 +2142,7 @@ struct WorkerRuntime::Impl
             std::lock_guard lock(mailbox->mutex);
             mailbox->accept_commands = false;
             mailbox->accept_program_events = false;
+            mailbox->accept_program_actions = false;
             mailbox->accept_host_events = false;
         }
 
@@ -1698,13 +2205,28 @@ struct WorkerRuntime::Impl
         program_runtime->Shutdown();
     }
 
+    void ShutdownProgramActionHostOnce() noexcept
+    {
+        if (!program_action_host || program_action_host_shutdown)
+            return;
+        program_action_host_shutdown = true;
+        program_action_host->Shutdown();
+    }
+
     void StopProgramEventIngress() noexcept
     {
         std::lock_guard lock(mailbox->mutex);
         mailbox->accept_program_events = false;
+        mailbox->accept_program_actions = false;
+        mailbox->program_pump_queued = false;
         for (auto it = mailbox->items.begin(); it != mailbox->items.end();)
         {
-            if (it->kind == MailboxItemKind::ProgramEvent)
+            if (it->kind == MailboxItemKind::ProgramEvent ||
+                it->kind ==
+                    MailboxItemKind::ProgramActionRequest ||
+                it->kind ==
+                    MailboxItemKind::ProgramActionCompletion ||
+                it->kind == MailboxItemKind::ProgramPump)
                 it = mailbox->items.erase(it);
             else
                 ++it;
@@ -1839,12 +2361,16 @@ struct WorkerRuntime::Impl
 
     std::shared_ptr<Mailbox> mailbox;
     std::shared_ptr<ProgramEventIngress> program_event_ingress;
+    std::shared_ptr<ProgramActionIngress> program_action_ingress;
     std::unique_ptr<EmulationSession> session;
     std::unique_ptr<IProgramRuntimePort> program_runtime;
+    std::unique_ptr<program::IProgramActionHost>
+        program_action_host;
     WorkerEventSink event_sink;
     std::shared_ptr<const WorkerRuntimeTestHooks> test_hooks;
     WorkerCapabilityMask capabilities_value = 0;
     bool program_runtime_shutdown = false;
+    bool program_action_host_shutdown = false;
     std::filesystem::path terminal_screenshot_directory;
     std::chrono::milliseconds terminal_screenshot_timeout{3000};
     bool screenshot_on_terminal = false;
@@ -1865,12 +2391,14 @@ WorkerRuntime::WorkerRuntime(
     std::unique_ptr<EmulationSession> session,
     std::unique_ptr<IProgramRuntimePort> program_runtime,
     WorkerEventSink event_sink,
-    std::shared_ptr<const WorkerRuntimeTestHooks> test_hooks)
+    std::shared_ptr<const WorkerRuntimeTestHooks> test_hooks,
+    std::unique_ptr<program::IProgramActionHost> action_host)
     : impl_(std::make_unique<Impl>(
           std::move(session),
           std::move(program_runtime),
           std::move(event_sink),
-          std::move(test_hooks)))
+          std::move(test_hooks),
+          std::move(action_host)))
 {
 }
 

@@ -49,6 +49,36 @@
     <Filter Include="Runner\Runtime">
       <UniqueIdentifier>{8C8AD43C-1F75-4F2B-B4A4-9073D1F36E12}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Runner\Runtime\ProgramRuntime">
+      <UniqueIdentifier>{D0CB5F69-E68D-4704-AE33-F65690A1D31B}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Runner\Runtime\ProgramRuntime\Actions">
+      <UniqueIdentifier>{D366C7E2-F247-461A-951B-5D7D36308400}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Runner\Runtime\ProgramRuntime\Capabilities">
+      <UniqueIdentifier>{9529360C-5326-43B5-84B4-EA45C075F9D2}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Runner\Runtime\ProgramRuntime\Codec">
+      <UniqueIdentifier>{B667D1EE-6285-461E-B95E-3247E6E305BD}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Runner\Runtime\ProgramRuntime\Composition">
+      <UniqueIdentifier>{6DC851BB-5148-445A-89D8-887910A7993C}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Runner\Runtime\ProgramRuntime\Execution">
+      <UniqueIdentifier>{02A3B822-2588-45D5-BA8E-B59E40DFCEA7}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Runner\Runtime\ProgramRuntime\Model">
+      <UniqueIdentifier>{2A66FF8E-357F-4BDF-A066-24E7437D5360}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Runner\Runtime\ProgramRuntime\Registry">
+      <UniqueIdentifier>{D312AB25-D17B-4AA5-9067-E95B6E73B027}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Runner\Runtime\ProgramRuntime\Store">
+      <UniqueIdentifier>{13EE6CB3-50F5-4EB6-9370-1F485012C2EE}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Runner\Runtime\ProgramRuntime\Verify">
+      <UniqueIdentifier>{30BE24B4-B88B-45E9-A54D-6A2B638E1B58}</UniqueIdentifier>
+    </Filter>
     <Filter Include="Runner\Runtime\Execution">
       <UniqueIdentifier>{6D37E415-DCB1-4519-87D5-B847CB9CE2C6}</UniqueIdentifier>
     </Filter>
@@ -378,6 +408,84 @@
     <ClInclude Include="Runner\Runtime\IProgramRuntimePort.h">
       <Filter>Runner\Runtime</Filter>
     </ClInclude>
+    <ClInclude Include="Runner\Runtime\ProgramRuntime\ProgramRuntime.h">
+      <Filter>Runner\Runtime\ProgramRuntime</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\ProgramRuntime\Actions\BoundedStopPointCpuEvaluator.h">
+      <Filter>Runner\Runtime\ProgramRuntime\Actions</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\ProgramRuntime\Actions\CanonicalActionPayload.h">
+      <Filter>Runner\Runtime\ProgramRuntime\Actions</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\ProgramRuntime\Actions\ProgramActionProtocol.h">
+      <Filter>Runner\Runtime\ProgramRuntime\Actions</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\ProgramRuntime\Actions\SessionProgramActionHost.h">
+      <Filter>Runner\Runtime\ProgramRuntime\Actions</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\ProgramRuntime\Actions\SessionResourceBindingTable.h">
+      <Filter>Runner\Runtime\ProgramRuntime\Actions</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\ProgramRuntime\Capabilities\SourceCapabilityPacks.h">
+      <Filter>Runner\Runtime\ProgramRuntime\Capabilities</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\ProgramRuntime\Capabilities\SourceReducers.h">
+      <Filter>Runner\Runtime\ProgramRuntime\Capabilities</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\ProgramRuntime\Codec\ProgramCodecV1.h">
+      <Filter>Runner\Runtime\ProgramRuntime\Codec</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\ProgramRuntime\Composition\CompositionSupport.h">
+      <Filter>Runner\Runtime\ProgramRuntime\Composition</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\ProgramRuntime\Composition\InteractionComposition.h">
+      <Filter>Runner\Runtime\ProgramRuntime\Composition</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\ProgramRuntime\Composition\PredicateComposition.h">
+      <Filter>Runner\Runtime\ProgramRuntime\Composition</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\ProgramRuntime\Composition\SemanticObservationComposition.h">
+      <Filter>Runner\Runtime\ProgramRuntime\Composition</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\ProgramRuntime\Execution\ProgramExecutor.h">
+      <Filter>Runner\Runtime\ProgramRuntime\Execution</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\ProgramRuntime\Model\ProgramIdentifiers.h">
+      <Filter>Runner\Runtime\ProgramRuntime\Model</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\ProgramRuntime\Model\ProgramIr.h">
+      <Filter>Runner\Runtime\ProgramRuntime\Model</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\ProgramRuntime\Model\ProgramModel.h">
+      <Filter>Runner\Runtime\ProgramRuntime\Model</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\ProgramRuntime\Model\ProgramTypes.h">
+      <Filter>Runner\Runtime\ProgramRuntime\Model</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\ProgramRuntime\Model\ProgramValueArena.h">
+      <Filter>Runner\Runtime\ProgramRuntime\Model</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\ProgramRuntime\Registry\ActionRegistry.h">
+      <Filter>Runner\Runtime\ProgramRuntime\Registry</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\ProgramRuntime\Registry\CanonicalActionCatalog.h">
+      <Filter>Runner\Runtime\ProgramRuntime\Registry</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\ProgramRuntime\Registry\CapabilityPackRegistry.h">
+      <Filter>Runner\Runtime\ProgramRuntime\Registry</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\ProgramRuntime\Registry\RegistryResult.h">
+      <Filter>Runner\Runtime\ProgramRuntime\Registry</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\ProgramRuntime\Registry\TypeSchemaRegistry.h">
+      <Filter>Runner\Runtime\ProgramRuntime\Registry</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\ProgramRuntime\Store\ProgramDefinitionStore.h">
+      <Filter>Runner\Runtime\ProgramRuntime\Store</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\ProgramRuntime\Verify\ProgramVerifier.h">
+      <Filter>Runner\Runtime\ProgramRuntime\Verify</Filter>
+    </ClInclude>
     <ClInclude Include="Runner\Runtime\RuntimeTypes.h">
       <Filter>Runner\Runtime</Filter>
     </ClInclude>
@@ -688,6 +796,69 @@
     </ClCompile>
     <ClCompile Include="Runner\Runtime\EmulationSession.cpp">
       <Filter>Runner\Runtime</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Runtime\ProgramRuntime\ProgramRuntime.cpp">
+      <Filter>Runner\Runtime\ProgramRuntime</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Runtime\ProgramRuntime\Actions\BoundedStopPointCpuEvaluator.cpp">
+      <Filter>Runner\Runtime\ProgramRuntime\Actions</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Runtime\ProgramRuntime\Actions\CanonicalActionPayload.cpp">
+      <Filter>Runner\Runtime\ProgramRuntime\Actions</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Runtime\ProgramRuntime\Actions\SessionProgramActionHost.cpp">
+      <Filter>Runner\Runtime\ProgramRuntime\Actions</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Runtime\ProgramRuntime\Actions\SessionResourceBindingTable.cpp">
+      <Filter>Runner\Runtime\ProgramRuntime\Actions</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Runtime\ProgramRuntime\Capabilities\SourceCapabilityPacks.cpp">
+      <Filter>Runner\Runtime\ProgramRuntime\Capabilities</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Runtime\ProgramRuntime\Capabilities\SourceReducers.cpp">
+      <Filter>Runner\Runtime\ProgramRuntime\Capabilities</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Runtime\ProgramRuntime\Codec\ProgramCodecV1.cpp">
+      <Filter>Runner\Runtime\ProgramRuntime\Codec</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Runtime\ProgramRuntime\Composition\CompositionSupport.cpp">
+      <Filter>Runner\Runtime\ProgramRuntime\Composition</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Runtime\ProgramRuntime\Composition\InteractionComposition.cpp">
+      <Filter>Runner\Runtime\ProgramRuntime\Composition</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Runtime\ProgramRuntime\Composition\PredicateComposition.cpp">
+      <Filter>Runner\Runtime\ProgramRuntime\Composition</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Runtime\ProgramRuntime\Composition\SemanticObservationComposition.cpp">
+      <Filter>Runner\Runtime\ProgramRuntime\Composition</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Runtime\ProgramRuntime\Execution\ProgramExecutor.cpp">
+      <Filter>Runner\Runtime\ProgramRuntime\Execution</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Runtime\ProgramRuntime\Model\ProgramIdentifiers.cpp">
+      <Filter>Runner\Runtime\ProgramRuntime\Model</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Runtime\ProgramRuntime\Model\ProgramValueArena.cpp">
+      <Filter>Runner\Runtime\ProgramRuntime\Model</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Runtime\ProgramRuntime\Registry\ActionRegistry.cpp">
+      <Filter>Runner\Runtime\ProgramRuntime\Registry</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Runtime\ProgramRuntime\Registry\CanonicalActionCatalog.cpp">
+      <Filter>Runner\Runtime\ProgramRuntime\Registry</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Runtime\ProgramRuntime\Registry\CapabilityPackRegistry.cpp">
+      <Filter>Runner\Runtime\ProgramRuntime\Registry</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Runtime\ProgramRuntime\Registry\TypeSchemaRegistry.cpp">
+      <Filter>Runner\Runtime\ProgramRuntime\Registry</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Runtime\ProgramRuntime\Store\ProgramDefinitionStore.cpp">
+      <Filter>Runner\Runtime\ProgramRuntime\Store</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Runtime\ProgramRuntime\Verify\ProgramVerifier.cpp">
+      <Filter>Runner\Runtime\ProgramRuntime\Verify</Filter>
     </ClCompile>
     <ClCompile Include="Runner\Runtime\Execution\ExecutionEngine.cpp">
       <Filter>Runner\Runtime\Execution</Filter>

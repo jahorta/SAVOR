@@ -1,0 +1,197 @@
+#include "BoundedStopPointCpuEvaluator.h"
+
+#include <algorithm>
+
+#include "Core/HW/Memmap.h"
+#include "Core/System.h"
+
+namespace savor::runtime::program {
+namespace {
+
+[[nodiscard]] bool ValidWidth(CpuSampleWidth width) noexcept
+{
+    switch (width)
+    {
+    case CpuSampleWidth::U8:
+    case CpuSampleWidth::U16:
+    case CpuSampleWidth::U32:
+    case CpuSampleWidth::U64:
+        return true;
+    }
+    return false;
+}
+
+[[nodiscard]] bool Compare(
+    CpuQualificationComparison comparison,
+    std::uint64_t actual,
+    std::uint64_t expected) noexcept
+{
+    switch (comparison)
+    {
+    case CpuQualificationComparison::Equal:
+        return actual == expected;
+    case CpuQualificationComparison::NotEqual:
+        return actual != expected;
+    case CpuQualificationComparison::Less:
+        return actual < expected;
+    case CpuQualificationComparison::LessEqual:
+        return actual <= expected;
+    case CpuQualificationComparison::Greater:
+        return actual > expected;
+    case CpuQualificationComparison::GreaterEqual:
+        return actual >= expected;
+    }
+    return false;
+}
+
+} // namespace
+
+BoundedStopPointCpuEvaluator::BoundedStopPointCpuEvaluator(
+    std::vector<CpuSampleDescriptor> samples,
+    std::vector<CpuQualificationDescriptor> qualifications) noexcept
+    : samples_(std::move(samples)),
+      qualifications_(std::move(qualifications))
+{
+    if (samples_.size() > kMaxRoutedHitSamples ||
+        qualifications_.size() > kMaxLogicalStopSubscriptions)
+    {
+        return;
+    }
+    for (std::size_t index = 0; index < samples_.size(); ++index)
+    {
+        const CpuSampleDescriptor& sample = samples_[index];
+        if (sample.id == 0 || !ValidWidth(sample.width) ||
+            (sample.source == CpuSampleSource::GuestMemoryAbsolute &&
+                sample.address == 0))
+        {
+            return;
+        }
+        if (std::any_of(
+                samples_.begin(),
+                samples_.begin() + index,
+                [&sample](const CpuSampleDescriptor& candidate) {
+                    return candidate.id == sample.id;
+                }))
+        {
+            return;
+        }
+    }
+    for (std::size_t index = 0;
+        index < qualifications_.size();
+        ++index)
+    {
+        const CpuQualificationDescriptor& qualification =
+            qualifications_[index];
+        if (qualification.id == 0 ||
+            !FindSample(qualification.sample_descriptor_id))
+        {
+            return;
+        }
+        if (std::any_of(
+                qualifications_.begin(),
+                qualifications_.begin() + index,
+                [&qualification](
+                    const CpuQualificationDescriptor& candidate) {
+                    return candidate.id == qualification.id;
+                }))
+        {
+            return;
+        }
+    }
+    valid_ = true;
+}
+
+bool BoundedStopPointCpuEvaluator::Qualify(
+    std::uint32_t qualification_id,
+    const StopPointCpuContext& context) noexcept
+{
+    if (!valid_ || qualification_id == 0)
+        return false;
+    const auto found = std::find_if(
+        qualifications_.begin(),
+        qualifications_.end(),
+        [qualification_id](
+            const CpuQualificationDescriptor& candidate) {
+            return candidate.id == qualification_id;
+        });
+    if (found == qualifications_.end())
+        return false;
+
+    const RoutedHitSample sample =
+        Sample(found->sample_descriptor_id, context);
+    if (!sample.available)
+        return false;
+    return Compare(
+        found->comparison,
+        sample.value & found->mask,
+        found->expected & found->mask);
+}
+
+RoutedHitSample BoundedStopPointCpuEvaluator::Sample(
+    std::uint32_t descriptor_id,
+    const StopPointCpuContext& context) noexcept
+{
+    RoutedHitSample result{descriptor_id, 0, false};
+    if (!valid_)
+        return result;
+    const CpuSampleDescriptor* descriptor = FindSample(descriptor_id);
+    if (!descriptor)
+        return result;
+
+    switch (descriptor->source)
+    {
+    case CpuSampleSource::HitPc:
+        result.value = context.pc;
+        result.available = true;
+        return result;
+    case CpuSampleSource::HitAddress:
+        result.value = context.address;
+        result.available = true;
+        return result;
+    case CpuSampleSource::HitValue:
+        result.value = context.value;
+        result.available = true;
+        return result;
+    case CpuSampleSource::GuestMemoryAbsolute:
+        break;
+    }
+
+    if (!context.system)
+        return result;
+    auto& memory = context.system->GetMemory();
+    const std::size_t width =
+        static_cast<std::size_t>(descriptor->width);
+    if (!memory.GetPointerForRange(descriptor->address, width))
+        return result;
+    switch (descriptor->width)
+    {
+    case CpuSampleWidth::U8:
+        result.value = memory.Read_U8(descriptor->address);
+        break;
+    case CpuSampleWidth::U16:
+        result.value = memory.Read_U16(descriptor->address);
+        break;
+    case CpuSampleWidth::U32:
+        result.value = memory.Read_U32(descriptor->address);
+        break;
+    case CpuSampleWidth::U64:
+        result.value = memory.Read_U64(descriptor->address);
+        break;
+    }
+    result.available = true;
+    return result;
+}
+
+const CpuSampleDescriptor* BoundedStopPointCpuEvaluator::FindSample(
+    std::uint32_t descriptor_id) const noexcept
+{
+    const auto found = std::find_if(
+        samples_.begin(),
+        samples_.end(),
+        [descriptor_id](const CpuSampleDescriptor& candidate) {
+            return candidate.id == descriptor_id;
+        });
+    return found == samples_.end() ? nullptr : &*found;
+}
+
+} // namespace savor::runtime::program

@@ -83,10 +83,13 @@ The router analysis records the resulting conflicts in
 - lines 717-729 state the single-owner invariants; and
 - lines 735-787 stage the session, physical-stop, router, execution, and input-arbitration extractions.
 
-Those observations describe the legacy path that motivated the cutover. Slices 1 through 4 now
-establish the worker actor, session, physical-stop router, execution owner, and generic scoped services
-in current code. The legacy VM remains production-disconnected. `ProgramRuntime`, registered
-game-capability packs, current-program migration, and production `ProgramInvocation` do not yet exist.
+Those observations describe the legacy path that motivated the cutover. Slices 1 through 4 establish
+the worker actor, session, physical-stop router, execution owner, and generic scoped services. Slice 5
+now adds the canonical `ProgramRuntime` model/store/verifier/executor, registries, actor-queued action
+seam, concrete internal `SessionProgramActionHost` service bindings, initial source-backed packs, and
+composition frontends. The legacy VM remains
+production-disconnected. Current-program migration and production `ProgramInvocation` capability
+activation do not yet exist.
 
 ## Core architectural constraints
 
@@ -430,18 +433,20 @@ still never publishes controller state itself.
 
 ### Game capability packs
 
-Dependency Slice 5 introduces Skies-specific capability registration as independently versioned packs:
+Dependency Slice 5 implements the generic `runtime.session` pack and the first independently versioned,
+source-backed Skies packs:
 
-- `soa.battle`;
 - `soa.field`;
-- `soa.navigation`;
-- `soa.cutscene`; and
-- `soa.overworld`.
+- `soa.battle`; and
+- `soa.navigation`.
 
-Packs register types, bounded actions, pure reducers, semantic stop points, and query schemas. They may
-depend on generic session services, but not on workflow storage, `WorkerRuntime`, or another executor.
-Adding a pack does not change existing module hashes unless a module imports that pack's definitions.
-Slice 4 deliberately does not create placeholder game packs or a monolithic game facade.
+They are compatibility-pinned to the supported USA game/executable/address-map identity and register
+exact runtime types, semantic stop points and addresses, coherent battle/navigation query descriptors,
+and the pure `soa.battle.materialize_turn_input` reducer. Packs depend on the generic session catalog,
+not workflow storage, `WorkerRuntime`, or another executor. Adding a pack does not change existing
+module hashes unless a module imports that pack's definitions. `soa.cutscene` and `soa.overworld` remain
+deferred until concrete migrated clients define their source-backed inventories; no placeholder pack or
+monolithic game facade is introduced.
 
 `ProgramKind` may remain as SavorDb job/handler/queue/affinity, semantic, UI, or workflow-family metadata
 during and after migration. Existing persisted affinity and claim data remain unchanged. Once the
@@ -506,9 +511,11 @@ The implementation order is constrained by ownership:
 5. Add `ExecutionEngine` and move every run, step, and tape path beneath it.
 6. Add `InputArbiter`, `StateService`, mutation, movie, capture, screenshot, telemetry, and the
    standalone resource ledger. This ownership seam is established by Slice 4.
-7. Introduce the universal `ProgramRuntime`, generic action surface, and modular capability packs, then
-   migrate phase definitions into the canonical IR.
-8. Delete the remaining compiled `PhaseScriptVM` translation evidence and peer macro runtime after differential
+7. Introduce the universal `ProgramRuntime`, canonical v1 model/codec, generic actor-queued action seam,
+   and initial modular capability packs. This foundation is established by Slice 5.
+8. Migrate phase definitions into canonical IR, then activate production invocation and program-kind
+   adapters through unchanged SavorDb contracts.
+9. Delete the remaining compiled `PhaseScriptVM` translation evidence and peer macro runtime after differential
    parity gates pass.
 
 The breakpoint-router analysis stages 1 through 5 remain useful guidance. Its stage 6 is replaced:
@@ -562,11 +569,16 @@ cutover is underway.
 - Resource tests prove actor-only mutation, atomic receipt acquisition, reverse-order unwind, optional
   diagnostics versus mandatory taint, resumable cleanup, and epoch end/rebind policy independently of
   `ProgramRuntime`.
+- Slice 5 focused guards cover canonical `SPRM`/`SPRI`/`SPRR` version-1 encoding, SHA-256 module
+  identity, exact definition/dependency resolution, verifier rejection, registry atomicity, source-pack
+  inventories, pure battle turn materialization, and ordinary-IR lowering by all three composition
+  frontends. They do not claim a production worker invocation or live game-program run.
 
 ## Deferred work
 
 - Exact C++ class, interface, worker-internal command-queue, coroutine, and smart-pointer spellings.
-- Concrete worker-message framing and capability-negotiation encoding.
+- Future worker-message or capability-negotiation changes beyond fixed WRMS version 1 and canonical
+  program-envelope version 1.
 - Whether the logical worker control actor uses a dedicated OS thread or an equivalent serialized
   executor.
 - Multi-console sessions inside one process; the target assumes exactly one `EmulationSession` per
@@ -575,6 +587,10 @@ cutover is underway.
   concerns and are not modified by this refactor.
 - Visual debugger UI behavior beyond the locked command and ownership boundary.
 - Nonblocking screenshot backend/actor ingress and active in-flight screenshot cancellation.
+- Production construction of `ProgramRuntime` and its implemented `SessionProgramActionHost`, the
+  `ProgramInvocation` worker capability, current-phase module migration, handler-adapter cutover, and a
+  live game-program smoke.
+- Source-backed `soa.cutscene` and `soa.overworld` packs and their game-specific algorithms.
 - Live state-plus-DTM playback continuation, live post-write capture, and rendered interaction checks
   until deterministic program execution/input and unattended authoritative witnesses exist.
 - Performance targets and batching optimizations that do not weaken event ordering or authority.
@@ -594,6 +610,9 @@ cutover is underway.
 - `SavorCore/Runner/InputMacro/IInputMacroHost.h:38-58`
 - `SavorCore/Runner/InputMacro/IInputMacroPlanDriver.h:42-59`
 - `SavorCore/Runner/Breakpoints/BPRegistry.h:15-93`
+- `SavorCore/Runner/Runtime/ProgramRuntime/ProgramRuntime.*`
+- `SavorCore/Runner/Runtime/ProgramRuntime/Actions/ProgramActionProtocol.h`
+- `SavorCore/Runner/Runtime/ProgramRuntime/Capabilities`
 - `D:\SoAInvestigate\Analyses\20260723_2107_savor_worker_breakpoint_router\20260723_2107_savor_worker_breakpoint_router_architecture_summary.txt:83-212`
 - `D:\SoAInvestigate\Analyses\20260723_2107_savor_worker_breakpoint_router\20260723_2107_savor_worker_breakpoint_router_architecture_summary.txt:214-473`
 - `D:\SoAInvestigate\Analyses\20260723_2107_savor_worker_breakpoint_router\20260723_2107_savor_worker_breakpoint_router_architecture_summary.txt:717-787`

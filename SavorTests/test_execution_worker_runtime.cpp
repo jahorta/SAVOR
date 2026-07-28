@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <future>
+#include <iterator>
 #include <latch>
 #include <memory>
 #include <mutex>
@@ -33,6 +34,9 @@ using savor::test_support::ScriptedDolphinBackend;
 using savor::test_support::ScriptedDolphinBackendControl;
 using savor::test_support::FakePhysicalStopBackend;
 using savor::test_support::FakePhysicalStopBackendControl;
+
+thread_local bool g_fake_runtime_start_active = false;
+thread_local bool g_fake_action_dispatch_active = false;
 
 static_assert(!std::is_same_v<StateEpoch, WorkerCommandSequence>);
 static_assert(!std::is_convertible_v<StateEpoch, WorkerCommandSequence>);
@@ -100,13 +104,26 @@ struct FakeProgramRuntimeControl
     int start_count = 0;
     int cancellation_count = 0;
     int shutdown_count = 0;
+    int action_dispatch_count = 0;
+    int action_completion_count = 0;
     bool throw_prepare = false;
     bool throw_start = false;
+    bool throw_action_dispatch = false;
+    bool emit_action_on_start = false;
+    bool complete_action_from_execution_terminal = false;
+    bool complete_invocation_on_action_completion = false;
+    bool terminal_published_by_action_completion = false;
+    bool action_dispatched_inline = false;
+    bool action_completed_inline = false;
+    std::shared_ptr<program::IProgramActionRequestSink> action_sink;
+    std::vector<std::string> action_order;
     ProgramRuntimeSubmission prepare_submission =
         ProgramRuntimeSubmission::Accepted();
     ProgramRuntimeSubmission start_submission =
         ProgramRuntimeSubmission::Accepted();
     ProgramRuntimeSubmission cancellation_submission =
+        ProgramRuntimeSubmission::Accepted();
+    ProgramRuntimeSubmission action_completion_submission =
         ProgramRuntimeSubmission::Accepted();
 
     [[nodiscard]] bool WaitForStarts(int expected)
@@ -128,6 +145,24 @@ struct FakeProgramRuntimeControl
     {
         std::unique_lock lock(mutex);
         return changed.wait_for(lock, 5s, [&] { return shutdown_count >= expected; });
+    }
+
+    [[nodiscard]] bool WaitForActionCompletions(int expected)
+    {
+        std::unique_lock lock(mutex);
+        return changed.wait_for(
+            lock,
+            5s,
+            [&] { return action_completion_count >= expected; });
+    }
+
+    [[nodiscard]] bool WaitForActionDispatches(int expected)
+    {
+        std::unique_lock lock(mutex);
+        return changed.wait_for(
+            lock,
+            5s,
+            [&] { return action_dispatch_count >= expected; });
     }
 
     [[nodiscard]] int StartCount() const
@@ -257,6 +292,9 @@ public:
         std::shared_ptr<IProgramRuntimeEventSink> events) override
     {
         bool should_throw = false;
+        bool emit_action = false;
+        std::shared_ptr<program::IProgramActionRequestSink>
+            action_sink;
         ProgramRuntimeSubmission submission;
         {
             std::lock_guard lock(control_->mutex);
@@ -265,11 +303,42 @@ public:
             control_->last_token = std::move(cancellation);
             control_->event_sink = std::move(events);
             should_throw = control_->throw_start;
+            emit_action = control_->emit_action_on_start;
+            action_sink = control_->action_sink;
             submission = control_->start_submission;
             control_->changed.notify_all();
         }
         if (should_throw)
             throw std::runtime_error("fake invocation failure after admission");
+        if (submission.accepted && emit_action && action_sink)
+        {
+            {
+                std::lock_guard lock(control_->mutex);
+                control_->action_order.push_back(
+                    "runtime_start_publish");
+            }
+            g_fake_runtime_start_active = true;
+            action_sink->Publish(program::ProgramActionRequest{
+                .request_id =
+                    program::ProgramActionRequestId(1),
+                .invocation_id =
+                    request.invocation.invocation_id,
+                .attempt_id = request.invocation.attempt_id,
+                .operation =
+                    program::ProgramHostOperation::InvokeAction,
+                .expected_epoch =
+                    request.invocation.expected_state_epoch,
+                .input = {
+                    program::ProgramValueId(1),
+                    {program::ProgramValue{
+                        program::ProgramValueId(1),
+                        program::TypeRef::Builtin(
+                            program::BuiltinType::Unit),
+                        program::UnitValue{}}}},
+                .scope = program::ProgramScopeId(1),
+            });
+            g_fake_runtime_start_active = false;
+        }
         return submission;
     }
 
@@ -278,8 +347,56 @@ public:
     {
         std::lock_guard lock(control_->mutex);
         ++control_->cancellation_count;
+        control_->action_order.push_back("runtime_cancel");
         control_->changed.notify_all();
+        if (control_->terminal_published_by_action_completion)
+            return ProgramRuntimeSubmission::TerminalAlreadyPublished();
         return control_->cancellation_submission;
+    }
+
+    void BindActionSink(
+        std::shared_ptr<program::IProgramActionRequestSink> sink)
+        override
+    {
+        std::lock_guard lock(control_->mutex);
+        control_->action_sink = std::move(sink);
+    }
+
+    ProgramRuntimeSubmission DeliverActionCompletion(
+        program::ProgramActionCompletion) override
+    {
+        std::shared_ptr<IProgramRuntimeEventSink> sink;
+        std::optional<ProgramInvocationRequest> invocation;
+        ProgramRuntimeSubmission submission;
+        {
+            std::lock_guard lock(control_->mutex);
+            ++control_->action_completion_count;
+            control_->action_completed_inline =
+                g_fake_action_dispatch_active;
+            control_->action_order.push_back("runtime_completion");
+            submission = control_->action_completion_submission;
+            if (submission.accepted &&
+                control_->complete_invocation_on_action_completion)
+            {
+                control_->terminal_published_by_action_completion = true;
+                sink = control_->event_sink;
+                invocation = control_->last_invocation;
+            }
+            control_->changed.notify_all();
+        }
+        if (sink && invocation)
+        {
+            sink->Publish(ProgramInvocationTerminalEvent{
+                invocation->invocation.invocation_id,
+                invocation->invocation.attempt_id,
+                InvocationTerminalStatus::Completed,
+                CleanupStatus::Clean,
+                SessionDisposition::Clean,
+                invocation->invocation.expected_state_epoch,
+                {},
+                {}});
+        }
+        return submission;
     }
 
     void Shutdown() noexcept override
@@ -291,6 +408,123 @@ public:
 
 private:
     std::shared_ptr<FakeProgramRuntimeControl> control_;
+};
+
+class FakeProgramActionHost final
+    : public program::IProgramActionHost
+{
+public:
+    explicit FakeProgramActionHost(
+        std::shared_ptr<FakeProgramRuntimeControl> control)
+        : control_(std::move(control))
+    {
+    }
+
+    program::ProgramActionDispatchResult Dispatch(
+        program::ProgramActionRequest request) override
+    {
+        g_fake_action_dispatch_active = true;
+        bool should_throw = false;
+        {
+            std::lock_guard lock(control_->mutex);
+            ++control_->action_dispatch_count;
+            control_->action_dispatched_inline =
+                g_fake_runtime_start_active;
+            control_->action_order.push_back(
+                "action_host_dispatch");
+            should_throw = control_->throw_action_dispatch;
+        }
+        if (should_throw)
+        {
+            g_fake_action_dispatch_active = false;
+            throw std::runtime_error(
+                "fake program action dispatch failure");
+        }
+        {
+            std::lock_guard lock(control_->mutex);
+            if (control_->complete_action_from_execution_terminal)
+            {
+                pending_request_ = std::move(request);
+                g_fake_action_dispatch_active = false;
+                control_->changed.notify_all();
+                return {
+                    true,
+                    std::nullopt,
+                    {}};
+            }
+        }
+        program::ProgramActionCompletion completion{
+            .request_id = request.request_id,
+            .invocation_id = request.invocation_id,
+            .attempt_id = request.attempt_id,
+            .operation = request.operation,
+            .status =
+                program::ProgramActionCompletionStatus::Completed,
+            .origin_epoch = request.expected_epoch,
+            .resulting_epoch = request.expected_epoch,
+            .output = {
+                program::ProgramValueId(1),
+                {program::ProgramValue{
+                    program::ProgramValueId(1),
+                    program::TypeRef::Builtin(
+                        program::BuiltinType::Unit),
+                    program::UnitValue{}}}},
+            .cleanup = program::ProgramCleanupStatus::Clean,
+            .session_disposition = SessionDisposition::Clean,
+        };
+        g_fake_action_dispatch_active = false;
+        return {
+            true,
+            std::move(completion),
+            {}};
+    }
+
+    void RequestCancellation(
+        InvocationId,
+        CancellationReason) noexcept override
+    {
+    }
+    void HandleExecutionEvent(ExecutionEvent event) override
+    {
+        if (!pending_request_ || !event.terminal)
+            return;
+        const program::ProgramActionRequest request =
+            std::move(*pending_request_);
+        pending_request_.reset();
+        completions_.push_back({
+            .request_id = request.request_id,
+            .invocation_id = request.invocation_id,
+            .attempt_id = request.attempt_id,
+            .operation = request.operation,
+            .status =
+                program::ProgramActionCompletionStatus::Completed,
+            .origin_epoch = request.expected_epoch,
+            .resulting_epoch = event.terminal->state_epoch,
+            .output = {
+                program::ProgramValueId(1),
+                {program::ProgramValue{
+                    program::ProgramValueId(1),
+                    program::TypeRef::Builtin(
+                        program::BuiltinType::Unit),
+                    program::UnitValue{}}}},
+            .cleanup = program::ProgramCleanupStatus::Clean,
+            .session_disposition = SessionDisposition::Clean,
+        });
+    }
+    void Pump() override {}
+    std::vector<program::ProgramActionCompletion>
+    DrainCompletions() override
+    {
+        return std::exchange(
+            completions_,
+            std::vector<program::ProgramActionCompletion>{});
+    }
+    void Shutdown() noexcept override {}
+
+private:
+    std::shared_ptr<FakeProgramRuntimeControl> control_;
+    std::optional<program::ProgramActionRequest> pending_request_;
+    std::vector<program::ProgramActionCompletion> completions_;
 };
 
 class WorkerEventLog
@@ -446,7 +680,8 @@ struct RuntimeHarness
                     std::move(physical_stop_points))),
             std::make_unique<FakeProgramRuntimePort>(program),
             [this](const WorkerEvent& event) { events.Record(event); },
-            std::move(test_hooks));
+            std::move(test_hooks),
+            std::make_unique<FakeProgramActionHost>(program));
     }
 
     [[nodiscard]] WireRequestId NextRequest()
@@ -843,6 +1078,138 @@ TEST(
     EXPECT_EQ(harness.Shutdown().outcome, WorkerCommandOutcome::Completed);
 }
 
+TEST(
+    ExecutionWorkerRuntime,
+    ImmediateProgramActionsStillRoundTripThroughTheActorMailbox)
+{
+    RuntimeHarness harness;
+    {
+        std::lock_guard lock(harness.program->mutex);
+        harness.program->emit_action_on_start = true;
+    }
+    ASSERT_EQ(
+        harness.Open().outcome,
+        WorkerCommandOutcome::Completed);
+    ASSERT_EQ(
+        harness.Invoke(150).outcome,
+        WorkerCommandOutcome::Accepted);
+    ASSERT_TRUE(harness.program->WaitForActionCompletions(1));
+
+    {
+        std::lock_guard lock(harness.program->mutex);
+        EXPECT_EQ(harness.program->action_dispatch_count, 1);
+        EXPECT_EQ(harness.program->action_completion_count, 1);
+        EXPECT_FALSE(harness.program->action_dispatched_inline);
+        EXPECT_FALSE(harness.program->action_completed_inline);
+        EXPECT_EQ(
+            harness.program->action_order,
+            (std::vector<std::string>{
+                "runtime_start_publish",
+                "action_host_dispatch",
+                "runtime_completion"}));
+    }
+
+    ASSERT_TRUE(harness.program->EmitTerminal(
+        InvocationTerminalStatus::Completed));
+    ASSERT_TRUE(harness.events.WaitForTerminalCount(1));
+    EXPECT_EQ(
+        harness.Shutdown().outcome,
+        WorkerCommandOutcome::Completed);
+}
+
+TEST(
+    ExecutionWorkerRuntime,
+    ProgramActionDispatchExceptionTaintsAndTerminatesOnce)
+{
+    RuntimeHarness harness;
+    {
+        std::lock_guard lock(harness.program->mutex);
+        harness.program->emit_action_on_start = true;
+        harness.program->throw_action_dispatch = true;
+    }
+    ASSERT_EQ(
+        harness.Open().outcome,
+        WorkerCommandOutcome::Completed);
+    ASSERT_EQ(
+        harness.Invoke(152).outcome,
+        WorkerCommandOutcome::Accepted);
+    ASSERT_TRUE(harness.events.WaitForTerminalCount(1));
+
+    EXPECT_EQ(
+        harness.runtime->snapshot().state,
+        WorkerState::Tainted);
+    EXPECT_EQ(harness.events.TerminalCount(), 1u);
+    EXPECT_EQ(harness.backend->CloseCount(), 1);
+    EXPECT_EQ(harness.program->ShutdownCount(), 1);
+
+    const WorkerCommandResult shutdown = harness.Shutdown();
+    EXPECT_EQ(shutdown.outcome, WorkerCommandOutcome::Rejected);
+    EXPECT_EQ(harness.events.TerminalCount(), 1u);
+}
+
+TEST(
+    ExecutionWorkerRuntime,
+    RejectedAwaitedActionCompletionTaintsAndTerminatesOnce)
+{
+    RuntimeHarness harness;
+    {
+        std::lock_guard lock(harness.program->mutex);
+        harness.program->emit_action_on_start = true;
+        harness.program->action_completion_submission =
+            ProgramRuntimeSubmission::Rejected(
+                WorkerRejectionCode::InvalidArgument,
+                "fake runtime rejected the awaited completion");
+    }
+    ASSERT_EQ(
+        harness.Open().outcome,
+        WorkerCommandOutcome::Completed);
+    ASSERT_EQ(
+        harness.Invoke(153).outcome,
+        WorkerCommandOutcome::Accepted);
+    ASSERT_TRUE(harness.program->WaitForActionCompletions(1));
+    ASSERT_TRUE(harness.events.WaitForTerminalCount(1));
+
+    EXPECT_EQ(
+        harness.runtime->snapshot().state,
+        WorkerState::Tainted);
+    EXPECT_EQ(harness.events.TerminalCount(), 1u);
+    EXPECT_EQ(harness.backend->CloseCount(), 1);
+    EXPECT_EQ(harness.program->ShutdownCount(), 1);
+
+    const WorkerCommandResult shutdown = harness.Shutdown();
+    EXPECT_EQ(shutdown.outcome, WorkerCommandOutcome::Rejected);
+    EXPECT_EQ(harness.events.TerminalCount(), 1u);
+}
+
+TEST(
+    ExecutionWorkerRuntime,
+    ProgramInvocationCapabilityRequiresAnActorActionHost)
+{
+    auto backend =
+        std::make_shared<ScriptedDolphinBackendControl>();
+    auto program =
+        std::make_shared<FakeProgramRuntimeControl>();
+    WorkerEventLog events;
+    WorkerRuntime runtime(
+        std::make_unique<EmulationSession>(
+            SessionId(151),
+            std::make_unique<ScriptedDolphinBackend>(backend)),
+        std::make_unique<FakeProgramRuntimePort>(program),
+        [&events](const WorkerEvent& event) {
+            events.Record(event);
+        });
+
+    EXPECT_FALSE(HasCapability(
+        runtime.capabilities(),
+        WorkerCapability::ProgramInvocation));
+    const WorkerCommandResult stopped =
+        runtime.Submit(WireRequestId(1), ShutdownCommand{}).get();
+    runtime.WaitStopped();
+    EXPECT_EQ(
+        stopped.outcome,
+        WorkerCommandOutcome::Completed);
+}
+
 TEST(ExecutionWorkerRuntime, CompletionWinningCancelRaceHasOneTerminal)
 {
     RuntimeHarness harness;
@@ -870,6 +1237,52 @@ TEST(ExecutionWorkerRuntime, CompletionWinningCancelRaceHasOneTerminal)
     ASSERT_EQ(barrier.outcome, WorkerCommandOutcome::Completed);
     EXPECT_EQ(harness.events.TerminalCount(), 1);
 
+    EXPECT_EQ(harness.Shutdown().outcome, WorkerCommandOutcome::Completed);
+}
+
+TEST(
+    ExecutionWorkerRuntime,
+    PublishedCanonicalTerminalWinsBeforeItsMailboxEventIsConsumed)
+{
+    RuntimeHarness harness;
+    ASSERT_EQ(harness.Open().outcome, WorkerCommandOutcome::Completed);
+    ASSERT_EQ(harness.Invoke(251).outcome, WorkerCommandOutcome::Accepted);
+    ASSERT_TRUE(harness.program->WaitForStarts(1));
+
+    {
+        std::lock_guard lock(harness.program->mutex);
+        harness.program->cancellation_submission =
+            ProgramRuntimeSubmission::TerminalAlreadyPublished();
+    }
+    const WorkerCommandResult cancel = harness.runtime->Submit(
+        harness.NextRequest(),
+        CancelInvocationCommand{InvocationId(251)}).get();
+    EXPECT_EQ(cancel.outcome, WorkerCommandOutcome::Rejected);
+    EXPECT_EQ(
+        cancel.error.code,
+        WorkerRejectionCode::InvocationNotActive);
+    EXPECT_FALSE(
+        harness.program->LastToken().is_cancellation_requested());
+
+    ASSERT_TRUE(harness.program->EmitTerminal(
+        InvocationTerminalStatus::Completed));
+    ASSERT_TRUE(harness.events.WaitForTerminalCount(1));
+    const auto terminals = harness.events.Terminals();
+    ASSERT_EQ(terminals.size(), 1u);
+    EXPECT_EQ(
+        terminals.front().status,
+        InvocationTerminalStatus::Completed);
+    ASSERT_EQ(
+        harness.runtime->Submit(
+            harness.NextRequest(),
+            CaptureScreenshotCommand{
+                harness.session_id,
+                "terminal-race-barrier.png",
+                100ms}).get().outcome,
+        WorkerCommandOutcome::Completed);
+    EXPECT_EQ(
+        harness.runtime->snapshot().state,
+        WorkerState::Ready);
     EXPECT_EQ(harness.Shutdown().outcome, WorkerCommandOutcome::Completed);
 }
 
@@ -1059,6 +1472,43 @@ TEST(ExecutionWorkerRuntime, CompletionWinningShutdownRaceStillClosesCleanly)
     EXPECT_EQ(harness.backend->CloseCount(), 1);
     EXPECT_EQ(harness.program->ShutdownCount(), 1);
     EXPECT_EQ(harness.events.TerminalCount(), 1);
+}
+
+TEST(
+    ExecutionWorkerRuntime,
+    RetainedTerminalAlsoWinsAQueuedShutdownCancellation)
+{
+    RuntimeHarness harness;
+    ASSERT_EQ(harness.Open().outcome, WorkerCommandOutcome::Completed);
+    ASSERT_EQ(harness.Invoke(403).outcome, WorkerCommandOutcome::Accepted);
+    ASSERT_TRUE(harness.program->WaitForStarts(1));
+    {
+        std::lock_guard lock(harness.program->mutex);
+        harness.program->cancellation_submission =
+            ProgramRuntimeSubmission::TerminalAlreadyPublished();
+    }
+
+    auto shutdown = harness.runtime->Submit(
+        harness.NextRequest(),
+        ShutdownCommand{});
+    ASSERT_TRUE(harness.program->WaitForCancellations(1));
+    EXPECT_EQ(
+        shutdown.wait_for(0ms),
+        std::future_status::timeout);
+    EXPECT_FALSE(
+        harness.program->LastToken().is_cancellation_requested());
+
+    ASSERT_TRUE(harness.program->EmitTerminal(
+        InvocationTerminalStatus::Completed));
+    const WorkerCommandResult result = shutdown.get();
+    harness.runtime->WaitStopped();
+    EXPECT_EQ(result.outcome, WorkerCommandOutcome::Completed);
+    const auto terminals = harness.events.Terminals();
+    ASSERT_EQ(terminals.size(), 1u);
+    EXPECT_EQ(
+        terminals.front().status,
+        InvocationTerminalStatus::Completed);
+    EXPECT_EQ(harness.backend->CloseCount(), 1);
 }
 
 TEST(ExecutionWorkerRuntime, CleanDiagnosticsReuseButTaintRejectsFurtherWork)
@@ -1438,6 +1888,122 @@ TEST(
     }
 
     ASSERT_TRUE(routed_terminal_index.has_value());
+
+    EXPECT_EQ(
+        harness.Shutdown().outcome,
+        WorkerCommandOutcome::Completed);
+}
+
+TEST(
+    ExecutionWorkerRuntime,
+    RoutedActionCompletionPrecedesQueuedInvocationCancellation)
+{
+    constexpr std::uint32_t kWakePc = 0x801dc288u;
+    auto physical_control =
+        std::make_shared<FakePhysicalStopBackendControl>();
+    auto physical_backend =
+        std::make_unique<FakePhysicalStopBackend>(physical_control);
+    FakePhysicalStopBackend* physical_backend_raw =
+        physical_backend.get();
+
+    EmulationSession* actor_session = nullptr;
+    std::atomic<bool> continue_accepted{false};
+    std::atomic<bool> arm_boundary_injection{false};
+    std::latch boundary_open{1};
+    std::latch injection_complete{1};
+    auto hooks = std::make_shared<WorkerRuntimeTestHooks>();
+    hooks->session_opened = [&](EmulationSession& session) {
+        actor_session = &session;
+    };
+    hooks->before_ingress_stability_check = [&]() {
+        if (!arm_boundary_injection.exchange(
+                false,
+                std::memory_order_acq_rel))
+        {
+            return;
+        }
+        const ExecutionSubmissionReceipt submission =
+            actor_session->SubmitExecution(ContinueUntilRequest{
+                .policy = SessionExecutionPolicy(
+                    actor_session->snapshot().state_epoch,
+                    5s),
+                .wake_group = WorkerWakeGroup(kWakePc),
+            });
+        continue_accepted.store(
+            submission.accepted,
+            std::memory_order_release);
+        boundary_open.count_down();
+        injection_complete.wait();
+    };
+
+    RuntimeHarness harness(std::move(physical_backend), hooks);
+    {
+        std::lock_guard lock(harness.program->mutex);
+        harness.program->emit_action_on_start = true;
+        harness.program->complete_action_from_execution_terminal = true;
+        harness.program->complete_invocation_on_action_completion = true;
+    }
+    ASSERT_EQ(
+        harness.Open().outcome,
+        WorkerCommandOutcome::Completed);
+    ASSERT_NE(actor_session, nullptr);
+    ASSERT_EQ(
+        harness.Invoke(451).outcome,
+        WorkerCommandOutcome::Accepted);
+    ASSERT_TRUE(harness.program->WaitForActionDispatches(1));
+
+    std::atomic<bool> requested_break{false};
+    std::thread injector([&]() {
+        boundary_open.wait();
+        harness.backend->SetCoreState(BackendCoreState::Paused);
+        harness.backend->pc = kWakePc;
+        const auto decision =
+            physical_backend_raw->InjectJitPcStop(kWakePc);
+        requested_break.store(
+            decision.request_break,
+            std::memory_order_release);
+        injection_complete.count_down();
+    });
+
+    arm_boundary_injection.store(true, std::memory_order_release);
+    const WorkerCommandResult cancel = harness.runtime->Submit(
+        harness.NextRequest(),
+        CancelInvocationCommand{InvocationId(451)}).get();
+    injector.join();
+
+    EXPECT_TRUE(
+        continue_accepted.load(std::memory_order_acquire));
+    EXPECT_TRUE(requested_break.load(std::memory_order_acquire));
+    EXPECT_EQ(cancel.outcome, WorkerCommandOutcome::Rejected);
+    EXPECT_EQ(
+        cancel.error.code,
+        WorkerRejectionCode::InvocationNotActive);
+    ASSERT_TRUE(harness.program->WaitForActionCompletions(1));
+    ASSERT_TRUE(harness.events.WaitForTerminalCount(1));
+
+    {
+        std::lock_guard lock(harness.program->mutex);
+        const auto completion = std::ranges::find(
+            harness.program->action_order,
+            "runtime_completion");
+        const auto cancellation = std::ranges::find(
+            harness.program->action_order,
+            "runtime_cancel");
+        ASSERT_NE(completion, harness.program->action_order.end());
+        ASSERT_NE(cancellation, harness.program->action_order.end());
+        EXPECT_LT(
+            std::distance(
+                harness.program->action_order.begin(),
+                completion),
+            std::distance(
+                harness.program->action_order.begin(),
+                cancellation));
+    }
+    const auto terminals = harness.events.Terminals();
+    ASSERT_EQ(terminals.size(), 1u);
+    EXPECT_EQ(
+        terminals.front().status,
+        InvocationTerminalStatus::Completed);
 
     EXPECT_EQ(
         harness.Shutdown().outcome,

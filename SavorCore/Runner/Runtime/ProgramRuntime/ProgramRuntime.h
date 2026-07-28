@@ -1,0 +1,88 @@
+#pragma once
+
+#include "../IProgramRuntimePort.h"
+#include "Execution/ProgramExecutor.h"
+#include "Registry/ActionRegistry.h"
+#include "Registry/CapabilityPackRegistry.h"
+#include "Registry/TypeSchemaRegistry.h"
+#include "Store/ProgramDefinitionStore.h"
+#include "Verify/ProgramVerifier.h"
+
+#include <memory>
+#include <optional>
+#include <string>
+
+namespace savor::runtime::program {
+
+struct ProgramRuntimeConfig
+{
+    RuntimeCompatibility compatibility;
+    // Scalar runtime-profile fields are exact compatibility constraints.
+    // Capability packs remain invocation-specific and must exactly equal the
+    // verified dependency lock.
+    RuntimeProfile runtime_profile;
+};
+
+// Canonical typed runtime. It owns only immutable definitions, registries,
+// verification, and invocation continuation data. Session effects cross the
+// actor-marshalled ProgramActionProtocol; this object never obtains an
+// EmulationSession, backend, service, database, or protocol writer.
+class ProgramRuntime final : public IProgramRuntimePort
+{
+public:
+    explicit ProgramRuntime(ProgramRuntimeConfig config);
+    ~ProgramRuntime() override;
+
+    ProgramRuntime(const ProgramRuntime&) = delete;
+    ProgramRuntime& operator=(const ProgramRuntime&) = delete;
+
+    [[nodiscard]] bool initialized() const noexcept;
+    [[nodiscard]] const std::string& initialization_diagnostic()
+        const noexcept;
+
+    [[nodiscard]] WorkerCapabilityMask capabilities()
+        const noexcept override;
+
+    ProgramRuntimeSubmission PrepareModule(
+        ModulePreparationRequest request,
+        std::shared_ptr<IProgramRuntimeEventSink> events) override;
+
+    ProgramRuntimeSubmission StartInvocation(
+        ProgramInvocationRequest request,
+        CancellationToken cancellation,
+        std::shared_ptr<IProgramRuntimeEventSink> events) override;
+
+    ProgramRuntimeSubmission RequestCancellation(
+        InvocationId invocation_id) override;
+
+    void BindActionSink(
+        std::shared_ptr<IProgramActionRequestSink> sink) override;
+
+    ProgramRuntimeSubmission DeliverActionCompletion(
+        ProgramActionCompletion completion) override;
+
+    ProgramRuntimeSubmission AcknowledgeTerminal(
+        InvocationId invocation_id,
+        AttemptId attempt_id) override;
+
+    [[nodiscard]] bool Pump() override;
+    [[nodiscard]] std::optional<
+        std::chrono::steady_clock::time_point>
+    next_wake() const override;
+
+    void Shutdown() noexcept override;
+
+    [[nodiscard]] ProgramDefinitionStore& definitions() noexcept;
+    [[nodiscard]] TypeSchemaRegistry& types() noexcept;
+    [[nodiscard]] ActionRegistry& actions() noexcept;
+    [[nodiscard]] CapabilityPackRegistry& capability_packs() noexcept;
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
+
+[[nodiscard]] std::unique_ptr<ProgramRuntime>
+MakeSupportedSoaUsaProgramRuntime();
+
+} // namespace savor::runtime::program

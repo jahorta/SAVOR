@@ -209,7 +209,8 @@ struct ExecutionEngine::Impl
         bool original_throttle_disabled = false;
         bool input_validated = false;
         std::optional<InputPublicationToken> input_publication;
-        std::optional<InputPublicationToken> last_input_publication;
+        std::optional<InputPublicationEvidence>
+            last_input_publication;
         std::optional<StopSubscriptionGroupHandle> wake_group;
         std::optional<ExecutionTerminalStatus> pending_terminal;
         std::optional<ExecutionError> pending_error;
@@ -633,23 +634,32 @@ struct ExecutionEngine::Impl
                 handlers.back().id == *operation.handler_owner &&
                 InputRelationshipOf(handlers.back().parent.request) ==
                     input_relationship;
-            const InputAdvanceReceipt cancelled = borrowed_from_parent
+            const bool completed =
+                status ==
+                    ExecutionTerminalStatus::RequestedCompletion ||
+                status == ExecutionTerminalStatus::StepsCompleted ||
+                status == ExecutionTerminalStatus::Paused;
+            const InputAdvanceReceipt retired = borrowed_from_parent
                 ? InputAdvanceReceipt{
                       true,
                       InputAdvanceDecision::Complete,
                       {},
                       {}}
+                : completed
+                ? config.input_advance->Complete(
+                      *input_relationship,
+                      epoch)
                 : config.input_advance->Cancel(
                       *input_relationship,
                       epoch);
-            if (!cancelled.ok)
+            if (!retired.ok)
             {
                 status = ExecutionTerminalStatus::CleanupFailure;
                 error = Error(
                     ExecutionErrorCode::InputUnavailable,
-                    cancelled.message.empty()
+                    retired.message.empty()
                         ? "input-advance cleanup failed"
-                        : cancelled.message);
+                        : retired.message);
             }
         }
         if (operation.handler_owner && !handlers.empty() &&
@@ -668,6 +678,8 @@ struct ExecutionEngine::Impl
             Remaining(operation, now());
         terminal.evidence = ConvertEvidence(observed);
         terminal.stop = std::move(stop);
+        terminal.input_publication =
+            operation.last_input_publication;
         terminal.error = std::move(error);
         terminal.integrity = terminal.error
             ? terminal.error.integrity
@@ -1215,17 +1227,29 @@ struct ExecutionEngine::Impl
                 return Error(
                     ExecutionErrorCode::InputUnavailable,
                     prepared.message.empty()
-                        ? "input publication could not be prepared"
-                        : prepared.message);
+                            ? "input publication could not be prepared"
+                            : prepared.message);
+            }
+            if (!prepared.publication_evidence ||
+                prepared.publication_evidence->publication !=
+                    prepared.publication ||
+                !prepared.publication_evidence->lease ||
+                prepared.publication_evidence->epoch != epoch)
+            {
+                return Error(
+                    ExecutionErrorCode::InputUnavailable,
+                    "input publication preparation omitted exact lease, frame, token, or epoch evidence");
             }
             if (operation.last_input_publication &&
-                *operation.last_input_publication == prepared.publication)
+                operation.last_input_publication->publication ==
+                    prepared.publication)
             {
                 return Error(
                     ExecutionErrorCode::InputUnavailable,
                     "input retry reused a prior publication token");
             }
-            operation.last_input_publication = prepared.publication;
+            operation.last_input_publication =
+                *prepared.publication_evidence;
             operation.input_publication = prepared.publication;
         }
         catch (const std::exception& ex)

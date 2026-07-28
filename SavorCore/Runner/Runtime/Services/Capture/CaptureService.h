@@ -124,6 +124,10 @@ public:
     [[nodiscard]] CaptureServiceReceipt ReplaceProfile(
         CaptureAttachmentId attachment,
         std::string profile_json);
+    [[nodiscard]] CaptureServiceReceipt Mark(
+        CaptureAttachmentId attachment,
+        std::string_view id,
+        std::uint64_t value = 0);
 
     [[nodiscard]] CaptureServiceReceipt PrepareStateReplacement(
         StateEpoch expected_epoch);

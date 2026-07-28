@@ -4,7 +4,8 @@
 
 This document describes the target meanings of `ProgramModule`, entrypoint, function,
 `ProgramInstance`, canonical IR, type/schema dependency, verification, and compilation frontend.
-Concrete C++ declarations and serialized module bytes may adapt during implementation; one verified
+Concrete C++ declarations may adapt during later migration, while the implemented
+`SPRM`/`SPRI`/`SPRR` version-1 canonical boundary remains an exact compatibility contract. One verified
 typed model and one executor remain the required architecture.
 
 ## Purpose and non-goals
@@ -24,7 +25,7 @@ This document does not:
   claims, workflow persistence, transaction boundaries, or artifact-storage interfaces;
 - create separate observation, interaction, predicate, or capture-language projects during this
   refactor; the composition libraries use the existing typed module-builder surface;
-- define bytecode packing, canonical hash algorithm, or wire framing;
+- make canonical program envelopes a worker protocol or database persistence format;
 - permit a program to schedule workers or own a durable search frontier;
 - define action service implementations, which are governed by document 04; or
 - preserve the current `PSContext`, opcode numbering, labels, or `ProgramKind` switches as public ABI.
@@ -53,6 +54,31 @@ The current system has several useful seeds but does not provide a general modul
 
 The existing program builders prove that declarative control flow is useful. The current opcode and
 context shapes are migration inputs, not the target ABI.
+
+### Implemented Slice 5 model
+
+Slice 5 implements the canonical typed boundary under
+`SavorCore/Runner/Runtime/ProgramRuntime`:
+
+- `SPRM` version 1 encodes the complete normalized `ProgramModule`;
+- `SPRI` version 1 encodes one typed `ProgramInvocation`;
+- `SPRR` version 1 encodes the three-axis `ProgramResult`;
+- every envelope uses a four-byte magic, little-endian version and payload length, canonical ordering,
+  bounded decoding, and rejection of malformed, noncanonical, oversized, or trailing input; and
+- module identity is SHA-256 over canonical `SPRM` bytes with the declared module hash omitted.
+
+The same implementation provides the bounded value graph/arena, definition store, exact type/action/
+capability registries, verifier, `ProgramExecutor`, and one `ProgramRuntime`. Program action requests
+leave the runtime only through the WorkerRuntime actor mailbox and return as correlated queued
+completions; the runtime obtains neither `EmulationSession` nor a backend/service escape hatch.
+`SessionResourceBindingTable` maps program resource identities onto the existing Slice 4 ledger.
+The concrete internal `SessionProgramActionHost` translates canonical requests into those
+session-owned services and returns completions through the same actor queue.
+
+This implementation checkpoint is not a production activation claim. No current phase has been
+translated, the production worker constructs neither this runtime nor its action host and does not
+advertise `ProgramInvocation`, and a live game-program smoke and production-worker SavorE2E remain
+deferred.
 
 ## Core runtime model
 
@@ -422,11 +448,11 @@ persistence contract.
 Program code cannot catch or ignore a mandatory cleanup failure. The runtime records it and applies
 session-taint policy.
 
-The implemented `SessionResourceLedger` is a standalone actor-owned facility beneath the future
+The implemented `SessionResourceLedger` is a standalone actor-owned facility beneath
 `ProgramRuntime`, not a data structure hidden inside `ProgramExecutor`. Slice 4 initializes one session
 root and permits synthetic nested scopes so every generic service can use the cleanup boundary before
-program execution exists. Slice 5 maps invocation root, lexical, action, and defer scopes onto that same
-ledger without changing its contracts.
+program execution exists. Slice 5 adds actor-owned binding between invocation resource identities and
+that same ledger without changing the ledger's contracts.
 
 The ledger assigns monotonic receipt/acquisition identities and records owner, service, scope,
 acquisition epoch, release descriptor, promotion policy, cleanup requirement, and one of
@@ -482,6 +508,10 @@ receipts; it does not implement a second cleanup ledger.
 
 For this refactor, `ProgramDefinitionStore` is a worker/runtime catalog and cache backed by compiled or
 packaged definitions. It is not SavorDb persistence.
+
+The Slice 5 implementation supplies these exact components and the canonical runtime port. Production
+composition intentionally does not construct that port yet, so the existence of the subsystem does not
+advertise worker invocation capability.
 
 ### Verification
 
@@ -649,8 +679,10 @@ execution path.
 
 ## Deferred work
 
-- Exact textual/binary IR syntax, canonical encoding, and hash algorithm.
-- Concrete C++ builder API and generated type wrappers.
+- Any future authored textual syntax and generated type wrappers. The canonical binary version-1
+  envelopes and SHA-256 module identity are implemented and no longer deferred.
+- A future version-2 encoding, only if an incompatible model change requires one; version 1 remains
+  exact and must not be silently reinterpreted.
 - Authored source language, parser, editor, debugger UI, publication workflow, and access control.
 - A generalized capture-plan authoring language or translation of `savor.capture.profile/1` into
   program IR. Existing profile behavior remains behind `CaptureService` during this refactor.
@@ -662,6 +694,8 @@ execution path.
 - Optional future generic sum/variant types beyond enum-plus-record/optional schemas.
 - Performance-driven batching instructions; any addition must remain generic, typed, and non-domain
   specific.
+- Translation of current phases, production runtime/action-host construction and capability
+  advertisement, a live game-program smoke, and production-worker SavorE2E.
 
 ## Source references
 
@@ -677,6 +711,12 @@ execution path.
 - `SavorCore/Runner/InputMacro/InputMacroRuntime.h:85-145`
 - `SavorCore/Runner/InputMacro/InputMacroRuntime.cpp:45-105`
 - `SavorCore/Runner/InputMacro/InputMacroRuntime.cpp:277-427`
+- `SavorCore/Runner/Runtime/ProgramRuntime/Codec/ProgramCodecV1.*`
+- `SavorCore/Runner/Runtime/ProgramRuntime/Model`
+- `SavorCore/Runner/Runtime/ProgramRuntime/Store/ProgramDefinitionStore.*`
+- `SavorCore/Runner/Runtime/ProgramRuntime/Verify/ProgramVerifier.*`
+- `SavorCore/Runner/Runtime/ProgramRuntime/Execution/ProgramExecutor.*`
+- `SavorCore/Runner/Runtime/ProgramRuntime/ProgramRuntime.*`
 - `planning/ExecutionRuntime/05-invocation-result-versioning-and-artifacts.md`
 - `planning/ExecutionRuntime/07-current-phase-migration-matrix.md`
 - `D:\SoAInvestigate\Analyses\20260723_2107_savor_worker_breakpoint_router\20260723_2107_savor_worker_breakpoint_router_architecture_summary.txt:499-555`

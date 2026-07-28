@@ -311,7 +311,8 @@ hatches. It does not restore `ProgramInvocation`.
   its fresh chronological position, and fails closed on required-event overflow.
 - A standalone actor-owned `SessionResourceLedger` owns session/synthetic scopes, atomic typed receipt
   registration, promotion, reverse-order unwind, cleanup continuations, state-epoch end/rebind policy,
-  and clean/diagnostic/taint disposition. Slice 5 maps invocation scopes onto this same ledger.
+  and clean/diagnostic/taint disposition. Slice 5 adds the program-resource binding seam onto this same
+  ledger.
 
 Game capability packs are not part of Slice 4. They arrive with the typed action/module surface in Slice
 5 and consume these narrow generic services. No broad game facade or placeholder pack is introduced.
@@ -325,26 +326,29 @@ witnesses without a GUI or user observation.
 
 This slice adds no WRMS message or worker capability, no project or project reference, and no SavorDb
 schema, migration, persistence, database-service, queue, claim, workflow, transaction, or artifact-store
-change. Production `ProgramInvocation`, capability packs, DB work, and production-worker SavorE2E remain
-unavailable.
+change. At the Slice 4 checkpoint, production `ProgramInvocation`, capability packs, DB work, and
+production-worker SavorE2E remain unavailable.
 
-### Dependency slice 5: canonical typed ProgramRuntime
+### Dependency slice 5: canonical typed ProgramRuntime (implemented foundation)
 
-**Implement:**
+Slice 5 now establishes the canonical development surface without restoring the production worker path.
 
-- implement `ProgramDefinitionStore`, `ProgramVerifier`, `ProgramExecutor`, `ActionRegistry`, and
-  `TypeSchemaRegistry` under `ProgramRuntime`;
-- register the first modular `soa.battle`, `soa.field`, `soa.navigation`, `soa.cutscene`, and
-  `soa.overworld` capability packs over Slice 4's narrow generic services, without a broad game facade;
-- implement immutable `ProgramModule`, typed CFG/basic-block IR, functions/subprograms, core instructions,
-  structured unwind, and one action-await boundary;
-- implement `ProgramInstance` as data containing control stack, locals, pending continuation, scopes,
-  epoch, emissions, and result construction;
-- validate exact imported action/type/capability closure before activation;
-- implement the three-axis `ProgramResult`;
-- support C++ builders as one frontend that emits canonical modules; and
-- add reusable semantic-observation, interaction, and predicate composition libraries to that
-  builder/frontend surface.
+**Implemented:**
+
+- immutable typed `ProgramModule`, CFG/basic-block IR, `ProgramInvocation`, `ProgramResult`, bounded value
+  graphs/arena, and the `ProgramInstance` execution state;
+- exact little-endian `SPRM`, `SPRI`, and `SPRR` version-1 envelopes with canonical ordering, bounded
+  decoding, and SHA-256 module identity over canonical `SPRM` bytes with the declared hash omitted;
+- `ProgramDefinitionStore`, `ProgramVerifier`, `ProgramExecutor`, `ActionRegistry`,
+  `TypeSchemaRegistry`, and `CapabilityPackRegistry` under one `ProgramRuntime`;
+- an actor-queued program action request/completion seam, resource-binding table, and concrete internal
+  `SessionProgramActionHost` over the existing Slice 4 service/ledger ownership, without giving
+  `ProgramRuntime` an `EmulationSession` or backend;
+- generic `runtime.session` plus source-backed `soa.field`, `soa.battle`, and `soa.navigation` packs for
+  the supported USA compatibility, including coherent battle/navigation queries and the pure
+  `soa.battle.materialize_turn_input` reducer; and
+- reusable semantic-observation, interaction, and predicate composition frontends that lower to
+  ordinary IR before verification.
 
 Semantic observation defines capability-pack-owned `SemanticPointDefinition`, `SemanticAwaitDefinition`,
 `SemanticPointReceipt`, `AddressExpression<T>`, `ObservationDefinition<T>`, and `ObservationUse<T>`.
@@ -360,15 +364,25 @@ consumes typed observation results and lowers pure conditions plus explicit `Che
 same surface. All three composers finish lowering before `ProgramVerifier` validates the resulting
 module and exact dependency closure.
 
-**Completion checks:**
+**Focused checkpoint coverage:**
 
-- verifier rejection cases and deterministic executor traces pass;
-- no domain action is represented by a new core opcode;
-- `ProgramExecutor` is the only program-flow scheduler;
-- actions and reducers cannot access Dolphin or create private loops; and
-- all three composers expose effects, subscriptions, branches, and emissions through the ordinary
-  verified dependency closure and contain no observation, interaction, or predicate opcode, executor,
-  runtime service, query VM, scheduler, or hidden controller.
+- model/value-graph and `SPRM`/`SPRI`/`SPRR` canonical codec guards;
+- definition-store, registry, dependency-closure, and verifier rejection guards;
+- deterministic executor quantum, action suspension/correlation, cancellation/unwind, and budget guards;
+- `ProgramRuntime` preparation/invocation/result, malformed-envelope, stale-epoch, and actor-sink guards;
+- actor action-protocol, resource-binding, and WorkerRuntime queue/correlation guards;
+- exact source-pack inventory, compatibility, query, and pure battle-turn materialization guards; and
+- focused lowering guards for all three composition frontends, including atomic failure and interaction
+  ordering.
+
+This list records the focused guard surface in source; it does not substitute for the current
+solution-build and test-run results.
+
+This checkpoint deliberately does not register `soa.cutscene` or `soa.overworld`, translate a legacy
+phase, construct the runtime or its implemented action host in production `SavorWorker`, advertise
+`ProgramInvocation`, run a live game-program smoke, or run production-worker SavorE2E. It adds no
+SavorDb schema, migration, persistence, database-service, queue, claim, workflow, transaction, or
+artifact-store change. Those omissions are deferred boundaries, not skipped Slice 5 validation claims.
 
 ### Dependency slice 6: legacy translation and current-phase migration
 
@@ -634,15 +648,15 @@ for risky seams and migration mismatches. They inform implementation but are not
 approval process.
 
 Intermediate hard-cutover slices are accepted by solution compilation plus focused guards for the seam
-being changed. Production-worker SavorE2E is intentionally unavailable after slice 1 and is run for final
-functional acceptance only after `ProgramRuntime`, current-program migration, and handler adapters restore
-the complete production path.
+being changed. Production-worker SavorE2E is intentionally unavailable throughout slices 1 through 5
+and is run for final functional acceptance only after current-program migration and handler adapters
+restore the complete production path.
 
 ## Deferred work
 
 - Exact commit/PR grouping and deployment calendar.
-- Final C++ namespaces, file layout, and encoded module/invocation payload schemas beyond the fixed Slice
-  1 `WRMS` frame header.
+- Final production composition details and any future incompatible envelope version beyond the fixed
+  `WRMS` header and canonical `SPRM`/`SPRI`/`SPRR` version-1 formats.
 - Duration of the differential window, subject to phase parity rather than a calendar alone.
 - Performance tuning and worker-pool sizing after correctness cutover.
 - Any generalized capture-plan authoring language or replacement for `savor.capture.profile/1`.
@@ -665,6 +679,7 @@ refactor.
 - `SavorCore/Runner/Script/PhaseScriptOpcodeTable.inc`
 - `SavorCore/Runner/InputMacro/IInputMacroPlanDriver.h`
 - `SavorCore/Phases/Programs/ProgramRegistry.cpp`
+- `SavorCore/Runner/Runtime/ProgramRuntime`
 - `SavorDb/Execution/ProgramDB/ProgramKindDescriptor.h`
 - `SavorDb/Execution/Workflow/WorkflowTerminalAdvancementService.cpp`
 - `SavorDb/Execution/Workflow/WorkflowRecoveryService.cpp`

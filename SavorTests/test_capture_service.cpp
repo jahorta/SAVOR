@@ -67,6 +67,7 @@ struct FakeCaptureState
     std::vector<RoutedStopEvent> observed;
     std::vector<StopDelivery> delivered;
     std::vector<StateEpoch> resumed_epochs;
+    std::vector<std::pair<std::string, std::uint64_t>> markers;
     std::size_t create_count = 0;
     std::size_t start_count = 0;
     std::size_t prepare_count = 0;
@@ -183,6 +184,16 @@ public:
             .action = ProbeRouterReconcileAction::ReplaceGroup,
             .replacement = state_->definition,
         };
+        return true;
+    }
+
+    bool EmitMarker(
+        std::string_view id,
+        std::uint64_t value) override
+    {
+        if (!state_->active || id.empty())
+            return false;
+        state_->markers.emplace_back(id, value);
         return true;
     }
 
@@ -398,6 +409,38 @@ TEST(CaptureService, OwnsOneOpaquePassiveAttachment)
         duplicate.error.code,
         CaptureServiceErrorCode::AlreadyAttached);
     EXPECT_EQ(fixture.capture_state->create_count, 1u);
+}
+
+TEST(CaptureService, EmitsMarkerThroughAttachedPassiveProfile)
+{
+    ServiceFixture fixture;
+    const auto attached = fixture.Attach();
+    ASSERT_TRUE(attached.ok) << attached.error.message;
+
+    const auto marked = fixture.service.Mark(
+        attached.attachment,
+        "program.phase",
+        17);
+    ASSERT_TRUE(marked.ok) << marked.error.message;
+    ASSERT_EQ(fixture.capture_state->markers.size(), 1u);
+    EXPECT_EQ(
+        fixture.capture_state->markers[0],
+        std::make_pair(std::string("program.phase"), std::uint64_t{17}));
+
+    EXPECT_EQ(
+        fixture.service.Mark(
+            CaptureAttachmentId(999),
+            "stale",
+            0)
+            .error.code,
+        CaptureServiceErrorCode::StaleAttachment);
+    EXPECT_EQ(
+        fixture.service.Mark(
+            attached.attachment,
+            {},
+            0)
+            .error.code,
+        CaptureServiceErrorCode::InvalidArgument);
 }
 
 TEST(
