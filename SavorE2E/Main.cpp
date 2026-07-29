@@ -94,7 +94,8 @@ int main(int argc, char** argv) {
                     1,
                     std::numeric_limits<std::uint32_t>::max())),
             .required_capabilities = savor::runtime::CapabilityMask(
-                savor::runtime::WorkerCapability::ProgramInvocation),
+                savor::runtime::WorkerCapability::WorksetDispatch),
+            .require_complete_exact_catalog = true,
         });
     if (!worker_preflight) {
         std::cerr << "[FAIL] " << worker_preflight.message << "\n";

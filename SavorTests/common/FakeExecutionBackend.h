@@ -22,7 +22,6 @@ struct FakeExecutionBackendControl
         runtime::BackendExecutionCapability::Pause |
         runtime::BackendExecutionCapability::Resume |
         runtime::BackendExecutionCapability::FrameStep |
-        runtime::BackendExecutionCapability::ExactInstructionStep |
         runtime::BackendExecutionCapability::ViObservation |
         runtime::BackendExecutionCapability::MovieObservation |
         runtime::BackendExecutionCapability::ThrottleControl;
@@ -34,8 +33,6 @@ struct FakeExecutionBackendControl
     runtime::BackendResult pause_result = runtime::BackendResult::Success();
     runtime::BackendResult resume_result = runtime::BackendResult::Success();
     runtime::BackendResult frame_step_result = runtime::BackendResult::Success();
-    runtime::BackendResult instruction_step_result =
-        runtime::BackendResult::Success();
     runtime::BackendResult throttle_result = runtime::BackendResult::Success();
 
     void SetCapabilities(runtime::BackendExecutionCapabilityMask value);
@@ -46,7 +43,6 @@ struct FakeExecutionBackendControl
     void SetPauseResult(runtime::BackendResult value);
     void SetResumeResult(runtime::BackendResult value);
     void SetFrameStepResult(runtime::BackendResult value);
-    void SetInstructionStepResult(runtime::BackendResult value);
     void SetThrottleResult(runtime::BackendResult value);
 
     [[nodiscard]] std::vector<std::string> Calls() const;
@@ -68,7 +64,6 @@ public:
     runtime::BackendResult RequestPause() override;
     runtime::BackendResult Resume() override;
     runtime::BackendResult BeginFrameStep() override;
-    runtime::BackendResult BeginExactInstructionStep() override;
     runtime::BackendResult SetThrottleDisabled(bool disabled) override;
 
 private:

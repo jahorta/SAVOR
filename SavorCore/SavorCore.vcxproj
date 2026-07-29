@@ -306,6 +306,13 @@
     <ClInclude Include="Runner\Runtime\StopPoints\StopPointRouter.h" />
     <ClInclude Include="Runner\Runtime\StopPoints\StopPointTypes.h" />
     <ClInclude Include="Runner\Runtime\WorkerRuntime.h" />
+    <ClInclude Include="Runner\Runtime\Worksets\ProgramBaseline.h" />
+    <ClInclude Include="Runner\Runtime\Worksets\StateArtifactFinalizer.h" />
+    <ClInclude Include="Runner\Runtime\Worksets\SessionStateCache.h" />
+    <ClInclude Include="Runner\Runtime\Worksets\WorkerCompletionLedger.h" />
+    <ClInclude Include="Runner\Runtime\Worksets\WorksetTypes.h" />
+    <ClInclude Include="Runner\Runtime\Worksets\WorksetStager.h" />
+    <ClInclude Include="Runner\Runtime\Worksets\WorksetWireCodec.h" />
     <ClInclude Include="Runner\Script\ContextKeys\BattleRunnerKeys.reg.h" />
     <ClInclude Include="Runner\Script\ContextKeys\BattleCompletionKeys.reg.h" />
     <ClInclude Include="Runner\Script\ContextKeys\BattleEndResultsKeys.reg.h" />
@@ -420,6 +427,13 @@
     <ClCompile Include="Runner\Runtime\StopPoints\PhysicalStopPointManager.cpp" />
     <ClCompile Include="Runner\Runtime\StopPoints\StopPointRouter.cpp" />
     <ClCompile Include="Runner\Runtime\WorkerRuntime.cpp" />
+    <ClCompile Include="Runner\Runtime\Worksets\ProgramBaseline.cpp" />
+    <ClCompile Include="Runner\Runtime\Worksets\StateArtifactFinalizer.cpp" />
+    <ClCompile Include="Runner\Runtime\Worksets\SessionStateCache.cpp" />
+    <ClCompile Include="Runner\Runtime\Worksets\WorkerCompletionLedger.cpp" />
+    <ClCompile Include="Runner\Runtime\Worksets\WorksetTypes.cpp" />
+    <ClCompile Include="Runner\Runtime\Worksets\WorksetStager.cpp" />
+    <ClCompile Include="Runner\Runtime\Worksets\WorksetWireCodec.cpp" />
     <ClCompile Include="Runner\InputMacro\InputMacroRuntime.cpp" />
     <ClCompile Include="Runner\InputMacro\Providers\BattleCommandInputMacroProvider.cpp" />
     <ClCompile Include="Runner\InputMacro\Providers\BattleCompletionInputMacroProvider.cpp" />

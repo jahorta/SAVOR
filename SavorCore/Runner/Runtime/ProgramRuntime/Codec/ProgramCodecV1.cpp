@@ -2167,6 +2167,47 @@ bool ReadResultBody(Reader& reader, ProgramResult& result)
         ReadProvenance(reader, result.provenance);
 }
 
+[[nodiscard]] bool AuthoritativeGraph(
+    const ProgramValueGraph& graph) noexcept
+{
+    return std::ranges::none_of(
+        graph.values,
+        [](const ProgramValue& value) {
+            const auto* artifact =
+                std::get_if<ArtifactReferenceValue>(
+                    &value.payload);
+            return artifact && !artifact->complete;
+        });
+}
+
+[[nodiscard]] bool AuthoritativeResult(
+    const ProgramResult& result) noexcept
+{
+    if ((result.domain_outcome &&
+         !AuthoritativeGraph(*result.domain_outcome)) ||
+        (result.output && !AuthoritativeGraph(*result.output)) ||
+        std::ranges::any_of(
+            result.emissions,
+            [](const ProgramEmission& emission) {
+                return !emission.complete ||
+                    !AuthoritativeGraph(emission.value);
+            }) ||
+        std::ranges::any_of(
+            result.artifacts,
+            [](const ProgramArtifact& artifact) {
+                return !artifact.artifact.complete;
+            }) ||
+        std::ranges::any_of(
+            result.provenance.source_artifacts,
+            [](const ArtifactReferenceValue& artifact) {
+                return !artifact.complete;
+            }))
+    {
+        return false;
+    }
+    return true;
+}
+
 template <typename BodyWriter>
 EncodeResult EncodeEnvelope(
     const std::array<Byte, 4>& magic,
@@ -2580,6 +2621,13 @@ EncodeResult EncodeProgramResultV1(
     const ProgramResult& result,
     const CodecLimits& limits)
 {
+    if (!AuthoritativeResult(result))
+    {
+        return {
+            {CodecError::InvalidValue,
+             "program result contains an incomplete internal artifact"},
+            {}};
+    }
     return EncodeEnvelope(
         kResultMagic,
         limits,

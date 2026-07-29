@@ -205,6 +205,8 @@ TEST(WorkerProtocolV1, RoundTripsEveryTypedPayload)
         0x1020304050607080ull,
         "savor-worker-test",
     });
+    ExpectPayloadRoundTrip(RuntimeManifestPayload{
+        .encoded_manifest = {0x01, 0x02, 0x03}});
 
     ExpectPayloadRoundTrip(OpenSessionPayload{
         "C:/runtime",
@@ -222,6 +224,7 @@ TEST(WorkerProtocolV1, RoundTripsEveryTypedPayload)
         .revision = 7,
         .canonical_hash = "sha256:0123456789abcdef",
         .format_version = 3,
+        .development_only = true,
         .encoded_module = { 0x00, 0x10, 0x20, 0xff },
     });
 
@@ -235,6 +238,23 @@ TEST(WorkerProtocolV1, RoundTripsEveryTypedPayload)
         .expected_state_epoch = 55,
         .encoded_invocation = { 0xde, 0xad, 0xbe, 0xef },
     });
+    ExpectPayloadRoundTrip(SubmitWorksetPayload{
+        .encoded_workset = {0x57, 0x53, 0x01}});
+    ExpectPayloadRoundTrip(CancelWorksetItemPayload{
+        .workset_id = 500,
+        .item_id = 3,
+        .reason = "cancel item"});
+    ExpectPayloadRoundTrip(CancelWorksetPayload{
+        .workset_id = 500,
+        .reason = "cancel workset"});
+    ExpectPayloadRoundTrip(AcknowledgeTerminalPayload{
+        .workset_id = 500,
+        .item_id = 3,
+        .item_ordinal = 2,
+        .invocation_id = 101,
+        .attempt_id = 7,
+        .terminal_id = 900,
+        .terminal_order = 44});
 
     ExpectPayloadRoundTrip(CancelInvocationPayload{
         101,
@@ -312,6 +332,9 @@ TEST(WorkerProtocolV1, RoundTripsEveryTypedPayload)
     ExpectPayloadRoundTrip(InvocationProgressPayload{
         .invocation_id = 101,
         .attempt_id = 7,
+        .workset_id = 500,
+        .item_id = 3,
+        .item_ordinal = 2,
         .ordinal = 9,
         .progress = { 0x01, 0x00, 0x01, 0x00 },
     });
@@ -327,6 +350,48 @@ TEST(WorkerProtocolV1, RoundTripsEveryTypedPayload)
         .message = "backend stopped responding",
         .result = { 0xca, 0xfe },
     });
+    ExpectPayloadRoundTrip(WorksetStatePayload{
+        .outbound_sequence = 31,
+        .workset_id = 500,
+        .state = WorksetStateCode::Running,
+        .next_item_ordinal = 2});
+    ExpectPayloadRoundTrip(WorksetItemStartedPayload{
+        .outbound_sequence = 32,
+        .workset_id = 500,
+        .item_id = 3,
+        .item_ordinal = 2,
+        .invocation_id = 101,
+        .attempt_id = 7,
+        .session_id = 55,
+        .state_epoch = 4,
+        .baseline_sha256 = std::string(64, 'a'),
+        .baseline_lineage = "seed-probe/neutral",
+        .baseline_restored = true});
+    ExpectPayloadRoundTrip(WorksetItemTerminalPayload{
+        .outbound_sequence = 33,
+        .workset_id = 500,
+        .item_id = 3,
+        .item_ordinal = 2,
+        .invocation_id = 101,
+        .attempt_id = 7,
+        .terminal_id = 900,
+        .terminal_order = 44,
+        .status = InvocationTerminalStatus::Succeeded,
+        .session_disposition = SessionDispositionCode::Clean,
+        .state_epoch = 4,
+        .unstarted = false,
+        .result = {0xaa, 0xbb}});
+    ExpectPayloadRoundTrip(WorksetCreditsPayload{
+        .outbound_sequence = 34,
+        .available_item_credits = 61,
+        .active_and_staged_items = 3,
+        .retained_terminals = 1});
+    ExpectPayloadRoundTrip(WorksetSummaryPayload{
+        .outbound_sequence = 35,
+        .workset_id = 500,
+        .item_count = 3,
+        .completed_count = 2,
+        .unstarted_count = 1});
 
     ExpectPayloadRoundTrip(HostEventPayload{
         55,
@@ -392,6 +457,27 @@ TEST(WorkerProtocolV1, KeepsExecutionControlAdditiveAndDirectional)
         MessageDirection::WorkerToParent);
 }
 
+TEST(WorkerProtocolV1, KeepsWorksetTransportAdditiveAndDirectional)
+{
+    EXPECT_EQ(ProtocolVersion, 1u);
+    EXPECT_TRUE(IsKnownMessageKind(MessageKind::SubmitInvocation));
+    EXPECT_TRUE(IsKnownMessageKind(MessageKind::RuntimeManifest));
+    EXPECT_TRUE(IsKnownMessageKind(MessageKind::SubmitWorkset));
+    EXPECT_TRUE(IsKnownMessageKind(MessageKind::CancelWorksetItem));
+    EXPECT_TRUE(IsKnownMessageKind(MessageKind::CancelWorkset));
+    EXPECT_TRUE(IsKnownMessageKind(MessageKind::AcknowledgeTerminal));
+    EXPECT_TRUE(IsKnownMessageKind(MessageKind::WorksetItemTerminal));
+    EXPECT_EQ(
+        DirectionOf(MessageKind::SubmitWorkset),
+        MessageDirection::ParentToWorker);
+    EXPECT_EQ(
+        DirectionOf(MessageKind::RuntimeManifest),
+        MessageDirection::WorkerToParent);
+    EXPECT_EQ(
+        DirectionOf(MessageKind::WorksetItemTerminal),
+        MessageDirection::WorkerToParent);
+}
+
 TEST(WorkerProtocolV1, RejectsInvalidExecutionControlWithoutPublishingOutput)
 {
     const ControlExecutionPayload valid{
@@ -417,6 +503,21 @@ TEST(WorkerProtocolV1, RejectsInvalidExecutionControlWithoutPublishingOutput)
     const auto encoded_invalid = EncodePayload(invalid, unchanged_output);
     EXPECT_EQ(encoded_invalid.error, PayloadError::InvalidEnumValue);
     EXPECT_EQ(unchanged_output, (std::vector<std::uint8_t>{0x5a}));
+
+    auto reserved = valid;
+    reserved.control = ExecutionControlKind::ReservedGuestInstruction;
+    unchanged_output = {0x6b};
+    const auto encoded_reserved =
+        EncodePayload(reserved, unchanged_output);
+    EXPECT_EQ(encoded_reserved.error, PayloadError::InvalidEnumValue);
+    EXPECT_EQ(unchanged_output, (std::vector<std::uint8_t>{0x6b}));
+
+    encoded.clear();
+    ASSERT_TRUE(EncodePayload(valid, encoded));
+    encoded[0] = static_cast<std::uint8_t>(
+        ExecutionControlKind::ReservedGuestInstruction);
+    const auto decoded_reserved = DecodePayload(encoded, unchanged);
+    EXPECT_EQ(decoded_reserved.error, PayloadError::InvalidEnumValue);
 }
 
 TEST(WorkerProtocolV1, PreservesCompleteEncodedEnvelopeMetadata)
@@ -461,6 +562,9 @@ TEST(WorkerProtocolV1, PreservesAttemptIdentityAcrossProgressAndTerminal)
     const InvocationProgressPayload progress{
         .invocation_id = invocation_id,
         .attempt_id = retry_attempt,
+        .workset_id = 500,
+        .item_id = 3,
+        .item_ordinal = 2,
         .ordinal = 12,
         .progress = { 0x44 },
     };

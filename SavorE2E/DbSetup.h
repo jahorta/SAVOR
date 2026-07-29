@@ -41,7 +41,10 @@ public:
         const CliOptions& options,
         std::string* error_out,
         EventLineCallback event_line_callback = {},
-        bool strict_smoke_terminal_on_failure = false);
+        bool strict_smoke_terminal_on_failure = false,
+        std::shared_ptr<
+            savor::db::execution::workflow::CoordinatorItemCreditSource>
+            item_credit_source = {});
     void Stop();
     [[nodiscard]] bool IsRunning() const;
     [[nodiscard]] savor::db::execution::workflow::WorkflowCoordinatorTelemetry SnapshotTelemetry() const;

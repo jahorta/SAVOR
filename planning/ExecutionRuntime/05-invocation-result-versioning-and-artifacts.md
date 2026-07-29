@@ -81,10 +81,14 @@ The normative conceptual type catalog is:
 |---|---|
 | `WorkerWorksetId` | Worker-protocol identity for one accepted transient workset |
 | `WorkerWorksetItemId` plus stable item ordinal | Exact item identity and immutable order within that workset |
-| `WorkerWorksetExecutionKey` | Exact module/revision/hash/entrypoint and dependency closure; runtime profile, game/disc/backend compatibility, and capability packs; exact source-state identity/hash/lineage and movie-continuation policy; common execution/input/capture/movie/mutation and other relevant service policies |
+| `WorkerWorksetExecutionKey` | Exact module/revision/hash/entrypoint and dependency closure; runtime profile, game/disc/backend compatibility, and capability packs; exact `ProgramBaselineKey` covering source-state identity/hash/lineage, movie continuation, and declared derived state; common execution/input/capture/movie/mutation and other relevant service policies |
 | `WorkerWorksetDefinition` | Immutable workset ID, execution key, limits, common preparation policy, and complete ordered item set |
 | `WorksetItemTemplate` | Immutable item ID/ordinal, invocation/attempt/cancellation correlation, one typed input record, per-item budget, and provenance awaiting actor-owned session/epoch binding |
 | `WorkerWorksetLimits` | Maximum item count, encoded bytes, aggregate declared child budgets, resident/staged item capacity, item-capacity credits, immutable-state/finalization bytes, and completion-ledger count and bytes |
+| `ProgramBaselineDefinition` | Complete ordered reusable starting condition for a multi-item workset |
+| `ProgramBaselineComponent` | One savestate, exact movie-continuation, or runtime-facing program-kind adapter-declared derived-state component |
+| `ProgramBaselineKey` | Exact identity of the complete ordered component set and its compatibility |
+| `PreparedProgramBaselineReceipt` | Atomic proof that every component was prepared for one exact session/epoch before admission |
 | Staged successor correlation | Exact immutable package/request identity tying one accepted but non-mutating successor package to its jobs, claim/lease authority, cancellation, and eventual promotion or rejection |
 | Typed state and receipts | Distinct workset/item state, exact item/workset cancellation, item-terminal acknowledgement, item terminal, workset terminal, and final drain receipts |
 
@@ -108,25 +112,34 @@ One workset may own the session while at most one immutable successor package is
 decode framing, validate the complete definition and item schemas, pin exact verified module/dependency
 objects, and acquire host-only immutable state-cache leases. It cannot boot, restore, capture a
 baseline, acquire an invocation/session effect, publish `JobStarted`, or create a `ProgramInstance`.
-Promotion occurs only after the active workset releases its session scope and the coordinator's exact
-claim/lease/cancellation authority is revalidated. This is bounded double buffering, not dynamic refill.
+Claim/start authority for every finite member is validated before `SubmitWorkset` and acceptance.
+Promotion occurs after the active workset releases its session scope, the session and local credits are
+clean, and no exact cancellation or lease-loss notice has arrived; it does not synchronously revalidate
+with the coordinator. This is bounded double buffering, not dynamic refill.
 
 Before common state preparation, `ProgramRuntime` preflights the shared module/dependency/capability
 closure once and validates every item's input schema and static policy/budgets without constructing a
 `ProgramInstance`. The resulting exact verified entrypoint/closure may be pinned by the active and
 staged packages; it is not re-resolved or re-verified for each child. A multi-item workset acquires or
-creates one immutable reusable baseline cache entry after common preparation; a one-item workset does
-not perform an unnecessary baseline capture. Immediately before each item starts, `WorkerRuntime`
-binds its template to the exact current `SessionId` and `StateEpoch`. The first item uses the
-already-prepared state; every later item follows a successful restore of the multi-item baseline and
-therefore binds a fresh epoch. That binding fills only actor-owned session/epoch identity and cannot
-rewrite any immutable template field.
+creates one composite `ProgramBaselineDefinition` after common preparation; a one-item workset does not
+perform an unnecessary baseline capture. Its `ProgramBaselineKey` covers the ordered savestate, exact
+movie continuation, and adapter-declared derived-state components. Immediately before each item starts,
+`WorkerRuntime` binds its template to the exact current `SessionId` and `StateEpoch`. The first item uses
+the already-prepared state; every later item follows one successful composite `RestoreBaseline`, receives
+a `PreparedProgramBaselineReceipt`, and therefore binds a fresh epoch. That binding fills only actor-
+owned session/epoch identity and cannot rewrite any immutable template field.
 
 Every accepted item consumes one negotiated item-capacity credit until its exact terminal or unstarted
 disposition has been durably acknowledged and all completion-ledger storage is released. Resident
 pending, staged, active, asynchronously finalizing, ready-but-order-blocked, and unacknowledged-terminal
 states are phases of the same credit rather than additional capacity. An item cannot be admitted unless
 the worker has reserved the worst-case count/byte capacity declared by its limits.
+
+The initial configurable limits are 16 items and 32 MiB encoded bytes per workset; four hours aggregate
+declared active budget; 64 total worker item credits and 32 active-plus-staged items; 16 immutable state
+cache entries/512 MiB; two finalizer threads with eight pending captures/256 MiB; and 32 retained
+authoritative terminals/128 MiB. The coordinator may buffer at most one additional workset per
+negotiated Ready worker, and at most two workers start concurrently.
 
 ### ProgramInvocation
 
@@ -154,9 +167,10 @@ State policies have fixed semantics:
 - **Boot** creates or rebuilds the session from the named runtime profile. It accepts no implicit prior
   emulation state.
 - **LoadArtifact** restores one explicitly named immutable `StateArtifact` before the entrypoint begins.
-- **RestoreBaseline** names one immutable baseline artifact and guarantees that the entrypoint starts from
-  it. Deliberate intra-invocation retry restores must request the same service explicitly and advance the
-  epoch; they are not hidden VM behavior.
+- **RestoreBaseline** names one exact `ProgramBaselineDefinition`/`ProgramBaselineKey` and guarantees that
+  the entrypoint starts only after the savestate, exact movie continuation, and every adapter-declared
+  derived-state component are prepared together. Deliberate intra-invocation retry restores must request
+  the same composite service explicitly and advance the epoch; they are not hidden VM behavior.
 - **ContinueSession** uses the current session only when the invocation supplies the expected session
   lineage and `StateEpoch`. A mismatch rejects the invocation before user program logic runs.
 
@@ -164,10 +178,11 @@ An entrypoint may reject a state policy it does not declare. There is no implici
 ambient workflow result.
 
 For workset admission, common preparation satisfies the declared state policy once. A multi-item
-workset captures the reusable baseline; a one-item workset does not. The resolved child invocation
-retains that preparation identity/provenance and an exact current-session/epoch guard;
+workset captures the reusable composite baseline; a one-item workset does not. The resolved child
+invocation retains that preparation identity/provenance and an exact current-session/epoch guard;
 `ProgramRuntime` does not repeat the common load for the first item. Later items start only after
-`StateService` restores the same multi-item baseline and the actor binds the resulting epoch.
+`RestoreBaseline` returns one `PreparedProgramBaselineReceipt` for the complete component set and the
+actor binds the resulting epoch. Each complete successful restore advances `StateEpoch` exactly once.
 
 ### ProgramInstance
 
@@ -365,7 +380,8 @@ which evidence and decision produced a branch or emission.
 The target protocol needs logical operations for:
 
 1. capability and runtime-profile negotiation;
-2. negotiated item/count/byte capacity credits and later credit-state updates;
+2. catalog negotiation as `Partial` or `CompleteExact`, plus negotiated item/count/byte capacity credits
+   and later credit-state updates;
 3. module transfer or cache lookup by hash;
 4. module verification and activation acknowledgement;
 5. unified `SubmitWorkset` submission for one to many items, including exact active-or-staged package
@@ -407,10 +423,15 @@ acknowledged, but that summary does not retain session ownership.
 template into a one-item workset and uses this same operation, correlation, result, and acknowledgement
 path.
 
-Concrete framing/version assignment remains an implementation-cutover concern. It must preserve this
-single workset path and must not reintroduce separate built-in, authored, or single-item execution modes.
-The former `SubmitInvocation` discriminator is reserved and receiving it rejects the frame before
-session mutation; it is not renumbered or reused.
+These operations extend WRMS version 1 additively; the protocol version remains 1. They preserve this
+single workset path and do not reintroduce separate built-in, authored, or single-item execution modes.
+The former `SubmitInvocation` discriminator and the removed guest-instruction-step discriminator remain
+reserved. Receiving either rejects the frame before session mutation; neither is renumbered or reused.
+
+The pre-6A process seam reports `Partial` while it transfers and executes one canonical test-only module
+through the ordinary preparation protocol. That module is never one of the nine production modules.
+Slice 7 permits DB activation only for `CompleteExact`: exactly the nine planned production module
+IDs/hashes, their exact dependency manifest, and no extra installed module.
 
 ### Worker affinity
 
@@ -476,9 +497,11 @@ stored representation.
 - A promoted immutable state capture may finish finalizing after its producing invocation/workset scope
   releases. Publication/validation failure assembles one infrastructure-failed terminal at its reserved
   sequence; it cannot revise an earlier success because no authoritative terminal existed.
-- Loss of a staged package's claim/lease authority rejects or cancels that package before promotion and
-  session mutation. Loss discovered after an item starts follows the existing attempt/lease and
-  idempotent-terminal recovery rules.
+- An exact claim/lease-loss, supersession, or user-cancellation notice for an accepted active or staged
+  package cancels the affected item/workset asynchronously. In the absence of such a notice, accepted
+  authority persists through staged promotion and ordered child admission without a coordinator
+  roundtrip. Loss discovered after an item starts follows ordinary exact-invocation cancellation plus
+  the existing attempt/lease and idempotent-terminal recovery rules.
 - Artifacts emitted before terminal failure remain incomplete unless their schema declares an independently
   atomic publication transaction.
 - Transport loss does not create a second “unknown” program success. Existing SavorDb durable-attempt
@@ -532,11 +555,16 @@ result-publication, and recovery mechanisms remain unchanged.
 - A mixed `WorkerWorksetExecutionKey`, dynamic item append/reorder, or dependency on a prior item result
   rejects before common state preparation.
 - The first item uses prepared state without a second restore; every later admitted item records one
-  fresh epoch created by restoring the workset baseline.
+  fresh epoch and one `PreparedProgramBaselineReceipt` created by restoring the complete savestate,
+  movie-continuation, and adapter-declared derived-state baseline.
 - Repeated worksets over the same exact state produce identical results from a cache hit or artifact
   load; each restore still creates a fresh epoch and cache eviction is unobservable.
 - One immutable staged successor can be preflighted without session mutation and can be promoted only
-  after active-scope release plus exact lease/cancellation revalidation.
+  after active-scope release, clean local capacity, and absence of an exact cancellation notice; it does
+  not wait for synchronous coordinator reauthorization.
+- A whole workset's claim/start authority is checked before acceptance. No per-item authorization call
+  occurs between clean children, while later lease-loss/supersession notices still cancel the exact
+  pending or active item.
 - A full item/completion-credit window prevents another baseline restore/admission or staged promotion
   until an exact durable acknowledgement creates capacity; progress loss cannot discard a completion
   entry or terminal result.
@@ -557,12 +585,14 @@ result-publication, and recovery mechanisms remain unchanged.
 ## Deferred work
 
 - Concrete C++ struct and ownership spellings.
-- Transport compression plus numeric workset, state-cache, staged-package, item-credit,
-  asynchronous-finalization, and completion-ledger thresholds; the non-lossy acknowledged per-item
-  terminal contract is not deferred. Numeric values are negotiated configuration informed by
-  measurement, not frozen architectural constants.
+- Transport compression and measurement-driven tuning beyond the fixed configurable defaults: 16
+  items/32 MiB/four aggregate hours per workset, 64 total and 32 active-plus-staged item credits, 16
+  cache entries/512 MiB, two finalizer threads with eight pending captures/256 MiB, 32 retained
+  terminals/128 MiB, two concurrent startups, and one coordinator-buffered successor per Ready worker.
+  The non-lossy acknowledged per-item terminal contract is not deferred.
 - Any SavorDb normalization or artifact-store-interface change is outside this refactor.
-- Canonical binary encoding and hash algorithm.
+- A future incompatible protocol version only if required; WRMS v1 and the reserved
+  `SubmitInvocation`/guest-step discriminators remain fixed.
 - User-facing module/version selection UI.
 
 ## Source references

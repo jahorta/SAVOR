@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -17,6 +18,41 @@ struct StateArtifactIdTag;
 
 using StateHandleId = StrongId<StateHandleIdTag>;
 using StateArtifactId = StrongId<StateArtifactIdTag>;
+
+// Immutable ownership transfer for state/movie bytes captured while Dolphin
+// is authoritatively paused. The bytes may be copied between host-only
+// pipeline records, but cannot be mutated after capture.
+class ImmutableStateBytes final
+{
+public:
+    ImmutableStateBytes() = default;
+
+    [[nodiscard]] static ImmutableStateBytes Capture(
+        std::vector<std::uint8_t> bytes)
+    {
+        ImmutableStateBytes captured;
+        captured.bytes_ =
+            std::make_shared<const std::vector<std::uint8_t>>(
+                std::move(bytes));
+        return captured;
+    }
+
+    [[nodiscard]] explicit operator bool() const noexcept
+    {
+        return static_cast<bool>(bytes_);
+    }
+    [[nodiscard]] const std::uint8_t* data() const noexcept
+    {
+        return bytes_ ? bytes_->data() : nullptr;
+    }
+    [[nodiscard]] std::size_t size() const noexcept
+    {
+        return bytes_ ? bytes_->size() : 0;
+    }
+
+private:
+    std::shared_ptr<const std::vector<std::uint8_t>> bytes_;
+};
 
 enum class StateServiceErrorCode : std::uint16_t
 {
@@ -122,6 +158,8 @@ struct StateLineage
     std::optional<StateArtifactId> parent_artifact;
     std::string edge;
     std::string producer;
+
+    auto operator<=>(const StateLineage&) const = default;
 };
 
 struct StateServiceResult
@@ -178,6 +216,43 @@ struct StateFileArtifactReceipt
     StateLineage lineage;
     std::optional<MovieCheckpointMetadata> movie;
     bool external = false;
+};
+
+// First half of asynchronous immutable artifact publication. The actor
+// captures these bytes synchronously while the session is idle-paused, then
+// transfers the receipt to a host-only finalizer. No path has been published
+// and no authoritative artifact reference exists yet.
+struct ImmutableStateArtifactCaptureReceipt
+{
+    StateServiceResult result;
+    StateArtifactId artifact;
+    StateEpoch captured_epoch;
+    std::filesystem::path final_path;
+    ImmutableStateBytes state_bytes;
+    std::optional<ImmutableStateBytes> movie_bytes;
+    StateCompatibilityToken compatibility;
+    StateLineage lineage;
+    std::optional<MovieCheckpointMetadata> movie;
+
+    [[nodiscard]] std::size_t resident_bytes() const noexcept
+    {
+        return state_bytes.size() +
+            (movie_bytes ? movie_bytes->size() : 0);
+    }
+};
+
+// Host finalization evidence returned to the actor. StateService accepts it
+// only for the exact pending capture and then records the ordinary immutable
+// file artifact. Hashing and filesystem publication have already completed.
+struct ImmutableStateArtifactPublicationReceipt
+{
+    StateArtifactId artifact;
+    std::filesystem::path state_path;
+    std::size_t state_size_bytes = 0;
+    std::string state_sha256;
+    std::optional<std::filesystem::path> movie_path;
+    std::size_t movie_size_bytes = 0;
+    std::string movie_sha256;
 };
 
 struct StateBootRequest

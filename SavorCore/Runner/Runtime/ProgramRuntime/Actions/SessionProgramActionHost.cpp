@@ -25,6 +25,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 #include <utility>
@@ -46,6 +47,18 @@ constexpr ResourceServiceId kCaptureService{7};
 
 constexpr std::uint32_t kMaximumStopAlternatives = 128;
 constexpr std::uint32_t kMaximumInputFrames = 65536;
+
+[[nodiscard]] bool CompleteSha256(std::string_view value) noexcept
+{
+    return value.size() == 64 &&
+        std::ranges::all_of(
+            value,
+            [](char ch)
+            {
+                return (ch >= '0' && ch <= '9') ||
+                    (ch >= 'a' && ch <= 'f');
+            });
+}
 
 struct EnumFieldBound
 {
@@ -676,7 +689,6 @@ bool UsesTypedRequestRecord(CanonicalAction action) noexcept
     {
     case CanonicalAction::ExecutionContinueUntil:
     case CanonicalAction::ExecutionStepFrames:
-    case CanonicalAction::ExecutionStepInstructions:
     case CanonicalAction::StopPointsSubscribeGroup:
     case CanonicalAction::InputAcquireLease:
     case CanonicalAction::InputPublishHeld:
@@ -1199,7 +1211,6 @@ bool DecodeContinueConfig(
 }
 
 bool DecodeAdvanceConfig(
-    CanonicalAction action,
     std::span<const Byte> bytes,
     CanonicalActionPayload& payload,
     std::string& diagnostic)
@@ -1210,17 +1221,11 @@ bool DecodeAdvanceConfig(
     bool stall = false;
     std::uint8_t throttle = 0;
     std::uint8_t interruption = 0;
-    const std::uint8_t expected =
-        action == CanonicalAction::ExecutionStepInstructions
-        ? 1u
-        : 2u;
+    constexpr std::uint8_t expected = 2u;
     if (!reader.U8(kind) || !reader.Bool(movie) ||
         !reader.Bool(stall) || !reader.U8(throttle) ||
         !reader.U8(interruption) || !reader.done() ||
         kind != expected ||
-        (action ==
-             CanonicalAction::ExecutionStepInstructions &&
-         stall) ||
         throttle >
             static_cast<std::uint8_t>(
                 ExecutionThrottlePolicy::RequireDisabled) ||
@@ -1577,20 +1582,9 @@ bool DecodeTypedCanonicalRequest(
         return true;
     }
     case CanonicalAction::ExecutionStepFrames:
-    case CanonicalAction::ExecutionStepInstructions:
     {
         std::uint64_t count = 0;
         bool receipt = false;
-        const CanonicalRuntimeSchema optional_schema =
-            action == CanonicalAction::ExecutionStepFrames
-            ? CanonicalRuntimeSchema::
-                  OptionalInputNeutralWitness
-            : CanonicalRuntimeSchema::
-                  OptionalInputPublicationReceipt;
-        const CanonicalAction producer =
-            action == CanonicalAction::ExecutionStepFrames
-            ? CanonicalAction::InputNeutralize
-            : CanonicalAction::InputPublishHeld;
         const auto* config = bytes(
             2,
             CanonicalRuntimeSchema::
@@ -1600,13 +1594,13 @@ bool DecodeTypedCanonicalRequest(
             !payload.AddUnsigned(Field::Count, count) ||
             !optional_receipt(
                 1,
-                optional_schema,
-                producer,
+                CanonicalRuntimeSchema::
+                    OptionalInputNeutralWitness,
+                CanonicalAction::InputNeutralize,
                 false,
                 receipt) ||
             !config ||
             !DecodeAdvanceConfig(
-                action,
                 *config,
                 payload,
                 diagnostic))
@@ -2874,6 +2868,18 @@ struct SessionProgramActionHost::Impl
                 "lineage_required",
                 "Invocation state policy requires an explicit session lineage");
         }
+        if (request.state_already_prepared &&
+            (!CompleteSha256(request.prepared_baseline_sha256) ||
+             !state.expected_session || !state.expected_epoch ||
+             state.expected_session != current.session_id ||
+             state.expected_epoch != current.state_epoch))
+        {
+            return Reject(
+                request,
+                ProgramActionCompletionStatus::Rejected,
+                "prepared_baseline_mismatch",
+                "Prepared baseline must identify the exact current session and epoch");
+        }
 
         switch (state.policy)
         {
@@ -2990,6 +2996,11 @@ struct SessionProgramActionHost::Impl
         ProgramActionCompletion completion = Completion(
             request,
             ProgramActionCompletionStatus::Completed);
+        if (request.state_already_prepared)
+        {
+            current_lineage = state.session_lineage;
+            return Immediate(std::move(completion));
+        }
         if (state.policy == InvocationStatePolicy::ContinueSession)
         {
             return Immediate(std::move(completion));
@@ -4090,38 +4101,54 @@ SessionProgramActionHost::Impl::InvokeCanonical(
             payload.Utf8(Field::Label).value_or(
                 "program state artifact"));
         capture.lineage.producer = "ProgramRuntime";
-        const StateFileArtifactReceipt artifact =
-            session.CaptureStateArtifact(capture);
+        ImmutableStateArtifactCaptureReceipt artifact =
+            session.CaptureImmutableStateArtifact(capture);
         if (!artifact.result.ok)
         {
             return service_failure(
                 "state_artifact_failed",
                 artifact.result.message);
         }
-        ProgramActionCompletion completion = Completion(
-            request,
-            ProgramActionCompletionStatus::Completed);
         const std::string artifact_id =
             "state:" +
             std::to_string(artifact.artifact.value());
-        completion.output = ArtifactResultGraph(
-            action,
-            artifact_id,
-            artifact.path.string(),
-            artifact.sha256);
-        if (completion.output.values.empty())
+        CanonicalActionPayload result;
+        if (!result.AddUnsigned(
+                Field::ResultArtifactId,
+                artifact.artifact.value()) ||
+            !result.AddUnsigned(
+                Field::ResultSize,
+                artifact.resident_bytes()) ||
+            !result.AddUtf8(
+                Field::StorageReference,
+                artifact.final_path.string()) ||
+            !result.AddUtf8(
+                Field::Publication,
+                "pending"))
         {
+            (void)session.AbandonImmutableStateArtifact(
+                artifact.artifact);
             return service_failure(
                 "result_encoding_failed",
-                "State artifact reference could not be encoded");
+                "Pending state-artifact receipt could not be encoded");
         }
-        saved_artifacts.insert_or_assign(
+        ProgramActionDispatchResult completed =
+            CompleteWithPayload(
+                std::move(request),
+                std::move(result));
+        if (!completed.immediate_completion)
+        {
+            (void)session.AbandonImmutableStateArtifact(
+                artifact.artifact);
+            return service_failure(
+                "result_encoding_failed",
+                "Pending state-artifact receipt was not completed");
+        }
+        completed.immediate_completion
+            ->pending_state_artifacts.push_back({
             artifact_id,
-            SavedArtifact{
-                artifact.artifact,
-                artifact.path,
-                artifact.sha256});
-        return Immediate(std::move(completion));
+            std::move(artifact)});
+        return completed;
     }
     case CanonicalAction::ExecutionContinueUntil:
     {
@@ -4246,25 +4273,6 @@ SessionProgramActionHost::Impl::InvokeCanonical(
         return SubmitExecutionAction(
             std::move(request),
             StepFramesRequest{
-                ExecutionPolicy(request, payload),
-                static_cast<std::uint32_t>(count)});
-    }
-    case CanonicalAction::ExecutionStepInstructions:
-    {
-        const std::uint64_t count =
-            UnsignedOr(payload, Field::Count, 1);
-        if (count == 0 ||
-            count > std::numeric_limits<std::uint32_t>::max())
-        {
-            return Reject(
-                request,
-                ProgramActionCompletionStatus::Rejected,
-                "invalid_step_count",
-                "Instruction step count is outside its bounded range");
-        }
-        return SubmitExecutionAction(
-            std::move(request),
-            StepInstructionsRequest{
                 ExecutionPolicy(request, payload),
                 static_cast<std::uint32_t>(count)});
     }

@@ -71,7 +71,6 @@ private:
     BackendResult RequestPause() override;
     BackendResult Resume() override;
     BackendResult BeginFrameStep() override;
-    BackendResult BeginExactInstructionStep() override;
     BackendResult SetThrottleDisabled(bool disabled) override;
 
     [[nodiscard]] bool IsAvailable(std::uint8_t port) const noexcept override;

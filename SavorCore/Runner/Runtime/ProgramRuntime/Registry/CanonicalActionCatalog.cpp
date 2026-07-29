@@ -17,14 +17,13 @@ struct CatalogEntry
     std::string_view signature;
 };
 
-constexpr std::array<CatalogEntry, 31> kActions{{
+constexpr std::array<CatalogEntry, 30> kActions{{
     {"runtime.state.capture", "(StateCaptureRequest)->StateHandle"},
     {"runtime.state.restore", "(StateRestoreRequest)->StateRestoreReceipt"},
     {"runtime.state.restore_baseline", "(BaselineRestoreRequest)->StateRestoreReceipt"},
-    {"runtime.state.save_immutable_artifact", "(StateArtifactSaveRequest)->StateArtifactRef"},
+    {"runtime.state.save_immutable_artifact", "(StateArtifactSaveRequest)->PendingStateArtifactPublicationReceipt"},
     {"runtime.execution.continue_until", "(ContinueUntilRequest)->ContinueUntilResult"},
     {"runtime.execution.step_frames", "(StepFramesRequest)->ExecutionResult"},
-    {"runtime.execution.step_instructions", "(StepInstructionsRequest)->ExecutionResult"},
     {"runtime.stop_points.subscribe_group", "(StopGroupDefinition)->StopGroupHandle"},
     {"runtime.stop_points.replace_group", "(StopGroupReplacement)->StopGroupHandle"},
     {"runtime.input.acquire_lease", "(InputLeaseRequest)->InputLeaseHandle"},
@@ -121,7 +120,6 @@ bool UsesTypedRequestRecord(CanonicalAction action) noexcept
     {
     case CanonicalAction::ExecutionContinueUntil:
     case CanonicalAction::ExecutionStepFrames:
-    case CanonicalAction::ExecutionStepInstructions:
     case CanonicalAction::StopPointsSubscribeGroup:
     case CanonicalAction::InputAcquireLease:
     case CanonicalAction::InputPublishHeld:
@@ -154,10 +152,11 @@ ActionOutputShape OutputShape(CanonicalAction action) noexcept
     case CanonicalAction::GuestPatchExecutable:
     case CanonicalAction::CaptureAttach:
         return ActionOutputShape::ResourceHandle;
-    case CanonicalAction::StateSaveImmutableArtifact:
     case CanonicalAction::MovieStopRecording:
     case CanonicalAction::ScreenshotCapture:
         return ActionOutputShape::ArtifactReference;
+    case CanonicalAction::StateSaveImmutableArtifact:
+        return ActionOutputShape::SapReceipt;
     case CanonicalAction::CaptureFinalize:
         return ActionOutputShape::ArtifactReferenceList;
     case CanonicalAction::GuestReadU8:
@@ -188,7 +187,6 @@ std::optional<SchemaIdentity> SharedOutputSchemaIdentity(
             "runtime.execution.ContinueUntilResult",
             "record ContinueUntilResult/1(stop_sequence:u64,state_epoch:u64,pc:u32,sample_snapshot_id:u64,evidence:StopEvidencePayload/1)");
     case CanonicalAction::ExecutionStepFrames:
-    case CanonicalAction::ExecutionStepInstructions:
         return RuntimeSchemaIdentity(
             "runtime.execution.ExecutionResult",
             "bytes(max=65536;ExecutionResult/1)");
@@ -310,18 +308,6 @@ std::vector<RecordFieldDefinition> TypedRequestFields(
              CanonicalRuntimeType(
                  CanonicalRuntimeSchema::
                      OptionalInputNeutralWitness)},
-            {"static_config",
-             CanonicalRuntimeType(
-                 CanonicalRuntimeSchema::
-                     ExecutionAdvanceStaticConfig)},
-        };
-    case CanonicalAction::ExecutionStepInstructions:
-        return {
-            {"count", u64},
-            {"input_publication",
-             CanonicalRuntimeType(
-                 CanonicalRuntimeSchema::
-                     OptionalInputPublicationReceipt)},
             {"static_config",
              CanonicalRuntimeType(
                  CanonicalRuntimeSchema::
@@ -626,6 +612,10 @@ std::optional<SchemaIdentity>
 CanonicalActionArtifactPayloadSchemaIdentity(
     CanonicalAction action)
 {
+    if (action == CanonicalAction::StateSaveImmutableArtifact)
+    {
+        return ArtifactPayloadIdentity(action);
+    }
     const ActionOutputShape shape = OutputShape(action);
     return shape == ActionOutputShape::ArtifactReference ||
             shape == ActionOutputShape::ArtifactReferenceList
@@ -986,6 +976,14 @@ BuildCanonicalRuntimeActionSchemas()
         case ActionOutputShape::U64:
             break;
         }
+        if (action == CanonicalAction::StateSaveImmutableArtifact)
+        {
+            append({
+                .identity = ArtifactPayloadIdentity(action),
+                .kind = TypeSchemaKind::BoundedBytes,
+                .maximum_size = kMaximumSapBytes,
+            });
+        }
     }
     std::ranges::sort(
         schemas,
@@ -1053,7 +1051,7 @@ CapabilityPackIdentity CanonicalRuntimePackIdentity()
 RuntimeCompatibility CanonicalRuntimeCompatibility()
 {
     return {
-        .game_id = "GEAE8E",
+        .game_id = "GEAE8P",
         .executable_identity = "soal-usa.GEAE8E",
         .address_map_revision =
             "savor.builtin-soal-usa-addresses/1",
@@ -1159,12 +1157,6 @@ BuildCanonicalRuntimeActionDescriptors()
         service(SessionServiceCapability::Execution),
         effect(ActionEffect::AdvanceEmulation),
         60000));
-    result.push_back(Descriptor(
-        CanonicalAction::ExecutionStepInstructions,
-        service(SessionServiceCapability::Execution),
-        effect(ActionEffect::AdvanceEmulation),
-        60000));
-
     result.push_back(Descriptor(
         CanonicalAction::StopPointsSubscribeGroup,
         service(SessionServiceCapability::StopPoints),

@@ -1,9 +1,11 @@
 #pragma once
 
 #include "Runner/Runtime/RuntimeTypes.h"
+#include "Runner/Runtime/Worksets/WorksetTypes.h"
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 
 namespace savor {
@@ -21,7 +23,11 @@ struct WorkerCapabilityPreflightRequest {
     std::size_t worker_id{ 0 };
     std::uint32_t timeout_ms{ 10000 };
     runtime::WorkerCapabilityMask required_capabilities{
-        runtime::CapabilityMask(runtime::WorkerCapability::ProgramInvocation) };
+        runtime::CapabilityMask(runtime::WorkerCapability::WorksetDispatch) };
+    bool require_complete_exact_catalog{ true };
+    std::string expected_catalog_sha256;
+    std::string expected_runtime_profile_sha256;
+    std::string expected_dependency_manifest_sha256;
 };
 
 struct WorkerCapabilityPreflightResult {
@@ -29,6 +35,7 @@ struct WorkerCapabilityPreflightResult {
         WorkerCapabilityPreflightStatus::RuntimeUnavailable };
     runtime::WorkerCapabilityMask advertised_capabilities{ 0 };
     runtime::WorkerCapabilityMask missing_capabilities{ 0 };
+    std::optional<runtime::WorkerRuntimeManifest> runtime_manifest;
     bool non_retryable{ false };
     std::string message;
 

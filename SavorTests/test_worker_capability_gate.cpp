@@ -8,6 +8,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -24,6 +25,7 @@ using savor::runner::parallel::savordb::CoordinatorStartStatus;
 using savor::runner::parallel::savordb::CoordinatorWorkerCapabilityPreflightResult;
 using savor::runner::parallel::savordb::DBWorkflowWorkerCoordinator;
 using savor::runner::parallel::savordb::DBWorkflowWorkerCoordinatorConfig;
+using savor::db::execution::workflow::CoordinatorItemCreditSource;
 
 class GateRecordingExecutionDb final : public RecordingExecutionDb
 {
@@ -76,7 +78,88 @@ DBWorkflowWorkerCoordinatorConfig BaseConfig()
     config.desired_workers = 1;
     config.controller_sleep_ms = 1;
     config.max_concurrent_worker_starts = 1;
+    config.expected_catalog_sha256 = "test-complete-catalog";
+    config.expected_runtime_profile_sha256 = "test-runtime-profile";
+    config.expected_dependency_manifest_sha256 =
+        "test-dependency-manifest";
+    config.workset_definition_builder =
+        [](std::size_t,
+            const std::vector<
+                savor::runner::parallel::savordb::ClaimedJobRecord>&,
+            const savor::runtime::WorkerRuntimeManifest&,
+            std::string* error_out)
+        -> std::optional<
+            savor::runtime::WorkerWorksetDefinition> {
+            if (error_out)
+                *error_out = "test builder was not expected to run";
+            return std::nullopt;
+        };
+    config.workset_terminal_decoder =
+        [](const savor::runner::parallel::savordb::ClaimedJobRecord&,
+            const savor::wrms::WorksetItemTerminalPayload&,
+            std::string* error_out)
+        -> std::optional<savor::PRResult> {
+            if (error_out)
+                error_out->clear();
+            return savor::PRResult{};
+        };
     return config;
+}
+
+savor::runtime::WorkerRuntimeManifest CompleteTestManifest(
+    std::uint32_t item_credits = 3)
+{
+    static constexpr std::array<
+        std::pair<std::string_view, std::string_view>,
+        9>
+        kModules{{
+            {"soa.seed_probe", "probe"},
+            {"soa.navigation.context", "capture"},
+            {"soa.tas_movie", "play_and_checkpoint"},
+            {"soa.tas_frame_detector", "detect"},
+            {"soa.battle.context", "capture"},
+            {"soa.battle.macro_probe", "probe"},
+            {"soa.battle.single_turn", "execute"},
+            {"soa.battle.completion", "complete"},
+            {"soa.battle.results_screen", "advance"},
+        }};
+    savor::runtime::WorkerRuntimeManifest manifest{};
+    manifest.catalog_status =
+        savor::runtime::RuntimeCatalogStatus::CompleteExact;
+    manifest.catalog_sha256 = "test-complete-catalog";
+    manifest.runtime_profile_sha256 = "test-runtime-profile";
+    manifest.dependency_manifest_sha256 = "test-dependency-manifest";
+    manifest.limits.maximum_item_credits = item_credits;
+    if (manifest.limits.maximum_active_and_staged_items >
+        item_credits)
+    {
+        manifest.limits.maximum_active_and_staged_items =
+            item_credits;
+    }
+    manifest.modules.reserve(kModules.size());
+    for (const auto& [module_id, entrypoint] : kModules) {
+        manifest.modules.push_back(
+            savor::runtime::RuntimeModuleManifestEntry{
+                .module = savor::runtime::ProgramModuleIdentity{
+                    .canonical_id = std::string(module_id),
+                    .revision = 1,
+                    .canonical_hash =
+                        "test-module-hash:" + std::string(module_id),
+                },
+                .entrypoints = {std::string(entrypoint)},
+                .dependency_manifest_sha256 =
+                    "test-module-dependencies",
+                .development_only = false,
+            });
+    }
+    return manifest;
+}
+
+savor::runtime::WorkerCapabilityMask WorksetCapabilities()
+{
+    return savor::runtime::AddCapability(
+        savor::runtime::kSlice1ProductionCapabilities,
+        savor::runtime::WorkerCapability::WorksetDispatch);
 }
 
 std::filesystem::path FindBuiltWorker()
@@ -110,7 +193,7 @@ savor::WorkerCapabilityPreflightResult RunCallerStylePreflight(
             .worker_exe_path = worker_path.string(),
             .timeout_ms = 10000,
             .required_capabilities = savor::runtime::CapabilityMask(
-                savor::runtime::WorkerCapability::ProgramInvocation),
+                savor::runtime::WorkerCapability::WorksetDispatch),
         });
     if (result)
         std::forward<StartDbCallback>(start_db)();
@@ -118,6 +201,33 @@ savor::WorkerCapabilityPreflightResult RunCallerStylePreflight(
 }
 
 } // namespace
+
+TEST(WorkerCapabilityGate, SharedItemCreditsStayClosedUntilExactGateAndBoundReservations)
+{
+    CoordinatorItemCreditSource credits;
+    EXPECT_FALSE(credits.IsOpen());
+    EXPECT_EQ(credits.AvailableCredits(), 0u);
+    EXPECT_FALSE(credits.TryReserve());
+
+    credits.Open(5);
+    EXPECT_TRUE(credits.IsOpen());
+    EXPECT_EQ(credits.AvailableCredits(), 5u);
+    EXPECT_TRUE(credits.TryReserve(2));
+    EXPECT_EQ(credits.AvailableCredits(), 3u);
+
+    credits.SetExternalUsage(2);
+    EXPECT_EQ(credits.AvailableCredits(), 1u);
+    EXPECT_FALSE(credits.TryReserve(2));
+    EXPECT_TRUE(credits.TryReserve());
+    EXPECT_EQ(credits.AvailableCredits(), 0u);
+
+    credits.ReleaseReservations(2);
+    EXPECT_EQ(credits.AvailableCredits(), 2u);
+    credits.Close();
+    EXPECT_FALSE(credits.IsOpen());
+    EXPECT_EQ(credits.AvailableCredits(), 0u);
+    EXPECT_FALSE(credits.TryReserve());
+}
 
 TEST(WorkerCapabilityGate, SessionOnlyCapabilitiesFailClosedBeforeAnyDataPlaneWork)
 {
@@ -148,6 +258,9 @@ TEST(WorkerCapabilityGate, SessionOnlyCapabilitiesFailClosedBeforeAnyDataPlaneWo
         &execution_db,
         std::move(config),
         CoordinatorIntegrationConfig{});
+    const auto item_credits = coordinator.ItemCreditSource();
+    ASSERT_NE(item_credits, nullptr);
+    EXPECT_FALSE(item_credits->IsOpen());
     coordinator.SetWorkflowMaterializationCallback(
         [&](std::int64_t, std::int64_t) { ++callback_calls; });
     coordinator.SetWorkflowTerminalCallback(
@@ -163,12 +276,14 @@ TEST(WorkerCapabilityGate, SessionOnlyCapabilitiesFailClosedBeforeAnyDataPlaneWo
 
     const auto first = coordinator.Start();
     EXPECT_FALSE(first);
-    EXPECT_EQ(first.status, CoordinatorStartStatus::ProgramInvocationUnavailable);
+    EXPECT_EQ(first.status, CoordinatorStartStatus::WorksetDispatchUnavailable);
     EXPECT_TRUE(first.non_retryable);
-    EXPECT_EQ(first.ready_invocation_capable_workers, 0u);
-    EXPECT_NE(first.error.find("ProgramInvocation"), std::string::npos);
+    EXPECT_EQ(first.ready_workset_capable_workers, 0u);
+    EXPECT_NE(first.error.find("WorksetDispatch"), std::string::npos);
     EXPECT_FALSE(coordinator.IsDataPlaneEnabled());
-    EXPECT_EQ(coordinator.ReadyInvocationCapableWorkerCount(), 0u);
+    EXPECT_FALSE(item_credits->IsOpen());
+    EXPECT_EQ(item_credits->AvailableCredits(), 0u);
+    EXPECT_EQ(coordinator.ReadyWorksetCapableWorkerCount(), 0u);
     EXPECT_EQ(coordinator.ActiveWorkerCount(), 0u);
 
     const auto second = coordinator.Start();
@@ -228,9 +343,8 @@ TEST(WorkerCapabilityGate, InvocationCapableButErrorfulPreflightFailsClosed)
             const std::shared_ptr<savor::ProcessWorker>&) {
             return CoordinatorWorkerCapabilityPreflightResult{
                 .process_ready = true,
-                .capabilities = savor::runtime::AddCapability(
-                    savor::runtime::kSlice1ProductionCapabilities,
-                    savor::runtime::WorkerCapability::ProgramInvocation),
+                .capabilities = WorksetCapabilities(),
+                .runtime_manifest = CompleteTestManifest(),
                 .error = "session negotiation did not complete",
             };
         };
@@ -249,10 +363,189 @@ TEST(WorkerCapabilityGate, InvocationCapableButErrorfulPreflightFailsClosed)
         result.error.find("session negotiation did not complete"),
         std::string::npos);
     EXPECT_FALSE(coordinator.IsDataPlaneEnabled());
-    EXPECT_EQ(coordinator.ReadyInvocationCapableWorkerCount(), 0u);
+    EXPECT_EQ(coordinator.ReadyWorksetCapableWorkerCount(), 0u);
     EXPECT_EQ(execution_db.DataPlaneCallCount(), 0);
 
     coordinator.Stop();
+}
+
+TEST(WorkerCapabilityGate, PartialOrMismatchedCatalogFailsBeforeDataPlaneWork)
+{
+    for (const bool mismatched_hash : {false, true})
+    {
+        SCOPED_TRACE(mismatched_hash);
+        GateRecordingExecutionDb execution_db;
+        auto config = BaseConfig();
+        config.worker_capability_preflight =
+            [mismatched_hash](
+                size_t,
+                const DBWorkflowWorkerCoordinatorConfig&,
+                const std::shared_ptr<savor::ProcessWorker>&) {
+                auto manifest = CompleteTestManifest();
+                if (mismatched_hash)
+                    manifest.catalog_sha256 = "wrong-catalog";
+                else
+                    manifest.catalog_status =
+                        savor::runtime::RuntimeCatalogStatus::Partial;
+                return CoordinatorWorkerCapabilityPreflightResult{
+                    .process_ready = true,
+                    .capabilities = WorksetCapabilities(),
+                    .runtime_manifest = std::move(manifest),
+                };
+            };
+
+        DBWorkflowWorkerCoordinator coordinator(
+            &execution_db,
+            std::move(config),
+            CoordinatorIntegrationConfig{});
+        const auto item_credits = coordinator.ItemCreditSource();
+        const auto result = coordinator.Start();
+        EXPECT_FALSE(result);
+        EXPECT_EQ(
+            result.status,
+            CoordinatorStartStatus::WorksetCatalogUnavailable);
+        EXPECT_TRUE(result.non_retryable);
+        EXPECT_FALSE(coordinator.IsDataPlaneEnabled());
+        ASSERT_NE(item_credits, nullptr);
+        EXPECT_FALSE(item_credits->IsOpen());
+        EXPECT_EQ(item_credits->AvailableCredits(), 0u);
+        EXPECT_EQ(execution_db.DataPlaneCallCount(), 0);
+        coordinator.Stop();
+    }
+}
+
+TEST(WorkerCapabilityGate, CompleteExactCatalogRejectsAnExtraModule)
+{
+    GateRecordingExecutionDb execution_db;
+    auto config = BaseConfig();
+    config.worker_capability_preflight =
+        [](size_t,
+            const DBWorkflowWorkerCoordinatorConfig&,
+            const std::shared_ptr<savor::ProcessWorker>&) {
+            auto manifest = CompleteTestManifest();
+            manifest.modules.push_back(
+                savor::runtime::RuntimeModuleManifestEntry{
+                    .module = savor::runtime::ProgramModuleIdentity{
+                        .canonical_id = "soa.unexpected.extra",
+                        .revision = 1,
+                        .canonical_hash = "test-module-hash:unexpected",
+                    },
+                    .entrypoints = {"run"},
+                    .dependency_manifest_sha256 =
+                        "test-module-dependencies",
+                    .development_only = false,
+                });
+            return CoordinatorWorkerCapabilityPreflightResult{
+                .process_ready = true,
+                .capabilities = WorksetCapabilities(),
+                .runtime_manifest = std::move(manifest),
+            };
+        };
+
+    DBWorkflowWorkerCoordinator coordinator(
+        &execution_db,
+        std::move(config),
+        CoordinatorIntegrationConfig{});
+    const auto item_credits = coordinator.ItemCreditSource();
+
+    const auto result = coordinator.Start();
+    EXPECT_FALSE(result);
+    EXPECT_EQ(
+        result.status,
+        CoordinatorStartStatus::WorksetCatalogUnavailable);
+    EXPECT_TRUE(result.non_retryable);
+    EXPECT_NE(result.error.find("exactly nine"), std::string::npos);
+    EXPECT_FALSE(coordinator.IsDataPlaneEnabled());
+    ASSERT_NE(item_credits, nullptr);
+    EXPECT_FALSE(item_credits->IsOpen());
+    EXPECT_EQ(item_credits->AvailableCredits(), 0u);
+    EXPECT_EQ(execution_db.DataPlaneCallCount(), 0);
+
+    coordinator.Stop();
+}
+
+TEST(WorkerCapabilityGate, CompleteExactCatalogRejectsAnExtraEntrypoint)
+{
+    GateRecordingExecutionDb execution_db;
+    auto config = BaseConfig();
+    config.worker_capability_preflight =
+        [](size_t,
+            const DBWorkflowWorkerCoordinatorConfig&,
+            const std::shared_ptr<savor::ProcessWorker>&) {
+            auto manifest = CompleteTestManifest();
+            manifest.modules.front().entrypoints.push_back(
+                "unexpected_entrypoint");
+            return CoordinatorWorkerCapabilityPreflightResult{
+                .process_ready = true,
+                .capabilities = WorksetCapabilities(),
+                .runtime_manifest = std::move(manifest),
+            };
+        };
+
+    DBWorkflowWorkerCoordinator coordinator(
+        &execution_db,
+        std::move(config),
+        CoordinatorIntegrationConfig{});
+    const auto item_credits = coordinator.ItemCreditSource();
+
+    const auto result = coordinator.Start();
+    EXPECT_FALSE(result);
+    EXPECT_EQ(
+        result.status,
+        CoordinatorStartStatus::WorksetCatalogUnavailable);
+    EXPECT_TRUE(result.non_retryable);
+    EXPECT_NE(result.error.find("entrypoint"), std::string::npos);
+    EXPECT_FALSE(coordinator.IsDataPlaneEnabled());
+    ASSERT_NE(item_credits, nullptr);
+    EXPECT_FALSE(item_credits->IsOpen());
+    EXPECT_EQ(execution_db.DataPlaneCallCount(), 0);
+
+    coordinator.Stop();
+}
+
+TEST(WorkerCapabilityGate, CompleteExactRequiresBuilderAndTerminalDecoderSeams)
+{
+    for (const bool omit_builder : {false, true})
+    {
+        SCOPED_TRACE(omit_builder ? "builder" : "terminal_decoder");
+        GateRecordingExecutionDb execution_db;
+        auto config = BaseConfig();
+        if (omit_builder)
+            config.workset_definition_builder = {};
+        else
+            config.workset_terminal_decoder = {};
+        config.worker_capability_preflight =
+            [](size_t,
+                const DBWorkflowWorkerCoordinatorConfig&,
+                const std::shared_ptr<savor::ProcessWorker>&) {
+                return CoordinatorWorkerCapabilityPreflightResult{
+                    .process_ready = true,
+                    .capabilities = WorksetCapabilities(),
+                    .runtime_manifest = CompleteTestManifest(),
+                };
+            };
+
+        DBWorkflowWorkerCoordinator coordinator(
+            &execution_db,
+            std::move(config),
+            CoordinatorIntegrationConfig{});
+        const auto item_credits = coordinator.ItemCreditSource();
+        const auto result = coordinator.Start();
+        EXPECT_FALSE(result);
+        EXPECT_EQ(
+            result.status,
+            CoordinatorStartStatus::WorksetCatalogUnavailable);
+        EXPECT_TRUE(result.non_retryable);
+        EXPECT_NE(
+            result.error.find(
+                omit_builder ? "builder" : "terminal decoder"),
+            std::string::npos);
+        EXPECT_FALSE(coordinator.IsDataPlaneEnabled());
+        ASSERT_NE(item_credits, nullptr);
+        EXPECT_FALSE(item_credits->IsOpen());
+        EXPECT_EQ(execution_db.DataPlaneCallCount(), 0);
+        coordinator.Stop();
+    }
 }
 
 TEST(WorkerCapabilityGate, VisualDebugRequiresInteractiveCapability)
@@ -266,9 +559,8 @@ TEST(WorkerCapabilityGate, VisualDebugRequiresInteractiveCapability)
             const std::shared_ptr<savor::ProcessWorker>&) {
             return CoordinatorWorkerCapabilityPreflightResult{
                 .process_ready = true,
-                .capabilities = savor::runtime::AddCapability(
-                    savor::runtime::kSlice1ProductionCapabilities,
-                    savor::runtime::WorkerCapability::ProgramInvocation),
+                .capabilities = WorksetCapabilities(),
+                .runtime_manifest = CompleteTestManifest(),
             };
         };
 
@@ -287,13 +579,13 @@ TEST(WorkerCapabilityGate, VisualDebugRequiresInteractiveCapability)
         result.error.find("InteractiveVisualDebug"),
         std::string::npos);
     EXPECT_FALSE(coordinator.IsDataPlaneEnabled());
-    EXPECT_EQ(coordinator.ReadyInvocationCapableWorkerCount(), 0u);
+    EXPECT_EQ(coordinator.ReadyWorksetCapableWorkerCount(), 0u);
     EXPECT_EQ(execution_db.DataPlaneCallCount(), 0);
 
     coordinator.Stop();
 }
 
-TEST(WorkerCapabilityGate, InvocationCapablePreflightEnablesDataPlaneAndReadyCapacity)
+TEST(WorkerCapabilityGate, ExactWorksetCatalogEnablesDataPlaneAndItemCredits)
 {
     GateRecordingExecutionDb execution_db;
     auto first_claim = execution_db.first_claim.get_future();
@@ -313,9 +605,8 @@ TEST(WorkerCapabilityGate, InvocationCapablePreflightEnablesDataPlaneAndReadyCap
             preflight_calls.fetch_add(1, std::memory_order_acq_rel);
             return CoordinatorWorkerCapabilityPreflightResult{
                 .process_ready = true,
-                .capabilities = savor::runtime::AddCapability(
-                    savor::runtime::kSlice1ProductionCapabilities,
-                    savor::runtime::WorkerCapability::ProgramInvocation),
+                .capabilities = WorksetCapabilities(),
+                .runtime_manifest = CompleteTestManifest(),
             };
         };
 
@@ -323,19 +614,24 @@ TEST(WorkerCapabilityGate, InvocationCapablePreflightEnablesDataPlaneAndReadyCap
         &execution_db,
         std::move(config),
         CoordinatorIntegrationConfig{});
+    const auto item_credits = coordinator.ItemCreditSource();
 
     const auto first = coordinator.Start();
     ASSERT_TRUE(first) << first.error;
     EXPECT_EQ(first.status, CoordinatorStartStatus::Started);
     EXPECT_FALSE(first.non_retryable);
-    EXPECT_EQ(first.ready_invocation_capable_workers, 1u);
+    EXPECT_EQ(first.ready_workset_capable_workers, 1u);
     EXPECT_TRUE(coordinator.IsDataPlaneEnabled());
-    EXPECT_EQ(coordinator.ReadyInvocationCapableWorkerCount(), 1u);
+    EXPECT_EQ(coordinator.ReadyWorksetCapableWorkerCount(), 1u);
+    EXPECT_EQ(coordinator.ReadyItemCreditCapacity(), 3u);
+    ASSERT_NE(item_credits, nullptr);
+    EXPECT_TRUE(item_credits->IsOpen());
+    EXPECT_EQ(item_credits->AvailableCredits(), 3u);
     EXPECT_EQ(coordinator.SnapshotStatus().ready_workers, 1u);
 
     const auto second = coordinator.Start();
     EXPECT_EQ(second.status, first.status);
-    EXPECT_EQ(second.ready_invocation_capable_workers, 1u);
+    EXPECT_EQ(second.ready_workset_capable_workers, 1u);
     EXPECT_EQ(preflight_calls.load(), 1);
     EXPECT_EQ(db_calls_observed_by_preflight.load(), 0);
 
@@ -343,11 +639,13 @@ TEST(WorkerCapabilityGate, InvocationCapablePreflightEnablesDataPlaneAndReadyCap
         first_claim.wait_for(std::chrono::seconds(2)),
         std::future_status::ready);
     EXPECT_GE(execution_db.claim_calls.load(), 1);
-    EXPECT_EQ(execution_db.last_claim_budget.load(), 1);
+    EXPECT_EQ(execution_db.last_claim_budget.load(), 3);
 
     coordinator.Stop();
     EXPECT_FALSE(coordinator.IsDataPlaneEnabled());
-    EXPECT_EQ(coordinator.ReadyInvocationCapableWorkerCount(), 0u);
+    EXPECT_FALSE(item_credits->IsOpen());
+    EXPECT_EQ(item_credits->AvailableCredits(), 0u);
+    EXPECT_EQ(coordinator.ReadyWorksetCapableWorkerCount(), 0u);
 }
 
 TEST(WorkerCapabilityGate, StopSerializesWithInFlightStart)
@@ -367,9 +665,8 @@ TEST(WorkerCapabilityGate, StopSerializesWithInFlightStart)
             release_preflight.wait();
             return CoordinatorWorkerCapabilityPreflightResult{
                 .process_ready = true,
-                .capabilities = savor::runtime::AddCapability(
-                    savor::runtime::kSlice1ProductionCapabilities,
-                    savor::runtime::WorkerCapability::ProgramInvocation),
+                .capabilities = WorksetCapabilities(),
+                .runtime_manifest = CompleteTestManifest(),
             };
         };
 
@@ -399,7 +696,70 @@ TEST(WorkerCapabilityGate, StopSerializesWithInFlightStart)
 
     EXPECT_FALSE(coordinator.IsDataPlaneEnabled());
     EXPECT_EQ(coordinator.ActiveWorkerCount(), 0u);
-    EXPECT_EQ(coordinator.ReadyInvocationCapableWorkerCount(), 0u);
+    EXPECT_EQ(coordinator.ReadyWorksetCapableWorkerCount(), 0u);
+}
+
+TEST(WorkerCapabilityGate, StartupOpensDataPlaneAfterFirstWorkerWhileRemainingPoolNegotiates)
+{
+    GateRecordingExecutionDb execution_db;
+    std::promise<void> secondary_entered_promise;
+    auto secondary_entered = secondary_entered_promise.get_future();
+    std::promise<void> release_secondaries_promise;
+    auto release_secondaries =
+        release_secondaries_promise.get_future().share();
+    std::atomic<bool> secondary_signaled{false};
+
+    auto config = BaseConfig();
+    config.desired_workers = 3;
+    config.max_concurrent_worker_starts = 2;
+    config.worker_capability_preflight =
+        [&](size_t worker_id,
+            const DBWorkflowWorkerCoordinatorConfig&,
+            const std::shared_ptr<savor::ProcessWorker>&) {
+            if (worker_id > 0) {
+                if (!secondary_signaled.exchange(true))
+                    secondary_entered_promise.set_value();
+                release_secondaries.wait();
+            }
+            return CoordinatorWorkerCapabilityPreflightResult{
+                .process_ready = true,
+                .capabilities = WorksetCapabilities(),
+                .runtime_manifest = CompleteTestManifest(),
+            };
+        };
+
+    DBWorkflowWorkerCoordinator coordinator(
+        &execution_db,
+        std::move(config),
+        CoordinatorIntegrationConfig{});
+    const auto start = coordinator.Start();
+    ASSERT_TRUE(start) << start.error;
+    EXPECT_TRUE(coordinator.IsDataPlaneEnabled());
+    EXPECT_EQ(start.ready_workset_capable_workers, 1u);
+    ASSERT_EQ(
+        secondary_entered.wait_for(std::chrono::seconds(2)),
+        std::future_status::ready);
+    EXPECT_EQ(coordinator.ReadyWorksetCapableWorkerCount(), 1u);
+
+    release_secondaries_promise.set_value();
+    const auto ready_deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (coordinator.ReadyWorksetCapableWorkerCount() < 3
+        && std::chrono::steady_clock::now() < ready_deadline) {
+        std::this_thread::yield();
+    }
+    EXPECT_EQ(coordinator.ReadyWorksetCapableWorkerCount(), 3u);
+    EXPECT_EQ(coordinator.ReadyItemCreditCapacity(), 9u);
+    const auto item_credits = coordinator.ItemCreditSource();
+    ASSERT_NE(item_credits, nullptr);
+    const auto credit_deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (item_credits->AvailableCredits() < 9
+        && std::chrono::steady_clock::now() < credit_deadline) {
+        std::this_thread::yield();
+    }
+    EXPECT_EQ(item_credits->AvailableCredits(), 9u);
+    coordinator.Stop();
 }
 
 TEST(WorkerCapabilityGate, ScaleUpRevalidatesCapabilitiesAndStopJoinsPreflight)
@@ -423,9 +783,8 @@ TEST(WorkerCapabilityGate, ScaleUpRevalidatesCapabilitiesAndStopJoinsPreflight)
             }
             return CoordinatorWorkerCapabilityPreflightResult{
                 .process_ready = true,
-                .capabilities = savor::runtime::AddCapability(
-                    savor::runtime::kSlice1ProductionCapabilities,
-                    savor::runtime::WorkerCapability::ProgramInvocation),
+                .capabilities = WorksetCapabilities(),
+                .runtime_manifest = CompleteTestManifest(),
             };
         };
 
@@ -454,7 +813,7 @@ TEST(WorkerCapabilityGate, ScaleUpRevalidatesCapabilitiesAndStopJoinsPreflight)
     EXPECT_GE(preflight_calls.load(std::memory_order_acquire), 2);
     EXPECT_FALSE(coordinator.IsDataPlaneEnabled());
     EXPECT_EQ(coordinator.ActiveWorkerCount(), 0u);
-    EXPECT_EQ(coordinator.ReadyInvocationCapableWorkerCount(), 0u);
+    EXPECT_EQ(coordinator.ReadyWorksetCapableWorkerCount(), 0u);
 }
 
 TEST(WorkerCapabilityGate, BuiltSliceOneWorkerBlocksE2EAndPredictBeforeDbStart)
@@ -477,9 +836,15 @@ TEST(WorkerCapabilityGate, BuiltSliceOneWorkerBlocksE2EAndPredictBeforeDbStart)
             savor::WorkerCapabilityPreflightStatus::RuntimeUnavailable);
         EXPECT_TRUE(result.non_retryable);
         EXPECT_TRUE(savor::runtime::HasCapability(
-            result.missing_capabilities,
-            savor::runtime::WorkerCapability::ProgramInvocation));
+            result.advertised_capabilities,
+            savor::runtime::WorkerCapability::WorksetDispatch));
+        EXPECT_EQ(result.missing_capabilities, 0u);
+        ASSERT_TRUE(result.runtime_manifest.has_value());
+        EXPECT_EQ(
+            result.runtime_manifest->catalog_status,
+            savor::runtime::RuntimeCatalogStatus::Partial);
         EXPECT_NE(result.message.find("RuntimeUnavailable"), std::string::npos);
+        EXPECT_NE(result.message.find("CompleteExact"), std::string::npos);
         EXPECT_EQ(db_start_calls.load(std::memory_order_acquire), 0);
     }
 }
@@ -509,7 +874,7 @@ TEST(WorkerCapabilityGate, VisualDebugReplayReportsSliceThreeDeferralWithoutData
 
     const auto start = coordinator.Start();
     ASSERT_FALSE(start);
-    ASSERT_EQ(start.status, CoordinatorStartStatus::ProgramInvocationUnavailable);
+    ASSERT_EQ(start.status, CoordinatorStartStatus::WorksetDispatchUnavailable);
     ASSERT_FALSE(coordinator.IsDataPlaneEnabled());
 
     std::string error;

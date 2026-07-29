@@ -3,6 +3,7 @@
 #include "EmulationSession.h"
 #include "IProgramRuntimePort.h"
 #include "RuntimeTypes.h"
+#include "Worksets/WorksetTypes.h"
 
 #include <chrono>
 #include <filesystem>
@@ -15,6 +16,8 @@
 #include <vector>
 
 namespace savor::runtime {
+
+class ProgramBaselineComponentRegistry;
 
 struct OpenSessionCommand
 {
@@ -36,6 +39,27 @@ struct CancelInvocationCommand
     InvocationId invocation_id;
 };
 
+struct SubmitWorksetCommand
+{
+    WorkerWorksetDefinition definition;
+};
+
+struct CancelWorksetItemCommand
+{
+    WorkerWorksetId workset_id;
+    WorkerWorksetItemId item_id;
+};
+
+struct CancelWorksetCommand
+{
+    WorkerWorksetId workset_id;
+};
+
+struct AcknowledgeTerminalCommand
+{
+    WorkerItemTerminalCorrelation correlation;
+};
+
 struct CaptureScreenshotCommand
 {
     SessionId session_id;
@@ -47,7 +71,6 @@ enum class WorkerExecutionControlKind : std::uint8_t
 {
     Pause,
     Resume,
-    StepInstruction,
     StepFrame,
 };
 
@@ -68,7 +91,11 @@ using WorkerCommand = std::variant<
     OpenSessionCommand,
     PrepareModuleCommand,
     InvokeProgramCommand,
+    SubmitWorksetCommand,
     CancelInvocationCommand,
+    CancelWorksetItemCommand,
+    CancelWorksetCommand,
+    AcknowledgeTerminalCommand,
     CaptureScreenshotCommand,
     ControlExecutionCommand,
     ShutdownCommand>;
@@ -80,7 +107,60 @@ struct WorkerSnapshot
     SessionSnapshot session;
     ExecutionSnapshot execution;
     std::optional<InvocationId> active_invocation;
+    std::optional<WorkerWorksetId> active_workset;
+    std::optional<WorkerWorksetId> staged_workset;
+    std::optional<WorkerWorksetItemId> active_workset_item;
+    std::uint32_t available_item_credits = 0;
+    std::uint32_t retained_terminal_count = 0;
+    std::size_t retained_terminal_bytes = 0;
     WorkerCommandSequence last_command_sequence;
+};
+
+struct WorkerWorksetStateEvent
+{
+    WorkerOutboundSequence outbound_sequence;
+    WorkerWorksetId workset_id;
+    WorkerWorksetState state = WorkerWorksetState::Validating;
+    std::uint32_t next_item_ordinal = 0;
+    RuntimeError error;
+};
+
+struct WorkerWorksetItemStartedEvent
+{
+    WorkerOutboundSequence outbound_sequence;
+    WorkerWorksetId workset_id;
+    WorkerWorksetItemId item_id;
+    std::uint32_t item_ordinal = 0;
+    InvocationId invocation_id;
+    AttemptId attempt_id;
+    SessionId session_id;
+    StateEpoch state_epoch;
+    PreparedProgramBaselineReceipt baseline;
+};
+
+struct WorkerWorksetItemTerminalEvent
+{
+    WorkerOutboundSequence outbound_sequence;
+    WorkerItemTerminalCorrelation correlation;
+    ProgramInvocationTerminalEvent terminal;
+    bool unstarted = false;
+};
+
+struct WorkerWorksetCreditEvent
+{
+    WorkerOutboundSequence outbound_sequence;
+    std::uint32_t available_item_credits = 0;
+    std::uint32_t active_and_staged_items = 0;
+    std::uint32_t retained_terminals = 0;
+};
+
+struct WorkerWorksetTerminalSummaryEvent
+{
+    WorkerOutboundSequence outbound_sequence;
+    WorkerWorksetId workset_id;
+    std::uint32_t item_count = 0;
+    std::uint32_t completed_count = 0;
+    std::uint32_t unstarted_count = 0;
 };
 
 struct WorkerCommandResult
@@ -137,6 +217,11 @@ using WorkerEvent = std::variant<
     ModulePreparationEvent,
     ProgramInvocationProgressEvent,
     ProgramInvocationTerminalEvent,
+    WorkerWorksetStateEvent,
+    WorkerWorksetItemStartedEvent,
+    WorkerWorksetItemTerminalEvent,
+    WorkerWorksetCreditEvent,
+    WorkerWorksetTerminalSummaryEvent,
     WorkerExecutionEvent,
     HostRuntimeEvent,
     WorkerRuntimeDiagnosticEvent>;
@@ -159,7 +244,9 @@ public:
         std::unique_ptr<IProgramRuntimePort> program_runtime = {},
         WorkerEventSink event_sink = {},
         std::shared_ptr<const WorkerRuntimeTestHooks> test_hooks = {},
-        std::unique_ptr<program::IProgramActionHost> action_host = {});
+        std::unique_ptr<program::IProgramActionHost> action_host = {},
+        std::shared_ptr<ProgramBaselineComponentRegistry>
+            baseline_components = {});
     ~WorkerRuntime();
 
     WorkerRuntime(const WorkerRuntime&) = delete;
@@ -171,6 +258,7 @@ public:
 
     [[nodiscard]] WorkerSnapshot snapshot() const;
     [[nodiscard]] WorkerCapabilityMask capabilities() const noexcept;
+    [[nodiscard]] WorkerRuntimeManifest runtime_manifest() const;
     [[nodiscard]] bool EnqueueHostEvent(
         std::string name,
         std::vector<std::uint8_t> encoded_payload);

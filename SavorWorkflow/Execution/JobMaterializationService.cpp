@@ -1,19 +1,74 @@
 #include "JobMaterializationService.h"
 
+#include "Runner/Script/PSContextCodec.h"
+
+#include <algorithm>
+#include <limits>
 #include <sstream>
 #include <string_view>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 namespace savor::runner::parallel::savordb {
 namespace {
 constexpr std::string_view kWorkflowJobMaterializerToken = "workflow_job_materializer";
+std::atomic<std::uint64_t> g_claim_run_sequence{ 0 };
+
+std::size_t EstimateEncodedInputBytes(const ClaimedJobRecord& record) {
+    // Deterministic coordinator lookahead estimate only. The phase adapter
+    // later supplies the exact encoded envelope size and the worker validates
+    // that exact value against its negotiated limit.
+    constexpr std::size_t kEnvelopeOverhead = 256;
+    std::size_t bytes = kEnvelopeOverhead
+        + record.runtime_init.savestate_ref_kind.size()
+        + record.runtime_init.bootstrap_profile.size()
+        + record.workset_execution_key.size();
+    if (record.payload.has_value()) {
+        bytes += record.payload->payload.size();
+        std::vector<std::uint8_t> encoded_context;
+        if (savor::psctx::encode_numeric(
+                record.payload->ctx,
+                encoded_context)) {
+            bytes += encoded_context.size();
+        }
+    }
+    return std::max<std::size_t>(1, bytes);
+}
+
+std::string MakeClaimTokenPrefix() {
+    std::ostringstream token;
+    token << kWorkflowJobMaterializerToken << ":run:"
+          << std::chrono::duration_cast<std::chrono::nanoseconds>(
+                 std::chrono::steady_clock::now().time_since_epoch())
+                 .count()
+          << ":" << (g_claim_run_sequence.fetch_add(1) + 1);
+    return token.str();
+}
 
 bool IsMaterializerActiveClaimState(ClaimedJobLifecycleState state) {
     return state == ClaimedJobLifecycleState::Claimed
         || state == ClaimedJobLifecycleState::Materializing
         || state == ClaimedJobLifecycleState::Materialized
-        || state == ClaimedJobLifecycleState::Dispatching;
+        || state == ClaimedJobLifecycleState::Dispatching
+        || state == ClaimedJobLifecycleState::Dispatched;
 }
+}
+
+std::size_t CoordinatorItemCapacitySnapshot::ConsumedCredits() const noexcept {
+    const auto add_saturated = [](std::size_t lhs, std::size_t rhs) {
+        const auto max = std::numeric_limits<std::size_t>::max();
+        return rhs > max - lhs ? max : lhs + rhs;
+    };
+    auto consumed = add_saturated(coordinator_buffered, worker_resident);
+    consumed = add_saturated(consumed, active_invocations);
+    consumed = add_saturated(consumed, pending_finalizers);
+    return add_saturated(consumed, unacknowledged_terminals);
+}
+
+std::size_t CoordinatorItemCapacitySnapshot::AvailableCredits() const noexcept {
+    const auto consumed = ConsumedCredits();
+    return consumed >= total_credits ? 0 : total_credits - consumed;
 }
 
 JobMaterializationService::JobMaterializationService(
@@ -29,6 +84,8 @@ void JobMaterializationService::ResetForStart() {
     claimed_jobs_.clear();
     materialized_jobs_.clear();
     claim_sequence_counter_ = 0;
+    claim_batch_sequence_counter_ = 0;
+    claim_token_prefix_ = MakeClaimTokenPrefix();
 }
 
 void JobMaterializationService::StopMaterializationLoop() {
@@ -52,8 +109,18 @@ ClaimJobsResult JobMaterializationService::ClaimJobsDetailed(
     std::vector<ClaimedJobSeed> claims;
 
     std::string error;
+    std::string claim_token_prefix;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (claim_token_prefix_.empty()) {
+            claim_token_prefix_ = MakeClaimTokenPrefix();
+        }
+        claim_token_prefix = claim_token_prefix_
+            + ":claim:"
+            + std::to_string(++claim_batch_sequence_counter_);
+    }
     const auto claimed_jobs = execution_db->ClaimBatchReadyExecutionJobs(
-        kWorkflowJobMaterializerToken,
+        claim_token_prefix,
         static_cast<int>(max_claims),
         30000,
         &error);
@@ -104,6 +171,16 @@ ClaimJobsResult JobMaterializationService::ClaimJobsDetailed(
             record.job_set_id = seed.job_set_id;
             record.job_id = seed.job_id;
             record.affinity = seed.affinity;
+            record.claimed_by_token = claimed_job.claimed_by_token.empty()
+                ? claim_token_prefix + ":"
+                    + std::to_string(seed.job_id)
+                : claimed_job.claimed_by_token;
+            record.lease_expires_at_utc =
+                claimed_job.lease_expires_at_utc;
+            record.durable_attempt_id =
+                claimed_job.durable_attempt_id;
+            record.durable_priority = claimed_job.priority;
+            record.queued_at_utc = claimed_job.queued_at_utc;
             record.claim_sequence = ++claim_sequence_counter_;
             record.claimed_at = now;
             record.state = ClaimedJobLifecycleState::Claimed;
@@ -211,6 +288,16 @@ bool JobMaterializationService::MaterializeClaimedJobRecord(
         .savestate_affinity_key = std::to_string(init_request.savestate_ref_id),
         .program_runtime_affinity_key = init_request.bootstrap_profile,
     };
+    // A RuntimeInitRequest does not yet describe the complete composite
+    // baseline (movie continuation and adapter-declared derived state are
+    // intentionally phase-owned). Do not infer multi-item compatibility from
+    // a savestate ID alone. Phase adapters opt into a shared canonical key as
+    // they migrate; until then the safe workset is a singleton.
+    materialized_record.workset_execution_key =
+        init_request.workset_execution_key.has_value()
+            && !init_request.workset_execution_key->empty()
+        ? *init_request.workset_execution_key
+        : "singleton-job:" + std::to_string(materialized_record.job_id);
     if (!materialized_record.payload.has_value()) {
         std::lock_guard<std::mutex> lock(mutex_);
         const auto it = claimed_jobs_.find(std::to_string(queued_record.job_id));
@@ -222,6 +309,8 @@ bool JobMaterializationService::MaterializeClaimedJobRecord(
         ++payload_materialization_failure_count_;
         return false;
     }
+    materialized_record.encoded_input_bytes =
+        EstimateEncodedInputBytes(materialized_record);
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -253,9 +342,40 @@ bool JobMaterializationService::TrySelectMaterializedJobForWorker(
     if (job_out == nullptr) {
         return false;
     }
+    std::vector<ClaimedJobRecord> jobs;
+    if (!TrySelectMaterializedWorksetForWorker(
+            worker_affinity,
+            MaterializedWorksetSelectionLimits{
+                .max_items = 1,
+                .lookahead_items = 64,
+                .max_selected_bytes =
+                    std::numeric_limits<std::size_t>::max(),
+                .lookahead_bytes =
+                    std::numeric_limits<std::size_t>::max(),
+            },
+            &jobs)
+        || jobs.empty()) {
+        return false;
+    }
+    *job_out = std::move(jobs.front());
+    return true;
+}
 
+bool JobMaterializationService::TrySelectMaterializedWorksetForWorker(
+    const MaterializedJobSelectionAffinity& worker_affinity,
+    MaterializedWorksetSelectionLimits limits,
+    std::vector<ClaimedJobRecord>* jobs_out) {
+    (void)worker_affinity;
+    if (jobs_out == nullptr || limits.max_items == 0
+        || limits.lookahead_items == 0
+        || limits.max_selected_bytes == 0
+        || limits.lookahead_bytes == 0) {
+        return false;
+    }
+    jobs_out->clear();
     std::lock_guard<std::mutex> lock(mutex_);
-    auto best_it = materialized_jobs_.end();
+    std::vector<ClaimedJobRecord*> candidates;
+    candidates.reserve(materialized_jobs_.size());
     for (auto it = materialized_jobs_.begin(); it != materialized_jobs_.end();) {
         const auto claimed_it = claimed_jobs_.find(it->first);
         if (claimed_it == claimed_jobs_.end()
@@ -263,43 +383,83 @@ bool JobMaterializationService::TrySelectMaterializedJobForWorker(
             it = materialized_jobs_.erase(it);
             continue;
         }
-        if (execution_db != nullptr) {
-            const auto job_row = execution_db->GetJob(claimed_it->second.job_id);
-            const bool is_valid_materializer_claim = job_row.has_value()
-                && job_row->state == "CLAIMED"
-                && job_row->claimed_by_token.has_value()
-                && *job_row->claimed_by_token == kWorkflowJobMaterializerToken;
-            if (!is_valid_materializer_claim) {
-                claimed_jobs_.erase(claimed_it);
-                it = materialized_jobs_.erase(it);
-                continue;
-            }
-        }
-
-        if (best_it == materialized_jobs_.end()) {
-            best_it = it;
-        } else {
-            const auto best_claimed_it = claimed_jobs_.find(best_it->first);
-            if (best_claimed_it == claimed_jobs_.end()
-                || BetterMaterializedDispatchCandidate(claimed_it->second, best_claimed_it->second, worker_affinity)) {
-                best_it = it;
-            }
-        }
+        candidates.push_back(&claimed_it->second);
         ++it;
     }
-
-    if (best_it == materialized_jobs_.end()) {
+    if (candidates.empty()) {
         return false;
     }
+    std::sort(
+        candidates.begin(),
+        candidates.end(),
+        [](const auto* lhs, const auto* rhs) {
+            return DurableMaterializedOrder(*lhs, *rhs);
+        });
 
-    const auto claimed_it = claimed_jobs_.find(best_it->first);
-    if (claimed_it == claimed_jobs_.end()) {
-        materialized_jobs_.erase(best_it);
+    const auto& anchor = *candidates.front();
+    const auto anchor_key = anchor.workset_execution_key;
+    const auto anchor_priority = anchor.durable_priority;
+    const auto lookahead = std::min(limits.lookahead_items, candidates.size());
+    jobs_out->reserve(std::min(limits.max_items, lookahead));
+    std::size_t inspected_bytes = 0;
+    std::size_t selected_bytes = 0;
+    for (std::size_t i = 0;
+         i < lookahead && jobs_out->size() < limits.max_items;
+         ++i) {
+        auto& candidate = *candidates[i];
+        if (candidate.durable_priority != anchor_priority) {
+            break;
+        }
+        const auto candidate_bytes =
+            std::max<std::size_t>(1, candidate.encoded_input_bytes);
+        if (inspected_bytes >= limits.lookahead_bytes
+            || candidate_bytes
+                > limits.lookahead_bytes - inspected_bytes) {
+            break;
+        }
+        inspected_bytes += candidate_bytes;
+        if (candidate.workset_execution_key != anchor_key) {
+            continue;
+        }
+        if (selected_bytes >= limits.max_selected_bytes
+            || candidate_bytes
+                > limits.max_selected_bytes - selected_bytes) {
+            break;
+        }
+        selected_bytes += candidate_bytes;
+        candidate.state = ClaimedJobLifecycleState::Dispatching;
+        jobs_out->push_back(candidate);
+        materialized_jobs_.erase(std::to_string(candidate.job_id));
+    }
+    return !jobs_out->empty();
+}
+
+bool JobMaterializationService::PeekMaterializedAnchor(
+    ClaimedJobRecord* job_out) const {
+    if (job_out == nullptr) {
         return false;
     }
-    *job_out = claimed_it->second;
-    claimed_it->second.state = ClaimedJobLifecycleState::Dispatching;
-    materialized_jobs_.erase(best_it);
+    std::lock_guard<std::mutex> lock(mutex_);
+    const ClaimedJobRecord* anchor = nullptr;
+    for (const auto& [_, materialized] : materialized_jobs_) {
+        const auto claimed_it = claimed_jobs_.find(
+            std::to_string(materialized.job_id));
+        if (claimed_it == claimed_jobs_.end()
+            || claimed_it->second.state
+                != ClaimedJobLifecycleState::Materialized) {
+            continue;
+        }
+        if (anchor == nullptr
+            || DurableMaterializedOrder(
+                claimed_it->second,
+                *anchor)) {
+            anchor = &claimed_it->second;
+        }
+    }
+    if (anchor == nullptr) {
+        return false;
+    }
+    *job_out = *anchor;
     return true;
 }
 
@@ -384,32 +544,68 @@ ClaimLeaseMaintenanceResult JobMaterializationService::RenewActiveClaimLeases(st
         return result;
     }
 
-    std::vector<std::int64_t> job_ids;
+    std::vector<savor::db::ExecutionJobLeaseRequest> requests;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        job_ids.reserve(claimed_jobs_.size());
+        requests.reserve(claimed_jobs_.size());
         for (const auto& [_, record] : claimed_jobs_) {
             if (IsMaterializerActiveClaimState(record.state)) {
-                job_ids.push_back(record.job_id);
+                requests.push_back(savor::db::ExecutionJobLeaseRequest{
+                    .job_id = record.job_id,
+                    .claimed_by_token = record.claimed_by_token,
+                });
             }
         }
     }
 
-    result.attempted = job_ids.size();
-    for (const auto job_id : job_ids) {
-        bool renewed = false;
-        std::string error;
-        if (!execution_db->RenewExecutionJobLease(
-                job_id,
-                kWorkflowJobMaterializerToken,
-                lease_duration.count(),
-                &renewed,
-                &error)) {
+    result.attempted = requests.size();
+    std::string error;
+    const auto receipts = execution_db->RenewExecutionJobLeases(
+        requests,
+        lease_duration.count(),
+        &error);
+    std::unordered_map<std::int64_t, std::string> token_by_job;
+    token_by_job.reserve(requests.size());
+    for (const auto& request : requests) {
+        token_by_job.emplace(
+            request.job_id,
+            request.claimed_by_token);
+    }
+    std::unordered_set<std::int64_t> seen_receipts;
+    seen_receipts.reserve(receipts.size());
+    for (const auto& receipt : receipts) {
+        const auto request = token_by_job.find(receipt.job_id);
+        if (request == token_by_job.end()
+            || !seen_receipts.emplace(receipt.job_id).second) {
             ++result.failed;
             continue;
         }
-        if (renewed) {
+        if (receipt.disposition
+            == savor::db::ExecutionJobLeaseRenewalDisposition::Renewed) {
             ++result.renewed;
+        } else {
+            ++result.failed;
+            result.lost_authority.push_back(
+                ClaimLeaseMaintenanceResult::LostAuthority{
+                    .job_id = receipt.job_id,
+                    .claimed_by_token = request->second,
+                    .disposition = receipt.disposition,
+                });
+        }
+    }
+    for (const auto& request : requests) {
+        if (!seen_receipts.contains(request.job_id)) {
+            ++result.failed;
+            result.lost_authority.push_back(
+                ClaimLeaseMaintenanceResult::LostAuthority{
+                    .job_id = request.job_id,
+                    .claimed_by_token =
+                        request.claimed_by_token,
+                    .disposition =
+                        savor::db::
+                            ExecutionJobLeaseRenewalDisposition::
+                                BackendError,
+                });
         }
     }
     return result;
@@ -548,6 +744,23 @@ bool JobMaterializationService::BetterMaterializedDispatchCandidate(
     }
 
     return lhs.claim_sequence < rhs.claim_sequence;
+}
+
+std::string JobMaterializationService::CurrentClaimTokenPrefix() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return claim_token_prefix_;
+}
+
+bool JobMaterializationService::DurableMaterializedOrder(
+    const ClaimedJobRecord& lhs,
+    const ClaimedJobRecord& rhs) {
+    if (lhs.durable_priority != rhs.durable_priority) {
+        return lhs.durable_priority > rhs.durable_priority;
+    }
+    if (lhs.queued_at_utc != rhs.queued_at_utc) {
+        return lhs.queued_at_utc < rhs.queued_at_utc;
+    }
+    return lhs.job_id < rhs.job_id;
 }
 
 } // namespace savor::runner::parallel::savordb

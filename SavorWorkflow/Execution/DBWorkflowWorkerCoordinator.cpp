@@ -1,15 +1,18 @@
 #include "DBWorkflowWorkerCoordinator.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <exception>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <optional>
 #include <sstream>
 #include <system_error>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -26,11 +29,36 @@
 namespace savor::runner::parallel::savordb {
 namespace {
 constexpr std::size_t kMaxCoordinatorWarnings = 32;
+std::atomic<std::uint64_t> g_worker_process_generation{0};
+
+std::uint64_t NextWorkerProcessGeneration() noexcept {
+    auto generation =
+        g_worker_process_generation.fetch_add(
+            1,
+            std::memory_order_relaxed)
+        + 1;
+    if (generation == 0) {
+        generation =
+            g_worker_process_generation.fetch_add(
+                1,
+                std::memory_order_relaxed)
+            + 1;
+    }
+    return generation;
+}
 
 std::int64_t NowMonoNs()
 {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+std::string WorksetItemMapKey(
+    std::size_t worker_idx,
+    std::uint64_t workset_id,
+    std::uint64_t item_id) {
+    return std::to_string(worker_idx) + ":"
+        + std::to_string(workset_id) + ":" + std::to_string(item_id);
 }
 
 struct ProgressDedupState {
@@ -44,14 +72,101 @@ struct ProgressDedupState {
 struct CapabilityPreflightEvaluation {
     bool ready = false;
     bool non_retryable = false;
-    bool invocation_missing = false;
+    bool workset_dispatch_missing = false;
+    bool workset_catalog_missing = false;
     bool interactive_visual_debug_missing = false;
     std::string error;
 };
 
+bool HasUsableWorksetLimits(
+    const savor::runtime::WorkerWorksetLimits& limits) {
+    constexpr std::size_t kWrmsMaximumPayloadBytes =
+        64ull * 1024ull * 1024ull;
+    return limits.maximum_items_per_workset > 0
+        && limits.maximum_encoded_workset_bytes > 0
+        && limits.maximum_encoded_workset_bytes
+            <= kWrmsMaximumPayloadBytes
+        && limits.maximum_aggregate_active_budget.count() > 0
+        && limits.maximum_item_credits > 0
+        && limits.maximum_active_and_staged_items > 0
+        && limits.maximum_active_and_staged_items
+            <= limits.maximum_item_credits
+        && limits.maximum_state_cache_entries > 0
+        && limits.maximum_state_cache_bytes > 0
+        && limits.finalizer_threads > 0
+        && limits.maximum_pending_finalizers > 0
+        && limits.maximum_pending_finalizer_bytes > 0
+        && limits.maximum_retained_terminals > 0
+        && limits.maximum_retained_terminal_bytes > 0
+        && limits.progressive_start_concurrency > 0;
+}
+
+bool HasExactProductionCatalogShape(
+    const savor::runtime::WorkerRuntimeManifest& manifest,
+    std::string* error_out) {
+    static constexpr std::array<
+        std::pair<std::string_view, std::string_view>,
+        9>
+        kProductionModules{{
+            {"soa.seed_probe", "probe"},
+            {"soa.navigation.context", "capture"},
+            {"soa.tas_movie", "play_and_checkpoint"},
+            {"soa.tas_frame_detector", "detect"},
+            {"soa.battle.context", "capture"},
+            {"soa.battle.macro_probe", "probe"},
+            {"soa.battle.single_turn", "execute"},
+            {"soa.battle.completion", "complete"},
+            {"soa.battle.results_screen", "advance"},
+        }};
+    if (manifest.modules.size() != kProductionModules.size()) {
+        if (error_out != nullptr) {
+            *error_out = "CompleteExact catalog must contain exactly nine "
+                "production modules";
+        }
+        return false;
+    }
+
+    std::unordered_set<std::string> seen;
+    seen.reserve(kProductionModules.size());
+    for (const auto& module : manifest.modules) {
+        if (module.development_only
+            || module.module.canonical_id.empty()
+            || !seen.emplace(module.module.canonical_id).second) {
+            if (error_out != nullptr) {
+                *error_out = "CompleteExact catalog contains a development, "
+                    "unnamed, or duplicate module";
+            }
+            return false;
+        }
+        const auto expected = std::find_if(
+            kProductionModules.begin(),
+            kProductionModules.end(),
+            [&](const auto& candidate) {
+                return candidate.first == module.module.canonical_id;
+            });
+        if (expected == kProductionModules.end()
+            || module.entrypoints.size() != 1
+            || std::find(
+                module.entrypoints.begin(),
+                module.entrypoints.end(),
+                std::string(expected->second))
+                == module.entrypoints.end()) {
+            if (error_out != nullptr) {
+                *error_out = "CompleteExact catalog module or entrypoint "
+                    "does not match the production nine-module catalog";
+            }
+            return false;
+        }
+    }
+    return true;
+}
+
 CapabilityPreflightEvaluation EvaluateCapabilityPreflight(
     const CoordinatorWorkerCapabilityPreflightResult& preflight,
-    bool require_interactive_visual_debug) {
+    bool require_interactive_visual_debug,
+    std::string_view expected_catalog_sha256,
+    std::string_view expected_runtime_profile_sha256,
+    std::string_view expected_dependency_manifest_sha256) {
     CapabilityPreflightEvaluation evaluation;
     if (!preflight.process_ready) {
         evaluation.error = preflight.error.empty()
@@ -62,12 +177,62 @@ CapabilityPreflightEvaluation EvaluateCapabilityPreflight(
 
     if (!savor::runtime::HasCapability(
             preflight.capabilities,
-            savor::runtime::WorkerCapability::ProgramInvocation)) {
+            savor::runtime::WorkerCapability::WorksetDispatch)) {
         evaluation.non_retryable = true;
-        evaluation.invocation_missing = true;
-        evaluation.error = preflight.error.empty()
-            ? "worker does not advertise ProgramInvocation"
-            : preflight.error;
+        evaluation.workset_dispatch_missing = true;
+        evaluation.error = "worker does not advertise WorksetDispatch";
+        if (!preflight.error.empty()) {
+            evaluation.error += ": " + preflight.error;
+        }
+        return evaluation;
+    }
+
+    std::string catalog_shape_error;
+    if (!preflight.runtime_manifest.has_value()
+        || preflight.runtime_manifest->catalog_status
+            != savor::runtime::RuntimeCatalogStatus::CompleteExact
+        || !HasExactProductionCatalogShape(
+            *preflight.runtime_manifest,
+            &catalog_shape_error)
+        || expected_catalog_sha256.empty()
+        || preflight.runtime_manifest->catalog_sha256
+            != expected_catalog_sha256) {
+        evaluation.non_retryable = true;
+        evaluation.workset_catalog_missing = true;
+        std::ostringstream error;
+        error << "worker does not advertise the required CompleteExact catalog";
+        if (expected_catalog_sha256.empty()) {
+            error << " (coordinator expected catalog hash is not configured)";
+        } else if (!catalog_shape_error.empty()) {
+            error << " (" << catalog_shape_error << ")";
+        } else if (preflight.runtime_manifest.has_value()) {
+            error << " expected=" << expected_catalog_sha256
+                  << " actual="
+                  << preflight.runtime_manifest->catalog_sha256;
+        }
+        evaluation.error = error.str();
+        return evaluation;
+    }
+
+    if (expected_runtime_profile_sha256.empty()
+        || preflight.runtime_manifest->runtime_profile_sha256
+            != expected_runtime_profile_sha256
+        || expected_dependency_manifest_sha256.empty()
+        || preflight.runtime_manifest->dependency_manifest_sha256
+            != expected_dependency_manifest_sha256) {
+        evaluation.non_retryable = true;
+        evaluation.workset_catalog_missing = true;
+        evaluation.error =
+            "worker runtime profile or dependency manifest does not match "
+            "the coordinator requirement";
+        return evaluation;
+    }
+
+    if (!HasUsableWorksetLimits(preflight.runtime_manifest->limits)) {
+        evaluation.non_retryable = true;
+        evaluation.workset_catalog_missing = true;
+        evaluation.error =
+            "worker advertises invalid or unusable workset limits";
         return evaluation;
     }
 
@@ -839,6 +1004,11 @@ DBWorkflowWorkerCoordinator::DBWorkflowWorkerCoordinator(
     , persist_materialization_fn_(std::move(persist_materialization_fn))
     , job_materialization_service_(execution_db, program_kind_registry)
     , program_kind_registry_(program_kind_registry) {
+    if (!worker_cfg_.item_credit_source) {
+        worker_cfg_.item_credit_source = std::make_shared<
+            savor::db::execution::workflow::
+                CoordinatorItemCreditSource>();
+    }
     if (step_completion_gate != nullptr) {
         step_completion_gate_ = step_completion_gate;
     } else {
@@ -856,11 +1026,102 @@ DBWorkflowWorkerCoordinator::~DBWorkflowWorkerCoordinator() {
     Stop();
 }
 
+void DBWorkflowWorkerCoordinator::ConfigureWorkerCallbacks(
+    std::size_t worker_idx,
+    std::uint64_t worker_generation,
+    const std::shared_ptr<savor::ProcessWorker>& worker) {
+    if (!worker) {
+        return;
+    }
+    worker->set_workset_state_callback(
+        [this, worker_idx, worker_generation](
+            const savor::wrms::WorksetStatePayload& payload) {
+            if (workset_event_q_.push(
+                    WorksetEventIngress{
+                        .worker_idx = worker_idx,
+                        .worker_generation = worker_generation,
+                        .kind = WorksetEventKind::State,
+                        .state = payload,
+                    })) {
+                queue_cv_.notify_all();
+            }
+        });
+    worker->set_workset_item_started_callback(
+        [this, worker_idx, worker_generation](
+            const savor::wrms::WorksetItemStartedPayload& payload) {
+            if (workset_event_q_.push(
+                    WorksetEventIngress{
+                        .worker_idx = worker_idx,
+                        .worker_generation = worker_generation,
+                        .kind = WorksetEventKind::ItemStarted,
+                        .started = payload,
+                    })) {
+                queue_cv_.notify_all();
+            }
+        });
+    worker->set_invocation_progress_callback(
+        [this, worker_idx, worker_generation](
+            const savor::wrms::InvocationProgressPayload& payload) {
+            if (workset_event_q_.push(
+                    WorksetEventIngress{
+                        .worker_idx = worker_idx,
+                        .worker_generation = worker_generation,
+                        .kind = WorksetEventKind::ItemProgress,
+                        .progress = payload,
+                    })) {
+                queue_cv_.notify_all();
+            }
+        });
+    worker->set_workset_item_terminal_callback(
+        [this, worker_idx, worker_generation](
+            const savor::wrms::WorksetItemTerminalPayload& payload) {
+            if (workset_event_q_.push(
+                    WorksetEventIngress{
+                        .worker_idx = worker_idx,
+                        .worker_generation = worker_generation,
+                        .kind = WorksetEventKind::ItemTerminal,
+                        .terminal = payload,
+                    })) {
+                queue_cv_.notify_all();
+            }
+        });
+    worker->set_workset_credits_callback(
+        [this, worker_idx, worker_generation](
+            const savor::wrms::WorksetCreditsPayload& payload) {
+            if (workset_event_q_.push(
+                    WorksetEventIngress{
+                        .worker_idx = worker_idx,
+                        .worker_generation = worker_generation,
+                        .kind = WorksetEventKind::Credits,
+                        .credits = payload,
+                    })) {
+                queue_cv_.notify_all();
+            }
+        });
+    worker->set_workset_summary_callback(
+        [this, worker_idx, worker_generation](
+            const savor::wrms::WorksetSummaryPayload& payload) {
+            if (workset_event_q_.push(
+                    WorksetEventIngress{
+                        .worker_idx = worker_idx,
+                        .worker_generation = worker_generation,
+                        .kind = WorksetEventKind::Summary,
+                        .summary = payload,
+                    })) {
+                queue_cv_.notify_all();
+            }
+        });
+}
+
 DBWorkflowWorkerCoordinator::WorkerSlotPtr DBWorkflowWorkerCoordinator::MakeWorkerSlot(size_t worker_idx) {
     auto slot = std::make_shared<WorkerSlot>();
     slot->id = worker_idx;
+    slot->process_generation = NextWorkerProcessGeneration();
     slot->worker = std::make_shared<savor::ProcessWorker>();
-    slot->worker->set_progress_queue(&progress_q_);
+    ConfigureWorkerCallbacks(
+        worker_idx,
+        slot->process_generation,
+        slot->worker);
     const auto surface_it = worker_visual_surfaces_.find(worker_idx);
     if (surface_it != worker_visual_surfaces_.end()) {
         slot->visual_render_widget_handle = surface_it->second.render_widget_handle;
@@ -943,13 +1204,16 @@ CoordinatorStartResult DBWorkflowWorkerCoordinator::Start() {
     if (worker_job_thread_.joinable() || worker_lifecycle_thread_.joinable()) {
         last_start_result_ = CoordinatorStartResult{
             .status = CoordinatorStartStatus::Started,
-            .ready_invocation_capable_workers = ReadyInvocationCapableWorkerCount(),
+            .ready_workset_capable_workers = ReadyWorksetCapableWorkerCount(),
             .non_retryable = false,
         };
         return last_start_result_;
     }
 
     data_plane_enabled_.store(false, std::memory_order_release);
+    if (worker_cfg_.item_credit_source) {
+        worker_cfg_.item_credit_source->Close();
+    }
     {
         std::lock_guard<std::mutex> lock(runtime_preparation_mtx_);
         prepared_runtime_worker_exe_.reset();
@@ -960,6 +1224,8 @@ CoordinatorStartResult DBWorkflowWorkerCoordinator::Start() {
     job_materialization_service_.ResetForStart();
     progress_q_.reset();
     results_q_.reset();
+    workset_event_q_.reset();
+    terminal_commit_sequence_.store(0, std::memory_order_relaxed);
     last_claim_lease_maintenance_ = {};
     no_jobs_available_.store(false);
     claim_attempt_count_.store(0);
@@ -994,9 +1260,10 @@ CoordinatorStartResult DBWorkflowWorkerCoordinator::Start() {
         RegisterWorkerSlotTelemetry(*slot);
     }
 
-    size_t ready_invocation_capable_workers = 0;
+    size_t ready_workset_capable_workers = 0;
     bool any_process_ready = false;
-    bool saw_invocation_capability_mismatch = false;
+    bool saw_workset_dispatch_capability_mismatch = false;
+    bool saw_workset_catalog_mismatch = false;
     bool saw_interactive_visual_debug_capability_mismatch = false;
     std::vector<std::string> preflight_errors;
     std::vector<std::shared_ptr<savor::ProcessWorker>>
@@ -1005,15 +1272,28 @@ CoordinatorStartResult DBWorkflowWorkerCoordinator::Start() {
     rejected_preflight_workers.reserve(initial_slots.size());
     const auto max_start_attempts =
         std::max<std::uint32_t>(1u, worker_cfg_.max_worker_start_attempts);
-    for (const auto& slot : initial_slots) {
+    // Production starts one compatible worker synchronously, opens the data
+    // plane, then lets the lifecycle loop add the rest with bounded
+    // concurrency. This avoids making useful capacity wait on the desired
+    // pool size without allowing any DB work before the complete-catalog gate.
+    const auto synchronous_preflight_count = initial_slots.size();
+    for (std::size_t initial_index = 0;
+         initial_index < synchronous_preflight_count
+            && ready_workset_capable_workers == 0;
+         ++initial_index) {
+        const auto& slot = initial_slots[initial_index];
         const auto preflight = RunWorkerCapabilityPreflightForSlot(slot);
         const auto evaluation = EvaluateCapabilityPreflight(
             preflight,
-            worker_cfg_.visual_debug_workers);
+            worker_cfg_.visual_debug_workers,
+            worker_cfg_.expected_catalog_sha256,
+            worker_cfg_.expected_runtime_profile_sha256,
+            worker_cfg_.expected_dependency_manifest_sha256);
 
         {
             std::lock_guard<std::mutex> slot_lock(slot->mtx);
             slot->capabilities = preflight.capabilities;
+            slot->runtime_manifest = preflight.runtime_manifest;
             slot->ready.store(evaluation.ready, std::memory_order_release);
             if (evaluation.ready) {
                 slot->last_start_error.clear();
@@ -1030,8 +1310,14 @@ CoordinatorStartResult DBWorkflowWorkerCoordinator::Start() {
                     rejected_preflight_workers.push_back(
                         std::move(slot->worker));
                 }
+                slot->process_generation =
+                    NextWorkerProcessGeneration();
                 slot->worker = std::make_shared<savor::ProcessWorker>();
-                slot->worker->set_progress_queue(&progress_q_);
+                ConfigureWorkerCallbacks(
+                    slot->id,
+                    slot->process_generation,
+                    slot->worker);
+                slot->runtime_manifest.reset();
             }
             RegisterWorkerSlotTelemetry(*slot);
         }
@@ -1039,11 +1325,14 @@ CoordinatorStartResult DBWorkflowWorkerCoordinator::Start() {
         if (preflight.process_ready) {
             any_process_ready = true;
         }
-        saw_invocation_capability_mismatch |= evaluation.invocation_missing;
+        saw_workset_dispatch_capability_mismatch |=
+            evaluation.workset_dispatch_missing;
+        saw_workset_catalog_mismatch |=
+            evaluation.workset_catalog_missing;
         saw_interactive_visual_debug_capability_mismatch |=
             evaluation.interactive_visual_debug_missing;
         if (evaluation.ready) {
-            ++ready_invocation_capable_workers;
+            ++ready_workset_capable_workers;
         } else {
             std::ostringstream error;
             error << "worker " << slot->id << ": " << evaluation.error;
@@ -1056,20 +1345,26 @@ CoordinatorStartResult DBWorkflowWorkerCoordinator::Start() {
         }
     }
 
-    if (ready_invocation_capable_workers == 0) {
+    if (ready_workset_capable_workers == 0) {
         std::ostringstream error;
-        if (saw_interactive_visual_debug_capability_mismatch
-            && !saw_invocation_capability_mismatch) {
+        if (saw_workset_catalog_mismatch
+            && !saw_workset_dispatch_capability_mismatch) {
+            error
+                << "no ready worker advertises the required CompleteExact workset catalog";
+        } else if (saw_interactive_visual_debug_capability_mismatch
+            && !saw_workset_dispatch_capability_mismatch) {
             error
                 << "no ready worker advertises InteractiveVisualDebug";
         } else {
-            error << "no ready worker advertises ProgramInvocation";
+            error << "no ready worker advertises WorksetDispatch";
         }
         for (const auto& preflight_error : preflight_errors) {
             error << "; " << preflight_error;
         }
-        const auto status = saw_invocation_capability_mismatch
-            ? CoordinatorStartStatus::ProgramInvocationUnavailable
+        const auto status = saw_workset_dispatch_capability_mismatch
+            ? CoordinatorStartStatus::WorksetDispatchUnavailable
+            : saw_workset_catalog_mismatch
+                ? CoordinatorStartStatus::WorksetCatalogUnavailable
             : saw_interactive_visual_debug_capability_mismatch
                 ? CoordinatorStartStatus::InteractiveVisualDebugUnavailable
                 : CoordinatorStartStatus::CapabilityPreflightFailed;
@@ -1080,17 +1375,40 @@ CoordinatorStartResult DBWorkflowWorkerCoordinator::Start() {
             error.str(),
             std::move(initial_slots));
     }
+    if (!worker_cfg_.workset_definition_builder
+        || !worker_cfg_.workset_terminal_decoder) {
+        std::ostringstream error;
+        error << "CompleteExact activation requires both the canonical "
+                 "workset-definition builder and workset-terminal decoder";
+        if (!worker_cfg_.workset_definition_builder) {
+            error << "; builder is unavailable";
+        }
+        if (!worker_cfg_.workset_terminal_decoder) {
+            error << "; terminal decoder is unavailable";
+        }
+        return FailStart(
+            CoordinatorStartStatus::WorksetCatalogUnavailable,
+            error.str(),
+            std::move(initial_slots));
+    }
 
     data_plane_enabled_.store(true, std::memory_order_release);
+    if (worker_cfg_.item_credit_source) {
+        worker_cfg_.item_credit_source->Open(
+            ReadyItemCreditCapacity());
+        RefreshSharedItemCredits();
+    }
     progress_drainer_thread_ = std::thread([this]() { DrainProgressLoop(); });
     results_drainer_thread_ = std::thread([this]() { DrainResultsLoop(); });
+    workset_event_drainer_thread_ =
+        std::thread([this]() { DrainWorksetEventsLoop(); });
     job_materializer_thread_ = std::thread([this]() { job_materialization_service_.MaterializeClaimedJobPayloadLoop(stop_); });
     worker_lifecycle_thread_ = std::thread([this]() { WorkerLifecycleCoordinatorLoop(); });
     worker_job_thread_ = std::thread([this]() { WorkerJobCoordinatorLoop(); });
 
     last_start_result_ = CoordinatorStartResult{
         .status = CoordinatorStartStatus::Started,
-        .ready_invocation_capable_workers = ready_invocation_capable_workers,
+        .ready_workset_capable_workers = ready_workset_capable_workers,
         .non_retryable = false,
     };
     return last_start_result_;
@@ -1170,17 +1488,7 @@ DBWorkflowWorkerCoordinator::PreflightWorkerSlot(const WorkerSlotPtr& slot) {
     }
 
     const auto capabilities = worker->process_capabilities();
-    if (!savor::runtime::HasCapability(
-            capabilities,
-            savor::runtime::WorkerCapability::ProgramInvocation)) {
-        return {
-            .process_ready = true,
-            .capabilities = capabilities,
-            .error =
-                "RuntimeUnavailable: canonical ProgramRuntime capability "
-                "is not implemented",
-        };
-    }
+    const auto runtime_manifest = worker->runtime_manifest();
     if (worker_cfg_.visual_debug_workers
         && !savor::runtime::HasCapability(
             capabilities,
@@ -1188,8 +1496,27 @@ DBWorkflowWorkerCoordinator::PreflightWorkerSlot(const WorkerSlotPtr& slot) {
         return {
             .process_ready = true,
             .capabilities = capabilities,
+            .runtime_manifest = runtime_manifest,
             .error =
                 "interactive visual debugging is deferred to Dependency Slice 3",
+        };
+    }
+    const auto process_evaluation = EvaluateCapabilityPreflight(
+        CoordinatorWorkerCapabilityPreflightResult{
+            .process_ready = true,
+            .capabilities = capabilities,
+            .runtime_manifest = runtime_manifest,
+        },
+        worker_cfg_.visual_debug_workers,
+        worker_cfg_.expected_catalog_sha256,
+        worker_cfg_.expected_runtime_profile_sha256,
+        worker_cfg_.expected_dependency_manifest_sha256);
+    if (!process_evaluation.ready) {
+        return {
+            .process_ready = true,
+            .capabilities = capabilities,
+            .runtime_manifest = runtime_manifest,
+            .error = process_evaluation.error,
         };
     }
 
@@ -1200,6 +1527,7 @@ DBWorkflowWorkerCoordinator::PreflightWorkerSlot(const WorkerSlotPtr& slot) {
         return {
             .process_ready = false,
             .capabilities = capabilities,
+            .runtime_manifest = runtime_manifest,
             .error = "create worker user directory failed: " + ec.message(),
         };
     }
@@ -1229,6 +1557,7 @@ DBWorkflowWorkerCoordinator::PreflightWorkerSlot(const WorkerSlotPtr& slot) {
         return {
             .process_ready = false,
             .capabilities = capabilities,
+            .runtime_manifest = runtime_manifest,
             .error = error.empty()
                 ? "worker OpenSession failed"
                 : error,
@@ -1238,6 +1567,7 @@ DBWorkflowWorkerCoordinator::PreflightWorkerSlot(const WorkerSlotPtr& slot) {
     return {
         .process_ready = true,
         .capabilities = open_result.capability_mask,
+        .runtime_manifest = runtime_manifest,
     };
 }
 
@@ -1247,6 +1577,9 @@ void DBWorkflowWorkerCoordinator::Stop() {
         return;
     }
     data_plane_enabled_.store(false, std::memory_order_release);
+    if (worker_cfg_.item_credit_source) {
+        worker_cfg_.item_credit_source->Close();
+    }
     EmitShutdownPhase("stop_requested");
     stop_.store(true);
     queue_cv_.notify_all();
@@ -1260,8 +1593,6 @@ void DBWorkflowWorkerCoordinator::Stop() {
     {
         std::lock_guard<std::mutex> lock(workers_mtx_);
         slots_to_stop = workers_;
-        workers_.clear();
-        worker_slot_count_.store(0, std::memory_order_relaxed);
     }
     {
         std::ostringstream detail;
@@ -1279,7 +1610,7 @@ void DBWorkflowWorkerCoordinator::Stop() {
     }
     for (const auto& slot : slots_to_stop) {
         if (slot) {
-            StopWorkerSlot(slot);
+            StopWorkerSlot(slot, true);
         }
     }
     EmitShutdownPhase("workers_stopped");
@@ -1312,6 +1643,7 @@ void DBWorkflowWorkerCoordinator::Stop() {
     EmitShutdownPhase("queues_close");
     progress_q_.close();
     results_q_.close();
+    workset_event_q_.close();
 
     EmitShutdownPhase("join_begin", "thread=progress_drainer");
     if (progress_drainer_thread_.joinable()) {
@@ -1323,9 +1655,45 @@ void DBWorkflowWorkerCoordinator::Stop() {
         results_drainer_thread_.join();
     }
     EmitShutdownPhase("join_end", "thread=results_drainer");
+    EmitShutdownPhase("join_begin", "thread=workset_event_drainer");
+    if (workset_event_drainer_thread_.joinable()) {
+        workset_event_drainer_thread_.join();
+    }
+    EmitShutdownPhase("join_end", "thread=workset_event_drainer");
     {
         std::lock_guard<std::mutex> lock(workers_mtx_);
         dispatched_job_context_by_id_.clear();
+        dispatched_workset_items_.clear();
+        for (const auto& slot : workers_) {
+            if (!slot) {
+                continue;
+            }
+            std::lock_guard<std::mutex> slot_lock(slot->mtx);
+            slot->in_flight_job_id.reset();
+            slot->active_workset_id.reset();
+            slot->staged_workset_id.reset();
+            slot->retained_workset_ids.clear();
+            slot->retained_workset_item_counts.clear();
+            slot->failed_closed_workset_ids.clear();
+            slot->last_workset_outbound_sequence = 0;
+            slot->last_workset_terminal_order = 0;
+            slot->workset_admission_blocked = false;
+            slot->in_flight_started_at = {};
+            slot->last_worker_contact_at = {};
+            slot->dead_in_flight_observed_at = {};
+            slot->loaded_program_kind.reset();
+            slot->loaded_program_runtime_affinity_key.reset();
+            slot->loaded_savestate_affinity_key.reset();
+            slot->loaded_workset_execution_key.reset();
+            slot->worker.reset();
+            worker_status_.UpdateState(
+                static_cast<std::int64_t>(slot->id),
+                WorkerStateKind::Dead);
+            worker_status_.UnregisterWorker(
+                static_cast<std::int64_t>(slot->id));
+        }
+        workers_.clear();
+        worker_slot_count_.store(0, std::memory_order_relaxed);
     }
     EmitShutdownPhase("stop_complete");
     {
@@ -1343,7 +1711,7 @@ bool DBWorkflowWorkerCoordinator::IsDataPlaneEnabled() const noexcept {
     return data_plane_enabled_.load(std::memory_order_acquire);
 }
 
-size_t DBWorkflowWorkerCoordinator::ReadyInvocationCapableWorkerCount() const {
+size_t DBWorkflowWorkerCoordinator::ReadyWorksetCapableWorkerCount() const {
     size_t count = 0;
     const auto slots = CopyWorkerSlots();
     for (const auto& slot : slots) {
@@ -1354,11 +1722,40 @@ size_t DBWorkflowWorkerCoordinator::ReadyInvocationCapableWorkerCount() const {
         if (slot->ready.load(std::memory_order_acquire)
             && savor::runtime::HasCapability(
                 slot->capabilities,
-                savor::runtime::WorkerCapability::ProgramInvocation)) {
+                savor::runtime::WorkerCapability::WorksetDispatch)) {
             ++count;
         }
     }
     return count;
+}
+
+size_t DBWorkflowWorkerCoordinator::ReadyItemCreditCapacity() const {
+    size_t credits = 0;
+    const auto slots = CopyWorkerSlots();
+    for (const auto& slot : slots) {
+        if (!slot) {
+            continue;
+        }
+        std::lock_guard<std::mutex> slot_lock(slot->mtx);
+        if (!slot->ready.load(std::memory_order_acquire)
+            || !slot->runtime_manifest.has_value()
+            || !savor::runtime::HasCapability(
+                slot->capabilities,
+                savor::runtime::WorkerCapability::WorksetDispatch)) {
+            continue;
+        }
+        const auto slot_credits = static_cast<size_t>(
+            slot->runtime_manifest->limits.maximum_item_credits);
+        const auto available = std::numeric_limits<size_t>::max() - credits;
+        credits += std::min(available, slot_credits);
+    }
+    return credits;
+}
+
+std::shared_ptr<
+    savor::db::execution::workflow::CoordinatorItemCreditSource>
+DBWorkflowWorkerCoordinator::ItemCreditSource() const {
+    return worker_cfg_.item_credit_source;
 }
 
 CoordinatorStartResult DBWorkflowWorkerCoordinator::FailStart(
@@ -1366,6 +1763,9 @@ CoordinatorStartResult DBWorkflowWorkerCoordinator::FailStart(
     std::string error,
     std::vector<WorkerSlotPtr> slots_to_stop) {
     data_plane_enabled_.store(false, std::memory_order_release);
+    if (worker_cfg_.item_credit_source) {
+        worker_cfg_.item_credit_source->Close();
+    }
     stop_.store(true, std::memory_order_release);
     for (const auto& slot : slots_to_stop) {
         if (!slot) {
@@ -1391,9 +1791,10 @@ CoordinatorStartResult DBWorkflowWorkerCoordinator::FailStart(
     }
     last_start_result_ = CoordinatorStartResult{
         .status = status,
-        .ready_invocation_capable_workers = 0,
+        .ready_workset_capable_workers = 0,
         .non_retryable = status == CoordinatorStartStatus::CapabilityPreflightUnavailable
-            || status == CoordinatorStartStatus::ProgramInvocationUnavailable
+            || status == CoordinatorStartStatus::WorksetDispatchUnavailable
+            || status == CoordinatorStartStatus::WorksetCatalogUnavailable
             || status == CoordinatorStartStatus::InteractiveVisualDebugUnavailable,
         .error = std::move(error),
     };
@@ -1566,90 +1967,1500 @@ bool DBWorkflowWorkerCoordinator::SendJobToWorker(
     size_t worker_idx,
     uint64_t job_id,
     const savor::PSJob& job) {
-    if (!IsDataPlaneEnabled()) {
-        return false;
-    }
-    const auto slot_handle = GetWorkerSlot(worker_idx);
-    if (!slot_handle) {
-        return false;
-    }
-
-    std::lock_guard<std::mutex> slot_lock(slot_handle->mtx);
-    auto& slot = *slot_handle;
-    if (!slot.ready.load() || !slot.worker->try_acquire_slot()) {
-        return false;
-    }
-
-    if (!slot.worker->send_job(job_id, epoch_.load(), job)) {
-        slot.worker->release_slot();
-        MarkWorkerError(slot, "send_job failed");
-        return false;
-    }
-
-    slot.in_flight_job_id = job_id;
-    slot.in_flight_started_at = std::chrono::steady_clock::now();
-    slot.last_worker_contact_at = slot.in_flight_started_at;
-    slot.dead_in_flight_observed_at = {};
-    worker_status_.SetCurrentJob(static_cast<std::int64_t>(slot.id), static_cast<std::int64_t>(job_id), std::nullopt);
-    worker_status_.UpdateState(static_cast<std::int64_t>(slot.id), WorkerStateKind::Running);
-    worker_status_.RecordHeartbeat(static_cast<std::int64_t>(slot.id));
-    return true;
+    (void)worker_idx;
+    (void)job_id;
+    (void)job;
+    // Hard cutover: production dispatch is SubmitWorkset for both singleton
+    // and multi-item execution. This retained source-compatibility facade
+    // fails locally and never invokes ProcessWorker::send_job.
+    return false;
 }
 
-bool DBWorkflowWorkerCoordinator::DispatchClaimedJobToWorker(size_t worker_idx, const ClaimedJobRecord& claimed_job) {
-    if (!IsDataPlaneEnabled()) {
+bool DBWorkflowWorkerCoordinator::ValidateClaimedWorksetAuthority(
+    const std::vector<ClaimedJobRecord>& claimed_jobs) {
+    if (execution_db_ == nullptr || claimed_jobs.empty()) {
         return false;
     }
-    const auto job_id = claimed_job.job_id;
-    if (adapter_chain_orchestrator_) {
-        savor::db::execution::workflow::AdapterChainTrace trace{};
-        (void)adapter_chain_orchestrator_->OnJobClaimed(claimed_job.step.step_kind, job_id, &trace);
-        ++adapter_job_claimed_invocations_;
-        EmitAdapterTraceEvent(claimed_job.step, "OnJobClaimed", "invoked", job_id, claimed_job.job_set_id);
+    std::vector<savor::db::ExecutionJobLeaseRequest> requests;
+    requests.reserve(claimed_jobs.size());
+    for (const auto& job : claimed_jobs) {
+        requests.push_back(savor::db::ExecutionJobLeaseRequest{
+            .job_id = job.job_id,
+            .claimed_by_token = job.claimed_by_token,
+        });
     }
-    if (!claimed_job.payload.has_value()) {
-        return false;
+
+    savor::db::ExecutionJobStartAuthoritySetReceipt receipt{};
+    std::string error;
+    const bool validated =
+        execution_db_->ValidateExecutionJobStartAuthoritySet(
+            requests,
+            &receipt,
+            &error);
+    if (validated && receipt.all_valid
+        && receipt.items.size() == claimed_jobs.size()) {
+        return true;
     }
-    if (!EnsureWorkerProgramForJob(worker_idx, claimed_job)) {
-        return false;
+
+    std::ostringstream line;
+    line << "[workflow-workset-authority-rejected]"
+         << " items=" << claimed_jobs.size()
+         << " receipts=" << receipt.items.size();
+    if (!error.empty()) {
+        line << " error=" << error;
+    }
+    EmitDurableEventLine(line.str());
+
+    for (std::size_t index = 0; index < claimed_jobs.size(); ++index) {
+        auto disposition =
+            savor::db::ExecutionJobLeaseRenewalDisposition::BackendError;
+        if (index < receipt.items.size()) {
+            switch (receipt.items[index].disposition) {
+            case savor::db::ExecutionJobStartAuthorityDisposition::Missing:
+                disposition =
+                    savor::db::ExecutionJobLeaseRenewalDisposition::Missing;
+                break;
+            case savor::db::ExecutionJobStartAuthorityDisposition::WrongState:
+                disposition = savor::db::
+                    ExecutionJobLeaseRenewalDisposition::WrongState;
+                break;
+            case savor::db::ExecutionJobStartAuthorityDisposition::TokenMismatch:
+                disposition = savor::db::
+                    ExecutionJobLeaseRenewalDisposition::TokenMismatch;
+                break;
+            case savor::db::ExecutionJobStartAuthorityDisposition::Expired:
+                disposition =
+                    savor::db::ExecutionJobLeaseRenewalDisposition::Expired;
+                break;
+            case savor::db::ExecutionJobStartAuthorityDisposition::Valid:
+                continue;
+            default:
+                break;
+            }
+        }
+        // These items have not crossed the worker boundary. Route the exact
+        // loss through the guarded internal path so invalid local materialized
+        // records are removed instead of being selected again in a tight loop.
+        HandleItemAuthorityLost(
+            ClaimLeaseMaintenanceResult::LostAuthority{
+                .job_id = claimed_jobs[index].job_id,
+                .claimed_by_token =
+                    claimed_jobs[index].claimed_by_token,
+                .disposition = disposition,
+            });
+    }
+    return false;
+}
+
+void DBWorkflowWorkerCoordinator::DrainWorksetEventsLoop() {
+    WorksetEventIngress event{};
+    while (workset_event_q_.pop_wait(event)) {
+        const auto slot = GetWorkerSlot(event.worker_idx);
+        if (!slot) {
+            continue;
+        }
+        std::uint64_t current_generation = 0;
+        {
+            std::lock_guard<std::mutex> slot_lock(slot->mtx);
+            current_generation = slot->process_generation;
+        }
+        if (event.worker_generation != current_generation) {
+            std::ostringstream line;
+            line << "[workflow-workset-stale-process-event]"
+                 << " worker=" << event.worker_idx
+                 << " event_generation="
+                 << event.worker_generation
+                 << " current_generation="
+                 << current_generation;
+            EmitDurableEventLine(line.str());
+            continue;
+        }
+        // SubmitWorkset can publish events immediately. Serialize handling
+        // behind provisional context registration and the local transition to
+        // Dispatched so ItemStarted is always the first durable mutation.
+        std::unique_lock<std::mutex> submission_lock(
+            slot->workset_submission_mtx);
+        {
+            std::lock_guard<std::mutex> slot_lock(slot->mtx);
+            if (event.worker_generation != slot->process_generation) {
+                EmitDurableEventLine(
+                    "[workflow-workset-stale-process-event] worker="
+                    + std::to_string(event.worker_idx)
+                    + " event_generation="
+                    + std::to_string(event.worker_generation)
+                    + " current_generation="
+                    + std::to_string(slot->process_generation));
+                continue;
+            }
+        }
+        switch (event.kind) {
+        case WorksetEventKind::State:
+            HandleWorksetState(event);
+            break;
+        case WorksetEventKind::ItemStarted:
+            HandleWorksetItemStarted(event);
+            break;
+        case WorksetEventKind::ItemProgress:
+            HandleWorksetItemProgress(event);
+            break;
+        case WorksetEventKind::ItemTerminal:
+            HandleWorksetItemTerminal(event);
+            break;
+        case WorksetEventKind::Credits:
+            HandleWorksetCredits(event);
+            break;
+        case WorksetEventKind::Summary:
+            HandleWorksetSummary(event);
+            break;
+        }
+    }
+}
+
+void DBWorkflowWorkerCoordinator::HandleWorksetState(
+    const WorksetEventIngress& event) {
+    if (!AcceptWorksetEventSequence(
+            event.worker_idx,
+            event.state.workset_id,
+            event.state.outbound_sequence,
+            "state")) {
+        FailClosedWorker(
+            event.worker_idx,
+            "invalid or out-of-order workset-state event");
+    }
+}
+
+void DBWorkflowWorkerCoordinator::HandleWorksetItemStarted(
+    const WorksetEventIngress& event) {
+    if (!AcceptWorksetEventSequence(
+            event.worker_idx,
+            event.started.workset_id,
+            event.started.outbound_sequence,
+            "item-start")) {
+        FailClosedWorker(
+            event.worker_idx,
+            "workset item-start sequence integrity failed");
+        return;
+    }
+    DispatchedWorksetItemContext context{};
+    bool context_found = false;
+    {
+        std::lock_guard<std::mutex> lock(workers_mtx_);
+        const auto it = dispatched_workset_items_.find(
+            WorksetItemMapKey(
+                event.worker_idx,
+                event.started.workset_id,
+                event.started.item_id));
+        if (it != dispatched_workset_items_.end()
+            && it->second.worker_idx == event.worker_idx) {
+            context = it->second;
+            context_found = true;
+        }
+    }
+    if (!context_found) {
+        std::ostringstream line;
+        line << "[workflow-workset-item-start-unmatched]"
+             << " worker=" << event.worker_idx
+             << " workset=" << event.started.workset_id
+             << " item=" << event.started.item_id;
+        EmitDurableEventLine(line.str());
+        FailClosedWorkset(
+            event.worker_idx,
+            event.started.workset_id,
+            "item-start has no exact retained claim");
+        return;
+    }
+    if (context.item_ordinal != event.started.item_ordinal
+        || context.invocation_id != event.started.invocation_id
+        || context.attempt_id != event.started.attempt_id) {
+        std::ostringstream line;
+        line << "[workflow-workset-item-start-correlation-mismatch]"
+             << " worker=" << event.worker_idx
+             << " workset=" << event.started.workset_id
+             << " item=" << event.started.item_id;
+        EmitDurableEventLine(line.str());
+        FailClosedWorkset(
+            event.worker_idx,
+            event.started.workset_id,
+            "item-start correlation mismatch");
+        return;
+    }
+    if (context.start_persisted) {
+        EmitDurableEventLine(
+            "[workflow-workset-item-start-duplicate] worker="
+            + std::to_string(event.worker_idx)
+            + " workset=" + std::to_string(event.started.workset_id)
+            + " item=" + std::to_string(event.started.item_id));
+        FailClosedWorkset(
+            event.worker_idx,
+            event.started.workset_id,
+            "duplicate item-start event");
+        return;
     }
     {
-        std::lock_guard<std::mutex> worker_lock(workers_mtx_);
-        dispatched_job_context_by_id_[static_cast<std::uint64_t>(job_id)] = DispatchedJobContext{
-            .step = claimed_job.step,
-            .job_set_id = claimed_job.job_set_id,
-        };
+        const auto slot = GetWorkerSlot(event.worker_idx);
+        if (!slot) {
+            FailClosedWorkset(
+                event.worker_idx,
+                event.started.workset_id,
+                "worker slot disappeared before item start");
+            return;
+        }
+        bool valid_execution_owner = false;
+        {
+            std::lock_guard<std::mutex> slot_lock(slot->mtx);
+            if (slot->staged_workset_id.has_value()
+                && *slot->staged_workset_id
+                    == event.started.workset_id) {
+                // The worker has promoted its host-only staged package. The
+                // predecessor remains retained only for completion-ledger
+                // terminals and its eventual bookkeeping summary.
+                slot->active_workset_id =
+                    slot->staged_workset_id;
+                slot->staged_workset_id.reset();
+                valid_execution_owner = true;
+            } else {
+                valid_execution_owner =
+                    slot->active_workset_id.has_value()
+                    && *slot->active_workset_id
+                        == event.started.workset_id;
+            }
+        }
+        if (!valid_execution_owner) {
+            FailClosedWorkset(
+                event.worker_idx,
+                event.started.workset_id,
+                "draining workset attempted to start another item");
+            return;
+        }
     }
-    if (!SendJobToWorker(worker_idx, static_cast<std::uint64_t>(job_id), *claimed_job.payload)) {
-        std::lock_guard<std::mutex> worker_lock(workers_mtx_);
-        dispatched_job_context_by_id_.erase(static_cast<std::uint64_t>(job_id));
+
+    savor::db::ExecutionJobStartReceipt receipt{};
+    std::string error;
+    const bool persisted = execution_db_ != nullptr
+        && execution_db_->MarkExecutionJobStarted(
+            context.claimed.job_id,
+            context.claimed.claimed_by_token,
+            "worker_workset_item_started",
+            &receipt,
+            &error);
+    if (!persisted
+        || receipt.disposition
+            != savor::db::ExecutionJobStartDisposition::Started
+        || !receipt.durable_attempt_id.has_value()
+        || *receipt.durable_attempt_id != context.attempt_id) {
+        std::ostringstream line;
+        line << "[workflow-workset-item-start-persist-failed]"
+             << " worker=" << event.worker_idx
+             << " workset=" << event.started.workset_id
+             << " item=" << event.started.item_id
+             << " job=" << context.claimed.job_id
+             << " disposition="
+             << static_cast<int>(receipt.disposition);
+        if (!error.empty()) {
+            line << " error=" << error;
+        }
+        EmitDurableEventLine(line.str());
+
+        auto disposition =
+            savor::db::ExecutionJobLeaseRenewalDisposition::BackendError;
+        switch (receipt.disposition) {
+        case savor::db::ExecutionJobStartDisposition::Missing:
+            disposition =
+                savor::db::ExecutionJobLeaseRenewalDisposition::Missing;
+            break;
+        case savor::db::ExecutionJobStartDisposition::WrongState:
+            disposition =
+                savor::db::ExecutionJobLeaseRenewalDisposition::WrongState;
+            break;
+        case savor::db::ExecutionJobStartDisposition::TokenMismatch:
+            disposition = savor::db::
+                ExecutionJobLeaseRenewalDisposition::TokenMismatch;
+            break;
+        case savor::db::ExecutionJobStartDisposition::Expired:
+            disposition =
+                savor::db::ExecutionJobLeaseRenewalDisposition::Expired;
+            break;
+        default:
+            break;
+        }
+        HandleItemAuthorityLost(
+            ClaimLeaseMaintenanceResult::LostAuthority{
+                .job_id = context.claimed.job_id,
+                .claimed_by_token =
+                    context.claimed.claimed_by_token,
+                .disposition = disposition,
+            });
+        FailClosedWorkset(
+            event.worker_idx,
+            event.started.workset_id,
+            "durable item-start authority was lost");
+        return;
+    }
+
+    bool retained_start_updated = false;
+    {
+        std::lock_guard<std::mutex> lock(workers_mtx_);
+        const auto it = dispatched_workset_items_.find(
+            WorksetItemMapKey(
+                event.worker_idx,
+                event.started.workset_id,
+                event.started.item_id));
+        if (it != dispatched_workset_items_.end()
+            && it->second.worker_idx == event.worker_idx) {
+            it->second.start_persisted = true;
+            retained_start_updated = true;
+        }
+    }
+    if (!retained_start_updated) {
+        FailClosedWorkset(
+            event.worker_idx,
+            event.started.workset_id,
+            "item-start claim disappeared after durable start");
+        return;
+    }
+
+    const auto slot = GetWorkerSlot(event.worker_idx);
+    if (slot) {
+        std::lock_guard<std::mutex> slot_lock(slot->mtx);
+        slot->in_flight_job_id =
+            static_cast<std::uint64_t>(context.claimed.job_id);
+        slot->loaded_program_kind =
+            context.claimed.program_kind;
+        slot->loaded_program_runtime_affinity_key =
+            context.claimed.affinity.program_runtime_affinity_key;
+        slot->loaded_savestate_affinity_key =
+            context.claimed.affinity.savestate_affinity_key;
+        slot->loaded_workset_execution_key =
+            context.claimed.workset_execution_key;
+        worker_status_.SetCurrentJob(
+            static_cast<std::int64_t>(slot->id),
+            context.claimed.job_id,
+            std::nullopt);
+        worker_status_.UpdateState(
+            static_cast<std::int64_t>(slot->id),
+            WorkerStateKind::Running);
+        worker_status_.RecordHeartbeat(
+            static_cast<std::int64_t>(slot->id));
+    }
+}
+
+void DBWorkflowWorkerCoordinator::HandleWorksetItemProgress(
+    const WorksetEventIngress& event) {
+    const auto& progress = event.progress;
+    DispatchedWorksetItemContext context{};
+    bool found = false;
+    {
+        std::lock_guard<std::mutex> lock(workers_mtx_);
+        const auto it = dispatched_workset_items_.find(
+            WorksetItemMapKey(
+                event.worker_idx,
+                progress.workset_id,
+                progress.item_id));
+        if (it != dispatched_workset_items_.end()
+            && it->second.worker_idx == event.worker_idx) {
+            context = it->second;
+            found = true;
+        }
+    }
+    if (!found
+        || context.item_ordinal != progress.item_ordinal
+        || context.invocation_id != progress.invocation_id
+        || context.attempt_id != progress.attempt_id
+        || !context.start_persisted) {
+        // Progress is passive and may be coalesced, but it must never be
+        // attributed to the wrong durable job. Drop an unmatched projection
+        // without changing workset/session state; authoritative lifecycle
+        // events remain fail-closed.
+        std::ostringstream line;
+        line << "[workflow-workset-progress-unmatched]"
+             << " worker=" << event.worker_idx
+             << " workset=" << progress.workset_id
+             << " item=" << progress.item_id
+             << " invocation=" << progress.invocation_id;
+        EmitDurableEventLine(line.str());
+        return;
+    }
+
+    savor::PRProgress projected{
+        .worker_id = event.worker_idx,
+        .job_id =
+            static_cast<std::uint64_t>(context.claimed.job_id),
+        .record_progress = true,
+    };
+    if (!progress.progress.empty()) {
+        projected.text.assign(
+            reinterpret_cast<const char*>(progress.progress.data()),
+            progress.progress.size());
+    }
+    (void)progress_q_.push(std::move(projected));
+}
+
+bool DBWorkflowWorkerCoordinator::AcceptWorksetEventSequence(
+    std::size_t worker_idx,
+    std::uint64_t workset_id,
+    std::uint64_t outbound_sequence,
+    std::string_view event_kind) {
+    const auto slot = GetWorkerSlot(worker_idx);
+    if (!slot) {
         return false;
     }
-    if (execution_db_ != nullptr && execution_db_->JobCommandService() != nullptr) {
-        std::string error;
-        if (!execution_db_->JobCommandService()->AppendLifecycleEvent(
-                {
-                    .kind = savor::db::execution::jobs::JobLifecycleEventKind::JobStarted,
-                    .job_id = job_id,
-                    .requested_by = "workflow_dispatch_coordinator",
-                },
-                &error)) {
+    bool accepted = false;
+    std::string reason;
+    {
+        std::lock_guard<std::mutex> slot_lock(slot->mtx);
+        if (workset_id != 0
+            && !slot->retained_workset_ids.contains(workset_id)) {
+            reason = "event does not match a retained workset";
+        } else if (workset_id != 0
+            && slot->failed_closed_workset_ids.contains(
+                       workset_id)) {
+            reason = "workset is already fail-closed";
+        } else if (outbound_sequence == 0
+            || slot->last_workset_outbound_sequence
+                == std::numeric_limits<std::uint64_t>::max()
+            || outbound_sequence
+                != slot->last_workset_outbound_sequence + 1) {
+            reason =
+                "outbound sequence is not the exact next worker sequence";
+        } else {
+            slot->last_workset_outbound_sequence =
+                outbound_sequence;
+            RecordWorkerContactLocked(
+                *slot,
+                std::chrono::steady_clock::now());
+            accepted = true;
+        }
+    }
+    if (!accepted) {
+        std::ostringstream line;
+        line << "[workflow-workset-event-rejected]"
+             << " worker=" << worker_idx
+             << " workset=" << workset_id
+             << " sequence=" << outbound_sequence
+             << " kind=" << event_kind
+             << " reason=" << reason;
+        EmitDurableEventLine(line.str());
+    }
+    return accepted;
+}
+
+void DBWorkflowWorkerCoordinator::FailClosedWorker(
+    std::size_t worker_idx,
+    std::string_view reason) {
+    const auto slot = GetWorkerSlot(worker_idx);
+    if (!slot) {
+        return;
+    }
+    std::shared_ptr<savor::ProcessWorker> worker;
+    {
+        std::lock_guard<std::mutex> slot_lock(slot->mtx);
+        slot->workset_admission_blocked = true;
+        slot->ready.store(false, std::memory_order_release);
+        for (const auto workset_id : slot->retained_workset_ids) {
+            slot->failed_closed_workset_ids.insert(workset_id);
+        }
+        worker = slot->worker;
+        worker_status_.UpdateState(
+            static_cast<std::int64_t>(slot->id),
+            WorkerStateKind::Draining);
+        worker_status_.RecordError(
+            static_cast<std::int64_t>(slot->id),
+            std::string(reason));
+    }
+    EmitDurableEventLine(
+        "[workflow-worker-sequence-fail-closed] worker="
+        + std::to_string(worker_idx)
+        + " reason=" + std::string(reason));
+    if (worker) {
+        worker->stop();
+    }
+}
+
+void DBWorkflowWorkerCoordinator::FailClosedWorkset(
+    std::size_t worker_idx,
+    std::uint64_t workset_id,
+    std::string_view reason) {
+    const auto slot = GetWorkerSlot(worker_idx);
+    if (!slot) {
+        return;
+    }
+    std::shared_ptr<savor::ProcessWorker> worker;
+    bool should_cancel = false;
+    {
+        std::lock_guard<std::mutex> slot_lock(slot->mtx);
+        if (!slot->retained_workset_ids.contains(workset_id)
+            || slot->failed_closed_workset_ids.contains(
+                workset_id)) {
+            return;
+        }
+        slot->failed_closed_workset_ids.insert(workset_id);
+        slot->workset_admission_blocked = true;
+        should_cancel =
+            (slot->active_workset_id.has_value()
+                && *slot->active_workset_id == workset_id)
+            || (slot->staged_workset_id.has_value()
+                && *slot->staged_workset_id == workset_id);
+        worker = slot->worker;
+        worker_status_.UpdateState(
+            static_cast<std::int64_t>(slot->id),
+            WorkerStateKind::Draining);
+        worker_status_.RecordError(
+            static_cast<std::int64_t>(slot->id),
+            std::string(reason));
+    }
+
+    std::ostringstream line;
+    line << "[workflow-workset-fail-closed]"
+         << " worker=" << worker_idx
+         << " workset=" << workset_id
+         << " reason=" << reason;
+    EmitDurableEventLine(line.str());
+
+    if (should_cancel && worker && !worker->cancel_workset(
+            savor::runtime::WorkerWorksetId{workset_id},
+            std::string(reason))) {
+        const auto worker_error = worker->last_error();
+        std::ostringstream cancel_line;
+        cancel_line << "[workflow-workset-fail-closed-cancel-failed]"
+                    << " worker=" << worker_idx
+                    << " workset=" << workset_id;
+        if (!worker_error.empty()) {
+            cancel_line << " error=" << worker_error;
+        }
+        EmitDurableEventLine(cancel_line.str());
+        worker->stop();
+        std::lock_guard<std::mutex> slot_lock(slot->mtx);
+        slot->ready.store(false, std::memory_order_release);
+    }
+}
+
+void DBWorkflowWorkerCoordinator::HandleWorksetItemTerminal(
+    const WorksetEventIngress& event) {
+    const auto& terminal = event.terminal;
+    if (!AcceptWorksetEventSequence(
+            event.worker_idx,
+            terminal.workset_id,
+            terminal.outbound_sequence,
+            "item-terminal")) {
+        FailClosedWorker(
+            event.worker_idx,
+            "workset item-terminal sequence integrity failed");
+        return;
+    }
+    {
+        const auto slot = GetWorkerSlot(event.worker_idx);
+        bool valid_terminal_order = false;
+        if (slot) {
+            std::lock_guard<std::mutex> slot_lock(slot->mtx);
+            valid_terminal_order =
+                terminal.terminal_order != 0
+                && slot->last_workset_terminal_order
+                    != std::numeric_limits<std::uint64_t>::max()
+                && terminal.terminal_order
+                    == slot->last_workset_terminal_order + 1;
+            if (valid_terminal_order) {
+                slot->last_workset_terminal_order =
+                    terminal.terminal_order;
+            }
+        }
+        if (!valid_terminal_order) {
+            EmitDurableEventLine(
+                "[workflow-workset-terminal-order-rejected] worker="
+                + std::to_string(event.worker_idx)
+                + " workset="
+                + std::to_string(terminal.workset_id)
+                + " terminal_order="
+                + std::to_string(terminal.terminal_order));
+            FailClosedWorker(
+                event.worker_idx,
+                "workset terminal order is not the exact next order");
+            return;
+        }
+    }
+
+    DispatchedWorksetItemContext item_context{};
+    DispatchedJobContext durable_context{};
+    bool item_context_found = false;
+    bool durable_context_found = false;
+    {
+        std::lock_guard<std::mutex> lock(workers_mtx_);
+        const auto item_it = dispatched_workset_items_.find(
+            WorksetItemMapKey(
+                event.worker_idx,
+                terminal.workset_id,
+                terminal.item_id));
+        if (item_it != dispatched_workset_items_.end()
+            && item_it->second.worker_idx == event.worker_idx) {
+            item_context = item_it->second;
+            item_context_found = true;
+        }
+        if (item_context_found) {
+            const auto durable_it =
+                dispatched_job_context_by_id_.find(
+                    static_cast<std::uint64_t>(
+                        item_context.claimed.job_id));
+            if (durable_it
+                != dispatched_job_context_by_id_.end()) {
+                durable_context = durable_it->second;
+                durable_context_found = true;
+            }
+        }
+    }
+    if (!item_context_found) {
+        std::ostringstream line;
+        line << "[workflow-workset-item-terminal-unmatched]"
+             << " worker=" << event.worker_idx
+             << " workset=" << terminal.workset_id
+             << " item=" << terminal.item_id;
+        EmitDurableEventLine(line.str());
+        FailClosedWorkset(
+            event.worker_idx,
+            terminal.workset_id,
+            "item-terminal has no exact retained claim");
+        return;
+    }
+    if (!durable_context_found) {
+        std::ostringstream line;
+        line << "[workflow-workset-item-terminal-context-missing]"
+             << " worker=" << event.worker_idx
+             << " workset=" << terminal.workset_id
+             << " item=" << terminal.item_id
+             << " job=" << item_context.claimed.job_id;
+        EmitDurableEventLine(line.str());
+        FailClosedWorkset(
+            event.worker_idx,
+            terminal.workset_id,
+            "durable projection context is missing");
+        return;
+    }
+
+    if (item_context.item_ordinal != terminal.item_ordinal
+        || item_context.invocation_id != terminal.invocation_id
+        || item_context.attempt_id != terminal.attempt_id
+        || terminal.terminal_id == 0
+        || terminal.terminal_order == 0) {
+        std::ostringstream line;
+        line << "[workflow-workset-item-terminal-correlation-mismatch]"
+             << " worker=" << event.worker_idx
+             << " workset=" << terminal.workset_id
+             << " item=" << terminal.item_id
+             << " job=" << item_context.claimed.job_id;
+        EmitDurableEventLine(line.str());
+        FailClosedWorkset(
+            event.worker_idx,
+            terminal.workset_id,
+            "item-terminal correlation mismatch");
+        return;
+    }
+    if (!terminal.unstarted && !item_context.start_persisted) {
+        EmitDurableEventLine(
+            "[workflow-workset-item-terminal-before-start] worker="
+            + std::to_string(event.worker_idx)
+            + " workset=" + std::to_string(terminal.workset_id)
+            + " item=" + std::to_string(terminal.item_id)
+            + " job="
+            + std::to_string(item_context.claimed.job_id));
+        FailClosedWorkset(
+            event.worker_idx,
+            terminal.workset_id,
+            "item terminal arrived before durable JobStarted");
+        return;
+    }
+
+    std::optional<savor::PRResult> decoded;
+    savor::db::execution::workflow::TerminalWorkflowStepNotification
+        terminal_notification{};
+    std::vector<std::string> post_ack_event_lines;
+    bool requires_recovery =
+        terminal.unstarted || item_context.authority_lost;
+    if (!requires_recovery) {
+        std::string decode_error;
+        try {
+            decoded = worker_cfg_.workset_terminal_decoder
+                ? worker_cfg_.workset_terminal_decoder(
+                    item_context.claimed,
+                    terminal,
+                    &decode_error)
+                : std::nullopt;
+        } catch (const std::exception& ex) {
+            decode_error =
+                std::string("terminal decoder threw: ") + ex.what();
+        } catch (...) {
+            decode_error = "terminal decoder threw an unknown exception";
+        }
+        if (!decoded.has_value()) {
             std::ostringstream line;
-            line << "[workflow-job-start-persist-failed] job=" << job_id;
-            if (!error.empty()) {
-                line << " error=" << error;
+            line << "[workflow-workset-item-terminal-decode-failed]"
+                 << " worker=" << event.worker_idx
+                 << " workset=" << terminal.workset_id
+                 << " item=" << terminal.item_id
+                 << " job=" << item_context.claimed.job_id;
+            if (!decode_error.empty()) {
+                line << " error=" << decode_error;
             }
             EmitDurableEventLine(line.str());
+            FailClosedWorkset(
+                event.worker_idx,
+                terminal.workset_id,
+                decode_error.empty()
+                    ? "workset terminal decoder rejected the result"
+                    : decode_error);
+            return;
+        }
+
+        decoded->job_id =
+            static_cast<std::uint64_t>(item_context.claimed.job_id);
+        decoded->worker_id = event.worker_idx;
+        decoded->epoch = terminal.state_epoch;
+
+        savor::db::ExecutionJobTerminalAuthorityReceipt
+            authority_receipt{};
+        std::string authority_error;
+        bool projection_committed = false;
+        {
+            // Lease loss and terminal projection share this serialization
+            // boundary. The exact DB operation also renews the lease, so
+            // ordinary expiry recovery cannot interleave after confirmation
+            // and before the existing adapter transaction(s).
+            std::lock_guard<std::mutex> projection_lock(
+                result_projection_mtx_);
+            const bool confirmed = execution_db_ != nullptr
+                && execution_db_->ConfirmExecutionJobTerminalAuthority(
+                    item_context.claimed.job_id,
+                    item_context.claimed.claimed_by_token,
+                    item_context.attempt_id,
+                    30000,
+                    &authority_receipt,
+                    &authority_error);
+            if (confirmed
+                && authority_receipt.disposition
+                    == savor::db::
+                        ExecutionJobTerminalAuthorityDisposition::Valid) {
+                ++results_received_count_;
+                projection_committed =
+                    ProcessDurableResultProjectionLocked(
+                        *decoded,
+                        durable_context,
+                        &terminal_notification,
+                        &post_ack_event_lines);
+            } else {
+                requires_recovery = true;
+            }
+        }
+        if (requires_recovery) {
+            item_context.authority_lost = true;
+            {
+                std::lock_guard<std::mutex> lock(workers_mtx_);
+                const auto it = dispatched_workset_items_.find(
+                    WorksetItemMapKey(
+                        event.worker_idx,
+                        terminal.workset_id,
+                        terminal.item_id));
+                if (it != dispatched_workset_items_.end()) {
+                    it->second.authority_lost = true;
+                }
+            }
+            std::ostringstream line;
+            line << "[workflow-workset-terminal-authority-lost]"
+                 << " worker=" << event.worker_idx
+                 << " workset=" << terminal.workset_id
+                 << " item=" << terminal.item_id
+                 << " job=" << item_context.claimed.job_id
+                 << " disposition="
+                 << static_cast<int>(authority_receipt.disposition);
+            if (!authority_error.empty()) {
+                line << " error=" << authority_error;
+            }
+            post_ack_event_lines.push_back(line.str());
+            decoded.reset();
+        } else if (!projection_committed) {
+            FailClosedWorkset(
+                event.worker_idx,
+                terminal.workset_id,
+                "durable result projection failed");
+            return;
+        }
+    }
+
+    if (requires_recovery) {
+        bool recovery_is_durable = false;
+        std::string recovery_error;
+        if (execution_db_ != nullptr) {
+            savor::db::ExecutionJobWorkerLossRecoveryReceipt
+                recovery_receipt{};
+            const bool recovered =
+                execution_db_->RecoverExecutionJobAfterWorkerLoss(
+                    item_context.claimed.job_id,
+                    item_context.claimed.claimed_by_token,
+                    item_context.attempt_id,
+                    terminal.message.empty()
+                        ? "WORKSET_ITEM_UNSTARTED"
+                        : terminal.message,
+                    &recovery_receipt,
+                    &recovery_error);
+            if (recovered) {
+                switch (recovery_receipt.disposition) {
+                case savor::db::
+                    ExecutionJobWorkerLossRecoveryDisposition::Requeued:
+                case savor::db::
+                    ExecutionJobWorkerLossRecoveryDisposition::
+                        AttemptsExhaustedFailed:
+                case savor::db::
+                    ExecutionJobWorkerLossRecoveryDisposition::
+                        AlreadyDurable:
+                case savor::db::
+                    ExecutionJobWorkerLossRecoveryDisposition::
+                        TokenMismatch:
+                case savor::db::
+                    ExecutionJobWorkerLossRecoveryDisposition::
+                        AttemptMismatch:
+                    recovery_is_durable = true;
+                    break;
+                default:
+                    break;
+                }
+            }
+        }
+        if (!recovery_is_durable) {
+            std::ostringstream line;
+            line << "[workflow-workset-unstarted-recovery-failed]"
+                 << " worker=" << event.worker_idx
+                 << " workset=" << terminal.workset_id
+                 << " item=" << terminal.item_id
+                 << " job=" << item_context.claimed.job_id;
+            if (!recovery_error.empty()) {
+                line << " error=" << recovery_error;
+            }
+            EmitDurableEventLine(line.str());
+            FailClosedWorkset(
+                event.worker_idx,
+                terminal.workset_id,
+                "unstarted item could not enter per-job recovery");
+            return;
+        }
+        post_ack_event_lines.push_back(
+            "[workflow-workset-unstarted-recovery] worker="
+            + std::to_string(event.worker_idx)
+            + " workset=" + std::to_string(terminal.workset_id)
+            + " item=" + std::to_string(terminal.item_id)
+            + " job=" + std::to_string(item_context.claimed.job_id)
+            + (item_context.authority_lost
+                ? " disposition=authority_lost_recovered"
+                : " disposition=requeued"));
+    }
+
+    const auto slot = GetWorkerSlot(event.worker_idx);
+    std::shared_ptr<savor::ProcessWorker> worker;
+    if (slot) {
+        std::lock_guard<std::mutex> slot_lock(slot->mtx);
+        worker = slot->worker;
+    }
+    const savor::runtime::WorkerItemTerminalCorrelation correlation{
+        .workset_id =
+            savor::runtime::WorkerWorksetId{terminal.workset_id},
+        .item_id =
+            savor::runtime::WorkerWorksetItemId{terminal.item_id},
+        .item_ordinal = terminal.item_ordinal,
+        .invocation_id =
+            savor::runtime::InvocationId{terminal.invocation_id},
+        .attempt_id =
+            savor::runtime::AttemptId{terminal.attempt_id},
+        .terminal_id =
+            savor::runtime::WorkerTerminalId{terminal.terminal_id},
+        .terminal_order =
+            savor::runtime::WorkerTerminalOrder{
+                terminal.terminal_order},
+    };
+    if (!worker || !worker->acknowledge_terminal(correlation)) {
+        std::ostringstream line;
+        line << "[workflow-workset-item-terminal-ack-failed]"
+             << " worker=" << event.worker_idx
+             << " workset=" << terminal.workset_id
+             << " item=" << terminal.item_id
+             << " job=" << item_context.claimed.job_id;
+        if (worker) {
+            const auto worker_error = worker->last_error();
+            if (!worker_error.empty()) {
+                line << " error=" << worker_error;
+            }
+        }
+        EmitDurableEventLine(line.str());
+        FailClosedWorkset(
+            event.worker_idx,
+            terminal.workset_id,
+            "terminal acknowledgement failed after durable projection");
+        return;
+    }
+    // The terminal's existing durable projection/recovery is authoritative at
+    // this point. Observational callbacks and targeted workflow advancement
+    // run only after the exact acknowledgement and cannot hold its bounded
+    // worker ledger slot.
+    for (const auto& line : post_ack_event_lines) {
+        EmitDurableEventLine(line);
+    }
+    PublishTerminalCommitIsolated(terminal_notification);
+
+    {
+        std::lock_guard<std::mutex> lock(workers_mtx_);
+        dispatched_workset_items_.erase(
+            WorksetItemMapKey(
+                event.worker_idx,
+                terminal.workset_id,
+                terminal.item_id));
+        dispatched_job_context_by_id_.erase(
+            static_cast<std::uint64_t>(
+                item_context.claimed.job_id));
+    }
+    (void)job_materialization_service_.CleanupDispatchedOrExpired(
+        item_context.claimed.job_id);
+    if (slot) {
+        std::lock_guard<std::mutex> slot_lock(slot->mtx);
+        if (slot->active_workset_id.has_value()
+            && *slot->active_workset_id == terminal.workset_id
+            && slot->in_flight_job_id.has_value()
+            && *slot->in_flight_job_id
+                == static_cast<std::uint64_t>(
+                    item_context.claimed.job_id)) {
+            worker_status_.SetCurrentJob(
+                static_cast<std::int64_t>(slot->id),
+                std::nullopt,
+                std::nullopt);
+            worker_status_.UpdateState(
+                static_cast<std::int64_t>(slot->id),
+                WorkerStateKind::Leasing);
+        }
+        worker_status_.RecordHeartbeat(
+            static_cast<std::int64_t>(slot->id));
+    }
+    if (decoded.has_value() && result_callback_) {
+        try {
+            result_callback_(*decoded);
+        } catch (const std::exception& ex) {
+            EmitDurableEventLine(
+                "[workflow-result-callback-failed] job="
+                + std::to_string(item_context.claimed.job_id)
+                + " error=" + ex.what());
+        } catch (...) {
+            EmitDurableEventLine(
+                "[workflow-result-callback-failed] job="
+                + std::to_string(item_context.claimed.job_id)
+                + " error=unknown_exception");
+        }
+    }
+}
+
+void DBWorkflowWorkerCoordinator::HandleWorksetCredits(
+    const WorksetEventIngress& event) {
+    if (!AcceptWorksetEventSequence(
+            event.worker_idx,
+            0,
+            event.credits.outbound_sequence,
+            "credits")) {
+        FailClosedWorker(
+            event.worker_idx,
+            "invalid or out-of-order workset-credits event");
+        return;
+    }
+    RefreshSharedItemCredits();
+    queue_cv_.notify_all();
+}
+
+void DBWorkflowWorkerCoordinator::HandleWorksetSummary(
+    const WorksetEventIngress& event) {
+    const auto& summary = event.summary;
+    if (!AcceptWorksetEventSequence(
+            event.worker_idx,
+            summary.workset_id,
+            summary.outbound_sequence,
+            "summary")) {
+        FailClosedWorker(
+            event.worker_idx,
+            "workset summary sequence integrity failed");
+        return;
+    }
+
+    {
+        const auto slot = GetWorkerSlot(event.worker_idx);
+        std::optional<std::size_t> expected_item_count;
+        if (slot) {
+            std::lock_guard<std::mutex> slot_lock(slot->mtx);
+            const auto count_it =
+                slot->retained_workset_item_counts.find(
+                    summary.workset_id);
+            if (count_it
+                != slot->retained_workset_item_counts.end()) {
+                expected_item_count = count_it->second;
+            }
+        }
+        const auto classified_count =
+            static_cast<std::uint64_t>(summary.completed_count)
+            + static_cast<std::uint64_t>(
+                summary.unstarted_count);
+        if (!expected_item_count.has_value()
+            || summary.item_count != *expected_item_count
+            || classified_count != summary.item_count) {
+            EmitDurableEventLine(
+                "[workflow-workset-summary-correlation-mismatch] "
+                "worker="
+                + std::to_string(event.worker_idx)
+                + " workset="
+                + std::to_string(summary.workset_id));
+            FailClosedWorkset(
+                event.worker_idx,
+                summary.workset_id,
+                "workset summary counts do not match admission");
+            return;
+        }
+    }
+
+    bool retained_item = false;
+    {
+        std::lock_guard<std::mutex> lock(workers_mtx_);
+        retained_item = std::any_of(
+            dispatched_workset_items_.begin(),
+            dispatched_workset_items_.end(),
+            [&](const auto& pair) {
+                return pair.second.worker_idx == event.worker_idx
+                    && pair.second.workset_id
+                        == summary.workset_id;
+            });
+    }
+    if (retained_item) {
+        EmitDurableEventLine(
+            "[workflow-workset-summary-before-terminal-ack] worker="
+            + std::to_string(event.worker_idx)
+            + " workset=" + std::to_string(summary.workset_id));
+        FailClosedWorkset(
+            event.worker_idx,
+            summary.workset_id,
+            "workset summary arrived before all terminals were acknowledged");
+        return;
+    }
+
+    const auto slot = GetWorkerSlot(event.worker_idx);
+    if (!slot) {
+        return;
+    }
+    std::shared_ptr<savor::ProcessWorker> worker_to_stop;
+    {
+        std::lock_guard<std::mutex> slot_lock(slot->mtx);
+        slot->retained_workset_ids.erase(summary.workset_id);
+        slot->retained_workset_item_counts.erase(
+            summary.workset_id);
+        slot->failed_closed_workset_ids.erase(
+            summary.workset_id);
+        if (slot->active_workset_id.has_value()
+            && *slot->active_workset_id
+                == summary.workset_id) {
+            slot->active_workset_id.reset();
+        }
+        if (slot->staged_workset_id.has_value()
+            && *slot->staged_workset_id
+                == summary.workset_id) {
+            slot->staged_workset_id.reset();
+        }
+        if (slot->failed_closed_workset_ids.empty()) {
+            slot->workset_admission_blocked = false;
+        }
+        const bool has_resident_workset =
+            slot->active_workset_id.has_value()
+            || slot->staged_workset_id.has_value();
+        if (!has_resident_workset) {
+            slot->in_flight_job_id.reset();
+            slot->in_flight_started_at = {};
+            slot->dead_in_flight_observed_at = {};
+            worker_status_.SetCurrentJob(
+                static_cast<std::int64_t>(slot->id),
+                std::nullopt,
+                std::nullopt);
+        }
+        if (!has_resident_workset
+            && slot->workset_admission_blocked) {
+            // A prior completion-ledger terminal is deliberately retained
+            // without ACK. Once the successor drains, stop this process so
+            // individual lease/attempt recovery becomes authoritative.
+            slot->last_worker_contact_at =
+                std::chrono::steady_clock::now();
+            slot->ready.store(false, std::memory_order_release);
+            worker_to_stop = slot->worker;
+            MarkWorkerError(
+                *slot,
+                "worker drained with an unacknowledged fail-closed "
+                "workset terminal");
+        } else if (slot->worker && slot->worker->is_ready()
+            && !has_resident_workset) {
+            slot->last_worker_contact_at = {};
+            worker_status_.UpdateState(
+                static_cast<std::int64_t>(slot->id),
+                WorkerStateKind::Idle);
+        } else if (slot->worker && slot->worker->is_ready()
+            && !slot->in_flight_job_id.has_value()) {
+            worker_status_.UpdateState(
+                static_cast<std::int64_t>(slot->id),
+                WorkerStateKind::Leasing);
+        } else if (!worker_to_stop) {
+            MarkWorkerError(
+                *slot,
+                "worker became unavailable after workset summary");
+        }
+    }
+    if (worker_to_stop) {
+        worker_to_stop->stop();
+    }
+    queue_cv_.notify_all();
+}
+
+bool DBWorkflowWorkerCoordinator::ValidateBuiltWorkset(
+    const savor::runtime::WorkerWorksetDefinition& workset,
+    const std::vector<ClaimedJobRecord>& claimed_jobs,
+    const savor::runtime::WorkerRuntimeManifest& manifest,
+    std::string* error_out) const {
+    const auto validation =
+        savor::runtime::ValidateWorkerWorksetDefinition(
+            workset,
+            manifest.limits);
+    if (!validation.ok) {
+        if (error_out != nullptr) {
+            *error_out = validation.error.message;
+        }
+        return false;
+    }
+    if (workset.items.size() != claimed_jobs.size()
+        || workset.items.size()
+            > manifest.limits.maximum_active_and_staged_items) {
+        if (error_out != nullptr) {
+            *error_out = "built workset membership does not match the "
+                "selected claimed items or negotiated resident limit";
+        }
+        return false;
+    }
+    const auto module = std::find_if(
+        manifest.modules.begin(),
+        manifest.modules.end(),
+        [&](const auto& entry) {
+            return entry.module == workset.execution_key.module;
+        });
+    if (module == manifest.modules.end()
+        || std::find(
+            module->entrypoints.begin(),
+            module->entrypoints.end(),
+            std::string(workset.execution_key.entrypoint))
+            == module->entrypoints.end()) {
+        if (error_out != nullptr) {
+            *error_out =
+                "built workset module/entrypoint is absent from the "
+                "negotiated worker catalog";
+        }
+        return false;
+    }
+    for (std::size_t index = 0; index < claimed_jobs.size(); ++index) {
+        const auto& claimed = claimed_jobs[index];
+        const auto& item = workset.items[index];
+        if (claimed.workset_execution_key
+                != workset.execution_key.canonical_sha256
+            || item.correlation.durable_job_id
+                != std::to_string(claimed.job_id)
+            || item.correlation.claim_token
+                != claimed.claimed_by_token
+            || claimed.durable_attempt_id == 0
+            || item.invocation.attempt_id.value()
+                != claimed.durable_attempt_id) {
+            if (error_out != nullptr) {
+                *error_out =
+                    "built workset order, execution key, durable job, or "
+                    "claim-token/attempt correlation does not match "
+                    "selection";
+            }
             return false;
         }
     }
+    if (error_out != nullptr) {
+        error_out->clear();
+    }
+    return true;
+}
+
+bool DBWorkflowWorkerCoordinator::DispatchClaimedWorksetToWorker(
+    size_t worker_idx,
+    const std::vector<ClaimedJobRecord>& claimed_jobs) {
+    if (!IsDataPlaneEnabled() || claimed_jobs.empty()
+        || !worker_cfg_.workset_definition_builder) {
+        return false;
+    }
     const auto slot = GetWorkerSlot(worker_idx);
-    if (slot) {
+    if (!slot) {
+        return false;
+    }
+
+    std::shared_ptr<savor::ProcessWorker> worker;
+    savor::runtime::WorkerRuntimeManifest manifest{};
+    {
         std::lock_guard<std::mutex> slot_lock(slot->mtx);
+        if (!slot->ready.load(std::memory_order_acquire)
+            || slot->workset_admission_blocked
+            || slot->staged_workset_id.has_value()
+            || !slot->runtime_manifest.has_value()
+            || !slot->worker) {
+            return false;
+        }
+        worker = slot->worker;
+        manifest = *slot->runtime_manifest;
+    }
+
+    std::string error;
+    auto workset = worker_cfg_.workset_definition_builder(
+        worker_idx,
+        claimed_jobs,
+        manifest,
+        &error);
+    if (!workset.has_value()
+        || !ValidateBuiltWorkset(
+            *workset,
+            claimed_jobs,
+            manifest,
+            &error)) {
+        std::ostringstream line;
+        line << "[workflow-workset-build-rejected]"
+             << " worker=" << worker_idx
+             << " items=" << claimed_jobs.size();
+        if (!error.empty()) {
+            line << " error=" << error;
+        }
+        EmitDurableEventLine(line.str());
+        return false;
+    }
+    if (!ValidateClaimedWorksetAuthority(claimed_jobs)) {
+        return false;
+    }
+
+    for (const auto& claimed : claimed_jobs) {
+        if (adapter_chain_orchestrator_) {
+            savor::db::execution::workflow::AdapterChainTrace trace{};
+            (void)adapter_chain_orchestrator_->OnJobClaimed(
+                claimed.step.step_kind,
+                claimed.job_id,
+                &trace);
+            ++adapter_job_claimed_invocations_;
+            EmitAdapterTraceEvent(
+                claimed.step,
+                "OnJobClaimed",
+                "invoked",
+                claimed.job_id,
+                claimed.job_set_id);
+        }
+    }
+
+    std::unique_lock<std::mutex> submission_lock(
+        slot->workset_submission_mtx);
+    const auto workset_id = workset->workset_id.value();
+    bool staged_submission = false;
+    {
+        std::lock_guard<std::mutex> slot_lock(slot->mtx);
+        if (!slot->ready.load(std::memory_order_acquire)
+            || slot->workset_admission_blocked
+            || slot->staged_workset_id.has_value()
+            || slot->retained_workset_ids.contains(workset_id)
+            || slot->worker != worker) {
+            return false;
+        }
+        staged_submission = slot->active_workset_id.has_value();
+        if (staged_submission) {
+            slot->staged_workset_id = workset_id;
+        } else {
+            slot->active_workset_id = workset_id;
+            slot->in_flight_job_id =
+                static_cast<std::uint64_t>(
+                    claimed_jobs.front().job_id);
+            slot->in_flight_started_at =
+                std::chrono::steady_clock::now();
+            slot->last_worker_contact_at =
+                slot->in_flight_started_at;
+            slot->dead_in_flight_observed_at = {};
+        }
+        slot->retained_workset_ids.insert(workset_id);
+        slot->retained_workset_item_counts[workset_id] =
+            claimed_jobs.size();
+        worker_status_.UpdateState(
+            static_cast<std::int64_t>(slot->id),
+            WorkerStateKind::Leasing);
+    }
+
+    // Register exact provisional contexts before SubmitWorkset. A worker may
+    // publish ItemStarted as soon as admission succeeds; the callback drainer
+    // must already be able to resolve its durable claim and projection
+    // context.
+    {
+        std::lock_guard<std::mutex> lock(workers_mtx_);
+        for (std::size_t index = 0; index < claimed_jobs.size(); ++index) {
+            const auto& claimed = claimed_jobs[index];
+            const auto& item = workset->items[index];
+            dispatched_job_context_by_id_[
+                static_cast<std::uint64_t>(claimed.job_id)] =
+                DispatchedJobContext{
+                    .step = claimed.step,
+                    .job_set_id = claimed.job_set_id,
+                };
+            dispatched_workset_items_[WorksetItemMapKey(
+                worker_idx,
+                workset_id,
+                item.item_id.value())] =
+                DispatchedWorksetItemContext{
+                    .worker_idx = worker_idx,
+                    .workset_id = workset_id,
+                    .item_id = item.item_id.value(),
+                    .item_ordinal = item.ordinal,
+                    .invocation_id =
+                        item.invocation.invocation_id.value(),
+                    .attempt_id = item.invocation.attempt_id.value(),
+                    .claimed = claimed,
+                };
+        }
+    }
+
+    const auto submit_outcome =
+        worker->submit_workset_with_outcome(*workset);
+    if (!submit_outcome.accepted()) {
+        std::ostringstream line;
+        line << (submit_outcome.disposition
+                    == savor::ProcessWorksetSubmitDisposition::
+                        AmbiguousAfterWrite
+                ? "[workflow-workset-submit-ambiguous]"
+                : "[workflow-workset-submit-rejected]")
+             << " worker=" << worker_idx
+             << " workset=" << workset->workset_id.value()
+             << " items=" << claimed_jobs.size()
+             << " frame_written="
+             << (submit_outcome.request_frame_written ? 1 : 0)
+             << " correlated_result="
+             << (submit_outcome.correlated_result_received ? 1 : 0);
+        if (!submit_outcome.diagnostic.empty()) {
+            line << " error=" << submit_outcome.diagnostic;
+        }
+        EmitDurableEventLine(line.str());
+
+        if (submit_outcome.disposition
+            == savor::ProcessWorksetSubmitDisposition::
+                AmbiguousAfterWrite) {
+            // The child may already own the workset. Preserve every exact
+            // claim/correlation record, prevent any local requeue, and
+            // quarantine the process. Normal dead-worker recovery will
+            // classify each retained item from its durable state.
+            bool local_dispatch_state_complete = true;
+            for (const auto& claimed : claimed_jobs) {
+                if (!job_materialization_service_.MarkDispatched(
+                        claimed.job_id,
+                        std::chrono::steady_clock::now())) {
+                    local_dispatch_state_complete = false;
+                    EmitDurableEventLine(
+                        "[workflow-workset-ambiguous-local-state-missed] "
+                        "worker=" + std::to_string(worker_idx)
+                        + " workset=" + std::to_string(workset_id)
+                        + " job=" + std::to_string(claimed.job_id));
+                }
+            }
+            {
+                std::lock_guard<std::mutex> slot_lock(slot->mtx);
+                slot->workset_admission_blocked = true;
+                slot->ready.store(false, std::memory_order_release);
+                slot->last_worker_contact_at =
+                    std::chrono::steady_clock::now();
+                MarkWorkerError(
+                    *slot,
+                    "SubmitWorkset outcome was ambiguous after the "
+                    "request frame was written");
+            }
+            EmitDurableEventLine(
+                "[workflow-workset-submit-ambiguous-quarantine] worker="
+                + std::to_string(worker_idx)
+                + " workset=" + std::to_string(workset_id)
+                + " local_dispatch_state_complete="
+                + (local_dispatch_state_complete ? "1" : "0"));
+            StopWorkerSlot(slot, true);
+            // Returning true transfers the selected records into retained
+            // recovery ownership. The caller must not put them back into
+            // the coordinator materialized queue.
+            return true;
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(workers_mtx_);
+            for (std::size_t index = 0;
+                 index < claimed_jobs.size();
+                 ++index) {
+                dispatched_job_context_by_id_.erase(
+                    static_cast<std::uint64_t>(
+                        claimed_jobs[index].job_id));
+                dispatched_workset_items_.erase(
+                    WorksetItemMapKey(
+                        worker_idx,
+                        workset_id,
+                        workset->items[index].item_id.value()));
+            }
+        }
+        {
+            std::lock_guard<std::mutex> slot_lock(slot->mtx);
+            slot->retained_workset_ids.erase(workset_id);
+            slot->retained_workset_item_counts.erase(workset_id);
+            if (slot->active_workset_id.has_value()
+                && *slot->active_workset_id == workset_id) {
+                slot->active_workset_id.reset();
+            }
+            if (slot->staged_workset_id.has_value()
+                && *slot->staged_workset_id == workset_id) {
+                slot->staged_workset_id.reset();
+            }
+            if (!slot->active_workset_id.has_value()
+                && !slot->staged_workset_id.has_value()) {
+                slot->in_flight_job_id.reset();
+                slot->in_flight_started_at = {};
+                slot->last_worker_contact_at = {};
+                slot->dead_in_flight_observed_at = {};
+                worker_status_.UpdateState(
+                    static_cast<std::int64_t>(slot->id),
+                    WorkerStateKind::Idle);
+            }
+        }
+        return false;
+    }
+
+    bool local_dispatch_state_complete = true;
+    for (const auto& claimed : claimed_jobs) {
+        if (!job_materialization_service_.MarkDispatched(
+                claimed.job_id,
+                std::chrono::steady_clock::now())) {
+            local_dispatch_state_complete = false;
+            std::ostringstream line;
+            line << "[workflow-workset-local-dispatch-state-missed]"
+                 << " worker=" << worker_idx
+                 << " job=" << claimed.job_id;
+            EmitDurableEventLine(line.str());
+        }
+    }
+
+    {
+        std::lock_guard<std::mutex> slot_lock(slot->mtx);
+        const auto& anchor = claimed_jobs.front();
         ++slot->dispatch_success_count;
-        slot->loaded_program_kind = claimed_job.program_kind;
-        slot->loaded_program_runtime_affinity_key = claimed_job.affinity.program_runtime_affinity_key;
-        slot->loaded_savestate_affinity_key = claimed_job.affinity.savestate_affinity_key;
+        if (!staged_submission) {
+            slot->loaded_program_kind = anchor.program_kind;
+            slot->loaded_program_runtime_affinity_key =
+                anchor.affinity.program_runtime_affinity_key;
+            slot->loaded_savestate_affinity_key =
+                anchor.affinity.savestate_affinity_key;
+            slot->loaded_workset_execution_key =
+                anchor.workset_execution_key;
+        }
+        worker_status_.UpdateState(
+            static_cast<std::int64_t>(slot->id),
+            WorkerStateKind::Leasing);
+        worker_status_.RecordHeartbeat(
+            static_cast<std::int64_t>(slot->id));
+    }
+    if (!local_dispatch_state_complete) {
+        FailClosedWorkset(
+            worker_idx,
+            workset_id,
+            "accepted workset could not enter local dispatched state");
     }
     return true;
 }
@@ -1658,57 +3469,124 @@ bool DBWorkflowWorkerCoordinator::DispatchNextEligibleForWorker(
     size_t worker_idx,
     const MaterializedJobSelectionAffinity& worker_affinity,
     std::chrono::steady_clock::time_point now) {
-    if (!IsDataPlaneEnabled()) {
+    if (!IsDataPlaneEnabled()
+        || !worker_cfg_.workset_definition_builder) {
         return false;
     }
-    ClaimedJobRecord candidate{};
-    if (!job_materialization_service_.TrySelectMaterializedJobForWorker(worker_affinity, &candidate)) {
+    const auto slot = GetWorkerSlot(worker_idx);
+    std::size_t maximum_items = 1;
+    std::size_t maximum_encoded_bytes = 1;
+    if (slot) {
+        std::lock_guard<std::mutex> slot_lock(slot->mtx);
+        if (slot->workset_admission_blocked
+            || slot->staged_workset_id.has_value()) {
+            return false;
+        }
+        if (slot->runtime_manifest.has_value()) {
+            const auto resident_limit = static_cast<std::size_t>(
+                slot->runtime_manifest->limits
+                    .maximum_active_and_staged_items);
+            std::size_t resident_items = 0;
+            const auto add_resident =
+                [&](const std::optional<std::uint64_t>& workset_id) {
+                    if (!workset_id.has_value()) {
+                        return;
+                    }
+                    const auto count =
+                        slot->retained_workset_item_counts.find(
+                            *workset_id);
+                    if (count !=
+                        slot->retained_workset_item_counts.end()) {
+                        resident_items += count->second;
+                    }
+                };
+            add_resident(slot->active_workset_id);
+            add_resident(slot->staged_workset_id);
+            if (resident_items >= resident_limit) {
+                return false;
+            }
+            maximum_items = std::max<std::size_t>(
+                1,
+                std::min<std::size_t>(
+                    slot->runtime_manifest->limits
+                        .maximum_items_per_workset,
+                    resident_limit - resident_items));
+            maximum_encoded_bytes = std::max<std::size_t>(
+                1,
+                slot->runtime_manifest->limits
+                    .maximum_encoded_workset_bytes);
+        }
+        if (!slot->worker) {
+            return false;
+        }
+        const auto available_credits =
+            slot->worker->latest_snapshot()
+                .available_item_credits;
+        if (available_credits == 0) {
+            return false;
+        }
+        maximum_items = std::min<std::size_t>(
+            maximum_items,
+            available_credits);
+    }
+    std::vector<ClaimedJobRecord> candidates;
+    if (!job_materialization_service_.
+            TrySelectMaterializedWorksetForWorker(
+                worker_affinity,
+                MaterializedWorksetSelectionLimits{
+                    .max_items = maximum_items,
+                    .lookahead_items = std::max<std::size_t>(
+                        1,
+                        worker_cfg_.workset_lookahead_items),
+                    .max_selected_bytes = maximum_encoded_bytes,
+                    .lookahead_bytes = std::max<std::size_t>(
+                        1,
+                        worker_cfg_.workset_lookahead_bytes),
+                },
+                &candidates)
+        || candidates.empty()) {
         return false;
     }
-
-    if (!candidate.payload.has_value()) {
-        std::ostringstream line;
-        line << "[seedprobe-dispatch-invalid] job=" << candidate.job_id
-             << " worker=" << worker_idx
-             << " step=" << candidate.step.step_key
-             << " kind=" << candidate.step.step_kind
-             << " workflow_step_id=" << candidate.step.workflow_step_id
-             << " job_set=" << candidate.job_set_id
-             << " reason=missing_payload";
-        EmitDurableEventLine(line.str());
-        return false;
-    }
-    const bool dispatched = DispatchClaimedJobToWorker(worker_idx, candidate);
+    const auto& anchor = candidates.front();
+    const bool dispatched =
+        DispatchClaimedWorksetToWorker(worker_idx, candidates);
     if (!dispatched) {
-        const bool requeued = job_materialization_service_.RequeueMaterializedJob(candidate.job_id);
+        std::size_t requeued = 0;
+        for (const auto& candidate : candidates) {
+            if (job_materialization_service_.RequeueMaterializedJob(
+                    candidate.job_id)) {
+                ++requeued;
+            }
+        }
         std::ostringstream line;
-        line << "[seedprobe-dispatch-requeue] job=" << candidate.job_id
+        line << "[workflow-workset-dispatch-requeue]"
+             << " anchor_job=" << anchor.job_id
              << " worker=" << worker_idx
-             << " step=" << candidate.step.step_key
-             << " kind=" << candidate.step.step_kind
-             << " workflow_step_id=" << candidate.step.workflow_step_id
-             << " job_set=" << candidate.job_set_id
-             << " reason=send_failed"
-             << " requeued=" << (requeued ? "true" : "false");
+             << " items=" << candidates.size()
+             << " reason=submit_failed"
+             << " requeued=" << requeued;
         EmitDurableEventLine(line.str());
         return false;
     }
-    const bool marked_dispatched = job_materialization_service_.MarkDispatched(candidate.job_id, now);
+    (void)now;
     std::ostringstream line;
-    line << "[seedprobe-dispatch] job=" << candidate.job_id
+    line << "[workflow-workset-dispatch]"
+         << " anchor_job=" << anchor.job_id
          << " worker=" << worker_idx
-         << " step=" << candidate.step.step_key
-         << " kind=" << candidate.step.step_kind
-         << " workflow_step_id=" << candidate.step.workflow_step_id
-         << " job_set=" << candidate.job_set_id
-         << " program_kind=" << candidate.program_kind
-         << " claim_sequence=" << candidate.claim_sequence
-         << " mark_dispatched=" << (marked_dispatched ? "true" : "false");
-    if (candidate.affinity.savestate_affinity_key.has_value()) {
-        line << " savestate_affinity=" << *candidate.affinity.savestate_affinity_key;
+         << " items=" << candidates.size()
+         << " step=" << anchor.step.step_key
+         << " kind=" << anchor.step.step_kind
+         << " workflow_step_id=" << anchor.step.workflow_step_id
+         << " job_set=" << anchor.job_set_id
+         << " program_kind=" << anchor.program_kind
+         << " claim_sequence=" << anchor.claim_sequence;
+    if (anchor.affinity.savestate_affinity_key.has_value()) {
+        line << " savestate_affinity="
+             << *anchor.affinity.savestate_affinity_key;
     }
-    if (candidate.affinity.program_runtime_affinity_key.has_value()) {
-        line << " runtime_affinity=" << *candidate.affinity.program_runtime_affinity_key;
+    if (anchor.affinity.program_runtime_affinity_key.has_value()) {
+        line << " runtime_affinity="
+             << *anchor.affinity.program_runtime_affinity_key;
     }
     EmitDurableEventLine(line.str());
     return true;
@@ -1729,7 +3607,7 @@ void DBWorkflowWorkerCoordinator::HandlePayloadMaterializationFailures() {
             std::string error;
             if (!execution_db_->RequeueClaimedExecutionJob(
                     failed_payload.job_id,
-                    "workflow_job_materializer",
+                    failed_payload.claimed_by_token,
                     "PAYLOAD_MATERIALIZATION_FAILED",
                     &error)) {
                 std::ostringstream line;
@@ -1741,6 +3619,74 @@ void DBWorkflowWorkerCoordinator::HandlePayloadMaterializationFailures() {
             }
         }
         (void)job_materialization_service_.AbandonClaim(failed_payload.job_id);
+    }
+}
+
+void DBWorkflowWorkerCoordinator::HandleItemAuthorityLost(
+    const ClaimLeaseMaintenanceResult::LostAuthority& lost) {
+    std::optional<DispatchedWorksetItemContext> context;
+    {
+        // Serialize the local authority bit with exact terminal confirmation
+        // and durable result projection. Once this block exits, a terminal
+        // can only observe authority_lost or reconfirm exact DB authority.
+        std::lock_guard<std::mutex> projection_lock(
+            result_projection_mtx_);
+        {
+            std::lock_guard<std::mutex> lock(workers_mtx_);
+            for (auto& [_, candidate] : dispatched_workset_items_) {
+                if (candidate.claimed.job_id == lost.job_id
+                    && candidate.claimed.claimed_by_token
+                        == lost.claimed_by_token) {
+                    candidate.authority_lost = true;
+                    context = candidate;
+                    break;
+                }
+            }
+        }
+        // Buffered/materializing work has not crossed the worker boundary.
+        // Removing it locally is sufficient; its durable owner/state is
+        // already authoritative and normal lease recovery can make it
+        // eligible again.
+        (void)job_materialization_service_.AbandonClaim(lost.job_id);
+    }
+
+    if (context.has_value()) {
+        const auto slot = GetWorkerSlot(context->worker_idx);
+        std::shared_ptr<savor::ProcessWorker> worker;
+        if (slot) {
+            std::lock_guard<std::mutex> slot_lock(slot->mtx);
+            worker = slot->worker;
+        }
+        const bool cancellation_delivered =
+            worker
+            && worker->cancel_workset_item(
+                savor::runtime::WorkerWorksetId{context->workset_id},
+                savor::runtime::WorkerWorksetItemId{context->item_id},
+                "durable claim or lease authority was lost");
+        if (!cancellation_delivered) {
+            FailClosedWorkset(
+                context->worker_idx,
+                context->workset_id,
+                "exact item cancellation failed after durable authority loss");
+        }
+    }
+
+    if (worker_cfg_.item_authority_lost_callback) {
+        try {
+            worker_cfg_.item_authority_lost_callback(
+                lost.job_id,
+                lost.claimed_by_token,
+                lost.disposition);
+        } catch (const std::exception& ex) {
+            EmitDurableEventLine(
+                "[workflow-item-authority-callback-failed] job="
+                + std::to_string(lost.job_id) + " error=" + ex.what());
+        } catch (...) {
+            EmitDurableEventLine(
+                "[workflow-item-authority-callback-failed] job="
+                + std::to_string(lost.job_id)
+                + " error=unknown_exception");
+        }
     }
 }
 
@@ -1766,6 +3712,9 @@ void DBWorkflowWorkerCoordinator::MaintainMaterializerClaims(std::chrono::steady
              << " failed=" << renewed.failed;
         EmitDurableEventLine(line.str());
     }
+    for (const auto& lost : renewed.lost_authority) {
+        HandleItemAuthorityLost(lost);
+    }
 
     if (execution_db_ == nullptr) {
         return;
@@ -1787,119 +3736,6 @@ void DBWorkflowWorkerCoordinator::MaintainMaterializerClaims(std::chrono::steady
         line << "[workflow-claim-recovery] requeued=" << rows_requeued;
         EmitDurableEventLine(line.str());
     }
-}
-
-bool DBWorkflowWorkerCoordinator::EnsureWorkerProgramForJob(size_t worker_idx, const ClaimedJobRecord& claimed_job) {
-    if (!IsDataPlaneEnabled()) {
-        return false;
-    }
-    if (claimed_job.program_kind <= 0) {
-        return false;
-    }
-
-    const auto slot_handle = GetWorkerSlot(worker_idx);
-    if (!slot_handle) {
-        return false;
-    }
-
-    std::lock_guard<std::mutex> slot_lock(slot_handle->mtx);
-    auto& slot = *slot_handle;
-    if (!slot.ready.load() || slot.worker == nullptr) {
-        return false;
-    }
-
-    const auto runtime_key = claimed_job.affinity.program_runtime_affinity_key;
-    const auto savestate_key = claimed_job.affinity.savestate_affinity_key;
-    const bool needs_program = !slot.loaded_program_kind.has_value()
-        || slot.loaded_program_kind.value() != claimed_job.program_kind;
-    const bool switches_program_kind = slot.loaded_program_kind.has_value()
-        && slot.loaded_program_kind.value() != claimed_job.program_kind;
-    const bool needs_runtime = slot.loaded_program_runtime_affinity_key != runtime_key;
-    const bool needs_savestate = slot.loaded_savestate_affinity_key != savestate_key;
-    if (!needs_program && !needs_runtime && !needs_savestate) {
-        return true;
-    }
-
-    savor::PSInit init{};
-    init.default_timeout_ms = claimed_job.runtime_init.default_timeout_ms > 0
-        ? static_cast<uint32_t>(claimed_job.runtime_init.default_timeout_ms)
-        : 10000;
-    init.derived_buffer_type = claimed_job.runtime_init.derived_buffer_type;
-    if (claimed_job.runtime_init.savestate_ref_id > 0) {
-        const auto savestate_path = PrepareWorkerSavestatePathForJob(worker_idx, claimed_job, needs_savestate);
-        if (!savestate_path.has_value()) {
-            MarkWorkerError(slot, "savestate materialization failed");
-            return false;
-        }
-        init.savestate_path = *savestate_path;
-    }
-    if (!slot.worker->ctl_set_program(
-        static_cast<uint8_t>(claimed_job.program_kind),
-        static_cast<uint8_t>(claimed_job.program_kind),
-        init)) {
-        MarkWorkerError(slot, "ctl_set_program failed");
-        return false;
-    }
-    if (!slot.worker->ctl_run_init_once()) {
-        MarkWorkerError(slot, "ctl_run_init_once failed");
-        return false;
-    }
-    if (!slot.worker->ctl_activate_main()) {
-        MarkWorkerError(slot, "ctl_activate_main failed");
-        return false;
-    }
-    if (switches_program_kind) {
-        ++slot.program_kind_switch_count;
-    }
-    slot.loaded_program_kind = claimed_job.program_kind;
-    slot.loaded_program_runtime_affinity_key = runtime_key;
-    slot.loaded_savestate_affinity_key = savestate_key;
-    worker_status_.SetCurrentJob(static_cast<std::int64_t>(slot.id), std::nullopt, claimed_job.program_kind);
-    worker_status_.UpdateState(static_cast<std::int64_t>(slot.id), WorkerStateKind::Idle);
-    worker_status_.RecordHeartbeat(static_cast<std::int64_t>(slot.id));
-    return true;
-}
-
-std::optional<std::string> DBWorkflowWorkerCoordinator::PrepareWorkerSavestatePathForJob(
-    size_t worker_idx,
-    const ClaimedJobRecord& claimed_job,
-    bool force_rematerialize) {
-    if (claimed_job.runtime_init.savestate_ref_id <= 0) {
-        return std::string{};
-    }
-    if (state_db_ == nullptr) {
-        return std::nullopt;
-    }
-
-    const auto worker_root = std::filesystem::path(worker_cfg_.worker_dir_root)
-        / ".worker"
-        / ("worker-" + std::to_string(worker_idx));
-    const auto savestate_dir = worker_root / "savestate";
-    const auto savestate_path = savestate_dir / "current.sav";
-
-    std::error_code ec;
-    if (!force_rematerialize && std::filesystem::exists(savestate_path, ec) && !ec) {
-        return savestate_path.string();
-    }
-
-    std::filesystem::remove_all(savestate_dir, ec);
-    if (ec) {
-        return std::nullopt;
-    }
-    std::filesystem::create_directories(savestate_dir, ec);
-    if (ec) {
-        return std::nullopt;
-    }
-
-    std::string error;
-    const auto materialized = state_db_->MaterializeSavestateToPath(
-        claimed_job.runtime_init.savestate_ref_id,
-        savestate_path.string(),
-        &error);
-    if (!materialized.has_value() || materialized->empty()) {
-        return std::nullopt;
-    }
-    return materialized;
 }
 
 size_t DBWorkflowWorkerCoordinator::ActiveWorkerCount() const {
@@ -1947,7 +3783,7 @@ PRStatus DBWorkflowWorkerCoordinator::SnapshotStatus() const {
     PRStatus status{};
     status.epoch = epoch_.load();
     status.workers = ActiveWorkerCount();
-    status.ready_workers = ReadyInvocationCapableWorkerCount();
+    status.ready_workers = ReadyWorksetCapableWorkerCount();
 
     std::lock_guard<std::mutex> lock(queue_mtx_);
     status.queued_jobs = ready_queue_.size();
@@ -2088,15 +3924,35 @@ void DBWorkflowWorkerCoordinator::WorkerJobCoordinatorLoop() {
         const auto now = std::chrono::steady_clock::now();
         RecoverDeadInFlightWorkers();
         MaintainMaterializerClaims(now);
-        const auto worker_target = ReadyInvocationCapableWorkerCount();
+        RefreshSharedItemCredits();
+        const auto worker_target = ReadyItemCreditCapacity();
+        const auto coordinator_buffer_target =
+            ReadyCoordinatorBufferCapacity();
         const auto buffered = job_materialization_service_.CountBufferedJobs();
+        auto capacity = worker_cfg_.worker_item_usage_provider
+            ? worker_cfg_.worker_item_usage_provider()
+            : CoordinatorItemCapacitySnapshot{};
+        capacity.total_credits = worker_target;
+        capacity.coordinator_buffered = buffered;
+        if (!worker_cfg_.worker_item_usage_provider) {
+            capacity.active_invocations = CountActiveInFlightItems();
+        }
+        const auto available_claim_credits =
+            capacity.AvailableCredits();
+        const auto available_buffer_credits =
+            coordinator_buffer_target > buffered
+            ? coordinator_buffer_target - buffered
+            : 0;
         const auto materialized_before_claim = job_materialization_service_.CountMaterializedJobs();
         if (buffered >= worker_target || materialized_before_claim > 0) {
             no_jobs_available_.store(false);
         }
         std::size_t claimed_count = 0;
-        if (buffered < worker_target) {
-            const auto claim_budget = worker_target - buffered;
+        if (available_claim_credits > 0
+            && available_buffer_credits > 0) {
+            const auto claim_budget = std::min(
+                available_claim_credits,
+                available_buffer_credits);
             const auto claim_result = job_materialization_service_.ClaimJobsDetailed(claim_budget, now);
             if (claim_result.attempted) {
                 ++claim_attempt_count_;
@@ -2109,8 +3965,11 @@ void DBWorkflowWorkerCoordinator::WorkerJobCoordinatorLoop() {
                          << " requested=" << claim_result.requested
                          << " budget=" << claim_budget
                          << " buffered_before=" << buffered
-                         << " materialized_before=" << materialized_before_claim
-                         << " worker_target=" << worker_target
+                     << " materialized_before=" << materialized_before_claim
+                     << " worker_target=" << worker_target
+                     << " coordinator_buffer_target="
+                     << coordinator_buffer_target
+                     << " consumed_credits=" << capacity.ConsumedCredits()
                          << " buffered_after=" << job_materialization_service_.CountBufferedJobs()
                          << " materialized_after=" << job_materialization_service_.CountMaterializedJobs()
                          << " error=" << (claim_result.error_message.empty() ? "unknown" : claim_result.error_message);
@@ -2128,11 +3987,13 @@ void DBWorkflowWorkerCoordinator::WorkerJobCoordinatorLoop() {
             }
             claimed_count = claim_result.claimed;
             if (claimed_count > 0) {
+                RefreshSharedItemCredits();
                 std::ostringstream line;
                 line << "[seedprobe-claim-batch] claimed=" << claimed_count
                      << " budget=" << claim_budget
                      << " buffered_before=" << buffered
                      << " worker_target=" << worker_target
+                     << " consumed_credits=" << capacity.ConsumedCredits()
                      << " buffered_after=" << job_materialization_service_.CountBufferedJobs();
                 EmitDurableEventLine(line.str());
             }
@@ -2141,7 +4002,28 @@ void DBWorkflowWorkerCoordinator::WorkerJobCoordinatorLoop() {
         HandlePayloadMaterializationFailures();
 
         bool dispatched_any = false;
-        const auto dispatchable_workers = CollectDispatchableWorkers();
+        auto dispatchable_workers = CollectDispatchableWorkers();
+        ClaimedJobRecord anchor{};
+        if (job_materialization_service_.PeekMaterializedAnchor(
+                &anchor)) {
+            const auto is_exact_warm =
+                [&](const DispatchableWorkerInfo& worker) {
+                    return worker.loaded_workset_execution_key.has_value()
+                        && *worker.loaded_workset_execution_key
+                            == anchor.workset_execution_key;
+                };
+            std::sort(
+                dispatchable_workers.begin(),
+                dispatchable_workers.end(),
+                [&](const auto& lhs, const auto& rhs) {
+                    const bool lhs_warm = is_exact_warm(lhs);
+                    const bool rhs_warm = is_exact_warm(rhs);
+                    if (lhs_warm != rhs_warm) {
+                        return lhs_warm;
+                    }
+                    return lhs.worker_idx < rhs.worker_idx;
+                });
+        }
         for (const auto& worker : dispatchable_workers) {
             ++dispatch_attempt_count_;
             const bool dispatched = DispatchNextEligibleForWorker(
@@ -2177,6 +4059,12 @@ void DBWorkflowWorkerCoordinator::RecoverDeadInFlightWorkers() {
     struct LostJob {
         size_t worker_idx = 0;
         std::uint64_t job_id = 0;
+        std::string claimed_by_token;
+        std::uint64_t attempt_id = 0;
+        std::string message;
+    };
+    struct LostWorker {
+        size_t worker_idx = 0;
         std::string message;
     };
 
@@ -2187,6 +4075,7 @@ void DBWorkflowWorkerCoordinator::RecoverDeadInFlightWorkers() {
             ? worker_cfg_.worker_silence_in_flight_timeout_ms
             : 30000u);
     std::vector<LostJob> lost_jobs;
+    std::vector<LostWorker> lost_workers;
     std::vector<std::string> event_lines;
     std::vector<std::shared_ptr<savor::ProcessWorker>> workers_to_stop;
     const auto slots = CopyWorkerSlots();
@@ -2194,8 +4083,11 @@ void DBWorkflowWorkerCoordinator::RecoverDeadInFlightWorkers() {
         if (!slot_ptr) {
             continue;
         }
+        std::unique_lock<std::mutex> submission_lock(
+            slot_ptr->workset_submission_mtx);
         std::lock_guard<std::mutex> slot_lock(slot_ptr->mtx);
-        if (!slot_ptr->in_flight_job_id.has_value() || !slot_ptr->worker) {
+        if (slot_ptr->retained_workset_ids.empty()
+            || !slot_ptr->worker) {
             continue;
         }
         auto& slot = *slot_ptr;
@@ -2213,7 +4105,7 @@ void DBWorkflowWorkerCoordinator::RecoverDeadInFlightWorkers() {
             continue;
         }
 
-        const auto job_id = *slot.in_flight_job_id;
+        const auto job_id = slot.in_flight_job_id.value_or(0);
         std::ostringstream line;
         line << (worker_silent ? "[workflow-worker-silent-in-flight]" : "[workflow-worker-dead-in-flight]")
              << " worker=" << slot.id
@@ -2230,10 +4122,8 @@ void DBWorkflowWorkerCoordinator::RecoverDeadInFlightWorkers() {
                 + std::to_string(worker_silence_cutoff.count())
                 + " milliseconds while job was in flight"
             : "worker exited while job was in flight");
-        (void)job_materialization_service_.CleanupDispatchedOrExpired(static_cast<std::int64_t>(job_id));
-        lost_jobs.push_back(LostJob{
+        lost_workers.push_back(LostWorker{
             .worker_idx = slot.id,
-            .job_id = job_id,
             .message = worker_silent ? "WORKER_SILENT_DURING_JOB" : "WORKER_EXITED_DURING_JOB",
         });
         if (auto worker_to_stop = ResetWorkerSlotRuntime(slot)) {
@@ -2245,10 +4135,37 @@ void DBWorkflowWorkerCoordinator::RecoverDeadInFlightWorkers() {
             worker->stop();
         }
     }
-    if (!lost_jobs.empty()) {
+    if (!lost_workers.empty()) {
         std::lock_guard<std::mutex> lock(workers_mtx_);
-        for (const auto& lost : lost_jobs) {
-            dispatched_job_context_by_id_.erase(lost.job_id);
+        for (auto it = dispatched_workset_items_.begin();
+             it != dispatched_workset_items_.end();) {
+            const auto lost_worker = std::find_if(
+                lost_workers.begin(),
+                lost_workers.end(),
+                [&](const LostWorker& candidate) {
+                    return candidate.worker_idx
+                        == it->second.worker_idx;
+                });
+            if (lost_worker == lost_workers.end()) {
+                ++it;
+                continue;
+            }
+            const auto job_id = static_cast<std::uint64_t>(
+                it->second.claimed.job_id);
+            // Preserve every exact token/attempt correlation. If an
+            // impossible duplicate exists, the guarded DB operation makes
+            // the second recovery an idempotent no-op instead of allowing an
+            // unordered-map winner to select which owner is recovered.
+            lost_jobs.push_back(LostJob{
+                .worker_idx = it->second.worker_idx,
+                .job_id = job_id,
+                .claimed_by_token =
+                    it->second.claimed.claimed_by_token,
+                .attempt_id = it->second.attempt_id,
+                .message = lost_worker->message,
+            });
+            dispatched_job_context_by_id_.erase(job_id);
+            it = dispatched_workset_items_.erase(it);
         }
     }
 
@@ -2257,33 +4174,63 @@ void DBWorkflowWorkerCoordinator::RecoverDeadInFlightWorkers() {
     }
 
     for (const auto& lost : lost_jobs) {
-        if (execution_db_ == nullptr || execution_db_->JobCommandService() == nullptr) {
+        (void)job_materialization_service_.
+            CleanupDispatchedOrExpired(
+                static_cast<std::int64_t>(lost.job_id));
+        if (execution_db_ == nullptr) {
             continue;
         }
-        const auto job = execution_db_->GetJob(static_cast<std::int64_t>(lost.job_id));
-        if (!job.has_value()) {
-            continue;
-        }
-        if (job->state != "RUNNING" && job->state != "CLAIMED") {
-            continue;
-        }
-
+        savor::db::ExecutionJobWorkerLossRecoveryReceipt receipt{};
         std::string error;
-        if (!execution_db_->JobCommandService()->AppendLifecycleEvent(
-                {
-                    .kind = savor::db::execution::jobs::JobLifecycleEventKind::JobQueued,
-                    .job_id = static_cast<std::int64_t>(lost.job_id),
-                    .message = lost.message,
-                    .requested_by = "workflow_worker_recovery",
-                },
-                &error)) {
+        const bool recovered =
+            execution_db_->RecoverExecutionJobAfterWorkerLoss(
+                static_cast<std::int64_t>(lost.job_id),
+                lost.claimed_by_token,
+                lost.attempt_id,
+                lost.message,
+                &receipt,
+                &error);
+        const bool durable_disposition = recovered
+            && (receipt.disposition
+                    == savor::db::
+                        ExecutionJobWorkerLossRecoveryDisposition::
+                            Requeued
+                || receipt.disposition
+                    == savor::db::
+                        ExecutionJobWorkerLossRecoveryDisposition::
+                            AttemptsExhaustedFailed
+                || receipt.disposition
+                    == savor::db::
+                        ExecutionJobWorkerLossRecoveryDisposition::
+                            AlreadyDurable
+                || receipt.disposition
+                    == savor::db::
+                        ExecutionJobWorkerLossRecoveryDisposition::
+                            TokenMismatch
+                || receipt.disposition
+                    == savor::db::
+                        ExecutionJobWorkerLossRecoveryDisposition::
+                            AttemptMismatch);
+        if (!durable_disposition) {
             std::ostringstream line;
-            line << "[workflow-worker-dead-in-flight-requeue-failed]"
+            line << "[workflow-worker-dead-in-flight-recovery-failed]"
                  << " worker=" << lost.worker_idx
-                 << " job=" << lost.job_id;
+                 << " job=" << lost.job_id
+                 << " attempt=" << lost.attempt_id
+                 << " disposition="
+                 << static_cast<int>(receipt.disposition);
             if (!error.empty()) {
                 line << " error=" << error;
             }
+            EmitDurableEventLine(line.str());
+        } else {
+            std::ostringstream line;
+            line << "[workflow-worker-dead-in-flight-recovery]"
+                 << " worker=" << lost.worker_idx
+                 << " job=" << lost.job_id
+                 << " attempt=" << lost.attempt_id
+                 << " disposition="
+                 << static_cast<int>(receipt.disposition);
             EmitDurableEventLine(line.str());
         }
     }
@@ -2296,6 +4243,7 @@ void DBWorkflowWorkerCoordinator::RecoverDeadInFlightWorkers() {
 void DBWorkflowWorkerCoordinator::WorkerLifecycleCoordinatorLoop() {
     while (!stop_.load() && IsDataPlaneEnabled()) {
         ReconcileWorkerPool();
+        RefreshSharedItemCredits();
 
         std::unique_lock<std::mutex> lock(queue_mtx_);
         const auto sleep_ms = worker_cfg_.controller_sleep_ms ? worker_cfg_.controller_sleep_ms : 5;
@@ -2450,9 +4398,6 @@ bool DBWorkflowWorkerCoordinator::CompleteNoWorkWorkflowStep(const WorkflowReady
 }
 
 void DBWorkflowWorkerCoordinator::DrainProgressLoop() {
-    if (!IsDataPlaneEnabled()) {
-        return;
-    }
     constexpr std::size_t kMaxBatchSize = 64;
     std::unordered_map<std::size_t, ProgressDedupState> progress_dedup_by_worker;
 
@@ -2504,9 +4449,6 @@ void DBWorkflowWorkerCoordinator::DrainProgressLoop() {
 
     savor::PRProgress progress;
     while (progress_q_.pop_wait(progress)) {
-        if (!IsDataPlaneEnabled()) {
-            continue;
-        }
         std::vector<savor::PRProgress> batch;
         batch.reserve(kMaxBatchSize);
         batch.push_back(progress);
@@ -2581,15 +4523,184 @@ void DBWorkflowWorkerCoordinator::DrainProgressLoop() {
     }
 }
 
-void DBWorkflowWorkerCoordinator::DrainResultsLoop() {
-    if (!IsDataPlaneEnabled()) {
+bool DBWorkflowWorkerCoordinator::ProcessDurableResultProjection(
+    const savor::PRResult& result,
+    const DispatchedJobContext& context,
+    savor::db::execution::workflow::
+        TerminalWorkflowStepNotification* notification_out,
+    std::vector<std::string>* post_ack_event_lines_out) {
+    std::lock_guard<std::mutex> projection_lock(
+        result_projection_mtx_);
+    return ProcessDurableResultProjectionLocked(
+        result,
+        context,
+        notification_out,
+        post_ack_event_lines_out);
+}
+
+bool DBWorkflowWorkerCoordinator::ProcessDurableResultProjectionLocked(
+    const savor::PRResult& result,
+    const DispatchedJobContext& context,
+    savor::db::execution::workflow::
+        TerminalWorkflowStepNotification* notification_out,
+    std::vector<std::string>* post_ack_event_lines_out) {
+    if (notification_out != nullptr) {
+        *notification_out = {};
+    }
+    if (!adapter_chain_orchestrator_) {
+        EmitDurableEventLine(
+            "[workflow-result-projection-unavailable] job="
+            + std::to_string(result.job_id)
+            + " worker=" + std::to_string(result.worker_id));
+        return false;
+    }
+
+    savor::db::execution::workflow::AdapterChainTrace trace{};
+    std::string adapter_error;
+    const auto mapped = adapter_chain_orchestrator_->OnJobTerminal(
+        context.step.step_kind,
+        static_cast<std::int64_t>(result.job_id),
+        result,
+        &trace,
+        &adapter_error);
+    ++adapter_job_terminal_invocations_;
+    EmitAdapterTraceEvent(
+        context.step,
+        "OnJobTerminal",
+        mapped.has_value() ? "invoked" : "failed",
+        static_cast<std::int64_t>(result.job_id),
+        context.job_set_id,
+        adapter_error.empty()
+            ? std::nullopt
+            : std::optional<std::string>(adapter_error));
+    if (mapped.has_value() && result_map_event_callback_) {
+        for (const auto& line : mapped->event_lines) {
+            if (post_ack_event_lines_out != nullptr) {
+                post_ack_event_lines_out->push_back(line);
+            } else {
+                EmitDurableEventLine(line);
+            }
+        }
+    }
+
+    const auto mapped_output_ref_kind =
+        mapped.has_value() && !mapped->output_ref_kind.empty()
+        ? mapped->output_ref_kind
+        : (mapped.has_value()
+            ? mapped->result_kind
+            : std::string{});
+    const auto mapped_output_ref_id =
+        mapped.has_value() && mapped->output_ref_id > 0
+        ? mapped->output_ref_id
+        : (mapped.has_value() ? mapped->result_ref_id : 0);
+    bool output_recorded = true;
+    if (mapped.has_value()
+        && !mapped->output_key.empty()
+        && !mapped->output_data_kind.empty()
+        && !mapped_output_ref_kind.empty()
+        && mapped_output_ref_id > 0
+        && execution_db_ != nullptr) {
+        std::string output_error;
+        if (!execution_db_->RecordJobOutput(
+                {
+                    .job_id = static_cast<std::int64_t>(
+                        result.job_id),
+                    .output_key = mapped->output_key,
+                    .data_kind = mapped->output_data_kind,
+                    .ref_kind = mapped_output_ref_kind,
+                    .ref_id = mapped_output_ref_id,
+                    .requested_by =
+                        "workflow_worker_result_mapper",
+                },
+                &output_error)) {
+            output_recorded = false;
+            std::ostringstream line;
+            line << "[execution-job-output-record-failed]"
+                 << " job=" << result.job_id
+                 << " worker=" << result.worker_id
+                 << " step=" << context.step.step_key
+                 << " kind=" << context.step.step_kind
+                 << " output_key=" << mapped->output_key
+                 << " output_ref_kind="
+                 << mapped_output_ref_kind
+                 << " output_ref_id=" << mapped_output_ref_id;
+            if (!output_error.empty()) {
+                line << " error=" << output_error;
+            }
+            EmitDurableEventLine(line.str());
+        }
+    }
+
+    const bool durable_projection_committed =
+        mapped.has_value() && output_recorded;
+    if (!mapped.has_value()) {
+        std::ostringstream line;
+        line << "[workflow-result-map-failed]"
+             << " job=" << result.job_id
+             << " worker=" << result.worker_id
+             << " step=" << context.step.step_key
+             << " kind=" << context.step.step_kind
+             << " workflow_step_id="
+             << context.step.workflow_step_id
+             << " job_set=" << context.job_set_id;
+        if (!adapter_error.empty()) {
+            line << " error=" << adapter_error;
+        }
+        EmitDurableEventLine(line.str());
+        MarkDeterministicFailure(
+            context.step,
+            static_cast<std::int64_t>(result.job_id),
+            context.job_set_id,
+            "ADAPTER_RESULT_PERSIST_FAILED:"
+                + (adapter_error.empty()
+                    ? std::string("mapping returned no result")
+                    : adapter_error));
+    }
+
+    if (durable_projection_committed && notification_out != nullptr) {
+        const auto commit_sequence =
+            terminal_commit_sequence_.fetch_add(
+                1,
+                std::memory_order_relaxed)
+            + 1;
+        *notification_out =
+            savor::db::execution::workflow::
+                TerminalWorkflowStepNotification{
+                    .commit_sequence = commit_sequence,
+                    .workflow_step_id =
+                        context.step.workflow_step_id,
+                    .job_id = static_cast<std::int64_t>(
+                        result.job_id),
+                };
+    }
+    return durable_projection_committed;
+}
+
+void DBWorkflowWorkerCoordinator::PublishTerminalCommitIsolated(
+    const savor::db::execution::workflow::
+        TerminalWorkflowStepNotification& notification) {
+    if (!worker_cfg_.terminal_commit_callback
+        || notification.commit_sequence == 0) {
         return;
     }
+    try {
+        worker_cfg_.terminal_commit_callback(notification);
+    } catch (const std::exception& ex) {
+        EmitDurableEventLine(
+            "[workflow-terminal-notification-callback-failed] job="
+            + std::to_string(notification.job_id)
+            + " error=" + ex.what());
+    } catch (...) {
+        EmitDurableEventLine(
+            "[workflow-terminal-notification-callback-failed] job="
+            + std::to_string(notification.job_id)
+            + " error=unknown_exception");
+    }
+}
+
+void DBWorkflowWorkerCoordinator::DrainResultsLoop() {
     savor::PRResult result;
     while (results_q_.pop_wait(result)) {
-        if (!IsDataPlaneEnabled()) {
-            continue;
-        }
         ++results_received_count_;
         std::optional<DispatchedJobContext> context;
         bool worker_known = false;
@@ -2642,81 +4753,10 @@ void DBWorkflowWorkerCoordinator::DrainResultsLoop() {
             EmitDurableEventLine(line.str());
         }
 
-        if (context.has_value() && adapter_chain_orchestrator_) {
-            savor::db::execution::workflow::AdapterChainTrace trace{};
-            std::string adapter_error;
-            const auto mapped = adapter_chain_orchestrator_->OnJobTerminal(
-                context->step.step_kind,
-                static_cast<std::int64_t>(result.job_id),
+        if (context.has_value()) {
+            (void)ProcessDurableResultProjection(
                 result,
-                &trace,
-                &adapter_error);
-            ++adapter_job_terminal_invocations_;
-            EmitAdapterTraceEvent(
-                context->step,
-                "OnJobTerminal",
-                mapped.has_value() ? "invoked" : "failed",
-                static_cast<std::int64_t>(result.job_id),
-                context->job_set_id,
-                adapter_error.empty() ? std::nullopt : std::optional<std::string>(adapter_error));
-            if (mapped.has_value() && result_map_event_callback_) {
-                for (const auto& line : mapped->event_lines) {
-                    result_map_event_callback_(line);
-                }
-            }
-            const auto mapped_output_ref_kind = mapped.has_value() && !mapped->output_ref_kind.empty()
-                ? mapped->output_ref_kind
-                : (mapped.has_value() ? mapped->result_kind : std::string{});
-            const auto mapped_output_ref_id = mapped.has_value() && mapped->output_ref_id > 0
-                ? mapped->output_ref_id
-                : (mapped.has_value() ? mapped->result_ref_id : 0);
-            if (mapped.has_value()
-                && !mapped->output_key.empty()
-                && !mapped->output_data_kind.empty()
-                && !mapped_output_ref_kind.empty()
-                && mapped_output_ref_id > 0
-                && execution_db_ != nullptr) {
-                std::string output_error;
-                if (!execution_db_->RecordJobOutput(
-                        {
-                            .job_id = static_cast<std::int64_t>(result.job_id),
-                            .output_key = mapped->output_key,
-                            .data_kind = mapped->output_data_kind,
-                            .ref_kind = mapped_output_ref_kind,
-                            .ref_id = mapped_output_ref_id,
-                            .requested_by = "workflow_worker_result_mapper",
-                        },
-                        &output_error)) {
-                    std::ostringstream line;
-                    line << "[execution-job-output-record-failed] job=" << result.job_id
-                         << " worker=" << result.worker_id
-                         << " step=" << context->step.step_key
-                         << " kind=" << context->step.step_kind
-                         << " output_key=" << mapped->output_key
-                         << " output_ref_kind=" << mapped_output_ref_kind
-                         << " output_ref_id=" << mapped_output_ref_id;
-                    if (!output_error.empty()) {
-                        line << " error=" << output_error;
-                    }
-                    EmitDurableEventLine(line.str());
-                }
-            }
-            if (!mapped.has_value() && !adapter_error.empty()) {
-                std::ostringstream line;
-                line << "[seedprobe-result-map-failed] job=" << result.job_id
-                     << " worker=" << result.worker_id
-                     << " step=" << context->step.step_key
-                     << " kind=" << context->step.step_kind
-                     << " workflow_step_id=" << context->step.workflow_step_id
-                     << " job_set=" << context->job_set_id
-                     << " error=" << adapter_error;
-                EmitDurableEventLine(line.str());
-                MarkDeterministicFailure(
-                    context->step,
-                    static_cast<std::int64_t>(result.job_id),
-                    context->job_set_id,
-                    "ADAPTER_RESULT_PERSIST_FAILED:" + adapter_error);
-            }
+                *context);
         }
 
         ReleaseWorkerByResult(result);
@@ -2738,7 +4778,9 @@ void DBWorkflowWorkerCoordinator::ReconcileWorkerPool() {
     const auto desired_workers = desired_worker_count_.load(std::memory_order_relaxed);
     const auto now = std::chrono::steady_clock::now();
     const auto max_start_attempts = std::max<std::uint32_t>(1u, worker_cfg_.max_worker_start_attempts);
-    const auto max_concurrent_starts = std::max<std::uint32_t>(1u, worker_cfg_.max_concurrent_worker_starts);
+    auto max_concurrent_starts = std::max<std::uint32_t>(
+        1u,
+        worker_cfg_.max_concurrent_worker_starts);
 
     {
         std::lock_guard<std::mutex> lock(workers_mtx_);
@@ -2786,6 +4828,15 @@ void DBWorkflowWorkerCoordinator::ReconcileWorkerPool() {
             continue;
         }
         std::lock_guard<std::mutex> slot_lock(slot->mtx);
+        if (slot->ready.load(std::memory_order_acquire)
+            && slot->runtime_manifest.has_value()) {
+            max_concurrent_starts = std::min(
+                max_concurrent_starts,
+                std::max<std::uint32_t>(
+                    1u,
+                    slot->runtime_manifest->limits
+                        .progressive_start_concurrency));
+        }
         if (!slot->startup_in_progress && slot->startup_thread.joinable()) {
             completed_startup_threads.push_back(std::move(slot->startup_thread));
         }
@@ -2806,6 +4857,8 @@ void DBWorkflowWorkerCoordinator::ReconcileWorkerPool() {
         bool should_start = false;
         bool restart_deferred_until_old_worker_stops = false;
         {
+            std::unique_lock<std::mutex> submission_lock(
+                slot_handle->workset_submission_mtx);
             std::lock_guard<std::mutex> slot_lock(slot_handle->mtx);
             auto& slot = *slot_handle;
             const auto worker_idx = slot.id;
@@ -2902,6 +4955,7 @@ bool DBWorkflowWorkerCoordinator::StartWorkerSlot(WorkerSlotPtr slot_handle) {
         slot.startup_in_progress = true;
         slot.ready.store(false);
         slot.capabilities = 0;
+        slot.runtime_manifest.reset();
         slot.start_retry_exhausted_logged = false;
         attempt = slot.start_attempts + 1;
         slot.start_attempts = attempt;
@@ -2913,6 +4967,7 @@ bool DBWorkflowWorkerCoordinator::StartWorkerSlot(WorkerSlotPtr slot_handle) {
             attempt,
             false,
             0,
+            std::nullopt,
             "startup canceled",
             true);
         return false;
@@ -2927,6 +4982,7 @@ bool DBWorkflowWorkerCoordinator::StartWorkerSlot(WorkerSlotPtr slot_handle) {
         slot.startup_in_progress = false;
         slot.last_start_error = "startup canceled";
         slot.capabilities = 0;
+        slot.runtime_manifest.reset();
         slot.ready.store(false, std::memory_order_release);
         return false;
     }
@@ -2942,6 +4998,7 @@ bool DBWorkflowWorkerCoordinator::StartWorkerSlot(WorkerSlotPtr slot_handle) {
                     attempt,
                     false,
                     0,
+                    std::nullopt,
                     "startup canceled",
                     true);
                 return;
@@ -2951,7 +5008,10 @@ bool DBWorkflowWorkerCoordinator::StartWorkerSlot(WorkerSlotPtr slot_handle) {
                 RunWorkerCapabilityPreflightForSlot(slot_handle);
             const auto evaluation = EvaluateCapabilityPreflight(
                 preflight,
-                worker_cfg_.visual_debug_workers);
+                worker_cfg_.visual_debug_workers,
+                worker_cfg_.expected_catalog_sha256,
+                worker_cfg_.expected_runtime_profile_sha256,
+                worker_cfg_.expected_dependency_manifest_sha256);
             if (!evaluation.ready) {
                 std::shared_ptr<savor::ProcessWorker> worker;
                 {
@@ -2969,6 +5029,7 @@ bool DBWorkflowWorkerCoordinator::StartWorkerSlot(WorkerSlotPtr slot_handle) {
                 attempt,
                 evaluation.ready,
                 preflight.capabilities,
+                preflight.runtime_manifest,
                 evaluation.error,
                 !evaluation.non_retryable);
         });
@@ -2980,6 +5041,7 @@ void DBWorkflowWorkerCoordinator::CompleteWorkerSlotStartup(
     uint32_t attempt,
     bool ready,
     savor::runtime::WorkerCapabilityMask capabilities,
+    std::optional<savor::runtime::WorkerRuntimeManifest> runtime_manifest,
     const std::string& error,
     bool retryable) {
     const auto slot_handle = GetWorkerSlot(worker_idx);
@@ -2996,6 +5058,9 @@ void DBWorkflowWorkerCoordinator::CompleteWorkerSlotStartup(
     slot.startup_in_progress = false;
     slot.ready.store(ready);
     slot.capabilities = ready ? capabilities : 0;
+    slot.runtime_manifest = ready
+        ? std::move(runtime_manifest)
+        : std::nullopt;
     RegisterWorkerSlotTelemetry(slot);
     if (ready) {
         slot.start_attempts = 0;
@@ -3020,6 +5085,8 @@ void DBWorkflowWorkerCoordinator::CompleteWorkerSlotStartup(
     slot.loaded_program_kind.reset();
     slot.loaded_program_runtime_affinity_key.reset();
     slot.loaded_savestate_affinity_key.reset();
+    slot.loaded_workset_execution_key.reset();
+    slot.runtime_manifest.reset();
 
     std::ostringstream line;
     line << "[workflow-worker-start-failed]"
@@ -3034,25 +5101,41 @@ void DBWorkflowWorkerCoordinator::CompleteWorkerSlotStartup(
 
 std::shared_ptr<savor::ProcessWorker> DBWorkflowWorkerCoordinator::ResetWorkerSlotRuntime(WorkerSlot& slot) {
     auto worker_to_stop = std::move(slot.worker);
+    slot.process_generation = NextWorkerProcessGeneration();
     slot.ready.store(false);
     slot.capabilities = 0;
+    slot.runtime_manifest.reset();
     slot.start_attempted = false;
     slot.startup_in_progress = false;
     slot.in_flight_job_id.reset();
+    slot.active_workset_id.reset();
+    slot.staged_workset_id.reset();
+    slot.retained_workset_ids.clear();
+    slot.retained_workset_item_counts.clear();
+    slot.failed_closed_workset_ids.clear();
+    slot.last_workset_outbound_sequence = 0;
+    slot.last_workset_terminal_order = 0;
+    slot.workset_admission_blocked = false;
     slot.in_flight_started_at = {};
     slot.last_worker_contact_at = {};
     slot.dead_in_flight_observed_at = {};
     slot.loaded_program_kind.reset();
     slot.loaded_program_runtime_affinity_key.reset();
     slot.loaded_savestate_affinity_key.reset();
+    slot.loaded_workset_execution_key.reset();
     slot.worker = std::make_shared<savor::ProcessWorker>();
-    slot.worker->set_progress_queue(&progress_q_);
+    ConfigureWorkerCallbacks(
+        slot.id,
+        slot.process_generation,
+        slot.worker);
     worker_status_.UpdateState(static_cast<std::int64_t>(slot.id), WorkerStateKind::Spawning);
     worker_status_.SetCurrentJob(static_cast<std::int64_t>(slot.id), std::nullopt, std::nullopt);
     return worker_to_stop;
 }
 
-void DBWorkflowWorkerCoordinator::StopWorkerSlot(WorkerSlotPtr slot_handle) {
+void DBWorkflowWorkerCoordinator::StopWorkerSlot(
+    WorkerSlotPtr slot_handle,
+    bool preserve_workset_event_context) {
     if (!slot_handle) {
         return;
     }
@@ -3067,20 +5150,36 @@ void DBWorkflowWorkerCoordinator::StopWorkerSlot(WorkerSlotPtr slot_handle) {
         worker_status_.SetCurrentJob(worker_id, std::nullopt, std::nullopt);
         slot.ready.store(false);
         slot.capabilities = 0;
+        slot.runtime_manifest.reset();
         slot.start_attempted = false;
         slot.startup_in_progress = false;
-        slot.in_flight_job_id.reset();
-        slot.in_flight_started_at = {};
-        slot.last_worker_contact_at = {};
-        slot.dead_in_flight_observed_at = {};
-        slot.loaded_program_kind.reset();
-        slot.loaded_program_runtime_affinity_key.reset();
-        slot.loaded_savestate_affinity_key.reset();
+        if (!preserve_workset_event_context) {
+            slot.in_flight_job_id.reset();
+            slot.active_workset_id.reset();
+            slot.staged_workset_id.reset();
+            slot.retained_workset_ids.clear();
+            slot.retained_workset_item_counts.clear();
+            slot.failed_closed_workset_ids.clear();
+            slot.last_workset_outbound_sequence = 0;
+            slot.last_workset_terminal_order = 0;
+            slot.workset_admission_blocked = false;
+            slot.in_flight_started_at = {};
+            slot.last_worker_contact_at = {};
+            slot.dead_in_flight_observed_at = {};
+            slot.loaded_program_kind.reset();
+            slot.loaded_program_runtime_affinity_key.reset();
+            slot.loaded_savestate_affinity_key.reset();
+            slot.loaded_workset_execution_key.reset();
+        } else {
+            slot.workset_admission_blocked = true;
+        }
         worker_to_stop = slot.worker;
         if (worker_to_stop) {
             pid = worker_to_stop->GetPid();
         }
-        slot.worker.reset();
+        if (!preserve_workset_event_context) {
+            slot.worker.reset();
+        }
     }
 
     {
@@ -3101,7 +5200,7 @@ void DBWorkflowWorkerCoordinator::StopWorkerSlot(WorkerSlotPtr slot_handle) {
         EmitShutdownPhase("worker_stop_end", detail.str());
     }
 
-    {
+    if (!preserve_workset_event_context) {
         std::lock_guard<std::mutex> slot_lock(slot_handle->mtx);
         worker_status_.UpdateState(worker_id, WorkerStateKind::Dead);
         worker_status_.UnregisterWorker(worker_id);
@@ -3152,10 +5251,16 @@ std::vector<DBWorkflowWorkerCoordinator::DispatchableWorkerInfo> DBWorkflowWorke
         if (!slot.ready.load()
             || !savor::runtime::HasCapability(
                 slot.capabilities,
-                savor::runtime::WorkerCapability::ProgramInvocation)) {
+                savor::runtime::WorkerCapability::WorksetDispatch)) {
             continue;
         }
-        if (slot.in_flight_job_id.has_value()) {
+        if (slot.workset_admission_blocked
+            || slot.staged_workset_id.has_value()) {
+            continue;
+        }
+        if (!slot.worker
+            || slot.worker->latest_snapshot()
+                    .available_item_credits == 0) {
             continue;
         }
         dispatchable.push_back(DispatchableWorkerInfo{
@@ -3163,6 +5268,8 @@ std::vector<DBWorkflowWorkerCoordinator::DispatchableWorkerInfo> DBWorkflowWorke
             .loaded_program_kind = slot.loaded_program_kind,
             .loaded_program_runtime_affinity_key = slot.loaded_program_runtime_affinity_key,
             .loaded_savestate_affinity_key = slot.loaded_savestate_affinity_key,
+            .loaded_workset_execution_key =
+                slot.loaded_workset_execution_key,
         });
     }
 
@@ -3173,6 +5280,56 @@ std::vector<DBWorkflowWorkerCoordinator::DispatchableWorkerInfo> DBWorkflowWorke
         }
     }
     return dispatchable;
+}
+
+std::size_t DBWorkflowWorkerCoordinator::CountActiveInFlightItems() const {
+    std::lock_guard<std::mutex> lock(workers_mtx_);
+    return dispatched_workset_items_.size();
+}
+
+std::size_t
+DBWorkflowWorkerCoordinator::ReadyCoordinatorBufferCapacity() const {
+    std::size_t capacity = 0;
+    const auto slots = CopyWorkerSlots();
+    for (const auto& slot : slots) {
+        if (!slot) {
+            continue;
+        }
+        std::lock_guard<std::mutex> slot_lock(slot->mtx);
+        if (!slot->ready.load(std::memory_order_acquire)
+            || !slot->runtime_manifest.has_value()
+            || !savor::runtime::HasCapability(
+                slot->capabilities,
+                savor::runtime::WorkerCapability::WorksetDispatch)) {
+            continue;
+        }
+        const auto per_worker = static_cast<std::size_t>(
+            slot->runtime_manifest->limits.maximum_items_per_workset);
+        const auto available =
+            std::numeric_limits<std::size_t>::max() - capacity;
+        capacity += std::min(available, per_worker);
+    }
+    return capacity;
+}
+
+void DBWorkflowWorkerCoordinator::RefreshSharedItemCredits() {
+    const auto& source = worker_cfg_.item_credit_source;
+    if (!source || !IsDataPlaneEnabled() || !source->IsOpen()) {
+        return;
+    }
+
+    const auto total_credits = ReadyItemCreditCapacity();
+    auto capacity = worker_cfg_.worker_item_usage_provider
+        ? worker_cfg_.worker_item_usage_provider()
+        : CoordinatorItemCapacitySnapshot{};
+    capacity.total_credits = total_credits;
+    capacity.coordinator_buffered =
+        job_materialization_service_.CountBufferedJobs();
+    if (!worker_cfg_.worker_item_usage_provider) {
+        capacity.active_invocations = CountActiveInFlightItems();
+    }
+    source->SetCapacity(total_credits);
+    source->SetExternalUsage(capacity.ConsumedCredits());
 }
 
 void DBWorkflowWorkerCoordinator::ReleaseWorkerByResult(const savor::PRResult& result) {
@@ -3266,7 +5423,13 @@ void DBWorkflowWorkerCoordinator::EmitWorkflowFailureEvents(
 
 void DBWorkflowWorkerCoordinator::EmitDurableEventLine(const std::string& line) const {
     if (result_map_event_callback_) {
-        result_map_event_callback_(line);
+        try {
+            result_map_event_callback_(line);
+        } catch (...) {
+            // Diagnostic/event-line consumers are observational. They must
+            // never interrupt claim handling, durable projection, or the
+            // worker's non-lossy terminal acknowledgement path.
+        }
     }
 }
 

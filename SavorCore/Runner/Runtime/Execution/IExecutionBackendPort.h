@@ -12,7 +12,6 @@ enum class BackendExecutionCapability : std::uint32_t
     Pause = 1u << 0,
     Resume = 1u << 1,
     FrameStep = 1u << 2,
-    ExactInstructionStep = 1u << 3,
     ViObservation = 1u << 4,
     MovieObservation = 1u << 5,
     ThrottleControl = 1u << 6,
@@ -86,7 +85,6 @@ public:
     virtual BackendResult RequestPause() = 0;
     virtual BackendResult Resume() = 0;
     virtual BackendResult BeginFrameStep() = 0;
-    virtual BackendResult BeginExactInstructionStep() = 0;
     virtual BackendResult SetThrottleDisabled(bool disabled) = 0;
 
 protected:

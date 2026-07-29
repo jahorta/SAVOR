@@ -171,10 +171,12 @@ The target keeps the correctness boundary at one invocation while making localit
 process/session-owned actor-LRU may retain immutable serialized state plus metadata across worksets under
 an exact `StateCacheKey`; a host-only staged successor may acquire a cache lease while another workset
 uses the session. Promotion then prepares the active workset's exact source state. A multi-item active
-`WorkerWorkset` retains one immutable in-memory baseline at workset scope, runs its first child from the
-prepared state, and restores that baseline before every later child. Each restore still advances
-`StateEpoch`; cache entries are not live guest state, and no item-local receipt or resource crosses that
-boundary.
+`WorkerWorkset` retains one composite `ProgramBaselineDefinition` at workset scope. Its ordered
+`ProgramBaselineComponent`s include the savestate, exact movie continuation, and runtime-facing
+program-kind adapter-declared derived state. `ProgramBaselineKey` identifies that complete definition,
+and every later child starts only after one `PreparedProgramBaselineReceipt` proves the composite
+restore. Each successful composite restore still advances `StateEpoch` exactly once; cache entries are
+not live guest state, and no item-local receipt or resource crosses that boundary.
 
 That paragraph describes the legacy execution corpus, which remains compiled only as production-
 disconnected, read-only orientation and deletion evidence during the hard cutover. It is never invoked
@@ -252,7 +254,9 @@ submission with `SubmitWorkset`: one bounded envelope containing one or more ind
 templates and non-lossy per-item terminals. The pipelined target permits one active session-mutating
 workset and one immutable host-only staged successor, while a separate worker-global completion/
 acknowledgement ledger retains completed execution records, promoted immutable output captures and
-pending finalizers, and authoritative terminals until exact durable acknowledgement.
+pending finalizers, and authoritative terminals until exact durable acknowledgement. WRMS remains
+version 1; the unactivated scalar `SubmitInvocation` and removed guest-step discriminators are reserved
+and reject before session mutation.
 
 ### DB program descriptors and workflow spawning
 
@@ -297,9 +301,10 @@ preserve. Initial `Start()` preflights and opens every desired worker serially b
 thread starts, even though later pool repair already has a bounded concurrent-start facility. Dispatch
 then performs savestate materialization and program setup only after an idle worker is selected, and the
 single result drainer retains that worker until result mapping and persistence finish. The pre-6A
-process seam therefore implements the eventual one-complete-compatible-worker gate and bounded
-progressive startup without opening DB work; Slice 7 applies the gate after complete catalog/dependency
-negotiation. The same target stages one immutable successor package while the active workset runs and
+process seam therefore implements the eventual one-compatible-worker gate and progressive startup with
+at most two concurrent launches without opening DB work; Slice 7 applies the gate only after
+`CompleteExact` proves exactly the nine production modules and no extras. The same target stages one
+immutable successor package while the active workset runs and
 moves terminal retention out of active workset/session ownership.
 
 The database/coordinator hot path is likewise only batch-shaped at its surface today:
@@ -401,7 +406,7 @@ The clean-slate replacement must preserve these proven ideas:
 | Worker visual thread calls runtime directly | External controls can bypass command serialization | All commands routed through `WorkerRuntime` |
 | Descriptor mixes execution with workflow integration | A new phase appears to require another descriptor/controller combination | Keep existing SavorDb contracts; adapt only runtime-facing handler behavior to construct/consume typed runtime contracts |
 | Affinity uses kind/bootstrap strings | Cache locality can be mistaken for exact revision or clean state | Verify exact runtime module/state/session identity after current materialization without changing stored affinity or claim data |
-| Initial pool startup is serial and gates every data-plane thread | Dolphin boot cost grows with the complete desired pool before useful work can begin | Establish a one-complete-compatible-worker gate and bounded progressive startup before 6A; apply that gate to open the data plane only in Slice 7 after complete catalog/dependency negotiation |
+| Initial pool startup is serial and gates every data-plane thread | Dolphin boot cost grows with the complete desired pool before useful work can begin | Establish a one-compatible-worker gate and at-most-two progressive startup before 6A; open the data plane only after Slice 7 proves `CompleteExact` |
 | State/program preparation begins only after a worker becomes idle | Immutable reads, hashing, decoding, and cache lookup create a cold handoff bubble | One host-only staged successor package and a bounded immutable state cache; session mutation remains serialized after promotion |
 | One parent submission per worker result | Compatible jobs incur repeated dispatch decisions and can leave a warm worker idle between items | One active finite static `WorkerWorkset`, one host-only staged successor, sequential child admission, and streamed per-item terminals |
 | Terminal retention is workset-scoped | A clean successor can remain blocked solely because an earlier terminal awaits durable acknowledgement | One bounded worker-global completion/acknowledgement ledger independent of the active workset/session scope |
@@ -464,12 +469,24 @@ The current evidence locks these conclusions:
   is classified unstarted, its complete invocation/workset resources and baseline lease are released,
   and the session is proven clean, the staged successor may promote while older outputs finalize or
   terminals remain unacknowledged if the global ledger still has capacity.
-- The pre-6A parent process seam implements and directly tests the eventual one-complete-compatible-worker
-  gate plus bounded progressive startup. It keeps coordinator data-plane work disabled; Slice 7 applies
-  the gate only after the complete production catalog and dependency manifest have been negotiated.
+- The pre-6A parent process seam implements and directly tests the eventual one-compatible-worker gate
+  plus at-most-two progressive startup. It keeps coordinator data-plane work disabled; Slice 7
+  applies the gate only after `CompleteExact` proves exactly the nine production module IDs/hashes,
+  their dependency manifest, and no extras.
 - Workset-specific coordinator grouping, active/staged/global-ledger capacity, and lease maintenance may
   change while every item retains its own claim, start, attempt, result mapping, retry, cancellation, and
   transition.
+- Claim/start authority is validated for the complete finite membership before `SubmitWorkset`.
+  Accepted children then run in immutable order without a per-item coordinator authorization pause;
+  later lease loss or supersession is enforced through exact cancellation.
+- Partial process characterization transfers a test-only canonical module through the ordinary module
+  preparation protocol. It is never compiled into or counted among the nine production modules.
+- Slice 7 opens DB work only for `CompleteExact`: exactly the planned nine module IDs/hashes, the exact
+  dependency manifest, and no extra installed module.
+- The initial configurable bounds are 16 items/32 MiB/four aggregate active hours per workset; 64 total
+  and 32 active-plus-staged item credits; 16 cache entries/512 MiB; two finalizer threads with eight
+  pending captures/256 MiB; 32 retained terminals/128 MiB; two concurrent startups; and one coordinator-
+  buffered successor per negotiated Ready worker.
 - Navigation Context migrates as an ordinary current phase. Navmesh Survey is the first net-new consumer
   after current behavior reaches the new runtime.
 
@@ -487,8 +504,8 @@ The replacement crosses these current seams:
 - `WireSetProgram`, worker-protocol job/result envelopes, and worker-side `ProgramKind` dispatch;
 - scalar production invocation submission, replaced by one `SubmitWorkset` path for 1..N children;
 - the parent worker-process startup seam, changed from complete-pool serial preflight to an eventual
-  one-compatible-worker data-plane gate plus bounded progressive startup, with actual DB activation held
-  until Slice 7 verifies the complete catalog and dependency manifest;
+  one-compatible-worker data-plane gate plus at-most-two progressive startup, with actual DB activation
+  held until Slice 7 proves `CompleteExact`;
 - program-kind handler implementations and adjacent runtime-init/result adapters;
 - job materialization and coordinator worker-slot bookkeeping needed to construct compatible worksets,
   account for active and staged items plus the worker-global terminal ledger, renew resident leases,
@@ -539,12 +556,13 @@ typed-module builders follow this dependency order:
 3. register generic service actions and modular game capability packs;
 4. expose current capabilities through registered actions and reusable subprograms;
 5. add the pre-6A worker-process seam and direct one-item process tests: implement the eventual
-   one-complete-compatible-worker gate and bounded progressive startup while leaving coordinator
-   `data_plane_enabled` false until Slice 7 verifies the complete production catalog and dependency
-   manifest;
+   one-compatible-worker gate and at-most-two progressive startup, transfer one canonical test-only
+   module for `Partial` process smoke, and leave coordinator `data_plane_enabled` false until Slice 7
+   verifies `CompleteExact`;
 6. add the pre-6A `WorkerWorkset` pipeline: unified 1..N dispatch, exact compatibility validation, one
    active session-mutating workset, one host-only staged successor with exact `StateCacheKey` leases,
-   multi-item baseline state flow, a worker-global per-item result acknowledgement ledger, and
+   composite `ProgramBaselineDefinition`/`RestoreBaseline` flow, a worker-global per-item result
+   acknowledgement ledger, and
    coordinator active/staged/completion-capacity accounting;
 7. implement the supported phase builders incrementally as 6A SeedProbe, 6B Navigation Context, 6C TAS
    Movie, 6D TAS Frame Detector, 6E Battle Context, 6F Battle Macro Probe, 6G Battle Single Turn, 6H
@@ -574,8 +592,8 @@ stop-point router, transport core, or a central opcode switch.
 This document does not decide:
 
 - exact C++ interface spelling or source directory layout;
-- final numeric workset, staging, immutable-cache, global-completion-ledger, compression, progressive-
-  startup-concurrency, and throughput tuning;
+- compression and measurement-driven tuning beyond the fixed configurable workset, item-credit,
+  immutable-cache, finalizer, global-completion-ledger, two-startup, and one-buffered-successor limits;
 - the authored script syntax/UI;
 - final module revision/hash algorithms;
 - Survey-specific action algorithms;

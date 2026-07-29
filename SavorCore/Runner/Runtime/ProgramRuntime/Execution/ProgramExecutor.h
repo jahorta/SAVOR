@@ -48,6 +48,7 @@ struct ProgramExecutorSnapshot
     std::size_t call_depth = 0;
     std::size_t scope_depth = 0;
     std::optional<ProgramActionRequestId> pending_action;
+    std::size_t pending_state_artifact_publications = 0;
 };
 
 struct ProgramExecutorPumpResult
@@ -96,6 +97,12 @@ public:
 
     [[nodiscard]] bool RequestCancellation(
         CancellationReason reason) noexcept;
+
+    // Transfers host-only publication ownership to WorkerRuntime. Draining
+    // never changes program semantics: pending receipts are not artifact
+    // references and finalizer evidence is appended only to the terminal.
+    [[nodiscard]] std::vector<PendingStateArtifactPublication>
+        DrainPendingStateArtifactPublications();
 
     [[nodiscard]] ProgramExecutorSnapshot snapshot() const noexcept;
     [[nodiscard]] std::optional<

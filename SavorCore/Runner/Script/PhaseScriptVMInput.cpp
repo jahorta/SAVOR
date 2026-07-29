@@ -23,7 +23,8 @@ namespace savor {
     {
         (void)op;
         SCLOGE(
-            "[VM] instruction stepping is disconnected; use the canonical ExecutionEngine");
+            "[VM] guest-instruction stepping is unsupported; use router "
+            "source-stop suppression or a declared semantic successor");
     }
     bool PhaseScriptVM::op_start_deterministic_run(
         PSResult& result,

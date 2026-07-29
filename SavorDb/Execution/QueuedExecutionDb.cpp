@@ -433,6 +433,121 @@ bool QueuedExecutionDb::RenewExecutionJobLease(
         error_out);
 }
 
+std::vector<ExecutionJobLeaseRenewalReceipt> QueuedExecutionDb::RenewExecutionJobLeases(
+    const std::vector<ExecutionJobLeaseRequest>& requests,
+    std::int64_t lease_duration_ms,
+    std::string* error_out) {
+    return ExecuteWrite<std::vector<ExecutionJobLeaseRenewalReceipt>>(
+        [this, requests, lease_duration_ms, error_out]() {
+            return inner_ != nullptr
+                ? inner_->RenewExecutionJobLeases(requests, lease_duration_ms, error_out)
+                : std::vector<ExecutionJobLeaseRenewalReceipt>{};
+        },
+        {},
+        error_out);
+}
+
+bool QueuedExecutionDb::MarkExecutionJobStarted(
+    std::int64_t job_id,
+    std::string_view claimed_by_token,
+    std::string_view requested_by,
+    ExecutionJobStartReceipt* receipt_out,
+    std::string* error_out) {
+    const auto token = std::string(claimed_by_token);
+    const auto requester = std::string(requested_by);
+    return ExecuteWrite<bool>(
+        [this, job_id, token, requester, receipt_out, error_out]() {
+            return inner_ != nullptr
+                ? inner_->MarkExecutionJobStarted(
+                    job_id,
+                    token,
+                    requester,
+                    receipt_out,
+                    error_out)
+                : false;
+        },
+        false,
+        error_out);
+}
+
+bool QueuedExecutionDb::ValidateExecutionJobStartAuthoritySet(
+    const std::vector<ExecutionJobLeaseRequest>& requests,
+    ExecutionJobStartAuthoritySetReceipt* receipt_out,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, requests, receipt_out, error_out]() {
+            return inner_ != nullptr
+                ? inner_->ValidateExecutionJobStartAuthoritySet(
+                    requests,
+                    receipt_out,
+                    error_out)
+                : false;
+        },
+        false,
+        error_out);
+}
+
+bool QueuedExecutionDb::ConfirmExecutionJobTerminalAuthority(
+    std::int64_t job_id,
+    std::string_view claimed_by_token,
+    std::uint64_t durable_attempt_id,
+    std::int64_t lease_duration_ms,
+    ExecutionJobTerminalAuthorityReceipt* receipt_out,
+    std::string* error_out) {
+    const auto token = std::string(claimed_by_token);
+    return ExecuteWrite<bool>(
+        [this,
+         job_id,
+         token,
+         durable_attempt_id,
+         lease_duration_ms,
+         receipt_out,
+         error_out]() {
+            return inner_ != nullptr
+                ? inner_->ConfirmExecutionJobTerminalAuthority(
+                    job_id,
+                    token,
+                    durable_attempt_id,
+                    lease_duration_ms,
+                    receipt_out,
+                    error_out)
+                : false;
+        },
+        false,
+        error_out);
+}
+
+bool QueuedExecutionDb::RecoverExecutionJobAfterWorkerLoss(
+    std::int64_t job_id,
+    std::string_view claimed_by_token,
+    std::uint64_t durable_attempt_id,
+    std::string_view message,
+    ExecutionJobWorkerLossRecoveryReceipt* receipt_out,
+    std::string* error_out) {
+    const auto token = std::string(claimed_by_token);
+    const auto message_value = std::string(message);
+    return ExecuteWrite<bool>(
+        [this,
+         job_id,
+         token,
+         durable_attempt_id,
+         message_value,
+         receipt_out,
+         error_out]() {
+            return inner_ != nullptr
+                ? inner_->RecoverExecutionJobAfterWorkerLoss(
+                    job_id,
+                    token,
+                    durable_attempt_id,
+                    message_value,
+                    receipt_out,
+                    error_out)
+                : false;
+        },
+        false,
+        error_out);
+}
+
 bool QueuedExecutionDb::RequeueExpiredExecutionLeases(
     int* rows_requeued_out,
     std::string* error_out) {

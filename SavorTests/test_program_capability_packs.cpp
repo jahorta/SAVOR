@@ -33,6 +33,12 @@ const CapabilityPackManifest& Manifest(
 TEST(CapabilityPackSources, CatalogIsStableSourceBackedAndJitGuardIsAbsent)
 {
     const auto catalog = BuildSourceCapabilityPackCatalog();
+    const RuntimeCompatibility supported =
+        SupportedSoaUsaCompatibility();
+    EXPECT_EQ(supported.game_id, "GEAE8P");
+    EXPECT_EQ(
+        supported.executable_identity,
+        "soal-usa.GEAE8E");
     ASSERT_EQ(catalog.manifests.size(), 4u);
     const auto& field = Manifest(catalog, "soa.field");
     const auto& battle = Manifest(catalog, "soa.battle");
@@ -47,7 +53,7 @@ TEST(CapabilityPackSources, CatalogIsStableSourceBackedAndJitGuardIsAbsent)
 
     for (const auto* manifest : {&field, &battle, &navigation})
     {
-        EXPECT_EQ(manifest->compatibility, SupportedSoaUsaCompatibility());
+        EXPECT_EQ(manifest->compatibility, supported);
         EXPECT_TRUE(std::ranges::none_of(
             manifest->semantic_points,
             [](const SemanticPointDescriptor& point)

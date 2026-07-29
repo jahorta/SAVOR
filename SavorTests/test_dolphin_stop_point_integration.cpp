@@ -349,42 +349,6 @@ TEST(
         session.execution_snapshot().evidence.vi_count,
         before_patch.evidence.vi_count);
 
-    // The concrete JIT64 backend must reject exact guest-instruction
-    // stepping before it mutates Dolphin or any stop-point state.
-    const ExecutionSnapshot before_instruction_rejection =
-        session.execution_snapshot();
-    const PhysicalStopPointPlan before_instruction_plan =
-        router->DesiredPhysicalPlan();
-    const ExecutionSubmissionReceipt unsupported_instruction_step =
-        session.SubmitExecution(StepInstructionsRequest{
-            .policy = MakeExecutionPolicy(StateEpoch(1), 10s),
-            .count = 1,
-        });
-    EXPECT_FALSE(unsupported_instruction_step.accepted);
-    EXPECT_EQ(
-        unsupported_instruction_step.error.code,
-        ExecutionErrorCode::Unsupported);
-    const ExecutionSnapshot after_instruction_rejection =
-        session.execution_snapshot();
-    EXPECT_EQ(
-        after_instruction_rejection.activity,
-        ExecutionActivity::IdlePaused);
-    EXPECT_EQ(
-        after_instruction_rejection.state_epoch,
-        before_instruction_rejection.state_epoch);
-    EXPECT_EQ(
-        after_instruction_rejection.evidence.core_state,
-        BackendCoreState::Paused);
-    EXPECT_EQ(
-        after_instruction_rejection.evidence.pc,
-        before_instruction_rejection.evidence.pc);
-    EXPECT_EQ(
-        after_instruction_rejection.evidence.vi_count,
-        before_instruction_rejection.evidence.vi_count);
-    EXPECT_EQ(
-        router->DesiredPhysicalPlan(),
-        before_instruction_plan);
-
     // Compile and execute the recurring game loop before installing the
     // physical PC. A later hit therefore exercises Dolphin's ordinary
     // address-specific JIT invalidation path.

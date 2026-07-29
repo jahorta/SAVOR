@@ -6,10 +6,13 @@
 #include <fstream>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -55,6 +58,90 @@
 #include "common/savordb_helpers.h"
 
 namespace savordb {
+
+namespace {
+
+savor::runtime::WorkerRuntimeManifest CompleteCoordinatorTestManifest() {
+    static constexpr std::array<
+        std::pair<std::string_view, std::string_view>,
+        9>
+        kModules{{
+            {"soa.seed_probe", "probe"},
+            {"soa.navigation.context", "capture"},
+            {"soa.tas_movie", "play_and_checkpoint"},
+            {"soa.tas_frame_detector", "detect"},
+            {"soa.battle.context", "capture"},
+            {"soa.battle.macro_probe", "probe"},
+            {"soa.battle.single_turn", "execute"},
+            {"soa.battle.completion", "complete"},
+            {"soa.battle.results_screen", "advance"},
+        }};
+
+    savor::runtime::WorkerRuntimeManifest manifest;
+    manifest.catalog_status =
+        savor::runtime::RuntimeCatalogStatus::CompleteExact;
+    manifest.catalog_sha256 = "savordb-test-complete-catalog";
+    manifest.runtime_profile_sha256 = "savordb-test-runtime-profile";
+    manifest.dependency_manifest_sha256 =
+        "savordb-test-dependency-manifest";
+    for (const auto& [module_id, entrypoint] : kModules) {
+        manifest.modules.push_back(
+            savor::runtime::RuntimeModuleManifestEntry{
+                .module = {
+                    .canonical_id = std::string(module_id),
+                    .revision = 1,
+                    .canonical_hash =
+                        "savordb-test-module:" + std::string(module_id),
+                },
+                .entrypoints = {std::string(entrypoint)},
+                .dependency_manifest_sha256 =
+                    "savordb-test-module-dependencies",
+            });
+    }
+    return manifest;
+}
+
+void ConfigureCoordinatorWorksetGate(
+    savor::runner::parallel::savordb::
+        DBWorkflowWorkerCoordinatorConfig& config) {
+    using namespace savor::runner::parallel::savordb;
+
+    config.expected_catalog_sha256 =
+        "savordb-test-complete-catalog";
+    config.expected_runtime_profile_sha256 =
+        "savordb-test-runtime-profile";
+    config.expected_dependency_manifest_sha256 =
+        "savordb-test-dependency-manifest";
+    config.workset_definition_builder =
+        [](std::size_t,
+           const std::vector<ClaimedJobRecord>&,
+           const savor::runtime::WorkerRuntimeManifest&,
+           std::string*)
+        -> std::optional<savor::runtime::WorkerWorksetDefinition> {
+            return std::nullopt;
+        };
+    config.workset_terminal_decoder =
+        [](const ClaimedJobRecord&,
+           const savor::wrms::WorksetItemTerminalPayload&,
+           std::string*)
+        -> std::optional<savor::PRResult> {
+            return savor::PRResult{};
+        };
+    config.worker_capability_preflight =
+        [](std::size_t,
+           const DBWorkflowWorkerCoordinatorConfig&,
+           const std::shared_ptr<savor::ProcessWorker>&) {
+            return CoordinatorWorkerCapabilityPreflightResult{
+                .process_ready = true,
+                .capabilities = savor::runtime::AddCapability(
+                    savor::runtime::kSlice1ProductionCapabilities,
+                    savor::runtime::WorkerCapability::WorksetDispatch),
+                .runtime_manifest = CompleteCoordinatorTestManifest(),
+            };
+        };
+}
+
+} // namespace
 
 TEST(DbMigrateMigrationsIntegration, DISABLED_FilesystemSourceHasMigrationPerContext) {
     namespace fs = std::filesystem;
@@ -539,11 +626,14 @@ TEST(Stage3cCoordinatorReplacement, MaterializesAndPublishesThroughWorkflowBridg
     using namespace savor::runner::parallel::savordb;
     using namespace savor::db::execution::workflow;
 
+    DBWorkflowWorkerCoordinatorConfig config{
+        .desired_workers = 1,
+        .controller_sleep_ms = 1,
+    };
+    ConfigureCoordinatorWorksetGate(config);
     DBWorkflowWorkerCoordinator coordinator(
         nullptr,
-        DBWorkflowWorkerCoordinatorConfig{
-            .desired_workers = 0,
-        },
+        std::move(config),
         CoordinatorIntegrationConfig{
 
         },
@@ -566,6 +656,7 @@ TEST(Stage3cCoordinatorReplacement, MaterializesAndPublishesThroughWorkflowBridg
         EXPECT_EQ(signal.workflow_step_id, 22);
         EXPECT_EQ(signal.terminal_state, "COMPLETED");
     });
+    ASSERT_TRUE(coordinator.Start());
 
     const auto materialized = coordinator.MaterializeWorkflowStep({
         .workflow_instance_id = 11,
@@ -589,12 +680,11 @@ TEST(Stage3cCoordinatorReplacement, MaterializesAndPublishesThroughWorkflowBridg
     EXPECT_FALSE(coordinator.PublishTerminalJobSet(terminal));
     EXPECT_EQ(terminal_callbacks, 1);
 
-    const auto status = coordinator.SnapshotStatus();
-    EXPECT_EQ(status.running_workers, 1u);
-    EXPECT_EQ(status.pending_start_workers, 1u);
+    coordinator.Stop();
+    EXPECT_TRUE(coordinator.SnapshotWorkers().empty());
 }
 
-TEST(Stage3cCoordinatorReplacement, SnapshotWorkersTracksSlotLifecycleAcrossEnqueueStartStop) {
+TEST(Stage3cCoordinatorReplacement, FailedWorkerPreflightClearsPublishedSlots) {
     using namespace savor::runner::parallel::savordb;
     using namespace savor::db::execution::workflow;
 
@@ -624,12 +714,14 @@ TEST(Stage3cCoordinatorReplacement, SnapshotWorkersTracksSlotLifecycleAcrossEnqu
     });
     EXPECT_TRUE(coordinator.SnapshotWorkers().empty());
 
-    coordinator.Start();
-    const auto started_snapshot = coordinator.SnapshotWorkers();
-    ASSERT_EQ(started_snapshot.size(), 1u);
-    EXPECT_EQ(started_snapshot[0].worker_id, 0);
-    EXPECT_FALSE(started_snapshot[0].job_id.has_value());
-    EXPECT_TRUE(started_snapshot[0].state == WorkerStateKind::Idle || started_snapshot[0].state == WorkerStateKind::Dead);
+    const auto start_result = coordinator.Start();
+    EXPECT_FALSE(start_result);
+    EXPECT_EQ(
+        start_result.status,
+        CoordinatorStartStatus::CapabilityPreflightFailed);
+    EXPECT_EQ(start_result.ready_workset_capable_workers, 0u);
+    EXPECT_FALSE(start_result.error.empty());
+    EXPECT_TRUE(coordinator.SnapshotWorkers().empty());
 
     coordinator.Stop();
     EXPECT_TRUE(coordinator.SnapshotWorkers().empty());
@@ -640,11 +732,14 @@ TEST(Stage3cCoordinatorReplacement, PersistsMaterializedAndTerminalTransitionsTo
     using namespace savor::db::execution::workflow;
 
     RecordingExecutionDb execution_db;
+    DBWorkflowWorkerCoordinatorConfig config{
+        .desired_workers = 1,
+        .controller_sleep_ms = 1,
+    };
+    ConfigureCoordinatorWorksetGate(config);
     DBWorkflowWorkerCoordinator coordinator(
         &execution_db,
-        DBWorkflowWorkerCoordinatorConfig{
-            .desired_workers = 0,
-        },
+        std::move(config),
         CoordinatorIntegrationConfig{
 
         },
@@ -654,6 +749,7 @@ TEST(Stage3cCoordinatorReplacement, PersistsMaterializedAndTerminalTransitionsTo
                 .workflow_step_id = step.workflow_step_id,
             };
         });
+    ASSERT_TRUE(coordinator.Start());
 
     const auto materialized = coordinator.MaterializeWorkflowStep({
         .workflow_instance_id = 77,
@@ -677,6 +773,8 @@ TEST(Stage3cCoordinatorReplacement, PersistsMaterializedAndTerminalTransitionsTo
     EXPECT_TRUE(coordinator.PublishTerminalJobSet(terminal));
     EXPECT_FALSE(coordinator.PublishTerminalJobSet(terminal));
     EXPECT_TRUE(execution_db.command_service.terminal_calls.empty());
+
+    coordinator.Stop();
 }
 
 TEST(Stage1CoordinatorIntegration, DbBackedSchedulerInvokesInputCompleteOnceAndMarksSameJobSet) {

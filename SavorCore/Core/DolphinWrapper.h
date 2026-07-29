@@ -123,7 +123,6 @@ namespace savor {
             const InputPlan& plan,
             const InputTapePlaybackOptions& options = {});
 
-        bool stepOneOpcodeBlocking(int timeout_ms = 1000);
         bool stepOneFrameBlocking(int timeout_ms = 1000);
 
         // Returns an approximate VI field count since the last reset.

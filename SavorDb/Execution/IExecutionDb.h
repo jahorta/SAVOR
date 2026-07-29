@@ -124,8 +124,120 @@ struct ClaimedExecutionJob {
     int workflow_step_priority = 0;
     std::optional<std::string> savestate_affinity_key;
     std::optional<std::string> program_runtime_affinity_key;
+    std::string claimed_by_token;
+    std::int64_t lease_expires_at_utc = 0;
+    // The next durable exec_job.attempts value reserved by this exact claim.
+    // It is committed only when the worker's ItemStarted event is accepted.
+    std::uint64_t durable_attempt_id = 0;
+    int priority = 0;
+    std::int64_t queued_at_utc = 0;
     std::optional<std::string> previous_claimed_by_token;
     std::optional<std::int64_t> previous_lease_expires_at_utc;
+};
+
+struct ExecutionJobLeaseRequest {
+    std::int64_t job_id = 0;
+    std::string claimed_by_token;
+};
+
+enum class ExecutionJobLeaseRenewalDisposition {
+    Renewed = 0,
+    Missing,
+    WrongState,
+    TokenMismatch,
+    Expired,
+    InvalidRequest,
+    BackendError,
+};
+
+struct ExecutionJobLeaseRenewalReceipt {
+    std::int64_t job_id = 0;
+    ExecutionJobLeaseRenewalDisposition disposition =
+        ExecutionJobLeaseRenewalDisposition::BackendError;
+    std::optional<std::int64_t> lease_expires_at_utc;
+};
+
+enum class ExecutionJobStartDisposition {
+    Started = 0,
+    AlreadyRunning,
+    Missing,
+    WrongState,
+    TokenMismatch,
+    Expired,
+    InvalidRequest,
+    BackendError,
+};
+
+struct ExecutionJobStartReceipt {
+    std::int64_t job_id = 0;
+    ExecutionJobStartDisposition disposition =
+        ExecutionJobStartDisposition::BackendError;
+    std::optional<std::int64_t> started_at_utc;
+    std::optional<std::int64_t> lease_expires_at_utc;
+    std::optional<std::uint64_t> durable_attempt_id;
+};
+
+enum class ExecutionJobStartAuthorityDisposition {
+    Valid = 0,
+    Missing,
+    WrongState,
+    TokenMismatch,
+    Expired,
+    DuplicateJob,
+    InvalidRequest,
+    BackendError,
+};
+
+struct ExecutionJobStartAuthorityItemReceipt {
+    std::int64_t job_id = 0;
+    ExecutionJobStartAuthorityDisposition disposition =
+        ExecutionJobStartAuthorityDisposition::BackendError;
+    std::optional<std::int64_t> lease_expires_at_utc;
+};
+
+struct ExecutionJobStartAuthoritySetReceipt {
+    bool all_valid = false;
+    std::int64_t validated_at_utc = 0;
+    std::vector<ExecutionJobStartAuthorityItemReceipt> items;
+};
+
+enum class ExecutionJobTerminalAuthorityDisposition {
+    Valid = 0,
+    Missing,
+    WrongState,
+    TokenMismatch,
+    AttemptMismatch,
+    Expired,
+    InvalidRequest,
+    BackendError,
+};
+
+struct ExecutionJobTerminalAuthorityReceipt {
+    std::int64_t job_id = 0;
+    ExecutionJobTerminalAuthorityDisposition disposition =
+        ExecutionJobTerminalAuthorityDisposition::BackendError;
+    std::optional<std::uint64_t> durable_attempt_id;
+    std::optional<std::int64_t> lease_expires_at_utc;
+};
+
+enum class ExecutionJobWorkerLossRecoveryDisposition {
+    Requeued = 0,
+    AttemptsExhaustedFailed,
+    AlreadyDurable,
+    Missing,
+    TokenMismatch,
+    AttemptMismatch,
+    WrongState,
+    InvalidRequest,
+    BackendError,
+};
+
+struct ExecutionJobWorkerLossRecoveryReceipt {
+    std::int64_t job_id = 0;
+    ExecutionJobWorkerLossRecoveryDisposition disposition =
+        ExecutionJobWorkerLossRecoveryDisposition::BackendError;
+    std::optional<std::uint64_t> durable_attempt_id;
+    std::string durable_state;
 };
 
 struct IExecutionDb {
@@ -152,6 +264,8 @@ struct IExecutionDb {
         return std::nullopt;
     }
     virtual std::vector<ClaimedExecutionJob> ClaimBatchReadyExecutionJobs(
+        // A caller-unique run/claim nonce. Implementations derive one exact
+        // authority token per returned job without persisting a batch parent.
         std::string_view claimed_by_token,
         int requested_jobs,
         std::int64_t lease_duration_ms,
@@ -181,6 +295,126 @@ struct IExecutionDb {
         }
         return true;
     }
+    virtual std::vector<ExecutionJobLeaseRenewalReceipt> RenewExecutionJobLeases(
+        const std::vector<ExecutionJobLeaseRequest>& requests,
+        std::int64_t lease_duration_ms,
+        std::string* error_out = nullptr) {
+        std::vector<ExecutionJobLeaseRenewalReceipt> receipts;
+        receipts.reserve(requests.size());
+        for (const auto& request : requests) {
+            bool renewed = false;
+            std::string error;
+            const bool ok = RenewExecutionJobLease(
+                request.job_id,
+                request.claimed_by_token,
+                lease_duration_ms,
+                &renewed,
+                &error);
+            receipts.push_back(ExecutionJobLeaseRenewalReceipt{
+                .job_id = request.job_id,
+                .disposition = ok && renewed
+                    ? ExecutionJobLeaseRenewalDisposition::Renewed
+                    : ok
+                        ? ExecutionJobLeaseRenewalDisposition::WrongState
+                        : ExecutionJobLeaseRenewalDisposition::BackendError,
+            });
+            if (!ok && error_out != nullptr && error_out->empty()) {
+                *error_out = std::move(error);
+            }
+        }
+        return receipts;
+    }
+    virtual bool MarkExecutionJobStarted(
+        std::int64_t job_id,
+        std::string_view claimed_by_token,
+        std::string_view requested_by,
+        ExecutionJobStartReceipt* receipt_out = nullptr,
+        std::string* error_out = nullptr) {
+        (void)job_id;
+        (void)claimed_by_token;
+        (void)requested_by;
+        if (receipt_out != nullptr) {
+            *receipt_out = ExecutionJobStartReceipt{
+                .job_id = job_id,
+                .disposition = ExecutionJobStartDisposition::BackendError,
+            };
+        }
+        if (error_out != nullptr) {
+            *error_out = "atomic execution-job start is not supported";
+        }
+        return false;
+    }
+    virtual bool ValidateExecutionJobStartAuthoritySet(
+        const std::vector<ExecutionJobLeaseRequest>& requests,
+        ExecutionJobStartAuthoritySetReceipt* receipt_out = nullptr,
+        std::string* error_out = nullptr) {
+        ExecutionJobStartAuthoritySetReceipt receipt{};
+        receipt.items.reserve(requests.size());
+        for (const auto& request : requests) {
+            receipt.items.push_back(
+                ExecutionJobStartAuthorityItemReceipt{
+                    .job_id = request.job_id,
+                    .disposition =
+                        ExecutionJobStartAuthorityDisposition::
+                            BackendError,
+                });
+        }
+        if (receipt_out != nullptr) {
+            *receipt_out = std::move(receipt);
+        }
+        if (error_out != nullptr) {
+            *error_out =
+                "exact-set execution-job start authority validation "
+                "is not supported";
+        }
+        return false;
+    }
+    virtual bool ConfirmExecutionJobTerminalAuthority(
+        std::int64_t job_id,
+        std::string_view claimed_by_token,
+        std::uint64_t durable_attempt_id,
+        std::int64_t lease_duration_ms,
+        ExecutionJobTerminalAuthorityReceipt* receipt_out = nullptr,
+        std::string* error_out = nullptr) {
+        (void)claimed_by_token;
+        (void)durable_attempt_id;
+        (void)lease_duration_ms;
+        if (receipt_out != nullptr) {
+            *receipt_out = ExecutionJobTerminalAuthorityReceipt{
+                .job_id = job_id,
+                .disposition =
+                    ExecutionJobTerminalAuthorityDisposition::BackendError,
+            };
+        }
+        if (error_out != nullptr) {
+            *error_out =
+                "exact terminal authority confirmation is not supported";
+        }
+        return false;
+    }
+    virtual bool RecoverExecutionJobAfterWorkerLoss(
+        std::int64_t job_id,
+        std::string_view claimed_by_token,
+        std::uint64_t durable_attempt_id,
+        std::string_view message,
+        ExecutionJobWorkerLossRecoveryReceipt* receipt_out = nullptr,
+        std::string* error_out = nullptr) {
+        (void)claimed_by_token;
+        (void)durable_attempt_id;
+        (void)message;
+        if (receipt_out != nullptr) {
+            *receipt_out = ExecutionJobWorkerLossRecoveryReceipt{
+                .job_id = job_id,
+                .disposition =
+                    ExecutionJobWorkerLossRecoveryDisposition::BackendError,
+            };
+        }
+        if (error_out != nullptr) {
+            *error_out =
+                "exact worker-loss recovery is not supported";
+        }
+        return false;
+    }
     virtual bool RequeueExpiredExecutionLeases(
         int* rows_requeued_out = nullptr,
         std::string* error_out = nullptr) {
@@ -208,6 +442,9 @@ struct IExecutionDb {
         std::string_view claimed_by_token,
         std::string_view message,
         std::string* error_out = nullptr) {
+        // The exact token is the authority boundary. Implementations may
+        // recover either CLAIMED work that never started or RUNNING work
+        // after its exact worker invocation has terminalized.
         (void)job_id;
         (void)claimed_by_token;
         (void)message;

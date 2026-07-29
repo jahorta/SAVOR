@@ -454,6 +454,17 @@ TEST(ProgramCanonicalCodecV1, RoundTripsSpriAndSprrWithIndependentStatuses)
     EXPECT_EQ(
         decoded_result.value->session_disposition,
         SessionDisposition::Tainted);
+
+    ProgramResult internal_only = result;
+    ArtifactReferenceValue incomplete =
+        SourceArtifact("pending-state", 0x55);
+    incomplete.complete = false;
+    internal_only.artifacts.push_back({
+        ProgramArtifactSequence(1),
+        std::move(incomplete)});
+    EXPECT_EQ(
+        EncodeProgramResultV1(internal_only).status.error,
+        CodecError::InvalidValue);
 }
 
 TEST(

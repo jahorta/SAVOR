@@ -11,6 +11,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -18,12 +19,14 @@
 
 #include "Runner/Parallel/PRTypes.h"
 #include "Runner/Runtime/RuntimeTypes.h"
+#include "Runner/Runtime/Worksets/WorksetTypes.h"
 #include "../Worker/ProcessWorker.h"
 #include "../Worker/TSQueue.h"
 #include "../Worker/WorkerStatusRegistry.h"
 #include "Execution/IExecutionDb.h"
 #include "Execution/ProgramDB/ProgramKindRegistry.h"
 #include "Execution/Workflow/AdapterChainOrchestrator.h"
+#include "Execution/Workflow/WorkflowCoordinatorService.h"
 #include "Execution/Workflow/WorkflowOrchestration.h"
 #include "State/IStateDb.h"
 #include "WorkflowCoordinatorBridge.h"
@@ -38,6 +41,7 @@ struct CoordinatorWorkerCapabilityPreflightResult {
     // The hook owns any launch/session negotiation needed to make this true.
     bool process_ready = false;
     savor::runtime::WorkerCapabilityMask capabilities = 0;
+    std::optional<savor::runtime::WorkerRuntimeManifest> runtime_manifest;
     std::string error;
 };
 
@@ -51,6 +55,26 @@ struct DBWorkflowWorkerCoordinatorConfig {
         size_t,
         const DBWorkflowWorkerCoordinatorConfig&,
         const std::shared_ptr<savor::ProcessWorker>&)>;
+    using TerminalCommitCallback = std::function<void(
+        const savor::db::execution::workflow::
+            TerminalWorkflowStepNotification&)>;
+    using ItemAuthorityLostCallback = std::function<void(
+        std::int64_t,
+        std::string_view,
+        savor::db::ExecutionJobLeaseRenewalDisposition)>;
+    using WorkerItemUsageProvider =
+        std::function<CoordinatorItemCapacitySnapshot()>;
+    using WorksetDefinitionBuilder = std::function<
+        std::optional<savor::runtime::WorkerWorksetDefinition>(
+            std::size_t,
+            const std::vector<ClaimedJobRecord>&,
+            const savor::runtime::WorkerRuntimeManifest&,
+            std::string*)>;
+    using WorksetTerminalDecoder = std::function<
+        std::optional<savor::PRResult>(
+            const ClaimedJobRecord&,
+            const savor::wrms::WorksetItemTerminalPayload&,
+            std::string*)>;
 
     size_t desired_workers = 1;
     uint32_t controller_sleep_ms = 5;
@@ -58,7 +82,7 @@ struct DBWorkflowWorkerCoordinatorConfig {
     uint32_t worker_start_timeout_ms = 20000;
     uint32_t worker_start_retry_backoff_ms = 5000;
     uint32_t max_worker_start_attempts = 3;
-    uint32_t max_concurrent_worker_starts = 5;
+    uint32_t max_concurrent_worker_starts = 2;
     std::string worker_exe_path;
     std::string iso_path;
     std::string dolphin_base_dir;
@@ -68,10 +92,26 @@ struct DBWorkflowWorkerCoordinatorConfig {
     bool visual_debug_workers = false;
     bool auto_resume_visual_workers = false;
     std::string visual_screenshot_dir;
+    // Slice 7 sets this to the canonical exact nine-module catalog hash.
+    // Until then the production partial manifest cannot open the data plane.
+    std::string expected_catalog_sha256;
+    std::string expected_runtime_profile_sha256;
+    std::string expected_dependency_manifest_sha256;
     RuntimeSlotPreparer runtime_slot_preparer;
-    // Required for Start(). The coordinator does not touch DB-facing work until at least one
-    // process-ready result advertises WorkerCapability::ProgramInvocation.
+    // Required for Start(). The coordinator does not touch DB-facing work
+    // until one process-ready result advertises WorksetDispatch and the exact
+    // configured production catalog.
     WorkerCapabilityPreflight worker_capability_preflight;
+    TerminalCommitCallback terminal_commit_callback;
+    ItemAuthorityLostCallback item_authority_lost_callback;
+    WorkerItemUsageProvider worker_item_usage_provider;
+    WorksetDefinitionBuilder workset_definition_builder;
+    WorksetTerminalDecoder workset_terminal_decoder;
+    std::size_t workset_lookahead_items = 64;
+    std::size_t workset_lookahead_bytes = 64ull * 1024ull * 1024ull;
+    std::shared_ptr<
+        savor::db::execution::workflow::CoordinatorItemCreditSource>
+        item_credit_source;
 };
 
 enum class CoordinatorStartStatus {
@@ -79,13 +119,14 @@ enum class CoordinatorStartStatus {
     Started,
     CapabilityPreflightUnavailable,
     CapabilityPreflightFailed,
-    ProgramInvocationUnavailable,
+    WorksetDispatchUnavailable,
+    WorksetCatalogUnavailable,
     InteractiveVisualDebugUnavailable,
 };
 
 struct CoordinatorStartResult {
     CoordinatorStartStatus status = CoordinatorStartStatus::NotStarted;
-    size_t ready_invocation_capable_workers = 0;
+    size_t ready_workset_capable_workers = 0;
     bool non_retryable = false;
     std::string error;
 
@@ -197,7 +238,11 @@ public:
     void Stop();
     [[nodiscard]] CoordinatorStartResult SnapshotStartResult() const;
     [[nodiscard]] bool IsDataPlaneEnabled() const noexcept;
-    [[nodiscard]] size_t ReadyInvocationCapableWorkerCount() const;
+    [[nodiscard]] size_t ReadyWorksetCapableWorkerCount() const;
+    [[nodiscard]] size_t ReadyItemCreditCapacity() const;
+    [[nodiscard]] std::shared_ptr<
+        savor::db::execution::workflow::CoordinatorItemCreditSource>
+        ItemCreditSource() const;
 
     void SetPaused(bool paused);
     bool IsPaused() const;
@@ -253,10 +298,16 @@ private:
 
     struct WorkerSlot {
         mutable std::mutex mtx;
+        mutable std::mutex workset_submission_mtx;
         size_t id = 0;
         std::shared_ptr<savor::ProcessWorker> worker;
+        // Changes whenever this logical slot receives a new child process.
+        // Callback ingress from an older process is stale evidence and must
+        // never mutate or fail-close the replacement.
+        std::uint64_t process_generation = 0;
         std::atomic<bool> ready{ false };
         savor::runtime::WorkerCapabilityMask capabilities = 0;
+        std::optional<savor::runtime::WorkerRuntimeManifest> runtime_manifest;
         bool start_attempted = false;
         bool startup_in_progress = false;
         uint32_t start_attempts = 0;
@@ -265,9 +316,19 @@ private:
         std::string last_start_error;
         std::thread startup_thread;
         std::optional<uint64_t> in_flight_job_id;
+        std::optional<std::uint64_t> active_workset_id;
+        std::optional<std::uint64_t> staged_workset_id;
+        std::unordered_set<std::uint64_t> retained_workset_ids;
+        std::unordered_map<std::uint64_t, std::size_t>
+            retained_workset_item_counts;
+        std::unordered_set<std::uint64_t> failed_closed_workset_ids;
+        std::uint64_t last_workset_outbound_sequence = 0;
+        std::uint64_t last_workset_terminal_order = 0;
+        bool workset_admission_blocked = false;
         std::optional<std::int32_t> loaded_program_kind;
         std::optional<std::string> loaded_program_runtime_affinity_key;
         std::optional<std::string> loaded_savestate_affinity_key;
+        std::optional<std::string> loaded_workset_execution_key;
         std::int64_t dispatch_success_count = 0;
         std::int64_t program_kind_switch_count = 0;
         std::chrono::steady_clock::time_point in_flight_started_at{};
@@ -285,10 +346,41 @@ private:
         std::optional<std::int32_t> loaded_program_kind;
         std::optional<std::string> loaded_program_runtime_affinity_key;
         std::optional<std::string> loaded_savestate_affinity_key;
+        std::optional<std::string> loaded_workset_execution_key;
     };
     struct DispatchedJobContext {
         WorkflowReadyStep step;
         std::int64_t job_set_id = 0;
+    };
+    enum class WorksetEventKind {
+        State = 0,
+        ItemStarted,
+        ItemProgress,
+        ItemTerminal,
+        Credits,
+        Summary,
+    };
+    struct WorksetEventIngress {
+        std::size_t worker_idx = 0;
+        std::uint64_t worker_generation = 0;
+        WorksetEventKind kind = WorksetEventKind::State;
+        savor::wrms::WorksetStatePayload state;
+        savor::wrms::WorksetItemStartedPayload started;
+        savor::wrms::InvocationProgressPayload progress;
+        savor::wrms::WorksetItemTerminalPayload terminal;
+        savor::wrms::WorksetCreditsPayload credits;
+        savor::wrms::WorksetSummaryPayload summary;
+    };
+    struct DispatchedWorksetItemContext {
+        std::size_t worker_idx = 0;
+        std::uint64_t workset_id = 0;
+        std::uint64_t item_id = 0;
+        std::uint32_t item_ordinal = 0;
+        std::uint64_t invocation_id = 0;
+        std::uint64_t attempt_id = 0;
+        bool start_persisted = false;
+        bool authority_lost = false;
+        ClaimedJobRecord claimed;
     };
 
     void WorkerJobCoordinatorLoop();
@@ -308,10 +400,13 @@ private:
         uint32_t attempt,
         bool ready,
         savor::runtime::WorkerCapabilityMask capabilities,
+        std::optional<savor::runtime::WorkerRuntimeManifest> runtime_manifest,
         const std::string& error,
         bool retryable);
     std::shared_ptr<savor::ProcessWorker> ResetWorkerSlotRuntime(WorkerSlot& slot);
-    void StopWorkerSlot(WorkerSlotPtr slot);
+    void StopWorkerSlot(
+        WorkerSlotPtr slot,
+        bool preserve_workset_event_context = false);
     void EmitShutdownPhase(const std::string& phase, const std::string& detail = {}) const;
     void RecordWorkerContactLocked(WorkerSlot& slot, std::chrono::steady_clock::time_point observed_at);
     WorkerSlotPtr MakeWorkerSlot(size_t worker_idx);
@@ -320,6 +415,9 @@ private:
     bool TryRecordWorkerContactFromProgress(std::size_t worker_id, std::uint64_t job_id, std::chrono::steady_clock::time_point observed_at);
     bool PrepareRuntimeSlotForWorker(size_t worker_idx, std::filesystem::path* runtime_worker_exe_out, std::string* error_out);
     std::vector<DispatchableWorkerInfo> CollectDispatchableWorkers();
+    std::size_t CountActiveInFlightItems() const;
+    std::size_t ReadyCoordinatorBufferCapacity() const;
+    void RefreshSharedItemCredits();
     void ReleaseWorkerByResult(const savor::PRResult& result);
     void PollReadyStepsFromDb();
     void MaintainMaterializerClaims(std::chrono::steady_clock::time_point now);
@@ -328,8 +426,62 @@ private:
     bool CompleteNoWorkWorkflowStep(const WorkflowReadyStep& step) const;
     std::optional<ScheduledJobSet> MaterializeWorkflowStepInternal(const WorkflowReadyStep& step);
     void HandlePayloadMaterializationFailures();
-    bool EnsureWorkerProgramForJob(size_t worker_idx, const ClaimedJobRecord& claimed_job);
-    bool DispatchClaimedJobToWorker(size_t worker_idx, const ClaimedJobRecord& claimed_job);
+    void HandleItemAuthorityLost(
+        const ClaimLeaseMaintenanceResult::LostAuthority& lost);
+    bool DispatchClaimedWorksetToWorker(
+        size_t worker_idx,
+        const std::vector<ClaimedJobRecord>& claimed_jobs);
+    bool ValidateClaimedWorksetAuthority(
+        const std::vector<ClaimedJobRecord>& claimed_jobs);
+    bool ValidateBuiltWorkset(
+        const savor::runtime::WorkerWorksetDefinition& workset,
+        const std::vector<ClaimedJobRecord>& claimed_jobs,
+        const savor::runtime::WorkerRuntimeManifest& manifest,
+        std::string* error_out) const;
+    void ConfigureWorkerCallbacks(
+        std::size_t worker_idx,
+        std::uint64_t worker_generation,
+        const std::shared_ptr<savor::ProcessWorker>& worker);
+    void DrainWorksetEventsLoop();
+    void HandleWorksetState(
+        const WorksetEventIngress& event);
+    void HandleWorksetItemStarted(
+        const WorksetEventIngress& event);
+    void HandleWorksetItemProgress(
+        const WorksetEventIngress& event);
+    void HandleWorksetItemTerminal(
+        const WorksetEventIngress& event);
+    void HandleWorksetCredits(
+        const WorksetEventIngress& event);
+    void HandleWorksetSummary(
+        const WorksetEventIngress& event);
+    bool ProcessDurableResultProjection(
+        const savor::PRResult& result,
+        const DispatchedJobContext& context,
+        savor::db::execution::workflow::
+            TerminalWorkflowStepNotification* notification_out = nullptr,
+        std::vector<std::string>* post_ack_event_lines_out = nullptr);
+    bool ProcessDurableResultProjectionLocked(
+        const savor::PRResult& result,
+        const DispatchedJobContext& context,
+        savor::db::execution::workflow::
+            TerminalWorkflowStepNotification* notification_out,
+        std::vector<std::string>* post_ack_event_lines_out);
+    void PublishTerminalCommitIsolated(
+        const savor::db::execution::workflow::
+            TerminalWorkflowStepNotification& notification);
+    void FailClosedWorkset(
+        std::size_t worker_idx,
+        std::uint64_t workset_id,
+        std::string_view reason);
+    void FailClosedWorker(
+        std::size_t worker_idx,
+        std::string_view reason);
+    bool AcceptWorksetEventSequence(
+        std::size_t worker_idx,
+        std::uint64_t workset_id,
+        std::uint64_t outbound_sequence,
+        std::string_view event_kind);
     bool DispatchNextEligibleForWorker(
         size_t worker_idx,
         const MaterializedJobSelectionAffinity& worker_affinity,
@@ -364,11 +516,6 @@ private:
         std::int64_t job_id,
         std::string message,
         std::string detail);
-    std::optional<std::string> PrepareWorkerSavestatePathForJob(
-        size_t worker_idx,
-        const ClaimedJobRecord& claimed_job,
-        bool force_rematerialize);
-
     savor::db::IExecutionDb* execution_db_ = nullptr;
     savor::db::IStateDb* state_db_ = nullptr;
     DBWorkflowWorkerCoordinatorConfig worker_cfg_{};
@@ -398,6 +545,7 @@ private:
     std::thread job_materializer_thread_;
     std::thread progress_drainer_thread_;
     std::thread results_drainer_thread_;
+    std::thread workset_event_drainer_thread_;
     std::chrono::steady_clock::time_point last_claim_lease_maintenance_{};
 
     mutable std::mutex queue_mtx_;
@@ -410,10 +558,14 @@ private:
     std::mutex runtime_preparation_mtx_;
     std::optional<std::filesystem::path> prepared_runtime_worker_exe_;
     std::unordered_map<std::uint64_t, DispatchedJobContext> dispatched_job_context_by_id_;
+    std::unordered_map<std::string, DispatchedWorksetItemContext>
+        dispatched_workset_items_;
     std::unordered_map<size_t, WorkerVisualSurface> worker_visual_surfaces_;
     size_t rr_worker_cursor_ = 0;
     TSQueue<savor::PRProgress> progress_q_;
     TSQueue<savor::PRResult> results_q_;
+    TSQueue<WorksetEventIngress> workset_event_q_;
+    std::mutex result_projection_mtx_;
     size_t materialized_count_ = 0;
     size_t terminal_published_count_ = 0;
     std::atomic<std::int64_t> ready_scan_count_{ 0 };
@@ -434,6 +586,7 @@ private:
     std::atomic<std::int64_t> progress_batch_count_{ 0 };
     std::atomic<std::int64_t> max_progress_batch_size_{ 0 };
     std::atomic<std::int64_t> results_received_count_{ 0 };
+    std::atomic<std::uint64_t> terminal_commit_sequence_{ 0 };
     std::atomic<std::int64_t> workflow_created_signal_count_{ 0 };
     std::atomic<std::int64_t> materialization_failure_count_{ 0 };
     std::atomic<std::int64_t> payload_materialization_failure_count_{ 0 };

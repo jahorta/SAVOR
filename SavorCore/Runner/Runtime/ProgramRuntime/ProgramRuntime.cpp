@@ -1,14 +1,17 @@
 #include "ProgramRuntime.h"
+#include "../Worksets/WorksetTypes.h"
 
 #include "Capabilities/SourceCapabilityPacks.h"
 #include "Capabilities/SourceReducers.h"
 #include "Codec/ProgramCodecV1.h"
 #include "Model/ProgramValueArena.h"
+#include "Utils/Hash.h"
 
 #include <algorithm>
 #include <chrono>
 #include <iterator>
 #include <limits>
+#include <map>
 #include <utility>
 
 namespace savor::runtime::program {
@@ -151,9 +154,10 @@ constexpr ProgramScopeId kInvocationScope{
     switch (state.policy)
     {
     case InvocationStatePolicy::LoadArtifact:
-    case InvocationStatePolicy::RestoreBaseline:
         return state.state_artifact &&
             CompleteArtifact(*state.state_artifact);
+    case InvocationStatePolicy::RestoreBaseline:
+        return !state.state_artifact;
     case InvocationStatePolicy::Boot:
     case InvocationStatePolicy::ContinueSession:
         return !state.state_artifact;
@@ -264,7 +268,145 @@ constexpr ProgramScopeId kInvocationScope{
     return WorkerRejectionCode::InternalFailure;
 }
 
+[[nodiscard]] std::string RuntimeProfileHash(
+    const RuntimeProfile& profile)
+{
+    std::string canonical = profile.profile_id;
+    const auto append = [&canonical](std::string_view value)
+    {
+        canonical.push_back('\0');
+        canonical.append(value);
+    };
+    append(profile.game_id);
+    append(profile.disc_identity);
+    append(profile.executable_identity);
+    append(profile.backend);
+    return hash::sha256(canonical.data(), canonical.size());
+}
+
+[[nodiscard]] bool CompleteHash(std::string_view value)
+{
+    return value.size() == 64 &&
+        std::all_of(
+            value.begin(),
+            value.end(),
+            [](char character)
+            {
+                return (character >= '0' && character <= '9') ||
+                    (character >= 'a' && character <= 'f');
+            });
+}
+
+[[nodiscard]] bool CanonicalizeExpectedCatalog(
+    std::vector<ProgramRuntimeCatalogModule>& catalog)
+{
+    if (catalog.size() != 9)
+        return false;
+    for (ProgramRuntimeCatalogModule& module : catalog)
+    {
+        if (module.development_only ||
+            module.identity.canonical_id.empty() ||
+            module.identity.revision == 0 ||
+            !CompleteHash(module.identity.canonical_hash) ||
+            module.entrypoints.empty())
+        {
+            return false;
+        }
+        std::sort(
+            module.entrypoints.begin(),
+            module.entrypoints.end());
+        if (module.entrypoints.front().empty() ||
+            std::adjacent_find(
+                module.entrypoints.begin(),
+                module.entrypoints.end()) !=
+                    module.entrypoints.end())
+        {
+            return false;
+        }
+    }
+    std::sort(
+        catalog.begin(),
+        catalog.end(),
+        [](const auto& lhs, const auto& rhs)
+        {
+            if (lhs.identity.canonical_id !=
+                rhs.identity.canonical_id)
+            {
+                return lhs.identity.canonical_id <
+                    rhs.identity.canonical_id;
+            }
+            if (lhs.identity.revision != rhs.identity.revision)
+            {
+                return lhs.identity.revision <
+                    rhs.identity.revision;
+            }
+            return lhs.identity.canonical_hash <
+                rhs.identity.canonical_hash;
+        });
+    return std::adjacent_find(
+               catalog.begin(),
+               catalog.end(),
+               [](const auto& lhs, const auto& rhs)
+               {
+                   return lhs.identity.canonical_id ==
+                       rhs.identity.canonical_id;
+               }) == catalog.end();
+}
+
+[[nodiscard]] std::vector<ProgramRuntimeCatalogModule>
+CanonicalCatalog(
+    std::vector<ProgramRuntimeCatalogModule> catalog)
+{
+    for (ProgramRuntimeCatalogModule& module : catalog)
+    {
+        std::sort(
+            module.entrypoints.begin(),
+            module.entrypoints.end());
+    }
+    std::sort(
+        catalog.begin(),
+        catalog.end(),
+        [](const auto& lhs, const auto& rhs)
+        {
+            if (lhs.identity.canonical_id !=
+                rhs.identity.canonical_id)
+            {
+                return lhs.identity.canonical_id <
+                    rhs.identity.canonical_id;
+            }
+            if (lhs.identity.revision != rhs.identity.revision)
+            {
+                return lhs.identity.revision <
+                    rhs.identity.revision;
+            }
+            return lhs.identity.canonical_hash <
+                rhs.identity.canonical_hash;
+        });
+    return catalog;
+}
+
 } // namespace
+
+std::string ComputeProgramInvocationCompatibilityHashV1(
+    const ProgramInvocation& source)
+{
+    ProgramInvocation invocation = source;
+    invocation.invocation_id = {};
+    invocation.attempt_id = {};
+    invocation.state.expected_session = {};
+    invocation.state.expected_epoch = {};
+    invocation.state.state_artifact.reset();
+    invocation.state.session_lineage.clear();
+    // Use a valid, type-neutral graph as the canonical placeholder. An empty
+    // graph is not encodable and per-item input must not affect this key.
+    invocation.input = UnitGraph();
+    invocation.limits = {};
+    invocation.provenance = {};
+    const EncodeResult encoded = EncodeProgramInvocationV1(invocation);
+    if (!encoded)
+        return {};
+    return hash::sha256(encoded.bytes.data(), encoded.bytes.size());
+}
 
 struct ProgramRuntime::Impl
 {
@@ -298,6 +440,13 @@ struct ProgramRuntime::Impl
             preparation_cleanup_receipts;
     };
 
+    struct PreparedTemplate
+    {
+        ProgramInvocation invocation;
+        std::shared_ptr<const VerifiedProgramModule> verified;
+        std::string compatibility_sha256;
+    };
+
     explicit Impl(ProgramRuntimeConfig config)
         : config(std::move(config)),
           actions(&types),
@@ -308,6 +457,16 @@ struct ProgramRuntime::Impl
         {
             initialization_diagnostic =
                 "ProgramRuntime runtime-profile constraints are invalid";
+            return;
+        }
+        if (this->config.expected_exact_catalog &&
+            !CanonicalizeExpectedCatalog(
+                *this->config.expected_exact_catalog))
+        {
+            initialization_diagnostic =
+                "ProgramRuntime exact production catalog must contain "
+                "exactly nine unique non-development modules with complete "
+                "identities and entrypoints";
             return;
         }
         const RegistryResult registered =
@@ -415,7 +574,14 @@ struct ProgramRuntime::Impl
     ProgramVerifier verifier;
     std::shared_ptr<IProgramActionRequestSink> action_sink;
     std::optional<ActiveInvocation> active;
+    std::map<std::uint64_t, PreparedTemplate> prepared_templates;
+    std::map<
+        std::pair<std::string, std::uint32_t>,
+        ProgramRuntimeCatalogModule>
+        prepared_modules;
     std::uint64_t next_action_id = 1;
+    std::uint64_t next_template_id = 1;
+    std::uint64_t catalog_generation = 1;
     bool initialized = false;
     bool shutdown = false;
     std::string initialization_diagnostic;
@@ -443,7 +609,8 @@ WorkerCapabilityMask ProgramRuntime::capabilities() const noexcept
 {
     if (!impl_->initialized || impl_->shutdown)
         return 0;
-    return CapabilityMask(WorkerCapability::ProgramInvocation);
+    return WorkerCapability::ProgramInvocation |
+        WorkerCapability::WorksetDispatch;
 }
 
 ProgramRuntimeSubmission ProgramRuntime::PrepareModule(
@@ -513,7 +680,25 @@ ProgramRuntimeSubmission ProgramRuntime::PrepareModule(
             // Module publication is atomic with verification. A rejected
             // candidate must not reserve its canonical id/revision or poison
             // the verified cache for a corrected preparation attempt.
+            std::vector<std::string> entrypoints;
+            entrypoints.reserve(
+                verified.verified->module->entrypoints.size());
+            for (const ProgramEntrypoint& entrypoint :
+                 verified.verified->module->entrypoints)
+            {
+                entrypoints.push_back(entrypoint.name);
+            }
+            std::sort(entrypoints.begin(), entrypoints.end());
             impl_->definitions = std::move(candidate);
+            impl_->prepared_modules.insert_or_assign(
+                std::pair{
+                    request.module.identity.canonical_id,
+                    request.module.identity.revision},
+                ProgramRuntimeCatalogModule{
+                    request.module.identity,
+                    std::move(entrypoints),
+                    request.module.development_only});
+            ++impl_->catalog_generation;
         }
     }
     events->Publish(std::move(event));
@@ -542,6 +727,13 @@ ProgramRuntimeSubmission ProgramRuntime::StartInvocation(
         return ProgramRuntimeSubmission::Rejected(
             WorkerRejectionCode::ProgramRuntimeUnavailable,
             "Canonical ProgramRuntime has no actor action sink");
+    }
+    if (request.state_already_prepared &&
+        request.prepared_baseline_sha256.size() != 64)
+    {
+        return ProgramRuntimeSubmission::Rejected(
+            WorkerRejectionCode::InvalidArgument,
+            "Prepared invocation requires a canonical baseline hash");
     }
 
     DecodeResult<ProgramInvocation> decoded =
@@ -668,6 +860,10 @@ ProgramRuntimeSubmission ProgramRuntime::StartInvocation(
     state.input = UnitGraph();
     state.scope = kInvocationScope;
     state.state_request = impl_->active->invocation.state;
+    state.state_already_prepared =
+        request.state_already_prepared;
+    state.prepared_baseline_sha256 =
+        std::move(request.prepared_baseline_sha256);
     state.active_deadline = impl_->active->active_deadline;
     state.effective_deadline = state.active_deadline;
     state.allowed_effects =
@@ -684,6 +880,246 @@ ProgramRuntimeSubmission ProgramRuntime::StartInvocation(
             "Program action sink rejected state preparation");
     }
     return ProgramRuntimeSubmission::Accepted();
+}
+
+ProgramRuntimeSubmission ProgramRuntime::PrepareInvocationTemplate(
+    InvocationTemplatePreparationRequest request,
+    PreparedInvocationTemplateReceipt& receipt)
+{
+    receipt = {};
+    if (impl_->shutdown || !impl_->initialized)
+    {
+        return ProgramRuntimeSubmission::Rejected(
+            WorkerRejectionCode::ProgramRuntimeUnavailable,
+            "Canonical ProgramRuntime is unavailable");
+    }
+    DecodeResult<ProgramInvocation> decoded =
+        DecodeProgramInvocationV1(
+            request.invocation_template.input_payload);
+    if (!decoded)
+    {
+        return ProgramRuntimeSubmission::Rejected(
+            WorkerRejectionCode::InvalidArgument,
+            decoded.status.message.empty()
+                ? "SPRI invocation template is invalid"
+                : decoded.status.message);
+    }
+    ProgramInvocation invocation = std::move(*decoded.value);
+    const auto outer_module =
+        ModuleIdentityFromEnvelope(
+            request.invocation_template.module);
+    if (!outer_module ||
+        invocation.invocation_id !=
+            request.invocation_template.invocation_id ||
+        invocation.attempt_id !=
+            request.invocation_template.attempt_id ||
+        invocation.module != *outer_module ||
+        invocation.entrypoint !=
+            request.invocation_template.entrypoint ||
+        invocation.state.expected_session ||
+        invocation.state.expected_epoch ||
+        request.invocation_template.expected_state_epoch)
+    {
+        return ProgramRuntimeSubmission::Rejected(
+            WorkerRejectionCode::InvalidArgument,
+            "SPRI workset template identity or deferred state binding is invalid");
+    }
+
+    ProgramVerificationResult verified = impl_->verifier.Verify(
+        invocation.module,
+        impl_->config.compatibility);
+    if (!verified.success)
+    {
+        return ProgramRuntimeSubmission::Rejected(
+            WorkerRejectionCode::InvalidArgument,
+            verified.diagnostics.empty()
+                ? "Program invocation template module verification failed"
+                : verified.diagnostics.front().message);
+    }
+    const ProgramEntrypoint* entrypoint = FindEntrypoint(
+        *verified.verified->module,
+        invocation.entrypoint);
+    const ProgramValue* input = RootValue(invocation.input);
+    const ProgramBudgets* maximum_budgets =
+        entrypoint && entrypoint->narrowed_budgets
+        ? &*entrypoint->narrowed_budgets
+        : &verified.verified->module->budgets;
+    if (!entrypoint || !input ||
+        input->type != entrypoint->input_type ||
+        invocation.dependencies !=
+            verified.verified->dependency_lock ||
+        !RuntimeProfileAccepted(
+            invocation.runtime_profile,
+            impl_->config,
+            verified.verified->dependency_lock) ||
+        !BudgetsWithin(invocation.limits, *maximum_budgets) ||
+        !InvocationPolicyAccepted(invocation, *entrypoint) ||
+        invocation.state.session_lineage.empty() ||
+        !InvocationStateShapeAccepted(invocation.state))
+    {
+        return ProgramRuntimeSubmission::Rejected(
+            WorkerRejectionCode::InvalidArgument,
+            "SPRI template violates its verified entrypoint, dependency, state, or budget contract");
+    }
+    const ProgramValueArenaStatus input_status =
+        ValidateProgramValueGraph(
+            invocation.input,
+            entrypoint->input_type,
+            verified.verified->type_closure,
+            {
+                invocation.limits.maximum_values,
+                invocation.limits.maximum_value_bytes,
+            },
+            {});
+    if (!input_status)
+    {
+        return ProgramRuntimeSubmission::Rejected(
+            WorkerRejectionCode::InvalidArgument,
+            input_status.message.empty()
+                ? "SPRI template input graph violates its verified schema"
+                : input_status.message);
+    }
+
+    const std::string compatibility =
+        ComputeProgramInvocationCompatibilityHashV1(invocation);
+    if (compatibility.size() != 64 ||
+        invocation.limits.active_deadline_milliseconds == 0 ||
+        invocation.limits.active_deadline_milliseconds >
+            static_cast<std::uint64_t>(
+                std::numeric_limits<std::int64_t>::max()) ||
+        impl_->next_template_id == 0 ||
+        impl_->next_template_id ==
+            std::numeric_limits<std::uint64_t>::max())
+    {
+        return ProgramRuntimeSubmission::Rejected(
+            WorkerRejectionCode::InternalFailure,
+            "Program invocation template identity could not be created");
+    }
+    const PreparedInvocationTemplateId id(
+        impl_->next_template_id++);
+    impl_->prepared_templates.emplace(
+        id.value(),
+        Impl::PreparedTemplate{
+            invocation,
+            std::move(verified.verified),
+            compatibility});
+    receipt = {
+        id,
+        invocation.invocation_id,
+        invocation.attempt_id,
+        ModuleIdentityToEnvelope(invocation.module),
+        invocation.entrypoint,
+        compatibility,
+        invocation.state.policy,
+        std::chrono::milliseconds(
+            invocation.limits.active_deadline_milliseconds)};
+    return ProgramRuntimeSubmission::Accepted();
+}
+
+ProgramRuntimeSubmission ProgramRuntime::ReleaseInvocationTemplate(
+    PreparedInvocationTemplateId template_id)
+{
+    if (!template_id ||
+        impl_->prepared_templates.erase(template_id.value()) != 1)
+    {
+        return ProgramRuntimeSubmission::Rejected(
+            WorkerRejectionCode::InvalidArgument,
+            "Prepared invocation template is unknown");
+    }
+    return ProgramRuntimeSubmission::Accepted();
+}
+
+ProgramRuntimeSubmission ProgramRuntime::StartPreparedInvocation(
+    PreparedInvocationStartRequest request,
+    CancellationToken cancellation,
+    std::shared_ptr<IProgramRuntimeEventSink> events)
+{
+    const auto found =
+        impl_->prepared_templates.find(request.template_id.value());
+    if (found == impl_->prepared_templates.end())
+    {
+        return ProgramRuntimeSubmission::Rejected(
+            WorkerRejectionCode::InvalidArgument,
+            "Prepared invocation template is unknown");
+    }
+    if (!request.session_id || !request.state_epoch ||
+        request.baseline_sha256.size() != 64 ||
+        request.baseline_lineage.empty() ||
+        found->second.invocation.state.session_lineage !=
+            request.baseline_lineage)
+    {
+        return ProgramRuntimeSubmission::Rejected(
+            WorkerRejectionCode::InvalidArgument,
+            "Prepared invocation binding does not match its exact program baseline");
+    }
+
+    ProgramInvocation invocation = found->second.invocation;
+    invocation.state.expected_session = request.session_id;
+    invocation.state.expected_epoch = request.state_epoch;
+    const EncodeResult encoded = EncodeProgramInvocationV1(invocation);
+    if (!encoded)
+    {
+        return ProgramRuntimeSubmission::Rejected(
+            WorkerRejectionCode::InternalFailure,
+            encoded.status.message.empty()
+                ? "Prepared invocation could not be rebound"
+                : encoded.status.message);
+    }
+    EncodedInvocationEnvelope envelope;
+    envelope.invocation_id = invocation.invocation_id;
+    envelope.attempt_id = invocation.attempt_id;
+    envelope.module = ModuleIdentityToEnvelope(invocation.module);
+    envelope.entrypoint = invocation.entrypoint;
+    envelope.expected_state_epoch = request.state_epoch;
+    envelope.input_payload = encoded.bytes;
+    ProgramRuntimeSubmission started = StartInvocation(
+        {
+            request.command_sequence,
+            std::move(envelope),
+            true,
+            request.baseline_sha256,
+        },
+        std::move(cancellation),
+        std::move(events));
+    if (started.accepted)
+        impl_->prepared_templates.erase(found);
+    return started;
+}
+
+ProgramRuntimeCatalogSnapshot ProgramRuntime::catalog() const
+{
+    ProgramRuntimeCatalogSnapshot snapshot;
+    snapshot.generation = impl_->catalog_generation;
+    snapshot.runtime_profile_sha256 =
+        RuntimeProfileHash(impl_->config.runtime_profile);
+    snapshot.dependency_manifest_sha256 = hash::sha256(
+        "savor.program_runtime.dependencies/v1",
+        sizeof("savor.program_runtime.dependencies/v1") - 1);
+    for (const auto& [_, module] : impl_->prepared_modules)
+    {
+        snapshot.modules.push_back(module);
+    }
+    snapshot.complete_exact =
+        impl_->config.expected_exact_catalog.has_value() &&
+        CanonicalCatalog(snapshot.modules) ==
+            *impl_->config.expected_exact_catalog;
+    std::vector<RuntimeModuleManifestEntry> canonical_modules;
+    canonical_modules.reserve(snapshot.modules.size());
+    for (const ProgramRuntimeCatalogModule& module :
+         snapshot.modules)
+    {
+        canonical_modules.push_back({
+            module.identity,
+            module.entrypoints,
+            snapshot.dependency_manifest_sha256,
+            module.development_only});
+    }
+    snapshot.catalog_sha256 = ComputeRuntimeCatalogHash(
+        canonical_modules,
+        snapshot.complete_exact
+            ? RuntimeCatalogStatus::CompleteExact
+            : RuntimeCatalogStatus::Partial);
+    return snapshot;
 }
 
 ProgramRuntimeSubmission ProgramRuntime::RequestCancellation(
@@ -923,6 +1359,19 @@ ProgramRuntimeSubmission ProgramRuntime::DeliverActionCompletion(
     return ProgramRuntimeSubmission::Accepted();
 }
 
+std::vector<PendingStateArtifactPublication>
+ProgramRuntime::DrainPendingStateArtifactPublications()
+{
+    if (!impl_->active ||
+        impl_->active->stage != Impl::ActiveStage::Executing ||
+        !impl_->active->executor)
+    {
+        return {};
+    }
+    return impl_->active->executor
+        ->DrainPendingStateArtifactPublications();
+}
+
 ProgramRuntimeSubmission ProgramRuntime::AcknowledgeTerminal(
     InvocationId invocation_id,
     AttemptId attempt_id)
@@ -1144,6 +1593,7 @@ void ProgramRuntime::Shutdown() noexcept
         }
         impl_->active.reset();
     }
+    impl_->prepared_templates.clear();
     impl_->action_sink.reset();
 }
 

@@ -265,7 +265,10 @@ bool ScopedWorkflowCoordinatorService::Start(
     const CliOptions& options,
     std::string* error_out,
     EventLineCallback event_line_callback,
-    bool strict_smoke_terminal_on_failure) {
+    bool strict_smoke_terminal_on_failure,
+    std::shared_ptr<
+        savor::db::execution::workflow::CoordinatorItemCreditSource>
+        item_credit_source) {
     if (service_ != nullptr && service_->IsRunning()) {
         return true;
     }
@@ -280,6 +283,7 @@ bool ScopedWorkflowCoordinatorService::Start(
     config.workflow_enabled = true;
     config.strict_smoke_terminal_on_failure = strict_smoke_terminal_on_failure;
     config.poll_interval = std::chrono::milliseconds(std::max<std::int64_t>(1, options.poll_ms));
+    config.item_credit_source = std::move(item_credit_source);
 
     auto service = std::make_unique<savor::db::execution::workflow::WorkflowCoordinatorService>(
         execution_db,

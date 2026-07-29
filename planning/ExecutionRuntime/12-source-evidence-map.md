@@ -75,9 +75,11 @@ projection. The target uses that evidence narrowly:
   one independently durable job is represented by a one-item workset;
 - the pre-6A process composition installs the one implemented production `ProgramRuntime` and
   `SessionProgramActionHost`, reports the exact currently installed module/dependency manifest, and
-  accepts explicit partial catalogs for unattended direct one-item tests;
-- a partial catalog cannot open the coordinator data plane. Slice 7 requires the exact complete
-  nine-module catalog/dependency manifest and negotiated active/staged/cache/finalizer/ledger limits;
+  transfers one canonical test-only module for an unattended direct one-item `Partial` process smoke.
+  The test module is never one of the nine production modules;
+- `Partial` cannot open the coordinator data plane. Slice 7 requires `CompleteExact`: exactly the
+  planned nine module IDs/hashes, their dependency manifest, no extra installed module, and negotiated
+  active/staged/cache/finalizer/ledger limits;
 - only already claimed and independently materialized jobs with the same exact runtime-only
   `WorkerWorksetExecutionKey` may share a multi-item envelope;
 - one workset may mutate the session while at most one immutable successor package performs host-only
@@ -86,13 +88,19 @@ projection. The target uses that evidence narrowly:
   `ProgramInstance`, or advance Dolphin;
 - workset acceptance keeps unstarted items `CLAIMED`; immediately before effects the worker publishes
   an ordered item-start event without waiting, and the coordinator appends the existing `JobStarted`
-  event before processing that child's later ordered terminal;
+  event before processing that child's later ordered terminal. The event is bookkeeping, not a permit
+  for another clean child;
 - each ready worker publishes item-capacity credits consumed from assignment through exact
-  acknowledgement; claim demand uses unreserved credit plus a separately bounded coordinator buffer;
-- the coordinator uses one real ordered batch claim, exact-set lease renewal, claim/start validation,
-  stable indexed selection, and targeted terminal reconciliation while preserving each per-job
+  acknowledgement; claim demand uses unreserved credit plus at most one coordinator-buffered additional
+  workset per negotiated Ready worker;
+- the coordinator uses one real ordered batch claim, exact-set lease renewal, one pre-submission exact-
+  set claim/start-authority validation, stable indexed selection, and targeted terminal reconciliation
+  while preserving each per-job
   lifecycle. Highest durable priority/claim order anchors selection, locality breaks only equivalent
   ties, and bounded lookahead/age prevents starvation;
+- accepted children run in immutable order without per-item coordinator authorization pauses. Later
+  lease loss, supersession, or user cancellation arrives as exact asynchronous item/workset
+  cancellation, and staged promotion does not synchronously revalidate with the coordinator;
 - the coordinator includes active, staged, buffered, outbound, finalizing, resident, and
   unacknowledged work in negotiated capacity;
 - each child fully unwinds before another child executes. Immutable state output may finalize on a
@@ -104,23 +112,33 @@ projection. The target uses that evidence narrowly:
   advancement, which processes commit-sequence/stable-ID order while periodic scanning remains the
   recovery authority. A clean staged successor may promote without waiting for older acknowledgements
   if global credit remains;
-- `WorkerRuntime` owns active/staged order, exact prepared state, multi-item reusable baseline lease,
-  current child, global completion ledger, one outbound sequence, and drain state, while
+- `WorkerRuntime` owns active/staged order, exact prepared state, multi-item
+  `ProgramBaselineDefinition`/`ProgramBaselineKey`, current child, global completion ledger, one outbound
+  sequence, and drain state. The ordered baseline components cover savestate, exact movie continuation,
+  and runtime-facing program-kind adapter-declared derived state; every later child receives one
+  `PreparedProgramBaselineReceipt` from composite `RestoreBaseline` and one epoch advancement.
   `ProgramRuntime` sees only one child invocation; a one-item workset skips reusable-baseline capture;
 - after a dependent transition is durable, exact same-worker `ContinueSession` or state-cache locality
   is only a preferred path; mismatch/eviction/worker loss uses the declared immutable-artifact restore
   with equivalent semantics;
-- Slice 7 negotiates one complete compatible worker as the data-plane gate, then starts the remaining
-  desired pool with bounded concurrency; and
+- Slice 7 negotiates one `CompleteExact` worker as the data-plane gate, then starts the remaining
+  desired pool with at most two concurrent startups; and
 - worker loss, cancellation, transport failure, or taint recovers each nonterminal durable job through
   the current per-job operations. Completed items are not rolled back and taint prevents a later child
   from starting.
 
 This is a coordinator/worker locality and pipeline optimization, not a persistent scheduler. There is no
 workset/cache/ledger row, membership table, durable cursor, workset attempt/result, aggregate transition,
-or worker access to SavorDb. Narrow ordered-batch claim, exact-set lease, claim/start validation, and
+or worker access to SavorDb. Narrow ordered-batch claim, exact-set lease, pre-submission exact-set
+claim/start validation, and
 targeted-reconciliation interfaces are permitted; unrelated database, workflow, durable queue-state,
 per-item transaction semantics, and artifact formats remain fixed.
+
+The fixed configurable defaults are 16 items/32 MiB/four aggregate active hours per workset; 64 total
+and 32 active-plus-staged item credits; 16 cache entries/512 MiB; two finalizer threads with eight
+pending captures/256 MiB; 32 retained terminals/128 MiB; two concurrent startups; and one coordinator-
+buffered successor per negotiated Ready worker. WRMS stays at version 1; the retired
+`SubmitInvocation` and guest-step discriminators remain reserved and reject before session mutation.
 
 ### Current program execution
 
@@ -388,7 +406,7 @@ Current Slice 5 code is under `SavorCore/Runner/Runtime/ProgramRuntime`:
 - `Registry/CanonicalActionCatalog.*` and `Capabilities/SourceCapabilityPacks.*`
   - register generic `runtime.session` plus source-backed `soa.field`, `soa.battle`, and
     `soa.navigation` for the supported USA executable/address-map compatibility;
-  - pin that compatibility to game `GEAE8E`, executable `soal-usa.GEAE8E`, and address map
+  - pin that compatibility to disc game ID `GEAE8P`, executable identity `soal-usa.GEAE8E`, and address map
     `savor.builtin-soal-usa-addresses/1`;
   - expose exact field/battle/navigation semantic inventories and coherent battle/navigation query
     descriptors; and
@@ -520,7 +538,8 @@ or required refactor phase.
 
 These questions are intentionally left to later migration or future work that needs them:
 
-- production runtime/action-host construction and capability advertisement;
+- complete nine-module catalog activation and DB-facing capability advertisement; the production
+  runtime/action-host and partial process transport are pre-6A dependencies;
 - any future incompatible canonical envelope version beyond implemented `SPRM`/`SPRI`/`SPRR` version 1;
 - authored source syntax, editor, publishing, and any future persisted module catalog;
 - any generalized replacement for the existing `savor.capture.profile/1` language;

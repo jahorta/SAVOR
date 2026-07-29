@@ -393,20 +393,23 @@ Session root scope
   -> bounded immutable state cache
   -> transient workset scope
        -> scoped state-cache lease
+       -> composite ProgramBaselineDefinition/ProgramBaselineKey
        -> one active invocation root scope
             -> lexical program scope
                  -> action transaction scope
                       -> service-owned resources and receipts
 ```
 
-The workset scope owns the exact common-preparation receipts and, only for a multi-item workset, the
-scoped cache lease for the immutable reusable baseline needed to admit its static ordered items. A
-one-item workset does not capture an unnecessary reusable baseline. The session-owned state cache may
-retain immutable serialized state bytes across worksets, but no workset obtains restore authority
+The workset scope owns the exact common-preparation receipts and, only for a multi-item workset, one
+`ProgramBaselineDefinition` plus the scoped cache lease needed by its savestate component. The
+definition's ordered `ProgramBaselineComponent`s cover the savestate, exact movie continuation, and
+runtime-facing program-kind adapter-declared derived state; `ProgramBaselineKey` identifies that whole
+set. A one-item workset does not capture an unnecessary reusable baseline. The session-owned state cache
+may retain immutable serialized state bytes across worksets, but no workset obtains restore authority
 without its own lease. The scope may not retain a live input lease, router wait, mutation, capture
 writer, action continuation, guest-derived pointer, or other mutable invocation effect between items.
-Only immutable cache entries and compiled definitions survive according to their contracts; every
-mutable child resource is reacquired.
+Only immutable cache entries, baseline component definitions, and compiled definitions survive
+according to their contracts; every mutable child resource is reacquired.
 
 The worker-global completion/acknowledgement ledger is host-only lifecycle state rather than another
 program or session scope. An invocation may promote a synchronously captured immutable state buffer and
@@ -460,6 +463,12 @@ Rules:
     bytes and metadata whose synchronous capture succeeded. Before promotion, ordinary unwind owns
     abort/cleanup; after promotion, the global ledger owns finalization, terminal assembly, retryable
     publication cleanup, and eventual release.
+14. `RestoreBaseline` is one composite transaction. It restores the state/movie pair and every declared
+    derived-state component, returns one `PreparedProgramBaselineReceipt`, and admits no item from a
+    partial preparation.
+15. Workset acceptance proves claim/start authority for every finite member. Clean resource unwind,
+    baseline preparation, local credits, and exact asynchronous cancellation govern later admission;
+    no per-item coordinator authorization pause is a resource boundary.
 
 ### StateEpoch interaction
 
@@ -487,10 +496,12 @@ rejected before service execution.
 
 Workset item templates deliberately omit the actor-owned exact session/epoch guard. After common state
 preparation, the first item is bound to that prepared epoch. Before each later item, `StateService`
-restores the workset baseline and advances `StateEpoch` exactly once; only after the restore commits does
-`WorkerRuntime` bind the item to the resulting exact `SessionId` and `StateEpoch` and submit the resolved
-`ProgramInvocation`. This just-in-time binding fills only actor-owned runtime identity. It cannot change
-the template's module, entrypoint, dependencies, inputs, policy, limits, or provenance.
+restores the savestate/movie component while the composite `RestoreBaseline` transaction restores every
+adapter-declared derived-state component. The transaction advances `StateEpoch` exactly once and returns
+one `PreparedProgramBaselineReceipt`; only after that complete receipt commits does `WorkerRuntime` bind
+the item to the resulting exact `SessionId` and epoch and submit the resolved `ProgramInvocation`. This
+just-in-time binding fills only actor-owned runtime identity. It cannot change the template's module,
+entrypoint, dependencies, inputs, policy, limits, or provenance.
 
 No receipt, observation, address, acknowledgement, mutation, suppression state, or guest-derived handle
 from one item can be supplied to another. The host-owned immutable baseline remains a valid restore
@@ -698,7 +709,8 @@ It replaces the VM's one implicit snapshot with explicit handles:
   same-session in-memory handle carrying the process-local recording generation and exact embedded DTM
   history.
 
-`StateService` also owns one bounded session-local immutable state cache. `StateCacheKey` contains the
+`StateService` also owns one bounded session-local immutable state cache, initially 16 entries and
+512 MiB. `StateCacheKey` contains the
 state content hash, exact game/ISO/emulator/runtime compatibility, lineage and source-artifact identity,
 the complete no-movie or read-only movie-continuation identity needed to interpret the bytes, and any
 session-generation constraint required by the backend/runtime profile. Recording-generation handles are
@@ -740,15 +752,18 @@ Loading state is never an unannounced helper side effect of VM initialization or
 
 For one accepted workset, common preparation is a bounded state transaction:
 
-1. validate the `WorkerWorksetExecutionKey`, derive the exact `StateCacheKey` when state bytes are
-   reusable, and prepare its declared boot/load/continue state;
+1. validate the `WorkerWorksetExecutionKey`, build the exact `ProgramBaselineDefinition` and
+   `ProgramBaselineKey`, derive the `StateCacheKey` for its state/movie bytes when reusable, and prepare
+   its declared boot/load/continue state plus adapter-declared derived state;
 2. when the workset has more than one item, acquire or create one immutable cache entry after that state
-   is confirmed clean and paused, then bind a workset-scoped lease to it; skip this reusable-baseline
-   capture and lease for a one-item workset unless its declared source is already satisfied by an
-   ordinary cache-assisted load;
+   is confirmed clean and paused, capture the ordered baseline components, and bind the definition and
+   workset-scoped lease; skip this reusable-baseline capture and lease for a one-item workset unless its
+   declared source is already satisfied by an ordinary cache-assisted load;
 3. admit the first item against the already-prepared current epoch without a redundant restore;
-4. after that item fully unwinds, restore the exact bytes named by the same cache lease before each later
-   non-cancelled item, creating one fresh epoch per successful restore; and
+4. after that item fully unwinds, run composite `RestoreBaseline` before each later non-cancelled item:
+   restore the exact state/movie bytes named by the same cache lease, restore every declared
+   derived-state component, return one `PreparedProgramBaselineReceipt`, and create one fresh epoch for
+   the whole successful transaction; and
 5. release the workset lease when no later item can be admitted. The underlying cache entry may remain
    only as bounded immutable session cache state.
 
@@ -771,7 +786,8 @@ available only through a same-session in-memory handle carrying the process-loca
 
 State capture must remain synchronized with the paused guest, but compression, hashing, sidecar/file
 I/O, and validation do not need to occupy the session actor or keep a `ProgramInstance` alive. A state
-artifact therefore uses this fixed sequence:
+artifact therefore uses this fixed sequence. The initial host pool has two finalizer threads and admits
+at most eight pending immutable captures totaling 256 MiB:
 
 1. While safely paused on the actor, `StateService` captures immutable state bytes and the exact
    no-movie or read-only movie metadata/DTM continuation required by the declared artifact role.
@@ -855,7 +871,8 @@ callbacks never write worker protocol frames directly.
 
 Workset item terminals are not telemetry. The worker-global completion/acknowledgement ledger owns
 promoted immutable state captures, background-finalization correlation, terminal assembly, and
-non-lossy retention across workset boundaries. When an executed item completes synchronous session work
+non-lossy retention across workset boundaries. Its initial authoritative-terminal bound is 32 retained
+terminals totaling 128 MiB. When an executed item completes synchronous session work
 or an unstarted item receives its final disposition, the actor assigns one monotonic terminal-order
 ordinal across worksets. This ordinal is distinct from the serialized publisher's outbound sequence.
 Background completions may arrive in another order, but the actor publishes authoritative terminals in
@@ -1113,12 +1130,14 @@ host interfaces are not exposed to new modules.
 
 ## Deferred work
 
-- Production worker construction of the implemented `ProgramRuntime` and `SessionProgramActionHost`,
-  plus unified `WorkerWorkset` execution capability and limit advertisement.
+- Complete nine-module production catalog activation and DB data-plane enablement. Production worker
+  construction of the implemented `ProgramRuntime`/`SessionProgramActionHost` and unified
+  `WorkerWorkset` capability/limit advertisement are pre-6A dependencies.
 - Migration-specific typed action payload schemas beyond the implemented canonical envelope and
   source-backed coherent query/reducer contracts.
 - Concrete router priority values, subscription serialization, and CPU sampling bytecode.
-- Numeric tuning for worker-local state-cache/finalization count and byte limits, compression, eviction,
+- Measurement-driven tuning beyond the fixed initial 16-entry/512-MiB state cache, two finalizer
+  threads, eight pending captures/256 MiB, and 32 retained terminals/128 MiB, plus compression, eviction,
   and future artifact-backend adapters. Scoped `StateCacheKey` leases, caller-declared paths,
   immutable/hash/compatibility/lineage semantics, and actor-side authoritative terminal assembly are
   already fixed; none alters SavorDb storage or interfaces.

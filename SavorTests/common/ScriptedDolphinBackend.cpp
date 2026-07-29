@@ -55,13 +55,6 @@ void ScriptedDolphinBackendControl::SetResumeResult(
     resume_result = std::move(result);
 }
 
-void ScriptedDolphinBackendControl::SetStepInstructionResult(
-    runtime::BackendResult result)
-{
-    std::lock_guard lock(mutex);
-    step_instruction_result = std::move(result);
-}
-
 void ScriptedDolphinBackendControl::SetStepFrameResult(
     runtime::BackendResult result)
 {
@@ -304,15 +297,6 @@ runtime::BackendResult ScriptedDolphinBackend::Resume()
         control_->core_state = runtime::BackendCoreState::Running;
     control_->changed.notify_all();
     return result;
-}
-
-runtime::BackendResult ScriptedDolphinBackend::StepInstruction(
-    std::chrono::milliseconds)
-{
-    std::lock_guard lock(control_->mutex);
-    control_->RecordLocked("step_instruction");
-    control_->changed.notify_all();
-    return control_->step_instruction_result;
 }
 
 runtime::BackendResult ScriptedDolphinBackend::StepFrame(
@@ -694,7 +678,6 @@ ScriptedDolphinBackend::Capabilities() const noexcept
     return runtime::BackendExecutionCapability::Pause |
         runtime::BackendExecutionCapability::Resume |
         runtime::BackendExecutionCapability::FrameStep |
-        runtime::BackendExecutionCapability::ExactInstructionStep |
         runtime::BackendExecutionCapability::ViObservation |
         runtime::BackendExecutionCapability::MovieObservation |
         runtime::BackendExecutionCapability::ThrottleControl;
@@ -730,20 +713,6 @@ runtime::BackendResult ScriptedDolphinBackend::BeginFrameStep()
     if (result.ok)
     {
         ++control_->vi_count;
-        control_->core_state = runtime::BackendCoreState::Paused;
-    }
-    control_->changed.notify_all();
-    return result;
-}
-
-runtime::BackendResult ScriptedDolphinBackend::BeginExactInstructionStep()
-{
-    std::lock_guard lock(control_->mutex);
-    control_->RecordLocked("begin_instruction_step");
-    runtime::BackendResult result = control_->step_instruction_result;
-    if (result.ok)
-    {
-        control_->pc += 4;
         control_->core_state = runtime::BackendCoreState::Paused;
     }
     control_->changed.notify_all();

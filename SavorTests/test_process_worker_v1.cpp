@@ -1,9 +1,11 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <future>
 #include <latch>
 #include <limits>
@@ -11,14 +13,23 @@
 #include <mutex>
 #include <optional>
 #include <set>
+#include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
+#include <tuple>
 #include <utility>
 #include <vector>
 
 #include "Runner/Runtime/RuntimeTypes.h"
+#include "Runner/Runtime/ProgramRuntime/Capabilities/SourceCapabilityPacks.h"
+#include "Runner/Runtime/ProgramRuntime/Codec/ProgramCodecV1.h"
+#include "Runner/Runtime/ProgramRuntime/ProgramRuntime.h"
+#include "Runner/Runtime/Worksets/WorksetWireCodec.h"
+#include "Utils/Hash.h"
 #include "Utils/ModulePath.h"
 #include "Worker/ProcessWorker.h"
+#include "serial_guard.h"
 
 namespace savor {
 
@@ -31,6 +42,7 @@ public:
         const Payload& value,
         std::uint64_t request_id = 0)
     {
+        worker.start_callback_dispatch();
         std::vector<std::uint8_t> payload;
         if (!wrms::EncodePayload(value, payload))
             return false;
@@ -49,11 +61,192 @@ public:
         ProcessWorker& worker,
         const wrms::OpenSessionResultPayload& result)
     {
-        return DeliverPayload(
+        constexpr std::uint64_t request_id = 991;
+        auto pending =
+            std::make_shared<ProcessWorker::PendingResponse>();
+        pending->request_kind = wrms::MessageKind::OpenSession;
+        {
+            std::lock_guard<std::mutex> lock(worker.pending_mutex_);
+            worker.pending_.emplace(request_id, pending);
+        }
+        const bool delivered = DeliverPayload(
             worker,
             wrms::MessageKind::OpenSessionResult,
             result,
-            991);
+            request_id);
+        {
+            std::lock_guard<std::mutex> lock(worker.pending_mutex_);
+            worker.pending_.erase(request_id);
+        }
+        return delivered;
+    }
+
+    static bool DeliverRaw(
+        ProcessWorker& worker,
+        wrms::MessageKind kind,
+        std::span<const std::uint8_t> payload,
+        std::uint64_t request_id = 0)
+    {
+        worker.handle_frame(wrms::FrameView{
+            .header = {
+                .kind = kind,
+                .payload_size =
+                    static_cast<std::uint32_t>(payload.size()),
+                .request_id = request_id,
+            },
+            .payload = payload,
+        });
+        return worker.protocol_failed_.load(std::memory_order_acquire);
+    }
+
+    static bool DeliverMismatchedCommandResult(
+        ProcessWorker& worker)
+    {
+        constexpr std::uint64_t request_id = 701;
+        auto pending =
+            std::make_shared<ProcessWorker::PendingResponse>();
+        pending->request_kind = wrms::MessageKind::SubmitWorkset;
+        {
+            std::lock_guard<std::mutex> lock(worker.pending_mutex_);
+            worker.pending_.emplace(request_id, pending);
+        }
+        const bool delivered = DeliverPayload(
+            worker,
+            wrms::MessageKind::CommandResult,
+            wrms::CommandResultPayload{
+                .command_kind = wrms::MessageKind::PrepareModule,
+                .status = wrms::CommandStatus::Succeeded,
+            },
+            request_id);
+        {
+            std::lock_guard<std::mutex> lock(worker.pending_mutex_);
+            worker.pending_.erase(request_id);
+        }
+        return delivered &&
+            worker.protocol_failed_.load(std::memory_order_acquire);
+    }
+
+    static bool CallbackDispatcherJoinable(
+        const ProcessWorker& worker)
+    {
+        return worker.callback_dispatcher_.joinable();
+    }
+
+    static bool ProtocolFailed(const ProcessWorker& worker)
+    {
+        return worker.protocol_failed_.load(std::memory_order_acquire);
+    }
+
+    static void MarkNegotiatedTransportStopped(ProcessWorker& worker)
+    {
+        worker.ready_received_.store(true, std::memory_order_release);
+        worker.ready_ok_.store(true, std::memory_order_release);
+        worker.running_.store(false, std::memory_order_release);
+    }
+
+    static bool DeliverDuplicateCommandResult(
+        ProcessWorker& worker,
+        std::uint64_t request_id,
+        wrms::MessageKind request_kind)
+    {
+        auto pending =
+            std::make_shared<ProcessWorker::PendingResponse>();
+        pending->request_kind = request_kind;
+        {
+            std::lock_guard<std::mutex> lock(worker.pending_mutex_);
+            worker.pending_.emplace(request_id, pending);
+        }
+        const wrms::CommandResultPayload result{
+            .command_kind = request_kind,
+            .status = wrms::CommandStatus::Succeeded,
+        };
+        const bool first = DeliverPayload(
+            worker,
+            wrms::MessageKind::CommandResult,
+            result,
+            request_id);
+        const bool second = DeliverPayload(
+            worker,
+            wrms::MessageKind::CommandResult,
+            result,
+            request_id);
+        {
+            std::lock_guard<std::mutex> lock(worker.pending_mutex_);
+            worker.pending_.erase(request_id);
+        }
+        return first && second &&
+            worker.protocol_failed_.load(std::memory_order_acquire);
+    }
+
+    static void ConfigureExpectedHello(
+        ProcessWorker& worker,
+        std::uint64_t worker_id,
+        std::uint32_t process_id)
+    {
+        worker.worker_id_ = static_cast<std::size_t>(worker_id);
+        worker.process_id_ = process_id;
+    }
+
+    static bool DeliverRuntimeManifest(
+        ProcessWorker& worker,
+        const runtime::WorkerRuntimeManifest& manifest)
+    {
+        std::vector<std::uint8_t> encoded;
+        if (!runtime::EncodeWorkerRuntimeManifestV1(
+                manifest,
+                encoded))
+        {
+            return false;
+        }
+        return DeliverPayload(
+            worker,
+            wrms::MessageKind::RuntimeManifest,
+            wrms::RuntimeManifestPayload{
+                .encoded_manifest = std::move(encoded)});
+    }
+
+    static void SetBusyWorksetResidency(
+        ProcessWorker& worker,
+        runtime::WorkerWorksetId active,
+        std::optional<runtime::WorkerWorksetId> staged = std::nullopt)
+    {
+        worker.busy_.store(true, std::memory_order_release);
+        std::lock_guard<std::mutex> lock(worker.snapshot_mutex_);
+        worker.snapshot_.active_workset = active;
+        worker.snapshot_.staged_workset = staged;
+    }
+
+    static bool Busy(const ProcessWorker& worker)
+    {
+        return worker.busy_.load(std::memory_order_acquire);
+    }
+
+    static void FailPendingTransport(ProcessWorker& worker)
+    {
+        worker.fail_all_pending();
+    }
+
+    static void AddPendingRequest(
+        ProcessWorker& worker,
+        std::uint64_t request_id,
+        wrms::MessageKind request_kind)
+    {
+        auto pending =
+            std::make_shared<ProcessWorker::PendingResponse>();
+        pending->request_kind = request_kind;
+        std::lock_guard<std::mutex> lock(worker.pending_mutex_);
+        worker.pending_.emplace(request_id, std::move(pending));
+    }
+
+    static void DrainCallbacks(ProcessWorker& worker)
+    {
+        auto drained = std::make_shared<std::promise<void>>();
+        auto future = drained->get_future();
+        worker.enqueue_callback(
+            [drained]() { drained->set_value(); });
+        ASSERT_EQ(
+            future.wait_for(std::chrono::seconds(1)),
+            std::future_status::ready);
     }
 
     static std::uint32_t EffectiveExecutionCommandTimeout(
@@ -207,6 +400,365 @@ std::filesystem::path FindBuiltWorker()
     return {};
 }
 
+savor::runtime::WorkerRuntimeManifest MakeTransportTestManifest(
+    std::uint64_t generation = 1)
+{
+    savor::runtime::WorkerRuntimeManifest manifest;
+    manifest.runtime_profile_sha256 = std::string(64, 'a');
+    manifest.dependency_manifest_sha256 = std::string(64, 'b');
+    manifest.catalog_status =
+        savor::runtime::RuntimeCatalogStatus::Partial;
+    manifest.catalog_generation = generation;
+    manifest.catalog_sha256 =
+        savor::runtime::ComputeRuntimeCatalogHash(
+            manifest.modules,
+            manifest.catalog_status);
+    return manifest;
+}
+
+savor::runtime::WorkerWorksetDefinition MakeTransportTestWorkset()
+{
+    using namespace savor::runtime;
+    WorkerWorksetDefinition workset;
+    workset.workset_id = WorkerWorksetId{5001};
+    workset.baseline.state_kind = ProgramBaselineStateKind::Boot;
+    workset.baseline.lineage = "transport-test-baseline";
+    workset.execution_key.module = {
+        .canonical_id = "test.transport/1",
+        .revision = 1,
+        .canonical_hash = std::string(64, 'c')};
+    workset.execution_key.entrypoint = "run";
+    workset.execution_key.verified_dependency_sha256 =
+        std::string(64, 'd');
+    workset.execution_key.runtime_profile_sha256 =
+        std::string(64, 'a');
+    workset.execution_key.baseline =
+        ComputeProgramBaselineKey(workset.baseline);
+    workset.execution_key.movie_policy_sha256 =
+        std::string(64, 'e');
+    workset.execution_key.service_policy_sha256 =
+        std::string(64, 'f');
+    workset.execution_key.canonical_sha256 =
+        ComputeWorkerWorksetExecutionKeyHash(
+            workset.execution_key);
+    workset.items.push_back(WorksetItemTemplate{
+        .item_id = WorkerWorksetItemId{5002},
+        .ordinal = 0,
+        .invocation = {
+            .invocation_id = InvocationId{5003},
+            .attempt_id = AttemptId{5004},
+            .module = workset.execution_key.module,
+            .entrypoint = workset.execution_key.entrypoint,
+            .template_payload = {0x01},
+        },
+        .declared_active_budget = std::chrono::seconds(1),
+        .declared_terminal_bytes = 4096,
+    });
+    return workset;
+}
+
+class ScopedTemporaryDirectory
+{
+public:
+    explicit ScopedTemporaryDirectory(std::string_view label)
+    {
+        const auto nonce = std::chrono::steady_clock::now()
+            .time_since_epoch()
+            .count();
+        path_ = std::filesystem::temp_directory_path() /
+            ("savor_" + std::string(label) + "_" +
+             std::to_string(nonce));
+        std::filesystem::create_directories(path_);
+    }
+
+    ~ScopedTemporaryDirectory()
+    {
+        std::error_code error;
+        std::filesystem::remove_all(path_, error);
+    }
+
+    ScopedTemporaryDirectory(const ScopedTemporaryDirectory&) = delete;
+    ScopedTemporaryDirectory& operator=(
+        const ScopedTemporaryDirectory&) = delete;
+
+    [[nodiscard]] const std::filesystem::path& path() const noexcept
+    {
+        return path_;
+    }
+
+private:
+    std::filesystem::path path_;
+};
+
+std::string Sha256FileStreaming(const std::filesystem::path& path)
+{
+    std::ifstream input(path, std::ios::binary);
+    if (!input)
+    {
+        throw std::runtime_error(
+            "Could not open fixture for SHA-256: " +
+            path.string());
+    }
+
+    mbedtls_sha256_context context;
+    mbedtls_sha256_init(&context);
+    const auto release = [&context]() {
+        mbedtls_sha256_free(&context);
+    };
+    if (mbedtls_sha256_starts_ret(&context, 0) != 0)
+    {
+        release();
+        throw std::runtime_error("Could not initialize SHA-256");
+    }
+    std::vector<unsigned char> bytes(1024 * 1024);
+    while (input)
+    {
+        input.read(
+            reinterpret_cast<char*>(bytes.data()),
+            static_cast<std::streamsize>(bytes.size()));
+        const std::streamsize count = input.gcount();
+        if (count > 0 &&
+            mbedtls_sha256_update_ret(
+                &context,
+                bytes.data(),
+                static_cast<std::size_t>(count)) != 0)
+        {
+            release();
+            throw std::runtime_error("Could not update SHA-256");
+        }
+    }
+    if (!input.eof())
+    {
+        release();
+        throw std::runtime_error(
+            "Could not read fixture for SHA-256: " +
+            path.string());
+    }
+    std::array<unsigned char, 32> digest{};
+    if (mbedtls_sha256_finish_ret(
+            &context,
+            digest.data()) != 0)
+    {
+        release();
+        throw std::runtime_error("Could not finalize SHA-256");
+    }
+    release();
+
+    static constexpr char kHex[] = "0123456789abcdef";
+    std::string result(64, '\0');
+    for (std::size_t index = 0; index < digest.size(); ++index)
+    {
+        result[index * 2] = kHex[digest[index] >> 4];
+        result[index * 2 + 1] =
+            kHex[digest[index] & 0x0f];
+    }
+    return result;
+}
+
+struct DevelopmentNoEffectProgram
+{
+    savor::runtime::EncodedModuleEnvelope module;
+    savor::runtime::program::ProgramInvocation invocation;
+    std::vector<std::uint8_t> encoded_invocation;
+};
+
+DevelopmentNoEffectProgram MakeDevelopmentNoEffectProgram(
+    std::string baseline_lineage)
+{
+    using namespace savor::runtime;
+    using namespace savor::runtime::program;
+
+    const ProgramBudgets budgets{
+        .maximum_instructions = 16,
+        .maximum_calls = 4,
+        .maximum_call_depth = 2,
+        .maximum_action_requests = 1,
+        .maximum_emissions = 1,
+        .maximum_artifacts = 1,
+        .maximum_values = 16,
+        .maximum_value_bytes = 1024,
+        .maximum_trace_events = 16,
+        .active_deadline_milliseconds = 10000,
+    };
+    const ProgramPolicySet policies{
+        .state_policies = {
+            InvocationStatePolicy::RestoreBaseline},
+        .execution_intents = {ExecutionIntent::Live},
+        .permits_state_replacement = true,
+    };
+    ProgramModule module{
+        .identity = {
+            .canonical_id = "test.workset.no_effect/1",
+            .revision = 1,
+        },
+        .ir_version = kCanonicalIrVersionV1,
+        .entrypoints = {
+            ProgramEntrypoint{
+                .name = "run",
+                .function = ProgramFunctionId{1},
+                .input_type =
+                    TypeRef::Builtin(BuiltinType::U32),
+                .output_type =
+                    TypeRef::Builtin(BuiltinType::U32),
+                .domain_outcome_type =
+                    TypeRef::Builtin(BuiltinType::Bool),
+                .accepted_policies = policies,
+            },
+        },
+        .functions = {
+            ProgramFunction{
+                .id = ProgramFunctionId{1},
+                .name = "run",
+                .arguments = {
+                    ValueDefinition{
+                        .id = ProgramValueId{1},
+                        .type =
+                            TypeRef::Builtin(BuiltinType::U32),
+                    },
+                },
+                .output_type =
+                    TypeRef::Builtin(BuiltinType::U32),
+                .domain_outcome_type =
+                    TypeRef::Builtin(BuiltinType::Bool),
+                .entry_block = ProgramBlockId{1},
+                .blocks = {
+                    BasicBlock{
+                        .id = ProgramBlockId{1},
+                        .instructions = {
+                            Instruction{
+                                .id = ProgramInstructionId{1},
+                                .opcode =
+                                    InstructionOpcode::Constant,
+                                .source_location =
+                                    ProgramSourceLocationId{1},
+                                .result = ValueDefinition{
+                                    .id = ProgramValueId{2},
+                                    .type = TypeRef::Builtin(
+                                        BuiltinType::Bool),
+                                },
+                                .literal = LiteralValue{
+                                    .type = TypeRef::Builtin(
+                                        BuiltinType::Bool),
+                                    .payload = true,
+                                },
+                            },
+                        },
+                        .terminator = Terminator{
+                            .kind = TerminatorKind::Return,
+                            .source_location =
+                                ProgramSourceLocationId{2},
+                            .return_value = ProgramValueId{1},
+                            .domain_outcome = ProgramValueId{2},
+                        },
+                    },
+                },
+                .exported = true,
+            },
+        },
+        .accepted_policies = policies,
+        .budgets = budgets,
+        .source_map = {
+            .version = 1,
+            .entries = {
+                SourceMapEntry{
+                    .id = ProgramSourceLocationId{1},
+                    .function = ProgramFunctionId{1},
+                    .block = ProgramBlockId{1},
+                    .instruction = ProgramInstructionId{1},
+                    .source_name =
+                        "process-worker-workset-smoke",
+                    .semantic_path = "run.domain",
+                },
+                SourceMapEntry{
+                    .id = ProgramSourceLocationId{2},
+                    .function = ProgramFunctionId{1},
+                    .block = ProgramBlockId{1},
+                    .source_name =
+                        "process-worker-workset-smoke",
+                    .semantic_path = "run.return",
+                },
+            },
+        },
+    };
+    module.identity.module_hash =
+        ComputeProgramModuleHashV1(module);
+    const EncodeResult encoded_module =
+        EncodeProgramModuleV1(module);
+    if (!encoded_module)
+    {
+        throw std::runtime_error(
+            "Could not encode the development no-effect module: " +
+            encoded_module.status.message);
+    }
+
+    ProgramInvocation invocation{
+        .invocation_id = InvocationId{7001},
+        .attempt_id = AttemptId{8001},
+        .module = module.identity,
+        .entrypoint = "run",
+        .dependencies = {
+            .ir_version = kCanonicalIrVersionV1,
+        },
+        .runtime_profile = {
+            .profile_id = "soa-usa-jit64-v1",
+            .game_id = std::string(
+                capabilities::kSupportedGameId),
+            .disc_identity = std::string(
+                capabilities::kSupportedGameId),
+            .executable_identity = std::string(
+                capabilities::kSupportedExecutableIdentity),
+            .backend = "jit64",
+        },
+        .state = {
+            .policy = InvocationStatePolicy::RestoreBaseline,
+            .session_lineage = std::move(baseline_lineage),
+        },
+        .execution = {
+            .intent = ExecutionIntent::Live,
+        },
+        .input = {
+            .root = ProgramValueId{1},
+            .values = {
+                ProgramValue{
+                    .id = ProgramValueId{1},
+                    .type =
+                        TypeRef::Builtin(BuiltinType::U32),
+                    .payload = std::uint32_t{0},
+                },
+            },
+        },
+        .limits = budgets,
+        .provenance = {
+            .requesting_component =
+                "ProcessWorkerV1.RealWorksetSmoke",
+        },
+    };
+    const EncodeResult encoded_invocation =
+        EncodeProgramInvocationV1(invocation);
+    if (!encoded_invocation)
+    {
+        throw std::runtime_error(
+            "Could not encode the development no-effect invocation: " +
+            encoded_invocation.status.message);
+    }
+
+    return {
+        .module = {
+            .identity = {
+                .canonical_id = module.identity.canonical_id,
+                .revision = module.identity.revision,
+                .canonical_hash =
+                    module.identity.module_hash.ToHex(),
+            },
+            .format_version = kProgramCodecVersionV1,
+            .development_only = true,
+            .payload = encoded_module.bytes,
+        },
+        .invocation = std::move(invocation),
+        .encoded_invocation = encoded_invocation.bytes,
+    };
+}
+
 void ExpectErrorContains(const savor::ProcessWorker& worker, const char* expected)
 {
     const auto error = worker.last_error();
@@ -278,6 +830,83 @@ TEST(ProcessWorkerV1, StopIsIdempotentWithoutAStartedProcess)
     EXPECT_FALSE(worker.is_running());
 }
 
+TEST(ProcessWorkerV1, ConcurrentStopWaitsForTheOwningStopToComplete)
+{
+    std::latch first_stop_entered{1};
+    std::latch release_first_stop{1};
+    auto hooks = std::make_shared<savor::ProcessWorkerTestHooks>();
+    hooks->stop_acceptance_closed = [&]()
+    {
+        first_stop_entered.count_down();
+        release_first_stop.wait();
+    };
+    savor::ProcessWorker worker{hooks};
+
+    std::thread first([&]() { worker.stop(); });
+    first_stop_entered.wait();
+
+    std::promise<void> second_returned;
+    auto second_future = second_returned.get_future();
+    std::thread second([&]()
+    {
+        worker.stop();
+        second_returned.set_value();
+    });
+    EXPECT_EQ(
+        second_future.wait_for(std::chrono::milliseconds(25)),
+        std::future_status::timeout);
+
+    release_first_stop.count_down();
+    first.join();
+    second.join();
+    EXPECT_EQ(
+        second_future.wait_for(std::chrono::seconds(1)),
+        std::future_status::ready);
+    EXPECT_TRUE(worker.last_stop_snapshot().already_stopping);
+}
+
+TEST(
+    ProcessWorkerV1,
+    CallbackCleanupGraceIsReportedSeparatelyButStillJoinsSafely)
+{
+    auto hooks = std::make_shared<savor::ProcessWorkerTestHooks>();
+    hooks->callback_cleanup_grace = std::chrono::milliseconds(1);
+    savor::ProcessWorker worker{hooks};
+
+    std::latch callback_entered{1};
+    std::latch release_callback{1};
+    worker.set_workset_credits_callback(
+        [&](const savor::wrms::WorksetCreditsPayload&)
+        {
+            callback_entered.count_down();
+            release_callback.wait();
+        });
+    ASSERT_TRUE(savor::ProcessWorkerTestPeer::DeliverPayload(
+        worker,
+        savor::wrms::MessageKind::WorksetCredits,
+        savor::wrms::WorksetCreditsPayload{
+            .outbound_sequence = 1}));
+    callback_entered.wait();
+
+    std::promise<void> stop_returned;
+    auto stop_future = stop_returned.get_future();
+    std::thread stopper([&]()
+    {
+        worker.stop();
+        stop_returned.set_value();
+    });
+    EXPECT_EQ(
+        stop_future.wait_for(std::chrono::milliseconds(25)),
+        std::future_status::timeout);
+    release_callback.count_down();
+    stopper.join();
+
+    const auto stopped = worker.last_stop_snapshot();
+    EXPECT_TRUE(stopped.callback_cleanup_timed_out);
+    EXPECT_TRUE(stopped.callback_dispatcher_joined);
+    EXPECT_FALSE(stopped.graceful);
+}
+
 TEST(ProcessWorkerV1, ExecutionControlsFailLocallyWithoutNegotiatedCapability)
 {
     savor::ProcessWorker worker;
@@ -290,8 +919,771 @@ TEST(ProcessWorkerV1, ExecutionControlsFailLocallyWithoutNegotiatedCapability)
     ExpectErrorContains(worker, "does not advertise");
     EXPECT_FALSE(worker.step_guest_frames(session, epoch, 1));
     ExpectErrorContains(worker, "does not advertise");
-    EXPECT_FALSE(worker.step_guest_instructions(session, epoch, 1));
-    ExpectErrorContains(worker, "does not advertise");
+}
+
+TEST(ProcessWorkerV1, ScalarInvocationSubmissionFailsLocallyWithoutWriting)
+{
+    std::atomic<unsigned> observed_writes{0};
+    auto hooks = std::make_shared<savor::ProcessWorkerTestHooks>();
+    hooks->observe_writer_frame =
+        [&](savor::wrms::MessageKind,
+            std::span<const std::uint8_t>) {
+            observed_writes.fetch_add(1, std::memory_order_relaxed);
+        };
+    savor::ProcessWorker worker{hooks};
+    savor::wrms::CommandResultPayload result;
+    EXPECT_FALSE(worker.submit_encoded_invocation(
+        savor::runtime::EncodedInvocationEnvelope{},
+        &result));
+    EXPECT_EQ(
+        result.command_kind,
+        savor::wrms::MessageKind::SubmitInvocation);
+    EXPECT_EQ(result.status, savor::wrms::CommandStatus::Unsupported);
+    EXPECT_EQ(observed_writes.load(std::memory_order_relaxed), 0u);
+    ExpectErrorContains(worker, "one-item WorkerWorkset");
+}
+
+TEST(
+    ProcessWorkerV1,
+    WorksetSubmitOutcomeDistinguishesLocalRejectionAcceptedAndAmbiguous)
+{
+    {
+        savor::ProcessWorker worker;
+        const auto outcome =
+            worker.submit_workset_with_outcome(
+                savor::runtime::WorkerWorksetDefinition{});
+        EXPECT_EQ(
+            outcome.disposition,
+            savor::ProcessWorksetSubmitDisposition::DefiniteRejected);
+        EXPECT_FALSE(outcome.request_frame_written);
+        EXPECT_FALSE(outcome.correlated_result_received);
+    }
+
+    {
+        savor::ProcessWorker* worker_ptr = nullptr;
+        auto hooks = std::make_shared<savor::ProcessWorkerTestHooks>();
+        hooks->observe_writer_frame =
+            [&](savor::wrms::MessageKind kind,
+                std::span<const std::uint8_t> bytes)
+            {
+                if (kind != savor::wrms::MessageKind::SubmitWorkset ||
+                    !worker_ptr)
+                {
+                    return;
+                }
+                const auto frame =
+                    savor::wrms::DecodeFrame(bytes, true);
+                ASSERT_TRUE(frame);
+                ASSERT_TRUE(
+                    savor::ProcessWorkerTestPeer::DeliverPayload(
+                        *worker_ptr,
+                        savor::wrms::MessageKind::CommandResult,
+                        savor::wrms::CommandResultPayload{
+                            .command_sequence = 1,
+                            .command_kind =
+                                savor::wrms::MessageKind::SubmitWorkset,
+                            .status =
+                                savor::wrms::CommandStatus::Succeeded},
+                        frame.frame.header.request_id));
+            };
+        savor::ProcessWorker worker{hooks};
+        worker_ptr = &worker;
+        ASSERT_TRUE(
+            savor::ProcessWorkerTestPeer::StartNegotiatedVisualTransport(
+                worker,
+                savor::runtime::SessionId{55},
+                savor::runtime::StateEpoch{4}));
+        const auto outcome =
+            worker.submit_workset_with_outcome(
+                MakeTransportTestWorkset(),
+                1000);
+        EXPECT_EQ(
+            outcome.disposition,
+            savor::ProcessWorksetSubmitDisposition::Accepted);
+        EXPECT_TRUE(outcome.request_frame_written);
+        EXPECT_TRUE(outcome.correlated_result_received);
+        savor::ProcessWorkerTestPeer::StopNegotiatedVisualTransport(
+            worker);
+    }
+
+    {
+        savor::ProcessWorker* worker_ptr = nullptr;
+        auto hooks = std::make_shared<savor::ProcessWorkerTestHooks>();
+        hooks->observe_writer_frame =
+            [&](savor::wrms::MessageKind kind,
+                std::span<const std::uint8_t> bytes)
+            {
+                if (kind != savor::wrms::MessageKind::SubmitWorkset ||
+                    !worker_ptr)
+                {
+                    return;
+                }
+                const auto frame =
+                    savor::wrms::DecodeFrame(bytes, true);
+                ASSERT_TRUE(frame);
+                ASSERT_TRUE(
+                    savor::ProcessWorkerTestPeer::DeliverPayload(
+                        *worker_ptr,
+                        savor::wrms::MessageKind::CommandResult,
+                        savor::wrms::CommandResultPayload{
+                            .command_sequence = 1,
+                            .command_kind =
+                                savor::wrms::MessageKind::SubmitWorkset,
+                            .status =
+                                savor::wrms::CommandStatus::Rejected,
+                            .rejection_code =
+                                savor::wrms::RejectionCode::CapacityExceeded,
+                            .error_code = "CapacityExceeded",
+                            .message = "resident item capacity exhausted"},
+                        frame.frame.header.request_id));
+            };
+        savor::ProcessWorker worker{hooks};
+        worker_ptr = &worker;
+        ASSERT_TRUE(
+            savor::ProcessWorkerTestPeer::StartNegotiatedVisualTransport(
+                worker,
+                savor::runtime::SessionId{55},
+                savor::runtime::StateEpoch{4}));
+        const auto outcome =
+            worker.submit_workset_with_outcome(
+                MakeTransportTestWorkset(),
+                1000);
+        EXPECT_EQ(
+            outcome.disposition,
+            savor::ProcessWorksetSubmitDisposition::DefiniteRejected);
+        EXPECT_TRUE(outcome.request_frame_written);
+        EXPECT_TRUE(outcome.correlated_result_received);
+        EXPECT_EQ(
+            outcome.result.rejection_code,
+            savor::wrms::RejectionCode::CapacityExceeded);
+        savor::ProcessWorkerTestPeer::StopNegotiatedVisualTransport(
+            worker);
+    }
+
+    {
+        savor::ProcessWorker* worker_ptr = nullptr;
+        auto hooks = std::make_shared<savor::ProcessWorkerTestHooks>();
+        hooks->after_writer_write =
+            [&](savor::wrms::MessageKind kind, bool succeeded)
+            {
+                if (kind ==
+                        savor::wrms::MessageKind::SubmitWorkset &&
+                    succeeded &&
+                    worker_ptr)
+                {
+                    savor::ProcessWorkerTestPeer::FailPendingTransport(
+                        *worker_ptr);
+                }
+            };
+        savor::ProcessWorker worker{hooks};
+        worker_ptr = &worker;
+        ASSERT_TRUE(
+            savor::ProcessWorkerTestPeer::StartNegotiatedVisualTransport(
+                worker,
+                savor::runtime::SessionId{55},
+                savor::runtime::StateEpoch{4}));
+        const auto outcome =
+            worker.submit_workset_with_outcome(
+                MakeTransportTestWorkset(),
+                1000);
+        EXPECT_EQ(
+            outcome.disposition,
+            savor::ProcessWorksetSubmitDisposition::AmbiguousAfterWrite);
+        EXPECT_TRUE(outcome.request_frame_written);
+        EXPECT_FALSE(outcome.correlated_result_received);
+        savor::ProcessWorkerTestPeer::StopNegotiatedVisualTransport(
+            worker);
+    }
+}
+
+TEST(
+    ProcessWorkerV1,
+    WorksetTerminalCallbackRunsOffReaderPathAndCanSynchronouslyAcknowledge)
+{
+    savor::ProcessWorker* worker_ptr = nullptr;
+    auto hooks = std::make_shared<savor::ProcessWorkerTestHooks>();
+    hooks->observe_writer_frame =
+        [&](savor::wrms::MessageKind kind,
+            std::span<const std::uint8_t> bytes) {
+            if (kind !=
+                    savor::wrms::MessageKind::AcknowledgeTerminal ||
+                !worker_ptr)
+                return;
+            const auto frame = savor::wrms::DecodeFrame(bytes, true);
+            ASSERT_TRUE(frame);
+            savor::wrms::AcknowledgeTerminalPayload acknowledgement;
+            ASSERT_TRUE(savor::wrms::DecodePayload(
+                frame.frame.payload,
+                acknowledgement));
+            EXPECT_EQ(acknowledgement.terminal_id, 900u);
+            EXPECT_EQ(acknowledgement.workset_id, 500u);
+            EXPECT_EQ(acknowledgement.item_id, 3u);
+            EXPECT_EQ(acknowledgement.item_ordinal, 2u);
+            EXPECT_EQ(acknowledgement.invocation_id, 101u);
+            EXPECT_EQ(acknowledgement.attempt_id, 7u);
+            EXPECT_EQ(acknowledgement.terminal_order, 44u);
+            ASSERT_TRUE(savor::ProcessWorkerTestPeer::DeliverPayload(
+                *worker_ptr,
+                savor::wrms::MessageKind::CommandResult,
+                savor::wrms::CommandResultPayload{
+                    .command_sequence = 77,
+                    .command_kind =
+                        savor::wrms::MessageKind::AcknowledgeTerminal,
+                    .status =
+                        savor::wrms::CommandStatus::Succeeded,
+                },
+                frame.frame.header.request_id));
+        };
+
+    savor::ProcessWorker worker{hooks};
+    worker_ptr = &worker;
+    ASSERT_TRUE(
+        savor::ProcessWorkerTestPeer::StartNegotiatedVisualTransport(
+            worker,
+            savor::runtime::SessionId{55},
+            savor::runtime::StateEpoch{4}));
+
+    const std::thread::id delivery_thread = std::this_thread::get_id();
+    auto callback_result =
+        std::make_shared<std::promise<std::pair<bool, bool>>>();
+    auto callback_future = callback_result->get_future();
+    worker.set_workset_item_terminal_callback(
+        [&](const savor::wrms::WorksetItemTerminalPayload& terminal) {
+            savor::runtime::WorkerItemTerminalCorrelation correlation{
+                savor::runtime::WorkerWorksetId{terminal.workset_id},
+                savor::runtime::WorkerWorksetItemId{terminal.item_id},
+                terminal.item_ordinal,
+                savor::runtime::InvocationId{terminal.invocation_id},
+                savor::runtime::AttemptId{terminal.attempt_id},
+                savor::runtime::WorkerTerminalId{terminal.terminal_id},
+                savor::runtime::WorkerTerminalOrder{
+                    terminal.terminal_order},
+            };
+            const bool off_delivery_thread =
+                std::this_thread::get_id() != delivery_thread;
+            const bool acknowledged =
+                worker.acknowledge_terminal(correlation, nullptr, 1000);
+            callback_result->set_value(
+                {off_delivery_thread, acknowledged});
+        });
+
+    ASSERT_TRUE(savor::ProcessWorkerTestPeer::DeliverPayload(
+        worker,
+        savor::wrms::MessageKind::WorksetItemTerminal,
+        savor::wrms::WorksetItemTerminalPayload{
+            .outbound_sequence = 1,
+            .workset_id = 500,
+            .item_id = 3,
+            .item_ordinal = 2,
+            .invocation_id = 101,
+            .attempt_id = 7,
+            .terminal_id = 900,
+            .terminal_order = 44,
+            .status =
+                savor::wrms::InvocationTerminalStatus::Succeeded,
+            .session_disposition =
+                savor::wrms::SessionDispositionCode::Clean,
+            .state_epoch = 4,
+        }));
+    ASSERT_EQ(
+        callback_future.wait_for(std::chrono::seconds(2)),
+        std::future_status::ready);
+    const auto [off_delivery_thread, acknowledged] =
+        callback_future.get();
+    EXPECT_TRUE(off_delivery_thread);
+    EXPECT_TRUE(acknowledged);
+
+    savor::ProcessWorkerTestPeer::StopNegotiatedVisualTransport(worker);
+}
+
+TEST(
+    ProcessWorkerV1,
+    WorksetEventsRequireExactMonotonicOutboundSequence)
+{
+    savor::ProcessWorker worker;
+    ASSERT_TRUE(savor::ProcessWorkerTestPeer::DeliverPayload(
+        worker,
+        savor::wrms::MessageKind::WorksetCredits,
+        savor::wrms::WorksetCreditsPayload{
+            .outbound_sequence = 1,
+            .available_item_credits = 4,
+        }));
+    EXPECT_EQ(worker.latest_snapshot().last_outbound_sequence, 1u);
+
+    ASSERT_TRUE(savor::ProcessWorkerTestPeer::DeliverPayload(
+        worker,
+        savor::wrms::MessageKind::WorksetCredits,
+        savor::wrms::WorksetCreditsPayload{
+            .outbound_sequence = 1,
+            .available_item_credits = 3,
+        }));
+    EXPECT_TRUE(worker.is_failed());
+    ExpectErrorContains(worker, "duplicated");
+}
+
+TEST(ProcessWorkerV1, DuplicateCorrelatedCommandResultFailsProtocol)
+{
+    savor::ProcessWorker worker;
+    EXPECT_TRUE(
+        savor::ProcessWorkerTestPeer::DeliverDuplicateCommandResult(
+            worker,
+            77,
+            savor::wrms::MessageKind::SubmitWorkset));
+    ExpectErrorContains(worker, "exact pending request");
+}
+
+TEST(ProcessWorkerV1, NegotiatedButExitedTransportIsNotReady)
+{
+    savor::ProcessWorker worker;
+    savor::ProcessWorkerTestPeer::MarkNegotiatedTransportStopped(
+        worker);
+    EXPECT_FALSE(worker.is_ready());
+    EXPECT_TRUE(worker.is_failed());
+}
+
+TEST(
+    ProcessWorkerV1,
+    WorksetEventsRejectZeroGapAndRegression)
+{
+    {
+        savor::ProcessWorker worker;
+        ASSERT_TRUE(savor::ProcessWorkerTestPeer::DeliverPayload(
+            worker,
+            savor::wrms::MessageKind::WorksetCredits,
+            savor::wrms::WorksetCreditsPayload{
+                .outbound_sequence = 0}));
+        EXPECT_TRUE(worker.is_failed());
+        ExpectErrorContains(worker, "zero");
+    }
+    {
+        savor::ProcessWorker worker;
+        ASSERT_TRUE(savor::ProcessWorkerTestPeer::DeliverPayload(
+            worker,
+            savor::wrms::MessageKind::WorksetCredits,
+            savor::wrms::WorksetCreditsPayload{
+                .outbound_sequence = 2}));
+        EXPECT_TRUE(worker.is_failed());
+        ExpectErrorContains(worker, "gap");
+    }
+    {
+        savor::ProcessWorker worker;
+        ASSERT_TRUE(savor::ProcessWorkerTestPeer::DeliverPayload(
+            worker,
+            savor::wrms::MessageKind::WorksetCredits,
+            savor::wrms::WorksetCreditsPayload{
+                .outbound_sequence = 1}));
+        ASSERT_TRUE(savor::ProcessWorkerTestPeer::DeliverPayload(
+            worker,
+            savor::wrms::MessageKind::WorksetCredits,
+            savor::wrms::WorksetCreditsPayload{
+                .outbound_sequence = 2}));
+        ASSERT_TRUE(savor::ProcessWorkerTestPeer::DeliverPayload(
+            worker,
+            savor::wrms::MessageKind::WorksetCredits,
+            savor::wrms::WorksetCreditsPayload{
+                .outbound_sequence = 1}));
+        EXPECT_TRUE(worker.is_failed());
+        ExpectErrorContains(worker, "regressed");
+    }
+}
+
+TEST(
+    ProcessWorkerV1,
+    AuthoritativeWorksetCallbackPressureFailsInsteadOfDropping)
+{
+    savor::ProcessWorker worker;
+    std::promise<void> callback_entered;
+    auto callback_entered_future = callback_entered.get_future();
+    std::latch release_callback{1};
+    std::atomic<bool> first_callback{true};
+    worker.set_workset_credits_callback(
+        [&](const savor::wrms::WorksetCreditsPayload&)
+        {
+            if (first_callback.exchange(false, std::memory_order_acq_rel))
+            {
+                callback_entered.set_value();
+                release_callback.wait();
+            }
+        });
+
+    ASSERT_TRUE(savor::ProcessWorkerTestPeer::DeliverPayload(
+        worker,
+        savor::wrms::MessageKind::WorksetCredits,
+        savor::wrms::WorksetCreditsPayload{
+            .outbound_sequence = 1}));
+    const auto entered =
+        callback_entered_future.wait_for(std::chrono::seconds(1));
+    if (entered != std::future_status::ready)
+    {
+        release_callback.count_down();
+        FAIL() << "callback dispatcher did not start";
+    }
+
+    for (std::uint64_t sequence = 2; sequence <= 129; ++sequence)
+    {
+        ASSERT_TRUE(savor::ProcessWorkerTestPeer::DeliverPayload(
+            worker,
+            savor::wrms::MessageKind::WorksetCredits,
+            savor::wrms::WorksetCreditsPayload{
+                .outbound_sequence = sequence}));
+    }
+    ASSERT_TRUE(savor::ProcessWorkerTestPeer::DeliverPayload(
+        worker,
+        savor::wrms::MessageKind::WorksetCredits,
+        savor::wrms::WorksetCreditsPayload{
+            .outbound_sequence = 130}));
+    EXPECT_TRUE(worker.is_failed());
+    ExpectErrorContains(worker, "callback queue is full");
+    release_callback.count_down();
+}
+
+TEST(ProcessWorkerV1, ThrowingAuthoritativeCallbackFailsProtocol)
+{
+    savor::ProcessWorker worker;
+    worker.set_workset_credits_callback(
+        [](const savor::wrms::WorksetCreditsPayload&)
+        {
+            throw std::runtime_error("authoritative callback failure");
+        });
+    ASSERT_TRUE(savor::ProcessWorkerTestPeer::DeliverPayload(
+        worker,
+        savor::wrms::MessageKind::WorksetCredits,
+        savor::wrms::WorksetCreditsPayload{
+            .outbound_sequence = 1}));
+    savor::ProcessWorkerTestPeer::DrainCallbacks(worker);
+    EXPECT_TRUE(savor::ProcessWorkerTestPeer::ProtocolFailed(worker));
+    ExpectErrorContains(worker, "authoritative worker event callback threw");
+}
+
+TEST(ProcessWorkerV1, ThrowingPassiveCallbackDoesNotFailProtocol)
+{
+    savor::ProcessWorker worker;
+    worker.set_host_event_callback(
+        [](const savor::wrms::HostEventPayload&)
+        {
+            throw std::runtime_error("passive callback failure");
+        });
+    ASSERT_TRUE(savor::ProcessWorkerTestPeer::DeliverPayload(
+        worker,
+        savor::wrms::MessageKind::HostEvent,
+        savor::wrms::HostEventPayload{
+            .name = "passive"}));
+    savor::ProcessWorkerTestPeer::DrainCallbacks(worker);
+    EXPECT_FALSE(savor::ProcessWorkerTestPeer::ProtocolFailed(worker));
+    ExpectErrorContains(worker, "passive worker event callback threw");
+}
+
+TEST(
+    ProcessWorkerV1,
+    OlderWorksetSummaryDoesNotReleaseSlotWhileSuccessorIsResident)
+{
+    savor::ProcessWorker worker;
+    savor::ProcessWorkerTestPeer::SetBusyWorksetResidency(
+        worker,
+        savor::runtime::WorkerWorksetId{10},
+        savor::runtime::WorkerWorksetId{20});
+
+    ASSERT_TRUE(savor::ProcessWorkerTestPeer::DeliverPayload(
+        worker,
+        savor::wrms::MessageKind::WorksetSummary,
+        savor::wrms::WorksetSummaryPayload{
+            .outbound_sequence = 1,
+            .workset_id = 10,
+            .item_count = 1,
+            .completed_count = 1}));
+    EXPECT_TRUE(savor::ProcessWorkerTestPeer::Busy(worker));
+    EXPECT_EQ(
+        worker.latest_snapshot().staged_workset,
+        savor::runtime::WorkerWorksetId{20});
+
+    ASSERT_TRUE(savor::ProcessWorkerTestPeer::DeliverPayload(
+        worker,
+        savor::wrms::MessageKind::WorksetSummary,
+        savor::wrms::WorksetSummaryPayload{
+            .outbound_sequence = 2,
+            .workset_id = 20,
+            .item_count = 1,
+            .completed_count = 1}));
+    EXPECT_FALSE(savor::ProcessWorkerTestPeer::Busy(worker));
+}
+
+TEST(ProcessWorkerV1, PinsOneProcessHelloToTheLaunchedIdentity)
+{
+    {
+        savor::ProcessWorker worker;
+        savor::ProcessWorkerTestPeer::ConfigureExpectedHello(
+            worker,
+            17,
+            4242);
+        const savor::wrms::ProcessHelloPayload hello{
+            .worker_id = 17,
+            .process_id = 4242,
+            .capability_mask = 1,
+            .build_identity = "test"};
+        ASSERT_TRUE(savor::ProcessWorkerTestPeer::DeliverPayload(
+            worker,
+            savor::wrms::MessageKind::ProcessHello,
+            hello));
+        EXPECT_FALSE(worker.is_failed());
+        ASSERT_TRUE(savor::ProcessWorkerTestPeer::DeliverPayload(
+            worker,
+            savor::wrms::MessageKind::ProcessHello,
+            hello));
+        EXPECT_TRUE(worker.is_failed());
+        ExpectErrorContains(worker, "more than one");
+    }
+    {
+        savor::ProcessWorker worker;
+        savor::ProcessWorkerTestPeer::ConfigureExpectedHello(
+            worker,
+            17,
+            4242);
+        ASSERT_TRUE(savor::ProcessWorkerTestPeer::DeliverPayload(
+            worker,
+            savor::wrms::MessageKind::ProcessHello,
+            savor::wrms::ProcessHelloPayload{
+                .worker_id = 18,
+                .process_id = 4242,
+                .build_identity = "wrong-worker"}));
+        EXPECT_TRUE(worker.is_failed());
+        ExpectErrorContains(worker, "launched worker process");
+    }
+}
+
+TEST(
+    ProcessWorkerV1,
+    RuntimeManifestAdvancementCannotChangeNegotiatedImmutableFields)
+{
+    savor::ProcessWorker worker;
+    auto initial = MakeTransportTestManifest(1);
+    ASSERT_TRUE(savor::ProcessWorkerTestPeer::DeliverRuntimeManifest(
+        worker,
+        initial));
+    ASSERT_FALSE(worker.is_failed());
+
+    auto changed = initial;
+    changed.catalog_generation = 2;
+    changed.runtime_profile_sha256 = std::string(64, 'c');
+    ASSERT_TRUE(savor::ProcessWorkerTestPeer::DeliverRuntimeManifest(
+        worker,
+        changed));
+    EXPECT_TRUE(worker.is_failed());
+    ExpectErrorContains(worker, "immutable negotiated fields");
+}
+
+TEST(
+    ProcessWorkerV1,
+    PrepareModuleSuccessRequiresExactRuntimeManifestBarrier)
+{
+    const savor::runtime::EncodedModuleEnvelope module{
+        .identity = {
+            .canonical_id = "test.manifest_barrier/1",
+            .revision = 1,
+            .canonical_hash = std::string(64, 'c'),
+        },
+        .format_version = 1,
+        .development_only = true,
+        .payload = {1, 2, 3},
+    };
+    auto initial = MakeTransportTestManifest(1);
+    auto advanced = initial;
+    advanced.catalog_generation = 2;
+    advanced.modules.push_back(
+        savor::runtime::RuntimeModuleManifestEntry{
+            .module = module.identity,
+            .entrypoints = {"run"},
+            .dependency_manifest_sha256 =
+                advanced.dependency_manifest_sha256,
+            .development_only = true,
+        });
+    advanced.catalog_sha256 =
+        savor::runtime::ComputeRuntimeCatalogHash(
+            advanced.modules,
+            advanced.catalog_status);
+
+    const auto run = [&](bool publish_manifest)
+    {
+        savor::ProcessWorker* worker_ptr = nullptr;
+        auto hooks =
+            std::make_shared<savor::ProcessWorkerTestHooks>();
+        hooks->observe_writer_frame =
+            [&](savor::wrms::MessageKind kind,
+                std::span<const std::uint8_t> bytes)
+            {
+                if (kind !=
+                        savor::wrms::MessageKind::PrepareModule ||
+                    !worker_ptr)
+                {
+                    return;
+                }
+                const auto frame =
+                    savor::wrms::DecodeFrame(bytes, true);
+                ASSERT_TRUE(frame);
+                if (publish_manifest)
+                {
+                    ASSERT_TRUE(
+                        savor::ProcessWorkerTestPeer::
+                            DeliverRuntimeManifest(
+                                *worker_ptr,
+                                advanced));
+                }
+                ASSERT_TRUE(
+                    savor::ProcessWorkerTestPeer::DeliverPayload(
+                        *worker_ptr,
+                        savor::wrms::MessageKind::CommandResult,
+                        savor::wrms::CommandResultPayload{
+                            .command_sequence = 4,
+                            .command_kind =
+                                savor::wrms::MessageKind::
+                                    PrepareModule,
+                            .status =
+                                savor::wrms::CommandStatus::
+                                    Succeeded,
+                        },
+                        frame.frame.header.request_id));
+            };
+
+        savor::ProcessWorker worker{hooks};
+        worker_ptr = &worker;
+        EXPECT_TRUE(
+            savor::ProcessWorkerTestPeer::
+                StartNegotiatedVisualTransport(
+                    worker,
+                    savor::runtime::SessionId{55},
+                    savor::runtime::StateEpoch{4}));
+        EXPECT_TRUE(
+            savor::ProcessWorkerTestPeer::DeliverRuntimeManifest(
+                worker,
+                initial));
+        const bool prepared = worker.prepare_encoded_module(
+            module,
+            nullptr,
+            1000);
+        const bool protocol_failed =
+            savor::ProcessWorkerTestPeer::ProtocolFailed(worker);
+        const std::string error = worker.last_error();
+        savor::ProcessWorkerTestPeer::StopNegotiatedVisualTransport(
+            worker);
+        return std::tuple{prepared, protocol_failed, error};
+    };
+
+    const auto [missing_prepared, missing_failed, missing_error] =
+        run(false);
+    EXPECT_FALSE(missing_prepared);
+    EXPECT_TRUE(missing_failed);
+    EXPECT_NE(
+        missing_error.find("exact RuntimeManifest module barrier"),
+        std::string::npos);
+
+    const auto [exact_prepared, exact_failed, exact_error] =
+        run(true);
+    EXPECT_TRUE(exact_prepared) << exact_error;
+    EXPECT_FALSE(exact_failed);
+}
+
+TEST(
+    ProcessWorkerV1,
+    UnsolicitedSpecialResponseFailsBeforeMutatingSessionSnapshot)
+{
+    savor::ProcessWorker worker;
+    const auto before = worker.latest_snapshot();
+    ASSERT_TRUE(savor::ProcessWorkerTestPeer::DeliverPayload(
+        worker,
+        savor::wrms::MessageKind::OpenSessionResult,
+        savor::wrms::OpenSessionResultPayload{
+            .success = true,
+            .session_id = 77,
+            .state_epoch = 9,
+            .worker_state = savor::wrms::WorkerStateCode::Ready,
+            .session_disposition =
+                savor::wrms::SessionDispositionCode::Clean},
+        991));
+    EXPECT_TRUE(worker.is_failed());
+    const auto after = worker.latest_snapshot();
+    EXPECT_EQ(after.session_open, before.session_open);
+    EXPECT_EQ(after.session_id, before.session_id);
+    EXPECT_EQ(after.state_epoch, before.state_epoch);
+    ExpectErrorContains(worker, "unsolicited");
+}
+
+TEST(
+    ProcessWorkerV1,
+    MalformedCorrelatedSpecialResponseFailsBeforeMutatingSessionSnapshot)
+{
+    savor::ProcessWorker worker;
+    constexpr std::uint64_t request_id = 992;
+    savor::ProcessWorkerTestPeer::AddPendingRequest(
+        worker,
+        request_id,
+        savor::wrms::MessageKind::OpenSession);
+    const auto before = worker.latest_snapshot();
+    const std::array<std::uint8_t, 1> malformed{0xff};
+    EXPECT_TRUE(savor::ProcessWorkerTestPeer::DeliverRaw(
+        worker,
+        savor::wrms::MessageKind::OpenSessionResult,
+        malformed,
+        request_id));
+    EXPECT_TRUE(worker.is_failed());
+    const auto after = worker.latest_snapshot();
+    EXPECT_EQ(after.session_open, before.session_open);
+    EXPECT_EQ(after.session_id, before.session_id);
+    EXPECT_EQ(after.state_epoch, before.state_epoch);
+    ExpectErrorContains(worker, "invalid");
+}
+
+TEST(ProcessWorkerV1, MalformedAuthoritativeWorksetEventFailsClosed)
+{
+    savor::ProcessWorker worker;
+    const std::array<std::uint8_t, 1> malformed{0xff};
+    EXPECT_TRUE(savor::ProcessWorkerTestPeer::DeliverRaw(
+        worker,
+        savor::wrms::MessageKind::WorksetItemTerminal,
+        malformed));
+    EXPECT_TRUE(worker.is_failed());
+    ExpectErrorContains(worker, "WorksetItemTerminal");
+}
+
+TEST(ProcessWorkerV1, CommandResultMustMatchExactSubmittedKind)
+{
+    savor::ProcessWorker worker;
+    EXPECT_TRUE(
+        savor::ProcessWorkerTestPeer::DeliverMismatchedCommandResult(
+            worker));
+    EXPECT_TRUE(worker.is_failed());
+    ExpectErrorContains(worker, "exact request kind");
+}
+
+TEST(
+    ProcessWorkerV1,
+    StopRequestedFromCallbackIsJoinedByOwningThread)
+{
+    savor::ProcessWorker worker;
+    auto stopped = std::make_shared<std::promise<void>>();
+    auto stopped_future = stopped->get_future();
+    worker.set_workset_credits_callback(
+        [&](const savor::wrms::WorksetCreditsPayload&)
+        {
+            worker.stop();
+            stopped->set_value();
+        });
+    ASSERT_TRUE(savor::ProcessWorkerTestPeer::DeliverPayload(
+        worker,
+        savor::wrms::MessageKind::WorksetCredits,
+        savor::wrms::WorksetCreditsPayload{
+            .outbound_sequence = 1,
+            .available_item_credits = 4,
+        }));
+    ASSERT_EQ(
+        stopped_future.wait_for(std::chrono::seconds(2)),
+        std::future_status::ready);
+    EXPECT_TRUE(
+        savor::ProcessWorkerTestPeer::CallbackDispatcherJoinable(
+            worker));
+
+    worker.stop();
+    EXPECT_FALSE(
+        savor::ProcessWorkerTestPeer::CallbackDispatcherJoinable(
+            worker));
 }
 
 TEST(
@@ -631,7 +2023,7 @@ TEST(ProcessWorkerV1, RejectedDuplicateOpenPreservesExistingSessionSnapshot)
         "the process already owns a session");
 }
 
-TEST(ProcessWorkerV1, RuntimeDiagnosticPreservesSessionAndCallbacksCarryAttemptId)
+TEST(ProcessWorkerV1, RuntimeDiagnosticPreservesSessionAndProgressCarriesAttemptId)
 {
     savor::ProcessWorker worker;
     ASSERT_TRUE(savor::ProcessWorkerTestPeer::DeliverOpenSessionResult(
@@ -677,11 +2069,8 @@ TEST(ProcessWorkerV1, RuntimeDiagnosticPreservesSessionAndCallbacksCarryAttemptI
         "late invocation event was ignored");
 
     std::optional<savor::wrms::InvocationProgressPayload> observed_progress;
-    std::optional<savor::wrms::InvocationTerminalPayload> observed_terminal;
     worker.set_invocation_progress_callback(
         [&](const auto& progress) { observed_progress = progress; });
-    worker.set_invocation_terminal_callback(
-        [&](const auto& terminal) { observed_terminal = terminal; });
 
     ASSERT_TRUE(savor::ProcessWorkerTestPeer::DeliverPayload(
         worker,
@@ -692,28 +2081,38 @@ TEST(ProcessWorkerV1, RuntimeDiagnosticPreservesSessionAndCallbacksCarryAttemptI
             .ordinal = 1,
             .progress = {1, 2},
         }));
+    savor::ProcessWorkerTestPeer::DrainCallbacks(worker);
+
+    ASSERT_TRUE(observed_progress.has_value());
+    EXPECT_EQ(observed_progress->invocation_id, 701u);
+    EXPECT_EQ(observed_progress->attempt_id, 801u);
+}
+
+TEST(
+    ProcessWorkerV1,
+    ScalarInvocationTerminalFailsProtocolWithoutReleasingWorksetSlot)
+{
+    savor::ProcessWorker worker;
+    savor::ProcessWorkerTestPeer::SetBusyWorksetResidency(
+        worker,
+        savor::runtime::WorkerWorksetId{55});
+
     ASSERT_TRUE(savor::ProcessWorkerTestPeer::DeliverPayload(
         worker,
         savor::wrms::MessageKind::InvocationTerminal,
         savor::wrms::InvocationTerminalPayload{
             .invocation_id = 701,
             .attempt_id = 801,
-            .status = savor::wrms::InvocationTerminalStatus::Failed,
+            .status =
+                savor::wrms::InvocationTerminalStatus::Succeeded,
             .session_disposition =
                 savor::wrms::SessionDispositionCode::Clean,
             .state_epoch = 10,
-            .rejection_code =
-                savor::wrms::RejectionCode::ProgramRuntimeUnavailable,
-            .error_code = "program_runtime_unavailable",
-            .message = "canonical ProgramRuntime is unavailable",
         }));
 
-    ASSERT_TRUE(observed_progress.has_value());
-    ASSERT_TRUE(observed_terminal.has_value());
-    EXPECT_EQ(observed_progress->invocation_id, 701u);
-    EXPECT_EQ(observed_progress->attempt_id, 801u);
-    EXPECT_EQ(observed_terminal->invocation_id, 701u);
-    EXPECT_EQ(observed_terminal->attempt_id, 801u);
+    EXPECT_TRUE(worker.is_failed());
+    EXPECT_TRUE(savor::ProcessWorkerTestPeer::Busy(worker));
+    ExpectErrorContains(worker, "scalar InvocationTerminal is retired");
 }
 
 TEST(ProcessWorkerV1, ExecutionStateUpdatesSnapshotAndUsesDedicatedCallback)
@@ -738,6 +2137,7 @@ TEST(ProcessWorkerV1, ExecutionStateUpdatesSnapshotAndUsesDedicatedCallback)
         worker,
         savor::wrms::MessageKind::ExecutionState,
         running));
+    savor::ProcessWorkerTestPeer::DrainCallbacks(worker);
 
     ASSERT_TRUE(observed.has_value());
     EXPECT_EQ(*observed, running);
@@ -890,19 +2290,50 @@ TEST(ProcessWorkerV1, NegotiatesSliceThreeCapabilitiesCorrelatesConcurrentReques
             .canonical_hash = "module-hash-14",
         },
         .format_version = 3,
+        .development_only = true,
         .payload = {1, 2, 3},
     };
-    const savor::runtime::EncodedInvocationEnvelope invocation{
-        .invocation_id = savor::runtime::InvocationId{101},
-        .attempt_id = savor::runtime::AttemptId{201},
-        .module = module.identity,
-        .entrypoint = "main",
-        .expected_state_epoch = savor::runtime::StateEpoch{41},
-        .input_payload = {4, 5, 6},
-    };
+    savor::runtime::WorkerWorksetDefinition workset;
+    workset.workset_id = savor::runtime::WorkerWorksetId{501};
+    workset.baseline.state_kind =
+        savor::runtime::ProgramBaselineStateKind::Boot;
+    workset.baseline.lineage = "process-worker-test";
+    workset.execution_key.module = module.identity;
+    workset.execution_key.entrypoint = "main";
+    workset.execution_key.verified_dependency_sha256 =
+        std::string(64, 'd');
+    workset.execution_key.runtime_profile_sha256 =
+        std::string(64, 'r');
+    workset.execution_key.baseline =
+        savor::runtime::ComputeProgramBaselineKey(workset.baseline);
+    workset.execution_key.movie_policy_sha256 =
+        std::string(64, 'm');
+    workset.execution_key.service_policy_sha256 =
+        std::string(64, 's');
+    workset.execution_key.canonical_sha256 =
+        savor::runtime::ComputeWorkerWorksetExecutionKeyHash(
+            workset.execution_key);
+    workset.items.push_back(savor::runtime::WorksetItemTemplate{
+        .item_id = savor::runtime::WorkerWorksetItemId{601},
+        .ordinal = 0,
+        .invocation = {
+            .invocation_id = savor::runtime::InvocationId{101},
+            .attempt_id = savor::runtime::AttemptId{201},
+            .module = module.identity,
+            .entrypoint = "main",
+            .template_payload = {4, 5, 6},
+        },
+        .declared_active_budget = std::chrono::seconds(1),
+        .correlation = {
+            .durable_job_id = "job-101",
+            .claim_token = "claim-101",
+        },
+    });
+    workset.encoded_size_bytes = 1024;
     std::mutex observed_mutex;
     std::optional<savor::wrms::PrepareModulePayload> observed_module;
-    std::optional<savor::wrms::SubmitInvocationPayload> observed_invocation;
+    std::optional<savor::runtime::WorkerWorksetDefinition>
+        observed_workset;
     auto hooks = std::make_shared<savor::ProcessWorkerTestHooks>();
     hooks->observe_writer_frame =
         [&](savor::wrms::MessageKind kind,
@@ -921,14 +2352,18 @@ TEST(ProcessWorkerV1, NegotiatesSliceThreeCapabilitiesCorrelatesConcurrentReques
                     observed_module = std::move(payload);
                 }
             }
-            else if (kind == savor::wrms::MessageKind::SubmitInvocation)
+            else if (kind == savor::wrms::MessageKind::SubmitWorkset)
             {
-                savor::wrms::SubmitInvocationPayload payload;
+                savor::wrms::SubmitWorksetPayload payload;
                 if (savor::wrms::DecodePayload(
                         decoded.frame.payload,
                         payload))
                 {
-                    observed_invocation = std::move(payload);
+                    savor::runtime::WorkerWorksetDefinition definition;
+                    if (savor::runtime::DecodeWorkerWorksetV1(
+                            payload.encoded_workset,
+                            definition))
+                        observed_workset = std::move(definition);
                 }
             }
         };
@@ -965,6 +2400,14 @@ TEST(ProcessWorkerV1, NegotiatesSliceThreeCapabilitiesCorrelatesConcurrentReques
     EXPECT_TRUE(savor::runtime::HasCapability(
         capabilities,
         savor::runtime::WorkerCapability::InteractiveVisualDebug));
+    EXPECT_TRUE(savor::runtime::HasCapability(
+        capabilities,
+        savor::runtime::WorkerCapability::WorksetDispatch));
+    const auto manifest = worker.runtime_manifest();
+    ASSERT_TRUE(manifest.has_value());
+    EXPECT_EQ(
+        manifest->wrms_protocol_version,
+        savor::wrms::ProtocolVersion);
 
     struct CommandOutcome
     {
@@ -985,8 +2428,8 @@ TEST(ProcessWorkerV1, NegotiatesSliceThreeCapabilitiesCorrelatesConcurrentReques
     std::thread invoke_thread([&]() {
         ready.count_down();
         go.wait();
-        invoke.succeeded = worker.submit_encoded_invocation(
-            invocation,
+        invoke.succeeded = worker.submit_one_item_workset(
+            workset,
             &invoke.result,
             10000);
     });
@@ -1010,7 +2453,7 @@ TEST(ProcessWorkerV1, NegotiatesSliceThreeCapabilitiesCorrelatesConcurrentReques
     EXPECT_FALSE(invoke.succeeded);
     EXPECT_FALSE(cancel.succeeded);
     EXPECT_EQ(prepare.result.command_kind, savor::wrms::MessageKind::PrepareModule);
-    EXPECT_EQ(invoke.result.command_kind, savor::wrms::MessageKind::SubmitInvocation);
+    EXPECT_EQ(invoke.result.command_kind, savor::wrms::MessageKind::SubmitWorkset);
     EXPECT_EQ(cancel.result.command_kind, savor::wrms::MessageKind::CancelInvocation);
     EXPECT_NE(prepare.result.status, savor::wrms::CommandStatus::Succeeded);
     EXPECT_NE(invoke.result.status, savor::wrms::CommandStatus::Succeeded);
@@ -1027,7 +2470,7 @@ TEST(ProcessWorkerV1, NegotiatesSliceThreeCapabilitiesCorrelatesConcurrentReques
     {
         std::lock_guard<std::mutex> lock(observed_mutex);
         ASSERT_TRUE(observed_module.has_value());
-        ASSERT_TRUE(observed_invocation.has_value());
+        ASSERT_TRUE(observed_workset.has_value());
         EXPECT_EQ(
             *observed_module,
             (savor::wrms::PrepareModulePayload{
@@ -1035,22 +2478,13 @@ TEST(ProcessWorkerV1, NegotiatesSliceThreeCapabilitiesCorrelatesConcurrentReques
                 .revision = module.identity.revision,
                 .canonical_hash = module.identity.canonical_hash,
                 .format_version = module.format_version,
+                .development_only = module.development_only,
                 .encoded_module = module.payload,
             }));
-        EXPECT_EQ(
-            *observed_invocation,
-            (savor::wrms::SubmitInvocationPayload{
-                .invocation_id = invocation.invocation_id.value(),
-                .attempt_id = invocation.attempt_id.value(),
-                .module_canonical_id = invocation.module.canonical_id,
-                .module_revision = invocation.module.revision,
-                .module_canonical_hash =
-                    invocation.module.canonical_hash,
-                .entrypoint = invocation.entrypoint,
-                .expected_state_epoch =
-                    invocation.expected_state_epoch.value(),
-                .encoded_invocation = invocation.input_payload,
-            }));
+        auto expected_workset = workset;
+        expected_workset.encoded_size_bytes =
+            observed_workset->encoded_size_bytes;
+        EXPECT_EQ(*observed_workset, expected_workset);
     }
 
     worker.stop();
@@ -1061,5 +2495,433 @@ TEST(ProcessWorkerV1, NegotiatesSliceThreeCapabilitiesCorrelatesConcurrentReques
     EXPECT_TRUE(stop.shutdown_result_received);
     EXPECT_TRUE(stop.graceful);
     EXPECT_FALSE(stop.forced);
+    EXPECT_FALSE(worker.is_running());
+}
+
+TEST(
+    ProcessWorkerV1,
+    RealHeadlessOneItemDevelopmentModuleStreamsTerminalAcknowledgesAndStops)
+{
+    tests::SerialGuard serial;
+    const std::filesystem::path worker_path = FindBuiltWorker();
+    ASSERT_FALSE(worker_path.empty())
+        << "SavorWorker.exe must be built beside the test outputs";
+
+    const std::filesystem::path runtime_root =
+        R"(D:\SoATAS\dolphin-2506a-x64)";
+    const std::filesystem::path iso_path =
+        R"(D:\SoATAS\SkiesofArcadiaLegends(USA).gcm)";
+    const std::filesystem::path state_path =
+        R"(D:\SoATAS\beginning_in_first_battle_rtc0.sav)";
+    ASSERT_TRUE(std::filesystem::is_directory(runtime_root))
+        << runtime_root;
+    ASSERT_TRUE(std::filesystem::is_regular_file(iso_path))
+        << iso_path;
+    ASSERT_TRUE(std::filesystem::is_regular_file(state_path))
+        << state_path;
+
+    ScopedTemporaryDirectory temporary(
+        "process_worker_workset_smoke");
+    const std::filesystem::path user_directory =
+        temporary.path() / "DolphinUser";
+    const std::filesystem::path log_directory =
+        temporary.path() / "logs";
+    ASSERT_TRUE(
+        std::filesystem::create_directories(user_directory));
+    ASSERT_TRUE(
+        std::filesystem::create_directories(log_directory));
+
+    constexpr std::string_view kBaselineLineage =
+        "process-worker-workset-smoke-baseline";
+    const DevelopmentNoEffectProgram program =
+        MakeDevelopmentNoEffectProgram(
+            std::string(kBaselineLineage));
+
+    savor::ProcessWorker worker;
+    std::string launch_error;
+    ASSERT_TRUE(worker.launch_and_negotiate(
+        savor::ProcessLaunchOptions{
+            .worker_id = 91,
+            .exe_path = worker_path.string(),
+            .log_directory = log_directory.string(),
+            .hello_timeout_ms = 30000,
+        },
+        &launch_error)) << launch_error;
+    ASSERT_TRUE(worker.has_process_capability(
+        savor::runtime::WorkerCapability::WorksetDispatch));
+    EXPECT_FALSE(worker.has_process_capability(
+        savor::runtime::WorkerCapability::ProgramInvocation));
+    const auto initial_manifest = worker.runtime_manifest();
+    ASSERT_TRUE(initial_manifest.has_value());
+    EXPECT_EQ(
+        initial_manifest->catalog_status,
+        savor::runtime::RuntimeCatalogStatus::Partial);
+    EXPECT_TRUE(initial_manifest->modules.empty());
+
+    savor::wrms::OpenSessionResultPayload opened;
+    std::string open_error;
+    ASSERT_TRUE(worker.open_session(
+        savor::ProcessOpenSessionOptions{
+            .runtime_root = runtime_root.string(),
+            .user_directory = user_directory.string(),
+            .iso_path = iso_path.string(),
+            .visual = false,
+        },
+        &opened,
+        &open_error,
+        120000)) << open_error;
+    ASSERT_TRUE(opened.success);
+    ASSERT_NE(opened.session_id, 0u);
+    ASSERT_NE(opened.state_epoch, 0u);
+
+    savor::wrms::CommandResultPayload prepared;
+    ASSERT_TRUE(worker.prepare_encoded_module(
+        program.module,
+        &prepared,
+        30000)) << prepared.message;
+    EXPECT_EQ(
+        prepared.status,
+        savor::wrms::CommandStatus::Succeeded);
+
+    const auto prepared_manifest = worker.runtime_manifest();
+    ASSERT_TRUE(prepared_manifest.has_value());
+    EXPECT_EQ(
+        prepared_manifest->catalog_status,
+        savor::runtime::RuntimeCatalogStatus::Partial);
+    const auto installed = std::ranges::find_if(
+        prepared_manifest->modules,
+        [&](const auto& entry)
+        {
+            return entry.module == program.module.identity;
+        });
+    ASSERT_NE(installed, prepared_manifest->modules.end());
+    EXPECT_EQ(installed->entrypoints, (std::vector<std::string>{"run"}));
+    EXPECT_TRUE(installed->development_only);
+    EXPECT_GT(
+        prepared_manifest->catalog_generation,
+        initial_manifest->catalog_generation);
+    EXPECT_NE(
+        prepared_manifest->catalog_sha256,
+        initial_manifest->catalog_sha256);
+
+    savor::runtime::ProgramBaselineDefinition baseline{
+        .state_kind =
+            savor::runtime::ProgramBaselineStateKind::Artifact,
+        .artifact =
+            savor::runtime::ProgramBaselineArtifact{
+                .state_path = state_path,
+                .state_sha256 =
+                    Sha256FileStreaming(state_path),
+                .movie_mode =
+                    savor::runtime::ExternalMovieImportMode::NoMovie,
+                .compatibility = {
+                    .game_id = std::string(
+                        savor::runtime::program::capabilities::
+                            kSupportedGameId),
+                    .iso_sha256 =
+                        Sha256FileStreaming(iso_path),
+                    .emulator_build = "dolphin-2506a",
+                    .runtime_revision =
+                        "worker-runtime-slice4",
+                },
+                .lineage = {
+                    .edge = "test_fixture_import",
+                    .producer =
+                        "ProcessWorkerV1.RealWorksetSmoke",
+                },
+            },
+        .lineage = std::string(kBaselineLineage),
+    };
+    savor::runtime::WorkerWorksetDefinition workset;
+    workset.workset_id =
+        savor::runtime::WorkerWorksetId{9001};
+    workset.baseline = std::move(baseline);
+    workset.execution_key.module = program.module.identity;
+    workset.execution_key.entrypoint = "run";
+    workset.execution_key.verified_dependency_sha256 =
+        savor::runtime::program::
+            ComputeProgramInvocationCompatibilityHashV1(
+                program.invocation);
+    ASSERT_EQ(
+        workset.execution_key.verified_dependency_sha256.size(),
+        64u);
+    workset.execution_key.runtime_profile_sha256 =
+        prepared_manifest->runtime_profile_sha256;
+    workset.execution_key.baseline =
+        savor::runtime::ComputeProgramBaselineKey(
+            workset.baseline);
+    static constexpr std::string_view kMoviePolicy =
+        "process-worker-workset-smoke/no-movie";
+    static constexpr std::string_view kServicePolicy =
+        "process-worker-workset-smoke/no-effects";
+    workset.execution_key.movie_policy_sha256 =
+        hash::sha256(
+            kMoviePolicy.data(),
+            kMoviePolicy.size());
+    workset.execution_key.service_policy_sha256 =
+        hash::sha256(
+            kServicePolicy.data(),
+            kServicePolicy.size());
+    workset.execution_key.canonical_sha256 =
+        savor::runtime::
+            ComputeWorkerWorksetExecutionKeyHash(
+                workset.execution_key);
+    workset.items.push_back(
+        savor::runtime::WorksetItemTemplate{
+            .item_id =
+                savor::runtime::WorkerWorksetItemId{9002},
+            .ordinal = 0,
+            .invocation = {
+                .invocation_id =
+                    program.invocation.invocation_id,
+                .attempt_id =
+                    program.invocation.attempt_id,
+                .module = program.module.identity,
+                .entrypoint = "run",
+                .template_payload =
+                    program.encoded_invocation,
+            },
+            .declared_active_budget =
+                std::chrono::seconds(10),
+            .correlation = {
+                .durable_job_id =
+                    "development-workset-smoke",
+                .claim_token =
+                    "development-workset-smoke-attempt-1",
+                .parent_correlation =
+                    "ProcessWorkerV1",
+            },
+        });
+
+    struct AcknowledgedTerminal
+    {
+        savor::wrms::WorksetItemTerminalPayload terminal;
+        bool acknowledged = false;
+        savor::wrms::CommandResultPayload acknowledgement;
+    };
+    auto terminal_promise =
+        std::make_shared<
+            std::promise<AcknowledgedTerminal>>();
+    auto terminal_future = terminal_promise->get_future();
+    auto started_promise =
+        std::make_shared<
+            std::promise<
+                savor::wrms::WorksetItemStartedPayload>>();
+    auto started_future = started_promise->get_future();
+    auto summary_promise =
+        std::make_shared<
+            std::promise<
+                savor::wrms::WorksetSummaryPayload>>();
+    auto summary_future = summary_promise->get_future();
+    auto first_lifecycle_promise =
+        std::make_shared<std::promise<void>>();
+    auto first_lifecycle_future =
+        first_lifecycle_promise->get_future();
+    auto first_lifecycle_signalled =
+        std::make_shared<std::atomic<bool>>(false);
+    std::atomic<bool> scalar_terminal_seen{false};
+    worker.set_invocation_terminal_callback(
+        [&](const savor::wrms::InvocationTerminalPayload&)
+        {
+            scalar_terminal_seen.store(
+                true,
+                std::memory_order_release);
+        });
+    worker.set_workset_item_started_callback(
+        [started_promise,
+         first_lifecycle_promise,
+         first_lifecycle_signalled](
+            const savor::wrms::WorksetItemStartedPayload& started)
+        {
+            started_promise->set_value(started);
+            if (!first_lifecycle_signalled->exchange(
+                    true,
+                    std::memory_order_acq_rel))
+            {
+                first_lifecycle_promise->set_value();
+            }
+        });
+    worker.set_workset_item_terminal_callback(
+        [&worker,
+         terminal_promise,
+         first_lifecycle_promise,
+         first_lifecycle_signalled](
+            const savor::wrms::WorksetItemTerminalPayload&
+                terminal)
+        {
+            savor::runtime::WorkerItemTerminalCorrelation
+                correlation{
+                    savor::runtime::WorkerWorksetId{
+                        terminal.workset_id},
+                    savor::runtime::WorkerWorksetItemId{
+                        terminal.item_id},
+                    terminal.item_ordinal,
+                    savor::runtime::InvocationId{
+                        terminal.invocation_id},
+                    savor::runtime::AttemptId{
+                        terminal.attempt_id},
+                    savor::runtime::WorkerTerminalId{
+                        terminal.terminal_id},
+                    savor::runtime::WorkerTerminalOrder{
+                        terminal.terminal_order},
+                };
+            savor::wrms::CommandResultPayload acknowledgement;
+            const bool acknowledged =
+                worker.acknowledge_terminal(
+                    correlation,
+                    &acknowledgement,
+                    30000);
+            terminal_promise->set_value(
+                AcknowledgedTerminal{
+                    terminal,
+                    acknowledged,
+                    acknowledgement});
+            if (!first_lifecycle_signalled->exchange(
+                    true,
+                    std::memory_order_acq_rel))
+            {
+                first_lifecycle_promise->set_value();
+            }
+        });
+    worker.set_workset_summary_callback(
+        [summary_promise](
+            const savor::wrms::WorksetSummaryPayload& summary)
+        {
+            summary_promise->set_value(summary);
+        });
+
+    savor::wrms::CommandResultPayload submitted;
+    ASSERT_TRUE(worker.submit_one_item_workset(
+        workset,
+        &submitted,
+        30000)) << submitted.message;
+    EXPECT_EQ(
+        submitted.status,
+        savor::wrms::CommandStatus::Succeeded);
+
+    ASSERT_EQ(
+        first_lifecycle_future.wait_for(
+            std::chrono::seconds(180)),
+        std::future_status::ready);
+    if (started_future.wait_for(std::chrono::seconds(0)) !=
+        std::future_status::ready)
+    {
+        ASSERT_EQ(
+            terminal_future.wait_for(std::chrono::seconds(0)),
+            std::future_status::ready);
+        const AcknowledgedTerminal early_terminal =
+            terminal_future.get();
+        FAIL()
+            << "Workset item terminalized before admission: status="
+            << static_cast<int>(early_terminal.terminal.status)
+            << " rejection="
+            << static_cast<int>(
+                   early_terminal.terminal.rejection_code)
+            << " error_code="
+            << early_terminal.terminal.error_code
+            << " message="
+            << early_terminal.terminal.message;
+    }
+    const savor::wrms::WorksetItemStartedPayload started =
+        started_future.get();
+    EXPECT_EQ(started.workset_id, 9001u);
+    EXPECT_EQ(started.item_id, 9002u);
+    EXPECT_EQ(started.item_ordinal, 0u);
+    EXPECT_EQ(
+        started.invocation_id,
+        program.invocation.invocation_id.value());
+    EXPECT_EQ(
+        started.attempt_id,
+        program.invocation.attempt_id.value());
+    EXPECT_EQ(started.session_id, opened.session_id);
+    EXPECT_GT(started.state_epoch, opened.state_epoch);
+    EXPECT_EQ(
+        started.baseline_sha256,
+        workset.execution_key.baseline.sha256);
+    EXPECT_EQ(started.baseline_lineage, kBaselineLineage);
+    EXPECT_FALSE(started.baseline_restored);
+
+    ASSERT_EQ(
+        terminal_future.wait_for(std::chrono::seconds(180)),
+        std::future_status::ready);
+    const AcknowledgedTerminal terminal =
+        terminal_future.get();
+    EXPECT_EQ(terminal.terminal.workset_id, 9001u);
+    EXPECT_EQ(terminal.terminal.item_id, 9002u);
+    EXPECT_EQ(terminal.terminal.item_ordinal, 0u);
+    EXPECT_EQ(
+        terminal.terminal.invocation_id,
+        program.invocation.invocation_id.value());
+    EXPECT_EQ(
+        terminal.terminal.attempt_id,
+        program.invocation.attempt_id.value());
+    EXPECT_NE(terminal.terminal.terminal_id, 0u);
+    EXPECT_NE(terminal.terminal.terminal_order, 0u);
+    EXPECT_EQ(
+        terminal.terminal.status,
+        savor::wrms::InvocationTerminalStatus::Succeeded);
+    EXPECT_FALSE(terminal.terminal.unstarted);
+    EXPECT_FALSE(terminal.terminal.result.empty());
+    EXPECT_GT(
+        terminal.terminal.outbound_sequence,
+        started.outbound_sequence);
+    const auto decoded_result =
+        savor::runtime::program::DecodeProgramResultV1(
+            terminal.terminal.result);
+    ASSERT_TRUE(decoded_result) << decoded_result.status.message;
+    const auto& program_result = *decoded_result.value;
+    ASSERT_TRUE(program_result.output.has_value());
+    const auto output_root = std::ranges::find(
+        program_result.output->values,
+        program_result.output->root,
+        &savor::runtime::program::ProgramValue::id);
+    ASSERT_NE(
+        output_root,
+        program_result.output->values.end());
+    const auto* output_value =
+        std::get_if<std::uint32_t>(&output_root->payload);
+    ASSERT_NE(output_value, nullptr);
+    EXPECT_EQ(*output_value, 0u);
+    ASSERT_TRUE(program_result.domain_outcome.has_value());
+    const auto domain_root = std::ranges::find(
+        program_result.domain_outcome->values,
+        program_result.domain_outcome->root,
+        &savor::runtime::program::ProgramValue::id);
+    ASSERT_NE(
+        domain_root,
+        program_result.domain_outcome->values.end());
+    const auto* domain_value =
+        std::get_if<bool>(&domain_root->payload);
+    ASSERT_NE(domain_value, nullptr);
+    EXPECT_TRUE(*domain_value);
+    EXPECT_TRUE(terminal.acknowledged)
+        << terminal.acknowledgement.message;
+    EXPECT_EQ(
+        terminal.acknowledgement.status,
+        savor::wrms::CommandStatus::Succeeded);
+
+    ASSERT_EQ(
+        summary_future.wait_for(std::chrono::seconds(30)),
+        std::future_status::ready);
+    const savor::wrms::WorksetSummaryPayload summary =
+        summary_future.get();
+    EXPECT_EQ(summary.workset_id, 9001u);
+    EXPECT_EQ(summary.item_count, 1u);
+    EXPECT_EQ(summary.completed_count, 1u);
+    EXPECT_EQ(summary.unstarted_count, 0u);
+    EXPECT_GT(
+        summary.outbound_sequence,
+        terminal.terminal.outbound_sequence);
+    EXPECT_FALSE(
+        scalar_terminal_seen.load(std::memory_order_acquire));
+    EXPECT_GE(
+        worker.latest_snapshot().last_outbound_sequence,
+        summary.outbound_sequence);
+
+    worker.stop();
+    const savor::ProcessWorkerStopSnapshot stopped =
+        worker.last_stop_snapshot();
+    EXPECT_TRUE(stopped.graceful);
+    EXPECT_FALSE(stopped.forced);
     EXPECT_FALSE(worker.is_running());
 }

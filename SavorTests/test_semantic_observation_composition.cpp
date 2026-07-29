@@ -421,7 +421,7 @@ TEST(SemanticObservationComposition, InvalidDefinitionIsAtomic)
     EXPECT_EQ(result.diagnostics.front().code, "semantic.zero_pc");
 }
 
-TEST(SemanticObservationComposition, DoesNotHidePostInstructionTimingMode)
+TEST(SemanticObservationComposition, RequiresExplicitPostFrameAction)
 {
     ProgramModule module;
     auto definition = Definition();

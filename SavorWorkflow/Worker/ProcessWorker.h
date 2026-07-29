@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -21,6 +22,7 @@
 #include "Runner/IPC/WrmsProtocol.h"
 #include "Runner/Runtime/IProgramRuntimePort.h"
 #include "Runner/Runtime/RuntimeTypes.h"
+#include "Runner/Runtime/Worksets/WorksetTypes.h"
 #include "Runner/Script/PhaseScriptProgram.h"
 #include "Runner/Parallel/PRTypes.h"
 #include "TSQueue.h"
@@ -33,9 +35,12 @@ inline constexpr const char* kDisconnectedWorkerApiDiagnostic =
     "canonical ProgramRuntime is not available";
 inline constexpr std::chrono::milliseconds kProcessWorkerDefaultStopGrace{
     5000};
+inline constexpr std::chrono::milliseconds
+    kProcessWorkerDefaultCallbackCleanupGrace{250};
 
 struct ProcessWorkerTestHooks {
     std::optional<std::chrono::milliseconds> stop_grace;
+    std::optional<std::chrono::milliseconds> callback_cleanup_grace;
     std::function<void()> stop_acceptance_closed;
     std::function<void(
         wrms::MessageKind,
@@ -78,6 +83,8 @@ struct ProcessWorkerStopSnapshot {
     bool cancel_reader_succeeded{ false };
     std::uint32_t cancel_reader_error{ 0 };
     bool reader_joined{ false };
+    bool callback_dispatcher_joined{ false };
+    bool callback_cleanup_timed_out{ false };
     std::uint32_t cooperative_wait_result{ WAIT_FAILED };
     std::uint32_t process_wait_result{ WAIT_FAILED };
     std::uint32_t process_wait_error{ 0 };
@@ -122,8 +129,30 @@ struct ProcStartParams {
 
 struct ProcessCommandCompletion {
     runtime::WireRequestId request_id;
+    bool request_frame_written{ false };
+    bool correlated_response_received{ false };
     wrms::MessageKind response_kind{ wrms::MessageKind::CommandResult };
     std::vector<std::uint8_t> payload;
+};
+
+enum class ProcessWorksetSubmitDisposition : std::uint8_t {
+    Accepted,
+    DefiniteRejected,
+    AmbiguousAfterWrite,
+};
+
+struct ProcessWorksetSubmitOutcome {
+    ProcessWorksetSubmitDisposition disposition{
+        ProcessWorksetSubmitDisposition::DefiniteRejected};
+    bool request_frame_written{ false };
+    bool correlated_result_received{ false };
+    wrms::CommandResultPayload result;
+    std::string diagnostic;
+
+    [[nodiscard]] bool accepted() const noexcept
+    {
+        return disposition == ProcessWorksetSubmitDisposition::Accepted;
+    }
 };
 
 struct ProcessWorkerSnapshot {
@@ -147,6 +176,13 @@ struct ProcessWorkerSnapshot {
         runtime::WorkerRejectionCode::None};
     bool shutdown_graceful{ false };
     std::string last_error;
+    bool runtime_manifest_received{ false };
+    std::optional<runtime::WorkerWorksetId> active_workset;
+    std::optional<runtime::WorkerWorksetId> staged_workset;
+    std::uint32_t available_item_credits{ 0 };
+    std::uint32_t active_and_staged_items{ 0 };
+    std::uint32_t retained_terminals{ 0 };
+    std::uint64_t last_outbound_sequence{ 0 };
 };
 
 class ProcessWorker {
@@ -159,6 +195,16 @@ public:
         std::function<void(const wrms::HostEventPayload&)>;
     using ExecutionStateCallback =
         std::function<void(const wrms::ExecutionStatePayload&)>;
+    using WorksetStateCallback =
+        std::function<void(const wrms::WorksetStatePayload&)>;
+    using WorksetItemStartedCallback =
+        std::function<void(const wrms::WorksetItemStartedPayload&)>;
+    using WorksetItemTerminalCallback =
+        std::function<void(const wrms::WorksetItemTerminalPayload&)>;
+    using WorksetCreditsCallback =
+        std::function<void(const wrms::WorksetCreditsPayload&)>;
+    using WorksetSummaryCallback =
+        std::function<void(const wrms::WorksetSummaryPayload&)>;
 
     ProcessWorker() = default;
     explicit ProcessWorker(
@@ -186,6 +232,32 @@ public:
         std::uint32_t timeout_ms = 10000);
     bool submit_encoded_invocation(
         const runtime::EncodedInvocationEnvelope& invocation,
+        wrms::CommandResultPayload* result_out = nullptr,
+        std::uint32_t timeout_ms = 10000);
+    bool submit_workset(
+        const runtime::WorkerWorksetDefinition& workset,
+        wrms::CommandResultPayload* result_out = nullptr,
+        std::uint32_t timeout_ms = 10000);
+    ProcessWorksetSubmitOutcome submit_workset_with_outcome(
+        const runtime::WorkerWorksetDefinition& workset,
+        std::uint32_t timeout_ms = 10000);
+    bool submit_one_item_workset(
+        const runtime::WorkerWorksetDefinition& workset,
+        wrms::CommandResultPayload* result_out = nullptr,
+        std::uint32_t timeout_ms = 10000);
+    bool cancel_workset_item(
+        runtime::WorkerWorksetId workset_id,
+        runtime::WorkerWorksetItemId item_id,
+        std::string reason,
+        wrms::CommandResultPayload* result_out = nullptr,
+        std::uint32_t timeout_ms = 10000);
+    bool cancel_workset(
+        runtime::WorkerWorksetId workset_id,
+        std::string reason,
+        wrms::CommandResultPayload* result_out = nullptr,
+        std::uint32_t timeout_ms = 10000);
+    bool acknowledge_terminal(
+        const runtime::WorkerItemTerminalCorrelation& terminal,
         wrms::CommandResultPayload* result_out = nullptr,
         std::uint32_t timeout_ms = 10000);
     bool cancel_invocation(
@@ -217,25 +289,26 @@ public:
         wrms::ExecutionResultPayload* result_out = nullptr,
         std::uint32_t operation_timeout_ms = 3000,
         std::uint32_t command_timeout_ms = 10000);
-    bool step_guest_instructions(
-        runtime::SessionId session_id,
-        runtime::StateEpoch expected_state_epoch,
-        std::uint32_t count = 1,
-        wrms::ExecutionResultPayload* result_out = nullptr,
-        std::uint32_t operation_timeout_ms = 3000,
-        std::uint32_t command_timeout_ms = 10000);
 
     runtime::WorkerCapabilityMask process_capabilities() const;
     runtime::WorkerCapabilityMask session_capabilities() const;
     bool has_process_capability(runtime::WorkerCapability capability) const;
     bool has_session_capability(runtime::WorkerCapability capability) const;
     ProcessWorkerSnapshot latest_snapshot() const;
+    std::optional<runtime::WorkerRuntimeManifest> runtime_manifest() const;
     std::string last_error() const;
 
     void set_invocation_progress_callback(InvocationProgressCallback callback);
     void set_invocation_terminal_callback(InvocationTerminalCallback callback);
     void set_host_event_callback(HostEventCallback callback);
     void set_execution_state_callback(ExecutionStateCallback callback);
+    void set_workset_state_callback(WorksetStateCallback callback);
+    void set_workset_item_started_callback(
+        WorksetItemStartedCallback callback);
+    void set_workset_item_terminal_callback(
+        WorksetItemTerminalCallback callback);
+    void set_workset_credits_callback(WorksetCreditsCallback callback);
+    void set_workset_summary_callback(WorksetSummaryCallback callback);
 
     // Transitional convenience: launch the v1 process and explicitly open its
     // one session. This does not restore any legacy program execution path.
@@ -284,8 +357,31 @@ private:
         std::condition_variable cv;
         bool completed{ false };
         bool transport_ok{ false };
+        wrms::MessageKind request_kind{ wrms::MessageKind::Shutdown };
         wrms::MessageKind response_kind{ wrms::MessageKind::CommandResult };
         std::vector<std::uint8_t> payload;
+    };
+
+    struct PendingCallback {
+        std::function<void()> invoke;
+        std::size_t resident_bytes{ 0 };
+        bool authoritative{ false };
+    };
+
+    struct CallbackDispatcherState {
+        std::mutex mutex;
+        std::condition_variable available;
+        std::condition_variable exited_cv;
+        std::deque<PendingCallback> queue;
+        std::size_t queued_bytes{ 0 };
+        bool stop_requested{ false };
+        bool exited{ false };
+        std::thread::id thread_id;
+    };
+
+    struct CallbackFailureTarget {
+        std::mutex mutex;
+        ProcessWorker* owner{ nullptr };
     };
 
     struct OutboundWrite {
@@ -343,12 +439,31 @@ private:
         std::uint64_t request_id,
         wrms::MessageKind kind,
         std::span<const std::uint8_t> payload);
+    [[nodiscard]] bool has_exact_pending_request(
+        std::uint64_t request_id,
+        wrms::MessageKind request_kind) const;
     void fail_all_pending();
     void writer_thread();
     void request_writer_stop(ProcessWorkerStopSnapshot* snapshot);
     void join_writer(ProcessWorkerStopSnapshot* snapshot);
     void reader_thread();
+    static void callback_thread(
+        std::shared_ptr<CallbackDispatcherState> state,
+        std::shared_ptr<CallbackFailureTarget> failure_target,
+        std::size_t worker_id);
+    void start_callback_dispatch();
+    bool enqueue_callback(
+        std::function<void()> callback,
+        bool authoritative = false,
+        std::size_t resident_bytes = 0);
+    [[nodiscard]] bool stop_callback_dispatch(
+        std::chrono::steady_clock::time_point deadline);
+    [[nodiscard]] bool on_callback_dispatcher_thread() const;
+    void detach_callback_failure_target() noexcept;
     void handle_frame(const wrms::FrameView& frame);
+    [[nodiscard]] bool accept_workset_outbound_sequence(
+        std::uint64_t sequence);
+    void fail_protocol(std::string error);
     void set_last_error(std::string error);
     bool fail_disconnected(const char* operation);
     void close_process_handles(ProcessWorkerStopSnapshot* snapshot);
@@ -362,6 +477,9 @@ private:
 
     std::thread reader_;
     std::thread writer_;
+    std::thread callback_dispatcher_;
+    std::shared_ptr<CallbackDispatcherState> callback_dispatcher_state_;
+    std::shared_ptr<CallbackFailureTarget> callback_failure_target_;
     std::atomic<bool> running_{ false };
     std::atomic<bool> accepting_writes_{ false };
     std::atomic<bool> writer_cancel_requested_{ false };
@@ -372,6 +490,7 @@ private:
     std::atomic<bool> ready_ok_{ false };
     std::atomic<std::uint32_t> ready_error_{ 0 };
     std::atomic<std::uint64_t> next_request_id_{ 1 };
+    std::atomic<bool> protocol_failed_{ false };
 
     mutable std::mutex writer_mutex_;
     std::condition_variable writer_cv_;
@@ -384,6 +503,7 @@ private:
     mutable std::mutex snapshot_mutex_;
     ProcessWorkerSnapshot snapshot_;
     wrms::ProcessHelloPayload hello_;
+    std::optional<runtime::WorkerRuntimeManifest> runtime_manifest_;
     std::condition_variable hello_cv_;
 
     mutable std::mutex callback_mutex_;
@@ -391,6 +511,11 @@ private:
     InvocationTerminalCallback invocation_terminal_callback_;
     HostEventCallback host_event_callback_;
     ExecutionStateCallback execution_state_callback_;
+    WorksetStateCallback workset_state_callback_;
+    WorksetItemStartedCallback workset_item_started_callback_;
+    WorksetItemTerminalCallback workset_item_terminal_callback_;
+    WorksetCreditsCallback workset_credits_callback_;
+    WorksetSummaryCallback workset_summary_callback_;
 
     mutable std::mutex progress_mutex_;
     PRProgress last_progress_{};
@@ -401,6 +526,9 @@ private:
 
     mutable std::mutex stop_mutex_;
     ProcessWorkerStopSnapshot last_stop_snapshot_;
+    mutable std::mutex stop_completion_mutex_;
+    std::condition_variable stop_completion_cv_;
+    bool stop_completed_{ true };
     std::shared_ptr<const ProcessWorkerTestHooks> test_hooks_;
 };
 

@@ -78,6 +78,10 @@ struct RuntimeInitRequest {
     std::string bootstrap_profile;
     savor::DBuf derived_buffer_type = savor::DBuf::DK_None;
     std::int64_t default_timeout_ms = 10000;
+    // Complete adapter-declared workset compatibility identity. Empty means
+    // the job is intentionally singleton until its native phase adapter can
+    // name the exact savestate/movie/derived-state baseline and policies.
+    std::optional<std::string> workset_execution_key;
 };
 
 struct ResultArtifactRef {

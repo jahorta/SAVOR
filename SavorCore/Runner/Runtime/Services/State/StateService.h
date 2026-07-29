@@ -50,6 +50,13 @@ public:
 
     [[nodiscard]] StateFileArtifactReceipt CaptureFileArtifact(
         const StateFileCaptureRequest& request);
+    [[nodiscard]] ImmutableStateArtifactCaptureReceipt
+        CaptureImmutableArtifact(
+            const StateFileCaptureRequest& request);
+    [[nodiscard]] StateFileArtifactReceipt CommitImmutableArtifact(
+        const ImmutableStateArtifactPublicationReceipt& publication);
+    [[nodiscard]] StateServiceResult AbandonImmutableArtifact(
+        StateArtifactId artifact) noexcept;
     [[nodiscard]] StateFileArtifactReceipt ImportFileArtifact(
         const StateFileImportRequest& request);
     [[nodiscard]] StateOperationReceipt RestoreFileArtifact(
@@ -94,6 +101,18 @@ private:
         StateFileArtifactReceipt receipt;
     };
 
+    struct PendingFileRecord
+    {
+        StateArtifactId artifact;
+        StateEpoch captured_epoch;
+        std::filesystem::path path;
+        std::size_t state_size_bytes = 0;
+        std::size_t movie_size_bytes = 0;
+        StateCompatibilityToken compatibility;
+        StateLineage lineage;
+        std::optional<MovieCheckpointMetadata> movie;
+    };
+
     [[nodiscard]] StateOperationReceipt ReplaceState(
         StateReplacementContext context,
         const std::function<StateBackendResult()>& operation);
@@ -118,6 +137,8 @@ private:
     std::vector<IStateReplacementParticipant*> participants_;
     std::unordered_map<std::uint64_t, MemoryRecord> memory_handles_;
     std::unordered_map<std::uint64_t, FileRecord> file_artifacts_;
+    std::unordered_map<std::uint64_t, PendingFileRecord>
+        pending_file_artifacts_;
     StateCompatibilityToken compatibility_;
     StateEpoch current_epoch_;
     std::uint64_t next_handle_id_ = 1;

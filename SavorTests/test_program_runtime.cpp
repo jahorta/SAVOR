@@ -548,6 +548,177 @@ TEST(ProgramRuntime, PreparesSprmBeforeAcceptingSpri)
         WorkerRejectionCode::ProgramRuntimeUnavailable);
 }
 
+TEST(
+    ProgramRuntime,
+    CompleteExactRequiresTheConfiguredNineProductionModulesAndNoExtras)
+{
+    std::vector<ProgramModule> modules;
+    std::vector<ProgramRuntimeCatalogModule> expected;
+    for (std::uint32_t index = 0; index < 9; ++index)
+    {
+        modules.push_back(Module(
+            "test.runtime.catalog." +
+            std::to_string(index)));
+        expected.push_back(ProgramRuntimeCatalogModule{
+            EnvelopeIdentity(modules.back().identity),
+            {"run"},
+            false});
+    }
+    ProgramRuntimeConfig config = TestRuntimeConfig();
+    config.expected_exact_catalog = expected;
+    ProgramRuntimeConfig invalid_config = config;
+    invalid_config.expected_exact_catalog->pop_back();
+    ProgramRuntime invalid_runtime(std::move(invalid_config));
+    EXPECT_FALSE(invalid_runtime.initialized());
+
+    ProgramRuntime runtime(config);
+    ASSERT_TRUE(runtime.initialized())
+        << runtime.initialization_diagnostic();
+    EXPECT_FALSE(runtime.catalog().complete_exact);
+
+    auto events = std::make_shared<RecordingEventSink>();
+    for (std::size_t index = 0; index < modules.size(); ++index)
+    {
+        const ProgramRuntimeSubmission prepared =
+            runtime.PrepareModule(
+                PreparationRequest(
+                    modules[index],
+                    WorkerCommandSequence(index + 1)),
+                events);
+        ASSERT_TRUE(prepared.accepted)
+            << prepared.error.message;
+        EXPECT_EQ(
+            runtime.catalog().complete_exact,
+            index + 1 == modules.size());
+    }
+
+    const ProgramModule extra =
+        Module("test.runtime.catalog.extra");
+    ASSERT_TRUE(
+        runtime.PrepareModule(
+            PreparationRequest(
+                extra,
+                WorkerCommandSequence(10)),
+            events)
+            .accepted);
+    EXPECT_FALSE(runtime.catalog().complete_exact);
+
+    ProgramRuntime development_runtime(config);
+    ASSERT_TRUE(development_runtime.initialized())
+        << development_runtime.initialization_diagnostic();
+    for (std::size_t index = 0; index < modules.size(); ++index)
+    {
+        ModulePreparationRequest request =
+            PreparationRequest(
+                modules[index],
+                WorkerCommandSequence(index + 1));
+        request.module.development_only =
+            index + 1 == modules.size();
+        ASSERT_TRUE(
+            development_runtime.PrepareModule(
+                std::move(request),
+                events)
+                .accepted);
+    }
+    EXPECT_FALSE(development_runtime.catalog().complete_exact);
+}
+
+TEST(
+    ProgramRuntime,
+    VerifiesUnboundWorksetTemplateBeforeExactBaselineBinding)
+{
+    ProgramRuntime runtime(TestRuntimeConfig());
+    auto events = std::make_shared<RecordingEventSink>();
+    auto actions = std::make_shared<RecordingActionSink>();
+    runtime.BindActionSink(actions);
+    const ProgramModule module =
+        Module("test.runtime.workset-template");
+    ASSERT_TRUE(
+        runtime.PrepareModule(
+            PreparationRequest(module),
+            events)
+            .accepted);
+
+    ProgramInvocation invocation = Invocation(module);
+    invocation.state.expected_session = {};
+    invocation.state.expected_epoch = {};
+    const EncodeResult encoded =
+        EncodeProgramInvocationV1(invocation);
+    ASSERT_TRUE(encoded) << encoded.status.message;
+    InvocationTemplatePreparationRequest preparation;
+    preparation.command_sequence = WorkerCommandSequence(2);
+    preparation.invocation_template = {
+        invocation.invocation_id,
+        invocation.attempt_id,
+        EnvelopeIdentity(invocation.module),
+        invocation.entrypoint,
+        {},
+        encoded.bytes};
+    PreparedInvocationTemplateReceipt prepared;
+    const ProgramRuntimeSubmission admitted =
+        runtime.PrepareInvocationTemplate(
+            std::move(preparation),
+            prepared);
+    ASSERT_TRUE(admitted.accepted) << admitted.error.message;
+    ASSERT_TRUE(prepared);
+
+    CancellationSource cancellation(invocation.invocation_id);
+    const ProgramRuntimeSubmission started =
+        runtime.StartPreparedInvocation(
+            {
+                WorkerCommandSequence(3),
+                prepared.template_id,
+                SessionId(9),
+                StateEpoch(5),
+                std::string(64, 'a'),
+                invocation.state.session_lineage,
+            },
+            cancellation.token(),
+            events);
+    ASSERT_TRUE(started.accepted) << started.error.message;
+    ASSERT_EQ(actions->requests.size(), 1u);
+    const ProgramActionRequest& state = actions->requests.back();
+    EXPECT_TRUE(state.state_already_prepared);
+    EXPECT_EQ(
+        state.prepared_baseline_sha256,
+        std::string(64, 'a'));
+    ASSERT_TRUE(state.state_request);
+    EXPECT_EQ(
+        state.state_request->expected_session,
+        SessionId(9));
+    EXPECT_EQ(
+        state.state_request->expected_epoch,
+        StateEpoch(5));
+
+    ASSERT_TRUE(
+        runtime.DeliverActionCompletion(
+            Completion(state, StateEpoch(5)))
+            .accepted);
+    EXPECT_FALSE(runtime.Pump());
+    ASSERT_EQ(actions->requests.size(), 2u);
+    const ProgramActionRequest finish = actions->requests.back();
+    ASSERT_EQ(
+        finish.operation,
+        ProgramHostOperation::FinishInvocation);
+    ASSERT_TRUE(
+        runtime.DeliverActionCompletion(
+            Completion(finish, StateEpoch(5)))
+            .accepted);
+    EXPECT_FALSE(runtime.Pump());
+    const auto* terminal =
+        events->Last<ProgramInvocationTerminalEvent>();
+    ASSERT_NE(terminal, nullptr);
+    EXPECT_EQ(
+        terminal->status,
+        InvocationTerminalStatus::Completed);
+    EXPECT_EQ(terminal->origin_state_epoch, StateEpoch(5));
+    EXPECT_TRUE(
+        runtime.AcknowledgeTerminal(
+            invocation.invocation_id,
+            invocation.attempt_id)
+            .accepted);
+}
+
 TEST(ProgramRuntime, RequiresAnExactConfiguredRuntimeProfile)
 {
     ProgramRuntimeConfig invalid = TestRuntimeConfig();
@@ -631,6 +802,7 @@ TEST(ProgramRuntime, EnforcesInvocationStatePolicyShapes)
     std::uint64_t next_id = 80;
     for (const InvocationStatePolicy policy : {
              InvocationStatePolicy::Boot,
+             InvocationStatePolicy::RestoreBaseline,
              InvocationStatePolicy::ContinueSession})
     {
         ProgramInvocation invalid =
@@ -641,8 +813,7 @@ TEST(ProgramRuntime, EnforcesInvocationStatePolicyShapes)
     }
 
     for (const InvocationStatePolicy policy : {
-             InvocationStatePolicy::LoadArtifact,
-             InvocationStatePolicy::RestoreBaseline})
+             InvocationStatePolicy::LoadArtifact})
     {
         ProgramInvocation missing =
             Invocation(module, InvocationId(next_id++));
@@ -691,7 +862,6 @@ TEST(ProgramRuntime, EnforcesInvocationStatePolicyShapes)
         Invocation(module, InvocationId(next_id++));
     baseline.state.policy =
         InvocationStatePolicy::RestoreBaseline;
-    baseline.state.state_artifact = complete;
     CancellationSource baseline_cancellation(
         baseline.invocation_id);
     ASSERT_TRUE(baseline_runtime.StartInvocation(
@@ -705,10 +875,9 @@ TEST(ProgramRuntime, EnforcesInvocationStatePolicyShapes)
         baseline_actions->requests.front()
             .state_request->policy,
         InvocationStatePolicy::RestoreBaseline);
-    EXPECT_EQ(
+    EXPECT_FALSE(
         baseline_actions->requests.front()
-            .state_request->state_artifact,
-        complete);
+            .state_request->state_artifact);
 }
 
 TEST(ProgramRuntime, RunsOnlyThroughTheActorActionSinkAndPublishesSprr)

@@ -1075,15 +1075,6 @@ namespace savor {
 
     // -- Frame Advancing --------------------------------
 
-    bool DolphinWrapper::stepOneOpcodeBlocking(int timeout_ms)
-    {
-        (void)timeout_ms;
-        SCLOGE(
-            "[DW/run] hard cutover: direct instruction stepping is "
-            "disconnected; use ExecutionEngine");
-        return false;
-    }
-
     bool DolphinWrapper::stepBootCoreForStateLoadBlocking(int timeout_ms)
     {
         if (!m_system || !Core::IsRunning(*m_system))
@@ -1094,10 +1085,10 @@ namespace savor {
         const PowerPC::CoreMode old_mode = power_pc.GetMode();
         power_pc.SetMode(PowerPC::CoreMode::Interpreter);
         m_system->GetCPU().StepOpcode(&sync_event);
-        sync_event.WaitFor(
+        const bool completed = sync_event.WaitFor(
             std::chrono::milliseconds(timeout_ms > 0 ? timeout_ms : 20));
         power_pc.SetMode(old_mode);
-        return true;
+        return completed;
     }
 
     bool DolphinWrapper::stepOneFrameBlocking(int timeout_ms)

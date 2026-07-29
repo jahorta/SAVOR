@@ -139,9 +139,10 @@ There is one path for program execution:
 
 1. The pre-6A parent worker-process seam launches and completely negotiates one compatible worker,
    supports direct one-item process tests, and then starts the rest of the desired pool progressively
-   under a bounded concurrency limit. It keeps the coordinator data plane disabled. Slice 7 applies the
-   same gate only after that first worker also proves the complete production catalog and dependency
-   manifest; only then may DB work open while the rest of the desired pool continues starting.
+   with at most two concurrent startups. It keeps the coordinator data plane disabled. Slice 7 applies
+   the same gate only after that first worker proves `CompleteExact`: exactly the planned nine module
+   IDs/hashes, their exact dependency manifest, and no extra installed module. Only then may DB work
+   open while the rest of the desired pool continues starting.
 2. `WorkerProtocol` translates external framing into one typed `SubmitWorkset` command containing one
    to the declared maximum number of items.
 3. If no workset owns the session, `WorkerRuntime` accepts the command as the active workset. While one
@@ -153,9 +154,11 @@ There is one path for program execution:
    acquire session-effect resources, construct a `ProgramInstance`, or advance Dolphin.
 5. On initial activation or clean staged-successor promotion, `StateService` prepares the workset's
    declared source from its exact artifact or immutable cache entry. A multi-item active workset then
-   captures one reusable baseline; a one-item workset does not. The first item uses the prepared state,
-   and every later admitted item restores that active-workset baseline and receives a fresh
-   `StateEpoch`.
+   prepares one reusable composite `ProgramBaselineDefinition`; a one-item workset does not. Its ordered
+   `ProgramBaselineComponent`s include the savestate, exact movie continuation, and runtime-facing
+   program-kind adapter-declared derived state. The first item uses the prepared state. Before every
+   later item, `RestoreBaseline` prepares all components as one transaction, returns one
+   `PreparedProgramBaselineReceipt`, and advances `StateEpoch` exactly once.
 6. Immediately before admitting an item, `WorkerRuntime` binds its immutable template to the exact
    current session and epoch. `ProgramRuntime` resolves and verifies the exact module/dependency closure
    and constructs the worker's sole executing `ProgramInstance`.
@@ -193,8 +196,8 @@ Every item shares one exact `WorkerWorksetExecutionKey`:
 
 - exact module ID, revision/hash, entrypoint, and dependency closure;
 - runtime, game, disc, backend, and required-capability profile;
-- exact caller-declared source-state identity, hash, lineage, baseline artifact identity, and movie
-  continuation; and
+- exact caller-declared `ProgramBaselineKey` covering source-state identity/hash/lineage, movie
+  continuation, and adapter-declared derived state; and
 - execution, input, capture, movie, mutation, and other relevant service policies that affect common
   session preparation.
 
@@ -209,6 +212,12 @@ The workset is an efficiency and transport construct owned by `WorkerRuntime`; i
 durable scheduler. Item order cannot carry a dependency. If one item needs another item's output, that
 relationship remains ordinary program composition or durable workflow composition.
 
+Claim/start authority for the complete finite membership is validated before `SubmitWorkset` and worker
+acceptance. Once accepted, clean children proceed in immutable order without a coordinator authorization
+pause between items. Later lease loss, supersession, or user cancellation arrives asynchronously as an
+exact item/workset cancellation. Item-start events remain authoritative ordering facts, but recording
+one does not authorize the worker's next effect.
+
 One active workset alone may prepare or mutate the `EmulationSession`. At most one additional successor
 may exist as a host-only immutable staged package. Staging is intentionally useful work: bounded decode,
 complete-key and item-schema validation, module/dependency cache resolution, immutable artifact I/O and
@@ -222,13 +231,21 @@ compatibility, movie-continuation identity, and session generation. Entries cont
 serialized bytes plus validated metadata. A scoped cache lease prevents eviction while a staged or
 active workset references an entry; it does not authorize restore or represent a live epoch-bound state
 handle. The active workset's baseline remains a separate session resource and is released before a
-staged successor promotes.
+staged successor promotes. `ProgramBaselineDefinition`, `ProgramBaselineKey`, and
+`PreparedProgramBaselineReceipt` cover the complete savestate, movie-continuation, and adapter-declared
+derived-state transaction; `RestoreBaseline` cannot admit a child from a partial component result.
 
 Completed execution records, promoted immutable outputs and pending finalizers, and published item
 terminals are owned by one bounded worker-global completion/acknowledgement ledger keyed by exact
 workset, item ordinal, invocation, attempt, and terminal identity/order. Ledger entries may outlive their
 originating active workset. Full negotiated count or byte capacity keeps Dolphin paused and blocks later
 item admission or staged promotion; it does not permit loss, overwrite, or aggregate acknowledgement.
+
+The initial configurable limits are exact: 16 items and 32 MiB encoded bytes per workset, four hours of
+aggregate declared active budget, 64 total worker item credits, 32 active-plus-staged items, 16 state-
+cache entries/512 MiB, two finalizer threads, eight pending captures/256 MiB, and 32 retained
+authoritative terminals/128 MiB. The coordinator may buffer at most one additional workset per
+negotiated Ready worker. Later measurement may tune these values without making any bound optional.
 
 ### Predicate composition boundary
 
@@ -294,7 +311,7 @@ progress views.
 
 | Component | Sole responsibilities | Explicitly forbidden responsibilities |
 |---|---|---|
-| Parent worker-process seam | Launch/negotiate exactly one complete compatible worker for the eventual data-plane gate, progressively start the remaining desired pool with bounded concurrency, expose process capabilities/limits, and support direct one-item process tests before Slice 7 | Claiming or starting DB work before complete Slice 7 catalog/dependency negotiation, interpreting programs, mutating a worker session |
+| Parent worker-process seam | Launch/negotiate one compatible worker, progressively start the remaining desired pool with at most two concurrent startups, expose process capabilities/limits, and support direct one-item tests with the transferred test-only module before Slice 7 | Claiming or starting DB work before `CompleteExact` proves exactly the nine production modules and no extras, interpreting programs, mutating a worker session |
 | `WorkerProcess` | Process arguments, logging, pipe handles, process shutdown, and construction of the worker object graph | Dolphin policy, program interpretation, phase selection, direct execution control |
 | `WorkerProtocol` | Decode/validate transport frames into typed commands, including bounded worksets, and serialize worker events/results/acknowledgements | Mutating session state, selecting a controller, interpreting `ProgramKind` as an executor |
 | `WorkerRuntime` | Serialize external commands, own exactly one session, one active session-mutating workset, at most one host-only staged successor, the bounded immutable state-cache leases, and the worker-global completion/acknowledgement ledger; prepare/promote/admit/cancel ordered items, bind exact current session/epoch, enforce session disposition, coordinate visual control and shutdown | Interpreting IR, implementing phase logic, dynamically creating workset items, allowing staged work to acquire session authority, physically manipulating stop points |
@@ -357,7 +374,8 @@ instead of one OS thread.
   metadata, and lease receipts; they cannot mutate session state or promote themselves.
 - Workset item order and actor-assigned admission order are deterministic. Item completion does not
   permit another item to start until invocation unwind has released that item's scope and the session
-  disposition plus worker-global completion-ledger capacity permit admission.
+  disposition plus worker-global completion-ledger capacity permit admission. It does not introduce a
+  per-item coordinator authorization pause after the workset was accepted.
 - Exactly one foreground `ExecutionEngine` operation may advance the core at a time.
 - A program waiting for an action is suspended data, not a blocked private event loop.
 - A router interceptor may request a verifier-known interruption handler. `ExecutionEngine` suspends the
@@ -449,7 +467,8 @@ The logical worker command surface includes:
 - request a screenshot or read-only diagnostic snapshot; and
 - rebuild or shut down the session.
 
-This is a logical surface, not a frozen wire protocol.
+This logical surface is carried additively by WRMS version 1; the prelude does not increment the
+protocol version.
 
 The former single-item `SubmitInvocation` discriminator remains reserved. Receiving it rejects the
 request before session mutation; it is not renumbered or reused. One-item execution uses
@@ -689,16 +708,18 @@ The implementation order is constrained by ownership:
 7. Introduce the universal `ProgramRuntime`, canonical v1 model/codec, generic actor-queued action seam,
    and initial modular capability packs. This foundation is established by Slice 5.
 8. Before 6A, implement the parent worker-process seam and workset pipeline: direct one-item process
-   tests, the eventual one-complete-compatible-worker gate, bounded progressive pool startup, one active
-   session-mutating workset, one immutable host-only staged successor, exact `StateCacheKey` leases, and
-   the bounded worker-global completion ledger. Keep coordinator data-plane work disabled.
+   tests, the eventual `CompleteExact` gate, at-most-two progressive pool startup, one active session-
+   mutating workset, one immutable host-only staged successor, exact `StateCacheKey` leases, and the
+   bounded worker-global completion ledger. Transfer one canonical test-only module through the
+   ordinary preparation protocol for `Partial` process smoke; it is not one of the nine production
+   modules. Keep coordinator data-plane work disabled.
 9. Re-author each current phase directly through canonical builders/composition frontends as 6A through
    6I. Legacy source may remain as historical behavior evidence, but it is not a translator or alternate
    executor.
-10. In Slice 7, negotiate the complete production catalog/dependency manifest and workset limits on the
-    first compatible worker, apply the startup gate to activate production invocation and the coordinator
-    data plane, then progressively start the remaining pool. Program-kind adapters continue through the
-    existing SavorDb contracts.
+10. In Slice 7, require `CompleteExact` on the first compatible worker: exactly the nine planned module
+    IDs/hashes, the exact dependency manifest and workset limits, and no extras. Apply that startup gate
+    to activate the coordinator data plane, then progressively start the remaining pool. Program-kind
+    adapters continue through the existing SavorDb contracts.
 11. Remove each disconnected `PhaseScriptVM` and peer macro-runtime execution path at cutover.
 
 The breakpoint-router analysis stages 1 through 5 remain useful guidance. Its stage 6 is replaced:
@@ -731,9 +752,10 @@ cutover is underway.
 - Published terminals remain replayable in the worker-global ledger after their workset releases the
   session. Old acknowledgements do not block clean promotion unless count/byte capacity is exhausted;
   the prior workset's bookkeeping summary still waits for every exact acknowledgement.
-- The pre-6A process seam proves the one-worker gate and progressive-start behavior with direct one-item
-  tests while the coordinator data plane remains disabled. Slice 7 proves complete catalog/dependency
-  negotiation before applying the gate to DB work.
+- The pre-6A process seam proves the one-worker gate and at-most-two progressive-start behavior with a
+  transferred test-only module in a one-item workset while the coordinator data plane remains disabled.
+  Slice 7 proves `CompleteExact`, including exactly nine production module IDs/hashes and no extras,
+  before applying the gate to DB work.
 - A visual frame step cannot bypass an active router interceptor or mutate a non-debuggable invocation.
 - Two logical stop-point consumers can share one PC without either replacing the other's subscription.
 - A requested interruption handler can suspend and resume a foreground operation while preserving its
@@ -787,16 +809,18 @@ cutover is underway.
   and result acknowledgement; broader queue or workflow redesign remains deferred.
 - Visual debugger UI behavior beyond the locked command and ownership boundary.
 - Nonblocking screenshot backend/actor ingress and active in-flight screenshot cancellation.
-- Production construction of `ProgramRuntime` and its implemented `SessionProgramActionHost`, the
-  `ProgramInvocation` worker capability, current-phase module migration, handler-adapter cutover, and a
-  live game-program smoke.
+- Current-phase module migration, handler-adapter cutover, complete-catalog DB activation, and a live
+  game-program smoke. The production `ProgramRuntime`, implemented `SessionProgramActionHost`, and
+  unified workset process transport are pre-6A dependencies rather than deferred Slice 7 work.
 - Source-backed `soa.cutscene` and `soa.overworld` packs and their game-specific algorithms.
 - Live state-plus-DTM playback continuation, live post-write capture, and rendered interaction checks
   until deterministic program execution/input and unattended authoritative witnesses exist.
-- Numeric workset/staged-item limits, immutable-state-cache count/byte bounds, worker-global
-  completion-ledger sizing, and progressive worker-start concurrency after the finite static workset
-  contract is proven. One active session-mutating workset, one host-only staged successor, one executing
-  item/instance, exact epoch binding, scoped cache leases, and non-lossy item terminals are not deferred.
+- Measurement-driven tuning beyond the fixed configurable defaults: 16 items/32 MiB/four aggregate
+  hours per workset; 64 total and 32 active-plus-staged item credits; 16 cache entries/512 MiB; two
+  finalizer threads with eight pending captures/256 MiB; 32 retained terminals/128 MiB; two concurrent
+  startups; and one coordinator-buffered successor per Ready worker. One active session-mutating
+  workset, one host-only staged successor, one executing item/instance, exact epoch binding, scoped
+  cache leases, and non-lossy item terminals are not deferred.
 
 ## Source references
 

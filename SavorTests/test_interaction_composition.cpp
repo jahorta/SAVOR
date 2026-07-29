@@ -39,8 +39,6 @@ InteractionActionSet Actions()
             CanonicalAction::StopPointsSubscribeGroup),
         .continue_until = CanonicalActionIdentity(
             CanonicalAction::ExecutionContinueUntil),
-        .step_instructions = CanonicalActionIdentity(
-            CanonicalAction::ExecutionStepInstructions),
         .step_frames = CanonicalActionIdentity(
             CanonicalAction::ExecutionStepFrames),
     };
@@ -102,9 +100,9 @@ InteractionDefinition Definition()
                 .input_kind = InteractionInputKind::Held,
                 .acknowledgement =
                     InputAcknowledgementPolicy::RequestAndRelease,
-                .step_off_current_source = true,
-                .reached_instruction =
-                    ReachedInstructionPolicy::ExecuteUnderHeldRequest,
+                .held_through_successor = Point(
+                    "soa.battle.point.BattleMacroInputReadyGate",
+                    0x8007cec4u),
                 .deadline_milliseconds = 1000,
                 .release_witness_point =
                     "soa.battle.point.BattleMacroInputReadyGate",
@@ -123,9 +121,6 @@ InteractionDefinition Definition()
                 .input_kind = InteractionInputKind::Pulse,
                 .acknowledgement =
                     InputAcknowledgementPolicy::RequestAndRelease,
-                .step_off_current_source = true,
-                .reached_instruction =
-                    ReachedInstructionPolicy::LeavePaused,
                 .deadline_milliseconds = 1000,
                 .release_witness_point =
                     "soa.battle.point.BattleMacroDirectCommandQueued",
@@ -191,14 +186,7 @@ TEST(InteractionComposition, LowersTemporalContractToOrdinaryIr)
         [](const Instruction* instruction)
         {
             return instruction->selector.contains(
-                "select/publish-before-step");
-        });
-    const auto step_source = std::ranges::find_if(
-        instructions,
-        [](const Instruction* instruction)
-        {
-            return instruction->selector.contains(
-                "select/step-source-with-request");
+                "select/publish-before-departure");
         });
     const auto wait = std::ranges::find_if(
         instructions,
@@ -206,6 +194,13 @@ TEST(InteractionComposition, LowersTemporalContractToOrdinaryIr)
         {
             return instruction->selector.contains(
                 "select/exact-stop-and-input-epoch");
+        });
+    const auto successor = std::ranges::find_if(
+        instructions,
+        [](const Instruction* instruction)
+        {
+            return instruction->selector.contains(
+                "select/held-through-semantic-successor");
         });
     const auto request_poll = std::ranges::find_if(
         instructions,
@@ -229,14 +224,16 @@ TEST(InteractionComposition, LowersTemporalContractToOrdinaryIr)
                 "select/release-witness");
         });
     ASSERT_NE(publish, instructions.end());
-    ASSERT_NE(step_source, instructions.end());
     ASSERT_NE(wait, instructions.end());
+    ASSERT_NE(successor, instructions.end());
     ASSERT_NE(request_poll, instructions.end());
     ASSERT_NE(neutral, instructions.end());
     ASSERT_NE(release, instructions.end());
-    EXPECT_LT(publish - instructions.begin(), step_source - instructions.begin());
-    EXPECT_LT(step_source - instructions.begin(), wait - instructions.begin());
-    EXPECT_LT(wait - instructions.begin(), request_poll - instructions.begin());
+    EXPECT_LT(publish - instructions.begin(), wait - instructions.begin());
+    EXPECT_LT(wait - instructions.begin(), successor - instructions.begin());
+    EXPECT_LT(
+        successor - instructions.begin(),
+        request_poll - instructions.begin());
     EXPECT_LT(request_poll - instructions.begin(), neutral - instructions.begin());
     EXPECT_LT(neutral - instructions.begin(), release - instructions.begin());
     for (const auto* instruction : instructions)
@@ -267,6 +264,28 @@ TEST(InteractionComposition, LowersTemporalContractToOrdinaryIr)
                 (*bytes)[3] == '1';
         });
     EXPECT_NE(stop_config, instructions.end());
+    const auto continue_config = std::ranges::find_if(
+        instructions,
+        [](const Instruction* instruction)
+        {
+            if (!instruction->literal ||
+                !instruction->selector.contains(
+                    "select/continue/static-config"))
+            {
+                return false;
+            }
+            const auto* bytes =
+                std::get_if<std::vector<Byte>>(
+                    &instruction->literal->payload);
+            return bytes && bytes->size() >= 6 &&
+                (*bytes)[0] == 'C' &&
+                (*bytes)[1] == 'U' &&
+                (*bytes)[2] == 'C' &&
+                (*bytes)[3] == '1' &&
+                (*bytes)[4] == 1u &&
+                (*bytes)[5] == 1u;
+        });
+    EXPECT_NE(continue_config, instructions.end());
 }
 
 TEST(InteractionComposition, MemoryPollingPreservesBaselineThenNeutralFrame)
@@ -329,14 +348,26 @@ TEST(InteractionComposition, MemoryPollingPreservesBaselineThenNeutralFrame)
             ? std::optional<Byte>((*bytes)[4])
             : std::nullopt;
     };
-    const auto instruction_kind =
-        advance_kind("source-step/static-config");
     const auto frame_kind =
         advance_kind("neutral-frame/static-config");
-    ASSERT_TRUE(instruction_kind);
     ASSERT_TRUE(frame_kind);
-    EXPECT_EQ(*instruction_kind, 1u);
     EXPECT_EQ(*frame_kind, 2u);
+    EXPECT_FALSE(std::ranges::any_of(
+        instructions,
+        [](const Instruction* instruction)
+        {
+            if (!instruction->literal)
+                return false;
+            const auto* bytes =
+                std::get_if<std::vector<Byte>>(
+                    &instruction->literal->payload);
+            return bytes && bytes->size() > 4 &&
+                (*bytes)[0] == 'E' &&
+                (*bytes)[1] == 'A' &&
+                (*bytes)[2] == 'C' &&
+                (*bytes)[3] == '1' &&
+                (*bytes)[4] == 1u;
+        }));
 }
 
 TEST(InteractionComposition, AdaptiveReducerCanSelectOnlyKnownSegmentsOrComplete)
@@ -404,6 +435,25 @@ TEST(InteractionComposition, InvalidReleaseWitnessIsRejectedAtomically)
     EXPECT_EQ(
         result.diagnostics.front().code,
         "interaction.missing_release_witness");
+}
+
+TEST(InteractionComposition, HeldThroughBehaviorRequiresSemanticSuccessor)
+{
+    auto definition = Definition();
+    ASSERT_TRUE(
+        definition.segments.front().held_through_successor.has_value());
+    definition.segments.front()
+        .held_through_successor->physical_pc = 0;
+    ProgramModule module;
+    module.ir_version = 99;
+    const auto before = module;
+    const auto result = LowerInteraction(definition, module);
+    EXPECT_FALSE(result);
+    EXPECT_EQ(module, before);
+    ASSERT_FALSE(result.diagnostics.empty());
+    EXPECT_EQ(
+        result.diagnostics.front().code,
+        "interaction.invalid_held_successor");
 }
 
 } // namespace

@@ -11,6 +11,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace savor::runtime::program {
 
@@ -21,7 +22,19 @@ struct ProgramRuntimeConfig
     // Capability packs remain invocation-specific and must exactly equal the
     // verified dependency lock.
     RuntimeProfile runtime_profile;
+    // When present, CompleteExact is reported only after the loaded catalog
+    // exactly matches these nine production modules. Development modules and
+    // extra modules can never satisfy this contract.
+    std::optional<std::vector<ProgramRuntimeCatalogModule>>
+        expected_exact_catalog;
 };
+
+// Computes the execution-key portion shared by independently bound workset
+// items. Per-item identity, input, budgets, provenance, lineage, and the
+// actor-owned session/epoch binding are intentionally excluded.
+[[nodiscard]] std::string
+ComputeProgramInvocationCompatibilityHashV1(
+    const ProgramInvocation& invocation);
 
 // Canonical typed runtime. It owns only immutable definitions, registries,
 // verification, and invocation continuation data. Session effects cross the
@@ -52,6 +65,21 @@ public:
         CancellationToken cancellation,
         std::shared_ptr<IProgramRuntimeEventSink> events) override;
 
+    ProgramRuntimeSubmission PrepareInvocationTemplate(
+        InvocationTemplatePreparationRequest request,
+        PreparedInvocationTemplateReceipt& receipt) override;
+
+    ProgramRuntimeSubmission ReleaseInvocationTemplate(
+        PreparedInvocationTemplateId template_id) override;
+
+    ProgramRuntimeSubmission StartPreparedInvocation(
+        PreparedInvocationStartRequest request,
+        CancellationToken cancellation,
+        std::shared_ptr<IProgramRuntimeEventSink> events) override;
+
+    [[nodiscard]] ProgramRuntimeCatalogSnapshot catalog()
+        const override;
+
     ProgramRuntimeSubmission RequestCancellation(
         InvocationId invocation_id) override;
 
@@ -60,6 +88,9 @@ public:
 
     ProgramRuntimeSubmission DeliverActionCompletion(
         ProgramActionCompletion completion) override;
+
+    [[nodiscard]] std::vector<PendingStateArtifactPublication>
+        DrainPendingStateArtifactPublications() override;
 
     ProgramRuntimeSubmission AcknowledgeTerminal(
         InvocationId invocation_id,

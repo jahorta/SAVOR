@@ -84,15 +84,19 @@ bool SavorDbRuntime::start(const std::filesystem::path& root, std::string* error
         return false;
     }
 
+    workflow_item_credit_source_ = std::make_shared<
+        savor::db::execution::workflow::CoordinatorItemCreditSource>();
 	std::function<void(const std::string&)> event_line_callback = [](const std::string& line) {
         (void)line;
 		};
 
+    auto workflow_config = buildWorkflowConfig();
+    workflow_config.item_credit_source = workflow_item_credit_source_;
     auto workflow_coordinator =
         std::make_unique<savor::db::execution::workflow::WorkflowCoordinatorService>(
             service_->ExecutionDb(),
             &program_registry_,
-            buildWorkflowConfig(),
+            std::move(workflow_config),
             std::move(event_line_callback),
             nullptr,
             service_->AuthoringDb());
@@ -109,10 +113,14 @@ bool SavorDbRuntime::start(const std::filesystem::path& root, std::string* error
 }
 
 void SavorDbRuntime::stop() {
+    if (workflow_item_credit_source_ != nullptr) {
+        workflow_item_credit_source_->Close();
+    }
     if (workflow_coordinator_ != nullptr) {
         workflow_coordinator_->Stop();
         workflow_coordinator_.reset();
     }
+    workflow_item_credit_source_.reset();
     program_registry_ = savor::db::execution::programdb::ProgramKindRegistry{};
     if (service_ != nullptr) {
         service_->Stop();
@@ -239,6 +247,19 @@ savor::db::execution::workflow::WorkflowCoordinatorTelemetry SavorDbRuntime::wor
 
 bool SavorDbRuntime::workflowCoordinatorRunning() const {
     return workflow_coordinator_ != nullptr && workflow_coordinator_->IsRunning();
+}
+
+std::shared_ptr<
+    savor::db::execution::workflow::CoordinatorItemCreditSource>
+SavorDbRuntime::workflowItemCreditSource() const {
+    return workflow_item_credit_source_;
+}
+
+bool SavorDbRuntime::publishTerminalCommit(
+    const savor::db::execution::workflow::
+        TerminalWorkflowStepNotification& notification) {
+    return workflow_coordinator_ != nullptr
+        && workflow_coordinator_->PublishTerminalCommit(notification);
 }
 
 bool SavorDbRuntime::buildProgramRegistry(std::string* error_out) {

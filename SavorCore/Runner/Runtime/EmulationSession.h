@@ -105,6 +105,15 @@ public:
         StateHandleId handle);
     [[nodiscard]] StateFileArtifactReceipt CaptureStateArtifact(
         const StateFileCaptureRequest& request);
+    [[nodiscard]] ImmutableStateArtifactCaptureReceipt
+        CaptureImmutableStateArtifact(
+            const StateFileCaptureRequest& request);
+    [[nodiscard]] StateFileArtifactReceipt CommitImmutableStateArtifact(
+        const ImmutableStateArtifactPublicationReceipt& publication);
+    [[nodiscard]] StateServiceResult AbandonImmutableStateArtifact(
+        StateArtifactId artifact) noexcept;
+    [[nodiscard]] StateServiceResult ReleaseStateArtifact(
+        StateArtifactId artifact) noexcept;
     [[nodiscard]] StateFileArtifactReceipt ImportStateArtifact(
         const StateFileImportRequest& request);
     [[nodiscard]] StateOperationReceipt RestoreStateArtifact(

@@ -14,6 +14,7 @@
 #include <mutex>
 #include <optional>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -25,6 +26,7 @@
 #include "Core/HostStubs.h"
 #include "Runner/IPC/WrmsProtocol.h"
 #include "Runner/Runtime/WorkerRuntime.h"
+#include "Runner/Runtime/Worksets/WorksetWireCodec.h"
 #include "Utils/Log.h"
 #include "Utils/ThreadName.h"
 
@@ -168,6 +170,20 @@ savor::wrms::RejectionCode MapRejectionCode(
         return WireCode::RuntimeStopping;
     case RuntimeCode::InternalFailure:
         return WireCode::InternalFailure;
+    case RuntimeCode::WorksetAlreadyActive:
+        return WireCode::WorksetAlreadyActive;
+    case RuntimeCode::WorksetNotFound:
+        return WireCode::WorksetNotFound;
+    case RuntimeCode::WorksetItemNotFound:
+        return WireCode::WorksetItemNotFound;
+    case RuntimeCode::WorksetCatalogMismatch:
+        return WireCode::WorksetCatalogMismatch;
+    case RuntimeCode::CapacityExceeded:
+        return WireCode::CapacityExceeded;
+    case RuntimeCode::TerminalNotFound:
+        return WireCode::TerminalNotFound;
+    case RuntimeCode::TerminalMismatch:
+        return WireCode::TerminalMismatch;
     }
     return WireCode::InternalFailure;
 }
@@ -193,6 +209,14 @@ MessageKind MapCommandKind(savor::runtime::WorkerCommandKind kind) {
         return MessageKind::SubmitInvocation;
     case savor::runtime::WorkerCommandKind::CancelInvocation:
         return MessageKind::CancelInvocation;
+    case savor::runtime::WorkerCommandKind::SubmitWorkset:
+        return MessageKind::SubmitWorkset;
+    case savor::runtime::WorkerCommandKind::CancelWorksetItem:
+        return MessageKind::CancelWorksetItem;
+    case savor::runtime::WorkerCommandKind::CancelWorkset:
+        return MessageKind::CancelWorkset;
+    case savor::runtime::WorkerCommandKind::AcknowledgeTerminal:
+        return MessageKind::AcknowledgeTerminal;
     case savor::runtime::WorkerCommandKind::CaptureScreenshot:
         return MessageKind::CaptureScreenshot;
     case savor::runtime::WorkerCommandKind::ControlExecution:
@@ -212,8 +236,6 @@ savor::wrms::ExecutionControlKind MapExecutionControl(
         return Wire::Pause;
     case Runtime::Resume:
         return Wire::Resume;
-    case Runtime::StepInstruction:
-        return Wire::StepInstruction;
     case Runtime::StepFrame:
         return Wire::StepFrame;
     }
@@ -233,7 +255,6 @@ savor::wrms::ExecutionActivityCode MapExecutionActivity(
     case Runtime::Closed:
         return Wire::Failed;
     case Runtime::Continuing:
-    case Runtime::SteppingInstruction:
     case Runtime::SteppingFrame:
     case Runtime::AdvancingInput:
     case Runtime::Pausing:
@@ -252,8 +273,6 @@ std::optional<savor::wrms::ExecutionControlKind> MapExecutionOperation(
         return Wire::Pause;
     case Runtime::InteractiveResume:
         return Wire::Resume;
-    case Runtime::StepInstructions:
-        return Wire::StepInstruction;
     case Runtime::StepFrames:
         return Wire::StepFrame;
     case Runtime::ContinueUntil:
@@ -357,6 +376,23 @@ savor::wrms::InvocationTerminalStatus MapTerminalStatus(
     }
 }
 
+savor::wrms::WorksetStateCode MapWorksetState(
+    savor::runtime::WorkerWorksetState state) {
+    using Runtime = savor::runtime::WorkerWorksetState;
+    using Wire = savor::wrms::WorksetStateCode;
+    switch (state) {
+    case Runtime::Validating: return Wire::Validating;
+    case Runtime::Staged: return Wire::Staged;
+    case Runtime::PreparingBaseline: return Wire::PreparingBaseline;
+    case Runtime::Running: return Wire::Running;
+    case Runtime::Draining: return Wire::Draining;
+    case Runtime::Completed: return Wire::Completed;
+    case Runtime::Cancelled: return Wire::Cancelled;
+    case Runtime::Failed: return Wire::Failed;
+    }
+    return Wire::Failed;
+}
+
 class OutboundPublisher {
 public:
     explicit OutboundPublisher(HANDLE output)
@@ -445,11 +481,42 @@ public:
             if (stopping_)
                 return false;
             try {
-                queue_.push_back(Record{
-                    .kind = kind,
-                    .request_id = request_id,
-                    .payload = std::move(payload),
-                });
+                const bool authoritative = IsAuthoritative(kind);
+                const std::size_t resident_bytes =
+                    payload.size() + sizeof(Record);
+                const auto fits = [&]() {
+                    return queue_.size() < kMaximumQueuedRecords &&
+                        resident_bytes <= kMaximumQueuedBytes &&
+                        queued_bytes_ <=
+                            kMaximumQueuedBytes - resident_bytes;
+                };
+                if (!fits()) {
+                    for (auto it = queue_.begin();
+                         it != queue_.end() && !fits();) {
+                        if (it->authoritative) {
+                            ++it;
+                            continue;
+                        }
+                        queued_bytes_ -= it->resident_bytes;
+                        it = queue_.erase(it);
+                    }
+                }
+                if (!fits()) {
+                    if (!authoritative)
+                        return true;
+                    healthy_.store(false, std::memory_order_release);
+                    stopping_ = true;
+                    enqueue_failed = true;
+                } else {
+                    queued_bytes_ += resident_bytes;
+                    queue_.push_back(Record{
+                        .kind = kind,
+                        .request_id = request_id,
+                        .payload = std::move(payload),
+                        .resident_bytes = resident_bytes,
+                        .authoritative = authoritative,
+                    });
+                }
             } catch (...) {
                 healthy_.store(false, std::memory_order_release);
                 stopping_ = true;
@@ -479,12 +546,34 @@ public:
         return healthy_.load(std::memory_order_acquire);
     }
 
+    void Fail() noexcept {
+        MarkUnhealthy();
+    }
+
 private:
     struct Record {
         MessageKind kind{ MessageKind::ProcessHello };
         std::uint64_t request_id{ 0 };
         std::vector<std::uint8_t> payload;
+        std::size_t resident_bytes{ 0 };
+        bool authoritative{ true };
     };
+
+    static constexpr std::size_t kMaximumQueuedRecords = 128;
+    static constexpr std::size_t kMaximumQueuedBytes =
+        128ull * 1024ull * 1024ull;
+
+    static bool IsAuthoritative(MessageKind kind) noexcept {
+        switch (kind) {
+        case MessageKind::InvocationProgress:
+        case MessageKind::HostEvent:
+        case MessageKind::RuntimeDiagnostic:
+        case MessageKind::ExecutionState:
+            return false;
+        default:
+            return true;
+        }
+    }
 
     void MarkUnhealthy() noexcept {
         healthy_.store(false, std::memory_order_release);
@@ -517,6 +606,7 @@ private:
                 }
                 record = std::move(queue_.front());
                 queue_.pop_front();
+                queued_bytes_ -= record.resident_bytes;
             }
 
             const auto frame = savor::wrms::EncodeFrame(
@@ -530,6 +620,7 @@ private:
                     std::lock_guard<std::mutex> lock(mutex_);
                     stopping_ = true;
                     queue_.clear();
+                    queued_bytes_ = 0;
                 }
                 CancelReader();
                 break;
@@ -542,6 +633,7 @@ private:
     mutable std::mutex mutex_;
     std::condition_variable available_;
     std::deque<Record> queue_;
+    std::size_t queued_bytes_{ 0 };
     bool stopping_{ false };
     std::atomic<bool> healthy_{ true };
     std::thread thread_;
@@ -549,6 +641,12 @@ private:
 
 class RequestMetadata {
 public:
+    struct WorksetCorrelation {
+        std::uint64_t workset_id = 0;
+        std::uint64_t item_id = 0;
+        std::uint32_t item_ordinal = 0;
+    };
+
     void RememberScreenshot(
         std::uint64_t request_id,
         std::string output_path) {
@@ -566,10 +664,54 @@ public:
         return value;
     }
 
+    void RememberWorksetItem(
+        const savor::runtime::WorkerWorksetItemStartedEvent& item) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        workset_items_[item.invocation_id.value()] = WorksetCorrelation{
+            item.workset_id.value(),
+            item.item_id.value(),
+            item.item_ordinal};
+    }
+
+    WorksetCorrelation FindWorksetItem(
+        savor::runtime::InvocationId invocation_id) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto found = workset_items_.find(invocation_id.value());
+        return found == workset_items_.end()
+            ? WorksetCorrelation{}
+            : found->second;
+    }
+
+    void ForgetWorksetItem(savor::runtime::InvocationId invocation_id) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        workset_items_.erase(invocation_id.value());
+    }
+
 private:
     std::mutex mutex_;
     std::unordered_map<std::uint64_t, std::string> screenshot_paths_;
+    std::unordered_map<std::uint64_t, WorksetCorrelation> workset_items_;
 };
+
+bool PublishRuntimeManifest(
+    OutboundPublisher& publisher,
+    savor::runtime::WorkerRuntime& runtime) {
+    std::vector<std::uint8_t> encoded_manifest;
+    const auto encoded =
+        savor::runtime::EncodeWorkerRuntimeManifestV1(
+            runtime.runtime_manifest(),
+            encoded_manifest);
+    if (!encoded) {
+        publisher.Fail();
+        return false;
+    }
+    return publisher.Publish(
+            MessageKind::RuntimeManifest,
+            0,
+            savor::wrms::RuntimeManifestPayload{
+                .encoded_manifest = std::move(encoded_manifest),
+            });
+}
 
 void PublishCommandCompletion(
     OutboundPublisher& publisher,
@@ -696,6 +838,7 @@ void PublishCommandCompletion(
 void PublishWorkerEvent(
     OutboundPublisher& publisher,
     RequestMetadata& metadata,
+    savor::runtime::WorkerRuntime* runtime,
     const WorkerEvent& event) {
     std::visit(
         Overloaded{
@@ -734,8 +877,18 @@ void PublishWorkerEvent(
                             .message = prepared.error.message,
                         });
                 }
+                if (prepared.prepared && !prepared.error) {
+                    if (!runtime ||
+                        !PublishRuntimeManifest(publisher, *runtime))
+                    {
+                        publisher.Fail();
+                        return;
+                    }
+                }
             },
             [&](const savor::runtime::ProgramInvocationProgressEvent& progress) {
+                const auto correlation =
+                    metadata.FindWorksetItem(progress.invocation_id);
                 std::vector<std::uint8_t> encoded(
                     progress.text.begin(),
                     progress.text.end());
@@ -745,6 +898,9 @@ void PublishWorkerEvent(
                     savor::wrms::InvocationProgressPayload{
                         .invocation_id = progress.invocation_id.value(),
                         .attempt_id = progress.attempt_id.value(),
+                        .workset_id = correlation.workset_id,
+                        .item_id = correlation.item_id,
+                        .item_ordinal = correlation.item_ordinal,
                         .ordinal = progress.progress_sequence,
                         .progress = std::move(encoded),
                     });
@@ -764,6 +920,107 @@ void PublishWorkerEvent(
                         .error_code = ErrorCodeString(terminal.error.code),
                         .message = terminal.error.message,
                         .result = terminal.output_payload,
+                    });
+            },
+            [&](const savor::runtime::WorkerWorksetStateEvent& state) {
+                publisher.Publish(
+                    MessageKind::WorksetState,
+                    0,
+                    savor::wrms::WorksetStatePayload{
+                        .outbound_sequence =
+                            state.outbound_sequence.value(),
+                        .workset_id = state.workset_id.value(),
+                        .state = MapWorksetState(state.state),
+                        .next_item_ordinal = state.next_item_ordinal,
+                        .rejection_code =
+                            MapRejectionCode(state.error.code),
+                        .message = state.error.message,
+                    });
+            },
+            [&](const savor::runtime::WorkerWorksetItemStartedEvent& started) {
+                metadata.RememberWorksetItem(started);
+                publisher.Publish(
+                    MessageKind::WorksetItemStarted,
+                    0,
+                    savor::wrms::WorksetItemStartedPayload{
+                        .outbound_sequence =
+                            started.outbound_sequence.value(),
+                        .workset_id = started.workset_id.value(),
+                        .item_id = started.item_id.value(),
+                        .item_ordinal = started.item_ordinal,
+                        .invocation_id = started.invocation_id.value(),
+                        .attempt_id = started.attempt_id.value(),
+                        .session_id = started.session_id.value(),
+                        .state_epoch = started.state_epoch.value(),
+                        .baseline_sha256 =
+                            started.baseline.key.sha256,
+                        .baseline_lineage =
+                            started.baseline.lineage,
+                        .baseline_restored =
+                            started.baseline.restored,
+                    });
+            },
+            [&](const savor::runtime::WorkerWorksetItemTerminalEvent& item) {
+                const auto& correlation = item.correlation;
+                const auto& terminal = item.terminal;
+                publisher.Publish(
+                    MessageKind::WorksetItemTerminal,
+                    0,
+                    savor::wrms::WorksetItemTerminalPayload{
+                        .outbound_sequence =
+                            item.outbound_sequence.value(),
+                        .workset_id = correlation.workset_id.value(),
+                        .item_id = correlation.item_id.value(),
+                        .item_ordinal = correlation.item_ordinal,
+                        .invocation_id =
+                            correlation.invocation_id.value(),
+                        .attempt_id = correlation.attempt_id.value(),
+                        .terminal_id = correlation.terminal_id.value(),
+                        .terminal_order =
+                            correlation.terminal_order.value(),
+                        .status = MapTerminalStatus(terminal.status),
+                        .session_disposition =
+                            MapSessionDisposition(
+                                terminal.session_disposition),
+                        .state_epoch =
+                            terminal.origin_state_epoch.value(),
+                        .unstarted = item.unstarted,
+                        .rejection_code =
+                            MapRejectionCode(terminal.error.code),
+                        .error_code =
+                            ErrorCodeString(terminal.error.code),
+                        .message = terminal.error.message,
+                        .result = terminal.output_payload,
+                    });
+                metadata.ForgetWorksetItem(
+                    correlation.invocation_id);
+            },
+            [&](const savor::runtime::WorkerWorksetCreditEvent& credits) {
+                publisher.Publish(
+                    MessageKind::WorksetCredits,
+                    0,
+                    savor::wrms::WorksetCreditsPayload{
+                        .outbound_sequence =
+                            credits.outbound_sequence.value(),
+                        .available_item_credits =
+                            credits.available_item_credits,
+                        .active_and_staged_items =
+                            credits.active_and_staged_items,
+                        .retained_terminals =
+                            credits.retained_terminals,
+                    });
+            },
+            [&](const savor::runtime::WorkerWorksetTerminalSummaryEvent& summary) {
+                publisher.Publish(
+                    MessageKind::WorksetSummary,
+                    0,
+                    savor::wrms::WorksetSummaryPayload{
+                        .outbound_sequence =
+                            summary.outbound_sequence.value(),
+                        .workset_id = summary.workset_id.value(),
+                        .item_count = summary.item_count,
+                        .completed_count = summary.completed_count,
+                        .unstarted_count = summary.unstarted_count,
                     });
             },
             [&](const savor::runtime::WorkerExecutionEvent& execution_event) {
@@ -962,6 +1219,7 @@ bool SubmitFrame(
         module.identity.canonical_hash =
             std::move(payload.canonical_hash);
         module.format_version = payload.format_version;
+        module.development_only = payload.development_only;
         module.payload = std::move(payload.encoded_module);
         (void)runtime.Submit(
             WireRequestId{frame.header.request_id},
@@ -969,30 +1227,109 @@ bool SubmitFrame(
         return true;
     }
     case MessageKind::SubmitInvocation: {
-        savor::wrms::SubmitInvocationPayload payload;
+        publisher.Publish(
+            MessageKind::CommandResult,
+            frame.header.request_id,
+            savor::wrms::CommandResultPayload{
+                .command_kind = MessageKind::SubmitInvocation,
+                .status = savor::wrms::CommandStatus::Unsupported,
+                .rejection_code =
+                    savor::wrms::RejectionCode::Unsupported,
+                .error_code = "ReservedSubmitInvocation",
+                .message =
+                    "SubmitInvocation is reserved; submit a one-item WorkerWorkset",
+            });
+        return true;
+    }
+    case MessageKind::SubmitWorkset: {
+        savor::wrms::SubmitWorksetPayload payload;
         if (!savor::wrms::DecodePayload(frame.payload, payload)) {
             PublishMalformedCommand(
                 publisher,
                 frame.header.kind,
                 frame.header.request_id,
-                "invalid SubmitInvocation payload");
+                "invalid SubmitWorkset payload");
             return true;
         }
-        EncodedInvocationEnvelope invocation;
-        invocation.invocation_id = InvocationId{payload.invocation_id};
-        invocation.attempt_id = AttemptId{payload.attempt_id};
-        invocation.module.canonical_id =
-            std::move(payload.module_canonical_id);
-        invocation.module.revision = payload.module_revision;
-        invocation.module.canonical_hash =
-            std::move(payload.module_canonical_hash);
-        invocation.entrypoint = std::move(payload.entrypoint);
-        invocation.expected_state_epoch =
-            StateEpoch{payload.expected_state_epoch};
-        invocation.input_payload = std::move(payload.encoded_invocation);
+        WorkerWorksetDefinition definition;
+        const std::size_t actual_encoded_size =
+            payload.encoded_workset.size();
+        const auto decoded = DecodeWorkerWorksetV1(
+            payload.encoded_workset,
+            definition);
+        if (!decoded) {
+            PublishMalformedCommand(
+                publisher,
+                frame.header.kind,
+                frame.header.request_id,
+                decoded.message.empty()
+                    ? "invalid encoded WorkerWorkset"
+                    : decoded.message);
+            return true;
+        }
+        // The transport is authoritative for residency accounting. Never
+        // accept a sender-supplied byte count.
+        definition.encoded_size_bytes = actual_encoded_size;
         (void)runtime.Submit(
             WireRequestId{frame.header.request_id},
-            InvokeProgramCommand{std::move(invocation)});
+            SubmitWorksetCommand{std::move(definition)});
+        return true;
+    }
+    case MessageKind::CancelWorksetItem: {
+        savor::wrms::CancelWorksetItemPayload payload;
+        if (!savor::wrms::DecodePayload(frame.payload, payload)) {
+            PublishMalformedCommand(
+                publisher,
+                frame.header.kind,
+                frame.header.request_id,
+                "invalid CancelWorksetItem payload");
+            return true;
+        }
+        (void)runtime.Submit(
+            WireRequestId{frame.header.request_id},
+            CancelWorksetItemCommand{
+                WorkerWorksetId{payload.workset_id},
+                WorkerWorksetItemId{payload.item_id}});
+        return true;
+    }
+    case MessageKind::CancelWorkset: {
+        savor::wrms::CancelWorksetPayload payload;
+        if (!savor::wrms::DecodePayload(frame.payload, payload)) {
+            PublishMalformedCommand(
+                publisher,
+                frame.header.kind,
+                frame.header.request_id,
+                "invalid CancelWorkset payload");
+            return true;
+        }
+        (void)runtime.Submit(
+            WireRequestId{frame.header.request_id},
+            CancelWorksetCommand{
+                WorkerWorksetId{payload.workset_id}});
+        return true;
+    }
+    case MessageKind::AcknowledgeTerminal: {
+        savor::wrms::AcknowledgeTerminalPayload payload;
+        if (!savor::wrms::DecodePayload(frame.payload, payload)) {
+            PublishMalformedCommand(
+                publisher,
+                frame.header.kind,
+                frame.header.request_id,
+                "invalid AcknowledgeTerminal payload");
+            return true;
+        }
+        (void)runtime.Submit(
+            WireRequestId{frame.header.request_id},
+            AcknowledgeTerminalCommand{
+                WorkerItemTerminalCorrelation{
+                    WorkerWorksetId{payload.workset_id},
+                    WorkerWorksetItemId{payload.item_id},
+                    payload.item_ordinal,
+                    InvocationId{payload.invocation_id},
+                    AttemptId{payload.attempt_id},
+                    WorkerTerminalId{payload.terminal_id},
+                    WorkerTerminalOrder{
+                        payload.terminal_order}}});
         return true;
     }
     case MessageKind::CancelInvocation: {
@@ -1052,8 +1389,9 @@ bool SubmitFrame(
         case savor::wrms::ExecutionControlKind::Resume:
             control = WorkerExecutionControlKind::Resume;
             break;
-        case savor::wrms::ExecutionControlKind::StepInstruction:
-            control = WorkerExecutionControlKind::StepInstruction;
+        case savor::wrms::ExecutionControlKind::ReservedGuestInstruction:
+            // DecodePayload rejects the reserved discriminator before this
+            // switch, so it can never reach the runtime.
             break;
         case savor::wrms::ExecutionControlKind::StepFrame:
             control = WorkerExecutionControlKind::StepFrame;
@@ -1136,14 +1474,22 @@ int main(int argc, char** argv) {
     OutboundPublisher publisher(output);
     RequestMetadata request_metadata;
     std::unique_ptr<savor::runtime::WorkerRuntime> runtime;
+    std::atomic<savor::runtime::WorkerRuntime*> runtime_for_events{
+        nullptr};
     runtime = savor::runtime::MakeProductionWorkerRuntime(
         savor::runtime::SessionId{},
         [&](const WorkerEvent& event) {
             PublishWorkerEvent(
                 publisher,
                 request_metadata,
+                runtime_for_events.load(std::memory_order_acquire),
                 event);
+            if (!publisher.healthy()) {
+                throw std::runtime_error(
+                    "WRMS outbound publisher rejected the worker event");
+            }
         });
+    runtime_for_events.store(runtime.get(), std::memory_order_release);
 
     savor::hoststubs::SetHostEventSink(
         [&](const savor::hoststubs::HostEvent& event) {
@@ -1164,6 +1510,10 @@ int main(int argc, char** argv) {
             .capability_mask = runtime->capabilities(),
             .build_identity = "SavorWorker WRMS/1 hard-cutover",
         });
+    if (!PublishRuntimeManifest(publisher, *runtime)) {
+        publisher.StopAndDrain();
+        return static_cast<int>(WorkerExitCode::PublisherFailure);
+    }
 
     std::vector<std::uint8_t> buffered;
     buffered.reserve(64 * 1024);

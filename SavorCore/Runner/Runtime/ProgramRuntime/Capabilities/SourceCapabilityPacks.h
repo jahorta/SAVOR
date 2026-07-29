@@ -7,7 +7,7 @@
 
 namespace savor::runtime::program::capabilities {
 
-inline constexpr std::string_view kSupportedGameId = "GEAE8E";
+inline constexpr std::string_view kSupportedGameId = "GEAE8P";
 inline constexpr std::string_view kSupportedExecutableIdentity =
     "soal-usa.GEAE8E";
 inline constexpr std::string_view kSupportedAddressMapRevision =

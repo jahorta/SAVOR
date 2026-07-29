@@ -1,6 +1,14 @@
 #include "WorkerRuntime.h"
 
 #include "DolphinWrapperBackend.h"
+#include "ProgramRuntime/Actions/SessionProgramActionHost.h"
+#include "ProgramRuntime/Codec/ProgramCodecV1.h"
+#include "ProgramRuntime/ProgramRuntime.h"
+#include "ProgramRuntime/Registry/CanonicalActionCatalog.h"
+#include "Worksets/ProgramBaseline.h"
+#include "Worksets/StateArtifactFinalizer.h"
+#include "Worksets/WorkerCompletionLedger.h"
+#include "Worksets/WorksetStager.h"
 
 #include <algorithm>
 #include <atomic>
@@ -11,9 +19,12 @@
 #include <iterator>
 #include <limits>
 #include <mutex>
+#include <set>
+#include <string_view>
 #include <thread>
 #include <type_traits>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -35,7 +46,11 @@ Overloaded(Ts...) -> Overloaded<Ts...>;
             [](const OpenSessionCommand&) { return WorkerCommandKind::OpenSession; },
             [](const PrepareModuleCommand&) { return WorkerCommandKind::PrepareModule; },
             [](const InvokeProgramCommand&) { return WorkerCommandKind::InvokeProgram; },
+            [](const SubmitWorksetCommand&) { return WorkerCommandKind::SubmitWorkset; },
             [](const CancelInvocationCommand&) { return WorkerCommandKind::CancelInvocation; },
+            [](const CancelWorksetItemCommand&) { return WorkerCommandKind::CancelWorksetItem; },
+            [](const CancelWorksetCommand&) { return WorkerCommandKind::CancelWorkset; },
+            [](const AcknowledgeTerminalCommand&) { return WorkerCommandKind::AcknowledgeTerminal; },
             [](const CaptureScreenshotCommand&) { return WorkerCommandKind::CaptureScreenshot; },
             [](const ControlExecutionCommand&) { return WorkerCommandKind::ControlExecution; },
             [](const ShutdownCommand&) { return WorkerCommandKind::Shutdown; }},
@@ -97,7 +112,6 @@ Overloaded(Ts...) -> Overloaded<Ts...>;
     {
     case WorkerExecutionControlKind::Pause:
         return status == ExecutionTerminalStatus::Paused;
-    case WorkerExecutionControlKind::StepInstruction:
     case WorkerExecutionControlKind::StepFrame:
         return status == ExecutionTerminalStatus::StepsCompleted;
     case WorkerExecutionControlKind::Resume:
@@ -242,12 +256,59 @@ struct WorkerRuntime::Impl
         std::weak_ptr<Mailbox> mailbox_;
     };
 
+    class WorksetStagerNotifier final
+        : public IWorksetStagerNotifier
+    {
+    public:
+        explicit WorksetStagerNotifier(
+            std::weak_ptr<Mailbox> mailbox)
+            : mailbox_(std::move(mailbox))
+        {
+        }
+
+        void NotifyWorksetStagingCompletion() noexcept override
+        {
+            if (const auto mailbox = mailbox_.lock())
+                SignalMailbox(*mailbox);
+        }
+
+    private:
+        std::weak_ptr<Mailbox> mailbox_;
+    };
+
+    class ArtifactFinalizerNotifier final
+        : public IStateArtifactFinalizerNotifier
+    {
+    public:
+        explicit ArtifactFinalizerNotifier(
+            std::weak_ptr<Mailbox> mailbox)
+            : mailbox_(std::move(mailbox))
+        {
+        }
+
+        void NotifyStateArtifactFinalizerCompletion() noexcept override
+        {
+            if (const auto mailbox = mailbox_.lock())
+                SignalMailbox(*mailbox);
+        }
+
+    private:
+        std::weak_ptr<Mailbox> mailbox_;
+    };
+
     struct ActiveInvocation
     {
         InvocationId invocation_id;
         AttemptId attempt_id;
         StateEpoch origin_epoch;
         CancellationSource cancellation;
+        std::optional<WorkerWorksetId> workset_id;
+        std::optional<WorkerWorksetItemId> workset_item_id;
+        std::uint32_t workset_item_ordinal = 0;
+        std::vector<StateArtifactFinalizationId>
+            artifact_finalizations;
+        bool artifact_publication_promoted = false;
+        std::string artifact_finalization_failure;
 
         ActiveInvocation(
             InvocationId invocation,
@@ -259,6 +320,61 @@ struct WorkerRuntime::Impl
               cancellation(invocation)
         {
         }
+    };
+
+    struct WorksetPackage
+    {
+        WorkerWorksetDefinition definition;
+        std::vector<PreparedInvocationTemplateReceipt> prepared;
+        std::vector<bool> cancelled;
+        std::vector<bool> terminalized;
+        std::uint32_t next_item = 0;
+        WorkerWorksetState state = WorkerWorksetState::Validating;
+        PreparedProgramBaselineReceipt baseline;
+        std::uint32_t terminal_count = 0;
+        std::uint32_t unstarted_count = 0;
+        bool admission_closed = false;
+        std::string admission_close_reason;
+    };
+
+    struct DrainingWorkset
+    {
+        std::uint32_t item_count = 0;
+        std::uint32_t terminal_count = 0;
+        std::uint32_t unstarted_count = 0;
+        std::uint32_t unacknowledged = 0;
+    };
+
+    struct RetainedTerminal
+    {
+        WorkerWorksetItemTerminalEvent event;
+        std::size_t retained_bytes = 0;
+    };
+
+    struct PendingWorksetStaging
+    {
+        WorksetStagingId staging_id;
+        WorkerWorksetId workset_id;
+        std::shared_ptr<QueuedCommand> command;
+        bool cancelled = false;
+    };
+
+    struct ArtifactPublication
+    {
+        WorkerItemExecutionCorrelation item;
+        StateArtifactId state_artifact_id;
+        std::string logical_artifact_id;
+        bool completed = false;
+        std::optional<program::ArtifactReferenceValue> artifact;
+        std::string failure;
+        WorkerTerminalId terminal_id;
+    };
+
+    struct PendingFinalizedTerminal
+    {
+        WorkerWorksetItemTerminalEvent event;
+        std::size_t reserved_bytes = 0;
+        std::vector<StateArtifactFinalizationId> finalizations;
     };
 
     struct PendingExecutionCommand
@@ -273,7 +389,9 @@ struct WorkerRuntime::Impl
         std::unique_ptr<IProgramRuntimePort> program_runtime,
         WorkerEventSink event_sink,
         std::shared_ptr<const WorkerRuntimeTestHooks> test_hooks,
-        std::unique_ptr<program::IProgramActionHost> action_host)
+        std::unique_ptr<program::IProgramActionHost> action_host,
+        std::shared_ptr<ProgramBaselineComponentRegistry>
+            injected_baseline_components)
         : mailbox(std::make_shared<Mailbox>()),
           program_event_ingress(std::make_shared<ProgramEventIngress>(mailbox)),
           program_action_ingress(
@@ -284,6 +402,26 @@ struct WorkerRuntime::Impl
           event_sink(std::move(event_sink)),
           test_hooks(std::move(test_hooks))
     {
+        baseline_components = injected_baseline_components
+            ? std::move(injected_baseline_components)
+            : std::make_shared<ProgramBaselineComponentRegistry>();
+        baseline_components->Freeze();
+        workset_stager = std::make_unique<WorksetStager>(
+            workset_limits,
+            baseline_components,
+            std::make_shared<WorksetStagerNotifier>(mailbox));
+        artifact_finalizer =
+            std::make_unique<StateArtifactFinalizer>(
+                workset_limits,
+                std::make_shared<ArtifactFinalizerNotifier>(
+                    mailbox));
+        if (this->session)
+        {
+            workset_state = std::make_unique<WorksetStateCoordinator>(
+                *this->session,
+                workset_limits,
+                baseline_components);
+        }
         capabilities_value = kSlice1ProductionCapabilities;
         if (this->session)
         {
@@ -307,12 +445,26 @@ struct WorkerRuntime::Impl
         if (this->program_runtime && this->program_action_host &&
             HasCapability(
                 this->program_runtime->capabilities(),
-                WorkerCapability::ProgramInvocation))
+                WorkerCapability::WorksetDispatch))
         {
+            capabilities_value = AddCapability(
+                capabilities_value,
+                WorkerCapability::WorksetDispatch);
+        }
+        else if (this->program_runtime &&
+                 this->program_action_host &&
+                 HasCapability(
+                     this->program_runtime->capabilities(),
+                     WorkerCapability::ProgramInvocation))
+        {
+            // Focused development fakes retain the scalar lifecycle tests.
+            // Production ProgramRuntime advertises WorksetDispatch and never
+            // exposes this capability or transport.
             capabilities_value = AddCapability(
                 capabilities_value,
                 WorkerCapability::ProgramInvocation);
         }
+        BuildRuntimeManifest();
         if (this->program_runtime)
         {
             this->program_runtime->BindActionSink(
@@ -321,6 +473,8 @@ struct WorkerRuntime::Impl
 
         current_snapshot.state = WorkerState::Starting;
         current_snapshot.capabilities = capabilities_value;
+        current_snapshot.available_item_credits =
+            workset_limits.maximum_item_credits;
         if (this->session)
         {
             (void)this->session->ConfigureStopPointIngressNotification(
@@ -403,6 +557,12 @@ struct WorkerRuntime::Impl
         return current_snapshot;
     }
 
+    WorkerRuntimeManifest RuntimeManifest() const
+    {
+        std::lock_guard lock(manifest_mutex);
+        return runtime_manifest_value;
+    }
+
     bool EnqueueHostEvent(
         std::string name,
         std::vector<std::uint8_t> encoded_payload)
@@ -456,12 +616,16 @@ struct WorkerRuntime::Impl
 
     void ActorMain()
     {
-        if (!session)
+        const CompletionLedgerResult ledger_bound =
+            completion_ledger.BindActorThread();
+        if (!ledger_bound.ok || !session)
         {
             ChangeState(WorkerState::Tainted);
             Publish(WorkerRuntimeDiagnosticEvent{
                 WorkerRejectionCode::InternalFailure,
-                "WorkerRuntime was constructed without an EmulationSession",
+                !ledger_bound.ok
+                    ? ledger_bound.message
+                    : "WorkerRuntime was constructed without an EmulationSession",
                 {}});
         }
         else
@@ -471,23 +635,50 @@ struct WorkerRuntime::Impl
 
         for (;;)
         {
-            bool item_waiting_before_ingress = false;
+            // Capture the generation before draining host completions. A
+            // stager/finalizer can publish immediately after a drain; loading
+            // the generation only when entering the wait would then absorb
+            // that notification and leave the completed command stranded
+            // until some unrelated mailbox event arrived.
+            const std::uint64_t observed_wake_generation =
+                mailbox->wake_generation.load(std::memory_order_acquire);
+            DrainWorksetStager();
+            const std::uint64_t stable_ingress_generation =
+                DrainAuthoritativeIngressToStable(false);
+            PumpProgramActionHost();
+            DrainArtifactFinalizers();
+            (void)PublishReadyWorksetTerminals();
+
+            bool external_command_waiting = false;
             {
                 std::lock_guard lock(mailbox->mutex);
-                item_waiting_before_ingress =
-                    !mailbox->items.empty();
+                external_command_waiting =
+                    !mailbox->items.empty() &&
+                    mailbox->items.front().kind ==
+                        MailboxItemKind::Command;
             }
-
-            const std::uint64_t stable_ingress_generation =
-                DrainAuthoritativeIngressToStable(
-                    item_waiting_before_ingress);
-            PumpProgramActionHost();
+            if (external_command_waiting)
+            {
+                // Do not remove an external command from the mailbox until
+                // authoritative CPU ingress and the action completions it
+                // produced have been drained. PumpProgramActionHost inserts
+                // those completions ahead of queued external commands.
+                (void)DrainAuthoritativeIngressToStable(true);
+                PumpProgramActionHost();
+            }
 
             MailboxItem item;
             bool has_item = false;
             {
                 std::lock_guard lock(mailbox->mutex);
-                if (!mailbox->items.empty())
+                // A command may arrive after the boundary peek above. Do not
+                // pop that newly arrived command until the next actor turn
+                // performs the authoritative-ingress stability check for it.
+                // Internal events may still be consumed immediately.
+                if (!mailbox->items.empty() &&
+                    (external_command_waiting ||
+                     mailbox->items.front().kind !=
+                         MailboxItemKind::Command))
                 {
                     item = std::move(mailbox->items.front());
                     mailbox->items.pop_front();
@@ -501,9 +692,6 @@ struct WorkerRuntime::Impl
                 PumpExecutionEvents();
                 PumpProgramActionHost();
                 PumpProgramRuntime();
-                const std::uint64_t observed_generation =
-                    mailbox->wake_generation.load(
-                        std::memory_order_acquire);
                 const auto next_execution_wake = session
                     ? session->next_execution_wake()
                     : std::nullopt;
@@ -523,7 +711,7 @@ struct WorkerRuntime::Impl
                     return !mailbox->items.empty() ||
                         mailbox->wake_generation.load(
                             std::memory_order_acquire) !=
-                            observed_generation ||
+                            observed_wake_generation ||
                         mailbox->ingress_generation.load(
                             std::memory_order_acquire) !=
                             stable_ingress_generation;
@@ -653,8 +841,20 @@ struct WorkerRuntime::Impl
                 [this, &queued](const InvokeProgramCommand& command) {
                     HandleInvoke(queued, command);
                 },
+                [this, &queued](const SubmitWorksetCommand& command) {
+                    HandleSubmitWorkset(queued, command);
+                },
                 [this, &queued](const CancelInvocationCommand& command) {
                     HandleCancel(queued, command);
+                },
+                [this, &queued](const CancelWorksetItemCommand& command) {
+                    HandleCancelWorksetItem(queued, command);
+                },
+                [this, &queued](const CancelWorksetCommand& command) {
+                    HandleCancelWorkset(queued, command);
+                },
+                [this, &queued](const AcknowledgeTerminalCommand& command) {
+                    HandleAcknowledgeTerminal(queued, command);
                 },
                 [this, &queued](const CaptureScreenshotCommand& command) {
                     HandleScreenshot(queued, command);
@@ -765,13 +965,891 @@ struct WorkerRuntime::Impl
             return;
         }
 
-        Complete(queued, WorkerCommandOutcome::Accepted);
+        pending_module_commands.emplace(
+            queued->sequence.value(),
+            queued);
+    }
+
+    [[nodiscard]] static bool BaselinePolicyMatches(
+        ProgramBaselineStateKind baseline,
+        program::InvocationStatePolicy policy) noexcept
+    {
+        switch (baseline)
+        {
+        case ProgramBaselineStateKind::Boot:
+            return policy == program::InvocationStatePolicy::Boot;
+        case ProgramBaselineStateKind::Artifact:
+            return policy ==
+                program::InvocationStatePolicy::RestoreBaseline;
+        case ProgramBaselineStateKind::CurrentSession:
+            return policy ==
+                program::InvocationStatePolicy::ContinueSession;
+        }
+        return false;
+    }
+
+    [[nodiscard]] bool SessionIsCleanIdle() const
+    {
+        if (!session)
+            return false;
+        const SessionSnapshot current = session->snapshot();
+        const ExecutionSnapshot execution =
+            session->execution_snapshot();
+        const bool clean =
+            current.disposition == SessionDisposition::Clean ||
+            current.disposition ==
+                SessionDisposition::CleanWithDiagnostics;
+        return current.open && clean &&
+            current.core_state == BackendCoreState::Paused &&
+            execution.activity == ExecutionActivity::IdlePaused &&
+            !execution.active_operation &&
+            execution.interruption_depth == 0;
+    }
+
+    [[nodiscard]] static std::size_t
+    DeclaredTerminalBytes(const WorksetPackage& package) noexcept
+    {
+        std::size_t result = 0;
+        for (std::size_t ordinal = 0;
+             ordinal < package.definition.items.size();
+             ++ordinal)
+        {
+            if (ordinal < package.terminalized.size() &&
+                package.terminalized[ordinal])
+            {
+                continue;
+            }
+            const std::size_t bytes =
+                package.definition.items[ordinal]
+                    .declared_terminal_bytes;
+            if (result >
+                std::numeric_limits<std::size_t>::max() - bytes)
+            {
+                return std::numeric_limits<std::size_t>::max();
+            }
+            result += bytes;
+        }
+        return result;
+    }
+
+    [[nodiscard]] std::size_t
+    ResidentDeclaredTerminalBytes() const noexcept
+    {
+        const std::size_t active = active_workset
+            ? DeclaredTerminalBytes(*active_workset)
+            : 0;
+        const std::size_t staged = staged_workset
+            ? DeclaredTerminalBytes(*staged_workset)
+            : 0;
+        std::size_t combined = 0;
+        if (active >
+            std::numeric_limits<std::size_t>::max() - staged)
+        {
+            return std::numeric_limits<std::size_t>::max();
+        }
+        combined = active + staged;
+        if (pending_workset_staging)
+        {
+            const auto* submit =
+                std::get_if<SubmitWorksetCommand>(
+                    &pending_workset_staging->command->command);
+            if (submit)
+            {
+                for (const WorksetItemTemplate& item :
+                     submit->definition.items)
+                {
+                    if (combined >
+                        std::numeric_limits<std::size_t>::max() -
+                            item.declared_terminal_bytes)
+                    {
+                        return std::numeric_limits<std::size_t>::max();
+                    }
+                    combined += item.declared_terminal_bytes;
+                }
+            }
+        }
+        return combined;
+    }
+
+    [[nodiscard]] bool WorksetIdentityConflicts(
+        const WorkerWorksetDefinition& candidate) const
+    {
+        if ((active_workset &&
+             active_workset->definition.workset_id ==
+                 candidate.workset_id) ||
+            (staged_workset &&
+             staged_workset->definition.workset_id ==
+                 candidate.workset_id) ||
+            draining_worksets.contains(candidate.workset_id.value()) ||
+            (pending_workset_staging &&
+             pending_workset_staging->workset_id ==
+                 candidate.workset_id))
+        {
+            return true;
+        }
+
+        std::unordered_set<std::uint64_t> item_ids;
+        std::unordered_set<std::uint64_t> invocation_ids;
+        const auto collect_package =
+            [&](const std::optional<WorksetPackage>& package)
+        {
+            if (!package)
+                return;
+            for (const WorksetItemTemplate& item :
+                 package->definition.items)
+            {
+                item_ids.insert(item.item_id.value());
+                invocation_ids.insert(
+                    item.invocation.invocation_id.value());
+            }
+        };
+        collect_package(active_workset);
+        collect_package(staged_workset);
+        if (pending_workset_staging)
+        {
+            if (const auto* pending =
+                    std::get_if<SubmitWorksetCommand>(
+                        &pending_workset_staging->command->command))
+            {
+                for (const WorksetItemTemplate& item :
+                     pending->definition.items)
+                {
+                    item_ids.insert(item.item_id.value());
+                    invocation_ids.insert(
+                        item.invocation.invocation_id.value());
+                }
+            }
+        }
+        for (const auto& [_, terminal] : retained_terminals)
+        {
+            if (terminal.event.correlation.workset_id ==
+                candidate.workset_id)
+            {
+                return true;
+            }
+            item_ids.insert(
+                terminal.event.correlation.item_id.value());
+            invocation_ids.insert(
+                terminal.event.correlation.invocation_id.value());
+        }
+        for (const auto& [_, terminal] :
+             pending_finalized_terminals)
+        {
+            if (terminal.event.correlation.workset_id ==
+                candidate.workset_id)
+            {
+                return true;
+            }
+            item_ids.insert(
+                terminal.event.correlation.item_id.value());
+            invocation_ids.insert(
+                terminal.event.correlation.invocation_id.value());
+        }
+        if (active_invocation)
+        {
+            invocation_ids.insert(
+                active_invocation->invocation_id.value());
+        }
+        return std::ranges::any_of(
+            candidate.items,
+            [&](const WorksetItemTemplate& item)
+            {
+                return item_ids.contains(item.item_id.value()) ||
+                    invocation_ids.contains(
+                        item.invocation.invocation_id.value());
+            });
+    }
+
+    [[nodiscard]] std::optional<WorksetPackage> ValidateAndStageWorkset(
+        HostStagedWorksetPackage source,
+        RuntimeError& error)
+    {
+        WorksetPackage package;
+        package.definition = std::move(source.definition);
+        const WorksetValidationResult validated =
+            ValidateWorkerWorksetDefinition(
+                package.definition,
+                workset_limits);
+        if (!validated.ok)
+        {
+            error = validated.error;
+            return std::nullopt;
+        }
+        if (!program_runtime || !workset_state)
+        {
+            error = {
+                WorkerRejectionCode::ProgramRuntimeUnavailable,
+                "WorkerWorkset runtime services are unavailable"};
+            return std::nullopt;
+        }
+        if (source.baseline_key !=
+                package.definition.execution_key.baseline ||
+            ComputeProgramBaselineKey(package.definition.baseline) !=
+                source.baseline_key)
+        {
+            error = {
+                WorkerRejectionCode::InvalidArgument,
+                "Staged program baseline does not match its exact execution key"};
+            return std::nullopt;
+        }
+        const ProgramRuntimeCatalogSnapshot catalog =
+            program_runtime->catalog();
+        if (catalog.runtime_profile_sha256.empty() ||
+            package.definition.execution_key.runtime_profile_sha256 !=
+                catalog.runtime_profile_sha256)
+        {
+            error = {
+                WorkerRejectionCode::WorksetCatalogMismatch,
+                "WorkerWorkset runtime profile does not match the installed runtime"};
+            return std::nullopt;
+        }
+
+        package.cancelled.resize(
+            package.definition.items.size(),
+            false);
+        package.terminalized.resize(
+            package.definition.items.size(),
+            false);
+        package.prepared.reserve(package.definition.items.size());
+        for (const WorksetItemTemplate& item :
+             package.definition.items)
+        {
+            EncodedInvocationEnvelope envelope;
+            envelope.invocation_id =
+                item.invocation.invocation_id;
+            envelope.attempt_id = item.invocation.attempt_id;
+            envelope.module = item.invocation.module;
+            envelope.entrypoint = item.invocation.entrypoint;
+            envelope.expected_state_epoch = {};
+            envelope.input_payload =
+                item.invocation.template_payload;
+
+            PreparedInvocationTemplateReceipt receipt;
+            const ProgramRuntimeSubmission prepared =
+                program_runtime->PrepareInvocationTemplate(
+                    {
+                        WorkerCommandSequence(
+                            current_snapshot.last_command_sequence.value()),
+                        std::move(envelope),
+                    },
+                    receipt);
+            if (!prepared.accepted || !receipt ||
+                receipt.invocation_id !=
+                    item.invocation.invocation_id ||
+                receipt.attempt_id !=
+                    item.invocation.attempt_id ||
+                receipt.module != item.invocation.module ||
+                receipt.entrypoint !=
+                    item.invocation.entrypoint ||
+                receipt.program_compatibility_sha256 !=
+                    package.definition.execution_key
+                        .verified_dependency_sha256 ||
+                receipt.active_budget !=
+                    item.declared_active_budget ||
+                !BaselinePolicyMatches(
+                    package.definition.baseline.state_kind,
+                    receipt.state_policy))
+            {
+                if (prepared.accepted && receipt.template_id)
+                {
+                    (void)program_runtime
+                        ->ReleaseInvocationTemplate(
+                            receipt.template_id);
+                }
+                for (const auto& staged : package.prepared)
+                {
+                    (void)program_runtime
+                        ->ReleaseInvocationTemplate(
+                            staged.template_id);
+                }
+                error = prepared.accepted
+                    ? RuntimeError{
+                          WorkerRejectionCode::
+                              WorksetCatalogMismatch,
+                          "Workset item does not match its exact execution key"}
+                    : prepared.error;
+                if (!error)
+                {
+                    error = {
+                        WorkerRejectionCode::InvalidArgument,
+                        "ProgramRuntime rejected a workset item template"};
+                }
+                return std::nullopt;
+            }
+            package.prepared.push_back(std::move(receipt));
+        }
+        package.state = WorkerWorksetState::Staged;
+        return package;
+    }
+
+    void HandleSubmitWorkset(
+        const std::shared_ptr<QueuedCommand>& queued,
+        const SubmitWorksetCommand& command)
+    {
+        const WorkerState state = Snapshot().state;
+        if (state != WorkerState::Ready &&
+            state != WorkerState::Running &&
+            state != WorkerState::Cancelling)
+        {
+            Reject(
+                queued,
+                state == WorkerState::Tainted
+                    ? WorkerRejectionCode::SessionTainted
+                    : WorkerRejectionCode::InvalidState,
+                "WorkerWorkset submission requires a ready or running session");
+            return;
+        }
+        if (!HasCapability(
+                capabilities_value,
+                WorkerCapability::WorksetDispatch))
+        {
+            Reject(
+                queued,
+                WorkerRejectionCode::ProgramRuntimeUnavailable,
+                "WorkerWorkset dispatch is unavailable");
+            return;
+        }
+        if (staged_workset || pending_workset_staging)
+        {
+            Reject(
+                queued,
+                WorkerRejectionCode::WorksetAlreadyActive,
+                "The worker already owns one staged successor workset");
+            return;
+        }
+        if (WorksetIdentityConflicts(command.definition))
+        {
+            Reject(
+                queued,
+                WorkerRejectionCode::InvalidArgument,
+                "WorkerWorkset reuses a resident, draining, or retained workset, item, or invocation identity");
+            return;
+        }
+        if (command.definition.baseline.state_kind ==
+            ProgramBaselineStateKind::CurrentSession)
+        {
+            const auto& guard =
+                command.definition.baseline.current_session;
+            const SessionSnapshot current = session->snapshot();
+            if (!guard ||
+                guard->session_id != current.session_id ||
+                guard->state_epoch != current.state_epoch ||
+                active_workset || active_invocation ||
+                !SessionIsCleanIdle())
+            {
+                Reject(
+                    queued,
+                    WorkerRejectionCode::StateEpochMismatch,
+                    "Current-session workset baseline is stale or the exact session is not clean and idle");
+                return;
+            }
+        }
+        if (!active_workset && !active_invocation &&
+            !SessionIsCleanIdle())
+        {
+            Reject(
+                queued,
+                WorkerRejectionCode::InvalidState,
+                "WorkerWorkset activation requires a clean, idle, paused session");
+            return;
+        }
+        const std::size_t resident =
+            ResidentItemCount() + command.definition.items.size();
+        std::size_t candidate_terminal_bytes = 0;
+        bool terminal_bytes_overflow = false;
+        for (const WorksetItemTemplate& item :
+             command.definition.items)
+        {
+            if (candidate_terminal_bytes >
+                std::numeric_limits<std::size_t>::max() -
+                    item.declared_terminal_bytes)
+            {
+                terminal_bytes_overflow = true;
+                break;
+            }
+            candidate_terminal_bytes +=
+                item.declared_terminal_bytes;
+        }
+        const std::size_t already_reserved =
+            ResidentDeclaredTerminalBytes();
+        std::size_t terminal_capacity =
+            workset_limits.maximum_retained_terminal_bytes -
+            std::min(
+                retained_terminal_bytes,
+                workset_limits.maximum_retained_terminal_bytes);
+        const bool resident_terminal_capacity_exceeded =
+            already_reserved > terminal_capacity;
+        if (!resident_terminal_capacity_exceeded)
+            terminal_capacity -= already_reserved;
+        const bool terminal_capacity_exceeded =
+            terminal_bytes_overflow ||
+            retained_terminal_bytes >
+                workset_limits.maximum_retained_terminal_bytes ||
+            resident_terminal_capacity_exceeded ||
+            candidate_terminal_bytes > terminal_capacity;
+        if (resident >
+                workset_limits.maximum_active_and_staged_items ||
+            command.definition.items.size() >
+                AvailableItemCredits() ||
+            terminal_capacity_exceeded)
+        {
+            Reject(
+                queued,
+                WorkerRejectionCode::CapacityExceeded,
+                "WorkerWorkset exceeds the worker's negotiated item credits");
+            return;
+        }
+
+        if (!workset_stager)
+        {
+            Reject(
+                queued,
+                WorkerRejectionCode::ProgramRuntimeUnavailable,
+                "Host-only WorkerWorkset staging is unavailable");
+            return;
+        }
+        const WorksetStagingSubmission submitted =
+            workset_stager->Submit(command.definition);
+        if (!submitted.result.ok)
+        {
+            Reject(
+                queued,
+                submitted.result.code ==
+                        WorksetStagerErrorCode::CapacityExceeded
+                    ? WorkerRejectionCode::CapacityExceeded
+                    : WorkerRejectionCode::InvalidArgument,
+                submitted.result.message.empty()
+                    ? "WorkerWorkset host staging was rejected"
+                    : submitted.result.message);
+            return;
+        }
+        pending_workset_staging.emplace(PendingWorksetStaging{
+            submitted.staging_id,
+            command.definition.workset_id,
+            queued,
+            false});
+        RefreshSnapshot();
+        PublishWorksetState(
+            command.definition.workset_id,
+            WorkerWorksetState::Validating);
+        PublishCredits();
+    }
+
+    void DrainWorksetStager()
+    {
+        if (!workset_stager)
+            return;
+        for (WorksetStagingCompletion& completion :
+             workset_stager->DrainCompletions())
+        {
+            if (!pending_workset_staging ||
+                completion.staging_id !=
+                    pending_workset_staging->staging_id ||
+                completion.workset_id !=
+                    pending_workset_staging->workset_id)
+            {
+                EnterTainted(
+                    "Host-only workset staging returned an unknown completion");
+                continue;
+            }
+            const auto pending =
+                std::move(*pending_workset_staging);
+            pending_workset_staging.reset();
+            if (pending.cancelled)
+            {
+                Reject(
+                    pending.command,
+                    WorkerRejectionCode::RuntimeStopping,
+                    "WorkerWorkset submission was cancelled during host staging");
+                RefreshSnapshot();
+                PublishCredits();
+                continue;
+            }
+            if (!completion.result.ok || !completion.package)
+            {
+                Reject(
+                    pending.command,
+                    completion.result.code ==
+                            WorksetStagerErrorCode::CapacityExceeded
+                        ? WorkerRejectionCode::CapacityExceeded
+                        : WorkerRejectionCode::InvalidArgument,
+                    completion.result.message.empty()
+                        ? "WorkerWorkset host staging failed"
+                        : completion.result.message);
+                RefreshSnapshot();
+                PublishCredits();
+                continue;
+            }
+            if (Snapshot().state == WorkerState::Stopping ||
+                Snapshot().state == WorkerState::Stopped ||
+                Snapshot().state == WorkerState::Tainted)
+            {
+                Reject(
+                    pending.command,
+                    WorkerRejectionCode::RuntimeStopping,
+                    "Worker stopped before host-staged workset admission");
+                RefreshSnapshot();
+                PublishCredits();
+                continue;
+            }
+            if (completion.package->definition.baseline.state_kind ==
+                ProgramBaselineStateKind::CurrentSession)
+            {
+                const auto& guard = completion.package->definition
+                                        .baseline.current_session;
+                const SessionSnapshot current = session->snapshot();
+                if (!guard ||
+                    guard->session_id != current.session_id ||
+                    guard->state_epoch != current.state_epoch ||
+                    active_workset || active_invocation ||
+                    !SessionIsCleanIdle())
+                {
+                    Reject(
+                        pending.command,
+                        WorkerRejectionCode::StateEpochMismatch,
+                        "Current-session workset changed while host staging was in progress");
+                    RefreshSnapshot();
+                    PublishCredits();
+                    continue;
+                }
+            }
+
+            RuntimeError error;
+            std::optional<WorksetPackage> staged =
+                ValidateAndStageWorkset(
+                    std::move(*completion.package),
+                    error);
+            if (!staged)
+            {
+                Reject(
+                    pending.command,
+                    error.code == WorkerRejectionCode::None
+                        ? WorkerRejectionCode::InvalidArgument
+                        : error.code,
+                    error.message.empty()
+                        ? "WorkerWorkset validation failed"
+                        : error.message);
+                RefreshSnapshot();
+                PublishCredits();
+                continue;
+            }
+            if (staged_workset)
+            {
+                for (const auto& receipt : staged->prepared)
+                {
+                    (void)program_runtime
+                        ->ReleaseInvocationTemplate(
+                            receipt.template_id);
+                }
+                Reject(
+                    pending.command,
+                    WorkerRejectionCode::WorksetAlreadyActive,
+                    "The staged-successor slot became occupied during host staging");
+                RefreshSnapshot();
+                PublishCredits();
+                continue;
+            }
+
+            const bool activate_now =
+                !active_workset && !active_invocation &&
+                SessionIsCleanIdle();
+            const WorkerWorksetId accepted_id =
+                staged->definition.workset_id;
+            if (activate_now)
+                active_workset.emplace(std::move(*staged));
+            else
+                staged_workset.emplace(std::move(*staged));
+            RefreshSnapshot();
+            Complete(
+                pending.command,
+                WorkerCommandOutcome::Accepted);
+            PublishWorksetState(
+                accepted_id,
+                WorkerWorksetState::Staged);
+            PublishCredits();
+            if (activate_now)
+                ActivateCurrentWorkset();
+        }
+    }
+
+    void ActivateCurrentWorkset()
+    {
+        if (!active_workset || active_invocation ||
+            Snapshot().state == WorkerState::Tainted ||
+            Snapshot().state == WorkerState::Stopping)
+        {
+            return;
+        }
+        if (!SessionIsCleanIdle())
+        {
+            FailRemainingWorksetItems(
+                WorkerRejectionCode::InvalidState,
+                "WorkerWorkset activation found a non-idle session");
+            FinishCurrentWorkset(WorkerWorksetState::Failed);
+            return;
+        }
+        active_workset->state =
+            WorkerWorksetState::PreparingBaseline;
+        PublishWorksetState(
+            active_workset->definition.workset_id,
+            active_workset->state);
+        ProgramBaselineComponentResult prepared =
+            workset_state->Prepare(
+                active_workset->definition.workset_id,
+                active_workset->definition.baseline,
+                active_workset->definition.items.size() > 1,
+                active_workset->baseline);
+        if (!prepared.ok)
+        {
+            FailRemainingWorksetItems(
+                prepared.error.code == WorkerRejectionCode::None
+                    ? WorkerRejectionCode::BackendFailure
+                    : prepared.error.code,
+                prepared.error.message.empty()
+                    ? "Program baseline preparation failed"
+                    : prepared.error.message);
+            FinishCurrentWorkset(WorkerWorksetState::Failed);
+            if (prepared.error.code ==
+                WorkerRejectionCode::SessionTainted)
+            {
+                EnterTainted(prepared.error.message);
+            }
+            return;
+        }
+        active_workset->state = WorkerWorksetState::Running;
+        PublishWorksetState(
+            active_workset->definition.workset_id,
+            active_workset->state);
+        StartNextWorksetItem();
+    }
+
+    void StartNextWorksetItem()
+    {
+        if (!active_workset || active_invocation)
+            return;
+        if (retained_terminals.size() +
+                pending_finalized_terminals.size() >=
+                workset_limits.maximum_retained_terminals ||
+            retained_terminal_bytes >=
+                workset_limits.maximum_retained_terminal_bytes)
+        {
+            PublishCredits();
+            return;
+        }
+
+        while (active_workset->next_item <
+               active_workset->definition.items.size())
+        {
+            const std::uint32_t ordinal =
+                active_workset->next_item;
+            if (active_workset->cancelled[ordinal] &&
+                !active_workset->terminalized[ordinal])
+            {
+                RetainUnstartedTerminal(
+                    *active_workset,
+                    ordinal,
+                    active_workset->admission_close_reason.empty()
+                        ? "Workset item was cancelled before admission"
+                        : active_workset
+                              ->admission_close_reason);
+            }
+            if (!active_workset->cancelled[ordinal] &&
+                !active_workset->terminalized[ordinal])
+                break;
+            ++active_workset->next_item;
+        }
+        if (active_workset->next_item >=
+            active_workset->definition.items.size())
+        {
+            FinishCurrentWorkset(
+                active_workset->admission_closed
+                    ? WorkerWorksetState::Cancelled
+                    : WorkerWorksetState::Completed);
+            return;
+        }
+
+        if (active_workset->next_item != 0)
+        {
+            ProgramBaselineComponentResult restored =
+                workset_state->RestoreForNextItem(
+                    active_workset->baseline);
+            if (!restored.ok)
+            {
+                FailRemainingWorksetItems(
+                    restored.error.code ==
+                            WorkerRejectionCode::None
+                        ? WorkerRejectionCode::BackendFailure
+                        : restored.error.code,
+                    restored.error.message.empty()
+                        ? "Workset baseline restore failed"
+                        : restored.error.message);
+                FinishCurrentWorkset(WorkerWorksetState::Failed);
+                if (restored.error.code ==
+                    WorkerRejectionCode::SessionTainted)
+                {
+                    EnterTainted(restored.error.message);
+                }
+                return;
+            }
+        }
+
+        const std::uint32_t ordinal =
+            active_workset->next_item;
+        const WorksetItemTemplate& item =
+            active_workset->definition.items[ordinal];
+        const PreparedInvocationTemplateReceipt& prepared =
+            active_workset->prepared[ordinal];
+        const SessionSnapshot current = session->snapshot();
+        const WorkerOutboundSequence start_sequence =
+            NextOutboundSequence();
+        if (!start_sequence)
+            return;
+        if (!Publish(WorkerWorksetItemStartedEvent{
+            start_sequence,
+            active_workset->definition.workset_id,
+            item.item_id,
+            ordinal,
+            item.invocation.invocation_id,
+            item.invocation.attempt_id,
+            current.session_id,
+            current.state_epoch,
+            active_workset->baseline}))
+        {
+            EnterTainted(
+                "WorkerWorkset item-start event could not be published before execution");
+            return;
+        }
+        active_invocation.emplace(
+            item.invocation.invocation_id,
+            item.invocation.attempt_id,
+            current.state_epoch);
+        active_invocation->workset_id =
+            active_workset->definition.workset_id;
+        active_invocation->workset_item_id = item.item_id;
+        active_invocation->workset_item_ordinal = ordinal;
+
+        ProgramRuntimeSubmission submission;
+        bool start_threw = false;
+        try
+        {
+            submission = program_runtime->StartPreparedInvocation(
+                {
+                    current_snapshot.last_command_sequence,
+                    prepared.template_id,
+                    current.session_id,
+                    current.state_epoch,
+                    active_workset->baseline.key.sha256,
+                    active_workset->baseline.lineage,
+                },
+                active_invocation->cancellation.token(),
+                program_event_ingress);
+        }
+        catch (const std::exception& ex)
+        {
+            start_threw = true;
+            submission = ProgramRuntimeSubmission::Rejected(
+                WorkerRejectionCode::InternalFailure,
+                std::string(
+                    "Prepared invocation submission threw: ") +
+                    ex.what());
+        }
+        catch (...)
+        {
+            start_threw = true;
+            submission = ProgramRuntimeSubmission::Rejected(
+                WorkerRejectionCode::InternalFailure,
+                "Prepared invocation submission threw");
+        }
+        if (!submission.accepted)
+        {
+            ProgramRuntimeSubmission released;
+            try
+            {
+                released =
+                    program_runtime->ReleaseInvocationTemplate(
+                        prepared.template_id);
+            }
+            catch (...)
+            {
+                released = ProgramRuntimeSubmission::Rejected(
+                    WorkerRejectionCode::InternalFailure,
+                    "Prepared invocation release threw");
+            }
+            std::string failure =
+                submission.error.message.empty()
+                ? "Prepared invocation start was rejected"
+                : submission.error.message;
+            if (start_threw)
+                failure = "Uncertain prepared invocation start: " + failure;
+            if (!released.accepted)
+            {
+                failure += "; prepared template cleanup was not proven";
+            }
+            active_invocation.reset();
+            session->MarkTainted(failure);
+            ProgramInvocationTerminalEvent terminal;
+            terminal.invocation_id =
+                item.invocation.invocation_id;
+            terminal.attempt_id = item.invocation.attempt_id;
+            terminal.status =
+                InvocationTerminalStatus::CleanupFailure;
+            terminal.cleanup = CleanupStatus::Failed;
+            terminal.session_disposition =
+                SessionDisposition::Tainted;
+            terminal.origin_state_epoch =
+                session->snapshot().state_epoch;
+            terminal.error = {
+                submission.error.code ==
+                        WorkerRejectionCode::None
+                    ? WorkerRejectionCode::InternalFailure
+                    : submission.error.code,
+                failure};
+            RetainWorksetTerminal(
+                *active_workset,
+                ordinal,
+                std::move(terminal),
+                false);
+            ++active_workset->next_item;
+            FailRemainingWorksetItems(
+                WorkerRejectionCode::SessionTainted,
+                failure);
+            WorksetPackage failed =
+                std::move(*active_workset);
+            active_workset.reset();
+            const ProgramBaselineComponentResult
+                baseline_release = workset_state->Release();
+            if (!baseline_release.ok &&
+                !baseline_release.error.message.empty())
+            {
+                failure += "; " +
+                    baseline_release.error.message;
+            }
+            MoveToDraining(
+                failed,
+                WorkerWorksetState::Failed);
+            EnterTainted(failure, false);
+            return;
+        }
+        RefreshSnapshot();
+        ChangeState(WorkerState::Running);
+        QueueProgramPump();
     }
 
     void HandleInvoke(
         const std::shared_ptr<QueuedCommand>& queued,
         const InvokeProgramCommand& command)
     {
+        if (program_runtime &&
+            HasCapability(
+                program_runtime->capabilities(),
+                WorkerCapability::WorksetDispatch))
+        {
+            Reject(
+                queued,
+                WorkerRejectionCode::Unsupported,
+                "Scalar invocation submission is retired; submit a one-item WorkerWorkset");
+            return;
+        }
         if (!RequireReadyProgramRuntime(queued))
             return;
 
@@ -949,11 +2027,1078 @@ struct WorkerRuntime::Impl
                 command.invocation_id,
                 CancellationReason::ExternalRequest);
         }
+        if (active_invocation->artifact_publication_promoted)
+        {
+            CloseActiveWorksetAdmissionAfterPublication(
+                "Cancellation after state capture closed later workset admission");
+        }
 
         Complete(
             queued,
             WorkerCommandOutcome::Accepted,
             command.invocation_id);
+    }
+
+    void HandleCancelWorksetItem(
+        const std::shared_ptr<QueuedCommand>& queued,
+        const CancelWorksetItemCommand& command)
+    {
+        WorksetPackage* package = nullptr;
+        bool staged = false;
+        if (active_workset &&
+            active_workset->definition.workset_id ==
+                command.workset_id)
+        {
+            package = &*active_workset;
+        }
+        else if (staged_workset &&
+                 staged_workset->definition.workset_id ==
+                     command.workset_id)
+        {
+            package = &*staged_workset;
+            staged = true;
+        }
+        if (!package)
+        {
+            Reject(
+                queued,
+                WorkerRejectionCode::WorksetNotFound,
+                "Cancellation does not identify a resident workset");
+            return;
+        }
+        const auto found = std::ranges::find(
+            package->definition.items,
+            command.item_id,
+            &WorksetItemTemplate::item_id);
+        if (found == package->definition.items.end())
+        {
+            Reject(
+                queued,
+                WorkerRejectionCode::WorksetItemNotFound,
+                "Cancellation does not identify a workset item");
+            return;
+        }
+        const std::uint32_t ordinal = static_cast<std::uint32_t>(
+            std::distance(
+                package->definition.items.begin(),
+                found));
+        if (package->cancelled[ordinal] ||
+            (ordinal < package->terminalized.size() &&
+             package->terminalized[ordinal]) ||
+            (!staged && ordinal < package->next_item))
+        {
+            Reject(
+                queued,
+                WorkerRejectionCode::DuplicateCancellation,
+                "Workset item is already terminal");
+            return;
+        }
+        if (!staged && active_invocation &&
+            active_invocation->workset_item_id ==
+                command.item_id)
+        {
+            if (active_invocation->cancellation
+                    .is_cancellation_requested())
+            {
+                Reject(
+                    queued,
+                    WorkerRejectionCode::DuplicateCancellation,
+                    "Active workset item cancellation has already been requested");
+                return;
+            }
+            if (!RequestActiveWorksetCancellation())
+            {
+                Reject(
+                    queued,
+                    WorkerRejectionCode::InternalFailure,
+                    "Active workset item cancellation could not be delivered");
+                return;
+            }
+            if (active_invocation &&
+                active_invocation
+                    ->artifact_publication_promoted)
+            {
+                CloseActiveWorksetAdmissionAfterPublication(
+                    "Cancellation after state capture closed later workset admission");
+            }
+        }
+        else
+        {
+            package->cancelled[ordinal] = true;
+            RetainUnstartedTerminal(
+                *package,
+                ordinal,
+                "Workset item was cancelled before admission");
+            (void)program_runtime->ReleaseInvocationTemplate(
+                package->prepared[ordinal].template_id);
+            if (!staged &&
+                ordinal == package->next_item &&
+                !active_invocation)
+            {
+                StartNextWorksetItem();
+            }
+        }
+        RefreshSnapshot();
+        Complete(queued, WorkerCommandOutcome::Accepted);
+        PublishCredits();
+    }
+
+    void HandleCancelWorkset(
+        const std::shared_ptr<QueuedCommand>& queued,
+        const CancelWorksetCommand& command)
+    {
+        if (pending_workset_staging &&
+            pending_workset_staging->workset_id ==
+                command.workset_id)
+        {
+            if (pending_workset_staging->cancelled)
+            {
+                Reject(
+                    queued,
+                    WorkerRejectionCode::DuplicateCancellation,
+                    "Host-staged workset cancellation has already been requested");
+                return;
+            }
+            pending_workset_staging->cancelled = true;
+            RefreshSnapshot();
+            Complete(
+                queued,
+                WorkerCommandOutcome::Accepted);
+            PublishCredits();
+            return;
+        }
+        if (staged_workset &&
+            staged_workset->definition.workset_id ==
+                command.workset_id)
+        {
+            WorksetPackage cancelled =
+                std::move(*staged_workset);
+            staged_workset.reset();
+            cancelled.admission_closed = true;
+            for (std::uint32_t ordinal = 0;
+                 ordinal < cancelled.definition.items.size();
+                 ++ordinal)
+            {
+                if (!cancelled.cancelled[ordinal] &&
+                    !cancelled.terminalized[ordinal])
+                {
+                    cancelled.cancelled[ordinal] = true;
+                    RetainUnstartedTerminal(
+                        cancelled,
+                        ordinal,
+                        "Staged workset was cancelled");
+                    (void)program_runtime
+                        ->ReleaseInvocationTemplate(
+                            cancelled.prepared[ordinal]
+                                .template_id);
+                }
+            }
+            MoveToDraining(
+                cancelled,
+                WorkerWorksetState::Cancelled);
+            RefreshSnapshot();
+            Complete(queued, WorkerCommandOutcome::Accepted);
+            PublishCredits();
+            return;
+        }
+        if (!active_workset ||
+            active_workset->definition.workset_id !=
+                command.workset_id)
+        {
+            Reject(
+                queued,
+                WorkerRejectionCode::WorksetNotFound,
+                "Cancellation does not identify the active workset");
+            return;
+        }
+        if (active_workset->admission_closed)
+        {
+            Reject(
+                queued,
+                WorkerRejectionCode::DuplicateCancellation,
+                "Workset cancellation has already closed admission");
+            return;
+        }
+        active_workset->admission_closed = true;
+        for (std::uint32_t ordinal =
+                 active_workset->next_item;
+             ordinal < active_workset->definition.items.size();
+             ++ordinal)
+        {
+            if (active_invocation &&
+                active_invocation->workset_item_ordinal == ordinal)
+            {
+                continue;
+            }
+            if (!active_workset->cancelled[ordinal] &&
+                !active_workset->terminalized[ordinal])
+            {
+                active_workset->cancelled[ordinal] = true;
+                RetainUnstartedTerminal(
+                    *active_workset,
+                    ordinal,
+                    "Workset was cancelled before item admission");
+                (void)program_runtime
+                    ->ReleaseInvocationTemplate(
+                        active_workset->prepared[ordinal]
+                            .template_id);
+            }
+        }
+        if (active_invocation &&
+            !RequestActiveWorksetCancellation())
+        {
+            Reject(
+                queued,
+                WorkerRejectionCode::InternalFailure,
+                "Active workset cancellation could not be delivered");
+            return;
+        }
+        if (!active_invocation)
+            StartNextWorksetItem();
+        RefreshSnapshot();
+        Complete(queued, WorkerCommandOutcome::Accepted);
+        PublishCredits();
+    }
+
+    void HandleAcknowledgeTerminal(
+        const std::shared_ptr<QueuedCommand>& queued,
+        const AcknowledgeTerminalCommand& command)
+    {
+        const auto found =
+            retained_terminals.find(
+                command.correlation.terminal_id.value());
+        if (found == retained_terminals.end())
+        {
+            const CompletionLedgerResult retry =
+                completion_ledger.AcknowledgeTerminal(
+                    command.correlation);
+            if (retry.ok)
+            {
+                Complete(
+                    queued,
+                    WorkerCommandOutcome::Completed);
+            }
+            else
+            {
+                Reject(
+                    queued,
+                    retry.code ==
+                            CompletionLedgerErrorCode::
+                                TerminalMismatch
+                        ? WorkerRejectionCode::TerminalMismatch
+                        : WorkerRejectionCode::TerminalNotFound,
+                    retry.message.empty()
+                        ? "Terminal acknowledgement is stale or unknown"
+                        : retry.message);
+            }
+            return;
+        }
+        const WorkerItemTerminalCorrelation& correlation =
+            found->second.event.correlation;
+        if (correlation != command.correlation)
+        {
+            Reject(
+                queued,
+                WorkerRejectionCode::TerminalMismatch,
+                "Terminal acknowledgement correlation does not match");
+            return;
+        }
+        const CompletionLedgerResult acknowledged =
+            completion_ledger.AcknowledgeTerminal(correlation);
+        if (!acknowledged.ok)
+        {
+            Reject(
+                queued,
+                WorkerRejectionCode::TerminalMismatch,
+                acknowledged.message.empty()
+                    ? "Completion ledger rejected the acknowledgement"
+                    : acknowledged.message);
+            return;
+        }
+        retained_terminal_bytes -= std::min(
+            retained_terminal_bytes,
+            found->second.retained_bytes);
+        retained_terminals.erase(found);
+        auto draining =
+            draining_worksets.find(
+                command.correlation.workset_id.value());
+        if (draining != draining_worksets.end() &&
+            draining->second.unacknowledged != 0)
+        {
+            --draining->second.unacknowledged;
+            if (draining->second.unacknowledged == 0)
+            {
+                PublishWorksetSummary(
+                    command.correlation.workset_id,
+                    draining->second);
+                draining_worksets.erase(draining);
+            }
+        }
+        RefreshSnapshot();
+        Complete(queued, WorkerCommandOutcome::Completed);
+        PublishCredits();
+        if (active_workset && !active_invocation)
+            StartNextWorksetItem();
+        else if (!active_workset && staged_workset)
+            PromoteStagedWorkset();
+    }
+
+    [[nodiscard]] bool RequestActiveWorksetCancellation()
+    {
+        if (!active_invocation ||
+            active_invocation->cancellation
+                .is_cancellation_requested())
+        {
+            return false;
+        }
+        ProgramRuntimeSubmission submission =
+            RequestProgramCancellation(
+                active_invocation->invocation_id);
+        if (!submission.accepted)
+            return false;
+        if (submission.terminal_already_published)
+            return true;
+        if (!active_invocation->cancellation.request_cancellation(
+                CancellationReason::ExternalRequest))
+        {
+            return false;
+        }
+        if (program_action_host)
+        {
+            program_action_host->RequestCancellation(
+                active_invocation->invocation_id,
+                CancellationReason::ExternalRequest);
+        }
+        ChangeState(WorkerState::Cancelling);
+        QueueProgramPump();
+        return true;
+    }
+
+    [[nodiscard]] WorkerOutboundSequence NextOutboundSequence()
+    {
+        if (completion_ledger.snapshot().open_outbound_sequence)
+        {
+            if (!PublishReadyWorksetTerminals() ||
+                completion_ledger.snapshot()
+                    .open_outbound_sequence)
+            {
+                return {};
+            }
+        }
+        const WorkerOutboundSequenceReceipt reserved =
+            completion_ledger.ReserveOutboundSequence();
+        if (!reserved.result.ok)
+            return {};
+        if (!completion_ledger
+                 .ConfirmOutboundSequence(reserved.sequence)
+                 .ok)
+        {
+            return {};
+        }
+        return reserved.sequence;
+    }
+
+    [[nodiscard]] std::size_t ResidentItemCount() const noexcept
+    {
+        const auto count = [](const std::optional<WorksetPackage>& package)
+        {
+            return package
+                ? package->definition.items.size() -
+                    std::min<std::size_t>(
+                        package->terminal_count,
+                        package->definition.items.size())
+                : std::size_t{0};
+        };
+        std::size_t result =
+            count(active_workset) + count(staged_workset);
+        if (pending_workset_staging)
+        {
+            if (const auto* pending =
+                    std::get_if<SubmitWorksetCommand>(
+                        &pending_workset_staging->command->command))
+            {
+                result += pending->definition.items.size();
+            }
+        }
+        return result;
+    }
+
+    [[nodiscard]] std::size_t CreditedItemCount() const
+    {
+        std::set<WorkerItemExecutionCorrelation> items;
+        const auto collect_package =
+            [&](const WorksetPackage& package)
+        {
+            for (std::size_t ordinal = 0;
+                 ordinal < package.definition.items.size();
+                 ++ordinal)
+            {
+                if (ordinal < package.terminalized.size() &&
+                    package.terminalized[ordinal])
+                {
+                    continue;
+                }
+                const WorksetItemTemplate& item =
+                    package.definition.items[ordinal];
+                items.emplace(WorkerItemExecutionCorrelation{
+                    package.definition.workset_id,
+                    item.item_id,
+                    static_cast<std::uint32_t>(ordinal),
+                    item.invocation.invocation_id,
+                    item.invocation.attempt_id});
+            }
+        };
+        if (active_workset)
+            collect_package(*active_workset);
+        if (staged_workset)
+            collect_package(*staged_workset);
+        if (pending_workset_staging)
+        {
+            if (const auto* pending =
+                    std::get_if<SubmitWorksetCommand>(
+                        &pending_workset_staging->command->command))
+            {
+                for (std::size_t ordinal = 0;
+                     ordinal < pending->definition.items.size();
+                     ++ordinal)
+                {
+                    const WorksetItemTemplate& item =
+                        pending->definition.items[ordinal];
+                    items.emplace(WorkerItemExecutionCorrelation{
+                        pending->definition.workset_id,
+                        item.item_id,
+                        static_cast<std::uint32_t>(ordinal),
+                        item.invocation.invocation_id,
+                        item.invocation.attempt_id});
+                }
+            }
+        }
+        for (const auto& [_, terminal] : retained_terminals)
+            items.emplace(ExecutionCorrelation(
+                terminal.event.correlation));
+        for (const auto& [_, terminal] :
+             pending_finalized_terminals)
+        {
+            items.emplace(ExecutionCorrelation(
+                terminal.event.correlation));
+        }
+        for (const auto& [_, publication] :
+             artifact_publications)
+        {
+            items.emplace(publication.item);
+        }
+        return items.size();
+    }
+
+    [[nodiscard]] std::uint32_t AvailableItemCredits() const
+    {
+        const std::size_t resident = ResidentItemCount();
+        const std::size_t retained =
+            retained_terminals.size() +
+            pending_finalized_terminals.size();
+        const std::size_t global_used = CreditedItemCount();
+        const std::size_t global =
+            global_used >= workset_limits.maximum_item_credits
+            ? 0
+            : workset_limits.maximum_item_credits - global_used;
+        const std::size_t terminal_reserved = retained + resident;
+        const std::size_t terminal =
+            terminal_reserved >=
+                    workset_limits.maximum_retained_terminals
+            ? 0
+            : workset_limits.maximum_retained_terminals -
+                terminal_reserved;
+        return static_cast<std::uint32_t>(
+            std::min(global, terminal));
+    }
+
+    void PublishWorksetState(
+        WorkerWorksetId workset_id,
+        WorkerWorksetState state,
+        RuntimeError error = {})
+    {
+        std::uint32_t next = 0;
+        if (active_workset &&
+            active_workset->definition.workset_id == workset_id)
+        {
+            next = active_workset->next_item;
+        }
+        else if (staged_workset &&
+                 staged_workset->definition.workset_id == workset_id)
+        {
+            next = staged_workset->next_item;
+        }
+        const WorkerOutboundSequence sequence =
+            NextOutboundSequence();
+        if (!sequence)
+            return;
+        Publish(WorkerWorksetStateEvent{
+            sequence,
+            workset_id,
+            state,
+            next,
+            std::move(error)});
+    }
+
+    void PublishCredits()
+    {
+        const WorkerOutboundSequence sequence =
+            NextOutboundSequence();
+        if (!sequence)
+            return;
+        Publish(WorkerWorksetCreditEvent{
+            sequence,
+            AvailableItemCredits(),
+            static_cast<std::uint32_t>(ResidentItemCount()),
+            static_cast<std::uint32_t>(
+                retained_terminals.size() +
+                pending_finalized_terminals.size())});
+    }
+
+    [[nodiscard]] bool PublishReadyWorksetTerminals()
+    {
+        for (;;)
+        {
+            const WorkerTerminalPublicationReceipt publication =
+                completion_ledger.BeginNextPublication();
+            if (!publication.result.ok)
+            {
+                EnterTainted(
+                    publication.result.message.empty()
+                        ? "Completion ledger could not publish a ready terminal"
+                        : publication.result.message);
+                return false;
+            }
+            if (!publication.publication)
+                return true;
+
+            const auto found = retained_terminals.find(
+                publication.publication->correlation
+                    .terminal_id.value());
+            if (found == retained_terminals.end() ||
+                found->second.event.correlation !=
+                    publication.publication->correlation)
+            {
+                EnterTainted(
+                    "Completion ledger publication lost its retained terminal");
+                return false;
+            }
+
+            found->second.event.outbound_sequence =
+                publication.publication->outbound_sequence;
+            if (!Publish(found->second.event))
+            {
+                const CompletionLedgerResult aborted =
+                    completion_ledger.AbortPublication(
+                        publication.publication->correlation);
+                if (!aborted.ok)
+                {
+                    EnterTainted(
+                        aborted.message.empty()
+                            ? "Failed terminal publication could not be retried"
+                            : aborted.message);
+                    return false;
+                }
+                // The exact retained event and its assigned outbound sequence
+                // remain ready for a later actor turn.
+                SignalMailbox(*mailbox);
+                return false;
+            }
+            const CompletionLedgerResult published =
+                completion_ledger.ConfirmPublished(
+                    publication.publication->correlation);
+            if (!published.ok)
+            {
+                EnterTainted(
+                    published.message.empty()
+                        ? "Completion ledger publication confirmation failed"
+                        : published.message);
+                return false;
+            }
+        }
+    }
+
+    void RetainWorksetTerminal(
+        WorksetPackage& package,
+        std::uint32_t ordinal,
+        ProgramInvocationTerminalEvent terminal,
+        bool unstarted,
+        std::vector<StateArtifactFinalizationId>
+            finalizations = {})
+    {
+        if (ordinal >= package.definition.items.size())
+            return;
+        if (ordinal < package.terminalized.size() &&
+            package.terminalized[ordinal])
+        {
+            EnterTainted(
+                "A workset item attempted to retain more than one terminal");
+            return;
+        }
+        const std::size_t declared_bytes =
+            package.definition.items[ordinal]
+                .declared_terminal_bytes;
+        const auto encoded_size =
+            [](const ProgramInvocationTerminalEvent& value)
+            {
+                return sizeof(WorkerWorksetItemTerminalEvent) +
+                    value.output_payload.size() +
+                    value.error.message.size();
+            };
+        std::size_t encoded_bytes = encoded_size(terminal);
+        if (encoded_bytes > declared_bytes)
+        {
+            terminal.status =
+                InvocationTerminalStatus::InfrastructureFailure;
+            terminal.output_payload.clear();
+            terminal.error = {
+                WorkerRejectionCode::CapacityExceeded,
+                "Program result exceeded its declared terminal-byte reservation"};
+            if (terminal.cleanup != CleanupStatus::Failed)
+                terminal.cleanup = CleanupStatus::Clean;
+            encoded_bytes = encoded_size(terminal);
+        }
+        if (encoded_bytes > declared_bytes ||
+            declared_bytes <
+                kMinimumWorksetTerminalReservationBytes)
+        {
+            EnterTainted(
+                "A typed terminal cannot fit its validated byte reservation");
+            return;
+        }
+        if (retained_terminals.size() +
+                pending_finalized_terminals.size() >=
+                workset_limits.maximum_retained_terminals ||
+            declared_bytes >
+                workset_limits.maximum_retained_terminal_bytes -
+                    std::min(
+                        retained_terminal_bytes,
+                        workset_limits
+                            .maximum_retained_terminal_bytes))
+        {
+            EnterTainted(
+                "Authoritative workset terminal retention capacity was exhausted");
+            return;
+        }
+        const WorksetItemTemplate& item =
+            package.definition.items[ordinal];
+        WorkerItemTerminalCorrelation proposed{
+            package.definition.workset_id,
+            item.item_id,
+            ordinal,
+            item.invocation.invocation_id,
+            item.invocation.attempt_id,
+            {},
+            {}};
+        const WorkerTerminalReservation reserved =
+            completion_ledger.ReserveTerminal(
+                proposed,
+                declared_bytes);
+        if (!reserved.result.ok)
+        {
+            EnterTainted(
+                reserved.result.message.empty()
+                    ? "Completion ledger could not reserve a terminal"
+                    : reserved.result.message);
+            return;
+        }
+        WorkerWorksetItemTerminalEvent event;
+        event.correlation = reserved.correlation;
+        event.terminal = std::move(terminal);
+        event.unstarted = unstarted;
+        retained_terminal_bytes += declared_bytes;
+        package.terminalized[ordinal] = true;
+        ++package.terminal_count;
+        if (unstarted)
+            ++package.unstarted_count;
+        for (const StateArtifactFinalizationId id :
+             finalizations)
+        {
+            const auto publication =
+                artifact_publications.find(id.value());
+            if (publication ==
+                    artifact_publications.end() ||
+                publication->second.item !=
+                    ExecutionCorrelation(
+                        reserved.correlation) ||
+                publication->second.terminal_id)
+            {
+                EnterTainted(
+                    "State artifact finalization lost its exact workset item correlation");
+                return;
+            }
+            publication->second.terminal_id =
+                reserved.correlation.terminal_id;
+        }
+        pending_finalized_terminals.emplace(
+            reserved.correlation.terminal_id.value(),
+            PendingFinalizedTerminal{
+                std::move(event),
+                declared_bytes,
+                std::move(finalizations)});
+        TryFinalizePendingTerminal(
+            reserved.correlation.terminal_id);
+    }
+
+    void TryFinalizePendingTerminal(
+        WorkerTerminalId terminal_id)
+    {
+        const auto pending =
+            pending_finalized_terminals.find(
+                terminal_id.value());
+        if (pending == pending_finalized_terminals.end())
+            return;
+        for (const StateArtifactFinalizationId id :
+             pending->second.finalizations)
+        {
+            const auto publication =
+                artifact_publications.find(id.value());
+            if (publication ==
+                    artifact_publications.end())
+            {
+                EnterTainted(
+                    "Pending terminal lost an artifact publication");
+                return;
+            }
+            if (!publication->second.completed)
+                return;
+        }
+
+        WorkerWorksetItemTerminalEvent event =
+            std::move(pending->second.event);
+        const std::size_t reserved_bytes =
+            pending->second.reserved_bytes;
+        bool artifact_failed = false;
+        std::string artifact_failure;
+        if (!pending->second.finalizations.empty())
+        {
+            const auto decoded =
+                program::DecodeProgramResultV1(
+                    event.terminal.output_payload);
+            program::ProgramResult result;
+            if (!decoded)
+            {
+                artifact_failed = true;
+                artifact_failure =
+                    decoded.status.message.empty()
+                    ? "ProgramResult could not be decoded for artifact finalization"
+                    : decoded.status.message;
+            }
+            else
+            {
+                result = std::move(*decoded.value);
+                std::uint64_t next_sequence = 1;
+                for (const program::ProgramArtifact& artifact :
+                     result.artifacts)
+                {
+                    next_sequence = std::max(
+                        next_sequence,
+                        artifact.sequence.value() + 1);
+                }
+                for (const StateArtifactFinalizationId id :
+                     pending->second.finalizations)
+                {
+                    const ArtifactPublication& publication =
+                        artifact_publications.at(id.value());
+                    if (!publication.failure.empty() ||
+                        !publication.artifact)
+                    {
+                        artifact_failed = true;
+                        artifact_failure =
+                            publication.failure.empty()
+                            ? "State artifact publication did not produce authoritative evidence"
+                            : publication.failure;
+                        break;
+                    }
+                    result.artifacts.push_back(
+                        program::ProgramArtifact{
+                            program::ProgramArtifactSequence(
+                                next_sequence++),
+                            *publication.artifact});
+                }
+                if (!artifact_failed)
+                {
+                    const program::EncodeResult encoded =
+                        program::EncodeProgramResultV1(result);
+                    if (!encoded)
+                    {
+                        artifact_failed = true;
+                        artifact_failure =
+                            encoded.status.message.empty()
+                            ? "Final ProgramResult artifact encoding failed"
+                            : encoded.status.message;
+                    }
+                    else
+                    {
+                        event.terminal.output_payload =
+                            encoded.bytes;
+                    }
+                }
+            }
+        }
+        if (artifact_failed)
+        {
+            event.terminal.status =
+                InvocationTerminalStatus::InfrastructureFailure;
+            event.terminal.output_payload.clear();
+            event.terminal.error = {
+                WorkerRejectionCode::BackendFailure,
+                artifact_failure};
+        }
+
+        const auto encoded_size =
+            [](const ProgramInvocationTerminalEvent& value)
+            {
+                return sizeof(WorkerWorksetItemTerminalEvent) +
+                    value.output_payload.size() +
+                    value.error.message.size();
+            };
+        std::size_t actual_bytes =
+            encoded_size(event.terminal);
+        if (actual_bytes > reserved_bytes)
+        {
+            event.terminal.status =
+                InvocationTerminalStatus::InfrastructureFailure;
+            event.terminal.output_payload.clear();
+            event.terminal.error = {
+                WorkerRejectionCode::CapacityExceeded,
+                "Finalized ProgramResult exceeded its declared terminal-byte reservation"};
+            event.terminal.cleanup = CleanupStatus::Clean;
+            actual_bytes = encoded_size(event.terminal);
+        }
+        if (actual_bytes > reserved_bytes)
+        {
+            EnterTainted(
+                "A finalized terminal cannot fit its validated byte reservation");
+            return;
+        }
+        // The ledger's byte bound covers the complete retained event, not
+        // only ProgramResult bytes. Its immutable payload is internal
+        // retention evidence; the typed event remains authoritative.
+        std::vector<std::uint8_t> ledger_payload(
+            actual_bytes,
+            0);
+        std::copy(
+            event.terminal.output_payload.begin(),
+            event.terminal.output_payload.end(),
+            ledger_payload.begin());
+        const CompletionLedgerResult completed =
+            completion_ledger.CompleteTerminal(
+                event.correlation,
+                std::move(ledger_payload));
+        if (!completed.ok)
+        {
+            EnterTainted(
+                completed.message.empty()
+                    ? "Completion ledger could not complete the finalized terminal"
+                    : completed.message);
+            return;
+        }
+        retained_terminal_bytes -=
+            std::min(
+                retained_terminal_bytes,
+                reserved_bytes);
+        retained_terminal_bytes += actual_bytes;
+        for (const StateArtifactFinalizationId id :
+             pending->second.finalizations)
+        {
+            artifact_publications.erase(id.value());
+        }
+        retained_terminals.emplace(
+            event.correlation.terminal_id.value(),
+            RetainedTerminal{
+                std::move(event),
+                actual_bytes});
+        pending_finalized_terminals.erase(pending);
+        RefreshSnapshot();
+        if (!terminal_publication_deferred)
+        {
+            if (!PublishReadyWorksetTerminals())
+                return;
+            PublishCredits();
+        }
+    }
+
+    void RetainUnstartedTerminal(
+        WorksetPackage& package,
+        std::uint32_t ordinal,
+        std::string message)
+    {
+        const WorksetItemTemplate& item =
+            package.definition.items[ordinal];
+        ProgramInvocationTerminalEvent terminal;
+        terminal.invocation_id =
+            item.invocation.invocation_id;
+        terminal.attempt_id = item.invocation.attempt_id;
+        terminal.status = InvocationTerminalStatus::Cancelled;
+        terminal.cleanup = CleanupStatus::Clean;
+        terminal.session_disposition = session
+            ? session->snapshot().disposition
+            : SessionDisposition::Closed;
+        terminal.origin_state_epoch = session
+            ? session->snapshot().state_epoch
+            : StateEpoch{};
+        terminal.error = {
+            WorkerRejectionCode::InvalidState,
+            std::move(message)};
+        RetainWorksetTerminal(
+            package,
+            ordinal,
+            std::move(terminal),
+            true);
+    }
+
+    void FailRemainingWorksetItems(
+        WorkerRejectionCode code,
+        const std::string& message)
+    {
+        if (!active_workset)
+            return;
+        for (std::uint32_t ordinal =
+                 active_workset->next_item;
+             ordinal < active_workset->definition.items.size();
+             ++ordinal)
+        {
+            if (active_workset->cancelled[ordinal] ||
+                active_workset->terminalized[ordinal])
+                continue;
+            const WorksetItemTemplate& item =
+                active_workset->definition.items[ordinal];
+            ProgramInvocationTerminalEvent terminal;
+            terminal.invocation_id =
+                item.invocation.invocation_id;
+            terminal.attempt_id = item.invocation.attempt_id;
+            terminal.status =
+                InvocationTerminalStatus::InfrastructureFailure;
+            terminal.cleanup = CleanupStatus::Clean;
+            terminal.session_disposition =
+                session->snapshot().disposition;
+            terminal.origin_state_epoch =
+                session->snapshot().state_epoch;
+            terminal.error = {code, message};
+            RetainWorksetTerminal(
+                *active_workset,
+                ordinal,
+                std::move(terminal),
+                true);
+            (void)program_runtime->ReleaseInvocationTemplate(
+                active_workset->prepared[ordinal].template_id);
+            active_workset->cancelled[ordinal] = true;
+        }
+        active_workset->next_item =
+            static_cast<std::uint32_t>(
+                active_workset->definition.items.size());
+    }
+
+    void MoveToDraining(
+        const WorksetPackage& package,
+        WorkerWorksetState terminal_state)
+    {
+        DrainingWorkset draining;
+        draining.item_count =
+            static_cast<std::uint32_t>(
+                package.definition.items.size());
+        draining.terminal_count = package.terminal_count;
+        draining.unstarted_count = package.unstarted_count;
+        draining.unacknowledged =
+            static_cast<std::uint32_t>(
+                std::ranges::count_if(
+                    retained_terminals,
+                    [&](const auto& entry)
+                    {
+                        return entry.second.event.correlation
+                                   .workset_id ==
+                            package.definition.workset_id;
+                    }) +
+                std::ranges::count_if(
+                    pending_finalized_terminals,
+                    [&](const auto& entry)
+                    {
+                        return entry.second.event.correlation
+                                   .workset_id ==
+                            package.definition.workset_id;
+                    }));
+        PublishWorksetState(
+            package.definition.workset_id,
+            terminal_state);
+        if (draining.unacknowledged == 0)
+        {
+            PublishWorksetSummary(
+                package.definition.workset_id,
+                draining);
+        }
+        else
+        {
+            draining_worksets.insert_or_assign(
+                package.definition.workset_id.value(),
+                draining);
+        }
+    }
+
+    void PublishWorksetSummary(
+        WorkerWorksetId workset_id,
+        const DrainingWorkset& draining)
+    {
+        const WorkerOutboundSequence sequence =
+            NextOutboundSequence();
+        if (!sequence)
+            return;
+        Publish(WorkerWorksetTerminalSummaryEvent{
+            sequence,
+            workset_id,
+            draining.item_count,
+            draining.terminal_count -
+                std::min(
+                    draining.terminal_count,
+                    draining.unstarted_count),
+            draining.unstarted_count});
+    }
+
+    void FinishCurrentWorkset(WorkerWorksetState terminal_state)
+    {
+        if (!active_workset)
+            return;
+        WorksetPackage finished =
+            std::move(*active_workset);
+        active_workset.reset();
+        const ProgramBaselineComponentResult released =
+            workset_state->Release();
+        if (!released.ok)
+        {
+            terminal_state = WorkerWorksetState::Failed;
+            if (released.error.code ==
+                WorkerRejectionCode::SessionTainted)
+            {
+                EnterTainted(released.error.message);
+            }
+        }
+        MoveToDraining(finished, terminal_state);
+        RefreshSnapshot();
+        if (session->snapshot().disposition ==
+                SessionDisposition::Tainted ||
+            Snapshot().state == WorkerState::Stopping)
+        {
+            return;
+        }
+        if (staged_workset)
+            PromoteStagedWorkset();
+        else
+            ChangeState(WorkerState::Ready);
+        PublishCredits();
+    }
+
+    void PromoteStagedWorkset()
+    {
+        if (active_workset || !staged_workset ||
+            active_invocation)
+        {
+            return;
+        }
+        active_workset.emplace(
+            std::move(*staged_workset));
+        staged_workset.reset();
+        RefreshSnapshot();
+        ActivateCurrentWorkset();
     }
 
     void HandleScreenshot(
@@ -1023,12 +3168,13 @@ struct WorkerRuntime::Impl
                 "Execution control requires a ready worker");
             return;
         }
-        if (active_invocation)
+        if (active_invocation || active_workset ||
+            staged_workset || pending_workset_staging)
         {
             Reject(
                 queued,
                 WorkerRejectionCode::InvocationAlreadyActive,
-                "Ready-session execution control is unavailable during an invocation");
+                "Ready-session execution control is unavailable while work is resident or staging");
             return;
         }
         if (!session_visual_intent)
@@ -1071,8 +3217,7 @@ struct WorkerRuntime::Impl
         }
 
         const bool is_step =
-            command.control == WorkerExecutionControlKind::StepFrame ||
-            command.control == WorkerExecutionControlKind::StepInstruction;
+            command.control == WorkerExecutionControlKind::StepFrame;
         if ((is_step && command.count == 0) ||
             (!is_step && command.count != 0))
         {
@@ -1109,11 +3254,6 @@ struct WorkerRuntime::Impl
             {
             case WorkerExecutionControlKind::Pause:
                 request = SafePauseRequest{std::move(policy)};
-                break;
-            case WorkerExecutionControlKind::StepInstruction:
-                request = StepInstructionsRequest{
-                    std::move(policy),
-                    command.count};
                 break;
             case WorkerExecutionControlKind::StepFrame:
                 request = StepFramesRequest{
@@ -1270,12 +3410,17 @@ struct WorkerRuntime::Impl
             return false;
         }
         if (!program_runtime ||
-            !HasCapability(capabilities_value, WorkerCapability::ProgramInvocation))
+            (!HasCapability(
+                 capabilities_value,
+                 WorkerCapability::WorksetDispatch) &&
+             !HasCapability(
+                 capabilities_value,
+                 WorkerCapability::ProgramInvocation)))
         {
             Reject(
                 queued,
                 WorkerRejectionCode::ProgramRuntimeUnavailable,
-                "Canonical ProgramRuntime invocation is not available");
+                "Canonical ProgramRuntime workset dispatch is not available");
             return false;
         }
         return true;
@@ -1466,6 +3611,155 @@ struct WorkerRuntime::Impl
         }
     }
 
+    void CloseActiveWorksetAdmissionAfterPublication(
+        std::string_view reason)
+    {
+        if (!active_workset || !active_invocation ||
+            active_workset->admission_closed)
+        {
+            return;
+        }
+        active_workset->admission_closed = true;
+        for (std::uint32_t ordinal =
+                 active_workset->next_item;
+             ordinal < active_workset->definition.items.size();
+             ++ordinal)
+        {
+            if (ordinal ==
+                    active_invocation->workset_item_ordinal ||
+                active_workset->cancelled[ordinal] ||
+                active_workset->terminalized[ordinal])
+            {
+                continue;
+            }
+            active_workset->cancelled[ordinal] = true;
+            (void)program_runtime->ReleaseInvocationTemplate(
+                active_workset->prepared[ordinal].template_id);
+        }
+        active_workset->admission_close_reason =
+            std::string(reason);
+    }
+
+    void PromotePendingArtifactPublications()
+    {
+        if (!program_runtime || !active_invocation)
+            return;
+        std::vector<program::PendingStateArtifactPublication>
+            pending;
+        try
+        {
+            pending = program_runtime
+                ->DrainPendingStateArtifactPublications();
+        }
+        catch (const std::exception& exception)
+        {
+            EnterTainted(
+                std::string(
+                    "ProgramRuntime pending publication drain threw: ") +
+                exception.what());
+            return;
+        }
+        catch (...)
+        {
+            EnterTainted(
+                "ProgramRuntime pending publication drain threw");
+            return;
+        }
+        if (pending.empty())
+            return;
+        if (!active_invocation->workset_id ||
+            !active_invocation->workset_item_id ||
+            !artifact_finalizer)
+        {
+            for (auto& publication : pending)
+            {
+                (void)session->AbandonImmutableStateArtifact(
+                    publication.capture.artifact);
+            }
+            EnterTainted(
+                "Pending state-artifact publication has no exact workset item owner");
+            return;
+        }
+
+        const WorkerItemExecutionCorrelation correlation{
+            *active_invocation->workset_id,
+            *active_invocation->workset_item_id,
+            active_invocation->workset_item_ordinal,
+            active_invocation->invocation_id,
+            active_invocation->attempt_id};
+        for (auto& publication : pending)
+        {
+            StateArtifactFinalizationRequest request;
+            request.item = correlation;
+            request.state_artifact_id =
+                publication.capture.artifact;
+            request.logical_artifact_id =
+                publication.artifact_id;
+            request.state.final_path =
+                publication.capture.final_path;
+            request.state.bytes = std::move(
+                publication.capture.state_bytes);
+            if (publication.capture.movie_bytes)
+            {
+                if (!publication.capture.movie ||
+                    publication.capture.movie->dtm_path.empty())
+                {
+                    (void)session
+                        ->AbandonImmutableStateArtifact(
+                            publication.capture.artifact);
+                    active_invocation
+                        ->artifact_finalization_failure =
+                        "Captured movie state has no exact sidecar path";
+                    CloseActiveWorksetAdmissionAfterPublication(
+                        "Artifact publication failure closed later workset admission");
+                    (void)RequestActiveWorksetCancellation();
+                    continue;
+                }
+                ImmutableArtifactFile sidecar;
+                sidecar.final_path =
+                    publication.capture.movie->dtm_path;
+                sidecar.bytes = std::move(
+                    *publication.capture.movie_bytes);
+                sidecar.expected_sha256 =
+                    publication.capture.movie->dtm_sha256;
+                request.sidecars.push_back(
+                    std::move(sidecar));
+            }
+            const StateArtifactId state_artifact_id =
+                request.state_artifact_id;
+            const std::string logical_artifact_id =
+                request.logical_artifact_id;
+            const StateArtifactFinalizerSubmission submitted =
+                artifact_finalizer->Submit(std::move(request));
+            if (!submitted.result.ok)
+            {
+                (void)session->AbandonImmutableStateArtifact(
+                    state_artifact_id);
+                active_invocation
+                    ->artifact_finalization_failure =
+                    submitted.result.message.empty()
+                    ? "State artifact finalizer rejected captured bytes"
+                    : submitted.result.message;
+                CloseActiveWorksetAdmissionAfterPublication(
+                    "Artifact publication failure closed later workset admission");
+                (void)RequestActiveWorksetCancellation();
+                continue;
+            }
+            active_invocation->artifact_publication_promoted =
+                true;
+            active_invocation->artifact_finalizations.push_back(
+                submitted.finalization_id);
+            artifact_publications.emplace(
+                submitted.finalization_id.value(),
+                ArtifactPublication{
+                    correlation,
+                    state_artifact_id,
+                    logical_artifact_id});
+        }
+        RefreshSnapshot();
+        PublishCredits();
+    }
+
     void HandleProgramActionCompletion(
         program::ProgramActionCompletion completion)
     {
@@ -1506,6 +3800,7 @@ struct WorkerRuntime::Impl
                     : delivered.error.message);
             return;
         }
+        PromotePendingArtifactPublications();
         QueueProgramPump();
     }
 
@@ -1601,7 +3896,40 @@ struct WorkerRuntime::Impl
         std::visit(
             Overloaded{
                 [this](ModulePreparationEvent& module) {
+                    if (module.prepared)
+                        BuildRuntimeManifest();
+                    const auto pending =
+                        pending_module_commands.find(
+                            module.command_sequence.value());
+                    // Publish the refreshed module/catalog observation before
+                    // resolving the command. Wire clients can therefore treat
+                    // a successful PrepareModule completion as a barrier for
+                    // the corresponding RuntimeManifest update.
                     Publish(module);
+                    if (pending !=
+                        pending_module_commands.end())
+                    {
+                        if (module.prepared)
+                        {
+                            Complete(
+                                pending->second,
+                                WorkerCommandOutcome::Completed);
+                        }
+                        else
+                        {
+                            Reject(
+                                pending->second,
+                                module.error.code ==
+                                        WorkerRejectionCode::None
+                                    ? WorkerRejectionCode::
+                                          InvalidArgument
+                                    : module.error.code,
+                                module.error.message.empty()
+                                    ? "Program module preparation failed"
+                                    : module.error.message);
+                        }
+                        pending_module_commands.erase(pending);
+                    }
                 },
                 [this](ProgramInvocationProgressEvent& progress) {
                     if (!active_invocation ||
@@ -1863,6 +4191,20 @@ struct WorkerRuntime::Impl
                 terminal.invocation_id});
             return;
         }
+        const std::optional<WorkerWorksetId> terminal_workset =
+            active_invocation->workset_id;
+        const std::optional<WorkerWorksetItemId>
+            terminal_workset_item =
+                active_invocation->workset_item_id;
+        const std::uint32_t terminal_workset_ordinal =
+            active_invocation->workset_item_ordinal;
+        std::vector<StateArtifactFinalizationId>
+            terminal_finalizations =
+                active_invocation->artifact_finalizations;
+        const bool artifact_publication_promoted =
+            active_invocation->artifact_publication_promoted;
+        const std::string artifact_finalization_failure =
+            active_invocation->artifact_finalization_failure;
 
         ProgramRuntimeSubmission acknowledged;
         try
@@ -1898,7 +4240,8 @@ struct WorkerRuntime::Impl
             terminal.status == InvocationTerminalStatus::Completed)
         {
             terminal.status = InvocationTerminalStatus::Cancelled;
-            terminal.output_payload.clear();
+            if (!artifact_publication_promoted)
+                terminal.output_payload.clear();
         }
 
         std::string taint_reason;
@@ -1945,6 +4288,14 @@ struct WorkerRuntime::Impl
                     taint_reason};
             }
         }
+        else if (!artifact_finalization_failure.empty())
+        {
+            terminal.status =
+                InvocationTerminalStatus::InfrastructureFailure;
+            terminal.error = {
+                WorkerRejectionCode::BackendFailure,
+                artifact_finalization_failure};
+        }
 
         if (taint_reason.empty() &&
             screenshot_on_terminal &&
@@ -1983,25 +4334,89 @@ struct WorkerRuntime::Impl
 
         if (!taint_reason.empty())
         {
-            EnterTainted(taint_reason, false);
+            // Publish the tainted session/worker state before exposing the
+            // authoritative terminal. Consumers that observe the terminal
+            // must never race a still-Ready snapshot and admit more
+            // mutating work.
+            session->MarkTainted(taint_reason);
+            RefreshSnapshot();
+            ChangeState(WorkerState::Tainted);
+            terminal.session_disposition = SessionDisposition::Tainted;
         }
-        else if (terminal.cleanup == CleanupStatus::CleanWithDiagnostics ||
+
+        if (taint_reason.empty() &&
+            (terminal.cleanup == CleanupStatus::CleanWithDiagnostics ||
                  terminal.session_disposition ==
-                     SessionDisposition::CleanWithDiagnostics)
+                     SessionDisposition::CleanWithDiagnostics))
         {
             session->MarkCleanWithDiagnostics(
                 terminal.error.message.empty()
                     ? "Invocation cleanup completed with diagnostics"
                     : terminal.error.message);
-            active_invocation.reset();
+        }
+        const bool tainted_terminal = !taint_reason.empty();
+        const bool publication_was_deferred =
+            terminal_publication_deferred;
+        if (tainted_terminal)
+            terminal_publication_deferred = true;
+        std::optional<ProgramInvocationTerminalEvent>
+            deferred_scalar_terminal;
+
+        active_invocation.reset();
+        RefreshSnapshot();
+        terminal.session_disposition = session->snapshot().disposition;
+        if (terminal_workset && terminal_workset_item &&
+            active_workset &&
+            active_workset->definition.workset_id ==
+                *terminal_workset &&
+            terminal_workset_ordinal <
+                active_workset->definition.items.size())
+        {
+            RetainWorksetTerminal(
+                *active_workset,
+                terminal_workset_ordinal,
+                std::move(terminal),
+                false,
+                std::move(terminal_finalizations));
+            if (active_workset->next_item ==
+                terminal_workset_ordinal)
+            {
+                ++active_workset->next_item;
+            }
+        }
+        else if (tainted_terminal)
+        {
+            deferred_scalar_terminal.emplace(std::move(terminal));
         }
         else
         {
-            active_invocation.reset();
+            Publish(terminal);
         }
-        RefreshSnapshot();
-        terminal.session_disposition = session->snapshot().disposition;
-        Publish(terminal);
+
+        if (tainted_terminal)
+        {
+            if (active_workset)
+            {
+                FailRemainingWorksetItems(
+                    WorkerRejectionCode::SessionTainted,
+                    taint_reason);
+                WorksetPackage failed =
+                    std::move(*active_workset);
+                active_workset.reset();
+                (void)workset_state->Release();
+                MoveToDraining(
+                    failed,
+                    WorkerWorksetState::Failed);
+            }
+            EnterTainted(taint_reason, false);
+            terminal_publication_deferred =
+                publication_was_deferred;
+            if (!publication_was_deferred)
+                (void)PublishReadyWorksetTerminals();
+            if (deferred_scalar_terminal)
+                Publish(std::move(*deferred_scalar_terminal));
+            return;
+        }
 
         if (!pending_shutdown_commands.empty() ||
             Snapshot().state == WorkerState::Stopping)
@@ -2010,8 +4425,15 @@ struct WorkerRuntime::Impl
             return;
         }
 
-        if (session->snapshot().disposition != SessionDisposition::Tainted)
+        if (active_workset)
+        {
+            StartNextWorksetItem();
+        }
+        else if (session->snapshot().disposition !=
+                 SessionDisposition::Tainted)
+        {
             ChangeState(WorkerState::Ready);
+        }
     }
 
     void EnterTainted(
@@ -2021,6 +4443,9 @@ struct WorkerRuntime::Impl
     {
         if (diagnostic.empty())
             diagnostic = "Session integrity could not be proven";
+        const bool publication_was_deferred =
+            terminal_publication_deferred;
+        terminal_publication_deferred = true;
 
         const std::optional<InvocationId> invocation = active_invocation
             ? std::optional<InvocationId>(active_invocation->invocation_id)
@@ -2058,6 +4483,82 @@ struct WorkerRuntime::Impl
             }
         }
 
+        if (synthetic_terminal && active_workset &&
+            active_invocation &&
+            active_invocation->workset_id ==
+                active_workset->definition.workset_id &&
+            active_invocation->workset_item_id &&
+            active_invocation->workset_item_ordinal <
+                active_workset->definition.items.size())
+        {
+            const std::uint32_t ordinal =
+                active_invocation->workset_item_ordinal;
+            RetainWorksetTerminal(
+                *active_workset,
+                ordinal,
+                std::move(*synthetic_terminal),
+                false,
+                active_invocation
+                    ->artifact_finalizations);
+            synthetic_terminal.reset();
+            if (active_workset->next_item == ordinal)
+                ++active_workset->next_item;
+        }
+        if (active_workset)
+        {
+            FailRemainingWorksetItems(
+                WorkerRejectionCode::SessionTainted,
+                diagnostic);
+            WorksetPackage failed =
+                std::move(*active_workset);
+            active_workset.reset();
+            const ProgramBaselineComponentResult released =
+                workset_state->Release();
+            if (!released.ok &&
+                !released.error.message.empty())
+            {
+                diagnostic += "; " +
+                    released.error.message;
+            }
+            MoveToDraining(
+                failed,
+                WorkerWorksetState::Failed);
+        }
+        if (staged_workset)
+        {
+            WorksetPackage failed =
+                std::move(*staged_workset);
+            staged_workset.reset();
+            failed.admission_closed = true;
+            for (std::uint32_t ordinal = 0;
+                 ordinal < failed.definition.items.size();
+                 ++ordinal)
+            {
+                if (failed.terminalized[ordinal])
+                    continue;
+                failed.cancelled[ordinal] = true;
+                RetainUnstartedTerminal(
+                    failed,
+                    ordinal,
+                    "Staged workset was not admitted because the session became tainted");
+                try
+                {
+                    (void)program_runtime
+                        ->ReleaseInvocationTemplate(
+                            failed.prepared[ordinal]
+                                .template_id);
+                }
+                catch (...)
+                {
+                    diagnostic +=
+                        "; staged prepared-template cleanup threw";
+                }
+            }
+            MoveToDraining(
+                failed,
+                WorkerWorksetState::Failed);
+        }
+
         ShutdownProgramRuntimeOnce();
         ShutdownProgramActionHostOnce();
 
@@ -2079,6 +4580,9 @@ struct WorkerRuntime::Impl
         active_invocation.reset();
         RefreshSnapshot();
         ChangeState(WorkerState::Tainted);
+        terminal_publication_deferred = publication_was_deferred;
+        if (!publication_was_deferred)
+            (void)PublishReadyWorksetTerminals();
         if (synthetic_terminal)
             Publish(std::move(*synthetic_terminal));
         Publish(WorkerRuntimeDiagnosticEvent{
@@ -2108,6 +4612,61 @@ struct WorkerRuntime::Impl
         if (finishing_shutdown)
             return;
         finishing_shutdown = true;
+        if (workset_stager)
+        {
+            workset_stager->Shutdown();
+            DrainWorksetStager();
+        }
+        if (active_workset)
+        {
+            FailRemainingWorksetItems(
+                WorkerRejectionCode::RuntimeStopping,
+                "Worker shutdown closed workset admission");
+            WorksetPackage stopped =
+                std::move(*active_workset);
+            active_workset.reset();
+            if (workset_state)
+                (void)workset_state->Release();
+            MoveToDraining(
+                stopped,
+                WorkerWorksetState::Cancelled);
+        }
+        if (staged_workset)
+        {
+            WorksetPackage stopped =
+                std::move(*staged_workset);
+            staged_workset.reset();
+            for (std::uint32_t ordinal = 0;
+                 ordinal < stopped.definition.items.size();
+                 ++ordinal)
+            {
+                if (stopped.cancelled[ordinal] ||
+                    stopped.terminalized[ordinal])
+                    continue;
+                stopped.cancelled[ordinal] = true;
+                RetainUnstartedTerminal(
+                    stopped,
+                    ordinal,
+                    "Worker shutdown cancelled the staged workset");
+                (void)program_runtime
+                    ->ReleaseInvocationTemplate(
+                        stopped.prepared[ordinal].template_id);
+            }
+            MoveToDraining(
+                stopped,
+                WorkerWorksetState::Cancelled);
+        }
+        if (workset_state)
+            (void)workset_state->Shutdown();
+        if (artifact_finalizer)
+            artifact_finalizer->Shutdown();
+        DrainArtifactFinalizers();
+        (void)PublishReadyWorksetTerminals();
+        const std::size_t unacknowledged_terminals =
+            std::max(
+                retained_terminals.size() +
+                    pending_finalized_terminals.size(),
+                completion_ledger.snapshot().retained_terminals);
         ShutdownProgramRuntimeOnce();
         ShutdownProgramActionHostOnce();
 
@@ -2132,6 +4691,18 @@ struct WorkerRuntime::Impl
                     ? "Execution shutdown tainted the session"
                     : session->taint_diagnostic(),
                 BackendIntegrity::Unknown);
+        }
+        else if (unacknowledged_terminals != 0 &&
+                 shutdown_receipt.ok)
+        {
+            shutdown_receipt.ok = false;
+            shutdown_receipt.backend = BackendResult::Failure(
+                BackendErrorCode::OperationFailed,
+                "Worker shutdown retained " +
+                    std::to_string(unacknowledged_terminals) +
+                    " unacknowledged authoritative terminal(s); "
+                    "durable per-item recovery is required",
+                BackendIntegrity::Preserved);
         }
 
         active_invocation.reset();
@@ -2192,6 +4763,14 @@ struct WorkerRuntime::Impl
                     : "WorkerRuntime stopped before execution control completed");
         }
         pending_execution_commands.clear();
+        for (auto& [_, pending] : pending_module_commands)
+        {
+            Reject(
+                pending,
+                WorkerRejectionCode::RuntimeStopping,
+                "WorkerRuntime stopped before module preparation completed");
+        }
+        pending_module_commands.clear();
 
         DrainQueuedCommands(forced);
     }
@@ -2277,6 +4856,30 @@ struct WorkerRuntime::Impl
             current_snapshot.active_invocation = active_invocation
                 ? std::optional<InvocationId>(active_invocation->invocation_id)
                 : std::nullopt;
+            current_snapshot.active_workset = active_workset
+                ? std::optional<WorkerWorksetId>(
+                      active_workset->definition.workset_id)
+                : std::nullopt;
+            current_snapshot.staged_workset = staged_workset
+                ? std::optional<WorkerWorksetId>(
+                      staged_workset->definition.workset_id)
+                : pending_workset_staging
+                ? std::optional<WorkerWorksetId>(
+                      pending_workset_staging->workset_id)
+                : std::nullopt;
+            current_snapshot.active_workset_item =
+                active_invocation &&
+                    active_invocation->workset_item_id
+                ? active_invocation->workset_item_id
+                : std::nullopt;
+            current_snapshot.available_item_credits =
+                AvailableItemCredits();
+            current_snapshot.retained_terminal_count =
+                static_cast<std::uint32_t>(
+                    retained_terminals.size() +
+                    pending_finalized_terminals.size());
+            current_snapshot.retained_terminal_bytes =
+                retained_terminal_bytes;
             current = current_snapshot;
         }
         if (previous != next)
@@ -2294,6 +4897,30 @@ struct WorkerRuntime::Impl
         current_snapshot.active_invocation = active_invocation
             ? std::optional<InvocationId>(active_invocation->invocation_id)
             : std::nullopt;
+        current_snapshot.active_workset = active_workset
+            ? std::optional<WorkerWorksetId>(
+                  active_workset->definition.workset_id)
+            : std::nullopt;
+        current_snapshot.staged_workset = staged_workset
+            ? std::optional<WorkerWorksetId>(
+                  staged_workset->definition.workset_id)
+            : pending_workset_staging
+            ? std::optional<WorkerWorksetId>(
+                  pending_workset_staging->workset_id)
+            : std::nullopt;
+        current_snapshot.active_workset_item =
+            active_invocation &&
+                active_invocation->workset_item_id
+            ? active_invocation->workset_item_id
+            : std::nullopt;
+        current_snapshot.available_item_credits =
+            AvailableItemCredits();
+        current_snapshot.retained_terminal_count =
+            static_cast<std::uint32_t>(
+                retained_terminals.size() +
+                pending_finalized_terminals.size());
+        current_snapshot.retained_terminal_bytes =
+            retained_terminal_bytes;
     }
 
     void Complete(
@@ -2345,18 +4972,223 @@ struct WorkerRuntime::Impl
     }
 
     template <typename Event>
-    void Publish(Event event)
+    bool Publish(Event event)
     {
         if (!event_sink)
-            return;
+            return true;
         try
         {
             event_sink(WorkerEvent(std::move(event)));
+            return true;
         }
         catch (...)
         {
             // Event publication cannot break command serialization or session cleanup.
+            return false;
         }
+    }
+
+    void DrainArtifactFinalizers()
+    {
+        if (!artifact_finalizer)
+            return;
+        std::vector<StateArtifactFinalizationCompletion>
+            completions =
+                artifact_finalizer->DrainCompletions();
+        if (completions.empty())
+            return;
+        for (StateArtifactFinalizationCompletion& completion :
+             completions)
+        {
+            const auto found = artifact_publications.find(
+                completion.finalization_id.value());
+            if (found == artifact_publications.end() ||
+                found->second.item != completion.item ||
+                found->second.state_artifact_id !=
+                    completion.state_artifact_id ||
+                found->second.logical_artifact_id !=
+                    completion.logical_artifact_id ||
+                found->second.completed)
+            {
+                EnterTainted(
+                    "State artifact finalizer returned a stale or mismatched completion");
+                continue;
+            }
+            ArtifactPublication& publication = found->second;
+            publication.completed = true;
+            if (!completion.result.ok)
+            {
+                publication.failure =
+                    completion.result.message.empty()
+                    ? "State artifact finalization failed"
+                    : completion.result.message;
+                (void)session->AbandonImmutableStateArtifact(
+                    publication.state_artifact_id);
+            }
+            else
+            {
+                ImmutableStateArtifactPublicationReceipt evidence;
+                evidence.artifact =
+                    publication.state_artifact_id;
+                evidence.state_path = completion.state.path;
+                evidence.state_size_bytes =
+                    completion.state.size_bytes;
+                evidence.state_sha256 =
+                    completion.state.sha256;
+                if (!completion.sidecars.empty())
+                {
+                    if (completion.sidecars.size() != 1)
+                    {
+                        publication.failure =
+                            "State artifact finalization returned an unexpected sidecar set";
+                    }
+                    else
+                    {
+                        evidence.movie_path =
+                            completion.sidecars.front().path;
+                        evidence.movie_size_bytes =
+                            completion.sidecars.front()
+                                .size_bytes;
+                        evidence.movie_sha256 =
+                            completion.sidecars.front().sha256;
+                    }
+                }
+                if (!publication.failure.empty())
+                {
+                    (void)session->AbandonImmutableStateArtifact(
+                        publication.state_artifact_id);
+                }
+                if (publication.failure.empty())
+                {
+                    const StateFileArtifactReceipt committed =
+                        session->CommitImmutableStateArtifact(
+                            evidence);
+                    if (!committed.result.ok)
+                    {
+                        publication.failure =
+                            committed.result.message.empty()
+                            ? "StateService rejected finalized artifact evidence"
+                            : committed.result.message;
+                        (void)session
+                            ->AbandonImmutableStateArtifact(
+                                publication.state_artifact_id);
+                    }
+                    else
+                    {
+                        const auto hash =
+                            program::ContentHash256::FromHex(
+                                committed.sha256);
+                        const auto schema =
+                            program::
+                                CanonicalActionArtifactPayloadSchemaIdentity(
+                                    program::CanonicalAction::
+                                        StateSaveImmutableArtifact);
+                        if (!hash || !schema)
+                        {
+                            publication.failure =
+                                "Finalized state artifact has invalid canonical identity";
+                        }
+                        else
+                        {
+                            publication.artifact =
+                                program::ArtifactReferenceValue{
+                                    publication
+                                        .logical_artifact_id,
+                                    *schema,
+                                    *hash,
+                                    committed.path.string(),
+                                    true};
+                        }
+                        const StateServiceResult released =
+                            session->ReleaseStateArtifact(
+                                publication.state_artifact_id);
+                        if (!released.ok)
+                        {
+                            publication.artifact.reset();
+                            publication.failure =
+                                released.message.empty()
+                                ? "Finalized state artifact service ownership could not be released"
+                                : released.message;
+                        }
+                    }
+                }
+            }
+            if (!publication.failure.empty())
+            {
+                Publish(WorkerRuntimeDiagnosticEvent{
+                    WorkerRejectionCode::BackendFailure,
+                    publication.failure,
+                    publication.item.invocation_id});
+                if (active_invocation &&
+                    active_invocation->invocation_id ==
+                        publication.item.invocation_id &&
+                    active_invocation->attempt_id ==
+                        publication.item.attempt_id)
+                {
+                    active_invocation
+                        ->artifact_finalization_failure =
+                        publication.failure;
+                    CloseActiveWorksetAdmissionAfterPublication(
+                        "Artifact publication failure closed later workset admission");
+                    if (!active_invocation->cancellation
+                             .is_cancellation_requested())
+                    {
+                        (void)RequestActiveWorksetCancellation();
+                    }
+                }
+            }
+            const WorkerTerminalId terminal_id =
+                publication.terminal_id;
+            if (terminal_id)
+                TryFinalizePendingTerminal(terminal_id);
+        }
+        RefreshSnapshot();
+        PublishCredits();
+    }
+
+    void BuildRuntimeManifest()
+    {
+        WorkerRuntimeManifest manifest;
+        manifest.catalog_status = RuntimeCatalogStatus::Partial;
+        manifest.limits = workset_limits;
+        if (program_runtime)
+        {
+            const ProgramRuntimeCatalogSnapshot catalog =
+                program_runtime->catalog();
+            manifest.catalog_status = catalog.complete_exact
+                ? RuntimeCatalogStatus::CompleteExact
+                : RuntimeCatalogStatus::Partial;
+            manifest.catalog_generation = catalog.generation;
+            manifest.runtime_profile_sha256 =
+                catalog.runtime_profile_sha256;
+            manifest.dependency_manifest_sha256 =
+                catalog.dependency_manifest_sha256;
+            for (const ProgramRuntimeCatalogModule& module :
+                 catalog.modules)
+            {
+                manifest.modules.push_back(
+                    RuntimeModuleManifestEntry{
+                        module.identity,
+                        module.entrypoints,
+                        catalog.dependency_manifest_sha256,
+                        module.development_only});
+            }
+        }
+        manifest.catalog_sha256 =
+            ComputeRuntimeCatalogHash(
+                manifest.modules,
+                manifest.catalog_status);
+        if (HasCapability(
+                capabilities_value,
+                WorkerCapability::WorksetDispatch) &&
+            !ValidateWorkerRuntimeManifest(manifest).ok)
+        {
+            capabilities_value = RemoveCapability(
+                capabilities_value,
+                WorkerCapability::WorksetDispatch);
+        }
+        std::lock_guard lock(manifest_mutex);
+        runtime_manifest_value = std::move(manifest);
     }
 
     std::shared_ptr<Mailbox> mailbox;
@@ -2368,6 +5200,14 @@ struct WorkerRuntime::Impl
         program_action_host;
     WorkerEventSink event_sink;
     std::shared_ptr<const WorkerRuntimeTestHooks> test_hooks;
+    WorkerWorksetLimits workset_limits;
+    WorkerCompletionLedger completion_ledger{workset_limits};
+    std::shared_ptr<ProgramBaselineComponentRegistry>
+        baseline_components;
+    std::unique_ptr<WorksetStager> workset_stager;
+    std::unique_ptr<StateArtifactFinalizer>
+        artifact_finalizer;
+    std::unique_ptr<WorksetStateCoordinator> workset_state;
     WorkerCapabilityMask capabilities_value = 0;
     bool program_runtime_shutdown = false;
     bool program_action_host_shutdown = false;
@@ -2379,8 +5219,28 @@ struct WorkerRuntime::Impl
     mutable std::mutex snapshot_mutex;
     WorkerSnapshot current_snapshot;
     std::optional<ActiveInvocation> active_invocation;
+    std::optional<WorksetPackage> active_workset;
+    std::optional<WorksetPackage> staged_workset;
+    std::optional<PendingWorksetStaging>
+        pending_workset_staging;
+    std::unordered_map<std::uint64_t, DrainingWorkset>
+        draining_worksets;
+    std::unordered_map<std::uint64_t, RetainedTerminal>
+        retained_terminals;
+    std::unordered_map<std::uint64_t, PendingFinalizedTerminal>
+        pending_finalized_terminals;
+    std::unordered_map<std::uint64_t, ArtifactPublication>
+        artifact_publications;
+    std::size_t retained_terminal_bytes = 0;
+    bool terminal_publication_deferred = false;
+    mutable std::mutex manifest_mutex;
+    WorkerRuntimeManifest runtime_manifest_value;
     std::unordered_map<std::uint64_t, PendingExecutionCommand>
         pending_execution_commands;
+    std::unordered_map<
+        std::uint64_t,
+        std::shared_ptr<QueuedCommand>>
+        pending_module_commands;
     std::vector<std::shared_ptr<QueuedCommand>> pending_shutdown_commands;
     bool finishing_shutdown = false;
     std::thread actor;
@@ -2392,13 +5252,16 @@ WorkerRuntime::WorkerRuntime(
     std::unique_ptr<IProgramRuntimePort> program_runtime,
     WorkerEventSink event_sink,
     std::shared_ptr<const WorkerRuntimeTestHooks> test_hooks,
-    std::unique_ptr<program::IProgramActionHost> action_host)
+    std::unique_ptr<program::IProgramActionHost> action_host,
+    std::shared_ptr<ProgramBaselineComponentRegistry>
+        baseline_components)
     : impl_(std::make_unique<Impl>(
           std::move(session),
           std::move(program_runtime),
           std::move(event_sink),
           std::move(test_hooks),
-          std::move(action_host)))
+          std::move(action_host),
+          std::move(baseline_components)))
 {
 }
 
@@ -2419,6 +5282,11 @@ WorkerSnapshot WorkerRuntime::snapshot() const
 WorkerCapabilityMask WorkerRuntime::capabilities() const noexcept
 {
     return impl_->capabilities_value;
+}
+
+WorkerRuntimeManifest WorkerRuntime::runtime_manifest() const
+{
+    return impl_->RuntimeManifest();
 }
 
 bool WorkerRuntime::EnqueueHostEvent(
@@ -2464,12 +5332,20 @@ std::unique_ptr<WorkerRuntime> MakeProductionWorkerRuntime(
         session_id = SessionId(generated);
     }
 
+    auto session = std::make_unique<EmulationSession>(
+        session_id,
+        MakeDolphinWrapperBackend());
+    auto runtime =
+        program::MakeSupportedSoaUsaProgramRuntime();
+    auto action_host =
+        std::make_unique<program::SessionProgramActionHost>(
+            *session);
     return std::make_unique<WorkerRuntime>(
-        std::make_unique<EmulationSession>(
-            session_id,
-            MakeDolphinWrapperBackend()),
+        std::move(session),
+        std::move(runtime),
+        std::move(event_sink),
         nullptr,
-        std::move(event_sink));
+        std::move(action_host));
 }
 
 } // namespace savor::runtime

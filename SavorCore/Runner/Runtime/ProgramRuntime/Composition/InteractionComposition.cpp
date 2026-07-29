@@ -156,12 +156,12 @@ std::optional<ProgramValueId> AddRequest(
 }
 
 std::vector<Byte> StopGroupConfig(
-    const InteractionSegmentDefinition& segment)
+    std::span<const SemanticPointReference> points)
 {
     StaticConfigWriter writer({'S', 'G', 'C', '1'});
     writer.U32(static_cast<std::uint32_t>(
-        segment.gate_alternatives.size()));
-    for (const auto& point : segment.gate_alternatives)
+        points.size()));
+    for (const auto& point : points)
     {
         writer.String(point.capability_pack.canonical_id);
         writer.U32(point.capability_pack.version);
@@ -184,7 +184,7 @@ std::vector<Byte> ContinueConfig(
     const InteractionSegmentDefinition& segment)
 {
     StaticConfigWriter writer({'C', 'U', 'C', '1'});
-    writer.U8(1); // FutureOnly after input publication/source step-off.
+    writer.U8(1); // FutureOnly; suppress exact retained source re-entry.
     writer.Bool(true);
     writer.Bool(segment.fail_on_movie_end);
     writer.Bool(segment.require_vi_progress);
@@ -194,13 +194,12 @@ std::vector<Byte> ContinueConfig(
 }
 
 std::vector<Byte> AdvanceConfig(
-    bool frame,
     const InteractionSegmentDefinition& segment)
 {
     StaticConfigWriter writer({'E', 'A', 'C', '1'});
-    writer.U8(frame ? 2u : 1u);
+    writer.U8(2u);
     writer.Bool(segment.fail_on_movie_end);
-    writer.Bool(frame && segment.require_vi_progress);
+    writer.Bool(segment.require_vi_progress);
     writer.U8(0);
     writer.U8(0);
     return std::move(writer).Finish();
@@ -382,7 +381,6 @@ std::optional<CompositionResult> Validate(
         actions.await_guest_poll.canonical_id,
         actions.subscribe_group.canonical_id,
         actions.continue_until.canonical_id,
-        actions.step_instructions.canonical_id,
         actions.step_frames.canonical_id,
     };
     if (std::ranges::any_of(
@@ -410,8 +408,6 @@ std::optional<CompositionResult> Validate(
             CanonicalAction::StopPointsSubscribeGroup),
         .continue_until = CanonicalActionIdentity(
             CanonicalAction::ExecutionContinueUntil),
-        .step_instructions = CanonicalActionIdentity(
-            CanonicalAction::ExecutionStepInstructions),
         .step_frames = CanonicalActionIdentity(
             CanonicalAction::ExecutionStepFrames),
     };
@@ -505,13 +501,21 @@ std::optional<CompositionResult> Validate(
         if (segment.input_kind == InteractionInputKind::Neutral &&
             (segment.acknowledgement !=
                  InputAcknowledgementPolicy::NotRequired ||
-             segment.reached_instruction ==
-                 ReachedInstructionPolicy::
-                     ExecuteUnderHeldRequest))
+             segment.held_through_successor))
         {
             return detail::Fail(
                 "interaction.invalid_neutral_segment",
-                "neutral segments cannot request held-input acknowledgement or held-through-hit execution");
+                "neutral segments cannot request held-input acknowledgement or a held-through semantic successor");
+        }
+        if (segment.held_through_successor &&
+            (segment.held_through_successor->canonical_id.empty() ||
+             (segment.held_through_successor->kind ==
+                  SemanticPointKind::ProgramCounter &&
+              segment.held_through_successor->physical_pc == 0)))
+        {
+            return detail::Fail(
+                "interaction.invalid_held_successor",
+                "held-through behavior requires an exact nonzero semantic successor");
         }
         if (segment.memory_change_observation &&
             (segment.maximum_memory_polls == 0 ||
@@ -627,7 +631,6 @@ void AddActionImports(
     builder.AddActionImport(actions.await_guest_poll);
     builder.AddActionImport(actions.subscribe_group);
     builder.AddActionImport(actions.continue_until);
-    builder.AddActionImport(actions.step_instructions);
     builder.AddActionImport(actions.step_frames);
     for (const auto action : {
              CanonicalAction::InputAcquireLease,
@@ -638,7 +641,6 @@ void AddActionImports(
              CanonicalAction::InputAwaitGuestPoll,
              CanonicalAction::StopPointsSubscribeGroup,
              CanonicalAction::ExecutionContinueUntil,
-             CanonicalAction::ExecutionStepInstructions,
              CanonicalAction::ExecutionStepFrames,
          })
     {
@@ -879,7 +881,7 @@ CompositionResult LowerInteraction(
             function,
             block,
             CanonicalRuntimeSchema::StopGroupStaticConfig,
-            StopGroupConfig(segment),
+            StopGroupConfig(segment.gate_alternatives),
             "segment/" + segment.canonical_id +
                 "/gate/static-config",
             segment_scope);
@@ -970,70 +972,10 @@ CompositionResult LowerInteraction(
                 : definition.input_publication_receipt_type,
             std::array{*publish_request},
             ActionTarget(publish_action),
-            "segment/" + segment.canonical_id + "/publish-before-step",
+            "segment/" + segment.canonical_id +
+                "/publish-before-departure",
             std::nullopt,
             {});
-
-        if (segment.step_off_current_source)
-        {
-            const auto one = ConstantU64(
-                builder,
-                function,
-                block,
-                1,
-                "segment/" + segment.canonical_id +
-                    "/exact-source-instruction-count",
-                segment_scope);
-            const auto input_relationship = AddOptional(
-                builder,
-                function,
-                block,
-                CanonicalRuntimeSchema::
-                    OptionalInputPublicationReceipt,
-                publish_kind ==
-                        CanonicalAction::InputNeutralize
-                    ? std::nullopt
-                    : publication,
-                "segment/" + segment.canonical_id +
-                    "/source-step/input-publication",
-                segment_scope);
-            const auto step_config = AddStaticConfig(
-                builder,
-                function,
-                block,
-                CanonicalRuntimeSchema::
-                    ExecutionAdvanceStaticConfig,
-                AdvanceConfig(false, segment),
-                "segment/" + segment.canonical_id +
-                    "/source-step/static-config",
-                segment_scope);
-            const auto step_request = AddRequest(
-                builder,
-                function,
-                block,
-                CanonicalAction::
-                    ExecutionStepInstructions,
-                std::array{
-                    *one,
-                    *input_relationship,
-                    *step_config},
-                "segment/" + segment.canonical_id +
-                    "/source-step/request",
-                segment_scope);
-            (void)builder.AddInstruction(
-                function,
-                block,
-                InstructionOpcode::AwaitAction,
-                CanonicalActionOutputType(
-                    CanonicalAction::
-                        ExecutionStepInstructions),
-                std::array{*step_request},
-                ActionTarget(definition.actions.step_instructions),
-                "segment/" + segment.canonical_id +
-                    "/step-source-with-request",
-                std::nullopt,
-                {});
-        }
 
         const auto deadline = ConstantU64(
             builder,
@@ -1078,7 +1020,7 @@ CompositionResult LowerInteraction(
             "segment/" + segment.canonical_id +
                 "/continue/request",
             segment_scope);
-        const auto stop = builder.AddInstruction(
+        auto stop = builder.AddInstruction(
             function,
             block,
             InstructionOpcode::AwaitAction,
@@ -1089,64 +1031,91 @@ CompositionResult LowerInteraction(
                 "/exact-stop-and-input-epoch/" + GateLabel(segment),
             std::nullopt,
             {});
-
-        if (segment.reached_instruction ==
-            ReachedInstructionPolicy::ExecuteUnderHeldRequest)
+        if (!stop)
         {
-            const auto one = ConstantU64(
+            return detail::Fail(
+                "interaction.lowering_failed",
+                "segment semantic gate wait could not be lowered");
+        }
+
+        if (segment.held_through_successor)
+        {
+            const std::array successor_points{
+                *segment.held_through_successor};
+            const auto successor_config = AddStaticConfig(
                 builder,
                 function,
                 block,
-                1,
+                CanonicalRuntimeSchema::StopGroupStaticConfig,
+                StopGroupConfig(successor_points),
                 "segment/" + segment.canonical_id +
-                    "/held-through-hit-count",
+                    "/held-successor/static-config",
                 segment_scope);
-            const auto held_relationship = AddOptional(
+            const auto successor_request = successor_config
+                ? AddRequest(
+                      builder,
+                      function,
+                      block,
+                      CanonicalAction::StopPointsSubscribeGroup,
+                      std::array{*successor_config},
+                      "segment/" + segment.canonical_id +
+                          "/held-successor/request",
+                      segment_scope)
+                : std::nullopt;
+            if (!successor_request)
+            {
+                return detail::Fail(
+                    "interaction.lowering_failed",
+                    "held-through semantic successor request could not be constructed");
+            }
+            const auto successor_subscription =
+                builder.AddInstruction(
+                    function,
+                    block,
+                    InstructionOpcode::AwaitAction,
+                    definition.subscription_type,
+                    std::array{*successor_request},
+                    ActionTarget(
+                        definition.actions.subscribe_group),
+                    "segment/" + segment.canonical_id +
+                        "/held-successor/" +
+                        segment.held_through_successor
+                            ->canonical_id,
+                    std::nullopt,
+                    segment_scope);
+            const auto successor_wait_request = AddRequest(
                 builder,
                 function,
                 block,
-                CanonicalRuntimeSchema::
-                    OptionalInputPublicationReceipt,
-                publication,
-                "segment/" + segment.canonical_id +
-                    "/held-through/input-publication",
-                segment_scope);
-            const auto held_config = AddStaticConfig(
-                builder,
-                function,
-                block,
-                CanonicalRuntimeSchema::
-                    ExecutionAdvanceStaticConfig,
-                AdvanceConfig(false, segment),
-                "segment/" + segment.canonical_id +
-                    "/held-through/static-config",
-                segment_scope);
-            const auto held_request = AddRequest(
-                builder,
-                function,
-                block,
-                CanonicalAction::
-                    ExecutionStepInstructions,
+                CanonicalAction::ExecutionContinueUntil,
                 std::array{
-                    *one,
-                    *held_relationship,
-                    *held_config},
+                    *successor_subscription,
+                    *wait_publication,
+                    *deadline,
+                    *wait_config},
                 "segment/" + segment.canonical_id +
-                    "/held-through/request",
+                    "/held-successor/continue/request",
                 segment_scope);
-            (void)builder.AddInstruction(
+            stop = builder.AddInstruction(
                 function,
                 block,
                 InstructionOpcode::AwaitAction,
-                CanonicalActionOutputType(
-                    CanonicalAction::
-                        ExecutionStepInstructions),
-                std::array{*held_request},
-                ActionTarget(definition.actions.step_instructions),
+                definition.point_receipt_type,
+                std::array{*successor_wait_request},
+                ActionTarget(
+                    definition.actions.continue_until),
                 "segment/" + segment.canonical_id +
-                    "/execute-reached-under-request",
+                    "/held-through-semantic-successor/" +
+                    segment.held_through_successor
+                        ->canonical_id,
                 std::nullopt,
                 {});
+            if (!stop)
+            {
+                return detail::Fail(
+                    "interaction.lowering_failed",
+                    "held-through semantic successor wait could not be lowered");
+            }
         }
 
         std::optional<ProgramValueId> request_poll;
@@ -1336,7 +1305,7 @@ CompositionResult LowerInteraction(
                 block,
                 CanonicalRuntimeSchema::
                     ExecutionAdvanceStaticConfig,
-                AdvanceConfig(true, segment),
+                AdvanceConfig(segment),
                 "segment/" + segment.canonical_id +
                     "/neutral-frame/static-config",
                 segment_scope);

@@ -2328,6 +2328,114 @@ VALUES(2000, 20, 1, 1, 'seedprobe_spec', 44, 'fp-2', 0, 'SUCCEEDED', 0, 1, unixe
     sqlite3_finalize(st);
 }
 
+TEST_F(SqliteDbFixture, WorksetTerminalCommitWakesTargetedAdvancementBeforeRecoveryScan) {
+    using namespace savor::db::execution::programdb;
+    using namespace savor::db::execution::workflow;
+    using namespace savor::db::migrations;
+
+    const MigrationSourceOptions embedded_options{
+        .source_kind = MigrationSourceKind::Embedded,
+    };
+    std::string err;
+    ASSERT_TRUE(ApplyContextMigrations(
+        db_,
+        MigrationContext::Execution,
+        embedded_options,
+        &err)) << err;
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+INSERT INTO exec_workflow_instance(
+    workflow_instance_id, workflow_kind, state, root_scope_kind,
+    created_by, created_at_utc)
+VALUES(20200, 'WORKSET_TARGETED', 'RUNNING', 'manual', 'test', 1);
+INSERT INTO exec_job_set(
+    job_set_id, program_kind, purpose, created_at_utc, expected_total)
+VALUES(20201, 1, 'targeted-terminal', 1, 1);
+INSERT INTO exec_workflow_step(
+    workflow_step_id, workflow_instance_id, step_key, step_kind, state,
+    job_set_id, priority, attempts, max_attempts, created_at_utc)
+VALUES(
+    20202, 20200, 'source', 'workset.targeted', 'MATERIALIZED',
+    20201, 4, 0, 1, 1);
+INSERT INTO exec_workflow_step(
+    workflow_step_id, workflow_instance_id, step_key, step_kind, state,
+    priority, attempts, max_attempts, created_at_utc)
+VALUES(
+    20203, 20200, 'next', 'workset.next', 'WAITING',
+    0, 0, 1, 1);
+INSERT INTO exec_job(
+    job_id, job_set_id, program_kind, program_version, program_ref_kind,
+    program_ref_id, fingerprint, priority, state, attempts, max_attempts,
+    queued_at_utc)
+VALUES(
+    20204, 20201, 1, 1, 'workset_test', 1, 'targeted-job', 4,
+    'RUNNING', 0, 1, 1);
+)SQL"));
+
+    ProgramKindRegistry registry;
+    ProgramKindDescriptor descriptor{};
+    descriptor.program_kind = 1;
+    descriptor.program_name = "workset.targeted";
+    descriptor.workflow_transition =
+        std::make_shared<AlwaysAdvanceTransitionHandler>();
+    ASSERT_TRUE(registry.RegisterForStepKind(
+        "workset.targeted",
+        descriptor));
+
+    SqliteExecutionDb execution_db(db_);
+    WorkflowCoordinatorService coordinator(
+        &execution_db,
+        &registry,
+        WorkflowCoordinatorConfig{
+            .poll_interval = std::chrono::seconds(5),
+            .terminal_repair_interval = std::chrono::seconds(5),
+        });
+    ASSERT_TRUE(coordinator.Start(&err)) << err;
+
+    const auto initial_scan_deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(1);
+    while (coordinator.SnapshotTelemetry().terminal_scan_count == 0
+        && std::chrono::steady_clock::now() < initial_scan_deadline) {
+        std::this_thread::yield();
+    }
+    ASSERT_GE(coordinator.SnapshotTelemetry().terminal_scan_count, 1);
+    ASSERT_TRUE(ExecSql(
+        db_,
+        "UPDATE exec_job SET state='SUCCEEDED', ended_at_utc=2 "
+        "WHERE job_id=20204;"));
+    ASSERT_TRUE(coordinator.PublishTerminalCommit(
+        {
+            .commit_sequence = 7,
+            .workflow_step_id = 20202,
+            .job_id = 20204,
+        }));
+
+    const auto targeted_deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(1);
+    while (coordinator.SnapshotTelemetry()
+               .targeted_terminal_advancement_count
+               == 0
+        && std::chrono::steady_clock::now() < targeted_deadline) {
+        std::this_thread::yield();
+    }
+    coordinator.Stop();
+
+    const auto telemetry = coordinator.SnapshotTelemetry();
+    EXPECT_EQ(telemetry.targeted_terminal_notification_count, 1);
+    EXPECT_EQ(telemetry.targeted_terminal_advancement_count, 1);
+    EXPECT_EQ(
+        ReadText(
+            db_,
+            "SELECT state FROM exec_workflow_step "
+            "WHERE workflow_step_id=20202;"),
+        "COMPLETED");
+    EXPECT_EQ(
+        ReadText(
+            db_,
+            "SELECT state FROM exec_workflow_step "
+            "WHERE workflow_step_id=20203;"),
+        "READY");
+}
+
 TEST_F(SqliteDbFixture, Stage3cTerminalAdvancementBoostsDynamicSuccessorSteps) {
     using namespace savor::db::execution::workflow;
 
@@ -3737,6 +3845,558 @@ VALUES(1762, 1761, 7, 1, 'seed_probe', 33, 'fp-stage3d-running-lease', 5, 'QUEUE
     EXPECT_EQ(sqlite3_column_type(st, 2), SQLITE_NULL);
     EXPECT_EQ(sqlite3_column_type(st, 3), SQLITE_NULL);
     sqlite3_finalize(st);
+}
+
+TEST_F(SqliteDbFixture, WorksetBatchClaimsAreOrderedAtomicAndUseExactAuthorityTokens) {
+    using namespace savor::db;
+    using namespace savor::db::execution::workflow;
+    using namespace savor::db::migrations;
+
+    const MigrationSourceOptions embedded_options{
+        .source_kind = MigrationSourceKind::Embedded,
+    };
+    std::string err;
+    ASSERT_TRUE(ApplyContextMigrations(
+        db_,
+        MigrationContext::Execution,
+        embedded_options,
+        &err)) << err;
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+INSERT INTO exec_workflow_instance(
+    workflow_instance_id, workflow_kind, state, root_scope_kind,
+    created_by, created_at_utc)
+VALUES(19100, 'WORKSET_TEST', 'RUNNING', 'manual', 'test', 1);
+INSERT INTO exec_job_set(
+    job_set_id, program_kind, purpose, created_at_utc)
+VALUES(19101, 7, 'workset-batch-claim', 1);
+INSERT INTO exec_workflow_step(
+    workflow_step_id, workflow_instance_id, step_key, step_kind, state,
+    job_set_id, priority, attempts, max_attempts, created_at_utc)
+VALUES(
+    19102, 19100, 'Batch', 'seedprobe.grid', 'MATERIALIZED',
+    19101, 10, 0, 2, 1);
+INSERT INTO exec_job(
+    job_id, job_set_id, program_kind, program_version, program_ref_kind,
+    program_ref_id, fingerprint, priority, state, attempts, max_attempts,
+    queued_at_utc)
+VALUES
+    (19103, 19101, 7, 1, 'seed_probe', 1, 'batch-low', 5,
+     'QUEUED', 0, 3, 300),
+    (19104, 19101, 7, 1, 'seed_probe', 1, 'batch-first', 10,
+     'QUEUED', 0, 3, 100),
+    (19105, 19101, 7, 1, 'seed_probe', 1, 'batch-second', 10,
+     'QUEUED', 0, 3, 200),
+    (19106, 19101, 7, 1, 'seed_probe', 1, 'attempts-exhausted', 20,
+     'QUEUED', 1, 1, 50);
+)SQL"));
+
+    SqliteExecutionDb execution_db(db_);
+    const auto claimed = execution_db.ClaimBatchReadyExecutionJobs(
+        "coordinator-run-77",
+        4,
+        30000,
+        &err);
+    ASSERT_TRUE(err.empty()) << err;
+    ASSERT_EQ(claimed.size(), 3u);
+    EXPECT_EQ(claimed[0].job_id, 19104);
+    EXPECT_EQ(claimed[1].job_id, 19105);
+    EXPECT_EQ(claimed[2].job_id, 19103);
+    EXPECT_EQ(claimed[0].claimed_by_token, "coordinator-run-77:19104");
+    EXPECT_EQ(claimed[1].claimed_by_token, "coordinator-run-77:19105");
+    EXPECT_EQ(claimed[2].claimed_by_token, "coordinator-run-77:19103");
+    EXPECT_EQ(claimed[0].durable_attempt_id, 1u);
+    EXPECT_EQ(claimed[1].durable_attempt_id, 1u);
+    EXPECT_EQ(claimed[2].durable_attempt_id, 1u);
+    EXPECT_NE(claimed[0].claimed_by_token, claimed[1].claimed_by_token);
+    EXPECT_EQ(ReadInt64(
+        db_,
+        "SELECT COUNT(1) FROM exec_job WHERE state='CLAIMED';"),
+        3);
+    EXPECT_EQ(ReadInt64(
+        db_,
+        "SELECT SUM(attempts) FROM exec_job WHERE job_set_id=19101;"),
+        1);
+    EXPECT_EQ(ReadInt64(
+        db_,
+        "SELECT COUNT(1) FROM exec_job "
+        "WHERE job_id=19106 AND state='QUEUED';"),
+        1);
+
+    const auto renewal = execution_db.RenewExecutionJobLeases(
+        {
+            {
+                .job_id = 19104,
+                .claimed_by_token = claimed[0].claimed_by_token,
+            },
+            {
+                .job_id = 19105,
+                .claimed_by_token = "wrong-token",
+            },
+            {
+                .job_id = 999999,
+                .claimed_by_token = "missing-token",
+            },
+        },
+        30000,
+        &err);
+    ASSERT_TRUE(err.empty()) << err;
+    ASSERT_EQ(renewal.size(), 3u);
+    EXPECT_EQ(
+        renewal[0].disposition,
+        ExecutionJobLeaseRenewalDisposition::Renewed);
+    EXPECT_EQ(
+        renewal[1].disposition,
+        ExecutionJobLeaseRenewalDisposition::TokenMismatch);
+    EXPECT_EQ(
+        renewal[2].disposition,
+        ExecutionJobLeaseRenewalDisposition::Missing);
+
+    ExecutionJobStartAuthoritySetReceipt authority{};
+    ASSERT_TRUE(execution_db.ValidateExecutionJobStartAuthoritySet(
+        {
+            {
+                .job_id = 19104,
+                .claimed_by_token = claimed[0].claimed_by_token,
+            },
+            {
+                .job_id = 19105,
+                .claimed_by_token = claimed[1].claimed_by_token,
+            },
+            {
+                .job_id = 19103,
+                .claimed_by_token = claimed[2].claimed_by_token,
+            },
+        },
+        &authority,
+        &err)) << err;
+    ASSERT_TRUE(authority.all_valid);
+    ASSERT_EQ(authority.items.size(), 3u);
+    for (const auto& item : authority.items) {
+        EXPECT_EQ(
+            item.disposition,
+            ExecutionJobStartAuthorityDisposition::Valid);
+    }
+    EXPECT_EQ(ReadInt64(
+        db_,
+        "SELECT COUNT(1) FROM exec_job WHERE state='CLAIMED';"),
+        3);
+    EXPECT_EQ(ReadInt64(
+        db_,
+        "SELECT COUNT(1) FROM exec_job_event "
+        "WHERE event_kind='Execution.JobStarted.v1';"),
+        0);
+
+    ASSERT_TRUE(execution_db.ValidateExecutionJobStartAuthoritySet(
+        {
+            {
+                .job_id = 19104,
+                .claimed_by_token = claimed[0].claimed_by_token,
+            },
+            {
+                .job_id = 19105,
+                .claimed_by_token = "wrong-token",
+            },
+            {
+                .job_id = 19104,
+                .claimed_by_token = claimed[0].claimed_by_token,
+            },
+        },
+        &authority,
+        &err)) << err;
+    EXPECT_FALSE(authority.all_valid);
+    ASSERT_EQ(authority.items.size(), 3u);
+    EXPECT_EQ(
+        authority.items[0].disposition,
+        ExecutionJobStartAuthorityDisposition::Valid);
+    EXPECT_EQ(
+        authority.items[1].disposition,
+        ExecutionJobStartAuthorityDisposition::TokenMismatch);
+    EXPECT_EQ(
+        authority.items[2].disposition,
+        ExecutionJobStartAuthorityDisposition::DuplicateJob);
+    EXPECT_EQ(ReadInt64(
+        db_,
+        "SELECT COUNT(1) FROM exec_job WHERE state='CLAIMED';"),
+        3);
+
+    ExecutionJobStartReceipt start{};
+    ASSERT_TRUE(execution_db.MarkExecutionJobStarted(
+        19104,
+        claimed[0].claimed_by_token,
+        "workset-item-start",
+        &start,
+        &err)) << err;
+    EXPECT_EQ(start.disposition, ExecutionJobStartDisposition::Started);
+    ASSERT_TRUE(start.durable_attempt_id.has_value());
+    EXPECT_EQ(*start.durable_attempt_id, claimed[0].durable_attempt_id);
+    EXPECT_EQ(ReadInt64(
+        db_,
+        "SELECT attempts FROM exec_job WHERE job_id=19104;"),
+        1);
+    ASSERT_TRUE(execution_db.MarkExecutionJobStarted(
+        19104,
+        claimed[0].claimed_by_token,
+        "workset-item-start-retry",
+        &start,
+        &err)) << err;
+    EXPECT_EQ(
+        start.disposition,
+        ExecutionJobStartDisposition::AlreadyRunning);
+    ASSERT_TRUE(start.durable_attempt_id.has_value());
+    EXPECT_EQ(*start.durable_attempt_id, claimed[0].durable_attempt_id);
+    EXPECT_EQ(ReadInt64(
+        db_,
+        "SELECT attempts FROM exec_job WHERE job_id=19104;"),
+        1);
+    ASSERT_TRUE(execution_db.MarkExecutionJobStarted(
+        19105,
+        "wrong-token",
+        "workset-item-start",
+        &start,
+        &err)) << err;
+    EXPECT_EQ(start.disposition, ExecutionJobStartDisposition::TokenMismatch);
+    EXPECT_EQ(ReadInt64(
+        db_,
+        "SELECT COUNT(1) FROM exec_job_event "
+        "WHERE job_id=19104 "
+        "AND event_kind='Execution.JobStarted.v1';"),
+        1);
+
+    ASSERT_TRUE(execution_db.RequeueClaimedExecutionJob(
+        19104,
+        claimed[0].claimed_by_token,
+        "WORKSET_INVOCATION_RECOVERY",
+        &err)) << err;
+    const auto recovered_job = execution_db.GetJob(19104);
+    ASSERT_TRUE(recovered_job.has_value());
+    EXPECT_EQ(recovered_job->state, "QUEUED");
+    EXPECT_EQ(ReadInt64(
+        db_,
+        "SELECT attempts FROM exec_job WHERE job_id=19104;"),
+        1);
+    const auto reclaimed = execution_db.ClaimBatchReadyExecutionJobs(
+        "coordinator-run-78",
+        1,
+        30000,
+        &err);
+    ASSERT_TRUE(err.empty()) << err;
+    ASSERT_EQ(reclaimed.size(), 1u);
+    EXPECT_EQ(reclaimed[0].job_id, 19104);
+    EXPECT_EQ(reclaimed[0].durable_attempt_id, 2u);
+}
+
+TEST_F(SqliteDbFixture, WorksetTerminalAuthorityRequiresExactLiveAttemptAndRenewsLease) {
+    using namespace savor::db;
+    using namespace savor::db::execution::workflow;
+    using namespace savor::db::migrations;
+
+    const MigrationSourceOptions embedded_options{
+        .source_kind = MigrationSourceKind::Embedded,
+    };
+    std::string err;
+    ASSERT_TRUE(ApplyContextMigrations(
+        db_,
+        MigrationContext::Execution,
+        embedded_options,
+        &err)) << err;
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+INSERT INTO exec_job_set(
+    job_set_id, program_kind, purpose, created_at_utc)
+VALUES(19301, 7, 'terminal-authority', 1);
+INSERT INTO exec_job(
+    job_id, job_set_id, program_kind, program_version, program_ref_kind,
+    program_ref_id, fingerprint, priority, state, attempts, max_attempts,
+    claimed_by_token, lease_expires_at_utc, queued_at_utc, started_at_utc)
+VALUES(
+    19302, 19301, 7, 1, 'seed_probe', 1, 'terminal-authority', 10,
+    'RUNNING', 2, 3, 'terminal-owner',
+    (unixepoch()*1000)+5000, 1, 2);
+)SQL"));
+
+    SqliteExecutionDb execution_db(db_);
+    ExecutionJobTerminalAuthorityReceipt receipt{};
+    const auto original_expiry = ReadInt64(
+        db_,
+        "SELECT lease_expires_at_utc FROM exec_job WHERE job_id=19302;");
+
+    ASSERT_TRUE(execution_db.ConfirmExecutionJobTerminalAuthority(
+        19302,
+        "terminal-owner",
+        1,
+        30000,
+        &receipt,
+        &err)) << err;
+    EXPECT_EQ(
+        receipt.disposition,
+        ExecutionJobTerminalAuthorityDisposition::AttemptMismatch);
+    EXPECT_EQ(
+        ReadInt64(
+            db_,
+            "SELECT lease_expires_at_utc FROM exec_job "
+            "WHERE job_id=19302;"),
+        original_expiry);
+
+    ASSERT_TRUE(execution_db.ConfirmExecutionJobTerminalAuthority(
+        19302,
+        "different-owner",
+        2,
+        30000,
+        &receipt,
+        &err)) << err;
+    EXPECT_EQ(
+        receipt.disposition,
+        ExecutionJobTerminalAuthorityDisposition::TokenMismatch);
+    EXPECT_EQ(
+        ReadInt64(
+            db_,
+            "SELECT lease_expires_at_utc FROM exec_job "
+            "WHERE job_id=19302;"),
+        original_expiry);
+
+    ASSERT_TRUE(execution_db.ConfirmExecutionJobTerminalAuthority(
+        19302,
+        "terminal-owner",
+        2,
+        30000,
+        &receipt,
+        &err)) << err;
+    EXPECT_EQ(
+        receipt.disposition,
+        ExecutionJobTerminalAuthorityDisposition::Valid);
+    ASSERT_TRUE(receipt.durable_attempt_id.has_value());
+    EXPECT_EQ(*receipt.durable_attempt_id, 2u);
+    ASSERT_TRUE(receipt.lease_expires_at_utc.has_value());
+    EXPECT_GT(*receipt.lease_expires_at_utc, original_expiry);
+
+    ASSERT_TRUE(ExecSql(
+        db_,
+        "UPDATE exec_job SET lease_expires_at_utc=1 "
+        "WHERE job_id=19302;"));
+    ASSERT_TRUE(execution_db.ConfirmExecutionJobTerminalAuthority(
+        19302,
+        "terminal-owner",
+        2,
+        30000,
+        &receipt,
+        &err)) << err;
+    EXPECT_EQ(
+        receipt.disposition,
+        ExecutionJobTerminalAuthorityDisposition::Expired);
+}
+
+TEST_F(SqliteDbFixture, WorksetWorkerLossRecoveryIsExactAndTerminalizesFinalAttempt) {
+    using namespace savor::db;
+    using namespace savor::db::execution::workflow;
+    using namespace savor::db::migrations;
+
+    const MigrationSourceOptions embedded_options{
+        .source_kind = MigrationSourceKind::Embedded,
+    };
+    std::string err;
+    ASSERT_TRUE(ApplyContextMigrations(
+        db_,
+        MigrationContext::Execution,
+        embedded_options,
+        &err)) << err;
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+INSERT INTO exec_job_set(
+    job_set_id, program_kind, purpose, created_at_utc)
+VALUES(19401, 7, 'worker-loss', 1);
+INSERT INTO exec_job(
+    job_id, job_set_id, program_kind, program_version, program_ref_kind,
+    program_ref_id, fingerprint, priority, state, attempts, max_attempts,
+    claimed_by_token, lease_expires_at_utc, queued_at_utc, started_at_utc)
+VALUES
+    (19402, 19401, 7, 1, 'seed_probe', 1, 'claimed-loss', 10,
+     'CLAIMED', 0, 3, 'claimed-owner',
+     (unixepoch()*1000)+60000, 1, NULL),
+    (19403, 19401, 7, 1, 'seed_probe', 1, 'running-loss', 9,
+     'RUNNING', 1, 3, 'running-owner',
+     (unixepoch()*1000)+60000, 1, 2),
+    (19404, 19401, 7, 1, 'seed_probe', 1, 'final-loss', 8,
+     'RUNNING', 1, 1, 'final-owner',
+     (unixepoch()*1000)+60000, 1, 2);
+)SQL"));
+
+    SqliteExecutionDb execution_db(db_);
+    ExecutionJobWorkerLossRecoveryReceipt receipt{};
+
+    ASSERT_TRUE(execution_db.RecoverExecutionJobAfterWorkerLoss(
+        19403,
+        "stale-owner",
+        1,
+        "worker lost",
+        &receipt,
+        &err)) << err;
+    EXPECT_EQ(
+        receipt.disposition,
+        ExecutionJobWorkerLossRecoveryDisposition::TokenMismatch);
+    EXPECT_EQ(
+        ReadText(
+            db_,
+            "SELECT state FROM exec_job WHERE job_id=19403;"),
+        "RUNNING");
+    EXPECT_EQ(
+        ReadText(
+            db_,
+            "SELECT claimed_by_token FROM exec_job WHERE job_id=19403;"),
+        "running-owner");
+
+    ASSERT_TRUE(execution_db.RecoverExecutionJobAfterWorkerLoss(
+        19403,
+        "running-owner",
+        2,
+        "worker lost",
+        &receipt,
+        &err)) << err;
+    EXPECT_EQ(
+        receipt.disposition,
+        ExecutionJobWorkerLossRecoveryDisposition::AttemptMismatch);
+    EXPECT_EQ(
+        ReadText(
+            db_,
+            "SELECT state FROM exec_job WHERE job_id=19403;"),
+        "RUNNING");
+
+    ASSERT_TRUE(execution_db.RecoverExecutionJobAfterWorkerLoss(
+        19402,
+        "claimed-owner",
+        1,
+        "worker lost before start",
+        &receipt,
+        &err)) << err;
+    EXPECT_EQ(
+        receipt.disposition,
+        ExecutionJobWorkerLossRecoveryDisposition::Requeued);
+    EXPECT_EQ(
+        ReadText(
+            db_,
+            "SELECT state FROM exec_job WHERE job_id=19402;"),
+        "QUEUED");
+    EXPECT_EQ(
+        ReadInt64(
+            db_,
+            "SELECT attempts FROM exec_job WHERE job_id=19402;"),
+        0);
+
+    ASSERT_TRUE(execution_db.RecoverExecutionJobAfterWorkerLoss(
+        19403,
+        "running-owner",
+        1,
+        "worker lost during execution",
+        &receipt,
+        &err)) << err;
+    EXPECT_EQ(
+        receipt.disposition,
+        ExecutionJobWorkerLossRecoveryDisposition::Requeued);
+    EXPECT_EQ(
+        ReadText(
+            db_,
+            "SELECT state FROM exec_job WHERE job_id=19403;"),
+        "QUEUED");
+    EXPECT_EQ(
+        ReadInt64(
+            db_,
+            "SELECT attempts FROM exec_job WHERE job_id=19403;"),
+        1);
+
+    ASSERT_TRUE(execution_db.RecoverExecutionJobAfterWorkerLoss(
+        19404,
+        "final-owner",
+        1,
+        "worker lost on final attempt",
+        &receipt,
+        &err)) << err;
+    EXPECT_EQ(
+        receipt.disposition,
+        ExecutionJobWorkerLossRecoveryDisposition::
+            AttemptsExhaustedFailed);
+    EXPECT_EQ(
+        ReadText(
+            db_,
+            "SELECT state FROM exec_job WHERE job_id=19404;"),
+        "FAILED");
+    EXPECT_EQ(
+        ReadText(
+            db_,
+            "SELECT error_code FROM exec_job WHERE job_id=19404;"),
+        "WORKER_LOSS");
+    EXPECT_EQ(
+        ReadInt64(
+            db_,
+            "SELECT COUNT(1) FROM exec_job_event "
+            "WHERE job_id=19404 "
+            "AND event_kind='Execution.JobCompleted.v1';"),
+        1);
+    EXPECT_EQ(
+        ReadInt64(
+            db_,
+            "SELECT COUNT(1) FROM exec_job "
+            "WHERE job_id=19404 AND state='QUEUED' "
+            "AND attempts>=max_attempts;"),
+        0);
+}
+
+TEST_F(SqliteDbFixture, WorksetBatchClaimRollsBackWhenAnyCandidateCannotResolveItsWorkflowStep) {
+    using namespace savor::db::execution::workflow;
+    using namespace savor::db::migrations;
+
+    const MigrationSourceOptions embedded_options{
+        .source_kind = MigrationSourceKind::Embedded,
+    };
+    std::string err;
+    ASSERT_TRUE(ApplyContextMigrations(
+        db_,
+        MigrationContext::Execution,
+        embedded_options,
+        &err)) << err;
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+INSERT INTO exec_workflow_instance(
+    workflow_instance_id, workflow_kind, state, root_scope_kind,
+    created_by, created_at_utc)
+VALUES(19200, 'WORKSET_TEST', 'RUNNING', 'manual', 'test', 1);
+INSERT INTO exec_job_set(
+    job_set_id, program_kind, purpose, created_at_utc)
+VALUES
+    (19201, 7, 'mapped', 1),
+    (19202, 7, 'unmapped', 1);
+INSERT INTO exec_workflow_step(
+    workflow_step_id, workflow_instance_id, step_key, step_kind, state,
+    job_set_id, priority, attempts, max_attempts, created_at_utc)
+VALUES(
+    19203, 19200, 'Mapped', 'seedprobe.grid', 'MATERIALIZED',
+    19201, 10, 0, 2, 1);
+INSERT INTO exec_job(
+    job_id, job_set_id, program_kind, program_version, program_ref_kind,
+    program_ref_id, fingerprint, priority, state, attempts, max_attempts,
+    queued_at_utc)
+VALUES
+    (19204, 19201, 7, 1, 'seed_probe', 1, 'mapped', 10,
+     'QUEUED', 0, 3, 100),
+    (19205, 19202, 7, 1, 'seed_probe', 1, 'unmapped', 10,
+     'QUEUED', 0, 3, 200);
+)SQL"));
+
+    SqliteExecutionDb execution_db(db_);
+    const auto claimed = execution_db.ClaimBatchReadyExecutionJobs(
+        "coordinator-run-rollback",
+        2,
+        30000,
+        &err);
+    EXPECT_TRUE(claimed.empty());
+    EXPECT_FALSE(err.empty());
+    EXPECT_EQ(ReadInt64(
+        db_,
+        "SELECT COUNT(1) FROM exec_job "
+        "WHERE job_id IN (19204,19205) AND state='QUEUED' "
+        "AND claimed_by_token IS NULL;"),
+        2);
+    EXPECT_EQ(ReadInt64(
+        db_,
+        "SELECT COUNT(1) FROM exec_job_event "
+        "WHERE job_id IN (19204,19205) "
+        "AND event_kind='Execution.JobClaimed.v1';"),
+        0);
 }
 
 TEST_F(SqliteDbFixture, Stage3dLiveExpiredClaimRecoveryOnlyRequeuesClaimedJobs) {

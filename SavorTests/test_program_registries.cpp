@@ -372,7 +372,14 @@ TEST(ActionRegistry, CanonicalRuntimeCatalogCoversEveryGenericAction)
     ActionRegistry registry(&schemas);
     const std::vector<ActionDescriptor> descriptors =
         BuildCanonicalRuntimeActionDescriptors();
-    ASSERT_EQ(descriptors.size(), 31u);
+    ASSERT_EQ(descriptors.size(), 30u);
+    EXPECT_TRUE(std::ranges::none_of(
+        descriptors,
+        [](const ActionDescriptor& descriptor)
+        {
+            return descriptor.identity.canonical_id ==
+                "runtime.execution.step_instructions";
+        }));
     for (std::size_t index = 0; index < descriptors.size(); ++index)
     {
         EXPECT_EQ(
@@ -439,18 +446,20 @@ TEST(ActionRegistry, CanonicalRuntimeCatalogCoversEveryGenericAction)
             CanonicalAction::StateSaveImmutableArtifact));
     ASSERT_NE(save_artifact, nullptr);
     ASSERT_TRUE(save_artifact->output_type.named);
-    const TypeSchemaDefinition* artifact_reference =
+    const TypeSchemaDefinition* pending_publication =
         schemas.Resolve(*save_artifact->output_type.named);
-    ASSERT_NE(artifact_reference, nullptr);
+    ASSERT_NE(pending_publication, nullptr);
     EXPECT_EQ(
-        artifact_reference->kind,
-        TypeSchemaKind::ArtifactReference);
-    ASSERT_TRUE(artifact_reference->element_type);
-    EXPECT_EQ(
-        artifact_reference->element_type,
-        TypeRef::Named(
+        pending_publication->kind,
+        TypeSchemaKind::BoundedBytes);
+    EXPECT_LE(
+        pending_publication->maximum_size,
+        64u * 1024u);
+    EXPECT_NE(
+        schemas.Resolve(
             *CanonicalActionArtifactPayloadSchemaIdentity(
-                CanonicalAction::StateSaveImmutableArtifact)));
+                CanonicalAction::StateSaveImmutableArtifact)),
+        nullptr);
 
     const auto finalize_output =
         CanonicalActionOutputSchemaIdentity(

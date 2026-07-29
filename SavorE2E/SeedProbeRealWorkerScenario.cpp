@@ -810,7 +810,9 @@ bool RunSeedProbeRealWorkerSmokeImpl(
             &err,
             [&](const std::string& line) {
                 enqueue_event_line(line);
-            })) {
+            },
+            false,
+            coordinator.ItemCreditSource())) {
         if (error_out) *error_out = err;
         return false;
     }

@@ -291,6 +291,8 @@
     <ClCompile Include="test_worker_capability_gate.cpp" />
     <ClCompile Include="test_execution_engine.cpp" />
     <ClCompile Include="test_execution_worker_runtime.cpp" />
+    <ClCompile Include="test_workset_completion.cpp" />
+    <ClCompile Include="test_workset_stager.cpp" />
     <ClCompile Include="test_session_services.cpp" />
     <ClCompile Include="test_movie_service.cpp" />
     <ClCompile Include="test_session_resource_ledger.cpp" />

@@ -16,14 +16,21 @@ inline constexpr std::size_t MaximumPayloadSize = 64u * 1024u * 1024u;
 
 enum class MessageKind : std::uint16_t {
     ProcessHello = 0x0001,
+    RuntimeManifest = 0x0002,
 
     OpenSession = 0x0010,
     PrepareModule = 0x0011,
+    // Reserved hard-cutover discriminator. It remains a known parent message
+    // so peers can reject it deterministically before touching the session.
     SubmitInvocation = 0x0012,
     CancelInvocation = 0x0013,
     CaptureScreenshot = 0x0014,
     Shutdown = 0x0015,
     ControlExecution = 0x0016,
+    SubmitWorkset = 0x0017,
+    CancelWorksetItem = 0x0018,
+    CancelWorkset = 0x0019,
+    AcknowledgeTerminal = 0x001a,
 
     CommandResult = 0x0100,
     OpenSessionResult = 0x0101,
@@ -36,6 +43,11 @@ enum class MessageKind : std::uint16_t {
     RuntimeDiagnostic = 0x0108,
     ExecutionResult = 0x0109,
     ExecutionState = 0x010a,
+    WorksetState = 0x010b,
+    WorksetItemStarted = 0x010c,
+    WorksetItemTerminal = 0x010d,
+    WorksetCredits = 0x010e,
+    WorksetSummary = 0x010f,
 };
 
 [[nodiscard]] bool IsKnownMessageKind(MessageKind kind) noexcept;
@@ -159,7 +171,9 @@ enum class WorkerStateCode : std::uint8_t {
 enum class ExecutionControlKind : std::uint8_t {
     Pause = 0,
     Resume = 1,
-    StepInstruction = 2,
+    // Reserved for the removed guest-instruction-step control. Encoding or
+    // decoding this value is invalid; StepFrame intentionally remains 3.
+    ReservedGuestInstruction = 2,
     StepFrame = 3,
 };
 
@@ -215,6 +229,13 @@ enum class RejectionCode : std::uint16_t {
     BackendFailure = 13,
     RuntimeStopping = 14,
     InternalFailure = 15,
+    WorksetAlreadyActive = 16,
+    WorksetNotFound = 17,
+    WorksetItemNotFound = 18,
+    WorksetCatalogMismatch = 19,
+    CapacityExceeded = 20,
+    TerminalNotFound = 21,
+    TerminalMismatch = 22,
 };
 
 struct ProcessHelloPayload {
@@ -224,6 +245,14 @@ struct ProcessHelloPayload {
     std::string build_identity;
 
     friend bool operator==(const ProcessHelloPayload&, const ProcessHelloPayload&) = default;
+};
+
+struct RuntimeManifestPayload {
+    std::vector<std::uint8_t> encoded_manifest;
+
+    friend bool operator==(
+        const RuntimeManifestPayload&,
+        const RuntimeManifestPayload&) = default;
 };
 
 struct OpenSessionPayload {
@@ -244,6 +273,7 @@ struct PrepareModulePayload {
     std::uint32_t revision = 0;
     std::string canonical_hash;
     std::uint32_t format_version = 0;
+    bool development_only = false;
     std::vector<std::uint8_t> encoded_module;
 
     friend bool operator==(const PrepareModulePayload&, const PrepareModulePayload&) = default;
@@ -260,6 +290,47 @@ struct SubmitInvocationPayload {
     std::vector<std::uint8_t> encoded_invocation;
 
     friend bool operator==(const SubmitInvocationPayload&, const SubmitInvocationPayload&) = default;
+};
+
+struct SubmitWorksetPayload {
+    std::vector<std::uint8_t> encoded_workset;
+
+    friend bool operator==(
+        const SubmitWorksetPayload&,
+        const SubmitWorksetPayload&) = default;
+};
+
+struct CancelWorksetItemPayload {
+    std::uint64_t workset_id = 0;
+    std::uint64_t item_id = 0;
+    std::string reason;
+
+    friend bool operator==(
+        const CancelWorksetItemPayload&,
+        const CancelWorksetItemPayload&) = default;
+};
+
+struct CancelWorksetPayload {
+    std::uint64_t workset_id = 0;
+    std::string reason;
+
+    friend bool operator==(
+        const CancelWorksetPayload&,
+        const CancelWorksetPayload&) = default;
+};
+
+struct AcknowledgeTerminalPayload {
+    std::uint64_t workset_id = 0;
+    std::uint64_t item_id = 0;
+    std::uint32_t item_ordinal = 0;
+    std::uint64_t invocation_id = 0;
+    std::uint64_t attempt_id = 0;
+    std::uint64_t terminal_id = 0;
+    std::uint64_t terminal_order = 0;
+
+    friend bool operator==(
+        const AcknowledgeTerminalPayload&,
+        const AcknowledgeTerminalPayload&) = default;
 };
 
 struct CancelInvocationPayload {
@@ -360,6 +431,9 @@ struct SessionEventPayload {
 struct InvocationProgressPayload {
     std::uint64_t invocation_id = 0;
     std::uint64_t attempt_id = 0;
+    std::uint64_t workset_id = 0;
+    std::uint64_t item_id = 0;
+    std::uint32_t item_ordinal = 0;
     std::uint64_t ordinal = 0;
     std::vector<std::uint8_t> progress;
 
@@ -378,6 +452,95 @@ struct InvocationTerminalPayload {
     std::vector<std::uint8_t> result;
 
     friend bool operator==(const InvocationTerminalPayload&, const InvocationTerminalPayload&) = default;
+};
+
+enum class WorksetStateCode : std::uint8_t {
+    Validating = 0,
+    Staged = 1,
+    PreparingBaseline = 2,
+    Running = 3,
+    Draining = 4,
+    Completed = 5,
+    Cancelled = 6,
+    Failed = 7,
+};
+
+struct WorksetStatePayload {
+    std::uint64_t outbound_sequence = 0;
+    std::uint64_t workset_id = 0;
+    WorksetStateCode state = WorksetStateCode::Validating;
+    std::uint32_t next_item_ordinal = 0;
+    RejectionCode rejection_code = RejectionCode::None;
+    std::string message;
+
+    friend bool operator==(
+        const WorksetStatePayload&,
+        const WorksetStatePayload&) = default;
+};
+
+struct WorksetItemStartedPayload {
+    std::uint64_t outbound_sequence = 0;
+    std::uint64_t workset_id = 0;
+    std::uint64_t item_id = 0;
+    std::uint32_t item_ordinal = 0;
+    std::uint64_t invocation_id = 0;
+    std::uint64_t attempt_id = 0;
+    std::uint64_t session_id = 0;
+    std::uint64_t state_epoch = 0;
+    std::string baseline_sha256;
+    std::string baseline_lineage;
+    bool baseline_restored = false;
+
+    friend bool operator==(
+        const WorksetItemStartedPayload&,
+        const WorksetItemStartedPayload&) = default;
+};
+
+struct WorksetItemTerminalPayload {
+    std::uint64_t outbound_sequence = 0;
+    std::uint64_t workset_id = 0;
+    std::uint64_t item_id = 0;
+    std::uint32_t item_ordinal = 0;
+    std::uint64_t invocation_id = 0;
+    std::uint64_t attempt_id = 0;
+    std::uint64_t terminal_id = 0;
+    std::uint64_t terminal_order = 0;
+    InvocationTerminalStatus status = InvocationTerminalStatus::Failed;
+    SessionDispositionCode session_disposition =
+        SessionDispositionCode::Closed;
+    std::uint64_t state_epoch = 0;
+    bool unstarted = false;
+    RejectionCode rejection_code = RejectionCode::None;
+    std::string error_code;
+    std::string message;
+    std::vector<std::uint8_t> result;
+
+    friend bool operator==(
+        const WorksetItemTerminalPayload&,
+        const WorksetItemTerminalPayload&) = default;
+};
+
+struct WorksetCreditsPayload {
+    std::uint64_t outbound_sequence = 0;
+    std::uint32_t available_item_credits = 0;
+    std::uint32_t active_and_staged_items = 0;
+    std::uint32_t retained_terminals = 0;
+
+    friend bool operator==(
+        const WorksetCreditsPayload&,
+        const WorksetCreditsPayload&) = default;
+};
+
+struct WorksetSummaryPayload {
+    std::uint64_t outbound_sequence = 0;
+    std::uint64_t workset_id = 0;
+    std::uint32_t item_count = 0;
+    std::uint32_t completed_count = 0;
+    std::uint32_t unstarted_count = 0;
+
+    friend bool operator==(
+        const WorksetSummaryPayload&,
+        const WorksetSummaryPayload&) = default;
 };
 
 struct HostEventPayload {
@@ -469,9 +632,14 @@ struct PayloadCodecResult {
         std::span<const std::uint8_t> input, Type& output)
 
 SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(ProcessHelloPayload);
+SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(RuntimeManifestPayload);
 SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(OpenSessionPayload);
 SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(PrepareModulePayload);
 SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(SubmitInvocationPayload);
+SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(SubmitWorksetPayload);
+SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(CancelWorksetItemPayload);
+SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(CancelWorksetPayload);
+SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(AcknowledgeTerminalPayload);
 SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(CancelInvocationPayload);
 SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(CaptureScreenshotPayload);
 SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(ShutdownPayload);
@@ -483,6 +651,11 @@ SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(ShutdownResultPayload);
 SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(SessionEventPayload);
 SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(InvocationProgressPayload);
 SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(InvocationTerminalPayload);
+SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(WorksetStatePayload);
+SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(WorksetItemStartedPayload);
+SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(WorksetItemTerminalPayload);
+SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(WorksetCreditsPayload);
+SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(WorksetSummaryPayload);
 SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(HostEventPayload);
 SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(RuntimeDiagnosticPayload);
 SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(ExecutionResultPayload);

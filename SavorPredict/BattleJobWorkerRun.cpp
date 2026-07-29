@@ -179,7 +179,8 @@ int run_battle_job(
             .worker_exe_path = options.worker_exe_path.string(),
             .timeout_ms = 10000,
             .required_capabilities = savor::runtime::CapabilityMask(
-                savor::runtime::WorkerCapability::ProgramInvocation),
+                savor::runtime::WorkerCapability::WorksetDispatch),
+            .require_complete_exact_catalog = true,
         });
     if (!worker_preflight) {
         err << worker_preflight.message << "\n";

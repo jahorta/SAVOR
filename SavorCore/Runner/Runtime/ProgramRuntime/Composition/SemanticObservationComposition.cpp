@@ -240,7 +240,7 @@ std::vector<Byte> AdvanceConfig(
     // Fail if a previously active movie ends; require VI progress for frame
     // advancement; preserve throttle; reject interruptions.
     writer.U8(1);
-    writer.U8(kind == ObservationAdvanceKind::StepFrame ? 1u : 0u);
+    writer.U8(1);
     writer.U8(0);
     writer.U8(0);
     return std::move(writer).Finish();
@@ -585,7 +585,7 @@ std::optional<CompositionResult> Validate(
         {
             return detail::Fail(
                 "semantic.invalid_explicit_advance",
-                "post-instruction or post-frame observation requires an exact bounded execution action");
+                "post-frame observation requires an exact bounded frame-step action");
         }
         if (use.advance_before_observation != ObservationAdvanceKind::None &&
             use.mode != ObservationAcquisitionMode::PausedAtPoint)
@@ -901,11 +901,8 @@ CompositionResult LowerSemanticObservation(
         if (use.advance_before_observation != ObservationAdvanceKind::None)
         {
             builder.AddActionImport(*use.advance_action);
-            const CanonicalAction advance_action =
-                use.advance_before_observation ==
-                        ObservationAdvanceKind::StepInstruction
-                ? CanonicalAction::ExecutionStepInstructions
-                : CanonicalAction::ExecutionStepFrames;
+            constexpr CanonicalAction advance_action =
+                CanonicalAction::ExecutionStepFrames;
             if (*use.advance_action !=
                 CanonicalActionIdentity(advance_action))
             {
@@ -926,19 +923,12 @@ CompositionResult LowerSemanticObservation(
                 },
                 "explicit-observation-advance/count",
                 scope);
-            const CanonicalRuntimeSchema optional_relationship =
-                advance_action ==
-                        CanonicalAction::
-                            ExecutionStepInstructions
-                ? CanonicalRuntimeSchema::
-                      OptionalInputPublicationReceipt
-                : CanonicalRuntimeSchema::
-                      OptionalInputNeutralWitness;
             const auto no_relationship = AddOptional(
                 builder,
                 function,
                 block,
-                optional_relationship,
+                CanonicalRuntimeSchema::
+                    OptionalInputNeutralWitness,
                 std::nullopt,
                 "explicit-observation-advance/no-input-relationship",
                 scope);
@@ -977,11 +967,7 @@ CompositionResult LowerSemanticObservation(
                 CanonicalActionOutputType(advance_action),
                 std::array{*advance_request},
                 ActionTarget(*use.advance_action),
-                std::string("explicit-observation-advance/") +
-                    (use.advance_before_observation ==
-                            ObservationAdvanceKind::StepInstruction
-                        ? "instructions/"
-                        : "frames/") +
+                "explicit-observation-advance/frames/" +
                     use.canonical_id,
                 std::nullopt,
                 {});

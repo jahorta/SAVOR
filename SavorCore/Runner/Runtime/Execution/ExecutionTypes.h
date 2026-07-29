@@ -42,7 +42,6 @@ struct InputPublicationEvidence
 enum class ExecutionOperationKind : std::uint8_t
 {
     ContinueUntil,
-    StepInstructions,
     StepFrames,
     InputSynchronizedAdvance,
     SafePause,
@@ -53,7 +52,6 @@ enum class ExecutionActivity : std::uint8_t
 {
     IdlePaused,
     Continuing,
-    SteppingInstruction,
     SteppingFrame,
     AdvancingInput,
     Pausing,
@@ -126,12 +124,6 @@ struct ContinueUntilRequest
     StopSubscriptionGroupDefinition wake_group;
 };
 
-struct StepInstructionsRequest
-{
-    ExecutionRequestPolicy policy;
-    std::uint32_t count = 1;
-};
-
 struct StepFramesRequest
 {
     ExecutionRequestPolicy policy;
@@ -162,7 +154,6 @@ struct InteractiveResumeRequest
 
 using ExecutionRequest = std::variant<
     ContinueUntilRequest,
-    StepInstructionsRequest,
     StepFramesRequest,
     InputSynchronizedAdvanceRequest,
     SafePauseRequest,

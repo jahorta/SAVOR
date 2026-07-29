@@ -38,6 +38,13 @@ struct SessionIdTag;
 struct InvocationIdTag;
 struct AttemptIdTag;
 struct StateEpochTag;
+struct WorkerWorksetIdTag;
+struct WorkerWorksetItemIdTag;
+struct WorkerTerminalIdTag;
+struct WorkerTerminalOrderTag;
+struct WorkerOutboundSequenceTag;
+struct PreparedInvocationTemplateIdTag;
+struct StateCacheLeaseIdTag;
 
 using WireRequestId = StrongId<WireRequestIdTag>;
 using WorkerCommandSequence = StrongId<WorkerCommandSequenceTag>;
@@ -46,10 +53,20 @@ using SessionId = StrongId<SessionIdTag>;
 using InvocationId = StrongId<InvocationIdTag>;
 using AttemptId = StrongId<AttemptIdTag>;
 using StateEpoch = StrongId<StateEpochTag>;
+using WorkerWorksetId = StrongId<WorkerWorksetIdTag>;
+using WorkerWorksetItemId = StrongId<WorkerWorksetItemIdTag>;
+using WorkerTerminalId = StrongId<WorkerTerminalIdTag>;
+using WorkerTerminalOrder = StrongId<WorkerTerminalOrderTag>;
+using WorkerOutboundSequence = StrongId<WorkerOutboundSequenceTag>;
+using PreparedInvocationTemplateId =
+    StrongId<PreparedInvocationTemplateIdTag>;
+using StateCacheLeaseId = StrongId<StateCacheLeaseIdTag>;
 
 static_assert(!std::is_convertible_v<StateEpoch, WorkerCommandSequence>);
 static_assert(!std::is_convertible_v<WorkerCommandSequence, StateEpoch>);
 static_assert(!std::is_convertible_v<InvocationId, AttemptId>);
+static_assert(!std::is_convertible_v<WorkerWorksetId, WorkerWorksetItemId>);
+static_assert(!std::is_convertible_v<WorkerTerminalId, WorkerTerminalOrder>);
 
 enum class WorkerCapability : std::uint64_t
 {
@@ -61,6 +78,7 @@ enum class WorkerCapability : std::uint64_t
     Shutdown = 1ull << 4,
     ProgramInvocation = 1ull << 5,
     InteractiveVisualDebug = 1ull << 6,
+    WorksetDispatch = 1ull << 7,
 };
 
 using WorkerCapabilityMask = std::uint64_t;
@@ -147,6 +165,10 @@ enum class WorkerCommandKind : std::uint8_t
     CancelInvocation,
     CaptureScreenshot,
     ControlExecution,
+    SubmitWorkset,
+    CancelWorksetItem,
+    CancelWorkset,
+    AcknowledgeTerminal,
     Shutdown,
 };
 
@@ -175,6 +197,13 @@ enum class WorkerRejectionCode : std::uint16_t
     BackendFailure,
     RuntimeStopping,
     InternalFailure,
+    WorksetAlreadyActive,
+    WorksetNotFound,
+    WorksetItemNotFound,
+    WorksetCatalogMismatch,
+    CapacityExceeded,
+    TerminalNotFound,
+    TerminalMismatch,
 };
 
 enum class InvocationTerminalStatus : std::uint8_t

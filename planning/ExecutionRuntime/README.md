@@ -168,6 +168,11 @@ The names have precise meanings:
 - **StateCacheKey** is the exact identity for a bounded process/session-owned cache of immutable
   serialized state plus metadata. It covers state hash and lineage, disc/runtime/backend/movie
   compatibility, and session generation; it never identifies live guest state or an epoch-bound handle.
+- **ProgramBaselineDefinition** is the complete reusable starting condition for a multi-item workset.
+  Its ordered **ProgramBaselineComponent** values cover the savestate, its exact movie continuation,
+  and any runtime-facing program-kind adapter-declared derived state. **ProgramBaselineKey** identifies
+  that complete definition, and **PreparedProgramBaselineReceipt** proves every component was prepared
+  together before an item is admitted.
 - **ProgramRuntime** is the worker subsystem containing definition storage, verification, execution,
   action registration, and type registration.
 - **ProgramExecutor** is the one interpreter and scheduler for program control flow.
@@ -276,13 +281,14 @@ The names have precise meanings:
     cancellation is deferred until nonblocking backend/actor ingress. `TelemetryBus` preserves
     monotonic sequence order when coalescing places a replacement at its fresh chronological position.
 25. `SubmitWorkset` is the sole production program-dispatch path. It accepts one or more item templates;
-    the old direct `SubmitInvocation` discriminator remains reserved and rejects before session mutation.
+    WRMS remains version 1, and both the old direct `SubmitInvocation` and removed guest-step
+    discriminators remain reserved and reject before session mutation.
 26. One worker owns at most one active session-mutating workset, at most one immutable host-only staged
     successor package, and at most one executing child `ProgramInvocation`/`ProgramInstance`.
     `ProgramRuntime` neither sees nor schedules pending or staged items.
 27. A multi-item workset has one exact module, entrypoint, dependency, runtime, state/movie, and service
-    compatibility key. Each child retains an independent job, claim, lease, invocation, attempt, budget,
-    cancellation, result, retry, and transition identity.
+    compatibility key plus one exact `ProgramBaselineKey`. Each child retains an independent job, claim,
+    lease, invocation, attempt, budget, cancellation, result, retry, and transition identity.
 28. Workset-specific coordinator grouping, resident-capacity accounting, and lease maintenance may
     change. Workset identity and membership are not persisted, and unrelated SavorDb storage, workflow,
     transaction, and artifact contracts remain fixed.
@@ -295,6 +301,15 @@ The names have precise meanings:
     session work or is classified unstarted, all required immutable captures are promoted, invocation
     and baseline scopes release, and the session is proven clean, the staged successor may promote while
     prior outputs finalize or terminals remain unacknowledged if global ledger capacity remains.
+31. Claim/start authority for every member is validated before the finite workset is accepted. After
+    acceptance, the worker runs its ordered children without a coordinator authorization pause between
+    items. Lease loss or supersession reaches the worker as exact item/workset cancellation.
+32. The configurable production defaults are 16 items and 32 MiB encoded bytes per workset, four hours
+    of aggregate declared active budget, 64 total worker item credits, and 32 active-plus-staged items.
+    State caching is limited to 16 entries/512 MiB; two finalizer threads may own at most eight pending
+    captures/256 MiB; the terminal ledger retains at most 32 terminals/128 MiB. At most two workers
+    start concurrently, and the coordinator buffers at most one additional workset per negotiated Ready
+    worker.
 
 ## Interfaces and ownership affected
 
@@ -306,11 +321,12 @@ activation/result, current program construction and worker-side payload switches
 public runtime contract, the VM-owned input-macro mini-runtime, and the runtime-facing behavior of
 program-kind handlers. The pre-6A process/workset prelude establishes the replacement for scalar
 production dispatch and supports direct one-item process tests. It implements the eventual
-one-compatible-worker startup gate, bounded progressive startup for the remaining desired pool,
+one-compatible-worker startup gate, at-most-two progressive startup for the remaining desired pool,
 active/staged independent-job accounting, and per-item durable handling through the worker-global
-completion ledger. It does not open the coordinator data plane during the hard-cutover interval. Slice 7
-applies that gate only after the worker has negotiated the complete production catalog and dependency
-manifest. Existing SavorDb handler registration, stored representations, workflow definitions,
+completion ledger. Its initial `Partial` smoke transfers one canonical test-only module that is never
+one of the nine production modules. It does not open the coordinator data plane during the hard-cutover
+interval. Slice 7 applies that gate only after `CompleteExact` proves exactly the nine planned module
+IDs/hashes, their dependency manifest, and no extras. Existing SavorDb handler registration, stored representations, workflow definitions,
 result-projection and per-item transaction semantics, and artifact contracts remain unchanged.
 
 ## Reading order
@@ -357,7 +373,8 @@ typed program IR, codec, verifier, executor, registry/action seam, initial packs
 frontends are also established. Before native phase migration, the process/workset prelude adds
 progressive pool startup, unified 1..N production dispatch, one host-only staged successor, bounded
 cross-workset immutable state caching by `StateCacheKey`, just-in-time child epoch binding, a
-multi-item-active-workset-owned immutable baseline (skipped for one-item worksets), non-lossy per-item
+multi-item-active-workset-owned composite `ProgramBaselineDefinition` (skipped for one-item worksets),
+non-lossy per-item
 terminals in a worker-global acknowledgement ledger, and coordinator staged/resident-job accounting.
 The remaining target then reconstructs supported current behavior in direct native typed-module builders
 and actor-owned registered effects before final production activation. Existing payload and result
@@ -384,11 +401,13 @@ executor/action-seam, capability-pack, and composition tests. A live program smo
 continuation, post-write capture, and rendered behavior remain deferred until migrated deterministic
 program execution exists.
 
-The pre-6A process seam implements and directly tests the one-compatible-worker gate, bounded
+The pre-6A process seam implements and directly tests the one-compatible-worker gate, at-most-two
 progressive startup, and unified one-item process path while keeping `data_plane_enabled` false. Slice 7
-requires one completely negotiated compatible worker, including the complete production catalog and
+requires one completely negotiated compatible worker in `CompleteExact` state, including exactly the
+nine planned module IDs/hashes with no extra module, the production
 dependency manifest plus pipelined-workset and staging/cache/ledger limits, before production data-plane
-activation. The remaining desired workers then start progressively with bounded concurrency. Slice 7
+activation. The remaining desired workers then start progressively with at most two concurrent
+startups. Slice 7
 runs a full Release `SAVOR.sln` build, the production-worker SavorE2E `all` matrix, separate
 `battle_end` and `navigation_context` scenarios, and focused direct diagnostics before Slice 8 deletes
 the already disconnected legacy sources. Slice 8 then receives the normal complete Debug and Release
@@ -402,8 +421,9 @@ do not gate completion.
 Future C++ API evolution, production worker activation, authored source language, authoring UI, and
 game-specific algorithms listed in document 11 remain deferred. The `SPRM`/`SPRI`/`SPRR` version-1
 encoding, SHA-256 module identity, and logical pipelined `WorkerWorkset` behavior are no longer open
-design questions. Numeric workset/staging/cache/ledger sizing and throughput tuning remain
-measurement-driven. SavorDb SQL/storage
+design questions. The initial workset/staging/cache/finalizer/ledger/startup limits above are
+configurable defaults; later tuning is measurement-driven without weakening those bounded contracts.
+SavorDb SQL/storage
 and unrelated interfaces remain fixed inputs, not deferred design choices in this refactor. A generalized
 replacement for `savor.capture.profile/1` is also deferred; the existing profile remains an opaque
 `CaptureService` contract during the initial architecture cutover. The initial field, battle, and

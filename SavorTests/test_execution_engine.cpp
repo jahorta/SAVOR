@@ -483,7 +483,7 @@ TEST_F(ExecutionEngineFixture, InteractiveResumeAcceptsASerializedSafePause)
     EXPECT_EQ(engine->snapshot().activity, ExecutionActivity::IdlePaused);
 }
 
-TEST_F(ExecutionEngineFixture, CompletesRequestedFrameAndFakeInstructionCounts)
+TEST_F(ExecutionEngineFixture, CompletesRequestedFrameCount)
 {
     CreateEngine();
 
@@ -497,42 +497,6 @@ TEST_F(ExecutionEngineFixture, CompletesRequestedFrameAndFakeInstructionCounts)
         ExecutionTerminalStatus::StepsCompleted);
     EXPECT_EQ(frame_terminal->completed_count, 3u);
     EXPECT_EQ(CountCall(execution_control->Calls(), "frame_step"), 3u);
-
-    const ExecutionSubmissionReceipt instructions =
-        engine->Submit(
-            StepInstructionsRequest{.policy = Policy(), .count = 2});
-    ASSERT_TRUE(instructions.accepted) << instructions.error.message;
-    const auto instruction_terminal = DrainTerminal(*engine);
-    ASSERT_TRUE(instruction_terminal.has_value());
-    EXPECT_EQ(
-        instruction_terminal->status,
-        ExecutionTerminalStatus::StepsCompleted);
-    EXPECT_EQ(instruction_terminal->completed_count, 2u);
-    EXPECT_EQ(
-        CountCall(execution_control->Calls(), "instruction_step"),
-        2u);
-}
-
-TEST_F(
-    ExecutionEngineFixture,
-    MissingExactInstructionCapabilityIsUnsupportedWithoutBackendMutation)
-{
-    execution_control->SetCapabilities(
-        execution_control->capabilities &
-        ~ExecutionCapabilityMask(
-            BackendExecutionCapability::ExactInstructionStep));
-    CreateEngine();
-
-    const ExecutionSubmissionReceipt submission =
-        engine->Submit(
-            StepInstructionsRequest{.policy = Policy(), .count = 1});
-
-    EXPECT_FALSE(submission.accepted);
-    EXPECT_EQ(submission.error.code, ExecutionErrorCode::Unsupported);
-    EXPECT_FALSE(DrainTerminal(*engine).has_value());
-    EXPECT_EQ(
-        CountCall(execution_control->Calls(), "instruction_step"),
-        0u);
 }
 
 TEST_F(ExecutionEngineFixture, SafePauseStopsARunningBackend)

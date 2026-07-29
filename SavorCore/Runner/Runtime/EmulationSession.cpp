@@ -482,6 +482,91 @@ EmulationSession::CaptureStateArtifact(
     return state_service_->CaptureFileArtifact(normalized);
 }
 
+ImmutableStateArtifactCaptureReceipt
+EmulationSession::CaptureImmutableStateArtifact(
+    const StateFileCaptureRequest& request)
+{
+    ImmutableStateArtifactCaptureReceipt receipt;
+    receipt.final_path = request.path;
+    if (!BindOrCheckOwner() || !CanOperate() ||
+        !state_service_)
+    {
+        receipt.result = StateServiceResult::Failure(
+            StateServiceErrorCode::InvalidState,
+            "Immutable state capture requires a clean open session");
+        return receipt;
+    }
+    if (!execution_engine_ ||
+        execution_engine_->has_active_operation() ||
+        execution_engine_->snapshot().activity !=
+            ExecutionActivity::IdlePaused ||
+        !execution_engine_->snapshot().evidence.pause_confirmed)
+    {
+        receipt.result = StateServiceResult::Failure(
+            StateServiceErrorCode::InvalidState,
+            "Immutable state capture requires idle-paused execution");
+        return receipt;
+    }
+    StateFileCaptureRequest normalized = request;
+    if (movie_service_ &&
+        movie_service_->activity() != MovieActivity::Inactive)
+    {
+        MovieCheckpointReceipt movie =
+            movie_service_->CaptureCheckpoint();
+        if (!movie.result.ok)
+        {
+            receipt.result = StateServiceResult::Failure(
+                StateServiceErrorCode::ParticipantFailure,
+                movie.result.message,
+                movie.result.integrity);
+            return receipt;
+        }
+        normalized.movie = std::move(movie.checkpoint);
+    }
+    return state_service_->CaptureImmutableArtifact(normalized);
+}
+
+StateFileArtifactReceipt
+EmulationSession::CommitImmutableStateArtifact(
+    const ImmutableStateArtifactPublicationReceipt& publication)
+{
+    if (!BindOrCheckOwner() || !state_service_)
+    {
+        StateFileArtifactReceipt receipt;
+        receipt.artifact = publication.artifact;
+        receipt.path = publication.state_path;
+        receipt.result = StateServiceResult::Failure(
+            StateServiceErrorCode::InvalidState,
+            "Immutable artifact commit requires an open state service");
+        return receipt;
+    }
+    return state_service_->CommitImmutableArtifact(publication);
+}
+
+StateServiceResult EmulationSession::AbandonImmutableStateArtifact(
+    StateArtifactId artifact) noexcept
+{
+    if (!BindOrCheckOwner() || !state_service_)
+    {
+        return StateServiceResult::Failure(
+            StateServiceErrorCode::InvalidState,
+            "Immutable artifact abandonment requires an open state service");
+    }
+    return state_service_->AbandonImmutableArtifact(artifact);
+}
+
+StateServiceResult EmulationSession::ReleaseStateArtifact(
+    StateArtifactId artifact) noexcept
+{
+    if (!BindOrCheckOwner() || !state_service_)
+    {
+        return StateServiceResult::Failure(
+            StateServiceErrorCode::InvalidState,
+            "State artifact release requires an open state service");
+    }
+    return state_service_->ReleaseFileArtifact(artifact);
+}
+
 StateFileArtifactReceipt
 EmulationSession::ImportStateArtifact(
     const StateFileImportRequest& request)

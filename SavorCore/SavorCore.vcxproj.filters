@@ -166,6 +166,9 @@
     <Filter Include="Tas">
       <UniqueIdentifier>{3323c09c-2ff3-43bc-a6ae-4d4bb181334e}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Runner\Runtime\Worksets">
+      <UniqueIdentifier>{53c1ad02-1d9d-4f58-a4a2-13a931f8e496}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="framework.h">
@@ -564,6 +567,27 @@
     <ClInclude Include="Runner\Runtime\WorkerRuntime.h">
       <Filter>Runner\Runtime</Filter>
     </ClInclude>
+    <ClInclude Include="Runner\Runtime\Worksets\ProgramBaseline.h">
+      <Filter>Runner\Runtime\Worksets</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\Worksets\StateArtifactFinalizer.h">
+      <Filter>Runner\Runtime\Worksets</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\Worksets\SessionStateCache.h">
+      <Filter>Runner\Runtime\Worksets</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\Worksets\WorkerCompletionLedger.h">
+      <Filter>Runner\Runtime\Worksets</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\Worksets\WorksetTypes.h">
+      <Filter>Runner\Runtime\Worksets</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\Worksets\WorksetStager.h">
+      <Filter>Runner\Runtime\Worksets</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\Worksets\WorksetWireCodec.h">
+      <Filter>Runner\Runtime\Worksets</Filter>
+    </ClInclude>
     <ClInclude Include="Core\Input\InputPlanFmt.h">
       <Filter>Core\Input</Filter>
     </ClInclude>
@@ -910,6 +934,27 @@
     </ClCompile>
     <ClCompile Include="Runner\Runtime\WorkerRuntime.cpp">
       <Filter>Runner\Runtime</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Runtime\Worksets\ProgramBaseline.cpp">
+      <Filter>Runner\Runtime\Worksets</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Runtime\Worksets\StateArtifactFinalizer.cpp">
+      <Filter>Runner\Runtime\Worksets</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Runtime\Worksets\SessionStateCache.cpp">
+      <Filter>Runner\Runtime\Worksets</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Runtime\Worksets\WorkerCompletionLedger.cpp">
+      <Filter>Runner\Runtime\Worksets</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Runtime\Worksets\WorksetTypes.cpp">
+      <Filter>Runner\Runtime\Worksets</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Runtime\Worksets\WorksetStager.cpp">
+      <Filter>Runner\Runtime\Worksets</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Runtime\Worksets\WorksetWireCodec.cpp">
+      <Filter>Runner\Runtime\Worksets</Filter>
     </ClCompile>
     <ClCompile Include="Runner\Script\PSContextCodec.cpp">
       <Filter>Runner\VM</Filter>

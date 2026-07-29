@@ -102,18 +102,21 @@ current runtime capability.
 | D42 | Battle end remains two native programs: Battle Completion and Battle Results Screen. | There is no monolithic `BattleEndResults` target module. Results Screen begins from the Completion manifest/field-return handoff rather than recreating the old combined controller. |
 | D43 | Battle Completion publishes neutral after paused restore, requires host publication success, and advances causally from `0x8006F554` to `0x8006F558` or from `0x8006F590` to `0x8006F594`. | It does not require a guest-neutral poll/release witness and does not import guest-opcode stepping; exact receipt suppression plus the semantic successor preserves the behavior that matters. |
 | D44 | `WorkerWorkset` is the sole production dispatch envelope for one or more independent invocation templates. It is finite, static, ordered, bounded, process-resident, and non-durable. | A singleton is a one-item workset. Only one workset may mutate the session and only one child `ProgramInvocation`/`ProgramInstance` may execute; `ProgramRuntime` remains unaware of worksets. |
-| D45 | A multi-item workset requires one exact `WorkerWorksetExecutionKey` covering module/entrypoint/dependency/runtime/state/movie/service compatibility and one workset-owned immutable baseline. | Persisted affinity is only a hint. The first child uses the freshly prepared state; every later child restore advances `StateEpoch`, and WorkerRuntime binds the authoritative session/epoch immediately before admission. |
+| D45 | A multi-item workset requires one exact `WorkerWorksetExecutionKey` and `ProgramBaselineKey`. Its `ProgramBaselineDefinition` orders savestate, exact movie continuation, and runtime-facing program-kind adapter-declared derived-state components. | Persisted affinity is only a hint. The first child uses the freshly prepared state; every later composite `RestoreBaseline` returns one `PreparedProgramBaselineReceipt`, advances `StateEpoch` exactly once, and precedes actor binding of the authoritative session/epoch. |
 | D46 | Every child retains independent job, claim, lease, invocation, attempt, budget, cancellation, result, retry, and transition identity. Per-item terminals are non-lossy in one bounded worker-global completion/acknowledgement ledger until durable projection succeeds. | There is no aggregate domain result or persisted workset. A clean successor may run while older acknowledgements drain, but full global credit stops later admission without advancing Dolphin. |
 | D47 | Workset scheduling is domain-neutral. The coordinator fixes item order; the worker cannot refill, reorder, inspect results for continuation, or retain invocation resources between items. | Winner-sensitive work uses small worksets plus asynchronous cancellation, without a result-dependent worker predicate or new coordinator gate. Dependencies and durable fan-out remain program/workflow composition. |
-| D48 | The pre-6A process seam constructs the one production `ProgramRuntime`/action host and negotiates the exact currently installed module/dependency manifest. | Partial catalogs support unattended one-item process validation during 6A-6I, but cannot satisfy the coordinator's complete-catalog data-plane gate. Slice 7 is catalog promotion and DB activation, not first construction of the runtime or transport. |
+| D48 | The pre-6A process seam constructs the one production `ProgramRuntime`/action host, keeps WRMS at version 1, and negotiates the exact installed module/dependency manifest as `Partial` or `CompleteExact`. | One transferred canonical test-only module proves the initial `Partial` process path but is never one of the nine production modules. `CompleteExact` requires exactly the nine planned module IDs/hashes and no extras. Slice 7 is catalog promotion and DB activation, not first construction of the runtime or transport. |
 | D49 | One immutable host-only successor package may stage beside the active workset. | Staging may decode/verify envelopes, resolve definitions, read/hash immutable artifacts, and acquire cache leases; it may not restore state, bind an epoch, capture a baseline, acquire session effects, construct a program instance, or advance Dolphin. |
 | D50 | A bounded worker-global completion ledger owns promoted immutable outputs, finalization state, and unacknowledged terminals after invocation/workset scopes release. | State bytes are captured synchronously while paused, but host-only hashing/publication may overlap later clean execution. No terminal containing an artifact is authoritative before final validation. The actor assigns terminal completion order separately from the one monotonic outbound publication sequence. |
 | D51 | Immutable serialized state may be cached by an exact compatibility/lineage/movie/session-generation-aware `StateCacheKey`; cache presence is never a correctness input. | Every use requires a scoped lease and ordinary `StateService` restore with a fresh `StateEpoch`. Incompatible reboot, runtime/backend replacement, movie-generation change, or integrity uncertainty invalidates affected entries. Miss/eviction falls back to the declared artifact or preparation path, and a dependent durable successor may attempt exact same-worker `ContinueSession` only with a correctness-equivalent restore fallback. |
-| D52 | Production pool startup is progressive. | Slice 7 negotiates one complete compatible worker before opening the data plane, then starts the remaining desired workers with bounded concurrency; only fully gated workers contribute claim capacity. |
-| D53 | Workset-specific DB efficiency uses narrow ordered-batch claim, exact-set lease renewal, claim/start authority validation, and targeted terminal reconciliation operations. | Per-job state, order, attempt, recovery, and transition semantics remain authoritative; no persisted workset or broad database/workflow redesign is introduced. |
+| D52 | Production pool startup is progressive with at most two concurrent startups. | Slice 7 negotiates one `CompleteExact` worker before opening the data plane, then starts the remaining desired workers; only workers with exactly the nine planned modules, no extras, and the full limit/capability gate contribute claim capacity. |
+| D53 | Workset-specific DB efficiency uses narrow ordered-batch claim, exact-set lease renewal, one pre-submission exact-set claim/start-authority validation, and targeted terminal reconciliation operations. | Per-job state, order, attempt, recovery, and transition semantics remain authoritative; no per-item authorization roundtrip, persisted workset, or broad database/workflow redesign is introduced. |
 | D54 | Ordinary coordinator progress is event-driven, with bounded polling retained as reconciliation rather than the scheduling clock. | Ready/materialized/result/ack events wake work directly; periodic scans still detect external writers, missed notifications, expired leases, and repairable terminal state. |
-| D55 | A negotiated item-capacity credit covers one item from assignment through staged/resident/active/finalizing/terminal retention until exact acknowledgement. | Claim demand uses only unreserved worker credit plus a separately bounded coordinator buffer; no item is omitted or double-counted between pipeline states. |
+| D55 | A negotiated item-capacity credit covers one item from assignment through staged/resident/active/finalizing/terminal retention until exact acknowledgement. | Claim demand uses only unreserved worker credit plus at most one coordinator-buffered additional workset per negotiated Ready worker; no item is omitted or double-counted between pipeline states. |
 | D56 | Workset assembly remains deterministic and priority-safe. | The highest-priority, oldest eligible item anchors selection; peer search stays inside that priority class and a configured count/byte window. Exact-key peers retain durable claim order, warm-worker locality is preferred, and otherwise-equal choices resolve by queue time, job ID, worker ID, then item ordinal. |
+| D57 | Accepted finite worksets execute without per-item coordinator authorization pauses. | Claim/start authority is validated before acceptance. Clean children and staged promotion use local state, resource, and credit checks; later lease loss, supersession, or user cancellation arrives as an exact asynchronous item/workset cancellation. Item-start events are ordered lifecycle facts, not execution permits. |
+| D58 | The initial bounded production configuration is fixed but configurable. | Defaults are 16 items/32 MiB/four aggregate active hours per workset; 64 total and 32 active-plus-staged item credits; 16 cache entries/512 MiB; two finalizer threads with eight pending captures/256 MiB; 32 retained terminals/128 MiB; two concurrent startups; and one coordinator-buffered successor per Ready worker. Later tuning cannot remove the bounds. |
+| D59 | Unified workset transport extends WRMS version 1 without renumbering retired messages. | The old `SubmitInvocation` and removed guest-instruction-step discriminators remain reserved and reject before session mutation. |
 
 ## Rejected alternatives
 
@@ -229,8 +232,9 @@ small worksets and asynchronous exact item/workset cancellation.
 ### Wait for the entire desired worker pool before opening the data plane
 
 Rejected. Serial all-worker startup multiplies boot/negotiation latency, while an all-ready barrier lets
-one slow or failed optional slot block useful compatible capacity. One complete compatible worker is the
-production gate; remaining workers start with bounded concurrency and join only after the same checks.
+one slow or failed optional slot block useful compatible capacity. One `CompleteExact` worker is the
+production gate; remaining workers start with at most two concurrent startups and join only after the
+same checks.
 A controlled test may explicitly request an all-workers-ready barrier when the fixture needs a stable
 pool before assertions.
 
@@ -305,11 +309,11 @@ reconciliation remains the recovery safety net rather than the normal scheduling
 | A data commit or code patch escapes its scope accidentally | A later operation inherits an unintended write or executable patch | Require explicit data commit, forbid code-patch commit, record original/replacement/readback, and use ledger-driven reverse restoration with taint on uncertainty |
 | Resource cleanup has two authorities | Executor-local and session-local stacks disagree about order, epoch, or taint | Use the standalone session ledger as the one receipt/disposition source and project future invocation scopes onto it |
 | Workset compatibility is too weak | Jobs with different state, module, movie, capture, or service policy share a baseline | Require and verify one exact execution key before session mutation; persisted affinity is never sufficient |
-| Workset state leaks between children | A later child inherits input, subscriptions, capture, mutation, continuation, or stale epoch evidence | Nest a fresh invocation root under the workset scope, fully unwind it, restore the baseline, advance epoch, and reacquire every child resource |
+| Workset state leaks between children | A later child inherits input, subscriptions, capture, mutation, continuation, or stale epoch evidence | Nest a fresh invocation root under the workset scope, fully unwind it, restore every `ProgramBaselineComponent`, require one `PreparedProgramBaselineReceipt`, advance epoch exactly once, and reacquire every child resource |
 | Resident work monopolizes a worker | Large active/staged bundles, finalizers, or acknowledgement backlog create head-of-line blocking or affinity starvation | Bound count, encoded bytes, aggregate budgets, active/staged/finalizing credit, and worker-global terminal bytes; preserve coordinator priority order |
-| Resident claims expire | Pending or staged children are requeued or duplicated while still inside the pipeline | Renew exact active/staged/resident sets and revalidate claim/start authority immediately before admission |
+| Resident claims expire | Pending or staged children are requeued or duplicated while still inside the pipeline | Validate the complete finite set before acceptance, renew exact active/staged/resident sets, and send exact cancellation on later loss or supersession without pausing every child for reauthorization |
 | Per-item results are lost or unbounded | Worker runs ahead of durable persistence or buffers unlimited terminal payloads across worksets | Use one non-lossy bounded worker-global ledger; stop child/workset admission when full and acknowledge only after existing result projection commits |
-| Partial catalog activates production accidentally | A direct phase-development worker satisfies a broad capability bit despite missing another required module or dependency | Negotiate the exact installed manifest, label completeness explicitly, and require the release's complete catalog/dependency manifest before any coordinator data-plane callback |
+| Partial catalog activates production accidentally | A direct phase-development worker or transferred test module satisfies a broad capability bit despite missing another required module, or an extra module enters production silently | Negotiate `Partial` versus `CompleteExact` explicitly and require exactly the planned nine IDs/hashes, exact dependencies, and no extras before any coordinator data-plane callback |
 | Staging becomes a second session owner | A staged package restores state, binds an epoch, or acquires a live service lease while the active workset runs | Enforce a host-only staging API and architecture guards that forbid backend/session/action-host access and a second `ProgramInstance` |
 | Background output finalization reorders terminals | Faster later compression or I/O publishes before an earlier completed item, or a failed file is referenced | Assign completion order on the actor, keep it separate from outbound publication sequence, withhold terminal assembly until validated publication, and release terminals in completion order under bounded finalizer credit |
 | Immutable state cache is under-keyed | A state is reused with the wrong disc/runtime/movie/lineage or is mistaken for current guest state | Hash bytes and require the exact `StateCacheKey`, scoped leases, ordinary restore, epoch advancement, and correctness-equivalent miss fallback |
@@ -326,8 +330,8 @@ reconciliation remains the recovery safety net rather than the normal scheduling
 ### Contract encodings
 
 - Any future incompatible canonical envelope version beyond implemented `SPRM`/`SPRI`/`SPRR` version 1.
-- Optional compression and numeric workset, staging, state-cache, finalizer, startup-concurrency, and
-  completion-ledger sizing heuristics beyond the required bounded logical contracts.
+- Optional compression and measurement-driven tuning beyond the fixed configurable defaults in D58.
+  WRMS remains version 1, and the retired scalar-invocation/guest-step discriminators remain reserved.
 
 These are deferred runtime encodings, not permission to alter the logical fields or ownership model.
 SavorDb SQL/schema, migrations, stored representations, persistent workset/cache/ledger identity,
@@ -338,8 +342,8 @@ are part of the pre-6A prelude.
 ### Cutover and live validation
 
 - Native implementation and migration of the current phases.
-- Slice 7 promotion of the incrementally tested partial catalog to the exact complete production
-  catalog/dependency manifest and activation of the coordinator data plane.
+- Slice 7 promotion of the incrementally tested `Partial` catalog to `CompleteExact` and activation of
+  the coordinator data plane.
 - A headless live game-program smoke after production runtime/action-host construction.
 - Production-worker SavorE2E after migrated programs and handler adapters restore the complete path.
 
@@ -408,7 +412,7 @@ Slice 4 has already moved state/epoch, input, guest mutation, movie, screenshot,
 cleanup behind their narrow session-owned services; Slice 5 now adds the canonical program/action
 surface, resource-binding seam, initial packs, and composition frontends over them. The pre-6A prelude
 installs that composition and the unified process pipeline in production; native phase implementation,
-complete-catalog DB activation, and program-kind adapters remain later cutover work.
+`CompleteExact` DB activation, and program-kind adapters remain later cutover work.
 
 ## Failure and cleanup behavior
 
@@ -438,6 +442,10 @@ No deferred implementation detail may weaken these rules:
 - existing SavorDb retry, idempotency, and lineage behavior remains unchanged; runtime trace identity is
   not a new persistence requirement;
 - a workset child completes full invocation unwind before the next child is admitted;
+- whole-workset claim/start authority is proven before acceptance, clean children run without per-item
+  coordinator authorization pauses, and later authority loss uses exact cancellation;
+- a later child starts only from one complete `PreparedProgramBaselineReceipt` covering state, movie
+  continuation, and adapter-declared derived state;
 - a clean child failure may continue, while cleanup uncertainty or taint halts the workset;
 - promoted immutable output is finalized and validated before its terminal becomes authoritative;
 - per-item terminal results remain non-lossy in the worker-global ledger until durably acknowledged,
@@ -481,8 +489,8 @@ before broadening the design.
   durability, and never interpret result content or retain child resources. Host-only staging and the
   worker-global completion ledger cannot become second executors or session owners.
 - Partial catalogs support direct process guards only. Coordinator data-plane activation requires one
-  complete compatible worker, and every progressively started worker must pass the same exact
-  catalog/dependency/limit gate before contributing capacity.
+  `CompleteExact` worker with exactly the nine planned modules and no extras, and every progressively
+  started worker must pass the same exact catalog/dependency/limit gate before contributing capacity.
 
 ## Source references
 

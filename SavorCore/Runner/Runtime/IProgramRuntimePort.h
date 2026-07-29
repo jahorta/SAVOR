@@ -25,6 +25,7 @@ struct EncodedModuleEnvelope
 {
     ProgramModuleIdentity identity;
     std::uint32_t format_version = 0;
+    bool development_only = false;
     std::vector<std::uint8_t> payload;
 };
 
@@ -48,6 +49,64 @@ struct ProgramInvocationRequest
 {
     WorkerCommandSequence command_sequence;
     EncodedInvocationEnvelope invocation;
+    bool state_already_prepared = false;
+    std::string prepared_baseline_sha256;
+};
+
+struct InvocationTemplatePreparationRequest
+{
+    WorkerCommandSequence command_sequence;
+    EncodedInvocationEnvelope invocation_template;
+};
+
+struct PreparedInvocationTemplateReceipt
+{
+    PreparedInvocationTemplateId template_id;
+    InvocationId invocation_id;
+    AttemptId attempt_id;
+    ProgramModuleIdentity module;
+    std::string entrypoint;
+    std::string program_compatibility_sha256;
+    program::InvocationStatePolicy state_policy =
+        program::InvocationStatePolicy::Boot;
+    std::chrono::milliseconds active_budget{};
+
+    [[nodiscard]] explicit operator bool() const noexcept
+    {
+        return template_id && invocation_id && attempt_id &&
+            !module.canonical_id.empty() && !entrypoint.empty() &&
+            program_compatibility_sha256.size() == 64 &&
+            active_budget.count() > 0;
+    }
+};
+
+struct PreparedInvocationStartRequest
+{
+    WorkerCommandSequence command_sequence;
+    PreparedInvocationTemplateId template_id;
+    SessionId session_id;
+    StateEpoch state_epoch;
+    std::string baseline_sha256;
+    std::string baseline_lineage;
+};
+
+struct ProgramRuntimeCatalogModule
+{
+    ProgramModuleIdentity identity;
+    std::vector<std::string> entrypoints;
+    bool development_only = false;
+
+    auto operator<=>(const ProgramRuntimeCatalogModule&) const = default;
+};
+
+struct ProgramRuntimeCatalogSnapshot
+{
+    bool complete_exact = false;
+    std::uint64_t generation = 1;
+    std::string runtime_profile_sha256;
+    std::string dependency_manifest_sha256;
+    std::string catalog_sha256;
+    std::vector<ProgramRuntimeCatalogModule> modules;
 };
 
 struct ModulePreparationEvent
@@ -143,6 +202,47 @@ public:
         CancellationToken cancellation,
         std::shared_ptr<IProgramRuntimeEventSink> events) = 0;
 
+    // Workset admission validates and pins canonical invocation contents
+    // before any session mutation. WorkerRuntime receives only an opaque
+    // receipt and later supplies the actor-owned session/epoch binding.
+    virtual ProgramRuntimeSubmission PrepareInvocationTemplate(
+        InvocationTemplatePreparationRequest request,
+        PreparedInvocationTemplateReceipt& receipt)
+    {
+        (void)request;
+        (void)receipt;
+        return ProgramRuntimeSubmission::Rejected(
+            WorkerRejectionCode::Unsupported,
+            "ProgramRuntime does not support workset templates");
+    }
+
+    virtual ProgramRuntimeSubmission ReleaseInvocationTemplate(
+        PreparedInvocationTemplateId template_id)
+    {
+        (void)template_id;
+        return ProgramRuntimeSubmission::Rejected(
+            WorkerRejectionCode::Unsupported,
+            "ProgramRuntime does not support workset templates");
+    }
+
+    virtual ProgramRuntimeSubmission StartPreparedInvocation(
+        PreparedInvocationStartRequest request,
+        CancellationToken cancellation,
+        std::shared_ptr<IProgramRuntimeEventSink> events)
+    {
+        (void)request;
+        (void)cancellation;
+        (void)events;
+        return ProgramRuntimeSubmission::Rejected(
+            WorkerRejectionCode::Unsupported,
+            "ProgramRuntime does not support prepared invocations");
+    }
+
+    [[nodiscard]] virtual ProgramRuntimeCatalogSnapshot catalog() const
+    {
+        return {};
+    }
+
     virtual ProgramRuntimeSubmission RequestCancellation(
         InvocationId invocation_id) = 0;
 
@@ -162,6 +262,16 @@ public:
         return ProgramRuntimeSubmission::Rejected(
             WorkerRejectionCode::Unsupported,
             "ProgramRuntime does not accept actor action completions");
+    }
+
+    // Transfers host-only publications which were promoted by accepted
+    // action completions. ProgramRuntime and ProgramExecutor never finalize
+    // files or expose these pending receipts to program IR.
+    [[nodiscard]] virtual std::vector<
+        program::PendingStateArtifactPublication>
+        DrainPendingStateArtifactPublications()
+    {
+        return {};
     }
 
     // A terminal remains correlated inside the runtime until the actor has

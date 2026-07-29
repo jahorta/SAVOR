@@ -283,7 +283,9 @@ bool RunSeedProbePrelude(
             &err,
             [&](const std::string& line) {
                 push_line(line);
-            })) {
+            },
+            false,
+            coordinator.ItemCreditSource())) {
         if (error_out) *error_out = err;
         return false;
     }
@@ -1479,7 +1481,9 @@ bool RunSeedProbeBattleRealWorkerScenario(
             &err,
             [&](const std::string& line) {
                 push_line(line);
-            })) {
+            },
+            false,
+            coordinator.ItemCreditSource())) {
         if (error_out) *error_out = err;
         return false;
     }
@@ -1825,7 +1829,9 @@ bool RunBattleWorkflowGraphRealWorkerScenario(
             &err,
             [&](const std::string& line) {
                 push_line(line);
-            })) {
+            },
+            false,
+            coordinator.ItemCreditSource())) {
         if (error_out) *error_out = err;
         return false;
     }
@@ -2280,7 +2286,9 @@ bool RunTasMovieSeedProbeBattleWorkflowGraphRealWorkerScenario(
             &err,
             [&](const std::string& line) {
                 push_line(line);
-            })) {
+            },
+            false,
+            coordinator.ItemCreditSource())) {
         if (error_out) *error_out = err;
         return false;
     }

@@ -685,7 +685,8 @@ bool RunBattleEndResultsScenario(
             [&](const std::string& line) {
                 push_event(line);
             },
-            true)) {
+            true,
+            coordinator.ItemCreditSource())) {
         if (error_out != nullptr) *error_out = error;
         return false;
     }

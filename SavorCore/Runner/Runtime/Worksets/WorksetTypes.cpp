@@ -1,0 +1,442 @@
+#include "WorksetTypes.h"
+
+#include "Utils/Hash.h"
+
+#include <algorithm>
+#include <array>
+#include <limits>
+#include <set>
+#include <sstream>
+#include <tuple>
+
+namespace savor::runtime {
+namespace {
+
+void AppendField(std::string& output, std::string_view value)
+{
+    output.append(std::to_string(value.size()));
+    output.push_back(':');
+    output.append(value);
+    output.push_back('|');
+}
+
+template <typename Value>
+void AppendNumber(std::string& output, Value value)
+{
+    AppendField(output, std::to_string(value));
+}
+
+void AppendCompatibility(
+    std::string& output,
+    const StateCompatibilityToken& value)
+{
+    AppendField(output, value.game_id);
+    AppendField(output, value.iso_sha256);
+    AppendField(output, value.emulator_build);
+    AppendField(output, value.runtime_revision);
+}
+
+bool CompleteSha256(std::string_view value)
+{
+    if (value.size() != 64)
+        return false;
+    return std::all_of(
+        value.begin(),
+        value.end(),
+        [](char ch)
+        {
+            return (ch >= '0' && ch <= '9') ||
+                (ch >= 'a' && ch <= 'f');
+        });
+}
+
+} // namespace
+
+ProgramBaselineKey ComputeProgramBaselineKey(
+    const ProgramBaselineDefinition& definition)
+{
+    std::string canonical;
+    AppendNumber(
+        canonical,
+        static_cast<std::uint32_t>(definition.state_kind));
+    AppendField(canonical, definition.lineage);
+    AppendNumber(
+        canonical,
+        definition.current_session.has_value() ? 1 : 0);
+    if (definition.current_session)
+    {
+        AppendNumber(
+            canonical,
+            definition.current_session->session_id.value());
+        AppendNumber(
+            canonical,
+            definition.current_session->state_epoch.value());
+        AppendNumber(
+            canonical,
+            definition.current_session->require_clean_idle ? 1 : 0);
+    }
+    AppendNumber(canonical, definition.artifact.has_value() ? 1 : 0);
+    if (definition.artifact)
+    {
+        const ProgramBaselineArtifact& artifact = *definition.artifact;
+        AppendField(canonical, artifact.state_sha256);
+        AppendNumber(canonical, artifact.movie_path ? 1 : 0);
+        AppendField(canonical, artifact.movie_sha256);
+        AppendNumber(
+            canonical,
+            static_cast<std::uint32_t>(artifact.movie_mode));
+        AppendCompatibility(canonical, artifact.compatibility);
+        AppendField(canonical, artifact.lineage.edge);
+        AppendField(canonical, artifact.lineage.producer);
+    }
+    AppendNumber(canonical, definition.components.size());
+    for (const ProgramBaselineComponent& component : definition.components)
+    {
+        AppendField(canonical, component.canonical_id);
+        AppendNumber(canonical, component.revision);
+        AppendField(canonical, component.schema_id);
+        AppendField(canonical, component.content_sha256);
+        AppendNumber(
+            canonical,
+            static_cast<std::uint32_t>(component.policy));
+    }
+    return {hash::sha256(canonical.data(), canonical.size())};
+}
+
+std::string ComputeWorkerWorksetExecutionKeyHash(
+    const WorkerWorksetExecutionKey& key)
+{
+    std::string canonical;
+    AppendField(canonical, key.module.canonical_id);
+    AppendNumber(canonical, key.module.revision);
+    AppendField(canonical, key.module.canonical_hash);
+    AppendField(canonical, key.entrypoint);
+    AppendField(canonical, key.verified_dependency_sha256);
+    AppendField(canonical, key.runtime_profile_sha256);
+    AppendField(canonical, key.baseline.sha256);
+    AppendField(canonical, key.movie_policy_sha256);
+    AppendField(canonical, key.service_policy_sha256);
+    return hash::sha256(canonical.data(), canonical.size());
+}
+
+std::string ComputeStateCacheKeyHash(const StateCacheKey& key)
+{
+    std::string canonical;
+    AppendField(canonical, key.baseline.sha256);
+    AppendField(canonical, key.state_sha256);
+    AppendField(canonical, key.lineage);
+    AppendCompatibility(canonical, key.compatibility);
+    AppendField(canonical, key.movie_continuation_sha256);
+    AppendNumber(canonical, key.session_generation);
+    return hash::sha256(canonical.data(), canonical.size());
+}
+
+WorksetValidationResult ValidateWorkerWorksetDefinition(
+    const WorkerWorksetDefinition& definition,
+    const WorkerWorksetLimits& limits)
+{
+    if (!definition.workset_id)
+    {
+        return WorksetValidationResult::Failure(
+            WorkerRejectionCode::InvalidArgument,
+            "WorkerWorkset requires a nonzero identity");
+    }
+    if (definition.items.empty() ||
+        definition.items.size() > limits.maximum_items_per_workset)
+    {
+        return WorksetValidationResult::Failure(
+            WorkerRejectionCode::InvalidArgument,
+            "WorkerWorkset item count exceeds its negotiated bounds");
+    }
+    if (definition.encoded_size_bytes >
+        limits.maximum_encoded_workset_bytes)
+    {
+        return WorksetValidationResult::Failure(
+            WorkerRejectionCode::InvalidArgument,
+            "WorkerWorkset encoded bytes exceed the negotiated bound");
+    }
+    const ProgramBaselineKey baseline =
+        ComputeProgramBaselineKey(definition.baseline);
+    if (!baseline || baseline != definition.execution_key.baseline)
+    {
+        return WorksetValidationResult::Failure(
+            WorkerRejectionCode::InvalidArgument,
+            "WorkerWorkset baseline identity does not match its execution key");
+    }
+    if (!definition.execution_key)
+    {
+        return WorksetValidationResult::Failure(
+            WorkerRejectionCode::InvalidArgument,
+            "WorkerWorkset execution key is incomplete");
+    }
+    if (ComputeWorkerWorksetExecutionKeyHash(definition.execution_key) !=
+        definition.execution_key.canonical_sha256)
+    {
+        return WorksetValidationResult::Failure(
+            WorkerRejectionCode::InvalidArgument,
+            "WorkerWorkset execution key hash is not canonical");
+    }
+
+    if (definition.baseline.lineage.empty())
+    {
+        return WorksetValidationResult::Failure(
+            WorkerRejectionCode::InvalidArgument,
+            "WorkerWorkset baseline requires explicit lineage");
+    }
+    const bool artifact_baseline =
+        definition.baseline.state_kind ==
+        ProgramBaselineStateKind::Artifact;
+    const bool current_session_baseline =
+        definition.baseline.state_kind ==
+        ProgramBaselineStateKind::CurrentSession;
+    if (artifact_baseline !=
+            definition.baseline.artifact.has_value() ||
+        current_session_baseline !=
+            definition.baseline.current_session.has_value())
+    {
+        return WorksetValidationResult::Failure(
+            WorkerRejectionCode::InvalidArgument,
+            "Program baseline kind does not match its exact state source");
+    }
+    if (current_session_baseline &&
+        !static_cast<bool>(*definition.baseline.current_session))
+    {
+        return WorksetValidationResult::Failure(
+            WorkerRejectionCode::InvalidArgument,
+            "Current-session baseline requires exact clean-idle session and epoch evidence");
+    }
+    if (definition.baseline.artifact)
+    {
+        const ProgramBaselineArtifact& artifact =
+            *definition.baseline.artifact;
+        if (artifact.state_path.empty() ||
+            !CompleteSha256(artifact.state_sha256) ||
+            !artifact.compatibility.Complete())
+        {
+            return WorksetValidationResult::Failure(
+                WorkerRejectionCode::InvalidArgument,
+                "Program baseline artifact identity is incomplete");
+        }
+        const bool has_movie_path = artifact.movie_path.has_value();
+        const bool has_movie_hash = !artifact.movie_sha256.empty();
+        const bool no_movie =
+            artifact.movie_mode == ExternalMovieImportMode::NoMovie;
+        const bool read_only_movie =
+            artifact.movie_mode ==
+            ExternalMovieImportMode::ReadOnlyPlayback;
+        const std::filesystem::path expected_movie =
+            std::filesystem::path(artifact.state_path.string() + ".dtm");
+        if ((!no_movie && !read_only_movie) ||
+            (no_movie && (has_movie_path || has_movie_hash)) ||
+            (read_only_movie &&
+             (!has_movie_path || !has_movie_hash ||
+              artifact.movie_path != expected_movie ||
+              !CompleteSha256(artifact.movie_sha256))))
+        {
+            return WorksetValidationResult::Failure(
+                WorkerRejectionCode::InvalidArgument,
+                "Program baseline movie continuation policy and exact sidecar identity disagree");
+        }
+    }
+    std::set<std::pair<std::string, std::uint32_t>> component_ids;
+    for (const ProgramBaselineComponent& component :
+         definition.baseline.components)
+    {
+        if (component.canonical_id.empty() ||
+            component.revision == 0 ||
+            component.schema_id.empty() ||
+            !CompleteSha256(component.content_sha256) ||
+            !component_ids
+                 .emplace(component.canonical_id, component.revision)
+                 .second)
+        {
+            return WorksetValidationResult::Failure(
+                WorkerRejectionCode::InvalidArgument,
+                "Program baseline component identity, schema, content hash, "
+                "or uniqueness is invalid");
+        }
+    }
+
+    std::set<std::uint64_t> item_ids;
+    std::set<std::uint64_t> invocation_ids;
+    std::chrono::milliseconds aggregate{};
+    std::size_t aggregate_terminal_bytes = 0;
+    for (std::size_t index = 0; index < definition.items.size(); ++index)
+    {
+        const WorksetItemTemplate& item = definition.items[index];
+        if (!item.item_id || item.ordinal != index ||
+            !item.invocation.invocation_id ||
+            !item.invocation.attempt_id ||
+            item.invocation.module != definition.execution_key.module ||
+            item.invocation.entrypoint !=
+                definition.execution_key.entrypoint ||
+            item.invocation.template_payload.empty())
+        {
+            return WorksetValidationResult::Failure(
+                WorkerRejectionCode::InvalidArgument,
+                "WorkerWorkset item identity, order, or invocation template is invalid");
+        }
+        if (!item_ids.insert(item.item_id.value()).second ||
+            !invocation_ids
+                 .insert(item.invocation.invocation_id.value())
+                 .second)
+        {
+            return WorksetValidationResult::Failure(
+                WorkerRejectionCode::InvalidArgument,
+                "WorkerWorkset contains duplicate item or invocation identities");
+        }
+        if (item.declared_active_budget.count() < 0 ||
+            aggregate >
+                limits.maximum_aggregate_active_budget -
+                    item.declared_active_budget)
+        {
+            return WorksetValidationResult::Failure(
+                WorkerRejectionCode::InvalidArgument,
+                "WorkerWorkset aggregate active budget exceeds its negotiated bound");
+        }
+        aggregate += item.declared_active_budget;
+        if (item.declared_active_budget.count() <= 0 ||
+            item.declared_terminal_bytes <
+                kMinimumWorksetTerminalReservationBytes ||
+            item.declared_terminal_bytes >
+                std::min(
+                    limits.maximum_retained_terminal_bytes,
+                    kMaximumWorksetTerminalReservationBytes) ||
+            aggregate_terminal_bytes >
+                limits.maximum_retained_terminal_bytes -
+                    item.declared_terminal_bytes)
+        {
+            return WorksetValidationResult::Failure(
+                WorkerRejectionCode::CapacityExceeded,
+                "WorkerWorkset item budget or terminal-byte reservation exceeds its negotiated bound");
+        }
+        aggregate_terminal_bytes += item.declared_terminal_bytes;
+    }
+    return WorksetValidationResult::Success();
+}
+
+std::string ComputeRuntimeCatalogHash(
+    const std::vector<RuntimeModuleManifestEntry>& modules,
+    RuntimeCatalogStatus status)
+{
+    std::vector<RuntimeModuleManifestEntry> ordered = modules;
+    std::sort(
+        ordered.begin(),
+        ordered.end(),
+        [](const auto& lhs, const auto& rhs)
+        {
+            if (lhs.module.canonical_id != rhs.module.canonical_id)
+                return lhs.module.canonical_id < rhs.module.canonical_id;
+            if (lhs.module.revision != rhs.module.revision)
+                return lhs.module.revision < rhs.module.revision;
+            return lhs.module.canonical_hash < rhs.module.canonical_hash;
+        });
+
+    std::string canonical;
+    AppendNumber(canonical, static_cast<std::uint32_t>(status));
+    for (const RuntimeModuleManifestEntry& entry : ordered)
+    {
+        AppendField(canonical, entry.module.canonical_id);
+        AppendNumber(canonical, entry.module.revision);
+        AppendField(canonical, entry.module.canonical_hash);
+        AppendField(canonical, entry.dependency_manifest_sha256);
+        AppendNumber(canonical, entry.development_only ? 1 : 0);
+        std::vector<std::string> entrypoints =
+            entry.entrypoints;
+        std::sort(entrypoints.begin(), entrypoints.end());
+        for (const std::string& entrypoint : entrypoints)
+            AppendField(canonical, entrypoint);
+    }
+    return hash::sha256(canonical.data(), canonical.size());
+}
+
+WorksetValidationResult ValidateWorkerRuntimeManifest(
+    const WorkerRuntimeManifest& manifest)
+{
+    if (manifest.wrms_protocol_version != 1 ||
+        manifest.program_module_format_version != 1 ||
+        manifest.program_invocation_format_version != 1 ||
+        manifest.program_result_format_version != 1 ||
+        manifest.catalog_generation == 0 ||
+        !CompleteSha256(manifest.runtime_profile_sha256) ||
+        !CompleteSha256(manifest.dependency_manifest_sha256) ||
+        !CompleteSha256(manifest.catalog_sha256))
+    {
+        return WorksetValidationResult::Failure(
+            WorkerRejectionCode::InvalidArgument,
+            "Worker runtime manifest version, generation, or hashes are incomplete");
+    }
+
+    std::set<std::tuple<std::string, std::uint32_t, std::string>>
+        module_ids;
+    for (const RuntimeModuleManifestEntry& module :
+         manifest.modules)
+    {
+        if (module.module.canonical_id.empty() ||
+            module.module.revision == 0 ||
+            !CompleteSha256(module.module.canonical_hash) ||
+            module.entrypoints.empty() ||
+            module.dependency_manifest_sha256 !=
+                manifest.dependency_manifest_sha256 ||
+            !module_ids
+                 .emplace(
+                     module.module.canonical_id,
+                     module.module.revision,
+                     module.module.canonical_hash)
+                 .second)
+        {
+            return WorksetValidationResult::Failure(
+                WorkerRejectionCode::InvalidArgument,
+                "Worker runtime manifest module identity or dependency hash is invalid");
+        }
+        std::set<std::string> entrypoints;
+        for (const std::string& entrypoint :
+             module.entrypoints)
+        {
+            if (entrypoint.empty() ||
+                !entrypoints.insert(entrypoint).second)
+            {
+                return WorksetValidationResult::Failure(
+                    WorkerRejectionCode::InvalidArgument,
+                    "Worker runtime manifest contains an empty or duplicate entrypoint");
+            }
+        }
+    }
+    if (ComputeRuntimeCatalogHash(
+            manifest.modules,
+            manifest.catalog_status) !=
+        manifest.catalog_sha256)
+    {
+        return WorksetValidationResult::Failure(
+            WorkerRejectionCode::WorksetCatalogMismatch,
+            "Worker runtime manifest catalog hash is not canonical");
+    }
+
+    const WorkerWorksetLimits& limits = manifest.limits;
+    if (limits.maximum_items_per_workset == 0 ||
+        limits.maximum_encoded_workset_bytes == 0 ||
+        limits.maximum_aggregate_active_budget.count() <= 0 ||
+        limits.maximum_item_credits == 0 ||
+        limits.maximum_active_and_staged_items == 0 ||
+        limits.maximum_state_cache_entries == 0 ||
+        limits.maximum_state_cache_bytes == 0 ||
+        limits.finalizer_threads == 0 ||
+        limits.maximum_pending_finalizers == 0 ||
+        limits.maximum_pending_finalizer_bytes == 0 ||
+        limits.maximum_retained_terminals == 0 ||
+        limits.maximum_retained_terminal_bytes <
+            kMinimumWorksetTerminalReservationBytes ||
+        limits.progressive_start_concurrency == 0 ||
+        limits.maximum_items_per_workset >
+            limits.maximum_active_and_staged_items ||
+        limits.maximum_active_and_staged_items >
+            limits.maximum_item_credits)
+    {
+        return WorksetValidationResult::Failure(
+            WorkerRejectionCode::InvalidArgument,
+            "Worker runtime manifest contains zero or contradictory negotiated limits");
+    }
+    return WorksetValidationResult::Success();
+}
+
+} // namespace savor::runtime

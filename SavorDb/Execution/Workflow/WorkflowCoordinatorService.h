@@ -6,11 +6,13 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -26,16 +28,50 @@ struct IAuthoringDb;
 
 namespace savor::db::execution::workflow {
 
+class CoordinatorItemCreditSource {
+public:
+    void Open(std::size_t total_credits) noexcept;
+    void SetCapacity(std::size_t total_credits) noexcept;
+    void SetExternalUsage(std::size_t used_credits) noexcept;
+    [[nodiscard]] std::size_t AvailableCredits() const noexcept;
+    [[nodiscard]] bool TryReserve(std::size_t credits = 1) noexcept;
+    void ReleaseReservations(std::size_t credits = 1) noexcept;
+    void Close() noexcept;
+    [[nodiscard]] bool IsOpen() const noexcept;
+
+private:
+    std::atomic<bool> open_{ false };
+    std::atomic<std::size_t> total_credits_{ 0 };
+    std::atomic<std::size_t> external_usage_{ 0 };
+    std::atomic<std::size_t> reservations_{ 0 };
+};
+
 struct WorkflowCoordinatorConfig {
     bool workflow_enabled = true;
     bool strict_smoke_terminal_on_failure = false;
     std::chrono::milliseconds poll_interval{ 50 };
+    // Targeted commit notifications are the normal advancement path. This
+    // slower scan remains the crash-recovery authority for notifications lost
+    // across process boundaries or restarts.
+    std::chrono::milliseconds terminal_repair_interval{ 250 };
     std::size_t ready_scan_limit = 2048;
     std::size_t terminal_scan_limit = 64;
     std::size_t max_active_materialized_workflows = 30;
     int successor_step_priority_boost = 10;
     std::chrono::milliseconds input_timeout{ 2000 };
     int input_timeout_retries = 1;
+    // Production supplies worker item credits. A null provider retains the
+    // legacy active-workflow throttle for focused compatibility tests.
+    std::function<std::size_t()> available_item_credits;
+    // The production coordinator pair shares this closed-by-default source.
+    // It opens only after exact worker/catalog negotiation succeeds.
+    std::shared_ptr<CoordinatorItemCreditSource> item_credit_source;
+};
+
+struct TerminalWorkflowStepNotification {
+    std::uint64_t commit_sequence = 0;
+    std::int64_t workflow_step_id = 0;
+    std::int64_t job_id = 0;
 };
 
 struct WorkflowCoordinatorTelemetry {
@@ -61,6 +97,8 @@ struct WorkflowCoordinatorTelemetry {
     std::int64_t transition_advanced_count = 0;
     std::int64_t workflow_completed_count = 0;
     std::int64_t workflow_failed_count = 0;
+    std::int64_t targeted_terminal_notification_count = 0;
+    std::int64_t targeted_terminal_advancement_count = 0;
 };
 
 class WorkflowCoordinatorService {
@@ -83,6 +121,8 @@ public:
     void Stop();
     [[nodiscard]] bool IsRunning() const;
     [[nodiscard]] WorkflowCoordinatorTelemetry SnapshotTelemetry() const;
+    bool PublishTerminalCommit(
+        const TerminalWorkflowStepNotification& notification);
 
 private:
     struct StepInputAggregationStatus {
@@ -108,7 +148,11 @@ private:
     void Loop();
     bool AdvanceAvailableWork();
     bool PollReadyStepsFromDb();
+    bool ReconcileTargetedTerminalNotifications();
     bool ReconcileTerminalWorkflowSteps();
+    bool AdvanceTerminalSnapshot(
+        const WorkflowStepTerminalSnapshot& snapshot,
+        const char* failure_stage);
     bool ProcessReadyWorkflowStep(const WorkflowReadyStepRecord& step);
     bool CompleteNoWorkWorkflowStep(const WorkflowReadyStepRecord& step);
     std::optional<programdb::WorkflowStepScheduleResult> ScheduleReadyStep(const WorkflowReadyStepRecord& step) const;
@@ -152,8 +196,15 @@ private:
     std::atomic<bool> stop_{ false };
     std::atomic<bool> running_{ false };
     std::thread worker_thread_;
+    std::chrono::steady_clock::time_point next_terminal_repair_at_{};
     mutable std::mutex wait_mtx_;
     std::condition_variable wait_cv_;
+    mutable std::mutex terminal_notification_mtx_;
+    std::map<
+        std::tuple<std::uint64_t, std::int64_t, std::int64_t>,
+        TerminalWorkflowStepNotification>
+        terminal_notifications_;
+    std::atomic<std::uint64_t> terminal_notification_generation_{ 0 };
     std::unordered_set<std::int64_t> seen_workflow_instance_ids_;
     std::unordered_map<std::string, StepAssemblyContext> input_contexts_;
 
@@ -179,6 +230,8 @@ private:
     std::atomic<std::int64_t> transition_advanced_count_{ 0 };
     std::atomic<std::int64_t> workflow_completed_count_{ 0 };
     std::atomic<std::int64_t> workflow_failed_count_{ 0 };
+    std::atomic<std::int64_t> targeted_terminal_notification_count_{ 0 };
+    std::atomic<std::int64_t> targeted_terminal_advancement_count_{ 0 };
 };
 
 } // namespace savor::db::execution::workflow

@@ -19,8 +19,6 @@ using Clock = std::chrono::steady_clock;
             using Request = std::decay_t<decltype(value)>;
             if constexpr (std::is_same_v<Request, ContinueUntilRequest>)
                 return ExecutionOperationKind::ContinueUntil;
-            if constexpr (std::is_same_v<Request, StepInstructionsRequest>)
-                return ExecutionOperationKind::StepInstructions;
             if constexpr (std::is_same_v<Request, StepFramesRequest>)
                 return ExecutionOperationKind::StepFrames;
             if constexpr (std::is_same_v<Request, InputSynchronizedAdvanceRequest>)
@@ -200,7 +198,6 @@ struct ExecutionEngine::Impl
         std::chrono::milliseconds remaining_budget{};
         std::uint64_t last_vi = 0;
         std::uint64_t advance_baseline_vi = 0;
-        std::uint32_t advance_baseline_pc = 0;
         std::uint32_t completed_count = 0;
         bool bounded = false;
         bool observed_running = false;
@@ -353,9 +350,6 @@ struct ExecutionEngine::Impl
             {
             case ExecutionOperationKind::ContinueUntil:
                 snapshot.activity = ExecutionActivity::Continuing;
-                break;
-            case ExecutionOperationKind::StepInstructions:
-                snapshot.activity = ExecutionActivity::SteppingInstruction;
                 break;
             case ExecutionOperationKind::StepFrames:
                 snapshot.activity = ExecutionActivity::SteppingFrame;
@@ -931,18 +925,6 @@ struct ExecutionEngine::Impl
             }
             break;
         }
-        case ExecutionOperationKind::StepInstructions:
-            if (std::get<StepInstructionsRequest>(request).count == 0)
-                return Error(ExecutionErrorCode::InvalidArgument, "Instruction-step count must be nonzero");
-            if (!HasExecutionCapability(
-                    backend.Capabilities(),
-                    BackendExecutionCapability::ExactInstructionStep))
-            {
-                return Error(
-                    ExecutionErrorCode::Unsupported,
-                    "Exact guest-instruction stepping is unavailable");
-            }
-            break;
         case ExecutionOperationKind::StepFrames:
             if (std::get<StepFramesRequest>(request).count == 0)
                 return Error(ExecutionErrorCode::InvalidArgument, "Frame-step count must be nonzero");
@@ -1151,19 +1133,6 @@ struct ExecutionEngine::Impl
         BackendResult started;
         switch (operation.kind)
         {
-        case ExecutionOperationKind::StepInstructions:
-            if (!HasExecutionCapability(
-                    backend.Capabilities(),
-                    BackendExecutionCapability::ExactInstructionStep))
-            {
-                return Error(
-                    ExecutionErrorCode::Unsupported,
-                    "Exact guest-instruction stepping is unavailable");
-            }
-            started = CallBackend(
-                "exact instruction step",
-                [&] { return backend.BeginExactInstructionStep(); });
-            break;
         case ExecutionOperationKind::StepFrames:
         case ExecutionOperationKind::InputSynchronizedAdvance:
             if (!HasExecutionCapability(
@@ -1186,7 +1155,6 @@ struct ExecutionEngine::Impl
         if (!started.ok)
             return BackendError("failed starting bounded advancement", started);
         operation.advance_baseline_vi = observed.vi_count;
-        operation.advance_baseline_pc = observed.pc;
         operation.awaiting_advance = true;
         operation.observed_running = false;
         return {};
@@ -1271,15 +1239,6 @@ struct ExecutionEngine::Impl
 
     [[nodiscard]] ExecutionError StartOperation(ActiveOperation& operation)
     {
-        if (operation.kind == ExecutionOperationKind::StepInstructions &&
-            !HasExecutionCapability(
-                backend.Capabilities(),
-                BackendExecutionCapability::ExactInstructionStep))
-        {
-            return Error(
-                ExecutionErrorCode::Unsupported,
-                "Exact guest-instruction stepping is unavailable");
-        }
         if ((operation.kind == ExecutionOperationKind::StepFrames ||
                 operation.kind ==
                     ExecutionOperationKind::InputSynchronizedAdvance) &&
@@ -1323,7 +1282,6 @@ struct ExecutionEngine::Impl
                 return {};
             return ResumeBackend();
         }
-        case ExecutionOperationKind::StepInstructions:
         case ExecutionOperationKind::StepFrames:
             return BeginAdvance(operation);
         case ExecutionOperationKind::InputSynchronizedAdvance:
@@ -1361,8 +1319,6 @@ struct ExecutionEngine::Impl
         {
             return false;
         }
-        if (operation.kind == ExecutionOperationKind::StepInstructions)
-            return observed.pc != operation.advance_baseline_pc;
         return observed.vi_count != operation.advance_baseline_vi;
     }
 
@@ -1371,8 +1327,6 @@ struct ExecutionEngine::Impl
     {
         switch (operation.kind)
         {
-        case ExecutionOperationKind::StepInstructions:
-            return std::get<StepInstructionsRequest>(operation.request).count;
         case ExecutionOperationKind::StepFrames:
             return std::get<StepFramesRequest>(operation.request).count;
         case ExecutionOperationKind::InputSynchronizedAdvance:
@@ -2056,7 +2010,6 @@ ExecutionControlReceipt ExecutionEngine::CompleteInterruptionHandler(
         case ExecutionOperationKind::InteractiveResume:
             resumed = impl_->ResumeBackend();
             break;
-        case ExecutionOperationKind::StepInstructions:
         case ExecutionOperationKind::StepFrames:
         case ExecutionOperationKind::InputSynchronizedAdvance:
             impl_->active->awaiting_advance = false;
@@ -2535,7 +2488,6 @@ void ExecutionEngine::Pump()
             observed.pause_confirmed)
             impl_->BeginFinish(ExecutionTerminalStatus::Paused);
         break;
-    case ExecutionOperationKind::StepInstructions:
     case ExecutionOperationKind::StepFrames:
     case ExecutionOperationKind::InputSynchronizedAdvance:
         if (impl_->AdvanceCompleted(operation, observed))

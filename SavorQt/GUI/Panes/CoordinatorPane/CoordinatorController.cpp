@@ -489,6 +489,14 @@ savor::runner::parallel::savordb::DBWorkflowWorkerCoordinatorConfig CoordinatorC
     cfg.worker_dir_root = workerRootPath().toStdString();
     cfg.visual_workers = visualWorkerPoolEnabled_;
     cfg.auto_resume_visual_workers = visualWorkerPoolEnabled_;
+    auto& runtime = savorqt::SavorDbRuntime::instance();
+    cfg.item_credit_source = runtime.workflowItemCreditSource();
+    cfg.terminal_commit_callback = [](
+        const savor::db::execution::workflow::
+            TerminalWorkflowStepNotification& notification) {
+        (void)savorqt::SavorDbRuntime::instance()
+            .publishTerminalCommit(notification);
+    };
     return cfg;
 }
 

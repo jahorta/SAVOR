@@ -34,6 +34,12 @@ public:
     savor::db::execution::programdb::ProgramKindRegistry* programKindRegistry();
     savor::db::execution::workflow::WorkflowCoordinatorTelemetry workflowCoordinatorTelemetry() const;
     bool workflowCoordinatorRunning() const;
+    std::shared_ptr<
+        savor::db::execution::workflow::CoordinatorItemCreditSource>
+        workflowItemCreditSource() const;
+    bool publishTerminalCommit(
+        const savor::db::execution::workflow::
+            TerminalWorkflowStepNotification& notification);
 
 private:
     SavorDbRuntime() = default;
@@ -44,6 +50,9 @@ private:
     std::unique_ptr<savor::db::core::DBService> service_;
     savor::db::execution::programdb::ProgramKindRegistry program_registry_;
     std::unique_ptr<savor::db::execution::workflow::WorkflowCoordinatorService> workflow_coordinator_;
+    std::shared_ptr<
+        savor::db::execution::workflow::CoordinatorItemCreditSource>
+        workflow_item_credit_source_;
     std::filesystem::path root_;
 };
 

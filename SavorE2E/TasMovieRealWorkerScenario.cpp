@@ -381,7 +381,9 @@ bool RunTasMovieScenario(
             &err,
             [&](const std::string& line) {
                 push_line(line);
-            })) {
+            },
+            false,
+            coordinator.ItemCreditSource())) {
         if (error_out) *error_out = err;
         return false;
     }

@@ -37,7 +37,6 @@ struct ScriptedDolphinBackendControl
     runtime::BackendResult close_result = runtime::BackendResult::Success();
     runtime::BackendResult pause_result = runtime::BackendResult::Success();
     runtime::BackendResult resume_result = runtime::BackendResult::Success();
-    runtime::BackendResult step_instruction_result = runtime::BackendResult::Success();
     runtime::BackendResult step_frame_result = runtime::BackendResult::Success();
     runtime::BackendResult restore_file_result = runtime::BackendResult::Success();
     runtime::BackendResult restore_buffer_result = runtime::BackendResult::Success();
@@ -83,7 +82,6 @@ struct ScriptedDolphinBackendControl
     void SetCloseResult(runtime::BackendResult result);
     void SetPauseResult(runtime::BackendResult result);
     void SetResumeResult(runtime::BackendResult result);
-    void SetStepInstructionResult(runtime::BackendResult result);
     void SetStepFrameResult(runtime::BackendResult result);
     void SetRestoreFileResult(runtime::BackendResult result);
     void SetRestoreBufferResult(runtime::BackendResult result);
@@ -135,8 +133,6 @@ public:
 
     runtime::BackendResult Pause(std::chrono::milliseconds timeout);
     runtime::BackendResult Resume() override;
-    runtime::BackendResult StepInstruction(
-        std::chrono::milliseconds timeout);
     runtime::BackendResult StepFrame(std::chrono::milliseconds timeout);
 
     runtime::BackendResult RestoreStateFile(
@@ -166,7 +162,6 @@ private:
     QueryExecutionSnapshot() const override;
     runtime::BackendResult RequestPause() override;
     runtime::BackendResult BeginFrameStep() override;
-    runtime::BackendResult BeginExactInstructionStep() override;
     runtime::BackendResult SetThrottleDisabled(bool disabled) override;
 
     [[nodiscard]] bool IsAvailable(std::uint8_t port) const noexcept override;

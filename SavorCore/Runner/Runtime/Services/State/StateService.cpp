@@ -8,6 +8,7 @@
 #include <exception>
 #include <fstream>
 #include <limits>
+#include <string_view>
 #include <system_error>
 #include <utility>
 
@@ -131,6 +132,18 @@ void RemoveOwnedFile(const std::filesystem::path& path) noexcept
 {
     std::error_code ignored;
     std::filesystem::remove(path, ignored);
+}
+
+[[nodiscard]] bool CompleteSha256(std::string_view value) noexcept
+{
+    return value.size() == 64 &&
+        std::all_of(
+            value.begin(),
+            value.end(),
+            [](char ch) {
+                return (ch >= '0' && ch <= '9') ||
+                    (ch >= 'a' && ch <= 'f');
+            });
 }
 
 } // namespace
@@ -289,6 +302,7 @@ StateServiceResult StateService::Shutdown() noexcept
         return *shutdown_result_;
     stopped_ = true;
     replacing_ = false;
+    pending_file_artifacts_.clear();
     StateBackendResult backend = backend_.Shutdown();
     open_ = false;
     if (!backend.ok)
@@ -685,6 +699,258 @@ StateFileArtifactReceipt StateService::CaptureFileArtifact(
     receipt.external = false;
     file_artifacts_.emplace(id, FileRecord{receipt});
     return receipt;
+}
+
+ImmutableStateArtifactCaptureReceipt
+StateService::CaptureImmutableArtifact(
+    const StateFileCaptureRequest& request)
+{
+    ImmutableStateArtifactCaptureReceipt receipt;
+    receipt.final_path = request.path;
+    receipt.captured_epoch = current_epoch_;
+    if (!OnOwnerThread())
+    {
+        receipt.result = WrongThread();
+        return receipt;
+    }
+    if (StateServiceResult ready = ValidateReady(); !ready.ok)
+    {
+        receipt.result = std::move(ready);
+        return receipt;
+    }
+    if (request.path.empty() || request.path.filename().empty())
+    {
+        receipt.result = StateServiceResult::Failure(
+            StateServiceErrorCode::InvalidArgument,
+            "Immutable state capture requires a caller-declared final path");
+        return receipt;
+    }
+    const std::filesystem::path normalized =
+        request.path.lexically_normal();
+    const auto path_pending =
+        std::ranges::any_of(
+            pending_file_artifacts_,
+            [&](const auto& entry) {
+                return entry.second.path.lexically_normal() ==
+                    normalized;
+            });
+    const auto path_committed =
+        std::ranges::any_of(
+            file_artifacts_,
+            [&](const auto& entry) {
+                return entry.second.receipt.path.lexically_normal() ==
+                    normalized;
+            });
+    if (path_pending || path_committed)
+    {
+        receipt.result = StateServiceResult::Failure(
+            StateServiceErrorCode::ArtifactFailure,
+            "Immutable state artifact path is already owned");
+        return receipt;
+    }
+
+    std::optional<MovieCheckpointMetadata> movie = request.movie;
+    if (movie)
+    {
+        if (!movie->HasMovie() ||
+            movie->mode == MovieCheckpointMode::Recording)
+        {
+            receipt.result = StateServiceResult::Failure(
+                movie->mode == MovieCheckpointMode::Recording
+                    ? StateServiceErrorCode::Unsupported
+                    : StateServiceErrorCode::InvalidArgument,
+                movie->mode == MovieCheckpointMode::Recording
+                    ? "Asynchronous file publication does not support an "
+                      "in-progress movie recording"
+                    : "Movie checkpoint metadata must declare a movie mode");
+            return receipt;
+        }
+        // Async capture never performs file reads or hashes on the actor.
+        // MovieService supplies the exact bytes while paused; the finalizer
+        // validates their optional expected digest off-thread.
+        if (!HasDtmMagic(movie->dtm_bytes))
+        {
+            receipt.result = StateServiceResult::Failure(
+                StateServiceErrorCode::ArtifactFailure,
+                "Asynchronous movie continuation requires exact DTM bytes");
+            return receipt;
+        }
+        const std::string dtm_game_id(
+            reinterpret_cast<const char*>(
+                movie->dtm_bytes.data() + 4),
+            6);
+        if ((!movie->game_id.empty() &&
+             movie->game_id != dtm_game_id) ||
+            (compatibility_.Complete() &&
+             compatibility_.game_id != dtm_game_id))
+        {
+            receipt.result = StateServiceResult::Failure(
+                StateServiceErrorCode::CompatibilityMismatch,
+                "Movie continuation belongs to another game");
+            return receipt;
+        }
+        if (!movie->dtm_sha256.empty() &&
+            !CompleteSha256(movie->dtm_sha256))
+        {
+            receipt.result = StateServiceResult::Failure(
+                StateServiceErrorCode::InvalidArgument,
+                "Movie continuation expected SHA-256 is malformed");
+            return receipt;
+        }
+        movie->game_id = dtm_game_id;
+        movie->starts_from_savestate =
+            movie->dtm_bytes[12] != 0;
+    }
+    if (next_artifact_id_ == 0)
+    {
+        receipt.result = StateServiceResult::Failure(
+            StateServiceErrorCode::IntegrityFailure,
+            "StateArtifactId is exhausted",
+            StateIntegrity::Unknown);
+        tainted_ = true;
+        return receipt;
+    }
+
+    StateBackendBufferResult saved = backend_.SaveStateBuffer();
+    if (!saved.result.ok)
+    {
+        receipt.result = StateServiceResult::Failure(
+            StateServiceErrorCode::BackendFailure,
+            saved.result.message.empty()
+                ? "Immutable state buffer capture failed"
+                : std::move(saved.result.message),
+            saved.result.integrity);
+        if (saved.result.integrity == StateIntegrity::Unknown)
+            tainted_ = true;
+        return receipt;
+    }
+    if (saved.bytes.empty())
+    {
+        receipt.result = StateServiceResult::Failure(
+            StateServiceErrorCode::ArtifactFailure,
+            "State backend returned an empty state buffer");
+        return receipt;
+    }
+
+    const StateArtifactId artifact(next_artifact_id_++);
+    const std::size_t state_size = saved.bytes.size();
+    std::size_t movie_size = 0;
+    receipt.result = StateServiceResult::Success();
+    receipt.artifact = artifact;
+    receipt.captured_epoch = current_epoch_;
+    receipt.final_path = request.path;
+    receipt.state_bytes =
+        ImmutableStateBytes::Capture(std::move(saved.bytes));
+    receipt.compatibility = compatibility_;
+    receipt.lineage = request.lineage;
+    if (movie)
+    {
+        movie_size = movie->dtm_bytes.size();
+        receipt.movie_bytes = ImmutableStateBytes::Capture(
+            std::move(movie->dtm_bytes));
+        movie->dtm_bytes.clear();
+        movie->dtm_path = DtmSidecar(request.path);
+        receipt.movie = movie;
+    }
+
+    pending_file_artifacts_.emplace(
+        artifact.value(),
+        PendingFileRecord{
+            artifact,
+            current_epoch_,
+            request.path,
+            state_size,
+            movie_size,
+            compatibility_,
+            request.lineage,
+            std::move(movie)});
+    return receipt;
+}
+
+StateFileArtifactReceipt StateService::CommitImmutableArtifact(
+    const ImmutableStateArtifactPublicationReceipt& publication)
+{
+    StateFileArtifactReceipt receipt;
+    receipt.artifact = publication.artifact;
+    receipt.path = publication.state_path;
+    if (!OnOwnerThread())
+    {
+        receipt.result = WrongThread();
+        return receipt;
+    }
+    const auto found =
+        pending_file_artifacts_.find(publication.artifact.value());
+    if (!publication.artifact ||
+        found == pending_file_artifacts_.end())
+    {
+        receipt.result = StateServiceResult::Failure(
+            StateServiceErrorCode::NotFound,
+            "Pending immutable state capture was not found");
+        return receipt;
+    }
+    const PendingFileRecord pending = found->second;
+    const bool movie_expected = pending.movie.has_value();
+    if (publication.state_path.lexically_normal() !=
+            pending.path.lexically_normal() ||
+        publication.state_size_bytes != pending.state_size_bytes ||
+        !CompleteSha256(publication.state_sha256) ||
+        movie_expected != publication.movie_path.has_value() ||
+        (movie_expected &&
+         (publication.movie_path->lexically_normal() !=
+              DtmSidecar(pending.path).lexically_normal() ||
+          publication.movie_size_bytes != pending.movie_size_bytes ||
+          !CompleteSha256(publication.movie_sha256))))
+    {
+        receipt.result = StateServiceResult::Failure(
+            StateServiceErrorCode::IntegrityFailure,
+            "Finalized state artifact does not match its exact pending "
+            "capture");
+        return receipt;
+    }
+    if (file_artifacts_.contains(publication.artifact.value()))
+    {
+        receipt.result = StateServiceResult::Failure(
+            StateServiceErrorCode::IntegrityFailure,
+            "Finalized state artifact identity is already committed");
+        return receipt;
+    }
+
+    receipt.result = StateServiceResult::Success();
+    receipt.artifact = pending.artifact;
+    receipt.captured_epoch = pending.captured_epoch;
+    receipt.path = pending.path;
+    receipt.size_bytes = publication.state_size_bytes +
+        publication.movie_size_bytes;
+    receipt.sha256 = publication.state_sha256;
+    receipt.compatibility = pending.compatibility;
+    receipt.lineage = pending.lineage;
+    receipt.movie = pending.movie;
+    if (receipt.movie)
+    {
+        receipt.movie->dtm_path = *publication.movie_path;
+        receipt.movie->dtm_sha256 = publication.movie_sha256;
+    }
+    receipt.external = false;
+    file_artifacts_.emplace(
+        receipt.artifact.value(),
+        FileRecord{receipt});
+    pending_file_artifacts_.erase(found);
+    return receipt;
+}
+
+StateServiceResult StateService::AbandonImmutableArtifact(
+    StateArtifactId artifact) noexcept
+{
+    if (!OnOwnerThread())
+        return WrongThread();
+    if (!artifact ||
+        pending_file_artifacts_.erase(artifact.value()) == 0)
+    {
+        return StateServiceResult::Failure(
+            StateServiceErrorCode::NotFound,
+            "Pending immutable state capture was not found");
+    }
+    return StateServiceResult::Success();
 }
 
 StateFileArtifactReceipt StateService::ImportFileArtifact(

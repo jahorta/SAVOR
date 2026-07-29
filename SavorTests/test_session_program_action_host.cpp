@@ -4,6 +4,7 @@
 #include "Runner/Runtime/EmulationSession.h"
 #include "Runner/Runtime/ProgramRuntime/Actions/CanonicalActionPayload.h"
 #include "Runner/Runtime/ProgramRuntime/Actions/SessionProgramActionHost.h"
+#include "Runner/Runtime/Worksets/StateArtifactFinalizer.h"
 #include "Runner/Runtime/ProgramRuntime/Capabilities/SourceCapabilityPacks.h"
 #include "Runner/Runtime/ProgramRuntime/Registry/CanonicalActionCatalog.h"
 #include "Utils/Hash.h"
@@ -699,11 +700,63 @@ TEST(
     const ProgramValue* artifact_root =
         Root(saved.immediate_completion->output);
     ASSERT_NE(artifact_root, nullptr);
-    const auto* artifact =
-        std::get_if<ArtifactReferenceValue>(
-            &artifact_root->payload);
-    ASSERT_NE(artifact, nullptr);
-    const ArtifactReferenceValue artifact_copy = *artifact;
+    EXPECT_FALSE(std::holds_alternative<ArtifactReferenceValue>(
+        artifact_root->payload));
+    EXPECT_FALSE(
+        CanonicalActionArtifactReferenceSchemaIdentity(
+            CanonicalAction::StateSaveImmutableArtifact));
+    ASSERT_EQ(
+        saved.immediate_completion
+            ->pending_state_artifacts.size(),
+        1u);
+    PendingStateArtifactPublication pending =
+        std::move(saved.immediate_completion
+                      ->pending_state_artifacts.front());
+    StateArtifactFinalizer finalizer;
+    StateArtifactFinalizationRequest finalization;
+    finalization.item = {
+        WorkerWorksetId(1),
+        WorkerWorksetItemId(1),
+        0,
+        InvocationId(100),
+        AttemptId(1)};
+    finalization.state_artifact_id =
+        pending.capture.artifact;
+    finalization.logical_artifact_id =
+        pending.artifact_id;
+    finalization.state = {
+        pending.capture.final_path,
+        pending.capture.state_bytes,
+        {}};
+    ASSERT_TRUE(
+        finalizer.Submit(std::move(finalization)).result.ok);
+    finalizer.Shutdown();
+    auto finalized = finalizer.DrainCompletions();
+    ASSERT_EQ(finalized.size(), 1u);
+    ASSERT_TRUE(finalized[0].result.ok)
+        << finalized[0].result.message;
+    const StateFileArtifactReceipt committed =
+        harness.session.CommitImmutableStateArtifact({
+            .artifact = finalized[0].state_artifact_id,
+            .state_path = finalized[0].state.path,
+            .state_size_bytes = finalized[0].state.size_bytes,
+            .state_sha256 = finalized[0].state.sha256,
+        });
+    ASSERT_TRUE(committed.result.ok)
+        << committed.result.message;
+    const auto artifact_schema =
+        CanonicalActionArtifactPayloadSchemaIdentity(
+            CanonicalAction::StateSaveImmutableArtifact);
+    const auto artifact_hash =
+        ContentHash256::FromHex(committed.sha256);
+    ASSERT_TRUE(artifact_schema);
+    ASSERT_TRUE(artifact_hash);
+    const ArtifactReferenceValue artifact_copy{
+        pending.artifact_id,
+        *artifact_schema,
+        *artifact_hash,
+        committed.path.string(),
+        true};
 
     ASSERT_TRUE(harness.Finish().accepted);
     ProgramActionDispatchResult continued =

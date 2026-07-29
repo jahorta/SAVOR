@@ -1,5 +1,6 @@
 #include <atomic>
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <functional>
@@ -7,12 +8,16 @@
 #include <fstream>
 #include <filesystem>
 #include <iterator>
+#include <limits>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 #include <gtest/gtest.h>
 #include <sqlite3.h>
@@ -82,6 +87,97 @@ namespace savordb {
                 std::this_thread::sleep_for(std::chrono::milliseconds{ 5 });
             }
             return condition();
+        }
+
+        savor::runtime::WorkerRuntimeManifest CompleteWorksetTestManifest() {
+            static constexpr std::array<
+                std::pair<std::string_view, std::string_view>,
+                9>
+                kModules{{
+                    {"soa.seed_probe", "probe"},
+                    {"soa.navigation.context", "capture"},
+                    {"soa.tas_movie", "play_and_checkpoint"},
+                    {"soa.tas_frame_detector", "detect"},
+                    {"soa.battle.context", "capture"},
+                    {"soa.battle.macro_probe", "probe"},
+                    {"soa.battle.single_turn", "execute"},
+                    {"soa.battle.completion", "complete"},
+                    {"soa.battle.results_screen", "advance"},
+                }};
+            savor::runtime::WorkerRuntimeManifest manifest;
+            manifest.catalog_status =
+                savor::runtime::RuntimeCatalogStatus::CompleteExact;
+            manifest.catalog_sha256 =
+                "phase3-workset-test-catalog";
+            manifest.runtime_profile_sha256 =
+                "phase3-workset-test-runtime";
+            manifest.dependency_manifest_sha256 =
+                "phase3-workset-test-dependencies";
+            for (const auto& [module_id, entrypoint] : kModules) {
+                manifest.modules.push_back(
+                    savor::runtime::RuntimeModuleManifestEntry{
+                        .module = {
+                            .canonical_id = std::string(module_id),
+                            .revision = 1,
+                            .canonical_hash =
+                                "phase3-workset-test:" +
+                                std::string(module_id),
+                        },
+                        .entrypoints = {
+                            std::string(entrypoint)},
+                        .dependency_manifest_sha256 =
+                            "phase3-workset-test-module-dependencies",
+                    });
+            }
+            return manifest;
+        }
+
+        void ConfigureWorksetTestGate(
+            savor::runner::parallel::savordb::
+                DBWorkflowWorkerCoordinatorConfig& config) {
+            using namespace savor::runner::parallel::savordb;
+            config.expected_catalog_sha256 =
+                "phase3-workset-test-catalog";
+            config.expected_runtime_profile_sha256 =
+                "phase3-workset-test-runtime";
+            config.expected_dependency_manifest_sha256 =
+                "phase3-workset-test-dependencies";
+            config.workset_definition_builder =
+                [](std::size_t,
+                   const std::vector<ClaimedJobRecord>&,
+                   const savor::runtime::WorkerRuntimeManifest&,
+                   std::string*)
+                -> std::optional<
+                    savor::runtime::WorkerWorksetDefinition> {
+                    return std::nullopt;
+                };
+            config.workset_terminal_decoder =
+                [](const ClaimedJobRecord&,
+                   const savor::wrms::
+                       WorksetItemTerminalPayload&,
+                   std::string*)
+                -> std::optional<savor::PRResult> {
+                    return savor::PRResult{};
+                };
+            config.worker_capability_preflight =
+                [](std::size_t,
+                   const DBWorkflowWorkerCoordinatorConfig&,
+                   const std::shared_ptr<
+                       savor::ProcessWorker>&) {
+                    return
+                        CoordinatorWorkerCapabilityPreflightResult{
+                            .process_ready = true,
+                            .capabilities =
+                                savor::runtime::AddCapability(
+                                    savor::runtime::
+                                        kSlice1ProductionCapabilities,
+                                    savor::runtime::
+                                        WorkerCapability::
+                                            WorksetDispatch),
+                            .runtime_manifest =
+                                CompleteWorksetTestManifest(),
+                        };
+                };
         }
 
         class TestJobPersistenceAdapter final : public savor::db::execution::programdb::IJobPersistenceAdapter {
@@ -691,12 +787,14 @@ VALUES(6403, 6401, 'Current', 'unit.step', 'MATERIALIZED', 6402, 0, 1, unixepoch
         using namespace savor::runner::parallel::savordb;
         using namespace savor::db::execution::workflow;
 
+        DBWorkflowWorkerCoordinatorConfig cfg{
+            .desired_workers = 1,
+            .controller_sleep_ms = 1,
+        };
+        ConfigureWorksetTestGate(cfg);
         DBWorkflowWorkerCoordinator coordinator(
             nullptr,
-            DBWorkflowWorkerCoordinatorConfig{
-                .desired_workers = 0,
-                .controller_sleep_ms = 1,
-            },
+            std::move(cfg),
             CoordinatorIntegrationConfig{},
             [](const WorkflowReadyStep& step) {
                 return ScheduledJobSet{
@@ -739,12 +837,14 @@ VALUES(6403, 6401, 'Current', 'unit.step', 'MATERIALIZED', 6402, 0, 1, unixepoch
         using namespace savor::runner::parallel::savordb;
         using namespace savor::db::execution::workflow;
 
+        DBWorkflowWorkerCoordinatorConfig cfg{
+            .desired_workers = 1,
+            .controller_sleep_ms = 1,
+        };
+        ConfigureWorksetTestGate(cfg);
         DBWorkflowWorkerCoordinator coordinator(
             nullptr,
-            DBWorkflowWorkerCoordinatorConfig{
-                .desired_workers = 0,
-                .controller_sleep_ms = 1,
-            },
+            std::move(cfg),
             CoordinatorIntegrationConfig{},
             [](const WorkflowReadyStep& step) {
                 return ScheduledJobSet{
@@ -760,7 +860,8 @@ VALUES(6403, 6401, 'Current', 'unit.step', 'MATERIALIZED', 6402, 0, 1, unixepoch
             events.push_back(line);
         });
 
-        coordinator.Start();
+        const auto start = coordinator.Start();
+        ASSERT_TRUE(start) << start.error;
         coordinator.Stop();
         coordinator.Stop();
 
@@ -775,12 +876,14 @@ VALUES(6403, 6401, 'Current', 'unit.step', 'MATERIALIZED', 6402, 0, 1, unixepoch
         using namespace savor::runner::parallel::savordb;
         using namespace savor::db::execution::workflow;
 
+        DBWorkflowWorkerCoordinatorConfig cfg{
+            .desired_workers = 1,
+            .controller_sleep_ms = 1,
+        };
+        ConfigureWorksetTestGate(cfg);
         DBWorkflowWorkerCoordinator coordinator(
             nullptr,
-            DBWorkflowWorkerCoordinatorConfig{
-                .desired_workers = 0,
-                .controller_sleep_ms = 1,
-            },
+            std::move(cfg),
             CoordinatorIntegrationConfig{},
             [](const WorkflowReadyStep& step) {
                 return ScheduledJobSet{
@@ -794,7 +897,8 @@ VALUES(6403, 6401, 'Current', 'unit.step', 'MATERIALIZED', 6402, 0, 1, unixepoch
             ++results_seen;
         });
 
-        coordinator.Start();
+        const auto start = coordinator.Start();
+        ASSERT_TRUE(start) << start.error;
         coordinator.EnqueueResultForTest(savor::PRResult{
             .job_id = 777,
             .epoch = 1,
@@ -814,23 +918,39 @@ VALUES(6403, 6401, 'Current', 'unit.step', 'MATERIALIZED', 6402, 0, 1, unixepoch
         auto startup_entered = std::make_shared<std::promise<void>>();
         auto startup_release = std::make_shared<std::promise<void>>();
         auto release_future = startup_release->get_future().share();
+        auto startup_signalled =
+            std::make_shared<std::atomic<bool>>(false);
 
         DBWorkflowWorkerCoordinatorConfig cfg{
-            .desired_workers = 1,
+            .desired_workers = 2,
             .controller_sleep_ms = 1,
             .max_concurrent_worker_starts = 1,
         };
-        cfg.runtime_slot_preparer = [startup_entered, release_future](
-            size_t,
+        ConfigureWorksetTestGate(cfg);
+        cfg.worker_capability_preflight =
+            [startup_entered,
+             release_future,
+             startup_signalled](
+            size_t worker_id,
             const DBWorkflowWorkerCoordinatorConfig&,
-            std::filesystem::path*,
-            std::string* error_out) mutable {
-            startup_entered->set_value();
-            release_future.wait();
-            if (error_out != nullptr) {
-                *error_out = "released by shutdown test";
+            const std::shared_ptr<savor::ProcessWorker>&) mutable {
+            if (worker_id != 0) {
+                if (!startup_signalled->exchange(true)) {
+                    startup_entered->set_value();
+                }
+                release_future.wait();
+                return CoordinatorWorkerCapabilityPreflightResult{
+                    .error = "released by shutdown test"};
             }
-            return false;
+            return CoordinatorWorkerCapabilityPreflightResult{
+                .process_ready = true,
+                .capabilities = savor::runtime::AddCapability(
+                    savor::runtime::kSlice1ProductionCapabilities,
+                    savor::runtime::WorkerCapability::
+                        WorksetDispatch),
+                .runtime_manifest =
+                    CompleteWorksetTestManifest(),
+            };
         };
 
         DBWorkflowWorkerCoordinator coordinator(
@@ -844,8 +964,12 @@ VALUES(6403, 6401, 'Current', 'unit.step', 'MATERIALIZED', 6402, 0, 1, unixepoch
                 };
             });
 
-        coordinator.Start();
-        ASSERT_EQ(startup_entered->get_future().wait_for(std::chrono::milliseconds(1000)), std::future_status::ready);
+        const auto start = coordinator.Start();
+        ASSERT_TRUE(start) << start.error;
+        ASSERT_EQ(
+            startup_entered->get_future().wait_for(
+                std::chrono::milliseconds(1000)),
+            std::future_status::ready);
 
         auto stop_future = std::async(std::launch::async, [&]() {
             coordinator.Stop();
@@ -860,13 +984,14 @@ VALUES(6403, 6401, 'Current', 'unit.step', 'MATERIALIZED', 6402, 0, 1, unixepoch
         using namespace savor::runner::parallel::savordb;
         using namespace savor::db::execution::workflow;
 
+        DBWorkflowWorkerCoordinatorConfig cfg{
+            .desired_workers = 1,
+            .controller_sleep_ms = 1,
+        };
+        ConfigureWorksetTestGate(cfg);
         DBWorkflowWorkerCoordinator coordinator(
             nullptr,
-            DBWorkflowWorkerCoordinatorConfig{
-                .desired_workers = 1,
-                .controller_sleep_ms = 1,
-                .worker_exe_path = "missing-worker-binary.exe",
-            },
+            std::move(cfg),
             CoordinatorIntegrationConfig{},
             [](const WorkflowReadyStep& step) {
                 return ScheduledJobSet{
@@ -882,7 +1007,8 @@ VALUES(6403, 6401, 'Current', 'unit.step', 'MATERIALIZED', 6402, 0, 1, unixepoch
             events.push_back(line);
         });
 
-        coordinator.Start();
+        const auto start = coordinator.Start();
+        ASSERT_TRUE(start) << start.error;
         ASSERT_TRUE(WaitForCondition([&]() {
             return !coordinator.SnapshotWorkers().empty();
         }, std::chrono::milliseconds{ 1000 }));
@@ -1096,29 +1222,39 @@ VALUES(6403, 6401, 'Current', 'unit.step', 'MATERIALIZED', 6402, 0, 1, unixepoch
         auto startup_entered = std::make_shared<std::promise<void>>();
         auto startup_release = std::make_shared<std::promise<void>>();
         auto release_future = startup_release->get_future().share();
-        auto preparer_calls = std::make_shared<std::atomic<int>>(0);
+        auto startup_signalled =
+            std::make_shared<std::atomic<bool>>(false);
 
         DBWorkflowWorkerCoordinatorConfig cfg{
             .desired_workers = 2,
             .controller_sleep_ms = 1,
             .max_concurrent_worker_starts = 1,
         };
-        cfg.runtime_slot_preparer = [startup_entered, release_future, preparer_calls](
-            size_t,
+        ConfigureWorksetTestGate(cfg);
+        cfg.worker_capability_preflight =
+            [startup_entered,
+             release_future,
+             startup_signalled](
+            size_t worker_id,
             const DBWorkflowWorkerCoordinatorConfig&,
-            std::filesystem::path* runtime_worker_exe_out,
-            std::string* error_out) mutable {
-            if (preparer_calls->fetch_add(1) == 0) {
-                startup_entered->set_value();
+            const std::shared_ptr<savor::ProcessWorker>&) mutable {
+            if (worker_id != 0) {
+                if (!startup_signalled->exchange(true)) {
+                    startup_entered->set_value();
+                }
                 release_future.wait();
+                return CoordinatorWorkerCapabilityPreflightResult{
+                    .error = "blocked secondary startup test"};
             }
-            if (runtime_worker_exe_out != nullptr) {
-                *runtime_worker_exe_out = "blocked-startup-test-worker.exe";
-            }
-            if (error_out != nullptr) {
-                *error_out = "blocked by test";
-            }
-            return false;
+            return CoordinatorWorkerCapabilityPreflightResult{
+                .process_ready = true,
+                .capabilities = savor::runtime::AddCapability(
+                    savor::runtime::kSlice1ProductionCapabilities,
+                    savor::runtime::WorkerCapability::
+                        WorksetDispatch),
+                .runtime_manifest =
+                    CompleteWorksetTestManifest(),
+            };
         };
 
         DBWorkflowWorkerCoordinator coordinator(
@@ -1132,8 +1268,16 @@ VALUES(6403, 6401, 'Current', 'unit.step', 'MATERIALIZED', 6402, 0, 1, unixepoch
                 };
             });
 
-        coordinator.Start();
-        ASSERT_EQ(startup_entered->get_future().wait_for(std::chrono::milliseconds(1000)), std::future_status::ready);
+        const auto start = coordinator.Start();
+        ASSERT_TRUE(start) << start.error;
+        const auto secondary_start =
+            startup_entered->get_future().wait_for(
+                std::chrono::milliseconds(1000));
+        if (secondary_start != std::future_status::ready) {
+            startup_release->set_value();
+            coordinator.Stop();
+            FAIL() << "Secondary worker startup did not begin";
+        }
 
         coordinator.EnqueueProgressForTest(savor::PRProgress{
             .worker_id = 1,
@@ -1158,12 +1302,14 @@ VALUES(6403, 6401, 'Current', 'unit.step', 'MATERIALIZED', 6402, 0, 1, unixepoch
         using namespace savor::runner::parallel::savordb;
         using namespace savor::db::execution::workflow;
 
+        DBWorkflowWorkerCoordinatorConfig cfg{
+            .desired_workers = 1,
+            .controller_sleep_ms = 1,
+        };
+        ConfigureWorksetTestGate(cfg);
         DBWorkflowWorkerCoordinator coordinator(
             nullptr,
-            DBWorkflowWorkerCoordinatorConfig{
-                .desired_workers = 0,
-                .controller_sleep_ms = 1,
-            },
+            std::move(cfg),
             CoordinatorIntegrationConfig{},
             [](const WorkflowReadyStep& step) {
                 return ScheduledJobSet{
@@ -1183,7 +1329,8 @@ VALUES(6403, 6401, 'Current', 'unit.step', 'MATERIALIZED', 6402, 0, 1, unixepoch
             terminal_seen_promise.set_value();
             });
 
-        coordinator.Start();
+        const auto start = coordinator.Start();
+        ASSERT_TRUE(start) << start.error;
         for (int i = 0; i < 200; ++i) {
             coordinator.EnqueueProgressForTest(savor::PRProgress{
                 .worker_id = 0,
@@ -1223,12 +1370,14 @@ VALUES(6403, 6401, 'Current', 'unit.step', 'MATERIALIZED', 6402, 0, 1, unixepoch
         };
 
         ProgressRecordingExecutionDb execution_db;
+        DBWorkflowWorkerCoordinatorConfig cfg{
+            .desired_workers = 1,
+            .controller_sleep_ms = 1,
+        };
+        ConfigureWorksetTestGate(cfg);
         DBWorkflowWorkerCoordinator coordinator(
             &execution_db,
-            DBWorkflowWorkerCoordinatorConfig{
-                .desired_workers = 0,
-                .controller_sleep_ms = 1,
-            },
+            std::move(cfg),
             CoordinatorIntegrationConfig{},
             [](const WorkflowReadyStep& step) {
                 return ScheduledJobSet{
@@ -1242,11 +1391,15 @@ VALUES(6403, 6401, 'Current', 'unit.step', 'MATERIALIZED', 6402, 0, 1, unixepoch
             ++progress_seen;
         });
 
-        coordinator.Start();
+        const auto start = coordinator.Start();
+        ASSERT_TRUE(start) << start.error;
         coordinator.EnqueueProgressForTest(savor::PRProgress{ .worker_id = 3, .job_id = 42, .text = "same" });
         coordinator.EnqueueProgressForTest(savor::PRProgress{ .worker_id = 3, .job_id = 42, .text = "same" });
         coordinator.EnqueueProgressForTest(savor::PRProgress{ .worker_id = 3, .job_id = 42, .text = "same" });
         coordinator.EnqueueProgressForTest(savor::PRProgress{ .worker_id = 3, .job_id = 42, .text = "next" });
+        EXPECT_TRUE(WaitForCondition([&] {
+            return progress_seen.load() == 2;
+        }));
         coordinator.Stop();
 
         std::vector<std::string> messages;
@@ -1292,12 +1445,17 @@ VALUES(6403, 6401, 'Current', 'unit.step', 'MATERIALIZED', 6402, 0, 1, unixepoch
                 }
                 std::vector<savor::db::ClaimedExecutionJob> out;
                 while (!claims.empty() && static_cast<int>(out.size()) < requested_jobs) {
-                    out.push_back(claims.front());
+                    auto claimed = claims.front();
+                    claimed.claimed_by_token =
+                        std::string(claimed_by_token) + ":"
+                        + std::to_string(claimed.job_id);
+                    claimed.lease_expires_at_utc = lease_duration_ms;
+                    out.push_back(claimed);
                     savor::db::ExecutionJobRecord record{};
-                    record.job_id = claims.front().job_id;
-                    record.job_set_id = claims.front().job_set_id;
+                    record.job_id = claimed.job_id;
+                    record.job_set_id = claimed.job_set_id;
                     record.state = "CLAIMED";
-                    record.claimed_by_token = std::string(claimed_by_token);
+                    record.claimed_by_token = claimed.claimed_by_token;
                     record.lease_expires_at_utc = lease_duration_ms;
                     records[record.job_id] = record;
                     claims.erase(claims.begin());
@@ -1429,7 +1587,7 @@ VALUES(6403, 6401, 'Current', 'unit.step', 'MATERIALIZED', 6402, 0, 1, unixepoch
         EXPECT_EQ(dispatch_calls, 1);
     }
 
-    TEST(Stage3Phase3DispatchGuard, MaterializedReadySetPrioritizesWorkerAffinity) {
+    TEST(Stage3Phase3DispatchGuard, MaterializedReadySetUsesStableDurableOrderBeforeWorkerAffinity) {
         using namespace savor::runner::parallel::savordb;
         using namespace savor::db::execution::programdb;
 
@@ -1445,12 +1603,17 @@ VALUES(6403, 6401, 'Current', 'unit.step', 'MATERIALIZED', 6402, 0, 1, unixepoch
                 }
                 std::vector<savor::db::ClaimedExecutionJob> out;
                 while (!claims.empty() && static_cast<int>(out.size()) < requested_jobs) {
-                    out.push_back(claims.front());
+                    auto claimed = claims.front();
+                    claimed.claimed_by_token =
+                        std::string(claimed_by_token) + ":"
+                        + std::to_string(claimed.job_id);
+                    claimed.lease_expires_at_utc = lease_duration_ms;
+                    out.push_back(claimed);
                     savor::db::ExecutionJobRecord record{};
-                    record.job_id = claims.front().job_id;
-                    record.job_set_id = claims.front().job_set_id;
+                    record.job_id = claimed.job_id;
+                    record.job_set_id = claimed.job_set_id;
                     record.state = "CLAIMED";
-                    record.claimed_by_token = std::string(claimed_by_token);
+                    record.claimed_by_token = claimed.claimed_by_token;
                     record.lease_expires_at_utc = lease_duration_ms;
                     records[record.job_id] = record;
                     claims.erase(claims.begin());
@@ -1506,6 +1669,9 @@ VALUES(6403, 6401, 'Current', 'unit.step', 'MATERIALIZED', 6402, 0, 1, unixepoch
                     .savestate_ref_kind = "test_savestate",
                     .savestate_ref_id = savestate_ref_id_,
                     .bootstrap_profile = bootstrap_profile_,
+                    .workset_execution_key =
+                        bootstrap_profile_ + ":"
+                        + std::to_string(savestate_ref_id_),
                 };
             }
 
@@ -1578,12 +1744,21 @@ VALUES(6403, 6401, 'Current', 'unit.step', 'MATERIALIZED', 6402, 0, 1, unixepoch
                 .workflow_step_kind = "test.program10",
                 .workflow_step_priority = 1,
             },
+            savor::db::ClaimedExecutionJob{
+                .job_id = 1005,
+                .job_set_id = 1,
+                .workflow_instance_id = 1,
+                .workflow_step_id = 5,
+                .workflow_step_key = "Program9Again",
+                .workflow_step_kind = "test.program9",
+                .workflow_step_priority = 1,
+            },
         };
 
         JobMaterializationService materialization(&execution_db, &registry);
         materialization.ResetForStart();
         const auto now = std::chrono::steady_clock::now();
-        EXPECT_EQ(materialization.ClaimJobs(4, now), 4u);
+        EXPECT_EQ(materialization.ClaimJobs(5, now), 5u);
         EXPECT_TRUE(materialization.MaterializeClaimedJobPayload(now));
 
         ClaimedJobRecord selected{};
@@ -1594,8 +1769,8 @@ VALUES(6403, 6401, 'Current', 'unit.step', 'MATERIALIZED', 6402, 0, 1, unixepoch
                 .program_runtime_affinity_key = std::string("old-runtime"),
             },
             &selected));
-        EXPECT_EQ(selected.job_id, 1002);
-        EXPECT_EQ(selected.program_kind, 8);
+        EXPECT_EQ(selected.job_id, 1001);
+        EXPECT_EQ(selected.program_kind, 7);
 
         EXPECT_TRUE(materialization.TrySelectMaterializedJobForWorker(
             MaterializedJobSelectionAffinity{
@@ -1603,17 +1778,60 @@ VALUES(6403, 6401, 'Current', 'unit.step', 'MATERIALIZED', 6402, 0, 1, unixepoch
                 .program_runtime_affinity_key = std::string("cold-runtime"),
             },
             &selected));
-        EXPECT_EQ(selected.job_id, 1001);
-        EXPECT_EQ(selected.program_kind, 7);
+        EXPECT_EQ(selected.job_id, 1002);
+        EXPECT_EQ(selected.program_kind, 8);
 
-        EXPECT_TRUE(materialization.TrySelectMaterializedJobForWorker(
+        ClaimedJobRecord anchor{};
+        ASSERT_TRUE(materialization.PeekMaterializedAnchor(&anchor));
+        ASSERT_EQ(anchor.job_id, 1003);
+        ASSERT_GT(anchor.encoded_input_bytes, 0u);
+
+        std::vector<ClaimedJobRecord> workset;
+        EXPECT_TRUE(materialization.TrySelectMaterializedWorksetForWorker(
+            MaterializedJobSelectionAffinity{},
+            MaterializedWorksetSelectionLimits{
+                .max_items = 16,
+                .lookahead_items = 16,
+                .max_selected_bytes = anchor.encoded_input_bytes,
+                .lookahead_bytes =
+                    (std::numeric_limits<std::size_t>::max)(),
+            },
+            &workset));
+        ASSERT_EQ(workset.size(), 1u);
+        EXPECT_EQ(workset.front().job_id, 1003);
+        ASSERT_TRUE(materialization.RequeueMaterializedJob(1003));
+
+        workset.clear();
+        EXPECT_TRUE(materialization.TrySelectMaterializedWorksetForWorker(
+            MaterializedJobSelectionAffinity{},
+            MaterializedWorksetSelectionLimits{
+                .max_items = 16,
+                .lookahead_items = 16,
+                .max_selected_bytes =
+                    (std::numeric_limits<std::size_t>::max)(),
+                .lookahead_bytes = anchor.encoded_input_bytes,
+            },
+            &workset));
+        ASSERT_EQ(workset.size(), 1u);
+        EXPECT_EQ(workset.front().job_id, 1003);
+        ASSERT_TRUE(materialization.RequeueMaterializedJob(1003));
+
+        workset.clear();
+        EXPECT_TRUE(materialization.TrySelectMaterializedWorksetForWorker(
             MaterializedJobSelectionAffinity{
                 .program_kind = 99,
                 .program_runtime_affinity_key = std::string("warm-runtime"),
             },
-            &selected));
-        EXPECT_EQ(selected.job_id, 1003);
-        EXPECT_EQ(selected.program_kind, 9);
+            MaterializedWorksetSelectionLimits{
+                .max_items = 16,
+                .lookahead_items = 16,
+            },
+            &workset));
+        ASSERT_EQ(workset.size(), 2u);
+        EXPECT_EQ(workset[0].job_id, 1003);
+        EXPECT_EQ(workset[1].job_id, 1005);
+        EXPECT_EQ(workset[0].workset_execution_key,
+            workset[1].workset_execution_key);
     }
 
     TEST(Stage3Phase3Contracts, DedupeIsolationIsScopedPerCoordinatorBridgeInstance) {

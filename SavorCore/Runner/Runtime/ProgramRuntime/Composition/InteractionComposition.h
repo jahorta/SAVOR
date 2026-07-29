@@ -24,12 +24,6 @@ enum class InputAcknowledgementPolicy : std::uint8_t
     RequestAndRelease,
 };
 
-enum class ReachedInstructionPolicy : std::uint8_t
-{
-    LeavePaused,
-    ExecuteUnderHeldRequest,
-};
-
 struct InteractionParameter
 {
     std::string name;
@@ -48,7 +42,6 @@ struct InteractionActionSet
     ExactDependencyIdentity await_guest_poll;
     ExactDependencyIdentity subscribe_group;
     ExactDependencyIdentity continue_until;
-    ExactDependencyIdentity step_instructions;
     ExactDependencyIdentity step_frames;
 
     auto operator<=>(const InteractionActionSet&) const = default;
@@ -62,9 +55,10 @@ struct InteractionSegmentDefinition
     InteractionInputKind input_kind = InteractionInputKind::Held;
     InputAcknowledgementPolicy acknowledgement =
         InputAcknowledgementPolicy::RequestAndRelease;
-    bool step_off_current_source = true;
-    ReachedInstructionPolicy reached_instruction =
-        ReachedInstructionPolicy::LeavePaused;
+    // When behavior depends on the guest executing beyond the reached gate
+    // under the same non-neutral publication, name the semantic successor
+    // explicitly. Ordinary source departure uses ContinueUntil suppression.
+    std::optional<SemanticPointReference> held_through_successor;
     std::uint64_t deadline_milliseconds = 0;
     bool fail_on_movie_end = true;
     bool require_vi_progress = true;

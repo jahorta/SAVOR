@@ -1,5 +1,6 @@
 #include "ProcessWorker.h"
 
+#include "Runner/Runtime/Worksets/WorksetWireCodec.h"
 #include "Utils/Log.h"
 #include "Utils/ThreadName.h"
 
@@ -15,6 +16,9 @@ namespace {
 
 constexpr std::uint32_t kDefaultRequestTimeoutMs = 10000;
 constexpr std::uint32_t kExecutionTransportAllowanceMs = 1000;
+constexpr std::size_t kMaximumPendingCallbacks = 128;
+constexpr std::size_t kMaximumPendingCallbackBytes =
+    128ull * 1024ull * 1024ull;
 
 bool WriteAll(
     HANDLE handle,
@@ -122,8 +126,45 @@ runtime::WorkerRejectionCode MapRejectionCode(
     case Wire::BackendFailure: return Runtime::BackendFailure;
     case Wire::RuntimeStopping: return Runtime::RuntimeStopping;
     case Wire::InternalFailure: return Runtime::InternalFailure;
+    case Wire::WorksetAlreadyActive: return Runtime::WorksetAlreadyActive;
+    case Wire::WorksetNotFound: return Runtime::WorksetNotFound;
+    case Wire::WorksetItemNotFound: return Runtime::WorksetItemNotFound;
+    case Wire::WorksetCatalogMismatch: return Runtime::WorksetCatalogMismatch;
+    case Wire::CapacityExceeded: return Runtime::CapacityExceeded;
+    case Wire::TerminalNotFound: return Runtime::TerminalNotFound;
+    case Wire::TerminalMismatch: return Runtime::TerminalMismatch;
     }
     return Runtime::InternalFailure;
+}
+
+bool SameImmutableManifestFields(
+    const runtime::WorkerRuntimeManifest& lhs,
+    const runtime::WorkerRuntimeManifest& rhs) noexcept
+{
+    return lhs.wrms_protocol_version == rhs.wrms_protocol_version &&
+        lhs.program_module_format_version ==
+            rhs.program_module_format_version &&
+        lhs.program_invocation_format_version ==
+            rhs.program_invocation_format_version &&
+        lhs.program_result_format_version ==
+            rhs.program_result_format_version &&
+        lhs.runtime_profile_sha256 == rhs.runtime_profile_sha256 &&
+        lhs.dependency_manifest_sha256 ==
+            rhs.dependency_manifest_sha256 &&
+        lhs.limits == rhs.limits;
+}
+
+bool ManifestContainsExactModule(
+    const runtime::WorkerRuntimeManifest& manifest,
+    const runtime::EncodedModuleEnvelope& module) noexcept
+{
+    return std::ranges::any_of(
+        manifest.modules,
+        [&](const runtime::RuntimeModuleManifestEntry& entry)
+        {
+            return entry.module == module.identity &&
+                entry.development_only == module.development_only;
+        });
 }
 
 std::uint32_t RemainingMilliseconds(
@@ -144,6 +185,11 @@ std::uint32_t RemainingMilliseconds(
 ProcessWorker::~ProcessWorker()
 {
     stop();
+    const auto callback_deadline =
+        std::chrono::steady_clock::now() +
+        kProcessWorkerDefaultCallbackCleanupGrace;
+    (void)stop_callback_dispatch(callback_deadline);
+    detach_callback_failure_target();
 }
 
 bool ProcessWorker::create_child(
@@ -294,6 +340,10 @@ bool ProcessWorker::launch_and_negotiate(
 
     stop_started_.store(false, std::memory_order_release);
     stop_repeated_.store(false, std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> lock(stop_completion_mutex_);
+        stop_completed_ = false;
+    }
     accepting_writes_.store(false, std::memory_order_release);
     ready_received_.store(false, std::memory_order_release);
     ready_ok_.store(false, std::memory_order_release);
@@ -301,6 +351,7 @@ bool ProcessWorker::launch_and_negotiate(
     busy_.store(false, std::memory_order_release);
     next_request_id_.store(1, std::memory_order_release);
     worker_id_ = options.worker_id;
+    protocol_failed_.store(false, std::memory_order_release);
     {
         std::lock_guard<std::mutex> lock(stop_mutex_);
         last_stop_snapshot_ = {};
@@ -317,7 +368,9 @@ bool ProcessWorker::launch_and_negotiate(
         snapshot_ = {};
         snapshot_.worker_state = runtime::WorkerState::Starting;
         hello_ = {};
+        runtime_manifest_.reset();
     }
+    start_callback_dispatch();
 
     std::string create_error;
     if (!create_child(options, &create_error))
@@ -351,7 +404,9 @@ bool ProcessWorker::launch_and_negotiate(
         });
     }
 
-    if (!negotiated || !ready_ok_.load(std::memory_order_acquire))
+    if (!negotiated ||
+        !ready_ok_.load(std::memory_order_acquire) ||
+        !running_.load(std::memory_order_acquire))
     {
         std::string error = last_error();
         if (error.empty())
@@ -445,11 +500,17 @@ bool ProcessWorker::prepare_encoded_module(
     wrms::CommandResultPayload* result_out,
     std::uint32_t timeout_ms)
 {
+    std::optional<runtime::WorkerRuntimeManifest> manifest_before;
+    {
+        std::lock_guard<std::mutex> lock(snapshot_mutex_);
+        manifest_before = runtime_manifest_;
+    }
     wrms::PrepareModulePayload request{
         .canonical_id = module.identity.canonical_id,
         .revision = module.identity.revision,
         .canonical_hash = module.identity.canonical_hash,
         .format_version = module.format_version,
+        .development_only = module.development_only,
         .encoded_module = module.payload,
     };
     std::vector<std::uint8_t> payload;
@@ -476,7 +537,34 @@ bool ProcessWorker::prepare_encoded_module(
     }
     if (result_out)
         *result_out = result;
-    return result.status == wrms::CommandStatus::Succeeded;
+    if (result.status != wrms::CommandStatus::Succeeded)
+        return false;
+
+    std::optional<runtime::WorkerRuntimeManifest> manifest_after;
+    {
+        std::lock_guard<std::mutex> lock(snapshot_mutex_);
+        manifest_after = runtime_manifest_;
+    }
+    const bool existed_before =
+        manifest_before &&
+        ManifestContainsExactModule(*manifest_before, module);
+    const bool exact_after =
+        manifest_after &&
+        ManifestContainsExactModule(*manifest_after, module);
+    const bool observed_barrier =
+        exact_after &&
+        (existed_before ||
+         !manifest_before ||
+         manifest_after->catalog_generation >
+             manifest_before->catalog_generation);
+    if (!observed_barrier)
+    {
+        fail_protocol(
+            "PrepareModule succeeded without an exact RuntimeManifest "
+            "module barrier");
+        return false;
+    }
+    return true;
 }
 
 bool ProcessWorker::submit_encoded_invocation(
@@ -484,25 +572,151 @@ bool ProcessWorker::submit_encoded_invocation(
     wrms::CommandResultPayload* result_out,
     std::uint32_t timeout_ms)
 {
-    wrms::SubmitInvocationPayload request{
-        .invocation_id = invocation.invocation_id.value(),
-        .attempt_id = invocation.attempt_id.value(),
-        .module_canonical_id = invocation.module.canonical_id,
-        .module_revision = invocation.module.revision,
-        .module_canonical_hash = invocation.module.canonical_hash,
-        .entrypoint = invocation.entrypoint,
-        .expected_state_epoch = invocation.expected_state_epoch.value(),
-        .encoded_invocation = invocation.input_payload,
-    };
+    (void)invocation;
+    (void)timeout_ms;
+    if (result_out)
+    {
+        *result_out = wrms::CommandResultPayload{
+            .command_kind = wrms::MessageKind::SubmitInvocation,
+            .status = wrms::CommandStatus::Unsupported,
+            .rejection_code = wrms::RejectionCode::Unsupported,
+            .error_code = "ReservedSubmitInvocation",
+            .message =
+                "SubmitInvocation is retired; submit a one-item WorkerWorkset",
+        };
+    }
+    set_last_error(
+        "SubmitInvocation is retired; submit a one-item WorkerWorkset");
+    return false;
+}
+
+bool ProcessWorker::submit_workset(
+    const runtime::WorkerWorksetDefinition& workset,
+    wrms::CommandResultPayload* result_out,
+    std::uint32_t timeout_ms)
+{
+    ProcessWorksetSubmitOutcome outcome =
+        submit_workset_with_outcome(workset, timeout_ms);
+    if (result_out)
+        *result_out = outcome.result;
+    if (!outcome.accepted() && !outcome.diagnostic.empty())
+        set_last_error(outcome.diagnostic);
+    return outcome.accepted();
+}
+
+ProcessWorksetSubmitOutcome ProcessWorker::submit_workset_with_outcome(
+    const runtime::WorkerWorksetDefinition& workset,
+    std::uint32_t timeout_ms)
+{
+    ProcessWorksetSubmitOutcome outcome;
+    outcome.result.command_kind = wrms::MessageKind::SubmitWorkset;
+    outcome.result.status = wrms::CommandStatus::Rejected;
+    outcome.result.rejection_code = wrms::RejectionCode::InvalidArgument;
+
+    std::vector<std::uint8_t> encoded_workset;
+    const auto encoded =
+        runtime::EncodeWorkerWorksetV1(workset, encoded_workset);
+    if (!encoded)
+    {
+        outcome.diagnostic = encoded.message.empty()
+            ? "failed encoding WorkerWorkset"
+            : encoded.message;
+        outcome.result.error_code = "LocalWorksetEncodingFailed";
+        outcome.result.message = outcome.diagnostic;
+        return outcome;
+    }
+    wrms::SubmitWorksetPayload request{
+        .encoded_workset = std::move(encoded_workset)};
     std::vector<std::uint8_t> payload;
     if (!EncodeTypedPayload(request, &payload))
     {
-        set_last_error("failed encoding SubmitInvocation payload");
+        outcome.diagnostic = "failed encoding SubmitWorkset payload";
+        outcome.result.error_code = "LocalWorksetEnvelopeEncodingFailed";
+        outcome.result.message = outcome.diagnostic;
+        return outcome;
+    }
+    ProcessCommandCompletion completion;
+    if (!request_response(
+            wrms::MessageKind::SubmitWorkset,
+            payload,
+            wrms::MessageKind::CommandResult,
+            timeout_ms,
+            &completion))
+    {
+        outcome.request_frame_written = completion.request_frame_written;
+        outcome.correlated_result_received =
+            completion.correlated_response_received;
+        outcome.disposition = completion.request_frame_written
+            ? ProcessWorksetSubmitDisposition::AmbiguousAfterWrite
+            : ProcessWorksetSubmitDisposition::DefiniteRejected;
+        outcome.diagnostic = last_error();
+        outcome.result.error_code = completion.request_frame_written
+            ? "WorksetSubmissionOutcomeAmbiguous"
+            : "WorksetSubmissionNotWritten";
+        outcome.result.message = outcome.diagnostic;
+        return outcome;
+    }
+    outcome.request_frame_written = completion.request_frame_written;
+    outcome.correlated_result_received =
+        completion.correlated_response_received;
+    wrms::CommandResultPayload result;
+    if (!wrms::DecodePayload(completion.payload, result))
+    {
+        outcome.disposition =
+            ProcessWorksetSubmitDisposition::AmbiguousAfterWrite;
+        outcome.diagnostic = "invalid SubmitWorkset command result";
+        outcome.result.error_code = "MalformedWorksetSubmissionResult";
+        outcome.result.message = outcome.diagnostic;
+        return outcome;
+    }
+    outcome.result = std::move(result);
+    if (outcome.result.status == wrms::CommandStatus::Succeeded)
+    {
+        outcome.disposition = ProcessWorksetSubmitDisposition::Accepted;
+        return outcome;
+    }
+    outcome.disposition =
+        ProcessWorksetSubmitDisposition::DefiniteRejected;
+    outcome.diagnostic = outcome.result.message.empty()
+        ? "worker definitively rejected SubmitWorkset"
+        : outcome.result.message;
+    return outcome;
+}
+
+bool ProcessWorker::submit_one_item_workset(
+    const runtime::WorkerWorksetDefinition& workset,
+    wrms::CommandResultPayload* result_out,
+    std::uint32_t timeout_ms)
+{
+    if (workset.items.size() != 1)
+    {
+        set_last_error(
+            "one-item WorkerWorkset convenience requires exactly one item");
+        return false;
+    }
+    return submit_workset(workset, result_out, timeout_ms);
+}
+
+bool ProcessWorker::cancel_workset_item(
+    runtime::WorkerWorksetId workset_id,
+    runtime::WorkerWorksetItemId item_id,
+    std::string reason,
+    wrms::CommandResultPayload* result_out,
+    std::uint32_t timeout_ms)
+{
+    wrms::CancelWorksetItemPayload request{
+        .workset_id = workset_id.value(),
+        .item_id = item_id.value(),
+        .reason = std::move(reason)};
+    std::vector<std::uint8_t> payload;
+    if (!EncodeTypedPayload(request, &payload))
+    {
+        set_last_error("failed encoding CancelWorksetItem payload");
         return false;
     }
     ProcessCommandCompletion completion;
     if (!request_response(
-            wrms::MessageKind::SubmitInvocation,
+            wrms::MessageKind::CancelWorksetItem,
             payload,
             wrms::MessageKind::CommandResult,
             timeout_ms,
@@ -513,7 +727,87 @@ bool ProcessWorker::submit_encoded_invocation(
     wrms::CommandResultPayload result;
     if (!wrms::DecodePayload(completion.payload, result))
     {
-        set_last_error("invalid SubmitInvocation command result");
+        set_last_error("invalid CancelWorksetItem command result");
+        return false;
+    }
+    if (result_out)
+        *result_out = result;
+    if (result.status != wrms::CommandStatus::Succeeded)
+        return false;
+    return true;
+}
+
+bool ProcessWorker::cancel_workset(
+    runtime::WorkerWorksetId workset_id,
+    std::string reason,
+    wrms::CommandResultPayload* result_out,
+    std::uint32_t timeout_ms)
+{
+    wrms::CancelWorksetPayload request{
+        .workset_id = workset_id.value(),
+        .reason = std::move(reason)};
+    std::vector<std::uint8_t> payload;
+    if (!EncodeTypedPayload(request, &payload))
+    {
+        set_last_error("failed encoding CancelWorkset payload");
+        return false;
+    }
+    ProcessCommandCompletion completion;
+    if (!request_response(
+            wrms::MessageKind::CancelWorkset,
+            payload,
+            wrms::MessageKind::CommandResult,
+            timeout_ms,
+            &completion))
+    {
+        return false;
+    }
+    wrms::CommandResultPayload result;
+    if (!wrms::DecodePayload(completion.payload, result))
+    {
+        set_last_error("invalid CancelWorkset command result");
+        return false;
+    }
+    if (result_out)
+        *result_out = result;
+    if (result.status != wrms::CommandStatus::Succeeded)
+        return false;
+    return true;
+}
+
+bool ProcessWorker::acknowledge_terminal(
+    const runtime::WorkerItemTerminalCorrelation& terminal,
+    wrms::CommandResultPayload* result_out,
+    std::uint32_t timeout_ms)
+{
+    wrms::AcknowledgeTerminalPayload request{
+        .workset_id = terminal.workset_id.value(),
+        .item_id = terminal.item_id.value(),
+        .item_ordinal = terminal.item_ordinal,
+        .invocation_id = terminal.invocation_id.value(),
+        .attempt_id = terminal.attempt_id.value(),
+        .terminal_id = terminal.terminal_id.value(),
+        .terminal_order = terminal.terminal_order.value()};
+    std::vector<std::uint8_t> payload;
+    if (!EncodeTypedPayload(request, &payload))
+    {
+        set_last_error("failed encoding AcknowledgeTerminal payload");
+        return false;
+    }
+    ProcessCommandCompletion completion;
+    if (!request_response(
+            wrms::MessageKind::AcknowledgeTerminal,
+            payload,
+            wrms::MessageKind::CommandResult,
+            timeout_ms,
+            &completion))
+    {
+        return false;
+    }
+    wrms::CommandResultPayload result;
+    if (!wrms::DecodePayload(completion.payload, result))
+    {
+        set_last_error("invalid AcknowledgeTerminal command result");
         return false;
     }
     if (result_out)
@@ -665,7 +959,6 @@ bool ProcessWorker::validate_execution_result(
                 "worker returned an inconsistent successful pause result");
         }
         break;
-    case wrms::ExecutionControlKind::StepInstruction:
     case wrms::ExecutionControlKind::StepFrame:
         if (!result.has_terminal_status ||
             result.terminal_status !=
@@ -677,6 +970,8 @@ bool ProcessWorker::validate_execution_result(
                 "worker returned an inconsistent successful step result");
         }
         break;
+    case wrms::ExecutionControlKind::ReservedGuestInstruction:
+        return fail("guest-instruction execution control is reserved");
     }
 
     if (error_out)
@@ -741,8 +1036,7 @@ bool ProcessWorker::request_execution_control(
     }
 
     const bool is_step =
-        control == wrms::ExecutionControlKind::StepFrame ||
-        control == wrms::ExecutionControlKind::StepInstruction;
+        control == wrms::ExecutionControlKind::StepFrame;
     if ((is_step && count == 0) || (!is_step && count != 0))
     {
         set_last_error(
@@ -868,24 +1162,6 @@ bool ProcessWorker::step_guest_frames(
         command_timeout_ms);
 }
 
-bool ProcessWorker::step_guest_instructions(
-    runtime::SessionId session_id,
-    runtime::StateEpoch expected_state_epoch,
-    std::uint32_t count,
-    wrms::ExecutionResultPayload* result_out,
-    std::uint32_t operation_timeout_ms,
-    std::uint32_t command_timeout_ms)
-{
-    return request_execution_control(
-        wrms::ExecutionControlKind::StepInstruction,
-        session_id,
-        expected_state_epoch,
-        count,
-        operation_timeout_ms,
-        result_out,
-        command_timeout_ms);
-}
-
 runtime::WorkerCapabilityMask ProcessWorker::process_capabilities() const
 {
     std::lock_guard<std::mutex> lock(snapshot_mutex_);
@@ -914,6 +1190,13 @@ ProcessWorkerSnapshot ProcessWorker::latest_snapshot() const
 {
     std::lock_guard<std::mutex> lock(snapshot_mutex_);
     return snapshot_;
+}
+
+std::optional<runtime::WorkerRuntimeManifest>
+ProcessWorker::runtime_manifest() const
+{
+    std::lock_guard<std::mutex> lock(snapshot_mutex_);
+    return runtime_manifest_;
 }
 
 std::string ProcessWorker::last_error() const
@@ -947,6 +1230,41 @@ void ProcessWorker::set_execution_state_callback(
 {
     std::lock_guard<std::mutex> lock(callback_mutex_);
     execution_state_callback_ = std::move(callback);
+}
+
+void ProcessWorker::set_workset_state_callback(
+    WorksetStateCallback callback)
+{
+    std::lock_guard<std::mutex> lock(callback_mutex_);
+    workset_state_callback_ = std::move(callback);
+}
+
+void ProcessWorker::set_workset_item_started_callback(
+    WorksetItemStartedCallback callback)
+{
+    std::lock_guard<std::mutex> lock(callback_mutex_);
+    workset_item_started_callback_ = std::move(callback);
+}
+
+void ProcessWorker::set_workset_item_terminal_callback(
+    WorksetItemTerminalCallback callback)
+{
+    std::lock_guard<std::mutex> lock(callback_mutex_);
+    workset_item_terminal_callback_ = std::move(callback);
+}
+
+void ProcessWorker::set_workset_credits_callback(
+    WorksetCreditsCallback callback)
+{
+    std::lock_guard<std::mutex> lock(callback_mutex_);
+    workset_credits_callback_ = std::move(callback);
+}
+
+void ProcessWorker::set_workset_summary_callback(
+    WorksetSummaryCallback callback)
+{
+    std::lock_guard<std::mutex> lock(callback_mutex_);
+    workset_summary_callback_ = std::move(callback);
 }
 
 bool ProcessWorker::start(ProcStartParams& params, TSQueue<PRResult>* out_queue)
@@ -1237,6 +1555,8 @@ bool ProcessWorker::request_response(
     ProcessCommandCompletion* completion_out,
     bool allow_during_stop)
 {
+    if (completion_out)
+        *completion_out = {};
     const auto deadline =
         std::chrono::steady_clock::now() +
         std::chrono::milliseconds{
@@ -1248,7 +1568,10 @@ bool ProcessWorker::request_response(
         return false;
     }
     const runtime::WireRequestId request_id{raw_id};
+    if (completion_out)
+        completion_out->request_id = request_id;
     auto pending = std::make_shared<PendingResponse>();
+    pending->request_kind = request_kind;
     {
         std::lock_guard<std::mutex> lock(pending_mutex_);
         pending_.emplace(raw_id, pending);
@@ -1272,6 +1595,8 @@ bool ProcessWorker::request_response(
             : "failed writing WRMS request");
         return false;
     }
+    if (completion_out)
+        completion_out->request_frame_written = true;
 
     bool completed = false;
     {
@@ -1301,7 +1626,7 @@ bool ProcessWorker::request_response(
 
     if (completion_out)
     {
-        completion_out->request_id = request_id;
+        completion_out->correlated_response_received = true;
         completion_out->response_kind = pending->response_kind;
         completion_out->payload = std::move(pending->payload);
     }
@@ -1321,6 +1646,26 @@ void ProcessWorker::complete_pending(
             return;
         pending = found->second;
     }
+    if (kind == wrms::MessageKind::CommandResult)
+    {
+        wrms::CommandResultPayload result;
+        if (!wrms::DecodePayload(payload, result) ||
+            result.command_kind != pending->request_kind)
+        {
+            {
+                std::lock_guard<std::mutex> lock(pending->mutex);
+                if (!pending->completed)
+                {
+                    pending->transport_ok = false;
+                    pending->completed = true;
+                }
+            }
+            pending->cv.notify_all();
+            fail_protocol(
+                "WRMS command result does not match its exact request kind");
+            return;
+        }
+    }
     {
         std::lock_guard<std::mutex> lock(pending->mutex);
         if (pending->completed)
@@ -1331,6 +1676,25 @@ void ProcessWorker::complete_pending(
         pending->completed = true;
     }
     pending->cv.notify_all();
+}
+
+bool ProcessWorker::has_exact_pending_request(
+    std::uint64_t request_id,
+    wrms::MessageKind request_kind) const
+{
+    if (request_id == 0)
+        return false;
+    std::lock_guard<std::mutex> lock(pending_mutex_);
+    const auto found = pending_.find(request_id);
+    if (found == pending_.end() ||
+        !found->second ||
+        found->second->request_kind != request_kind)
+    {
+        return false;
+    }
+    std::lock_guard<std::mutex> response_lock(
+        found->second->mutex);
+    return !found->second->completed;
 }
 
 void ProcessWorker::fail_all_pending()
@@ -1353,6 +1717,222 @@ void ProcessWorker::fail_all_pending()
         }
         response->cv.notify_all();
     }
+}
+
+bool ProcessWorker::accept_workset_outbound_sequence(
+    std::uint64_t sequence)
+{
+    bool accepted = false;
+    {
+        std::lock_guard<std::mutex> lock(snapshot_mutex_);
+        const std::uint64_t expected =
+            snapshot_.last_outbound_sequence + 1;
+        accepted = sequence != 0 && sequence == expected;
+        if (accepted)
+            snapshot_.last_outbound_sequence = sequence;
+    }
+    if (!accepted)
+    {
+        fail_protocol(
+            "WRMS workset event sequence is zero, duplicated, regressed, or "
+            "contains a gap");
+    }
+    return accepted;
+}
+
+void ProcessWorker::fail_protocol(std::string error)
+{
+    protocol_failed_.store(true, std::memory_order_release);
+    accepting_writes_.store(false, std::memory_order_release);
+    running_.store(false, std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> lock(snapshot_mutex_);
+        snapshot_.running = false;
+        snapshot_.last_rejection_code =
+            runtime::WorkerRejectionCode::InvalidArgument;
+        snapshot_.last_error = std::move(error);
+    }
+    ready_received_.store(true, std::memory_order_release);
+    ready_ok_.store(false, std::memory_order_release);
+    ready_error_.store(1, std::memory_order_release);
+    hello_cv_.notify_all();
+    fail_all_pending();
+}
+
+bool ProcessWorker::enqueue_callback(
+    std::function<void()> callback,
+    bool authoritative,
+    std::size_t resident_bytes)
+{
+    if (!callback)
+        return true;
+    const auto state = callback_dispatcher_state_;
+    if (!state)
+        return false;
+    resident_bytes = std::max<std::size_t>(resident_bytes, sizeof(callback));
+    {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        if (state->stop_requested)
+            return false;
+        const auto fits = [&]() {
+            return state->queue.size() < kMaximumPendingCallbacks &&
+                resident_bytes <= kMaximumPendingCallbackBytes &&
+                state->queued_bytes <=
+                    kMaximumPendingCallbackBytes - resident_bytes;
+        };
+        if (!fits() && authoritative)
+        {
+            // Passive observations may be coalesced/dropped under pressure,
+            // but an authoritative item lifecycle event is never discarded.
+            // Reclaim the oldest passive entries before failing the transport.
+            for (auto it = state->queue.begin();
+                 it != state->queue.end() && !fits();)
+            {
+                if (it->authoritative)
+                {
+                    ++it;
+                    continue;
+                }
+                state->queued_bytes -= it->resident_bytes;
+                it = state->queue.erase(it);
+            }
+        }
+        if (!fits())
+            return false;
+        state->queued_bytes += resident_bytes;
+        state->queue.push_back(PendingCallback{
+            std::move(callback),
+            resident_bytes,
+            authoritative});
+    }
+    state->available.notify_one();
+    return true;
+}
+
+void ProcessWorker::start_callback_dispatch()
+{
+    if (callback_dispatcher_.joinable())
+        return;
+    callback_dispatcher_state_ =
+        std::make_shared<CallbackDispatcherState>();
+    callback_failure_target_ =
+        std::make_shared<CallbackFailureTarget>();
+    callback_failure_target_->owner = this;
+    callback_dispatcher_ = std::thread(
+        &ProcessWorker::callback_thread,
+        callback_dispatcher_state_,
+        callback_failure_target_,
+        worker_id_);
+}
+
+void ProcessWorker::callback_thread(
+    std::shared_ptr<CallbackDispatcherState> state,
+    std::shared_ptr<CallbackFailureTarget> failure_target,
+    std::size_t worker_id)
+{
+    set_this_thread_name_utf8(
+        ("WorkerEventsV1-" + std::to_string(worker_id)).c_str());
+    {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        state->thread_id = std::this_thread::get_id();
+    }
+    for (;;)
+    {
+        PendingCallback callback;
+        {
+            std::unique_lock<std::mutex> lock(state->mutex);
+            state->available.wait(lock, [&]() {
+                return state->stop_requested ||
+                    !state->queue.empty();
+            });
+            if (state->queue.empty())
+            {
+                if (state->stop_requested)
+                    break;
+                continue;
+            }
+            callback = std::move(state->queue.front());
+            state->queue.pop_front();
+            state->queued_bytes -= callback.resident_bytes;
+        }
+        try
+        {
+            callback.invoke();
+        }
+        catch (...)
+        {
+            std::lock_guard<std::mutex> target_lock(
+                failure_target->mutex);
+            if (failure_target->owner)
+            {
+                if (callback.authoritative)
+                {
+                    failure_target->owner->fail_protocol(
+                        "authoritative worker event callback threw");
+                }
+                else
+                {
+                    failure_target->owner->set_last_error(
+                        "passive worker event callback threw");
+                }
+            }
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        state->exited = true;
+    }
+    state->exited_cv.notify_all();
+}
+
+bool ProcessWorker::on_callback_dispatcher_thread() const
+{
+    const auto state = callback_dispatcher_state_;
+    if (!state)
+        return false;
+    std::lock_guard<std::mutex> lock(state->mutex);
+    return state->thread_id == std::this_thread::get_id();
+}
+
+void ProcessWorker::detach_callback_failure_target() noexcept
+{
+    const auto target = callback_failure_target_;
+    if (!target)
+        return;
+    std::lock_guard<std::mutex> lock(target->mutex);
+    target->owner = nullptr;
+}
+
+bool ProcessWorker::stop_callback_dispatch(
+    std::chrono::steady_clock::time_point deadline)
+{
+    const auto state = callback_dispatcher_state_;
+    if (!state)
+        return true;
+    {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        state->stop_requested = true;
+    }
+    state->available.notify_all();
+    if (!callback_dispatcher_.joinable())
+        return true;
+    if (on_callback_dispatcher_thread())
+        return true;
+
+    bool exited_before_deadline = false;
+    {
+        std::unique_lock<std::mutex> lock(state->mutex);
+        exited_before_deadline = state->exited_cv.wait_until(
+            lock,
+            deadline,
+            [&]() { return state->exited; });
+    }
+    // Arbitrary user callbacks cannot be cancelled safely because they may
+    // legally retain and use ProcessWorker. Preserve memory safety by joining
+    // even when callback cleanup exceeds its separately reported grace.
+    callback_dispatcher_.join();
+    detach_callback_failure_target();
+    return exited_before_deadline;
 }
 
 void ProcessWorker::reader_thread()
@@ -1388,27 +1968,30 @@ void ProcessWorker::reader_thread()
                 break;
             if (decoded.status == wrms::FrameDecodeStatus::Error)
             {
-                set_last_error(
+                fail_protocol(
                     "worker emitted an invalid WRMS frame (error " +
                     std::to_string(static_cast<unsigned>(decoded.error)) + ")");
                 clean_eof = false;
-                running_.store(false, std::memory_order_release);
                 break;
             }
 
             if (wrms::DirectionOf(decoded.frame.header.kind) !=
                 wrms::MessageDirection::WorkerToParent)
             {
-                set_last_error("worker emitted a parent-to-worker WRMS message");
+                fail_protocol(
+                    "worker emitted a parent-to-worker WRMS message");
                 clean_eof = false;
-                running_.store(false, std::memory_order_release);
                 break;
             }
             handle_frame(decoded.frame);
             buffered.erase(
                 buffered.begin(),
                 buffered.begin() + decoded.consumed_size);
+            if (protocol_failed_.load(std::memory_order_acquire))
+                break;
         }
+        if (protocol_failed_.load(std::memory_order_acquire))
+            break;
     }
 
     if (clean_eof && !buffered.empty())
@@ -1442,11 +2025,22 @@ void ProcessWorker::handle_frame(const wrms::FrameView& frame)
         if (frame.header.request_id != 0 ||
             !wrms::DecodePayload(frame.payload, hello))
         {
-            set_last_error("invalid WRMS process hello");
-            ready_received_.store(true, std::memory_order_release);
-            ready_ok_.store(false, std::memory_order_release);
-            ready_error_.store(1, std::memory_order_release);
-            hello_cv_.notify_all();
+            fail_protocol("invalid WRMS process hello");
+            return;
+        }
+        bool duplicate_hello = false;
+        {
+            std::lock_guard<std::mutex> lock(snapshot_mutex_);
+            duplicate_hello = snapshot_.hello_received;
+        }
+        if (duplicate_hello ||
+            hello.worker_id != static_cast<std::uint64_t>(worker_id_) ||
+            hello.process_id != process_id_)
+        {
+            fail_protocol(
+                duplicate_hello
+                    ? "worker emitted more than one WRMS process hello"
+                    : "WRMS process hello does not identify the launched worker process");
             return;
         }
         {
@@ -1455,18 +2049,94 @@ void ProcessWorker::handle_frame(const wrms::FrameView& frame)
             snapshot_.hello_received = true;
             snapshot_.process_capabilities = hello.capability_mask;
             snapshot_.worker_state = runtime::WorkerState::AwaitingSession;
+            if (runtime_manifest_)
+            {
+                ready_received_.store(true, std::memory_order_release);
+                ready_ok_.store(true, std::memory_order_release);
+                ready_error_.store(0, std::memory_order_release);
+            }
         }
-        ready_received_.store(true, std::memory_order_release);
-        ready_ok_.store(true, std::memory_order_release);
-        ready_error_.store(0, std::memory_order_release);
+        hello_cv_.notify_all();
+        return;
+    }
+    case wrms::MessageKind::RuntimeManifest:
+    {
+        wrms::RuntimeManifestPayload payload;
+        runtime::WorkerRuntimeManifest manifest;
+        if (frame.header.request_id != 0 ||
+            !wrms::DecodePayload(frame.payload, payload))
+        {
+            fail_protocol("invalid WRMS runtime manifest envelope");
+            return;
+        }
+        const auto decoded = runtime::DecodeWorkerRuntimeManifestV1(
+            payload.encoded_manifest,
+            manifest);
+        if (!decoded ||
+            manifest.wrms_protocol_version != wrms::ProtocolVersion)
+        {
+            fail_protocol(
+                decoded.message.empty()
+                    ? "worker runtime manifest protocol is incompatible"
+                    : decoded.message);
+            return;
+        }
+        bool invalid_update = false;
+        {
+            std::lock_guard<std::mutex> lock(snapshot_mutex_);
+            if (runtime_manifest_ &&
+                (manifest.catalog_generation <
+                     runtime_manifest_->catalog_generation ||
+                 (manifest.catalog_generation ==
+                      runtime_manifest_->catalog_generation &&
+                  manifest != *runtime_manifest_) ||
+                 !SameImmutableManifestFields(
+                     manifest,
+                     *runtime_manifest_)))
+            {
+                invalid_update = true;
+            }
+            else
+            {
+                runtime_manifest_ = std::move(manifest);
+                snapshot_.runtime_manifest_received = true;
+                if (snapshot_.hello_received)
+                {
+                    ready_received_.store(true, std::memory_order_release);
+                    ready_ok_.store(true, std::memory_order_release);
+                    ready_error_.store(0, std::memory_order_release);
+                }
+            }
+        }
+        if (invalid_update)
+        {
+            fail_protocol(
+                "worker runtime manifest generation regressed, changed "
+                "without advancing, or changed immutable negotiated fields");
+            return;
+        }
         hello_cv_.notify_all();
         return;
     }
     case wrms::MessageKind::CommandResult:
     {
         wrms::CommandResultPayload result;
-        if (wrms::DecodePayload(frame.payload, result) &&
-            result.status != wrms::CommandStatus::Succeeded)
+        if (frame.header.request_id == 0 ||
+            !wrms::DecodePayload(frame.payload, result))
+        {
+            fail_protocol("invalid WRMS command result");
+            return;
+        }
+        if (!has_exact_pending_request(
+                frame.header.request_id,
+                result.command_kind))
+        {
+            fail_protocol(
+                "WRMS command result does not match an exact pending request "
+                "or its exact request kind");
+            return;
+        }
+        if (result.status != wrms::CommandStatus::Succeeded)
         {
             std::lock_guard<std::mutex> lock(snapshot_mutex_);
             snapshot_.last_rejection_code =
@@ -1483,7 +2153,16 @@ void ProcessWorker::handle_frame(const wrms::FrameView& frame)
     case wrms::MessageKind::OpenSessionResult:
     {
         wrms::OpenSessionResultPayload result;
-        if (wrms::DecodePayload(frame.payload, result))
+        if (frame.header.request_id == 0 ||
+            !has_exact_pending_request(
+                frame.header.request_id,
+                wrms::MessageKind::OpenSession) ||
+            !wrms::DecodePayload(frame.payload, result))
+        {
+            fail_protocol(
+                "invalid or unsolicited WRMS OpenSessionResult");
+            return;
+        }
         {
             std::lock_guard<std::mutex> lock(snapshot_mutex_);
             if (result.success)
@@ -1525,8 +2204,17 @@ void ProcessWorker::handle_frame(const wrms::FrameView& frame)
     case wrms::MessageKind::ScreenshotResult:
     {
         wrms::ScreenshotResultPayload result;
-        if (wrms::DecodePayload(frame.payload, result) &&
-            result.status != wrms::ScreenshotStatus::Captured)
+        if (frame.header.request_id == 0 ||
+            !has_exact_pending_request(
+                frame.header.request_id,
+                wrms::MessageKind::CaptureScreenshot) ||
+            !wrms::DecodePayload(frame.payload, result))
+        {
+            fail_protocol(
+                "invalid or unsolicited WRMS ScreenshotResult");
+            return;
+        }
+        if (result.status != wrms::ScreenshotStatus::Captured)
         {
             std::lock_guard<std::mutex> lock(snapshot_mutex_);
             snapshot_.last_rejection_code =
@@ -1543,7 +2231,16 @@ void ProcessWorker::handle_frame(const wrms::FrameView& frame)
     case wrms::MessageKind::ShutdownResult:
     {
         wrms::ShutdownResultPayload result;
-        if (wrms::DecodePayload(frame.payload, result))
+        if (frame.header.request_id == 0 ||
+            !has_exact_pending_request(
+                frame.header.request_id,
+                wrms::MessageKind::Shutdown) ||
+            !wrms::DecodePayload(frame.payload, result))
+        {
+            fail_protocol(
+                "invalid or unsolicited WRMS ShutdownResult");
+            return;
+        }
         {
             std::lock_guard<std::mutex> lock(snapshot_mutex_);
             snapshot_.shutdown_graceful =
@@ -1573,8 +2270,12 @@ void ProcessWorker::handle_frame(const wrms::FrameView& frame)
     case wrms::MessageKind::SessionEvent:
     {
         wrms::SessionEventPayload event;
-        if (!wrms::DecodePayload(frame.payload, event))
+        if (frame.header.request_id != 0 ||
+            !wrms::DecodePayload(frame.payload, event))
+        {
+            fail_protocol("invalid WRMS SessionEvent");
             return;
+        }
         std::lock_guard<std::mutex> lock(snapshot_mutex_);
         snapshot_.session_id = runtime::SessionId{event.session_id};
         snapshot_.state_epoch = runtime::StateEpoch{event.state_epoch};
@@ -1604,15 +2305,24 @@ void ProcessWorker::handle_frame(const wrms::FrameView& frame)
     case wrms::MessageKind::InvocationProgress:
     {
         wrms::InvocationProgressPayload progress;
-        if (!wrms::DecodePayload(frame.payload, progress))
+        if (frame.header.request_id != 0 ||
+            !wrms::DecodePayload(frame.payload, progress))
+        {
+            fail_protocol("invalid WRMS InvocationProgress event");
             return;
+        }
         InvocationProgressCallback callback;
         {
             std::lock_guard<std::mutex> lock(callback_mutex_);
             callback = invocation_progress_callback_;
         }
         if (callback)
-            callback(progress);
+            enqueue_callback(
+                [callback = std::move(callback), progress]() {
+                    callback(progress);
+                },
+                false,
+                sizeof(progress) + progress.progress.size());
 
         PRProgress legacy;
         legacy.worker_id = worker_id_;
@@ -1632,38 +2342,44 @@ void ProcessWorker::handle_frame(const wrms::FrameView& frame)
     }
     case wrms::MessageKind::InvocationTerminal:
     {
-        wrms::InvocationTerminalPayload terminal;
-        if (!wrms::DecodePayload(frame.payload, terminal))
-            return;
-        InvocationTerminalCallback callback;
-        {
-            std::lock_guard<std::mutex> lock(callback_mutex_);
-            callback = invocation_terminal_callback_;
-        }
-        if (callback)
-            callback(terminal);
-        release_slot();
+        fail_protocol(
+            "scalar InvocationTerminal is retired; production terminals "
+            "must use WorksetItemTerminal");
         return;
     }
     case wrms::MessageKind::HostEvent:
     {
         wrms::HostEventPayload event;
-        if (!wrms::DecodePayload(frame.payload, event))
+        if (frame.header.request_id != 0 ||
+            !wrms::DecodePayload(frame.payload, event))
+        {
+            fail_protocol("invalid WRMS HostEvent");
             return;
+        }
         HostEventCallback callback;
         {
             std::lock_guard<std::mutex> lock(callback_mutex_);
             callback = host_event_callback_;
         }
         if (callback)
-            callback(event);
+            enqueue_callback(
+                [callback = std::move(callback), event]() {
+                    callback(event);
+                },
+                false,
+                sizeof(event) + event.name.size() +
+                    event.event_data.size());
         return;
     }
     case wrms::MessageKind::RuntimeDiagnostic:
     {
         wrms::RuntimeDiagnosticPayload diagnostic;
-        if (!wrms::DecodePayload(frame.payload, diagnostic))
+        if (frame.header.request_id != 0 ||
+            !wrms::DecodePayload(frame.payload, diagnostic))
+        {
+            fail_protocol("invalid WRMS RuntimeDiagnostic event");
             return;
+        }
         std::lock_guard<std::mutex> lock(snapshot_mutex_);
         snapshot_.last_rejection_code =
             MapRejectionCode(diagnostic.rejection_code);
@@ -1673,7 +2389,16 @@ void ProcessWorker::handle_frame(const wrms::FrameView& frame)
     case wrms::MessageKind::ExecutionResult:
     {
         wrms::ExecutionResultPayload result;
-        if (wrms::DecodePayload(frame.payload, result))
+        if (frame.header.request_id == 0 ||
+            !has_exact_pending_request(
+                frame.header.request_id,
+                wrms::MessageKind::ControlExecution) ||
+            !wrms::DecodePayload(frame.payload, result))
+        {
+            fail_protocol(
+                "invalid or unsolicited WRMS ExecutionResult");
+            return;
+        }
         {
             std::lock_guard<std::mutex> lock(snapshot_mutex_);
             snapshot_.session_id = runtime::SessionId{result.session_id};
@@ -1704,8 +2429,12 @@ void ProcessWorker::handle_frame(const wrms::FrameView& frame)
     case wrms::MessageKind::ExecutionState:
     {
         wrms::ExecutionStatePayload state;
-        if (!wrms::DecodePayload(frame.payload, state))
+        if (frame.header.request_id != 0 ||
+            !wrms::DecodePayload(frame.payload, state))
+        {
+            fail_protocol("invalid WRMS ExecutionState event");
             return;
+        }
         {
             std::lock_guard<std::mutex> lock(snapshot_mutex_);
             snapshot_.session_id = runtime::SessionId{state.session_id};
@@ -1728,7 +2457,250 @@ void ProcessWorker::handle_frame(const wrms::FrameView& frame)
             callback = execution_state_callback_;
         }
         if (callback)
-            callback(state);
+            enqueue_callback(
+                [callback = std::move(callback), state]() {
+                    callback(state);
+                },
+                false,
+                sizeof(state) + state.message.size());
+        return;
+    }
+    case wrms::MessageKind::WorksetState:
+    {
+        wrms::WorksetStatePayload state;
+        if (!wrms::DecodePayload(frame.payload, state) ||
+            frame.header.request_id != 0)
+        {
+            fail_protocol("invalid WRMS WorksetState event");
+            return;
+        }
+        if (!accept_workset_outbound_sequence(
+                state.outbound_sequence))
+            return;
+        {
+            std::lock_guard<std::mutex> lock(snapshot_mutex_);
+            const runtime::WorkerWorksetId id{state.workset_id};
+            switch (state.state)
+            {
+            case wrms::WorksetStateCode::Staged:
+                snapshot_.staged_workset = id;
+                break;
+            case wrms::WorksetStateCode::PreparingBaseline:
+            case wrms::WorksetStateCode::Running:
+            case wrms::WorksetStateCode::Draining:
+                snapshot_.active_workset = id;
+                if (snapshot_.staged_workset == id)
+                    snapshot_.staged_workset.reset();
+                break;
+            case wrms::WorksetStateCode::Completed:
+            case wrms::WorksetStateCode::Cancelled:
+            case wrms::WorksetStateCode::Failed:
+                if (snapshot_.active_workset == id)
+                    snapshot_.active_workset.reset();
+                if (snapshot_.staged_workset == id)
+                    snapshot_.staged_workset.reset();
+                break;
+            case wrms::WorksetStateCode::Validating:
+                break;
+            }
+            snapshot_.last_rejection_code =
+                MapRejectionCode(state.rejection_code);
+            if (!state.message.empty())
+                snapshot_.last_error = state.message;
+        }
+        WorksetStateCallback callback;
+        {
+            std::lock_guard<std::mutex> lock(callback_mutex_);
+            callback = workset_state_callback_;
+        }
+        if (callback)
+        {
+            if (!enqueue_callback(
+                    [callback = std::move(callback), state]() {
+                        callback(state);
+                    },
+                    true,
+                    sizeof(state) + state.message.size()))
+            {
+                fail_protocol(
+                    "authoritative WorksetState callback queue is full");
+            }
+        }
+        return;
+    }
+    case wrms::MessageKind::WorksetItemStarted:
+    {
+        wrms::WorksetItemStartedPayload started;
+        if (!wrms::DecodePayload(frame.payload, started) ||
+            frame.header.request_id != 0)
+        {
+            fail_protocol("invalid WRMS WorksetItemStarted event");
+            return;
+        }
+        if (!accept_workset_outbound_sequence(
+                started.outbound_sequence))
+            return;
+        {
+            std::lock_guard<std::mutex> lock(snapshot_mutex_);
+            snapshot_.active_workset =
+                runtime::WorkerWorksetId{started.workset_id};
+            if (snapshot_.staged_workset ==
+                runtime::WorkerWorksetId{started.workset_id})
+                snapshot_.staged_workset.reset();
+            snapshot_.state_epoch =
+                runtime::StateEpoch{started.state_epoch};
+        }
+        WorksetItemStartedCallback callback;
+        {
+            std::lock_guard<std::mutex> lock(callback_mutex_);
+            callback = workset_item_started_callback_;
+        }
+        if (callback)
+        {
+            if (!enqueue_callback(
+                    [callback = std::move(callback), started]() {
+                        callback(started);
+                    },
+                    true,
+                    sizeof(started) +
+                        started.baseline_sha256.size() +
+                        started.baseline_lineage.size()))
+            {
+                fail_protocol(
+                    "authoritative WorksetItemStarted callback queue is full");
+            }
+        }
+        return;
+    }
+    case wrms::MessageKind::WorksetItemTerminal:
+    {
+        wrms::WorksetItemTerminalPayload terminal;
+        if (!wrms::DecodePayload(frame.payload, terminal) ||
+            frame.header.request_id != 0)
+        {
+            fail_protocol("invalid WRMS WorksetItemTerminal event");
+            return;
+        }
+        if (!accept_workset_outbound_sequence(
+                terminal.outbound_sequence))
+            return;
+        {
+            std::lock_guard<std::mutex> lock(snapshot_mutex_);
+            snapshot_.state_epoch =
+                runtime::StateEpoch{terminal.state_epoch};
+            snapshot_.last_rejection_code =
+                MapRejectionCode(terminal.rejection_code);
+            if (!terminal.message.empty())
+                snapshot_.last_error = terminal.message;
+        }
+        WorksetItemTerminalCallback callback;
+        {
+            std::lock_guard<std::mutex> lock(callback_mutex_);
+            callback = workset_item_terminal_callback_;
+        }
+        if (callback)
+        {
+            const std::size_t resident_bytes =
+                sizeof(terminal) + terminal.error_code.size() +
+                terminal.message.size() + terminal.result.size();
+            if (!enqueue_callback(
+                    [callback = std::move(callback), terminal]() {
+                        callback(terminal);
+                    },
+                    true,
+                    resident_bytes))
+            {
+                fail_protocol(
+                    "authoritative WorksetItemTerminal callback queue is full");
+            }
+        }
+        return;
+    }
+    case wrms::MessageKind::WorksetCredits:
+    {
+        wrms::WorksetCreditsPayload credits;
+        if (!wrms::DecodePayload(frame.payload, credits) ||
+            frame.header.request_id != 0)
+        {
+            fail_protocol("invalid WRMS WorksetCredits event");
+            return;
+        }
+        if (!accept_workset_outbound_sequence(
+                credits.outbound_sequence))
+            return;
+        {
+            std::lock_guard<std::mutex> lock(snapshot_mutex_);
+            snapshot_.available_item_credits =
+                credits.available_item_credits;
+            snapshot_.active_and_staged_items =
+                credits.active_and_staged_items;
+            snapshot_.retained_terminals =
+                credits.retained_terminals;
+        }
+        WorksetCreditsCallback callback;
+        {
+            std::lock_guard<std::mutex> lock(callback_mutex_);
+            callback = workset_credits_callback_;
+        }
+        if (callback)
+        {
+            if (!enqueue_callback(
+                [callback = std::move(callback), credits]() {
+                    callback(credits);
+                },
+                true,
+                sizeof(credits)))
+            {
+                fail_protocol(
+                    "authoritative WorksetCredits callback queue is full");
+            }
+        }
+        return;
+    }
+    case wrms::MessageKind::WorksetSummary:
+    {
+        wrms::WorksetSummaryPayload summary;
+        if (!wrms::DecodePayload(frame.payload, summary) ||
+            frame.header.request_id != 0)
+        {
+            fail_protocol("invalid WRMS WorksetSummary event");
+            return;
+        }
+        if (!accept_workset_outbound_sequence(
+                summary.outbound_sequence))
+            return;
+        bool no_resident_workset = false;
+        {
+            std::lock_guard<std::mutex> lock(snapshot_mutex_);
+            const runtime::WorkerWorksetId id{summary.workset_id};
+            if (snapshot_.active_workset == id)
+                snapshot_.active_workset.reset();
+            if (snapshot_.staged_workset == id)
+                snapshot_.staged_workset.reset();
+            no_resident_workset =
+                !snapshot_.active_workset &&
+                !snapshot_.staged_workset;
+        }
+        WorksetSummaryCallback callback;
+        {
+            std::lock_guard<std::mutex> lock(callback_mutex_);
+            callback = workset_summary_callback_;
+        }
+        if (callback)
+        {
+            if (!enqueue_callback(
+                    [callback = std::move(callback), summary]() {
+                        callback(summary);
+                    },
+                    true,
+                    sizeof(summary)))
+            {
+                fail_protocol(
+                    "authoritative WorksetSummary callback queue is full");
+            }
+        }
+        if (no_resident_workset)
+            release_slot();
         return;
     }
     default:
@@ -1754,14 +2726,16 @@ bool ProcessWorker::fail_disconnected(const char* operation)
 
 bool ProcessWorker::is_ready() const
 {
-    return ready_received_.load(std::memory_order_acquire) &&
+    return running_.load(std::memory_order_acquire) &&
+        ready_received_.load(std::memory_order_acquire) &&
         ready_ok_.load(std::memory_order_acquire);
 }
 
 bool ProcessWorker::is_failed() const
 {
     return ready_received_.load(std::memory_order_acquire) &&
-        !ready_ok_.load(std::memory_order_acquire);
+        (!ready_ok_.load(std::memory_order_acquire) ||
+         !running_.load(std::memory_order_acquire));
 }
 
 bool ProcessWorker::wait_ready(std::uint32_t timeout_ms)
@@ -1789,11 +2763,41 @@ bool ProcessWorker::try_get_last_progress(PRProgress& out) const
 
 void ProcessWorker::stop()
 {
-    if (stop_started_.exchange(true, std::memory_order_acq_rel))
+    bool already_stopping = false;
+    {
+        std::lock_guard<std::mutex> lock(stop_completion_mutex_);
+        already_stopping =
+            stop_started_.exchange(true, std::memory_order_acq_rel);
+        if (!already_stopping)
+            stop_completed_ = false;
+    }
+    if (already_stopping)
     {
         stop_repeated_.store(true, std::memory_order_release);
-        std::lock_guard<std::mutex> lock(stop_mutex_);
-        last_stop_snapshot_.already_stopping = true;
+        if (on_callback_dispatcher_thread())
+        {
+            const auto callback_deadline =
+                std::chrono::steady_clock::now();
+            (void)stop_callback_dispatch(callback_deadline);
+            return;
+        }
+        {
+            std::unique_lock<std::mutex> lock(
+                stop_completion_mutex_);
+            stop_completion_cv_.wait(
+                lock,
+                [&]() { return stop_completed_; });
+        }
+        const auto callback_deadline =
+            std::chrono::steady_clock::now() +
+            kProcessWorkerDefaultCallbackCleanupGrace;
+        (void)stop_callback_dispatch(callback_deadline);
+        {
+            std::lock_guard<std::mutex> lock(stop_mutex_);
+            last_stop_snapshot_.already_stopping = true;
+            last_stop_snapshot_.callback_dispatcher_joined =
+                !callback_dispatcher_.joinable();
+        }
         return;
     }
 
@@ -1831,6 +2835,8 @@ void ProcessWorker::stop()
             snapshot.shutdown_request_id = raw_id;
             snapshot.shutdown_frame_attempted = true;
             shutdown_pending = std::make_shared<PendingResponse>();
+            shutdown_pending->request_kind =
+                wrms::MessageKind::Shutdown;
             {
                 std::lock_guard<std::mutex> lock(pending_mutex_);
                 pending_.emplace(raw_id, shutdown_pending);
@@ -1982,9 +2988,22 @@ void ProcessWorker::stop()
         reader_.join();
         snapshot.reader_joined = true;
     }
-
     running_.store(false, std::memory_order_release);
     fail_all_pending();
+    auto callback_grace =
+        kProcessWorkerDefaultCallbackCleanupGrace;
+    if (test_hooks_ && test_hooks_->callback_cleanup_grace)
+        callback_grace = *test_hooks_->callback_cleanup_grace;
+    if (callback_grace < std::chrono::milliseconds::zero())
+        callback_grace = std::chrono::milliseconds::zero();
+    const bool callback_within_grace =
+        stop_callback_dispatch(
+            std::chrono::steady_clock::now() +
+            callback_grace);
+    snapshot.callback_dispatcher_joined =
+        !callback_dispatcher_.joinable();
+    snapshot.callback_cleanup_timed_out =
+        !callback_within_grace;
 
     if (process_handle_)
     {
@@ -1997,6 +3016,8 @@ void ProcessWorker::stop()
             snapshot.process_exit_code = exit_code;
     }
     snapshot.graceful =
+        !snapshot.deadline_expired &&
+        !snapshot.callback_cleanup_timed_out &&
         !snapshot.forced &&
         snapshot.shutdown_result_received &&
         shutdown_reported_graceful &&
@@ -2015,6 +3036,11 @@ void ProcessWorker::stop()
             stop_repeated_.load(std::memory_order_acquire);
         last_stop_snapshot_ = snapshot;
     }
+    {
+        std::lock_guard<std::mutex> lock(stop_completion_mutex_);
+        stop_completed_ = true;
+    }
+    stop_completion_cv_.notify_all();
 }
 
 void ProcessWorker::close_process_handles(

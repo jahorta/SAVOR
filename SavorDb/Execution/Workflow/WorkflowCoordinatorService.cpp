@@ -29,6 +29,89 @@ void StoreMax(std::atomic<std::int64_t>& target, std::int64_t value) {
 
 } // namespace
 
+void CoordinatorItemCreditSource::Open(std::size_t total_credits) noexcept {
+    open_.store(false, std::memory_order_release);
+    reservations_.store(0, std::memory_order_relaxed);
+    external_usage_.store(0, std::memory_order_relaxed);
+    total_credits_.store(total_credits, std::memory_order_relaxed);
+    open_.store(total_credits > 0, std::memory_order_release);
+}
+
+void CoordinatorItemCreditSource::SetCapacity(
+    std::size_t total_credits) noexcept {
+    total_credits_.store(total_credits, std::memory_order_release);
+}
+
+void CoordinatorItemCreditSource::SetExternalUsage(
+    std::size_t used_credits) noexcept {
+    external_usage_.store(used_credits, std::memory_order_release);
+}
+
+std::size_t CoordinatorItemCreditSource::AvailableCredits() const noexcept {
+    if (!open_.load(std::memory_order_acquire)) {
+        return 0;
+    }
+    const auto total = total_credits_.load(std::memory_order_acquire);
+    const auto external = external_usage_.load(std::memory_order_acquire);
+    const auto reserved = reservations_.load(std::memory_order_acquire);
+    if (external >= total || reserved >= total - external) {
+        return 0;
+    }
+    return total - external - reserved;
+}
+
+bool CoordinatorItemCreditSource::TryReserve(std::size_t credits) noexcept {
+    if (credits == 0) {
+        return true;
+    }
+    auto reserved = reservations_.load(std::memory_order_acquire);
+    for (;;) {
+        if (!open_.load(std::memory_order_acquire)) {
+            return false;
+        }
+        const auto total = total_credits_.load(std::memory_order_acquire);
+        const auto external = external_usage_.load(std::memory_order_acquire);
+        if (external >= total
+            || reserved >= total - external
+            || credits > total - external - reserved) {
+            return false;
+        }
+        if (reservations_.compare_exchange_weak(
+                reserved,
+                reserved + credits,
+                std::memory_order_acq_rel,
+                std::memory_order_acquire)) {
+            return true;
+        }
+    }
+}
+
+void CoordinatorItemCreditSource::ReleaseReservations(
+    std::size_t credits) noexcept {
+    auto reserved = reservations_.load(std::memory_order_acquire);
+    for (;;) {
+        const auto release = std::min(reserved, credits);
+        if (reservations_.compare_exchange_weak(
+                reserved,
+                reserved - release,
+                std::memory_order_acq_rel,
+                std::memory_order_acquire)) {
+            return;
+        }
+    }
+}
+
+void CoordinatorItemCreditSource::Close() noexcept {
+    open_.store(false, std::memory_order_release);
+    total_credits_.store(0, std::memory_order_relaxed);
+    external_usage_.store(0, std::memory_order_relaxed);
+    reservations_.store(0, std::memory_order_relaxed);
+}
+
+bool CoordinatorItemCreditSource::IsOpen() const noexcept {
+    return open_.load(std::memory_order_acquire);
+}
+
 WorkflowCoordinatorService::WorkflowCoordinatorService(
     savor::db::IExecutionDb* execution_db,
     const savor::db::execution::programdb::ProgramKindRegistry* program_kind_registry,
@@ -80,6 +163,11 @@ bool WorkflowCoordinatorService::Start(std::string* error_out) {
         return false;
     }
 
+    {
+        std::lock_guard<std::mutex> lock(terminal_notification_mtx_);
+        terminal_notifications_.clear();
+    }
+    next_terminal_repair_at_ = std::chrono::steady_clock::now();
     stop_.store(false);
     running_.store(true);
     worker_thread_ = std::thread([this]() { Loop(); });
@@ -126,22 +214,69 @@ WorkflowCoordinatorTelemetry WorkflowCoordinatorService::SnapshotTelemetry() con
     telemetry.transition_advanced_count = transition_advanced_count_.load();
     telemetry.workflow_completed_count = workflow_completed_count_.load();
     telemetry.workflow_failed_count = workflow_failed_count_.load();
+    telemetry.targeted_terminal_notification_count =
+        targeted_terminal_notification_count_.load();
+    telemetry.targeted_terminal_advancement_count =
+        targeted_terminal_advancement_count_.load();
     return telemetry;
+}
+
+bool WorkflowCoordinatorService::PublishTerminalCommit(
+    const TerminalWorkflowStepNotification& notification) {
+    if (notification.commit_sequence == 0
+        || notification.workflow_step_id <= 0
+        || notification.job_id <= 0) {
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(terminal_notification_mtx_);
+        terminal_notifications_.try_emplace(
+            std::make_tuple(
+                notification.commit_sequence,
+                notification.workflow_step_id,
+                notification.job_id),
+            notification);
+    }
+    ++targeted_terminal_notification_count_;
+    terminal_notification_generation_.fetch_add(
+        1,
+        std::memory_order_release);
+    wait_cv_.notify_all();
+    return true;
 }
 
 void WorkflowCoordinatorService::Loop() {
     while (!stop_.load()) {
+        const std::uint64_t observed_terminal_generation =
+            terminal_notification_generation_.load(
+                std::memory_order_acquire);
         const bool advanced = AdvanceAvailableWork();
         if (!advanced) {
             std::unique_lock<std::mutex> lock(wait_mtx_);
-            wait_cv_.wait_for(lock, config_.poll_interval);
+            wait_cv_.wait_for(
+                lock,
+                config_.poll_interval,
+                [&]() {
+                    return stop_.load() ||
+                        terminal_notification_generation_.load(
+                            std::memory_order_acquire) !=
+                            observed_terminal_generation;
+                });
         }
     }
 }
 
 bool WorkflowCoordinatorService::AdvanceAvailableWork() {
     bool advanced = false;
-    advanced = ReconcileTerminalWorkflowSteps() || advanced;
+    advanced = ReconcileTargetedTerminalNotifications() || advanced;
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= next_terminal_repair_at_) {
+        advanced = ReconcileTerminalWorkflowSteps() || advanced;
+        const auto repair_interval =
+            std::max(config_.terminal_repair_interval,
+                     std::chrono::milliseconds(1));
+        next_terminal_repair_at_ = now + repair_interval;
+    }
     advanced = PollReadyStepsFromDb() || advanced;
     return advanced;
 }
@@ -162,15 +297,30 @@ bool WorkflowCoordinatorService::PollReadyStepsFromDb() {
 
     const auto active_count = queries->CountActiveMaterializedWorkflows();
     active_materialized_workflow_count_.store(active_count);
-    if (config_.max_active_materialized_workflows == 0
-        || active_count >= static_cast<std::int64_t>(config_.max_active_materialized_workflows)) {
-        ++materialization_throttle_count_;
-        finish_scan();
-        return false;
+    std::size_t scan_limit = 0;
+    if (config_.item_credit_source || config_.available_item_credits) {
+        const auto credits = config_.item_credit_source
+            ? config_.item_credit_source->AvailableCredits()
+            : config_.available_item_credits();
+        if (credits == 0) {
+            ++materialization_throttle_count_;
+            finish_scan();
+            return false;
+        }
+        scan_limit = std::min(config_.ready_scan_limit, credits);
+    } else {
+        if (config_.max_active_materialized_workflows == 0
+            || active_count >= static_cast<std::int64_t>(
+                config_.max_active_materialized_workflows)) {
+            ++materialization_throttle_count_;
+            finish_scan();
+            return false;
+        }
+        const auto remaining_capacity =
+            config_.max_active_materialized_workflows
+            - static_cast<std::size_t>(active_count);
+        scan_limit = std::min(config_.ready_scan_limit, remaining_capacity);
     }
-
-    const auto remaining_capacity = config_.max_active_materialized_workflows - static_cast<std::size_t>(active_count);
-    const auto scan_limit = std::min(config_.ready_scan_limit, remaining_capacity);
     const auto ready_steps = queries->ListReadySteps(scan_limit);
     bool processed_any = false;
     for (const auto& step : ready_steps) {
@@ -185,6 +335,61 @@ bool WorkflowCoordinatorService::PollReadyStepsFromDb() {
     return processed_any;
 }
 
+bool WorkflowCoordinatorService::ReconcileTargetedTerminalNotifications() {
+    std::vector<TerminalWorkflowStepNotification> notifications;
+    {
+        std::lock_guard<std::mutex> lock(terminal_notification_mtx_);
+        const auto limit = std::max<std::size_t>(
+            1,
+            config_.terminal_scan_limit);
+        notifications.reserve(std::min(limit, terminal_notifications_.size()));
+        auto it = terminal_notifications_.begin();
+        while (it != terminal_notifications_.end()
+            && notifications.size() < limit) {
+            notifications.push_back(it->second);
+            it = terminal_notifications_.erase(it);
+        }
+    }
+    if (notifications.empty()) {
+        return false;
+    }
+
+    auto* queries = execution_db_ != nullptr
+        ? execution_db_->WorkflowQueryService()
+        : nullptr;
+    if (queries == nullptr) {
+        return false;
+    }
+    bool advanced_any = false;
+    for (const auto& notification : notifications) {
+        const auto snapshot =
+            queries->GetStepTerminalSnapshotForJob(notification.job_id);
+        if (!snapshot.has_value()) {
+            continue;
+        }
+        if (snapshot->workflow_step_id != notification.workflow_step_id) {
+            WorkflowReadyStepRecord step{};
+            step.workflow_instance_id = snapshot->workflow_instance_id;
+            step.workflow_step_id = snapshot->workflow_step_id;
+            step.step_key = snapshot->step_key;
+            step.step_kind = snapshot->step_kind;
+            EmitWorkflowFailureEvent(
+                step,
+                "AdvanceTargetedTerminalStep",
+                "terminal notification workflow_step_id mismatch");
+            continue;
+        }
+        const bool advanced = AdvanceTerminalSnapshot(
+            *snapshot,
+            "AdvanceTargetedTerminalStep");
+        if (advanced) {
+            ++targeted_terminal_advancement_count_;
+        }
+        advanced_any = advanced || advanced_any;
+    }
+    return advanced_any;
+}
+
 bool WorkflowCoordinatorService::ReconcileTerminalWorkflowSteps() {
     auto* queries = execution_db_ != nullptr ? execution_db_->WorkflowQueryService() : nullptr;
     auto* commands = execution_db_ != nullptr ? execution_db_->WorkflowCommandService() : nullptr;
@@ -195,6 +400,28 @@ bool WorkflowCoordinatorService::ReconcileTerminalWorkflowSteps() {
     const auto snapshots = queries->ListTerminalReadyStepSnapshots(config_.terminal_scan_limit);
     ++terminal_scan_count_;
     if (snapshots.empty()) {
+        return false;
+    }
+
+    bool advanced_any = false;
+    for (const auto& snapshot : snapshots) {
+        advanced_any = AdvanceTerminalSnapshot(
+            snapshot,
+            "AdvanceTerminalStep") || advanced_any;
+    }
+    return advanced_any;
+}
+
+bool WorkflowCoordinatorService::AdvanceTerminalSnapshot(
+    const WorkflowStepTerminalSnapshot& snapshot,
+    const char* failure_stage) {
+    auto* queries = execution_db_ != nullptr
+        ? execution_db_->WorkflowQueryService()
+        : nullptr;
+    auto* commands = execution_db_ != nullptr
+        ? execution_db_->WorkflowCommandService()
+        : nullptr;
+    if (queries == nullptr || commands == nullptr) {
         return false;
     }
 
@@ -211,44 +438,45 @@ bool WorkflowCoordinatorService::ReconcileTerminalWorkflowSteps() {
         commands,
         authoring_db_ != nullptr ? &graph_routing : nullptr,
         config_.successor_step_priority_boost);
-
-    bool advanced_any = false;
-    for (const auto& snapshot : snapshots) {
-        WorkflowTerminalAdvancementResult advancement{};
-        std::string error;
-        if (!terminal_advancement.AdvanceSnapshot(snapshot, &advancement, &error)) {
-            WorkflowReadyStepRecord step{};
-            step.workflow_instance_id = snapshot.workflow_instance_id;
-            step.workflow_step_id = snapshot.workflow_step_id;
-            step.step_key = snapshot.step_key;
-            step.step_kind = snapshot.step_kind;
-            EmitWorkflowFailureEvent(
-                step,
-                "AdvanceTerminalStep",
-                error.empty() ? "unknown error" : error);
-            continue;
-        }
-
-        ++terminal_step_count_;
-        if (snapshot.discovered_total == 0) {
-            ++terminal_empty_step_count_;
-        } else if (snapshot.failed_total > 0) {
-            ++terminal_failed_step_count_;
-        } else {
-            ++terminal_completed_step_count_;
-        }
-        if (advancement.advanced_next_step || advancement.spawned_step_count > 0) {
-            ++transition_advanced_count_;
-        }
-        if (advancement.workflow_completed) {
-            ++workflow_completed_count_;
-        }
-        if (advancement.workflow_failed) {
-            ++workflow_failed_count_;
-        }
-        advanced_any = true;
+    WorkflowTerminalAdvancementResult advancement{};
+    std::string error;
+    if (!terminal_advancement.AdvanceSnapshot(
+            snapshot,
+            &advancement,
+            &error)) {
+        WorkflowReadyStepRecord step{};
+        step.workflow_instance_id = snapshot.workflow_instance_id;
+        step.workflow_step_id = snapshot.workflow_step_id;
+        step.step_key = snapshot.step_key;
+        step.step_kind = snapshot.step_kind;
+        EmitWorkflowFailureEvent(
+            step,
+            failure_stage != nullptr
+                ? failure_stage
+                : "AdvanceTerminalStep",
+            error.empty() ? "unknown error" : error);
+        return false;
     }
-    return advanced_any;
+
+    ++terminal_step_count_;
+    if (snapshot.discovered_total == 0) {
+        ++terminal_empty_step_count_;
+    } else if (snapshot.failed_total > 0) {
+        ++terminal_failed_step_count_;
+    } else {
+        ++terminal_completed_step_count_;
+    }
+    if (advancement.advanced_next_step
+        || advancement.spawned_step_count > 0) {
+        ++transition_advanced_count_;
+    }
+    if (advancement.workflow_completed) {
+        ++workflow_completed_count_;
+    }
+    if (advancement.workflow_failed) {
+        ++workflow_failed_count_;
+    }
+    return true;
 }
 
 bool WorkflowCoordinatorService::ProcessReadyWorkflowStep(const WorkflowReadyStepRecord& step) {
@@ -283,6 +511,10 @@ bool WorkflowCoordinatorService::ProcessReadyWorkflowStep(const WorkflowReadySte
     if (aggregation.input_latency_ms.has_value()) {
         last_input_latency_ms_.store(*aggregation.input_latency_ms);
     }
+    // Worker item credits are counted where concrete execution jobs enter the
+    // coordinator pipeline. A ready workflow step can fan out to an unknown
+    // number of jobs, so reserving one item here and later releasing by job
+    // count mixes units and can release another step's reservation.
     return MaterializeWorkflowStep(step);
 }
 

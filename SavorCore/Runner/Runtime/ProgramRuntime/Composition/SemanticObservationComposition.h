@@ -161,9 +161,8 @@ enum class ObservationPublicationPolicy : std::uint8_t
 
 enum class ObservationAdvanceKind : std::uint8_t
 {
-    None,
-    StepInstruction,
-    StepFrame,
+    None = 0,
+    StepFrame = 2,
 };
 
 struct ObservationUse

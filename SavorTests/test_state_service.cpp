@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "Runner/Runtime/Services/State/StateService.h"
+#include "Runner/Runtime/Worksets/StateArtifactFinalizer.h"
 #include "Utils/Hash.h"
 
 #include <algorithm>
@@ -375,6 +376,102 @@ TEST(StateService, PublishesImmutableStateAndExactDtmPair)
         service.RestoreFileArtifact(saved.artifact);
     EXPECT_FALSE(changed.result.ok);
     EXPECT_EQ(changed.result.code, StateServiceErrorCode::ArtifactFailure);
+}
+
+TEST(
+    StateService,
+    CapturesPausedBytesThenCommitsHostFinalizationEvidence)
+{
+    TemporaryDirectory temp;
+    FakeStateBackend backend;
+    StateService service(backend);
+    ASSERT_TRUE(service.Boot().result.ok);
+    const std::filesystem::path state =
+        temp.path() / "async-checkpoint.sav";
+    MovieCheckpointMetadata movie{
+        .mode = MovieCheckpointMode::ReadOnlyPlayback,
+        .dtm_bytes = DtmBytes(true),
+    };
+
+    ImmutableStateArtifactCaptureReceipt captured =
+        service.CaptureImmutableArtifact({
+            .path = state,
+            .movie = movie,
+            .lineage = {
+                .edge = "async-checkpoint",
+                .producer = "test"},
+        });
+    ASSERT_TRUE(captured.result.ok)
+        << captured.result.message;
+    EXPECT_FALSE(std::filesystem::exists(state));
+    EXPECT_FALSE(std::filesystem::exists(
+        std::filesystem::path(state.string() + ".dtm")));
+    EXPECT_EQ(
+        std::ranges::count(
+            backend.calls,
+            std::string{"save-file"}),
+        0u);
+    ASSERT_TRUE(captured.state_bytes);
+    ASSERT_TRUE(captured.movie_bytes);
+
+    WorkerWorksetLimits limits;
+    limits.finalizer_threads = 1;
+    StateArtifactFinalizer finalizer(limits);
+    StateArtifactFinalizationRequest request;
+    request.item = {
+        WorkerWorksetId(1),
+        WorkerWorksetItemId(2),
+        0,
+        InvocationId(3),
+        AttemptId(4)};
+    request.state_artifact_id = captured.artifact;
+    request.logical_artifact_id =
+        "state:" + std::to_string(captured.artifact.value());
+    request.state = {
+        captured.final_path,
+        captured.state_bytes,
+        {}};
+    request.sidecars.push_back({
+        std::filesystem::path(
+            captured.final_path.string() + ".dtm"),
+        *captured.movie_bytes,
+        captured.movie->dtm_sha256});
+    ASSERT_TRUE(finalizer.Submit(std::move(request)).result.ok);
+    finalizer.Shutdown();
+    auto finalized = finalizer.DrainCompletions();
+    ASSERT_EQ(finalized.size(), 1u);
+    ASSERT_TRUE(finalized[0].result.ok)
+        << finalized[0].result.message;
+
+    const StateFileArtifactReceipt committed =
+        service.CommitImmutableArtifact({
+            .artifact = finalized[0].state_artifact_id,
+            .state_path = finalized[0].state.path,
+            .state_size_bytes = finalized[0].state.size_bytes,
+            .state_sha256 = finalized[0].state.sha256,
+            .movie_path = finalized[0].sidecars[0].path,
+            .movie_size_bytes =
+                finalized[0].sidecars[0].size_bytes,
+            .movie_sha256 =
+                finalized[0].sidecars[0].sha256,
+        });
+    ASSERT_TRUE(committed.result.ok)
+        << committed.result.message;
+    EXPECT_EQ(committed.artifact, captured.artifact);
+    EXPECT_TRUE(std::filesystem::is_regular_file(state));
+    EXPECT_TRUE(std::filesystem::is_regular_file(
+        std::filesystem::path(state.string() + ".dtm")));
+    EXPECT_EQ(
+        committed.sha256,
+        hash::sha256(
+            backend.next_buffer.data(),
+            backend.next_buffer.size()));
+    ASSERT_TRUE(committed.movie);
+    EXPECT_EQ(
+        committed.movie->dtm_sha256,
+        hash::sha256(
+            movie.dtm_bytes.data(),
+            movie.dtm_bytes.size()));
 }
 
 TEST(StateService, RecordingFileCaptureIsRejectedBeforeBackendMutation)

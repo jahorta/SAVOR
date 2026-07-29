@@ -1,5 +1,6 @@
 #include "ProgramExecutor.h"
 #include "../Model/ProgramValueArena.h"
+#include "../Registry/CanonicalActionCatalog.h"
 
 #include <algorithm>
 #include <bit>
@@ -41,6 +42,31 @@ constexpr ProgramScopeId kInvocationScope{
     const ProgramValueGraph& graph) noexcept
 {
     return FindValue(graph, graph.root);
+}
+
+[[nodiscard]] bool ValidatePendingStateArtifacts(
+    const ProgramActionCompletion& completion,
+    std::string& diagnostic)
+{
+    std::set<std::string> declared;
+    for (const PendingStateArtifactPublication& pending :
+         completion.pending_state_artifacts)
+    {
+        if (pending.artifact_id.empty() ||
+            !pending.capture.result.ok ||
+            !pending.capture.artifact ||
+            !pending.capture.captured_epoch ||
+            !pending.capture.state_bytes ||
+            pending.capture.final_path.empty() ||
+            !declared.emplace(pending.artifact_id).second)
+        {
+            diagnostic =
+                "Pending state-artifact publication is incomplete or "
+                "duplicated";
+            return false;
+        }
+    }
+    return true;
 }
 
 void RemapPayload(
@@ -2287,6 +2313,8 @@ struct ProgramExecutor::Impl
     std::vector<Frame> frames;
     std::vector<Scope> scopes;
     std::optional<PendingHost> pending;
+    std::vector<PendingStateArtifactPublication>
+        pending_artifact_publications;
     bool unwinding = false;
     bool explicit_scope_close = false;
     CancellationReason explicit_cancellation = CancellationReason::None;
@@ -2600,6 +2628,41 @@ bool ProgramExecutor::DeliverHostCompletion(
         }
     }
 
+    if (completion.status != ProgramActionCompletionStatus::Completed &&
+        !completion.pending_state_artifacts.empty())
+    {
+        if (diagnostic)
+        {
+            *diagnostic =
+                "Failed host completion cannot transfer pending "
+                "state-artifact publication";
+        }
+        return false;
+    }
+    if (!completion.pending_state_artifacts.empty() &&
+        (!pending_action ||
+         pending_action->identity !=
+             CanonicalActionIdentity(
+                 CanonicalAction::StateSaveImmutableArtifact)))
+    {
+        if (diagnostic)
+        {
+            *diagnostic =
+                "Only the canonical state-save action may promote "
+                "pending state-artifact publication";
+        }
+        return false;
+    }
+    std::string pending_artifact_diagnostic;
+    if (!ValidatePendingStateArtifacts(
+            completion,
+            pending_artifact_diagnostic))
+    {
+        if (diagnostic)
+            *diagnostic = std::move(pending_artifact_diagnostic);
+        return false;
+    }
+
     std::optional<std::string> output_budget_failure;
     if (completion.status ==
             ProgramActionCompletionStatus::Completed &&
@@ -2772,6 +2835,13 @@ bool ProgramExecutor::DeliverHostCompletion(
         return true;
     }
 
+    for (PendingStateArtifactPublication& publication :
+         completion.pending_state_artifacts)
+    {
+        impl_->pending_artifact_publications.push_back(
+            std::move(publication));
+    }
+
     switch (pending.success)
     {
     case Impl::PendingSuccess::BindValue:
@@ -2835,6 +2905,14 @@ bool ProgramExecutor::RequestCancellation(
     return true;
 }
 
+std::vector<PendingStateArtifactPublication>
+ProgramExecutor::DrainPendingStateArtifactPublications()
+{
+    std::vector<PendingStateArtifactPublication> drained;
+    drained.swap(impl_->pending_artifact_publications);
+    return drained;
+}
+
 ProgramExecutorSnapshot ProgramExecutor::snapshot() const noexcept
 {
     return {
@@ -2848,7 +2926,8 @@ ProgramExecutorSnapshot ProgramExecutor::snapshot() const noexcept
         impl_->artifacts,
         impl_->frames.size(),
         impl_->scopes.size(),
-        impl_->pending ? impl_->pending->request_id : std::nullopt};
+        impl_->pending ? impl_->pending->request_id : std::nullopt,
+        impl_->pending_artifact_publications.size()};
 }
 
 std::optional<std::chrono::steady_clock::time_point>

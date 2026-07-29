@@ -17,7 +17,6 @@ enum class CanonicalAction : std::uint8_t
     StateSaveImmutableArtifact,
     ExecutionContinueUntil,
     ExecutionStepFrames,
-    ExecutionStepInstructions,
     StopPointsSubscribeGroup,
     StopPointsReplaceGroup,
     InputAcquireLease,

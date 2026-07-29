@@ -4,6 +4,7 @@
 #include "../Registry/ActionRegistry.h"
 #include "../../Execution/ExecutionTypes.h"
 #include "../../Services/Resources/SessionResourceLedger.h"
+#include "../../Services/State/StateTypes.h"
 
 #include <chrono>
 #include <cstdint>
@@ -41,6 +42,12 @@ struct ProgramActionRequest
     ProgramScopeId parent_scope;
     ProgramResourceHandleId resource;
     std::optional<InvocationStateRequest> state_request;
+    // Workset admission may prepare the complete baseline before binding the
+    // invocation. The host still opens the invocation resource scope and
+    // validates the exact session/epoch/lineage, but must not restore state a
+    // second time.
+    bool state_already_prepared = false;
+    std::string prepared_baseline_sha256;
     // The remaining invocation deadline is projected into every non-cleanup
     // host request. InvokeAction additionally carries the verified
     // descriptor deadline and their minimum. Cleanup actions do not inherit
@@ -80,6 +87,17 @@ struct ProgramActionResource
     std::optional<StateEpoch> origin_epoch;
 };
 
+// Internal ownership transfer from a completed state-save action to the
+// worker's host-output pipeline. Program IR receives only the matching typed
+// pending-publication receipt. It never receives an ArtifactReferenceValue;
+// only finalizer evidence can create a complete authoritative reference in
+// the terminal ProgramResult.
+struct PendingStateArtifactPublication
+{
+    std::string artifact_id;
+    ImmutableStateArtifactCaptureReceipt capture;
+};
+
 struct ProgramActionCompletion
 {
     ProgramActionRequestId request_id;
@@ -91,6 +109,8 @@ struct ProgramActionCompletion
     StateEpoch origin_epoch;
     StateEpoch resulting_epoch;
     ProgramValueGraph output;
+    std::vector<PendingStateArtifactPublication>
+        pending_state_artifacts;
     std::vector<ProgramActionResource> resources;
     std::vector<CleanupReceipt> cleanup_receipts;
     ProgramCleanupStatus cleanup = ProgramCleanupStatus::Clean;

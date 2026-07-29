@@ -91,7 +91,8 @@ coordinator/runtime interfaces may change, and the narrow execution database int
 - one bounded batch-claim/reservation operation over existing job rows and individual claim tokens;
 - one exact-set lease-renewal operation over those exact tokens with an independent disposition for
   every requested item;
-- exact claim/start authority validation without re-querying every buffered candidate; and
+- one exact-set claim/start-authority validation for the complete finite package before
+  `SubmitWorkset`, without re-querying each child between admissions; and
 - exact targeted terminal advancement for a known workflow/step/job after its existing result
   projection succeeds.
 
@@ -194,7 +195,9 @@ Each item retains:
 The workset itself has only transient request identity, one exact in-memory
 `WorkerWorksetExecutionKey`, the
 fixed item order, bounded item-count/encoded-byte/aggregate-child-budget/item-credit limits, a scoped
-`StateCacheKey` lease only when reusable state is needed, and execution/cancellation state. The key
+`StateCacheKey` lease only when reusable state is needed, one exact `ProgramBaselineKey`, and
+execution/cancellation state. The corresponding `ProgramBaselineDefinition` contains ordered savestate,
+exact movie-continuation, and runtime-facing program-kind adapter-declared derived-state components. The key
 covers exact module, entrypoint, dependency closure, runtime/session profile, source-state
 identity/hash/lineage or reusable-baseline identity, movie-continuation policy, and
 execution/input/capture/movie/mutation/relevant-service compatibility. The workset is never a SavorDb
@@ -209,7 +212,17 @@ completion/acknowledgement ledger is separate from both packages: it retains pro
 captures, finalization state, authoritative terminals, and acknowledgements from executed items even
 after their workset session scope releases.
 
+The initial configurable envelope is fixed at 16 items, 32 MiB encoded bytes, and four hours aggregate
+declared active budget per workset; 64 total worker item credits and 32 active-plus-staged items; 16
+state-cache entries/512 MiB; two finalizer threads with eight pending captures/256 MiB; and 32 retained
+terminals/128 MiB. Coordinator buffering is at most one additional workset per negotiated Ready worker.
+
 Admission and accounting are fixed:
+
+An accepted workset is an uninterrupted worker-resident execution envelope: clean ordered children
+continue under local resource, baseline, and credit checks without per-item coordinator authorization.
+Durable leases remain independently authoritative, and later loss/supersession is enforced by the exact
+asynchronous cancellation path below rather than an authorization roundtrip.
 
 1. Each ready worker publishes negotiated item-capacity credits and count/byte limits. A credit covers
    one item from assignment through staged/resident/active/asynchronously-finalizing/terminal retention
@@ -228,19 +241,23 @@ Admission and accounting are fixed:
    and capacity-accounted rather than being silently reordered.
 4. A multi-item workset contains only adapter-declared eligible items with one exact
    `WorkerWorksetExecutionKey`. Persisted affinity is a hint, never compatibility proof. A singleton is
-   valid whenever no peer fits. The worker atomically revalidates the whole immutable package and its
-   credits before any session mutation.
+   valid whenever no peer fits. Before submission, the coordinator validates claim/start authority for
+   the whole finite membership in one exact-set operation. The worker atomically validates the whole
+   immutable package, execution key, and credits before any session mutation.
 5. If no workset owns the session, the accepted package becomes active. Otherwise at most one package
    may enter the immutable staged-successor slot under exact staged correlation. Acceptance keeps every
    not-yet-started item in its existing `CLAIMED` state and does not append `JobStarted`.
 6. Active common preparation acquires or creates the exact `StateCacheKey` entry and scoped lease when
-   reusable state is declared. A multi-item workset uses that immutable baseline; a singleton does not
-   capture an unnecessary new baseline. The first child begins from prepared state; every later child
-   restores the leased bytes and receives a fresh `StateEpoch`.
+   reusable state is declared. A multi-item workset prepares its exact composite
+   `ProgramBaselineDefinition`; a singleton does not capture an unnecessary new baseline. The first
+   child begins from prepared state. Before every later child, `RestoreBaseline` prepares the leased
+   savestate/movie continuation and all declared derived-state components, returns one
+   `PreparedProgramBaselineReceipt`, and advances `StateEpoch` exactly once.
 7. Immediately before a child's first effect, the worker publishes its ordered item-start event and
    activates the sole `ProgramInvocation`/`ProgramInstance` without waiting for a coordinator decision.
    The coordinator consumes that event and appends the existing per-job `JobStarted` event before
-   processing that child's later terminal.
+   processing that child's later terminal. Recording the start is durable lifecycle bookkeeping, not
+   permission for the worker to continue.
 8. When execution ends, the invocation fully unwinds. If a state artifact was requested, paused
    immutable-byte/movie-metadata capture is synchronously promoted into the worker-global completion
    ledger and bounded background finalization begins. The next child may become the sole active
@@ -258,16 +275,18 @@ Admission and accounting are fixed:
     in commit-sequence then stable-ID order. This hot path does not delay the item acknowledgement;
     broad terminal scanning remains restart/reconciliation fallback if a notification is missed.
 12. The coordinator renews every resident/staged/active/finalizing nonterminal claim through the real
-    grouped lease operation and checks exact authority before staged promotion or item start. Loss of
-    authority cancels an unstarted item without session mutation; an already-started attempt follows
-    existing idempotent recovery.
+    grouped lease operation. A lease-loss, supersession, or user-cancellation disposition sends an exact
+    asynchronous item/workset cancellation. In the absence of that notice, the authority established
+    before acceptance persists through staged promotion and ordered item admission; there is no
+    synchronous coordinator check between children.
 13. Acknowledgement releases the completion-ledger entry and returns that item's worker credit.
     Coordinator-buffered claimed jobs remain separately bounded. Pending finalization,
     ready-but-order-blocked terminals, unacknowledged terminals, active/resident items, and staged items
     may not be dropped or double-counted.
 14. After every child has entered terminal preparation or is classified unstarted, the active workset
     releases its baseline lease and session scope. Its finalizations/acknowledgements may continue in
-    the global ledger while the staged package is revalidated and promoted. The old bookkeeping summary
+    the global ledger while the staged package is locally validated and promoted unless an exact
+    cancellation notice arrived. The old bookkeeping summary
     waits for its acknowledgements but does not keep the session idle.
 
 The fixed active-workflow-count throttle is removed from the production hot path. Item-capacity credits
@@ -343,14 +362,17 @@ the ordinary immutable-artifact restore path.
 
 ### Progressive worker startup
 
-Process launch, protocol negotiation, complete production catalog verification, session readiness, and
-capacity-credit publication occur independently for each configured worker. The coordinator may open
-its data-plane loops once at least one worker has passed every required production capability/catalog
-gate and published nonzero usable credits; it does not wait for every configured process to finish
-booting. Later compatible workers add their credits atomically when ready.
+Process launch, WRMS-v1 negotiation, production catalog verification, session readiness, and capacity-
+credit publication occur independently for each configured worker, with at most two concurrent
+startups. The coordinator may open its data-plane loops once at least one worker has passed
+`CompleteExact`: exactly the nine planned production module IDs/hashes, their exact dependency manifest,
+no extras, all required production capabilities, and nonzero usable credits. It does not wait for every
+configured process to finish booting. Later compatible workers add their credits atomically when ready.
 
 A failed, mismatched, or still-starting worker contributes no claim capacity and cannot receive a
-staged package. There is no scalar or partial-catalog fallback, and startup is a structured failure when
+staged package. The pre-6A transferred test-only module may prove a `Partial` catalog process path while
+the data plane stays closed; it is never one of the nine production modules. There is no scalar or
+partial-catalog DB fallback, and startup is a structured failure when
 no required worker becomes ready. Progressive availability changes utilization only: deterministic
 claim priority, exact-key assembly, per-item attempts, and durable workflow behavior remain the same.
 
@@ -383,7 +405,7 @@ claim priority, exact-key assembly, per-item attempts, and durable workflow beha
   unchanged.
 - Workset admission leaves every not-yet-started item `CLAIMED`. Immediately before effects, the worker
   emits the ordered item-start event without waiting; the coordinator appends `JobStarted` before
-  processing that child's later terminal.
+  processing that child's later terminal. The worker does not pause for that append.
 - A state-producing item may unwind after promoting its immutable capture while background
   finalization continues. No result is projected until the actor assembles its one authoritative
   terminal in actor-assigned completion order. The coordinator then performs the unchanged per-job
@@ -391,8 +413,9 @@ claim priority, exact-key assembly, per-item attempts, and durable workflow beha
   in-process notification and does not delay that acknowledgement.
 - Exhausted item/completion credits stop later restore/admission or staged promotion without advancing
   Dolphin. Credits return only after the exact item terminal/disposition is durably acknowledged.
-- Staged-package rejection, cancellation, or lease loss occurs before session mutation. Active item
-  failures use ordinary unwind, and out-of-order background finalizer events cannot reorder terminals.
+- Exact staged-package cancellation or lease-loss notice prevents session mutation. An accepted staged
+  package otherwise promotes without synchronous coordinator reauthorization. Active item failures use
+  ordinary unwind, and out-of-order background finalizer events cannot reorder terminals.
 - Workset rejection, cancellation, transport loss, worker loss, or session taint returns every
   nonterminal item to the current per-job recovery/requeue path. A tainted worker starts no later
   resident item and cannot promote its staged successor.
@@ -410,16 +433,19 @@ Migration must:
 2. implement exact runtime invocation/result translation within program-kind handlers or adjacent
    adapters;
 3. implement the narrow execution-interface allowance as real bounded batch claim/reservation, exact-set
-   lease renewal, claim/start authority validation, and targeted terminal advancement over existing
-   records, rather than repeated scalar calls or a new persistent workset abstraction;
+   lease renewal, one pre-submission exact-set claim/start-authority validation, and targeted terminal
+   advancement over existing records, rather than repeated scalar calls, per-item authorization
+   roundtrips, or a new persistent workset abstraction;
 4. replace the unactivated scalar production submission with one bounded coordinator/worker
    `SubmitWorkset` path for 1..N independently claimed/materialized jobs, with deterministic exact-key
-   assembly, one immutable staged successor, item-capacity credits, scoped `StateCacheKey` baseline
-   leases, ordered per-item start, asynchronous immutable state-artifact finalization, globally ordered
+   assembly, one immutable staged successor, item-capacity credits, composite
+   `ProgramBaselineDefinition` preparation plus scoped `StateCacheKey` leases, ordered per-item start,
+   asynchronous immutable state-artifact finalization, globally ordered
    terminals, per-item projection/acknowledgement, targeted post-commit advancement, and current
    requeue/recovery behavior;
-5. start coordinator capacity progressively from workers that have completed the full
-   protocol/catalog/session/credit gate without admitting partial-capability workers;
+5. start at most two workers concurrently and contribute coordinator capacity only from workers that
+   have completed the full WRMS-v1 `CompleteExact` catalog/session/credit gate, without admitting
+   partial-capability workers;
 6. preserve all current workflow lifecycle, outbox, recovery, fan-out, result-projection transaction,
    and transition tests;
 7. keep current persisted payload/result codecs where handlers need them to read or write the existing
@@ -457,6 +483,9 @@ this refactor.
   every nonterminal claim through the grouped lease operation.
 - Real batch claim preserves an individual claim token/lifecycle per row and deterministic exact-key
   assembly preserves durable priority with bounded affinity lookahead and starvation protection.
+- One exact-set operation validates claim/start authority for the complete finite workset before
+  submission. The accepted worker then makes no authorization call between children; grouped lease
+  dispositions produce exact asynchronous cancellation when authority is later lost.
 - Workset admission does not mark queued resident items started. The worker's ordered item-start event
   precedes effects without a coordinator round trip, and the coordinator appends `JobStarted` before
   processing the ordered terminal.
@@ -465,12 +494,14 @@ this refactor.
   acknowledged through its existing durable transaction, then its exact known workflow step is
   advanced through the ordered notification path.
 - One immutable staged successor performs no session mutation and promotes only after active-scope
-  release plus lease/cancellation revalidation. Prior acknowledgements may drain globally without
-  retaining the old session scope.
+  release plus local capacity/cleanliness checks and absence of an exact cancellation notice. It does
+  not wait for coordinator reauthorization. Prior acknowledgements may drain globally without retaining
+  the old session scope.
 - Cache-hit, cache-miss, warm `ContinueSession`, and artifact-load paths are semantically equivalent;
   cache state is transient, scoped, exact-keyed, and never required for recovery.
-- Progressive startup contributes capacity only from fully compatible ready workers; it never activates
-  a partial catalog or changes claim priority.
+- Progressive startup contributes capacity only from `CompleteExact` Ready workers containing exactly
+  the nine production modules and no extras; the transferred test-only `Partial` catalog never activates
+  DB work or changes claim priority.
 - Existing queued jobs and historical payload/result records remain valid; no data conversion is
   required.
 - Current workflow restart, retry, idempotency, outbox, dynamic-step, fan-out, survivor-selection, and

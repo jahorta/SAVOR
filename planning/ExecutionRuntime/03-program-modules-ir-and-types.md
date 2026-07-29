@@ -151,8 +151,11 @@ pipeline, or parallel-execution instruction to the IR. It does not change an ent
 schemas and does not construct a larger `ProgramInstance`.
 
 Every active or staged workset item shares one `WorkerWorksetExecutionKey`: the same exact
-module/revision/hash, entrypoint, dependency closure, runtime profile, initial baseline, and
-session-shaping policy. The staged successor contains only the complete static item templates,
+module/revision/hash, entrypoint, dependency closure, runtime profile, `ProgramBaselineKey`, and
+session-shaping policy. The `ProgramBaselineDefinition` is an ordered set of
+`ProgramBaselineComponent`s covering savestate, exact movie continuation, and runtime-facing
+program-kind adapter-declared derived state. These are workset/session contracts, not module values or
+IR. The staged successor contains only the complete static item templates,
 correlation, validated immutable metadata, and scoped cache leases. Staging may decode, resolve and
 verify cached modules, validate typed inputs, read and hash immutable artifacts, and acquire a lease on
 an immutable serialized-state cache entry identified by exact `StateCacheKey`. It cannot bind
@@ -160,10 +163,13 @@ an immutable serialized-state cache entry identified by exact `StateCacheKey`. I
 an action, or construct a `ProgramInvocation` or `ProgramInstance`.
 
 Only after a workset is active does `WorkerRuntime` prepare its common source state and optional
-multi-item baseline. Immediately before each child admission, it binds that template to the exact
-current session and `StateEpoch`; `ProgramRuntime` then receives one ordinary immutable
-`ProgramInvocation` and creates one ordinary `ProgramInstance`. Exactly one invocation/instance may
-execute or own invocation resources across the active and staged worksets.
+multi-item composite baseline. Before every later child, `RestoreBaseline` prepares every component,
+returns one `PreparedProgramBaselineReceipt`, and advances `StateEpoch` exactly once. Immediately before
+each child admission, `WorkerRuntime` binds that template to the exact current session and epoch;
+`ProgramRuntime` then receives one ordinary immutable `ProgramInvocation` and creates one ordinary
+`ProgramInstance`. Exactly one invocation/instance may execute or own invocation resources across the
+active and staged worksets. The coordinator validates claim/start authority for all finite members
+before acceptance; no later per-item authorization pause becomes part of program control flow.
 
 After full invocation unwind, the typed execution outcome and any promoted immutable output capture
 leave `ProgramRuntime`. The bounded worker-global completion/acknowledgement ledger performs host-only
@@ -712,6 +718,11 @@ execution path.
 - One active workset plus one host-only staged successor still yields exactly one executing
   `ProgramInvocation` and one `ProgramInstance`. Staging constructs neither and cannot acquire a
   program/session resource or bind an epoch.
+- A `PreparedProgramBaselineReceipt` proves that savestate, movie continuation, and adapter-declared
+  derived state were restored as one composite transaction before a later child; partial preparation
+  cannot construct an invocation.
+- Once a finite workset is accepted, its clean children proceed in order without a per-item coordinator
+  authorization pause. Exact asynchronous cancellation handles later lease loss or supersession.
 - `StateCacheKey`, immutable serialized-state cache entries and leases, and the worker-global
   completion/acknowledgement ledger remain outside modules, entrypoint schemas, IR values, invocations,
   and instances.
@@ -763,11 +774,12 @@ execution path.
 - Any durable catalog or persistence for module source, normalized IR, verification cache, or source maps
   is a separate project. This refactor adds no SavorDb storage for those objects.
 - Optional future generic sum/variant types beyond enum-plus-record/optional schemas.
-- Numeric tuning of active/staged workset limits, immutable-state-cache count/byte bounds, the
-  worker-global completion/acknowledgement ledger, and progressive startup. Worker scheduling does not
-  add a batching/pipeline instruction or require list-valued phase schemas.
-- Direct re-authoring of current phases, production runtime/action-host construction and capability
-  advertisement, a live game-program smoke, and production-worker SavorE2E.
+- Measurement-driven tuning beyond the fixed configurable workset, credit, cache, finalizer, terminal,
+  startup, and coordinator-buffer defaults in document 02. Worker scheduling does not add a
+  batching/pipeline instruction or require list-valued phase schemas.
+- Direct re-authoring of current phases, `CompleteExact` capability advertisement and DB activation, a
+  live game-program smoke, and production-worker SavorE2E. Production runtime/action-host construction
+  and unified process transport are pre-6A work.
 
 ## Source references
 

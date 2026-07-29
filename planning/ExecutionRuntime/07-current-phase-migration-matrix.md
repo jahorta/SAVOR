@@ -267,8 +267,10 @@ replacement, or permission for a module to enumerate workflow work.
 
 Any independently ready invocations whose exact `WorkerWorksetExecutionKey` matches may use this path; phase
 identity alone neither permits nor forbids it. The key covers the exact module/entrypoint and dependency
-identity, runtime/session profile, source-state or reusable-baseline identity, and the execution/service
-policy that affects safe reuse. A one-item workset is valid and is the normal direct-tool boundary.
+identity, runtime/session profile, exact `ProgramBaselineKey`, and the execution/service policy that
+affects safe reuse. The corresponding `ProgramBaselineDefinition` orders the savestate, exact movie
+continuation, and runtime-facing program-kind adapter-declared derived-state components. A one-item
+workset is valid and is the normal direct-tool boundary.
 Within one worker, children still execute one at a time. The worker may hold at most one active
 session-mutating workset and one immutable host-only staged successor, while a bounded worker-global
 completion/acknowledgement ledger retains older completed executions, pending artifact finalizers, and
@@ -279,11 +281,17 @@ session resources, or advance Dolphin. Neither staging nor output finalization c
 
 Each child retains its own job, invocation, attempt, deadline, cancellation, provenance, cleanup,
 artifact, and terminal-result identity. Every child begins through the exact state preparation or
-baseline restore declared for the key. An exact worker-local immutable-state cache may avoid repeated
-artifact reads, but every independent restore still passes through `StateService` and advances
-`StateEpoch`; no epoch-bound resource survives between children or worksets. After a dependent
+composite baseline restore declared for the key. Before every later child, `RestoreBaseline` prepares
+every component, returns one `PreparedProgramBaselineReceipt`, and advances `StateEpoch` exactly once.
+An exact worker-local immutable-state cache may avoid repeated artifact reads, but no epoch-bound
+resource survives between children or worksets. After a dependent
 transition commits durably, ordinary same-worker affinity may attempt exact `ContinueSession`, with
 cached or file-backed restore as the correctness-equivalent fallback.
+
+The coordinator validates claim/start authority for the complete finite membership before submission.
+After worker acceptance, clean ordered children proceed without a per-item authorization pause;
+lease loss, supersession, and user cancellation arrive through exact asynchronous item/workset
+cancellation.
 
 The worker assigns one outbound sequence across worksets and streams each authoritative child terminal
 as soon as its required outputs are complete. Immutable state bytes may be captured synchronously while
@@ -299,8 +307,14 @@ unacknowledged work by negotiated item, byte, and budget credits; it may split o
 population across workers and leaves unstarted work independently cancelable or retryable through
 current operations. This is a locality/dispatch optimization only: existing SavorDb fan-out,
 supersession, reduction, and transitions remain authoritative, while documented workset-specific
-ordered batch claim, exact-set lease renewal, claim/start validation, and targeted terminal-
+ordered batch claim, exact-set lease renewal, pre-submission exact-set claim/start validation, and targeted terminal-
 reconciliation interfaces may be narrowed for the pipeline.
+
+The initial configurable bounds are shared runtime policy rather than phase semantics: 16 items,
+32 MiB, and four aggregate active hours per workset; 64 total worker item credits and 32 active-plus-
+staged items; 16 cache entries/512 MiB; two finalizer threads with eight pending captures/256 MiB; 32
+retained terminals/128 MiB; two concurrent worker startups; and one extra coordinator-buffered workset
+per negotiated Ready worker.
 
 A bounded list inside one scalar input is instead a **domain candidate list**. Its elements are one
 program's declared algorithmic work and share that invocation's result and failure boundary. It does not
@@ -950,11 +964,13 @@ Capability packs, typed action registration, and `ProgramRuntime` arrive in Slic
 
 Each slice is vertical: it adds the native module, any reusable action/composition refinement, current
 program-kind adapter projection where applicable, and focused validation. The pre-6A process seam makes
-the installed partial catalog available to unattended one-item `SubmitWorkset` guards as each slice
-lands; references above to in-process validation remain minimum focused coverage, and references to
+one transferred canonical test-only module available for the first `Partial` real-process workset
+smoke; that module is never one of the nine production modules. As each slice lands, its installed
+partial production catalog remains available to unattended one-item `SubmitWorkset` guards; references
+above to in-process validation remain minimum focused coverage, and references to
 direct-worker SavorE2E waiting for Slice 7 mean DB-backed/full-catalog activation. Coordinator data-plane
-work and the complete-catalog production capability remain unavailable until all nine modules are ready
-in Slice 7. There is no legacy 6J and no monolithic BattleEndResults slice.
+work remains unavailable until Slice 7 proves `CompleteExact`: exactly all nine planned production
+module IDs/hashes and no extras. There is no legacy 6J and no monolithic BattleEndResults slice.
 
 ## Interfaces and ownership affected
 

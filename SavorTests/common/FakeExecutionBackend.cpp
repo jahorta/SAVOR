@@ -66,13 +66,6 @@ void FakeExecutionBackendControl::SetFrameStepResult(runtime::BackendResult valu
     frame_step_result = std::move(value);
 }
 
-void FakeExecutionBackendControl::SetInstructionStepResult(
-    runtime::BackendResult value)
-{
-    std::lock_guard lock(mutex);
-    instruction_step_result = std::move(value);
-}
-
 void FakeExecutionBackendControl::SetThrottleResult(runtime::BackendResult value)
 {
     std::lock_guard lock(mutex);
@@ -155,20 +148,6 @@ runtime::BackendResult FakeExecutionBackend::BeginFrameStep()
         control_->snapshot.core_state = runtime::BackendCoreState::Paused;
         control_->snapshot.pause_confirmed = true;
         ++control_->snapshot.vi_count;
-    }
-    return result;
-}
-
-runtime::BackendResult FakeExecutionBackend::BeginExactInstructionStep()
-{
-    std::lock_guard lock(control_->mutex);
-    control_->RecordLocked("instruction_step");
-    const runtime::BackendResult result = control_->instruction_step_result;
-    if (result.ok)
-    {
-        control_->snapshot.core_state = runtime::BackendCoreState::Paused;
-        control_->snapshot.pause_confirmed = true;
-        control_->snapshot.pc += 4;
     }
     return result;
 }

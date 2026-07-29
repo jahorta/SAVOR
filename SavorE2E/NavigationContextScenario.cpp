@@ -578,7 +578,8 @@ bool RunNavigationContextScenario(
                 std::cout << line << '\n';
                 durable_log.AppendLine(line);
             },
-            true)) {
+            true,
+            coordinator.ItemCreditSource())) {
         if (error_out != nullptr) *error_out = error;
         return false;
     }

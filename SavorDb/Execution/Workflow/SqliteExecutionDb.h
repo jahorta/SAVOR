@@ -53,6 +53,34 @@ public:
         std::int64_t lease_duration_ms,
         bool* renewed_out = nullptr,
         std::string* error_out = nullptr) override;
+    std::vector<ExecutionJobLeaseRenewalReceipt> RenewExecutionJobLeases(
+        const std::vector<ExecutionJobLeaseRequest>& requests,
+        std::int64_t lease_duration_ms,
+        std::string* error_out = nullptr) override;
+    bool MarkExecutionJobStarted(
+        std::int64_t job_id,
+        std::string_view claimed_by_token,
+        std::string_view requested_by,
+        ExecutionJobStartReceipt* receipt_out = nullptr,
+        std::string* error_out = nullptr) override;
+    bool ValidateExecutionJobStartAuthoritySet(
+        const std::vector<ExecutionJobLeaseRequest>& requests,
+        ExecutionJobStartAuthoritySetReceipt* receipt_out = nullptr,
+        std::string* error_out = nullptr) override;
+    bool ConfirmExecutionJobTerminalAuthority(
+        std::int64_t job_id,
+        std::string_view claimed_by_token,
+        std::uint64_t durable_attempt_id,
+        std::int64_t lease_duration_ms,
+        ExecutionJobTerminalAuthorityReceipt* receipt_out = nullptr,
+        std::string* error_out = nullptr) override;
+    bool RecoverExecutionJobAfterWorkerLoss(
+        std::int64_t job_id,
+        std::string_view claimed_by_token,
+        std::uint64_t durable_attempt_id,
+        std::string_view message,
+        ExecutionJobWorkerLossRecoveryReceipt* receipt_out = nullptr,
+        std::string* error_out = nullptr) override;
     bool RequeueExpiredExecutionLeases(
         int* rows_requeued_out = nullptr,
         std::string* error_out = nullptr) override;

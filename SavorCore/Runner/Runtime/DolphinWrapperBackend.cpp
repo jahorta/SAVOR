@@ -1113,15 +1113,6 @@ BackendResult DolphinWrapperBackend::BeginFrameStep()
     return BackendResult::Success();
 }
 
-BackendResult DolphinWrapperBackend::BeginExactInstructionStep()
-{
-    if (BackendResult open = impl_->RequireOpen(); !open.ok)
-        return open;
-    return BackendResult::Failure(
-        BackendErrorCode::Unavailable,
-        "Exact guest-instruction stepping is unavailable in JIT64");
-}
-
 BackendResult DolphinWrapperBackend::SetThrottleDisabled(bool disabled)
 {
     if (BackendResult open = impl_->RequireOpen(); !open.ok)
