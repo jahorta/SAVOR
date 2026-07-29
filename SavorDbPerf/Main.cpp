@@ -50,7 +50,6 @@ struct Options {
     std::filesystem::path workspace_root;
     std::filesystem::path worker_dir_root;
     std::string durable_lines;
-    std::string tasmovie_headroom;
     int rtc_max = 0;
     std::string seedprobe_combo_attempts_per_target;
     std::filesystem::path report_dir;
@@ -135,8 +134,6 @@ bool ParseOptions(int argc, char** argv, Options* options) {
                 options->worker_dir_root = need_value("--worker-dir-root");
             } else if (arg == "--durable-lines") {
                 options->durable_lines = need_value("--durable-lines");
-            } else if (arg == "--tasmovie-headroom" || arg == "--tasmovie-headroom-x10" || arg == "--headroom") {
-                options->tasmovie_headroom = need_value(arg.c_str());
             } else if (arg == "--tasmovie-rtc-max" || arg == "--rtc-max") {
                 options->rtc_max = std::stoi(need_value(arg.c_str()));
             } else if (arg == "--tasmovie-rtc" || arg == "--rtc" || arg == "--tasmovie-rtc-min" || arg == "--rtc-min") {
@@ -770,7 +767,6 @@ int RunE2EReplay(const Options& options, const char* argv0) {
     AppendPathArg(cmd, "--workspace-root", options.workspace_root);
     AppendPathArg(cmd, "--worker-dir-root", options.worker_dir_root);
     AppendStringArg(cmd, "--durable-lines", options.durable_lines);
-    AppendStringArg(cmd, "--tasmovie-headroom", options.tasmovie_headroom);
     cmd << " --tasmovie-rtc-min 0"
         << " --tasmovie-rtc-max " << options.rtc_max;
     AppendStringArg(cmd, "--seedprobe-combo-attempts-per-target", options.seedprobe_combo_attempts_per_target);

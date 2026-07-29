@@ -23,8 +23,6 @@ enum class SeedProbeWorkflowPhase : std::uint32_t {
 struct SeedProbeGridBlueprintConfig {
     std::int64_t probe_id = 0;
     std::int32_t program_version = 1;
-    std::uint32_t run_ms = 0;
-    std::uint32_t vi_stall_ms = 0;
     savor::seedprobe::SeedProbeTarget target = savor::seedprobe::SeedProbeTarget::PreBattle;
 };
 

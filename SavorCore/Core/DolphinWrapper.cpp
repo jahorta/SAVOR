@@ -978,13 +978,12 @@ namespace savor {
         }
 
         SCLOGDX(SC_TAGS("input"),
-            "[input-tape] label=%s begin source_frames=%zu playback_frames=%zu safe_mode=%u max_unacked_replays=%u frame_step_timeout_ms=%u",
+            "[input-tape] label=%s begin source_frames=%zu playback_frames=%zu safe_mode=%u max_unacked_replays=%u",
             options.label,
             plan.size(),
             playback_plan.size(),
             options.safe_mode ? 1u : 0u,
-            options.max_unacked_replays,
-            options.frame_step_timeout_ms);
+            options.max_unacked_replays);
 
         result.attempted_frames.reserve(playback_plan.size());
         result.vi_durations.reserve(playback_plan.size());
@@ -1008,7 +1007,7 @@ namespace savor {
                     pc_before,
                     DescribeFrameCompact(frame).c_str());
 
-                const bool step_ok = stepOneFrameBlocking(static_cast<int>(options.frame_step_timeout_ms));
+                const bool step_ok = stepOneFrameBlocking();
                 const auto stats = m_pad.getPollStats();
                 const uint32_t vi_after = static_cast<uint32_t>(getViFieldCountApprox() & 0xFFFFFFFFull);
                 const uint32_t pc_after = getPC();
@@ -1615,51 +1614,6 @@ namespace savor {
     void DolphinWrapper::clearMemoryWatchpoints()
     {
         SCLOGE("[core] hard cutover: clearMemoryWatchpoints is disconnected; use StopPointRouter");
-    }
-
-    DolphinWrapper::RunUntilHitResult DolphinWrapper::runUntilBreakpointBlocking(uint32_t timeout_ms)
-    {
-        // Preserve legacy behavior but now through the flexible watchdog loop with no extra checks.
-        return runUntilBreakpointFlexible(timeout_ms, 0, false);
-    }
-
-    
-
-    uint32_t DolphinWrapper::pickPollIntervalMs(uint32_t timeout_ms)
-    {
-        return pickPollIntervalMsForTimeLeft(timeout_ms, timeout_ms);
-    }
-
-    uint32_t DolphinWrapper::pickPollIntervalMsForTimeLeft(uint32_t timeout_ms, uint32_t time_left_ms)
-    {
-        // Monotonic tiers: tighten as we get closer to the deadline.
-        // You can tweak these in one place and both VM and wrapper will follow.
-        (void)timeout_ms; // reserved for future policy that also considers absolute scale
-        if (time_left_ms >= 5u * 60u * 1000u) return 1000u;  // >= 5 minutes
-        if (time_left_ms >= 60u * 1000u)      return 500u;  // 1-5 minutes
-        if (time_left_ms >= 10u * 1000u)      return 200u;  // 10-60 seconds
-        if (time_left_ms >= 2000u)            return 100u;   // 2-10 seconds
-        return 100u;                                         // < 2 seconds
-    }
-
-    DolphinWrapper::RunUntilHitResult
-        DolphinWrapper::runUntilBreakpointFlexible(uint32_t timeout_ms,
-            uint32_t vi_stall_ms,
-            bool watch_movie,
-            uint32_t poll_ms,
-            uint32_t progflags,
-            ProgressSink sink)
-    {
-        (void)timeout_ms;
-        (void)vi_stall_ms;
-        (void)watch_movie;
-        (void)poll_ms;
-        (void)progflags;
-        (void)sink;
-        SCLOGE(
-            "[DW/run] hard cutover: legacy run-until is disconnected; "
-            "use StopPointRouter and ExecutionEngine");
-        return {false, 0u, "hard_cutover_stop_point_router_required"};
     }
 
     void DolphinWrapper::disableThrottle()

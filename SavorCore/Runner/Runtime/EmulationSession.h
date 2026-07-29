@@ -3,6 +3,7 @@
 #include "IDolphinBackend.h"
 #include "RuntimeTypes.h"
 #include "Execution/ExecutionEngine.h"
+#include "Execution/HostActivityTracker.h"
 #include "Services/Capture/CaptureService.h"
 #include "Services/Input/InputArbiter.h"
 #include "Services/Memory/GuestMemory.h"
@@ -80,7 +81,10 @@ struct SessionBufferReceipt
 class EmulationSession final : private IStateReplacementParticipant
 {
 public:
-    EmulationSession(SessionId session_id, std::unique_ptr<IDolphinBackend> backend);
+    EmulationSession(
+        SessionId session_id,
+        std::unique_ptr<IDolphinBackend> backend,
+        ExecutionEngineConfig execution_engine_config = {});
     ~EmulationSession();
 
     EmulationSession(const EmulationSession&) = delete;
@@ -275,6 +279,8 @@ private:
     std::unique_ptr<SessionResourceLedger> resource_ledger_;
     std::unique_ptr<program::SessionResourceBindingTable>
         resource_bindings_;
+    HostActivityTracker host_activity_;
+    ExecutionEngineConfig execution_engine_config_;
     std::unique_ptr<ExecutionEngine> execution_engine_;
     std::vector<ExecutionEvent> retained_execution_events_;
     SessionDisposition disposition_ = SessionDisposition::Closed;

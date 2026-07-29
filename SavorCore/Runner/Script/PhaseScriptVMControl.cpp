@@ -132,8 +132,6 @@ namespace savor {
     void PhaseScriptVM::op_add_u32(const PSOp& op, PSContext& ctx) const { uint32_t v = 0; ctx.get<uint32_t>(op.keyimm.key, v); ctx[op.keyimm.key] = v + op.keyimm.imm; }
     void PhaseScriptVM::op_emit_result(const PSOp& op, PSResult& result, PSContext& ctx) const { SCLOGD("[VM] EMIT_RESULT %s=%08X", savor::context::key::name_for_id(op.key.id).data(), ctx[op.key.id]); result.ctx[op.key.id] = ctx[op.key.id]; }
     bool PhaseScriptVM::op_return_result(const PSOp& op, PSResult& result, PSContext& ctx) const { ctx[savor::context::key::core::VI_LAST] = (uint32_t)(host_.getViFieldCountApprox() & 0xFFFFFFFFull); result.ctx = ctx; result.ctx[op.keyimm.key] = op.keyimm.imm; uint32_t dw_outcome = 0; ctx.get(savor::context::key::core::DW_RUN_OUTCOME_CODE, dw_outcome); result.ok = dw_outcome == 0; return true; }
-    void PhaseScriptVM::op_set_timeout(const PSOp& op, PSContext& ctx) const { ctx[savor::context::key::core::RUN_MS] = op.imm.v; }
-    void PhaseScriptVM::op_set_timeout_from(const PSOp& op, PSContext& ctx) const { uint32_t timeout_ms; ctx.get<uint32_t>(op.key.id, timeout_ms); ctx[savor::context::key::core::RUN_MS] = timeout_ms; }
     PhaseScriptVM::RunUntilBpCoreResult PhaseScriptVM::run_until_bp_core(
         PSContext& ctx,
         const RunUntilBpSpec& spec)
@@ -144,7 +142,6 @@ namespace savor {
         run_until_bp_active_.store(false, std::memory_order_release);
         ctx[savor::context::key::core::DW_RUN_OUTCOME_CODE] =
             static_cast<uint32_t>(RunToBpOutcome::Aborted);
-        ctx[savor::context::key::core::ELAPSED_MS] = 0u;
         ctx[savor::context::key::core::RUN_HIT_PC] = 0u;
         ctx[savor::context::key::core::RUN_HIT_BP_KEY] = 0u;
         ctx[savor::context::key::core::RUN_EXPECTED_MATCH] = 0u;

@@ -328,8 +328,8 @@ savor::wrms::ExecutionTerminalStatusCode MapExecutionTerminalStatus(
         return Wire::Cancelled;
     case Runtime::TimedOut:
         return Wire::TimedOut;
-    case Runtime::ViStalled:
-        return Wire::ViStalled;
+    case Runtime::CoreStalled:
+        return Wire::CoreStalled;
     case Runtime::MovieEnded:
         return Wire::MovieEnded;
     case Runtime::ConsumedStop:
@@ -1038,6 +1038,14 @@ void PublishWorkerEvent(
                 const auto error = event.terminal
                     ? event.terminal->error
                     : savor::runtime::ExecutionError{};
+                const std::string warning_code =
+                    event.health_warning
+                    ? event.health_warning->code
+                    : std::string{};
+                const std::string warning_message =
+                    event.health_warning
+                    ? event.health_warning->message
+                    : std::string{};
                 publisher.Publish(
                     MessageKind::ExecutionState,
                     0,
@@ -1060,9 +1068,13 @@ void PublishWorkerEvent(
                         .program_counter = snapshot.evidence.pc,
                         .rejection_code = MapRejectionCode(
                             MapExecutionError(error.code)),
-                        .code = ErrorCodeString(
-                            MapExecutionError(error.code)),
-                        .message = error.message,
+                        .code = warning_code.empty()
+                            ? ErrorCodeString(
+                                  MapExecutionError(error.code))
+                            : warning_code,
+                        .message = warning_message.empty()
+                            ? error.message
+                            : warning_message,
                     });
             },
             [&](const savor::runtime::HostRuntimeEvent& host) {

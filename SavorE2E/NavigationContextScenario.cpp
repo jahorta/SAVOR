@@ -204,7 +204,6 @@ struct WorkerObservation {
     std::uint32_t hit_pc = 0;
     std::uint32_t hit_key = 0;
     std::uint32_t run_outcome = 0;
-    std::uint32_t elapsed_ms = 0;
     std::uint32_t vi_delta = 0;
     std::uint32_t phase_outcome = 0;
     std::uint32_t failure = 0;
@@ -225,7 +224,6 @@ WorkerObservation Observe(const savor::PRResult& result)
     result.ps.ctx.get(
         savor::context::key::core::DW_RUN_OUTCOME_CODE,
         out.run_outcome);
-    result.ps.ctx.get(savor::context::key::core::ELAPSED_MS, out.elapsed_ms);
     result.ps.ctx.get(savor::context::key::core::VI_DELTA, out.vi_delta);
     result.ps.ctx.get(
         savor::context::key::navigation::OUTCOME,
@@ -384,7 +382,6 @@ bool VerifyCompletedWorkflow(
             "job_id=" + std::to_string(observation.job_id)
             + " entry_pc=" + FormatHex(observation.entry_pc)
             + " capture_pc=" + FormatHex(context.capture_pc)
-            + " elapsed_ms=" + std::to_string(observation.elapsed_ms)
             + " vi_delta=" + std::to_string(observation.vi_delta)
             + " has_ground="
                 + std::to_string(context.has_ground ? 1 : 0)
@@ -457,11 +454,6 @@ bool RunNavigationContextScenario(
             runtime_root);
     registry_config.navigation_context.working_dir_root =
         runtime_root / "navigation-context";
-    registry_config.navigation_context.run_timeout_ms = static_cast<std::uint32_t>(
-        std::clamp<std::int64_t>(
-            options.timeout_ms,
-            1,
-            std::numeric_limits<std::uint32_t>::max()));
     std::string error;
     savor::db::execution::programdb::ProgramKindRegistry registry;
     if (!savor::db::execution::programdb::BuildProductionProgramKindRegistry(
@@ -555,7 +547,6 @@ bool RunNavigationContextScenario(
             + " ok=" + (result.ps.ok ? std::string("true") : "false")
             + " entry_pc=" + FormatHex(observed.entry_pc)
             + " hit_pc=" + FormatHex(observed.hit_pc)
-            + " elapsed_ms=" + std::to_string(observed.elapsed_ms)
             + " vi_delta=" + std::to_string(observed.vi_delta)
             + " failure=" + std::to_string(observed.failure)
             + " diagnostic=\"" + observed.diagnostic + "\"";

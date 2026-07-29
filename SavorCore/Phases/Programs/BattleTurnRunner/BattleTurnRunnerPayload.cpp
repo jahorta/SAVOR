@@ -41,8 +41,6 @@ namespace phase::battle::turnrunner {
         out.clear();
         out.push_back(savor::PK_BattleSingleTurnRunner);
         put_u32(out, PayloadVersion);
-        put_u32(out, spec.run_ms);
-        put_u32(out, spec.vi_stall_ms);
         put_u32(out, spec.current_turn);
         put_u32(out, spec.max_turn);
         put_u32(out, spec.has_initial_input ? 1u : 0u);
@@ -99,15 +97,12 @@ namespace phase::battle::turnrunner {
         if (tag != savor::PK_BattleSingleTurnRunner) return false;
 
         uint32_t version = 0;
-        uint32_t run_ms = 0, vi_stall_ms = 0;
         uint32_t current_turn = 1;
         uint32_t max_turn = 1;
         uint32_t has_initial_input = 0;
 
         if (!get_u32(p, e, version)) return false;
-        if (version < 3 || version > PayloadVersion) return false;
-        if (!get_u32(p, e, run_ms)) return false;
-        if (!get_u32(p, e, vi_stall_ms)) return false;
+        if (version != PayloadVersion) return false;
         if (!get_u32(p, e, current_turn)) return false;
         if (!get_u32(p, e, max_turn)) return false;
         if (!get_u32(p, e, has_initial_input)) return false;
@@ -177,11 +172,6 @@ namespace phase::battle::turnrunner {
         soa::battle::actions::BattlePath path;
         path.push_back(std::move(turn));
 
-        const uint32_t effective_run_ms = run_ms > 0 ? run_ms : 120000u;
-        out_ctx[savor::context::key::core::RUN_MS] = effective_run_ms;
-        out_ctx[savor::context::key::battle::RUN_LONG_TIMEOUT_MS] = effective_run_ms;
-        out_ctx[savor::context::key::core::VI_STALL_MS] = vi_stall_ms;
-
         // Single-turn runner payload carries exactly one local turn plan.
         // Materialization indexes TURN_PLANS with ACTIVE_TURN as a 1-based index,
         // so keep ACTIVE_TURN local (=1) while preserving the caller-provided
@@ -210,23 +200,18 @@ namespace phase::battle::turnrunner {
         out_ctx[savor::context::key::battle::MACRO_FAKE_MEMORY_GATE_MODE] = (uint32_t)1;
         out_ctx[savor::context::key::battle::MACRO_FAKE_TARGET_NEUTRAL_FRAMES] = (uint32_t)7;
         out_ctx[savor::context::key::battle::MACRO_FAKE_INPUT_NEUTRAL_FRAMES] = (uint32_t)0;
-        out_ctx[savor::context::key::battle::MACRO_FAKE_MEMORY_TIMEOUT_MS] = (uint32_t)1000;
         out_ctx[savor::context::key::battle::MACRO_FAKE_USE_MIXED_PATTERNS] = (uint32_t)1;
         out_ctx[savor::context::key::battle::MACRO_FAKE_FIRST_MEMORY_GATE_MODE] = (uint32_t)1;
         out_ctx[savor::context::key::battle::MACRO_FAKE_FIRST_TARGET_NEUTRAL_FRAMES] = (uint32_t)0;
         out_ctx[savor::context::key::battle::MACRO_FAKE_FIRST_INPUT_NEUTRAL_FRAMES] = (uint32_t)0;
-        out_ctx[savor::context::key::battle::MACRO_FAKE_FIRST_MEMORY_TIMEOUT_MS] = (uint32_t)1000;
         out_ctx[savor::context::key::battle::MACRO_MEMORY_REPEAT2_BASELINE] = (uint32_t)0;
         out_ctx[savor::context::key::battle::MACRO_MEMORY_REPEAT2_LATEST] = (uint32_t)0;
         out_ctx[savor::context::key::battle::MACRO_MEMORY_REPEAT2_CHANGED] = (uint32_t)0;
         out_ctx[savor::context::key::battle::MACRO_MEMORY_REPEAT2_POLL_COUNT] = (uint32_t)0;
-        out_ctx[savor::context::key::battle::MACRO_MEMORY_REPEAT2_ELAPSED_MS] = (uint32_t)0;
         out_ctx[savor::context::key::battle::RNG_OVERRIDE_ENABLED] = override_start_rng_enabled ? 1u : 0u;
         out_ctx[savor::context::key::battle::RNG_OVERRIDE_SEED] = override_start_rng_seed;
         out_ctx[savor::context::key::battle::RNG_ORIGINAL_SEED] = (uint32_t)0;
         out_ctx[savor::context::key::battle::RNG_APPLIED_SEED] = (uint32_t)0;
-        out_ctx[savor::context::key::core::RUN_POLL_MS] = (uint32_t)10;
-
         out_ctx[savor::context::key::core::PRED_COUNT] = pred_count;
         out_ctx[savor::context::key::core::PRED_TABLE] = pred_table;
         out_ctx[savor::context::key::core::PRED_BASELINES] = pred_bases;
@@ -239,12 +224,11 @@ namespace phase::battle::turnrunner {
             out_ctx[savor::context::key::core::CAPTURE_OUTPUT_PATH] = capture_output_path;
         }
 
-        savor::progress::ProgressDeets progress{ .poll_rate = 5000 };
+        savor::progress::ProgressDeets progress{};
         progress.set_flag(CoreProgressFlags::BattleProgress);
         progress.set_flag(CoreProgressFlags::PredicateProgress);
         progress.set_flag(CoreProgressFlags::DontRecordHeartbeat);
 
-        out_ctx[savor::context::key::core::PROGRESS_RATE] = progress.poll_rate;
         out_ctx[savor::context::key::core::PROGRESS_CORE_FLAGS] = progress.flags;
         return true;
     }

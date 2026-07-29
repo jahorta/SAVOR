@@ -6,9 +6,8 @@
 #include <optional>
 #include <sstream>
 #include <string>
+#include <string_view>
 
-#include "../../../Analysis/IAnalysisDb.h"
-#include "../../../Authoring/IAuthoringDb.h"
 #include "../../../../SavorCore/Utils/Hex.h"
 #include "../../../../SavorCore/Utils/IniDoc.h"
 #include "../../../../SavorCore/Phases/Programs/SeedProbe/SeedProbePayload.h"
@@ -17,20 +16,8 @@
 
 namespace savor::db::execution::programdb::seedprobe {
 
-struct SeedProbeTimingConfig {
-    uint32_t run_ms = 0;
-    uint32_t vi_stall_ms = 0;
-};
-
-static inline uint32_t clamp_to_u32(std::int64_t value) {
-    if (value <= 0) {
-        return 0;
-    }
-    if (value > static_cast<std::int64_t>(std::numeric_limits<uint32_t>::max())) {
-        return std::numeric_limits<uint32_t>::max();
-    }
-    return static_cast<uint32_t>(value);
-}
+inline constexpr std::string_view kSeedProbeFingerprintNamespace =
+    "seedprobe-fingerprint-v2";
 
 static inline int clamp_to_int(std::int64_t value) {
     if (value < static_cast<std::int64_t>(std::numeric_limits<int>::min())) {
@@ -40,30 +27,6 @@ static inline int clamp_to_int(std::int64_t value) {
         return std::numeric_limits<int>::max();
     }
     return static_cast<int>(value);
-}
-
-static inline std::optional<SeedProbeTimingConfig> resolve_timing_from_authoring_spec(
-    const savor::db::IAnalysisDb* analysis_db,
-    const savor::db::IAuthoringDb* authoring_db,
-    std::int64_t probe_run_id) {
-    if (analysis_db == nullptr || authoring_db == nullptr || probe_run_id <= 0) {
-        return std::nullopt;
-    }
-
-    const auto probe_run = analysis_db->GetSeedProbeRun(probe_run_id);
-    if (!probe_run.has_value()) {
-        return std::nullopt;
-    }
-
-    const auto spec = authoring_db->GetSeedProbeSpec(probe_run->seed_probe_spec_id);
-    if (!spec.has_value()) {
-        return std::nullopt;
-    }
-
-    return SeedProbeTimingConfig{
-        .run_ms = clamp_to_u32(spec->run_ms),
-        .vi_stall_ms = clamp_to_u32(spec->vi_stall_ms),
-    };
 }
 
 struct GridIni {
@@ -133,8 +96,6 @@ struct BlueprintIni {
     int64_t root_jobset_id{ -1 };
     int64_t savestate_id{ -1 };
     int64_t probe_id{ -1 };
-    uint32_t run_ms;
-    uint32_t vi_stall_ms;
     SeedProbePhase cur_phase{ SeedProbePhase::None };
     bool clear_result_winners = true;
     bool auto_schedule_battle_run = false;
@@ -147,8 +108,6 @@ struct BlueprintIni {
         bp.root_jobset_id = section.get_i64("root_jobset_id", -1);
         bp.savestate_id = section.get_i64("savestate_id", -1);
         bp.probe_id = section.get_i64("probe_id", -1);
-        bp.run_ms = section.get_u32("run_ms", 0);
-        bp.vi_stall_ms = section.get_u32("vi_stall_ms", 0);
         bp.cur_phase = (SeedProbePhase)section.get_u32("cur_phase", 0);
         bp.clear_result_winners = section.get_bool("clear_result_winners", true);
         bp.auto_schedule_battle_run = section.get_bool("auto_schedule_battle_run", false);
@@ -161,8 +120,6 @@ struct BlueprintIni {
         doc.set(SECTION_NAME, "root_jobset_id", std::to_string(root_jobset_id));
         doc.set(SECTION_NAME, "savestate_id", std::to_string(savestate_id));
         doc.set(SECTION_NAME, "probe_id", std::to_string(probe_id));
-        doc.set(SECTION_NAME, "run_ms", std::to_string(run_ms));
-        doc.set(SECTION_NAME, "vi_stall_ms", std::to_string(vi_stall_ms));
         doc.set(SECTION_NAME, "cur_phase", std::to_string((uint32_t)cur_phase));
         doc.set(SECTION_NAME, "clear_result_winners", clear_result_winners ? "1" : "0");
         doc.set(SECTION_NAME, "auto_schedule_battle_run", auto_schedule_battle_run ? "1" : "0");
@@ -260,21 +217,23 @@ struct CleanupIni {
     }
 };
 
-static inline std::string fingerprint_for(int64_t probe_id, const std::string& frame_hex, uint32_t run_ms, uint32_t vi_stall_ms, std::int32_t program_version = 1) {
+static inline std::string fingerprint_for(
+    int64_t probe_id,
+    const std::string& frame_hex,
+    std::int32_t program_version = 1) {
     std::ostringstream oss;
-    oss << "PK=1;PV=" << program_version << ";probe_id=" << probe_id
-        << ";frame=" << frame_hex << ";run_ms=" << run_ms << ";vi=" << vi_stall_ms;
+    oss << "FPNS=" << kSeedProbeFingerprintNamespace
+        << ";PK=1;PV=" << program_version << ";probe_id=" << probe_id
+        << ";frame=" << frame_hex;
     return oss.str();
 }
 
 static inline std::string fingerprint_for_target(
     int64_t probe_id,
     const std::string& frame_hex,
-    uint32_t run_ms,
-    uint32_t vi_stall_ms,
     savor::seedprobe::SeedProbeTarget target) {
     const auto program_version = target == savor::seedprobe::SeedProbeTarget::PreBattle ? 1 : 2;
-    return fingerprint_for(probe_id, frame_hex, run_ms, vi_stall_ms, program_version)
+    return fingerprint_for(probe_id, frame_hex, program_version)
         + ";target=" + std::to_string(static_cast<std::uint32_t>(target));
 }
 
@@ -318,19 +277,23 @@ static inline std::optional<savor::GCInputFrame> parse_frame_hex_or_null(const s
     return frame;
 }
 
-static inline savor::seedprobe::EncodeSpec build_encode_spec_from_fingerprint(const std::string& fingerprint) {
+static inline bool is_current_fingerprint(const std::string& fingerprint) {
+    return fingerprint.starts_with(
+        std::string("FPNS=") + std::string(kSeedProbeFingerprintNamespace) + ";");
+}
+
+static inline std::optional<savor::seedprobe::EncodeSpec>
+build_encode_spec_from_fingerprint(const std::string& fingerprint) {
+    if (!is_current_fingerprint(fingerprint)) {
+        return std::nullopt;
+    }
+
     savor::seedprobe::EncodeSpec spec{};
     const auto frame = parse_frame_hex_or_null(fingerprint_value(fingerprint, "frame"));
     if (frame.has_value()) {
         spec.frame = *frame;
     }
 
-    if (const auto run_ms = parse_u32_or_null(fingerprint_value(fingerprint, "run_ms")); run_ms.has_value()) {
-        spec.run_ms = *run_ms;
-    }
-    if (const auto vi_stall_ms = parse_u32_or_null(fingerprint_value(fingerprint, "vi")); vi_stall_ms.has_value()) {
-        spec.vi_stall_ms = *vi_stall_ms;
-    }
     if (const auto target = parse_u32_or_null(fingerprint_value(fingerprint, "target")); target.has_value()) {
         spec.target = static_cast<savor::seedprobe::SeedProbeTarget>(*target);
     }

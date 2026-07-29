@@ -9,10 +9,8 @@
 
 #include "Execution/ProgramDB/ProgramKindRegistry.h"
 #include "Execution/ProgramDB/ProductionProgramKindRegistry.h"
-#include "Phases/Programs/PlayTasMovie/TasMoviePayload.h"
 #include "Execution/DBWorkflowCoordinatorFactory.h"
 #include "Execution/DBWorkflowWorkerCoordinator.h"
-#include "Tas/DtmFile.h"
 #include "UIRead/IUiReadDb.h"
 
 #include "CoordinatorProgress.h"
@@ -49,31 +47,10 @@ std::string FormatWorkflowStateLine(const savor::db::execution::workflow::Workfl
     return oss.str();
 }
 
-std::int64_t ComputeTasMovieRunMs(
-    const std::filesystem::path& dtm_file,
-    std::uint8_t headroom_x10,
-    std::int64_t fallback_ms) {
-    savor::tas::DtmFile dtm;
-    if (!dtm.load(dtm_file.string())) {
-        return fallback_ms;
-    }
-    const auto info = dtm.info();
-    const auto run_ms = savor::tasmovie::compute_run_ms_from_counts(
-        info.vi_count,
-        info.input_count,
-        static_cast<double>(headroom_x10) / 10.0);
-    return run_ms > 0 ? static_cast<std::int64_t>(run_ms) : fallback_ms;
-}
-
 std::int64_t ComputeTasMovieScenarioTimeoutMs(
     const CliOptions& options,
-    bool chain_seedprobe,
-    std::uint8_t headroom_x10) {
-    const auto tas_movie_run_ms = ComputeTasMovieRunMs(
-        options.dtm_file,
-        headroom_x10,
-        options.timeout_ms * 2);
-    const auto tas_budget_ms = tas_movie_run_ms + options.timeout_ms;
+    bool chain_seedprobe) {
+    const auto tas_budget_ms = options.timeout_ms * 3;
     if (!chain_seedprobe) {
         return tas_budget_ms;
     }
@@ -258,14 +235,10 @@ bool RunTasMovieScenario(
     tas_config.blueprint.base_dtm_artifact_id = dtm_artifact_id;
     tas_config.blueprint.rtc_low = static_cast<std::uint8_t>(rtc_range.low);
     tas_config.blueprint.rtc_high = static_cast<std::uint8_t>(rtc_range.high);
-    tas_config.blueprint.run_ms = 0;
-    tas_config.blueprint.vi_stall_ms = 2000;
     tas_config.blueprint.progress_enable = true;
-    tas_config.blueprint.headroom_x10 = static_cast<std::uint8_t>(options.tasmovie_headroom_x10.value_or(35));
     const auto scenario_timeout_ms = ComputeTasMovieScenarioTimeoutMs(
         options,
-        chain_seedprobe,
-        tas_config.blueprint.headroom_x10);
+        chain_seedprobe);
     tas_config.working_dir_root = scenario_workspace_root / "tasmovie";
     tas_config.next_step_key = chain_seedprobe ? "Neutral" : "Done";
     savor::db::execution::programdb::ProgramKindRegistry registry;

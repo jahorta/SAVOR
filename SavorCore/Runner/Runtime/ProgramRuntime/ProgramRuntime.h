@@ -8,6 +8,7 @@
 #include "Store/ProgramDefinitionStore.h"
 #include "Verify/ProgramVerifier.h"
 
+#include <chrono>
 #include <memory>
 #include <optional>
 #include <string>
@@ -22,6 +23,11 @@ struct ProgramRuntimeConfig
     // Capability packs remain invocation-specific and must exactly equal the
     // verified dependency lock.
     RuntimeProfile runtime_profile;
+    // Infrastructure-only timeout for actor/host operations that do not
+    // advance guest execution. It is process configuration, never invocation
+    // identity or phase policy.
+    std::chrono::milliseconds bounded_host_operation_timeout{
+        std::chrono::seconds(30)};
     // When present, CompleteExact is reported only after the loaded catalog
     // exactly matches these nine production modules. Development modules and
     // extra modules can never satisfy this contract.

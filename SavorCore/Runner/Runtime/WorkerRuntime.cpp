@@ -1244,8 +1244,6 @@ struct WorkerRuntime::Impl
                 receipt.program_compatibility_sha256 !=
                     package.definition.execution_key
                         .verified_dependency_sha256 ||
-                receipt.active_budget !=
-                    item.declared_active_budget ||
                 !BaselinePolicyMatches(
                     package.definition.baseline.state_kind,
                     receipt.state_policy))
@@ -3248,12 +3246,13 @@ struct WorkerRuntime::Impl
         {
             ExecutionRequestPolicy policy;
             policy.expected_epoch = command.expected_state_epoch;
-            policy.active_timeout = command.timeout;
             policy.interruptions = ExecutionInterruptionPolicy::Reject;
             switch (command.control)
             {
             case WorkerExecutionControlKind::Pause:
-                request = SafePauseRequest{std::move(policy)};
+                request = SafePauseRequest{
+                    std::move(policy),
+                    command.timeout};
                 break;
             case WorkerExecutionControlKind::StepFrame:
                 request = StepFramesRequest{
@@ -4570,6 +4569,25 @@ struct WorkerRuntime::Impl
                 diagnostic);
         }
         pending_execution_commands.clear();
+
+        // WorksetStateCoordinator and its session cache retain references to
+        // StateService. Tear them down while the session service composition
+        // is still alive; EmulationSession::Shutdown destroys StateService.
+        // Reset the coordinator even when cleanup reports a failure so its
+        // destructor cannot revisit those borrowed references afterward.
+        if (workset_state)
+        {
+            const ProgramBaselineComponentResult workset_shutdown =
+                workset_state->Shutdown();
+            if (!workset_shutdown.ok)
+            {
+                diagnostic += "; ";
+                diagnostic += workset_shutdown.error.message.empty()
+                    ? "workset state cleanup failed during session taint"
+                    : workset_shutdown.error.message;
+            }
+            workset_state.reset();
+        }
 
         if (session)
         {

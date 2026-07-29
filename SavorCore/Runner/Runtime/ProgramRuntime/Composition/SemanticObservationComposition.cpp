@@ -223,8 +223,6 @@ std::vector<Byte> ContinueConfig(
     writer.Bool(definition.suppress_immediate_reentry);
     writer.U8(static_cast<std::uint8_t>(
         definition.movie_policy));
-    writer.U8(static_cast<std::uint8_t>(
-        definition.stall_policy));
     // Default Slice 5 execution policies: preserve throttle and fail closed
     // on an unregistered interruption.
     writer.U8(0);
@@ -237,9 +235,8 @@ std::vector<Byte> AdvanceConfig(
 {
     StaticConfigWriter writer({'E', 'A', 'C', '1'});
     writer.U8(static_cast<std::uint8_t>(kind));
-    // Fail if a previously active movie ends; require VI progress for frame
-    // advancement; preserve throttle; reject interruptions.
-    writer.U8(1);
+    // Fail if a previously active movie ends; preserve throttle; reject
+    // interruptions.
     writer.U8(1);
     writer.U8(0);
     writer.U8(0);
@@ -372,10 +369,6 @@ std::optional<CompositionResult> Validate(
         return detail::Fail(
             "semantic.missing_point",
             "semantic await requires at least one point alternative");
-    if (definition.await.deadline_milliseconds == 0)
-        return detail::Fail(
-            "semantic.unbounded_wait",
-            "semantic await requires a positive deadline");
     if (definition.await.subscribe_group_action.canonical_id.empty() ||
         definition.await.continue_until_action.canonical_id.empty())
     {
@@ -812,16 +805,6 @@ CompositionResult LowerSemanticObservation(
             "semantic.lowering_failed",
             "subscription action did not produce a typed resource");
 
-    const auto deadline = AddLiteral(
-        builder,
-        function,
-        block,
-        {
-            .type = TypeRef::Builtin(BuiltinType::U64),
-            .payload = definition.await.deadline_milliseconds,
-        },
-        "deadline-milliseconds",
-        scope);
     const auto no_publication = AddOptional(
         builder,
         function,
@@ -840,7 +823,7 @@ CompositionResult LowerSemanticObservation(
         "continue-until/static-config",
         scope);
     const auto continue_request =
-        deadline && no_publication && continue_config
+        no_publication && continue_config
         ? AddRequest(
               builder,
               function,
@@ -849,7 +832,6 @@ CompositionResult LowerSemanticObservation(
               std::array{
                   *subscription,
                   *no_publication,
-                  *deadline,
                   *continue_config},
               "continue-until/request",
               scope)

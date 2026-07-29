@@ -59,7 +59,6 @@ private:
         QString rootScopeId;
         QString rtcLow;
         QString rtcHigh;
-        int tasHeadroom = 15;
         int seedSamplesPerAxis = 5;
         bool battleFakeOverride = false;
         int battleFakeMin = 0;
@@ -117,8 +116,6 @@ private:
     QFrame* rtcRangePanel_ = nullptr;
     QLineEdit* rtcLowEdit_ = nullptr;
     QLineEdit* rtcHighEdit_ = nullptr;
-    QLabel* tasHeadroomLabel_ = nullptr;
-    QSpinBox* tasHeadroomSpin_ = nullptr;
     QLabel* seedSamplesLabel_ = nullptr;
     QSpinBox* seedSamplesSpin_ = nullptr;
     QCheckBox* battleFakeOverrideCheck_ = nullptr;

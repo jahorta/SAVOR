@@ -86,7 +86,6 @@ bool HasUsableWorksetLimits(
         && limits.maximum_encoded_workset_bytes > 0
         && limits.maximum_encoded_workset_bytes
             <= kWrmsMaximumPayloadBytes
-        && limits.maximum_aggregate_active_budget.count() > 0
         && limits.maximum_item_credits > 0
         && limits.maximum_active_and_staged_items > 0
         && limits.maximum_active_and_staged_items
@@ -4070,10 +4069,6 @@ void DBWorkflowWorkerCoordinator::RecoverDeadInFlightWorkers() {
 
     constexpr auto kDeadWorkerResultGrace = std::chrono::seconds(2);
     const auto now = std::chrono::steady_clock::now();
-    const auto worker_silence_cutoff = std::chrono::milliseconds(
-        worker_cfg_.worker_silence_in_flight_timeout_ms != 0
-            ? worker_cfg_.worker_silence_in_flight_timeout_ms
-            : 30000u);
     std::vector<LostJob> lost_jobs;
     std::vector<LostWorker> lost_workers;
     std::vector<std::string> event_lines;
@@ -4091,40 +4086,28 @@ void DBWorkflowWorkerCoordinator::RecoverDeadInFlightWorkers() {
             continue;
         }
         auto& slot = *slot_ptr;
-        const bool worker_silent = slot.last_worker_contact_at != std::chrono::steady_clock::time_point{}
-            && now - slot.last_worker_contact_at >= worker_silence_cutoff;
-        if (slot.worker->is_running() && !worker_silent) {
+        if (slot.worker->is_running()) {
             slot.dead_in_flight_observed_at = {};
             continue;
         }
-        if (!worker_silent && slot.dead_in_flight_observed_at == std::chrono::steady_clock::time_point{}) {
+        if (slot.dead_in_flight_observed_at == std::chrono::steady_clock::time_point{}) {
             slot.dead_in_flight_observed_at = now;
             continue;
         }
-        if (!worker_silent && now - slot.dead_in_flight_observed_at < kDeadWorkerResultGrace) {
+        if (now - slot.dead_in_flight_observed_at < kDeadWorkerResultGrace) {
             continue;
         }
 
         const auto job_id = slot.in_flight_job_id.value_or(0);
         std::ostringstream line;
-        line << (worker_silent ? "[workflow-worker-silent-in-flight]" : "[workflow-worker-dead-in-flight]")
+        line << "[workflow-worker-dead-in-flight]"
              << " worker=" << slot.id
              << " job=" << job_id;
-        if (worker_silent) {
-            const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - slot.in_flight_started_at).count();
-            const auto silent_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - slot.last_worker_contact_at).count();
-            line << " elapsed_ms=" << elapsed_ms
-                 << " silent_ms=" << silent_ms;
-        }
         event_lines.push_back(line.str());
-        MarkWorkerError(slot, worker_silent
-            ? "worker was silent for "
-                + std::to_string(worker_silence_cutoff.count())
-                + " milliseconds while job was in flight"
-            : "worker exited while job was in flight");
+        MarkWorkerError(slot, "worker exited while job was in flight");
         lost_workers.push_back(LostWorker{
             .worker_idx = slot.id,
-            .message = worker_silent ? "WORKER_SILENT_DURING_JOB" : "WORKER_EXITED_DURING_JOB",
+            .message = "WORKER_EXITED_DURING_JOB",
         });
         if (auto worker_to_stop = ResetWorkerSlotRuntime(slot)) {
             workers_to_stop.push_back(std::move(worker_to_stop));

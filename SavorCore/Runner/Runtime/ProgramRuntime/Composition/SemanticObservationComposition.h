@@ -38,12 +38,6 @@ enum class SemanticMoviePolicy : std::uint8_t
     FailIfEnded,
 };
 
-enum class SemanticStallPolicy : std::uint8_t
-{
-    Disabled,
-    RequireViProgress,
-};
-
 struct HitTimeSampleRequirement
 {
     std::string canonical_id;
@@ -63,8 +57,6 @@ struct SemanticAwaitDefinition
     std::vector<HitTimeSampleRequirement> hit_time_samples;
     CurrentPointPolicy current_point = CurrentPointPolicy::AcceptCurrent;
     SemanticMoviePolicy movie_policy = SemanticMoviePolicy::FailIfEnded;
-    SemanticStallPolicy stall_policy = SemanticStallPolicy::RequireViProgress;
-    std::uint64_t deadline_milliseconds = 0;
     bool suppress_immediate_reentry = true;
     ExactDependencyIdentity subscribe_group_action;
     ExactDependencyIdentity continue_until_action;

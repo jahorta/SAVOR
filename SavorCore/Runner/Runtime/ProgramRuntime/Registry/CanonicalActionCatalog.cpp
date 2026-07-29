@@ -295,7 +295,6 @@ std::vector<RecordFieldDefinition> TypedRequestFields(
              CanonicalRuntimeType(
                  CanonicalRuntimeSchema::
                      OptionalInputPublicationReceipt)},
-            {"deadline_milliseconds", u64},
             {"static_config",
              CanonicalRuntimeType(
                  CanonicalRuntimeSchema::
@@ -424,7 +423,7 @@ ActionDescriptor Descriptor(
     CanonicalAction action,
     SessionServiceCapabilityMask services,
     ActionEffectMask effects,
-    std::uint64_t deadline,
+    std::uint64_t bounded_host_timeout_milliseconds,
     ActionEpochPolicy epoch = ActionEpochPolicy::RequiresCurrentEpoch,
     ActionReplayClass replay = ActionReplayClass::RecordedEvidence,
     ActionCancellationMode cancellation =
@@ -437,8 +436,24 @@ ActionDescriptor Descriptor(
     ActionIdempotency idempotency =
         ActionIdempotency::NotRetryable)
 {
+    const bool cancellation_driven =
+        action == CanonicalAction::ExecutionContinueUntil ||
+        action == CanonicalAction::ExecutionStepFrames ||
+        action == CanonicalAction::InputPublishPulse ||
+        action == CanonicalAction::InputPublishSequence ||
+        action == CanonicalAction::InputAwaitGuestPoll;
     const TypeRef input = CanonicalActionInputType(action);
     const TypeRef output = CanonicalActionOutputType(action);
+    std::vector<std::string> diagnostic_categories{
+        "invalid_request",
+        "stale_epoch",
+        "cancelled",
+        "service_failure",
+        "cleanup_failure",
+    };
+    if (!cancellation_driven)
+        diagnostic_categories.emplace_back("timeout");
+
     return {
         .identity = Identity(action),
         .providing_pack = {
@@ -455,24 +470,24 @@ ActionDescriptor Descriptor(
         .epoch_policy = epoch,
         .replay_class = replay,
         .cancellation = cancellation,
+        .timing = cancellation_driven
+            ? ActionTimingClass::CancellationDriven
+            : ActionTimingClass::BoundedHostOperation,
         .maximum_non_cancellable_milliseconds =
-            cancellation ==
+            !cancellation_driven &&
+                cancellation ==
                     ActionCancellationMode::BeforeMutationOnly
-                ? deadline
+                ? bounded_host_timeout_milliseconds
                 : std::uint64_t{0},
-        .default_deadline_milliseconds = deadline,
+        .default_host_timeout_milliseconds =
+            cancellation_driven
+                ? 0
+                : bounded_host_timeout_milliseconds,
         .resource_behavior = resource,
         .cleanup = cleanup,
         .taints_on_unproven_cleanup = taints_on_cleanup,
         .idempotency = idempotency,
-        .diagnostic_categories = {
-            "invalid_request",
-            "stale_epoch",
-            "cancelled",
-            "timeout",
-            "service_failure",
-            "cleanup_failure",
-        },
+        .diagnostic_categories = std::move(diagnostic_categories),
     };
 }
 
@@ -690,11 +705,11 @@ SchemaIdentity CanonicalRuntimeSchemaIdentity(
     case CanonicalRuntimeSchema::ContinueUntilStaticConfig:
         return RuntimeSchemaIdentity(
             "runtime.execution.ContinueUntilStaticConfig",
-            "bytes(max=4096;CUC1 current-point, immediate-reentry, movie, VI-stall, interruption policies)");
+            "bytes(max=4096;CUC1 current-point, immediate-reentry, movie, interruption policies)");
     case CanonicalRuntimeSchema::ExecutionAdvanceStaticConfig:
         return RuntimeSchemaIdentity(
             "runtime.execution.AdvanceStaticConfig",
-            "bytes(max=4096;EAC1 movie, VI-stall, throttle, interruption policies)");
+            "bytes(max=4096;EAC1 movie, throttle, interruption policies)");
     case CanonicalRuntimeSchema::InputLeaseStaticConfig:
         return RuntimeSchemaIdentity(
             "runtime.input.InputLeaseStaticConfig",
@@ -1151,12 +1166,12 @@ BuildCanonicalRuntimeActionDescriptors()
         CanonicalAction::ExecutionContinueUntil,
         service(SessionServiceCapability::Execution),
         effect(ActionEffect::AdvanceEmulation),
-        600000));
+        0));
     result.push_back(Descriptor(
         CanonicalAction::ExecutionStepFrames,
         service(SessionServiceCapability::Execution),
         effect(ActionEffect::AdvanceEmulation),
-        60000));
+        0));
     result.push_back(Descriptor(
         CanonicalAction::StopPointsSubscribeGroup,
         service(SessionServiceCapability::StopPoints),
@@ -1220,9 +1235,7 @@ BuildCanonicalRuntimeActionDescriptors()
             effects(
                 ActionEffect::PublishInput,
                 ActionEffect::AdvanceEmulation),
-            action == CanonicalAction::InputPublishSequence
-                ? 600000
-                : 60000,
+            0,
             ActionEpochPolicy::RequiresCurrentEpoch,
             ActionReplayClass::RecordedEvidence,
             ActionCancellationMode::CleanupRequired,
@@ -1246,7 +1259,7 @@ BuildCanonicalRuntimeActionDescriptors()
         CanonicalAction::InputAwaitGuestPoll,
         service(SessionServiceCapability::Input),
         0,
-        60000));
+        0));
 
     result.push_back(Descriptor(
         CanonicalAction::MovieStartPlayback,

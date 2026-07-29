@@ -26,8 +26,6 @@ struct AddressProgramDraft {
 struct SeedProbeSpecDraft {
     std::string name;
     int priority = 0;
-    std::int64_t run_ms = 0;
-    std::int64_t vi_stall_ms = 0;
     std::int64_t min_value = -128;
     std::int64_t max_value = 127;
     bool cap_trigger_top = false;
@@ -39,8 +37,6 @@ struct SeedProbeSpecDraft {
 struct TasSpecDraft {
     std::string base_name;
     int priority = 0;
-    std::int64_t run_ms = 0;
-    std::int64_t vi_stall_ms = 0;
     bool progress_enable = true;
     std::int64_t base_dtm_artifact_id = 0;
 };
@@ -102,8 +98,6 @@ struct BattlePlanDraft {
 struct BattleRunSpecDraft {
     std::string name;
     int priority = 0;
-    std::int64_t run_ms = 0;
-    std::int64_t vi_stall_ms = 0;
     bool progress_enable = true;
     bool use_single_turn_runner = false;
     bool auto_wave_trigger_enable = false;
@@ -188,8 +182,6 @@ public:
         savor::db::SaveSeedProbeSpecCommand command{};
         command.name = draft.name;
         command.priority = draft.priority;
-        command.run_ms = draft.run_ms;
-        command.vi_stall_ms = draft.vi_stall_ms;
         command.min_value = draft.min_value;
         command.max_value = draft.max_value;
         command.cap_trigger_top = draft.cap_trigger_top;
@@ -240,8 +232,6 @@ public:
         savor::db::SaveTasSpecCommand command{};
         command.base_name = draft.base_name;
         command.priority = draft.priority;
-        command.run_ms = draft.run_ms;
-        command.vi_stall_ms = draft.vi_stall_ms;
         command.progress_enable = draft.progress_enable;
         command.base_dtm_artifact_id = draft.base_dtm_artifact_id;
         command.created_at_utc = now;
@@ -380,8 +370,6 @@ public:
         savor::db::SaveBattleRunSpecCommand command{};
         command.name = draft.name;
         command.priority = draft.priority;
-        command.run_ms = draft.run_ms;
-        command.vi_stall_ms = draft.vi_stall_ms;
         command.progress_enable = draft.progress_enable;
         command.use_single_turn_runner = draft.use_single_turn_runner;
         command.auto_wave_trigger_enable = draft.auto_wave_trigger_enable;

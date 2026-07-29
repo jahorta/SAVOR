@@ -34,8 +34,6 @@ private:
     std::function<void()> savedCallback_;
     QLineEdit* nameEdit_ = nullptr;
     QSpinBox* prioritySpin_ = nullptr;
-    QLineEdit* runMsEdit_ = nullptr;
-    QLineEdit* viStallMsEdit_ = nullptr;
     QLineEdit* minValueEdit_ = nullptr;
     QLineEdit* maxValueEdit_ = nullptr;
     QCheckBox* capTriggerTopCheck_ = nullptr;
@@ -62,8 +60,6 @@ private:
     std::function<void()> savedCallback_;
     QLineEdit* nameEdit_ = nullptr;
     QSpinBox* prioritySpin_ = nullptr;
-    QLineEdit* runMsEdit_ = nullptr;
-    QLineEdit* viStallMsEdit_ = nullptr;
     QPushButton* saveButton_ = nullptr;
 };
 
@@ -84,8 +80,6 @@ private:
     std::function<void()> savedCallback_;
     QLineEdit* nameEdit_ = nullptr;
     QSpinBox* prioritySpin_ = nullptr;
-    QLineEdit* runMsEdit_ = nullptr;
-    QLineEdit* viStallMsEdit_ = nullptr;
     QCheckBox* singleTurnRunnerCheck_ = nullptr;
     QCheckBox* autoWaveTriggerCheck_ = nullptr;
     QPushButton* saveButton_ = nullptr;

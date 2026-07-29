@@ -134,8 +134,8 @@ claim/start validation, and
 targeted-reconciliation interfaces are permitted; unrelated database, workflow, durable queue-state,
 per-item transaction semantics, and artifact formats remain fixed.
 
-The fixed configurable defaults are 16 items/32 MiB/four aggregate active hours per workset; 64 total
-and 32 active-plus-staged item credits; 16 cache entries/512 MiB; two finalizer threads with eight
+The fixed configurable defaults are 16 items/32 MiB per workset; 64 total and 32 active-plus-staged item
+credits; 16 cache entries/512 MiB; two finalizer threads with eight
 pending captures/256 MiB; 32 retained terminals/128 MiB; two concurrent startups; and one coordinator-
 buffered successor per negotiated Ready worker. WRMS stays at version 1; the retired
 `SubmitInvocation` and guest-step discriminators remain reserved and reject before session mutation.
@@ -207,10 +207,12 @@ buffered successor per negotiated Ready worker. WRMS stays at version 1; the ret
 - Phase-specific adapters under `SavorDb/Execution/ProgramDB`
   - preserve the existing stored payload/result/domain representations and workflow behavior.
 
-The refactor may change runtime-facing handler implementations, adjacent adapters, and only the narrow
-workset-specific execution operations above. It does not change SavorDb schema, stored representations,
-durable queue states, per-job lifecycle/attempt/recovery semantics, workflow persistence, or artifact
-formats.
+The refactor may change runtime-facing handler implementations, adjacent adapters, the narrow
+workset-specific execution operations above, and public authoring DTO/interface fields that previously
+exposed the retained timing columns. It does not change SavorDb schema, stored representations, durable
+queue states, per-job lifecycle/attempt/recovery semantics, workflow persistence, or artifact formats.
+The three private neutral insert shims are the only temporary accommodation for those unchanged
+`NOT NULL` columns.
 
 ## Current phase corpus
 
@@ -433,8 +435,34 @@ Focused guards live in:
 
 This source inventory does not claim a live production program. Production composition still constructs
 neither the runtime nor its implemented action host and advertises no `ProgramInvocation` capability.
-Current phases have not yet been implemented natively, no live program smoke or production-worker
-SavorE2E has been established for Slice 5, and no SavorDb contract changed.
+Current phases have not yet been implemented natively, and no live program smoke or production-worker
+SavorE2E has been established for Slice 5.
+
+## Pre-6A timing and core-health cutover evidence
+
+The hard cutover removes the elapsed-policy family previously distributed across:
+
+- `ExecutionTypes`, `ExecutionEngine`, `ProgramIr`, `ProgramRuntime`, `ProgramExecutor`,
+  `ProgramCodecV1`, semantic/interaction composition, `WorksetTypes`, and `WorksetWireCodec`;
+- current phase payloads, PhaseScript timeout context/builders, timed legacy wrapper/macro facades, and
+  ProgramDB runtime-init/job/fingerprint projections;
+- SavorQt authoring drafts/editors, SavorPredict run/batch options and manifests, and SavorE2E phase
+  setup; and
+- `IAuthoringDb` commands/snapshots plus `SqliteAuthoringDb` selects and identity comparisons.
+
+The physical constraint is visible in
+`SavorDb/migration/Authoring/202604051000_authoring_stage2_schema.sql` and retained by
+`202606141400_authoring_launch_tunables.sql`: the SeedProbe, TAS, and Battle Run `run_ms` and
+`vi_stall_ms` columns are `NOT NULL` and have no defaults. Those migration files remain unchanged.
+The only production references after the cutover are private authoring inserts that bind literal neutral
+values; all production reads and public DTOs ignore the columns. A focused migrated fixture may inspect
+them to prove old nonzero values are behaviorally inert and new rows receive `0,0`.
+
+Core health is sourced from the execution backend's core state and VI/CoreTiming snapshot plus one
+session-owned synchronous host-activity tracker. Stop routing, bounded hit-time sampling, and synchronous
+capture observation register the CPU-side activity path without allocation, locks, or exceptions.
+WorkerRuntime continues to drain authoritative ingress before maintenance health evaluation.
+Background state-artifact finalization remains host-only and does not mask guest liveness.
 
 ## Useful tests and live references
 
@@ -517,6 +545,11 @@ or required refactor phase.
 - Interaction migration does not import public guest-opcode stepping. Exact current-receipt suppression
   prevents duplicate re-entry, and a verifier-known semantic successor provides causal post-instruction
   evidence when a phase needs it.
+- Phase execution does not import wall-clock deadlines or per-request VI-stall policy under a new name.
+  Guest-dependent work ends through semantic completion, explicit cancellation, movie/epoch policy, or
+  confirmed centralized core-health failure. Only classified host operations retain finite timeouts.
+- Database migration is a separate refactor. Public and behavioral uses of the six authoring timing
+  columns are removed now; private neutral inserts are temporary schema compatibility, not domain data.
 - The private state-load bootstrap step remains inside `DolphinWrapper`'s state transaction; it is not a
   precedent for an execution action or WRMS command. Future ProgramRuntime IR/source-level stepping is a
   distinct deferred authoring/debugging concern.
@@ -541,6 +574,8 @@ These questions are intentionally left to later migration or future work that ne
 - complete nine-module catalog activation and DB-facing capability advertisement; the production
   runtime/action-host and partial process transport are pre-6A dependencies;
 - any future incompatible canonical envelope version beyond implemented `SPRM`/`SPRI`/`SPRR` version 1;
+- physical deletion of the six authoring timing columns and removal of their private neutral insert
+  shims;
 - authored source syntax, editor, publishing, and any future persisted module catalog;
 - any generalized replacement for the existing `savor.capture.profile/1` language;
 - detailed Survey trigger behavior beyond the first bounded path;
@@ -552,7 +587,8 @@ These questions are intentionally left to later migration or future work that ne
 - any future ProgramRuntime IR/source-level stepping design.
 
 None of these permits a second executor, unscoped emulator mutation, direct program access to SavorDb,
-or a change to SavorDb storage/interfaces inside this refactor.
+or any further SavorDb storage/interface change beyond the narrow workset operations, removed public
+timing fields, and private neutral insert shims already called out above.
 
 ## Research and domain references
 

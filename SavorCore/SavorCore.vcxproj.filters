@@ -399,6 +399,9 @@
     <ClInclude Include="Runner\Runtime\Execution\ExecutionTypes.h">
       <Filter>Runner\Runtime\Execution</Filter>
     </ClInclude>
+    <ClInclude Include="Runner\Runtime\Execution\HostActivityTracker.h">
+      <Filter>Runner\Runtime\Execution</Filter>
+    </ClInclude>
     <ClInclude Include="Runner\Runtime\Execution\IExecutionBackendPort.h">
       <Filter>Runner\Runtime\Execution</Filter>
     </ClInclude>

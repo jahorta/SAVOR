@@ -11,10 +11,12 @@ Current code and executable behavior win if this inventory drifts. It:
 - identifies strengths that the replacement must preserve; and
 - identifies constraints that the replacement must remove rather than enshrine in a new ABI.
 
-It does not propose compatibility shims, define the target IR in detail, or claim that a planning-only
-phase has been implemented. In particular, **Navmesh Survey is not implemented**. Navigation Context is
-implemented and has produced a concrete `.sav`/`.nctx` bootstrap, but that is the starting point for the
-Survey rather than an implementation of it.
+It does not propose a worker/runtime compatibility shim, define the target IR in detail, or claim that
+a planning-only phase has been implemented. The private neutral SQLite insert bindings required while
+the retained timing columns await a separate migration are schema compatibility only. In particular,
+**Navmesh Survey is not implemented**. Navigation Context is implemented and has produced a concrete
+`.sav`/`.nctx` bootstrap, but that is the starting point for the Survey rather than an implementation
+of it.
 
 ## Current end-to-end execution path
 
@@ -43,6 +45,13 @@ ownership are fused into the present VM and its surrounding switches. It also le
 with one in-flight job: after each result, the coordinator must process that job and submit another before
 the worker can continue, even when several independent jobs have the same program, runtime, and source
 state.
+
+The current path also carries phase-specific elapsed execution policy through authoring
+`run_ms`/`vi_stall_ms` columns, payload fields, context keys, fingerprints, runtime-init requests,
+SavorPredict overrides, E2E setup, and worker operation budgets. Those values conflate valid slow guest
+execution with an unhealthy emulator and cannot account correctly for synchronous router, sampler, or
+capture work that temporarily blocks guest advancement. The pre-6A hard cutover removes this timing
+family rather than translating it into the new architecture.
 
 ## Current code evidence
 
@@ -483,8 +492,8 @@ The current evidence locks these conclusions:
   preparation protocol. It is never compiled into or counted among the nine production modules.
 - Slice 7 opens DB work only for `CompleteExact`: exactly the planned nine module IDs/hashes, the exact
   dependency manifest, and no extra installed module.
-- The initial configurable bounds are 16 items/32 MiB/four aggregate active hours per workset; 64 total
-  and 32 active-plus-staged item credits; 16 cache entries/512 MiB; two finalizer threads with eight
+- The initial configurable bounds are 16 items/32 MiB per workset; 64 total and 32 active-plus-staged
+  item credits; 16 cache entries/512 MiB; two finalizer threads with eight
   pending captures/256 MiB; 32 retained terminals/128 MiB; two concurrent startups; and one coordinator-
   buffered successor per negotiated Ready worker.
 - Navigation Context migrates as an ordinary current phase. Navmesh Survey is the first net-new consumer
@@ -515,12 +524,16 @@ The replacement crosses these current seams:
 - existing transition and successor-step publication behavior as an unchanged integration contract.
 
 The migration adds no SavorDb schema/migration, persistent workset record, aggregate durable job/result,
-or unrelated workflow, artifact, or transaction redesign. Workset-specific coordinator scheduling,
-capacity bookkeeping, and startup may change. Database interfaces may change only for ordered batch
-claim, exact-set lease renewal, claim/start validation, and targeted terminal reconciliation over
-existing rows and per-item semantics. Existing macro, predicate, address-program, and capture-profile
-representations are decoded, adapted, or consumed in memory rather than migrated. The refactor must not
-push workflow persistence into the worker or move emulator ownership into DB adapters.
+or unrelated workflow, artifact, or transaction redesign. The timing hard cutover does intentionally
+remove obsolete fields from public authoring interfaces and from newly generated job arguments.
+The six physical `run_ms`/`vi_stall_ms` authoring columns remain ignored until a separate database
+refactor removes them; only private insert shims write neutral `0,0` values required by their current
+`NOT NULL` constraints. Workset-specific coordinator scheduling, capacity bookkeeping, and startup may
+change. Other database interfaces may change only for ordered batch claim, exact-set lease renewal,
+claim/start validation, and targeted terminal reconciliation over existing rows and per-item semantics.
+Existing macro, predicate, address-program, and capture-profile representations are decoded, adapted,
+or consumed in memory rather than migrated. The refactor must not push workflow persistence into the
+worker or move emulator ownership into DB adapters.
 
 ## Failure and cleanup behavior
 
@@ -538,8 +551,8 @@ than releasing resources owned by one source.
 
 The target must:
 
-- run the same structured unwind for return, handled domain failure, infrastructure failure, timeout,
-  cancellation, and verifier/guard abort after acquisition;
+- run the same structured unwind for return, handled domain failure, infrastructure failure,
+  bounded-host timeout, cancellation, and verifier/guard abort after acquisition;
 - distinguish a normal domain failure from infrastructure failure;
 - report cleanup independently from both;
 - neutralize/release input and restore every owned subscription and mutation;
@@ -555,24 +568,28 @@ typed-module builders follow this dependency order:
 2. define and verify the small core IR and typed module/invocation/result contracts;
 3. register generic service actions and modular game capability packs;
 4. expose current capabilities through registered actions and reusable subprograms;
-5. add the pre-6A worker-process seam and direct one-item process tests: implement the eventual
+5. perform the pre-6A cancellation/health hard cutover: remove phase-provided elapsed deadlines and
+   VI-stall settings, retain structural bounds and bounded host operations, install session-owned core
+   health plus synchronous host-activity accounting, and remove public/behavioral use of the obsolete
+   authoring timing columns without changing migrations or DDL;
+6. add the pre-6A worker-process seam and direct one-item process tests: implement the eventual
    one-compatible-worker gate and at-most-two progressive startup, transfer one canonical test-only
    module for `Partial` process smoke, and leave coordinator `data_plane_enabled` false until Slice 7
    verifies `CompleteExact`;
-6. add the pre-6A `WorkerWorkset` pipeline: unified 1..N dispatch, exact compatibility validation, one
+7. add the pre-6A `WorkerWorkset` pipeline: unified 1..N dispatch, exact compatibility validation, one
    active session-mutating workset, one host-only staged successor with exact `StateCacheKey` leases,
    composite `ProgramBaselineDefinition`/`RestoreBaseline` flow, a worker-global per-item result
    acknowledgement ledger, and
    coordinator active/staged/completion-capacity accounting;
-7. implement the supported phase builders incrementally as 6A SeedProbe, 6B Navigation Context, 6C TAS
+8. implement the supported phase builders incrementally as 6A SeedProbe, 6B Navigation Context, 6C TAS
    Movie, 6D TAS Frame Detector, 6E Battle Context, 6F Battle Macro Probe, 6G Battle Single Turn, 6H
    Battle Completion, and 6I Battle Results Screen;
-8. verify each builder against its current functional contract and focused source-derived
+9. verify each builder against its current functional contract and focused source-derived
    characterization without adding a temporary translator or parallel differential executor;
-9. have existing program-kind handlers or adjacent adapters derive exact runtime identity, typed inputs,
+10. have existing program-kind handlers or adjacent adapters derive exact runtime identity, typed inputs,
    and workset compatibility during materialization without changing stored job identity or affinity;
-10. remove current worker switches, domain opcodes, and the subordinate macro scheduler; and
-11. implement Navmesh Survey only on the new path.
+11. remove current worker switches, domain opcodes, and the subordinate macro scheduler; and
+12. implement Navmesh Survey only on the new path.
 
 The current dynamic battle-wave implementation is a migration asset: it provides executable examples for
 separating bounded worker expansion from durable orchestration.
@@ -602,11 +619,13 @@ This document does not decide:
 - overworld game rules; or
 - cutscene acceleration policy.
 
-The logical pipelined `WorkerWorkset` contract, one-compatible-worker startup gate, and unified dispatch
-direction are decided, not deferred. SavorDb SQL schema, stored representations, and unrelated
-interfaces remain fixed inputs. Any database-interface change beyond ordered batch claim, exact-set
-lease renewal, claim/start validation, and targeted terminal reconciliation requires concrete evidence
-and a corresponding guidance update rather than an ambient reopening of SavorDb architecture.
+The logical pipelined `WorkerWorkset` contract, cancellation-driven guest execution, centralized
+core-health policy, one-compatible-worker startup gate, and unified dispatch direction are decided, not
+deferred. SavorDb migrations and DDL remain fixed inputs. The timing-only authoring-interface removal
+and private neutral insert shim are explicit exceptions; any other database-interface change beyond
+ordered batch claim, exact-set lease renewal, claim/start validation, and targeted terminal
+reconciliation requires concrete evidence and a corresponding guidance update rather than an ambient
+reopening of SavorDb architecture.
 
 ## Source references
 

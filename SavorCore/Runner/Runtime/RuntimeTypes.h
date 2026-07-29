@@ -228,7 +228,7 @@ enum class CancellationReason : std::uint8_t
     None,
     ExternalRequest,
     Shutdown,
-    Deadline,
+    ReservedLegacyValue3,
     RuntimeFailure,
 };
 

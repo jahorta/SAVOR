@@ -83,14 +83,12 @@ MacroStep CaptureU32Step(
 MacroStep WaitU32ChangeStep(
     const char* label,
     std::uint32_t cycle_index,
-    std::uint32_t address,
-    std::uint32_t timeout_ms) {
+    std::uint32_t address) {
     return MacroStep{
         .label = label,
         .action = savor::inputmacro::WaitU32ChangeAction{
             .baseline_id = FakeAttackBaselineId(cycle_index),
             .address = address,
-            .timeout_ms = timeout_ms,
             .diagnostic_cycle_index = cycle_index,
         },
     };
@@ -177,9 +175,8 @@ void AddFakeAttackMemoryGate(
     std::vector<MacroStep>& steps,
     const char* label,
     std::uint32_t cycle_index,
-    std::uint32_t rng_addr,
-    std::uint32_t timeout_ms) {
-    steps.push_back(WaitU32ChangeStep(label, cycle_index, rng_addr, timeout_ms));
+    std::uint32_t rng_addr) {
+    steps.push_back(WaitU32ChangeStep(label, cycle_index, rng_addr));
 }
 
 void AddFakeAttackCycleSteps(
@@ -199,8 +196,7 @@ void AddFakeAttackCycleSteps(
             steps,
             "fake_attack_rng_changed_target",
             cycle_index,
-            rng_addr,
-            pattern.memory_timeout_ms);
+            rng_addr);
     }
     AddNeutralFrames(steps, "fake_attack_target_neutral_before_b", pattern.target_neutral_before_b_frames);
     steps.push_back(BreakpointStep(
@@ -214,8 +210,7 @@ void AddFakeAttackCycleSteps(
             steps,
             "fake_attack_rng_changed_input",
             cycle_index,
-            rng_addr,
-            pattern.memory_timeout_ms);
+            rng_addr);
     }
 }
 
@@ -507,13 +502,11 @@ std::vector<MacroStep> BuildMacroPlanStepsFromTurnPlan(
         .memory_gate_mode = FakeAttackMemoryGateMode::TargetSide,
         .target_neutral_before_b_frames = 7,
         .input_neutral_after_b_frames = 0,
-        .memory_timeout_ms = 1000,
     };
     const FakeAttackPattern slow_fake_attack_pattern{
         .memory_gate_mode = FakeAttackMemoryGateMode::TargetSide,
         .target_neutral_before_b_frames = 7,
         .input_neutral_after_b_frames = 0,
-        .memory_timeout_ms = 1000,
     };
 
     const std::uint32_t alive_player_count = planning_context
@@ -606,8 +599,8 @@ BattleCommandInputMacroProvider::PrepareResult WaitFailure(
     result.last_hit_key = wait.hit_key;
     result.last_hit_pc = wait.hit_pc;
     if (!wait.hit) {
-        result.failure = Legacy::FailureCode::Timeout;
-        result.diagnostic = "timed out waiting for battle command synchronization breakpoint";
+        result.failure = Legacy::FailureCode::HostFailure;
+        result.diagnostic = "battle command synchronization wait failed";
     } else {
         result.failure = Legacy::FailureCode::UnexpectedBreakpoint;
         result.diagnostic = "unexpected breakpoint while synchronizing battle command input";

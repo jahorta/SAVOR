@@ -359,7 +359,6 @@ void WriteLimits(Writer& writer, const WorkerWorksetLimits& limits)
 {
     writer.U32(limits.maximum_items_per_workset);
     writer.U64(limits.maximum_encoded_workset_bytes);
-    writer.U64(limits.maximum_aggregate_active_budget.count());
     writer.U32(limits.maximum_item_credits);
     writer.U32(limits.maximum_active_and_staged_items);
     writer.U32(limits.maximum_state_cache_entries);
@@ -375,13 +374,11 @@ void WriteLimits(Writer& writer, const WorkerWorksetLimits& limits)
 bool ReadLimits(Reader& reader, WorkerWorksetLimits& limits)
 {
     std::uint64_t encoded_bytes = 0;
-    std::uint64_t aggregate_ms = 0;
     std::uint64_t cache_bytes = 0;
     std::uint64_t finalizer_bytes = 0;
     std::uint64_t terminal_bytes = 0;
     if (!reader.U32(limits.maximum_items_per_workset) ||
         !reader.U64(encoded_bytes) ||
-        !reader.U64(aggregate_ms) ||
         !reader.U32(limits.maximum_item_credits) ||
         !reader.U32(limits.maximum_active_and_staged_items) ||
         !reader.U32(limits.maximum_state_cache_entries) ||
@@ -391,17 +388,12 @@ bool ReadLimits(Reader& reader, WorkerWorksetLimits& limits)
         !reader.U64(finalizer_bytes) ||
         !reader.U32(limits.maximum_retained_terminals) ||
         !reader.U64(terminal_bytes) ||
-        !reader.U32(limits.progressive_start_concurrency) ||
-        aggregate_ms >
-            static_cast<std::uint64_t>(
-                std::numeric_limits<std::int64_t>::max()))
+        !reader.U32(limits.progressive_start_concurrency))
     {
         return false;
     }
     limits.maximum_encoded_workset_bytes =
         static_cast<std::size_t>(encoded_bytes);
-    limits.maximum_aggregate_active_budget =
-        std::chrono::milliseconds(aggregate_ms);
     limits.maximum_state_cache_bytes =
         static_cast<std::size_t>(cache_bytes);
     limits.maximum_pending_finalizer_bytes =
@@ -440,7 +432,6 @@ WorksetWireCodecResult EncodeWorkerWorksetV1(
         WriteModule(writer, item.invocation.module);
         writer.String(item.invocation.entrypoint);
         writer.Blob(item.invocation.template_payload);
-        writer.U64(item.declared_active_budget.count());
         writer.U64(item.declared_terminal_bytes);
         writer.String(item.correlation.durable_job_id);
         writer.String(item.correlation.claim_token);
@@ -485,7 +476,6 @@ WorksetWireCodecResult DecodeWorkerWorksetV1(
         std::uint64_t item_id = 0;
         std::uint64_t invocation_id = 0;
         std::uint64_t attempt_id = 0;
-        std::uint64_t budget_ms = 0;
         std::uint64_t terminal_bytes = 0;
         if (!reader.U64(item_id) ||
             !reader.U32(item.ordinal) ||
@@ -494,14 +484,10 @@ WorksetWireCodecResult DecodeWorkerWorksetV1(
             !ReadModule(reader, item.invocation.module) ||
             !reader.String(item.invocation.entrypoint) ||
             !reader.Blob(item.invocation.template_payload) ||
-            !reader.U64(budget_ms) ||
             !reader.U64(terminal_bytes) ||
             !reader.String(item.correlation.durable_job_id) ||
             !reader.String(item.correlation.claim_token) ||
             !reader.String(item.correlation.parent_correlation) ||
-            budget_ms >
-                static_cast<std::uint64_t>(
-                    std::numeric_limits<std::int64_t>::max()) ||
             terminal_bytes >
                 static_cast<std::uint64_t>(
                     std::numeric_limits<std::size_t>::max()))
@@ -512,8 +498,6 @@ WorksetWireCodecResult DecodeWorkerWorksetV1(
         item.invocation.invocation_id =
             InvocationId(invocation_id);
         item.invocation.attempt_id = AttemptId(attempt_id);
-        item.declared_active_budget =
-            std::chrono::milliseconds(budget_ms);
         item.declared_terminal_bytes =
             static_cast<std::size_t>(terminal_bytes);
         candidate.items.push_back(std::move(item));

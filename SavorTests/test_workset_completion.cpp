@@ -8,12 +8,14 @@
 #include "common/ScriptedDolphinBackend.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <barrier>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <memory>
 #include <string>
 #include <thread>
@@ -88,6 +90,95 @@ public:
     std::atomic<std::uint32_t> notifications{0};
 };
 
+void InsertU64LittleEndian(
+    std::vector<std::uint8_t>& bytes,
+    std::size_t offset,
+    std::uint64_t value)
+{
+    std::array<std::uint8_t, sizeof(std::uint64_t)> encoded{};
+    for (unsigned shift = 0; shift < 64; shift += 8)
+    {
+        encoded[shift / 8] =
+            static_cast<std::uint8_t>(value >> shift);
+    }
+    bytes.insert(
+        bytes.begin() + offset,
+        encoded.begin(),
+        encoded.end());
+}
+
+WorkerWorksetDefinition CodecWorksetDefinition()
+{
+    WorkerWorksetDefinition definition;
+    definition.workset_id = WorkerWorksetId(9);
+    definition.baseline.state_kind =
+        ProgramBaselineStateKind::CurrentSession;
+    definition.baseline.current_session =
+        CurrentSessionBaselineGuard{
+            SessionId(7),
+            StateEpoch(8),
+            true};
+    definition.baseline.lineage = "lineage";
+    definition.baseline.components.push_back({
+        "test.derived-memory",
+        1,
+        "test.bytes/1",
+        hash::sha256("abc", 3),
+        ProgramBaselineComponentPolicy::ResetForEveryItem,
+        {'a', 'b', 'c'}});
+    definition.execution_key.module = {
+        "test.no_effect/1",
+        1,
+        std::string(64, 'a')};
+    definition.execution_key.entrypoint = "run";
+    definition.execution_key.verified_dependency_sha256 =
+        std::string(64, 'b');
+    definition.execution_key.runtime_profile_sha256 =
+        std::string(64, 'c');
+    definition.execution_key.baseline =
+        ComputeProgramBaselineKey(definition.baseline);
+    definition.execution_key.movie_policy_sha256 =
+        std::string(64, 'd');
+    definition.execution_key.service_policy_sha256 =
+        std::string(64, 'e');
+    definition.execution_key.canonical_sha256 =
+        ComputeWorkerWorksetExecutionKeyHash(
+            definition.execution_key);
+
+    WorksetItemTemplate item;
+    item.item_id = WorkerWorksetItemId(1);
+    item.ordinal = 0;
+    item.invocation = {
+        InvocationId(2),
+        AttemptId(3),
+        definition.execution_key.module,
+        definition.execution_key.entrypoint,
+        {0xa1, 0xb2, 0xc3}};
+    item.declared_terminal_bytes = 4096;
+    item.correlation = {"job", "claim", "parent"};
+    definition.items.push_back(std::move(item));
+    return definition;
+}
+
+WorkerRuntimeManifest CodecRuntimeManifest(
+    const WorkerWorksetDefinition& definition)
+{
+    WorkerRuntimeManifest manifest;
+    manifest.runtime_profile_sha256 = std::string(64, '1');
+    manifest.dependency_manifest_sha256 =
+        std::string(64, '2');
+    manifest.catalog_status = RuntimeCatalogStatus::Partial;
+    manifest.modules.push_back({
+        definition.execution_key.module,
+        {"run"},
+        manifest.dependency_manifest_sha256,
+        true});
+    manifest.catalog_sha256 = ComputeRuntimeCatalogHash(
+        manifest.modules,
+        manifest.catalog_status);
+    return manifest;
+}
+
 TEST(WorkerCompletionLedger, PreservesTerminalOrderAcrossOutOfOrderFinalization)
 {
     WorkerCompletionLedger ledger;
@@ -150,53 +241,8 @@ TEST(WorkerCompletionLedger, PreservesTerminalOrderAcrossOutOfOrderFinalization)
 
 TEST(WorksetWireCodec, RoundTripsCompositeBaselineAndManifest)
 {
-    WorkerWorksetDefinition definition;
-    definition.workset_id = WorkerWorksetId(9);
-    definition.baseline.state_kind =
-        ProgramBaselineStateKind::CurrentSession;
-    definition.baseline.current_session =
-        CurrentSessionBaselineGuard{
-            SessionId(7),
-            StateEpoch(8),
-            true};
-    definition.baseline.lineage = "lineage";
-    definition.baseline.components.push_back({
-        "test.derived-memory",
-        1,
-        "test.bytes/1",
-        hash::sha256("abc", 3),
-        ProgramBaselineComponentPolicy::ResetForEveryItem,
-        {'a', 'b', 'c'}});
-    definition.execution_key.module = {
-        "test.no_effect/1",
-        1,
-        std::string(64, 'a')};
-    definition.execution_key.entrypoint = "run";
-    definition.execution_key.verified_dependency_sha256 =
-        std::string(64, 'b');
-    definition.execution_key.runtime_profile_sha256 =
-        std::string(64, 'c');
-    definition.execution_key.baseline =
-        ComputeProgramBaselineKey(definition.baseline);
-    definition.execution_key.movie_policy_sha256 =
-        std::string(64, 'd');
-    definition.execution_key.service_policy_sha256 =
-        std::string(64, 'e');
-    definition.execution_key.canonical_sha256 =
-        ComputeWorkerWorksetExecutionKeyHash(
-            definition.execution_key);
-    definition.items.push_back({
-        WorkerWorksetItemId(1),
-        0,
-        {
-            InvocationId(2),
-            AttemptId(3),
-            definition.execution_key.module,
-            definition.execution_key.entrypoint,
-            {1, 2, 3}},
-        std::chrono::seconds(2),
-        4096,
-        {"job", "claim", "parent"}});
+    WorkerWorksetDefinition definition =
+        CodecWorksetDefinition();
 
     std::vector<std::uint8_t> encoded;
     ASSERT_TRUE(EncodeWorkerWorksetV1(definition, encoded));
@@ -205,19 +251,8 @@ TEST(WorksetWireCodec, RoundTripsCompositeBaselineAndManifest)
     definition.encoded_size_bytes = encoded.size();
     EXPECT_EQ(decoded, definition);
 
-    WorkerRuntimeManifest manifest;
-    manifest.runtime_profile_sha256 = std::string(64, '1');
-    manifest.dependency_manifest_sha256 =
-        std::string(64, '2');
-    manifest.catalog_status = RuntimeCatalogStatus::Partial;
-    manifest.modules.push_back({
-        definition.execution_key.module,
-        {"run"},
-        manifest.dependency_manifest_sha256,
-        true});
-    manifest.catalog_sha256 = ComputeRuntimeCatalogHash(
-        manifest.modules,
-        manifest.catalog_status);
+    WorkerRuntimeManifest manifest =
+        CodecRuntimeManifest(definition);
     ASSERT_TRUE(EncodeWorkerRuntimeManifestV1(manifest, encoded));
     WorkerRuntimeManifest decoded_manifest;
     ASSERT_TRUE(
@@ -225,6 +260,82 @@ TEST(WorksetWireCodec, RoundTripsCompositeBaselineAndManifest)
             encoded,
             decoded_manifest));
     EXPECT_EQ(decoded_manifest, manifest);
+}
+
+TEST(
+    WorksetWireCodec,
+    RejectsLegacyItemActiveBudgetBeforePublishingOutput)
+{
+    const WorkerWorksetDefinition definition =
+        CodecWorksetDefinition();
+    std::vector<std::uint8_t> legacy;
+    ASSERT_TRUE(EncodeWorkerWorksetV1(definition, legacy));
+
+    // The former v1 item layout placed declared_active_budget (u64 ms)
+    // immediately after the encoded invocation template payload.
+    const std::vector<std::uint8_t> payload_marker{
+        3, 0, 0, 0, 0xa1, 0xb2, 0xc3};
+    const auto payload = std::search(
+        legacy.begin(),
+        legacy.end(),
+        payload_marker.begin(),
+        payload_marker.end());
+    ASSERT_NE(payload, legacy.end());
+    ASSERT_EQ(
+        std::search(
+            std::next(payload),
+            legacy.end(),
+            payload_marker.begin(),
+            payload_marker.end()),
+        legacy.end());
+    InsertU64LittleEndian(
+        legacy,
+        static_cast<std::size_t>(
+            std::distance(legacy.begin(), payload)) +
+            payload_marker.size(),
+        2000);
+
+    WorkerWorksetDefinition output;
+    output.workset_id = WorkerWorksetId(999);
+    const WorkerWorksetDefinition unchanged = output;
+    const WorksetWireCodecResult rejected =
+        DecodeWorkerWorksetV1(legacy, output);
+    EXPECT_FALSE(rejected);
+    EXPECT_EQ(output, unchanged);
+}
+
+TEST(
+    WorksetWireCodec,
+    RejectsLegacyAggregateBudgetManifestBeforePublishingOutput)
+{
+    const WorkerWorksetDefinition definition =
+        CodecWorksetDefinition();
+    const WorkerRuntimeManifest manifest =
+        CodecRuntimeManifest(definition);
+    std::vector<std::uint8_t> legacy;
+    ASSERT_TRUE(
+        EncodeWorkerRuntimeManifestV1(manifest, legacy));
+
+    // The limits record is the final fixed-width 64 bytes in the current
+    // manifest. Former v1 inserted maximum_aggregate_active_budget (u64 ms)
+    // after its first u32/u64 pair.
+    constexpr std::size_t kCurrentLimitsSize = 64;
+    constexpr std::size_t kLegacyBudgetOffsetInLimits =
+        sizeof(std::uint32_t) + sizeof(std::uint64_t);
+    ASSERT_GE(legacy.size(), kCurrentLimitsSize);
+    InsertU64LittleEndian(
+        legacy,
+        legacy.size() - kCurrentLimitsSize +
+            kLegacyBudgetOffsetInLimits,
+        4ull * 60ull * 60ull * 1000ull);
+
+    WorkerRuntimeManifest output;
+    output.runtime_profile_sha256 = "unchanged";
+    const WorkerRuntimeManifest unchanged = output;
+    const WorksetWireCodecResult rejected =
+        DecodeWorkerRuntimeManifestV1(legacy, output);
+    EXPECT_FALSE(rejected);
+    EXPECT_EQ(output, unchanged);
 }
 
 TEST(WorkerCompletionLedger, EnforcesCountBytesAndPublicationRetryIdentity)
@@ -315,7 +426,6 @@ TEST(WorksetValidation, CapsEachTerminalBelowTheWrmsPayloadCeiling)
         definition.execution_key.module,
         "run",
         {1}};
-    item.declared_active_budget = std::chrono::seconds(1);
     item.declared_terminal_bytes =
         kMaximumWorksetTerminalReservationBytes;
     definition.items.push_back(item);

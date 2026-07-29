@@ -248,7 +248,7 @@ bool write_battle_job_run_manifest(
     }
 
     file << "{\n";
-    file << "  \"schema\": \"savor_predict_battle_job_run_v2\",\n";
+    file << "  \"schema\": \"savor_predict_battle_job_run_v3\",\n";
     file << "  \"source_db_root\": \"" << json_escape(path_string(summary.options.db_root)) << "\",\n";
     file << "  \"run_root\": \"" << json_escape(path_string(summary.sandbox.run_root)) << "\",\n";
     file << "  \"sandbox_db_root\": \"" << json_escape(path_string(summary.sandbox.db_root)) << "\",\n";
@@ -259,8 +259,6 @@ bool write_battle_job_run_manifest(
     file << "  \"probe_mode\": \"" << probe_mode_name(summary.options.probe_mode) << "\",\n";
     file << "  \"probe_cpu_core\": \"" << probe_cpu_core_name(summary.options.probe_cpu_core) << "\",\n";
     file << "  \"capture_profile_path\": \"" << json_escape(path_string(summary.capture_profile_path)) << "\",\n";
-    file << "  \"timeout_ms\": " << summary.options.timeout_ms << ",\n";
-    write_optional_u32(file, "battle_run_ms", summary.options.battle_run_ms, true);
     file << "  \"expected_capture_path\": \"" << json_escape(path_string(summary.expected_capture_path)) << "\",\n";
     file << "  \"stable_capture_path\": \"" << json_escape(path_string(summary.stable_capture_path)) << "\",\n";
     file << "  \"capture_export_path\": \"" << json_escape(path_string(summary.capture_export_path)) << "\",\n";
@@ -285,7 +283,6 @@ bool write_battle_job_run_manifest(
     write_optional_bool(file, "captured_seed_readback_matches", summary.captured_seed_readback_matches, true);
     file << "  \"quarantined_ready_jobs\": " << summary.clone.quarantined_ready_jobs << ",\n";
     file << "  \"terminal_state\": \"" << json_escape(summary.terminal_state) << "\",\n";
-    file << "  \"timed_out\": " << (summary.timed_out ? "true" : "false") << ",\n";
     file << "  \"capture_found\": " << (summary.capture_found ? "true" : "false") << ",\n";
     write_capture_artifact(file, summary.capture_artifact);
     file << "  \"trace_exit_code\": " << summary.trace_exit_code << ",\n";
@@ -330,9 +327,6 @@ bool write_battle_job_run_text_summary(
         << (summary.options.override_fake_attacks_this_turn.has_value()
             ? std::to_string(*summary.options.override_fake_attacks_this_turn)
             : "none")
-        << "\n";
-    file << "battle_run_ms: "
-        << (summary.options.battle_run_ms.has_value() ? std::to_string(*summary.options.battle_run_ms) : "none")
         << "\n";
     if (summary.captured_original_seed.has_value()) {
         file << "captured_original_seed: " << hex_u32(*summary.captured_original_seed) << "\n";

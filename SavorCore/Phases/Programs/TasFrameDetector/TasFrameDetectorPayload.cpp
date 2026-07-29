@@ -8,7 +8,7 @@
 
 namespace savor::tasframedetector {
 
-static constexpr uint16_t kPayloadVersion = 1;
+static constexpr uint16_t kPayloadVersion = 2;
 
 static inline void put_u32(std::vector<uint8_t>& b, uint32_t v) {
     b.push_back(uint8_t(v)); b.push_back(uint8_t(v >> 8));
@@ -33,10 +33,9 @@ static inline uint16_t rd_u16(const uint8_t* d, size_t& o, size_t n) {
 bool encode_payload(const EncodeSpec& spec, std::vector<uint8_t>& out)
 {
     out.clear();
-    out.reserve(1 + 2 + 4 + 8 + 4 + spec.dtm_path.size());
+    out.reserve(1 + 2 + 8 + 4 + spec.dtm_path.size());
     out.push_back(PK_TasInputStreamDetector);
     put_u16(out, kPayloadVersion);
-    put_u32(out, spec.vi_stall_ms);
     out.insert(out.end(), 8, uint8_t(0)); // reserved
     put_u32(out, static_cast<uint32_t>(spec.dtm_path.size()));
     out.insert(out.end(), spec.dtm_path.begin(), spec.dtm_path.end());
@@ -45,7 +44,7 @@ bool encode_payload(const EncodeSpec& spec, std::vector<uint8_t>& out)
 
 bool decode_payload(const std::vector<uint8_t>& in, PSContext& out_ctx)
 {
-    if (in.size() < 1 + 2 + 4 + 8 + 4) return false;
+    if (in.size() < 1 + 2 + 8 + 4) return false;
     size_t off = 0;
     const uint8_t pk = in[off++];
     if (pk != PK_TasInputStreamDetector) return false;
@@ -53,7 +52,6 @@ bool decode_payload(const std::vector<uint8_t>& in, PSContext& out_ctx)
     const uint16_t ver = rd_u16(in.data(), off, in.size());
     if (ver != kPayloadVersion) return false;
 
-    const uint32_t vi_stall_ms = rd_u32(in.data(), off, in.size());
     off += 8; // reserved
 
     const uint32_t len_dtm = rd_u32(in.data(), off, in.size());
@@ -79,7 +77,6 @@ bool decode_payload(const std::vector<uint8_t>& in, PSContext& out_ctx)
 
     out_ctx[savor::context::key::tasframedetector::DTM_PATH] = dtm_path;
     out_ctx[savor::context::key::tasframedetector::DISC_ID6] = id6;
-    out_ctx[savor::context::key::core::VI_STALL_MS] = vi_stall_ms;
     out_ctx[savor::context::key::tasframedetector::HEADER_IDENTITY] = header_identity;
     out_ctx[savor::context::key::tasframedetector::EMU_VERSION] = std::string("unknown");
     return true;

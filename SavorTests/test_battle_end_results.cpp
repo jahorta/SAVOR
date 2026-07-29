@@ -367,10 +367,9 @@ TEST(BattleCompletionManifest, VersionOneRoundTripsRawProgressAndDerivedMagic)
         (std::vector<std::uint8_t>{0}));
 }
 
-TEST(BattleEndResultsPayload, VersionTwoRequiresManifestTimeoutPolicyAndOutputPath)
+TEST(BattleEndResultsPayload, VersionThreeRequiresManifestPolicyAndOutputPath)
 {
     endresults::EncodeSpec spec{
-        .run_timeout_ms = 900000,
         .acceleration_policy = endresults::AccelerationPolicy::FullAdaptive,
         .completion_manifest_blob = MakeCompletionManifest(),
         .output_savestate_path = "battle-end.sav",
@@ -382,22 +381,28 @@ TEST(BattleEndResultsPayload, VersionTwoRequiresManifestTimeoutPolicyAndOutputPa
     savor::PSContext context;
     ASSERT_TRUE(endresults::decode_payload(payload, context));
     std::uint32_t value = 0;
-    EXPECT_TRUE(context.get(savor::context::key::battleend::RUN_TIMEOUT_MS, value));
-    EXPECT_EQ(value, 900000u);
     EXPECT_TRUE(context.get(savor::context::key::battleend::ACCELERATION_POLICY, value));
     EXPECT_EQ(value, static_cast<std::uint32_t>(endresults::AccelerationPolicy::FullAdaptive));
 
-    spec.run_timeout_ms = 0;
-    EXPECT_FALSE(endresults::encode_payload(spec, payload));
-    spec.run_timeout_ms = 1;
     spec.output_savestate_path.clear();
     EXPECT_FALSE(endresults::encode_payload(spec, payload));
+
+    auto legacy = payload;
+    ASSERT_TRUE(endresults::encode_payload(
+        endresults::EncodeSpec{
+            .acceleration_policy =
+                endresults::AccelerationPolicy::FullAdaptive,
+            .completion_manifest_blob = MakeCompletionManifest(),
+            .output_savestate_path = "battle-end.sav",
+        },
+        legacy));
+    legacy[1] = 2;
+    EXPECT_FALSE(endresults::decode_payload(legacy, context));
 }
 
-TEST(FieldReturnSeedProbePayload, VersionTwoMaterializesExpectedSeedAndLegacyV1Observes)
+TEST(FieldReturnSeedProbePayload, VersionThreeMaterializesAndRejectsLegacyTimingPayload)
 {
     savor::seedprobe::EncodeSpec spec{};
-    spec.run_ms = 900000;
     spec.target = savor::seedprobe::SeedProbeTarget::FieldReturn;
     spec.mode = savor::seedprobe::SeedProbeMode::Materialize;
     spec.expected_seed = 0x12345678u;
@@ -423,7 +428,7 @@ TEST(FieldReturnSeedProbePayload, VersionTwoMaterializesExpectedSeedAndLegacyV1O
     };
     std::vector<std::uint8_t> legacy{
         savor::PK_SeedProbe,
-        static_cast<std::uint8_t>(savor::seedprobe::LegacyPayloadVersion),
+        1u,
         0u,
     };
     put_u32(legacy, 1000u);
@@ -432,13 +437,7 @@ TEST(FieldReturnSeedProbePayload, VersionTwoMaterializesExpectedSeedAndLegacyV1O
     const auto* raw = reinterpret_cast<const std::uint8_t*>(&neutral);
     legacy.insert(legacy.end(), raw, raw + sizeof(neutral));
     savor::PSContext legacy_context;
-    ASSERT_TRUE(savor::seedprobe::decode_payload(legacy, legacy_context));
-    ASSERT_TRUE(legacy_context.get(savor::context::key::seed::TARGET, value));
-    EXPECT_EQ(value, static_cast<std::uint32_t>(
-        savor::seedprobe::SeedProbeTarget::PreBattle));
-    ASSERT_TRUE(legacy_context.get(savor::context::key::seed::MODE, value));
-    EXPECT_EQ(value, static_cast<std::uint32_t>(
-        savor::seedprobe::SeedProbeMode::Observe));
+    EXPECT_FALSE(savor::seedprobe::decode_payload(legacy, legacy_context));
 }
 
 TEST(FieldReturnSeedProbeScript, UsesInternalFieldAnchorAndPublicLegacyGate)
@@ -1245,7 +1244,9 @@ TEST(BattleEndResultsProvider, RequiresCausalRawAndControllerInfoReleaseFieldsTo
                 6,
                 6));
         EXPECT_EQ(decision.status, InputMacroDriverStatus::Failed);
-        EXPECT_EQ(provider.failure(), endresults::FailureCode::GuestNeutralTimeout);
+        EXPECT_EQ(
+            provider.failure(),
+            endresults::FailureCode::GuestNeutralUnacknowledged);
     }
 }
 

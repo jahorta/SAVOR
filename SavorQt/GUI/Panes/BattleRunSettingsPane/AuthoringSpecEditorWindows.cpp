@@ -237,8 +237,6 @@ void SeedProbeSpecEditorWindow::loadSnapshot(const savor::db::SeedProbeSpecSnaps
         : QStringLiteral("Seed Probe Spec Editor - Edit Copy"));
     nameEdit_->setText(QString::fromStdString(snapshot.name) + (duplicate ? QStringLiteral(" copy") : QString()));
     prioritySpin_->setValue(snapshot.priority);
-    runMsEdit_->setText(QString::number(snapshot.run_ms));
-    viStallMsEdit_->setText(QString::number(snapshot.vi_stall_ms));
     minValueEdit_->setText(QString::number(snapshot.min_value));
     maxValueEdit_->setText(QString::number(snapshot.max_value));
     capTriggerTopCheck_->setChecked(snapshot.cap_trigger_top);
@@ -259,8 +257,6 @@ void SeedProbeSpecEditorWindow::createWidgets()
     nameEdit_ = new QLineEdit(panel);
     prioritySpin_ = new QSpinBox(panel);
     prioritySpin_->setRange(0, 100000);
-    runMsEdit_ = numericEdit(panel, QStringLiteral("30000"));
-    viStallMsEdit_ = numericEdit(panel, QStringLiteral("4000"));
     minValueEdit_ = numericEdit(panel, QStringLiteral("48"));
     maxValueEdit_ = numericEdit(panel, QStringLiteral("207"));
     capTriggerTopCheck_ = new QCheckBox(panel);
@@ -275,8 +271,6 @@ void SeedProbeSpecEditorWindow::createWidgets()
     comboSamplerTriesSpin_->setValue(8);
     form->addRow(QStringLiteral("Name"), nameEdit_);
     form->addRow(QStringLiteral("Priority"), prioritySpin_);
-    form->addRow(QStringLiteral("Run ms"), runMsEdit_);
-    form->addRow(QStringLiteral("VI stall ms"), viStallMsEdit_);
     form->addRow(QStringLiteral("Min value"), minValueEdit_);
     form->addRow(QStringLiteral("Max value"), maxValueEdit_);
     form->addRow(QStringLiteral("Cap trigger top"), capTriggerTopCheck_);
@@ -303,13 +297,9 @@ void SeedProbeSpecEditorWindow::saveSpec()
         return;
     }
     QString error;
-    std::int64_t runMs = 0;
-    std::int64_t viStallMs = 0;
     std::int64_t minValue = 0;
     std::int64_t maxValue = 0;
-    if (!parseInt64(runMsEdit_, QStringLiteral("Run ms"), &runMs, &error)
-        || !parseInt64(viStallMsEdit_, QStringLiteral("VI stall ms"), &viStallMs, &error)
-        || !parseInt64(minValueEdit_, QStringLiteral("Min value"), &minValue, &error)
+    if (!parseInt64(minValueEdit_, QStringLiteral("Min value"), &minValue, &error)
         || !parseInt64(maxValueEdit_, QStringLiteral("Max value"), &maxValue, &error)) {
         postStatusMessage(error, StatusToast::Severity::Warn);
         return;
@@ -318,8 +308,6 @@ void SeedProbeSpecEditorWindow::saveSpec()
     savorqt::db::SeedProbeSpecDraft draft{};
     draft.name = nameEdit_->text().trimmed().toStdString();
     draft.priority = prioritySpin_->value();
-    draft.run_ms = runMs;
-    draft.vi_stall_ms = viStallMs;
     draft.min_value = minValue;
     draft.max_value = maxValue;
     draft.cap_trigger_top = capTriggerTopCheck_->isChecked();
@@ -369,8 +357,6 @@ void TasSpecEditorWindow::loadSnapshot(const savor::db::TasSpecSnapshot& snapsho
         : QStringLiteral("TAS Spec Editor - Edit Copy"));
     nameEdit_->setText(QString::fromStdString(snapshot.base_name) + (duplicate ? QStringLiteral(" copy") : QString()));
     prioritySpin_->setValue(snapshot.priority);
-    runMsEdit_->setText(QString::number(snapshot.run_ms));
-    viStallMsEdit_->setText(QString::number(snapshot.vi_stall_ms));
 }
 
 void TasSpecEditorWindow::createWidgets()
@@ -385,12 +371,8 @@ void TasSpecEditorWindow::createWidgets()
     nameEdit_ = new QLineEdit(panel);
     prioritySpin_ = new QSpinBox(panel);
     prioritySpin_->setRange(0, 100000);
-    runMsEdit_ = numericEdit(panel, QStringLiteral("0"));
-    viStallMsEdit_ = numericEdit(panel, QStringLiteral("2500"));
     form->addRow(QStringLiteral("Name"), nameEdit_);
     form->addRow(QStringLiteral("Priority"), prioritySpin_);
-    form->addRow(QStringLiteral("Run ms"), runMsEdit_);
-    form->addRow(QStringLiteral("VI stall ms"), viStallMsEdit_);
     panelLayout->addLayout(form);
     panelLayout->addStretch(1);
     root->addWidget(panel, 1);
@@ -409,19 +391,9 @@ void TasSpecEditorWindow::saveSpec()
         postStatusMessage(QStringLiteral("TAS spec name is required."), StatusToast::Severity::Warn);
         return;
     }
-    QString error;
-    std::int64_t runMs = 0;
-    std::int64_t viStallMs = 0;
-    if (!parseInt64(runMsEdit_, QStringLiteral("Run ms"), &runMs, &error)
-        || !parseInt64(viStallMsEdit_, QStringLiteral("VI stall ms"), &viStallMs, &error)) {
-        postStatusMessage(error, StatusToast::Severity::Warn);
-        return;
-    }
     savorqt::db::TasSpecDraft draft{};
     draft.base_name = nameEdit_->text().trimmed().toStdString();
     draft.priority = prioritySpin_->value();
-    draft.run_ms = runMs;
-    draft.vi_stall_ms = viStallMs;
     draft.progress_enable = true;
     draft.base_dtm_artifact_id = 0;
     const auto result = savorqt::db::SavorDbAuthoringService::SaveTasSpec(draft);
@@ -467,8 +439,6 @@ void BattleRunSpecEditorWindow::loadSnapshot(const savor::db::BattleRunSpecSnaps
         : QStringLiteral("Battle Run Spec Editor - Edit Copy"));
     nameEdit_->setText(QString::fromStdString(snapshot.name) + (duplicate ? QStringLiteral(" copy") : QString()));
     prioritySpin_->setValue(snapshot.priority);
-    runMsEdit_->setText(QString::number(snapshot.run_ms));
-    viStallMsEdit_->setText(QString::number(snapshot.vi_stall_ms));
     singleTurnRunnerCheck_->setChecked(snapshot.use_single_turn_runner);
     autoWaveTriggerCheck_->setChecked(snapshot.auto_wave_trigger_enable);
 }
@@ -485,16 +455,12 @@ void BattleRunSpecEditorWindow::createWidgets()
     nameEdit_ = new QLineEdit(panel);
     prioritySpin_ = new QSpinBox(panel);
     prioritySpin_->setRange(0, 100000);
-    runMsEdit_ = numericEdit(panel, QStringLiteral("30000"));
-    viStallMsEdit_ = numericEdit(panel, QStringLiteral("4000"));
     singleTurnRunnerCheck_ = new QCheckBox(panel);
     singleTurnRunnerCheck_->setChecked(true);
     autoWaveTriggerCheck_ = new QCheckBox(panel);
 	autoWaveTriggerCheck_->setChecked(true);
     form->addRow(QStringLiteral("Name"), nameEdit_);
     form->addRow(QStringLiteral("Priority"), prioritySpin_);
-    form->addRow(QStringLiteral("Run ms"), runMsEdit_);
-    form->addRow(QStringLiteral("VI stall ms"), viStallMsEdit_);
     form->addRow(QStringLiteral("Single turn runner"), singleTurnRunnerCheck_);
     form->addRow(QStringLiteral("Auto wave trigger"), autoWaveTriggerCheck_);
     panelLayout->addLayout(form);
@@ -515,19 +481,9 @@ void BattleRunSpecEditorWindow::saveSpec()
         postStatusMessage(QStringLiteral("Battle run spec name is required."), StatusToast::Severity::Warn);
         return;
     }
-    QString error;
-    std::int64_t runMs = 0;
-    std::int64_t viStallMs = 0;
-    if (!parseInt64(runMsEdit_, QStringLiteral("Run ms"), &runMs, &error)
-        || !parseInt64(viStallMsEdit_, QStringLiteral("VI stall ms"), &viStallMs, &error)) {
-        postStatusMessage(error, StatusToast::Severity::Warn);
-        return;
-    }
     savorqt::db::BattleRunSpecDraft draft{};
     draft.name = nameEdit_->text().trimmed().toStdString();
     draft.priority = prioritySpin_->value();
-    draft.run_ms = runMs;
-    draft.vi_stall_ms = viStallMs;
     draft.progress_enable = true;
     draft.use_single_turn_runner = singleTurnRunnerCheck_->isChecked();
     draft.auto_wave_trigger_enable = autoWaveTriggerCheck_->isChecked();

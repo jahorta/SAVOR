@@ -19,10 +19,7 @@ struct TasMovieBlueprintConfig {
     std::int64_t rtc_low = 0;
     std::int64_t rtc_high = 0;
     int priority = 0;
-    std::uint32_t run_ms = 0;
-    std::uint32_t vi_stall_ms = 2000;
     bool progress_enable = true;
-    std::uint8_t headroom_x10 = 15;
     std::optional<std::int64_t> bind_seed_probe_run_id;
 };
 
@@ -36,7 +33,6 @@ struct TasMoviePhaseRegistrationConfig {
 struct TasMovieResultsIni {
     int w_err = 0;
     std::uint32_t dw_err = 0;
-    std::uint32_t run_ms_used = 0;
     std::uint32_t vi_start = 0;
     std::uint32_t vi_end = 0;
     std::string savestate_path;

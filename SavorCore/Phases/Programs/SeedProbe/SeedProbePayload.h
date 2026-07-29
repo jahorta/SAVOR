@@ -8,8 +8,7 @@
 
 namespace savor::seedprobe {
 
-    inline constexpr std::uint16_t LegacyPayloadVersion = 1;
-    inline constexpr std::uint16_t PayloadVersion = 2;
+    inline constexpr std::uint16_t PayloadVersion = 3;
 
     enum class SeedProbeTarget : std::uint32_t {
         PreBattle = 0,
@@ -26,17 +25,11 @@ namespace savor::seedprobe {
 	// On-wire layout (little-endian), fixed-size first:
 	//
 	// [0]      : u8   ProgramKind tag (== PK_SeedProbe)
-	// [1..2]   : u16  version = 1
-	// [3..6]   : u32  run_ms (0 => use VM defaults / script-set timeout)
-	// [7..10]  : u32  vi_stall_ms (0 => disabled)
-	// [11..(11+sizeof(GCInputFrame)-1)] : raw GCInputFrame bytes
-	//
-	// Goal: let the decoder set common run knobs via VMCoreKeys and provide the input frame.
+	// [1..2]   : u16  version = 3
+	// [3..(3+sizeof(GCInputFrame)-1)] : raw GCInputFrame bytes
 
 	struct EncodeSpec {
 		GCInputFrame frame{};
-		uint32_t     run_ms{ 0 };        // 0 => derive from VM/script defaults
-		uint32_t     vi_stall_ms{ 0 };   // 0 => disabled
 		SeedProbeTarget target{SeedProbeTarget::PreBattle};
 		SeedProbeMode mode{SeedProbeMode::Observe};
 		std::optional<std::uint32_t> expected_seed;
@@ -48,7 +41,6 @@ namespace savor::seedprobe {
 
 	// Worker-side: parse payload -> populate ctx with:
 	//   - K_INPUT  -> GCInputFrame
-	//   - core.input.run_ms / core.input.vi_stall_ms (if nonzero)
 	bool decode_payload(const std::vector<uint8_t>& in, PSContext& out_ctx);
 
 } // namespace savor::seedprobe

@@ -18,10 +18,12 @@ current-source orientation and deletion targets; they receive no target module.
 It does not:
 
 - implement a module, action, or runtime type schema;
-- change SavorDb SQL/schema, migrations, stored representations, queue states, workflow persistence,
-  transaction semantics, or artifact-storage contracts; the shared workset prelude may add only the
-  narrow coordinator/DB interfaces documented in document 06 for ordered batch claim, exact-set lease
-  renewal, claim/start validation, and targeted terminal reconciliation;
+- change SavorDb SQL/schema or migrations, queue states, workflow persistence, transaction semantics,
+  or artifact-storage contracts. The pre-6A cutover removes obsolete public authoring timing fields and
+  newly generated timing arguments while private neutral insert shims satisfy the unchanged physical
+  columns; the shared workset prelude may add only the narrow coordinator/DB interfaces documented in
+  document 06 for ordered batch claim, exact-set lease renewal, claim/start validation, and targeted
+  terminal reconciliation;
 - make current persisted payload bytes the worker runtime contract; program-kind handlers may continue to
   use existing codecs to preserve the stored representation;
 - make Navmesh Survey part of the current-phase migration corpus;
@@ -54,9 +56,9 @@ Every current phase follows the same rules:
    entrypoint, dependency closure, state policy, and typed input from existing job/domain records and
    runtime configuration. `ProgramKind` may remain SavorDb job, handler, transition, queue/affinity,
    historical, and UI metadata; it no longer selects worker execution.
-3. **Lifecycle is invocation policy.** Boot/load/restore, capture attachment, movie policy, default
-   deadline, and state artifact roles are not hidden in payload keys or duplicated as entrypoint prologue
-   operations.
+3. **Lifecycle is invocation policy.** Boot/load/restore, capture attachment, movie policy,
+   cancellation, and state artifact roles are not hidden in payload keys or duplicated as entrypoint
+   prologue operations. No phase supplies an elapsed execution deadline or VI-stall threshold.
 4. **Domain effects are actions.** Stop waits, input leases, memory access, state saves, movie operations,
    capture, and Skies-specific queries use the exact descriptors defined in document 04. The rows below
    name semantics, not additional interpreter opcodes.
@@ -128,7 +130,7 @@ queries migrate through one reusable semantic-observation composition library:
 - capability packs own `SemanticPointDefinition` identities and map them to physical PC, memory, or
   synthetic evidence;
 - a `SemanticAwaitDefinition` declares exact point alternatives, bounded hit-time qualification or
-  sampling, current-point acceptance, deadlines, and execution policy;
+  sampling, current-point acceptance, cancellation/movie policy, and execution policy;
 - a successful await returns a `SemanticPointReceipt` containing the logical point, physical evidence,
   stop sequence, `StateEpoch`, and declared hit-time samples;
 - `AddressExpression<T>` and `ObservationDefinition<T>` describe bounded typed reads, checked
@@ -159,9 +161,9 @@ verifier-known segment set, hard budgets, and declared emissions. Each
 `InteractionSegmentDefinition` declares its semantic gates, requested input and acknowledgement policy,
 source-stop departure behavior, an optional declared semantic successor held under the same
 publication, attached observations/checks,
-timeout/stall/movie/cancel policy, and typed completion mapping. `InteractionSegmentResult` preserves the
-exact stop receipt, request and release receipts, ordered observations/checks, elapsed evidence, epoch,
-and distinct terminal status.
+movie/cancellation policy, and typed completion mapping. `InteractionSegmentResult` preserves the
+exact stop receipt, request and release receipts, ordered observations/checks, schema-declared domain
+evidence, epoch, and distinct terminal status. Host elapsed time is diagnostic telemetry only.
 
 Before verification, the composer lowers static sequences and adaptive reducers into ordinary
 subprogram CFG, action awaits, semantic-observation composition, branches, and emissions. A reducer may
@@ -185,8 +187,9 @@ The migration preserves the current temporal behavior:
   scopes.
 
 Common unwind neutralizes input, proves release when required, releases nested subscriptions and the
-lease, and taints the session if mandatory cleanup fails. Timeout, unexpected point, unacknowledged input,
-unsatisfied check, infrastructure failure, cancellation, and cleanup failure remain distinguishable.
+lease, and taints the session if mandatory cleanup fails. Unexpected point, unacknowledged input,
+unsatisfied check, confirmed infrastructure failure, cancellation, and cleanup failure remain
+distinguishable.
 
 ### Reusable predicate composition
 
@@ -239,7 +242,7 @@ cannot reinterpret its internals.
 |---|---|
 | `ARM_PHASE_BPS_ONCE`, canonical/gated vectors | `SemanticPointDefinition` and `SemanticAwaitDefinition` lower exact alternatives and current-point policy into scoped router subscriptions plus `runtime.execution.continue_until` |
 | `LOAD_SNAPSHOT` and init-time savestate path | Invocation `StatePolicy` over a typed state handle or caller-declared immutable artifact; `StateService` alone advances `StateEpoch`, and `runtime.state.restore_baseline` is used only for a declared local retry |
-| Timeout keys and `SET_TIMEOUT*` | Invocation deadline/budget plus action-specific bounded deadline |
+| Timeout keys and `SET_TIMEOUT*` | Deleted before 6A. Guest-dependent work is cancellation-driven; only explicitly classified host-only operations retain infrastructure timeouts |
 | `RUN_UNTIL_BP*` and source-stop departure | `runtime.execution.continue_until` plus exact retained-receipt suppression under the sole `ExecutionEngine`; old step-off opcodes are mechanics, not target behavior |
 | Frame stepping | `runtime.execution.step_frames` when the phase contract is genuinely frame-granular |
 | Guest opcode stepping | No target action. Reconstruct the intent with suppression and a declared semantic successor; reject a path whose behavior cannot be expressed semantically |
@@ -279,7 +282,7 @@ read/hash immutable artifacts; it cannot restore state, bind `StateEpoch`, captu
 session resources, or advance Dolphin. Neither staging nor output finalization creates a second
 `ProgramInstance` or executor.
 
-Each child retains its own job, invocation, attempt, deadline, cancellation, provenance, cleanup,
+Each child retains its own job, invocation, attempt, structural limits, cancellation, provenance, cleanup,
 artifact, and terminal-result identity. Every child begins through the exact state preparation or
 composite baseline restore declared for the key. Before every later child, `RestoreBaseline` prepares
 every component, returns one `PreparedProgramBaselineReceipt`, and advances `StateEpoch` exactly once.
@@ -310,9 +313,9 @@ supersession, reduction, and transitions remain authoritative, while documented 
 ordered batch claim, exact-set lease renewal, pre-submission exact-set claim/start validation, and targeted terminal-
 reconciliation interfaces may be narrowed for the pipeline.
 
-The initial configurable bounds are shared runtime policy rather than phase semantics: 16 items,
-32 MiB, and four aggregate active hours per workset; 64 total worker item credits and 32 active-plus-
-staged items; 16 cache entries/512 MiB; two finalizer threads with eight pending captures/256 MiB; 32
+The initial configurable bounds are shared runtime policy rather than phase semantics: 16 items and
+32 MiB per workset; 64 total worker item credits and 32 active-plus-staged items; 16 cache
+entries/512 MiB; two finalizer threads with eight pending captures/256 MiB; 32
 retained terminals/128 MiB; two concurrent worker startups; and one extra coordinator-buffered workset
 per negotiated Ready worker.
 
@@ -340,7 +343,6 @@ later steps through current operations.
 - `mode`: `Observe` or `Materialize`;
 - one `GCInputFrame`;
 - optional expected RNG seed, required in `Materialize`;
-- invocation/action deadline policy; and
 - optional output-state artifact role, required in `Materialize`.
 
 The source state is supplied by invocation `LoadArtifact` or `RestoreBaseline`; it is not a payload path.
@@ -363,7 +365,7 @@ through the existing SeedProbe result and transition operations.
 **Lifecycle duplication removed**
 
 - `OpArmPhaseBps` and `OpLoadSnapshot`;
-- timeout and output-path context keys;
+- elapsed-time and output-path context keys;
 - first-byte `PK_SeedProbe` dispatch;
 - program-specific payload decoding; and
 - use of `DW_RUN_OUTCOME_CODE` as both infrastructure and domain result.
@@ -401,12 +403,12 @@ handler needs it to preserve stored data.
 The current Navigation Context script restores its baseline, publishes neutral input, records the entry
 PC/stop, waits for `NavigationContextInitialPlayerInputReady` when necessary, validates the exact capture
 key and PC, captures navigation state, saves a matching savestate, emits the `.nctx` blob, and maps
-timeout/stall/host/unexpected/capture/data/save failures.
+confirmed core-health/host/unexpected/capture/data/save failures.
 
 **Typed input**
 
 `NavigationContextCaptureRequest` contains the source state relationship, capture qualification revision,
-execution bound, and declared `navigation_context` plus `survey_bootstrap_state` artifact roles. The
+and declared `navigation_context` plus `survey_bootstrap_state` artifact roles. The
 neutral controller is module behavior through a scoped input action, not a serialized input key.
 
 **Typed output and emissions**
@@ -457,21 +459,21 @@ existing files remain immutable inputs/evidence and are not overwritten.
 The `navigation.context_probe` handler constructs the target module invocation, projects its result into
 the existing `.nctx` and state-artifact representation, and keeps current consumers compatible. No
 worker-side caller uses kind `10`, Navigation Context context keys, `GET_NAVIGATION_CONTEXT`, or its
-`ProgramRegistry` branches; the persisted payload codec may remain behind the handler, and the Survey
-handoff below passes.
+`ProgramRegistry` branches; only recognized semantic persisted fields may remain behind the handler, and
+the Survey handoff below passes.
 
 ### Slice 6C - `soa.tas_movie::play_and_checkpoint`
 
 **Current control flow**
 
-`MakeTasMovieProgram` validates the DTM disc ID, starts playback, applies a derived timeout, waits for the
-pre-battle stop or failure, stops playback, saves a savestate, steps one frame, and returns movie failure
-status. The payload decoder derives disc identity and runtime from the DTM.
+`MakeTasMovieProgram` validates the DTM disc ID, starts playback, waits for the pre-battle stop, movie
+completion, cancellation, or failure, stops playback, saves a savestate, steps one frame, and returns
+movie failure status. The payload decoder derives disc identity and runtime from the DTM.
 
 **Typed input**
 
 `TasPlaybackRequest` contains an immutable DTM artifact reference, expected disc identity, explicit stop
-condition, playback bounds/headroom policy, and an output-state artifact role. Invocation state policy is
+condition, movie-ended policy, and an output-state artifact role. Invocation state policy is
 explicit (`Boot` for the current workflow unless a future workflow intentionally supplies a state).
 
 **Typed output and emissions**
@@ -502,8 +504,8 @@ caller-supplied frame/input cursor: after the exact DTM is staged and state is r
 records Dolphin's authoritative observed cursor. An internally captured checkpoint already carries a
 known cursor and must match it exactly. External imports explicitly declare `NoMovie` or
 `ReadOnlyPlayback`. Recording file-artifact capture/import/restore is unsupported, while same-session
-recording rewind uses an in-memory handle. Timeout derivation occurs before activation and is recorded
-in invocation provenance.
+recording rewind uses an in-memory handle. DTM length and host elapsed time may be diagnostic telemetry,
+but neither derives invocation policy or identity.
 
 **WorkerWorkset fit**
 
@@ -624,7 +626,7 @@ module does not absorb downstream wave fan-out or combine contexts from distinct
 
 - immediate-capture and run-to-capture paths;
 - exact current `BattleContext` codec output;
-- timeout, wrong-stop, and memory-read failure;
+- confirmed core-health, wrong-stop, and memory-read failure;
 - existing DB tests for direct-wave and bootstrap-wave fan-out; and
 - restart/idempotency around transition publication.
 
@@ -640,9 +642,9 @@ payload codec may remain only behind the SavorDb handler to preserve stored data
 **Current control flow**
 
 `MakeBattleMacroProbeProgram` materializes a command/fake-attack plan, repeatedly asks the macro runtime
-to execute one adaptive segment, steps past the turn-ready stop, optionally observes a bounded tail, and
-returns macro status. SavorE2E currently activates this program directly rather than through a DB
-descriptor.
+to execute one adaptive segment, departs the turn-ready stop through exact suppression, records declared
+semantic observations, and returns macro status. SavorE2E currently activates this program directly
+rather than through a DB descriptor.
 
 **Typed input**
 
@@ -650,8 +652,6 @@ descriptor.
 
 - ordered macro commands and target slots;
 - transition-neutral-frame policy;
-- segment and VI-stall bounds;
-- observation-tail bound;
 - fake-attack budget and selected pattern set; and
 - optional capture profile artifact.
 
@@ -668,8 +668,7 @@ memory-gate observation is emitted with stable sequence identity.
 - shared interaction composition with semantic gate alternatives, request/release acknowledgements,
   memory baseline/change observations, exact source suppression, and declared semantic successors where
   a publication must span a later point;
-- battle-context observation/query; and
-- routed observation-tail execution.
+- battle-context observation/query.
 
 No single “run battle macro probe” native action is allowed. The program owns visible branching in IR;
 the reducer decides only the next bounded segment from typed state and the preceding completion.
@@ -677,7 +676,7 @@ the reducer decides only the next bounded segment from typed state and the prece
 **WorkerWorkset fit**
 
 This direct diagnostic enters through a one-item workset. Its ordered commands, adaptive segments, and
-observation tail are domain control flow within that one scalar invocation; they are not workset
+semantic observations are domain control flow within that one scalar invocation; they are not workset
 children.
 
 **Parity checks**
@@ -1015,8 +1014,8 @@ outcome.
 
 For observations, optional `Unavailable` is not false or zero, required missing evidence is a structured
 failure, and a stale receipt/baseline is rejected after `StateEpoch` replacement. For interactions,
-timeout, unexpected point, unacknowledged request or release, unsatisfied check, infrastructure failure,
-cancellation, and cleanup failure remain distinct. Normal and abnormal unwind attempt neutralization,
+unexpected point, unacknowledged request or release, unsatisfied check, confirmed infrastructure
+failure, cancellation, and cleanup failure remain distinct. Normal and abnormal unwind attempt neutralization,
 any required release witness, subscription release, and input-lease release exactly once; mandatory
 cleanup failure taints the session.
 
@@ -1027,7 +1026,8 @@ restoration, or patch restoration taints the session even if the domain result w
 A mandatory capture finalization failure also leaves capture unable to accept another attachment and
 blocks session/worker reuse until a full rebuild.
 
-Cancellation and timeout injection is mandatory at every action-await boundary for each migrated family.
+Cancellation injection is mandatory at every guest-dependent action-await boundary. Bounded host-only
+operations additionally receive their infrastructure-timeout coverage.
 
 ## Dependencies and migration implications
 
@@ -1039,9 +1039,12 @@ This matrix depends on documents 02 through 06:
 - invocation/result/artifact identity; and
 - the fixed SavorDb integration boundary in document 06.
 
-No DB migration is part of this refactor. Compatibility translation belongs in program-kind handlers or
-adjacent runtime adapters. In-flight incompatible worker activations may be drained at the release
-boundary; persisted job, workflow, result, artifact, queue, and affinity records are not migrated. A
+No DB migration is part of this refactor. Public authoring timing fields and generated timing arguments
+are removed before 6A; the six physical columns remain ignored behind private neutral insert shims until
+the separate database refactor. Compatibility translation for recognized semantic fields belongs in
+program-kind handlers or adjacent runtime adapters. In-flight incompatible worker activations may be
+drained at the release boundary; persisted job, workflow, result, artifact, queue, and affinity records
+are not migrated. A
 worker-side legacy/new controller split is forbidden, and live `PhaseScriptVM` state is never serialized
 into `ProgramInstance`.
 
@@ -1061,10 +1064,10 @@ The current-phase migration is complete only when:
 - the same immutable state and typed inputs produce the required domain outputs, artifacts, and game
   witnesses, allowing only explicitly declared nondeterministic fields;
 - current workflow restart, idempotency, fan-out, survivor selection, and artifact lineage still pass;
-- no SavorDb schema migration, stored-representation change, durable queue/claim/workflow semantic
-  change, or artifact-storage-interface change is introduced; database interfaces change only for the
-  shared ordered batch claim, exact-set lease renewal, claim/start validation, and targeted terminal
-  reconciliation operations documented in 06;
+- no SavorDb schema migration, durable queue/claim/workflow semantic change, or
+  artifact-storage-interface change is introduced; public authoring interfaces lose obsolete timing
+  fields, and other database interfaces change only for the shared ordered batch claim, exact-set lease
+  renewal, claim/start validation, and targeted terminal reconciliation operations documented in 06;
 - current predicate records and result fields remain compatible through in-memory composition and
   existing result projection;
 - current stop/address/query/baseline behavior lowers through semantic-observation composition with

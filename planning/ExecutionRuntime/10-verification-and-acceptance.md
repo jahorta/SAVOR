@@ -17,12 +17,14 @@ Verification should establish, where relevant to the implementation slice:
 
 - ownership invariants, not only happy-path outputs;
 - deterministic program control flow under a deterministic backend event trace;
-- complete cleanup under return, failure, cancellation, timeout, and injected restoration faults;
+- complete cleanup under return, failure, cancellation, bounded-host timeout, confirmed core failure,
+  and injected restoration faults;
 - exact module/action/type/state/artifact provenance;
 - parity for every supported current phase;
-- unchanged durable SavorDb workflow, persistence, idempotency, and restart semantics, with only the
-  documented workset-specific ordered-batch claim, exact-set lease, claim/start validation, targeted
-  reconciliation, scheduling, capacity, and acknowledgement additions;
+- unchanged durable SavorDb workflow, persistence, idempotency, and restart semantics. Public authoring
+  timing fields are removed behind private neutral insert shims, alongside the documented
+  workset-specific ordered-batch claim, exact-set lease, claim/start validation, targeted reconciliation,
+  scheduling, capacity, and acknowledgement additions;
 - safe phase switching through one executor; and
 - for future Survey work, the concrete `a101b` bounded-runtime behavior.
 
@@ -171,7 +173,7 @@ semantic fields needed for comparison:
 - completed action output;
 - branch/call/return/fail decision;
 - emitted record/artifact identity;
-- cancellation/deadline event; and
+- cancellation, bounded-host timeout, or confirmed core-health event; and
 - final infrastructure, domain, and cleanup/session status.
 
 Host timestamps, OS thread IDs, storage locators, and other declared nondeterministic fields are
@@ -233,7 +235,7 @@ The reusable semantic-observation library receives focused pure-contract and fak
 
 - capability-pack point identities lower to exact router subscriptions and
   `runtime.execution.continue_until` requests;
-- exact alternatives, current-point acceptance, deadlines, rearm/current-instruction suppression, and
+- exact alternatives, current-point acceptance, cancellation/movie policy, rearm/current-instruction suppression, and
   unrelated-stop behavior are preserved;
 - `SemanticPointReceipt` records logical identity, PC/memory/synthetic evidence, stop sequence,
   `StateEpoch`, and only the declared bounded hit-time samples;
@@ -281,7 +283,7 @@ characterization coverage:
   between polls;
 - one input lease spans the full interaction while segment subscriptions and observations use nested
   scopes;
-- timeout, VI stall/movie end, unexpected point, unacknowledged request/release, unsatisfied check,
+- movie end, unexpected point, unacknowledged request/release, unsatisfied check, confirmed
   infrastructure failure, cancellation, and cleanup failure remain distinct;
 - normal return and every injected failure/cancellation point unwind once, neutralize input, prove
   release when required, release subscriptions/lease, and taint on mandatory cleanup failure; and
@@ -302,8 +304,8 @@ The reusable predicate library receives focused pure-contract and fake-session c
 - required observation failure cannot silently become false or be skipped;
 - baselines and guest-derived witness state use semantic-observation rules and obey `StateEpoch`;
 - type, import, capability, subscription, and emission mismatches reject the module before effects begin;
-- normal return, rejection, failure, cancellation, and timeout unwind predicate-related resources through
-  the ordinary resource stack;
+- normal return, rejection, failure, cancellation, and bounded-host failure unwind predicate-related
+  resources through the ordinary resource stack;
 - deterministic traces expose the observation, evaluation, branch or rejection, and emission; and
 - no predicate-specific opcode, executor, runtime service, direct Dolphin access, or physical-breakpoint
   manipulation is introduced.
@@ -316,7 +318,7 @@ Cover:
 - nested subprograms and typed locals;
 - one and many sequential action awaits;
 - cancellation before execution, during an await, after completion delivery, and during unwind;
-- deadline and instruction/effect/emission/artifact budget exhaustion;
+- instruction/effect/emission/artifact and other structural-budget exhaustion;
 - late, duplicated, mismatched, and stale-epoch action completions;
 - deterministic trace reproduction;
 - zero, one, and many emitted records/artifacts;
@@ -411,11 +413,11 @@ Cover:
   deferred; it is not an `ExecutionEngine` guest-opcode operation;
 - every operation routed through interceptors;
 - caller wait suspended by a requested interruption-handler child operation and then resumed or aborted;
-- frozen parent and nested-child wall-clock/VI budgets, child-budget expiry, declared nesting/recursion,
-  and the absolute depth cap of eight;
+- ineligible parent and nested-child health monitoring with rebaseline on resume, independent
+  cancellation, declared nesting/recursion, and the absolute depth cap of eight;
 - requested completion versus unrelated stop;
-- timeout, explicit VI warmup/stall, inactive versus ended movie, throttle restoration, backend fault,
-  stale epoch, and cancellation;
+- inactive versus ended movie, throttle restoration, backend fault, stale epoch, cancellation, and
+  confirmed centralized core-health failure;
 - interruption-handler failure propagation;
 - `ResumeParent` and `AbortParent` as the only handler policy outcomes;
 - visual-intent commands serialized with execution through fake sessions and WRMS/process fixtures; and
@@ -425,6 +427,36 @@ Slice 3 validation is unattended and non-visual. Tests shall not create an HWND 
 automate SavorQt or DolphinQt, compare screenshots, control the desktop, or require a user to inspect or
 close anything. Rendered interactive-debug validation is deferred until authoritative non-visual
 telemetry can prove it or a later validation explicitly permits human participation.
+
+### Pre-6A cancellation and core-health tests
+
+Before the first native phase module, focused injected-clock and barrier-based tests prove:
+
+- arbitrary wall-clock advancement cannot terminate guest work while VI/CoreTiming continues;
+- guest-dependent actions, semantic waits, interactions, interruption children, and workset items carry
+  cancellation plus structural bounds but no active elapsed deadline or per-request VI-stall policy;
+- `SuspectedCoreStall` appears after ten eligible seconds without progress and confirmation occurs only
+  after ten additional eligible seconds;
+- normal VI progress, throttle-on/off execution, and any change in registered synchronous host-activity
+  generation rebaseline health without a rate assertion;
+- native router qualification, bounded sampling, synchronous capture observation, reconciliation, state
+  replacement, handler suspension, and paused host work do not accrue core-stall time;
+- a continuous host activity warns after ten seconds and every thirty seconds thereafter without
+  becoming a core-stall terminal, including deferred threshold publication after actor-blocking work
+  returns;
+- multiple completed long host activities remain independently observable, and bounded diagnostic
+  overflow is explicit rather than silent;
+- background artifact finalization neither masks nor produces a core stall;
+- confirmed stall plus proven safe pause/health produces `CoreStalled` and
+  `CleanWithDiagnostics`; unproven pause, cleanup, or integrity taints and shuts down the session;
+- authoritative routed stop, movie termination, epoch replacement, already-accepted command,
+  cancellation, and health races still produce exactly one terminal in the documented precedence; and
+- bounded host operations retain their independent timeout and cleanup behavior.
+
+Repository-surface tests additionally prove that obsolete timing fields do not appear in runtime/module/
+workset codecs, phase payload schemas, adapter fingerprints, SavorPredict manifests, E2E runtime inputs,
+or UI. Runtime/workset v1 golden encodings are revised in place and old legacy payload revisions reject
+before session mutation.
 
 The serialized Release live-Dolphin guard remains headless and JIT64-only. It opens paused, performs one
 engine-owned frame step before registering the recurring `0x801DC288` Observe/Wake pair, continues
@@ -484,8 +516,8 @@ Characterize every retained `savor.capture.profile/1` behavior before moving it 
   not acquire control semantics merely because a capture profile names `control`;
 - one routed match carries the same sequence/snapshot/epoch identity through control, capture, progress,
   and emitted artifacts;
-- cancellation, deadline, restore, profile detach, normal finalization, backend failure, and cleanup
-  fault behavior; and
+- cancellation, bounded-host finalization timeout, restore, profile detach, normal finalization, backend
+  failure, and cleanup fault behavior; and
 - profile attach remains passive and cannot manipulate physical stop points, create a foreground wait,
   advance emulation, or grant control authority.
 
@@ -610,7 +642,7 @@ The Slice 4 direct `SessionResourceLedger` tests remain authoritative beneath `P
 Every registered action receives a generated conformance suite from `ActionDescriptor`:
 
 - schema and capability validation;
-- bounded completion or deadline;
+- timing-class conformance: cancellation-driven guest work or finite bounded-host completion;
 - cancellation acknowledgement;
 - declared determinism/replay behavior;
 - permitted `StateEpoch` transition and handle rules;
@@ -620,7 +652,8 @@ Every registered action receives a generated conformance suite from `ActionDescr
 - complete trace/receipt production.
 
 Property and fault-injection tests acquire every resource type in varied nested orders, then terminate at
-every suspension point by return, fail, cancel, deadline, backend failure, and restore. Expected result:
+every suspension point by return, fail, cancel, bounded-host timeout, backend failure, and restore.
+Expected result:
 
 - every scope receives exactly one unwind attempt;
 - unwind occurs in reverse acquisition order;
@@ -674,17 +707,16 @@ prove:
   baseline identity, and execution/service policy;
 - no phase-family allowlist or denylist participates in eligibility;
 - the coordinator forms bounded worksets only from independently ready existing jobs and preserves each
-  child's job, semantic invocation, attempt, lease, deadline, cancellation, provenance, artifact, and
+  child's job, semantic invocation, attempt, lease, structural limits, cancellation, provenance, artifact, and
   terminal-result identities;
 - a compatible population can be split across multiple available workers, with bounded item count,
-  encoded bytes, aggregate declared child budgets, active/staged/finalizing capacity, and worker-global
+  encoded bytes, active/staged/finalizing capacity, and worker-global
   unacknowledged terminal count/bytes, plus fairness that prevents one workset from monopolizing a
   worker;
-- boundary tests enforce the initial configurable values exactly: 16 items, 32 MiB, and four aggregate
-  active hours per workset; 64 total worker item credits and 32 active-plus-staged items; 16 cache
-  entries/512 MiB; two finalizer threads with eight pending captures/256 MiB; 32 retained terminals/
-  128 MiB; two concurrent startups; and one extra coordinator-buffered workset per negotiated Ready
-  worker;
+- boundary tests enforce the initial configurable values exactly: 16 items and 32 MiB per workset;
+  64 total worker item credits and 32 active-plus-staged items; 16 cache entries/512 MiB; two finalizer
+  threads with eight pending captures/256 MiB; 32 retained terminals/128 MiB; two concurrent startups;
+  and one extra coordinator-buffered workset per negotiated Ready worker;
 - each worker executes one child at a time in deterministic workset-local order while global progress and
   terminal events remain correlated correctly under cross-worker interleaving;
 - the first child establishes the exact `ProgramBaselineDefinition`, whose ordered components cover
@@ -826,10 +858,15 @@ native regression evidence; it cannot be hidden as refactor drift.
 
 Use the current workflow persistence and restart fixtures to prove:
 
-- no schema migration or stored-representation change is required;
-- existing persisted jobs feed the correct `ProgramInvocation` through program-kind handlers;
+- no schema migration is required; the six physical timing columns remain unchanged while public
+  authoring DTOs and all behavioral reads omit them;
+- migrated fixtures with legacy nonzero timing values produce timing-free snapshots, identities,
+  fingerprints, workset keys, and invocations;
+- new SeedProbe, TAS, and Battle Run authoring rows store private neutral `0,0` compatibility values;
+- existing persisted jobs feed the correct timing-free `ProgramInvocation` through program-kind handlers;
 - `ProgramResult` projects through existing result, artifact, and transition operations;
-- current payload/result codecs remain usable where stored records require them;
+- current payload/result codecs retain recognized semantic fields where stored records require them;
+  obsolete timing keys are ignored and old legacy payload revisions do not become native invocations;
 - existing predicate records load and translate through current interfaces/storage, and their result
   projection and survivor-selection behavior remain compatible without migration or conversion;
 - existing macro, address-program, and capture-profile representations are translated or consumed in
@@ -847,7 +884,8 @@ Use the current workflow persistence and restart fixtures to prove:
 - current duplicate-completion and stale-attempt behavior remains unchanged; and
 - no workset/cache/ledger schema, persistent workset record, unrelated DB interface or queue-state
   change, workflow record, frontier record, broad workflow redesign, or replacement transaction model
-  is introduced.
+  is introduced. The public authoring timing-field removal and private neutral insert shim are the
+  explicit database-interface exception.
 
 Generalized DFS/BFS/best-first frontier persistence and new typed workflow-binding tests belong to a
 separate future SavorDb project.
@@ -916,7 +954,7 @@ Schema and artifact assertions must prove that:
 - no anchor owns a savestate;
 - no ground-selector record, worksheet pointer, ground pointer, or other live handle is persisted;
 - no inferred probe clock, VI-frame cost, or movement schedule appears in Survey evidence;
-- runtime deadlines remain diagnostics only;
+- guest execution has no phase-provided runtime deadline; elapsed host time remains diagnostic only;
 - no permanent hook, code cave, breakpoint-based suppression, generalized trigger allowlist, or
   `eventhook` dependency exists;
 - the first-slice trigger path is limited to `motscpt`, `wallmot`, and `goscript`; and
@@ -1035,8 +1073,8 @@ no SQL/schema, durable queue state, workflow record, or artifact-format contract
   tests just in time for the direct paths being replaced.
 - Each migrated phase adds permanent native-runtime regression coverage derived from its current source
   behavior; no translator or executable legacy comparison path is introduced.
-- Use existing SavorDb boundary regressions when changing handler adapters. Any new workflow/frontier
-  tests belong to their separate future work.
+- Use existing SavorDb boundary regressions plus the legacy-column compatibility fixture when changing
+  handler adapters. Any new workflow/frontier tests belong to their separate future work.
 - The live Survey scenario depends on production Survey implementation and exact bootstrap artifacts, but
   the fake patch/door/state tests can be built earlier.
 
@@ -1062,11 +1100,12 @@ no SQL/schema, durable queue state, workflow record, or artifact-format contract
 - Existing `savor.capture.profile/1` behavior remains compatible behind passive `CaptureService`, with
   wake/control authority retained by `StopPointRouter` and `ExecutionEngine`.
 - Existing SavorDb jobs, results, artifacts, workflows, queues, retries, and restart behavior remain
-  compatible without data conversion.
+  compatible without data conversion; obsolete timing values are ignored.
 - The refactor adds no SavorDb migration, persisted workset/cache/ledger record, queue state,
-  workflow-persistence representation, or artifact format. Only the documented narrow
+  workflow-persistence representation, or artifact format. Public authoring timing fields are removed,
+  the unchanged physical columns receive only private neutral insert values, and the documented narrow
   workset-specific batch-claim, exact-set lease, claim/start validation, and targeted-reconciliation
-  interfaces change.
+  interfaces are the other database changes.
 
 The detailed test sections above are implementation aids for reaching these outcomes. They are not a
 requirement to produce a formal evidence packet or run every possible matrix after each slice.

@@ -78,7 +78,7 @@ const char* FailureCodeName(FailureCode code) {
     case FailureCode::InvalidMode: return "invalid_mode";
     case FailureCode::InvalidTarget: return "invalid_target";
     case FailureCode::NoSteps: return "no_steps";
-    case FailureCode::Timeout: return "timeout";
+    case FailureCode::HostFailure: return "host_failure";
     case FailureCode::UnexpectedBreakpoint: return "unexpected_breakpoint";
     case FailureCode::BattleContextUnavailable: return "battle_context_unavailable";
     case FailureCode::MemoryReadFailed: return "memory_read_failed";
@@ -194,28 +194,21 @@ bool encode_payload(const EncodeSpec& spec, std::vector<std::uint8_t>& out) {
         put_u32(out, command.target_slot);
     }
     put_u32(out, spec.transition_neutral_frames);
-    put_u32(out, spec.step_timeout_ms);
-    put_u32(out, spec.vi_stall_ms);
-    put_u32(out, spec.observation_tail_ms);
     put_u32(out, spec.fake_attack_count);
     put_u32(out, static_cast<std::uint32_t>(spec.fake_attack_pattern.memory_gate_mode));
     put_u32(out, spec.fake_attack_pattern.target_neutral_before_b_frames);
     put_u32(out, spec.fake_attack_pattern.input_neutral_after_b_frames);
-    put_u32(out, spec.fake_attack_pattern.memory_timeout_ms);
     put_u32(out, spec.use_mixed_fake_attack_patterns ? 1u : 0u);
     put_u32(out, static_cast<std::uint32_t>(spec.first_fake_attack_pattern.memory_gate_mode));
     put_u32(out, spec.first_fake_attack_pattern.target_neutral_before_b_frames);
     put_u32(out, spec.first_fake_attack_pattern.input_neutral_after_b_frames);
-    put_u32(out, spec.first_fake_attack_pattern.memory_timeout_ms);
     put_u32(out, static_cast<std::uint32_t>(spec.repeat_fake_attack_pattern.memory_gate_mode));
     put_u32(out, spec.repeat_fake_attack_pattern.target_neutral_before_b_frames);
     put_u32(out, spec.repeat_fake_attack_pattern.input_neutral_after_b_frames);
-    put_u32(out, spec.repeat_fake_attack_pattern.memory_timeout_ms);
     put_u32(out, spec.use_final_fake_attack_pattern ? 1u : 0u);
     put_u32(out, static_cast<std::uint32_t>(spec.final_fake_attack_pattern.memory_gate_mode));
     put_u32(out, spec.final_fake_attack_pattern.target_neutral_before_b_frames);
     put_u32(out, spec.final_fake_attack_pattern.input_neutral_after_b_frames);
-    put_u32(out, spec.final_fake_attack_pattern.memory_timeout_ms);
     return true;
 }
 
@@ -230,9 +223,6 @@ bool decode_payload(const std::vector<std::uint8_t>& in, savor::PSContext& out_c
     std::uint32_t version = 0;
     std::uint32_t command_count = 0;
     std::uint32_t transition_neutral_frames = 0;
-    std::uint32_t step_timeout_ms = 0;
-    std::uint32_t vi_stall_ms = 0;
-    std::uint32_t observation_tail_ms = 0;
     std::uint32_t fake_attack_count = 0;
     FakeAttackPattern fake_attack_pattern{};
     bool use_mixed_fake_attack_patterns = false;
@@ -250,11 +240,10 @@ bool decode_payload(const std::vector<std::uint8_t>& in, savor::PSContext& out_c
         if (!get_u32(p, e, raw_gate_mode)) return false;
         if (!get_u32(p, e, pattern->target_neutral_before_b_frames)) return false;
         if (!get_u32(p, e, pattern->input_neutral_after_b_frames)) return false;
-        if (!get_u32(p, e, pattern->memory_timeout_ms)) return false;
         pattern->memory_gate_mode = static_cast<FakeAttackMemoryGateMode>(raw_gate_mode);
         return valid_gate_mode(pattern->memory_gate_mode);
     };
-    if (!get_u32(p, e, version) || (version != PayloadVersion && version != 6 && version != 5 && version != 4 && version != 3)) return false;
+    if (!get_u32(p, e, version) || version != PayloadVersion) return false;
     if (!get_u32(p, e, command_count)) return false;
     if (command_count == 0 || command_count > 16) return false;
     std::vector<MacroCommand> commands;
@@ -272,37 +261,27 @@ bool decode_payload(const std::vector<std::uint8_t>& in, savor::PSContext& out_c
         commands.push_back(MacroCommand{.mode = parsed_mode, .target_slot = target_slot});
     }
     if (!get_u32(p, e, transition_neutral_frames)) return false;
-    if (!get_u32(p, e, step_timeout_ms)) return false;
-    if (!get_u32(p, e, vi_stall_ms)) return false;
-    if (!get_u32(p, e, observation_tail_ms)) return false;
-    if (version >= 4 && !get_u32(p, e, fake_attack_count)) return false;
-    if (version >= 5) {
-        if (!get_pattern(&fake_attack_pattern)) return false;
-    }
+    if (!get_u32(p, e, fake_attack_count)) return false;
+    if (!get_pattern(&fake_attack_pattern)) return false;
     first_fake_attack_pattern = fake_attack_pattern;
     repeat_fake_attack_pattern = fake_attack_pattern;
     final_fake_attack_pattern = fake_attack_pattern;
-    if (version >= 6) {
-        std::uint32_t raw_use_mixed = 0;
-        if (!get_u32(p, e, raw_use_mixed)) return false;
-        use_mixed_fake_attack_patterns = raw_use_mixed != 0;
-        if (!get_pattern(&first_fake_attack_pattern)) return false;
-        if (!get_pattern(&repeat_fake_attack_pattern)) return false;
-        final_fake_attack_pattern = repeat_fake_attack_pattern;
-    }
-    if (version >= 7) {
-        std::uint32_t raw_use_final = 0;
-        if (!get_u32(p, e, raw_use_final)) return false;
-        use_final_fake_attack_pattern = raw_use_final != 0;
-        if (!get_pattern(&final_fake_attack_pattern)) return false;
-    }
+    std::uint32_t raw_use_mixed = 0;
+    if (!get_u32(p, e, raw_use_mixed)) return false;
+    use_mixed_fake_attack_patterns = raw_use_mixed != 0;
+    if (!get_pattern(&first_fake_attack_pattern)) return false;
+    if (!get_pattern(&repeat_fake_attack_pattern)) return false;
+    final_fake_attack_pattern = repeat_fake_attack_pattern;
+    std::uint32_t raw_use_final = 0;
+    if (!get_u32(p, e, raw_use_final)) return false;
+    use_final_fake_attack_pattern = raw_use_final != 0;
+    if (!get_pattern(&final_fake_attack_pattern)) return false;
     if (p != e) return false;
 
     out_ctx[savor::context::key::battle::MACRO_MODE] = static_cast<std::uint32_t>(commands.front().mode);
     out_ctx[savor::context::key::battle::MACRO_TARGET_SLOT] = commands.front().target_slot;
     out_ctx[savor::context::key::battle::MACRO_PLAN_BLOB] = SerializeCommandPlan(commands);
     out_ctx[savor::context::key::battle::MACRO_TRANSITION_NEUTRAL_FRAMES] = transition_neutral_frames;
-    out_ctx[savor::context::key::battle::MACRO_OBSERVATION_TAIL_MS] = observation_tail_ms;
     out_ctx[savor::context::key::battle::FAKE_ATTACK_COUNT_THIS_TURN] = fake_attack_count;
     out_ctx[savor::context::key::battle::MACRO_FAKE_MEMORY_GATE_MODE] =
         static_cast<std::uint32_t>(fake_attack_pattern.memory_gate_mode);
@@ -310,8 +289,6 @@ bool decode_payload(const std::vector<std::uint8_t>& in, savor::PSContext& out_c
         fake_attack_pattern.target_neutral_before_b_frames;
     out_ctx[savor::context::key::battle::MACRO_FAKE_INPUT_NEUTRAL_FRAMES] =
         fake_attack_pattern.input_neutral_after_b_frames;
-    out_ctx[savor::context::key::battle::MACRO_FAKE_MEMORY_TIMEOUT_MS] =
-        fake_attack_pattern.memory_timeout_ms;
     out_ctx[savor::context::key::battle::MACRO_FAKE_USE_MIXED_PATTERNS] =
         use_mixed_fake_attack_patterns ? 1u : 0u;
     out_ctx[savor::context::key::battle::MACRO_FAKE_FIRST_MEMORY_GATE_MODE] =
@@ -320,8 +297,6 @@ bool decode_payload(const std::vector<std::uint8_t>& in, savor::PSContext& out_c
         first_fake_attack_pattern.target_neutral_before_b_frames;
     out_ctx[savor::context::key::battle::MACRO_FAKE_FIRST_INPUT_NEUTRAL_FRAMES] =
         first_fake_attack_pattern.input_neutral_after_b_frames;
-    out_ctx[savor::context::key::battle::MACRO_FAKE_FIRST_MEMORY_TIMEOUT_MS] =
-        first_fake_attack_pattern.memory_timeout_ms;
     out_ctx[savor::context::key::battle::MACRO_FAKE_USE_FINAL_PATTERN] =
         use_final_fake_attack_pattern ? 1u : 0u;
     out_ctx[savor::context::key::battle::MACRO_FAKE_FINAL_MEMORY_GATE_MODE] =
@@ -330,15 +305,9 @@ bool decode_payload(const std::vector<std::uint8_t>& in, savor::PSContext& out_c
         final_fake_attack_pattern.target_neutral_before_b_frames;
     out_ctx[savor::context::key::battle::MACRO_FAKE_FINAL_INPUT_NEUTRAL_FRAMES] =
         final_fake_attack_pattern.input_neutral_after_b_frames;
-    out_ctx[savor::context::key::battle::MACRO_FAKE_FINAL_MEMORY_TIMEOUT_MS] =
-        final_fake_attack_pattern.memory_timeout_ms;
-    out_ctx[savor::context::key::core::RUN_MS] = step_timeout_ms;
-    out_ctx[savor::context::key::core::VI_STALL_MS] = vi_stall_ms;
-    out_ctx[savor::context::key::core::RUN_POLL_MS] = 10u;
-    savor::progress::ProgressDeets progress{ .poll_rate = 5000 };
+    savor::progress::ProgressDeets progress{};
     progress.set_flag(CoreProgressFlags::BattleProgress);
     progress.set_flag(CoreProgressFlags::DontRecordHeartbeat);
-    out_ctx[savor::context::key::core::PROGRESS_RATE] = progress.poll_rate;
     out_ctx[savor::context::key::core::PROGRESS_CORE_FLAGS] = progress.flags;
     out_ctx[savor::context::key::battle::MACRO_RESULT] = 1u;
     out_ctx[savor::context::key::battle::MACRO_FAILURE_CODE] = static_cast<std::uint32_t>(FailureCode::NoSteps);
@@ -348,23 +317,19 @@ bool decode_payload(const std::vector<std::uint8_t>& in, savor::PSContext& out_c
     out_ctx[savor::context::key::battle::MACRO_MEMORY_LATEST] = 0u;
     out_ctx[savor::context::key::battle::MACRO_MEMORY_CHANGED] = 0u;
     out_ctx[savor::context::key::battle::MACRO_MEMORY_POLL_COUNT] = 0u;
-    out_ctx[savor::context::key::battle::MACRO_MEMORY_ELAPSED_MS] = 0u;
     out_ctx[savor::context::key::battle::MACRO_MEMORY_GATE_COUNT] = 0u;
     out_ctx[savor::context::key::battle::MACRO_MEMORY_FIRST_BASELINE] = 0u;
     out_ctx[savor::context::key::battle::MACRO_MEMORY_FIRST_LATEST] = 0u;
     out_ctx[savor::context::key::battle::MACRO_MEMORY_FIRST_CHANGED] = 0u;
     out_ctx[savor::context::key::battle::MACRO_MEMORY_FIRST_POLL_COUNT] = 0u;
-    out_ctx[savor::context::key::battle::MACRO_MEMORY_FIRST_ELAPSED_MS] = 0u;
     out_ctx[savor::context::key::battle::MACRO_MEMORY_REPEAT_BASELINE] = 0u;
     out_ctx[savor::context::key::battle::MACRO_MEMORY_REPEAT_LATEST] = 0u;
     out_ctx[savor::context::key::battle::MACRO_MEMORY_REPEAT_CHANGED] = 0u;
     out_ctx[savor::context::key::battle::MACRO_MEMORY_REPEAT_POLL_COUNT] = 0u;
-    out_ctx[savor::context::key::battle::MACRO_MEMORY_REPEAT_ELAPSED_MS] = 0u;
     out_ctx[savor::context::key::battle::MACRO_MEMORY_REPEAT2_BASELINE] = 0u;
     out_ctx[savor::context::key::battle::MACRO_MEMORY_REPEAT2_LATEST] = 0u;
     out_ctx[savor::context::key::battle::MACRO_MEMORY_REPEAT2_CHANGED] = 0u;
     out_ctx[savor::context::key::battle::MACRO_MEMORY_REPEAT2_POLL_COUNT] = 0u;
-    out_ctx[savor::context::key::battle::MACRO_MEMORY_REPEAT2_ELAPSED_MS] = 0u;
     return true;
 }
 

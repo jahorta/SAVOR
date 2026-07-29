@@ -449,7 +449,7 @@ std::optional<SeedProbeSpecSnapshot> LoadSeedProbeSpecByName(sqlite3* db, std::s
     Statement st;
     if (sqlite3_prepare_v2(
             db,
-            "SELECT s.seed_probe_spec_id,s.name,s.priority,s.run_ms,s.vi_stall_ms,"
+            "SELECT s.seed_probe_spec_id,s.name,s.priority,"
             "g.min_value,g.max_value,g.cap_trigger_top,g.ignore_trigger_min_max,"
             "u.combo_attempts_per_target,u.combo_sampler_tries,s.auto_schedule_battle_run "
             "FROM au_seed_probe_spec s "
@@ -473,23 +473,19 @@ std::optional<SeedProbeSpecSnapshot> LoadSeedProbeSpecByName(sqlite3* db, std::s
     const auto* name_text = sqlite3_column_text(st.st, 1);
     snapshot.name = name_text == nullptr ? "" : reinterpret_cast<const char*>(name_text);
     snapshot.priority = sqlite3_column_int(st.st, 2);
-    snapshot.run_ms = sqlite3_column_int64(st.st, 3);
-    snapshot.vi_stall_ms = sqlite3_column_int64(st.st, 4);
-    snapshot.min_value = sqlite3_column_int64(st.st, 5);
-    snapshot.max_value = sqlite3_column_int64(st.st, 6);
-    snapshot.cap_trigger_top = sqlite3_column_int(st.st, 7) != 0;
-    snapshot.ignore_trigger_minmax = sqlite3_column_int(st.st, 8) != 0;
-    snapshot.combo_attempts_per_target = sqlite3_column_int(st.st, 9);
-    snapshot.combo_sampler_tries = sqlite3_column_int(st.st, 10);
-    snapshot.auto_schedule_battle_run = sqlite3_column_int(st.st, 11) != 0;
+    snapshot.min_value = sqlite3_column_int64(st.st, 3);
+    snapshot.max_value = sqlite3_column_int64(st.st, 4);
+    snapshot.cap_trigger_top = sqlite3_column_int(st.st, 5) != 0;
+    snapshot.ignore_trigger_minmax = sqlite3_column_int(st.st, 6) != 0;
+    snapshot.combo_attempts_per_target = sqlite3_column_int(st.st, 7);
+    snapshot.combo_sampler_tries = sqlite3_column_int(st.st, 8);
+    snapshot.auto_schedule_battle_run = sqlite3_column_int(st.st, 9) != 0;
     return snapshot;
 }
 
 bool SeedProbeSpecIdentityMatches(const SeedProbeSpecSnapshot& row, const SaveSeedProbeSpecCommand& command) {
     return row.name == command.name
         && row.priority == command.priority
-        && row.run_ms == command.run_ms
-        && row.vi_stall_ms == command.vi_stall_ms
         && row.min_value == command.min_value
         && row.max_value == command.max_value
         && row.cap_trigger_top == command.cap_trigger_top
@@ -783,8 +779,10 @@ bool SqliteAuthoringDb::SaveSeedProbeSpec(
 
     sqlite3_bind_text(insert_spec.st, 1, command.name.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int(insert_spec.st, 2, command.priority);
-    sqlite3_bind_int64(insert_spec.st, 3, command.run_ms);
-    sqlite3_bind_int64(insert_spec.st, 4, command.vi_stall_ms);
+    // Schema compatibility shim: these NOT NULL legacy columns are otherwise
+    // excluded from the authoring contract until the separate DB migration.
+    sqlite3_bind_int64(insert_spec.st, 3, 0);
+    sqlite3_bind_int64(insert_spec.st, 4, 0);
     sqlite3_bind_int64(insert_spec.st, 5, grid_spec_id);
     sqlite3_bind_int64(insert_spec.st, 6, unique_spec_id);
     sqlite3_bind_int(insert_spec.st, 7, command.auto_schedule_battle_run ? 1 : 0);
@@ -835,7 +833,7 @@ std::optional<SeedProbeSpecSnapshot> SqliteAuthoringDb::GetSeedProbeSpec(std::in
     Statement st;
     if (sqlite3_prepare_v2(
             db_,
-            "SELECT s.seed_probe_spec_id,s.name,s.priority,s.run_ms,s.vi_stall_ms,"
+            "SELECT s.seed_probe_spec_id,s.name,s.priority,"
             "g.min_value,g.max_value,g.cap_trigger_top,g.ignore_trigger_min_max,"
             "u.combo_attempts_per_target,u.combo_sampler_tries,s.auto_schedule_battle_run "
             "FROM au_seed_probe_spec s "
@@ -860,15 +858,13 @@ std::optional<SeedProbeSpecSnapshot> SqliteAuthoringDb::GetSeedProbeSpec(std::in
         snapshot.name = reinterpret_cast<const char*>(text);
     }
     snapshot.priority = sqlite3_column_int(st.st, 2);
-    snapshot.run_ms = sqlite3_column_int64(st.st, 3);
-    snapshot.vi_stall_ms = sqlite3_column_int64(st.st, 4);
-    snapshot.min_value = sqlite3_column_int64(st.st, 5);
-    snapshot.max_value = sqlite3_column_int64(st.st, 6);
-    snapshot.cap_trigger_top = sqlite3_column_int(st.st, 7) != 0;
-    snapshot.ignore_trigger_minmax = sqlite3_column_int(st.st, 8) != 0;
-    snapshot.combo_attempts_per_target = sqlite3_column_int(st.st, 9);
-    snapshot.combo_sampler_tries = sqlite3_column_int(st.st, 10);
-    snapshot.auto_schedule_battle_run = sqlite3_column_int(st.st, 11) != 0;
+    snapshot.min_value = sqlite3_column_int64(st.st, 3);
+    snapshot.max_value = sqlite3_column_int64(st.st, 4);
+    snapshot.cap_trigger_top = sqlite3_column_int(st.st, 5) != 0;
+    snapshot.ignore_trigger_minmax = sqlite3_column_int(st.st, 6) != 0;
+    snapshot.combo_attempts_per_target = sqlite3_column_int(st.st, 7);
+    snapshot.combo_sampler_tries = sqlite3_column_int(st.st, 8);
+    snapshot.auto_schedule_battle_run = sqlite3_column_int(st.st, 9) != 0;
     return snapshot;
 }
 
@@ -1096,8 +1092,10 @@ bool SqliteAuthoringDb::SaveTasSpec(
 
     sqlite3_bind_text(insert_base.st, 1, command.base_name.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int(insert_base.st, 2, command.priority);
-    sqlite3_bind_int64(insert_base.st, 3, command.run_ms);
-    sqlite3_bind_int64(insert_base.st, 4, command.vi_stall_ms);
+    // Schema compatibility shim: these NOT NULL legacy columns are otherwise
+    // excluded from the authoring contract until the separate DB migration.
+    sqlite3_bind_int64(insert_base.st, 3, 0);
+    sqlite3_bind_int64(insert_base.st, 4, 0);
     sqlite3_bind_int(insert_base.st, 5, command.progress_enable ? 1 : 0);
     sqlite3_bind_int(insert_base.st, 6, command.auto_queue_seeds ? 1 : 0);
     sqlite3_bind_int64(insert_base.st, 7, ToEpochMillis(command.created_at_utc));
@@ -1178,7 +1176,7 @@ std::optional<TasSpecSnapshot> SqliteAuthoringDb::GetTasSpec(
 
     Statement st;
     constexpr const char* kSql =
-        "SELECT s.tas_spec_id, b.tas_spec_base_id, b.name, b.priority, b.run_ms, b.vi_stall_ms, "
+        "SELECT s.tas_spec_id, b.tas_spec_base_id, b.name, b.priority, "
         "b.progress_enable, b.auto_queue_seeds, "
         "s.base_dtm_artifact_id "
         "FROM au_tas_spec s "
@@ -1198,11 +1196,9 @@ std::optional<TasSpecSnapshot> SqliteAuthoringDb::GetTasSpec(
     snapshot.tas_spec_base_id = sqlite3_column_int64(st.st, 1);
     snapshot.base_name = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 2));
     snapshot.priority = sqlite3_column_int(st.st, 3);
-    snapshot.run_ms = sqlite3_column_int64(st.st, 4);
-    snapshot.vi_stall_ms = sqlite3_column_int64(st.st, 5);
-    snapshot.progress_enable = sqlite3_column_int(st.st, 6) != 0;
-    snapshot.auto_queue_seeds = sqlite3_column_int(st.st, 7) != 0;
-    snapshot.base_dtm_artifact_id = sqlite3_column_int64(st.st, 8);
+    snapshot.progress_enable = sqlite3_column_int(st.st, 4) != 0;
+    snapshot.auto_queue_seeds = sqlite3_column_int(st.st, 5) != 0;
+    snapshot.base_dtm_artifact_id = sqlite3_column_int64(st.st, 6);
     return snapshot;
 }
 
@@ -1269,8 +1265,10 @@ bool SqliteAuthoringDb::SaveBattleRunSpec(
 
     sqlite3_bind_text(insert_spec.st, 1, command.name.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int(insert_spec.st, 2, command.priority);
-    sqlite3_bind_int64(insert_spec.st, 3, command.run_ms);
-    sqlite3_bind_int64(insert_spec.st, 4, command.vi_stall_ms);
+    // Schema compatibility shim: these NOT NULL legacy columns are otherwise
+    // excluded from the authoring contract until the separate DB migration.
+    sqlite3_bind_int64(insert_spec.st, 3, 0);
+    sqlite3_bind_int64(insert_spec.st, 4, 0);
     sqlite3_bind_int(insert_spec.st, 5, command.progress_enable ? 1 : 0);
     sqlite3_bind_int(insert_spec.st, 6, command.use_single_turn_runner ? 1 : 0);
     sqlite3_bind_int(insert_spec.st, 7, command.auto_wave_trigger_enable ? 1 : 0);
@@ -1321,7 +1319,7 @@ std::optional<BattleRunSpecSnapshot> SqliteAuthoringDb::GetBattleRunSpec(
 
     Statement st;
     constexpr const char* kSql =
-        "SELECT battle_run_spec_id,name,priority,run_ms,vi_stall_ms,progress_enable,use_single_turn_runner,"
+        "SELECT battle_run_spec_id,name,priority,progress_enable,use_single_turn_runner,"
         "auto_wave_trigger_enable "
         "FROM au_battle_run_spec WHERE battle_run_spec_id=?1;";
     if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK) {
@@ -1336,11 +1334,9 @@ std::optional<BattleRunSpecSnapshot> SqliteAuthoringDb::GetBattleRunSpec(
     out.battle_run_spec_id = sqlite3_column_int64(st.st, 0);
     out.name = ColumnText(st.st, 1);
     out.priority = sqlite3_column_int(st.st, 2);
-    out.run_ms = sqlite3_column_int64(st.st, 3);
-    out.vi_stall_ms = sqlite3_column_int64(st.st, 4);
-    out.progress_enable = sqlite3_column_int(st.st, 5) != 0;
-    out.use_single_turn_runner = sqlite3_column_int(st.st, 6) != 0;
-    out.auto_wave_trigger_enable = sqlite3_column_int(st.st, 7) != 0;
+    out.progress_enable = sqlite3_column_int(st.st, 3) != 0;
+    out.use_single_turn_runner = sqlite3_column_int(st.st, 4) != 0;
+    out.auto_wave_trigger_enable = sqlite3_column_int(st.st, 5) != 0;
     return out;
 }
 

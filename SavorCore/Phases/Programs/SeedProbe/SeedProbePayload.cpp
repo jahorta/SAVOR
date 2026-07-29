@@ -71,23 +71,19 @@ bool ValidMode(SeedProbeMode mode)
 }
 
 void SetContext(PSContext& out_ctx, const GCInputFrame& frame,
-                std::uint32_t run_ms, std::uint32_t vi_stall_ms,
                 SeedProbeTarget target, SeedProbeMode mode,
                 std::optional<std::uint32_t> expected_seed,
                 std::string output_path)
 {
     namespace key = savor::context::key;
     out_ctx[key::seed::INPUT] = frame;
-    out_ctx[key::core::RUN_MS] = run_ms;
-    out_ctx[key::core::VI_STALL_MS] = vi_stall_ms;
     out_ctx[key::seed::TARGET] = static_cast<std::uint32_t>(target);
     out_ctx[key::seed::MODE] = static_cast<std::uint32_t>(mode);
     out_ctx[key::seed::HAS_EXPECTED_SEED] = expected_seed.has_value() ? 1u : 0u;
     out_ctx[key::seed::EXPECTED_SEED] = expected_seed.value_or(0u);
     out_ctx[key::seed::OUTPUT_SAVESTATE_PATH] = std::move(output_path);
-    savor::progress::ProgressDeets progress{.poll_rate = 5000};
+    savor::progress::ProgressDeets progress{};
     progress.set_flag(CoreProgressFlags::DontRecordHeartbeat);
-    out_ctx[key::core::PROGRESS_RATE] = progress.poll_rate;
     out_ctx[key::core::PROGRESS_CORE_FLAGS] = progress.flags;
 }
 
@@ -106,12 +102,10 @@ bool encode_payload(const EncodeSpec& spec, std::vector<std::uint8_t>& out)
         return false;
     }
     out.clear();
-    out.reserve(1 + 2 + 4 + 4 + sizeof(GCInputFrame) + 4 * 4 + 4
+    out.reserve(1 + 2 + sizeof(GCInputFrame) + 4 * 4 + 4
         + spec.output_savestate_path.size());
     out.push_back(PK_SeedProbe);
     PutU16(out, PayloadVersion);
-    PutU32(out, spec.run_ms);
-    PutU32(out, spec.vi_stall_ms);
     const auto* frame = reinterpret_cast<const std::uint8_t*>(&spec.frame);
     out.insert(out.end(), frame, frame + sizeof(GCInputFrame));
     PutU32(out, static_cast<std::uint32_t>(spec.target));
@@ -124,29 +118,19 @@ bool encode_payload(const EncodeSpec& spec, std::vector<std::uint8_t>& out)
 
 bool decode_payload(const std::vector<std::uint8_t>& in, PSContext& out_ctx)
 {
-    constexpr std::size_t V1Size = 1 + 2 + 4 + 4 + sizeof(GCInputFrame);
-    if (in.size() < V1Size) return false;
+    constexpr std::size_t MinimumSize =
+        1 + 2 + sizeof(GCInputFrame) + 4 * 4 + 4;
+    if (in.size() < MinimumSize) return false;
     const auto* cursor = in.data();
     const auto* end = cursor + in.size();
     if (*cursor++ != PK_SeedProbe) return false;
     std::uint16_t version = 0;
-    std::uint32_t run_ms = 0, vi_stall_ms = 0;
     if (!GetU16(cursor, end, version)
-        || !GetU32(cursor, end, run_ms)
-        || !GetU32(cursor, end, vi_stall_ms)
+        || version != PayloadVersion
         || static_cast<std::size_t>(end - cursor) < sizeof(GCInputFrame)) return false;
     GCInputFrame frame{};
     std::memcpy(&frame, cursor, sizeof(frame));
     cursor += sizeof(frame);
-
-    if (version == LegacyPayloadVersion) {
-        if (cursor != end) return false;
-        SetContext(out_ctx, frame, run_ms, vi_stall_ms,
-                   SeedProbeTarget::PreBattle, SeedProbeMode::Observe,
-                   std::nullopt, {});
-        return true;
-    }
-    if (version != PayloadVersion) return false;
 
     std::uint32_t raw_target = 0, raw_mode = 0, has_expected = 0, expected = 0;
     std::string output_path;
@@ -161,7 +145,7 @@ bool decode_payload(const std::vector<std::uint8_t>& in, PSContext& out_ctx)
     if (!ValidTarget(target) || !ValidMode(mode)
         || (mode == SeedProbeMode::Materialize
             && (!expected_seed.has_value() || output_path.empty()))) return false;
-    SetContext(out_ctx, frame, run_ms, vi_stall_ms, target, mode,
+    SetContext(out_ctx, frame, target, mode,
                expected_seed, std::move(output_path));
     return true;
 }

@@ -34,7 +34,6 @@ ProgramBudgets Budgets()
         .maximum_values = 100,
         .maximum_value_bytes = 4096,
         .maximum_trace_events = 100,
-        .active_deadline_milliseconds = 1000,
     };
 }
 
@@ -212,7 +211,8 @@ TestAction RegisterTestAction(
                     cleanup == ActionCleanupGuarantee::None
                     ? ActionCancellationMode::Cooperative
                     : ActionCancellationMode::CleanupRequired,
-                .default_deadline_milliseconds = 1000,
+                .timing = ActionTimingClass::BoundedHostOperation,
+                .default_host_timeout_milliseconds = 1000,
                 .resource_behavior = resource,
                 .cleanup = cleanup,
                 .idempotency = idempotency,
@@ -327,7 +327,8 @@ TEST(ProgramVerifier, RejectsActionWhoseEffectIsNotDeclared)
                 .required_services =
                     ServiceMask(SessionServiceCapability::Capture),
                 .effects = EffectMask(ActionEffect::Capture),
-                .default_deadline_milliseconds = 1000,
+                .timing = ActionTimingClass::BoundedHostOperation,
+                .default_host_timeout_milliseconds = 1000,
             })
             .success);
     ASSERT_TRUE(

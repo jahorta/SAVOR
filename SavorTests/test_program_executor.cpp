@@ -38,7 +38,6 @@ ProgramBudgets Budgets(
         .maximum_values = 8192,
         .maximum_value_bytes = 1024 * 1024,
         .maximum_trace_events = 8192,
-        .active_deadline_milliseconds = 60'000,
     };
 }
 
@@ -351,7 +350,8 @@ std::shared_ptr<const VerifiedProgramModule> CleanupProgram(
         .input_type = TypeRef::Builtin(BuiltinType::Unit),
         .output_type = TypeRef::Builtin(BuiltinType::Unit),
         .cancellation = ActionCancellationMode::CleanupRequired,
-        .default_deadline_milliseconds = 1000,
+        .timing = ActionTimingClass::BoundedHostOperation,
+        .default_host_timeout_milliseconds = 1000,
         .cleanup = ActionCleanupGuarantee::VerifiedCompensation,
         .taints_on_unproven_cleanup = true,
     };
@@ -678,7 +678,8 @@ TEST(ProgramExecutor, SuspendsForActionsAndCorrelatesCompletions)
         .providing_pack = pack,
         .input_type = TypeRef::Builtin(BuiltinType::U32),
         .output_type = TypeRef::Builtin(BuiltinType::U32),
-        .default_deadline_milliseconds = 1000,
+        .timing = ActionTimingClass::BoundedHostOperation,
+        .default_host_timeout_milliseconds = 1000,
     };
     ProgramModule module = BaseModule(
         "test.executor.action",
@@ -840,7 +841,8 @@ TEST(
         .providing_pack = pack,
         .input_type = TypeRef::Builtin(BuiltinType::Unit),
         .output_type = TypeRef::Builtin(BuiltinType::Unit),
-        .default_deadline_milliseconds = 1000,
+        .timing = ActionTimingClass::BoundedHostOperation,
+        .default_host_timeout_milliseconds = 1000,
         .resource_behavior =
             ActionResourceBehavior::Scoped,
     };
@@ -939,7 +941,8 @@ TEST(ProgramExecutor, StaleActionCompletionFailsAndStillUnwinds)
         .providing_pack = pack,
         .input_type = TypeRef::Builtin(BuiltinType::U32),
         .output_type = TypeRef::Builtin(BuiltinType::U32),
-        .default_deadline_milliseconds = 1000,
+        .timing = ActionTimingClass::BoundedHostOperation,
+        .default_host_timeout_milliseconds = 1000,
     };
     ProgramModule module = BaseModule(
         "test.executor.stale",
@@ -1034,7 +1037,8 @@ TEST(ProgramExecutor, CancellationRunsDeferredCleanupAndClosesScopes)
         .input_type = TypeRef::Builtin(BuiltinType::Unit),
         .output_type = TypeRef::Builtin(BuiltinType::Unit),
         .cancellation = ActionCancellationMode::CleanupRequired,
-        .default_deadline_milliseconds = 1000,
+        .timing = ActionTimingClass::BoundedHostOperation,
+        .default_host_timeout_milliseconds = 1000,
         .cleanup = ActionCleanupGuarantee::VerifiedCompensation,
         .taints_on_unproven_cleanup = true,
     };
@@ -1671,7 +1675,8 @@ TEST(
         .providing_pack = pack,
         .input_type = TypeRef::Builtin(BuiltinType::Unit),
         .output_type = TypeRef::Builtin(BuiltinType::U32),
-        .default_deadline_milliseconds = 1000,
+        .timing = ActionTimingClass::BoundedHostOperation,
+        .default_host_timeout_milliseconds = 1000,
     };
     ProgramBudgets limits = Budgets();
     limits.maximum_values = 1;

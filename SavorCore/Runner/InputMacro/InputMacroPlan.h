@@ -31,7 +31,6 @@ struct CaptureU32BaselineAction {
 struct WaitU32ChangeAction {
     InputMacroBaselineId baseline_id;
     std::uint32_t address{0};
-    std::uint32_t timeout_ms{0};
     // Compatibility tag used by providers to route per-gate diagnostics. The
     // generic runtime does not interpret this value.
     std::uint32_t diagnostic_cycle_index{0};

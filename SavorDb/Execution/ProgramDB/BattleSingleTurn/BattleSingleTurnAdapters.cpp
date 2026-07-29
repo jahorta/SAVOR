@@ -58,7 +58,6 @@ struct JobIni {
     std::string resolved_turn_commands_blob;
     std::string resolved_turn_variant_key;
     std::string capture_profile_path;
-    std::optional<std::uint32_t> run_ms_override;
     std::optional<std::uint32_t> override_start_rng_seed;
 
     void set_section(IniDoc& ini) const {
@@ -74,9 +73,6 @@ struct JobIni {
         ini.set(kJobSection, "resolved_turn_variant_key", resolved_turn_variant_key);
         if (!capture_profile_path.empty()) {
             ini.set(kJobSection, "capture_profile_path", capture_profile_path);
-        }
-        if (run_ms_override.has_value()) {
-            ini.set(kJobSection, "run_ms_override", std::to_string(*run_ms_override));
         }
         if (override_start_rng_seed.has_value()) {
             ini.set(kJobSection, "override_start_rng_seed", std::to_string(*override_start_rng_seed));
@@ -106,9 +102,6 @@ struct JobIni {
             out.resolved_turn_variant_key = ini.get(kJobSection, "target_variant_key", "");
         }
         out.capture_profile_path = ini.get(kJobSection, "capture_profile_path", "");
-        if (ini.has(kJobSection, "run_ms_override")) {
-            out.run_ms_override = ini.get_u32(kJobSection, "run_ms_override", 0);
-        }
         if (ini.has(kJobSection, "override_start_rng_seed")) {
             out.override_start_rng_seed = ini.get_u32(kJobSection, "override_start_rng_seed", 0);
         }
@@ -245,16 +238,6 @@ std::int64_t FileSize(const std::filesystem::path& path) {
     std::error_code ec;
     const auto size = std::filesystem::file_size(path, ec);
     return ec ? 0 : static_cast<std::int64_t>(size);
-}
-
-std::uint32_t ClampU32(std::int64_t value) {
-    if (value <= 0) {
-        return 0;
-    }
-    if (value > static_cast<std::int64_t>(std::numeric_limits<std::uint32_t>::max())) {
-        return std::numeric_limits<std::uint32_t>::max();
-    }
-    return static_cast<std::uint32_t>(value);
 }
 
 std::uint8_t ClampByte(int value) {
@@ -962,7 +945,6 @@ public:
         request.bootstrap_profile = "battle.single_turn";
         request.savestate_ref_kind = "state_savestate";
         request.derived_buffer_type = savor::DBuf::DK_Battle;
-        request.default_timeout_ms = 10000;
         if (execution_db_ == nullptr) {
             return request;
         }
@@ -972,24 +954,6 @@ public:
         }
         if (job->savestate_id.has_value()) {
             request.savestate_ref_id = *job->savestate_id;
-        }
-        const auto job_ini = JobIni::parse(job->input_ini);
-        if (job_ini.run_ms_override.has_value() && *job_ini.run_ms_override > 0) {
-            request.default_timeout_ms = static_cast<int>(std::min<std::uint32_t>(
-                *job_ini.run_ms_override,
-                static_cast<std::uint32_t>(std::numeric_limits<int>::max())));
-        }
-        if (analysis_db_ != nullptr && authoring_db_ != nullptr && job_ini.wave_id > 0) {
-            if (const auto wave = analysis_db_->GetBattleTurnWave(job_ini.wave_id); wave.has_value()) {
-                if (const auto battle_set = analysis_db_->GetBattleSet(wave->battle_set_id); battle_set.has_value()) {
-                    if (!job_ini.run_ms_override.has_value()) {
-                        if (const auto spec = authoring_db_->GetBattleRunSpec(battle_set->battle_run_spec_id);
-                            spec.has_value() && spec->run_ms > 0) {
-                            request.default_timeout_ms = spec->run_ms;
-                        }
-                    }
-                }
-            }
         }
         return request;
     }
@@ -1025,8 +989,6 @@ public:
         }
 
         phase::battle::turnrunner::EncodeSpec spec{};
-        spec.run_ms = job_ini.run_ms_override.value_or(ClampU32(run_spec->run_ms));
-        spec.vi_stall_ms = ClampU32(run_spec->vi_stall_ms);
         spec.current_turn = static_cast<std::uint32_t>(std::max(1, job_ini.turn_index));
         spec.max_turn = static_cast<std::uint32_t>(std::max(plan->num_turns, job_ini.turn_index));
         if (!job_ini.resolved_turn_commands_blob.empty()) {

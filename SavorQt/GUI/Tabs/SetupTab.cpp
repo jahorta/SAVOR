@@ -377,7 +377,7 @@ QString launchShapeSignature(const savor::db::WorkflowGraphSnapshot& graph)
         nodeParts << qs(node.node_key) << qs(node.unit_kind);
         const QString unitKind = qs(node.unit_kind);
         if (isTasMovieUnit(unitKind)) {
-            nodeParts << QStringLiteral("arg:headroom") << QStringLiteral("rtc");
+            nodeParts << QStringLiteral("rtc");
         } else if (isSeedProbeUnit(unitKind)) {
             nodeParts << QStringLiteral("arg:samples_per_axis");
         } else if (isBattleChainUnit(unitKind)) {
@@ -468,10 +468,9 @@ QString describeSpecRef(const std::optional<std::string>& refKind, const std::op
         if (!spec.ok) {
             return QStringLiteral("Battle run spec #%1 unavailable: %2").arg(id).arg(qs(spec.error.message));
         }
-        return QStringLiteral("Battle run spec: %1 (#%2)\n  run ms: %3\n  single-turn runner: %4")
+        return QStringLiteral("Battle run spec: %1 (#%2)\n  single-turn runner: %3")
             .arg(qs(spec.value.name))
             .arg(id)
-            .arg(spec.value.run_ms)
             .arg(spec.value.use_single_turn_runner ? QStringLiteral("yes") : QStringLiteral("no"));
     }
     if (*refKind == "authoring.battle_chain_spec" || *refKind == "battle_chain_spec") {
@@ -845,7 +844,6 @@ void SetupTab::build()
                 rtcLayout->addWidget(maxEdit, 1);
                 groupForm->addRow(QStringLiteral("RTC"), rtcRow);
                 launchEditors->tasRtc.push_back(TasRtcEditor{ nodeKey, rangeCheck, singleEdit, minEdit, maxEdit });
-                addArgumentRow(QStringLiteral("Headroom"), QStringLiteral("headroom"));
             } else if (isSeedProbeUnit(unitKind)) {
                 addArgumentRow(QStringLiteral("samples/axis"), QStringLiteral("samples_per_axis"));
             } else if (isBattleChainUnit(unitKind)) {

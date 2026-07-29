@@ -49,16 +49,23 @@ It supersedes the target-runtime portions of:
 Those sources remain useful current-state and research evidence. Current SavorDb code defines the
 persisted job, workflow, artifact, and domain-storage contracts this refactor must preserve. Separate DB
 migration/workflow plans are orientation for their own projects; they are not requirements for this
-refactor. Program-kind handlers or adjacent integration adapters construct per-item invocation templates
-from existing persisted job/domain data; `WorkerRuntime` binds each template into a
+refactor. The pre-6A timing cutover deliberately removes the obsolete timing fields from public
+authoring interfaces, program-kind adapters, UI, fingerprints, and newly generated job arguments.
+It does not change migrations or DDL. The six existing `run_ms`/`vi_stall_ms` authoring columns remain
+physically present and ignored; because they are `NOT NULL` without defaults, only the three private
+SQLite insert paths write neutral `0,0` compatibility values. A separate database refactor will remove
+the physical columns and that shim.
+
+Program-kind handlers or adjacent integration adapters construct per-item invocation templates from
+the remaining persisted job/domain data; `WorkerRuntime` binds each template into a
 `ProgramInvocation` only at active admission, and existing adapters project each `ProgramResult`
 through existing persistence operations. Workset support may change coordinator grouping,
 staged/resident-capacity accounting, lease maintenance, completion acknowledgement, progressive worker
 startup, and use of the current claim/start lifecycle. It does not add a SavorDb SQL migration,
-persistent workset record, aggregate job/result representation, unrelated database interface change,
-durable workflow redesign, result-projection transaction change, per-item lifecycle change, or
-artifact-storage interface. The one documented transaction-granularity exception is claiming an ordered
-set in one transaction instead of looping scalar claim transactions.
+persistent workset record, aggregate job/result representation, durable workflow redesign,
+result-projection transaction change, per-item lifecycle change, or artifact-storage interface. The one
+documented transaction-granularity exception is claiming an ordered set in one transaction instead of
+looping scalar claim transactions.
 In this package, an unqualified **schema** is a runtime program/type schema, not a database schema.
 
 The Navigation Context workflow package describes the intended Navmesh Survey domain behavior; this
@@ -77,7 +84,8 @@ This package does not:
 - implement the refactor;
 - claim that Navmesh Survey or the other future phases exist;
 - add a SavorDb SQL/schema migration, persistent workset representation, aggregate durable job/result,
-  or unrelated database-service, workflow, transaction, or artifact-storage redesign;
+  or workflow, transaction, queue/claim, or artifact-storage redesign; the timing-only authoring
+  interface cleanup above is intentional;
 - freeze concrete C++ declarations or byte-level worker transport layouts;
 - choose a user-authored source language or editor;
 - replace durable workflow orchestration with an in-worker scheduler; a bounded transient workset is
@@ -225,8 +233,8 @@ The names have precise meanings:
    execution loops.
 5. Domain behavior is registered through typed actions and composed through programs; it is never added
    to a central interpreter opcode switch.
-6. Every effectful resource is scoped. Return, failure, cancellation, timeout, and guard abort unwind the
-   same resource stack.
+6. Every effectful resource is scoped. Return, failure, cancellation, confirmed infrastructure failure,
+   and guard abort unwind the same resource stack.
 7. A failed mandatory cleanup taints the session and prevents worker reuse.
 8. `StateService` is the sole authority that establishes and advances `StateEpoch`. Every successful
    boot, reboot, or restore advances it exactly once; a recoverable replacement failure does not.
@@ -241,26 +249,31 @@ The names have precise meanings:
     `ProgramExecutor`, `ExecutionEngine`, the stop-point router, transport core, or a central opcode table.
 13. C++ builders and future authored formats compile to the same `ProgramModule`; there is no separate
     `PK_UserScript` execution path.
-14. Runtime deadlines may prevent hangs, but domain schemas decide whether time is evidence. Navmesh Survey
-    evidence is spatial and contains no inferred probe timing.
-15. SavorDb storage and orchestration contracts are fixed inputs. Runtime integration must adapt to them;
-    this refactor does not migrate or redesign them.
-16. Predicate composition introduces no predicate executor, runtime service, domain opcode, hidden effect
+14. Guest execution is cancellation-driven. It ends on semantic completion, explicit cancellation,
+    movie/epoch policy, or confirmed infrastructure failure, never because a phase-provided wall-clock
+    budget expired. Structural verifier bounds and bounded host-only operations remain.
+15. Core liveness is one session-owned policy. VI/CoreTiming progress and registered synchronous
+    host activity distinguish a stalled core from capture, routing, sampling, and other guest-blocking
+    host work. Phases, worksets, fingerprints, and database rows cannot tune that policy.
+16. SavorDb migrations and physical schema remain separate work. Public authoring timing fields and all
+    behavioral reads are removed now; only private neutral writes satisfy the six obsolete `NOT NULL`
+    columns until the database refactor deletes them.
+17. Predicate composition introduces no predicate executor, runtime service, domain opcode, hidden effect
     channel, or persistence model. Failure to obtain required evidence remains distinct from a predicate
     evaluating false, and all generated effects and emissions remain visible to verification and tracing.
-17. Semantic-observation and interaction composition introduce no peer runtime, controller, scheduler,
+18. Semantic-observation and interaction composition introduce no peer runtime, controller, scheduler,
     query VM, domain opcode family, hidden effect channel, filesystem access, database access, or
     persistence model. Their complete lowering is visible to verification, hashing, tracing, and unwind.
-18. A semantic-point receipt, observation, derived guest handle, or baseline is bound to one
+19. A semantic-point receipt, observation, derived guest handle, or baseline is bound to one
     `StateEpoch`. Hit-time sampling is a bounded router concern and ordinary typed reads occur while
     paused. Exact guest-opcode stepping is not a forward execution contract: breakpoint departure uses
     router suppression and behavior that must occur after a guest instruction uses an explicit semantic
     witness or other routed continuation. A future debugger may step `ProgramRuntime` IR instructions,
     which is a distinct facility and remains deferred.
-19. `CaptureService` remains passive. `StopPointRouter` and `ExecutionEngine` own wake and control
+20. `CaptureService` remains passive. `StopPointRouter` and `ExecutionEngine` own wake and control
     authority, while capture observes the same routed hit identity and preserves existing profile-visible
     control, window, recorder, progress, and artifact behavior.
-20. State and movie continuation are one exact transaction. Caller-declared immutable state artifacts
+21. State and movie continuation are one exact transaction. Caller-declared immutable state artifacts
     carry compatibility, SHA-256, lineage, and exact embedded/hash-verified read-only DTM history.
     Restore materializes that history before state mutation and requires any already-active DTM identity
     to match. External movie imports must declare `NoMovie` or `ReadOnlyPlayback`; recording
@@ -269,47 +282,46 @@ The names have precise meanings:
     caller-supplied frame/input cursor: Dolphin restores that cursor from the savestate and
     `MovieService` records the authoritative observed position. Exact cursor equality is required only
     for an internally captured checkpoint that already carries a known cursor.
-21. `InputArbiter` alone publishes pad state. Its leases, publications, poll acknowledgements, neutral
+22. `InputArbiter` alone publishes pad state. Its leases, publications, poll acknowledgements, neutral
     release, interruption borrowing, typed arbiter-issued one-use neutral borrow witnesses, and
     movie-exclusive reservations are epoch-bound resources.
-22. Guest data mutations are reversible by default and may survive only through an explicit commit.
+23. Guest data mutations are reversible by default and may survive only through an explicit commit.
     Executable patches are always reversible and require symmetric JIT/cache invalidation and readback.
-23. One session may have at most one opaque capture attachment. It is rebound across a successful state
+24. One session may have at most one opaque capture attachment. It is rebound across a successful state
     replacement and remains passive throughout. Mandatory finalization failure taints the session,
     blocks another attachment, and prevents reuse until a full rebuild.
-24. `ScreenshotService` currently owns one synchronous actor-thread bounded call; active in-flight
+25. `ScreenshotService` currently owns one synchronous actor-thread bounded call; active in-flight
     cancellation is deferred until nonblocking backend/actor ingress. `TelemetryBus` preserves
     monotonic sequence order when coalescing places a replacement at its fresh chronological position.
-25. `SubmitWorkset` is the sole production program-dispatch path. It accepts one or more item templates;
+26. `SubmitWorkset` is the sole production program-dispatch path. It accepts one or more item templates;
     WRMS remains version 1, and both the old direct `SubmitInvocation` and removed guest-step
     discriminators remain reserved and reject before session mutation.
-26. One worker owns at most one active session-mutating workset, at most one immutable host-only staged
+27. One worker owns at most one active session-mutating workset, at most one immutable host-only staged
     successor package, and at most one executing child `ProgramInvocation`/`ProgramInstance`.
     `ProgramRuntime` neither sees nor schedules pending or staged items.
-27. A multi-item workset has one exact module, entrypoint, dependency, runtime, state/movie, and service
+28. A multi-item workset has one exact module, entrypoint, dependency, runtime, state/movie, and service
     compatibility key plus one exact `ProgramBaselineKey`. Each child retains an independent job, claim,
-    lease, invocation, attempt, budget, cancellation, result, retry, and transition identity.
-28. Workset-specific coordinator grouping, resident-capacity accounting, and lease maintenance may
+    lease, invocation, attempt, structural limits, cancellation, result, retry, and transition identity.
+29. Workset-specific coordinator grouping, resident-capacity accounting, and lease maintenance may
     change. Workset identity and membership are not persisted, and unrelated SavorDb storage, workflow,
     transaction, and artifact contracts remain fixed.
-29. Host-only staging may decode envelopes, resolve cached modules, validate typed inputs, read and hash
+30. Host-only staging may decode envelopes, resolve cached modules, validate typed inputs, read and hash
     immutable artifacts, and acquire bounded cache leases. It may not restore state, bind `StateEpoch`,
     capture a baseline, acquire session-effect resources, construct a `ProgramInstance`, or advance
     Dolphin.
-30. Completed execution records and synchronously captured immutable outputs leave workset/session
+31. Completed execution records and synchronously captured immutable outputs leave workset/session
     ownership through the worker-global bounded completion ledger. After every child has completed
     session work or is classified unstarted, all required immutable captures are promoted, invocation
     and baseline scopes release, and the session is proven clean, the staged successor may promote while
     prior outputs finalize or terminals remain unacknowledged if global ledger capacity remains.
-31. Claim/start authority for every member is validated before the finite workset is accepted. After
+32. Claim/start authority for every member is validated before the finite workset is accepted. After
     acceptance, the worker runs its ordered children without a coordinator authorization pause between
     items. Lease loss or supersession reaches the worker as exact item/workset cancellation.
-32. The configurable production defaults are 16 items and 32 MiB encoded bytes per workset, four hours
-    of aggregate declared active budget, 64 total worker item credits, and 32 active-plus-staged items.
-    State caching is limited to 16 entries/512 MiB; two finalizer threads may own at most eight pending
-    captures/256 MiB; the terminal ledger retains at most 32 terminals/128 MiB. At most two workers
-    start concurrently, and the coordinator buffers at most one additional workset per negotiated Ready
-    worker.
+33. The configurable production defaults are 16 items and 32 MiB encoded bytes per workset, 64 total
+    worker item credits, and 32 active-plus-staged items. State caching is limited to 16 entries/512 MiB;
+    two finalizer threads may own at most eight pending captures/256 MiB; the terminal ledger retains at
+    most 32 terminals/128 MiB. At most two workers start concurrently, and the coordinator buffers at
+    most one additional workset per negotiated Ready worker.
 
 ## Interfaces and ownership affected
 
@@ -370,7 +382,11 @@ loss transfers recovery to their ordinary durable attempt rules.
 
 The explicit `EmulationSession` boundary and its scoped generic services are established. The canonical
 typed program IR, codec, verifier, executor, registry/action seam, initial packs, and composition
-frontends are also established. Before native phase migration, the process/workset prelude adds
+frontends are also established. Before native phase migration, a hard-cutover prelude removes all
+phase-provided elapsed execution policy and installs session-owned core-health accounting that excludes
+registered synchronous host activity. It also removes public and behavioral use of the obsolete
+authoring timing columns while leaving their physical removal to the separate database refactor.
+The process/workset prelude adds
 progressive pool startup, unified 1..N production dispatch, one host-only staged successor, bounded
 cross-workset immutable state caching by `StateCacheKey`, just-in-time child epoch binding, a
 multi-item-active-workset-owned composite `ProgramBaselineDefinition` (skipped for one-item worksets),

@@ -81,6 +81,7 @@ public:
     Capabilities() const noexcept = 0;
     [[nodiscard]] virtual BackendExecutionSnapshot
     QueryExecutionSnapshot() const = 0;
+    [[nodiscard]] virtual BackendHealthReport CheckHealth() const = 0;
 
     virtual BackendResult RequestPause() = 0;
     virtual BackendResult Resume() = 0;

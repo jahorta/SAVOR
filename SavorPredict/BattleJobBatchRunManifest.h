@@ -21,7 +21,6 @@ struct BattleJobBatchRunJobSummary {
     std::filesystem::path capture_export_path;
     std::filesystem::path trace_report_path;
     std::string terminal_state;
-    bool timed_out = false;
     bool capture_found = false;
     PreparedCaptureArtifact capture_artifact;
     int trace_exit_code = -1;
@@ -39,8 +38,6 @@ struct BattleJobBatchRunSummary {
     std::filesystem::path capture_profile_path;
     BattlePredictorResourceBundlePtr resource_inputs;
     int worker_count = 0;
-    int timeout_ms = 0;
-    bool timed_out = false;
     std::vector<BattleJobBatchRunJobSummary> jobs;
     std::vector<std::string> events;
     std::vector<std::string> errors;

@@ -259,7 +259,6 @@ WorksetValidationResult ValidateWorkerWorksetDefinition(
 
     std::set<std::uint64_t> item_ids;
     std::set<std::uint64_t> invocation_ids;
-    std::chrono::milliseconds aggregate{};
     std::size_t aggregate_terminal_bytes = 0;
     for (std::size_t index = 0; index < definition.items.size(); ++index)
     {
@@ -285,18 +284,7 @@ WorksetValidationResult ValidateWorkerWorksetDefinition(
                 WorkerRejectionCode::InvalidArgument,
                 "WorkerWorkset contains duplicate item or invocation identities");
         }
-        if (item.declared_active_budget.count() < 0 ||
-            aggregate >
-                limits.maximum_aggregate_active_budget -
-                    item.declared_active_budget)
-        {
-            return WorksetValidationResult::Failure(
-                WorkerRejectionCode::InvalidArgument,
-                "WorkerWorkset aggregate active budget exceeds its negotiated bound");
-        }
-        aggregate += item.declared_active_budget;
-        if (item.declared_active_budget.count() <= 0 ||
-            item.declared_terminal_bytes <
+        if (item.declared_terminal_bytes <
                 kMinimumWorksetTerminalReservationBytes ||
             item.declared_terminal_bytes >
                 std::min(
@@ -308,7 +296,7 @@ WorksetValidationResult ValidateWorkerWorksetDefinition(
         {
             return WorksetValidationResult::Failure(
                 WorkerRejectionCode::CapacityExceeded,
-                "WorkerWorkset item budget or terminal-byte reservation exceeds its negotiated bound");
+                "WorkerWorkset item terminal-byte reservation exceeds its negotiated bound");
         }
         aggregate_terminal_bytes += item.declared_terminal_bytes;
     }
@@ -415,7 +403,6 @@ WorksetValidationResult ValidateWorkerRuntimeManifest(
     const WorkerWorksetLimits& limits = manifest.limits;
     if (limits.maximum_items_per_workset == 0 ||
         limits.maximum_encoded_workset_bytes == 0 ||
-        limits.maximum_aggregate_active_budget.count() <= 0 ||
         limits.maximum_item_credits == 0 ||
         limits.maximum_active_and_staged_items == 0 ||
         limits.maximum_state_cache_entries == 0 ||

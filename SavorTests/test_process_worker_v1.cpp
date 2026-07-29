@@ -451,7 +451,6 @@ savor::runtime::WorkerWorksetDefinition MakeTransportTestWorkset()
             .entrypoint = workset.execution_key.entrypoint,
             .template_payload = {0x01},
         },
-        .declared_active_budget = std::chrono::seconds(1),
         .declared_terminal_bytes = 4096,
     });
     return workset;
@@ -578,7 +577,6 @@ DevelopmentNoEffectProgram MakeDevelopmentNoEffectProgram(
         .maximum_values = 16,
         .maximum_value_bytes = 1024,
         .maximum_trace_events = 16,
-        .active_deadline_milliseconds = 10000,
     };
     const ProgramPolicySet policies{
         .state_policies = {
@@ -2323,7 +2321,6 @@ TEST(ProcessWorkerV1, NegotiatesSliceThreeCapabilitiesCorrelatesConcurrentReques
             .entrypoint = "main",
             .template_payload = {4, 5, 6},
         },
-        .declared_active_budget = std::chrono::seconds(1),
         .correlation = {
             .durable_job_id = "job-101",
             .claim_token = "claim-101",
@@ -2681,8 +2678,6 @@ TEST(
                 .template_payload =
                     program.encoded_invocation,
             },
-            .declared_active_budget =
-                std::chrono::seconds(10),
             .correlation = {
                 .durable_job_id =
                     "development-workset-smoke",

@@ -101,10 +101,7 @@ constexpr ProgramScopeId kInvocationScope{
                maximum.maximum_value_bytes) &&
         within(
                requested.maximum_trace_events,
-               maximum.maximum_trace_events) &&
-        within(
-               requested.active_deadline_milliseconds,
-               maximum.active_deadline_milliseconds);
+               maximum.maximum_trace_events);
 }
 
 [[nodiscard]] bool InvocationPolicyAccepted(
@@ -178,7 +175,9 @@ constexpr ProgramScopeId kInvocationScope{
         profile.executable_identity ==
             config.compatibility.executable_identity &&
         !profile.backend.empty() &&
-        profile.capability_packs.empty();
+        profile.capability_packs.empty() &&
+        config.bounded_host_operation_timeout >
+            std::chrono::milliseconds::zero();
 }
 
 [[nodiscard]] bool RuntimeProfileAccepted(
@@ -428,8 +427,6 @@ struct ProgramRuntime::Impl
         ProgramActionRequestId state_request;
         std::unique_ptr<ProgramExecutor> executor;
         std::uint64_t progress_sequence = 1;
-        std::optional<std::chrono::steady_clock::time_point>
-            active_deadline;
         CancellationReason pending_cancellation =
             CancellationReason::None;
         ProgramCleanupStatus preparation_cleanup =
@@ -840,14 +837,6 @@ ProgramRuntimeSubmission ProgramRuntime::StartInvocation(
     active.cancellation = std::move(cancellation);
     active.events = std::move(events);
     active.state_request = state_request;
-    if (active.invocation.limits.active_deadline_milliseconds != 0)
-    {
-        active.active_deadline =
-            std::chrono::steady_clock::now() +
-            std::chrono::milliseconds(
-                active.invocation.limits
-                    .active_deadline_milliseconds);
-    }
     impl_->active.emplace(std::move(active));
 
     ProgramActionRequest state;
@@ -864,8 +853,10 @@ ProgramRuntimeSubmission ProgramRuntime::StartInvocation(
         request.state_already_prepared;
     state.prepared_baseline_sha256 =
         std::move(request.prepared_baseline_sha256);
-    state.active_deadline = impl_->active->active_deadline;
-    state.effective_deadline = state.active_deadline;
+    state.timing = ActionTimingClass::BoundedHostOperation;
+    state.bounded_host_deadline =
+        std::chrono::steady_clock::now() +
+        impl_->config.bounded_host_operation_timeout;
     state.allowed_effects =
         AllowedEffects(impl_->active->invocation.execution);
     try
@@ -983,10 +974,6 @@ ProgramRuntimeSubmission ProgramRuntime::PrepareInvocationTemplate(
     const std::string compatibility =
         ComputeProgramInvocationCompatibilityHashV1(invocation);
     if (compatibility.size() != 64 ||
-        invocation.limits.active_deadline_milliseconds == 0 ||
-        invocation.limits.active_deadline_milliseconds >
-            static_cast<std::uint64_t>(
-                std::numeric_limits<std::int64_t>::max()) ||
         impl_->next_template_id == 0 ||
         impl_->next_template_id ==
             std::numeric_limits<std::uint64_t>::max())
@@ -1010,9 +997,7 @@ ProgramRuntimeSubmission ProgramRuntime::PrepareInvocationTemplate(
         ModuleIdentityToEnvelope(invocation.module),
         invocation.entrypoint,
         compatibility,
-        invocation.state.policy,
-        std::chrono::milliseconds(
-            invocation.limits.active_deadline_milliseconds)};
+        invocation.state.policy};
     return ProgramRuntimeSubmission::Accepted();
 }
 
@@ -1260,50 +1245,6 @@ ProgramRuntimeSubmission ProgramRuntime::DeliverActionCompletion(
         }
         impl_->active->invocation.state.expected_epoch =
             completion.resulting_epoch;
-        if (impl_->active->active_deadline)
-        {
-            const auto now = std::chrono::steady_clock::now();
-            if (now >= *impl_->active->active_deadline)
-            {
-                ProgramResult timed_out{
-                    .invocation_id =
-                        impl_->active->invocation.invocation_id,
-                    .attempt_id =
-                        impl_->active->invocation.attempt_id,
-                    .module = impl_->active->invocation.module,
-                    .entrypoint =
-                        impl_->active->invocation.entrypoint,
-                    .resolved_dependencies =
-                        impl_->active->verified->dependency_lock,
-                    .infrastructure =
-                        ProgramInfrastructureStatus::TimedOut,
-                    .cleanup = completion.cleanup,
-                    .session_disposition =
-                        completion.session_disposition,
-                    .diagnostics = {ProgramDiagnostic{
-                        DiagnosticSeverity::Error,
-                        "deadline",
-                        "Invocation deadline expired during state "
-                        "preparation",
-                        {},
-                        {}}},
-                    .provenance =
-                        impl_->active->invocation.provenance,
-                };
-                impl_->PublishTerminal(std::move(timed_out));
-                return ProgramRuntimeSubmission::Accepted();
-            }
-            const auto remaining =
-                std::chrono::duration_cast<
-                    std::chrono::milliseconds>(
-                    *impl_->active->active_deadline - now);
-            impl_->active->invocation.limits
-                .active_deadline_milliseconds =
-                static_cast<std::uint64_t>(
-                    std::max<std::int64_t>(
-                        1,
-                        remaining.count()));
-        }
         auto executor = std::make_unique<ProgramExecutor>(
             [](const ExactDependencyIdentity& identity,
                std::span<const ProgramValueGraph> inputs,
@@ -1404,50 +1345,7 @@ bool ProgramRuntime::Pump()
     }
 
     if (impl_->active->stage == Impl::ActiveStage::PreparingState)
-    {
-        if (!impl_->active->active_deadline ||
-            std::chrono::steady_clock::now() <
-                *impl_->active->active_deadline)
-        {
-            return false;
-        }
-        if (impl_->active->pending_cancellation ==
-            CancellationReason::None)
-        {
-            impl_->active->pending_cancellation =
-                CancellationReason::Deadline;
-        }
-        ProgramResult timed_out{
-            .invocation_id =
-                impl_->active->invocation.invocation_id,
-            .attempt_id =
-                impl_->active->invocation.attempt_id,
-            .module = impl_->active->invocation.module,
-            .entrypoint =
-                impl_->active->invocation.entrypoint,
-            .resolved_dependencies =
-                impl_->active->verified->dependency_lock,
-            .infrastructure =
-                ProgramInfrastructureStatus::TimedOut,
-            // A state replacement that never returns a cleanup receipt
-            // cannot be proven reusable. The retained terminal therefore
-            // follows the normal publication/acknowledgement path while
-            // conservatively tainting the session.
-            .cleanup = ProgramCleanupStatus::Tainted,
-            .session_disposition = SessionDisposition::Tainted,
-            .diagnostics = {ProgramDiagnostic{
-                DiagnosticSeverity::Error,
-                "state_preparation_deadline",
-                "Invocation deadline expired while state preparation "
-                "was still pending",
-                {},
-                {}}},
-            .provenance =
-                impl_->active->invocation.provenance,
-        };
-        impl_->PublishTerminal(std::move(timed_out));
         return false;
-    }
 
     if (impl_->active->stage != Impl::ActiveStage::Executing ||
         !impl_->active->executor)
@@ -1486,30 +1384,24 @@ bool ProgramRuntime::Pump()
         request.cleanup_only = pumped.host_request->cleanup_only;
         request.allowed_effects =
             AllowedEffects(impl_->active->invocation.execution);
-        if (!request.cleanup_only)
-            request.active_deadline =
-                impl_->active->executor->next_wake();
+        request.timing = ActionTimingClass::BoundedHostOperation;
         if (request.action)
         {
             const ActionDescriptor* descriptor =
                 impl_->actions.ResolveAction(*request.action);
             if (descriptor)
             {
-                request.descriptor_deadline =
-                    std::chrono::steady_clock::now() +
-                    std::chrono::milliseconds(
-                        descriptor->
-                            default_deadline_milliseconds);
+                request.timing = descriptor->timing;
+                if (descriptor->timing ==
+                        ActionTimingClass::BoundedHostOperation)
+                {
+                    request.bounded_host_deadline =
+                        std::chrono::steady_clock::now() +
+                        std::chrono::milliseconds(
+                            descriptor->
+                                default_host_timeout_milliseconds);
+                }
             }
-        }
-        request.effective_deadline = request.active_deadline;
-        if (request.descriptor_deadline &&
-            (!request.effective_deadline ||
-             *request.descriptor_deadline <
-                 *request.effective_deadline))
-        {
-            request.effective_deadline =
-                request.descriptor_deadline;
         }
         impl_->action_sink->Publish(std::move(request));
 
@@ -1540,7 +1432,7 @@ ProgramRuntime::next_wake() const
     if (!impl_->active)
         return std::nullopt;
     if (impl_->active->stage == Impl::ActiveStage::PreparingState)
-        return impl_->active->active_deadline;
+        return std::nullopt;
     if (impl_->active->stage != Impl::ActiveStage::Executing ||
         !impl_->active->executor)
     {

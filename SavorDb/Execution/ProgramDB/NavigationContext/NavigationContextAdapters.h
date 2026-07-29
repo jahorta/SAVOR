@@ -1,6 +1,5 @@
 #pragma once
 
-#include <cstdint>
 #include <filesystem>
 #include <string_view>
 
@@ -28,7 +27,6 @@ inline constexpr std::string_view DerivationSourceContextKind = "state_artifact"
 
 struct NavigationContextPhaseRegistrationConfig {
     std::filesystem::path working_dir_root;
-    std::uint32_t run_timeout_ms = 120000;
 };
 
 ProgramKindDescriptor BuildNavigationContextProbeDescriptor(

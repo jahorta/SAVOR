@@ -87,8 +87,6 @@ struct AuthoringPayloadRecord {
 struct SaveSeedProbeSpecCommand {
     std::string name;
     int priority = 0;
-    std::int64_t run_ms = 0;
-    std::int64_t vi_stall_ms = 0;
     std::int64_t min_value = 0;
     std::int64_t max_value = 0;
     bool cap_trigger_top = false;
@@ -105,8 +103,6 @@ struct SeedProbeSpecSnapshot {
     std::int64_t seed_probe_spec_id = 0;
     std::string name;
     int priority = 0;
-    std::int64_t run_ms = 0;
-    std::int64_t vi_stall_ms = 0;
     std::int64_t min_value = 0;
     std::int64_t max_value = 0;
     bool cap_trigger_top = false;
@@ -144,8 +140,6 @@ struct AuthoringInputSetFrameSnapshot {
 struct SaveTasSpecCommand {
     std::string base_name;
     int priority = 0;
-    std::int64_t run_ms = 0;
-    std::int64_t vi_stall_ms = 0;
     bool progress_enable = true;
     bool auto_queue_seeds = false;
     std::int64_t base_dtm_artifact_id = 0;
@@ -159,8 +153,6 @@ struct TasSpecSnapshot {
     std::int64_t tas_spec_base_id = 0;
     std::string base_name;
     int priority = 0;
-    std::int64_t run_ms = 0;
-    std::int64_t vi_stall_ms = 0;
     bool progress_enable = true;
     bool auto_queue_seeds = false;
     std::int64_t base_dtm_artifact_id = 0;
@@ -169,8 +161,6 @@ struct TasSpecSnapshot {
 struct SaveBattleRunSpecCommand {
     std::string name;
     int priority = 0;
-    std::int64_t run_ms = 0;
-    std::int64_t vi_stall_ms = 0;
     bool progress_enable = true;
     bool use_single_turn_runner = false;
     bool auto_wave_trigger_enable = false;
@@ -353,8 +343,6 @@ struct BattleRunSpecSnapshot {
     std::int64_t battle_run_spec_id = 0;
     std::string name;
     int priority = 0;
-    std::int64_t run_ms = 0;
-    std::int64_t vi_stall_ms = 0;
     bool progress_enable = true;
     bool use_single_turn_runner = false;
     bool auto_wave_trigger_enable = false;

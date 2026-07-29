@@ -9,7 +9,6 @@ namespace savor::inputmacro {
 
 enum class InputMacroHostStatus : std::uint8_t {
     Succeeded,
-    TimedOut,
     Cancelled,
     ReadFailed,
     Failed,
@@ -25,14 +24,12 @@ struct BreakpointWaitResult {
     GCInputFrame requested_input{};
     std::uint32_t input_poll_count{0};
     bool input_acknowledged{false};
-    std::uint32_t elapsed_ms{0};
 };
 
 struct MemoryChangeResult {
     InputMacroHostStatus status{InputMacroHostStatus::Failed};
     std::uint32_t latest_value{0};
     std::uint32_t poll_count{0};
-    std::uint32_t elapsed_ms{0};
 };
 
 class IInputMacroHost {
@@ -47,8 +44,7 @@ public:
     virtual bool read_u32(std::uint32_t address, std::uint32_t& value_out) = 0;
     virtual MemoryChangeResult wait_for_u32_change(
         std::uint32_t address,
-        std::uint32_t baseline,
-        std::uint32_t timeout_ms) = 0;
+        std::uint32_t baseline) = 0;
 
     // The runtime invokes these in this exact order during cleanup. Session
     // release is skipped only when acquisition never succeeded.

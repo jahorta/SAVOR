@@ -49,7 +49,6 @@ SemanticObservationComposition Definition()
                     Reducer("test.project.rng-seed"),
             }},
             .current_point = CurrentPointPolicy::FutureOnly,
-            .deadline_milliseconds = 10000,
             .subscribe_group_action = CanonicalActionIdentity(
                 CanonicalAction::StopPointsSubscribeGroup),
             .continue_until_action = CanonicalActionIdentity(
@@ -216,7 +215,6 @@ ProgramVerificationResult CompleteAndVerify(
         .maximum_values = 10000,
         .maximum_value_bytes = 4 * 1024 * 1024,
         .maximum_trace_events = 10000,
-        .active_deadline_milliseconds = 60000,
     };
     module.source_map.entries.push_back({
         .id = ProgramSourceLocationId(10000),

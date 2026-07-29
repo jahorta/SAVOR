@@ -18,12 +18,14 @@ domain behavior.
 This plan does not:
 
 - require backward-compatible worker-internal C++ APIs or worker messages;
-- change SavorDb SQL/schema, migrations, stored representations, durable queue/claim lifecycle,
-  workflow persistence, result-projection transaction boundaries, or artifact-storage interfaces;
-  ordered batch claim, exact-set lease renewal, claim/start validation, and targeted terminal
-  reconciliation are the only database-interface exceptions;
-- reinterpret or rewrite existing persisted payload/result bytes; program-kind handlers continue to
-  support them through the current storage contracts;
+- change SavorDb SQL/schema or migrations, durable queue/claim lifecycle, workflow persistence,
+  result-projection transaction boundaries, or artifact-storage interfaces. The pre-6A hard cutover
+  intentionally removes obsolete timing fields from public authoring interfaces and newly generated
+  arguments; private neutral insert shims satisfy the unchanged physical columns. Ordered batch claim,
+  exact-set lease renewal, claim/start validation, and targeted terminal reconciliation are the other
+  database-interface exceptions;
+- rewrite existing rows. Program-kind handlers consume recognized semantic payload/result fields but do
+  not reinterpret obsolete timing keys as runtime policy;
 - migrate a live `PhaseScriptVM` instruction pointer or live Dolphin session;
 - discard or re-author existing queued jobs;
 - define exact pull-request boundaries or dates; or
@@ -67,19 +69,20 @@ plan replaces both with `ProgramRuntime` and one `ProgramExecutor`.
 4. New features, including Navmesh Survey, are prohibited in the legacy execution code.
 5. An active `ProgramInstance`, resource scope, `StateEpoch`, Dolphin session, or in-flight worker command
    is never migrated across runtime versions.
-6. Existing persisted payloads and results remain in their current representation. Program-kind handlers
-   translate them at the runtime boundary; they are not rewritten as stored `ProgramModule` or
-   `ProgramInvocation` records.
+6. Existing persisted rows are not rewritten. Program-kind handlers translate recognized semantic
+   payload/result fields at the runtime boundary; obsolete timing keys are ignored and are not rewritten
+   as stored `ProgramModule` or `ProgramInvocation` records.
 7. Coordinator, worker protocol, module catalog, action/type registries, and runtime-facing program-kind
    adapters deploy as one compatibility-checked application release set.
 8. Rollback means stopping the release and restoring the matched application build. No database rollback
    or schema state is part of this refactor, and rollback never enables an old interpreter inside the new
    worker.
-9. SavorDb storage, durable queue/claim lifecycle, workflow persistence, result-projection transaction
-   boundaries, and artifact contracts remain unchanged throughout the cutover. Database interfaces may
-   change only for ordered batch claim, exact-set lease renewal, claim/start validation, and targeted
-   terminal reconciliation; coordinator grouping, capacity accounting, staging, and acknowledgements
-   remain transient.
+9. SavorDb migrations, physical schema, durable queue/claim lifecycle, workflow persistence,
+   result-projection transaction boundaries, and artifact contracts remain unchanged throughout the
+   cutover. Public authoring interfaces lose obsolete timing fields while private neutral insert shims
+   satisfy the unchanged columns. Other database interfaces may change only for ordered batch claim,
+   exact-set lease renewal, claim/start validation, and targeted terminal reconciliation; coordinator
+   grouping, capacity accounting, staging, and acknowledgements remain transient.
 10. `SubmitWorkset` is the sole production program-dispatch path. A `WorkerWorkset` is a bounded,
     transient, ordered envelope over one or more independently durable jobs; it is not a persisted
     aggregate, a workflow step, or a worker-owned scheduler.
@@ -235,11 +238,12 @@ queue, claim, workflow, transaction, or artifact-storage contract.
   input-synchronized-advance, safe-pause, and interactive-resume operations;
 - route every operation and every accepted stop receipt through the same control-thread event loop and
   router, with no engine thread or nested blocking loop;
-- represent timeout, VI stall, movie end, cancellation, requested completion, intercepted stops, and
-  interruption-handler requests as structured results;
-- support requested interruption handlers as a bounded stack whose suspended parent/child active-time
-  budgets freeze, whose trusted descriptors declare allowed nesting/recursion, whose absolute depth is at
-  most eight, and whose only policy outcomes are `ResumeParent` or `AbortParent`;
+- represent movie end, cancellation, requested completion, intercepted stops, and
+  interruption-handler requests as structured results. The pre-6A hard cutover later replaces the
+  initial request-owned timeout/VI-stall implementation with centralized core health;
+- support requested interruption handlers as a structurally bounded stack whose trusted descriptors
+  declare allowed nesting/recursion, whose absolute depth is at most eight, and whose only policy
+  outcomes are `ResumeParent` or `AbortParent`;
 - expose primitive movie/VI/throttle observations through the private execution-backend facet without
   moving movie lifecycle into the engine;
 - define the fake-tested opaque input-advance collaboration, while leaving production input publication
@@ -250,9 +254,11 @@ queue, claim, workflow, transaction, or artifact-storage contract.
   opened with visual intent may use serialized pause, resume, and frame-step controls while remaining
   `Ready`; a separate execution snapshot reports whether it is idle-paused or interactively running.
 
-`InteractiveResume` is the sole intentionally unbounded engine operation. Guest PowerPC instruction
-stepping is not part of the forward engine contract: the implementation does not switch temporarily to
-Interpreter, call a JIT block an instruction, or expose a guest-step action. Production `ProgramInvocation`, DB-backed
+At the Slice 3 checkpoint, `InteractiveResume` was the sole intentionally unbounded engine operation.
+The pre-6A cancellation/health cutover removes the other guest-operation elapsed deadlines as well;
+bounded host confirmation and cleanup remain distinct. Guest PowerPC instruction stepping is not part
+of the forward engine contract: the implementation does not switch temporarily to Interpreter, call a
+JIT block an instruction, or expose a guest-step action. Production `ProgramInvocation`, DB-backed
 visual replay, and SavorQt wiring remain unavailable. Production input advancement was deliberately
 unsupported at the Slice 3 checkpoint and is supplied by Slice 4's `InputArbiter` without moving pad
 publication into the engine.
@@ -392,6 +398,44 @@ phase, construct the runtime or its implemented action host in production `Savor
 SavorDb schema, migration, persistence, database-service, queue, claim, workflow, transaction, or
 artifact-store change. Those omissions are deferred boundaries, not skipped Slice 5 validation claims.
 
+### Pre-6A hard cutover: cancellation-driven execution and centralized core health
+
+Complete this slice before any native phase module:
+
+- remove `run_ms`, `run_timeout_ms`, `vi_stall_ms`, timing overrides, macro/memory/tail timeouts, TAS
+  timing headroom, and every derived active wall-clock budget from runtime contracts, phase payloads,
+  adapters, fingerprints, workset keys, SavorPredict, SavorE2E configuration, and UI;
+- remove active elapsed limits from `ProgramBudgets`, action requests, `ExecutionRequestPolicy`,
+  interruption descriptors, semantic/interaction composition, workset item templates, and aggregate
+  workset limits. Keep verifier structural limits, finite semantic retry/poll counts, resident-resource
+  limits, and explicitly classified bounded host operations;
+- classify guest-dependent work as `CancellationDriven` and filesystem/state/protocol/screenshot/
+  pause-confirmation/finalization/cleanup/shutdown work as `BoundedHostOperation`. Only the latter may
+  return an infrastructure timeout;
+- install one actor-owned session health monitor. Begin eligibility only after engine-owned advancement
+  is confirmed running; VI/CoreTiming progress or a changed synchronous host-activity generation resets
+  its baseline;
+- make native routing, bounded sampling, synchronous capture observation, reconciliation, state
+  replacement, handler suspension, and paused host actions ineligible. CPU-hook activity registration is
+  atomic, allocation-free, and `noexcept`; background artifact finalization does not mask guest health;
+- emit `SuspectedCoreStall` after ten eligible seconds, confirm after ten more, and warn on one continuous
+  host activity after ten seconds and every thirty seconds thereafter. When actor-owned activity blocks
+  publication, retain its duration and emit every crossed threshold on the next actor pump. Retain
+  completed-scope diagnostics in a bounded lock-free buffer and diagnose saturation explicitly.
+  Confirmed stall safely pauses and
+  produces `CoreStalled` plus `CleanWithDiagnostics` when integrity is proven; otherwise taint and shut
+  down the session. Preserve the existing WRMS numeric terminal value and add no message or capability;
+- remove timing fields from public SeedProbe/TAS/Battle Run authoring commands, snapshots, editors, and
+  identity. Do not change migrations or DDL. The six existing `NOT NULL` columns remain physically
+  present and ignored; only the three private SQLite inserts bind neutral `0,0` values. A separate
+  database refactor removes the columns and shims; and
+- revise the unpublished runtime/workset v1 codecs in place, reject obsolete legacy payload revisions
+  before session mutation, and give newly generated native fingerprints a timing-free revision/namespace.
+
+Validate this hard cutover with full Debug and Release solution builds; injected-clock health/race tests;
+runtime, composition, workset, authoring, ProgramDB, SavorPredict, protocol, and codec guards; and the
+headless Release JIT/router guard. Do not run SavorE2E while production invocation remains unavailable.
+
 ### Pre-6A dependency prelude: production process and pipelined WorkerWorkset foundation
 
 Build the real process boundary before reconstructing an individual phase:
@@ -452,11 +496,11 @@ Build the real process boundary before reconstructing an individual phase:
 - allow no dynamic item addition, worker-side reordering, durable successor selection, or worker access
   to SavorDb.
 
-Use the fixed configurable defaults: 16 items and 32 MiB encoded bytes per workset; four hours aggregate
-declared active budget; 64 total worker item credits and 32 active-plus-staged items; 16 state-cache
-entries/512 MiB; two finalizer threads with eight pending captures/256 MiB; 32 retained authoritative
-terminals/128 MiB; two concurrent worker startups; and at most one coordinator-buffered additional
-workset per negotiated Ready worker.
+Use the fixed configurable defaults: 16 items and 32 MiB encoded bytes per workset; 64 total worker item
+credits and 32 active-plus-staged items; 16 state-cache entries/512 MiB; two finalizer threads with eight
+pending captures/256 MiB; 32 retained authoritative terminals/128 MiB; two concurrent worker startups;
+and at most one coordinator-buffered additional workset per negotiated Ready worker. No workset carries
+an elapsed guest-execution budget.
 
 Each 6A-6I slice adds its module and exact dependency manifest to this real process catalog and runs an
 unattended one-item `SubmitWorkset` process test through the production worker/runtime/action-host seam.
@@ -542,7 +586,7 @@ changing only claim transaction granularity, and they do not grant workers datab
   processing the ordered terminal;
 - one exact-set authority validation occurs before acceptance, no authorization request occurs between
   clean children or at staged promotion, and later lease loss/supersession produces exact cancellation;
-- boundary tests enforce the fixed item/byte/budget, total/staged-credit, cache, finalizer/pending-
+- boundary tests enforce the fixed item/byte/structural-limit, total/staged-credit, cache, finalizer/pending-
   capture, retained-terminal, startup, and coordinator-buffer defaults;
 - WRMS remains version 1, and both the old `SubmitInvocation` and guest-step discriminators reject before
   session mutation;
@@ -711,10 +755,12 @@ select the legacy interpreter.
 - one-item worksets cover every direct or singleton production dispatch, with no scalar-only fallback
   and no mixed production fleet lacking workset support;
 - existing jobs, queues, workflows, results, artifacts, retries, and restart behavior remain compatible
-  without a database migration or record conversion;
+  without a database migration or record conversion; obsolete timing keys are ignored rather than
+  converted into native execution policy;
 - multi-item worksets preserve independent claim/start/attempt/result/retry/transition behavior and
   immediate per-item projection;
-- program-kind handlers project through existing SavorDb interfaces and transaction boundaries;
+- program-kind handlers project through timing-free authoring/runtime-facing SavorDb interfaces and the
+  existing transaction boundaries;
 - the Release SavorE2E `all` matrix passes, followed by separate `battle_end` and
   `navigation_context` scenarios without adding either to `all`;
 - TAS Frame Detector retains focused direct validation and Battle Macro Probe retains its direct-worker
@@ -872,6 +918,7 @@ existing E2E baseline + just-in-time characterization
   -> scoped generic services
   -> universal program runtime + modular capability packs
   -> production process + pipelined WorkerWorkset prelude
+  -> cancellation-driven execution + centralized core health hard cutover
   -> native phase slices 6A-6I
   -> final production activation
   -> legacy deletion
@@ -922,10 +969,11 @@ upstream owner. In particular:
 - In-flight legacy executions are drained/canceled rather than migrated.
 - Exact invocation/result/module compatibility is enforced after current claim/materialization and before
   worker activation or guest-state mutation.
-- No SavorDb migration, stored-representation change, persistent workset/cache/ledger record,
-  queue-state or workflow-persistence change, per-item lifecycle change, or artifact-format change is
-  introduced. Only the documented narrow ordered-claim, exact-set lease, claim/start validation, and
-  targeted-reconciliation interfaces change.
+- No SavorDb migration, persistent workset/cache/ledger record, queue-state or workflow-persistence
+  change, per-item lifecycle change, or artifact-format change is introduced. Obsolete public authoring
+  timing fields and newly generated timing arguments are removed; the six physical columns remain behind
+  private neutral insert shims. Only that cleanup and the documented narrow ordered-claim, exact-set
+  lease, claim/start validation, and targeted-reconciliation interfaces change.
 - The legacy interpreter, public `PSContext` ABI, peer macro engine, and program-kind execution switch are
   absent from production after dependency slice 8.
 - Rollback changes only the matched application release, leaves existing data untouched, and never

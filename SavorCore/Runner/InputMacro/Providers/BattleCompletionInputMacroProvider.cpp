@@ -69,9 +69,6 @@ InputMacroFailure RuntimeFailureFor(InputMacroFailure failure)
 endresults::FailureCode DetailedFailureFor(InputMacroFailure failure)
 {
     switch (failure) {
-    case InputMacroFailure::BreakpointTimeout:
-    case InputMacroFailure::MemoryTimeout:
-        return endresults::FailureCode::Timeout;
     case InputMacroFailure::UnexpectedBreakpoint:
         return endresults::FailureCode::UnexpectedBreakpoint;
     case InputMacroFailure::MemoryReadFailed:
@@ -218,7 +215,7 @@ private:
                         "victory completion did not publish battleInputState == 2");
         if (!result.input_acknowledged || result.input_poll_count == 0
             || result.input_epoch == 0 || result.requested_input.buttons != 0) {
-            return Fail(endresults::FailureCode::GuestNeutralTimeout,
+            return Fail(endresults::FailureCode::GuestNeutralUnacknowledged,
                         InputMacroFailure::HostFailure,
                         "victory completion lacks a guest-observed neutral epoch");
         }

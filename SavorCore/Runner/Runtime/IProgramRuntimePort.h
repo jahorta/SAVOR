@@ -69,14 +69,12 @@ struct PreparedInvocationTemplateReceipt
     std::string program_compatibility_sha256;
     program::InvocationStatePolicy state_policy =
         program::InvocationStatePolicy::Boot;
-    std::chrono::milliseconds active_budget{};
 
     [[nodiscard]] explicit operator bool() const noexcept
     {
         return template_id && invocation_id && attempt_id &&
             !module.canonical_id.empty() && !entrypoint.empty() &&
-            program_compatibility_sha256.size() == 64 &&
-            active_budget.count() > 0;
+            program_compatibility_sha256.size() == 64;
     }
 };
 

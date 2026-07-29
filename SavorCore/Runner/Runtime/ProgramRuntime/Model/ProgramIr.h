@@ -181,7 +181,6 @@ struct ProgramBudgets
     std::uint64_t maximum_values = 0;
     std::uint64_t maximum_value_bytes = 0;
     std::uint64_t maximum_trace_events = 0;
-    std::uint64_t active_deadline_milliseconds = 0;
 
     auto operator<=>(const ProgramBudgets&) const = default;
 };

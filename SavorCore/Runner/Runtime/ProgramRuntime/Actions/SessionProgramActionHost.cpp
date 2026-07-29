@@ -1155,7 +1155,6 @@ bool DecodeStopGroupConfig(
 
 bool DecodeContinueConfig(
     std::span<const Byte> bytes,
-    std::uint64_t deadline,
     CanonicalActionPayload& payload,
     std::string& diagnostic)
 {
@@ -1163,14 +1162,12 @@ bool DecodeContinueConfig(
     std::uint8_t current = 0;
     bool suppress = false;
     std::uint8_t movie = 0;
-    std::uint8_t stall = 0;
     std::uint8_t throttle = 0;
     std::uint8_t interruption = 0;
     if (!reader.U8(current) || !reader.Bool(suppress) ||
-        !reader.U8(movie) || !reader.U8(stall) ||
-        !reader.U8(throttle) ||
+        !reader.U8(movie) || !reader.U8(throttle) ||
         !reader.U8(interruption) || !reader.done() ||
-        current > 1 || movie > 1 || stall > 1 ||
+        current > 1 || movie > 1 ||
         throttle >
             static_cast<std::uint8_t>(
                 ExecutionThrottlePolicy::RequireDisabled) ||
@@ -1202,12 +1199,7 @@ bool DecodeContinueConfig(
             interruption) &&
         payload.AddUnsigned(
             Field::Flags,
-            suppress ? 1u : 0u) &&
-        payload.AddBoolean(Field::Required, stall != 0) &&
-        (!stall ||
-         payload.AddUnsigned(
-             Field::ViStallMaximumMilliseconds,
-             deadline));
+            suppress ? 1u : 0u);
 }
 
 bool DecodeAdvanceConfig(
@@ -1218,12 +1210,11 @@ bool DecodeAdvanceConfig(
     StaticConfigReader reader(bytes, {'E', 'A', 'C', '1'});
     std::uint8_t kind = 0;
     bool movie = false;
-    bool stall = false;
     std::uint8_t throttle = 0;
     std::uint8_t interruption = 0;
     constexpr std::uint8_t expected = 2u;
     if (!reader.U8(kind) || !reader.Bool(movie) ||
-        !reader.Bool(stall) || !reader.U8(throttle) ||
+        !reader.U8(throttle) ||
         !reader.U8(interruption) || !reader.done() ||
         kind != expected ||
         throttle >
@@ -1246,8 +1237,7 @@ bool DecodeAdvanceConfig(
         payload.AddUnsigned(Field::ThrottlePolicy, throttle) &&
         payload.AddUnsigned(
             Field::InterruptionPolicy,
-            interruption) &&
-        payload.AddBoolean(Field::Required, stall);
+            interruption);
 }
 
 bool DecodeLeaseConfig(
@@ -1546,13 +1536,12 @@ bool DecodeTypedCanonicalRequest(
     }
     case CanonicalAction::ExecutionContinueUntil:
     {
-        std::uint64_t deadline = 0;
         bool publication = false;
         const auto* config = bytes(
-            3,
+            2,
             CanonicalRuntimeSchema::
                 ContinueUntilStaticConfig);
-        if (record->fields.size() != 4 ||
+        if (record->fields.size() != 3 ||
             !handle(
                 0,
                 CanonicalAction::StopPointsSubscribeGroup) ||
@@ -1563,14 +1552,9 @@ bool DecodeTypedCanonicalRequest(
                 CanonicalAction::InputPublishHeld,
                 false,
                 publication) ||
-            !u64(2, deadline) || deadline == 0 ||
             !config ||
-            !payload.AddUnsigned(
-                Field::TimeoutMilliseconds,
-                deadline) ||
             !DecodeContinueConfig(
                 *config,
-                deadline,
                 payload,
                 diagnostic))
         {
@@ -2657,17 +2641,10 @@ struct SessionProgramActionHost::Impl
         std::chrono::steady_clock::time_point>
     Deadline(const ProgramActionRequest& request) const noexcept
     {
-        if (request.effective_deadline)
-            return request.effective_deadline;
-
-        std::optional<std::chrono::steady_clock::time_point>
-            deadline = request.descriptor_deadline;
-        if (!request.cleanup_only && request.active_deadline &&
-            (!deadline || *request.active_deadline < *deadline))
-        {
-            deadline = request.active_deadline;
-        }
-        return deadline;
+        return request.timing ==
+                ActionTimingClass::BoundedHostOperation
+            ? request.bounded_host_deadline
+            : std::nullopt;
     }
 
     [[nodiscard]] std::chrono::milliseconds Timeout(
@@ -2707,21 +2684,6 @@ struct SessionProgramActionHost::Impl
     {
         ExecutionRequestPolicy policy;
         policy.expected_epoch = request.expected_epoch;
-        policy.active_timeout = Timeout(request, payload);
-        policy.vi_stall.enabled =
-            payload.Contains(Field::ViStallMaximumMilliseconds) ||
-            BooleanOr(payload, Field::Required, false);
-        policy.vi_stall.warmup = std::chrono::milliseconds(
-            UnsignedOr(
-                payload,
-                Field::ViStallWarmupMilliseconds,
-                0));
-        policy.vi_stall.maximum_stall =
-            std::chrono::milliseconds(UnsignedOr(
-                payload,
-                Field::ViStallMaximumMilliseconds,
-                static_cast<std::uint64_t>(
-                    policy.active_timeout.count())));
         policy.movie_ended =
             static_cast<MovieEndedPolicy>(UnsignedOr(
                 payload,
@@ -5473,11 +5435,6 @@ bool SessionProgramActionHost::Impl::SubmitCleanupAdvance(
     const SessionSnapshot current = session.snapshot();
     ExecutionRequestPolicy policy;
     policy.expected_epoch = current.state_epoch;
-    policy.active_timeout = std::max(
-        std::chrono::milliseconds(1),
-        std::min(
-            config.default_action_timeout,
-            config.maximum_action_timeout));
     policy.movie_ended = MovieEndedPolicy::Ignore;
     policy.throttle = ExecutionThrottlePolicy::Preserve;
     policy.current_point =
@@ -5509,9 +5466,12 @@ SessionProgramActionHost::Impl::ExecutionCompletion(
         ? terminal.state_epoch
         : session.snapshot().state_epoch;
     completion.message = terminal.error.message;
-    completion.code = "execution_terminal_" +
-        std::to_string(
-            static_cast<std::uint32_t>(terminal.status));
+    completion.code =
+        terminal.status == ExecutionTerminalStatus::CoreStalled
+        ? "core_stalled"
+        : "execution_terminal_" +
+              std::to_string(
+                  static_cast<std::uint32_t>(terminal.status));
 
     if (!ExecutionSucceeded(terminal) ||
         !operation.request.action)

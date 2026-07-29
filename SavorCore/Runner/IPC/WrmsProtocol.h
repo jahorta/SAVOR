@@ -190,7 +190,7 @@ enum class ExecutionTerminalStatusCode : std::uint8_t {
     Paused = 2,
     Cancelled = 3,
     TimedOut = 4,
-    ViStalled = 5,
+    CoreStalled = 5,
     MovieEnded = 6,
     ConsumedStop = 7,
     UnexpectedStop = 8,

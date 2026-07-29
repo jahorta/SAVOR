@@ -225,8 +225,6 @@ protected:
             {
                 .name = "dbutils-run-spec-" + std::to_string(key),
                 .priority = 1,
-                .run_ms = 1000,
-                .vi_stall_ms = 0,
                 .use_single_turn_runner = true,
                 .created_at_utc = now,
                 .correlation_id = "dbutils-test",

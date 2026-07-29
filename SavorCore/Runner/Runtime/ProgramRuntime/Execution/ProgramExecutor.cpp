@@ -2328,7 +2328,6 @@ struct ProgramExecutor::Impl
     std::uint64_t next_trace = 1;
     std::uint64_t next_emission = 1;
     std::uint64_t next_artifact = 1;
-    std::optional<std::chrono::steady_clock::time_point> deadline;
 };
 
 ProgramExecutor::ProgramExecutor(
@@ -2464,12 +2463,6 @@ bool ProgramExecutor::Start(
     impl_->scopes.push_back(
         Impl::Scope{kInvocationScope, {}, {}});
     impl_->activity = ProgramExecutorActivity::Runnable;
-    if (impl_->limits.active_deadline_milliseconds > 0)
-    {
-        impl_->deadline = impl_->clock() +
-            std::chrono::milliseconds(
-                impl_->limits.active_deadline_milliseconds);
-    }
     impl_->Trace("invocation_started");
     return true;
 }
@@ -2487,13 +2480,6 @@ ProgramExecutorPumpResult ProgramExecutor::Pump(
     if (maximum_instructions == 0)
         return {true, {}, {}};
 
-    if (impl_->deadline && impl_->clock() >= *impl_->deadline)
-    {
-        impl_->BeginFailure(
-            ProgramInfrastructureStatus::TimedOut,
-            "deadline",
-            "Program active deadline expired");
-    }
     const CancellationReason cancellation =
         impl_->explicit_cancellation != CancellationReason::None
         ? impl_->explicit_cancellation
@@ -2938,7 +2924,7 @@ ProgramExecutor::next_wake() const noexcept
     {
         return std::nullopt;
     }
-    return impl_->deadline;
+    return std::nullopt;
 }
 
 } // namespace savor::runtime::program

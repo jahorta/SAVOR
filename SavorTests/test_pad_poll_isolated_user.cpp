@@ -206,7 +206,6 @@ TEST(
                 savor::inputmacro::WaitU32ChangeAction{
                     kBaseline,
                     kAddress,
-                    250,
                     0,
                 },
         },

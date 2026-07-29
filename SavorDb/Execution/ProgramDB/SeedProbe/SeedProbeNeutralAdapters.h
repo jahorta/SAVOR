@@ -4,7 +4,6 @@
 
 #include "../../IExecutionDb.h"
 #include "../../../Analysis/IAnalysisDb.h"
-#include "../../../Authoring/IAuthoringDb.h"
 #include "../ProgramKindDescriptor.h"
 #include "../../../../SavorCore/Phases/Programs/SeedProbe/SeedProbePayload.h"
 
@@ -14,8 +13,6 @@ class NeutralProbeJobPersistenceAdapter final : public IJobPersistenceAdapter {
 public:
     NeutralProbeJobPersistenceAdapter(
         savor::db::IExecutionDb* execution_db,
-        savor::db::IAnalysisDb* analysis_db,
-        savor::db::IAuthoringDb* authoring_db = nullptr,
         savor::seedprobe::SeedProbeTarget target = savor::seedprobe::SeedProbeTarget::PreBattle);
 
     WorkflowStepScheduleResult EncodeForQueueing(const WorkflowStepScheduleContext& context) const override;
@@ -23,8 +20,6 @@ public:
 
 private:
     savor::db::IExecutionDb* execution_db_ = nullptr;
-    savor::db::IAnalysisDb* analysis_db_ = nullptr;
-    savor::db::IAuthoringDb* authoring_db_ = nullptr;
     savor::seedprobe::SeedProbeTarget target_ = savor::seedprobe::SeedProbeTarget::PreBattle;
 };
 
@@ -64,7 +59,6 @@ public:
 
 ProgramKindDescriptor BuildSeedProbeNeutralDescriptor(
     savor::db::IExecutionDb* execution_db,
-    savor::db::IAnalysisDb* analysis_db,
-    savor::db::IAuthoringDb* authoring_db = nullptr);
+    savor::db::IAnalysisDb* analysis_db);
 
 } // namespace savor::db::execution::programdb::seedprobe

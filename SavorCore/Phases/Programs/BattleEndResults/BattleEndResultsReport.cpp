@@ -108,10 +108,11 @@ const char* FailureCodeName(FailureCode code) noexcept
     case FailureCode::InvalidResultPointer: return "invalid_result_pointer";
     case FailureCode::InvalidResultState: return "invalid_result_state";
     case FailureCode::InvalidRowCount: return "invalid_row_count";
-    case FailureCode::Timeout: return "timeout";
+    case FailureCode::ReservedLegacyTimeout: return "reserved_legacy_timeout";
     case FailureCode::UnexpectedBreakpoint: return "unexpected_breakpoint";
     case FailureCode::QualificationMismatch: return "qualification_mismatch";
-    case FailureCode::GuestNeutralTimeout: return "guest_neutral_timeout";
+    case FailureCode::GuestNeutralUnacknowledged:
+        return "guest_neutral_unacknowledged";
     case FailureCode::StaleOccurrence: return "stale_occurrence";
     case FailureCode::OccurrenceLimit: return "occurrence_limit";
     case FailureCode::NoProgress: return "no_progress";

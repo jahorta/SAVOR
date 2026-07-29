@@ -384,7 +384,6 @@ int run_battle_jobs(
     BattleJobBatchRunSummary summary{};
     summary.options = options;
     summary.resource_inputs = options.resource_inputs;
-    summary.timeout_ms = resolved_battle_job_batch_timeout_ms(options);
     const auto run_requests = resolved_battle_job_batch_requests(options);
 
     const auto worker_preflight = savor::RunWorkerCapabilityPreflight(
@@ -436,7 +435,6 @@ int run_battle_jobs(
             .source_exec_job_id = request.exec_job_id,
             .override_start_rng_seed = request.override_start_rng_seed,
             .override_fake_attacks_this_turn = request.override_fake_attacks_this_turn,
-            .battle_run_ms = request.battle_run_ms,
         });
     }
     if (!clone_battle_jobs_for_capture(
@@ -477,8 +475,6 @@ int run_battle_jobs(
         savor::runner::parallel::savordb::DBWorkflowWorkerCoordinatorConfig{
             .desired_workers = static_cast<std::uint32_t>(summary.worker_count),
             .controller_sleep_ms = static_cast<std::uint32_t>(options.poll_ms),
-            .worker_silence_in_flight_timeout_ms =
-                static_cast<std::uint32_t>(summary.timeout_ms),
             .max_concurrent_worker_starts = 1u,
             .worker_exe_path = options.worker_exe_path.string(),
             .iso_path = options.iso_path.string(),
@@ -521,10 +517,12 @@ int run_battle_jobs(
     coordinator.SetPaused(wait_for_initial_worker_pool);
     coordinator.Start();
 
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(summary.timeout_ms);
     if (wait_for_initial_worker_pool) {
+        const auto ready_deadline =
+            std::chrono::steady_clock::now() +
+            std::chrono::seconds(60);
         std::size_t ready_workers = 0;
-        while (std::chrono::steady_clock::now() < deadline) {
+        while (std::chrono::steady_clock::now() < ready_deadline) {
             const auto workers = coordinator.SnapshotWorkers();
             ready_workers = static_cast<std::size_t>(std::count_if(
                 workers.begin(), workers.end(), [](const WorkerSnapshot& worker) {
@@ -545,25 +543,11 @@ int run_battle_jobs(
         coordinator.SetPaused(false);
     }
 
-    while (std::chrono::steady_clock::now() < deadline) {
+    for (;;) {
         if (all_jobs_terminal(db_service->ExecutionDb(), &summary.jobs)) {
             break;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(options.poll_ms));
-    }
-    if (!all_jobs_terminal(db_service->ExecutionDb(), &summary.jobs)) {
-        summary.timed_out = true;
-        append_error(summary, "timed out waiting for cloned execution jobs to finish");
-        for (auto& job : summary.jobs) {
-            if (!is_terminal_state(job.terminal_state)) {
-                job.timed_out = true;
-                std::string cancel_error;
-                if (!db_service->ExecutionDb()->CancelQueuedOrClaimedJob(job.clone.cloned_exec_job_id, &cancel_error)
-                    && !cancel_error.empty()) {
-                    append_error(job, "failed canceling timed-out job: " + cancel_error);
-                }
-            }
-        }
     }
 
     coordinator.Stop();
@@ -588,7 +572,7 @@ int run_battle_jobs(
     const bool all_succeeded = std::all_of(summary.jobs.begin(), summary.jobs.end(), [](const BattleJobBatchRunJobSummary& job) {
         return job.terminal_state == "SUCCEEDED";
     });
-    if (summary.timed_out || !all_succeeded || has_job_errors(summary)) {
+    if (!all_succeeded || has_job_errors(summary)) {
         return 1;
     }
     return 0;

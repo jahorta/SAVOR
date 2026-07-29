@@ -9,10 +9,9 @@
 
 namespace phase::battle::endresults {
 
-inline constexpr std::uint32_t PayloadVersion = 2;
+inline constexpr std::uint32_t PayloadVersion = 3;
 
 struct EncodeSpec {
-    std::uint32_t run_timeout_ms{0};
     AccelerationPolicy acceleration_policy{AccelerationPolicy::FullAdaptive};
     std::string completion_manifest_blob;
     std::string output_savestate_path;

@@ -39,7 +39,7 @@ namespace phase::battle::turnrunner {
     static const std::string LabelRetDWErr = "RET_DW_RUN_ERROR";
     static const std::string LabelRetOutOfTurns = "RET_OUT_OF_TURNS";
 
-    inline savor::PhaseScript MakeBattleTurnRunnerProgram(uint32_t long_timeout = 120000, uint32_t gate_timeout = 20000)
+    inline savor::PhaseScript MakeBattleTurnRunnerProgram()
     {
         using savor::battle::Outcome;
 
@@ -54,8 +54,6 @@ namespace phase::battle::turnrunner {
         ps.ops.push_back(savor::OpArmBpsFromPredTable());
         ps.ops.push_back(savor::OpLoadSnapshot());
         ps.ops.push_back(savor::OpClearMemoryWatchpoints());
-        ps.ops.push_back(savor::OpSetTimeoutFromKey(savor::context::key::battle::RUN_LONG_TIMEOUT_MS));
-        ps.ops.push_back(savor::OpSetU32(savor::context::key::core::RUN_POLL_MS, 0u));
         ps.ops.push_back(savor::OpSetU32(savor::context::key::battle::INPUT_RETRY_COUNT, 0u));
 
         // Infer prelude path by current turn. current_turn > 1 starts near TurnInputs and should not apply initial input.
@@ -101,7 +99,6 @@ namespace phase::battle::turnrunner {
 
         // ============  Label Turn Inputs  ===================
         ps.ops.push_back(savor::OpLabel(LabelTurnInputs));
-        ps.ops.push_back(savor::OpSetU32(savor::context::key::core::RUN_POLL_MS, 10u));
         ps.ops.push_back(savor::OpLabel(LabelMaterializeTurnMacro));
         ps.ops.push_back(savor::OpMaterializeBattleTurnMacroSteps());
         ps.ops.push_back(savor::OpGotoIf(savor::context::key::battle::PLAN_MATERIALIZE_ERR, savor::PSCmp::NE, 0u, LabelRetMaterializeFail));
@@ -114,18 +111,14 @@ namespace phase::battle::turnrunner {
         ps.ops.push_back(savor::OpGoto(LabelRunTurnMacro));
 
         ps.ops.push_back(savor::OpLabel(LabelAfterTurnMacro));
-        ps.ops.push_back(savor::OpSetU32(savor::context::key::core::RUN_POLL_MS, 0u));
         ps.ops.push_back(savor::OpGoto(LabelConfirmTurnReady));
 
         // ============  Label Confirm Turn Ready  ===================
         // Require the game to accept the applied turn and finish instruction generation before normal post-input wait.
         ps.ops.push_back(savor::OpLabel(LabelConfirmTurnReady));
-        ps.ops.push_back(savor::OpSetU32(savor::context::key::core::RUN_POLL_MS, 0u));
-        ps.ops.push_back(savor::OpSetTimeoutToMS(gate_timeout));
         ps.ops.push_back(savor::OpRunUntilBp());
         ps.ops.push_back(savor::OpGotoIf(DW_Outcome, savor::PSCmp::NE, 0u, LabelRetryInput));
         ps.ops.push_back(savor::OpGotoIf(savor::context::key::core::RUN_HIT_BP_KEY, savor::PSCmp::NE, (uint32_t)BP_BattleInputsDone, LabelRetryInput));
-        ps.ops.push_back(savor::OpSetTimeoutFromKey(savor::context::key::battle::RUN_LONG_TIMEOUT_MS));
         ps.ops.push_back(savor::OpArmCaptureMemoryWatchpoints());
         ps.ops.push_back(savor::OpGoto(LabelRunAppliedInputs));
 
@@ -153,8 +146,6 @@ namespace phase::battle::turnrunner {
         ps.ops.push_back(savor::OpAddU32(savor::context::key::battle::INPUT_RETRY_COUNT, 1u));
         ps.ops.push_back(savor::OpLoadSnapshot());
         ps.ops.push_back(savor::OpClearMemoryWatchpoints());
-        ps.ops.push_back(savor::OpSetTimeoutFromKey(savor::context::key::battle::RUN_LONG_TIMEOUT_MS));
-        ps.ops.push_back(savor::OpSetU32(savor::context::key::core::RUN_POLL_MS, 0u));
         ps.ops.push_back(savor::OpGoto(LabelStartAttempt));
 
         ps.ops.push_back(savor::OpLabel(LabelRetryExhausted));

@@ -59,9 +59,7 @@ struct InteractionSegmentDefinition
     // under the same non-neutral publication, name the semantic successor
     // explicitly. Ordinary source departure uses ContinueUntil suppression.
     std::optional<SemanticPointReference> held_through_successor;
-    std::uint64_t deadline_milliseconds = 0;
     bool fail_on_movie_end = true;
-    bool require_vi_progress = true;
     std::vector<ProgramFunctionId> attached_observations;
     std::vector<ExactDependencyIdentity> attached_checks;
     std::optional<std::string> release_witness_point;

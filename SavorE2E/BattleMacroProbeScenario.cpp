@@ -33,8 +33,6 @@ namespace savor::e2e {
 namespace {
 
 using Clock = std::chrono::steady_clock;
-constexpr std::uint32_t kDefaultObservationTailSeconds = 10;
-constexpr std::uint32_t kMaxObservationTailSeconds = 300;
 
 std::filesystem::path ResolveWorkspaceRoot(const CliOptions& options) {
     return options.workspace_root.value_or(std::filesystem::temp_directory_path() / "savor-e2e-default");
@@ -64,7 +62,6 @@ std::string MacroResultLine(const savor::PRResult& result) {
     std::uint32_t memory_latest = 0;
     std::uint32_t memory_changed = 0;
     std::uint32_t memory_poll_count = 0;
-    std::uint32_t memory_elapsed_ms = 0;
     result.ps.ctx.get(savor::context::key::core::DW_RUN_OUTCOME_CODE, dw_err);
     result.ps.ctx.get(savor::context::key::battle::MACRO_RESULT, macro_result);
     result.ps.ctx.get(savor::context::key::battle::MACRO_FAILURE_CODE, macro_failure);
@@ -78,7 +75,6 @@ std::string MacroResultLine(const savor::PRResult& result) {
     result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_LATEST, memory_latest);
     result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_CHANGED, memory_changed);
     result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_POLL_COUNT, memory_poll_count);
-    result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_ELAPSED_MS, memory_elapsed_ms);
 
     std::ostringstream line;
     line << "[battle-macro-probe-result]"
@@ -99,8 +95,7 @@ std::string MacroResultLine(const savor::PRResult& result) {
          << " memory_before=" << FormatHexPc(memory_baseline)
          << " memory_after=" << FormatHexPc(memory_latest)
          << " memory_changed=" << memory_changed
-         << " memory_polls=" << memory_poll_count
-         << " memory_elapsed_ms=" << memory_elapsed_ms;
+         << " memory_polls=" << memory_poll_count;
     return line.str();
 }
 
@@ -170,9 +165,6 @@ struct FakeAttackSweepTrial {
     std::uint32_t first_polls{0};
     std::uint32_t repeat1_polls{0};
     std::uint32_t repeat2_polls{0};
-    std::uint32_t first_elapsed_ms{0};
-    std::uint32_t repeat1_elapsed_ms{0};
-    std::uint32_t repeat2_elapsed_ms{0};
     std::uint32_t failure_code{0};
 };
 
@@ -184,9 +176,7 @@ struct FakeAttackSweepSummary {
     std::uint32_t repeat1_successes{0};
     std::uint32_t repeat2_successes{0};
     std::uint64_t total_polls{0};
-    std::uint64_t total_elapsed_ms{0};
     std::uint32_t max_polls{0};
-    std::uint32_t max_elapsed_ms{0};
 
     bool first_reliable() const { return trials != 0 && first_successes == trials; }
     bool repeat1_reliable() const { return trials != 0 && repeat1_successes == trials; }
@@ -195,9 +185,6 @@ struct FakeAttackSweepSummary {
     bool reliable() const { return trials != 0 && failures == 0 && first_reliable() && repeat_reliable(); }
     double avg_polls() const {
         return trials == 0 ? 0.0 : static_cast<double>(total_polls) / static_cast<double>(trials * 3u);
-    }
-    double avg_elapsed_ms() const {
-        return trials == 0 ? 0.0 : static_cast<double>(total_elapsed_ms) / static_cast<double>(trials * 3u);
     }
 };
 
@@ -221,7 +208,6 @@ std::vector<FakeAttackSweepCandidate> BuildFakeAttackSweepCandidates(
                         .memory_gate_mode = mode,
                         .target_neutral_before_b_frames = target_neutral,
                         .input_neutral_after_b_frames = input_neutral,
-                        .memory_timeout_ms = 1000,
                     },
                 });
             }
@@ -239,9 +225,6 @@ bool IsBetterSweepRecommendation(const FakeAttackSweepSummary& lhs, const FakeAt
     }
     if (lhs.avg_polls() != rhs.avg_polls()) {
         return lhs.avg_polls() < rhs.avg_polls();
-    }
-    if (lhs.max_elapsed_ms != rhs.max_elapsed_ms) {
-        return lhs.max_elapsed_ms < rhs.max_elapsed_ms;
     }
     return lhs.candidate.index < rhs.candidate.index;
 }
@@ -425,19 +408,6 @@ PromptResult PromptBattleMacroSavestatePath(
     }
 }
 
-bool ParseObservationTailSeconds(const std::string& value, std::uint32_t* seconds_out) {
-    const auto trimmed = TrimPromptValue(value);
-    if (trimmed.empty()) return false;
-    std::uint32_t seconds = 0;
-    const char* first = trimmed.data();
-    const char* last = trimmed.data() + trimmed.size();
-    const auto result = std::from_chars(first, last, seconds);
-    if (result.ec != std::errc{} || result.ptr != last) return false;
-    if (seconds == 0 || seconds > kMaxObservationTailSeconds) return false;
-    if (seconds_out) *seconds_out = seconds;
-    return true;
-}
-
 bool ParseFakeAttackCount(const std::string& value, std::uint32_t* count_out) {
     const auto trimmed = TrimPromptValue(value);
     if (trimmed.empty()) return false;
@@ -487,61 +457,21 @@ PromptResult PromptBattleMacroFakeAttackCount(
     }
 }
 
-PromptResult PromptBattleMacroObservationTailSeconds(
-    std::uint32_t default_seconds,
-    std::uint32_t* seconds_out,
-    std::string* error_out) {
-    if (!IsInteractiveStdin()) {
-        if (error_out) *error_out = "battle_macro_probe requires explicit battle plan arguments when stdin is not interactive";
-        return PromptResult::Cancel;
-    }
-
-    for (;;) {
-        std::string line;
-        if (!ReadPromptLine("Observation tail seconds [1..300, Enter current, b back, q cancel]\n  current: "
-            + std::to_string(default_seconds) + "\n> ", &line, error_out)) {
-            return PromptResult::Cancel;
-        }
-        line = TrimPromptValue(std::move(line));
-        if (IsCancelInput(line)) {
-            if (error_out) *error_out = "battle macro probe cancelled";
-            return PromptResult::Cancel;
-        }
-        if (IsBackInput(line)) {
-            return PromptResult::Back;
-        }
-        if (line.empty()) {
-            *seconds_out = default_seconds;
-            return PromptResult::Done;
-        }
-        std::uint32_t parsed = 0;
-        if (ParseObservationTailSeconds(line, &parsed)) {
-            *seconds_out = parsed;
-            return PromptResult::Done;
-        }
-        std::cout << "Enter an observation tail duration from 1 through "
-                  << kMaxObservationTailSeconds << " seconds.\n";
-    }
-}
-
 struct BattleMacroInteractiveDraft {
     std::filesystem::path savestate_path;
     std::vector<phase::battle::macroprobe::MacroCommand> commands;
     std::uint32_t fake_attack_count{0};
-    std::uint32_t observation_tail_seconds{kDefaultObservationTailSeconds};
 };
 
 PromptResult PromptBattleMacroInteractiveDraft(
     const std::filesystem::path& default_savestate_path,
     std::uint32_t default_fake_attack_count,
-    std::uint32_t default_observation_tail_seconds,
     BattleMacroInteractiveDraft* draft,
     std::string* error_out) {
     enum class Step {
         Savestate,
         FakeAttacks,
         Plan,
-        TailSeconds,
         Done,
     };
 
@@ -549,7 +479,6 @@ PromptResult PromptBattleMacroInteractiveDraft(
     std::filesystem::path savestate_path = default_savestate_path;
     std::vector<phase::battle::macroprobe::MacroCommand> commands;
     std::uint32_t fake_attack_count = default_fake_attack_count;
-    std::uint32_t observation_tail_seconds = default_observation_tail_seconds;
 
     while (step != Step::Done) {
         switch (step) {
@@ -576,21 +505,6 @@ PromptResult PromptBattleMacroInteractiveDraft(
                 step = Step::FakeAttacks;
                 break;
             }
-            step = Step::TailSeconds;
-            break;
-        }
-        case Step::TailSeconds: {
-            std::cout << "Plan: fake_attacks=" << fake_attack_count
-                      << " commands=" << phase::battle::macroprobe::FormatCommandPlanSpec(commands) << "\n";
-            const auto result = PromptBattleMacroObservationTailSeconds(
-                observation_tail_seconds,
-                &observation_tail_seconds,
-                error_out);
-            if (result == PromptResult::Cancel) return PromptResult::Cancel;
-            if (result == PromptResult::Back) {
-                step = Step::Plan;
-                break;
-            }
             step = Step::Done;
             break;
         }
@@ -602,7 +516,6 @@ PromptResult PromptBattleMacroInteractiveDraft(
     draft->savestate_path = std::move(savestate_path);
     draft->commands = std::move(commands);
     draft->fake_attack_count = fake_attack_count;
-    draft->observation_tail_seconds = observation_tail_seconds;
     return PromptResult::Done;
 }
 
@@ -662,8 +575,6 @@ bool WriteFakeAttackSweepJson(
             << ",\"frame_cost\":" << summary->candidate.frame_cost()
             << ",\"max_polls\":" << summary->max_polls
             << ",\"avg_polls\":" << std::fixed << std::setprecision(3) << summary->avg_polls()
-            << ",\"max_elapsed_ms\":" << summary->max_elapsed_ms
-            << ",\"avg_elapsed_ms\":" << std::fixed << std::setprecision(3) << summary->avg_elapsed_ms()
             << "}";
     };
 
@@ -689,8 +600,6 @@ bool WriteFakeAttackSweepJson(
             << ",\"repeat_reliable\":" << (summary.repeat_reliable() ? "true" : "false")
             << ",\"max_polls\":" << summary.max_polls
             << ",\"avg_polls\":" << std::fixed << std::setprecision(3) << summary.avg_polls()
-            << ",\"max_elapsed_ms\":" << summary.max_elapsed_ms
-            << ",\"avg_elapsed_ms\":" << std::fixed << std::setprecision(3) << summary.avg_elapsed_ms()
             << "}";
         if (i + 1 < summaries.size()) {
             out << ",";
@@ -713,12 +622,10 @@ bool RunBattleFakeAttackSweep(
     std::string* error_out) {
     constexpr std::uint32_t kTransitionNeutralFrames = 3;
     constexpr std::uint32_t kFakeAttacksPerTrial = 3;
-    constexpr std::uint32_t kObservationTailMs = 1;
     const phase::battle::macroprobe::FakeAttackPattern kFixedLastFakeAttackPattern{
         .memory_gate_mode = phase::battle::macroprobe::FakeAttackMemoryGateMode::TargetSide,
         .target_neutral_before_b_frames = 0,
         .input_neutral_after_b_frames = 0,
-        .memory_timeout_ms = 1000,
     };
 
     std::vector<phase::battle::macroprobe::MacroCommand> commands;
@@ -789,7 +696,6 @@ bool RunBattleFakeAttackSweep(
         for (int trial = 0; trial < options.battle_fake_sweep_trials; ++trial) {
             savor::PSInit init{};
             init.savestate_path = options.savestate_file.string();
-            init.default_timeout_ms = static_cast<std::uint32_t>(options.timeout_ms);
             init.derived_buffer_type = savor::DBuf::DK_None;
             if (!worker.ctl_set_program(savor::PK_None, savor::PK_BattleMacroProbe, init)) {
                 if (error_out) *error_out = "battle fake sweep worker failed SET_PROGRAM";
@@ -805,9 +711,6 @@ bool RunBattleFakeAttackSweep(
                 phase::battle::macroprobe::EncodeSpec{
                     .commands = commands,
                     .transition_neutral_frames = kTransitionNeutralFrames,
-                    .step_timeout_ms = static_cast<std::uint32_t>(options.timeout_ms),
-                    .vi_stall_ms = 5000,
-                    .observation_tail_ms = kObservationTailMs,
                     .fake_attack_count = kFakeAttacksPerTrial,
                     .fake_attack_pattern = candidate.pattern,
                     .use_mixed_fake_attack_patterns = true,
@@ -851,15 +754,12 @@ bool RunBattleFakeAttackSweep(
                 result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_FIRST_BASELINE, trial_result.first_before);
                 result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_FIRST_LATEST, trial_result.first_after);
                 result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_FIRST_POLL_COUNT, trial_result.first_polls);
-                result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_FIRST_ELAPSED_MS, trial_result.first_elapsed_ms);
                 result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_REPEAT_BASELINE, trial_result.repeat1_before);
                 result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_REPEAT_LATEST, trial_result.repeat1_after);
                 result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_REPEAT_POLL_COUNT, trial_result.repeat1_polls);
-                result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_REPEAT_ELAPSED_MS, trial_result.repeat1_elapsed_ms);
                 result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_REPEAT2_BASELINE, trial_result.repeat2_before);
                 result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_REPEAT2_LATEST, trial_result.repeat2_after);
                 result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_REPEAT2_POLL_COUNT, trial_result.repeat2_polls);
-                result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_REPEAT2_ELAPSED_MS, trial_result.repeat2_elapsed_ms);
                 std::uint32_t first_changed = 0;
                 std::uint32_t repeat1_changed = 0;
                 std::uint32_t repeat2_changed = 0;
@@ -884,15 +784,10 @@ bool RunBattleFakeAttackSweep(
             if (trial_result.repeat1_ok) ++summary.repeat1_successes;
             if (trial_result.repeat2_ok) ++summary.repeat2_successes;
             const std::uint32_t trial_polls = trial_result.first_polls + trial_result.repeat1_polls + trial_result.repeat2_polls;
-            const std::uint32_t trial_elapsed = trial_result.first_elapsed_ms + trial_result.repeat1_elapsed_ms + trial_result.repeat2_elapsed_ms;
             summary.total_polls += trial_polls;
-            summary.total_elapsed_ms += trial_elapsed;
             summary.max_polls = std::max(
                 summary.max_polls,
                 std::max(trial_result.first_polls, std::max(trial_result.repeat1_polls, trial_result.repeat2_polls)));
-            summary.max_elapsed_ms = std::max(
-                summary.max_elapsed_ms,
-                std::max(trial_result.first_elapsed_ms, std::max(trial_result.repeat1_elapsed_ms, trial_result.repeat2_elapsed_ms)));
 
             std::ostringstream trial_line;
             trial_line << "[battle-fake-sweep-trial]"
@@ -911,7 +806,6 @@ bool RunBattleFakeAttackSweep(
                 << " repeat2_before=" << FormatHexPc(trial_result.repeat2_before)
                 << " repeat2_after=" << FormatHexPc(trial_result.repeat2_after)
                 << " polls=" << trial_polls
-                << " elapsed_ms=" << trial_elapsed
                 << " failure=" << trial_result.failure_code;
             durable_log.AppendLine(trial_line.str());
         }
@@ -926,8 +820,6 @@ bool RunBattleFakeAttackSweep(
             << " repeat2_successes=" << summary.repeat2_successes << "/" << summary.trials
             << " max_polls=" << summary.max_polls
             << " avg_polls=" << std::fixed << std::setprecision(3) << summary.avg_polls()
-            << " max_elapsed_ms=" << summary.max_elapsed_ms
-            << " avg_elapsed_ms=" << std::fixed << std::setprecision(3) << summary.avg_elapsed_ms()
             << " frame_cost=" << candidate.frame_cost();
         durable_log.AppendLine(summary_line.str());
         std::cout << summary_line.str() << '\n';
@@ -1087,7 +979,6 @@ bool RunBattleMacroProbeScenario(
     std::uint64_t successful_runs = 0;
     std::filesystem::path current_savestate = options.savestate_file;
     std::uint32_t current_fake_attack_count = static_cast<std::uint32_t>(options.battle_macro_fake_attacks.value_or(0));
-    std::uint32_t current_observation_tail_seconds = kDefaultObservationTailSeconds;
     if (options.battle_fake_attack_sweep) {
         const bool ok = RunBattleFakeAttackSweep(
             options,
@@ -1105,14 +996,12 @@ bool RunBattleMacroProbeScenario(
         std::filesystem::path run_savestate;
         std::vector<phase::battle::macroprobe::MacroCommand> commands;
         std::uint32_t fake_attack_count = current_fake_attack_count;
-        std::uint32_t observation_tail_seconds = current_observation_tail_seconds;
         if (interactive_loop) {
             BattleMacroInteractiveDraft draft{};
             std::string prompt_error;
             const auto prompt_result = PromptBattleMacroInteractiveDraft(
                 current_savestate,
                 current_fake_attack_count,
-                current_observation_tail_seconds,
                 &draft,
                 &prompt_error);
             if (prompt_result != PromptResult::Done) {
@@ -1128,7 +1017,6 @@ bool RunBattleMacroProbeScenario(
             run_savestate = std::move(draft.savestate_path);
             commands = std::move(draft.commands);
             fake_attack_count = draft.fake_attack_count;
-            observation_tail_seconds = draft.observation_tail_seconds;
         } else {
             run_savestate = current_savestate;
             std::string prompt_error;
@@ -1138,12 +1026,9 @@ bool RunBattleMacroProbeScenario(
                 return false;
             }
             fake_attack_count = current_fake_attack_count;
-            observation_tail_seconds = kDefaultObservationTailSeconds;
         }
         current_savestate = run_savestate;
         current_fake_attack_count = fake_attack_count;
-        current_observation_tail_seconds = observation_tail_seconds;
-        const std::uint32_t observation_tail_ms = observation_tail_seconds * 1000u;
 
         phase::battle::macroprobe::FailureCode build_failure = phase::battle::macroprobe::FailureCode::Ok;
         const auto steps = phase::battle::macroprobe::BuildMacroProbePlanSteps(
@@ -1167,7 +1052,6 @@ bool RunBattleMacroProbeScenario(
             + " fake_attacks=" + std::to_string(fake_attack_count)
             + " savestate=\"" + EscapeLogValue(run_savestate.string()) + "\""
             + " commands=" + std::to_string(commands.size())
-            + " observation_tail_seconds=" + std::to_string(observation_tail_seconds)
             + " transition_neutral_frames=" + std::to_string(kTransitionNeutralFrames)
             + " steps=" + std::to_string(steps.size())
             + " visual=" + (params.visual ? "true" : "false")
@@ -1175,7 +1059,6 @@ bool RunBattleMacroProbeScenario(
 
         savor::PSInit init{};
         init.savestate_path = run_savestate.string();
-        init.default_timeout_ms = static_cast<std::uint32_t>(options.timeout_ms);
         init.derived_buffer_type = savor::DBuf::DK_None;
         if (!worker.ctl_set_program(savor::PK_None, savor::PK_BattleMacroProbe, init)) {
             stop_worker();
@@ -1193,9 +1076,6 @@ bool RunBattleMacroProbeScenario(
             phase::battle::macroprobe::EncodeSpec{
                 .commands = commands,
                 .transition_neutral_frames = kTransitionNeutralFrames,
-                .step_timeout_ms = static_cast<std::uint32_t>(options.timeout_ms),
-                .vi_stall_ms = 5000,
-                .observation_tail_ms = observation_tail_ms,
                 .fake_attack_count = fake_attack_count,
             },
             payload);
@@ -1221,8 +1101,8 @@ bool RunBattleMacroProbeScenario(
             }
         };
 
-        const auto result_timeout_ms = options.timeout_ms * static_cast<std::int64_t>(steps.size() + 3)
-            + static_cast<std::int64_t>(observation_tail_ms);
+        const auto result_timeout_ms =
+            options.timeout_ms * static_cast<std::int64_t>(steps.size() + 3);
         const auto deadline = Clock::now() + std::chrono::milliseconds(result_timeout_ms);
         savor::PRResult result{};
         bool have_result = false;

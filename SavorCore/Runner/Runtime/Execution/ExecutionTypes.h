@@ -96,18 +96,9 @@ enum class ExecutionInterruptionPolicy : std::uint8_t
     AllowKnown,
 };
 
-struct ViStallPolicy
-{
-    bool enabled = false;
-    std::chrono::milliseconds warmup{};
-    std::chrono::milliseconds maximum_stall{};
-};
-
 struct ExecutionRequestPolicy
 {
     StateEpoch expected_epoch;
-    std::chrono::milliseconds active_timeout{};
-    ViStallPolicy vi_stall;
     MovieEndedPolicy movie_ended = MovieEndedPolicy::Ignore;
     ExecutionThrottlePolicy throttle = ExecutionThrottlePolicy::Preserve;
     ExecutionCurrentPointPolicy current_point =
@@ -140,6 +131,10 @@ struct InputSynchronizedAdvanceRequest
 struct SafePauseRequest
 {
     ExecutionRequestPolicy policy;
+    // Host-side pause confirmation remains bounded even though guest
+    // execution is cancellation-driven.
+    std::chrono::milliseconds confirmation_timeout{
+        std::chrono::seconds(5)};
 };
 
 struct InteractiveResumeRequest
@@ -166,7 +161,8 @@ enum class ExecutionTerminalStatus : std::uint8_t
     Paused,
     Cancelled,
     TimedOut,
-    ViStalled,
+    // Retains terminal numeric value 5 for WRMS v1 compatibility.
+    CoreStalled,
     MovieEnded,
     ConsumedStop,
     UnexpectedStop,
@@ -229,7 +225,6 @@ struct ExecutionTerminalResult
     ExecutionTerminalStatus status = ExecutionTerminalStatus::BackendFailure;
     StateEpoch state_epoch;
     std::uint32_t completed_count = 0;
-    std::chrono::milliseconds remaining_active_budget{};
     ExecutionEnvironmentEvidence evidence;
     std::optional<StopRouteReceipt> stop;
     std::optional<InputPublicationEvidence> input_publication;
@@ -262,6 +257,26 @@ enum class ExecutionEventKind : std::uint8_t
     StateChanged,
     Progress,
     Terminal,
+    HealthWarning,
+};
+
+enum class ExecutionHealthWarningKind : std::uint8_t
+{
+    SuspectedCoreStall,
+    HostActivityLongRunning,
+    HostActivityDiagnosticOverflow,
+};
+
+struct ExecutionHealthWarning
+{
+    ExecutionHealthWarningKind kind =
+        ExecutionHealthWarningKind::SuspectedCoreStall;
+    StateEpoch state_epoch;
+    std::optional<ExecutionOperationId> operation_id;
+    std::chrono::milliseconds elapsed{};
+    std::uint64_t host_activity_generation = 0;
+    std::string code;
+    std::string message;
 };
 
 struct ExecutionEvent
@@ -270,6 +285,7 @@ struct ExecutionEvent
     ExecutionSnapshot snapshot;
     std::optional<ExecutionTerminalResult> terminal;
     std::optional<ExecutionProgress> progress;
+    std::optional<ExecutionHealthWarning> health_warning;
 };
 
 struct ExecutionSubmissionReceipt
@@ -297,7 +313,6 @@ struct InterruptionHandlerDescriptor
 {
     std::string key;
     std::vector<ExecutionOperationKind> allowed_child_operations;
-    std::chrono::milliseconds child_active_budget{};
     std::vector<std::string> permitted_nested_keys;
     bool allow_self_recursion = false;
     std::uint8_t maximum_depth = 1;

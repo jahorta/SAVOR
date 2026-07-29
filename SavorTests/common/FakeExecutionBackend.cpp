@@ -72,6 +72,33 @@ void FakeExecutionBackendControl::SetThrottleResult(runtime::BackendResult value
     throttle_result = std::move(value);
 }
 
+void FakeExecutionBackendControl::SetPauseChangesState(bool value)
+{
+    std::lock_guard lock(mutex);
+    pause_changes_state = value;
+}
+
+void FakeExecutionBackendControl::SetHealth(
+    runtime::BackendHealthReport value)
+{
+    std::lock_guard lock(mutex);
+    health = std::move(value);
+}
+
+void FakeExecutionBackendControl::QueueQuerySnapshot(
+    runtime::BackendExecutionSnapshot value)
+{
+    std::lock_guard lock(mutex);
+    queued_query_snapshots.push_back(std::move(value));
+}
+
+void FakeExecutionBackendControl::QueueQueryCallback(
+    std::function<void()> callback)
+{
+    std::lock_guard lock(mutex);
+    queued_query_callbacks.push_back(std::move(callback));
+}
+
 std::vector<std::string> FakeExecutionBackendControl::Calls() const
 {
     std::lock_guard lock(mutex);
@@ -107,9 +134,32 @@ FakeExecutionBackend::Capabilities() const noexcept
 runtime::BackendExecutionSnapshot
 FakeExecutionBackend::QueryExecutionSnapshot() const
 {
+    {
+        std::lock_guard lock(control_->mutex);
+        control_->RecordLocked("query");
+        if (!control_->queued_query_snapshots.empty())
+        {
+            control_->snapshot =
+                std::move(control_->queued_query_snapshots.front());
+            control_->queued_query_snapshots.pop_front();
+        }
+        if (control_->queued_query_callbacks.empty())
+            return control_->snapshot;
+        std::function<void()> callback =
+            std::move(control_->queued_query_callbacks.front());
+        control_->queued_query_callbacks.pop_front();
+        const runtime::BackendExecutionSnapshot snapshot =
+            control_->snapshot;
+        callback();
+        return snapshot;
+    }
+}
+
+runtime::BackendHealthReport FakeExecutionBackend::CheckHealth() const
+{
     std::lock_guard lock(control_->mutex);
-    control_->RecordLocked("query");
-    return control_->snapshot;
+    control_->RecordLocked("check_health");
+    return control_->health;
 }
 
 runtime::BackendResult FakeExecutionBackend::RequestPause()
@@ -117,7 +167,7 @@ runtime::BackendResult FakeExecutionBackend::RequestPause()
     std::lock_guard lock(control_->mutex);
     control_->RecordLocked("pause");
     const runtime::BackendResult result = control_->pause_result;
-    if (result.ok)
+    if (result.ok && control_->pause_changes_state)
     {
         control_->snapshot.core_state = runtime::BackendCoreState::Paused;
         control_->snapshot.pause_confirmed = true;

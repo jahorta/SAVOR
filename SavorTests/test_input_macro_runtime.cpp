@@ -35,7 +35,6 @@ struct FakeInputMacroHost final : IInputMacroHost {
     struct MemoryRequest {
         std::uint32_t address;
         std::uint32_t baseline;
-        std::uint32_t timeout_ms;
     };
     std::vector<MemoryRequest> memory_requests;
 
@@ -81,11 +80,10 @@ struct FakeInputMacroHost final : IInputMacroHost {
 
     MemoryChangeResult wait_for_u32_change(
         std::uint32_t address,
-        std::uint32_t baseline,
-        std::uint32_t timeout_ms) override
+        std::uint32_t baseline) override
     {
         calls.emplace_back("memory");
-        memory_requests.push_back({address, baseline, timeout_ms});
+        memory_requests.push_back({address, baseline});
         if (memory_results.empty()) return {};
         const auto result = memory_results.front();
         memory_results.pop_front();
@@ -137,8 +135,8 @@ TEST(InputMacroRuntime, ExecutesSequentialAndAlternativeBreakpointGates)
 {
     FakeInputMacroHost host;
     host.breakpoint_results = {
-        {.status = InputMacroHostStatus::Succeeded, .hit = true, .hit_key = kGateA, .hit_pc = 0x8007cfd8u, .elapsed_ms = 4},
-        {.status = InputMacroHostStatus::Succeeded, .hit = true, .hit_key = kGateAlt, .hit_pc = 0x8007d06cu, .elapsed_ms = 7},
+        {.status = InputMacroHostStatus::Succeeded, .hit = true, .hit_key = kGateA, .hit_pc = 0x8007cfd8u},
+        {.status = InputMacroHostStatus::Succeeded, .hit = true, .hit_key = kGateAlt, .hit_pc = 0x8007d06cu},
     };
     InputMacroRuntime runtime(host);
     const std::vector<BPKey> declared{kGateA, kGateB, kGateAlt};
@@ -180,7 +178,6 @@ TEST(InputMacroRuntime, PropagatesBreakpointInputPollReceipt)
         .requested_input = input,
         .input_poll_count = 11,
         .input_acknowledged = true,
-        .elapsed_ms = 5,
     });
 
     InputMacroRuntime runtime(host);
@@ -249,13 +246,12 @@ TEST(InputMacroRuntime, CapturesBaselineAndWaitsForU32Change)
         .status = InputMacroHostStatus::Succeeded,
         .latest_value = 0x87654321u,
         .poll_count = 6,
-        .elapsed_ms = 19,
     });
     InputMacroRuntime runtime(host);
     const std::vector<BPKey> declared;
     InputMacroPlan plan{{
         {.label = "before", .action = CaptureU32BaselineAction{"target", kAddress}},
-        {.label = "changed", .action = WaitU32ChangeAction{"target", kAddress, 250, 2}},
+        {.label = "changed", .action = WaitU32ChangeAction{"target", kAddress, 2}},
     }};
     ASSERT_EQ(runtime.Start(std::move(plan), declared).state, InputMacroRuntimeState::Running);
 
@@ -270,10 +266,8 @@ TEST(InputMacroRuntime, CapturesBaselineAndWaitsForU32Change)
     EXPECT_EQ(changed.memory_latest, 0x87654321u);
     EXPECT_TRUE(changed.memory_changed);
     EXPECT_EQ(changed.memory_poll_count, 6u);
-    EXPECT_EQ(changed.elapsed_ms, 19u);
     EXPECT_EQ(changed.diagnostic_cycle_index, 2u);
     ASSERT_EQ(host.memory_requests.size(), 1u);
-    EXPECT_EQ(host.memory_requests[0].timeout_ms, 250u);
     ExpectCleanupSuffix(host);
 }
 
@@ -284,7 +278,7 @@ TEST(InputMacroRuntime, RejectsMissingOrMismatchedBaselineReferences)
         FakeInputMacroHost host;
         InputMacroRuntime runtime(host);
         InputMacroPlan plan{{
-            {.label = "missing", .action = WaitU32ChangeAction{"none", kAddress, 100, 0}},
+            {.label = "missing", .action = WaitU32ChangeAction{"none", kAddress, 0}},
         }};
         const auto result = runtime.Start(std::move(plan), declared);
         EXPECT_EQ(result.failure, InputMacroFailure::InvalidBaselineReference);
@@ -295,38 +289,36 @@ TEST(InputMacroRuntime, RejectsMissingOrMismatchedBaselineReferences)
         InputMacroRuntime runtime(host);
         InputMacroPlan plan{{
             {.label = "capture", .action = CaptureU32BaselineAction{"same", kAddress}},
-            {.label = "wrong-address", .action = WaitU32ChangeAction{"same", kAddress + 4, 100, 0}},
+            {.label = "wrong-address", .action = WaitU32ChangeAction{"same", kAddress + 4, 0}},
         }};
         const auto result = runtime.Start(std::move(plan), declared);
         EXPECT_EQ(result.failure, InputMacroFailure::InvalidBaselineReference);
     }
 }
 
-TEST(InputMacroRuntime, ReportsMemoryTimeoutWithTelemetry)
+TEST(InputMacroRuntime, ReportsCancellationDuringMemoryWait)
 {
     FakeInputMacroHost host;
     host.read_results.push_back({true, 41u});
     host.memory_results.push_back({
-        .status = InputMacroHostStatus::TimedOut,
+        .status = InputMacroHostStatus::Cancelled,
         .latest_value = 41u,
         .poll_count = 9,
-        .elapsed_ms = 100,
     });
     InputMacroRuntime runtime(host);
     const std::vector<BPKey> declared;
     InputMacroPlan plan{{
         {.label = "capture", .action = CaptureU32BaselineAction{"value", kAddress}},
-        {.label = "timeout", .action = WaitU32ChangeAction{"value", kAddress, 100, 1}},
+        {.label = "cancelled", .action = WaitU32ChangeAction{"value", kAddress, 1}},
     }};
     ASSERT_EQ(runtime.Start(std::move(plan), declared).state, InputMacroRuntimeState::Running);
     ASSERT_TRUE(runtime.ExecuteNext().step_completed);
 
     const auto result = runtime.ExecuteNext();
-    EXPECT_EQ(result.failure, InputMacroFailure::MemoryTimeout);
+    EXPECT_EQ(result.failure, InputMacroFailure::Cancelled);
     EXPECT_EQ(result.memory_baseline, 41u);
     EXPECT_EQ(result.memory_latest, 41u);
     EXPECT_EQ(result.memory_poll_count, 9u);
-    EXPECT_EQ(result.elapsed_ms, 100u);
     ExpectCleanupSuffix(host);
 }
 
@@ -351,12 +343,11 @@ TEST(InputMacroRuntime, ReportsCaptureAndWaitReadFailures)
             .status = InputMacroHostStatus::ReadFailed,
             .latest_value = 7,
             .poll_count = 2,
-            .elapsed_ms = 3,
         });
         InputMacroRuntime runtime(host);
         InputMacroPlan plan{{
             {.label = "capture", .action = CaptureU32BaselineAction{"value", kAddress}},
-            {.label = "read-fail", .action = WaitU32ChangeAction{"value", kAddress, 50, 0}},
+            {.label = "read-fail", .action = WaitU32ChangeAction{"value", kAddress, 0}},
         }};
         ASSERT_EQ(runtime.Start(std::move(plan), declared).state, InputMacroRuntimeState::Running);
         ASSERT_TRUE(runtime.ExecuteNext().step_completed);
@@ -365,7 +356,7 @@ TEST(InputMacroRuntime, ReportsCaptureAndWaitReadFailures)
     }
 }
 
-TEST(InputMacroRuntime, ValidatesPlanStructureAddressesAndTimeouts)
+TEST(InputMacroRuntime, ValidatesPlanStructureAndAddresses)
 {
     const std::vector<BPKey> declared{kGateA};
     auto expect_failure = [&](InputMacroPlan plan, InputMacroFailure failure) {
@@ -386,10 +377,6 @@ TEST(InputMacroRuntime, ValidatesPlanStructureAddressesAndTimeouts)
         InputMacroFailure::InvalidAddress);
     expect_failure(InputMacroPlan{{{.label = "unaligned", .action = CaptureU32BaselineAction{"b", kAddress + 1}}}},
         InputMacroFailure::InvalidAddress);
-    expect_failure(InputMacroPlan{{
-        {.label = "capture", .action = CaptureU32BaselineAction{"b", kAddress}},
-        {.label = "timeout", .action = WaitU32ChangeAction{"b", kAddress, 0, 0}},
-    }}, InputMacroFailure::InvalidTimeout);
 }
 
 TEST(InputMacroRuntime, RejectsUndeclaredAndUnauthorizedBreakpointKeys)
@@ -453,7 +440,7 @@ TEST(InputMacroRuntime, CleansUpExactlyOnceOnCompletionFailureAndCancellation)
     }
     {
         FakeInputMacroHost host;
-        host.breakpoint_results.push_back({.status = InputMacroHostStatus::TimedOut});
+        host.breakpoint_results.push_back({.status = InputMacroHostStatus::Failed});
         InputMacroRuntime runtime(host);
         ASSERT_EQ(runtime.Start(OneGatePlan(), declared).state, InputMacroRuntimeState::Running);
         ASSERT_EQ(runtime.ExecuteNext().state, InputMacroRuntimeState::Failed);

@@ -13,8 +13,6 @@ namespace phase::battle::runner {
 
     // encode side (parent)
     struct EncodeSpec {
-        uint32_t run_ms{ 0 };
-        uint32_t vi_stall_ms{ 0 };
         GCInputFrame initial{};
         soa::battle::actions::BattlePath path;
         std::vector<savor::pred::Spec> predicates;

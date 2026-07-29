@@ -24,7 +24,6 @@ enum DBuf : uint8_t {
 
 struct PSInit {
     std::string savestate_path;
-    uint32_t default_timeout_ms{ 10000 };
     DBuf derived_buffer_type{ DBuf::DK_None };
 };
 
@@ -41,8 +40,8 @@ struct PSResult {
 
 enum class RunToBpOutcome : uint32_t {
     Hit = 0,
-    Timeout = 1,
-    ViStalled = 2,
+    ReservedLegacyTimeout = 1,
+    ReservedLegacyViStall = 2,
     MovieEnded = 3,
     Aborted = 4,
     InputPlaybackFailed = 5,
@@ -53,8 +52,8 @@ inline const char* RunToBpOutcomeToString(uint32_t outcome)
 {
     switch (static_cast<RunToBpOutcome>(outcome)) {
     case RunToBpOutcome::Hit: return "Finished";
-    case RunToBpOutcome::Timeout: return "Timeout";
-    case RunToBpOutcome::ViStalled: return "ViStalled";
+    case RunToBpOutcome::ReservedLegacyTimeout: return "ReservedLegacyTimeout";
+    case RunToBpOutcome::ReservedLegacyViStall: return "ReservedLegacyViStall";
     case RunToBpOutcome::MovieEnded: return "MovieEnded";
     case RunToBpOutcome::Aborted: return "Aborted";
     case RunToBpOutcome::InputPlaybackFailed: return "InputPlaybackFailed";

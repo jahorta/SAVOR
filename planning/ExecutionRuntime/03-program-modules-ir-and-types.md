@@ -21,10 +21,12 @@ ever-growing central opcode switch.
 This document does not:
 
 - define the authoring syntax or editor;
-- change SavorDb SQL/schema, migrations, stored representations, durable queue/claim lifecycle,
-  workflow persistence, result-projection transaction boundaries, or artifact-storage interfaces;
-  document 06's ordered batch claim, exact-set lease renewal, claim/start validation, and targeted
-  terminal reconciliation interfaces do not change this program model;
+- change SavorDb SQL/schema or migrations, durable queue/claim lifecycle, workflow persistence,
+  result-projection transaction boundaries, or artifact-storage interfaces. The pre-6A cutover removes
+  obsolete timing fields from public authoring interfaces and generated arguments while private neutral
+  insert shims satisfy the unchanged physical schema; document 06's ordered batch claim, exact-set lease
+  renewal, claim/start validation, and targeted terminal reconciliation interfaces do not change this
+  program model;
 - create separate observation, interaction, predicate, or capture-language projects during this
   refactor; the composition libraries use the existing typed module-builder surface;
 - make canonical program envelopes a worker protocol or database persistence format;
@@ -106,7 +108,7 @@ The logical module contains:
 | `type_imports` | Exact type/schema ID, version, and hash dependencies |
 | `required_capabilities` | Capability/effect requirements checked before activation |
 | `accepted_policies` | State, runtime, movie, capture, replay, and debug policies the module permits |
-| `budgets` | Maximum instructions, calls, action requests, emissions, values/bytes, and elapsed deadline |
+| `budgets` | Maximum instructions, calls, action requests, emissions, values/bytes, artifacts, and other structural resources |
 | `source_map` | Versioned mapping from IR locations to builder or authored source |
 
 Exact identity and replay fields are further governed by document 05. Module imports and registered
@@ -287,9 +289,9 @@ The reusable authoring model contains:
   memory, or synthetic source. Programs import the logical identity and never manipulate its physical
   breakpoint/watchpoint representation.
 - `SemanticAwaitDefinition`: one or more exact point alternatives, optional bounded hit-time
-  qualification/sample requirements, explicit current-point acceptance, deadline/stall/movie/cancel
-  policies, and rearm/current-instruction-suppression policy. It lowers to a scoped logical router
-  subscription and `runtime.execution.continue_until`.
+  qualification/sample requirements, explicit current-point acceptance, movie/cancellation policies,
+  and rearm/current-instruction-suppression policy. It lowers to a scoped logical router subscription
+  and cancellation-driven `runtime.execution.continue_until`.
 - `SemanticPointReceipt`: the matched logical point, physical hit evidence, stop sequence,
   `StateEpoch`, and any declared hit-time samples. A receipt identifies one routed event; it does not
   grant control authority.
@@ -343,7 +345,7 @@ An `InteractionDefinition<State, Output>` declares:
 - typed reducer state and completion output;
 - pure initialization and advancement reducers;
 - a finite verifier-known set of segment definitions;
-- hard instruction/action/emission/elapsed budgets; and
+- hard instruction/action/emission/value/artifact structural budgets; and
 - the typed records/artifacts it may emit.
 
 Each `InteractionSegmentDefinition` declares one bounded unit:
@@ -353,14 +355,15 @@ Each `InteractionSegmentDefinition` declares one bounded unit:
 - request and release guest-poll acknowledgement requirements;
 - current-receipt suppression and declared semantic completion policies;
 - ordered observations and checks at the permitted acquisition moments;
-- deadline, stall, movie-ended, cancellation, and current-instruction-suppression policies; and
+- movie-ended, cancellation, and current-instruction-suppression policies; and
 - the typed completion mapping returned to the reducer/statechart.
 
 `InteractionSegmentResult` contains the exact semantic-point receipt, requested-input and neutral-release
-receipts when applicable, ordered observations/check results, elapsed evidence, originating
-`StateEpoch`, and a distinct terminal status. Timeout, unexpected point, unacknowledged input,
-unsatisfied check, infrastructure failure, cancellation, and cleanup failure cannot collapse into one
-boolean.
+receipts when applicable, ordered observations/check results, schema-declared domain evidence,
+originating `StateEpoch`, and a distinct terminal status. Host elapsed time may appear only as
+diagnostic telemetry, not as a completion policy or generic domain result. Unexpected point,
+unacknowledged input, unsatisfied check, confirmed infrastructure failure, cancellation, and cleanup
+failure cannot collapse into one boolean.
 
 Static interactions lower to ordinary subprogram CFG. Adaptive interactions lower to a reusable IR
 statechart whose pure reducer consumes only typed state and the prior segment result. The reducer may
@@ -488,8 +491,8 @@ Every entrypoint starts with one root resource scope. IR may nest lexical scopes
 - `defer` may register only an imported compensation action marked cleanup-safe and idempotent for that
   receipt type.
 - Normal scope exit performs its verified releases/compensations in reverse acquisition order.
-- Return, fail, cancellation, timeout, budget exhaustion, guard abort, and backend failure unwind every
-  open scope through the same runtime path.
+- Return, fail, cancellation, bounded-host timeout, structural-bound exhaustion, guard abort, and
+  backend failure unwind every open scope through the same runtime path.
 - A resource may be promoted only to an enclosing scope by an explicit typed operation allowed by its
   descriptor. It can never be emitted to a workflow as a live handle.
 - An artifact created by finalizing a resource is immutable durable output; it is not the resource
@@ -526,7 +529,7 @@ old-epoch resources before accepting the new epoch.
 - pending action request and continuation, if suspended;
 - lexical resource/defer stack;
 - current `StateEpoch` and all epoch-bound handles;
-- remaining instruction, call, action, emission, memory, artifact, and deadline budgets;
+- remaining instruction, call, action, emission, memory, artifact, and other structural budgets;
 - emitted-record and artifact-reference builders;
 - branch/action trace correlation;
 - structured diagnostics; and
@@ -601,8 +604,8 @@ Verification completes before state preparation or any action:
 7. Check entrypoint input, output, domain-outcome, emission, and artifact declarations.
 8. Check action capability/effect imports against the module and entrypoint allowance.
 9. Check lexical scope structure, deferred compensation descriptors, and resource promotion rules.
-10. Check recursion, call-depth, instruction, action, value/byte, emission, artifact, and deadline
-    budgets.
+10. Check recursion, call-depth, instruction, action, value/byte, emission, artifact, and other
+    structural budgets.
 11. Check accepted invocation policies and runtime compatibility.
 12. Produce a verified-module object that references only the imported dependency closure.
 
@@ -677,8 +680,8 @@ Program failures are classified before result assembly:
   anomaly. This can be a clean completed invocation.
 - **Predicate evaluation:** `Unsatisfied` follows the check's explicit branch/domain/fail/record policy;
   `Unavailable` remains distinct and follows the required-observation or action-failure contract.
-- **Cancellation/timeout:** ordinary flow does not resume; the pending action is cancelled and all
-  scopes unwind.
+- **Cancellation or confirmed infrastructure failure:** ordinary flow does not resume; the pending
+  action is cancelled and all scopes unwind.
 - **Cleanup failure:** diagnostics accumulate, remaining cleanup continues, and the result marks the
   session tainted when mandatory restoration is unproven.
 
@@ -693,7 +696,8 @@ This contract depends on:
 - the `WorkerRuntime`/`EmulationSession` ownership model in document 02;
 - the action, reducer, service, scope, and epoch contracts in document 04;
 - invocation, version, result, and artifact identity in document 05; and
-- the unchanged SavorDb ownership boundary for durable composition in document 06.
+- the SavorDb ownership boundary for durable composition in document 06, including the timing-only
+  public authoring cleanup and private neutral insert shim.
 
 Implementation must define the canonical IR and verifier before serializing user scripts as a permanent
 runtime format. Adopting today's opcode/context serialization as the permanent module format would

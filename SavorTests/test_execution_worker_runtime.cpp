@@ -50,13 +50,10 @@ static_assert(!std::is_convertible_v<WorkerCommandSequence, StateEpoch>);
 static_assert(!std::is_convertible_v<StateEpoch, std::uint64_t>);
 static_assert(!std::is_convertible_v<std::uint64_t, StateEpoch>);
 
-ExecutionRequestPolicy SessionExecutionPolicy(
-    StateEpoch epoch,
-    std::chrono::milliseconds timeout = 100ms)
+ExecutionRequestPolicy SessionExecutionPolicy(StateEpoch epoch)
 {
     ExecutionRequestPolicy policy;
     policy.expected_epoch = epoch;
-    policy.active_timeout = timeout;
     return policy;
 }
 
@@ -194,7 +191,6 @@ struct FakeProgramRuntimeControl
     bool supports_worksets = false;
     program::InvocationStatePolicy prepared_state_policy =
         program::InvocationStatePolicy::ContinueSession;
-    std::chrono::milliseconds prepared_active_budget{1000};
     std::uint64_t next_template_id = 1;
     std::unordered_map<
         std::uint64_t,
@@ -462,8 +458,7 @@ public:
             request.invocation_template.module,
             request.invocation_template.entrypoint,
             std::string(64, 'a'),
-            control_->prepared_state_policy,
-            control_->prepared_active_budget};
+            control_->prepared_state_policy};
         return ProgramRuntimeSubmission::Accepted();
     }
 
@@ -808,6 +803,23 @@ public:
         });
     }
 
+    [[nodiscard]] bool WaitForExecutionHealthWarningCount(
+        std::size_t count)
+    {
+        std::unique_lock lock(mutex_);
+        return changed_.wait_for(lock, 5s, [&] {
+            return static_cast<std::size_t>(std::count_if(
+                events_.begin(),
+                events_.end(),
+                [](const WorkerEvent& event) {
+                    const auto* execution =
+                        std::get_if<WorkerExecutionEvent>(&event);
+                    return execution &&
+                        execution->event.health_warning.has_value();
+                })) >= count;
+        });
+    }
+
     [[nodiscard]] bool WaitForWorksetTerminalCount(
         std::size_t count)
     {
@@ -851,6 +863,39 @@ public:
             }
         }
         return progress;
+    }
+
+    [[nodiscard]] std::vector<ExecutionTerminalResult>
+    ExecutionTerminals() const
+    {
+        std::lock_guard lock(mutex_);
+        std::vector<ExecutionTerminalResult> terminals;
+        for (const WorkerEvent& event : events_)
+        {
+            const auto* execution =
+                std::get_if<WorkerExecutionEvent>(&event);
+            if (execution && execution->event.terminal)
+                terminals.push_back(*execution->event.terminal);
+        }
+        return terminals;
+    }
+
+    [[nodiscard]] std::vector<ExecutionHealthWarning>
+    ExecutionHealthWarnings() const
+    {
+        std::lock_guard lock(mutex_);
+        std::vector<ExecutionHealthWarning> warnings;
+        for (const WorkerEvent& event : events_)
+        {
+            const auto* execution =
+                std::get_if<WorkerExecutionEvent>(&event);
+            if (execution && execution->event.health_warning)
+            {
+                warnings.push_back(
+                    *execution->event.health_warning);
+            }
+        }
+        return warnings;
     }
 
     [[nodiscard]] std::vector<WorkerWorksetItemTerminalEvent>
@@ -951,7 +996,8 @@ struct RuntimeHarness
         std::shared_ptr<const WorkerRuntimeTestHooks> test_hooks = {},
         bool supports_worksets = false,
         std::shared_ptr<ProgramBaselineComponentRegistry>
-            baseline_components = {})
+            baseline_components = {},
+        ExecutionEngineConfig execution_engine_config = {})
     {
         program->supports_worksets = supports_worksets;
         runtime = std::make_unique<WorkerRuntime>(
@@ -959,7 +1005,8 @@ struct RuntimeHarness
                 session_id,
                 std::make_unique<ScriptedDolphinBackend>(
                     backend,
-                    std::move(physical_stop_points))),
+                    std::move(physical_stop_points)),
+                std::move(execution_engine_config)),
             std::make_unique<FakeProgramRuntimePort>(program),
             [this](const WorkerEvent& event) { events.Record(event); },
             std::move(test_hooks),
@@ -1016,7 +1063,6 @@ struct RuntimeHarness
             item.invocation.entrypoint =
                 definition.execution_key.entrypoint;
             item.invocation.template_payload = {0x01, 0x02};
-            item.declared_active_budget = 1s;
             item.correlation.durable_job_id =
                 "job-" + std::to_string(ordinal + 1);
             item.correlation.claim_token =
@@ -1573,7 +1619,7 @@ TEST(
 
 TEST(
     ExecutionWorkerRuntime,
-    RejectsStaleCurrentSessionAndTemplatePolicyOrBudgetMismatch)
+    RejectsStaleCurrentSessionAndTemplatePolicyMismatch)
 {
     RuntimeHarness harness({}, {}, true);
     ASSERT_EQ(
@@ -1598,23 +1644,6 @@ TEST(
             .error.code,
         WorkerRejectionCode::StateEpochMismatch);
 
-    harness.program->prepared_active_budget = 2s;
-    WorkerWorksetDefinition wrong_budget =
-        harness.Workset(51, 1);
-    EXPECT_EQ(
-        harness.runtime
-            ->Submit(
-                harness.NextRequest(),
-                SubmitWorksetCommand{wrong_budget})
-            .get()
-            .outcome,
-        WorkerCommandOutcome::Rejected);
-    {
-        std::lock_guard lock(harness.program->mutex);
-        EXPECT_TRUE(harness.program->prepared_templates.empty());
-    }
-
-    harness.program->prepared_active_budget = 1s;
     harness.program->prepared_state_policy =
         program::InvocationStatePolicy::Boot;
     WorkerWorksetDefinition wrong_policy =
@@ -2656,6 +2685,316 @@ TEST(ExecutionWorkerRuntime, CleanDiagnosticsReuseButTaintRejectsFurtherWork)
         InvocationTerminalStatus::CleanupFailure);
 }
 
+TEST(
+    ExecutionWorkerRuntime,
+    GenuineCoreStallMarksSessionCleanWithDiagnosticsAndAllowsReuse)
+{
+    std::atomic<std::int64_t> clock_offset_milliseconds{0};
+    ExecutionEngineConfig execution_config;
+    execution_config.now = [&clock_offset_milliseconds] {
+        return std::chrono::steady_clock::now() +
+            std::chrono::milliseconds(
+                clock_offset_milliseconds.load(
+                    std::memory_order_acquire));
+    };
+
+    EmulationSession* actor_session = nullptr;
+    std::atomic<bool> arm_execution{false};
+    std::atomic<bool> execution_accepted{false};
+    auto hooks = std::make_shared<WorkerRuntimeTestHooks>();
+    hooks->session_opened = [&](EmulationSession& session) {
+        actor_session = &session;
+    };
+    hooks->before_ingress_stability_check = [&] {
+        if (!arm_execution.exchange(
+                false,
+                std::memory_order_acq_rel))
+        {
+            return;
+        }
+        const ExecutionSubmissionReceipt submitted =
+            actor_session->SubmitExecution(ContinueUntilRequest{
+                .policy = SessionExecutionPolicy(
+                    actor_session->snapshot().state_epoch),
+                .wake_group = WorkerWakeGroup(0x801DC288u),
+            });
+        execution_accepted.store(
+            submitted.accepted,
+            std::memory_order_release);
+    };
+
+    RuntimeHarness harness(
+        {},
+        std::move(hooks),
+        false,
+        {},
+        std::move(execution_config));
+    ASSERT_EQ(
+        harness.Open().outcome,
+        WorkerCommandOutcome::Completed);
+    ASSERT_NE(actor_session, nullptr);
+
+    arm_execution.store(true, std::memory_order_release);
+    (void)harness.runtime
+        ->Submit(
+            harness.NextRequest(),
+            CancelInvocationCommand{
+                InvocationId(900001)})
+        .get();
+    (void)harness.runtime
+        ->Submit(
+            harness.NextRequest(),
+            CancelInvocationCommand{
+                InvocationId(900000)})
+        .get();
+    ASSERT_TRUE(
+        execution_accepted.load(std::memory_order_acquire));
+    ASSERT_EQ(
+        harness.runtime->snapshot().execution.activity,
+        ExecutionActivity::Continuing);
+
+    clock_offset_milliseconds.fetch_add(
+        10'001,
+        std::memory_order_acq_rel);
+    (void)harness.runtime
+        ->Submit(
+            harness.NextRequest(),
+            CancelInvocationCommand{
+                InvocationId(900002)})
+        .get();
+    ASSERT_TRUE(
+        harness.events.WaitForExecutionHealthWarningCount(1));
+    EXPECT_EQ(
+        harness.events.ExecutionTerminals().size(),
+        0u);
+
+    clock_offset_milliseconds.fetch_add(
+        10'001,
+        std::memory_order_acq_rel);
+    (void)harness.runtime
+        ->Submit(
+            harness.NextRequest(),
+            CancelInvocationCommand{
+                InvocationId(900003)})
+        .get();
+    ASSERT_EQ(
+        harness.events.ExecutionHealthWarnings().size(),
+        1u);
+    // Core-stall confirmation begins the bounded safe-pause terminal path.
+    // Drive one more actor turn so the newly paused backend can be confirmed
+    // without relying on a real-time sleep.
+    (void)harness.runtime
+        ->Submit(
+            harness.NextRequest(),
+            CancelInvocationCommand{
+                InvocationId(900004)})
+        .get();
+    ASSERT_TRUE(
+        harness.events.WaitForExecutionTerminalCount(1));
+
+    const auto execution_terminals =
+        harness.events.ExecutionTerminals();
+    ASSERT_EQ(execution_terminals.size(), 1u);
+    EXPECT_EQ(
+        execution_terminals.front().status,
+        ExecutionTerminalStatus::CoreStalled);
+    EXPECT_EQ(
+        execution_terminals.front().integrity,
+        BackendIntegrity::Preserved);
+    EXPECT_EQ(
+        harness.runtime->snapshot().session.disposition,
+        SessionDisposition::CleanWithDiagnostics);
+    EXPECT_EQ(
+        harness.runtime->snapshot().state,
+        WorkerState::Ready);
+
+    ASSERT_EQ(
+        harness.Invoke(504).outcome,
+        WorkerCommandOutcome::Accepted);
+    ASSERT_TRUE(harness.program->EmitTerminal(
+        InvocationTerminalStatus::Completed));
+    ASSERT_TRUE(harness.events.WaitForTerminalCount(1));
+    EXPECT_EQ(
+        harness.runtime->snapshot().state,
+        WorkerState::Ready);
+    EXPECT_EQ(
+        harness.runtime->snapshot().session.disposition,
+        SessionDisposition::CleanWithDiagnostics);
+
+    EXPECT_EQ(
+        harness.Shutdown().outcome,
+        WorkerCommandOutcome::Completed);
+}
+
+TEST(
+    ExecutionWorkerRuntime,
+    UnprovenCoreStallPauseTaintsSessionAndTerminatesResidentWorkset)
+{
+    std::atomic<std::int64_t> clock_offset_milliseconds{0};
+    ExecutionEngineConfig execution_config;
+    execution_config.now = [&clock_offset_milliseconds] {
+        return std::chrono::steady_clock::now() +
+            std::chrono::milliseconds(
+                clock_offset_milliseconds.load(
+                    std::memory_order_acquire));
+    };
+
+    EmulationSession* actor_session = nullptr;
+    std::atomic<bool> arm_execution{false};
+    std::atomic<bool> execution_accepted{false};
+    auto hooks = std::make_shared<WorkerRuntimeTestHooks>();
+    hooks->session_opened = [&](EmulationSession& session) {
+        actor_session = &session;
+    };
+    hooks->before_ingress_stability_check = [&] {
+        if (!arm_execution.exchange(
+                false,
+                std::memory_order_acq_rel))
+        {
+            return;
+        }
+        const ExecutionSubmissionReceipt submitted =
+            actor_session->SubmitExecution(ContinueUntilRequest{
+                .policy = SessionExecutionPolicy(
+                    actor_session->snapshot().state_epoch),
+                .wake_group = WorkerWakeGroup(0x801DC288u),
+            });
+        execution_accepted.store(
+            submitted.accepted,
+            std::memory_order_release);
+    };
+
+    RuntimeHarness harness(
+        {},
+        std::move(hooks),
+        true,
+        {},
+        std::move(execution_config));
+    ASSERT_EQ(
+        harness.Open().outcome,
+        WorkerCommandOutcome::Completed);
+    ASSERT_NE(actor_session, nullptr);
+
+    const WorkerCommandResult accepted =
+        harness.runtime
+            ->Submit(
+                harness.NextRequest(),
+                SubmitWorksetCommand{
+                    harness.Workset(86, 2)})
+            .get();
+    ASSERT_EQ(
+        accepted.outcome,
+        WorkerCommandOutcome::Accepted)
+        << accepted.error.message;
+    ASSERT_TRUE(harness.program->WaitForStarts(1));
+
+    arm_execution.store(true, std::memory_order_release);
+    (void)harness.runtime
+        ->Submit(
+            harness.NextRequest(),
+            CancelInvocationCommand{
+                InvocationId(910001)})
+        .get();
+    (void)harness.runtime
+        ->Submit(
+            harness.NextRequest(),
+            CancelInvocationCommand{
+                InvocationId(910000)})
+        .get();
+    ASSERT_TRUE(
+        execution_accepted.load(std::memory_order_acquire));
+
+    harness.backend->SetPauseResult(BackendResult::Failure(
+        BackendErrorCode::OperationFailed,
+        "pause proof failed",
+        BackendIntegrity::Unknown));
+    clock_offset_milliseconds.fetch_add(
+        10'001,
+        std::memory_order_acq_rel);
+    (void)harness.runtime
+        ->Submit(
+            harness.NextRequest(),
+            CancelInvocationCommand{
+                InvocationId(910002)})
+        .get();
+    ASSERT_TRUE(
+        harness.events.WaitForExecutionHealthWarningCount(1));
+
+    clock_offset_milliseconds.fetch_add(
+        10'001,
+        std::memory_order_acq_rel);
+    (void)harness.runtime
+        ->Submit(
+            harness.NextRequest(),
+            CancelInvocationCommand{
+                InvocationId(910003)})
+        .get();
+    (void)harness.runtime
+        ->Submit(
+            harness.NextRequest(),
+            CancelInvocationCommand{
+                InvocationId(910004)})
+        .get();
+
+    ASSERT_TRUE(
+        harness.events.WaitForExecutionTerminalCount(1));
+    const auto execution_terminals =
+        harness.events.ExecutionTerminals();
+    ASSERT_EQ(execution_terminals.size(), 1u);
+    EXPECT_EQ(
+        execution_terminals.front().status,
+        ExecutionTerminalStatus::CleanupFailure);
+    EXPECT_EQ(
+        execution_terminals.front().integrity,
+        BackendIntegrity::Unknown);
+
+    ASSERT_TRUE(
+        harness.events.WaitForWorksetTerminalCount(2));
+    const auto workset_terminals =
+        harness.events.WorksetTerminals();
+    ASSERT_EQ(workset_terminals.size(), 2u);
+    EXPECT_FALSE(workset_terminals[0].unstarted);
+    EXPECT_EQ(
+        workset_terminals[0].terminal.status,
+        InvocationTerminalStatus::InfrastructureFailure);
+    EXPECT_TRUE(workset_terminals[1].unstarted);
+    EXPECT_EQ(
+        harness.runtime->snapshot().state,
+        WorkerState::Tainted);
+    EXPECT_EQ(
+        harness.runtime->snapshot().session.disposition,
+        SessionDisposition::Tainted);
+    EXPECT_FALSE(
+        harness.runtime->snapshot().active_workset.has_value());
+    EXPECT_EQ(harness.backend->CloseCount(), 1);
+
+    const WorkerCommandResult rejected =
+        harness.runtime
+            ->Submit(
+                harness.NextRequest(),
+                SubmitWorksetCommand{
+                    harness.Workset(87, 1)})
+            .get();
+    EXPECT_EQ(
+        rejected.outcome,
+        WorkerCommandOutcome::Rejected);
+    EXPECT_EQ(
+        rejected.error.code,
+        WorkerRejectionCode::SessionTainted);
+
+    const WorkerCommandResult shutdown =
+        harness.Shutdown();
+    EXPECT_EQ(
+        shutdown.outcome,
+        WorkerCommandOutcome::Rejected);
+    EXPECT_EQ(
+        shutdown.error.code,
+        WorkerRejectionCode::SessionTainted);
+    EXPECT_EQ(
+        harness.runtime->snapshot().state,
+        WorkerState::Stopped);
+}
+
 TEST(ExecutionWorkerRuntime, ScreenshotRequiresValidStateAndExactSession)
 {
     RuntimeHarness harness;
@@ -2923,8 +3262,7 @@ TEST(
     auto hooks = std::make_shared<WorkerRuntimeTestHooks>();
     hooks->session_opened = [&](EmulationSession& session) {
         ExecutionRequestPolicy policy = SessionExecutionPolicy(
-            session.snapshot().state_epoch,
-            5s);
+            session.snapshot().state_epoch);
         const ExecutionSubmissionReceipt submission =
             session.SubmitExecution(ContinueUntilRequest{
                 .policy = std::move(policy),
@@ -3054,8 +3392,7 @@ TEST(
         const ExecutionSubmissionReceipt submission =
             actor_session->SubmitExecution(ContinueUntilRequest{
                 .policy = SessionExecutionPolicy(
-                    actor_session->snapshot().state_epoch,
-                    5s),
+                    actor_session->snapshot().state_epoch),
                 .wake_group = WorkerWakeGroup(kWakePc),
             });
         continue_accepted.store(
@@ -3153,6 +3490,169 @@ TEST(
     EXPECT_EQ(
         terminals.front().status,
         InvocationTerminalStatus::Completed);
+
+    EXPECT_EQ(
+        harness.Shutdown().outcome,
+        WorkerCommandOutcome::Completed);
+}
+
+TEST(
+    ExecutionWorkerRuntime,
+    AuthoritativeWakePrecedesQueuedPauseAndCoreHealthConfirmation)
+{
+    constexpr std::uint32_t kWakePc = 0x801dc288u;
+    std::atomic<std::int64_t> clock_offset_milliseconds{0};
+    ExecutionEngineConfig execution_config;
+    execution_config.now = [&clock_offset_milliseconds] {
+        return std::chrono::steady_clock::now() +
+            std::chrono::milliseconds(
+                clock_offset_milliseconds.load(
+                    std::memory_order_acquire));
+    };
+
+    auto physical_control =
+        std::make_shared<FakePhysicalStopBackendControl>();
+    auto physical_backend =
+        std::make_unique<FakePhysicalStopBackend>(physical_control);
+    FakePhysicalStopBackend* physical_backend_raw =
+        physical_backend.get();
+
+    EmulationSession* actor_session = nullptr;
+    std::atomic<bool> arm_execution{false};
+    std::atomic<bool> execution_accepted{false};
+    std::atomic<bool> arm_boundary_injection{false};
+    std::atomic<bool> coordination_timed_out{false};
+    std::promise<void> boundary_open_signal;
+    std::shared_future<void> boundary_open =
+        boundary_open_signal.get_future().share();
+    std::promise<void> injection_complete_signal;
+    std::shared_future<void> injection_complete =
+        injection_complete_signal.get_future().share();
+    auto hooks = std::make_shared<WorkerRuntimeTestHooks>();
+    hooks->session_opened = [&](EmulationSession& session) {
+        actor_session = &session;
+    };
+    hooks->before_ingress_stability_check = [&] {
+        if (arm_execution.exchange(
+                false,
+                std::memory_order_acq_rel))
+        {
+            const ExecutionSubmissionReceipt submitted =
+                actor_session->SubmitExecution(ContinueUntilRequest{
+                    .policy = SessionExecutionPolicy(
+                        actor_session->snapshot().state_epoch),
+                    .wake_group = WorkerWakeGroup(kWakePc),
+                });
+            execution_accepted.store(
+                submitted.accepted,
+                std::memory_order_release);
+        }
+        if (!arm_boundary_injection.exchange(
+                false,
+                std::memory_order_acq_rel))
+        {
+            return;
+        }
+        boundary_open_signal.set_value();
+        if (injection_complete.wait_for(5s) !=
+            std::future_status::ready)
+        {
+            coordination_timed_out.store(
+                true,
+                std::memory_order_release);
+        }
+    };
+
+    RuntimeHarness harness(
+        std::move(physical_backend),
+        std::move(hooks),
+        false,
+        {},
+        std::move(execution_config));
+    SessionOpenOptions options = harness.OpenOptions();
+    options.backend.visual = true;
+    ASSERT_EQ(
+        harness.Open(std::move(options)).outcome,
+        WorkerCommandOutcome::Completed);
+    ASSERT_NE(actor_session, nullptr);
+
+    arm_execution.store(true, std::memory_order_release);
+    (void)harness.runtime
+        ->Submit(
+            harness.NextRequest(),
+            CaptureScreenshotCommand{
+                harness.session_id,
+                "arm-precedence-wake.png",
+                100ms})
+        .get();
+    ASSERT_TRUE(
+        execution_accepted.load(std::memory_order_acquire));
+
+    std::atomic<bool> requested_break{false};
+    std::thread injector([&] {
+        if (boundary_open.wait_for(5s) !=
+            std::future_status::ready)
+        {
+            coordination_timed_out.store(
+                true,
+                std::memory_order_release);
+            injection_complete_signal.set_value();
+            return;
+        }
+        harness.backend->SetCoreState(
+            BackendCoreState::Paused);
+        {
+            std::lock_guard lock(harness.backend->mutex);
+            harness.backend->pc = kWakePc;
+        }
+        const auto decision =
+            physical_backend_raw->InjectJitPcStop(kWakePc);
+        requested_break.store(
+            decision.request_break,
+            std::memory_order_release);
+        clock_offset_milliseconds.store(
+            20'001,
+            std::memory_order_release);
+        injection_complete_signal.set_value();
+    });
+
+    arm_boundary_injection.store(
+        true,
+        std::memory_order_release);
+    auto pause_future = harness.runtime->Submit(
+        harness.NextRequest(),
+        ControlExecutionCommand{
+            .control = WorkerExecutionControlKind::Pause,
+            .session_id = harness.session_id,
+            .expected_state_epoch =
+                harness.runtime->snapshot().session.state_epoch,
+        });
+    const std::future_status pause_status =
+        pause_future.wait_for(5s);
+    injector.join();
+    ASSERT_EQ(pause_status, std::future_status::ready);
+    const WorkerCommandResult pause = pause_future.get();
+
+    EXPECT_FALSE(
+        coordination_timed_out.load(std::memory_order_acquire));
+    EXPECT_TRUE(requested_break.load(std::memory_order_acquire));
+    EXPECT_EQ(
+        pause.outcome,
+        WorkerCommandOutcome::Rejected);
+    ASSERT_TRUE(
+        harness.events.WaitForExecutionTerminalCount(1));
+    const auto terminals =
+        harness.events.ExecutionTerminals();
+    ASSERT_EQ(terminals.size(), 1u);
+    EXPECT_EQ(
+        terminals.front().status,
+        ExecutionTerminalStatus::RequestedCompletion);
+    EXPECT_EQ(
+        terminals.front().evidence.pc,
+        kWakePc);
+    EXPECT_EQ(
+        harness.runtime->snapshot().session.disposition,
+        SessionDisposition::Clean);
 
     EXPECT_EQ(
         harness.Shutdown().outcome,

@@ -64,8 +64,7 @@ bool encode_payload(
     const EncodeSpec& spec,
     std::vector<std::uint8_t>& out)
 {
-    if (spec.run_timeout_ms == 0
-        || spec.output_savestate_path.empty()
+    if (spec.output_savestate_path.empty()
         || spec.output_savestate_path.size() > MaxPathBytes
         || spec.output_savestate_path.size()
             > (std::numeric_limits<std::uint32_t>::max)()) {
@@ -74,10 +73,9 @@ bool encode_payload(
     }
 
     out.clear();
-    out.reserve(1 + 4 + 4 + 4 + spec.output_savestate_path.size());
+    out.reserve(1 + 4 + 4 + spec.output_savestate_path.size());
     out.push_back(savor::PK_NavigationContextRunner);
     PutU32(out, PayloadVersion);
-    PutU32(out, spec.run_timeout_ms);
     PutString(out, spec.output_savestate_path);
     return true;
 }
@@ -86,28 +84,22 @@ bool decode_payload(
     const std::vector<std::uint8_t>& in,
     savor::PSContext& out_ctx)
 {
-    if (in.size() < 1 + 4 + 4 + 4) return false;
+    if (in.size() < 1 + 4 + 4) return false;
 
     const auto* cursor = in.data();
     const auto* end = cursor + in.size();
     if (*cursor++ != savor::PK_NavigationContextRunner) return false;
 
     std::uint32_t version = 0;
-    std::uint32_t run_timeout_ms = 0;
     std::string output_path;
     if (!GetU32(cursor, end, version)
         || version != PayloadVersion
-        || !GetU32(cursor, end, run_timeout_ms)
-        || run_timeout_ms == 0
         || !GetString(cursor, end, output_path)
         || cursor != end) {
         return false;
     }
 
     namespace key = savor::context::key;
-    out_ctx[key::core::RUN_MS] = run_timeout_ms;
-    out_ctx[key::core::RUN_POLL_MS] = std::uint32_t{0};
-    out_ctx[key::navigation::RUN_TIMEOUT_MS] = run_timeout_ms;
     out_ctx[key::navigation::OUTPUT_SAVESTATE_PATH] =
         std::move(output_path);
     out_ctx[key::navigation::NEUTRAL_INPUT] = savor::GCInputFrame{};
@@ -119,12 +111,10 @@ bool decode_payload(
     out_ctx[key::navigation::DIAGNOSTIC] = std::string{};
     out_ctx[key::navigation::CTX_BLOB] = std::string{};
 
-    savor::progress::ProgressDeets progress{.poll_rate = 5000};
+    savor::progress::ProgressDeets progress{};
     progress.set_flag(CoreProgressFlags::ViDelta);
     progress.set_flag(CoreProgressFlags::ScriptSection);
-    progress.set_flag(CoreProgressFlags::WarnViStall);
     progress.set_flag(CoreProgressFlags::DontRecordHeartbeat);
-    out_ctx[key::core::PROGRESS_RATE] = progress.poll_rate;
     out_ctx[key::core::PROGRESS_CORE_FLAGS] = progress.flags;
     return true;
 }

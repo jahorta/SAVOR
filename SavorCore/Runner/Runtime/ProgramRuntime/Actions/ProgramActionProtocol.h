@@ -48,17 +48,11 @@ struct ProgramActionRequest
     // second time.
     bool state_already_prepared = false;
     std::string prepared_baseline_sha256;
-    // The remaining invocation deadline is projected into every non-cleanup
-    // host request. InvokeAction additionally carries the verified
-    // descriptor deadline and their minimum. Cleanup actions do not inherit
-    // an already-expired invocation deadline, but remain bounded by their
-    // descriptor.
+    // Guest-dependent actions are cancellation-driven. Only verified
+    // host-only actions carry a finite infrastructure deadline.
+    ActionTimingClass timing = ActionTimingClass::BoundedHostOperation;
     std::optional<std::chrono::steady_clock::time_point>
-        active_deadline;
-    std::optional<std::chrono::steady_clock::time_point>
-        descriptor_deadline;
-    std::optional<std::chrono::steady_clock::time_point>
-        effective_deadline;
+        bounded_host_deadline;
     ActionEffectMask allowed_effects = ~ActionEffectMask{0};
     bool cleanup_only = false;
 };

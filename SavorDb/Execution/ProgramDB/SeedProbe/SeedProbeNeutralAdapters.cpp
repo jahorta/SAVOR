@@ -22,13 +22,10 @@ constexpr const char* kNeutralResultKind = "seedprobe.neutral_seed";
 
 std::string BuildNeutralFingerprint(
     std::int64_t probe_id,
-    SeedProbeTimingConfig timing,
     savor::seedprobe::SeedProbeTarget target) {
     return fingerprint_for_target(
         probe_id,
         savor::GCInputFrame{}.to_frame_hex(),
-        timing.run_ms,
-        timing.vi_stall_ms,
         target);
 }
 
@@ -67,12 +64,8 @@ std::string ApplyTerminalJobStateFromResults(
 
 NeutralProbeJobPersistenceAdapter::NeutralProbeJobPersistenceAdapter(
     savor::db::IExecutionDb* execution_db,
-    savor::db::IAnalysisDb* analysis_db,
-    savor::db::IAuthoringDb* authoring_db,
     savor::seedprobe::SeedProbeTarget target)
     : execution_db_(execution_db)
-    , analysis_db_(analysis_db)
-    , authoring_db_(authoring_db)
     , target_(target) {
 }
 
@@ -84,8 +77,7 @@ WorkflowStepScheduleResult NeutralProbeJobPersistenceAdapter::EncodeForQueueing(
     persisted.program_version = target_ == savor::seedprobe::SeedProbeTarget::PreBattle
         ? kProgramVersion
         : 2;
-    const auto timing = resolve_timing_from_authoring_spec(analysis_db_, authoring_db_, domain_ref_id).value_or(SeedProbeTimingConfig{});
-    persisted.fingerprint = BuildNeutralFingerprint(domain_ref_id, timing, target_);
+    persisted.fingerprint = BuildNeutralFingerprint(domain_ref_id, target_);
     persisted.program_ref_id = domain_ref_id;
     std::int64_t probe_run_id = domain_ref_id;
 
@@ -171,7 +163,8 @@ std::optional<savor::PSJob> RequiredSavestateRuntimeInitAdapter::MaterializePsJo
 
     savor::PSJob job{};
     const auto spec = build_encode_spec_from_fingerprint(job_row->fingerprint);
-    if (!savor::seedprobe::encode_payload(spec, job.payload)) {
+    if (!spec.has_value()
+        || !savor::seedprobe::encode_payload(*spec, job.payload)) {
         return std::nullopt;
     }
     return job;
@@ -276,12 +269,11 @@ WorkflowTransitionDecision NeutralToGridTransitionHandler::EvaluateTransition(co
 
 ProgramKindDescriptor BuildSeedProbeNeutralDescriptor(
     savor::db::IExecutionDb* execution_db,
-    savor::db::IAnalysisDb* analysis_db,
-    savor::db::IAuthoringDb* authoring_db) {
+    savor::db::IAnalysisDb* analysis_db) {
     ProgramKindDescriptor descriptor{};
     descriptor.program_kind = savor::PK_SeedProbe;
     descriptor.program_name = "SeedProbe";
-    descriptor.job_persistence = std::make_shared<NeutralProbeJobPersistenceAdapter>(execution_db, analysis_db, authoring_db);
+    descriptor.job_persistence = std::make_shared<NeutralProbeJobPersistenceAdapter>(execution_db);
     descriptor.runtime_init = std::make_shared<RequiredSavestateRuntimeInitAdapter>(execution_db, analysis_db);
     descriptor.result_mapper = std::make_shared<NeutralSeedResultMapper>(execution_db, analysis_db);
     descriptor.workflow_transition = std::make_shared<NeutralToGridTransitionHandler>();

@@ -129,8 +129,6 @@ ScriptRun ExecuteNavigationScript(const ScriptHostPlan& host)
     ScriptRun run{};
     run.context[key::navigation::NEUTRAL_INPUT] =
         savor::GCInputFrame{};
-    run.context[key::navigation::RUN_TIMEOUT_MS] =
-        std::uint32_t{120000};
     run.context[key::navigation::OUTPUT_SAVESTATE_PATH] =
         std::string{"navigation-context.sav"};
     run.context[key::navigation::OUTCOME] =
@@ -209,10 +207,6 @@ ScriptRun ExecuteNavigationScript(const ScriptHostPlan& host)
             jump(op.jmp.name, pc);
             advance = false;
             break;
-        case savor::PSOpCode::SET_TIMEOUT_FROM:
-            run.context[key::core::RUN_MS] =
-                ReadU32(run.context, op.key.id);
-            break;
         case savor::PSOpCode::RUN_UNTIL_BP:
             ++run.run_calls;
             run.context[key::core::DW_RUN_OUTCOME_CODE] =
@@ -290,7 +284,6 @@ TEST(NavigationContextFramework, RegistersCompleteContextKeyContract)
     EXPECT_EQ(navigation::OUTCOME, static_cast<KeyId>(0x0704));
     EXPECT_EQ(navigation::FAILURE, static_cast<KeyId>(0x0705));
     EXPECT_EQ(navigation::DIAGNOSTIC, static_cast<KeyId>(0x0706));
-    EXPECT_EQ(navigation::RUN_TIMEOUT_MS, static_cast<KeyId>(0x0707));
 
     std::string registry_error;
     ASSERT_TRUE(validate_registry(&registry_error)) << registry_error;
@@ -308,9 +301,6 @@ TEST(NavigationContextFramework, RegistersCompleteContextKeyContract)
              std::pair{
                  navigation::DIAGNOSTIC,
                  "navigation.diagnostic"},
-             std::pair{
-                 navigation::RUN_TIMEOUT_MS,
-                 "navigation.run_timeout_ms"},
          }) {
         EXPECT_EQ(name_for_id(key), name);
         KeyId resolved = 0;
@@ -359,13 +349,7 @@ TEST(NavigationContextFramework, ProgramUsesFixedCaptureAndNeutralInput)
         immediate.jcc.imm,
         bp::navigation::NavigationContextInitialPlayerInputReady);
 
-    EXPECT_EQ(
-        script.ops[6].code,
-        savor::PSOpCode::SET_TIMEOUT_FROM);
-    EXPECT_EQ(
-        script.ops[6].key.id,
-        savor::context::key::navigation::RUN_TIMEOUT_MS);
-    EXPECT_EQ(script.ops[7].code, savor::PSOpCode::RUN_UNTIL_BP);
+    EXPECT_EQ(script.ops[6].code, savor::PSOpCode::RUN_UNTIL_BP);
 
     EXPECT_EQ(
         std::count_if(
@@ -524,12 +508,6 @@ TEST(NavigationContextProgramExecution, RunFailuresStopBeforeCapture)
     };
     for (const auto& test : {
              Case{
-                 savor::RunToBpOutcome::Timeout,
-                 phase::navigation::ctx::FailureCode::Timeout},
-             Case{
-                 savor::RunToBpOutcome::ViStalled,
-                 phase::navigation::ctx::FailureCode::ViStalled},
-             Case{
                  savor::RunToBpOutcome::MovieEnded,
                  phase::navigation::ctx::FailureCode::UnexpectedStop},
              Case{
@@ -638,7 +616,6 @@ TEST(NavigationContextFramework, ProgramRegistryBuildsAndDecodesKindTen)
     std::vector<std::uint8_t> payload;
     ASSERT_TRUE(phase::navigation::ctx::encode_payload(
         {
-            .run_timeout_ms = 120000u,
             .output_savestate_path = "navigation-context.sav",
         },
         payload));
@@ -648,11 +625,6 @@ TEST(NavigationContextFramework, ProgramRegistryBuildsAndDecodesKindTen)
         payload,
         context));
 
-    std::uint32_t timeout = 0;
-    ASSERT_TRUE(context.get(
-        savor::context::key::navigation::RUN_TIMEOUT_MS,
-        timeout));
-    EXPECT_EQ(timeout, 120000u);
     std::string output_path;
     ASSERT_TRUE(context.get(
         savor::context::key::navigation::OUTPUT_SAVESTATE_PATH,

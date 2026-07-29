@@ -4,8 +4,10 @@
 
 This document defines the logical invocation, result, version, and artifact contracts used by the target
 Execution Runtime. Implementation slices may choose concrete C++ types and worker transport encoding,
-but must preserve these concepts and their separate meanings. SavorDb storage and normalization are
-fixed inputs, not implementation choices in this refactor.
+but must preserve these concepts and their separate meanings. SavorDb migrations and physical schema
+are fixed inputs. The pre-6A cutover deliberately removes obsolete timing fields from public authoring
+interfaces and newly generated arguments while private neutral insert shims satisfy the unchanged
+`NOT NULL` columns.
 
 ## Purpose and non-goals
 
@@ -16,9 +18,10 @@ worker caching without using `ProgramKind` as execution identity.
 This document does not define:
 
 - a packed wire struct;
-- changes to SavorDb SQL/schema, migrations, stored representations, durable job/claim/lease/result
-  semantics, workflow persistence, result-projection transaction boundaries, or artifact-storage
-  interfaces; document 06 may narrowly adapt execution-facing interfaces for ordered batch claim,
+- changes to SavorDb SQL/schema or migrations, durable job/claim/lease/result semantics, workflow
+  persistence, result-projection transaction boundaries, or artifact-storage interfaces. Timing fields
+  are removed from public authoring DTOs and generated runtime-facing representations without rewriting
+  existing rows; document 06 may narrowly adapt execution-facing interfaces for ordered batch claim,
   exact-set lease renewal, claim/start validation, and targeted terminal reconciliation over the same
   records and semantics;
 - the authored program source format;
@@ -83,8 +86,8 @@ The normative conceptual type catalog is:
 | `WorkerWorksetItemId` plus stable item ordinal | Exact item identity and immutable order within that workset |
 | `WorkerWorksetExecutionKey` | Exact module/revision/hash/entrypoint and dependency closure; runtime profile, game/disc/backend compatibility, and capability packs; exact `ProgramBaselineKey` covering source-state identity/hash/lineage, movie continuation, and declared derived state; common execution/input/capture/movie/mutation and other relevant service policies |
 | `WorkerWorksetDefinition` | Immutable workset ID, execution key, limits, common preparation policy, and complete ordered item set |
-| `WorksetItemTemplate` | Immutable item ID/ordinal, invocation/attempt/cancellation correlation, one typed input record, per-item budget, and provenance awaiting actor-owned session/epoch binding |
-| `WorkerWorksetLimits` | Maximum item count, encoded bytes, aggregate declared child budgets, resident/staged item capacity, item-capacity credits, immutable-state/finalization bytes, and completion-ledger count and bytes |
+| `WorksetItemTemplate` | Immutable item ID/ordinal, invocation/attempt/cancellation correlation, one typed input record, structural limits, and provenance awaiting actor-owned session/epoch binding |
+| `WorkerWorksetLimits` | Maximum item count, encoded bytes, resident/staged item capacity, item-capacity credits, immutable-state/finalization bytes, and completion-ledger count and bytes |
 | `ProgramBaselineDefinition` | Complete ordered reusable starting condition for a multi-item workset |
 | `ProgramBaselineComponent` | One savestate, exact movie-continuation, or runtime-facing program-kind adapter-declared derived-state component |
 | `ProgramBaselineKey` | Exact identity of the complete ordered component set and its compatibility |
@@ -96,7 +99,7 @@ The normative conceptual type catalog is:
 `WorkerWorksetLimits`, the common state preparation, and every `WorksetItemTemplate` before acceptance.
 
 Every item must match the workset's exact `WorkerWorksetExecutionKey`. Only typed input,
-invocation/attempt/cancellation correlation, per-item budget, and child identity/provenance may differ;
+invocation/attempt/cancellation correlation, per-item structural limits, and child identity/provenance may differ;
 no item may select another module, entrypoint, dependency closure, runtime, baseline, or
 session-shaping policy. The complete workset is rejected before state
 mutation if it is empty, unbounded, oversized, malformed, or mixed-key.
@@ -135,11 +138,11 @@ pending, staged, active, asynchronously finalizing, ready-but-order-blocked, and
 states are phases of the same credit rather than additional capacity. An item cannot be admitted unless
 the worker has reserved the worst-case count/byte capacity declared by its limits.
 
-The initial configurable limits are 16 items and 32 MiB encoded bytes per workset; four hours aggregate
-declared active budget; 64 total worker item credits and 32 active-plus-staged items; 16 immutable state
-cache entries/512 MiB; two finalizer threads with eight pending captures/256 MiB; and 32 retained
-authoritative terminals/128 MiB. The coordinator may buffer at most one additional workset per
-negotiated Ready worker, and at most two workers start concurrently.
+The initial configurable limits are 16 items and 32 MiB encoded bytes per workset; 64 total worker item
+credits and 32 active-plus-staged items; 16 immutable state cache entries/512 MiB; two finalizer threads
+with eight pending captures/256 MiB; and 32 retained authoritative terminals/128 MiB. The coordinator
+may buffer at most one additional workset per negotiated Ready worker, and at most two workers start
+concurrently. No workset limit is an aggregate elapsed guest-execution budget.
 
 ### ProgramInvocation
 
@@ -154,7 +157,7 @@ Every admitted workset item becomes one immutable logical invocation:
 | State policy | Declared `Boot`, `LoadArtifact`, `RestoreBaseline`, or `ContinueSession` preparation provenance plus the exact prepared session/epoch guard |
 | Execution policy | Live, replay, or visual-debug intent; movie/input/capture policy; cancellation and observation policy |
 | Inputs | One typed record conforming exactly to the entrypoint input schema |
-| Limits | Deadline and instruction/effect/emission/artifact budgets |
+| Limits | Instruction/effect/emission/artifact/value and other structural budgets |
 | Provenance | Requesting workflow or tool, source artifacts, route/model revisions, and caller correlation IDs |
 
 The program-kind adapter derives every non-actor-owned field from existing SavorDb records and fixed
@@ -339,15 +342,15 @@ result record the actual starting epoch.
 ### Version and dependency verification
 
 Activation verifies the module hash, IR version, every imported action signature, every imported type
-schema, required capability packs, runtime compatibility, and declared budgets before constructing a
-`ProgramInstance`.
+schema, required capability packs, runtime compatibility, and declared structural budgets before
+constructing a `ProgramInstance`.
 
 Compatibility is dependency-scoped. Adding an unrelated action or schema to a worker must not invalidate
 an existing module. A single global registry hash is insufficient as the permanent compatibility model.
 
 Workers cache verified modules by canonical hash and cache resolved dependency closures by their combined
 identity. A workset pins one exact verified entrypoint/closure during atomic preflight and reuses it for
-each child; child admission repeats input, budget, policy, session, epoch, and cancellation validation,
+each child; child admission repeats input, structural-limit, policy, session, epoch, and cancellation validation,
 not canonical module verification. Adapter-generated composition variants and immutable parsed service
 definitions may likewise be cached only by their complete canonical content/dependency identity. Cache
 hits never weaken invocation verification or carry mutable capture, observation, input, or resource
@@ -480,8 +483,8 @@ stored representation.
 ## Failure and cleanup behavior
 
 - Verification failure produces `Rejected`; the entrypoint never runs.
-- Deadline or cancellation requests suspend new effects, cancel the pending cancellable action, and
-  unwind all scopes.
+- Cancellation or confirmed infrastructure failure suspends new effects, cancels the pending
+  cancellable action, and unwinds all scopes.
 - Exact cancellation of a pending workset item produces a cancelled-before-start item terminal without
   state mutation. Exact cancellation of the active item follows ordinary invocation cancellation and
   may permit the next item only after clean unwind.
@@ -520,9 +523,12 @@ result-publication, and recovery mechanisms remain unchanged.
 
 ## Dependencies and migration implications
 
-- Only worker-facing activation and result protocols change. Existing persisted job payloads and
-  domain/result representations remain unchanged. Program-kind adapters decode existing records into
-  typed runtime inputs and project typed runtime results back through existing operations.
+- Worker-facing activation and result protocols change. Existing domain/result storage remains intact,
+  but obsolete timing keys are no longer generated or interpreted. Public authoring timing fields are
+  removed; existing physical values are ignored; three private insert shims write neutral values until
+  the separate database migration removes those columns. Program-kind adapters decode recognized
+  semantic fields into typed runtime inputs and project typed runtime results back through existing
+  operations.
 - Each supported current phase uses a direct native typed-module builder. Existing persisted payload and
   result codecs remain at the adapter boundary and are decoded or projected in memory; no `PhaseScript`
   translator contributes module bytes, identity, or verification evidence.

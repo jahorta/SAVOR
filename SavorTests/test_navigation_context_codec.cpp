@@ -364,12 +364,10 @@ TEST(NavigationContextCodec, EncodeFailsClosedForInvalidModels)
 TEST(NavigationContextPayload, RoundTripsStrictInputsAndInjectsNeutralController)
 {
     using namespace phase::navigation::ctx;
-    constexpr std::uint32_t run_timeout_ms = 98765u;
     const std::string output_path = "C:\\capture\\navigation.sav";
     std::vector<std::uint8_t> payload;
     ASSERT_TRUE(encode_payload(
         {
-            .run_timeout_ms = run_timeout_ms,
             .output_savestate_path = output_path,
         },
         payload));
@@ -381,14 +379,6 @@ TEST(NavigationContextPayload, RoundTripsStrictInputsAndInjectsNeutralController
     std::uint32_t scalar = 0;
     std::string text;
     savor::GCInputFrame neutral{};
-    ASSERT_TRUE(context.get(
-        savor::context::key::core::RUN_MS,
-        scalar));
-    EXPECT_EQ(scalar, run_timeout_ms);
-    ASSERT_TRUE(context.get(
-        savor::context::key::navigation::RUN_TIMEOUT_MS,
-        scalar));
-    EXPECT_EQ(scalar, run_timeout_ms);
     ASSERT_TRUE(context.get(
         savor::context::key::navigation::OUTPUT_SAVESTATE_PATH,
         text));
@@ -417,20 +407,16 @@ TEST(NavigationContextPayload, RoundTripsStrictInputsAndInjectsNeutralController
         static_cast<std::uint32_t>(FailureCode::None));
 }
 
-TEST(NavigationContextPayload, RejectsZeroTimeoutEmptyPathWrongVersionAndTrailingData)
+TEST(NavigationContextPayload, RejectsEmptyPathOldVersionAndTrailingData)
 {
     using namespace phase::navigation::ctx;
     std::vector<std::uint8_t> payload{1, 2, 3};
     EXPECT_FALSE(encode_payload(
-        {.run_timeout_ms = 0, .output_savestate_path = "out.sav"},
-        payload));
-    EXPECT_TRUE(payload.empty());
-    EXPECT_FALSE(encode_payload(
-        {.run_timeout_ms = 1, .output_savestate_path = ""},
+        {.output_savestate_path = ""},
         payload));
 
     ASSERT_TRUE(encode_payload(
-        {.run_timeout_ms = 1, .output_savestate_path = "out.sav"},
+        {.output_savestate_path = "out.sav"},
         payload));
     savor::PSContext context;
 
@@ -439,12 +425,8 @@ TEST(NavigationContextPayload, RejectsZeroTimeoutEmptyPathWrongVersionAndTrailin
     EXPECT_FALSE(decode_payload(wrong_kind, context));
 
     auto wrong_version = payload;
-    wrong_version[1] = 2;
+    wrong_version[1] = 1;
     EXPECT_FALSE(decode_payload(wrong_version, context));
-
-    auto zero_timeout = payload;
-    std::fill(zero_timeout.begin() + 5, zero_timeout.begin() + 9, 0);
-    EXPECT_FALSE(decode_payload(zero_timeout, context));
 
     auto truncated = payload;
     truncated.pop_back();

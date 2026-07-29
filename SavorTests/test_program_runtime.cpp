@@ -11,7 +11,6 @@
 #include <memory>
 #include <optional>
 #include <string>
-#include <thread>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -33,7 +32,6 @@ ProgramBudgets Budgets()
         .maximum_values = 100,
         .maximum_value_bytes = 4096,
         .maximum_trace_events = 100,
-        .active_deadline_milliseconds = 10'000,
     };
 }
 
@@ -86,6 +84,48 @@ ProgramValueGraph BytesGraph(
                 ProgramValueId(1),
                 std::move(type),
                 std::move(bytes),
+            },
+        },
+    };
+}
+
+ProgramValueGraph StepFramesGraph(std::uint64_t count)
+{
+    const ProgramValueId count_id(1);
+    const ProgramValueId neutral_witness_id(2);
+    const ProgramValueId static_config_id(3);
+    const ProgramValueId root_id(4);
+    return {
+        root_id,
+        {
+            ProgramValue{
+                count_id,
+                TypeRef::Builtin(BuiltinType::U64),
+                count,
+            },
+            ProgramValue{
+                neutral_witness_id,
+                CanonicalRuntimeType(
+                    CanonicalRuntimeSchema::
+                        OptionalInputNeutralWitness),
+                OptionalValue{},
+            },
+            ProgramValue{
+                static_config_id,
+                CanonicalRuntimeType(
+                    CanonicalRuntimeSchema::
+                        ExecutionAdvanceStaticConfig),
+                std::vector<Byte>{},
+            },
+            ProgramValue{
+                root_id,
+                CanonicalActionInputType(
+                    CanonicalAction::ExecutionStepFrames),
+                RecordValue{{
+                    count_id,
+                    neutral_witness_id,
+                    static_config_id,
+                }},
             },
         },
     };
@@ -220,9 +260,10 @@ ProgramModule StatePolicyModule(std::string canonical_id)
     return module;
 }
 
-ProgramModule DeadlineActionModule(std::string canonical_id)
+ProgramModule TimingActionModule(
+    std::string canonical_id,
+    CanonicalAction action = CanonicalAction::TelemetryEmit)
 {
-    const CanonicalAction action = CanonicalAction::TelemetryEmit;
     const ExactDependencyIdentity identity =
         CanonicalActionIdentity(action);
     const TypeRef input = CanonicalActionInputType(action);
@@ -1020,7 +1061,7 @@ TEST(ProgramRuntime, RunsOnlyThroughTheActorActionSinkAndPublishesSprr)
         }));
 }
 
-TEST(ProgramRuntime, ProjectsVerifiedActionAndInvocationDeadlines)
+TEST(ProgramRuntime, ProjectsOnlyVerifiedBoundedHostOperationDeadlines)
 {
     ProgramRuntime runtime(TestRuntimeConfig());
     ASSERT_TRUE(runtime.initialized())
@@ -1030,7 +1071,7 @@ TEST(ProgramRuntime, ProjectsVerifiedActionAndInvocationDeadlines)
     runtime.BindActionSink(actions);
 
     const ProgramModule module =
-        DeadlineActionModule("test.runtime.action-deadline");
+        TimingActionModule("test.runtime.action-timing");
     ASSERT_TRUE(runtime.PrepareModule(
         PreparationRequest(module), events).accepted);
     const ModulePreparationEvent* prepared =
@@ -1044,10 +1085,8 @@ TEST(ProgramRuntime, ProjectsVerifiedActionAndInvocationDeadlines)
     const TypeRef input_type = CanonicalActionInputType(action);
     ProgramInvocation invocation = Invocation(module);
     invocation.dependencies.action_imports = {identity};
-    const TypeRef output_type = CanonicalActionOutputType(action);
-    invocation.dependencies.type_imports = {
-        *input_type.named,
-        *output_type.named};
+    invocation.dependencies.type_imports =
+        CanonicalActionTypeSchemaClosure(action);
     invocation.dependencies.capability_packs = {
         CanonicalRuntimePackIdentity()};
     invocation.runtime_profile.capability_packs =
@@ -1060,11 +1099,11 @@ TEST(ProgramRuntime, ProjectsVerifiedActionAndInvocationDeadlines)
         cancellation.token(),
         events).accepted);
     ASSERT_EQ(actions->requests.size(), 1u);
-    EXPECT_TRUE(actions->requests.front().active_deadline);
-    EXPECT_FALSE(actions->requests.front().descriptor_deadline);
     EXPECT_EQ(
-        actions->requests.front().effective_deadline,
-        actions->requests.front().active_deadline);
+        actions->requests.front().timing,
+        ActionTimingClass::BoundedHostOperation);
+    EXPECT_TRUE(actions->requests.front().bounded_host_deadline);
+    EXPECT_FALSE(runtime.next_wake().has_value());
 
     ASSERT_TRUE(runtime.DeliverActionCompletion(
         Completion(actions->requests.front(), StateEpoch(6))).accepted);
@@ -1072,30 +1111,29 @@ TEST(ProgramRuntime, ProjectsVerifiedActionAndInvocationDeadlines)
     ASSERT_EQ(actions->requests.size(), 2u);
     const ProgramActionRequest& request = actions->requests.back();
     ASSERT_EQ(request.action, identity);
-    ASSERT_TRUE(request.active_deadline);
-    ASSERT_TRUE(request.descriptor_deadline);
-    ASSERT_TRUE(request.effective_deadline);
     EXPECT_EQ(
-        *request.effective_deadline,
-        std::min(
-            *request.active_deadline,
-            *request.descriptor_deadline));
+        request.timing,
+        ActionTimingClass::BoundedHostOperation);
+    ASSERT_TRUE(request.bounded_host_deadline);
 
     const ActionDescriptor* descriptor =
         runtime.actions().ResolveAction(identity);
     ASSERT_NE(descriptor, nullptr);
+    EXPECT_EQ(
+        descriptor->timing,
+        ActionTimingClass::BoundedHostOperation);
     const auto descriptor_remaining =
         std::chrono::duration_cast<std::chrono::milliseconds>(
-            *request.descriptor_deadline -
+            *request.bounded_host_deadline -
             std::chrono::steady_clock::now());
     EXPECT_GT(descriptor_remaining.count(), 0);
     EXPECT_LE(
         descriptor_remaining.count(),
         static_cast<std::int64_t>(
-            descriptor->default_deadline_milliseconds));
+            descriptor->default_host_timeout_milliseconds));
 }
 
-TEST(ProgramRuntime, TimesOutStalledStatePreparationAtItsNextWake)
+TEST(ProgramRuntime, CancellationDrivenActionsCarryNoElapsedDeadline)
 {
     ProgramRuntime runtime(TestRuntimeConfig());
     ASSERT_TRUE(runtime.initialized())
@@ -1104,62 +1142,52 @@ TEST(ProgramRuntime, TimesOutStalledStatePreparationAtItsNextWake)
     auto actions = std::make_shared<RecordingActionSink>();
     runtime.BindActionSink(actions);
 
+    const CanonicalAction action =
+        CanonicalAction::ExecutionStepFrames;
     const ProgramModule module =
-        Module("test.runtime.state-preparation-deadline");
+        TimingActionModule(
+            "test.runtime.cancellation-driven-action",
+            action);
     ASSERT_TRUE(runtime.PrepareModule(
         PreparationRequest(module), events).accepted);
     ASSERT_TRUE(events->Last<ModulePreparationEvent>()->prepared);
 
     ProgramInvocation invocation = Invocation(module);
-    invocation.limits.active_deadline_milliseconds = 1;
+    const ExactDependencyIdentity identity =
+        CanonicalActionIdentity(action);
+    const TypeRef input_type = CanonicalActionInputType(action);
+    invocation.dependencies.action_imports = {identity};
+    invocation.dependencies.type_imports =
+        CanonicalActionTypeSchemaClosure(action);
+    invocation.dependencies.capability_packs = {
+        CanonicalRuntimePackIdentity()};
+    invocation.runtime_profile.capability_packs =
+        invocation.dependencies.capability_packs;
+    invocation.input = StepFramesGraph(1);
+
     CancellationSource cancellation(invocation.invocation_id);
     ASSERT_TRUE(runtime.StartInvocation(
         InvocationRequest(invocation),
         cancellation.token(),
         events).accepted);
     ASSERT_EQ(actions->requests.size(), 1u);
-    ASSERT_TRUE(actions->requests.front().active_deadline);
-    ASSERT_TRUE(runtime.next_wake());
     EXPECT_EQ(
-        runtime.next_wake(),
-        actions->requests.front().active_deadline);
-
-    std::this_thread::sleep_until(
-        *runtime.next_wake() + std::chrono::milliseconds(1));
-    EXPECT_FALSE(runtime.Pump());
+        actions->requests.front().timing,
+        ActionTimingClass::BoundedHostOperation);
+    EXPECT_TRUE(actions->requests.front().bounded_host_deadline);
     EXPECT_FALSE(runtime.next_wake());
 
-    const ProgramInvocationTerminalEvent* terminal =
-        events->Last<ProgramInvocationTerminalEvent>();
-    ASSERT_NE(terminal, nullptr);
+    ASSERT_TRUE(runtime.DeliverActionCompletion(
+        Completion(actions->requests.front(), StateEpoch(6))).accepted);
+    EXPECT_FALSE(runtime.Pump());
+    ASSERT_EQ(actions->requests.size(), 2u);
+    const ProgramActionRequest& request = actions->requests.back();
+    ASSERT_EQ(request.action, identity);
     EXPECT_EQ(
-        terminal->status,
-        InvocationTerminalStatus::TimedOut);
-    EXPECT_EQ(terminal->cleanup, CleanupStatus::Failed);
-    EXPECT_EQ(
-        terminal->session_disposition,
-        SessionDisposition::Tainted);
-    const DecodeResult<ProgramResult> decoded =
-        DecodeProgramResultV1(terminal->output_payload);
-    ASSERT_TRUE(decoded) << decoded.status.message;
-    EXPECT_EQ(
-        decoded.value->infrastructure,
-        ProgramInfrastructureStatus::TimedOut);
-    EXPECT_EQ(
-        decoded.value->cleanup,
-        ProgramCleanupStatus::Tainted);
-    ASSERT_FALSE(decoded.value->diagnostics.empty());
-    EXPECT_EQ(
-        decoded.value->diagnostics.back().code,
-        "state_preparation_deadline");
-
-    const ProgramRuntimeSubmission retained =
-        runtime.RequestCancellation(invocation.invocation_id);
-    EXPECT_TRUE(retained.accepted);
-    EXPECT_TRUE(retained.terminal_already_published);
-    EXPECT_TRUE(runtime.AcknowledgeTerminal(
-        invocation.invocation_id,
-        invocation.attempt_id).accepted);
+        request.timing,
+        ActionTimingClass::CancellationDriven);
+    EXPECT_FALSE(request.bounded_host_deadline);
+    EXPECT_FALSE(runtime.next_wake());
 }
 
 TEST(ProgramRuntime, RetainsTerminalCorrelationUntilActorAcknowledges)

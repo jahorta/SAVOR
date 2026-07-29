@@ -24,8 +24,6 @@ inline savor::PhaseScript MakeBattleCompletionProgram()
     script.ops.push_back(savor::OpArmPhaseBps());
     script.ops.push_back(savor::OpLoadSnapshot());
     script.ops.push_back(savor::OpClearMemoryWatchpoints());
-    script.ops.push_back(savor::OpSetTimeoutFromKey(key::battlecompletion::RUN_TIMEOUT_MS));
-    script.ops.push_back(savor::OpSetU32(key::core::RUN_POLL_MS, 0u));
     script.ops.push_back(savor::OpMaterializeBattleCompletionMacroSteps());
     script.ops.push_back(savor::OpGotoIf(
         key::battlecompletion::PROVIDER_FAILURE, savor::PSCmp::NE, 0u, Failure));

@@ -56,7 +56,6 @@ struct NavigationContextJobIni {
     std::int64_t source_artifact_id = 0;
     std::int64_t source_artifact_size_bytes = 0;
     std::string source_artifact_sha256;
-    std::uint32_t run_timeout_ms = 0;
     bool required_keys_present = false;
 
     std::string Encode() const {
@@ -90,7 +89,6 @@ struct NavigationContextJobIni {
             "source_artifact_size_bytes",
             std::to_string(source_artifact_size_bytes));
         ini.set(kJobSection, "source_artifact_sha256", source_artifact_sha256);
-        ini.set(kJobSection, "run_timeout_ms", std::to_string(run_timeout_ms));
         return ini.to_string_sorted();
     }
 
@@ -108,8 +106,7 @@ struct NavigationContextJobIni {
             && ini.has(kJobSection, "source_savestate_id")
             && ini.has(kJobSection, "source_artifact_id")
             && ini.has(kJobSection, "source_artifact_size_bytes")
-            && ini.has(kJobSection, "source_artifact_sha256")
-            && ini.has(kJobSection, "run_timeout_ms");
+            && ini.has(kJobSection, "source_artifact_sha256");
         out.version = ini.get_u32(kJobSection, "version", 0);
         out.workflow_instance_id =
             ini.get_i64(kJobSection, "workflow_instance_id", 0);
@@ -129,7 +126,6 @@ struct NavigationContextJobIni {
             ini.get_i64(kJobSection, "source_artifact_size_bytes", 0);
         out.source_artifact_sha256 =
             ini.get(kJobSection, "source_artifact_sha256", "");
-        out.run_timeout_ms = ini.get_u32(kJobSection, "run_timeout_ms", 0);
         return out;
     }
 
@@ -145,8 +141,7 @@ struct NavigationContextJobIni {
             && source_savestate_id > 0
             && source_artifact_id > 0
             && source_artifact_size_bytes > 0
-            && !source_artifact_sha256.empty()
-            && run_timeout_ms > 0;
+            && !source_artifact_sha256.empty();
     }
 };
 
@@ -578,18 +573,15 @@ class NavigationContextGraphAdapter final
 public:
     NavigationContextGraphAdapter(
         savor::db::IExecutionDb* execution_db,
-        savor::db::IStateDb* state_db,
-        std::uint32_t run_timeout_ms)
+        savor::db::IStateDb* state_db)
         : execution_db_(execution_db)
-        , state_db_(state_db)
-        , run_timeout_ms_(run_timeout_ms) {
+        , state_db_(state_db) {
     }
 
     WorkflowStepScheduleResult EncodeForGraphQueueing(
         const WorkflowGraphStepScheduleContext& context) const override {
         if (execution_db_ == nullptr
             || state_db_ == nullptr
-            || run_timeout_ms_ == 0
             || context.workflow_instance_id <= 0
             || context.workflow_step_id <= 0
             || !context.workflow_unit_activation_id.has_value()
@@ -638,7 +630,6 @@ public:
         input.source_artifact_id = source->artifact_id;
         input.source_artifact_size_bytes = source->artifact_size_bytes;
         input.source_artifact_sha256 = source->artifact_sha256;
-        input.run_timeout_ms = run_timeout_ms_;
         const auto input_ini = input.Encode();
         const auto fingerprint =
             "PK=" + std::to_string(savor::PK_NavigationContextRunner)
@@ -713,7 +704,6 @@ public:
             + " source_savestate_id="
             + std::to_string(source->savestate_id)
             + " source_artifact_id=" + std::to_string(source->artifact_id)
-            + " run_timeout_ms=" + std::to_string(run_timeout_ms_)
             + " job=" + std::to_string(job_id));
         return result;
     }
@@ -721,7 +711,6 @@ public:
 private:
     savor::db::IExecutionDb* execution_db_ = nullptr;
     savor::db::IStateDb* state_db_ = nullptr;
-    std::uint32_t run_timeout_ms_ = 0;
 };
 
 class NavigationContextRuntimeAdapter final : public IRuntimeInitAdapter {
@@ -756,7 +745,6 @@ public:
         }
         request.savestate_ref_kind = String(ProgramRefKind);
         request.savestate_ref_id = input.source_savestate_id;
-        request.default_timeout_ms = input.run_timeout_ms;
         return request;
     }
 
@@ -777,7 +765,6 @@ public:
             || !MatchesWorkflowIdentity(execution_db_, *job, input)
             || request.savestate_ref_kind != ProgramRefKind
             || request.savestate_ref_id != input.source_savestate_id
-            || request.default_timeout_ms != input.run_timeout_ms
             || !source.has_value()
             || !ValidFrozenState(*source, input)) {
             return std::nullopt;
@@ -792,7 +779,6 @@ public:
             return std::nullopt;
         }
         phase::navigation::ctx::EncodeSpec spec{};
-        spec.run_timeout_ms = input.run_timeout_ms;
         spec.output_savestate_path = output.string();
         savor::PSJob result{};
         if (!phase::navigation::ctx::encode_payload(spec, result.payload)) {
@@ -1064,8 +1050,7 @@ ProgramKindDescriptor BuildNavigationContextProbeDescriptor(
     descriptor.graph_job_persistence =
         std::make_shared<NavigationContextGraphAdapter>(
             execution_db,
-            state_db,
-            config.run_timeout_ms);
+            state_db);
     descriptor.runtime_init =
         std::make_shared<NavigationContextRuntimeAdapter>(
             execution_db,

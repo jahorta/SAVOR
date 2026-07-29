@@ -23,17 +23,15 @@ namespace savor::tasmovie {
         // 2) Start movie playback from the DTM path provided by the job.
         p.ops.push_back(OpMoviePlayFrom(savor::context::key::tas::DTM_PATH));
 
-        // 3) Set a per-job timeout derived from the DTM header.
-        p.ops.push_back(OpSetTimeoutFromKey(savor::context::key::core::RUN_MS));
-
-        // 4) Run until any armed canonical BP triggers (or failure/timeouts/watchdogs).
+        // 3) Run until any armed canonical BP triggers or cancellation,
+        // movie termination, or infrastructure failure ends the attempt.
         p.ops.push_back(OpRunUntilBp());
 
-        // 5) Always stop playback cleanly.
+        // 4) Always stop playback cleanly.
         p.ops.push_back(OpMovieStop());
         p.ops.push_back(OpGotoIf(savor::context::key::core::DW_RUN_OUTCOME_CODE, PSCmp::NE, 0, "DW_ERR"));
 
-        // 6) Save a state named after the DTM path (worker decides whether to save-on-fail by consulting context).
+        // 5) Save a state named after the DTM path (worker decides whether to save-on-fail by consulting context).
         p.ops.push_back(OpSaveSavestateFrom(savor::context::key::tas::SAVE_PATH));
         p.ops.push_back(OpStepFrames(1, true));  // Prevents worker from not detecting a save-state load if the worker uses the above saved save state.
         p.ops.push_back(OpReturnResult(savor::context::key::tas::MOVIE_FAILED, 0));

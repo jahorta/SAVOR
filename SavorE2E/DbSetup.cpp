@@ -56,13 +56,6 @@ void AppendTasMovieRtcArgumentIfSingle(
     if (command == nullptr) {
         return;
     }
-    command->arguments.push_back({
-        .node_key = "tas_1",
-        .argument_key = "headroom",
-        .value_type = "integer",
-        .integer_value = options.tasmovie_headroom_x10.value_or(15),
-        .source_kind = "scenario",
-    });
     const auto range = ResolveTasMovieRtcRange(options, default_value);
     if (range.low != range.high) {
         return;
@@ -413,8 +406,6 @@ bool SeedAuthoringSpec(
         {
             .name = "SavorE2E seedprobe",
             .priority = 1,
-            .run_ms = 10000,
-            .vi_stall_ms = 2000,
             .min_value = 47,
             .max_value = 207,
             .cap_trigger_top = true,

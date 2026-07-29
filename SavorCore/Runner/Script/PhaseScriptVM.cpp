@@ -121,9 +121,8 @@ namespace savor {
 
         SCLOGDX(
             SC_TAGS("vm", "init"),
-            "[VM] legacy init rejected sav=%s timeout=%u",
-            init.savestate_path.c_str(),
-            init.default_timeout_ms);
+            "[VM] legacy init rejected sav=%s",
+            init.savestate_path.c_str());
 
         armed_pcs_.clear();
         armed_ = false;
@@ -173,11 +172,13 @@ namespace savor {
                 ? DispatchResult::Continue
                 : DispatchResult::Failed;
         case PSOpCode::SET_TIMEOUT:
-            op_set_timeout(op, ctx);
-            return DispatchResult::Continue;
         case PSOpCode::SET_TIMEOUT_FROM:
-            op_set_timeout_from(op, ctx);
-            return DispatchResult::Continue;
+            SCLOGE("[VM] legacy timeout opcode is reserved after the hard cutover");
+            ctx[savor::context::key::core::WORKER_ERROR] =
+                static_cast<uint32_t>(WERR_UnknownError);
+            result.ctx = ctx;
+            result.ok = false;
+            return DispatchResult::Failed;
         case PSOpCode::START_DETERMINISTIC_RUN:
             return op_start_deterministic_run(result, ctx)
                 ? DispatchResult::Continue

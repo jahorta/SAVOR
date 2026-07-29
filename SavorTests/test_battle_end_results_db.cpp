@@ -159,8 +159,6 @@ std::optional<SeededVictorySource> SeedVictorySource(
             {
                 .name = label + "-run",
                 .priority = 1,
-                .run_ms = 60000,
-                .vi_stall_ms = 0,
                 .use_single_turn_runner = true,
                 .created_at_utc = now,
                 .correlation_id = "test.battle_end_results." + label,
@@ -272,7 +270,6 @@ std::optional<SeededVictorySource> SeedVictorySource(
         return std::nullopt;
     }
     IniDoc source_input;
-    source_input.set("BattleSingleTurn.Job", "run_ms_override", "60000");
     if (!execution_db->EnqueueJob(
             {
                 .job_set_id = source_job_set_id,
@@ -321,8 +318,6 @@ std::optional<std::int64_t> SaveBattleEndResultsGraph(
             {
                 .name = label + " field-return seed probe",
                 .priority = 1,
-                .run_ms = 60000,
-                .vi_stall_ms = 2000,
                 .min_value = 47,
                 .max_value = 207,
                 .cap_trigger_top = true,
@@ -649,7 +644,6 @@ TEST(BattleEndResultsDb, RuntimeMaterializationRejectsDirectlyEnqueuedJobWithout
     input.set("BattleEndResults.Job", "source_savestate_id", "9");
     input.set("BattleEndResults.Job", "source_artifact_id", "5");
     input.set("BattleEndResults.Job", "source_artifact_sha256", source_hash);
-    input.set("BattleEndResults.Job", "run_timeout_ms", "60000");
     input.set("BattleEndResults.Job", "acceleration_policy", "1");
 
     std::int64_t job_id = 0;
@@ -1707,7 +1701,6 @@ TEST_F(BattleEndResultsSqliteDbFixture, CompletionResultStoresBcmbAndAggregateSc
         input.set("FieldReturnSeed.Job", "entry_savestate_id", std::to_string(completion_savestate_id));
         input.set("FieldReturnSeed.Job", "entry_artifact_id", std::to_string(completion_state->artifact_id));
         input.set("FieldReturnSeed.Job", "entry_artifact_sha256", completion_state->artifact_sha256);
-        input.set("FieldReturnSeed.Job", "run_timeout_ms", "60000");
         std::int64_t job_set_id = 0;
         if (!db_service_->ExecutionDb()->CreateJobSet(
                 {
@@ -1758,7 +1751,6 @@ TEST_F(BattleEndResultsSqliteDbFixture, CompletionResultStoresBcmbAndAggregateSc
         forged.savestate_ref_kind = "state_savestate";
         forged.savestate_ref_id = completion_savestate_id;
         forged.bootstrap_profile = "battle.field_return_seed_probe.materialize";
-        forged.default_timeout_ms = 60000;
         EXPECT_FALSE(materialize_descriptor.runtime_init->MaterializePsJob(invalid_job_id, forged).has_value());
     }
 
@@ -1845,15 +1837,6 @@ TEST_F(BattleEndResultsSqliteDbFixture, CompletionResultStoresBcmbAndAggregateSc
                 .ref_kind = "state.savestate",
                 .ref_id = seeded_savestate_id,
                 .source_kind = "upstream",
-            },
-        };
-        context.arguments = {
-            {
-                .node_key = "results",
-                .argument_key = "run_ms",
-                .value_type = "integer",
-                .integer_value = 60000,
-                .source_kind = "test",
             },
         };
         return results_descriptor->graph_job_persistence->EncodeForGraphQueueing(context);

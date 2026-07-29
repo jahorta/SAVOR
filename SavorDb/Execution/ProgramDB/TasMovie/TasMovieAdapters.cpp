@@ -1,6 +1,5 @@
 #include "TasMovieAdapters.h"
 
-#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -40,13 +39,7 @@ TasMovieBlueprintConfig ParseBlueprint(const std::string& input_ini) {
     cfg.rtc_low = ini.get_i64(kBlueprintSection, "rtc_low", 0);
     cfg.rtc_high = ini.get_i64(kBlueprintSection, "rtc_high", 0);
     cfg.priority = static_cast<int>(ini.get_i64(kBlueprintSection, "priority", 0));
-    cfg.run_ms = ini.get_u32(kBlueprintSection, "run_ms", 0);
-    cfg.vi_stall_ms = ini.get_u32(kBlueprintSection, "vi_stall_ms", 2000);
     cfg.progress_enable = true;
-    cfg.headroom_x10 = static_cast<std::uint8_t>(std::clamp<std::int64_t>(
-        ini.get_i64(kBlueprintSection, "headroom_x10", 15),
-        0,
-        255));
     const auto probe_run_id = ini.get_i64(kBlueprintSection, "bind_seed_probe_run_id", 0);
     if (probe_run_id > 0) {
         cfg.bind_seed_probe_run_id = probe_run_id;
@@ -67,10 +60,7 @@ std::string BuildInputIni(const TasMovieBlueprintConfig& cfg, std::int64_t rtc) 
     ini.set(kBlueprintSection, "rtc_low", ToString(cfg.rtc_low));
     ini.set(kBlueprintSection, "rtc_high", ToString(cfg.rtc_high));
     ini.set(kBlueprintSection, "priority", ToString(cfg.priority));
-    ini.set(kBlueprintSection, "run_ms", ToString(cfg.run_ms));
-    ini.set(kBlueprintSection, "vi_stall_ms", ToString(cfg.vi_stall_ms));
     ini.set(kBlueprintSection, "progress_enable", "1");
-    ini.set(kBlueprintSection, "headroom_x10", ToString(cfg.headroom_x10));
     if (cfg.bind_seed_probe_run_id.has_value()) {
         ini.set(kBlueprintSection, "bind_seed_probe_run_id", ToString(*cfg.bind_seed_probe_run_id));
     }
@@ -88,9 +78,7 @@ std::string VariantFingerprint(
         + ";job_set_id=" + std::to_string(job_set_id)
         + (cfg.tas_spec_id.has_value() ? ";tas_spec_id=" + std::to_string(*cfg.tas_spec_id) : "")
         + ";base_dtm_artifact_id=" + std::to_string(cfg.base_dtm_artifact_id)
-        + ";rtc=" + std::to_string(rtc)
-        + ";run_ms=" + std::to_string(cfg.run_ms)
-        + ";vi=" + std::to_string(cfg.vi_stall_ms);
+        + ";rtc=" + std::to_string(rtc);
 }
 
 std::string VariantIdentitySuffix(const TasMovieBlueprintConfig& cfg, std::int64_t rtc) {
@@ -380,13 +368,7 @@ public:
             }
             cfg.tas_spec_id = *node->authored_ref_id;
             cfg.priority = spec->priority;
-            cfg.run_ms = static_cast<std::uint32_t>(std::max<std::int64_t>(0, spec->run_ms));
-            cfg.vi_stall_ms = static_cast<std::uint32_t>(std::max<std::int64_t>(0, spec->vi_stall_ms));
             cfg.progress_enable = true;
-        }
-        const auto headroom_argument = FindIntegerArgument(context, "headroom");
-        if (headroom_argument.has_value()) {
-            cfg.headroom_x10 = static_cast<std::uint8_t>(std::clamp<std::int64_t>(*headroom_argument, 0, 255));
         }
 
         const auto* dtm = FindBinding(context, "dtm_artifact", "state_artifact.dtm_artifact_id");
@@ -498,9 +480,6 @@ public:
 
         savor::tasmovie::EncodeSpec spec{};
         spec.dtm_path = derived_path.string();
-        spec.run_ms = cfg.run_ms;
-        spec.vi_stall_ms = cfg.vi_stall_ms;
-        spec.headroom_x10 = cfg.headroom_x10;
 
         savor::PSJob out{};
         if (!savor::tasmovie::encode_payload(spec, out.payload)) {
@@ -534,7 +513,6 @@ public:
         if (out.w_err == 0) {
             result.ps.ctx.get(savor::context::key::core::DW_RUN_OUTCOME_CODE, out.dw_err);
         }
-        result.ps.ctx.get(savor::context::key::core::RUN_MS, out.run_ms_used);
         result.ps.ctx.get(savor::context::key::core::VI_FIRST, out.vi_start);
         result.ps.ctx.get(savor::context::key::core::VI_LAST, out.vi_end);
         result.ps.ctx.get(savor::context::key::tas::SAVE_PATH, out.savestate_path);
@@ -684,7 +662,6 @@ TasMovieResultsIni TasMovieResultsIni::FromIniText(const std::string& text) {
     TasMovieResultsIni out{};
     out.w_err = static_cast<int>(ini.get_i64(kResultsSection, "w_err", 0));
     out.dw_err = ini.get_u32(kResultsSection, "dw_err", 0);
-    out.run_ms_used = ini.get_u32(kResultsSection, "run_ms_used", 0);
     out.vi_start = ini.get_u32(kResultsSection, "vi_start", 0);
     out.vi_end = ini.get_u32(kResultsSection, "vi_end", 0);
     out.savestate_path = ini.get(kResultsSection, "savestate_path", "");
@@ -695,7 +672,6 @@ std::string TasMovieResultsIni::ToIniText() const {
     IniDoc ini;
     ini.set(kResultsSection, "w_err", std::to_string(w_err));
     ini.set(kResultsSection, "dw_err", std::to_string(dw_err));
-    ini.set(kResultsSection, "run_ms_used", std::to_string(run_ms_used));
     ini.set(kResultsSection, "vi_start", std::to_string(vi_start));
     ini.set(kResultsSection, "vi_end", std::to_string(vi_end));
     ini.set(kResultsSection, "savestate_path", savestate_path);

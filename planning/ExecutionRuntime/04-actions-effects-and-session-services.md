@@ -5,9 +5,11 @@
 This document describes how programs request effects, how native extensions are bounded, which session
 service owns each emulator facility, how resources are scoped, and how cancellation/restoration affect
 session reuse. Concrete C++ signatures and worker transport encoding may adapt during implementation.
-The package-wide SavorDb boundary applies: its schema, stored representations, durable lifecycle
+The package-wide SavorDb migration boundary applies: its physical schema, migrations, durable lifecycle
 semantics, workflow persistence, result-projection transaction boundaries, and artifact-storage
-interfaces remain unchanged. Document 06 permits only narrowly workset-specific execution-interface
+interfaces remain unchanged. The pre-6A hard cutover removes obsolete timing fields from public
+authoring interfaces and generated arguments; only private neutral insert shims satisfy the six
+unchanged physical timing columns. Document 06 permits narrowly workset-specific execution-interface
 changes for ordered batch claim, exact-set lease renewal, claim/start validation, and targeted terminal
 reconciliation over those same records; the session services in this document neither depend on nor
 broaden that allowance.
@@ -132,7 +134,7 @@ An action request logically includes:
 - typed input conforming to the imported schema;
 - current `StateEpoch`;
 - active resource scope;
-- remaining deadline and cancellation token;
+- cancellation token and structural-budget context;
 - retry/idempotency identity where external publication is possible; and
 - the caller's allowed capability/effect set.
 
@@ -170,7 +172,7 @@ Every action registration has an immutable logical descriptor:
 | Epoch behavior | Epoch requirement, whether the action may replace state, and handle invalidation/rebinding rules |
 | Determinism/replay | Replay class and fields that must be recorded or compared |
 | Cancellation | Cancellation mode, safe points, maximum non-cancellable section, and cancellation completion |
-| Deadline | Required/default upper bound and whether a caller may narrow it |
+| Timing class | `CancellationDriven` guest-dependent work or `BoundedHostOperation` with a finite infrastructure timeout |
 | Cleanup guarantee | No resource, automatically scoped release, or verified compensation; taint rule on failure |
 | Idempotency | Whether retry is safe and which key/receipt proves a prior commit |
 | Diagnostics | Stable failure categories and source/trace fields |
@@ -180,7 +182,7 @@ The registry resolves exact imported identity. It never chooses an implementatio
 
 ### Action granularity
 
-An action is one bounded reusable capability transaction. It may:
+An action is one structurally bounded reusable capability transaction. It may:
 
 - perform one finite pure conversion that cannot be represented conveniently in IR;
 - read one coherent observation;
@@ -194,7 +196,7 @@ An action is one bounded reusable capability transaction. It may:
 An action may contain service-internal polling or emulator advancement only when:
 
 - it is part of one declared transaction;
-- the completion condition and hard deadline are declared;
+- the completion condition, cancellation behavior, and structural bounds are declared;
 - every emulator advance uses `ExecutionEngine`;
 - cancellation safe points and partial-commit behavior are defined; and
 - it performs no phase-level branching or scheduling.
@@ -266,8 +268,9 @@ capabilities. It lowers before verification to exact capability-pack imports and
 The await use explicitly says whether an already-paused matching current point is acceptable. Otherwise
 current-instruction suppression and rearm policy prevent the source stop from spuriously completing the
 new wait. Unrelated stops may be observed or handled by their owners but cannot complete the await.
-Timeout, stall, movie-ended, cancellation, guard/interceptor failure, and backend failure remain
-distinct completion statuses.
+Movie-ended, cancellation, centrally confirmed `CoreStalled`, guard/interceptor failure, and backend
+failure remain distinct completion statuses. A bounded host operation may additionally report its own
+infrastructure timeout.
 
 `GuestMemory` evaluates checked `AddressExpression<T>` definitions and registered coherent query
 recipes. It distinguishes required evidence loss from optional `Unavailable` and from a successfully
@@ -319,13 +322,14 @@ neutral frame between polls. A `Latest` baseline is updated before the check at 
 reducer consumes only typed state plus the completed segment result and may select only a finite
 verifier-declared next segment, emit declared records, or complete.
 
-Timeout, unexpected point, unacknowledged requested input, unproven neutral release, unsatisfied check,
-infrastructure failure, cancellation, and cleanup failure remain distinct. On every terminal path,
-common unwind cancels outstanding execution, neutralizes through the still-valid lease, proves release
-when the interaction requires it, removes only the interaction's subscription scopes, and releases the
-lease. Cleanup continues after a failure; an unproven mandatory release or restoration taints the
-session. The target preserves these semantic dependencies, not the incidental order of current
-`IInputMacroHost` cleanup calls.
+Unexpected point, unacknowledged requested input, unproven neutral release, unsatisfied check,
+centrally confirmed `CoreStalled`, infrastructure failure, cancellation, and cleanup failure remain
+distinct. A bounded host operation may additionally report its own infrastructure timeout. On every
+terminal path, common unwind cancels outstanding execution, neutralizes through the still-valid lease,
+proves release when the interaction requires it, removes only the interaction's subscription scopes,
+and releases the lease. Cleanup continues after a failure; an unproven mandatory release or
+restoration taints the session. The target preserves these semantic dependencies, not the incidental
+order of current `IInputMacroHost` cleanup calls.
 
 ### Predicate lowering and service boundaries
 
@@ -362,9 +366,9 @@ Each descriptor declares one class:
 
 Pure reducers are deterministic by definition and do not use an action replay class.
 
-Elapsed host time, poll count, or safety deadline may appear in infrastructure diagnostics when useful.
-It becomes domain evidence only when the action's domain schema explicitly declares it. Navmesh Survey
-actions do not declare timing as spatial evidence.
+Elapsed host time or poll count may appear in infrastructure diagnostics when useful. It becomes domain
+evidence only when the action's domain schema explicitly declares it. Guest-dependent action completion
+is never converted into a phase execution deadline.
 
 ### Cancellation modes
 
@@ -376,8 +380,9 @@ Every action declares one:
 - `CommitCritical`: a short declared commit section completes atomically before cancellation is
   acknowledged; the completion proves committed versus not committed.
 
-An action with no bounded cancellation or deadline contract cannot be registered for worker programs.
-Cancellation never calls arbitrary program code from a service thread.
+Every action must have a cancellation contract. A `BoundedHostOperation` additionally declares a finite
+infrastructure timeout; a `CancellationDriven` action must not declare an elapsed deadline. Cancellation
+never calls arbitrary program code from a service thread.
 
 ### Resource scopes and receipts
 
@@ -445,8 +450,8 @@ Rules:
 4. A cleanup-safe compensation action must be idempotent and operate only on its typed receipt.
 5. Resource promotion to an enclosing scope is explicit and descriptor-authorized.
 6. Live resource/opaque handles cannot be emitted as records or artifacts.
-7. Return, explicit fail, action failure, cancellation, timeout, budget exhaustion, guard abort, and
-   worker-requested shutdown use the same unwind machinery.
+7. Return, explicit fail, action failure, cancellation, bounded-host timeout, structural-bound
+   exhaustion, guard abort, and worker-requested shutdown use the same unwind machinery.
 8. Optional cleanup failure records `CleanWithDiagnostics`; mandatory cleanup without a verified receipt
    records `TaintRequired` and blocks later acquisition.
 9. State replacement is a ledger transaction: epoch-agnostic resources survive, end-on-change resources
@@ -556,25 +561,40 @@ second execution owner. The engine accepts typed operations corresponding to:
 - interactively resume a Ready visual-intent session; and
 - execute verifier-known bounded interruption handlers requested by router interceptors.
 
-It owns operation IDs, deadlines, remaining-time accounting, VI-stall policy, movie-ended policy,
-throttle mode, cancellation, current-instruction suppression, pause confirmation, and resumption after
-routing. Every operation carries `StateEpoch` and remains interceptor-aware.
+It owns operation IDs, cancellation, centralized core health, movie-ended policy, throttle mode,
+current-instruction suppression, pause confirmation, and resumption after routing. Every operation
+carries `StateEpoch` and remains interceptor-aware.
 
 Only one foreground operation advances the core. Interruption-handler child operations structurally
 suspend the parent and return to it; they do not start a nested runtime.
 
-The engine is an actor-owned state machine, not a thread. Bounded requests carry remaining active
-wall-clock time rather than a deadline that expires while structurally suspended. Parent wall-clock and
-VI-stall budgets freeze while a handler child is active; a child freezes while a declared nested child is
-active. Ready-session `InteractiveResume` is the sole unbounded operation and terminates at a safe pause,
-routed terminal, shutdown, or failure.
+The engine is an actor-owned state machine, not a thread. Guest-dependent requests are
+cancellation-driven. Parent health monitoring is ineligible while a handler child is active and
+rebaselines when that parent resumes; the same rule applies while a child is suspended by a declared
+nested child. Ready-session `InteractiveResume` follows the same health and cancellation rules and
+terminates at a safe pause, routed terminal, shutdown, or failure.
 
-An immutable trusted handler descriptor declares its allowed child operation kinds, child budget,
+An immutable trusted handler descriptor declares its allowed child operation kinds, child structural limits,
 permitted nested keys, recursion policy, and maximum depth. The engine additionally enforces an absolute
 depth cap of eight. A child may return only `ResumeParent` or `AbortParent`; unknown handlers,
 undeclared nesting, forbidden recursion, depth overflow, and infrastructure failure remain distinct
-typed failures. The parent retains its exact completion condition, active budget, stall baseline,
-temporary wake group, input relationship, suppression state, and `StateEpoch`.
+typed failures. The parent retains its exact completion condition, temporary wake group, input
+relationship, suppression state, and `StateEpoch`; its health baseline is intentionally renewed after
+the ineligible suspension interval.
+
+The session-owned health monitor starts only after engine advancement is confirmed running.
+VI/CoreTiming progress or a changed synchronous host-activity generation resets its baseline. Native
+router/sampler/capture work uses an atomic, allocation-free, `noexcept` activity scope; actor-side
+guest-blocking work uses ordinary scoped registration. Intentional pause, state replacement,
+reconciliation, and handler suspension are ineligible. Background artifact finalization is not.
+
+After ten eligible seconds without progress the monitor emits `SuspectedCoreStall`; after ten more it
+requests a safe pause. Proven pause and health produce `CoreStalled` with clean diagnostics; unproven
+integrity taints the session. A continuously active host scope warns after ten seconds and every thirty
+seconds thereafter but does not become a core-stall failure. Actor-owned work that blocks publication
+retains its completed duration so the next actor pump emits every crossed threshold. Completed-scope
+diagnostic overflow is explicit. These defaults are session policy, not module, workset, fingerprint,
+or database input.
 
 The private backend facet available to the engine contains only primitive pause/resume, frame-step,
 core/PC/VI/movie/throttle observation, and throttle apply/restore operations. Movie observation here
@@ -953,8 +973,8 @@ facade.
 - Validation failure before dispatch acquires no resource and returns a deterministic runtime rejection.
 - A handler that fails after partial acquisition returns every receipt already created.
 - Domain-negative observations use typed domain fields and may allow ordinary program branching.
-- Backend, schema, stale-epoch, deadline, cancellation, or capability failures are infrastructure
-  statuses and cannot masquerade as domain values.
+- Backend, schema, stale-epoch, bounded-host timeout, cancellation, confirmed core-health, or capability
+  failures are infrastructure statuses and cannot masquerade as domain values.
 - A lost/duplicate completion cannot lose resource ownership: the runtime resource ledger, not the
   completion message alone, remains authoritative.
 - A duplicate idempotent external request resolves from its commit receipt rather than repeating the
@@ -1023,8 +1043,10 @@ Migration implications:
 2. Move physical breakpoint/watchpoint mutation to `PhysicalStopPointManager`.
 3. Convert current VM waits and macro waits to temporary router subscriptions plus
    `runtime.execution.continue_until`.
-4. Bring direct continue, pause, and frame-step behavior under `ExecutionEngine`; hard-disconnect legacy
-   guest-instruction-step and tape/macro advancement rather than creating a compatibility executor.
+4. Before Slice 6A, bring direct continue, pause, and frame-step behavior under `ExecutionEngine`;
+   remove phase elapsed deadlines and per-request VI-stall policy, add session-owned core health plus
+   synchronous host-activity accounting, and hard-disconnect legacy guest-instruction-step and timed
+   tape/macro advancement rather than creating a compatibility executor.
 5. Keep the implemented `InputArbiter` opaque input-advance port beneath `ExecutionEngine`; re-author
    current input/macro behavior with its epoch-bound leases, borrow policy, and guest-observed release.
 6. Use the implemented `StateService` as the sole epoch authority and translate raw savestate/buffer
@@ -1056,7 +1078,7 @@ host interfaces are not exposed to new modules.
 
 ## Service and cleanup checks
 
-- An action cannot be registered without exact types, capabilities/effects, epoch, deadline,
+- An action cannot be registered without exact types, capabilities/effects, epoch, timing class,
   cancellation, replay, resource, cleanup, and idempotency declarations.
 - Static dependencies prevent handlers/reducers/packs from obtaining `WorkerRuntime`,
   `ProgramExecutor`, workflow storage, or raw `DolphinBackend`.
@@ -1077,8 +1099,9 @@ host interfaces are not exposed to new modules.
   Tests prove that no guest PowerPC instruction-step action or backend facet exists and that exact
   source-receipt suppression preserves ordinary continuation behavior; `InputArbiter` supplies the
   production input-synchronized port without giving the engine publication authority.
-- Interruption tests cover frozen parent/child active-time budgets, declared nesting and recursion, the
-  eight-level hard cap, and `ResumeParent`/`AbortParent` as the only policy outcomes.
+- Interruption tests cover cancellation propagation, health rebaselining across parent/child
+  suspension, declared nesting and recursion, the eight-level hard cap, and
+  `ResumeParent`/`AbortParent` as the only policy outcomes.
 - Visual-intent command tests use fake sessions and protocol fixtures without a window, GUI automation,
   screenshot comparison, desktop control, or manual observation.
 - Multiple logical consumers share one physical PC/memory site; releasing one subscription group leaves

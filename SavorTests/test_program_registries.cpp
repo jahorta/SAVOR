@@ -69,7 +69,8 @@ ActionDescriptor Action(
         .required_services =
             ServiceMask(SessionServiceCapability::Execution),
         .effects = EffectMask(ActionEffect::AdvanceEmulation),
-        .default_deadline_milliseconds = 1000,
+        .timing = ActionTimingClass::BoundedHostOperation,
+        .default_host_timeout_milliseconds = 1000,
         .diagnostic_categories = {"timeout"},
     };
 }
@@ -270,7 +271,10 @@ TEST(ActionRegistry, DescriptorIdentityCoversEveryMaterialPolicyClass)
         ++value.maximum_non_cancellable_milliseconds;
     });
     changes_hash([](ActionDescriptor& value) {
-        ++value.default_deadline_milliseconds;
+        value.timing = ActionTimingClass::CancellationDriven;
+    });
+    changes_hash([](ActionDescriptor& value) {
+        ++value.default_host_timeout_milliseconds;
     });
     changes_hash([](ActionDescriptor& value) {
         value.resource_behavior = ActionResourceBehavior::Scoped;
@@ -389,9 +393,29 @@ TEST(ActionRegistry, CanonicalRuntimeCatalogCoversEveryGenericAction)
         EXPECT_EQ(
             descriptors[index].providing_pack,
             CanonicalRuntimePackIdentity());
-        EXPECT_NE(
-            descriptors[index].default_deadline_milliseconds,
-            0u);
+        if (descriptors[index].timing ==
+            ActionTimingClass::BoundedHostOperation)
+        {
+            EXPECT_NE(
+                descriptors[index].default_host_timeout_milliseconds,
+                0u);
+            EXPECT_NE(
+                std::ranges::find(
+                    descriptors[index].diagnostic_categories,
+                    "timeout"),
+                descriptors[index].diagnostic_categories.end());
+        }
+        else
+        {
+            EXPECT_EQ(
+                descriptors[index].default_host_timeout_milliseconds,
+                0u);
+            EXPECT_EQ(
+                std::ranges::find(
+                    descriptors[index].diagnostic_categories,
+                    "timeout"),
+                descriptors[index].diagnostic_categories.end());
+        }
         EXPECT_EQ(
             descriptors[index].input_type,
             CanonicalActionInputType(
@@ -515,8 +539,7 @@ TEST(ActionRegistry, CanonicalRuntimeCatalogCoversEveryGenericAction)
     };
     require_record(
         CanonicalAction::ExecutionContinueUntil,
-        {"wake_group", "input_publication",
-         "deadline_milliseconds", "static_config"});
+        {"wake_group", "input_publication", "static_config"});
     require_record(
         CanonicalAction::InputAwaitGuestPoll,
         {"lease", "input_publication",

@@ -19,8 +19,6 @@ namespace phase::battle::runner {
 
     static const std::string LabelInputTurnActions = "APPLY_INPUTS";
     static const std::string LabelRunTurn = "RUN_TURN";
-    static const std::string LabelSetTimeoutSmall = "SET_TIMEOUT_SMALL";
-    static const std::string LabelSetTimeoutLarge = "SET_TIMEOUT_LARGE";
     static const std::string LabelStartRun = "START_RUN";
 
     static const std::string LabelADV = "ADV";
@@ -30,7 +28,7 @@ namespace phase::battle::runner {
     static const std::string LabelMaterializeFail = "RET_PLAN_MAT_FAILURE";
     static const std::string LabelDWErr = "RET_DW_RUN_ERROR";
 
-    inline PhaseScript MakeBattleRunnerProgram(uint32_t short_timeout = 20000, uint32_t long_timeout = 120000)
+    inline PhaseScript MakeBattleRunnerProgram()
     {
         using savor::battle::Outcome;
         
@@ -62,7 +60,7 @@ namespace phase::battle::runner {
         // ============  Label Run Turn  ===================
         ps.ops.push_back(OpLabel(LabelRunTurn));
 
-        // set timeout based on bp
+        // Continue to the next semantic battle stop.
         ps.ops.push_back(OpRunUntilBp());
         ps.ops.push_back(OpGotoIf(DW_Outcome, PSCmp::NE, 0, LabelDWErr));
         ps.ops.push_back(OpCapturePredBaselines());
@@ -76,7 +74,6 @@ namespace phase::battle::runner {
         
         // If we are not to the next input bp, keep running
         ps.ops.push_back(OpGotoIf(savor::context::key::core::RUN_HIT_BP_KEY, PSCmp::EQ, (uint32_t)BP_BattleLoadComplete, LabelADV));
-        ps.ops.push_back(OpSetTimeoutToMS(long_timeout));
         ps.ops.push_back(OpGotoIf(savor::context::key::core::RUN_HIT_BP_KEY, PSCmp::NE, (uint32_t)BP_BattleAcceptInput, LabelRunTurn));
 
         ps.ops.push_back(OpGotoIfKeys(savor::context::key::battle::ACTIVE_TURN, PSCmp::LT, savor::context::key::battle::LAST_TURN, LabelADV));
@@ -84,7 +81,6 @@ namespace phase::battle::runner {
 
         // ============  Label ADV  ===================
         ps.ops.push_back(OpLabel(LabelADV));
-        ps.ops.push_back(OpSetTimeoutToMS(short_timeout));
         ps.ops.push_back(OpAddU32(savor::context::key::battle::ACTIVE_TURN, 1));
         ps.ops.push_back(OpGoto(LabelInputTurnActions));
 

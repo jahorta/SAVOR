@@ -63,23 +63,19 @@ void ResetBattleMacroContext(PSContext& ctx)
     ctx[battle::MACRO_MEMORY_LATEST] = 0u;
     ctx[battle::MACRO_MEMORY_CHANGED] = 0u;
     ctx[battle::MACRO_MEMORY_POLL_COUNT] = 0u;
-    ctx[battle::MACRO_MEMORY_ELAPSED_MS] = 0u;
     ctx[battle::MACRO_MEMORY_GATE_COUNT] = 0u;
     ctx[battle::MACRO_MEMORY_FIRST_BASELINE] = 0u;
     ctx[battle::MACRO_MEMORY_FIRST_LATEST] = 0u;
     ctx[battle::MACRO_MEMORY_FIRST_CHANGED] = 0u;
     ctx[battle::MACRO_MEMORY_FIRST_POLL_COUNT] = 0u;
-    ctx[battle::MACRO_MEMORY_FIRST_ELAPSED_MS] = 0u;
     ctx[battle::MACRO_MEMORY_REPEAT_BASELINE] = 0u;
     ctx[battle::MACRO_MEMORY_REPEAT_LATEST] = 0u;
     ctx[battle::MACRO_MEMORY_REPEAT_CHANGED] = 0u;
     ctx[battle::MACRO_MEMORY_REPEAT_POLL_COUNT] = 0u;
-    ctx[battle::MACRO_MEMORY_REPEAT_ELAPSED_MS] = 0u;
     ctx[battle::MACRO_MEMORY_REPEAT2_BASELINE] = 0u;
     ctx[battle::MACRO_MEMORY_REPEAT2_LATEST] = 0u;
     ctx[battle::MACRO_MEMORY_REPEAT2_CHANGED] = 0u;
     ctx[battle::MACRO_MEMORY_REPEAT2_POLL_COUNT] = 0u;
-    ctx[battle::MACRO_MEMORY_REPEAT2_ELAPSED_MS] = 0u;
 }
 
 phase::battle::macroprobe::FailureCode LegacyFailureFor(
@@ -90,9 +86,6 @@ phase::battle::macroprobe::FailureCode LegacyFailureFor(
     switch (failure) {
     case Failure::None:
         return Legacy::Ok;
-    case Failure::BreakpointTimeout:
-    case Failure::MemoryTimeout:
-        return Legacy::Timeout;
     case Failure::UnexpectedBreakpoint:
     case Failure::Cancelled:
         return Legacy::UnexpectedBreakpoint;
@@ -103,13 +96,12 @@ phase::battle::macroprobe::FailureCode LegacyFailureFor(
     case Failure::EmptyPlan:
     case Failure::EmptyExpectedKeys:
     case Failure::InvalidAddress:
-    case Failure::InvalidTimeout:
     case Failure::InvalidBaselineReference:
     case Failure::UndeclaredBreakpoint:
     case Failure::UnauthorizedBreakpoint:
     case Failure::SessionUnavailable:
     case Failure::HostFailure:
-        return Legacy::InvalidMode;
+        return Legacy::HostFailure;
     }
     return Legacy::InvalidMode;
 }
@@ -119,10 +111,7 @@ void ApplyRuntimeOutcome(
     PSContext& ctx)
 {
     using Failure = inputmacro::InputMacroFailure;
-    if (failure == Failure::BreakpointTimeout || failure == Failure::MemoryTimeout) {
-        ctx[context::key::core::DW_RUN_OUTCOME_CODE] =
-            static_cast<std::uint32_t>(RunToBpOutcome::Timeout);
-    } else if (failure == Failure::Cancelled) {
+    if (failure == Failure::Cancelled) {
         ctx[context::key::core::DW_RUN_OUTCOME_CODE] =
             static_cast<std::uint32_t>(RunToBpOutcome::Aborted);
     } else if (failure != Failure::None) {
@@ -222,7 +211,6 @@ inputmacro::BreakpointWaitResult PhaseScriptVM::run_to_breakpoints(
             .input_acknowledged = result.input_acknowledged,
         };
     }
-    result.elapsed_ms = run.elapsed_ms;
     if (run.run.hit && run.expected_match) {
         result.status = inputmacro::InputMacroHostStatus::Succeeded;
         if (derived_) derived_->update_on_bp(run.hit_bp_key, *active_input_macro_context_, host_);
@@ -233,9 +221,7 @@ inputmacro::BreakpointWaitResult PhaseScriptVM::run_to_breakpoints(
         // dedicated UnexpectedBreakpoint failure.
         result.status = inputmacro::InputMacroHostStatus::Succeeded;
     } else {
-        // The legacy battle adapter classified every non-aborted no-hit
-        // outcome as a timeout, including watchdog and movie-stop variants.
-        result.status = inputmacro::InputMacroHostStatus::TimedOut;
+        result.status = inputmacro::InputMacroHostStatus::Failed;
     }
 
     SCLOGI("[input-macro] wait expected=%s hit=%u pc=%08X status=%u input_epoch=%llu input_polls=%u input_ack=%u",
@@ -265,11 +251,9 @@ bool PhaseScriptVM::read_u32(std::uint32_t address, std::uint32_t& value)
 
 inputmacro::MemoryChangeResult PhaseScriptVM::wait_for_u32_change(
     std::uint32_t address,
-    std::uint32_t baseline,
-    std::uint32_t timeout_ms)
+    std::uint32_t baseline)
 {
     (void)address;
-    (void)timeout_ms;
     SCLOGE(
         "[input-macro] memory-change advancement is disconnected; use observation and interaction composition");
     return inputmacro::MemoryChangeResult{
@@ -397,11 +381,9 @@ void PhaseScriptVM::start_prepared_battle_macro(
         static_cast<std::uint32_t>(prepared.failure);
 
     if (!prepared.ok()) {
-        if (prepared.failure == FailureCode::Timeout) {
-            ctx[context::key::core::DW_RUN_OUTCOME_CODE] =
-                static_cast<std::uint32_t>(RunToBpOutcome::Timeout);
-        } else if (prepared.failure == FailureCode::UnexpectedBreakpoint
+        if (prepared.failure == FailureCode::UnexpectedBreakpoint
             || prepared.failure == FailureCode::BattleContextUnavailable
+            || prepared.failure == FailureCode::HostFailure
             || !authored_turn) {
             ctx[context::key::core::DW_RUN_OUTCOME_CODE] =
                 static_cast<std::uint32_t>(RunToBpOutcome::InputPlaybackFailed);
@@ -473,13 +455,11 @@ void PhaseScriptVM::op_materialize_battle_macro_steps(PSContext& ctx)
     auto read_pattern = [&](context::key::KeyId mode_key,
                             context::key::KeyId target_neutral_key,
                             context::key::KeyId input_neutral_key,
-                            context::key::KeyId timeout_key,
                             FakeAttackPattern defaults) {
         std::uint32_t raw_gate = static_cast<std::uint32_t>(defaults.memory_gate_mode);
         ctx.get(mode_key, raw_gate);
         ctx.get(target_neutral_key, defaults.target_neutral_before_b_frames);
         ctx.get(input_neutral_key, defaults.input_neutral_after_b_frames);
-        ctx.get(timeout_key, defaults.memory_timeout_ms);
         defaults.memory_gate_mode = static_cast<FakeAttackMemoryGateMode>(raw_gate);
         return defaults;
     };
@@ -488,19 +468,16 @@ void PhaseScriptVM::op_materialize_battle_macro_steps(PSContext& ctx)
         context::key::battle::MACRO_FAKE_MEMORY_GATE_MODE,
         context::key::battle::MACRO_FAKE_TARGET_NEUTRAL_FRAMES,
         context::key::battle::MACRO_FAKE_INPUT_NEUTRAL_FRAMES,
-        context::key::battle::MACRO_FAKE_MEMORY_TIMEOUT_MS,
         FakeAttackPattern{});
     const auto first_pattern = read_pattern(
         context::key::battle::MACRO_FAKE_FIRST_MEMORY_GATE_MODE,
         context::key::battle::MACRO_FAKE_FIRST_TARGET_NEUTRAL_FRAMES,
         context::key::battle::MACRO_FAKE_FIRST_INPUT_NEUTRAL_FRAMES,
-        context::key::battle::MACRO_FAKE_FIRST_MEMORY_TIMEOUT_MS,
         FakeAttackPattern{});
     const auto final_pattern = read_pattern(
         context::key::battle::MACRO_FAKE_FINAL_MEMORY_GATE_MODE,
         context::key::battle::MACRO_FAKE_FINAL_TARGET_NEUTRAL_FRAMES,
         context::key::battle::MACRO_FAKE_FINAL_INPUT_NEUTRAL_FRAMES,
-        context::key::battle::MACRO_FAKE_FINAL_MEMORY_TIMEOUT_MS,
         FakeAttackPattern{});
 
     std::uint32_t fake_attack_count = 0;
@@ -696,7 +673,6 @@ void PhaseScriptVM::apply_input_macro_step_result(
         ctx[battle::MACRO_MEMORY_LATEST] = step_result.memory_latest;
         ctx[battle::MACRO_MEMORY_CHANGED] = step_result.memory_changed ? 1u : 0u;
         ctx[battle::MACRO_MEMORY_POLL_COUNT] = step_result.memory_poll_count;
-        ctx[battle::MACRO_MEMORY_ELAPSED_MS] = step_result.elapsed_ms;
     }
 
     if (step_result.action_kind == inputmacro::InputMacroActionKind::WaitU32Change) {
@@ -706,35 +682,30 @@ void PhaseScriptVM::apply_input_macro_step_result(
         const auto set_cycle = [&](context::key::KeyId baseline_key,
                                    context::key::KeyId latest_key,
                                    context::key::KeyId changed_key,
-                                   context::key::KeyId polls_key,
-                                   context::key::KeyId elapsed_key) {
+                                   context::key::KeyId polls_key) {
             ctx[baseline_key] = step_result.memory_baseline;
             ctx[latest_key] = step_result.memory_latest;
             ctx[changed_key] = step_result.memory_changed ? 1u : 0u;
             ctx[polls_key] = step_result.memory_poll_count;
-            ctx[elapsed_key] = step_result.elapsed_ms;
         };
         if (step_result.diagnostic_cycle_index == 0) {
             set_cycle(
                 battle::MACRO_MEMORY_FIRST_BASELINE,
                 battle::MACRO_MEMORY_FIRST_LATEST,
                 battle::MACRO_MEMORY_FIRST_CHANGED,
-                battle::MACRO_MEMORY_FIRST_POLL_COUNT,
-                battle::MACRO_MEMORY_FIRST_ELAPSED_MS);
+                battle::MACRO_MEMORY_FIRST_POLL_COUNT);
         } else if (step_result.diagnostic_cycle_index == 1) {
             set_cycle(
                 battle::MACRO_MEMORY_REPEAT_BASELINE,
                 battle::MACRO_MEMORY_REPEAT_LATEST,
                 battle::MACRO_MEMORY_REPEAT_CHANGED,
-                battle::MACRO_MEMORY_REPEAT_POLL_COUNT,
-                battle::MACRO_MEMORY_REPEAT_ELAPSED_MS);
+                battle::MACRO_MEMORY_REPEAT_POLL_COUNT);
         } else if (step_result.diagnostic_cycle_index == 2) {
             set_cycle(
                 battle::MACRO_MEMORY_REPEAT2_BASELINE,
                 battle::MACRO_MEMORY_REPEAT2_LATEST,
                 battle::MACRO_MEMORY_REPEAT2_CHANGED,
-                battle::MACRO_MEMORY_REPEAT2_POLL_COUNT,
-                battle::MACRO_MEMORY_REPEAT2_ELAPSED_MS);
+                battle::MACRO_MEMORY_REPEAT2_POLL_COUNT);
         }
     }
 

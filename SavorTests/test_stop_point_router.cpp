@@ -861,6 +861,45 @@ TEST(StopPointRouter, InvokesTrustedCpuObserverOnceAfterFinalWakeSelection)
     EXPECT_TRUE(router.StopIngressDrainAndCleanup().ok);
 }
 
+TEST(
+    StopPointRouter,
+    EmptyIngressDrainDoesNotCreateHostActivityButDeliveryDoes)
+{
+    auto control = std::make_shared<FakePhysicalStopBackendControl>();
+    FakePhysicalStopBackend backend(control);
+    PhysicalStopPointManager manager(backend);
+    HostActivityTracker host_activity;
+    StopPointRouter router(manager, nullptr, nullptr, &host_activity);
+    ASSERT_TRUE(router.Initialize(StateEpoch(1)).ok);
+
+    const HostActivityTracker::Snapshot before_empty =
+        host_activity.snapshot();
+    EXPECT_TRUE(router.DrainIngress().empty());
+    const HostActivityTracker::Snapshot after_empty =
+        host_activity.snapshot();
+    EXPECT_EQ(after_empty.generation, before_empty.generation);
+    EXPECT_EQ(after_empty.in_flight, 0u);
+
+    RecordingStopConsumer consumer;
+    auto registration = router.RegisterGroup(
+        Group(1, {PcSubscription(1, 0x80001000u, consumer)}));
+    ASSERT_TRUE(registration.receipt.ok);
+    ASSERT_FALSE(
+        backend.InjectJitPcStop(0x80001000u).request_break);
+
+    const HostActivityTracker::Snapshot before_delivery =
+        host_activity.snapshot();
+    const auto receipts = router.DrainIngress();
+    ASSERT_EQ(receipts.size(), 1u);
+    EXPECT_EQ(consumer.deliveries.size(), 1u);
+    const HostActivityTracker::Snapshot after_delivery =
+        host_activity.snapshot();
+    EXPECT_GT(after_delivery.generation, before_delivery.generation);
+    EXPECT_EQ(after_delivery.in_flight, 0u);
+
+    EXPECT_TRUE(router.StopIngressDrainAndCleanup().ok);
+}
+
 TEST(StopPointRouter, CpuObserverFailureFailsClosedBeforeActorDelivery)
 {
     auto control = std::make_shared<FakePhysicalStopBackendControl>();

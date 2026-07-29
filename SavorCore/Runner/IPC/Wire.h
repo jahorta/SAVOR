@@ -86,7 +86,7 @@ namespace savor {
     struct TasJobPayload {
         char dtm_path[260];
         char save_dir[260];
-        uint32_t run_until_ms;
+        uint32_t reserved_legacy_word;
     };
 
     struct WireReady {
@@ -124,8 +124,6 @@ namespace savor {
     {
         PF_WAITING_FOR_BP = 0x00000001,
         PF_MOVIE_PLAYING = 0x00000002,
-        PF_VI_STALLED_SUSPECTED = 0x00000004,
-        PF_TIMEOUT_NEAR = 0x00000008,
         PF_HEARTBEAT = 0x00000010,
     };
 
@@ -144,7 +142,7 @@ namespace savor {
         uint8_t  init_kind;   // PK_*
         uint8_t  main_kind;   // PK_*
         uint8_t  buff_kind;   // DK_* 
-        uint32_t timeout_ms;
+        uint32_t reserved_legacy_word;
         char     savestate_path[260]; // empty => start from boot
     };
 

@@ -582,8 +582,6 @@ TEST_F(SqliteDbFixture, DBOwnedEventIdsAllowRepeatedAuthoringAndAnalysisWrites) 
         {
             .name = "repeat-authoring-a",
             .priority = 1,
-            .run_ms = 1000,
-            .vi_stall_ms = 16,
             .min_value = 0,
             .max_value = 255,
             .created_at_utc = t1,
@@ -592,14 +590,20 @@ TEST_F(SqliteDbFixture, DBOwnedEventIdsAllowRepeatedAuthoringAndAnalysisWrites) 
         },
         &spec_a,
         &error)) << error;
+    const auto seed_probe_zero_sql =
+        "SELECT COUNT(1) FROM au_seed_probe_spec WHERE seed_probe_spec_id="
+        + std::to_string(spec_a) + " AND run_ms=0 AND vi_stall_ms=0;";
+    EXPECT_EQ(ReadInt64(db_, seed_probe_zero_sql.c_str()), 1);
+    const auto seed_probe_legacy_update =
+        "UPDATE au_seed_probe_spec SET run_ms=40000,vi_stall_ms=3000"
+        " WHERE seed_probe_spec_id=" + std::to_string(spec_a) + ";";
+    ASSERT_TRUE(ExecSql(db_, seed_probe_legacy_update.c_str()));
 
     std::int64_t spec_b = 0;
     ASSERT_TRUE(authoring_db->SaveSeedProbeSpec(
         {
             .name = "repeat-authoring-b",
             .priority = 1,
-            .run_ms = 1000,
-            .vi_stall_ms = 16,
             .min_value = 0,
             .max_value = 255,
             .created_at_utc = t2,
@@ -616,8 +620,6 @@ TEST_F(SqliteDbFixture, DBOwnedEventIdsAllowRepeatedAuthoringAndAnalysisWrites) 
         {
             .name = "repeat-authoring-a",
             .priority = 1,
-            .run_ms = 1000,
-            .vi_stall_ms = 16,
             .min_value = 0,
             .max_value = 255,
             .created_at_utc = t2,
@@ -633,8 +635,6 @@ TEST_F(SqliteDbFixture, DBOwnedEventIdsAllowRepeatedAuthoringAndAnalysisWrites) 
         {
             .name = "repeat-authoring-a",
             .priority = 1,
-            .run_ms = 1000,
-            .vi_stall_ms = 16,
             .min_value = 0,
             .max_value = 254,
             .created_at_utc = t2,
@@ -779,8 +779,6 @@ TEST_F(SqliteDbFixture, AllScenarioStyleRepeatedSeedWritesUseDbOwnedOutboxEventI
             {
                 .name = std::string("all-scenario-style-seedprobe-") + std::to_string(i),
                 .priority = 1,
-                .run_ms = 1000,
-                .vi_stall_ms = 16,
                 .min_value = 0,
                 .max_value = 255,
                 .created_at_utc = now,
@@ -1343,8 +1341,6 @@ TEST_F(SqliteDbFixture, BattleSingleTurnEnqueueUsesWorkflowStepPriority) {
         {
             .name = "single-turn-priority-run",
             .priority = 7,
-            .run_ms = 1000,
-            .vi_stall_ms = 0,
             .use_single_turn_runner = true,
             .created_at_utc = now,
             .correlation_id = "single-turn-priority",
@@ -1352,6 +1348,14 @@ TEST_F(SqliteDbFixture, BattleSingleTurnEnqueueUsesWorkflowStepPriority) {
         },
         &battle_run_spec_id,
         &err)) << err;
+    const auto battle_run_zero_sql =
+        "SELECT COUNT(1) FROM au_battle_run_spec WHERE battle_run_spec_id="
+        + std::to_string(battle_run_spec_id) + " AND run_ms=0 AND vi_stall_ms=0;";
+    EXPECT_EQ(ReadInt64(db_, battle_run_zero_sql.c_str()), 1);
+    const auto battle_run_legacy_update =
+        "UPDATE au_battle_run_spec SET run_ms=35000,vi_stall_ms=1200"
+        " WHERE battle_run_spec_id=" + std::to_string(battle_run_spec_id) + ";";
+    ASSERT_TRUE(ExecSql(db_, battle_run_legacy_update.c_str()));
 
     std::int64_t plan_id = 0;
     ASSERT_TRUE(authoring_db->SavePlan(
@@ -1559,8 +1563,6 @@ TEST_F(SqliteDbFixture, BattleSingleTurnTransitionSpawnsNextTurnDirectlyFromRetu
         {
             .name = "direct-context-chain",
             .priority = 7,
-            .run_ms = 10000,
-            .vi_stall_ms = 1000,
             .progress_enable = true,
             .use_single_turn_runner = true,
             .auto_wave_trigger_enable = true,
@@ -5047,8 +5049,6 @@ TEST_F(SqliteDbFixture, Stage3dBattleAuthoringAndAnalysisQueriesRoundTrip) {
         {
             .name = "single-turn-run",
             .priority = 7,
-            .run_ms = 35000,
-            .vi_stall_ms = 1200,
             .progress_enable = true,
             .use_single_turn_runner = true,
             .auto_wave_trigger_enable = true,
@@ -5239,7 +5239,6 @@ TEST_F(SqliteDbFixture, Stage3dBattleAuthoringAndAnalysisQueriesRoundTrip) {
     const auto run_spec = authoring_db.GetBattleRunSpec(battle_run_spec_id);
     ASSERT_TRUE(run_spec.has_value());
     EXPECT_TRUE(run_spec->use_single_turn_runner);
-    EXPECT_EQ(run_spec->run_ms, 35000);
 
     const auto plan = authoring_db.GetBattlePlan(plan_id);
     ASSERT_TRUE(plan.has_value());
@@ -5480,8 +5479,6 @@ TEST_F(SqliteDbFixture, Stage5SeedProbeRunCreatesOwnedAnalysisInputSetAndRecords
         {
             .name = "input-set-owner-spec",
             .priority = 1,
-            .run_ms = 1000,
-            .vi_stall_ms = 0,
             .min_value = 0,
             .max_value = 0,
             .combo_attempts_per_target = 1,
@@ -5574,8 +5571,6 @@ TEST_F(SqliteDbFixture, Stage5BattleChainGraphAcceptsInputSetsAndRejectsProbeRun
         {
             .name = "input-set-battle-run",
             .priority = 1,
-            .run_ms = 1000,
-            .vi_stall_ms = 0,
             .use_single_turn_runner = true,
             .created_at_utc = now,
             .correlation_id = "au-battle-input-set",
@@ -6514,8 +6509,6 @@ TEST_F(SqliteDbFixture, Stage5CoordinatorMaterializesSeedProbeGraphNodeFromInsta
         {
             .name = "graph seed probe spec",
             .priority = 1,
-            .run_ms = 12000,
-            .vi_stall_ms = 500,
             .min_value = 80,
             .max_value = 180,
             .cap_trigger_top = true,
@@ -6696,15 +6689,13 @@ TEST_F(SqliteDbFixture, Stage5CoordinatorMaterializesTasMovieGraphNodesWithTasSp
         &err))
         << err;
 
-    auto save_tas_spec = [&](std::string_view suffix, std::int64_t run_ms) {
+    auto save_tas_spec = [&](std::string_view suffix) {
         const auto base_name = std::string("graph tas spec ") + std::string(suffix);
         std::int64_t tas_spec_id = 0;
         EXPECT_TRUE(authoring_db->SaveTasSpec(
             {
                 .base_name = base_name,
                 .priority = 1,
-                .run_ms = run_ms,
-                .vi_stall_ms = 2500,
                 .progress_enable = true,
                 .base_dtm_artifact_id = base_artifact_id,
                 .created_at_utc = types::UtcNow(),
@@ -6716,21 +6707,33 @@ TEST_F(SqliteDbFixture, Stage5CoordinatorMaterializesTasMovieGraphNodesWithTasSp
             &err))
             << err;
         if (tas_spec_id > 0) {
+            const auto tas_zero_sql =
+                "SELECT COUNT(1) FROM au_tas_spec s"
+                " JOIN au_tas_spec_base b ON b.tas_spec_base_id=s.tas_spec_base_id"
+                " WHERE s.tas_spec_id=" + std::to_string(tas_spec_id)
+                + " AND b.run_ms=0 AND b.vi_stall_ms=0;";
+            EXPECT_EQ(ReadInt64(db_, tas_zero_sql.c_str()), 1);
             return tas_spec_id;
         }
         for (const auto& spec : authoring_db->ListTasSpecs(10)) {
-            if (spec.base_name == base_name && spec.run_ms == run_ms) {
+            if (spec.base_name == base_name) {
                 return spec.tas_spec_id;
             }
         }
         return std::int64_t{0};
     };
 
-    const auto first_tas_spec_id = save_tas_spec("first", 60000);
-    const auto second_tas_spec_id = save_tas_spec("second", 90000);
+    const auto first_tas_spec_id = save_tas_spec("first");
+    const auto second_tas_spec_id = save_tas_spec("second");
     ASSERT_GT(first_tas_spec_id, 0);
     ASSERT_GT(second_tas_spec_id, 0);
     ASSERT_NE(first_tas_spec_id, second_tas_spec_id);
+    const auto tas_legacy_update =
+        "UPDATE au_tas_spec_base SET run_ms=60000,vi_stall_ms=2500"
+        " WHERE tas_spec_base_id=(SELECT tas_spec_base_id FROM au_tas_spec"
+        " WHERE tas_spec_id=" + std::to_string(first_tas_spec_id) + ");";
+    ASSERT_TRUE(ExecSql(db_, tas_legacy_update.c_str()));
+    ASSERT_TRUE(authoring_db->GetTasSpec(first_tas_spec_id).has_value());
 
     ProgramKindRegistry registry;
     TasMoviePhaseRegistrationConfig config{};
@@ -6913,6 +6916,14 @@ TEST_F(SqliteDbFixture, Stage5CoordinatorMaterializesTasMovieGraphNodesWithTasSp
     ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
     EXPECT_EQ(sqlite3_column_int64(st, 0), 2);
     sqlite3_finalize(st);
+
+    EXPECT_EQ(
+        ReadInt64(
+            db_,
+            "SELECT COUNT(1) FROM exec_job"
+            " WHERE program_kind=2"
+            " AND (fingerprint LIKE '%;run_ms=%' OR fingerprint LIKE '%;vi=%');"),
+        0);
 }
 
 TEST_F(SqliteDbFixture, Stage5CoordinatorBlocksTasMovieGraphNodeWithoutRtcArgument) {
@@ -8792,7 +8803,7 @@ VALUES(8301,8201,12345,'CALCULATED',2000);
     EXPECT_EQ(ReadInt64(db_, "SELECT COUNT(1) FROM sp_neutral_seed WHERE neutral_seed_id=8301;"), 1);
 }
 
-TEST_F(SqliteDbFixture, Stage3Phase1DbContracts_TimeoutRetryOnceThenFailedTerminalState) {
+TEST_F(SqliteDbFixture, Stage3Phase1DbContracts_FailedStepReachesTerminalState) {
     using namespace savor::db::execution::workflow;
 
     ASSERT_TRUE(ExecSql(db_, R"SQL(
@@ -8811,7 +8822,7 @@ VALUES(1402, 1401, 'Grid', 'seedprobe.grid', 'READY', 1, 0, 2, unixepoch()*1000,
         {
             .workflow_step_id = 1402,
             .terminal_state = "FAILED",
-            .requested_by = "SavorTests-timeout",
+            .requested_by = "SavorTests-failure",
         },
         &err))
         << err;
@@ -8824,7 +8835,7 @@ VALUES(1402, 1401, 'Grid', 'seedprobe.grid', 'READY', 1, 0, 2, unixepoch()*1000,
     sqlite3_finalize(st);
 }
 
-TEST_F(SqliteDbFixture, Stage3cSeedProbeAdaptersUseAuthoringSpecTimingInFingerprints) {
+TEST_F(SqliteDbFixture, Stage3cSeedProbeAdaptersIgnoreLegacyAuthoringTimingColumns) {
     using namespace savor::db;
     using namespace savor::db::execution::programdb;
     using namespace savor::db::execution::programdb::seedprobe;
@@ -8839,10 +8850,8 @@ TEST_F(SqliteDbFixture, Stage3cSeedProbeAdaptersUseAuthoringSpecTimingInFingerpr
     std::int64_t seed_probe_spec_id = 0;
     ASSERT_TRUE(authoring_db->SaveSeedProbeSpec(
         {
-            .name = "timing regression",
+            .name = "timing-cutover regression",
             .priority = 1,
-            .run_ms = 12345,
-            .vi_stall_ms = 678,
             .min_value = 47,
             .max_value = 207,
             .cap_trigger_top = true,
@@ -8851,12 +8860,21 @@ TEST_F(SqliteDbFixture, Stage3cSeedProbeAdaptersUseAuthoringSpecTimingInFingerpr
             .combo_sampler_tries = 1,
             .auto_schedule_battle_run = false,
             .created_at_utc = savor::db::types::UtcNow(),
-            .correlation_id = "test.seedprobe.timing",
+            .correlation_id = "test.seedprobe.timing-cutover",
             .causation_id = "test",
         },
         &seed_probe_spec_id,
         &err))
         << err;
+    const auto inserted_zero_sql =
+        "SELECT COUNT(1) FROM au_seed_probe_spec WHERE seed_probe_spec_id="
+        + std::to_string(seed_probe_spec_id) + " AND run_ms=0 AND vi_stall_ms=0;";
+    EXPECT_EQ(ReadInt64(db_, inserted_zero_sql.c_str()), 1);
+    const auto seed_probe_timing_update =
+        "UPDATE au_seed_probe_spec SET run_ms=12345,vi_stall_ms=678"
+        " WHERE seed_probe_spec_id=" + std::to_string(seed_probe_spec_id) + ";";
+    ASSERT_TRUE(ExecSql(db_, seed_probe_timing_update.c_str()));
+    ASSERT_TRUE(authoring_db->GetSeedProbeSpec(seed_probe_spec_id).has_value());
 
     std::int64_t probe_set_id = 0;
     ASSERT_TRUE(analysis_db->CreateSeedProbeSet(
@@ -8866,7 +8884,7 @@ TEST_F(SqliteDbFixture, Stage3cSeedProbeAdaptersUseAuthoringSpecTimingInFingerpr
             .breakpoint_policy_name = "default",
             .segment_source_kind = "manual",
             .created_at_utc = savor::db::types::UtcNow(),
-            .correlation_id = "test.seedprobe.timing",
+            .correlation_id = "test.seedprobe.timing-cutover",
             .causation_id = "test",
         },
         &probe_set_id,
@@ -8883,7 +8901,7 @@ TEST_F(SqliteDbFixture, Stage3cSeedProbeAdaptersUseAuthoringSpecTimingInFingerpr
             .codec_version = 1,
             .status = "queued",
             .requested_at_utc = savor::db::types::UtcNow(),
-            .correlation_id = "test.seedprobe.timing",
+            .correlation_id = "test.seedprobe.timing-cutover",
             .causation_id = "test",
         },
         &probe_run_id,
@@ -8959,10 +8977,16 @@ TEST_F(SqliteDbFixture, Stage3cSeedProbeAdaptersUseAuthoringSpecTimingInFingerpr
         EXPECT_EQ(min_priority, expected_min);
         EXPECT_EQ(max_priority, expected_max);
     };
-    auto expect_timing = [](const std::string& fingerprint) {
-        EXPECT_NE(fingerprint.find(";run_ms=12345"), std::string::npos) << fingerprint;
-        EXPECT_NE(fingerprint.find(";vi=678"), std::string::npos) << fingerprint;
+    auto expect_no_timing = [](const std::string& fingerprint) {
+        EXPECT_TRUE(fingerprint.starts_with(
+            "FPNS=seedprobe-fingerprint-v2;"))
+            << fingerprint;
+        EXPECT_EQ(fingerprint.find(";run_ms="), std::string::npos) << fingerprint;
+        EXPECT_EQ(fingerprint.find(";vi="), std::string::npos) << fingerprint;
     };
+    EXPECT_FALSE(build_encode_spec_from_fingerprint(
+        "PK=1;PV=1;probe_id=1;frame=0000000000000000;run_ms=40000;vi=3000")
+        .has_value());
     auto schedule_context = [](std::int64_t domain_ref_id, int step_priority = 42) {
         return WorkflowStepScheduleContext{
             .domain_ref_id = domain_ref_id,
@@ -8970,11 +8994,11 @@ TEST_F(SqliteDbFixture, Stage3cSeedProbeAdaptersUseAuthoringSpecTimingInFingerpr
         };
     };
 
-    auto neutral = BuildSeedProbeNeutralDescriptor(&execution_db, analysis_db, authoring_db);
+    auto neutral = BuildSeedProbeNeutralDescriptor(&execution_db, analysis_db);
     const auto neutral_scheduled = neutral.job_persistence->EncodeForQueueing(schedule_context(probe_run_id));
     ASSERT_GT(neutral_scheduled.root_job_set_id, 0);
-    expect_timing(neutral_scheduled.persistence.fingerprint);
-    expect_timing(read_first_job_fingerprint(neutral_scheduled.root_job_set_id));
+    expect_no_timing(neutral_scheduled.persistence.fingerprint);
+    expect_no_timing(read_first_job_fingerprint(neutral_scheduled.root_job_set_id));
     expect_pending_jobs(neutral_scheduled.root_job_set_id);
     expect_priority_range(neutral_scheduled.root_job_set_id, 42, 42);
 
@@ -8988,8 +9012,8 @@ TEST_F(SqliteDbFixture, Stage3cSeedProbeAdaptersUseAuthoringSpecTimingInFingerpr
         authoring_db);
     const auto grid_scheduled = grid.job_persistence->EncodeForQueueing(schedule_context(probe_run_id));
     ASSERT_GT(grid_scheduled.root_job_set_id, 0);
-    expect_timing(grid_scheduled.persistence.fingerprint);
-    expect_timing(read_first_job_fingerprint(grid_scheduled.root_job_set_id));
+    expect_no_timing(grid_scheduled.persistence.fingerprint);
+    expect_no_timing(read_first_job_fingerprint(grid_scheduled.root_job_set_id));
     expect_pending_jobs(grid_scheduled.root_job_set_id);
     expect_priority_range(grid_scheduled.root_job_set_id, 42, 42);
 
@@ -9004,7 +9028,7 @@ TEST_F(SqliteDbFixture, Stage3cSeedProbeAdaptersUseAuthoringSpecTimingInFingerpr
             .seed_value = 1001,
             .seed_delta = 1,
             .recorded_at_utc = savor::db::types::UtcNow(),
-            .correlation_id = "test.seedprobe.timing",
+            .correlation_id = "test.seedprobe.timing-cutover",
             .causation_id = "test",
         },
         nullptr,
@@ -9018,7 +9042,7 @@ TEST_F(SqliteDbFixture, Stage3cSeedProbeAdaptersUseAuthoringSpecTimingInFingerpr
             .seed_value = 1002,
             .seed_delta = 2,
             .recorded_at_utc = savor::db::types::UtcNow(),
-            .correlation_id = "test.seedprobe.timing",
+            .correlation_id = "test.seedprobe.timing-cutover",
             .causation_id = "test",
         },
         nullptr,
@@ -9032,7 +9056,7 @@ TEST_F(SqliteDbFixture, Stage3cSeedProbeAdaptersUseAuthoringSpecTimingInFingerpr
             .seed_value = 1004,
             .seed_delta = 4,
             .recorded_at_utc = savor::db::types::UtcNow(),
-            .correlation_id = "test.seedprobe.timing",
+            .correlation_id = "test.seedprobe.timing-cutover",
             .causation_id = "test",
         },
         nullptr,
@@ -9047,7 +9071,7 @@ TEST_F(SqliteDbFixture, Stage3cSeedProbeAdaptersUseAuthoringSpecTimingInFingerpr
         {},
         authoring_db);
     const auto unique_scheduled = unique.job_persistence->EncodeForQueueing(schedule_context(probe_run_id));
-    expect_timing(unique_scheduled.persistence.fingerprint);
+    expect_no_timing(unique_scheduled.persistence.fingerprint);
     ASSERT_GT(unique_scheduled.root_job_set_id, 0);
     ASSERT_FALSE(unique_scheduled.event_lines.empty());
     expect_pending_jobs(unique_scheduled.root_job_set_id);
@@ -9237,7 +9261,7 @@ TEST_F(SqliteDbFixture, Stage3cSeedProbeGridResultMapperPersistsGridSeedFromJobF
     auto frame = savor::GCInputFrame::new_stk_main(128, 128);
     const auto fingerprint = std::string("PK=3;PV=1;probe_run_id=")
         + std::to_string(probe_run_id)
-        + ";family=main;grid_ref=1;run_ms=1;vi=1;frame="
+        + ";family=main;grid_ref=1;frame="
         + frame.to_frame_hex();
 
     std::int64_t job_id = 0;
@@ -9355,7 +9379,7 @@ TEST_F(SqliteDbFixture, Stage3cSeedProbeUniqueResultMapperRecordsInputFrameAndSu
     auto frame = savor::GCInputFrame::new_stk_main(120, 136);
     const auto fingerprint = std::string("PK=3;PV=1;phase=unique;probe_run_id=")
         + std::to_string(probe_run_id)
-        + ";run_ms=1;vi=1;probe_result_id="
+        + ";probe_result_id="
         + std::to_string(*analysis_db->LookupSeedProbeResultId(probe_run_id))
         + ";expected_delta=4;frame="
         + frame.to_frame_hex();

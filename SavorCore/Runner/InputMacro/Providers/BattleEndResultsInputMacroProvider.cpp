@@ -246,9 +246,6 @@ InputMacroFailure MapRuntimeFailure(InputMacroFailure failure) noexcept
 endresults::FailureCode MapDetailedFailure(InputMacroFailure failure) noexcept
 {
     switch (failure) {
-    case InputMacroFailure::BreakpointTimeout:
-    case InputMacroFailure::MemoryTimeout:
-        return endresults::FailureCode::Timeout;
     case InputMacroFailure::UnexpectedBreakpoint:
         return endresults::FailureCode::UnexpectedBreakpoint;
     case InputMacroFailure::MemoryReadFailed:
@@ -563,7 +560,7 @@ private:
             || !IsNeutral(result.requested_input)
             || result.input_epoch == 0) {
             return Fail(
-                endresults::FailureCode::GuestNeutralTimeout,
+                endresults::FailureCode::GuestNeutralUnacknowledged,
                 InputMacroFailure::HostFailure,
                 "victory completion lacks a guest-observed full-neutral epoch");
         }
@@ -800,7 +797,7 @@ private:
         }
         if (!IsNeutral(result.requested_input)) {
             return Fail(
-                endresults::FailureCode::GuestNeutralTimeout,
+                endresults::FailureCode::GuestNeutralUnacknowledged,
                 InputMacroFailure::HostFailure,
                 "ready gate was reached without a full-neutral request");
         }
@@ -813,14 +810,14 @@ private:
         }
         if (!controller_neutral || last_input_epoch_ == 0) {
             return Fail(
-                endresults::FailureCode::GuestNeutralTimeout,
+                endresults::FailureCode::GuestNeutralUnacknowledged,
                 InputMacroFailure::HostFailure,
                 "ready gate lacks a prior guest-observed full-neutral rearm");
         }
         if (result.input_acknowledged && result.input_poll_count != 0) {
             if (result.input_epoch <= last_input_epoch_) {
                 return Fail(
-                    endresults::FailureCode::GuestNeutralTimeout,
+                    endresults::FailureCode::GuestNeutralUnacknowledged,
                     InputMacroFailure::HostFailure,
                     "ready gate reported a stale neutral input epoch");
             }
@@ -955,7 +952,7 @@ private:
             || !IsNeutral(result.requested_input)
             || result.input_epoch <= last_input_epoch_) {
             return Fail(
-                endresults::FailureCode::GuestNeutralTimeout,
+                endresults::FailureCode::GuestNeutralUnacknowledged,
                 InputMacroFailure::HostFailure,
                 "release was not observed as a fresh full-neutral guest input epoch");
         }
@@ -970,7 +967,7 @@ private:
         }
         if (!controller_neutral) {
             return Fail(
-                endresults::FailureCode::GuestNeutralTimeout,
+                endresults::FailureCode::GuestNeutralUnacknowledged,
                 InputMacroFailure::HostFailure,
                 "controller-0 raw/current/new fields are not neutral at release witness");
         }

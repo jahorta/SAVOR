@@ -1,16 +1,20 @@
 #include <gtest/gtest.h>
 
 #include "Runner/Runtime/Execution/ExecutionEngine.h"
+#include "Runner/Runtime/Worksets/StateArtifactFinalizer.h"
 #include "common/FakeExecutionBackend.h"
 #include "common/FakePhysicalStopBackend.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <filesystem>
 #include <iterator>
 #include <memory>
 #include <optional>
 #include <string>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -23,6 +27,67 @@ using namespace savor::test_support;
 constexpr StateEpoch kEpoch{7};
 constexpr std::uint32_t kWakePc = 0x801DC288u;
 
+std::uint64_t AtomicHostTicks(void* context) noexcept
+{
+    return static_cast<std::atomic<std::uint64_t>*>(context)
+        ->load(std::memory_order_acquire);
+}
+
+TEST(
+    HostActivityTracker,
+    OverlappingScopesRetainIndependentCompletionEvidence)
+{
+    std::atomic<std::uint64_t> ticks{0};
+    HostActivityTracker tracker(&AtomicHostTicks, &ticks);
+
+    auto first = tracker.Track();
+    ticks.store(5'000, std::memory_order_release);
+    auto second = tracker.Track();
+    ticks.store(15'000, std::memory_order_release);
+    first.Reset();
+    EXPECT_EQ(tracker.snapshot().in_flight, 1u);
+    ticks.store(25'000, std::memory_order_release);
+    second.Reset();
+
+    EXPECT_EQ(tracker.snapshot().in_flight, 0u);
+    const auto completed = tracker.DrainCompletedActivities();
+    ASSERT_EQ(completed.count, 2u);
+    EXPECT_EQ(completed.overflow_count, 0u);
+    EXPECT_LT(
+        completed.activities[0].sequence,
+        completed.activities[1].sequence);
+    EXPECT_EQ(completed.activities[0].elapsed.count(), 15000);
+    EXPECT_EQ(completed.activities[1].elapsed.count(), 20000);
+}
+
+class HealthTestTemporaryDirectory final
+{
+public:
+    HealthTestTemporaryDirectory()
+    {
+        const auto stamp = std::chrono::steady_clock::now()
+                               .time_since_epoch()
+                               .count();
+        path_ = std::filesystem::temp_directory_path() /
+            ("savor-execution-health-" + std::to_string(stamp));
+        std::filesystem::create_directories(path_);
+    }
+
+    ~HealthTestTemporaryDirectory()
+    {
+        std::error_code ignored;
+        std::filesystem::remove_all(path_, ignored);
+    }
+
+    [[nodiscard]] const std::filesystem::path& path() const noexcept
+    {
+        return path_;
+    }
+
+private:
+    std::filesystem::path path_;
+};
+
 std::size_t CountCall(
     const std::vector<std::string>& calls,
     const std::string& expected)
@@ -33,13 +98,10 @@ std::size_t CountCall(
         expected));
 }
 
-ExecutionRequestPolicy Policy(
-    StateEpoch epoch = kEpoch,
-    std::chrono::milliseconds active_timeout = 1s)
+ExecutionRequestPolicy Policy(StateEpoch epoch = kEpoch)
 {
     ExecutionRequestPolicy policy;
     policy.expected_epoch = epoch;
-    policy.active_timeout = active_timeout;
     return policy;
 }
 
@@ -75,7 +137,6 @@ InterruptionHandlerDescriptor Handler(
             ExecutionOperationKind::ContinueUntil,
             ExecutionOperationKind::SafePause,
         },
-        .child_active_budget = 200ms,
         .permitted_nested_keys = {"test.dialog"},
         .allow_self_recursion = true,
         .maximum_depth = maximum_depth,
@@ -91,6 +152,50 @@ public:
     }
 
     std::vector<StopDelivery> deliveries;
+};
+
+class HostActivityRecordingCpuObserver final
+    : public IStopPointCpuObserver
+{
+public:
+    explicit HostActivityRecordingCpuObserver(
+        HostActivityTracker& host_activity) noexcept
+        : host_activity_(host_activity)
+    {
+    }
+
+    StopCpuObservationResult ObserveRoutedHit(
+        std::uint32_t descriptor_id,
+        const RoutedStopEvent&) noexcept override
+    {
+        descriptor_.store(descriptor_id, std::memory_order_relaxed);
+        observed_in_flight_.store(
+            host_activity_.snapshot().in_flight != 0,
+            std::memory_order_relaxed);
+        calls_.fetch_add(1, std::memory_order_relaxed);
+        return StopCpuObservationResult::Observed;
+    }
+
+    [[nodiscard]] std::uint32_t calls() const noexcept
+    {
+        return calls_.load(std::memory_order_relaxed);
+    }
+
+    [[nodiscard]] std::uint32_t descriptor() const noexcept
+    {
+        return descriptor_.load(std::memory_order_relaxed);
+    }
+
+    [[nodiscard]] bool observed_in_flight() const noexcept
+    {
+        return observed_in_flight_.load(std::memory_order_relaxed);
+    }
+
+private:
+    HostActivityTracker& host_activity_;
+    std::atomic<std::uint32_t> calls_{0};
+    std::atomic<std::uint32_t> descriptor_{0};
+    std::atomic<bool> observed_in_flight_{false};
 };
 
 std::optional<ExecutionTerminalResult> TakeTerminal(
@@ -120,6 +225,21 @@ std::vector<ExecutionTerminalResult> TakeTerminals(
         }
     }
     return terminals;
+}
+
+std::vector<ExecutionHealthWarning> TakeHealthWarnings(
+    ExecutionEngine& engine)
+{
+    std::vector<ExecutionHealthWarning> warnings;
+    for (ExecutionEvent& event : engine.DrainEvents())
+    {
+        if (event.kind == ExecutionEventKind::HealthWarning &&
+            event.health_warning.has_value())
+        {
+            warnings.push_back(std::move(*event.health_warning));
+        }
+    }
+    return warnings;
 }
 
 std::optional<ExecutionTerminalResult> DrainTerminal(
@@ -261,6 +381,17 @@ private:
 class ExecutionEngineFixture : public testing::Test
 {
 protected:
+    static std::uint64_t HostActivityTicks(void* context) noexcept
+    {
+        const auto* current =
+            static_cast<const std::chrono::steady_clock::time_point*>(
+                context);
+        return static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                current->time_since_epoch())
+                .count());
+    }
+
     void SetUp() override
     {
         ASSERT_TRUE(router.Initialize(kEpoch).ok);
@@ -288,12 +419,17 @@ protected:
 
     void CreateEngine(
         IInputAdvancePort* input = nullptr,
-        std::vector<InterruptionHandlerDescriptor> handlers = {})
+        std::vector<InterruptionHandlerDescriptor> handlers = {},
+        std::chrono::milliseconds maintenance_interval = 10ms,
+        std::chrono::milliseconds pause_confirmation_timeout = 5s)
     {
         ExecutionEngineConfig config;
-        config.maintenance_interval = 10ms;
+        config.maintenance_interval = maintenance_interval;
+        config.pause_confirmation_timeout =
+            pause_confirmation_timeout;
         config.now = [this] { return now; };
         config.input_advance = input;
+        config.host_activity = &host_activity;
         config.interruption_handlers = std::move(handlers);
         engine = std::make_unique<ExecutionEngine>(
             execution_backend,
@@ -380,12 +516,18 @@ protected:
         std::make_shared<FakePhysicalStopBackendControl>();
     FakePhysicalStopBackend physical_backend{physical_control};
     PhysicalStopPointManager physical_manager{physical_backend};
-    StopPointRouter router{physical_manager};
+    std::chrono::steady_clock::time_point now{};
+    HostActivityTracker host_activity{&HostActivityTicks, &now};
+    HostActivityRecordingCpuObserver cpu_observer{host_activity};
+    StopPointRouter router{
+        physical_manager,
+        nullptr,
+        &cpu_observer,
+        &host_activity};
 
     std::shared_ptr<FakeExecutionBackendControl> execution_control =
         std::make_shared<FakeExecutionBackendControl>();
     FakeExecutionBackend execution_backend{execution_control};
-    std::chrono::steady_clock::time_point now{};
     std::unique_ptr<ExecutionEngine> engine;
     RecordingInterruptionConsumer interruption_consumer;
     std::optional<StopSubscriptionGroupHandle> interruption_group;
@@ -514,62 +656,772 @@ TEST_F(ExecutionEngineFixture, SafePauseStopsARunningBackend)
     EXPECT_EQ(CountCall(execution_control->Calls(), "pause"), 1u);
 }
 
-TEST_F(ExecutionEngineFixture, ContinueTimesOutAgainstTheInjectedClock)
+TEST_F(
+    ExecutionEngineFixture,
+    ContinueRemainsCancellationDrivenWhileViProgressesAcrossArbitraryTime)
 {
     CreateEngine();
-    ExecutionRequestPolicy policy = Policy(kEpoch, 100ms);
-
     const ExecutionSubmissionReceipt submission =
         engine->Submit(ContinueUntilRequest{
-            .policy = std::move(policy),
+            .policy = Policy(),
             .wake_group = WakeGroup(),
         });
     ASSERT_TRUE(submission.accepted) << submission.error.message;
-    EXPECT_TRUE(engine->has_active_operation());
+    engine->Pump();
+    (void)engine->DrainEvents();
 
-    now += 101ms;
+    for (std::uint64_t vi = 1; vi <= 24; ++vi)
+    {
+        now += 1h;
+        execution_control->SetViCount(vi);
+        engine->Pump();
+        EXPECT_TRUE(engine->has_active_operation());
+        EXPECT_FALSE(TakeTerminal(*engine).has_value());
+    }
+
+    ASSERT_TRUE(
+        engine->Cancel(CancellationReason::ExternalRequest).accepted);
     const auto terminal = DrainTerminal(*engine);
     ASSERT_TRUE(terminal.has_value());
-    EXPECT_EQ(terminal->status, ExecutionTerminalStatus::TimedOut);
+    EXPECT_EQ(terminal->status, ExecutionTerminalStatus::Cancelled);
     EXPECT_EQ(terminal->evidence.core_state, BackendCoreState::Paused);
     EXPECT_EQ(CountCall(execution_control->Calls(), "pause"), 1u);
 }
 
-TEST_F(ExecutionEngineFixture, ViWarmupAndProgressDelayAStallTerminal)
+TEST_F(
+    ExecutionEngineFixture,
+    CoreHealthWarnsAtTenSecondsAndConfirmsAtTwentySeconds)
 {
     CreateEngine();
-    ExecutionRequestPolicy policy = Policy(kEpoch, 2s);
-    policy.vi_stall = {
-        .enabled = true,
-        .warmup = 100ms,
-        .maximum_stall = 50ms,
-    };
+    const ExecutionSubmissionReceipt submission =
+        engine->Submit(ContinueUntilRequest{
+            .policy = Policy(),
+            .wake_group = WakeGroup(),
+        });
+    ASSERT_TRUE(submission.accepted) << submission.error.message;
+    engine->Pump();
+    (void)engine->DrainEvents();
 
+    now += 9999ms;
+    engine->Pump();
+    EXPECT_TRUE(TakeHealthWarnings(*engine).empty());
+    EXPECT_TRUE(engine->has_active_operation());
+
+    now += 1ms;
+    engine->Pump();
+    const auto warnings = TakeHealthWarnings(*engine);
+    ASSERT_EQ(warnings.size(), 1u);
+    EXPECT_EQ(
+        warnings.front().kind,
+        ExecutionHealthWarningKind::SuspectedCoreStall);
+    EXPECT_EQ(warnings.front().elapsed.count(), 10000);
+    EXPECT_EQ(warnings.front().code, "suspected_core_stall");
+    EXPECT_TRUE(engine->has_active_operation());
+
+    now += 9999ms;
+    engine->Pump();
+    EXPECT_FALSE(TakeTerminal(*engine).has_value());
+
+    now += 1ms;
+    const auto terminal = DrainTerminal(*engine);
+    ASSERT_TRUE(terminal.has_value());
+    EXPECT_EQ(terminal->status, ExecutionTerminalStatus::CoreStalled);
+    EXPECT_EQ(terminal->error.message, "core_stalled");
+    EXPECT_EQ(terminal->integrity, BackendIntegrity::Preserved);
+    EXPECT_EQ(terminal->evidence.core_state, BackendCoreState::Paused);
+    EXPECT_EQ(CountCall(execution_control->Calls(), "check_health"), 1u);
+}
+
+TEST_F(
+    ExecutionEngineFixture,
+    HostActivityAtTheConfirmationBoundaryPreventsAFalseCoreStall)
+{
+    CreateEngine();
+    const ExecutionSubmissionReceipt submission =
+        engine->Submit(ContinueUntilRequest{
+            .policy = Policy(),
+            .wake_group = WakeGroup(),
+        });
+    ASSERT_TRUE(submission.accepted) << submission.error.message;
+    engine->Pump();
+    (void)engine->DrainEvents();
+
+    execution_control->QueueQueryCallback([] {});
+    execution_control->QueueQueryCallback([this] {
+        auto activity = host_activity.Track();
+    });
+    now += 20s;
+    engine->Pump();
+
+    EXPECT_TRUE(engine->has_active_operation());
+    EXPECT_FALSE(TakeTerminal(*engine).has_value());
+    EXPECT_TRUE(TakeHealthWarnings(*engine).empty());
+
+    ASSERT_TRUE(
+        engine->Cancel(CancellationReason::ExternalRequest).accepted);
+    const auto terminal = DrainTerminal(*engine);
+    ASSERT_TRUE(terminal.has_value());
+    EXPECT_EQ(terminal->status, ExecutionTerminalStatus::Cancelled);
+}
+
+TEST_F(
+    ExecutionEngineFixture,
+    ViProgressAtTheConfirmationBoundaryPreventsAFalseCoreStall)
+{
+    CreateEngine();
+    const ExecutionSubmissionReceipt submission =
+        engine->Submit(ContinueUntilRequest{
+            .policy = Policy(),
+            .wake_group = WakeGroup(),
+        });
+    ASSERT_TRUE(submission.accepted) << submission.error.message;
+    engine->Pump();
+    (void)engine->DrainEvents();
+
+    BackendExecutionSnapshot initial =
+        execution_control->Snapshot();
+    initial.core_state = BackendCoreState::Running;
+    initial.pause_confirmed = false;
+    initial.vi_count = 0;
+    BackendExecutionSnapshot progressed = initial;
+    progressed.vi_count = 1;
+    execution_control->QueueQuerySnapshot(std::move(initial));
+    execution_control->QueueQuerySnapshot(std::move(progressed));
+
+    now += 20s;
+    engine->Pump();
+    EXPECT_TRUE(engine->has_active_operation());
+    EXPECT_FALSE(TakeTerminal(*engine).has_value());
+    EXPECT_TRUE(TakeHealthWarnings(*engine).empty());
+
+    ASSERT_TRUE(
+        engine->Cancel(CancellationReason::ExternalRequest).accepted);
+    const auto terminal = DrainTerminal(*engine);
+    ASSERT_TRUE(terminal.has_value());
+    EXPECT_EQ(terminal->status, ExecutionTerminalStatus::Cancelled);
+}
+
+TEST_F(
+    ExecutionEngineFixture,
+    SynchronousHostActivityWarnsAfterReturningAndCannotBecomeACoreStall)
+{
+    CreateEngine();
+    const ExecutionSubmissionReceipt submission =
+        engine->Submit(ContinueUntilRequest{
+            .policy = Policy(),
+            .wake_group = WakeGroup(),
+        });
+    ASSERT_TRUE(submission.accepted) << submission.error.message;
+    engine->Pump();
+    (void)engine->DrainEvents();
+
+    auto activity = host_activity.Track();
+    engine->Pump();
+    (void)engine->DrainEvents();
+
+    now += 10s;
+    engine->Pump();
+    EXPECT_TRUE(TakeHealthWarnings(*engine).empty());
+    EXPECT_TRUE(engine->has_active_operation());
+
+    now += 29s;
+    engine->Pump();
+    EXPECT_TRUE(TakeHealthWarnings(*engine).empty());
+    EXPECT_TRUE(engine->has_active_operation());
+
+    now += 1s;
+    engine->Pump();
+    EXPECT_TRUE(TakeHealthWarnings(*engine).empty());
+    EXPECT_TRUE(engine->has_active_operation());
+
+    activity.Reset();
+    engine->Pump();
+    const auto warnings = TakeHealthWarnings(*engine);
+    ASSERT_EQ(warnings.size(), 2u);
+    EXPECT_EQ(
+        warnings[0].kind,
+        ExecutionHealthWarningKind::HostActivityLongRunning);
+    EXPECT_EQ(warnings[0].elapsed.count(), 10000);
+    EXPECT_EQ(warnings[0].code, "host_activity_long_running");
+    EXPECT_EQ(warnings[1].elapsed.count(), 40000);
+    EXPECT_TRUE(engine->has_active_operation());
+    EXPECT_FALSE(TakeTerminal(*engine).has_value());
+
+    ASSERT_TRUE(
+        engine->Cancel(CancellationReason::ExternalRequest).accepted);
+    const auto terminal = DrainTerminal(*engine);
+    ASSERT_TRUE(terminal.has_value());
+    EXPECT_EQ(terminal->status, ExecutionTerminalStatus::Cancelled);
+}
+
+TEST_F(
+    ExecutionEngineFixture,
+    MultipleLongHostActivitiesRetainIndependentDiagnostics)
+{
+    CreateEngine();
+    const ExecutionSubmissionReceipt submission =
+        engine->Submit(ContinueUntilRequest{
+            .policy = Policy(),
+            .wake_group = WakeGroup(),
+        });
+    ASSERT_TRUE(submission.accepted) << submission.error.message;
+    engine->Pump();
+    (void)engine->DrainEvents();
+
+    {
+        auto first = host_activity.Track();
+        now += 11s;
+    }
+    {
+        auto second = host_activity.Track();
+        now += 12s;
+    }
+
+    engine->Pump();
+    const auto warnings = TakeHealthWarnings(*engine);
+    ASSERT_EQ(warnings.size(), 2u);
+    EXPECT_EQ(warnings[0].elapsed.count(), 10000);
+    EXPECT_EQ(warnings[1].elapsed.count(), 10000);
+    EXPECT_NE(
+        warnings[0].host_activity_generation,
+        std::uint64_t{0});
+    EXPECT_TRUE(engine->has_active_operation());
+    EXPECT_FALSE(TakeTerminal(*engine).has_value());
+
+    ASSERT_TRUE(
+        engine->Cancel(CancellationReason::ExternalRequest).accepted);
+    ASSERT_TRUE(DrainTerminal(*engine).has_value());
+}
+
+TEST_F(
+    ExecutionEngineFixture,
+    HostActivityDiagnosticOverflowIsExplicit)
+{
+    CreateEngine();
+    const ExecutionSubmissionReceipt submission =
+        engine->Submit(ContinueUntilRequest{
+            .policy = Policy(),
+            .wake_group = WakeGroup(),
+        });
+    ASSERT_TRUE(submission.accepted) << submission.error.message;
+    engine->Pump();
+    (void)engine->DrainEvents();
+
+    for (std::size_t index = 0;
+         index <
+             HostActivityTracker::kCompletedActivityCapacity + 1;
+         ++index)
+    {
+        auto activity = host_activity.Track();
+    }
+
+    engine->Pump();
+    const auto warnings = TakeHealthWarnings(*engine);
+    ASSERT_EQ(warnings.size(), 1u);
+    EXPECT_EQ(
+        warnings.front().kind,
+        ExecutionHealthWarningKind::
+            HostActivityDiagnosticOverflow);
+    EXPECT_EQ(
+        warnings.front().code,
+        "host_activity_diagnostic_overflow");
+    EXPECT_NE(
+        warnings.front().message.find("1 completed scope"),
+        std::string::npos);
+    EXPECT_TRUE(engine->has_active_operation());
+
+    ASSERT_TRUE(
+        engine->Cancel(CancellationReason::ExternalRequest).accepted);
+    ASSERT_TRUE(DrainTerminal(*engine).has_value());
+}
+
+TEST_F(
+    ExecutionEngineFixture,
+    CompletedActorBlockingActivityPublishesDeferredWarnings)
+{
+    CreateEngine();
+    const ExecutionSubmissionReceipt submission =
+        engine->Submit(ContinueUntilRequest{
+            .policy = Policy(),
+            .wake_group = WakeGroup(),
+        });
+    ASSERT_TRUE(submission.accepted) << submission.error.message;
+    engine->Pump();
+    (void)engine->DrainEvents();
+
+    {
+        auto activity = host_activity.Track();
+        now += 70s;
+        // An actor-owned synchronous activity prevents the actor from pumping.
+        // The tracker must retain enough evidence to report every threshold
+        // crossed once control returns.
+    }
+
+    engine->Pump();
+    const auto warnings = TakeHealthWarnings(*engine);
+    ASSERT_EQ(warnings.size(), 3u);
+    EXPECT_EQ(
+        warnings[0].kind,
+        ExecutionHealthWarningKind::HostActivityLongRunning);
+    EXPECT_EQ(warnings[0].elapsed.count(), 10000);
+    EXPECT_EQ(warnings[1].elapsed.count(), 40000);
+    EXPECT_EQ(warnings[2].elapsed.count(), 70000);
+    EXPECT_TRUE(engine->has_active_operation());
+    EXPECT_FALSE(TakeTerminal(*engine).has_value());
+
+    ASSERT_TRUE(
+        engine->Cancel(CancellationReason::ExternalRequest).accepted);
+    const auto terminal = DrainTerminal(*engine);
+    ASSERT_TRUE(terminal.has_value());
+    EXPECT_EQ(terminal->status, ExecutionTerminalStatus::Cancelled);
+}
+
+TEST_F(
+    ExecutionEngineFixture,
+    IntermittentHostActivityRebaselinesHealthWithThrottleDisabled)
+{
+    CreateEngine();
+    ExecutionRequestPolicy policy = Policy();
+    policy.throttle = ExecutionThrottlePolicy::RequireDisabled;
     const ExecutionSubmissionReceipt submission =
         engine->Submit(ContinueUntilRequest{
             .policy = std::move(policy),
             .wake_group = WakeGroup(),
         });
     ASSERT_TRUE(submission.accepted) << submission.error.message;
-
-    now += 90ms;
     engine->Pump();
-    EXPECT_FALSE(TakeTerminal(*engine).has_value());
+    (void)engine->DrainEvents();
+    EXPECT_TRUE(execution_control->Snapshot().throttle_disabled);
 
-    execution_control->SetViCount(1);
-    engine->Pump();
-    EXPECT_FALSE(TakeTerminal(*engine).has_value());
+    for (int cycle = 0; cycle < 4; ++cycle)
+    {
+        now += 9s;
+        engine->Pump();
+        EXPECT_TRUE(engine->has_active_operation());
+        EXPECT_TRUE(TakeHealthWarnings(*engine).empty());
 
-    now += 40ms;
-    engine->Pump();
-    EXPECT_FALSE(TakeTerminal(*engine).has_value());
+        {
+            auto activity = host_activity.Track();
+            engine->Pump();
+            now += 2s;
+            engine->Pump();
+            EXPECT_TRUE(TakeHealthWarnings(*engine).empty());
+        }
+        engine->Pump();
+        EXPECT_TRUE(engine->has_active_operation());
+        EXPECT_FALSE(TakeTerminal(*engine).has_value());
+    }
 
-    now += 21ms;
+    ASSERT_TRUE(
+        engine->Cancel(CancellationReason::ExternalRequest).accepted);
     const auto terminal = DrainTerminal(*engine);
     ASSERT_TRUE(terminal.has_value());
-    EXPECT_EQ(terminal->status, ExecutionTerminalStatus::ViStalled);
-    EXPECT_EQ(terminal->evidence.vi_count, 1u);
-    EXPECT_EQ(terminal->evidence.core_state, BackendCoreState::Paused);
+    EXPECT_EQ(terminal->status, ExecutionTerminalStatus::Cancelled);
+    EXPECT_FALSE(execution_control->Snapshot().throttle_disabled);
+}
+
+TEST_F(
+    ExecutionEngineFixture,
+    BackgroundArtifactFinalizationNeitherMasksNorCreatesCoreStalls)
+{
+    CreateEngine();
+    const ExecutionSubmissionReceipt submission =
+        engine->Submit(ContinueUntilRequest{
+            .policy = Policy(),
+            .wake_group = WakeGroup(),
+        });
+    ASSERT_TRUE(submission.accepted) << submission.error.message;
+    engine->Pump();
+    (void)engine->DrainEvents();
+
+    const HostActivityTracker::Snapshot before =
+        host_activity.snapshot();
+    HealthTestTemporaryDirectory temporary;
+    WorkerWorksetLimits limits;
+    limits.finalizer_threads = 1;
+    limits.maximum_pending_finalizers = 2;
+    limits.maximum_pending_finalizer_bytes = 1024;
+    StateArtifactFinalizer finalizer(limits);
+
+    StateArtifactFinalizationRequest request;
+    request.item = {
+        WorkerWorksetId(1),
+        WorkerWorksetItemId(1),
+        0,
+        InvocationId(1),
+        AttemptId(1),
+    };
+    request.state_artifact_id = StateArtifactId(1);
+    request.logical_artifact_id = "health-test-state";
+    request.state = {
+        temporary.path() / "health-test.sav",
+        ImmutableArtifactBytes::Capture({1, 2, 3, 4}),
+        {},
+    };
+    ASSERT_TRUE(finalizer.Submit(std::move(request)).result.ok);
+    finalizer.Shutdown();
+    const auto completions = finalizer.DrainCompletions();
+    ASSERT_EQ(completions.size(), 1u);
+    ASSERT_TRUE(completions.front().result.ok)
+        << completions.front().result.message;
+
+    const HostActivityTracker::Snapshot after =
+        host_activity.snapshot();
+    EXPECT_EQ(after.generation, before.generation);
+    EXPECT_EQ(after.in_flight, before.in_flight);
+
+    now += 20s;
+    execution_control->SetViCount(1);
+    engine->Pump();
+    EXPECT_TRUE(engine->has_active_operation());
+    EXPECT_FALSE(TakeTerminal(*engine).has_value());
+
+    now += 20s;
+    const auto terminal = DrainTerminal(*engine);
+    ASSERT_TRUE(terminal.has_value());
+    EXPECT_EQ(terminal->status, ExecutionTerminalStatus::CoreStalled);
+}
+
+TEST_F(
+    ExecutionEngineFixture,
+    NativeRouterObservationRebaselinesHealthWithoutFalseCoreStall)
+{
+    constexpr std::uint32_t kCapturePc = 0x801DC28Cu;
+    constexpr std::uint32_t kCaptureDescriptor = 901u;
+    RecordingInterruptionConsumer capture_consumer;
+    StopGroupRegistrationResult capture_group =
+        router.RegisterGroup({
+            .id = StopSubscriptionGroupId(901),
+            .source = {
+                .id = StopSourceId(901),
+                .stable_name =
+                    "test.execution-engine.capture-observer",
+                .diagnostic_label =
+                    "execution-engine capture observer",
+            },
+            .epoch_policy = StopEpochPolicy::EndOnEpochChange,
+            .subscriptions = {{
+                .id = StopSubscriptionId(901),
+                .point = PcStopPointSpec{kCapturePc},
+                .delivery = StopDeliveryMode::Observe,
+                .policy = StopRoutingPolicy::Pass,
+                .cpu_observer_descriptor_id =
+                    kCaptureDescriptor,
+                .consumer = &capture_consumer,
+            }},
+        });
+    ASSERT_TRUE(capture_group.receipt.ok)
+        << capture_group.receipt.error.message;
+
+    CreateEngine();
+    const ExecutionSubmissionReceipt submission =
+        engine->Submit(ContinueUntilRequest{
+            .policy = Policy(),
+            .wake_group = WakeGroup(),
+        });
+    ASSERT_TRUE(submission.accepted) << submission.error.message;
+    engine->Pump();
+    (void)engine->DrainEvents();
+
+    std::uint64_t previous_generation =
+        host_activity.snapshot().generation;
+    for (int observation = 0; observation < 3; ++observation)
+    {
+        // Without synchronous host progress this is one second short of
+        // the confirmed-stall threshold.
+        now += 19s;
+        const auto decision =
+            physical_backend.InjectJitPcStop(kCapturePc);
+        EXPECT_FALSE(decision.request_break);
+        EXPECT_FALSE(decision.authoritative_overflow);
+
+        const HostActivityTracker::Snapshot tracked =
+            host_activity.snapshot();
+        EXPECT_GT(tracked.generation, previous_generation);
+        EXPECT_EQ(tracked.in_flight, 0u);
+        previous_generation = tracked.generation;
+
+        auto receipts = router.DrainIngress();
+        ASSERT_EQ(receipts.size(), 1u);
+        EXPECT_EQ(receipts.front().terminal, StopRouteTerminal::None);
+        engine->HandleStopPointReceipt(std::move(receipts.front()));
+        engine->Pump();
+
+        EXPECT_TRUE(engine->has_active_operation());
+        EXPECT_FALSE(TakeTerminal(*engine).has_value());
+    }
+
+    EXPECT_EQ(cpu_observer.calls(), 3u);
+    EXPECT_EQ(cpu_observer.descriptor(), kCaptureDescriptor);
+    EXPECT_TRUE(cpu_observer.observed_in_flight());
+    EXPECT_EQ(capture_consumer.deliveries.size(), 3u);
+
+    // The last native dispatch is the new health baseline. It may produce a
+    // suspicion warning later, but it must not be classified as a confirmed
+    // core stall before another full confirmation interval elapses.
+    now += 19999ms;
+    engine->Pump();
+    const auto warnings = TakeHealthWarnings(*engine);
+    ASSERT_EQ(warnings.size(), 1u);
+    EXPECT_EQ(
+        warnings.front().kind,
+        ExecutionHealthWarningKind::SuspectedCoreStall);
+    EXPECT_TRUE(engine->has_active_operation());
+    EXPECT_FALSE(TakeTerminal(*engine).has_value());
+
+    ASSERT_TRUE(
+        engine->Cancel(CancellationReason::ExternalRequest).accepted);
+    const auto terminal = DrainTerminal(*engine);
+    ASSERT_TRUE(terminal.has_value());
+    EXPECT_EQ(terminal->status, ExecutionTerminalStatus::Cancelled);
+
+    const StopReleaseReceipt released =
+        capture_group.handle.Release();
+    EXPECT_TRUE(released.ok) << released.error.message;
+}
+
+TEST_F(
+    ExecutionEngineFixture,
+    PausedAndEpochReplacementTimeIsRebaselinedBeforeGuestExecution)
+{
+    CreateEngine();
+    now += 24h;
+
+    ASSERT_TRUE(router.PrepareStateReplacement(kEpoch).ok);
+    ASSERT_TRUE(engine->PrepareStateReplacement().ok);
+    ASSERT_TRUE(router.CommitStateReplacement(StateEpoch(8)).ok);
+    ASSERT_TRUE(engine->CommitStateEpoch(StateEpoch(8)).ok);
+
+    const ExecutionSubmissionReceipt submission =
+        engine->Submit(ContinueUntilRequest{
+            .policy = Policy(StateEpoch(8)),
+            .wake_group = WakeGroup(),
+        });
+    ASSERT_TRUE(submission.accepted) << submission.error.message;
+    engine->Pump();
+    EXPECT_TRUE(engine->has_active_operation());
+    EXPECT_TRUE(TakeHealthWarnings(*engine).empty());
+
+    execution_control->SetViCount(1);
+    now += 10s;
+    engine->Pump();
+    EXPECT_TRUE(engine->has_active_operation());
+    EXPECT_TRUE(TakeHealthWarnings(*engine).empty());
+
+    ASSERT_TRUE(
+        engine->Cancel(CancellationReason::ExternalRequest).accepted);
+    ASSERT_TRUE(DrainTerminal(*engine).has_value());
+}
+
+TEST_F(
+    ExecutionEngineFixture,
+    SafePauseConfirmationRetainsABoundedHostOperationTimeout)
+{
+    CreateEngine();
+    execution_control->SetCoreState(BackendCoreState::Running);
+    execution_control->SetPauseChangesState(false);
+
+    const ExecutionSubmissionReceipt submission =
+        engine->Submit(SafePauseRequest{
+            .policy = Policy(),
+            .confirmation_timeout = 25ms,
+        });
+    ASSERT_TRUE(submission.accepted) << submission.error.message;
+
+    now += 24ms;
+    engine->Pump();
+    EXPECT_TRUE(engine->has_active_operation());
+    EXPECT_FALSE(TakeTerminal(*engine).has_value());
+
+    now += 1ms;
+    engine->Pump();
+    const auto terminal = DrainTerminal(*engine);
+    ASSERT_TRUE(terminal.has_value());
+    EXPECT_EQ(
+        terminal->status,
+        ExecutionTerminalStatus::CleanupFailure);
+    EXPECT_EQ(terminal->integrity, BackendIntegrity::Unknown);
+    EXPECT_NE(
+        terminal->error.message.find("host-operation bound"),
+        std::string::npos);
+    execution_control->SetPauseChangesState(true);
+    execution_control->SetCoreState(BackendCoreState::Paused);
+}
+
+TEST_F(
+    ExecutionEngineFixture,
+    UnprovenBackendHealthMakesCoreStallIntegrityUnknown)
+{
+    CreateEngine();
+    execution_control->SetHealth({
+        false,
+        BackendCoreState::Unknown,
+        "injected unhealthy backend",
+    });
+    const ExecutionSubmissionReceipt submission =
+        engine->Submit(ContinueUntilRequest{
+            .policy = Policy(),
+            .wake_group = WakeGroup(),
+        });
+    ASSERT_TRUE(submission.accepted) << submission.error.message;
+    engine->Pump();
+    (void)engine->DrainEvents();
+
+    now += 20s;
+    const auto terminal = DrainTerminal(*engine);
+    ASSERT_TRUE(terminal.has_value());
+    EXPECT_EQ(terminal->status, ExecutionTerminalStatus::CoreStalled);
+    EXPECT_EQ(terminal->integrity, BackendIntegrity::Unknown);
+    EXPECT_NE(
+        terminal->error.message.find("injected unhealthy backend"),
+        std::string::npos);
+}
+
+TEST_F(
+    ExecutionEngineFixture,
+    AlreadyPausedCoreStallStillRequiresBackendHealthProof)
+{
+    CreateEngine();
+    const ExecutionSubmissionReceipt submission =
+        engine->Submit(ContinueUntilRequest{
+            .policy = Policy(),
+            .wake_group = WakeGroup(),
+        });
+    ASSERT_TRUE(submission.accepted) << submission.error.message;
+    engine->Pump();
+    (void)engine->DrainEvents();
+
+    execution_control->SetHealth({
+        false,
+        BackendCoreState::Unknown,
+        "injected immediate-pause health failure",
+    });
+    BackendExecutionSnapshot running =
+        execution_control->Snapshot();
+    running.core_state = BackendCoreState::Running;
+    running.pause_confirmed = false;
+    BackendExecutionSnapshot paused = running;
+    paused.core_state = BackendCoreState::Paused;
+    paused.pause_confirmed = true;
+    execution_control->QueueQuerySnapshot(std::move(running));
+    execution_control->QueueQuerySnapshot(
+        execution_control->Snapshot());
+    execution_control->QueueQuerySnapshot(std::move(paused));
+
+    now += 20s;
+    engine->Pump();
+    const auto terminal = TakeTerminal(*engine);
+    ASSERT_TRUE(terminal.has_value());
+    EXPECT_EQ(terminal->status, ExecutionTerminalStatus::CoreStalled);
+    EXPECT_EQ(terminal->integrity, BackendIntegrity::Unknown);
+    EXPECT_NE(
+        terminal->error.message.find(
+            "injected immediate-pause health failure"),
+        std::string::npos);
+    EXPECT_EQ(CountCall(execution_control->Calls(), "check_health"), 1u);
+}
+
+TEST_F(
+    ExecutionEngineFixture,
+    StoppedCoreFailsInsteadOfWaitingForever)
+{
+    CreateEngine();
+    const ExecutionSubmissionReceipt submission =
+        engine->Submit(ContinueUntilRequest{
+            .policy = Policy(),
+            .wake_group = WakeGroup(),
+        });
+    ASSERT_TRUE(submission.accepted) << submission.error.message;
+    engine->Pump();
+    (void)engine->DrainEvents();
+
+    execution_control->SetCoreState(BackendCoreState::Stopped);
+    execution_control->SetHealth({
+        false,
+        BackendCoreState::Stopped,
+        "injected stopped core",
+    });
+    engine->Pump();
+
+    const auto terminal = DrainTerminal(*engine);
+    ASSERT_TRUE(terminal.has_value());
+    EXPECT_EQ(terminal->status, ExecutionTerminalStatus::BackendFailure);
+    EXPECT_EQ(terminal->integrity, BackendIntegrity::Unknown);
+    EXPECT_NE(
+        terminal->error.message.find("injected stopped core"),
+        std::string::npos);
+    EXPECT_FALSE(engine->has_active_operation());
+    EXPECT_EQ(TakeTerminals(*engine).size(), 0u);
+}
+
+TEST_F(
+    ExecutionEngineFixture,
+    UnconfirmedPauseFailsAfterTheHostConfirmationBound)
+{
+    CreateEngine();
+    const ExecutionSubmissionReceipt submission =
+        engine->Submit(ContinueUntilRequest{
+            .policy = Policy(),
+            .wake_group = WakeGroup(),
+        });
+    ASSERT_TRUE(submission.accepted) << submission.error.message;
+    engine->Pump();
+    (void)engine->DrainEvents();
+
+    BackendExecutionSnapshot unconfirmed =
+        execution_control->Snapshot();
+    unconfirmed.core_state = BackendCoreState::Paused;
+    unconfirmed.pause_confirmed = false;
+    execution_control->SetSnapshot(std::move(unconfirmed));
+    execution_control->SetPauseChangesState(false);
+
+    engine->Pump();
+    EXPECT_TRUE(engine->has_active_operation());
+    EXPECT_FALSE(TakeTerminal(*engine).has_value());
+
+    now += 5s;
+    engine->Pump();
+    now += 5s;
+    engine->Pump();
+    const auto terminal = DrainTerminal(*engine);
+    ASSERT_TRUE(terminal.has_value());
+    EXPECT_EQ(
+        terminal->status,
+        ExecutionTerminalStatus::CleanupFailure);
+    EXPECT_EQ(terminal->integrity, BackendIntegrity::Unknown);
+    EXPECT_FALSE(engine->has_active_operation());
+
+    execution_control->SetPauseChangesState(true);
+    execution_control->SetCoreState(BackendCoreState::Paused);
+}
+
+TEST_F(
+    ExecutionEngineFixture,
+    UnconfirmedPauseDeadlinePrecedesALongerMaintenanceCadence)
+{
+    CreateEngine(nullptr, {}, 60s, 5s);
+    const ExecutionSubmissionReceipt submission =
+        engine->Submit(ContinueUntilRequest{
+            .policy = Policy(),
+            .wake_group = WakeGroup(),
+        });
+    ASSERT_TRUE(submission.accepted) << submission.error.message;
+
+    BackendExecutionSnapshot unconfirmed =
+        execution_control->Snapshot();
+    unconfirmed.core_state = BackendCoreState::Paused;
+    unconfirmed.pause_confirmed = false;
+    execution_control->SetSnapshot(std::move(unconfirmed));
+    engine->Pump();
+
+    ASSERT_TRUE(engine->next_wake().has_value());
+    EXPECT_EQ(*engine->next_wake(), now + 5s);
+
+    execution_control->SetCoreState(BackendCoreState::Running);
+    engine->Pump();
+    ASSERT_TRUE(
+        engine->Cancel(CancellationReason::ExternalRequest).accepted);
+    ASSERT_TRUE(DrainTerminal(*engine).has_value());
 }
 
 TEST_F(ExecutionEngineFixture, ContinueCompletesFromTheSharedRouterReceipt)
@@ -598,6 +1450,59 @@ TEST_F(ExecutionEngineFixture, ContinueCompletesFromTheSharedRouterReceipt)
     ASSERT_TRUE(terminal->stop->event.has_value());
     EXPECT_EQ(terminal->stop->event->evidence.hit_pc, kWakePc);
     EXPECT_EQ(terminal->state_epoch, kEpoch);
+}
+
+TEST_F(
+    ExecutionEngineFixture,
+    RoutedCompletionPublishesCompletedHostWarningBeforeTerminal)
+{
+    CreateEngine();
+
+    const ExecutionSubmissionReceipt submission =
+        engine->Submit(ContinueUntilRequest{
+            .policy = Policy(),
+            .wake_group = WakeGroup(),
+        });
+    ASSERT_TRUE(submission.accepted) << submission.error.message;
+    (void)engine->DrainEvents();
+
+    {
+        auto routing_activity = host_activity.Track();
+        now += 11s;
+    }
+    const auto decision = physical_backend.InjectJitPcStop(kWakePc);
+    ASSERT_TRUE(decision.request_break);
+    auto receipts = router.DrainIngress();
+    ASSERT_EQ(receipts.size(), 1u);
+    execution_control->SetCoreState(BackendCoreState::Paused);
+    engine->HandleStopPointReceipt(std::move(receipts.front()));
+
+    const std::vector<ExecutionEvent> events =
+        engine->DrainEvents();
+    const auto warning = std::find_if(
+        events.begin(),
+        events.end(),
+        [](const ExecutionEvent& event) {
+            return event.health_warning &&
+                event.health_warning->kind ==
+                    ExecutionHealthWarningKind::
+                        HostActivityLongRunning;
+        });
+    const auto terminal = std::find_if(
+        events.begin(),
+        events.end(),
+        [](const ExecutionEvent& event) {
+            return event.terminal.has_value();
+        });
+    ASSERT_NE(warning, events.end());
+    ASSERT_NE(terminal, events.end());
+    EXPECT_LT(
+        std::distance(events.begin(), warning),
+        std::distance(events.begin(), terminal));
+    EXPECT_EQ(warning->health_warning->elapsed.count(), 10000);
+    EXPECT_EQ(
+        terminal->terminal->status,
+        ExecutionTerminalStatus::RequestedCompletion);
 }
 
 TEST_F(
@@ -642,6 +1547,52 @@ TEST_F(
     ASSERT_TRUE(terminal->stop.has_value());
     ASSERT_TRUE(terminal->stop->event.has_value());
     EXPECT_EQ(terminal->stop->event->evidence.hit_pc, kWakePc);
+}
+
+TEST_F(
+    ExecutionEngineFixture,
+    TransientUnconfirmedPauseTimeDoesNotCountTowardCoreStall)
+{
+    CreateEngine();
+
+    const ExecutionSubmissionReceipt submission =
+        engine->Submit(ContinueUntilRequest{
+            .policy = Policy(),
+            .wake_group = WakeGroup(),
+        });
+    ASSERT_TRUE(submission.accepted) << submission.error.message;
+    engine->Pump();
+    (void)engine->DrainEvents();
+
+    now += 9s;
+    engine->Pump();
+    EXPECT_TRUE(TakeHealthWarnings(*engine).empty());
+
+    BackendExecutionSnapshot transient =
+        execution_control->Snapshot();
+    transient.core_state = BackendCoreState::Paused;
+    transient.pause_confirmed = false;
+    execution_control->SetSnapshot(std::move(transient));
+    now += 4s;
+    engine->Pump();
+    EXPECT_TRUE(engine->has_active_operation());
+    EXPECT_FALSE(TakeTerminal(*engine).has_value());
+
+    execution_control->SetCoreState(BackendCoreState::Running);
+    engine->Pump();
+    EXPECT_TRUE(engine->has_active_operation());
+    EXPECT_TRUE(TakeHealthWarnings(*engine).empty());
+    EXPECT_FALSE(TakeTerminal(*engine).has_value());
+
+    now += 9s;
+    engine->Pump();
+    EXPECT_TRUE(engine->has_active_operation());
+    EXPECT_TRUE(TakeHealthWarnings(*engine).empty());
+    EXPECT_FALSE(TakeTerminal(*engine).has_value());
+
+    ASSERT_TRUE(
+        engine->Cancel(CancellationReason::ExternalRequest).accepted);
+    ASSERT_TRUE(DrainTerminal(*engine).has_value());
 }
 
 TEST_F(ExecutionEngineFixture, RestoresThePriorThrottleStateOnCompletion)
@@ -715,20 +1666,25 @@ TEST_F(ExecutionEngineFixture, MovieEndCompletesAccordingToPolicy)
 
 TEST_F(
     ExecutionEngineFixture,
-    AcceptedWakePrecedesCancellationAndAnExpiredMaintenanceBudget)
+    AcceptedWakePrecedesCancellationMovieEndAndHealthMaintenance)
 {
+    execution_control->SetMovieState(BackendMovieState::Playing);
     CreateEngine();
     CancellationSource cancellation(InvocationId(77));
-    ExecutionRequestPolicy policy = Policy(kEpoch, 100ms);
+    ExecutionRequestPolicy policy = Policy();
     policy.cancellation = cancellation.token();
+    policy.movie_ended = MovieEndedPolicy::Complete;
     const ExecutionSubmissionReceipt submission =
         engine->Submit(ContinueUntilRequest{
             .policy = std::move(policy),
             .wake_group = WakeGroup(),
         });
     ASSERT_TRUE(submission.accepted) << submission.error.message;
+    engine->Pump();
+    (void)engine->DrainEvents();
 
-    now += 101ms;
+    now += 20s;
+    execution_control->SetMovieState(BackendMovieState::Ended);
     ASSERT_TRUE(cancellation.request_cancellation(
         CancellationReason::ExternalRequest));
     execution_control->SetCoreState(BackendCoreState::Paused);
@@ -744,16 +1700,18 @@ TEST_F(
         ExecutionTerminalStatus::RequestedCompletion);
     EXPECT_FALSE(
         engine->Cancel(CancellationReason::ExternalRequest).accepted);
+    engine->Pump();
+    EXPECT_FALSE(TakeTerminal(*engine).has_value());
 }
 
 TEST_F(
     ExecutionEngineFixture,
-    CancellationAcceptedBeforeAStopAndTimeoutRemainsTheOnlyTerminal)
+    CancellationAcceptedBeforeAStopRemainsTheOnlyTerminal)
 {
     CreateEngine();
     const ExecutionSubmissionReceipt submission =
         engine->Submit(ContinueUntilRequest{
-            .policy = Policy(kEpoch, 100ms),
+            .policy = Policy(),
             .wake_group = WakeGroup(),
         });
     ASSERT_TRUE(submission.accepted) << submission.error.message;
@@ -761,8 +1719,6 @@ TEST_F(
     const ExecutionControlReceipt cancellation =
         engine->Cancel(CancellationReason::ExternalRequest);
     ASSERT_TRUE(cancellation.accepted) << cancellation.error.message;
-    now += 101ms;
-
     (void)physical_backend.InjectJitPcStop(kWakePc);
     auto receipts = router.DrainIngress();
     ASSERT_EQ(receipts.size(), 1u);
@@ -793,10 +1749,10 @@ TEST_F(ExecutionEngineFixture, RejectsStateEpochMismatchWithoutAdvancing)
 
 TEST_F(
     ExecutionEngineFixture,
-    ResumeParentRestoresTheContinueAndItsFrozenActiveBudget)
+    InterruptionChildAndCompletionWaitForAuthoritativePauseConfirmation)
 {
-    CreateEngine(nullptr, {Handler()});
-    ExecutionRequestPolicy policy = Policy(kEpoch, 100ms);
+    CreateEngine(nullptr, {Handler()}, 60s, 5s);
+    ExecutionRequestPolicy policy = Policy();
     policy.interruptions = ExecutionInterruptionPolicy::AllowKnown;
     const ExecutionSubmissionReceipt parent =
         engine->Submit(ContinueUntilRequest{
@@ -805,7 +1761,220 @@ TEST_F(
         });
     ASSERT_TRUE(parent.accepted) << parent.error.message;
 
-    now += 40ms;
+    execution_control->SetPauseChangesState(false);
+    engine->HandleStopPointReceipt(RouteInterruption());
+    const auto frame = engine->snapshot().active_interruption_frame;
+    ASSERT_TRUE(frame.has_value());
+    ASSERT_TRUE(engine->next_wake().has_value());
+    EXPECT_EQ(*engine->next_wake(), now + 5s);
+
+    const ExecutionSubmissionReceipt premature_child =
+        engine->SubmitInterruptionChild(
+            *frame,
+            ContinueUntilRequest{
+                .policy = Policy(),
+                .wake_group = WakeGroup(kWakePc + 4),
+            });
+    EXPECT_FALSE(premature_child.accepted);
+    EXPECT_EQ(
+        premature_child.error.code,
+        ExecutionErrorCode::InvalidState);
+    const ExecutionControlReceipt premature_completion =
+        engine->CompleteInterruptionHandler(
+            *frame,
+            InterruptionHandlerOutcome::AbortParent);
+    EXPECT_FALSE(premature_completion.accepted);
+    EXPECT_EQ(
+        premature_completion.error.code,
+        ExecutionErrorCode::InvalidState);
+
+    execution_control->SetCoreState(BackendCoreState::Paused);
+    engine->Pump();
+    const ExecutionControlReceipt completion =
+        engine->CompleteInterruptionHandler(
+            *frame,
+            InterruptionHandlerOutcome::AbortParent);
+    ASSERT_TRUE(completion.accepted) << completion.error.message;
+    const auto terminal = DrainTerminal(*engine);
+    ASSERT_TRUE(terminal.has_value());
+    EXPECT_EQ(terminal->operation_id, parent.operation_id);
+    EXPECT_EQ(
+        terminal->status,
+        ExecutionTerminalStatus::InterruptionAborted);
+}
+
+TEST_F(
+    ExecutionEngineFixture,
+    InterruptionPauseConfirmationTimeoutFailsClosedExactlyOnce)
+{
+    CreateEngine(nullptr, {Handler()}, 60s, 5s);
+    ExecutionRequestPolicy policy = Policy();
+    policy.interruptions = ExecutionInterruptionPolicy::AllowKnown;
+    const ExecutionSubmissionReceipt parent =
+        engine->Submit(ContinueUntilRequest{
+            .policy = std::move(policy),
+            .wake_group = WakeGroup(),
+        });
+    ASSERT_TRUE(parent.accepted) << parent.error.message;
+
+    execution_control->SetPauseChangesState(false);
+    engine->HandleStopPointReceipt(RouteInterruption());
+    ASSERT_TRUE(
+        engine->snapshot().active_interruption_frame.has_value());
+    EXPECT_FALSE(TakeTerminal(*engine).has_value());
+
+    now += 5s;
+    engine->Pump();
+    EXPECT_FALSE(TakeTerminal(*engine).has_value());
+
+    now += 5s;
+    engine->Pump();
+    const auto terminal = TakeTerminal(*engine);
+    ASSERT_TRUE(terminal.has_value());
+    EXPECT_EQ(terminal->operation_id, parent.operation_id);
+    EXPECT_EQ(
+        terminal->status,
+        ExecutionTerminalStatus::CleanupFailure);
+    EXPECT_EQ(terminal->integrity, BackendIntegrity::Unknown);
+    engine->Pump();
+    EXPECT_FALSE(TakeTerminal(*engine).has_value());
+
+    execution_control->SetCoreState(BackendCoreState::Paused);
+}
+
+TEST_F(
+    ExecutionEngineFixture,
+    CancellationDuringPendingHandlerPauseUsesTheSafePauseBound)
+{
+    CreateEngine(nullptr, {Handler()}, 60s, 5s);
+    ExecutionRequestPolicy policy = Policy();
+    policy.interruptions = ExecutionInterruptionPolicy::AllowKnown;
+    const ExecutionSubmissionReceipt parent =
+        engine->Submit(ContinueUntilRequest{
+            .policy = std::move(policy),
+            .wake_group = WakeGroup(),
+        });
+    ASSERT_TRUE(parent.accepted) << parent.error.message;
+
+    execution_control->SetPauseChangesState(false);
+    engine->HandleStopPointReceipt(RouteInterruption());
+    ASSERT_TRUE(
+        engine->snapshot().active_interruption_frame.has_value());
+
+    const ExecutionControlReceipt cancelled =
+        engine->Cancel(CancellationReason::ExternalRequest);
+    ASSERT_TRUE(cancelled.accepted) << cancelled.error.message;
+    EXPECT_FALSE(TakeTerminal(*engine).has_value());
+
+    now += 5s;
+    engine->Pump();
+    const auto terminal = TakeTerminal(*engine);
+    ASSERT_TRUE(terminal.has_value());
+    EXPECT_EQ(terminal->operation_id, parent.operation_id);
+    EXPECT_EQ(
+        terminal->status,
+        ExecutionTerminalStatus::CleanupFailure);
+    EXPECT_NE(
+        terminal->status,
+        ExecutionTerminalStatus::Cancelled);
+    EXPECT_EQ(terminal->integrity, BackendIntegrity::Unknown);
+    engine->Pump();
+    EXPECT_FALSE(TakeTerminal(*engine).has_value());
+
+    execution_control->SetCoreState(BackendCoreState::Paused);
+}
+
+TEST_F(
+    ExecutionEngineFixture,
+    CancellationFromANestedWaitingHandlerCleansEachParentExactlyOnce)
+{
+    InterruptionHandlerDescriptor outer = Handler("handler.outer");
+    outer.permitted_nested_keys = {"handler.inner"};
+    CreateEngine(
+        nullptr,
+        {std::move(outer), Handler("handler.inner")});
+
+    ExecutionRequestPolicy root_policy = Policy();
+    root_policy.interruptions =
+        ExecutionInterruptionPolicy::AllowKnown;
+    const ExecutionSubmissionReceipt root =
+        engine->Submit(ContinueUntilRequest{
+            .policy = std::move(root_policy),
+            .wake_group = WakeGroup(),
+        });
+    ASSERT_TRUE(root.accepted) << root.error.message;
+
+    execution_control->SetCoreState(BackendCoreState::Paused);
+    engine->HandleStopPointReceipt(
+        RouteInterruption("handler.outer"));
+    const auto outer_frame =
+        engine->snapshot().active_interruption_frame;
+    ASSERT_TRUE(outer_frame.has_value());
+
+    ExecutionRequestPolicy child_policy = Policy();
+    child_policy.interruptions =
+        ExecutionInterruptionPolicy::AllowKnown;
+    const ExecutionSubmissionReceipt child =
+        engine->SubmitInterruptionChild(
+            *outer_frame,
+            ContinueUntilRequest{
+                .policy = std::move(child_policy),
+                .wake_group = WakeGroup(),
+            });
+    ASSERT_TRUE(child.accepted) << child.error.message;
+
+    execution_control->SetCoreState(BackendCoreState::Paused);
+    engine->HandleStopPointReceipt(
+        RouteInterruption("handler.inner"));
+    ASSERT_TRUE(
+        engine->snapshot().active_interruption_frame.has_value());
+
+    const ExecutionControlReceipt cancelled =
+        engine->Cancel(CancellationReason::ExternalRequest);
+    ASSERT_TRUE(cancelled.accepted) << cancelled.error.message;
+    const auto terminals = TakeTerminals(*engine);
+    ASSERT_EQ(terminals.size(), 2u);
+    EXPECT_EQ(
+        std::count_if(
+            terminals.begin(),
+            terminals.end(),
+            [&](const ExecutionTerminalResult& terminal) {
+                return terminal.operation_id == child.operation_id;
+            }),
+        1);
+    EXPECT_EQ(
+        std::count_if(
+            terminals.begin(),
+            terminals.end(),
+            [&](const ExecutionTerminalResult& terminal) {
+                return terminal.operation_id == root.operation_id;
+            }),
+        1);
+    EXPECT_TRUE(std::all_of(
+        terminals.begin(),
+        terminals.end(),
+        [](const ExecutionTerminalResult& terminal) {
+            return terminal.status ==
+                ExecutionTerminalStatus::Cancelled;
+        }));
+    engine->Pump();
+    EXPECT_FALSE(TakeTerminal(*engine).has_value());
+}
+
+TEST_F(
+    ExecutionEngineFixture,
+    HandlerSuspensionAndChildExecutionDoNotCreateElapsedDeadlines)
+{
+    CreateEngine(nullptr, {Handler()});
+    ExecutionRequestPolicy policy = Policy();
+    policy.interruptions = ExecutionInterruptionPolicy::AllowKnown;
+    const ExecutionSubmissionReceipt parent =
+        engine->Submit(ContinueUntilRequest{
+            .policy = std::move(policy),
+            .wake_group = WakeGroup(),
+        });
+    ASSERT_TRUE(parent.accepted) << parent.error.message;
+
     execution_control->SetCoreState(BackendCoreState::Paused);
     engine->HandleStopPointReceipt(RouteInterruption());
     const ExecutionSnapshot suspended = engine->snapshot();
@@ -820,21 +1989,32 @@ TEST_F(
             *suspended.active_interruption_frame,
             ContinueUntilRequest{
                 .policy = std::move(child_policy),
-                .wake_group = WakeGroup(),
+                .wake_group = WakeGroup(kWakePc + 4),
             });
     ASSERT_TRUE(child.accepted) << child.error.message;
 
-    now += 201ms;
+    now += 24h;
+    execution_control->SetViCount(1);
+    engine->Pump();
+    EXPECT_TRUE(engine->has_active_operation());
+    EXPECT_FALSE(TakeTerminal(*engine).has_value());
+
+    const auto child_hit =
+        physical_backend.InjectJitPcStop(kWakePc + 4);
+    ASSERT_TRUE(child_hit.request_break);
+    execution_control->SetCoreState(BackendCoreState::Paused);
+    auto child_receipts = router.DrainIngress();
+    ASSERT_EQ(child_receipts.size(), 1u);
+    engine->HandleStopPointReceipt(std::move(child_receipts.front()));
     const auto child_terminal = DrainTerminal(*engine);
     ASSERT_TRUE(child_terminal.has_value());
     EXPECT_EQ(child_terminal->operation_id, child.operation_id);
-    EXPECT_EQ(child_terminal->status, ExecutionTerminalStatus::TimedOut);
+    EXPECT_EQ(
+        child_terminal->status,
+        ExecutionTerminalStatus::RequestedCompletion);
     EXPECT_EQ(engine->snapshot().activity, ExecutionActivity::HandlingInterruption);
 
-    // Handler decision time is bounded while it is awaiting a command.
-    // Resume within that bound; the parent's own budget remained frozen for
-    // the entire interruption.
-    now += 100ms;
+    now += 24h;
     const ExecutionControlReceipt resumed =
         engine->CompleteInterruptionHandler(
             *suspended.active_interruption_frame,
@@ -842,15 +2022,30 @@ TEST_F(
     ASSERT_TRUE(resumed.accepted) << resumed.error.message;
     EXPECT_EQ(engine->snapshot().activity, ExecutionActivity::Continuing);
 
-    now += 59ms;
+    execution_control->SetViCount(2);
+    now += 24h;
     engine->Pump();
     EXPECT_FALSE(TakeTerminal(*engine).has_value());
 
-    now += 2ms;
+    ASSERT_TRUE(interruption_group.has_value());
+    ASSERT_TRUE(interruption_group->Release().ok);
+    interruption_group.reset();
+    // The child completed at a different semantic point. The next visit to
+    // the parent's Wake PC is therefore a legitimate future hit, not an
+    // immediate source-instruction re-entry to suppress.
+    const auto parent_hit =
+        physical_backend.InjectJitPcStop(kWakePc);
+    ASSERT_TRUE(parent_hit.request_break);
+    execution_control->SetCoreState(BackendCoreState::Paused);
+    auto parent_receipts = router.DrainIngress();
+    ASSERT_EQ(parent_receipts.size(), 1u);
+    engine->HandleStopPointReceipt(std::move(parent_receipts.front()));
     const auto terminal = DrainTerminal(*engine);
     ASSERT_TRUE(terminal.has_value());
     EXPECT_EQ(terminal->operation_id, parent.operation_id);
-    EXPECT_EQ(terminal->status, ExecutionTerminalStatus::TimedOut);
+    EXPECT_EQ(
+        terminal->status,
+        ExecutionTerminalStatus::RequestedCompletion);
 }
 
 TEST_F(
@@ -931,7 +2126,7 @@ TEST_F(
 
 TEST_F(
     ExecutionEngineFixture,
-    NestedHandlerDecisionBudgetsFreezeWhileTheirChildrenRun)
+    NestedHandlersAndChildrenRemainCancellationDriven)
 {
     InterruptionHandlerDescriptor outer = Handler("handler.outer");
     outer.permitted_nested_keys = {"handler.inner"};
@@ -977,17 +2172,23 @@ TEST_F(
             StepFramesRequest{.policy = Policy(), .count = 1});
     ASSERT_TRUE(inner_child.accepted) << inner_child.error.message;
 
-    // The fake backend normally completes a frame immediately. Hold this
-    // child in its running phase so its own bounded budget, rather than
-    // instantaneous fake completion, decides the result.
+    // Holding a guest-dependent child operation across arbitrary injected
+    // time cannot manufacture an elapsed-time terminal.
     execution_control->SetCoreState(BackendCoreState::Running);
-    now += 500ms;
+    execution_control->SetViCount(1);
+    now += 24h;
+    engine->Pump();
+    EXPECT_TRUE(engine->has_active_operation());
+    EXPECT_FALSE(TakeTerminal(*engine).has_value());
+
+    execution_control->SetCoreState(BackendCoreState::Paused);
+    execution_control->SetViCount(2);
     const auto inner_child_terminal = DrainTerminal(*engine);
     ASSERT_TRUE(inner_child_terminal.has_value());
     EXPECT_EQ(inner_child_terminal->operation_id, inner_child.operation_id);
     EXPECT_EQ(
         inner_child_terminal->status,
-        ExecutionTerminalStatus::TimedOut);
+        ExecutionTerminalStatus::StepsCompleted);
 
     const ExecutionControlReceipt inner_resumed =
         engine->CompleteInterruptionHandler(

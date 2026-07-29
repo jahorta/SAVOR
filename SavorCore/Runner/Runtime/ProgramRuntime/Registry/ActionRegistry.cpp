@@ -122,12 +122,13 @@ ContentHash256 ComputeActionDescriptorContractHash(
     AppendNumber(contract, descriptor.epoch_policy);
     AppendNumber(contract, descriptor.replay_class);
     AppendNumber(contract, descriptor.cancellation);
+    AppendNumber(contract, descriptor.timing);
     AppendNumber(
         contract,
         descriptor.maximum_non_cancellable_milliseconds);
     AppendNumber(
         contract,
-        descriptor.default_deadline_milliseconds);
+        descriptor.default_host_timeout_milliseconds);
     AppendNumber(contract, descriptor.resource_behavior);
     AppendNumber(contract, descriptor.cleanup);
     AppendNumber(contract, descriptor.taints_on_unproven_cleanup);
@@ -296,11 +297,19 @@ RegistryResult ActionRegistry::Validate(
             "Action references an unregistered schema: " +
                 descriptor.identity.canonical_id);
     }
-    if (descriptor.default_deadline_milliseconds == 0)
+    if (descriptor.timing == ActionTimingClass::BoundedHostOperation &&
+        descriptor.default_host_timeout_milliseconds == 0)
     {
         return RegistryResult::Failure(
             RegistryErrorCode::InvalidArgument,
-            "Actions require a finite nonzero default deadline");
+            "Bounded host actions require a finite nonzero default timeout");
+    }
+    if (descriptor.timing == ActionTimingClass::CancellationDriven &&
+        descriptor.default_host_timeout_milliseconds != 0)
+    {
+        return RegistryResult::Failure(
+            RegistryErrorCode::InvalidArgument,
+            "Cancellation-driven actions cannot declare an elapsed timeout");
     }
     if (descriptor.resource_behavior != ActionResourceBehavior::None &&
         descriptor.cleanup == ActionCleanupGuarantee::None)

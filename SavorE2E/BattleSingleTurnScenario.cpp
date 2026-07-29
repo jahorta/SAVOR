@@ -57,21 +57,6 @@ void AppendTasMovieRtcArgument(
     });
 }
 
-void AppendTasMovieHeadroomArgument(
-    savor::db::execution::workflow::WorkflowCreateInstanceCommand* command,
-    const CliOptions& options) {
-    if (command == nullptr) {
-        return;
-    }
-    command->arguments.push_back({
-        .node_key = "tas_1",
-        .argument_key = "headroom",
-        .value_type = "integer",
-        .integer_value = options.tasmovie_headroom_x10.value_or(50),
-        .source_kind = "scenario",
-    });
-}
-
 const char* ToString(savor::db::execution::workflow::WorkflowInstanceState state) {
     using savor::db::execution::workflow::WorkflowInstanceState;
     switch (state) {
@@ -97,29 +82,16 @@ std::string FormatWorkflowStateLine(const savor::db::execution::workflow::Workfl
     return oss.str();
 }
 
-std::int64_t ComputeBattleScenarioTimeoutMs(const savor::db::BattleRunSpecSnapshot& run_spec, const CliOptions& options) {
+std::int64_t ComputeBattleScenarioTimeoutMs(const CliOptions& options) {
     const int fake_low = options.battle_fake_attack_low.value_or(0);
     const int fake_high = options.battle_fake_attack_high.value_or(fake_low);
     const int fake_jobs_per_wave = std::max(1, std::abs(fake_high - fake_low) + 1);
-    const std::int64_t per_wave_budget = static_cast<std::int64_t>(std::max(1, fake_jobs_per_wave))
-        * std::max<std::int64_t>(1000, static_cast<std::int64_t>(run_spec.run_ms));
-    return std::max<std::int64_t>(options.timeout_ms, (per_wave_budget * 4) + options.timeout_ms);
-}
-
-std::int64_t ComputeTasMovieRunMs(
-    const std::filesystem::path& dtm_file,
-    std::uint8_t headroom_x10,
-    std::int64_t fallback_ms) {
-    savor::tas::DtmFile dtm;
-    if (!dtm.load(dtm_file.string())) {
-        return fallback_ms;
-    }
-    const auto info = dtm.info();
-    const auto run_ms = savor::tasmovie::compute_run_ms_from_counts(
-        info.vi_count,
-        info.input_count,
-        static_cast<double>(headroom_x10) / 10.0);
-    return run_ms > 0 ? static_cast<std::int64_t>(run_ms) : fallback_ms;
+    const std::int64_t per_wave_guard =
+        static_cast<std::int64_t>(std::max(1, fake_jobs_per_wave))
+        * options.timeout_ms;
+    return std::max<std::int64_t>(
+        options.timeout_ms,
+        (per_wave_guard * 4) + options.timeout_ms);
 }
 
 std::string BattleSeedSuffix(
@@ -448,8 +420,6 @@ bool SeedBattleAuthoringRows(
             {
                 .name = "SavorE2E first battle single-turn " + suffix,
                 .priority = 1,
-                .run_ms = 10000,
-                .vi_stall_ms = 2000,
                 .progress_enable = true,
                 .use_single_turn_runner = true,
                 .auto_wave_trigger_enable = true,
@@ -1005,7 +975,6 @@ bool SeedTasMovieSeedProbeBattleGraphExecution(
             .source_kind = "external_override",
         });
     }
-    AppendTasMovieHeadroomArgument(&command, options);
     AppendTasMovieRtcArgument(&command, rtc_value);
     command.arguments.push_back({
         .node_key = "probe_1",
@@ -1144,7 +1113,6 @@ bool SeedTasMovieBattleGraphExecution(
         .ref_id = input_set_id,
         .source_kind = "external",
     });
-    AppendTasMovieHeadroomArgument(&command, options);
     AppendTasMovieRtcArgument(&command, rtc_value);
     command.arguments.push_back({ .node_key = "battle_1", .argument_key = "fake_attack_min", .value_type = "integer", .integer_value = options.battle_fake_attack_low.value_or(0), .source_kind = "scenario" });
     command.arguments.push_back({ .node_key = "battle_1", .argument_key = "fake_attack_max", .value_type = "integer", .integer_value = options.battle_fake_attack_high.value_or(0), .source_kind = "scenario" });
@@ -1375,10 +1343,7 @@ bool RunSeedProbeBattleRealWorkerScenario(
         return false;
     }
 
-    const auto run_spec = db_service->AuthoringDb()->GetBattleRunSpec(battle_run_spec_id);
-    const auto scenario_timeout_ms = run_spec.has_value()
-        ? ComputeBattleScenarioTimeoutMs(*run_spec, options)
-        : std::max<std::int64_t>(options.timeout_ms, 120000);
+    const auto scenario_timeout_ms = ComputeBattleScenarioTimeoutMs(options);
 
     const auto scenario_workspace_root = options.workspace_root.value_or(
         std::filesystem::temp_directory_path() / "savor-e2e-default");
@@ -1754,10 +1719,7 @@ bool RunBattleWorkflowGraphRealWorkerScenario(
         return false;
     }
 
-    const auto run_spec = db_service->AuthoringDb()->GetBattleRunSpec(battle_run_spec_id);
-    const auto scenario_timeout_ms = run_spec.has_value()
-        ? ComputeBattleScenarioTimeoutMs(*run_spec, options)
-        : std::max<std::int64_t>(options.timeout_ms, 300000);
+    const auto scenario_timeout_ms = ComputeBattleScenarioTimeoutMs(options);
 
     std::cout << "[battle-graph-setup] entry_savestate_id=" << entry_savestate_id
               << " battle_run_spec_id=" << battle_run_spec_id
@@ -2162,12 +2124,7 @@ bool RunTasMovieSeedProbeBattleWorkflowGraphRealWorkerScenario(
     tas_config.blueprint.base_dtm_artifact_id = dtm_artifact_id;
     tas_config.blueprint.rtc_low = 0;
     tas_config.blueprint.rtc_high = 0;
-    tas_config.blueprint.run_ms = 0;
-    tas_config.blueprint.vi_stall_ms = 2000;
     tas_config.blueprint.progress_enable = true;
-    const auto tas_headroom_x10 =
-        static_cast<std::uint8_t>(options.tasmovie_headroom_x10.value_or(50));
-    tas_config.blueprint.headroom_x10 = tas_headroom_x10;
     tas_config.working_dir_root = scenario_workspace_root / "tasmovie";
     registry_config.battle_context.working_dir_root =
         scenario_workspace_root / "battle-context";
@@ -2198,19 +2155,14 @@ bool RunTasMovieSeedProbeBattleWorkflowGraphRealWorkerScenario(
         return false;
     }
 
-    const auto run_spec = db_service->AuthoringDb()->GetBattleRunSpec(battle_run_spec_id);
-    const auto tas_budget_ms =
-        ComputeTasMovieRunMs(options.dtm_file, tas_headroom_x10, options.timeout_ms * 2)
-        + options.timeout_ms;
+    const auto tas_budget_ms = options.timeout_ms * 3;
     const auto seedprobe_budget_ms = options.timeout_ms
         * (1
             + (static_cast<std::int64_t>(options.seedprobe_samples_per_axis.value_or(kSeedProbeSamplesPerAxis))
                 * options.seedprobe_samples_per_axis.value_or(kSeedProbeSamplesPerAxis)
                 * 3)
             + 25);
-    const auto battle_budget_ms = run_spec.has_value()
-        ? ComputeBattleScenarioTimeoutMs(*run_spec, options)
-        : std::max<std::int64_t>(options.timeout_ms, 300000);
+    const auto battle_budget_ms = ComputeBattleScenarioTimeoutMs(options);
     const auto scenario_timeout_ms = tas_budget_ms + seedprobe_budget_ms + battle_budget_ms;
 
     std::cout << "[tasmovie-seedprobe-battle-graph-setup] dtm_artifact_id=" << dtm_artifact_id

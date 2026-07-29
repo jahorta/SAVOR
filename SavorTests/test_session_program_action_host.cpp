@@ -273,7 +273,6 @@ ProgramValueGraph StepFramesRequestGraph(
         TestStaticConfigWriter writer({'E', 'A', 'C', '1'});
         writer.U8(2);
         writer.Bool(false);
-        writer.Bool(false);
         writer.U8(0);
         writer.U8(0);
         config = writer.Finish();
@@ -423,13 +422,11 @@ ProgramValueGraph SubscribeRequestGraph(const TestPoint& target)
 
 ProgramValueGraph ContinueRequestGraph(
     const ProgramValue& stop_group,
-    std::uint64_t deadline_milliseconds,
     const ProgramValue* input_publication = nullptr)
 {
     TestStaticConfigWriter writer({'C', 'U', 'C', '1'});
     writer.U8(1);
     writer.Bool(true);
-    writer.U8(0);
     writer.U8(0);
     writer.U8(0);
     writer.U8(0);
@@ -447,9 +444,6 @@ ProgramValueGraph ContinueRequestGraph(
             CanonicalRuntimeSchema::
                 OptionalInputPublicationReceipt),
         OptionalValue{publication_value});
-    const ProgramValueId deadline = builder.Add(
-        TypeRef::Builtin(BuiltinType::U64),
-        deadline_milliseconds);
     const ProgramValueId config = builder.Add(
         CanonicalRuntimeType(
             CanonicalRuntimeSchema::
@@ -457,7 +451,7 @@ ProgramValueGraph ContinueRequestGraph(
         writer.Finish());
     return builder.Finish(
         CanonicalAction::ExecutionContinueUntil,
-        {group, publication, deadline, config});
+        {group, publication, config});
 }
 
 ProgramValueGraph InputPollRequestGraph(
@@ -976,7 +970,7 @@ TEST(
 
 TEST(
     SessionProgramActionHost,
-    EnforcesActionDeadlineAndEffectAuthorizationBeforeMutation)
+    EnforcesBoundedHostDeadlineAndEffectAuthorizationBeforeMutation)
 {
     HostHarness harness;
     ASSERT_TRUE(harness.Open());
@@ -989,7 +983,8 @@ TEST(
         harness.session.snapshot().state_epoch);
     expired.action =
         CanonicalActionIdentity(CanonicalAction::GuestReadU32);
-    expired.active_deadline =
+    expired.timing = ActionTimingClass::BoundedHostOperation;
+    expired.bounded_host_deadline =
         std::chrono::steady_clock::now() - 1ms;
     ProgramActionDispatchResult timed_out =
         harness.host->Dispatch(std::move(expired));
@@ -999,20 +994,25 @@ TEST(
         timed_out.immediate_completion->status,
         ProgramActionCompletionStatus::TimedOut);
 
-    ProgramActionRequest descriptor_expired = harness.Request(
+    ProgramActionRequest cancellation_driven = harness.Request(
         ProgramHostOperation::InvokeAction,
         harness.session.snapshot().state_epoch);
-    descriptor_expired.action =
-        CanonicalActionIdentity(CanonicalAction::GuestReadU32);
-    descriptor_expired.descriptor_deadline =
+    cancellation_driven.action =
+        CanonicalActionIdentity(
+            CanonicalAction::ExecutionContinueUntil);
+    cancellation_driven.timing =
+        ActionTimingClass::CancellationDriven;
+    cancellation_driven.bounded_host_deadline =
         std::chrono::steady_clock::now() - 1ms;
-    ProgramActionDispatchResult descriptor_timed_out =
-        harness.host->Dispatch(std::move(descriptor_expired));
-    EXPECT_FALSE(descriptor_timed_out.accepted);
-    ASSERT_TRUE(descriptor_timed_out.immediate_completion);
-    EXPECT_EQ(
-        descriptor_timed_out.immediate_completion->status,
+    ProgramActionDispatchResult cancellation_driven_result =
+        harness.host->Dispatch(std::move(cancellation_driven));
+    ASSERT_TRUE(cancellation_driven_result.immediate_completion);
+    EXPECT_NE(
+        cancellation_driven_result.immediate_completion->status,
         ProgramActionCompletionStatus::TimedOut);
+    EXPECT_NE(
+        cancellation_driven_result.immediate_completion->code,
+        "action_deadline");
 
     ProgramActionRequest unauthorized = harness.Request(
         ProgramHostOperation::InvokeAction,
@@ -1179,7 +1179,7 @@ TEST(
     ProgramActionDispatchResult continued =
         harness.InvokeGraph(
             CanonicalAction::ExecutionContinueUntil,
-            ContinueRequestGraph(*group, 30000));
+            ContinueRequestGraph(*group));
     ASSERT_TRUE(continued.accepted)
         << continued.diagnostic;
     EXPECT_FALSE(continued.immediate_completion);
@@ -1669,7 +1669,6 @@ TEST(
             CanonicalAction::ExecutionContinueUntil,
             ContinueRequestGraph(
                 *group,
-                30000,
                 publication));
     ASSERT_TRUE(continued.accepted)
         << continued.diagnostic;
@@ -1717,7 +1716,6 @@ TEST(
             CanonicalAction::ExecutionContinueUntil,
             ContinueRequestGraph(
                 *group,
-                30000,
                 forged_publication));
     EXPECT_FALSE(rejected.accepted);
     ASSERT_TRUE(rejected.immediate_completion);

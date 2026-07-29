@@ -83,7 +83,6 @@ struct CliOptions {
     std::int64_t perf_snapshot_interval_ms = 1000;
     int repeat = 1;
     std::string load_level;
-    std::optional<int> tasmovie_headroom_x10;
     std::optional<int> tasmovie_rtc;
     std::optional<int> tasmovie_rtc_min;
     std::optional<int> tasmovie_rtc_max;

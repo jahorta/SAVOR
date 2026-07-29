@@ -2,6 +2,8 @@
 
 #include "Runner/Runtime/Execution/IExecutionBackendPort.h"
 
+#include <deque>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -34,6 +36,13 @@ struct FakeExecutionBackendControl
     runtime::BackendResult resume_result = runtime::BackendResult::Success();
     runtime::BackendResult frame_step_result = runtime::BackendResult::Success();
     runtime::BackendResult throttle_result = runtime::BackendResult::Success();
+    bool pause_changes_state = true;
+    runtime::BackendHealthReport health{
+        true,
+        runtime::BackendCoreState::Paused,
+        {}};
+    std::deque<runtime::BackendExecutionSnapshot> queued_query_snapshots;
+    std::deque<std::function<void()>> queued_query_callbacks;
 
     void SetCapabilities(runtime::BackendExecutionCapabilityMask value);
     void SetSnapshot(runtime::BackendExecutionSnapshot value);
@@ -44,6 +53,10 @@ struct FakeExecutionBackendControl
     void SetResumeResult(runtime::BackendResult value);
     void SetFrameStepResult(runtime::BackendResult value);
     void SetThrottleResult(runtime::BackendResult value);
+    void SetPauseChangesState(bool value);
+    void SetHealth(runtime::BackendHealthReport value);
+    void QueueQuerySnapshot(runtime::BackendExecutionSnapshot value);
+    void QueueQueryCallback(std::function<void()> callback);
 
     [[nodiscard]] std::vector<std::string> Calls() const;
     [[nodiscard]] runtime::BackendExecutionSnapshot Snapshot() const;
@@ -61,6 +74,7 @@ public:
     Capabilities() const noexcept override;
     [[nodiscard]] runtime::BackendExecutionSnapshot
     QueryExecutionSnapshot() const override;
+    [[nodiscard]] runtime::BackendHealthReport CheckHealth() const override;
     runtime::BackendResult RequestPause() override;
     runtime::BackendResult Resume() override;
     runtime::BackendResult BeginFrameStep() override;

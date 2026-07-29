@@ -106,7 +106,6 @@ namespace savor {
 
         struct InputTapePlaybackOptions {
             uint32_t max_unacked_replays = 2;
-            uint32_t frame_step_timeout_ms = 5000;
             bool safe_mode = false;
             const char* label = "input_tape";
         };
@@ -242,19 +241,8 @@ namespace savor {
         bool probeJobActive() const;
         void emitProbeMarker(std::string_view marker, std::uint64_t value = 0) const;
 
-        RunUntilHitResult runUntilBreakpointBlocking(uint32_t timeout_ms = 5000);
-        RunUntilHitResult runUntilBreakpointFlexible(uint32_t timeout_ms,
-            uint32_t vi_stall_ms = 0,
-            bool watch_movie = true,
-            uint32_t poll_ms = 0,
-            uint32_t flags = {},
-            ProgressSink sink = nullptr);
-
         void disableThrottle();
         void enableThrottle();
-
-        uint32_t pickPollIntervalMs(uint32_t timeout_ms);
-        static uint32_t pickPollIntervalMsForTimeLeft(uint32_t timeout_ms, uint32_t time_left_ms);
 
         void silenceStdOutInfo();
         void restoreStdOutInfo();

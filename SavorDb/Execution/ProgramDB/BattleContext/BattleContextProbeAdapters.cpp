@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <cstdint>
 #include <filesystem>
-#include <limits>
 #include <memory>
 #include <optional>
 #include <sstream>
@@ -141,16 +140,6 @@ std::vector<InputSetCandidate> ResolveInputSetCandidates(
     const std::string& ref_kind,
     std::int64_t ref_id,
     std::string* error_out);
-
-std::uint32_t ClampU32(std::int64_t value) {
-    if (value <= 0) {
-        return 0;
-    }
-    if (value > static_cast<std::int64_t>(std::numeric_limits<std::uint32_t>::max())) {
-        return std::numeric_limits<std::uint32_t>::max();
-    }
-    return static_cast<std::uint32_t>(value);
-}
 
 std::string BuildInputIni(const JobIni& job) {
     IniDoc ini;
@@ -354,13 +343,8 @@ private:
 
 class BattleContextProbeRuntimeInitAdapter final : public IRuntimeInitAdapter {
 public:
-    BattleContextProbeRuntimeInitAdapter(
-        savor::db::IExecutionDb* execution_db,
-        savor::db::IAnalysisDb* analysis_db,
-        savor::db::IAuthoringDb* authoring_db)
-        : execution_db_(execution_db)
-        , analysis_db_(analysis_db)
-        , authoring_db_(authoring_db) {
+    explicit BattleContextProbeRuntimeInitAdapter(savor::db::IExecutionDb* execution_db)
+        : execution_db_(execution_db) {
     }
 
     RuntimeInitRequest BuildRuntimeInit(std::int64_t job_id) const override {
@@ -368,7 +352,6 @@ public:
         request.bootstrap_profile = "battle.context_probe";
         request.savestate_ref_kind = "state_savestate";
         request.derived_buffer_type = savor::DBuf::DK_None;
-        request.default_timeout_ms = 10000;
         if (execution_db_ == nullptr) {
             return request;
         }
@@ -378,20 +361,6 @@ public:
         }
         if (job->savestate_id.has_value()) {
             request.savestate_ref_id = *job->savestate_id;
-        }
-        if (analysis_db_ != nullptr && authoring_db_ != nullptr) {
-            const auto job_ini = JobIni::parse(job->input_ini);
-            if (job_ini.battle_run_spec_id > 0) {
-                if (const auto spec = authoring_db_->GetBattleRunSpec(job_ini.battle_run_spec_id); spec.has_value() && spec->run_ms > 0) {
-                    request.default_timeout_ms = spec->run_ms;
-                }
-            } else if (const auto wave = analysis_db_->GetBattleTurnWave(job_ini.wave_id); wave.has_value()) {
-                if (const auto battle_set = analysis_db_->GetBattleSet(wave->battle_set_id); battle_set.has_value()) {
-                    if (const auto spec = authoring_db_->GetBattleRunSpec(battle_set->battle_run_spec_id); spec.has_value() && spec->run_ms > 0) {
-                        request.default_timeout_ms = spec->run_ms;
-                    }
-                }
-            }
         }
         return request;
     }
@@ -406,28 +375,7 @@ public:
                 && exec_job->program_ref_kind != kGraphContextProbeRefKind)) {
             return std::nullopt;
         }
-        std::int64_t run_ms = 10000;
-        std::int64_t vi_stall_ms = 2000;
-        if (analysis_db_ != nullptr && authoring_db_ != nullptr) {
-            const auto job_ini = JobIni::parse(exec_job->input_ini);
-            if (job_ini.battle_run_spec_id > 0) {
-                if (const auto spec = authoring_db_->GetBattleRunSpec(job_ini.battle_run_spec_id); spec.has_value()) {
-                    run_ms = spec->run_ms;
-                    vi_stall_ms = spec->vi_stall_ms;
-                }
-            } else if (const auto wave = analysis_db_->GetBattleTurnWave(job_ini.wave_id); wave.has_value()) {
-                if (const auto battle_set = analysis_db_->GetBattleSet(wave->battle_set_id); battle_set.has_value()) {
-                    if (const auto spec = authoring_db_->GetBattleRunSpec(battle_set->battle_run_spec_id); spec.has_value()) {
-                        run_ms = spec->run_ms;
-                        vi_stall_ms = spec->vi_stall_ms;
-                    }
-                }
-            }
-        }
-
         phase::battle::ctx::EncodeSpec spec{};
-        spec.run_ms = ClampU32(run_ms);
-        spec.vi_stall_ms = ClampU32(vi_stall_ms);
 
         savor::PSJob ps_job{};
         if (!phase::battle::ctx::encode_payload(spec, ps_job.payload)) {
@@ -438,8 +386,6 @@ public:
 
 private:
     savor::db::IExecutionDb* execution_db_ = nullptr;
-    savor::db::IAnalysisDb* analysis_db_ = nullptr;
-    savor::db::IAuthoringDb* authoring_db_ = nullptr;
 };
 
 class BattleContextProbeResultMapper final : public IResultMapper {
@@ -1056,10 +1002,7 @@ ProgramKindDescriptor BuildBattleContextProbeDescriptor(
         execution_db,
         analysis_db,
         config.authoring_db);
-    descriptor.runtime_init = std::make_shared<BattleContextProbeRuntimeInitAdapter>(
-        execution_db,
-        analysis_db,
-        config.authoring_db);
+    descriptor.runtime_init = std::make_shared<BattleContextProbeRuntimeInitAdapter>(execution_db);
     descriptor.result_mapper = std::make_shared<BattleContextProbeResultMapper>(
         execution_db,
         analysis_db,

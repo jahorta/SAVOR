@@ -5,7 +5,8 @@
 This document records how bounded worker programs meet the existing SavorDb workflow system. It does not
 define or schedule a SavorDb redesign. Current repository code defines the persisted workflow, queue,
 claim, artifact, and domain-storage contracts this refactor must preserve. Separate DB migration
-planning sets describe other work and are not requirements for this refactor.
+planning sets describe other work and are not requirements for this refactor. The pre-6A timing cutover
+changes public authoring DTOs and generated runtime arguments, but not migrations or DDL.
 
 ## Purpose and non-goals
 
@@ -18,16 +19,19 @@ outside the worker. Existing SavorDb workflows continue to own:
 - domain result persistence and transition handling; and
 - current transaction, outbox, idempotency, and restart behavior.
 
-A program invocation is a bounded interaction with one emulation session. It may call subprograms, await
+A program invocation is a structurally bounded interaction with one emulation session. It may call subprograms, await
 registered actions, emit records or artifacts, and return one runtime result. It may not create or claim
 jobs, write workflow state, keep durable topology only in worker memory, or decide that its own result
 must become another job.
 
-**SavorDb boundary:** this refactor does not change the SavorDb database schema or migrations; stored
-job, claim, lease, result, artifact, workflow, affinity, or domain representations; durable lifecycle
-semantics; result-projection transaction boundaries; artifact interfaces; or workflow/frontier
-persistence. Existing program-kind handlers and adjacent adapters may derive runtime inputs/results in
-memory. Narrow execution-facing database-service interfaces may additionally be added or adapted only
+**SavorDb boundary:** this refactor does not change the SavorDb database schema or migrations; durable
+job, claim, lease, result, artifact, workflow, affinity, or domain lifecycle semantics;
+result-projection transaction boundaries; artifact interfaces; or workflow/frontier persistence.
+Obsolete authoring timing fields and newly generated timing arguments are intentionally removed. The
+six physical authoring timing columns remain ignored; three private insert paths write neutral `0,0`
+values until a separate database migration removes the columns and shims. Existing program-kind
+handlers and adjacent adapters derive timing-free runtime inputs/results in memory. Narrow
+execution-facing database-service interfaces may additionally be added or adapted only
 for real bounded batch claim/reservation, exact-set lease renewal, claim/start authority validation, and
 targeted advancement of an exact known terminal. Those operations use the same existing rows, commands,
 idempotency rules, and per-item semantics. They do not persist a workset, completion ledger, capacity
@@ -66,8 +70,8 @@ These are migration assets and compatibility requirements, not rewrite targets.
 source for the current DB-facing catalog. It registers TAS Movie, SeedProbe, Battle Context, Battle
 Single Turn, Battle End, and Navigation Context in that order and validates the canonical numeric and
 workflow-step mappings before publishing the registry. SavorQt and all DB-backed SavorE2E scenarios use
-the full catalog; scenario-specific runtime paths, TAS settings, and Navigation timeout remain explicit
-configuration overrides.
+the full catalog; scenario-specific runtime paths, TAS settings, and Navigation working directories
+remain explicit configuration overrides.
 
 SavorE2E continues to share one `DBService`. Isolation is enforced at scenario and repeat boundaries
 through the existing workflow query interface: no Pending or Running workflow, Ready step, active
@@ -194,7 +198,7 @@ Each item retains:
 
 The workset itself has only transient request identity, one exact in-memory
 `WorkerWorksetExecutionKey`, the
-fixed item order, bounded item-count/encoded-byte/aggregate-child-budget/item-credit limits, a scoped
+fixed item order, bounded item-count/encoded-byte/item-credit limits, a scoped
 `StateCacheKey` lease only when reusable state is needed, one exact `ProgramBaselineKey`, and
 execution/cancellation state. The corresponding `ProgramBaselineDefinition` contains ordered savestate,
 exact movie-continuation, and runtime-facing program-kind adapter-declared derived-state components. The key
@@ -212,10 +216,11 @@ completion/acknowledgement ledger is separate from both packages: it retains pro
 captures, finalization state, authoritative terminals, and acknowledgements from executed items even
 after their workset session scope releases.
 
-The initial configurable envelope is fixed at 16 items, 32 MiB encoded bytes, and four hours aggregate
-declared active budget per workset; 64 total worker item credits and 32 active-plus-staged items; 16
-state-cache entries/512 MiB; two finalizer threads with eight pending captures/256 MiB; and 32 retained
-terminals/128 MiB. Coordinator buffering is at most one additional workset per negotiated Ready worker.
+The initial configurable envelope is fixed at 16 items and 32 MiB encoded bytes per workset; 64 total
+worker item credits and 32 active-plus-staged items; 16 state-cache entries/512 MiB; two finalizer
+threads with eight pending captures/256 MiB; and 32 retained terminals/128 MiB. Coordinator buffering
+is at most one additional workset per negotiated Ready worker. No workset carries an elapsed guest
+execution budget.
 
 Admission and accounting are fixed:
 
@@ -421,16 +426,19 @@ claim priority, exact-key assembly, per-item attempts, and durable workflow beha
   resident item and cannot promote its staged successor.
 - A failed worker never commits workflow state directly. Only existing SavorDb handlers and commands can
   advance durable work.
-- Existing queued jobs remain consumable through the compatibility translation in program-kind handlers;
-  they are not rewritten into a new stored invocation format.
+- Existing queued records are not rewritten. Program-kind handlers consume recognized semantic fields;
+  obsolete timing keys are ignored and old legacy payload revisions are not silently reinterpreted as
+  native invocations.
 
 ## Dependencies and migration implications
 
 Migration must:
 
-1. preserve the current SavorDb schema, migrations, stored representations, durable queue/claim/lease
-   lifecycle, workflow commands, result/transition transactions, and artifact interfaces;
-2. implement exact runtime invocation/result translation within program-kind handlers or adjacent
+1. preserve the current SavorDb schema and migrations, durable queue/claim/lease lifecycle, workflow
+   commands, result/transition transactions, and artifact interfaces; remove obsolete public authoring
+   timing fields and generated timing arguments while private neutral insert shims satisfy the unchanged
+   physical columns;
+2. implement exact timing-free runtime invocation/result translation within program-kind handlers or adjacent
    adapters;
 3. implement the narrow execution-interface allowance as real bounded batch claim/reservation, exact-set
    lease renewal, one pre-submission exact-set claim/start-authority validation, and targeted terminal
@@ -448,8 +456,8 @@ Migration must:
    partial-capability workers;
 6. preserve all current workflow lifecycle, outbox, recovery, fan-out, result-projection transaction,
    and transition tests;
-7. keep current persisted payload/result codecs where handlers need them to read or write the existing
-   representation, without linking those codecs to the legacy worker interpreter;
+7. keep only persisted payload/result codec fields that carry current semantic data, without linking
+   those codecs to the legacy worker interpreter or recognizing obsolete timing keys as policy;
 8. translate current predicate records through the shared in-memory composition path without changing
    their storage or interfaces;
 9. translate current macro and address-program inputs through interaction and semantic-observation
@@ -468,10 +476,12 @@ this refactor.
 
 ## Boundary checks
 
-- No SavorDb migration or database-schema change is added.
+- No SavorDb migration or database-schema change is added; physical timing-column deletion is a separate
+  refactor.
 - No durable queue/claim/lease/affinity/workflow-persistence, result-projection transaction, or
-  artifact-storage semantic change is added. Execution-facing interfaces may change only for the
-  bounded batch claim/lease, capacity, and targeted-terminal operations enumerated above.
+  artifact-storage semantic change is added. Public authoring interfaces additionally lose obsolete
+  timing fields; execution-facing interfaces may change only for the bounded batch claim/lease,
+  capacity, and targeted-terminal operations enumerated above.
 - Existing persisted jobs materialize the correct `ProgramInvocation` through program-kind handlers.
 - `ProgramResult` is projected through existing result/domain writers without changing stored
   representations.

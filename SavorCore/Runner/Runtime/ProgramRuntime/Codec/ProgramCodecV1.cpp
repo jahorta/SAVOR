@@ -1441,7 +1441,6 @@ void WriteBudgets(Writer& writer, const ProgramBudgets& budgets)
     writer.U64(budgets.maximum_values);
     writer.U64(budgets.maximum_value_bytes);
     writer.U64(budgets.maximum_trace_events);
-    writer.U64(budgets.active_deadline_milliseconds);
 }
 
 bool ReadBudgets(Reader& reader, ProgramBudgets& budgets)
@@ -1454,8 +1453,7 @@ bool ReadBudgets(Reader& reader, ProgramBudgets& budgets)
         reader.U64(budgets.maximum_artifacts) &&
         reader.U64(budgets.maximum_values) &&
         reader.U64(budgets.maximum_value_bytes) &&
-        reader.U64(budgets.maximum_trace_events) &&
-        reader.U64(budgets.active_deadline_milliseconds);
+        reader.U64(budgets.maximum_trace_events);
 }
 
 void WritePolicySet(Writer& writer, const ProgramPolicySet& policies)

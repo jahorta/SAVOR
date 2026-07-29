@@ -205,12 +205,12 @@ std::string SeedProbeGridJobPersistenceAdapter::FingerprintFor(
     const std::string& frame_hex,
     const char* family,
     std::int64_t grid_ref) {
-    std::string fingerprint = "PK=3;PV=" + std::to_string(blueprint.program_version)
+    std::string fingerprint =
+        "FPNS=" + std::string(kSeedProbeFingerprintNamespace)
+        + ";PK=3;PV=" + std::to_string(blueprint.program_version)
         + ";phase=grid;probe_run_id=" + std::to_string(probe_run_id)
         + ";family=" + family
         + ";grid_ref=" + std::to_string(grid_ref)
-        + ";run_ms=" + std::to_string(blueprint.run_ms)
-        + ";vi=" + std::to_string(blueprint.vi_stall_ms)
         + ";target=" + std::to_string(static_cast<std::uint32_t>(blueprint.target));
     if (!frame_hex.empty()) {
         fingerprint += ";frame=" + frame_hex;
@@ -261,11 +261,6 @@ std::vector<GridFanoutEntry> SeedProbeGridJobPersistenceAdapter::BuildFanout(
 SeedProbeGridBlueprintConfig SeedProbeGridJobPersistenceAdapter::ResolveBlueprintForRun(std::int64_t probe_run_id) const {
     auto resolved = blueprint_;
     resolved.probe_id = probe_run_id;
-    const auto timing = resolve_timing_from_authoring_spec(analysis_db_, authoring_db_, probe_run_id);
-    if (timing.has_value()) {
-        resolved.run_ms = timing->run_ms;
-        resolved.vi_stall_ms = timing->vi_stall_ms;
-    }
     return resolved;
 }
 
@@ -343,7 +338,8 @@ std::optional<savor::PSJob> SeedProbeRuntimeInitAdapter::MaterializePsJob(
 
     savor::PSJob job{};
     const auto spec = build_encode_spec_from_fingerprint(job_row->fingerprint);
-    if (!savor::seedprobe::encode_payload(spec, job.payload)) {
+    if (!spec.has_value()
+        || !savor::seedprobe::encode_payload(*spec, job.payload)) {
         return std::nullopt;
     }
     return job;

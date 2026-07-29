@@ -147,12 +147,10 @@ private:
 }
 
 [[nodiscard]] ExecutionRequestPolicy MakeExecutionPolicy(
-    StateEpoch epoch,
-    std::chrono::milliseconds timeout)
+    StateEpoch epoch)
 {
     ExecutionRequestPolicy policy;
     policy.expected_epoch = epoch;
-    policy.active_timeout = timeout;
     return policy;
 }
 
@@ -356,7 +354,7 @@ TEST(
         session.execution_snapshot().evidence;
     const ExecutionSubmissionReceipt initial_step =
         session.SubmitExecution(StepFramesRequest{
-            .policy = MakeExecutionPolicy(StateEpoch(1), 10s),
+            .policy = MakeExecutionPolicy(StateEpoch(1)),
             .count = 1,
         });
     ASSERT_TRUE(initial_step.accepted) << initial_step.error.message;
@@ -403,7 +401,7 @@ TEST(
 
     const ExecutionSubmissionReceipt first_wait =
         session.SubmitExecution(ContinueUntilRequest{
-            .policy = MakeExecutionPolicy(StateEpoch(1), 30s),
+            .policy = MakeExecutionPolicy(StateEpoch(1)),
             .wake_group = MakeEngineWakeGroup(),
         });
     ASSERT_TRUE(first_wait.accepted) << first_wait.error.message;
@@ -463,7 +461,7 @@ TEST(
     // it, and the next completion must carry a fresh routed sequence.
     const ExecutionSubmissionReceipt second_wait =
         session.SubmitExecution(ContinueUntilRequest{
-            .policy = MakeExecutionPolicy(StateEpoch(1), 30s),
+            .policy = MakeExecutionPolicy(StateEpoch(1)),
             .wake_group = MakeEngineWakeGroup(),
         });
     ASSERT_TRUE(second_wait.accepted) << second_wait.error.message;
@@ -516,7 +514,7 @@ TEST(
         session.execution_snapshot().evidence.vi_count;
     const ExecutionSubmissionReceipt final_step =
         session.SubmitExecution(StepFramesRequest{
-            .policy = MakeExecutionPolicy(StateEpoch(1), 10s),
+            .policy = MakeExecutionPolicy(StateEpoch(1)),
             .count = 1,
         });
     ASSERT_TRUE(final_step.accepted) << final_step.error.message;

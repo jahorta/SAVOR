@@ -47,8 +47,7 @@ enum class CanonicalActionPayloadField : std::uint16_t
     CurrentPointPolicy = 26,
     MovieEndedPolicy = 27,
     ThrottlePolicy = 28,
-    ViStallWarmupMilliseconds = 29,
-    ViStallMaximumMilliseconds = 30,
+    // 29 and 30 are reserved legacy fields.
     ProfileJson = 31,
     MarkerId = 32,
     MarkerValue = 33,

@@ -4,7 +4,6 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
-#include <limits>
 #include <memory>
 #include <optional>
 #include <sstream>
@@ -68,13 +67,6 @@ std::int64_t FileSize(const std::filesystem::path& path) {
     std::error_code error;
     const auto size = std::filesystem::file_size(path, error);
     return error ? 0 : static_cast<std::int64_t>(size);
-}
-
-std::uint32_t ClampU32(std::int64_t value) {
-    if (value <= 0) return 0;
-    return static_cast<std::uint32_t>(std::min<std::int64_t>(
-        value,
-        std::numeric_limits<std::uint32_t>::max()));
 }
 
 int CountBits(std::uint32_t value) {
@@ -330,29 +322,6 @@ bool ValidStateArtifact(
         && (!verify_hash || hash::sha256_of_file(path.string()) == state.artifact_sha256);
 }
 
-std::optional<std::uint32_t> ResolveRunTimeout(
-    savor::db::IAuthoringDb* authoring_db,
-    const savor::db::BattleSetSnapshot& battle_set,
-    const savor::db::ExecutionJobRecord& source_exec,
-    const WorkflowGraphStepScheduleContext& context) {
-    const auto args = FindArguments(context, "run_ms");
-    if (args.size() > 1) return std::nullopt;
-    if (args.size() == 1) {
-        if (args.front()->value_type != "integer"
-            || !args.front()->integer_value.has_value()
-            || *args.front()->integer_value <= 0) return std::nullopt;
-        return ClampU32(*args.front()->integer_value);
-    }
-    const auto source_ini = IniDoc::parse(source_exec.input_ini);
-    auto run_ms = source_ini.get_u32("BattleSingleTurn.Job", "run_ms_override", 0);
-    if (run_ms == 0 && authoring_db != nullptr) {
-        const auto spec = authoring_db->GetBattleRunSpec(battle_set.battle_run_spec_id);
-        if (spec.has_value()) run_ms = ClampU32(spec->run_ms);
-    }
-    if (run_ms == 0) return std::nullopt;
-    return run_ms;
-}
-
 class AdvanceTransition final : public IWorkflowTransitionHandler {
 public:
     WorkflowTransitionDecision EvaluateTransition(const WorkflowTransitionContext& context) const override {
@@ -376,7 +345,6 @@ struct CompletionJobIni {
     std::int64_t entry_savestate_id = 0;
     std::int64_t entry_artifact_id = 0;
     std::string entry_artifact_sha256;
-    std::uint32_t run_timeout_ms = 0;
     bool required_keys_present = false;
 
     std::string encode() const {
@@ -388,7 +356,6 @@ struct CompletionJobIni {
         ini.set(Section, "entry_savestate_id", std::to_string(entry_savestate_id));
         ini.set(Section, "entry_artifact_id", std::to_string(entry_artifact_id));
         ini.set(Section, "entry_artifact_sha256", entry_artifact_sha256);
-        ini.set(Section, "run_timeout_ms", std::to_string(run_timeout_ms));
         return ini.to_string_sorted();
     }
     static CompletionJobIni decode(const std::string& text) {
@@ -400,8 +367,7 @@ struct CompletionJobIni {
             && ini.has(Section, "source_turn_job_id")
             && ini.has(Section, "entry_savestate_id")
             && ini.has(Section, "entry_artifact_id")
-            && ini.has(Section, "entry_artifact_sha256")
-            && ini.has(Section, "run_timeout_ms");
+            && ini.has(Section, "entry_artifact_sha256");
         out.completion_id = ini.get_i64(Section, "completion_id", 0);
         out.workflow_instance_id = ini.get_i64(Section, "workflow_instance_id", 0);
         out.workflow_step_id = ini.get_i64(Section, "workflow_step_id", 0);
@@ -409,7 +375,6 @@ struct CompletionJobIni {
         out.entry_savestate_id = ini.get_i64(Section, "entry_savestate_id", 0);
         out.entry_artifact_id = ini.get_i64(Section, "entry_artifact_id", 0);
         out.entry_artifact_sha256 = ini.get(Section, "entry_artifact_sha256", "");
-        out.run_timeout_ms = ini.get_u32(Section, "run_timeout_ms", 0);
         return out;
     }
 };
@@ -429,8 +394,7 @@ bool MatchesCompletionJob(
         && input.source_turn_job_id > 0
         && input.entry_savestate_id > 0
         && input.entry_artifact_id > 0
-        && !input.entry_artifact_sha256.empty()
-        && input.run_timeout_ms > 0;
+        && !input.entry_artifact_sha256.empty();
 }
 
 bool MatchesCompletionAggregate(
@@ -452,13 +416,12 @@ public:
     CompletionGraphAdapter(
         savor::db::IExecutionDb* execution_db,
         savor::db::IStateDb* state_db,
-        savor::db::IAnalysisDb* analysis_db,
-        savor::db::IAuthoringDb* authoring_db)
-        : execution_db_(execution_db), state_db_(state_db), analysis_db_(analysis_db), authoring_db_(authoring_db) {}
+        savor::db::IAnalysisDb* analysis_db)
+        : execution_db_(execution_db), state_db_(state_db), analysis_db_(analysis_db) {}
 
     WorkflowStepScheduleResult EncodeForGraphQueueing(
         const WorkflowGraphStepScheduleContext& context) const override {
-        if (execution_db_ == nullptr || state_db_ == nullptr || analysis_db_ == nullptr || authoring_db_ == nullptr
+        if (execution_db_ == nullptr || state_db_ == nullptr || analysis_db_ == nullptr
             || context.unit_kind != kCompletionUnit || context.step_kind != kCompletionStep) {
             return ScheduleFailure(context, "invalid_context_or_db");
         }
@@ -490,9 +453,6 @@ public:
             || !state.has_value() || !ValidStateArtifact(*state)) {
             return ScheduleFailure(context, "source_provenance_or_artifact_invalid");
         }
-        const auto timeout = ResolveRunTimeout(authoring_db_, *battle_set, *source_exec, context);
-        if (!timeout.has_value() || *timeout == 0) return ScheduleFailure(context, "run_timeout_unavailable");
-
         const auto now = savor::db::types::UtcNow();
         std::string error;
         std::int64_t completion_id = 0;
@@ -520,7 +480,6 @@ public:
         input.entry_savestate_id = binding->ref_id;
         input.entry_artifact_id = state->artifact_id;
         input.entry_artifact_sha256 = state->artifact_sha256;
-        input.run_timeout_ms = *timeout;
         const auto input_ini = input.encode();
         const auto fingerprint = "PK=" + std::to_string(savor::PK_BattleCompletionRunner)
             + ";PV=" + std::to_string(phase::battle::completion::PayloadVersion)
@@ -595,7 +554,6 @@ private:
     savor::db::IExecutionDb* execution_db_ = nullptr;
     savor::db::IStateDb* state_db_ = nullptr;
     savor::db::IAnalysisDb* analysis_db_ = nullptr;
-    savor::db::IAuthoringDb* authoring_db_ = nullptr;
 };
 
 class CompletionRuntimeAdapter final : public IRuntimeInitAdapter {
@@ -623,7 +581,6 @@ public:
             || state->artifact_sha256 != input.entry_artifact_sha256) return request;
         request.savestate_ref_kind = "state_savestate";
         request.savestate_ref_id = input.entry_savestate_id;
-        request.default_timeout_ms = input.run_timeout_ms;
         return request;
     }
 
@@ -646,7 +603,6 @@ public:
             / "output" / "battle_completion.sav";
         std::filesystem::create_directories(output.parent_path());
         phase::battle::completion::EncodeSpec spec{};
-        spec.run_timeout_ms = input.run_timeout_ms;
         spec.output_savestate_path = output.string();
         savor::PSJob result{};
         if (!phase::battle::completion::encode_payload(spec, result.payload)) return std::nullopt;
@@ -1096,7 +1052,6 @@ struct FieldMaterializeJobIni {
     std::int64_t entry_savestate_id = 0;
     std::int64_t entry_artifact_id = 0;
     std::string entry_artifact_sha256;
-    std::uint32_t run_timeout_ms = 0;
     bool required_keys_present = false;
 
     std::string encode() const {
@@ -1114,7 +1069,6 @@ struct FieldMaterializeJobIni {
         ini.set(Section, "entry_savestate_id", std::to_string(entry_savestate_id));
         ini.set(Section, "entry_artifact_id", std::to_string(entry_artifact_id));
         ini.set(Section, "entry_artifact_sha256", entry_artifact_sha256);
-        ini.set(Section, "run_timeout_ms", std::to_string(run_timeout_ms));
         return ini.to_string_sorted();
     }
     static FieldMaterializeJobIni decode(const std::string& text) {
@@ -1132,8 +1086,7 @@ struct FieldMaterializeJobIni {
             && ini.has(Section, "frame_hex")
             && ini.has(Section, "entry_savestate_id")
             && ini.has(Section, "entry_artifact_id")
-            && ini.has(Section, "entry_artifact_sha256")
-            && ini.has(Section, "run_timeout_ms");
+            && ini.has(Section, "entry_artifact_sha256");
         out.workflow_instance_id = ini.get_i64(Section, "workflow_instance_id", 0);
         out.workflow_step_id = ini.get_i64(Section, "workflow_step_id", 0);
         out.completion_id = ini.get_i64(Section, "completion_id", 0);
@@ -1147,7 +1100,6 @@ struct FieldMaterializeJobIni {
         out.entry_savestate_id = ini.get_i64(Section, "entry_savestate_id", 0);
         out.entry_artifact_id = ini.get_i64(Section, "entry_artifact_id", 0);
         out.entry_artifact_sha256 = ini.get(Section, "entry_artifact_sha256", "");
-        out.run_timeout_ms = ini.get_u32(Section, "run_timeout_ms", 0);
         return out;
     }
 };
@@ -1172,8 +1124,7 @@ bool MatchesFieldMaterializeJob(
         && input.entry_savestate_id > 0
         && input.entry_artifact_id > 0
         && !input.entry_artifact_sha256.empty()
-        && !input.frame_hex.empty()
-        && input.run_timeout_ms > 0;
+        && !input.frame_hex.empty();
 }
 
 bool MatchesUniqueSeedFrame(
@@ -1248,13 +1199,12 @@ public:
     FieldMaterializePersistenceAdapter(
         savor::db::IExecutionDb* execution_db,
         savor::db::IStateDb* state_db,
-        savor::db::IAnalysisDb* analysis_db,
-        savor::db::IAuthoringDb* authoring_db)
-        : execution_db_(execution_db), state_db_(state_db), analysis_db_(analysis_db), authoring_db_(authoring_db) {}
+        savor::db::IAnalysisDb* analysis_db)
+        : execution_db_(execution_db), state_db_(state_db), analysis_db_(analysis_db) {}
 
     WorkflowStepScheduleResult EncodeForQueueing(const WorkflowStepScheduleContext& context) const override {
         WorkflowStepScheduleResult result{};
-        if (execution_db_ == nullptr || state_db_ == nullptr || analysis_db_ == nullptr || authoring_db_ == nullptr
+        if (execution_db_ == nullptr || state_db_ == nullptr || analysis_db_ == nullptr
             || context.domain_ref_id <= 0) return result;
         const auto graph = execution_db_->WorkflowQueryService() != nullptr
             ? execution_db_->WorkflowQueryService()->GetWorkflowGraph(context.workflow_instance_id)
@@ -1344,13 +1294,10 @@ public:
         }
         input.frame_hex = frame.to_frame_hex();
         const auto state = state_db_->GetSavestate(*completion->completion_savestate_id);
-        const auto spec = authoring_db_->GetSeedProbeSpec(probe_run->seed_probe_spec_id);
-        if (!state.has_value() || !ValidStateArtifact(*state) || !spec.has_value()) return result;
+        if (!state.has_value() || !ValidStateArtifact(*state)) return result;
         input.entry_savestate_id = state->savestate_id;
         input.entry_artifact_id = state->artifact_id;
         input.entry_artifact_sha256 = state->artifact_sha256;
-        input.run_timeout_ms = ClampU32(spec->run_ms);
-        if (input.run_timeout_ms == 0) return result;
         const auto input_ini = input.encode();
         const auto fingerprint = "PK=" + std::to_string(savor::PK_SeedProbe)
             + ";PV=2;target=FIELD_RETURN;mode=MATERIALIZE"
@@ -1411,7 +1358,6 @@ private:
     savor::db::IExecutionDb* execution_db_ = nullptr;
     savor::db::IStateDb* state_db_ = nullptr;
     savor::db::IAnalysisDb* analysis_db_ = nullptr;
-    savor::db::IAuthoringDb* authoring_db_ = nullptr;
 };
 
 class FieldMaterializeRuntimeAdapter final : public IRuntimeInitAdapter {
@@ -1439,7 +1385,6 @@ public:
             || state->artifact_sha256 != input.entry_artifact_sha256) return request;
         request.savestate_ref_kind = "state_savestate";
         request.savestate_ref_id = input.entry_savestate_id;
-        request.default_timeout_ms = input.run_timeout_ms;
         return request;
     }
 
@@ -1465,7 +1410,6 @@ public:
         std::filesystem::create_directories(output.parent_path());
         savor::seedprobe::EncodeSpec spec{};
         spec.frame = *frame;
-        spec.run_ms = input.run_timeout_ms;
         spec.target = savor::seedprobe::SeedProbeTarget::FieldReturn;
         spec.mode = savor::seedprobe::SeedProbeMode::Materialize;
         spec.expected_seed = input.expected_seed;
@@ -1680,7 +1624,6 @@ struct ResultsJobIni {
     std::string seed_ref_kind;
     std::int64_t seed_ref_id = 0;
     std::uint32_t selected_seed = 0;
-    std::uint32_t run_timeout_ms = 0;
     std::uint32_t acceleration_policy = 1;
     std::string manifest_base64;
     bool required_keys_present = false;
@@ -1697,7 +1640,6 @@ struct ResultsJobIni {
         ini.set(Section, "seed_ref_kind", seed_ref_kind);
         ini.set(Section, "seed_ref_id", std::to_string(seed_ref_id));
         ini.set(Section, "selected_seed", std::to_string(selected_seed));
-        ini.set(Section, "run_timeout_ms", std::to_string(run_timeout_ms));
         ini.set(Section, "acceleration_policy", std::to_string(acceleration_policy));
         ini.set(Section, "manifest_base64", manifest_base64);
         return ini.to_string_sorted();
@@ -1715,7 +1657,6 @@ struct ResultsJobIni {
             && ini.has(Section, "seed_ref_kind")
             && ini.has(Section, "seed_ref_id")
             && ini.has(Section, "selected_seed")
-            && ini.has(Section, "run_timeout_ms")
             && ini.has(Section, "acceleration_policy")
             && ini.has(Section, "manifest_base64");
         out.workflow_instance_id = ini.get_i64(Section, "workflow_instance_id", 0);
@@ -1728,7 +1669,6 @@ struct ResultsJobIni {
         out.seed_ref_kind = ini.get(Section, "seed_ref_kind", "");
         out.seed_ref_id = ini.get_i64(Section, "seed_ref_id", 0);
         out.selected_seed = ini.get_u32(Section, "selected_seed", 0);
-        out.run_timeout_ms = ini.get_u32(Section, "run_timeout_ms", 0);
         out.acceleration_policy = ini.get_u32(Section, "acceleration_policy", 1);
         out.manifest_base64 = ini.get(Section, "manifest_base64", "");
         return out;
@@ -1753,7 +1693,6 @@ bool MatchesResultsJob(
         && !input.entry_artifact_sha256.empty()
         && (input.seed_ref_kind == kNeutralSeedRef || input.seed_ref_kind == kUniqueSeedRef)
         && input.seed_ref_id > 0
-        && input.run_timeout_ms > 0
         && (input.acceleration_policy
                 == static_cast<std::uint32_t>(phase::battle::endresults::AccelerationPolicy::RequiredOnly)
             || input.acceleration_policy
@@ -1864,13 +1803,12 @@ public:
     ResultsGraphAdapter(
         savor::db::IExecutionDb* execution_db,
         savor::db::IStateDb* state_db,
-        savor::db::IAnalysisDb* analysis_db,
-        savor::db::IAuthoringDb* authoring_db)
-        : execution_db_(execution_db), state_db_(state_db), analysis_db_(analysis_db), authoring_db_(authoring_db) {}
+        savor::db::IAnalysisDb* analysis_db)
+        : execution_db_(execution_db), state_db_(state_db), analysis_db_(analysis_db) {}
 
     WorkflowStepScheduleResult EncodeForGraphQueueing(
         const WorkflowGraphStepScheduleContext& context) const override {
-        if (execution_db_ == nullptr || state_db_ == nullptr || analysis_db_ == nullptr || authoring_db_ == nullptr
+        if (execution_db_ == nullptr || state_db_ == nullptr || analysis_db_ == nullptr
             || context.unit_kind != kResultsUnit || context.step_kind != kResultsStep) {
             return ScheduleFailure(context, "invalid_results_context");
         }
@@ -1893,28 +1831,6 @@ public:
         if (!anchor.has_value()) return ScheduleFailure(context, "seed_anchor_missing_or_ambiguous");
         const auto policy = ReadAccelerationPolicy(context);
         if (!policy.has_value()) return ScheduleFailure(context, "acceleration_policy_invalid");
-        const auto timeout_args = FindArguments(context, "run_ms");
-        std::uint32_t timeout = 0;
-        if (timeout_args.size() > 1) return ScheduleFailure(context, "duplicate_run_ms");
-        if (timeout_args.size() == 1) {
-            if (timeout_args.front()->value_type != "integer" || !timeout_args.front()->integer_value.has_value()
-                || *timeout_args.front()->integer_value <= 0) return ScheduleFailure(context, "invalid_run_ms");
-            timeout = ClampU32(*timeout_args.front()->integer_value);
-        }
-        if (timeout == 0) {
-            const auto source_jobs = analysis_db_->ListBattleTurnJobsByOutputSavestateId(completion->entry_savestate_id);
-            if (source_jobs.size() != 1 || !source_jobs.front().exec_job_id.has_value()) {
-                return ScheduleFailure(context, "source_turn_timeout_provenance_missing");
-            }
-            const auto source_exec = execution_db_->GetJob(*source_jobs.front().exec_job_id);
-            const auto wave = analysis_db_->GetBattleTurnWave(source_jobs.front().wave_id);
-            const auto battle_set = wave.has_value() ? analysis_db_->GetBattleSet(wave->battle_set_id) : std::nullopt;
-            if (!source_exec.has_value() || !battle_set.has_value()) return ScheduleFailure(context, "source_run_spec_missing");
-            const auto resolved = ResolveRunTimeout(authoring_db_, *battle_set, *source_exec, context);
-            if (!resolved.has_value()) return ScheduleFailure(context, "run_timeout_unavailable");
-            timeout = *resolved;
-        }
-
         const auto now = savor::db::types::UtcNow();
         std::string error;
         std::int64_t results_id = 0;
@@ -1949,7 +1865,6 @@ public:
         input.seed_ref_kind = anchor->ref_kind;
         input.seed_ref_id = anchor->ref_id;
         input.selected_seed = static_cast<std::uint32_t>(anchor->seed_value);
-        input.run_timeout_ms = timeout;
         input.acceleration_policy = static_cast<std::uint32_t>(*policy);
         input.manifest_base64 = savor::utils::Base64Encode(*completion->manifest_blob);
         const auto input_ini = input.encode();
@@ -2023,7 +1938,6 @@ private:
     savor::db::IExecutionDb* execution_db_ = nullptr;
     savor::db::IStateDb* state_db_ = nullptr;
     savor::db::IAnalysisDb* analysis_db_ = nullptr;
-    savor::db::IAuthoringDb* authoring_db_ = nullptr;
 };
 
 class ResultsRuntimeAdapter final : public IRuntimeInitAdapter {
@@ -2044,7 +1958,6 @@ public:
         if (!ValidateResultsFrozenIdentity(*job, job_id, input, analysis_db_, state_db_)) return request;
         request.savestate_ref_kind = "state_savestate";
         request.savestate_ref_id = input.entry_savestate_id;
-        request.default_timeout_ms = input.run_timeout_ms;
         return request;
     }
     std::optional<savor::PSJob> MaterializePsJob(std::int64_t job_id, const RuntimeInitRequest& request) const override {
@@ -2059,7 +1972,6 @@ public:
         const auto output = WorkRoot(root_, "results") / ("job-" + std::to_string(job_id)) / "output" / "battle_end.sav";
         std::filesystem::create_directories(output.parent_path());
         phase::battle::endresults::EncodeSpec spec{};
-        spec.run_timeout_ms = input.run_timeout_ms;
         spec.acceleration_policy = static_cast<phase::battle::endresults::AccelerationPolicy>(input.acceleration_policy);
         spec.completion_manifest_blob = *manifest;
         spec.output_savestate_path = output.string();
@@ -2316,16 +2228,16 @@ private:savor::db::IExecutionDb* execution_db_=nullptr;savor::db::IStateDb* stat
 } // namespace
 
 ProgramKindDescriptor BuildBattleCompletionDescriptor(savor::db::IExecutionDb* e,savor::db::IStateDb* s,savor::db::IAnalysisDb* a,BattleEndWorkflowPhaseRegistrationConfig c){
-    ProgramKindDescriptor d{};d.program_kind=savor::PK_BattleCompletionRunner;d.program_name="BattleCompletionRunner";d.graph_job_persistence=std::make_shared<CompletionGraphAdapter>(e,s,a,c.authoring_db);d.runtime_init=std::make_shared<CompletionRuntimeAdapter>(e,s,a,c.working_dir_root);d.result_mapper=std::make_shared<CompletionResultMapper>(e,s,a,c.working_dir_root);d.workflow_transition=std::make_shared<AdvanceTransition>();d.supports_workflow_orchestration=true;return d;}
+    ProgramKindDescriptor d{};d.program_kind=savor::PK_BattleCompletionRunner;d.program_name="BattleCompletionRunner";d.graph_job_persistence=std::make_shared<CompletionGraphAdapter>(e,s,a);d.runtime_init=std::make_shared<CompletionRuntimeAdapter>(e,s,a,c.working_dir_root);d.result_mapper=std::make_shared<CompletionResultMapper>(e,s,a,c.working_dir_root);d.workflow_transition=std::make_shared<AdvanceTransition>();d.supports_workflow_orchestration=true;return d;}
 ProgramKindDescriptor BuildFieldReturnSeedProbeDescriptor(savor::db::IExecutionDb* e,savor::db::IStateDb*,savor::db::IAnalysisDb* a,BattleEndWorkflowPhaseRegistrationConfig c){
-    auto neutral=std::make_shared<seedprobe::NeutralProbeJobPersistenceAdapter>(e,a,c.authoring_db,savor::seedprobe::SeedProbeTarget::FieldReturn);auto base=seedprobe::BuildSeedProbeNeutralDescriptor(e,a,c.authoring_db);base.program_name="FieldReturnSeedProbe";base.job_persistence=nullptr;base.graph_job_persistence=std::make_shared<FieldReturnChainGraphAdapter>(a,c.authoring_db,neutral);base.workflow_transition=std::make_shared<FieldReturnChainTransition>();return base;}
+    auto neutral=std::make_shared<seedprobe::NeutralProbeJobPersistenceAdapter>(e,savor::seedprobe::SeedProbeTarget::FieldReturn);auto base=seedprobe::BuildSeedProbeNeutralDescriptor(e,a);base.program_name="FieldReturnSeedProbe";base.job_persistence=nullptr;base.graph_job_persistence=std::make_shared<FieldReturnChainGraphAdapter>(a,c.authoring_db,neutral);base.workflow_transition=std::make_shared<FieldReturnChainTransition>();return base;}
 ProgramKindDescriptor BuildFieldReturnSeedProbeGridDescriptor(savor::db::IExecutionDb* e,savor::db::IStateDb*,savor::db::IAnalysisDb* a,BattleEndWorkflowPhaseRegistrationConfig c){
     seedprobe::SeedProbeGridBlueprintConfig b{};b.program_version=2;b.target=savor::seedprobe::SeedProbeTarget::FieldReturn;auto d=seedprobe::BuildSeedProbeGridDescriptor(e,a,b,{},c.authoring_db);d.workflow_transition=std::make_shared<FieldGridTransition>();return d;}
 ProgramKindDescriptor BuildFieldReturnSeedProbeUniqueDescriptor(savor::db::IExecutionDb* e,savor::db::IStateDb*,savor::db::IAnalysisDb* a,BattleEndWorkflowPhaseRegistrationConfig c){
     seedprobe::SeedProbeGridBlueprintConfig b{};b.program_version=2;b.target=savor::seedprobe::SeedProbeTarget::FieldReturn;auto d=seedprobe::BuildSeedProbeUniqueDescriptor(e,a,b,{}, {},c.authoring_db);d.workflow_transition=std::make_shared<FieldUniqueTransition>();return d;}
 ProgramKindDescriptor BuildFieldReturnSeedMaterializeDescriptor(savor::db::IExecutionDb* e,savor::db::IStateDb* s,savor::db::IAnalysisDb* a,BattleEndWorkflowPhaseRegistrationConfig c){
-    ProgramKindDescriptor d{};d.program_kind=savor::PK_SeedProbe;d.program_name="FieldReturnSeedMaterialize";d.job_persistence=std::make_shared<FieldMaterializePersistenceAdapter>(e,s,a,c.authoring_db);d.runtime_init=std::make_shared<FieldMaterializeRuntimeAdapter>(e,s,a,c.working_dir_root);d.result_mapper=std::make_shared<FieldMaterializeResultMapper>(e,s,a,c.working_dir_root);d.workflow_transition=std::make_shared<AdvanceTransition>();d.supports_workflow_orchestration=true;return d;}
+    ProgramKindDescriptor d{};d.program_kind=savor::PK_SeedProbe;d.program_name="FieldReturnSeedMaterialize";d.job_persistence=std::make_shared<FieldMaterializePersistenceAdapter>(e,s,a);d.runtime_init=std::make_shared<FieldMaterializeRuntimeAdapter>(e,s,a,c.working_dir_root);d.result_mapper=std::make_shared<FieldMaterializeResultMapper>(e,s,a,c.working_dir_root);d.workflow_transition=std::make_shared<AdvanceTransition>();d.supports_workflow_orchestration=true;return d;}
 ProgramKindDescriptor BuildBattleResultsScreenDescriptor(savor::db::IExecutionDb* e,savor::db::IStateDb* s,savor::db::IAnalysisDb* a,BattleEndWorkflowPhaseRegistrationConfig c){
-    ProgramKindDescriptor d{};d.program_kind=savor::PK_BattleResultsScreenRunner;d.program_name="BattleResultsScreenRunner";d.graph_job_persistence=std::make_shared<ResultsGraphAdapter>(e,s,a,c.authoring_db);d.runtime_init=std::make_shared<ResultsRuntimeAdapter>(e,s,a,c.working_dir_root);d.result_mapper=std::make_shared<ResultsResultMapper>(e,s,a,c.working_dir_root);d.workflow_transition=std::make_shared<AdvanceTransition>();d.supports_workflow_orchestration=true;return d;}
+    ProgramKindDescriptor d{};d.program_kind=savor::PK_BattleResultsScreenRunner;d.program_name="BattleResultsScreenRunner";d.graph_job_persistence=std::make_shared<ResultsGraphAdapter>(e,s,a);d.runtime_init=std::make_shared<ResultsRuntimeAdapter>(e,s,a,c.working_dir_root);d.result_mapper=std::make_shared<ResultsResultMapper>(e,s,a,c.working_dir_root);d.workflow_transition=std::make_shared<AdvanceTransition>();d.supports_workflow_orchestration=true;return d;}
 
 } // namespace savor::db::execution::programdb::battleend

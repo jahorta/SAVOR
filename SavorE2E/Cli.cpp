@@ -316,7 +316,6 @@ void PrintUsage() {
               << " [--visual-worker *]"
               << " [--visual-screenshot-dir <path>]"
               << " [--durable-lines <mode>]"
-              << " [--tasmovie-headroom <x10>]"
               << " [--tasmovie-rtc <value>]"
               << " [--tasmovie-rtc-min <value>]"
               << " [--tasmovie-rtc-max <value>]"
@@ -338,7 +337,7 @@ void PrintUsage() {
               << " [--battle-macro-debug]\n\n";
     std::cout << "Durable line modes: quiet, normal, verbose, all, or a comma list.\n";
     std::cout << "E2E perf mode requires Release builds and load-level low|mid|high; worker-count defaults to 15 and accepts 1..30.\n";
-    std::cout << "TAS rtc sets one concrete launch value; rtc-min/max fans out graph scenarios into one workflow per value. TAS headroom is the existing x10 value.\n";
+    std::cout << "TAS rtc sets one concrete launch value; rtc-min/max fans out graph scenarios into one workflow per value.\n";
     std::cout << "Visual worker locks worker count to 1. battle_macro_probe opens an interactive prompt unless --battle-plan or --battle-macro is supplied.\n";
     std::cout << "Battle macro CLI: use --battle-plan block,attack:5 for a multi-character plan, --battle-fake-attacks N for experimental RNG fake attacks, --battle-fake-attack-sweep to measure fake-attack timing, or --battle-macro attack --battle-macro-target-slot 5 for one command.\n";
     std::cout << "battle_end (battle_end_results alias) reuses the selected workspace databases and requires --source-savestate-id from a successful BattleSingleTurn victory. Seed selection defaults to neutral.\n";
@@ -476,10 +475,6 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
             std::string v;
             if (!require_value(arg.c_str(), &v)) return false;
             if (!ParseDurableLineMask(v, &options.durable_line_mask, error_out)) return false;
-        } else if (arg == "--tasmovie-headroom" || arg == "--tasmovie-headroom-x10" || arg == "--headroom") {
-            int v = 0;
-            if (!require_int(arg.c_str(), &v)) return false;
-            options.tasmovie_headroom_x10 = v;
         } else if (arg == "--tasmovie-rtc" || arg == "--rtc") {
             int v = 0;
             if (!require_int(arg.c_str(), &v)) return false;
@@ -747,10 +742,6 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
     }
     if (perf_mode && options.visual_worker) {
         if (error_out) *error_out = "E2E perf mode does not support --visual-worker";
-        return false;
-    }
-    if (options.tasmovie_headroom_x10.has_value() && (*options.tasmovie_headroom_x10 < 0 || *options.tasmovie_headroom_x10 > 255)) {
-        if (error_out) *error_out = "--tasmovie-headroom must be between 0 and 255";
         return false;
     }
     if (options.tasmovie_rtc.has_value() && (*options.tasmovie_rtc < 0 || *options.tasmovie_rtc > 255)) {

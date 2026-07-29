@@ -252,8 +252,6 @@ int run_battle_job(
         savor::runner::parallel::savordb::DBWorkflowWorkerCoordinatorConfig{
             .desired_workers = 1u,
             .controller_sleep_ms = static_cast<std::uint32_t>(options.poll_ms),
-            .worker_silence_in_flight_timeout_ms =
-                static_cast<std::uint32_t>(options.timeout_ms),
             .max_concurrent_worker_starts = 1u,
             .worker_exe_path = options.worker_exe_path.string(),
             .iso_path = options.iso_path.string(),
@@ -288,8 +286,7 @@ int run_battle_job(
         << " in sandbox " << summary.sandbox.db_root.string() << "\n";
     coordinator.Start();
 
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(options.timeout_ms);
-    while (std::chrono::steady_clock::now() < deadline) {
+    for (;;) {
         const auto job = db_service->ExecutionDb()->GetJob(summary.clone.cloned_exec_job_id);
         if (job.has_value()) {
             summary.terminal_state = job->state;
@@ -298,12 +295,6 @@ int run_battle_job(
             }
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(options.poll_ms));
-    }
-    if (!is_terminal_state(summary.terminal_state)) {
-        summary.timed_out = true;
-        append_error(summary, "timed out waiting for cloned execution job to finish");
-        std::string cancel_error;
-        (void)db_service->ExecutionDb()->CancelQueuedOrClaimedJob(summary.clone.cloned_exec_job_id, &cancel_error);
     }
 
     coordinator.Stop();
@@ -383,7 +374,7 @@ int run_battle_job(
         out << "Probe mode: " << probe_mode_name(options.probe_mode) << " (no .scap)\n";
     }
 
-    if (summary.timed_out || summary.terminal_state != "SUCCEEDED" || !summary.errors.empty()) {
+    if (summary.terminal_state != "SUCCEEDED" || !summary.errors.empty()) {
         return 1;
     }
     return 0;

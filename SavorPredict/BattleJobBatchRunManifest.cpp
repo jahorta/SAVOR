@@ -256,12 +256,6 @@ void write_requested_runs(std::ostream& out, const BattleJobBatchRunOptions& opt
         } else {
             out << "null";
         }
-        out << ",\"battle_run_ms\":";
-        if (requests[i].battle_run_ms.has_value()) {
-            out << *requests[i].battle_run_ms;
-        } else {
-            out << "null";
-        }
         out << "}";
     }
     out << "],\n";
@@ -327,7 +321,7 @@ bool write_battle_job_batch_run_manifest(
     }
 
     file << "{\n";
-    file << "  \"schema\": \"savor_predict_battle_job_batch_run_v2\",\n";
+    file << "  \"schema\": \"savor_predict_battle_job_batch_run_v3\",\n";
     file << "  \"command\": \"run-battle-jobs\",\n";
     file << "  \"source_db_root\": \"" << json_escape(path_string(summary.options.db_root)) << "\",\n";
     file << "  \"run_root\": \"" << json_escape(path_string(summary.sandbox.run_root)) << "\",\n";
@@ -346,11 +340,8 @@ bool write_battle_job_batch_run_manifest(
     file << "  \"wait_for_workers_ready\": "
         << (summary.options.wait_for_workers_ready ? "true" : "false") << ",\n";
     file << "  \"poll_ms\": " << summary.options.poll_ms << ",\n";
-    file << "  \"timeout_ms\": " << summary.timeout_ms << ",\n";
-    write_optional_u32(file, "  ", "battle_run_ms", summary.options.battle_run_ms, true);
     write_optional_hex_u32(file, "  ", "override_start_rng_seed", summary.options.override_start_rng_seed, true);
     write_optional_u32(file, "  ", "override_fake_attacks_this_turn", summary.options.override_fake_attacks_this_turn, true);
-    file << "  \"timed_out\": " << (summary.timed_out ? "true" : "false") << ",\n";
 
     const auto source_exec_job_ids = unique_battle_job_batch_source_exec_job_ids(summary.options);
     file << "  \"source_exec_job_ids\": [";
@@ -382,7 +373,6 @@ bool write_battle_job_batch_run_manifest(
         file << "      \"turn_index\": " << job.clone.turn_index << ",\n";
         file << "      \"source_fake_attacks_this_turn\": " << job.clone.source_fake_attacks_this_turn << ",\n";
         file << "      \"fake_attacks_this_turn\": " << job.clone.fake_attacks_this_turn << ",\n";
-        write_optional_u32(file, "      ", "battle_run_ms", job.clone.battle_run_ms, true);
         write_optional_hex_u32(file, "      ", "override_start_rng_seed", job.clone.override_start_rng_seed, true);
         write_optional_u32(file, "      ", "override_fake_attacks_this_turn", job.clone.override_fake_attacks_this_turn, true);
         write_optional_hex_u32(file, "      ", "captured_original_seed", job.captured_original_seed, true);
@@ -390,7 +380,6 @@ bool write_battle_job_batch_run_manifest(
         write_optional_hex_u32(file, "      ", "captured_applied_seed", job.captured_applied_seed, true);
         write_optional_bool(file, "      ", "captured_seed_readback_matches", job.captured_seed_readback_matches, true);
         file << "      \"terminal_state\": \"" << json_escape(job.terminal_state) << "\",\n";
-        file << "      \"timed_out\": " << (job.timed_out ? "true" : "false") << ",\n";
         file << "      \"capture_found\": " << (job.capture_found ? "true" : "false") << ",\n";
         write_capture_artifact(file, "      ", job.capture_artifact, true);
         file << "      \"trace_exit_code\": " << job.trace_exit_code << ",\n";
@@ -438,8 +427,6 @@ bool write_battle_job_batch_run_text_summary(
     file << "worker_count: " << summary.worker_count << "\n";
     file << "wait_for_workers_ready: "
         << (summary.options.wait_for_workers_ready ? "true" : "false") << "\n";
-    file << "timeout_ms: " << summary.timeout_ms << "\n";
-    file << "battle_run_ms: " << optional_u32_for_text(summary.options.battle_run_ms) << "\n";
     file << "override_start_rng_seed: " << optional_hex_for_text(summary.options.override_start_rng_seed) << "\n";
     file << "override_fake_attacks_this_turn: " << optional_u32_for_text(summary.options.override_fake_attacks_this_turn) << "\n";
     if (summary.resource_inputs == nullptr) {
@@ -460,7 +447,6 @@ bool write_battle_job_batch_run_text_summary(
         file << "std_json_cache: explicit legacy directory "
             << summary.options.action_view_std_json_dir.string() << "\n";
     }
-    file << "timed_out: " << (summary.timed_out ? "true" : "false") << "\n";
     file << "jobs: " << summary.jobs.size() << "\n";
     for (const auto& job : summary.jobs) {
         file << "job original_exec=" << job.clone.original_exec_job_id
@@ -468,7 +454,6 @@ bool write_battle_job_batch_run_text_summary(
             << " state=" << (job.terminal_state.empty() ? "unknown" : job.terminal_state)
             << " source_fake_attacks=" << job.clone.source_fake_attacks_this_turn
             << " fake_attacks=" << job.clone.fake_attacks_this_turn
-            << " battle_run_ms=" << optional_u32_for_text(job.clone.battle_run_ms)
             << " override=" << optional_hex_for_text(job.clone.override_start_rng_seed)
             << " override_fake_attacks=" << optional_u32_for_text(job.clone.override_fake_attacks_this_turn)
             << " original_seed=" << optional_hex_for_text(job.captured_original_seed)
@@ -508,8 +493,8 @@ bool write_battle_job_batch_run_csv_summary(
         return false;
     }
     file << "original_exec_job_id,cloned_exec_job_id,original_turn_job_id,cloned_turn_job_id,"
-        << "source_fake_attacks_this_turn,fake_attacks_this_turn,battle_run_ms,override_start_rng_seed,override_fake_attacks_this_turn,captured_original_seed,captured_override_seed,captured_applied_seed,"
-        << "captured_seed_readback_matches,terminal_state,timed_out,probe_mode,capture_found,capture_complete,capture_segments,capture_chunks,capture_gaps,capture_drops,capture_revisions,trace_exit_code,stable_capture_path,capture_export_path,trace_report_path,error_count\n";
+        << "source_fake_attacks_this_turn,fake_attacks_this_turn,override_start_rng_seed,override_fake_attacks_this_turn,captured_original_seed,captured_override_seed,captured_applied_seed,"
+        << "captured_seed_readback_matches,terminal_state,probe_mode,capture_found,capture_complete,capture_segments,capture_chunks,capture_gaps,capture_drops,capture_revisions,trace_exit_code,stable_capture_path,capture_export_path,trace_report_path,error_count\n";
     for (const auto& job : summary.jobs) {
         file << job.clone.original_exec_job_id << ","
             << job.clone.cloned_exec_job_id << ","
@@ -517,7 +502,6 @@ bool write_battle_job_batch_run_csv_summary(
             << job.clone.cloned_turn_job_id << ","
             << job.clone.source_fake_attacks_this_turn << ","
             << job.clone.fake_attacks_this_turn << ","
-            << csv_escape(optional_u32_for_text(job.clone.battle_run_ms)) << ","
             << csv_escape(optional_hex_for_text(job.clone.override_start_rng_seed)) << ","
             << csv_escape(optional_u32_for_text(job.clone.override_fake_attacks_this_turn)) << ","
             << csv_escape(optional_hex_for_text(job.captured_original_seed)) << ","
@@ -527,7 +511,6 @@ bool write_battle_job_batch_run_csv_summary(
                 ? (*job.captured_seed_readback_matches ? "true" : "false")
                 : "none") << ","
             << csv_escape(job.terminal_state) << ","
-            << (job.timed_out ? "true" : "false") << ","
             << probe_mode_name(summary.options.probe_mode) << ","
             << (job.capture_found ? "true" : "false") << ","
             << (job.capture_artifact.complete ? "true" : "false") << ","

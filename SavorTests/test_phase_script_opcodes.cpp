@@ -148,7 +148,6 @@ TEST(PhaseScriptOpcodes, DescriptionsFormatEveryArgumentCategory)
     EXPECT_EQ(savor::get_psop_desc(savor::OpApplyInputFrom(key_a)), "Apply Input: [key=65534]");
     EXPECT_EQ(savor::get_psop_desc(savor::OpStepFrames(3, true)), "Step Frames: [n=3, disable_breakpoints=1]");
     EXPECT_EQ(savor::get_psop_desc(savor::OpRunUntilBpKey(204)), "Run Until BP Key: [bp_key=204]");
-    EXPECT_EQ(savor::get_psop_desc(savor::OpSetTimeoutToMS(2500)), "Set Timeout: [ms=2500]");
     EXPECT_EQ(savor::get_psop_desc(savor::OpReadU32(4096, key_a)), "Read u32: [addr=4096, dst=65534]");
     EXPECT_EQ(savor::get_psop_desc(savor::OpWriteU32(8192, key_a)), "Write u32: [addr=8192, value_key=65534]");
     EXPECT_EQ(savor::get_psop_desc(savor::OpLabel("loop")), "Set Label: [name=loop]");
@@ -174,7 +173,6 @@ TEST(PhaseScriptProgram, DefaultContractsRemainStable)
     EXPECT_TRUE(program.ops.empty());
 
     savor::PSInit init{};
-    EXPECT_EQ(init.default_timeout_ms, 10000u);
     EXPECT_EQ(init.derived_buffer_type, savor::DBuf::DK_None);
 
     savor::PSResult result{};

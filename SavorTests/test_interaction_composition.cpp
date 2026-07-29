@@ -103,7 +103,6 @@ InteractionDefinition Definition()
                 .held_through_successor = Point(
                     "soa.battle.point.BattleMacroInputReadyGate",
                     0x8007cec4u),
-                .deadline_milliseconds = 1000,
                 .release_witness_point =
                     "soa.battle.point.BattleMacroInputReadyGate",
                 .completion_mapper =
@@ -121,7 +120,6 @@ InteractionDefinition Definition()
                 .input_kind = InteractionInputKind::Pulse,
                 .acknowledgement =
                     InputAcknowledgementPolicy::RequestAndRelease,
-                .deadline_milliseconds = 1000,
                 .release_witness_point =
                     "soa.battle.point.BattleMacroDirectCommandQueued",
                 .memory_change_observation = CanonicalActionIdentity(
@@ -139,7 +137,6 @@ InteractionDefinition Definition()
             .maximum_instructions = 10000,
             .maximum_action_requests = 128,
             .maximum_emissions = 16,
-            .active_deadline_milliseconds = 5000,
         },
     };
 }

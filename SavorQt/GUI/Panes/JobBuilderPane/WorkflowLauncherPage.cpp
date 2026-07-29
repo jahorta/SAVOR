@@ -201,10 +201,6 @@ void WorkflowLauncherPage::createWidgets()
     rtcLayout->addWidget(rtcLowEdit_);
     rtcLayout->addWidget(new QLabel(QStringLiteral("to"), rtcRangePanel_));
     rtcLayout->addWidget(rtcHighEdit_);
-    tasHeadroomLabel_ = new QLabel(QStringLiteral("TAS headroom x10"), formPanel);
-    tasHeadroomSpin_ = new QSpinBox(formPanel);
-    tasHeadroomSpin_->setRange(0, 255);
-    tasHeadroomSpin_->setValue(15);
     seedSamplesLabel_ = new QLabel(QStringLiteral("Seed samples/axis"), formPanel);
     seedSamplesSpin_ = new QSpinBox(formPanel);
     seedSamplesSpin_->setRange(1, 255);
@@ -228,7 +224,6 @@ void WorkflowLauncherPage::createWidgets()
     form->addRow(QStringLiteral("Root scope id"), rootScopeIdEdit_);
     form->addRow(authoredRefLabel_, authoredRefCombo_);
     form->addRow(rtcRangeLabel_, rtcRangePanel_);
-    form->addRow(tasHeadroomLabel_, tasHeadroomSpin_);
     form->addRow(seedSamplesLabel_, seedSamplesSpin_);
     form->addRow(battleFakeOverrideCheck_);
     form->addRow(battleFakeRangeLabel_, battleFakeRangePanel_);
@@ -346,8 +341,6 @@ void WorkflowLauncherPage::renderCurrentGraphIfNeeded(bool forceRebuild)
         authoredRefCombo_->hide();
         rtcRangeLabel_->hide();
         rtcRangePanel_->hide();
-        tasHeadroomLabel_->hide();
-        tasHeadroomSpin_->hide();
         seedSamplesLabel_->hide();
         seedSamplesSpin_->hide();
         battleFakeOverrideCheck_->hide();
@@ -364,8 +357,6 @@ void WorkflowLauncherPage::renderCurrentGraphIfNeeded(bool forceRebuild)
     const bool hasBattleChain = !battleChainNodeKeys(*graph).empty();
     rtcRangeLabel_->setVisible(hasTasMovie);
     rtcRangePanel_->setVisible(hasTasMovie);
-    tasHeadroomLabel_->setVisible(hasTasMovie);
-    tasHeadroomSpin_->setVisible(hasTasMovie);
     seedSamplesLabel_->setVisible(hasSeedProbe);
     seedSamplesSpin_->setVisible(hasSeedProbe);
     battleFakeOverrideCheck_->setVisible(hasBattleChain);
@@ -417,8 +408,6 @@ void WorkflowLauncherPage::renderCurrentUnitIfNeeded(bool forceRebuild)
         launchButton_->setEnabled(false);
         rtcRangeLabel_->hide();
         rtcRangePanel_->hide();
-        tasHeadroomLabel_->hide();
-        tasHeadroomSpin_->hide();
         seedSamplesLabel_->hide();
         seedSamplesSpin_->hide();
         battleFakeOverrideCheck_->hide();
@@ -437,8 +426,6 @@ void WorkflowLauncherPage::renderCurrentUnitIfNeeded(bool forceRebuild)
     const bool hasBattleChain = unit->unit_kind == "battle_chain";
     rtcRangeLabel_->setVisible(hasTasMovie);
     rtcRangePanel_->setVisible(hasTasMovie);
-    tasHeadroomLabel_->setVisible(hasTasMovie);
-    tasHeadroomSpin_->setVisible(hasTasMovie);
     seedSamplesLabel_->setVisible(hasSeedProbe);
     seedSamplesSpin_->setVisible(hasSeedProbe);
     battleFakeOverrideCheck_->setVisible(hasBattleChain);
@@ -466,7 +453,6 @@ void WorkflowLauncherPage::captureLauncherDraft()
     draft.rootScopeId = rootScopeIdEdit_ == nullptr ? QString() : rootScopeIdEdit_->text();
     draft.rtcLow = rtcLowEdit_ == nullptr ? QString() : rtcLowEdit_->text();
     draft.rtcHigh = rtcHighEdit_ == nullptr ? QString() : rtcHighEdit_->text();
-    draft.tasHeadroom = tasHeadroomSpin_ == nullptr ? 15 : tasHeadroomSpin_->value();
     draft.seedSamplesPerAxis = seedSamplesSpin_ == nullptr ? 5 : seedSamplesSpin_->value();
     draft.battleFakeOverride = battleFakeOverrideCheck_ != nullptr && battleFakeOverrideCheck_->isChecked();
     draft.battleFakeMin = battleFakeMinSpin_ == nullptr ? 0 : battleFakeMinSpin_->value();
@@ -505,9 +491,6 @@ void WorkflowLauncherPage::restoreLauncherDraft()
     }
     if (rtcHighEdit_ != nullptr) {
         rtcHighEdit_->setText(draft.rtcHigh);
-    }
-    if (tasHeadroomSpin_ != nullptr) {
-        tasHeadroomSpin_->setValue(draft.tasHeadroom);
     }
     if (seedSamplesSpin_ != nullptr) {
         seedSamplesSpin_->setValue(draft.seedSamplesPerAxis);
@@ -641,13 +624,6 @@ void WorkflowLauncherPage::launchSelectedGraph()
         request.root_scope_id = rootScopeId;
         request.input_bindings = inputBindings;
         for (const auto& nodeKey : tasNodes) {
-            request.arguments.push_back(savorqt::db::WorkflowGraphArgumentDraft{
-                .node_key = nodeKey.toStdString(),
-                .argument_key = "headroom",
-                .value_type = "integer",
-                .integer_value = tasHeadroomSpin_ == nullptr ? 15 : tasHeadroomSpin_->value(),
-                .source_kind = "launcher",
-            });
             request.arguments.push_back(savorqt::db::WorkflowGraphArgumentDraft{
                 .node_key = nodeKey.toStdString(),
                 .argument_key = "rtc",
@@ -822,13 +798,6 @@ void WorkflowLauncherPage::launchStandaloneUnit()
         request.root_scope_id = rootScopeId;
         request.input_bindings = inputBindings;
         if (unit->unit_kind == "tas_movie") {
-            request.arguments.push_back(savorqt::db::WorkflowGraphArgumentDraft{
-                .node_key = nodeKey,
-                .argument_key = "headroom",
-                .value_type = "integer",
-                .integer_value = tasHeadroomSpin_ == nullptr ? 15 : tasHeadroomSpin_->value(),
-                .source_kind = "launcher",
-            });
             request.arguments.push_back(savorqt::db::WorkflowGraphArgumentDraft{
                 .node_key = nodeKey,
                 .argument_key = "rtc",
@@ -1111,7 +1080,7 @@ QString WorkflowLauncherPage::graphLaunchShapeSignature(const savor::db::Workflo
         const QString unitKind = QString::fromStdString(node.unit_kind);
         parts << QStringLiteral("node:%1:%2").arg(QString::fromStdString(node.node_key), unitKind);
         if (unitKind == QStringLiteral("tas_movie")) {
-            parts << QStringLiteral("rtc") << QStringLiteral("headroom");
+            parts << QStringLiteral("rtc");
         }
         if (unitKind == QStringLiteral("seed_probe_chain")
             || unitKind == QStringLiteral("battle_seed_probe")
@@ -1142,7 +1111,7 @@ QString WorkflowLauncherPage::unitLaunchShapeSignature(const WorkflowUnitDefinit
     QStringList parts;
     parts << QStringLiteral("unit:%1").arg(QString::fromStdString(unit.unit_kind));
     if (unit.unit_kind == "tas_movie") {
-        parts << QStringLiteral("rtc") << QStringLiteral("headroom");
+        parts << QStringLiteral("rtc");
     }
     if (unit.unit_kind == "seed_probe_chain"
         || unit.unit_kind == "battle_seed_probe"

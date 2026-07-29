@@ -85,9 +85,11 @@ ProductionCaptureAdapterConfig()
 
 EmulationSession::EmulationSession(
     SessionId session_id,
-    std::unique_ptr<IDolphinBackend> backend)
+    std::unique_ptr<IDolphinBackend> backend,
+    ExecutionEngineConfig execution_engine_config)
     : session_id_(session_id),
-      backend_(std::move(backend))
+      backend_(std::move(backend)),
+      execution_engine_config_(std::move(execution_engine_config))
 {
 }
 
@@ -669,6 +671,7 @@ SessionOperationReceipt EmulationSession::RevalidateStopPointsAfterJit()
             BackendResult::Success()};
     }
 
+    auto host_activity = host_activity_.Track();
     BackendResult result = FromStopPointLifecycle(
         "stop-point JIT revalidation",
         stop_router_->RevalidateAfterJit());
@@ -704,6 +707,7 @@ SessionOperationReceipt EmulationSession::ValidateBreakpointChangeNotification()
             BackendResult::Success()};
     }
 
+    auto host_activity = host_activity_.Track();
     BackendResult result = FromStopPointLifecycle(
         "breakpoint-change reconciliation",
         stop_router_->ValidateBreakpointChangeNotification());
@@ -731,9 +735,10 @@ std::vector<StopRouteReceipt> EmulationSession::DrainStopPointEvents()
             return receipt.event.has_value() &&
                 receipt.event->
                     requires_physical_reconcile_before_resume;
-        });
+    });
     if (reconcile && capture_service_)
     {
+        auto host_activity = host_activity_.Track();
         CaptureServiceReceipt capture =
             capture_service_->ReconcileBeforeResume();
         if (!capture.ok)
@@ -886,6 +891,14 @@ std::vector<ExecutionEvent> EmulationSession::DrainExecutionEvents()
                 ? "ExecutionEngine could not prove session integrity"
                 : event.terminal->error.message);
             break;
+        }
+        if (event.terminal->status ==
+            ExecutionTerminalStatus::CoreStalled)
+        {
+            MarkCleanWithDiagnostics(
+                event.terminal->error.message.empty()
+                    ? "core_stalled"
+                    : event.terminal->error.message);
         }
     }
     return events;
@@ -1223,7 +1236,8 @@ BackendResult EmulationSession::InitializeStopPoints(StateEpoch first_epoch)
             std::make_unique<StopPointRouter>(
                 *physical_stop_manager_,
                 nullptr,
-                capture_service_.get());
+                capture_service_.get(),
+                &host_activity_);
     }
     catch (const std::exception& ex)
     {
@@ -1458,8 +1472,9 @@ BackendResult EmulationSession::InitializeExecution(StateEpoch first_epoch)
     }
     try
     {
-        ExecutionEngineConfig config;
+        ExecutionEngineConfig config = execution_engine_config_;
         config.input_advance = input_arbiter_.get();
+        config.host_activity = &host_activity_;
         execution_engine_ =
             std::make_unique<ExecutionEngine>(
                 *port,

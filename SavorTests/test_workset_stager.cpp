@@ -182,7 +182,6 @@ WorkerWorksetDefinition CurrentSessionWorkset(
     item.invocation.module = definition.execution_key.module;
     item.invocation.entrypoint = "run";
     item.invocation.template_payload = {1, 2, 3};
-    item.declared_active_budget = std::chrono::seconds(2);
     item.declared_terminal_bytes =
         kMinimumWorksetTerminalReservationBytes;
     item.correlation = {"job", "claim", "parent"};

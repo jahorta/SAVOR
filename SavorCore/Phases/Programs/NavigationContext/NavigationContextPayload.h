@@ -8,10 +8,9 @@
 
 namespace phase::navigation::ctx {
 
-inline constexpr std::uint32_t PayloadVersion = 1;
+inline constexpr std::uint32_t PayloadVersion = 2;
 
 struct EncodeSpec {
-    std::uint32_t run_timeout_ms{0};
     std::string output_savestate_path;
 };
 

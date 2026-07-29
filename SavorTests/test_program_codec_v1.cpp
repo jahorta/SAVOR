@@ -1,11 +1,14 @@
 #include <gtest/gtest.h>
 
 #include "Runner/Runtime/ProgramRuntime/Codec/ProgramCodecV1.h"
+#include "Utils/Hash.h"
 
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <iterator>
 #include <limits>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -13,6 +16,85 @@ namespace {
 
 using namespace savor::runtime;
 using namespace savor::runtime::program;
+
+void AppendU64LittleEndian(
+    std::vector<Byte>& bytes,
+    std::uint64_t value)
+{
+    for (unsigned shift = 0; shift < 64; shift += 8)
+    {
+        bytes.push_back(
+            static_cast<Byte>(value >> shift));
+    }
+}
+
+std::vector<Byte> EncodedBudgets(
+    const ProgramBudgets& budgets)
+{
+    std::vector<Byte> bytes;
+    bytes.reserve(9 * sizeof(std::uint64_t));
+    AppendU64LittleEndian(bytes, budgets.maximum_instructions);
+    AppendU64LittleEndian(bytes, budgets.maximum_calls);
+    AppendU64LittleEndian(bytes, budgets.maximum_call_depth);
+    AppendU64LittleEndian(bytes, budgets.maximum_action_requests);
+    AppendU64LittleEndian(bytes, budgets.maximum_emissions);
+    AppendU64LittleEndian(bytes, budgets.maximum_artifacts);
+    AppendU64LittleEndian(bytes, budgets.maximum_values);
+    AppendU64LittleEndian(bytes, budgets.maximum_value_bytes);
+    AppendU64LittleEndian(bytes, budgets.maximum_trace_events);
+    return bytes;
+}
+
+std::optional<std::size_t> FindUniqueBytes(
+    const std::vector<Byte>& bytes,
+    const std::vector<Byte>& pattern)
+{
+    const auto first = std::search(
+        bytes.begin(),
+        bytes.end(),
+        pattern.begin(),
+        pattern.end());
+    if (first == bytes.end())
+        return std::nullopt;
+    const auto second = std::search(
+        std::next(first),
+        bytes.end(),
+        pattern.begin(),
+        pattern.end());
+    if (second != bytes.end())
+        return std::nullopt;
+    return static_cast<std::size_t>(
+        std::distance(bytes.begin(), first));
+}
+
+void RewriteEnvelopePayloadLength(std::vector<Byte>& bytes)
+{
+    const std::uint32_t payload_size =
+        static_cast<std::uint32_t>(
+            bytes.size() - kProgramCodecHeaderSizeV1);
+    bytes[6] = static_cast<Byte>(payload_size);
+    bytes[7] = static_cast<Byte>(payload_size >> 8);
+    bytes[8] = static_cast<Byte>(payload_size >> 16);
+    bytes[9] = static_cast<Byte>(payload_size >> 24);
+}
+
+void InsertLegacyActiveDeadline(
+    std::vector<Byte>& bytes,
+    std::size_t budget_offset,
+    std::uint64_t active_deadline_milliseconds)
+{
+    std::vector<Byte> encoded_deadline;
+    encoded_deadline.reserve(sizeof(std::uint64_t));
+    AppendU64LittleEndian(
+        encoded_deadline,
+        active_deadline_milliseconds);
+    bytes.insert(
+        bytes.begin() + budget_offset +
+            9 * sizeof(std::uint64_t),
+        encoded_deadline.begin(),
+        encoded_deadline.end());
+    RewriteEnvelopePayloadLength(bytes);
+}
 
 ContentHash256 FilledHash(Byte value)
 {
@@ -133,7 +215,6 @@ ProgramModule MakeModule()
             .maximum_values = 100,
             .maximum_value_bytes = 4096,
             .maximum_trace_events = 100,
-            .active_deadline_milliseconds = 5000,
         },
         .source_map = ProgramSourceMap{
             .version = 1,
@@ -382,6 +463,108 @@ TEST(ProgramCanonicalCodecV1, RejectsHashMismatchAndDuplicateImports)
     EXPECT_EQ(
         EncodeProgramModuleV1(module).status.error,
         CodecError::InvalidValue);
+}
+
+TEST(
+    ProgramCanonicalCodecV1,
+    RejectsLegacyBudgetBearingModuleV1Layout)
+{
+    ProgramModule module = MakeModule();
+    module.budgets = ProgramBudgets{
+        .maximum_instructions = 0x101,
+        .maximum_calls = 0x202,
+        .maximum_call_depth = 0x303,
+        .maximum_action_requests = 0x404,
+        .maximum_emissions = 0x505,
+        .maximum_artifacts = 0x606,
+        .maximum_values = 0x707,
+        .maximum_value_bytes = 0x808,
+        .maximum_trace_events = 0x909,
+    };
+    const std::vector<Byte> budget_bytes =
+        EncodedBudgets(module.budgets);
+
+    // Reconstruct the former canonical hash material exactly: v1 encoded
+    // ProgramBudgets used to append active_deadline_milliseconds.
+    EncodeResult legacy_hash_material =
+        EncodeProgramModuleV1(
+            module,
+            CanonicalHashMode::OmitDeclaredHash);
+    ASSERT_TRUE(legacy_hash_material)
+        << legacy_hash_material.status.message;
+    const auto hash_budget_offset = FindUniqueBytes(
+        legacy_hash_material.bytes,
+        budget_bytes);
+    ASSERT_TRUE(hash_budget_offset);
+    InsertLegacyActiveDeadline(
+        legacy_hash_material.bytes,
+        *hash_budget_offset,
+        5000);
+
+    const std::string legacy_hash_hex = hash::sha256(
+        legacy_hash_material.bytes.data(),
+        legacy_hash_material.bytes.size());
+    const auto legacy_hash =
+        ContentHash256::FromHex(legacy_hash_hex);
+    ASSERT_TRUE(legacy_hash);
+    module.identity.module_hash = *legacy_hash;
+
+    EncodeResult legacy_module =
+        EncodeProgramModuleV1(module);
+    ASSERT_TRUE(legacy_module)
+        << legacy_module.status.message;
+    const auto module_budget_offset = FindUniqueBytes(
+        legacy_module.bytes,
+        budget_bytes);
+    ASSERT_TRUE(module_budget_offset);
+    InsertLegacyActiveDeadline(
+        legacy_module.bytes,
+        *module_budget_offset,
+        5000);
+
+    const DecodeResult<ProgramModule> rejected =
+        DecodeProgramModuleV1(legacy_module.bytes);
+    EXPECT_FALSE(rejected);
+    EXPECT_FALSE(rejected.value);
+}
+
+TEST(
+    ProgramCanonicalCodecV1,
+    RejectsLegacyBudgetBearingInvocationV1Layout)
+{
+    const ProgramModule module = MakeModule();
+    ProgramInvocation invocation = MakeInvocation(module);
+    invocation.limits = ProgramBudgets{
+        .maximum_instructions = 0x111,
+        .maximum_calls = 0x222,
+        .maximum_call_depth = 0x333,
+        .maximum_action_requests = 0x444,
+        .maximum_emissions = 0x555,
+        .maximum_artifacts = 0x666,
+        .maximum_values = 0x777,
+        .maximum_value_bytes = 0x888,
+        .maximum_trace_events = 0x999,
+    };
+    const std::vector<Byte> budget_bytes =
+        EncodedBudgets(invocation.limits);
+
+    EncodeResult legacy_invocation =
+        EncodeProgramInvocationV1(invocation);
+    ASSERT_TRUE(legacy_invocation)
+        << legacy_invocation.status.message;
+    const auto budget_offset = FindUniqueBytes(
+        legacy_invocation.bytes,
+        budget_bytes);
+    ASSERT_TRUE(budget_offset);
+    InsertLegacyActiveDeadline(
+        legacy_invocation.bytes,
+        *budget_offset,
+        5000);
+
+    const DecodeResult<ProgramInvocation> rejected =
+        DecodeProgramInvocationV1(legacy_invocation.bytes);
+    EXPECT_FALSE(rejected);
+    EXPECT_FALSE(rejected.value);
 }
 
 TEST(ProgramCanonicalCodecV1, RejectsNonfiniteValuesAndOpenGraphs)

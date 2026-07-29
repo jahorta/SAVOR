@@ -155,8 +155,7 @@ bool BudgetsValid(const ProgramBudgets& budgets)
         budgets.maximum_artifacts != 0 &&
         budgets.maximum_values != 0 &&
         budgets.maximum_value_bytes != 0 &&
-        budgets.maximum_trace_events != 0 &&
-        budgets.active_deadline_milliseconds != 0;
+        budgets.maximum_trace_events != 0;
 }
 
 bool BudgetsNarrow(
@@ -172,9 +171,7 @@ bool BudgetsNarrow(
         child.maximum_artifacts <= parent.maximum_artifacts &&
         child.maximum_values <= parent.maximum_values &&
         child.maximum_value_bytes <= parent.maximum_value_bytes &&
-        child.maximum_trace_events <= parent.maximum_trace_events &&
-        child.active_deadline_milliseconds <=
-            parent.active_deadline_milliseconds;
+        child.maximum_trace_events <= parent.maximum_trace_events;
 }
 
 struct SchemaLookup

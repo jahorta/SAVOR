@@ -16,8 +16,6 @@ inline savor::PhaseScript MakeNavigationContextProgram()
     constexpr auto CapturePc = soa::navigation::ctx::CapturePc;
     constexpr const char* ValidateCapture = "NAVIGATION_VALIDATE_CAPTURE";
     constexpr const char* Capture = "NAVIGATION_CAPTURE";
-    constexpr const char* FailTimeout = "NAVIGATION_FAIL_TIMEOUT";
-    constexpr const char* FailViStalled = "NAVIGATION_FAIL_VI_STALLED";
     constexpr const char* FailHost = "NAVIGATION_FAIL_HOST";
     constexpr const char* FailUnexpected = "NAVIGATION_FAIL_UNEXPECTED";
     constexpr const char* FailCapturePc = "NAVIGATION_FAIL_CAPTURE_PC";
@@ -37,19 +35,7 @@ inline savor::PhaseScript MakeNavigationContextProgram()
         savor::PSCmp::EQ,
         static_cast<std::uint32_t>(CaptureKey),
         ValidateCapture));
-    script.ops.push_back(
-        savor::OpSetTimeoutFromKey(key::navigation::RUN_TIMEOUT_MS));
     script.ops.push_back(savor::OpRunUntilBp());
-    script.ops.push_back(savor::OpGotoIf(
-        key::core::DW_RUN_OUTCOME_CODE,
-        savor::PSCmp::EQ,
-        static_cast<std::uint32_t>(savor::RunToBpOutcome::Timeout),
-        FailTimeout));
-    script.ops.push_back(savor::OpGotoIf(
-        key::core::DW_RUN_OUTCOME_CODE,
-        savor::PSCmp::EQ,
-        static_cast<std::uint32_t>(savor::RunToBpOutcome::ViStalled),
-        FailViStalled));
     script.ops.push_back(savor::OpGotoIf(
         key::core::DW_RUN_OUTCOME_CODE,
         savor::PSCmp::EQ,
@@ -88,16 +74,6 @@ inline savor::PhaseScript MakeNavigationContextProgram()
         key::navigation::OUTCOME,
         static_cast<std::uint32_t>(Outcome::Completed)));
 
-    script.ops.push_back(savor::OpLabel(FailTimeout));
-    script.ops.push_back(savor::OpSetU32(
-        key::navigation::FAILURE,
-        static_cast<std::uint32_t>(FailureCode::Timeout)));
-    script.ops.push_back(savor::OpGoto(ReturnFailure));
-    script.ops.push_back(savor::OpLabel(FailViStalled));
-    script.ops.push_back(savor::OpSetU32(
-        key::navigation::FAILURE,
-        static_cast<std::uint32_t>(FailureCode::ViStalled)));
-    script.ops.push_back(savor::OpGoto(ReturnFailure));
     script.ops.push_back(savor::OpLabel(FailHost));
     script.ops.push_back(savor::OpSetU32(
         key::navigation::FAILURE,

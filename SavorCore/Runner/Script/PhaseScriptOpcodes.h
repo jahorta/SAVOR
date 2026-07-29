@@ -152,8 +152,6 @@ inline PSOp OpClearMemoryWatchpoints() { PSOp op; op.code = PSOpCode::CLEAR_MEMO
 inline PSOp OpArmCaptureMemoryWatchpoints() { PSOp op; op.code = PSOpCode::ARM_CAPTURE_MEMORY_WATCHPOINTS; return op; }
 
 inline PSOp OpApplyInputFrom(savor::context::key::KeyId key) { PSOp op; op.code = PSOpCode::APPLY_INPUT_FROM; op.key.id = key; return op; }
-inline PSOp OpSetTimeoutFromKey(savor::context::key::KeyId key) { PSOp op; op.code = PSOpCode::SET_TIMEOUT_FROM; op.key.id = key; return op; }
-inline PSOp OpSetTimeoutToMS(uint32_t ms) { PSOp op; op.code = PSOpCode::SET_TIMEOUT; op.imm.v = ms; return op; }
 inline PSOp OpMoviePlayFrom(savor::context::key::KeyId key) { PSOp op; op.code = PSOpCode::MOVIE_PLAY_FROM; op.key.id = key; return op; }
 inline PSOp OpSaveSavestateFrom(savor::context::key::KeyId key) { PSOp op; op.code = PSOpCode::SAVE_SAVESTATE_FROM; op.key.id = key; return op; }
 inline PSOp OpRequireDiscGameIdFrom(savor::context::key::KeyId key) { PSOp op; op.code = PSOpCode::REQUIRE_DISC_GAMEID_FROM; op.key.id = key; return op; }

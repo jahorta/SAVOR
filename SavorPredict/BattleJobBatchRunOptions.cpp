@@ -265,18 +265,12 @@ std::vector<BattleJobBatchRunRequest> resolved_battle_job_batch_requests(const B
             .exec_job_id = exec_job_id,
             .override_start_rng_seed = options.override_start_rng_seed,
             .override_fake_attacks_this_turn = options.override_fake_attacks_this_turn,
-            .battle_run_ms = options.battle_run_ms,
         });
     }
     requests.insert(
         requests.end(),
         options.seeded_exec_job_requests.begin(),
         options.seeded_exec_job_requests.end());
-    if (options.battle_run_ms.has_value()) {
-        for (auto& request : requests) {
-            request.battle_run_ms = options.battle_run_ms;
-        }
-    }
     if (options.override_fake_attacks_this_turn.has_value()) {
         for (auto& request : requests) {
             if (!request.override_fake_attacks_this_turn.has_value()) {
@@ -298,22 +292,6 @@ std::vector<long long> unique_battle_job_batch_source_exec_job_ids(const BattleJ
         }
     }
     return ids;
-}
-
-int resolved_battle_job_batch_timeout_ms(const BattleJobBatchRunOptions& options) {
-    if (options.timeout_ms.has_value()) {
-        return *options.timeout_ms;
-    }
-    const auto job_count = static_cast<long long>(std::max<std::size_t>(1, resolved_battle_job_batch_requests(options).size()));
-    const auto worker_count = static_cast<long long>(std::max(1, options.max_workers));
-    const auto waves = (job_count + worker_count - 1) / worker_count;
-    constexpr long long kDefaultPerWaveMs = 180000;
-    constexpr long long kBattleRunMarginMs = 60000;
-    const auto per_wave = options.battle_run_ms.has_value()
-        ? std::max(kDefaultPerWaveMs, static_cast<long long>(*options.battle_run_ms) + kBattleRunMarginMs)
-        : kDefaultPerWaveMs;
-    const auto timeout = per_wave * waves;
-    return static_cast<int>(std::min<long long>(timeout, std::numeric_limits<int>::max()));
 }
 
 std::vector<std::string> validate_battle_job_batch_run_options(const BattleJobBatchRunOptions& options) {
@@ -376,14 +354,8 @@ std::vector<std::string> validate_battle_job_batch_run_options(const BattleJobBa
     if (options.poll_ms <= 0) {
         errors.push_back("--poll-ms must be positive.");
     }
-    if (options.timeout_ms.has_value() && *options.timeout_ms <= 0) {
-        errors.push_back("--timeout-ms must be positive.");
-    }
     if (options.max_workers <= 0) {
         errors.push_back("--max-workers must be positive.");
-    }
-    if (options.battle_run_ms.has_value() && *options.battle_run_ms == 0) {
-        errors.push_back("--battle-run-ms must be positive.");
     }
     if (options.override_fake_attacks_this_turn.has_value()
         && *options.override_fake_attacks_this_turn > 255u) {
@@ -517,13 +489,6 @@ BattleJobBatchRunParseResult parse_battle_job_batch_run_tokens(
             } else {
                 result.errors.push_back("--poll-ms requires an integer.");
             }
-        } else if (arg == "--timeout-ms") {
-            int parsed = 0;
-            if (require_value(args, i, arg, value, result.errors) && parse_int(value, parsed)) {
-                result.options.timeout_ms = parsed;
-            } else {
-                result.errors.push_back("--timeout-ms requires an integer.");
-            }
         } else if (arg == "--max-workers") {
             int parsed = 0;
             if (require_value(args, i, arg, value, result.errors) && parse_int(value, parsed)) {
@@ -533,13 +498,6 @@ BattleJobBatchRunParseResult parse_battle_job_batch_run_tokens(
             }
         } else if (arg == "--wait-for-workers-ready") {
             result.options.wait_for_workers_ready = true;
-        } else if (arg == "--battle-run-ms") {
-            std::uint32_t parsed = 0;
-            if (require_value(args, i, arg, value, result.errors) && parse_u32_auto(value, parsed)) {
-                result.options.battle_run_ms = parsed;
-            } else {
-                result.errors.push_back("--battle-run-ms requires a positive uint32 millisecond value.");
-            }
         } else if (arg == "--override-start-rng-seed") {
             std::uint32_t parsed = 0;
             if (require_value(args, i, arg, value, result.errors) && parse_u32_auto(value, parsed)) {

@@ -13,7 +13,7 @@ namespace fs = std::filesystem;
 
 namespace savor::tasmovie {
 
-    static constexpr const int PVersion = 2;
+    static constexpr const int PVersion = 3;
 
     static inline void put_u32(std::vector<uint8_t>& b, uint32_t v) {
         b.push_back(uint8_t(v)); b.push_back(uint8_t(v >> 8));
@@ -29,19 +29,6 @@ namespace savor::tasmovie {
         if (o + 2 > n) return 0; uint16_t v = uint16_t(d[o]) | (uint16_t(d[o + 1]) << 8); o += 2; return v;
     }
 
-    uint32_t compute_run_ms_from_counts(uint64_t vi_count, uint64_t input_count, double headroom)
-    {
-        // Use the larger of VI and input counts (inputs are typically per-VI in DTM).
-        const uint64_t base = (vi_count ? vi_count : input_count);
-        if (base == 0) return 60000; // fallback 60s if header is weird
-        // Assume ~60 VI/s; headroom gives cushion near movie end / drift.
-        const double ms = (double)base * (1000.0 / 60.0) * (headroom > 1.0 ? headroom : 1.0);
-        uint64_t msi = (uint64_t)(ms + 0.5);
-        if (msi < 1000) msi = 1000;
-        if (msi > 60ull * 60ull * 1000ull) msi = 60ull * 60ull * 1000ull; // cap to 60 min
-        return (uint32_t)msi;
-    }
-
     std::string derive_save_path(const std::string& dtm_path)
     {
         const fs::path p(dtm_path);
@@ -52,7 +39,7 @@ namespace savor::tasmovie {
     bool encode_payload(const EncodeSpec& spec, std::vector<uint8_t>& out)
     {
         out.clear();
-        out.reserve(1 + 2 + 1 + 4 + 4 + + 1 + 7 + 4 + spec.dtm_path.size());
+        out.reserve(1 + 2 + 1 + 8 + 4 + spec.dtm_path.size());
 
         out.push_back(PK_TasMovie);                 // payload kind tag
         put_u16(out, PVersion);                            // version
@@ -60,13 +47,7 @@ namespace savor::tasmovie {
         uint8_t flags = 0;
         out.push_back(flags);
 
-        put_u32(out, spec.run_ms);
-        put_u32(out, spec.vi_stall_ms);
-
-        out.push_back(spec.headroom_x10);
-
-        // reserved 8 bytes 
-        out.insert(out.end(), 7, uint8_t(0));
+        out.insert(out.end(), 8, uint8_t(0));
 
         put_u32(out, (uint32_t)spec.dtm_path.size());
         out.insert(out.end(), spec.dtm_path.begin(), spec.dtm_path.end());
@@ -76,7 +57,7 @@ namespace savor::tasmovie {
 
     bool decode_payload(const std::vector<uint8_t>& in, PSContext& out_ctx)
     {
-        if (in.size() < 1 + 2 + 1 + 4 + 4 + 1 + 7 + 4) return false;
+        if (in.size() < 1 + 2 + 1 + 8 + 4) return false;
         size_t off = 0;
         const uint8_t pk = in[off++];         // ProgramKind tag
         if (pk != PK_TasMovie) return false;
@@ -86,13 +67,7 @@ namespace savor::tasmovie {
 
         const uint8_t flags = in[off++]; // bit0: save_on_fail
 
-        const uint32_t run_ms_in = rd_u32(in.data(), off, in.size());
-        const uint32_t vi_stall_ms = rd_u32(in.data(), off, in.size());
-
-        const uint8_t headroom_x10 = in[off++];
-
-        // skip 7 reserved bytes
-        off += 7;
+        off += 8; // reserved
 
         const uint32_t len_dtm = rd_u32(in.data(), off, in.size());
         if (off + len_dtm > in.size()) return false;
@@ -106,40 +81,25 @@ namespace savor::tasmovie {
         // Read DTM header to extract id6 and counts
         savor::tas::DtmFile df;
         std::string id6;
-        uint64_t vi_count = 0, input_count = 0;
-
         if (df.load(dtm_path)) {
             const auto info = df.info();
             id6.assign(info.game_id.data(), 6);
-            vi_count = info.vi_count;
-            input_count = info.input_count;
         }
         else {
             // If we can't load it now, the program will still attempt playback; id6 left empty
             id6.assign("");
         }
 
-        const double headroom = static_cast<double>(headroom_x10) / 10.0;
-
-        // Derive run_ms if the payload asked us to (== 0)
-        const uint32_t run_ms = (run_ms_in == 0)
-            ? compute_run_ms_from_counts(vi_count, input_count, /*headroom=*/headroom)
-            : run_ms_in;
-
         // Fill TAS program context keys
         out_ctx[savor::context::key::tas::DTM_PATH] = dtm_path;
         out_ctx[savor::context::key::tas::SAVE_PATH] = save_path;
-        out_ctx[savor::context::key::core::RUN_MS] = run_ms;
-        out_ctx[savor::context::key::core::VI_STALL_MS] = vi_stall_ms;
         out_ctx[savor::context::key::tas::SAVE_ON_FAIL] = (uint32_t)0;
 
         savor::progress::ProgressDeets progress{};
         progress.set_flag(CoreProgressFlags::ViDelta);
         progress.set_flag(CoreProgressFlags::Filename);
         progress.set_flag(CoreProgressFlags::ScriptSection);
-        progress.set_flag(CoreProgressFlags::WarnViStall);
 
-        out_ctx[savor::context::key::core::PROGRESS_RATE] = progress.poll_rate;
         out_ctx[savor::context::key::core::PROGRESS_CORE_FLAGS] = progress.flags;
         out_ctx[savor::context::key::tas::DISC_ID6] = id6;
 

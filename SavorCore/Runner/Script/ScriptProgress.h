@@ -9,7 +9,7 @@
 
 enum class CoreProgressFlags : std::uint32_t {
     ViDelta = 1 << 0,
-    WarnViStall = 1 << 1,
+    // Bit 1 remains reserved so persisted flag values do not shift.
     Filename = 1 << 2,
     ScriptSection = 1 << 3,
     BattleProgress = 1 << 4,
@@ -21,7 +21,6 @@ enum class CoreProgressFlags : std::uint32_t {
 namespace savor::progress {
 
 struct ProgressDeets {
-    std::uint32_t poll_rate = 0;
     std::uint32_t flags = 0;
 
     void clear_flags() { flags = 0; }

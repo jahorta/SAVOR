@@ -15,7 +15,7 @@
 
 namespace phase::battle::macroprobe {
 
-static constexpr int PayloadVersion = 7;
+static constexpr int PayloadVersion = 8;
 
 enum class MacroMode : std::uint32_t {
     Attack = 1,
@@ -28,7 +28,7 @@ enum class FailureCode : std::uint32_t {
     InvalidMode = 1,
     InvalidTarget = 2,
     NoSteps = 3,
-    Timeout = 4,
+    HostFailure = 4,
     UnexpectedBreakpoint = 5,
     BattleContextUnavailable = 6,
     MemoryReadFailed = 7,
@@ -55,7 +55,6 @@ struct FakeAttackPattern {
     FakeAttackMemoryGateMode memory_gate_mode{FakeAttackMemoryGateMode::TargetSide};
     std::uint32_t target_neutral_before_b_frames{0};
     std::uint32_t input_neutral_after_b_frames{20};
-    std::uint32_t memory_timeout_ms{1000};
 };
 
 struct BattleMacroItemRow {
@@ -80,9 +79,6 @@ struct EncodeSpec {
     std::uint32_t target_slot{4};
     std::vector<MacroCommand> commands;
     std::uint32_t transition_neutral_frames{3};
-    std::uint32_t step_timeout_ms{5000};
-    std::uint32_t vi_stall_ms{5000};
-    std::uint32_t observation_tail_ms{10000};
     std::uint32_t fake_attack_count{0};
     FakeAttackPattern fake_attack_pattern{};
     bool use_mixed_fake_attack_patterns{false};

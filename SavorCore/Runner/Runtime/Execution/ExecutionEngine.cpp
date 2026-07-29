@@ -192,14 +192,15 @@ struct ExecutionEngine::Impl
         ExecutionRequest request;
         ExecutionOperationKind kind = ExecutionOperationKind::SafePause;
         Clock::time_point started;
-        Clock::time_point deadline;
-        Clock::time_point last_vi_change;
-        std::optional<Clock::time_point> suspended_at;
-        std::chrono::milliseconds remaining_budget{};
-        std::uint64_t last_vi = 0;
+        Clock::time_point health_baseline;
+        std::uint64_t health_last_vi = 0;
+        std::uint64_t health_host_generation = 0;
+        bool health_eligible = false;
+        bool stall_suspected = false;
+        std::uint32_t host_activity_sequence = 0;
+        std::chrono::milliseconds host_activity_warned_through{};
         std::uint64_t advance_baseline_vi = 0;
         std::uint32_t completed_count = 0;
-        bool bounded = false;
         bool observed_running = false;
         bool awaiting_advance = false;
         bool throttle_changed = false;
@@ -215,6 +216,8 @@ struct ExecutionEngine::Impl
         std::optional<InterruptionFrameId> handler_owner;
         std::optional<ExecutionOperationId> pause_control_id;
         std::optional<Clock::time_point> pause_control_deadline;
+        std::optional<Clock::time_point>
+            unconfirmed_pause_deadline;
         bool borrowed_wake_group = false;
         bool wake_group_parked = false;
     };
@@ -224,9 +227,8 @@ struct ExecutionEngine::Impl
         InterruptionFrameId id;
         InterruptionHandlerDescriptor descriptor;
         ActiveOperation parent;
-        Clock::time_point decision_deadline;
-        std::chrono::milliseconds remaining_decision_budget{};
-        std::optional<Clock::time_point> decision_suspended_at;
+        bool pause_confirmed = false;
+        std::optional<Clock::time_point> pause_confirmation_deadline;
     };
 
     struct PendingParentTerminal
@@ -240,6 +242,8 @@ struct ExecutionEngine::Impl
     IExecutionBackendPort& backend;
     StopPointRouter& stop_points;
     ExecutionEngineConfig config;
+    HostActivityTracker owned_host_activity;
+    HostActivityTracker* host_activity = nullptr;
     std::function<Clock::time_point()> now;
     std::thread::id owner_thread;
     StateEpoch epoch;
@@ -268,6 +272,9 @@ struct ExecutionEngine::Impl
                   : [] { return Clock::now(); }),
           owner_thread(std::this_thread::get_id())
     {
+        host_activity = config.host_activity
+            ? config.host_activity
+            : &owned_host_activity;
         if (config.maintenance_interval <= std::chrono::milliseconds::zero())
             config.maintenance_interval = std::chrono::milliseconds(10);
         if (config.pause_confirmation_timeout <=
@@ -275,12 +282,30 @@ struct ExecutionEngine::Impl
         {
             config.pause_confirmation_timeout = std::chrono::seconds(5);
         }
+        if (config.suspect_core_stall_after <=
+            std::chrono::milliseconds::zero())
+        {
+            config.suspect_core_stall_after = std::chrono::seconds(10);
+        }
+        if (config.confirm_core_stall_after <=
+            std::chrono::milliseconds::zero())
+        {
+            config.confirm_core_stall_after = std::chrono::seconds(10);
+        }
+        if (config.host_activity_warning_after <=
+            std::chrono::milliseconds::zero())
+        {
+            config.host_activity_warning_after = std::chrono::seconds(10);
+        }
+        if (config.host_activity_warning_repeat <=
+            std::chrono::milliseconds::zero())
+        {
+            config.host_activity_warning_repeat = std::chrono::seconds(30);
+        }
         for (InterruptionHandlerDescriptor& descriptor :
             config.interruption_handlers)
         {
             if (!descriptor.key.empty() &&
-                descriptor.child_active_budget >
-                    std::chrono::milliseconds::zero() &&
                 descriptor.maximum_depth > 0 &&
                 descriptor.maximum_depth <= 8)
             {
@@ -394,6 +419,100 @@ struct ExecutionEngine::Impl
             std::move(progress)});
     }
 
+    void PublishHealthWarning(
+        const ActiveOperation& operation,
+        ExecutionHealthWarningKind kind,
+        Clock::duration elapsed,
+        std::string code,
+        std::string message)
+    {
+        RefreshSnapshot();
+        ExecutionHealthWarning warning;
+        warning.kind = kind;
+        warning.state_epoch = epoch;
+        warning.operation_id = operation.id;
+        warning.elapsed =
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                elapsed);
+        warning.host_activity_generation =
+            host_activity->snapshot().generation;
+        warning.code = std::move(code);
+        warning.message = std::move(message);
+        events.push_back({
+            ExecutionEventKind::HealthWarning,
+            snapshot,
+            std::nullopt,
+            std::nullopt,
+            std::move(warning)});
+    }
+
+    void PublishHostActivityWarnings(
+        ActiveOperation& operation,
+        std::uint32_t activity_sequence,
+        std::chrono::milliseconds elapsed)
+    {
+        if (activity_sequence == 0)
+            return;
+        if (operation.host_activity_sequence != activity_sequence)
+        {
+            operation.host_activity_sequence = activity_sequence;
+            operation.host_activity_warned_through =
+                std::chrono::milliseconds::zero();
+        }
+
+        std::chrono::milliseconds next_warning =
+            operation.host_activity_warned_through ==
+                    std::chrono::milliseconds::zero()
+            ? config.host_activity_warning_after
+            : operation.host_activity_warned_through +
+                  config.host_activity_warning_repeat;
+        while (elapsed >= next_warning)
+        {
+            PublishHealthWarning(
+                operation,
+                ExecutionHealthWarningKind::HostActivityLongRunning,
+                next_warning,
+                "host_activity_long_running",
+                "Synchronous host activity is delaying guest advancement");
+            operation.host_activity_warned_through = next_warning;
+            next_warning += config.host_activity_warning_repeat;
+        }
+    }
+
+    void DrainCompletedHostActivityWarnings(
+        ActiveOperation& operation)
+    {
+        HostActivityTracker::CompletedActivityBatch completed =
+            host_activity->DrainCompletedActivities();
+        for (std::size_t index = 0;
+             index < completed.count;
+             ++index)
+        {
+            PublishHostActivityWarnings(
+                operation,
+                completed.activities[index].sequence,
+                completed.activities[index].elapsed);
+        }
+        if (completed.overflow_count != 0)
+        {
+            PublishHealthWarning(
+                operation,
+                ExecutionHealthWarningKind::
+                    HostActivityDiagnosticOverflow,
+                Clock::duration::zero(),
+                "host_activity_diagnostic_overflow",
+                "Synchronous host-activity diagnostics overflowed by " +
+                    std::to_string(completed.overflow_count) +
+                    " completed scope(s)");
+        }
+    }
+
+    void PumpSuspendedHostActivityWarnings(
+        ActiveOperation& operation)
+    {
+        DrainCompletedHostActivityWarnings(operation);
+    }
+
     [[nodiscard]] BackendExecutionSnapshot Query()
     {
         try
@@ -444,18 +563,153 @@ struct ExecutionEngine::Impl
         }
     }
 
-    [[nodiscard]] std::chrono::milliseconds Remaining(
-        const ActiveOperation& operation,
-        Clock::time_point current) const
+    [[nodiscard]] BackendHealthReport CheckBackendHealth()
     {
-        if (!operation.bounded)
-            return {};
-        if (operation.suspended_at)
-            return operation.remaining_budget;
-        if (current >= operation.deadline)
-            return {};
-        return std::chrono::duration_cast<std::chrono::milliseconds>(
-            operation.deadline - current);
+        try
+        {
+            return backend.CheckHealth();
+        }
+        catch (const std::exception& ex)
+        {
+            return {
+                false,
+                BackendCoreState::Unknown,
+                std::string("execution health check threw: ") + ex.what()};
+        }
+        catch (...)
+        {
+            return {
+                false,
+                BackendCoreState::Unknown,
+                "execution health check threw"};
+        }
+    }
+
+    void ApplyCoreStallHealthProof(
+        ExecutionTerminalStatus status,
+        ExecutionError& error)
+    {
+        if (status != ExecutionTerminalStatus::CoreStalled)
+            return;
+        const BackendHealthReport health = CheckBackendHealth();
+        if (health.healthy &&
+            health.core_state == BackendCoreState::Paused)
+        {
+            return;
+        }
+        error = Error(
+            ExecutionErrorCode::BackendFailure,
+            health.diagnostic.empty()
+                ? "core_stalled: paused backend health is unproven"
+                : "core_stalled: " + health.diagnostic,
+            BackendIntegrity::Unknown);
+    }
+
+    void RebaselineHealth(
+        ActiveOperation& operation,
+        const BackendExecutionSnapshot& observed,
+        Clock::time_point current)
+    {
+        const HostActivityTracker::Snapshot host =
+            host_activity->snapshot();
+        operation.health_baseline = current;
+        operation.health_last_vi = observed.vi_count;
+        operation.health_host_generation = host.generation;
+        operation.stall_suspected = false;
+    }
+
+    [[nodiscard]] bool PumpCoreHealth(
+        ActiveOperation& operation,
+        const BackendExecutionSnapshot& observed,
+        Clock::time_point current)
+    {
+        DrainCompletedHostActivityWarnings(operation);
+
+        if (operation.kind == ExecutionOperationKind::SafePause ||
+            observed.core_state != BackendCoreState::Running)
+        {
+            operation.health_eligible = false;
+            RebaselineHealth(operation, observed, current);
+            return false;
+        }
+
+        const HostActivityTracker::Snapshot host =
+            host_activity->snapshot();
+        if (!operation.health_eligible)
+        {
+            operation.health_eligible = true;
+            RebaselineHealth(operation, observed, current);
+            return false;
+        }
+
+        if (host.in_flight != 0)
+        {
+            RebaselineHealth(operation, observed, current);
+            return false;
+        }
+
+        if (observed.vi_count != operation.health_last_vi ||
+            host.generation != operation.health_host_generation)
+        {
+            RebaselineHealth(operation, observed, current);
+            return false;
+        }
+
+        const Clock::duration stalled_for =
+            current - operation.health_baseline;
+        if (stalled_for >=
+            config.suspect_core_stall_after +
+                config.confirm_core_stall_after)
+        {
+            const BackendExecutionSnapshot confirmation = Query();
+            const HostActivityTracker::Snapshot confirmation_host =
+                host_activity->snapshot();
+            if (!confirmation.result.ok)
+            {
+                BeginFinish(
+                    ExecutionTerminalStatus::CleanupFailure,
+                    BackendError(
+                        "core-stall confirmation snapshot failed",
+                        confirmation.result));
+                return true;
+            }
+            if (confirmation.core_state != BackendCoreState::Running ||
+                confirmation.vi_count != observed.vi_count ||
+                confirmation_host.in_flight != 0 ||
+                confirmation_host.generation != host.generation)
+            {
+                RebaselineHealth(operation, confirmation, current);
+                return false;
+            }
+            if (!operation.stall_suspected)
+            {
+                operation.stall_suspected = true;
+                PublishHealthWarning(
+                    operation,
+                    ExecutionHealthWarningKind::SuspectedCoreStall,
+                    stalled_for,
+                    "suspected_core_stall",
+                    "Dolphin has not demonstrated VI or synchronous host progress");
+            }
+            BeginFinish(
+                ExecutionTerminalStatus::CoreStalled,
+                Error(
+                    ExecutionErrorCode::BackendFailure,
+                    "core_stalled"));
+            return true;
+        }
+        if (!operation.stall_suspected &&
+            stalled_for >= config.suspect_core_stall_after)
+        {
+            operation.stall_suspected = true;
+            PublishHealthWarning(
+                operation,
+                ExecutionHealthWarningKind::SuspectedCoreStall,
+                stalled_for,
+                "suspected_core_stall",
+                "Dolphin has not demonstrated VI or synchronous host progress");
+        }
+        return false;
     }
 
     [[nodiscard]] BackendResult RestoreThrottle(ActiveOperation& operation)
@@ -471,31 +725,6 @@ struct ExecutionEngine::Impl
         if (result.ok)
             operation.throttle_changed = false;
         return result;
-    }
-
-    void FreezeHandlerDecision(
-        SuspendedFrame& frame,
-        Clock::time_point current)
-    {
-        if (frame.decision_suspended_at)
-            return;
-        frame.remaining_decision_budget =
-            current >= frame.decision_deadline
-            ? std::chrono::milliseconds::zero()
-            : std::chrono::duration_cast<std::chrono::milliseconds>(
-                  frame.decision_deadline - current);
-        frame.decision_suspended_at = current;
-    }
-
-    void ResumeHandlerDecision(
-        SuspendedFrame& frame,
-        Clock::time_point current)
-    {
-        if (!frame.decision_suspended_at)
-            return;
-        frame.decision_deadline =
-            current + frame.remaining_decision_budget;
-        frame.decision_suspended_at.reset();
     }
 
     [[nodiscard]] ExecutionError ParkWakeGroup(
@@ -586,6 +815,7 @@ struct ExecutionEngine::Impl
         std::optional<StopRouteReceipt> stop = std::nullopt,
         const BackendExecutionSnapshot* known_snapshot = nullptr)
     {
+        DrainCompletedHostActivityWarnings(operation);
         BackendExecutionSnapshot observed =
             known_snapshot ? *known_snapshot : Query();
         if (!observed.result.ok && !error)
@@ -656,20 +886,12 @@ struct ExecutionEngine::Impl
                         : retired.message);
             }
         }
-        if (operation.handler_owner && !handlers.empty() &&
-            handlers.back().id == *operation.handler_owner)
-        {
-            ResumeHandlerDecision(handlers.back(), now());
-        }
-
         ExecutionTerminalResult terminal;
         terminal.operation_id = operation.id;
         terminal.kind = operation.kind;
         terminal.status = status;
         terminal.state_epoch = epoch;
         terminal.completed_count = operation.completed_count;
-        terminal.remaining_active_budget =
-            Remaining(operation, now());
         terminal.evidence = ConvertEvidence(observed);
         terminal.stop = std::move(stop);
         terminal.input_publication =
@@ -718,8 +940,21 @@ struct ExecutionEngine::Impl
         {
             std::vector<PendingParentTerminal> parents;
             parents.swap(pending_parent_terminals);
+            const bool pause_confirmed =
+                observed.result.ok &&
+                observed.core_state == BackendCoreState::Paused &&
+                observed.pause_confirmed;
             for (PendingParentTerminal& parent : parents)
             {
+                if (!pause_confirmed)
+                {
+                    parent.status =
+                        ExecutionTerminalStatus::CleanupFailure;
+                    parent.error = Error(
+                        ExecutionErrorCode::BackendFailure,
+                        "interruption-parent cancellation could not confirm Dolphin paused",
+                        BackendIntegrity::Unknown);
+                }
                 EmitTerminal(
                     std::move(parent.operation),
                     parent.status,
@@ -765,6 +1000,7 @@ struct ExecutionEngine::Impl
             const auto final_status = *finished.pending_terminal;
             ExecutionError final_error =
                 finished.pending_error.value_or(ExecutionError{});
+            ApplyCoreStallHealthProof(final_status, final_error);
             std::optional<StopRouteReceipt> final_stop =
                 std::move(finished.pending_stop);
             EmitTerminal(
@@ -867,29 +1103,6 @@ struct ExecutionEngine::Impl
         }
         if (const ExecutionRequestPolicy* policy = PolicyOf(request))
         {
-            if (policy->active_timeout <= std::chrono::milliseconds::zero())
-            {
-                return Error(
-                    ExecutionErrorCode::InvalidArgument,
-                    "Bounded execution requires a positive active timeout");
-            }
-            if (policy->vi_stall.enabled &&
-                policy->vi_stall.maximum_stall <=
-                    std::chrono::milliseconds::zero())
-            {
-                return Error(
-                    ExecutionErrorCode::InvalidArgument,
-                    "VI-stall policy requires a positive maximum stall");
-            }
-            if (policy->vi_stall.enabled &&
-                !HasExecutionCapability(
-                    backend.Capabilities(),
-                    BackendExecutionCapability::ViObservation))
-            {
-                return Error(
-                    ExecutionErrorCode::Unsupported,
-                    "Execution backend does not support VI observation");
-            }
             if (policy->movie_ended != MovieEndedPolicy::Ignore &&
                 !HasExecutionCapability(
                     backend.Capabilities(),
@@ -967,6 +1180,15 @@ struct ExecutionEngine::Impl
             break;
         }
         case ExecutionOperationKind::SafePause:
+            if (std::get<SafePauseRequest>(request)
+                    .confirmation_timeout <=
+                std::chrono::milliseconds::zero())
+            {
+                return Error(
+                    ExecutionErrorCode::InvalidArgument,
+                    "SafePause requires a positive host confirmation timeout");
+            }
+            break;
         case ExecutionOperationKind::InteractiveResume:
             break;
         }
@@ -1293,6 +1515,10 @@ struct ExecutionEngine::Impl
                 operation.pending_terminal = ExecutionTerminalStatus::Paused;
                 return {};
             }
+            operation.pause_control_deadline =
+                now() +
+                std::get<SafePauseRequest>(operation.request)
+                    .confirmation_timeout;
             if (BackendResult pause = CallBackend(
                     "safe pause",
                     [&] { return backend.RequestPause(); });
@@ -1406,7 +1632,7 @@ struct ExecutionEngine::Impl
             if (operation.completed_count >= TargetCount(operation))
             {
                 BeginFinish(
-                    ExecutionTerminalStatus::TimedOut,
+                    ExecutionTerminalStatus::BackendFailure,
                     Error(
                         ExecutionErrorCode::InputUnavailable,
                         "input advancement exhausted its declared bound"));
@@ -1553,7 +1779,7 @@ ExecutionSubmissionReceipt ExecutionEngine::Submit(ExecutionRequest request)
         impl_->active->pause_control_id = pause_id;
         const auto& pause_request = std::get<SafePauseRequest>(request);
         impl_->active->pause_control_deadline =
-            impl_->now() + pause_request.policy.active_timeout;
+            impl_->now() + pause_request.confirmation_timeout;
         receipt.accepted = true;
         receipt.operation_id = pause_id;
         impl_->BeginFinish(ExecutionTerminalStatus::Paused);
@@ -1584,13 +1810,7 @@ ExecutionSubmissionReceipt ExecutionEngine::Submit(ExecutionRequest request)
     operation.input_validated =
         kind == ExecutionOperationKind::InputSynchronizedAdvance;
     operation.started = impl_->now();
-    operation.last_vi_change = operation.started;
-    if (const ExecutionRequestPolicy* policy = PolicyOf(operation.request))
-    {
-        operation.bounded = true;
-        operation.remaining_budget = policy->active_timeout;
-        operation.deadline = operation.started + policy->active_timeout;
-    }
+    operation.health_baseline = operation.started;
     const BackendExecutionSnapshot observed = impl_->Query();
     if (!observed.result.ok)
     {
@@ -1598,7 +1818,10 @@ ExecutionSubmissionReceipt ExecutionEngine::Submit(ExecutionRequest request)
             BackendError("execution start snapshot failed", observed.result);
         return receipt;
     }
-    operation.last_vi = observed.vi_count;
+    operation.health_last_vi = observed.vi_count;
+    (void)impl_->host_activity->DrainCompletedActivities();
+    operation.health_host_generation =
+        impl_->host_activity->snapshot().generation;
     impl_->active.emplace(std::move(operation));
     receipt.accepted = true;
     receipt.operation_id = operation_id;
@@ -1660,15 +1883,15 @@ ExecutionSubmissionReceipt ExecutionEngine::SubmitInterruptionChild(
             "interruption frame is not awaiting a child operation");
         return receipt;
     }
-    Impl::SuspendedFrame& frame = impl_->handlers.back();
-    auto current = impl_->now();
-    if (current >= frame.decision_deadline)
+    if (!impl_->handlers.back().pause_confirmed)
     {
         receipt.error = Error(
-            ExecutionErrorCode::InterruptionPolicyViolation,
-            "interruption handler decision budget has expired");
+            ExecutionErrorCode::InvalidState,
+            "interruption child requires an authoritatively paused core");
         return receipt;
     }
+    Impl::SuspendedFrame& frame = impl_->handlers.back();
+    impl_->PumpSuspendedHostActivityWarnings(frame.parent);
     if (CancellationOf(frame.parent.request)
             .is_cancellation_requested())
     {
@@ -1690,50 +1913,6 @@ ExecutionSubmissionReceipt ExecutionEngine::SubmitInterruptionChild(
         receipt.error = std::move(validation);
         return receipt;
     }
-    current = impl_->now();
-    if (current >= frame.decision_deadline)
-    {
-        receipt.error = Error(
-            ExecutionErrorCode::InterruptionPolicyViolation,
-            "interruption handler decision budget expired during validation");
-        return receipt;
-    }
-
-    if (ExecutionRequestPolicy* policy = std::visit(
-            [](auto& value) -> ExecutionRequestPolicy* {
-                using Request = std::decay_t<decltype(value)>;
-                if constexpr (std::is_same_v<Request, InteractiveResumeRequest>)
-                    return nullptr;
-                else
-                    return &value.policy;
-            },
-            request))
-    {
-        const auto handler_remaining =
-            std::chrono::duration_cast<std::chrono::milliseconds>(
-                frame.decision_deadline - current);
-        const auto child_bound = std::min(
-            frame.descriptor.child_active_budget,
-            handler_remaining);
-        if (child_bound <= std::chrono::milliseconds::zero())
-        {
-            receipt.error = Error(
-                ExecutionErrorCode::InterruptionPolicyViolation,
-                "interruption child has no remaining active budget");
-            return receipt;
-        }
-        if (policy->active_timeout > child_bound)
-        {
-            policy->active_timeout = child_bound;
-        }
-    }
-    else
-    {
-        receipt.error = Error(
-            ExecutionErrorCode::InterruptionPolicyViolation,
-            "interruption children must be bounded");
-        return receipt;
-    }
 
     const ExecutionOperationId operation_id = impl_->NextOperationId();
     if (!operation_id)
@@ -1752,11 +1931,7 @@ ExecutionSubmissionReceipt ExecutionEngine::SubmitInterruptionChild(
         kind == ExecutionOperationKind::InputSynchronizedAdvance;
     child.handler_owner = frame_id;
     child.started = impl_->now();
-    child.last_vi_change = child.started;
-    const ExecutionRequestPolicy* policy = PolicyOf(child.request);
-    child.bounded = true;
-    child.remaining_budget = policy->active_timeout;
-    child.deadline = child.started + policy->active_timeout;
+    child.health_baseline = child.started;
     const BackendExecutionSnapshot observed = impl_->Query();
     if (!observed.result.ok)
     {
@@ -1782,8 +1957,9 @@ ExecutionSubmissionReceipt ExecutionEngine::SubmitInterruptionChild(
         frame.parent.wake_group_parked = false;
         child.borrowed_wake_group = true;
     }
-    child.last_vi = observed.vi_count;
-    impl_->FreezeHandlerDecision(frame, current);
+    child.health_last_vi = observed.vi_count;
+    child.health_host_generation =
+        impl_->host_activity->snapshot().generation;
     impl_->active.emplace(std::move(child));
     receipt.accepted = true;
     receipt.operation_id = operation_id;
@@ -1836,6 +2012,13 @@ ExecutionControlReceipt ExecutionEngine::Cancel(CancellationReason reason)
         ? impl_->active->id
         : impl_->handlers.back().parent.id;
     (void)reason;
+    if (!impl_->active && !impl_->handlers.empty())
+    {
+        Impl::SuspendedFrame anchor =
+            std::move(impl_->handlers.back());
+        impl_->handlers.pop_back();
+        impl_->active.emplace(std::move(anchor.parent));
+    }
     if (impl_->active && impl_->active->borrowed_wake_group &&
         impl_->active->wake_group && !impl_->handlers.empty() &&
         impl_->active->handler_owner == impl_->handlers.back().id)
@@ -1856,21 +2039,6 @@ ExecutionControlReceipt ExecutionEngine::Cancel(CancellationReason reason)
     if (impl_->active)
     {
         impl_->BeginFinish(ExecutionTerminalStatus::Cancelled);
-    }
-    else
-    {
-        const BackendExecutionSnapshot observed = impl_->Query();
-        std::vector<Impl::PendingParentTerminal> parents;
-        parents.swap(impl_->pending_parent_terminals);
-        for (Impl::PendingParentTerminal& parent : parents)
-        {
-            impl_->EmitTerminal(
-                std::move(parent.operation),
-                parent.status,
-                std::move(parent.error),
-                std::nullopt,
-                &observed);
-        }
     }
     return receipt;
 }
@@ -1897,23 +2065,21 @@ ExecutionControlReceipt ExecutionEngine::CompleteInterruptionHandler(
             "interruption frame is not awaiting completion");
         return receipt;
     }
+    if (!impl_->handlers.back().pause_confirmed)
+    {
+        receipt.error = Error(
+            ExecutionErrorCode::InvalidState,
+            "interruption completion requires an authoritatively paused core");
+        return receipt;
+    }
+    impl_->PumpSuspendedHostActivityWarnings(
+        impl_->handlers.back().parent);
 
     Impl::SuspendedFrame frame =
         std::move(impl_->handlers.back());
     impl_->handlers.pop_back();
     receipt.accepted = true;
     receipt.operation_id = frame.parent.id;
-    const auto current = impl_->now();
-    if (current >= frame.decision_deadline)
-    {
-        impl_->active.emplace(std::move(frame.parent));
-        impl_->BeginFinish(
-            ExecutionTerminalStatus::InterruptionFailed,
-            Error(
-                ExecutionErrorCode::InterruptionPolicyViolation,
-                "interruption handler exceeded its bounded decision budget"));
-        return receipt;
-    }
     if (outcome != InterruptionHandlerOutcome::ResumeParent)
     {
         impl_->active.emplace(std::move(frame.parent));
@@ -1943,24 +2109,9 @@ ExecutionControlReceipt ExecutionEngine::CompleteInterruptionHandler(
         impl_->BeginFinish(ExecutionTerminalStatus::Cancelled);
         return receipt;
     }
-    if (frame.parent.bounded &&
-        frame.parent.remaining_budget <=
-            std::chrono::milliseconds::zero())
-    {
-        impl_->active.emplace(std::move(frame.parent));
-        impl_->BeginFinish(ExecutionTerminalStatus::TimedOut);
-        return receipt;
-    }
-    if (frame.parent.suspended_at)
-    {
-        const auto suspended_duration =
-            current - *frame.parent.suspended_at;
-        frame.parent.started += suspended_duration;
-        frame.parent.last_vi_change += suspended_duration;
-        frame.parent.suspended_at.reset();
-    }
-    if (frame.parent.bounded)
-        frame.parent.deadline = current + frame.parent.remaining_budget;
+    frame.parent.health_eligible = false;
+    frame.parent.health_baseline = impl_->now();
+    frame.parent.stall_suspected = false;
     impl_->active.emplace(std::move(frame.parent));
 
     ExecutionError resumed =
@@ -2240,41 +2391,77 @@ void ExecutionEngine::HandleStopPointReceipt(StopRouteReceipt receipt)
     }
     const auto suspended_at = impl_->now();
     Impl::ActiveOperation parent = std::move(*impl_->active);
-    if (parent.bounded)
-        parent.remaining_budget =
-            impl_->Remaining(parent, suspended_at);
-    parent.suspended_at = suspended_at;
+    parent.health_eligible = false;
+    parent.health_baseline = suspended_at;
+    parent.stall_suspected = false;
     impl_->active.reset();
     impl_->handlers.push_back({
         frame_id,
         descriptor->second,
         std::move(parent),
-        suspended_at + descriptor->second.child_active_budget,
-        descriptor->second.child_active_budget,
-        {}});
+        false,
+        suspended_at + impl_->config.pause_confirmation_timeout});
     BackendExecutionSnapshot observed = impl_->Query();
-    if (observed.result.ok &&
-        (observed.core_state != BackendCoreState::Paused ||
-            !observed.pause_confirmed))
+    if (!observed.result.ok)
     {
-        const BackendResult pause = impl_->CallBackend(
-            "interruption pause confirmation",
-            [&] { return impl_->backend.RequestPause(); });
-        if (!pause.ok)
-        {
-            Impl::SuspendedFrame failed =
-                std::move(impl_->handlers.back());
-            impl_->handlers.pop_back();
-            impl_->active.emplace(std::move(failed.parent));
-            impl_->BeginFinish(
-                ExecutionTerminalStatus::InterruptionFailed,
-                BackendError(
-                    "interruption pause request failed",
-                    pause),
-                std::move(receipt));
-            return;
-        }
-        observed = impl_->Query();
+        Impl::SuspendedFrame failed =
+            std::move(impl_->handlers.back());
+        impl_->handlers.pop_back();
+        impl_->active.emplace(std::move(failed.parent));
+        impl_->BeginFinish(
+            ExecutionTerminalStatus::CleanupFailure,
+            BackendError(
+                "interruption pause-confirmation snapshot failed",
+                observed.result),
+            std::move(receipt));
+        return;
+    }
+    if (observed.core_state == BackendCoreState::Paused &&
+        observed.pause_confirmed)
+    {
+        impl_->handlers.back().pause_confirmed = true;
+        impl_->handlers.back().pause_confirmation_deadline.reset();
+        impl_->PublishState(&observed);
+        return;
+    }
+
+    const BackendResult pause = impl_->CallBackend(
+        "interruption pause confirmation",
+        [&] { return impl_->backend.RequestPause(); });
+    if (!pause.ok)
+    {
+        Impl::SuspendedFrame failed =
+            std::move(impl_->handlers.back());
+        impl_->handlers.pop_back();
+        impl_->active.emplace(std::move(failed.parent));
+        impl_->BeginFinish(
+            ExecutionTerminalStatus::InterruptionFailed,
+            BackendError(
+                "interruption pause request failed",
+                pause),
+            std::move(receipt));
+        return;
+    }
+    observed = impl_->Query();
+    if (!observed.result.ok)
+    {
+        Impl::SuspendedFrame failed =
+            std::move(impl_->handlers.back());
+        impl_->handlers.pop_back();
+        impl_->active.emplace(std::move(failed.parent));
+        impl_->BeginFinish(
+            ExecutionTerminalStatus::CleanupFailure,
+            BackendError(
+                "post-request interruption pause snapshot failed",
+                observed.result),
+            std::move(receipt));
+        return;
+    }
+    if (observed.core_state == BackendCoreState::Paused &&
+        observed.pause_confirmed)
+    {
+        impl_->handlers.back().pause_confirmed = true;
+        impl_->handlers.back().pause_confirmation_deadline.reset();
     }
     impl_->PublishState(&observed);
 }
@@ -2301,45 +2488,10 @@ void ExecutionEngine::Pump()
         return;
     }
 
-    if (!impl_->handlers.empty() &&
-        !impl_->handlers.back().decision_suspended_at &&
-        current >= impl_->handlers.back().decision_deadline)
-    {
-        Impl::SuspendedFrame expired =
-            std::move(impl_->handlers.back());
-        impl_->handlers.pop_back();
-        ExecutionError timeout = Error(
-            ExecutionErrorCode::InterruptionPolicyViolation,
-            "interruption handler exceeded its bounded decision budget");
-        if (impl_->active)
-        {
-            if (impl_->active->borrowed_wake_group &&
-                impl_->active->wake_group &&
-                impl_->active->handler_owner == expired.id)
-            {
-                expired.parent.wake_group.emplace(
-                    std::move(*impl_->active->wake_group));
-                impl_->active->wake_group.reset();
-                impl_->active->borrowed_wake_group = false;
-            }
-            impl_->pending_parent_terminals.push_back({
-                std::move(expired.parent),
-                ExecutionTerminalStatus::InterruptionFailed,
-                std::move(timeout)});
-            impl_->BeginFinish(ExecutionTerminalStatus::Cancelled);
-        }
-        else
-        {
-            impl_->active.emplace(std::move(expired.parent));
-            impl_->BeginFinish(
-                ExecutionTerminalStatus::InterruptionFailed,
-                std::move(timeout));
-        }
-        return;
-    }
-
     if (!impl_->active)
     {
+        if (impl_->handlers.empty())
+            return;
         const BackendExecutionSnapshot observed = impl_->Query();
         if (!observed.result.ok)
         {
@@ -2353,6 +2505,31 @@ void ExecutionEngine::Pump()
                     "interruption maintenance snapshot failed",
                     observed.result));
             return;
+        }
+        Impl::SuspendedFrame& frame = impl_->handlers.back();
+        impl_->PumpSuspendedHostActivityWarnings(frame.parent);
+        if (!frame.pause_confirmed)
+        {
+            if (observed.core_state == BackendCoreState::Paused &&
+                observed.pause_confirmed)
+            {
+                frame.pause_confirmed = true;
+                frame.pause_confirmation_deadline.reset();
+            }
+            else if (frame.pause_confirmation_deadline &&
+                current >= *frame.pause_confirmation_deadline)
+            {
+                Impl::SuspendedFrame failed = std::move(frame);
+                impl_->handlers.pop_back();
+                impl_->active.emplace(std::move(failed.parent));
+                impl_->BeginFinish(
+                    ExecutionTerminalStatus::InterruptionFailed,
+                    Error(
+                        ExecutionErrorCode::BackendFailure,
+                        "interruption pause confirmation exceeded its host-operation bound",
+                        BackendIntegrity::Unknown));
+                return;
+            }
         }
         const ExecutionEnvironmentEvidence evidence =
             ConvertEvidence(observed);
@@ -2400,6 +2577,7 @@ void ExecutionEngine::Pump()
                 *finished.pending_terminal;
             ExecutionError error =
                 finished.pending_error.value_or(ExecutionError{});
+            impl_->ApplyCoreStallHealthProof(status, error);
             std::optional<StopRouteReceipt> stop =
                 std::move(finished.pending_stop);
             impl_->EmitTerminal(
@@ -2415,13 +2593,19 @@ void ExecutionEngine::Pump()
             Impl::ActiveOperation failed = std::move(operation);
             const std::optional<StopRouteReceipt> stop =
                 std::move(failed.pending_stop);
+            ExecutionError timeout_error =
+                failed.kind == ExecutionOperationKind::SafePause &&
+                    failed.pending_error
+                ? std::move(*failed.pending_error)
+                : Error(
+                      ExecutionErrorCode::BackendFailure,
+                      "Dolphin pause confirmation exceeded its cleanup bound",
+                      BackendIntegrity::Unknown);
+            timeout_error.integrity = BackendIntegrity::Unknown;
             impl_->EmitTerminal(
                 std::move(failed),
                 ExecutionTerminalStatus::CleanupFailure,
-                Error(
-                    ExecutionErrorCode::BackendFailure,
-                    "Dolphin pause confirmation exceeded its cleanup bound",
-                    BackendIntegrity::Unknown),
+                std::move(timeout_error),
                 stop,
                 &observed);
         }
@@ -2436,9 +2620,16 @@ void ExecutionEngine::Pump()
         return;
     }
 
-    if (operation.bounded && current >= operation.deadline)
+    if (operation.kind == ExecutionOperationKind::SafePause &&
+        operation.pause_control_deadline &&
+        current >= *operation.pause_control_deadline)
     {
-        impl_->BeginFinish(ExecutionTerminalStatus::TimedOut);
+        impl_->BeginFinish(
+            ExecutionTerminalStatus::CleanupFailure,
+            Error(
+                ExecutionErrorCode::BackendFailure,
+                "Dolphin pause confirmation exceeded its host-operation bound",
+                BackendIntegrity::Unknown));
         return;
     }
 
@@ -2457,29 +2648,59 @@ void ExecutionEngine::Pump()
                     : ExecutionError{});
             return;
         }
-        if (policy->vi_stall.enabled)
+    }
+
+    if (operation.kind != ExecutionOperationKind::SafePause &&
+        observed.core_state == BackendCoreState::Paused &&
+        !observed.pause_confirmed)
+    {
+        operation.health_eligible = false;
+        impl_->RebaselineHealth(operation, observed, current);
+        if (!operation.unconfirmed_pause_deadline)
         {
-            if (observed.vi_count != operation.last_vi)
-            {
-                operation.last_vi = observed.vi_count;
-                operation.last_vi_change = current;
-            }
-            const auto warmup_end =
-                operation.started + policy->vi_stall.warmup;
-            const auto stall_baseline =
-                std::max(operation.last_vi_change, warmup_end);
-            if (current >= warmup_end &&
-                current - stall_baseline >=
-                    policy->vi_stall.maximum_stall)
-            {
-                impl_->BeginFinish(ExecutionTerminalStatus::ViStalled);
-                return;
-            }
+            operation.unconfirmed_pause_deadline =
+                current + impl_->config.pause_confirmation_timeout;
         }
+        else if (current >= *operation.unconfirmed_pause_deadline)
+        {
+            const BackendHealthReport health =
+                impl_->CheckBackendHealth();
+            impl_->BeginFinish(
+                ExecutionTerminalStatus::BackendFailure,
+                Error(
+                    ExecutionErrorCode::BackendFailure,
+                    health.diagnostic.empty()
+                        ? "execution backend did not confirm its paused state"
+                        : "execution backend did not confirm its paused state: " +
+                            health.diagnostic,
+                    BackendIntegrity::Unknown));
+        }
+        return;
+    }
+    operation.unconfirmed_pause_deadline.reset();
+
+    if (operation.kind != ExecutionOperationKind::SafePause &&
+        observed.core_state != BackendCoreState::Running &&
+        observed.core_state != BackendCoreState::Paused)
+    {
+        const BackendHealthReport health =
+            impl_->CheckBackendHealth();
+        impl_->BeginFinish(
+            ExecutionTerminalStatus::BackendFailure,
+            Error(
+                ExecutionErrorCode::BackendFailure,
+                health.diagnostic.empty()
+                    ? "execution backend left Running without an authoritative pause"
+                    : "execution backend left Running: " +
+                        health.diagnostic,
+                BackendIntegrity::Unknown));
+        return;
     }
 
     if (observed.core_state == BackendCoreState::Running)
         operation.observed_running = true;
+    if (impl_->PumpCoreHealth(operation, observed, current))
+        return;
 
     switch (operation.kind)
     {
@@ -2535,17 +2756,27 @@ std::optional<Clock::time_point> ExecutionEngine::next_wake() const
     const Clock::time_point maintenance =
         impl_->now() + impl_->config.maintenance_interval;
     Clock::time_point wake = maintenance;
-    if (impl_->active && impl_->active->bounded)
-        wake = std::min(wake, impl_->active->deadline);
     if (impl_->active && impl_->active->pause_control_deadline)
     {
         wake = std::min(
             wake,
             *impl_->active->pause_control_deadline);
     }
+    if (impl_->active &&
+        impl_->active->unconfirmed_pause_deadline)
+    {
+        wake = std::min(
+            wake,
+            *impl_->active->unconfirmed_pause_deadline);
+    }
     if (!impl_->handlers.empty() &&
-        !impl_->handlers.back().decision_suspended_at)
-        wake = std::min(wake, impl_->handlers.back().decision_deadline);
+        !impl_->handlers.back().pause_confirmed &&
+        impl_->handlers.back().pause_confirmation_deadline)
+    {
+        wake = std::min(
+            wake,
+            *impl_->handlers.back().pause_confirmation_deadline);
+    }
     return wake;
 }
 

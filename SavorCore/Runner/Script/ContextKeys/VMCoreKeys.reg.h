@@ -9,7 +9,6 @@ namespace savor::context::key::core {
   X(RUN_HIT_PC,              0x0000, "core.run.hit_pc")        \
   X(RUN_HIT_BP_KEY,          0x0001, "core.run.hit_bp")        \
   X(DW_RUN_OUTCOME_CODE,     0x0002, "core.run.outcome_code")  \
-  X(ELAPSED_MS,              0x0003, "core.run.elapsed_ms")    \
   X(LAST_SAVESTATE_PATH,     0x0004, "core.run.last_savestate_path")    \
   X(GAME_ISO_PATH,           0x0005, "core.run.game_iso_path")    \
   X(RUN_EXPECTED_MATCH,      0x0006, "core.run.expected_match")    \
@@ -23,14 +22,9 @@ namespace savor::context::key::core {
 \
   X(VI_FIRST,                0x0020, "core.metrics.vi_first")  \
   X(VI_LAST,                 0x0021, "core.metrics.vi_last")   \
-  X(POLL_MS,                 0x0022, "core.metrics.poll_ms")   \
   X(VI_DELTA,                0x0023, "core.metrics.vi_delta")   \
 \
-  X(RUN_MS,                  0x0040, "core.input.run_ms")      \
-  X(VI_STALL_MS,             0x0041, "core.input.vi_stall_ms") \
-  X(PROGRESS_RATE,           0x0042, "core.input.progress_rate") \
   X(PROGRESS_CORE_FLAGS,     0x0043, "core.input.progress_core_flags") \
-  X(RUN_POLL_MS,             0x0044, "core.input.run_poll_ms") \
   X(CAPTURE_PROFILE_PATH,    0x0045, "core.capture.profile_path") \
   X(CAPTURE_OUTPUT_PATH,     0x0046, "core.capture.output_path") \
   X(MEMWRITE_STATUS,         0x0047, "core.memwrite.status") \

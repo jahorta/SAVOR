@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ExecutionTypes.h"
+#include "HostActivityTracker.h"
 #include "IExecutionBackendPort.h"
 #include "IInputAdvancePort.h"
 #include "../StopPoints/StopPointRouter.h"
@@ -22,6 +23,15 @@ struct ExecutionEngineConfig
     std::function<std::chrono::steady_clock::time_point()> now;
     std::vector<InterruptionHandlerDescriptor> interruption_handlers;
     IInputAdvancePort* input_advance = nullptr;
+    HostActivityTracker* host_activity = nullptr;
+    std::chrono::milliseconds suspect_core_stall_after{
+        std::chrono::seconds(10)};
+    std::chrono::milliseconds confirm_core_stall_after{
+        std::chrono::seconds(10)};
+    std::chrono::milliseconds host_activity_warning_after{
+        std::chrono::seconds(10)};
+    std::chrono::milliseconds host_activity_warning_repeat{
+        std::chrono::seconds(30)};
 };
 
 class ExecutionEngine final : private IStopPointConsumer

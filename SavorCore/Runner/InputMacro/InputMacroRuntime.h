@@ -32,15 +32,12 @@ enum class InputMacroFailure : std::uint8_t {
     EmptyPlan,
     EmptyExpectedKeys,
     InvalidAddress,
-    InvalidTimeout,
     InvalidBaselineReference,
     UndeclaredBreakpoint,
     UnauthorizedBreakpoint,
     SessionUnavailable,
-    BreakpointTimeout,
     UnexpectedBreakpoint,
     MemoryReadFailed,
-    MemoryTimeout,
     MissingBaseline,
     HostFailure,
     Cancelled,
@@ -71,7 +68,6 @@ struct InputMacroStepResult {
     std::uint32_t memory_latest{0};
     bool memory_changed{false};
     std::uint32_t memory_poll_count{0};
-    std::uint32_t elapsed_ms{0};
     std::uint32_t diagnostic_cycle_index{0};
 
     std::string diagnostic;

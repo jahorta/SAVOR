@@ -86,7 +86,6 @@ namespace savor {
 			bool include_gated_hit_lookup{ false };
 			bool update_derived{ true };
 			bool track_input_poll{ false };
-			uint32_t poll_ms_override{ 0 };
 		};
 
 		struct RunUntilBpCoreResult {
@@ -98,7 +97,6 @@ namespace savor {
 			GCInputFrame requested_input{};
 			uint32_t input_poll_count{ 0 };
 			bool input_acknowledged{ false };
-			uint32_t elapsed_ms{ 0 };
 		};
 
 		std::unique_ptr<inputmacro::InputMacroRuntime> input_macro_runtime_;
@@ -192,8 +190,6 @@ namespace savor {
 		void op_emit_result(const PSOp& op, PSResult& result, PSContext& ctx) const;
 		bool op_return_result(const PSOp& op, PSResult& result, PSContext& ctx) const;
 		bool op_apply_input_from(const PSOp& op, PSResult& result, PSContext& ctx);
-		void op_set_timeout(const PSOp& op, PSContext& ctx) const;
-		void op_set_timeout_from(const PSOp& op, PSContext& ctx) const;
 		bool op_movie_play_from(const PSOp& op, PSResult& result, PSContext& ctx);
 		bool op_movie_stop(PSResult& result, PSContext& ctx);
 		bool op_save_savestate_from(const PSOp& op, PSResult& result, PSContext& ctx);
@@ -211,8 +207,7 @@ namespace savor {
 		bool read_u32(uint32_t address, uint32_t& value) override;
 		inputmacro::MemoryChangeResult wait_for_u32_change(
 			uint32_t address,
-			uint32_t baseline,
-			uint32_t timeout_ms) override;
+			uint32_t baseline) override;
 		void set_neutral_input() override;
 		void clear_macro_memory_watchpoints() override;
 		void restore_breakpoint_state() override;

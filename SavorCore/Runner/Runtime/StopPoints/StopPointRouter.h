@@ -1,6 +1,7 @@
 #pragma once
 
 #include "PhysicalStopPointManager.h"
+#include "../Execution/HostActivityTracker.h"
 
 #include <array>
 #include <atomic>
@@ -164,7 +165,8 @@ public:
     explicit StopPointRouter(
         PhysicalStopPointManager& physical_manager,
         IStopPointCpuEvaluator* cpu_evaluator = nullptr,
-        IStopPointCpuObserver* cpu_observer = nullptr);
+        IStopPointCpuObserver* cpu_observer = nullptr,
+        HostActivityTracker* host_activity = nullptr);
     ~StopPointRouter() override;
 
     StopPointRouter(const StopPointRouter&) = delete;
@@ -266,6 +268,7 @@ private:
     PhysicalStopPointManager& physical_manager_;
     IStopPointCpuEvaluator* cpu_evaluator_ = nullptr;
     IStopPointCpuObserver* cpu_observer_ = nullptr;
+    HostActivityTracker* host_activity_ = nullptr;
     std::shared_ptr<StopPointLeaseControl> lease_control_;
     std::thread::id owner_thread_;
     StateEpoch state_epoch_;

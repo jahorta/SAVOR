@@ -193,11 +193,6 @@ InputMacroStepResult InputMacroRuntime::Validate(
             invalid.diagnostic = "memory-change wait has an invalid u32 address";
             return invalid;
         }
-        if (change.timeout_ms == 0) {
-            invalid.failure = InputMacroFailure::InvalidTimeout;
-            invalid.diagnostic = "memory-change wait has a zero timeout";
-            return invalid;
-        }
         const auto baseline = prior_captures.find(change.baseline_id);
         if (change.baseline_id.empty()
             || baseline == prior_captures.end()
@@ -309,13 +304,9 @@ InputMacroStepResult InputMacroRuntime::ExecuteNext()
         result.requested_input = wait->input;
         result.input_poll_count = host_result.input_poll_count;
         result.input_acknowledged = host_result.input_acknowledged;
-        result.elapsed_ms = host_result.elapsed_ms;
         if (host_result.status == InputMacroHostStatus::Cancelled) {
             return FailResult(std::move(result), InputMacroFailure::Cancelled, "breakpoint wait was cancelled",
                 InputMacroTerminalStatus::Cancelled);
-        }
-        if (host_result.status == InputMacroHostStatus::TimedOut) {
-            return FailResult(std::move(result), InputMacroFailure::BreakpointTimeout, "breakpoint wait timed out");
         }
         if (host_result.status != InputMacroHostStatus::Succeeded || !host_result.hit) {
             return FailResult(std::move(result), InputMacroFailure::HostFailure, "breakpoint wait failed in the host");
@@ -370,13 +361,11 @@ InputMacroStepResult InputMacroRuntime::ExecuteNext()
     result.memory_baseline = baseline->second.value;
     const auto host_result = host_.wait_for_u32_change(
         change.address,
-        baseline->second.value,
-        change.timeout_ms);
+        baseline->second.value);
     result.memory_latest = host_result.latest_value;
     result.memory_changed = host_result.status == InputMacroHostStatus::Succeeded
         && host_result.latest_value != baseline->second.value;
     result.memory_poll_count = host_result.poll_count;
-    result.elapsed_ms = host_result.elapsed_ms;
     if (host_result.status == InputMacroHostStatus::Cancelled) {
         return FailResult(std::move(result), InputMacroFailure::Cancelled, "memory-change wait was cancelled",
             InputMacroTerminalStatus::Cancelled);
@@ -384,10 +373,6 @@ InputMacroStepResult InputMacroRuntime::ExecuteNext()
     if (host_result.status == InputMacroHostStatus::ReadFailed) {
         return FailResult(std::move(result), InputMacroFailure::MemoryReadFailed,
             "memory-change wait encountered a read failure");
-    }
-    if (host_result.status == InputMacroHostStatus::TimedOut) {
-        return FailResult(std::move(result), InputMacroFailure::MemoryTimeout,
-            "memory-change wait timed out");
     }
     if (host_result.status != InputMacroHostStatus::Succeeded || !result.memory_changed) {
         return FailResult(std::move(result), InputMacroFailure::HostFailure,

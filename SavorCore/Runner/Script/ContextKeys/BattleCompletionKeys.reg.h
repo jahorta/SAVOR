@@ -6,7 +6,6 @@
 namespace savor::context::key::battlecompletion {
 
 #define BATTLE_COMPLETION_KEYS(X) \
-    X(RUN_TIMEOUT_MS,              0x0600, "battle.completion.run_timeout_ms") \
     X(OUTPUT_SAVESTATE_PATH,       0x0601, "battle.completion.output_savestate_path") \
     X(OUTCOME,                     0x0602, "battle.completion.outcome") \
     X(PROVIDER_FAILURE,            0x0603, "battle.completion.provider_failure") \

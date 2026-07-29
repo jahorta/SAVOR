@@ -2932,7 +2932,8 @@ std::string build_first_battle_capture_profile_ini()
 
     // action_view_dispatch_state_80051424 is intentionally omitted from the
     // default profile. It is useful in narrow action-view research profiles,
-    // but it fires once per update tick and can exhaust the VM run timeout.
+    // but it fires once per update tick and produces excessive default-profile
+    // traffic.
 
     write_checkpoint(
         out,

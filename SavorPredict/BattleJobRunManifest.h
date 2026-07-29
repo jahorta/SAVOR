@@ -25,7 +25,6 @@ struct BattleJobRunSummary {
     std::filesystem::path trace_report_path;
     BattlePredictorResourceBundlePtr resource_inputs;
     std::string terminal_state;
-    bool timed_out = false;
     bool capture_found = false;
     PreparedCaptureArtifact capture_artifact;
     int trace_exit_code = -1;

@@ -229,7 +229,7 @@ void RegisterSeedProbePhaseDescriptors(
         return;
     }
 
-    auto neutral = BuildSeedProbeNeutralDescriptor(execution_db, analysis_db, config.authoring_db);
+    auto neutral = BuildSeedProbeNeutralDescriptor(execution_db, analysis_db);
     auto grid = BuildSeedProbeGridDescriptor(
         execution_db,
         analysis_db,

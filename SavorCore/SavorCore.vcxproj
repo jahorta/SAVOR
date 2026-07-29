@@ -250,6 +250,7 @@
     <ClInclude Include="Runner\Runtime\EmulationSession.h" />
     <ClInclude Include="Runner\Runtime\Execution\ExecutionEngine.h" />
     <ClInclude Include="Runner\Runtime\Execution\ExecutionTypes.h" />
+    <ClInclude Include="Runner\Runtime\Execution\HostActivityTracker.h" />
     <ClInclude Include="Runner\Runtime\Execution\IExecutionBackendPort.h" />
     <ClInclude Include="Runner\Runtime\Execution\IInputAdvancePort.h" />
     <ClInclude Include="Runner\Runtime\IDolphinBackend.h" />

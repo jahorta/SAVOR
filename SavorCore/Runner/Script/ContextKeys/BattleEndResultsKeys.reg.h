@@ -7,7 +7,6 @@
 namespace savor::context::key::battleend {
 
 #define BATTLE_END_RESULTS_KEYS(X) \
-    X(RUN_TIMEOUT_MS,            0x0500, "battle.end_results.run_timeout_ms") \
     X(ACCELERATION_POLICY,       0x0501, "battle.end_results.acceleration_policy") \
     X(OUTPUT_SAVESTATE_PATH,     0x0502, "battle.end_results.output_savestate_path") \
     X(OUTCOME,                   0x0503, "battle.end_results.outcome") \

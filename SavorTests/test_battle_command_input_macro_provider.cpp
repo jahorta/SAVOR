@@ -76,7 +76,6 @@ void ExpectActionEquivalent(
                 static_assert(std::is_same_v<T, inputmacro::WaitU32ChangeAction>);
                 EXPECT_EQ(left.baseline_id, right.baseline_id);
                 EXPECT_EQ(left.address, right.address);
-                EXPECT_EQ(left.timeout_ms, right.timeout_ms);
                 EXPECT_EQ(left.diagnostic_cycle_index, right.diagnostic_cycle_index);
             }
         },
@@ -163,7 +162,6 @@ TEST(BattleCommandInputMacroProvider, ProbeRequestMatchesCompatibilityCompilerAn
             .memory_gate_mode = legacy::FakeAttackMemoryGateMode::Both,
             .target_neutral_before_b_frames = 1,
             .input_neutral_after_b_frames = 2,
-            .memory_timeout_ms = 321,
         },
     };
 
@@ -238,10 +236,10 @@ TEST(BattleCommandInputMacroProvider, MapsSynchronizationAndCaptureFailuresCompa
         .commands = {{.mode = legacy::MacroMode::Block, .target_slot = 4}},
     };
 
-    FakeProviderHost timeout_host;
-    timeout_host.results = {{.hit = false}};
-    const auto timeout = Provider{}.prepare(timeout_host, Provider::Request{request});
-    EXPECT_EQ(timeout.failure, legacy::FailureCode::Timeout);
+    FakeProviderHost failed_host;
+    failed_host.results = {{.hit = false}};
+    const auto failed = Provider{}.prepare(failed_host, Provider::Request{request});
+    EXPECT_EQ(failed.failure, legacy::FailureCode::HostFailure);
 
     FakeProviderHost unexpected_host;
     unexpected_host.results = {{.hit = true, .hit_key = bp::battle::BattleMacroMagicReady}};

@@ -22,7 +22,6 @@ ProgramBudgets Budgets()
         .maximum_values = 100,
         .maximum_value_bytes = 4096,
         .maximum_trace_events = 100,
-        .active_deadline_milliseconds = 1000,
     };
 }
 

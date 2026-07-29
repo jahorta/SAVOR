@@ -187,7 +187,6 @@ std::vector<Byte> ContinueConfig(
     writer.U8(1); // FutureOnly; suppress exact retained source re-entry.
     writer.Bool(true);
     writer.Bool(segment.fail_on_movie_end);
-    writer.Bool(segment.require_vi_progress);
     writer.U8(0); // preserve throttle
     writer.U8(0); // reject unknown interruption
     return std::move(writer).Finish();
@@ -199,7 +198,6 @@ std::vector<Byte> AdvanceConfig(
     StaticConfigWriter writer({'E', 'A', 'C', '1'});
     writer.U8(2u);
     writer.Bool(segment.fail_on_movie_end);
-    writer.Bool(segment.require_vi_progress);
     writer.U8(0);
     writer.U8(0);
     return std::move(writer).Finish();
@@ -363,12 +361,11 @@ std::optional<CompositionResult> Validate(
             "interaction requires exact initialization and finalization reducers");
     }
     if (definition.budgets.maximum_instructions == 0 ||
-        definition.budgets.maximum_action_requests == 0 ||
-        definition.budgets.active_deadline_milliseconds == 0)
+        definition.budgets.maximum_action_requests == 0)
     {
         return detail::Fail(
             "interaction.unbounded",
-            "interaction requires finite instruction, action, and elapsed budgets");
+            "interaction requires finite instruction and action budgets");
     }
 
     const auto& actions = definition.actions;
@@ -451,13 +448,12 @@ std::optional<CompositionResult> Validate(
         if (segment.canonical_id.empty() ||
             !segment_ids.insert(segment.canonical_id).second ||
             segment.gate_alternatives.empty() ||
-            segment.deadline_milliseconds == 0 ||
             segment.requested_input_parameter >= definition.parameters.size() ||
             segment.completion_mapper.canonical_id.empty())
         {
             return detail::Fail(
                 "interaction.invalid_segment",
-                "segments require unique identity, a gate, input, deadline, and completion mapping");
+                "segments require unique identity, a gate, input, and completion mapping");
         }
         for (const auto& point : segment.gate_alternatives)
         {
@@ -977,13 +973,6 @@ CompositionResult LowerInteraction(
             std::nullopt,
             {});
 
-        const auto deadline = ConstantU64(
-            builder,
-            function,
-            block,
-            segment.deadline_milliseconds,
-            "segment/" + segment.canonical_id + "/deadline",
-            segment_scope);
         const auto wait_publication = AddOptional(
             builder,
             function,
@@ -1015,7 +1004,6 @@ CompositionResult LowerInteraction(
             std::array{
                 *subscription,
                 *wait_publication,
-                *deadline,
                 *wait_config},
             "segment/" + segment.canonical_id +
                 "/continue/request",
@@ -1091,7 +1079,6 @@ CompositionResult LowerInteraction(
                 std::array{
                     *successor_subscription,
                     *wait_publication,
-                    *deadline,
                     *wait_config},
                 "segment/" + segment.canonical_id +
                     "/held-successor/continue/request",
@@ -1603,10 +1590,6 @@ CompositionResult LowerInteraction(
     candidate.budgets.maximum_emissions = std::max(
         candidate.budgets.maximum_emissions,
         definition.budgets.maximum_emissions);
-    candidate.budgets.active_deadline_milliseconds = std::max(
-        candidate.budgets.active_deadline_milliseconds,
-        definition.budgets.active_deadline_milliseconds);
-
     const auto function_id = function.id;
     module = std::move(candidate);
     return {

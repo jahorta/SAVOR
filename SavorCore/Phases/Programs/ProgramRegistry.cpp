@@ -23,24 +23,6 @@
 
 namespace savor::programs {
 
-    namespace {
-        constexpr const char* kSeedProbeBlueprintSection = "SeedProbe.Blueprint";
-        constexpr const char* kSeedProbeResultsSection = "SeedProbe.Results";
-        constexpr const char* kTasMovieBlueprintSection = "TasMovie.Blueprint";
-        constexpr const char* kTasMovieResultsSection = "TasMovie.Results";
-        constexpr const char* kTasFrameDetectorBlueprintSection = "TasFrameDetector.Blueprint";
-        constexpr const char* kTasFrameDetectorResultsSection = "TasFrameDetector.Results";
-        constexpr const char* kBattleRunBlueprintSection = "BattleRun.Blueprint";
-        constexpr const char* kBattleRunResultsSection = "BattleRun.Results";
-        constexpr const char* kBattleContextBlueprintSection = "BattleContext.Blueprint";
-        constexpr const char* kBattleContextResultsSection = "BattleContext.Results";
-        constexpr const char* kBattleSingleTurnResultsSection = "BattleSingleTurn.Results";
-        constexpr const char* kNavigationContextBlueprintSection =
-            "NavigationContext.Blueprint";
-        constexpr const char* kNavigationContextResultsSection =
-            "NavigationContext.Results";
-    }
-
     PhaseScript build_main_program(uint8_t program_kind)
     {
         switch (program_kind) {
@@ -48,7 +30,7 @@ namespace savor::programs {
             // SeedProbe fixed program should use APPLY_INPUT_FROM("seed.gc.input") etc.
             return seedprobe::MakeSeedProbeProgram();
         case PK_TasMovie:
-            // TAS fixed program should use *_FROM("tas.*") keys (id6, dtm_path, run_ms, save_path)
+            // TAS fixed program uses context keys for the disc, movie, and output state.
             return tasmovie::MakeTasMovieProgram();
         case PK_TasInputStreamDetector:
             return tasframedetector::MakeTasFrameDetectorProgram();
@@ -105,49 +87,6 @@ namespace savor::programs {
             return phase::navigation::ctx::decode_payload(payload, out_ctx);
         default:
             return false;
-        }
-    }
-
-    const RetryTuningInfo* get_retry_tuning_info(uint8_t program_kind)
-    {
-        static const RetryTuningInfo seedprobe_info{
-            kSeedProbeBlueprintSection,
-            kSeedProbeResultsSection
-        };
-        static const RetryTuningInfo tasmovie_info{
-            kTasMovieBlueprintSection,
-            kTasMovieResultsSection
-        };
-        static const RetryTuningInfo tas_input_stream_info{
-            kTasFrameDetectorBlueprintSection,
-            kTasFrameDetectorResultsSection
-        };
-        static const RetryTuningInfo battleturn_info{
-            kBattleRunBlueprintSection,
-            kBattleRunResultsSection
-        };
-        static const RetryTuningInfo battlecontext_info{
-            kBattleContextBlueprintSection,
-            kBattleContextResultsSection
-        };
-        static const RetryTuningInfo battlest_info{
-            kBattleRunBlueprintSection,
-            kBattleSingleTurnResultsSection
-        };
-        static const RetryTuningInfo navigation_context_info{
-            kNavigationContextBlueprintSection,
-            kNavigationContextResultsSection
-        };
-
-        switch (program_kind) {
-        case PK_SeedProbe: return &seedprobe_info;
-        case PK_TasMovie: return &tasmovie_info;
-        case PK_TasInputStreamDetector: return &tas_input_stream_info;
-        case PK_BattleTurnRunner: return &battleturn_info;
-        case PK_BattleContextProbe: return &battlecontext_info;
-        case PK_BattleSingleTurnRunner: return &battlest_info;
-        case PK_NavigationContextRunner: return &navigation_context_info;
-        default: return nullptr;
         }
     }
 

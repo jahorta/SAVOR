@@ -3,7 +3,6 @@
 #include "../IProgramRuntimePort.h"
 #include "../Services/State/StateTypes.h"
 
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -39,8 +38,6 @@ struct WorkerWorksetLimits
 {
     std::uint32_t maximum_items_per_workset = 16;
     std::size_t maximum_encoded_workset_bytes = 32ull * 1024ull * 1024ull;
-    std::chrono::milliseconds maximum_aggregate_active_budget{
-        std::chrono::hours(4)};
     std::uint32_t maximum_item_credits = 64;
     std::uint32_t maximum_active_and_staged_items = 32;
     std::uint32_t maximum_state_cache_entries = 16;
@@ -228,7 +225,6 @@ struct WorksetItemTemplate
     WorkerWorksetItemId item_id;
     std::uint32_t ordinal = 0;
     EncodedInvocationTemplateEnvelope invocation;
-    std::chrono::milliseconds declared_active_budget{};
     // Maximum encoded authoritative terminal bytes retained until the
     // coordinator acknowledges this exact item.
     std::size_t declared_terminal_bytes = 1024 * 1024;

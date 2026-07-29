@@ -32,10 +32,13 @@ This document defines:
 This document does not define:
 
 - concrete C++ class declarations, ownership pointer types, or coroutine libraries;
-- changes to SavorDb SQL/schema, migrations, stored representations, durable queue/claim lifecycle,
-  workflow persistence, result-projection transaction boundaries, or artifact-storage interfaces;
-  document 06 permits only ordered batch claim, exact-set lease renewal, claim/start validation, and
-  targeted terminal reconciliation interfaces over those same records and semantics;
+- changes to SavorDb SQL/schema or migrations, durable queue/claim lifecycle, workflow persistence,
+  result-projection transaction boundaries, or artifact-storage interfaces. The pre-6A hard cutover
+  does remove obsolete timing fields from public authoring interfaces and newly generated arguments;
+  the six physical timing columns remain ignored behind private neutral insert shims until a separate
+  database refactor removes them. Document 06 permits ordered batch claim, exact-set lease renewal,
+  claim/start validation, and targeted terminal reconciliation interfaces over the same durable records
+  and semantics;
 - byte-level worker messages;
 - the typed program IR, which is fixed in document 03;
 - individual action schemas, which are fixed in document 04;
@@ -201,11 +204,11 @@ Every item shares one exact `WorkerWorksetExecutionKey`:
 - execution, input, capture, movie, mutation, and other relevant service policies that affect common
   session preparation.
 
-Per-item invocation/attempt/cancellation correlation, typed input value, declared child budget, and
-provenance may differ. Any
-incompatible item rejects the complete workset before state mutation. Workset bounds cover item count,
-encoded bytes, aggregate declared child budgets, active and staged resident-item capacity, and the
-worker-global unacknowledged-terminal count and bytes.
+Per-item invocation/attempt/cancellation correlation, typed input value, structural limits, and
+provenance may differ. Any incompatible item rejects the complete workset before state mutation.
+Workset bounds cover item count, encoded bytes, active and staged resident-item capacity, and the
+worker-global unacknowledged-terminal count and bytes. A workset carries no aggregate elapsed-time
+budget and cannot impose one on its children.
 
 The workset is an efficiency and transport construct owned by `WorkerRuntime`; it is not a
 `ProgramModule`, `ProgramInvocation`, `ProgramInstance`, IR instruction, phase controller, workflow, or
@@ -241,11 +244,11 @@ workset, item ordinal, invocation, attempt, and terminal identity/order. Ledger 
 originating active workset. Full negotiated count or byte capacity keeps Dolphin paused and blocks later
 item admission or staged promotion; it does not permit loss, overwrite, or aggregate acknowledgement.
 
-The initial configurable limits are exact: 16 items and 32 MiB encoded bytes per workset, four hours of
-aggregate declared active budget, 64 total worker item credits, 32 active-plus-staged items, 16 state-
-cache entries/512 MiB, two finalizer threads, eight pending captures/256 MiB, and 32 retained
-authoritative terminals/128 MiB. The coordinator may buffer at most one additional workset per
-negotiated Ready worker. Later measurement may tune these values without making any bound optional.
+The initial configurable limits are exact: 16 items and 32 MiB encoded bytes per workset, 64 total worker
+item credits, 32 active-plus-staged items, 16 state-cache entries/512 MiB, two finalizer threads, eight
+pending captures/256 MiB, and 32 retained authoritative terminals/128 MiB. The coordinator may buffer
+at most one additional workset per negotiated Ready worker. Later measurement may tune these structural
+and resident-resource values without introducing an elapsed execution bound.
 
 ### Predicate composition boundary
 
@@ -317,13 +320,13 @@ progress views.
 | `WorkerRuntime` | Serialize external commands, own exactly one session, one active session-mutating workset, at most one host-only staged successor, the bounded immutable state-cache leases, and the worker-global completion/acknowledgement ledger; prepare/promote/admit/cancel ordered items, bind exact current session/epoch, enforce session disposition, coordinate visual control and shutdown | Interpreting IR, implementing phase logic, dynamically creating workset items, allowing staged work to acquire session authority, physically manipulating stop points |
 | `EmulationSession` | Own the live backend and all session-scoped services; expose capability interfaces to registered actions | Workflow scheduling, module selection, phase-specific control loops |
 | `DolphinBackend` | Narrow adapter for primitive boot/run/frame-step, physical debug objects, raw memory/register access, pad publication, state/movie/screenshot primitives, and CPU-thread callback ingress | `ProgramKind`, IR, action IDs, game policy, router priority, workflow identity |
-| `ExecutionEngine` | Own one actor-driven foreground emulator operation, routed-stop consumption, active-time budgets, pause confirmation, and primitive movie/VI/throttle policy | Threads, nested event loops, program control flow, pad publication, movie lifecycle, or physical stop-point ownership |
+| `ExecutionEngine` | Own one actor-driven foreground emulator operation, routed-stop consumption, centralized core-health monitoring, bounded host pause confirmation, and primitive movie/VI/throttle policy | Threads, nested event loops, program control flow, pad publication, movie lifecycle, phase elapsed-time policy, or physical stop-point ownership |
 | `StateService` | Own every boot/reboot/restore transaction, compatibility and immutable state evidence, state/movie checkpoint pairing, and the authoritative monotonic `StateEpoch` | Ambient/latest artifact selection, workflow persistence, cold restoration of in-progress recording |
 | `SessionResourceLedger` | Own actor-sequenced resource receipts, synthetic/session scopes, promotion, reverse-order unwind, epoch transition/rebind requests, cleanup continuations, and cleanup disposition | Calling Dolphin, interpreting program flow, or embedding service-specific cleanup policy |
 | `ProgramRuntime` | Own definition storage, verification, executor, action/type registries, one active instance lifecycle, effect dispatch, resource unwind, and one-item result assembly | Advancing Dolphin directly, interpreting or scheduling worksets, scheduling durable workflow work |
 | `ProgramExecutor` | Interpret the canonical IR and exclusively advance program control flow | Calling Dolphin/session services directly, running native phase controllers |
 | `ProgramInstance` | Hold mutable state for one invocation: instruction location, call frames, typed values, pending continuation, scope stack, epoch, emissions, and diagnostics | Threads, virtual controller behavior, worker commands, Dolphin handles |
-| `ActionRegistry` | Resolve exact action descriptors and dispatch a validated bounded request to its handler | Choosing subsequent program branches or owning a whole phase |
+| `ActionRegistry` | Resolve exact action descriptors, enforce `CancellationDriven` versus `BoundedHostOperation` timing classification, and dispatch a validated request to its handler | Choosing subsequent program branches or owning a whole phase |
 | `TypeSchemaRegistry` | Resolve exact type/schema dependencies and validate values at module, action, result, and artifact boundaries | Persisting workflow topology or silently converting incompatible values |
 
 ### Exclusive authority invariants
@@ -379,12 +382,11 @@ instead of one OS thread.
 - Exactly one foreground `ExecutionEngine` operation may advance the core at a time.
 - A program waiting for an action is suspended data, not a blocked private event loop.
 - A router interceptor may request a verifier-known interruption handler. `ExecutionEngine` suspends the
-  foreground execution operation and runs that handler as a bounded child operation through the same
-  engine. The parent operation retains its deadline, completion condition, input relationship, stall
-  baseline, and suppression state.
-- Wall-clock and VI-stall budgets are active-time budgets. A parent budget freezes while an interruption
-  child is active, a child budget freezes during a declared nested child, and a future invocation-owned
-  operation freezes while explicitly interactively paused. Each active child retains its own bound.
+  foreground execution operation and runs that handler through the same engine. The parent operation
+  retains its completion condition, input relationship, health baseline, and suppression state.
+- Parent and nested-child execution is cancellation-driven. Suspension freezes ownership and health
+  eligibility rather than preserving a phase-provided wall-clock or VI-stall budget. Each child retains
+  its own cancellation token and structural limits.
 - Interruption descriptors form a trusted immutable registry. They declare allowed child-operation
   kinds, allowed nested keys, recursion policy, and a maximum depth no greater than eight. A child returns
   only `ResumeParent` or `AbortParent`; it cannot directly complete a parent condition or invocation.
@@ -547,7 +549,7 @@ interaction segments.
 
 | Service | Program-visible through actions? | Owns |
 |---|---|---|
-| `ExecutionEngine` | Indirectly | Continue/frame-advance operations, deadlines, cancellation, structured suspension |
+| `ExecutionEngine` | Indirectly | Continue/frame-advance operations, cancellation, centralized core health, structured suspension |
 | `StopPointRouter` | Indirectly | Logical subscriptions, routing order, wake/intercept/guard decisions |
 | `PhysicalStopPointManager` | No | Physical PC breakpoints, memchecks, immutable CPU dispatch snapshot |
 | `GuestMemory` | Through checked read/query actions | Paused-safe typed reads and symbolic resolution |
@@ -573,7 +575,6 @@ PC set. Removing a scope removes only that scope's subscriptions.
 Every `ExecutionEngine` request declares:
 
 - completion conditions;
-- remaining active wall-clock budget and explicit VI-stall policy, including any warmup;
 - movie-ended behavior;
 - cancellation token;
 - optional opaque input-advance relationship;
@@ -587,9 +588,31 @@ by the VM.
 
 The engine is actor-driven and owns no thread or nested blocking loop. `WorkerRuntime` drains accepted
 stop receipts into it before accepting the next external command, then pumps backend confirmations,
-environment observations, and expired budgets. A deadline-aware actor wait uses a short maintenance
-cadence only while confirmation or movie/VI observation is required; deterministic tests inject the
-clock.
+environment observations, cancellation, and centralized health observations. A condition-variable wait
+uses a short maintenance cadence only while confirmation, movie observation, or health observation is
+required; deterministic tests inject the clock.
+
+### Centralized core health
+
+`EmulationSession` owns one health monitor used by every engine operation. It begins an eligible interval
+only after engine-owned advancement is confirmed running. VI/CoreTiming advancement or a change in the
+session's synchronous host-activity generation proves progress and resets the baseline.
+
+Native routing, bounded sampling, synchronous capture observation, stop reconciliation, state
+replacement, handler suspension, and paused host actions register or imply ineligible host activity.
+CPU-hook registration is atomic, allocation-free, and `noexcept`; actor-side registration is scoped.
+Background artifact finalization is not guest-blocking and does not affect the monitor.
+
+Production defaults emit `SuspectedCoreStall` after ten eligible seconds without progress and confirm
+after ten additional eligible seconds. A synchronous host activity warns after ten seconds and every
+thirty seconds thereafter without becoming a core-stall failure. If actor-owned synchronous work
+prevents the actor from publishing while the scope is active, the tracker retains its duration and the
+next actor pump publishes every crossed warning threshold. Completed scopes use a bounded lock-free
+diagnostic buffer; saturation is itself an explicit health diagnostic rather than a silent drop.
+Confirmed stall requests a safe pause:
+proven pause, health, and cleanup produce `CoreStalled` plus `CleanWithDiagnostics`; unproven integrity
+taints and shuts down the session. This policy is not part of a module schema, workset key, fingerprint,
+database row, or invocation budget.
 
 The private execution-backend facet exposes only pause, resume, frame-step,
 core/PC/VI/movie/throttle observation, and throttle apply/restore primitives. It exposes no guest
@@ -639,7 +662,7 @@ executor, controller class, worker-side payload decoder, or worker runtime.
 | Module/dependency/schema/capability mismatch | staged host validation or `ProgramRuntime` verifier path | Reject before state preparation; admission still revalidates any session-dependent requirement |
 | IR fail or declared domain terminal | `ProgramExecutor` | Produce typed domain/program outcome, then unwind |
 | Action contract violation | `ProgramRuntime` / `ActionRegistry` | Fail invocation, cancel pending effect, then unwind |
-| Emulator operation timeout, stall, guard, or backend failure | Session service that owns the operation | Return typed completion/failure to the action; executor follows program policy or fails |
+| Confirmed core stall, guard failure, backend failure, or bounded host-operation timeout | Session service that owns the operation | Return typed completion/failure to the action; executor follows program policy or fails |
 | Exact item cancellation | `WorkerRuntime` | Classify a pending item without mutation or cancel the active action/execution and unwind that invocation |
 | Workset cancellation | `WorkerRuntime` | Stop later admission, classify pending items, cancel/unwind the active invocation, then release the workset scope |
 | Item-terminal backpressure | `WorkerRuntime` / `WorkerProtocol` | Retain and replay the result, keep the session paused, and admit no new item until exact durable acknowledgement creates capacity |
@@ -668,9 +691,10 @@ Active-item cancellation is monotonic:
 8. If any mandatory restoration cannot be proven, the session becomes `Tainted` and cannot accept
    another invocation.
 
-Timeout and guard abort use the same sequence. Shutdown first closes new admission, classifies the
-host-only staged successor as unstarted, performs the active unwind, and drains the bounded pending
-artifact finalizers plus already assembled terminal publication for the cooperative shutdown interval.
+Bounded-host timeout and guard abort use the same sequence. Shutdown first closes new admission,
+classifies the host-only staged successor as unstarted, performs the active unwind, and drains the
+bounded pending artifact finalizers plus already assembled terminal publication for the cooperative
+shutdown interval.
 Promoted immutable output is never discarded merely because shutdown began. Transport closure and
 backend destruction follow that drain attempt; forced process termination leaves any unfinished or
 unacknowledged item to the existing per-attempt recovery/idempotency path.
@@ -707,20 +731,24 @@ The implementation order is constrained by ownership:
    standalone resource ledger. This ownership seam is established by Slice 4.
 7. Introduce the universal `ProgramRuntime`, canonical v1 model/codec, generic actor-queued action seam,
    and initial modular capability packs. This foundation is established by Slice 5.
-8. Before 6A, implement the parent worker-process seam and workset pipeline: direct one-item process
+8. Before 6A, remove every phase-provided elapsed execution deadline and VI-stall setting, retain
+   structural limits and bounded host-only operations, install session-owned core-health and
+   synchronous host-activity accounting, and remove public/behavioral use of the obsolete authoring
+   timing columns without changing migrations or DDL.
+9. Before 6A, implement the parent worker-process seam and workset pipeline: direct one-item process
    tests, the eventual `CompleteExact` gate, at-most-two progressive pool startup, one active session-
    mutating workset, one immutable host-only staged successor, exact `StateCacheKey` leases, and the
    bounded worker-global completion ledger. Transfer one canonical test-only module through the
    ordinary preparation protocol for `Partial` process smoke; it is not one of the nine production
    modules. Keep coordinator data-plane work disabled.
-9. Re-author each current phase directly through canonical builders/composition frontends as 6A through
+10. Re-author each current phase directly through canonical builders/composition frontends as 6A through
    6I. Legacy source may remain as historical behavior evidence, but it is not a translator or alternate
    executor.
-10. In Slice 7, require `CompleteExact` on the first compatible worker: exactly the nine planned module
+11. In Slice 7, require `CompleteExact` on the first compatible worker: exactly the nine planned module
     IDs/hashes, the exact dependency manifest and workset limits, and no extras. Apply that startup gate
     to activate the coordinator data plane, then progressively start the remaining pool. Program-kind
     adapters continue through the existing SavorDb contracts.
-11. Remove each disconnected `PhaseScriptVM` and peer macro-runtime execution path at cutover.
+12. Remove each disconnected `PhaseScriptVM` and peer macro-runtime execution path at cutover.
 
 The breakpoint-router analysis stages 1 through 5 remain useful guidance. Its stage 6 is replaced:
 implementation shall not merely shrink the current VM while retaining `PhaseScriptInterpreter` and
@@ -759,7 +787,7 @@ cutover is underway.
 - A visual frame step cannot bypass an active router interceptor or mutate a non-debuggable invocation.
 - Two logical stop-point consumers can share one PC without either replacing the other's subscription.
 - A requested interruption handler can suspend and resume a foreground operation while preserving its
-  remaining active budget and opaque input relationship.
+  cancellation state, structural limits, and opaque input relationship.
 - Slice 3 verification is unattended and non-visual: no rendered worker, GUI automation, screenshot
   comparison, desktop control, or user observation is an acceptance dependency.
 - Cancellation from every program suspension point reaches `Unwinding`, releases every scope, and emits

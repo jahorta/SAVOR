@@ -478,7 +478,6 @@ TEST_F(
         db_service_->StateDb(),
         NavigationContextPhaseRegistrationConfig{
             .working_dir_root = working_root,
-            .run_timeout_ms = 987654u,
         });
     const auto scheduled = CreateAndScheduleProbe(
         db_service_.get(),
@@ -531,7 +530,7 @@ TEST_F(
     EXPECT_EQ(
         frozen.get(section, "source_artifact_sha256", ""),
         source->sha256);
-    EXPECT_EQ(frozen.get_u32(section, "run_timeout_ms", 0), 987654u);
+    EXPECT_FALSE(frozen.has(section, "run_timeout_ms"));
 
     const auto graph =
         db_service_->ExecutionDb()->WorkflowQueryService()->
@@ -555,7 +554,6 @@ TEST_F(
         descriptor->runtime_init->BuildRuntimeInit(scheduled->job_id);
     EXPECT_EQ(init.savestate_ref_kind, "state_savestate");
     EXPECT_EQ(init.savestate_ref_id, source->savestate_id);
-    EXPECT_EQ(init.default_timeout_ms, 987654);
 
     const auto materialized =
         descriptor->runtime_init->MaterializePsJob(
@@ -567,15 +565,10 @@ TEST_F(
         phase::navigation::ctx::decode_payload(
             materialized->payload,
             payload_context));
-    std::uint32_t timeout = 0;
     savor::GCInputFrame neutral;
-    ASSERT_TRUE(payload_context.get(
-        savor::context::key::navigation::RUN_TIMEOUT_MS,
-        timeout));
     ASSERT_TRUE(payload_context.get(
         savor::context::key::navigation::NEUTRAL_INPUT,
         neutral));
-    EXPECT_EQ(timeout, 987654u);
     EXPECT_EQ(neutral, savor::GCInputFrame{});
 
     const auto tamper_sql =
@@ -626,7 +619,6 @@ TEST_F(
         db_service_->StateDb(),
         NavigationContextPhaseRegistrationConfig{
             .working_dir_root = working_root,
-            .run_timeout_ms = 120000u,
         });
     const auto* descriptor =
         registry.FindForStepKind("navigation.context_probe");
@@ -820,7 +812,6 @@ TEST_F(
         db_service_->StateDb(),
         NavigationContextPhaseRegistrationConfig{
             .working_dir_root = working_root,
-            .run_timeout_ms = 120000u,
         });
     const auto* descriptor =
         registry.FindForStepKind("navigation.context_probe");
@@ -851,7 +842,6 @@ TEST_F(
     forged.savestate_ref_kind = "state_savestate";
     forged.savestate_ref_id = source->savestate_id;
     forged.bootstrap_profile = "navigation.context_probe";
-    forged.default_timeout_ms = 120000;
     EXPECT_FALSE(
         descriptor->runtime_init->MaterializePsJob(
             tampered->job_id,

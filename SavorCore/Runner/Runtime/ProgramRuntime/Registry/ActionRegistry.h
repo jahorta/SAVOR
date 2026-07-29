@@ -71,6 +71,17 @@ enum class ActionCancellationMode : std::uint8_t
     CleanupRequired,
 };
 
+enum class ActionTimingClass : std::uint8_t
+{
+    // Guest-dependent work has no elapsed deadline. It ends through semantic
+    // completion, cancellation, movie policy, epoch invalidation, or health
+    // failure.
+    CancellationDriven,
+    // Host-only work such as state/file I/O and cleanup retains a finite
+    // infrastructure timeout.
+    BoundedHostOperation,
+};
+
 enum class ActionResourceBehavior : std::uint8_t
 {
     None,
@@ -107,8 +118,9 @@ struct ActionDescriptor
     ActionReplayClass replay_class = ActionReplayClass::Deterministic;
     ActionCancellationMode cancellation =
         ActionCancellationMode::Cooperative;
+    ActionTimingClass timing = ActionTimingClass::CancellationDriven;
     std::uint64_t maximum_non_cancellable_milliseconds = 0;
-    std::uint64_t default_deadline_milliseconds = 0;
+    std::uint64_t default_host_timeout_milliseconds = 0;
     ActionResourceBehavior resource_behavior =
         ActionResourceBehavior::None;
     ActionCleanupGuarantee cleanup = ActionCleanupGuarantee::None;

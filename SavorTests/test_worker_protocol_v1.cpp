@@ -74,6 +74,14 @@ TEST(WorkerProtocolV1, EncodesExactWrmsLittleEndianGoldenFrame)
         std::vector<std::uint8_t>(payload.begin(), payload.end()));
 }
 
+TEST(WorkerProtocolV1, CoreStalledRetainsTheFormerViStallWireValue)
+{
+    EXPECT_EQ(
+        static_cast<std::uint8_t>(
+            ExecutionTerminalStatusCode::CoreStalled),
+        5u);
+}
+
 TEST(WorkerProtocolV1, EncodesExactAdditiveExecutionGoldenFrames)
 {
     {

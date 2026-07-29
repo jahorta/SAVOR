@@ -1013,11 +1013,13 @@ void StopSubscriptionGroupHandle::ReleaseNoThrow() noexcept
 StopPointRouter::StopPointRouter(
     PhysicalStopPointManager& physical_manager,
     IStopPointCpuEvaluator* cpu_evaluator,
-    IStopPointCpuObserver* cpu_observer)
+    IStopPointCpuObserver* cpu_observer,
+    HostActivityTracker* host_activity)
     : impl_(std::make_unique<Impl>()),
       physical_manager_(physical_manager),
       cpu_evaluator_(cpu_evaluator),
       cpu_observer_(cpu_observer),
+      host_activity_(host_activity),
       lease_control_(std::make_shared<StopPointLeaseControl>()),
       owner_thread_(std::this_thread::get_id())
 {
@@ -2686,6 +2688,9 @@ savor::probe::NativeStopDecision StopPointRouter::RouteNative(
     const StopPointCpuContext& context,
     RoutedStopEvidence evidence) noexcept
 {
+    HostActivityTracker::Scope host_activity =
+        host_activity_ ? host_activity_->Track()
+                       : HostActivityTracker::Scope{};
     NativeIngressGuard guard(native_inflight_);
     if (!ingress_enabled_.load(std::memory_order_acquire))
     {
@@ -3041,6 +3046,16 @@ std::vector<StopRouteReceipt> StopPointRouter::DrainIngress()
         return receipts;
     }
 
+    HostActivityTracker::Scope host_activity;
+    bool host_activity_started = false;
+    const auto ensure_host_activity = [&]() noexcept {
+        if (host_activity_started)
+            return;
+        host_activity_started = true;
+        if (host_activity_)
+            host_activity = host_activity_->Track();
+    };
+
     bool snapshot_changed = false;
     do
     {
@@ -3049,6 +3064,7 @@ std::vector<StopRouteReceipt> StopPointRouter::DrainIngress()
         NativePacket packet;
         while (impl_->ingress.TryPop(packet))
         {
+            ensure_host_activity();
             receipts.push_back(ProcessPacket(
                 *impl_,
                 std::move(packet),
@@ -3059,6 +3075,7 @@ std::vector<StopRouteReceipt> StopPointRouter::DrainIngress()
         }
         if (impl_->emergency.TryConsume(packet))
         {
+            ensure_host_activity();
             receipts.push_back(ProcessPacket(
                 *impl_,
                 std::move(packet),
@@ -3071,6 +3088,7 @@ std::vector<StopRouteReceipt> StopPointRouter::DrainIngress()
             RemoveFiredOneShotsCandidate(impl_->groups);
         if (one_shots.changed)
         {
+            ensure_host_activity();
             CandidateApplyReceipt applied = ApplyCandidate(
                 *impl_,
                 physical_manager_,
@@ -3110,6 +3128,7 @@ std::vector<StopRouteReceipt> StopPointRouter::DrainIngress()
     if (authoritative_overflow_.load(std::memory_order_acquire) &&
         !impl_->overflow_reported)
     {
+        ensure_host_activity();
         impl_->overflow_reported = true;
         StopRouteReceipt overflow = FailureRoute(
             StopRouteTerminal::Overflow,
