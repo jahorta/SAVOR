@@ -116,7 +116,6 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="BattleMacroProbeScenario.cpp" />
-    <ClCompile Include="BattleEndResultsScenario.cpp" />
     <ClCompile Include="BattleSingleTurnScenario.cpp" />
     <ClCompile Include="Cli.cpp" />
     <ClCompile Include="CoordinatorProgress.cpp" />
@@ -128,10 +127,10 @@
     <ClCompile Include="SeedProbeRealWorkerScenario.cpp" />
     <ClCompile Include="TasMovieRealWorkerScenario.cpp" />
     <ClCompile Include="WorkerCoordinatorPerf.cpp" />
+    <ClCompile Include="WorkerStartupBarrier.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="BattleMacroProbeScenario.h" />
-    <ClInclude Include="BattleEndResultsScenario.h" />
     <ClInclude Include="BattleSingleTurnScenario.h" />
     <ClInclude Include="Cli.h" />
     <ClInclude Include="CoordinatorProgress.h" />
@@ -142,6 +141,7 @@
     <ClInclude Include="SeedProbeRealWorkerScenario.h" />
     <ClInclude Include="TasMovieRealWorkerScenario.h" />
     <ClInclude Include="WorkerCoordinatorPerf.h" />
+    <ClInclude Include="WorkerStartupBarrier.h" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\SavorWorker\SavorWorker.vcxproj">

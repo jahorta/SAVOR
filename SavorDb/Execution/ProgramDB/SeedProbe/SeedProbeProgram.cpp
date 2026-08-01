@@ -1,0 +1,2061 @@
+#include "SeedProbeProgram.h"
+
+#include <algorithm>
+#include <array>
+#include <cstdint>
+#include <limits>
+#include <map>
+#include <memory>
+#include <optional>
+#include <set>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
+#include <vector>
+
+#include "SeedProbeExecutionAdapters.h"
+#include "SeedProbeJobSpec.h"
+#include "../../IExecutionDb.h"
+#include "../../../Analysis/IAnalysisDb.h"
+#include "../../../Authoring/IAuthoringDb.h"
+#include "../../../Common/Types/UtcTimestamp.h"
+#include "../../../State/IStateDb.h"
+#include "../../../../SavorCore/Phases/Programs/SeedProbe/SeedProbeModule.h"
+#include "../../../../SavorCore/Phases/RNGSeedDeltaMap.h"
+#include "../../../../SavorCore/Runner/IPC/Wire.h"
+#include "../../../../SavorCore/Runner/Runtime/RuntimeTypes.h"
+#include "../../../../SavorCore/Utils/Hash.h"
+
+namespace savor::db::execution::programdb::seedprobe {
+namespace {
+
+constexpr std::int32_t kProgramVersion =
+    runtime::seedprobe::ProgramVersion;
+constexpr std::int32_t kJobSpecVersion = 1;
+constexpr std::string_view kRunRefKind = "sp_probe_run";
+constexpr std::string_view kRootPurpose = "SEEDPROBE_SURVEY";
+constexpr std::string_view kSearchPurpose = "SEEDPROBE_SEARCH";
+constexpr std::string_view kRecoverySearchPurpose =
+    "SEEDPROBE_SEARCH_RECOVERY";
+constexpr std::string_view kConfirmPurpose = "SEEDPROBE_CONFIRM";
+constexpr std::string_view kCreatedBy = "seedprobe_program_kind";
+
+struct SurveyObservation {
+    SeedProbeJobSpec job;
+    SeedProbeResultRow result;
+    AnalysisInputSetFrameRow frame;
+    SeedFamily family = SeedFamily::Neutral;
+};
+
+struct PublishedJobSet {
+    std::int64_t job_set_id = 0;
+    bool created = false;
+};
+
+std::int64_t NowMs() {
+    return types::UtcNow().time_since_epoch().count();
+}
+
+std::string Fingerprint(
+    std::string_view materialization_key,
+    const SeedProbeJobSpec& spec) {
+    const auto input = EncodeSeedProbeJobSpec(spec);
+    const auto canonical =
+        std::string(materialization_key) + "\n" + input;
+    return "PK=1;PV=2;seedprobe="
+        + hash::sha256(canonical.data(), canonical.size());
+}
+
+GCInputFrame NeutralFrame() {
+    GCInputFrame frame{};
+    frame.buttons = 0;
+    frame.main_x = 128;
+    frame.main_y = 128;
+    frame.c_x = 128;
+    frame.c_y = 128;
+    frame.trig_l = 0;
+    frame.trig_r = 0;
+    return frame;
+}
+
+GCInputFrame ToFrame(const AnalysisInputSetFrameRow& row) {
+    GCInputFrame frame = NeutralFrame();
+    frame.main_x = static_cast<std::uint8_t>(row.main_x);
+    frame.main_y = static_cast<std::uint8_t>(row.main_y);
+    frame.c_x = static_cast<std::uint8_t>(row.cstick_x);
+    frame.c_y = static_cast<std::uint8_t>(row.cstick_y);
+    frame.trig_l = static_cast<std::uint8_t>(row.trigger_x);
+    frame.trig_r = static_cast<std::uint8_t>(row.trigger_y);
+    return frame;
+}
+
+std::int64_t AxisId(std::uint8_t x, std::uint8_t y) {
+    return (static_cast<std::int64_t>(x) << 8)
+        | static_cast<std::int64_t>(y);
+}
+
+std::optional<SeedFamily> ClassifySurveyFrame(
+    const AnalysisInputSetFrameRow& row) {
+    const bool main =
+        row.main_x != 128 || row.main_y != 128;
+    const bool cstick =
+        row.cstick_x != 128 || row.cstick_y != 128;
+    const bool triggers =
+        row.trigger_x != 0 || row.trigger_y != 0;
+    const auto changed =
+        static_cast<int>(main)
+        + static_cast<int>(cstick)
+        + static_cast<int>(triggers);
+    if (changed == 0) {
+        return SeedFamily::Neutral;
+    }
+    if (changed != 1) {
+        return std::nullopt;
+    }
+    if (main) {
+        return SeedFamily::Main;
+    }
+    if (cstick) {
+        return SeedFamily::CStick;
+    }
+    return SeedFamily::Triggers;
+}
+
+std::optional<std::int64_t> ResolveEntrySavestate(
+    const ProgramJobMaterializationContext& context) {
+    if (!context.graph.has_value()) {
+        return context.step.domain_ref_id > 0
+            ? std::optional<std::int64_t>(
+                  context.step.domain_ref_id)
+            : std::nullopt;
+    }
+    for (const auto& binding :
+         context.graph->input_bindings) {
+        if (binding.input_key == "entry_savestate"
+            && binding.ref_id > 0) {
+            return binding.ref_id;
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<std::int64_t> ResolveAuthoredSpec(
+    const ProgramJobMaterializationContext& context) {
+    if (!context.graph.has_value()
+        || !context.graph->authored_ref_id.has_value()
+        || context.graph->authored_ref_kind
+            != std::optional<std::string>("seed_probe_spec")) {
+        return std::nullopt;
+    }
+    return context.graph->authored_ref_id;
+}
+
+int ResolveSamplesPerAxis(
+    const ProgramJobMaterializationContext& context) {
+    if (context.graph.has_value()) {
+        for (const auto& argument : context.graph->arguments) {
+            if (argument.argument_key == "samples_per_axis"
+                && argument.integer_value.has_value()) {
+                return static_cast<int>(
+                    *argument.integer_value);
+            }
+        }
+    }
+    return 1;
+}
+
+std::pair<std::string, std::string> ResolveFlavorAndPolicy(
+    const ProgramJobMaterializationContext& context) {
+    if (!context.graph.has_value()) {
+        return {"BATTLE_PRE", "seedprobe.battle"};
+    }
+    const auto& graph = *context.graph;
+    if (graph.unit_variant == "field_return"
+        || graph.breakpoint_profile_key
+            == "seedprobe.field_return") {
+        return {"FIELD_RETURN", "seedprobe.field_return"};
+    }
+    if (graph.unit_variant == "dungeon") {
+        return {
+            "DUNGEON_PRE",
+            graph.breakpoint_profile_key.empty()
+                ? "seedprobe.dungeon"
+                : graph.breakpoint_profile_key,
+        };
+    }
+    if (graph.unit_variant == "overworld") {
+        return {
+            "OVERWORLD_PRE",
+            graph.breakpoint_profile_key.empty()
+                ? "seedprobe.overworld"
+                : graph.breakpoint_profile_key,
+        };
+    }
+    return {
+        "BATTLE_PRE",
+        graph.breakpoint_profile_key.empty()
+            ? "seedprobe.battle"
+            : graph.breakpoint_profile_key,
+    };
+}
+
+bool IsBusinessFinal(std::string_view state) {
+    return state == "COMPLETED" || state == "SUCCEEDED"
+        || state == "SUCCEEDED_WINNER"
+        || state == "SUPERSEDED"
+        || state == "SUCCEEDED_DUPLICATE"
+        || state == "FAILED" || state == "CANCELED";
+}
+
+std::int32_t SignedDelta(
+    std::uint32_t seed,
+    std::uint32_t neutral) {
+    return savor::wrapped_seed_delta(seed, neutral);
+}
+
+std::optional<SeedProbeJobSpec> JobSpecFor(
+    IExecutionDb* execution_db,
+    std::int64_t job_id) {
+    const auto job = execution_db != nullptr
+        ? execution_db->GetJob(job_id)
+        : std::nullopt;
+    if (!job.has_value()) {
+        return std::nullopt;
+    }
+    return DecodeSeedProbeJobSpec(job->input_ini);
+}
+
+std::string JoinIds(
+    const std::vector<std::int64_t>& values) {
+    std::ostringstream out;
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        if (i != 0) {
+            out << ',';
+        }
+        out << values[i];
+    }
+    return out.str();
+}
+
+class SeedProbeMaterializer final : public IProgramJobMaterializer {
+public:
+    SeedProbeMaterializer(
+        IExecutionDb* execution_db,
+        IStateDb* state_db,
+        IAnalysisDb* analysis_db,
+        IAuthoringDb* authoring_db,
+        SeedProbeProgramConfig config)
+        : execution_db_(execution_db)
+        , state_db_(state_db)
+        , analysis_db_(analysis_db)
+        , authoring_db_(authoring_db)
+        , config_(std::move(config)) {
+        phase_ = runtime::seedprobe::
+            SeedProbeFullPhaseDefinitionV2();
+        if (!phase_ || !phase_->identity()) {
+            module_error_ =
+                "SeedProbe Full Phase definition is unavailable";
+        }
+    }
+
+    bool Materialize(
+        const ProgramJobMaterializationContext& context,
+        WorkflowStepScheduleResult* result_out,
+        std::string* error_out) const override {
+        if (result_out == nullptr) {
+            return Fail(
+                "SeedProbe schedule result output is required",
+                error_out);
+        }
+        *result_out = {};
+        if (!DependenciesReady(error_out)) {
+            return false;
+        }
+        const auto entry_savestate =
+            ResolveEntrySavestate(context);
+        const auto authored_spec = ResolveAuthoredSpec(context);
+        const auto samples_per_axis =
+            ResolveSamplesPerAxis(context);
+        if (!entry_savestate.has_value()
+            || !authored_spec.has_value()
+            || samples_per_axis <= 0
+            || samples_per_axis > 64) {
+            return Fail(
+                "SeedProbe requires an entry savestate, authored "
+                "seed_probe_spec, and samples_per_axis in [1,64]",
+                error_out);
+        }
+        const auto spec =
+            authoring_db_->GetSeedProbeSpec(*authored_spec);
+        if (!spec.has_value()
+            || spec->min_value < 0
+            || spec->max_value > 255
+            || spec->min_value > spec->max_value
+            || spec->combo_attempts_per_target < 0
+            || spec->combo_sampler_tries < 0) {
+            return Fail(
+                "SeedProbe authored specification is invalid",
+                error_out);
+        }
+        const auto savestate =
+            state_db_->GetSavestate(*entry_savestate);
+        if (!savestate.has_value() || !savestate->is_complete) {
+            return Fail(
+                "SeedProbe entry savestate is missing or incomplete",
+                error_out);
+        }
+
+        const auto root_key =
+            "seedprobe.step."
+            + std::to_string(context.step.workflow_step_id)
+            + ".survey";
+        std::int64_t probe_run_id = 0;
+        std::int64_t root_job_set_id = 0;
+        const auto existing =
+            execution_db_->GetJobSetByMaterializationKey(
+                root_key);
+        if (existing.has_value()) {
+            if (existing->purpose != kRootPurpose
+                || existing->domain_ref_kind
+                    != std::optional<std::string>(
+                        std::string(kRunRefKind))
+                || !existing->domain_ref_id.has_value()) {
+                return Fail(
+                    "SeedProbe Survey materialization key conflicts "
+                    "with a different job set",
+                    error_out);
+            }
+            root_job_set_id = existing->job_set_id;
+            probe_run_id = *existing->domain_ref_id;
+        } else {
+            const auto [flavor, policy] =
+                ResolveFlavorAndPolicy(context);
+            std::int64_t probe_set_id = 0;
+            if (!analysis_db_->CreateSeedProbeSet(
+                    {
+                        .name =
+                            "seedprobe." + flavor + "." + policy,
+                        .probe_flavor = flavor,
+                        .breakpoint_policy_name = policy,
+                        .segment_source_kind =
+                            "workflow_program_kind",
+                        .created_at_utc = types::UtcNow(),
+                        .correlation_id =
+                            "seedprobe-step-"
+                            + std::to_string(
+                                context.step.workflow_step_id),
+                        .causation_id =
+                            "workflow-"
+                            + std::to_string(
+                                context.step.workflow_instance_id),
+                    },
+                    &probe_set_id,
+                    error_out)) {
+                return false;
+            }
+            if (!analysis_db_->RequestSeedProbeRun(
+                    {
+                        .materialization_key = root_key,
+                        .probe_set_id = probe_set_id,
+                        .entry_savestate_id = *entry_savestate,
+                        .seed_probe_spec_id = *authored_spec,
+                        .launch_samples_per_axis =
+                            samples_per_axis,
+                        .codec_version = kProgramVersion,
+                        .status = SeedProbeRunStatus::Survey,
+                        .requested_at_utc = types::UtcNow(),
+                        .correlation_id =
+                            "seedprobe-step-"
+                            + std::to_string(
+                                context.step.workflow_step_id),
+                        .causation_id =
+                            "workflow-"
+                            + std::to_string(
+                                context.step.workflow_instance_id),
+                    },
+                    &probe_run_id,
+                    error_out)) {
+                return false;
+            }
+        }
+
+        const auto run =
+            analysis_db_->GetSeedProbeRun(probe_run_id);
+        if (!run.has_value()
+            || run->materialization_key != root_key
+            || run->entry_savestate_id != *entry_savestate
+            || run->seed_probe_spec_id != *authored_spec
+            || run->launch_samples_per_axis
+                != samples_per_axis) {
+            return Fail(
+                "SeedProbe run does not match the workflow request",
+                error_out);
+        }
+
+        const auto frames = phase_->PlanSurvey({
+            .samples_per_axis = samples_per_axis,
+            .min_value = static_cast<std::int32_t>(spec->min_value),
+            .max_value = static_cast<std::int32_t>(spec->max_value),
+            .ignore_trigger_minmax = spec->ignore_trigger_minmax,
+            .cap_trigger_top = spec->cap_trigger_top,
+        });
+        std::vector<SeedProbeJobSpec> jobs;
+        jobs.reserve(frames.size());
+        std::int32_t ordinal = 0;
+        for (const auto& frame : frames) {
+            std::int64_t input_frame_id = 0;
+            if (!analysis_db_->EnsureSeedProbeInputFrame(
+                    AxisId(frame.main_x, frame.main_y),
+                    AxisId(frame.c_x, frame.c_y),
+                    AxisId(frame.trig_l, frame.trig_r),
+                    &input_frame_id,
+                    error_out)) {
+                return false;
+            }
+            jobs.push_back(
+                {
+                    .version = kJobSpecVersion,
+                    .stage = SeedProbeJobStage::Survey,
+                    .input_frame_id = input_frame_id,
+                    .sample_ordinal = ordinal++,
+                });
+        }
+
+        const auto published = PublishJobSet(
+            root_key,
+            std::nullopt,
+            context.step.workflow_step_id,
+            0,
+            kRootPurpose,
+            "stage=SURVEY",
+            probe_run_id,
+            run->entry_savestate_id,
+            context.step.step_priority + spec->priority,
+            jobs,
+            error_out);
+        if (!published.has_value()) {
+            return false;
+        }
+        root_job_set_id = published->job_set_id;
+        result_out->root_job_set_id = root_job_set_id;
+        result_out->persistence = {
+            .program_ref_kind = std::string(kRunRefKind),
+            .program_ref_id = probe_run_id,
+            .fingerprint = root_key,
+            .program_version = kProgramVersion,
+        };
+        result_out->event_lines.push_back(
+            "[seedprobe-materialized] run="
+            + std::to_string(probe_run_id)
+            + " survey_jobs=" + std::to_string(jobs.size())
+            + " root_job_set="
+            + std::to_string(root_job_set_id));
+        if (error_out != nullptr) {
+            error_out->clear();
+        }
+        return true;
+    }
+
+    bool Continue(
+        const ProgramJobContinuationContext& context,
+        ProgramJobContinuationResult* result_out,
+        std::string* error_out) const override {
+        if (result_out == nullptr) {
+            return Fail(
+                "SeedProbe continuation output is required",
+                error_out);
+        }
+        *result_out = {};
+        if (!DependenciesReady(error_out)) {
+            return false;
+        }
+        const auto probe_run_id =
+            context.materialization.step.domain_ref_id;
+        const auto run =
+            analysis_db_->GetSeedProbeRun(probe_run_id);
+        if (!run.has_value()
+            || context.root_job_set_id <= 0) {
+            return Fail(
+                "SeedProbe continuation cannot resolve its run",
+                error_out);
+        }
+
+        switch (run->status) {
+        case SeedProbeRunStatus::Survey:
+            return ContinueSurvey(
+                context,
+                *run,
+                result_out,
+                error_out);
+        case SeedProbeRunStatus::Search:
+            return ContinueSearch(
+                context,
+                *run,
+                result_out,
+                error_out);
+        case SeedProbeRunStatus::Confirm:
+            return ContinueConfirm(
+                context,
+                *run,
+                result_out,
+                error_out);
+        case SeedProbeRunStatus::Completed:
+        case SeedProbeRunStatus::CompletedPartial:
+            result_out->disposition =
+                ProgramJobContinuationDisposition::Complete;
+            result_out->output = ProgramJobContinuationOutput{
+                .output_key = "seed_probe_run",
+                .data_kind = "analysis.seed_probe_run",
+                .ref_kind = "sp_probe_run",
+                .ref_id = run->probe_run_id,
+            };
+            return true;
+        case SeedProbeRunStatus::Failed:
+            result_out->disposition =
+                ProgramJobContinuationDisposition::Failed;
+            result_out->failure_code = "SEEDPROBE_RUN_FAILED";
+            result_out->failure_text =
+                "SeedProbe run is durably failed";
+            return true;
+        case SeedProbeRunStatus::Invalidated:
+            result_out->disposition =
+                ProgramJobContinuationDisposition::Failed;
+            result_out->failure_code =
+                "SEEDPROBE_RUN_ENDPOINT_INVALIDATED";
+            result_out->failure_text = run->invalidation_diagnostic
+                .value_or(
+                    "SeedProbe run was invalidated by a factual endpoint mismatch");
+            return true;
+        default:
+            return Fail(
+                "SeedProbe run has an unknown status",
+                error_out);
+        }
+    }
+
+private:
+    bool Fail(
+        std::string message,
+        std::string* error_out) const {
+        if (error_out != nullptr) {
+            *error_out = std::move(message);
+        }
+        return false;
+    }
+
+    bool DependenciesReady(std::string* error_out) const {
+        if (execution_db_ == nullptr || state_db_ == nullptr
+            || analysis_db_ == nullptr
+            || authoring_db_ == nullptr) {
+            return Fail(
+                "SeedProbe descriptor dependencies are unavailable",
+                error_out);
+        }
+        if (!phase_ || !phase_->identity()) {
+            return Fail(
+                module_error_.empty()
+                    ? "SeedProbe module identity is unavailable"
+                    : module_error_,
+                error_out);
+        }
+        return true;
+    }
+
+    std::optional<PublishedJobSet> PublishJobSet(
+        std::string materialization_key,
+        std::optional<std::int64_t> parent_job_set_id,
+        std::int64_t workflow_step_id,
+        std::int64_t root_job_set_id,
+        std::string_view purpose,
+        std::string meta_note,
+        std::int64_t probe_run_id,
+        std::int64_t savestate_id,
+        int priority,
+        const std::vector<SeedProbeJobSpec>& specs,
+        std::string* error_out) const {
+        EnsureMaterializingJobSetReceipt ensured{};
+        if (!execution_db_->EnsureMaterializingJobSet(
+                {
+                    .materialization_key =
+                        materialization_key,
+                    .parent_job_set_id =
+                        parent_job_set_id,
+                    .program_kind =
+                        static_cast<std::int32_t>(
+                            savor::PK_SeedProbe),
+                    .purpose = std::string(purpose),
+                    .created_by =
+                        std::string(kCreatedBy),
+                    .created_at_utc = NowMs(),
+                    .priority_boost = priority,
+                    .expected_total =
+                        static_cast<int>(specs.size()),
+                    .domain_ref_kind =
+                        std::string(kRunRefKind),
+                    .domain_ref_id = probe_run_id,
+                    .meta_note = std::move(meta_note),
+                },
+                &ensured,
+                error_out)
+            || (ensured.disposition
+                    != ExecutionDbOperationDisposition::Applied
+                && ensured.disposition
+                    != ExecutionDbOperationDisposition::AlreadyApplied)) {
+            return std::nullopt;
+        }
+
+        if (ensured.materialization_state == "MATERIALIZING") {
+            for (const auto& spec : specs) {
+                CreatePendingJobReceipt receipt{};
+                if (!execution_db_->CreatePendingJob(
+                        {
+                            .job_set_id =
+                                ensured.job_set_id,
+                            .program_kind =
+                                static_cast<std::int32_t>(
+                                    savor::PK_SeedProbe),
+                            .program_version =
+                                kProgramVersion,
+                            .program_ref_kind =
+                                std::string(kRunRefKind),
+                            .program_ref_id = probe_run_id,
+                            .savestate_id = savestate_id,
+                            .fingerprint = Fingerprint(
+                                materialization_key,
+                                spec),
+                            .priority = priority,
+                            .max_attempts = 3,
+                            .input_ini =
+                                EncodeSeedProbeJobSpec(spec),
+                            .cancellation_group_key =
+                                SeedProbeCancellationGroupKey(
+                                    probe_run_id,
+                                    spec),
+                        },
+                        &receipt,
+                        error_out)
+                    || (receipt.disposition
+                            != ExecutionDbOperationDisposition::Applied
+                        && receipt.disposition
+                            != ExecutionDbOperationDisposition::AlreadyApplied)) {
+                    return std::nullopt;
+                }
+            }
+        }
+
+        const auto durable_jobs =
+            execution_db_->ListJobsInJobSet(
+                ensured.job_set_id);
+        if (durable_jobs.size() != specs.size()) {
+            if (error_out != nullptr) {
+                *error_out =
+                    "SeedProbe job-set population does not match "
+                    "the deterministic plan";
+            }
+            return std::nullopt;
+        }
+        for (std::size_t i = 0; i < specs.size(); ++i) {
+            if (durable_jobs[i].input_ini
+                    != EncodeSeedProbeJobSpec(specs[i])
+                || durable_jobs[i].cancellation_group_key
+                    != SeedProbeCancellationGroupKey(
+                        probe_run_id,
+                        specs[i])) {
+                if (error_out != nullptr) {
+                    *error_out =
+                        "SeedProbe durable job order differs from "
+                        "the deterministic plan";
+                }
+                return std::nullopt;
+            }
+        }
+
+        SealJobPopulationReceipt sealed{};
+        if (!execution_db_->SealJobPopulation(
+                {
+                    .job_set_id = ensured.job_set_id,
+                    .expected_job_count =
+                        static_cast<int>(specs.size()),
+                    .requested_by =
+                        std::string(kCreatedBy),
+                },
+                &sealed,
+                error_out)
+            || (sealed.disposition
+                    != ExecutionDbOperationDisposition::Applied
+                && sealed.disposition
+                    != ExecutionDbOperationDisposition::AlreadyApplied)) {
+            return std::nullopt;
+        }
+
+        const auto chunk_size = std::max<std::size_t>(
+            1,
+            config_.maximum_items_per_workset);
+        const auto workset_count =
+            (durable_jobs.size() + chunk_size - 1)
+            / chunk_size;
+        for (std::size_t chunk = 0;
+             chunk < workset_count;
+             ++chunk) {
+            const auto begin = chunk * chunk_size;
+            const auto end = std::min(
+                durable_jobs.size(),
+                begin + chunk_size);
+            std::vector<std::int64_t> job_ids;
+            job_ids.reserve(end - begin);
+            for (auto i = begin; i < end; ++i) {
+                job_ids.push_back(durable_jobs[i].job_id);
+            }
+            PublishWorksetReceipt published{};
+            const auto& runtime_contract =
+                phase_->runtime_contract();
+            const auto compatibility_key =
+                "seedprobe:v2:savestate:"
+                + std::to_string(savestate_id)
+                + ":phase:"
+                + phase_->identity().canonical_sha256;
+            const auto invocation_root_job_set_id =
+                root_job_set_id > 0
+                ? root_job_set_id
+                : ensured.job_set_id;
+            if (!execution_db_->PublishWorkset(
+                    {
+                        .job_set_id =
+                            ensured.job_set_id,
+                        .workflow_step_id = workflow_step_id,
+                        .root_job_set_id =
+                            invocation_root_job_set_id,
+                        .workset_key =
+                            materialization_key
+                            + ".workset."
+                            + std::to_string(chunk),
+                        .program_kind =
+                            static_cast<std::int32_t>(
+                                savor::PK_SeedProbe),
+                        .program_version =
+                            kProgramVersion,
+                        .compatibility =
+                            {
+                                .compatibility_key =
+                                    compatibility_key,
+                                .module_canonical_id =
+                                    runtime_contract.module
+                                        .canonical_id,
+                                .module_version =
+                                    static_cast<std::int32_t>(
+                                        runtime_contract.module
+                                            .revision),
+                                .module_sha256 =
+                                    runtime_contract.module
+                                        .canonical_hash,
+                                .entrypoint =
+                                    runtime_contract.entrypoint,
+                                .verified_dependency_sha256 =
+                                    runtime_contract
+                                        .verified_dependency_sha256,
+                                .runtime_profile_sha256 =
+                                    runtime_contract
+                                        .runtime_profile_sha256,
+                                .required_capability_mask =
+                                    runtime_contract
+                                        .required_capabilities,
+                                .estimated_payload_bytes =
+                                    static_cast<std::uint64_t>(
+                                        (end - begin) * 256 * 1024),
+                            },
+                        .priority = priority,
+                        .ordered_job_ids =
+                            std::move(job_ids),
+                        .requested_by =
+                            std::string(kCreatedBy),
+                    },
+                    &published,
+                    error_out)
+                || (published.disposition
+                        != ExecutionDbOperationDisposition::Applied
+                    && published.disposition
+                        != ExecutionDbOperationDisposition::AlreadyApplied)) {
+                return std::nullopt;
+            }
+        }
+
+        CompleteWorksetPublicationReceipt completed{};
+        if (!execution_db_->CompleteWorksetPublication(
+                {
+                    .job_set_id = ensured.job_set_id,
+                    .expected_workset_count =
+                        static_cast<int>(workset_count),
+                    .expected_job_count =
+                        static_cast<int>(specs.size()),
+                    .requested_by =
+                        std::string(kCreatedBy),
+                },
+                &completed,
+                error_out)
+            || (completed.disposition
+                    != ExecutionDbOperationDisposition::Applied
+                && completed.disposition
+                    != ExecutionDbOperationDisposition::AlreadyApplied)) {
+            return std::nullopt;
+        }
+        return PublishedJobSet{
+            .job_set_id = ensured.job_set_id,
+            .created =
+                ensured.disposition
+                == ExecutionDbOperationDisposition::Applied,
+        };
+    }
+
+    bool SetRunStatus(
+        std::int64_t probe_run_id,
+        SeedProbeRunStatus expected,
+        SeedProbeRunStatus desired,
+        std::string* error_out) const {
+        bool changed = false;
+        const bool terminal =
+            desired == SeedProbeRunStatus::Completed
+            || desired
+                == SeedProbeRunStatus::CompletedPartial
+            || desired == SeedProbeRunStatus::Failed;
+        return analysis_db_->UpdateSeedProbeRunStatus(
+            {
+                .probe_run_id = probe_run_id,
+                .expected_status = expected,
+                .new_status = desired,
+                .completed_at_utc = terminal
+                    ? std::optional<types::UtcTimePoint>(
+                          types::UtcNow())
+                    : std::nullopt,
+                .changed_at_utc = types::UtcNow(),
+                .correlation_id =
+                    "seedprobe-run-"
+                    + std::to_string(probe_run_id),
+                .causation_id = "seedprobe-continuation",
+            },
+            &changed,
+            error_out);
+    }
+
+    bool FailRun(
+        const SeedProbeRunSnapshot& run,
+        std::string code,
+        std::string text,
+        ProgramJobContinuationResult* result_out,
+        std::string* error_out) const {
+        if (!SetRunStatus(
+                run.probe_run_id,
+                run.status,
+                SeedProbeRunStatus::Failed,
+                error_out)) {
+            return false;
+        }
+        result_out->disposition =
+            ProgramJobContinuationDisposition::Failed;
+        result_out->failure_code = std::move(code);
+        result_out->failure_text = std::move(text);
+        return true;
+    }
+
+    std::optional<std::vector<SurveyObservation>>
+    LoadSurveyObservations(
+        const SeedProbeRunSnapshot& run,
+        std::int64_t root_job_set_id,
+        std::string* error_out) const {
+        const auto jobs =
+            execution_db_->ListJobsInJobSet(
+                root_job_set_id);
+        const auto results =
+            analysis_db_->ListSeedProbeResults(
+                run.probe_run_id);
+        std::unordered_map<std::int64_t, SeedProbeResultRow>
+            by_job;
+        for (const auto& result : results) {
+            by_job.emplace(result.source_job_id, result);
+        }
+        std::vector<SurveyObservation> observations;
+        observations.reserve(jobs.size());
+        for (const auto& job : jobs) {
+            if (!IsBusinessFinal(job.state)) {
+                if (error_out != nullptr) {
+                    *error_out =
+                        "SeedProbe Survey continuation ran before "
+                        "all Survey jobs became business-final";
+                }
+                return std::nullopt;
+            }
+            const auto spec =
+                DecodeSeedProbeJobSpec(job.input_ini);
+            const auto result_it = by_job.find(job.job_id);
+            if (!spec.has_value()
+                || spec->stage
+                    != SeedProbeJobStage::Survey
+                || result_it == by_job.end()) {
+                if (error_out != nullptr) {
+                    *error_out =
+                        "SeedProbe Survey is missing a successful "
+                        "scalar observation";
+                }
+                return std::nullopt;
+            }
+            const auto frame =
+                analysis_db_->GetAnalysisInputFrame(
+                    spec->input_frame_id);
+            if (!frame.has_value()) {
+                if (error_out != nullptr) {
+                    *error_out =
+                        "SeedProbe Survey input frame is missing";
+                }
+                return std::nullopt;
+            }
+            const auto family =
+                ClassifySurveyFrame(*frame);
+            if (!family.has_value()) {
+                if (error_out != nullptr) {
+                    *error_out =
+                        "SeedProbe Survey frame changes more than "
+                        "one inferred input family";
+                }
+                return std::nullopt;
+            }
+            observations.push_back(
+                {
+                    .job = *spec,
+                    .result = result_it->second,
+                    .frame = *frame,
+                    .family = *family,
+                });
+        }
+        return observations;
+    }
+
+    std::optional<SeedProbeResultRow> NeutralResult(
+        std::int64_t probe_run_id) const {
+        for (const auto& result :
+             analysis_db_->ListSeedProbeResults(
+                 probe_run_id)) {
+            const auto spec =
+                JobSpecFor(execution_db_, result.source_job_id);
+            const auto frame =
+                analysis_db_->GetAnalysisInputFrame(
+                    result.input_frame_id);
+            if (spec.has_value()
+                && spec->stage
+                    == SeedProbeJobStage::Survey
+                && frame.has_value()
+                && ClassifySurveyFrame(*frame)
+                    == std::optional<SeedFamily>(
+                        SeedFamily::Neutral)) {
+                return result;
+            }
+        }
+        return std::nullopt;
+    }
+
+    std::vector<SeedProbeJobSpec> BuildConfirmSpecs(
+        std::int64_t probe_run_id) const {
+        const auto results =
+            analysis_db_->ListSeedProbeResults(
+                probe_run_id);
+        std::unordered_set<std::int64_t> confirmed_candidates;
+        for (const auto& result : results) {
+            if (result.confirmation_of_probe_result_id.has_value()) {
+                confirmed_candidates.insert(
+                    *result.confirmation_of_probe_result_id);
+            }
+        }
+        std::vector<SeedProbeResultRow> candidates;
+        for (const auto& result : results) {
+            if (result.evidence_state
+                    == SeedProbeEvidenceState::Provisional
+                && !confirmed_candidates.contains(
+                    result.probe_result_id)) {
+                candidates.push_back(result);
+            }
+        }
+        std::sort(
+            candidates.begin(),
+            candidates.end(),
+            [](const auto& lhs, const auto& rhs) {
+                return lhs.probe_result_id
+                    < rhs.probe_result_id;
+            });
+        std::vector<SeedProbeJobSpec> specs;
+        specs.reserve(candidates.size());
+        std::int32_t ordinal = 0;
+        for (const auto& candidate : candidates) {
+            specs.push_back(
+                {
+                    .version = kJobSpecVersion,
+                    .stage = SeedProbeJobStage::Confirm,
+                    .input_frame_id =
+                        candidate.input_frame_id,
+                    .sample_ordinal = ordinal++,
+                    .confirmation_of_probe_result_id =
+                        candidate.probe_result_id,
+                });
+        }
+        return specs;
+    }
+
+    bool PublishConfirmation(
+        const SeedProbeRunSnapshot& run,
+        std::int64_t workflow_step_id,
+        std::int64_t root_job_set_id,
+        const std::vector<SeedProbeJobSpec>& specs,
+        std::string* error_out) const {
+        if (specs.empty()) {
+            return true;
+        }
+        std::vector<std::int64_t> candidate_ids;
+        candidate_ids.reserve(specs.size());
+        for (const auto& spec : specs) {
+            candidate_ids.push_back(
+                *spec.confirmation_of_probe_result_id);
+        }
+        const auto joined = JoinIds(candidate_ids);
+        const auto key =
+            "seedprobe.run."
+            + std::to_string(run.probe_run_id)
+            + ".confirm."
+            + hash::sha256(joined.data(), joined.size());
+        return PublishJobSet(
+                   key,
+                   root_job_set_id,
+                   workflow_step_id,
+                   root_job_set_id,
+                   kConfirmPurpose,
+                   "stage=CONFIRM;candidates=" + joined,
+                   run.probe_run_id,
+                   run.entry_savestate_id,
+                   0,
+                   specs,
+                   error_out)
+            .has_value();
+    }
+
+    bool ContinueSurvey(
+        const ProgramJobContinuationContext& context,
+        const SeedProbeRunSnapshot& run,
+        ProgramJobContinuationResult* result_out,
+        std::string* error_out) const {
+        auto observations = LoadSurveyObservations(
+            run,
+            context.root_job_set_id,
+            error_out);
+        if (!observations.has_value()) {
+            const auto detail =
+                error_out != nullptr && !error_out->empty()
+                ? *error_out
+                : "Survey did not produce every planned observation";
+            if (error_out != nullptr) {
+                error_out->clear();
+            }
+            return FailRun(
+                run,
+                "SEEDPROBE_SURVEY_EXHAUSTED",
+                detail,
+                result_out,
+                error_out);
+        }
+
+        const SurveyObservation* neutral = nullptr;
+        for (const auto& observation : *observations) {
+            if (observation.family == SeedFamily::Neutral) {
+                if (neutral != nullptr) {
+                    return FailRun(
+                        run,
+                        "SEEDPROBE_SURVEY_INVALID",
+                        "Survey contains more than one neutral frame",
+                        result_out,
+                        error_out);
+                }
+                neutral = &observation;
+            }
+        }
+        if (neutral == nullptr) {
+            return FailRun(
+                run,
+                "SEEDPROBE_SURVEY_INVALID",
+                "Survey does not contain its neutral frame",
+                result_out,
+                error_out);
+        }
+
+        std::map<std::uint32_t, const SurveyObservation*>
+            representative_by_seed;
+        for (const auto& observation : *observations) {
+            const auto [it, inserted] =
+                representative_by_seed.emplace(
+                    observation.result.seed_value,
+                    &observation);
+            if (!inserted
+                && observation.job.sample_ordinal
+                    < it->second->job.sample_ordinal) {
+                it->second = &observation;
+            }
+        }
+        for (const auto& [seed, observation] :
+             representative_by_seed) {
+            (void)seed;
+            if (observation->result.evidence_state
+                == SeedProbeEvidenceState::Observed) {
+                bool changed = false;
+                if (!analysis_db_->TransitionSeedProbeEvidence(
+                        {
+                            .probe_result_id =
+                                observation->result
+                                    .probe_result_id,
+                            .expected_state =
+                                SeedProbeEvidenceState::Observed,
+                            .new_state =
+                                SeedProbeEvidenceState::
+                                    Provisional,
+                            .changed_at_utc = types::UtcNow(),
+                            .correlation_id =
+                                "seedprobe-run-"
+                                + std::to_string(
+                                    run.probe_run_id),
+                            .causation_id =
+                                "seedprobe-survey-selection",
+                        },
+                        &changed,
+                        error_out)) {
+                    return false;
+                }
+            } else if (
+                observation->result.evidence_state
+                != SeedProbeEvidenceState::Provisional
+                && observation->result.evidence_state
+                != SeedProbeEvidenceState::Confirmed) {
+                return FailRun(
+                    run,
+                    "SEEDPROBE_SURVEY_INVALID",
+                    "Selected Survey evidence has an invalid state",
+                    result_out,
+                    error_out);
+            }
+        }
+
+        RandSeedProbeResult grid{};
+        grid.base_seed = neutral->result.seed_value;
+        for (const auto& observation : *observations) {
+            if (observation.family == SeedFamily::Neutral) {
+                continue;
+            }
+            const auto delta = SignedDelta(
+                observation.result.seed_value,
+                neutral->result.seed_value);
+            RandSeedProbeEntry entry{};
+            entry.grid_n = observation.job.sample_ordinal;
+            entry.family = observation.family;
+            entry.seed = observation.result.seed_value;
+            entry.delta = delta;
+            entry.ok = true;
+            if (observation.family == SeedFamily::Main) {
+                entry.x = static_cast<std::uint8_t>(
+                    observation.frame.main_x);
+                entry.y = static_cast<std::uint8_t>(
+                    observation.frame.main_y);
+            } else if (
+                observation.family == SeedFamily::CStick) {
+                entry.x = static_cast<std::uint8_t>(
+                    observation.frame.cstick_x);
+                entry.y = static_cast<std::uint8_t>(
+                    observation.frame.cstick_y);
+            } else {
+                entry.x = static_cast<std::uint8_t>(
+                    observation.frame.trigger_x);
+                entry.y = static_cast<std::uint8_t>(
+                    observation.frame.trigger_y);
+            }
+            grid.entries.push_back(std::move(entry));
+        }
+
+        const auto authored =
+            authoring_db_->GetSeedProbeSpec(
+                run.seed_probe_spec_id);
+        if (!authored.has_value()) {
+            return FailRun(
+                run,
+                "SEEDPROBE_SPEC_MISSING",
+                "The authored SeedProbe specification is missing",
+                result_out,
+                error_out);
+        }
+        const auto planned = phase_->PlanSearch(
+            grid,
+            static_cast<std::uint32_t>(
+                std::max(
+                    0,
+                    authored->combo_attempts_per_target)),
+            static_cast<std::uint32_t>(
+                std::max(0, authored->combo_sampler_tries)));
+
+        std::vector<SeedProbeJobSpec> search_specs;
+        std::int32_t ordinal = 0;
+        for (const auto& target : planned.samples) {
+            for (const auto& frame : target.frames) {
+                std::int64_t input_frame_id = 0;
+                if (!analysis_db_->EnsureSeedProbeInputFrame(
+                        AxisId(frame.main_x, frame.main_y),
+                        AxisId(frame.c_x, frame.c_y),
+                        AxisId(frame.trig_l, frame.trig_r),
+                        &input_frame_id,
+                        error_out)) {
+                    return false;
+                }
+                search_specs.push_back(
+                    {
+                        .version = kJobSpecVersion,
+                        .stage = SeedProbeJobStage::Search,
+                        .input_frame_id = input_frame_id,
+                        .sample_ordinal = ordinal++,
+                        .desired_delta =
+                            target.target_delta,
+                    });
+            }
+        }
+
+        if (!search_specs.empty()) {
+            const auto key =
+                "seedprobe.run."
+                + std::to_string(run.probe_run_id)
+                + ".search.initial";
+            if (!PublishJobSet(
+                    key,
+                    context.root_job_set_id,
+                    context.materialization.step.workflow_step_id,
+                    context.root_job_set_id,
+                    kSearchPurpose,
+                    "stage=SEARCH",
+                    run.probe_run_id,
+                    run.entry_savestate_id,
+                    context.materialization.step.step_priority
+                        + authored->priority,
+                    search_specs,
+                    error_out)
+                    .has_value()
+                || !SetRunStatus(
+                    run.probe_run_id,
+                    SeedProbeRunStatus::Survey,
+                    SeedProbeRunStatus::Search,
+                    error_out)) {
+                return false;
+            }
+            result_out->disposition =
+                ProgramJobContinuationDisposition::AddedWork;
+            result_out->event_lines.push_back(
+                "[seedprobe-stage] run="
+                + std::to_string(run.probe_run_id)
+                + " stage=SEARCH jobs="
+                + std::to_string(search_specs.size()));
+            return true;
+        }
+
+        const auto confirm_specs =
+            BuildConfirmSpecs(run.probe_run_id);
+        if (confirm_specs.empty()
+            || !PublishConfirmation(
+                run,
+                context.materialization.step.workflow_step_id,
+                context.root_job_set_id,
+                confirm_specs,
+                error_out)
+            || !SetRunStatus(
+                run.probe_run_id,
+                SeedProbeRunStatus::Survey,
+                SeedProbeRunStatus::Confirm,
+                error_out)) {
+            return confirm_specs.empty()
+                ? Fail(
+                      "SeedProbe Survey selected no evidence to confirm",
+                      error_out)
+                : false;
+        }
+        result_out->disposition =
+            ProgramJobContinuationDisposition::AddedWork;
+        result_out->event_lines.push_back(
+            "[seedprobe-stage] run="
+            + std::to_string(run.probe_run_id)
+            + " stage=CONFIRM jobs="
+            + std::to_string(confirm_specs.size()));
+        return true;
+    }
+
+    bool ContinueSearch(
+        const ProgramJobContinuationContext& context,
+        const SeedProbeRunSnapshot& run,
+        ProgramJobContinuationResult* result_out,
+        std::string* error_out) const {
+        const auto confirm_specs =
+            BuildConfirmSpecs(run.probe_run_id);
+        if (confirm_specs.empty()) {
+            if (!SetRunStatus(
+                    run.probe_run_id,
+                    SeedProbeRunStatus::Search,
+                    SeedProbeRunStatus::Confirm,
+                    error_out)) {
+                return false;
+            }
+            const auto confirm_run =
+                analysis_db_->GetSeedProbeRun(
+                    run.probe_run_id);
+            if (!confirm_run.has_value()
+                || confirm_run->status
+                    != SeedProbeRunStatus::Confirm) {
+                return Fail(
+                    "SeedProbe Search could not enter Confirm",
+                    error_out);
+            }
+            return ContinueConfirm(
+                context,
+                *confirm_run,
+                result_out,
+                error_out);
+        }
+        if (!PublishConfirmation(
+                run,
+                context.materialization.step.workflow_step_id,
+                context.root_job_set_id,
+                confirm_specs,
+                error_out)
+            || !SetRunStatus(
+                run.probe_run_id,
+                SeedProbeRunStatus::Search,
+                SeedProbeRunStatus::Confirm,
+                error_out)) {
+            return false;
+        }
+        result_out->disposition =
+            ProgramJobContinuationDisposition::AddedWork;
+        result_out->event_lines.push_back(
+            "[seedprobe-stage] run="
+            + std::to_string(run.probe_run_id)
+            + " stage=CONFIRM jobs="
+            + std::to_string(confirm_specs.size()));
+        return true;
+    }
+
+    bool RejectUnobservedConfirmations(
+        const SeedProbeRunSnapshot& run,
+        std::int64_t root_job_set_id,
+        std::string* error_out) const {
+        for (const auto& child :
+             execution_db_->GetChildJobSetProgress(
+                 root_job_set_id)) {
+            if (child.purpose != kConfirmPurpose) {
+                continue;
+            }
+            for (const auto& job :
+                 execution_db_->ListJobsInJobSet(
+                     child.job_set_id)) {
+                if (!IsBusinessFinal(job.state)) {
+                    return Fail(
+                        "SeedProbe Confirm continuation ran before "
+                        "every Confirm job became business-final",
+                        error_out);
+                }
+                const auto spec =
+                    DecodeSeedProbeJobSpec(job.input_ini);
+                if (!spec.has_value()
+                    || spec->stage
+                        != SeedProbeJobStage::Confirm
+                    || !spec->confirmation_of_probe_result_id
+                            .has_value()) {
+                    return Fail(
+                        "SeedProbe Confirm job metadata is invalid",
+                        error_out);
+                }
+                if (analysis_db_
+                        ->GetSeedProbeResultForSourceJob(
+                            job.job_id)
+                        .has_value()) {
+                    continue;
+                }
+                const auto candidate =
+                    analysis_db_->GetSeedProbeResult(
+                        *spec->
+                            confirmation_of_probe_result_id);
+                if (!candidate.has_value()
+                    || candidate->probe_run_id
+                        != run.probe_run_id) {
+                    return Fail(
+                        "SeedProbe Confirm candidate is missing",
+                        error_out);
+                }
+                if (candidate->evidence_state
+                    != SeedProbeEvidenceState::Provisional) {
+                    continue;
+                }
+                bool changed = false;
+                if (!analysis_db_->TransitionSeedProbeEvidence(
+                        {
+                            .probe_result_id =
+                                candidate->probe_result_id,
+                            .expected_state =
+                                SeedProbeEvidenceState::
+                                    Provisional,
+                            .new_state =
+                                SeedProbeEvidenceState::
+                                    Rejected,
+                            .changed_at_utc = types::UtcNow(),
+                            .correlation_id =
+                                "seedprobe-run-"
+                                + std::to_string(
+                                    run.probe_run_id),
+                            .causation_id =
+                                "seedprobe-confirm-exhausted",
+                        },
+                        &changed,
+                        error_out)) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    struct DeltaCandidate {
+        SeedProbeResultRow result;
+        ExecutionJobRecord source_job;
+        SeedProbeJobSpec spec;
+        std::int32_t delta = 0;
+        bool neutral = false;
+    };
+
+    std::optional<std::vector<DeltaCandidate>>
+    LoadDeltaCandidates(
+        const SeedProbeRunSnapshot& run,
+        std::uint32_t neutral_seed,
+        std::string* error_out) const {
+        std::vector<DeltaCandidate> candidates;
+        for (const auto& result :
+             analysis_db_->ListSeedProbeResults(
+                 run.probe_run_id)) {
+            if (result.confirmation_of_probe_result_id
+                    .has_value()) {
+                continue;
+            }
+            const auto source_job =
+                execution_db_->GetJob(result.source_job_id);
+            const auto spec = source_job.has_value()
+                ? DecodeSeedProbeJobSpec(
+                      source_job->input_ini)
+                : std::nullopt;
+            if (!source_job.has_value()
+                || !spec.has_value()
+                || (spec->stage
+                        != SeedProbeJobStage::Survey
+                    && spec->stage
+                        != SeedProbeJobStage::Search)) {
+                Fail(
+                    "SeedProbe candidate has invalid source job metadata",
+                    error_out);
+                return std::nullopt;
+            }
+            bool neutral = false;
+            if (spec->stage == SeedProbeJobStage::Survey) {
+                const auto frame =
+                    analysis_db_->GetAnalysisInputFrame(
+                        result.input_frame_id);
+                const auto family = frame.has_value()
+                    ? ClassifySurveyFrame(*frame)
+                    : std::nullopt;
+                if (!family.has_value()) {
+                    Fail(
+                        "SeedProbe Survey candidate frame is invalid",
+                        error_out);
+                    return std::nullopt;
+                }
+                neutral = *family == SeedFamily::Neutral;
+            }
+            candidates.push_back(
+                {
+                    .result = result,
+                    .source_job = *source_job,
+                    .spec = *spec,
+                    .delta = SignedDelta(
+                        result.seed_value,
+                        neutral_seed),
+                    .neutral = neutral,
+                });
+        }
+        return candidates;
+    }
+
+    static bool CandidateLess(
+        const DeltaCandidate& lhs,
+        const DeltaCandidate& rhs) {
+        const int lhs_rank =
+            lhs.spec.stage == SeedProbeJobStage::Survey
+            ? 0
+            : 1;
+        const int rhs_rank =
+            rhs.spec.stage == SeedProbeJobStage::Survey
+            ? 0
+            : 1;
+        if (lhs_rank != rhs_rank) {
+            return lhs_rank < rhs_rank;
+        }
+        if (lhs.spec.stage == SeedProbeJobStage::Survey) {
+            if (lhs.spec.sample_ordinal
+                != rhs.spec.sample_ordinal) {
+                return lhs.spec.sample_ordinal
+                    < rhs.spec.sample_ordinal;
+            }
+        } else {
+            if (lhs.source_job.job_set_id
+                != rhs.source_job.job_set_id) {
+                return lhs.source_job.job_set_id
+                    < rhs.source_job.job_set_id;
+            }
+            if (lhs.spec.sample_ordinal
+                != rhs.spec.sample_ordinal) {
+                return lhs.spec.sample_ordinal
+                    < rhs.spec.sample_ordinal;
+            }
+        }
+        if (lhs.source_job.job_id
+            != rhs.source_job.job_id) {
+            return lhs.source_job.job_id
+                < rhs.source_job.job_id;
+        }
+        return lhs.result.probe_result_id
+            < rhs.result.probe_result_id;
+    }
+
+    bool ContinueConfirm(
+        const ProgramJobContinuationContext& context,
+        const SeedProbeRunSnapshot& run,
+        ProgramJobContinuationResult* result_out,
+        std::string* error_out) const {
+        if (!RejectUnobservedConfirmations(
+                run,
+                context.root_job_set_id,
+                error_out)) {
+            return false;
+        }
+
+        const auto neutral =
+            NeutralResult(run.probe_run_id);
+        if (!neutral.has_value()
+            || neutral->evidence_state
+                != SeedProbeEvidenceState::Confirmed) {
+            return FailRun(
+                run,
+                "SEEDPROBE_NEUTRAL_CONFIRMATION_MISSING",
+                "The neutral Survey observation was not confirmed",
+                result_out,
+                error_out);
+        }
+
+        auto candidates = LoadDeltaCandidates(
+            run,
+            neutral->seed_value,
+            error_out);
+        if (!candidates.has_value()) {
+            return false;
+        }
+        std::sort(
+            candidates->begin(),
+            candidates->end(),
+            CandidateLess);
+
+        std::set<std::int32_t> confirmed_deltas;
+        std::map<std::int32_t, std::vector<SeedProbeResultRow>>
+            rejected_by_delta;
+        std::map<std::int32_t, std::unordered_set<std::int64_t>>
+            rejected_frames_by_delta;
+        for (const auto& candidate : *candidates) {
+            if (candidate.result.evidence_state
+                == SeedProbeEvidenceState::Confirmed) {
+                confirmed_deltas.insert(candidate.delta);
+            } else if (
+                candidate.result.evidence_state
+                == SeedProbeEvidenceState::Rejected) {
+                rejected_by_delta[candidate.delta].push_back(
+                    candidate.result);
+                rejected_frames_by_delta[candidate.delta].insert(
+                    candidate.result.input_frame_id);
+            }
+        }
+
+        // A rejected delta first searches the complete factual ledger.
+        // CandidateLess keeps one-axis Grid frames ahead of combination
+        // Search frames without treating either origin as a different
+        // accepted-evidence kind.
+        for (const auto& [delta, rejected] :
+             rejected_by_delta) {
+            (void)rejected;
+            if (delta == 0
+                || confirmed_deltas.contains(delta)) {
+                continue;
+            }
+            const DeltaCandidate* best = nullptr;
+            for (const auto& candidate : *candidates) {
+                if (candidate.delta != delta
+                    || candidate.result.evidence_state
+                        != SeedProbeEvidenceState::Observed
+                    || rejected_frames_by_delta[delta].contains(
+                        candidate.result.input_frame_id)) {
+                    continue;
+                }
+                if (best == nullptr) {
+                    best = &candidate;
+                }
+            }
+            if (best != nullptr) {
+                bool changed = false;
+                if (!analysis_db_->TransitionSeedProbeEvidence(
+                        {
+                            .probe_result_id =
+                                best->result.probe_result_id,
+                            .expected_state =
+                                SeedProbeEvidenceState::
+                                    Observed,
+                            .new_state =
+                                SeedProbeEvidenceState::
+                                    Provisional,
+                            .changed_at_utc = types::UtcNow(),
+                            .correlation_id =
+                                "seedprobe-run-"
+                                + std::to_string(
+                                    run.probe_run_id),
+                            .causation_id =
+                                "seedprobe-delta-ledger-recovery",
+                        },
+                        &changed,
+                        error_out)) {
+                    return false;
+                }
+            }
+        }
+
+        auto confirm_specs =
+            BuildConfirmSpecs(run.probe_run_id);
+        if (!confirm_specs.empty()) {
+            if (!PublishConfirmation(
+                    run,
+                    context.materialization.step.workflow_step_id,
+                    context.root_job_set_id,
+                    confirm_specs,
+                    error_out)) {
+                return false;
+            }
+            result_out->disposition =
+                ProgramJobContinuationDisposition::AddedWork;
+            result_out->event_lines.push_back(
+                "[seedprobe-recovery] run="
+                + std::to_string(run.probe_run_id)
+                + " action=confirm_recorded_delta_candidate jobs="
+                + std::to_string(confirm_specs.size()));
+            return true;
+        }
+
+        candidates = LoadDeltaCandidates(
+            run,
+            neutral->seed_value,
+            error_out);
+        if (!candidates.has_value()) {
+            return false;
+        }
+        confirmed_deltas.clear();
+        rejected_by_delta.clear();
+        rejected_frames_by_delta.clear();
+        for (const auto& candidate : *candidates) {
+            if (candidate.result.evidence_state
+                == SeedProbeEvidenceState::Confirmed) {
+                confirmed_deltas.insert(candidate.delta);
+            } else if (
+                candidate.result.evidence_state
+                == SeedProbeEvidenceState::Rejected) {
+                rejected_by_delta[candidate.delta].push_back(
+                    candidate.result);
+                rejected_frames_by_delta[candidate.delta].insert(
+                    candidate.result.input_frame_id);
+            }
+        }
+        std::set<std::int32_t> unresolved_deltas;
+        for (const auto& [delta, rejected] :
+             rejected_by_delta) {
+            (void)rejected;
+            if (delta != 0
+                && !confirmed_deltas.contains(delta)) {
+                unresolved_deltas.insert(delta);
+            }
+        }
+
+        struct RecoverySpec {
+            std::int64_t source_job_set_id = 0;
+            SeedProbeJobSpec spec;
+        };
+        std::vector<RecoverySpec> recovery_candidates;
+        std::set<std::pair<std::int32_t, std::int64_t>>
+            recovery_frames;
+        std::set<std::pair<std::int32_t, std::int64_t>>
+            observed_search_frames;
+        for (const auto& candidate : *candidates) {
+            if (candidate.spec.stage
+                    == SeedProbeJobStage::Search
+                && candidate.spec.desired_delta.has_value()) {
+                observed_search_frames.emplace(
+                    *candidate.spec.desired_delta,
+                    candidate.result.input_frame_id);
+            }
+        }
+        for (const auto& child :
+             execution_db_->GetChildJobSetProgress(
+                 context.root_job_set_id)) {
+            if (child.purpose != kSearchPurpose
+                && child.purpose
+                    != kRecoverySearchPurpose) {
+                continue;
+            }
+            for (const auto& row :
+                 execution_db_->ListJobsInJobSet(
+                     child.job_set_id)) {
+                if (row.state != "CANCELED"
+                    || analysis_db_
+                        ->GetSeedProbeResultForSourceJob(
+                            row.job_id)
+                        .has_value()) {
+                    continue;
+                }
+                const auto spec =
+                    DecodeSeedProbeJobSpec(row.input_ini);
+                if (!spec.has_value()
+                    || spec->stage
+                        != SeedProbeJobStage::Search
+                    || !spec->desired_delta.has_value()
+                    || !unresolved_deltas.contains(
+                        *spec->desired_delta)) {
+                    continue;
+                }
+                if (rejected_frames_by_delta[
+                        *spec->desired_delta]
+                        .contains(spec->input_frame_id)
+                    || observed_search_frames.contains(
+                        {
+                            *spec->desired_delta,
+                            spec->input_frame_id,
+                        })
+                    || !recovery_frames.emplace(
+                            *spec->desired_delta,
+                            spec->input_frame_id)
+                            .second) {
+                    continue;
+                }
+                recovery_candidates.push_back(
+                    {
+                        .source_job_set_id =
+                            child.job_set_id,
+                        .spec = *spec,
+                    });
+            }
+        }
+        std::sort(
+            recovery_candidates.begin(),
+            recovery_candidates.end(),
+            [](const auto& lhs, const auto& rhs) {
+                if (lhs.spec.desired_delta
+                    != rhs.spec.desired_delta) {
+                    return lhs.spec.desired_delta
+                        < rhs.spec.desired_delta;
+                }
+                if (lhs.source_job_set_id
+                    != rhs.source_job_set_id) {
+                    return lhs.source_job_set_id
+                        < rhs.source_job_set_id;
+                }
+                if (lhs.spec.sample_ordinal
+                    != rhs.spec.sample_ordinal) {
+                    return lhs.spec.sample_ordinal
+                        < rhs.spec.sample_ordinal;
+                }
+                return lhs.spec.input_frame_id
+                    < rhs.spec.input_frame_id;
+            });
+        std::vector<SeedProbeJobSpec> recovery_specs;
+        recovery_specs.reserve(recovery_candidates.size());
+        for (std::size_t i = 0;
+             i < recovery_candidates.size();
+             ++i) {
+            auto spec = recovery_candidates[i].spec;
+            spec.sample_ordinal =
+                static_cast<std::int32_t>(i);
+            recovery_specs.push_back(std::move(spec));
+        }
+
+        if (!recovery_specs.empty()) {
+            std::vector<std::int64_t> rejected_ids;
+            for (const auto& [delta, rejected] :
+                 rejected_by_delta) {
+                if (!unresolved_deltas.contains(delta)) {
+                    continue;
+                }
+                for (const auto& row : rejected) {
+                    rejected_ids.push_back(
+                        row.probe_result_id);
+                }
+            }
+            std::sort(
+                rejected_ids.begin(),
+                rejected_ids.end());
+            const auto joined = JoinIds(rejected_ids);
+            const auto key =
+                "seedprobe.run."
+                + std::to_string(run.probe_run_id)
+                + ".search.recovery."
+                + hash::sha256(
+                    joined.data(),
+                    joined.size());
+            if (!PublishJobSet(
+                    key,
+                    context.root_job_set_id,
+                    context.materialization.step.workflow_step_id,
+                    context.root_job_set_id,
+                    kRecoverySearchPurpose,
+                    "stage=SEARCH_RECOVERY;rejected=" + joined,
+                    run.probe_run_id,
+                    run.entry_savestate_id,
+                    context.materialization.step.step_priority,
+                    recovery_specs,
+                    error_out)
+                    .has_value()
+                || !SetRunStatus(
+                    run.probe_run_id,
+                    SeedProbeRunStatus::Confirm,
+                    SeedProbeRunStatus::Search,
+                    error_out)) {
+                return false;
+            }
+            result_out->disposition =
+                ProgramJobContinuationDisposition::AddedWork;
+            result_out->event_lines.push_back(
+                "[seedprobe-recovery] run="
+                + std::to_string(run.probe_run_id)
+                + " action=republish_canceled jobs="
+                + std::to_string(recovery_specs.size()));
+            return true;
+        }
+
+        return CompleteRun(
+            context,
+            run,
+            result_out,
+            error_out);
+    }
+
+    bool CompleteRun(
+        const ProgramJobContinuationContext& context,
+        const SeedProbeRunSnapshot& run,
+        ProgramJobContinuationResult* result_out,
+        std::string* error_out) const {
+        (void)context;
+        const auto neutral =
+            NeutralResult(run.probe_run_id);
+        if (!neutral.has_value()
+            || neutral->evidence_state
+                != SeedProbeEvidenceState::Confirmed) {
+            return FailRun(
+                run,
+                "SEEDPROBE_NEUTRAL_CONFIRMATION_MISSING",
+                "SeedProbe cannot complete without confirmed "
+                "neutral-frame evidence",
+                result_out,
+                error_out);
+        }
+
+        const auto candidates = LoadDeltaCandidates(
+            run,
+            neutral->seed_value,
+            error_out);
+        if (!candidates.has_value()) {
+            return false;
+        }
+
+        std::set<std::int32_t> discovered_deltas;
+        std::set<std::int32_t> rejected_deltas;
+        std::map<std::int32_t, DeltaCandidate>
+            confirmed_by_delta;
+        for (const auto& candidate : *candidates) {
+            discovered_deltas.insert(candidate.delta);
+            if (candidate.result.evidence_state
+                == SeedProbeEvidenceState::Rejected) {
+                rejected_deltas.insert(candidate.delta);
+            }
+            if (candidate.result.evidence_state
+                != SeedProbeEvidenceState::Confirmed) {
+                continue;
+            }
+            const auto [it, inserted] =
+                confirmed_by_delta.emplace(
+                    candidate.delta,
+                    candidate);
+            if (!inserted
+                && it->second.result.probe_result_id
+                    != candidate.result.probe_result_id) {
+                return Fail(
+                    "SeedProbe has multiple confirmed representatives "
+                    "for one actual delta",
+                    error_out);
+            }
+        }
+        const auto confirmed_neutral =
+            confirmed_by_delta.find(0);
+        if (confirmed_neutral == confirmed_by_delta.end()
+            || !confirmed_neutral->second.neutral
+            || confirmed_neutral->second.result.probe_result_id
+                != neutral->probe_result_id) {
+            return FailRun(
+                run,
+                "SEEDPROBE_NEUTRAL_CONFIRMATION_MISSING",
+                "SeedProbe delta zero is not represented by its "
+                "confirmed Neutral frame",
+                result_out,
+                error_out);
+        }
+
+        std::set<std::int32_t> unresolved_deltas;
+        for (const auto delta : discovered_deltas) {
+            if (confirmed_by_delta.contains(delta)) {
+                continue;
+            }
+            if (delta == 0) {
+                return FailRun(
+                    run,
+                    "SEEDPROBE_NEUTRAL_CONFIRMATION_MISSING",
+                    "SeedProbe discovered delta zero without a "
+                    "confirmed Neutral representative",
+                    result_out,
+                    error_out);
+            }
+            if (!rejected_deltas.contains(delta)) {
+                return Fail(
+                    "SeedProbe discovered delta has neither a "
+                    "confirmed nor exhausted representative",
+                    error_out);
+            }
+            unresolved_deltas.insert(delta);
+        }
+
+        std::vector<std::int64_t> frame_ids;
+        std::unordered_set<std::int64_t> seen;
+        frame_ids.push_back(
+            confirmed_neutral->second.result.input_frame_id);
+        seen.insert(
+            confirmed_neutral->second.result.input_frame_id);
+        for (const auto& [delta, candidate] :
+             confirmed_by_delta) {
+            if (delta == 0) {
+                continue;
+            }
+            if (!seen.insert(
+                    candidate.result.input_frame_id)
+                    .second) {
+                return Fail(
+                    "SeedProbe accepted frame represents more than "
+                    "one actual delta",
+                    error_out);
+            }
+            frame_ids.push_back(
+                candidate.result.input_frame_id);
+        }
+        if (!analysis_db_->ReplaceSeedProbeAcceptedInputFrames(
+                {
+                    .probe_run_id = run.probe_run_id,
+                    .input_frame_ids = frame_ids,
+                    .replaced_at_utc = types::UtcNow(),
+                    .correlation_id =
+                        "seedprobe-run-"
+                        + std::to_string(run.probe_run_id),
+                    .causation_id =
+                        "seedprobe-completion",
+                },
+                error_out)) {
+            return false;
+        }
+        const bool partial = !unresolved_deltas.empty();
+        const auto terminal_status = partial
+            ? SeedProbeRunStatus::CompletedPartial
+            : SeedProbeRunStatus::Completed;
+        if (!SetRunStatus(
+                run.probe_run_id,
+                SeedProbeRunStatus::Confirm,
+                terminal_status,
+                error_out)) {
+            return false;
+        }
+        result_out->disposition =
+            ProgramJobContinuationDisposition::Complete;
+        result_out->output = ProgramJobContinuationOutput{
+            .output_key = "seed_probe_run",
+            .data_kind = "analysis.seed_probe_run",
+            .ref_kind = "sp_probe_run",
+            .ref_id = run.probe_run_id,
+        };
+        result_out->event_lines.push_back(
+            "[seedprobe-completed] run="
+            + std::to_string(run.probe_run_id)
+            + " status="
+            + std::string(
+                partial ? "COMPLETED_PARTIAL" : "COMPLETED")
+            + " accepted="
+            + std::to_string(frame_ids.size())
+            + " discovered="
+            + std::to_string(discovered_deltas.size())
+            + " unresolved="
+            + std::to_string(unresolved_deltas.size()));
+        return true;
+    }
+
+    IExecutionDb* execution_db_ = nullptr;
+    IStateDb* state_db_ = nullptr;
+    IAnalysisDb* analysis_db_ = nullptr;
+    IAuthoringDb* authoring_db_ = nullptr;
+    SeedProbeProgramConfig config_;
+    std::shared_ptr<const runtime::seedprobe::
+        ISeedProbeFullPhaseDefinitionV2> phase_;
+    std::string module_error_;
+};
+
+} // namespace
+
+ProgramKindDescriptor BuildSeedProbeProgramDescriptor(
+    IExecutionDb* execution_db,
+    IStateDb* state_db,
+    IAnalysisDb* analysis_db,
+    IAuthoringDb* authoring_db,
+    SeedProbeProgramConfig config) {
+    auto materializer =
+        std::make_shared<SeedProbeMaterializer>(
+            execution_db,
+            state_db,
+            analysis_db,
+            authoring_db,
+            config);
+    auto execution = BuildSeedProbeExecutionAdapters(
+        execution_db,
+        state_db,
+        analysis_db,
+        config.working_dir_root);
+
+    ProgramKindDescriptor descriptor{};
+    descriptor.program_kind =
+        static_cast<std::int32_t>(savor::PK_SeedProbe);
+    descriptor.program_name = "SeedProbe";
+    descriptor.job_materializer = std::move(materializer);
+    descriptor.workset_reconstruction =
+        std::move(execution.reconstruction);
+    descriptor.result_handler =
+        std::move(execution.result_handler);
+    descriptor.supports_workflow_orchestration = true;
+    descriptor.allow_mixed_success_failed_transition = true;
+    return descriptor;
+}
+
+} // namespace savor::db::execution::programdb::seedprobe

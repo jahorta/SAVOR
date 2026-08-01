@@ -49,8 +49,6 @@ constexpr const char* kOutputRefKind = "state_artifact";
 constexpr const char* kDerivationMethod = "navigation_context_capture";
 constexpr const char* kDerivationContextKind = "state_artifact";
 constexpr std::uint32_t kCapturePc = 0x80111770u;
-constexpr std::int64_t kCoordinatorCompletionGraceMs = 90'000;
-
 std::filesystem::path WorkspaceRoot(const CliOptions& options)
 {
     return options.workspace_root.value_or(
@@ -576,17 +574,12 @@ bool RunNavigationContextScenario(
     }
 
     coordinator.Start();
-    const auto deadline =
-        std::chrono::steady_clock::now()
-        + std::chrono::milliseconds(
-            std::max<std::int64_t>(1, options.timeout_ms)
-            + kCoordinatorCompletionGraceMs);
     std::optional<
         savor::db::execution::workflow::WorkflowGraphSnapshot> graph;
     bool completed = false;
     bool failed = false;
     std::size_t poll_count = 0;
-    while (std::chrono::steady_clock::now() < deadline) {
+    while (true) {
         ++poll_count;
         graph =
             db_service->ExecutionDb()->WorkflowQueryService()
@@ -624,7 +617,7 @@ bool RunNavigationContextScenario(
         if (error_out != nullptr) {
             *error_out = failed
                 ? "Navigation Context workflow failed"
-                : "Navigation Context workflow timed out";
+                : "Navigation Context workflow stopped before completion";
         }
         return false;
     }

@@ -17,18 +17,11 @@ public:
     explicit SqliteAnalysisDb(sqlite3* db);
 
     std::optional<std::int64_t> LookupSeedProbeRunSavestateId(std::int64_t probe_run_id) const override;
-    std::optional<std::int64_t> LookupSeedProbeResultId(std::int64_t probe_run_id) const override;
-    std::optional<std::int64_t> LookupSeedProbeNeutralSeed(std::int64_t probe_run_id) const override;
-    std::optional<SeedProbeNeutralSeedRow> GetSeedProbeNeutralSeed(std::int64_t neutral_seed_id) const override;
-    bool TryGetSeedProbeNeutralSeedForRun(
-        std::int64_t probe_run_id,
-        std::optional<SeedProbeNeutralSeedRow>* row_out,
-        std::string* error_out = nullptr) const override;
-    std::vector<SeedProbeGridSeedRow> ListSeedProbeGridSeeds(std::int64_t probe_run_id) const override;
-    std::vector<SeedProbeUniqueSeedRow> ListSeedProbeUniqueSeeds(std::int64_t probe_run_id) const override;
-    std::optional<SeedProbeUniqueSeedRow> GetSeedProbeUniqueSeed(std::int64_t unique_seed_id) const override;
-    std::optional<SeedProbeUniqueSeedRow> FindSeedProbeUniqueSeedForEntrySavestateInputFrame(
-        std::int64_t entry_savestate_id,
+    std::optional<SeedProbeResultRow> GetSeedProbeResult(std::int64_t probe_result_id) const override;
+    std::optional<SeedProbeResultRow> GetSeedProbeResultForSourceJob(std::int64_t source_job_id) const override;
+    std::vector<SeedProbeResultRow> ListSeedProbeResults(std::int64_t probe_run_id) const override;
+    std::optional<SeedProbeResultRow> FindConfirmedSeedProbeResultForAcceptedInputSetFrame(
+        std::int64_t accepted_input_set_id,
         std::int64_t input_frame_id) const override;
     std::optional<AnalysisInputSetFrameRow> GetAnalysisInputFrame(std::int64_t input_frame_id) const override;
     std::vector<AnalysisInputSetFrameRow> ListAnalysisInputSetFrames(std::int64_t input_set_id) const override;
@@ -38,10 +31,14 @@ public:
         std::int64_t trigger_axis_xy_id,
         std::int64_t* input_frame_id_out = nullptr,
         std::string* error_out = nullptr) override;
-    bool EnsureSeedProbeUniqueSeedDelta(
-        const RecordSeedProbeUniqueSeedCommand& command,
+    bool EnsureSeedProbeObservation(
+        const RecordSeedProbeObservationCommand& command,
         bool* inserted_out = nullptr,
-        std::int64_t* unique_seed_id_out = nullptr,
+        std::int64_t* probe_result_id_out = nullptr,
+        std::string* error_out = nullptr) override;
+    bool TransitionSeedProbeEvidence(
+        const TransitionSeedProbeEvidenceCommand& command,
+        bool* changed_out = nullptr,
         std::string* error_out = nullptr) override;
 
     bool CreateSeedProbeSet(
@@ -53,43 +50,26 @@ public:
         const RequestSeedProbeRunCommand& command,
         std::int64_t* probe_run_id_out = nullptr,
         std::string* error_out = nullptr) override;
-    bool CreateSeedProbeRunForSet(
-        std::int64_t probe_set_id,
-        std::int64_t* probe_run_id_out = nullptr,
-        std::string* error_out = nullptr) override;
     std::optional<SeedProbeRunSnapshot> GetSeedProbeRun(
         std::int64_t probe_run_id) const override;
-    bool SetSeedProbeRunNeutralSeed(
-        std::int64_t probe_run_id,
-        std::int64_t neutral_seed_value,
+    bool UpdateSeedProbeRunStatus(
+        const UpdateSeedProbeRunStatusCommand& command,
+        bool* changed_out = nullptr,
+        std::string* error_out = nullptr) override;
+    bool ObserveSeedProbeEndpoint(
+        const ObserveSeedProbeEndpointCommand& command,
+        ObserveSeedProbeEndpointReceipt* receipt_out = nullptr,
+        std::string* error_out = nullptr) override;
+    bool ReplaceSeedProbeAcceptedInputFrames(
+        const ReplaceSeedProbeAcceptedInputFramesCommand& command,
         std::string* error_out = nullptr) override;
     bool SetSeedProbeRunEntrySavestate(
         const SetSeedProbeRunEntrySavestateCommand& command,
         std::string* error_out = nullptr) override;
 
-    bool RecordSeedProbeNeutralSeed(
-        const RecordSeedProbeNeutralSeedCommand& command,
-        std::int64_t* neutral_seed_id_out = nullptr,
-        std::string* error_out = nullptr) override;
-
-    bool RecordSeedProbeGridSeed(
-        const RecordSeedProbeGridSeedCommand& command,
-        std::int64_t* grid_seed_id_out = nullptr,
-        std::string* error_out = nullptr) override;
-
-    bool RecordSeedProbeUniqueSeed(
-        const RecordSeedProbeUniqueSeedCommand& command,
-        std::int64_t* unique_seed_id_out = nullptr,
-        std::string* error_out = nullptr) override;
-
     bool RecordSeedProbeEncounterProjection(
         const RecordSeedProbeEncounterProjectionCommand& command,
         std::int64_t* encounter_projection_id_out = nullptr,
-        std::string* error_out = nullptr) override;
-
-    bool CompleteSeedProbeRun(
-        const CompleteSeedProbeRunCommand& command,
-        std::int64_t* probe_result_id_out = nullptr,
         std::string* error_out = nullptr) override;
 
     bool CreateBattleSet(
@@ -105,11 +85,6 @@ public:
     bool CreateBattleTurnWave(
         const CreateBattleTurnWaveCommand& command,
         std::int64_t* wave_id_out = nullptr,
-        std::string* error_out = nullptr) override;
-    bool EnsureSeedProbeNeutralSeed(
-        const RecordSeedProbeNeutralSeedCommand& command,
-        bool* inserted_out = nullptr,
-        std::int64_t* neutral_seed_id_out = nullptr,
         std::string* error_out = nullptr) override;
     bool CreateBattleContextProbe(
         const CreateBattleContextProbeCommand& command,

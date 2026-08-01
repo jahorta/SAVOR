@@ -5,12 +5,38 @@
 #include "SqliteWorkflowOrchestration.h"
 #include "WorkflowRecoveryService.h"
 
+#include <algorithm>
+#include <cctype>
+#include <limits>
 #include <sstream>
 #include <unordered_set>
 #include <utility>
 #include <vector>
 
 namespace savor::db::execution::workflow {
+
+std::optional<std::string> OptionalText(sqlite3_stmt* st, int index);
+std::string Text(sqlite3_stmt* st, int index);
+void BindOptionalText(
+    sqlite3_stmt* st,
+    int index,
+    const std::optional<std::string>& value);
+bool IsSha256(std::string_view value);
+bool IsSafeRelativeBlobPath(std::string_view value);
+bool InsertAggregateOutboxEvent(
+    sqlite3* db,
+    const char* event_type,
+    const char* aggregate_kind,
+    std::int64_t aggregate_id_value,
+    const char* payload_ref_kind,
+    std::int64_t payload_ref_id,
+    std::string_view causation_suffix,
+    std::string* error_out);
+bool WorkerSupportsWorkset(
+    const ReadyWorksetCompatibilityProfile& worker,
+    std::int32_t program_kind,
+    const ExecutionWorksetCompatibility& compatibility,
+    int item_count);
 namespace {
 
 struct Statement {
@@ -72,7 +98,8 @@ bool InsertJobActionEventAndOutbox(
     std::int64_t job_set_id,
     const char* event_type,
     const char* message,
-    std::string* error_out) {
+    std::string* error_out,
+    std::int64_t* job_event_id_out = nullptr) {
     const auto now = CurrentUtcMs(db);
     Statement job_event;
     if (sqlite3_prepare_v2(
@@ -95,6 +122,9 @@ bool InsertJobActionEventAndOutbox(
         return false;
     }
     const auto job_event_id = sqlite3_last_insert_rowid(db);
+    if (job_event_id_out != nullptr) {
+        *job_event_id_out = job_event_id;
+    }
 
     std::ostringstream event_id;
     event_id << "execution-" << event_type << "-" << job_id << "-" << job_event_id;
@@ -133,11 +163,19 @@ bool InsertJobActionEventAndOutbox(
 struct JobStateForAction {
     std::int64_t job_set_id = 0;
     std::string state;
+    bool workset_backed = false;
 };
 
 std::optional<JobStateForAction> GetJobStateForAction(sqlite3* db, std::int64_t job_id, std::string* error_out) {
     Statement st;
-    if (sqlite3_prepare_v2(db, "SELECT job_set_id,state FROM exec_job WHERE job_id=?1;", -1, &st.st, nullptr) != SQLITE_OK) {
+    if (sqlite3_prepare_v2(
+            db,
+            "SELECT job_set_id,state,workset_id "
+            "FROM exec_job WHERE job_id=?1;",
+            -1,
+            &st.st,
+            nullptr)
+        != SQLITE_OK) {
         if (error_out) *error_out = sqlite3_errmsg(db);
         return std::nullopt;
     }
@@ -151,6 +189,8 @@ std::optional<JobStateForAction> GetJobStateForAction(sqlite3* db, std::int64_t 
     row.job_set_id = sqlite3_column_int64(st.st, 0);
     const auto* state = sqlite3_column_text(st.st, 1);
     row.state = state != nullptr ? reinterpret_cast<const char*>(state) : "";
+    row.workset_backed =
+        sqlite3_column_type(st.st, 2) != SQLITE_NULL;
     return row;
 }
 
@@ -199,6 +239,31 @@ std::optional<events::ExecutionWorkflowJobPayloadView> ResolveJobSetPayload(sqli
 
     events::ExecutionWorkflowJobPayloadView view{};
     view.job_set_id = sqlite3_column_int64(st.st, 0);
+    return view;
+}
+
+std::optional<events::ExecutionWorkflowJobPayloadView>
+ResolveWorksetPayload(sqlite3* db, std::int64_t payload_ref_id) {
+    Statement st;
+    if (sqlite3_prepare_v2(
+            db,
+            "SELECT workset_id,job_set_id "
+            "FROM exec_workset WHERE workset_id=?1;",
+            -1,
+            &st.st,
+            nullptr)
+        != SQLITE_OK) {
+        return std::nullopt;
+    }
+
+    sqlite3_bind_int64(st.st, 1, payload_ref_id);
+    if (sqlite3_step(st.st) != SQLITE_ROW) {
+        return std::nullopt;
+    }
+
+    events::ExecutionWorkflowJobPayloadView view{};
+    view.workset_id = sqlite3_column_int64(st.st, 0);
+    view.job_set_id = sqlite3_column_int64(st.st, 1);
     return view;
 }
 
@@ -283,6 +348,225 @@ bool ResolveWorkflowStepForJobSetAncestry(
         *error_out = "workflow step not found for job_set ancestry job_set_id=" + std::to_string(job_set_id);
     }
     return false;
+}
+
+std::int64_t ResultProcessingBackoffMs(int logical_failure) {
+    constexpr std::int64_t kBaseDelayMs = 1000;
+    constexpr std::int64_t kMaximumDelayMs = 5 * 60 * 1000;
+    auto delay = kBaseDelayMs;
+    for (int index = 1;
+         index < logical_failure && delay < kMaximumDelayMs;
+         ++index) {
+        delay = std::min(delay * 2, kMaximumDelayMs);
+    }
+    return delay;
+}
+
+struct CancellationInsertResult {
+    ExecutionDbOperationDisposition disposition =
+        ExecutionDbOperationDisposition::BackendError;
+    std::int64_t cancellation_request_id = 0;
+    std::string state;
+};
+
+bool InsertCancellationRequest(
+    sqlite3* db,
+    const ExecutionCancellationRequestSpec& request,
+    std::int64_t now,
+    CancellationInsertResult* result_out,
+    std::string* error_out) {
+    if (result_out == nullptr) {
+        if (error_out != nullptr) {
+            *error_out = "cancellation insert result is required";
+        }
+        return false;
+    }
+    *result_out = {};
+
+    Statement existing;
+    if (sqlite3_prepare_v2(
+            db,
+            "SELECT cancellation_request_id,reason_code,reason_text,"
+            "requested_by,caused_by_job_id,state "
+            "FROM exec_job_cancellation_request "
+            "WHERE job_id=?1 AND request_key=?2;",
+            -1,
+            &existing.st,
+            nullptr)
+        != SQLITE_OK) {
+        if (error_out != nullptr) *error_out = sqlite3_errmsg(db);
+        return false;
+    }
+    sqlite3_bind_int64(existing.st, 1, request.job_id);
+    sqlite3_bind_text(
+        existing.st,
+        2,
+        request.request_key.c_str(),
+        -1,
+        SQLITE_TRANSIENT);
+    const auto existing_rc = sqlite3_step(existing.st);
+    if (existing_rc == SQLITE_ROW) {
+        const auto existing_cause =
+            sqlite3_column_type(existing.st, 4) == SQLITE_NULL
+            ? std::optional<std::int64_t>{}
+            : std::optional<std::int64_t>{
+                sqlite3_column_int64(existing.st, 4)};
+        if (Text(existing.st, 1) != request.reason_code
+            || OptionalText(existing.st, 2) != request.reason_text
+            || Text(existing.st, 3) != request.requested_by
+            || existing_cause != request.caused_by_job_id) {
+            result_out->disposition =
+                ExecutionDbOperationDisposition::Conflict;
+            result_out->cancellation_request_id =
+                sqlite3_column_int64(existing.st, 0);
+            result_out->state = Text(existing.st, 5);
+            return true;
+        }
+        result_out->disposition =
+            ExecutionDbOperationDisposition::AlreadyApplied;
+        result_out->cancellation_request_id =
+            sqlite3_column_int64(existing.st, 0);
+        result_out->state = Text(existing.st, 5);
+        return true;
+    }
+    if (existing_rc != SQLITE_DONE) {
+        if (error_out != nullptr) *error_out = sqlite3_errmsg(db);
+        return false;
+    }
+
+    Statement job;
+    if (sqlite3_prepare_v2(
+            db,
+            "SELECT job_set_id FROM exec_job WHERE job_id=?1;",
+            -1,
+            &job.st,
+            nullptr)
+        != SQLITE_OK) {
+        if (error_out != nullptr) *error_out = sqlite3_errmsg(db);
+        return false;
+    }
+    sqlite3_bind_int64(job.st, 1, request.job_id);
+    if (sqlite3_step(job.st) != SQLITE_ROW) {
+        result_out->disposition =
+            ExecutionDbOperationDisposition::Missing;
+        return true;
+    }
+    const auto job_set_id = sqlite3_column_int64(job.st, 0);
+
+    Statement active;
+    if (sqlite3_prepare_v2(
+            db,
+            "SELECT cancellation_request_id,state "
+            "FROM exec_job_cancellation_request "
+            "WHERE job_id=?1 "
+            "AND state IN ('REQUESTED','DELIVERY_CLAIMED','DELIVERED') "
+            "LIMIT 1;",
+            -1,
+            &active.st,
+            nullptr)
+        != SQLITE_OK) {
+        if (error_out != nullptr) *error_out = sqlite3_errmsg(db);
+        return false;
+    }
+    sqlite3_bind_int64(active.st, 1, request.job_id);
+    if (sqlite3_step(active.st) == SQLITE_ROW) {
+        result_out->disposition =
+            ExecutionDbOperationDisposition::Conflict;
+        result_out->cancellation_request_id =
+            sqlite3_column_int64(active.st, 0);
+        result_out->state = Text(active.st, 1);
+        return true;
+    }
+
+    Statement insert;
+    if (sqlite3_prepare_v2(
+            db,
+            "INSERT INTO exec_job_cancellation_request("
+            "job_id,request_key,reason_code,reason_text,requested_by,"
+            "caused_by_job_id,requested_at_utc,state) "
+            "VALUES(?1,?2,?3,?4,?5,?6,?7,'REQUESTED');",
+            -1,
+            &insert.st,
+            nullptr)
+        != SQLITE_OK) {
+        if (error_out != nullptr) *error_out = sqlite3_errmsg(db);
+        return false;
+    }
+    sqlite3_bind_int64(insert.st, 1, request.job_id);
+    sqlite3_bind_text(
+        insert.st, 2, request.request_key.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(
+        insert.st, 3, request.reason_code.c_str(), -1, SQLITE_TRANSIENT);
+    BindOptionalText(insert.st, 4, request.reason_text);
+    sqlite3_bind_text(
+        insert.st, 5, request.requested_by.c_str(), -1, SQLITE_TRANSIENT);
+    if (request.caused_by_job_id.has_value()) {
+        sqlite3_bind_int64(insert.st, 6, *request.caused_by_job_id);
+    } else {
+        sqlite3_bind_null(insert.st, 6);
+    }
+    sqlite3_bind_int64(insert.st, 7, now);
+    if (sqlite3_step(insert.st) != SQLITE_DONE) {
+        if (error_out != nullptr) *error_out = sqlite3_errmsg(db);
+        return false;
+    }
+    result_out->cancellation_request_id = sqlite3_last_insert_rowid(db);
+
+    Statement summary;
+    if (sqlite3_prepare_v2(
+            db,
+            "UPDATE exec_job SET "
+            "cancellation_state='REQUESTED',"
+            "cancellation_request_key=?1,cancellation_reason_code=?2,"
+            "cancellation_reason_text=?3,cancellation_requested_by=?4,"
+            "cancellation_caused_by_job_id=?5,"
+            "cancellation_requested_at_utc=?6,"
+            "cancellation_delivery_token=NULL,"
+            "cancellation_delivery_lease_expires_at_utc=NULL,"
+            "cancellation_delivery_attempts=0,"
+            "cancellation_delivered_at_utc=NULL,"
+            "cancellation_resolved_at_utc=NULL,"
+            "cancellation_resolution_code=NULL "
+            "WHERE job_id=?7;",
+            -1,
+            &summary.st,
+            nullptr)
+        != SQLITE_OK) {
+        if (error_out != nullptr) *error_out = sqlite3_errmsg(db);
+        return false;
+    }
+    sqlite3_bind_text(
+        summary.st, 1, request.request_key.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(
+        summary.st, 2, request.reason_code.c_str(), -1, SQLITE_TRANSIENT);
+    BindOptionalText(summary.st, 3, request.reason_text);
+    sqlite3_bind_text(
+        summary.st, 4, request.requested_by.c_str(), -1, SQLITE_TRANSIENT);
+    if (request.caused_by_job_id.has_value()) {
+        sqlite3_bind_int64(summary.st, 5, *request.caused_by_job_id);
+    } else {
+        sqlite3_bind_null(summary.st, 5);
+    }
+    sqlite3_bind_int64(summary.st, 6, now);
+    sqlite3_bind_int64(summary.st, 7, request.job_id);
+    if (sqlite3_step(summary.st) != SQLITE_DONE
+        || sqlite3_changes(db) != 1
+        || !InsertJobActionEventAndOutbox(
+            db,
+            request.job_id,
+            job_set_id,
+            "Execution.JobCancellationRequested.v1",
+            "durable-cancellation-requested",
+            error_out)) {
+        if (error_out != nullptr && error_out->empty()) {
+            *error_out = "failed updating cancellation summary";
+        }
+        return false;
+    }
+    result_out->disposition =
+        ExecutionDbOperationDisposition::Applied;
+    result_out->state = "REQUESTED";
+    return true;
 }
 
 } // namespace
@@ -396,7 +680,13 @@ std::optional<ExecutionJobRecord> SqliteExecutionDb::GetJob(std::int64_t job_id)
     if (sqlite3_prepare_v2(db_,
         "SELECT job_id, job_set_id, program_kind, program_version, program_ref_kind, program_ref_id, "
         "savestate_id, fingerprint, state, priority, attempts, max_attempts, queued_at_utc, input_ini, "
-        "claimed_by_token, lease_expires_at_utc "
+        "claimed_by_token, lease_expires_at_utc,workset_id,workset_item_ordinal,"
+        "dispatch_attempt_id,dispatch_item_ordinal,reserved_attempt_id,"
+        "execution_finished_at_utc,"
+        "worker_terminal_status,worker_terminal_fingerprint,worker_result_blob_id,"
+        "result_processing_state,result_processing_attempts,result_processing_failures,"
+        "result_processing_retry_after_utc,cancellation_state,"
+        "cancellation_group_key "
         "FROM exec_job WHERE job_id=?1;",
         -1,
         &st.st,
@@ -437,6 +727,40 @@ std::optional<ExecutionJobRecord> SqliteExecutionDb::GetJob(std::int64_t job_id)
     if (sqlite3_column_type(st.st, 15) != SQLITE_NULL) {
         row.lease_expires_at_utc = sqlite3_column_int64(st.st, 15);
     }
+    if (sqlite3_column_type(st.st, 16) != SQLITE_NULL) {
+        row.workset_id = sqlite3_column_int64(st.st, 16);
+    }
+    if (sqlite3_column_type(st.st, 17) != SQLITE_NULL) {
+        row.workset_item_ordinal = sqlite3_column_int(st.st, 17);
+    }
+    if (sqlite3_column_type(st.st, 18) != SQLITE_NULL) {
+        row.dispatch_attempt_id = sqlite3_column_int64(st.st, 18);
+    }
+    if (sqlite3_column_type(st.st, 19) != SQLITE_NULL) {
+        row.dispatch_item_ordinal = static_cast<std::uint32_t>(
+            sqlite3_column_int(st.st, 19));
+    }
+    if (sqlite3_column_type(st.st, 20) != SQLITE_NULL) {
+        row.reserved_attempt_id = static_cast<std::uint64_t>(
+            sqlite3_column_int64(st.st, 20));
+    }
+    if (sqlite3_column_type(st.st, 21) != SQLITE_NULL) {
+        row.execution_finished_at_utc = sqlite3_column_int64(st.st, 21);
+    }
+    row.worker_terminal_status = OptionalText(st.st, 22);
+    row.worker_terminal_fingerprint = OptionalText(st.st, 23);
+    if (sqlite3_column_type(st.st, 24) != SQLITE_NULL) {
+        row.worker_result_blob_id = sqlite3_column_int64(st.st, 24);
+    }
+    row.result_processing_state = OptionalText(st.st, 25);
+    row.result_processing_attempts = sqlite3_column_int(st.st, 26);
+    row.result_processing_failures = sqlite3_column_int(st.st, 27);
+    if (sqlite3_column_type(st.st, 28) != SQLITE_NULL) {
+        row.result_processing_retry_after_utc =
+            sqlite3_column_int64(st.st, 28);
+    }
+    row.cancellation_state = OptionalText(st.st, 29);
+    row.cancellation_group_key = OptionalText(st.st, 30);
     return row;
 }
 
@@ -498,6 +822,38 @@ bool SqliteExecutionDb::RecordJobOutput(
         return false;
     }
     if (!ExecuteSql(db_, "BEGIN IMMEDIATE;", error_out)) {
+        return false;
+    }
+
+    Statement authority;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT workset_id FROM exec_job WHERE job_id=?1;",
+            -1,
+            &authority.st,
+            nullptr)
+        != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        Rollback(db_);
+        return false;
+    }
+    sqlite3_bind_int64(authority.st, 1, command.job_id);
+    const auto authority_rc = sqlite3_step(authority.st);
+    if (authority_rc != SQLITE_ROW) {
+        if (error_out) {
+            *error_out = authority_rc == SQLITE_DONE
+                ? "job not found"
+                : sqlite3_errmsg(db_);
+        }
+        Rollback(db_);
+        return false;
+    }
+    if (sqlite3_column_type(authority.st, 0) != SQLITE_NULL) {
+        if (error_out) {
+            *error_out =
+                "legacy output API cannot mutate a workset-backed job";
+        }
+        Rollback(db_);
         return false;
     }
 
@@ -629,6 +985,14 @@ bool SqliteExecutionDb::RequeueJob(std::int64_t job_id, std::string* error_out) 
         Rollback(db_);
         return false;
     }
+    if (job->workset_backed) {
+        Rollback(db_);
+        if (error_out) {
+            *error_out =
+                "legacy requeue API cannot mutate a workset-backed job";
+        }
+        return false;
+    }
     if (job->state == "QUEUED" || job->state == "CLAIMED" || job->state == "RUNNING" || job->state == "FAILED") {
         Rollback(db_);
         if (error_out) *error_out = "job cannot be requeued from state " + job->state;
@@ -682,6 +1046,14 @@ bool SqliteExecutionDb::RestartFailedJob(std::int64_t job_id, std::optional<std:
     const auto job = GetJobStateForAction(db_, job_id, error_out);
     if (!job.has_value()) {
         Rollback(db_);
+        return false;
+    }
+    if (job->workset_backed) {
+        Rollback(db_);
+        if (error_out) {
+            *error_out =
+                "legacy restart API cannot mutate a workset-backed job";
+        }
         return false;
     }
     if (job->state != "FAILED") {
@@ -739,6 +1111,14 @@ bool SqliteExecutionDb::CancelQueuedOrClaimedJob(std::int64_t job_id, std::strin
     const auto job = GetJobStateForAction(db_, job_id, error_out);
     if (!job.has_value()) {
         Rollback(db_);
+        return false;
+    }
+    if (job->workset_backed) {
+        Rollback(db_);
+        if (error_out) {
+            *error_out =
+                "legacy cancel API cannot mutate a workset-backed job";
+        }
         return false;
     }
     if (job->state != "QUEUED" && job->state != "INTERRUPTED" && job->state != "CLAIMED") {
@@ -806,13 +1186,10 @@ std::optional<ExecutionJobSetProgressDetails> SqliteExecutionDb::GetJobSetProgre
             "  LEFT JOIN exec_job j ON j.job_set_id=d.job_set_id"
             "), "
             "expected AS ("
-            "  SELECT CASE "
-            "    WHEN EXISTS(SELECT 1 FROM job_set_descendants WHERE depth > 0) "
-            "      THEN (SELECT COALESCE(SUM(COALESCE(child.expected_total, 0)), 0) "
-            "            FROM exec_job_set child JOIN job_set_descendants d ON d.job_set_id=child.job_set_id WHERE d.depth > 0) "
-            "    ELSE COALESCE(js.expected_total, 0) "
-            "  END AS expected_total "
-            "  FROM exec_job_set js WHERE js.job_set_id=?1"
+            "  SELECT COALESCE(SUM(COALESCE(js.expected_total, 0)), 0) "
+            "    AS expected_total "
+            "  FROM exec_job_set js "
+            "  JOIN job_set_descendants d ON d.job_set_id=js.job_set_id"
             ") "
             "SELECT ?1, summary.total_jobs, summary.completed_jobs, summary.succeeded_jobs, "
             "summary.failed_jobs, summary.canceled_jobs, expected.expected_total "
@@ -840,6 +1217,126 @@ std::optional<ExecutionJobSetProgressDetails> SqliteExecutionDb::GetJobSetProgre
         details.expected_total = sqlite3_column_int64(st.st, 6);
     }
     return details;
+}
+
+std::vector<ExecutionJobSetJobRecord>
+SqliteExecutionDb::ListJobsInJobSet(std::int64_t job_set_id) const {
+    std::vector<ExecutionJobSetJobRecord> rows;
+    if (db_ == nullptr || job_set_id <= 0) {
+        return rows;
+    }
+
+    Statement st;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT job_id,state,COALESCE(input_ini,''),"
+            "cancellation_group_key "
+            "FROM exec_job "
+            "WHERE job_set_id=?1 "
+            "ORDER BY job_id ASC;",
+            -1,
+            &st.st,
+            nullptr)
+        != SQLITE_OK) {
+        return rows;
+    }
+    sqlite3_bind_int64(st.st, 1, job_set_id);
+    while (sqlite3_step(st.st) == SQLITE_ROW) {
+        rows.push_back(
+            ExecutionJobSetJobRecord{
+                .job_id = sqlite3_column_int64(st.st, 0),
+                .state = Text(st.st, 1),
+                .input_ini = Text(st.st, 2),
+                .cancellation_group_key =
+                    OptionalText(st.st, 3),
+            });
+    }
+    return rows;
+}
+
+std::vector<ExecutionJobSetJobRecord>
+SqliteExecutionDb::ListJobsByProgramReference(
+    std::int32_t program_kind,
+    std::string_view program_ref_kind,
+    std::int64_t program_ref_id) const {
+    std::vector<ExecutionJobSetJobRecord> rows;
+    if (db_ == nullptr || program_kind <= 0
+        || program_ref_kind.empty() || program_ref_id <= 0) {
+        return rows;
+    }
+    Statement st;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT job_id,state,COALESCE(input_ini,''),"
+            "cancellation_group_key FROM exec_job "
+            "WHERE program_kind=?1 AND program_ref_kind=?2 "
+            "AND program_ref_id=?3 ORDER BY job_id ASC;",
+            -1,
+            &st.st,
+            nullptr) != SQLITE_OK) {
+        return rows;
+    }
+    sqlite3_bind_int(st.st, 1, program_kind);
+    sqlite3_bind_text(st.st, 2, program_ref_kind.data(),
+        static_cast<int>(program_ref_kind.size()), SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st.st, 3, program_ref_id);
+    while (sqlite3_step(st.st) == SQLITE_ROW) {
+        rows.push_back({
+            .job_id = sqlite3_column_int64(st.st, 0),
+            .state = Text(st.st, 1),
+            .input_ini = Text(st.st, 2),
+            .cancellation_group_key = OptionalText(st.st, 3),
+        });
+    }
+    return rows;
+}
+
+std::optional<ExecutionJobSetMaterializationRecord>
+SqliteExecutionDb::GetJobSetByMaterializationKey(
+    std::string_view materialization_key) const {
+    if (db_ == nullptr || materialization_key.empty()) {
+        return std::nullopt;
+    }
+
+    Statement st;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT job_set_id,materialization_key,"
+            "COALESCE(materialization_state,''),parent_job_set_id,"
+            "domain_ref_kind,domain_ref_id,purpose,expected_total "
+            "FROM exec_job_set WHERE materialization_key=?1;",
+            -1,
+            &st.st,
+            nullptr)
+        != SQLITE_OK) {
+        return std::nullopt;
+    }
+    sqlite3_bind_text(
+        st.st,
+        1,
+        materialization_key.data(),
+        static_cast<int>(materialization_key.size()),
+        SQLITE_TRANSIENT);
+    if (sqlite3_step(st.st) != SQLITE_ROW) {
+        return std::nullopt;
+    }
+
+    ExecutionJobSetMaterializationRecord row{};
+    row.job_set_id = sqlite3_column_int64(st.st, 0);
+    row.materialization_key = Text(st.st, 1);
+    row.materialization_state = Text(st.st, 2);
+    if (sqlite3_column_type(st.st, 3) != SQLITE_NULL) {
+        row.parent_job_set_id = sqlite3_column_int64(st.st, 3);
+    }
+    row.domain_ref_kind = OptionalText(st.st, 4);
+    if (sqlite3_column_type(st.st, 5) != SQLITE_NULL) {
+        row.domain_ref_id = sqlite3_column_int64(st.st, 5);
+    }
+    row.purpose = Text(st.st, 6);
+    if (sqlite3_column_type(st.st, 7) != SQLITE_NULL) {
+        row.expected_total = sqlite3_column_int(st.st, 7);
+    }
+    return row;
 }
 
 std::vector<ExecutionChildJobSetProgressDetails> SqliteExecutionDb::GetChildJobSetProgress(std::int64_t parent_job_set_id) const {
@@ -996,7 +1493,10 @@ bool SqliteExecutionDb::EnqueueJob(
     Statement insert_job;
     if (sqlite3_prepare_v2(db_,
         "INSERT INTO exec_job(job_set_id,parent_job_id,program_kind,program_version,program_ref_kind,program_ref_id,savestate_id,fingerprint,priority,state,attempts,max_attempts,claimed_by_token,lease_expires_at_utc,queued_at_utc,started_at_utc,ended_at_utc,error_code,error_text,input_ini) "
-        "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,NULL,NULL,?13,NULL,NULL,NULL,NULL,?14);",
+        "SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,"
+        "NULL,NULL,?13,NULL,NULL,NULL,NULL,?14 "
+        "FROM exec_job_set js "
+        "WHERE js.job_set_id=?1 AND js.materialization_state IS NULL;",
         -1,
         &insert_job.st,
         nullptr)
@@ -1023,8 +1523,5055 @@ bool SqliteExecutionDb::EnqueueJob(
         if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;
     }
+    if (sqlite3_changes(db_) != 1) {
+        if (error_out) {
+            *error_out =
+                "legacy enqueue cannot target a materializing job set";
+        }
+        return false;
+    }
 
     if (job_id_out) *job_id_out = sqlite3_last_insert_rowid(db_);
+    return true;
+}
+
+bool SqliteExecutionDb::EnsureMaterializingJobSet(
+    const EnsureMaterializingJobSetCommand& command,
+    EnsureMaterializingJobSetReceipt* receipt_out,
+    std::string* error_out) {
+    EnsureMaterializingJobSetReceipt receipt{};
+    if (receipt_out != nullptr) {
+        *receipt_out = receipt;
+    }
+    if (db_ == nullptr
+        || command.materialization_key.empty()
+        || command.program_kind <= 0
+        || command.purpose.empty()
+        || command.created_at_utc < 0
+        || (command.parent_job_set_id.has_value()
+            && *command.parent_job_set_id <= 0)
+        || (command.expected_total.has_value()
+            && *command.expected_total < 0)
+        || command.domain_ref_kind.has_value()
+            != command.domain_ref_id.has_value()
+        || (command.domain_ref_id.has_value()
+            && *command.domain_ref_id <= 0)) {
+        receipt.disposition =
+            ExecutionDbOperationDisposition::InvalidRequest;
+        if (receipt_out != nullptr) *receipt_out = receipt;
+        if (error_out != nullptr) {
+            *error_out = "invalid materializing job-set command";
+        }
+        return false;
+    }
+    if (!ExecuteSql(db_, "BEGIN IMMEDIATE;", error_out)) {
+        return false;
+    }
+    const auto fail = [&](std::string message) {
+        Rollback(db_);
+        if (error_out != nullptr) *error_out = std::move(message);
+    };
+
+    Statement existing;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT job_set_id,parent_job_set_id,program_kind,purpose,"
+            "created_by,priority_boost,expected_total,domain_ref_kind,"
+            "domain_ref_id,meta_note,COALESCE(materialization_state,'') "
+            "FROM exec_job_set WHERE materialization_key=?1;",
+            -1,
+            &existing.st,
+            nullptr)
+        != SQLITE_OK) {
+        fail(sqlite3_errmsg(db_));
+        return false;
+    }
+    sqlite3_bind_text(
+        existing.st,
+        1,
+        command.materialization_key.c_str(),
+        -1,
+        SQLITE_TRANSIENT);
+    const auto existing_rc = sqlite3_step(existing.st);
+    if (existing_rc == SQLITE_ROW) {
+        receipt.job_set_id = sqlite3_column_int64(existing.st, 0);
+        receipt.materialization_state = Text(existing.st, 10);
+        const auto parent_job_set_id =
+            sqlite3_column_type(existing.st, 1) == SQLITE_NULL
+            ? std::optional<std::int64_t>{}
+            : std::optional<std::int64_t>{
+                sqlite3_column_int64(existing.st, 1)};
+        const auto expected_total =
+            sqlite3_column_type(existing.st, 6) == SQLITE_NULL
+            ? std::optional<int>{}
+            : std::optional<int>{
+                sqlite3_column_int(existing.st, 6)};
+        const auto domain_ref_id =
+            sqlite3_column_type(existing.st, 8) == SQLITE_NULL
+            ? std::optional<std::int64_t>{}
+            : std::optional<std::int64_t>{
+                sqlite3_column_int64(existing.st, 8)};
+        if (parent_job_set_id != command.parent_job_set_id
+            || sqlite3_column_int(existing.st, 2)
+                != command.program_kind
+            || Text(existing.st, 3) != command.purpose
+            || OptionalText(existing.st, 4) != command.created_by
+            || sqlite3_column_int(existing.st, 5)
+                != command.priority_boost
+            || expected_total != command.expected_total
+            || OptionalText(existing.st, 7)
+                != command.domain_ref_kind
+            || domain_ref_id != command.domain_ref_id
+            || OptionalText(existing.st, 9) != command.meta_note) {
+            Rollback(db_);
+            receipt.disposition =
+                ExecutionDbOperationDisposition::Conflict;
+            if (receipt_out != nullptr) *receipt_out = receipt;
+            if (error_out != nullptr) {
+                *error_out =
+                    "materialization_key identifies a different job set";
+            }
+            return true;
+        }
+        if (!Commit(db_, error_out)) {
+            Rollback(db_);
+            return false;
+        }
+        receipt.disposition =
+            ExecutionDbOperationDisposition::AlreadyApplied;
+        if (receipt_out != nullptr) *receipt_out = receipt;
+        return true;
+    }
+    if (existing_rc != SQLITE_DONE) {
+        fail(sqlite3_errmsg(db_));
+        return false;
+    }
+
+    const auto now = command.created_at_utc > 0
+        ? command.created_at_utc
+        : CurrentUtcMs(db_);
+    Statement insert;
+    if (sqlite3_prepare_v2(
+            db_,
+            "INSERT INTO exec_job_set("
+            "parent_job_set_id,program_kind,purpose,created_by,"
+            "created_at_utc,priority_boost,expected_total,"
+            "domain_ref_kind,domain_ref_id,meta_note,"
+            "materialization_key,materialization_state) "
+            "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,"
+            "'MATERIALIZING');",
+            -1,
+            &insert.st,
+            nullptr)
+        != SQLITE_OK) {
+        fail(sqlite3_errmsg(db_));
+        return false;
+    }
+    if (command.parent_job_set_id.has_value()) {
+        sqlite3_bind_int64(
+            insert.st,
+            1,
+            *command.parent_job_set_id);
+    } else {
+        sqlite3_bind_null(insert.st, 1);
+    }
+    sqlite3_bind_int(insert.st, 2, command.program_kind);
+    sqlite3_bind_text(
+        insert.st,
+        3,
+        command.purpose.c_str(),
+        -1,
+        SQLITE_TRANSIENT);
+    BindOptionalText(insert.st, 4, command.created_by);
+    sqlite3_bind_int64(insert.st, 5, now);
+    sqlite3_bind_int(insert.st, 6, command.priority_boost);
+    if (command.expected_total.has_value()) {
+        sqlite3_bind_int(insert.st, 7, *command.expected_total);
+    } else {
+        sqlite3_bind_null(insert.st, 7);
+    }
+    BindOptionalText(insert.st, 8, command.domain_ref_kind);
+    if (command.domain_ref_id.has_value()) {
+        sqlite3_bind_int64(insert.st, 9, *command.domain_ref_id);
+    } else {
+        sqlite3_bind_null(insert.st, 9);
+    }
+    BindOptionalText(insert.st, 10, command.meta_note);
+    sqlite3_bind_text(
+        insert.st,
+        11,
+        command.materialization_key.c_str(),
+        -1,
+        SQLITE_TRANSIENT);
+    if (sqlite3_step(insert.st) != SQLITE_DONE) {
+        fail(sqlite3_errmsg(db_));
+        return false;
+    }
+    receipt.job_set_id = sqlite3_last_insert_rowid(db_);
+    receipt.materialization_state = "MATERIALIZING";
+    if (!InsertAggregateOutboxEvent(
+            db_,
+            "Execution.JobSetMaterializing.v1",
+            "job_set",
+            receipt.job_set_id,
+            "job_set",
+            receipt.job_set_id,
+            "materializing-" + std::to_string(receipt.job_set_id),
+            error_out)
+        || !Commit(db_, error_out)) {
+        Rollback(db_);
+        return false;
+    }
+    receipt.disposition = ExecutionDbOperationDisposition::Applied;
+    if (receipt_out != nullptr) *receipt_out = receipt;
+    return true;
+}
+
+bool SqliteExecutionDb::CreatePendingJob(
+    const CreatePendingJobCommand& command,
+    CreatePendingJobReceipt* receipt_out,
+    std::string* error_out) {
+    CreatePendingJobReceipt receipt{};
+    if (receipt_out != nullptr) *receipt_out = receipt;
+    if (db_ == nullptr
+        || command.job_set_id <= 0
+        || command.program_kind <= 0
+        || command.program_version <= 0
+        || command.program_ref_kind.empty()
+        || command.program_ref_id <= 0
+        || command.fingerprint.empty()
+        || command.max_attempts <= 0
+        || (command.cancellation_group_key.has_value()
+            && command.cancellation_group_key->empty())
+        || (command.parent_job_id.has_value()
+            && *command.parent_job_id <= 0)
+        || (command.savestate_id.has_value()
+            && *command.savestate_id <= 0)) {
+        receipt.disposition =
+            ExecutionDbOperationDisposition::InvalidRequest;
+        if (receipt_out != nullptr) *receipt_out = receipt;
+        if (error_out != nullptr) {
+            *error_out = "invalid pending-job command";
+        }
+        return false;
+    }
+    if (!ExecuteSql(db_, "BEGIN IMMEDIATE;", error_out)) {
+        return false;
+    }
+    const auto fail = [&](std::string message) {
+        Rollback(db_);
+        if (error_out != nullptr) *error_out = std::move(message);
+    };
+
+    Statement job_set;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT program_kind,COALESCE(materialization_state,'') "
+            "FROM exec_job_set WHERE job_set_id=?1;",
+            -1,
+            &job_set.st,
+            nullptr)
+        != SQLITE_OK) {
+        fail(sqlite3_errmsg(db_));
+        return false;
+    }
+    sqlite3_bind_int64(job_set.st, 1, command.job_set_id);
+    if (sqlite3_step(job_set.st) != SQLITE_ROW) {
+        Rollback(db_);
+        receipt.disposition =
+            ExecutionDbOperationDisposition::Missing;
+        if (receipt_out != nullptr) *receipt_out = receipt;
+        return true;
+    }
+    if (sqlite3_column_int(job_set.st, 0) != command.program_kind
+        || Text(job_set.st, 1) != "MATERIALIZING") {
+        Rollback(db_);
+        receipt.disposition =
+            ExecutionDbOperationDisposition::WrongState;
+        if (receipt_out != nullptr) *receipt_out = receipt;
+        return true;
+    }
+
+    Statement existing;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT job_id,job_set_id,state,parent_job_id,program_kind,"
+            "program_version,program_ref_kind,program_ref_id,savestate_id,"
+            "priority,max_attempts,input_ini,cancellation_group_key "
+            "FROM exec_job "
+            "WHERE fingerprint=?1;",
+            -1,
+            &existing.st,
+            nullptr)
+        != SQLITE_OK) {
+        fail(sqlite3_errmsg(db_));
+        return false;
+    }
+    sqlite3_bind_text(
+        existing.st,
+        1,
+        command.fingerprint.c_str(),
+        -1,
+        SQLITE_TRANSIENT);
+    const auto existing_rc = sqlite3_step(existing.st);
+    if (existing_rc == SQLITE_ROW) {
+        receipt.job_id = sqlite3_column_int64(existing.st, 0);
+        const auto parent_job_id =
+            sqlite3_column_type(existing.st, 3) == SQLITE_NULL
+            ? std::optional<std::int64_t>{}
+            : std::optional<std::int64_t>{
+                sqlite3_column_int64(existing.st, 3)};
+        const auto savestate_id =
+            sqlite3_column_type(existing.st, 8) == SQLITE_NULL
+            ? std::optional<std::int64_t>{}
+            : std::optional<std::int64_t>{
+                sqlite3_column_int64(existing.st, 8)};
+        receipt.disposition =
+            sqlite3_column_int64(existing.st, 1) == command.job_set_id
+                && Text(existing.st, 2) == "PENDING_WORKSET"
+                && parent_job_id == command.parent_job_id
+                && sqlite3_column_int(existing.st, 4)
+                    == command.program_kind
+                && sqlite3_column_int(existing.st, 5)
+                    == command.program_version
+                && Text(existing.st, 6)
+                    == command.program_ref_kind
+                && sqlite3_column_int64(existing.st, 7)
+                    == command.program_ref_id
+                && savestate_id == command.savestate_id
+                && sqlite3_column_int(existing.st, 9)
+                    == command.priority
+                && sqlite3_column_int(existing.st, 10)
+                    == command.max_attempts
+                && Text(existing.st, 11) == command.input_ini
+                && OptionalText(existing.st, 12)
+                    == command.cancellation_group_key
+            ? ExecutionDbOperationDisposition::AlreadyApplied
+            : ExecutionDbOperationDisposition::Conflict;
+        if (!Commit(db_, error_out)) {
+            Rollback(db_);
+            return false;
+        }
+        if (receipt_out != nullptr) *receipt_out = receipt;
+        return true;
+    }
+    if (existing_rc != SQLITE_DONE) {
+        fail(sqlite3_errmsg(db_));
+        return false;
+    }
+
+    const auto now = CurrentUtcMs(db_);
+    Statement insert;
+    if (sqlite3_prepare_v2(
+            db_,
+            "INSERT INTO exec_job("
+            "job_set_id,parent_job_id,program_kind,program_version,"
+            "program_ref_kind,program_ref_id,savestate_id,fingerprint,"
+            "priority,state,attempts,max_attempts,claimed_by_token,"
+            "lease_expires_at_utc,queued_at_utc,started_at_utc,"
+            "ended_at_utc,error_code,error_text,input_ini,"
+            "cancellation_group_key) "
+            "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,"
+            "'PENDING_WORKSET',0,?10,NULL,NULL,?11,NULL,NULL,NULL,NULL,?12,?13);",
+            -1,
+            &insert.st,
+            nullptr)
+        != SQLITE_OK) {
+        fail(sqlite3_errmsg(db_));
+        return false;
+    }
+    sqlite3_bind_int64(insert.st, 1, command.job_set_id);
+    if (command.parent_job_id.has_value()) {
+        sqlite3_bind_int64(insert.st, 2, *command.parent_job_id);
+    } else {
+        sqlite3_bind_null(insert.st, 2);
+    }
+    sqlite3_bind_int(insert.st, 3, command.program_kind);
+    sqlite3_bind_int(insert.st, 4, command.program_version);
+    sqlite3_bind_text(
+        insert.st,
+        5,
+        command.program_ref_kind.c_str(),
+        -1,
+        SQLITE_TRANSIENT);
+    sqlite3_bind_int64(insert.st, 6, command.program_ref_id);
+    if (command.savestate_id.has_value()) {
+        sqlite3_bind_int64(insert.st, 7, *command.savestate_id);
+    } else {
+        sqlite3_bind_null(insert.st, 7);
+    }
+    sqlite3_bind_text(
+        insert.st,
+        8,
+        command.fingerprint.c_str(),
+        -1,
+        SQLITE_TRANSIENT);
+    sqlite3_bind_int(insert.st, 9, command.priority);
+    sqlite3_bind_int(insert.st, 10, command.max_attempts);
+    sqlite3_bind_int64(insert.st, 11, now);
+    sqlite3_bind_text(
+        insert.st,
+        12,
+        command.input_ini.c_str(),
+        -1,
+        SQLITE_TRANSIENT);
+    BindOptionalText(
+        insert.st,
+        13,
+        command.cancellation_group_key);
+    if (sqlite3_step(insert.st) != SQLITE_DONE) {
+        fail(sqlite3_errmsg(db_));
+        return false;
+    }
+    receipt.job_id = sqlite3_last_insert_rowid(db_);
+    if (!InsertJobActionEventAndOutbox(
+            db_,
+            receipt.job_id,
+            command.job_set_id,
+            "Execution.JobPendingWorkset.v1",
+            "pending-workset",
+            error_out)
+        || !Commit(db_, error_out)) {
+        Rollback(db_);
+        return false;
+    }
+    receipt.disposition = ExecutionDbOperationDisposition::Applied;
+    if (receipt_out != nullptr) *receipt_out = receipt;
+    return true;
+}
+
+bool SqliteExecutionDb::SealJobPopulation(
+    const SealJobPopulationCommand& command,
+    SealJobPopulationReceipt* receipt_out,
+    std::string* error_out) {
+    SealJobPopulationReceipt receipt{};
+    if (receipt_out != nullptr) *receipt_out = receipt;
+    if (db_ == nullptr
+        || command.job_set_id <= 0
+        || command.expected_job_count < 0
+        || command.requested_by.empty()) {
+        receipt.disposition =
+            ExecutionDbOperationDisposition::InvalidRequest;
+        if (receipt_out != nullptr) *receipt_out = receipt;
+        if (error_out != nullptr) {
+            *error_out = "invalid seal-job-population command";
+        }
+        return false;
+    }
+    if (!ExecuteSql(db_, "BEGIN IMMEDIATE;", error_out)) {
+        return false;
+    }
+    const auto fail = [&](std::string message) {
+        Rollback(db_);
+        if (error_out != nullptr) *error_out = std::move(message);
+    };
+    Statement state;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT COALESCE(materialization_state,''),"
+            "(SELECT COUNT(1) FROM exec_job WHERE job_set_id=?1) "
+            "FROM exec_job_set WHERE job_set_id=?1;",
+            -1,
+            &state.st,
+            nullptr)
+        != SQLITE_OK) {
+        fail(sqlite3_errmsg(db_));
+        return false;
+    }
+    sqlite3_bind_int64(state.st, 1, command.job_set_id);
+    if (sqlite3_step(state.st) != SQLITE_ROW) {
+        Rollback(db_);
+        receipt.disposition =
+            ExecutionDbOperationDisposition::Missing;
+        if (receipt_out != nullptr) *receipt_out = receipt;
+        return true;
+    }
+    receipt.materialization_state = Text(state.st, 0);
+    receipt.durable_job_count = sqlite3_column_int(state.st, 1);
+    if (receipt.durable_job_count != command.expected_job_count) {
+        Rollback(db_);
+        receipt.disposition =
+            ExecutionDbOperationDisposition::Conflict;
+        if (receipt_out != nullptr) *receipt_out = receipt;
+        return true;
+    }
+    if (receipt.materialization_state != "MATERIALIZING") {
+        receipt.disposition =
+            receipt.materialization_state == "POPULATION_SEALED"
+                || receipt.materialization_state == "PUBLISHING_WORKSETS"
+                || receipt.materialization_state
+                    == "WORKSET_PUBLICATION_COMPLETE"
+            ? ExecutionDbOperationDisposition::AlreadyApplied
+            : ExecutionDbOperationDisposition::WrongState;
+        if (!Commit(db_, error_out)) {
+            Rollback(db_);
+            return false;
+        }
+        if (receipt_out != nullptr) *receipt_out = receipt;
+        return true;
+    }
+    const auto now = CurrentUtcMs(db_);
+    Statement update;
+    if (sqlite3_prepare_v2(
+            db_,
+            "UPDATE exec_job_set "
+            "SET materialization_state='POPULATION_SEALED',"
+            "population_sealed_at_utc=?1 "
+            "WHERE job_set_id=?2 AND materialization_state='MATERIALIZING';",
+            -1,
+            &update.st,
+            nullptr)
+        != SQLITE_OK) {
+        fail(sqlite3_errmsg(db_));
+        return false;
+    }
+    sqlite3_bind_int64(update.st, 1, now);
+    sqlite3_bind_int64(update.st, 2, command.job_set_id);
+    if (sqlite3_step(update.st) != SQLITE_DONE
+        || sqlite3_changes(db_) != 1) {
+        fail("job population seal CAS failed");
+        return false;
+    }
+    if (!InsertAggregateOutboxEvent(
+            db_,
+            "Execution.JobPopulationSealed.v1",
+            "job_set",
+            command.job_set_id,
+            "job_set",
+            command.job_set_id,
+            "population-sealed-" + std::to_string(command.job_set_id),
+            error_out)
+        || !Commit(db_, error_out)) {
+        Rollback(db_);
+        return false;
+    }
+    receipt.disposition = ExecutionDbOperationDisposition::Applied;
+    receipt.materialization_state = "POPULATION_SEALED";
+    if (receipt_out != nullptr) *receipt_out = receipt;
+    return true;
+}
+
+bool SqliteExecutionDb::PublishWorkset(
+    const PublishWorksetCommand& command,
+    PublishWorksetReceipt* receipt_out,
+    std::string* error_out) {
+    PublishWorksetReceipt receipt{};
+    if (receipt_out != nullptr) *receipt_out = receipt;
+    const auto& compatibility = command.compatibility;
+    if (db_ == nullptr
+        || command.job_set_id <= 0
+        || command.workset_key.empty()
+        || command.program_kind <= 0
+        || command.program_version <= 0
+        || ((command.workflow_step_id > 0)
+            != (command.root_job_set_id > 0))
+        || command.ordered_job_ids.empty()
+        || command.ordered_job_ids.size()
+            > static_cast<std::size_t>(
+                std::numeric_limits<int>::max())
+        || command.requested_by.empty()
+        || compatibility.compatibility_key.empty()
+        || compatibility.module_canonical_id.empty()
+        || compatibility.module_version <= 0
+        || !IsSha256(compatibility.module_sha256)
+        || compatibility.entrypoint.empty()
+        || !IsSha256(compatibility.verified_dependency_sha256)
+        || !IsSha256(compatibility.runtime_profile_sha256)
+        || compatibility.required_capability_mask
+            > static_cast<std::uint64_t>(
+                std::numeric_limits<std::int64_t>::max())
+        || compatibility.estimated_payload_bytes
+            > static_cast<std::uint64_t>(
+                std::numeric_limits<std::int64_t>::max())) {
+        receipt.disposition =
+            ExecutionDbOperationDisposition::InvalidRequest;
+        if (receipt_out != nullptr) *receipt_out = receipt;
+        if (error_out != nullptr) {
+            *error_out = "invalid publish-workset command";
+        }
+        return false;
+    }
+    std::unordered_set<std::int64_t> unique_jobs;
+    for (const auto job_id : command.ordered_job_ids) {
+        if (job_id <= 0 || !unique_jobs.insert(job_id).second) {
+            receipt.disposition =
+                ExecutionDbOperationDisposition::InvalidRequest;
+            if (receipt_out != nullptr) *receipt_out = receipt;
+            if (error_out != nullptr) {
+                *error_out = "workset job ids must be positive and unique";
+            }
+            return false;
+        }
+    }
+    if (!ExecuteSql(db_, "BEGIN IMMEDIATE;", error_out)) {
+        return false;
+    }
+    const auto fail = [&](std::string message) {
+        Rollback(db_);
+        if (error_out != nullptr) *error_out = std::move(message);
+    };
+    Statement job_set;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT program_kind,COALESCE(materialization_state,'') "
+            "FROM exec_job_set WHERE job_set_id=?1;",
+            -1,
+            &job_set.st,
+            nullptr)
+        != SQLITE_OK) {
+        fail(sqlite3_errmsg(db_));
+        return false;
+    }
+    sqlite3_bind_int64(job_set.st, 1, command.job_set_id);
+    if (sqlite3_step(job_set.st) != SQLITE_ROW) {
+        Rollback(db_);
+        receipt.disposition =
+            ExecutionDbOperationDisposition::Missing;
+        if (receipt_out != nullptr) *receipt_out = receipt;
+        return true;
+    }
+    const auto publication_state = Text(job_set.st, 1);
+    if (sqlite3_column_int(job_set.st, 0) != command.program_kind) {
+        Rollback(db_);
+        receipt.disposition =
+            ExecutionDbOperationDisposition::Conflict;
+        if (receipt_out != nullptr) *receipt_out = receipt;
+        return true;
+    }
+
+    std::int64_t root_job_set_id = command.root_job_set_id;
+    std::int64_t workflow_step_id = command.workflow_step_id;
+    if (workflow_step_id > 0) {
+        Statement root;
+        if (sqlite3_prepare_v2(
+                db_,
+                "WITH RECURSIVE ancestors(job_set_id,parent_job_set_id) AS ("
+                "  SELECT job_set_id,parent_job_set_id FROM exec_job_set "
+                "  WHERE job_set_id=?1 "
+                "  UNION ALL "
+                "  SELECT parent.job_set_id,parent.parent_job_set_id "
+                "  FROM exec_job_set parent "
+                "  JOIN ancestors child "
+                "    ON child.parent_job_set_id=parent.job_set_id"
+                ") "
+                "SELECT job_set_id FROM ancestors "
+                "WHERE parent_job_set_id IS NULL;",
+                -1,
+                &root.st,
+                nullptr)
+            != SQLITE_OK) {
+            fail(sqlite3_errmsg(db_));
+            return false;
+        }
+        sqlite3_bind_int64(root.st, 1, command.job_set_id);
+        if (sqlite3_step(root.st) != SQLITE_ROW ||
+            sqlite3_column_int64(root.st, 0) != root_job_set_id ||
+            sqlite3_step(root.st) != SQLITE_DONE) {
+            fail("published workset root invocation anchor disagrees with job-set ancestry");
+            return false;
+        }
+
+        Statement step;
+        if (sqlite3_prepare_v2(
+                db_,
+                "SELECT job_set_id FROM exec_workflow_step "
+                "WHERE workflow_step_id=?1;",
+                -1,
+                &step.st,
+                nullptr)
+            != SQLITE_OK) {
+            fail(sqlite3_errmsg(db_));
+            return false;
+        }
+        sqlite3_bind_int64(step.st, 1, workflow_step_id);
+        if (sqlite3_step(step.st) != SQLITE_ROW) {
+            fail("published workset workflow-step invocation anchor does not exist");
+            return false;
+        }
+        const auto existing_root =
+            sqlite3_column_type(step.st, 0) == SQLITE_NULL
+            ? std::optional<std::int64_t>{}
+            : std::optional<std::int64_t>{
+                  sqlite3_column_int64(step.st, 0)};
+        if ((existing_root.has_value() &&
+             *existing_root != root_job_set_id) ||
+            sqlite3_step(step.st) != SQLITE_DONE) {
+            fail("published workset workflow-step invocation anchor conflicts with its durable root");
+            return false;
+        }
+    } else {
+        Statement invocation_anchor;
+        if (sqlite3_prepare_v2(
+                db_,
+                "WITH RECURSIVE ancestors(job_set_id,parent_job_set_id) AS ("
+                "  SELECT job_set_id,parent_job_set_id FROM exec_job_set "
+                "  WHERE job_set_id=?1 "
+                "  UNION ALL "
+                "  SELECT parent.job_set_id,parent.parent_job_set_id "
+                "  FROM exec_job_set parent "
+                "  JOIN ancestors child "
+                "    ON child.parent_job_set_id=parent.job_set_id"
+                ") "
+                "SELECT a.job_set_id,s.workflow_step_id "
+                "FROM ancestors a "
+                "JOIN exec_workflow_step s ON s.job_set_id=a.job_set_id "
+                "WHERE a.parent_job_set_id IS NULL;",
+                -1,
+                &invocation_anchor.st,
+                nullptr)
+            != SQLITE_OK) {
+            fail(sqlite3_errmsg(db_));
+            return false;
+        }
+        sqlite3_bind_int64(
+            invocation_anchor.st, 1, command.job_set_id);
+        if (sqlite3_step(invocation_anchor.st) != SQLITE_ROW) {
+            fail("workset job set has no workflow-step root invocation anchor");
+            return false;
+        }
+        root_job_set_id =
+            sqlite3_column_int64(invocation_anchor.st, 0);
+        workflow_step_id =
+            sqlite3_column_int64(invocation_anchor.st, 1);
+        if (root_job_set_id <= 0 || workflow_step_id <= 0 ||
+            sqlite3_step(invocation_anchor.st) != SQLITE_DONE) {
+            fail("workset job set has an ambiguous workflow-step root invocation anchor");
+            return false;
+        }
+    }
+
+    Statement existing;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT workset_id,item_count,program_kind,program_version,"
+            "compatibility_key,module_canonical_id,module_version,"
+            "module_sha256,entrypoint,verified_dependency_sha256,"
+            "runtime_profile_sha256,required_capability_mask,"
+            "execution_affinity_key,baseline_affinity_key,"
+            "estimated_payload_bytes,priority,workflow_step_id,"
+            "root_job_set_id "
+            "FROM exec_workset "
+            "WHERE job_set_id=?1 AND workset_key=?2;",
+            -1,
+            &existing.st,
+            nullptr)
+        != SQLITE_OK) {
+        fail(sqlite3_errmsg(db_));
+        return false;
+    }
+    sqlite3_bind_int64(existing.st, 1, command.job_set_id);
+    sqlite3_bind_text(
+        existing.st,
+        2,
+        command.workset_key.c_str(),
+        -1,
+        SQLITE_TRANSIENT);
+    const auto existing_rc = sqlite3_step(existing.st);
+    if (existing_rc == SQLITE_ROW) {
+        receipt.workset_id = sqlite3_column_int64(existing.st, 0);
+        receipt.item_count = sqlite3_column_int(existing.st, 1);
+        const bool metadata_matches =
+            receipt.item_count
+                == static_cast<int>(command.ordered_job_ids.size())
+            && sqlite3_column_int(existing.st, 2)
+                == command.program_kind
+            && sqlite3_column_int(existing.st, 3)
+                == command.program_version
+            && Text(existing.st, 4)
+                == compatibility.compatibility_key
+            && Text(existing.st, 5)
+                == compatibility.module_canonical_id
+            && sqlite3_column_int(existing.st, 6)
+                == compatibility.module_version
+            && Text(existing.st, 7) == compatibility.module_sha256
+            && Text(existing.st, 8) == compatibility.entrypoint
+            && Text(existing.st, 9)
+                == compatibility.verified_dependency_sha256
+            && Text(existing.st, 10)
+                == compatibility.runtime_profile_sha256
+            && static_cast<std::uint64_t>(
+                sqlite3_column_int64(existing.st, 11))
+                == compatibility.required_capability_mask
+            && OptionalText(existing.st, 12)
+                == compatibility.execution_affinity_key
+            && OptionalText(existing.st, 13)
+                == compatibility.baseline_affinity_key
+            && static_cast<std::uint64_t>(
+                sqlite3_column_int64(existing.st, 14))
+                == compatibility.estimated_payload_bytes
+            && sqlite3_column_int(existing.st, 15)
+                == command.priority
+            && sqlite3_column_int64(existing.st, 16)
+                == workflow_step_id
+            && sqlite3_column_int64(existing.st, 17)
+                == root_job_set_id;
+        bool membership_matches = metadata_matches;
+        if (membership_matches) {
+            Statement members;
+            if (sqlite3_prepare_v2(
+                    db_,
+                    "SELECT job_id FROM exec_job "
+                    "WHERE workset_id=?1 "
+                    "ORDER BY workset_item_ordinal ASC;",
+                    -1,
+                    &members.st,
+                    nullptr)
+                != SQLITE_OK) {
+                fail(sqlite3_errmsg(db_));
+                return false;
+            }
+            sqlite3_bind_int64(
+                members.st,
+                1,
+                receipt.workset_id);
+            for (const auto expected_job_id :
+                 command.ordered_job_ids) {
+                if (sqlite3_step(members.st) != SQLITE_ROW
+                    || sqlite3_column_int64(members.st, 0)
+                        != expected_job_id) {
+                    membership_matches = false;
+                    break;
+                }
+            }
+            if (membership_matches
+                && sqlite3_step(members.st) != SQLITE_DONE) {
+                membership_matches = false;
+            }
+        }
+        receipt.disposition = membership_matches
+            ? ExecutionDbOperationDisposition::AlreadyApplied
+            : ExecutionDbOperationDisposition::Conflict;
+        if (!Commit(db_, error_out)) {
+            Rollback(db_);
+            return false;
+        }
+        if (receipt_out != nullptr) *receipt_out = receipt;
+        return true;
+    }
+    if (existing_rc != SQLITE_DONE) {
+        fail(sqlite3_errmsg(db_));
+        return false;
+    }
+    if (publication_state != "POPULATION_SEALED"
+        && publication_state != "PUBLISHING_WORKSETS") {
+        Rollback(db_);
+        receipt.disposition =
+            ExecutionDbOperationDisposition::WrongState;
+        if (receipt_out != nullptr) *receipt_out = receipt;
+        return true;
+    }
+
+    Statement validate_job;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT job_set_id,program_kind,program_version,state,"
+            "workset_id,workset_item_ordinal "
+            "FROM exec_job WHERE job_id=?1;",
+            -1,
+            &validate_job.st,
+            nullptr)
+        != SQLITE_OK) {
+        fail(sqlite3_errmsg(db_));
+        return false;
+    }
+    for (const auto job_id : command.ordered_job_ids) {
+        sqlite3_reset(validate_job.st);
+        sqlite3_clear_bindings(validate_job.st);
+        sqlite3_bind_int64(validate_job.st, 1, job_id);
+        if (sqlite3_step(validate_job.st) != SQLITE_ROW
+            || sqlite3_column_int64(validate_job.st, 0)
+                != command.job_set_id
+            || sqlite3_column_int(validate_job.st, 1)
+                != command.program_kind
+            || sqlite3_column_int(validate_job.st, 2)
+                != command.program_version
+            || Text(validate_job.st, 3) != "PENDING_WORKSET"
+            || sqlite3_column_type(validate_job.st, 4) != SQLITE_NULL
+            || sqlite3_column_type(validate_job.st, 5) != SQLITE_NULL) {
+            Rollback(db_);
+            receipt.disposition =
+                ExecutionDbOperationDisposition::Conflict;
+            if (receipt_out != nullptr) *receipt_out = receipt;
+            return true;
+        }
+    }
+
+    const auto now = CurrentUtcMs(db_);
+    Statement insert_workset;
+    if (sqlite3_prepare_v2(
+            db_,
+            "INSERT INTO exec_workset("
+            "job_set_id,workflow_step_id,root_job_set_id,workset_key,"
+            "program_kind,program_version,"
+            "compatibility_key,module_canonical_id,module_version,"
+            "module_sha256,entrypoint,verified_dependency_sha256,"
+            "runtime_profile_sha256,required_capability_mask,"
+            "execution_affinity_key,baseline_affinity_key,"
+            "estimated_payload_bytes,priority,item_count,published_at_utc) "
+            "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,"
+            "?13,?14,?15,?16,?17,?18,?19,?20);",
+            -1,
+            &insert_workset.st,
+            nullptr)
+        != SQLITE_OK) {
+        fail(sqlite3_errmsg(db_));
+        return false;
+    }
+    sqlite3_bind_int64(insert_workset.st, 1, command.job_set_id);
+    sqlite3_bind_int64(insert_workset.st, 2, workflow_step_id);
+    sqlite3_bind_int64(insert_workset.st, 3, root_job_set_id);
+    sqlite3_bind_text(
+        insert_workset.st,
+        4,
+        command.workset_key.c_str(),
+        -1,
+        SQLITE_TRANSIENT);
+    sqlite3_bind_int(insert_workset.st, 5, command.program_kind);
+    sqlite3_bind_int(insert_workset.st, 6, command.program_version);
+    sqlite3_bind_text(
+        insert_workset.st,
+        7,
+        compatibility.compatibility_key.c_str(),
+        -1,
+        SQLITE_TRANSIENT);
+    sqlite3_bind_text(
+        insert_workset.st,
+        8,
+        compatibility.module_canonical_id.c_str(),
+        -1,
+        SQLITE_TRANSIENT);
+    sqlite3_bind_int(
+        insert_workset.st,
+        9,
+        compatibility.module_version);
+    sqlite3_bind_text(
+        insert_workset.st,
+        10,
+        compatibility.module_sha256.c_str(),
+        -1,
+        SQLITE_TRANSIENT);
+    sqlite3_bind_text(
+        insert_workset.st,
+        11,
+        compatibility.entrypoint.c_str(),
+        -1,
+        SQLITE_TRANSIENT);
+    sqlite3_bind_text(
+        insert_workset.st,
+        12,
+        compatibility.verified_dependency_sha256.c_str(),
+        -1,
+        SQLITE_TRANSIENT);
+    sqlite3_bind_text(
+        insert_workset.st,
+        13,
+        compatibility.runtime_profile_sha256.c_str(),
+        -1,
+        SQLITE_TRANSIENT);
+    sqlite3_bind_int64(
+        insert_workset.st,
+        14,
+        static_cast<std::int64_t>(
+            compatibility.required_capability_mask));
+    BindOptionalText(
+        insert_workset.st,
+        15,
+        compatibility.execution_affinity_key);
+    BindOptionalText(
+        insert_workset.st,
+        16,
+        compatibility.baseline_affinity_key);
+    sqlite3_bind_int64(
+        insert_workset.st,
+        17,
+        static_cast<std::int64_t>(
+            compatibility.estimated_payload_bytes));
+    sqlite3_bind_int(insert_workset.st, 18, command.priority);
+    sqlite3_bind_int(
+        insert_workset.st,
+        19,
+        static_cast<int>(command.ordered_job_ids.size()));
+    sqlite3_bind_int64(insert_workset.st, 20, now);
+    if (sqlite3_step(insert_workset.st) != SQLITE_DONE) {
+        fail(sqlite3_errmsg(db_));
+        return false;
+    }
+    receipt.workset_id = sqlite3_last_insert_rowid(db_);
+    receipt.item_count =
+        static_cast<int>(command.ordered_job_ids.size());
+
+    Statement publish_job;
+    if (sqlite3_prepare_v2(
+            db_,
+            "UPDATE exec_job "
+            "SET workset_id=?1,workset_item_ordinal=?2,state='QUEUED',"
+            "queued_at_utc=?3 "
+            "WHERE job_id=?4 AND state='PENDING_WORKSET' "
+            "AND workset_id IS NULL AND workset_item_ordinal IS NULL;",
+            -1,
+            &publish_job.st,
+            nullptr)
+        != SQLITE_OK) {
+        fail(sqlite3_errmsg(db_));
+        return false;
+    }
+    for (std::size_t ordinal = 0;
+         ordinal < command.ordered_job_ids.size();
+         ++ordinal) {
+        sqlite3_reset(publish_job.st);
+        sqlite3_clear_bindings(publish_job.st);
+        sqlite3_bind_int64(
+            publish_job.st,
+            1,
+            receipt.workset_id);
+        sqlite3_bind_int(
+            publish_job.st,
+            2,
+            static_cast<int>(ordinal));
+        sqlite3_bind_int64(publish_job.st, 3, now);
+        sqlite3_bind_int64(
+            publish_job.st,
+            4,
+            command.ordered_job_ids[ordinal]);
+        if (sqlite3_step(publish_job.st) != SQLITE_DONE
+            || sqlite3_changes(db_) != 1
+            || !InsertJobActionEventAndOutbox(
+                db_,
+                command.ordered_job_ids[ordinal],
+                command.job_set_id,
+                "Execution.JobQueued.v1",
+                "workset-published",
+                error_out)) {
+            fail(
+                error_out != nullptr && !error_out->empty()
+                ? *error_out
+                : "workset membership publication CAS failed");
+            return false;
+        }
+    }
+
+    Statement update_job_set;
+    if (sqlite3_prepare_v2(
+            db_,
+            "UPDATE exec_job_set "
+            "SET materialization_state='PUBLISHING_WORKSETS' "
+            "WHERE job_set_id=?1 AND materialization_state IN "
+            "('POPULATION_SEALED','PUBLISHING_WORKSETS');",
+            -1,
+            &update_job_set.st,
+            nullptr)
+        != SQLITE_OK) {
+        fail(sqlite3_errmsg(db_));
+        return false;
+    }
+    sqlite3_bind_int64(
+        update_job_set.st,
+        1,
+        command.job_set_id);
+    if (sqlite3_step(update_job_set.st) != SQLITE_DONE
+        || sqlite3_changes(db_) != 1
+        || !InsertAggregateOutboxEvent(
+            db_,
+            "Execution.WorksetPublished.v1",
+            "workset",
+            receipt.workset_id,
+            "workset",
+            receipt.workset_id,
+            "workset-published-"
+                + std::to_string(receipt.workset_id),
+            error_out)
+        || !Commit(db_, error_out)) {
+        Rollback(db_);
+        return false;
+    }
+    receipt.disposition = ExecutionDbOperationDisposition::Applied;
+    if (receipt_out != nullptr) *receipt_out = receipt;
+    return true;
+}
+
+bool SqliteExecutionDb::CompleteWorksetPublication(
+    const CompleteWorksetPublicationCommand& command,
+    CompleteWorksetPublicationReceipt* receipt_out,
+    std::string* error_out) {
+    CompleteWorksetPublicationReceipt receipt{};
+    if (receipt_out != nullptr) *receipt_out = receipt;
+    if (db_ == nullptr
+        || command.job_set_id <= 0
+        || command.expected_workset_count < 0
+        || command.expected_job_count < 0
+        || command.requested_by.empty()) {
+        receipt.disposition =
+            ExecutionDbOperationDisposition::InvalidRequest;
+        if (receipt_out != nullptr) *receipt_out = receipt;
+        if (error_out != nullptr) {
+            *error_out = "invalid complete-workset-publication command";
+        }
+        return false;
+    }
+    if (!ExecuteSql(db_, "BEGIN IMMEDIATE;", error_out)) {
+        return false;
+    }
+    const auto fail = [&](std::string message) {
+        Rollback(db_);
+        if (error_out != nullptr) *error_out = std::move(message);
+    };
+    Statement counts;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT COALESCE(js.materialization_state,''),"
+            "(SELECT COUNT(1) FROM exec_workset w "
+            " WHERE w.job_set_id=js.job_set_id),"
+            "(SELECT COUNT(1) FROM exec_job j "
+            " WHERE j.job_set_id=js.job_set_id),"
+            "(SELECT COUNT(1) FROM exec_job j "
+            " WHERE j.job_set_id=js.job_set_id "
+            "   AND (j.workset_id IS NULL "
+            "        OR j.workset_item_ordinal IS NULL)) "
+            "FROM exec_job_set js WHERE js.job_set_id=?1;",
+            -1,
+            &counts.st,
+            nullptr)
+        != SQLITE_OK) {
+        fail(sqlite3_errmsg(db_));
+        return false;
+    }
+    sqlite3_bind_int64(counts.st, 1, command.job_set_id);
+    if (sqlite3_step(counts.st) != SQLITE_ROW) {
+        Rollback(db_);
+        receipt.disposition =
+            ExecutionDbOperationDisposition::Missing;
+        if (receipt_out != nullptr) *receipt_out = receipt;
+        return true;
+    }
+    receipt.materialization_state = Text(counts.st, 0);
+    receipt.durable_workset_count = sqlite3_column_int(counts.st, 1);
+    receipt.durable_job_count = sqlite3_column_int(counts.st, 2);
+    const auto unassigned_jobs = sqlite3_column_int(counts.st, 3);
+    if (receipt.materialization_state
+            == "WORKSET_PUBLICATION_COMPLETE"
+        && receipt.durable_workset_count
+            == command.expected_workset_count
+        && receipt.durable_job_count
+            == command.expected_job_count
+        && unassigned_jobs == 0) {
+        if (!Commit(db_, error_out)) {
+            Rollback(db_);
+            return false;
+        }
+        receipt.disposition =
+            ExecutionDbOperationDisposition::AlreadyApplied;
+        if (receipt_out != nullptr) *receipt_out = receipt;
+        return true;
+    }
+    if ((receipt.materialization_state != "POPULATION_SEALED"
+            && receipt.materialization_state
+                != "PUBLISHING_WORKSETS")
+        || receipt.durable_workset_count
+            != command.expected_workset_count
+        || receipt.durable_job_count != command.expected_job_count
+        || unassigned_jobs != 0) {
+        Rollback(db_);
+        receipt.disposition =
+            ExecutionDbOperationDisposition::Conflict;
+        if (receipt_out != nullptr) *receipt_out = receipt;
+        return true;
+    }
+    const auto now = CurrentUtcMs(db_);
+    Statement update;
+    if (sqlite3_prepare_v2(
+            db_,
+            "UPDATE exec_job_set "
+            "SET materialization_state='WORKSET_PUBLICATION_COMPLETE',"
+            "workset_publication_completed_at_utc=?1 "
+            "WHERE job_set_id=?2 AND materialization_state IN "
+            "('POPULATION_SEALED','PUBLISHING_WORKSETS');",
+            -1,
+            &update.st,
+            nullptr)
+        != SQLITE_OK) {
+        fail(sqlite3_errmsg(db_));
+        return false;
+    }
+    sqlite3_bind_int64(update.st, 1, now);
+    sqlite3_bind_int64(update.st, 2, command.job_set_id);
+    if (sqlite3_step(update.st) != SQLITE_DONE
+        || sqlite3_changes(db_) != 1
+        || !InsertAggregateOutboxEvent(
+            db_,
+            "Execution.WorksetPublicationCompleted.v1",
+            "job_set",
+            command.job_set_id,
+            "job_set",
+            command.job_set_id,
+            "workset-publication-complete-"
+                + std::to_string(command.job_set_id),
+            error_out)
+        || !Commit(db_, error_out)) {
+        Rollback(db_);
+        return false;
+    }
+    receipt.disposition = ExecutionDbOperationDisposition::Applied;
+    receipt.materialization_state =
+        "WORKSET_PUBLICATION_COMPLETE";
+    if (receipt_out != nullptr) *receipt_out = receipt;
+    return true;
+}
+
+std::vector<ClaimedPublishedWorkset>
+SqliteExecutionDb::ClaimPublishedWorksetBatch(
+    const ClaimPublishedWorksetBatchCommand& command,
+    std::string* error_out) {
+    std::vector<ClaimedPublishedWorkset> claimed_worksets;
+    if (error_out != nullptr) error_out->clear();
+    if (db_ == nullptr
+        || command.batch_nonce.empty()
+        || command.requested_workset_count == 0
+        || command.lease_duration_ms <= 0
+        || command.compatibility.max_workset_items == 0
+        || command.compatibility.max_payload_bytes == 0
+        || command.compatibility.supported_program_kinds.empty()
+        || command.compatibility.supported_modules.empty()) {
+        if (error_out != nullptr) {
+            *error_out = "invalid published-workset batch-claim command";
+        }
+        return claimed_worksets;
+    }
+    if (!ExecuteSql(db_, "BEGIN IMMEDIATE;", error_out)) {
+        return claimed_worksets;
+    }
+    const auto fail = [&](std::string message) {
+        Rollback(db_);
+        claimed_worksets.clear();
+        if (error_out != nullptr) *error_out = std::move(message);
+    };
+
+    struct Candidate {
+        ClaimedPublishedWorkset workset;
+        std::int64_t published_at_utc = 0;
+        int runnable_count = 0;
+    };
+    std::vector<Candidate> selected;
+    std::optional<int> absolute_priority;
+    Statement candidates;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT "
+            "w.workset_id,w.job_set_id,w.workflow_step_id,"
+            "w.root_job_set_id,w.workset_key,w.program_kind,"
+            "w.program_version,w.compatibility_key,"
+            "w.module_canonical_id,w.module_version,w.module_sha256,"
+            "w.entrypoint,w.verified_dependency_sha256,"
+            "w.runtime_profile_sha256,w.required_capability_mask,"
+            "w.execution_affinity_key,w.baseline_affinity_key,"
+            "w.estimated_payload_bytes,w.priority,w.published_at_utc,"
+            "(SELECT COUNT(1) FROM exec_job j "
+            " WHERE j.workset_id=w.workset_id AND j.state='QUEUED' "
+            "   AND j.attempts<j.max_attempts) "
+            "FROM exec_workset w "
+            "WHERE EXISTS("
+            "  SELECT 1 FROM exec_job j "
+            "  WHERE j.workset_id=w.workset_id AND j.state='QUEUED' "
+            "    AND j.attempts<j.max_attempts"
+            ") "
+            "AND NOT EXISTS("
+            "  SELECT 1 FROM exec_job j "
+            "  WHERE j.workset_id=w.workset_id AND j.state='QUEUED' "
+            "    AND j.attempts>=j.max_attempts"
+            ") "
+            "AND NOT EXISTS("
+            "  SELECT 1 FROM exec_workset_dispatch_attempt d "
+            "  WHERE d.workset_id=w.workset_id "
+            "    AND d.state IN ('CLAIMED','DISPATCHED')"
+            ") "
+            "AND NOT EXISTS("
+            "  SELECT 1 "
+            "  FROM exec_job j "
+            "  JOIN exec_job_cancellation_request c "
+            "    ON c.job_id=j.job_id "
+            "  WHERE j.workset_id=w.workset_id "
+            "    AND j.state='QUEUED' "
+            "    AND c.state IN "
+            "      ('REQUESTED','DELIVERY_CLAIMED','DELIVERED')"
+            ") "
+            "ORDER BY w.priority DESC,w.published_at_utc ASC,"
+            "w.workset_id ASC;",
+            -1,
+            &candidates.st,
+            nullptr)
+        != SQLITE_OK) {
+        fail(sqlite3_errmsg(db_));
+        return claimed_worksets;
+    }
+    for (;;) {
+        const auto rc = sqlite3_step(candidates.st);
+        if (rc == SQLITE_DONE) break;
+        if (rc != SQLITE_ROW) {
+            fail(sqlite3_errmsg(db_));
+            return claimed_worksets;
+        }
+        const auto priority = sqlite3_column_int(candidates.st, 18);
+        if (!absolute_priority.has_value()) {
+            absolute_priority = priority;
+        } else if (priority != *absolute_priority) {
+            break;
+        }
+
+        Candidate candidate{};
+        auto& row = candidate.workset;
+        row.workset_id = sqlite3_column_int64(candidates.st, 0);
+        row.job_set_id = sqlite3_column_int64(candidates.st, 1);
+        row.workflow_step_id = sqlite3_column_int64(candidates.st, 2);
+        row.root_job_set_id = sqlite3_column_int64(candidates.st, 3);
+        row.workset_key = Text(candidates.st, 4);
+        row.program_kind = sqlite3_column_int(candidates.st, 5);
+        row.program_version = sqlite3_column_int(candidates.st, 6);
+        row.compatibility.compatibility_key = Text(candidates.st, 7);
+        row.compatibility.module_canonical_id = Text(candidates.st, 8);
+        row.compatibility.module_version =
+            sqlite3_column_int(candidates.st, 9);
+        row.compatibility.module_sha256 = Text(candidates.st, 10);
+        row.compatibility.entrypoint = Text(candidates.st, 11);
+        row.compatibility.verified_dependency_sha256 =
+            Text(candidates.st, 12);
+        row.compatibility.runtime_profile_sha256 =
+            Text(candidates.st, 13);
+        row.compatibility.required_capability_mask =
+            static_cast<std::uint64_t>(
+                sqlite3_column_int64(candidates.st, 14));
+        row.compatibility.execution_affinity_key =
+            OptionalText(candidates.st, 15);
+        row.compatibility.baseline_affinity_key =
+            OptionalText(candidates.st, 16);
+        row.compatibility.estimated_payload_bytes =
+            static_cast<std::uint64_t>(
+                sqlite3_column_int64(candidates.st, 17));
+        row.priority = priority;
+        candidate.published_at_utc =
+            sqlite3_column_int64(candidates.st, 19);
+        candidate.runnable_count =
+            sqlite3_column_int(candidates.st, 20);
+        if (!WorkerSupportsWorkset(
+                command.compatibility,
+                row.program_kind,
+                row.compatibility,
+                candidate.runnable_count)) {
+            continue;
+        }
+        selected.push_back(std::move(candidate));
+    }
+    std::stable_sort(
+        selected.begin(),
+        selected.end(),
+        [](const Candidate& lhs, const Candidate& rhs) {
+            if (lhs.published_at_utc != rhs.published_at_utc) {
+                return lhs.published_at_utc < rhs.published_at_utc;
+            }
+            return lhs.workset.workset_id < rhs.workset.workset_id;
+        });
+    if (selected.size() > command.requested_workset_count) {
+        selected.resize(command.requested_workset_count);
+    }
+    if (selected.empty()) {
+        if (!Commit(db_, error_out)) {
+            Rollback(db_);
+        }
+        return claimed_worksets;
+    }
+
+    const auto now = CurrentUtcMs(db_);
+    if (now <= 0
+        || command.lease_duration_ms
+            > std::numeric_limits<std::int64_t>::max() - now) {
+        fail("workset lease duration overflow");
+        return claimed_worksets;
+    }
+    claimed_worksets.reserve(selected.size());
+    for (std::size_t selected_index = 0;
+         selected_index < selected.size();
+         ++selected_index) {
+        auto claimed = std::move(selected[selected_index].workset);
+        claimed.claim_token =
+            command.batch_nonce + "-" + std::to_string(selected_index + 1);
+        claimed.lease_expires_at_utc = now + command.lease_duration_ms;
+
+        Statement sequence;
+        if (sqlite3_prepare_v2(
+                db_,
+                "SELECT COALESCE(MAX(dispatch_sequence),0)+1 "
+                "FROM exec_workset_dispatch_attempt "
+                "WHERE workset_id=?1;",
+                -1,
+                &sequence.st,
+                nullptr) != SQLITE_OK) {
+            fail(sqlite3_errmsg(db_));
+            return claimed_worksets;
+        }
+        sqlite3_bind_int64(sequence.st, 1, claimed.workset_id);
+        if (sqlite3_step(sequence.st) != SQLITE_ROW) {
+            fail(sqlite3_errmsg(db_));
+            return claimed_worksets;
+        }
+        const auto dispatch_sequence =
+            sqlite3_column_int64(sequence.st, 0);
+
+        Statement insert_dispatch;
+        if (sqlite3_prepare_v2(
+                db_,
+                "INSERT INTO exec_workset_dispatch_attempt("
+                "workset_id,dispatch_sequence,state,claim_token,"
+                "lease_expires_at_utc,claimed_at_utc) "
+                "VALUES(?1,?2,'CLAIMED',?3,?4,?5);",
+                -1,
+                &insert_dispatch.st,
+                nullptr) != SQLITE_OK) {
+            fail(sqlite3_errmsg(db_));
+            return claimed_worksets;
+        }
+        sqlite3_bind_int64(insert_dispatch.st, 1, claimed.workset_id);
+        sqlite3_bind_int64(insert_dispatch.st, 2, dispatch_sequence);
+        sqlite3_bind_text(
+            insert_dispatch.st,
+            3,
+            claimed.claim_token.c_str(),
+            -1,
+            SQLITE_TRANSIENT);
+        sqlite3_bind_int64(
+            insert_dispatch.st,
+            4,
+            claimed.lease_expires_at_utc);
+        sqlite3_bind_int64(insert_dispatch.st, 5, now);
+        if (sqlite3_step(insert_dispatch.st) != SQLITE_DONE) {
+            fail(sqlite3_errmsg(db_));
+            return claimed_worksets;
+        }
+        claimed.dispatch_attempt_id = sqlite3_last_insert_rowid(db_);
+
+        Statement claim_jobs;
+        if (sqlite3_prepare_v2(
+                db_,
+                "WITH ordered(job_id,runtime_ordinal) AS MATERIALIZED ("
+                "  SELECT job_id,"
+                "         ROW_NUMBER() OVER (ORDER BY workset_item_ordinal)-1 "
+                "  FROM exec_job "
+                "  WHERE workset_id=?4 AND state='QUEUED' "
+                "    AND attempts<max_attempts"
+                ") "
+                "UPDATE exec_job "
+                "SET state='CLAIMED',claimed_by_token=?1,"
+                "lease_expires_at_utc=?2,dispatch_attempt_id=?3,"
+                "dispatch_item_ordinal=("
+                "  SELECT runtime_ordinal FROM ordered "
+                "  WHERE ordered.job_id=exec_job.job_id"
+                "),reserved_attempt_id=attempts+1 "
+                "WHERE job_id IN (SELECT job_id FROM ordered) "
+                "AND workset_id=?4 AND state='QUEUED' "
+                "AND attempts<max_attempts;",
+                -1,
+                &claim_jobs.st,
+                nullptr) != SQLITE_OK) {
+            fail(sqlite3_errmsg(db_));
+            return claimed_worksets;
+        }
+        sqlite3_bind_text(
+            claim_jobs.st,
+            1,
+            claimed.claim_token.c_str(),
+            -1,
+            SQLITE_TRANSIENT);
+        sqlite3_bind_int64(
+            claim_jobs.st,
+            2,
+            claimed.lease_expires_at_utc);
+        sqlite3_bind_int64(
+            claim_jobs.st,
+            3,
+            claimed.dispatch_attempt_id);
+        sqlite3_bind_int64(claim_jobs.st, 4, claimed.workset_id);
+        const auto claim_rc = sqlite3_step(claim_jobs.st);
+        const auto changed_jobs = sqlite3_changes(db_);
+        if (claim_rc != SQLITE_DONE
+            || changed_jobs != selected[selected_index].runnable_count) {
+            fail(
+                "whole-workset batch claim CAS failed for workset "
+                + std::to_string(claimed.workset_id)
+                + ": sqlite rc=" + std::to_string(claim_rc)
+                + ", changed=" + std::to_string(changed_jobs)
+                + ", expected="
+                + std::to_string(
+                    selected[selected_index].runnable_count)
+                + ", diagnostic=" + sqlite3_errmsg(db_));
+            return claimed_worksets;
+        }
+
+        Statement items;
+        if (sqlite3_prepare_v2(
+                db_,
+                "SELECT job_id,job_set_id,program_kind,program_version,"
+                "program_ref_kind,program_ref_id,savestate_id,fingerprint,"
+                "priority,attempts,max_attempts,queued_at_utc,input_ini,"
+                "workset_item_ordinal,dispatch_item_ordinal,"
+                "reserved_attempt_id "
+                "FROM exec_job "
+                "WHERE dispatch_attempt_id=?1 AND state='CLAIMED' "
+                "ORDER BY workset_item_ordinal ASC;",
+                -1,
+                &items.st,
+                nullptr) != SQLITE_OK) {
+            fail(sqlite3_errmsg(db_));
+            return claimed_worksets;
+        }
+        sqlite3_bind_int64(items.st, 1, claimed.dispatch_attempt_id);
+        for (;;) {
+            const auto rc = sqlite3_step(items.st);
+            if (rc == SQLITE_DONE) break;
+            if (rc != SQLITE_ROW) {
+                fail(sqlite3_errmsg(db_));
+                return claimed_worksets;
+            }
+            ClaimedPublishedWorksetItem item{};
+            item.job_id = sqlite3_column_int64(items.st, 0);
+            item.job_set_id = sqlite3_column_int64(items.st, 1);
+            item.program_kind = sqlite3_column_int(items.st, 2);
+            item.program_version = sqlite3_column_int(items.st, 3);
+            item.program_ref_kind = Text(items.st, 4);
+            item.program_ref_id = sqlite3_column_int64(items.st, 5);
+            if (sqlite3_column_type(items.st, 6) != SQLITE_NULL) {
+                item.savestate_id = sqlite3_column_int64(items.st, 6);
+            }
+            item.fingerprint = Text(items.st, 7);
+            item.priority = sqlite3_column_int(items.st, 8);
+            item.attempts = sqlite3_column_int(items.st, 9);
+            item.max_attempts = sqlite3_column_int(items.st, 10);
+            item.queued_at_utc = sqlite3_column_int64(items.st, 11);
+            item.input_ini = Text(items.st, 12);
+            item.item_ordinal = sqlite3_column_int(items.st, 13);
+            if (sqlite3_column_type(items.st, 14) == SQLITE_NULL
+                || sqlite3_column_int64(items.st, 14) < 0
+                || sqlite3_column_int64(items.st, 14)
+                    > static_cast<sqlite3_int64>(
+                        (std::numeric_limits<std::uint32_t>::max)())) {
+                fail("claimed workset item has invalid runtime ordinal");
+                return claimed_worksets;
+            }
+            item.dispatch_item_ordinal = static_cast<std::uint32_t>(
+                sqlite3_column_int64(items.st, 14));
+            item.reserved_attempt_id = static_cast<std::uint64_t>(
+                sqlite3_column_int64(items.st, 15));
+            if (!InsertJobActionEventAndOutbox(
+                    db_,
+                    item.job_id,
+                    item.job_set_id,
+                    "Execution.JobClaimed.v1",
+                    "published-workset-batch-claimed",
+                    error_out)) {
+                fail(
+                    error_out != nullptr
+                        ? *error_out
+                        : "job batch-claim event failed");
+                return claimed_worksets;
+            }
+            claimed.items.push_back(std::move(item));
+        }
+        if (claimed.items.size()
+                != static_cast<std::size_t>(
+                    selected[selected_index].runnable_count)
+            || !InsertAggregateOutboxEvent(
+                db_,
+                "Execution.WorksetClaimed.v1",
+                "workset",
+                claimed.workset_id,
+                "workset",
+                claimed.workset_id,
+                "dispatch-" + std::to_string(claimed.dispatch_attempt_id),
+                error_out)) {
+            fail(
+                error_out != nullptr
+                    ? *error_out
+                    : "workset batch-claim event failed");
+            return claimed_worksets;
+        }
+        claimed_worksets.push_back(std::move(claimed));
+    }
+    if (!Commit(db_, error_out)) {
+        Rollback(db_);
+        claimed_worksets.clear();
+    }
+    return claimed_worksets;
+}
+
+bool SqliteExecutionDb::RenewWorksetDispatchLease(
+    const RenewWorksetDispatchLeaseCommand& command,
+    WorksetDispatchLeaseReceipt* receipt_out,
+    std::string* error_out) {
+    WorksetDispatchLeaseReceipt receipt{};
+    receipt.dispatch_attempt_id = command.dispatch_attempt_id;
+    if (receipt_out != nullptr) *receipt_out = receipt;
+    if (db_ == nullptr
+        || command.dispatch_attempt_id <= 0
+        || command.claim_token.empty()
+        || command.lease_duration_ms <= 0) {
+        receipt.disposition =
+            ExecutionDbOperationDisposition::InvalidRequest;
+        if (receipt_out != nullptr) *receipt_out = receipt;
+        return false;
+    }
+    if (!ExecuteSql(db_, "BEGIN IMMEDIATE;", error_out)) {
+        return false;
+    }
+    const auto now = CurrentUtcMs(db_);
+    if (now <= 0
+        || command.lease_duration_ms
+            > std::numeric_limits<std::int64_t>::max() - now) {
+        Rollback(db_);
+        if (error_out != nullptr) {
+            *error_out = "workset lease expiration overflow";
+        }
+        return false;
+    }
+    const auto next = now + command.lease_duration_ms;
+    Statement update_dispatch;
+    if (sqlite3_prepare_v2(
+            db_,
+            "UPDATE exec_workset_dispatch_attempt "
+            "SET lease_expires_at_utc=?1 "
+            "WHERE dispatch_attempt_id=?2 "
+            "AND claim_token=?3 "
+            "AND state IN ('CLAIMED','DISPATCHED') "
+            "AND lease_expires_at_utc>=?4;",
+            -1,
+            &update_dispatch.st,
+            nullptr)
+        != SQLITE_OK) {
+        Rollback(db_);
+        if (error_out != nullptr) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    sqlite3_bind_int64(update_dispatch.st, 1, next);
+    sqlite3_bind_int64(
+        update_dispatch.st,
+        2,
+        command.dispatch_attempt_id);
+    sqlite3_bind_text(
+        update_dispatch.st,
+        3,
+        command.claim_token.c_str(),
+        -1,
+        SQLITE_TRANSIENT);
+    sqlite3_bind_int64(update_dispatch.st, 4, now);
+    if (sqlite3_step(update_dispatch.st) != SQLITE_DONE) {
+        Rollback(db_);
+        if (error_out != nullptr) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    if (sqlite3_changes(db_) != 1) {
+        Statement current;
+        if (sqlite3_prepare_v2(
+                db_,
+                "SELECT state,claim_token,lease_expires_at_utc "
+                "FROM exec_workset_dispatch_attempt "
+                "WHERE dispatch_attempt_id=?1;",
+                -1,
+                &current.st,
+                nullptr)
+            != SQLITE_OK) {
+            Rollback(db_);
+            if (error_out != nullptr) *error_out = sqlite3_errmsg(db_);
+            return false;
+        }
+        sqlite3_bind_int64(
+            current.st,
+            1,
+            command.dispatch_attempt_id);
+        if (sqlite3_step(current.st) != SQLITE_ROW) {
+            receipt.disposition =
+                ExecutionDbOperationDisposition::Missing;
+        } else {
+            const auto current_state = Text(current.st, 0);
+            const auto current_token = Text(current.st, 1);
+            const auto current_lease =
+                sqlite3_column_int64(current.st, 2);
+            receipt.disposition =
+                current_token != command.claim_token
+                ? ExecutionDbOperationDisposition::TokenMismatch
+                : current_lease < now
+                    ? ExecutionDbOperationDisposition::LeaseExpired
+                    : ExecutionDbOperationDisposition::WrongState;
+        }
+        if (!Commit(db_, error_out)) {
+            Rollback(db_);
+            return false;
+        }
+        if (receipt_out != nullptr) *receipt_out = receipt;
+        return true;
+    }
+    Statement update_jobs;
+    if (sqlite3_prepare_v2(
+            db_,
+            "UPDATE exec_job SET lease_expires_at_utc=?1 "
+            "WHERE dispatch_attempt_id=?2 "
+            "AND state IN ('CLAIMED','RUNNING');",
+            -1,
+            &update_jobs.st,
+            nullptr)
+        != SQLITE_OK) {
+        Rollback(db_);
+        if (error_out != nullptr) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    sqlite3_bind_int64(update_jobs.st, 1, next);
+    sqlite3_bind_int64(
+        update_jobs.st,
+        2,
+        command.dispatch_attempt_id);
+    if (sqlite3_step(update_jobs.st) != SQLITE_DONE
+        || !Commit(db_, error_out)) {
+        Rollback(db_);
+        return false;
+    }
+    receipt.disposition = ExecutionDbOperationDisposition::Applied;
+    receipt.lease_expires_at_utc = next;
+    if (receipt_out != nullptr) *receipt_out = receipt;
+    return true;
+}
+
+bool SqliteExecutionDb::MarkWorksetDispatched(
+    const MarkWorksetDispatchedCommand& command,
+    WorksetDispatchMutationReceipt* receipt_out,
+    std::string* error_out) {
+    WorksetDispatchMutationReceipt receipt{};
+    receipt.dispatch_attempt_id = command.dispatch_attempt_id;
+    if (receipt_out != nullptr) *receipt_out = receipt;
+    if (db_ == nullptr
+        || command.dispatch_attempt_id <= 0
+        || command.claim_token.empty()
+        || command.requested_by.empty()) {
+        receipt.disposition =
+            ExecutionDbOperationDisposition::InvalidRequest;
+        if (receipt_out != nullptr) *receipt_out = receipt;
+        return false;
+    }
+    if (!ExecuteSql(db_, "BEGIN IMMEDIATE;", error_out)) {
+        return false;
+    }
+    const auto now = CurrentUtcMs(db_);
+    Statement update;
+    if (sqlite3_prepare_v2(
+            db_,
+            "UPDATE exec_workset_dispatch_attempt "
+            "SET state='DISPATCHED',dispatched_at_utc=?1 "
+            "WHERE dispatch_attempt_id=?2 AND claim_token=?3 "
+            "AND state='CLAIMED' AND lease_expires_at_utc>=?1;",
+            -1,
+            &update.st,
+            nullptr)
+        != SQLITE_OK) {
+        Rollback(db_);
+        if (error_out != nullptr) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    sqlite3_bind_int64(update.st, 1, now);
+    sqlite3_bind_int64(update.st, 2, command.dispatch_attempt_id);
+    sqlite3_bind_text(
+        update.st,
+        3,
+        command.claim_token.c_str(),
+        -1,
+        SQLITE_TRANSIENT);
+    if (sqlite3_step(update.st) != SQLITE_DONE) {
+        Rollback(db_);
+        if (error_out != nullptr) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    if (sqlite3_changes(db_) != 1) {
+        Statement current;
+        if (sqlite3_prepare_v2(
+                db_,
+                "SELECT state,claim_token,lease_expires_at_utc "
+                "FROM exec_workset_dispatch_attempt "
+                "WHERE dispatch_attempt_id=?1;",
+                -1,
+                &current.st,
+                nullptr)
+            != SQLITE_OK) {
+            Rollback(db_);
+            if (error_out != nullptr) *error_out = sqlite3_errmsg(db_);
+            return false;
+        }
+        sqlite3_bind_int64(
+            current.st,
+            1,
+            command.dispatch_attempt_id);
+        if (sqlite3_step(current.st) != SQLITE_ROW) {
+            receipt.disposition =
+                ExecutionDbOperationDisposition::Missing;
+        } else {
+            const auto current_state = Text(current.st, 0);
+            const auto current_token = Text(current.st, 1);
+            const auto current_lease =
+                sqlite3_column_int64(current.st, 2);
+            receipt.disposition =
+                current_token != command.claim_token
+                ? ExecutionDbOperationDisposition::TokenMismatch
+                : current_state == "DISPATCHED"
+                    ? ExecutionDbOperationDisposition::AlreadyApplied
+                    : current_lease < now
+                        ? ExecutionDbOperationDisposition::LeaseExpired
+                        : ExecutionDbOperationDisposition::WrongState;
+        }
+        if (!Commit(db_, error_out)) {
+            Rollback(db_);
+            return false;
+        }
+        if (receipt_out != nullptr) *receipt_out = receipt;
+        return true;
+    }
+    Statement identity;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT d.workset_id,w.job_set_id "
+            "FROM exec_workset_dispatch_attempt d "
+            "JOIN exec_workset w ON w.workset_id=d.workset_id "
+            "WHERE d.dispatch_attempt_id=?1;",
+            -1,
+            &identity.st,
+            nullptr)
+        != SQLITE_OK) {
+        Rollback(db_);
+        if (error_out != nullptr) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    sqlite3_bind_int64(identity.st, 1, command.dispatch_attempt_id);
+    if (sqlite3_step(identity.st) != SQLITE_ROW
+        || !InsertAggregateOutboxEvent(
+            db_,
+            "Execution.WorksetDispatched.v1",
+            "workset",
+            sqlite3_column_int64(identity.st, 0),
+            "workset",
+            sqlite3_column_int64(identity.st, 0),
+            "dispatch-"
+                + std::to_string(command.dispatch_attempt_id),
+            error_out)
+        || !Commit(db_, error_out)) {
+        Rollback(db_);
+        return false;
+    }
+    receipt.disposition = ExecutionDbOperationDisposition::Applied;
+    if (receipt_out != nullptr) *receipt_out = receipt;
+    return true;
+}
+
+bool SqliteExecutionDb::ReleaseWorksetDispatch(
+    const ReleaseWorksetDispatchCommand& command,
+    WorksetDispatchMutationReceipt* receipt_out,
+    std::string* error_out) {
+    WorksetDispatchMutationReceipt receipt{};
+    receipt.dispatch_attempt_id = command.dispatch_attempt_id;
+    if (receipt_out != nullptr) *receipt_out = receipt;
+    if (db_ == nullptr
+        || command.dispatch_attempt_id <= 0
+        || command.claim_token.empty()
+        || command.reason_code.empty()
+        || command.requested_by.empty()) {
+        receipt.disposition =
+            ExecutionDbOperationDisposition::InvalidRequest;
+        if (receipt_out != nullptr) *receipt_out = receipt;
+        return false;
+    }
+    if (!ExecuteSql(db_, "BEGIN IMMEDIATE;", error_out)) {
+        return false;
+    }
+    const auto fail = [&](std::string message) {
+        Rollback(db_);
+        if (error_out != nullptr) *error_out = std::move(message);
+    };
+    Statement dispatch;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT d.state,d.claim_token,d.workset_id,w.job_set_id "
+            "FROM exec_workset_dispatch_attempt d "
+            "JOIN exec_workset w ON w.workset_id=d.workset_id "
+            "WHERE d.dispatch_attempt_id=?1;",
+            -1,
+            &dispatch.st,
+            nullptr)
+        != SQLITE_OK) {
+        fail(sqlite3_errmsg(db_));
+        return false;
+    }
+    sqlite3_bind_int64(
+        dispatch.st,
+        1,
+        command.dispatch_attempt_id);
+    if (sqlite3_step(dispatch.st) != SQLITE_ROW) {
+        Rollback(db_);
+        receipt.disposition =
+            ExecutionDbOperationDisposition::Missing;
+        if (receipt_out != nullptr) *receipt_out = receipt;
+        return true;
+    }
+    const auto dispatch_state = Text(dispatch.st, 0);
+    const auto durable_token = Text(dispatch.st, 1);
+    const auto workset_id = sqlite3_column_int64(dispatch.st, 2);
+    const auto job_set_id = sqlite3_column_int64(dispatch.st, 3);
+    if (durable_token != command.claim_token) {
+        Rollback(db_);
+        receipt.disposition =
+            ExecutionDbOperationDisposition::TokenMismatch;
+        if (receipt_out != nullptr) *receipt_out = receipt;
+        return true;
+    }
+    if (dispatch_state == "CLOSED") {
+        if (!Commit(db_, error_out)) {
+            Rollback(db_);
+            return false;
+        }
+        receipt.disposition =
+            ExecutionDbOperationDisposition::AlreadyApplied;
+        receipt.dispatch_closed = true;
+        if (receipt_out != nullptr) *receipt_out = receipt;
+        return true;
+    }
+
+    struct ReleasableJob {
+        std::int64_t job_id = 0;
+        std::int64_t job_set_id = 0;
+        std::string state;
+        int attempts = 0;
+        int max_attempts = 0;
+    };
+    std::vector<ReleasableJob> jobs;
+    Statement list_jobs;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT job_id,job_set_id,state,attempts,max_attempts "
+            "FROM exec_job WHERE dispatch_attempt_id=?1 "
+            "AND state IN ('CLAIMED','RUNNING') "
+            "ORDER BY workset_item_ordinal ASC;",
+            -1,
+            &list_jobs.st,
+            nullptr)
+        != SQLITE_OK) {
+        fail(sqlite3_errmsg(db_));
+        return false;
+    }
+    sqlite3_bind_int64(
+        list_jobs.st,
+        1,
+        command.dispatch_attempt_id);
+    for (;;) {
+        const auto rc = sqlite3_step(list_jobs.st);
+        if (rc == SQLITE_DONE) break;
+        if (rc != SQLITE_ROW) {
+            fail(sqlite3_errmsg(db_));
+            return false;
+        }
+        jobs.push_back({
+            .job_id = sqlite3_column_int64(list_jobs.st, 0),
+            .job_set_id = sqlite3_column_int64(list_jobs.st, 1),
+            .state = Text(list_jobs.st, 2),
+            .attempts = sqlite3_column_int(list_jobs.st, 3),
+            .max_attempts = sqlite3_column_int(list_jobs.st, 4),
+        });
+    }
+
+    const auto now = CurrentUtcMs(db_);
+    Statement requeue;
+    Statement fail_job;
+    if (sqlite3_prepare_v2(
+            db_,
+            "UPDATE exec_job SET state='QUEUED',queued_at_utc=?1,"
+            "claimed_by_token=NULL,lease_expires_at_utc=NULL,"
+            "dispatch_attempt_id=NULL,dispatch_item_ordinal=NULL,"
+            "reserved_attempt_id=NULL "
+            "WHERE job_id=?2 AND dispatch_attempt_id=?3 "
+            "AND state IN ('CLAIMED','RUNNING');",
+            -1,
+            &requeue.st,
+            nullptr)
+            != SQLITE_OK
+        || sqlite3_prepare_v2(
+            db_,
+            "UPDATE exec_job SET state='FAILED',ended_at_utc=?1,"
+            "error_code=?2,error_text=?3,claimed_by_token=NULL,"
+            "lease_expires_at_utc=NULL,dispatch_attempt_id=NULL,"
+            "dispatch_item_ordinal=NULL,reserved_attempt_id=NULL "
+            "WHERE job_id=?4 AND dispatch_attempt_id=?5 "
+            "AND state='RUNNING';",
+            -1,
+            &fail_job.st,
+            nullptr)
+            != SQLITE_OK) {
+        fail(sqlite3_errmsg(db_));
+        return false;
+    }
+    for (const auto& job : jobs) {
+        const bool exhausted = job.state == "RUNNING"
+            && job.attempts >= job.max_attempts;
+        auto* statement = exhausted ? fail_job.st : requeue.st;
+        sqlite3_reset(statement);
+        sqlite3_clear_bindings(statement);
+        sqlite3_bind_int64(statement, 1, now);
+        if (exhausted) {
+            sqlite3_bind_text(
+                statement,
+                2,
+                command.reason_code.c_str(),
+                -1,
+                SQLITE_TRANSIENT);
+            BindOptionalText(statement, 3, command.reason_text);
+            sqlite3_bind_int64(statement, 4, job.job_id);
+            sqlite3_bind_int64(
+                statement,
+                5,
+                command.dispatch_attempt_id);
+        } else {
+            sqlite3_bind_int64(statement, 2, job.job_id);
+            sqlite3_bind_int64(
+                statement,
+                3,
+                command.dispatch_attempt_id);
+        }
+        if (sqlite3_step(statement) != SQLITE_DONE
+            || sqlite3_changes(db_) != 1) {
+            fail("workset job release CAS failed");
+            return false;
+        }
+        if (exhausted) {
+            ++receipt.jobs_failed;
+            if (!InsertJobActionEventAndOutbox(
+                    db_,
+                    job.job_id,
+                    job.job_set_id,
+                    "Execution.JobCompleted.v1",
+                    "workset-release-attempts-exhausted",
+                    error_out)) {
+                fail(error_out != nullptr
+                    ? *error_out
+                    : "job completion event failed");
+                return false;
+            }
+        } else {
+            ++receipt.jobs_requeued;
+            if (!InsertJobActionEventAndOutbox(
+                    db_,
+                    job.job_id,
+                    job.job_set_id,
+                    "Execution.JobClaimRequeued.v1",
+                    "workset-released",
+                    error_out)) {
+                fail(error_out != nullptr
+                    ? *error_out
+                    : "job requeue event failed");
+                return false;
+            }
+        }
+    }
+
+    Statement close;
+    if (sqlite3_prepare_v2(
+            db_,
+            "UPDATE exec_workset_dispatch_attempt "
+            "SET state='CLOSED',closed_at_utc=?1,"
+            "close_reason_code=?2,close_reason_text=?3 "
+            "WHERE dispatch_attempt_id=?4 AND claim_token=?5 "
+            "AND state IN ('CLAIMED','DISPATCHED');",
+            -1,
+            &close.st,
+            nullptr)
+        != SQLITE_OK) {
+        fail(sqlite3_errmsg(db_));
+        return false;
+    }
+    sqlite3_bind_int64(close.st, 1, now);
+    sqlite3_bind_text(
+        close.st,
+        2,
+        command.reason_code.c_str(),
+        -1,
+        SQLITE_TRANSIENT);
+    BindOptionalText(close.st, 3, command.reason_text);
+    sqlite3_bind_int64(
+        close.st,
+        4,
+        command.dispatch_attempt_id);
+    sqlite3_bind_text(
+        close.st,
+        5,
+        command.claim_token.c_str(),
+        -1,
+        SQLITE_TRANSIENT);
+    if (sqlite3_step(close.st) != SQLITE_DONE
+        || sqlite3_changes(db_) != 1
+        || !InsertAggregateOutboxEvent(
+            db_,
+            "Execution.WorksetReleased.v1",
+            "workset",
+            workset_id,
+            "workset",
+            workset_id,
+            "dispatch-release-"
+                + std::to_string(command.dispatch_attempt_id),
+            error_out)
+        || !Commit(db_, error_out)) {
+        Rollback(db_);
+        return false;
+    }
+    receipt.disposition = ExecutionDbOperationDisposition::Applied;
+    receipt.dispatch_closed = true;
+    if (receipt_out != nullptr) *receipt_out = receipt;
+    return true;
+}
+
+bool SqliteExecutionDb::MarkWorksetJobStarted(
+    const MarkWorksetJobStartedCommand& command,
+    WorksetJobStartReceipt* receipt_out,
+    std::string* error_out) {
+    WorksetJobStartReceipt receipt{};
+    receipt.job_id = command.job_id;
+    if (receipt_out != nullptr) *receipt_out = receipt;
+    if (db_ == nullptr
+        || command.dispatch_attempt_id <= 0
+        || command.claim_token.empty()
+        || command.job_id <= 0
+        || command.reserved_attempt_id == 0
+        || command.reserved_attempt_id
+            > static_cast<std::uint64_t>(
+                std::numeric_limits<std::int64_t>::max())
+        || command.worker_invocation_id.empty()
+        || command.requested_by.empty()) {
+        receipt.disposition =
+            ExecutionDbOperationDisposition::InvalidRequest;
+        if (receipt_out != nullptr) *receipt_out = receipt;
+        return false;
+    }
+    if (!ExecuteSql(db_, "BEGIN IMMEDIATE;", error_out)) {
+        return false;
+    }
+    const auto now = CurrentUtcMs(db_);
+    Statement update;
+    if (sqlite3_prepare_v2(
+            db_,
+            "UPDATE exec_job "
+            "SET state='RUNNING',attempts=?1,"
+            "started_at_utc=COALESCE(started_at_utc,?2) "
+            "WHERE job_id=?3 AND state='CLAIMED' "
+            "AND dispatch_attempt_id=?4 "
+            "AND claimed_by_token=?5 "
+            "AND dispatch_item_ordinal=?6 "
+            "AND reserved_attempt_id=?1 "
+            "AND attempts=?1-1 "
+            "AND EXISTS("
+            "  SELECT 1 FROM exec_workset_dispatch_attempt d "
+            "  WHERE d.dispatch_attempt_id=?4 "
+            "    AND d.claim_token=?5 "
+            "    AND d.state='DISPATCHED' "
+            "    AND d.lease_expires_at_utc>=?2"
+            ");",
+            -1,
+            &update.st,
+            nullptr)
+        != SQLITE_OK) {
+        Rollback(db_);
+        if (error_out != nullptr) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    sqlite3_bind_int64(
+        update.st,
+        1,
+        static_cast<std::int64_t>(
+            command.reserved_attempt_id));
+    sqlite3_bind_int64(update.st, 2, now);
+    sqlite3_bind_int64(update.st, 3, command.job_id);
+    sqlite3_bind_int64(
+        update.st,
+        4,
+        command.dispatch_attempt_id);
+    sqlite3_bind_text(
+        update.st,
+        5,
+        command.claim_token.c_str(),
+        -1,
+        SQLITE_TRANSIENT);
+    sqlite3_bind_int64(
+        update.st,
+        6,
+        static_cast<sqlite3_int64>(
+            command.dispatch_item_ordinal));
+    if (sqlite3_step(update.st) != SQLITE_DONE) {
+        Rollback(db_);
+        if (error_out != nullptr) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    if (sqlite3_changes(db_) != 1) {
+        Statement existing;
+        if (sqlite3_prepare_v2(
+                db_,
+                "SELECT j.state,j.attempts,j.dispatch_attempt_id,"
+                "j.claimed_by_token,j.dispatch_item_ordinal,"
+                "j.reserved_attempt_id,d.dispatch_attempt_id,"
+                "d.state,d.claim_token,d.lease_expires_at_utc "
+                "FROM exec_job j "
+                "LEFT JOIN exec_workset_dispatch_attempt d "
+                "  ON d.dispatch_attempt_id=j.dispatch_attempt_id "
+                "WHERE j.job_id=?1;",
+                -1,
+                &existing.st,
+                nullptr)
+            != SQLITE_OK) {
+            Rollback(db_);
+            if (error_out != nullptr) *error_out = sqlite3_errmsg(db_);
+            return false;
+        }
+        sqlite3_bind_int64(existing.st, 1, command.job_id);
+        const auto existing_rc = sqlite3_step(existing.st);
+        if (existing_rc == SQLITE_DONE) {
+            Rollback(db_);
+            receipt.disposition =
+                ExecutionDbOperationDisposition::Missing;
+            if (receipt_out != nullptr) *receipt_out = receipt;
+            return true;
+        }
+        if (existing_rc != SQLITE_ROW) {
+            Rollback(db_);
+            if (error_out != nullptr) *error_out = sqlite3_errmsg(db_);
+            return false;
+        }
+
+        const auto job_state = Text(existing.st, 0);
+        const auto durable_attempts =
+            sqlite3_column_int64(existing.st, 1);
+        const bool has_durable_dispatch =
+            sqlite3_column_type(existing.st, 2) != SQLITE_NULL;
+        const auto durable_dispatch =
+            sqlite3_column_int64(existing.st, 2);
+        const auto durable_token = Text(existing.st, 3);
+        const bool has_durable_ordinal =
+            sqlite3_column_type(existing.st, 4) != SQLITE_NULL;
+        const auto durable_ordinal =
+            sqlite3_column_int64(existing.st, 4);
+        const bool has_reserved_attempt =
+            sqlite3_column_type(existing.st, 5) != SQLITE_NULL;
+        const auto durable_reserved_attempt =
+            static_cast<std::uint64_t>(
+                sqlite3_column_int64(existing.st, 5));
+        const bool has_dispatch_authority =
+            sqlite3_column_type(existing.st, 6) != SQLITE_NULL;
+        const auto dispatch_state = Text(existing.st, 7);
+        const auto dispatch_token = Text(existing.st, 8);
+        const auto lease_expires_at_utc =
+            sqlite3_column_int64(existing.st, 9);
+
+        if (job_state == "RUNNING"
+            && static_cast<std::uint64_t>(
+                durable_attempts)
+                == command.reserved_attempt_id
+            && has_durable_dispatch
+            && durable_dispatch == command.dispatch_attempt_id
+            && durable_token == command.claim_token
+            && has_durable_ordinal
+            && static_cast<std::uint64_t>(
+                durable_ordinal)
+                == command.dispatch_item_ordinal
+            && has_reserved_attempt
+            && durable_reserved_attempt
+                == command.reserved_attempt_id) {
+            if (!Commit(db_, error_out)) {
+                Rollback(db_);
+                return false;
+            }
+            receipt.disposition =
+                ExecutionDbOperationDisposition::AlreadyApplied;
+            receipt.durable_attempt_id =
+                command.reserved_attempt_id;
+            if (receipt_out != nullptr) *receipt_out = receipt;
+            return true;
+        }
+
+        const bool token_mismatch =
+            durable_token != command.claim_token
+            || (has_dispatch_authority
+                && dispatch_token != command.claim_token);
+        const bool attempt_mismatch =
+            !has_reserved_attempt
+            || durable_reserved_attempt
+                != command.reserved_attempt_id
+            || (job_state == "CLAIMED"
+                && durable_attempts
+                    != static_cast<std::int64_t>(
+                        command.reserved_attempt_id)
+                        - 1)
+            || (job_state == "RUNNING"
+                && durable_attempts
+                    != static_cast<std::int64_t>(
+                        command.reserved_attempt_id));
+        const bool identity_or_state_mismatch =
+            job_state != "CLAIMED"
+            || !has_durable_dispatch
+            || durable_dispatch != command.dispatch_attempt_id
+            || !has_durable_ordinal
+            || static_cast<std::uint64_t>(durable_ordinal)
+                != command.dispatch_item_ordinal
+            || !has_dispatch_authority
+            || dispatch_state != "DISPATCHED";
+
+        Rollback(db_);
+        receipt.disposition =
+            token_mismatch
+            ? ExecutionDbOperationDisposition::TokenMismatch
+            : attempt_mismatch
+                ? ExecutionDbOperationDisposition::AttemptMismatch
+                : identity_or_state_mismatch
+                    ? ExecutionDbOperationDisposition::WrongState
+                    : lease_expires_at_utc < now
+                        ? ExecutionDbOperationDisposition::LeaseExpired
+                        : ExecutionDbOperationDisposition::WrongState;
+        if (receipt_out != nullptr) *receipt_out = receipt;
+        return true;
+    }
+
+    Statement job_set;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT job_set_id FROM exec_job WHERE job_id=?1;",
+            -1,
+            &job_set.st,
+            nullptr)
+            != SQLITE_OK) {
+        Rollback(db_);
+        if (error_out != nullptr) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    sqlite3_bind_int64(job_set.st, 1, command.job_id);
+    if (sqlite3_step(job_set.st) != SQLITE_ROW
+        || !InsertJobActionEventAndOutbox(
+            db_,
+            command.job_id,
+            sqlite3_column_int64(job_set.st, 0),
+            "Execution.JobStarted.v1",
+            "workset-item-started",
+            error_out)
+        || !Commit(db_, error_out)) {
+        Rollback(db_);
+        return false;
+    }
+    receipt.disposition = ExecutionDbOperationDisposition::Applied;
+    receipt.durable_attempt_id = command.reserved_attempt_id;
+    if (receipt_out != nullptr) *receipt_out = receipt;
+    return true;
+}
+
+bool SqliteExecutionDb::StageWorkerTerminal(
+    const StageWorkerTerminalCommand& command,
+    StageWorkerTerminalReceipt* receipt_out,
+    std::string* error_out) {
+    StageWorkerTerminalReceipt receipt{};
+    receipt.job_id = command.job_id;
+    if (receipt_out != nullptr) *receipt_out = receipt;
+    const bool valid_terminal_status =
+        command.terminal_status == "SUCCEEDED"
+        || command.terminal_status == "FAILED"
+        || command.terminal_status == "CANCELLED"
+        || command.terminal_status == "INFRASTRUCTURE_FAILURE"
+        || command.terminal_status == "CLEANUP_FAILURE"
+        || command.terminal_status == "TIMED_OUT";
+    if (db_ == nullptr
+        || command.dispatch_attempt_id <= 0
+        || command.claim_token.empty()
+        || command.job_id <= 0
+        || command.reserved_attempt_id == 0
+        || command.reserved_attempt_id
+            > static_cast<std::uint64_t>(
+                std::numeric_limits<std::int64_t>::max())
+        || !valid_terminal_status
+        || command.terminal_fingerprint.empty()
+        || command.terminal_id.empty()
+        || command.requested_by.empty()
+        || !IsSafeRelativeBlobPath(
+            command.result_blob.relative_path)
+        || !IsSha256(command.result_blob.sha256)
+        || command.terminal_fingerprint
+            != command.result_blob.sha256
+        || command.result_blob.format.empty()
+        || command.result_blob.size_bytes == 0
+        || command.result_blob.size_bytes
+            > static_cast<std::uint64_t>(
+                std::numeric_limits<std::int64_t>::max())) {
+        receipt.disposition =
+            ExecutionDbOperationDisposition::InvalidRequest;
+        if (receipt_out != nullptr) *receipt_out = receipt;
+        if (error_out != nullptr) {
+            *error_out = "invalid worker-terminal staging command";
+        }
+        return false;
+    }
+    if (!ExecuteSql(db_, "BEGIN IMMEDIATE;", error_out)) {
+        return false;
+    }
+    const auto fail = [&](std::string message) {
+        Rollback(db_);
+        if (error_out != nullptr) *error_out = std::move(message);
+    };
+    Statement job;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT j.job_set_id,j.state,j.attempts,j.max_attempts,"
+            "j.dispatch_attempt_id,j.reserved_attempt_id,"
+            "j.claimed_by_token,j.worker_terminal_fingerprint,"
+            "j.worker_result_blob_id,d.state,d.lease_expires_at_utc,"
+            "j.workset_id,b.sha256,b.relative_path,b.size_bytes,b.format,"
+            "j.worker_terminal_status,j.worker_terminal_id,"
+            "j.worker_terminal_error_code,j.worker_terminal_error_text,"
+            "j.worker_terminal_unstarted,d.claim_token,"
+            "j.dispatch_item_ordinal "
+            "FROM exec_job j "
+            "LEFT JOIN exec_workset_dispatch_attempt d "
+            "  ON d.dispatch_attempt_id=j.dispatch_attempt_id "
+            "LEFT JOIN exec_temp_blob b "
+            "  ON b.temp_blob_id=j.worker_result_blob_id "
+            "WHERE j.job_id=?1;",
+            -1,
+            &job.st,
+            nullptr)
+        != SQLITE_OK) {
+        fail(sqlite3_errmsg(db_));
+        return false;
+    }
+    sqlite3_bind_int64(job.st, 1, command.job_id);
+    if (sqlite3_step(job.st) != SQLITE_ROW) {
+        Rollback(db_);
+        receipt.disposition =
+            ExecutionDbOperationDisposition::Missing;
+        if (receipt_out != nullptr) *receipt_out = receipt;
+        return true;
+    }
+    const auto job_set_id = sqlite3_column_int64(job.st, 0);
+    const auto job_state = Text(job.st, 1);
+    const auto attempts = sqlite3_column_int(job.st, 2);
+    const auto durable_dispatch = sqlite3_column_int64(job.st, 4);
+    const auto reserved_attempt =
+        static_cast<std::uint64_t>(
+            sqlite3_column_int64(job.st, 5));
+    const auto durable_token = Text(job.st, 6);
+    const auto existing_fingerprint = OptionalText(job.st, 7);
+    const auto existing_blob_id =
+        sqlite3_column_type(job.st, 8) != SQLITE_NULL
+        ? std::optional<std::int64_t>(
+            sqlite3_column_int64(job.st, 8))
+        : std::nullopt;
+    const auto dispatch_state = Text(job.st, 9);
+    const auto lease_expires = sqlite3_column_int64(job.st, 10);
+    const auto workset_id = sqlite3_column_int64(job.st, 11);
+    receipt.durable_job_state = job_state;
+
+    if ((job_state == "EXECUTION_FINISHED"
+            || job_state == "SUCCEEDED"
+            || job_state == "FAILED"
+            || job_state == "CANCELED"
+            || job_state == "SUPERSEDED")
+        && existing_fingerprint
+            == std::optional<std::string>(
+                command.terminal_fingerprint)
+        && existing_blob_id.has_value()
+        && Text(job.st, 12) == command.result_blob.sha256
+        && Text(job.st, 13) == command.result_blob.relative_path
+        && static_cast<std::uint64_t>(
+            sqlite3_column_int64(job.st, 14))
+            == command.result_blob.size_bytes
+        && Text(job.st, 15) == command.result_blob.format
+        && Text(job.st, 16) == command.terminal_status
+        && Text(job.st, 17) == command.terminal_id
+        && OptionalText(job.st, 18) == command.error_code
+        && OptionalText(job.st, 19) == command.error_text
+        && (sqlite3_column_int(job.st, 20) != 0)
+            == command.unstarted
+        && Text(job.st, 21) == command.claim_token
+        && sqlite3_column_type(job.st, 22) != SQLITE_NULL
+        && static_cast<std::uint64_t>(
+            sqlite3_column_int64(job.st, 22))
+            == command.dispatch_item_ordinal
+        && durable_dispatch == command.dispatch_attempt_id
+        && reserved_attempt == command.reserved_attempt_id) {
+        if (!Commit(db_, error_out)) {
+            Rollback(db_);
+            return false;
+        }
+        receipt.disposition =
+            ExecutionDbOperationDisposition::AlreadyApplied;
+        receipt.temp_blob_id = *existing_blob_id;
+        receipt.durable_job_state = job_state;
+        if (receipt_out != nullptr) *receipt_out = receipt;
+        return true;
+    }
+    const auto now = CurrentUtcMs(db_);
+    const bool valid_started = !command.unstarted
+        && job_state == "RUNNING"
+        && static_cast<std::uint64_t>(attempts)
+            == command.reserved_attempt_id;
+    const bool valid_unstarted = command.unstarted
+        && job_state == "CLAIMED"
+        && static_cast<std::uint64_t>(attempts + 1)
+            == command.reserved_attempt_id;
+    if ((!valid_started && !valid_unstarted)
+        || durable_dispatch != command.dispatch_attempt_id
+        || reserved_attempt != command.reserved_attempt_id
+        || sqlite3_column_type(job.st, 22) == SQLITE_NULL
+        || static_cast<std::uint64_t>(
+            sqlite3_column_int64(job.st, 22))
+            != command.dispatch_item_ordinal
+        || durable_token != command.claim_token
+        || dispatch_state != "DISPATCHED"
+        || lease_expires < now) {
+        Rollback(db_);
+        receipt.disposition =
+            durable_token != command.claim_token
+            ? ExecutionDbOperationDisposition::TokenMismatch
+            : reserved_attempt != command.reserved_attempt_id
+                ? ExecutionDbOperationDisposition::AttemptMismatch
+                : lease_expires < now
+                    ? ExecutionDbOperationDisposition::LeaseExpired
+                    : ExecutionDbOperationDisposition::WrongState;
+        if (receipt_out != nullptr) *receipt_out = receipt;
+        return true;
+    }
+
+    Statement insert_blob;
+    if (sqlite3_prepare_v2(
+            db_,
+            "INSERT INTO exec_temp_blob("
+            "relative_path,sha256,size_bytes,format,cleanup_state,"
+            "created_at_utc) "
+            "VALUES(?1,?2,?3,?4,'LIVE',?5);",
+            -1,
+            &insert_blob.st,
+            nullptr)
+        != SQLITE_OK) {
+        fail(sqlite3_errmsg(db_));
+        return false;
+    }
+    sqlite3_bind_text(
+        insert_blob.st,
+        1,
+        command.result_blob.relative_path.c_str(),
+        -1,
+        SQLITE_TRANSIENT);
+    sqlite3_bind_text(
+        insert_blob.st,
+        2,
+        command.result_blob.sha256.c_str(),
+        -1,
+        SQLITE_TRANSIENT);
+    sqlite3_bind_int64(
+        insert_blob.st,
+        3,
+        static_cast<std::int64_t>(
+            command.result_blob.size_bytes));
+    sqlite3_bind_text(
+        insert_blob.st,
+        4,
+        command.result_blob.format.c_str(),
+        -1,
+        SQLITE_TRANSIENT);
+    sqlite3_bind_int64(insert_blob.st, 5, now);
+    if (sqlite3_step(insert_blob.st) != SQLITE_DONE) {
+        fail(sqlite3_errmsg(db_));
+        return false;
+    }
+    receipt.temp_blob_id = sqlite3_last_insert_rowid(db_);
+
+    Statement stage;
+    if (sqlite3_prepare_v2(
+            db_,
+            "UPDATE exec_job "
+            "SET state='EXECUTION_FINISHED',"
+            "execution_finished_at_utc=?1,"
+            "worker_terminal_status=?2,"
+            "worker_terminal_fingerprint=?3,"
+            "worker_terminal_id=?4,"
+            "worker_terminal_error_code=?5,"
+            "worker_terminal_error_text=?6,"
+            "worker_terminal_unstarted=?7,"
+            "worker_result_blob_id=?8,"
+            "result_processing_state='PENDING',"
+            "result_processor_token=NULL,"
+            "result_processing_lease_expires_at_utc=NULL,"
+            "result_processing_retry_after_utc=NULL,"
+            "result_processing_attempts=0,"
+            "result_processing_failures=0,"
+            "result_processing_error_code=NULL,"
+            "result_processing_error_text=NULL,"
+            "result_processing_failed_at_utc=NULL,"
+            "result_processed_at_utc=NULL,"
+            "claimed_by_token=NULL,lease_expires_at_utc=NULL "
+            "WHERE job_id=?9 AND dispatch_attempt_id=?10 "
+            "AND reserved_attempt_id=?11 "
+            "AND state=?12;",
+            -1,
+            &stage.st,
+            nullptr)
+        != SQLITE_OK) {
+        fail(sqlite3_errmsg(db_));
+        return false;
+    }
+    sqlite3_bind_int64(stage.st, 1, now);
+    sqlite3_bind_text(
+        stage.st,
+        2,
+        command.terminal_status.c_str(),
+        -1,
+        SQLITE_TRANSIENT);
+    sqlite3_bind_text(
+        stage.st,
+        3,
+        command.terminal_fingerprint.c_str(),
+        -1,
+        SQLITE_TRANSIENT);
+    sqlite3_bind_text(
+        stage.st,
+        4,
+        command.terminal_id.c_str(),
+        -1,
+        SQLITE_TRANSIENT);
+    BindOptionalText(stage.st, 5, command.error_code);
+    BindOptionalText(stage.st, 6, command.error_text);
+    sqlite3_bind_int(stage.st, 7, command.unstarted ? 1 : 0);
+    sqlite3_bind_int64(stage.st, 8, receipt.temp_blob_id);
+    sqlite3_bind_int64(stage.st, 9, command.job_id);
+    sqlite3_bind_int64(
+        stage.st,
+        10,
+        command.dispatch_attempt_id);
+    sqlite3_bind_int64(
+        stage.st,
+        11,
+        static_cast<std::int64_t>(
+            command.reserved_attempt_id));
+    sqlite3_bind_text(
+        stage.st,
+        12,
+        valid_started ? "RUNNING" : "CLAIMED",
+        -1,
+        SQLITE_STATIC);
+    if (sqlite3_step(stage.st) != SQLITE_DONE
+        || sqlite3_changes(db_) != 1) {
+        fail("worker-terminal staging CAS failed");
+        return false;
+    }
+
+    Statement resolve_cancellation;
+    if (sqlite3_prepare_v2(
+            db_,
+            "UPDATE exec_job_cancellation_request "
+            "SET state='RESOLVED',resolved_at_utc=?1,"
+            "resolution_code='WORKER_TERMINAL',"
+            "delivery_lease_expires_at_utc=NULL "
+            "WHERE job_id=?2 "
+            "AND state IN "
+            "('REQUESTED','DELIVERY_CLAIMED','DELIVERED');",
+            -1,
+            &resolve_cancellation.st,
+            nullptr)
+        != SQLITE_OK) {
+        fail(sqlite3_errmsg(db_));
+        return false;
+    }
+    sqlite3_bind_int64(resolve_cancellation.st, 1, now);
+    sqlite3_bind_int64(resolve_cancellation.st, 2, command.job_id);
+    if (sqlite3_step(resolve_cancellation.st) != SQLITE_DONE) {
+        fail(sqlite3_errmsg(db_));
+        return false;
+    }
+    const bool cancellation_resolved = sqlite3_changes(db_) > 0;
+    if (cancellation_resolved) {
+        Statement summary;
+        if (sqlite3_prepare_v2(
+                db_,
+                "UPDATE exec_job SET cancellation_state='RESOLVED',"
+                "cancellation_delivery_token=NULL,"
+                "cancellation_delivery_lease_expires_at_utc=NULL,"
+                "cancellation_resolved_at_utc=?1,"
+                "cancellation_resolution_code='WORKER_TERMINAL' "
+                "WHERE job_id=?2;",
+                -1,
+                &summary.st,
+                nullptr)
+            != SQLITE_OK) {
+            fail(sqlite3_errmsg(db_));
+            return false;
+        }
+        sqlite3_bind_int64(summary.st, 1, now);
+        sqlite3_bind_int64(summary.st, 2, command.job_id);
+        if (sqlite3_step(summary.st) != SQLITE_DONE) {
+            fail(sqlite3_errmsg(db_));
+            return false;
+        }
+    }
+
+    Statement remaining;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT COUNT(1) FROM exec_job "
+            "WHERE dispatch_attempt_id=?1 "
+            "AND state IN ('CLAIMED','RUNNING');",
+            -1,
+            &remaining.st,
+            nullptr)
+        != SQLITE_OK) {
+        fail(sqlite3_errmsg(db_));
+        return false;
+    }
+    sqlite3_bind_int64(
+        remaining.st,
+        1,
+        command.dispatch_attempt_id);
+    if (sqlite3_step(remaining.st) != SQLITE_ROW) {
+        fail(sqlite3_errmsg(db_));
+        return false;
+    }
+    if (sqlite3_column_int(remaining.st, 0) == 0) {
+        Statement close;
+        if (sqlite3_prepare_v2(
+                db_,
+                "UPDATE exec_workset_dispatch_attempt "
+                "SET state='CLOSED',closed_at_utc=?1,"
+                "close_reason_code='WORKER_TERMINALS_STAGED' "
+                "WHERE dispatch_attempt_id=?2 "
+                "AND state='DISPATCHED';",
+                -1,
+                &close.st,
+                nullptr)
+            != SQLITE_OK) {
+            fail(sqlite3_errmsg(db_));
+            return false;
+        }
+        sqlite3_bind_int64(close.st, 1, now);
+        sqlite3_bind_int64(
+            close.st,
+            2,
+            command.dispatch_attempt_id);
+        if (sqlite3_step(close.st) != SQLITE_DONE) {
+            fail(sqlite3_errmsg(db_));
+            return false;
+        }
+        receipt.dispatch_closed = sqlite3_changes(db_) == 1;
+    }
+    if (!InsertJobActionEventAndOutbox(
+            db_,
+            command.job_id,
+            job_set_id,
+            "Execution.JobExecutionFinished.v1",
+            "worker-terminal-staged",
+            error_out)) {
+        fail(error_out != nullptr
+            ? *error_out
+            : "execution-finished event failed");
+        return false;
+    }
+    if (cancellation_resolved
+        && !InsertJobActionEventAndOutbox(
+            db_,
+            command.job_id,
+            job_set_id,
+            "Execution.JobCancellationResolved.v1",
+            "worker-terminal",
+            error_out)) {
+        fail(error_out != nullptr
+            ? *error_out
+            : "cancellation resolution event failed");
+        return false;
+    }
+    if (receipt.dispatch_closed
+        && !InsertAggregateOutboxEvent(
+            db_,
+            "Execution.WorksetReleased.v1",
+            "workset",
+            workset_id,
+            "workset",
+            workset_id,
+            "dispatch-complete-"
+                + std::to_string(command.dispatch_attempt_id),
+            error_out)) {
+        fail(error_out != nullptr
+            ? *error_out
+            : "workset-close event failed");
+        return false;
+    }
+    if (!Commit(db_, error_out)) {
+        Rollback(db_);
+        return false;
+    }
+    receipt.disposition = ExecutionDbOperationDisposition::Applied;
+    receipt.durable_job_state = "EXECUTION_FINISHED";
+    if (receipt_out != nullptr) *receipt_out = receipt;
+    return true;
+}
+
+std::optional<ClaimedExecutionFinishedJob>
+SqliteExecutionDb::ClaimNextExecutionFinishedJob(
+    const ClaimExecutionFinishedJobCommand& command,
+    std::string* error_out) {
+    if (db_ == nullptr
+        || command.processor_token.empty()
+        || command.lease_duration_ms <= 0
+        || command.max_total_processing_attempts <= 0) {
+        if (error_out != nullptr) {
+            *error_out = "invalid execution-finished claim command";
+        }
+        return std::nullopt;
+    }
+    if (!ExecuteSql(db_, "BEGIN IMMEDIATE;", error_out)) {
+        return std::nullopt;
+    }
+    const auto fail = [&](std::string message) {
+        Rollback(db_);
+        if (error_out != nullptr) *error_out = std::move(message);
+    };
+    const auto now = CurrentUtcMs(db_);
+    if (now <= 0
+        || command.lease_duration_ms
+            > std::numeric_limits<std::int64_t>::max() - now) {
+        fail("result-processing lease expiration overflow");
+        return std::nullopt;
+    }
+    const auto lease_expires = now + command.lease_duration_ms;
+
+    Statement candidate;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT j.job_id "
+            "FROM exec_job j "
+            "JOIN exec_temp_blob b "
+            "  ON b.temp_blob_id=j.worker_result_blob_id "
+            "WHERE j.state='EXECUTION_FINISHED' "
+            "AND j.workset_id IS NOT NULL "
+            "AND j.dispatch_attempt_id IS NOT NULL "
+            "AND j.reserved_attempt_id IS NOT NULL "
+            "AND b.cleanup_state='LIVE' "
+            "AND COALESCE(j.result_processing_retry_after_utc,0)<=?2 "
+            "AND ("
+            "  (j.result_processing_state='PENDING' "
+            "   AND j.result_processing_attempts<?1)"
+            "  OR "
+            "  (j.result_processing_state='PARKED' "
+            "   AND j.result_processing_failures<?1 "
+            "   AND j.result_processing_attempts<?1)"
+            ") "
+            "ORDER BY j.execution_finished_at_utc ASC,j.job_id ASC "
+            "LIMIT 1;",
+            -1,
+            &candidate.st,
+            nullptr)
+        != SQLITE_OK) {
+        fail(sqlite3_errmsg(db_));
+        return std::nullopt;
+    }
+    sqlite3_bind_int(
+        candidate.st,
+        1,
+        command.max_total_processing_attempts);
+    sqlite3_bind_int64(candidate.st, 2, now);
+    const auto candidate_rc = sqlite3_step(candidate.st);
+    if (candidate_rc == SQLITE_DONE) {
+        if (!Commit(db_, error_out)) {
+            Rollback(db_);
+        }
+        return std::nullopt;
+    }
+    if (candidate_rc != SQLITE_ROW) {
+        fail(sqlite3_errmsg(db_));
+        return std::nullopt;
+    }
+    const auto job_id = sqlite3_column_int64(candidate.st, 0);
+
+    Statement claim;
+    if (sqlite3_prepare_v2(
+            db_,
+            "UPDATE exec_job SET "
+            "result_processing_state='PROCESSING',"
+            "result_processor_token=?1,"
+            "result_processing_lease_expires_at_utc=?2,"
+            "result_processing_retry_after_utc=NULL,"
+            "result_processing_attempts=result_processing_attempts+1 "
+            "WHERE job_id=?3 AND state='EXECUTION_FINISHED' "
+            "AND COALESCE(result_processing_retry_after_utc,0)<=?5 "
+            "AND ("
+            "  (result_processing_state='PENDING' "
+            "   AND result_processing_attempts<?4)"
+            "  OR "
+            "  (result_processing_state='PARKED' "
+            "   AND result_processing_failures<?4 "
+            "   AND result_processing_attempts<?4)"
+            ");",
+            -1,
+            &claim.st,
+            nullptr)
+        != SQLITE_OK) {
+        fail(sqlite3_errmsg(db_));
+        return std::nullopt;
+    }
+    sqlite3_bind_text(
+        claim.st,
+        1,
+        command.processor_token.c_str(),
+        -1,
+        SQLITE_TRANSIENT);
+    sqlite3_bind_int64(claim.st, 2, lease_expires);
+    sqlite3_bind_int64(claim.st, 3, job_id);
+    sqlite3_bind_int(
+        claim.st,
+        4,
+        command.max_total_processing_attempts);
+    sqlite3_bind_int64(claim.st, 5, now);
+    if (sqlite3_step(claim.st) != SQLITE_DONE
+        || sqlite3_changes(db_) != 1) {
+        fail("execution-finished result claim CAS failed");
+        return std::nullopt;
+    }
+
+    Statement details;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT w.workset_id,j.dispatch_attempt_id,"
+            "j.reserved_attempt_id,w.workset_key,"
+            "w.compatibility_key,w.module_canonical_id,"
+            "w.module_version,w.module_sha256,w.entrypoint,"
+            "w.verified_dependency_sha256,w.runtime_profile_sha256,"
+            "w.required_capability_mask,w.execution_affinity_key,"
+            "w.baseline_affinity_key,w.estimated_payload_bytes,"
+            "j.worker_terminal_status,j.worker_terminal_fingerprint,"
+            "j.worker_terminal_id,j.worker_terminal_error_code,"
+            "j.worker_terminal_error_text,j.worker_terminal_unstarted,"
+            "b.temp_blob_id,b.relative_path,b.sha256,b.size_bytes,"
+            "b.format,b.cleanup_state,b.created_at_utc,"
+            "j.result_processing_attempts,j.result_processing_failures,"
+            "j.dispatch_item_ordinal "
+            "FROM exec_job j "
+            "JOIN exec_workset w ON w.workset_id=j.workset_id "
+            "JOIN exec_temp_blob b "
+            "  ON b.temp_blob_id=j.worker_result_blob_id "
+            "WHERE j.job_id=?1;",
+            -1,
+            &details.st,
+            nullptr)
+        != SQLITE_OK) {
+        fail(sqlite3_errmsg(db_));
+        return std::nullopt;
+    }
+    sqlite3_bind_int64(details.st, 1, job_id);
+    if (sqlite3_step(details.st) != SQLITE_ROW) {
+        fail("claimed execution-finished details are missing");
+        return std::nullopt;
+    }
+
+    ClaimedExecutionFinishedJob claimed{};
+    const auto job = GetJob(job_id);
+    if (!job.has_value()) {
+        fail("claimed execution-finished job is missing");
+        return std::nullopt;
+    }
+    claimed.job = *job;
+    claimed.workset_id = sqlite3_column_int64(details.st, 0);
+    claimed.dispatch_attempt_id = sqlite3_column_int64(details.st, 1);
+    claimed.reserved_attempt_id = static_cast<std::uint64_t>(
+        sqlite3_column_int64(details.st, 2));
+    claimed.workset_key = Text(details.st, 3);
+    claimed.compatibility.compatibility_key = Text(details.st, 4);
+    claimed.compatibility.module_canonical_id = Text(details.st, 5);
+    claimed.compatibility.module_version =
+        sqlite3_column_int(details.st, 6);
+    claimed.compatibility.module_sha256 = Text(details.st, 7);
+    claimed.compatibility.entrypoint = Text(details.st, 8);
+    claimed.compatibility.verified_dependency_sha256 =
+        Text(details.st, 9);
+    claimed.compatibility.runtime_profile_sha256 = Text(details.st, 10);
+    claimed.compatibility.required_capability_mask =
+        static_cast<std::uint64_t>(
+            sqlite3_column_int64(details.st, 11));
+    claimed.compatibility.execution_affinity_key =
+        OptionalText(details.st, 12);
+    claimed.compatibility.baseline_affinity_key =
+        OptionalText(details.st, 13);
+    claimed.compatibility.estimated_payload_bytes =
+        static_cast<std::uint64_t>(
+            sqlite3_column_int64(details.st, 14));
+    claimed.worker_terminal_status = Text(details.st, 15);
+    claimed.worker_terminal_fingerprint = Text(details.st, 16);
+    claimed.worker_terminal_id = Text(details.st, 17);
+    claimed.worker_terminal_error_code = OptionalText(details.st, 18);
+    claimed.worker_terminal_error_text = OptionalText(details.st, 19);
+    claimed.worker_terminal_unstarted =
+        sqlite3_column_int(details.st, 20) != 0;
+    claimed.result_blob.temp_blob_id =
+        sqlite3_column_int64(details.st, 21);
+    claimed.result_blob.relative_path = Text(details.st, 22);
+    claimed.result_blob.sha256 = Text(details.st, 23);
+    claimed.result_blob.size_bytes = static_cast<std::uint64_t>(
+        sqlite3_column_int64(details.st, 24));
+    claimed.result_blob.format = Text(details.st, 25);
+    claimed.result_blob.cleanup_state = Text(details.st, 26);
+    claimed.result_blob.created_at_utc =
+        sqlite3_column_int64(details.st, 27);
+    claimed.processor_token = command.processor_token;
+    claimed.processor_lease_expires_at_utc = lease_expires;
+    claimed.processing_attempts = sqlite3_column_int(details.st, 28);
+    claimed.processing_failures = sqlite3_column_int(details.st, 29);
+    if (sqlite3_column_type(details.st, 30) == SQLITE_NULL
+        || sqlite3_column_int64(details.st, 30) < 0
+        || sqlite3_column_int64(details.st, 30)
+            > static_cast<sqlite3_int64>(
+                (std::numeric_limits<std::uint32_t>::max)())) {
+        fail("execution-finished job has invalid runtime ordinal");
+        return std::nullopt;
+    }
+    claimed.runtime_item_ordinal =
+        static_cast<std::uint32_t>(
+            sqlite3_column_int64(details.st, 30));
+
+    if (!InsertJobActionEventAndOutbox(
+            db_,
+            job_id,
+            claimed.job.job_set_id,
+            "Execution.JobResultProcessingStarted.v1",
+            "result-processing-claimed",
+            error_out)
+        || !Commit(db_, error_out)) {
+        Rollback(db_);
+        return std::nullopt;
+    }
+    return claimed;
+}
+
+bool SqliteExecutionDb::RenewResultProcessingLease(
+    const RenewResultProcessingLeaseCommand& command,
+    ResultProcessingReceipt* receipt_out,
+    std::string* error_out) {
+    ResultProcessingReceipt receipt{};
+    receipt.job_id = command.job_id;
+    if (receipt_out != nullptr) *receipt_out = receipt;
+    if (db_ == nullptr
+        || command.job_id <= 0
+        || command.processor_token.empty()
+        || command.lease_duration_ms <= 0) {
+        receipt.disposition =
+            ExecutionDbOperationDisposition::InvalidRequest;
+        if (receipt_out != nullptr) *receipt_out = receipt;
+        return false;
+    }
+    if (!ExecuteSql(db_, "BEGIN IMMEDIATE;", error_out)) {
+        return false;
+    }
+    const auto now = CurrentUtcMs(db_);
+    if (now <= 0
+        || command.lease_duration_ms
+            > std::numeric_limits<std::int64_t>::max() - now) {
+        Rollback(db_);
+        if (error_out != nullptr) {
+            *error_out = "result-processing lease expiration overflow";
+        }
+        return false;
+    }
+    const auto lease_expires = now + command.lease_duration_ms;
+    Statement update;
+    if (sqlite3_prepare_v2(
+            db_,
+            "UPDATE exec_job "
+            "SET result_processing_lease_expires_at_utc=?1 "
+            "WHERE job_id=?2 AND state='EXECUTION_FINISHED' "
+            "AND result_processing_state='PROCESSING' "
+            "AND result_processor_token=?3 "
+            "AND result_processing_lease_expires_at_utc>=?4;",
+            -1,
+            &update.st,
+            nullptr)
+        != SQLITE_OK) {
+        Rollback(db_);
+        if (error_out != nullptr) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    sqlite3_bind_int64(update.st, 1, lease_expires);
+    sqlite3_bind_int64(update.st, 2, command.job_id);
+    sqlite3_bind_text(
+        update.st,
+        3,
+        command.processor_token.c_str(),
+        -1,
+        SQLITE_TRANSIENT);
+    sqlite3_bind_int64(update.st, 4, now);
+    if (sqlite3_step(update.st) != SQLITE_DONE) {
+        Rollback(db_);
+        if (error_out != nullptr) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    if (sqlite3_changes(db_) != 1) {
+        Statement state;
+        if (sqlite3_prepare_v2(
+                db_,
+                "SELECT state,result_processing_state,"
+                "result_processor_token,"
+                "result_processing_lease_expires_at_utc,"
+                "result_processing_failures "
+                "FROM exec_job WHERE job_id=?1;",
+                -1,
+                &state.st,
+                nullptr)
+            != SQLITE_OK) {
+            Rollback(db_);
+            if (error_out != nullptr) *error_out = sqlite3_errmsg(db_);
+            return false;
+        }
+        sqlite3_bind_int64(state.st, 1, command.job_id);
+        if (sqlite3_step(state.st) != SQLITE_ROW) {
+            receipt.disposition =
+                ExecutionDbOperationDisposition::Missing;
+        } else {
+            receipt.durable_job_state = Text(state.st, 0);
+            receipt.processing_state = Text(state.st, 1);
+            receipt.processing_failures =
+                sqlite3_column_int(state.st, 4);
+            receipt.disposition =
+                Text(state.st, 2) != command.processor_token
+                ? ExecutionDbOperationDisposition::TokenMismatch
+                : sqlite3_column_type(state.st, 3) != SQLITE_NULL
+                    && sqlite3_column_int64(state.st, 3) < now
+                    ? ExecutionDbOperationDisposition::LeaseExpired
+                    : ExecutionDbOperationDisposition::WrongState;
+        }
+        if (!Commit(db_, error_out)) {
+            Rollback(db_);
+            return false;
+        }
+        if (receipt_out != nullptr) *receipt_out = receipt;
+        return true;
+    }
+    if (!Commit(db_, error_out)) {
+        Rollback(db_);
+        return false;
+    }
+    receipt.disposition = ExecutionDbOperationDisposition::Applied;
+    receipt.durable_job_state = "EXECUTION_FINISHED";
+    receipt.processing_state = "PROCESSING";
+    if (receipt_out != nullptr) *receipt_out = receipt;
+    return true;
+}
+
+bool SqliteExecutionDb::ParkResultProcessing(
+    const ParkResultProcessingCommand& command,
+    ResultProcessingReceipt* receipt_out,
+    std::string* error_out) {
+    ResultProcessingReceipt receipt{};
+    receipt.job_id = command.job_id;
+    if (receipt_out != nullptr) *receipt_out = receipt;
+    if (db_ == nullptr
+        || command.job_id <= 0
+        || command.processor_token.empty()
+        || command.error_code.empty()) {
+        receipt.disposition =
+            ExecutionDbOperationDisposition::InvalidRequest;
+        if (receipt_out != nullptr) *receipt_out = receipt;
+        return false;
+    }
+    if (!ExecuteSql(db_, "BEGIN IMMEDIATE;", error_out)) {
+        return false;
+    }
+    const auto now = CurrentUtcMs(db_);
+    Statement authority;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT state,result_processing_state,"
+            "result_processor_token,"
+            "result_processing_lease_expires_at_utc,"
+            "job_set_id,result_processing_failures "
+            "FROM exec_job WHERE job_id=?1;",
+            -1,
+            &authority.st,
+            nullptr)
+        != SQLITE_OK) {
+        Rollback(db_);
+        if (error_out != nullptr) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    sqlite3_bind_int64(authority.st, 1, command.job_id);
+    if (sqlite3_step(authority.st) != SQLITE_ROW) {
+        if (!Commit(db_, error_out)) {
+            Rollback(db_);
+            return false;
+        }
+        receipt.disposition =
+            ExecutionDbOperationDisposition::Missing;
+        if (receipt_out != nullptr) *receipt_out = receipt;
+        return true;
+    }
+    receipt.durable_job_state = Text(authority.st, 0);
+    receipt.processing_state = Text(authority.st, 1);
+    const auto durable_token = Text(authority.st, 2);
+    const auto durable_lease =
+        sqlite3_column_type(authority.st, 3) == SQLITE_NULL
+        ? std::optional<std::int64_t>{}
+        : std::optional<std::int64_t>{
+            sqlite3_column_int64(authority.st, 3)};
+    const auto job_set_id = sqlite3_column_int64(authority.st, 4);
+    receipt.processing_failures =
+        sqlite3_column_int(authority.st, 5);
+    if (receipt.durable_job_state != "EXECUTION_FINISHED"
+        || receipt.processing_state != "PROCESSING"
+        || durable_token != command.processor_token
+        || !durable_lease.has_value()
+        || *durable_lease < now) {
+        receipt.disposition =
+            durable_token != command.processor_token
+            ? ExecutionDbOperationDisposition::TokenMismatch
+            : durable_lease.has_value() && *durable_lease < now
+                ? ExecutionDbOperationDisposition::LeaseExpired
+                : ExecutionDbOperationDisposition::WrongState;
+        if (!Commit(db_, error_out)) {
+            Rollback(db_);
+            return false;
+        }
+        if (receipt_out != nullptr) *receipt_out = receipt;
+        return true;
+    }
+    if (receipt.processing_failures
+            == std::numeric_limits<int>::max()) {
+        Rollback(db_);
+        if (error_out != nullptr) {
+            *error_out = "result-processing failure counter overflow";
+        }
+        return false;
+    }
+    const auto next_failures = receipt.processing_failures + 1;
+    const auto retry_delay =
+        ResultProcessingBackoffMs(next_failures);
+    if (now <= 0
+        || retry_delay
+            > std::numeric_limits<std::int64_t>::max() - now) {
+        Rollback(db_);
+        if (error_out != nullptr) {
+            *error_out = "result-processing retry timestamp overflow";
+        }
+        return false;
+    }
+    const auto retry_after = now + retry_delay;
+
+    Statement update;
+    if (sqlite3_prepare_v2(
+            db_,
+            "UPDATE exec_job SET "
+            "result_processing_state='PARKED',"
+            "result_processor_token=NULL,"
+            "result_processing_lease_expires_at_utc=NULL,"
+            "result_processing_retry_after_utc=?4,"
+            "result_processing_failures=result_processing_failures+1,"
+            "result_processing_error_code=?1,"
+            "result_processing_error_text=?2,"
+            "result_processing_failed_at_utc=?3 "
+            "WHERE job_id=?5 AND state='EXECUTION_FINISHED' "
+            "AND result_processing_state='PROCESSING' "
+            "AND result_processor_token=?6 "
+            "AND result_processing_lease_expires_at_utc>=?3;",
+            -1,
+            &update.st,
+            nullptr)
+        != SQLITE_OK) {
+        Rollback(db_);
+        if (error_out != nullptr) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    sqlite3_bind_text(
+        update.st, 1, command.error_code.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(
+        update.st, 2, command.error_text.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(update.st, 3, now);
+    sqlite3_bind_int64(update.st, 4, retry_after);
+    sqlite3_bind_int64(update.st, 5, command.job_id);
+    sqlite3_bind_text(
+        update.st,
+        6,
+        command.processor_token.c_str(),
+        -1,
+        SQLITE_TRANSIENT);
+    if (sqlite3_step(update.st) != SQLITE_DONE) {
+        Rollback(db_);
+        if (error_out != nullptr) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    if (sqlite3_changes(db_) != 1) {
+        Rollback(db_);
+        if (error_out != nullptr) {
+            *error_out = "result-processing park CAS failed";
+        }
+        return false;
+    }
+
+    if (!InsertJobActionEventAndOutbox(
+            db_,
+            command.job_id,
+            job_set_id,
+            "Execution.JobResultParked.v1",
+            "result-processing-parked",
+            error_out)
+        || !Commit(db_, error_out)) {
+        Rollback(db_);
+        return false;
+    }
+    receipt.disposition = ExecutionDbOperationDisposition::Applied;
+    receipt.durable_job_state = "EXECUTION_FINISHED";
+    receipt.processing_state = "PARKED";
+    receipt.processing_failures = next_failures;
+    if (receipt_out != nullptr) *receipt_out = receipt;
+    return true;
+}
+
+bool SqliteExecutionDb::CommitResultFinalization(
+    const CommitResultFinalizationCommand& command,
+    ResultProcessingReceipt* receipt_out,
+    std::string* error_out) {
+    ResultProcessingReceipt receipt{};
+    receipt.job_id = command.job_id;
+    if (receipt_out != nullptr) *receipt_out = receipt;
+
+    const bool final =
+        command.disposition == ExecutionResultFinalizationDisposition::Final;
+    const bool valid_final_state = command.final_state.has_value()
+        && (*command.final_state == "SUCCEEDED"
+            || *command.final_state == "SUCCEEDED_WINNER"
+            || *command.final_state == "SUCCEEDED_DUPLICATE"
+            || *command.final_state == "FAILED"
+            || *command.final_state == "CANCELED"
+            || *command.final_state == "SUPERSEDED");
+    std::unordered_set<std::string> output_keys;
+    bool valid_outputs = true;
+    for (const auto& output : command.outputs) {
+        valid_outputs = valid_outputs
+            && !output.output_key.empty()
+            && !output.data_kind.empty()
+            && !output.ref_kind.empty()
+            && output.ref_id > 0
+            && output_keys.insert(output.output_key).second;
+    }
+    std::unordered_set<std::string> cancellation_keys;
+    bool valid_cancellations = true;
+    for (const auto& cancellation : command.cancellation_requests) {
+        const auto identity = std::to_string(cancellation.job_id)
+            + "\n" + cancellation.request_key;
+        valid_cancellations = valid_cancellations
+            && cancellation.job_id > 0
+            && !cancellation.request_key.empty()
+            && !cancellation.reason_code.empty()
+            && !cancellation.requested_by.empty()
+            && (!cancellation.caused_by_job_id.has_value()
+                || *cancellation.caused_by_job_id > 0)
+            && cancellation_keys.insert(identity).second;
+    }
+    if (db_ == nullptr
+        || command.job_id <= 0
+        || command.processor_token.empty()
+        || command.requested_by.empty()
+        || (final && !valid_final_state)
+        || (!final && command.final_state.has_value())
+        || (!final
+            && (!command.outputs.empty()
+                || !command.cancellation_requests.empty()))
+        || !valid_outputs
+        || !valid_cancellations) {
+        receipt.disposition =
+            ExecutionDbOperationDisposition::InvalidRequest;
+        if (receipt_out != nullptr) *receipt_out = receipt;
+        if (error_out != nullptr) {
+            *error_out = "invalid result-finalization command";
+        }
+        return false;
+    }
+    if (!ExecuteSql(db_, "BEGIN IMMEDIATE;", error_out)) {
+        return false;
+    }
+    const auto fail = [&](std::string message) {
+        Rollback(db_);
+        if (error_out != nullptr) *error_out = std::move(message);
+    };
+    const auto now = CurrentUtcMs(db_);
+
+    Statement state;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT state,result_processing_state,"
+            "result_processor_token,"
+            "result_processing_lease_expires_at_utc,"
+            "job_set_id,attempts,max_attempts,worker_result_blob_id,"
+            "result_processing_failures "
+            "FROM exec_job WHERE job_id=?1;",
+            -1,
+            &state.st,
+            nullptr)
+        != SQLITE_OK) {
+        fail(sqlite3_errmsg(db_));
+        return false;
+    }
+    sqlite3_bind_int64(state.st, 1, command.job_id);
+    if (sqlite3_step(state.st) != SQLITE_ROW) {
+        Rollback(db_);
+        receipt.disposition =
+            ExecutionDbOperationDisposition::Missing;
+        if (receipt_out != nullptr) *receipt_out = receipt;
+        return true;
+    }
+    const auto durable_state = Text(state.st, 0);
+    const auto processing_state = Text(state.st, 1);
+    const auto durable_processor_token = Text(state.st, 2);
+    const auto processing_lease =
+        sqlite3_column_type(state.st, 3) == SQLITE_NULL
+        ? std::optional<std::int64_t>{}
+        : std::optional<std::int64_t>{
+            sqlite3_column_int64(state.st, 3)};
+    const auto job_set_id = sqlite3_column_int64(state.st, 4);
+    const auto attempts = sqlite3_column_int(state.st, 5);
+    const auto max_attempts = sqlite3_column_int(state.st, 6);
+    const auto blob_id =
+        sqlite3_column_type(state.st, 7) == SQLITE_NULL
+        ? std::optional<std::int64_t>{}
+        : std::optional<std::int64_t>{
+            sqlite3_column_int64(state.st, 7)};
+    receipt.processing_failures = sqlite3_column_int(state.st, 8);
+
+    const bool previously_finalized = processing_state == "PROCESSED"
+        && ((final && durable_state == *command.final_state)
+            || (!final
+                && (durable_state == "QUEUED"
+                    || durable_state == "FAILED")));
+    if (previously_finalized) {
+        receipt.disposition =
+            ExecutionDbOperationDisposition::AlreadyApplied;
+        receipt.durable_job_state = durable_state;
+        receipt.processing_state = processing_state;
+        if (final || durable_state == "FAILED") {
+            ClaimedExecutionJob workflow_identity{};
+            if (!ResolveWorkflowStepForJobSetAncestry(
+                    db_,
+                    job_set_id,
+                    &workflow_identity,
+                    error_out)) {
+                fail(error_out != nullptr
+                    ? *error_out
+                    : "workflow step resolution failed");
+                return false;
+            }
+            receipt.workflow_step_id =
+                workflow_identity.workflow_step_id;
+            Statement sequence;
+            if (sqlite3_prepare_v2(
+                    db_,
+                    "SELECT COALESCE(MAX(job_event_id),0) "
+                    "FROM exec_job_event "
+                    "WHERE job_id=?1 "
+                    "AND event_kind='Execution.JobCompleted.v1';",
+                    -1,
+                    &sequence.st,
+                    nullptr)
+                != SQLITE_OK) {
+                fail(sqlite3_errmsg(db_));
+                return false;
+            }
+            sqlite3_bind_int64(sequence.st, 1, command.job_id);
+            if (sqlite3_step(sequence.st) != SQLITE_ROW) {
+                fail(sqlite3_errmsg(db_));
+                return false;
+            }
+            receipt.commit_sequence =
+                sqlite3_column_int64(sequence.st, 0);
+            if (receipt.commit_sequence <= 0
+                || receipt.workflow_step_id <= 0) {
+                fail(
+                    "durable finalization receipt identity is missing");
+                return false;
+            }
+        }
+        if (!Commit(db_, error_out)) {
+            Rollback(db_);
+            return false;
+        }
+        if (receipt_out != nullptr) *receipt_out = receipt;
+        return true;
+    }
+    if (durable_state != "EXECUTION_FINISHED"
+        || processing_state != "PROCESSING") {
+        Rollback(db_);
+        receipt.disposition =
+            ExecutionDbOperationDisposition::WrongState;
+        receipt.durable_job_state = durable_state;
+        receipt.processing_state = processing_state;
+        if (receipt_out != nullptr) *receipt_out = receipt;
+        return true;
+    }
+    if (durable_processor_token != command.processor_token) {
+        Rollback(db_);
+        receipt.disposition =
+            ExecutionDbOperationDisposition::TokenMismatch;
+        receipt.durable_job_state = durable_state;
+        receipt.processing_state = processing_state;
+        if (receipt_out != nullptr) *receipt_out = receipt;
+        return true;
+    }
+    if (!processing_lease.has_value() || *processing_lease < now) {
+        Rollback(db_);
+        receipt.disposition =
+            ExecutionDbOperationDisposition::LeaseExpired;
+        receipt.durable_job_state = durable_state;
+        receipt.processing_state = processing_state;
+        if (receipt_out != nullptr) *receipt_out = receipt;
+        return true;
+    }
+    if (!blob_id.has_value()) {
+        fail("execution-finished job has no worker result blob");
+        return false;
+    }
+
+    ClaimedExecutionJob workflow_identity{};
+    const bool becomes_terminal =
+        final || attempts >= max_attempts;
+    if (becomes_terminal
+        && !ResolveWorkflowStepForJobSetAncestry(
+            db_,
+            job_set_id,
+            &workflow_identity,
+            error_out)) {
+        fail(error_out != nullptr
+            ? *error_out
+            : "workflow step resolution failed");
+        return false;
+    }
+
+    Statement insert_output;
+    if (final && !command.outputs.empty()
+        && sqlite3_prepare_v2(
+            db_,
+            "INSERT INTO exec_job_output("
+            "job_id,output_key,data_kind,ref_kind,ref_id,created_at_utc) "
+            "VALUES(?1,?2,?3,?4,?5,?6);",
+            -1,
+            &insert_output.st,
+            nullptr)
+            != SQLITE_OK) {
+        fail(sqlite3_errmsg(db_));
+        return false;
+    }
+    for (const auto& output : command.outputs) {
+        sqlite3_reset(insert_output.st);
+        sqlite3_clear_bindings(insert_output.st);
+        sqlite3_bind_int64(insert_output.st, 1, command.job_id);
+        sqlite3_bind_text(
+            insert_output.st,
+            2,
+            output.output_key.c_str(),
+            -1,
+            SQLITE_TRANSIENT);
+        sqlite3_bind_text(
+            insert_output.st,
+            3,
+            output.data_kind.c_str(),
+            -1,
+            SQLITE_TRANSIENT);
+        sqlite3_bind_text(
+            insert_output.st,
+            4,
+            output.ref_kind.c_str(),
+            -1,
+            SQLITE_TRANSIENT);
+        sqlite3_bind_int64(insert_output.st, 5, output.ref_id);
+        sqlite3_bind_int64(insert_output.st, 6, now);
+        if (sqlite3_step(insert_output.st) != SQLITE_DONE) {
+            fail(sqlite3_errmsg(db_));
+            return false;
+        }
+    }
+
+    for (const auto& cancellation : command.cancellation_requests) {
+        CancellationInsertResult cancellation_result{};
+        if (!InsertCancellationRequest(
+                db_,
+                cancellation,
+                now,
+                &cancellation_result,
+                error_out)) {
+            fail(error_out != nullptr
+                ? *error_out
+                : "cancellation request insert failed");
+            return false;
+        }
+        if (cancellation_result.disposition
+                != ExecutionDbOperationDisposition::Applied
+            && cancellation_result.disposition
+                != ExecutionDbOperationDisposition::AlreadyApplied) {
+            Rollback(db_);
+            receipt.disposition = cancellation_result.disposition;
+            if (receipt_out != nullptr) *receipt_out = receipt;
+            return true;
+        }
+    }
+
+    Statement event_line;
+    if (!command.event_lines.empty()
+        && sqlite3_prepare_v2(
+            db_,
+            "INSERT INTO exec_job_event("
+            "job_id,event_kind,event_ts_utc,message,artifact_id) "
+            "VALUES(?1,'Execution.ProgramResultEvent.v1',?2,?3,NULL);",
+            -1,
+            &event_line.st,
+            nullptr)
+            != SQLITE_OK) {
+        fail(sqlite3_errmsg(db_));
+        return false;
+    }
+    for (const auto& line : command.event_lines) {
+        sqlite3_reset(event_line.st);
+        sqlite3_clear_bindings(event_line.st);
+        sqlite3_bind_int64(event_line.st, 1, command.job_id);
+        sqlite3_bind_int64(event_line.st, 2, now);
+        sqlite3_bind_text(
+            event_line.st, 3, line.c_str(), -1, SQLITE_TRANSIENT);
+        if (sqlite3_step(event_line.st) != SQLITE_DONE) {
+            fail(sqlite3_errmsg(db_));
+            return false;
+        }
+    }
+
+    const bool retry_exhausted = !final && attempts >= max_attempts;
+    Statement finalize;
+    if (final) {
+        if (sqlite3_prepare_v2(
+                db_,
+                "UPDATE exec_job SET state=?1,ended_at_utc=?2,"
+                "error_code=?3,error_text=?4,"
+                "result_processing_state='PROCESSED',"
+                "result_processor_token=NULL,"
+                "result_processing_lease_expires_at_utc=NULL,"
+                "result_processing_retry_after_utc=NULL,"
+                "result_processed_at_utc=?2 "
+                "WHERE job_id=?5 AND state='EXECUTION_FINISHED' "
+                "AND result_processing_state='PROCESSING' "
+                "AND result_processor_token=?6 "
+                "AND result_processing_lease_expires_at_utc>=?2;",
+                -1,
+                &finalize.st,
+                nullptr)
+            != SQLITE_OK) {
+            fail(sqlite3_errmsg(db_));
+            return false;
+        }
+        sqlite3_bind_text(
+            finalize.st,
+            1,
+            command.final_state->c_str(),
+            -1,
+            SQLITE_TRANSIENT);
+        sqlite3_bind_int64(finalize.st, 2, now);
+        BindOptionalText(finalize.st, 3, command.error_code);
+        BindOptionalText(finalize.st, 4, command.error_text);
+        sqlite3_bind_int64(finalize.st, 5, command.job_id);
+        sqlite3_bind_text(
+            finalize.st,
+            6,
+            command.processor_token.c_str(),
+            -1,
+            SQLITE_TRANSIENT);
+    } else if (retry_exhausted) {
+        if (sqlite3_prepare_v2(
+                db_,
+                "UPDATE exec_job SET state='FAILED',ended_at_utc=?1,"
+                "error_code=COALESCE(?2,'EXECUTION_ATTEMPTS_EXHAUSTED'),"
+                "error_text=?3,"
+                "result_processing_state='PROCESSED',"
+                "result_processor_token=NULL,"
+                "result_processing_lease_expires_at_utc=NULL,"
+                "result_processing_retry_after_utc=NULL,"
+                "result_processed_at_utc=?1 "
+                "WHERE job_id=?4 AND state='EXECUTION_FINISHED' "
+                "AND result_processing_state='PROCESSING' "
+                "AND result_processor_token=?5 "
+                "AND result_processing_lease_expires_at_utc>=?1;",
+                -1,
+                &finalize.st,
+                nullptr)
+            != SQLITE_OK) {
+            fail(sqlite3_errmsg(db_));
+            return false;
+        }
+        sqlite3_bind_int64(finalize.st, 1, now);
+        BindOptionalText(finalize.st, 2, command.error_code);
+        BindOptionalText(finalize.st, 3, command.error_text);
+        sqlite3_bind_int64(finalize.st, 4, command.job_id);
+        sqlite3_bind_text(
+            finalize.st,
+            5,
+            command.processor_token.c_str(),
+            -1,
+            SQLITE_TRANSIENT);
+    } else {
+        if (sqlite3_prepare_v2(
+                db_,
+                "UPDATE exec_job SET state='QUEUED',queued_at_utc=?1,"
+                "ended_at_utc=NULL,error_code=NULL,error_text=NULL,"
+                "claimed_by_token=NULL,lease_expires_at_utc=NULL,"
+                "dispatch_attempt_id=NULL,dispatch_item_ordinal=NULL,"
+                "reserved_attempt_id=NULL,"
+                "result_processing_state='PROCESSED',"
+                "result_processor_token=NULL,"
+                "result_processing_lease_expires_at_utc=NULL,"
+                "result_processing_retry_after_utc=NULL,"
+                "result_processed_at_utc=?1 "
+                "WHERE job_id=?2 AND state='EXECUTION_FINISHED' "
+                "AND result_processing_state='PROCESSING' "
+                "AND result_processor_token=?3 "
+                "AND result_processing_lease_expires_at_utc>=?1;",
+                -1,
+                &finalize.st,
+                nullptr)
+            != SQLITE_OK) {
+            fail(sqlite3_errmsg(db_));
+            return false;
+        }
+        sqlite3_bind_int64(finalize.st, 1, now);
+        sqlite3_bind_int64(finalize.st, 2, command.job_id);
+        sqlite3_bind_text(
+            finalize.st,
+            3,
+            command.processor_token.c_str(),
+            -1,
+            SQLITE_TRANSIENT);
+    }
+    if (sqlite3_step(finalize.st) != SQLITE_DONE
+        || sqlite3_changes(db_) != 1) {
+        fail("result-finalization CAS failed");
+        return false;
+    }
+
+    Statement cleanup;
+    if (sqlite3_prepare_v2(
+            db_,
+            "UPDATE exec_temp_blob SET cleanup_state='DELETE_PENDING',"
+            "delete_pending_at_utc=COALESCE(delete_pending_at_utc,?1),"
+            "cleanup_claim_token=NULL,"
+            "cleanup_lease_expires_at_utc=NULL "
+            "WHERE temp_blob_id=?2 AND cleanup_state='LIVE';",
+            -1,
+            &cleanup.st,
+            nullptr)
+        != SQLITE_OK) {
+        fail(sqlite3_errmsg(db_));
+        return false;
+    }
+    sqlite3_bind_int64(cleanup.st, 1, now);
+    sqlite3_bind_int64(cleanup.st, 2, *blob_id);
+    if (sqlite3_step(cleanup.st) != SQLITE_DONE
+        || sqlite3_changes(db_) != 1) {
+        fail("worker result blob cleanup transition failed");
+        return false;
+    }
+
+    if (!InsertJobActionEventAndOutbox(
+            db_,
+            command.job_id,
+            job_set_id,
+            "Execution.JobResultProcessed.v1",
+            final ? "program-result-finalized"
+                  : retry_exhausted
+                    ? "execution-retry-attempts-exhausted"
+                    : "execution-retry-requested",
+            error_out)) {
+        fail(error_out != nullptr
+            ? *error_out
+            : "result-processed event failed");
+        return false;
+    }
+
+    if (becomes_terminal) {
+        std::int64_t commit_sequence = 0;
+        if (!InsertJobActionEventAndOutbox(
+                db_,
+                command.job_id,
+                job_set_id,
+                "Execution.JobCompleted.v1",
+                final ? "program-result-completed"
+                      : "execution-retry-attempts-exhausted",
+                error_out,
+                &commit_sequence)) {
+            fail(error_out != nullptr
+                ? *error_out
+                : "job-completed event failed");
+            return false;
+        }
+        receipt.commit_sequence = commit_sequence;
+        receipt.workflow_step_id =
+            workflow_identity.workflow_step_id;
+    } else if (!InsertJobActionEventAndOutbox(
+            db_,
+            command.job_id,
+            job_set_id,
+            "Execution.JobClaimRequeued.v1",
+            "program-result-retry",
+            error_out)) {
+        fail(error_out != nullptr
+            ? *error_out
+            : "job retry event failed");
+        return false;
+    }
+
+    if (!Commit(db_, error_out)) {
+        Rollback(db_);
+        return false;
+    }
+    receipt.disposition = ExecutionDbOperationDisposition::Applied;
+    receipt.durable_job_state = final
+        ? *command.final_state
+        : retry_exhausted ? "FAILED" : "QUEUED";
+    receipt.processing_state = "PROCESSED";
+    if (receipt_out != nullptr) *receipt_out = receipt;
+    return true;
+}
+
+bool SqliteExecutionDb::RequestJobCancellation(
+    const RequestJobCancellationCommand& command,
+    JobCancellationReceipt* receipt_out,
+    std::string* error_out) {
+    JobCancellationReceipt receipt{};
+    receipt.job_id = command.job_id;
+    if (receipt_out != nullptr) *receipt_out = receipt;
+    if (db_ == nullptr
+        || command.job_id <= 0
+        || command.request_key.empty()
+        || command.reason_code.empty()
+        || command.requested_by.empty()
+        || (command.caused_by_job_id.has_value()
+            && *command.caused_by_job_id <= 0)) {
+        receipt.disposition =
+            ExecutionDbOperationDisposition::InvalidRequest;
+        if (receipt_out != nullptr) *receipt_out = receipt;
+        return false;
+    }
+    if (!ExecuteSql(db_, "BEGIN IMMEDIATE;", error_out)) {
+        return false;
+    }
+    CancellationInsertResult result{};
+    if (!InsertCancellationRequest(
+            db_,
+            ExecutionCancellationRequestSpec{
+                .job_id = command.job_id,
+                .request_key = command.request_key,
+                .reason_code = command.reason_code,
+                .reason_text = command.reason_text,
+                .requested_by = command.requested_by,
+                .caused_by_job_id = command.caused_by_job_id,
+            },
+            CurrentUtcMs(db_),
+            &result,
+            error_out)) {
+        Rollback(db_);
+        return false;
+    }
+    if (!Commit(db_, error_out)) {
+        Rollback(db_);
+        return false;
+    }
+    receipt.disposition = result.disposition;
+    receipt.cancellation_request_id =
+        result.cancellation_request_id;
+    receipt.state = result.state;
+    if (receipt_out != nullptr) *receipt_out = receipt;
+    return true;
+}
+
+std::optional<ClaimedJobCancellation>
+SqliteExecutionDb::ClaimNextJobCancellation(
+    const ClaimJobCancellationCommand& command,
+    std::string* error_out) {
+    if (db_ == nullptr
+        || command.delivery_token.empty()
+        || command.lease_duration_ms <= 0) {
+        if (error_out != nullptr) {
+            *error_out = "invalid cancellation-delivery claim command";
+        }
+        return std::nullopt;
+    }
+    if (!ExecuteSql(db_, "BEGIN IMMEDIATE;", error_out)) {
+        return std::nullopt;
+    }
+    const auto fail = [&](std::string message) {
+        Rollback(db_);
+        if (error_out != nullptr) *error_out = std::move(message);
+    };
+    const auto now = CurrentUtcMs(db_);
+    if (now <= 0
+        || command.lease_duration_ms
+            > std::numeric_limits<std::int64_t>::max() - now) {
+        fail("cancellation-delivery lease expiration overflow");
+        return std::nullopt;
+    }
+    const auto lease_expires = now + command.lease_duration_ms;
+
+    Statement candidate;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT cancellation_request_id "
+            "FROM exec_job_cancellation_request "
+            "WHERE state='REQUESTED' "
+            "OR (state='DELIVERY_CLAIMED' "
+            "    AND delivery_lease_expires_at_utc<?1) "
+            "ORDER BY requested_at_utc ASC,cancellation_request_id ASC "
+            "LIMIT 1;",
+            -1,
+            &candidate.st,
+            nullptr)
+        != SQLITE_OK) {
+        fail(sqlite3_errmsg(db_));
+        return std::nullopt;
+    }
+    sqlite3_bind_int64(candidate.st, 1, now);
+    const auto candidate_rc = sqlite3_step(candidate.st);
+    if (candidate_rc == SQLITE_DONE) {
+        if (!Commit(db_, error_out)) {
+            Rollback(db_);
+        }
+        return std::nullopt;
+    }
+    if (candidate_rc != SQLITE_ROW) {
+        fail(sqlite3_errmsg(db_));
+        return std::nullopt;
+    }
+    const auto cancellation_id =
+        sqlite3_column_int64(candidate.st, 0);
+
+    Statement claim;
+    if (sqlite3_prepare_v2(
+            db_,
+            "UPDATE exec_job_cancellation_request SET "
+            "state='DELIVERY_CLAIMED',delivery_token=?1,"
+            "delivery_lease_expires_at_utc=?2,"
+            "delivery_attempts=delivery_attempts+1 "
+            "WHERE cancellation_request_id=?3 "
+            "AND (state='REQUESTED' "
+            " OR (state='DELIVERY_CLAIMED' "
+            "     AND delivery_lease_expires_at_utc<?4));",
+            -1,
+            &claim.st,
+            nullptr)
+        != SQLITE_OK) {
+        fail(sqlite3_errmsg(db_));
+        return std::nullopt;
+    }
+    sqlite3_bind_text(
+        claim.st,
+        1,
+        command.delivery_token.c_str(),
+        -1,
+        SQLITE_TRANSIENT);
+    sqlite3_bind_int64(claim.st, 2, lease_expires);
+    sqlite3_bind_int64(claim.st, 3, cancellation_id);
+    sqlite3_bind_int64(claim.st, 4, now);
+    if (sqlite3_step(claim.st) != SQLITE_DONE
+        || sqlite3_changes(db_) != 1) {
+        fail("cancellation-delivery claim CAS failed");
+        return std::nullopt;
+    }
+
+    Statement details;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT c.job_id,c.request_key,c.reason_code,c.reason_text,"
+            "j.state,j.workset_id,j.dispatch_attempt_id,"
+            "j.claimed_by_token,d.state "
+            "FROM exec_job_cancellation_request c "
+            "JOIN exec_job j ON j.job_id=c.job_id "
+            "LEFT JOIN exec_workset_dispatch_attempt d "
+            "  ON d.dispatch_attempt_id=j.dispatch_attempt_id "
+            "WHERE c.cancellation_request_id=?1;",
+            -1,
+            &details.st,
+            nullptr)
+        != SQLITE_OK) {
+        fail(sqlite3_errmsg(db_));
+        return std::nullopt;
+    }
+    sqlite3_bind_int64(details.st, 1, cancellation_id);
+    if (sqlite3_step(details.st) != SQLITE_ROW) {
+        fail("claimed cancellation details are missing");
+        return std::nullopt;
+    }
+
+    ClaimedJobCancellation claimed{};
+    claimed.cancellation_request_id = cancellation_id;
+    claimed.job_id = sqlite3_column_int64(details.st, 0);
+    claimed.request_key = Text(details.st, 1);
+    claimed.reason_code = Text(details.st, 2);
+    claimed.reason_text = OptionalText(details.st, 3);
+    claimed.job_state = Text(details.st, 4);
+    if (sqlite3_column_type(details.st, 5) != SQLITE_NULL) {
+        claimed.workset_id = sqlite3_column_int64(details.st, 5);
+    }
+    if (sqlite3_column_type(details.st, 6) != SQLITE_NULL) {
+        claimed.dispatch_attempt_id =
+            sqlite3_column_int64(details.st, 6);
+    }
+    claimed.workset_claim_token = OptionalText(details.st, 7);
+    const auto dispatch_state = Text(details.st, 8);
+    if (claimed.job_state == "PENDING_WORKSET"
+        || claimed.job_state == "QUEUED") {
+        claimed.action =
+            JobCancellationExecutionAction::CancelWithoutWorker;
+    } else if (claimed.job_state == "CLAIMED"
+        && dispatch_state == "CLAIMED") {
+        claimed.action =
+            JobCancellationExecutionAction::ReleaseClaimedWorkset;
+    } else if ((claimed.job_state == "CLAIMED"
+            || claimed.job_state == "RUNNING")
+        && dispatch_state == "DISPATCHED") {
+        claimed.action =
+            JobCancellationExecutionAction::DeliverToWorker;
+    } else {
+        claimed.action =
+            JobCancellationExecutionAction::ResolveNoLongerExecutable;
+    }
+    claimed.delivery_token = command.delivery_token;
+    claimed.delivery_lease_expires_at_utc = lease_expires;
+
+    Statement summary;
+    if (sqlite3_prepare_v2(
+            db_,
+            "UPDATE exec_job SET "
+            "cancellation_state='DELIVERY_CLAIMED',"
+            "cancellation_delivery_token=?1,"
+            "cancellation_delivery_lease_expires_at_utc=?2,"
+            "cancellation_delivery_attempts="
+            "cancellation_delivery_attempts+1 "
+            "WHERE job_id=?3 AND cancellation_request_key=?4 "
+            "AND cancellation_state IN "
+            "('REQUESTED','DELIVERY_CLAIMED');",
+            -1,
+            &summary.st,
+            nullptr)
+        != SQLITE_OK) {
+        fail(sqlite3_errmsg(db_));
+        return std::nullopt;
+    }
+    sqlite3_bind_text(
+        summary.st,
+        1,
+        command.delivery_token.c_str(),
+        -1,
+        SQLITE_TRANSIENT);
+    sqlite3_bind_int64(summary.st, 2, lease_expires);
+    sqlite3_bind_int64(summary.st, 3, claimed.job_id);
+    sqlite3_bind_text(
+        summary.st,
+        4,
+        claimed.request_key.c_str(),
+        -1,
+        SQLITE_TRANSIENT);
+    if (sqlite3_step(summary.st) != SQLITE_DONE
+        || sqlite3_changes(db_) != 1
+        || !Commit(db_, error_out)) {
+        Rollback(db_);
+        return std::nullopt;
+    }
+    return claimed;
+}
+
+bool SqliteExecutionDb::MarkJobCancellationDelivered(
+    const MarkJobCancellationDeliveredCommand& command,
+    JobCancellationReceipt* receipt_out,
+    std::string* error_out) {
+    JobCancellationReceipt receipt{};
+    receipt.cancellation_request_id =
+        command.cancellation_request_id;
+    if (receipt_out != nullptr) *receipt_out = receipt;
+    if (db_ == nullptr
+        || command.cancellation_request_id <= 0
+        || command.delivery_token.empty()) {
+        receipt.disposition =
+            ExecutionDbOperationDisposition::InvalidRequest;
+        if (receipt_out != nullptr) *receipt_out = receipt;
+        return false;
+    }
+    if (!ExecuteSql(db_, "BEGIN IMMEDIATE;", error_out)) {
+        return false;
+    }
+    const auto now = CurrentUtcMs(db_);
+    Statement request;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT c.job_id,c.state,c.delivery_token,"
+            "c.delivery_lease_expires_at_utc,j.job_set_id,"
+            "c.resolution_code "
+            "FROM exec_job_cancellation_request c "
+            "JOIN exec_job j ON j.job_id=c.job_id "
+            "WHERE c.cancellation_request_id=?1;",
+            -1,
+            &request.st,
+            nullptr)
+        != SQLITE_OK) {
+        Rollback(db_);
+        if (error_out != nullptr) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    sqlite3_bind_int64(
+        request.st,
+        1,
+        command.cancellation_request_id);
+    if (sqlite3_step(request.st) != SQLITE_ROW) {
+        Rollback(db_);
+        receipt.disposition =
+            ExecutionDbOperationDisposition::Missing;
+        if (receipt_out != nullptr) *receipt_out = receipt;
+        return true;
+    }
+    receipt.job_id = sqlite3_column_int64(request.st, 0);
+    const auto durable_state = Text(request.st, 1);
+    const auto durable_token = Text(request.st, 2);
+    const auto lease = sqlite3_column_int64(request.st, 3);
+    const auto job_set_id = sqlite3_column_int64(request.st, 4);
+    receipt.resolution_code = OptionalText(request.st, 5);
+    if (durable_state == "RESOLVED") {
+        if (!Commit(db_, error_out)) {
+            Rollback(db_);
+            return false;
+        }
+        receipt.disposition =
+            ExecutionDbOperationDisposition::AlreadyApplied;
+        receipt.state = durable_state;
+        if (receipt_out != nullptr) *receipt_out = receipt;
+        return true;
+    }
+    if (durable_state == "DELIVERED"
+        && durable_token == command.delivery_token) {
+        if (!Commit(db_, error_out)) {
+            Rollback(db_);
+            return false;
+        }
+        receipt.disposition =
+            ExecutionDbOperationDisposition::AlreadyApplied;
+        receipt.state = durable_state;
+        if (receipt_out != nullptr) *receipt_out = receipt;
+        return true;
+    }
+    if (durable_token != command.delivery_token
+        || durable_state != "DELIVERY_CLAIMED"
+        || lease < now) {
+        Rollback(db_);
+        receipt.disposition =
+            durable_token != command.delivery_token
+            ? ExecutionDbOperationDisposition::TokenMismatch
+            : lease < now
+                ? ExecutionDbOperationDisposition::LeaseExpired
+                : ExecutionDbOperationDisposition::WrongState;
+        receipt.state = durable_state;
+        if (receipt_out != nullptr) *receipt_out = receipt;
+        return true;
+    }
+
+    Statement update;
+    if (sqlite3_prepare_v2(
+            db_,
+            "UPDATE exec_job_cancellation_request SET "
+            "state='DELIVERED',delivered_at_utc=?1 "
+            "WHERE cancellation_request_id=?2 "
+            "AND state='DELIVERY_CLAIMED' AND delivery_token=?3 "
+            "AND delivery_lease_expires_at_utc>=?1;",
+            -1,
+            &update.st,
+            nullptr)
+        != SQLITE_OK) {
+        Rollback(db_);
+        if (error_out != nullptr) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    sqlite3_bind_int64(update.st, 1, now);
+    sqlite3_bind_int64(
+        update.st,
+        2,
+        command.cancellation_request_id);
+    sqlite3_bind_text(
+        update.st,
+        3,
+        command.delivery_token.c_str(),
+        -1,
+        SQLITE_TRANSIENT);
+    if (sqlite3_step(update.st) != SQLITE_DONE
+        || sqlite3_changes(db_) != 1) {
+        Rollback(db_);
+        if (error_out != nullptr) {
+            *error_out = "cancellation delivery CAS failed";
+        }
+        return false;
+    }
+    Statement summary;
+    if (sqlite3_prepare_v2(
+            db_,
+            "UPDATE exec_job SET cancellation_state='DELIVERED',"
+            "cancellation_delivered_at_utc=?1 "
+            "WHERE job_id=?2 AND cancellation_delivery_token=?3 "
+            "AND cancellation_state='DELIVERY_CLAIMED';",
+            -1,
+            &summary.st,
+            nullptr)
+        != SQLITE_OK) {
+        Rollback(db_);
+        if (error_out != nullptr) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    sqlite3_bind_int64(summary.st, 1, now);
+    sqlite3_bind_int64(summary.st, 2, receipt.job_id);
+    sqlite3_bind_text(
+        summary.st,
+        3,
+        command.delivery_token.c_str(),
+        -1,
+        SQLITE_TRANSIENT);
+    if (sqlite3_step(summary.st) != SQLITE_DONE
+        || sqlite3_changes(db_) != 1
+        || !InsertJobActionEventAndOutbox(
+            db_,
+            receipt.job_id,
+            job_set_id,
+            "Execution.JobCancellationDelivered.v1",
+            "durable-cancellation-delivered",
+            error_out)
+        || !Commit(db_, error_out)) {
+        Rollback(db_);
+        return false;
+    }
+    receipt.disposition = ExecutionDbOperationDisposition::Applied;
+    receipt.state = "DELIVERED";
+    if (receipt_out != nullptr) *receipt_out = receipt;
+    return true;
+}
+
+bool SqliteExecutionDb::ResolveJobCancellation(
+    const ResolveJobCancellationCommand& command,
+    JobCancellationReceipt* receipt_out,
+    std::string* error_out) {
+    JobCancellationReceipt receipt{};
+    receipt.cancellation_request_id =
+        command.cancellation_request_id;
+    if (receipt_out != nullptr) *receipt_out = receipt;
+    if (db_ == nullptr
+        || command.cancellation_request_id <= 0
+        || command.resolution_code.empty()
+        || command.requested_by.empty()) {
+        receipt.disposition =
+            ExecutionDbOperationDisposition::InvalidRequest;
+        if (receipt_out != nullptr) *receipt_out = receipt;
+        return false;
+    }
+    if (!ExecuteSql(db_, "BEGIN IMMEDIATE;", error_out)) {
+        return false;
+    }
+    const auto now = CurrentUtcMs(db_);
+    Statement request;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT c.job_id,c.state,c.delivery_token,"
+            "c.resolution_code,j.state,j.job_set_id "
+            "FROM exec_job_cancellation_request c "
+            "JOIN exec_job j ON j.job_id=c.job_id "
+            "WHERE c.cancellation_request_id=?1;",
+            -1,
+            &request.st,
+            nullptr)
+        != SQLITE_OK) {
+        Rollback(db_);
+        if (error_out != nullptr) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    sqlite3_bind_int64(
+        request.st,
+        1,
+        command.cancellation_request_id);
+    if (sqlite3_step(request.st) != SQLITE_ROW) {
+        Rollback(db_);
+        receipt.disposition =
+            ExecutionDbOperationDisposition::Missing;
+        if (receipt_out != nullptr) *receipt_out = receipt;
+        return true;
+    }
+    receipt.job_id = sqlite3_column_int64(request.st, 0);
+    const auto cancellation_state = Text(request.st, 1);
+    const auto delivery_token = OptionalText(request.st, 2);
+    const auto durable_resolution = OptionalText(request.st, 3);
+    receipt.resolution_code = durable_resolution;
+    const auto job_state = Text(request.st, 4);
+    const auto job_set_id = sqlite3_column_int64(request.st, 5);
+    if (cancellation_state == "RESOLVED") {
+        receipt.disposition =
+            ExecutionDbOperationDisposition::AlreadyApplied;
+        if (!Commit(db_, error_out)) {
+            Rollback(db_);
+            return false;
+        }
+        receipt.state = cancellation_state;
+        if (receipt_out != nullptr) *receipt_out = receipt;
+        return true;
+    }
+    if (delivery_token.has_value()
+        && (!command.delivery_token.has_value()
+            || *delivery_token != *command.delivery_token)) {
+        Rollback(db_);
+        receipt.disposition =
+            ExecutionDbOperationDisposition::TokenMismatch;
+        receipt.state = cancellation_state;
+        if (receipt_out != nullptr) *receipt_out = receipt;
+        return true;
+    }
+    if (command.finalize_job_canceled
+        && job_state != "PENDING_WORKSET"
+        && job_state != "QUEUED") {
+        Rollback(db_);
+        receipt.disposition =
+            ExecutionDbOperationDisposition::WrongState;
+        receipt.state = cancellation_state;
+        if (receipt_out != nullptr) *receipt_out = receipt;
+        return true;
+    }
+
+    Statement resolve;
+    if (sqlite3_prepare_v2(
+            db_,
+            "UPDATE exec_job_cancellation_request SET "
+            "state='RESOLVED',resolved_at_utc=?1,resolution_code=?2,"
+            "delivery_lease_expires_at_utc=NULL "
+            "WHERE cancellation_request_id=?3 "
+            "AND state IN "
+            "('REQUESTED','DELIVERY_CLAIMED','DELIVERED');",
+            -1,
+            &resolve.st,
+            nullptr)
+        != SQLITE_OK) {
+        Rollback(db_);
+        if (error_out != nullptr) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    sqlite3_bind_int64(resolve.st, 1, now);
+    sqlite3_bind_text(
+        resolve.st,
+        2,
+        command.resolution_code.c_str(),
+        -1,
+        SQLITE_TRANSIENT);
+    sqlite3_bind_int64(
+        resolve.st,
+        3,
+        command.cancellation_request_id);
+    if (sqlite3_step(resolve.st) != SQLITE_DONE
+        || sqlite3_changes(db_) != 1) {
+        Rollback(db_);
+        if (error_out != nullptr) {
+            *error_out = "cancellation resolution CAS failed";
+        }
+        return false;
+    }
+
+    Statement summary;
+    if (sqlite3_prepare_v2(
+            db_,
+            "UPDATE exec_job SET cancellation_state='RESOLVED',"
+            "cancellation_delivery_token=NULL,"
+            "cancellation_delivery_lease_expires_at_utc=NULL,"
+            "cancellation_resolved_at_utc=?1,"
+            "cancellation_resolution_code=?2 "
+            "WHERE job_id=?3;",
+            -1,
+            &summary.st,
+            nullptr)
+        != SQLITE_OK) {
+        Rollback(db_);
+        if (error_out != nullptr) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    sqlite3_bind_int64(summary.st, 1, now);
+    sqlite3_bind_text(
+        summary.st,
+        2,
+        command.resolution_code.c_str(),
+        -1,
+        SQLITE_TRANSIENT);
+    sqlite3_bind_int64(summary.st, 3, receipt.job_id);
+    if (sqlite3_step(summary.st) != SQLITE_DONE
+        || sqlite3_changes(db_) != 1) {
+        Rollback(db_);
+        if (error_out != nullptr) {
+            *error_out = "cancellation summary resolution failed";
+        }
+        return false;
+    }
+
+    if (command.finalize_job_canceled) {
+        Statement cancel_job;
+        if (sqlite3_prepare_v2(
+                db_,
+                "UPDATE exec_job SET state='CANCELED',ended_at_utc=?1,"
+            "error_code='CANCELED',error_text=?2,"
+            "claimed_by_token=NULL,lease_expires_at_utc=NULL,"
+            "dispatch_attempt_id=NULL,dispatch_item_ordinal=NULL,"
+            "reserved_attempt_id=NULL "
+                "WHERE job_id=?3 "
+                "AND state IN ('PENDING_WORKSET','QUEUED');",
+                -1,
+                &cancel_job.st,
+                nullptr)
+            != SQLITE_OK) {
+            Rollback(db_);
+            if (error_out != nullptr) *error_out = sqlite3_errmsg(db_);
+            return false;
+        }
+        sqlite3_bind_int64(cancel_job.st, 1, now);
+        sqlite3_bind_text(
+            cancel_job.st,
+            2,
+            command.resolution_code.c_str(),
+            -1,
+            SQLITE_TRANSIENT);
+        sqlite3_bind_int64(cancel_job.st, 3, receipt.job_id);
+        if (sqlite3_step(cancel_job.st) != SQLITE_DONE
+            || sqlite3_changes(db_) != 1) {
+            Rollback(db_);
+            if (error_out != nullptr) {
+                *error_out = "job cancellation finalization CAS failed";
+            }
+            return false;
+        }
+    }
+
+    if (!InsertJobActionEventAndOutbox(
+            db_,
+            receipt.job_id,
+            job_set_id,
+            "Execution.JobCancellationResolved.v1",
+            "durable-cancellation-resolved",
+            error_out)
+        || (command.finalize_job_canceled
+            && !InsertJobActionEventAndOutbox(
+                db_,
+                receipt.job_id,
+                job_set_id,
+                "Execution.JobCompleted.v1",
+                "durable-cancellation-completed",
+                error_out))
+        || !Commit(db_, error_out)) {
+        Rollback(db_);
+        return false;
+    }
+    receipt.disposition = ExecutionDbOperationDisposition::Applied;
+    receipt.state = "RESOLVED";
+    receipt.resolution_code = command.resolution_code;
+    if (receipt_out != nullptr) *receipt_out = receipt;
+    return true;
+}
+
+bool SqliteExecutionDb::IsTempBlobTracked(
+    std::string_view relative_path,
+    bool* tracked_out,
+    std::string* error_out) const {
+    if (tracked_out != nullptr) {
+        *tracked_out = false;
+    }
+    if (db_ == nullptr || tracked_out == nullptr
+        || !IsSafeRelativeBlobPath(relative_path)) {
+        if (error_out != nullptr) {
+            *error_out = "invalid temporary-blob tracking query";
+        }
+        return false;
+    }
+
+    Statement query;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT EXISTS("
+            "  SELECT 1 FROM exec_temp_blob "
+            "  WHERE relative_path=?1 "
+            "    AND cleanup_state IN ('LIVE','DELETE_PENDING')"
+            ");",
+            -1,
+            &query.st,
+            nullptr)
+        != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        return false;
+    }
+    sqlite3_bind_text(
+        query.st,
+        1,
+        relative_path.data(),
+        static_cast<int>(relative_path.size()),
+        SQLITE_TRANSIENT);
+    if (sqlite3_step(query.st) != SQLITE_ROW) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        return false;
+    }
+    *tracked_out = sqlite3_column_int(query.st, 0) != 0;
+    if (error_out != nullptr) {
+        error_out->clear();
+    }
+    return true;
+}
+
+std::optional<ClaimedTempBlobCleanup>
+SqliteExecutionDb::ClaimNextTempBlobCleanup(
+    const ClaimTempBlobCleanupCommand& command,
+    std::string* error_out) {
+    if (db_ == nullptr
+        || command.cleanup_token.empty()
+        || command.lease_duration_ms <= 0) {
+        if (error_out != nullptr) {
+            *error_out = "invalid temporary-blob cleanup claim command";
+        }
+        return std::nullopt;
+    }
+    if (!ExecuteSql(db_, "BEGIN IMMEDIATE;", error_out)) {
+        return std::nullopt;
+    }
+    const auto fail = [&](std::string message) {
+        Rollback(db_);
+        if (error_out != nullptr) *error_out = std::move(message);
+    };
+    const auto now = CurrentUtcMs(db_);
+    if (now <= 0
+        || command.lease_duration_ms
+            > std::numeric_limits<std::int64_t>::max() - now) {
+        fail("temporary-blob cleanup lease expiration overflow");
+        return std::nullopt;
+    }
+    const auto lease_expires = now + command.lease_duration_ms;
+    Statement candidate;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT temp_blob_id FROM exec_temp_blob "
+            "WHERE cleanup_state='DELETE_PENDING' "
+            "AND (cleanup_claim_token IS NULL "
+            " OR cleanup_lease_expires_at_utc<?1) "
+            "ORDER BY delete_pending_at_utc ASC,temp_blob_id ASC "
+            "LIMIT 1;",
+            -1,
+            &candidate.st,
+            nullptr)
+        != SQLITE_OK) {
+        fail(sqlite3_errmsg(db_));
+        return std::nullopt;
+    }
+    sqlite3_bind_int64(candidate.st, 1, now);
+    const auto candidate_rc = sqlite3_step(candidate.st);
+    if (candidate_rc == SQLITE_DONE) {
+        if (!Commit(db_, error_out)) {
+            Rollback(db_);
+        }
+        return std::nullopt;
+    }
+    if (candidate_rc != SQLITE_ROW) {
+        fail(sqlite3_errmsg(db_));
+        return std::nullopt;
+    }
+    const auto blob_id = sqlite3_column_int64(candidate.st, 0);
+    Statement claim;
+    if (sqlite3_prepare_v2(
+            db_,
+            "UPDATE exec_temp_blob SET cleanup_claim_token=?1,"
+            "cleanup_lease_expires_at_utc=?2,"
+            "cleanup_attempts=cleanup_attempts+1,"
+            "cleanup_error=NULL "
+            "WHERE temp_blob_id=?3 AND cleanup_state='DELETE_PENDING' "
+            "AND (cleanup_claim_token IS NULL "
+            " OR cleanup_lease_expires_at_utc<?4);",
+            -1,
+            &claim.st,
+            nullptr)
+        != SQLITE_OK) {
+        fail(sqlite3_errmsg(db_));
+        return std::nullopt;
+    }
+    sqlite3_bind_text(
+        claim.st,
+        1,
+        command.cleanup_token.c_str(),
+        -1,
+        SQLITE_TRANSIENT);
+    sqlite3_bind_int64(claim.st, 2, lease_expires);
+    sqlite3_bind_int64(claim.st, 3, blob_id);
+    sqlite3_bind_int64(claim.st, 4, now);
+    if (sqlite3_step(claim.st) != SQLITE_DONE
+        || sqlite3_changes(db_) != 1) {
+        fail("temporary-blob cleanup claim CAS failed");
+        return std::nullopt;
+    }
+    Statement details;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT relative_path,sha256,size_bytes,format,"
+            "cleanup_state,created_at_utc,cleanup_attempts "
+            "FROM exec_temp_blob WHERE temp_blob_id=?1;",
+            -1,
+            &details.st,
+            nullptr)
+        != SQLITE_OK) {
+        fail(sqlite3_errmsg(db_));
+        return std::nullopt;
+    }
+    sqlite3_bind_int64(details.st, 1, blob_id);
+    if (sqlite3_step(details.st) != SQLITE_ROW) {
+        fail("claimed temporary blob is missing");
+        return std::nullopt;
+    }
+    ClaimedTempBlobCleanup claimed{};
+    claimed.blob.temp_blob_id = blob_id;
+    claimed.blob.relative_path = Text(details.st, 0);
+    claimed.blob.sha256 = Text(details.st, 1);
+    claimed.blob.size_bytes = static_cast<std::uint64_t>(
+        sqlite3_column_int64(details.st, 2));
+    claimed.blob.format = Text(details.st, 3);
+    claimed.blob.cleanup_state = Text(details.st, 4);
+    claimed.blob.created_at_utc =
+        sqlite3_column_int64(details.st, 5);
+    claimed.cleanup_token = command.cleanup_token;
+    claimed.cleanup_lease_expires_at_utc = lease_expires;
+    claimed.cleanup_attempts = sqlite3_column_int(details.st, 6);
+    if (!Commit(db_, error_out)) {
+        Rollback(db_);
+        return std::nullopt;
+    }
+    return claimed;
+}
+
+bool SqliteExecutionDb::CompleteTempBlobCleanup(
+    const CompleteTempBlobCleanupCommand& command,
+    ExecutionDbOperationDisposition* disposition_out,
+    std::string* error_out) {
+    if (disposition_out != nullptr) {
+        *disposition_out = ExecutionDbOperationDisposition::BackendError;
+    }
+    if (db_ == nullptr
+        || command.temp_blob_id <= 0
+        || command.cleanup_token.empty()) {
+        if (disposition_out != nullptr) {
+            *disposition_out =
+                ExecutionDbOperationDisposition::InvalidRequest;
+        }
+        return false;
+    }
+    if (!ExecuteSql(db_, "BEGIN IMMEDIATE;", error_out)) {
+        return false;
+    }
+    const auto now = CurrentUtcMs(db_);
+    Statement state;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT cleanup_state,cleanup_claim_token,"
+            "cleanup_lease_expires_at_utc "
+            "FROM exec_temp_blob WHERE temp_blob_id=?1;",
+            -1,
+            &state.st,
+            nullptr)
+        != SQLITE_OK) {
+        Rollback(db_);
+        if (error_out != nullptr) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    sqlite3_bind_int64(state.st, 1, command.temp_blob_id);
+    if (sqlite3_step(state.st) != SQLITE_ROW) {
+        Rollback(db_);
+        if (disposition_out != nullptr) {
+            *disposition_out = ExecutionDbOperationDisposition::Missing;
+        }
+        return true;
+    }
+    const auto cleanup_state = Text(state.st, 0);
+    const auto cleanup_token = Text(state.st, 1);
+    const auto lease = sqlite3_column_type(state.st, 2) == SQLITE_NULL
+        ? 0
+        : sqlite3_column_int64(state.st, 2);
+    if (cleanup_state == "DELETED" && command.deleted) {
+        if (!Commit(db_, error_out)) {
+            Rollback(db_);
+            return false;
+        }
+        if (disposition_out != nullptr) {
+            *disposition_out =
+                ExecutionDbOperationDisposition::AlreadyApplied;
+        }
+        return true;
+    }
+    if (cleanup_token != command.cleanup_token
+        || cleanup_state != "DELETE_PENDING"
+        || lease < now) {
+        Rollback(db_);
+        if (disposition_out != nullptr) {
+            *disposition_out =
+                cleanup_token != command.cleanup_token
+                ? ExecutionDbOperationDisposition::TokenMismatch
+                : lease < now
+                    ? ExecutionDbOperationDisposition::LeaseExpired
+                    : ExecutionDbOperationDisposition::WrongState;
+        }
+        return true;
+    }
+    Statement update;
+    const char* sql = command.deleted
+        ? "UPDATE exec_temp_blob SET cleanup_state='DELETED',"
+          "cleanup_claim_token=NULL,"
+          "cleanup_lease_expires_at_utc=NULL,cleanup_error=NULL,"
+          "deleted_at_utc=?1 "
+          "WHERE temp_blob_id=?2 AND cleanup_state='DELETE_PENDING' "
+          "AND cleanup_claim_token=?3 "
+          "AND cleanup_lease_expires_at_utc>=?1;"
+        : "UPDATE exec_temp_blob SET "
+          "cleanup_claim_token=NULL,"
+          "cleanup_lease_expires_at_utc=NULL,cleanup_error=?4 "
+          "WHERE temp_blob_id=?2 AND cleanup_state='DELETE_PENDING' "
+          "AND cleanup_claim_token=?3 "
+          "AND cleanup_lease_expires_at_utc>=?1;";
+    if (sqlite3_prepare_v2(
+            db_, sql, -1, &update.st, nullptr)
+        != SQLITE_OK) {
+        Rollback(db_);
+        if (error_out != nullptr) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    sqlite3_bind_int64(update.st, 1, now);
+    sqlite3_bind_int64(update.st, 2, command.temp_blob_id);
+    sqlite3_bind_text(
+        update.st,
+        3,
+        command.cleanup_token.c_str(),
+        -1,
+        SQLITE_TRANSIENT);
+    if (!command.deleted) {
+        BindOptionalText(update.st, 4, command.cleanup_error);
+    }
+    if (sqlite3_step(update.st) != SQLITE_DONE
+        || sqlite3_changes(db_) != 1
+        || !Commit(db_, error_out)) {
+        Rollback(db_);
+        return false;
+    }
+    if (disposition_out != nullptr) {
+        *disposition_out = ExecutionDbOperationDisposition::Applied;
+    }
+    return true;
+}
+
+bool SqliteExecutionDb::RecoverExpiredWorksetDispatches(
+    int max_dispatches,
+    int* dispatches_recovered_out,
+    std::string* error_out) {
+    if (dispatches_recovered_out != nullptr) {
+        *dispatches_recovered_out = 0;
+    }
+    if (db_ == nullptr || max_dispatches <= 0) {
+        if (error_out != nullptr) {
+            *error_out = "max_dispatches must be positive";
+        }
+        return false;
+    }
+    std::vector<std::pair<std::int64_t, std::string>> expired;
+    {
+        Statement list;
+        if (sqlite3_prepare_v2(
+                db_,
+                "SELECT dispatch_attempt_id,claim_token "
+                "FROM exec_workset_dispatch_attempt "
+                "WHERE state IN ('CLAIMED','DISPATCHED') "
+                "AND lease_expires_at_utc<?1 "
+                "ORDER BY lease_expires_at_utc ASC,"
+                "dispatch_attempt_id ASC LIMIT ?2;",
+                -1,
+                &list.st,
+                nullptr)
+            != SQLITE_OK) {
+            if (error_out != nullptr) *error_out = sqlite3_errmsg(db_);
+            return false;
+        }
+        sqlite3_bind_int64(list.st, 1, CurrentUtcMs(db_));
+        sqlite3_bind_int(list.st, 2, max_dispatches);
+        for (;;) {
+            const auto rc = sqlite3_step(list.st);
+            if (rc == SQLITE_DONE) break;
+            if (rc != SQLITE_ROW) {
+                if (error_out != nullptr) *error_out = sqlite3_errmsg(db_);
+                return false;
+            }
+            expired.emplace_back(
+                sqlite3_column_int64(list.st, 0),
+                Text(list.st, 1));
+        }
+    }
+    int recovered = 0;
+    for (const auto& [dispatch_id, token] : expired) {
+        WorksetDispatchMutationReceipt receipt{};
+        std::string release_error;
+        if (!ReleaseWorksetDispatch(
+                {
+                    .dispatch_attempt_id = dispatch_id,
+                    .claim_token = token,
+                    .reason_code = "DISPATCH_LEASE_EXPIRED",
+                    .reason_text =
+                        std::string("workset dispatch lease expired"),
+                    .requested_by = "execution_recovery",
+                },
+                &receipt,
+                &release_error)) {
+            if (error_out != nullptr) {
+                *error_out = release_error.empty()
+                    ? "expired workset dispatch recovery failed"
+                    : std::move(release_error);
+            }
+            return false;
+        }
+        if (receipt.disposition == ExecutionDbOperationDisposition::Applied) {
+            ++recovered;
+        }
+    }
+    if (dispatches_recovered_out != nullptr) {
+        *dispatches_recovered_out = recovered;
+    }
+    return true;
+}
+
+bool SqliteExecutionDb::RecoverExpiredResultProcessingLeases(
+    int max_jobs,
+    int* jobs_recovered_out,
+    std::string* error_out) {
+    if (jobs_recovered_out != nullptr) *jobs_recovered_out = 0;
+    if (db_ == nullptr || max_jobs <= 0) {
+        if (error_out != nullptr) *error_out = "max_jobs must be positive";
+        return false;
+    }
+    if (!ExecuteSql(db_, "BEGIN IMMEDIATE;", error_out)) {
+        return false;
+    }
+    const auto fail = [&](std::string message) {
+        Rollback(db_);
+        if (error_out != nullptr) *error_out = std::move(message);
+    };
+    const auto now = CurrentUtcMs(db_);
+    std::vector<std::pair<std::int64_t, std::int64_t>> jobs;
+    Statement list;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT job_id,job_set_id FROM exec_job "
+            "WHERE state='EXECUTION_FINISHED' "
+            "AND result_processing_state='PROCESSING' "
+            "AND result_processing_lease_expires_at_utc<?1 "
+            "ORDER BY result_processing_lease_expires_at_utc ASC,"
+            "job_id ASC LIMIT ?2;",
+            -1,
+            &list.st,
+            nullptr)
+        != SQLITE_OK) {
+        fail(sqlite3_errmsg(db_));
+        return false;
+    }
+    sqlite3_bind_int64(list.st, 1, now);
+    sqlite3_bind_int(list.st, 2, max_jobs);
+    for (;;) {
+        const auto rc = sqlite3_step(list.st);
+        if (rc == SQLITE_DONE) break;
+        if (rc != SQLITE_ROW) {
+            fail(sqlite3_errmsg(db_));
+            return false;
+        }
+        jobs.emplace_back(
+            sqlite3_column_int64(list.st, 0),
+            sqlite3_column_int64(list.st, 1));
+    }
+    Statement update;
+    if (!jobs.empty()
+        && sqlite3_prepare_v2(
+            db_,
+            "UPDATE exec_job SET result_processing_state='PARKED',"
+            "result_processor_token=NULL,"
+            "result_processing_lease_expires_at_utc=NULL,"
+            "result_processing_retry_after_utc=?1,"
+            "result_processing_attempts=result_processing_attempts-1,"
+            "result_processing_error_code='PROCESSOR_LEASE_EXPIRED',"
+            "result_processing_error_text="
+            "'result-processing lease expired before finalization',"
+            "result_processing_failed_at_utc=?1 "
+            "WHERE job_id=?2 AND state='EXECUTION_FINISHED' "
+            "AND result_processing_state='PROCESSING' "
+            "AND result_processing_lease_expires_at_utc<?1 "
+            "AND result_processing_attempts>0;",
+            -1,
+            &update.st,
+            nullptr)
+            != SQLITE_OK) {
+        fail(sqlite3_errmsg(db_));
+        return false;
+    }
+    int recovered = 0;
+    for (const auto& [job_id, job_set_id] : jobs) {
+        sqlite3_reset(update.st);
+        sqlite3_clear_bindings(update.st);
+        sqlite3_bind_int64(update.st, 1, now);
+        sqlite3_bind_int64(update.st, 2, job_id);
+        if (sqlite3_step(update.st) != SQLITE_DONE) {
+            fail(sqlite3_errmsg(db_));
+            return false;
+        }
+        if (sqlite3_changes(db_) == 0) continue;
+        if (!InsertJobActionEventAndOutbox(
+                db_,
+                job_id,
+                job_set_id,
+                "Execution.JobResultParked.v1",
+                "result-processing-lease-expired",
+                error_out)) {
+            fail(error_out != nullptr
+                ? *error_out
+                : "result lease recovery event failed");
+            return false;
+        }
+        ++recovered;
+    }
+    if (!Commit(db_, error_out)) {
+        Rollback(db_);
+        return false;
+    }
+    if (jobs_recovered_out != nullptr) *jobs_recovered_out = recovered;
+    return true;
+}
+
+bool SqliteExecutionDb::RecoverExpiredCancellationDeliveryLeases(
+    int max_requests,
+    int* requests_recovered_out,
+    std::string* error_out) {
+    if (requests_recovered_out != nullptr) {
+        *requests_recovered_out = 0;
+    }
+    if (db_ == nullptr || max_requests <= 0) {
+        if (error_out != nullptr) {
+            *error_out = "max_requests must be positive";
+        }
+        return false;
+    }
+    if (!ExecuteSql(db_, "BEGIN IMMEDIATE;", error_out)) {
+        return false;
+    }
+    const auto fail = [&](std::string message) {
+        Rollback(db_);
+        if (error_out != nullptr) *error_out = std::move(message);
+    };
+    const auto now = CurrentUtcMs(db_);
+    struct ExpiredCancellation {
+        std::int64_t request_id = 0;
+        std::int64_t job_id = 0;
+        std::int64_t job_set_id = 0;
+        std::string request_key;
+    };
+    std::vector<ExpiredCancellation> requests;
+    Statement list;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT c.cancellation_request_id,c.job_id,j.job_set_id,"
+            "c.request_key "
+            "FROM exec_job_cancellation_request c "
+            "JOIN exec_job j ON j.job_id=c.job_id "
+            "WHERE c.state='DELIVERY_CLAIMED' "
+            "AND c.delivery_lease_expires_at_utc<?1 "
+            "ORDER BY c.delivery_lease_expires_at_utc ASC,"
+            "c.cancellation_request_id ASC LIMIT ?2;",
+            -1,
+            &list.st,
+            nullptr)
+        != SQLITE_OK) {
+        fail(sqlite3_errmsg(db_));
+        return false;
+    }
+    sqlite3_bind_int64(list.st, 1, now);
+    sqlite3_bind_int(list.st, 2, max_requests);
+    for (;;) {
+        const auto rc = sqlite3_step(list.st);
+        if (rc == SQLITE_DONE) break;
+        if (rc != SQLITE_ROW) {
+            fail(sqlite3_errmsg(db_));
+            return false;
+        }
+        requests.push_back({
+            .request_id = sqlite3_column_int64(list.st, 0),
+            .job_id = sqlite3_column_int64(list.st, 1),
+            .job_set_id = sqlite3_column_int64(list.st, 2),
+            .request_key = Text(list.st, 3),
+        });
+    }
+    Statement recover;
+    Statement summary;
+    if (!requests.empty()
+        && (sqlite3_prepare_v2(
+                db_,
+                "UPDATE exec_job_cancellation_request SET "
+                "state='REQUESTED',delivery_token=NULL,"
+                "delivery_lease_expires_at_utc=NULL "
+                "WHERE cancellation_request_id=?1 "
+                "AND state='DELIVERY_CLAIMED' "
+                "AND delivery_lease_expires_at_utc<?2;",
+                -1,
+                &recover.st,
+                nullptr)
+                != SQLITE_OK
+            || sqlite3_prepare_v2(
+                db_,
+                "UPDATE exec_job SET cancellation_state='REQUESTED',"
+                "cancellation_delivery_token=NULL,"
+                "cancellation_delivery_lease_expires_at_utc=NULL "
+                "WHERE job_id=?1 AND cancellation_request_key=?2 "
+                "AND cancellation_state='DELIVERY_CLAIMED';",
+                -1,
+                &summary.st,
+                nullptr)
+                != SQLITE_OK)) {
+        fail(sqlite3_errmsg(db_));
+        return false;
+    }
+    int recovered_count = 0;
+    for (const auto& request : requests) {
+        sqlite3_reset(recover.st);
+        sqlite3_clear_bindings(recover.st);
+        sqlite3_bind_int64(recover.st, 1, request.request_id);
+        sqlite3_bind_int64(recover.st, 2, now);
+        if (sqlite3_step(recover.st) != SQLITE_DONE) {
+            fail(sqlite3_errmsg(db_));
+            return false;
+        }
+        if (sqlite3_changes(db_) == 0) continue;
+        sqlite3_reset(summary.st);
+        sqlite3_clear_bindings(summary.st);
+        sqlite3_bind_int64(summary.st, 1, request.job_id);
+        sqlite3_bind_text(
+            summary.st,
+            2,
+            request.request_key.c_str(),
+            -1,
+            SQLITE_TRANSIENT);
+        if (sqlite3_step(summary.st) != SQLITE_DONE
+            || sqlite3_changes(db_) != 1
+            || !InsertJobActionEventAndOutbox(
+                db_,
+                request.job_id,
+                request.job_set_id,
+                "Execution.JobCancellationRequested.v1",
+                "cancellation-delivery-lease-recovered",
+                error_out)) {
+            fail(error_out != nullptr && !error_out->empty()
+                ? *error_out
+                : "cancellation delivery recovery failed");
+            return false;
+        }
+        ++recovered_count;
+    }
+    if (!Commit(db_, error_out)) {
+        Rollback(db_);
+        return false;
+    }
+    if (requests_recovered_out != nullptr) {
+        *requests_recovered_out = recovered_count;
+    }
     return true;
 }
 
@@ -1063,6 +6610,7 @@ std::optional<ClaimedExecutionJob> SqliteExecutionDb::ClaimNextReadyExecutionJob
                 "SELECT job_id, claimed_by_token, lease_expires_at_utc "
                 "FROM exec_job "
                 "WHERE state='QUEUED' "
+                "  AND workset_id IS NULL "
                 "  AND attempts < max_attempts "
                 "  AND (claimed_by_token IS NULL OR claimed_by_token='') "
                 "ORDER BY priority DESC, queued_at_utc ASC, job_id ASC "
@@ -1114,6 +6662,7 @@ std::optional<ClaimedExecutionJob> SqliteExecutionDb::ClaimNextReadyExecutionJob
                 "SET state='CLAIMED', claimed_by_token=?1, lease_expires_at_utc=?2 "
                 "WHERE job_id=?3 "
                 "AND state='QUEUED' "
+                "AND workset_id IS NULL "
                 "AND attempts < max_attempts "
                 "AND (claimed_by_token IS NULL OR claimed_by_token='') "
                 "RETURNING job_id, job_set_id, savestate_id, program_kind, program_ref_kind, program_ref_id, "
@@ -1253,6 +6802,7 @@ std::vector<ClaimedExecutionJob> SqliteExecutionDb::ClaimBatchReadyExecutionJobs
             "attempts, max_attempts "
             "FROM exec_job "
             "WHERE state='QUEUED' "
+            "  AND workset_id IS NULL "
             "  AND attempts < max_attempts "
             "  AND (claimed_by_token IS NULL OR claimed_by_token='') "
             "ORDER BY priority DESC, queued_at_utc ASC, job_id ASC "
@@ -1338,6 +6888,7 @@ std::vector<ClaimedExecutionJob> SqliteExecutionDb::ClaimBatchReadyExecutionJobs
             "SET state='CLAIMED', claimed_by_token=?1, lease_expires_at_utc=?2 "
             "WHERE job_id=?3 "
             "  AND state='QUEUED' "
+            "  AND workset_id IS NULL "
             "  AND attempts < max_attempts "
             "  AND (claimed_by_token IS NULL OR claimed_by_token='');",
             -1,
@@ -1420,6 +6971,7 @@ bool SqliteExecutionDb::RenewExecutionJobLease(
             "WHERE job_id=?2 "
             "AND state IN ('CLAIMED','RUNNING') "
             "AND claimed_by_token=?3 "
+            "AND workset_id IS NULL "
             "AND COALESCE(lease_expires_at_utc, 0) > ?4;",
         -1,
         &st.st,
@@ -1443,6 +6995,210 @@ bool SqliteExecutionDb::RenewExecutionJobLease(
     }
     if (renewed_out) *renewed_out = sqlite3_changes(db_) > 0;
     return true;
+}
+
+std::optional<std::string> OptionalText(sqlite3_stmt* st, int index) {
+    if (sqlite3_column_type(st, index) == SQLITE_NULL) {
+        return std::nullopt;
+    }
+    const auto* text = sqlite3_column_text(st, index);
+    return text != nullptr
+        ? std::optional<std::string>(
+            reinterpret_cast<const char*>(text))
+        : std::optional<std::string>(std::string{});
+}
+
+std::string Text(sqlite3_stmt* st, int index) {
+    const auto* text = sqlite3_column_text(st, index);
+    return text != nullptr ? reinterpret_cast<const char*>(text) : "";
+}
+
+void BindOptionalText(
+    sqlite3_stmt* st,
+    int index,
+    const std::optional<std::string>& value) {
+    if (value.has_value()) {
+        sqlite3_bind_text(
+            st,
+            index,
+            value->c_str(),
+            -1,
+            SQLITE_TRANSIENT);
+    } else {
+        sqlite3_bind_null(st, index);
+    }
+}
+
+bool IsSha256(std::string_view value) {
+    return value.size() == 64
+        && std::all_of(
+            value.begin(),
+            value.end(),
+            [](unsigned char ch) {
+                return std::isxdigit(ch) != 0;
+            });
+}
+
+bool IsSafeRelativeBlobPath(std::string_view value) {
+    if (value.empty()
+        || value.front() == '/'
+        || value.front() == '\\'
+        || value.find('\\') != std::string_view::npos
+        || value.find(':') != std::string_view::npos
+        || value.find('\0') != std::string_view::npos
+        || (value.size() >= 2
+            && std::isalpha(
+                static_cast<unsigned char>(value.front())) != 0
+            && value[1] == ':')) {
+        return false;
+    }
+    if (value.rfind("worker_results/", 0) != 0
+        || value.size() <= std::string_view("worker_results/").size()) {
+        return false;
+    }
+    std::size_t start = 0;
+    while (start <= value.size()) {
+        const auto end = value.find('/', start);
+        const auto component = value.substr(
+            start,
+            end == std::string::npos
+                ? std::string::npos
+                : end - start);
+        if (component.empty() || component == "." || component == "..") {
+            return false;
+        }
+        if (end == std::string::npos) {
+            break;
+        }
+        start = end + 1;
+    }
+    return true;
+}
+
+bool InsertAggregateOutboxEvent(
+    sqlite3* db,
+    const char* event_type,
+    const char* aggregate_kind,
+    std::int64_t aggregate_id_value,
+    const char* payload_ref_kind,
+    std::int64_t payload_ref_id,
+    std::string_view causation_suffix,
+    std::string* error_out) {
+    const auto now = CurrentUtcMs(db);
+    const auto aggregate_id = std::to_string(aggregate_id_value);
+    const auto event_id = std::string("execution-")
+        + event_type + "-" + aggregate_id + "-"
+        + std::string(causation_suffix);
+    const auto causation_id = std::string("execution-db-")
+        + std::string(causation_suffix);
+
+    Statement outbox;
+    if (sqlite3_prepare_v2(
+            db,
+            "INSERT INTO exec_outbox_message("
+            "event_id,event_type,event_version,context_name,aggregate_kind,"
+            "aggregate_id,correlation_id,causation_id,occurred_at_utc,"
+            "payload_ref_kind,payload_ref_id) "
+            "VALUES(?1,?2,1,'Execution',?3,?4,NULL,?5,?6,?7,?8);",
+            -1,
+            &outbox.st,
+            nullptr)
+        != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db);
+        }
+        return false;
+    }
+    sqlite3_bind_text(
+        outbox.st,
+        1,
+        event_id.c_str(),
+        -1,
+        SQLITE_TRANSIENT);
+    sqlite3_bind_text(
+        outbox.st,
+        2,
+        event_type,
+        -1,
+        SQLITE_STATIC);
+    sqlite3_bind_text(
+        outbox.st,
+        3,
+        aggregate_kind,
+        -1,
+        SQLITE_STATIC);
+    sqlite3_bind_text(
+        outbox.st,
+        4,
+        aggregate_id.c_str(),
+        -1,
+        SQLITE_TRANSIENT);
+    sqlite3_bind_text(
+        outbox.st,
+        5,
+        causation_id.c_str(),
+        -1,
+        SQLITE_TRANSIENT);
+    sqlite3_bind_int64(outbox.st, 6, now);
+    sqlite3_bind_text(
+        outbox.st,
+        7,
+        payload_ref_kind,
+        -1,
+        SQLITE_STATIC);
+    sqlite3_bind_int64(outbox.st, 8, payload_ref_id);
+    if (sqlite3_step(outbox.st) != SQLITE_DONE) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db);
+        }
+        return false;
+    }
+    return true;
+}
+
+bool WorkerSupportsWorkset(
+    const ReadyWorksetCompatibilityProfile& worker,
+    std::int32_t program_kind,
+    const ExecutionWorksetCompatibility& compatibility,
+    int item_count) {
+    if (std::find(
+            worker.supported_program_kinds.begin(),
+            worker.supported_program_kinds.end(),
+            program_kind)
+            == worker.supported_program_kinds.end()) {
+        return false;
+    }
+    if (worker.max_workset_items == 0
+        || item_count < 0
+        || static_cast<std::uint64_t>(item_count)
+            > worker.max_workset_items) {
+        return false;
+    }
+    if (compatibility.estimated_payload_bytes
+        > worker.max_payload_bytes) {
+        return false;
+    }
+    if ((compatibility.required_capability_mask
+            & ~worker.available_capability_mask)
+        != 0) {
+        return false;
+    }
+    for (const auto& module : worker.supported_modules) {
+        if (module.module_canonical_id
+                == compatibility.module_canonical_id
+            && module.module_version == compatibility.module_version
+            && module.module_sha256 == compatibility.module_sha256
+            && module.runtime_profile_sha256
+                == compatibility.runtime_profile_sha256
+            && std::find(
+                   module.entrypoints.begin(),
+                   module.entrypoints.end(),
+                   compatibility.entrypoint)
+                != module.entrypoints.end()) {
+            return true;
+        }
+    }
+    return false;
 }
 
 std::vector<ExecutionJobLeaseRenewalReceipt>
@@ -1488,7 +7244,8 @@ SqliteExecutionDb::RenewExecutionJobLeases(
     Statement query;
     if (sqlite3_prepare_v2(
             db_,
-            "SELECT state, claimed_by_token, lease_expires_at_utc "
+            "SELECT state, claimed_by_token, lease_expires_at_utc,"
+            "workset_id "
             "FROM exec_job WHERE job_id=?1;",
             -1,
             &query.st,
@@ -1504,6 +7261,7 @@ SqliteExecutionDb::RenewExecutionJobLeases(
             "WHERE job_id=?2 "
             "  AND state IN ('CLAIMED','RUNNING') "
             "  AND claimed_by_token=?3 "
+            "  AND workset_id IS NULL "
             "  AND COALESCE(lease_expires_at_utc,0)>?4;",
             -1,
             &update.st,
@@ -1553,9 +7311,12 @@ SqliteExecutionDb::RenewExecutionJobLeases(
             sqlite3_column_type(query.st, 2) != SQLITE_NULL
             ? sqlite3_column_int64(query.st, 2)
             : 0;
+        const bool workset_backed =
+            sqlite3_column_type(query.st, 3) != SQLITE_NULL;
         receipt.lease_expires_at_utc = lease_expiry;
 
-        if (state != "CLAIMED" && state != "RUNNING") {
+        if (workset_backed
+            || (state != "CLAIMED" && state != "RUNNING")) {
             receipt.disposition =
                 ExecutionJobLeaseRenewalDisposition::WrongState;
         } else if (token != request.claimed_by_token) {
@@ -1642,7 +7403,8 @@ bool SqliteExecutionDb::ValidateExecutionJobStartAuthoritySet(
     Statement query;
     if (sqlite3_prepare_v2(
             db_,
-            "SELECT state, claimed_by_token, lease_expires_at_utc "
+            "SELECT state, claimed_by_token, lease_expires_at_utc,"
+            "workset_id "
             "FROM exec_job WHERE job_id=?1;",
             -1,
             &query.st,
@@ -1690,8 +7452,10 @@ bool SqliteExecutionDb::ValidateExecutionJobStartAuthoritySet(
                     sqlite3_column_type(query.st, 2) != SQLITE_NULL
                     ? sqlite3_column_int64(query.st, 2)
                     : 0;
+                const bool workset_backed =
+                    sqlite3_column_type(query.st, 3) != SQLITE_NULL;
                 item.lease_expires_at_utc = lease_expiry;
-                if (state != "CLAIMED") {
+                if (workset_backed || state != "CLAIMED") {
                     item.disposition =
                         ExecutionJobStartAuthorityDisposition::
                             WrongState;
@@ -1764,7 +7528,8 @@ bool SqliteExecutionDb::MarkExecutionJobStarted(
     if (sqlite3_prepare_v2(
             db_,
             "SELECT job_set_id, state, claimed_by_token, "
-            "lease_expires_at_utc, started_at_utc, attempts, max_attempts "
+            "lease_expires_at_utc, started_at_utc, attempts, max_attempts,"
+            "workset_id "
             "FROM exec_job WHERE job_id=?1;",
             -1,
             &query.st,
@@ -1802,6 +7567,8 @@ bool SqliteExecutionDb::MarkExecutionJobStarted(
             : std::nullopt;
         const auto attempts = sqlite3_column_int(query.st, 5);
         const auto max_attempts = sqlite3_column_int(query.st, 6);
+        const bool workset_backed =
+            sqlite3_column_type(query.st, 7) != SQLITE_NULL;
         const auto now_utc = CurrentUtcMs(db_);
         receipt.lease_expires_at_utc = lease_expiry;
         receipt.started_at_utc = started_at;
@@ -1810,7 +7577,8 @@ bool SqliteExecutionDb::MarkExecutionJobStarted(
                 static_cast<std::uint64_t>(attempts);
         }
 
-        if (state != "CLAIMED" && state != "RUNNING") {
+        if (workset_backed
+            || (state != "CLAIMED" && state != "RUNNING")) {
             receipt.disposition = ExecutionJobStartDisposition::WrongState;
         } else if (token != claimed_by_token) {
             receipt.disposition = ExecutionJobStartDisposition::TokenMismatch;
@@ -1834,6 +7602,7 @@ bool SqliteExecutionDb::MarkExecutionJobStarted(
                     "WHERE job_id=?2 "
                     "  AND state='CLAIMED' "
                     "  AND claimed_by_token=?3 "
+                    "  AND workset_id IS NULL "
                     "  AND COALESCE(lease_expires_at_utc,0)>?1 "
                     "  AND attempts=?4 "
                     "  AND attempts<max_attempts;",
@@ -1925,7 +7694,8 @@ bool SqliteExecutionDb::ConfirmExecutionJobTerminalAuthority(
     Statement query;
     if (sqlite3_prepare_v2(
             db_,
-            "SELECT state, claimed_by_token, lease_expires_at_utc, attempts "
+            "SELECT state, claimed_by_token, lease_expires_at_utc,attempts,"
+            "workset_id "
             "FROM exec_job WHERE job_id=?1;",
             -1,
             &query.st,
@@ -1958,6 +7728,8 @@ bool SqliteExecutionDb::ConfirmExecutionJobTerminalAuthority(
             ? sqlite3_column_int64(query.st, 2)
             : 0;
         const auto attempts = sqlite3_column_int(query.st, 3);
+        const bool workset_backed =
+            sqlite3_column_type(query.st, 4) != SQLITE_NULL;
         const auto now = CurrentUtcMs(db_);
         receipt.lease_expires_at_utc = lease_expiry;
         if (attempts > 0) {
@@ -1965,7 +7737,7 @@ bool SqliteExecutionDb::ConfirmExecutionJobTerminalAuthority(
                 static_cast<std::uint64_t>(attempts);
         }
 
-        if (state != "RUNNING") {
+        if (workset_backed || state != "RUNNING") {
             receipt.disposition =
                 ExecutionJobTerminalAuthorityDisposition::WrongState;
         } else if (token != claimed_by_token) {
@@ -1987,6 +7759,7 @@ bool SqliteExecutionDb::ConfirmExecutionJobTerminalAuthority(
                     "UPDATE exec_job SET lease_expires_at_utc=?1 "
                     "WHERE job_id=?2 AND state='RUNNING' "
                     "AND claimed_by_token=?3 AND attempts=?4 "
+                    "AND workset_id IS NULL "
                     "AND COALESCE(lease_expires_at_utc,0)>?5;",
                     -1,
                     &update.st,
@@ -2077,7 +7850,8 @@ bool SqliteExecutionDb::RecoverExecutionJobAfterWorkerLoss(
     if (sqlite3_prepare_v2(
             db_,
             "SELECT job_set_id, state, claimed_by_token, attempts, "
-            "max_attempts FROM exec_job WHERE job_id=?1;",
+            "max_attempts,workset_id "
+            "FROM exec_job WHERE job_id=?1;",
             -1,
             &query.st,
             nullptr)
@@ -2107,13 +7881,18 @@ bool SqliteExecutionDb::RecoverExecutionJobAfterWorkerLoss(
             : "";
         attempts = sqlite3_column_int(query.st, 3);
         max_attempts = sqlite3_column_int(query.st, 4);
+        const bool workset_backed =
+            sqlite3_column_type(query.st, 5) != SQLITE_NULL;
         receipt.durable_state = state;
         if (attempts > 0) {
             receipt.durable_attempt_id =
                 static_cast<std::uint64_t>(attempts);
         }
 
-        if (state != "CLAIMED" && state != "RUNNING") {
+        if (workset_backed) {
+            receipt.disposition =
+                ExecutionJobWorkerLossRecoveryDisposition::WrongState;
+        } else if (state != "CLAIMED" && state != "RUNNING") {
             receipt.disposition =
                 ExecutionJobWorkerLossRecoveryDisposition::AlreadyDurable;
         } else if (token != claimed_by_token) {
@@ -2144,13 +7923,15 @@ bool SqliteExecutionDb::RecoverExecutionJobAfterWorkerLoss(
                       "claimed_by_token=NULL, lease_expires_at_utc=NULL, "
                       "ended_at_utc=?1, error_code='WORKER_LOSS', "
                       "error_text=?2 WHERE job_id=?3 AND state='RUNNING' "
-                      "AND claimed_by_token=?4 AND attempts=?5;"
+                      "AND claimed_by_token=?4 AND attempts=?5 "
+                      "AND workset_id IS NULL;"
                     : "UPDATE exec_job SET state='QUEUED', "
                       "claimed_by_token=NULL, lease_expires_at_utc=NULL, "
                       "started_at_utc=NULL, ended_at_utc=NULL, "
                       "error_code=NULL, error_text=NULL "
                       "WHERE job_id=?1 AND state=?2 "
-                      "AND claimed_by_token=?3 AND attempts=?4;";
+                      "AND claimed_by_token=?3 AND attempts=?4 "
+                      "AND workset_id IS NULL;";
                 if (sqlite3_prepare_v2(
                         db_,
                         update_sql,
@@ -2255,6 +8036,7 @@ bool SqliteExecutionDb::RequeueExpiredExecutionLeases(
         "UPDATE exec_job "
             "SET state='QUEUED', claimed_by_token=NULL, lease_expires_at_utc=NULL, started_at_utc=NULL "
             "WHERE state IN ('QUEUED','CLAIMED','RUNNING') "
+            "AND workset_id IS NULL "
             "AND claimed_by_token IS NOT NULL "
             "AND claimed_by_token<>'' "
             "AND COALESCE(lease_expires_at_utc, 0) <= ?1;",
@@ -2295,6 +8077,7 @@ bool SqliteExecutionDb::RequeueExpiredClaimedExecutionJobs(
             "SELECT job_id, job_set_id "
             "FROM exec_job "
             "WHERE state='CLAIMED' "
+            "  AND workset_id IS NULL "
             "  AND claimed_by_token IS NOT NULL "
             "  AND claimed_by_token<>'' "
             "  AND COALESCE(lease_expires_at_utc, 0) <= ?1 "
@@ -2329,6 +8112,7 @@ bool SqliteExecutionDb::RequeueExpiredClaimedExecutionJobs(
             "SET state='QUEUED', claimed_by_token=NULL, lease_expires_at_utc=NULL, "
             "started_at_utc=NULL, ended_at_utc=NULL, error_code=NULL, error_text=NULL "
             "WHERE state='CLAIMED' "
+            "  AND workset_id IS NULL "
             "  AND claimed_by_token IS NOT NULL "
             "  AND claimed_by_token<>'' "
             "  AND COALESCE(lease_expires_at_utc, 0) <= ?1;",
@@ -2397,6 +8181,7 @@ bool SqliteExecutionDb::RequeueClaimedExecutionJob(
         if (sqlite3_prepare_v2(db_,
             "SELECT job_set_id FROM exec_job "
             "WHERE job_id=?1 AND state IN ('CLAIMED','RUNNING') "
+            "AND workset_id IS NULL "
             "AND claimed_by_token=?2;",
             -1,
             &select.st,
@@ -2429,6 +8214,7 @@ bool SqliteExecutionDb::RequeueClaimedExecutionJob(
             "SET state='QUEUED', claimed_by_token=NULL, lease_expires_at_utc=NULL, "
             "started_at_utc=NULL, ended_at_utc=NULL, error_code=NULL, error_text=NULL "
             "WHERE job_id=?1 AND state IN ('CLAIMED','RUNNING') "
+            "AND workset_id IS NULL "
             "AND claimed_by_token=?2;",
         -1,
         &update.st,
@@ -2491,10 +8277,11 @@ bool SqliteExecutionDb::RequeueInterruptedExecutionJobs(
         if (sqlite3_prepare_v2(db_,
             "SELECT job_id, job_set_id "
             "FROM exec_job "
-            "WHERE state IN ('CLAIMED','RUNNING') "
+            "WHERE workset_id IS NULL "
+            "  AND (state IN ('CLAIMED','RUNNING') "
             "   OR (state IN ('QUEUED','INTERRUPTED') "
             "       AND claimed_by_token IS NOT NULL "
-            "       AND claimed_by_token<>'') "
+            "       AND claimed_by_token<>'')) "
             "ORDER BY job_id ASC;",
             -1,
             &select.st,
@@ -2522,13 +8309,14 @@ bool SqliteExecutionDb::RequeueInterruptedExecutionJobs(
 
     Statement update;
     if (sqlite3_prepare_v2(db_,
-        "UPDATE exec_job "
+            "UPDATE exec_job "
             "SET state='QUEUED', claimed_by_token=NULL, lease_expires_at_utc=NULL, "
             "started_at_utc=NULL, ended_at_utc=NULL, error_code=NULL, error_text=NULL "
-            "WHERE state IN ('CLAIMED','RUNNING') "
+            "WHERE workset_id IS NULL "
+            "  AND (state IN ('CLAIMED','RUNNING') "
             "   OR (state IN ('QUEUED','INTERRUPTED') "
             "       AND claimed_by_token IS NOT NULL "
-            "       AND claimed_by_token<>'');",
+            "       AND claimed_by_token<>''));",
         -1,
         &update.st,
         nullptr)
@@ -2549,6 +8337,7 @@ bool SqliteExecutionDb::RequeueInterruptedExecutionJobs(
         "UPDATE exec_job "
             "SET claimed_by_token=NULL, lease_expires_at_utc=NULL "
             "WHERE state NOT IN ('QUEUED','CLAIMED','RUNNING','INTERRUPTED') "
+            "  AND workset_id IS NULL "
             "  AND (claimed_by_token IS NOT NULL OR lease_expires_at_utc IS NOT NULL);",
         -1,
         &terminal_cleanup.st,
@@ -2612,6 +8401,7 @@ bool SqliteExecutionDb::MarkQueuedJobsSuperseded(
         if (sqlite3_prepare_v2(db_,
             "SELECT job_id FROM exec_job "
             "WHERE job_set_id=?1 AND state='QUEUED' AND job_id<>?2 "
+            "AND workset_id IS NULL "
             "ORDER BY job_id ASC;",
             -1,
             &select.st,
@@ -2640,7 +8430,8 @@ bool SqliteExecutionDb::MarkQueuedJobsSuperseded(
         if (sqlite3_prepare_v2(db_,
             "UPDATE exec_job "
             "SET state='SUPERSEDED', ended_at_utc=CAST(unixepoch('now') * 1000 AS INTEGER) "
-            "WHERE job_id=?1 AND job_set_id=?2 AND state='QUEUED';",
+            "WHERE job_id=?1 AND job_set_id=?2 AND state='QUEUED' "
+            "AND workset_id IS NULL;",
             -1,
             &update.st,
             nullptr)
@@ -2815,6 +8606,9 @@ std::optional<events::ExecutionWorkflowJobPayloadView> SqliteExecutionDb::Resolv
     }
     if (payload_ref_kind == "job_set") {
         return ResolveJobSetPayload(db_, payload_ref_id);
+    }
+    if (payload_ref_kind == "workset") {
+        return ResolveWorksetPayload(db_, payload_ref_id);
     }
     if (payload_ref_kind == "job") {
         return ResolveJobPayload(db_, payload_ref_id);

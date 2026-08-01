@@ -89,8 +89,14 @@ struct SourceWaveRefs {
 
 struct SourceSeedCandidate {
     std::int64_t seed_candidate_id = 0;
-    std::optional<std::int64_t> source_unique_seed_id;
+    std::optional<std::int64_t> source_probe_result_id;
     std::optional<std::int64_t> source_input_frame_id;
+};
+
+struct SourceConfirmedProbeResult {
+    std::int64_t probe_result_id = 0;
+    std::int64_t probe_run_id = 0;
+    std::int64_t input_frame_id = 0;
 };
 
 struct SourceExplorerSettings {
@@ -425,6 +431,64 @@ bool copy_one_by_id(
     return copy_rows_by_ids(db, db_name, table, id_column, { id }, result, err);
 }
 
+bool copy_exec_job_without_coordinator_lineage(
+    sqlite3* db,
+    std::int64_t job_id,
+    BattleSingleTurnJobSubsetResult* result,
+    std::ostream& err) {
+    if (job_id <= 0) {
+        return true;
+    }
+    if (!table_exists(db, "main", "exec_job", err)
+        || !table_exists(db, "src", "exec_job", err)) {
+        return true;
+    }
+    const auto columns = common_columns(db, "exec_job", err);
+    if (columns.empty()) {
+        err << "No common columns for table exec_job\n";
+        return false;
+    }
+    static const std::unordered_set<std::string> normalized_columns{
+        "parent_job_id",
+        "workset_id",
+        "workset_item_ordinal",
+        "dispatch_attempt_id",
+        "dispatch_item_ordinal",
+        "reserved_attempt_id",
+        "worker_result_blob_id",
+        "cancellation_caused_by_job_id",
+    };
+    std::ostringstream selected;
+    for (std::size_t index = 0; index < columns.size(); ++index) {
+        if (index != 0) {
+            selected << ",";
+        }
+        if (normalized_columns.contains(columns[index])) {
+            selected << "NULL";
+        } else {
+            selected << quote_ident(columns[index]);
+        }
+    }
+    const auto sql =
+        "INSERT OR IGNORE INTO main.exec_job ("
+        + join_columns(columns)
+        + ") SELECT "
+        + selected.str()
+        + " FROM src.exec_job WHERE job_id="
+        + std::to_string(job_id)
+        + ";";
+    if (!exec(db, sql, err)) {
+        err << "Failed copying normalized execution.exec_job\n";
+        return false;
+    }
+    const int changed = sqlite3_changes(db);
+    if (result != nullptr && changed != 0) {
+        result->table_counts.push_back(
+            {"execution", "exec_job", changed});
+    }
+    return true;
+}
+
 bool copy_battle_advancement_pool(
     sqlite3* db,
     std::int64_t pool_id,
@@ -589,7 +653,7 @@ std::optional<SourceWaveRefs> read_wave_refs(sqlite3* analysis_db, std::int64_t 
 std::optional<SourceSeedCandidate> read_seed_candidate(sqlite3* analysis_db, std::int64_t seed_candidate_id, std::ostream& err) {
     Statement st;
     constexpr const char* kSql =
-        "SELECT seed_candidate_id,source_unique_seed_id,source_input_frame_id "
+        "SELECT seed_candidate_id,source_probe_result_id,source_input_frame_id "
         "FROM ab_seed_candidate WHERE seed_candidate_id=?1;";
     if (!prepare(analysis_db, kSql, &st, err)) {
         return std::nullopt;
@@ -601,7 +665,7 @@ std::optional<SourceSeedCandidate> read_seed_candidate(sqlite3* analysis_db, std
     }
     SourceSeedCandidate row{};
     row.seed_candidate_id = sqlite3_column_int64(st.st, 0);
-    row.source_unique_seed_id = column_i64_optional(st.st, 1);
+    row.source_probe_result_id = column_i64_optional(st.st, 1);
     row.source_input_frame_id = column_i64_optional(st.st, 2);
     return row;
 }
@@ -641,37 +705,35 @@ std::set<std::int64_t> query_i64_set(sqlite3* db, const char* sql, std::int64_t 
     return values;
 }
 
-std::optional<std::int64_t> unique_seed_input_frame(sqlite3* analysis_db, std::int64_t unique_seed_id, std::ostream& err) {
-    return scalar_i64(analysis_db, "SELECT input_frame_id FROM sp_unique_seed WHERE unique_seed_id=?1;", unique_seed_id, err);
-}
-
-std::optional<std::int64_t> find_unique_seed_for_entry_savestate_input_frame(
+std::optional<SourceConfirmedProbeResult> read_confirmed_probe_result(
     sqlite3* analysis_db,
-    std::int64_t entry_savestate_id,
-    std::int64_t input_frame_id,
+    std::int64_t probe_result_id,
     std::ostream& err) {
-    // Keep this selection aligned with
-    // SqliteAnalysisDb::FindSeedProbeUniqueSeedForEntrySavestateInputFrame.
     Statement st;
     constexpr const char* kSql =
-        "SELECT u.unique_seed_id "
-        "FROM sp_probe_run pr "
-        "JOIN sp_probe_result r ON r.probe_run_id=pr.probe_run_id "
-        "JOIN sp_unique_seed u ON u.probe_result_id=r.probe_result_id "
-        "WHERE pr.entry_savestate_id=?1 AND u.input_frame_id=?2 "
-        "ORDER BY pr.probe_run_id ASC, u.unique_seed_id ASC "
-        "LIMIT 1;";
+        "SELECT probe_result_id,probe_run_id,input_frame_id "
+        "FROM sp_probe_result "
+        "WHERE probe_result_id=?1 AND evidence_state='CONFIRMED' "
+        "AND confirmation_of_probe_result_id IS NULL;";
     if (!prepare(analysis_db, kSql, &st, err)) {
         return std::nullopt;
     }
-    sqlite3_bind_int64(st.st, 1, entry_savestate_id);
-    sqlite3_bind_int64(st.st, 2, input_frame_id);
+    sqlite3_bind_int64(st.st, 1, probe_result_id);
     const auto rc = sqlite3_step(st.st);
     if (rc == SQLITE_ROW) {
-        return sqlite3_column_int64(st.st, 0);
+        return SourceConfirmedProbeResult{
+            .probe_result_id = sqlite3_column_int64(st.st, 0),
+            .probe_run_id = sqlite3_column_int64(st.st, 1),
+            .input_frame_id = sqlite3_column_int64(st.st, 2),
+        };
     }
     if (rc != SQLITE_DONE) {
-        err << "Failed resolving seed probe unique seed: " << sqlite3_errmsg(analysis_db) << "\n";
+        err << "Failed resolving confirmed SeedProbe result: "
+            << sqlite3_errmsg(analysis_db) << "\n";
+    } else {
+        err << "Battle seed candidate references a missing or unconfirmed "
+               "SeedProbe result: "
+            << probe_result_id << "\n";
     }
     return std::nullopt;
 }
@@ -939,44 +1001,28 @@ int hydrate_battle_single_turn_job_subset_into_existing(
     result_out->source_wave_id = turn->wave_id;
 
     std::set<std::int64_t> input_frame_ids;
-    std::set<std::int64_t> unique_seed_ids;
     std::set<std::int64_t> probe_result_ids;
     std::set<std::int64_t> probe_run_ids;
     std::set<std::int64_t> probe_set_ids;
     std::set<std::int64_t> analysis_input_set_ids;
     std::set<std::int64_t> axis_ids;
     if (seed_candidate.has_value()) {
-        if (seed_candidate->source_unique_seed_id.has_value()) {
-            unique_seed_ids.insert(*seed_candidate->source_unique_seed_id);
-            if (const auto frame_id = unique_seed_input_frame(source_analysis.get(), *seed_candidate->source_unique_seed_id, err);
-                frame_id.has_value()) {
-                input_frame_ids.insert(*frame_id);
+        if (seed_candidate->source_probe_result_id.has_value()) {
+            const auto result = read_confirmed_probe_result(
+                source_analysis.get(),
+                *seed_candidate->source_probe_result_id,
+                err);
+            if (!result.has_value()) {
+                result_out->validation_errors.push_back(
+                    "seed candidate source is not a confirmed SeedProbe result");
+                return 1;
             }
+            probe_result_ids.insert(result->probe_result_id);
+            probe_run_ids.insert(result->probe_run_id);
+            input_frame_ids.insert(result->input_frame_id);
         }
         if (seed_candidate->source_input_frame_id.has_value()) {
             input_frame_ids.insert(*seed_candidate->source_input_frame_id);
-            if (!seed_candidate->source_unique_seed_id.has_value()) {
-                if (const auto unique_seed_id = find_unique_seed_for_entry_savestate_input_frame(
-                        source_analysis.get(),
-                        battle_set->entry_savestate_id,
-                        *seed_candidate->source_input_frame_id,
-                        err);
-                    unique_seed_id.has_value()) {
-                    unique_seed_ids.insert(*unique_seed_id);
-                }
-            }
-        }
-    }
-    for (const auto unique_seed_id : unique_seed_ids) {
-        if (const auto probe_result_id = scalar_i64(source_analysis.get(), "SELECT probe_result_id FROM sp_unique_seed WHERE unique_seed_id=?1;", unique_seed_id, err);
-            probe_result_id.has_value()) {
-            probe_result_ids.insert(*probe_result_id);
-        }
-    }
-    for (const auto probe_result_id : probe_result_ids) {
-        if (const auto probe_run_id = scalar_i64(source_analysis.get(), "SELECT probe_run_id FROM sp_probe_result WHERE probe_result_id=?1;", probe_result_id, err);
-            probe_run_id.has_value()) {
-            probe_run_ids.insert(*probe_run_id);
         }
     }
     for (const auto probe_run_id : probe_run_ids) {
@@ -984,9 +1030,61 @@ int hydrate_battle_single_turn_job_subset_into_existing(
             probe_set_id.has_value()) {
             probe_set_ids.insert(*probe_set_id);
         }
-        if (const auto input_set_id = scalar_i64(source_analysis.get(), "SELECT unique_input_set_id FROM sp_probe_run WHERE probe_run_id=?1;", probe_run_id, err);
+        if (const auto input_set_id = scalar_i64(source_analysis.get(), "SELECT accepted_input_set_id FROM sp_probe_run WHERE probe_run_id=?1;", probe_run_id, err);
             input_set_id.has_value()) {
             analysis_input_set_ids.insert(*input_set_id);
+            const auto accepted_frames = query_i64_set(
+                source_analysis.get(),
+                "SELECT input_frame_id FROM an_input_set_frame "
+                "WHERE input_set_id=?1;",
+                *input_set_id,
+                err);
+            input_frame_ids.insert(
+                accepted_frames.begin(),
+                accepted_frames.end());
+        }
+        const auto accepted_evidence = query_i64_set(
+            source_analysis.get(),
+            "SELECT observation.probe_result_id "
+            "FROM sp_probe_result observation "
+            "WHERE observation.probe_run_id=?1 AND ("
+            "  (observation.evidence_state='CONFIRMED' "
+            "   AND observation.confirmation_of_probe_result_id IS NULL "
+            "   AND EXISTS ("
+            "     SELECT 1 FROM sp_probe_run accepted_run "
+            "     JOIN an_input_set_frame accepted_frame "
+            "       ON accepted_frame.input_set_id=accepted_run.accepted_input_set_id "
+            "     WHERE accepted_run.probe_run_id=observation.probe_run_id "
+            "       AND accepted_frame.input_frame_id=observation.input_frame_id"
+            "   )) "
+            "  OR EXISTS ("
+            "    SELECT 1 FROM sp_probe_result representative "
+            "    JOIN sp_probe_run accepted_run "
+            "      ON accepted_run.probe_run_id=representative.probe_run_id "
+            "    JOIN an_input_set_frame accepted_frame "
+            "      ON accepted_frame.input_set_id=accepted_run.accepted_input_set_id "
+            "      AND accepted_frame.input_frame_id=representative.input_frame_id "
+            "    WHERE representative.probe_result_id="
+            "      observation.confirmation_of_probe_result_id "
+            "      AND representative.evidence_state='CONFIRMED' "
+            "      AND representative.confirmation_of_probe_result_id IS NULL"
+            "  )"
+            ");",
+            probe_run_id,
+            err);
+        probe_result_ids.insert(
+            accepted_evidence.begin(),
+            accepted_evidence.end());
+    }
+    for (const auto probe_result_id : probe_result_ids) {
+        if (const auto input_frame_id = scalar_i64(
+                source_analysis.get(),
+                "SELECT input_frame_id FROM sp_probe_result "
+                "WHERE probe_result_id=?1;",
+                probe_result_id,
+                err);
+            input_frame_id.has_value()) {
+            input_frame_ids.insert(*input_frame_id);
         }
     }
     collect_input_frame_axis_ids(source_analysis.get(), input_frame_ids, &axis_ids, err);
@@ -1085,11 +1183,20 @@ int hydrate_battle_single_turn_job_subset_into_existing(
                     || !copy_rows(db, "execution", "exec_workflow_unit_activation", workflow_instance_filter, result_out, err)
                     || !copy_rows(db, "execution", "exec_workflow_unit_activation_edge", workflow_instance_filter, result_out, err)
                     || !copy_rows(db, "execution", "exec_workflow_step", "WHERE job_set_id=" + job_set_id, result_out, err)
-                    || !copy_one_by_id(db, "execution", "exec_job", "job_id", exec_job->job_id, result_out, err)) {
+                    || !copy_exec_job_without_coordinator_lineage(
+                        db,
+                        exec_job->job_id,
+                        result_out,
+                        err)) {
                     return false;
                 }
                 return exec(db, "UPDATE exec_job_set SET parent_job_set_id=NULL WHERE job_set_id=" + std::to_string(exec_job->job_set_id) + ";", err)
-                    && exec(db, "UPDATE exec_job SET parent_job_id=NULL WHERE job_id=" + std::to_string(exec_job->job_id) + ";", err);
+                    && exec(
+                        db,
+                        "UPDATE exec_job SET parent_job_id=NULL WHERE job_id="
+                            + std::to_string(exec_job->job_id)
+                            + ";",
+                        err);
             },
             err)) {
         return 1;
@@ -1106,7 +1213,7 @@ int hydrate_battle_single_turn_job_subset_into_existing(
                     && copy_rows_by_ids(db, "analysis", "sp_probe_result", "probe_result_id", probe_result_ids, result_out, err)
                     && copy_rows_by_ids(db, "analysis", "sp_axis_xy", "axis_xy_id", axis_ids, result_out, err)
                     && copy_rows_by_ids(db, "analysis", "sp_input_frame", "input_frame_id", input_frame_ids, result_out, err)
-                    && copy_rows_by_ids(db, "analysis", "sp_unique_seed", "unique_seed_id", unique_seed_ids, result_out, err)
+                    && copy_rows_by_ids(db, "analysis", "an_input_set_frame", "input_set_id", analysis_input_set_ids, result_out, err)
                     && copy_one_by_id(db, "analysis", "ab_battle_set", "battle_set_id", battle_set->battle_set_id, result_out, err)
                     && copy_one_by_id(db, "analysis", "ab_seed_candidate", "seed_candidate_id", seed_candidate_id, result_out, err)
                     && copy_battle_advancement_pool(db, wave_refs->battle_advancement_pool_id.value_or(0), result_out, err)

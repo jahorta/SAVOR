@@ -63,17 +63,15 @@ struct CliOptions {
     // The currently running scenario (set in main for each requested scenario) so
     // existing scenario implementations can report durable logs under scenario names.
     std::string scenario = "seedprobe";
-    std::int64_t timeout_ms = 30000;
     std::int64_t poll_ms = 100;
     std::int64_t worker_count = 1;
+    bool wait_for_workers_ready = false;
     std::uint32_t durable_line_mask = kDurableLineNormalMask;
     std::filesystem::path savestate_file;
     std::filesystem::path dtm_file;
     std::filesystem::path iso_path;
     std::filesystem::path dolphin_base_dir;
     std::optional<std::int64_t> source_savestate_id;
-    std::string battle_end_seed_selector = "neutral";
-    std::optional<std::int64_t> battle_end_seed_value;
     std::optional<std::filesystem::path> migration_root;
     std::optional<std::filesystem::path> workspace_root;
     std::optional<std::filesystem::path> worker_dir_root;

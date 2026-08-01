@@ -1343,6 +1343,8 @@ BackendResult EmulationSession::InitializeServiceComposition(
                 *memory);
         screenshot_service_ =
             std::make_unique<ScreenshotService>(*screenshots);
+        artifact_sink_ = std::make_unique<RuntimeArtifactSink>(
+            options.runtime_artifact_root);
         if (ICaptureBackendPort* capture = backend_->Captures())
         {
             capture_service_ = std::make_unique<CaptureService>(
@@ -1630,6 +1632,7 @@ BackendResult EmulationSession::CleanupServices() noexcept
     movie_input_reservations_.reset();
     resource_bindings_.reset();
     screenshot_service_.reset();
+    artifact_sink_.reset();
     if (guest_mutations_)
     {
         const GuestMutationCleanupReceipt mutations =

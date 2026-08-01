@@ -10,6 +10,7 @@
 
 #include <sqlite3.h>
 
+#include <algorithm>
 #include <iomanip>
 #include <ostream>
 #include <sstream>
@@ -271,9 +272,8 @@ std::optional<std::string> lookup_savestate_sha256(
 const char* battle_prediction_seed_source_name(BattlePredictionSeedSource source) {
     switch (source) {
     case BattlePredictionSeedSource::Override: return "override";
-    case BattlePredictionSeedSource::SeedProbeUniqueSeed: return "sp_unique_seed.seed_value";
+    case BattlePredictionSeedSource::SeedProbeConfirmedResult: return "sp_probe_result.seed_value";
     case BattlePredictionSeedSource::SeedCandidate: return "ab_seed_candidate.seed_value";
-    case BattlePredictionSeedSource::SeedCandidateFallback: return "seed_candidate_fallback";
     case BattlePredictionSeedSource::Unknown: return "unknown";
     }
     return "unknown";
@@ -444,68 +444,80 @@ build_battle_prediction_input_from_analysis_db_impl(
         if (turn_job->rng_seed.has_value()) {
             metadata.warnings.push_back("start seed override ignored stored turn-job RNG seed");
         }
+    } else if (seed_candidate->source_kind
+        == savor::db::BattleSeedCandidateSourceKind::SeedProbeConfirmedResult) {
+        if (!seed_candidate->source_probe_result_id.has_value()) {
+            err << "Selected SeedProbe candidate has no source_probe_result_id.\n";
+            return std::nullopt;
+        }
+        const auto probe_result =
+            analysis_db.GetSeedProbeResult(*seed_candidate->source_probe_result_id);
+        if (!probe_result.has_value()) {
+            if (report_sqlite_query_error(
+                    sqlite_db,
+                    "Querying sp_probe_result by probe_result_id "
+                        + std::to_string(*seed_candidate->source_probe_result_id),
+                    err)) {
+                return std::nullopt;
+            }
+            err << "Selected SeedProbe candidate references missing sp_probe_result "
+                << *seed_candidate->source_probe_result_id << ".\n";
+            return std::nullopt;
+        }
+        if (probe_result->evidence_state != savor::db::SeedProbeEvidenceState::Confirmed
+            || probe_result->confirmation_of_probe_result_id.has_value()) {
+            err << "Selected SeedProbe candidate source "
+                << probe_result->probe_result_id
+                << " is not a confirmed representative observation.\n";
+            return std::nullopt;
+        }
+        if ((seed_candidate->source_input_frame_id.has_value()
+                && *seed_candidate->source_input_frame_id
+                    != probe_result->input_frame_id)
+            || seed_candidate->seed_value
+                != static_cast<std::int64_t>(probe_result->seed_value)) {
+            err << "Selected SeedProbe candidate facts do not match sp_probe_result "
+                << probe_result->probe_result_id << ".\n";
+            return std::nullopt;
+        }
+        const auto probe_run = analysis_db.GetSeedProbeRun(probe_result->probe_run_id);
+        if (!probe_run.has_value()
+            || probe_run->entry_savestate_id != battle_set->entry_savestate_id
+            || (probe_run->status != savor::db::SeedProbeRunStatus::Completed
+                && probe_run->status
+                    != savor::db::SeedProbeRunStatus::CompletedPartial)) {
+            err << "Selected SeedProbe result does not belong to a completed run "
+                   "for the battle-set entry savestate.\n";
+            return std::nullopt;
+        }
+        const auto accepted_frames =
+            analysis_db.ListAnalysisInputSetFrames(probe_run->accepted_input_set_id);
+        const auto accepted = std::find_if(
+            accepted_frames.begin(),
+            accepted_frames.end(),
+            [&](const savor::db::AnalysisInputSetFrameRow& frame) {
+                return frame.input_frame_id == probe_result->input_frame_id;
+            });
+        if (accepted == accepted_frames.end()) {
+            err << "Selected SeedProbe result's input frame is not in the run's "
+                   "accepted input set.\n";
+            return std::nullopt;
+        }
+        resolved.input.starting_rng_seed = probe_result->seed_value;
+        metadata.seed_source =
+            BattlePredictionSeedSource::SeedProbeConfirmedResult;
     } else {
-        if (seed_candidate->source_unique_seed_id.has_value()) {
-            const auto unique_seed =
-                analysis_db.GetSeedProbeUniqueSeed(*seed_candidate->source_unique_seed_id);
-            if (unique_seed.has_value()) {
-                resolved.input.starting_rng_seed = checked_seed_from_i64(unique_seed->seed_value);
-                metadata.seed_source = BattlePredictionSeedSource::SeedProbeUniqueSeed;
-            } else if (report_sqlite_query_error(
-                    sqlite_db,
-                    "Querying sp_unique_seed by unique_seed_id "
-                        + std::to_string(
-                            *seed_candidate->source_unique_seed_id),
-                    err)) {
-                return std::nullopt;
-            } else if (options.allow_seed_candidate_fallback) {
-                resolved.input.starting_rng_seed = checked_seed_from_i64(seed_candidate->seed_value);
-                metadata.seed_source = BattlePredictionSeedSource::SeedCandidateFallback;
-                metadata.warnings.push_back(
-                    "linked sp_unique_seed row was missing; using ab_seed_candidate.seed_value fallback");
-            } else {
-                err << "Selected seed candidate references missing sp_unique_seed "
-                    << *seed_candidate->source_unique_seed_id
-                    << "; rerun with --allow-seed-candidate-fallback to use ab_seed_candidate.seed_value.\n";
-                return std::nullopt;
-            }
-        } else if (seed_candidate->source_input_frame_id.has_value()) {
-            const auto unique_seed =
-                analysis_db.FindSeedProbeUniqueSeedForEntrySavestateInputFrame(
-                    battle_set->entry_savestate_id,
-                    *seed_candidate->source_input_frame_id);
-            if (unique_seed.has_value()) {
-                resolved.input.starting_rng_seed = checked_seed_from_i64(unique_seed->seed_value);
-                metadata.seed_source = BattlePredictionSeedSource::SeedProbeUniqueSeed;
-            } else if (report_sqlite_query_error(
-                    sqlite_db,
-                    "Querying sp_unique_seed by entry savestate "
-                        + std::to_string(battle_set->entry_savestate_id)
-                        + " and input_frame_id "
-                        + std::to_string(
-                            *seed_candidate->source_input_frame_id),
-                    err)) {
-                return std::nullopt;
-            } else if (options.allow_seed_candidate_fallback) {
-                resolved.input.starting_rng_seed = checked_seed_from_i64(seed_candidate->seed_value);
-                metadata.seed_source = BattlePredictionSeedSource::SeedCandidateFallback;
-                metadata.warnings.push_back(
-                    "no sp_unique_seed matched seed candidate source input frame; using ab_seed_candidate.seed_value fallback");
-            } else {
-                err << "Selected seed candidate has source input frame "
-                    << *seed_candidate->source_input_frame_id
-                    << " but no matching sp_unique_seed for battle set entry savestate "
-                    << battle_set->entry_savestate_id
-                    << "; rerun with --allow-seed-candidate-fallback to use ab_seed_candidate.seed_value.\n";
-                return std::nullopt;
-            }
-        } else {
-            resolved.input.starting_rng_seed = checked_seed_from_i64(seed_candidate->seed_value);
-            metadata.seed_source = BattlePredictionSeedSource::SeedCandidate;
-            if (turn_job->rng_seed.has_value()) {
-                metadata.warnings.push_back(
-                    "using ab_seed_candidate.seed_value as battle start seed; stored turn-job RNG seed is not used for predictor input");
-            }
+        if (seed_candidate->source_probe_result_id.has_value()) {
+            err << "Only SeedProbe-confirmed candidates may reference "
+                   "source_probe_result_id.\n";
+            return std::nullopt;
+        }
+        resolved.input.starting_rng_seed =
+            checked_seed_from_i64(seed_candidate->seed_value);
+        metadata.seed_source = BattlePredictionSeedSource::SeedCandidate;
+        if (turn_job->rng_seed.has_value()) {
+            metadata.warnings.push_back(
+                "using ab_seed_candidate.seed_value as battle start seed; stored turn-job RNG seed is not used for predictor input");
         }
     }
     metadata.starting_rng_seed = resolved.input.starting_rng_seed;

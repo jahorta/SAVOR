@@ -20,15 +20,7 @@ struct ISeedProbePayloadRowResolver {
         std::string_view payload_ref_kind,
         std::int64_t payload_ref_id) const = 0;
 
-    virtual std::optional<AnalysisSeedProbeNeutralSeedRecordedPayloadView> ResolveSeedProbeNeutralSeedRecorded(
-        std::string_view payload_ref_kind,
-        std::int64_t payload_ref_id) const = 0;
-
-    virtual std::optional<AnalysisSeedProbeGridSeedRecordedPayloadView> ResolveSeedProbeGridSeedRecorded(
-        std::string_view payload_ref_kind,
-        std::int64_t payload_ref_id) const = 0;
-
-    virtual std::optional<AnalysisSeedProbeUniqueSeedRecordedPayloadView> ResolveSeedProbeUniqueSeedRecorded(
+    virtual std::optional<AnalysisSeedProbeResultPayloadView> ResolveSeedProbeResult(
         std::string_view payload_ref_kind,
         std::int64_t payload_ref_id) const = 0;
 
@@ -36,9 +28,6 @@ struct ISeedProbePayloadRowResolver {
         std::string_view payload_ref_kind,
         std::int64_t payload_ref_id) const = 0;
 
-    virtual std::optional<AnalysisSeedProbeRunCompletedPayloadView> ResolveSeedProbeRunCompleted(
-        std::string_view payload_ref_kind,
-        std::int64_t payload_ref_id) const = 0;
 };
 
 struct IAnalysisBattlePayloadRowResolver {

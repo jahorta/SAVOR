@@ -19,6 +19,31 @@ using BattlePayloadRecord = events::AnalysisBattlePayloadView;
 using SpinePayloadRecord = events::AnalysisSpinePayloadView;
 using BattleTurnOutcome = savor::battle::Outcome;
 
+enum class SeedProbeRunStatus {
+    Unknown = 0,
+    Survey,
+    Search,
+    Confirm,
+    Completed,
+    CompletedPartial,
+    Failed,
+    Invalidated,
+};
+
+enum class SeedProbeEndpoint {
+    Unknown = 0,
+    AfterRandSeedSet,
+    RandSeedCommitted,
+};
+
+enum class SeedProbeEvidenceState {
+    Unknown = 0,
+    Observed,
+    Provisional,
+    Confirmed,
+    Rejected,
+};
+
 enum class BattleSetStatus {
     Unknown = 0,
     Active,
@@ -30,7 +55,7 @@ enum class BattleSetStatus {
 
 enum class BattleSeedCandidateSourceKind {
     Unknown = 0,
-    SeedProbeUnique,
+    SeedProbeConfirmedResult,
     Manual,
     Synthetic,
 };
@@ -144,7 +169,7 @@ inline BattleSetStatus ParseBattleSetStatus(std::string_view value) {
 
 inline std::string_view ToDbString(BattleSeedCandidateSourceKind value) {
     switch (value) {
-    case BattleSeedCandidateSourceKind::SeedProbeUnique: return "SP_UNIQUE";
+    case BattleSeedCandidateSourceKind::SeedProbeConfirmedResult: return "SP_CONFIRMED_RESULT";
     case BattleSeedCandidateSourceKind::Manual: return "MANUAL";
     case BattleSeedCandidateSourceKind::Synthetic: return "SYNTHETIC";
     default: return "";
@@ -152,10 +177,73 @@ inline std::string_view ToDbString(BattleSeedCandidateSourceKind value) {
 }
 
 inline BattleSeedCandidateSourceKind ParseBattleSeedCandidateSourceKind(std::string_view value) {
-    if (value == "SP_UNIQUE") return BattleSeedCandidateSourceKind::SeedProbeUnique;
+    if (value == "SP_CONFIRMED_RESULT") return BattleSeedCandidateSourceKind::SeedProbeConfirmedResult;
     if (value == "MANUAL") return BattleSeedCandidateSourceKind::Manual;
     if (value == "SYNTHETIC") return BattleSeedCandidateSourceKind::Synthetic;
     return BattleSeedCandidateSourceKind::Unknown;
+}
+
+inline std::string_view ToDbString(SeedProbeRunStatus value) {
+    switch (value) {
+    case SeedProbeRunStatus::Survey: return "SURVEY";
+    case SeedProbeRunStatus::Search: return "SEARCH";
+    case SeedProbeRunStatus::Confirm: return "CONFIRM";
+    case SeedProbeRunStatus::Completed: return "COMPLETED";
+    case SeedProbeRunStatus::CompletedPartial: return "COMPLETED_PARTIAL";
+    case SeedProbeRunStatus::Failed: return "FAILED";
+    case SeedProbeRunStatus::Invalidated: return "INVALIDATED";
+    default: return "";
+    }
+}
+
+inline SeedProbeRunStatus ParseSeedProbeRunStatus(std::string_view value) {
+    if (value == "SURVEY") return SeedProbeRunStatus::Survey;
+    if (value == "SEARCH") return SeedProbeRunStatus::Search;
+    if (value == "CONFIRM") return SeedProbeRunStatus::Confirm;
+    if (value == "COMPLETED") return SeedProbeRunStatus::Completed;
+    if (value == "COMPLETED_PARTIAL") return SeedProbeRunStatus::CompletedPartial;
+    if (value == "FAILED") return SeedProbeRunStatus::Failed;
+    if (value == "INVALIDATED") return SeedProbeRunStatus::Invalidated;
+    return SeedProbeRunStatus::Unknown;
+}
+
+inline std::string_view ToDbString(SeedProbeEndpoint value) {
+    switch (value) {
+    case SeedProbeEndpoint::AfterRandSeedSet:
+        return "AFTER_RAND_SEED_SET";
+    case SeedProbeEndpoint::RandSeedCommitted:
+        return "RAND_SEED_COMMITTED";
+    default:
+        return "";
+    }
+}
+
+inline SeedProbeEndpoint ParseSeedProbeEndpoint(std::string_view value) {
+    if (value == "AFTER_RAND_SEED_SET") {
+        return SeedProbeEndpoint::AfterRandSeedSet;
+    }
+    if (value == "RAND_SEED_COMMITTED") {
+        return SeedProbeEndpoint::RandSeedCommitted;
+    }
+    return SeedProbeEndpoint::Unknown;
+}
+
+inline std::string_view ToDbString(SeedProbeEvidenceState value) {
+    switch (value) {
+    case SeedProbeEvidenceState::Observed: return "OBSERVED";
+    case SeedProbeEvidenceState::Provisional: return "PROVISIONAL";
+    case SeedProbeEvidenceState::Confirmed: return "CONFIRMED";
+    case SeedProbeEvidenceState::Rejected: return "REJECTED";
+    default: return "";
+    }
+}
+
+inline SeedProbeEvidenceState ParseSeedProbeEvidenceState(std::string_view value) {
+    if (value == "OBSERVED") return SeedProbeEvidenceState::Observed;
+    if (value == "PROVISIONAL") return SeedProbeEvidenceState::Provisional;
+    if (value == "CONFIRMED") return SeedProbeEvidenceState::Confirmed;
+    if (value == "REJECTED") return SeedProbeEvidenceState::Rejected;
+    return SeedProbeEvidenceState::Unknown;
 }
 
 inline std::string_view ToDbString(BattleSeedCandidateStatus value) {
@@ -296,47 +384,62 @@ struct CreateSeedProbeSetCommand {
 };
 
 struct RequestSeedProbeRunCommand {
+    std::string materialization_key;
     std::int64_t probe_set_id = 0;
     std::int64_t entry_savestate_id = 0;
     std::int64_t seed_probe_spec_id = 0;
     int launch_samples_per_axis = 0;
     int codec_version = 1;
-    std::string status;
+    SeedProbeRunStatus status = SeedProbeRunStatus::Survey;
     types::UtcTimePoint requested_at_utc{};
     std::string correlation_id;
     std::string causation_id;
 };
 
-struct RecordSeedProbeNeutralSeedCommand {
-    std::int64_t probe_result_id = 0;
-    std::int64_t neutral_seed_value = 0;
-    std::string source_kind;
-    types::UtcTimePoint recorded_at_utc{};
-    std::string correlation_id;
-    std::string causation_id;
-};
-
-struct SeedProbeNeutralSeedRow {
-    std::int64_t neutral_seed_id = 0;
-    std::int64_t probe_result_id = 0;
-    std::int64_t probe_run_id = 0;
-    std::int64_t neutral_seed_value = 0;
-    std::string source_kind;
-    types::UtcTimePoint recorded_at_utc{};
-};
-
 struct SeedProbeRunSnapshot {
     std::int64_t probe_run_id = 0;
+    std::string materialization_key;
     std::int64_t probe_set_id = 0;
     std::string probe_flavor;
     std::int64_t seed_probe_spec_id = 0;
     std::int64_t entry_savestate_id = 0;
     int launch_samples_per_axis = 0;
     int codec_version = 0;
-    std::string status;
-    std::int64_t unique_input_set_id = 0;
+    SeedProbeRunStatus status = SeedProbeRunStatus::Unknown;
+    std::int64_t accepted_input_set_id = 0;
     types::UtcTimePoint requested_at_utc{};
     std::optional<types::UtcTimePoint> completed_at_utc;
+    SeedProbeEndpoint established_endpoint = SeedProbeEndpoint::Unknown;
+    std::optional<std::int64_t> established_endpoint_source_job_id;
+    std::optional<SeedProbeEndpoint> conflicting_endpoint;
+    std::optional<std::int64_t> conflicting_endpoint_source_job_id;
+    std::optional<std::string> invalidation_diagnostic;
+    std::optional<types::UtcTimePoint> invalidated_at_utc;
+};
+
+enum class SeedProbeEndpointObservationDisposition {
+    Established = 0,
+    Matched,
+    Invalidated,
+    AlreadyInvalidatedMatching,
+    AlreadyInvalidatedConflicting,
+};
+
+struct ObserveSeedProbeEndpointCommand {
+    std::int64_t probe_run_id = 0;
+    SeedProbeEndpoint endpoint = SeedProbeEndpoint::Unknown;
+    std::int64_t source_job_id = 0;
+    types::UtcTimePoint observed_at_utc{};
+    std::string diagnostic;
+    std::string correlation_id;
+    std::string causation_id;
+};
+
+struct ObserveSeedProbeEndpointReceipt {
+    SeedProbeEndpointObservationDisposition disposition =
+        SeedProbeEndpointObservationDisposition::Established;
+    SeedProbeEndpoint established_endpoint = SeedProbeEndpoint::Unknown;
+    std::optional<SeedProbeEndpoint> conflicting_endpoint;
 };
 
 struct SetSeedProbeRunEntrySavestateCommand {
@@ -347,40 +450,34 @@ struct SetSeedProbeRunEntrySavestateCommand {
     std::string causation_id;
 };
 
-struct RecordSeedProbeGridSeedCommand {
-    std::int64_t probe_result_id = 0;
-    std::string source_family;
-    std::int64_t axis_xy_id = 0;
-    std::int64_t seed_value = 0;
-    std::int64_t seed_delta = 0;
+struct RecordSeedProbeObservationCommand {
+    std::int64_t probe_run_id = 0;
+    std::int64_t input_frame_id = 0;
+    std::int64_t source_job_id = 0;
+    std::uint32_t seed_value = 0;
+    std::uint64_t origin_worker_id = 0;
+    std::uint64_t origin_process_generation = 0;
+    std::uint64_t origin_state_epoch = 0;
+    std::string terminal_sha256;
+    std::optional<std::int64_t> confirmation_of_probe_result_id;
     types::UtcTimePoint recorded_at_utc{};
     std::string correlation_id;
     std::string causation_id;
 };
 
-struct SeedProbeGridSeedRow {
-    std::int64_t grid_seed_id = 0;
-    std::int64_t probe_result_id = 0;
-    std::string source_family;
-    std::int32_t axis_x = 0;
-    std::int32_t axis_y = 0;
-    std::int64_t seed_value = 0;
-    std::int64_t seed_delta = 0;
-};
-
-struct SeedProbeUniqueSeedRow {
-    std::int64_t unique_seed_id = 0;
+struct SeedProbeResultRow {
     std::int64_t probe_result_id = 0;
     std::int64_t probe_run_id = 0;
     std::int64_t input_frame_id = 0;
-    std::int64_t seed_value = 0;
-    std::int64_t seed_delta = 0;
-    std::int32_t main_x = 0;
-    std::int32_t main_y = 0;
-    std::int32_t cstick_x = 0;
-    std::int32_t cstick_y = 0;
-    std::int32_t trigger_x = 0;
-    std::int32_t trigger_y = 0;
+    std::int64_t source_job_id = 0;
+    std::uint32_t seed_value = 0;
+    std::uint64_t origin_worker_id = 0;
+    std::uint64_t origin_process_generation = 0;
+    std::uint64_t origin_state_epoch = 0;
+    std::string terminal_sha256;
+    std::optional<std::int64_t> confirmation_of_probe_result_id;
+    SeedProbeEvidenceState evidence_state = SeedProbeEvidenceState::Unknown;
+    types::UtcTimePoint recorded_at_utc{};
 };
 
 struct AnalysisInputSetFrameRow {
@@ -394,12 +491,29 @@ struct AnalysisInputSetFrameRow {
     std::int32_t trigger_y = 0;
 };
 
-struct RecordSeedProbeUniqueSeedCommand {
+struct TransitionSeedProbeEvidenceCommand {
     std::int64_t probe_result_id = 0;
-    std::int64_t input_frame_id = 0;
-    std::int64_t seed_value = 0;
-    std::int64_t seed_delta = 0;
-    types::UtcTimePoint recorded_at_utc{};
+    SeedProbeEvidenceState expected_state = SeedProbeEvidenceState::Unknown;
+    SeedProbeEvidenceState new_state = SeedProbeEvidenceState::Unknown;
+    types::UtcTimePoint changed_at_utc{};
+    std::string correlation_id;
+    std::string causation_id;
+};
+
+struct UpdateSeedProbeRunStatusCommand {
+    std::int64_t probe_run_id = 0;
+    SeedProbeRunStatus expected_status = SeedProbeRunStatus::Unknown;
+    SeedProbeRunStatus new_status = SeedProbeRunStatus::Unknown;
+    std::optional<types::UtcTimePoint> completed_at_utc;
+    types::UtcTimePoint changed_at_utc{};
+    std::string correlation_id;
+    std::string causation_id;
+};
+
+struct ReplaceSeedProbeAcceptedInputFramesCommand {
+    std::int64_t probe_run_id = 0;
+    std::vector<std::int64_t> input_frame_ids;
+    types::UtcTimePoint replaced_at_utc{};
     std::string correlation_id;
     std::string causation_id;
 };
@@ -413,19 +527,6 @@ struct RecordSeedProbeEncounterProjectionCommand {
     std::optional<std::int64_t> stutter_step_at;
     bool movement_required = false;
     types::UtcTimePoint recorded_at_utc{};
-    std::string correlation_id;
-    std::string causation_id;
-};
-
-struct CompleteSeedProbeRunCommand {
-    std::int64_t probe_run_id = 0;
-    std::optional<std::int64_t> neutral_seed_value;
-    int grid_count = 0;
-    int unique_count = 0;
-    std::string result_status;
-    std::string run_status;
-    types::UtcTimePoint recorded_at_utc{};
-    types::UtcTimePoint completed_at_utc{};
     std::string correlation_id;
     std::string causation_id;
 };
@@ -445,7 +546,7 @@ struct CreateBattleSetCommand {
 
 struct AddBattleSeedCandidateCommand {
     std::int64_t battle_set_id = 0;
-    std::optional<std::int64_t> source_unique_seed_id;
+    std::optional<std::int64_t> source_probe_result_id;
     std::optional<std::int64_t> source_input_frame_id;
     std::int64_t seed_value = 0;
     BattleSeedCandidateSourceKind source_kind = BattleSeedCandidateSourceKind::Unknown;
@@ -553,7 +654,7 @@ struct BattleSetSnapshot {
 struct BattleSeedCandidateRow {
     std::int64_t seed_candidate_id = 0;
     std::int64_t battle_set_id = 0;
-    std::optional<std::int64_t> source_unique_seed_id;
+    std::optional<std::int64_t> source_probe_result_id;
     std::optional<std::int64_t> source_input_frame_id;
     std::int64_t seed_value = 0;
     BattleSeedCandidateSourceKind source_kind = BattleSeedCandidateSourceKind::Unknown;
@@ -793,18 +894,12 @@ struct IAnalysisDb {
     virtual ~IAnalysisDb() = default;
 
     virtual std::optional<std::int64_t> LookupSeedProbeRunSavestateId(std::int64_t probe_run_id) const = 0;
-    virtual std::optional<std::int64_t> LookupSeedProbeResultId(std::int64_t probe_run_id) const = 0;
-    virtual std::optional<std::int64_t> LookupSeedProbeNeutralSeed(std::int64_t probe_run_id) const = 0;
-    virtual std::optional<SeedProbeNeutralSeedRow> GetSeedProbeNeutralSeed(std::int64_t neutral_seed_id) const = 0;
-    virtual bool TryGetSeedProbeNeutralSeedForRun(
-        std::int64_t probe_run_id,
-        std::optional<SeedProbeNeutralSeedRow>* row_out,
-        std::string* error_out = nullptr) const = 0;
-    virtual std::vector<SeedProbeGridSeedRow> ListSeedProbeGridSeeds(std::int64_t probe_run_id) const = 0;
-    virtual std::vector<SeedProbeUniqueSeedRow> ListSeedProbeUniqueSeeds(std::int64_t probe_run_id) const = 0;
-    virtual std::optional<SeedProbeUniqueSeedRow> GetSeedProbeUniqueSeed(std::int64_t unique_seed_id) const = 0;
-    virtual std::optional<SeedProbeUniqueSeedRow> FindSeedProbeUniqueSeedForEntrySavestateInputFrame(
-        std::int64_t entry_savestate_id,
+    virtual std::optional<SeedProbeResultRow> GetSeedProbeResult(std::int64_t probe_result_id) const = 0;
+    virtual std::optional<SeedProbeResultRow> GetSeedProbeResultForSourceJob(
+        std::int64_t source_job_id) const = 0;
+    virtual std::vector<SeedProbeResultRow> ListSeedProbeResults(std::int64_t probe_run_id) const = 0;
+    virtual std::optional<SeedProbeResultRow> FindConfirmedSeedProbeResultForAcceptedInputSetFrame(
+        std::int64_t accepted_input_set_id,
         std::int64_t input_frame_id) const = 0;
     virtual std::optional<AnalysisInputSetFrameRow> GetAnalysisInputFrame(std::int64_t input_frame_id) const = 0;
     virtual std::vector<AnalysisInputSetFrameRow> ListAnalysisInputSetFrames(std::int64_t input_set_id) const = 0;
@@ -814,10 +909,14 @@ struct IAnalysisDb {
         std::int64_t trigger_axis_xy_id,
         std::int64_t* input_frame_id_out = nullptr,
         std::string* error_out = nullptr) = 0;
-    virtual bool EnsureSeedProbeUniqueSeedDelta(
-        const RecordSeedProbeUniqueSeedCommand& command,
+    virtual bool EnsureSeedProbeObservation(
+        const RecordSeedProbeObservationCommand& command,
         bool* inserted_out = nullptr,
-        std::int64_t* unique_seed_id_out = nullptr,
+        std::int64_t* probe_result_id_out = nullptr,
+        std::string* error_out = nullptr) = 0;
+    virtual bool TransitionSeedProbeEvidence(
+        const TransitionSeedProbeEvidenceCommand& command,
+        bool* changed_out = nullptr,
         std::string* error_out = nullptr) = 0;
 
     virtual bool CreateSeedProbeSet(
@@ -830,51 +929,28 @@ struct IAnalysisDb {
         std::int64_t* probe_run_id_out = nullptr,
         std::string* error_out = nullptr) = 0;
 
-    virtual bool CreateSeedProbeRunForSet(
-        std::int64_t probe_set_id,
-        std::int64_t* probe_run_id_out = nullptr,
-        std::string* error_out = nullptr) = 0;
-
     virtual std::optional<SeedProbeRunSnapshot> GetSeedProbeRun(
         std::int64_t probe_run_id) const = 0;
 
-    virtual bool SetSeedProbeRunNeutralSeed(
-        std::int64_t probe_run_id,
-        std::int64_t neutral_seed_value,
+    virtual bool UpdateSeedProbeRunStatus(
+        const UpdateSeedProbeRunStatusCommand& command,
+        bool* changed_out = nullptr,
+        std::string* error_out = nullptr) = 0;
+    virtual bool ObserveSeedProbeEndpoint(
+        const ObserveSeedProbeEndpointCommand& command,
+        ObserveSeedProbeEndpointReceipt* receipt_out = nullptr,
+        std::string* error_out = nullptr) = 0;
+    virtual bool ReplaceSeedProbeAcceptedInputFrames(
+        const ReplaceSeedProbeAcceptedInputFramesCommand& command,
         std::string* error_out = nullptr) = 0;
 
     virtual bool SetSeedProbeRunEntrySavestate(
         const SetSeedProbeRunEntrySavestateCommand& command,
         std::string* error_out = nullptr) = 0;
 
-    virtual bool RecordSeedProbeNeutralSeed(
-        const RecordSeedProbeNeutralSeedCommand& command,
-        std::int64_t* neutral_seed_id_out = nullptr,
-        std::string* error_out = nullptr) = 0;
-    virtual bool EnsureSeedProbeNeutralSeed(
-        const RecordSeedProbeNeutralSeedCommand& command,
-        bool* inserted_out = nullptr,
-        std::int64_t* neutral_seed_id_out = nullptr,
-        std::string* error_out = nullptr) = 0;
-
-    virtual bool RecordSeedProbeGridSeed(
-        const RecordSeedProbeGridSeedCommand& command,
-        std::int64_t* grid_seed_id_out = nullptr,
-        std::string* error_out = nullptr) = 0;
-
-    virtual bool RecordSeedProbeUniqueSeed(
-        const RecordSeedProbeUniqueSeedCommand& command,
-        std::int64_t* unique_seed_id_out = nullptr,
-        std::string* error_out = nullptr) = 0;
-
     virtual bool RecordSeedProbeEncounterProjection(
         const RecordSeedProbeEncounterProjectionCommand& command,
         std::int64_t* encounter_projection_id_out = nullptr,
-        std::string* error_out = nullptr) = 0;
-
-    virtual bool CompleteSeedProbeRun(
-        const CompleteSeedProbeRunCommand& command,
-        std::int64_t* probe_result_id_out = nullptr,
         std::string* error_out = nullptr) = 0;
 
     virtual bool CreateBattleSet(

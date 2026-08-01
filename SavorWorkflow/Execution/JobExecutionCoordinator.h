@@ -1,0 +1,198 @@
+#pragma once
+
+#include <atomic>
+#include <chrono>
+#include <cstddef>
+#include <cstdint>
+#include <functional>
+#include <memory>
+#include <map>
+#include <optional>
+#include <string>
+#include <vector>
+
+#include "Execution/IExecutionDb.h"
+#include "Execution/ProgramDB/ProgramKindRegistry.h"
+#include "Execution/WorkerResultBlobStore.h"
+#include "WorkerCoordinator.h"
+
+namespace savor::runner::parallel::savordb {
+
+struct JobExecutionCoordinatorConfig {
+    std::chrono::milliseconds poll_interval{20};
+    std::chrono::milliseconds workset_lease_duration{30000};
+    std::chrono::milliseconds recovery_interval{1000};
+    std::chrono::milliseconds terminal_retry_interval{250};
+    std::chrono::milliseconds terminal_retry_max_interval{30000};
+    std::chrono::milliseconds blob_readiness_retry_interval{1000};
+    std::chrono::milliseconds blob_readiness_retry_max_interval{30000};
+    std::size_t worker_queue_capacity = 2;
+    std::size_t terminal_persistence_threads = 4;
+    std::uint32_t maximum_items_per_workset = 16;
+    std::uint64_t maximum_encoded_workset_bytes =
+        32ull * 1024ull * 1024ull;
+    int recovery_batch_size = 64;
+    savor::runtime::StateCompatibilityToken state_compatibility;
+};
+
+struct JobExecutionCoordinatorWarning {
+    std::uint64_t sequence = 0;
+    std::int64_t worker_id = 0;
+    std::int64_t job_id = 0;
+    std::int64_t observed_mono_ns = 0;
+    std::string message;
+    std::string detail;
+};
+
+enum class WorkerSchedulerAffinityState : std::uint8_t {
+    Cold = 0,
+    Projected,
+    Actual,
+};
+
+struct JobExecutionWorkerLaneSnapshot {
+    std::size_t worker_id = 0;
+    std::uint64_t process_generation = 0;
+    std::size_t reservations = 0;
+    std::size_t reconstructing = 0;
+    std::size_t waiting_queue_depth = 0;
+    std::optional<std::int64_t> submitting_dispatch_attempt_id;
+    std::optional<std::int64_t> active_dispatch_attempt_id;
+    std::size_t persistence_queue_depth = 0;
+    std::size_t control_queue_depth = 0;
+    std::size_t pending_acknowledgements = 0;
+    std::size_t pending_cancellations = 0;
+    WorkerSchedulerAffinityState affinity_state =
+        WorkerSchedulerAffinityState::Cold;
+    std::optional<std::string> projected_execution_affinity_key;
+    std::optional<std::string> projected_baseline_affinity_key;
+    std::optional<std::string> actual_execution_affinity_key;
+    std::optional<std::string> actual_baseline_affinity_key;
+};
+
+struct JobExecutionCoordinatorTelemetry {
+    std::uint64_t claim_batches = 0;
+    std::uint64_t successful_claim_batches = 0;
+    std::uint64_t empty_claim_batches = 0;
+    std::uint64_t worksets_claimed = 0;
+    std::uint64_t worksets_reconstructed = 0;
+    std::uint64_t worksets_submitted = 0;
+    std::uint64_t submission_calls_started = 0;
+    std::uint64_t submission_accepted = 0;
+    std::uint64_t submission_temporary_unavailable = 0;
+    std::uint64_t submission_stale_generation = 0;
+    std::uint64_t submission_incompatible = 0;
+    std::uint64_t submission_deterministic_rejection = 0;
+    std::uint64_t submission_ambiguous_after_write = 0;
+    std::uint64_t submission_transport_canceled_before_write = 0;
+    std::uint64_t worksets_durably_dispatched = 0;
+    std::uint64_t reconstruction_invariant_failures = 0;
+    std::uint64_t jobs_started = 0;
+    std::uint64_t worker_terminals_observed = 0;
+    std::uint64_t worker_terminals_staged = 0;
+    std::uint64_t
+        worker_terminals_discarded_after_authority_release = 0;
+    std::uint64_t worker_terminal_acks = 0;
+    std::uint64_t worker_terminal_ack_abandoned_generation_loss = 0;
+    std::uint64_t worker_terminal_staging_failures = 0;
+    std::uint64_t worker_terminal_retry_attempts = 0;
+    std::uint64_t blob_readiness_failures = 0;
+    std::uint64_t cancellations_claimed = 0;
+    std::uint64_t cancellations_delivered = 0;
+    std::uint64_t worker_losses = 0;
+    std::uint64_t recovered_dispatches = 0;
+    std::uint64_t scheduler_wakeups = 0;
+    std::size_t claim_profiles_in_backoff = 0;
+    std::uint64_t maximum_claim_backoff_ms = 0;
+    std::string last_scheduler_wake_reason;
+    std::size_t reserved_slots = 0;
+    std::size_t reconstruction_queue_depth = 0;
+    std::size_t reconstruction_queue_high_water = 0;
+    std::uint64_t reconstruction_oldest_item_age_ms = 0;
+    bool reconstruction_active = false;
+    std::uint64_t reconstruction_total_duration_ms = 0;
+    std::uint64_t reconstruction_max_duration_ms = 0;
+    std::size_t reconstructed_waiting_worksets = 0;
+    std::size_t submitting_worksets = 0;
+    std::size_t active_worksets = 0;
+    std::size_t draining_worksets = 0;
+    std::size_t persistence_queue_depth = 0;
+    std::size_t persistence_queue_high_water = 0;
+    std::uint64_t persistence_oldest_event_age_ms = 0;
+    std::size_t active_worker_streams = 0;
+    std::size_t worker_control_queue_depth = 0;
+    std::size_t worker_control_queue_high_water = 0;
+    std::uint64_t worker_control_oldest_command_age_ms = 0;
+    std::size_t pending_acknowledgements = 0;
+    std::size_t pending_cancellations = 0;
+    std::uint64_t worker_control_commands_queued = 0;
+    std::uint64_t worker_control_commands_attempted = 0;
+    std::uint64_t worker_control_commands_applied = 0;
+    std::uint64_t worker_control_commands_failed = 0;
+    std::uint64_t worker_control_commands_abandoned = 0;
+    std::uint64_t cancellation_deliveries_already_applied = 0;
+    std::uint64_t cancellation_delivery_total_latency_ms = 0;
+    std::uint64_t cancellation_delivery_max_latency_ms = 0;
+    std::map<std::string, std::uint64_t>
+        cancellation_resolution_counts;
+    std::map<std::string, std::uint64_t>
+        dispatch_release_reason_counts;
+    std::map<std::string, std::uint64_t>
+        dispatch_release_phase_counts;
+    bool blob_store_ready = false;
+    bool user_admission_paused = false;
+    bool invariant_admission_paused = false;
+    bool storage_admission_paused = false;
+
+    // Compatibility aliases retained for the existing SeedProbe progress
+    // renderer while it is cut over to the lane-specific fields.
+    std::size_t buffered_worksets = 0;
+    std::size_t pending_worker_terminals = 0;
+    bool claims_paused_for_terminal_staging = false;
+    bool invariant_paused = false;
+    std::string last_error;
+};
+
+class JobExecutionCoordinator {
+public:
+    using WorkerTerminalStagedCallback = std::function<void()>;
+
+    JobExecutionCoordinator(
+        savor::db::IExecutionDb* execution_db,
+        const savor::db::execution::programdb::ProgramKindRegistry*
+            program_kind_registry,
+        WorkerCoordinator* worker_coordinator,
+        savor::db::execution::WorkerResultBlobStore* blob_store,
+        JobExecutionCoordinatorConfig config = {},
+        WorkerTerminalStagedCallback terminal_staged_callback = {});
+    ~JobExecutionCoordinator();
+
+    JobExecutionCoordinator(const JobExecutionCoordinator&) = delete;
+    JobExecutionCoordinator& operator=(const JobExecutionCoordinator&) =
+        delete;
+
+    bool Start(std::string* error_out = nullptr);
+    void Quiesce();
+    bool ReleaseBufferedClaims(std::string* error_out = nullptr);
+    bool RecoverAfterWorkersStopped(std::string* error_out = nullptr);
+    void Stop();
+
+    void SetPaused(bool paused);
+    [[nodiscard]] bool IsPaused() const noexcept;
+    [[nodiscard]] bool IsRunning() const noexcept;
+    bool ClearInvariantPause();
+    void NotifyWorkAvailable(
+        std::string reason = "work-published");
+
+    [[nodiscard]] JobExecutionCoordinatorTelemetry SnapshotTelemetry() const;
+    [[nodiscard]] std::vector<JobExecutionWorkerLaneSnapshot>
+        SnapshotWorkerLanes() const;
+    [[nodiscard]] std::vector<JobExecutionCoordinatorWarning>
+        SnapshotWarnings() const;
+
+private:
+    class Impl;
+    std::unique_ptr<Impl> impl_;
+};
+
+} // namespace savor::runner::parallel::savordb

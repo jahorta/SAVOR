@@ -17,7 +17,7 @@ namespace savor {
         uint8_t x = 0;
         uint8_t y = 0;
         uint32_t seed = 0;
-        long long delta = 0;
+        std::int32_t delta = 0;
         bool ok = false;
         std::string label;
     };
@@ -30,6 +30,14 @@ namespace savor {
     std::vector<savor::GCInputFrame> build_grid_main(int n, int minv, int maxv);
     std::vector<savor::GCInputFrame> build_grid_cstick(int n, int minv, int maxv);
     std::vector<savor::GCInputFrame> build_grid_trig(int n, int minv, int maxv, bool cap_top);
+
+    /**
+     * Subtract two uint32 RNG states with uint32 wraparound, then interpret
+     * the resulting 32 bits as a signed delta.
+     */
+    std::int32_t wrapped_seed_delta(
+        std::uint32_t observed,
+        std::uint32_t neutral) noexcept;
 
     struct ComboSampleSet {
         int32_t target_delta = 0;

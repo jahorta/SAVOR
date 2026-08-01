@@ -157,6 +157,10 @@
     <ClCompile Include="test_program_runtime_action_support.cpp" />
     <ClCompile Include="test_program_verifier.cpp" />
     <ClCompile Include="test_semantic_observation_composition.cpp" />
+    <ClCompile Include="test_seedprobe_module.cpp" />
+    <ClCompile Include="test_job_execution_coordinator.cpp" />
+    <ClCompile Include="test_worker_startup_barrier.cpp" />
+    <ClCompile Include="test_worker_result_blob_store.cpp" />
     <ClCompile Include="test_session_program_action_host.cpp" />
     <ClCompile Include="test_execution_worker_runtime.cpp" />
     <ClCompile Include="test_session_services.cpp" />

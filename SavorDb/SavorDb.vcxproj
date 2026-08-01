@@ -81,7 +81,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <LanguageStandard>stdcpplatest</LanguageStandard>
       <UseStandardPreprocessor>true</UseStandardPreprocessor>
-      <AdditionalIncludeDirectories>$(IntDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(IntDir);$(SolutionDir)SavorCore;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <PreBuildEvent>
       <Command>powershell -NoProfile -ExecutionPolicy Bypass -Command ^
@@ -94,9 +94,9 @@
   "  $context=$_.Directory.Name;" ^
   "  [PSCustomObject]@{ Context=$context; Name=$_.Name; FullName=$_.FullName; Key=($context + '/' + $_.Name) }" ^
   "} | Sort-Object Key;" ^
-  "$keys=($files | ForEach-Object Key) -join [Environment]::NewLine;" ^
+  "$manifest=($files | ForEach-Object { $_.Key + '|' + (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash }) -join [Environment]::NewLine;" ^
   "if(Test-Path $stamp){ $prev=Get-Content -Path $stamp -Raw } else { $prev='' }" ^
-  "if($prev -eq $keys){ Write-Host 'No new migration files; skipping embedding.'; exit 0 }" ^
+  "if($prev -eq $manifest){ Write-Host 'Migration filenames and contents unchanged; skipping embedding.'; exit 0 }" ^
   "$header=@('// generated - do not edit','#pragma once','','#include &lt;array&gt;','','#include \"MigrationContext.h\"','','namespace savor::db::migrations {','','struct EmbeddedMigrationEntry {','    MigrationContext context;','    const char* filename;','    const char* sql;','};','','inline constexpr std::array&lt;EmbeddedMigrationEntry, '+$files.Count+'&gt; kEmbeddedMigrations{{');" ^
   "$tmp=$out + '.tmp';" ^
   "Set-Content -Path $tmp -Value $header -Encoding UTF8;" ^
@@ -109,8 +109,8 @@
   "Add-Content -Path $tmp -Value '' -Encoding UTF8;" ^
   "Add-Content -Path $tmp -Value '} // namespace savor::db::migrations' -Encoding UTF8;" ^
   "Move-Item -Force -Path $tmp -Destination $out;" ^
-  "Set-Content -Path $stamp -Value $keys -Encoding UTF8;" ^
-  "Write-Host 'Embedded migrations header regenerated due to new migration files.'"</Command>
+  "Set-Content -Path $stamp -Value $manifest -Encoding UTF8;" ^
+  "Write-Host 'Embedded migrations header regenerated due to migration changes.'"</Command>
     </PreBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -124,7 +124,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <LanguageStandard>stdcpplatest</LanguageStandard>
       <UseStandardPreprocessor>true</UseStandardPreprocessor>
-      <AdditionalIncludeDirectories>$(IntDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(IntDir);$(SolutionDir)SavorCore;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <PreBuildEvent>
       <Command>powershell -NoProfile -ExecutionPolicy Bypass -Command ^
@@ -137,9 +137,9 @@
   "  $context=$_.Directory.Name;" ^
   "  [PSCustomObject]@{ Context=$context; Name=$_.Name; FullName=$_.FullName; Key=($context + '/' + $_.Name) }" ^
   "} | Sort-Object Key;" ^
-  "$keys=($files | ForEach-Object Key) -join [Environment]::NewLine;" ^
+  "$manifest=($files | ForEach-Object { $_.Key + '|' + (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash }) -join [Environment]::NewLine;" ^
   "if(Test-Path $stamp){ $prev=Get-Content -Path $stamp -Raw } else { $prev='' }" ^
-  "if($prev -eq $keys){ Write-Host 'No new migration files; skipping embedding.'; exit 0 }" ^
+  "if($prev -eq $manifest){ Write-Host 'Migration filenames and contents unchanged; skipping embedding.'; exit 0 }" ^
   "$header=@('// generated - do not edit','#pragma once','','#include &lt;array&gt;','','#include \"MigrationContext.h\"','','namespace savor::db::migrations {','','struct EmbeddedMigrationEntry {','    MigrationContext context;','    const char* filename;','    const char* sql;','};','','inline constexpr std::array&lt;EmbeddedMigrationEntry, '+$files.Count+'&gt; kEmbeddedMigrations{{');" ^
   "$tmp=$out + '.tmp';" ^
   "Set-Content -Path $tmp -Value $header -Encoding UTF8;" ^
@@ -152,8 +152,8 @@
   "Add-Content -Path $tmp -Value '' -Encoding UTF8;" ^
   "Add-Content -Path $tmp -Value '} // namespace savor::db::migrations' -Encoding UTF8;" ^
   "Move-Item -Force -Path $tmp -Destination $out;" ^
-  "Set-Content -Path $stamp -Value $keys -Encoding UTF8;" ^
-  "Write-Host 'Embedded migrations header regenerated due to new migration files.'"</Command>
+  "Set-Content -Path $stamp -Value $manifest -Encoding UTF8;" ^
+  "Write-Host 'Embedded migrations header regenerated due to migration changes.'"</Command>
     </PreBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -184,20 +184,18 @@
     <ClInclude Include="Common\Events\OutboxRelay.h" />
     <ClInclude Include="Execution\ProgramDB\BattleContext\BattleContextProbeAdapters.h" />
     <ClInclude Include="Execution\ProgramDB\BattleContext\BattleContextProbePhaseRegistration.h" />
-    <ClInclude Include="Execution\ProgramDB\BattleEndResults\BattleEndResultsAdapters.h" />
-    <ClInclude Include="Execution\ProgramDB\BattleEndResults\BattleEndResultsPhaseRegistration.h" />
     <ClInclude Include="Execution\ProgramDB\NavigationContext\NavigationContextAdapters.h" />
     <ClInclude Include="Execution\ProgramDB\NavigationContext\NavigationContextPhaseRegistration.h" />
     <ClInclude Include="Execution\ProgramDB\BattleSingleTurn\BattleSingleTurnAdapters.h" />
     <ClInclude Include="Execution\ProgramDB\BattleSingleTurn\BattleSingleTurnPhaseRegistration.h" />
     <ClInclude Include="Execution\ProgramDB\ProgramKindDescriptor.h" />
     <ClInclude Include="Execution\ProgramDB\ProgramKindRegistry.h" />
+    <ClInclude Include="Execution\ProgramDB\ProgramResultProcessor.h" />
     <ClInclude Include="Execution\ProgramDB\ProductionProgramKindRegistry.h" />
-    <ClInclude Include="Execution\ProgramDB\SeedProbe\SeedProbeContracts.h" />
-    <ClInclude Include="Execution\ProgramDB\SeedProbe\SeedProbeGridAdapters.h" />
-    <ClInclude Include="Execution\ProgramDB\SeedProbe\SeedProbeNeutralAdapters.h" />
-    <ClInclude Include="Execution\ProgramDB\SeedProbe\SeedProbePhaseRegistration.h" />
-    <ClInclude Include="Execution\ProgramDB\SeedProbe\SeedProbeUniqueAdapters.h" />
+    <ClInclude Include="Execution\ProgramDB\WorkerResultBlobCleanupService.h" />
+    <ClInclude Include="Execution\ProgramDB\SeedProbe\SeedProbeExecutionAdapters.h" />
+    <ClInclude Include="Execution\ProgramDB\SeedProbe\SeedProbeJobSpec.h" />
+    <ClInclude Include="Execution\ProgramDB\SeedProbe\SeedProbeProgram.h" />
     <ClInclude Include="Execution\ProgramDB\TasMovie\TasMovieAdapters.h" />
     <ClInclude Include="Execution\ProgramDB\TasMovie\TasMoviePhaseRegistration.h" />
     <ClInclude Include="Execution\Workflow\WorkflowOrchestration.h" />
@@ -207,6 +205,7 @@
     <ClInclude Include="Common\Types\TypedIds.h" />
     <ClInclude Include="Common\Types\UtcTimestamp.h" />
     <ClInclude Include="Execution\IExecutionDb.h" />
+    <ClInclude Include="Execution\WorkerResultBlobStore.h" />
     <ClInclude Include="Execution\Jobs\JobEventOrchestration.h" />
     <ClInclude Include="Execution\QueuedExecutionDb.h" />
     <ClInclude Include="Execution\Workflow\SqliteExecutionDb.h" />
@@ -252,18 +251,15 @@
     <ClCompile Include="Execution\QueuedExecutionDb.cpp" />
     <ClCompile Include="Execution\ProgramDB\BattleContext\BattleContextProbeAdapters.cpp" />
     <ClCompile Include="Execution\ProgramDB\BattleContext\BattleContextProbePhaseRegistration.cpp" />
-    <ClCompile Include="Execution\ProgramDB\BattleEndResults\BattleEndResultsAdapters.cpp" />
-    <ClCompile Include="Execution\ProgramDB\BattleEndResults\BattleEndWorkflowAdapters.cpp" />
-    <ClCompile Include="Execution\ProgramDB\BattleEndResults\BattleEndResultsPhaseRegistration.cpp" />
     <ClCompile Include="Execution\ProgramDB\NavigationContext\NavigationContextAdapters.cpp" />
     <ClCompile Include="Execution\ProgramDB\NavigationContext\NavigationContextPhaseRegistration.cpp" />
     <ClCompile Include="Execution\ProgramDB\BattleSingleTurn\BattleSingleTurnAdapters.cpp" />
     <ClCompile Include="Execution\ProgramDB\BattleSingleTurn\BattleSingleTurnPhaseRegistration.cpp" />
+    <ClCompile Include="Execution\ProgramDB\ProgramResultProcessor.cpp" />
     <ClCompile Include="Execution\ProgramDB\ProductionProgramKindRegistry.cpp" />
-    <ClCompile Include="Execution\ProgramDB\SeedProbe\SeedProbeGridAdapters.cpp" />
-    <ClCompile Include="Execution\ProgramDB\SeedProbe\SeedProbeNeutralAdapters.cpp" />
-    <ClCompile Include="Execution\ProgramDB\SeedProbe\SeedProbePhaseRegistration.cpp" />
-    <ClCompile Include="Execution\ProgramDB\SeedProbe\SeedProbeUniqueAdapters.cpp" />
+    <ClCompile Include="Execution\ProgramDB\WorkerResultBlobCleanupService.cpp" />
+    <ClCompile Include="Execution\ProgramDB\SeedProbe\SeedProbeExecutionAdapters.cpp" />
+    <ClCompile Include="Execution\ProgramDB\SeedProbe\SeedProbeProgram.cpp" />
     <ClCompile Include="Execution\ProgramDB\TasMovie\TasMovieAdapters.cpp" />
     <ClCompile Include="Execution\ProgramDB\TasMovie\TasMoviePhaseRegistration.cpp" />
     <ClCompile Include="Execution\Workflow\SqliteExecutionDb.cpp" />
@@ -277,6 +273,7 @@
     <ClCompile Include="Execution\Workflow\WorkflowTerminalAdvancementService.cpp" />
     <ClCompile Include="Execution\Workflow\WorkflowTerminalOutboxSubscriber.cpp" />
     <ClCompile Include="Execution\Workflow\WorkflowRecoveryService.cpp" />
+    <ClCompile Include="Execution\WorkerResultBlobStore.cpp" />
     <ClCompile Include="SavorDb.cpp" />
     <ClCompile Include="State\QueuedStateDb.cpp" />
     <ClCompile Include="State\SqliteStateDb.cpp" />
@@ -302,6 +299,7 @@
     <None Include="migration\Archive\202606201000_archive_workflow_package_membership.sql" />
     <None Include="migration\Archive\202606201100_archive_package_name_notes.sql" />
     <None Include="migration\Archive\202607211300_archive_battle_end_workflow_kinds.sql" />
+    <None Include="migration\Archive\202607291100_archive_workset_coordination_kinds.sql" />
     <None Include="migration\Authoring\202604051000_authoring_stage2_schema.sql" />
     <None Include="migration\Authoring\202604101000_authoring_predicate_breakpoint_id.sql" />
     <None Include="migration\Authoring\202604101100_authoring_predicate_width.sql" />
@@ -321,6 +319,7 @@
     <None Include="migration\Execution\202604111000_execution_graph_routing.sql" />
     <None Include="migration\Execution\202606181100_execution_job_event_projection_index.sql" />
     <None Include="migration\Execution\202606181200_execution_active_workflow_materialization_index.sql" />
+    <None Include="migration\Execution\202607291000_execution_workset_coordination.sql" />
     <None Include="migration\State\202604051000_state_stage2_schema.sql" />
     <None Include="migration\State\202607231800_state_derivation_source_context_index.sql" />
     <None Include="migration\UIRead\202604051000_uiread_stage2_schema.sql" />
@@ -342,6 +341,7 @@
     <None Include="migration\UIRead\202606181400_uiread_terminal_display_state_repair.sql" />
     <None Include="migration\UIRead\202606201000_uiread_archive_workflow_scope.sql" />
     <None Include="migration\UIRead\202606201100_uiread_archive_name_notes.sql" />
+    <None Include="migration\UIRead\202607291100_uiread_result_processing_visibility.sql" />
     <None Include="update_generated_migrations_command.txt" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

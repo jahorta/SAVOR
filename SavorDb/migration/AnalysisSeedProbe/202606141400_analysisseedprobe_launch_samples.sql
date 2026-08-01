@@ -1,1 +1,7 @@
-ALTER TABLE sp_probe_run ADD COLUMN launch_samples_per_axis INTEGER NULL;
+BEGIN IMMEDIATE;
+
+-- launch_samples_per_axis is part of the destructive base schema. This
+-- retained migration is intentionally idempotent for catalog stability.
+SELECT 1;
+
+COMMIT;

@@ -29,9 +29,6 @@
     <ClCompile Include="BattleSingleTurnScenario.cpp">
       <Filter>Scenarios</Filter>
     </ClCompile>
-    <ClCompile Include="BattleEndResultsScenario.cpp">
-      <Filter>Scenarios</Filter>
-    </ClCompile>
     <ClCompile Include="NavigationContextScenario.cpp">
       <Filter>Scenarios</Filter>
     </ClCompile>
@@ -51,6 +48,9 @@
       <Filter>Helpers</Filter>
     </ClCompile>
     <ClCompile Include="WorkerCoordinatorPerf.cpp">
+      <Filter>Helpers</Filter>
+    </ClCompile>
+    <ClCompile Include="WorkerStartupBarrier.cpp">
       <Filter>Helpers</Filter>
     </ClCompile>
   </ItemGroup>
@@ -76,9 +76,6 @@
     <ClInclude Include="BattleSingleTurnScenario.h">
       <Filter>Scenarios</Filter>
     </ClInclude>
-    <ClInclude Include="BattleEndResultsScenario.h">
-      <Filter>Scenarios</Filter>
-    </ClInclude>
     <ClInclude Include="NavigationContextScenario.h">
       <Filter>Scenarios</Filter>
     </ClInclude>
@@ -86,6 +83,9 @@
       <Filter>Helpers</Filter>
     </ClInclude>
     <ClInclude Include="WorkerCoordinatorPerf.h">
+      <Filter>Helpers</Filter>
+    </ClInclude>
+    <ClInclude Include="WorkerStartupBarrier.h">
       <Filter>Helpers</Filter>
     </ClInclude>
   </ItemGroup>

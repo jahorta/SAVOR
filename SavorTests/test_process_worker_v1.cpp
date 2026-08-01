@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 
+#include "Phases/Programs/SeedProbe/SeedProbeModule.h"
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -421,35 +423,42 @@ savor::runtime::WorkerWorksetDefinition MakeTransportTestWorkset()
     using namespace savor::runtime;
     WorkerWorksetDefinition workset;
     workset.workset_id = WorkerWorksetId{5001};
+    const auto phase = savor::runtime::seedprobe::
+        SeedProbeFullPhaseDefinitionV2();
+    workset.phase_invocation = {
+        .invocation_id = {1, 5001},
+        .program = phase->identity(),
+    };
     workset.baseline.state_kind = ProgramBaselineStateKind::Boot;
-    workset.baseline.lineage = "transport-test-baseline";
-    workset.execution_key.module = {
-        .canonical_id = "test.transport/1",
-        .revision = 1,
-        .canonical_hash = std::string(64, 'c')};
-    workset.execution_key.entrypoint = "run";
+    workset.baseline.lineage =
+        phase->runtime_contract().baseline_lineage;
+    workset.execution_key.module =
+        phase->runtime_contract().module;
+    workset.execution_key.entrypoint =
+        phase->runtime_contract().entrypoint;
     workset.execution_key.verified_dependency_sha256 =
-        std::string(64, 'd');
+        phase->runtime_contract().verified_dependency_sha256;
     workset.execution_key.runtime_profile_sha256 =
-        std::string(64, 'a');
+        phase->runtime_contract().runtime_profile_sha256;
     workset.execution_key.baseline =
         ComputeProgramBaselineKey(workset.baseline);
     workset.execution_key.movie_policy_sha256 =
-        std::string(64, 'e');
+        phase->runtime_contract().movie_policy_sha256;
     workset.execution_key.service_policy_sha256 =
-        std::string(64, 'f');
+        phase->runtime_contract().service_policy_sha256;
     workset.execution_key.canonical_sha256 =
         ComputeWorkerWorksetExecutionKeyHash(
             workset.execution_key);
     workset.items.push_back(WorksetItemTemplate{
         .item_id = WorkerWorksetItemId{5002},
         .ordinal = 0,
-        .invocation = {
-            .invocation_id = InvocationId{5003},
+        .execution = {
+            .execution_id = ProgramExecutionId{5003},
             .attempt_id = AttemptId{5004},
-            .module = workset.execution_key.module,
-            .entrypoint = workset.execution_key.entrypoint,
-            .template_payload = {0x01},
+            .input_payload =
+                savor::runtime::seedprobe::
+                    EncodeSeedProbeExecutionInputV2(
+                    {savor::GCInputFrame{}}),
         },
         .declared_terminal_bytes = 4096,
     });
@@ -939,6 +948,56 @@ TEST(ProcessWorkerV1, ScalarInvocationSubmissionFailsLocallyWithoutWriting)
     EXPECT_EQ(result.status, savor::wrms::CommandStatus::Unsupported);
     EXPECT_EQ(observed_writes.load(std::memory_order_relaxed), 0u);
     ExpectErrorContains(worker, "one-item WorkerWorkset");
+}
+
+TEST(ProcessWorkerV1, LivenessProbeUsesTheDirectCommandResultPath)
+{
+    savor::ProcessWorker* worker_ptr = nullptr;
+    auto hooks = std::make_shared<savor::ProcessWorkerTestHooks>();
+    hooks->observe_writer_frame =
+        [&](savor::wrms::MessageKind kind,
+            std::span<const std::uint8_t> bytes)
+        {
+            if (kind != savor::wrms::MessageKind::LivenessProbe
+                || worker_ptr == nullptr)
+            {
+                return;
+            }
+            const auto frame =
+                savor::wrms::DecodeFrame(bytes, true);
+            ASSERT_TRUE(frame);
+            ASSERT_TRUE(
+                savor::ProcessWorkerTestPeer::DeliverPayload(
+                    *worker_ptr,
+                    savor::wrms::MessageKind::CommandResult,
+                    savor::wrms::CommandResultPayload{
+                        .command_sequence = 1,
+                        .command_kind =
+                            savor::wrms::MessageKind::LivenessProbe,
+                        .status =
+                            savor::wrms::CommandStatus::Succeeded},
+                    frame.frame.header.request_id));
+        };
+
+    savor::ProcessWorker worker{hooks};
+    worker_ptr = &worker;
+    ASSERT_TRUE(
+        savor::ProcessWorkerTestPeer::StartNegotiatedVisualTransport(
+            worker,
+            savor::runtime::SessionId{55},
+            savor::runtime::StateEpoch{4}));
+
+    savor::wrms::CommandResultPayload result;
+    EXPECT_TRUE(worker.probe_liveness(&result, 1000));
+    EXPECT_EQ(
+        result.command_kind,
+        savor::wrms::MessageKind::LivenessProbe);
+    EXPECT_EQ(
+        result.status,
+        savor::wrms::CommandStatus::Succeeded);
+
+    savor::ProcessWorkerTestPeer::StopNegotiatedVisualTransport(
+        worker);
 }
 
 TEST(
@@ -2293,33 +2352,43 @@ TEST(ProcessWorkerV1, NegotiatesSliceThreeCapabilitiesCorrelatesConcurrentReques
     };
     savor::runtime::WorkerWorksetDefinition workset;
     workset.workset_id = savor::runtime::WorkerWorksetId{501};
+    const auto phase = savor::runtime::seedprobe::
+        SeedProbeFullPhaseDefinitionV2();
+    workset.phase_invocation = {
+        .invocation_id = {1, 501},
+        .program = phase->identity(),
+    };
     workset.baseline.state_kind =
         savor::runtime::ProgramBaselineStateKind::Boot;
-    workset.baseline.lineage = "process-worker-test";
-    workset.execution_key.module = module.identity;
-    workset.execution_key.entrypoint = "main";
+    workset.baseline.lineage =
+        phase->runtime_contract().baseline_lineage;
+    workset.execution_key.module =
+        phase->runtime_contract().module;
+    workset.execution_key.entrypoint =
+        phase->runtime_contract().entrypoint;
     workset.execution_key.verified_dependency_sha256 =
-        std::string(64, 'd');
+        phase->runtime_contract().verified_dependency_sha256;
     workset.execution_key.runtime_profile_sha256 =
-        std::string(64, 'r');
+        phase->runtime_contract().runtime_profile_sha256;
     workset.execution_key.baseline =
         savor::runtime::ComputeProgramBaselineKey(workset.baseline);
     workset.execution_key.movie_policy_sha256 =
-        std::string(64, 'm');
+        phase->runtime_contract().movie_policy_sha256;
     workset.execution_key.service_policy_sha256 =
-        std::string(64, 's');
+        phase->runtime_contract().service_policy_sha256;
     workset.execution_key.canonical_sha256 =
         savor::runtime::ComputeWorkerWorksetExecutionKeyHash(
             workset.execution_key);
     workset.items.push_back(savor::runtime::WorksetItemTemplate{
         .item_id = savor::runtime::WorkerWorksetItemId{601},
         .ordinal = 0,
-        .invocation = {
-            .invocation_id = savor::runtime::InvocationId{101},
+        .execution = {
+            .execution_id =
+                savor::runtime::ProgramExecutionId{101},
             .attempt_id = savor::runtime::AttemptId{201},
-            .module = module.identity,
-            .entrypoint = "main",
-            .template_payload = {4, 5, 6},
+            .input_payload = savor::runtime::seedprobe::
+                EncodeSeedProbeExecutionInputV2(
+                    {savor::GCInputFrame{}}),
         },
         .correlation = {
             .durable_job_id = "job-101",
@@ -2357,7 +2426,7 @@ TEST(ProcessWorkerV1, NegotiatesSliceThreeCapabilitiesCorrelatesConcurrentReques
                         payload))
                 {
                     savor::runtime::WorkerWorksetDefinition definition;
-                    if (savor::runtime::DecodeWorkerWorksetV1(
+                    if (savor::runtime::DecodeWorkerWorksetV2(
                             payload.encoded_workset,
                             definition))
                         observed_workset = std::move(definition);
@@ -2668,15 +2737,15 @@ TEST(
             .item_id =
                 savor::runtime::WorkerWorksetItemId{9002},
             .ordinal = 0,
-            .invocation = {
-                .invocation_id =
+            .execution = {
+                .execution_id =
                     program.invocation.invocation_id,
                 .attempt_id =
                     program.invocation.attempt_id,
-                .module = program.module.identity,
-                .entrypoint = "run",
-                .template_payload =
-                    program.encoded_invocation,
+                .input_payload =
+                    savor::runtime::seedprobe::
+                        EncodeSeedProbeExecutionInputV2(
+                            {savor::GCInputFrame{}}),
             },
             .correlation = {
                 .durable_job_id =

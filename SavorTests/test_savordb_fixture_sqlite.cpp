@@ -4,8 +4,10 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <optional>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 #include <utility>
@@ -43,10 +45,8 @@
 #include "Execution/ProgramDB/BattleSingleTurn/BattleSingleTurnAdapters.h"
 #include "Execution/ProgramDB/BattleContext/BattleContextProbePhaseRegistration.h"
 #include "Execution/ProgramDB/ProductionProgramKindRegistry.h"
-#include "Execution/ProgramDB/SeedProbe/SeedProbePhaseRegistration.h"
-#include "Execution/ProgramDB/SeedProbe/SeedProbeNeutralAdapters.h"
-#include "Execution/ProgramDB/SeedProbe/SeedProbeGridAdapters.h"
-#include "Execution/ProgramDB/SeedProbe/SeedProbeUniqueAdapters.h"
+#include "Execution/ProgramDB/SeedProbe/SeedProbeExecutionAdapters.h"
+#include "Execution/ProgramDB/SeedProbe/SeedProbeJobSpec.h"
 #include "Execution/ProgramDB/TasMovie/TasMoviePhaseRegistration.h"
 #include "UIRead/Projectors/ProjectorContract.h"
 #include "Execution/WorkflowCoordinatorBridge.h"
@@ -57,6 +57,7 @@
 #include "Utils/Hash.h"
 #include "Core/Memory/Soa/Battle/BattleContextCodec.h"
 #include "Runner/Breakpoints/BpRegistry.h"
+#include "Runner/IPC/Wire.h"
 
 #include "common/RecordingExecutionDb.h"
 #include "common/AlwaysAdvanceTransitionHandler.h"
@@ -87,6 +88,159 @@ workflow::WorkflowCreateUnitActivationSpec TestUnitActivation(
         .max_attempts = max_attempts,
     });
     return activation;
+}
+
+struct ConfirmedSeedProbeFixture {
+    std::int64_t probe_result_id = 0;
+    std::int64_t input_frame_id = 0;
+};
+
+std::optional<ConfirmedSeedProbeFixture> CreateConfirmedSeedProbeFixture(
+    savor::db::IAnalysisDb* analysis_db,
+    const std::string& fixture_name,
+    std::int64_t entry_savestate_id,
+    std::int64_t seed_probe_spec_id,
+    std::int64_t representative_job_id,
+    std::uint32_t seed_value,
+    savor::db::types::UtcTimePoint now,
+    std::string* error_out) {
+    using namespace savor::db;
+
+    if (analysis_db == nullptr) {
+        if (error_out != nullptr) {
+            *error_out = "analysis DB is required";
+        }
+        return std::nullopt;
+    }
+
+    std::int64_t probe_set_id = 0;
+    if (!analysis_db->CreateSeedProbeSet(
+            {
+                .name = fixture_name + "-probe-set",
+                .probe_flavor = "BATTLE_PRE",
+                .breakpoint_policy_name = "fixture",
+                .segment_source_kind = "sqlite_fixture",
+                .created_at_utc = now,
+                .correlation_id = fixture_name,
+                .causation_id = fixture_name,
+            },
+            &probe_set_id,
+            error_out)) {
+        return std::nullopt;
+    }
+
+    std::int64_t probe_run_id = 0;
+    if (!analysis_db->RequestSeedProbeRun(
+            {
+                .materialization_key =
+                    "sqlite-fixture." + fixture_name,
+                .probe_set_id = probe_set_id,
+                .entry_savestate_id = entry_savestate_id,
+                .seed_probe_spec_id = seed_probe_spec_id,
+                .launch_samples_per_axis = 1,
+                .codec_version = 1,
+                .status = SeedProbeRunStatus::Survey,
+                .requested_at_utc = now,
+                .correlation_id = fixture_name,
+                .causation_id = fixture_name,
+            },
+            &probe_run_id,
+            error_out)) {
+        return std::nullopt;
+    }
+
+    std::int64_t input_frame_id = 0;
+    if (!analysis_db->EnsureSeedProbeInputFrame(
+            0x8080,
+            0x8080,
+            0x0000,
+            &input_frame_id,
+            error_out)) {
+        return std::nullopt;
+    }
+
+    bool inserted = false;
+    std::int64_t representative_result_id = 0;
+    if (!analysis_db->EnsureSeedProbeObservation(
+            {
+                .probe_run_id = probe_run_id,
+                .input_frame_id = input_frame_id,
+                .source_job_id = representative_job_id,
+                .seed_value = seed_value,
+                .origin_worker_id = 1,
+                .origin_process_generation = 1,
+                .origin_state_epoch = 1,
+                .terminal_sha256 = std::string(64, 'a'),
+                .recorded_at_utc = now,
+                .correlation_id = fixture_name,
+                .causation_id = fixture_name,
+            },
+            &inserted,
+            &representative_result_id,
+            error_out)
+        || !inserted) {
+        return std::nullopt;
+    }
+
+    bool changed = false;
+    if (!analysis_db->TransitionSeedProbeEvidence(
+            {
+                .probe_result_id = representative_result_id,
+                .expected_state = SeedProbeEvidenceState::Observed,
+                .new_state = SeedProbeEvidenceState::Provisional,
+                .changed_at_utc = now,
+                .correlation_id = fixture_name,
+                .causation_id = fixture_name,
+            },
+            &changed,
+            error_out)
+        || !changed) {
+        return std::nullopt;
+    }
+
+    std::int64_t confirmation_result_id = 0;
+    if (!analysis_db->EnsureSeedProbeObservation(
+            {
+                .probe_run_id = probe_run_id,
+                .input_frame_id = input_frame_id,
+                .source_job_id = representative_job_id + 1,
+                .seed_value = seed_value,
+                .origin_worker_id = 1,
+                .origin_process_generation = 1,
+                .origin_state_epoch = 2,
+                .terminal_sha256 = std::string(64, 'b'),
+                .confirmation_of_probe_result_id = representative_result_id,
+                .recorded_at_utc = now,
+                .correlation_id = fixture_name,
+                .causation_id = fixture_name,
+            },
+            &inserted,
+            &confirmation_result_id,
+            error_out)
+        || !inserted) {
+        return std::nullopt;
+    }
+
+    changed = false;
+    if (!analysis_db->TransitionSeedProbeEvidence(
+            {
+                .probe_result_id = representative_result_id,
+                .expected_state = SeedProbeEvidenceState::Provisional,
+                .new_state = SeedProbeEvidenceState::Confirmed,
+                .changed_at_utc = now,
+                .correlation_id = fixture_name,
+                .causation_id = fixture_name,
+            },
+            &changed,
+            error_out)
+        || !changed) {
+        return std::nullopt;
+    }
+
+    return ConfirmedSeedProbeFixture{
+        .probe_result_id = representative_result_id,
+        .input_frame_id = input_frame_id,
+    };
 }
 
 const savor::db::uiread::projectors::UiReadProjectionStreamTelemetrySnapshot* FindProjectionStream(
@@ -2350,8 +2504,11 @@ INSERT INTO exec_workflow_instance(
     created_by, created_at_utc)
 VALUES(20200, 'WORKSET_TARGETED', 'RUNNING', 'manual', 'test', 1);
 INSERT INTO exec_job_set(
-    job_set_id, program_kind, purpose, created_at_utc, expected_total)
-VALUES(20201, 1, 'targeted-terminal', 1, 1);
+    job_set_id, program_kind, purpose, created_at_utc, expected_total,
+    materialization_state)
+VALUES(
+    20201, 1, 'targeted-terminal', 1, 1,
+    'WORKSET_PUBLICATION_COMPLETE');
 INSERT INTO exec_workflow_step(
     workflow_step_id, workflow_instance_id, step_key, step_kind, state,
     job_set_id, priority, attempts, max_attempts, created_at_utc)
@@ -2373,10 +2530,26 @@ VALUES(
     'RUNNING', 0, 1, 1);
 )SQL"));
 
+    class TerminalOnlyMaterializer final : public IProgramJobMaterializer {
+    public:
+        bool Materialize(
+            const ProgramJobMaterializationContext&,
+            WorkflowStepScheduleResult*,
+            std::string* error_out) const override {
+            if (error_out != nullptr) {
+                *error_out =
+                    "terminal-only fixture does not materialize jobs";
+            }
+            return false;
+        }
+    };
+
     ProgramKindRegistry registry;
     ProgramKindDescriptor descriptor{};
     descriptor.program_kind = 1;
     descriptor.program_name = "workset.targeted";
+    descriptor.job_materializer =
+        std::make_shared<TerminalOnlyMaterializer>();
     descriptor.workflow_transition =
         std::make_shared<AlwaysAdvanceTransitionHandler>();
     ASSERT_TRUE(registry.RegisterForStepKind(
@@ -2986,234 +3159,6 @@ VALUES(
         nullptr));
     ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
     EXPECT_EQ(sqlite3_column_int(st, 0), 2);
-    sqlite3_finalize(st);
-}
-
-TEST_F(SqliteDbFixture, Stage3cEndToEndWorkflowSeedProbeWithRestartMidRun) {
-    using namespace savor::db::migrations;
-    using namespace savor::db::execution::workflow;
-    using namespace savor::runner::parallel::savordb;
-
-    const MigrationSourceOptions embedded_options{ .source_kind = MigrationSourceKind::Embedded };
-    std::string err;
-    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Execution, embedded_options, &err)) << err;
-    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::UIRead, embedded_options, &err)) << err;
-
-    savor::db::execution::workflow::SqliteExecutionDb execution_db(db_);
-
-    std::int64_t workflow_instance_id = 0;
-    WorkflowCreateInstanceCommand create{};
-    create.workflow_kind = "workflow_graph";
-    create.root_scope_kind = "manual";
-    create.workflow_graph_revision_id = 1;
-    create.created_by = "stage3c-e2e";
-    create.created_at_utc = savor::db::types::UtcNow().time_since_epoch().count();
-    create.unit_activations.push_back({
-        .activation_key = "SeedProbe",
-        .graph_node_key = "SeedProbe",
-        .unit_kind = "test_seedprobe_chain",
-        .display_name = "Test Seed Probe Chain",
-        .activation_params_json = "{}",
-        .steps = {
-            { .step_key = "Neutral", .step_kind = "seedprobe.neutral", .priority = 1, .max_attempts = 2, .input_ref_kind = std::string("sp_probe_run"), .input_ref_id = 1 },
-            { .step_key = "Grid", .step_kind = "seedprobe.grid", .dependencies = { "Neutral" }, .priority = 1, .max_attempts = 2 },
-            { .step_key = "Unique", .step_kind = "seedprobe.unique", .dependencies = { "Grid" }, .priority = 1, .max_attempts = 2 },
-            { .step_key = "Done", .step_kind = "seedprobe.done", .dependencies = { "Unique" }, .priority = 1, .max_attempts = 1 },
-        },
-    });
-    ASSERT_TRUE(execution_db.WorkflowCommandService()->CreateWorkflowInstance(create, &workflow_instance_id, &err)) << err;
-    ASSERT_GT(workflow_instance_id, 0);
-
-    const auto graph = execution_db.WorkflowQueryService()->GetWorkflowGraph(workflow_instance_id);
-    ASSERT_TRUE(graph.has_value());
-    std::unordered_map<std::string, std::int64_t> step_ids_by_key;
-    for (const auto& step : graph->steps) {
-        step_ids_by_key.emplace(step.step_key, step.workflow_step_id);
-    }
-    ASSERT_TRUE(step_ids_by_key.count("Neutral"));
-    ASSERT_TRUE(step_ids_by_key.count("Grid"));
-    ASSERT_TRUE(step_ids_by_key.count("Unique"));
-    ASSERT_TRUE(step_ids_by_key.count("Done"));
-
-    const auto neutral_step_id = step_ids_by_key.at("Neutral");
-    const auto grid_step_id = step_ids_by_key.at("Grid");
-    const auto unique_step_id = step_ids_by_key.at("Unique");
-    const auto done_step_id = step_ids_by_key.at("Done");
-
-    std::int64_t next_job_set_id = 12000;
-    auto schedule = [&](const WorkflowReadyStep& step) {
-        const auto job_set_id = ++next_job_set_id;
-        const std::string sql =
-            "INSERT INTO exec_job_set(job_set_id, program_kind, purpose, created_at_utc) VALUES("
-            + std::to_string(job_set_id) + ", 1, 'stage3c-item15', unixepoch());";
-        const bool ok = ExecSql(db_, sql.c_str());
-        EXPECT_TRUE(ok);
-        return ScheduledJobSet{
-            .job_set_id = job_set_id,
-            .workflow_step_id = step.workflow_step_id,
-        };
-    };
-
-    DBWorkflowWorkerCoordinator coordinator(
-        &execution_db,
-        DBWorkflowWorkerCoordinatorConfig{
-            .desired_workers = 0,
-            .controller_sleep_ms = 1,
-        },
-        CoordinatorIntegrationConfig{
-
-        },
-        schedule);
-
-    auto insert_completed_job = [&](std::int64_t job_id, std::int64_t job_set_id, const char* fingerprint) {
-        const std::string sql =
-            "INSERT INTO exec_job(job_id, job_set_id, program_kind, program_version, program_ref_kind, program_ref_id, fingerprint, priority, state, attempts, max_attempts, queued_at_utc, ended_at_utc) VALUES("
-            + std::to_string(job_id)
-            + ","
-            + std::to_string(job_set_id)
-            + ",1,1,'seedprobe',1,'"
-            + fingerprint
-            + "',10,'COMPLETED',1,2,unixepoch(),unixepoch());";
-        ASSERT_TRUE(ExecSql(db_, sql.c_str()));
-    };
-
-    auto query_job_set_for_step = [&](std::int64_t workflow_step_id) -> std::int64_t {
-        sqlite3_stmt* stmt = nullptr;
-        const std::string sql = "SELECT COALESCE(job_set_id,0) FROM exec_workflow_step WHERE workflow_step_id=" + std::to_string(workflow_step_id) + ";";
-        EXPECT_EQ(SQLITE_OK, sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr));
-        EXPECT_EQ(SQLITE_ROW, sqlite3_step(stmt));
-        const auto value = sqlite3_column_int64(stmt, 0);
-        sqlite3_finalize(stmt);
-        return value;
-    };
-
-    const auto neutral = coordinator.MaterializeWorkflowStep({
-        .workflow_instance_id = workflow_instance_id,
-        .workflow_step_id = neutral_step_id,
-        .step_key = "Neutral",
-        .step_kind = "seedprobe.neutral",
-        .priority = 10,
-        .input_ref_kind = std::string("sp_probe_run"),
-        .input_ref_id = 1,
-    });
-    ASSERT_TRUE(neutral.has_value());
-    const std::int64_t neutral_job_set_id = query_job_set_for_step(neutral_step_id);
-    ASSERT_GT(neutral_job_set_id, 0);
-    EXPECT_TRUE(coordinator.PublishTerminalJobSet({
-        .workflow_instance_id = workflow_instance_id,
-        .workflow_step_id = neutral_step_id,
-        .job_set_id = neutral_job_set_id,
-        .terminal_state = "COMPLETED",
-    }));
-
-    ASSERT_TRUE(ExecSql(db_, ("UPDATE exec_workflow_step SET state='READY', ready_at_utc=unixepoch() WHERE workflow_step_id=" + std::to_string(grid_step_id) + ";").c_str()));
-
-    const auto grid = coordinator.MaterializeWorkflowStep({
-        .workflow_instance_id = workflow_instance_id,
-        .workflow_step_id = grid_step_id,
-        .step_key = "Grid",
-        .step_kind = "seedprobe.grid",
-        .priority = 8,
-    });
-    ASSERT_TRUE(grid.has_value());
-
-    // Simulate restart in the middle: process exits after materialization, before terminal callback.
-    DBWorkflowWorkerCoordinator after_restart(
-        &execution_db,
-        DBWorkflowWorkerCoordinatorConfig{
-            .desired_workers = 0,
-        },
-        CoordinatorIntegrationConfig{
-
-        },
-        schedule);
-
-    insert_completed_job(13001, grid->job_set_id, "item15-grid");
-
-    WorkflowRecoveryService recovery(db_);
-    WorkflowRecoveryResult recovery_result{};
-    ASSERT_TRUE(recovery.ReconcileInFlightInstances(&recovery_result, &err)) << err;
-    EXPECT_EQ(recovery_result.completed_steps, 1);
-
-    ASSERT_TRUE(ExecSql(db_, ("UPDATE exec_workflow_step SET state='READY', ready_at_utc=unixepoch() WHERE workflow_step_id=" + std::to_string(unique_step_id) + ";").c_str()));
-    const auto unique = after_restart.MaterializeWorkflowStep({
-        .workflow_instance_id = workflow_instance_id,
-        .workflow_step_id = unique_step_id,
-        .step_key = "Unique",
-        .step_kind = "seedprobe.unique",
-        .priority = 7,
-    });
-    ASSERT_TRUE(unique.has_value());
-    EXPECT_TRUE(after_restart.PublishTerminalJobSet({
-        .workflow_instance_id = workflow_instance_id,
-        .workflow_step_id = unique_step_id,
-        .job_set_id = unique->job_set_id,
-        .terminal_state = "COMPLETED",
-    }));
-    EXPECT_FALSE(after_restart.PublishTerminalJobSet({
-        .workflow_instance_id = workflow_instance_id,
-        .workflow_step_id = unique_step_id,
-        .job_set_id = unique->job_set_id,
-        .terminal_state = "COMPLETED",
-    }));
-
-    ASSERT_TRUE(ExecSql(db_, ("UPDATE exec_workflow_step SET state='READY', ready_at_utc=unixepoch() WHERE workflow_step_id=" + std::to_string(done_step_id) + ";").c_str()));
-    const auto done = after_restart.MaterializeWorkflowStep({
-        .workflow_instance_id = workflow_instance_id,
-        .workflow_step_id = done_step_id,
-        .step_key = "Done",
-        .step_kind = "seedprobe.done",
-        .priority = 1,
-    });
-    ASSERT_TRUE(done.has_value());
-    EXPECT_TRUE(after_restart.PublishTerminalJobSet({
-        .workflow_instance_id = workflow_instance_id,
-        .workflow_step_id = done_step_id,
-        .job_set_id = done->job_set_id,
-        .terminal_state = "COMPLETED",
-    }));
-
-    insert_completed_job(13000, neutral_job_set_id, "item15-neutral");
-    insert_completed_job(13002, unique->job_set_id, "item15-unique");
-    insert_completed_job(13003, done->job_set_id, "item15-done");
-
-    WorkflowRecoveryResult final_recovery_result{};
-    ASSERT_TRUE(recovery.ReconcileInFlightInstances(&final_recovery_result, &err)) << err;
-    EXPECT_EQ(final_recovery_result.completed_steps, 3);
-
-    ASSERT_TRUE(ExecSql(db_, ("UPDATE exec_workflow_instance SET state='COMPLETED', completed_at_utc=unixepoch() WHERE workflow_instance_id=" + std::to_string(workflow_instance_id) + ";").c_str()));
-
-    sqlite3_stmt* st = nullptr;
-    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
-        db_,
-        ("SELECT COUNT(1) FROM exec_workflow_step WHERE workflow_instance_id=" + std::to_string(workflow_instance_id) + " AND state='COMPLETED';").c_str(),
-        -1,
-        &st,
-        nullptr));
-    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
-    EXPECT_EQ(sqlite3_column_int(st, 0), 4);
-    sqlite3_finalize(st);
-
-    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
-        db_,
-        ("SELECT COUNT(1) FROM exec_workflow_event WHERE workflow_instance_id=" + std::to_string(workflow_instance_id) + " AND event_kind='Execution.WorkflowStepMaterialized.v1';").c_str(),
-        -1,
-        &st,
-        nullptr));
-    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
-    EXPECT_EQ(sqlite3_column_int(st, 0), 4);
-    sqlite3_finalize(st);
-
-    WorkflowProjector projector(db_);
-    ASSERT_TRUE(projector.ProjectFromOutbox("WorkflowProjector", 1000, &err)) << err;
-    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
-        db_,
-        ("SELECT state FROM ui_workflow_instance WHERE workflow_instance_id=" + std::to_string(workflow_instance_id) + ";").c_str(),
-        -1,
-        &st,
-        nullptr));
-    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
-    EXPECT_EQ(std::string(reinterpret_cast<const char*>(sqlite3_column_text(st, 0))), "COMPLETED");
     sqlite3_finalize(st);
 }
 
@@ -4886,13 +4831,25 @@ TEST_F(SqliteDbFixture, Stage3dAnalysisBattleCommandsEmitEventsThirtyThroughThir
         << err;
     ASSERT_GT(battle_set_id, 0);
 
+    const auto confirmed_seed = CreateConfirmedSeedProbeFixture(
+        &analysis_db,
+        "stage3d-analysis-battle-events",
+        101,
+        202,
+        444,
+        555,
+        now,
+        &err);
+    ASSERT_TRUE(confirmed_seed.has_value()) << err;
+
     std::int64_t seed_candidate_id = 0;
     ASSERT_TRUE(analysis_db.AddBattleSeedCandidate(
         {
             .battle_set_id = battle_set_id,
-            .source_unique_seed_id = 444,
+            .source_probe_result_id = confirmed_seed->probe_result_id,
+            .source_input_frame_id = confirmed_seed->input_frame_id,
             .seed_value = 555,
-            .source_kind = savor::db::BattleSeedCandidateSourceKind::SeedProbeUnique,
+            .source_kind = savor::db::BattleSeedCandidateSourceKind::SeedProbeConfirmedResult,
             .candidate_status = savor::db::BattleSeedCandidateStatus::Pending,
             .created_at_utc = now,
             .correlation_id = "ab-corr-1",
@@ -5288,13 +5245,25 @@ TEST_F(SqliteDbFixture, Stage3dBattleAuthoringAndAnalysisQueriesRoundTrip) {
         &battle_set_id,
         &err)) << err;
 
+    const auto confirmed_seed = CreateConfirmedSeedProbeFixture(
+        &analysis_db,
+        "stage3d-battle-roundtrip",
+        501,
+        battle_run_spec_id,
+        2001,
+        7777,
+        now,
+        &err);
+    ASSERT_TRUE(confirmed_seed.has_value()) << err;
+
     std::int64_t seed_candidate_id = 0;
     ASSERT_TRUE(analysis_db.AddBattleSeedCandidate(
         {
             .battle_set_id = battle_set_id,
-            .source_unique_seed_id = 2001,
+            .source_probe_result_id = confirmed_seed->probe_result_id,
+            .source_input_frame_id = confirmed_seed->input_frame_id,
             .seed_value = 7777,
-            .source_kind = savor::db::BattleSeedCandidateSourceKind::SeedProbeUnique,
+            .source_kind = savor::db::BattleSeedCandidateSourceKind::SeedProbeConfirmedResult,
             .candidate_status = savor::db::BattleSeedCandidateStatus::Pending,
             .created_at_utc = now,
             .correlation_id = "ab-corr",
@@ -5380,7 +5349,8 @@ TEST_F(SqliteDbFixture, Stage3dBattleAuthoringAndAnalysisQueriesRoundTrip) {
 
     const auto candidates = analysis_db.ListBattleSeedCandidates(battle_set_id);
     ASSERT_EQ(candidates.size(), 1);
-    EXPECT_EQ(candidates[0].source_unique_seed_id.value_or(0), 2001);
+    EXPECT_EQ(candidates[0].source_probe_result_id.value_or(0), confirmed_seed->probe_result_id);
+    EXPECT_EQ(candidates[0].source_input_frame_id.value_or(0), confirmed_seed->input_frame_id);
     EXPECT_EQ(candidates[0].seed_value, 7777);
 
     const auto wave = analysis_db.GetBattleTurnWave(wave_id);
@@ -5464,7 +5434,108 @@ TEST_F(SqliteDbFixture, Stage5AuthoringInputSetsAreIdempotentByOrderedFrameConte
     EXPECT_EQ(stored[1].main_x, 160);
 }
 
-TEST_F(SqliteDbFixture, Stage5SeedProbeRunCreatesOwnedAnalysisInputSetAndRecordsUniqueFrames) {
+TEST_F(SqliteDbFixture, SeedProbeNeutralSelectionRequiresSurveySourceJob) {
+    using namespace savor::db;
+    using namespace savor::db::execution::programdb::seedprobe;
+
+    auto* analysis_db = db_service_->AnalysisDb();
+    auto* execution_db = db_service_->ExecutionDb();
+    ASSERT_NE(analysis_db, nullptr);
+    ASSERT_NE(execution_db, nullptr);
+
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+INSERT INTO sp_probe_set(
+    probe_set_id,name,probe_flavor,breakpoint_policy_name,
+    segment_source_kind,created_at_utc)
+VALUES(77601,'neutral-stage-filter','BATTLE_PRE','test','test',1000);
+INSERT INTO an_input_set(
+    input_set_id,source_ref_kind,source_ref_id,created_at_utc)
+VALUES(77602,'sp_probe_run',77605,1000);
+INSERT INTO sp_axis_xy(axis_xy_id,x,y)
+VALUES(77603,128,128),(77604,0,0);
+INSERT INTO sp_input_frame(
+    input_frame_id,main_axis_xy_id,cstick_axis_xy_id,trigger_axis_xy_id)
+VALUES(77606,77603,77603,77604);
+INSERT INTO sp_probe_run(
+    probe_run_id,materialization_key,probe_set_id,entry_savestate_id,
+    seed_probe_spec_id,launch_samples_per_axis,codec_version,status,
+    accepted_input_set_id,requested_at_utc)
+VALUES(
+    77605,'fixture.neutral-stage-filter',77601,1,
+    1,1,1,'SEARCH',77602,1000);
+INSERT INTO exec_job_set(
+    job_set_id,program_kind,purpose,created_by,created_at_utc,
+    priority_boost,expected_total,domain_ref_kind,domain_ref_id)
+VALUES(
+    77610,1,'SeedProbe Search','test',1000,
+    0,1,'sp_probe_run',77605);
+INSERT INTO exec_job(
+    job_id,job_set_id,program_kind,program_version,program_ref_kind,
+    program_ref_id,fingerprint,priority,state,attempts,max_attempts,
+    queued_at_utc,input_ini)
+VALUES(
+    77611,77610,1,2,'sp_probe_run',
+    77605,'neutral-stage-filter-search',0,'SUCCEEDED',1,1,1000,
+    '[SeedProbe.Request]
+desired_delta=1
+input_frame_id=77606
+sample_ordinal=0
+stage=SEARCH
+version=1
+');
+INSERT INTO sp_probe_result(
+    probe_result_id,probe_run_id,input_frame_id,source_job_id,seed_value,
+    origin_worker_id,origin_process_generation,origin_state_epoch,
+    terminal_sha256,confirmation_of_probe_result_id,
+    evidence_state,recorded_at_utc)
+VALUES(
+    77621,77605,77606,77611,100,1,1,1,
+    '1111111111111111111111111111111111111111111111111111111111111111',
+    NULL,'PROVISIONAL',1000);
+)SQL")) << sqlite3_errmsg(db_);
+
+    EXPECT_FALSE(
+        FindSurveyNeutralSeedProbeResultId(
+            execution_db,
+            analysis_db,
+            77605)
+            .has_value());
+
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+INSERT INTO exec_job(
+    job_id,job_set_id,program_kind,program_version,program_ref_kind,
+    program_ref_id,fingerprint,priority,state,attempts,max_attempts,
+    queued_at_utc,input_ini)
+VALUES(
+    77612,77610,1,2,'sp_probe_run',
+    77605,'neutral-stage-filter-survey',0,'SUCCEEDED',1,1,1000,
+    '[SeedProbe.Request]
+input_frame_id=77606
+sample_ordinal=0
+stage=SURVEY
+version=1
+');
+INSERT INTO sp_probe_result(
+    probe_result_id,probe_run_id,input_frame_id,source_job_id,seed_value,
+    origin_worker_id,origin_process_generation,origin_state_epoch,
+    terminal_sha256,confirmation_of_probe_result_id,
+    evidence_state,recorded_at_utc)
+VALUES(
+    77622,77605,77606,77612,101,1,1,2,
+    '2222222222222222222222222222222222222222222222222222222222222222',
+    NULL,'PROVISIONAL',1000);
+)SQL")) << sqlite3_errmsg(db_);
+
+    const auto neutral_result_id =
+        FindSurveyNeutralSeedProbeResultId(
+            execution_db,
+            analysis_db,
+            77605);
+    ASSERT_TRUE(neutral_result_id.has_value());
+    EXPECT_EQ(*neutral_result_id, 77622);
+}
+
+TEST_F(SqliteDbFixture, Stage5SeedProbeRunAcceptsSameNumericEpochFromDifferentWorkerAndPublishesConfirmedFrames) {
     using namespace savor::db;
 
     auto* authoring_db = db_service_->AuthoringDb();
@@ -5504,49 +5575,407 @@ TEST_F(SqliteDbFixture, Stage5SeedProbeRunCreatesOwnedAnalysisInputSetAndRecords
     std::int64_t probe_run_id = 0;
     ASSERT_TRUE(analysis_db->RequestSeedProbeRun(
         {
+            .materialization_key =
+                "fixture.input-set-owner",
             .probe_set_id = probe_set_id,
             .entry_savestate_id = 77001,
             .seed_probe_spec_id = seed_probe_spec_id,
+            .launch_samples_per_axis = 1,
             .codec_version = 1,
-            .status = "requested",
+            .status = SeedProbeRunStatus::Survey,
             .requested_at_utc = now,
             .correlation_id = "an-probe-run-input-set-owner",
         },
         &probe_run_id,
         &err)) << err;
+    std::int64_t retried_probe_run_id = 0;
+    ASSERT_TRUE(analysis_db->RequestSeedProbeRun(
+        {
+            .materialization_key =
+                "fixture.input-set-owner",
+            .probe_set_id = probe_set_id,
+            .entry_savestate_id = 77001,
+            .seed_probe_spec_id = seed_probe_spec_id,
+            .launch_samples_per_axis = 1,
+            .codec_version = 1,
+            .status = SeedProbeRunStatus::Survey,
+            .requested_at_utc = now,
+            .correlation_id =
+                "an-probe-run-input-set-owner-retry",
+        },
+        &retried_probe_run_id,
+        &err)) << err;
+    EXPECT_EQ(retried_probe_run_id, probe_run_id);
+    EXPECT_EQ(
+        ReadInt64(
+            db_,
+            "SELECT COUNT(1) FROM sp_probe_run "
+            "WHERE materialization_key='fixture.input-set-owner';"),
+        1);
 
     const auto probe_run = analysis_db->GetSeedProbeRun(probe_run_id);
     ASSERT_TRUE(probe_run.has_value());
-    ASSERT_GT(probe_run->unique_input_set_id, 0);
-    EXPECT_TRUE(analysis_db->ListAnalysisInputSetFrames(probe_run->unique_input_set_id).empty());
+    ASSERT_GT(probe_run->accepted_input_set_id, 0);
+    EXPECT_TRUE(analysis_db->ListAnalysisInputSetFrames(probe_run->accepted_input_set_id).empty());
 
     std::int64_t input_frame_id = 0;
     ASSERT_TRUE(analysis_db->EnsureSeedProbeInputFrame(0x8080, 0x8080, 0x0000, &input_frame_id, &err)) << err;
 
-    ASSERT_TRUE(analysis_db->SetSeedProbeRunNeutralSeed(probe_run_id, 0, &err)) << err;
-    const auto probe_result_id = analysis_db->LookupSeedProbeResultId(probe_run_id);
-    ASSERT_TRUE(probe_result_id.has_value());
-
-    RecordSeedProbeUniqueSeedCommand unique_cmd{
-        .probe_result_id = *probe_result_id,
+    const RecordSeedProbeObservationCommand representative{
+        .probe_run_id = probe_run_id,
         .input_frame_id = input_frame_id,
+        .source_job_id = 77010,
         .seed_value = 0,
-        .seed_delta = 0,
+        .origin_worker_id = 1,
+        .origin_process_generation = 1,
+        .origin_state_epoch = 1,
+        .terminal_sha256 = std::string(64, 'a'),
         .recorded_at_utc = now,
-        .correlation_id = "an-probe-unique-input-set-owner",
+        .correlation_id = "an-probe-observation-input-set-owner",
+        .causation_id = "an-probe-run-input-set-owner",
     };
     bool inserted = false;
-    std::int64_t unique_seed_id = 0;
-    ASSERT_TRUE(analysis_db->EnsureSeedProbeUniqueSeedDelta(unique_cmd, &inserted, &unique_seed_id, &err)) << err;
+    std::int64_t probe_result_id = 0;
+    ASSERT_TRUE(analysis_db->EnsureSeedProbeObservation(
+        representative,
+        &inserted,
+        &probe_result_id,
+        &err)) << err;
     EXPECT_TRUE(inserted);
-    EXPECT_GT(unique_seed_id, 0);
-    ASSERT_TRUE(analysis_db->EnsureSeedProbeUniqueSeedDelta(unique_cmd, &inserted, &unique_seed_id, &err)) << err;
+    EXPECT_GT(probe_result_id, 0);
+    std::int64_t replay_result_id = 0;
+    ASSERT_TRUE(analysis_db->EnsureSeedProbeObservation(
+        representative,
+        &inserted,
+        &replay_result_id,
+        &err)) << err;
     EXPECT_FALSE(inserted);
+    EXPECT_EQ(replay_result_id, probe_result_id);
 
-    const auto frames = analysis_db->ListAnalysisInputSetFrames(probe_run->unique_input_set_id);
+    bool changed = false;
+    ASSERT_TRUE(analysis_db->TransitionSeedProbeEvidence(
+        {
+            .probe_result_id = probe_result_id,
+            .expected_state = SeedProbeEvidenceState::Observed,
+            .new_state = SeedProbeEvidenceState::Provisional,
+            .changed_at_utc = now,
+            .correlation_id = "an-probe-evidence-input-set-owner",
+            .causation_id = "an-probe-observation-input-set-owner",
+        },
+        &changed,
+        &err)) << err;
+    EXPECT_TRUE(changed);
+
+    std::int64_t confirmation_result_id = 0;
+    ASSERT_TRUE(analysis_db->EnsureSeedProbeObservation(
+        {
+            .probe_run_id = probe_run_id,
+            .input_frame_id = input_frame_id,
+            .source_job_id = 77011,
+            .seed_value = 0,
+            .origin_worker_id = 2,
+            .origin_process_generation = 1,
+            .origin_state_epoch = 1,
+            .terminal_sha256 = std::string(64, 'b'),
+            .confirmation_of_probe_result_id = probe_result_id,
+            .recorded_at_utc = now,
+            .correlation_id = "an-probe-confirmation-input-set-owner",
+            .causation_id = "an-probe-observation-input-set-owner",
+        },
+        &inserted,
+        &confirmation_result_id,
+        &err)) << err;
+    EXPECT_TRUE(inserted);
+    EXPECT_GT(confirmation_result_id, 0);
+    const auto confirmation =
+        analysis_db->GetSeedProbeResult(
+            confirmation_result_id);
+    ASSERT_TRUE(confirmation.has_value());
+    EXPECT_EQ(confirmation->origin_worker_id, 2);
+    EXPECT_EQ(confirmation->origin_process_generation, 1);
+    EXPECT_EQ(confirmation->origin_state_epoch, 1);
+
+    changed = false;
+    ASSERT_TRUE(analysis_db->TransitionSeedProbeEvidence(
+        {
+            .probe_result_id = probe_result_id,
+            .expected_state = SeedProbeEvidenceState::Provisional,
+            .new_state = SeedProbeEvidenceState::Confirmed,
+            .changed_at_utc = now,
+            .correlation_id = "an-probe-confirmed-input-set-owner",
+            .causation_id = "an-probe-confirmation-input-set-owner",
+        },
+        &changed,
+        &err)) << err;
+    EXPECT_TRUE(changed);
+
+    ASSERT_TRUE(analysis_db->ReplaceSeedProbeAcceptedInputFrames(
+        {
+            .probe_run_id = probe_run_id,
+            .input_frame_ids = { input_frame_id },
+            .replaced_at_utc = now,
+            .correlation_id = "an-probe-accepted-input-set-owner",
+            .causation_id = "an-probe-confirmed-input-set-owner",
+        },
+        &err)) << err;
+
+    const auto frames = analysis_db->ListAnalysisInputSetFrames(probe_run->accepted_input_set_id);
     ASSERT_EQ(frames.size(), 1);
     EXPECT_EQ(frames[0].ordinal, 0);
     EXPECT_EQ(frames[0].input_frame_id, input_frame_id);
+
+    const auto confirmed = analysis_db->GetSeedProbeResult(probe_result_id);
+    ASSERT_TRUE(confirmed.has_value());
+    EXPECT_EQ(confirmed->evidence_state, SeedProbeEvidenceState::Confirmed);
+}
+
+TEST_F(SqliteDbFixture, Stage5ConfirmedSeedProbeLookupIsScopedToAcceptedInputSetOwner) {
+    using namespace savor::db;
+
+    auto* analysis_db = db_service_->AnalysisDb();
+    ASSERT_NE(analysis_db, nullptr);
+
+    const auto now =
+        types::UtcTimePoint(std::chrono::milliseconds(1712304000904));
+    std::string err;
+    const auto first = CreateConfirmedSeedProbeFixture(
+        analysis_db,
+        "accepted-input-owner-first",
+        88001,
+        99001,
+        77100,
+        0x11111111u,
+        now,
+        &err);
+    ASSERT_TRUE(first.has_value()) << err;
+    const auto second = CreateConfirmedSeedProbeFixture(
+        analysis_db,
+        "accepted-input-owner-second",
+        88001,
+        99001,
+        77200,
+        0x22222222u,
+        now,
+        &err);
+    ASSERT_TRUE(second.has_value()) << err;
+    ASSERT_EQ(first->input_frame_id, second->input_frame_id);
+
+    const auto first_result =
+        analysis_db->GetSeedProbeResult(first->probe_result_id);
+    const auto second_result =
+        analysis_db->GetSeedProbeResult(second->probe_result_id);
+    ASSERT_TRUE(first_result.has_value());
+    ASSERT_TRUE(second_result.has_value());
+    ASSERT_NE(first_result->probe_run_id, second_result->probe_run_id);
+
+    const auto first_run =
+        analysis_db->GetSeedProbeRun(first_result->probe_run_id);
+    const auto second_run =
+        analysis_db->GetSeedProbeRun(second_result->probe_run_id);
+    ASSERT_TRUE(first_run.has_value());
+    ASSERT_TRUE(second_run.has_value());
+    ASSERT_NE(
+        first_run->accepted_input_set_id,
+        second_run->accepted_input_set_id);
+
+    ASSERT_TRUE(analysis_db->ReplaceSeedProbeAcceptedInputFrames(
+        {
+            .probe_run_id = first_result->probe_run_id,
+            .input_frame_ids = {first->input_frame_id},
+            .replaced_at_utc = now,
+            .correlation_id = "accepted-input-owner-first",
+            .causation_id = "accepted-input-owner-first",
+        },
+        &err)) << err;
+    ASSERT_TRUE(analysis_db->ReplaceSeedProbeAcceptedInputFrames(
+        {
+            .probe_run_id = second_result->probe_run_id,
+            .input_frame_ids = {second->input_frame_id},
+            .replaced_at_utc = now,
+            .correlation_id = "accepted-input-owner-second",
+            .causation_id = "accepted-input-owner-second",
+        },
+        &err)) << err;
+
+    const auto from_first =
+        analysis_db->FindConfirmedSeedProbeResultForAcceptedInputSetFrame(
+            first_run->accepted_input_set_id,
+            first->input_frame_id);
+    const auto from_second =
+        analysis_db->FindConfirmedSeedProbeResultForAcceptedInputSetFrame(
+            second_run->accepted_input_set_id,
+            second->input_frame_id);
+    ASSERT_TRUE(from_first.has_value());
+    ASSERT_TRUE(from_second.has_value());
+    EXPECT_EQ(from_first->probe_result_id, first->probe_result_id);
+    EXPECT_EQ(from_first->seed_value, 0x11111111u);
+    EXPECT_EQ(from_second->probe_result_id, second->probe_result_id);
+    EXPECT_EQ(from_second->seed_value, 0x22222222u);
+}
+
+TEST_F(
+    SqliteDbFixture,
+    UiReadSeedProbeProjectionSeparatesSurveyGridFromConfirmedSearch) {
+    auto* ui_read_db = db_service_->UiReadDb();
+    ASSERT_NE(ui_read_db, nullptr);
+
+    ASSERT_TRUE(ExecSql(
+        db_,
+        R"SQL(
+INSERT INTO sp_probe_set(
+    probe_set_id,name,probe_flavor,breakpoint_policy_name,
+    segment_source_kind,created_at_utc)
+VALUES(
+    77100,'uiread-stage-classification','BATTLE_PRE','test',
+    'fixture',1712304000950);
+INSERT INTO an_input_set(
+    input_set_id,source_ref_kind,source_ref_id,created_at_utc)
+VALUES(77101,'sp_probe_run',77103,1712304000950);
+INSERT INTO sp_probe_run(
+    probe_run_id,materialization_key,probe_set_id,entry_savestate_id,
+    seed_probe_spec_id,launch_samples_per_axis,codec_version,status,
+    accepted_input_set_id,requested_at_utc)
+VALUES(
+    77103,'fixture.uiread-stage-classification',77100,77104,
+    77105,1,1,'SURVEY',77101,1712304000950);
+INSERT INTO sp_axis_xy(axis_xy_id,x,y) VALUES
+    (77110,128,128),
+    (77111,0,0),
+    (77112,129,128),
+    (77113,129,129),
+    (77114,1,1);
+INSERT INTO sp_input_frame(
+    input_frame_id,main_axis_xy_id,cstick_axis_xy_id,trigger_axis_xy_id)
+VALUES
+    (77120,77110,77110,77111),
+    (77121,77112,77110,77111),
+    (77122,77113,77113,77114);
+
+INSERT INTO exec_job_set(
+    job_set_id,program_kind,purpose,created_by,created_at_utc,
+    priority_boost,expected_total,domain_ref_kind,domain_ref_id)
+VALUES(
+    77200,100,'SeedProbe UIRead stage classification','test',
+    1712304000950,0,6,'analysisseedprobe.probe_run',77103);
+INSERT INTO exec_job(
+    job_id,job_set_id,program_kind,program_version,program_ref_kind,
+    program_ref_id,fingerprint,priority,state,attempts,max_attempts,
+    queued_at_utc,input_ini)
+VALUES
+    (77201,77200,100,1,'analysisseedprobe.probe_run',77103,
+     'uiread-neutral',1,'SUCCEEDED',1,1,1712304000950,
+     '[SeedProbe.Request]
+input_frame_id=77120
+sample_ordinal=0
+stage=SURVEY
+version=1
+'),
+    (77202,77200,100,1,'analysisseedprobe.probe_run',77103,
+     'uiread-grid',1,'SUCCEEDED',1,1,1712304000950,
+     '[SeedProbe.Request]
+input_frame_id=77121
+sample_ordinal=1
+stage=SURVEY
+version=1
+'),
+    (77203,77200,100,1,'analysisseedprobe.probe_run',77103,
+     'uiread-search',1,'SUCCEEDED',1,1,1712304000950,
+     '[SeedProbe.Request]
+input_frame_id=77122
+sample_ordinal=2
+stage=SEARCH
+version=1
+'),
+    (77204,77200,100,1,'analysisseedprobe.probe_run',77103,
+     'uiread-neutral-confirm',1,'SUCCEEDED',1,1,1712304000950,
+     '[SeedProbe.Request]
+input_frame_id=77120
+sample_ordinal=0
+stage=CONFIRM
+version=1
+'),
+    (77205,77200,100,1,'analysisseedprobe.probe_run',77103,
+     'uiread-grid-confirm',1,'SUCCEEDED',1,1,1712304000950,
+     '[SeedProbe.Request]
+input_frame_id=77121
+sample_ordinal=1
+stage=CONFIRM
+version=1
+'),
+    (77206,77200,100,1,'analysisseedprobe.probe_run',77103,
+     'uiread-search-confirm',1,'SUCCEEDED',1,1,1712304000950,
+     '[SeedProbe.Request]
+input_frame_id=77122
+sample_ordinal=2
+stage=CONFIRM
+version=1
+');
+
+INSERT INTO sp_probe_result(
+    probe_result_id,probe_run_id,input_frame_id,source_job_id,seed_value,
+    origin_worker_id,origin_process_generation,origin_state_epoch,
+    terminal_sha256,confirmation_of_probe_result_id,
+    evidence_state,recorded_at_utc)
+VALUES
+    (77301,77103,77120,77201,4294967295,1,1,1,
+     '1111111111111111111111111111111111111111111111111111111111111111',
+     NULL,'CONFIRMED',1712304000950),
+    (77302,77103,77121,77202,0,1,1,2,
+     '2222222222222222222222222222222222222222222222222222222222222222',
+     NULL,'CONFIRMED',1712304000950),
+    (77303,77103,77122,77203,4294967293,1,1,3,
+     '3333333333333333333333333333333333333333333333333333333333333333',
+     NULL,'CONFIRMED',1712304000950),
+    (77304,77103,77120,77204,4294967295,1,1,4,
+     '4444444444444444444444444444444444444444444444444444444444444444',
+     77301,'OBSERVED',1712304000950),
+    (77305,77103,77121,77205,0,1,1,5,
+     '5555555555555555555555555555555555555555555555555555555555555555',
+     77302,'OBSERVED',1712304000950),
+    (77306,77103,77122,77206,4294967293,1,1,6,
+     '6666666666666666666666666666666666666666666666666666666666666666',
+     77303,'OBSERVED',1712304000950);
+INSERT INTO sp_outbox_message(
+    outbox_id,event_id,event_type,event_version,context_name,
+    aggregate_kind,aggregate_id,occurred_at_utc,payload_ref_kind,
+    payload_ref_id,attempt_count)
+VALUES(
+    77401,'uiread-stage-classification-event',
+    'AnalysisSeedProbe.ObservationRecorded.v1',1,'AnalysisSeedProbe',
+    'probe_run','77103',1712304000950,'probe_result',77303,0);
+)SQL"))
+        << sqlite3_errmsg(db_);
+
+    RunUiReadProjectionUntilCaughtUp(
+        *db_service_,
+        "analysis-seedprobe");
+
+    const auto summary =
+        ui_read_db->GetSeedProbeRunSummary(77103);
+    ASSERT_TRUE(summary.has_value());
+    ASSERT_TRUE(summary->neutral_seed_value.has_value());
+    EXPECT_EQ(*summary->neutral_seed_value, 0xFFFFFFFFu);
+    EXPECT_EQ(summary->grid_count, 1);
+    EXPECT_EQ(summary->unique_count, 1);
+
+    const auto grid_points =
+        ui_read_db->ListSeedProbeDeltaPoints(77103);
+    ASSERT_EQ(grid_points.size(), 1);
+    EXPECT_EQ(grid_points[0].source_family, "MAIN");
+    EXPECT_EQ(grid_points[0].seed_value, 0u);
+    EXPECT_EQ(grid_points[0].seed_delta, 1);
+
+    const auto search_values =
+        ui_read_db->ListSeedProbeUniqueValues(77103);
+    ASSERT_EQ(search_values.size(), 1);
+    EXPECT_EQ(search_values[0].seed_value, 0xFFFFFFFDu);
+    EXPECT_EQ(search_values[0].seed_delta, -2);
+    EXPECT_EQ(search_values[0].main_x, 129);
+    EXPECT_EQ(search_values[0].main_y, 129);
+    EXPECT_EQ(search_values[0].cstick_x, 129);
+    EXPECT_EQ(search_values[0].cstick_y, 129);
+    EXPECT_EQ(search_values[0].trigger_x, 1);
+    EXPECT_EQ(search_values[0].trigger_y, 1);
 }
 
 TEST_F(SqliteDbFixture, Stage5BattleChainGraphAcceptsInputSetsAndRejectsProbeRunFrameSetRefs) {
@@ -5746,7 +6175,7 @@ TEST_F(SqliteDbFixture, Stage5AuthoringWorkflowGraphStoresBattleChainSpecWithout
                         { .input_key = "entry_savestate", .data_kind = "state.savestate_id", .display_name = "Entry savestate" },
                     },
                     .possible_outputs = {
-                        { .output_key = "unique_input_frames", .data_kind = "analysis.input_frame_set_id", .display_name = "Unique input frames" },
+                        { .output_key = "accepted_input_frames", .data_kind = "analysis.input_frame_set_id", .display_name = "Accepted input frames" },
                     },
                 },
                 {
@@ -5767,7 +6196,7 @@ TEST_F(SqliteDbFixture, Stage5AuthoringWorkflowGraphStoresBattleChainSpecWithout
             .edges = {
                 { .from_node_key = "tas_1", .output_key = "savestate", .to_node_key = "probe_1", .input_key = "entry_savestate" },
                 { .from_node_key = "tas_1", .output_key = "savestate", .to_node_key = "battle_1", .input_key = "entry_savestate" },
-                { .from_node_key = "probe_1", .output_key = "unique_input_frames", .to_node_key = "battle_1", .input_key = "initial_input_frames" },
+                { .from_node_key = "probe_1", .output_key = "accepted_input_frames", .to_node_key = "battle_1", .input_key = "initial_input_frames" },
             },
             .created_at_utc = now,
             .correlation_id = "au-workflow-graph",
@@ -5853,7 +6282,7 @@ TEST_F(SqliteDbFixture, Stage5AuthoringWorkflowGraphStoresBattleChainSpecWithout
                         { .input_key = "entry_savestate", .data_kind = "state.savestate_id", .display_name = "Entry savestate" },
                     },
                     .possible_outputs = {
-                        { .output_key = "unique_input_frames", .data_kind = "analysis.input_frame_set_id", .display_name = "Unique input frames" },
+                        { .output_key = "accepted_input_frames", .data_kind = "analysis.input_frame_set_id", .display_name = "Accepted input frames" },
                     },
                 },
                 {
@@ -5874,7 +6303,7 @@ TEST_F(SqliteDbFixture, Stage5AuthoringWorkflowGraphStoresBattleChainSpecWithout
             .edges = {
                 { .from_node_key = "tas_1", .output_key = "savestate", .to_node_key = "probe_1", .input_key = "entry_savestate" },
                 { .from_node_key = "tas_1", .output_key = "savestate", .to_node_key = "battle_1", .input_key = "entry_savestate" },
-                { .from_node_key = "probe_1", .output_key = "unique_input_frames", .to_node_key = "battle_1", .input_key = "initial_input_frames" },
+                { .from_node_key = "probe_1", .output_key = "accepted_input_frames", .to_node_key = "battle_1", .input_key = "initial_input_frames" },
             },
             .created_at_utc = now,
             .correlation_id = "au-workflow-graph",
@@ -5938,7 +6367,7 @@ TEST_F(SqliteDbFixture, Stage5ExecutionWorkflowInstanceStoresAuthoredGraphRevisi
                         { .input_key = "entry_savestate", .data_kind = "state.savestate_id", .display_name = "Entry savestate" },
                     },
                     .possible_outputs = {
-                        { .output_key = "unique_input_frames", .data_kind = "analysis.input_frame_set_id", .display_name = "Unique input frames" },
+                        { .output_key = "accepted_input_frames", .data_kind = "analysis.input_frame_set_id", .display_name = "Accepted input frames" },
                     },
                 },
                 {
@@ -5956,7 +6385,7 @@ TEST_F(SqliteDbFixture, Stage5ExecutionWorkflowInstanceStoresAuthoredGraphRevisi
                 },
             },
             .edges = {
-                { .from_node_key = "probe_1", .output_key = "unique_input_frames", .to_node_key = "battle_1", .input_key = "initial_input_frames" },
+                { .from_node_key = "probe_1", .output_key = "accepted_input_frames", .to_node_key = "battle_1", .input_key = "initial_input_frames" },
             },
             .created_at_utc = now,
             .correlation_id = "au-workflow-graph-launch",
@@ -6102,7 +6531,7 @@ TEST_F(SqliteDbFixture, Stage5GraphRoutingRoutesJobOutputsAndWaitsForRequiredInp
                         { .input_key = "entry_savestate", .data_kind = "state.savestate_id", .display_name = "Entry savestate" },
                     },
                     .possible_outputs = {
-                        { .output_key = "unique_input_frames", .data_kind = "analysis.input_frame_set_id", .display_name = "Unique input frames" },
+                        { .output_key = "accepted_input_frames", .data_kind = "analysis.input_frame_set_id", .display_name = "Accepted input frames" },
                     },
                 },
                 {
@@ -6121,7 +6550,7 @@ TEST_F(SqliteDbFixture, Stage5GraphRoutingRoutesJobOutputsAndWaitsForRequiredInp
             .edges = {
                 { .from_node_key = "tas_1", .output_key = "savestate", .to_node_key = "probe_1", .input_key = "entry_savestate" },
                 { .from_node_key = "tas_1", .output_key = "savestate", .to_node_key = "battle_1", .input_key = "entry_savestate" },
-                { .from_node_key = "probe_1", .output_key = "unique_input_frames", .to_node_key = "battle_1", .input_key = "initial_input_frames" },
+                { .from_node_key = "probe_1", .output_key = "accepted_input_frames", .to_node_key = "battle_1", .input_key = "initial_input_frames" },
             },
             .created_at_utc = now,
             .correlation_id = "au-workflow-graph-routing",
@@ -6307,7 +6736,7 @@ TEST_F(SqliteDbFixture, Stage5GraphRoutingRoutesJobOutputsAndWaitsForRequiredInp
     ASSERT_TRUE(execution_db->RecordJobOutput(
         {
             .job_id = probe_job_id,
-            .output_key = "unique_input_frames",
+            .output_key = "accepted_input_frames",
             .data_kind = "analysis.input_frame_set_id",
             .ref_kind = "an.input_set",
             .ref_id = 8001,
@@ -6351,7 +6780,7 @@ TEST_F(SqliteDbFixture, Stage5GraphRoutingRoutesJobOutputsAndWaitsForRequiredInp
         return output.graph_node_key == "tas_1" && output.output_key == "savestate";
     }), 1);
     EXPECT_EQ(std::count_if(outputs.begin(), outputs.end(), [](const auto& output) {
-        return output.graph_node_key == "probe_1" && output.output_key == "unique_input_frames";
+        return output.graph_node_key == "probe_1" && output.output_key == "accepted_input_frames";
     }), 1);
 }
 
@@ -6491,163 +6920,6 @@ TEST_F(SqliteDbFixture, Stage5GraphRoutingRespectsExternalOverrideInputBinding) 
     EXPECT_EQ(override_count, 1);
 }
 
-TEST_F(SqliteDbFixture, Stage5CoordinatorMaterializesSeedProbeGraphNodeFromInstanceInputBinding) {
-    using namespace savor::db;
-    using namespace savor::db::execution::programdb;
-    using namespace savor::db::execution::programdb::seedprobe;
-    using namespace savor::db::execution::workflow;
-    using namespace savor::runner::parallel::savordb;
-
-    auto* authoring_db = db_service_->AuthoringDb();
-    auto* analysis_db = db_service_->AnalysisDb();
-    ASSERT_NE(authoring_db, nullptr);
-    ASSERT_NE(analysis_db, nullptr);
-
-    std::string err;
-    std::int64_t seed_probe_spec_id = 0;
-    ASSERT_TRUE(authoring_db->SaveSeedProbeSpec(
-        {
-            .name = "graph seed probe spec",
-            .priority = 1,
-            .min_value = 80,
-            .max_value = 180,
-            .cap_trigger_top = true,
-            .ignore_trigger_minmax = true,
-            .combo_attempts_per_target = 1,
-            .combo_sampler_tries = 1,
-            .auto_schedule_battle_run = false,
-            .created_at_utc = types::UtcNow(),
-            .correlation_id = "test.graph-materialize",
-            .causation_id = "test",
-        },
-        &seed_probe_spec_id,
-        &err))
-        << err;
-
-    SaveWorkflowGraphResult saved{};
-    ASSERT_TRUE(authoring_db->SaveWorkflowGraph(
-        {
-            .name = "graph-materialize-seedprobe",
-            .description = "Seed probe chain launch graph",
-            .graph_version = 1,
-            .graph_hash = "graph-materialize-seedprobe-hash",
-            .nodes = {
-                {
-                    .node_key = "probe_1",
-                    .unit_kind = "seed_probe_chain",
-                    .display_name = "Seed Probe Chain",
-                    .authored_ref_kind = std::string("seed_probe_spec"),
-                    .authored_ref_id = seed_probe_spec_id,
-                    .inputs = {
-                        { .input_key = "entry_savestate", .data_kind = "state.savestate_id", .display_name = "Entry savestate" },
-                    },
-                    .possible_outputs = {
-                        { .output_key = "unique_input_frames", .data_kind = "analysis.input_frame_set_id", .display_name = "Unique input frames" },
-                    },
-                },
-            },
-            .created_at_utc = types::UtcNow(),
-            .correlation_id = "test.graph-materialize",
-        },
-        &saved,
-        &err))
-        << err;
-
-    auto* execution_db = db_service_->ExecutionDb();
-    ASSERT_NE(execution_db, nullptr);
-    std::int64_t workflow_instance_id = 0;
-    WorkflowCreateInstanceCommand command{};
-    command.workflow_kind = "workflow_graph";
-    command.root_scope_kind = "manual";
-    command.workflow_graph_revision_id = saved.workflow_graph_revision_id;
-    command.created_by = "sqlite-fixture";
-    command.created_at_utc = types::UtcNow().time_since_epoch().count();
-    command.unit_activations.push_back(TestUnitActivation("probe_1", "seed_probe_chain", "Seed Probe Chain", {}, 10, 1));
-    command.input_bindings.push_back({
-        .node_key = "probe_1",
-        .input_key = "entry_savestate",
-        .data_kind = "state.savestate_id",
-        .ref_kind = "state.savestate",
-        .ref_id = 44001,
-        .source_kind = "external",
-    });
-    command.arguments.push_back({
-        .node_key = "probe_1",
-        .argument_key = "samples_per_axis",
-        .value_type = "integer",
-        .integer_value = 1,
-        .source_kind = "test",
-    });
-    ASSERT_TRUE(execution_db->WorkflowCommandService()->CreateWorkflowInstance(command, &workflow_instance_id, &err)) << err;
-
-    const auto graph = execution_db->WorkflowQueryService()->GetWorkflowGraph(workflow_instance_id);
-    ASSERT_TRUE(graph.has_value());
-    ASSERT_EQ(graph->steps.size(), 1u);
-
-    ProgramKindRegistry registry;
-    SeedProbePhaseRegistrationConfig config{};
-    config.authoring_db = authoring_db;
-    RegisterSeedProbePhaseDescriptors(&registry, execution_db, analysis_db, config);
-
-    DBWorkflowWorkerCoordinator coordinator(
-        execution_db,
-        DBWorkflowWorkerCoordinatorConfig{},
-        CoordinatorIntegrationConfig{ .workflow_enabled = true },
-        &registry);
-
-    const auto scheduled = coordinator.MaterializeWorkflowStep(
-        WorkflowReadyStep{
-            .workflow_instance_id = workflow_instance_id,
-            .workflow_step_id = graph->steps.front().workflow_step_id,
-            .step_key = "probe_1",
-            .step_kind = "seed_probe_chain",
-            .priority = 10,
-        });
-    ASSERT_TRUE(scheduled.has_value());
-    EXPECT_GT(scheduled->job_set_id, 0);
-
-    sqlite3_stmt* st = nullptr;
-    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
-        db_,
-        "SELECT probe_run_id, probe_set_id, entry_savestate_id, seed_probe_spec_id, launch_samples_per_axis "
-        "FROM sp_probe_run WHERE entry_savestate_id=?1 AND seed_probe_spec_id=?2 LIMIT 1;",
-        -1,
-        &st,
-        nullptr));
-    sqlite3_bind_int64(st, 1, 44001);
-    sqlite3_bind_int64(st, 2, seed_probe_spec_id);
-    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
-    const auto probe_run_id = sqlite3_column_int64(st, 0);
-    EXPECT_GT(sqlite3_column_int64(st, 1), 0);
-    EXPECT_EQ(sqlite3_column_int64(st, 2), 44001);
-    EXPECT_EQ(sqlite3_column_int64(st, 3), seed_probe_spec_id);
-    EXPECT_EQ(sqlite3_column_int(st, 4), 1);
-    sqlite3_finalize(st);
-
-    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
-        db_,
-        "SELECT program_ref_kind, program_ref_id FROM exec_job WHERE job_set_id=?1 ORDER BY job_id LIMIT 1;",
-        -1,
-        &st,
-        nullptr));
-    sqlite3_bind_int64(st, 1, scheduled->job_set_id);
-    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
-    ASSERT_NE(sqlite3_column_text(st, 0), nullptr);
-    EXPECT_EQ(std::string(reinterpret_cast<const char*>(sqlite3_column_text(st, 0))), "seed_probe_run");
-    EXPECT_EQ(sqlite3_column_int64(st, 1), probe_run_id);
-    sqlite3_finalize(st);
-
-    JobMaterializationService materializer(execution_db, &registry);
-    const auto claimed = materializer.ClaimJobs(1, std::chrono::steady_clock::now());
-    ASSERT_EQ(claimed, 1u);
-    ASSERT_TRUE(materializer.MaterializeClaimedJobPayload(std::chrono::steady_clock::now()));
-    const auto materialized = materializer.ListByState(ClaimedJobLifecycleState::Materialized);
-    ASSERT_EQ(materialized.size(), 1u);
-    EXPECT_EQ(materialized.front().step.step_kind, "seed_probe_chain");
-    EXPECT_EQ(materialized.front().runtime_init.bootstrap_profile, "seedprobe.neutral.required_savestate");
-    EXPECT_EQ(materialized.front().runtime_init.savestate_ref_id, 44001);
-    EXPECT_TRUE(materialized.front().payload.has_value());
-}
 
 TEST_F(SqliteDbFixture, Stage5CoordinatorMaterializesTasMovieGraphNodesWithTasSpecScopedDedupe) {
     using namespace savor::db;
@@ -7818,32 +8090,121 @@ TEST_F(SqliteDbFixture, Stage4WorkflowArchiveRehydrateRestoresSeedProbeAnalysisA
 INSERT INTO sp_probe_set(probe_set_id,name,probe_flavor,breakpoint_policy_name,segment_source_kind,created_at_utc)
 VALUES(9000,'seed probe set','BATTLE_PRE','default','manual',1000);
 INSERT INTO an_input_set(input_set_id,content_hash,source_ref_kind,source_ref_id,created_at_utc)
-VALUES(9001,'seed-input-hash','manual',1,1000);
-INSERT INTO sp_axis_xy(axis_xy_id,x,y) VALUES(9002,128,128),(9003,129,128),(9004,128,129);
+VALUES(9001,'seed-input-hash','sp_probe_run',9010,1000);
+INSERT INTO sp_axis_xy(axis_xy_id,x,y) VALUES(9002,128,128),(9003,0,0);
 INSERT INTO sp_input_frame(input_frame_id,main_axis_xy_id,cstick_axis_xy_id,trigger_axis_xy_id)
-VALUES(9005,9002,9003,9004);
+VALUES(9005,9002,9002,9003);
 INSERT INTO an_input_set_frame(input_set_id,ordinal,input_frame_id,added_at_utc)
 VALUES(9001,0,9005,1000);
-INSERT INTO sp_probe_run(probe_run_id,probe_set_id,entry_savestate_id,seed_probe_spec_id,codec_version,status,unique_input_set_id,requested_at_utc,completed_at_utc,launch_samples_per_axis)
-VALUES(9010,9000,701,1,1,'COMPLETED',9001,1000,2000,1);
-INSERT INTO sp_probe_result(probe_result_id,probe_run_id,neutral_seed_value,grid_count,unique_count,result_status,recorded_at_utc)
-VALUES(9020,9010,1000,1,1,'COMPLETED',2000);
-INSERT INTO sp_neutral_seed(neutral_seed_id,probe_result_id,neutral_seed_value,source_kind,recorded_at_utc)
-VALUES(9030,9020,1000,'CALCULATED',2000);
-INSERT INTO sp_grid_seed(grid_seed_id,probe_result_id,source_family,axis_xy_id,seed_value,seed_delta,recorded_at_utc)
-VALUES(9040,9020,'MAIN',9002,1001,1,2000);
-INSERT INTO sp_unique_seed(unique_seed_id,probe_result_id,input_frame_id,seed_value,seed_delta,recorded_at_utc)
-VALUES(9050,9020,9005,1002,2,2000);
+INSERT INTO sp_probe_run(
+    probe_run_id,materialization_key,probe_set_id,entry_savestate_id,
+    seed_probe_spec_id,launch_samples_per_axis,codec_version,status,
+    accepted_input_set_id,requested_at_utc,completed_at_utc,
+    established_endpoint,established_endpoint_source_job_id)
+VALUES(
+    9010,'fixture.archive.seedprobe',9000,701,
+    1,1,2,'COMPLETED',9001,1000,2000,
+    'AFTER_RAND_SEED_SET',9102);
+INSERT INTO sp_probe_result(
+    probe_result_id,probe_run_id,input_frame_id,source_job_id,seed_value,
+    origin_worker_id,origin_process_generation,origin_state_epoch,
+    terminal_sha256,confirmation_of_probe_result_id,
+    evidence_state,recorded_at_utc)
+VALUES
+    (9020,9010,9005,9102,1000,1,1,1,
+     '1111111111111111111111111111111111111111111111111111111111111111',
+     NULL,'CONFIRMED',2000),
+    (9021,9010,9005,9103,1000,1,1,2,
+     '2222222222222222222222222222222222222222222222222222222222222222',
+     9020,'OBSERVED',2000);
 INSERT INTO sp_encounter_projection(encounter_projection_id,probe_run_id,seed_value,option_ordinal,encounter_id,encounter_frame,movement_required,recorded_at_utc)
-VALUES(9060,9010,1002,0,'battle',10,1,2000);
-INSERT INTO exec_job_set(job_set_id,program_kind,purpose,created_by,created_at_utc,priority_boost,expected_total,domain_ref_kind,domain_ref_id,meta_note)
-VALUES(9100,3,'seed job set','test',1000,0,1,'sp_probe_run',9010,'seed');
-INSERT INTO exec_job(job_id,job_set_id,program_kind,program_version,program_ref_kind,program_ref_id,fingerprint,priority,state,attempts,max_attempts,queued_at_utc,ended_at_utc)
-VALUES(9101,9100,3,1,'sp_probe_run',9010,'rehydrate-seed-job',0,'SUCCEEDED',1,1,1000,2000);
+VALUES(9060,9010,1000,0,'battle',10,1,2000);
+INSERT INTO exec_job_set(
+    job_set_id,program_kind,purpose,created_by,created_at_utc,priority_boost,
+    expected_total,domain_ref_kind,domain_ref_id,meta_note,materialization_key,
+    materialization_state,population_sealed_at_utc,
+    workset_publication_completed_at_utc)
+VALUES(
+    9100,1,'SeedProbe Survey','test',1000,0,
+    3,'sp_probe_run',9010,'stage=SURVEY','fixture.archive.seedprobe.survey',
+    'WORKSET_PUBLICATION_COMPLETE',1000,1000);
 INSERT INTO exec_workflow_instance(workflow_instance_id,workflow_kind,state,root_scope_kind,root_scope_id,created_by,created_at_utc,completed_at_utc)
 VALUES(9102,'SEED_PROBE','COMPLETED','job_set',9100,'test',1000,2000);
 INSERT INTO exec_workflow_step(workflow_step_id,workflow_instance_id,step_key,graph_node_key,step_kind,state,priority,attempts,max_attempts,job_set_id,input_ref_kind,input_ref_id,output_ref_kind,output_ref_id,created_at_utc,completed_at_utc)
 VALUES(9103,9102,'probe','probe','seed_probe_chain','COMPLETED',0,1,1,9100,'sp_probe_run',9010,'sp_probe_run',9010,1000,2000);
+INSERT INTO exec_workset(
+    workset_id,job_set_id,workflow_step_id,root_job_set_id,
+    workset_key,program_kind,program_version,
+    compatibility_key,module_canonical_id,module_version,module_sha256,
+    entrypoint,verified_dependency_sha256,runtime_profile_sha256,
+    required_capability_mask,execution_affinity_key,baseline_affinity_key,
+    estimated_payload_bytes,priority,item_count,published_at_utc)
+VALUES(
+    9110,9100,9103,9100,'fixture.archive.seedprobe.workset',1,2,
+    'fixture-compatibility','soa.seed_probe',2,
+    'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    'probe',
+    'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+    'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+    128,NULL,'savestate:701',128,0,3,1000);
+INSERT INTO exec_workset_dispatch_attempt(
+    dispatch_attempt_id,workset_id,dispatch_sequence,state,claim_token,
+    lease_expires_at_utc,claimed_at_utc,dispatched_at_utc,closed_at_utc,
+    close_reason_code,close_reason_text)
+VALUES(
+    9120,9110,1,'CLOSED','fixture-seedprobe-dispatch',
+    2500,1100,1200,2000,'ALL_TERMINAL','fixture complete');
+INSERT INTO exec_job(
+    job_id,job_set_id,program_kind,program_version,program_ref_kind,
+    program_ref_id,fingerprint,priority,state,attempts,max_attempts,
+    queued_at_utc,ended_at_utc,input_ini,workset_id,workset_item_ordinal,
+    dispatch_attempt_id,dispatch_item_ordinal,reserved_attempt_id,
+    cancellation_group_key,cancellation_state,cancellation_request_key,
+    cancellation_reason_code,cancellation_reason_text,
+    cancellation_requested_by,cancellation_caused_by_job_id,
+    cancellation_requested_at_utc,cancellation_delivered_at_utc,
+    cancellation_resolved_at_utc,cancellation_resolution_code)
+VALUES
+    (9101,9100,1,2,'sp_probe_run',9010,'rehydrate-seed-canceled',0,
+     'CANCELED',1,1,1000,2000,
+     '[SeedProbe.Request]
+ desired_delta=2
+ input_frame_id=9005
+ sample_ordinal=1
+ stage=SEARCH
+ version=1
+ ',9110,0,NULL,NULL,NULL,
+     'seedprobe.run.9010.search.delta.2','RESOLVED',
+     'cancel-search-delta-2','SEED_PROBE_SEARCH_WINNER',
+     'confirmed candidate already won','seedprobe-result-processor',9103,
+     1500,1600,1700,'CANCELED'),
+    (9102,9100,1,2,'sp_probe_run',9010,'rehydrate-seed-observed',0,
+     'SUCCEEDED',1,1,1000,2000,
+     '[SeedProbe.Request]
+input_frame_id=9005
+sample_ordinal=0
+stage=SURVEY
+version=1
+',9110,1,9120,0,1,
+     NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL),
+    (9103,9100,1,2,'sp_probe_run',9010,'rehydrate-seed-confirm',0,
+     'SUCCEEDED',1,1,1000,2000,
+     '[SeedProbe.Request]
+confirmation_of_probe_result_id=9020
+input_frame_id=9005
+sample_ordinal=0
+stage=CONFIRM
+version=1
+',9110,2,9120,1,1,
+     NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL);
+INSERT INTO exec_job_cancellation_request(
+    cancellation_request_id,job_id,request_key,reason_code,reason_text,
+    requested_by,caused_by_job_id,requested_at_utc,state,delivery_attempts,
+    delivered_at_utc,resolved_at_utc,resolution_code)
+VALUES(
+    9150,9101,'cancel-search-delta-2','SEED_PROBE_SEARCH_WINNER',
+    'confirmed candidate already won','seedprobe-result-processor',9103,
+    1500,'RESOLVED',1,1600,1700,'CANCELED');
 INSERT INTO exec_workflow_step_output(workflow_step_output_id,workflow_instance_id,workflow_step_id,graph_node_key,output_key,data_kind,ref_kind,ref_id,created_at_utc)
 VALUES(9104,9102,9103,'probe','run','sp_probe_run','sp_probe_run',9010,2000);
 INSERT INTO exec_workflow_instance_input_binding(workflow_instance_input_binding_id,workflow_instance_id,workflow_graph_revision_id,node_key,input_key,data_kind,ref_kind,ref_id,source_kind,created_at_utc)
@@ -7900,21 +8261,115 @@ VALUES(9102,'SEED_PROBE','COMPLETED','COMPLETED','job_set','test',1000,2000,0);
     ASSERT_TRUE(result.success) << result.error.value_or("unknown error");
 
     const auto new_probe_run_id = ReadInt64(db_, "SELECT CAST(new_id AS INTEGER) FROM ar_rehydrate_map WHERE entity_kind='analysis_seed_probe_run' AND old_id='9010' ORDER BY rehydrate_map_id DESC LIMIT 1;");
-    const auto new_job_id = ReadInt64(db_, "SELECT CAST(new_id AS INTEGER) FROM ar_rehydrate_map WHERE entity_kind='job' AND old_id='9101' ORDER BY rehydrate_map_id DESC LIMIT 1;");
+    const auto new_canceled_job_id = ReadInt64(db_, "SELECT CAST(new_id AS INTEGER) FROM ar_rehydrate_map WHERE entity_kind='job' AND old_id='9101' ORDER BY rehydrate_map_id DESC LIMIT 1;");
+    const auto new_observed_job_id = ReadInt64(db_, "SELECT CAST(new_id AS INTEGER) FROM ar_rehydrate_map WHERE entity_kind='job' AND old_id='9102' ORDER BY rehydrate_map_id DESC LIMIT 1;");
+    const auto new_confirm_job_id = ReadInt64(db_, "SELECT CAST(new_id AS INTEGER) FROM ar_rehydrate_map WHERE entity_kind='job' AND old_id='9103' ORDER BY rehydrate_map_id DESC LIMIT 1;");
+    const auto new_input_frame_id = ReadInt64(db_, "SELECT CAST(new_id AS INTEGER) FROM ar_rehydrate_map WHERE entity_kind='analysis_seed_probe_input_frame' AND old_id='9005' ORDER BY rehydrate_map_id DESC LIMIT 1;");
+    const auto new_probe_result_id = ReadInt64(db_, "SELECT CAST(new_id AS INTEGER) FROM ar_rehydrate_map WHERE entity_kind='analysis_seed_probe_result' AND old_id='9020' ORDER BY rehydrate_map_id DESC LIMIT 1;");
+    const auto new_confirmation_result_id = ReadInt64(db_, "SELECT CAST(new_id AS INTEGER) FROM ar_rehydrate_map WHERE entity_kind='analysis_seed_probe_result' AND old_id='9021' ORDER BY rehydrate_map_id DESC LIMIT 1;");
+    const auto new_cancellation_request_id = ReadInt64(db_, "SELECT CAST(new_id AS INTEGER) FROM ar_rehydrate_map WHERE entity_kind='job_cancellation_request' AND old_id='9150' ORDER BY rehydrate_map_id DESC LIMIT 1;");
+    const auto new_workset_id = ReadInt64(db_, "SELECT CAST(new_id AS INTEGER) FROM ar_rehydrate_map WHERE entity_kind='workset' AND old_id='9110' ORDER BY rehydrate_map_id DESC LIMIT 1;");
+    const auto new_dispatch_attempt_id = ReadInt64(db_, "SELECT CAST(new_id AS INTEGER) FROM ar_rehydrate_map WHERE entity_kind='workset_dispatch_attempt' AND old_id='9120' ORDER BY rehydrate_map_id DESC LIMIT 1;");
     const auto new_step_id = ReadInt64(db_, "SELECT CAST(new_id AS INTEGER) FROM ar_rehydrate_map WHERE entity_kind='workflow_step' AND old_id='9103' ORDER BY rehydrate_map_id DESC LIMIT 1;");
     ASSERT_GT(new_probe_run_id, 0);
-    ASSERT_GT(new_job_id, 0);
+    ASSERT_GT(new_canceled_job_id, 0);
+    ASSERT_GT(new_observed_job_id, 0);
+    ASSERT_GT(new_confirm_job_id, 0);
+    ASSERT_GT(new_input_frame_id, 0);
+    ASSERT_GT(new_probe_result_id, 0);
+    ASSERT_GT(new_confirmation_result_id, 0);
+    ASSERT_GT(new_cancellation_request_id, 0);
+    ASSERT_GT(new_workset_id, 0);
+    ASSERT_GT(new_dispatch_attempt_id, 0);
     ASSERT_GT(new_step_id, 0);
-    EXPECT_EQ(ReadInt64(db_, ("SELECT program_ref_id FROM exec_job WHERE job_id=" + std::to_string(new_job_id) + ";").c_str()), new_probe_run_id);
+    EXPECT_EQ(ReadInt64(db_, ("SELECT program_ref_id FROM exec_job WHERE job_id=" + std::to_string(new_observed_job_id) + ";").c_str()), new_probe_run_id);
     EXPECT_EQ(ReadInt64(db_, ("SELECT input_ref_id FROM exec_workflow_step WHERE workflow_step_id=" + std::to_string(new_step_id) + ";").c_str()), new_probe_run_id);
-    EXPECT_EQ(ReadInt64(db_, ("SELECT COUNT(1) FROM sp_probe_result WHERE probe_run_id=" + std::to_string(new_probe_run_id) + ";").c_str()), 1);
+    EXPECT_EQ(ReadInt64(db_, ("SELECT workflow_step_id FROM exec_workset WHERE workset_id=" + std::to_string(new_workset_id) + ";").c_str()), new_step_id);
+    EXPECT_EQ(
+        ReadInt64(db_, ("SELECT root_job_set_id FROM exec_workset WHERE workset_id=" + std::to_string(new_workset_id) + ";").c_str()),
+        ReadInt64(db_, "SELECT CAST(new_id AS INTEGER) FROM ar_rehydrate_map WHERE entity_kind='job_set' AND old_id='9100' ORDER BY rehydrate_map_id DESC LIMIT 1;"));
+    EXPECT_EQ(ReadInt64(db_, ("SELECT COUNT(1) FROM sp_probe_result WHERE probe_run_id=" + std::to_string(new_probe_run_id) + ";").c_str()), 2);
     EXPECT_EQ(ReadInt64(db_, ("SELECT entry_savestate_id FROM sp_probe_run WHERE probe_run_id=" + std::to_string(new_probe_run_id) + ";").c_str()), 701);
-    EXPECT_EQ(ReadInt64(db_, ("SELECT COUNT(1) FROM sp_unique_seed u JOIN sp_probe_result r ON r.probe_result_id=u.probe_result_id WHERE r.probe_run_id=" + std::to_string(new_probe_run_id) + ";").c_str()), 1);
+    EXPECT_EQ(ReadInt64(db_, ("SELECT accepted_input_set_id FROM sp_probe_run WHERE probe_run_id=" + std::to_string(new_probe_run_id) + ";").c_str()),
+        ReadInt64(db_, "SELECT CAST(new_id AS INTEGER) FROM ar_rehydrate_map WHERE entity_kind='analysis_input_set' AND old_id='9001' ORDER BY rehydrate_map_id DESC LIMIT 1;"));
+    EXPECT_EQ(ReadText(db_, ("SELECT established_endpoint FROM sp_probe_run WHERE probe_run_id=" + std::to_string(new_probe_run_id) + ";").c_str()), "AFTER_RAND_SEED_SET");
+    EXPECT_EQ(ReadInt64(db_, ("SELECT established_endpoint_source_job_id FROM sp_probe_run WHERE probe_run_id=" + std::to_string(new_probe_run_id) + ";").c_str()), new_observed_job_id);
+    EXPECT_NE(ReadText(db_, ("SELECT materialization_key FROM sp_probe_run WHERE probe_run_id=" + std::to_string(new_probe_run_id) + ";").c_str()), "fixture.archive.seedprobe");
+    EXPECT_EQ(ReadInt64(db_, ("SELECT source_job_id FROM sp_probe_result WHERE probe_result_id=" + std::to_string(new_probe_result_id) + ";").c_str()), new_observed_job_id);
+    EXPECT_EQ(ReadText(db_, ("SELECT evidence_state FROM sp_probe_result WHERE probe_result_id=" + std::to_string(new_probe_result_id) + ";").c_str()), "CONFIRMED");
+    EXPECT_EQ(ReadInt64(db_, ("SELECT confirmation_of_probe_result_id FROM sp_probe_result WHERE probe_result_id=" + std::to_string(new_confirmation_result_id) + ";").c_str()), new_probe_result_id);
+    EXPECT_EQ(ReadInt64(db_, ("SELECT source_job_id FROM sp_probe_result WHERE probe_result_id=" + std::to_string(new_confirmation_result_id) + ";").c_str()), new_confirm_job_id);
+    EXPECT_EQ(ReadInt64(db_, ("SELECT dispatch_attempt_id FROM exec_job WHERE job_id=" + std::to_string(new_observed_job_id) + ";").c_str()), new_dispatch_attempt_id);
+    EXPECT_EQ(ReadInt64(db_, ("SELECT dispatch_item_ordinal FROM exec_job WHERE job_id=" + std::to_string(new_observed_job_id) + ";").c_str()), 0);
+    EXPECT_EQ(ReadInt64(db_, ("SELECT reserved_attempt_id FROM exec_job WHERE job_id=" + std::to_string(new_observed_job_id) + ";").c_str()), 1);
+    EXPECT_EQ(ReadInt64(db_, ("SELECT dispatch_attempt_id FROM exec_job WHERE job_id=" + std::to_string(new_confirm_job_id) + ";").c_str()), new_dispatch_attempt_id);
+    EXPECT_EQ(ReadInt64(db_, ("SELECT dispatch_item_ordinal FROM exec_job WHERE job_id=" + std::to_string(new_confirm_job_id) + ";").c_str()), 1);
+    EXPECT_EQ(ReadInt64(db_, ("SELECT reserved_attempt_id FROM exec_job WHERE job_id=" + std::to_string(new_confirm_job_id) + ";").c_str()), 1);
+    const auto observed_spec =
+        execution::programdb::seedprobe::DecodeSeedProbeJobSpec(
+            ReadText(
+                db_,
+                ("SELECT input_ini FROM exec_job WHERE job_id="
+                    + std::to_string(new_observed_job_id) + ";")
+                    .c_str()));
+    ASSERT_TRUE(observed_spec.has_value());
+    EXPECT_EQ(
+        observed_spec->stage,
+        execution::programdb::seedprobe::SeedProbeJobStage::Survey);
+    EXPECT_EQ(observed_spec->input_frame_id, new_input_frame_id);
+    EXPECT_EQ(observed_spec->sample_ordinal, 0);
+    const auto confirm_spec =
+        execution::programdb::seedprobe::DecodeSeedProbeJobSpec(
+            ReadText(
+                db_,
+                ("SELECT input_ini FROM exec_job WHERE job_id="
+                    + std::to_string(new_confirm_job_id) + ";")
+                    .c_str()));
+    ASSERT_TRUE(confirm_spec.has_value());
+    EXPECT_EQ(
+        confirm_spec->stage,
+        execution::programdb::seedprobe::SeedProbeJobStage::Confirm);
+    EXPECT_EQ(confirm_spec->input_frame_id, new_input_frame_id);
+    EXPECT_EQ(
+        confirm_spec->confirmation_of_probe_result_id,
+        std::optional<std::int64_t>(new_probe_result_id));
+    const auto search_spec =
+        execution::programdb::seedprobe::DecodeSeedProbeJobSpec(
+            ReadText(
+                db_,
+                ("SELECT input_ini FROM exec_job WHERE job_id="
+                    + std::to_string(new_canceled_job_id) + ";")
+                    .c_str()));
+    ASSERT_TRUE(search_spec.has_value());
+    EXPECT_EQ(
+        search_spec->stage,
+        execution::programdb::seedprobe::SeedProbeJobStage::Search);
+    EXPECT_EQ(search_spec->input_frame_id, new_input_frame_id);
+    EXPECT_EQ(
+        search_spec->desired_delta,
+        std::optional<std::int32_t>(2));
+    EXPECT_EQ(
+        ReadText(
+            db_,
+            ("SELECT cancellation_group_key FROM exec_job WHERE job_id="
+                + std::to_string(new_canceled_job_id) + ";")
+                .c_str()),
+        "seedprobe.run." + std::to_string(new_probe_run_id)
+            + ".search.delta.2");
+    EXPECT_NE(
+        ReadText(
+            db_,
+            ("SELECT fingerprint FROM exec_job WHERE job_id="
+                + std::to_string(new_observed_job_id) + ";")
+                .c_str()),
+        "rehydrate-seed-observed");
+    EXPECT_EQ(ReadInt64(db_, ("SELECT cancellation_caused_by_job_id FROM exec_job WHERE job_id=" + std::to_string(new_canceled_job_id) + ";").c_str()), new_confirm_job_id);
+    EXPECT_EQ(ReadInt64(db_, ("SELECT caused_by_job_id FROM exec_job_cancellation_request WHERE cancellation_request_id=" + std::to_string(new_cancellation_request_id) + ";").c_str()), new_confirm_job_id);
 
     std::filesystem::remove_all(temp_root);
 }
 
-TEST_F(SqliteDbFixture, Stage4WorkflowArchiveRehydrateRestoresBattleEndAggregatesSeedAncestryAndDerivations) {
+TEST_F(SqliteDbFixture, Stage4WorkflowArchiveRehydrateRestoresBattleEndAggregatesConfirmedSeedAncestryAndDerivations) {
     using namespace savor::db;
     using namespace savor::db::archive;
     using namespace savor::db::migrations;
@@ -7951,12 +8406,63 @@ TEST_F(SqliteDbFixture, Stage4WorkflowArchiveRehydrateRestoresBattleEndAggregate
         "(704,70,'FIELD','results complete',1,1300);";
     ASSERT_TRUE(ExecSql(db_, state_sql.c_str()));
     ASSERT_TRUE(ExecSql(db_, R"SQL(
-INSERT INTO exec_workflow_instance(workflow_instance_id,workflow_kind,state,root_scope_kind,created_by,created_at_utc,completed_at_utc)
-VALUES(9200,'BATTLE_END','COMPLETED','manual','test',1000,2000);
-INSERT INTO exec_workflow_step(workflow_step_id,workflow_instance_id,step_key,graph_node_key,step_kind,state,priority,attempts,max_attempts,input_ref_kind,input_ref_id,output_ref_kind,output_ref_id,created_at_utc,completed_at_utc)
-VALUES(9201,9200,'completion','completion','battle.completion','COMPLETED',0,1,1,'state.savestate',701,'analysis_battle.battle_completion',9300,1000,1100),
-      (9202,9200,'seed','seed','battle.field_return_seed_probe','COMPLETED',0,1,1,'sp_probe_run',9010,'state.savestate',703,1100,1200),
-      (9203,9200,'results','results','battle.results_screen','COMPLETED',0,1,1,'analysis_battle.battle_completion',9300,'analysis_battle.battle_results',9400,1200,1300);
+INSERT INTO exec_job_set(
+    job_set_id,program_kind,purpose,created_by,created_at_utc,priority_boost,
+    expected_total,domain_ref_kind,domain_ref_id,meta_note,materialization_key,
+    materialization_state,population_sealed_at_utc,
+    workset_publication_completed_at_utc)
+VALUES(
+    9100,1,'FieldReturn SeedProbe','test',1100,0,
+    2,'sp_probe_run',9010,'stage=SURVEY','fixture.archive.field-return',
+    'WORKSET_PUBLICATION_COMPLETE',1100,1100);
+INSERT INTO exec_workset(
+    workset_id,job_set_id,workset_key,program_kind,program_version,
+    compatibility_key,module_canonical_id,module_version,module_sha256,
+    entrypoint,verified_dependency_sha256,runtime_profile_sha256,
+    required_capability_mask,execution_affinity_key,baseline_affinity_key,
+    estimated_payload_bytes,priority,item_count,published_at_utc)
+VALUES(
+    9110,9100,'fixture.archive.field-return.workset',1,1,
+    'fixture-compatibility','soa.seed_probe',1,
+    'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    'soa.seed_probe/probe',
+    'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+    'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+    0,NULL,'savestate:702',128,0,2,1100);
+INSERT INTO exec_job(
+    job_id,job_set_id,program_kind,program_version,program_ref_kind,
+    program_ref_id,fingerprint,priority,state,attempts,max_attempts,
+    queued_at_utc,ended_at_utc,input_ini,workset_id,workset_item_ordinal)
+VALUES
+    (9101,9100,1,1,'sp_probe_run',9010,'field-return-neutral',0,
+     'SUCCEEDED',1,1,1100,1200,
+     '[SeedProbe.Request]
+input_frame_id=9005
+sample_ordinal=0
+stage=SURVEY
+version=1
+',9110,0),
+    (9102,9100,1,1,'sp_probe_run',9010,'field-return-neutral-confirm',0,
+     'SUCCEEDED',1,1,1100,1200,
+     '[SeedProbe.Request]
+confirmation_of_probe_result_id=9020
+input_frame_id=9005
+sample_ordinal=0
+stage=CONFIRM
+version=1
+',9110,1);
+
+INSERT INTO exec_workflow_instance(
+    workflow_instance_id,workflow_kind,state,root_scope_kind,root_scope_id,
+    created_by,created_at_utc,completed_at_utc)
+VALUES
+    (9190,'SEED_PROBE','COMPLETED','job_set',9100,'test',1000,1200),
+    (9200,'BATTLE_END','COMPLETED','manual',NULL,'test',1000,2000);
+INSERT INTO exec_workflow_step(workflow_step_id,workflow_instance_id,step_key,graph_node_key,step_kind,state,priority,attempts,max_attempts,job_set_id,input_ref_kind,input_ref_id,output_ref_kind,output_ref_id,created_at_utc,completed_at_utc)
+VALUES(9191,9190,'probe','probe','seed_probe_chain','COMPLETED',0,1,1,9100,'state.savestate',702,'sp_probe_run',9010,1000,1200),
+      (9201,9200,'completion','completion','battle.completion','COMPLETED',0,1,1,NULL,'state.savestate',701,'analysis_battle.battle_completion',9300,1000,1100),
+      (9202,9200,'seed','seed','battle.field_return_seed_probe','COMPLETED',0,1,1,NULL,'state.savestate',702,'state.savestate',703,1100,1200),
+      (9203,9200,'results','results','battle.results_screen','COMPLETED',0,1,1,NULL,'analysis_battle.battle_completion',9300,'analysis_battle.battle_results',9400,1200,1300);
 INSERT INTO ui_workflow_instance(workflow_instance_id,workflow_kind,state,display_state,root_scope_kind,created_by,created_at_utc,completed_at_utc,battle_final_victory_count)
 VALUES(9200,'BATTLE_END','COMPLETED','COMPLETED','manual','test',1000,2000,1);
 
@@ -7964,12 +8470,32 @@ INSERT INTO sp_probe_set(probe_set_id,name,probe_flavor,breakpoint_policy_name,s
 VALUES(9000,'field-return-roundtrip','FIELD_RETURN','battle-end-results','workflow',1000);
 INSERT INTO an_input_set(input_set_id,content_hash,source_ref_kind,source_ref_id,created_at_utc)
 VALUES(9001,'field-return-roundtrip-input','sp_probe_run',9010,1000);
-INSERT INTO sp_probe_run(probe_run_id,probe_set_id,entry_savestate_id,seed_probe_spec_id,codec_version,status,unique_input_set_id,requested_at_utc,completed_at_utc,launch_samples_per_axis)
-VALUES(9010,9000,702,1,2,'COMPLETED',9001,1100,1200,1);
-INSERT INTO sp_probe_result(probe_result_id,probe_run_id,neutral_seed_value,grid_count,unique_count,result_status,recorded_at_utc)
-VALUES(9020,9010,333,0,0,'COMPLETED',1200);
-INSERT INTO sp_neutral_seed(neutral_seed_id,probe_result_id,neutral_seed_value,source_kind,recorded_at_utc)
-VALUES(9030,9020,333,'CALCULATED',1200);
+INSERT INTO sp_axis_xy(axis_xy_id,x,y)
+VALUES(9002,128,128),(9003,0,0);
+INSERT INTO sp_input_frame(
+    input_frame_id,main_axis_xy_id,cstick_axis_xy_id,trigger_axis_xy_id)
+VALUES(9005,9002,9002,9003);
+INSERT INTO an_input_set_frame(input_set_id,ordinal,input_frame_id,added_at_utc)
+VALUES(9001,0,9005,1200);
+INSERT INTO sp_probe_run(
+    probe_run_id,materialization_key,probe_set_id,entry_savestate_id,
+    seed_probe_spec_id,launch_samples_per_axis,codec_version,status,
+    accepted_input_set_id,requested_at_utc,completed_at_utc)
+VALUES(
+    9010,'fixture.archive.field-return',9000,702,
+    1,1,2,'COMPLETED',9001,1100,1200);
+INSERT INTO sp_probe_result(
+    probe_result_id,probe_run_id,input_frame_id,source_job_id,seed_value,
+    origin_worker_id,origin_process_generation,origin_state_epoch,
+    terminal_sha256,confirmation_of_probe_result_id,
+    evidence_state,recorded_at_utc)
+VALUES
+    (9020,9010,9005,9101,333,1,1,1,
+     '1111111111111111111111111111111111111111111111111111111111111111',
+     NULL,'CONFIRMED',1200),
+    (9021,9010,9005,9102,333,1,1,2,
+     '2222222222222222222222222222222222222222222222222222222222222222',
+     9020,'OBSERVED',1200);
 
 INSERT INTO ab_battle_completion(
     battle_completion_id,workflow_instance_id,workflow_step_id,entry_savestate_id,completion_savestate_id,
@@ -7980,13 +8506,13 @@ INSERT INTO ab_battle_results(
     battle_results_id,battle_completion_id,workflow_instance_id,workflow_step_id,selected_seed_ref_kind,
     selected_seed_ref_id,entry_savestate_id,final_savestate_id,selected_seed_value,entry_rng_seed,final_rng_seed,
     rng_effect_kind,fixed_draw_count,mismatch_count,invariant_failure_count,status,created_at_utc,completed_at_utc)
-VALUES(9400,9300,9200,9203,'analysisseedprobe.neutral_seed',9030,703,704,333,333,333,
+VALUES(9400,9300,9200,9203,'analysisseedprobe.confirmed_result',9020,703,704,333,333,333,
        'PRESERVE',0,0,0,'COMPLETED',1200,1300);
 
 INSERT INTO state_savestate_derivation(
     derivation_id,from_savestate_id,to_savestate_id,method_kind,source_context_kind,source_context_id,created_at_utc)
 VALUES(9501,701,702,'battle_completion','analysis_battle.battle_completion',9300,1100),
-      (9502,702,703,'field_return_seed_materialization','analysisseedprobe.neutral_seed',9030,1200),
+      (9502,702,703,'field_return_seed_materialization','analysisseedprobe.confirmed_result',9020,1200),
       (9503,703,704,'battle_results','analysis_battle.battle_results',9400,1300);
 )SQL"));
 
@@ -8021,6 +8547,18 @@ VALUES(9501,701,702,'battle_completion','analysis_battle.battle_completion',9300
         + " AND item_kind='analysis_seed_probe_runs';").c_str()), 1);
     EXPECT_EQ(ReadInt64(db_, ("SELECT item_count FROM ar_archive_item WHERE archive_package_id="
         + std::to_string(package.archive_package_id)
+        + " AND item_kind='workflow_instances';").c_str()), 1);
+    EXPECT_EQ(ReadInt64(db_, ("SELECT item_count FROM ar_archive_item WHERE archive_package_id="
+        + std::to_string(package.archive_package_id)
+        + " AND item_kind='job_sets';").c_str()), 1);
+    EXPECT_EQ(ReadInt64(db_, ("SELECT item_count FROM ar_archive_item WHERE archive_package_id="
+        + std::to_string(package.archive_package_id)
+        + " AND item_kind='worksets';").c_str()), 1);
+    EXPECT_EQ(ReadInt64(db_, ("SELECT item_count FROM ar_archive_item WHERE archive_package_id="
+        + std::to_string(package.archive_package_id)
+        + " AND item_kind='jobs';").c_str()), 2);
+    EXPECT_EQ(ReadInt64(db_, ("SELECT item_count FROM ar_archive_item WHERE archive_package_id="
+        + std::to_string(package.archive_package_id)
         + " AND item_kind='state_savestate_derivations';").c_str()), 3);
 
     std::int64_t request_id = 0;
@@ -8053,7 +8591,10 @@ VALUES(9501,701,702,'battle_completion','analysis_battle.battle_completion',9300
     const auto new_completion_step = mapped("workflow_step", 9201);
     const auto new_results_step = mapped("workflow_step", 9203);
     const auto new_probe_run = mapped("analysis_seed_probe_run", 9010);
-    const auto new_neutral_seed = mapped("analysis_seed_probe_neutral_seed", 9030);
+    const auto new_confirmed_result = mapped("analysis_seed_probe_result", 9020);
+    const auto new_confirmation_result = mapped("analysis_seed_probe_result", 9021);
+    const auto new_probe_source_job = mapped("job", 9101);
+    const auto new_confirmation_source_job = mapped("job", 9102);
     const auto new_completion = mapped("analysis_battle_completion", 9300);
     const auto new_results = mapped("analysis_battle_results", 9400);
     const auto new_entry_state = mapped("state_savestate", 701);
@@ -8061,10 +8602,17 @@ VALUES(9501,701,702,'battle_completion','analysis_battle.battle_completion',9300
     const auto new_seeded_state = mapped("state_savestate", 703);
     const auto new_final_state = mapped("state_savestate", 704);
     for (const auto id : {new_workflow, new_completion_step, new_results_step, new_probe_run,
-             new_neutral_seed, new_completion, new_results, new_entry_state, new_completion_state,
-             new_seeded_state, new_final_state}) {
+              new_confirmed_result, new_confirmation_result, new_probe_source_job,
+              new_confirmation_source_job, new_completion, new_results, new_entry_state,
+              new_completion_state, new_seeded_state, new_final_state}) {
         ASSERT_GT(id, 0);
     }
+    EXPECT_EQ(
+        ReadInt64(
+            db_,
+            "SELECT COUNT(1) FROM ar_rehydrate_map "
+            "WHERE entity_kind='workflow_instance' AND old_id='9190';"),
+        0);
 
     EXPECT_EQ(ReadInt64(db_, ("SELECT workflow_instance_id FROM ab_battle_completion WHERE battle_completion_id="
         + std::to_string(new_completion) + ";").c_str()), new_workflow);
@@ -8082,23 +8630,40 @@ VALUES(9501,701,702,'battle_completion','analysis_battle.battle_completion',9300
     EXPECT_EQ(ReadInt64(db_, ("SELECT workflow_step_id FROM ab_battle_results WHERE battle_results_id="
         + std::to_string(new_results) + ";").c_str()), new_results_step);
     EXPECT_EQ(ReadInt64(db_, ("SELECT selected_seed_ref_id FROM ab_battle_results WHERE battle_results_id="
-        + std::to_string(new_results) + ";").c_str()), new_neutral_seed);
+        + std::to_string(new_results) + ";").c_str()), new_confirmed_result);
     EXPECT_EQ(ReadInt64(db_, ("SELECT entry_savestate_id FROM ab_battle_results WHERE battle_results_id="
         + std::to_string(new_results) + ";").c_str()), new_seeded_state);
     EXPECT_EQ(ReadInt64(db_, ("SELECT final_savestate_id FROM ab_battle_results WHERE battle_results_id="
         + std::to_string(new_results) + ";").c_str()), new_final_state);
     EXPECT_EQ(ReadText(db_, ("SELECT selected_seed_ref_kind FROM ab_battle_results WHERE battle_results_id="
-        + std::to_string(new_results) + ";").c_str()), "analysisseedprobe.neutral_seed");
+        + std::to_string(new_results) + ";").c_str()), "analysisseedprobe.confirmed_result");
 
     EXPECT_EQ(ReadInt64(db_, ("SELECT entry_savestate_id FROM sp_probe_run WHERE probe_run_id="
         + std::to_string(new_probe_run) + ";").c_str()), new_completion_state);
     EXPECT_EQ(ReadText(db_, ("SELECT ps.probe_flavor FROM sp_probe_run pr JOIN sp_probe_set ps "
         "ON ps.probe_set_id=pr.probe_set_id WHERE pr.probe_run_id="
         + std::to_string(new_probe_run) + ";").c_str()), "FIELD_RETURN");
-    EXPECT_EQ(ReadInt64(db_, ("SELECT COUNT(1) FROM sp_neutral_seed n JOIN sp_probe_result r "
-        "ON r.probe_result_id=n.probe_result_id WHERE n.neutral_seed_id="
-        + std::to_string(new_neutral_seed) + " AND r.probe_run_id="
-        + std::to_string(new_probe_run) + ";").c_str()), 1);
+    EXPECT_EQ(ReadInt64(db_, ("SELECT COUNT(1) FROM sp_probe_result "
+        "WHERE probe_result_id=" + std::to_string(new_confirmed_result)
+        + " AND probe_run_id=" + std::to_string(new_probe_run)
+        + " AND evidence_state='CONFIRMED';").c_str()), 1);
+    EXPECT_EQ(ReadInt64(db_, ("SELECT confirmation_of_probe_result_id FROM sp_probe_result "
+        "WHERE probe_result_id=" + std::to_string(new_confirmation_result)
+        + ";").c_str()), new_confirmed_result);
+    EXPECT_EQ(
+        ReadInt64(
+            db_,
+            ("SELECT source_job_id FROM sp_probe_result WHERE probe_result_id="
+                + std::to_string(new_confirmed_result) + ";")
+                .c_str()),
+        new_probe_source_job);
+    EXPECT_EQ(
+        ReadInt64(
+            db_,
+            ("SELECT source_job_id FROM sp_probe_result WHERE probe_result_id="
+                + std::to_string(new_confirmation_result) + ";")
+                .c_str()),
+        new_confirmation_source_job);
 
     EXPECT_EQ(ReadInt64(db_, ("SELECT COUNT(1) FROM state_savestate_derivation WHERE from_savestate_id="
         + std::to_string(new_entry_state) + " AND to_savestate_id="
@@ -8108,8 +8673,8 @@ VALUES(9501,701,702,'battle_completion','analysis_battle.battle_completion',9300
     EXPECT_EQ(ReadInt64(db_, ("SELECT COUNT(1) FROM state_savestate_derivation WHERE from_savestate_id="
         + std::to_string(new_completion_state) + " AND to_savestate_id="
         + std::to_string(new_seeded_state)
-        + " AND source_context_kind='analysisseedprobe.neutral_seed' AND source_context_id="
-        + std::to_string(new_neutral_seed) + ";").c_str()), 1);
+        + " AND source_context_kind='analysisseedprobe.confirmed_result' AND source_context_id="
+        + std::to_string(new_confirmed_result) + ";").c_str()), 1);
     EXPECT_EQ(ReadInt64(db_, ("SELECT COUNT(1) FROM state_savestate_derivation WHERE from_savestate_id="
         + std::to_string(new_seeded_state) + " AND to_savestate_id="
         + std::to_string(new_final_state)
@@ -8782,12 +9347,32 @@ INSERT INTO sp_probe_set(probe_set_id,name,probe_flavor,breakpoint_policy_name,s
 VALUES(8001,'shared-field-return','FIELD_RETURN','test','test',1000);
 INSERT INTO an_input_set(input_set_id,source_ref_kind,source_ref_id,created_at_utc)
 VALUES(8051,'sp_probe_run',8101,1000);
-INSERT INTO sp_probe_run(probe_run_id,probe_set_id,entry_savestate_id,seed_probe_spec_id,codec_version,status,unique_input_set_id,requested_at_utc,completed_at_utc)
-VALUES(8101,8001,9001,1,2,'COMPLETED',8051,1000,2000);
-INSERT INTO sp_probe_result(probe_result_id,probe_run_id,neutral_seed_value,grid_count,unique_count,result_status,recorded_at_utc)
-VALUES(8201,8101,12345,0,0,'COMPLETED',2000);
-INSERT INTO sp_neutral_seed(neutral_seed_id,probe_result_id,neutral_seed_value,source_kind,recorded_at_utc)
-VALUES(8301,8201,12345,'CALCULATED',2000);
+INSERT INTO sp_axis_xy(axis_xy_id,x,y)
+VALUES(8061,128,128),(8062,0,0);
+INSERT INTO sp_input_frame(
+    input_frame_id,main_axis_xy_id,cstick_axis_xy_id,trigger_axis_xy_id)
+VALUES(8071,8061,8061,8062);
+INSERT INTO an_input_set_frame(input_set_id,ordinal,input_frame_id,added_at_utc)
+VALUES(8051,0,8071,2000);
+INSERT INTO sp_probe_run(
+    probe_run_id,materialization_key,probe_set_id,entry_savestate_id,
+    seed_probe_spec_id,launch_samples_per_axis,codec_version,status,
+    accepted_input_set_id,requested_at_utc,completed_at_utc)
+VALUES(
+    8101,'fixture.purge.shared-field-return',8001,9001,
+    1,1,2,'COMPLETED',8051,1000,2000);
+INSERT INTO sp_probe_result(
+    probe_result_id,probe_run_id,input_frame_id,source_job_id,seed_value,
+    origin_worker_id,origin_process_generation,origin_state_epoch,
+    terminal_sha256,confirmation_of_probe_result_id,
+    evidence_state,recorded_at_utc)
+VALUES
+    (8201,8101,8071,8301,12345,1,1,1,
+     '1111111111111111111111111111111111111111111111111111111111111111',
+     NULL,'CONFIRMED',2000),
+    (8202,8101,8071,8302,12345,1,1,2,
+     '2222222222222222222222222222222222222222222222222222222222222222',
+     8201,'OBSERVED',2000);
 )SQL"));
 
     execution::workflow::SqliteExecutionDb execution_db(db_);
@@ -8799,8 +9384,9 @@ VALUES(8301,8201,12345,'CALCULATED',2000);
     EXPECT_EQ(ReadInt64(db_, "SELECT COUNT(1) FROM exec_workflow_instance WHERE workflow_instance_id=4610;"), 0);
     EXPECT_EQ(ReadInt64(db_, "SELECT COUNT(1) FROM exec_workflow_instance WHERE workflow_instance_id=4620;"), 1);
     EXPECT_EQ(ReadInt64(db_, "SELECT COUNT(1) FROM sp_probe_run WHERE probe_run_id=8101;"), 1);
-    EXPECT_EQ(ReadInt64(db_, "SELECT COUNT(1) FROM sp_probe_result WHERE probe_result_id=8201;"), 1);
-    EXPECT_EQ(ReadInt64(db_, "SELECT COUNT(1) FROM sp_neutral_seed WHERE neutral_seed_id=8301;"), 1);
+    EXPECT_EQ(ReadInt64(db_, "SELECT COUNT(1) FROM sp_probe_result WHERE probe_run_id=8101;"), 2);
+    EXPECT_EQ(ReadInt64(db_, "SELECT COUNT(1) FROM sp_probe_result WHERE probe_result_id=8201 AND evidence_state='CONFIRMED';"), 1);
+    EXPECT_EQ(ReadInt64(db_, "SELECT confirmation_of_probe_result_id FROM sp_probe_result WHERE probe_result_id=8202;"), 8201);
 }
 
 TEST_F(SqliteDbFixture, Stage3Phase1DbContracts_FailedStepReachesTerminalState) {
@@ -8835,630 +9421,9 @@ VALUES(1402, 1401, 'Grid', 'seedprobe.grid', 'READY', 1, 0, 2, unixepoch()*1000,
     sqlite3_finalize(st);
 }
 
-TEST_F(SqliteDbFixture, Stage3cSeedProbeAdaptersIgnoreLegacyAuthoringTimingColumns) {
-    using namespace savor::db;
-    using namespace savor::db::execution::programdb;
-    using namespace savor::db::execution::programdb::seedprobe;
-    using namespace savor::db::execution::workflow;
 
-    auto* authoring_db = db_service_->AuthoringDb();
-    auto* analysis_db = db_service_->AnalysisDb();
-    ASSERT_NE(authoring_db, nullptr);
-    ASSERT_NE(analysis_db, nullptr);
 
-    std::string err;
-    std::int64_t seed_probe_spec_id = 0;
-    ASSERT_TRUE(authoring_db->SaveSeedProbeSpec(
-        {
-            .name = "timing-cutover regression",
-            .priority = 1,
-            .min_value = 47,
-            .max_value = 207,
-            .cap_trigger_top = true,
-            .ignore_trigger_minmax = true,
-            .combo_attempts_per_target = 1,
-            .combo_sampler_tries = 1,
-            .auto_schedule_battle_run = false,
-            .created_at_utc = savor::db::types::UtcNow(),
-            .correlation_id = "test.seedprobe.timing-cutover",
-            .causation_id = "test",
-        },
-        &seed_probe_spec_id,
-        &err))
-        << err;
-    const auto inserted_zero_sql =
-        "SELECT COUNT(1) FROM au_seed_probe_spec WHERE seed_probe_spec_id="
-        + std::to_string(seed_probe_spec_id) + " AND run_ms=0 AND vi_stall_ms=0;";
-    EXPECT_EQ(ReadInt64(db_, inserted_zero_sql.c_str()), 1);
-    const auto seed_probe_timing_update =
-        "UPDATE au_seed_probe_spec SET run_ms=12345,vi_stall_ms=678"
-        " WHERE seed_probe_spec_id=" + std::to_string(seed_probe_spec_id) + ";";
-    ASSERT_TRUE(ExecSql(db_, seed_probe_timing_update.c_str()));
-    ASSERT_TRUE(authoring_db->GetSeedProbeSpec(seed_probe_spec_id).has_value());
 
-    std::int64_t probe_set_id = 0;
-    ASSERT_TRUE(analysis_db->CreateSeedProbeSet(
-        {
-            .name = "timing probe set",
-            .probe_flavor = "BATTLE_PRE",
-            .breakpoint_policy_name = "default",
-            .segment_source_kind = "manual",
-            .created_at_utc = savor::db::types::UtcNow(),
-            .correlation_id = "test.seedprobe.timing-cutover",
-            .causation_id = "test",
-        },
-        &probe_set_id,
-        &err))
-        << err;
-
-    std::int64_t probe_run_id = 0;
-    ASSERT_TRUE(analysis_db->RequestSeedProbeRun(
-        {
-            .probe_set_id = probe_set_id,
-            .entry_savestate_id = 77,
-            .seed_probe_spec_id = seed_probe_spec_id,
-            .launch_samples_per_axis = 1,
-            .codec_version = 1,
-            .status = "queued",
-            .requested_at_utc = savor::db::types::UtcNow(),
-            .correlation_id = "test.seedprobe.timing-cutover",
-            .causation_id = "test",
-        },
-        &probe_run_id,
-        &err))
-        << err;
-
-    SqliteExecutionDb execution_db(db_);
-    auto read_first_job_fingerprint = [&](std::int64_t job_set_id) {
-        sqlite3_stmt* st = nullptr;
-        EXPECT_EQ(SQLITE_OK, sqlite3_prepare_v2(
-            db_,
-            "SELECT fingerprint FROM exec_job WHERE job_set_id=?1 ORDER BY job_id LIMIT 1;",
-            -1,
-            &st,
-            nullptr));
-        sqlite3_bind_int64(st, 1, job_set_id);
-        EXPECT_EQ(SQLITE_ROW, sqlite3_step(st));
-        std::string fingerprint;
-        if (const auto* text = sqlite3_column_text(st, 0)) {
-            fingerprint = reinterpret_cast<const char*>(text);
-        }
-        sqlite3_finalize(st);
-        return fingerprint;
-    };
-    auto expect_pending_jobs = [&](std::int64_t job_set_id) {
-        sqlite3_stmt* st = nullptr;
-        ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
-            db_,
-            "WITH RECURSIVE job_set_descendants(job_set_id) AS ("
-            "  SELECT job_set_id FROM exec_job_set WHERE job_set_id=?1 "
-            "  UNION ALL "
-            "  SELECT child.job_set_id FROM exec_job_set child "
-            "  JOIN job_set_descendants parent ON parent.job_set_id=child.parent_job_set_id"
-            ") "
-            "SELECT COUNT(1), "
-            "SUM(CASE WHEN state='PENDING_MATERIALIZATION' THEN 1 ELSE 0 END) "
-            "FROM exec_job "
-            "WHERE job_set_id IN (SELECT job_set_id FROM job_set_descendants);",
-            -1,
-            &st,
-            nullptr));
-        sqlite3_bind_int64(st, 1, job_set_id);
-        ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
-        const int total = sqlite3_column_int(st, 0);
-        const int pending = sqlite3_column_int(st, 1);
-        sqlite3_finalize(st);
-        EXPECT_GT(total, 0);
-        EXPECT_EQ(pending, total);
-    };
-    auto expect_priority_range = [&](std::int64_t job_set_id, int expected_min, int expected_max) {
-        sqlite3_stmt* st = nullptr;
-        ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
-            db_,
-            "WITH RECURSIVE job_set_descendants(job_set_id) AS ("
-            "  SELECT job_set_id FROM exec_job_set WHERE job_set_id=?1 "
-            "  UNION ALL "
-            "  SELECT child.job_set_id FROM exec_job_set child "
-            "  JOIN job_set_descendants parent ON parent.job_set_id=child.parent_job_set_id"
-            ") "
-            "SELECT COUNT(1), COALESCE(MIN(priority), 0), COALESCE(MAX(priority), 0) "
-            "FROM exec_job "
-            "WHERE job_set_id IN (SELECT job_set_id FROM job_set_descendants);",
-            -1,
-            &st,
-            nullptr));
-        sqlite3_bind_int64(st, 1, job_set_id);
-        ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
-        const int total = sqlite3_column_int(st, 0);
-        const int min_priority = sqlite3_column_int(st, 1);
-        const int max_priority = sqlite3_column_int(st, 2);
-        sqlite3_finalize(st);
-        EXPECT_GT(total, 0);
-        EXPECT_EQ(min_priority, expected_min);
-        EXPECT_EQ(max_priority, expected_max);
-    };
-    auto expect_no_timing = [](const std::string& fingerprint) {
-        EXPECT_TRUE(fingerprint.starts_with(
-            "FPNS=seedprobe-fingerprint-v2;"))
-            << fingerprint;
-        EXPECT_EQ(fingerprint.find(";run_ms="), std::string::npos) << fingerprint;
-        EXPECT_EQ(fingerprint.find(";vi="), std::string::npos) << fingerprint;
-    };
-    EXPECT_FALSE(build_encode_spec_from_fingerprint(
-        "PK=1;PV=1;probe_id=1;frame=0000000000000000;run_ms=40000;vi=3000")
-        .has_value());
-    auto schedule_context = [](std::int64_t domain_ref_id, int step_priority = 42) {
-        return WorkflowStepScheduleContext{
-            .domain_ref_id = domain_ref_id,
-            .step_priority = step_priority,
-        };
-    };
-
-    auto neutral = BuildSeedProbeNeutralDescriptor(&execution_db, analysis_db);
-    const auto neutral_scheduled = neutral.job_persistence->EncodeForQueueing(schedule_context(probe_run_id));
-    ASSERT_GT(neutral_scheduled.root_job_set_id, 0);
-    expect_no_timing(neutral_scheduled.persistence.fingerprint);
-    expect_no_timing(read_first_job_fingerprint(neutral_scheduled.root_job_set_id));
-    expect_pending_jobs(neutral_scheduled.root_job_set_id);
-    expect_priority_range(neutral_scheduled.root_job_set_id, 42, 42);
-
-    SeedProbeGridSpec grid_spec{};
-    grid_spec.samples_per_axis = 1;
-    auto grid = BuildSeedProbeGridDescriptor(
-        &execution_db,
-        analysis_db,
-        SeedProbeGridBlueprintConfig{},
-        grid_spec,
-        authoring_db);
-    const auto grid_scheduled = grid.job_persistence->EncodeForQueueing(schedule_context(probe_run_id));
-    ASSERT_GT(grid_scheduled.root_job_set_id, 0);
-    expect_no_timing(grid_scheduled.persistence.fingerprint);
-    expect_no_timing(read_first_job_fingerprint(grid_scheduled.root_job_set_id));
-    expect_pending_jobs(grid_scheduled.root_job_set_id);
-    expect_priority_range(grid_scheduled.root_job_set_id, 42, 42);
-
-    ASSERT_TRUE(analysis_db->SetSeedProbeRunNeutralSeed(probe_run_id, 1000, &err)) << err;
-    const auto probe_result_id = analysis_db->LookupSeedProbeResultId(probe_run_id);
-    ASSERT_TRUE(probe_result_id.has_value());
-    ASSERT_TRUE(analysis_db->RecordSeedProbeGridSeed(
-        {
-            .probe_result_id = *probe_result_id,
-            .source_family = "MAIN",
-            .axis_xy_id = 0x8080,
-            .seed_value = 1001,
-            .seed_delta = 1,
-            .recorded_at_utc = savor::db::types::UtcNow(),
-            .correlation_id = "test.seedprobe.timing-cutover",
-            .causation_id = "test",
-        },
-        nullptr,
-        &err))
-        << err;
-    ASSERT_TRUE(analysis_db->RecordSeedProbeGridSeed(
-        {
-            .probe_result_id = *probe_result_id,
-            .source_family = "CSTICK",
-            .axis_xy_id = 0x8181,
-            .seed_value = 1002,
-            .seed_delta = 2,
-            .recorded_at_utc = savor::db::types::UtcNow(),
-            .correlation_id = "test.seedprobe.timing-cutover",
-            .causation_id = "test",
-        },
-        nullptr,
-        &err))
-        << err;
-    ASSERT_TRUE(analysis_db->RecordSeedProbeGridSeed(
-        {
-            .probe_result_id = *probe_result_id,
-            .source_family = "TRIGGER",
-            .axis_xy_id = 0x8282,
-            .seed_value = 1004,
-            .seed_delta = 4,
-            .recorded_at_utc = savor::db::types::UtcNow(),
-            .correlation_id = "test.seedprobe.timing-cutover",
-            .causation_id = "test",
-        },
-        nullptr,
-        &err))
-        << err;
-
-    auto unique = BuildSeedProbeUniqueDescriptor(
-        &execution_db,
-        analysis_db,
-        SeedProbeGridBlueprintConfig{},
-        UniqueIni{},
-        {},
-        authoring_db);
-    const auto unique_scheduled = unique.job_persistence->EncodeForQueueing(schedule_context(probe_run_id));
-    expect_no_timing(unique_scheduled.persistence.fingerprint);
-    ASSERT_GT(unique_scheduled.root_job_set_id, 0);
-    ASSERT_FALSE(unique_scheduled.event_lines.empty());
-    expect_pending_jobs(unique_scheduled.root_job_set_id);
-    expect_priority_range(unique_scheduled.root_job_set_id, 42, 43);
-    EXPECT_NE(unique_scheduled.event_lines.back().find("combo_attempts_per_target=1"), std::string::npos)
-        << unique_scheduled.event_lines.back();
-    EXPECT_NE(unique_scheduled.event_lines.back().find("combo_sampler_tries=1"), std::string::npos)
-        << unique_scheduled.event_lines.back();
-
-    sqlite3_stmt* child_st = nullptr;
-    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
-        db_,
-        "SELECT COUNT(1), COALESCE(MAX(expected_total), 0) "
-        "FROM exec_job_set WHERE parent_job_set_id=?1;",
-        -1,
-        &child_st,
-        nullptr));
-    sqlite3_bind_int64(child_st, 1, unique_scheduled.root_job_set_id);
-    ASSERT_EQ(SQLITE_ROW, sqlite3_step(child_st));
-    const int child_count = sqlite3_column_int(child_st, 0);
-    const int max_child_expected = sqlite3_column_int(child_st, 1);
-    sqlite3_finalize(child_st);
-    EXPECT_GT(child_count, 0);
-    EXPECT_LE(max_child_expected, 1);
-}
-
-TEST_F(SqliteDbFixture, Stage3cSeedProbeNeutralResultMapperPersistsCalculatedNeutralSeedIdempotently) {
-    using namespace savor::db;
-    using namespace savor::db::execution::programdb::seedprobe;
-
-    auto* analysis_db = db_service_->AnalysisDb();
-    auto* execution_db = db_service_->ExecutionDb();
-    ASSERT_NE(analysis_db, nullptr);
-    ASSERT_NE(execution_db, nullptr);
-
-    std::string err;
-    std::int64_t probe_set_id = 0;
-    ASSERT_TRUE(analysis_db->CreateSeedProbeSet(
-        {
-            .name = "neutral mapper field-return probe set",
-            .probe_flavor = "FIELD_RETURN",
-            .breakpoint_policy_name = "field_return",
-            .segment_source_kind = "workflow_graph",
-            .created_at_utc = savor::db::types::UtcNow(),
-            .correlation_id = "test.seedprobe.neutral_mapper",
-            .causation_id = "test",
-        },
-        &probe_set_id,
-        &err))
-        << err;
-
-    std::int64_t probe_run_id = 0;
-    ASSERT_TRUE(analysis_db->RequestSeedProbeRun(
-        {
-            .probe_set_id = probe_set_id,
-            .entry_savestate_id = 77,
-            .seed_probe_spec_id = 1,
-            .codec_version = 2,
-            .status = "queued",
-            .requested_at_utc = savor::db::types::UtcNow(),
-            .correlation_id = "test.seedprobe.neutral_mapper",
-            .causation_id = "test",
-        },
-        &probe_run_id,
-        &err))
-        << err;
-
-    std::int64_t job_set_id = 0;
-    ASSERT_TRUE(execution_db->CreateJobSet(
-        {
-            .program_kind = 1,
-            .purpose = "Field Return SeedProbe Neutral",
-            .created_by = std::string("test"),
-            .expected_total = 1,
-            .domain_ref_kind = std::string("sp_probe_run"),
-            .domain_ref_id = probe_run_id,
-            .meta_note = std::string("phase=Neutral"),
-        },
-        &job_set_id,
-        &err))
-        << err;
-
-    std::int64_t job_id = 0;
-    ASSERT_TRUE(execution_db->EnqueueJob(
-        {
-            .job_set_id = job_set_id,
-            .program_kind = 1,
-            .program_version = 2,
-            .program_ref_kind = "sp_probe_run",
-            .program_ref_id = probe_run_id,
-            .fingerprint = "PK=1;PV=2;probe_run_id=" + std::to_string(probe_run_id),
-            .priority = 0,
-            .max_attempts = 1,
-        },
-        &job_id,
-        &err))
-        << err;
-
-    NeutralSeedResultMapper mapper(execution_db, analysis_db);
-    const std::string result_ini =
-        "[SeedProbe.Results]\n"
-        "w_err=0\n"
-        "dw_err=0\n"
-        "rng_seed=12345\n"
-        "vi_start=1\n"
-        "vi_end=2\n";
-    const auto payload = mapper.MapPrimaryResult(job_id, result_ini);
-    EXPECT_EQ(payload.result_kind, "seedprobe.neutral_seed");
-    EXPECT_EQ(payload.result_ref_id, probe_run_id);
-    ASSERT_FALSE(payload.event_lines.empty());
-    EXPECT_NE(payload.event_lines.back().find("[seedprobe-neutral-row] ok=true"), std::string::npos)
-        << payload.event_lines.back();
-
-    std::optional<SeedProbeNeutralSeedRow> neutral_row;
-    ASSERT_TRUE(analysis_db->TryGetSeedProbeNeutralSeedForRun(probe_run_id, &neutral_row, &err)) << err;
-    ASSERT_TRUE(neutral_row.has_value());
-    EXPECT_EQ(neutral_row->neutral_seed_value, 12345);
-    EXPECT_EQ(neutral_row->source_kind, "CALCULATED");
-
-    const auto replay = mapper.MapPrimaryResult(job_id, result_ini);
-    EXPECT_EQ(replay.result_ref_id, probe_run_id);
-    std::optional<SeedProbeNeutralSeedRow> replay_row;
-    ASSERT_TRUE(analysis_db->TryGetSeedProbeNeutralSeedForRun(probe_run_id, &replay_row, &err)) << err;
-    ASSERT_TRUE(replay_row.has_value());
-    EXPECT_EQ(replay_row->neutral_seed_id, neutral_row->neutral_seed_id);
-}
-
-TEST_F(SqliteDbFixture, Stage3cSeedProbeGridResultMapperPersistsGridSeedFromJobFingerprintWithoutInjectedContext) {
-    using namespace savor::db;
-    using namespace savor::db::execution::programdb::seedprobe;
-
-    auto* analysis_db = db_service_->AnalysisDb();
-    auto* execution_db = db_service_->ExecutionDb();
-    ASSERT_NE(analysis_db, nullptr);
-    ASSERT_NE(execution_db, nullptr);
-
-    std::string err;
-    std::int64_t probe_set_id = 0;
-    ASSERT_TRUE(analysis_db->CreateSeedProbeSet(
-        {
-            .name = "grid mapper fallback probe set",
-            .probe_flavor = "BATTLE_PRE",
-            .breakpoint_policy_name = "default",
-            .segment_source_kind = "manual",
-            .created_at_utc = savor::db::types::UtcNow(),
-            .correlation_id = "test.seedprobe.grid_mapper_fallback",
-            .causation_id = "test",
-        },
-        &probe_set_id,
-        &err))
-        << err;
-
-    std::int64_t probe_run_id = 0;
-    ASSERT_TRUE(analysis_db->RequestSeedProbeRun(
-        {
-            .probe_set_id = probe_set_id,
-            .entry_savestate_id = 77,
-            .seed_probe_spec_id = 1,
-            .codec_version = 1,
-            .status = "queued",
-            .requested_at_utc = savor::db::types::UtcNow(),
-            .correlation_id = "test.seedprobe.grid_mapper_fallback",
-            .causation_id = "test",
-        },
-        &probe_run_id,
-        &err))
-        << err;
-    ASSERT_TRUE(analysis_db->LookupSeedProbeResultId(probe_run_id).has_value());
-    ASSERT_TRUE(analysis_db->SetSeedProbeRunNeutralSeed(probe_run_id, 1000, &err)) << err;
-    ASSERT_EQ(analysis_db->LookupSeedProbeNeutralSeed(probe_run_id), 1000);
-
-    std::int64_t job_set_id = 0;
-    ASSERT_TRUE(execution_db->CreateJobSet(
-        {
-            .program_kind = 3,
-            .purpose = "SeedProbe Grid",
-            .created_by = std::string("test"),
-            .expected_total = 1,
-            .domain_ref_kind = std::string("sp_probe_run"),
-            .domain_ref_id = probe_run_id,
-            .meta_note = std::string("phase=Grid"),
-        },
-        &job_set_id,
-        &err))
-        << err;
-
-    auto frame = savor::GCInputFrame::new_stk_main(128, 128);
-    const auto fingerprint = std::string("PK=3;PV=1;probe_run_id=")
-        + std::to_string(probe_run_id)
-        + ";family=main;grid_ref=1;frame="
-        + frame.to_frame_hex();
-
-    std::int64_t job_id = 0;
-    ASSERT_TRUE(execution_db->EnqueueJob(
-        {
-            .job_set_id = job_set_id,
-            .program_kind = 3,
-            .program_version = 1,
-            .program_ref_kind = "sp_probe_run",
-            .program_ref_id = probe_run_id,
-            .fingerprint = fingerprint,
-            .priority = 0,
-            .max_attempts = 1,
-        },
-        &job_id,
-        &err))
-        << err;
-
-    SeedProbeGridResultMapper mapper(execution_db, analysis_db);
-    const auto payload = mapper.MapPrimaryResult(
-        job_id,
-        "[SeedProbe.Results]\nw_err=0\ndw_err=0\nrng_seed=1255\nvi_start=1\nvi_end=2\n");
-    ASSERT_EQ(payload.result_kind, "analysisseedprobe.grid_seed");
-    ASSERT_GT(payload.result_ref_id, 0);
-
-    const auto replay_payload = mapper.MapPrimaryResult(
-        job_id,
-        "[SeedProbe.Results]\nw_err=0\ndw_err=0\nrng_seed=1255\nvi_start=1\nvi_end=2\n");
-    ASSERT_EQ(replay_payload.result_kind, "analysisseedprobe.grid_seed");
-    EXPECT_EQ(replay_payload.result_ref_id, payload.result_ref_id);
-
-    const auto rows = analysis_db->ListSeedProbeGridSeeds(probe_run_id);
-    ASSERT_EQ(rows.size(), 1u);
-    EXPECT_EQ(rows.front().source_family, "MAIN");
-    EXPECT_EQ(rows.front().axis_x, 128);
-    EXPECT_EQ(rows.front().axis_y, 128);
-    EXPECT_EQ(rows.front().seed_value, 1255);
-    EXPECT_EQ(rows.front().seed_delta, 255);
-}
-
-TEST_F(SqliteDbFixture, Stage3cSeedProbeUniqueResultMapperRecordsInputFrameAndSupersedesMatchingChildSet) {
-    using namespace savor::db;
-    using namespace savor::db::execution::programdb::seedprobe;
-
-    auto* analysis_db = db_service_->AnalysisDb();
-    auto* execution_db = db_service_->ExecutionDb();
-    ASSERT_NE(analysis_db, nullptr);
-    ASSERT_NE(execution_db, nullptr);
-
-    std::string err;
-    std::int64_t probe_set_id = 0;
-    ASSERT_TRUE(analysis_db->CreateSeedProbeSet(
-        {
-            .name = "unique mapper supersede probe set",
-            .probe_flavor = "BATTLE_PRE",
-            .breakpoint_policy_name = "default",
-            .segment_source_kind = "manual",
-            .created_at_utc = savor::db::types::UtcNow(),
-            .correlation_id = "test.seedprobe.unique_mapper_supersede",
-            .causation_id = "test",
-        },
-        &probe_set_id,
-        &err))
-        << err;
-
-    std::int64_t probe_run_id = 0;
-    ASSERT_TRUE(analysis_db->RequestSeedProbeRun(
-        {
-            .probe_set_id = probe_set_id,
-            .entry_savestate_id = 77,
-            .seed_probe_spec_id = 1,
-            .codec_version = 1,
-            .status = "queued",
-            .requested_at_utc = savor::db::types::UtcNow(),
-            .correlation_id = "test.seedprobe.unique_mapper_supersede",
-            .causation_id = "test",
-        },
-        &probe_run_id,
-        &err))
-        << err;
-    ASSERT_TRUE(analysis_db->SetSeedProbeRunNeutralSeed(probe_run_id, 1000, &err)) << err;
-    ASSERT_TRUE(analysis_db->LookupSeedProbeResultId(probe_run_id).has_value());
-
-    std::int64_t root_job_set_id = 0;
-    ASSERT_TRUE(execution_db->CreateJobSet(
-        {
-            .program_kind = 3,
-            .purpose = "SeedProbe Unique",
-            .created_by = std::string("test"),
-            .expected_total = 2,
-            .domain_ref_kind = std::string("sp_probe_run"),
-            .domain_ref_id = probe_run_id,
-            .meta_note = std::string("phase=Unique"),
-        },
-        &root_job_set_id,
-        &err))
-        << err;
-
-    std::int64_t child_job_set_id = 0;
-    ASSERT_TRUE(execution_db->CreateJobSet(
-        {
-            .parent_job_set_id = root_job_set_id,
-            .program_kind = 3,
-            .purpose = "SeedProbe Unique Delta",
-            .created_by = std::string("test"),
-            .expected_total = 2,
-            .domain_ref_kind = std::string("sp_probe_run"),
-            .domain_ref_id = probe_run_id,
-            .meta_note = std::string("expected_delta=4"),
-        },
-        &child_job_set_id,
-        &err))
-        << err;
-
-    auto frame = savor::GCInputFrame::new_stk_main(120, 136);
-    const auto fingerprint = std::string("PK=3;PV=1;phase=unique;probe_run_id=")
-        + std::to_string(probe_run_id)
-        + ";probe_result_id="
-        + std::to_string(*analysis_db->LookupSeedProbeResultId(probe_run_id))
-        + ";expected_delta=4;frame="
-        + frame.to_frame_hex();
-
-    std::int64_t winner_job_id = 0;
-    ASSERT_TRUE(execution_db->EnqueueJob(
-        {
-            .job_set_id = child_job_set_id,
-            .program_kind = 3,
-            .program_version = 1,
-            .program_ref_kind = "sp_probe_run",
-            .program_ref_id = probe_run_id,
-            .fingerprint = fingerprint + ";case=winner",
-            .priority = 0,
-            .max_attempts = 1,
-        },
-        &winner_job_id,
-        &err))
-        << err;
-
-    std::int64_t sibling_job_id = 0;
-    ASSERT_TRUE(execution_db->EnqueueJob(
-        {
-            .job_set_id = child_job_set_id,
-            .program_kind = 3,
-            .program_version = 1,
-            .program_ref_kind = "sp_probe_run",
-            .program_ref_id = probe_run_id,
-            .fingerprint = fingerprint + ";case=sibling",
-            .priority = 0,
-            .max_attempts = 1,
-        },
-        &sibling_job_id,
-        &err))
-        << err;
-
-    SeedProbeUniqueResultMapper mapper(execution_db, analysis_db);
-    const auto payload = mapper.MapPrimaryResult(
-        winner_job_id,
-        "[SeedProbe.Results]\nw_err=0\ndw_err=0\nrng_seed=1004\nvi_start=1\nvi_end=2\n");
-
-    ASSERT_EQ(payload.result_kind, "analysisseedprobe.unique.winner");
-    ASSERT_GT(payload.result_ref_id, 0);
-    ASSERT_GE(payload.event_lines.size(), 1u);
-    const auto superseded_line = std::find_if(
-        payload.event_lines.begin(),
-        payload.event_lines.end(),
-        [](const std::string& line) {
-            return line.find("[seedprobe-superseded]") != std::string::npos;
-        });
-    ASSERT_NE(superseded_line, payload.event_lines.end());
-    EXPECT_NE(superseded_line->find("expected_delta=4"), std::string::npos);
-    EXPECT_NE(superseded_line->find("observed_delta=4"), std::string::npos);
-    EXPECT_NE(superseded_line->find("superseded=1"), std::string::npos);
-
-    const auto winner_job = execution_db->GetJob(winner_job_id);
-    const auto sibling_job = execution_db->GetJob(sibling_job_id);
-    ASSERT_TRUE(winner_job.has_value());
-    ASSERT_TRUE(sibling_job.has_value());
-    EXPECT_EQ(winner_job->state, "SUCCEEDED_WINNER");
-    EXPECT_EQ(sibling_job->state, "SUPERSEDED");
-
-    sqlite3_stmt* st = nullptr;
-    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
-        db_,
-        "SELECT f.main_axis_xy_id, f.cstick_axis_xy_id, f.trigger_axis_xy_id "
-        "FROM sp_unique_seed u "
-        "JOIN sp_input_frame f ON f.input_frame_id=u.input_frame_id "
-        "WHERE u.unique_seed_id=?1;",
-        -1,
-        &st,
-        nullptr));
-    sqlite3_bind_int64(st, 1, payload.result_ref_id);
-    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
-    EXPECT_EQ(sqlite3_column_int64(st, 0), (120 << 8) | 136);
-    EXPECT_EQ(sqlite3_column_int64(st, 1), (128 << 8) | 128);
-    EXPECT_EQ(sqlite3_column_int64(st, 2), 0);
-    sqlite3_finalize(st);
-}
 
 TEST_F(SqliteDbFixture, StateDbMaterializesSavestateToExplicitPath) {
     auto* state_db = db_service_->StateDb();
@@ -11322,6 +11287,400 @@ TEST_F(SqliteDbFixture, UiReadProjectionDirtyJobSetRefreshesWorkflowBattleRollup
     EXPECT_EQ(ReadInt64(verify_handle, "SELECT battle_selected_count FROM ui_workflow_instance WHERE workflow_instance_id=34100;"), 1);
     EXPECT_EQ(ReadInt64(verify_handle, "SELECT COUNT(1) FROM ui_projection_dirty_entity WHERE stream_id='execution' AND entity_kind='job_set';"), 0);
     sqlite3_close(verify_handle);
+}
+
+TEST_F(SqliteDbFixture, MarkWorksetJobStartedClassifiesAuthorityRejectionsAndPreservesIdempotency) {
+    using savor::db::ExecutionDbOperationDisposition;
+    using savor::db::MarkWorksetJobStartedCommand;
+    using savor::db::WorksetJobStartReceipt;
+    using savor::db::execution::workflow::SqliteExecutionDb;
+
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+INSERT INTO exec_job_set(
+    job_set_id,program_kind,purpose,created_by,created_at_utc)
+VALUES(35010,42,'start-authority','test',1000);
+
+INSERT INTO exec_workset(
+    workset_id,job_set_id,workset_key,program_kind,program_version,
+    compatibility_key,module_canonical_id,module_version,module_sha256,
+    entrypoint,verified_dependency_sha256,runtime_profile_sha256,
+    required_capability_mask,estimated_payload_bytes,priority,item_count,
+    published_at_utc)
+VALUES(
+    35020,35010,'start-authority-workset',42,1,
+    'start-authority-compatibility','test.module',1,printf('%064d',0),
+    'test-entrypoint',printf('%064d',0),printf('%064d',0),
+    0,1,0,1,1000);
+
+INSERT INTO exec_workset_dispatch_attempt(
+    dispatch_attempt_id,workset_id,dispatch_sequence,state,claim_token,
+    lease_expires_at_utc,claimed_at_utc,dispatched_at_utc)
+VALUES(
+    35030,35020,1,'DISPATCHED','start-authority-token',
+    1,1000,1000);
+
+INSERT INTO exec_job(
+    job_id,job_set_id,program_kind,program_version,program_ref_kind,
+    program_ref_id,fingerprint,priority,state,attempts,max_attempts,
+    claimed_by_token,queued_at_utc,workset_id,workset_item_ordinal,
+    dispatch_attempt_id,dispatch_item_ordinal,reserved_attempt_id)
+VALUES(
+    35040,35010,42,1,'test',1,'start-authority-job',0,
+    'CLAIMED',0,2,'start-authority-token',1000,35020,0,35030,0,1);
+)SQL"));
+
+    SqliteExecutionDb execution_db(db_);
+    const MarkWorksetJobStartedCommand valid_command{
+        .dispatch_attempt_id = 35030,
+        .claim_token = "start-authority-token",
+        .job_id = 35040,
+        .dispatch_item_ordinal = 0,
+        .reserved_attempt_id = 1,
+        .worker_invocation_id = "start-authority-invocation",
+        .requested_by = "test",
+    };
+    const auto expect_disposition =
+        [&](const MarkWorksetJobStartedCommand& command,
+            ExecutionDbOperationDisposition expected) {
+            WorksetJobStartReceipt receipt{};
+            std::string error;
+            ASSERT_TRUE(execution_db.MarkWorksetJobStarted(
+                command,
+                &receipt,
+                &error))
+                << error;
+            EXPECT_EQ(receipt.disposition, expected);
+        };
+
+    auto command = valid_command;
+    command.job_id = 35999;
+    expect_disposition(
+        command,
+        ExecutionDbOperationDisposition::Missing);
+
+    command = valid_command;
+    command.claim_token = "wrong-token";
+    expect_disposition(
+        command,
+        ExecutionDbOperationDisposition::TokenMismatch);
+
+    command = valid_command;
+    command.reserved_attempt_id = 2;
+    expect_disposition(
+        command,
+        ExecutionDbOperationDisposition::AttemptMismatch);
+
+    command = valid_command;
+    command.dispatch_item_ordinal = 1;
+    expect_disposition(
+        command,
+        ExecutionDbOperationDisposition::WrongState);
+
+    expect_disposition(
+        valid_command,
+        ExecutionDbOperationDisposition::LeaseExpired);
+
+    ASSERT_TRUE(ExecSql(
+        db_,
+        "UPDATE exec_workset_dispatch_attempt "
+        "SET lease_expires_at_utc=9223372036854775807 "
+        "WHERE dispatch_attempt_id=35030;"));
+    expect_disposition(
+        valid_command,
+        ExecutionDbOperationDisposition::Applied);
+    expect_disposition(
+        valid_command,
+        ExecutionDbOperationDisposition::AlreadyApplied);
+    EXPECT_EQ(
+        ReadText(
+            db_,
+            "SELECT state FROM exec_job WHERE job_id=35040;"),
+        "RUNNING");
+    EXPECT_EQ(
+        ReadInt64(
+            db_,
+            "SELECT attempts FROM exec_job WHERE job_id=35040;"),
+        1);
+}
+
+TEST_F(
+    SqliteDbFixture,
+    ExpiredWorksetRecoveryRequeuesAndMakesWorksetClaimableAgain) {
+    using savor::db::ClaimPublishedWorksetBatchCommand;
+    using savor::db::ReadyWorkerSupportedModule;
+    using savor::db::ReadyWorksetCompatibilityProfile;
+    using savor::db::execution::workflow::SqliteExecutionDb;
+
+    const auto hash = std::string(64, '0');
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+INSERT INTO exec_job_set(
+    job_set_id,program_kind,purpose,created_by,created_at_utc)
+VALUES(35110,42,'expired-recovery','test',1000);
+
+INSERT INTO exec_workflow_instance(
+    workflow_instance_id,workflow_kind,state,root_scope_kind,
+    root_scope_id,created_by,created_at_utc)
+VALUES(
+    35111,'TEST','RUNNING','job_set',35110,'test',1000);
+
+INSERT INTO exec_workflow_step(
+    workflow_step_id,workflow_instance_id,step_key,graph_node_key,
+    step_kind,state,priority,attempts,max_attempts,job_set_id,
+    created_at_utc)
+VALUES(
+    35112,35111,'probe','probe','test','MATERIALIZED',
+    0,1,1,35110,1000);
+
+INSERT INTO exec_workset(
+    workset_id,job_set_id,workflow_step_id,root_job_set_id,
+    workset_key,program_kind,program_version,
+    compatibility_key,module_canonical_id,module_version,module_sha256,
+    entrypoint,verified_dependency_sha256,runtime_profile_sha256,
+    required_capability_mask,estimated_payload_bytes,priority,item_count,
+    published_at_utc)
+VALUES(
+    35120,35110,35112,35110,'expired-recovery-workset',42,1,
+    'expired-recovery-compatibility','test.module',1,printf('%064d',0),
+    'test-entrypoint',printf('%064d',0),printf('%064d',0),
+    0,1,0,1,1000);
+
+INSERT INTO exec_workset_dispatch_attempt(
+    dispatch_attempt_id,workset_id,dispatch_sequence,state,claim_token,
+    lease_expires_at_utc,claimed_at_utc,dispatched_at_utc)
+VALUES(
+    35130,35120,1,'DISPATCHED','expired-recovery-token',
+    1,1000,1000);
+
+INSERT INTO exec_job(
+    job_id,job_set_id,program_kind,program_version,program_ref_kind,
+    program_ref_id,fingerprint,priority,state,attempts,max_attempts,
+    claimed_by_token,lease_expires_at_utc,queued_at_utc,started_at_utc,
+    workset_id,workset_item_ordinal,dispatch_attempt_id,
+    dispatch_item_ordinal,reserved_attempt_id)
+VALUES(
+    35140,35110,42,1,'test',1,'expired-recovery-job',0,
+    'RUNNING',1,2,'expired-recovery-token',1,1000,1000,
+    35120,0,35130,0,1);
+)SQL"));
+
+    SqliteExecutionDb execution_db(db_);
+    int recovered = 0;
+    std::string error;
+    ASSERT_TRUE(execution_db.RecoverExpiredWorksetDispatches(
+        1,
+        &recovered,
+        &error))
+        << error;
+    ASSERT_EQ(recovered, 1);
+    EXPECT_EQ(
+        ReadText(
+            db_,
+            "SELECT state FROM exec_job WHERE job_id=35140;"),
+        "QUEUED");
+    EXPECT_EQ(
+        ReadText(
+            db_,
+            "SELECT state FROM exec_workset_dispatch_attempt "
+            "WHERE dispatch_attempt_id=35130;"),
+        "CLOSED");
+    EXPECT_EQ(
+        ReadInt64(
+            db_,
+            "SELECT COUNT(1) FROM exec_job WHERE job_id=35140 "
+            "AND claimed_by_token IS NULL "
+            "AND dispatch_attempt_id IS NULL;"),
+        1);
+
+    const ReadyWorksetCompatibilityProfile compatibility{
+        .available_capability_mask = 0,
+        .max_workset_items = 1,
+        .max_payload_bytes = 1024,
+        .supported_program_kinds = {42},
+        .supported_modules =
+            {
+                ReadyWorkerSupportedModule{
+                    .module_canonical_id = "test.module",
+                    .module_version = 1,
+                    .module_sha256 = hash,
+                    .entrypoints = {"test-entrypoint"},
+                    .verified_dependency_sha256 = hash,
+                    .runtime_profile_sha256 = hash,
+                },
+            },
+    };
+    const auto claimed = execution_db.ClaimPublishedWorksetBatch(
+        ClaimPublishedWorksetBatchCommand{
+            .batch_nonce = "expired-recovery-reclaim",
+            .requested_workset_count = 1,
+            .lease_duration_ms = 30000,
+            .compatibility = compatibility,
+        },
+        &error);
+    ASSERT_EQ(claimed.size(), 1u) << error;
+    EXPECT_EQ(claimed.front().workset_id, 35120);
+    ASSERT_EQ(claimed.front().items.size(), 1u);
+    EXPECT_EQ(claimed.front().items.front().job_id, 35140);
+    EXPECT_EQ(
+        claimed.front().items.front().reserved_attempt_id,
+        2u);
+}
+
+TEST_F(
+    SqliteDbFixture,
+    PublishedWorksetBatchClaimUsesPriorityCompatibilityWarmthAndRollsBackAsAUnit) {
+    using savor::db::ClaimPublishedWorksetBatchCommand;
+    using savor::db::ReadyWorkerSupportedModule;
+    using savor::db::ReadyWorksetCompatibilityProfile;
+    using savor::db::execution::workflow::SqliteExecutionDb;
+
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+INSERT INTO exec_job_set(
+    job_set_id,program_kind,purpose,created_by,created_at_utc)
+VALUES
+    (35210,42,'batch-claim','test',1000),
+    (35310,42,'batch-rollback','test',1000);
+INSERT INTO exec_workflow_instance(
+    workflow_instance_id,workflow_kind,state,root_scope_kind,
+    root_scope_id,created_by,created_at_utc)
+VALUES
+    (35211,'TEST','RUNNING','job_set',35210,'test',1000),
+    (35311,'TEST','RUNNING','job_set',35310,'test',1000);
+INSERT INTO exec_workflow_step(
+    workflow_step_id,workflow_instance_id,step_key,graph_node_key,
+    step_kind,state,priority,attempts,max_attempts,job_set_id,
+    created_at_utc)
+VALUES
+    (35212,35211,'probe','probe','test','MATERIALIZED',
+     0,1,1,35210,1000),
+    (35312,35311,'probe','probe','test','MATERIALIZED',
+     0,1,1,35310,1000);
+INSERT INTO exec_workset(
+    workset_id,job_set_id,workflow_step_id,root_job_set_id,
+    workset_key,program_kind,program_version,compatibility_key,
+    module_canonical_id,module_version,module_sha256,entrypoint,
+    verified_dependency_sha256,runtime_profile_sha256,
+    required_capability_mask,execution_affinity_key,
+    estimated_payload_bytes,priority,item_count,published_at_utc)
+VALUES
+    (35220,35210,35212,35210,'cold',42,1,'compat',
+     'test.module',1,printf('%064d',0),'test-entrypoint',
+     printf('%064d',0),printf('%064d',0),0,'cold',1,10,1,1000),
+    (35221,35210,35212,35210,'warm',42,1,'compat',
+     'test.module',1,printf('%064d',0),'test-entrypoint',
+     printf('%064d',0),printf('%064d',0),0,'warm',1,10,1,1001),
+    (35222,35210,35212,35210,'incompatible',42,1,'compat',
+     'other.module',1,printf('%064d',0),'test-entrypoint',
+     printf('%064d',0),printf('%064d',0),0,'warm',1,10,1,900),
+    (35223,35210,35212,35210,'lower',42,1,'compat',
+     'test.module',1,printf('%064d',0),'test-entrypoint',
+     printf('%064d',0),printf('%064d',0),0,'warm',1,5,1,800),
+    (35320,35310,35312,35310,'rollback-a',42,1,'compat',
+     'test.module',1,printf('%064d',0),'test-entrypoint',
+     printf('%064d',0),printf('%064d',0),0,'warm',1,20,1,1000),
+    (35321,35310,35312,35310,'rollback-b',42,1,'compat',
+     'test.module',1,printf('%064d',0),'test-entrypoint',
+     printf('%064d',0),printf('%064d',0),0,'warm',1,20,1,1001);
+INSERT INTO exec_job(
+    job_id,job_set_id,program_kind,program_version,program_ref_kind,
+    program_ref_id,fingerprint,priority,state,attempts,max_attempts,
+    queued_at_utc,workset_id,workset_item_ordinal)
+VALUES
+    (35240,35210,42,1,'test',1,'cold-job',10,'QUEUED',0,2,1000,35220,0),
+    (35241,35210,42,1,'test',1,'warm-job',10,'QUEUED',0,2,1000,35221,0),
+    (35242,35210,42,1,'test',1,'other-job',10,'QUEUED',0,2,1000,35222,0),
+    (35243,35210,42,1,'test',1,'lower-job',5,'QUEUED',0,2,1000,35223,0),
+    (35340,35310,42,1,'test',1,'rollback-a-job',20,'QUEUED',0,2,1000,35320,0),
+    (35341,35310,42,1,'test',1,'rollback-b-job',20,'QUEUED',0,2,1000,35321,0);
+)SQL"));
+
+    const auto hash = std::string(64, '0');
+    const ReadyWorksetCompatibilityProfile profile{
+        .available_capability_mask = 0,
+        .max_workset_items = 1,
+        .max_payload_bytes = 1024,
+        .supported_program_kinds = {42},
+        .supported_modules =
+            {
+                ReadyWorkerSupportedModule{
+                    .module_canonical_id = "test.module",
+                    .module_version = 1,
+                    .module_sha256 = hash,
+                    .entrypoints = {"test-entrypoint"},
+                    .verified_dependency_sha256 = hash,
+                    .runtime_profile_sha256 = hash,
+                },
+        },
+    };
+    SqliteExecutionDb execution_db(db_);
+    std::string error;
+
+    // Priority 20 is currently claimable, so exercise whole-batch rollback
+    // before testing the lower priority selection.
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+CREATE TRIGGER fail_second_batch_claim
+BEFORE UPDATE OF dispatch_attempt_id ON exec_job
+WHEN NEW.job_id=35341 AND NEW.dispatch_attempt_id IS NOT NULL
+BEGIN
+    SELECT RAISE(ABORT,'batch rollback probe');
+END;
+)SQL"));
+    const auto failed = execution_db.ClaimPublishedWorksetBatch(
+        {
+            .batch_nonce = "rollback-batch",
+            .requested_workset_count = 2,
+            .lease_duration_ms = 30000,
+            .compatibility = profile,
+        },
+        &error);
+    EXPECT_TRUE(failed.empty());
+    EXPECT_NE(error.find("batch rollback probe"), std::string::npos)
+        << error;
+    EXPECT_EQ(
+        ReadInt64(
+            db_,
+            "SELECT COUNT(1) FROM exec_workset_dispatch_attempt "
+            "WHERE workset_id IN (35320,35321);"),
+        0);
+    EXPECT_EQ(
+        ReadInt64(
+            db_,
+            "SELECT COUNT(1) FROM exec_job "
+            "WHERE job_id IN (35340,35341) AND state='QUEUED';"),
+        2);
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+DROP TRIGGER fail_second_batch_claim;
+UPDATE exec_job SET attempts=max_attempts WHERE job_id IN (35340,35341);
+)SQL"));
+
+    error.clear();
+    const auto claimed = execution_db.ClaimPublishedWorksetBatch(
+        {
+            .batch_nonce = "ordered-batch",
+            .requested_workset_count = 2,
+            .lease_duration_ms = 30000,
+            .compatibility = profile,
+        },
+        &error);
+    ASSERT_EQ(claimed.size(), 2u) << error;
+    EXPECT_EQ(claimed[0].workset_id, 35221);
+    EXPECT_EQ(claimed[1].workset_id, 35220);
+    EXPECT_EQ(claimed[0].claim_token, "ordered-batch-1");
+    EXPECT_EQ(claimed[1].claim_token, "ordered-batch-2");
+    ASSERT_EQ(claimed[0].items.size(), 1u);
+    ASSERT_EQ(claimed[1].items.size(), 1u);
+    EXPECT_EQ(claimed[0].items[0].dispatch_item_ordinal, 0u);
+    EXPECT_EQ(claimed[1].items[0].dispatch_item_ordinal, 0u);
+    EXPECT_EQ(
+        ReadInt64(
+            db_,
+            "SELECT COUNT(1) FROM exec_job "
+            "WHERE job_id IN (35240,35241) AND state='CLAIMED';"),
+        2);
+    EXPECT_EQ(
+        ReadText(
+            db_,
+            "SELECT state FROM exec_job WHERE job_id=35243;"),
+        "QUEUED");
 }
 
 }

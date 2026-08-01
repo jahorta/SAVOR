@@ -125,9 +125,7 @@ constexpr ProgramScopeId kInvocationScope{
         (invocation.execution.allow_capture &&
          !accepted.permits_capture) ||
         (invocation.execution.intent == ExecutionIntent::Replay &&
-         !accepted.permits_replay) ||
-        (invocation.execution.intent == ExecutionIntent::VisualDebug &&
-         !accepted.permits_visual_debug))
+         !accepted.permits_replay))
     {
         return false;
     }

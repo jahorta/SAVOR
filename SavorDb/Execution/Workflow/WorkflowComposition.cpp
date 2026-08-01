@@ -55,10 +55,13 @@ WorkflowUnitDefinition SeedProbeUnit(
             Port("entry_savestate", "state.savestate_id", "Entry savestate"),
         },
         .possible_outputs = {
-            Port("unique_input_frames", "analysis.input_frame_set_id", "Unique input frames"),
+            Port(
+                "accepted_input_frames",
+                "analysis.input_frame_set_id",
+                "Accepted input frames"),
         },
-        .internal_step_kinds = { "seed_probe_chain", "seedprobe.grid", "seedprobe.unique" },
-        .step_templates = SingleStep("seed_probe_chain"),
+        .internal_step_kinds = { "seedprobe.run" },
+        .step_templates = SingleStep("seedprobe.run"),
     };
 }
 
@@ -165,10 +168,13 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
                 Port("entry_savestate", "state.savestate_id", "Entry savestate"),
             },
             .possible_outputs = {
-                Port("unique_input_frames", "analysis.input_frame_set_id", "Unique input frames"),
+                Port(
+                    "accepted_input_frames",
+                    "analysis.input_frame_set_id",
+                    "Accepted input frames"),
             },
-            .internal_step_kinds = { "seed_probe_chain", "seedprobe.grid", "seedprobe.unique" },
-            .step_templates = SingleStep("seed_probe_chain"),
+            .internal_step_kinds = { "seedprobe.run" },
+            .step_templates = SingleStep("seedprobe.run"),
         },
         &ignored);
 
@@ -259,34 +265,6 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
             },
             .internal_step_kinds = { "battle.completion" },
             .step_templates = SingleStep("battle.completion"),
-        },
-        &ignored);
-
-    (void)registry.RegisterUnit(
-        WorkflowUnitDefinition{
-            .unit_kind = "field_return_seed_probe",
-            .display_name = "Field Return Seed Probe",
-            .description = "Selects and materializes one deterministic field-return reseed from a completed battle.",
-            .hidden = true,
-            .unit_variant = "field_return",
-            .breakpoint_profile_key = "seedprobe.field_return",
-            .default_activation_params_json = "{}",
-            .authored_refs = {
-                { .ref_kind = "seed_probe_spec", .display_name = "Seed probe spec" },
-            },
-            .required_inputs = {
-                Port("completion", "analysis_battle.battle_completion_id", "Battle completion"),
-            },
-            .possible_outputs = {
-                Port("seeded_savestate", "state.savestate_id", "Field-return seeded savestate"),
-            },
-            .internal_step_kinds = {
-                "battle.field_return_seed_probe",
-                "battle.field_return_seed_probe.grid",
-                "battle.field_return_seed_probe.unique",
-                "battle.field_return_seed_probe.materialize",
-            },
-            .step_templates = SingleStep("battle.field_return_seed_probe"),
         },
         &ignored);
 

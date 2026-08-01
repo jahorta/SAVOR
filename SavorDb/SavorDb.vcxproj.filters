@@ -37,9 +37,6 @@
     <Filter Include="Programs\BattleContext">
       <UniqueIdentifier>{69766586-b762-48aa-82f2-d7c1d55f19d8}</UniqueIdentifier>
     </Filter>
-    <Filter Include="Programs\BattleEndResults">
-      <UniqueIdentifier>{2c3a9a29-094d-443c-b11b-24f377f866aa}</UniqueIdentifier>
-    </Filter>
     <Filter Include="Programs\NavigationContext">
       <UniqueIdentifier>{17136C34-BFE1-49BD-ACF5-C9C463E57DDF}</UniqueIdentifier>
     </Filter>
@@ -187,6 +184,9 @@
     <ClInclude Include="Execution\IExecutionDb.h">
       <Filter>Execution</Filter>
     </ClInclude>
+    <ClInclude Include="Execution\WorkerResultBlobStore.h">
+      <Filter>Execution</Filter>
+    </ClInclude>
     <ClInclude Include="Execution\QueuedExecutionDb.h">
       <Filter>Execution</Filter>
     </ClInclude>
@@ -199,22 +199,22 @@
     <ClInclude Include="Execution\ProgramDB\ProgramKindDescriptor.h">
       <Filter>Programs</Filter>
     </ClInclude>
+    <ClInclude Include="Execution\ProgramDB\ProgramResultProcessor.h">
+      <Filter>Programs</Filter>
+    </ClInclude>
     <ClInclude Include="Execution\ProgramDB\ProductionProgramKindRegistry.h">
       <Filter>Programs</Filter>
     </ClInclude>
-    <ClInclude Include="Execution\ProgramDB\SeedProbe\SeedProbeUniqueAdapters.h">
+    <ClInclude Include="Execution\ProgramDB\WorkerResultBlobCleanupService.h">
+      <Filter>Programs</Filter>
+    </ClInclude>
+    <ClInclude Include="Execution\ProgramDB\SeedProbe\SeedProbeExecutionAdapters.h">
       <Filter>Programs\SeedProbe</Filter>
     </ClInclude>
-    <ClInclude Include="Execution\ProgramDB\SeedProbe\SeedProbePhaseRegistration.h">
+    <ClInclude Include="Execution\ProgramDB\SeedProbe\SeedProbeJobSpec.h">
       <Filter>Programs\SeedProbe</Filter>
     </ClInclude>
-    <ClInclude Include="Execution\ProgramDB\SeedProbe\SeedProbeNeutralAdapters.h">
-      <Filter>Programs\SeedProbe</Filter>
-    </ClInclude>
-    <ClInclude Include="Execution\ProgramDB\SeedProbe\SeedProbeGridAdapters.h">
-      <Filter>Programs\SeedProbe</Filter>
-    </ClInclude>
-    <ClInclude Include="Execution\ProgramDB\SeedProbe\SeedProbeContracts.h">
+    <ClInclude Include="Execution\ProgramDB\SeedProbe\SeedProbeProgram.h">
       <Filter>Programs\SeedProbe</Filter>
     </ClInclude>
     <ClInclude Include="Execution\ProgramDB\TasMovie\TasMovieAdapters.h">
@@ -234,12 +234,6 @@
     </ClInclude>
     <ClInclude Include="Execution\ProgramDB\BattleContext\BattleContextProbePhaseRegistration.h">
       <Filter>Programs\BattleContext</Filter>
-    </ClInclude>
-    <ClInclude Include="Execution\ProgramDB\BattleEndResults\BattleEndResultsAdapters.h">
-      <Filter>Programs\BattleEndResults</Filter>
-    </ClInclude>
-    <ClInclude Include="Execution\ProgramDB\BattleEndResults\BattleEndResultsPhaseRegistration.h">
-      <Filter>Programs\BattleEndResults</Filter>
     </ClInclude>
     <ClInclude Include="Execution\ProgramDB\NavigationContext\NavigationContextAdapters.h">
       <Filter>Programs\NavigationContext</Filter>
@@ -381,19 +375,22 @@
     <ClCompile Include="Execution\QueuedExecutionDb.cpp">
       <Filter>Execution</Filter>
     </ClCompile>
+    <ClCompile Include="Execution\WorkerResultBlobStore.cpp">
+      <Filter>Execution</Filter>
+    </ClCompile>
+    <ClCompile Include="Execution\ProgramDB\ProgramResultProcessor.cpp">
+      <Filter>Programs</Filter>
+    </ClCompile>
     <ClCompile Include="Execution\ProgramDB\ProductionProgramKindRegistry.cpp">
       <Filter>Programs</Filter>
     </ClCompile>
-    <ClCompile Include="Execution\ProgramDB\SeedProbe\SeedProbeUniqueAdapters.cpp">
+    <ClCompile Include="Execution\ProgramDB\WorkerResultBlobCleanupService.cpp">
+      <Filter>Programs</Filter>
+    </ClCompile>
+    <ClCompile Include="Execution\ProgramDB\SeedProbe\SeedProbeExecutionAdapters.cpp">
       <Filter>Programs\SeedProbe</Filter>
     </ClCompile>
-    <ClCompile Include="Execution\ProgramDB\SeedProbe\SeedProbePhaseRegistration.cpp">
-      <Filter>Programs\SeedProbe</Filter>
-    </ClCompile>
-    <ClCompile Include="Execution\ProgramDB\SeedProbe\SeedProbeNeutralAdapters.cpp">
-      <Filter>Programs\SeedProbe</Filter>
-    </ClCompile>
-    <ClCompile Include="Execution\ProgramDB\SeedProbe\SeedProbeGridAdapters.cpp">
+    <ClCompile Include="Execution\ProgramDB\SeedProbe\SeedProbeProgram.cpp">
       <Filter>Programs\SeedProbe</Filter>
     </ClCompile>
     <ClCompile Include="Execution\ProgramDB\TasMovie\TasMovieAdapters.cpp">
@@ -413,15 +410,6 @@
     </ClCompile>
     <ClCompile Include="Execution\ProgramDB\BattleContext\BattleContextProbePhaseRegistration.cpp">
       <Filter>Programs\BattleContext</Filter>
-    </ClCompile>
-    <ClCompile Include="Execution\ProgramDB\BattleEndResults\BattleEndResultsAdapters.cpp">
-      <Filter>Programs\BattleEndResults</Filter>
-    </ClCompile>
-    <ClCompile Include="Execution\ProgramDB\BattleEndResults\BattleEndWorkflowAdapters.cpp">
-      <Filter>Programs\BattleEndResults</Filter>
-    </ClCompile>
-    <ClCompile Include="Execution\ProgramDB\BattleEndResults\BattleEndResultsPhaseRegistration.cpp">
-      <Filter>Programs\BattleEndResults</Filter>
     </ClCompile>
     <ClCompile Include="Execution\ProgramDB\NavigationContext\NavigationContextAdapters.cpp">
       <Filter>Programs\NavigationContext</Filter>
@@ -504,6 +492,9 @@
     <None Include="migration\Archive\202607211300_archive_battle_end_workflow_kinds.sql">
       <Filter>Migrations\Archive</Filter>
     </None>
+    <None Include="migration\Archive\202607291100_archive_workset_coordination_kinds.sql">
+      <Filter>Migrations\Archive</Filter>
+    </None>
     <None Include="migration\Authoring\202604051000_authoring_stage2_schema.sql">
       <Filter>Migrations\Authoring</Filter>
     </None>
@@ -559,6 +550,9 @@
       <Filter>Migrations\Execution</Filter>
     </None>
     <None Include="migration\Execution\202606181200_execution_active_workflow_materialization_index.sql">
+      <Filter>Migrations\Execution</Filter>
+    </None>
+    <None Include="migration\Execution\202607291000_execution_workset_coordination.sql">
       <Filter>Migrations\Execution</Filter>
     </None>
     <None Include="migration\State\202604051000_state_stage2_schema.sql">
@@ -622,6 +616,9 @@
       <Filter>Migrations\UiRead</Filter>
     </None>
     <None Include="migration\UIRead\202606201100_uiread_archive_name_notes.sql">
+      <Filter>Migrations\UiRead</Filter>
+    </None>
+    <None Include="migration\UIRead\202607291100_uiread_result_processing_visibility.sql">
       <Filter>Migrations\UiRead</Filter>
     </None>
   </ItemGroup>

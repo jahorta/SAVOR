@@ -11,6 +11,7 @@
 #include <tuple>
 #include <numeric>
 #include <random>
+#include <bit>
 
 namespace savor {
 
@@ -161,7 +162,11 @@ namespace savor {
                     for (int32_t jd : j_keys)
                         for (int32_t cd : c_keys)
                             for (int32_t td : t_keys) {
-                                const int32_t s = jd + cd + td;
+                                const auto s =
+                                    std::bit_cast<std::int32_t>(
+                                        static_cast<std::uint32_t>(jd)
+                                        + static_cast<std::uint32_t>(cd)
+                                        + static_cast<std::uint32_t>(td));
                                 if (!singletons.count(s)) tset.insert(s);
                             }
                     targets.assign(tset.begin(), tset.end());
@@ -174,7 +179,11 @@ namespace savor {
 
                     for (int32_t jd : j_keys) {
                         for (int32_t cd : c_keys) {
-                            const int32_t need = t - jd - cd;
+                            const auto need =
+                                std::bit_cast<std::int32_t>(
+                                    static_cast<std::uint32_t>(t)
+                                    - static_cast<std::uint32_t>(jd)
+                                    - static_cast<std::uint32_t>(cd));
                             auto itT = t_map.find(need);
                             if (itT == t_map.end()) continue;
 
@@ -262,8 +271,12 @@ namespace savor {
         return out;
     }
 
-    static inline long long signed_delta(uint32_t a, uint32_t b) {
-        return (long long)(int32_t)a - (long long)(int32_t)b;
+    std::int32_t wrapped_seed_delta(
+        std::uint32_t observed,
+        std::uint32_t neutral) noexcept
+    {
+        return std::bit_cast<std::int32_t>(
+            static_cast<std::uint32_t>(observed - neutral));
     }
 
     static std::string make_label(const char* title, uint8_t x, uint8_t y) {

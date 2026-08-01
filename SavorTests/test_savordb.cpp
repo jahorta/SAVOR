@@ -41,10 +41,6 @@
 #include "Execution/Workflow/WorkflowRecoveryService.h"
 #include "Execution/Workflow/AdapterChainOrchestrator.h"
 #include "Execution/Workflow/WorkflowTerminalOutboxSubscriber.h"
-#include "Execution/ProgramDB/SeedProbe/SeedProbePhaseRegistration.h"
-#include "Execution/ProgramDB/SeedProbe/SeedProbeNeutralAdapters.h"
-#include "Execution/ProgramDB/SeedProbe/SeedProbeGridAdapters.h"
-#include "Execution/ProgramDB/SeedProbe/SeedProbeUniqueAdapters.h"
 #include "UIRead/Projectors/ProjectorContract.h"
 #include "Execution/WorkflowCoordinatorBridge.h"
 #include "Execution/DBWorkflowWorkerCoordinator.h"
@@ -199,7 +195,7 @@ TEST(Stage5WorkflowComposition, ValidatesTasSeedProbeBattleCompatibility) {
     composition.output_bindings = {
         { .from_node_key = "tas_1", .output_key = "savestate", .to_node_key = "probe_1", .input_key = "entry_savestate" },
         { .from_node_key = "tas_1", .output_key = "savestate", .to_node_key = "battle_1", .input_key = "entry_savestate" },
-        { .from_node_key = "probe_1", .output_key = "unique_input_frames", .to_node_key = "battle_1", .input_key = "initial_input_frames" },
+        { .from_node_key = "probe_1", .output_key = "accepted_input_frames", .to_node_key = "battle_1", .input_key = "initial_input_frames" },
     };
 
     const auto preview = service.Preview(composition);
@@ -232,7 +228,7 @@ TEST(Stage5WorkflowComposition, ReportsUnresolvedAndMismatchedInputs) {
         { .node_key = "probe_1", .input_key = "entry_savestate", .data_kind = "state.savestate_id", .ref_id = 99 },
     };
     mismatched.output_bindings = {
-        { .from_node_key = "probe_1", .output_key = "unique_input_frames", .to_node_key = "battle_1", .input_key = "entry_savestate" },
+        { .from_node_key = "probe_1", .output_key = "accepted_input_frames", .to_node_key = "battle_1", .input_key = "entry_savestate" },
     };
 
     preview = service.Preview(mismatched);
@@ -269,91 +265,6 @@ TEST(Stage3cCoordinatorBridge, DeduplicatesTerminalSignalsAndSchedulesReadySteps
     EXPECT_EQ(scheduled.workflow_step_id, 44);
 }
 
-
-TEST(Stage3cSeedProbeProgramDB, BuildsPhaseSpecificDescriptors) {
-    using namespace savor::db::execution::programdb::seedprobe;
-
-    auto neutral = BuildSeedProbeNeutralDescriptor(nullptr, nullptr);
-    auto grid = BuildSeedProbeGridDescriptor(
-        nullptr,
-        nullptr,
-        SeedProbeGridBlueprintConfig{},
-        SeedProbeGridSpec{});
-    auto unique = BuildSeedProbeUniqueDescriptor(nullptr, nullptr, SeedProbeGridBlueprintConfig{}, UniqueIni{});
-
-    EXPECT_NE(dynamic_cast<NeutralProbeJobPersistenceAdapter*>(neutral.job_persistence.get()), nullptr);
-    EXPECT_NE(dynamic_cast<SeedProbeGridJobPersistenceAdapter*>(grid.job_persistence.get()), nullptr);
-    EXPECT_NE(dynamic_cast<SeedProbeUniqueJobPersistenceAdapter*>(unique.job_persistence.get()), nullptr);
-
-    EXPECT_NE(dynamic_cast<RequiredSavestateRuntimeInitAdapter*>(neutral.runtime_init.get()), nullptr);
-    EXPECT_NE(dynamic_cast<SeedProbeRuntimeInitAdapter*>(grid.runtime_init.get()), nullptr);
-    EXPECT_NE(dynamic_cast<SeedProbeUniqueRuntimeInitAdapter*>(unique.runtime_init.get()), nullptr);
-
-    EXPECT_NE(dynamic_cast<NeutralSeedResultMapper*>(neutral.result_mapper.get()), nullptr);
-    EXPECT_NE(dynamic_cast<SeedProbeGridResultMapper*>(grid.result_mapper.get()), nullptr);
-    EXPECT_NE(dynamic_cast<SeedProbeUniqueResultMapper*>(unique.result_mapper.get()), nullptr);
-
-    EXPECT_NE(neutral.workflow_transition, nullptr);
-    EXPECT_NE(grid.workflow_transition, nullptr);
-    EXPECT_NE(unique.workflow_transition, nullptr);
-}
-
-TEST(Stage3cSeedProbeProgramDB, RegistryDispatchesAdaptersByWorkflowStepKind) {
-    using namespace savor::db::execution::programdb;
-    using namespace savor::db::execution::programdb::seedprobe;
-
-    ProgramKindRegistry registry;
-    SeedProbePhaseRegistrationConfig config{};
-    RegisterSeedProbePhaseDescriptors(&registry, nullptr, nullptr, std::move(config));
-
-    const auto* neutral = registry.FindForStepKind("seedprobe.neutral");
-    ASSERT_NE(neutral, nullptr);
-    EXPECT_NE(dynamic_cast<NeutralProbeJobPersistenceAdapter*>(neutral->job_persistence.get()), nullptr);
-
-    const auto* grid = registry.FindForStepKind("seedprobe.grid");
-    ASSERT_NE(grid, nullptr);
-    EXPECT_NE(dynamic_cast<SeedProbeGridJobPersistenceAdapter*>(grid->job_persistence.get()), nullptr);
-
-    const auto* unique = registry.FindForStepKind("seedprobe.unique");
-    ASSERT_NE(unique, nullptr);
-    EXPECT_NE(dynamic_cast<SeedProbeUniqueJobPersistenceAdapter*>(unique->job_persistence.get()), nullptr);
-}
-
-TEST(Stage3cSeedProbeProgramDB, UniqueTransitionBlocksWhenCompletionGateFails) {
-    using namespace savor::db::execution::programdb::seedprobe;
-
-    SeedProbeUniqueTransitionHandler handler([](const auto&) { return false; });
-    const savor::db::execution::programdb::WorkflowTransitionContext context{
-        .workflow_instance_id = 77,
-        .workflow_step_id = 501,
-        .job_set_id = 9001,
-        .workflow_kind = "SEED_PROBE_CHAIN",
-        .step_key = "Grid",
-    };
-
-    const auto decision = handler.EvaluateTransition(context);
-    EXPECT_FALSE(decision.should_advance);
-    EXPECT_EQ(decision.blocked_reason.value_or(""), "Grid completion gate not satisfied");
-    EXPECT_EQ(decision.next_step_key.value_or(""), "Unique");
-}
-
-TEST(Stage3cSeedProbeProgramDB, UniqueTransitionAdvancesToDoneTerminalStep) {
-    using namespace savor::db::execution::programdb::seedprobe;
-
-    SeedProbeUniqueTransitionHandler handler([](const auto&) { return true; });
-    const savor::db::execution::programdb::WorkflowTransitionContext context{
-        .workflow_instance_id = 77,
-        .workflow_step_id = 503,
-        .job_set_id = 9003,
-        .workflow_kind = "SEED_PROBE_CHAIN",
-        .step_key = "Unique",
-    };
-
-    const auto decision = handler.EvaluateTransition(context);
-    EXPECT_TRUE(decision.should_advance);
-    EXPECT_EQ(decision.next_step_key.value_or(""), "Done");
-    EXPECT_FALSE(decision.blocked_reason.has_value());
-}
 
 TEST(Stage2AdapterChain, InvokesCanonicalOrderAndWriterContract) {
     using namespace savor::db::execution::programdb;
@@ -466,28 +377,6 @@ TEST(Stage2AdapterChain, InvokesCanonicalOrderAndWriterContract) {
     ASSERT_TRUE(terminal.transition.has_value());
     EXPECT_TRUE(terminal.transition->should_advance);
     EXPECT_TRUE(trace.transition_handler_invoked);
-}
-
-TEST(Stage3cResultMapper, SeedProbeMapPrimaryResultMarksTerminalJobStateFromErrors) {
-    using namespace savor::db::execution::jobs;
-    using namespace savor::db::execution::programdb::seedprobe;
-
-    MapperExecutionDb execution_db;
-    NeutralSeedResultMapper mapper(&execution_db, nullptr);
-
-    (void)mapper.MapPrimaryResult(701, "[SeedProbe.Results]\nw_err=0\ndw_err=0\n");
-    (void)mapper.MapPrimaryResult(702, "[SeedProbe.Results]\nw_err=1\ndw_err=0\n");
-
-    ASSERT_EQ(execution_db.job_events.calls.size(), 2u);
-    EXPECT_EQ(execution_db.job_events.calls[0].kind, JobLifecycleEventKind::JobCompleted);
-    EXPECT_EQ(execution_db.job_events.calls[0].job_id, 701);
-    ASSERT_TRUE(execution_db.job_events.calls[0].terminal_state.has_value());
-    EXPECT_EQ(*execution_db.job_events.calls[0].terminal_state, "SUCCEEDED");
-
-    EXPECT_EQ(execution_db.job_events.calls[1].kind, JobLifecycleEventKind::JobCompleted);
-    EXPECT_EQ(execution_db.job_events.calls[1].job_id, 702);
-    ASSERT_TRUE(execution_db.job_events.calls[1].terminal_state.has_value());
-    EXPECT_EQ(*execution_db.job_events.calls[1].terminal_state, "FAILED");
 }
 
 TEST(Stage2AdapterChain, CompletionGateMismatchThenTerminalFail) {
@@ -965,9 +854,9 @@ TEST(Stage3cEventContracts, SeedProbeValidationRequiresConcretePayloadRefKinds) 
 
     std::string error;
     EXPECT_FALSE(ValidateAnalysisSeedProbePayloadV1(envelope, &error));
-    EXPECT_EQ(error, "payload_ref_kind must be probe_result for AnalysisSeedProbe.RunCompleted.v1");
+    EXPECT_EQ(error, "payload_ref_kind must be probe_run for SeedProbe run events");
 
-    envelope.payload_ref_kind = "probe_result";
+    envelope.payload_ref_kind = "probe_run";
     EXPECT_TRUE(ValidateAnalysisSeedProbePayloadV1(envelope, &error)) << error;
 }
 

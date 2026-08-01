@@ -47,8 +47,7 @@ ScenarioRequirement GetScenarioRequirement(const std::string_view scenario) {
     if (scenario == "battle_macro_probe") {
         return {.requires_savestate_file = true};
     }
-    if (scenario == "battle_end" || scenario == "battle_end_results"
-        || scenario == "navigation_context") {
+    if (scenario == "navigation_context") {
         return {.requires_source_savestate_id = true};
     }
     if (scenario == "tasmovie_seedprobe") {
@@ -72,8 +71,7 @@ ScenarioRequirement GetScenarioRequirement(const std::string_view scenario) {
 }
 
 bool IsSupportedScenario(const std::string_view scenario) {
-    if (scenario == "all" || scenario == "battle_end" || scenario == "battle_end_results"
-        || scenario == "navigation_context") {
+    if (scenario == "all" || scenario == "navigation_context") {
         return true;
     }
     for (const auto& supported : kAllScenarioOrder) {
@@ -299,13 +297,11 @@ void PrintUsage() {
               << " --dolphin-base-dir <path>"
               << " [--savestate-file <path>]"
               << " [--source-savestate-id <id>]"
-              << " [--battle-end-seed-selector neutral|seed_value|seed_delta]"
-              << " [--battle-end-seed-value <signed delta or u32 seed>]"
               << " [--dtm-file <path>]"
-              << " [--scenario seedprobe|seedprobe_battle|battle|battle_end|battle_end_results|navigation_context|all]"
-              << " [--timeout-ms <100..800000000 - default 30000>]"
+              << " [--scenario seedprobe|seedprobe_battle|battle|navigation_context|all]"
               << " [--poll-ms <100..5000 - default 100>]"
               << " [--worker-count <1..30 - default 1>]"
+              << " [--wait-for-workers-ready]"
               << " [--migration-root <path>]"
               << " [--workspace-root <path>]"
               << " [--worker-dir-root <path>]"
@@ -340,11 +336,10 @@ void PrintUsage() {
     std::cout << "TAS rtc sets one concrete launch value; rtc-min/max fans out graph scenarios into one workflow per value.\n";
     std::cout << "Visual worker locks worker count to 1. battle_macro_probe opens an interactive prompt unless --battle-plan or --battle-macro is supplied.\n";
     std::cout << "Battle macro CLI: use --battle-plan block,attack:5 for a multi-character plan, --battle-fake-attacks N for experimental RNG fake attacks, --battle-fake-attack-sweep to measure fake-attack timing, or --battle-macro attack --battle-macro-target-slot 5 for one command.\n";
-    std::cout << "battle_end (battle_end_results alias) reuses the selected workspace databases and requires --source-savestate-id from a successful BattleSingleTurn victory. Seed selection defaults to neutral.\n";
     std::cout << "navigation_context reuses the selected workspace databases and requires --source-savestate-id for any complete StateDB savestate.\n";
     std::cout << "Categories: result,failure,warning,workflow,materialization,claim,dispatch,supersede,worker,adapter,db,debug\n\n";
     std::cout << "Scenarios: all, seedprobe, tasmovie, seedprobe_battle, battle, "
-              << "battle_macro_probe, battle_end, battle_end_results, navigation_context, "
+              << "battle_macro_probe, navigation_context, "
               << "tasmovie_seedprobe, tasmovie_seedprobe_battle, "
               << "tasmovie_seedprobe_battle_override, tasmovie_battle\n";
     std::cout << "You may pass --scenario multiple times and they will run in order.\n\n";
@@ -388,10 +383,6 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
                 return false;
             }
             requested_scenarios.push_back(std::move(scenario));
-        } else if (arg == "--timeout-ms") {
-            std::string v;
-            if (!require_value("--timeout-ms", &v)) return false;
-            options.timeout_ms = std::stoll(v);
         } else if (arg == "--poll-ms") {
             std::string v;
             if (!require_value("--poll-ms", &v)) return false;
@@ -401,6 +392,8 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
             if (!require_value("--worker-count", &v)) return false;
             options.worker_count = std::stoll(v);
             worker_count_explicit = true;
+        } else if (arg == "--wait-for-workers-ready") {
+            options.wait_for_workers_ready = true;
         } else if (arg == "--savestate-file") {
             std::string v;
             if (!require_value("--savestate-file", &v)) return false;
@@ -412,17 +405,6 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
                 options.source_savestate_id = std::stoll(v);
             } catch (const std::exception&) {
                 if (error_out) *error_out = "invalid integer for --source-savestate-id: " + v;
-                return false;
-            }
-        } else if (arg == "--battle-end-seed-selector") {
-            if (!require_value("--battle-end-seed-selector", &options.battle_end_seed_selector)) return false;
-        } else if (arg == "--battle-end-seed-value") {
-            std::string v;
-            if (!require_value("--battle-end-seed-value", &v)) return false;
-            try {
-                options.battle_end_seed_value = std::stoll(v);
-            } catch (const std::exception&) {
-                if (error_out) *error_out = "invalid integer for --battle-end-seed-value: " + v;
                 return false;
             }
         } else if (arg == "--dtm-file") {
@@ -689,8 +671,8 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
         if (error_out) *error_out = "--dolphin-base-dir is required and must exist";
         return false;
     }
-    if (options.timeout_ms < 100 || options.poll_ms < 100) {
-        if (error_out) *error_out = "--timeout-ms and --poll-ms must be > 100";
+    if (options.poll_ms < 100) {
+        if (error_out) *error_out = "--poll-ms must be >= 100";
         return false;
     }    
     if (options.worker_count < 1 || options.worker_count > 30) {
@@ -705,31 +687,8 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
         }
         return false;
     }
-    if (options.battle_end_seed_selector != "neutral"
-        && options.battle_end_seed_selector != "seed_value"
-        && options.battle_end_seed_selector != "seed_delta") {
-        if (error_out) *error_out = "--battle-end-seed-selector must be neutral, seed_value, or seed_delta";
-        return false;
-    }
-    if (options.battle_end_seed_selector == "neutral" && options.battle_end_seed_value.has_value()) {
-        if (error_out) *error_out = "--battle-end-seed-value is only valid with seed_value or seed_delta selection";
-        return false;
-    }
-    if (options.battle_end_seed_selector != "neutral" && !options.battle_end_seed_value.has_value()) {
-        if (error_out) *error_out = "--battle-end-seed-value is required with seed_value or seed_delta selection";
-        return false;
-    }
-    if (options.battle_end_seed_selector == "seed_value"
-        && (*options.battle_end_seed_value < 0 || *options.battle_end_seed_value > 0xFFFFFFFFll)) {
-        if (error_out) *error_out = "seed_value selection requires --battle-end-seed-value in the u32 range";
-        return false;
-    }
-    if (options.timeout_ms > 800000000) {
-        if (error_out) *error_out = "--timeout-ms must be <= 800000000";
-        return false;
-    }
     if (options.poll_ms > 5000) {
-        if (error_out) *error_out = "--timeout-ms and --poll-ms must be <= 5000";
+        if (error_out) *error_out = "--poll-ms must be <= 5000";
         return false;
     }
     if (options.perf_snapshot_interval_ms < 100 || options.perf_snapshot_interval_ms > 5000) {

@@ -1544,11 +1544,8 @@ DBWorkflowWorkerCoordinator::PreflightWorkerSlot(const WorkerSlotPtr& slot) {
                 .iso_path = worker_cfg_.iso_path,
                 .visual = worker_cfg_.visual_workers,
                 .render_widget_handle = render_widget_handle,
-                .screenshot_directory =
+                .runtime_artifact_root =
                     worker_cfg_.visual_screenshot_dir,
-                .screenshot_timeout_ms = 5000,
-                .screenshot_on_terminal =
-                    !worker_cfg_.visual_screenshot_dir.empty(),
             },
             &open_result,
             &error,
@@ -3162,7 +3159,7 @@ bool DBWorkflowWorkerCoordinator::ValidateBuiltWorkset(
             || item.correlation.claim_token
                 != claimed.claimed_by_token
             || claimed.durable_attempt_id == 0
-            || item.invocation.attempt_id.value()
+            || item.execution.attempt_id.value()
                 != claimed.durable_attempt_id) {
             if (error_out != nullptr) {
                 *error_out =
@@ -3309,8 +3306,8 @@ bool DBWorkflowWorkerCoordinator::DispatchClaimedWorksetToWorker(
                     .item_id = item.item_id.value(),
                     .item_ordinal = item.ordinal,
                     .invocation_id =
-                        item.invocation.invocation_id.value(),
-                    .attempt_id = item.invocation.attempt_id.value(),
+                        item.execution.execution_id.value(),
+                    .attempt_id = item.execution.attempt_id.value(),
                     .claimed = claimed,
                 };
         }

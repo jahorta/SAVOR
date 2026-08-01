@@ -115,7 +115,7 @@ std::optional<UiSeedProbeRunSummary> ReadSeedProbeSummaryRow(sqlite3_stmt* st) {
     const auto* status_text = sqlite3_column_text(st, 5);
     summary.status = status_text == nullptr ? std::string{} : reinterpret_cast<const char*>(status_text);
     if (sqlite3_column_type(st, 6) != SQLITE_NULL) {
-        summary.neutral_seed_value = sqlite3_column_int64(st, 6);
+        summary.neutral_seed_value = static_cast<std::uint32_t>(sqlite3_column_int64(st, 6));
     }
     summary.grid_count = sqlite3_column_int(st, 7);
     summary.unique_count = sqlite3_column_int(st, 8);
@@ -147,16 +147,24 @@ UiJobSummary ReadJobSummaryRow(sqlite3_stmt* st) {
     row.max_attempts = sqlite3_column_int(st, 10);
     const auto* error_text = sqlite3_column_text(st, 11);
     row.error_text = error_text == nullptr ? std::string{} : reinterpret_cast<const char*>(error_text);
+    row.result_processing_state = ColumnText(st, 12);
+    row.result_processing_attempts = sqlite3_column_int(st, 13);
+    row.result_processing_failures = sqlite3_column_int(st, 14);
+    if (sqlite3_column_type(st, 15) != SQLITE_NULL) {
+        row.result_processing_retry_after_utc = sqlite3_column_int64(st, 15);
+    }
+    row.result_processing_error_code = ColumnText(st, 16);
+    row.result_processing_error_text = ColumnText(st, 17);
     return row;
 }
 
 UiJobDetail ReadJobDetailRow(sqlite3_stmt* st) {
     UiJobDetail row{};
     row.summary = ReadJobSummaryRow(st);
-    row.fingerprint = ColumnText(st, 12);
-    row.claimed_by_token = ColumnTextOptional(st, 13);
-    if (sqlite3_column_type(st, 14) != SQLITE_NULL) {
-        row.lease_expires_at_utc = sqlite3_column_int64(st, 14);
+    row.fingerprint = ColumnText(st, 18);
+    row.claimed_by_token = ColumnTextOptional(st, 19);
+    if (sqlite3_column_type(st, 20) != SQLITE_NULL) {
+        row.lease_expires_at_utc = sqlite3_column_int64(st, 20);
     }
     return row;
 }
@@ -169,6 +177,8 @@ void AddJobStateCount(UiJobStateCounts& counts, const std::string& state, std::i
         counts.claimed += count;
     } else if (state == "RUNNING") {
         counts.running += count;
+    } else if (state == "EXECUTION_FINISHED") {
+        counts.execution_finished += count;
     } else if (state == "FAILED") {
         counts.failed += count;
     } else if (state == "CANCELED") {
@@ -495,7 +505,11 @@ UiReadPage<UiJobSummary> SqliteUiReadDb::ListJobs(
     constexpr const char* kSql =
         "SELECT s.job_id,s.job_set_id,s.program_kind,s.state,s.priority,s.queued_at_utc,"
         "s.started_at_utc,s.ended_at_utc,COALESCE(s.error_code,''),"
-        "COALESCE(d.attempts,0),COALESCE(d.max_attempts,0),COALESCE(d.error_text,'') "
+        "COALESCE(d.attempts,0),COALESCE(d.max_attempts,0),COALESCE(d.error_text,''),"
+        "COALESCE(d.result_processing_state,''),COALESCE(d.result_processing_attempts,0),"
+        "COALESCE(d.result_processing_failures,0),d.result_processing_retry_after_utc,"
+        "COALESCE(d.result_processing_error_code,''),"
+        "COALESCE(d.result_processing_error_text,'') "
         "FROM ui_job_summary s LEFT JOIN ui_job_detail d ON d.job_id=s.job_id "
         "WHERE (?1=0 OR s.program_kind=?2) "
         "AND (?3=0 OR s.job_set_id=?4) "
@@ -583,7 +597,11 @@ std::optional<UiJobSummary> SqliteUiReadDb::GetJobSummary(std::int64_t job_id) c
     constexpr const char* kSql =
         "SELECT s.job_id,s.job_set_id,s.program_kind,s.state,s.priority,s.queued_at_utc,"
         "s.started_at_utc,s.ended_at_utc,COALESCE(s.error_code,''),"
-        "COALESCE(d.attempts,0),COALESCE(d.max_attempts,0),COALESCE(d.error_text,'') "
+        "COALESCE(d.attempts,0),COALESCE(d.max_attempts,0),COALESCE(d.error_text,''),"
+        "COALESCE(d.result_processing_state,''),COALESCE(d.result_processing_attempts,0),"
+        "COALESCE(d.result_processing_failures,0),d.result_processing_retry_after_utc,"
+        "COALESCE(d.result_processing_error_code,''),"
+        "COALESCE(d.result_processing_error_text,'') "
         "FROM ui_job_summary s LEFT JOIN ui_job_detail d ON d.job_id=s.job_id "
         "WHERE s.job_id=?1;";
     if (sqlite3_prepare_v2(db_, kSql, -1, &st, nullptr) != SQLITE_OK) {
@@ -608,6 +626,10 @@ std::optional<UiJobDetail> SqliteUiReadDb::GetJobDetail(std::int64_t job_id) con
         "SELECT s.job_id,s.job_set_id,s.program_kind,s.state,s.priority,s.queued_at_utc,"
         "s.started_at_utc,s.ended_at_utc,COALESCE(s.error_code,''),"
         "COALESCE(d.attempts,0),COALESCE(d.max_attempts,0),COALESCE(d.error_text,''),"
+        "COALESCE(d.result_processing_state,''),COALESCE(d.result_processing_attempts,0),"
+        "COALESCE(d.result_processing_failures,0),d.result_processing_retry_after_utc,"
+        "COALESCE(d.result_processing_error_code,''),"
+        "COALESCE(d.result_processing_error_text,''),"
         "COALESCE(d.fingerprint,''),d.claimed_by_token,d.lease_expires_at_utc "
         "FROM ui_job_summary s LEFT JOIN ui_job_detail d ON d.job_id=s.job_id "
         "WHERE s.job_id=?1;";
@@ -1337,7 +1359,7 @@ UiSeedProbeRunPage SqliteUiReadDb::ListSeedProbeRuns(
         "status,neutral_seed_value,grid_count,unique_count,requested_at_utc,completed_at_utc "
         "FROM ui_seed_probe_summary "
         "WHERE (?1=1 OR status LIKE ?2 OR CAST(probe_run_id AS TEXT) LIKE ?2) "
-        "AND (?3=0 OR lower(status)='completed' OR lower(status)='done') "
+        "AND (?3=0 OR status IN ('COMPLETED','COMPLETED_PARTIAL')) "
         "AND (?4=0 OR requested_at_utc < ?5 OR (requested_at_utc=?5 AND probe_run_id < ?6)) "
         "AND (?7=0 OR requested_at_utc > ?8 OR (requested_at_utc=?8 AND probe_run_id > ?9)) "
         "ORDER BY requested_at_utc DESC, probe_run_id DESC LIMIT ?10;";
@@ -1421,8 +1443,8 @@ std::vector<UiSeedProbeDeltaPoint> SqliteUiReadDb::ListSeedProbeDeltaPoints(
         point.source_family = family == nullptr ? std::string{} : reinterpret_cast<const char*>(family);
         point.axis_x = sqlite3_column_int(st, 3);
         point.axis_y = sqlite3_column_int(st, 4);
-        point.seed_value = sqlite3_column_int64(st, 5);
-        point.seed_delta = sqlite3_column_int64(st, 6);
+        point.seed_value = static_cast<std::uint32_t>(sqlite3_column_int64(st, 5));
+        point.seed_delta = static_cast<std::int32_t>(sqlite3_column_int(st, 6));
         points.push_back(std::move(point));
     }
     sqlite3_finalize(st);
@@ -1447,8 +1469,8 @@ std::vector<UiSeedProbeUniqueValue> SqliteUiReadDb::ListSeedProbeUniqueValues(
         UiSeedProbeUniqueValue value{};
         value.unique_value_id = sqlite3_column_int64(st, 0);
         value.probe_run_id = sqlite3_column_int64(st, 1);
-        value.seed_value = sqlite3_column_int64(st, 2);
-        value.seed_delta = sqlite3_column_int64(st, 3);
+        value.seed_value = static_cast<std::uint32_t>(sqlite3_column_int64(st, 2));
+        value.seed_delta = static_cast<std::int32_t>(sqlite3_column_int(st, 3));
         value.main_x = sqlite3_column_int(st, 4);
         value.main_y = sqlite3_column_int(st, 5);
         value.cstick_x = sqlite3_column_int(st, 6);
@@ -1542,7 +1564,7 @@ bool SqliteUiReadDb::ReplaceSeedProbeDeltaPoints(
         sqlite3_bind_int(ins, 4, point.axis_x);
         sqlite3_bind_int(ins, 5, point.axis_y);
         sqlite3_bind_int64(ins, 6, point.seed_value);
-        sqlite3_bind_int64(ins, 7, point.seed_delta);
+        sqlite3_bind_int(ins, 7, point.seed_delta);
         success = sqlite3_step(ins) == SQLITE_DONE;
     }
     sqlite3_finalize(ins);
@@ -1589,7 +1611,7 @@ bool SqliteUiReadDb::ReplaceSeedProbeUniqueValues(
         sqlite3_bind_int64(ins, 1, value.unique_value_id);
         sqlite3_bind_int64(ins, 2, probe_run_id);
         sqlite3_bind_int64(ins, 3, value.seed_value);
-        sqlite3_bind_int64(ins, 4, value.seed_delta);
+        sqlite3_bind_int(ins, 4, value.seed_delta);
         sqlite3_bind_int(ins, 5, value.main_x);
         sqlite3_bind_int(ins, 6, value.main_y);
         sqlite3_bind_int(ins, 7, value.cstick_x);

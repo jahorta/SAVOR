@@ -141,6 +141,13 @@ WorksetValidationResult ValidateWorkerWorksetDefinition(
             WorkerRejectionCode::InvalidArgument,
             "WorkerWorkset requires a nonzero identity");
     }
+    if (!definition.phase_invocation.invocation_id ||
+        !definition.phase_invocation.program)
+    {
+        return WorksetValidationResult::Failure(
+            WorkerRejectionCode::InvalidArgument,
+            "WorkerWorkset requires one complete Full Phase invocation identity");
+    }
     if (definition.items.empty() ||
         definition.items.size() > limits.maximum_items_per_workset)
     {
@@ -175,6 +182,49 @@ WorksetValidationResult ValidateWorkerWorksetDefinition(
         return WorksetValidationResult::Failure(
             WorkerRejectionCode::InvalidArgument,
             "WorkerWorkset execution key hash is not canonical");
+    }
+    const auto* phase = fullphase::ProductionRegistry().Find(
+        definition.phase_invocation.program);
+    if (phase == nullptr)
+    {
+        const auto* local = fullphase::ProductionRegistry().Find(
+            definition.phase_invocation.program.program_kind);
+        if (local != nullptr)
+        {
+            const auto& received =
+                definition.phase_invocation.program;
+            const auto& available = local->identity();
+            return WorksetValidationResult::Failure(
+                WorkerRejectionCode::Unsupported,
+                "WorkerWorkset Full Phase identity disagrees with the "
+                "local production definition: received=" +
+                    received.canonical_id + "@" +
+                    std::to_string(received.contract_revision) + "#" +
+                    received.canonical_sha256 + ", local=" +
+                    available.canonical_id + "@" +
+                    std::to_string(available.contract_revision) + "#" +
+                    available.canonical_sha256);
+        }
+        return WorksetValidationResult::Failure(
+            WorkerRejectionCode::Unsupported,
+            "WorkerWorkset Full Phase identity is not in the local production registry");
+    }
+    const auto& contract = phase->runtime_contract();
+    if (definition.execution_key.module != contract.module ||
+        definition.execution_key.entrypoint != contract.entrypoint ||
+        definition.execution_key.verified_dependency_sha256 !=
+            contract.verified_dependency_sha256 ||
+        definition.execution_key.runtime_profile_sha256 !=
+            contract.runtime_profile_sha256 ||
+        definition.execution_key.movie_policy_sha256 !=
+            contract.movie_policy_sha256 ||
+        definition.execution_key.service_policy_sha256 !=
+            contract.service_policy_sha256 ||
+        definition.baseline.lineage != contract.baseline_lineage)
+    {
+        return WorksetValidationResult::Failure(
+            WorkerRejectionCode::InvalidArgument,
+            "WorkerWorkset execution or baseline invariants disagree with its Full Phase definition");
     }
 
     if (definition.baseline.lineage.empty())
@@ -258,31 +308,28 @@ WorksetValidationResult ValidateWorkerWorksetDefinition(
     }
 
     std::set<std::uint64_t> item_ids;
-    std::set<std::uint64_t> invocation_ids;
+    std::set<std::uint64_t> execution_ids;
     std::size_t aggregate_terminal_bytes = 0;
     for (std::size_t index = 0; index < definition.items.size(); ++index)
     {
         const WorksetItemTemplate& item = definition.items[index];
         if (!item.item_id || item.ordinal != index ||
-            !item.invocation.invocation_id ||
-            !item.invocation.attempt_id ||
-            item.invocation.module != definition.execution_key.module ||
-            item.invocation.entrypoint !=
-                definition.execution_key.entrypoint ||
-            item.invocation.template_payload.empty())
+            !item.execution.execution_id ||
+            !item.execution.attempt_id ||
+            item.execution.input_payload.empty())
         {
             return WorksetValidationResult::Failure(
                 WorkerRejectionCode::InvalidArgument,
-                "WorkerWorkset item identity, order, or invocation template is invalid");
+                "WorkerWorkset item identity, order, or scalar execution binding is invalid");
         }
         if (!item_ids.insert(item.item_id.value()).second ||
-            !invocation_ids
-                 .insert(item.invocation.invocation_id.value())
+            !execution_ids
+                 .insert(item.execution.execution_id.value())
                  .second)
         {
             return WorksetValidationResult::Failure(
                 WorkerRejectionCode::InvalidArgument,
-                "WorkerWorkset contains duplicate item or invocation identities");
+                "WorkerWorkset contains duplicate item or execution identities");
         }
         if (item.declared_terminal_bytes <
                 kMinimumWorksetTerminalReservationBytes ||

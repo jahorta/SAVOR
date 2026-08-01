@@ -226,12 +226,12 @@
     <ClInclude Include="Phases\Programs\TasFrameDetector\TasFrameDetectorPayload.h" />
     <ClInclude Include="Phases\Programs\TasFrameDetector\TasFrameDetectorScript.h" />
     <ClInclude Include="Phases\Programs\ProgramRegistry.h" />
-    <ClInclude Include="Phases\Programs\SeedProbe\SeedProbePayload.h" />
-    <ClInclude Include="Phases\Programs\SeedProbe\SeedProbeScript.h" />
+    <ClInclude Include="Phases\Programs\SeedProbe\SeedProbeModule.h" />
     <ClInclude Include="Phases\RNGSeedDeltaMap.h" />
     <ClInclude Include="Runner\Breakpoints\BP.def.h" />
     <ClInclude Include="Runner\Breakpoints\BpRegistry.h" />
     <ClInclude Include="Runner\Breakpoints\Predicate.h" />
+    <ClInclude Include="Runner\IPC\DurableWorkerTerminalEnvelope.h" />
     <ClInclude Include="Runner\IPC\Wire.h" />
     <ClInclude Include="Runner\IPC\WrmsProtocol.h" />
     <ClInclude Include="Runner\IPC\WorkerWireWriter.h" />
@@ -281,7 +281,9 @@
     <ClInclude Include="Runner\Runtime\ProgramRuntime\Registry\TypeSchemaRegistry.h" />
     <ClInclude Include="Runner\Runtime\ProgramRuntime\Store\ProgramDefinitionStore.h" />
     <ClInclude Include="Runner\Runtime\ProgramRuntime\Verify\ProgramVerifier.h" />
+    <ClInclude Include="Runner\Runtime\FullPhase\FullPhaseProgram.h" />
     <ClInclude Include="Runner\Runtime\RuntimeTypes.h" />
+    <ClInclude Include="Runner\Runtime\Services\Artifacts\RuntimeArtifactSink.h" />
     <ClInclude Include="Runner\Runtime\Services\Capture\CaptureService.h" />
     <ClInclude Include="Runner\Runtime\Services\Capture\ICaptureBackendPort.h" />
     <ClInclude Include="Runner\Runtime\Services\Input\IInputBackendPort.h" />
@@ -381,11 +383,12 @@
     <ClCompile Include="Phases\Programs\PlayTasMovie\TasMoviePayload.cpp" />
     <ClCompile Include="Phases\Programs\TasFrameDetector\TasFrameDetectorPayload.cpp" />
     <ClCompile Include="Phases\Programs\ProgramRegistry.cpp" />
-    <ClCompile Include="Phases\Programs\SeedProbe\SeedProbePayload.cpp" />
+    <ClCompile Include="Phases\Programs\SeedProbe\SeedProbeModule.cpp" />
     <ClCompile Include="Phases\RNGSeedDeltaMap.cpp" />
     <ClCompile Include="Runner\Breakpoints\BpRegistry.cpp" />
     <ClCompile Include="Runner\Breakpoints\Predicate.cpp" />
     <ClCompile Include="Runner\Script\CtxRegistry.cpp" />
+    <ClCompile Include="Runner\IPC\DurableWorkerTerminalEnvelope.cpp" />
     <ClCompile Include="Runner\IPC\WrmsProtocol.cpp" />
     <ClCompile Include="Runner\IPC\WorkerWireWriter.cpp" />
     <ClCompile Include="Runner\Runtime\ProgramRuntime\ProgramRuntime.cpp" />
@@ -409,6 +412,7 @@
     <ClCompile Include="Runner\Runtime\ProgramRuntime\Registry\TypeSchemaRegistry.cpp" />
     <ClCompile Include="Runner\Runtime\ProgramRuntime\Store\ProgramDefinitionStore.cpp" />
     <ClCompile Include="Runner\Runtime\ProgramRuntime\Verify\ProgramVerifier.cpp" />
+    <ClCompile Include="Runner\Runtime\FullPhase\FullPhaseProgram.cpp" />
     <ClCompile Include="Runner\Runtime\DolphinWrapperBackend.cpp" />
     <ClCompile Include="Runner\Runtime\EmulationSession.cpp" />
     <ClCompile Include="Runner\Runtime\Execution\ExecutionEngine.cpp" />

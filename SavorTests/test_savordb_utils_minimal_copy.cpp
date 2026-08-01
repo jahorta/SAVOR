@@ -146,7 +146,7 @@ struct SeededSourceBattle {
     std::int64_t artifact_id = 0;
     std::int64_t battle_set_id = 0;
     std::int64_t source_input_frame_id = 0;
-    std::int64_t source_unique_seed_id = 0;
+    std::int64_t source_probe_result_id = 0;
     std::int64_t wave_id = 0;
     std::int64_t seed_candidate_id = 0;
     std::int64_t plan_id = 0;
@@ -318,11 +318,14 @@ protected:
             std::int64_t probe_run_id = 0;
             RequireFixtureStep(db_service.AnalysisDb()->RequestSeedProbeRun(
                 {
+                    .materialization_key =
+                        "dbutils-test.seedprobe-run",
                     .probe_set_id = probe_set_id,
                     .entry_savestate_id = seeded.savestate_id,
                     .seed_probe_spec_id = 1,
+                    .launch_samples_per_axis = 1,
                     .codec_version = 1,
-                    .status = "requested",
+                    .status = SeedProbeRunStatus::Survey,
                     .requested_at_utc = now,
                     .correlation_id = "dbutils-test",
                     .causation_id = "seed-probe-run",
@@ -335,37 +338,84 @@ protected:
                 0x0000,
                 &seeded.source_input_frame_id,
                 &err), err, "create seed probe input frame");
-            RequireFixtureStep(db_service.AnalysisDb()->SetSeedProbeRunNeutralSeed(probe_run_id, 0, &err),
-                err,
-                "set seed probe neutral seed");
-            const auto probe_result_id = db_service.AnalysisDb()->LookupSeedProbeResultId(probe_run_id);
-            RequireFixtureStep(probe_result_id.has_value(), "probe result not found", "resolve seed probe result");
             bool inserted = false;
-            RequireFixtureStep(db_service.AnalysisDb()->EnsureSeedProbeUniqueSeedDelta(
+            RequireFixtureStep(db_service.AnalysisDb()->EnsureSeedProbeObservation(
                 {
-                    .probe_result_id = *probe_result_id,
+                    .probe_run_id = probe_run_id,
                     .input_frame_id = seeded.source_input_frame_id,
+                    .source_job_id = 970001 + key * 2,
                     .seed_value = 0x44444444,
-                    .seed_delta = 0,
+                    .origin_worker_id = 1,
+                    .origin_process_generation = 1,
+                    .origin_state_epoch = 1,
+                    .terminal_sha256 = std::string(64, '1'),
                     .recorded_at_utc = now,
                     .correlation_id = "dbutils-test",
-                    .causation_id = "seed-probe-unique",
+                    .causation_id = "seed-probe-observation",
                 },
                 &inserted,
-                &seeded.source_unique_seed_id,
-                &err), err, "record seed probe unique seed");
+                &seeded.source_probe_result_id,
+                &err), err, "record seed probe observation");
+            bool changed = false;
+            RequireFixtureStep(db_service.AnalysisDb()->TransitionSeedProbeEvidence(
+                {
+                    .probe_result_id = seeded.source_probe_result_id,
+                    .expected_state = SeedProbeEvidenceState::Observed,
+                    .new_state = SeedProbeEvidenceState::Provisional,
+                    .changed_at_utc = now,
+                    .correlation_id = "dbutils-test",
+                    .causation_id = "seed-probe-provisional",
+                },
+                &changed,
+                &err), err, "mark seed probe result provisional");
+            std::int64_t confirmation_result_id = 0;
+            RequireFixtureStep(db_service.AnalysisDb()->EnsureSeedProbeObservation(
+                {
+                    .probe_run_id = probe_run_id,
+                    .input_frame_id = seeded.source_input_frame_id,
+                    .source_job_id = 970002 + key * 2,
+                    .seed_value = 0x44444444,
+                    .origin_worker_id = 1,
+                    .origin_process_generation = 1,
+                    .origin_state_epoch = 2,
+                    .terminal_sha256 = std::string(64, '2'),
+                    .confirmation_of_probe_result_id =
+                        seeded.source_probe_result_id,
+                    .recorded_at_utc = now,
+                    .correlation_id = "dbutils-test",
+                    .causation_id = "seed-probe-confirmation",
+                },
+                &inserted,
+                &confirmation_result_id,
+                &err), err, "record seed probe confirmation");
+            RequireFixtureStep(db_service.AnalysisDb()->TransitionSeedProbeEvidence(
+                {
+                    .probe_result_id = seeded.source_probe_result_id,
+                    .expected_state = SeedProbeEvidenceState::Provisional,
+                    .new_state = SeedProbeEvidenceState::Confirmed,
+                    .changed_at_utc = now,
+                    .correlation_id = "dbutils-test",
+                    .causation_id = "seed-probe-confirmed",
+                },
+                &changed,
+                &err), err, "confirm seed probe result");
         }
 
         RequireFixtureStep(db_service.AnalysisDb()->AddBattleSeedCandidate(
             {
                 .battle_set_id = seeded.battle_set_id,
-                .source_unique_seed_id = std::nullopt,
+                .source_probe_result_id = seed_indirect_prediction_seed
+                    ? std::optional<std::int64_t>(
+                        seeded.source_probe_result_id)
+                    : std::nullopt,
                 .source_input_frame_id = seed_indirect_prediction_seed
                     ? std::optional<std::int64_t>(seeded.source_input_frame_id)
                     : std::nullopt,
-                .seed_value = 12345,
+                .seed_value = seed_indirect_prediction_seed
+                    ? 0x44444444
+                    : 12345,
                 .source_kind = seed_indirect_prediction_seed
-                    ? BattleSeedCandidateSourceKind::SeedProbeUnique
+                    ? BattleSeedCandidateSourceKind::SeedProbeConfirmedResult
                     : BattleSeedCandidateSourceKind::Synthetic,
                 .candidate_status = BattleSeedCandidateStatus::Ready,
                 .created_at_utc = now,
@@ -692,18 +742,19 @@ TEST_F(SavorDbUtilsMinimalCopyFixture, MinimalCopyPreservesSelectedClosureAndLoc
     EXPECT_NE(localized->find((root_ / "run" / "source-artifacts").string()), std::string::npos);
 }
 
-TEST_F(SavorDbUtilsMinimalCopyFixture, MinimalCopyPreservesIndirectPredictionSeedClosure)
+TEST_F(SavorDbUtilsMinimalCopyFixture, MinimalCopyPreservesConfirmedSeedProbeResultClosure)
 {
     const auto source_root = root_ / "source";
     const auto target_root = root_ / "target";
     const auto seeded = SeedSourceDb(source_root, 1, 201, true);
 
     ASSERT_GT(seeded.source_input_frame_id, 0);
-    ASSERT_GT(seeded.source_unique_seed_id, 0);
+    ASSERT_GT(seeded.source_probe_result_id, 0);
     EXPECT_EQ(QueryI64(
         source_root / "analysis.db",
         "SELECT COUNT(*) FROM ab_seed_candidate "
-        "WHERE seed_candidate_id=?1 AND source_unique_seed_id IS NULL AND source_input_frame_id IS NOT NULL;",
+        "WHERE seed_candidate_id=?1 AND source_probe_result_id IS NOT NULL "
+        "AND source_input_frame_id IS NOT NULL;",
         seeded.seed_candidate_id).value_or(-1), 1);
 
     savor::dbutils::BattleSingleTurnJobSubsetResult result;
@@ -723,24 +774,20 @@ TEST_F(SavorDbUtilsMinimalCopyFixture, MinimalCopyPreservesIndirectPredictionSee
     const auto target_analysis = savor::dbutils::MakeDbConfigPaths(target_root).analysis_db_path;
     EXPECT_EQ(QueryI64(
         target_analysis,
-        "SELECT COUNT(*) FROM sp_unique_seed WHERE unique_seed_id=?1;",
-        seeded.source_unique_seed_id).value_or(-1), 1);
+        "SELECT COUNT(*) FROM sp_probe_result WHERE probe_result_id=?1 "
+        "AND evidence_state='CONFIRMED' "
+        "AND confirmation_of_probe_result_id IS NULL;",
+        seeded.source_probe_result_id).value_or(-1), 1);
     EXPECT_EQ(QueryI64(
         target_analysis,
-        "SELECT u.seed_value "
+        "SELECT r.seed_value "
         "FROM ab_seed_candidate c "
-        "JOIN ab_battle_set b ON b.battle_set_id=c.battle_set_id "
-        "JOIN sp_probe_run pr ON pr.entry_savestate_id=b.entry_savestate_id "
-        "JOIN sp_probe_result r ON r.probe_run_id=pr.probe_run_id "
-        "JOIN sp_unique_seed u ON u.probe_result_id=r.probe_result_id "
-        "JOIN sp_input_frame f ON f.input_frame_id=u.input_frame_id "
-        "JOIN sp_axis_xy m ON m.axis_xy_id=f.main_axis_xy_id "
-        "JOIN sp_axis_xy s ON s.axis_xy_id=f.cstick_axis_xy_id "
-        "JOIN sp_axis_xy t ON t.axis_xy_id=f.trigger_axis_xy_id "
+        "JOIN sp_probe_result r "
+        "ON r.probe_result_id=c.source_probe_result_id "
         "WHERE c.seed_candidate_id=?1 "
-        "AND c.source_unique_seed_id IS NULL "
-        "AND u.input_frame_id=c.source_input_frame_id "
-        "ORDER BY pr.probe_run_id ASC,u.unique_seed_id ASC "
+        "AND r.input_frame_id=c.source_input_frame_id "
+        "AND r.evidence_state='CONFIRMED' "
+        "AND r.confirmation_of_probe_result_id IS NULL "
         "LIMIT 1;",
         seeded.seed_candidate_id).value_or(-1), 0x44444444);
 }
@@ -785,8 +832,9 @@ TEST_F(SavorDbUtilsMinimalCopyFixture, MinimalBatchCopyPreservesSelectedClosures
     EXPECT_EQ(QueryI64(target_paths.analysis_db_path, "SELECT COUNT(*) FROM ab_turn_job;").value_or(-1), 2);
     EXPECT_EQ(QueryI64(
         target_paths.analysis_db_path,
-        "SELECT COUNT(*) FROM sp_unique_seed WHERE unique_seed_id=?1;",
-        first.source_unique_seed_id).value_or(-1), 1);
+        "SELECT COUNT(*) FROM sp_probe_result WHERE probe_result_id=?1 "
+        "AND evidence_state='CONFIRMED';",
+        first.source_probe_result_id).value_or(-1), 1);
     EXPECT_TRUE(std::filesystem::exists(result.copied_artifacts[0].copied_path));
     EXPECT_TRUE(std::filesystem::exists(result.copied_artifacts[1].copied_path));
 }

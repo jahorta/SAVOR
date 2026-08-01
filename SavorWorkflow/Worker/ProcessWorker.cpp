@@ -437,9 +437,7 @@ bool ProcessWorker::open_session(
         .iso_path = options.iso_path,
         .visual_requested = options.visual,
         .render_window_handle = options.render_widget_handle,
-        .screenshot_directory = options.screenshot_directory,
-        .screenshot_timeout_ms = options.screenshot_timeout_ms,
-        .screenshot_on_terminal = options.screenshot_on_terminal,
+        .runtime_artifact_root = options.runtime_artifact_root,
     };
     std::vector<std::uint8_t> payload;
     if (!EncodeTypedPayload(request, &payload))
@@ -615,7 +613,7 @@ ProcessWorksetSubmitOutcome ProcessWorker::submit_workset_with_outcome(
 
     std::vector<std::uint8_t> encoded_workset;
     const auto encoded =
-        runtime::EncodeWorkerWorksetV1(workset, encoded_workset);
+        runtime::EncodeWorkerWorksetV2(workset, encoded_workset);
     if (!encoded)
     {
         outcome.diagnostic = encoded.message.empty()
@@ -813,6 +811,41 @@ bool ProcessWorker::acknowledge_terminal(
     if (result_out)
         *result_out = result;
     return result.status == wrms::CommandStatus::Succeeded;
+}
+
+bool ProcessWorker::probe_liveness(
+    wrms::CommandResultPayload* result_out,
+    std::uint32_t timeout_ms)
+{
+    ProcessCommandCompletion completion;
+    if (!request_response(
+            wrms::MessageKind::LivenessProbe,
+            {},
+            wrms::MessageKind::CommandResult,
+            timeout_ms,
+            &completion))
+    {
+        return false;
+    }
+    wrms::CommandResultPayload result;
+    if (!wrms::DecodePayload(completion.payload, result)
+        || result.command_kind
+            != wrms::MessageKind::LivenessProbe)
+    {
+        set_last_error("invalid LivenessProbe command result");
+        return false;
+    }
+    if (result_out)
+        *result_out = result;
+    if (result.status != wrms::CommandStatus::Succeeded)
+    {
+        set_last_error(
+            result.message.empty()
+                ? "worker rejected LivenessProbe"
+                : result.message);
+        return false;
+    }
+    return true;
 }
 
 bool ProcessWorker::cancel_invocation(
@@ -1308,9 +1341,7 @@ bool ProcessWorker::start(ProcStartParams& params, TSQueue<PRResult>* out_queue)
             .iso_path = params.iso_path,
             .visual = params.visual,
             .render_widget_handle = params.render_widget_handle,
-            .screenshot_directory = params.visual_screenshot_dir,
-            .screenshot_timeout_ms = 5000,
-            .screenshot_on_terminal = !params.visual_screenshot_dir.empty(),
+            .runtime_artifact_root = params.runtime_artifact_root,
         },
         nullptr,
         &error,
@@ -1412,10 +1443,14 @@ bool ProcessWorker::write_frame(
         return false;
 
     std::unique_lock<std::mutex> lock(write->mutex);
-    if (!write->cv.wait_until(
-            lock,
-            deadline,
-            [&]() { return write->completed; }))
+    if (deadline == std::chrono::steady_clock::time_point::max())
+    {
+        write->cv.wait(lock, [&]() { return write->completed; });
+    }
+    else if (!write->cv.wait_until(
+                 lock,
+                 deadline,
+                 [&]() { return write->completed; }))
     {
         if (timed_out)
             *timed_out = true;
@@ -1557,10 +1592,10 @@ bool ProcessWorker::request_response(
 {
     if (completion_out)
         *completion_out = {};
-    const auto deadline =
-        std::chrono::steady_clock::now() +
-        std::chrono::milliseconds{
-            timeout_ms ? timeout_ms : kDefaultRequestTimeoutMs};
+    const auto deadline = timeout_ms == 0
+        ? std::chrono::steady_clock::time_point::max()
+        : std::chrono::steady_clock::now() +
+            std::chrono::milliseconds{timeout_ms};
     const auto raw_id = next_request_id_.fetch_add(1, std::memory_order_acq_rel);
     if (raw_id == 0)
     {
@@ -1590,9 +1625,11 @@ bool ProcessWorker::request_response(
             std::lock_guard<std::mutex> lock(pending_mutex_);
             pending_.erase(raw_id);
         }
+        const auto kind = std::to_string(
+            static_cast<std::uint32_t>(request_kind));
         set_last_error(write_timed_out
-            ? "timed out waiting for WRMS request write"
-            : "failed writing WRMS request");
+            ? "timed out waiting for WRMS request write kind=" + kind
+            : "failed writing WRMS request kind=" + kind);
         return false;
     }
     if (completion_out)
@@ -1601,10 +1638,18 @@ bool ProcessWorker::request_response(
     bool completed = false;
     {
         std::unique_lock<std::mutex> lock(pending->mutex);
-        completed = pending->cv.wait_until(
-            lock,
-            deadline,
-            [&]() { return pending->completed; });
+        if (deadline == std::chrono::steady_clock::time_point::max())
+        {
+            pending->cv.wait(lock, [&]() { return pending->completed; });
+            completed = true;
+        }
+        else
+        {
+            completed = pending->cv.wait_until(
+                lock,
+                deadline,
+                [&]() { return pending->completed; });
+        }
     }
     {
         std::lock_guard<std::mutex> lock(pending_mutex_);
@@ -1613,9 +1658,11 @@ bool ProcessWorker::request_response(
 
     if (!completed || !pending->transport_ok)
     {
+        const auto kind = std::to_string(
+            static_cast<std::uint32_t>(request_kind));
         set_last_error(completed
-            ? "worker transport closed before command completion"
-            : "timed out waiting for WRMS command completion");
+            ? "worker transport closed before WRMS command completion kind=" + kind
+            : "timed out waiting for WRMS command completion kind=" + kind);
         return false;
     }
     if (pending->response_kind != expected_response_kind)

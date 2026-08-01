@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include "Phases/Programs/SeedProbe/SeedProbeModule.h"
 #include "Runner/Runtime/Worksets/StateArtifactFinalizer.h"
 #include "Runner/Runtime/Worksets/ProgramBaseline.h"
 #include "Runner/Runtime/Worksets/WorkerCompletionLedger.h"
@@ -111,6 +112,11 @@ WorkerWorksetDefinition CodecWorksetDefinition()
 {
     WorkerWorksetDefinition definition;
     definition.workset_id = WorkerWorksetId(9);
+    const auto phase = seedprobe::SeedProbeFullPhaseDefinitionV2();
+    definition.phase_invocation = {
+        .invocation_id = {7, 9},
+        .program = phase->identity(),
+    };
     definition.baseline.state_kind =
         ProgramBaselineStateKind::CurrentSession;
     definition.baseline.current_session =
@@ -118,7 +124,8 @@ WorkerWorksetDefinition CodecWorksetDefinition()
             SessionId(7),
             StateEpoch(8),
             true};
-    definition.baseline.lineage = "lineage";
+    definition.baseline.lineage =
+        phase->runtime_contract().baseline_lineage;
     definition.baseline.components.push_back({
         "test.derived-memory",
         1,
@@ -126,21 +133,20 @@ WorkerWorksetDefinition CodecWorksetDefinition()
         hash::sha256("abc", 3),
         ProgramBaselineComponentPolicy::ResetForEveryItem,
         {'a', 'b', 'c'}});
-    definition.execution_key.module = {
-        "test.no_effect/1",
-        1,
-        std::string(64, 'a')};
-    definition.execution_key.entrypoint = "run";
+    definition.execution_key.module =
+        phase->runtime_contract().module;
+    definition.execution_key.entrypoint =
+        phase->runtime_contract().entrypoint;
     definition.execution_key.verified_dependency_sha256 =
-        std::string(64, 'b');
+        phase->runtime_contract().verified_dependency_sha256;
     definition.execution_key.runtime_profile_sha256 =
-        std::string(64, 'c');
+        phase->runtime_contract().runtime_profile_sha256;
     definition.execution_key.baseline =
         ComputeProgramBaselineKey(definition.baseline);
     definition.execution_key.movie_policy_sha256 =
-        std::string(64, 'd');
+        phase->runtime_contract().movie_policy_sha256;
     definition.execution_key.service_policy_sha256 =
-        std::string(64, 'e');
+        phase->runtime_contract().service_policy_sha256;
     definition.execution_key.canonical_sha256 =
         ComputeWorkerWorksetExecutionKeyHash(
             definition.execution_key);
@@ -148,12 +154,19 @@ WorkerWorksetDefinition CodecWorksetDefinition()
     WorksetItemTemplate item;
     item.item_id = WorkerWorksetItemId(1);
     item.ordinal = 0;
-    item.invocation = {
-        InvocationId(2),
+    savor::GCInputFrame input_frame{};
+    input_frame.buttons = 0xB2A1;
+    input_frame.main_x = 0xC3;
+    input_frame.main_y = 0xD4;
+    input_frame.c_x = 0xE5;
+    input_frame.c_y = 0xF6;
+    input_frame.trig_l = 0x17;
+    input_frame.trig_r = 0x28;
+    item.execution = {
+        ProgramExecutionId(2),
         AttemptId(3),
-        definition.execution_key.module,
-        definition.execution_key.entrypoint,
-        {0xa1, 0xb2, 0xc3}};
+        seedprobe::EncodeSeedProbeExecutionInputV2(
+            {input_frame})};
     item.declared_terminal_bytes = 4096;
     item.correlation = {"job", "claim", "parent"};
     definition.items.push_back(std::move(item));
@@ -245,9 +258,9 @@ TEST(WorksetWireCodec, RoundTripsCompositeBaselineAndManifest)
         CodecWorksetDefinition();
 
     std::vector<std::uint8_t> encoded;
-    ASSERT_TRUE(EncodeWorkerWorksetV1(definition, encoded));
+    ASSERT_TRUE(EncodeWorkerWorksetV2(definition, encoded));
     WorkerWorksetDefinition decoded;
-    ASSERT_TRUE(DecodeWorkerWorksetV1(encoded, decoded));
+    ASSERT_TRUE(DecodeWorkerWorksetV2(encoded, decoded));
     definition.encoded_size_bytes = encoded.size();
     EXPECT_EQ(decoded, definition);
 
@@ -269,12 +282,14 @@ TEST(
     const WorkerWorksetDefinition definition =
         CodecWorksetDefinition();
     std::vector<std::uint8_t> legacy;
-    ASSERT_TRUE(EncodeWorkerWorksetV1(definition, legacy));
+    ASSERT_TRUE(EncodeWorkerWorksetV2(definition, legacy));
 
     // The former v1 item layout placed declared_active_budget (u64 ms)
     // immediately after the encoded invocation template payload.
     const std::vector<std::uint8_t> payload_marker{
-        3, 0, 0, 0, 0xa1, 0xb2, 0xc3};
+        8, 0, 0, 0,
+        0xa1, 0xb2, 0xc3, 0xd4,
+        0xe5, 0xf6, 0x17, 0x28};
     const auto payload = std::search(
         legacy.begin(),
         legacy.end(),
@@ -299,7 +314,7 @@ TEST(
     output.workset_id = WorkerWorksetId(999);
     const WorkerWorksetDefinition unchanged = output;
     const WorksetWireCodecResult rejected =
-        DecodeWorkerWorksetV1(legacy, output);
+        DecodeWorkerWorksetV2(legacy, output);
     EXPECT_FALSE(rejected);
     EXPECT_EQ(output, unchanged);
 }
@@ -392,6 +407,11 @@ TEST(WorksetValidation, CapsEachTerminalBelowTheWrmsPayloadCeiling)
     WorkerWorksetLimits limits;
     WorkerWorksetDefinition definition;
     definition.workset_id = WorkerWorksetId(1);
+    const auto phase = seedprobe::SeedProbeFullPhaseDefinitionV2();
+    definition.phase_invocation = {
+        .invocation_id = {2, 1},
+        .program = phase->identity(),
+    };
     definition.baseline.state_kind =
         ProgramBaselineStateKind::CurrentSession;
     definition.baseline.current_session =
@@ -399,33 +419,32 @@ TEST(WorksetValidation, CapsEachTerminalBelowTheWrmsPayloadCeiling)
             SessionId(2),
             StateEpoch(3),
             true};
-    definition.baseline.lineage = "lineage";
-    definition.execution_key.module = {
-        "test.module/1",
-        1,
-        std::string(64, 'a')};
-    definition.execution_key.entrypoint = "run";
+    definition.baseline.lineage =
+        phase->runtime_contract().baseline_lineage;
+    definition.execution_key.module =
+        phase->runtime_contract().module;
+    definition.execution_key.entrypoint =
+        phase->runtime_contract().entrypoint;
     definition.execution_key.verified_dependency_sha256 =
-        std::string(64, 'b');
+        phase->runtime_contract().verified_dependency_sha256;
     definition.execution_key.runtime_profile_sha256 =
-        std::string(64, 'c');
+        phase->runtime_contract().runtime_profile_sha256;
     definition.execution_key.baseline =
         ComputeProgramBaselineKey(definition.baseline);
     definition.execution_key.movie_policy_sha256 =
-        std::string(64, 'd');
+        phase->runtime_contract().movie_policy_sha256;
     definition.execution_key.service_policy_sha256 =
-        std::string(64, 'e');
+        phase->runtime_contract().service_policy_sha256;
     definition.execution_key.canonical_sha256 =
         ComputeWorkerWorksetExecutionKeyHash(
             definition.execution_key);
     WorksetItemTemplate item;
     item.item_id = WorkerWorksetItemId(1);
-    item.invocation = {
-        InvocationId(4),
+    item.execution = {
+        ProgramExecutionId(4),
         AttemptId(5),
-        definition.execution_key.module,
-        "run",
-        {1}};
+        seedprobe::EncodeSeedProbeExecutionInputV2(
+            {savor::GCInputFrame{}})};
     item.declared_terminal_bytes =
         kMaximumWorksetTerminalReservationBytes;
     definition.items.push_back(item);

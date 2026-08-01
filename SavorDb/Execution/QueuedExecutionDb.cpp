@@ -387,6 +387,379 @@ bool QueuedExecutionDb::EnqueueJob(const EnqueueJobCommand& command, std::int64_
         error_out);
 }
 
+bool QueuedExecutionDb::EnsureMaterializingJobSet(
+    const EnsureMaterializingJobSetCommand& command,
+    EnsureMaterializingJobSetReceipt* receipt_out,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, command, receipt_out, error_out]() {
+            return inner_ != nullptr
+                ? inner_->EnsureMaterializingJobSet(
+                    command, receipt_out, error_out)
+                : false;
+        },
+        false,
+        error_out);
+}
+
+bool QueuedExecutionDb::CreatePendingJob(
+    const CreatePendingJobCommand& command,
+    CreatePendingJobReceipt* receipt_out,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, command, receipt_out, error_out]() {
+            return inner_ != nullptr
+                ? inner_->CreatePendingJob(command, receipt_out, error_out)
+                : false;
+        },
+        false,
+        error_out);
+}
+
+bool QueuedExecutionDb::SealJobPopulation(
+    const SealJobPopulationCommand& command,
+    SealJobPopulationReceipt* receipt_out,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, command, receipt_out, error_out]() {
+            return inner_ != nullptr
+                ? inner_->SealJobPopulation(command, receipt_out, error_out)
+                : false;
+        },
+        false,
+        error_out);
+}
+
+bool QueuedExecutionDb::PublishWorkset(
+    const PublishWorksetCommand& command,
+    PublishWorksetReceipt* receipt_out,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, command, receipt_out, error_out]() {
+            return inner_ != nullptr
+                ? inner_->PublishWorkset(command, receipt_out, error_out)
+                : false;
+        },
+        false,
+        error_out);
+}
+
+bool QueuedExecutionDb::CompleteWorksetPublication(
+    const CompleteWorksetPublicationCommand& command,
+    CompleteWorksetPublicationReceipt* receipt_out,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, command, receipt_out, error_out]() {
+            return inner_ != nullptr
+                ? inner_->CompleteWorksetPublication(
+                    command, receipt_out, error_out)
+                : false;
+        },
+        false,
+        error_out);
+}
+
+std::vector<ClaimedPublishedWorkset>
+QueuedExecutionDb::ClaimPublishedWorksetBatch(
+    const ClaimPublishedWorksetBatchCommand& command,
+    std::string* error_out) {
+    return ExecuteWrite<std::vector<ClaimedPublishedWorkset>>(
+        [this, command, error_out]() {
+            return inner_ != nullptr
+                ? inner_->ClaimPublishedWorksetBatch(command, error_out)
+                : std::vector<ClaimedPublishedWorkset>{};
+        },
+        {},
+        error_out);
+}
+
+bool QueuedExecutionDb::RenewWorksetDispatchLease(
+    const RenewWorksetDispatchLeaseCommand& command,
+    WorksetDispatchLeaseReceipt* receipt_out,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, command, receipt_out, error_out]() {
+            return inner_ != nullptr
+                ? inner_->RenewWorksetDispatchLease(
+                    command, receipt_out, error_out)
+                : false;
+        },
+        false,
+        error_out);
+}
+
+bool QueuedExecutionDb::MarkWorksetDispatched(
+    const MarkWorksetDispatchedCommand& command,
+    WorksetDispatchMutationReceipt* receipt_out,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, command, receipt_out, error_out]() {
+            return inner_ != nullptr
+                ? inner_->MarkWorksetDispatched(
+                    command, receipt_out, error_out)
+                : false;
+        },
+        false,
+        error_out);
+}
+
+bool QueuedExecutionDb::ReleaseWorksetDispatch(
+    const ReleaseWorksetDispatchCommand& command,
+    WorksetDispatchMutationReceipt* receipt_out,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, command, receipt_out, error_out]() {
+            return inner_ != nullptr
+                ? inner_->ReleaseWorksetDispatch(
+                    command, receipt_out, error_out)
+                : false;
+        },
+        false,
+        error_out);
+}
+
+bool QueuedExecutionDb::MarkWorksetJobStarted(
+    const MarkWorksetJobStartedCommand& command,
+    WorksetJobStartReceipt* receipt_out,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, command, receipt_out, error_out]() {
+            return inner_ != nullptr
+                ? inner_->MarkWorksetJobStarted(
+                    command, receipt_out, error_out)
+                : false;
+        },
+        false,
+        error_out);
+}
+
+bool QueuedExecutionDb::StageWorkerTerminal(
+    const StageWorkerTerminalCommand& command,
+    StageWorkerTerminalReceipt* receipt_out,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, command, receipt_out, error_out]() {
+            return inner_ != nullptr
+                ? inner_->StageWorkerTerminal(
+                    command, receipt_out, error_out)
+                : false;
+        },
+        false,
+        error_out);
+}
+
+std::optional<ClaimedExecutionFinishedJob>
+QueuedExecutionDb::ClaimNextExecutionFinishedJob(
+    const ClaimExecutionFinishedJobCommand& command,
+    std::string* error_out) {
+    return ExecuteWrite<std::optional<ClaimedExecutionFinishedJob>>(
+        [this, command, error_out]() {
+            return inner_ != nullptr
+                ? inner_->ClaimNextExecutionFinishedJob(command, error_out)
+                : std::nullopt;
+        },
+        std::nullopt,
+        error_out);
+}
+
+bool QueuedExecutionDb::RenewResultProcessingLease(
+    const RenewResultProcessingLeaseCommand& command,
+    ResultProcessingReceipt* receipt_out,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, command, receipt_out, error_out]() {
+            return inner_ != nullptr
+                ? inner_->RenewResultProcessingLease(
+                    command, receipt_out, error_out)
+                : false;
+        },
+        false,
+        error_out);
+}
+
+bool QueuedExecutionDb::ParkResultProcessing(
+    const ParkResultProcessingCommand& command,
+    ResultProcessingReceipt* receipt_out,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, command, receipt_out, error_out]() {
+            return inner_ != nullptr
+                ? inner_->ParkResultProcessing(
+                    command, receipt_out, error_out)
+                : false;
+        },
+        false,
+        error_out);
+}
+
+bool QueuedExecutionDb::CommitResultFinalization(
+    const CommitResultFinalizationCommand& command,
+    ResultProcessingReceipt* receipt_out,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, command, receipt_out, error_out]() {
+            return inner_ != nullptr
+                ? inner_->CommitResultFinalization(
+                    command, receipt_out, error_out)
+                : false;
+        },
+        false,
+        error_out);
+}
+
+bool QueuedExecutionDb::RequestJobCancellation(
+    const RequestJobCancellationCommand& command,
+    JobCancellationReceipt* receipt_out,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, command, receipt_out, error_out]() {
+            return inner_ != nullptr
+                ? inner_->RequestJobCancellation(
+                    command, receipt_out, error_out)
+                : false;
+        },
+        false,
+        error_out);
+}
+
+std::optional<ClaimedJobCancellation>
+QueuedExecutionDb::ClaimNextJobCancellation(
+    const ClaimJobCancellationCommand& command,
+    std::string* error_out) {
+    return ExecuteWrite<std::optional<ClaimedJobCancellation>>(
+        [this, command, error_out]() {
+            return inner_ != nullptr
+                ? inner_->ClaimNextJobCancellation(command, error_out)
+                : std::nullopt;
+        },
+        std::nullopt,
+        error_out);
+}
+
+bool QueuedExecutionDb::MarkJobCancellationDelivered(
+    const MarkJobCancellationDeliveredCommand& command,
+    JobCancellationReceipt* receipt_out,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, command, receipt_out, error_out]() {
+            return inner_ != nullptr
+                ? inner_->MarkJobCancellationDelivered(
+                    command, receipt_out, error_out)
+                : false;
+        },
+        false,
+        error_out);
+}
+
+bool QueuedExecutionDb::ResolveJobCancellation(
+    const ResolveJobCancellationCommand& command,
+    JobCancellationReceipt* receipt_out,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, command, receipt_out, error_out]() {
+            return inner_ != nullptr
+                ? inner_->ResolveJobCancellation(
+                    command, receipt_out, error_out)
+                : false;
+        },
+        false,
+        error_out);
+}
+
+bool QueuedExecutionDb::IsTempBlobTracked(
+    std::string_view relative_path,
+    bool* tracked_out,
+    std::string* error_out) const {
+    const auto path = std::string(relative_path);
+    return ExecuteRead<bool>(
+        [this, path, tracked_out, error_out]() {
+            if (inner_ == nullptr) {
+                SetError(error_out, kInnerUnavailableError);
+                return false;
+            }
+            return inner_->IsTempBlobTracked(
+                path,
+                tracked_out,
+                error_out);
+        },
+        false,
+        error_out);
+}
+
+std::optional<ClaimedTempBlobCleanup>
+QueuedExecutionDb::ClaimNextTempBlobCleanup(
+    const ClaimTempBlobCleanupCommand& command,
+    std::string* error_out) {
+    return ExecuteWrite<std::optional<ClaimedTempBlobCleanup>>(
+        [this, command, error_out]() {
+            return inner_ != nullptr
+                ? inner_->ClaimNextTempBlobCleanup(command, error_out)
+                : std::nullopt;
+        },
+        std::nullopt,
+        error_out);
+}
+
+bool QueuedExecutionDb::CompleteTempBlobCleanup(
+    const CompleteTempBlobCleanupCommand& command,
+    ExecutionDbOperationDisposition* disposition_out,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, command, disposition_out, error_out]() {
+            return inner_ != nullptr
+                ? inner_->CompleteTempBlobCleanup(
+                    command, disposition_out, error_out)
+                : false;
+        },
+        false,
+        error_out);
+}
+
+bool QueuedExecutionDb::RecoverExpiredWorksetDispatches(
+    int max_dispatches,
+    int* dispatches_recovered_out,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, max_dispatches, dispatches_recovered_out, error_out]() {
+            return inner_ != nullptr
+                ? inner_->RecoverExpiredWorksetDispatches(
+                    max_dispatches, dispatches_recovered_out, error_out)
+                : false;
+        },
+        false,
+        error_out);
+}
+
+bool QueuedExecutionDb::RecoverExpiredResultProcessingLeases(
+    int max_jobs,
+    int* jobs_recovered_out,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, max_jobs, jobs_recovered_out, error_out]() {
+            return inner_ != nullptr
+                ? inner_->RecoverExpiredResultProcessingLeases(
+                    max_jobs, jobs_recovered_out, error_out)
+                : false;
+        },
+        false,
+        error_out);
+}
+
+bool QueuedExecutionDb::RecoverExpiredCancellationDeliveryLeases(
+    int max_requests,
+    int* requests_recovered_out,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, max_requests, requests_recovered_out, error_out]() {
+            return inner_ != nullptr
+                ? inner_->RecoverExpiredCancellationDeliveryLeases(
+                    max_requests, requests_recovered_out, error_out)
+                : false;
+        },
+        false,
+        error_out);
+}
+
 std::optional<ClaimedExecutionJob> QueuedExecutionDb::ClaimNextReadyExecutionJob(
     std::string_view claimed_by_token,
     std::int64_t lease_duration_ms,
@@ -673,6 +1046,48 @@ std::optional<ExecutionJobSetProgressDetails> QueuedExecutionDb::GetJobSetProgre
     return ExecuteRead<std::optional<ExecutionJobSetProgressDetails>>(
         [this, job_set_id]() {
             return inner_ != nullptr ? inner_->GetJobSetProgress(job_set_id) : std::nullopt;
+        },
+        std::nullopt);
+}
+
+std::vector<ExecutionJobSetJobRecord> QueuedExecutionDb::ListJobsInJobSet(
+    std::int64_t job_set_id) const {
+    return ExecuteRead<std::vector<ExecutionJobSetJobRecord>>(
+        [this, job_set_id]() {
+            return inner_ != nullptr
+                ? inner_->ListJobsInJobSet(job_set_id)
+                : std::vector<ExecutionJobSetJobRecord>{};
+        },
+        {});
+}
+
+std::vector<ExecutionJobSetJobRecord>
+QueuedExecutionDb::ListJobsByProgramReference(
+    std::int32_t program_kind,
+    std::string_view program_ref_kind,
+    std::int64_t program_ref_id) const {
+    return ExecuteRead<std::vector<ExecutionJobSetJobRecord>>(
+        [this, program_kind, ref_kind = std::string(program_ref_kind),
+         program_ref_id]() {
+            return inner_ != nullptr
+                ? inner_->ListJobsByProgramReference(
+                    program_kind, ref_kind, program_ref_id)
+                : std::vector<ExecutionJobSetJobRecord>{};
+        },
+        {});
+}
+
+std::optional<ExecutionJobSetMaterializationRecord>
+QueuedExecutionDb::GetJobSetByMaterializationKey(
+    std::string_view materialization_key) const {
+    return ExecuteRead<
+        std::optional<ExecutionJobSetMaterializationRecord>>(
+        [this, materialization_key =
+                   std::string(materialization_key)]() {
+            return inner_ != nullptr
+                ? inner_->GetJobSetByMaterializationKey(
+                      materialization_key)
+                : std::nullopt;
         },
         std::nullopt);
 }

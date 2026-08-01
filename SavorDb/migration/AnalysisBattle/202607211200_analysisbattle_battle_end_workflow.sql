@@ -28,15 +28,14 @@ CREATE TABLE IF NOT EXISTS ab_battle_results (
     workflow_step_id INTEGER NOT NULL,
     exec_job_id INTEGER NULL,
     selected_seed_ref_kind TEXT NOT NULL CHECK(selected_seed_ref_kind IN (
-        'analysisseedprobe.neutral_seed',
-        'analysisseedprobe.unique_seed'
+        'analysisseedprobe.confirmed_result'
     )),
     selected_seed_ref_id INTEGER NOT NULL,
     entry_savestate_id INTEGER NOT NULL,
     final_savestate_id INTEGER NULL,
-    selected_seed_value INTEGER NOT NULL,
-    entry_rng_seed INTEGER NULL,
-    final_rng_seed INTEGER NULL,
+    selected_seed_value INTEGER NOT NULL CHECK(selected_seed_value BETWEEN 0 AND 4294967295),
+    entry_rng_seed INTEGER NULL CHECK(entry_rng_seed IS NULL OR entry_rng_seed BETWEEN 0 AND 4294967295),
+    final_rng_seed INTEGER NULL CHECK(final_rng_seed IS NULL OR final_rng_seed BETWEEN 0 AND 4294967295),
     rng_effect_kind TEXT NOT NULL CHECK(rng_effect_kind IN ('PRESERVE', 'ADVANCE_FIXED', 'VARIABLE')),
     fixed_draw_count INTEGER NULL CHECK(fixed_draw_count IS NULL OR fixed_draw_count >= 0),
     result_artifact_id INTEGER NULL,
@@ -47,6 +46,7 @@ CREATE TABLE IF NOT EXISTS ab_battle_results (
     created_at_utc INTEGER NOT NULL,
     completed_at_utc INTEGER NULL,
     FOREIGN KEY(battle_completion_id) REFERENCES ab_battle_completion(battle_completion_id),
+    FOREIGN KEY(selected_seed_ref_id) REFERENCES sp_probe_result(probe_result_id),
     CONSTRAINT uq_ab_battle_results_workflow_step UNIQUE (workflow_step_id)
 );
 

@@ -8,9 +8,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "  $context=$_.Directory.Name;" ^
   "  [PSCustomObject]@{ Context=$context; Name=$_.Name; FullName=$_.FullName; Key=($context + '/' + $_.Name) }" ^
   "} | Sort-Object Key;" ^
-  "$keys=($files | ForEach-Object Key) -join [Environment]::NewLine;" ^
+  "$manifest=($files | ForEach-Object { $_.Key + '|' + (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash }) -join [Environment]::NewLine;" ^
   "if(Test-Path $stamp){ $prev=Get-Content -Path $stamp -Raw } else { $prev='' }" ^
-  "if($prev -eq $keys){ Write-Host 'No new migration files; skipping embedding.'; exit 0 }" ^
+  "if($prev -eq $manifest){ Write-Host 'Migration filenames and contents unchanged; skipping embedding.'; exit 0 }" ^
   "$header=@('// generated - do not edit','#pragma once','','#include <array>','','#include \"MigrationContext.h\"','','namespace savor::db::migrations {','','struct EmbeddedMigrationEntry {','    MigrationContext context;','    const char* filename;','    const char* sql;','};','','inline constexpr std::array<EmbeddedMigrationEntry, '+$files.Count+'> kEmbeddedMigrations{{');" ^
   "$tmp=$out + '.tmp';" ^
   "Set-Content -Path $tmp -Value $header -Encoding UTF8;" ^
@@ -23,5 +23,5 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "Add-Content -Path $tmp -Value '' -Encoding UTF8;" ^
   "Add-Content -Path $tmp -Value '} // namespace savor::db::migrations' -Encoding UTF8;" ^
   "Move-Item -Force -Path $tmp -Destination $out;" ^
-  "Set-Content -Path $stamp -Value $keys -Encoding UTF8;" ^
-  "Write-Host 'Embedded migrations header regenerated due to new migration files.'"
+  "Set-Content -Path $stamp -Value $manifest -Encoding UTF8;" ^
+  "Write-Host 'Embedded migrations header regenerated due to migration changes.'"

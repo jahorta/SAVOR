@@ -68,20 +68,17 @@ std::optional<events::AnalysisSeedProbeRunRequestedPayloadView> SqliteSeedProbeP
     return view;
 }
 
-std::optional<events::AnalysisSeedProbeNeutralSeedRecordedPayloadView> SqliteSeedProbePayloadRowResolver::ResolveSeedProbeNeutralSeedRecorded(
+std::optional<events::AnalysisSeedProbeResultPayloadView> SqliteSeedProbePayloadRowResolver::ResolveSeedProbeResult(
     std::string_view payload_ref_kind,
     std::int64_t payload_ref_id) const {
-    if (db_ == nullptr || !MatchesRef("neutral_seed", payload_ref_kind, payload_ref_id)) {
+    if (db_ == nullptr || !MatchesRef("probe_result", payload_ref_kind, payload_ref_id)) {
         return std::nullopt;
     }
 
     Statement st;
     if (sqlite3_prepare_v2(
             db_,
-            "SELECT pr.probe_run_id, n.probe_result_id, n.neutral_seed_id "
-            "FROM sp_neutral_seed n "
-            "JOIN sp_probe_result pr ON pr.probe_result_id=n.probe_result_id "
-            "WHERE n.neutral_seed_id=?1;",
+            "SELECT probe_run_id,probe_result_id FROM sp_probe_result WHERE probe_result_id=?1;",
             -1,
             &st.st,
             nullptr)
@@ -94,76 +91,9 @@ std::optional<events::AnalysisSeedProbeNeutralSeedRecordedPayloadView> SqliteSee
         return std::nullopt;
     }
 
-    events::AnalysisSeedProbeNeutralSeedRecordedPayloadView view{};
+    events::AnalysisSeedProbeResultPayloadView view{};
     view.probe_run_id = sqlite3_column_int64(st.st, 0);
     view.probe_result_id = sqlite3_column_int64(st.st, 1);
-    view.neutral_seed_id = sqlite3_column_int64(st.st, 2);
-    return view;
-}
-
-std::optional<events::AnalysisSeedProbeGridSeedRecordedPayloadView> SqliteSeedProbePayloadRowResolver::ResolveSeedProbeGridSeedRecorded(
-    std::string_view payload_ref_kind,
-    std::int64_t payload_ref_id) const {
-    if (db_ == nullptr || !MatchesRef("grid_seed", payload_ref_kind, payload_ref_id)) {
-        return std::nullopt;
-    }
-
-    Statement st;
-    if (sqlite3_prepare_v2(
-            db_,
-            "SELECT pr.probe_run_id, g.probe_result_id, g.grid_seed_id "
-            "FROM sp_grid_seed g "
-            "JOIN sp_probe_result pr ON pr.probe_result_id=g.probe_result_id "
-            "WHERE g.grid_seed_id=?1;",
-            -1,
-            &st.st,
-            nullptr)
-        != SQLITE_OK) {
-        return std::nullopt;
-    }
-
-    sqlite3_bind_int64(st.st, 1, payload_ref_id);
-    if (sqlite3_step(st.st) != SQLITE_ROW) {
-        return std::nullopt;
-    }
-
-    events::AnalysisSeedProbeGridSeedRecordedPayloadView view{};
-    view.probe_run_id = sqlite3_column_int64(st.st, 0);
-    view.probe_result_id = sqlite3_column_int64(st.st, 1);
-    view.grid_seed_id = sqlite3_column_int64(st.st, 2);
-    return view;
-}
-
-std::optional<events::AnalysisSeedProbeUniqueSeedRecordedPayloadView> SqliteSeedProbePayloadRowResolver::ResolveSeedProbeUniqueSeedRecorded(
-    std::string_view payload_ref_kind,
-    std::int64_t payload_ref_id) const {
-    if (db_ == nullptr || !MatchesRef("unique_seed", payload_ref_kind, payload_ref_id)) {
-        return std::nullopt;
-    }
-
-    Statement st;
-    if (sqlite3_prepare_v2(
-            db_,
-            "SELECT pr.probe_run_id, u.probe_result_id, u.unique_seed_id "
-            "FROM sp_unique_seed u "
-            "JOIN sp_probe_result pr ON pr.probe_result_id=u.probe_result_id "
-            "WHERE u.unique_seed_id=?1;",
-            -1,
-            &st.st,
-            nullptr)
-        != SQLITE_OK) {
-        return std::nullopt;
-    }
-
-    sqlite3_bind_int64(st.st, 1, payload_ref_id);
-    if (sqlite3_step(st.st) != SQLITE_ROW) {
-        return std::nullopt;
-    }
-
-    events::AnalysisSeedProbeUniqueSeedRecordedPayloadView view{};
-    view.probe_run_id = sqlite3_column_int64(st.st, 0);
-    view.probe_result_id = sqlite3_column_int64(st.st, 1);
-    view.unique_seed_id = sqlite3_column_int64(st.st, 2);
     return view;
 }
 
@@ -194,35 +124,6 @@ std::optional<events::AnalysisSeedProbeEncounterProjectionRecordedPayloadView> S
     events::AnalysisSeedProbeEncounterProjectionRecordedPayloadView view{};
     view.probe_run_id = sqlite3_column_int64(st.st, 0);
     view.encounter_projection_id = sqlite3_column_int64(st.st, 1);
-    return view;
-}
-
-std::optional<events::AnalysisSeedProbeRunCompletedPayloadView> SqliteSeedProbePayloadRowResolver::ResolveSeedProbeRunCompleted(
-    std::string_view payload_ref_kind,
-    std::int64_t payload_ref_id) const {
-    if (db_ == nullptr || !MatchesRef("probe_result", payload_ref_kind, payload_ref_id)) {
-        return std::nullopt;
-    }
-
-    Statement st;
-    if (sqlite3_prepare_v2(
-            db_,
-            "SELECT probe_run_id, probe_result_id FROM sp_probe_result WHERE probe_result_id=?1;",
-            -1,
-            &st.st,
-            nullptr)
-        != SQLITE_OK) {
-        return std::nullopt;
-    }
-
-    sqlite3_bind_int64(st.st, 1, payload_ref_id);
-    if (sqlite3_step(st.st) != SQLITE_ROW) {
-        return std::nullopt;
-    }
-
-    events::AnalysisSeedProbeRunCompletedPayloadView view{};
-    view.probe_run_id = sqlite3_column_int64(st.st, 0);
-    view.probe_result_id = sqlite3_column_int64(st.st, 1);
     return view;
 }
 

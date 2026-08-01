@@ -466,7 +466,7 @@ struct PredictionDbFixtureRows {
     std::int64_t battle_set_id = 0;
     std::int64_t seed_candidate_id = 0;
     std::int64_t source_input_frame_id = 0;
-    std::int64_t unique_seed_id = 0;
+    std::int64_t probe_result_id = 0;
     std::int64_t wave_id = 0;
     std::int64_t context_probe_id = 0;
     std::int64_t turn_job_id = 0;
@@ -527,11 +527,14 @@ protected:
             std::int64_t probe_run_id = 0;
             EXPECT_TRUE(analysis_db->RequestSeedProbeRun(
                 {
+                    .materialization_key =
+                        "predict-fixture.seedprobe-run",
                     .probe_set_id = probe_set_id,
                     .entry_savestate_id = 501,
                     .seed_probe_spec_id = 1,
+                    .launch_samples_per_axis = 1,
                     .codec_version = 1,
-                    .status = "requested",
+                    .status = SeedProbeRunStatus::Survey,
                     .requested_at_utc = now,
                     .correlation_id = "predict-corr",
                     .causation_id = "predict-cause-seedprobe-run",
@@ -547,23 +550,103 @@ protected:
                 &rows.source_input_frame_id,
                 &err))
                 << err;
-            EXPECT_TRUE(analysis_db->SetSeedProbeRunNeutralSeed(probe_run_id, 0, &err)) << err;
-            const auto probe_result_id = analysis_db->LookupSeedProbeResultId(probe_run_id);
-            EXPECT_TRUE(probe_result_id.has_value());
-
             bool inserted = false;
-            EXPECT_TRUE(analysis_db->EnsureSeedProbeUniqueSeedDelta(
+            EXPECT_TRUE(analysis_db->EnsureSeedProbeObservation(
                 {
-                    .probe_result_id = probe_result_id.value_or(0),
+                    .probe_run_id = probe_run_id,
                     .input_frame_id = rows.source_input_frame_id,
+                    .source_job_id = 990001,
                     .seed_value = rows.unique_seed,
-                    .seed_delta = 0,
+                    .origin_worker_id = 1,
+                    .origin_process_generation = 1,
+                    .origin_state_epoch = 1,
+                    .terminal_sha256 = std::string(64, '1'),
                     .recorded_at_utc = now,
                     .correlation_id = "predict-corr",
-                    .causation_id = "predict-cause-unique-seed",
+                    .causation_id = "predict-cause-probe-result",
                 },
                 &inserted,
-                &rows.unique_seed_id,
+                &rows.probe_result_id,
+                &err))
+                << err;
+            bool changed = false;
+            EXPECT_TRUE(analysis_db->TransitionSeedProbeEvidence(
+                {
+                    .probe_result_id = rows.probe_result_id,
+                    .expected_state = SeedProbeEvidenceState::Observed,
+                    .new_state = SeedProbeEvidenceState::Provisional,
+                    .changed_at_utc = now,
+                    .correlation_id = "predict-corr",
+                    .causation_id = "predict-cause-provisional",
+                },
+                &changed,
+                &err))
+                << err;
+            std::int64_t confirmation_result_id = 0;
+            EXPECT_TRUE(analysis_db->EnsureSeedProbeObservation(
+                {
+                    .probe_run_id = probe_run_id,
+                    .input_frame_id = rows.source_input_frame_id,
+                    .source_job_id = 990002,
+                    .seed_value = rows.unique_seed,
+                    .origin_worker_id = 1,
+                    .origin_process_generation = 1,
+                    .origin_state_epoch = 2,
+                    .terminal_sha256 = std::string(64, '2'),
+                    .confirmation_of_probe_result_id = rows.probe_result_id,
+                    .recorded_at_utc = now,
+                    .correlation_id = "predict-corr",
+                    .causation_id = "predict-cause-confirmation",
+                },
+                &inserted,
+                &confirmation_result_id,
+                &err))
+                << err;
+            EXPECT_TRUE(analysis_db->TransitionSeedProbeEvidence(
+                {
+                    .probe_result_id = rows.probe_result_id,
+                    .expected_state = SeedProbeEvidenceState::Provisional,
+                    .new_state = SeedProbeEvidenceState::Confirmed,
+                    .changed_at_utc = now,
+                    .correlation_id = "predict-corr",
+                    .causation_id = "predict-cause-confirmed",
+                },
+                &changed,
+                &err))
+                << err;
+            EXPECT_TRUE(analysis_db->ReplaceSeedProbeAcceptedInputFrames(
+                {
+                    .probe_run_id = probe_run_id,
+                    .input_frame_ids = {rows.source_input_frame_id},
+                    .replaced_at_utc = now,
+                    .correlation_id = "predict-corr",
+                    .causation_id = "predict-cause-accepted",
+                },
+                &err))
+                << err;
+            EXPECT_TRUE(analysis_db->UpdateSeedProbeRunStatus(
+                {
+                    .probe_run_id = probe_run_id,
+                    .expected_status = SeedProbeRunStatus::Survey,
+                    .new_status = SeedProbeRunStatus::Confirm,
+                    .changed_at_utc = now,
+                    .correlation_id = "predict-corr",
+                    .causation_id = "predict-cause-confirm-stage",
+                },
+                &changed,
+                &err))
+                << err;
+            EXPECT_TRUE(analysis_db->UpdateSeedProbeRunStatus(
+                {
+                    .probe_run_id = probe_run_id,
+                    .expected_status = SeedProbeRunStatus::Confirm,
+                    .new_status = SeedProbeRunStatus::Completed,
+                    .completed_at_utc = now,
+                    .changed_at_utc = now,
+                    .correlation_id = "predict-corr",
+                    .causation_id = "predict-cause-completed",
+                },
+                &changed,
                 &err))
                 << err;
         }
@@ -571,15 +654,17 @@ protected:
         EXPECT_TRUE(analysis_db->AddBattleSeedCandidate(
             {
                 .battle_set_id = rows.battle_set_id,
-                .source_unique_seed_id = create_unique_seed && direct_unique_link
-                    ? std::optional<std::int64_t>(rows.unique_seed_id)
+                .source_probe_result_id = create_unique_seed && direct_unique_link
+                    ? std::optional<std::int64_t>(rows.probe_result_id)
                     : std::nullopt,
                 .source_input_frame_id = create_unique_seed
                     ? std::optional<std::int64_t>(rows.source_input_frame_id)
                     : std::nullopt,
-                .seed_value = rows.candidate_seed,
+                .seed_value = create_unique_seed && direct_unique_link
+                    ? rows.unique_seed
+                    : rows.candidate_seed,
                 .source_kind = create_unique_seed && direct_unique_link
-                    ? BattleSeedCandidateSourceKind::SeedProbeUnique
+                    ? BattleSeedCandidateSourceKind::SeedProbeConfirmedResult
                     : BattleSeedCandidateSourceKind::Synthetic,
                 .candidate_status = BattleSeedCandidateStatus::Pending,
                 .created_at_utc = now,
@@ -6735,7 +6820,7 @@ TEST(SavorPredictBattlePredictionDbInput, ReportsSqliteErrorsAfterJobLookupSucce
     std::filesystem::remove_all(root, cleanup_error);
 }
 
-TEST_F(SavorPredictDbInputFixture, UsesSeedProbeUniqueSeedForExecJob) {
+TEST_F(SavorPredictDbInputFixture, UsesConfirmedSeedProbeResultForExecJob) {
     const auto rows = SeedPredictionRows(0x22222222u);
 
     BattlePredictionDbInputOptions options;
@@ -6754,7 +6839,9 @@ TEST_F(SavorPredictDbInputFixture, UsesSeedProbeUniqueSeedForExecJob) {
 
     ASSERT_TRUE(resolved.has_value()) << err.str();
     EXPECT_EQ(resolved->input.starting_rng_seed, rows.unique_seed);
-    EXPECT_EQ(resolved->metadata.seed_source, BattlePredictionSeedSource::SeedProbeUniqueSeed);
+    EXPECT_EQ(
+        resolved->metadata.seed_source,
+        BattlePredictionSeedSource::SeedProbeConfirmedResult);
     EXPECT_EQ(resolved->metadata.turn_job_id, rows.turn_job_id);
     EXPECT_EQ(resolved->metadata.exec_job_id.value_or(0), rows.turn_exec_job_id);
     EXPECT_EQ(resolved->metadata.context_source, BattlePredictionContextSource::LatestWaveContextProbe);
@@ -6804,26 +6891,6 @@ TEST_F(SavorPredictDbInputFixture, AllowsExplicitNonFirstTurnResearchOverride) {
     EXPECT_TRUE(resolved->input.options.allow_profile_overrides);
     ASSERT_TRUE(resolved->input.turn_index.has_value());
     EXPECT_EQ(*resolved->input.turn_index, 2);
-}
-
-TEST_F(SavorPredictDbInputFixture, UsesSeedProbeUniqueSeedFromSourceInputFrameForLegacyCandidate) {
-    const auto rows = SeedPredictionRows(0x22222222u, true, false);
-
-    BattlePredictionDbInputOptions options;
-    options.selector.exec_job_id = rows.turn_exec_job_id;
-    std::ostringstream err;
-
-    const auto resolved = build_battle_prediction_input_from_analysis_db(
-        *db_service_->AnalysisDb(),
-        options,
-        err);
-
-    ASSERT_TRUE(resolved.has_value()) << err.str();
-    EXPECT_EQ(resolved->input.starting_rng_seed, rows.unique_seed);
-    EXPECT_EQ(resolved->metadata.seed_source, BattlePredictionSeedSource::SeedProbeUniqueSeed);
-    EXPECT_EQ(
-        resolved->input.start_boundary,
-        BattlePredictionStartBoundary::CapturedTurnStart);
 }
 
 TEST_F(SavorPredictDbInputFixture, PropagatesOptionalScenarioMetadata) {

@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+#include "../../../SavorCore/Runner/Runtime/Worksets/WorksetTypes.h"
 #include "../../../SavorCore/Runner/Script/PhaseScriptVM.h"
 
 namespace savor {
@@ -67,9 +68,83 @@ struct WorkflowGraphStepScheduleContext {
     std::string unit_variant;
     std::string breakpoint_profile_key;
     std::string activation_params_json;
+    std::optional<std::string> authored_ref_kind;
+    std::optional<std::int64_t> authored_ref_id;
     int step_priority = 0;
     std::vector<WorkflowGraphInputBinding> input_bindings;
     std::vector<WorkflowGraphArgument> arguments;
+};
+
+struct ProgramJobMaterializationContext {
+    WorkflowStepScheduleContext step;
+    std::optional<WorkflowGraphStepScheduleContext> graph;
+};
+
+enum class ProgramJobContinuationDisposition {
+    AddedWork = 0,
+    Complete,
+    Failed,
+};
+
+struct ProgramJobContinuationOutput {
+    std::string output_key;
+    std::string data_kind;
+    std::string ref_kind;
+    std::int64_t ref_id = 0;
+};
+
+struct ProgramJobContinuationContext {
+    ProgramJobMaterializationContext materialization;
+    std::int64_t root_job_set_id = 0;
+    int expected_total = 0;
+    int discovered_total = 0;
+    int terminal_total = 0;
+    int failed_total = 0;
+};
+
+struct ProgramJobContinuationResult {
+    ProgramJobContinuationDisposition disposition =
+        ProgramJobContinuationDisposition::Complete;
+    std::optional<ProgramJobContinuationOutput> output;
+    std::optional<std::string> failure_code;
+    std::optional<std::string> failure_text;
+    std::vector<std::string> event_lines;
+};
+
+struct IProgramJobMaterializer {
+    virtual ~IProgramJobMaterializer() = default;
+
+    // The descriptor owns incremental fanout and durable grouping. A
+    // successful return means it has:
+    //   1. ensured the materializing job set,
+    //   2. created the complete PENDING_WORKSET population,
+    //   3. sealed that population,
+    //   4. published every immutable workset, and
+    //   5. completed workset publication.
+    // Implementations must be idempotent so the workflow coordinator can
+    // invoke the same step again after interruption.
+    virtual bool Materialize(
+        const ProgramJobMaterializationContext& context,
+        WorkflowStepScheduleResult* result_out,
+        std::string* error_out) const = 0;
+
+    // Called after every currently published descendant job is business-final.
+    // A descriptor may idempotently publish another child job set, finish the
+    // workflow step, or fail it. Other program kinds need no special handling
+    // and therefore complete by default.
+    virtual bool Continue(
+        const ProgramJobContinuationContext& context,
+        ProgramJobContinuationResult* result_out,
+        std::string* error_out) const {
+        (void)context;
+        if (result_out != nullptr) {
+            *result_out = ProgramJobContinuationResult{};
+        }
+        if (error_out != nullptr) {
+            error_out->clear();
+        }
+        return true;
+    }
 };
 
 struct RuntimeInitRequest {
@@ -96,6 +171,111 @@ struct ResultMapPayload {
     std::string output_ref_kind;
     std::int64_t output_ref_id = 0;
     std::vector<std::string> event_lines;
+};
+
+// Durable workset membership and dispatch authority are selected by the
+// execution DB. A descriptor may reconstruct runtime payloads for that exact
+// ordered membership, but it may not regroup, omit, or add jobs here.
+struct WorksetReconstructionItem {
+    std::int64_t job_id = 0;
+    std::uint32_t logical_ordinal = 0;
+    std::uint64_t reserved_attempt_id = 0;
+    std::string claim_token;
+    std::int32_t program_kind = 0;
+    std::int32_t program_version = 0;
+    std::string program_ref_kind;
+    std::int64_t program_ref_id = 0;
+    std::optional<std::int64_t> savestate_id;
+    std::string fingerprint;
+    std::string input_ini;
+};
+
+struct WorksetReconstructionContext {
+    std::int64_t workset_id = 0;
+    std::int64_t dispatch_attempt_id = 0;
+    std::int64_t workflow_step_id = 0;
+    std::int64_t root_job_set_id = 0;
+    std::string dispatch_token;
+    std::string compatibility_key;
+    savor::runtime::StateCompatibilityToken state_compatibility;
+    std::vector<WorksetReconstructionItem> items;
+};
+
+struct WorksetReconstructionResult {
+    savor::runtime::WorkerWorksetDefinition workset;
+    // This redundant identity list makes the no-regrouping invariant explicit
+    // and cheap for the JobExecutionCoordinator to validate before submission.
+    std::vector<std::int64_t> ordered_job_ids;
+};
+
+struct IWorksetReconstructionAdapter {
+    virtual ~IWorksetReconstructionAdapter() = default;
+    virtual std::optional<WorksetReconstructionResult> Reconstruct(
+        const WorksetReconstructionContext& context,
+        std::string* error_out) const = 0;
+};
+
+struct WorkerTerminalObservation {
+    std::int64_t job_id = 0;
+    std::int64_t workset_id = 0;
+    std::int64_t dispatch_attempt_id = 0;
+    std::uint64_t reserved_attempt_id = 0;
+    std::string format;
+    std::string sha256;
+    std::vector<std::uint8_t> envelope;
+};
+
+struct ProgramResultOutput {
+    std::string output_key;
+    std::string data_kind;
+    std::string ref_kind;
+    std::int64_t ref_id = 0;
+};
+
+struct ProgramResultCancellation {
+    std::int64_t job_id = 0;
+    std::string request_key;
+    std::string reason_code;
+    std::string reason_text;
+};
+
+enum class ProgramResultDisposition {
+    Finalize = 0,
+    RetryExecution,
+};
+
+struct ProgramResultDecision {
+    ProgramResultDisposition disposition = ProgramResultDisposition::Finalize;
+    // Used only for Finalize. Program kinds own the business outcome; the
+    // generic result processor deliberately does not infer success/failure
+    // from a worker terminal.
+    std::string final_job_state;
+    std::optional<std::string> error_code;
+    std::optional<std::string> error_text;
+    std::vector<ProgramResultOutput> outputs;
+    std::vector<ProgramResultCancellation> cancellations;
+    std::vector<std::string> event_lines;
+};
+
+struct ProgramResultProcessingContext {
+    std::int64_t job_id = 0;
+    std::int64_t job_set_id = 0;
+    std::int32_t program_kind = 0;
+    std::int32_t program_version = 0;
+    std::string program_ref_kind;
+    std::int64_t program_ref_id = 0;
+    std::string fingerprint;
+    std::string input_ini;
+    WorkerTerminalObservation terminal;
+};
+
+struct IProgramResultHandler {
+    virtual ~IProgramResultHandler() = default;
+    // Domain writes performed here must be idempotent. Returning a decision
+    // means those writes are complete; the processor commits the execution
+    // job's final state only afterwards.
+    virtual ProgramResultDecision Process(
+        const ProgramResultProcessingContext& context) const = 0;
 };
 
 struct IResultPayloadWriter {
@@ -182,6 +362,13 @@ struct ProgramKindDescriptor {
     std::shared_ptr<IResultMapper> result_mapper;
     std::shared_ptr<IResultPayloadWriter> result_payload_writer;
     std::shared_ptr<IWorkflowTransitionHandler> workflow_transition;
+
+    // Coordinator architecture contracts. Legacy phase adapters remain
+    // source-visible during the cutover but production workflow scheduling
+    // accepts only descriptors providing all three contracts.
+    std::shared_ptr<IProgramJobMaterializer> job_materializer;
+    std::shared_ptr<IWorksetReconstructionAdapter> workset_reconstruction;
+    std::shared_ptr<IProgramResultHandler> result_handler;
 
     bool supports_workflow_orchestration = false;
     bool allow_mixed_success_failed_transition = false;

@@ -180,72 +180,306 @@ namespace savordb {
                 };
         }
 
-        class TestJobPersistenceAdapter final : public savor::db::execution::programdb::IJobPersistenceAdapter {
+        class TestProgramJobMaterializer final
+            : public savor::db::execution::programdb::
+                  IProgramJobMaterializer {
         public:
-            explicit TestJobPersistenceAdapter(savor::db::IExecutionDb* execution_db)
-                : execution_db_(execution_db) {
+            explicit TestProgramJobMaterializer(
+                savor::db::IExecutionDb* execution_db,
+                std::shared_ptr<std::atomic<int>>
+                    continuation_count = {},
+                savor::db::execution::programdb::
+                    ProgramJobContinuationDisposition
+                        continuation_disposition =
+                            savor::db::execution::programdb::
+                                ProgramJobContinuationDisposition::
+                                    Complete)
+                : execution_db_(execution_db)
+                , continuation_count_(
+                      std::move(continuation_count))
+                , continuation_disposition_(
+                      continuation_disposition) {
             }
 
-            savor::db::execution::programdb::WorkflowStepScheduleResult EncodeForQueueing(
-                const savor::db::execution::programdb::WorkflowStepScheduleContext& context) const override {
-                savor::db::execution::programdb::WorkflowStepScheduleResult result{};
-                const std::int64_t domain_ref_id = context.domain_ref_id;
-                if (execution_db_ == nullptr) {
-                    return result;
+            bool Materialize(
+                const savor::db::execution::programdb::
+                    ProgramJobMaterializationContext& context,
+                savor::db::execution::programdb::
+                    WorkflowStepScheduleResult* result_out,
+                std::string* error_out) const override {
+                using savor::db::ExecutionDbOperationDisposition;
+                if (result_out == nullptr || execution_db_ == nullptr) {
+                    if (error_out != nullptr) {
+                        *error_out =
+                            "workflow coordinator test materializer is "
+                            "unavailable";
+                    }
+                    return false;
                 }
+                *result_out = {};
 
-                std::string error;
-                std::int64_t job_set_id = 0;
-                if (!execution_db_->CreateJobSet(
+                const auto accepted = [](auto disposition) {
+                    return disposition
+                            == ExecutionDbOperationDisposition::Applied
+                        || disposition
+                            == ExecutionDbOperationDisposition::
+                                AlreadyApplied;
+                };
+                const auto fail = [&](std::string fallback) {
+                    if (error_out != nullptr && error_out->empty()) {
+                        *error_out = std::move(fallback);
+                    }
+                    return false;
+                };
+                const auto materialization_key =
+                    "workflow-coordinator-test-"
+                    + std::to_string(
+                        context.step.workflow_step_id);
+                const auto fingerprint =
+                    materialization_key + ".job";
+                const auto set_result =
+                    [&](std::int64_t job_set_id) {
+                        result_out->root_job_set_id =
+                            job_set_id;
+                        result_out->persistence = {
+                            .program_ref_kind = "unit.input",
+                            .program_ref_id =
+                                context.step.domain_ref_id,
+                            .fingerprint = fingerprint,
+                            .program_version = 1,
+                        };
+                    };
+
+                savor::db::EnsureMaterializingJobSetReceipt
+                    job_set{};
+                if (!execution_db_->EnsureMaterializingJobSet(
                     {
+                        .materialization_key =
+                            materialization_key,
+                        .parent_job_set_id = std::nullopt,
                         .program_kind = 1,
                         .purpose = "workflow-test",
-                        .created_by = std::string("WorkflowCoordinatorServiceTest"),
+                        .created_by =
+                            std::string(
+                                "WorkflowCoordinatorServiceTest"),
+                        .created_at_utc = 0,
                         .priority_boost = 0,
                         .expected_total = 1,
-                        .domain_ref_kind = std::string("unit.input"),
-                        .domain_ref_id = domain_ref_id,
+                        .domain_ref_kind =
+                            std::string("unit.input"),
+                        .domain_ref_id =
+                            context.step.domain_ref_id,
                     },
-                    &job_set_id,
-                    &error)
-                    || job_set_id <= 0) {
-                    return result;
+                    &job_set,
+                    error_out)
+                    || !accepted(job_set.disposition)
+                    || job_set.job_set_id <= 0) {
+                    return fail(
+                        "failed ensuring workflow coordinator test "
+                        "job set");
+                }
+                if (job_set.materialization_state
+                    == "WORKSET_PUBLICATION_COMPLETE") {
+                    set_result(job_set.job_set_id);
+                    if (error_out != nullptr) {
+                        error_out->clear();
+                    }
+                    return true;
                 }
 
                 std::int64_t job_id = 0;
-                if (!execution_db_->EnqueueJob(
-                    {
-                        .job_set_id = job_set_id,
-                        .program_kind = 1,
-                        .program_version = 1,
-                        .program_ref_kind = "unit.input",
-                        .program_ref_id = domain_ref_id,
-                        .fingerprint = "workflow-coordinator-test-" + std::to_string(domain_ref_id),
-                        .priority = context.step_priority,
-                        .max_attempts = 1,
-                    },
-                    &job_id,
-                    &error)
-                    || job_id <= 0) {
-                    return {};
+                if (job_set.materialization_state
+                    == "MATERIALIZING") {
+                    savor::db::CreatePendingJobReceipt job{};
+                    if (!execution_db_->CreatePendingJob(
+                        {
+                            .job_set_id =
+                                job_set.job_set_id,
+                            .program_kind = 1,
+                            .program_version = 1,
+                            .program_ref_kind = "unit.input",
+                            .program_ref_id =
+                                context.step.domain_ref_id,
+                            .fingerprint = fingerprint,
+                            .priority =
+                                context.step.step_priority,
+                            .max_attempts = 1,
+                        },
+                        &job,
+                        error_out)
+                        || !accepted(job.disposition)
+                        || job.job_id <= 0) {
+                        return fail(
+                            "failed creating workflow coordinator "
+                            "test job");
+                    }
+                    job_id = job.job_id;
+                } else {
+                    const auto jobs =
+                        execution_db_->ListJobsInJobSet(
+                            job_set.job_set_id);
+                    if (jobs.size() != 1) {
+                        return fail(
+                            "workflow coordinator test job set does "
+                            "not contain exactly one job");
+                    }
+                    job_id = jobs.front().job_id;
                 }
 
-                result.root_job_set_id = job_set_id;
-                result.persistence = {
-                    .program_ref_kind = "unit.input",
-                    .program_ref_id = domain_ref_id,
-                    .fingerprint = "workflow-coordinator-test-" + std::to_string(domain_ref_id),
-                    .program_version = 1,
-                };
-                return result;
+                savor::db::SealJobPopulationReceipt seal{};
+                if (!execution_db_->SealJobPopulation(
+                    {
+                        .job_set_id = job_set.job_set_id,
+                        .expected_job_count = 1,
+                        .requested_by =
+                            "WorkflowCoordinatorServiceTest",
+                    },
+                    &seal,
+                    error_out)
+                    || !accepted(seal.disposition)) {
+                    return fail(
+                        "failed sealing workflow coordinator test "
+                        "job population");
+                }
+
+                savor::db::PublishWorksetReceipt workset{};
+                if (!execution_db_->PublishWorkset(
+                    {
+                        .job_set_id = job_set.job_set_id,
+                        .workset_key =
+                            materialization_key + ".workset",
+                        .program_kind = 1,
+                        .program_version = 1,
+                        .compatibility = {
+                            .compatibility_key =
+                                "workflow-coordinator-test",
+                            .module_canonical_id =
+                                "workflow.coordinator.test",
+                            .module_version = 1,
+                            .module_sha256 =
+                                std::string(64, '1'),
+                            .entrypoint = "execute",
+                            .verified_dependency_sha256 =
+                                std::string(64, '2'),
+                            .runtime_profile_sha256 =
+                                std::string(64, '3'),
+                            .required_capability_mask = 0,
+                            .estimated_payload_bytes = 1,
+                        },
+                        .priority =
+                            context.step.step_priority,
+                        .ordered_job_ids = {job_id},
+                        .requested_by =
+                            "WorkflowCoordinatorServiceTest",
+                    },
+                    &workset,
+                    error_out)
+                    || !accepted(workset.disposition)
+                    || workset.workset_id <= 0) {
+                    return fail(
+                        "failed publishing workflow coordinator test "
+                        "workset");
+                }
+
+                savor::db::CompleteWorksetPublicationReceipt
+                    complete{};
+                if (!execution_db_->CompleteWorksetPublication(
+                    {
+                        .job_set_id = job_set.job_set_id,
+                        .expected_workset_count = 1,
+                        .expected_job_count = 1,
+                        .requested_by =
+                            "WorkflowCoordinatorServiceTest",
+                    },
+                    &complete,
+                    error_out)
+                    || !accepted(complete.disposition)) {
+                    return fail(
+                        "failed completing workflow coordinator test "
+                        "workset publication");
+                }
+
+                set_result(job_set.job_set_id);
+                if (error_out != nullptr) {
+                    error_out->clear();
+                }
+                return true;
             }
 
-            std::int64_t DecodeDomainRefId(const savor::db::execution::programdb::JobPersistenceRecord& persisted) const override {
-                return persisted.program_ref_id;
+            bool Continue(
+                const savor::db::execution::programdb::
+                    ProgramJobContinuationContext&,
+                savor::db::execution::programdb::
+                    ProgramJobContinuationResult* result_out,
+                std::string* error_out) const override {
+                if (result_out == nullptr) {
+                    if (error_out != nullptr) {
+                        *error_out =
+                            "workflow coordinator test continuation "
+                            "result is required";
+                    }
+                    return false;
+                }
+                if (continuation_count_ != nullptr) {
+                    continuation_count_->fetch_add(
+                        1,
+                        std::memory_order_relaxed);
+                }
+                *result_out = {};
+                result_out->disposition =
+                    continuation_disposition_;
+                if (continuation_disposition_
+                    == savor::db::execution::programdb::
+                        ProgramJobContinuationDisposition::Failed) {
+                    result_out->failure_code =
+                        "TEST_CONTINUATION_FAILED";
+                    result_out->failure_text =
+                        "test continuation rejected completed work";
+                }
+                if (error_out != nullptr) {
+                    error_out->clear();
+                }
+                return true;
             }
 
         private:
             savor::db::IExecutionDb* execution_db_ = nullptr;
+            std::shared_ptr<std::atomic<int>>
+                continuation_count_;
+            savor::db::execution::programdb::
+                ProgramJobContinuationDisposition
+                    continuation_disposition_;
+        };
+
+        class TestWorksetReconstructionAdapter final
+            : public savor::db::execution::programdb::
+                  IWorksetReconstructionAdapter {
+        public:
+            std::optional<
+                savor::db::execution::programdb::
+                    WorksetReconstructionResult>
+            Reconstruct(
+                const savor::db::execution::programdb::
+                    WorksetReconstructionContext&,
+                std::string*) const override {
+                return std::nullopt;
+            }
+        };
+
+        class TestProgramResultHandler final
+            : public savor::db::execution::programdb::
+                  IProgramResultHandler {
+        public:
+            savor::db::execution::programdb::
+                ProgramResultDecision
+            Process(
+                const savor::db::execution::programdb::
+                    ProgramResultProcessingContext&)
+                const override {
+                return {
+                    .final_job_state = "SUCCEEDED",
+                };
+            }
         };
 
         class AdvanceToNextStepHandler final : public savor::db::execution::programdb::IWorkflowTransitionHandler {
@@ -261,12 +495,29 @@ namespace savordb {
 
         savor::db::execution::programdb::ProgramKindRegistry BuildWorkflowCoordinatorTestRegistry(
             savor::db::IExecutionDb* execution_db,
-            bool include_transition = false) {
+            bool include_transition = false,
+            std::shared_ptr<std::atomic<int>>
+                continuation_count = {},
+            savor::db::execution::programdb::
+                ProgramJobContinuationDisposition
+                    continuation_disposition =
+                        savor::db::execution::programdb::
+                            ProgramJobContinuationDisposition::
+                                Complete) {
             savor::db::execution::programdb::ProgramKindRegistry registry;
             savor::db::execution::programdb::ProgramKindDescriptor descriptor{};
             descriptor.program_kind = 1;
             descriptor.program_name = "WorkflowCoordinatorServiceTest";
-            descriptor.job_persistence = std::make_shared<TestJobPersistenceAdapter>(execution_db);
+            descriptor.job_materializer =
+                std::make_shared<TestProgramJobMaterializer>(
+                    execution_db,
+                    std::move(continuation_count),
+                    continuation_disposition);
+            descriptor.workset_reconstruction =
+                std::make_shared<
+                    TestWorksetReconstructionAdapter>();
+            descriptor.result_handler =
+                std::make_shared<TestProgramResultHandler>();
             if (include_transition) {
                 descriptor.workflow_transition = std::make_shared<AdvanceToNextStepHandler>();
             }
@@ -530,7 +781,7 @@ VALUES
         sqlite3_close(db);
     }
 
-    TEST(WorkflowCoordinatorService, ThrottlesReadyMaterializationWhenActiveWorkflowLimitReached) {
+    TEST(WorkflowCoordinatorService, MaterializesReadyWorkRegardlessOfActiveWorkflowCount) {
         using namespace savor::db::execution::workflow;
         using namespace savor::db::migrations;
 
@@ -550,7 +801,13 @@ VALUES
         WorkflowCoordinatorService service(&execution_db, &registry, config);
         ASSERT_TRUE(service.Start(&err)) << err;
         EXPECT_TRUE(WaitForCondition([&]() {
-            return service.SnapshotTelemetry().materialization_throttle_count > 0;
+            std::string state;
+            return QueryText(
+                       db,
+                       "SELECT state FROM exec_workflow_step WHERE "
+                       "workflow_step_id=6802;",
+                       &state)
+                && state == "MATERIALIZED";
         }));
         service.Stop();
 
@@ -558,15 +815,16 @@ VALUES
         std::int64_t created_job_sets = 0;
         ASSERT_TRUE(QueryText(db, "SELECT state FROM exec_workflow_step WHERE workflow_step_id=6802;", &ready_state));
         ASSERT_TRUE(QueryInt64(db, "SELECT COUNT(1) FROM exec_job_set WHERE created_by='WorkflowCoordinatorServiceTest';", &created_job_sets));
-        EXPECT_EQ(ready_state, "READY");
-        EXPECT_EQ(created_job_sets, 0);
+        EXPECT_EQ(ready_state, "MATERIALIZED");
+        EXPECT_EQ(created_job_sets, 1);
         const auto telemetry = service.SnapshotTelemetry();
-        EXPECT_EQ(telemetry.active_materialized_workflow_count, 30);
-        EXPECT_GE(telemetry.materialization_throttle_count, 1);
+        EXPECT_GE(telemetry.active_materialized_workflow_count, 30);
+        EXPECT_EQ(telemetry.materialization_throttle_count, 0);
+        EXPECT_GE(telemetry.materialization_count, 1);
         sqlite3_close(db);
     }
 
-    TEST(WorkflowCoordinatorService, MaterializesOnlyRemainingWorkflowCapacity) {
+    TEST(WorkflowCoordinatorService, MaterializesAllReadyWorkRegardlessOfActiveWorkflowCount) {
         using namespace savor::db::execution::workflow;
         using namespace savor::db::migrations;
 
@@ -590,21 +848,26 @@ VALUES
         EXPECT_TRUE(WaitForCondition([&]() {
             std::int64_t materialized_ready_steps = 0;
             return QueryInt64(db, "SELECT COUNT(1) FROM exec_workflow_step WHERE workflow_instance_id IN (7101,7111,7121) AND state='MATERIALIZED';", &materialized_ready_steps)
-                && materialized_ready_steps == 1
-                && service.SnapshotTelemetry().materialization_throttle_count > 0;
+                && materialized_ready_steps == 3;
         }));
         service.Stop();
 
         std::int64_t materialized_ready_steps = 0;
         std::int64_t ready_steps = 0;
+        std::int64_t created_job_sets = 0;
         ASSERT_TRUE(QueryInt64(db, "SELECT COUNT(1) FROM exec_workflow_step WHERE workflow_instance_id IN (7101,7111,7121) AND state='MATERIALIZED';", &materialized_ready_steps));
         ASSERT_TRUE(QueryInt64(db, "SELECT COUNT(1) FROM exec_workflow_step WHERE workflow_instance_id IN (7101,7111,7121) AND state='READY';", &ready_steps));
-        EXPECT_EQ(materialized_ready_steps, 1);
-        EXPECT_EQ(ready_steps, 2);
+        ASSERT_TRUE(QueryInt64(db, "SELECT COUNT(1) FROM exec_job_set WHERE created_by='WorkflowCoordinatorServiceTest';", &created_job_sets));
+        EXPECT_EQ(materialized_ready_steps, 3);
+        EXPECT_EQ(ready_steps, 0);
+        EXPECT_EQ(created_job_sets, 3);
+        const auto telemetry = service.SnapshotTelemetry();
+        EXPECT_EQ(telemetry.materialization_throttle_count, 0);
+        EXPECT_GE(telemetry.materialization_count, 3);
         sqlite3_close(db);
     }
 
-    TEST(WorkflowCoordinatorService, TerminalReconciliationRunsWhileMaterializationThrottled) {
+    TEST(WorkflowCoordinatorService, TerminalReconciliationRunsAlongsideActiveMaterializedWorkflows) {
         using namespace savor::db::execution::workflow;
         using namespace savor::db::migrations;
 
@@ -618,8 +881,8 @@ VALUES
         ASSERT_TRUE(ExecSql(db, R"SQL(
 INSERT INTO exec_workflow_instance(workflow_instance_id, workflow_kind, state, root_scope_kind, created_by, created_at_utc, started_at_utc)
 VALUES(7401, 'workflow_coordinator_test', 'RUNNING', 'manual', 'test', unixepoch()*1000, unixepoch()*1000);
-INSERT INTO exec_job_set(job_set_id, program_kind, purpose, expected_total, created_at_utc)
-VALUES(7402, 1, 'workflow-test-empty', 0, unixepoch()*1000);
+INSERT INTO exec_job_set(job_set_id, program_kind, purpose, expected_total, created_at_utc, materialization_state)
+VALUES(7402, 1, 'workflow-test-empty', 0, unixepoch()*1000, 'WORKSET_PUBLICATION_COMPLETE');
 INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, job_set_id, attempts, max_attempts, created_at_utc, started_at_utc)
 VALUES(7403, 7401, 'Current', 'unit.step', 'MATERIALIZED', 7402, 0, 1, unixepoch()*1000, unixepoch()*1000);
 )SQL"));
@@ -653,8 +916,8 @@ VALUES(7403, 7401, 'Current', 'unit.step', 'MATERIALIZED', 7402, 0, 1, unixepoch
         ASSERT_TRUE(ExecSql(db, R"SQL(
 INSERT INTO exec_workflow_instance(workflow_instance_id, workflow_kind, state, root_scope_kind, created_by, created_at_utc, started_at_utc)
 VALUES(6201, 'workflow_coordinator_test', 'RUNNING', 'manual', 'test', unixepoch()*1000, unixepoch()*1000);
-INSERT INTO exec_job_set(job_set_id, program_kind, purpose, expected_total, created_at_utc)
-VALUES(6202, 1, 'workflow-test', 1, unixepoch()*1000);
+INSERT INTO exec_job_set(job_set_id, program_kind, purpose, expected_total, created_at_utc, materialization_state)
+VALUES(6202, 1, 'workflow-test', 1, unixepoch()*1000, 'WORKSET_PUBLICATION_COMPLETE');
 INSERT INTO exec_job(job_id, job_set_id, program_kind, program_version, program_ref_kind, program_ref_id, fingerprint, priority, state, attempts, max_attempts, queued_at_utc, ended_at_utc)
 VALUES(6203, 6202, 1, 1, 'unit.input', 6203, 'workflow-terminal-success', 0, 'COMPLETED', 1, 1, unixepoch()*1000, unixepoch()*1000);
 INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, job_set_id, attempts, max_attempts, created_at_utc, started_at_utc)
@@ -683,6 +946,252 @@ VALUES(6205, 6201, 'Next', 'unit.ready', 'WAITING', 0, 1, unixepoch()*1000);
         sqlite3_close(db);
     }
 
+    TEST(WorkflowCoordinatorService, TargetedTerminalNotificationWaitsForEveryDescendantJob) {
+        using namespace savor::db::execution::workflow;
+        using namespace savor::db::migrations;
+
+        sqlite3* db = nullptr;
+        ASSERT_EQ(SQLITE_OK, sqlite3_open(":memory:", &db));
+        std::string err;
+        ASSERT_TRUE(ApplyContextMigrations(
+            db,
+            MigrationContext::Execution,
+            {.source_kind = MigrationSourceKind::Embedded},
+            &err))
+            << err;
+        ASSERT_TRUE(ExecSql(db, R"SQL(
+INSERT INTO exec_workflow_instance(workflow_instance_id, workflow_kind, state, root_scope_kind, created_by, created_at_utc, started_at_utc)
+VALUES(7501, 'workflow_coordinator_test', 'RUNNING', 'manual', 'test', unixepoch()*1000, unixepoch()*1000);
+INSERT INTO exec_job_set(job_set_id, parent_job_set_id, program_kind, purpose, expected_total, created_at_utc, materialization_state)
+VALUES
+    (7502, NULL, 1, 'workflow-test-root', 2, unixepoch()*1000, 'WORKSET_PUBLICATION_COMPLETE'),
+    (7504, 7502, 1, 'workflow-test-child', 1, unixepoch()*1000, 'WORKSET_PUBLICATION_COMPLETE');
+INSERT INTO exec_job(job_id, job_set_id, program_kind, program_version, program_ref_kind, program_ref_id, fingerprint, priority, state, attempts, max_attempts, queued_at_utc, ended_at_utc)
+VALUES
+    (7503, 7502, 1, 1, 'unit.input', 7503, 'workflow-targeted-terminal', 0, 'COMPLETED', 1, 1, unixepoch()*1000, unixepoch()*1000),
+    (7507, 7502, 1, 1, 'unit.input', 7507, 'workflow-root-still-running', 0, 'QUEUED', 0, 1, unixepoch()*1000, NULL),
+    (7505, 7504, 1, 1, 'unit.input', 7505, 'workflow-child-still-running', 0, 'QUEUED', 0, 1, unixepoch()*1000, NULL);
+INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, job_set_id, attempts, max_attempts, created_at_utc, started_at_utc)
+VALUES(7506, 7501, 'Current', 'unit.step', 'MATERIALIZED', 7502, 0, 1, unixepoch()*1000, unixepoch()*1000);
+)SQL"));
+
+        SqliteExecutionDb execution_db(db);
+        auto* queries = execution_db.WorkflowQueryService();
+        ASSERT_NE(queries, nullptr);
+        EXPECT_FALSE(
+            queries->GetStepTerminalSnapshotForJob(7503)
+                .has_value());
+
+        auto continuation_count =
+            std::make_shared<std::atomic<int>>(0);
+        auto registry = BuildWorkflowCoordinatorTestRegistry(
+            &execution_db,
+            false,
+            continuation_count);
+        auto config = FastWorkflowCoordinatorConfig();
+        config.terminal_repair_interval =
+            std::chrono::hours(1);
+        WorkflowCoordinatorService service(
+            &execution_db,
+            &registry,
+            config);
+        ASSERT_TRUE(service.Start(&err)) << err;
+        ASSERT_TRUE(WaitForCondition([&]() {
+            return service.SnapshotTelemetry()
+                       .ready_scan_count
+                >= 1;
+        }));
+        const auto ready_scans_before_notification =
+            service.SnapshotTelemetry().ready_scan_count;
+
+        ASSERT_TRUE(service.PublishTerminalCommit({
+            .commit_sequence = 1,
+            .workflow_step_id = 7506,
+            .job_id = 7503,
+        }));
+        ASSERT_TRUE(WaitForCondition([&]() {
+            return service.SnapshotTelemetry()
+                       .ready_scan_count
+                > ready_scans_before_notification;
+        }));
+        EXPECT_EQ(
+            continuation_count->load(
+                std::memory_order_relaxed),
+            0);
+        std::string step_state;
+        ASSERT_TRUE(QueryText(
+            db,
+            "SELECT state FROM exec_workflow_step WHERE "
+            "workflow_step_id=7506;",
+            &step_state));
+        EXPECT_EQ(step_state, "MATERIALIZED");
+
+        ASSERT_TRUE(ExecSql(db, R"SQL(
+UPDATE exec_job
+SET state='COMPLETED', attempts=1, ended_at_utc=unixepoch()*1000
+WHERE job_id IN (7505,7507);
+)SQL"));
+        ASSERT_TRUE(
+            queries->GetStepTerminalSnapshotForJob(7507)
+                .has_value());
+        ASSERT_TRUE(service.PublishTerminalCommit({
+            .commit_sequence = 2,
+            .workflow_step_id = 7506,
+            .job_id = 7507,
+        }));
+        EXPECT_TRUE(WaitForCondition([&]() {
+            std::string current_state;
+            return continuation_count->load(
+                       std::memory_order_relaxed)
+                    == 1
+                && QueryText(
+                    db,
+                    "SELECT state FROM exec_workflow_step WHERE "
+                    "workflow_step_id=7506;",
+                    &current_state)
+                && current_state == "COMPLETED";
+        }));
+        service.Stop();
+
+        EXPECT_EQ(
+            continuation_count->load(
+                std::memory_order_relaxed),
+            1);
+        const auto telemetry = service.SnapshotTelemetry();
+        EXPECT_EQ(
+            telemetry.targeted_terminal_notification_count,
+            2);
+        EXPECT_EQ(
+            telemetry.targeted_terminal_advancement_count,
+            1);
+        sqlite3_close(db);
+    }
+
+    TEST(WorkflowCoordinatorService, ContinuationFailureCommitsStepAndWorkflowTogether) {
+        using namespace savor::db::execution::programdb;
+        using namespace savor::db::execution::workflow;
+        using namespace savor::db::migrations;
+
+        sqlite3* db = nullptr;
+        ASSERT_EQ(SQLITE_OK, sqlite3_open(":memory:", &db));
+        std::string err;
+        ASSERT_TRUE(ApplyContextMigrations(
+            db,
+            MigrationContext::Execution,
+            {.source_kind = MigrationSourceKind::Embedded},
+            &err))
+            << err;
+        ASSERT_TRUE(ExecSql(db, R"SQL(
+INSERT INTO exec_workflow_instance(workflow_instance_id, workflow_kind, state, root_scope_kind, created_by, created_at_utc, started_at_utc)
+VALUES
+    (7601, 'workflow_coordinator_test', 'RUNNING', 'manual', 'test', unixepoch()*1000, unixepoch()*1000),
+    (7611, 'workflow_coordinator_test', 'RUNNING', 'manual', 'test', unixepoch()*1000, unixepoch()*1000);
+INSERT INTO exec_job_set(job_set_id, program_kind, purpose, expected_total, created_at_utc, materialization_state)
+VALUES
+    (7602, 1, 'workflow-test', 1, unixepoch()*1000, 'WORKSET_PUBLICATION_COMPLETE'),
+    (7612, 1, 'workflow-test', 1, unixepoch()*1000, 'WORKSET_PUBLICATION_COMPLETE');
+INSERT INTO exec_job(job_id, job_set_id, program_kind, program_version, program_ref_kind, program_ref_id, fingerprint, priority, state, attempts, max_attempts, queued_at_utc, ended_at_utc)
+VALUES
+    (7603, 7602, 1, 1, 'unit.input', 7603, 'workflow-continuation-failed', 0, 'COMPLETED', 1, 1, unixepoch()*1000, unixepoch()*1000),
+    (7613, 7612, 1, 1, 'unit.input', 7613, 'workflow-continuation-rollback', 0, 'COMPLETED', 1, 1, unixepoch()*1000, unixepoch()*1000);
+INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, job_set_id, attempts, max_attempts, created_at_utc, started_at_utc)
+VALUES
+    (7604, 7601, 'Current', 'unit.step', 'MATERIALIZED', 7602, 0, 1, unixepoch()*1000, unixepoch()*1000),
+    (7614, 7611, 'Current', 'unit.step', 'MATERIALIZED', 7612, 0, 1, unixepoch()*1000, unixepoch()*1000);
+CREATE TRIGGER reject_test_workflow_failure
+BEFORE UPDATE OF state ON exec_workflow_instance
+WHEN OLD.workflow_instance_id=7611 AND NEW.state='FAILED'
+BEGIN
+    SELECT RAISE(ABORT, 'injected workflow failure');
+END;
+)SQL"));
+
+        SqliteExecutionDb execution_db(db);
+        auto continuation_count =
+            std::make_shared<std::atomic<int>>(0);
+        auto registry = BuildWorkflowCoordinatorTestRegistry(
+            &execution_db,
+            false,
+            continuation_count,
+            ProgramJobContinuationDisposition::Failed);
+        WorkflowCoordinatorService service(
+            &execution_db,
+            &registry,
+            FastWorkflowCoordinatorConfig());
+        ASSERT_TRUE(service.Start(&err)) << err;
+        EXPECT_TRUE(WaitForCondition([&]() {
+            std::string committed_step_state;
+            std::string committed_workflow_state;
+            std::int64_t rollback_failure_events = 0;
+            return QueryText(
+                       db,
+                       "SELECT state FROM exec_workflow_step WHERE "
+                       "workflow_step_id=7604;",
+                       &committed_step_state)
+                && QueryText(
+                    db,
+                    "SELECT state FROM exec_workflow_instance WHERE "
+                    "workflow_instance_id=7601;",
+                    &committed_workflow_state)
+                && QueryInt64(
+                    db,
+                    "SELECT COUNT(1) FROM exec_workflow_event WHERE "
+                    "workflow_step_id=7614 AND "
+                    "event_kind='Execution.WorkflowStepCoordinatorFailure.v1';",
+                    &rollback_failure_events)
+                && committed_step_state == "FAILED"
+                && committed_workflow_state == "FAILED"
+                && rollback_failure_events >= 1;
+        }));
+        service.Stop();
+
+        std::string committed_failure_code;
+        std::string rolled_back_step_state;
+        std::string rolled_back_workflow_state;
+        std::int64_t committed_step_failure_events = 0;
+        std::int64_t rolled_back_step_failure_events = 0;
+        ASSERT_TRUE(QueryText(
+            db,
+            "SELECT failure_code FROM exec_workflow_instance WHERE "
+            "workflow_instance_id=7601;",
+            &committed_failure_code));
+        ASSERT_TRUE(QueryText(
+            db,
+            "SELECT state FROM exec_workflow_step WHERE "
+            "workflow_step_id=7614;",
+            &rolled_back_step_state));
+        ASSERT_TRUE(QueryText(
+            db,
+            "SELECT state FROM exec_workflow_instance WHERE "
+            "workflow_instance_id=7611;",
+            &rolled_back_workflow_state));
+        ASSERT_TRUE(QueryInt64(
+            db,
+            "SELECT COUNT(1) FROM exec_workflow_event WHERE "
+            "workflow_step_id=7604 AND "
+            "event_kind='Execution.WorkflowStepFailed.v1';",
+            &committed_step_failure_events));
+        ASSERT_TRUE(QueryInt64(
+            db,
+            "SELECT COUNT(1) FROM exec_workflow_event WHERE "
+            "workflow_step_id=7614 AND "
+            "event_kind='Execution.WorkflowStepFailed.v1';",
+            &rolled_back_step_failure_events));
+
+        EXPECT_EQ(committed_failure_code, "TEST_CONTINUATION_FAILED");
+        EXPECT_EQ(rolled_back_step_state, "MATERIALIZED");
+        EXPECT_EQ(rolled_back_workflow_state, "RUNNING");
+        EXPECT_EQ(committed_step_failure_events, 1);
+        EXPECT_EQ(rolled_back_step_failure_events, 0);
+        EXPECT_GE(
+            continuation_count->load(std::memory_order_relaxed),
+            2);
+        EXPECT_GE(
+            service.SnapshotTelemetry().continuation_failure_count,
+            1);
+        sqlite3_close(db);
+    }
+
     TEST(WorkflowCoordinatorService, TerminalScanMarksFailedWhenAnyDescendantJobFails) {
         using namespace savor::db::execution::workflow;
         using namespace savor::db::migrations;
@@ -694,8 +1203,8 @@ VALUES(6205, 6201, 'Next', 'unit.ready', 'WAITING', 0, 1, unixepoch()*1000);
         ASSERT_TRUE(ExecSql(db, R"SQL(
 INSERT INTO exec_workflow_instance(workflow_instance_id, workflow_kind, state, root_scope_kind, created_by, created_at_utc, started_at_utc)
 VALUES(6301, 'workflow_coordinator_test', 'RUNNING', 'manual', 'test', unixepoch()*1000, unixepoch()*1000);
-INSERT INTO exec_job_set(job_set_id, program_kind, purpose, expected_total, created_at_utc)
-VALUES(6302, 1, 'workflow-test', 2, unixepoch()*1000);
+INSERT INTO exec_job_set(job_set_id, program_kind, purpose, expected_total, created_at_utc, materialization_state)
+VALUES(6302, 1, 'workflow-test', 2, unixepoch()*1000, 'WORKSET_PUBLICATION_COMPLETE');
 INSERT INTO exec_job(job_id, job_set_id, program_kind, program_version, program_ref_kind, program_ref_id, fingerprint, priority, state, attempts, max_attempts, queued_at_utc, ended_at_utc)
 VALUES
     (6303, 6302, 1, 1, 'unit.input', 6303, 'workflow-terminal-failed-1', 0, 'COMPLETED', 1, 1, unixepoch()*1000, unixepoch()*1000),
@@ -735,8 +1244,8 @@ VALUES(6305, 6301, 'Current', 'unit.step', 'MATERIALIZED', 6302, 0, 1, unixepoch
         ASSERT_TRUE(ExecSql(db, R"SQL(
 INSERT INTO exec_workflow_instance(workflow_instance_id, workflow_kind, state, root_scope_kind, created_by, created_at_utc, started_at_utc)
 VALUES(6401, 'workflow_coordinator_test', 'RUNNING', 'manual', 'test', unixepoch()*1000, unixepoch()*1000);
-INSERT INTO exec_job_set(job_set_id, program_kind, purpose, expected_total, created_at_utc)
-VALUES(6402, 1, 'workflow-test-empty', 0, unixepoch()*1000);
+INSERT INTO exec_job_set(job_set_id, program_kind, purpose, expected_total, created_at_utc, materialization_state)
+VALUES(6402, 1, 'workflow-test-empty', 0, unixepoch()*1000, 'WORKSET_PUBLICATION_COMPLETE');
 INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, job_set_id, attempts, max_attempts, created_at_utc, started_at_utc)
 VALUES(6403, 6401, 'Current', 'unit.step', 'MATERIALIZED', 6402, 0, 1, unixepoch()*1000, unixepoch()*1000);
 )SQL"));

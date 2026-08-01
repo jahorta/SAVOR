@@ -1484,7 +1484,6 @@ void WritePolicySet(Writer& writer, const ProgramPolicySet& policies)
     writer.Bool(policies.permits_movie_recording);
     writer.Bool(policies.permits_capture);
     writer.Bool(policies.permits_replay);
-    writer.Bool(policies.permits_visual_debug);
     writer.Bool(policies.permits_state_replacement);
     writer.Bool(policies.permits_resource_promotion);
 }
@@ -1501,13 +1500,12 @@ bool ReadPolicySet(Reader& reader, ProgramPolicySet& policies)
         reader.Vector(
             policies.execution_intents,
             [](Reader& input, ExecutionIntent& intent) {
-                return input.EnumValue(intent, ExecutionIntent::VisualDebug);
+                return input.EnumValue(intent, ExecutionIntent::Replay);
             }) &&
         reader.Bool(policies.permits_movie_playback) &&
         reader.Bool(policies.permits_movie_recording) &&
         reader.Bool(policies.permits_capture) &&
         reader.Bool(policies.permits_replay) &&
-        reader.Bool(policies.permits_visual_debug) &&
         reader.Bool(policies.permits_state_replacement) &&
         reader.Bool(policies.permits_resource_promotion);
 }
@@ -1916,7 +1914,7 @@ bool ReadExecutionPolicy(
     Reader& reader,
     InvocationExecutionPolicy& execution)
 {
-    return reader.EnumValue(execution.intent, ExecutionIntent::VisualDebug) &&
+    return reader.EnumValue(execution.intent, ExecutionIntent::Replay) &&
         reader.Bool(execution.allow_movie_playback) &&
         reader.Bool(execution.allow_movie_recording) &&
         reader.Bool(execution.allow_input) &&

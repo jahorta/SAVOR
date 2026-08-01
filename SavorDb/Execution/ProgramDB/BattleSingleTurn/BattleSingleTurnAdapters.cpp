@@ -631,17 +631,6 @@ std::optional<std::vector<savor::pred::Spec>> BuildPredicates(
     return out;
 }
 
-savor::GCInputFrame InitialFrameFromUniqueSeed(const savor::db::SeedProbeUniqueSeedRow& seed) {
-    savor::GCInputFrame frame{};
-    frame.main_x = ClampByte(seed.main_x);
-    frame.main_y = ClampByte(seed.main_y);
-    frame.c_x = ClampByte(seed.cstick_x);
-    frame.c_y = ClampByte(seed.cstick_y);
-    frame.trig_l = ClampByte(seed.trigger_x);
-    frame.trig_r = ClampByte(seed.trigger_y);
-    return frame;
-}
-
 savor::GCInputFrame InitialFrameFromInputSetFrame(const savor::db::AnalysisInputSetFrameRow& seed) {
     savor::GCInputFrame frame{};
     frame.main_x = ClampByte(seed.main_x);
@@ -1008,10 +997,16 @@ public:
 
         if (job_ini.turn_index == 1) {
             if (const auto candidate = analysis_db_->GetBattleSeedCandidate(job_ini.seed_candidate_id);
-                candidate.has_value() && candidate->source_unique_seed_id.has_value()) {
-                if (const auto unique = analysis_db_->GetSeedProbeUniqueSeed(*candidate->source_unique_seed_id); unique.has_value()) {
-                    spec.has_initial_input = true;
-                    spec.initial = InitialFrameFromUniqueSeed(*unique);
+                candidate.has_value() && candidate->source_probe_result_id.has_value()) {
+                if (const auto result = analysis_db_->GetSeedProbeResult(
+                        *candidate->source_probe_result_id);
+                    result.has_value()) {
+                    if (const auto frame = analysis_db_->GetAnalysisInputFrame(
+                            result->input_frame_id);
+                        frame.has_value()) {
+                        spec.has_initial_input = true;
+                        spec.initial = InitialFrameFromInputSetFrame(*frame);
+                    }
                 }
             } else if (candidate.has_value() && candidate->source_input_frame_id.has_value()) {
                 if (const auto frame = analysis_db_->GetAnalysisInputFrame(*candidate->source_input_frame_id); frame.has_value()) {

@@ -31,11 +31,27 @@ private:
     value_type value_ = 0;
 };
 
+// One logical Full Phase activation. The workflow step names the orchestration
+// scope while the root job set names the durable execution aggregate that owns
+// every child wave.
+struct ProgramInvocationId
+{
+    std::uint64_t workflow_step_id = 0;
+    std::uint64_t root_job_set_id = 0;
+
+    [[nodiscard]] explicit operator bool() const noexcept
+    {
+        return workflow_step_id != 0 && root_job_set_id != 0;
+    }
+
+    auto operator<=>(const ProgramInvocationId&) const noexcept = default;
+};
+
 struct WireRequestIdTag;
 struct WorkerCommandSequenceTag;
 struct HostEventSequenceTag;
 struct SessionIdTag;
-struct InvocationIdTag;
+struct ProgramExecutionIdTag;
 struct AttemptIdTag;
 struct StateEpochTag;
 struct WorkerWorksetIdTag;
@@ -50,7 +66,10 @@ using WireRequestId = StrongId<WireRequestIdTag>;
 using WorkerCommandSequence = StrongId<WorkerCommandSequenceTag>;
 using HostEventSequence = StrongId<HostEventSequenceTag>;
 using SessionId = StrongId<SessionIdTag>;
-using InvocationId = StrongId<InvocationIdTag>;
+using ProgramExecutionId = StrongId<ProgramExecutionIdTag>;
+// ProgramRuntime still uses this spelling for its private resolved-execution
+// state. Public workset and result contracts use ProgramExecutionId.
+using InvocationId = ProgramExecutionId;
 using AttemptId = StrongId<AttemptIdTag>;
 using StateEpoch = StrongId<StateEpochTag>;
 using WorkerWorksetId = StrongId<WorkerWorksetIdTag>;
@@ -64,7 +83,7 @@ using StateCacheLeaseId = StrongId<StateCacheLeaseIdTag>;
 
 static_assert(!std::is_convertible_v<StateEpoch, WorkerCommandSequence>);
 static_assert(!std::is_convertible_v<WorkerCommandSequence, StateEpoch>);
-static_assert(!std::is_convertible_v<InvocationId, AttemptId>);
+static_assert(!std::is_convertible_v<ProgramExecutionId, AttemptId>);
 static_assert(!std::is_convertible_v<WorkerWorksetId, WorkerWorksetItemId>);
 static_assert(!std::is_convertible_v<WorkerTerminalId, WorkerTerminalOrder>);
 

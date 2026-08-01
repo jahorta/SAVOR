@@ -232,6 +232,9 @@ std::string BuildObjectJson(sqlite3_stmt* st, const ArchivePackageRetentionPolic
         const bool payload_candidate =
             column_name == "message"
             || column_name == "error_text"
+            || column_name == "worker_terminal_error_text"
+            || column_name == "result_processing_error_text"
+            || column_name == "cancellation_reason_text"
             || column_name == "failure_text"
             || column_name == "last_error"
             || column_name == "meta_note"
@@ -372,9 +375,37 @@ std::vector<ExportSpec> BuildExportSpecs(const CreateArchivePackageRequest& requ
     });
 
     specs.push_back(ExportSpec{
+        "worksets",
+        scoped_job_sets
+            + "SELECT * FROM exec_workset WHERE job_set_id IN (SELECT job_set_id FROM scoped_job_sets) ORDER BY workset_id ASC;"
+    });
+
+    specs.push_back(ExportSpec{
+        "workset_dispatch_attempts",
+        scoped_job_sets
+            + "SELECT a.* FROM exec_workset_dispatch_attempt a "
+              "JOIN exec_workset w ON w.workset_id=a.workset_id "
+              "WHERE w.job_set_id IN (SELECT job_set_id FROM scoped_job_sets) "
+              "ORDER BY a.dispatch_attempt_id ASC;"
+    });
+
+    specs.push_back(ExportSpec{
         "jobs",
         scoped_job_sets
-            + "SELECT * FROM exec_job WHERE job_set_id IN (SELECT job_set_id FROM scoped_job_sets) ORDER BY job_id ASC;"
+            + "SELECT job_id,job_set_id,parent_job_id,program_kind,program_version,program_ref_kind,program_ref_id,"
+              "fingerprint,priority,state,attempts,max_attempts,claimed_by_token,lease_expires_at_utc,queued_at_utc,"
+              "started_at_utc,ended_at_utc,error_code,error_text,savestate_id,input_ini,workset_id,workset_item_ordinal,"
+              "dispatch_attempt_id,dispatch_item_ordinal,reserved_attempt_id,execution_finished_at_utc,worker_terminal_status,"
+              "worker_terminal_fingerprint,worker_terminal_id,worker_terminal_error_code,worker_terminal_error_text,"
+              "worker_terminal_unstarted,NULL AS worker_result_blob_id,result_processing_state,result_processor_token,"
+              "result_processing_lease_expires_at_utc,result_processing_attempts,result_processing_failures,"
+              "result_processing_error_code,result_processing_error_text,result_processing_failed_at_utc,"
+              "result_processed_at_utc,cancellation_group_key,cancellation_state,cancellation_request_key,cancellation_reason_code,"
+              "cancellation_reason_text,cancellation_requested_by,cancellation_caused_by_job_id,"
+              "cancellation_requested_at_utc,cancellation_delivery_token,cancellation_delivery_lease_expires_at_utc,"
+              "cancellation_delivery_attempts,cancellation_delivered_at_utc,cancellation_resolved_at_utc,"
+              "cancellation_resolution_code "
+              "FROM exec_job WHERE job_set_id IN (SELECT job_set_id FROM scoped_job_sets) ORDER BY job_id ASC;"
     });
 
     specs.push_back(ExportSpec{
@@ -384,6 +415,15 @@ std::vector<ExportSpec> BuildExportSpecs(const CreateArchivePackageRequest& requ
               "JOIN exec_job j ON j.job_id=e.job_id "
               "WHERE j.job_set_id IN (SELECT job_set_id FROM scoped_job_sets) "
               "ORDER BY e.job_event_id ASC;"
+    });
+
+    specs.push_back(ExportSpec{
+        "job_cancellation_requests",
+        scoped_job_sets
+            + "SELECT c.* FROM exec_job_cancellation_request c "
+              "JOIN exec_job j ON j.job_id=c.job_id "
+              "WHERE j.job_set_id IN (SELECT job_set_id FROM scoped_job_sets) "
+              "ORDER BY c.cancellation_request_id ASC;"
     });
 
     const std::string scoped_instances =
@@ -466,6 +506,12 @@ std::vector<ExportSpec> BuildExportSpecs(const CreateArchivePackageRequest& requ
                   "WHERE aggregate_kind='job_set' AND CAST(aggregate_id AS INTEGER) IN (SELECT job_set_id FROM scoped_job_sets) "
                   "OR aggregate_kind='job' AND CAST(aggregate_id AS INTEGER) IN ("
                   "SELECT job_id FROM exec_job WHERE job_set_id IN (SELECT job_set_id FROM scoped_job_sets)) "
+                  "OR aggregate_kind='workset' AND CAST(aggregate_id AS INTEGER) IN ("
+                  "SELECT workset_id FROM exec_workset WHERE job_set_id IN (SELECT job_set_id FROM scoped_job_sets)) "
+                  "OR aggregate_kind='workset_dispatch_attempt' AND CAST(aggregate_id AS INTEGER) IN ("
+                  "SELECT a.dispatch_attempt_id FROM exec_workset_dispatch_attempt a "
+                  "JOIN exec_workset w ON w.workset_id=a.workset_id "
+                  "WHERE w.job_set_id IN (SELECT job_set_id FROM scoped_job_sets)) "
                   "ORDER BY outbox_id ASC;"
         });
     }
@@ -501,13 +547,30 @@ std::string JoinIds(const std::vector<std::int64_t>& ids) {
     return out.str();
 }
 
-std::string WorkflowJobSetCte(const std::string& workflow_ids) {
+std::string WorkflowJobSetCte(
+    const std::string& workflow_ids,
+    const std::vector<std::int64_t>& additional_root_job_set_ids = {}) {
+    const auto additional_roots = additional_root_job_set_ids.empty()
+        ? std::string{}
+        : " UNION SELECT job_set_id FROM exec_job_set WHERE job_set_id IN ("
+            + JoinIds(additional_root_job_set_ids) + ")";
     return "WITH RECURSIVE seed_job_sets(job_set_id) AS ("
-           "SELECT job_set_id FROM exec_workflow_step WHERE workflow_instance_id IN (" + workflow_ids + ") AND job_set_id IS NOT NULL), "
+           "SELECT job_set_id FROM exec_workflow_step WHERE workflow_instance_id IN (" + workflow_ids + ") AND job_set_id IS NOT NULL"
+           + additional_roots + "), "
            "scoped_job_sets(job_set_id) AS ("
            "SELECT job_set_id FROM seed_job_sets "
            "UNION "
            "SELECT child.job_set_id FROM exec_job_set child JOIN scoped_job_sets parent ON child.parent_job_set_id=parent.job_set_id), "
+           "scoped_jobs(job_id) AS ("
+           "SELECT job_id FROM exec_job WHERE job_set_id IN (SELECT job_set_id FROM scoped_job_sets)) ";
+}
+
+std::string RootJobSetCte(std::int64_t root_job_set_id) {
+    return "WITH RECURSIVE scoped_job_sets(job_set_id) AS ("
+           "SELECT job_set_id FROM exec_job_set WHERE job_set_id=" + std::to_string(root_job_set_id) + " "
+           "UNION "
+           "SELECT child.job_set_id FROM exec_job_set child "
+           "JOIN scoped_job_sets parent ON child.parent_job_set_id=parent.job_set_id), "
            "scoped_jobs(job_id) AS ("
            "SELECT job_id FROM exec_job WHERE job_set_id IN (SELECT job_set_id FROM scoped_job_sets)) ";
 }
@@ -559,6 +622,132 @@ std::int64_t QuerySingleInt64(sqlite3* db, const std::string& query, std::string
     return 0;
 }
 
+bool CollectArchiveReadinessBlockers(
+    sqlite3* execution_db,
+    const std::string& scoped_job_sets_and_jobs,
+    std::vector<std::string>* blockers,
+    std::string* error_out) {
+    if (execution_db == nullptr || blockers == nullptr || scoped_job_sets_and_jobs.empty()) {
+        if (error_out != nullptr) *error_out = "invalid archive readiness request";
+        return false;
+    }
+
+    const auto add_blocker_if_any = [&](const std::string& query, std::string message) {
+        std::string query_error;
+        const auto count = QuerySingleInt64(execution_db, query, &query_error);
+        if (!query_error.empty()) {
+            if (error_out != nullptr) *error_out = query_error;
+            return false;
+        }
+        if (count > 0) {
+            blockers->push_back(std::move(message) + " (" + std::to_string(count) + ")");
+        }
+        return true;
+    };
+
+    return add_blocker_if_any(
+               scoped_job_sets_and_jobs
+                   + "SELECT COUNT(1) FROM exec_job_set "
+                     "WHERE job_set_id IN (SELECT job_set_id FROM scoped_job_sets) "
+                     "AND COALESCE(materialization_state,'')<>'WORKSET_PUBLICATION_COMPLETE';",
+               "job-set workset publication is incomplete")
+        && add_blocker_if_any(
+               scoped_job_sets_and_jobs
+                   + "SELECT COUNT(1) FROM exec_job "
+                     "WHERE job_id IN (SELECT job_id FROM scoped_jobs) "
+                     "AND (workset_id IS NULL OR workset_item_ordinal IS NULL);",
+               "published workset membership is incomplete")
+        && add_blocker_if_any(
+               scoped_job_sets_and_jobs
+                   + "SELECT COUNT(1) FROM exec_workset w "
+                     "WHERE w.job_set_id IN (SELECT job_set_id FROM scoped_job_sets) "
+                     "AND ("
+                     "  (SELECT COUNT(1) FROM exec_job j WHERE j.workset_id=w.workset_id)<>w.item_count "
+                     "  OR (SELECT COALESCE(MIN(j.workset_item_ordinal),-1) FROM exec_job j WHERE j.workset_id=w.workset_id)<>0 "
+                     "  OR (SELECT COALESCE(MAX(j.workset_item_ordinal),-1) FROM exec_job j WHERE j.workset_id=w.workset_id)<>w.item_count-1"
+                     ");",
+               "published workset item membership is inconsistent")
+        && add_blocker_if_any(
+               scoped_job_sets_and_jobs
+                   + "SELECT COUNT(1) FROM exec_workset_dispatch_attempt a "
+                     "JOIN exec_workset w ON w.workset_id=a.workset_id "
+                     "WHERE w.job_set_id IN (SELECT job_set_id FROM scoped_job_sets) "
+                     "AND a.state IN ('CLAIMED','DISPATCHED');",
+               "workset dispatch is active")
+        && add_blocker_if_any(
+               scoped_job_sets_and_jobs
+                   + "SELECT COUNT(1) FROM exec_job "
+                     "WHERE job_id IN (SELECT job_id FROM scoped_jobs) "
+                     "AND state='EXECUTION_FINISHED';",
+               "job result processing is not terminal")
+        && add_blocker_if_any(
+               scoped_job_sets_and_jobs
+                   + "SELECT COUNT(1) FROM exec_job "
+                     "WHERE job_id IN (SELECT job_id FROM scoped_jobs) "
+                     "AND cancellation_state IS NOT NULL "
+                     "AND cancellation_state<>'RESOLVED';",
+               "job cancellation is unresolved")
+        && add_blocker_if_any(
+               scoped_job_sets_and_jobs
+                   + "SELECT COUNT(1) FROM exec_job_cancellation_request "
+                     "WHERE job_id IN (SELECT job_id FROM scoped_jobs) "
+                     "AND state<>'RESOLVED';",
+               "job cancellation request history is unresolved")
+        && add_blocker_if_any(
+               scoped_job_sets_and_jobs
+                   + "SELECT COUNT(1) FROM exec_job j "
+                     "WHERE j.job_id IN (SELECT job_id FROM scoped_jobs) "
+                     "AND j.cancellation_request_key IS NOT NULL "
+                     "AND NOT EXISTS ("
+                     "  SELECT 1 FROM exec_job_cancellation_request c "
+                     "  WHERE c.job_id=j.job_id "
+                     "    AND c.request_key=j.cancellation_request_key"
+                     ");",
+               "job cancellation summary has no authoritative history row")
+        && add_blocker_if_any(
+               scoped_job_sets_and_jobs
+                   + "SELECT COUNT(1) FROM exec_job j "
+                     "JOIN exec_temp_blob b ON b.temp_blob_id=j.worker_result_blob_id "
+                     "WHERE j.job_id IN (SELECT job_id FROM scoped_jobs) "
+                     "AND b.cleanup_state<>'DELETED';",
+               "temporary result-blob cleanup is pending")
+        && add_blocker_if_any(
+               scoped_job_sets_and_jobs
+                   + "SELECT COUNT(1) FROM exec_job "
+                     "WHERE job_id IN (SELECT job_id FROM scoped_jobs) "
+                     "AND cancellation_caused_by_job_id IS NOT NULL "
+                     "AND cancellation_caused_by_job_id NOT IN (SELECT job_id FROM scoped_jobs);",
+               "cancellation history depends on a job outside the archive scope")
+        && add_blocker_if_any(
+               scoped_job_sets_and_jobs
+                   + "SELECT COUNT(1) FROM exec_job "
+                     "WHERE job_id NOT IN (SELECT job_id FROM scoped_jobs) "
+                     "AND cancellation_caused_by_job_id IN (SELECT job_id FROM scoped_jobs);",
+               "a job outside the archive scope depends on scoped cancellation history")
+        && add_blocker_if_any(
+               scoped_job_sets_and_jobs
+                   + "SELECT COUNT(1) FROM exec_job_cancellation_request "
+                     "WHERE job_id IN (SELECT job_id FROM scoped_jobs) "
+                     "AND caused_by_job_id IS NOT NULL "
+                     "AND caused_by_job_id NOT IN (SELECT job_id FROM scoped_jobs);",
+               "cancellation request history depends on a job outside the archive scope")
+        && add_blocker_if_any(
+               scoped_job_sets_and_jobs
+                   + "SELECT COUNT(1) FROM exec_job_cancellation_request "
+                     "WHERE job_id NOT IN (SELECT job_id FROM scoped_jobs) "
+                     "AND caused_by_job_id IN (SELECT job_id FROM scoped_jobs);",
+               "a cancellation request outside the archive scope depends on a scoped job");
+}
+
+std::string JoinBlockers(const std::vector<std::string>& blockers) {
+    std::ostringstream out;
+    for (std::size_t i = 0; i < blockers.size(); ++i) {
+        if (i != 0) out << "; ";
+        out << blockers[i];
+    }
+    return out.str();
+}
+
 bool ColumnPresent(sqlite3* db, std::string_view table_name, std::string_view column_name) {
     Statement st;
     const std::string pragma = "PRAGMA table_info(" + std::string(table_name) + ");";
@@ -577,9 +766,11 @@ bool ColumnPresent(sqlite3* db, std::string_view table_name, std::string_view co
 std::vector<ExportSpec> BuildWorkflowExecutionSpecs(
     const std::vector<std::int64_t>& workflow_ids,
     const ArchivePackageRetentionPolicy& policy,
-    sqlite3* execution_db) {
+    sqlite3* execution_db,
+    const std::vector<std::int64_t>& additional_root_job_set_ids = {}) {
     const auto ids = JoinIds(workflow_ids);
-    const auto scoped = WorkflowJobSetCte(ids);
+    const auto scoped =
+        WorkflowJobSetCte(ids, additional_root_job_set_ids);
     std::vector<ExportSpec> specs;
     specs.push_back({"workflow_instances", "SELECT * FROM exec_workflow_instance WHERE workflow_instance_id IN (" + ids + ") ORDER BY workflow_instance_id ASC;"});
     specs.push_back({"workflow_steps", "SELECT * FROM exec_workflow_step WHERE workflow_instance_id IN (" + ids + ") ORDER BY workflow_step_id ASC;"});
@@ -603,13 +794,42 @@ std::vector<ExportSpec> BuildWorkflowExecutionSpecs(
         specs.push_back({"workflow_events", "SELECT * FROM exec_workflow_event WHERE workflow_instance_id IN (" + ids + ") ORDER BY workflow_event_id ASC;"});
     }
     specs.push_back({"job_sets", scoped + "SELECT * FROM exec_job_set WHERE job_set_id IN (SELECT job_set_id FROM scoped_job_sets) ORDER BY job_set_id ASC;"});
-    specs.push_back({"jobs", scoped + "SELECT * FROM exec_job WHERE job_id IN (SELECT job_id FROM scoped_jobs) ORDER BY job_id ASC;"});
+    specs.push_back({"worksets", scoped + "SELECT * FROM exec_workset WHERE job_set_id IN (SELECT job_set_id FROM scoped_job_sets) ORDER BY workset_id ASC;"});
+    specs.push_back({"workset_dispatch_attempts", scoped + "SELECT a.* FROM exec_workset_dispatch_attempt a JOIN exec_workset w ON w.workset_id=a.workset_id WHERE w.job_set_id IN (SELECT job_set_id FROM scoped_job_sets) ORDER BY a.dispatch_attempt_id ASC;"});
+    specs.push_back({
+        "jobs",
+        scoped
+            + "SELECT job_id,job_set_id,parent_job_id,program_kind,program_version,program_ref_kind,program_ref_id,"
+              "fingerprint,priority,state,attempts,max_attempts,claimed_by_token,lease_expires_at_utc,queued_at_utc,"
+              "started_at_utc,ended_at_utc,error_code,error_text,savestate_id,input_ini,workset_id,workset_item_ordinal,"
+              "dispatch_attempt_id,dispatch_item_ordinal,reserved_attempt_id,execution_finished_at_utc,worker_terminal_status,"
+              "worker_terminal_fingerprint,worker_terminal_id,worker_terminal_error_code,worker_terminal_error_text,"
+              "worker_terminal_unstarted,NULL AS worker_result_blob_id,result_processing_state,result_processor_token,"
+              "result_processing_lease_expires_at_utc,result_processing_attempts,result_processing_failures,"
+              "result_processing_error_code,result_processing_error_text,result_processing_failed_at_utc,"
+              "result_processed_at_utc,cancellation_group_key,cancellation_state,cancellation_request_key,cancellation_reason_code,"
+              "cancellation_reason_text,cancellation_requested_by,cancellation_caused_by_job_id,"
+              "cancellation_requested_at_utc,cancellation_delivery_token,cancellation_delivery_lease_expires_at_utc,"
+              "cancellation_delivery_attempts,cancellation_delivered_at_utc,cancellation_resolved_at_utc,"
+              "cancellation_resolution_code "
+              "FROM exec_job WHERE job_id IN (SELECT job_id FROM scoped_jobs) ORDER BY job_id ASC;"
+    });
     specs.push_back({"job_events", scoped + "SELECT * FROM exec_job_event WHERE job_id IN (SELECT job_id FROM scoped_jobs) ORDER BY job_event_id ASC;"});
+    specs.push_back({"job_cancellation_requests", scoped + "SELECT * FROM exec_job_cancellation_request WHERE job_id IN (SELECT job_id FROM scoped_jobs) ORDER BY cancellation_request_id ASC;"});
     if (policy.include_trigger && IsTablePresent(execution_db, "exec_trigger", nullptr)) {
         specs.push_back({"triggers", scoped + "SELECT * FROM exec_trigger WHERE (scope_kind='job_set' AND scope_id IN (SELECT job_set_id FROM scoped_job_sets)) OR (scope_kind='job' AND scope_id IN (SELECT job_id FROM scoped_jobs)) ORDER BY trigger_id ASC;"});
     }
     if (policy.include_outbox_message && IsTablePresent(execution_db, "exec_outbox_message", nullptr)) {
-        specs.push_back({"outbox", scoped + "SELECT * FROM exec_outbox_message WHERE (aggregate_kind='job_set' AND CAST(aggregate_id AS INTEGER) IN (SELECT job_set_id FROM scoped_job_sets)) OR (aggregate_kind='job' AND CAST(aggregate_id AS INTEGER) IN (SELECT job_id FROM scoped_jobs)) ORDER BY outbox_id ASC;"});
+        specs.push_back({
+            "outbox",
+            scoped
+                + "SELECT * FROM exec_outbox_message WHERE "
+                  "(aggregate_kind='job_set' AND CAST(aggregate_id AS INTEGER) IN (SELECT job_set_id FROM scoped_job_sets)) "
+                  "OR (aggregate_kind='job' AND CAST(aggregate_id AS INTEGER) IN (SELECT job_id FROM scoped_jobs)) "
+                  "OR (aggregate_kind='workset' AND CAST(aggregate_id AS INTEGER) IN (SELECT workset_id FROM exec_workset WHERE job_set_id IN (SELECT job_set_id FROM scoped_job_sets))) "
+                  "OR (aggregate_kind='workset_dispatch_attempt' AND CAST(aggregate_id AS INTEGER) IN (SELECT a.dispatch_attempt_id FROM exec_workset_dispatch_attempt a JOIN exec_workset w ON w.workset_id=a.workset_id WHERE w.job_set_id IN (SELECT job_set_id FROM scoped_job_sets))) "
+                  "ORDER BY outbox_id ASC;"
+        });
     }
     return specs;
 }
@@ -754,31 +974,21 @@ std::vector<ExportSpec> BuildWorkflowAnalysisSpecs(
         }
     }
     if (!workflow_ids.empty() && IsTablePresent(analysis_db, "ab_battle_results", nullptr)) {
-        auto neutral_runs = QueryInt64Column(
+        auto result_runs = QueryInt64Column(
             analysis_db,
             "SELECT DISTINCT r.probe_run_id FROM ab_battle_results br "
-            "JOIN sp_neutral_seed n ON br.selected_seed_ref_kind='analysisseedprobe.neutral_seed' "
-            "AND n.neutral_seed_id=br.selected_seed_ref_id "
-            "JOIN sp_probe_result r ON r.probe_result_id=n.probe_result_id "
+            "JOIN sp_probe_result r ON br.selected_seed_ref_kind='analysisseedprobe.confirmed_result' "
+            "AND r.probe_result_id=br.selected_seed_ref_id "
             "WHERE br.workflow_instance_id IN (" + workflow_id_list + ");",
             &error);
-        probe_run_ids.insert(probe_run_ids.end(), neutral_runs.begin(), neutral_runs.end());
-        auto unique_runs = QueryInt64Column(
-            analysis_db,
-            "SELECT DISTINCT r.probe_run_id FROM ab_battle_results br "
-            "JOIN sp_unique_seed u ON br.selected_seed_ref_kind='analysisseedprobe.unique_seed' "
-            "AND u.unique_seed_id=br.selected_seed_ref_id "
-            "JOIN sp_probe_result r ON r.probe_result_id=u.probe_result_id "
-            "WHERE br.workflow_instance_id IN (" + workflow_id_list + ");",
-            &error);
-        probe_run_ids.insert(probe_run_ids.end(), unique_runs.begin(), unique_runs.end());
+        probe_run_ids.insert(probe_run_ids.end(), result_runs.begin(), result_runs.end());
     }
     std::sort(probe_run_ids.begin(), probe_run_ids.end());
     probe_run_ids.erase(std::unique(probe_run_ids.begin(), probe_run_ids.end()), probe_run_ids.end());
     if (!probe_run_ids.empty() && IsTablePresent(analysis_db, "sp_probe_run", nullptr)) {
         const auto run_ids = JoinIds(probe_run_ids);
         const auto probe_set_ids = QueryInt64Column(analysis_db, "SELECT probe_set_id FROM sp_probe_run WHERE probe_run_id IN (" + run_ids + ") ORDER BY probe_set_id ASC;", &error);
-        const auto input_set_ids = QueryInt64Column(analysis_db, "SELECT unique_input_set_id FROM sp_probe_run WHERE probe_run_id IN (" + run_ids + ") ORDER BY unique_input_set_id ASC;", &error);
+        const auto input_set_ids = QueryInt64Column(analysis_db, "SELECT accepted_input_set_id FROM sp_probe_run WHERE probe_run_id IN (" + run_ids + ") ORDER BY accepted_input_set_id ASC;", &error);
         const auto probe_result_ids = QueryInt64Column(analysis_db, "SELECT probe_result_id FROM sp_probe_result WHERE probe_run_id IN (" + run_ids + ") ORDER BY probe_result_id ASC;", &error);
 
         if (!probe_set_ids.empty() && IsTablePresent(analysis_db, "sp_probe_set", nullptr)) {
@@ -792,9 +1002,9 @@ std::vector<ExportSpec> BuildWorkflowAnalysisSpecs(
         if (!input_set_ids.empty() && IsTablePresent(analysis_db, "an_input_set_frame", nullptr)) {
             input_frame_ids = QueryInt64Column(analysis_db, "SELECT input_frame_id FROM an_input_set_frame WHERE input_set_id IN (" + JoinIds(input_set_ids) + ") ORDER BY input_frame_id ASC;", &error);
         }
-        if (!probe_result_ids.empty() && IsTablePresent(analysis_db, "sp_unique_seed", nullptr)) {
-            auto unique_frame_ids = QueryInt64Column(analysis_db, "SELECT input_frame_id FROM sp_unique_seed WHERE probe_result_id IN (" + JoinIds(probe_result_ids) + ") ORDER BY input_frame_id ASC;", &error);
-            input_frame_ids.insert(input_frame_ids.end(), unique_frame_ids.begin(), unique_frame_ids.end());
+        if (!probe_result_ids.empty()) {
+            auto result_frame_ids = QueryInt64Column(analysis_db, "SELECT input_frame_id FROM sp_probe_result WHERE probe_result_id IN (" + JoinIds(probe_result_ids) + ") ORDER BY input_frame_id ASC;", &error);
+            input_frame_ids.insert(input_frame_ids.end(), result_frame_ids.begin(), result_frame_ids.end());
         }
         std::sort(input_frame_ids.begin(), input_frame_ids.end());
         input_frame_ids.erase(std::unique(input_frame_ids.begin(), input_frame_ids.end()), input_frame_ids.end());
@@ -807,10 +1017,6 @@ std::vector<ExportSpec> BuildWorkflowAnalysisSpecs(
                 "UNION SELECT cstick_axis_xy_id FROM sp_input_frame WHERE input_frame_id IN (" + JoinIds(input_frame_ids) + ") "
                 "UNION SELECT trigger_axis_xy_id FROM sp_input_frame WHERE input_frame_id IN (" + JoinIds(input_frame_ids) + ");",
                 &error);
-        }
-        if (!probe_result_ids.empty() && IsTablePresent(analysis_db, "sp_grid_seed", nullptr)) {
-            auto grid_axis_ids = QueryInt64Column(analysis_db, "SELECT axis_xy_id FROM sp_grid_seed WHERE probe_result_id IN (" + JoinIds(probe_result_ids) + ") ORDER BY axis_xy_id ASC;", &error);
-            axis_ids.insert(axis_ids.end(), grid_axis_ids.begin(), grid_axis_ids.end());
         }
         std::sort(axis_ids.begin(), axis_ids.end());
         axis_ids.erase(std::unique(axis_ids.begin(), axis_ids.end()), axis_ids.end());
@@ -827,9 +1033,6 @@ std::vector<ExportSpec> BuildWorkflowAnalysisSpecs(
         specs.push_back({"analysis_seed_probe_runs", "SELECT * FROM sp_probe_run WHERE probe_run_id IN (" + run_ids + ") ORDER BY probe_run_id ASC;"});
         if (!probe_result_ids.empty() && IsTablePresent(analysis_db, "sp_probe_result", nullptr)) {
             specs.push_back({"analysis_seed_probe_results", "SELECT * FROM sp_probe_result WHERE probe_result_id IN (" + JoinIds(probe_result_ids) + ") ORDER BY probe_result_id ASC;"});
-            specs.push_back({"analysis_seed_probe_neutral_seeds", "SELECT * FROM sp_neutral_seed WHERE probe_result_id IN (" + JoinIds(probe_result_ids) + ") ORDER BY neutral_seed_id ASC;"});
-            specs.push_back({"analysis_seed_probe_grid_seeds", "SELECT * FROM sp_grid_seed WHERE probe_result_id IN (" + JoinIds(probe_result_ids) + ") ORDER BY grid_seed_id ASC;"});
-            specs.push_back({"analysis_seed_probe_unique_seeds", "SELECT * FROM sp_unique_seed WHERE probe_result_id IN (" + JoinIds(probe_result_ids) + ") ORDER BY unique_seed_id ASC;"});
         }
         if (IsTablePresent(analysis_db, "sp_encounter_projection", nullptr)) {
             specs.push_back({"analysis_seed_probe_encounter_projections", "SELECT * FROM sp_encounter_projection WHERE probe_run_id IN (" + run_ids + ") ORDER BY encounter_projection_id ASC;"});
@@ -1167,13 +1370,14 @@ std::vector<std::int64_t> CollectWorkflowSeedProbeRunIds(
     const auto jobs = job_ids.empty() ? std::string("0") : JoinIds(job_ids);
     const auto job_sets = job_set_ids.empty() ? std::string("0") : JoinIds(job_set_ids);
     const auto workflows = workflow_ids.empty() ? std::string("0") : JoinIds(workflow_ids);
-    std::vector<std::int64_t> neutral_seed_ids;
-    std::vector<std::int64_t> unique_seed_ids;
+    std::vector<std::int64_t> result_ids;
     if (execution_db != nullptr) {
         auto values = QueryInt64Column(
             execution_db,
             "SELECT program_ref_id FROM exec_job WHERE job_id IN (" + jobs
-                + ") AND program_ref_kind='sp_probe_run';",
+                + ") AND program_ref_kind='sp_probe_run' "
+                  "UNION SELECT domain_ref_id FROM exec_job_set WHERE job_set_id IN (" + job_sets
+                + ") AND domain_ref_kind='sp_probe_run';",
             &error);
         ids.insert(ids.end(), values.begin(), values.end());
         values = QueryInt64Column(
@@ -1204,19 +1408,11 @@ std::vector<std::int64_t> CollectWorkflowSeedProbeRunIds(
         values = QueryInt64Column(
             execution_db,
             "SELECT program_ref_id FROM exec_job WHERE job_id IN (" + jobs
-                + ") AND program_ref_kind='analysisseedprobe.neutral_seed' "
+                + ") AND program_ref_kind='analysisseedprobe.confirmed_result' "
                 "UNION SELECT domain_ref_id FROM exec_job_set WHERE job_set_id IN (" + job_sets
-                + ") AND domain_ref_kind='analysisseedprobe.neutral_seed';",
+                + ") AND domain_ref_kind='analysisseedprobe.confirmed_result';",
             &error);
-        neutral_seed_ids.insert(neutral_seed_ids.end(), values.begin(), values.end());
-        values = QueryInt64Column(
-            execution_db,
-            "SELECT program_ref_id FROM exec_job WHERE job_id IN (" + jobs
-                + ") AND program_ref_kind='analysisseedprobe.unique_seed' "
-                "UNION SELECT domain_ref_id FROM exec_job_set WHERE job_set_id IN (" + job_sets
-                + ") AND domain_ref_kind='analysisseedprobe.unique_seed';",
-            &error);
-        unique_seed_ids.insert(unique_seed_ids.end(), values.begin(), values.end());
+        result_ids.insert(result_ids.end(), values.begin(), values.end());
 
         if (IsTablePresent(execution_db, "exec_job_output", nullptr)) {
             values = QueryInt64Column(
@@ -1228,55 +1424,128 @@ std::vector<std::int64_t> CollectWorkflowSeedProbeRunIds(
             values = QueryInt64Column(
                 execution_db,
                 "SELECT ref_id FROM exec_job_output WHERE job_id IN (" + jobs
-                    + ") AND ref_kind='analysisseedprobe.neutral_seed';",
+                    + ") AND ref_kind='analysisseedprobe.confirmed_result';",
                 &error);
-            neutral_seed_ids.insert(neutral_seed_ids.end(), values.begin(), values.end());
-            values = QueryInt64Column(
-                execution_db,
-                "SELECT ref_id FROM exec_job_output WHERE job_id IN (" + jobs
-                    + ") AND ref_kind='analysisseedprobe.unique_seed';",
-                &error);
-            unique_seed_ids.insert(unique_seed_ids.end(), values.begin(), values.end());
+            result_ids.insert(result_ids.end(), values.begin(), values.end());
         }
     }
     if (!workflow_ids.empty() && IsTablePresent(analysis_db, "ab_battle_results", nullptr)) {
         auto values = QueryInt64Column(
             analysis_db,
-            "SELECT DISTINCT r.probe_run_id FROM ab_battle_results br JOIN sp_neutral_seed n "
-                "ON br.selected_seed_ref_kind='analysisseedprobe.neutral_seed' AND n.neutral_seed_id=br.selected_seed_ref_id "
-                "JOIN sp_probe_result r ON r.probe_result_id=n.probe_result_id WHERE br.workflow_instance_id IN ("
-                + workflows + ") UNION SELECT DISTINCT r.probe_run_id FROM ab_battle_results br JOIN sp_unique_seed u "
-                "ON br.selected_seed_ref_kind='analysisseedprobe.unique_seed' AND u.unique_seed_id=br.selected_seed_ref_id "
-                "JOIN sp_probe_result r ON r.probe_result_id=u.probe_result_id WHERE br.workflow_instance_id IN ("
+            "SELECT DISTINCT r.probe_run_id FROM ab_battle_results br JOIN sp_probe_result r "
+                "ON br.selected_seed_ref_kind='analysisseedprobe.confirmed_result' "
+                "AND r.probe_result_id=br.selected_seed_ref_id WHERE br.workflow_instance_id IN ("
                 + workflows + ");",
             &error);
         ids.insert(ids.end(), values.begin(), values.end());
     }
-    if (!neutral_seed_ids.empty()
-        && IsTablePresent(analysis_db, "sp_neutral_seed", nullptr)
-        && IsTablePresent(analysis_db, "sp_probe_result", nullptr)) {
+    if (!result_ids.empty() && IsTablePresent(analysis_db, "sp_probe_result", nullptr)) {
         auto values = QueryInt64Column(
             analysis_db,
-            "SELECT DISTINCT r.probe_run_id FROM sp_neutral_seed n JOIN sp_probe_result r "
-                "ON r.probe_result_id=n.probe_result_id WHERE n.neutral_seed_id IN ("
-                + JoinIds(neutral_seed_ids) + ");",
-            &error);
-        ids.insert(ids.end(), values.begin(), values.end());
-    }
-    if (!unique_seed_ids.empty()
-        && IsTablePresent(analysis_db, "sp_unique_seed", nullptr)
-        && IsTablePresent(analysis_db, "sp_probe_result", nullptr)) {
-        auto values = QueryInt64Column(
-            analysis_db,
-            "SELECT DISTINCT r.probe_run_id FROM sp_unique_seed u JOIN sp_probe_result r "
-                "ON r.probe_result_id=u.probe_result_id WHERE u.unique_seed_id IN ("
-                + JoinIds(unique_seed_ids) + ");",
+            "SELECT DISTINCT probe_run_id FROM sp_probe_result WHERE probe_result_id IN ("
+                + JoinIds(result_ids) + ");",
             &error);
         ids.insert(ids.end(), values.begin(), values.end());
     }
     std::sort(ids.begin(), ids.end());
     ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
     return ids;
+}
+
+std::vector<std::int64_t> CollectSeedProbeExecutionRootJobSetIds(
+    sqlite3* execution_db,
+    sqlite3* analysis_db,
+    const std::vector<std::int64_t>& workflow_ids,
+    const std::vector<std::int64_t>& job_ids,
+    const std::vector<std::int64_t>& job_set_ids,
+    std::string* error_out) {
+    // SeedProbe result facts live in Analysis, while their durable stage,
+    // ordinal, and desired-delta intent lives on the source Execution jobs.
+    // Export each producer root so workset membership and dispatch history
+    // remain internally complete without importing the producer workflow.
+    std::vector<std::int64_t> root_job_set_ids;
+    if (execution_db == nullptr || analysis_db == nullptr) {
+        return root_job_set_ids;
+    }
+
+    const auto probe_run_ids = CollectWorkflowSeedProbeRunIds(
+        execution_db,
+        analysis_db,
+        workflow_ids,
+        job_ids,
+        job_set_ids);
+    if (probe_run_ids.empty()
+        || !IsTablePresent(analysis_db, "sp_probe_result", nullptr)) {
+        return root_job_set_ids;
+    }
+
+    std::string query_error;
+    const auto source_job_ids = QueryInt64Column(
+        analysis_db,
+        "SELECT DISTINCT source_job_id FROM sp_probe_result "
+        "WHERE probe_run_id IN (" + JoinIds(probe_run_ids)
+            + ") ORDER BY source_job_id ASC;",
+        &query_error);
+    if (!query_error.empty()) {
+        if (error_out != nullptr) {
+            *error_out = query_error;
+        }
+        return {};
+    }
+    if (source_job_ids.empty()) {
+        return root_job_set_ids;
+    }
+
+    const auto source_jobs = JoinIds(source_job_ids);
+    const auto present_source_job_ids = QueryInt64Column(
+        execution_db,
+        "SELECT job_id FROM exec_job WHERE job_id IN (" + source_jobs
+            + ") ORDER BY job_id ASC;",
+        &query_error);
+    if (!query_error.empty()) {
+        if (error_out != nullptr) {
+            *error_out = query_error;
+        }
+        return {};
+    }
+    if (present_source_job_ids != source_job_ids) {
+        if (error_out != nullptr) {
+            *error_out =
+                "SeedProbe archive evidence references a missing source "
+                "execution job";
+        }
+        return {};
+    }
+
+    root_job_set_ids = QueryInt64Column(
+        execution_db,
+        "WITH RECURSIVE source_ancestry(job_set_id,parent_job_set_id) AS ("
+        " SELECT js.job_set_id,js.parent_job_set_id "
+        " FROM exec_job j JOIN exec_job_set js ON js.job_set_id=j.job_set_id "
+        " WHERE j.job_id IN (" + source_jobs + ") "
+        " UNION "
+        " SELECT parent.job_set_id,parent.parent_job_set_id "
+        " FROM exec_job_set parent "
+        " JOIN source_ancestry child "
+        " ON child.parent_job_set_id=parent.job_set_id"
+        ") "
+        "SELECT DISTINCT job_set_id FROM source_ancestry "
+        "WHERE parent_job_set_id IS NULL ORDER BY job_set_id ASC;",
+        &query_error);
+    if (!query_error.empty()) {
+        if (error_out != nullptr) {
+            *error_out = query_error;
+        }
+        return {};
+    }
+    if (root_job_set_ids.empty()) {
+        if (error_out != nullptr) {
+            *error_out =
+                "SeedProbe archive evidence source jobs have no root job set";
+        }
+        return {};
+    }
+    return root_job_set_ids;
 }
 
 std::vector<std::int64_t> FilterExclusiveWorkflowSeedProbeRunIds(
@@ -1304,26 +1573,11 @@ std::vector<std::int64_t> FilterExclusiveWorkflowSeedProbeRunIds(
     for (const auto probe_run_id : probe_run_ids) {
         const auto run = std::to_string(probe_run_id);
         bool referenced = false;
-        std::vector<std::int64_t> neutral_seed_ids;
-        std::vector<std::int64_t> unique_seed_ids;
-        if (IsTablePresent(analysis_db, "sp_probe_result", nullptr)) {
-            if (IsTablePresent(analysis_db, "sp_neutral_seed", nullptr)) {
-                neutral_seed_ids = QueryInt64Column(
-                    analysis_db,
-                    "SELECT n.neutral_seed_id FROM sp_neutral_seed n JOIN sp_probe_result r "
-                        "ON r.probe_result_id=n.probe_result_id WHERE r.probe_run_id=" + run + ";",
-                    &error);
-            }
-            if (IsTablePresent(analysis_db, "sp_unique_seed", nullptr)) {
-                unique_seed_ids = QueryInt64Column(
-                    analysis_db,
-                    "SELECT u.unique_seed_id FROM sp_unique_seed u JOIN sp_probe_result r "
-                        "ON r.probe_result_id=u.probe_result_id WHERE r.probe_run_id=" + run + ";",
-                    &error);
-            }
-        }
-        const auto neutral = neutral_seed_ids.empty() ? std::string("0") : JoinIds(neutral_seed_ids);
-        const auto unique = unique_seed_ids.empty() ? std::string("0") : JoinIds(unique_seed_ids);
+        const auto result_ids = QueryInt64Column(
+            analysis_db,
+            "SELECT probe_result_id FROM sp_probe_result WHERE probe_run_id=" + run + ";",
+            &error);
+        const auto results = result_ids.empty() ? std::string("0") : JoinIds(result_ids);
 
         if (execution_db != nullptr) {
             referenced = QuerySingleInt64(
@@ -1366,22 +1620,22 @@ std::vector<std::int64_t> FilterExclusiveWorkflowSeedProbeRunIds(
 
             referenced = referenced || QuerySingleInt64(
                 execution_db,
-                "SELECT COUNT(1) FROM exec_job WHERE job_id NOT IN (" + jobs + ") AND ("
-                    "(program_ref_kind='analysisseedprobe.neutral_seed' AND program_ref_id IN (" + neutral + ")) OR "
-                    "(program_ref_kind='analysisseedprobe.unique_seed' AND program_ref_id IN (" + unique + ")));",
+                "SELECT COUNT(1) FROM exec_job WHERE job_id NOT IN (" + jobs
+                    + ") AND program_ref_kind='analysisseedprobe.confirmed_result' "
+                      "AND program_ref_id IN (" + results + ");",
                 &error) > 0;
             referenced = referenced || QuerySingleInt64(
                 execution_db,
-                "SELECT COUNT(1) FROM exec_job_set WHERE job_set_id NOT IN (" + job_sets + ") AND ("
-                    "(domain_ref_kind='analysisseedprobe.neutral_seed' AND domain_ref_id IN (" + neutral + ")) OR "
-                    "(domain_ref_kind='analysisseedprobe.unique_seed' AND domain_ref_id IN (" + unique + ")));",
+                "SELECT COUNT(1) FROM exec_job_set WHERE job_set_id NOT IN (" + job_sets
+                    + ") AND domain_ref_kind='analysisseedprobe.confirmed_result' "
+                      "AND domain_ref_id IN (" + results + ");",
                 &error) > 0;
             if (IsTablePresent(execution_db, "exec_job_output", nullptr)) {
                 referenced = referenced || QuerySingleInt64(
                     execution_db,
-                    "SELECT COUNT(1) FROM exec_job_output WHERE job_id NOT IN (" + jobs + ") AND ("
-                        "(ref_kind='analysisseedprobe.neutral_seed' AND ref_id IN (" + neutral + ")) OR "
-                        "(ref_kind='analysisseedprobe.unique_seed' AND ref_id IN (" + unique + ")));",
+                    "SELECT COUNT(1) FROM exec_job_output WHERE job_id NOT IN (" + jobs
+                        + ") AND ref_kind='analysisseedprobe.confirmed_result' "
+                          "AND ref_id IN (" + results + ");",
                     &error) > 0;
             }
         }
@@ -1389,15 +1643,15 @@ std::vector<std::int64_t> FilterExclusiveWorkflowSeedProbeRunIds(
         if (!referenced && IsTablePresent(analysis_db, "ab_battle_results", nullptr)) {
             referenced = QuerySingleInt64(
                 analysis_db,
-                "SELECT COUNT(1) FROM ab_battle_results WHERE workflow_instance_id NOT IN (" + workflows + ") AND ("
-                    "(selected_seed_ref_kind='analysisseedprobe.neutral_seed' AND selected_seed_ref_id IN (" + neutral + ")) OR "
-                    "(selected_seed_ref_kind='analysisseedprobe.unique_seed' AND selected_seed_ref_id IN (" + unique + ")));",
+                "SELECT COUNT(1) FROM ab_battle_results WHERE workflow_instance_id NOT IN (" + workflows
+                    + ") AND selected_seed_ref_kind='analysisseedprobe.confirmed_result' "
+                      "AND selected_seed_ref_id IN (" + results + ");",
                 &error) > 0;
         }
         if (!referenced && IsTablePresent(analysis_db, "ab_seed_candidate", nullptr)) {
             referenced = QuerySingleInt64(
                 analysis_db,
-                "SELECT COUNT(1) FROM ab_seed_candidate c WHERE c.source_unique_seed_id IN (" + unique + ") AND ("
+                "SELECT COUNT(1) FROM ab_seed_candidate c WHERE c.source_probe_result_id IN (" + results + ") AND ("
                     "c.battle_set_id NOT IN (" + battle_sets + ") OR EXISTS ("
                     "SELECT 1 FROM ab_turn_wave w WHERE w.battle_set_id=c.battle_set_id AND ("
                     "EXISTS (SELECT 1 FROM ab_turn_job t WHERE t.wave_id=w.wave_id AND "
@@ -1410,16 +1664,16 @@ std::vector<std::int64_t> FilterExclusiveWorkflowSeedProbeRunIds(
             referenced = QuerySingleInt64(
                 analysis_db,
                 "SELECT COUNT(1) FROM sp_probe_run other JOIN sp_probe_run candidate "
-                    "ON other.unique_input_set_id=candidate.unique_input_set_id "
+                    "ON other.accepted_input_set_id=candidate.accepted_input_set_id "
                     "WHERE candidate.probe_run_id=" + run + " AND other.probe_run_id<>candidate.probe_run_id;",
                 &error) > 0;
         }
         if (!referenced && state_db != nullptr && IsTablePresent(state_db, "state_savestate_derivation", nullptr)) {
             referenced = QuerySingleInt64(
                 state_db,
-                "SELECT COUNT(1) FROM state_savestate_derivation WHERE ("
-                    "(source_context_kind='analysisseedprobe.neutral_seed' AND source_context_id IN (" + neutral + ")) OR "
-                    "(source_context_kind='analysisseedprobe.unique_seed' AND source_context_id IN (" + unique + "))) "
+                "SELECT COUNT(1) FROM state_savestate_derivation WHERE "
+                    "source_context_kind='analysisseedprobe.confirmed_result' "
+                    "AND source_context_id IN (" + results + ") "
                     "AND (from_savestate_id NOT IN (" + exclusive_states + ") OR to_savestate_id NOT IN ("
                     + exclusive_states + "));",
                 &error) > 0;
@@ -1785,6 +2039,21 @@ CreateArchivePackageResult SqliteArchivePackageService::CreatePackage(const Crea
         return result;
     }
 
+    std::vector<std::string> readiness_blockers;
+    std::string readiness_error;
+    if (!CollectArchiveReadinessBlockers(
+            execution_db_,
+            RootJobSetCte(request.source_root_job_set_id),
+            &readiness_blockers,
+            &readiness_error)) {
+        result.error = readiness_error;
+        return result;
+    }
+    if (!readiness_blockers.empty()) {
+        result.error = "archive source is not quiescent: " + JoinBlockers(readiness_blockers);
+        return result;
+    }
+
     std::int64_t manifest_schema_version = request.schema_version;
     if (manifest_schema_version <= 0) {
         std::string schema_error;
@@ -1995,7 +2264,43 @@ WorkflowArchivePreview SqliteArchivePackageService::PreviewWorkflowArchive(
 
     const auto workflow_id_list = JoinIds(workflow_ids);
     std::string query_error;
-    const auto scoped = WorkflowJobSetCte(workflow_id_list);
+    const auto base_scoped = WorkflowJobSetCte(workflow_id_list);
+    const auto base_job_ids = QueryInt64Column(
+        execution_db_,
+        base_scoped
+            + "SELECT job_id FROM scoped_jobs ORDER BY job_id ASC;",
+        &query_error);
+    const auto base_job_set_ids = QueryInt64Column(
+        execution_db_,
+        base_scoped
+            + "SELECT job_set_id FROM scoped_job_sets "
+              "ORDER BY job_set_id ASC;",
+        &query_error);
+    const auto seed_probe_root_job_set_ids =
+        CollectSeedProbeExecutionRootJobSetIds(
+            execution_db_,
+            analysis_db_,
+            workflow_ids,
+            base_job_ids,
+            base_job_set_ids,
+            &query_error);
+    if (!query_error.empty()) {
+        preview.error = query_error;
+        if (error_out) *error_out = query_error;
+        return preview;
+    }
+    const auto scoped = WorkflowJobSetCte(
+        workflow_id_list,
+        seed_probe_root_job_set_ids);
+    if (!CollectArchiveReadinessBlockers(
+            execution_db_,
+            scoped,
+            &preview.purge_blockers,
+            &query_error)) {
+        preview.error = query_error;
+        if (error_out) *error_out = query_error;
+        return preview;
+    }
     const auto job_ids = QueryInt64Column(
         execution_db_,
         scoped + "SELECT job_id FROM scoped_jobs ORDER BY job_id ASC;",
@@ -2016,7 +2321,11 @@ WorkflowArchivePreview SqliteArchivePackageService::PreviewWorkflowArchive(
 
     auto execution_policy = ArchivePackageRetentionPolicy{};
     execution_policy.inline_payload_max_bytes = std::numeric_limits<std::size_t>::max();
-    for (const auto& spec : BuildWorkflowExecutionSpecs(workflow_ids, execution_policy, execution_db_)) {
+    for (const auto& spec : BuildWorkflowExecutionSpecs(
+             workflow_ids,
+             execution_policy,
+             execution_db_,
+             seed_probe_root_job_set_ids)) {
         preview.execution_row_count += static_cast<int>(count_rows(execution_db_, spec, &query_error));
     }
 
@@ -2071,6 +2380,59 @@ CreateArchivePackageResult SqliteArchivePackageService::CreateWorkflowPackage(
         return result;
     }
 
+    const auto workflow_id_list = JoinIds(workflow_ids);
+    std::string query_error;
+    const auto base_scoped = WorkflowJobSetCte(workflow_id_list);
+    const auto base_job_ids = QueryInt64Column(
+        execution_db_,
+        base_scoped
+            + "SELECT job_id FROM scoped_jobs ORDER BY job_id ASC;",
+        &query_error);
+    const auto base_job_set_ids = QueryInt64Column(
+        execution_db_,
+        base_scoped
+            + "SELECT job_set_id FROM scoped_job_sets "
+              "ORDER BY job_set_id ASC;",
+        &query_error);
+    const auto seed_probe_root_job_set_ids = request.include_analysis
+        ? CollectSeedProbeExecutionRootJobSetIds(
+              execution_db_,
+              analysis_db_,
+              workflow_ids,
+              base_job_ids,
+              base_job_set_ids,
+              &query_error)
+        : std::vector<std::int64_t>{};
+    if (!query_error.empty()) {
+        result.error = query_error;
+        return result;
+    }
+    if (!seed_probe_root_job_set_ids.empty()
+        && !request.include_execution) {
+        result.error =
+            "SeedProbe analysis archive requires execution context because "
+            "sp_probe_result intent is stored in its source jobs";
+        return result;
+    }
+
+    const auto scoped = WorkflowJobSetCte(
+        workflow_id_list,
+        seed_probe_root_job_set_ids);
+    std::vector<std::string> readiness_blockers;
+    std::string readiness_error;
+    if (!CollectArchiveReadinessBlockers(
+            execution_db_,
+            scoped,
+            &readiness_blockers,
+            &readiness_error)) {
+        result.error = readiness_error;
+        return result;
+    }
+    if (!readiness_blockers.empty()) {
+        result.error = "archive source is not quiescent: " + JoinBlockers(readiness_blockers);
+        return result;
+    }
+
     std::int64_t execution_schema_version = request.schema_version;
     if (execution_schema_version <= 0) {
         std::string schema_error;
@@ -2109,9 +2471,6 @@ CreateArchivePackageResult SqliteArchivePackageService::CreateWorkflowPackage(
     auto package_policy = request.retention_policy;
     package_policy.inline_payload_max_bytes = std::numeric_limits<std::size_t>::max();
 
-    const auto workflow_id_list = JoinIds(workflow_ids);
-    std::string query_error;
-    const auto scoped = WorkflowJobSetCte(workflow_id_list);
     const auto job_ids = QueryInt64Column(
         execution_db_,
         scoped + "SELECT job_id FROM scoped_jobs ORDER BY job_id ASC;",
@@ -2122,7 +2481,11 @@ CreateArchivePackageResult SqliteArchivePackageService::CreateWorkflowPackage(
     }
 
     const auto execution_specs = request.include_execution
-        ? BuildWorkflowExecutionSpecs(workflow_ids, package_policy, execution_db_)
+        ? BuildWorkflowExecutionSpecs(
+              workflow_ids,
+              package_policy,
+              execution_db_,
+              seed_probe_root_job_set_ids)
         : std::vector<ExportSpec>{};
     std::vector<std::int64_t> battle_set_ids;
     const auto analysis_specs = (request.include_analysis && analysis_db_ != nullptr)
@@ -2520,6 +2883,18 @@ WorkflowArchivePurgeResult SqliteArchivePackageService::PurgeWorkflowArchiveSour
 
     std::string query_error;
     const auto scoped = WorkflowJobSetCte(workflow_id_list);
+    if (!CollectArchiveReadinessBlockers(
+            execution_db_,
+            scoped,
+            &result.blockers,
+            &query_error)) {
+        result.error = query_error;
+        if (error_out) *error_out = query_error;
+        return result;
+    }
+    if (!result.blockers.empty()) {
+        return result;
+    }
     const auto job_ids = QueryInt64Column(execution_db_, scoped + "SELECT job_id FROM scoped_jobs ORDER BY job_id ASC;", &query_error);
     if (!query_error.empty()) {
         result.error = query_error;
@@ -2582,9 +2957,6 @@ WorkflowArchivePurgeResult SqliteArchivePackageService::PurgeWorkflowArchiveSour
     std::vector<std::int64_t> selected_completion_ids;
     std::vector<std::int64_t> selected_results_ids;
     std::vector<std::int64_t> exclusive_probe_result_ids;
-    std::vector<std::int64_t> exclusive_neutral_seed_ids;
-    std::vector<std::int64_t> exclusive_unique_seed_ids;
-    std::vector<std::int64_t> exclusive_grid_seed_ids;
     std::vector<std::int64_t> exclusive_encounter_projection_ids;
     std::vector<std::int64_t> exclusive_probe_set_ids;
     std::vector<std::int64_t> exclusive_input_set_ids;
@@ -2615,7 +2987,7 @@ WorkflowArchivePurgeResult SqliteArchivePackageService::PurgeWorkflowArchiveSour
             if (query_error.empty()) {
                 exclusive_input_set_ids = QueryInt64Column(
                     analysis_db_,
-                    "SELECT unique_input_set_id FROM sp_probe_run WHERE probe_run_id IN (" + runs + ");",
+                    "SELECT accepted_input_set_id FROM sp_probe_run WHERE probe_run_id IN (" + runs + ");",
                     &query_error);
             }
             if (query_error.empty() && IsTablePresent(analysis_db_, "sp_probe_result", nullptr)) {
@@ -2627,35 +2999,12 @@ WorkflowArchivePurgeResult SqliteArchivePackageService::PurgeWorkflowArchiveSour
         }
         if (query_error.empty() && !exclusive_probe_result_ids.empty()) {
             const auto results = JoinIds(exclusive_probe_result_ids);
-            if (IsTablePresent(analysis_db_, "sp_neutral_seed", nullptr)) {
-                exclusive_neutral_seed_ids = QueryInt64Column(
-                    analysis_db_,
-                    "SELECT neutral_seed_id FROM sp_neutral_seed WHERE probe_result_id IN (" + results + ");",
-                    &query_error);
-            }
-            if (query_error.empty() && IsTablePresent(analysis_db_, "sp_unique_seed", nullptr)) {
-                exclusive_unique_seed_ids = QueryInt64Column(
-                    analysis_db_,
-                    "SELECT unique_seed_id FROM sp_unique_seed WHERE probe_result_id IN (" + results + ");",
-                    &query_error);
-                auto frames = QueryInt64Column(
-                    analysis_db_,
-                    "SELECT input_frame_id FROM sp_unique_seed WHERE probe_result_id IN (" + results + ");",
-                    &query_error);
-                exclusive_input_frame_ids.insert(
-                    exclusive_input_frame_ids.end(), frames.begin(), frames.end());
-            }
-            if (query_error.empty() && IsTablePresent(analysis_db_, "sp_grid_seed", nullptr)) {
-                exclusive_grid_seed_ids = QueryInt64Column(
-                    analysis_db_,
-                    "SELECT grid_seed_id FROM sp_grid_seed WHERE probe_result_id IN (" + results + ");",
-                    &query_error);
-                auto axes = QueryInt64Column(
-                    analysis_db_,
-                    "SELECT axis_xy_id FROM sp_grid_seed WHERE probe_result_id IN (" + results + ");",
-                    &query_error);
-                exclusive_axis_ids.insert(exclusive_axis_ids.end(), axes.begin(), axes.end());
-            }
+            auto frames = QueryInt64Column(
+                analysis_db_,
+                "SELECT input_frame_id FROM sp_probe_result WHERE probe_result_id IN (" + results + ");",
+                &query_error);
+            exclusive_input_frame_ids.insert(
+                exclusive_input_frame_ids.end(), frames.begin(), frames.end());
         }
         if (query_error.empty() && !exclusive_probe_run_ids.empty()
             && IsTablePresent(analysis_db_, "sp_encounter_projection", nullptr)) {
@@ -2888,24 +3237,12 @@ WorkflowArchivePurgeResult SqliteArchivePackageService::PurgeWorkflowArchiveSour
         }
         if (!exclusive_probe_run_ids.empty() && IsTablePresent(analysis_db_, "sp_probe_run", nullptr)) {
             const auto run_id_list = JoinIds(exclusive_probe_run_ids);
-            const auto result_id_list = exclusive_probe_result_ids.empty()
-                ? std::string("0")
-                : JoinIds(exclusive_probe_result_ids);
             if (IsTablePresent(analysis_db_, "sp_outbox_message", nullptr)) {
                 del("DELETE FROM sp_outbox_message WHERE aggregate_kind='probe_run' "
                     "AND CAST(aggregate_id AS INTEGER) IN (" + run_id_list + ");");
             }
             if (IsTablePresent(analysis_db_, "sp_encounter_projection", nullptr)) {
                 del("DELETE FROM sp_encounter_projection WHERE probe_run_id IN (" + run_id_list + ");");
-            }
-            if (IsTablePresent(analysis_db_, "sp_neutral_seed", nullptr)) {
-                del("DELETE FROM sp_neutral_seed WHERE probe_result_id IN (" + result_id_list + ");");
-            }
-            if (IsTablePresent(analysis_db_, "sp_grid_seed", nullptr)) {
-                del("DELETE FROM sp_grid_seed WHERE probe_result_id IN (" + result_id_list + ");");
-            }
-            if (IsTablePresent(analysis_db_, "sp_unique_seed", nullptr)) {
-                del("DELETE FROM sp_unique_seed WHERE probe_result_id IN (" + result_id_list + ");");
             }
             if (IsTablePresent(analysis_db_, "sp_probe_result", nullptr)) {
                 del("DELETE FROM sp_probe_result WHERE probe_run_id IN (" + run_id_list + ");");
@@ -2916,10 +3253,10 @@ WorkflowArchivePurgeResult SqliteArchivePackageService::PurgeWorkflowArchiveSour
                 && IsTablePresent(analysis_db_, "an_input_set_frame", nullptr)) {
                 const auto input_set_id_list = JoinIds(exclusive_input_set_ids);
                 del("DELETE FROM an_input_set_frame WHERE input_set_id IN (" + input_set_id_list + ") "
-                    "AND input_set_id NOT IN (SELECT DISTINCT unique_input_set_id FROM sp_probe_run);");
+                    "AND input_set_id NOT IN (SELECT DISTINCT accepted_input_set_id FROM sp_probe_run);");
                 if (IsTablePresent(analysis_db_, "an_input_set", nullptr)) {
                     del("DELETE FROM an_input_set WHERE input_set_id IN (" + input_set_id_list + ") "
-                        "AND input_set_id NOT IN (SELECT DISTINCT unique_input_set_id FROM sp_probe_run);");
+                        "AND input_set_id NOT IN (SELECT DISTINCT accepted_input_set_id FROM sp_probe_run);");
                 }
             }
             if (!exclusive_input_frame_ids.empty()
@@ -2932,7 +3269,7 @@ WorkflowArchivePurgeResult SqliteArchivePackageService::PurgeWorkflowArchiveSour
                 }
                 del("DELETE FROM sp_input_frame WHERE input_frame_id IN ("
                     + JoinIds(exclusive_input_frame_ids) + ") "
-                    "AND input_frame_id NOT IN (SELECT DISTINCT input_frame_id FROM sp_unique_seed) "
+                    "AND input_frame_id NOT IN (SELECT DISTINCT input_frame_id FROM sp_probe_result) "
                     "AND input_frame_id NOT IN (SELECT DISTINCT input_frame_id FROM an_input_set_frame) "
                     + retained_candidate_clause + ";");
             }
@@ -2940,8 +3277,7 @@ WorkflowArchivePurgeResult SqliteArchivePackageService::PurgeWorkflowArchiveSour
                 del("DELETE FROM sp_axis_xy WHERE axis_xy_id IN (" + JoinIds(exclusive_axis_ids) + ") "
                     "AND axis_xy_id NOT IN (SELECT main_axis_xy_id FROM sp_input_frame "
                     "UNION SELECT cstick_axis_xy_id FROM sp_input_frame "
-                    "UNION SELECT trigger_axis_xy_id FROM sp_input_frame) "
-                    "AND axis_xy_id NOT IN (SELECT axis_xy_id FROM sp_grid_seed);");
+                    "UNION SELECT trigger_axis_xy_id FROM sp_input_frame);");
             }
             if (!exclusive_probe_set_ids.empty() && IsTablePresent(analysis_db_, "sp_probe_set", nullptr)) {
                 const auto probe_set_id_list = JoinIds(exclusive_probe_set_ids);
@@ -3039,14 +3375,40 @@ WorkflowArchivePurgeResult SqliteArchivePackageService::PurgeWorkflowArchiveSour
     exec_del("DELETE FROM exec_workflow_step WHERE workflow_instance_id IN (" + workflow_id_list + ");");
     exec_del("DELETE FROM exec_workflow_instance WHERE workflow_instance_id IN (" + workflow_id_list + ");");
     exec_del("DELETE FROM exec_job_event WHERE job_id IN (" + job_id_list_for_delete + ");");
+    exec_del("DELETE FROM exec_job_cancellation_request WHERE job_id IN (" + job_id_list_for_delete + ");");
     if (IsTablePresent(execution_db_, "exec_trigger", nullptr)) {
         exec_del("DELETE FROM exec_trigger WHERE (scope_kind='job_set' AND scope_id IN (" + job_set_id_list_for_delete + ")) OR (scope_kind='job' AND scope_id IN (" + job_id_list_for_delete + "));");
     }
     if (IsTablePresent(execution_db_, "exec_outbox_message", nullptr)) {
-        exec_del("DELETE FROM exec_outbox_message WHERE (aggregate_kind='job_set' AND CAST(aggregate_id AS INTEGER) IN (" + job_set_id_list_for_delete + ")) OR (aggregate_kind='job' AND CAST(aggregate_id AS INTEGER) IN (" + job_id_list_for_delete + "));");
+        exec_del(
+            "DELETE FROM exec_outbox_message WHERE "
+            "(aggregate_kind='job_set' AND CAST(aggregate_id AS INTEGER) IN (" + job_set_id_list_for_delete + ")) "
+            "OR (aggregate_kind='job' AND CAST(aggregate_id AS INTEGER) IN (" + job_id_list_for_delete + ")) "
+            "OR (aggregate_kind='workset' AND CAST(aggregate_id AS INTEGER) IN (SELECT workset_id FROM exec_workset WHERE job_set_id IN (" + job_set_id_list_for_delete + "))) "
+            "OR (aggregate_kind='workset_dispatch_attempt' AND CAST(aggregate_id AS INTEGER) IN (SELECT a.dispatch_attempt_id FROM exec_workset_dispatch_attempt a JOIN exec_workset w ON w.workset_id=a.workset_id WHERE w.job_set_id IN (" + job_set_id_list_for_delete + ")));");
     }
     exec_del("DELETE FROM exec_job WHERE job_id IN (" + job_id_list_for_delete + ");");
+    exec_del("DELETE FROM exec_workset_dispatch_attempt WHERE workset_id IN (SELECT workset_id FROM exec_workset WHERE job_set_id IN (" + job_set_id_list_for_delete + "));");
+    exec_del("DELETE FROM exec_workset WHERE job_set_id IN (" + job_set_id_list_for_delete + ");");
     exec_del("DELETE FROM exec_job_set WHERE job_set_id IN (" + job_set_id_list_for_delete + ");");
+    if (exec_ok) {
+        const auto remaining = QuerySingleInt64(
+            execution_db_,
+            "SELECT "
+            "(SELECT COUNT(1) FROM exec_job_cancellation_request WHERE job_id IN (" + job_id_list_for_delete + ")) + "
+            "(SELECT COUNT(1) FROM exec_job_event WHERE job_id IN (" + job_id_list_for_delete + ")) + "
+            "(SELECT COUNT(1) FROM exec_job WHERE job_id IN (" + job_id_list_for_delete + ")) + "
+            "(SELECT COUNT(1) FROM exec_workset_dispatch_attempt WHERE workset_id IN (SELECT workset_id FROM exec_workset WHERE job_set_id IN (" + job_set_id_list_for_delete + "))) + "
+            "(SELECT COUNT(1) FROM exec_workset WHERE job_set_id IN (" + job_set_id_list_for_delete + ")) + "
+            "(SELECT COUNT(1) FROM exec_job_set WHERE job_set_id IN (" + job_set_id_list_for_delete + "));",
+            &query_error);
+        if (!query_error.empty() || remaining != 0) {
+            exec_ok = false;
+            if (query_error.empty()) {
+                query_error = "execution coordination rows remain after archive purge";
+            }
+        }
+    }
     if (exec_ok) {
         if (!ExecuteSql(execution_db_, "COMMIT;", &query_error)) return fail(query_error);
         result.workflow_rows_deleted = static_cast<int>(workflow_ids.size());
@@ -3061,8 +3423,7 @@ WorkflowArchivePurgeResult SqliteArchivePackageService::PurgeWorkflowArchiveSour
             || !exclusive_artifact_ids.empty()
             || !selected_completion_ids.empty()
             || !selected_results_ids.empty()
-            || !exclusive_neutral_seed_ids.empty()
-            || !exclusive_unique_seed_ids.empty())) {
+            || !exclusive_probe_result_ids.empty())) {
         if (!ExecuteSql(state_db_, "BEGIN IMMEDIATE;", &query_error)) return fail(query_error);
         bool state_ok = true;
         int sav_deleted = 0;
@@ -3094,18 +3455,11 @@ WorkflowArchivePurgeResult SqliteArchivePackageService::PurgeWorkflowArchiveSour
                     "'analysisbattle.battle_results','ab_battle_results');",
                 nullptr);
         }
-        if (!exclusive_neutral_seed_ids.empty()) {
+        if (!exclusive_probe_result_ids.empty()) {
             state_del(
                 "DELETE FROM state_savestate_derivation WHERE source_context_kind="
-                    "'analysisseedprobe.neutral_seed' AND source_context_id IN ("
-                    + JoinIds(exclusive_neutral_seed_ids) + ");",
-                nullptr);
-        }
-        if (!exclusive_unique_seed_ids.empty()) {
-            state_del(
-                "DELETE FROM state_savestate_derivation WHERE source_context_kind="
-                    "'analysisseedprobe.unique_seed' AND source_context_id IN ("
-                    + JoinIds(exclusive_unique_seed_ids) + ");",
+                    "'analysisseedprobe.confirmed_result' AND source_context_id IN ("
+                    + JoinIds(exclusive_probe_result_ids) + ");",
                 nullptr);
         }
         if (!exclusive_savestate_ids.empty()) {
@@ -3203,9 +3557,10 @@ std::vector<ArchiveCandidateRoot> SqliteArchivePackageService::ListArchiveCandid
         "), run_stats AS ("
         "  SELECT root_job_set_id, "
         "         COUNT(job_id) AS total_jobs, "
-        "         SUM(CASE WHEN ended_at_utc IS NULL "
+        "         SUM(CASE WHEN state='EXECUTION_FINISHED' "
+        "                   OR (ended_at_utc IS NULL "
         "                   AND state NOT IN ('COMPLETED','FAILED','CANCELED','SUCCEEDED','SUCCEEDED_WINNER','SUCCEEDED_DUPLICATE','SUPERSEDED') "
-        "                  THEN 1 ELSE 0 END) AS non_terminal_jobs, "
+        "                  ) THEN 1 ELSE 0 END) AS non_terminal_jobs, "
         "         SUM(CASE WHEN claimed_by_token IS NOT NULL AND claimed_by_token<>'' "
         "                   AND COALESCE(lease_expires_at_utc, 0) > ?1 "
         "                  THEN 1 ELSE 0 END) AS active_leases, "
@@ -3218,6 +3573,34 @@ std::vector<ArchiveCandidateRoot> SqliteArchivePackageService::ListArchiveCandid
         "WHERE total_jobs > 0 "
         "  AND non_terminal_jobs = 0 "
         "  AND active_leases = 0 "
+        "  AND NOT EXISTS ("
+        "    SELECT 1 FROM run_tree t "
+        "    JOIN exec_job_set s ON s.job_set_id=t.job_set_id "
+        "    WHERE t.root_job_set_id=run_stats.root_job_set_id "
+        "      AND COALESCE(s.materialization_state,'')<>'WORKSET_PUBLICATION_COMPLETE'"
+        "  ) "
+        "  AND NOT EXISTS ("
+        "    SELECT 1 FROM run_tree t "
+        "    JOIN exec_workset w ON w.job_set_id=t.job_set_id "
+        "    JOIN exec_workset_dispatch_attempt a ON a.workset_id=w.workset_id "
+        "    WHERE t.root_job_set_id=run_stats.root_job_set_id "
+        "      AND a.state IN ('CLAIMED','DISPATCHED')"
+        "  ) "
+        "  AND NOT EXISTS ("
+        "    SELECT 1 FROM run_tree t "
+        "    JOIN exec_job j ON j.job_set_id=t.job_set_id "
+        "    LEFT JOIN exec_job_cancellation_request c ON c.job_id=j.job_id "
+        "    WHERE t.root_job_set_id=run_stats.root_job_set_id "
+        "      AND ((j.cancellation_state IS NOT NULL AND j.cancellation_state<>'RESOLVED') "
+        "        OR (c.cancellation_request_id IS NOT NULL AND c.state<>'RESOLVED'))"
+        "  ) "
+        "  AND NOT EXISTS ("
+        "    SELECT 1 FROM run_tree t "
+        "    JOIN exec_job j ON j.job_set_id=t.job_set_id "
+        "    JOIN exec_temp_blob b ON b.temp_blob_id=j.worker_result_blob_id "
+        "    WHERE t.root_job_set_id=run_stats.root_job_set_id "
+        "      AND b.cleanup_state<>'DELETED'"
+        "  ) "
         "  AND terminal_at_utc > 0 "
         "  AND terminal_at_utc < ?2 "
         "ORDER BY terminal_at_utc ASC, root_job_set_id ASC "
@@ -3384,6 +3767,23 @@ bool SqliteArchivePackageService::ApplySourcePurgePolicyForRoot(
     }
     if (action == ArchiveSourcePurgeAction::None) {
         return true;
+    }
+
+    std::vector<std::string> readiness_blockers;
+    std::string readiness_error;
+    if (!CollectArchiveReadinessBlockers(
+            execution_db_,
+            RootJobSetCte(root_job_set_id),
+            &readiness_blockers,
+            &readiness_error)) {
+        if (error_out != nullptr) *error_out = readiness_error;
+        return false;
+    }
+    if (!readiness_blockers.empty()) {
+        if (error_out != nullptr) {
+            *error_out = "archive source is not quiescent: " + JoinBlockers(readiness_blockers);
+        }
+        return false;
     }
 
     Statement st;
@@ -3557,6 +3957,17 @@ bool SqliteArchivePackageService::ApplySourcePurgePolicyForRoot(
             "), scoped_jobs(job_id) AS ("
             "  SELECT job_id FROM exec_job WHERE job_set_id IN (SELECT job_set_id FROM scoped_job_sets)"
             ") "
+            "DELETE FROM exec_job_cancellation_request "
+            "WHERE job_id IN (SELECT job_id FROM scoped_jobs);");
+        ok = ok && run_delete(
+            "WITH RECURSIVE scoped_job_sets(job_set_id) AS ("
+            "  SELECT job_set_id FROM exec_job_set WHERE job_set_id=?1 "
+            "  UNION ALL "
+            "  SELECT c.job_set_id FROM exec_job_set c "
+            "  JOIN scoped_job_sets p ON c.parent_job_set_id=p.job_set_id"
+            "), scoped_jobs(job_id) AS ("
+            "  SELECT job_id FROM exec_job WHERE job_set_id IN (SELECT job_set_id FROM scoped_job_sets)"
+            ") "
             "DELETE FROM exec_trigger "
             "WHERE (scope_kind='job_set' AND scope_id IN (SELECT job_set_id FROM scoped_job_sets)) "
             "   OR (scope_kind='job' AND scope_id IN (SELECT job_id FROM scoped_jobs));");
@@ -3571,7 +3982,14 @@ bool SqliteArchivePackageService::ApplySourcePurgePolicyForRoot(
             ") "
             "DELETE FROM exec_outbox_message "
             "WHERE (aggregate_kind='job_set' AND CAST(aggregate_id AS INTEGER) IN (SELECT job_set_id FROM scoped_job_sets)) "
-            "   OR (aggregate_kind='job' AND CAST(aggregate_id AS INTEGER) IN (SELECT job_id FROM scoped_jobs));");
+            "   OR (aggregate_kind='job' AND CAST(aggregate_id AS INTEGER) IN (SELECT job_id FROM scoped_jobs)) "
+            "   OR (aggregate_kind='workset' AND CAST(aggregate_id AS INTEGER) IN ("
+            "       SELECT workset_id FROM exec_workset "
+            "       WHERE job_set_id IN (SELECT job_set_id FROM scoped_job_sets))) "
+            "   OR (aggregate_kind='workset_dispatch_attempt' AND CAST(aggregate_id AS INTEGER) IN ("
+            "       SELECT a.dispatch_attempt_id FROM exec_workset_dispatch_attempt a "
+            "       JOIN exec_workset w ON w.workset_id=a.workset_id "
+            "       WHERE w.job_set_id IN (SELECT job_set_id FROM scoped_job_sets)));");
         ok = ok && run_delete(
             "WITH RECURSIVE scoped_job_sets(job_set_id) AS ("
             "  SELECT job_set_id FROM exec_job_set WHERE job_set_id=?1 "
@@ -3580,6 +3998,27 @@ bool SqliteArchivePackageService::ApplySourcePurgePolicyForRoot(
             "  JOIN scoped_job_sets p ON c.parent_job_set_id=p.job_set_id"
             ") "
             "DELETE FROM exec_job WHERE job_set_id IN (SELECT job_set_id FROM scoped_job_sets);");
+        ok = ok && run_delete(
+            "WITH RECURSIVE scoped_job_sets(job_set_id) AS ("
+            "  SELECT job_set_id FROM exec_job_set WHERE job_set_id=?1 "
+            "  UNION ALL "
+            "  SELECT c.job_set_id FROM exec_job_set c "
+            "  JOIN scoped_job_sets p ON c.parent_job_set_id=p.job_set_id"
+            ") "
+            "DELETE FROM exec_workset_dispatch_attempt "
+            "WHERE workset_id IN ("
+            "  SELECT workset_id FROM exec_workset "
+            "  WHERE job_set_id IN (SELECT job_set_id FROM scoped_job_sets)"
+            ");");
+        ok = ok && run_delete(
+            "WITH RECURSIVE scoped_job_sets(job_set_id) AS ("
+            "  SELECT job_set_id FROM exec_job_set WHERE job_set_id=?1 "
+            "  UNION ALL "
+            "  SELECT c.job_set_id FROM exec_job_set c "
+            "  JOIN scoped_job_sets p ON c.parent_job_set_id=p.job_set_id"
+            ") "
+            "DELETE FROM exec_workset "
+            "WHERE job_set_id IN (SELECT job_set_id FROM scoped_job_sets);");
         ok = ok && run_delete(
             "WITH RECURSIVE scoped_job_sets(job_set_id) AS ("
             "  SELECT job_set_id FROM exec_job_set WHERE job_set_id=?1 "

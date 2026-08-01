@@ -1,6 +1,7 @@
 #include "RehydrateExecutor.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <fstream>
 #include <limits>
@@ -10,6 +11,7 @@
 
 #include "../Common/Migrations/MigrationRunner.h"
 #include "../Common/Events/OutboxEventIds.h"
+#include "../Execution/ProgramDB/SeedProbe/SeedProbeJobSpec.h"
 #include "../../SavorCore/Utils/Hash.h"
 
 namespace savor::db::archive {
@@ -331,6 +333,17 @@ const StreamFile* FindStream(const PackageSpec& spec, std::string_view item_kind
     return it == spec.stream_files.end() ? nullptr : &*it;
 }
 
+bool JsonPathPresent(sqlite3* db, std::string_view json, std::string_view path) {
+    Statement st;
+    if (db == nullptr
+        || sqlite3_prepare_v2(db, "SELECT json_type(?1, ?2) IS NOT NULL;", -1, &st.st, nullptr) != SQLITE_OK) {
+        return false;
+    }
+    sqlite3_bind_text(st.st, 1, json.data(), static_cast<int>(json.size()), SQLITE_TRANSIENT);
+    sqlite3_bind_text(st.st, 2, path.data(), static_cast<int>(path.size()), SQLITE_TRANSIENT);
+    return sqlite3_step(st.st) == SQLITE_ROW && sqlite3_column_int(st.st, 0) != 0;
+}
+
 std::vector<std::string> ReadStreamLines(const PackageSpec& spec, const StreamFile& file) {
     std::vector<std::string> lines;
     std::ifstream in(spec.package_root / file.rel_path, std::ios::binary);
@@ -341,6 +354,168 @@ std::vector<std::string> ReadStreamLines(const PackageSpec& spec, const StreamFi
         }
     }
     return lines;
+}
+
+void ValidateExecutionPackageContract(
+    sqlite3* json_db,
+    const PackageSpec& spec,
+    std::vector<std::string>* blockers) {
+    if (json_db == nullptr || blockers == nullptr) {
+        return;
+    }
+
+    const std::array<std::string_view, 6> required_streams = {
+        "job_sets",
+        "worksets",
+        "workset_dispatch_attempts",
+        "jobs",
+        "job_events",
+        "job_cancellation_requests",
+    };
+    const bool has_execution = std::any_of(
+        required_streams.begin(),
+        required_streams.end(),
+        [&](std::string_view kind) { return FindStream(spec, kind) != nullptr; });
+    if (!has_execution) {
+        return;
+    }
+
+    const std::array<std::string_view, 6> required_tables = {
+        "exec_job_set",
+        "exec_workset",
+        "exec_workset_dispatch_attempt",
+        "exec_job",
+        "exec_job_event",
+        "exec_job_cancellation_request",
+    };
+    for (const auto table : required_tables) {
+        if (!TableExists(json_db, table)) {
+            blockers->push_back("required_execution_table_missing:" + std::string(table));
+        }
+    }
+
+    for (const auto kind : required_streams) {
+        if (FindStream(spec, kind) == nullptr) {
+            blockers->push_back("required_execution_stream_missing:" + std::string(kind));
+        }
+    }
+    if (FindStream(spec, "temp_blobs") != nullptr
+        || FindStream(spec, "temporary_result_blobs") != nullptr) {
+        blockers->push_back("temporary_result_blob_stream_forbidden");
+    }
+
+    for (const auto& file : spec.stream_files) {
+        if (file.rel_path.extension() != ".jsonl") {
+            continue;
+        }
+        const auto lines = ReadStreamLines(spec, file);
+        if (static_cast<int>(lines.size()) != file.row_count) {
+            blockers->push_back(
+                "stream_row_count_mismatch:" + file.item_kind
+                + ":manifest=" + std::to_string(file.row_count)
+                + ":actual=" + std::to_string(lines.size()));
+        }
+    }
+
+    if (const auto* job_sets = FindStream(spec, "job_sets")) {
+        for (const auto& line : ReadStreamLines(spec, *job_sets)) {
+            bool ok = false;
+            const auto state = JsonExtractText(json_db, line, "$.materialization_state", &ok);
+            if (!ok || state != "WORKSET_PUBLICATION_COMPLETE") {
+                blockers->push_back("job_set_publication_incomplete");
+                break;
+            }
+        }
+    }
+    if (const auto* attempts = FindStream(spec, "workset_dispatch_attempts")) {
+        for (const auto& line : ReadStreamLines(spec, *attempts)) {
+            bool ok = false;
+            const auto state = JsonExtractText(json_db, line, "$.state", &ok);
+            if (!ok || state != "CLOSED") {
+                blockers->push_back("active_workset_dispatch_in_package");
+                break;
+            }
+        }
+    }
+    if (const auto* jobs = FindStream(spec, "jobs")) {
+        std::unordered_map<std::int64_t, std::vector<std::int64_t>> ordinals_by_workset;
+        for (const auto& line : ReadStreamLines(spec, *jobs)) {
+            bool ok_state = false;
+            const auto state = JsonExtractText(json_db, line, "$.state", &ok_state);
+            if (!ok_state || state == "EXECUTION_FINISHED") {
+                blockers->push_back("non_archivable_job_state_in_package");
+                break;
+            }
+            bool has_blob_id = false;
+            (void)JsonExtractInt(json_db, line, "$.worker_result_blob_id", &has_blob_id);
+            if (has_blob_id) {
+                blockers->push_back("temporary_result_blob_reference_forbidden");
+                break;
+            }
+            bool ok_cancellation = false;
+            const auto cancellation = JsonExtractText(
+                json_db, line, "$.cancellation_state", &ok_cancellation);
+            if (ok_cancellation && cancellation != "RESOLVED") {
+                blockers->push_back("unresolved_job_cancellation_in_package");
+                break;
+            }
+            if (!JsonPathPresent(json_db, line, "$.result_processing_attempts")
+                || !JsonPathPresent(json_db, line, "$.result_processing_failures")
+                || !JsonPathPresent(json_db, line, "$.cancellation_delivery_attempts")) {
+                blockers->push_back("current_job_coordination_fields_missing");
+                break;
+            }
+            bool ok_workset = false;
+            bool ok_ordinal = false;
+            const auto workset_id = JsonExtractInt(json_db, line, "$.workset_id", &ok_workset);
+            const auto ordinal = JsonExtractInt(
+                json_db, line, "$.workset_item_ordinal", &ok_ordinal);
+            if (!ok_workset || !ok_ordinal || ordinal < 0) {
+                blockers->push_back("published_job_membership_missing");
+                break;
+            }
+            ordinals_by_workset[workset_id].push_back(ordinal);
+        }
+
+        if (const auto* worksets = FindStream(spec, "worksets")) {
+            for (const auto& line : ReadStreamLines(spec, *worksets)) {
+                bool ok_id = false;
+                bool ok_count = false;
+                const auto workset_id = JsonExtractInt(
+                    json_db, line, "$.workset_id", &ok_id);
+                const auto item_count = JsonExtractInt(
+                    json_db, line, "$.item_count", &ok_count);
+                if (!ok_id || !ok_count || item_count <= 0) {
+                    blockers->push_back("published_workset_shape_invalid");
+                    break;
+                }
+                auto ordinals = ordinals_by_workset[workset_id];
+                std::sort(ordinals.begin(), ordinals.end());
+                if (ordinals.size() != static_cast<std::size_t>(item_count)
+                    || ordinals.front() != 0
+                    || ordinals.back() != item_count - 1
+                    || std::adjacent_find(ordinals.begin(), ordinals.end())
+                        != ordinals.end()) {
+                    blockers->push_back("published_workset_membership_inconsistent");
+                    break;
+                }
+                ordinals_by_workset.erase(workset_id);
+            }
+            if (!ordinals_by_workset.empty()) {
+                blockers->push_back("job_references_missing_workset_stream_row");
+            }
+        }
+    }
+    if (const auto* cancellations = FindStream(spec, "job_cancellation_requests")) {
+        for (const auto& line : ReadStreamLines(spec, *cancellations)) {
+            bool ok = false;
+            const auto state = JsonExtractText(json_db, line, "$.state", &ok);
+            if (!ok || state != "RESOLVED") {
+                blockers->push_back("unresolved_cancellation_history_in_package");
+                break;
+            }
+        }
+    }
 }
 
 bool LoadPackageSpecFromManifest(
@@ -594,10 +769,15 @@ RehydratePackagePreviewResult SqliteRehydrateExecutor::PreviewPackage(const Rehy
         result.blocking_reasons.push_back("state_db_missing");
     }
 
+    ValidateExecutionPackageContract(execution_db_, spec, &result.blocking_reasons);
+
     std::vector<IdRule> rules = {
         {"job_sets", "$.job_set_id", "job_set", "exec_job_set", "job_set_id", execution_db_},
+        {"worksets", "$.workset_id", "workset", "exec_workset", "workset_id", execution_db_},
+        {"workset_dispatch_attempts", "$.dispatch_attempt_id", "workset_dispatch_attempt", "exec_workset_dispatch_attempt", "dispatch_attempt_id", execution_db_},
         {"jobs", "$.job_id", "job", "exec_job", "job_id", execution_db_},
         {"job_events", "$.job_event_id", "job_event", "exec_job_event", "job_event_id", execution_db_},
+        {"job_cancellation_requests", "$.cancellation_request_id", "job_cancellation_request", "exec_job_cancellation_request", "cancellation_request_id", execution_db_},
         {"workflow_instances", "$.workflow_instance_id", "workflow_instance", "exec_workflow_instance", "workflow_instance_id", execution_db_},
         {"workflow_unit_activations", "$.workflow_unit_activation_id", "workflow_unit_activation", "exec_workflow_unit_activation", "workflow_unit_activation_id", execution_db_},
         {"workflow_unit_activation_edges", "$.workflow_unit_activation_edge_id", "workflow_unit_activation_edge", "exec_workflow_unit_activation_edge", "workflow_unit_activation_edge_id", execution_db_},
@@ -623,9 +803,6 @@ RehydratePackagePreviewResult SqliteRehydrateExecutor::PreviewPackage(const Rehy
         {"analysis_seed_probe_input_frames", "$.input_frame_id", "analysis_seed_probe_input_frame", "sp_input_frame", "input_frame_id", analysis_db_},
         {"analysis_seed_probe_runs", "$.probe_run_id", "analysis_seed_probe_run", "sp_probe_run", "probe_run_id", analysis_db_},
         {"analysis_seed_probe_results", "$.probe_result_id", "analysis_seed_probe_result", "sp_probe_result", "probe_result_id", analysis_db_},
-        {"analysis_seed_probe_neutral_seeds", "$.neutral_seed_id", "analysis_seed_probe_neutral_seed", "sp_neutral_seed", "neutral_seed_id", analysis_db_},
-        {"analysis_seed_probe_grid_seeds", "$.grid_seed_id", "analysis_seed_probe_grid_seed", "sp_grid_seed", "grid_seed_id", analysis_db_},
-        {"analysis_seed_probe_unique_seeds", "$.unique_seed_id", "analysis_seed_probe_unique_seed", "sp_unique_seed", "unique_seed_id", analysis_db_},
         {"analysis_seed_probe_encounter_projections", "$.encounter_projection_id", "analysis_seed_probe_encounter_projection", "sp_encounter_projection", "encounter_projection_id", analysis_db_},
     };
     ScanCollisionRules(spec, rules, &result.blocking_reasons);
@@ -1006,6 +1183,23 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
         } else if (has_analysis_streams && analysis_db_ == nullptr) {
             result.error = StructuredError{ "ANALYSIS_DB_MISSING", "analysis streams require an analysis database", "analysis_db is null" }.ToJson();
         }
+        if (!result.error.has_value()
+            && has_analysis_streams
+            && sqlite3_exec(analysis_db_, "PRAGMA defer_foreign_keys=ON;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+            result.error = StructuredError{
+                "ANALYSIS_REHYDRATE_ERROR",
+                "failed deferring analysis foreign keys for rehydrate",
+                sqlite3_errmsg(analysis_db_)
+            }.ToJson();
+        }
+        if (!result.error.has_value()
+            && sqlite3_exec(execution_db_, "PRAGMA defer_foreign_keys=ON;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+            result.error = StructuredError{
+                "EXECUTION_REHYDRATE_ERROR",
+                "failed deferring execution foreign keys for rehydrate",
+                sqlite3_errmsg(execution_db_)
+            }.ToJson();
+        }
         auto rollback = [&]() {
             if (execution_transaction_started) {
                 sqlite3_exec(execution_db_, "ROLLBACK;", nullptr, nullptr, nullptr);
@@ -1018,8 +1212,13 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
         };
 
         std::string db_error;
+        std::unordered_map<std::string, int> restored_execution_counts;
         std::vector<std::string> order = {
-            "job_sets", "jobs", "job_events", "workflow_instances", "workflow_unit_activations", "workflow_unit_activation_edges", "workflow_steps", "workflow_edges", "workflow_step_outputs", "workflow_instance_input_bindings", "workflow_instance_arguments", "workflow_events", "triggers"
+            "job_sets", "worksets", "workset_dispatch_attempts", "jobs", "job_events",
+            "job_cancellation_requests", "workflow_instances", "workflow_unit_activations",
+            "workflow_unit_activation_edges", "workflow_steps", "workflow_edges",
+            "workflow_step_outputs", "workflow_instance_input_bindings",
+            "workflow_instance_arguments", "workflow_events", "triggers"
         };
         auto map_id = [&](std::string_view map_kind, std::int64_t old_id) -> std::int64_t {
             auto& per_kind = id_map[std::string(map_kind)];
@@ -1061,10 +1260,21 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                     const auto new_parent = ok_parent ? map_id("job_set", old_parent) : 0;
                     if (new_id == 0 || (ok_parent && new_parent == 0)) break;
 
+                    bool ok_materialization_key = false;
+                    const auto old_materialization_key = JsonExtractText(
+                        execution_db_, line, "$.materialization_key", &ok_materialization_key);
+                    const auto materialization_key = ok_materialization_key
+                        ? Fnv1a64(
+                            spec.target_namespace + ":job-set-materialization:"
+                            + std::to_string(new_id) + ":" + old_materialization_key)
+                        : std::string{};
                     Statement st;
                     if (!Prepare(execution_db_,
-                            "INSERT INTO exec_job_set(job_set_id,parent_job_set_id,program_kind,purpose,created_by,created_at_utc,priority_boost,expected_total,domain_ref_kind,domain_ref_id,meta_note) "
-                            "VALUES(?1,?2,json_extract(?3,'$.program_kind'),json_extract(?3,'$.purpose'),?4,json_extract(?3,'$.created_at_utc'),json_extract(?3,'$.priority_boost'),json_extract(?3,'$.expected_total'),json_extract(?3,'$.domain_ref_kind'),json_extract(?3,'$.domain_ref_id'),?5);",
+                            "INSERT INTO exec_job_set(job_set_id,parent_job_set_id,program_kind,purpose,created_by,created_at_utc,priority_boost,expected_total,domain_ref_kind,domain_ref_id,meta_note,"
+                            "materialization_key,materialization_state,population_sealed_at_utc,workset_publication_completed_at_utc) "
+                            "VALUES(?1,?2,json_extract(?3,'$.program_kind'),json_extract(?3,'$.purpose'),?4,json_extract(?3,'$.created_at_utc'),json_extract(?3,'$.priority_boost'),json_extract(?3,'$.expected_total'),"
+                            "json_extract(?3,'$.domain_ref_kind'),json_extract(?3,'$.domain_ref_id'),?5,?6,json_extract(?3,'$.materialization_state'),json_extract(?3,'$.population_sealed_at_utc'),"
+                            "json_extract(?3,'$.workset_publication_completed_at_utc'));",
                             &st,
                             &db_error)) {
                         break;
@@ -1076,7 +1286,89 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                     const auto note = "rehydrated:" + spec.target_namespace;
                     sqlite3_bind_text(st.st, 4, created_by.c_str(), -1, SQLITE_TRANSIENT);
                     sqlite3_bind_text(st.st, 5, note.c_str(), -1, SQLITE_TRANSIENT);
+                    if (ok_materialization_key) {
+                        sqlite3_bind_text(st.st, 6, materialization_key.c_str(), -1, SQLITE_TRANSIENT);
+                    } else {
+                        sqlite3_bind_null(st.st, 6);
+                    }
                     if (!StepDone(execution_db_, st.st, &db_error)) break;
+                    ++restored_execution_counts[kind];
+                } else if (kind == "worksets") {
+                    bool ok_id = false;
+                    bool ok_set = false;
+                    bool ok_step = false;
+                    bool ok_root_set = false;
+                    const auto old_id = JsonExtractInt(execution_db_, line, "$.workset_id", &ok_id);
+                    const auto old_set = JsonExtractInt(execution_db_, line, "$.job_set_id", &ok_set);
+                    const auto old_step = JsonExtractInt(execution_db_, line, "$.workflow_step_id", &ok_step);
+                    const auto old_root_set = JsonExtractInt(execution_db_, line, "$.root_job_set_id", &ok_root_set);
+                    if (!ok_id || !ok_set || !ok_step || !ok_root_set) {
+                        db_error = "archived workset is missing its Full Phase invocation anchor";
+                        break;
+                    }
+                    const auto new_id = map_id("workset", old_id);
+                    const auto new_set = map_id("job_set", old_set);
+                    const auto new_step = map_id("workflow_step", old_step);
+                    const auto new_root_set = map_id("job_set", old_root_set);
+                    if (new_id == 0 || new_set == 0 || new_step == 0 || new_root_set == 0) {
+                        db_error = "archived workset Full Phase invocation anchor could not be remapped";
+                        break;
+                    }
+
+                    Statement st;
+                    if (!Prepare(execution_db_,
+                            "INSERT INTO exec_workset(workset_id,job_set_id,workflow_step_id,root_job_set_id,workset_key,program_kind,program_version,compatibility_key,"
+                            "module_canonical_id,module_version,module_sha256,entrypoint,verified_dependency_sha256,runtime_profile_sha256,"
+                            "required_capability_mask,execution_affinity_key,baseline_affinity_key,estimated_payload_bytes,priority,item_count,published_at_utc) "
+                            "VALUES(?1,?2,?3,?4,json_extract(?5,'$.workset_key'),json_extract(?5,'$.program_kind'),json_extract(?5,'$.program_version'),"
+                            "json_extract(?5,'$.compatibility_key'),json_extract(?5,'$.module_canonical_id'),json_extract(?5,'$.module_version'),"
+                            "json_extract(?5,'$.module_sha256'),json_extract(?5,'$.entrypoint'),json_extract(?5,'$.verified_dependency_sha256'),"
+                            "json_extract(?5,'$.runtime_profile_sha256'),json_extract(?5,'$.required_capability_mask'),"
+                            "json_extract(?5,'$.execution_affinity_key'),json_extract(?5,'$.baseline_affinity_key'),"
+                            "json_extract(?5,'$.estimated_payload_bytes'),json_extract(?5,'$.priority'),json_extract(?5,'$.item_count'),"
+                            "json_extract(?5,'$.published_at_utc'));",
+                            &st,
+                            &db_error)) break;
+                    sqlite3_bind_int64(st.st, 1, new_id);
+                    sqlite3_bind_int64(st.st, 2, new_set);
+                    sqlite3_bind_int64(st.st, 3, new_step);
+                    sqlite3_bind_int64(st.st, 4, new_root_set);
+                    sqlite3_bind_text(st.st, 5, line.c_str(), -1, SQLITE_TRANSIENT);
+                    if (!StepDone(execution_db_, st.st, &db_error)) break;
+                    ++restored_execution_counts[kind];
+                } else if (kind == "workset_dispatch_attempts") {
+                    bool ok_id = false;
+                    bool ok_workset = false;
+                    const auto old_id = JsonExtractInt(execution_db_, line, "$.dispatch_attempt_id", &ok_id);
+                    const auto old_workset = JsonExtractInt(execution_db_, line, "$.workset_id", &ok_workset);
+                    if (!ok_id || !ok_workset) continue;
+                    const auto new_id = map_id("workset_dispatch_attempt", old_id);
+                    const auto new_workset = map_id("workset", old_workset);
+                    if (new_id == 0 || new_workset == 0) break;
+
+                    bool ok_claim_token = false;
+                    const auto old_claim_token = JsonExtractText(
+                        execution_db_, line, "$.claim_token", &ok_claim_token);
+                    if (!ok_claim_token) continue;
+                    const auto claim_token = Fnv1a64(
+                        spec.target_namespace + ":workset-dispatch:"
+                        + std::to_string(new_id) + ":" + old_claim_token);
+                    Statement st;
+                    if (!Prepare(execution_db_,
+                            "INSERT INTO exec_workset_dispatch_attempt(dispatch_attempt_id,workset_id,dispatch_sequence,state,claim_token,"
+                            "lease_expires_at_utc,claimed_at_utc,dispatched_at_utc,closed_at_utc,close_reason_code,close_reason_text) "
+                            "VALUES(?1,?2,json_extract(?3,'$.dispatch_sequence'),json_extract(?3,'$.state'),?4,"
+                            "json_extract(?3,'$.lease_expires_at_utc'),json_extract(?3,'$.claimed_at_utc'),"
+                            "json_extract(?3,'$.dispatched_at_utc'),json_extract(?3,'$.closed_at_utc'),"
+                            "json_extract(?3,'$.close_reason_code'),json_extract(?3,'$.close_reason_text'));",
+                            &st,
+                            &db_error)) break;
+                    sqlite3_bind_int64(st.st, 1, new_id);
+                    sqlite3_bind_int64(st.st, 2, new_workset);
+                    sqlite3_bind_text(st.st, 3, line.c_str(), -1, SQLITE_TRANSIENT);
+                    sqlite3_bind_text(st.st, 4, claim_token.c_str(), -1, SQLITE_TRANSIENT);
+                    if (!StepDone(execution_db_, st.st, &db_error)) break;
+                    ++restored_execution_counts[kind];
                 } else if (kind == "jobs") {
                     bool ok_id = false;
                     bool ok_set = false;
@@ -1091,12 +1383,102 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                     if (new_id == 0 || new_set == 0 || (ok_parent && new_parent == 0)) break;
 
                     const auto base_fingerprint = JsonExtractText(execution_db_, line, "$.fingerprint", &ok_id);
+                    // A restored fingerprint is an opaque uniqueness token. It
+                    // is never decoded for SeedProbe business intent, and
+                    // namespacing it with the mapped job id prevents collisions
+                    // even when the archived text contains old domain ids.
                     const auto safe_fingerprint = Fnv1a64(spec.target_namespace + ":job:" + std::to_string(new_id) + ":" + base_fingerprint);
 
+                    bool ok_workset = false;
+                    bool ok_dispatch = false;
+                    bool ok_savestate = false;
+                    const auto old_workset = JsonExtractInt(execution_db_, line, "$.workset_id", &ok_workset);
+                    const auto old_dispatch = JsonExtractInt(execution_db_, line, "$.dispatch_attempt_id", &ok_dispatch);
+                    const auto old_savestate = JsonExtractInt(execution_db_, line, "$.savestate_id", &ok_savestate);
+                    const auto new_workset = ok_workset ? map_id("workset", old_workset) : 0;
+                    const auto new_dispatch = ok_dispatch
+                        ? map_id("workset_dispatch_attempt", old_dispatch)
+                        : 0;
+                    if ((ok_workset && new_workset == 0) || (ok_dispatch && new_dispatch == 0)) break;
+
+                    auto new_savestate = old_savestate;
+                    if (ok_savestate) {
+                        const auto mapped_kind = id_map.find("state_savestate");
+                        if (mapped_kind != id_map.end()) {
+                            const auto mapped = mapped_kind->second.find(old_savestate);
+                            if (mapped != mapped_kind->second.end()) {
+                                new_savestate = mapped->second;
+                            }
+                        }
+                    }
+
+                    bool ok_input_ini = false;
+                    bool ok_cancellation_group_key = false;
+                    auto restored_input_ini = JsonExtractText(
+                        execution_db_, line, "$.input_ini", &ok_input_ini);
+                    auto restored_cancellation_group_key = JsonExtractText(
+                        execution_db_,
+                        line,
+                        "$.cancellation_group_key",
+                        &ok_cancellation_group_key);
+
+                    bool ok_cancellation_key = false;
+                    const auto old_cancellation_key = JsonExtractText(
+                        execution_db_, line, "$.cancellation_request_key", &ok_cancellation_key);
+                    const auto cancellation_key = ok_cancellation_key
+                        ? Fnv1a64(
+                            spec.target_namespace + ":job-cancellation:"
+                            + std::to_string(new_id) + ":" + old_cancellation_key)
+                        : std::string{};
+                    bool ok_cancellation_delivery_token = false;
+                    const auto old_cancellation_delivery_token = JsonExtractText(
+                        execution_db_, line, "$.cancellation_delivery_token",
+                        &ok_cancellation_delivery_token);
+                    const auto cancellation_delivery_token = ok_cancellation_delivery_token
+                        ? Fnv1a64(
+                            spec.target_namespace + ":cancellation-delivery:"
+                            + std::to_string(new_id) + ":" + old_cancellation_delivery_token)
+                        : std::string{};
                     Statement st;
                     if (!Prepare(execution_db_,
-                            "INSERT INTO exec_job(job_id,job_set_id,parent_job_id,program_kind,program_version,program_ref_kind,program_ref_id,fingerprint,priority,state,attempts,max_attempts,claimed_by_token,lease_expires_at_utc,queued_at_utc,started_at_utc,ended_at_utc,error_code,error_text) "
-                            "VALUES(?1,?2,?3,json_extract(?4,'$.program_kind'),json_extract(?4,'$.program_version'),json_extract(?4,'$.program_ref_kind'),json_extract(?4,'$.program_ref_id'),?5,json_extract(?4,'$.priority'),json_extract(?4,'$.state'),json_extract(?4,'$.attempts'),json_extract(?4,'$.max_attempts'),json_extract(?4,'$.claimed_by_token'),json_extract(?4,'$.lease_expires_at_utc'),json_extract(?4,'$.queued_at_utc'),json_extract(?4,'$.started_at_utc'),json_extract(?4,'$.ended_at_utc'),json_extract(?4,'$.error_code'),json_extract(?4,'$.error_text'));",
+                            "INSERT INTO exec_job("
+                            "job_id,job_set_id,parent_job_id,program_kind,program_version,program_ref_kind,program_ref_id,fingerprint,"
+                            "priority,state,attempts,max_attempts,claimed_by_token,lease_expires_at_utc,queued_at_utc,started_at_utc,"
+                            "ended_at_utc,error_code,error_text,savestate_id,input_ini,workset_id,workset_item_ordinal,"
+                            "dispatch_attempt_id,dispatch_item_ordinal,reserved_attempt_id,execution_finished_at_utc,worker_terminal_status,"
+                            "worker_terminal_fingerprint,worker_terminal_id,worker_terminal_error_code,worker_terminal_error_text,"
+                            "worker_terminal_unstarted,worker_result_blob_id,result_processing_state,result_processor_token,"
+                            "result_processing_lease_expires_at_utc,result_processing_attempts,result_processing_failures,"
+                            "result_processing_error_code,result_processing_error_text,result_processing_failed_at_utc,"
+                            "result_processed_at_utc,cancellation_group_key,cancellation_state,"
+                            "cancellation_request_key,cancellation_reason_code,"
+                            "cancellation_reason_text,cancellation_requested_by,cancellation_caused_by_job_id,"
+                            "cancellation_requested_at_utc,cancellation_delivery_token,cancellation_delivery_lease_expires_at_utc,"
+                            "cancellation_delivery_attempts,cancellation_delivered_at_utc,cancellation_resolved_at_utc,"
+                            "cancellation_resolution_code) "
+                            "VALUES(?1,?2,?3,json_extract(?4,'$.program_kind'),json_extract(?4,'$.program_version'),"
+                            "json_extract(?4,'$.program_ref_kind'),json_extract(?4,'$.program_ref_id'),?5,"
+                            "json_extract(?4,'$.priority'),json_extract(?4,'$.state'),json_extract(?4,'$.attempts'),"
+                            "json_extract(?4,'$.max_attempts'),json_extract(?4,'$.claimed_by_token'),"
+                            "json_extract(?4,'$.lease_expires_at_utc'),json_extract(?4,'$.queued_at_utc'),"
+                            "json_extract(?4,'$.started_at_utc'),json_extract(?4,'$.ended_at_utc'),"
+                            "json_extract(?4,'$.error_code'),json_extract(?4,'$.error_text'),?8,?11,"
+                            "?6,json_extract(?4,'$.workset_item_ordinal'),?7,json_extract(?4,'$.dispatch_item_ordinal'),json_extract(?4,'$.reserved_attempt_id'),"
+                            "json_extract(?4,'$.execution_finished_at_utc'),json_extract(?4,'$.worker_terminal_status'),"
+                            "json_extract(?4,'$.worker_terminal_fingerprint'),json_extract(?4,'$.worker_terminal_id'),"
+                            "json_extract(?4,'$.worker_terminal_error_code'),json_extract(?4,'$.worker_terminal_error_text'),"
+                            "json_extract(?4,'$.worker_terminal_unstarted'),NULL,json_extract(?4,'$.result_processing_state'),"
+                            "json_extract(?4,'$.result_processor_token'),json_extract(?4,'$.result_processing_lease_expires_at_utc'),"
+                            "json_extract(?4,'$.result_processing_attempts'),json_extract(?4,'$.result_processing_failures'),"
+                            "json_extract(?4,'$.result_processing_error_code'),json_extract(?4,'$.result_processing_error_text'),"
+                            "json_extract(?4,'$.result_processing_failed_at_utc'),json_extract(?4,'$.result_processed_at_utc'),"
+                            "?12,json_extract(?4,'$.cancellation_state'),"
+                            "?9,json_extract(?4,'$.cancellation_reason_code'),"
+                            "json_extract(?4,'$.cancellation_reason_text'),json_extract(?4,'$.cancellation_requested_by'),NULL,"
+                            "json_extract(?4,'$.cancellation_requested_at_utc'),?10,"
+                            "json_extract(?4,'$.cancellation_delivery_lease_expires_at_utc'),"
+                            "json_extract(?4,'$.cancellation_delivery_attempts'),json_extract(?4,'$.cancellation_delivered_at_utc'),"
+                            "json_extract(?4,'$.cancellation_resolved_at_utc'),json_extract(?4,'$.cancellation_resolution_code'));",
                             &st,
                             &db_error)) {
                         break;
@@ -1106,8 +1488,43 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                     if (ok_parent) sqlite3_bind_int64(st.st, 3, new_parent); else sqlite3_bind_null(st.st, 3);
                     sqlite3_bind_text(st.st, 4, line.c_str(), -1, SQLITE_TRANSIENT);
                     sqlite3_bind_text(st.st, 5, safe_fingerprint.c_str(), -1, SQLITE_TRANSIENT);
+                    if (ok_workset) sqlite3_bind_int64(st.st, 6, new_workset); else sqlite3_bind_null(st.st, 6);
+                    if (ok_dispatch) sqlite3_bind_int64(st.st, 7, new_dispatch); else sqlite3_bind_null(st.st, 7);
+                    if (ok_savestate) sqlite3_bind_int64(st.st, 8, new_savestate); else sqlite3_bind_null(st.st, 8);
+                    if (ok_cancellation_key) {
+                        sqlite3_bind_text(st.st, 9, cancellation_key.c_str(), -1, SQLITE_TRANSIENT);
+                    } else {
+                        sqlite3_bind_null(st.st, 9);
+                    }
+                    if (ok_cancellation_delivery_token) {
+                        sqlite3_bind_text(
+                            st.st, 10, cancellation_delivery_token.c_str(), -1, SQLITE_TRANSIENT);
+                    } else {
+                        sqlite3_bind_null(st.st, 10);
+                    }
+                    if (ok_input_ini) {
+                        sqlite3_bind_text(
+                            st.st,
+                            11,
+                            restored_input_ini.c_str(),
+                            -1,
+                            SQLITE_TRANSIENT);
+                    } else {
+                        sqlite3_bind_null(st.st, 11);
+                    }
+                    if (ok_cancellation_group_key) {
+                        sqlite3_bind_text(
+                            st.st,
+                            12,
+                            restored_cancellation_group_key.c_str(),
+                            -1,
+                            SQLITE_TRANSIENT);
+                    } else {
+                        sqlite3_bind_null(st.st, 12);
+                    }
                     if (!StepDone(execution_db_, st.st, &db_error)) break;
                     restored_jobs.push_back(new_id);
+                    ++restored_execution_counts[kind];
                 } else if (kind == "job_events") {
                     bool ok_event = false;
                     bool ok_job = false;
@@ -1127,6 +1544,61 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                     sqlite3_bind_int64(st.st, 2, new_job);
                     sqlite3_bind_text(st.st, 3, line.c_str(), -1, SQLITE_TRANSIENT);
                     if (!StepDone(execution_db_, st.st, &db_error)) break;
+                    ++restored_execution_counts[kind];
+                } else if (kind == "job_cancellation_requests") {
+                    bool ok_id = false;
+                    bool ok_job = false;
+                    bool ok_caused_by = false;
+                    bool ok_request_key = false;
+                    const auto old_id = JsonExtractInt(
+                        execution_db_, line, "$.cancellation_request_id", &ok_id);
+                    const auto old_job = JsonExtractInt(execution_db_, line, "$.job_id", &ok_job);
+                    const auto old_caused_by = JsonExtractInt(
+                        execution_db_, line, "$.caused_by_job_id", &ok_caused_by);
+                    const auto old_request_key = JsonExtractText(
+                        execution_db_, line, "$.request_key", &ok_request_key);
+                    if (!ok_id || !ok_job || !ok_request_key) continue;
+                    const auto new_id = map_id("job_cancellation_request", old_id);
+                    const auto new_job = map_id("job", old_job);
+                    const auto new_caused_by = ok_caused_by ? map_id("job", old_caused_by) : 0;
+                    if (new_id == 0 || new_job == 0 || (ok_caused_by && new_caused_by == 0)) break;
+
+                    const auto request_key = Fnv1a64(
+                        spec.target_namespace + ":job-cancellation:"
+                        + std::to_string(new_job) + ":" + old_request_key);
+                    bool ok_delivery_token = false;
+                    const auto old_delivery_token = JsonExtractText(
+                        execution_db_, line, "$.delivery_token", &ok_delivery_token);
+                    const auto delivery_token = ok_delivery_token
+                        ? Fnv1a64(
+                            spec.target_namespace + ":cancellation-delivery:"
+                            + std::to_string(new_job) + ":" + old_delivery_token)
+                        : std::string{};
+                    Statement st;
+                    if (!Prepare(execution_db_,
+                            "INSERT INTO exec_job_cancellation_request("
+                            "cancellation_request_id,job_id,request_key,reason_code,reason_text,requested_by,caused_by_job_id,"
+                            "requested_at_utc,state,delivery_token,delivery_lease_expires_at_utc,delivery_attempts,"
+                            "delivered_at_utc,resolved_at_utc,resolution_code) "
+                            "VALUES(?1,?2,?3,json_extract(?4,'$.reason_code'),json_extract(?4,'$.reason_text'),"
+                            "json_extract(?4,'$.requested_by'),?5,json_extract(?4,'$.requested_at_utc'),"
+                            "json_extract(?4,'$.state'),?6,json_extract(?4,'$.delivery_lease_expires_at_utc'),"
+                            "json_extract(?4,'$.delivery_attempts'),json_extract(?4,'$.delivered_at_utc'),"
+                            "json_extract(?4,'$.resolved_at_utc'),json_extract(?4,'$.resolution_code'));",
+                            &st,
+                            &db_error)) break;
+                    sqlite3_bind_int64(st.st, 1, new_id);
+                    sqlite3_bind_int64(st.st, 2, new_job);
+                    sqlite3_bind_text(st.st, 3, request_key.c_str(), -1, SQLITE_TRANSIENT);
+                    sqlite3_bind_text(st.st, 4, line.c_str(), -1, SQLITE_TRANSIENT);
+                    if (ok_caused_by) sqlite3_bind_int64(st.st, 5, new_caused_by); else sqlite3_bind_null(st.st, 5);
+                    if (ok_delivery_token) {
+                        sqlite3_bind_text(st.st, 6, delivery_token.c_str(), -1, SQLITE_TRANSIENT);
+                    } else {
+                        sqlite3_bind_null(st.st, 6);
+                    }
+                    if (!StepDone(execution_db_, st.st, &db_error)) break;
+                    ++restored_execution_counts[kind];
                 } else if (kind == "workflow_instances") {
                     bool ok_id = false;
                     const auto old_id = JsonExtractInt(execution_db_, line, "$.workflow_instance_id", &ok_id);
@@ -1420,6 +1892,63 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
             }
         }
 
+        if (!result.error.has_value() && db_error.empty()) {
+            const std::array<std::string_view, 6> required_counts = {
+                "job_sets",
+                "worksets",
+                "workset_dispatch_attempts",
+                "jobs",
+                "job_events",
+                "job_cancellation_requests",
+            };
+            for (const auto kind : required_counts) {
+                const auto* stream = FindStream(spec, kind);
+                if (stream != nullptr
+                    && restored_execution_counts[std::string(kind)] != stream->row_count) {
+                    db_error = "restored row count mismatch for " + std::string(kind);
+                    break;
+                }
+            }
+        }
+
+        if (!result.error.has_value() && db_error.empty()) {
+            const auto* jobs_stream = FindStream(spec, "jobs");
+            if (jobs_stream != nullptr) {
+                for (const auto& line : ReadStreamLines(spec, *jobs_stream)) {
+                    bool ok_job = false;
+                    bool ok_caused_by = false;
+                    const auto old_job = JsonExtractInt(
+                        execution_db_, line, "$.job_id", &ok_job);
+                    const auto old_caused_by = JsonExtractInt(
+                        execution_db_, line, "$.cancellation_caused_by_job_id", &ok_caused_by);
+                    if (!ok_job || !ok_caused_by) continue;
+                    const auto job_it = id_map["job"].find(old_job);
+                    const auto cause_it = id_map["job"].find(old_caused_by);
+                    if (job_it == id_map["job"].end() || cause_it == id_map["job"].end()) {
+                        db_error = "cancellation caused-by job mapping is missing";
+                        break;
+                    }
+                    Statement update;
+                    if (!Prepare(
+                            execution_db_,
+                            "UPDATE exec_job SET cancellation_caused_by_job_id=?1 WHERE job_id=?2;",
+                            &update,
+                            &db_error)) break;
+                    sqlite3_bind_int64(update.st, 1, cause_it->second);
+                    sqlite3_bind_int64(update.st, 2, job_it->second);
+                    if (!StepDone(execution_db_, update.st, &db_error)) break;
+                }
+            }
+        }
+
+        if (!result.error.has_value() && !db_error.empty()) {
+            result.error = StructuredError{
+                "DB_VALIDATION_ERROR",
+                "restored execution coordination validation failed",
+                db_error
+            }.ToJson();
+        }
+
         if (!result.error.has_value() && has_analysis_streams) {
             auto lookup_map = [&](std::string_view map_kind, std::int64_t old_id) -> std::optional<std::int64_t> {
                 const auto per_kind = id_map.find(std::string(map_kind));
@@ -1555,26 +2084,26 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                 StepDone(analysis_db_, st.st, &db_error);
             });
             restore_stream("analysis_seed_candidates", [&](const std::string& line) {
-                bool ok_id = false, ok_battle = false, ok_unique = false, ok_frame = false;
+                bool ok_id = false, ok_battle = false, ok_result = false, ok_frame = false;
                 const auto old_id = JsonExtractInt(analysis_db_, line, "$.seed_candidate_id", &ok_id);
                 const auto old_battle = JsonExtractInt(analysis_db_, line, "$.battle_set_id", &ok_battle);
-                const auto old_unique = JsonExtractInt(analysis_db_, line, "$.source_unique_seed_id", &ok_unique);
+                const auto old_result = JsonExtractInt(analysis_db_, line, "$.source_probe_result_id", &ok_result);
                 const auto old_frame = JsonExtractInt(analysis_db_, line, "$.source_input_frame_id", &ok_frame);
                 if (!ok_id || !ok_battle) return;
                 const auto new_id = map_id("analysis_seed_candidate", old_id);
                 const auto battle = map_optional("analysis_battle_set", true, old_battle);
-                const auto unique = map_optional("analysis_seed_probe_unique_seed", ok_unique, old_unique);
+                const auto probe_result = map_optional("analysis_seed_probe_result", ok_result, old_result);
                 const auto frame = map_optional("analysis_seed_probe_input_frame", ok_frame, old_frame);
                 if (new_id == 0 || !battle.has_value()) return;
                 Statement st;
                 if (!Prepare(analysis_db_,
-                        "INSERT INTO ab_seed_candidate(seed_candidate_id,battle_set_id,source_unique_seed_id,source_input_frame_id,seed_value,source_kind,candidate_status,created_at_utc) "
+                        "INSERT INTO ab_seed_candidate(seed_candidate_id,battle_set_id,source_probe_result_id,source_input_frame_id,seed_value,source_kind,candidate_status,created_at_utc) "
                         "VALUES(?1,?2,?3,?4,json_extract(?5,'$.seed_value'),json_extract(?5,'$.source_kind'),json_extract(?5,'$.candidate_status'),json_extract(?5,'$.created_at_utc'));",
                         &st,
                         &db_error)) return;
                 sqlite3_bind_int64(st.st, 1, new_id);
                 sqlite3_bind_int64(st.st, 2, *battle);
-                bind_optional_int64(st.st, 3, unique);
+                bind_optional_int64(st.st, 3, probe_result);
                 bind_optional_int64(st.st, 4, frame);
                 sqlite3_bind_text(st.st, 5, line.c_str(), -1, SQLITE_TRANSIENT);
                 StepDone(analysis_db_, st.st, &db_error);
@@ -1838,20 +2367,53 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
             });
             restore_stream("analysis_seed_probe_runs", [&](const std::string& line) {
                 bool ok_id = false, ok_set = false, ok_sav = false, ok_input_set = false;
+                bool ok_established_source_job = false;
+                bool ok_conflicting_source_job = false;
                 const auto old_id = JsonExtractInt(analysis_db_, line, "$.probe_run_id", &ok_id);
                 const auto old_set = JsonExtractInt(analysis_db_, line, "$.probe_set_id", &ok_set);
                 const auto old_sav = JsonExtractInt(analysis_db_, line, "$.entry_savestate_id", &ok_sav);
-                const auto old_input_set = JsonExtractInt(analysis_db_, line, "$.unique_input_set_id", &ok_input_set);
+                const auto old_input_set = JsonExtractInt(analysis_db_, line, "$.accepted_input_set_id", &ok_input_set);
+                const auto old_established_source_job = JsonExtractInt(
+                    analysis_db_, line, "$.established_endpoint_source_job_id",
+                    &ok_established_source_job);
+                const auto old_conflicting_source_job = JsonExtractInt(
+                    analysis_db_, line, "$.conflicting_endpoint_source_job_id",
+                    &ok_conflicting_source_job);
                 if (!ok_id || !ok_set || !ok_sav || !ok_input_set) return;
                 const auto new_id = map_id("analysis_seed_probe_run", old_id);
                 const auto set_id = map_optional("analysis_seed_probe_set", true, old_set);
                 const auto sav = map_savestate(true, old_sav);
                 const auto input_set = map_optional("analysis_input_set", true, old_input_set);
                 if (new_id == 0 || !set_id || !sav || !input_set) return;
+                const auto established_source_job = map_optional(
+                    "job", ok_established_source_job,
+                    old_established_source_job);
+                const auto conflicting_source_job = map_optional(
+                    "job", ok_conflicting_source_job,
+                    old_conflicting_source_job);
+                if ((ok_established_source_job && !established_source_job)
+                    || (ok_conflicting_source_job && !conflicting_source_job)) {
+                    db_error = "SeedProbe endpoint source job mapping is missing";
+                    return;
+                }
+                bool ok_old_materialization_key = false;
+                const auto old_materialization_key = JsonExtractText(
+                    analysis_db_,
+                    line,
+                    "$.materialization_key",
+                    &ok_old_materialization_key);
+                const auto materialization_key = Fnv1a64(
+                    spec.target_namespace
+                    + ":seedprobe-run-materialization:"
+                    + std::to_string(new_id)
+                    + ":"
+                    + (ok_old_materialization_key
+                           ? old_materialization_key
+                           : std::to_string(old_id)));
                 Statement st;
                 if (!Prepare(analysis_db_,
-                        "INSERT INTO sp_probe_run(probe_run_id,probe_set_id,entry_savestate_id,seed_probe_spec_id,codec_version,status,unique_input_set_id,requested_at_utc,completed_at_utc,launch_samples_per_axis) "
-                        "VALUES(?1,?2,?3,json_extract(?4,'$.seed_probe_spec_id'),json_extract(?4,'$.codec_version'),json_extract(?4,'$.status'),?5,json_extract(?4,'$.requested_at_utc'),json_extract(?4,'$.completed_at_utc'),json_extract(?4,'$.launch_samples_per_axis'));",
+                        "INSERT INTO sp_probe_run(probe_run_id,materialization_key,probe_set_id,entry_savestate_id,seed_probe_spec_id,codec_version,status,accepted_input_set_id,requested_at_utc,completed_at_utc,launch_samples_per_axis,established_endpoint,established_endpoint_source_job_id,conflicting_endpoint,conflicting_endpoint_source_job_id,invalidation_diagnostic,invalidated_at_utc) "
+                        "VALUES(?1,?6,?2,?3,json_extract(?4,'$.seed_probe_spec_id'),json_extract(?4,'$.codec_version'),json_extract(?4,'$.status'),?5,json_extract(?4,'$.requested_at_utc'),json_extract(?4,'$.completed_at_utc'),json_extract(?4,'$.launch_samples_per_axis'),json_extract(?4,'$.established_endpoint'),?7,json_extract(?4,'$.conflicting_endpoint'),?8,json_extract(?4,'$.invalidation_diagnostic'),json_extract(?4,'$.invalidated_at_utc'));",
                         &st,
                         &db_error)) return;
                 sqlite3_bind_int64(st.st, 1, new_id);
@@ -1859,76 +2421,68 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                 sqlite3_bind_int64(st.st, 3, *sav);
                 sqlite3_bind_text(st.st, 4, line.c_str(), -1, SQLITE_TRANSIENT);
                 sqlite3_bind_int64(st.st, 5, *input_set);
-                StepDone(analysis_db_, st.st, &db_error);
+                sqlite3_bind_text(
+                    st.st,
+                    6,
+                    materialization_key.c_str(),
+                    -1,
+                    SQLITE_TRANSIENT);
+                if (established_source_job) {
+                    sqlite3_bind_int64(st.st, 7, *established_source_job);
+                } else {
+                    sqlite3_bind_null(st.st, 7);
+                }
+                if (conflicting_source_job) {
+                    sqlite3_bind_int64(st.st, 8, *conflicting_source_job);
+                } else {
+                    sqlite3_bind_null(st.st, 8);
+                }
+                if (!StepDone(analysis_db_, st.st, &db_error)) return;
+                Statement attach_input_set;
+                if (!Prepare(
+                        analysis_db_,
+                        "UPDATE an_input_set SET source_ref_kind='sp_probe_run',source_ref_id=?2 "
+                        "WHERE input_set_id=?1;",
+                        &attach_input_set,
+                        &db_error)) return;
+                sqlite3_bind_int64(attach_input_set.st, 1, *input_set);
+                sqlite3_bind_int64(attach_input_set.st, 2, new_id);
+                StepDone(analysis_db_, attach_input_set.st, &db_error);
             });
             restore_stream("analysis_seed_probe_results", [&](const std::string& line) {
-                bool ok_id = false, ok_run = false;
+                bool ok_id = false, ok_run = false, ok_frame = false, ok_job = false, ok_confirmation = false;
                 const auto old_id = JsonExtractInt(analysis_db_, line, "$.probe_result_id", &ok_id);
                 const auto old_run = JsonExtractInt(analysis_db_, line, "$.probe_run_id", &ok_run);
-                if (!ok_id || !ok_run) return;
+                const auto old_frame = JsonExtractInt(analysis_db_, line, "$.input_frame_id", &ok_frame);
+                const auto old_job = JsonExtractInt(analysis_db_, line, "$.source_job_id", &ok_job);
+                const auto old_confirmation = JsonExtractInt(
+                    analysis_db_, line, "$.confirmation_of_probe_result_id", &ok_confirmation);
+                if (!ok_id || !ok_run || !ok_frame || !ok_job) return;
                 const auto new_id = map_id("analysis_seed_probe_result", old_id);
                 const auto run = map_optional("analysis_seed_probe_run", true, old_run);
-                if (new_id == 0 || !run) return;
+                const auto frame = map_optional("analysis_seed_probe_input_frame", true, old_frame);
+                const auto job = map_optional("job", true, old_job);
+                const auto confirmation = map_optional(
+                    "analysis_seed_probe_result", ok_confirmation, old_confirmation);
+                if (new_id == 0 || !run || !frame || !job) return;
                 Statement st;
                 if (!Prepare(analysis_db_,
-                        "INSERT INTO sp_probe_result(probe_result_id,probe_run_id,neutral_seed_value,grid_count,unique_count,result_status,recorded_at_utc) "
-                        "VALUES(?1,?2,json_extract(?3,'$.neutral_seed_value'),json_extract(?3,'$.grid_count'),json_extract(?3,'$.unique_count'),json_extract(?3,'$.result_status'),json_extract(?3,'$.recorded_at_utc'));",
+                        "INSERT INTO sp_probe_result(probe_result_id,probe_run_id,input_frame_id,source_job_id,seed_value,"
+                        "origin_worker_id,origin_process_generation,origin_state_epoch,terminal_sha256,"
+                        "confirmation_of_probe_result_id,evidence_state,recorded_at_utc) "
+                        "VALUES(?1,?2,?3,?4,json_extract(?5,'$.seed_value'),"
+                        "json_extract(?5,'$.origin_worker_id'),json_extract(?5,'$.origin_process_generation'),"
+                        "json_extract(?5,'$.origin_state_epoch'),json_extract(?5,'$.terminal_sha256'),"
+                        "?6,json_extract(?5,'$.evidence_state'),"
+                        "json_extract(?5,'$.recorded_at_utc'));",
                         &st,
                         &db_error)) return;
                 sqlite3_bind_int64(st.st, 1, new_id);
                 sqlite3_bind_int64(st.st, 2, *run);
-                sqlite3_bind_text(st.st, 3, line.c_str(), -1, SQLITE_TRANSIENT);
-                StepDone(analysis_db_, st.st, &db_error);
-            });
-            restore_stream("analysis_seed_probe_neutral_seeds", [&](const std::string& line) {
-                bool ok_id = false, ok_result = false;
-                const auto old_id = JsonExtractInt(analysis_db_, line, "$.neutral_seed_id", &ok_id);
-                const auto old_result = JsonExtractInt(analysis_db_, line, "$.probe_result_id", &ok_result);
-                if (!ok_id || !ok_result) return;
-                const auto new_id = map_id("analysis_seed_probe_neutral_seed", old_id);
-                const auto result_id = map_optional("analysis_seed_probe_result", true, old_result);
-                if (new_id == 0 || !result_id) return;
-                Statement st;
-                if (!Prepare(analysis_db_, "INSERT INTO sp_neutral_seed(neutral_seed_id,probe_result_id,neutral_seed_value,source_kind,recorded_at_utc) VALUES(?1,?2,json_extract(?3,'$.neutral_seed_value'),json_extract(?3,'$.source_kind'),json_extract(?3,'$.recorded_at_utc'));", &st, &db_error)) return;
-                sqlite3_bind_int64(st.st, 1, new_id);
-                sqlite3_bind_int64(st.st, 2, *result_id);
-                sqlite3_bind_text(st.st, 3, line.c_str(), -1, SQLITE_TRANSIENT);
-                StepDone(analysis_db_, st.st, &db_error);
-            });
-            restore_stream("analysis_seed_probe_grid_seeds", [&](const std::string& line) {
-                bool ok_id = false, ok_result = false, ok_axis = false;
-                const auto old_id = JsonExtractInt(analysis_db_, line, "$.grid_seed_id", &ok_id);
-                const auto old_result = JsonExtractInt(analysis_db_, line, "$.probe_result_id", &ok_result);
-                const auto old_axis = JsonExtractInt(analysis_db_, line, "$.axis_xy_id", &ok_axis);
-                if (!ok_id || !ok_result || !ok_axis) return;
-                const auto new_id = map_id("analysis_seed_probe_grid_seed", old_id);
-                const auto result_id = map_optional("analysis_seed_probe_result", true, old_result);
-                const auto axis = map_optional("analysis_seed_probe_axis_xy", true, old_axis);
-                if (new_id == 0 || !result_id || !axis) return;
-                Statement st;
-                if (!Prepare(analysis_db_, "INSERT INTO sp_grid_seed(grid_seed_id,probe_result_id,source_family,axis_xy_id,seed_value,seed_delta,recorded_at_utc) VALUES(?1,?2,json_extract(?3,'$.source_family'),?4,json_extract(?3,'$.seed_value'),json_extract(?3,'$.seed_delta'),json_extract(?3,'$.recorded_at_utc'));", &st, &db_error)) return;
-                sqlite3_bind_int64(st.st, 1, new_id);
-                sqlite3_bind_int64(st.st, 2, *result_id);
-                sqlite3_bind_text(st.st, 3, line.c_str(), -1, SQLITE_TRANSIENT);
-                sqlite3_bind_int64(st.st, 4, *axis);
-                StepDone(analysis_db_, st.st, &db_error);
-            });
-            restore_stream("analysis_seed_probe_unique_seeds", [&](const std::string& line) {
-                bool ok_id = false, ok_result = false, ok_frame = false;
-                const auto old_id = JsonExtractInt(analysis_db_, line, "$.unique_seed_id", &ok_id);
-                const auto old_result = JsonExtractInt(analysis_db_, line, "$.probe_result_id", &ok_result);
-                const auto old_frame = JsonExtractInt(analysis_db_, line, "$.input_frame_id", &ok_frame);
-                if (!ok_id || !ok_result || !ok_frame) return;
-                const auto new_id = map_id("analysis_seed_probe_unique_seed", old_id);
-                const auto result_id = map_optional("analysis_seed_probe_result", true, old_result);
-                const auto frame = map_optional("analysis_seed_probe_input_frame", true, old_frame);
-                if (new_id == 0 || !result_id || !frame) return;
-                Statement st;
-                if (!Prepare(analysis_db_, "INSERT INTO sp_unique_seed(unique_seed_id,probe_result_id,input_frame_id,seed_value,seed_delta,recorded_at_utc) VALUES(?1,?2,?3,json_extract(?4,'$.seed_value'),json_extract(?4,'$.seed_delta'),json_extract(?4,'$.recorded_at_utc'));", &st, &db_error)) return;
-                sqlite3_bind_int64(st.st, 1, new_id);
-                sqlite3_bind_int64(st.st, 2, *result_id);
                 sqlite3_bind_int64(st.st, 3, *frame);
-                sqlite3_bind_text(st.st, 4, line.c_str(), -1, SQLITE_TRANSIENT);
+                sqlite3_bind_int64(st.st, 4, *job);
+                sqlite3_bind_text(st.st, 5, line.c_str(), -1, SQLITE_TRANSIENT);
+                bind_optional_int64(st.st, 6, confirmation);
                 StepDone(analysis_db_, st.st, &db_error);
             });
             restore_stream("analysis_battle_results", [&](const std::string& line) {
@@ -1954,11 +2508,9 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                 const auto job = map_optional("job", ok_job, old_job);
                 const auto entry = map_savestate(true, old_entry);
                 const auto final_state = map_savestate(ok_final, old_final);
-                const auto seed_map_kind = seed_kind == "analysisseedprobe.neutral_seed"
-                    ? std::string_view("analysis_seed_probe_neutral_seed")
-                    : seed_kind == "analysisseedprobe.unique_seed"
-                        ? std::string_view("analysis_seed_probe_unique_seed")
-                        : std::string_view{};
+                const auto seed_map_kind = seed_kind == "analysisseedprobe.confirmed_result"
+                    ? std::string_view("analysis_seed_probe_result")
+                    : std::string_view{};
                 const auto seed_ref = seed_map_kind.empty() ? std::nullopt : lookup_map(seed_map_kind, old_seed_ref);
                 if (!seed_ref.has_value()) {
                     db_error = "direct selected seed row mapping is missing during battle results rehydrate";
@@ -2035,11 +2587,8 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
 
             auto map_domain_ref = [&](std::string_view ref_kind, std::int64_t old_id) -> std::optional<std::int64_t> {
                 if (ref_kind == "sp_probe_run") return lookup_map("analysis_seed_probe_run", old_id);
-                if (ref_kind == "analysisseedprobe.neutral_seed") {
-                    return lookup_map("analysis_seed_probe_neutral_seed", old_id);
-                }
-                if (ref_kind == "analysisseedprobe.unique_seed") {
-                    return lookup_map("analysis_seed_probe_unique_seed", old_id);
+                if (ref_kind == "analysisseedprobe.confirmed_result") {
+                    return lookup_map("analysis_seed_probe_result", old_id);
                 }
                 if (ref_kind == "analysis_battle.battle_completion_id"
                     || ref_kind == "analysis_battle.battle_completion"
@@ -2079,7 +2628,108 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                 if (!ok_job || !ok_ref) return;
                 const auto job = map_optional("job", true, old_job);
                 const auto mapped = map_domain_ref(ref_kind, old_ref);
-                if (!job || !mapped) return;
+                if (!job) return;
+                if (!mapped) {
+                    if (ref_kind == "sp_probe_run") {
+                        db_error =
+                            "failed mapping SeedProbe run during job "
+                            "rehydrate";
+                    }
+                    return;
+                }
+
+                if (ref_kind == "sp_probe_run") {
+                    bool ok_input_ini = false;
+                    const auto old_input_ini = JsonExtractText(
+                        execution_db_,
+                        line,
+                        "$.input_ini",
+                        &ok_input_ini);
+                    if (!ok_input_ini) {
+                        db_error =
+                            "archived SeedProbe job is missing its request";
+                        return;
+                    }
+                    std::string decode_error;
+                    auto seed_probe_spec =
+                        execution::programdb::seedprobe::
+                            DecodeSeedProbeJobSpec(
+                                old_input_ini,
+                                &decode_error);
+                    if (!seed_probe_spec.has_value()) {
+                        db_error =
+                            "archived SeedProbe request is invalid: "
+                            + decode_error;
+                        return;
+                    }
+                    const auto mapped_frame = lookup_map(
+                        "analysis_seed_probe_input_frame",
+                        seed_probe_spec->input_frame_id);
+                    if (!mapped_frame.has_value()) {
+                        db_error =
+                            "failed mapping SeedProbe request input frame "
+                            "during rehydrate";
+                        return;
+                    }
+                    seed_probe_spec->input_frame_id = *mapped_frame;
+                    if (seed_probe_spec
+                            ->confirmation_of_probe_result_id
+                            .has_value()) {
+                        const auto mapped_result = lookup_map(
+                            "analysis_seed_probe_result",
+                            *seed_probe_spec
+                                 ->confirmation_of_probe_result_id);
+                        if (!mapped_result.has_value()) {
+                            db_error =
+                                "failed mapping SeedProbe confirmation "
+                                "result during rehydrate";
+                            return;
+                        }
+                        seed_probe_spec
+                            ->confirmation_of_probe_result_id =
+                            *mapped_result;
+                    }
+                    const auto input_ini =
+                        execution::programdb::seedprobe::
+                            EncodeSeedProbeJobSpec(*seed_probe_spec);
+                    const auto cancellation_group =
+                        execution::programdb::seedprobe::
+                            SeedProbeCancellationGroupKey(
+                                *mapped,
+                                *seed_probe_spec);
+
+                    Statement st;
+                    if (!Prepare(
+                            execution_db_,
+                            "UPDATE exec_job "
+                            "SET program_ref_id=?1,input_ini=?2,"
+                            "cancellation_group_key=?3 WHERE job_id=?4;",
+                            &st,
+                            &db_error)) {
+                        return;
+                    }
+                    sqlite3_bind_int64(st.st, 1, *mapped);
+                    sqlite3_bind_text(
+                        st.st,
+                        2,
+                        input_ini.c_str(),
+                        -1,
+                        SQLITE_TRANSIENT);
+                    if (cancellation_group.has_value()) {
+                        sqlite3_bind_text(
+                            st.st,
+                            3,
+                            cancellation_group->c_str(),
+                            -1,
+                            SQLITE_TRANSIENT);
+                    } else {
+                        sqlite3_bind_null(st.st, 3);
+                    }
+                    sqlite3_bind_int64(st.st, 4, *job);
+                    StepDone(execution_db_, st.st, &db_error);
+                    return;
+                }
+
                 Statement st;
                 if (!Prepare(execution_db_, "UPDATE exec_job SET program_ref_id=?1 WHERE job_id=?2;", &st, &db_error)) return;
                 sqlite3_bind_int64(st.st, 1, *mapped);
@@ -2182,8 +2832,7 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                 }
 
                 std::string map_kind;
-                if (context_kind == "analysisseedprobe.neutral_seed") map_kind = "analysis_seed_probe_neutral_seed";
-                else if (context_kind == "analysisseedprobe.unique_seed") map_kind = "analysis_seed_probe_unique_seed";
+                if (context_kind == "analysisseedprobe.confirmed_result") map_kind = "analysis_seed_probe_result";
                 else if (context_kind == "analysis_battle.battle_completion_id"
                     || context_kind == "analysis_battle.battle_completion"
                     || context_kind == "analysisbattle.battle_completion"

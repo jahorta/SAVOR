@@ -217,14 +217,12 @@ TEST(WorkerProtocolV1, RoundTripsEveryTypedPayload)
         .encoded_manifest = {0x01, 0x02, 0x03}});
 
     ExpectPayloadRoundTrip(OpenSessionPayload{
-        "C:/runtime",
-        "C:/users/worker-17",
-        "D:/games/soa.gcm",
-        true,
-        0xfedcba9876543210ull,
-        "C:/shots",
-        5000,
-        true,
+        .runtime_root = "C:/runtime",
+        .user_directory = "C:/users/worker-17",
+        .iso_path = "D:/games/soa.gcm",
+        .visual_requested = true,
+        .render_window_handle = 0xfedcba9876543210ull,
+        .runtime_artifact_root = "C:/artifacts",
     });
 
     ExpectPayloadRoundTrip(PrepareModulePayload{
@@ -474,9 +472,13 @@ TEST(WorkerProtocolV1, KeepsWorksetTransportAdditiveAndDirectional)
     EXPECT_TRUE(IsKnownMessageKind(MessageKind::CancelWorksetItem));
     EXPECT_TRUE(IsKnownMessageKind(MessageKind::CancelWorkset));
     EXPECT_TRUE(IsKnownMessageKind(MessageKind::AcknowledgeTerminal));
+    EXPECT_TRUE(IsKnownMessageKind(MessageKind::LivenessProbe));
     EXPECT_TRUE(IsKnownMessageKind(MessageKind::WorksetItemTerminal));
     EXPECT_EQ(
         DirectionOf(MessageKind::SubmitWorkset),
+        MessageDirection::ParentToWorker);
+    EXPECT_EQ(
+        DirectionOf(MessageKind::LivenessProbe),
         MessageDirection::ParentToWorker);
     EXPECT_EQ(
         DirectionOf(MessageKind::RuntimeManifest),

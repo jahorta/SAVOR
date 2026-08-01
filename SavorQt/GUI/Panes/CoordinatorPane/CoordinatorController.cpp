@@ -1,18 +1,21 @@
 #include "CoordinatorController.h"
 
 #include "SavorDbRuntime.h"
+#include "Phases/Programs/SeedProbe/SeedProbeModule.h"
+#include "Runner/Runtime/ProgramRuntime/Capabilities/SourceCapabilityPacks.h"
 
 #include <QtCore/QCoreApplication>
+#include <QtCore/QCryptographicHash>
 #include <QtCore/QDir>
+#include <QtCore/QFile>
 #include <QtCore/QFileInfo>
 #include <QtCore/QSettings>
 #include <QtCore/QStringList>
 
-#include "Runner/IPC/Wire.h"
-
 #include <algorithm>
 #include <exception>
 #include <filesystem>
+#include <optional>
 #include <utility>
 
 namespace {
@@ -20,9 +23,7 @@ constexpr auto kSettingsGroup = "Coordinator";
 constexpr auto kIsoPathKey = "iso_path";
 constexpr auto kDolphinBaseKey = "dolphin_base";
 constexpr auto kTargetWorkersKey = "target_workers";
-constexpr auto kEventRingKey = "event_ring";
 constexpr auto kStartPausedKey = "start_paused";
-constexpr auto kAutoRestartFailedJobsKey = "auto_restart_failed_jobs";
 constexpr auto kVisualWorkerPoolKey = "visual_worker_pool";
 
 bool fileExists(const QString& path)
@@ -33,6 +34,37 @@ bool fileExists(const QString& path)
 bool dirExists(const QString& path)
 {
     return QFileInfo(path).isDir();
+}
+
+std::optional<std::string> sha256File(
+    const QString& path,
+    QString* errorOut)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        if (errorOut != nullptr) {
+            *errorOut = file.errorString();
+        }
+        return std::nullopt;
+    }
+
+    QCryptographicHash hash(QCryptographicHash::Sha256);
+    constexpr qint64 kChunkBytes = 4 * 1024 * 1024;
+    while (!file.atEnd()) {
+        const QByteArray chunk = file.read(kChunkBytes);
+        if (chunk.isEmpty() && file.error() != QFileDevice::NoError) {
+            if (errorOut != nullptr) {
+                *errorOut = file.errorString();
+            }
+            return std::nullopt;
+        }
+        hash.addData(chunk);
+    }
+
+    if (errorOut != nullptr) {
+        errorOut->clear();
+    }
+    return hash.result().toHex().toStdString();
 }
 } // namespace
 
@@ -46,19 +78,30 @@ CoordinatorController::CoordinatorController(QObject* parent)
 
 CoordinatorController::~CoordinatorController()
 {
-    if (coordinator_) {
-        coordinator_->Stop();
-        coordinator_.reset();
-    }
+    stopCoordinatorServices();
 }
 
-bool CoordinatorController::isRunning() const { return coordinator_ != nullptr; }
-bool CoordinatorController::isPaused() const { return coordinator_ ? coordinator_->IsPaused() : paused_; }
+bool CoordinatorController::isRunning() const
+{
+    return worker_coordinator_ != nullptr
+        && job_execution_coordinator_ != nullptr
+        && worker_coordinator_->IsStarted()
+        && job_execution_coordinator_->IsRunning();
+}
+bool CoordinatorController::isPaused() const
+{
+    return job_execution_coordinator_
+        ? job_execution_coordinator_->IsPaused()
+        : paused_;
+}
 int CoordinatorController::targetWorkers() const { return targetWorkers_; }
-int CoordinatorController::activeWorkers() const { return coordinator_ ? static_cast<int>(coordinator_->ActiveWorkerCount()) : 0; }
-int CoordinatorController::eventBufferCapacity() const { return eventBufferCapacity_; }
+int CoordinatorController::activeWorkers() const
+{
+    return worker_coordinator_
+        ? static_cast<int>(worker_coordinator_->SnapshotWorkers().size())
+        : 0;
+}
 bool CoordinatorController::startPaused() const { return startPaused_; }
-bool CoordinatorController::restartFailedJobsAutomatically() const { return restartFailedJobsAutomatically_; }
 bool CoordinatorController::visualWorkerPoolEnabled() const { return visualWorkerPoolEnabled_; }
 QString CoordinatorController::isoPath() const { return isoPath_; }
 QString CoordinatorController::dolphinBaseDir() const { return dolphinBaseDir_; }
@@ -66,48 +109,39 @@ QString CoordinatorController::validationMessage() const { return validationMess
 const std::vector<WorkerSnapshot>& CoordinatorController::snapshot() const { return snapshotCache_; }
 std::vector<WorkerSnapshot> CoordinatorController::freshSnapshot() const
 {
-    return coordinator_ ? coordinator_->SnapshotWorkers() : std::vector<WorkerSnapshot>{};
+    return worker_coordinator_
+        ? worker_coordinator_->SnapshotWorkers()
+        : std::vector<WorkerSnapshot>{};
 }
 const std::vector<WorkerSnapshot>& CoordinatorController::visualSnapshot() const { return visualSnapshotCache_; }
-const std::vector<savor::runner::parallel::savordb::CoordinatorWarningSnapshot>& CoordinatorController::warningSnapshot() const { return warningSnapshotCache_; }
+const std::vector<
+    savor::runner::parallel::savordb::JobExecutionCoordinatorWarning>&
+CoordinatorController::warningSnapshot() const
+{
+    return warningSnapshotCache_;
+}
 QStringList CoordinatorController::takeVisualLiveLogLineUpdates()
 {
-    if (!coordinator_) {
-        return {};
-    }
-    QStringList lines;
-    for (const auto& line : coordinator_->TakeVisualDebugLogLines()) {
-        lines.append(QString::fromStdString(line));
-    }
-    return lines;
+    return {};
 }
 
 QString CoordinatorController::visualReplayRuntimeStateText() const
 {
-    if (!coordinator_) {
-        return visualReplayLastError_.isEmpty()
-            ? QStringLiteral("Visual replay idle. Start the coordinator before launching debug replay.")
-            : visualReplayLastError_;
-    }
-    const auto snapshot = coordinator_->SnapshotVisualDebugReplay();
-    if (!snapshot.active) {
-        return visualReplayLastError_.isEmpty()
-            ? QStringLiteral("Visual replay idle.")
-            : visualReplayLastError_;
-    }
-    const QString stateText = visualReplayStateToText(snapshot.state);
-    const QString detail = QString::fromStdString(snapshot.detail);
-    return detail.isEmpty() ? stateText : QStringLiteral("%1: %2").arg(stateText, detail);
+    return visualReplayLastError_.isEmpty()
+        ? QStringLiteral(
+              "Visual replay is unavailable during the coordinator "
+              "architecture cutover.")
+        : visualReplayLastError_;
 }
 
 bool CoordinatorController::visualReplayControlsEnabled() const
 {
-    return coordinator_ ? coordinator_->SnapshotVisualDebugReplay().controls_enabled : false;
+    return false;
 }
 
 void CoordinatorController::startCoordinator()
 {
-    if (coordinator_) {
+    if (worker_coordinator_ || job_execution_coordinator_) {
         return;
     }
 
@@ -126,17 +160,31 @@ void CoordinatorController::startCoordinator()
     }
 
     auto* executionDb = runtime.executionDb();
-    auto* stateDb = runtime.stateDb();
+    auto* resultBlobStore = runtime.workerResultBlobStore();
+    if (executionDb == nullptr || resultBlobStore == nullptr
+        || !runtime.workflowCoordinatorRunning()
+        || !runtime.programResultProcessorRunning()) {
+        validationMessage_ = QStringLiteral(
+            "Execution scheduling services are unavailable.");
+        emit stateChanged();
+        return;
+    }
+
+    QString isoHashError;
+    const auto isoSha256 =
+        sha256File(isoPath_.trimmed(), &isoHashError);
+    if (!isoSha256.has_value()) {
+        validationMessage_ =
+            QStringLiteral("Failed to hash the configured ISO: %1")
+                .arg(isoHashError);
+        emit stateChanged();
+        return;
+    }
 
     try {
-        auto coordinator = std::make_unique<savor::runner::parallel::savordb::DBWorkflowWorkerCoordinator>(
-            executionDb,
-            buildWorkerConfig(),
-            savor::runner::parallel::savordb::CoordinatorIntegrationConfig{},
-            programRegistry,
-            savor::runner::parallel::savordb::DBWorkflowWorkerCoordinator::ReadyStepPersistFn{},
-            nullptr,
-            stateDb);
+        auto workerCoordinator = std::make_unique<
+            savor::runner::parallel::savordb::WorkerCoordinator>(
+                buildWorkerConfig());
         if (visualWorkerPoolEnabled_) {
             for (int workerIndex = 0; workerIndex < targetWorkers_; ++workerIndex) {
                 const auto it = visualWorkerSurfaces_.find(workerIndex);
@@ -145,31 +193,73 @@ void CoordinatorController::startCoordinator()
                     emit stateChanged();
                     return;
                 }
-                coordinator->SetWorkerVisualSurface(
+                workerCoordinator->SetWorkerVisualSurface(
                     static_cast<size_t>(workerIndex),
                     static_cast<uint64_t>(it->second.renderWidgetHandle),
                     it->second.hostEventsPipeName.toStdString());
             }
         }
-        const auto startResult = coordinator->Start();
+        const auto startResult = workerCoordinator->Start();
         if (!startResult) {
-            validationMessage_ = QStringLiteral("Coordinator startup failed: %1")
-                .arg(QString::fromStdString(startResult.error));
-            coordinator->Stop();
+            validationMessage_ =
+                QStringLiteral("Worker coordinator startup failed: %1")
+                    .arg(QString::fromStdString(
+                        startResult.diagnostic));
+            workerCoordinator->Stop();
             emit stateChanged();
             return;
         }
-        coordinator->SetPaused(startPaused_);
+        workerCoordinator->SetPaused(startPaused_);
+
+        savor::runner::parallel::savordb::
+            JobExecutionCoordinatorConfig executionConfig{};
+        executionConfig.state_compatibility = {
+            .game_id = std::string(
+                savor::runtime::program::capabilities::
+                    kSupportedGameId),
+            .iso_sha256 = *isoSha256,
+            .emulator_build = "dolphin-2506a",
+            .runtime_revision = "worker-runtime-slice4",
+        };
+
+        auto jobExecutionCoordinator = std::make_unique<
+            savor::runner::parallel::savordb::JobExecutionCoordinator>(
+                executionDb,
+                programRegistry,
+                workerCoordinator.get(),
+                resultBlobStore,
+                std::move(executionConfig),
+                []() {
+                    savorqt::SavorDbRuntime::instance()
+                        .wakeProgramResultProcessor();
+                });
+        jobExecutionCoordinator->SetPaused(startPaused_);
+        std::string execution_start_error;
+        if (!jobExecutionCoordinator->Start(
+                &execution_start_error)) {
+            validationMessage_ =
+                QStringLiteral(
+                    "Job execution coordinator startup failed: %1")
+                    .arg(QString::fromStdString(
+                        execution_start_error));
+            jobExecutionCoordinator->Stop();
+            workerCoordinator->Stop();
+            emit stateChanged();
+            return;
+        }
+
         paused_ = startPaused_;
-        coordinator_ = std::move(coordinator);
+        worker_coordinator_ = std::move(workerCoordinator);
+        job_execution_coordinator_ =
+            std::move(jobExecutionCoordinator);
     } catch (const std::exception& ex) {
         validationMessage_ = QStringLiteral("Coordinator startup failed: %1").arg(QString::fromUtf8(ex.what()));
-        coordinator_.reset();
+        stopCoordinatorServices();
         emit stateChanged();
         return;
     } catch (...) {
         validationMessage_ = QStringLiteral("Coordinator startup failed with an unknown exception.");
-        coordinator_.reset();
+        stopCoordinatorServices();
         emit stateChanged();
         return;
     }
@@ -181,12 +271,11 @@ void CoordinatorController::startCoordinator()
 
 void CoordinatorController::stopCoordinator()
 {
-    if (!coordinator_) {
+    if (!worker_coordinator_ && !job_execution_coordinator_) {
         return;
     }
 
-    coordinator_->Stop();
-    coordinator_.reset();
+    stopCoordinatorServices();
     paused_ = false;
     updateSnapshotCache();
     emit stateChanged();
@@ -196,8 +285,11 @@ void CoordinatorController::stopCoordinator()
 void CoordinatorController::setPaused(bool paused)
 {
     paused_ = paused;
-    if (coordinator_) {
-        coordinator_->SetPaused(paused_);
+    if (worker_coordinator_) {
+        worker_coordinator_->SetPaused(paused_);
+    }
+    if (job_execution_coordinator_) {
+        job_execution_coordinator_->SetPaused(paused_);
         updateSnapshotCache();
         emit snapshotChanged();
     }
@@ -215,20 +307,10 @@ void CoordinatorController::setTargetWorkers(int targetWorkers)
 
     targetWorkers_ = clampedValue;
     persistInt(kTargetWorkersKey, targetWorkers_);
-    if (coordinator_) {
-        coordinator_->SetDesiredWorkerCount(static_cast<size_t>(targetWorkers_));
+    if (worker_coordinator_) {
+        worker_coordinator_->SetDesiredWorkerCount(
+            static_cast<size_t>(targetWorkers_));
     }
-    emit stateChanged();
-}
-
-void CoordinatorController::setEventBufferCapacity(int capacity)
-{
-    const int clampedValue = (std::max)(kMinEventBufferCapacity, capacity);
-    if (eventBufferCapacity_ == clampedValue) {
-        return;
-    }
-    eventBufferCapacity_ = clampedValue;
-    persistInt(kEventRingKey, eventBufferCapacity_);
     emit stateChanged();
 }
 
@@ -242,22 +324,12 @@ void CoordinatorController::setStartPaused(bool startPaused)
     emit stateChanged();
 }
 
-void CoordinatorController::setRestartFailedJobsAutomatically(bool enabled)
-{
-    if (restartFailedJobsAutomatically_ == enabled) {
-        return;
-    }
-    restartFailedJobsAutomatically_ = enabled;
-    persistInt(kAutoRestartFailedJobsKey, restartFailedJobsAutomatically_ ? 1 : 0);
-    emit stateChanged();
-}
-
 void CoordinatorController::setVisualWorkerPoolEnabled(bool enabled)
 {
     if (visualWorkerPoolEnabled_ == enabled) {
         return;
     }
-    if (coordinator_) {
+    if (worker_coordinator_ || job_execution_coordinator_) {
         return;
     }
     visualWorkerPoolEnabled_ = enabled;
@@ -274,8 +346,8 @@ void CoordinatorController::setVisualWorkerSurface(int workerIndex, quintptr hwn
         .renderWidgetHandle = hwnd,
         .hostEventsPipeName = hostEventsPipeName,
     };
-    if (coordinator_) {
-        coordinator_->SetWorkerVisualSurface(
+    if (worker_coordinator_) {
+        worker_coordinator_->SetWorkerVisualSurface(
             static_cast<size_t>(workerIndex),
             static_cast<uint64_t>(hwnd),
             hostEventsPipeName.toStdString());
@@ -321,55 +393,30 @@ void CoordinatorController::setVisualHostEventsPipeName(const QString& pipeName)
 
 void CoordinatorController::requestVisualReplay(qint64 jobId)
 {
-    visualReplayLastError_.clear();
     if (jobId <= 0) {
         visualReplayLastError_ = QStringLiteral("Visual replay requires a valid job id.");
-        emit stateChanged();
-        return;
-    }
-    if (!coordinator_) {
-        visualReplayLastError_ = QStringLiteral("Start the DB workflow coordinator before launching visual debug replay.");
-        emit stateChanged();
-        return;
-    }
-
-    std::string error;
-    if (!coordinator_->StartVisualDebugReplay(
-        static_cast<std::int64_t>(jobId),
-        static_cast<uint64_t>(visualRenderWidgetHandle_),
-        visualHostEventsPipeName_.toStdString(),
-        &error)) {
-        visualReplayLastError_ = QStringLiteral("Visual replay failed to start: %1").arg(QString::fromStdString(error));
+    } else {
+        visualReplayLastError_ = QStringLiteral(
+            "Visual replay is not part of the new worker/job execution "
+            "coordinator boundary.");
     }
     emit stateChanged();
 }
 
 void CoordinatorController::pauseVisualReplayEmulation()
 {
-    if (coordinator_) {
-        (void)coordinator_->PauseVisualDebugReplayEmulation();
-    }
 }
 
 void CoordinatorController::stepVisualReplayVm()
 {
-    if (coordinator_) {
-        (void)coordinator_->StepVisualDebugReplayVm();
-    }
 }
 
 void CoordinatorController::resumeVisualReplayEmulation()
 {
-    if (coordinator_) {
-        (void)coordinator_->ResumeVisualDebugReplayEmulation();
-    }
 }
 
 void CoordinatorController::stopVisualReplay()
 {
-    if (coordinator_) {
-        (void)coordinator_->StopVisualDebugReplay();
-    }
     visualReplayLastError_.clear();
     emit stateChanged();
 }
@@ -396,9 +443,7 @@ void CoordinatorController::loadSettings()
     isoPath_ = settings.value(kIsoPathKey).toString();
     dolphinBaseDir_ = settings.value(kDolphinBaseKey).toString();
     targetWorkers_ = (std::min)(kMaxTargetWorkers, (std::max)(kMinTargetWorkers, settings.value(kTargetWorkersKey, targetWorkers_).toInt()));
-    eventBufferCapacity_ = (std::max)(kMinEventBufferCapacity, settings.value(kEventRingKey, eventBufferCapacity_).toInt());
     startPaused_ = settings.value(kStartPausedKey, startPaused_ ? 1 : 0).toInt() != 0;
-    restartFailedJobsAutomatically_ = settings.value(kAutoRestartFailedJobsKey, restartFailedJobsAutomatically_ ? 1 : 0).toInt() != 0;
     visualWorkerPoolEnabled_ = settings.value(kVisualWorkerPoolKey, visualWorkerPoolEnabled_ ? 1 : 0).toInt() != 0;
     settings.endGroup();
 }
@@ -463,25 +508,26 @@ void CoordinatorController::updateValidationMessage()
 
 void CoordinatorController::updateSnapshotCache()
 {
-    if (!coordinator_) {
+    if (!worker_coordinator_) {
         snapshotCache_.clear();
         visualSnapshotCache_.clear();
         warningSnapshotCache_.clear();
-        statusSnapshot_ = {};
-        telemetrySnapshot_ = savorqt::SavorDbRuntime::instance().workflowCoordinatorTelemetry();
         return;
     }
 
-    snapshotCache_ = coordinator_->SnapshotWorkers();
+    snapshotCache_ = worker_coordinator_->SnapshotWorkers();
     visualSnapshotCache_.clear();
-    warningSnapshotCache_ = coordinator_->SnapshotWarnings();
-    statusSnapshot_ = coordinator_->SnapshotStatus();
-    telemetrySnapshot_ = savorqt::SavorDbRuntime::instance().workflowCoordinatorTelemetry();
+    warningSnapshotCache_ = job_execution_coordinator_
+        ? job_execution_coordinator_->SnapshotWarnings()
+        : std::vector<
+              savor::runner::parallel::savordb::
+                  JobExecutionCoordinatorWarning>{};
 }
 
-savor::runner::parallel::savordb::DBWorkflowWorkerCoordinatorConfig CoordinatorController::buildWorkerConfig() const
+savor::runner::parallel::savordb::WorkerCoordinatorConfig
+CoordinatorController::buildWorkerConfig() const
 {
-    savor::runner::parallel::savordb::DBWorkflowWorkerCoordinatorConfig cfg{};
+    savor::runner::parallel::savordb::WorkerCoordinatorConfig cfg{};
     cfg.desired_workers = static_cast<size_t>((std::max)(kMinTargetWorkers, targetWorkers_));
     cfg.worker_exe_path = workerExePath().toStdString();
     cfg.iso_path = isoPath_.trimmed().toStdString();
@@ -489,47 +535,64 @@ savor::runner::parallel::savordb::DBWorkflowWorkerCoordinatorConfig CoordinatorC
     cfg.worker_dir_root = workerRootPath().toStdString();
     cfg.visual_workers = visualWorkerPoolEnabled_;
     cfg.auto_resume_visual_workers = visualWorkerPoolEnabled_;
-    auto& runtime = savorqt::SavorDbRuntime::instance();
-    cfg.item_credit_source = runtime.workflowItemCreditSource();
-    cfg.terminal_commit_callback = [](
-        const savor::db::execution::workflow::
-            TerminalWorkflowStepNotification& notification) {
-        (void)savorqt::SavorDbRuntime::instance()
-            .publishTerminalCommit(notification);
-    };
+    if (const auto phase = savor::runtime::seedprobe::
+            SeedProbeFullPhaseDefinitionV2();
+        phase && phase->identity()) {
+        cfg.enabled_program_kinds.push_back(
+            phase->identity().program_kind);
+    }
     return cfg;
+}
+
+void CoordinatorController::stopCoordinatorServices()
+{
+    std::string shutdownError;
+    if (job_execution_coordinator_) {
+        job_execution_coordinator_->Quiesce();
+        std::string releaseError;
+        if (!job_execution_coordinator_->ReleaseBufferedClaims(
+                &releaseError)
+            && !releaseError.empty()) {
+            shutdownError = std::move(releaseError);
+        }
+    }
+
+    if (worker_coordinator_) {
+        worker_coordinator_->Stop();
+    }
+
+    if (job_execution_coordinator_) {
+        std::string recoveryError;
+        if (!job_execution_coordinator_->RecoverAfterWorkersStopped(
+                &recoveryError)
+            && shutdownError.empty() && !recoveryError.empty()) {
+            shutdownError = std::move(recoveryError);
+        }
+        job_execution_coordinator_->Stop();
+        job_execution_coordinator_.reset();
+    }
+    worker_coordinator_.reset();
+
+    if (!shutdownError.empty()) {
+        validationMessage_ =
+            QStringLiteral("Coordinator shutdown warning: %1")
+                .arg(QString::fromStdString(shutdownError));
+    }
 }
 
 void CoordinatorController::applyVisualWorkerSurfaces()
 {
-    if (!coordinator_) {
+    if (!worker_coordinator_) {
         return;
     }
     for (const auto& [workerIndex, surface] : visualWorkerSurfaces_) {
         if (workerIndex < 0 || surface.renderWidgetHandle == 0) {
             continue;
         }
-        coordinator_->SetWorkerVisualSurface(
+        worker_coordinator_->SetWorkerVisualSurface(
             static_cast<size_t>(workerIndex),
             static_cast<uint64_t>(surface.renderWidgetHandle),
             surface.hostEventsPipeName.toStdString());
-    }
-}
-
-QString CoordinatorController::visualReplayStateToText(
-    savor::runner::parallel::savordb::VisualReplayRuntimeState state) const
-{
-    using savor::runner::parallel::savordb::VisualReplayRuntimeState;
-    switch (state) {
-    case VisualReplayRuntimeState::Idle: return QStringLiteral("Idle");
-    case VisualReplayRuntimeState::QueuedStartup: return QStringLiteral("Queued startup");
-    case VisualReplayRuntimeState::LaunchingWorker: return QStringLiteral("Launching worker");
-    case VisualReplayRuntimeState::AttachReady: return QStringLiteral("Attach ready");
-    case VisualReplayRuntimeState::Active: return QStringLiteral("Active");
-    case VisualReplayRuntimeState::Stopping: return QStringLiteral("Stopping");
-    case VisualReplayRuntimeState::Finished: return QStringLiteral("Finished");
-    case VisualReplayRuntimeState::Failed: return QStringLiteral("Failed");
-    default: return QStringLiteral("Unknown");
     }
 }
 

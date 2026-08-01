@@ -189,6 +189,35 @@ bool ReadModule(Reader& reader, ProgramModuleIdentity& module)
         reader.String(module.canonical_hash);
 }
 
+void WriteFullPhaseProgram(
+    Writer& writer,
+    const fullphase::FullPhaseProgramIdentity& program)
+{
+    writer.U32(static_cast<std::uint32_t>(program.program_kind));
+    writer.U32(static_cast<std::uint32_t>(program.program_version));
+    writer.String(program.canonical_id);
+    writer.U32(program.contract_revision);
+    writer.String(program.canonical_sha256);
+}
+
+bool ReadFullPhaseProgram(
+    Reader& reader,
+    fullphase::FullPhaseProgramIdentity& program)
+{
+    std::uint32_t kind = 0;
+    std::uint32_t version = 0;
+    if (!reader.U32(kind) || !reader.U32(version) ||
+        !reader.String(program.canonical_id) ||
+        !reader.U32(program.contract_revision) ||
+        !reader.String(program.canonical_sha256))
+    {
+        return false;
+    }
+    program.program_kind = static_cast<std::int32_t>(kind);
+    program.program_version = static_cast<std::int32_t>(version);
+    return true;
+}
+
 void WriteCompatibility(
     Writer& writer,
     const StateCompatibilityToken& value)
@@ -405,13 +434,17 @@ bool ReadLimits(Reader& reader, WorkerWorksetLimits& limits)
 
 } // namespace
 
-WorksetWireCodecResult EncodeWorkerWorksetV1(
+WorksetWireCodecResult EncodeWorkerWorksetV2(
     const WorkerWorksetDefinition& definition,
     std::vector<std::uint8_t>& output)
 {
     Writer writer;
-    writer.U32(kWorksetWireVersionV1);
+    writer.U32(kWorksetWireVersionV2);
     writer.U64(definition.workset_id.value());
+    writer.U64(definition.phase_invocation.invocation_id.workflow_step_id);
+    writer.U64(definition.phase_invocation.invocation_id.root_job_set_id);
+    WriteFullPhaseProgram(
+        writer, definition.phase_invocation.program);
     const WorkerWorksetExecutionKey& key = definition.execution_key;
     WriteModule(writer, key.module);
     writer.String(key.entrypoint);
@@ -427,11 +460,9 @@ WorksetWireCodecResult EncodeWorkerWorksetV1(
     {
         writer.U64(item.item_id.value());
         writer.U32(item.ordinal);
-        writer.U64(item.invocation.invocation_id.value());
-        writer.U64(item.invocation.attempt_id.value());
-        WriteModule(writer, item.invocation.module);
-        writer.String(item.invocation.entrypoint);
-        writer.Blob(item.invocation.template_payload);
+        writer.U64(item.execution.execution_id.value());
+        writer.U64(item.execution.attempt_id.value());
+        writer.Blob(item.execution.input_payload);
         writer.U64(item.declared_terminal_bytes);
         writer.String(item.correlation.durable_job_id);
         writer.String(item.correlation.claim_token);
@@ -440,7 +471,7 @@ WorksetWireCodecResult EncodeWorkerWorksetV1(
     return writer.Finish(output, kMaximumWorksetWireBytes);
 }
 
-WorksetWireCodecResult DecodeWorkerWorksetV1(
+WorksetWireCodecResult DecodeWorkerWorksetV2(
     std::span<const std::uint8_t> input,
     WorkerWorksetDefinition& output)
 {
@@ -450,9 +481,15 @@ WorksetWireCodecResult DecodeWorkerWorksetV1(
     WorkerWorksetDefinition candidate;
     std::uint32_t version = 0;
     std::uint64_t workset_id = 0;
+    std::uint64_t workflow_step_id = 0;
+    std::uint64_t root_job_set_id = 0;
     WorkerWorksetExecutionKey& key = candidate.execution_key;
-    if (!reader.U32(version) || version != kWorksetWireVersionV1 ||
+    if (!reader.U32(version) || version != kWorksetWireVersionV2 ||
         !reader.U64(workset_id) ||
+        !reader.U64(workflow_step_id) ||
+        !reader.U64(root_job_set_id) ||
+        !ReadFullPhaseProgram(
+            reader, candidate.phase_invocation.program) ||
         !ReadModule(reader, key.module) ||
         !reader.String(key.entrypoint) ||
         !reader.String(key.verified_dependency_sha256) ||
@@ -466,6 +503,10 @@ WorksetWireCodecResult DecodeWorkerWorksetV1(
         return {false, "WorkerWorkset header is invalid"};
     }
     candidate.workset_id = WorkerWorksetId(workset_id);
+    candidate.phase_invocation.invocation_id = {
+        .workflow_step_id = workflow_step_id,
+        .root_job_set_id = root_job_set_id,
+    };
     std::uint32_t item_count = 0;
     if (!reader.Count(item_count, 16))
         return reader.Finish();
@@ -474,16 +515,14 @@ WorksetWireCodecResult DecodeWorkerWorksetV1(
     {
         WorksetItemTemplate item;
         std::uint64_t item_id = 0;
-        std::uint64_t invocation_id = 0;
+        std::uint64_t execution_id = 0;
         std::uint64_t attempt_id = 0;
         std::uint64_t terminal_bytes = 0;
         if (!reader.U64(item_id) ||
             !reader.U32(item.ordinal) ||
-            !reader.U64(invocation_id) ||
+            !reader.U64(execution_id) ||
             !reader.U64(attempt_id) ||
-            !ReadModule(reader, item.invocation.module) ||
-            !reader.String(item.invocation.entrypoint) ||
-            !reader.Blob(item.invocation.template_payload) ||
+            !reader.Blob(item.execution.input_payload) ||
             !reader.U64(terminal_bytes) ||
             !reader.String(item.correlation.durable_job_id) ||
             !reader.String(item.correlation.claim_token) ||
@@ -495,9 +534,9 @@ WorksetWireCodecResult DecodeWorkerWorksetV1(
             return {false, "WorkerWorkset item is invalid"};
         }
         item.item_id = WorkerWorksetItemId(item_id);
-        item.invocation.invocation_id =
-            InvocationId(invocation_id);
-        item.invocation.attempt_id = AttemptId(attempt_id);
+        item.execution.execution_id =
+            ProgramExecutionId(execution_id);
+        item.execution.attempt_id = AttemptId(attempt_id);
         item.declared_terminal_bytes =
             static_cast<std::size_t>(terminal_bytes);
         candidate.items.push_back(std::move(item));
@@ -525,7 +564,7 @@ WorksetWireCodecResult EncodeWorkerRuntimeManifestV1(
                 : validated.error.message};
     }
     Writer writer;
-    writer.U32(kWorksetWireVersionV1);
+    writer.U32(kRuntimeManifestWireVersionV1);
     writer.U32(manifest.wrms_protocol_version);
     writer.U32(manifest.program_module_format_version);
     writer.U32(manifest.program_invocation_format_version);
@@ -558,7 +597,8 @@ WorksetWireCodecResult DecodeWorkerRuntimeManifestV1(
     std::uint32_t version = 0;
     std::uint32_t wrms = 0;
     std::uint8_t status = 0;
-    if (!reader.U32(version) || version != kWorksetWireVersionV1 ||
+    if (!reader.U32(version) ||
+        version != kRuntimeManifestWireVersionV1 ||
         !reader.U32(wrms) ||
         wrms > std::numeric_limits<std::uint16_t>::max() ||
         !reader.U32(candidate.program_module_format_version) ||

@@ -38,7 +38,7 @@ CREATE TABLE IF NOT EXISTS ui_seed_probe_summary (
     probe_run_id INTEGER PRIMARY KEY,
     probe_set_id INTEGER NOT NULL,
     status TEXT NOT NULL,
-    neutral_seed_value INTEGER NULL,
+    neutral_seed_value INTEGER NULL CHECK(neutral_seed_value BETWEEN 0 AND 4294967295),
     grid_count INTEGER NOT NULL,
     unique_count INTEGER NOT NULL,
     requested_at_utc INTEGER NOT NULL,
@@ -51,16 +51,16 @@ CREATE TABLE IF NOT EXISTS ui_seed_probe_delta_point (
     source_family TEXT NOT NULL,
     axis_x INTEGER NOT NULL,
     axis_y INTEGER NOT NULL,
-    seed_value INTEGER NOT NULL,
-    seed_delta INTEGER NOT NULL,
+    seed_value INTEGER NOT NULL CHECK(seed_value BETWEEN 0 AND 4294967295),
+    seed_delta INTEGER NOT NULL CHECK(seed_delta BETWEEN -2147483648 AND 2147483647),
     CONSTRAINT uq_ui_seed_probe_delta_point UNIQUE (probe_run_id, source_family, axis_x, axis_y, seed_value)
 );
 
 CREATE TABLE IF NOT EXISTS ui_seed_probe_unique_value (
     unique_value_id INTEGER PRIMARY KEY,
     probe_run_id INTEGER NOT NULL,
-    seed_value INTEGER NOT NULL,
-    seed_delta INTEGER NOT NULL,
+    seed_value INTEGER NOT NULL CHECK(seed_value BETWEEN 0 AND 4294967295),
+    seed_delta INTEGER NOT NULL CHECK(seed_delta BETWEEN -2147483648 AND 2147483647),
     main_x INTEGER NOT NULL,
     main_y INTEGER NOT NULL,
     cstick_x INTEGER NOT NULL,

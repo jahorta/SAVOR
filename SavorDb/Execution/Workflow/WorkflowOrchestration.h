@@ -217,6 +217,7 @@ struct WorkflowPauseInstanceCommand {
 
 struct WorkflowTerminalFailInstanceCommand {
     std::int64_t workflow_instance_id = 0;
+    std::optional<std::int64_t> workflow_step_id;
     std::string failure_code;
     std::string failure_message;
     std::string requested_by;

@@ -82,18 +82,6 @@ std::string FormatWorkflowStateLine(const savor::db::execution::workflow::Workfl
     return oss.str();
 }
 
-std::int64_t ComputeBattleScenarioTimeoutMs(const CliOptions& options) {
-    const int fake_low = options.battle_fake_attack_low.value_or(0);
-    const int fake_high = options.battle_fake_attack_high.value_or(fake_low);
-    const int fake_jobs_per_wave = std::max(1, std::abs(fake_high - fake_low) + 1);
-    const std::int64_t per_wave_guard =
-        static_cast<std::int64_t>(std::max(1, fake_jobs_per_wave))
-        * options.timeout_ms;
-    return std::max<std::int64_t>(
-        options.timeout_ms,
-        (per_wave_guard * 4) + options.timeout_ms);
-}
-
 std::string BattleSeedSuffix(
     std::string scenario,
     int min_fake_attacks,
@@ -123,16 +111,22 @@ std::vector<std::uint8_t> BuildCurrentTurnAddressProgram() {
     return builder.blob();
 }
 
-std::int64_t ComputeSeedProbePreludeTimeoutMs(const CliOptions& options) {
-    const auto samples_per_axis = options.seedprobe_samples_per_axis.value_or(kSeedProbeSamplesPerAxis);
-    const std::int64_t grid_probe_count =
-        static_cast<std::int64_t>(samples_per_axis)
-        * static_cast<std::int64_t>(samples_per_axis)
-        * 3;
-    constexpr std::int64_t kAverageUniqueCountEstimate = 25;
-    return std::max<std::int64_t>(
-        options.timeout_ms,
-        options.timeout_ms * (1 + grid_probe_count + kAverageUniqueCountEstimate));
+std::vector<savor::db::SeedProbeResultRow>
+ListConfirmedSeedProbeRepresentatives(
+    savor::db::IAnalysisDb* analysis_db,
+    std::int64_t probe_run_id) {
+    if (analysis_db == nullptr || probe_run_id <= 0) {
+        return {};
+    }
+    auto rows = analysis_db->ListSeedProbeResults(probe_run_id);
+    std::erase_if(
+        rows,
+        [](const savor::db::SeedProbeResultRow& row) {
+            return row.evidence_state
+                    != savor::db::SeedProbeEvidenceState::Confirmed
+                || row.confirmation_of_probe_result_id.has_value();
+        });
+    return rows;
 }
 
 bool RunSeedProbePrelude(
@@ -141,9 +135,9 @@ bool RunSeedProbePrelude(
     savor::db::core::DBService* db_service,
     DurableLogFile* durable_log,
     std::int64_t* entry_savestate_id_out,
-    std::int64_t* unique_seed_id_out,
+    std::int64_t* probe_result_id_out,
     std::string* error_out) {
-    if (db_service == nullptr || entry_savestate_id_out == nullptr || unique_seed_id_out == nullptr) {
+    if (db_service == nullptr || entry_savestate_id_out == nullptr || probe_result_id_out == nullptr) {
         if (error_out) *error_out = "seed probe prelude args unavailable";
         return false;
     }
@@ -263,8 +257,6 @@ bool RunSeedProbePrelude(
     }
 
     coordinator.Start();
-    const auto started = std::chrono::steady_clock::now();
-    const auto timeout_ms = ComputeSeedProbePreludeTimeoutMs(options);
     const bool interactive_stdout = IsInteractiveStdout();
     MultiLineProgressRenderer progress_renderer;
     const auto interactive_refresh_cadence = std::chrono::milliseconds(100);
@@ -275,7 +267,7 @@ bool RunSeedProbePrelude(
     std::size_t poll_count = 0;
     std::size_t ticks_since_snapshot = 0;
     std::size_t terminal_steps_seen_count = 0;
-    while (std::chrono::steady_clock::now() - started < std::chrono::milliseconds(timeout_ms)) {
+    while (true) {
         ++poll_count;
         ++ticks_since_snapshot;
         const auto event_lines = drain_lines();
@@ -378,26 +370,30 @@ bool RunSeedProbePrelude(
         }
     }
 
-    std::cout << "[battle-seedprobe-final] status=" << (completed ? "success" : failed ? "failure" : "timeout") << '\n';
-    std::cout << "  timeout_ms=" << timeout_ms << '\n';
+    std::cout << "[battle-seedprobe-final] status=" << (completed ? "success" : failed ? "failure" : "incomplete") << '\n';
     std::cout << "  " << latest_state << '\n';
     if (!completed) {
         if (error_out) *error_out = failed
             ? "SeedProbe prelude workflow did not complete successfully"
-            : "SeedProbe prelude workflow did not reach COMPLETED state before timeout";
+            : "SeedProbe prelude workflow stopped before reaching COMPLETED";
         return false;
     }
 
-    const auto unique_rows = db_service->AnalysisDb()->ListSeedProbeUniqueSeeds(probe_run_id);
-    if (unique_rows.empty()) {
-        if (error_out) *error_out = "SeedProbe prelude completed with no unique seeds";
+    const auto confirmed_results = ListConfirmedSeedProbeRepresentatives(
+        db_service->AnalysisDb(),
+        probe_run_id);
+    if (confirmed_results.empty()) {
+        if (error_out) {
+            *error_out =
+                "SeedProbe prelude completed with no confirmed results";
+        }
         return false;
     }
     *entry_savestate_id_out = entry_savestate_id;
-    *unique_seed_id_out = unique_rows.front().unique_seed_id;
+    *probe_result_id_out = confirmed_results.front().probe_result_id;
     std::cout << "[battle-seedprobe-selected] probe_run_id=" << probe_run_id
-              << " unique_seed_id=" << *unique_seed_id_out
-              << " unique_count=" << unique_rows.size() << '\n';
+              << " probe_result_id=" << *probe_result_id_out
+              << " confirmed_count=" << confirmed_results.size() << '\n';
     return true;
 }
 
@@ -610,7 +606,7 @@ bool SeedBattleAnalysisAndWorkflowRows(
     std::int64_t explorer_settings_id,
     int min_fake_attacks,
     int max_fake_attacks,
-    std::int64_t source_unique_seed_id,
+    std::int64_t source_probe_result_id,
     std::int64_t* battle_set_id_out,
     std::int64_t* wave_id_out,
     std::int64_t* workflow_instance_id_out,
@@ -640,17 +636,33 @@ bool SeedBattleAnalysisAndWorkflowRows(
         return false;
     }
 
+    const auto source_result =
+        analysis_db->GetSeedProbeResult(source_probe_result_id);
+    if (!source_result.has_value()
+        || source_result->evidence_state
+            != savor::db::SeedProbeEvidenceState::Confirmed
+        || source_result->confirmation_of_probe_result_id.has_value()) {
+        if (error_out != nullptr) {
+            *error_out =
+                "battle seed candidate requires a confirmed SeedProbe result";
+        }
+        return false;
+    }
+
     std::int64_t seed_candidate_id = 0;
     if (!analysis_db->AddBattleSeedCandidate(
             {
                 .battle_set_id = battle_set_id,
-                .source_unique_seed_id = source_unique_seed_id,
-                .seed_value = 0,
-                .source_kind = savor::db::BattleSeedCandidateSourceKind::SeedProbeUnique,
+                .source_probe_result_id = source_probe_result_id,
+                .source_input_frame_id = source_result->input_frame_id,
+                .seed_value = source_result->seed_value,
+                .source_kind = savor::db::BattleSeedCandidateSourceKind::
+                    SeedProbeConfirmedResult,
                 .candidate_status = savor::db::BattleSeedCandidateStatus::Ready,
                 .created_at_utc = now,
                 .correlation_id = "savor-e2e.battle",
-                .causation_id = "unique-seed-" + std::to_string(source_unique_seed_id),
+                .causation_id = "probe-result-"
+                    + std::to_string(source_probe_result_id),
             },
             &seed_candidate_id,
             error_out)) {
@@ -871,7 +883,7 @@ bool SeedTasMovieSeedProbeBattleGraphExecution(
                             { .input_key = "entry_savestate", .data_kind = "state.savestate_id", .display_name = "Entry savestate" },
                         },
                         .possible_outputs = {
-                            { .output_key = "unique_input_frames", .data_kind = "analysis.input_frame_set_id", .display_name = "Unique input frames" },
+                            { .output_key = "accepted_input_frames", .data_kind = "analysis.input_frame_set_id", .display_name = "Accepted input frames" },
                         },
                     },
                     {
@@ -892,7 +904,7 @@ bool SeedTasMovieSeedProbeBattleGraphExecution(
                 .edges = {
                     { .from_node_key = "tas_1", .output_key = "savestate", .to_node_key = "probe_1", .input_key = "entry_savestate" },
                     { .from_node_key = "tas_1", .output_key = "savestate", .to_node_key = "battle_1", .input_key = "entry_savestate" },
-                    { .from_node_key = "probe_1", .output_key = "unique_input_frames", .to_node_key = "battle_1", .input_key = "initial_input_frames" },
+                    { .from_node_key = "probe_1", .output_key = "accepted_input_frames", .to_node_key = "battle_1", .input_key = "initial_input_frames" },
                 },
                 .created_at_utc = savor::db::types::UtcNow(),
                 .correlation_id = "savor-e2e.workflow_graph.tasmovie_seedprobe_battle",
@@ -1287,7 +1299,7 @@ bool RunSeedProbeBattleRealWorkerScenario(
     std::cout << "[durable-log] path=" << durable_log.path().string() << '\n';
 
     std::int64_t entry_savestate_id = 0;
-    std::int64_t unique_seed_id = 0;
+    std::int64_t probe_result_id = 0;
     std::string err;
     if (!RunSeedProbePrelude(
             options,
@@ -1295,7 +1307,7 @@ bool RunSeedProbeBattleRealWorkerScenario(
             db_service,
             &durable_log,
             &entry_savestate_id,
-            &unique_seed_id,
+            &probe_result_id,
             &err)) {
         if (error_out) *error_out = "failed running SeedProbe prelude for battle scenario: " + err;
         return false;
@@ -1334,7 +1346,7 @@ bool RunSeedProbeBattleRealWorkerScenario(
             explorer_settings_id,
             options.battle_fake_attack_low.value_or(0),
             options.battle_fake_attack_high.value_or(2),
-            unique_seed_id,
+            probe_result_id,
             &battle_set_id,
             &wave_id,
             &workflow_instance_id,
@@ -1342,8 +1354,6 @@ bool RunSeedProbeBattleRealWorkerScenario(
         if (error_out) *error_out = "failed seeding battle analysis/workflow rows: " + err;
         return false;
     }
-
-    const auto scenario_timeout_ms = ComputeBattleScenarioTimeoutMs(options);
 
     const auto scenario_workspace_root = options.workspace_root.value_or(
         std::filesystem::temp_directory_path() / "savor-e2e-default");
@@ -1378,7 +1388,7 @@ bool RunSeedProbeBattleRealWorkerScenario(
     }
 
     std::cout << "[battle-single-turn-setup] seeded entry_savestate_id=" << entry_savestate_id
-              << " unique_seed_id=" << unique_seed_id
+              << " probe_result_id=" << probe_result_id
               << " battle_run_spec_id=" << battle_run_spec_id
               << " explorer_settings_id=" << explorer_settings_id
               << " battle_set_id=" << battle_set_id
@@ -1454,7 +1464,6 @@ bool RunSeedProbeBattleRealWorkerScenario(
     }
 
     coordinator.Start();
-    const auto started = std::chrono::steady_clock::now();
     const bool interactive_stdout = IsInteractiveStdout();
     MultiLineProgressRenderer progress_renderer;
     const auto interactive_refresh_cadence = std::chrono::milliseconds(100);
@@ -1465,7 +1474,7 @@ bool RunSeedProbeBattleRealWorkerScenario(
     std::size_t ticks_since_snapshot = 0;
     std::size_t terminal_steps_seen_count = 0;
     std::vector<std::string> latest_lines;
-    while (std::chrono::steady_clock::now() - started < std::chrono::milliseconds(scenario_timeout_ms)) {
+    while (true) {
         ++poll_count;
         ++ticks_since_snapshot;
         const auto event_lines = drain_lines();
@@ -1576,8 +1585,7 @@ bool RunSeedProbeBattleRealWorkerScenario(
         }));
     }
 
-    std::cout << "[battle-single-turn-final] status=" << (completed ? "success" : failed ? "failure" : "timeout") << '\n';
-    std::cout << "  timeout_ms=" << scenario_timeout_ms << '\n';
+    std::cout << "[battle-single-turn-final] status=" << (completed ? "success" : failed ? "failure" : "incomplete") << '\n';
     std::cout << "  " << latest_state << '\n';
     std::cout << "  waves=" << waves.size()
               << " turn_jobs=" << job_count
@@ -1586,7 +1594,7 @@ bool RunSeedProbeBattleRealWorkerScenario(
     if (!completed) {
         if (error_out) *error_out = failed
             ? "workflow did not complete successfully"
-            : "workflow did not reach COMPLETED state before timeout - timed out";
+            : "workflow stopped before reaching COMPLETED state";
         return false;
     }
     return true;
@@ -1719,8 +1727,6 @@ bool RunBattleWorkflowGraphRealWorkerScenario(
         return false;
     }
 
-    const auto scenario_timeout_ms = ComputeBattleScenarioTimeoutMs(options);
-
     std::cout << "[battle-graph-setup] entry_savestate_id=" << entry_savestate_id
               << " battle_run_spec_id=" << battle_run_spec_id
               << " explorer_settings_id=" << explorer_settings_id
@@ -1799,7 +1805,6 @@ bool RunBattleWorkflowGraphRealWorkerScenario(
     }
 
     coordinator.Start();
-    const auto started = std::chrono::steady_clock::now();
     const bool interactive_stdout = IsInteractiveStdout();
     MultiLineProgressRenderer progress_renderer;
     const auto interactive_refresh_cadence = std::chrono::milliseconds(100);
@@ -1810,7 +1815,7 @@ bool RunBattleWorkflowGraphRealWorkerScenario(
     std::size_t ticks_since_snapshot = 0;
     std::size_t terminal_steps_seen_count = 0;
     std::vector<std::string> latest_lines;
-    while (std::chrono::steady_clock::now() - started < std::chrono::milliseconds(scenario_timeout_ms)) {
+    while (true) {
         ++poll_count;
         ++ticks_since_snapshot;
         const auto event_lines = drain_lines();
@@ -1938,8 +1943,7 @@ bool RunBattleWorkflowGraphRealWorkerScenario(
         }
     }
 
-    std::cout << "[battle-graph-final] status=" << (completed ? "success" : failed ? "failure" : "timeout") << '\n';
-    std::cout << "  timeout_ms=" << scenario_timeout_ms << '\n';
+    std::cout << "[battle-graph-final] status=" << (completed ? "success" : failed ? "failure" : "incomplete") << '\n';
     std::cout << "  " << latest_state << '\n';
     std::cout << "  workflow_instance_id=" << workflow_instance_id
               << " input_set_id=" << input_set_id
@@ -1954,7 +1958,7 @@ bool RunBattleWorkflowGraphRealWorkerScenario(
     if (!completed) {
         if (error_out) *error_out = failed
             ? "workflow did not complete successfully"
-            : "workflow did not reach COMPLETED state before timeout - timed out";
+            : "workflow stopped before reaching COMPLETED state";
         return false;
     }
     if (authored_input_frames.empty()) {
@@ -2155,16 +2159,6 @@ bool RunTasMovieSeedProbeBattleWorkflowGraphRealWorkerScenario(
         return false;
     }
 
-    const auto tas_budget_ms = options.timeout_ms * 3;
-    const auto seedprobe_budget_ms = options.timeout_ms
-        * (1
-            + (static_cast<std::int64_t>(options.seedprobe_samples_per_axis.value_or(kSeedProbeSamplesPerAxis))
-                * options.seedprobe_samples_per_axis.value_or(kSeedProbeSamplesPerAxis)
-                * 3)
-            + 25);
-    const auto battle_budget_ms = ComputeBattleScenarioTimeoutMs(options);
-    const auto scenario_timeout_ms = tas_budget_ms + seedprobe_budget_ms + battle_budget_ms;
-
     std::cout << "[tasmovie-seedprobe-battle-graph-setup] dtm_artifact_id=" << dtm_artifact_id
               << " seed_probe_spec_id=" << seed_probe_spec_id
               << " battle_run_spec_id=" << battle_run_spec_id
@@ -2246,7 +2240,6 @@ bool RunTasMovieSeedProbeBattleWorkflowGraphRealWorkerScenario(
     }
 
     coordinator.Start();
-    const auto started = std::chrono::steady_clock::now();
     const bool interactive_stdout = IsInteractiveStdout();
     MultiLineProgressRenderer progress_renderer;
     const auto interactive_refresh_cadence = std::chrono::milliseconds(100);
@@ -2257,7 +2250,7 @@ bool RunTasMovieSeedProbeBattleWorkflowGraphRealWorkerScenario(
     std::size_t ticks_since_snapshot = 0;
     std::size_t terminal_steps_seen_count = 0;
     std::vector<std::string> latest_lines;
-    while (std::chrono::steady_clock::now() - started < std::chrono::milliseconds(scenario_timeout_ms)) {
+    while (true) {
         ++poll_count;
         ++ticks_since_snapshot;
         const auto event_lines = drain_lines();
@@ -2402,7 +2395,7 @@ bool RunTasMovieSeedProbeBattleWorkflowGraphRealWorkerScenario(
         progress_renderer.Render(std::cout);
     }
 
-    std::size_t total_unique_count = 0;
+    std::size_t total_confirmed_result_count = 0;
     std::size_t total_first_turn_waves = 0;
     std::size_t total_expected_first_turn_waves = 0;
     std::size_t context_probe_count = 0;
@@ -2427,9 +2420,12 @@ bool RunTasMovieSeedProbeBattleWorkflowGraphRealWorkerScenario(
         if (first_probe_run_id <= 0) {
             first_probe_run_id = graph_probe_run_id;
         }
-        const auto unique_rows = db_service->AnalysisDb()->ListSeedProbeUniqueSeeds(graph_probe_run_id);
-        total_unique_count += unique_rows.size();
-        if (!override_input_frames && !tasmovie_battle_only && (graph_probe_run_id <= 0 || unique_rows.empty())) {
+        const auto confirmed_results = ListConfirmedSeedProbeRepresentatives(
+            db_service->AnalysisDb(),
+            graph_probe_run_id);
+        total_confirmed_result_count += confirmed_results.size();
+        if (!override_input_frames && !tasmovie_battle_only
+            && (graph_probe_run_id <= 0 || confirmed_results.empty())) {
             missing_probe_run = true;
         }
 
@@ -2449,7 +2445,7 @@ bool RunTasMovieSeedProbeBattleWorkflowGraphRealWorkerScenario(
             : std::vector<savor::db::BattleTurnWaveSnapshot>{};
         const auto expected_first_turn_waves = external_input_set_id.has_value()
             ? authored_input_frames.size()
-            : unique_rows.size();
+            : confirmed_results.size();
         total_first_turn_waves += waves.size();
         total_expected_first_turn_waves += expected_first_turn_waves;
         if (waves.size() != expected_first_turn_waves) {
@@ -2470,12 +2466,12 @@ bool RunTasMovieSeedProbeBattleWorkflowGraphRealWorkerScenario(
         }
     }
 
-    std::cout << "[tasmovie-seedprobe-battle-graph-final] status=" << (completed ? "success" : failed ? "failure" : "timeout") << '\n';
-    std::cout << "  timeout_ms=" << scenario_timeout_ms << '\n';
+    std::cout << "[tasmovie-seedprobe-battle-graph-final] status=" << (completed ? "success" : failed ? "failure" : "incomplete") << '\n';
     std::cout << "  " << latest_state << '\n';
     std::cout << "  workflow_instances=" << workflow_instance_ids.size()
               << " probe_run_id=" << first_probe_run_id
-              << " unique_count=" << total_unique_count
+              << " confirmed_result_count="
+              << total_confirmed_result_count
               << " context_probe_id=" << first_context_probe_id
               << " context_probe_count=" << context_probe_count
               << " first_turn_waves=" << total_first_turn_waves
@@ -2487,7 +2483,7 @@ bool RunTasMovieSeedProbeBattleWorkflowGraphRealWorkerScenario(
     if (!completed) {
         if (error_out) *error_out = failed
             ? "workflow did not complete successfully"
-            : "workflow did not reach COMPLETED state before timeout - timed out";
+            : "workflow stopped before reaching COMPLETED state";
         return false;
     }
     if (missing_probe_run) {

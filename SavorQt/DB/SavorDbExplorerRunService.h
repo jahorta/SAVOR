@@ -66,7 +66,7 @@ struct BattleReplicationOrigin {
     std::optional<std::int64_t> entry_savestate_artifact_id;
     std::optional<std::int64_t> seed_candidate_id;
     std::string seed_source_kind;
-    std::optional<std::int64_t> source_unique_seed_id;
+    std::optional<std::int64_t> source_probe_result_id;
     std::optional<std::int64_t> source_input_frame_id;
     std::optional<savor::GCInputFrame> initial_input;
 };
@@ -247,21 +247,21 @@ public:
         if (auto* analysis = AnalysisDb(); analysis != nullptr && out.origin.seed_candidate_id.has_value()) {
             if (const auto candidate = analysis->GetBattleSeedCandidate(*out.origin.seed_candidate_id); candidate.has_value()) {
                 out.origin.seed_source_kind = std::string(savor::db::ToDbString(candidate->source_kind));
-                out.origin.source_unique_seed_id = candidate->source_unique_seed_id;
+                out.origin.source_probe_result_id =
+                    candidate->source_probe_result_id;
                 out.origin.source_input_frame_id = candidate->source_input_frame_id;
-                if (candidate->source_unique_seed_id.has_value()) {
-                    if (const auto unique = analysis->GetSeedProbeUniqueSeed(*candidate->source_unique_seed_id); unique.has_value()) {
-                        savor::GCInputFrame frame{};
-                        frame.main_x = static_cast<std::uint8_t>(std::clamp(unique->main_x, 0, 255));
-                        frame.main_y = static_cast<std::uint8_t>(std::clamp(unique->main_y, 0, 255));
-                        frame.c_x = static_cast<std::uint8_t>(std::clamp(unique->cstick_x, 0, 255));
-                        frame.c_y = static_cast<std::uint8_t>(std::clamp(unique->cstick_y, 0, 255));
-                        frame.trig_l = static_cast<std::uint8_t>(std::clamp(unique->trigger_x, 0, 255));
-                        frame.trig_r = static_cast<std::uint8_t>(std::clamp(unique->trigger_y, 0, 255));
-                        out.origin.initial_input = frame;
+                if (candidate->source_probe_result_id.has_value()) {
+                    if (const auto result = analysis->GetSeedProbeResult(
+                            *candidate->source_probe_result_id);
+                        result.has_value()) {
+                        out.origin.source_input_frame_id =
+                            result->input_frame_id;
                     }
-                } else if (candidate->source_input_frame_id.has_value()) {
-                    if (const auto input = analysis->GetAnalysisInputFrame(*candidate->source_input_frame_id); input.has_value()) {
+                }
+                if (out.origin.source_input_frame_id.has_value()) {
+                    if (const auto input = analysis->GetAnalysisInputFrame(
+                            *out.origin.source_input_frame_id);
+                        input.has_value()) {
                         savor::GCInputFrame frame{};
                         frame.main_x = static_cast<std::uint8_t>(std::clamp(input->main_x, 0, 255));
                         frame.main_y = static_cast<std::uint8_t>(std::clamp(input->main_y, 0, 255));

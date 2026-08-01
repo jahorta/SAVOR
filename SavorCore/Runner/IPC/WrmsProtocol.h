@@ -31,6 +31,9 @@ enum class MessageKind : std::uint16_t {
     CancelWorksetItem = 0x0018,
     CancelWorkset = 0x0019,
     AcknowledgeTerminal = 0x001a,
+    // Host-only control-plane probe. The worker transport answers directly;
+    // it never enters guest execution or the WorkerRuntime actor.
+    LivenessProbe = 0x001b,
 
     CommandResult = 0x0100,
     OpenSessionResult = 0x0101,
@@ -261,9 +264,7 @@ struct OpenSessionPayload {
     std::string iso_path;
     bool visual_requested = false;
     std::uint64_t render_window_handle = 0;
-    std::string screenshot_directory;
-    std::uint32_t screenshot_timeout_ms = 0;
-    bool screenshot_on_terminal = false;
+    std::string runtime_artifact_root;
 
     friend bool operator==(const OpenSessionPayload&, const OpenSessionPayload&) = default;
 };

@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include "Phases/Programs/SeedProbe/SeedProbeModule.h"
 #include "Runner/Runtime/EmulationSession.h"
 #include "Runner/Runtime/IProgramRuntimePort.h"
 #include "Runner/Runtime/ProgramRuntime/Codec/ProgramCodecV1.h"
@@ -134,8 +135,9 @@ std::vector<std::uint8_t> EncodedCompletedProgramResult(
     InvocationId invocation_id,
     AttemptId attempt_id)
 {
+    const auto phase = seedprobe::SeedProbeFullPhaseDefinitionV2();
     const auto hash = program::ContentHash256::FromHex(
-        std::string(64, 'a'));
+        phase->runtime_contract().module.canonical_hash);
     if (!hash)
         throw std::runtime_error("test module hash is invalid");
 
@@ -143,10 +145,10 @@ std::vector<std::uint8_t> EncodedCompletedProgramResult(
         .invocation_id = invocation_id,
         .attempt_id = attempt_id,
         .module = {
-            "test.module/1",
-            1,
+            phase->runtime_contract().module.canonical_id,
+            phase->runtime_contract().module.revision,
             *hash},
-        .entrypoint = "main",
+        .entrypoint = phase->runtime_contract().entrypoint,
         .infrastructure =
             program::ProgramInfrastructureStatus::Completed,
         .cleanup = program::ProgramCleanupStatus::Clean,
@@ -451,13 +453,15 @@ public:
         control_->prepared_templates.emplace(
             id.value(),
             request.invocation_template);
+        const auto phase =
+            seedprobe::SeedProbeFullPhaseDefinitionV2();
         receipt = {
             id,
             request.invocation_template.invocation_id,
             request.invocation_template.attempt_id,
             request.invocation_template.module,
             request.invocation_template.entrypoint,
-            std::string(64, 'a'),
+            phase->runtime_contract().verified_dependency_sha256,
             control_->prepared_state_policy};
         return ProgramRuntimeSubmission::Accepted();
     }
@@ -514,9 +518,11 @@ public:
 
     ProgramRuntimeCatalogSnapshot catalog() const override
     {
+        const auto phase =
+            seedprobe::SeedProbeFullPhaseDefinitionV2();
         ProgramRuntimeCatalogSnapshot snapshot;
         snapshot.runtime_profile_sha256 =
-            std::string(64, 'b');
+            phase->runtime_contract().runtime_profile_sha256;
         snapshot.dependency_manifest_sha256 =
             std::string(64, 'a');
         snapshot.catalog_sha256 = std::string(64, 'c');
@@ -983,6 +989,9 @@ private:
 struct RuntimeHarness
 {
     SessionId session_id{77};
+    TemporaryRuntimeDirectory baseline_files;
+    std::filesystem::path baseline_path =
+        baseline_files.File("baseline.sav");
     std::shared_ptr<ScriptedDolphinBackendControl> backend =
         std::make_shared<ScriptedDolphinBackendControl>();
     std::shared_ptr<FakeProgramRuntimeControl> program =
@@ -999,7 +1008,16 @@ struct RuntimeHarness
             baseline_components = {},
         ExecutionEngineConfig execution_engine_config = {})
     {
+        {
+            std::ofstream output(baseline_path, std::ios::binary);
+            output << "seedprobe-test-baseline";
+        }
         program->supports_worksets = supports_worksets;
+        if (supports_worksets)
+        {
+            program->prepared_state_policy =
+                program::InvocationStatePolicy::RestoreBaseline;
+        }
         runtime = std::make_unique<WorkerRuntime>(
             std::make_unique<EmulationSession>(
                 session_id,
@@ -1020,30 +1038,46 @@ struct RuntimeHarness
     {
         WorkerWorksetDefinition definition;
         definition.workset_id = WorkerWorksetId(workset_id);
+        const auto phase =
+            seedprobe::SeedProbeFullPhaseDefinitionV2();
+        definition.phase_invocation = {
+            .invocation_id = {1, workset_id},
+            .program = phase->identity(),
+        };
         definition.baseline.state_kind =
-            ProgramBaselineStateKind::CurrentSession;
-        const WorkerSnapshot current = runtime->snapshot();
-        definition.baseline.current_session =
-            CurrentSessionBaselineGuard{
-                current.session.session_id,
-                current.session.state_epoch,
-                true};
-        definition.baseline.lineage = "test-baseline";
-        definition.execution_key.module = {
-            "test.module/1",
-            1,
-            "test-hash"};
-        definition.execution_key.entrypoint = "main";
+            ProgramBaselineStateKind::Artifact;
+        definition.baseline.artifact = ProgramBaselineArtifact{
+            .state_path = baseline_path,
+            .state_sha256 = hash::sha256_of_file(
+                baseline_path.string()),
+            .movie_mode = ExternalMovieImportMode::NoMovie,
+            .compatibility = {
+                .game_id = "TEST00",
+                .iso_sha256 = std::string(64, '0'),
+                .emulator_build = "scripted-dolphin-backend",
+                .runtime_revision = "slice4",
+            },
+            .lineage = {
+                .edge = "test-fixture",
+                .producer = "RuntimeHarness",
+            },
+        };
+        definition.baseline.lineage =
+            phase->runtime_contract().baseline_lineage;
+        definition.execution_key.module =
+            phase->runtime_contract().module;
+        definition.execution_key.entrypoint =
+            phase->runtime_contract().entrypoint;
         definition.execution_key.verified_dependency_sha256 =
-            std::string(64, 'a');
+            phase->runtime_contract().verified_dependency_sha256;
         definition.execution_key.runtime_profile_sha256 =
-            std::string(64, 'b');
+            phase->runtime_contract().runtime_profile_sha256;
         definition.execution_key.baseline =
             ComputeProgramBaselineKey(definition.baseline);
         definition.execution_key.movie_policy_sha256 =
-            std::string(64, 'c');
+            phase->runtime_contract().movie_policy_sha256;
         definition.execution_key.service_policy_sha256 =
-            std::string(64, 'd');
+            phase->runtime_contract().service_policy_sha256;
         definition.execution_key.canonical_sha256 =
             ComputeWorkerWorksetExecutionKeyHash(
                 definition.execution_key);
@@ -1055,14 +1089,12 @@ struct RuntimeHarness
             item.item_id =
                 WorkerWorksetItemId(ordinal + 1);
             item.ordinal = ordinal;
-            item.invocation.invocation_id =
-                InvocationId(workset_id * 100 + ordinal + 1);
-            item.invocation.attempt_id = AttemptId(1);
-            item.invocation.module =
-                definition.execution_key.module;
-            item.invocation.entrypoint =
-                definition.execution_key.entrypoint;
-            item.invocation.template_payload = {0x01, 0x02};
+            item.execution.execution_id =
+                ProgramExecutionId(workset_id * 100 + ordinal + 1);
+            item.execution.attempt_id = AttemptId(1);
+            item.execution.input_payload =
+                seedprobe::EncodeSeedProbeExecutionInputV2(
+                    {savor::GCInputFrame{}});
             item.correlation.durable_job_id =
                 "job-" + std::to_string(ordinal + 1);
             item.correlation.claim_token =
@@ -1369,9 +1401,9 @@ TEST(
         harness.program->terminal_output_payload =
             EncodedCompletedProgramResult(
                 first.items.front()
-                    .invocation.invocation_id,
+                    .execution.execution_id,
                 first.items.front()
-                    .invocation.attempt_id);
+                    .execution.attempt_id);
     }
     ASSERT_EQ(
         harness.runtime
@@ -1433,9 +1465,9 @@ TEST(
         harness.program->terminal_output_payload =
             EncodedCompletedProgramResult(
                 second.items.front()
-                    .invocation.invocation_id,
+                    .execution.execution_id,
                 second.items.front()
-                    .invocation.attempt_id);
+                    .execution.attempt_id);
     }
     ASSERT_EQ(
         harness.runtime
@@ -1507,9 +1539,9 @@ TEST(
         harness.program->terminal_output_payload =
             EncodedCompletedProgramResult(
                 workset.items.front()
-                    .invocation.invocation_id,
+                    .execution.execution_id,
                 workset.items.front()
-                    .invocation.attempt_id);
+                    .execution.attempt_id);
         harness.program->pending_state_artifact_factory =
             [&]() {
                 ImmutableStateArtifactCaptureReceipt receipt =
@@ -1593,8 +1625,8 @@ TEST(
         harness.runtime->snapshot().session.state_epoch;
     WorkerWorksetDefinition invalid =
         harness.Workset(42, 2);
-    invalid.items[1].invocation.module.canonical_id =
-        "different.module/1";
+    invalid.phase_invocation.program.canonical_sha256 =
+        std::string(64, '0');
     const WorkerCommandResult rejected =
         harness.runtime
             ->Submit(
@@ -1619,30 +1651,29 @@ TEST(
 
 TEST(
     ExecutionWorkerRuntime,
-    RejectsStaleCurrentSessionAndTemplatePolicyMismatch)
+    RejectsCorruptArtifactAndTemplatePolicyMismatch)
 {
     RuntimeHarness harness({}, {}, true);
     ASSERT_EQ(
         harness.Open().outcome,
         WorkerCommandOutcome::Completed);
 
-    WorkerWorksetDefinition stale =
+    WorkerWorksetDefinition corrupt =
         harness.Workset(50, 1);
-    stale.baseline.current_session->state_epoch =
-        StateEpoch(
-            stale.baseline.current_session->state_epoch.value() + 1);
-    stale.execution_key.baseline =
-        ComputeProgramBaselineKey(stale.baseline);
-    stale.execution_key.canonical_sha256 =
-        ComputeWorkerWorksetExecutionKeyHash(stale.execution_key);
+    corrupt.baseline.artifact->state_sha256 =
+        std::string(64, '0');
+    corrupt.execution_key.baseline =
+        ComputeProgramBaselineKey(corrupt.baseline);
+    corrupt.execution_key.canonical_sha256 =
+        ComputeWorkerWorksetExecutionKeyHash(corrupt.execution_key);
     EXPECT_EQ(
         harness.runtime
             ->Submit(
                 harness.NextRequest(),
-                SubmitWorksetCommand{stale})
+                SubmitWorksetCommand{corrupt})
             .get()
             .error.code,
-        WorkerRejectionCode::StateEpochMismatch);
+        WorkerRejectionCode::InvalidArgument);
 
     harness.program->prepared_state_policy =
         program::InvocationStatePolicy::Boot;
@@ -3657,33 +3688,6 @@ TEST(
     EXPECT_EQ(
         harness.Shutdown().outcome,
         WorkerCommandOutcome::Completed);
-}
-
-TEST(ExecutionWorkerRuntime, TerminalScreenshotUsesConfiguredActorPath)
-{
-    RuntimeHarness harness;
-    SessionOpenOptions options = harness.OpenOptions();
-    options.screenshot_directory = "terminal-shots";
-    options.screenshot_timeout = 321ms;
-    options.screenshot_on_terminal = true;
-    ASSERT_EQ(
-        harness.Open(std::move(options)).outcome,
-        WorkerCommandOutcome::Completed);
-
-    ASSERT_EQ(harness.Invoke(701).outcome, WorkerCommandOutcome::Accepted);
-    ASSERT_TRUE(harness.program->EmitTerminal(
-        InvocationTerminalStatus::Completed));
-    ASSERT_TRUE(harness.events.WaitForTerminalCount(1));
-
-    const auto paths = harness.backend->ScreenshotPaths();
-    ASSERT_EQ(paths.size(), 1);
-    EXPECT_EQ(
-        paths.front(),
-        std::filesystem::path("terminal-shots") /
-            "invocation-701-terminal.png");
-    EXPECT_FALSE(harness.backend->HasOwnerViolation());
-
-    EXPECT_EQ(harness.Shutdown().outcome, WorkerCommandOutcome::Completed);
 }
 
 TEST(ExecutionWorkerRuntime, RuntimeSubmissionExceptionTaintsAndTerminatesOnce)

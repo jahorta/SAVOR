@@ -18,13 +18,20 @@ CREATE TABLE IF NOT EXISTS ab_battle_set (
 CREATE TABLE IF NOT EXISTS ab_seed_candidate (
     seed_candidate_id INTEGER PRIMARY KEY,
     battle_set_id INTEGER NOT NULL,
-    source_unique_seed_id INTEGER NULL,
+    source_probe_result_id INTEGER NULL,
     source_input_frame_id INTEGER NULL,
-    seed_value INTEGER NOT NULL,
-    source_kind TEXT NOT NULL CHECK(source_kind IN ('SP_UNIQUE', 'MANUAL', 'SYNTHETIC')),
+    seed_value INTEGER NOT NULL CHECK(seed_value BETWEEN 0 AND 4294967295),
+    source_kind TEXT NOT NULL CHECK(source_kind IN ('SP_CONFIRMED_RESULT', 'MANUAL', 'SYNTHETIC')),
     candidate_status TEXT NOT NULL,
     created_at_utc INTEGER NOT NULL,
-    FOREIGN KEY(battle_set_id) REFERENCES ab_battle_set(battle_set_id)
+    FOREIGN KEY(battle_set_id) REFERENCES ab_battle_set(battle_set_id),
+    FOREIGN KEY(source_probe_result_id) REFERENCES sp_probe_result(probe_result_id),
+    CONSTRAINT ck_ab_seed_candidate_probe_result_source
+        CHECK(
+            (source_kind = 'SP_CONFIRMED_RESULT' AND source_probe_result_id IS NOT NULL)
+            OR
+            (source_kind <> 'SP_CONFIRMED_RESULT' AND source_probe_result_id IS NULL)
+        )
 );
 
 CREATE TABLE IF NOT EXISTS ab_selection_pool (

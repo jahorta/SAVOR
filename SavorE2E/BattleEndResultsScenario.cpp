@@ -692,8 +692,6 @@ bool RunBattleEndResultsScenario(
     }
 
     coordinator.Start();
-    const auto deadline = std::chrono::steady_clock::now()
-        + std::chrono::milliseconds(std::max<std::int64_t>(1, options.timeout_ms));
     const bool interactive_stdout = IsInteractiveStdout();
     MultiLineProgressRenderer progress_renderer;
     const auto refresh_cadence = std::chrono::milliseconds(100);
@@ -701,7 +699,7 @@ bool RunBattleEndResultsScenario(
     bool completed = false;
     bool failed = false;
     std::size_t poll_count = 0;
-    while (std::chrono::steady_clock::now() < deadline) {
+    while (true) {
         ++poll_count;
         const auto event_lines = drain_events();
         graph = db_service->ExecutionDb()->WorkflowQueryService()->GetWorkflowGraph(workflow_instance_id);
@@ -759,13 +757,13 @@ bool RunBattleEndResultsScenario(
 
     const auto final_description = DescribeWorkflow(graph);
     std::cout << "[battle-end-final] status="
-              << (completed ? "success" : failed ? "failure" : "timeout") << '\n'
+              << (completed ? "success" : failed ? "failure" : "incomplete") << '\n'
               << "  source_savestate_id=" << source_savestate_id << '\n'
               << "  workflow_instance_id=" << workflow_instance_id << '\n'
               << "  " << final_description << '\n';
     durable_log.AppendLine(
         "[battle-end-final] status="
-        + std::string(completed ? "success" : failed ? "failure" : "timeout")
+        + std::string(completed ? "success" : failed ? "failure" : "incomplete")
         + " source_savestate_id=" + std::to_string(source_savestate_id)
         + " workflow_instance_id=" + std::to_string(workflow_instance_id)
         + " " + final_description);
@@ -786,7 +784,7 @@ bool RunBattleEndResultsScenario(
         if (error_out != nullptr) {
             *error_out = failed
                 ? "battle-end workflow failed: " + final_description
-                : "battle-end workflow timed out before reaching a terminal workflow state: " + final_description;
+                : "battle-end workflow stopped before reaching a terminal workflow state: " + final_description;
             if (!last_failure_event.empty()) {
                 *error_out += "; last coordinator error: " + last_failure_event;
             }

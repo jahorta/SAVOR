@@ -277,9 +277,6 @@ TEST(
     open_options.backend.iso_path = kIso;
     open_options.backend.force_resync_from_base = true;
     open_options.backend.visual = false;
-    open_options.screenshot_directory =
-        temporary.path() / "screenshots";
-
     const SessionOperationReceipt opened = session.Open(open_options);
     ASSERT_TRUE(opened.ok) << opened.backend.message;
     ASSERT_EQ(opened.origin_epoch, StateEpoch{});

@@ -150,6 +150,28 @@ bool OpenDb(
     return readonly ? ConfigureSourceConnection(*db, error_out) : ConfigureUiConnection(*db, error_out);
 }
 
+bool AttachExecutionSource(
+    sqlite3* db,
+    const std::filesystem::path& execution_db_path,
+    std::string* error_out) {
+    Statement attach;
+    if (!Prepare(
+            db,
+            "ATTACH DATABASE ?1 AS execution_source;",
+            &attach,
+            error_out)) {
+        return false;
+    }
+    const auto path = execution_db_path.string();
+    sqlite3_bind_text(
+        attach.st,
+        1,
+        path.c_str(),
+        -1,
+        SQLITE_TRANSIENT);
+    return StepDone(db, attach.st, error_out);
+}
+
 std::int64_t ScalarInt64(sqlite3* db, const std::string& sql, std::string* error_out) {
     Statement st;
     if (!Prepare(db, sql.c_str(), &st, error_out)) {
@@ -232,7 +254,15 @@ bool IsExecutionJobEvent(const std::string& event_type) {
         || event_type == "Execution.JobStarted.v1"
         || event_type == "Execution.JobLeaseRenewed.v1"
         || event_type == "Execution.JobProgressed.v1"
+        || event_type == "Execution.JobPendingWorkset.v1"
         || event_type == "Execution.JobCompleted.v1"
+        || event_type == "Execution.JobExecutionFinished.v1"
+        || event_type == "Execution.JobResultProcessingStarted.v1"
+        || event_type == "Execution.JobResultParked.v1"
+        || event_type == "Execution.JobResultProcessed.v1"
+        || event_type == "Execution.JobCancellationRequested.v1"
+        || event_type == "Execution.JobCancellationDelivered.v1"
+        || event_type == "Execution.JobCancellationResolved.v1"
         || event_type == "Execution.JobEventArchived.v1"
         || event_type == "Execution.JobRestored.v1";
 }
@@ -241,6 +271,7 @@ bool IsExecutionWorkflowEvent(const std::string& event_type) {
     return event_type == "Execution.WorkflowInstanceCreated.v1"
         || event_type == "Execution.WorkflowStepReady.v1"
         || event_type == "Execution.WorkflowStepMaterialized.v1"
+        || event_type == "Execution.WorkflowStepBlocked.v1"
         || event_type == "Execution.WorkflowStepCompleted.v1"
         || event_type == "Execution.WorkflowStepFailed.v1"
         || event_type == "Execution.WorkflowInstanceCompleted.v1";
@@ -276,7 +307,9 @@ bool ProjectJobRows(
     Statement src;
     constexpr const char* kSelect =
         "SELECT job_id,job_set_id,program_kind,state,priority,queued_at_utc,started_at_utc,ended_at_utc,error_code,"
-        "attempts,max_attempts,fingerprint,claimed_by_token,lease_expires_at_utc,error_text "
+        "attempts,max_attempts,fingerprint,claimed_by_token,lease_expires_at_utc,error_text,"
+        "result_processing_state,result_processing_attempts,result_processing_failures,"
+        "result_processing_retry_after_utc,result_processing_error_code,result_processing_error_text "
         "FROM exec_job WHERE job_id=?1;";
     if (!Prepare(source, kSelect, &src, error_out)) {
         return false;
@@ -318,16 +351,27 @@ bool ProjectJobRows(
 
     Statement detail;
     constexpr const char* kDetail =
-        "INSERT INTO ui_job_detail(job_id,attempts,max_attempts,fingerprint,claimed_by_token,lease_expires_at_utc,error_text) "
-        "VALUES(?1,?2,?3,?4,?5,?6,?7) "
+        "INSERT INTO ui_job_detail(job_id,attempts,max_attempts,fingerprint,claimed_by_token,lease_expires_at_utc,error_text,"
+        "result_processing_state,result_processing_attempts,result_processing_failures,result_processing_retry_after_utc,"
+        "result_processing_error_code,"
+        "result_processing_error_text) "
+        "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13) "
         "ON CONFLICT(job_id) DO UPDATE SET "
         "attempts=excluded.attempts,max_attempts=excluded.max_attempts,fingerprint=excluded.fingerprint,"
-        "claimed_by_token=excluded.claimed_by_token,lease_expires_at_utc=excluded.lease_expires_at_utc,error_text=excluded.error_text;";
+        "claimed_by_token=excluded.claimed_by_token,lease_expires_at_utc=excluded.lease_expires_at_utc,error_text=excluded.error_text,"
+        "result_processing_state=excluded.result_processing_state,result_processing_attempts=excluded.result_processing_attempts,"
+        "result_processing_failures=excluded.result_processing_failures,"
+        "result_processing_retry_after_utc=excluded.result_processing_retry_after_utc,"
+        "result_processing_error_code=excluded.result_processing_error_code,"
+        "result_processing_error_text=excluded.result_processing_error_text;";
     if (!Prepare(ui, kDetail, &detail, error_out)) {
         return false;
     }
     BindColumn(detail.st, 1, src.st, 0);
     for (int i = 9; i < 15; ++i) {
+        BindColumn(detail.st, i - 7, src.st, i);
+    }
+    for (int i = 15; i < 21; ++i) {
         BindColumn(detail.st, i - 7, src.st, i);
     }
     if (!StepDone(ui, detail.st, error_out)) {
@@ -494,7 +538,7 @@ bool ProjectWorkflowInstance(sqlite3* source, sqlite3* ui, std::int64_t workflow
         "CASE "
         "WHEN i.state IN ('COMPLETED','FAILED','CANCELED') THEN i.state "
         "WHEN EXISTS(SELECT 1 FROM exec_workflow_step s WHERE s.workflow_instance_id=i.workflow_instance_id AND s.state IN ('MATERIALIZED','RUNNING')) THEN 'RUNNING' "
-        "WHEN EXISTS(SELECT 1 FROM exec_workflow_step s JOIN exec_job j ON j.job_set_id=s.job_set_id WHERE s.workflow_instance_id=i.workflow_instance_id AND j.state IN ('PENDING_MATERIALIZATION','QUEUED','CLAIMED','RUNNING')) THEN 'RUNNING' "
+        "WHEN EXISTS(SELECT 1 FROM exec_workflow_step s JOIN exec_job j ON j.job_set_id=s.job_set_id WHERE s.workflow_instance_id=i.workflow_instance_id AND j.state IN ('PENDING_MATERIALIZATION','QUEUED','CLAIMED','RUNNING','EXECUTION_FINISHED')) THEN 'RUNNING' "
         "WHEN EXISTS(SELECT 1 FROM exec_workflow_step s WHERE s.workflow_instance_id=i.workflow_instance_id AND s.state='READY') THEN 'QUEUED' "
         "ELSE 'WAITING' END,"
         "i.root_scope_kind,i.root_scope_id,i.created_by,"
@@ -639,7 +683,8 @@ bool ProjectWorkflowInstance(sqlite3* source, sqlite3* ui, std::int64_t workflow
         "SELECT (workflow_step_id * 10) + CASE WHEN blocked_reason IS NOT NULL THEN 1 ELSE 2 END,"
         "workflow_instance_id,workflow_step_id,"
         "CASE WHEN blocked_reason IS NOT NULL THEN 'BLOCKED_STEP' ELSE 'FAILED_STEP' END,"
-        "CASE WHEN blocked_reason IS NOT NULL THEN 'STEP_BLOCKED' ELSE 'STEP_FAILED' END,"
+        "CASE WHEN blocked_reason='DESCRIPTOR_UNAVAILABLE' THEN 'DESCRIPTOR_UNAVAILABLE' "
+        "WHEN blocked_reason IS NOT NULL THEN 'STEP_BLOCKED' ELSE 'STEP_FAILED' END,"
         "COALESCE(blocked_reason,'step failed') "
         "FROM exec_workflow_step WHERE workflow_instance_id=?1 AND (blocked_reason IS NOT NULL OR state='FAILED');";
     if (!Prepare(source, kAlertSrc, &alert_src, error_out)) return false;
@@ -694,24 +739,6 @@ std::int64_t ResolveProbeRunId(sqlite3* source, const OutboxEvent& event, std::s
         sqlite3_bind_int64(st.st, 1, event.payload_ref_id);
         return sqlite3_step(st.st) == SQLITE_ROW ? sqlite3_column_int64(st.st, 0) : 0;
     }
-    if (event.payload_ref_kind == "grid_seed") {
-        Statement st;
-        if (!Prepare(source,
-                "SELECT r.probe_run_id FROM sp_grid_seed g JOIN sp_probe_result r ON r.probe_result_id=g.probe_result_id WHERE g.grid_seed_id=?1;",
-                &st,
-                error_out)) return 0;
-        sqlite3_bind_int64(st.st, 1, event.payload_ref_id);
-        return sqlite3_step(st.st) == SQLITE_ROW ? sqlite3_column_int64(st.st, 0) : 0;
-    }
-    if (event.payload_ref_kind == "unique_seed") {
-        Statement st;
-        if (!Prepare(source,
-                "SELECT r.probe_run_id FROM sp_unique_seed u JOIN sp_probe_result r ON r.probe_result_id=u.probe_result_id WHERE u.unique_seed_id=?1;",
-                &st,
-                error_out)) return 0;
-        sqlite3_bind_int64(st.st, 1, event.payload_ref_id);
-        return sqlite3_step(st.st) == SQLITE_ROW ? sqlite3_column_int64(st.st, 0) : 0;
-    }
     if (event.payload_ref_kind == "encounter_projection") {
         Statement st;
         if (!Prepare(source, "SELECT probe_run_id FROM sp_encounter_projection WHERE encounter_projection_id=?1;", &st, error_out)) return 0;
@@ -725,9 +752,42 @@ bool ProjectSeedProbeRun(sqlite3* source, sqlite3* ui, std::int64_t probe_run_id
     if (probe_run_id <= 0) return true;
     Statement summary_src;
     constexpr const char* kSummarySrc =
+        "WITH neutral(seed_value) AS ("
+        " SELECT o.seed_value FROM sp_probe_result o "
+        " JOIN execution_source.exec_job j ON j.job_id=o.source_job_id "
+        " JOIN sp_input_frame f ON f.input_frame_id=o.input_frame_id "
+        " JOIN sp_axis_xy m ON m.axis_xy_id=f.main_axis_xy_id "
+        " JOIN sp_axis_xy c ON c.axis_xy_id=f.cstick_axis_xy_id "
+        " JOIN sp_axis_xy t ON t.axis_xy_id=f.trigger_axis_xy_id "
+        " WHERE o.probe_run_id=?1 AND o.confirmation_of_probe_result_id IS NULL "
+        " AND o.evidence_state<>'REJECTED' "
+        " AND instr(char(10)||replace(COALESCE(j.input_ini,''),char(13),'')||char(10),"
+        " char(10)||'stage=SURVEY'||char(10))>0 "
+        " AND m.x=128 AND m.y=128 AND c.x=128 AND c.y=128 AND t.x=0 AND t.y=0 "
+        " ORDER BY CASE o.evidence_state WHEN 'CONFIRMED' THEN 0 WHEN 'PROVISIONAL' THEN 1 ELSE 2 END,"
+        " o.probe_result_id LIMIT 1"
+        ") "
         "SELECT r.probe_run_id,r.probe_set_id,r.entry_savestate_id,r.seed_probe_spec_id,r.codec_version,r.status,"
-        "res.neutral_seed_value,res.grid_count,res.unique_count,r.requested_at_utc,r.completed_at_utc "
-        "FROM sp_probe_run r LEFT JOIN sp_probe_result res ON res.probe_run_id=r.probe_run_id WHERE r.probe_run_id=?1;";
+        "(SELECT seed_value FROM neutral),"
+        "(SELECT COUNT(1) FROM sp_probe_result o "
+        " JOIN execution_source.exec_job j ON j.job_id=o.source_job_id "
+        " JOIN sp_input_frame f ON f.input_frame_id=o.input_frame_id "
+        " JOIN sp_axis_xy m ON m.axis_xy_id=f.main_axis_xy_id "
+        " JOIN sp_axis_xy c ON c.axis_xy_id=f.cstick_axis_xy_id "
+        " JOIN sp_axis_xy t ON t.axis_xy_id=f.trigger_axis_xy_id "
+        " WHERE o.probe_run_id=r.probe_run_id AND o.confirmation_of_probe_result_id IS NULL "
+        " AND o.evidence_state IN ('PROVISIONAL','CONFIRMED') "
+        " AND instr(char(10)||replace(COALESCE(j.input_ini,''),char(13),'')||char(10),"
+        " char(10)||'stage=SURVEY'||char(10))>0 "
+        " AND ((m.x<>128 OR m.y<>128) + (c.x<>128 OR c.y<>128) + (t.x<>0 OR t.y<>0))=1),"
+        "(SELECT COUNT(1) FROM sp_probe_result o "
+        " JOIN execution_source.exec_job j ON j.job_id=o.source_job_id "
+        " WHERE o.probe_run_id=r.probe_run_id "
+        " AND o.confirmation_of_probe_result_id IS NULL AND o.evidence_state='CONFIRMED' "
+        " AND instr(char(10)||replace(COALESCE(j.input_ini,''),char(13),'')||char(10),"
+        " char(10)||'stage=SEARCH'||char(10))>0),"
+        "r.requested_at_utc,r.completed_at_utc "
+        "FROM sp_probe_run r WHERE r.probe_run_id=?1;";
     if (!Prepare(source, kSummarySrc, &summary_src, error_out)) return false;
     sqlite3_bind_int64(summary_src.st, 1, probe_run_id);
     if (sqlite3_step(summary_src.st) != SQLITE_ROW) return true;
@@ -752,9 +812,42 @@ bool ProjectSeedProbeRun(sqlite3* source, sqlite3* ui, std::int64_t probe_run_id
 
     Statement delta_src;
     constexpr const char* kDeltaSrc =
-        "SELECT g.grid_seed_id,res.probe_run_id,g.source_family,xy.x,xy.y,g.seed_value,g.seed_delta "
-        "FROM sp_grid_seed g JOIN sp_probe_result res ON res.probe_result_id=g.probe_result_id "
-        "JOIN sp_axis_xy xy ON xy.axis_xy_id=g.axis_xy_id WHERE res.probe_run_id=?1;";
+        "WITH neutral(seed_value) AS ("
+        " SELECT o.seed_value FROM sp_probe_result o "
+        " JOIN execution_source.exec_job j ON j.job_id=o.source_job_id "
+        " JOIN sp_input_frame f ON f.input_frame_id=o.input_frame_id "
+        " JOIN sp_axis_xy m ON m.axis_xy_id=f.main_axis_xy_id "
+        " JOIN sp_axis_xy c ON c.axis_xy_id=f.cstick_axis_xy_id "
+        " JOIN sp_axis_xy t ON t.axis_xy_id=f.trigger_axis_xy_id "
+        " WHERE o.probe_run_id=?1 AND o.confirmation_of_probe_result_id IS NULL "
+        " AND o.evidence_state<>'REJECTED' "
+        " AND instr(char(10)||replace(COALESCE(j.input_ini,''),char(13),'')||char(10),"
+        " char(10)||'stage=SURVEY'||char(10))>0 "
+        " AND m.x=128 AND m.y=128 AND c.x=128 AND c.y=128 AND t.x=0 AND t.y=0 "
+        " ORDER BY CASE o.evidence_state WHEN 'CONFIRMED' THEN 0 WHEN 'PROVISIONAL' THEN 1 ELSE 2 END,"
+        " o.probe_result_id LIMIT 1"
+        ") "
+        "SELECT o.probe_result_id,o.probe_run_id,"
+        "CASE WHEN (m.x<>128 OR m.y<>128) THEN 'MAIN' "
+        " WHEN (c.x<>128 OR c.y<>128) THEN 'CSTICK' ELSE 'TRIGGER' END,"
+        "CASE WHEN (m.x<>128 OR m.y<>128) THEN m.x "
+        " WHEN (c.x<>128 OR c.y<>128) THEN c.x ELSE t.x END,"
+        "CASE WHEN (m.x<>128 OR m.y<>128) THEN m.y "
+        " WHEN (c.x<>128 OR c.y<>128) THEN c.y ELSE t.y END,"
+        "o.seed_value,"
+        "((((o.seed_value-neutral.seed_value)+2147483648) & 4294967295)-2147483648) "
+        "FROM sp_probe_result o "
+        "JOIN execution_source.exec_job j ON j.job_id=o.source_job_id "
+        "JOIN sp_input_frame f ON f.input_frame_id=o.input_frame_id "
+        "JOIN sp_axis_xy m ON m.axis_xy_id=f.main_axis_xy_id "
+        "JOIN sp_axis_xy c ON c.axis_xy_id=f.cstick_axis_xy_id "
+        "JOIN sp_axis_xy t ON t.axis_xy_id=f.trigger_axis_xy_id "
+        "CROSS JOIN neutral "
+        "WHERE o.probe_run_id=?1 AND o.confirmation_of_probe_result_id IS NULL "
+        "AND o.evidence_state IN ('PROVISIONAL','CONFIRMED') "
+        "AND instr(char(10)||replace(COALESCE(j.input_ini,''),char(13),'')||char(10),"
+        " char(10)||'stage=SURVEY'||char(10))>0 "
+        "AND ((m.x<>128 OR m.y<>128) + (c.x<>128 OR c.y<>128) + (t.x<>0 OR t.y<>0))=1;";
     if (!Prepare(source, kDeltaSrc, &delta_src, error_out)) return false;
     sqlite3_bind_int64(delta_src.st, 1, probe_run_id);
     while (sqlite3_step(delta_src.st) == SQLITE_ROW) {
@@ -775,12 +868,35 @@ bool ProjectSeedProbeRun(sqlite3* source, sqlite3* ui, std::int64_t probe_run_id
 
     Statement unique_src;
     constexpr const char* kUniqueSrc =
-        "SELECT u.unique_seed_id,res.probe_run_id,u.seed_value,u.seed_delta,m.x,m.y,c.x,c.y,t.x,t.y "
-        "FROM sp_unique_seed u JOIN sp_probe_result res ON res.probe_result_id=u.probe_result_id "
-        "JOIN sp_input_frame f ON f.input_frame_id=u.input_frame_id "
+        "WITH neutral(seed_value) AS ("
+        " SELECT o.seed_value FROM sp_probe_result o "
+        " JOIN execution_source.exec_job j ON j.job_id=o.source_job_id "
+        " JOIN sp_input_frame f ON f.input_frame_id=o.input_frame_id "
+        " JOIN sp_axis_xy m ON m.axis_xy_id=f.main_axis_xy_id "
+        " JOIN sp_axis_xy c ON c.axis_xy_id=f.cstick_axis_xy_id "
+        " JOIN sp_axis_xy t ON t.axis_xy_id=f.trigger_axis_xy_id "
+        " WHERE o.probe_run_id=?1 AND o.confirmation_of_probe_result_id IS NULL "
+        " AND o.evidence_state='CONFIRMED' "
+        " AND instr(char(10)||replace(COALESCE(j.input_ini,''),char(13),'')||char(10),"
+        " char(10)||'stage=SURVEY'||char(10))>0 "
+        " AND m.x=128 AND m.y=128 AND c.x=128 AND c.y=128 AND t.x=0 AND t.y=0 "
+        " ORDER BY o.probe_result_id LIMIT 1"
+        ") "
+        "SELECT o.probe_result_id,o.probe_run_id,o.seed_value,"
+        "((((o.seed_value-neutral.seed_value)+2147483648) & 4294967295)-2147483648),"
+        "m.x,m.y,c.x,c.y,t.x,t.y "
+        "FROM sp_probe_result o "
+        "JOIN execution_source.exec_job j ON j.job_id=o.source_job_id "
+        "JOIN sp_input_frame f ON f.input_frame_id=o.input_frame_id "
         "JOIN sp_axis_xy m ON m.axis_xy_id=f.main_axis_xy_id "
         "JOIN sp_axis_xy c ON c.axis_xy_id=f.cstick_axis_xy_id "
-        "JOIN sp_axis_xy t ON t.axis_xy_id=f.trigger_axis_xy_id WHERE res.probe_run_id=?1;";
+        "JOIN sp_axis_xy t ON t.axis_xy_id=f.trigger_axis_xy_id "
+        "CROSS JOIN neutral "
+        "WHERE o.probe_run_id=?1 AND o.confirmation_of_probe_result_id IS NULL "
+        "AND o.evidence_state='CONFIRMED' "
+        "AND instr(char(10)||replace(COALESCE(j.input_ini,''),char(13),'')||char(10),"
+        " char(10)||'stage=SEARCH'||char(10))>0 "
+        "ORDER BY o.probe_result_id;";
     if (!Prepare(source, kUniqueSrc, &unique_src, error_out)) return false;
     sqlite3_bind_int64(unique_src.st, 1, probe_run_id);
     while (sqlite3_step(unique_src.st) == SQLITE_ROW) {
@@ -1251,10 +1367,14 @@ bool ClassifyOutboxEvent(
     std::string* error_out) {
     switch (kind) {
     case StreamKind::Execution:
-        if (IsExecutionWorkflowEvent(event.event_type)) {
+        if (IsExecutionWorkflowEvent(event.event_type)
+            || event.aggregate_kind == "workflow"
+            || event.aggregate_kind == "workflow_instance") {
             return AddDirty(dirty, "workflow", ParseInt64(event.aggregate_id), event, error_out);
         }
-        if (IsExecutionJobEvent(event.event_type)) {
+        if (IsExecutionJobEvent(event.event_type)
+            || event.aggregate_kind == "job"
+            || event.aggregate_kind == "job_set") {
             if (event.event_type == "Execution.JobSetCreated.v1" || event.aggregate_kind == "job_set") {
                 const auto job_set_id = ParseInt64(event.aggregate_id);
                 if (!AddDirty(dirty, "job_set", job_set_id, event, error_out)) return false;
@@ -1282,11 +1402,13 @@ bool ClassifyOutboxEvent(
             return true;
         }
         if (event.event_type == "AnalysisSeedProbe.RunRequested.v1"
-            || event.event_type == "AnalysisSeedProbe.NeutralSeedRecorded.v1"
-            || event.event_type == "AnalysisSeedProbe.GridSeedRecorded.v1"
-            || event.event_type == "AnalysisSeedProbe.UniqueSeedRecorded.v1"
+            || event.event_type == "AnalysisSeedProbe.ObservationRecorded.v1"
+            || event.event_type == "AnalysisSeedProbe.EvidenceStateChanged.v1"
+            || event.event_type == "AnalysisSeedProbe.AcceptedInputFramesReplaced.v1"
+            || event.event_type == "AnalysisSeedProbe.RunStatusChanged.v1"
             || event.event_type == "AnalysisSeedProbe.EncounterProjectionRecorded.v1"
-            || event.event_type == "AnalysisSeedProbe.RunCompleted.v1") {
+            || event.event_type == "AnalysisSeedProbe.RunCompleted.v1"
+            || event.event_type == "AnalysisSeedProbe.RunFailed.v1") {
             return AddDirty(dirty, "seed_probe_run", ResolveProbeRunId(source, event, error_out), event, error_out);
         }
         break;
@@ -2004,6 +2126,18 @@ void UiReadProjectionService::InterruptStreams() const {
 bool UiReadProjectionService::OpenStream(StreamRuntime& stream, std::string* error_out) {
     if (!OpenDb(stream.source_db_path, true, &stream.source_db, error_out)) {
         if (error_out) *error_out = "failed opening projection source " + stream.stream_id + ": " + *error_out;
+        return false;
+    }
+    if (stream.kind == StreamKind::AnalysisSeedProbe
+        && !AttachExecutionSource(
+            stream.source_db,
+            config_.execution_db_path,
+            error_out)) {
+        if (error_out) {
+            *error_out =
+                "failed attaching Execution source for "
+                + stream.stream_id + ": " + *error_out;
+        }
         return false;
     }
     if (!OpenDb(config_.ui_read_db_path, false, &stream.ui_db, error_out)) {

@@ -4,11 +4,10 @@
 #include <string>
 
 #include "BattleContext/BattleContextProbePhaseRegistration.h"
-#include "BattleEndResults/BattleEndResultsPhaseRegistration.h"
 #include "BattleSingleTurn/BattleSingleTurnPhaseRegistration.h"
 #include "NavigationContext/NavigationContextPhaseRegistration.h"
 #include "ProgramKindRegistry.h"
-#include "SeedProbe/SeedProbePhaseRegistration.h"
+#include "SeedProbe/SeedProbeProgram.h"
 #include "TasMovie/TasMoviePhaseRegistration.h"
 
 namespace savor::db::execution::programdb {
@@ -22,10 +21,9 @@ struct ProductionProgramKindRegistryDependencies {
 
 struct ProductionProgramKindRegistryConfig {
     tasmovie::TasMoviePhaseRegistrationConfig tas_movie;
-    seedprobe::SeedProbePhaseRegistrationConfig seed_probe;
+    seedprobe::SeedProbeProgramConfig seed_probe;
     battlecontext::BattleContextProbePhaseRegistrationConfig battle_context;
     battle::BattleSingleTurnPhaseRegistrationConfig battle_single_turn;
-    battleend::BattleEndWorkflowPhaseRegistrationConfig battle_end;
     navigationcontext::NavigationContextPhaseRegistrationConfig navigation_context;
 };
 

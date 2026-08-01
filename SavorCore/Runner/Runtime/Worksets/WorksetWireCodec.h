@@ -8,7 +8,8 @@
 
 namespace savor::runtime {
 
-inline constexpr std::uint32_t kWorksetWireVersionV1 = 1;
+inline constexpr std::uint32_t kWorksetWireVersionV2 = 2;
+inline constexpr std::uint32_t kRuntimeManifestWireVersionV1 = 1;
 inline constexpr std::size_t kMaximumWorksetWireBytes =
     32ull * 1024ull * 1024ull;
 
@@ -20,11 +21,11 @@ struct WorksetWireCodecResult
     [[nodiscard]] explicit operator bool() const noexcept { return ok; }
 };
 
-[[nodiscard]] WorksetWireCodecResult EncodeWorkerWorksetV1(
+[[nodiscard]] WorksetWireCodecResult EncodeWorkerWorksetV2(
     const WorkerWorksetDefinition& definition,
     std::vector<std::uint8_t>& output);
 
-[[nodiscard]] WorksetWireCodecResult DecodeWorkerWorksetV1(
+[[nodiscard]] WorksetWireCodecResult DecodeWorkerWorksetV2(
     std::span<const std::uint8_t> input,
     WorkerWorksetDefinition& output);
 

@@ -67,18 +67,39 @@ inline bool ValidateExecutionWorkflowJobPayloadV1(const EventEnvelope& envelope,
         return false;
     }
 
-    if (envelope.event_type == "Execution.JobSetCreated.v1") {
+    if (envelope.event_type == "Execution.JobSetCreated.v1"
+        || envelope.event_type == "Execution.JobSetMaterializing.v1"
+        || envelope.event_type == "Execution.JobPopulationSealed.v1"
+        || envelope.event_type
+            == "Execution.WorksetPublicationCompleted.v1") {
         if (envelope.payload_ref_kind != "job_set") {
-            if (error_out) *error_out = "payload_ref_kind must be job_set for Execution.JobSetCreated.v1";
+            if (error_out) {
+                *error_out =
+                    "payload_ref_kind must be job_set for Execution "
+                    "job-set events";
+            }
             return false;
         }
         return true;
     }
     if (envelope.event_type == "Execution.JobQueued.v1"
+        || envelope.event_type == "Execution.JobPendingWorkset.v1"
         || envelope.event_type == "Execution.JobClaimed.v1"
+        || envelope.event_type == "Execution.JobClaimRequeued.v1"
         || envelope.event_type == "Execution.JobStarted.v1"
         || envelope.event_type == "Execution.JobLeaseRenewed.v1"
         || envelope.event_type == "Execution.JobProgressed.v1"
+        || envelope.event_type == "Execution.JobExecutionFinished.v1"
+        || envelope.event_type
+            == "Execution.JobResultProcessingStarted.v1"
+        || envelope.event_type == "Execution.JobResultParked.v1"
+        || envelope.event_type == "Execution.JobResultProcessed.v1"
+        || envelope.event_type
+            == "Execution.JobCancellationRequested.v1"
+        || envelope.event_type
+            == "Execution.JobCancellationDelivered.v1"
+        || envelope.event_type
+            == "Execution.JobCancellationResolved.v1"
         || envelope.event_type == "Execution.JobCompleted.v1"
         || envelope.event_type == "Execution.JobEventArchived.v1"
         || envelope.event_type == "Execution.JobRestored.v1") {
@@ -88,12 +109,52 @@ inline bool ValidateExecutionWorkflowJobPayloadV1(const EventEnvelope& envelope,
         }
         return true;
     }
+    if (envelope.event_type == "Execution.WorksetPublished.v1"
+        || envelope.event_type == "Execution.WorksetClaimed.v1"
+        || envelope.event_type == "Execution.WorksetDispatched.v1"
+        || envelope.event_type == "Execution.WorksetReleased.v1") {
+        if (envelope.payload_ref_kind != "workset") {
+            if (error_out) {
+                *error_out =
+                    "payload_ref_kind must be workset for Execution "
+                    "workset events";
+            }
+            return false;
+        }
+        return true;
+    }
 
     if (envelope.event_type == "Execution.WorkflowInstanceCreated.v1"
         || envelope.event_type == "Execution.WorkflowStepReady.v1"
+        || envelope.event_type == "Execution.WorkflowStepBlocked.v1"
         || envelope.event_type == "Execution.WorkflowStepMaterialized.v1"
         || envelope.event_type == "Execution.WorkflowStepCompleted.v1"
         || envelope.event_type == "Execution.WorkflowStepFailed.v1"
+        || envelope.event_type == "Execution.WorkflowStepEmpty.v1"
+        || envelope.event_type
+            == "Execution.WorkflowStepCoordinatorFailure.v1"
+        || envelope.event_type
+            == "Execution.WorkflowStepDescriptorAvailable.v1"
+        || envelope.event_type
+            == "Execution.WorkflowStepInputRequested.v1"
+        || envelope.event_type
+            == "Execution.WorkflowStepInputFragmentReady.v1"
+        || envelope.event_type
+            == "Execution.WorkflowStepInputComplete.v1"
+        || envelope.event_type
+            == "Execution.WorkflowTransitionEvaluated.v1"
+        || envelope.event_type
+            == "Execution.WorkflowTransitionAdvanced.v1"
+        || envelope.event_type
+            == "Execution.WorkflowTransitionBlocked.v1"
+        || envelope.event_type
+            == "Execution.WorkflowInvariantViolation.v1"
+        || envelope.event_type
+            == "Execution.WorkflowRemediationReopened.v1"
+        || envelope.event_type
+            == "Execution.WorkflowRemediationRepairExecuted.v1"
+        || envelope.event_type
+            == "Execution.WorkflowRemediationTerminalFailed.v1"
         || envelope.event_type == "Execution.WorkflowInstanceCompleted.v1") {
         if (envelope.payload_ref_kind != "workflow_event") {
             if (error_out) *error_out = "payload_ref_kind must be workflow_event for Execution.Workflow* event";
@@ -121,30 +182,21 @@ inline bool ValidateAnalysisSeedProbePayloadV1(const EventEnvelope& envelope, st
         }
         return true;
     }
-    if (envelope.event_type == "AnalysisSeedProbe.RunRequested.v1") {
+    if (envelope.event_type == "AnalysisSeedProbe.RunRequested.v1"
+        || envelope.event_type == "AnalysisSeedProbe.AcceptedInputFramesReplaced.v1"
+        || envelope.event_type == "AnalysisSeedProbe.RunStatusChanged.v1"
+        || envelope.event_type == "AnalysisSeedProbe.RunCompleted.v1"
+        || envelope.event_type == "AnalysisSeedProbe.RunFailed.v1") {
         if (envelope.payload_ref_kind != "probe_run") {
-            if (error_out) *error_out = "payload_ref_kind must be probe_run for AnalysisSeedProbe.RunRequested.v1";
+            if (error_out) *error_out = "payload_ref_kind must be probe_run for SeedProbe run events";
             return false;
         }
         return true;
     }
-    if (envelope.event_type == "AnalysisSeedProbe.NeutralSeedRecorded.v1") {
-        if (envelope.payload_ref_kind != "neutral_seed") {
-            if (error_out) *error_out = "payload_ref_kind must be neutral_seed for AnalysisSeedProbe.NeutralSeedRecorded.v1";
-            return false;
-        }
-        return true;
-    }
-    if (envelope.event_type == "AnalysisSeedProbe.GridSeedRecorded.v1") {
-        if (envelope.payload_ref_kind != "grid_seed") {
-            if (error_out) *error_out = "payload_ref_kind must be grid_seed for AnalysisSeedProbe.GridSeedRecorded.v1";
-            return false;
-        }
-        return true;
-    }
-    if (envelope.event_type == "AnalysisSeedProbe.UniqueSeedRecorded.v1") {
-        if (envelope.payload_ref_kind != "unique_seed") {
-            if (error_out) *error_out = "payload_ref_kind must be unique_seed for AnalysisSeedProbe.UniqueSeedRecorded.v1";
+    if (envelope.event_type == "AnalysisSeedProbe.ObservationRecorded.v1"
+        || envelope.event_type == "AnalysisSeedProbe.EvidenceStateChanged.v1") {
+        if (envelope.payload_ref_kind != "probe_result") {
+            if (error_out) *error_out = "payload_ref_kind must be probe_result for SeedProbe result events";
             return false;
         }
         return true;
@@ -156,14 +208,6 @@ inline bool ValidateAnalysisSeedProbePayloadV1(const EventEnvelope& envelope, st
         }
         return true;
     }
-    if (envelope.event_type == "AnalysisSeedProbe.RunCompleted.v1") {
-        if (envelope.payload_ref_kind != "probe_result") {
-            if (error_out) *error_out = "payload_ref_kind must be probe_result for AnalysisSeedProbe.RunCompleted.v1";
-            return false;
-        }
-        return true;
-    }
-
     if (error_out) *error_out = "unsupported AnalysisSeedProbe event_type";
     return false;
 }

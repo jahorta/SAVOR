@@ -37,7 +37,6 @@ struct Options {
     int write_ratio = 1;
     int snapshot_interval_ms = 1000;
     int repeat = 1;
-    int timeout_ms = 0;
     int poll_ms = 0;
     std::string load_level = "low";
     std::vector<std::string> e2e_scenarios;
@@ -52,6 +51,7 @@ struct Options {
     std::string durable_lines;
     int rtc_max = 0;
     std::string seedprobe_combo_attempts_per_target;
+    bool wait_for_workers_ready = false;
     std::filesystem::path report_dir;
 };
 
@@ -69,7 +69,8 @@ void PrintUsage() {
         << "  --duration-sec N --producers N --workers N --jobs N --batch-size N\n"
         << "  --read-ratio N --write-ratio N --snapshot-interval-ms N --report-dir PATH\n"
         << "  e2e-replay: --e2e-scenario NAME --load-level low|mid|high --repeat N [--rtc-max N]\n"
-        << "              --iso PATH --dolphin-base-dir PATH [--savestate-file PATH] [--dtm-file PATH]\n";
+        << "              --iso PATH --dolphin-base-dir PATH [--savestate-file PATH] [--dtm-file PATH]\n"
+        << "              [--wait-for-workers-ready]\n";
 }
 
 bool ParseOptions(int argc, char** argv, Options* options) {
@@ -92,8 +93,6 @@ bool ParseOptions(int argc, char** argv, Options* options) {
                 options->scenario = need_value("--scenario");
             } else if (arg == "--duration-sec") {
                 options->duration_sec = std::stoi(need_value("--duration-sec"));
-            } else if (arg == "--timeout-ms") {
-                options->timeout_ms = std::stoi(need_value("--timeout-ms"));
             } else if (arg == "--poll-ms") {
                 options->poll_ms = std::stoi(need_value("--poll-ms"));
             } else if (arg == "--producers") {
@@ -141,6 +140,8 @@ bool ParseOptions(int argc, char** argv, Options* options) {
                 return false;
             } else if (arg == "--seedprobe-combo-attempts-per-target" || arg == "--combo-attempts-per-target") {
                 options->seedprobe_combo_attempts_per_target = need_value(arg.c_str());
+            } else if (arg == "--wait-for-workers-ready") {
+                options->wait_for_workers_ready = true;
             } else if (arg == "--report-dir") {
                 options->report_dir = need_value("--report-dir");
             } else {
@@ -753,9 +754,6 @@ int RunE2EReplay(const Options& options, const char* argv0) {
     for (const auto& scenario : scenarios) {
         cmd << " --scenario " << QuoteArg(scenario);
     }
-    if (options.timeout_ms > 0) {
-        cmd << " --timeout-ms " << options.timeout_ms;
-    }
     if (options.poll_ms > 0) {
         cmd << " --poll-ms " << options.poll_ms;
     }
@@ -770,6 +768,9 @@ int RunE2EReplay(const Options& options, const char* argv0) {
     cmd << " --tasmovie-rtc-min 0"
         << " --tasmovie-rtc-max " << options.rtc_max;
     AppendStringArg(cmd, "--seedprobe-combo-attempts-per-target", options.seedprobe_combo_attempts_per_target);
+    if (options.wait_for_workers_ready) {
+        cmd << " --wait-for-workers-ready";
+    }
 
     std::cout << "Running E2E replay via " << e2e_exe.string() << "\n";
     const std::string shell_command = "cmd.exe /S /C \"" + cmd.str() + "\"";

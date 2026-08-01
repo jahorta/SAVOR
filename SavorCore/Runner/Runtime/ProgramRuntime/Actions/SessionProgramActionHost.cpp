@@ -5308,19 +5308,37 @@ SessionProgramActionHost::Impl::InvokeCanonical(
     }
     case CanonicalAction::ScreenshotCapture:
     {
-        const auto path = payload.Utf8(Field::Path);
-        if (!path || path->empty())
+        const auto label = payload.Utf8(Field::Label);
+        if (!label || label->empty())
         {
             return Reject(
                 request,
                 ProgramActionCompletionStatus::Rejected,
-                "screenshot_path_required",
-                "Screenshot capture requires a caller-declared path");
+                "screenshot_label_required",
+                "Screenshot capture requires a logical artifact label");
+        }
+        RuntimeArtifactSink* sink = session.artifact_sink();
+        if (sink == nullptr)
+        {
+            return service_failure(
+                "artifact_sink_unavailable",
+                "Screenshot capture requires a host runtime artifact sink");
+        }
+        std::string reservation_error;
+        const auto reservation = sink->Reserve(
+            *label,
+            ".png",
+            &reservation_error);
+        if (!reservation.has_value())
+        {
+            return service_failure(
+                "artifact_reservation_failed",
+                reservation_error);
         }
         const auto timeout = Timeout(request, payload);
         const SessionOperationReceipt captured =
             session.CaptureScreenshot(
-                std::filesystem::path(*path),
+                reservation->output_path,
                 timeout);
         if (!captured.ok)
         {
@@ -5331,7 +5349,8 @@ SessionProgramActionHost::Impl::InvokeCanonical(
         std::string digest;
         try
         {
-            digest = hash::sha256_of_file(std::string(*path));
+            digest = hash::sha256_of_file(
+                reservation->output_path.string());
         }
         catch (const std::exception& ex)
         {
@@ -5344,9 +5363,9 @@ SessionProgramActionHost::Impl::InvokeCanonical(
             ProgramActionCompletionStatus::Completed);
         completion.output = ArtifactResultGraph(
             action,
-            "screenshot:" +
+            "screenshot:" + reservation->logical_label + ":" +
                 std::to_string(request.request_id.value()),
-            std::string(*path),
+            reservation->output_path.string(),
             std::move(digest));
         if (completion.output.values.empty())
         {

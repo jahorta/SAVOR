@@ -127,16 +127,11 @@ QVector<int> buildLegend(const std::vector<UiSeedProbeDeltaPoint>& rows)
     return values;
 }
 
-QVector<SeedProbeController::UniqueSeedRow> buildUniqueRows(const UiSeedProbeRunSummary& summary, const std::vector<UiSeedProbeUniqueValue>& uniqueRows)
+QVector<SeedProbeController::UniqueSeedRow> buildSearchRows(
+    const std::vector<UiSeedProbeUniqueValue>& uniqueRows)
 {
     QVector<SeedProbeController::UniqueSeedRow> rows;
-    if (!summary.neutral_seed_value.has_value()) {
-        rows.push_back({ QStringLiteral("Unique results require a neutral seed."), QStringLiteral("n/a") });
-        return rows;
-    }
-
-    rows.reserve(static_cast<int>(uniqueRows.size()) + 1);
-    rows.push_back({ QString::fromStdString(DescribeFrameCompact(GCInputFrame{})), hex32(static_cast<quint32>(*summary.neutral_seed_value)) });
+    rows.reserve(static_cast<int>(uniqueRows.size()));
     for (const UiSeedProbeUniqueValue& row : uniqueRows) {
         GCInputFrame frame{};
         frame.main_x = static_cast<std::uint8_t>(row.main_x);
@@ -539,7 +534,7 @@ void SeedProbeController::kickDetailFetch(qint64 probeId, bool force)
         bundle.cStickGrid = buildGrid(gridRows, "CSTICK", minNeg, maxPos);
         bundle.triggerGrid = buildGrid(gridRows, "TRIGGER", minNeg, maxPos);
         bundle.legendDeltas = buildLegend(gridRows);
-        bundle.uniqueRows = buildUniqueRows(*summary, uniqueRows);
+        bundle.uniqueRows = buildSearchRows(uniqueRows);
         DetailBundleResult result;
         result.ok = true;
         result.value = std::move(bundle);

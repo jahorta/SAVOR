@@ -12,8 +12,6 @@
 #include "Phases/Programs/BattleEndResults/BattleEndResultsReport.h"
 #include "Phases/Programs/BattleEndResults/BattleEndResultsScript.h"
 #include "Phases/Programs/BattleCompletion/BattleCompletionManifest.h"
-#include "Phases/Programs/SeedProbe/SeedProbePayload.h"
-#include "Phases/Programs/SeedProbe/SeedProbeScript.h"
 #include "Runner/IPC/Wire.h"
 #include "Runner/InputMacro/Providers/BattleCompletionInputMacroProvider.h"
 #include "Runner/InputMacro/Providers/BattleEndResultsInputMacroProvider.h"
@@ -398,62 +396,6 @@ TEST(BattleEndResultsPayload, VersionThreeRequiresManifestPolicyAndOutputPath)
         legacy));
     legacy[1] = 2;
     EXPECT_FALSE(endresults::decode_payload(legacy, context));
-}
-
-TEST(FieldReturnSeedProbePayload, VersionThreeMaterializesAndRejectsLegacyTimingPayload)
-{
-    savor::seedprobe::EncodeSpec spec{};
-    spec.target = savor::seedprobe::SeedProbeTarget::FieldReturn;
-    spec.mode = savor::seedprobe::SeedProbeMode::Materialize;
-    spec.expected_seed = 0x12345678u;
-    spec.output_savestate_path = "field-return.sav";
-    std::vector<std::uint8_t> payload;
-    ASSERT_TRUE(savor::seedprobe::encode_payload(spec, payload));
-    ASSERT_GE(payload.size(), 3u);
-    EXPECT_EQ(payload[1], savor::seedprobe::PayloadVersion);
-    savor::PSContext context;
-    ASSERT_TRUE(savor::seedprobe::decode_payload(payload, context));
-    std::uint32_t value = 0;
-    ASSERT_TRUE(context.get(savor::context::key::seed::TARGET, value));
-    EXPECT_EQ(value, static_cast<std::uint32_t>(
-        savor::seedprobe::SeedProbeTarget::FieldReturn));
-    ASSERT_TRUE(context.get(savor::context::key::seed::EXPECTED_SEED, value));
-    EXPECT_EQ(value, 0x12345678u);
-
-    const auto put_u32 = [](std::vector<std::uint8_t>& bytes, std::uint32_t input) {
-        bytes.push_back(static_cast<std::uint8_t>(input));
-        bytes.push_back(static_cast<std::uint8_t>(input >> 8));
-        bytes.push_back(static_cast<std::uint8_t>(input >> 16));
-        bytes.push_back(static_cast<std::uint8_t>(input >> 24));
-    };
-    std::vector<std::uint8_t> legacy{
-        savor::PK_SeedProbe,
-        1u,
-        0u,
-    };
-    put_u32(legacy, 1000u);
-    put_u32(legacy, 0u);
-    const GCInputFrame neutral{};
-    const auto* raw = reinterpret_cast<const std::uint8_t*>(&neutral);
-    legacy.insert(legacy.end(), raw, raw + sizeof(neutral));
-    savor::PSContext legacy_context;
-    EXPECT_FALSE(savor::seedprobe::decode_payload(legacy, legacy_context));
-}
-
-TEST(FieldReturnSeedProbeScript, UsesInternalFieldAnchorAndPublicLegacyGate)
-{
-    const auto script = savor::seedprobe::MakeSeedProbeProgram();
-    ASSERT_EQ(script.canonical_bp_keys, (std::vector<BPKey>{
-        savor::bp::battle::BattleEndFieldReturnReseedComplete}));
-    ASSERT_EQ(script.gated_bp_keys, (std::vector<BPKey>{
-        savor::bp::prebattle::AfterRandSeedSet}));
-    EXPECT_NE(std::find_if(script.ops.begin(), script.ops.end(), [](const savor::PSOp& op) {
-        return op.code == savor::PSOpCode::RUN_UNTIL_BP_KEY
-            && op.imm.v == savor::bp::prebattle::AfterRandSeedSet;
-    }), script.ops.end());
-    EXPECT_NE(std::find_if(script.ops.begin(), script.ops.end(), [](const savor::PSOp& op) {
-        return op.code == savor::PSOpCode::SAVE_SAVESTATE_FROM;
-    }), script.ops.end());
 }
 
 TEST(BattleCompletionProvider, CapturesPreAndPostStateAndStopsAtRewardCommit)

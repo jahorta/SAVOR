@@ -977,8 +977,8 @@ void AnalysisTab::showBattleReplicationDetails(qint64 jobId)
         ? QStringLiteral("#%1").arg(*origin.seed_candidate_id)
         : QStringLiteral("--"));
     body += fieldHtml(QStringLiteral("Seed source"), origin.seed_source_kind.empty() ? QStringLiteral("--") : qs(origin.seed_source_kind));
-    body += fieldHtml(QStringLiteral("Unique seed"), origin.source_unique_seed_id.has_value()
-        ? QStringLiteral("#%1").arg(*origin.source_unique_seed_id)
+    body += fieldHtml(QStringLiteral("SeedProbe result"), origin.source_probe_result_id.has_value()
+        ? QStringLiteral("#%1").arg(*origin.source_probe_result_id)
         : QStringLiteral("--"));
     body += fieldHtml(QStringLiteral("Input frame"), origin.source_input_frame_id.has_value()
         ? QStringLiteral("#%1").arg(*origin.source_input_frame_id)

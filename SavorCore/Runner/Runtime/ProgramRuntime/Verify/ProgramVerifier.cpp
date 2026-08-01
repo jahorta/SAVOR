@@ -137,8 +137,6 @@ bool PolicySubset(
          parent.permits_movie_recording) &&
         (!child.permits_capture || parent.permits_capture) &&
         (!child.permits_replay || parent.permits_replay) &&
-        (!child.permits_visual_debug ||
-         parent.permits_visual_debug) &&
         (!child.permits_state_replacement ||
          parent.permits_state_replacement) &&
         (!child.permits_resource_promotion ||
@@ -2697,6 +2695,15 @@ ProgramVerificationResult ProgramVerifier::Verify(
                 verified->dependency_lock.type_imports,
                 schema.identity);
         }
+        // Local schemas belong to the verified module rather than its
+        // dependency lock, but runtime value-boundary validation still needs
+        // them in the nominal closure. Without them, a valid invocation whose
+        // entrypoint uses a module-local request record is rejected before
+        // execution.
+        verified->type_closure.insert(
+            verified->type_closure.end(),
+            module->local_types.begin(),
+            module->local_types.end());
     }
 
     RegistryError pack_error;

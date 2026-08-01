@@ -104,9 +104,7 @@ struct ProcessOpenSessionOptions {
     std::string iso_path;
     bool visual{ false };
     std::uint64_t render_widget_handle{ 0 };
-    std::string screenshot_directory;
-    std::uint32_t screenshot_timeout_ms{ 5000 };
-    bool screenshot_on_terminal{ false };
+    std::string runtime_artifact_root;
 };
 
 // Retained as a source-compatible launch description while callers migrate to
@@ -124,7 +122,7 @@ struct ProcStartParams {
     std::uint64_t render_widget_handle{ 0 };
     std::string visual_control_pipe_name;
     std::string visual_host_events_pipe_name;
-    std::string visual_screenshot_dir;
+    std::string runtime_artifact_root;
 };
 
 struct ProcessCommandCompletion {
@@ -237,34 +235,37 @@ public:
     bool submit_workset(
         const runtime::WorkerWorksetDefinition& workset,
         wrms::CommandResultPayload* result_out = nullptr,
-        std::uint32_t timeout_ms = 10000);
+        std::uint32_t timeout_ms = 0);
     ProcessWorksetSubmitOutcome submit_workset_with_outcome(
         const runtime::WorkerWorksetDefinition& workset,
-        std::uint32_t timeout_ms = 10000);
+        std::uint32_t timeout_ms = 0);
     bool submit_one_item_workset(
         const runtime::WorkerWorksetDefinition& workset,
         wrms::CommandResultPayload* result_out = nullptr,
-        std::uint32_t timeout_ms = 10000);
+        std::uint32_t timeout_ms = 0);
     bool cancel_workset_item(
         runtime::WorkerWorksetId workset_id,
         runtime::WorkerWorksetItemId item_id,
         std::string reason,
         wrms::CommandResultPayload* result_out = nullptr,
-        std::uint32_t timeout_ms = 10000);
+        std::uint32_t timeout_ms = 0);
     bool cancel_workset(
         runtime::WorkerWorksetId workset_id,
         std::string reason,
         wrms::CommandResultPayload* result_out = nullptr,
-        std::uint32_t timeout_ms = 10000);
+        std::uint32_t timeout_ms = 0);
     bool acknowledge_terminal(
         const runtime::WorkerItemTerminalCorrelation& terminal,
         wrms::CommandResultPayload* result_out = nullptr,
-        std::uint32_t timeout_ms = 10000);
+        std::uint32_t timeout_ms = 0);
+    bool probe_liveness(
+        wrms::CommandResultPayload* result_out = nullptr,
+        std::uint32_t timeout_ms = 2000);
     bool cancel_invocation(
         runtime::InvocationId invocation_id,
         std::string reason,
         wrms::CommandResultPayload* result_out = nullptr,
-        std::uint32_t timeout_ms = 10000);
+        std::uint32_t timeout_ms = 0);
     bool request_screenshot(
         runtime::SessionId session_id,
         std::string output_path,

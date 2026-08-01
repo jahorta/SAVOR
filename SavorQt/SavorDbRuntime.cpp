@@ -3,9 +3,10 @@
 #include <QtCore/QCoreApplication>
 
 #include <filesystem>
+#include <functional>
+#include <memory>
 #include <system_error>
 #include <utility>
-#include <memory>
 
 #include "Execution/ProgramDB/ProductionProgramKindRegistry.h"
 
@@ -84,14 +85,15 @@ bool SavorDbRuntime::start(const std::filesystem::path& root, std::string* error
         return false;
     }
 
-    workflow_item_credit_source_ = std::make_shared<
-        savor::db::execution::workflow::CoordinatorItemCreditSource>();
-	std::function<void(const std::string&)> event_line_callback = [](const std::string& line) {
+    worker_result_blob_store_ =
+        std::make_unique<savor::db::execution::WorkerResultBlobStore>(
+            root / "object_store");
+
+    std::function<void(const std::string&)> event_line_callback = [](const std::string& line) {
         (void)line;
-		};
+    };
 
     auto workflow_config = buildWorkflowConfig();
-    workflow_config.item_credit_source = workflow_item_credit_source_;
     auto workflow_coordinator =
         std::make_unique<savor::db::execution::workflow::WorkflowCoordinatorService>(
             service_->ExecutionDb(),
@@ -109,18 +111,69 @@ bool SavorDbRuntime::start(const std::filesystem::path& root, std::string* error
         return false;
     }
     workflow_coordinator_ = std::move(workflow_coordinator);
+
+    auto blob_cleanup = std::make_unique<
+        savor::db::execution::programdb::WorkerResultBlobCleanupService>(
+            service_->ExecutionDb(),
+            worker_result_blob_store_.get());
+    std::string cleanup_error;
+    if (!blob_cleanup->Start(&cleanup_error)) {
+        if (error_out != nullptr) {
+            *error_out =
+                "worker result blob cleanup startup failed: "
+                + cleanup_error;
+        }
+        stop();
+        return false;
+    }
+    worker_result_blob_cleanup_ = std::move(blob_cleanup);
+
+    auto result_processor = std::make_unique<
+        savor::db::execution::programdb::ProgramResultProcessor>(
+            service_->ExecutionDb(),
+            &program_registry_,
+            worker_result_blob_store_.get(),
+            savor::db::execution::programdb::ProgramResultProcessorConfig{},
+            [this](
+                std::uint64_t commit_sequence,
+                std::int64_t workflow_step_id,
+                std::int64_t job_id) {
+                (void)publishTerminalCommit(
+                    {
+                        .commit_sequence = commit_sequence,
+                        .workflow_step_id = workflow_step_id,
+                        .job_id = job_id,
+                    });
+                worker_result_blob_cleanup_->Wake();
+            });
+    std::string processor_error;
+    if (!result_processor->Start(&processor_error)) {
+        if (error_out != nullptr) {
+            *error_out =
+                "program result processor startup failed: "
+                + processor_error;
+        }
+        stop();
+        return false;
+    }
+    program_result_processor_ = std::move(result_processor);
     return true;
 }
 
 void SavorDbRuntime::stop() {
-    if (workflow_item_credit_source_ != nullptr) {
-        workflow_item_credit_source_->Close();
+    if (program_result_processor_ != nullptr) {
+        program_result_processor_->Stop();
+        program_result_processor_.reset();
+    }
+    if (worker_result_blob_cleanup_ != nullptr) {
+        worker_result_blob_cleanup_->Stop();
+        worker_result_blob_cleanup_.reset();
     }
     if (workflow_coordinator_ != nullptr) {
         workflow_coordinator_->Stop();
         workflow_coordinator_.reset();
     }
-    workflow_item_credit_source_.reset();
+    worker_result_blob_store_.reset();
     program_registry_ = savor::db::execution::programdb::ProgramKindRegistry{};
     if (service_ != nullptr) {
         service_->Stop();
@@ -239,20 +292,51 @@ savor::db::execution::programdb::ProgramKindRegistry* SavorDbRuntime::programKin
     return service_ != nullptr && service_->IsRunning() ? &program_registry_ : nullptr;
 }
 
+savor::db::execution::WorkerResultBlobStore*
+SavorDbRuntime::workerResultBlobStore() {
+    return worker_result_blob_store_.get();
+}
+
 savor::db::execution::workflow::WorkflowCoordinatorTelemetry SavorDbRuntime::workflowCoordinatorTelemetry() const {
     return workflow_coordinator_ != nullptr
         ? workflow_coordinator_->SnapshotTelemetry()
         : savor::db::execution::workflow::WorkflowCoordinatorTelemetry{};
 }
 
+savor::db::execution::programdb::ProgramResultProcessorTelemetry
+SavorDbRuntime::programResultProcessorTelemetry() const {
+    return program_result_processor_ != nullptr
+        ? program_result_processor_->SnapshotTelemetry()
+        : savor::db::execution::programdb::
+              ProgramResultProcessorTelemetry{};
+}
+
 bool SavorDbRuntime::workflowCoordinatorRunning() const {
     return workflow_coordinator_ != nullptr && workflow_coordinator_->IsRunning();
 }
 
-std::shared_ptr<
-    savor::db::execution::workflow::CoordinatorItemCreditSource>
-SavorDbRuntime::workflowItemCreditSource() const {
-    return workflow_item_credit_source_;
+bool SavorDbRuntime::programResultProcessorRunning() const {
+    return program_result_processor_ != nullptr
+        && program_result_processor_->IsRunning();
+}
+
+void SavorDbRuntime::setProgramResultMaxProcessingAttempts(
+    int attempts) {
+    if (program_result_processor_ != nullptr) {
+        program_result_processor_->SetMaxTotalProcessingAttempts(attempts);
+    }
+}
+
+int SavorDbRuntime::programResultMaxProcessingAttempts() const {
+    return program_result_processor_ != nullptr
+        ? program_result_processor_->MaxTotalProcessingAttempts()
+        : 1;
+}
+
+void SavorDbRuntime::wakeProgramResultProcessor() {
+    if (program_result_processor_ != nullptr) {
+        program_result_processor_->Wake();
+    }
 }
 
 bool SavorDbRuntime::publishTerminalCommit(

@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <sstream>
 #include <sqlite3.h>
 #include <string>
@@ -649,26 +650,85 @@ int read_job(sqlite3* db, const TraceJobOptions& options, JobSnapshot& job, std:
             w.turn_index,
             j.fake_attacks_this_turn,
             j.fake_attacks_used_before,
-            COALESCE(u.seed_value, sc.seed_value),
-            CASE WHEN u.seed_value IS NOT NULL THEN 'sp_unique_seed.seed_value' ELSE 'ab_seed_candidate.seed_value' END,
+            CASE
+                WHEN sc.source_probe_result_id IS NOT NULL THEN res.seed_value
+                ELSE sc.seed_value
+            END,
+            CASE
+                WHEN sc.source_probe_result_id IS NOT NULL THEN 'sp_probe_result.seed_value'
+                ELSE 'ab_seed_candidate.seed_value'
+            END,
             j.rng_seed,
             j.battle_outcome,
             COALESCE(j.resolved_turn_commands_blob, ''),
             COALESCE(j.resolved_turn_variant_key, ''),
             COALESCE(j.seed_candidate_id, w.seed_candidate_id),
             sc.seed_value,
-            u.seed_delta
+            CASE
+                WHEN res.probe_result_id IS NULL THEN NULL
+                ELSE (((res.seed_value - (
+                    SELECT neutral.seed_value
+                    FROM sp_probe_run neutral_run
+                    JOIN an_input_set_frame accepted
+                        ON accepted.input_set_id = neutral_run.accepted_input_set_id
+                    JOIN sp_probe_result neutral
+                        ON neutral.probe_run_id = neutral_run.probe_run_id
+                        AND neutral.input_frame_id = accepted.input_frame_id
+                        AND neutral.evidence_state = 'CONFIRMED'
+                        AND neutral.confirmation_of_probe_result_id IS NULL
+                    JOIN sp_input_frame neutral_frame
+                        ON neutral_frame.input_frame_id = neutral.input_frame_id
+                    JOIN sp_axis_xy neutral_main
+                        ON neutral_main.axis_xy_id = neutral_frame.main_axis_xy_id
+                    JOIN sp_axis_xy neutral_cstick
+                        ON neutral_cstick.axis_xy_id = neutral_frame.cstick_axis_xy_id
+                    JOIN sp_axis_xy neutral_trigger
+                        ON neutral_trigger.axis_xy_id = neutral_frame.trigger_axis_xy_id
+                    WHERE neutral_run.probe_run_id = res.probe_run_id
+                        AND neutral_main.x = 128
+                        AND neutral_main.y = 128
+                        AND neutral_cstick.x = 128
+                        AND neutral_cstick.y = 128
+                        AND neutral_trigger.x = 0
+                        AND neutral_trigger.y = 0
+                    ORDER BY accepted.ordinal
+                    LIMIT 1
+                )) + 2147483648) & 4294967295) - 2147483648
+            END
         FROM ab_turn_job j
         JOIN ab_turn_wave w ON w.wave_id = j.wave_id
         JOIN ab_battle_set bs ON bs.battle_set_id = w.battle_set_id
         LEFT JOIN st.state_tas_movie_variant v ON v.produced_savestate_id = bs.entry_savestate_id
         JOIN ab_seed_candidate sc ON sc.seed_candidate_id = COALESCE(j.seed_candidate_id, w.seed_candidate_id)
-        LEFT JOIN sp_probe_run pr ON pr.entry_savestate_id = bs.entry_savestate_id
-        LEFT JOIN sp_probe_result res ON res.probe_run_id = pr.probe_run_id
-        LEFT JOIN sp_unique_seed u ON u.probe_result_id = res.probe_result_id
-            AND u.input_frame_id = sc.source_input_frame_id
-        WHERE (?1 IS NOT NULL AND j.turn_job_id = ?1)
-           OR (?2 IS NOT NULL AND j.exec_job_id = ?2)
+        LEFT JOIN sp_probe_result res
+            ON res.probe_result_id = sc.source_probe_result_id
+            AND res.evidence_state = 'CONFIRMED'
+            AND res.confirmation_of_probe_result_id IS NULL
+        WHERE (
+                (?1 IS NOT NULL AND j.turn_job_id = ?1)
+                OR (?2 IS NOT NULL AND j.exec_job_id = ?2)
+            )
+            AND (
+                sc.source_probe_result_id IS NULL
+                OR (
+                    res.probe_result_id IS NOT NULL
+                    AND (
+                        sc.source_input_frame_id IS NULL
+                        OR res.input_frame_id = sc.source_input_frame_id
+                    )
+                    AND res.seed_value = sc.seed_value
+                    AND EXISTS (
+                        SELECT 1
+                        FROM sp_probe_run accepted_run
+                        JOIN an_input_set_frame accepted_frame
+                            ON accepted_frame.input_set_id = accepted_run.accepted_input_set_id
+                            AND accepted_frame.input_frame_id = res.input_frame_id
+                        WHERE accepted_run.probe_run_id = res.probe_run_id
+                            AND accepted_run.entry_savestate_id = bs.entry_savestate_id
+                            AND accepted_run.status IN ('COMPLETED', 'COMPLETED_PARTIAL')
+                    )
+                )
+            )
         LIMIT 1
     )SQL";
 
@@ -719,7 +779,11 @@ int read_job(sqlite3* db, const TraceJobOptions& options, JobSnapshot& job, std:
     job.seed_candidate_id = sqlite3_column_int64(stmt.get(), 14);
     job.seed_candidate_ordinal = column_u32(stmt.get(), 15);
     if (sqlite3_column_type(stmt.get(), 16) != SQLITE_NULL) {
-        job.seedprobe_delta = sqlite3_column_int(stmt.get(), 16);
+        const auto delta = sqlite3_column_int64(stmt.get(), 16);
+        if (delta >= (std::numeric_limits<std::int32_t>::min)()
+            && delta <= (std::numeric_limits<std::int32_t>::max)()) {
+            job.seedprobe_delta = static_cast<std::int32_t>(delta);
+        }
     }
     return 0;
 }

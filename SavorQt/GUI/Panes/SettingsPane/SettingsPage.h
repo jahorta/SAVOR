@@ -15,7 +15,6 @@ class QLineEdit;
 class QPushButton;
 class QCheckBox;
 class QFrame;
-class QSpinBox;
 class QToolButton;
 class QWidget;
 
@@ -99,9 +98,7 @@ private:
     QPushButton* isoBrowseButton_ = nullptr;
     QLineEdit* dolphinBaseDirEdit_ = nullptr;
     QPushButton* dolphinBrowseButton_ = nullptr;
-    QSpinBox* eventBufferSpin_ = nullptr;
     QCheckBox* startPausedCheck_ = nullptr;
-    QCheckBox* requeueFailuresAutomaticallyCheck_ = nullptr;
     QLabel* coordinatorValidationLabel_ = nullptr;
     QToolButton* coordinatorSectionToggle_ = nullptr;
 

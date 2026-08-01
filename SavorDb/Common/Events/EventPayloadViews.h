@@ -10,6 +10,7 @@ struct ExecutionWorkflowJobPayloadView {
     std::int64_t workflow_step_id = 0;
     std::int64_t workflow_edge_id = 0;
     std::int64_t job_set_id = 0;
+    std::int64_t workset_id = 0;
     std::int64_t job_id = 0;
 };
 
@@ -23,22 +24,9 @@ struct AnalysisSeedProbeRunRequestedPayloadView {
     std::int64_t probe_run_id = 0;
 };
 
-struct AnalysisSeedProbeNeutralSeedRecordedPayloadView {
+struct AnalysisSeedProbeResultPayloadView {
     std::int64_t probe_run_id = 0;
     std::int64_t probe_result_id = 0;
-    std::int64_t neutral_seed_id = 0;
-};
-
-struct AnalysisSeedProbeGridSeedRecordedPayloadView {
-    std::int64_t probe_run_id = 0;
-    std::int64_t probe_result_id = 0;
-    std::int64_t grid_seed_id = 0;
-};
-
-struct AnalysisSeedProbeUniqueSeedRecordedPayloadView {
-    std::int64_t probe_run_id = 0;
-    std::int64_t probe_result_id = 0;
-    std::int64_t unique_seed_id = 0;
 };
 
 struct AnalysisSeedProbeEncounterProjectionRecordedPayloadView {
@@ -46,12 +34,6 @@ struct AnalysisSeedProbeEncounterProjectionRecordedPayloadView {
     std::int64_t encounter_projection_id = 0;
 };
 
-struct AnalysisSeedProbeRunCompletedPayloadView {
-    std::int64_t probe_run_id = 0;
-    std::int64_t probe_result_id = 0;
-};
-
-// Backward-compatible coarse family view.
 struct AnalysisSeedProbePayloadView {
     std::int64_t probe_set_id = 0;
     std::int64_t probe_run_id = 0;

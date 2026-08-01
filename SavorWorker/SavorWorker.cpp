@@ -1203,13 +1203,7 @@ bool SubmitFrame(
         options.backend.visual = payload.visual_requested;
         options.backend.render_window_handle =
             static_cast<std::uintptr_t>(payload.render_window_handle);
-        options.screenshot_directory = payload.screenshot_directory;
-        options.screenshot_timeout = std::chrono::milliseconds{
-            payload.screenshot_timeout_ms
-                ? payload.screenshot_timeout_ms
-                : 3000};
-        options.screenshot_on_terminal =
-            payload.screenshot_on_terminal;
+        options.runtime_artifact_root = payload.runtime_artifact_root;
         (void)runtime.Submit(
             WireRequestId{frame.header.request_id},
             OpenSessionCommand{std::move(options)});
@@ -1266,7 +1260,7 @@ bool SubmitFrame(
         WorkerWorksetDefinition definition;
         const std::size_t actual_encoded_size =
             payload.encoded_workset.size();
-        const auto decoded = DecodeWorkerWorksetV1(
+        const auto decoded = DecodeWorkerWorksetV2(
             payload.encoded_workset,
             definition);
         if (!decoded) {
@@ -1342,6 +1336,24 @@ bool SubmitFrame(
                     WorkerTerminalId{payload.terminal_id},
                     WorkerTerminalOrder{
                         payload.terminal_order}}});
+        return true;
+    }
+    case MessageKind::LivenessProbe: {
+        if (!frame.payload.empty()) {
+            PublishMalformedCommand(
+                publisher,
+                frame.header.kind,
+                frame.header.request_id,
+                "LivenessProbe payload must be empty");
+            return true;
+        }
+        publisher.Publish(
+            MessageKind::CommandResult,
+            frame.header.request_id,
+            savor::wrms::CommandResultPayload{
+                .command_kind = MessageKind::LivenessProbe,
+                .status = savor::wrms::CommandStatus::Succeeded,
+            });
         return true;
     }
     case MessageKind::CancelInvocation: {

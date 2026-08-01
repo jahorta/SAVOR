@@ -221,6 +221,7 @@
     <ClCompile Include="..\SavorPredict\ViewPlacementCacheModel.cpp" />
     <ClCompile Include="..\SavorPredict\ViewPlacementGeometryModel.cpp" />
     <ClCompile Include="..\SavorE2E\Cli.cpp" />
+    <ClCompile Include="..\SavorE2E\WorkerStartupBarrier.cpp" />
     <ClCompile Include="..\third-party\googletest-1.17.0\googlemock\src\gmock-all.cc" />
     <ClCompile Include="..\third-party\googletest-1.17.0\googletest\src\gtest-all.cc" />
     <ClCompile Include="run_tests.cpp" />
@@ -288,6 +289,10 @@
     <ClCompile Include="test_program_verifier.cpp" />
     <ClCompile Include="test_session_program_action_host.cpp" />
     <ClCompile Include="test_semantic_observation_composition.cpp" />
+    <ClCompile Include="test_seedprobe_module.cpp" />
+    <ClCompile Include="test_job_execution_coordinator.cpp" />
+    <ClCompile Include="test_worker_startup_barrier.cpp" />
+    <ClCompile Include="test_worker_result_blob_store.cpp" />
     <ClCompile Include="test_worker_capability_gate.cpp" />
     <ClCompile Include="test_execution_engine.cpp" />
     <ClCompile Include="test_execution_worker_runtime.cpp" />

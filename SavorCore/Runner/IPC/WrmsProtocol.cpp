@@ -384,6 +384,7 @@ bool IsKnownMessageKind(MessageKind kind) noexcept
     case MessageKind::CancelWorksetItem:
     case MessageKind::CancelWorkset:
     case MessageKind::AcknowledgeTerminal:
+    case MessageKind::LivenessProbe:
     case MessageKind::CommandResult:
     case MessageKind::OpenSessionResult:
     case MessageKind::ScreenshotResult:
@@ -419,6 +420,7 @@ MessageDirection DirectionOf(MessageKind kind) noexcept
     case MessageKind::CancelWorksetItem:
     case MessageKind::CancelWorkset:
     case MessageKind::AcknowledgeTerminal:
+    case MessageKind::LivenessProbe:
         return MessageDirection::ParentToWorker;
     default:
         return MessageDirection::WorkerToParent;
@@ -572,9 +574,7 @@ PayloadCodecResult EncodePayload(
         writer.string(payload.iso_path);
         writer.boolean(payload.visual_requested);
         writer.u64(payload.render_window_handle);
-        writer.string(payload.screenshot_directory);
-        writer.u32(payload.screenshot_timeout_ms);
-        writer.boolean(payload.screenshot_on_terminal);
+        writer.string(payload.runtime_artifact_root);
     });
 }
 
@@ -588,9 +588,7 @@ PayloadCodecResult DecodePayload(
         reader.string(payload.iso_path);
         reader.boolean(payload.visual_requested);
         reader.u64(payload.render_window_handle);
-        reader.string(payload.screenshot_directory);
-        reader.u32(payload.screenshot_timeout_ms);
-        reader.boolean(payload.screenshot_on_terminal);
+        reader.string(payload.runtime_artifact_root);
     });
 }
 

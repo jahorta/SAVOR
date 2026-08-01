@@ -17,9 +17,8 @@ namespace savor::predict {
 enum class BattlePredictionSeedSource {
     Unknown,
     Override,
-    SeedProbeUniqueSeed,
+    SeedProbeConfirmedResult,
     SeedCandidate,
-    SeedCandidateFallback,
 };
 
 enum class BattlePredictionFakeAttackSource {

@@ -51,7 +51,7 @@ struct UiSeedProbeRunSummary {
     std::int64_t seed_probe_spec_id = 0;
     int codec_version = 0;
     std::string status;
-    std::optional<std::int64_t> neutral_seed_value;
+    std::optional<std::uint32_t> neutral_seed_value;
     int grid_count = 0;
     int unique_count = 0;
     std::int64_t requested_at_utc = 0;
@@ -70,15 +70,15 @@ struct UiSeedProbeDeltaPoint {
     std::string source_family;
     int axis_x = 0;
     int axis_y = 0;
-    std::int64_t seed_value = 0;
-    std::int64_t seed_delta = 0;
+    std::uint32_t seed_value = 0;
+    std::int32_t seed_delta = 0;
 };
 
 struct UiSeedProbeUniqueValue {
     std::int64_t unique_value_id = 0;
     std::int64_t probe_run_id = 0;
-    std::int64_t seed_value = 0;
-    std::int64_t seed_delta = 0;
+    std::uint32_t seed_value = 0;
+    std::int32_t seed_delta = 0;
     int main_x = 0;
     int main_y = 0;
     int cstick_x = 0;
@@ -126,6 +126,12 @@ struct UiJobSummary {
     std::optional<std::int64_t> ended_at_utc;
     std::string error_code;
     std::string error_text;
+    std::string result_processing_state;
+    int result_processing_attempts = 0;
+    int result_processing_failures = 0;
+    std::optional<std::int64_t> result_processing_retry_after_utc;
+    std::string result_processing_error_code;
+    std::string result_processing_error_text;
 };
 
 struct UiJobStateCounts {
@@ -133,6 +139,7 @@ struct UiJobStateCounts {
     std::int64_t queued = 0;
     std::int64_t claimed = 0;
     std::int64_t running = 0;
+    std::int64_t execution_finished = 0;
     std::int64_t failed = 0;
     std::int64_t succeeded = 0;
     std::int64_t canceled = 0;

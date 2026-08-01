@@ -11,6 +11,7 @@
 #include "Execution/ProgramDB/ProductionProgramKindRegistry.h"
 #include "Execution/DBWorkflowCoordinatorFactory.h"
 #include "Execution/DBWorkflowWorkerCoordinator.h"
+#include "Runner/IPC/Wire.h"
 #include "UIRead/IUiReadDb.h"
 
 #include "CoordinatorProgress.h"
@@ -45,97 +46,6 @@ std::string FormatWorkflowStateLine(const savor::db::execution::workflow::Workfl
     oss << "workflow=" << ToString(graph.instance.state)
         << " steps=" << completed << "/" << graph.steps.size();
     return oss.str();
-}
-
-std::int64_t ComputeTasMovieScenarioTimeoutMs(
-    const CliOptions& options,
-    bool chain_seedprobe) {
-    const auto tas_budget_ms = options.timeout_ms * 3;
-    if (!chain_seedprobe) {
-        return tas_budget_ms;
-    }
-    constexpr std::int64_t kSeedProbeAverageUniqueCountEstimate = 25;
-    const std::int64_t grid_probe_count =
-        static_cast<std::int64_t>(options.seedprobe_samples_per_axis.value_or(kSeedProbeSamplesPerAxis))
-        * static_cast<std::int64_t>(options.seedprobe_samples_per_axis.value_or(kSeedProbeSamplesPerAxis))
-        * 3;
-    const auto seedprobe_budget_ms =
-        options.timeout_ms * (1 + grid_probe_count + kSeedProbeAverageUniqueCountEstimate);
-    return tas_budget_ms + seedprobe_budget_ms;
-}
-
-bool RefreshSeedProbeUiReadProjection(
-    savor::db::IAnalysisDb* analysis_db,
-    savor::db::IUiReadDb* ui_read_db,
-    std::int64_t probe_run_id,
-    std::string* error_out) {
-    if (analysis_db == nullptr || ui_read_db == nullptr || probe_run_id <= 0) {
-        if (error_out) *error_out = "analysis/ui read db unavailable";
-        return false;
-    }
-    const auto run = analysis_db->GetSeedProbeRun(probe_run_id);
-    if (!run.has_value()) {
-        if (error_out) *error_out = "seed probe run not found";
-        return false;
-    }
-    const auto neutral = analysis_db->LookupSeedProbeNeutralSeed(probe_run_id);
-    const auto grid_rows = analysis_db->ListSeedProbeGridSeeds(probe_run_id);
-    const auto unique_rows = analysis_db->ListSeedProbeUniqueSeeds(probe_run_id);
-
-    savor::db::UiSeedProbeRunSummary summary{};
-    summary.probe_run_id = run->probe_run_id;
-    summary.probe_set_id = run->probe_set_id;
-    summary.entry_savestate_id = run->entry_savestate_id;
-    summary.seed_probe_spec_id = run->seed_probe_spec_id;
-    summary.codec_version = run->codec_version;
-    summary.status = run->status;
-    summary.neutral_seed_value = neutral;
-    summary.grid_count = static_cast<int>(grid_rows.size());
-    summary.unique_count = static_cast<int>(unique_rows.size());
-    summary.requested_at_utc = run->requested_at_utc.time_since_epoch().count();
-    if (run->completed_at_utc.has_value()) {
-        summary.completed_at_utc = run->completed_at_utc->time_since_epoch().count();
-    }
-    if (!ui_read_db->UpsertSeedProbeRunSummary(summary, error_out)) {
-        return false;
-    }
-
-    std::vector<savor::db::UiSeedProbeDeltaPoint> points;
-    points.reserve(grid_rows.size());
-    for (const auto& row : grid_rows) {
-        points.push_back(
-            {
-                .delta_point_id = row.grid_seed_id,
-                .probe_run_id = probe_run_id,
-                .source_family = row.source_family,
-                .axis_x = row.axis_x,
-                .axis_y = row.axis_y,
-                .seed_value = row.seed_value,
-                .seed_delta = row.seed_delta,
-            });
-    }
-    if (!ui_read_db->ReplaceSeedProbeDeltaPoints(probe_run_id, points, error_out)) {
-        return false;
-    }
-
-    std::vector<savor::db::UiSeedProbeUniqueValue> values;
-    values.reserve(unique_rows.size());
-    for (const auto& row : unique_rows) {
-        values.push_back(
-            {
-                .unique_value_id = row.unique_seed_id,
-                .probe_run_id = probe_run_id,
-                .seed_value = row.seed_value,
-                .seed_delta = row.seed_delta,
-                .main_x = row.main_x,
-                .main_y = row.main_y,
-                .cstick_x = row.cstick_x,
-                .cstick_y = row.cstick_y,
-                .trigger_x = row.trigger_x,
-                .trigger_y = row.trigger_y,
-            });
-    }
-    return ui_read_db->ReplaceSeedProbeUniqueValues(probe_run_id, values, error_out);
 }
 
 std::int64_t ResolveSeedProbeRunIdFromGraph(
@@ -236,9 +146,6 @@ bool RunTasMovieScenario(
     tas_config.blueprint.rtc_low = static_cast<std::uint8_t>(rtc_range.low);
     tas_config.blueprint.rtc_high = static_cast<std::uint8_t>(rtc_range.high);
     tas_config.blueprint.progress_enable = true;
-    const auto scenario_timeout_ms = ComputeTasMovieScenarioTimeoutMs(
-        options,
-        chain_seedprobe);
     tas_config.working_dir_root = scenario_workspace_root / "tasmovie";
     tas_config.next_step_key = chain_seedprobe ? "Neutral" : "Done";
     savor::db::execution::programdb::ProgramKindRegistry registry;
@@ -362,7 +269,6 @@ bool RunTasMovieScenario(
     }
 
     coordinator.Start();
-    const auto started = std::chrono::steady_clock::now();
     const bool interactive_stdout = IsInteractiveStdout();
     MultiLineProgressRenderer progress_renderer;
     const auto interactive_refresh_cadence = std::chrono::milliseconds(100);
@@ -372,7 +278,7 @@ bool RunTasMovieScenario(
     std::vector<std::string> latest_lines;
     std::size_t poll_count = 0;
     std::size_t ticks_since_snapshot = 0;
-    while (std::chrono::steady_clock::now() - started < std::chrono::milliseconds(scenario_timeout_ms)) {
+    while (true) {
         ++poll_count;
         ++ticks_since_snapshot;
         const auto event_lines = drain_lines();
@@ -469,19 +375,16 @@ bool RunTasMovieScenario(
     }
 
     if (chain_seedprobe && db_service->UiReadDb() != nullptr) {
-        if (RefreshSeedProbeUiReadProjection(db_service->AnalysisDb(), db_service->UiReadDb(), probe_run_id, &err)) {
-            PrintSeedProbeUiReadLine(db_service->UiReadDb(), probe_run_id);
-        }
+        PrintSeedProbeUiReadLine(db_service->UiReadDb(), probe_run_id);
     }
 
-    std::cout << "[tasmovie-final] status=" << (completed ? "success" : failed ? "failure" : "timeout") << '\n';
-    std::cout << "  timeout_ms=" << scenario_timeout_ms << '\n';
+    std::cout << "[tasmovie-final] status=" << (completed ? "success" : failed ? "failure" : "incomplete") << '\n';
     std::cout << "  " << latest_state << '\n';
 
     if (!completed) {
         if (error_out) *error_out = failed
             ? "workflow did not complete successfully"
-            : "workflow did not reach COMPLETED state before timeout";
+            : "workflow stopped before reaching COMPLETED state";
         return false;
     }
     return true;

@@ -68,6 +68,102 @@ public:
         std::string* error_out = nullptr) override;
     bool CreateJobSet(const CreateJobSetCommand& command, std::int64_t* job_set_id_out = nullptr, std::string* error_out = nullptr) override;
     bool EnqueueJob(const EnqueueJobCommand& command, std::int64_t* job_id_out = nullptr, std::string* error_out = nullptr) override;
+    bool EnsureMaterializingJobSet(
+        const EnsureMaterializingJobSetCommand& command,
+        EnsureMaterializingJobSetReceipt* receipt_out = nullptr,
+        std::string* error_out = nullptr) override;
+    bool CreatePendingJob(
+        const CreatePendingJobCommand& command,
+        CreatePendingJobReceipt* receipt_out = nullptr,
+        std::string* error_out = nullptr) override;
+    bool SealJobPopulation(
+        const SealJobPopulationCommand& command,
+        SealJobPopulationReceipt* receipt_out = nullptr,
+        std::string* error_out = nullptr) override;
+    bool PublishWorkset(
+        const PublishWorksetCommand& command,
+        PublishWorksetReceipt* receipt_out = nullptr,
+        std::string* error_out = nullptr) override;
+    bool CompleteWorksetPublication(
+        const CompleteWorksetPublicationCommand& command,
+        CompleteWorksetPublicationReceipt* receipt_out = nullptr,
+        std::string* error_out = nullptr) override;
+    std::vector<ClaimedPublishedWorkset> ClaimPublishedWorksetBatch(
+        const ClaimPublishedWorksetBatchCommand& command,
+        std::string* error_out = nullptr) override;
+    bool RenewWorksetDispatchLease(
+        const RenewWorksetDispatchLeaseCommand& command,
+        WorksetDispatchLeaseReceipt* receipt_out = nullptr,
+        std::string* error_out = nullptr) override;
+    bool MarkWorksetDispatched(
+        const MarkWorksetDispatchedCommand& command,
+        WorksetDispatchMutationReceipt* receipt_out = nullptr,
+        std::string* error_out = nullptr) override;
+    bool ReleaseWorksetDispatch(
+        const ReleaseWorksetDispatchCommand& command,
+        WorksetDispatchMutationReceipt* receipt_out = nullptr,
+        std::string* error_out = nullptr) override;
+    bool MarkWorksetJobStarted(
+        const MarkWorksetJobStartedCommand& command,
+        WorksetJobStartReceipt* receipt_out = nullptr,
+        std::string* error_out = nullptr) override;
+    bool StageWorkerTerminal(
+        const StageWorkerTerminalCommand& command,
+        StageWorkerTerminalReceipt* receipt_out = nullptr,
+        std::string* error_out = nullptr) override;
+    std::optional<ClaimedExecutionFinishedJob> ClaimNextExecutionFinishedJob(
+        const ClaimExecutionFinishedJobCommand& command,
+        std::string* error_out = nullptr) override;
+    bool RenewResultProcessingLease(
+        const RenewResultProcessingLeaseCommand& command,
+        ResultProcessingReceipt* receipt_out = nullptr,
+        std::string* error_out = nullptr) override;
+    bool ParkResultProcessing(
+        const ParkResultProcessingCommand& command,
+        ResultProcessingReceipt* receipt_out = nullptr,
+        std::string* error_out = nullptr) override;
+    bool CommitResultFinalization(
+        const CommitResultFinalizationCommand& command,
+        ResultProcessingReceipt* receipt_out = nullptr,
+        std::string* error_out = nullptr) override;
+    bool RequestJobCancellation(
+        const RequestJobCancellationCommand& command,
+        JobCancellationReceipt* receipt_out = nullptr,
+        std::string* error_out = nullptr) override;
+    std::optional<ClaimedJobCancellation> ClaimNextJobCancellation(
+        const ClaimJobCancellationCommand& command,
+        std::string* error_out = nullptr) override;
+    bool MarkJobCancellationDelivered(
+        const MarkJobCancellationDeliveredCommand& command,
+        JobCancellationReceipt* receipt_out = nullptr,
+        std::string* error_out = nullptr) override;
+    bool ResolveJobCancellation(
+        const ResolveJobCancellationCommand& command,
+        JobCancellationReceipt* receipt_out = nullptr,
+        std::string* error_out = nullptr) override;
+    bool IsTempBlobTracked(
+        std::string_view relative_path,
+        bool* tracked_out,
+        std::string* error_out = nullptr) const override;
+    std::optional<ClaimedTempBlobCleanup> ClaimNextTempBlobCleanup(
+        const ClaimTempBlobCleanupCommand& command,
+        std::string* error_out = nullptr) override;
+    bool CompleteTempBlobCleanup(
+        const CompleteTempBlobCleanupCommand& command,
+        ExecutionDbOperationDisposition* disposition_out = nullptr,
+        std::string* error_out = nullptr) override;
+    bool RecoverExpiredWorksetDispatches(
+        int max_dispatches,
+        int* dispatches_recovered_out = nullptr,
+        std::string* error_out = nullptr) override;
+    bool RecoverExpiredResultProcessingLeases(
+        int max_jobs,
+        int* jobs_recovered_out = nullptr,
+        std::string* error_out = nullptr) override;
+    bool RecoverExpiredCancellationDeliveryLeases(
+        int max_requests,
+        int* requests_recovered_out = nullptr,
+        std::string* error_out = nullptr) override;
     std::optional<ClaimedExecutionJob> ClaimNextReadyExecutionJob(
         std::string_view claimed_by_token,
         std::int64_t lease_duration_ms,
@@ -134,6 +230,16 @@ public:
     bool RestartFailedJob(std::int64_t job_id, std::optional<std::string> input_ini_override = std::nullopt, std::string* error_out = nullptr) override;
     bool CancelQueuedOrClaimedJob(std::int64_t job_id, std::string* error_out = nullptr) override;
     std::optional<ExecutionJobSetProgressDetails> GetJobSetProgress(std::int64_t job_set_id) const override;
+    std::vector<ExecutionJobSetJobRecord> ListJobsInJobSet(
+        std::int64_t job_set_id) const override;
+    std::vector<ExecutionJobSetJobRecord>
+    ListJobsByProgramReference(
+        std::int32_t program_kind,
+        std::string_view program_ref_kind,
+        std::int64_t program_ref_id) const override;
+    std::optional<ExecutionJobSetMaterializationRecord>
+    GetJobSetByMaterializationKey(
+        std::string_view materialization_key) const override;
     std::vector<ExecutionChildJobSetProgressDetails> GetChildJobSetProgress(std::int64_t parent_job_set_id) const override;
     bool MarkQueuedJobsSuperseded(
         std::int64_t job_set_id,

@@ -197,7 +197,6 @@ enum class ExecutionIntent : std::uint8_t
 {
     Live,
     Replay,
-    VisualDebug,
 };
 
 struct ProgramPolicySet
@@ -208,7 +207,6 @@ struct ProgramPolicySet
     bool permits_movie_recording = false;
     bool permits_capture = false;
     bool permits_replay = false;
-    bool permits_visual_debug = false;
     bool permits_state_replacement = false;
     bool permits_resource_promotion = false;
 

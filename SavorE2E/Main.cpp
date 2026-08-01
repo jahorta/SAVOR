@@ -4,7 +4,6 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
-#include <limits>
 #include <map>
 #include <sstream>
 #include <string>
@@ -12,7 +11,6 @@
 
 #include "Cli.h"
 #include "BattleMacroProbeScenario.h"
-#include "BattleEndResultsScenario.h"
 #include "BattleSingleTurnScenario.h"
 #include "Common/DbService.h"
 #include "Common/Performance/DbPerfReport.h"
@@ -26,6 +24,7 @@
 namespace {
 
 using Clock = std::chrono::steady_clock;
+constexpr std::uint32_t kWorkerPreflightTimeoutMs = 60'000;
 
 std::string JoinScenarios(const std::vector<std::string>& scenarios) {
     std::ostringstream out;
@@ -42,6 +41,8 @@ std::string E2EPerfConfiguration(const savor::e2e::CliOptions& options) {
     const auto rtc_range = savor::e2e::ResolveTasMovieRtcRange(options, 0);
     std::ostringstream out;
     out << "workers=" << options.worker_count
+        << " wait_for_workers_ready="
+        << (options.wait_for_workers_ready ? "true" : "false")
         << " repeat=" << options.repeat
         << " samples_per_axis=" << options.seedprobe_samples_per_axis.value_or(0)
         << " fake_attack_min=" << options.battle_fake_attack_low.value_or(0)
@@ -73,8 +74,6 @@ int main(int argc, char** argv) {
         { "seedprobe_battle", &RunSeedProbeBattleRealWorkerScenario },
         { "battle", &RunBattleWorkflowGraphRealWorkerScenario },
         { "battle_macro_probe", &RunBattleMacroProbeScenario },
-        { "battle_end", &RunBattleEndResultsScenario },
-        { "battle_end_results", &RunBattleEndResultsScenario },
         { "navigation_context", &RunNavigationContextScenario },
         { "tasmovie_seedprobe_battle", &RunTasMovieSeedProbeBattleWorkflowGraphRealWorkerScenario },
         { "tasmovie_seedprobe_battle_override", &RunTasMovieSeedProbeBattleOverrideWorkflowGraphRealWorkerScenario },
@@ -88,19 +87,23 @@ int main(int argc, char** argv) {
                 ? (*options.worker_dir_root / "capability-preflight").string()
                 : std::string{},
             .worker_id = 0,
-            .timeout_ms = static_cast<std::uint32_t>(
-                std::clamp<std::int64_t>(
-                    options.timeout_ms,
-                    1,
-                    std::numeric_limits<std::uint32_t>::max())),
+            .timeout_ms = kWorkerPreflightTimeoutMs,
             .required_capabilities = savor::runtime::CapabilityMask(
                 savor::runtime::WorkerCapability::WorksetDispatch),
-            .require_complete_exact_catalog = true,
+            // Program modules are prepared by the scenario's
+            // WorkerCoordinator before that worker becomes ready. The
+            // executable-level preflight can therefore require the protocol
+            // surface, but cannot require modules that have not been
+            // prepared yet.
+            .require_complete_exact_catalog = false,
         });
     if (!worker_preflight) {
         std::cerr << "[FAIL] " << worker_preflight.message << "\n";
         return 1;
     }
+    std::cout
+        << "[worker-startup-policy] wait_for_workers_ready="
+        << (options.wait_for_workers_ready ? 1 : 0) << "\n";
 
     const auto migration_root = ResolveMigrationRoot(options.migration_root);
     const auto db_paths = BuildDbPaths(options);
@@ -179,8 +182,7 @@ int main(int argc, char** argv) {
             submitted += 1;
             std::cout << "Running scenario '" << scenario_name << "' repeat=" << (repeat_index + 1)
                       << "/" << options.repeat
-                      << " timeout=" << options.timeout_ms
-                      << "ms poll=" << options.poll_ms << "ms\n";
+                      << " poll=" << options.poll_ms << "ms\n";
 
             scenario_error.clear();
             const bool scenario_passed =

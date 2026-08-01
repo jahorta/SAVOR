@@ -9,7 +9,6 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
-#include <limits>
 #include <sstream>
 #include <thread>
 
@@ -33,6 +32,67 @@ namespace savor::e2e {
 namespace {
 
 using Clock = std::chrono::steady_clock;
+constexpr std::uint32_t kWorkerHostOperationTimeoutMs = 60'000;
+constexpr std::uint32_t kWorkerLivenessProbeTimeoutMs = 2'000;
+constexpr auto kWorkerLivenessProbeInterval =
+    std::chrono::seconds(5);
+constexpr std::uint32_t kWorkerLivenessFailureThreshold = 2;
+
+template <typename DrainProgress>
+bool WaitForWorkerResult(
+    savor::ProcessWorker& worker,
+    TSQueue<savor::PRResult>& results,
+    std::chrono::milliseconds poll_interval,
+    DrainProgress&& drain_progress,
+    savor::PRResult* result_out,
+    std::string* error_out) {
+    if (result_out == nullptr) {
+        if (error_out != nullptr) {
+            *error_out = "worker result output is unavailable";
+        }
+        return false;
+    }
+
+    auto next_probe = Clock::now() + kWorkerLivenessProbeInterval;
+    std::uint32_t consecutive_probe_failures = 0;
+    for (;;) {
+        drain_progress();
+        if (results.try_pop(*result_out)) {
+            return true;
+        }
+        if (!worker.is_running()) {
+            if (error_out != nullptr) {
+                *error_out = "worker exited before returning a result";
+            }
+            return false;
+        }
+
+        const auto now = Clock::now();
+        if (now >= next_probe) {
+            savor::wrms::CommandResultPayload probe_result;
+            if (worker.probe_liveness(
+                    &probe_result,
+                    kWorkerLivenessProbeTimeoutMs)) {
+                consecutive_probe_failures = 0;
+            } else {
+                ++consecutive_probe_failures;
+                if (consecutive_probe_failures
+                    >= kWorkerLivenessFailureThreshold) {
+                    if (error_out != nullptr) {
+                        *error_out =
+                            "worker stopped responding to control-plane "
+                            "liveness probes: "
+                            + worker.last_error();
+                    }
+                    return false;
+                }
+            }
+            next_probe = Clock::now() + kWorkerLivenessProbeInterval;
+        }
+        std::this_thread::sleep_for(
+            std::max(poll_interval, std::chrono::milliseconds(1)));
+    }
+}
 
 std::filesystem::path ResolveWorkspaceRoot(const CliOptions& options) {
     return options.workspace_root.value_or(std::filesystem::temp_directory_path() / "savor-e2e-default");
@@ -732,46 +792,49 @@ bool RunBattleFakeAttackSweep(
                 return false;
             }
 
-            const auto result_timeout_ms = options.timeout_ms * static_cast<std::int64_t>(steps.size() + 3);
-            const auto deadline = Clock::now() + std::chrono::milliseconds(result_timeout_ms);
             savor::PRResult result{};
-            bool have_result = false;
-            while (Clock::now() < deadline) {
-                drain_progress();
-                if (results.try_pop(result)) {
-                    have_result = true;
-                    break;
-                }
-                std::this_thread::sleep_for(std::chrono::milliseconds(options.poll_ms));
-            }
+            std::string wait_error;
+            const bool have_result = WaitForWorkerResult(
+                worker,
+                results,
+                std::chrono::milliseconds(options.poll_ms),
+                drain_progress,
+                &result,
+                &wait_error);
             drain_progress();
+            if (!have_result) {
+                if (error_out != nullptr) {
+                    *error_out =
+                        "battle fake sweep worker result failed: "
+                        + wait_error;
+                }
+                return false;
+            }
 
             FakeAttackSweepTrial trial_result{};
-            if (have_result) {
-                std::uint32_t macro_result = 1;
-                result.ps.ctx.get(savor::context::key::battle::MACRO_RESULT, macro_result);
-                result.ps.ctx.get(savor::context::key::battle::MACRO_FAILURE_CODE, trial_result.failure_code);
-                result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_FIRST_BASELINE, trial_result.first_before);
-                result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_FIRST_LATEST, trial_result.first_after);
-                result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_FIRST_POLL_COUNT, trial_result.first_polls);
-                result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_REPEAT_BASELINE, trial_result.repeat1_before);
-                result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_REPEAT_LATEST, trial_result.repeat1_after);
-                result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_REPEAT_POLL_COUNT, trial_result.repeat1_polls);
-                result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_REPEAT2_BASELINE, trial_result.repeat2_before);
-                result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_REPEAT2_LATEST, trial_result.repeat2_after);
-                result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_REPEAT2_POLL_COUNT, trial_result.repeat2_polls);
-                std::uint32_t first_changed = 0;
-                std::uint32_t repeat1_changed = 0;
-                std::uint32_t repeat2_changed = 0;
-                result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_FIRST_CHANGED, first_changed);
-                result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_REPEAT_CHANGED, repeat1_changed);
-                result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_REPEAT2_CHANGED, repeat2_changed);
-                trial_result.worker_ok = result.ps.ok;
-                trial_result.macro_ok = result.ps.ok && macro_result == 0;
-                trial_result.first_ok = first_changed != 0 && trial_result.first_before != trial_result.first_after;
-                trial_result.repeat1_ok = repeat1_changed != 0 && trial_result.repeat1_before != trial_result.repeat1_after;
-                trial_result.repeat2_ok = repeat2_changed != 0 && trial_result.repeat2_before != trial_result.repeat2_after;
-            }
+            std::uint32_t macro_result = 1;
+            result.ps.ctx.get(savor::context::key::battle::MACRO_RESULT, macro_result);
+            result.ps.ctx.get(savor::context::key::battle::MACRO_FAILURE_CODE, trial_result.failure_code);
+            result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_FIRST_BASELINE, trial_result.first_before);
+            result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_FIRST_LATEST, trial_result.first_after);
+            result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_FIRST_POLL_COUNT, trial_result.first_polls);
+            result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_REPEAT_BASELINE, trial_result.repeat1_before);
+            result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_REPEAT_LATEST, trial_result.repeat1_after);
+            result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_REPEAT_POLL_COUNT, trial_result.repeat1_polls);
+            result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_REPEAT2_BASELINE, trial_result.repeat2_before);
+            result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_REPEAT2_LATEST, trial_result.repeat2_after);
+            result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_REPEAT2_POLL_COUNT, trial_result.repeat2_polls);
+            std::uint32_t first_changed = 0;
+            std::uint32_t repeat1_changed = 0;
+            std::uint32_t repeat2_changed = 0;
+            result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_FIRST_CHANGED, first_changed);
+            result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_REPEAT_CHANGED, repeat1_changed);
+            result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_REPEAT2_CHANGED, repeat2_changed);
+            trial_result.worker_ok = result.ps.ok;
+            trial_result.macro_ok = result.ps.ok && macro_result == 0;
+            trial_result.first_ok = first_changed != 0 && trial_result.first_before != trial_result.first_after;
+            trial_result.repeat1_ok = repeat1_changed != 0 && trial_result.repeat1_before != trial_result.repeat1_after;
+            trial_result.repeat2_ok = repeat2_changed != 0 && trial_result.repeat2_before != trial_result.repeat2_after;
 
             if (!trial_result.worker_ok
                 || !trial_result.macro_ok
@@ -878,11 +941,7 @@ bool RunBattleMacroProbeScenario(
     const auto preflight = savor::RunWorkerCapabilityPreflight(
         savor::WorkerCapabilityPreflightRequest{
             .worker_exe_path = source_worker_exe.string(),
-            .timeout_ms = static_cast<std::uint32_t>(
-                std::clamp<std::int64_t>(
-                    options.timeout_ms,
-                    1,
-                    std::numeric_limits<std::uint32_t>::max())),
+            .timeout_ms = kWorkerHostOperationTimeoutMs,
             .required_capabilities = savor::runtime::CapabilityMask(
                 savor::runtime::WorkerCapability::WorksetDispatch),
             .require_complete_exact_catalog = true,
@@ -957,7 +1016,7 @@ bool RunBattleMacroProbeScenario(
     params.vm_control = true;
     params.visual = options.visual_worker || options.battle_macro_debug;
     params.visual_debug = options.battle_macro_debug;
-    params.visual_screenshot_dir = screenshots.string();
+    params.runtime_artifact_root = screenshots.string();
 
     if (!worker.start(params, &results)) {
         if (error_out) *error_out = "failed starting SavorWorker for battle macro probe";
@@ -969,7 +1028,7 @@ bool RunBattleMacroProbeScenario(
         worker.stop();
     };
 
-    if (!worker.wait_ready(static_cast<std::uint32_t>(options.timeout_ms))) {
+    if (!worker.wait_ready(kWorkerHostOperationTimeoutMs)) {
         stop_worker();
         if (error_out) *error_out = "battle macro worker did not become ready";
         return false;
@@ -1101,25 +1160,29 @@ bool RunBattleMacroProbeScenario(
             }
         };
 
-        const auto result_timeout_ms =
-            options.timeout_ms * static_cast<std::int64_t>(steps.size() + 3);
-        const auto deadline = Clock::now() + std::chrono::milliseconds(result_timeout_ms);
         savor::PRResult result{};
-        bool have_result = false;
-        while (Clock::now() < deadline) {
-            drain_progress();
-            if (results.try_pop(result)) {
-                have_result = true;
-                break;
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(options.poll_ms));
-        }
+        std::string wait_error;
+        const bool have_result = WaitForWorkerResult(
+            worker,
+            results,
+            std::chrono::milliseconds(options.poll_ms),
+            drain_progress,
+            &result,
+            &wait_error);
         drain_progress();
 
         if (!have_result) {
             stop_worker();
-            if (error_out) *error_out = "battle macro probe timed out waiting for worker result";
-            durable_log.AppendLine("[battle-macro-probe-result] job=" + std::to_string(next_job_id) + " timed_out=true");
+            if (error_out) {
+                *error_out =
+                    "battle macro probe worker result failed: "
+                    + wait_error;
+            }
+            durable_log.AppendLine(
+                "[battle-macro-probe-result] job="
+                + std::to_string(next_job_id)
+                + " worker_unavailable=true diagnostic=\""
+                + EscapeLogValue(wait_error) + "\"");
             return false;
         }
 

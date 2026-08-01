@@ -306,10 +306,7 @@
     <ClInclude Include="Phases\Programs\BattleTurnRunner\BattleTurnRunnerScript.h">
       <Filter>Phases\BattleRunner</Filter>
     </ClInclude>
-    <ClInclude Include="Phases\Programs\SeedProbe\SeedProbePayload.h">
-      <Filter>Phases\SeedProbe</Filter>
-    </ClInclude>
-    <ClInclude Include="Phases\Programs\SeedProbe\SeedProbeScript.h">
+    <ClInclude Include="Phases\Programs\SeedProbe\SeedProbeModule.h">
       <Filter>Phases\SeedProbe</Filter>
     </ClInclude>
     <ClInclude Include="Phases\Programs\PlayTasMovie\TasMovieScript.h">
@@ -377,6 +374,9 @@
     </ClInclude>
     <ClInclude Include="Runner\Script\CtxRegistry.h">
       <Filter>Runner\VM</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\IPC\DurableWorkerTerminalEnvelope.h">
+      <Filter>Runner</Filter>
     </ClInclude>
     <ClInclude Include="Runner\IPC\Wire.h">
       <Filter>Runner</Filter>
@@ -492,7 +492,13 @@
     <ClInclude Include="Runner\Runtime\ProgramRuntime\Verify\ProgramVerifier.h">
       <Filter>Runner\Runtime\ProgramRuntime\Verify</Filter>
     </ClInclude>
+    <ClInclude Include="Runner\Runtime\FullPhase\FullPhaseProgram.h">
+      <Filter>Runner\Runtime</Filter>
+    </ClInclude>
     <ClInclude Include="Runner\Runtime\RuntimeTypes.h">
+      <Filter>Runner\Runtime</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Runtime\Services\Artifacts\RuntimeArtifactSink.h">
       <Filter>Runner\Runtime</Filter>
     </ClInclude>
     <ClInclude Include="Runner\Runtime\Services\Capture\CaptureService.h">
@@ -812,6 +818,9 @@
     <ClCompile Include="Runner\Script\ScriptProgress.cpp">
       <Filter>Runner\VM</Filter>
     </ClCompile>
+    <ClCompile Include="Runner\IPC\DurableWorkerTerminalEnvelope.cpp">
+      <Filter>Runner</Filter>
+    </ClCompile>
     <ClCompile Include="Runner\IPC\WorkerWireWriter.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -938,6 +947,9 @@
     <ClCompile Include="Runner\Runtime\WorkerRuntime.cpp">
       <Filter>Runner\Runtime</Filter>
     </ClCompile>
+    <ClCompile Include="Runner\Runtime\FullPhase\FullPhaseProgram.cpp">
+      <Filter>Runner\Runtime</Filter>
+    </ClCompile>
     <ClCompile Include="Runner\Runtime\Worksets\ProgramBaseline.cpp">
       <Filter>Runner\Runtime\Worksets</Filter>
     </ClCompile>
@@ -971,7 +983,7 @@
     <ClCompile Include="Phases\Programs\BattleTurnRunner\BattleTurnRunnerPayload.cpp">
       <Filter>Phases\BattleRunner</Filter>
     </ClCompile>
-    <ClCompile Include="Phases\Programs\SeedProbe\SeedProbePayload.cpp">
+    <ClCompile Include="Phases\Programs\SeedProbe\SeedProbeModule.cpp">
       <Filter>Phases\SeedProbe</Filter>
     </ClCompile>
     <ClCompile Include="Phases\Programs\PlayTasMovie\TasMoviePayload.cpp">

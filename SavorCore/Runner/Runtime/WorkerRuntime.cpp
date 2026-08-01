@@ -900,9 +900,6 @@ struct WorkerRuntime::Impl
 
         ChangeState(WorkerState::Ready);
         session_visual_intent = command.options.backend.visual;
-        terminal_screenshot_directory = command.options.screenshot_directory;
-        terminal_screenshot_timeout = command.options.screenshot_timeout;
-        screenshot_on_terminal = command.options.screenshot_on_terminal;
         Complete(
             queued,
             WorkerCommandOutcome::Completed,
@@ -1100,7 +1097,7 @@ struct WorkerRuntime::Impl
             {
                 item_ids.insert(item.item_id.value());
                 invocation_ids.insert(
-                    item.invocation.invocation_id.value());
+                    item.execution.execution_id.value());
             }
         };
         collect_package(active_workset);
@@ -1116,7 +1113,7 @@ struct WorkerRuntime::Impl
                 {
                     item_ids.insert(item.item_id.value());
                     invocation_ids.insert(
-                        item.invocation.invocation_id.value());
+                        item.execution.execution_id.value());
                 }
             }
         }
@@ -1156,7 +1153,7 @@ struct WorkerRuntime::Impl
             {
                 return item_ids.contains(item.item_id.value()) ||
                     invocation_ids.contains(
-                        item.invocation.invocation_id.value());
+                        item.execution.execution_id.value());
             });
     }
 
@@ -1211,18 +1208,51 @@ struct WorkerRuntime::Impl
             package.definition.items.size(),
             false);
         package.prepared.reserve(package.definition.items.size());
+        const auto* phase = fullphase::ProductionRegistry().Find(
+            package.definition.phase_invocation.program);
+        if (phase == nullptr)
+        {
+            error = {
+                WorkerRejectionCode::WorksetCatalogMismatch,
+                "WorkerWorkset Full Phase definition is unavailable"};
+            return std::nullopt;
+        }
         for (const WorksetItemTemplate& item :
              package.definition.items)
         {
+            std::string build_diagnostic;
+            const auto execution = phase->BuildResolvedExecution(
+                item.execution.input_payload,
+                item.execution.execution_id,
+                item.execution.attempt_id,
+                &build_diagnostic);
+            if (!execution)
+            {
+                error = {
+                    WorkerRejectionCode::InvalidArgument,
+                    build_diagnostic.empty()
+                        ? "Full Phase scalar input could not be resolved"
+                        : std::move(build_diagnostic)};
+                return std::nullopt;
+            }
+            const auto encoded =
+                program::EncodeProgramInvocationV1(*execution);
+            if (!encoded)
+            {
+                error = {
+                    WorkerRejectionCode::InvalidArgument,
+                    "Resolved Full Phase execution could not be encoded: " +
+                        encoded.status.message};
+                return std::nullopt;
+            }
             EncodedInvocationEnvelope envelope;
             envelope.invocation_id =
-                item.invocation.invocation_id;
-            envelope.attempt_id = item.invocation.attempt_id;
-            envelope.module = item.invocation.module;
-            envelope.entrypoint = item.invocation.entrypoint;
+                item.execution.execution_id;
+            envelope.attempt_id = item.execution.attempt_id;
+            envelope.module = phase->runtime_contract().module;
+            envelope.entrypoint = phase->runtime_contract().entrypoint;
             envelope.expected_state_epoch = {};
-            envelope.input_payload =
-                item.invocation.template_payload;
+            envelope.input_payload = encoded.bytes;
 
             PreparedInvocationTemplateReceipt receipt;
             const ProgramRuntimeSubmission prepared =
@@ -1235,12 +1265,12 @@ struct WorkerRuntime::Impl
                     receipt);
             if (!prepared.accepted || !receipt ||
                 receipt.invocation_id !=
-                    item.invocation.invocation_id ||
+                    item.execution.execution_id ||
                 receipt.attempt_id !=
-                    item.invocation.attempt_id ||
-                receipt.module != item.invocation.module ||
+                    item.execution.attempt_id ||
+                receipt.module != phase->runtime_contract().module ||
                 receipt.entrypoint !=
-                    item.invocation.entrypoint ||
+                    phase->runtime_contract().entrypoint ||
                 receipt.program_compatibility_sha256 !=
                     package.definition.execution_key
                         .verified_dependency_sha256 ||
@@ -1707,8 +1737,8 @@ struct WorkerRuntime::Impl
             active_workset->definition.workset_id,
             item.item_id,
             ordinal,
-            item.invocation.invocation_id,
-            item.invocation.attempt_id,
+            item.execution.execution_id,
+            item.execution.attempt_id,
             current.session_id,
             current.state_epoch,
             active_workset->baseline}))
@@ -1718,8 +1748,8 @@ struct WorkerRuntime::Impl
             return;
         }
         active_invocation.emplace(
-            item.invocation.invocation_id,
-            item.invocation.attempt_id,
+            item.execution.execution_id,
+            item.execution.attempt_id,
             current.state_epoch);
         active_invocation->workset_id =
             active_workset->definition.workset_id;
@@ -1787,8 +1817,8 @@ struct WorkerRuntime::Impl
             session->MarkTainted(failure);
             ProgramInvocationTerminalEvent terminal;
             terminal.invocation_id =
-                item.invocation.invocation_id;
-            terminal.attempt_id = item.invocation.attempt_id;
+                item.execution.execution_id;
+            terminal.attempt_id = item.execution.attempt_id;
             terminal.status =
                 InvocationTerminalStatus::CleanupFailure;
             terminal.cleanup = CleanupStatus::Failed;
@@ -2442,8 +2472,8 @@ struct WorkerRuntime::Impl
                     package.definition.workset_id,
                     item.item_id,
                     static_cast<std::uint32_t>(ordinal),
-                    item.invocation.invocation_id,
-                    item.invocation.attempt_id});
+                    item.execution.execution_id,
+                    item.execution.attempt_id});
             }
         };
         if (active_workset)
@@ -2466,8 +2496,8 @@ struct WorkerRuntime::Impl
                         pending->definition.workset_id,
                         item.item_id,
                         static_cast<std::uint32_t>(ordinal),
-                        item.invocation.invocation_id,
-                        item.invocation.attempt_id});
+                        item.execution.execution_id,
+                        item.execution.attempt_id});
                 }
             }
         }
@@ -2684,8 +2714,8 @@ struct WorkerRuntime::Impl
             package.definition.workset_id,
             item.item_id,
             ordinal,
-            item.invocation.invocation_id,
-            item.invocation.attempt_id,
+            item.execution.execution_id,
+            item.execution.attempt_id,
             {},
             {}};
         const WorkerTerminalReservation reserved =
@@ -2926,8 +2956,8 @@ struct WorkerRuntime::Impl
             package.definition.items[ordinal];
         ProgramInvocationTerminalEvent terminal;
         terminal.invocation_id =
-            item.invocation.invocation_id;
-        terminal.attempt_id = item.invocation.attempt_id;
+            item.execution.execution_id;
+        terminal.attempt_id = item.execution.attempt_id;
         terminal.status = InvocationTerminalStatus::Cancelled;
         terminal.cleanup = CleanupStatus::Clean;
         terminal.session_disposition = session
@@ -2964,8 +2994,8 @@ struct WorkerRuntime::Impl
                 active_workset->definition.items[ordinal];
             ProgramInvocationTerminalEvent terminal;
             terminal.invocation_id =
-                item.invocation.invocation_id;
-            terminal.attempt_id = item.invocation.attempt_id;
+                item.execution.execution_id;
+            terminal.attempt_id = item.execution.attempt_id;
             terminal.status =
                 InvocationTerminalStatus::InfrastructureFailure;
             terminal.cleanup = CleanupStatus::Clean;
@@ -4296,41 +4326,6 @@ struct WorkerRuntime::Impl
                 artifact_finalization_failure};
         }
 
-        if (taint_reason.empty() &&
-            screenshot_on_terminal &&
-            !terminal_screenshot_directory.empty())
-        {
-            const std::filesystem::path screenshot_path =
-                terminal_screenshot_directory /
-                ("invocation-" +
-                 std::to_string(terminal.invocation_id.value()) +
-                 "-terminal.png");
-            SessionOperationReceipt screenshot = session->CaptureScreenshot(
-                screenshot_path,
-                terminal_screenshot_timeout);
-            RefreshSnapshot();
-            if (!screenshot.ok)
-            {
-                Publish(WorkerRuntimeDiagnosticEvent{
-                    MapBackendError(screenshot.backend.code),
-                    screenshot.backend.message.empty()
-                        ? "Terminal screenshot capture failed"
-                        : screenshot.backend.message,
-                    terminal.invocation_id});
-                if (screenshot.disposition == SessionDisposition::Tainted)
-                {
-                    taint_reason = screenshot.backend.message.empty()
-                        ? "Terminal screenshot left session integrity unknown"
-                        : screenshot.backend.message;
-                    terminal.status = InvocationTerminalStatus::CleanupFailure;
-                    terminal.cleanup = CleanupStatus::Failed;
-                    terminal.error = {
-                        WorkerRejectionCode::SessionTainted,
-                        taint_reason};
-                }
-            }
-        }
-
         if (!taint_reason.empty())
         {
             // Publish the tainted session/worker state before exposing the
@@ -5229,9 +5224,6 @@ struct WorkerRuntime::Impl
     WorkerCapabilityMask capabilities_value = 0;
     bool program_runtime_shutdown = false;
     bool program_action_host_shutdown = false;
-    std::filesystem::path terminal_screenshot_directory;
-    std::chrono::milliseconds terminal_screenshot_timeout{3000};
-    bool screenshot_on_terminal = false;
     bool session_visual_intent = false;
 
     mutable std::mutex snapshot_mutex;

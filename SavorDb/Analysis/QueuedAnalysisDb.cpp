@@ -78,75 +78,39 @@ std::optional<std::int64_t> QueuedAnalysisDb::LookupSeedProbeRunSavestateId(std:
         std::nullopt);
 }
 
-std::optional<std::int64_t> QueuedAnalysisDb::LookupSeedProbeResultId(std::int64_t probe_run_id) const {
-    return ExecuteRead<std::optional<std::int64_t>>(
-        [this, probe_run_id]() {
-            return inner_ != nullptr ? inner_->LookupSeedProbeResultId(probe_run_id) : std::nullopt;
+std::optional<SeedProbeResultRow> QueuedAnalysisDb::GetSeedProbeResult(std::int64_t probe_result_id) const {
+    return ExecuteRead<std::optional<SeedProbeResultRow>>(
+        [this, probe_result_id]() {
+            return inner_ != nullptr ? inner_->GetSeedProbeResult(probe_result_id) : std::nullopt;
         },
         std::nullopt);
 }
 
-std::optional<std::int64_t> QueuedAnalysisDb::LookupSeedProbeNeutralSeed(std::int64_t probe_run_id) const {
-    return ExecuteRead<std::optional<std::int64_t>>(
-        [this, probe_run_id]() {
-            return inner_ != nullptr ? inner_->LookupSeedProbeNeutralSeed(probe_run_id) : std::nullopt;
+std::optional<SeedProbeResultRow> QueuedAnalysisDb::GetSeedProbeResultForSourceJob(std::int64_t source_job_id) const {
+    return ExecuteRead<std::optional<SeedProbeResultRow>>(
+        [this, source_job_id]() {
+            return inner_ != nullptr ? inner_->GetSeedProbeResultForSourceJob(source_job_id) : std::nullopt;
         },
         std::nullopt);
 }
 
-std::vector<SeedProbeGridSeedRow> QueuedAnalysisDb::ListSeedProbeGridSeeds(std::int64_t probe_run_id) const {
-    return ExecuteRead<std::vector<SeedProbeGridSeedRow>>(
+std::vector<SeedProbeResultRow> QueuedAnalysisDb::ListSeedProbeResults(std::int64_t probe_run_id) const {
+    return ExecuteRead<std::vector<SeedProbeResultRow>>(
         [this, probe_run_id]() {
-            return inner_ != nullptr ? inner_->ListSeedProbeGridSeeds(probe_run_id) : std::vector<SeedProbeGridSeedRow>{};
+            return inner_ != nullptr ? inner_->ListSeedProbeResults(probe_run_id) : std::vector<SeedProbeResultRow>{};
         },
         {});
 }
 
-std::vector<SeedProbeUniqueSeedRow> QueuedAnalysisDb::ListSeedProbeUniqueSeeds(std::int64_t probe_run_id) const {
-    return ExecuteRead<std::vector<SeedProbeUniqueSeedRow>>(
-        [this, probe_run_id]() {
-            return inner_ != nullptr ? inner_->ListSeedProbeUniqueSeeds(probe_run_id) : std::vector<SeedProbeUniqueSeedRow>{};
-        },
-        {});
-}
-
-std::optional<SeedProbeUniqueSeedRow> QueuedAnalysisDb::GetSeedProbeUniqueSeed(std::int64_t unique_seed_id) const {
-    return ExecuteRead<std::optional<SeedProbeUniqueSeedRow>>(
-        [this, unique_seed_id]() {
-            return inner_ != nullptr ? inner_->GetSeedProbeUniqueSeed(unique_seed_id) : std::nullopt;
-        },
-        std::nullopt);
-}
-
-std::optional<SeedProbeNeutralSeedRow> QueuedAnalysisDb::GetSeedProbeNeutralSeed(std::int64_t neutral_seed_id) const {
-    return ExecuteRead<std::optional<SeedProbeNeutralSeedRow>>(
-        [this, neutral_seed_id]() {
-            return inner_ != nullptr ? inner_->GetSeedProbeNeutralSeed(neutral_seed_id) : std::nullopt;
-        },
-        std::nullopt);
-}
-
-bool QueuedAnalysisDb::TryGetSeedProbeNeutralSeedForRun(
-    std::int64_t probe_run_id,
-    std::optional<SeedProbeNeutralSeedRow>* row_out,
-    std::string* error_out) const {
-    return ExecuteRead<bool>(
-        [this, probe_run_id, row_out, error_out]() {
-            return inner_ != nullptr
-                ? inner_->TryGetSeedProbeNeutralSeedForRun(probe_run_id, row_out, error_out)
-                : false;
-        },
-        false,
-        error_out);
-}
-
-std::optional<SeedProbeUniqueSeedRow> QueuedAnalysisDb::FindSeedProbeUniqueSeedForEntrySavestateInputFrame(
-    std::int64_t entry_savestate_id,
+std::optional<SeedProbeResultRow> QueuedAnalysisDb::FindConfirmedSeedProbeResultForAcceptedInputSetFrame(
+    std::int64_t accepted_input_set_id,
     std::int64_t input_frame_id) const {
-    return ExecuteRead<std::optional<SeedProbeUniqueSeedRow>>(
-        [this, entry_savestate_id, input_frame_id]() {
+    return ExecuteRead<std::optional<SeedProbeResultRow>>(
+        [this, accepted_input_set_id, input_frame_id]() {
             return inner_ != nullptr
-                ? inner_->FindSeedProbeUniqueSeedForEntrySavestateInputFrame(entry_savestate_id, input_frame_id)
+                ? inner_->FindConfirmedSeedProbeResultForAcceptedInputSetFrame(
+                      accepted_input_set_id,
+                      input_frame_id)
                 : std::nullopt;
         },
         std::nullopt);
@@ -184,15 +148,29 @@ bool QueuedAnalysisDb::EnsureSeedProbeInputFrame(
         error_out);
 }
 
-bool QueuedAnalysisDb::EnsureSeedProbeUniqueSeedDelta(
-    const RecordSeedProbeUniqueSeedCommand& command,
+bool QueuedAnalysisDb::EnsureSeedProbeObservation(
+    const RecordSeedProbeObservationCommand& command,
     bool* inserted_out,
-    std::int64_t* unique_seed_id_out,
+    std::int64_t* probe_result_id_out,
     std::string* error_out) {
     return ExecuteWrite<bool>(
-        [this, command, inserted_out, unique_seed_id_out, error_out]() {
+        [this, command, inserted_out, probe_result_id_out, error_out]() {
             return inner_ != nullptr
-                ? inner_->EnsureSeedProbeUniqueSeedDelta(command, inserted_out, unique_seed_id_out, error_out)
+                ? inner_->EnsureSeedProbeObservation(command, inserted_out, probe_result_id_out, error_out)
+                : false;
+        },
+        false,
+        error_out);
+}
+
+bool QueuedAnalysisDb::TransitionSeedProbeEvidence(
+    const TransitionSeedProbeEvidenceCommand& command,
+    bool* changed_out,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, command, changed_out, error_out]() {
+            return inner_ != nullptr
+                ? inner_->TransitionSeedProbeEvidence(command, changed_out, error_out)
                 : false;
         },
         false,
@@ -223,18 +201,6 @@ bool QueuedAnalysisDb::RequestSeedProbeRun(
         error_out);
 }
 
-bool QueuedAnalysisDb::CreateSeedProbeRunForSet(
-    std::int64_t probe_set_id,
-    std::int64_t* probe_run_id_out,
-    std::string* error_out) {
-    return ExecuteWrite<bool>(
-        [this, probe_set_id, probe_run_id_out, error_out]() {
-            return inner_ != nullptr ? inner_->CreateSeedProbeRunForSet(probe_set_id, probe_run_id_out, error_out) : false;
-        },
-        false,
-        error_out);
-}
-
 std::optional<SeedProbeRunSnapshot> QueuedAnalysisDb::GetSeedProbeRun(std::int64_t probe_run_id) const {
     return ExecuteRead<std::optional<SeedProbeRunSnapshot>>(
         [this, probe_run_id]() {
@@ -243,13 +209,39 @@ std::optional<SeedProbeRunSnapshot> QueuedAnalysisDb::GetSeedProbeRun(std::int64
         std::nullopt);
 }
 
-bool QueuedAnalysisDb::SetSeedProbeRunNeutralSeed(
-    std::int64_t probe_run_id,
-    std::int64_t neutral_seed_value,
+bool QueuedAnalysisDb::UpdateSeedProbeRunStatus(
+    const UpdateSeedProbeRunStatusCommand& command,
+    bool* changed_out,
     std::string* error_out) {
     return ExecuteWrite<bool>(
-        [this, probe_run_id, neutral_seed_value, error_out]() {
-            return inner_ != nullptr ? inner_->SetSeedProbeRunNeutralSeed(probe_run_id, neutral_seed_value, error_out) : false;
+        [this, command, changed_out, error_out]() {
+            return inner_ != nullptr ? inner_->UpdateSeedProbeRunStatus(command, changed_out, error_out) : false;
+        },
+        false,
+        error_out);
+}
+
+bool QueuedAnalysisDb::ObserveSeedProbeEndpoint(
+    const ObserveSeedProbeEndpointCommand& command,
+    ObserveSeedProbeEndpointReceipt* receipt_out,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, command, receipt_out, error_out]() {
+            return inner_ != nullptr
+                ? inner_->ObserveSeedProbeEndpoint(
+                    command, receipt_out, error_out)
+                : false;
+        },
+        false,
+        error_out);
+}
+
+bool QueuedAnalysisDb::ReplaceSeedProbeAcceptedInputFrames(
+    const ReplaceSeedProbeAcceptedInputFramesCommand& command,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, command, error_out]() {
+            return inner_ != nullptr ? inner_->ReplaceSeedProbeAcceptedInputFrames(command, error_out) : false;
         },
         false,
         error_out);
@@ -266,42 +258,6 @@ bool QueuedAnalysisDb::SetSeedProbeRunEntrySavestate(
         error_out);
 }
 
-bool QueuedAnalysisDb::RecordSeedProbeNeutralSeed(
-    const RecordSeedProbeNeutralSeedCommand& command,
-    std::int64_t* neutral_seed_id_out,
-    std::string* error_out) {
-    return ExecuteWrite<bool>(
-        [this, command, neutral_seed_id_out, error_out]() {
-            return inner_ != nullptr ? inner_->RecordSeedProbeNeutralSeed(command, neutral_seed_id_out, error_out) : false;
-        },
-        false,
-        error_out);
-}
-
-bool QueuedAnalysisDb::RecordSeedProbeGridSeed(
-    const RecordSeedProbeGridSeedCommand& command,
-    std::int64_t* grid_seed_id_out,
-    std::string* error_out) {
-    return ExecuteWrite<bool>(
-        [this, command, grid_seed_id_out, error_out]() {
-            return inner_ != nullptr ? inner_->RecordSeedProbeGridSeed(command, grid_seed_id_out, error_out) : false;
-        },
-        false,
-        error_out);
-}
-
-bool QueuedAnalysisDb::RecordSeedProbeUniqueSeed(
-    const RecordSeedProbeUniqueSeedCommand& command,
-    std::int64_t* unique_seed_id_out,
-    std::string* error_out) {
-    return ExecuteWrite<bool>(
-        [this, command, unique_seed_id_out, error_out]() {
-            return inner_ != nullptr ? inner_->RecordSeedProbeUniqueSeed(command, unique_seed_id_out, error_out) : false;
-        },
-        false,
-        error_out);
-}
-
 bool QueuedAnalysisDb::RecordSeedProbeEncounterProjection(
     const RecordSeedProbeEncounterProjectionCommand& command,
     std::int64_t* encounter_projection_id_out,
@@ -311,18 +267,6 @@ bool QueuedAnalysisDb::RecordSeedProbeEncounterProjection(
             return inner_ != nullptr
                 ? inner_->RecordSeedProbeEncounterProjection(command, encounter_projection_id_out, error_out)
                 : false;
-        },
-        false,
-        error_out);
-}
-
-bool QueuedAnalysisDb::CompleteSeedProbeRun(
-    const CompleteSeedProbeRunCommand& command,
-    std::int64_t* probe_result_id_out,
-    std::string* error_out) {
-    return ExecuteWrite<bool>(
-        [this, command, probe_result_id_out, error_out]() {
-            return inner_ != nullptr ? inner_->CompleteSeedProbeRun(command, probe_result_id_out, error_out) : false;
         },
         false,
         error_out);
@@ -580,21 +524,6 @@ std::optional<BattleContextProbeSnapshot> QueuedAnalysisDb::GetLatestBattleConte
             return inner_ != nullptr ? inner_->GetLatestBattleContextForWave(wave_id) : std::nullopt;
         },
         std::nullopt);
-}
-
-bool QueuedAnalysisDb::EnsureSeedProbeNeutralSeed(
-    const RecordSeedProbeNeutralSeedCommand& command,
-    bool* inserted_out,
-    std::int64_t* neutral_seed_id_out,
-    std::string* error_out) {
-    return ExecuteWrite<bool>(
-        [this, command, inserted_out, neutral_seed_id_out, error_out]() {
-            return inner_ != nullptr
-                ? inner_->EnsureSeedProbeNeutralSeed(command, inserted_out, neutral_seed_id_out, error_out)
-                : false;
-        },
-        false,
-        error_out);
 }
 
 std::optional<BattleTurnJobSnapshot> QueuedAnalysisDb::GetBattleTurnJob(std::int64_t turn_job_id) const {

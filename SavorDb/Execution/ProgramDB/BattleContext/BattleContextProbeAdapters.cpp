@@ -39,10 +39,8 @@ struct JobIni {
     std::int64_t context_probe_id = 0;
     std::int64_t wave_id = 0;
     std::int64_t source_savestate_id = 0;
-    std::int64_t probe_run_id = 0;
     std::string input_set_ref_kind;
     std::int64_t input_set_ref_id = 0;
-    std::int64_t unique_seed_id = 0;
     std::int64_t battle_chain_spec_id = 0;
     std::int64_t battle_run_spec_id = 0;
     std::int64_t explorer_settings_id = 0;
@@ -53,10 +51,8 @@ struct JobIni {
         ini.set(kJobSection, "context_probe_id", std::to_string(context_probe_id));
         ini.set(kJobSection, "wave_id", std::to_string(wave_id));
         ini.set(kJobSection, "source_savestate_id", std::to_string(source_savestate_id));
-        ini.set(kJobSection, "probe_run_id", std::to_string(probe_run_id));
         ini.set(kJobSection, "input_set_ref_kind", input_set_ref_kind);
         ini.set(kJobSection, "input_set_ref_id", std::to_string(input_set_ref_id));
-        ini.set(kJobSection, "unique_seed_id", std::to_string(unique_seed_id));
         ini.set(kJobSection, "battle_chain_spec_id", std::to_string(battle_chain_spec_id));
         ini.set(kJobSection, "battle_run_spec_id", std::to_string(battle_run_spec_id));
         ini.set(kJobSection, "explorer_settings_id", std::to_string(explorer_settings_id));
@@ -70,10 +66,8 @@ struct JobIni {
         out.context_probe_id = ini.get_i64(kJobSection, "context_probe_id", 0);
         out.wave_id = ini.get_i64(kJobSection, "wave_id", 0);
         out.source_savestate_id = ini.get_i64(kJobSection, "source_savestate_id", 0);
-        out.probe_run_id = ini.get_i64(kJobSection, "probe_run_id", 0);
         out.input_set_ref_kind = ini.get(kJobSection, "input_set_ref_kind", "");
         out.input_set_ref_id = ini.get_i64(kJobSection, "input_set_ref_id", 0);
-        out.unique_seed_id = ini.get_i64(kJobSection, "unique_seed_id", 0);
         out.battle_chain_spec_id = ini.get_i64(kJobSection, "battle_chain_spec_id", 0);
         out.battle_run_spec_id = ini.get_i64(kJobSection, "battle_run_spec_id", 0);
         out.explorer_settings_id = ini.get_i64(kJobSection, "explorer_settings_id", 0);
@@ -128,7 +122,7 @@ struct ResultsIni {
 };
 
 struct InputSetCandidate {
-    std::optional<std::int64_t> source_unique_seed_id;
+    std::optional<std::int64_t> source_probe_result_id;
     std::int64_t source_input_frame_id = 0;
     std::int64_t seed_value = 0;
     savor::db::BattleSeedCandidateSourceKind source_kind = savor::db::BattleSeedCandidateSourceKind::Unknown;
@@ -530,7 +524,8 @@ public:
                 if (!analysis_db_->AddBattleSeedCandidate(
                         {
                             .battle_set_id = battle_set_id,
-                            .source_unique_seed_id = candidate.source_unique_seed_id,
+                            .source_probe_result_id =
+                                candidate.source_probe_result_id,
                             .source_input_frame_id = candidate.source_input_frame_id,
                             .seed_value = candidate.seed_value,
                             .source_kind = candidate.source_kind,
@@ -772,10 +767,26 @@ std::vector<InputSetCandidate> ResolveInputSetCandidates(
         const auto frames = analysis_db->ListAnalysisInputSetFrames(ref_id);
         out.reserve(frames.size());
         for (const auto& frame : frames) {
+            const auto confirmed =
+                analysis_db->FindConfirmedSeedProbeResultForAcceptedInputSetFrame(
+                    ref_id,
+                    frame.input_frame_id);
             out.push_back(InputSetCandidate{
+                .source_probe_result_id =
+                    confirmed.has_value()
+                    ? std::optional<std::int64_t>(
+                          confirmed->probe_result_id)
+                    : std::nullopt,
                 .source_input_frame_id = frame.input_frame_id,
-                .seed_value = frame.ordinal,
-                .source_kind = savor::db::BattleSeedCandidateSourceKind::Synthetic,
+                .seed_value = confirmed.has_value()
+                    ? static_cast<std::int64_t>(
+                          confirmed->seed_value)
+                    : frame.ordinal,
+                .source_kind = confirmed.has_value()
+                    ? savor::db::BattleSeedCandidateSourceKind::
+                          SeedProbeConfirmedResult
+                    : savor::db::BattleSeedCandidateSourceKind::
+                          Synthetic,
             });
         }
         if (out.empty() && error_out) *error_out = "an.input_set has no frames";
@@ -882,6 +893,17 @@ public:
             || (input_frames->ref_kind != "an.input_set" && input_frames->ref_kind != "au.input_set")) {
             return {};
         }
+        const auto* entry_savestate = FindGraphBinding(
+            context,
+            "entry_savestate",
+            "state.savestate_id");
+        if (entry_savestate == nullptr
+            || entry_savestate->ref_kind != "state.savestate"
+            || entry_savestate->ref_id <= 0) {
+            return {};
+        }
+        const auto source_savestate_id =
+            entry_savestate->ref_id;
         std::string input_set_error;
         const auto input_set_candidates = ResolveInputSetCandidates(
             analysis_db_,
@@ -892,11 +914,6 @@ public:
         if (input_set_candidates.empty()) {
             return {};
         }
-        const auto* entry_savestate = FindGraphBinding(context, "entry_savestate", "state.savestate_id");
-        if (entry_savestate == nullptr || entry_savestate->ref_kind != "state.savestate" || entry_savestate->ref_id <= 0) {
-            return {};
-        }
-        const auto source_savestate_id = entry_savestate->ref_id;
 
         const auto now = savor::db::types::UtcNow();
         const auto aggregate = std::to_string(context.workflow_instance_id)

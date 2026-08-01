@@ -210,7 +210,10 @@ void SeedProbePage::createWidgets()
     uniquePanel->setObjectName("jobsSurfacePanel");
     QVBoxLayout* uniqueLayout = new QVBoxLayout(uniquePanel);
     uniqueLayout->setContentsMargins(12, 12, 12, 12);
-    uniqueLayout->addWidget(new QLabel(QStringLiteral("Unique Seeds"), uniquePanel));
+    uniqueLayout->addWidget(
+        new QLabel(
+            QStringLiteral("Confirmed Search Results"),
+            uniquePanel));
     uniqueTable_ = new QTreeView(uniquePanel);
     uniqueTable_->setModel(uniqueModel_);
     uniqueTable_->header()->setStretchLastSection(true);

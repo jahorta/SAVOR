@@ -20,19 +20,10 @@ public:
     std::optional<events::AnalysisSeedProbeRunRequestedPayloadView> ResolveSeedProbeRunRequested(
         std::string_view payload_ref_kind,
         std::int64_t payload_ref_id) const override;
-    std::optional<events::AnalysisSeedProbeNeutralSeedRecordedPayloadView> ResolveSeedProbeNeutralSeedRecorded(
-        std::string_view payload_ref_kind,
-        std::int64_t payload_ref_id) const override;
-    std::optional<events::AnalysisSeedProbeGridSeedRecordedPayloadView> ResolveSeedProbeGridSeedRecorded(
-        std::string_view payload_ref_kind,
-        std::int64_t payload_ref_id) const override;
-    std::optional<events::AnalysisSeedProbeUniqueSeedRecordedPayloadView> ResolveSeedProbeUniqueSeedRecorded(
+    std::optional<events::AnalysisSeedProbeResultPayloadView> ResolveSeedProbeResult(
         std::string_view payload_ref_kind,
         std::int64_t payload_ref_id) const override;
     std::optional<events::AnalysisSeedProbeEncounterProjectionRecordedPayloadView> ResolveSeedProbeEncounterProjectionRecorded(
-        std::string_view payload_ref_kind,
-        std::int64_t payload_ref_id) const override;
-    std::optional<events::AnalysisSeedProbeRunCompletedPayloadView> ResolveSeedProbeRunCompleted(
         std::string_view payload_ref_kind,
         std::int64_t payload_ref_id) const override;
 

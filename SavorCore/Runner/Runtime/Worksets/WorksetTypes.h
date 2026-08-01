@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../IProgramRuntimePort.h"
+#include "../FullPhase/FullPhaseProgram.h"
 #include "../Services/State/StateTypes.h"
 
 #include <cstddef>
@@ -199,16 +200,23 @@ struct WorkerWorksetExecutionKey
     auto operator<=>(const WorkerWorksetExecutionKey&) const = default;
 };
 
-struct EncodedInvocationTemplateEnvelope
+struct FullPhaseInvocationEnvelope
 {
-    InvocationId invocation_id;
-    AttemptId attempt_id;
-    ProgramModuleIdentity module;
-    std::string entrypoint;
-    // Canonical SPRI bytes with session/epoch guards intentionally unbound.
-    std::vector<std::uint8_t> template_payload;
+    ProgramInvocationId invocation_id;
+    fullphase::FullPhaseProgramIdentity program;
 
-    auto operator<=>(const EncodedInvocationTemplateEnvelope&) const = default;
+    auto operator<=>(const FullPhaseInvocationEnvelope&) const = default;
+};
+
+struct ScalarProgramExecutionBinding
+{
+    ProgramExecutionId execution_id;
+    AttemptId attempt_id;
+    // Program-kind-specific scalar input. Full Phase invariants never appear
+    // here; the worker resolves them from the compiled definition registry.
+    std::vector<std::uint8_t> input_payload;
+
+    auto operator<=>(const ScalarProgramExecutionBinding&) const = default;
 };
 
 struct WorksetItemCorrelation
@@ -224,7 +232,7 @@ struct WorksetItemTemplate
 {
     WorkerWorksetItemId item_id;
     std::uint32_t ordinal = 0;
-    EncodedInvocationTemplateEnvelope invocation;
+    ScalarProgramExecutionBinding execution;
     // Maximum encoded authoritative terminal bytes retained until the
     // coordinator acknowledges this exact item.
     std::size_t declared_terminal_bytes = 1024 * 1024;
@@ -236,6 +244,7 @@ struct WorksetItemTemplate
 struct WorkerWorksetDefinition
 {
     WorkerWorksetId workset_id;
+    FullPhaseInvocationEnvelope phase_invocation;
     WorkerWorksetExecutionKey execution_key;
     ProgramBaselineDefinition baseline;
     std::vector<WorksetItemTemplate> items;

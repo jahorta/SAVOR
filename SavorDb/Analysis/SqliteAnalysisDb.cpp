@@ -1,9 +1,12 @@
 #include "SqliteAnalysisDb.h"
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cstdint>
+#include <limits>
 #include <string>
+#include <unordered_set>
 
 #include "../Common/Events/EventPayloadDispatch.h"
 #include "../Common/Events/EventPayloadValidation.h"
@@ -67,6 +70,30 @@ std::optional<std::string> ColumnTextOptional(sqlite3_stmt* st, int index) {
         return std::nullopt;
     }
     return ColumnText(st, index);
+}
+
+SeedProbeResultRow ReadSeedProbeResultRow(sqlite3_stmt* st) {
+    SeedProbeResultRow row{};
+    row.probe_result_id = sqlite3_column_int64(st, 0);
+    row.probe_run_id = sqlite3_column_int64(st, 1);
+    row.input_frame_id = sqlite3_column_int64(st, 2);
+    row.source_job_id = sqlite3_column_int64(st, 3);
+    row.seed_value = static_cast<std::uint32_t>(sqlite3_column_int64(st, 4));
+    row.origin_worker_id = static_cast<std::uint64_t>(sqlite3_column_int64(st, 5));
+    row.origin_process_generation = static_cast<std::uint64_t>(sqlite3_column_int64(st, 6));
+    row.origin_state_epoch = static_cast<std::uint64_t>(sqlite3_column_int64(st, 7));
+    row.terminal_sha256 = ColumnText(st, 8);
+    row.confirmation_of_probe_result_id = ColumnInt64Optional(st, 9);
+    row.evidence_state = ParseSeedProbeEvidenceState(ColumnText(st, 10));
+    row.recorded_at_utc = ColumnTime(st, 11);
+    return row;
+}
+
+bool IsLowerHexSha256(std::string_view value) {
+    return value.size() == 64
+        && std::all_of(value.begin(), value.end(), [](unsigned char c) {
+            return std::isdigit(c) != 0 || (c >= 'a' && c <= 'f');
+        });
 }
 
 std::string ColumnBlob(sqlite3_stmt* st, int index) {
@@ -255,25 +282,6 @@ bool InsertBattleOutboxEvent(
     return false;
 }
 
-std::optional<std::int64_t> ProbeRunIdForResult(sqlite3* db, std::int64_t probe_result_id) {
-    Statement st;
-    if (sqlite3_prepare_v2(
-            db,
-            "SELECT probe_run_id FROM sp_probe_result WHERE probe_result_id=?1;",
-            -1,
-            &st.st,
-            nullptr)
-        != SQLITE_OK) {
-        return std::nullopt;
-    }
-
-    sqlite3_bind_int64(st.st, 1, probe_result_id);
-    if (sqlite3_step(st.st) != SQLITE_ROW) {
-        return std::nullopt;
-    }
-    return sqlite3_column_int64(st.st, 0);
-}
-
 std::optional<std::int64_t> CreateAnalysisInputSetForPendingProbeRun(
     sqlite3* db,
     std::int64_t created_at_utc,
@@ -323,11 +331,11 @@ bool AttachAnalysisInputSetToProbeRun(
     return sqlite3_changes(db) > 0;
 }
 
-std::optional<std::int64_t> UniqueInputSetIdForProbeRun(sqlite3* db, std::int64_t probe_run_id) {
+std::optional<std::int64_t> AcceptedInputSetIdForProbeRun(sqlite3* db, std::int64_t probe_run_id) {
     Statement st;
     if (sqlite3_prepare_v2(
             db,
-            "SELECT unique_input_set_id FROM sp_probe_run WHERE probe_run_id=?1;",
+            "SELECT accepted_input_set_id FROM sp_probe_run WHERE probe_run_id=?1;",
             -1,
             &st.st,
             nullptr)
@@ -339,53 +347,6 @@ std::optional<std::int64_t> UniqueInputSetIdForProbeRun(sqlite3* db, std::int64_
         return std::nullopt;
     }
     return sqlite3_column_int64(st.st, 0);
-}
-
-bool AppendFrameToAnalysisInputSet(
-    sqlite3* db,
-    std::int64_t input_set_id,
-    std::int64_t input_frame_id,
-    std::int64_t added_at_utc,
-    std::string* error_out) {
-    Statement ordinal_st;
-    if (sqlite3_prepare_v2(
-            db,
-            "SELECT COALESCE(MAX(ordinal),-1)+1 FROM an_input_set_frame WHERE input_set_id=?1;",
-            -1,
-            &ordinal_st.st,
-            nullptr)
-        != SQLITE_OK) {
-        if (error_out) *error_out = sqlite3_errmsg(db);
-        return false;
-    }
-    sqlite3_bind_int64(ordinal_st.st, 1, input_set_id);
-    if (sqlite3_step(ordinal_st.st) != SQLITE_ROW) {
-        if (error_out) *error_out = sqlite3_errmsg(db);
-        return false;
-    }
-    const auto ordinal = sqlite3_column_int(ordinal_st.st, 0);
-
-    Statement insert_st;
-    if (sqlite3_prepare_v2(
-            db,
-            "INSERT INTO an_input_set_frame(input_set_id,ordinal,input_frame_id,added_at_utc) "
-            "VALUES(?1,?2,?3,?4);",
-            -1,
-            &insert_st.st,
-            nullptr)
-        != SQLITE_OK) {
-        if (error_out) *error_out = sqlite3_errmsg(db);
-        return false;
-    }
-    sqlite3_bind_int64(insert_st.st, 1, input_set_id);
-    sqlite3_bind_int(insert_st.st, 2, ordinal);
-    sqlite3_bind_int64(insert_st.st, 3, input_frame_id);
-    sqlite3_bind_int64(insert_st.st, 4, added_at_utc);
-    if (sqlite3_step(insert_st.st) != SQLITE_DONE) {
-        if (error_out) *error_out = sqlite3_errmsg(db);
-        return false;
-    }
-    return true;
 }
 
 std::optional<std::int64_t> BattleSetIdForWave(sqlite3* db, std::int64_t wave_id) {
@@ -565,26 +526,8 @@ std::optional<events::AnalysisSeedProbePayloadView> ResolveSeedProbeByKind(
         record.probe_run_id = view->probe_run_id;
         return record;
     }
-    if (payload_ref_kind == "neutral_seed") {
-        const auto view = resolver.ResolveSeedProbeNeutralSeedRecorded(payload_ref_kind, payload_ref_id);
-        if (!view.has_value()) {
-            return std::nullopt;
-        }
-        record.probe_run_id = view->probe_run_id;
-        record.probe_result_id = view->probe_result_id;
-        return record;
-    }
-    if (payload_ref_kind == "grid_seed") {
-        const auto view = resolver.ResolveSeedProbeGridSeedRecorded(payload_ref_kind, payload_ref_id);
-        if (!view.has_value()) {
-            return std::nullopt;
-        }
-        record.probe_run_id = view->probe_run_id;
-        record.probe_result_id = view->probe_result_id;
-        return record;
-    }
-    if (payload_ref_kind == "unique_seed") {
-        const auto view = resolver.ResolveSeedProbeUniqueSeedRecorded(payload_ref_kind, payload_ref_id);
+    if (payload_ref_kind == "probe_result") {
+        const auto view = resolver.ResolveSeedProbeResult(payload_ref_kind, payload_ref_id);
         if (!view.has_value()) {
             return std::nullopt;
         }
@@ -600,16 +543,6 @@ std::optional<events::AnalysisSeedProbePayloadView> ResolveSeedProbeByKind(
         record.probe_run_id = view->probe_run_id;
         return record;
     }
-    if (payload_ref_kind == "probe_result") {
-        const auto view = resolver.ResolveSeedProbeRunCompleted(payload_ref_kind, payload_ref_id);
-        if (!view.has_value()) {
-            return std::nullopt;
-        }
-        record.probe_run_id = view->probe_run_id;
-        record.probe_result_id = view->probe_result_id;
-        return record;
-    }
-
     return std::nullopt;
 }
 
@@ -785,146 +718,67 @@ std::optional<std::int64_t> SqliteAnalysisDb::LookupSeedProbeRunSavestateId(std:
     return sqlite3_column_int64(st.st, 0);
 }
 
-std::optional<std::int64_t> SqliteAnalysisDb::LookupSeedProbeResultId(std::int64_t probe_run_id) const {
-    if (db_ == nullptr || probe_run_id <= 0) {
+std::optional<SeedProbeResultRow> SqliteAnalysisDb::GetSeedProbeResult(
+    std::int64_t probe_result_id) const {
+    if (db_ == nullptr || probe_result_id <= 0) {
         return std::nullopt;
     }
     Statement st;
     if (sqlite3_prepare_v2(
             db_,
-            "SELECT probe_result_id FROM sp_probe_result WHERE probe_run_id=?1;",
+            "SELECT probe_result_id,probe_run_id,input_frame_id,source_job_id,seed_value,"
+            "origin_worker_id,origin_process_generation,origin_state_epoch,terminal_sha256,"
+            "confirmation_of_probe_result_id,evidence_state,recorded_at_utc "
+            "FROM sp_probe_result WHERE probe_result_id=?1;",
             -1,
             &st.st,
             nullptr)
         != SQLITE_OK) {
         return std::nullopt;
     }
-    sqlite3_bind_int64(st.st, 1, probe_run_id);
-    if (sqlite3_step(st.st) != SQLITE_ROW) {
-        return std::nullopt;
-    }
-    return sqlite3_column_int64(st.st, 0);
+    sqlite3_bind_int64(st.st, 1, probe_result_id);
+    return sqlite3_step(st.st) == SQLITE_ROW
+        ? std::optional<SeedProbeResultRow>{ReadSeedProbeResultRow(st.st)}
+        : std::nullopt;
 }
 
-std::optional<std::int64_t> SqliteAnalysisDb::LookupSeedProbeNeutralSeed(std::int64_t probe_run_id) const {
-    if (db_ == nullptr || probe_run_id <= 0) {
+std::optional<SeedProbeResultRow> SqliteAnalysisDb::GetSeedProbeResultForSourceJob(
+    std::int64_t source_job_id) const {
+    if (db_ == nullptr || source_job_id <= 0) {
         return std::nullopt;
     }
     Statement st;
     if (sqlite3_prepare_v2(
             db_,
-            "SELECT neutral_seed_value FROM sp_probe_result WHERE probe_run_id=?1;",
+            "SELECT probe_result_id,probe_run_id,input_frame_id,source_job_id,seed_value,"
+            "origin_worker_id,origin_process_generation,origin_state_epoch,terminal_sha256,"
+            "confirmation_of_probe_result_id,evidence_state,recorded_at_utc "
+            "FROM sp_probe_result WHERE source_job_id=?1;",
             -1,
             &st.st,
             nullptr)
         != SQLITE_OK) {
         return std::nullopt;
     }
-    sqlite3_bind_int64(st.st, 1, probe_run_id);
-    if (sqlite3_step(st.st) != SQLITE_ROW || sqlite3_column_type(st.st, 0) == SQLITE_NULL) {
-        return std::nullopt;
-    }
-    return sqlite3_column_int64(st.st, 0);
+    sqlite3_bind_int64(st.st, 1, source_job_id);
+    return sqlite3_step(st.st) == SQLITE_ROW
+        ? std::optional<SeedProbeResultRow>{ReadSeedProbeResultRow(st.st)}
+        : std::nullopt;
 }
 
-std::optional<SeedProbeNeutralSeedRow> SqliteAnalysisDb::GetSeedProbeNeutralSeed(
-    std::int64_t neutral_seed_id) const {
-    if (db_ == nullptr || neutral_seed_id <= 0) {
-        return std::nullopt;
-    }
-    Statement st;
-    if (sqlite3_prepare_v2(
-            db_,
-            "SELECT n.neutral_seed_id,n.probe_result_id,r.probe_run_id,n.neutral_seed_value,n.source_kind,n.recorded_at_utc "
-            "FROM sp_neutral_seed n JOIN sp_probe_result r ON r.probe_result_id=n.probe_result_id "
-            "WHERE n.neutral_seed_id=?1;",
-            -1,
-            &st.st,
-            nullptr)
-        != SQLITE_OK) {
-        return std::nullopt;
-    }
-    sqlite3_bind_int64(st.st, 1, neutral_seed_id);
-    if (sqlite3_step(st.st) != SQLITE_ROW) {
-        return std::nullopt;
-    }
-    return SeedProbeNeutralSeedRow{
-        .neutral_seed_id = sqlite3_column_int64(st.st, 0),
-        .probe_result_id = sqlite3_column_int64(st.st, 1),
-        .probe_run_id = sqlite3_column_int64(st.st, 2),
-        .neutral_seed_value = sqlite3_column_int64(st.st, 3),
-        .source_kind = ColumnText(st.st, 4),
-        .recorded_at_utc = ColumnTime(st.st, 5),
-    };
-}
-
-bool SqliteAnalysisDb::TryGetSeedProbeNeutralSeedForRun(
-    std::int64_t probe_run_id,
-    std::optional<SeedProbeNeutralSeedRow>* row_out,
-    std::string* error_out) const {
-    if (row_out != nullptr) {
-        row_out->reset();
-    }
-    if (db_ == nullptr || probe_run_id <= 0 || row_out == nullptr) {
-        if (error_out) *error_out = "database, positive probe_run_id, and row_out are required";
-        return false;
-    }
-    Statement st;
-    if (sqlite3_prepare_v2(
-            db_,
-            "SELECT n.neutral_seed_id,n.probe_result_id,r.probe_run_id,n.neutral_seed_value,n.source_kind,n.recorded_at_utc "
-            "FROM sp_probe_result r JOIN sp_neutral_seed n ON n.probe_result_id=r.probe_result_id "
-            "WHERE r.probe_run_id=?1 ORDER BY n.neutral_seed_id ASC LIMIT 2;",
-            -1,
-            &st.st,
-            nullptr)
-        != SQLITE_OK) {
-        if (error_out) *error_out = sqlite3_errmsg(db_);
-        return false;
-    }
-    sqlite3_bind_int64(st.st, 1, probe_run_id);
-    const auto first_rc = sqlite3_step(st.st);
-    if (first_rc == SQLITE_DONE) {
-        return true;
-    }
-    if (first_rc != SQLITE_ROW) {
-        if (error_out) *error_out = sqlite3_errmsg(db_);
-        return false;
-    }
-    SeedProbeNeutralSeedRow row{
-        .neutral_seed_id = sqlite3_column_int64(st.st, 0),
-        .probe_result_id = sqlite3_column_int64(st.st, 1),
-        .probe_run_id = sqlite3_column_int64(st.st, 2),
-        .neutral_seed_value = sqlite3_column_int64(st.st, 3),
-        .source_kind = ColumnText(st.st, 4),
-        .recorded_at_utc = ColumnTime(st.st, 5),
-    };
-    const auto second_rc = sqlite3_step(st.st);
-    if (second_rc == SQLITE_ROW) {
-        if (error_out) *error_out = "multiple neutral seed rows exist for probe run";
-        return false;
-    }
-    if (second_rc != SQLITE_DONE) {
-        if (error_out) *error_out = sqlite3_errmsg(db_);
-        return false;
-    }
-    *row_out = std::move(row);
-    return true;
-}
-
-std::vector<SeedProbeGridSeedRow> SqliteAnalysisDb::ListSeedProbeGridSeeds(std::int64_t probe_run_id) const {
-    std::vector<SeedProbeGridSeedRow> rows;
+std::vector<SeedProbeResultRow> SqliteAnalysisDb::ListSeedProbeResults(
+    std::int64_t probe_run_id) const {
+    std::vector<SeedProbeResultRow> rows;
     if (db_ == nullptr || probe_run_id <= 0) {
         return rows;
     }
     Statement st;
     if (sqlite3_prepare_v2(
             db_,
-            "SELECT g.grid_seed_id,g.probe_result_id,g.source_family,a.x,a.y,g.seed_value,g.seed_delta "
-            "FROM sp_grid_seed g "
-            "JOIN sp_axis_xy a ON a.axis_xy_id=g.axis_xy_id "
-            "JOIN sp_probe_result r ON r.probe_result_id=g.probe_result_id "
-            "WHERE r.probe_run_id=?1;",
+            "SELECT probe_result_id,probe_run_id,input_frame_id,source_job_id,seed_value,"
+            "origin_worker_id,origin_process_generation,origin_state_epoch,terminal_sha256,"
+            "confirmation_of_probe_result_id,evidence_state,recorded_at_utc "
+            "FROM sp_probe_result WHERE probe_run_id=?1 ORDER BY probe_result_id ASC;",
             -1,
             &st.st,
             nullptr)
@@ -933,128 +787,31 @@ std::vector<SeedProbeGridSeedRow> SqliteAnalysisDb::ListSeedProbeGridSeeds(std::
     }
     sqlite3_bind_int64(st.st, 1, probe_run_id);
     while (sqlite3_step(st.st) == SQLITE_ROW) {
-        rows.push_back(SeedProbeGridSeedRow{
-            .grid_seed_id = sqlite3_column_int64(st.st, 0),
-            .probe_result_id = sqlite3_column_int64(st.st, 1),
-            .source_family = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 2)),
-            .axis_x = sqlite3_column_int(st.st, 3),
-            .axis_y = sqlite3_column_int(st.st, 4),
-            .seed_value = sqlite3_column_int64(st.st, 5),
-            .seed_delta = sqlite3_column_int64(st.st, 6),
-            });
+        rows.push_back(ReadSeedProbeResultRow(st.st));
     }
     return rows;
 }
 
-std::vector<SeedProbeUniqueSeedRow> SqliteAnalysisDb::ListSeedProbeUniqueSeeds(std::int64_t probe_run_id) const {
-    std::vector<SeedProbeUniqueSeedRow> rows;
-    if (db_ == nullptr || probe_run_id <= 0) {
-        return rows;
-    }
-    Statement st;
-    if (sqlite3_prepare_v2(
-            db_,
-            "SELECT u.unique_seed_id,u.probe_result_id,r.probe_run_id,u.input_frame_id,"
-            "u.seed_value,u.seed_delta,"
-            "m.x,m.y,c.x,c.y,t.x,t.y "
-            "FROM sp_unique_seed u "
-            "JOIN sp_probe_result r ON r.probe_result_id=u.probe_result_id "
-            "JOIN sp_input_frame f ON f.input_frame_id=u.input_frame_id "
-            "JOIN sp_axis_xy m ON m.axis_xy_id=f.main_axis_xy_id "
-            "JOIN sp_axis_xy c ON c.axis_xy_id=f.cstick_axis_xy_id "
-            "JOIN sp_axis_xy t ON t.axis_xy_id=f.trigger_axis_xy_id "
-            "WHERE r.probe_run_id=?1 "
-            "ORDER BY u.seed_value ASC, u.unique_seed_id ASC;",
-            -1,
-            &st.st,
-            nullptr)
-        != SQLITE_OK) {
-        return rows;
-    }
-    sqlite3_bind_int64(st.st, 1, probe_run_id);
-    while (sqlite3_step(st.st) == SQLITE_ROW) {
-        rows.push_back(SeedProbeUniqueSeedRow{
-            .unique_seed_id = sqlite3_column_int64(st.st, 0),
-            .probe_result_id = sqlite3_column_int64(st.st, 1),
-            .probe_run_id = sqlite3_column_int64(st.st, 2),
-            .input_frame_id = sqlite3_column_int64(st.st, 3),
-            .seed_value = sqlite3_column_int64(st.st, 4),
-            .seed_delta = sqlite3_column_int64(st.st, 5),
-            .main_x = sqlite3_column_int(st.st, 6),
-            .main_y = sqlite3_column_int(st.st, 7),
-            .cstick_x = sqlite3_column_int(st.st, 8),
-            .cstick_y = sqlite3_column_int(st.st, 9),
-            .trigger_x = sqlite3_column_int(st.st, 10),
-            .trigger_y = sqlite3_column_int(st.st, 11),
-            });
-    }
-    return rows;
-}
-
-std::optional<SeedProbeUniqueSeedRow> SqliteAnalysisDb::GetSeedProbeUniqueSeed(std::int64_t unique_seed_id) const {
-    if (db_ == nullptr || unique_seed_id <= 0) {
-        return std::nullopt;
-    }
-    Statement st;
-    if (sqlite3_prepare_v2(
-            db_,
-            "SELECT u.unique_seed_id,u.probe_result_id,r.probe_run_id,u.input_frame_id,"
-            "u.seed_value,u.seed_delta,"
-            "m.x,m.y,c.x,c.y,t.x,t.y "
-            "FROM sp_unique_seed u "
-            "JOIN sp_probe_result r ON r.probe_result_id=u.probe_result_id "
-            "JOIN sp_input_frame f ON f.input_frame_id=u.input_frame_id "
-            "JOIN sp_axis_xy m ON m.axis_xy_id=f.main_axis_xy_id "
-            "JOIN sp_axis_xy c ON c.axis_xy_id=f.cstick_axis_xy_id "
-            "JOIN sp_axis_xy t ON t.axis_xy_id=f.trigger_axis_xy_id "
-            "WHERE u.unique_seed_id=?1;",
-            -1,
-            &st.st,
-            nullptr)
-        != SQLITE_OK) {
-        return std::nullopt;
-    }
-    sqlite3_bind_int64(st.st, 1, unique_seed_id);
-    if (sqlite3_step(st.st) != SQLITE_ROW) {
-        return std::nullopt;
-    }
-    return SeedProbeUniqueSeedRow{
-        .unique_seed_id = sqlite3_column_int64(st.st, 0),
-        .probe_result_id = sqlite3_column_int64(st.st, 1),
-        .probe_run_id = sqlite3_column_int64(st.st, 2),
-        .input_frame_id = sqlite3_column_int64(st.st, 3),
-        .seed_value = sqlite3_column_int64(st.st, 4),
-        .seed_delta = sqlite3_column_int64(st.st, 5),
-        .main_x = sqlite3_column_int(st.st, 6),
-        .main_y = sqlite3_column_int(st.st, 7),
-        .cstick_x = sqlite3_column_int(st.st, 8),
-        .cstick_y = sqlite3_column_int(st.st, 9),
-        .trigger_x = sqlite3_column_int(st.st, 10),
-        .trigger_y = sqlite3_column_int(st.st, 11),
-    };
-}
-
-std::optional<SeedProbeUniqueSeedRow> SqliteAnalysisDb::FindSeedProbeUniqueSeedForEntrySavestateInputFrame(
-    std::int64_t entry_savestate_id,
+std::optional<SeedProbeResultRow> SqliteAnalysisDb::FindConfirmedSeedProbeResultForAcceptedInputSetFrame(
+    std::int64_t accepted_input_set_id,
     std::int64_t input_frame_id) const {
-    if (db_ == nullptr || entry_savestate_id <= 0 || input_frame_id <= 0) {
+    if (db_ == nullptr || accepted_input_set_id <= 0 || input_frame_id <= 0) {
         return std::nullopt;
     }
     Statement st;
     if (sqlite3_prepare_v2(
             db_,
-            "SELECT u.unique_seed_id,u.probe_result_id,r.probe_run_id,u.input_frame_id,"
-            "u.seed_value,u.seed_delta,"
-            "m.x,m.y,c.x,c.y,t.x,t.y "
+            "SELECT r.probe_result_id,r.probe_run_id,r.input_frame_id,r.source_job_id,r.seed_value,"
+            "r.origin_worker_id,r.origin_process_generation,r.origin_state_epoch,r.terminal_sha256,"
+            "r.confirmation_of_probe_result_id,r.evidence_state,r.recorded_at_utc "
             "FROM sp_probe_run pr "
             "JOIN sp_probe_result r ON r.probe_run_id=pr.probe_run_id "
-            "JOIN sp_unique_seed u ON u.probe_result_id=r.probe_result_id "
-            "JOIN sp_input_frame f ON f.input_frame_id=u.input_frame_id "
-            "JOIN sp_axis_xy m ON m.axis_xy_id=f.main_axis_xy_id "
-            "JOIN sp_axis_xy c ON c.axis_xy_id=f.cstick_axis_xy_id "
-            "JOIN sp_axis_xy t ON t.axis_xy_id=f.trigger_axis_xy_id "
-            "WHERE pr.entry_savestate_id=?1 AND u.input_frame_id=?2 "
-            "ORDER BY pr.probe_run_id ASC, u.unique_seed_id ASC "
+            "JOIN an_input_set_frame accepted "
+            "ON accepted.input_set_id=pr.accepted_input_set_id "
+            "AND accepted.input_frame_id=r.input_frame_id "
+            "WHERE pr.accepted_input_set_id=?1 AND r.input_frame_id=?2 "
+            "AND r.evidence_state='CONFIRMED' AND r.confirmation_of_probe_result_id IS NULL "
+            "ORDER BY r.probe_result_id ASC "
             "LIMIT 1;",
             -1,
             &st.st,
@@ -1062,25 +819,12 @@ std::optional<SeedProbeUniqueSeedRow> SqliteAnalysisDb::FindSeedProbeUniqueSeedF
         != SQLITE_OK) {
         return std::nullopt;
     }
-    sqlite3_bind_int64(st.st, 1, entry_savestate_id);
+    sqlite3_bind_int64(st.st, 1, accepted_input_set_id);
     sqlite3_bind_int64(st.st, 2, input_frame_id);
     if (sqlite3_step(st.st) != SQLITE_ROW) {
         return std::nullopt;
     }
-    return SeedProbeUniqueSeedRow{
-        .unique_seed_id = sqlite3_column_int64(st.st, 0),
-        .probe_result_id = sqlite3_column_int64(st.st, 1),
-        .probe_run_id = sqlite3_column_int64(st.st, 2),
-        .input_frame_id = sqlite3_column_int64(st.st, 3),
-        .seed_value = sqlite3_column_int64(st.st, 4),
-        .seed_delta = sqlite3_column_int64(st.st, 5),
-        .main_x = sqlite3_column_int(st.st, 6),
-        .main_y = sqlite3_column_int(st.st, 7),
-        .cstick_x = sqlite3_column_int(st.st, 8),
-        .cstick_y = sqlite3_column_int(st.st, 9),
-        .trigger_x = sqlite3_column_int(st.st, 10),
-        .trigger_y = sqlite3_column_int(st.st, 11),
-    };
+    return ReadSeedProbeResultRow(st.st);
 }
 
 std::optional<AnalysisInputSetFrameRow> SqliteAnalysisDb::GetAnalysisInputFrame(std::int64_t input_frame_id) const {
@@ -1170,8 +914,10 @@ bool SqliteAnalysisDb::EnsureSeedProbeInputFrame(
         if (error_out) *error_out = "database handle is null";
         return false;
     }
-    if (main_axis_xy_id < 0 || cstick_axis_xy_id < 0 || trigger_axis_xy_id < 0) {
-        if (error_out) *error_out = "axis ids must be non-negative";
+    if (main_axis_xy_id < 0 || main_axis_xy_id > 0xffff
+        || cstick_axis_xy_id < 0 || cstick_axis_xy_id > 0xffff
+        || trigger_axis_xy_id < 0 || trigger_axis_xy_id > 0xffff) {
+        if (error_out) *error_out = "axis ids must be packed uint16 x/y values";
         return false;
     }
 
@@ -1274,23 +1020,33 @@ bool SqliteAnalysisDb::EnsureSeedProbeInputFrame(
     return true;
 }
 
-bool SqliteAnalysisDb::EnsureSeedProbeUniqueSeedDelta(
-    const RecordSeedProbeUniqueSeedCommand& command,
+bool SqliteAnalysisDb::EnsureSeedProbeObservation(
+    const RecordSeedProbeObservationCommand& command,
     bool* inserted_out,
-    std::int64_t* unique_seed_id_out,
+    std::int64_t* probe_result_id_out,
     std::string* error_out) {
     if (inserted_out) {
         *inserted_out = false;
     }
-    if (unique_seed_id_out) {
-        *unique_seed_id_out = 0;
+    if (probe_result_id_out) {
+        *probe_result_id_out = 0;
     }
 
     if (db_ == nullptr) {
         if (error_out) *error_out = "database handle is null";
         return false;
     }
-    if (command.probe_result_id <= 0 || command.input_frame_id <= 0) {
+    if (command.probe_run_id <= 0
+        || command.input_frame_id <= 0
+        || command.source_job_id <= 0
+        || command.origin_worker_id > static_cast<std::uint64_t>((std::numeric_limits<std::int64_t>::max)())
+        || command.origin_process_generation == 0
+        || command.origin_process_generation > static_cast<std::uint64_t>((std::numeric_limits<std::int64_t>::max)())
+        || command.origin_state_epoch == 0
+        || command.origin_state_epoch > static_cast<std::uint64_t>((std::numeric_limits<std::int64_t>::max)())
+        || !IsLowerHexSha256(command.terminal_sha256)
+        || (command.confirmation_of_probe_result_id.has_value()
+            && *command.confirmation_of_probe_result_id <= 0)) {
         if (error_out) *error_out = "required command fields are missing";
         return false;
     }
@@ -1302,117 +1058,337 @@ bool SqliteAnalysisDb::EnsureSeedProbeUniqueSeedDelta(
         return false;
     }
 
+    const auto rollback = [&]() {
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+    };
+
     Statement existing;
     if (sqlite3_prepare_v2(
             db_,
-            "SELECT unique_seed_id "
-            "FROM sp_unique_seed "
-            "WHERE probe_result_id=?1 AND seed_delta=?2 "
-            "LIMIT 1;",
+            "SELECT probe_result_id,probe_run_id,input_frame_id,source_job_id,seed_value,"
+            "origin_worker_id,origin_process_generation,origin_state_epoch,terminal_sha256,"
+            "confirmation_of_probe_result_id,evidence_state,recorded_at_utc "
+            "FROM sp_probe_result WHERE source_job_id=?1;",
             -1,
             &existing.st,
             nullptr)
         != SQLITE_OK) {
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        rollback();
         if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;
     }
 
-    sqlite3_bind_int64(existing.st, 1, command.probe_result_id);
-    sqlite3_bind_int64(existing.st, 2, command.seed_delta);
+    sqlite3_bind_int64(existing.st, 1, command.source_job_id);
     if (sqlite3_step(existing.st) == SQLITE_ROW) {
-        if (unique_seed_id_out) {
-            *unique_seed_id_out = sqlite3_column_int64(existing.st, 0);
+        const auto row = ReadSeedProbeResultRow(existing.st);
+        const bool same =
+            row.probe_run_id == command.probe_run_id
+            && row.input_frame_id == command.input_frame_id
+            && row.source_job_id == command.source_job_id
+            && row.seed_value == command.seed_value
+            && row.origin_worker_id == command.origin_worker_id
+            && row.origin_process_generation == command.origin_process_generation
+            && row.origin_state_epoch == command.origin_state_epoch
+            && row.terminal_sha256 == command.terminal_sha256
+            && row.confirmation_of_probe_result_id == command.confirmation_of_probe_result_id;
+        if (!same) {
+            rollback();
+            if (error_out) *error_out = "source job already has a different immutable SeedProbe observation";
+            return false;
+        }
+        if (probe_result_id_out) {
+            *probe_result_id_out = row.probe_result_id;
         }
         if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
-            if (error_out) {
-                *error_out = sqlite3_errmsg(db_);
-            }
-            (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+            if (error_out) *error_out = sqlite3_errmsg(db_);
+            rollback();
             return false;
         }
         return true;
     }
 
-    Statement insert_unique;
+    if (command.confirmation_of_probe_result_id.has_value()) {
+        Statement provisional;
+        if (sqlite3_prepare_v2(
+                db_,
+                "SELECT probe_run_id,input_frame_id,source_job_id,origin_worker_id,"
+                "origin_process_generation,origin_state_epoch,confirmation_of_probe_result_id "
+                "FROM sp_probe_result WHERE probe_result_id=?1;",
+                -1,
+                &provisional.st,
+                nullptr)
+            != SQLITE_OK) {
+            if (error_out) *error_out = sqlite3_errmsg(db_);
+            rollback();
+            return false;
+        }
+        sqlite3_bind_int64(provisional.st, 1, *command.confirmation_of_probe_result_id);
+        if (sqlite3_step(provisional.st) != SQLITE_ROW
+            || sqlite3_column_int64(provisional.st, 0) != command.probe_run_id
+            || sqlite3_column_int64(provisional.st, 1) != command.input_frame_id
+            || sqlite3_column_int64(provisional.st, 2) == command.source_job_id
+            || (static_cast<std::uint64_t>(sqlite3_column_int64(provisional.st, 3))
+                    == command.origin_worker_id
+                && static_cast<std::uint64_t>(sqlite3_column_int64(provisional.st, 4))
+                    == command.origin_process_generation
+                && static_cast<std::uint64_t>(sqlite3_column_int64(provisional.st, 5))
+                    == command.origin_state_epoch)
+            || sqlite3_column_type(provisional.st, 6) != SQLITE_NULL) {
+            if (error_out) {
+                *error_out = "confirmation must reference a representative from the same run and frame with a distinct job and scoped StateEpoch";
+            }
+            rollback();
+            return false;
+        }
+    }
+
+    Statement insert_result;
     if (sqlite3_prepare_v2(
             db_,
-            "INSERT INTO sp_unique_seed(probe_result_id,input_frame_id,seed_value,seed_delta,recorded_at_utc) "
-            "VALUES(?1,?2,?3,?4,?5);",
+            "INSERT INTO sp_probe_result("
+            "probe_run_id,input_frame_id,source_job_id,seed_value,origin_worker_id,"
+            "origin_process_generation,origin_state_epoch,terminal_sha256,"
+            "confirmation_of_probe_result_id,evidence_state,recorded_at_utc) "
+            "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,'OBSERVED',?10);",
             -1,
-            &insert_unique.st,
+            &insert_result.st,
             nullptr)
         != SQLITE_OK) {
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        rollback();
         if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;
     }
 
-    sqlite3_bind_int64(insert_unique.st, 1, command.probe_result_id);
-    sqlite3_bind_int64(insert_unique.st, 2, command.input_frame_id);
-    sqlite3_bind_int64(insert_unique.st, 3, command.seed_value);
-    sqlite3_bind_int64(insert_unique.st, 4, command.seed_delta);
-    sqlite3_bind_int64(insert_unique.st, 5, command.recorded_at_utc.time_since_epoch().count());
-    if (sqlite3_step(insert_unique.st) != SQLITE_DONE) {
-        if (error_out != nullptr) {
-            *error_out = sqlite3_errmsg(db_);
-        }
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+    sqlite3_bind_int64(insert_result.st, 1, command.probe_run_id);
+    sqlite3_bind_int64(insert_result.st, 2, command.input_frame_id);
+    sqlite3_bind_int64(insert_result.st, 3, command.source_job_id);
+    sqlite3_bind_int64(insert_result.st, 4, static_cast<std::int64_t>(command.seed_value));
+    sqlite3_bind_int64(insert_result.st, 5, static_cast<std::int64_t>(command.origin_worker_id));
+    sqlite3_bind_int64(insert_result.st, 6, static_cast<std::int64_t>(command.origin_process_generation));
+    sqlite3_bind_int64(insert_result.st, 7, static_cast<std::int64_t>(command.origin_state_epoch));
+    sqlite3_bind_text(insert_result.st, 8, command.terminal_sha256.c_str(), -1, SQLITE_TRANSIENT);
+    if (command.confirmation_of_probe_result_id.has_value()) {
+        sqlite3_bind_int64(insert_result.st, 9, *command.confirmation_of_probe_result_id);
+    } else {
+        sqlite3_bind_null(insert_result.st, 9);
+    }
+    sqlite3_bind_int64(insert_result.st, 10, command.recorded_at_utc.time_since_epoch().count());
+    if (sqlite3_step(insert_result.st) != SQLITE_DONE) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        rollback();
         return false;
     }
 
-    const auto unique_seed_id = sqlite3_last_insert_rowid(db_);
+    const auto probe_result_id = sqlite3_last_insert_rowid(db_);
     if (inserted_out) {
         *inserted_out = true;
     }
-    if (unique_seed_id_out) {
-        *unique_seed_id_out = unique_seed_id;
+    if (probe_result_id_out) {
+        *probe_result_id_out = probe_result_id;
     }
 
-    const auto probe_run_id = ProbeRunIdForResult(db_, command.probe_result_id);
-    if (!probe_run_id.has_value()) {
-        if (error_out) *error_out = "probe_result_id does not resolve to probe_run";
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+    if (!InsertSeedProbeOutboxEvent(
+            db_,
+            "AnalysisSeedProbe.ObservationRecorded.v1",
+            "probe_run",
+            std::to_string(command.probe_run_id),
+            command.correlation_id,
+            command.causation_id,
+            command.recorded_at_utc.time_since_epoch().count(),
+            "probe_result",
+            probe_result_id,
+            error_out)) {
+        rollback();
         return false;
     }
-    const auto unique_input_set_id = UniqueInputSetIdForProbeRun(db_, *probe_run_id);
-    if (!unique_input_set_id.has_value()
-        || !AppendFrameToAnalysisInputSet(
-            db_,
-            *unique_input_set_id,
-            command.input_frame_id,
-            command.recorded_at_utc.time_since_epoch().count(),
-            error_out)) {
-        if (error_out != nullptr && error_out->empty()) {
-            *error_out = "probe_run unique input set is missing";
-        }
+
+    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        rollback();
+        return false;
+    }
+
+    return true;
+}
+
+bool SqliteAnalysisDb::TransitionSeedProbeEvidence(
+    const TransitionSeedProbeEvidenceCommand& command,
+    bool* changed_out,
+    std::string* error_out) {
+    if (changed_out) *changed_out = false;
+    if (db_ == nullptr
+        || command.probe_result_id <= 0
+        || command.expected_state == SeedProbeEvidenceState::Unknown
+        || command.new_state == SeedProbeEvidenceState::Unknown) {
+        if (error_out) *error_out = "invalid SeedProbe evidence transition";
+        return false;
+    }
+    const bool allowed =
+        (command.expected_state == SeedProbeEvidenceState::Observed
+            && command.new_state == SeedProbeEvidenceState::Provisional)
+        || (command.expected_state == SeedProbeEvidenceState::Provisional
+            && (command.new_state == SeedProbeEvidenceState::Confirmed
+                || command.new_state == SeedProbeEvidenceState::Rejected));
+    if (!allowed) {
+        if (error_out) *error_out = "unsupported SeedProbe evidence transition";
+        return false;
+    }
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    const auto rollback = [&]() {
         (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+    };
+
+    Statement current;
+        if (sqlite3_prepare_v2(
+            db_,
+            "SELECT probe_run_id,evidence_state,seed_value,source_job_id,origin_worker_id,"
+            "origin_process_generation,origin_state_epoch,confirmation_of_probe_result_id "
+            "FROM sp_probe_result WHERE probe_result_id=?1;",
+            -1,
+            &current.st,
+            nullptr)
+        != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        rollback();
+        return false;
+    }
+    sqlite3_bind_int64(current.st, 1, command.probe_result_id);
+    if (sqlite3_step(current.st) != SQLITE_ROW) {
+        if (error_out) *error_out = "SeedProbe result does not exist";
+        rollback();
+        return false;
+    }
+    const auto probe_run_id = sqlite3_column_int64(current.st, 0);
+    const auto current_state = ParseSeedProbeEvidenceState(ColumnText(current.st, 1));
+    const auto seed_value = sqlite3_column_int64(current.st, 2);
+    const auto source_job_id = sqlite3_column_int64(current.st, 3);
+    const auto origin_worker_id = sqlite3_column_int64(current.st, 4);
+    const auto origin_process_generation = sqlite3_column_int64(current.st, 5);
+    const auto origin_state_epoch = sqlite3_column_int64(current.st, 6);
+    if (sqlite3_column_type(current.st, 7) != SQLITE_NULL) {
+        if (error_out) *error_out = "confirmation observations cannot become evidence representatives";
+        rollback();
+        return false;
+    }
+    if (current_state == command.new_state) {
+        if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+            if (error_out) *error_out = sqlite3_errmsg(db_);
+            rollback();
+            return false;
+        }
+        return true;
+    }
+    if (current_state != command.expected_state) {
+        if (error_out) *error_out = "SeedProbe evidence state changed concurrently";
+        rollback();
+        return false;
+    }
+
+    if (command.new_state == SeedProbeEvidenceState::Provisional) {
+        Statement winner;
+        if (sqlite3_prepare_v2(
+                db_,
+                "SELECT probe_result_id FROM sp_probe_result "
+                "WHERE probe_run_id=?1 AND seed_value=?2 "
+                "AND evidence_state IN ('PROVISIONAL','CONFIRMED') LIMIT 1;",
+                -1,
+                &winner.st,
+                nullptr)
+            != SQLITE_OK) {
+            if (error_out) *error_out = sqlite3_errmsg(db_);
+            rollback();
+            return false;
+        }
+        sqlite3_bind_int64(winner.st, 1, probe_run_id);
+        sqlite3_bind_int64(winner.st, 2, seed_value);
+        if (sqlite3_step(winner.st) == SQLITE_ROW
+            && sqlite3_column_int64(winner.st, 0) != command.probe_result_id) {
+            if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+                if (error_out) *error_out = sqlite3_errmsg(db_);
+                rollback();
+                return false;
+            }
+            return true;
+        }
+    }
+
+    if (command.new_state == SeedProbeEvidenceState::Confirmed) {
+        Statement confirmation;
+        if (sqlite3_prepare_v2(
+                db_,
+                "SELECT 1 FROM sp_probe_result "
+                "WHERE confirmation_of_probe_result_id=?1 AND seed_value=?2 "
+                "AND source_job_id<>?3 "
+                "AND (origin_worker_id<>?4 OR origin_process_generation<>?5 OR origin_state_epoch<>?6) "
+                "LIMIT 1;",
+                -1,
+                &confirmation.st,
+                nullptr)
+            != SQLITE_OK) {
+            if (error_out) *error_out = sqlite3_errmsg(db_);
+            rollback();
+            return false;
+        }
+        sqlite3_bind_int64(confirmation.st, 1, command.probe_result_id);
+        sqlite3_bind_int64(confirmation.st, 2, seed_value);
+        sqlite3_bind_int64(confirmation.st, 3, source_job_id);
+        sqlite3_bind_int64(confirmation.st, 4, origin_worker_id);
+        sqlite3_bind_int64(confirmation.st, 5, origin_process_generation);
+        sqlite3_bind_int64(confirmation.st, 6, origin_state_epoch);
+        if (sqlite3_step(confirmation.st) != SQLITE_ROW) {
+            if (error_out) *error_out = "confirmation requires an equal observation from a distinct job and scoped StateEpoch";
+            rollback();
+            return false;
+        }
+    }
+
+    Statement update;
+    if (sqlite3_prepare_v2(
+            db_,
+            "UPDATE sp_probe_result SET evidence_state=?2 "
+            "WHERE probe_result_id=?1 AND evidence_state=?3;",
+            -1,
+            &update.st,
+            nullptr)
+        != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        rollback();
+        return false;
+    }
+    const auto expected = ToDbString(command.expected_state);
+    const auto desired = ToDbString(command.new_state);
+    sqlite3_bind_int64(update.st, 1, command.probe_result_id);
+    sqlite3_bind_text(update.st, 2, desired.data(), static_cast<int>(desired.size()), SQLITE_TRANSIENT);
+    sqlite3_bind_text(update.st, 3, expected.data(), static_cast<int>(expected.size()), SQLITE_TRANSIENT);
+    if (sqlite3_step(update.st) != SQLITE_DONE || sqlite3_changes(db_) != 1) {
+        if (error_out) *error_out = "SeedProbe evidence state changed concurrently";
+        rollback();
         return false;
     }
 
     if (!InsertSeedProbeOutboxEvent(
             db_,
-            "AnalysisSeedProbe.UniqueSeedRecorded.v1",
+            "AnalysisSeedProbe.EvidenceStateChanged.v1",
             "probe_run",
-            std::to_string(probe_run_id.value()),
+            std::to_string(probe_run_id),
             command.correlation_id,
             command.causation_id,
-            command.recorded_at_utc.time_since_epoch().count(),
-            "unique_seed",
-            unique_seed_id,
+            command.changed_at_utc.time_since_epoch().count(),
+            "probe_result",
+            command.probe_result_id,
             error_out)) {
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        rollback();
         return false;
     }
-
     if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
-        if (error_out != nullptr) {
-            *error_out = sqlite3_errmsg(db_);
-        }
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        rollback();
         return false;
     }
-
+    if (changed_out) *changed_out = true;
     return true;
 }
 
@@ -1436,6 +1412,64 @@ bool SqliteAnalysisDb::CreateSeedProbeSet(
         if (error_out != nullptr) {
             *error_out = sqlite3_errmsg(db_);
         }
+        return false;
+    }
+
+    Statement find_existing;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT probe_set_id,probe_flavor,breakpoint_policy_name,dungeon_segment_file_num,"
+            "dungeon_segment_file_letter,dungeon_segment_code,segment_source_kind "
+            "FROM sp_probe_set WHERE name=?1 LIMIT 1;",
+            -1,
+            &find_existing.st,
+            nullptr)
+        != SQLITE_OK) {
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    sqlite3_bind_text(find_existing.st, 1, command.name.c_str(), -1, SQLITE_TRANSIENT);
+    const auto existing_step = sqlite3_step(find_existing.st);
+    if (existing_step == SQLITE_ROW) {
+        const auto read_text = [&](int column) {
+            const auto* text = sqlite3_column_text(find_existing.st, column);
+            return text == nullptr ? std::string{} : reinterpret_cast<const char*>(text);
+        };
+        const auto read_optional_text = [&](int column) -> std::optional<std::string> {
+            if (sqlite3_column_type(find_existing.st, column) == SQLITE_NULL) return std::nullopt;
+            return read_text(column);
+        };
+        const auto read_optional_int64 = [&](int column) -> std::optional<std::int64_t> {
+            if (sqlite3_column_type(find_existing.st, column) == SQLITE_NULL) return std::nullopt;
+            return sqlite3_column_int64(find_existing.st, column);
+        };
+        const auto existing_id = sqlite3_column_int64(find_existing.st, 0);
+        const bool exact_definition_match =
+            read_text(1) == command.probe_flavor
+            && read_text(2) == command.breakpoint_policy_name
+            && read_optional_int64(3) == command.dungeon_segment_file_num
+            && read_optional_text(4) == command.dungeon_segment_file_letter
+            && read_optional_text(5) == command.dungeon_segment_code
+            && read_text(6) == command.segment_source_kind;
+        if (!exact_definition_match) {
+            (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+            if (error_out) {
+                *error_out = "seed probe set name already exists with a different definition";
+            }
+            return false;
+        }
+        if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+            if (error_out) *error_out = sqlite3_errmsg(db_);
+            (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+            return false;
+        }
+        if (probe_set_id_out) *probe_set_id_out = existing_id;
+        return true;
+    }
+    if (existing_step != SQLITE_DONE) {
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;
     }
 
@@ -1510,10 +1544,13 @@ bool SqliteAnalysisDb::RequestSeedProbeRun(
         if (error_out) *error_out = "database handle is null";
         return false;
     }
-    if (command.probe_set_id <= 0
+    if (command.materialization_key.empty()
+        || command.probe_set_id <= 0
         || command.entry_savestate_id <= 0
         || command.seed_probe_spec_id <= 0
-        || command.status.empty()) {
+        || command.launch_samples_per_axis <= 0
+        || command.codec_version <= 0
+        || command.status != SeedProbeRunStatus::Survey) {
         if (error_out) *error_out = "required command fields are missing";
         return false;
     }
@@ -1525,11 +1562,80 @@ bool SqliteAnalysisDb::RequestSeedProbeRun(
         return false;
     }
 
-    const auto unique_input_set_id = CreateAnalysisInputSetForPendingProbeRun(
+    Statement existing;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT probe_run_id,probe_set_id,entry_savestate_id,"
+            "seed_probe_spec_id,launch_samples_per_axis,codec_version "
+            "FROM sp_probe_run WHERE materialization_key=?1;",
+            -1,
+            &existing.st,
+            nullptr)
+        != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        (void)sqlite3_exec(
+            db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+    sqlite3_bind_text(
+        existing.st,
+        1,
+        command.materialization_key.c_str(),
+        -1,
+        SQLITE_TRANSIENT);
+    const auto existing_rc = sqlite3_step(existing.st);
+    if (existing_rc == SQLITE_ROW) {
+        const auto existing_id =
+            sqlite3_column_int64(existing.st, 0);
+        const bool matches =
+            sqlite3_column_int64(existing.st, 1)
+                    == command.probe_set_id
+            && sqlite3_column_int64(existing.st, 2)
+                    == command.entry_savestate_id
+            && sqlite3_column_int64(existing.st, 3)
+                    == command.seed_probe_spec_id
+            && sqlite3_column_int(existing.st, 4)
+                    == command.launch_samples_per_axis
+            && sqlite3_column_int(existing.st, 5)
+                    == command.codec_version;
+        if (!matches) {
+            if (error_out) {
+                *error_out =
+                    "SeedProbe materialization key conflicts with "
+                    "different run facts";
+            }
+            (void)sqlite3_exec(
+                db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+            return false;
+        }
+        if (sqlite3_exec(
+                db_, "COMMIT;", nullptr, nullptr, nullptr)
+            != SQLITE_OK) {
+            if (error_out) *error_out = sqlite3_errmsg(db_);
+            (void)sqlite3_exec(
+                db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+            return false;
+        }
+        if (probe_run_id_out) {
+            *probe_run_id_out = existing_id;
+        }
+        if (error_out) {
+            error_out->clear();
+        }
+        return true;
+    }
+    if (existing_rc != SQLITE_DONE) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        (void)sqlite3_exec(
+            db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+
+    const auto accepted_input_set_id = CreateAnalysisInputSetForPendingProbeRun(
         db_,
         command.requested_at_utc.time_since_epoch().count(),
         error_out);
-    if (!unique_input_set_id.has_value()) {
+    if (!accepted_input_set_id.has_value()) {
         (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
@@ -1537,8 +1643,11 @@ bool SqliteAnalysisDb::RequestSeedProbeRun(
     Statement insert_run;
     if (sqlite3_prepare_v2(
             db_,
-            "INSERT INTO sp_probe_run(probe_set_id,entry_savestate_id,seed_probe_spec_id,launch_samples_per_axis,codec_version,status,unique_input_set_id,requested_at_utc,completed_at_utc) "
-            "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,NULL);",
+            "INSERT INTO sp_probe_run(materialization_key,probe_set_id,"
+            "entry_savestate_id,seed_probe_spec_id,"
+            "launch_samples_per_axis,codec_version,status,"
+            "accepted_input_set_id,requested_at_utc,completed_at_utc) "
+            "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,NULL);",
             -1,
             &insert_run.st,
             nullptr)
@@ -1548,18 +1657,21 @@ bool SqliteAnalysisDb::RequestSeedProbeRun(
         return false;
     }
 
-    sqlite3_bind_int64(insert_run.st, 1, command.probe_set_id);
-    sqlite3_bind_int64(insert_run.st, 2, command.entry_savestate_id);
-    sqlite3_bind_int64(insert_run.st, 3, command.seed_probe_spec_id);
-    if (command.launch_samples_per_axis > 0) {
-        sqlite3_bind_int(insert_run.st, 4, command.launch_samples_per_axis);
-    } else {
-        sqlite3_bind_null(insert_run.st, 4);
-    }
-    sqlite3_bind_int(insert_run.st, 5, command.codec_version);
-    sqlite3_bind_text(insert_run.st, 6, command.status.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(insert_run.st, 7, *unique_input_set_id);
-    sqlite3_bind_int64(insert_run.st, 8, command.requested_at_utc.time_since_epoch().count());
+    sqlite3_bind_text(
+        insert_run.st,
+        1,
+        command.materialization_key.c_str(),
+        -1,
+        SQLITE_TRANSIENT);
+    sqlite3_bind_int64(insert_run.st, 2, command.probe_set_id);
+    sqlite3_bind_int64(insert_run.st, 3, command.entry_savestate_id);
+    sqlite3_bind_int64(insert_run.st, 4, command.seed_probe_spec_id);
+    sqlite3_bind_int(insert_run.st, 5, command.launch_samples_per_axis);
+    sqlite3_bind_int(insert_run.st, 6, command.codec_version);
+    const auto status = ToDbString(command.status);
+    sqlite3_bind_text(insert_run.st, 7, status.data(), static_cast<int>(status.size()), SQLITE_TRANSIENT);
+    sqlite3_bind_int64(insert_run.st, 8, *accepted_input_set_id);
+    sqlite3_bind_int64(insert_run.st, 9, command.requested_at_utc.time_since_epoch().count());
     if (sqlite3_step(insert_run.st) != SQLITE_DONE) {
         if (error_out != nullptr) {
             *error_out = sqlite3_errmsg(db_);
@@ -1569,30 +1681,7 @@ bool SqliteAnalysisDb::RequestSeedProbeRun(
     }
 
     const auto probe_run_id = sqlite3_last_insert_rowid(db_);
-    if (!AttachAnalysisInputSetToProbeRun(db_, *unique_input_set_id, probe_run_id, error_out)) {
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        return false;
-    }
-
-    Statement insert_result;
-    if (sqlite3_prepare_v2(
-            db_,
-            "INSERT INTO sp_probe_result(probe_run_id,neutral_seed_value,grid_count,unique_count,result_status,recorded_at_utc) "
-            "VALUES(?1,NULL,0,0,'pending',?2);",
-            -1,
-            &insert_result.st,
-            nullptr)
-        != SQLITE_OK) {
-        if (error_out) *error_out = sqlite3_errmsg(db_);
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        return false;
-    }
-    sqlite3_bind_int64(insert_result.st, 1, probe_run_id);
-    sqlite3_bind_int64(insert_result.st, 2, command.requested_at_utc.time_since_epoch().count());
-    if (sqlite3_step(insert_result.st) != SQLITE_DONE) {
-        if (error_out != nullptr) {
-            *error_out = sqlite3_errmsg(db_);
-        }
+    if (!AttachAnalysisInputSetToProbeRun(db_, *accepted_input_set_id, probe_run_id, error_out)) {
         (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
@@ -1627,101 +1716,6 @@ bool SqliteAnalysisDb::RequestSeedProbeRun(
     return true;
 }
 
-bool SqliteAnalysisDb::CreateSeedProbeRunForSet(
-    std::int64_t probe_set_id,
-    std::int64_t* probe_run_id_out,
-    std::string* error_out) {
-    if (db_ == nullptr) {
-        if (error_out) *error_out = "database handle is null";
-        return false;
-    }
-    if (probe_set_id <= 0) {
-        if (error_out) *error_out = "probe_set_id must be > 0";
-        return false;
-    }
-    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
-        if (error_out != nullptr) {
-            *error_out = sqlite3_errmsg(db_);
-        }
-        return false;
-    }
-
-    const auto now = types::UtcNow().time_since_epoch().count();
-    const auto unique_input_set_id = CreateAnalysisInputSetForPendingProbeRun(db_, now, error_out);
-    if (!unique_input_set_id.has_value()) {
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        return false;
-    }
-
-    Statement insert_run;
-    if (sqlite3_prepare_v2(
-            db_,
-            "INSERT INTO sp_probe_run(probe_set_id,entry_savestate_id,seed_probe_spec_id,launch_samples_per_axis,codec_version,status,unique_input_set_id,requested_at_utc,completed_at_utc) "
-            "VALUES(?1,?2,?3,NULL,?4,?5,?6,?7,NULL);",
-            -1,
-            &insert_run.st,
-            nullptr)
-        != SQLITE_OK) {
-        if (error_out) *error_out = sqlite3_errmsg(db_);
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        return false;
-    }
-    sqlite3_bind_int64(insert_run.st, 1, probe_set_id);
-    sqlite3_bind_int64(insert_run.st, 2, 0); // runtime init will fail fast until caller hydrates this run with a concrete savestate
-    sqlite3_bind_int64(insert_run.st, 3, probe_set_id); // neutral queueing path binds spec to set id
-    sqlite3_bind_int(insert_run.st, 4, 1);
-    sqlite3_bind_text(insert_run.st, 5, "queued", -1, SQLITE_STATIC);
-    sqlite3_bind_int64(insert_run.st, 6, *unique_input_set_id);
-    sqlite3_bind_int64(insert_run.st, 7, now);
-    if (sqlite3_step(insert_run.st) != SQLITE_DONE) {
-        if (error_out != nullptr) {
-            *error_out = sqlite3_errmsg(db_);
-        }
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        return false;
-    }
-
-    const auto probe_run_id = sqlite3_last_insert_rowid(db_);
-    if (!AttachAnalysisInputSetToProbeRun(db_, *unique_input_set_id, probe_run_id, error_out)) {
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        return false;
-    }
-    Statement insert_result;
-    if (sqlite3_prepare_v2(
-            db_,
-            "INSERT INTO sp_probe_result(probe_run_id,neutral_seed_value,grid_count,unique_count,result_status,recorded_at_utc) "
-            "VALUES(?1,NULL,0,0,'pending',?2);",
-            -1,
-            &insert_result.st,
-            nullptr)
-        != SQLITE_OK) {
-        if (error_out) *error_out = sqlite3_errmsg(db_);
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        return false;
-    }
-    sqlite3_bind_int64(insert_result.st, 1, probe_run_id);
-    sqlite3_bind_int64(insert_result.st, 2, now);
-    if (sqlite3_step(insert_result.st) != SQLITE_DONE) {
-        if (error_out != nullptr) {
-            *error_out = sqlite3_errmsg(db_);
-        }
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        return false;
-    }
-
-    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
-        if (error_out != nullptr) {
-            *error_out = sqlite3_errmsg(db_);
-        }
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        return false;
-    }
-    if (probe_run_id_out) {
-        *probe_run_id_out = probe_run_id;
-    }
-    return true;
-}
-
 std::optional<SeedProbeRunSnapshot> SqliteAnalysisDb::GetSeedProbeRun(std::int64_t probe_run_id) const {
     if (db_ == nullptr || probe_run_id <= 0) {
         return std::nullopt;
@@ -1729,8 +1723,12 @@ std::optional<SeedProbeRunSnapshot> SqliteAnalysisDb::GetSeedProbeRun(std::int64
     Statement st;
     if (sqlite3_prepare_v2(
             db_,
-            "SELECT r.probe_run_id,r.probe_set_id,s.probe_flavor,r.seed_probe_spec_id,r.entry_savestate_id,"
-            "r.launch_samples_per_axis,r.codec_version,r.status,r.unique_input_set_id,r.requested_at_utc,r.completed_at_utc "
+            "SELECT r.probe_run_id,r.materialization_key,r.probe_set_id,"
+            "s.probe_flavor,r.seed_probe_spec_id,r.entry_savestate_id,"
+            "r.launch_samples_per_axis,r.codec_version,r.status,r.accepted_input_set_id,r.requested_at_utc,r.completed_at_utc,"
+            "r.established_endpoint,r.established_endpoint_source_job_id,"
+            "r.conflicting_endpoint,r.conflicting_endpoint_source_job_id,"
+            "r.invalidation_diagnostic,r.invalidated_at_utc "
             "FROM sp_probe_run r JOIN sp_probe_set s ON s.probe_set_id=r.probe_set_id "
             "WHERE r.probe_run_id=?1 LIMIT 1;",
             -1,
@@ -1746,140 +1744,543 @@ std::optional<SeedProbeRunSnapshot> SqliteAnalysisDb::GetSeedProbeRun(std::int64
 
     SeedProbeRunSnapshot snapshot{};
     snapshot.probe_run_id = sqlite3_column_int64(st.st, 0);
-    snapshot.probe_set_id = sqlite3_column_int64(st.st, 1);
-    snapshot.probe_flavor = ColumnText(st.st, 2);
-    snapshot.seed_probe_spec_id = sqlite3_column_int64(st.st, 3);
-    snapshot.entry_savestate_id = sqlite3_column_int64(st.st, 4);
-    snapshot.launch_samples_per_axis = sqlite3_column_type(st.st, 5) == SQLITE_NULL ? 0 : sqlite3_column_int(st.st, 5);
-    snapshot.codec_version = sqlite3_column_int(st.st, 6);
-    snapshot.status = ColumnText(st.st, 7);
-    snapshot.unique_input_set_id = sqlite3_column_int64(st.st, 8);
-    snapshot.requested_at_utc = types::UtcTimePoint(std::chrono::milliseconds(sqlite3_column_int64(st.st, 9)));
-    if (sqlite3_column_type(st.st, 10) != SQLITE_NULL) {
-        snapshot.completed_at_utc = types::UtcTimePoint(std::chrono::milliseconds(sqlite3_column_int64(st.st, 10)));
+    snapshot.materialization_key = ColumnText(st.st, 1);
+    snapshot.probe_set_id = sqlite3_column_int64(st.st, 2);
+    snapshot.probe_flavor = ColumnText(st.st, 3);
+    snapshot.seed_probe_spec_id = sqlite3_column_int64(st.st, 4);
+    snapshot.entry_savestate_id = sqlite3_column_int64(st.st, 5);
+    snapshot.launch_samples_per_axis = sqlite3_column_type(st.st, 6) == SQLITE_NULL ? 0 : sqlite3_column_int(st.st, 6);
+    snapshot.codec_version = sqlite3_column_int(st.st, 7);
+    snapshot.status = ParseSeedProbeRunStatus(ColumnText(st.st, 8));
+    snapshot.accepted_input_set_id = sqlite3_column_int64(st.st, 9);
+    snapshot.requested_at_utc = types::UtcTimePoint(std::chrono::milliseconds(sqlite3_column_int64(st.st, 10)));
+    if (sqlite3_column_type(st.st, 11) != SQLITE_NULL) {
+        snapshot.completed_at_utc = types::UtcTimePoint(std::chrono::milliseconds(sqlite3_column_int64(st.st, 11)));
+    }
+    snapshot.established_endpoint = ParseSeedProbeEndpoint(
+        ColumnText(st.st, 12));
+    if (sqlite3_column_type(st.st, 13) != SQLITE_NULL) {
+        snapshot.established_endpoint_source_job_id =
+            sqlite3_column_int64(st.st, 13);
+    }
+    if (sqlite3_column_type(st.st, 14) != SQLITE_NULL) {
+        snapshot.conflicting_endpoint = ParseSeedProbeEndpoint(
+            ColumnText(st.st, 14));
+    }
+    if (sqlite3_column_type(st.st, 15) != SQLITE_NULL) {
+        snapshot.conflicting_endpoint_source_job_id =
+            sqlite3_column_int64(st.st, 15);
+    }
+    if (sqlite3_column_type(st.st, 16) != SQLITE_NULL) {
+        snapshot.invalidation_diagnostic = ColumnText(st.st, 16);
+    }
+    if (sqlite3_column_type(st.st, 17) != SQLITE_NULL) {
+        snapshot.invalidated_at_utc = types::UtcTimePoint(
+            std::chrono::milliseconds(
+                sqlite3_column_int64(st.st, 17)));
     }
     return snapshot;
 }
 
-bool SqliteAnalysisDb::SetSeedProbeRunNeutralSeed(
-    std::int64_t probe_run_id,
-    std::int64_t neutral_seed_value,
+bool SqliteAnalysisDb::UpdateSeedProbeRunStatus(
+    const UpdateSeedProbeRunStatusCommand& command,
+    bool* changed_out,
     std::string* error_out) {
+    if (changed_out) *changed_out = false;
     if (db_ == nullptr) {
         if (error_out) *error_out = "database handle is null";
         return false;
     }
-    if (probe_run_id <= 0) {
-        if (error_out) *error_out = "probe_run_id must be > 0";
+    if (command.probe_run_id <= 0
+        || command.expected_status == SeedProbeRunStatus::Unknown
+        || command.new_status == SeedProbeRunStatus::Unknown) {
+        if (error_out) *error_out = "invalid SeedProbe run status transition";
+        return false;
+    }
+    const bool terminal =
+        command.new_status == SeedProbeRunStatus::Completed
+        || command.new_status == SeedProbeRunStatus::CompletedPartial
+        || command.new_status == SeedProbeRunStatus::Failed;
+    const bool allowed =
+        (command.expected_status == SeedProbeRunStatus::Survey
+            && (command.new_status == SeedProbeRunStatus::Search
+                || command.new_status == SeedProbeRunStatus::Confirm
+                || command.new_status == SeedProbeRunStatus::Failed))
+        || (command.expected_status == SeedProbeRunStatus::Search
+            && (command.new_status == SeedProbeRunStatus::Confirm
+                || command.new_status == SeedProbeRunStatus::Failed))
+        || (command.expected_status == SeedProbeRunStatus::Confirm
+            && (command.new_status == SeedProbeRunStatus::Search
+                || command.new_status == SeedProbeRunStatus::Completed
+                || command.new_status == SeedProbeRunStatus::CompletedPartial
+                || command.new_status == SeedProbeRunStatus::Failed));
+    if (!allowed) {
+        if (error_out) *error_out = "unsupported SeedProbe run status transition";
+        return false;
+    }
+    if (terminal != command.completed_at_utc.has_value()) {
+        if (error_out) *error_out = "terminal SeedProbe status requires completed_at_utc and nonterminal status forbids it";
         return false;
     }
     if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
-        if (error_out != nullptr) {
-            *error_out = sqlite3_errmsg(db_);
-        }
+        if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;
     }
-    const auto now = types::UtcNow().time_since_epoch().count();
-
-    Statement get_result;
+    const auto rollback = [&]() {
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+    };
+    Statement current;
     if (sqlite3_prepare_v2(
             db_,
-            "SELECT probe_result_id FROM sp_probe_result WHERE probe_run_id=?1 LIMIT 1;",
+            "SELECT status FROM sp_probe_run WHERE probe_run_id=?1;",
             -1,
-            &get_result.st,
+            &current.st,
             nullptr)
         != SQLITE_OK) {
         if (error_out) *error_out = sqlite3_errmsg(db_);
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        rollback();
         return false;
     }
-    sqlite3_bind_int64(get_result.st, 1, probe_run_id);
-    auto get_result_step = sqlite3_step(get_result.st);
-    std::int64_t probe_result_id = 0;
-    if (get_result_step == SQLITE_ROW) {
-        probe_result_id = sqlite3_column_int64(get_result.st, 0);
-    } else if (get_result_step == SQLITE_DONE) {
-        Statement insert_result;
+    sqlite3_bind_int64(current.st, 1, command.probe_run_id);
+    if (sqlite3_step(current.st) != SQLITE_ROW) {
+        if (error_out) *error_out = "SeedProbe run does not exist";
+        rollback();
+        return false;
+    }
+    const auto current_status = ParseSeedProbeRunStatus(ColumnText(current.st, 0));
+    if (current_status == command.new_status) {
+        if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+            if (error_out) *error_out = sqlite3_errmsg(db_);
+            rollback();
+            return false;
+        }
+        return true;
+    }
+    if (current_status != command.expected_status) {
+        if (error_out) *error_out = "SeedProbe run status changed concurrently";
+        rollback();
+        return false;
+    }
+
+    if (command.new_status == SeedProbeRunStatus::Completed
+        || command.new_status == SeedProbeRunStatus::CompletedPartial) {
+        Statement accepted;
         if (sqlite3_prepare_v2(
                 db_,
-                "INSERT INTO sp_probe_result(probe_run_id,neutral_seed_value,grid_count,unique_count,result_status,recorded_at_utc) "
-                "VALUES(?1,NULL,0,0,'pending',?2);",
+                "SELECT "
+                "(SELECT COUNT(1) FROM sp_probe_result r "
+                " WHERE r.probe_run_id=?1 AND r.evidence_state='CONFIRMED' "
+                " AND r.confirmation_of_probe_result_id IS NULL),"
+                "(SELECT COUNT(1) FROM an_input_set_frame f JOIN sp_probe_run pr "
+                " ON pr.accepted_input_set_id=f.input_set_id WHERE pr.probe_run_id=?1),"
+                "(SELECT COUNT(1) FROM an_input_set_frame f JOIN sp_probe_run pr "
+                " ON pr.accepted_input_set_id=f.input_set_id "
+                " WHERE pr.probe_run_id=?1 AND NOT EXISTS ("
+                "  SELECT 1 FROM sp_probe_result r WHERE r.probe_run_id=pr.probe_run_id "
+                "  AND r.input_frame_id=f.input_frame_id AND r.evidence_state='CONFIRMED' "
+                "  AND r.confirmation_of_probe_result_id IS NULL));",
                 -1,
-                &insert_result.st,
+                &accepted.st,
                 nullptr)
             != SQLITE_OK) {
             if (error_out) *error_out = sqlite3_errmsg(db_);
-            (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+            rollback();
             return false;
         }
-        sqlite3_bind_int64(insert_result.st, 1, probe_run_id);
-        sqlite3_bind_int64(insert_result.st, 2, now);
-        if (sqlite3_step(insert_result.st) != SQLITE_DONE) {
-            if (error_out != nullptr) {
-                *error_out = sqlite3_errmsg(db_);
+        sqlite3_bind_int64(accepted.st, 1, command.probe_run_id);
+        if (sqlite3_step(accepted.st) != SQLITE_ROW
+            || sqlite3_column_int64(accepted.st, 0) <= 0
+            || sqlite3_column_int64(accepted.st, 0) != sqlite3_column_int64(accepted.st, 1)
+            || sqlite3_column_int64(accepted.st, 2) != 0) {
+            if (error_out) {
+                *error_out = "completed SeedProbe run must publish every confirmed representative frame";
             }
-            (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+            rollback();
             return false;
         }
-        probe_result_id = sqlite3_last_insert_rowid(db_);
+    }
+
+    Statement update;
+    if (sqlite3_prepare_v2(
+            db_,
+            "UPDATE sp_probe_run SET status=?2,completed_at_utc=?3 "
+            "WHERE probe_run_id=?1 AND status=?4;",
+            -1,
+            &update.st,
+            nullptr)
+        != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        rollback();
+        return false;
+    }
+    const auto expected = ToDbString(command.expected_status);
+    const auto desired = ToDbString(command.new_status);
+    sqlite3_bind_int64(update.st, 1, command.probe_run_id);
+    sqlite3_bind_text(update.st, 2, desired.data(), static_cast<int>(desired.size()), SQLITE_TRANSIENT);
+    if (command.completed_at_utc.has_value()) {
+        sqlite3_bind_int64(update.st, 3, command.completed_at_utc->time_since_epoch().count());
     } else {
-        if (error_out != nullptr) {
-            *error_out = sqlite3_errmsg(db_);
-        }
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        sqlite3_bind_null(update.st, 3);
+    }
+    sqlite3_bind_text(update.st, 4, expected.data(), static_cast<int>(expected.size()), SQLITE_TRANSIENT);
+    if (sqlite3_step(update.st) != SQLITE_DONE || sqlite3_changes(db_) != 1) {
+        if (error_out) *error_out = "SeedProbe run status changed concurrently";
+        rollback();
         return false;
     }
 
-    Statement update_result;
-    if (sqlite3_prepare_v2(
+    const std::string_view event_type =
+        command.new_status == SeedProbeRunStatus::Failed
+        ? "AnalysisSeedProbe.RunFailed.v1"
+        : terminal
+            ? "AnalysisSeedProbe.RunCompleted.v1"
+            : "AnalysisSeedProbe.RunStatusChanged.v1";
+    if (!InsertSeedProbeOutboxEvent(
             db_,
-            "UPDATE sp_probe_result SET neutral_seed_value=?2, result_status='completed', recorded_at_utc=?3 WHERE probe_result_id=?1;",
-            -1,
-            &update_result.st,
-            nullptr)
-        != SQLITE_OK) {
-        if (error_out) *error_out = sqlite3_errmsg(db_);
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+            event_type,
+            "probe_run",
+            std::to_string(command.probe_run_id),
+            command.correlation_id,
+            command.causation_id,
+            command.changed_at_utc.time_since_epoch().count(),
+            "probe_run",
+            command.probe_run_id,
+            error_out)) {
+        rollback();
         return false;
     }
-    sqlite3_bind_int64(update_result.st, 1, probe_result_id);
-    sqlite3_bind_int64(update_result.st, 2, neutral_seed_value);
-    sqlite3_bind_int64(update_result.st, 3, now);
-    if (sqlite3_step(update_result.st) != SQLITE_DONE) {
-        if (error_out != nullptr) {
-            *error_out = sqlite3_errmsg(db_);
-        }
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        return false;
-    }
-
-    Statement update_run;
-    if (sqlite3_prepare_v2(
-            db_,
-            "UPDATE sp_probe_run SET status='completed', completed_at_utc=?2 WHERE probe_run_id=?1;",
-            -1,
-            &update_run.st,
-            nullptr)
-        != SQLITE_OK) {
-        if (error_out) *error_out = sqlite3_errmsg(db_);
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        return false;
-    }
-    sqlite3_bind_int64(update_run.st, 1, probe_run_id);
-    sqlite3_bind_int64(update_run.st, 2, now);
-    if (sqlite3_step(update_run.st) != SQLITE_DONE) {
-        if (error_out != nullptr) {
-            *error_out = sqlite3_errmsg(db_);
-        }
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        return false;
-    }
-
     if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
-        if (error_out != nullptr) {
-            *error_out = sqlite3_errmsg(db_);
-        }
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        rollback();
+        return false;
+    }
+    if (changed_out) *changed_out = true;
+    return true;
+}
+
+bool SqliteAnalysisDb::ObserveSeedProbeEndpoint(
+    const ObserveSeedProbeEndpointCommand& command,
+    ObserveSeedProbeEndpointReceipt* receipt_out,
+    std::string* error_out) {
+    if (receipt_out != nullptr) *receipt_out = {};
+    if (db_ == nullptr || command.probe_run_id <= 0
+        || command.source_job_id <= 0
+        || command.endpoint == SeedProbeEndpoint::Unknown
+        || command.observed_at_utc.time_since_epoch().count() <= 0) {
+        if (error_out) *error_out =
+            "invalid SeedProbe endpoint observation";
+        return false;
+    }
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr)
+        != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    const auto rollback = [&]() {
         (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+    };
+    Statement current;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT status,established_endpoint,conflicting_endpoint "
+            "FROM sp_probe_run WHERE probe_run_id=?1;",
+            -1,
+            &current.st,
+            nullptr) != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        rollback();
+        return false;
+    }
+    sqlite3_bind_int64(current.st, 1, command.probe_run_id);
+    if (sqlite3_step(current.st) != SQLITE_ROW) {
+        if (error_out) *error_out = "SeedProbe run does not exist";
+        rollback();
+        return false;
+    }
+    const auto status = ParseSeedProbeRunStatus(ColumnText(current.st, 0));
+    const auto established = ParseSeedProbeEndpoint(
+        ColumnText(current.st, 1));
+    const auto prior_conflict = ParseSeedProbeEndpoint(
+        ColumnText(current.st, 2));
+    ObserveSeedProbeEndpointReceipt receipt{};
+
+    if (established == SeedProbeEndpoint::Unknown) {
+        Statement establish;
+        if (sqlite3_prepare_v2(
+                db_,
+                "UPDATE sp_probe_run SET established_endpoint=?2,"
+                "established_endpoint_source_job_id=?3 "
+                "WHERE probe_run_id=?1 AND established_endpoint IS NULL "
+                "AND status<>'INVALIDATED';",
+                -1,
+                &establish.st,
+                nullptr) != SQLITE_OK) {
+            if (error_out) *error_out = sqlite3_errmsg(db_);
+            rollback();
+            return false;
+        }
+        const auto endpoint = ToDbString(command.endpoint);
+        sqlite3_bind_int64(establish.st, 1, command.probe_run_id);
+        sqlite3_bind_text(establish.st, 2, endpoint.data(),
+            static_cast<int>(endpoint.size()), SQLITE_TRANSIENT);
+        sqlite3_bind_int64(establish.st, 3, command.source_job_id);
+        if (sqlite3_step(establish.st) != SQLITE_DONE
+            || sqlite3_changes(db_) != 1) {
+            if (error_out) *error_out =
+                "SeedProbe endpoint establishment changed concurrently";
+            rollback();
+            return false;
+        }
+        receipt.disposition =
+            SeedProbeEndpointObservationDisposition::Established;
+        receipt.established_endpoint = command.endpoint;
+    } else if (established == command.endpoint) {
+        receipt.disposition = status == SeedProbeRunStatus::Invalidated
+            ? SeedProbeEndpointObservationDisposition::
+                AlreadyInvalidatedMatching
+            : SeedProbeEndpointObservationDisposition::Matched;
+        receipt.established_endpoint = established;
+        if (prior_conflict != SeedProbeEndpoint::Unknown) {
+            receipt.conflicting_endpoint = prior_conflict;
+        }
+    } else if (status == SeedProbeRunStatus::Invalidated) {
+        receipt.disposition =
+            SeedProbeEndpointObservationDisposition::
+                AlreadyInvalidatedConflicting;
+        receipt.established_endpoint = established;
+        receipt.conflicting_endpoint = prior_conflict ==
+                SeedProbeEndpoint::Unknown
+            ? std::optional<SeedProbeEndpoint>(command.endpoint)
+            : std::optional<SeedProbeEndpoint>(prior_conflict);
+    } else {
+        Statement invalidate;
+        if (sqlite3_prepare_v2(
+                db_,
+                "UPDATE sp_probe_run SET status='INVALIDATED',"
+                "conflicting_endpoint=?2,"
+                "conflicting_endpoint_source_job_id=?3,"
+                "invalidation_diagnostic=?4,invalidated_at_utc=?5,"
+                "completed_at_utc=?5 "
+                "WHERE probe_run_id=?1 AND status<>'INVALIDATED' "
+                "AND established_endpoint=?6;",
+                -1,
+                &invalidate.st,
+                nullptr) != SQLITE_OK) {
+            if (error_out) *error_out = sqlite3_errmsg(db_);
+            rollback();
+            return false;
+        }
+        const auto conflict = ToDbString(command.endpoint);
+        const auto expected = ToDbString(established);
+        const auto observed_at =
+            command.observed_at_utc.time_since_epoch().count();
+        sqlite3_bind_int64(invalidate.st, 1, command.probe_run_id);
+        sqlite3_bind_text(invalidate.st, 2, conflict.data(),
+            static_cast<int>(conflict.size()), SQLITE_TRANSIENT);
+        sqlite3_bind_int64(invalidate.st, 3, command.source_job_id);
+        sqlite3_bind_text(invalidate.st, 4,
+            command.diagnostic.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(invalidate.st, 5, observed_at);
+        sqlite3_bind_text(invalidate.st, 6, expected.data(),
+            static_cast<int>(expected.size()), SQLITE_TRANSIENT);
+        if (sqlite3_step(invalidate.st) != SQLITE_DONE
+            || sqlite3_changes(db_) != 1) {
+            if (error_out) *error_out =
+                "SeedProbe endpoint invalidation changed concurrently";
+            rollback();
+            return false;
+        }
+        if (!InsertSeedProbeOutboxEvent(
+                db_,
+                "AnalysisSeedProbe.RunFailed.v1",
+                "probe_run",
+                std::to_string(command.probe_run_id),
+                command.correlation_id,
+                command.causation_id,
+                observed_at,
+                "probe_run",
+                command.probe_run_id,
+                error_out)) {
+            rollback();
+            return false;
+        }
+        receipt.disposition =
+            SeedProbeEndpointObservationDisposition::Invalidated;
+        receipt.established_endpoint = established;
+        receipt.conflicting_endpoint = command.endpoint;
+    }
+
+    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr)
+        != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        rollback();
+        return false;
+    }
+    if (receipt_out != nullptr) *receipt_out = receipt;
+    if (error_out != nullptr) error_out->clear();
+    return true;
+}
+
+bool SqliteAnalysisDb::ReplaceSeedProbeAcceptedInputFrames(
+    const ReplaceSeedProbeAcceptedInputFramesCommand& command,
+    std::string* error_out) {
+    if (db_ == nullptr || command.probe_run_id <= 0 || command.input_frame_ids.empty()) {
+        if (error_out) *error_out = "SeedProbe run and at least one accepted input frame are required";
+        return false;
+    }
+    std::unordered_set<std::int64_t> distinct;
+    for (const auto input_frame_id : command.input_frame_ids) {
+        if (input_frame_id <= 0 || !distinct.insert(input_frame_id).second) {
+            if (error_out) *error_out = "accepted input frames must be positive and unique";
+            return false;
+        }
+    }
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    const auto rollback = [&]() {
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+    };
+    const auto input_set_id = AcceptedInputSetIdForProbeRun(db_, command.probe_run_id);
+    if (!input_set_id.has_value()) {
+        if (error_out) *error_out = "SeedProbe run does not have an accepted input set";
+        rollback();
+        return false;
+    }
+
+    Statement confirmed;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT 1 FROM sp_probe_result "
+            "WHERE probe_run_id=?1 AND input_frame_id=?2 "
+            "AND evidence_state='CONFIRMED' AND confirmation_of_probe_result_id IS NULL LIMIT 1;",
+            -1,
+            &confirmed.st,
+            nullptr)
+        != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        rollback();
+        return false;
+    }
+    for (const auto input_frame_id : command.input_frame_ids) {
+        sqlite3_reset(confirmed.st);
+        sqlite3_clear_bindings(confirmed.st);
+        sqlite3_bind_int64(confirmed.st, 1, command.probe_run_id);
+        sqlite3_bind_int64(confirmed.st, 2, input_frame_id);
+        if (sqlite3_step(confirmed.st) != SQLITE_ROW) {
+            if (error_out) {
+                *error_out = "accepted input frames must be confirmed representatives from the same SeedProbe run";
+            }
+            rollback();
+            return false;
+        }
+    }
+
+    bool already_matches = true;
+    std::size_t current_ordinal = 0;
+    Statement current;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT ordinal,input_frame_id FROM an_input_set_frame "
+            "WHERE input_set_id=?1 ORDER BY ordinal ASC;",
+            -1,
+            &current.st,
+            nullptr)
+        != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        rollback();
+        return false;
+    }
+    sqlite3_bind_int64(current.st, 1, *input_set_id);
+    for (;;) {
+        const auto step = sqlite3_step(current.st);
+        if (step == SQLITE_DONE) break;
+        if (step != SQLITE_ROW) {
+            if (error_out) *error_out = sqlite3_errmsg(db_);
+            rollback();
+            return false;
+        }
+        if (current_ordinal >= command.input_frame_ids.size()
+            || sqlite3_column_int64(current.st, 0) != static_cast<std::int64_t>(current_ordinal)
+            || sqlite3_column_int64(current.st, 1) != command.input_frame_ids[current_ordinal]) {
+            already_matches = false;
+        }
+        ++current_ordinal;
+    }
+    already_matches = already_matches && current_ordinal == command.input_frame_ids.size();
+    if (already_matches) {
+        if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+            if (error_out) *error_out = sqlite3_errmsg(db_);
+            rollback();
+            return false;
+        }
+        return true;
+    }
+
+    Statement remove;
+    if (sqlite3_prepare_v2(
+            db_,
+            "DELETE FROM an_input_set_frame WHERE input_set_id=?1;",
+            -1,
+            &remove.st,
+            nullptr)
+        != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        rollback();
+        return false;
+    }
+    sqlite3_bind_int64(remove.st, 1, *input_set_id);
+    if (sqlite3_step(remove.st) != SQLITE_DONE) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        rollback();
+        return false;
+    }
+
+    Statement insert;
+    if (sqlite3_prepare_v2(
+            db_,
+            "INSERT INTO an_input_set_frame(input_set_id,ordinal,input_frame_id,added_at_utc) "
+            "VALUES(?1,?2,?3,?4);",
+            -1,
+            &insert.st,
+            nullptr)
+        != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        rollback();
+        return false;
+    }
+    for (std::size_t ordinal = 0; ordinal < command.input_frame_ids.size(); ++ordinal) {
+        sqlite3_reset(insert.st);
+        sqlite3_clear_bindings(insert.st);
+        sqlite3_bind_int64(insert.st, 1, *input_set_id);
+        sqlite3_bind_int64(insert.st, 2, static_cast<std::int64_t>(ordinal));
+        sqlite3_bind_int64(insert.st, 3, command.input_frame_ids[ordinal]);
+        sqlite3_bind_int64(insert.st, 4, command.replaced_at_utc.time_since_epoch().count());
+        if (sqlite3_step(insert.st) != SQLITE_DONE) {
+            if (error_out) *error_out = sqlite3_errmsg(db_);
+            rollback();
+            return false;
+        }
+    }
+
+    if (!InsertSeedProbeOutboxEvent(
+            db_,
+            "AnalysisSeedProbe.AcceptedInputFramesReplaced.v1",
+            "probe_run",
+            std::to_string(command.probe_run_id),
+            command.correlation_id,
+            command.causation_id,
+            command.replaced_at_utc.time_since_epoch().count(),
+            "probe_run",
+            command.probe_run_id,
+            error_out)) {
+        rollback();
+        return false;
+    }
+    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        rollback();
         return false;
     }
     return true;
@@ -1921,408 +2322,6 @@ bool SqliteAnalysisDb::SetSeedProbeRunEntrySavestate(
     return true;
 }
 
-bool SqliteAnalysisDb::RecordSeedProbeNeutralSeed(
-    const RecordSeedProbeNeutralSeedCommand& command,
-    std::int64_t* neutral_seed_id_out,
-    std::string* error_out) {
-    if (db_ == nullptr) {
-        if (error_out) *error_out = "database handle is null";
-        return false;
-    }
-    if (command.probe_result_id <= 0 || command.source_kind.empty()) {
-        if (error_out) *error_out = "required command fields are missing";
-        return false;
-    }
-
-    const auto probe_run_id = ProbeRunIdForResult(db_, command.probe_result_id);
-    if (!probe_run_id.has_value()) {
-        if (error_out) *error_out = "probe_result_id does not resolve to probe_run";
-        return false;
-    }
-
-    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
-        if (error_out != nullptr) {
-            *error_out = sqlite3_errmsg(db_);
-        }
-        return false;
-    }
-
-    Statement insert_neutral;
-    if (sqlite3_prepare_v2(
-            db_,
-            "INSERT INTO sp_neutral_seed(probe_result_id,neutral_seed_value,source_kind,recorded_at_utc) "
-            "VALUES(?1,?2,?3,?4);",
-            -1,
-            &insert_neutral.st,
-            nullptr)
-        != SQLITE_OK) {
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        if (error_out) *error_out = sqlite3_errmsg(db_);
-        return false;
-    }
-
-    sqlite3_bind_int64(insert_neutral.st, 1, command.probe_result_id);
-    sqlite3_bind_int64(insert_neutral.st, 2, command.neutral_seed_value);
-    sqlite3_bind_text(insert_neutral.st, 3, command.source_kind.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(insert_neutral.st, 4, command.recorded_at_utc.time_since_epoch().count());
-
-    if (sqlite3_step(insert_neutral.st) != SQLITE_DONE) {
-        if (error_out != nullptr) {
-            *error_out = sqlite3_errmsg(db_);
-        }
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        return false;
-    }
-
-    const auto neutral_seed_id = sqlite3_last_insert_rowid(db_);
-    if (!InsertSeedProbeOutboxEvent(
-            db_,
-            "AnalysisSeedProbe.NeutralSeedRecorded.v1",
-            "probe_run",
-            std::to_string(probe_run_id.value()),
-            command.correlation_id,
-            command.causation_id,
-            command.recorded_at_utc.time_since_epoch().count(),
-            "neutral_seed",
-            neutral_seed_id,
-            error_out)) {
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        return false;
-    }
-
-    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
-        if (error_out != nullptr) {
-            *error_out = sqlite3_errmsg(db_);
-        }
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        return false;
-    }
-
-    if (neutral_seed_id_out) {
-        *neutral_seed_id_out = neutral_seed_id;
-    }
-    return true;
-}
-
-bool SqliteAnalysisDb::EnsureSeedProbeNeutralSeed(
-    const RecordSeedProbeNeutralSeedCommand& command,
-    bool* inserted_out,
-    std::int64_t* neutral_seed_id_out,
-    std::string* error_out) {
-    if (inserted_out) *inserted_out = false;
-    if (neutral_seed_id_out) *neutral_seed_id_out = 0;
-    if (db_ == nullptr) {
-        if (error_out) *error_out = "database handle is null";
-        return false;
-    }
-    if (command.probe_result_id <= 0 || command.source_kind.empty()) {
-        if (error_out) *error_out = "required command fields are missing";
-        return false;
-    }
-    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
-        if (error_out) *error_out = sqlite3_errmsg(db_);
-        return false;
-    }
-    auto fail = [&](std::string message) {
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        if (error_out) *error_out = std::move(message);
-        return false;
-    };
-
-    Statement result_st;
-    if (sqlite3_prepare_v2(
-            db_,
-            "SELECT probe_run_id,neutral_seed_value FROM sp_probe_result WHERE probe_result_id=?1;",
-            -1,
-            &result_st.st,
-            nullptr)
-        != SQLITE_OK) {
-        return fail(sqlite3_errmsg(db_));
-    }
-    sqlite3_bind_int64(result_st.st, 1, command.probe_result_id);
-    if (sqlite3_step(result_st.st) != SQLITE_ROW) {
-        return fail("probe_result_id does not resolve to probe_run");
-    }
-    const auto probe_run_id = sqlite3_column_int64(result_st.st, 0);
-    const auto parent_seed = ColumnInt64Optional(result_st.st, 1);
-    if (parent_seed.has_value() && *parent_seed != command.neutral_seed_value) {
-        return fail("probe result neutral seed conflicts with requested neutral seed row");
-    }
-
-    Statement existing_st;
-    if (sqlite3_prepare_v2(
-            db_,
-            "SELECT neutral_seed_id,neutral_seed_value,source_kind FROM sp_neutral_seed "
-            "WHERE probe_result_id=?1 ORDER BY neutral_seed_id ASC LIMIT 2;",
-            -1,
-            &existing_st.st,
-            nullptr)
-        != SQLITE_OK) {
-        return fail(sqlite3_errmsg(db_));
-    }
-    sqlite3_bind_int64(existing_st.st, 1, command.probe_result_id);
-    const auto first_rc = sqlite3_step(existing_st.st);
-    if (first_rc == SQLITE_ROW) {
-        const auto existing_id = sqlite3_column_int64(existing_st.st, 0);
-        const auto existing_seed = sqlite3_column_int64(existing_st.st, 1);
-        const auto existing_source = ColumnText(existing_st.st, 2);
-        const auto second_rc = sqlite3_step(existing_st.st);
-        if (second_rc == SQLITE_ROW) {
-            return fail("multiple neutral seed rows exist for probe result");
-        }
-        if (second_rc != SQLITE_DONE) {
-            return fail(sqlite3_errmsg(db_));
-        }
-        if (existing_seed != command.neutral_seed_value || existing_source != command.source_kind) {
-            return fail("existing neutral seed row conflicts with requested values");
-        }
-        if (!parent_seed.has_value()) {
-            Statement update_parent;
-            if (sqlite3_prepare_v2(
-                    db_,
-                    "UPDATE sp_probe_result SET neutral_seed_value=?2 WHERE probe_result_id=?1;",
-                    -1,
-                    &update_parent.st,
-                    nullptr)
-                != SQLITE_OK) {
-                return fail(sqlite3_errmsg(db_));
-            }
-            sqlite3_bind_int64(update_parent.st, 1, command.probe_result_id);
-            sqlite3_bind_int64(update_parent.st, 2, command.neutral_seed_value);
-            if (sqlite3_step(update_parent.st) != SQLITE_DONE) {
-                return fail(sqlite3_errmsg(db_));
-            }
-        }
-        if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
-            return fail(sqlite3_errmsg(db_));
-        }
-        if (neutral_seed_id_out) *neutral_seed_id_out = existing_id;
-        return true;
-    }
-    if (first_rc != SQLITE_DONE) {
-        return fail(sqlite3_errmsg(db_));
-    }
-
-    Statement insert_st;
-    if (sqlite3_prepare_v2(
-            db_,
-            "INSERT INTO sp_neutral_seed(probe_result_id,neutral_seed_value,source_kind,recorded_at_utc) "
-            "VALUES(?1,?2,?3,?4);",
-            -1,
-            &insert_st.st,
-            nullptr)
-        != SQLITE_OK) {
-        return fail(sqlite3_errmsg(db_));
-    }
-    sqlite3_bind_int64(insert_st.st, 1, command.probe_result_id);
-    sqlite3_bind_int64(insert_st.st, 2, command.neutral_seed_value);
-    sqlite3_bind_text(insert_st.st, 3, command.source_kind.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(insert_st.st, 4, command.recorded_at_utc.time_since_epoch().count());
-    if (sqlite3_step(insert_st.st) != SQLITE_DONE) {
-        return fail(sqlite3_errmsg(db_));
-    }
-    const auto neutral_seed_id = sqlite3_last_insert_rowid(db_);
-
-    if (!parent_seed.has_value()) {
-        Statement update_parent;
-        if (sqlite3_prepare_v2(
-                db_,
-                "UPDATE sp_probe_result SET neutral_seed_value=?2 WHERE probe_result_id=?1;",
-                -1,
-                &update_parent.st,
-                nullptr)
-            != SQLITE_OK) {
-            return fail(sqlite3_errmsg(db_));
-        }
-        sqlite3_bind_int64(update_parent.st, 1, command.probe_result_id);
-        sqlite3_bind_int64(update_parent.st, 2, command.neutral_seed_value);
-        if (sqlite3_step(update_parent.st) != SQLITE_DONE) {
-            return fail(sqlite3_errmsg(db_));
-        }
-    }
-
-    if (!InsertSeedProbeOutboxEvent(
-            db_,
-            "AnalysisSeedProbe.NeutralSeedRecorded.v1",
-            "probe_run",
-            std::to_string(probe_run_id),
-            command.correlation_id,
-            command.causation_id,
-            command.recorded_at_utc.time_since_epoch().count(),
-            "neutral_seed",
-            neutral_seed_id,
-            error_out)) {
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        return false;
-    }
-    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
-        return fail(sqlite3_errmsg(db_));
-    }
-    if (inserted_out) *inserted_out = true;
-    if (neutral_seed_id_out) *neutral_seed_id_out = neutral_seed_id;
-    return true;
-}
-
-bool SqliteAnalysisDb::RecordSeedProbeGridSeed(
-    const RecordSeedProbeGridSeedCommand& command,
-    std::int64_t* grid_seed_id_out,
-    std::string* error_out) {
-    if (db_ == nullptr) {
-        if (error_out) *error_out = "database handle is null";
-        return false;
-    }
-    if (command.probe_result_id <= 0 || command.axis_xy_id < 0 || command.source_family.empty()) {
-        if (error_out) *error_out = "required command fields are missing";
-        return false;
-    }
-
-    const auto probe_run_id = ProbeRunIdForResult(db_, command.probe_result_id);
-    if (!probe_run_id.has_value()) {
-        if (error_out) *error_out = "probe_result_id does not resolve to probe_run";
-        return false;
-    }
-
-    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
-        if (error_out != nullptr) {
-            *error_out = sqlite3_errmsg(db_);
-        }
-        return false;
-    }
-
-    const auto axis_x = static_cast<int>((static_cast<std::uint64_t>(command.axis_xy_id) >> 8) & 0xff);
-    const auto axis_y = static_cast<int>(static_cast<std::uint64_t>(command.axis_xy_id) & 0xff);
-
-    Statement existing_grid;
-    if (sqlite3_prepare_v2(
-            db_,
-            "SELECT grid_seed_id FROM sp_grid_seed "
-            "WHERE probe_result_id=?1 AND source_family=?2 AND axis_xy_id=?3 AND seed_value=?4 AND seed_delta=?5 "
-            "LIMIT 1;",
-            -1,
-            &existing_grid.st,
-            nullptr)
-        != SQLITE_OK) {
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        if (error_out) *error_out = sqlite3_errmsg(db_);
-        return false;
-    }
-    sqlite3_bind_int64(existing_grid.st, 1, command.probe_result_id);
-    sqlite3_bind_text(existing_grid.st, 2, command.source_family.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(existing_grid.st, 3, command.axis_xy_id);
-    sqlite3_bind_int64(existing_grid.st, 4, command.seed_value);
-    sqlite3_bind_int64(existing_grid.st, 5, command.seed_delta);
-    const auto existing_grid_rc = sqlite3_step(existing_grid.st);
-    if (existing_grid_rc == SQLITE_ROW) {
-        if (grid_seed_id_out) {
-            *grid_seed_id_out = sqlite3_column_int64(existing_grid.st, 0);
-        }
-        if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
-            if (error_out != nullptr) {
-                *error_out = sqlite3_errmsg(db_);
-            }
-            (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-            return false;
-        }
-        return true;
-    }
-    if (existing_grid_rc != SQLITE_DONE) {
-        if (error_out != nullptr) {
-            *error_out = sqlite3_errmsg(db_);
-        }
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        return false;
-    }
-
-    Statement insert_axis;
-    if (sqlite3_prepare_v2(
-            db_,
-            "INSERT OR IGNORE INTO sp_axis_xy(axis_xy_id,x,y) "
-            "VALUES(?1,?2,?3);",
-            -1,
-            &insert_axis.st,
-            nullptr)
-        != SQLITE_OK) {
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        if (error_out) *error_out = sqlite3_errmsg(db_);
-        return false;
-    }
-
-    sqlite3_bind_int64(insert_axis.st, 1, command.axis_xy_id);
-    sqlite3_bind_int(insert_axis.st, 2, axis_x);
-    sqlite3_bind_int(insert_axis.st, 3, axis_y);
-    if (sqlite3_step(insert_axis.st) != SQLITE_DONE) {
-        if (error_out != nullptr) {
-            *error_out = sqlite3_errmsg(db_);
-        }
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        return false;
-    }
-
-    Statement insert_grid;
-    if (sqlite3_prepare_v2(
-            db_,
-            "INSERT INTO sp_grid_seed(probe_result_id,source_family,axis_xy_id,seed_value,seed_delta,recorded_at_utc) "
-            "VALUES(?1,?2,?3,?4,?5,?6);",
-            -1,
-            &insert_grid.st,
-            nullptr)
-        != SQLITE_OK) {
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        if (error_out) *error_out = sqlite3_errmsg(db_);
-        return false;
-    }
-
-    sqlite3_bind_int64(insert_grid.st, 1, command.probe_result_id);
-    sqlite3_bind_text(insert_grid.st, 2, command.source_family.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(insert_grid.st, 3, command.axis_xy_id);
-    sqlite3_bind_int64(insert_grid.st, 4, command.seed_value);
-    sqlite3_bind_int64(insert_grid.st, 5, command.seed_delta);
-    sqlite3_bind_int64(insert_grid.st, 6, command.recorded_at_utc.time_since_epoch().count());
-    if (sqlite3_step(insert_grid.st) != SQLITE_DONE) {
-        if (error_out != nullptr) {
-            *error_out = sqlite3_errmsg(db_);
-        }
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        return false;
-    }
-
-    const auto grid_seed_id = sqlite3_last_insert_rowid(db_);
-    if (!InsertSeedProbeOutboxEvent(
-            db_,
-            "AnalysisSeedProbe.GridSeedRecorded.v1",
-            "probe_run",
-            std::to_string(probe_run_id.value()),
-            command.correlation_id,
-            command.causation_id,
-            command.recorded_at_utc.time_since_epoch().count(),
-            "grid_seed",
-            grid_seed_id,
-            error_out)) {
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        return false;
-    }
-
-    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
-        if (error_out != nullptr) {
-            *error_out = sqlite3_errmsg(db_);
-        }
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        return false;
-    }
-
-    if (grid_seed_id_out) {
-        *grid_seed_id_out = grid_seed_id;
-    }
-    return true;
-}
-
-bool SqliteAnalysisDb::RecordSeedProbeUniqueSeed(
-    const RecordSeedProbeUniqueSeedCommand& command,
-    std::int64_t* unique_seed_id_out,
-    std::string* error_out) {
-    bool inserted = false;
-    return EnsureSeedProbeUniqueSeedDelta(command, &inserted, unique_seed_id_out, error_out) && inserted;
-}
 
 bool SqliteAnalysisDb::RecordSeedProbeEncounterProjection(
     const RecordSeedProbeEncounterProjectionCommand& command,
@@ -2408,108 +2407,6 @@ bool SqliteAnalysisDb::RecordSeedProbeEncounterProjection(
     return true;
 }
 
-bool SqliteAnalysisDb::CompleteSeedProbeRun(
-    const CompleteSeedProbeRunCommand& command,
-    std::int64_t* probe_result_id_out,
-    std::string* error_out) {
-    if (db_ == nullptr) {
-        if (error_out) *error_out = "database handle is null";
-        return false;
-    }
-    if (command.probe_run_id <= 0 || command.result_status.empty() || command.run_status.empty()) {
-        if (error_out) *error_out = "required command fields are missing";
-        return false;
-    }
-
-    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
-        if (error_out != nullptr) {
-            *error_out = sqlite3_errmsg(db_);
-        }
-        return false;
-    }
-
-    Statement insert_result;
-    if (sqlite3_prepare_v2(
-            db_,
-            "INSERT INTO sp_probe_result(probe_run_id,neutral_seed_value,grid_count,unique_count,result_status,recorded_at_utc) "
-            "VALUES(?1,?2,?3,?4,?5,?6);",
-            -1,
-            &insert_result.st,
-            nullptr)
-        != SQLITE_OK) {
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        if (error_out) *error_out = sqlite3_errmsg(db_);
-        return false;
-    }
-
-    sqlite3_bind_int64(insert_result.st, 1, command.probe_run_id);
-    if (command.neutral_seed_value.has_value()) sqlite3_bind_int64(insert_result.st, 2, command.neutral_seed_value.value());
-    else sqlite3_bind_null(insert_result.st, 2);
-    sqlite3_bind_int(insert_result.st, 3, command.grid_count);
-    sqlite3_bind_int(insert_result.st, 4, command.unique_count);
-    sqlite3_bind_text(insert_result.st, 5, command.result_status.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(insert_result.st, 6, command.recorded_at_utc.time_since_epoch().count());
-    if (sqlite3_step(insert_result.st) != SQLITE_DONE) {
-        if (error_out != nullptr) {
-            *error_out = sqlite3_errmsg(db_);
-        }
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        return false;
-    }
-
-    Statement update_run;
-    if (sqlite3_prepare_v2(
-            db_,
-            "UPDATE sp_probe_run SET status=?2, completed_at_utc=?3 WHERE probe_run_id=?1;",
-            -1,
-            &update_run.st,
-            nullptr)
-        != SQLITE_OK) {
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        if (error_out) *error_out = sqlite3_errmsg(db_);
-        return false;
-    }
-
-    sqlite3_bind_int64(update_run.st, 1, command.probe_run_id);
-    sqlite3_bind_text(update_run.st, 2, command.run_status.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(update_run.st, 3, command.completed_at_utc.time_since_epoch().count());
-    if (sqlite3_step(update_run.st) != SQLITE_DONE) {
-        if (error_out != nullptr) {
-            *error_out = sqlite3_errmsg(db_);
-        }
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        return false;
-    }
-
-    const auto probe_result_id = sqlite3_last_insert_rowid(db_);
-    if (!InsertSeedProbeOutboxEvent(
-            db_,
-            "AnalysisSeedProbe.RunCompleted.v1",
-            "probe_run",
-            std::to_string(command.probe_run_id),
-            command.correlation_id,
-            command.causation_id,
-            command.recorded_at_utc.time_since_epoch().count(),
-            "probe_result",
-            probe_result_id,
-            error_out)) {
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        return false;
-    }
-
-    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
-        if (error_out != nullptr) {
-            *error_out = sqlite3_errmsg(db_);
-        }
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        return false;
-    }
-
-    if (probe_result_id_out) {
-        *probe_result_id_out = probe_result_id;
-    }
-    return true;
-}
 
 bool SqliteAnalysisDb::CreateBattleSet(
     const CreateBattleSetCommand& command,
@@ -2605,6 +2502,8 @@ bool SqliteAnalysisDb::AddBattleSeedCandidate(
         return false;
     }
     if (command.battle_set_id <= 0
+        || command.seed_value < 0
+        || command.seed_value > static_cast<std::int64_t>((std::numeric_limits<std::uint32_t>::max)())
         || command.source_kind == BattleSeedCandidateSourceKind::Unknown
         || command.candidate_status == BattleSeedCandidateStatus::Unknown) {
         if (error_out) *error_out = "required command fields are missing";
@@ -2618,10 +2517,49 @@ bool SqliteAnalysisDb::AddBattleSeedCandidate(
         return false;
     }
 
+    if (command.source_kind == BattleSeedCandidateSourceKind::SeedProbeConfirmedResult) {
+        if (!command.source_probe_result_id.has_value() || *command.source_probe_result_id <= 0) {
+            (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+            if (error_out) *error_out = "confirmed SeedProbe candidate requires source_probe_result_id";
+            return false;
+        }
+        Statement source;
+        if (sqlite3_prepare_v2(
+                db_,
+                "SELECT input_frame_id,seed_value,evidence_state,confirmation_of_probe_result_id "
+                "FROM sp_probe_result WHERE probe_result_id=?1;",
+                -1,
+                &source.st,
+                nullptr)
+            != SQLITE_OK) {
+            (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+            if (error_out) *error_out = sqlite3_errmsg(db_);
+            return false;
+        }
+        sqlite3_bind_int64(source.st, 1, *command.source_probe_result_id);
+        if (sqlite3_step(source.st) != SQLITE_ROW
+            || ColumnText(source.st, 2) != "CONFIRMED"
+            || sqlite3_column_type(source.st, 3) != SQLITE_NULL
+            || static_cast<std::uint32_t>(sqlite3_column_int64(source.st, 1))
+                != static_cast<std::uint32_t>(command.seed_value)
+            || (command.source_input_frame_id.has_value()
+                && sqlite3_column_int64(source.st, 0) != *command.source_input_frame_id)) {
+            (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+            if (error_out) {
+                *error_out = "SeedProbe candidate source must be the matching confirmed representative result";
+            }
+            return false;
+        }
+    } else if (command.source_probe_result_id.has_value()) {
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        if (error_out) *error_out = "only SP_CONFIRMED_RESULT candidates may reference a SeedProbe result";
+        return false;
+    }
+
     Statement insert_candidate;
     if (sqlite3_prepare_v2(
             db_,
-            "INSERT INTO ab_seed_candidate(battle_set_id,source_unique_seed_id,source_input_frame_id,seed_value,source_kind,candidate_status,created_at_utc) "
+            "INSERT INTO ab_seed_candidate(battle_set_id,source_probe_result_id,source_input_frame_id,seed_value,source_kind,candidate_status,created_at_utc) "
             "VALUES(?1,?2,?3,?4,?5,?6,?7);",
             -1,
             &insert_candidate.st,
@@ -2633,7 +2571,7 @@ bool SqliteAnalysisDb::AddBattleSeedCandidate(
     }
 
     sqlite3_bind_int64(insert_candidate.st, 1, command.battle_set_id);
-    if (command.source_unique_seed_id.has_value()) sqlite3_bind_int64(insert_candidate.st, 2, command.source_unique_seed_id.value());
+    if (command.source_probe_result_id.has_value()) sqlite3_bind_int64(insert_candidate.st, 2, command.source_probe_result_id.value());
     else sqlite3_bind_null(insert_candidate.st, 2);
     if (command.source_input_frame_id.has_value()) sqlite3_bind_int64(insert_candidate.st, 3, command.source_input_frame_id.value());
     else sqlite3_bind_null(insert_candidate.st, 3);
@@ -3719,7 +3657,7 @@ std::vector<BattleSeedCandidateRow> SqliteAnalysisDb::ListBattleSeedCandidates(s
     }
     Statement st;
     constexpr const char* kSql =
-        "SELECT seed_candidate_id,battle_set_id,source_unique_seed_id,source_input_frame_id,seed_value,source_kind,candidate_status,created_at_utc "
+        "SELECT seed_candidate_id,battle_set_id,source_probe_result_id,source_input_frame_id,seed_value,source_kind,candidate_status,created_at_utc "
         "FROM ab_seed_candidate WHERE battle_set_id=?1 ORDER BY seed_candidate_id ASC;";
     if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK) {
         return rows;
@@ -3729,7 +3667,7 @@ std::vector<BattleSeedCandidateRow> SqliteAnalysisDb::ListBattleSeedCandidates(s
         BattleSeedCandidateRow row{};
         row.seed_candidate_id = sqlite3_column_int64(st.st, 0);
         row.battle_set_id = sqlite3_column_int64(st.st, 1);
-        row.source_unique_seed_id = ColumnInt64Optional(st.st, 2);
+        row.source_probe_result_id = ColumnInt64Optional(st.st, 2);
         row.source_input_frame_id = ColumnInt64Optional(st.st, 3);
         row.seed_value = sqlite3_column_int64(st.st, 4);
         row.source_kind = ParseBattleSeedCandidateSourceKind(ColumnText(st.st, 5));
@@ -3746,7 +3684,7 @@ std::optional<BattleSeedCandidateRow> SqliteAnalysisDb::GetBattleSeedCandidate(s
     }
     Statement st;
     constexpr const char* kSql =
-        "SELECT seed_candidate_id,battle_set_id,source_unique_seed_id,source_input_frame_id,seed_value,source_kind,candidate_status,created_at_utc "
+        "SELECT seed_candidate_id,battle_set_id,source_probe_result_id,source_input_frame_id,seed_value,source_kind,candidate_status,created_at_utc "
         "FROM ab_seed_candidate WHERE seed_candidate_id=?1;";
     if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK) {
         return std::nullopt;
@@ -3758,7 +3696,7 @@ std::optional<BattleSeedCandidateRow> SqliteAnalysisDb::GetBattleSeedCandidate(s
     BattleSeedCandidateRow row{};
     row.seed_candidate_id = sqlite3_column_int64(st.st, 0);
     row.battle_set_id = sqlite3_column_int64(st.st, 1);
-    row.source_unique_seed_id = ColumnInt64Optional(st.st, 2);
+    row.source_probe_result_id = ColumnInt64Optional(st.st, 2);
     row.source_input_frame_id = ColumnInt64Optional(st.st, 3);
     row.seed_value = sqlite3_column_int64(st.st, 4);
     row.source_kind = ParseBattleSeedCandidateSourceKind(ColumnText(st.st, 5));
@@ -4490,10 +4428,12 @@ bool SqliteAnalysisDb::CreateBattleResults(
         (command.rng_effect_kind == RngEffectKind::Preserve && command.fixed_draw_count == std::optional<std::int64_t>(0))
         || (command.rng_effect_kind == RngEffectKind::AdvanceFixed && command.fixed_draw_count.has_value() && *command.fixed_draw_count >= 0)
         || (command.rng_effect_kind == RngEffectKind::Variable && !command.fixed_draw_count.has_value());
-    const bool valid_seed_ref = command.selected_seed_ref_kind == "analysisseedprobe.neutral_seed"
-        || command.selected_seed_ref_kind == "analysisseedprobe.unique_seed";
+    const bool valid_seed_ref =
+        command.selected_seed_ref_kind == "analysisseedprobe.confirmed_result";
     if (db_ == nullptr || command.battle_completion_id <= 0 || command.workflow_instance_id <= 0
         || command.workflow_step_id <= 0 || command.entry_savestate_id <= 0 || command.selected_seed_ref_id <= 0
+        || command.selected_seed_value < 0
+        || command.selected_seed_value > static_cast<std::int64_t>((std::numeric_limits<std::uint32_t>::max)())
         || command.status != "QUEUED" || effect.empty() || !valid_effect_count || !valid_seed_ref
         || (command.exec_job_id.has_value() && *command.exec_job_id <= 0)) {
         if (error_out) *error_out = "invalid battle results create command";
@@ -4528,15 +4468,13 @@ bool SqliteAnalysisDb::CreateBattleResults(
     const auto completion_savestate_id = sqlite3_column_int64(completion_check.st, 1);
 
     Statement seed_check;
-    const char* seed_sql = command.selected_seed_ref_kind == "analysisseedprobe.neutral_seed"
-        ? "SELECT n.neutral_seed_value,pr.entry_savestate_id,pr.codec_version,ps.probe_flavor FROM sp_neutral_seed n "
-          "JOIN sp_probe_result r ON r.probe_result_id=n.probe_result_id "
-          "JOIN sp_probe_run pr ON pr.probe_run_id=r.probe_run_id "
-          "JOIN sp_probe_set ps ON ps.probe_set_id=pr.probe_set_id WHERE n.neutral_seed_id=?1;"
-        : "SELECT u.seed_value,pr.entry_savestate_id,pr.codec_version,ps.probe_flavor FROM sp_unique_seed u "
-          "JOIN sp_probe_result r ON r.probe_result_id=u.probe_result_id "
-          "JOIN sp_probe_run pr ON pr.probe_run_id=r.probe_run_id "
-          "JOIN sp_probe_set ps ON ps.probe_set_id=pr.probe_set_id WHERE u.unique_seed_id=?1;";
+    constexpr const char* seed_sql =
+        "SELECT r.seed_value,pr.entry_savestate_id,pr.codec_version,ps.probe_flavor "
+        "FROM sp_probe_result r "
+        "JOIN sp_probe_run pr ON pr.probe_run_id=r.probe_run_id "
+        "JOIN sp_probe_set ps ON ps.probe_set_id=pr.probe_set_id "
+        "WHERE r.probe_result_id=?1 AND r.evidence_state='CONFIRMED' "
+        "AND r.confirmation_of_probe_result_id IS NULL;";
     if (sqlite3_prepare_v2(db_, seed_sql, -1, &seed_check.st, nullptr) != SQLITE_OK) return fail(sqlite3_errmsg(db_));
     sqlite3_bind_int64(seed_check.st, 1, command.selected_seed_ref_id);
     if (sqlite3_step(seed_check.st) != SQLITE_ROW) {
@@ -5191,7 +5129,11 @@ std::optional<SeedProbePayloadRecord> SqliteAnalysisDb::ResolveSeedProbePayload(
         record.probe_set_id = view->probe_set_id;
         return record;
     }
-    if (envelope.event_type == "AnalysisSeedProbe.RunRequested.v1") {
+    if (envelope.event_type == "AnalysisSeedProbe.RunRequested.v1"
+        || envelope.event_type == "AnalysisSeedProbe.AcceptedInputFramesReplaced.v1"
+        || envelope.event_type == "AnalysisSeedProbe.RunStatusChanged.v1"
+        || envelope.event_type == "AnalysisSeedProbe.RunCompleted.v1"
+        || envelope.event_type == "AnalysisSeedProbe.RunFailed.v1") {
         const auto view = seed_probe_row_resolver_.ResolveSeedProbeRunRequested(envelope.payload_ref_kind, envelope.payload_ref_id);
         if (!view.has_value()) {
             return std::nullopt;
@@ -5202,30 +5144,9 @@ std::optional<SeedProbePayloadRecord> SqliteAnalysisDb::ResolveSeedProbePayload(
         record.probe_run_id = view->probe_run_id;
         return record;
     }
-    if (envelope.event_type == "AnalysisSeedProbe.NeutralSeedRecorded.v1") {
-        const auto view = seed_probe_row_resolver_.ResolveSeedProbeNeutralSeedRecorded(envelope.payload_ref_kind, envelope.payload_ref_id);
-        if (!view.has_value()) {
-            return std::nullopt;
-        }
-
-        SeedProbePayloadRecord record{};
-        record.probe_run_id = view->probe_run_id;
-        record.probe_result_id = view->probe_result_id;
-        return record;
-    }
-    if (envelope.event_type == "AnalysisSeedProbe.GridSeedRecorded.v1") {
-        const auto view = seed_probe_row_resolver_.ResolveSeedProbeGridSeedRecorded(envelope.payload_ref_kind, envelope.payload_ref_id);
-        if (!view.has_value()) {
-            return std::nullopt;
-        }
-
-        SeedProbePayloadRecord record{};
-        record.probe_run_id = view->probe_run_id;
-        record.probe_result_id = view->probe_result_id;
-        return record;
-    }
-    if (envelope.event_type == "AnalysisSeedProbe.UniqueSeedRecorded.v1") {
-        const auto view = seed_probe_row_resolver_.ResolveSeedProbeUniqueSeedRecorded(envelope.payload_ref_kind, envelope.payload_ref_id);
+    if (envelope.event_type == "AnalysisSeedProbe.ObservationRecorded.v1"
+        || envelope.event_type == "AnalysisSeedProbe.EvidenceStateChanged.v1") {
+        const auto view = seed_probe_row_resolver_.ResolveSeedProbeResult(envelope.payload_ref_kind, envelope.payload_ref_id);
         if (!view.has_value()) {
             return std::nullopt;
         }
@@ -5245,18 +5166,6 @@ std::optional<SeedProbePayloadRecord> SqliteAnalysisDb::ResolveSeedProbePayload(
         record.probe_run_id = view->probe_run_id;
         return record;
     }
-    if (envelope.event_type == "AnalysisSeedProbe.RunCompleted.v1") {
-        const auto view = seed_probe_row_resolver_.ResolveSeedProbeRunCompleted(envelope.payload_ref_kind, envelope.payload_ref_id);
-        if (!view.has_value()) {
-            return std::nullopt;
-        }
-
-        SeedProbePayloadRecord record{};
-        record.probe_run_id = view->probe_run_id;
-        record.probe_result_id = view->probe_result_id;
-        return record;
-    }
-
     return std::nullopt;
 }
 

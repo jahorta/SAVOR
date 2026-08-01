@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <exception>
 #include <limits>
 #include <sstream>
 #include <utility>
@@ -10,6 +11,7 @@
 #include "Execution/Workflow/WorkflowOrchestration.h"
 #include "Execution/Workflow/WorkflowUnitActivationFactory.h"
 #include "Tas/DtmFile.h"
+#include "Utils/Hash.h"
 
 namespace savor::e2e {
 
@@ -72,14 +74,6 @@ void AppendTasMovieRtcArgumentIfSingle(
 savor::db::DbConfigPaths BuildDbPaths(const CliOptions& options) {
     const auto root = options.workspace_root.value_or(std::filesystem::temp_directory_path() / "savor-e2e-default");
     const bool reuse_existing_database = std::find(
-        options.scenarios.begin(),
-        options.scenarios.end(),
-        "battle_end") != options.scenarios.end()
-        || std::find(
-            options.scenarios.begin(),
-            options.scenarios.end(),
-            "battle_end_results") != options.scenarios.end()
-        || std::find(
             options.scenarios.begin(),
             options.scenarios.end(),
             "navigation_context") != options.scenarios.end();
@@ -324,10 +318,30 @@ bool SeedStateSavestate(
         return false;
     }
 
+    std::string savestate_sha256;
+    try {
+        savestate_sha256 =
+            hash::sha256_of_file(savestate_file.string());
+    } catch (const std::exception& exception) {
+        if (error_out) {
+            *error_out =
+                "failed hashing savestate: "
+                + std::string(exception.what());
+        }
+        return false;
+    }
+    if (savestate_sha256.size() != 64) {
+        if (error_out) {
+            *error_out =
+                "savestate hash is not a complete SHA-256";
+        }
+        return false;
+    }
+
     std::int64_t artifact_id = 0;
     if (!state_db->StoreArtifact(
             {
-                .sha256 = "savor-e2e-" + savestate_file.filename().string(),
+                .sha256 = std::move(savestate_sha256),
                 .size_bytes = static_cast<std::int64_t>(std::filesystem::file_size(savestate_file)),
                 .compression_kind = 0,
                 .filename = std::filesystem::absolute(savestate_file).string(),
@@ -442,9 +456,9 @@ bool SeedWorkflowGraphExecution(
     if (!authoring_db->SaveWorkflowGraph(
             {
                 .name = "SavorE2E workflow graph seedprobe",
-                .description = "Graph-style seed probe chain scenario",
+                .description = "Single-step SeedProbe run scenario",
                 .graph_version = 1,
-                .graph_hash = "savor-e2e.workflow_graph.seedprobe",
+                .graph_hash = "savor-e2e.workflow_graph.seedprobe.v2",
                 .nodes = {
                     {
                         .node_key = "probe_1",
@@ -456,7 +470,7 @@ bool SeedWorkflowGraphExecution(
                             { .input_key = "entry_savestate", .data_kind = "state.savestate_id", .display_name = "Entry savestate" },
                         },
                         .possible_outputs = {
-                            { .output_key = "unique_input_frames", .data_kind = "analysis.input_frame_set_id", .display_name = "Unique input frames" },
+                            { .output_key = "accepted_input_frames", .data_kind = "analysis.input_frame_set_id", .display_name = "Accepted input frames" },
                         },
                     },
                 },
@@ -489,6 +503,16 @@ bool SeedWorkflowGraphExecution(
         &activation_error);
     if (!probe_activation.has_value()) {
         if (error_out) *error_out = activation_error;
+        return false;
+    }
+    if (probe_activation->steps.size() != 1
+        || probe_activation->steps.front().step_kind
+            != "seedprobe.run") {
+        if (error_out) {
+            *error_out =
+                "battle_seed_probe must resolve to exactly one "
+                "seedprobe.run workflow step";
+        }
         return false;
     }
     command.unit_activations.push_back(std::move(*probe_activation));
@@ -608,9 +632,10 @@ bool SeedTasMovieSeedProbeWorkflow(
     if (!authoring_db->SaveWorkflowGraph(
             {
                 .name = "SavorE2E workflow graph TasMovie SeedProbe",
-                .description = "Graph-style TAS movie into seed probe scenario",
+                .description = "Graph-style TAS movie into one SeedProbe run",
                 .graph_version = 1,
-                .graph_hash = "savor-e2e.workflow_graph.tasmovie_seedprobe",
+                .graph_hash =
+                    "savor-e2e.workflow_graph.tasmovie_seedprobe.v2",
                 .nodes = {
                     {
                         .node_key = "tas_1",
@@ -633,7 +658,7 @@ bool SeedTasMovieSeedProbeWorkflow(
                             { .input_key = "entry_savestate", .data_kind = "state.savestate_id", .display_name = "Entry savestate" },
                         },
                         .possible_outputs = {
-                            { .output_key = "unique_input_frames", .data_kind = "analysis.input_frame_set_id", .display_name = "Unique input frames" },
+                            { .output_key = "accepted_input_frames", .data_kind = "analysis.input_frame_set_id", .display_name = "Accepted input frames" },
                         },
                     },
                 },
@@ -685,6 +710,16 @@ bool SeedTasMovieSeedProbeWorkflow(
         &activation_error);
     if (!probe_activation.has_value()) {
         if (error_out) *error_out = activation_error;
+        return false;
+    }
+    if (probe_activation->steps.size() != 1
+        || probe_activation->steps.front().step_kind
+            != "seedprobe.run") {
+        if (error_out) {
+            *error_out =
+                "battle_seed_probe must resolve to exactly one "
+                "seedprobe.run workflow step";
+        }
         return false;
     }
     command.unit_activations.push_back(std::move(*probe_activation));

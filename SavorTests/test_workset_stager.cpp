@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include "Phases/Programs/SeedProbe/SeedProbeModule.h"
 #include "Runner/Runtime/Worksets/WorksetStager.h"
 #include "Utils/Hash.h"
 #include "common/ScriptedDolphinBackend.h"
@@ -140,6 +141,11 @@ WorkerWorksetDefinition CurrentSessionWorkset(
 {
     WorkerWorksetDefinition definition;
     definition.workset_id = WorkerWorksetId(workset_id);
+    const auto phase = seedprobe::SeedProbeFullPhaseDefinitionV2();
+    definition.phase_invocation = {
+        .invocation_id = {1, 1},
+        .program = phase->identity(),
+    };
     definition.baseline.state_kind =
         ProgramBaselineStateKind::CurrentSession;
     definition.baseline.current_session =
@@ -147,7 +153,8 @@ WorkerWorksetDefinition CurrentSessionWorkset(
             SessionId(7),
             StateEpoch(9),
             true};
-    definition.baseline.lineage = "exact-start";
+    definition.baseline.lineage =
+        phase->runtime_contract().baseline_lineage;
     const std::vector<std::uint8_t> bytes{'a', 'b', 'c'};
     definition.baseline.components.push_back({
         "test.host-only-component",
@@ -156,32 +163,31 @@ WorkerWorksetDefinition CurrentSessionWorkset(
         hash::sha256(bytes.data(), bytes.size()),
         ProgramBaselineComponentPolicy::ResetForEveryItem,
         bytes});
-    definition.execution_key.module = {
-        "test.no_effect/1",
-        1,
-        std::string(64, 'a')};
-    definition.execution_key.entrypoint = "run";
+    definition.execution_key.module =
+        phase->runtime_contract().module;
+    definition.execution_key.entrypoint =
+        phase->runtime_contract().entrypoint;
     definition.execution_key.verified_dependency_sha256 =
-        std::string(64, 'b');
+        phase->runtime_contract().verified_dependency_sha256;
     definition.execution_key.runtime_profile_sha256 =
-        std::string(64, 'c');
+        phase->runtime_contract().runtime_profile_sha256;
     definition.execution_key.baseline =
         ComputeProgramBaselineKey(definition.baseline);
     definition.execution_key.movie_policy_sha256 =
-        std::string(64, 'd');
+        phase->runtime_contract().movie_policy_sha256;
     definition.execution_key.service_policy_sha256 =
-        std::string(64, 'e');
+        phase->runtime_contract().service_policy_sha256;
     definition.execution_key.canonical_sha256 =
         ComputeWorkerWorksetExecutionKeyHash(
             definition.execution_key);
     WorksetItemTemplate item;
     item.item_id = WorkerWorksetItemId(1);
     item.ordinal = 0;
-    item.invocation.invocation_id = InvocationId(2);
-    item.invocation.attempt_id = AttemptId(3);
-    item.invocation.module = definition.execution_key.module;
-    item.invocation.entrypoint = "run";
-    item.invocation.template_payload = {1, 2, 3};
+    item.execution.execution_id = ProgramExecutionId(2);
+    item.execution.attempt_id = AttemptId(3);
+    item.execution.input_payload =
+        seedprobe::EncodeSeedProbeExecutionInputV2(
+            {savor::GCInputFrame{}});
     item.declared_terminal_bytes =
         kMinimumWorksetTerminalReservationBytes;
     item.correlation = {"job", "claim", "parent"};

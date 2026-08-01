@@ -5,6 +5,7 @@
 #include "Execution/ExecutionEngine.h"
 #include "Execution/HostActivityTracker.h"
 #include "Services/Capture/CaptureService.h"
+#include "Services/Artifacts/RuntimeArtifactSink.h"
 #include "Services/Input/InputArbiter.h"
 #include "Services/Memory/GuestMemory.h"
 #include "Services/Memory/GuestMutationService.h"
@@ -48,9 +49,7 @@ struct SessionOpenOptions
 {
     BackendOpenOptions backend;
     std::optional<std::filesystem::path> read_only_movie_path;
-    std::filesystem::path screenshot_directory;
-    std::chrono::milliseconds screenshot_timeout{3000};
-    bool screenshot_on_terminal = false;
+    std::filesystem::path runtime_artifact_root;
 };
 
 struct SessionSnapshot
@@ -205,6 +204,11 @@ public:
         return capture_service_.get();
     }
 
+    [[nodiscard]] RuntimeArtifactSink* artifact_sink() noexcept
+    {
+        return artifact_sink_.get();
+    }
+
     [[nodiscard]] SessionResourceLedger* resources() noexcept
     {
         return resource_ledger_.get();
@@ -270,6 +274,7 @@ private:
     std::unique_ptr<GuestMemory> guest_memory_;
     std::unique_ptr<GuestMutationService> guest_mutations_;
     std::unique_ptr<ScreenshotService> screenshot_service_;
+    std::unique_ptr<RuntimeArtifactSink> artifact_sink_;
     std::unique_ptr<SessionStateBackendAdapter> state_backend_adapter_;
     std::unique_ptr<StateService> state_service_;
     std::unique_ptr<InputMovieReservationAdapter>

@@ -23,7 +23,6 @@
 #include <QtWidgets/QLineEdit>
 #include <QtWidgets/QMessageBox>
 #include <QtWidgets/QPushButton>
-#include <QtWidgets/QSpinBox>
 #include <QtWidgets/QStyle>
 #include <QtWidgets/QToolButton>
 #include <QtWidgets/QVBoxLayout>
@@ -256,13 +255,7 @@ void SettingsPage::createWidgets()
     dolphinBaseDirEdit_->setPlaceholderText("Path to DolphinQt base directory with portable.txt");
     dolphinBrowseButton_ = new QPushButton("Browse…", coordinatorSection.content);
 
-    eventBufferSpin_ = new QSpinBox(coordinatorSection.content);
-    eventBufferSpin_->setObjectName("jobsRefreshSpin");
-    eventBufferSpin_->setMinimum(8);
-    eventBufferSpin_->setMaximum(1000000);
-
     startPausedCheck_ = new QCheckBox("Start paused", coordinatorSection.content);
-    requeueFailuresAutomaticallyCheck_ = new QCheckBox("Requeue failures automatically", coordinatorSection.content);
 
     QHBoxLayout* isoLayout = new QHBoxLayout();
     isoLayout->setContentsMargins(0, 0, 0, 0);
@@ -279,16 +272,14 @@ void SettingsPage::createWidgets()
     QHBoxLayout* startupLayout = new QHBoxLayout();
     startupLayout->setContentsMargins(0, 0, 0, 0);
     startupLayout->setSpacing(10);
-    startupLayout->addWidget(eventBufferSpin_);
     startupLayout->addWidget(startPausedCheck_);
-    startupLayout->addWidget(requeueFailuresAutomaticallyCheck_);
     startupLayout->addStretch();
 
     QLabel* isoLabel = new QLabel("ISO", coordinatorSection.content);
     isoLabel->setObjectName("settingsFieldLabel");
     QLabel* dolphinLabel = new QLabel("Dolphin base", coordinatorSection.content);
     dolphinLabel->setObjectName("settingsFieldLabel");
-    QLabel* startupLabel = new QLabel("Buffer + startup", coordinatorSection.content);
+    QLabel* startupLabel = new QLabel("Startup", coordinatorSection.content);
     startupLabel->setObjectName("settingsFieldLabel");
 
     coordinatorFormLayout->addWidget(isoLabel, 0, 0);
@@ -308,9 +299,7 @@ void SettingsPage::createWidgets()
     if (coordinatorController_) {
         connect(isoPathEdit_, &QLineEdit::textChanged, coordinatorController_, &CoordinatorController::setIsoPath);
         connect(dolphinBaseDirEdit_, &QLineEdit::textChanged, coordinatorController_, &CoordinatorController::setDolphinBaseDir);
-        connect(eventBufferSpin_, qOverload<int>(&QSpinBox::valueChanged), coordinatorController_, &CoordinatorController::setEventBufferCapacity);
         connect(startPausedCheck_, &QCheckBox::toggled, coordinatorController_, &CoordinatorController::setStartPaused);
-        connect(requeueFailuresAutomaticallyCheck_, &QCheckBox::toggled, coordinatorController_, &CoordinatorController::setRestartFailedJobsAutomatically);
     }
     connect(isoBrowseButton_, &QPushButton::clicked, this, &SettingsPage::browseForIsoPath);
     connect(dolphinBrowseButton_, &QPushButton::clicked, this, &SettingsPage::browseForDolphinBaseDir);
@@ -628,6 +617,14 @@ void SettingsPage::startStorageOperation(StorageOperation op, const QString& wor
         return;
     }
 
+    // Storage operations may stop or replace the database runtime. Tear down
+    // both execution coordinators first so they cannot retain raw pointers
+    // into a stopped DB service, registry, or result-blob store.
+    if (coordinatorController_ != nullptr
+        && coordinatorController_->isRunning()) {
+        coordinatorController_->stopCoordinator();
+    }
+
     storageBusy_ = true;
     currentStorageOperation_ = op;
     refreshStorageUi();
@@ -712,16 +709,8 @@ void SettingsPage::refreshCoordinatorUi()
         dolphinBaseDirEdit_->setText(coordinatorController_->dolphinBaseDir());
     }
     {
-        const QSignalBlocker blocker(eventBufferSpin_);
-        eventBufferSpin_->setValue(coordinatorController_->eventBufferCapacity());
-    }
-    {
         const QSignalBlocker blocker(startPausedCheck_);
         startPausedCheck_->setChecked(coordinatorController_->startPaused());
-    }
-    {
-        const QSignalBlocker blocker(requeueFailuresAutomaticallyCheck_);
-        requeueFailuresAutomaticallyCheck_->setChecked(coordinatorController_->restartFailedJobsAutomatically());
     }
 
     const bool running = coordinatorController_->isRunning();
@@ -729,9 +718,7 @@ void SettingsPage::refreshCoordinatorUi()
     isoBrowseButton_->setEnabled(!running);
     dolphinBaseDirEdit_->setEnabled(!running);
     dolphinBrowseButton_->setEnabled(!running);
-    eventBufferSpin_->setEnabled(!running);
     startPausedCheck_->setEnabled(!running);
-    requeueFailuresAutomaticallyCheck_->setEnabled(!running);
 
     coordinatorValidationLabel_->setText(
         coordinatorController_->validationMessage().isEmpty()
