@@ -4880,6 +4880,14 @@ struct WorkerRuntime::Impl
                 ? std::optional<WorkerWorksetId>(
                       pending_workset_staging->workset_id)
                 : std::nullopt;
+            current_snapshot.resident_workset_state = active_workset
+                ? std::optional<WorkerWorksetState>(active_workset->state)
+                : staged_workset
+                ? std::optional<WorkerWorksetState>(staged_workset->state)
+                : pending_workset_staging
+                ? std::optional<WorkerWorksetState>(
+                    WorkerWorksetState::Validating)
+                : std::nullopt;
             current_snapshot.active_workset_item =
                 active_invocation &&
                     active_invocation->workset_item_id
@@ -4920,6 +4928,14 @@ struct WorkerRuntime::Impl
             : pending_workset_staging
             ? std::optional<WorkerWorksetId>(
                   pending_workset_staging->workset_id)
+            : std::nullopt;
+        current_snapshot.resident_workset_state = active_workset
+            ? std::optional<WorkerWorksetState>(active_workset->state)
+            : staged_workset
+            ? std::optional<WorkerWorksetState>(staged_workset->state)
+            : pending_workset_staging
+            ? std::optional<WorkerWorksetState>(
+                WorkerWorksetState::Validating)
             : std::nullopt;
         current_snapshot.active_workset_item =
             active_invocation &&
@@ -5183,7 +5199,7 @@ struct WorkerRuntime::Impl
                     RuntimeModuleManifestEntry{
                         module.identity,
                         module.entrypoints,
-                        catalog.dependency_manifest_sha256,
+                        module.dependency_lock_sha256,
                         module.development_only});
             }
         }

@@ -36,6 +36,10 @@ struct FullPhaseRuntimeContract
 {
     ProgramModuleIdentity module;
     std::string entrypoint;
+    std::string dependency_lock_sha256;
+    // The historical name is retained at the workset boundary. This value is
+    // the full ProgramInvocation compatibility hash, not the dependency-lock
+    // hash used for prepared-module admission.
     std::string verified_dependency_sha256;
     std::string runtime_profile_sha256;
     program::InvocationStatePolicy state_policy =

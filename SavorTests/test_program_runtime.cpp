@@ -575,6 +575,18 @@ TEST(ProgramRuntime, PreparesSprmBeforeAcceptingSpri)
         preparation->module,
         EnvelopeIdentity(module.identity));
     EXPECT_EQ(runtime.definitions().size(), 1u);
+    const ProgramRuntimeCatalogSnapshot prepared_catalog =
+        runtime.catalog();
+    ASSERT_EQ(prepared_catalog.modules.size(), 1u);
+    EXPECT_EQ(
+        prepared_catalog.modules.front().dependency_lock_sha256,
+        ComputeProgramDependencyLockHashV1(
+            ProgramDependencyLock{
+                .ir_version = kCanonicalIrVersionV1})
+            .ToHex());
+    EXPECT_NE(
+        prepared_catalog.modules.front().dependency_lock_sha256,
+        prepared_catalog.dependency_manifest_sha256);
 
     const ProgramInvocation invocation = Invocation(module);
     CancellationSource cancellation(invocation.invocation_id);
@@ -603,6 +615,10 @@ TEST(
         expected.push_back(ProgramRuntimeCatalogModule{
             EnvelopeIdentity(modules.back().identity),
             {"run"},
+            ComputeProgramDependencyLockHashV1(
+                ProgramDependencyLock{
+                    .ir_version = kCanonicalIrVersionV1})
+                .ToHex(),
             false});
     }
     ProgramRuntimeConfig config = TestRuntimeConfig();

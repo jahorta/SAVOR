@@ -411,8 +411,7 @@ WorksetValidationResult ValidateWorkerRuntimeManifest(
             module.module.revision == 0 ||
             !CompleteSha256(module.module.canonical_hash) ||
             module.entrypoints.empty() ||
-            module.dependency_manifest_sha256 !=
-                manifest.dependency_manifest_sha256 ||
+            !CompleteSha256(module.dependency_manifest_sha256) ||
             !module_ids
                  .emplace(
                      module.module.canonical_id,

@@ -2048,6 +2048,9 @@ ProgramKindDescriptor BuildSeedProbeProgramDescriptor(
     descriptor.program_kind =
         static_cast<std::int32_t>(savor::PK_SeedProbe);
     descriptor.program_name = "SeedProbe";
+    descriptor.full_phase_identity =
+        savor::runtime::seedprobe::
+            SeedProbeFullPhaseDefinitionV2()->identity();
     descriptor.job_materializer = std::move(materializer);
     descriptor.workset_reconstruction =
         std::move(execution.reconstruction);

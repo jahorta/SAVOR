@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "../../../SavorCore/Runner/Runtime/Worksets/WorksetTypes.h"
+#include "../../../SavorCore/Runner/Runtime/FullPhase/FullPhaseProgram.h"
 #include "../../../SavorCore/Runner/Script/PhaseScriptVM.h"
 
 namespace savor {
@@ -355,6 +356,8 @@ struct IWorkflowTransitionHandler {
 struct ProgramKindDescriptor {
     std::int32_t program_kind = 0;
     std::string program_name;
+    std::optional<savor::runtime::fullphase::FullPhaseProgramIdentity>
+        full_phase_identity;
 
     std::shared_ptr<IJobPersistenceAdapter> job_persistence;
     std::shared_ptr<IWorkflowGraphJobPersistenceAdapter> graph_job_persistence;

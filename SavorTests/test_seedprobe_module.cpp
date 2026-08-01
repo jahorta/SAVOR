@@ -650,10 +650,9 @@ std::optional<std::int64_t> RecordObservation(
     char hash_digit,
     std::string* error_out)
 {
-    bool inserted = false;
-    std::int64_t result_id = 0;
+    savor::db::RecordSeedProbeObservationReceipt receipt{};
     if (analysis_db == nullptr ||
-        !analysis_db->EnsureSeedProbeObservation(
+        !analysis_db->RecordSeedProbeObservation(
             {
                 .probe_run_id = probe_run_id,
                 .input_frame_id = input_frame_id,
@@ -667,6 +666,8 @@ std::optional<std::int64_t> RecordObservation(
                     std::string(64, hash_digit),
                 .confirmation_of_probe_result_id =
                     confirmation_of,
+                .endpoint =
+                    savor::db::SeedProbeEndpoint::AfterRandSeedSet,
                 .recorded_at_utc =
                     savor::db::types::UtcTimePoint(
                         std::chrono::milliseconds(2000)),
@@ -675,14 +676,13 @@ std::optional<std::int64_t> RecordObservation(
                 .causation_id =
                     "seedprobe-descriptor-test",
             },
-            &inserted,
-            &result_id,
+            &receipt,
             error_out) ||
-        !inserted)
+        !receipt.inserted)
     {
         return std::nullopt;
     }
-    return result_id;
+    return receipt.observation.probe_result_id;
 }
 
 bool TransitionEvidence(
@@ -1454,6 +1454,9 @@ TEST(SeedProbeModule, ProductionEnvelopeIsCanonicalAndVerifierAccepted)
         phase->runtime_contract().runtime_profile_sha256.size(),
         64u);
     EXPECT_EQ(
+        phase->runtime_contract().dependency_lock_sha256.size(),
+        64u);
+    EXPECT_EQ(
         phase->runtime_contract().verified_dependency_sha256.size(),
         64u);
 
@@ -1486,6 +1489,14 @@ TEST(SeedProbeModule, ProductionEnvelopeIsCanonicalAndVerifierAccepted)
                 ? ""
                 : verified.diagnostics.front().message);
     ASSERT_TRUE(verified.verified);
+    EXPECT_EQ(
+        phase->runtime_contract().dependency_lock_sha256,
+        ComputeProgramDependencyLockHashV1(
+            verified.verified->dependency_lock)
+            .ToHex());
+    EXPECT_NE(
+        phase->runtime_contract().dependency_lock_sha256,
+        phase->runtime_contract().verified_dependency_sha256);
     const auto input_status = ValidateProgramValueGraph(
         invocation->input,
         decoded.value->entrypoints.front().input_type,
@@ -3451,7 +3462,7 @@ TEST_F(
         savor::db::SeedProbeEndpoint::AfterRandSeedSet);
     EXPECT_EQ(
         established->established_endpoint_source_job_id,
-        std::optional<std::int64_t>(first_job->job_id));
+        std::optional<std::int64_t>(run->neutral_job_id));
 
     const auto conflicting = descriptor.result_handler->Process(
         SuccessfulResultContext(
@@ -3498,7 +3509,7 @@ TEST_F(
             before_late,
             conflicting_job->job_id,
             &savor::db::SeedProbeResultRow::source_job_id),
-        0);
+        1);
     const auto late = descriptor.result_handler->Process(
         SuccessfulResultContext(
             analysis_db,

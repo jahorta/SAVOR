@@ -562,7 +562,6 @@ bool WorkflowCoordinatorService::AdvanceTerminalSnapshot(
     if (continuation.disposition
         == programdb::ProgramJobContinuationDisposition::AddedWork) {
         ++continuation_added_work_count_;
-        if (config_.work_published) config_.work_published();
         return true;
     }
 
@@ -977,7 +976,6 @@ bool WorkflowCoordinatorService::MaterializeWorkflowStep(const WorkflowReadyStep
     last_materialization_latency_ms_.store(static_cast<std::int64_t>(elapsed));
     StoreMax(max_materialization_latency_ms_, static_cast<std::int64_t>(elapsed));
     ++materialization_count_;
-    if (config_.work_published) config_.work_published();
     return true;
 }
 

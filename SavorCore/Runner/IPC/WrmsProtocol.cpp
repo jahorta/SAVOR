@@ -1229,6 +1229,43 @@ PayloadCodecResult DecodePayload(
 }
 
 PayloadCodecResult EncodePayload(
+    const WorksetResidenceSnapshotV1& value,
+    std::vector<std::uint8_t>& output)
+{
+    return EncodePayloadImpl(value, output, [](PayloadWriter& writer, const auto& payload) {
+        if (payload.format_version != 1
+            || payload.has_resident_workset != (payload.workset_id != 0)
+            || !IsKnownWorksetState(static_cast<std::uint8_t>(payload.state))) {
+            writer.fail(PayloadError::InvalidValue);
+        }
+        writer.u32(payload.format_version);
+        writer.boolean(payload.has_resident_workset);
+        writer.u64(payload.workset_id);
+        writer.u8(static_cast<std::uint8_t>(payload.state));
+    });
+}
+
+PayloadCodecResult DecodePayload(
+    std::span<const std::uint8_t> input,
+    WorksetResidenceSnapshotV1& output)
+{
+    return DecodePayloadImpl(input, output, [](PayloadReader& reader, auto& payload) {
+        std::uint8_t state = 0;
+        reader.u32(payload.format_version);
+        reader.boolean(payload.has_resident_workset);
+        reader.u64(payload.workset_id);
+        if (reader.u8(state)) {
+            payload.state = static_cast<WorksetStateCode>(state);
+        }
+        if (payload.format_version != 1
+            || payload.has_resident_workset != (payload.workset_id != 0)
+            || !IsKnownWorksetState(state)) {
+            reader.fail(PayloadError::InvalidValue);
+        }
+    });
+}
+
+PayloadCodecResult EncodePayload(
     const WorksetItemStartedPayload& value,
     std::vector<std::uint8_t>& output)
 {

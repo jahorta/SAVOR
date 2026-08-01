@@ -338,8 +338,8 @@ protected:
                 0x0000,
                 &seeded.source_input_frame_id,
                 &err), err, "create seed probe input frame");
-            bool inserted = false;
-            RequireFixtureStep(db_service.AnalysisDb()->EnsureSeedProbeObservation(
+            RecordSeedProbeObservationReceipt observation_receipt{};
+            RequireFixtureStep(db_service.AnalysisDb()->RecordSeedProbeObservation(
                 {
                     .probe_run_id = probe_run_id,
                     .input_frame_id = seeded.source_input_frame_id,
@@ -349,13 +349,15 @@ protected:
                     .origin_process_generation = 1,
                     .origin_state_epoch = 1,
                     .terminal_sha256 = std::string(64, '1'),
+                    .endpoint = SeedProbeEndpoint::AfterRandSeedSet,
                     .recorded_at_utc = now,
                     .correlation_id = "dbutils-test",
                     .causation_id = "seed-probe-observation",
                 },
-                &inserted,
-                &seeded.source_probe_result_id,
+                &observation_receipt,
                 &err), err, "record seed probe observation");
+            seeded.source_probe_result_id =
+                observation_receipt.observation.probe_result_id;
             bool changed = false;
             RequireFixtureStep(db_service.AnalysisDb()->TransitionSeedProbeEvidence(
                 {
@@ -368,8 +370,8 @@ protected:
                 },
                 &changed,
                 &err), err, "mark seed probe result provisional");
-            std::int64_t confirmation_result_id = 0;
-            RequireFixtureStep(db_service.AnalysisDb()->EnsureSeedProbeObservation(
+            observation_receipt = {};
+            RequireFixtureStep(db_service.AnalysisDb()->RecordSeedProbeObservation(
                 {
                     .probe_run_id = probe_run_id,
                     .input_frame_id = seeded.source_input_frame_id,
@@ -381,12 +383,12 @@ protected:
                     .terminal_sha256 = std::string(64, '2'),
                     .confirmation_of_probe_result_id =
                         seeded.source_probe_result_id,
+                    .endpoint = SeedProbeEndpoint::AfterRandSeedSet,
                     .recorded_at_utc = now,
                     .correlation_id = "dbutils-test",
                     .causation_id = "seed-probe-confirmation",
                 },
-                &inserted,
-                &confirmation_result_id,
+                &observation_receipt,
                 &err), err, "record seed probe confirmation");
             RequireFixtureStep(db_service.AnalysisDb()->TransitionSeedProbeEvidence(
                 {

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -393,29 +394,23 @@ struct CompleteWorksetPublicationReceipt {
     std::string materialization_state;
 };
 
-struct ReadyWorkerSupportedModule {
-    std::string module_canonical_id;
-    std::int32_t module_version = 0;
-    std::string module_sha256;
-    std::vector<std::string> entrypoints;
-    std::string verified_dependency_sha256;
-    std::string runtime_profile_sha256;
-};
-
-struct ReadyWorksetCompatibilityProfile {
-    std::uint64_t available_capability_mask = 0;
-    std::uint32_t max_workset_items = 0;
-    std::uint64_t max_payload_bytes = 0;
-    std::vector<std::int32_t> supported_program_kinds;
-    std::vector<ReadyWorkerSupportedModule> supported_modules;
-};
-
 struct ClaimPublishedWorksetBatchCommand {
     std::string batch_nonce;
     std::size_t requested_workset_count = 0;
     std::int64_t lease_duration_ms = 0;
-    ReadyWorksetCompatibilityProfile compatibility;
 };
+
+struct ReadyWorksetAvailabilitySnapshot {
+    std::uint64_t generation = 0;
+    bool has_ready_worksets = false;
+    std::int64_t changed_at_utc = 0;
+
+    auto operator<=>(const ReadyWorksetAvailabilitySnapshot&) const = default;
+};
+
+using ReadyWorksetAvailabilityCallback =
+    std::function<void(const ReadyWorksetAvailabilitySnapshot&)>;
+using ReadyWorksetAvailabilitySubscription = std::uint64_t;
 
 struct ClaimedPublishedWorksetItem {
     std::int64_t job_id = 0;
@@ -452,9 +447,13 @@ struct ClaimedPublishedWorkset {
     std::vector<ClaimedPublishedWorksetItem> items;
 };
 
-struct RenewWorksetDispatchLeaseCommand {
+struct WorksetDispatchLeaseRequest {
     std::int64_t dispatch_attempt_id = 0;
     std::string claim_token;
+};
+
+struct RenewWorksetDispatchLeasesCommand {
+    std::vector<WorksetDispatchLeaseRequest> requests;
     std::int64_t lease_duration_ms = 0;
 };
 
@@ -797,18 +796,33 @@ struct IExecutionDb {
         }
         return {};
     }
-    virtual bool RenewWorksetDispatchLease(
-        const RenewWorksetDispatchLeaseCommand& command,
-        WorksetDispatchLeaseReceipt* receipt_out = nullptr,
+    virtual std::vector<WorksetDispatchLeaseReceipt>
+    RenewWorksetDispatchLeases(
+        const RenewWorksetDispatchLeasesCommand& command,
         std::string* error_out = nullptr) {
         (void)command;
-        if (receipt_out != nullptr) {
-            *receipt_out = {};
-        }
         if (error_out != nullptr) {
             *error_out = "workset lease renewal is not supported";
         }
-        return false;
+        return {};
+    }
+    virtual std::optional<ReadyWorksetAvailabilitySnapshot>
+    GetReadyWorksetAvailability(
+        std::string* error_out = nullptr) const {
+        if (error_out != nullptr) {
+            *error_out = "ready-workset availability is not supported";
+        }
+        return std::nullopt;
+    }
+    virtual ReadyWorksetAvailabilitySubscription
+    SubscribeReadyWorksetAvailability(
+        ReadyWorksetAvailabilityCallback callback) {
+        (void)callback;
+        return 0;
+    }
+    virtual void UnsubscribeReadyWorksetAvailability(
+        ReadyWorksetAvailabilitySubscription subscription) {
+        (void)subscription;
     }
     virtual bool MarkWorksetDispatched(
         const MarkWorksetDispatchedCommand& command,

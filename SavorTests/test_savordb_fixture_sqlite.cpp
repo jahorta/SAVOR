@@ -159,9 +159,8 @@ std::optional<ConfirmedSeedProbeFixture> CreateConfirmedSeedProbeFixture(
         return std::nullopt;
     }
 
-    bool inserted = false;
-    std::int64_t representative_result_id = 0;
-    if (!analysis_db->EnsureSeedProbeObservation(
+    RecordSeedProbeObservationReceipt observation_receipt{};
+    if (!analysis_db->RecordSeedProbeObservation(
             {
                 .probe_run_id = probe_run_id,
                 .input_frame_id = input_frame_id,
@@ -171,16 +170,18 @@ std::optional<ConfirmedSeedProbeFixture> CreateConfirmedSeedProbeFixture(
                 .origin_process_generation = 1,
                 .origin_state_epoch = 1,
                 .terminal_sha256 = std::string(64, 'a'),
+                .endpoint = SeedProbeEndpoint::AfterRandSeedSet,
                 .recorded_at_utc = now,
                 .correlation_id = fixture_name,
                 .causation_id = fixture_name,
             },
-            &inserted,
-            &representative_result_id,
+            &observation_receipt,
             error_out)
-        || !inserted) {
+        || !observation_receipt.inserted) {
         return std::nullopt;
     }
+    const auto representative_result_id =
+        observation_receipt.observation.probe_result_id;
 
     bool changed = false;
     if (!analysis_db->TransitionSeedProbeEvidence(
@@ -198,8 +199,8 @@ std::optional<ConfirmedSeedProbeFixture> CreateConfirmedSeedProbeFixture(
         return std::nullopt;
     }
 
-    std::int64_t confirmation_result_id = 0;
-    if (!analysis_db->EnsureSeedProbeObservation(
+    observation_receipt = {};
+    if (!analysis_db->RecordSeedProbeObservation(
             {
                 .probe_run_id = probe_run_id,
                 .input_frame_id = input_frame_id,
@@ -210,14 +211,14 @@ std::optional<ConfirmedSeedProbeFixture> CreateConfirmedSeedProbeFixture(
                 .origin_state_epoch = 2,
                 .terminal_sha256 = std::string(64, 'b'),
                 .confirmation_of_probe_result_id = representative_result_id,
+                .endpoint = SeedProbeEndpoint::AfterRandSeedSet,
                 .recorded_at_utc = now,
                 .correlation_id = fixture_name,
                 .causation_id = fixture_name,
             },
-            &inserted,
-            &confirmation_result_id,
+            &observation_receipt,
             error_out)
-        || !inserted) {
+        || !observation_receipt.inserted) {
         return std::nullopt;
     }
 
@@ -5630,27 +5631,44 @@ TEST_F(SqliteDbFixture, Stage5SeedProbeRunAcceptsSameNumericEpochFromDifferentWo
         .origin_process_generation = 1,
         .origin_state_epoch = 1,
         .terminal_sha256 = std::string(64, 'a'),
+        .endpoint = SeedProbeEndpoint::AfterRandSeedSet,
         .recorded_at_utc = now,
         .correlation_id = "an-probe-observation-input-set-owner",
         .causation_id = "an-probe-run-input-set-owner",
     };
-    bool inserted = false;
-    std::int64_t probe_result_id = 0;
-    ASSERT_TRUE(analysis_db->EnsureSeedProbeObservation(
+    RecordSeedProbeObservationReceipt observation_receipt{};
+    ASSERT_TRUE(analysis_db->RecordSeedProbeObservation(
         representative,
-        &inserted,
-        &probe_result_id,
+        &observation_receipt,
         &err)) << err;
-    EXPECT_TRUE(inserted);
+    EXPECT_TRUE(observation_receipt.inserted);
+    const auto probe_result_id =
+        observation_receipt.observation.probe_result_id;
     EXPECT_GT(probe_result_id, 0);
-    std::int64_t replay_result_id = 0;
-    ASSERT_TRUE(analysis_db->EnsureSeedProbeObservation(
+    observation_receipt = {};
+    ASSERT_TRUE(analysis_db->RecordSeedProbeObservation(
         representative,
-        &inserted,
-        &replay_result_id,
+        &observation_receipt,
         &err)) << err;
-    EXPECT_FALSE(inserted);
-    EXPECT_EQ(replay_result_id, probe_result_id);
+    EXPECT_FALSE(observation_receipt.inserted);
+    EXPECT_EQ(
+        observation_receipt.observation.probe_result_id,
+        probe_result_id);
+    auto conflicting_replay = representative;
+    conflicting_replay.seed_value = 1;
+    conflicting_replay.endpoint = SeedProbeEndpoint::RandSeedCommitted;
+    observation_receipt = {};
+    EXPECT_FALSE(analysis_db->RecordSeedProbeObservation(
+        conflicting_replay,
+        &observation_receipt,
+        &err));
+    const auto unchanged_run = analysis_db->GetSeedProbeRun(probe_run_id);
+    ASSERT_TRUE(unchanged_run.has_value());
+    EXPECT_EQ(unchanged_run->status, SeedProbeRunStatus::Survey);
+    EXPECT_EQ(
+        unchanged_run->established_endpoint,
+        SeedProbeEndpoint::AfterRandSeedSet);
+    EXPECT_FALSE(unchanged_run->conflicting_endpoint.has_value());
 
     bool changed = false;
     ASSERT_TRUE(analysis_db->TransitionSeedProbeEvidence(
@@ -5666,8 +5684,8 @@ TEST_F(SqliteDbFixture, Stage5SeedProbeRunAcceptsSameNumericEpochFromDifferentWo
         &err)) << err;
     EXPECT_TRUE(changed);
 
-    std::int64_t confirmation_result_id = 0;
-    ASSERT_TRUE(analysis_db->EnsureSeedProbeObservation(
+    observation_receipt = {};
+    ASSERT_TRUE(analysis_db->RecordSeedProbeObservation(
         {
             .probe_run_id = probe_run_id,
             .input_frame_id = input_frame_id,
@@ -5678,14 +5696,16 @@ TEST_F(SqliteDbFixture, Stage5SeedProbeRunAcceptsSameNumericEpochFromDifferentWo
             .origin_state_epoch = 1,
             .terminal_sha256 = std::string(64, 'b'),
             .confirmation_of_probe_result_id = probe_result_id,
+            .endpoint = SeedProbeEndpoint::AfterRandSeedSet,
             .recorded_at_utc = now,
             .correlation_id = "an-probe-confirmation-input-set-owner",
             .causation_id = "an-probe-observation-input-set-owner",
         },
-        &inserted,
-        &confirmation_result_id,
+        &observation_receipt,
         &err)) << err;
-    EXPECT_TRUE(inserted);
+    EXPECT_TRUE(observation_receipt.inserted);
+    const auto confirmation_result_id =
+        observation_receipt.observation.probe_result_id;
     EXPECT_GT(confirmation_result_id, 0);
     const auto confirmation =
         analysis_db->GetSeedProbeResult(
@@ -11407,11 +11427,8 @@ TEST_F(
     SqliteDbFixture,
     ExpiredWorksetRecoveryRequeuesAndMakesWorksetClaimableAgain) {
     using savor::db::ClaimPublishedWorksetBatchCommand;
-    using savor::db::ReadyWorkerSupportedModule;
-    using savor::db::ReadyWorksetCompatibilityProfile;
     using savor::db::execution::workflow::SqliteExecutionDb;
 
-    const auto hash = std::string(64, '0');
     ASSERT_TRUE(ExecSql(db_, R"SQL(
 INSERT INTO exec_job_set(
     job_set_id,program_kind,purpose,created_by,created_at_utc)
@@ -11464,14 +11481,25 @@ VALUES(
 )SQL"));
 
     SqliteExecutionDb execution_db(db_);
-    int recovered = 0;
     std::string error;
+    const auto before_recovery_signal =
+        execution_db.GetReadyWorksetAvailability(&error);
+    ASSERT_TRUE(before_recovery_signal.has_value()) << error;
+    EXPECT_FALSE(before_recovery_signal->has_ready_worksets);
+    int recovered = 0;
     ASSERT_TRUE(execution_db.RecoverExpiredWorksetDispatches(
         1,
         &recovered,
         &error))
         << error;
     ASSERT_EQ(recovered, 1);
+    const auto after_recovery_signal =
+        execution_db.GetReadyWorksetAvailability(&error);
+    ASSERT_TRUE(after_recovery_signal.has_value()) << error;
+    EXPECT_TRUE(after_recovery_signal->has_ready_worksets);
+    EXPECT_GT(
+        after_recovery_signal->generation,
+        before_recovery_signal->generation);
     EXPECT_EQ(
         ReadText(
             db_,
@@ -11491,32 +11519,54 @@ VALUES(
             "AND dispatch_attempt_id IS NULL;"),
         1);
 
-    const ReadyWorksetCompatibilityProfile compatibility{
-        .available_capability_mask = 0,
-        .max_workset_items = 1,
-        .max_payload_bytes = 1024,
-        .supported_program_kinds = {42},
-        .supported_modules =
-            {
-                ReadyWorkerSupportedModule{
-                    .module_canonical_id = "test.module",
-                    .module_version = 1,
-                    .module_sha256 = hash,
-                    .entrypoints = {"test-entrypoint"},
-                    .verified_dependency_sha256 = hash,
-                    .runtime_profile_sha256 = hash,
-                },
-            },
-    };
     const auto claimed = execution_db.ClaimPublishedWorksetBatch(
         ClaimPublishedWorksetBatchCommand{
             .batch_nonce = "expired-recovery-reclaim",
             .requested_workset_count = 1,
             .lease_duration_ms = 30000,
-            .compatibility = compatibility,
         },
         &error);
     ASSERT_EQ(claimed.size(), 1u) << error;
+    const auto after_claim_signal =
+        execution_db.GetReadyWorksetAvailability(&error);
+    ASSERT_TRUE(after_claim_signal.has_value()) << error;
+    EXPECT_FALSE(after_claim_signal->has_ready_worksets);
+    EXPECT_GT(
+        after_claim_signal->generation,
+        after_recovery_signal->generation);
+    const auto lease_receipts =
+        execution_db.RenewWorksetDispatchLeases(
+            {
+                .requests = {
+                    {
+                        .dispatch_attempt_id =
+                            claimed.front().dispatch_attempt_id,
+                        .claim_token = claimed.front().claim_token,
+                    },
+                    {
+                        .dispatch_attempt_id =
+                            claimed.front().dispatch_attempt_id,
+                        .claim_token = "wrong-token",
+                    },
+                    {
+                        .dispatch_attempt_id = 999999,
+                        .claim_token = "missing-token",
+                    },
+                },
+                .lease_duration_ms = 180000,
+            },
+            &error);
+    ASSERT_EQ(lease_receipts.size(), 3u) << error;
+    EXPECT_EQ(
+        lease_receipts[0].disposition,
+        savor::db::ExecutionDbOperationDisposition::Applied);
+    EXPECT_EQ(
+        lease_receipts[1].disposition,
+        savor::db::ExecutionDbOperationDisposition::TokenMismatch);
+    EXPECT_EQ(
+        lease_receipts[2].disposition,
+        savor::db::ExecutionDbOperationDisposition::Missing);
+    EXPECT_TRUE(lease_receipts[0].lease_expires_at_utc.has_value());
     EXPECT_EQ(claimed.front().workset_id, 35120);
     ASSERT_EQ(claimed.front().items.size(), 1u);
     EXPECT_EQ(claimed.front().items.front().job_id, 35140);
@@ -11527,10 +11577,8 @@ VALUES(
 
 TEST_F(
     SqliteDbFixture,
-    PublishedWorksetBatchClaimUsesPriorityCompatibilityWarmthAndRollsBackAsAUnit) {
+    PublishedWorksetBatchClaimUsesGlobalPriorityOrderAndRollsBackAsAUnit) {
     using savor::db::ClaimPublishedWorksetBatchCommand;
-    using savor::db::ReadyWorkerSupportedModule;
-    using savor::db::ReadyWorksetCompatibilityProfile;
     using savor::db::execution::workflow::SqliteExecutionDb;
 
     ASSERT_TRUE(ExecSql(db_, R"SQL(
@@ -11593,24 +11641,6 @@ VALUES
     (35341,35310,42,1,'test',1,'rollback-b-job',20,'QUEUED',0,2,1000,35321,0);
 )SQL"));
 
-    const auto hash = std::string(64, '0');
-    const ReadyWorksetCompatibilityProfile profile{
-        .available_capability_mask = 0,
-        .max_workset_items = 1,
-        .max_payload_bytes = 1024,
-        .supported_program_kinds = {42},
-        .supported_modules =
-            {
-                ReadyWorkerSupportedModule{
-                    .module_canonical_id = "test.module",
-                    .module_version = 1,
-                    .module_sha256 = hash,
-                    .entrypoints = {"test-entrypoint"},
-                    .verified_dependency_sha256 = hash,
-                    .runtime_profile_sha256 = hash,
-                },
-        },
-    };
     SqliteExecutionDb execution_db(db_);
     std::string error;
 
@@ -11629,7 +11659,6 @@ END;
             .batch_nonce = "rollback-batch",
             .requested_workset_count = 2,
             .lease_duration_ms = 30000,
-            .compatibility = profile,
         },
         &error);
     EXPECT_TRUE(failed.empty());
@@ -11658,11 +11687,10 @@ UPDATE exec_job SET attempts=max_attempts WHERE job_id IN (35340,35341);
             .batch_nonce = "ordered-batch",
             .requested_workset_count = 2,
             .lease_duration_ms = 30000,
-            .compatibility = profile,
         },
         &error);
     ASSERT_EQ(claimed.size(), 2u) << error;
-    EXPECT_EQ(claimed[0].workset_id, 35221);
+    EXPECT_EQ(claimed[0].workset_id, 35222);
     EXPECT_EQ(claimed[1].workset_id, 35220);
     EXPECT_EQ(claimed[0].claim_token, "ordered-batch-1");
     EXPECT_EQ(claimed[1].claim_token, "ordered-batch-2");
@@ -11674,7 +11702,7 @@ UPDATE exec_job SET attempts=max_attempts WHERE job_id IN (35340,35341);
         ReadInt64(
             db_,
             "SELECT COUNT(1) FROM exec_job "
-            "WHERE job_id IN (35240,35241) AND state='CLAIMED';"),
+            "WHERE job_id IN (35240,35242) AND state='CLAIMED';"),
         2);
     EXPECT_EQ(
         ReadText(

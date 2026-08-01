@@ -555,6 +555,9 @@
     <None Include="migration\Execution\202607291000_execution_workset_coordination.sql">
       <Filter>Migrations\Execution</Filter>
     </None>
+    <None Include="migration\Execution\202608011000_execution_ready_workset_generation.sql">
+      <Filter>Migrations\Execution</Filter>
+    </None>
     <None Include="migration\State\202604051000_state_stage2_schema.sql">
       <Filter>Migrations\State</Filter>
     </None>

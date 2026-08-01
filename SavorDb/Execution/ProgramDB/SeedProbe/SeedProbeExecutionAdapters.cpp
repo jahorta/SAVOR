@@ -713,40 +713,54 @@ public:
         }
 
         const auto endpoint = AnalysisEndpoint(observation.endpoint);
-        ObserveSeedProbeEndpointReceipt endpoint_receipt{};
-        std::string endpoint_error;
         const auto endpoint_text = std::string(
             ToDbString(endpoint));
-        if (!analysis_db_->ObserveSeedProbeEndpoint(
+        std::optional<std::int64_t> confirmation_of;
+        if (spec->stage == SeedProbeJobStage::Confirm) {
+            confirmation_of =
+                spec->confirmation_of_probe_result_id;
+        }
+        RecordSeedProbeObservationReceipt observation_receipt{};
+        std::string observation_persistence_error;
+        if (!analysis_db_->RecordSeedProbeObservation(
                 {
                     .probe_run_id = run->probe_run_id,
-                    .endpoint = endpoint,
+                    .input_frame_id = spec->input_frame_id,
                     .source_job_id = context.job_id,
-                    .observed_at_utc = types::UtcNow(),
-                    .diagnostic =
+                    .seed_value = observation.raw_seed,
+                    .origin_worker_id = terminal.worker_id,
+                    .origin_process_generation =
+                        terminal.process_generation,
+                    .origin_state_epoch = observation.semantic_stop
+                        .state_epoch.value(),
+                    .terminal_sha256 = context.terminal.sha256,
+                    .confirmation_of_probe_result_id = confirmation_of,
+                    .endpoint = endpoint,
+                    .endpoint_mismatch_diagnostic =
                         "SeedProbe run endpoint mismatch: established="
                         + std::string(ToDbString(
                             run->established_endpoint))
                         + " observed=" + endpoint_text
                         + " source_job="
                         + std::to_string(context.job_id),
-                    .correlation_id =
-                        "seedprobe-endpoint-job-"
-                        + std::to_string(context.job_id),
+                    .recorded_at_utc = types::UtcNow(),
+                    .correlation_id = "seedprobe-run-"
+                        + std::to_string(run->probe_run_id),
                     .causation_id =
-                        "exec-job-" + std::to_string(context.job_id),
+                        "execution-job-"
+                        + std::to_string(context.job_id),
                 },
-                &endpoint_receipt,
-                &endpoint_error)) {
+                &observation_receipt,
+                &observation_persistence_error)) {
             throw std::runtime_error(
-                endpoint_error.empty()
-                    ? "SeedProbe endpoint observation could not be persisted"
-                    : std::move(endpoint_error));
+                observation_persistence_error.empty()
+                    ? "SeedProbe observation could not be persisted atomically"
+                    : std::move(observation_persistence_error));
         }
         const bool conflicting_endpoint =
-            endpoint_receipt.disposition ==
+            observation_receipt.endpoint_disposition ==
                 SeedProbeEndpointObservationDisposition::Invalidated
-            || endpoint_receipt.disposition ==
+            || observation_receipt.endpoint_disposition ==
                 SeedProbeEndpointObservationDisposition::
                     AlreadyInvalidatedConflicting;
         if (conflicting_endpoint) {
@@ -778,26 +792,14 @@ public:
                 + " job=" + std::to_string(context.job_id)
                 + " established="
                 + std::string(ToDbString(
-                    endpoint_receipt.established_endpoint))
+                    observation_receipt.established_endpoint))
                 + " conflicting=" + endpoint_text);
             return decision;
         }
 
-        std::optional<std::int64_t> confirmation_of;
-        if (spec->stage == SeedProbeJobStage::Confirm) {
-            confirmation_of =
-                spec->confirmation_of_probe_result_id;
-        }
-        const auto persisted = EnsureObservation(
-            context,
-            *run,
-            *spec,
-            observation,
-            terminal.worker_id,
-            terminal.process_generation,
-            confirmation_of);
+        const auto& persisted = observation_receipt.observation;
 
-        if (endpoint_receipt.disposition ==
+        if (observation_receipt.endpoint_disposition ==
             SeedProbeEndpointObservationDisposition::
                 AlreadyInvalidatedMatching) {
             auto decision = FinalDecision("SUCCEEDED");
@@ -836,94 +838,6 @@ public:
     }
 
 private:
-    savor::db::SeedProbeResultRow EnsureObservation(
-        const ProgramResultProcessingContext& context,
-        const savor::db::SeedProbeRunSnapshot& run,
-        const SeedProbeJobSpec& spec,
-        const savor::runtime::seedprobe::SeedProbeResultV2&
-            observation,
-        std::uint64_t origin_worker_id,
-        std::uint64_t origin_process_generation,
-        std::optional<std::int64_t> confirmation_of) const {
-        const auto validate_existing =
-            [&](const savor::db::SeedProbeResultRow& row) {
-                return row.probe_run_id == run.probe_run_id
-                    && row.input_frame_id
-                        == spec.input_frame_id
-                    && row.source_job_id == context.job_id
-                    && row.seed_value == observation.raw_seed
-                    && row.origin_worker_id
-                        == origin_worker_id
-                    && row.origin_process_generation
-                        == origin_process_generation
-                    && row.origin_state_epoch
-                        == observation.semantic_stop
-                            .state_epoch.value()
-                    && row.terminal_sha256
-                        == context.terminal.sha256
-                    && row.confirmation_of_probe_result_id
-                        == confirmation_of;
-            };
-        if (const auto existing =
-                analysis_db_->
-                    GetSeedProbeResultForSourceJob(
-                        context.job_id);
-            existing.has_value()) {
-            if (!validate_existing(*existing)) {
-                throw std::runtime_error(
-                    "SeedProbe source job already has different immutable facts");
-            }
-            return *existing;
-        }
-
-        bool inserted = false;
-        std::int64_t probe_result_id = 0;
-        std::string error;
-        const auto recorded_at =
-            savor::db::types::UtcNow();
-        if (!analysis_db_->EnsureSeedProbeObservation(
-                {
-                    .probe_run_id = run.probe_run_id,
-                    .input_frame_id = spec.input_frame_id,
-                    .source_job_id = context.job_id,
-                    .seed_value = observation.raw_seed,
-                    .origin_worker_id =
-                        origin_worker_id,
-                    .origin_process_generation =
-                        origin_process_generation,
-                    .origin_state_epoch =
-                        observation.semantic_stop
-                            .state_epoch.value(),
-                    .terminal_sha256 =
-                        context.terminal.sha256,
-                    .confirmation_of_probe_result_id =
-                        confirmation_of,
-                    .recorded_at_utc = recorded_at,
-                    .correlation_id =
-                        "seedprobe-run-"
-                        + std::to_string(run.probe_run_id),
-                    .causation_id =
-                        "execution-job-"
-                        + std::to_string(context.job_id),
-                },
-                &inserted,
-                &probe_result_id,
-                &error)) {
-            throw std::runtime_error(
-                error.empty()
-                    ? "failed persisting SeedProbe observation"
-                    : std::move(error));
-        }
-        const auto row =
-            analysis_db_->GetSeedProbeResult(
-                probe_result_id);
-        if (!row.has_value() || !validate_existing(*row)) {
-            throw std::runtime_error(
-                "persisted SeedProbe observation cannot be read back exactly");
-        }
-        return *row;
-    }
-
     std::optional<savor::db::SeedProbeResultRow>
     FindNeutralRepresentative(
         std::int64_t probe_run_id) const {

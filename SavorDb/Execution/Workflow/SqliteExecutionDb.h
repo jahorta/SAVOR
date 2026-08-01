@@ -61,10 +61,13 @@ public:
     std::vector<ClaimedPublishedWorkset> ClaimPublishedWorksetBatch(
         const ClaimPublishedWorksetBatchCommand& command,
         std::string* error_out = nullptr) override;
-    bool RenewWorksetDispatchLease(
-        const RenewWorksetDispatchLeaseCommand& command,
-        WorksetDispatchLeaseReceipt* receipt_out = nullptr,
+    std::vector<WorksetDispatchLeaseReceipt>
+    RenewWorksetDispatchLeases(
+        const RenewWorksetDispatchLeasesCommand& command,
         std::string* error_out = nullptr) override;
+    std::optional<ReadyWorksetAvailabilitySnapshot>
+    GetReadyWorksetAvailability(
+        std::string* error_out = nullptr) const override;
     bool MarkWorksetDispatched(
         const MarkWorksetDispatchedCommand& command,
         WorksetDispatchMutationReceipt* receipt_out = nullptr,

@@ -90,6 +90,13 @@ enum class CanonicalHashMode : std::uint8_t
 [[nodiscard]] ContentHash256 ComputeProgramModuleHashV1(
     const ProgramModule& module);
 
+// Hashes the canonical, versioned dependency-lock representation. This is a
+// module-verification fact; it is intentionally distinct from the broader
+// ProgramInvocation compatibility hash.
+[[nodiscard]] ContentHash256 ComputeProgramDependencyLockHashV1(
+    const ProgramDependencyLock& dependency_lock,
+    const CodecLimits& limits = {});
+
 [[nodiscard]] CodecStatus ValidateProgramModuleIdentityV1(
     const ProgramModule& module);
 

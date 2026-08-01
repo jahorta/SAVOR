@@ -425,23 +425,6 @@ enum class SeedProbeEndpointObservationDisposition {
     AlreadyInvalidatedConflicting,
 };
 
-struct ObserveSeedProbeEndpointCommand {
-    std::int64_t probe_run_id = 0;
-    SeedProbeEndpoint endpoint = SeedProbeEndpoint::Unknown;
-    std::int64_t source_job_id = 0;
-    types::UtcTimePoint observed_at_utc{};
-    std::string diagnostic;
-    std::string correlation_id;
-    std::string causation_id;
-};
-
-struct ObserveSeedProbeEndpointReceipt {
-    SeedProbeEndpointObservationDisposition disposition =
-        SeedProbeEndpointObservationDisposition::Established;
-    SeedProbeEndpoint established_endpoint = SeedProbeEndpoint::Unknown;
-    std::optional<SeedProbeEndpoint> conflicting_endpoint;
-};
-
 struct SetSeedProbeRunEntrySavestateCommand {
     std::int64_t probe_run_id = 0;
     std::int64_t entry_savestate_id = 0;
@@ -460,6 +443,8 @@ struct RecordSeedProbeObservationCommand {
     std::uint64_t origin_state_epoch = 0;
     std::string terminal_sha256;
     std::optional<std::int64_t> confirmation_of_probe_result_id;
+    SeedProbeEndpoint endpoint = SeedProbeEndpoint::Unknown;
+    std::string endpoint_mismatch_diagnostic;
     types::UtcTimePoint recorded_at_utc{};
     std::string correlation_id;
     std::string causation_id;
@@ -478,6 +463,16 @@ struct SeedProbeResultRow {
     std::optional<std::int64_t> confirmation_of_probe_result_id;
     SeedProbeEvidenceState evidence_state = SeedProbeEvidenceState::Unknown;
     types::UtcTimePoint recorded_at_utc{};
+};
+
+struct RecordSeedProbeObservationReceipt {
+    bool inserted = false;
+    SeedProbeResultRow observation;
+    SeedProbeEndpointObservationDisposition endpoint_disposition =
+        SeedProbeEndpointObservationDisposition::Established;
+    SeedProbeEndpoint established_endpoint = SeedProbeEndpoint::Unknown;
+    std::optional<SeedProbeEndpoint> conflicting_endpoint;
+    bool run_invalidated = false;
 };
 
 struct AnalysisInputSetFrameRow {
@@ -909,10 +904,9 @@ struct IAnalysisDb {
         std::int64_t trigger_axis_xy_id,
         std::int64_t* input_frame_id_out = nullptr,
         std::string* error_out = nullptr) = 0;
-    virtual bool EnsureSeedProbeObservation(
+    virtual bool RecordSeedProbeObservation(
         const RecordSeedProbeObservationCommand& command,
-        bool* inserted_out = nullptr,
-        std::int64_t* probe_result_id_out = nullptr,
+        RecordSeedProbeObservationReceipt* receipt_out = nullptr,
         std::string* error_out = nullptr) = 0;
     virtual bool TransitionSeedProbeEvidence(
         const TransitionSeedProbeEvidenceCommand& command,
@@ -935,10 +929,6 @@ struct IAnalysisDb {
     virtual bool UpdateSeedProbeRunStatus(
         const UpdateSeedProbeRunStatusCommand& command,
         bool* changed_out = nullptr,
-        std::string* error_out = nullptr) = 0;
-    virtual bool ObserveSeedProbeEndpoint(
-        const ObserveSeedProbeEndpointCommand& command,
-        ObserveSeedProbeEndpointReceipt* receipt_out = nullptr,
         std::string* error_out = nullptr) = 0;
     virtual bool ReplaceSeedProbeAcceptedInputFrames(
         const ReplaceSeedProbeAcceptedInputFramesCommand& command,

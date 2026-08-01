@@ -149,12 +149,6 @@ public:
         workflow_config.strict_smoke_terminal_on_failure = false;
         workflow_config.poll_interval =
             std::max(poll_interval, std::chrono::milliseconds(1));
-        workflow_config.work_published = [this]() {
-            if (job_execution_coordinator_ != nullptr) {
-                job_execution_coordinator_->NotifyWorkAvailable(
-                    "workflow-work-published");
-            }
-        };
         workflow_coordinator_ = std::make_unique<
             savor::db::execution::workflow::WorkflowCoordinatorService>(
                 execution_db,
@@ -799,10 +793,18 @@ std::string FormatCoordinatorTelemetryLine(
         << telemetry.execution.recovered_dispatches
         << " scheduler_wakeups="
         << telemetry.execution.scheduler_wakeups
-        << " claim_profiles_backoff="
-        << telemetry.execution.claim_profiles_in_backoff
-        << " claim_backoff_max_ms="
-        << telemetry.execution.maximum_claim_backoff_ms
+        << " ready_work_generation="
+        << telemetry.execution.ready_workset_generation
+        << " ready_work_present="
+        << (telemetry.execution.ready_worksets_present ? 1 : 0)
+        << " ready_work_signal_wakeups="
+        << telemetry.execution.ready_workset_signal_wakeups
+        << " claim_backoff_stage="
+        << telemetry.execution.claim_backoff_stage
+        << " claim_backoff_ms="
+        << telemetry.execution.current_claim_backoff_ms
+        << " reconciliation_claims="
+        << telemetry.execution.reconciliation_claims
         << " scheduler_wake_reason="
         << telemetry.execution.last_scheduler_wake_reason
         << " results_claimed=" << telemetry.results.claims
@@ -902,7 +904,13 @@ std::string FormatExecutionDbQueueLine(
         << maximum_latency(
             snapshot.queued.read_lane.operations,
             &savor::db::core::DbOperationTelemetrySnapshot::
-                execution);
+                execution)
+        << " ready_watcher_reads="
+        << snapshot.ready_workset_watcher_reads
+        << " ready_signal_transitions="
+        << snapshot.ready_workset_signal_transitions
+        << " ready_callback_wakes="
+        << snapshot.ready_workset_callback_wakes;
     return out.str();
 }
 

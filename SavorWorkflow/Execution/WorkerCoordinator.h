@@ -79,6 +79,7 @@ struct WorkerCoordinatorConfig {
     // Top-level composition selects enabled production program kinds. The
     // immutable definitions and modules are resolved only from SavorCore.
     std::vector<std::int32_t> enabled_program_kinds;
+    savor::runtime::WorkerWorksetLimits required_workset_limits{};
 
     RuntimeSlotPreparer runtime_slot_preparer;
     WorkerCapabilityPreflight worker_capability_preflight;
@@ -283,6 +284,17 @@ public:
     [[nodiscard]] FleetStartupSnapshot SnapshotFleetStartup() const;
     [[nodiscard]] WorkerCoordinatorTelemetry SnapshotTelemetry() const;
     [[nodiscard]] WorkerCoordinatorStartResult SnapshotStartResult() const;
+    [[nodiscard]] std::vector<std::int32_t> EnabledProgramKinds() const;
+    [[nodiscard]] savor::runtime::WorkerWorksetLimits
+        RequiredWorksetLimits() const noexcept;
+    [[nodiscard]] bool ConfirmWorksetResidence(
+        WorkerExecutionTarget target,
+        savor::runtime::WorkerWorksetId expected_workset_id,
+        savor::wrms::WorksetResidenceSnapshotV1* snapshot_out = nullptr,
+        std::string* diagnostic_out = nullptr);
+    void QuarantineWorkerGeneration(
+        WorkerExecutionTarget target,
+        std::string diagnostic);
 
     [[nodiscard]] WorkerSubmitResult SubmitWorksetToWorker(
         WorkerExecutionTarget target,

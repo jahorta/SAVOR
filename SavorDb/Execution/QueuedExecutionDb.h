@@ -1,12 +1,18 @@
 #pragma once
 
 #include <cstddef>
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <source_location>
 #include <string>
 #include <string_view>
+#include <thread>
+#include <unordered_map>
 #include <vector>
 
 #include "../Common/QueuedDb.h"
@@ -19,6 +25,7 @@ namespace savor::db::execution {
 struct ExecutionQueueConfig {
     std::size_t write_capacity = 4096;
     std::size_t read_capacity = 4096;
+    std::chrono::milliseconds ready_workset_watch_interval{1000};
 };
 
 struct ExecutionQueueTelemetrySnapshot {
@@ -41,6 +48,9 @@ struct ExecutionQueueTelemetrySnapshot {
     std::uint64_t read_failed = 0;
     std::uint64_t sqlite_busy = 0;
     std::uint64_t sqlite_locked = 0;
+    std::uint64_t ready_workset_watcher_reads = 0;
+    std::uint64_t ready_workset_signal_transitions = 0;
+    std::uint64_t ready_workset_callback_wakes = 0;
 };
 
 class QueuedExecutionDb final : public savor::db::IExecutionDb, private savor::db::core::QueuedDbExecutor {
@@ -91,10 +101,18 @@ public:
     std::vector<ClaimedPublishedWorkset> ClaimPublishedWorksetBatch(
         const ClaimPublishedWorksetBatchCommand& command,
         std::string* error_out = nullptr) override;
-    bool RenewWorksetDispatchLease(
-        const RenewWorksetDispatchLeaseCommand& command,
-        WorksetDispatchLeaseReceipt* receipt_out = nullptr,
+    std::vector<WorksetDispatchLeaseReceipt>
+    RenewWorksetDispatchLeases(
+        const RenewWorksetDispatchLeasesCommand& command,
         std::string* error_out = nullptr) override;
+    std::optional<ReadyWorksetAvailabilitySnapshot>
+    GetReadyWorksetAvailability(
+        std::string* error_out = nullptr) const override;
+    ReadyWorksetAvailabilitySubscription
+    SubscribeReadyWorksetAvailability(
+        ReadyWorksetAvailabilityCallback callback) override;
+    void UnsubscribeReadyWorksetAvailability(
+        ReadyWorksetAvailabilitySubscription subscription) override;
     bool MarkWorksetDispatched(
         const MarkWorksetDispatchedCommand& command,
         WorksetDispatchMutationReceipt* receipt_out = nullptr,
@@ -287,6 +305,11 @@ private:
         std::string* error_out = nullptr,
         const std::source_location& location = std::source_location::current()) const;
 
+    void AvailabilityWatcherLoop();
+    void RefreshReadyWorksetAvailability();
+    void PublishReadyWorksetAvailability(
+        const ReadyWorksetAvailabilitySnapshot& snapshot);
+
     template <typename Result, typename Fn>
     Result ExecuteWrite(
         Fn&& fn,
@@ -298,6 +321,19 @@ private:
     ExecutionQueueConfig config_{};
 
     mutable std::mutex sqlite_call_mtx_;
+    mutable std::mutex availability_mutex_;
+    std::condition_variable availability_cv_;
+    std::unordered_map<
+        ReadyWorksetAvailabilitySubscription,
+        ReadyWorksetAvailabilityCallback> availability_callbacks_;
+    std::optional<ReadyWorksetAvailabilitySnapshot>
+        last_ready_workset_availability_;
+    ReadyWorksetAvailabilitySubscription next_availability_subscription_ = 1;
+    std::thread availability_thread_;
+    std::atomic<bool> availability_stop_{false};
+    std::atomic<std::uint64_t> availability_watcher_reads_{0};
+    std::atomic<std::uint64_t> availability_signal_transitions_{0};
+    std::atomic<std::uint64_t> availability_callback_wakes_{0};
     std::unique_ptr<core::QueuedDbLane> read_lane_;
     std::unique_ptr<core::QueuedDbLane> write_lane_;
     std::unique_ptr<QueuedWorkflowQueryService> workflow_query_service_;

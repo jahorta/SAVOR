@@ -92,6 +92,7 @@ struct ProgramRuntimeCatalogModule
 {
     ProgramModuleIdentity identity;
     std::vector<std::string> entrypoints;
+    std::string dependency_lock_sha256;
     bool development_only = false;
 
     auto operator<=>(const ProgramRuntimeCatalogModule&) const = default;

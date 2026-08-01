@@ -90,7 +90,7 @@ std::chrono::milliseconds CappedExponentialDelay(
 
 std::chrono::steady_clock::time_point LeaseRenewalDeadline(
     std::int64_t lease_expires_at_utc,
-    std::chrono::milliseconds lease_duration) {
+    std::chrono::milliseconds renewal_lead_time) {
     const auto now_steady = std::chrono::steady_clock::now();
     const auto now_utc = std::chrono::duration_cast<
         std::chrono::milliseconds>(
@@ -98,10 +98,9 @@ std::chrono::steady_clock::time_point LeaseRenewalDeadline(
                              .count();
     const auto remaining = std::chrono::milliseconds(
         std::max<std::int64_t>(0, lease_expires_at_utc - now_utc));
-    const auto reserve = lease_duration * 2 / 3;
-    return remaining <= reserve
+    return remaining <= renewal_lead_time
         ? now_steady
-        : now_steady + (remaining - reserve);
+        : now_steady + (remaining - renewal_lead_time);
 }
 
 std::string WorkerStreamKey(
@@ -163,7 +162,6 @@ public:
     bool IsPaused() const noexcept;
     bool IsRunning() const noexcept;
     bool ClearInvariantPause();
-    void NotifyWorkAvailable(std::string reason);
     JobExecutionCoordinatorTelemetry SnapshotTelemetry() const;
     std::vector<JobExecutionWorkerLaneSnapshot>
         SnapshotWorkerLanes() const;
@@ -325,11 +323,6 @@ private:
     void LeaseHeartbeatLoop();
     void WorkerLaneLoop(const WorkerLanePtr& lane);
 
-    std::optional<savor::db::ReadyWorksetCompatibilityProfile>
-        BuildReadyProfile(
-            const ReadyWorkerCompatibilitySnapshot& worker) const;
-    std::string ProfileKey(
-        const savor::db::ReadyWorksetCompatibilityProfile& profile) const;
     WorkerLanePtr EnsureWorkerLane(
         const ReadyWorkerCompatibilitySnapshot& worker);
     WorkerLanePtr FindWorkerLane(
@@ -464,15 +457,14 @@ private:
         std::uint64_t delay_ms = 0;
         Clock::time_point next_attempt{};
     };
-    struct ClaimProfileWakeState {
-        std::string ready_topology;
-        bool had_capacity = false;
-    };
-    std::unordered_map<std::string, ClaimBackoffState> claim_backoffs_;
-    std::unordered_map<std::string, ClaimProfileWakeState>
-        claim_profile_wake_states_;
-    std::unordered_map<std::string, std::size_t>
-        last_assigned_worker_by_profile_;
+    ClaimBackoffState claim_backoff_;
+    std::size_t last_assigned_worker_ =
+        std::numeric_limits<std::size_t>::max();
+    Clock::time_point next_full_claim_reconciliation_{};
+    savor::db::ReadyWorksetAvailabilitySubscription
+        ready_workset_subscription_ = 0;
+    savor::db::ReadyWorksetAvailabilitySnapshot
+        ready_workset_availability_{};
     std::uint64_t scheduler_wakeup_generation_ = 0;
     std::string last_scheduler_wake_reason_;
 
@@ -547,6 +539,8 @@ private:
     std::atomic<std::uint64_t> worker_losses_{0};
     std::atomic<std::uint64_t> recovered_dispatches_{0};
     std::atomic<std::uint64_t> scheduler_wakeups_{0};
+    std::atomic<std::uint64_t> ready_workset_signal_wakeups_{0};
+    std::atomic<std::uint64_t> reconciliation_claims_{0};
     std::atomic<std::uint64_t> worker_control_commands_queued_{0};
     std::atomic<std::uint64_t> worker_control_commands_attempted_{0};
     std::atomic<std::uint64_t> worker_control_commands_applied_{0};
@@ -592,7 +586,52 @@ bool JobExecutionCoordinator::Impl::Start(std::string* error_out) {
         }
         return false;
     }
+    const auto enabled_program_kinds =
+        worker_coordinator_->EnabledProgramKinds();
+    const auto descriptor_program_kinds =
+        program_kind_registry_->RegisteredProgramKinds();
+    if (enabled_program_kinds != descriptor_program_kinds) {
+        if (error_out) {
+            *error_out =
+                "enabled FullPhase set and execution descriptor registry do not agree";
+        }
+        return false;
+    }
+    for (const auto program_kind : enabled_program_kinds) {
+        const auto* phase = savor::runtime::fullphase::
+            ProductionRegistry().Find(program_kind);
+        const auto* descriptor =
+            program_kind_registry_->Find(program_kind);
+        if (phase == nullptr || descriptor == nullptr
+            || !descriptor->full_phase_identity.has_value()
+            || *descriptor->full_phase_identity != phase->identity()) {
+            if (error_out) {
+                *error_out =
+                    "execution descriptor does not identify the enabled immutable FullPhase: "
+                    + std::to_string(program_kind);
+            }
+            return false;
+        }
+    }
+    const auto pool_limits =
+        worker_coordinator_->RequiredWorksetLimits();
+    if (pool_limits.maximum_items_per_workset
+            < config_.maximum_items_per_workset
+        || pool_limits.maximum_encoded_workset_bytes
+            < config_.maximum_encoded_workset_bytes) {
+        if (error_out) {
+            *error_out =
+                "job execution limits exceed the homogeneous worker pool contract";
+        }
+        return false;
+    }
     if (config_.workset_lease_duration <= std::chrono::milliseconds::zero()
+        || config_.workset_lease_renewal_point
+            <= std::chrono::milliseconds::zero()
+        || config_.workset_lease_renewal_point
+            >= config_.workset_lease_duration
+        || config_.workset_lease_retry_interval
+            <= std::chrono::milliseconds::zero()
         || config_.terminal_retry_interval
             <= std::chrono::milliseconds::zero()
         || config_.terminal_retry_max_interval
@@ -668,12 +707,50 @@ bool JobExecutionCoordinator::Impl::Start(std::string* error_out) {
     }
     {
         std::lock_guard lock(scheduler_mutex_);
-        claim_backoffs_.clear();
-        claim_profile_wake_states_.clear();
-        last_assigned_worker_by_profile_.clear();
+        claim_backoff_ = {};
+        last_assigned_worker_ =
+            std::numeric_limits<std::size_t>::max();
+        next_full_claim_reconciliation_ =
+            Clock::now() + std::chrono::seconds(30);
         scheduler_wakeup_generation_ = 0;
         last_scheduler_wake_reason_.clear();
     }
+
+    std::string availability_error;
+    const auto availability =
+        execution_db_->GetReadyWorksetAvailability(&availability_error);
+    if (!availability.has_value()) {
+        if (error_out) {
+            *error_out = availability_error.empty()
+                ? "execution DB did not provide ready-workset availability"
+                : std::move(availability_error);
+        }
+        return false;
+    }
+    {
+        std::lock_guard lock(scheduler_mutex_);
+        ready_workset_availability_ = *availability;
+    }
+    ready_workset_subscription_ =
+        execution_db_->SubscribeReadyWorksetAvailability(
+            [this](
+                const savor::db::ReadyWorksetAvailabilitySnapshot& snapshot) {
+                bool changed = false;
+                {
+                    std::lock_guard lock(scheduler_mutex_);
+                    changed = snapshot.generation
+                            != ready_workset_availability_.generation
+                        || snapshot.has_ready_worksets
+                            != ready_workset_availability_.has_ready_worksets;
+                    ready_workset_availability_ = snapshot;
+                }
+                if (changed) {
+                    ++ready_workset_signal_wakeups_;
+                    WakeScheduler(
+                        "ready-workset-generation",
+                        snapshot.has_ready_worksets);
+                }
+            });
 
     stop_.store(false);
     quiescing_.store(false);
@@ -765,6 +842,11 @@ void JobExecutionCoordinator::Impl::Stop() {
         return;
     }
     Quiesce();
+    if (ready_workset_subscription_ != 0) {
+        execution_db_->UnsubscribeReadyWorksetAvailability(
+            ready_workset_subscription_);
+        ready_workset_subscription_ = 0;
+    }
     if (running_.load() && authority_thread_.joinable()) {
         std::string ignored;
         (void)WaitForLifecycleRequest(
@@ -810,7 +892,7 @@ void JobExecutionCoordinator::Impl::Stop() {
 
 void JobExecutionCoordinator::Impl::SetPaused(bool paused) {
     user_paused_.store(paused);
-    WakeScheduler(paused ? "user-pause" : "user-resume", !paused);
+    WakeScheduler(paused ? "user-pause" : "user-resume", false);
     std::lock_guard lock(lanes_mutex_);
     for (const auto& [worker_id, lane] : lanes_) {
         (void)worker_id;
@@ -829,7 +911,7 @@ bool JobExecutionCoordinator::Impl::IsRunning() const noexcept {
 bool JobExecutionCoordinator::Impl::ClearInvariantPause() {
     const bool changed = invariant_paused_.exchange(false);
     if (changed) {
-        WakeScheduler("invariant-resume", true);
+        WakeScheduler("invariant-resume", false);
         std::lock_guard lock(lanes_mutex_);
         for (const auto& [worker_id, lane] : lanes_) {
             (void)worker_id;
@@ -837,11 +919,6 @@ bool JobExecutionCoordinator::Impl::ClearInvariantPause() {
         }
     }
     return changed;
-}
-
-void JobExecutionCoordinator::Impl::NotifyWorkAvailable(
-    std::string reason) {
-    WakeScheduler(std::move(reason), true);
 }
 
 void JobExecutionCoordinator::Impl::WakeScheduler(
@@ -852,10 +929,7 @@ void JobExecutionCoordinator::Impl::WakeScheduler(
         ++scheduler_wakeup_generation_;
         last_scheduler_wake_reason_ = std::move(reason);
         if (reset_backoff) {
-            for (auto& [profile, state] : claim_backoffs_) {
-                (void)profile;
-                state = {};
-            }
+            claim_backoff_ = {};
         }
     }
     ++scheduler_wakeups_;
@@ -921,6 +995,9 @@ JobExecutionCoordinator::Impl::SnapshotTelemetry() const {
     telemetry.worker_losses = worker_losses_.load();
     telemetry.recovered_dispatches = recovered_dispatches_.load();
     telemetry.scheduler_wakeups = scheduler_wakeups_.load();
+    telemetry.ready_workset_signal_wakeups =
+        ready_workset_signal_wakeups_.load();
+    telemetry.reconciliation_claims = reconciliation_claims_.load();
     telemetry.worker_control_commands_queued =
         worker_control_commands_queued_.load();
     telemetry.worker_control_commands_attempted =
@@ -962,15 +1039,14 @@ JobExecutionCoordinator::Impl::SnapshotTelemetry() const {
         std::lock_guard lock(scheduler_mutex_);
         telemetry.last_scheduler_wake_reason =
             last_scheduler_wake_reason_;
-        for (const auto& [profile, state] : claim_backoffs_) {
-            (void)profile;
-            if (state.next_attempt > Clock::now()) {
-                ++telemetry.claim_profiles_in_backoff;
-            }
-            telemetry.maximum_claim_backoff_ms = std::max(
-                telemetry.maximum_claim_backoff_ms,
-                state.delay_ms);
-        }
+        telemetry.ready_workset_generation =
+            ready_workset_availability_.generation;
+        telemetry.ready_worksets_present =
+            ready_workset_availability_.has_ready_worksets;
+        telemetry.claim_backoff_stage = std::min<std::uint32_t>(
+            claim_backoff_.empty_attempts,
+            3);
+        telemetry.current_claim_backoff_ms = claim_backoff_.delay_ms;
     }
 
     const auto now = Clock::now();
@@ -1225,71 +1301,6 @@ void JobExecutionCoordinator::Impl::ConfigureWorkerCallbacks() {
         });
 }
 
-std::optional<savor::db::ReadyWorksetCompatibilityProfile>
-JobExecutionCoordinator::Impl::BuildReadyProfile(
-    const ReadyWorkerCompatibilitySnapshot& worker) const {
-    if (worker.runtime_manifest.limits.maximum_items_per_workset == 0
-        || worker.runtime_manifest.limits
-               .maximum_encoded_workset_bytes == 0) {
-        return std::nullopt;
-    }
-    savor::db::ReadyWorksetCompatibilityProfile profile{};
-    profile.available_capability_mask = worker.capabilities;
-    profile.max_workset_items = std::min(
-        config_.maximum_items_per_workset,
-        worker.runtime_manifest.limits.maximum_items_per_workset);
-    profile.max_payload_bytes = std::min<std::uint64_t>(
-        config_.maximum_encoded_workset_bytes,
-        worker.runtime_manifest.limits.maximum_encoded_workset_bytes);
-    profile.supported_program_kinds =
-        program_kind_registry_->RegisteredProgramKinds();
-    if (profile.supported_program_kinds.empty()
-        || profile.max_workset_items == 0
-        || profile.max_payload_bytes == 0) {
-        return std::nullopt;
-    }
-    profile.supported_modules.reserve(
-        worker.runtime_manifest.modules.size());
-    for (const auto& module : worker.runtime_manifest.modules) {
-        profile.supported_modules.push_back(
-            {
-                .module_canonical_id = module.module.canonical_id,
-                .module_version =
-                    static_cast<std::int32_t>(module.module.revision),
-                .module_sha256 = module.module.canonical_hash,
-                .entrypoints = module.entrypoints,
-                .verified_dependency_sha256 =
-                    module.dependency_manifest_sha256,
-                .runtime_profile_sha256 =
-                    worker.runtime_manifest.runtime_profile_sha256,
-            });
-    }
-    return profile;
-}
-
-std::string JobExecutionCoordinator::Impl::ProfileKey(
-    const savor::db::ReadyWorksetCompatibilityProfile& profile) const {
-    std::ostringstream out;
-    out << profile.available_capability_mask << '|'
-        << profile.max_workset_items << '|'
-        << profile.max_payload_bytes << '|';
-    for (const auto kind : profile.supported_program_kinds) {
-        out << kind << ',';
-    }
-    out << '|';
-    for (const auto& module : profile.supported_modules) {
-        out << module.module_canonical_id << ':'
-            << module.module_version << ':'
-            << module.module_sha256 << ':'
-            << module.runtime_profile_sha256 << ':';
-        for (const auto& entrypoint : module.entrypoints) {
-            out << entrypoint << ',';
-        }
-        out << ';';
-    }
-    return out.str();
-}
-
 JobExecutionCoordinator::Impl::WorkerLanePtr
 JobExecutionCoordinator::Impl::FindWorkerLane(
     std::size_t worker_id,
@@ -1482,101 +1493,73 @@ void JobExecutionCoordinator::Impl::RemoveProjectedAffinity(
 }
 
 void JobExecutionCoordinator::Impl::SchedulerLoop() {
-    struct Group {
-        savor::db::ReadyWorksetCompatibilityProfile profile;
-        struct FreeLane {
-            WorkerLanePtr lane;
-            std::size_t free = 0;
-            std::size_t assigned = 0;
-        };
-        std::vector<FreeLane> lanes;
+    struct FreeLane {
+        WorkerLanePtr lane;
+        std::size_t initial_depth = 0;
+        std::size_t free = 0;
+        std::size_t assigned = 0;
     };
     while (!stop_.load()) {
         if (IsDispatchAdmissionPaused()) {
             std::unique_lock lock(scheduler_mutex_);
-            scheduler_cv_.wait_for(
-                lock,
-                std::chrono::seconds(1));
+            scheduler_cv_.wait_for(lock, std::chrono::seconds(1));
             continue;
         }
 
         const auto workers = worker_coordinator_->SnapshotReadyWorkers();
-        std::map<std::string, Group> groups;
+        std::vector<FreeLane> lanes;
+        lanes.reserve(workers.size());
+        std::size_t requested = 0;
         for (const auto& worker : workers) {
-            const auto profile = BuildReadyProfile(worker);
-            if (!profile.has_value()) continue;
             const auto lane = EnsureWorkerLane(worker);
             std::size_t free = 0;
+            std::size_t occupied = 0;
             {
                 std::lock_guard lock(lane->mutex);
                 if (lane->generation != worker.process_generation) continue;
                 RefreshActualAffinity(*lane, worker);
-                const auto occupied =
+                occupied =
                     lane->reservations + lane->waiting.size();
                 free = occupied < config_.worker_queue_capacity
                     ? config_.worker_queue_capacity - occupied
                     : 0;
             }
-            const auto key = ProfileKey(*profile);
-            auto& group = groups.try_emplace(
-                key,
-                Group{*profile, {}}).first->second;
-            group.lanes.push_back({lane, free, 0});
+            lanes.push_back({lane, occupied, free, 0});
+            requested += free;
         }
+        std::sort(
+            lanes.begin(),
+            lanes.end(),
+            [](const FreeLane& lhs, const FreeLane& rhs) {
+                return lhs.lane->worker_id < rhs.lane->worker_id;
+            });
 
+        const auto now = Clock::now();
+        bool ready_signal = false;
+        bool reconciliation_due = false;
+        Clock::time_point next_attempt = now + std::chrono::seconds(30);
         {
             std::lock_guard lock(scheduler_mutex_);
-            for (auto& [key, state] : claim_profile_wake_states_) {
-                if (!groups.contains(key)) {
-                    state.ready_topology.clear();
-                    state.had_capacity = false;
-                }
+            ready_signal = ready_workset_availability_.has_ready_worksets;
+            if (next_full_claim_reconciliation_ == Clock::time_point{}) {
+                next_full_claim_reconciliation_ =
+                    now + std::chrono::seconds(30);
             }
+            reconciliation_due = now >= next_full_claim_reconciliation_;
+            next_attempt = std::min(
+                claim_backoff_.next_attempt == Clock::time_point{}
+                    ? next_full_claim_reconciliation_
+                    : claim_backoff_.next_attempt,
+                next_full_claim_reconciliation_);
         }
 
-        auto next_poll = Clock::now() + std::chrono::seconds(1);
-        for (auto& [key, group] : groups) {
-            std::sort(
-                group.lanes.begin(),
-                group.lanes.end(),
-                [](const Group::FreeLane& lhs,
-                   const Group::FreeLane& rhs) {
-                    return lhs.lane->worker_id < rhs.lane->worker_id;
-                });
-            std::ostringstream ready_topology;
-            std::size_t requested = 0;
-            for (const auto& entry : group.lanes) {
-                ready_topology
-                    << entry.lane->worker_id << ':'
-                    << entry.lane->generation << ';';
-                requested += entry.free;
-            }
-            {
-                std::lock_guard lock(scheduler_mutex_);
-                auto& wake_state = claim_profile_wake_states_[key];
-                const bool topology_changed =
-                    wake_state.ready_topology != ready_topology.str();
-                const bool capacity_became_available =
-                    requested > 0 && !wake_state.had_capacity;
-                if (topology_changed || capacity_became_available) {
-                    claim_backoffs_[key] = {};
-                }
-                wake_state.ready_topology = ready_topology.str();
-                wake_state.had_capacity = requested > 0;
-            }
-            if (requested == 0) continue;
-            const auto now = Clock::now();
-            {
-                std::lock_guard lock(scheduler_mutex_);
-                const auto found = claim_backoffs_.find(key);
-                if (found != claim_backoffs_.end()
-                    && found->second.next_attempt > now) {
-                    next_poll = std::min(
-                        next_poll,
-                        found->second.next_attempt);
-                    continue;
-                }
-            }
+        const bool backoff_elapsed = [&]() {
+            std::lock_guard lock(scheduler_mutex_);
+            return claim_backoff_.next_attempt == Clock::time_point{}
+                || claim_backoff_.next_attempt <= now;
+        }();
+        if (requested > 0
+            && (ready_signal || reconciliation_due || backoff_elapsed)) {
             std::string error;
             ++claim_batches_;
             auto claimed = execution_db_->ClaimPublishedWorksetBatch(
@@ -1585,7 +1568,6 @@ void JobExecutionCoordinator::Impl::SchedulerLoop() {
                     .requested_workset_count = requested,
                     .lease_duration_ms =
                         config_.workset_lease_duration.count(),
-                    .compatibility = group.profile,
                 },
                 &error);
             if (!error.empty()) RecordError(std::move(error));
@@ -1595,15 +1577,12 @@ void JobExecutionCoordinator::Impl::SchedulerLoop() {
                     std::string release_error;
                     (void)execution_db_->ReleaseWorksetDispatch(
                         {
-                            .dispatch_attempt_id =
-                                row.dispatch_attempt_id,
+                            .dispatch_attempt_id = row.dispatch_attempt_id,
                             .claim_token = row.claim_token,
-                            .reason_code =
-                                "BATCH_CLAIM_OVERFLOW",
+                            .reason_code = "BATCH_CLAIM_OVERFLOW",
                             .reason_text =
                                 "DB returned more claims than reserved slots",
-                            .requested_by =
-                                "job_execution_coordinator",
+                            .requested_by = "job_execution_coordinator",
                         },
                         &receipt,
                         &release_error);
@@ -1617,46 +1596,50 @@ void JobExecutionCoordinator::Impl::SchedulerLoop() {
             if (claimed.empty()) {
                 ++empty_claim_batches_;
                 std::lock_guard lock(scheduler_mutex_);
-                auto& backoff = claim_backoffs_[key];
-                ++backoff.empty_attempts;
-                const std::uint64_t delays[] = {
-                    100, 200, 400, 800, 1000};
+                ++claim_backoff_.empty_attempts;
+                const std::uint64_t delays[] = {1000, 5000, 30000};
                 const auto index = std::min<std::size_t>(
-                    backoff.empty_attempts - 1,
+                    claim_backoff_.empty_attempts - 1,
                     std::size(delays) - 1);
-                backoff.delay_ms = delays[index];
-                backoff.next_attempt = Clock::now()
-                    + std::chrono::milliseconds(backoff.delay_ms);
-                next_poll = std::min(next_poll, backoff.next_attempt);
-                continue;
+                claim_backoff_.delay_ms = delays[index];
+                claim_backoff_.next_attempt = Clock::now()
+                    + std::chrono::milliseconds(
+                        claim_backoff_.delay_ms);
+            } else {
+                ++successful_claim_batches_;
+                worksets_claimed_.fetch_add(claimed.size());
+                if (reconciliation_due && !ready_signal) {
+                    reconciliation_claims_.fetch_add(claimed.size());
+                }
+                {
+                    std::lock_guard lock(scheduler_mutex_);
+                    claim_backoff_ = {};
+                }
             }
-
-            ++successful_claim_batches_;
-            worksets_claimed_.fetch_add(claimed.size());
-            {
+            if (reconciliation_due) {
                 std::lock_guard lock(scheduler_mutex_);
-                claim_backoffs_[key] = {};
+                next_full_claim_reconciliation_ =
+                    Clock::now() + std::chrono::seconds(30);
             }
 
             for (auto& row : claimed) {
                 std::size_t minimum_depth =
                     std::numeric_limits<std::size_t>::max();
-                for (const auto& entry : group.lanes) {
+                for (const auto& entry : lanes) {
                     if (entry.assigned < entry.free) {
                         minimum_depth = std::min(
                             minimum_depth,
-                            entry.assigned);
+                            entry.initial_depth + entry.assigned);
                     }
                 }
 
                 int best_affinity = std::numeric_limits<int>::min();
                 std::vector<std::size_t> candidates;
-                for (std::size_t index = 0;
-                     index < group.lanes.size();
-                     ++index) {
-                    auto& entry = group.lanes[index];
+                for (std::size_t index = 0; index < lanes.size(); ++index) {
+                    auto& entry = lanes[index];
                     if (entry.assigned >= entry.free
-                        || entry.assigned != minimum_depth) {
+                        || entry.initial_depth + entry.assigned
+                            != minimum_depth) {
                         continue;
                     }
                     std::lock_guard lane_lock(entry.lane->mutex);
@@ -1668,9 +1651,7 @@ void JobExecutionCoordinator::Impl::SchedulerLoop() {
                         best_affinity = score;
                         candidates.clear();
                     }
-                    if (score == best_affinity) {
-                        candidates.push_back(index);
-                    }
+                    if (score == best_affinity) candidates.push_back(index);
                 }
 
                 std::optional<std::size_t> selected_index;
@@ -1678,24 +1659,17 @@ void JobExecutionCoordinator::Impl::SchedulerLoop() {
                     std::numeric_limits<std::size_t>::max();
                 {
                     std::lock_guard lock(scheduler_mutex_);
-                    const auto found =
-                        last_assigned_worker_by_profile_.find(key);
-                    if (found !=
-                        last_assigned_worker_by_profile_.end()) {
-                        last_worker = found->second;
-                    }
+                    last_worker = last_assigned_worker_;
                 }
                 for (const auto index : candidates) {
                     if (last_worker
                             != std::numeric_limits<std::size_t>::max()
-                        && group.lanes[index].lane->worker_id
-                            > last_worker) {
+                        && lanes[index].lane->worker_id > last_worker) {
                         selected_index = index;
                         break;
                     }
                 }
-                if (!selected_index.has_value()
-                    && !candidates.empty()) {
+                if (!selected_index.has_value() && !candidates.empty()) {
                     selected_index = candidates.front();
                 }
 
@@ -1704,15 +1678,12 @@ void JobExecutionCoordinator::Impl::SchedulerLoop() {
                     std::string release_error;
                     (void)execution_db_->ReleaseWorksetDispatch(
                         {
-                            .dispatch_attempt_id =
-                                row.dispatch_attempt_id,
+                            .dispatch_attempt_id = row.dispatch_attempt_id,
                             .claim_token = row.claim_token,
-                            .reason_code =
-                                "NO_COMPATIBLE_RESERVED_WORKER",
+                            .reason_code = "NO_RESERVED_WORKER",
                             .reason_text =
                                 "ready worker generation was lost during assignment",
-                            .requested_by =
-                                "job_execution_coordinator",
+                            .requested_by = "job_execution_coordinator",
                         },
                         &receipt,
                         &release_error);
@@ -1722,15 +1693,14 @@ void JobExecutionCoordinator::Impl::SchedulerLoop() {
                     continue;
                 }
 
-                auto& selected = group.lanes[*selected_index];
+                auto& selected = lanes[*selected_index];
                 const auto& lane = selected.lane;
                 auto dispatch = std::make_shared<DispatchRecord>();
                 dispatch->claimed = std::move(row);
-                dispatch->target =
-                    {
-                        .worker_id = lane->worker_id,
-                        .process_generation = lane->generation,
-                    };
+                dispatch->target = {
+                    .worker_id = lane->worker_id,
+                    .process_generation = lane->generation,
+                };
                 dispatch->phase = DispatchPhase::Reconstructing;
                 InsertDispatch(dispatch);
                 RegisterLeaseHeartbeat(dispatch->claimed);
@@ -1745,8 +1715,7 @@ void JobExecutionCoordinator::Impl::SchedulerLoop() {
                 ++selected.assigned;
                 {
                     std::lock_guard lock(scheduler_mutex_);
-                    last_assigned_worker_by_profile_[key] =
-                        lane->worker_id;
+                    last_assigned_worker_ = lane->worker_id;
                 }
                 {
                     std::lock_guard lock(reconstruction_mutex_);
@@ -1760,16 +1729,23 @@ void JobExecutionCoordinator::Impl::SchedulerLoop() {
             }
         }
 
+        {
+            std::lock_guard lock(scheduler_mutex_);
+            next_attempt = std::min(
+                claim_backoff_.next_attempt == Clock::time_point{}
+                    ? next_full_claim_reconciliation_
+                    : claim_backoff_.next_attempt,
+                next_full_claim_reconciliation_);
+        }
+        if (requested == 0 && next_attempt <= Clock::now()) {
+            next_attempt = Clock::now() + std::chrono::seconds(1);
+        }
         std::unique_lock lock(scheduler_mutex_);
         const auto observed_generation = scheduler_wakeup_generation_;
-        scheduler_cv_.wait_until(
-            lock,
-            next_poll,
-            [this, observed_generation]() {
-                return stop_.load()
-                    || scheduler_wakeup_generation_
-                        != observed_generation;
-            });
+        scheduler_cv_.wait_until(lock, next_attempt, [this, observed_generation]() {
+            return stop_.load()
+                || scheduler_wakeup_generation_ != observed_generation;
+        });
     }
 }
 
@@ -2248,6 +2224,13 @@ void JobExecutionCoordinator::Impl::WorkerLaneLoop(
                     + submitted.error_code + "]";
             }
             if (invariant_rejection) {
+                if (submitted.disposition
+                    == WorkerSubmitDisposition::IncompatibleWorkset) {
+                    worker_coordinator_->QuarantineWorkerGeneration(
+                        dispatch->target,
+                        "homogeneous pool admission invariant failed: "
+                            + diagnostic);
+                }
                 PauseForInvariant(
                     dispatch,
                     "Worker rejected a locally validated workset "
@@ -3723,7 +3706,7 @@ void JobExecutionCoordinator::Impl::RefreshStorageReadiness() {
             has_retries = !terminal_retries_.empty();
         }
         if (!has_retries) storage_paused_.store(false);
-        WakeScheduler("storage-ready", true);
+        WakeScheduler("storage-ready", false);
         return;
     }
     ++blob_readiness_failures_;
@@ -4070,7 +4053,7 @@ void JobExecutionCoordinator::Impl::RegisterLeaseHeartbeat(
         .lease_expires_at_utc = claimed.lease_expires_at_utc,
         .renew_at = LeaseRenewalDeadline(
             claimed.lease_expires_at_utc,
-            config_.workset_lease_duration),
+            config_.workset_lease_renewal_point),
     };
     {
         std::lock_guard lock(lease_heartbeat_mutex_);
@@ -4099,7 +4082,7 @@ void JobExecutionCoordinator::Impl::UnregisterLeaseHeartbeat(
 
 void JobExecutionCoordinator::Impl::LeaseHeartbeatLoop() {
     while (!stop_.load()) {
-        LeaseHeartbeatEntry entry{};
+        std::vector<LeaseHeartbeatEntry> due;
         {
             std::unique_lock lock(lease_heartbeat_mutex_);
             for (;;) {
@@ -4127,74 +4110,136 @@ void JobExecutionCoordinator::Impl::LeaseHeartbeatLoop() {
                         earliest->second.renew_at);
                     continue;
                 }
-                entry = earliest->second;
-                earliest->second.renew_at =
-                    now
-                    + std::max(
-                        std::chrono::milliseconds(1),
-                        config_.workset_lease_duration / 12);
+                for (auto& [dispatch_id, candidate] :
+                     lease_heartbeat_entries_) {
+                    (void)dispatch_id;
+                    if (candidate.renew_at <= now) {
+                        due.push_back(candidate);
+                        candidate.renew_at = now
+                            + config_.workset_lease_retry_interval;
+                    }
+                }
                 break;
             }
         }
 
-        savor::db::WorksetDispatchLeaseReceipt receipt{};
-        std::string error;
-        const bool succeeded =
-            execution_db_->RenewWorksetDispatchLease(
-                {
-                    .dispatch_attempt_id =
-                        entry.dispatch_attempt_id,
-                    .claim_token = entry.claim_token,
-                    .lease_duration_ms =
-                        config_.workset_lease_duration.count(),
-                },
-                &receipt,
-                &error);
-        {
-            std::lock_guard lock(lease_heartbeat_mutex_);
-            const auto found = lease_heartbeat_entries_.find(
-                entry.dispatch_attempt_id);
-            if (found != lease_heartbeat_entries_.end()
-                && found->second.claim_token == entry.claim_token) {
-                if (succeeded && Applied(receipt.disposition)) {
-                    const auto fallback_expiry =
-                        std::chrono::duration_cast<
-                            std::chrono::milliseconds>(
-                            std::chrono::system_clock::now()
-                                .time_since_epoch())
-                            .count()
-                        + config_.workset_lease_duration.count();
-                    const auto durable_expiry =
-                        receipt.lease_expires_at_utc.value_or(
-                            fallback_expiry);
-                    found->second.lease_expires_at_utc =
-                        durable_expiry;
-                    found->second.renew_at =
-                        LeaseRenewalDeadline(
-                            durable_expiry,
-                            config_.workset_lease_duration);
-                } else if (
-                    receipt.disposition
-                    != savor::db::ExecutionDbOperationDisposition::
-                        BackendError) {
-                    lease_heartbeat_entries_.erase(found);
+        std::vector<LeaseHeartbeatEntry> renewable;
+        std::vector<savor::db::WorksetDispatchLeaseRequest> requests;
+        renewable.reserve(due.size());
+        requests.reserve(due.size());
+        for (const auto& entry : due) {
+            const auto dispatch = FindDispatch(entry.dispatch_attempt_id);
+            if (!dispatch) {
+                UnregisterLeaseHeartbeat(
+                    entry.dispatch_attempt_id,
+                    entry.claim_token);
+                continue;
+            }
+            DispatchPhase phase = DispatchPhase::Released;
+            WorkerExecutionTarget target{};
+            std::int64_t workset_id = 0;
+            std::string durable_token;
+            {
+                std::lock_guard lock(dispatch->mutex);
+                phase = dispatch->phase;
+                target = dispatch->target;
+                workset_id = dispatch->claimed.workset_id;
+                durable_token = dispatch->claimed.claim_token;
+            }
+            if (durable_token != entry.claim_token
+                || phase == DispatchPhase::Released
+                || phase == DispatchPhase::Retired) {
+                UnregisterLeaseHeartbeat(
+                    entry.dispatch_attempt_id,
+                    entry.claim_token);
+                continue;
+            }
+            if (phase == DispatchPhase::Active) {
+                savor::wrms::WorksetResidenceSnapshotV1 evidence{};
+                std::string evidence_error;
+                if (!worker_coordinator_->ConfirmWorksetResidence(
+                        target,
+                        savor::runtime::WorkerWorksetId{
+                            static_cast<std::uint64_t>(workset_id)},
+                        &evidence,
+                        &evidence_error)) {
+                    RecordWarning(
+                        "Active workset lease was not renewed",
+                        evidence_error,
+                        static_cast<std::int64_t>(target.worker_id));
+                    continue;
                 }
             }
-        }
-        EnqueueAuthority(
-            [this,
-             dispatch_attempt_id = entry.dispatch_attempt_id,
-             claim_token = std::move(entry.claim_token),
-             succeeded,
-             receipt,
-             error = std::move(error)]() mutable {
-                HandleLeaseHeartbeatResult(
-                    dispatch_attempt_id,
-                    std::move(claim_token),
-                    succeeded,
-                    receipt,
-                    std::move(error));
+            renewable.push_back(entry);
+            requests.push_back({
+                .dispatch_attempt_id = entry.dispatch_attempt_id,
+                .claim_token = entry.claim_token,
             });
+        }
+        if (requests.empty()) continue;
+
+        std::string error;
+        auto receipts = execution_db_->RenewWorksetDispatchLeases(
+            {
+                .requests = std::move(requests),
+                .lease_duration_ms =
+                    config_.workset_lease_duration.count(),
+            },
+            &error);
+        if (receipts.size() != renewable.size()) {
+            receipts.assign(
+                renewable.size(),
+                savor::db::WorksetDispatchLeaseReceipt{});
+        }
+        for (std::size_t index = 0; index < renewable.size(); ++index) {
+            const auto& entry = renewable[index];
+            auto receipt = receipts[index];
+            receipt.dispatch_attempt_id = entry.dispatch_attempt_id;
+            {
+                std::lock_guard lock(lease_heartbeat_mutex_);
+                const auto found = lease_heartbeat_entries_.find(
+                    entry.dispatch_attempt_id);
+                if (found != lease_heartbeat_entries_.end()
+                    && found->second.claim_token == entry.claim_token) {
+                    if (Applied(receipt.disposition)) {
+                        const auto fallback_expiry =
+                            std::chrono::duration_cast<
+                                std::chrono::milliseconds>(
+                                std::chrono::system_clock::now()
+                                    .time_since_epoch())
+                                .count()
+                            + config_.workset_lease_duration.count();
+                        const auto durable_expiry =
+                            receipt.lease_expires_at_utc.value_or(
+                                fallback_expiry);
+                        found->second.lease_expires_at_utc =
+                            durable_expiry;
+                        found->second.renew_at = LeaseRenewalDeadline(
+                            durable_expiry,
+                            config_.workset_lease_renewal_point);
+                    } else if (receipt.disposition
+                        != savor::db::ExecutionDbOperationDisposition::
+                            BackendError) {
+                        lease_heartbeat_entries_.erase(found);
+                    }
+                }
+            }
+            EnqueueAuthority(
+                [this,
+                 dispatch_attempt_id = entry.dispatch_attempt_id,
+                 claim_token = entry.claim_token,
+                 receipt,
+                 error]() mutable {
+                    HandleLeaseHeartbeatResult(
+                        dispatch_attempt_id,
+                        std::move(claim_token),
+                        receipt.disposition
+                            != savor::db::
+                                ExecutionDbOperationDisposition::BackendError,
+                        receipt,
+                        std::move(error));
+                });
+        }
     }
 }
 
@@ -4209,7 +4254,6 @@ void JobExecutionCoordinator::Impl::HandleLeaseHeartbeatResult(
     {
         std::lock_guard lock(dispatch->mutex);
         if (dispatch->claimed.claim_token != claim_token
-            || dispatch->phase == DispatchPhase::Draining
             || dispatch->phase == DispatchPhase::Released
             || dispatch->phase == DispatchPhase::Retired) {
             return;
@@ -4338,9 +4382,6 @@ bool JobExecutionCoordinator::IsRunning() const noexcept {
 }
 bool JobExecutionCoordinator::ClearInvariantPause() {
     return impl_->ClearInvariantPause();
-}
-void JobExecutionCoordinator::NotifyWorkAvailable(std::string reason) {
-    impl_->NotifyWorkAvailable(std::move(reason));
 }
 JobExecutionCoordinatorTelemetry
 JobExecutionCoordinator::SnapshotTelemetry() const {

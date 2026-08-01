@@ -1898,6 +1898,13 @@ public:
         }
         const RuntimeProfile runtime_profile =
             InvocationRuntimeProfile(*dependencies);
+        const ContentHash256 dependency_lock_hash =
+            ComputeProgramDependencyLockHashV1(*dependencies);
+        if (dependency_lock_hash.empty())
+        {
+            throw std::logic_error(
+                "SeedProbe Full Phase dependency-lock hash could not be computed");
+        }
         const InvocationExecutionPolicy execution{
             .intent = ExecutionIntent::Live,
             .allow_movie_playback = false,
@@ -1930,6 +1937,7 @@ public:
         runtime_ = {
             .module = module_envelope_.identity,
             .entrypoint = std::string(Entrypoint),
+            .dependency_lock_sha256 = dependency_lock_hash.ToHex(),
             .verified_dependency_sha256 = *compatibility,
             .runtime_profile_sha256 =
                 RuntimeProfileHash(runtime_profile_),
@@ -1966,6 +1974,8 @@ public:
         canonical.push_back('\0');
         canonical.append(runtime_.entrypoint);
         canonical.push_back('\0');
+        canonical.append(runtime_.dependency_lock_sha256);
+        canonical.push_back('\0');
         canonical.append(runtime_.verified_dependency_sha256);
         canonical.push_back('\0');
         canonical.append(runtime_.runtime_profile_sha256);
@@ -1982,7 +1992,7 @@ public:
                 savor::PK_SeedProbe),
             .program_version = ProgramVersion,
             .canonical_id = "savor.full_phase.seed_probe",
-            .contract_revision = 1,
+            .contract_revision = 2,
             .canonical_sha256 = hash::sha256(
                 canonical.data(), canonical.size()),
         };

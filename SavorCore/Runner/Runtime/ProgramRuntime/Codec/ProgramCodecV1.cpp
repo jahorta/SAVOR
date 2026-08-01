@@ -17,6 +17,7 @@ namespace savor::runtime::program {
 namespace {
 
 constexpr std::array<Byte, 4> kModuleMagic{'S', 'P', 'R', 'M'};
+constexpr std::array<Byte, 4> kDependencyLockMagic{'S', 'P', 'R', 'D'};
 constexpr std::array<Byte, 4> kInvocationMagic{'S', 'P', 'R', 'I'};
 constexpr std::array<Byte, 4> kResultMagic{'S', 'P', 'R', 'R'};
 
@@ -2565,6 +2566,31 @@ ContentHash256 ComputeProgramModuleHashV1(const ProgramModule& module)
         CanonicalHashMode::OmitDeclaredHash);
     if (!encoded)
         return result;
+    if (mbedtls_sha256_ret(
+            encoded.bytes.data(),
+            encoded.bytes.size(),
+            result.bytes.data(),
+            0) != 0)
+    {
+        return {};
+    }
+    return result;
+}
+
+ContentHash256 ComputeProgramDependencyLockHashV1(
+    const ProgramDependencyLock& dependency_lock,
+    const CodecLimits& limits)
+{
+    const EncodeResult encoded = EncodeEnvelope(
+        kDependencyLockMagic,
+        limits,
+        [&](Writer& writer) {
+            WriteDependencyLock(writer, dependency_lock);
+        });
+    if (!encoded)
+        return {};
+
+    ContentHash256 result;
     if (mbedtls_sha256_ret(
             encoded.bytes.data(),
             encoded.bytes.size(),

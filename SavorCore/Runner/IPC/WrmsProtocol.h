@@ -479,6 +479,17 @@ struct WorksetStatePayload {
         const WorksetStatePayload&) = default;
 };
 
+struct WorksetResidenceSnapshotV1 {
+    std::uint32_t format_version = 1;
+    bool has_resident_workset = false;
+    std::uint64_t workset_id = 0;
+    WorksetStateCode state = WorksetStateCode::Validating;
+
+    friend bool operator==(
+        const WorksetResidenceSnapshotV1&,
+        const WorksetResidenceSnapshotV1&) = default;
+};
+
 struct WorksetItemStartedPayload {
     std::uint64_t outbound_sequence = 0;
     std::uint64_t workset_id = 0;
@@ -614,6 +625,7 @@ enum class PayloadError : std::uint8_t {
     InvalidEnumValue,
     TrailingBytes,
     PayloadTooLarge,
+    InvalidValue,
 };
 
 struct PayloadCodecResult {
@@ -653,6 +665,7 @@ SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(SessionEventPayload);
 SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(InvocationProgressPayload);
 SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(InvocationTerminalPayload);
 SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(WorksetStatePayload);
+SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(WorksetResidenceSnapshotV1);
 SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(WorksetItemStartedPayload);
 SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(WorksetItemTerminalPayload);
 SAVOR_WRMS_DECLARE_PAYLOAD_CODEC(WorksetCreditsPayload);

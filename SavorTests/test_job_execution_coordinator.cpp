@@ -9,6 +9,7 @@
 #include <functional>
 #include <future>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -16,6 +17,7 @@
 
 #include "Execution/JobExecutionCoordinator.h"
 #include "Execution/ProgramDB/ProgramKindRegistry.h"
+#include "Execution/QueuedExecutionDb.h"
 #include "Execution/WorkerCoordinator.h"
 #include "Execution/WorkerResultBlobStore.h"
 #include "common/RecordingExecutionDb.h"
@@ -48,27 +50,29 @@ bool WaitUntil(
 
 savor::runtime::WorkerRuntimeManifest TestWorkerManifest(
     std::uint32_t item_credits = 2) {
+    const auto* phase = savor::runtime::fullphase::
+        ProductionRegistry().Find(1);
+    if (phase == nullptr) {
+        throw std::logic_error(
+            "PK_SeedProbe is absent from the production FullPhase registry");
+    }
+    const auto& contract = phase->runtime_contract();
     savor::runtime::WorkerRuntimeManifest manifest{};
     manifest.catalog_status =
         savor::runtime::RuntimeCatalogStatus::CompleteExact;
-    manifest.runtime_profile_sha256 = std::string(64, '1');
+    manifest.runtime_profile_sha256 =
+        contract.runtime_profile_sha256;
     manifest.dependency_manifest_sha256 =
-        std::string(64, '2');
-    manifest.limits.maximum_items_per_workset = item_credits;
-    manifest.limits.maximum_item_credits = item_credits;
-    manifest.limits.maximum_active_and_staged_items =
-        item_credits;
-    manifest.limits.maximum_encoded_workset_bytes = 1024;
+        std::string(64, 'a');
+    if (item_credits > manifest.limits.maximum_item_credits) {
+        manifest.limits.maximum_item_credits = item_credits;
+    }
     manifest.modules.push_back(
         {
-            .module = {
-                .canonical_id = "soa.seed_probe",
-                .revision = 1,
-                .canonical_hash = std::string(64, '3'),
-            },
-            .entrypoints = {"probe"},
+            .module = contract.module,
+            .entrypoints = {contract.entrypoint},
             .dependency_manifest_sha256 =
-                manifest.dependency_manifest_sha256,
+                contract.dependency_lock_sha256,
             .development_only = false,
         });
     manifest.catalog_sha256 =
@@ -79,25 +83,36 @@ savor::runtime::WorkerRuntimeManifest TestWorkerManifest(
 }
 
 savor::runtime::WorkerCapabilityMask TestWorkerCapabilities() {
+    const auto* phase = savor::runtime::fullphase::
+        ProductionRegistry().Find(1);
     return savor::runtime::CapabilityMask(
-        savor::runtime::WorkerCapability::WorksetDispatch);
+               savor::runtime::WorkerCapability::WorksetDispatch)
+        | (phase == nullptr
+               ? 0
+               : phase->runtime_contract().required_capabilities);
 }
 
 savor::runtime::WorkerWorksetDefinition TestTargetedWorkset(
-    std::string module_id = "soa.seed_probe") {
+    std::string module_id = {}) {
+    const auto* phase = savor::runtime::fullphase::
+        ProductionRegistry().Find(1);
+    if (phase == nullptr) {
+        throw std::logic_error(
+            "PK_SeedProbe is absent from the production FullPhase registry");
+    }
+    const auto& contract = phase->runtime_contract();
     savor::runtime::WorkerWorksetDefinition workset{};
     workset.workset_id = savor::runtime::WorkerWorksetId{1};
-    workset.execution_key.module =
-        {
-            .canonical_id = std::move(module_id),
-            .revision = 1,
-            .canonical_hash = std::string(64, '3'),
-        };
-    workset.execution_key.entrypoint = "probe";
+    workset.execution_key.module = contract.module;
+    if (!module_id.empty()) {
+        workset.execution_key.module.canonical_id =
+            std::move(module_id);
+    }
+    workset.execution_key.entrypoint = contract.entrypoint;
     workset.execution_key.verified_dependency_sha256 =
-        std::string(64, '2');
+        contract.verified_dependency_sha256;
     workset.execution_key.runtime_profile_sha256 =
-        std::string(64, '1');
+        contract.runtime_profile_sha256;
     workset.execution_key.baseline.sha256 =
         std::string(64, '4');
     workset.execution_key.canonical_sha256 =
@@ -108,6 +123,27 @@ savor::runtime::WorkerWorksetDefinition TestTargetedWorkset(
             .ordinal = 0,
         });
     return workset;
+}
+
+void EnableSeedProbePool(WorkerCoordinatorConfig* config) {
+    if (config != nullptr) {
+        config->enabled_program_kinds = {1};
+    }
+}
+
+savor::db::execution::programdb::ProgramKindDescriptor
+TestProgramDescriptor(std::string name) {
+    const auto* phase = savor::runtime::fullphase::
+        ProductionRegistry().Find(1);
+    if (phase == nullptr) {
+        throw std::logic_error(
+            "PK_SeedProbe is absent from the production FullPhase registry");
+    }
+    savor::db::execution::programdb::ProgramKindDescriptor descriptor{};
+    descriptor.program_kind = 1;
+    descriptor.program_name = std::move(name);
+    descriptor.full_phase_identity = phase->identity();
+    return descriptor;
 }
 
 void UpdateMaximum(
@@ -150,6 +186,24 @@ private:
 
 class TrackingExecutionDb : public RecordingExecutionDb {
 public:
+    bool PublishWorkset(
+        const savor::db::PublishWorksetCommand&,
+        savor::db::PublishWorksetReceipt* receipt_out,
+        std::string* error_out) override {
+        if (!publish_updates_availability.load()) {
+            if (error_out) error_out->clear();
+            return false;
+        }
+        ready_present.store(true);
+        ready_generation.fetch_add(1);
+        if (receipt_out) {
+            receipt_out->disposition =
+                savor::db::ExecutionDbOperationDisposition::Applied;
+        }
+        if (error_out) error_out->clear();
+        return true;
+    }
+
     std::vector<savor::db::ClaimedPublishedWorkset>
     ClaimPublishedWorksetBatch(
         const savor::db::ClaimPublishedWorksetBatchCommand& command,
@@ -164,24 +218,39 @@ public:
         return {};
     }
 
-    bool RenewWorksetDispatchLease(
-        const savor::db::RenewWorksetDispatchLeaseCommand& command,
-        savor::db::WorksetDispatchLeaseReceipt* receipt_out,
+    std::vector<savor::db::WorksetDispatchLeaseReceipt>
+    RenewWorksetDispatchLeases(
+        const savor::db::RenewWorksetDispatchLeasesCommand& command,
         std::string* error_out) override {
         ++renew_calls;
-        if (receipt_out != nullptr) {
-            *receipt_out = {
+        UpdateMaximum(
+            &maximum_renewal_batch_size,
+            static_cast<int>(command.requests.size()));
+        std::vector<savor::db::WorksetDispatchLeaseReceipt> receipts;
+        for (const auto& request : command.requests) {
+            receipts.push_back({
                 .disposition =
                     savor::db::ExecutionDbOperationDisposition::Applied,
-                .dispatch_attempt_id = command.dispatch_attempt_id,
+                .dispatch_attempt_id = request.dispatch_attempt_id,
                 .lease_expires_at_utc =
                     CurrentUtcMs() + command.lease_duration_ms,
-            };
+            });
         }
         if (error_out != nullptr) {
             error_out->clear();
         }
-        return true;
+        return receipts;
+    }
+
+    std::optional<savor::db::ReadyWorksetAvailabilitySnapshot>
+    GetReadyWorksetAvailability(
+        std::string* error_out) const override {
+        if (error_out) error_out->clear();
+        return savor::db::ReadyWorksetAvailabilitySnapshot{
+            .generation = ready_generation.load(),
+            .has_ready_worksets = ready_present.load(),
+            .changed_at_utc = CurrentUtcMs(),
+        };
     }
 
     bool ReleaseWorksetDispatch(
@@ -244,8 +313,12 @@ public:
     std::atomic<int> claim_calls{0};
     std::atomic<int> maximum_requested_worksets{0};
     std::atomic<int> renew_calls{0};
+    std::atomic<int> maximum_renewal_batch_size{0};
     std::atomic<int> release_calls{0};
     std::atomic<int> stage_calls{0};
+    std::atomic<std::uint64_t> ready_generation{1};
+    std::atomic<bool> ready_present{false};
+    std::atomic<bool> publish_updates_availability{false};
     std::string last_release_reason;
 };
 
@@ -372,6 +445,8 @@ JobExecutionCoordinatorConfig TestConfig() {
     return {
         .poll_interval = std::chrono::milliseconds(2),
         .workset_lease_duration = std::chrono::milliseconds(60),
+        .workset_lease_renewal_point = std::chrono::milliseconds(30),
+        .workset_lease_retry_interval = std::chrono::milliseconds(5),
         .recovery_interval = std::chrono::hours(1),
         .terminal_retry_interval = std::chrono::milliseconds(1),
         .terminal_retry_max_interval = std::chrono::milliseconds(4),
@@ -417,6 +492,7 @@ TEST(
         .desired_workers = 1,
         .max_worker_start_attempts = 3,
     };
+    EnableSeedProbePool(&config);
     config.worker_capability_preflight =
         [](
             std::size_t,
@@ -451,6 +527,7 @@ TEST(
         .desired_workers = 1,
         .max_worker_start_attempts = 1,
     };
+    EnableSeedProbePool(&config);
     config.worker_capability_preflight =
         [](
             std::size_t,
@@ -492,6 +569,7 @@ TEST(
         .controller_sleep_ms = 250,
         .max_concurrent_worker_starts = 2,
     };
+    EnableSeedProbePool(&config);
     config.worker_capability_preflight =
         [&](std::size_t worker_id,
             const WorkerCoordinatorConfig&,
@@ -550,6 +628,7 @@ TEST(
         .controller_sleep_ms = 50,
         .max_concurrent_worker_starts = 1,
     };
+    EnableSeedProbePool(&config);
     config.worker_capability_preflight =
         [&](std::size_t worker_id,
             const WorkerCoordinatorConfig&,
@@ -592,6 +671,7 @@ TEST(
         .max_worker_start_attempts = 3,
         .max_concurrent_worker_starts = 1,
     };
+    EnableSeedProbePool(&config);
     config.worker_capability_preflight =
         [](std::size_t worker_id,
             const WorkerCoordinatorConfig&,
@@ -639,6 +719,7 @@ TEST(
     WorkerCoordinatorConfig config{
         .desired_workers = 1,
     };
+    EnableSeedProbePool(&config);
     config.worker_capability_preflight =
         [](
             std::size_t,
@@ -684,6 +765,138 @@ TEST(
 }
 
 TEST(
+    WorkerCoordinator,
+    ExtraVisualCapabilityRemainsInTheHomogeneousPool) {
+    WorkerCoordinatorConfig config{.desired_workers = 1};
+    EnableSeedProbePool(&config);
+    config.worker_capability_preflight =
+        [](
+            std::size_t,
+            const WorkerCoordinatorConfig&,
+            const std::shared_ptr<savor::ProcessWorker>&) {
+            return savor::runner::parallel::savordb::
+                WorkerCoordinatorCapabilityPreflightResult{
+                    .process_ready = true,
+                    .capabilities = TestWorkerCapabilities()
+                        | savor::runtime::CapabilityMask(
+                            savor::runtime::WorkerCapability::
+                                InteractiveVisualDebug),
+                    .runtime_manifest = TestWorkerManifest(),
+                };
+        };
+    WorkerCoordinator coordinator(std::move(config));
+    ASSERT_TRUE(coordinator.Start().started());
+    const auto ready = coordinator.SnapshotReadyWorkers();
+    ASSERT_EQ(ready.size(), 1u);
+    EXPECT_TRUE(savor::runtime::HasCapability(
+        ready.front().capabilities,
+        savor::runtime::WorkerCapability::InteractiveVisualDebug));
+    const auto* phase = savor::runtime::fullphase::
+        ProductionRegistry().Find(1);
+    ASSERT_NE(phase, nullptr);
+    EXPECT_TRUE(std::ranges::any_of(
+        ready.front().runtime_manifest.modules,
+        [&](const auto& module) {
+            return module.module
+                == phase->runtime_contract().module;
+        }));
+    coordinator.Stop();
+}
+
+TEST(
+    WorkerCoordinator,
+    UnderqualifiedWorkerNeverBecomesReady) {
+    WorkerCoordinatorConfig config{
+        .desired_workers = 1,
+        .max_worker_start_attempts = 1,
+    };
+    EnableSeedProbePool(&config);
+    config.worker_capability_preflight =
+        [](
+            std::size_t,
+            const WorkerCoordinatorConfig&,
+            const std::shared_ptr<savor::ProcessWorker>&) {
+            auto manifest = TestWorkerManifest();
+            manifest.limits.maximum_items_per_workset = 15;
+            return savor::runner::parallel::savordb::
+                WorkerCoordinatorCapabilityPreflightResult{
+                    .process_ready = true,
+                    .capabilities = TestWorkerCapabilities(),
+                    .runtime_manifest = std::move(manifest),
+                };
+        };
+    WorkerCoordinator coordinator(std::move(config));
+    const auto start = coordinator.Start();
+    EXPECT_EQ(
+        start.status,
+        WorkerCoordinatorStartStatus::StartupExhausted);
+    EXPECT_TRUE(coordinator.SnapshotReadyWorkers().empty());
+    EXPECT_NE(
+        start.diagnostic.find("homogeneous pool limits"),
+        std::string::npos)
+        << start.diagnostic;
+    coordinator.Stop();
+}
+
+TEST(
+    QueuedExecutionDb,
+    ReadyWorksetCallbacksAreImmediateAndWatcherSeesExternalGeneration) {
+    TrackingExecutionDb inner;
+    inner.publish_updates_availability = true;
+    savor::db::execution::QueuedExecutionDb queued(
+        &inner,
+        savor::db::execution::ExecutionQueueConfig{
+            .ready_workset_watch_interval =
+                std::chrono::milliseconds(20),
+        });
+    std::string error;
+    ASSERT_TRUE(queued.Start(&error)) << error;
+    std::mutex observed_mutex;
+    std::vector<savor::db::ReadyWorksetAvailabilitySnapshot> observed;
+    const auto subscription = queued.SubscribeReadyWorksetAvailability(
+        [&](const auto& snapshot) {
+            std::lock_guard lock(observed_mutex);
+            observed.push_back(snapshot);
+        });
+    ASSERT_NE(subscription, 0u);
+
+    savor::db::PublishWorksetReceipt published{};
+    ASSERT_TRUE(queued.PublishWorkset({}, &published, &error)) << error;
+    EXPECT_EQ(
+        published.disposition,
+        savor::db::ExecutionDbOperationDisposition::Applied);
+    ASSERT_TRUE(WaitUntil([&]() {
+        std::lock_guard lock(observed_mutex);
+        return !observed.empty()
+            && observed.back().has_ready_worksets;
+    }));
+
+    inner.ready_present = false;
+    inner.ready_generation.fetch_add(1);
+    ASSERT_TRUE(WaitUntil([&]() {
+        std::lock_guard lock(observed_mutex);
+        return observed.size() >= 2
+            && !observed.back().has_ready_worksets;
+    }));
+    {
+        std::lock_guard lock(observed_mutex);
+        EXPECT_GT(
+            observed.back().generation,
+            observed.front().generation);
+    }
+    const auto queue_telemetry = queued.GetTelemetrySnapshot();
+    EXPECT_GT(queue_telemetry.ready_workset_watcher_reads, 0u);
+    EXPECT_GE(queue_telemetry.ready_workset_signal_transitions, 3u);
+    EXPECT_GE(queue_telemetry.ready_workset_callback_wakes, 2u);
+    queued.UnsubscribeReadyWorksetAvailability(subscription);
+    queued.Stop();
+    EXPECT_EQ(
+        savor::db::execution::ExecutionQueueConfig{}
+            .ready_workset_watch_interval,
+        std::chrono::seconds(1));
+}
+
+TEST(
     JobExecutionCoordinator,
     ClaimsWithFirstReadyWorkerWhileRemainingFleetStarts) {
     TemporaryCoordinatorDirectory temporary;
@@ -696,6 +909,7 @@ TEST(
         .controller_sleep_ms = 250,
         .max_concurrent_worker_starts = 1,
     };
+    EnableSeedProbePool(&worker_config);
     worker_config.worker_capability_preflight =
         [&](std::size_t worker_id,
             const WorkerCoordinatorConfig&,
@@ -726,10 +940,7 @@ TEST(
     TrackingExecutionDb execution_db;
     savor::db::execution::programdb::ProgramKindRegistry registry;
     EXPECT_TRUE(registry.Register(
-        {
-            .program_kind = 1,
-            .program_name = "test-seed-probe",
-        }));
+        TestProgramDescriptor("test-seed-probe")));
     savor::db::execution::WorkerResultBlobStore blob_store(
         temporary.root() / "object_store");
     JobExecutionCoordinator coordinator(
@@ -774,6 +985,7 @@ TEST(
         .controller_sleep_ms = 250,
         .max_concurrent_worker_starts = 1,
     };
+    EnableSeedProbePool(&worker_config);
     worker_config.worker_capability_preflight =
         [&](std::size_t worker_id,
             const WorkerCoordinatorConfig&,
@@ -804,10 +1016,7 @@ TEST(
     TrackingExecutionDb execution_db;
     savor::db::execution::programdb::ProgramKindRegistry registry;
     EXPECT_TRUE(registry.Register(
-        {
-            .program_kind = 1,
-            .program_name = "test-seed-probe",
-        }));
+        TestProgramDescriptor("test-seed-probe")));
     savor::db::execution::WorkerResultBlobStore blob_store(
         temporary.root() / "object_store");
     JobExecutionCoordinator coordinator(
@@ -853,6 +1062,7 @@ TEST(
         .controller_sleep_ms = 250,
         .max_concurrent_worker_starts = 3,
     };
+    EnableSeedProbePool(&worker_config);
     worker_config.worker_capability_preflight =
         [](
             std::size_t,
@@ -874,10 +1084,7 @@ TEST(
     TrackingExecutionDb execution_db;
     savor::db::execution::programdb::ProgramKindRegistry registry;
     ASSERT_TRUE(registry.Register(
-        {
-            .program_kind = 1,
-            .program_name = "test-seed-probe",
-        }));
+        TestProgramDescriptor("test-seed-probe")));
     savor::db::execution::WorkerResultBlobStore blob_store(
         temporary.root() / "object_store");
     JobExecutionCoordinator coordinator(
@@ -905,6 +1112,81 @@ TEST(
 
 TEST(
     JobExecutionCoordinator,
+    EmptyGlobalClaimCampaignBacksOffOneFiveThenThirtySeconds) {
+    TemporaryCoordinatorDirectory temporary;
+    WorkerCoordinatorConfig worker_config{
+        .desired_workers = 1,
+        .controller_sleep_ms = 10000,
+        .liveness_probe_interval_ms = 60000,
+        .liveness_probe_failure_threshold = 1000,
+    };
+    EnableSeedProbePool(&worker_config);
+    worker_config.worker_capability_preflight =
+        [](
+            std::size_t,
+            const WorkerCoordinatorConfig&,
+            const std::shared_ptr<savor::ProcessWorker>&) {
+            return savor::runner::parallel::savordb::
+                WorkerCoordinatorCapabilityPreflightResult{
+                    .process_ready = true,
+                    .capabilities = TestWorkerCapabilities(),
+                    .runtime_manifest = TestWorkerManifest(),
+                };
+        };
+    WorkerCoordinator workers(std::move(worker_config));
+    ASSERT_TRUE(workers.Start().started());
+
+    TrackingExecutionDb execution_db;
+    savor::db::execution::programdb::ProgramKindRegistry registry;
+    ASSERT_TRUE(registry.Register(
+        TestProgramDescriptor("test-seed-probe")));
+    savor::db::execution::WorkerResultBlobStore blob_store(
+        temporary.root() / "object_store");
+    JobExecutionCoordinator coordinator(
+        &execution_db,
+        &registry,
+        &workers,
+        &blob_store,
+        TestConfig());
+    std::string error;
+    ASSERT_TRUE(coordinator.Start(&error)) << error;
+    ASSERT_TRUE(WaitUntil(
+        [&]() { return execution_db.claim_calls.load() >= 1; }));
+    auto telemetry = coordinator.SnapshotTelemetry();
+    EXPECT_EQ(telemetry.claim_backoff_stage, 1u);
+    EXPECT_EQ(telemetry.current_claim_backoff_ms, 1000u);
+    const bool observed_second = WaitUntil(
+        [&]() { return execution_db.claim_calls.load() >= 2; },
+        std::chrono::seconds(2));
+    if (!observed_second) {
+        const auto stalled = coordinator.SnapshotTelemetry();
+        ADD_FAILURE()
+            << "claims=" << execution_db.claim_calls.load()
+            << " ready_workers="
+            << workers.SnapshotReadyWorkers().size()
+            << " stage=" << stalled.claim_backoff_stage
+            << " delay_ms=" << stalled.current_claim_backoff_ms
+            << " wake_reason=" << stalled.last_scheduler_wake_reason;
+        coordinator.Stop();
+        workers.Stop();
+        return;
+    }
+    telemetry = coordinator.SnapshotTelemetry();
+    EXPECT_EQ(telemetry.claim_backoff_stage, 2u);
+    EXPECT_EQ(telemetry.current_claim_backoff_ms, 5000u);
+    ASSERT_TRUE(WaitUntil(
+        [&]() { return execution_db.claim_calls.load() >= 3; },
+        std::chrono::seconds(7)));
+    telemetry = coordinator.SnapshotTelemetry();
+    EXPECT_EQ(telemetry.claim_backoff_stage, 3u);
+    EXPECT_EQ(telemetry.current_claim_backoff_ms, 30000u);
+
+    coordinator.Stop();
+    workers.Stop();
+}
+
+TEST(
+    JobExecutionCoordinator,
     BlockedSingleReconstructorExposesBacklogWhileHeartbeatContinues) {
     TemporaryCoordinatorDirectory temporary;
     WorkerCoordinatorConfig worker_config{
@@ -912,6 +1194,7 @@ TEST(
         .controller_sleep_ms = 250,
         .max_concurrent_worker_starts = 2,
     };
+    EnableSeedProbePool(&worker_config);
     worker_config.worker_capability_preflight =
         [](
             std::size_t,
@@ -937,9 +1220,8 @@ TEST(
         reconstruction_release);
     ScriptedBatchExecutionDb execution_db;
     savor::db::execution::programdb::ProgramKindRegistry registry;
-    savor::db::execution::programdb::ProgramKindDescriptor descriptor{};
-    descriptor.program_kind = 1;
-    descriptor.program_name = "blocked-reconstruction-test";
+    auto descriptor =
+        TestProgramDescriptor("blocked-reconstruction-test");
     descriptor.workset_reconstruction = adapter;
     ASSERT_TRUE(registry.Register(descriptor));
     savor::db::execution::WorkerResultBlobStore blob_store(
@@ -974,6 +1256,7 @@ TEST(
     EXPECT_EQ(adapter->maximum_active(), 1);
     EXPECT_TRUE(WaitUntil(
         [&]() { return execution_db.renew_calls.load() > 0; }));
+    EXPECT_GT(execution_db.maximum_renewal_batch_size.load(), 1);
     EXPECT_EQ(adapter->maximum_active(), 1);
 
     reconstruction_release_promise.set_value();
@@ -1000,8 +1283,11 @@ TEST(
 
     TrackingExecutionDb execution_db;
     savor::db::execution::programdb::ProgramKindRegistry registry;
-    WorkerCoordinator workers(
-        WorkerCoordinatorConfig{.desired_workers = 0});
+    ASSERT_TRUE(registry.Register(
+        TestProgramDescriptor("test-seed-probe")));
+    WorkerCoordinatorConfig worker_config{.desired_workers = 0};
+    EnableSeedProbePool(&worker_config);
+    WorkerCoordinator workers(std::move(worker_config));
     ASSERT_TRUE(workers.Start().started());
     savor::db::execution::WorkerResultBlobStore blob_store(
         object_store);
@@ -1019,6 +1305,39 @@ TEST(
     EXPECT_EQ(execution_db.claim_calls.load(), 0);
     EXPECT_EQ(execution_db.stage_calls.load(), 0);
     EXPECT_FALSE(coordinator.SnapshotTelemetry().blob_store_ready);
+    workers.Stop();
+}
+
+TEST(
+    JobExecutionCoordinator,
+    StartupRejectsDescriptorWithMismatchedFullPhaseIdentity) {
+    TemporaryCoordinatorDirectory temporary;
+    TrackingExecutionDb execution_db;
+    savor::db::execution::programdb::ProgramKindRegistry registry;
+    auto descriptor = TestProgramDescriptor("mismatched-seed-probe");
+    ASSERT_TRUE(descriptor.full_phase_identity.has_value());
+    descriptor.full_phase_identity->canonical_sha256[0] =
+        descriptor.full_phase_identity->canonical_sha256[0] == 'a'
+        ? 'b'
+        : 'a';
+    ASSERT_TRUE(registry.Register(descriptor));
+    WorkerCoordinatorConfig worker_config{.desired_workers = 0};
+    EnableSeedProbePool(&worker_config);
+    WorkerCoordinator workers(std::move(worker_config));
+    ASSERT_TRUE(workers.Start().started());
+    savor::db::execution::WorkerResultBlobStore blob_store(
+        temporary.root() / "object_store");
+    JobExecutionCoordinator coordinator(
+        &execution_db,
+        &registry,
+        &workers,
+        &blob_store,
+        TestConfig());
+    std::string error;
+    EXPECT_FALSE(coordinator.Start(&error));
+    EXPECT_NE(error.find("immutable FullPhase"), std::string::npos)
+        << error;
+    EXPECT_EQ(execution_db.claim_calls.load(), 0);
     workers.Stop();
 }
 

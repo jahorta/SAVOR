@@ -66,7 +66,6 @@ struct WorkflowCoordinatorConfig {
     std::shared_ptr<CoordinatorItemCreditSource> item_credit_source;
     // In-process hint only. The execution DB remains authoritative and the
     // claim scheduler retains its external-writer fallback poll.
-    std::function<void()> work_published;
 };
 
 struct TerminalWorkflowStepNotification {

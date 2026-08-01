@@ -550,8 +550,8 @@ protected:
                 &rows.source_input_frame_id,
                 &err))
                 << err;
-            bool inserted = false;
-            EXPECT_TRUE(analysis_db->EnsureSeedProbeObservation(
+            RecordSeedProbeObservationReceipt observation_receipt{};
+            EXPECT_TRUE(analysis_db->RecordSeedProbeObservation(
                 {
                     .probe_run_id = probe_run_id,
                     .input_frame_id = rows.source_input_frame_id,
@@ -561,14 +561,16 @@ protected:
                     .origin_process_generation = 1,
                     .origin_state_epoch = 1,
                     .terminal_sha256 = std::string(64, '1'),
+                    .endpoint = SeedProbeEndpoint::AfterRandSeedSet,
                     .recorded_at_utc = now,
                     .correlation_id = "predict-corr",
                     .causation_id = "predict-cause-probe-result",
                 },
-                &inserted,
-                &rows.probe_result_id,
+                &observation_receipt,
                 &err))
                 << err;
+            rows.probe_result_id =
+                observation_receipt.observation.probe_result_id;
             bool changed = false;
             EXPECT_TRUE(analysis_db->TransitionSeedProbeEvidence(
                 {
@@ -582,8 +584,8 @@ protected:
                 &changed,
                 &err))
                 << err;
-            std::int64_t confirmation_result_id = 0;
-            EXPECT_TRUE(analysis_db->EnsureSeedProbeObservation(
+            observation_receipt = {};
+            EXPECT_TRUE(analysis_db->RecordSeedProbeObservation(
                 {
                     .probe_run_id = probe_run_id,
                     .input_frame_id = rows.source_input_frame_id,
@@ -594,12 +596,12 @@ protected:
                     .origin_state_epoch = 2,
                     .terminal_sha256 = std::string(64, '2'),
                     .confirmation_of_probe_result_id = rows.probe_result_id,
+                    .endpoint = SeedProbeEndpoint::AfterRandSeedSet,
                     .recorded_at_utc = now,
                     .correlation_id = "predict-corr",
                     .causation_id = "predict-cause-confirmation",
                 },
-                &inserted,
-                &confirmation_result_id,
+                &observation_receipt,
                 &err))
                 << err;
             EXPECT_TRUE(analysis_db->TransitionSeedProbeEvidence(

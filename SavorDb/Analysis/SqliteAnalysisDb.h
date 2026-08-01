@@ -31,10 +31,9 @@ public:
         std::int64_t trigger_axis_xy_id,
         std::int64_t* input_frame_id_out = nullptr,
         std::string* error_out = nullptr) override;
-    bool EnsureSeedProbeObservation(
+    bool RecordSeedProbeObservation(
         const RecordSeedProbeObservationCommand& command,
-        bool* inserted_out = nullptr,
-        std::int64_t* probe_result_id_out = nullptr,
+        RecordSeedProbeObservationReceipt* receipt_out = nullptr,
         std::string* error_out = nullptr) override;
     bool TransitionSeedProbeEvidence(
         const TransitionSeedProbeEvidenceCommand& command,
@@ -55,10 +54,6 @@ public:
     bool UpdateSeedProbeRunStatus(
         const UpdateSeedProbeRunStatusCommand& command,
         bool* changed_out = nullptr,
-        std::string* error_out = nullptr) override;
-    bool ObserveSeedProbeEndpoint(
-        const ObserveSeedProbeEndpointCommand& command,
-        ObserveSeedProbeEndpointReceipt* receipt_out = nullptr,
         std::string* error_out = nullptr) override;
     bool ReplaceSeedProbeAcceptedInputFrames(
         const ReplaceSeedProbeAcceptedInputFramesCommand& command,

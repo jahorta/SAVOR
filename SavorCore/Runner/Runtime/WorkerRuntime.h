@@ -109,6 +109,7 @@ struct WorkerSnapshot
     std::optional<InvocationId> active_invocation;
     std::optional<WorkerWorksetId> active_workset;
     std::optional<WorkerWorksetId> staged_workset;
+    std::optional<WorkerWorksetState> resident_workset_state;
     std::optional<WorkerWorksetItemId> active_workset_item;
     std::uint32_t available_item_credits = 0;
     std::uint32_t retained_terminal_count = 0;

@@ -20,7 +20,9 @@ namespace savor::runner::parallel::savordb {
 
 struct JobExecutionCoordinatorConfig {
     std::chrono::milliseconds poll_interval{20};
-    std::chrono::milliseconds workset_lease_duration{30000};
+    std::chrono::milliseconds workset_lease_duration{180000};
+    std::chrono::milliseconds workset_lease_renewal_point{90000};
+    std::chrono::milliseconds workset_lease_retry_interval{5000};
     std::chrono::milliseconds recovery_interval{1000};
     std::chrono::milliseconds terminal_retry_interval{250};
     std::chrono::milliseconds terminal_retry_max_interval{30000};
@@ -102,8 +104,12 @@ struct JobExecutionCoordinatorTelemetry {
     std::uint64_t worker_losses = 0;
     std::uint64_t recovered_dispatches = 0;
     std::uint64_t scheduler_wakeups = 0;
-    std::size_t claim_profiles_in_backoff = 0;
-    std::uint64_t maximum_claim_backoff_ms = 0;
+    std::uint64_t ready_workset_generation = 0;
+    bool ready_worksets_present = false;
+    std::uint64_t ready_workset_signal_wakeups = 0;
+    std::uint32_t claim_backoff_stage = 0;
+    std::uint64_t current_claim_backoff_ms = 0;
+    std::uint64_t reconciliation_claims = 0;
     std::string last_scheduler_wake_reason;
     std::size_t reserved_slots = 0;
     std::size_t reconstruction_queue_depth = 0;
@@ -181,9 +187,6 @@ public:
     [[nodiscard]] bool IsPaused() const noexcept;
     [[nodiscard]] bool IsRunning() const noexcept;
     bool ClearInvariantPause();
-    void NotifyWorkAvailable(
-        std::string reason = "work-published");
-
     [[nodiscard]] JobExecutionCoordinatorTelemetry SnapshotTelemetry() const;
     [[nodiscard]] std::vector<JobExecutionWorkerLaneSnapshot>
         SnapshotWorkerLanes() const;

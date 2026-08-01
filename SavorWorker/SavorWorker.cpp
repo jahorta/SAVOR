@@ -1347,12 +1347,36 @@ bool SubmitFrame(
                 "LivenessProbe payload must be empty");
             return true;
         }
+        const auto snapshot = runtime.snapshot();
+        savor::wrms::WorksetResidenceSnapshotV1 residence{};
+        const auto resident = snapshot.active_workset.has_value()
+            ? snapshot.active_workset
+            : snapshot.staged_workset;
+        if (resident.has_value()) {
+            residence.has_resident_workset = true;
+            residence.workset_id = resident->value();
+            residence.state = MapWorksetState(
+                snapshot.resident_workset_state.value_or(
+                    savor::runtime::WorkerWorksetState::Validating));
+        }
+        std::vector<std::uint8_t> encoded_residence;
+        if (!savor::wrms::EncodePayload(
+                residence,
+                encoded_residence)) {
+            PublishMalformedCommand(
+                publisher,
+                frame.header.kind,
+                frame.header.request_id,
+                "failed encoding LivenessProbe residence snapshot");
+            return true;
+        }
         publisher.Publish(
             MessageKind::CommandResult,
             frame.header.request_id,
             savor::wrms::CommandResultPayload{
                 .command_kind = MessageKind::LivenessProbe,
                 .status = savor::wrms::CommandStatus::Succeeded,
+                .result = std::move(encoded_residence),
             });
         return true;
     }

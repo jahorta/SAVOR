@@ -361,6 +361,11 @@ TEST(WorkerProtocolV1, RoundTripsEveryTypedPayload)
         .workset_id = 500,
         .state = WorksetStateCode::Running,
         .next_item_ordinal = 2});
+    ExpectPayloadRoundTrip(WorksetResidenceSnapshotV1{
+        .format_version = 1,
+        .has_resident_workset = true,
+        .workset_id = 500,
+        .state = WorksetStateCode::Running});
     ExpectPayloadRoundTrip(WorksetItemStartedPayload{
         .outbound_sequence = 32,
         .workset_id = 500,

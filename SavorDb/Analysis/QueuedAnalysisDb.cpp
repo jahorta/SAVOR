@@ -148,15 +148,15 @@ bool QueuedAnalysisDb::EnsureSeedProbeInputFrame(
         error_out);
 }
 
-bool QueuedAnalysisDb::EnsureSeedProbeObservation(
+bool QueuedAnalysisDb::RecordSeedProbeObservation(
     const RecordSeedProbeObservationCommand& command,
-    bool* inserted_out,
-    std::int64_t* probe_result_id_out,
+    RecordSeedProbeObservationReceipt* receipt_out,
     std::string* error_out) {
     return ExecuteWrite<bool>(
-        [this, command, inserted_out, probe_result_id_out, error_out]() {
+        [this, command, receipt_out, error_out]() {
             return inner_ != nullptr
-                ? inner_->EnsureSeedProbeObservation(command, inserted_out, probe_result_id_out, error_out)
+                ? inner_->RecordSeedProbeObservation(
+                    command, receipt_out, error_out)
                 : false;
         },
         false,
@@ -216,21 +216,6 @@ bool QueuedAnalysisDb::UpdateSeedProbeRunStatus(
     return ExecuteWrite<bool>(
         [this, command, changed_out, error_out]() {
             return inner_ != nullptr ? inner_->UpdateSeedProbeRunStatus(command, changed_out, error_out) : false;
-        },
-        false,
-        error_out);
-}
-
-bool QueuedAnalysisDb::ObserveSeedProbeEndpoint(
-    const ObserveSeedProbeEndpointCommand& command,
-    ObserveSeedProbeEndpointReceipt* receipt_out,
-    std::string* error_out) {
-    return ExecuteWrite<bool>(
-        [this, command, receipt_out, error_out]() {
-            return inner_ != nullptr
-                ? inner_->ObserveSeedProbeEndpoint(
-                    command, receipt_out, error_out)
-                : false;
         },
         false,
         error_out);

@@ -684,6 +684,18 @@ ProgramRuntimeSubmission ProgramRuntime::PrepareModule(
                 entrypoints.push_back(entrypoint.name);
             }
             std::sort(entrypoints.begin(), entrypoints.end());
+            const ContentHash256 dependency_lock_hash =
+                ComputeProgramDependencyLockHashV1(
+                    verified.verified->dependency_lock);
+            if (dependency_lock_hash.empty())
+            {
+                event.prepared = false;
+                event.error = {
+                    WorkerRejectionCode::InternalFailure,
+                    "Program dependency-lock hash could not be computed"};
+                events->Publish(std::move(event));
+                return ProgramRuntimeSubmission::Accepted();
+            }
             impl_->definitions = std::move(candidate);
             impl_->prepared_modules.insert_or_assign(
                 std::pair{
@@ -692,6 +704,7 @@ ProgramRuntimeSubmission ProgramRuntime::PrepareModule(
                 ProgramRuntimeCatalogModule{
                     request.module.identity,
                     std::move(entrypoints),
+                    dependency_lock_hash.ToHex(),
                     request.module.development_only});
             ++impl_->catalog_generation;
         }
@@ -1094,7 +1107,7 @@ ProgramRuntimeCatalogSnapshot ProgramRuntime::catalog() const
         canonical_modules.push_back({
             module.identity,
             module.entrypoints,
-            snapshot.dependency_manifest_sha256,
+            module.dependency_lock_sha256,
             module.development_only});
     }
     snapshot.catalog_sha256 = ComputeRuntimeCatalogHash(
